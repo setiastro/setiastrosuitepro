@@ -6,7 +6,7 @@ import tempfile
 import datetime as _dt
 import numpy as np
 import time
-
+import threading
 from PyQt6.QtCore import Qt, QTimer, QSettings, pyqtSignal
 from PyQt6.QtGui import QIcon, QImage, QPixmap, QAction, QIntValidator, QDoubleValidator
 from PyQt6.QtWidgets import (QDialog, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QLineEdit,
@@ -19,14 +19,10 @@ from astropy.io import fits
 from astropy.stats import sigma_clipped_stats
 
 # optional deps used in your code; guard if not installed
-try:
-    import rawpy
-except Exception:
-    rawpy = None
-try:
-    import exifread
-except Exception:
-    exifread = None
+import rawpy
+
+import exifread
+
 
 import sep
 import exifread
@@ -354,7 +350,7 @@ def estimate_global_snr(
     if sigma_central <= 0.0:
         return 0.0
 
-    nu = med_patch - 3.0 * sigma_central * med_patch
+    nu = med_patch - 3.0 * sigma_central
 
     # 6) Return (mean − nu) / σ
     return (mu_patch - nu) / sigma_central
@@ -394,6 +390,8 @@ class LiveStackWindow(QDialog):
         self.FILE_STABLE_SECS = 3.0          # how long size+mtime must stay unchanged
         self.OPEN_RETRY_PENALTY_SECS = 10.0  # cool-down after a read/permission failure
         self.MAX_FILE_WAIT_SECS = 600.0      # optional safety cap (unused by default logic)
+
+        self._stop_event = threading.Event()
 
         # ── Load persisted settings ───────────────────────────────
         s = QSettings()
@@ -610,6 +608,17 @@ class LiveStackWindow(QDialog):
         self.poll_timer.setInterval(1500)
         self.poll_timer.timeout.connect(self.check_for_new_frames)
         self._on_mono_color_toggled(self.mono_color_checkbox.isChecked())
+
+        app = QApplication.instance()
+        if app is not None:
+            try:
+                app.aboutToQuit.connect(self.stop_live)
+            except Exception:
+                pass
+
+    def _should_stop(self) -> bool:
+        # stop requested or not running anymore
+        return self._stop_event.is_set() or (not self.is_running)
 
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -938,8 +947,9 @@ class LiveStackWindow(QDialog):
             # direct mapping: e.g. "SHO" → R=S, G=H, B=O
             letters = list(mode)
             if len(letters) != 3 or any(l not in ("S","H","O") for l in letters):
-                # invalid code → fallback to natural
-                return self._build_color_composite.__wrapped__(self)
+                # fallback to natural
+                self.narrowband_mapping = "Natural"
+                return self._build_color_composite()
 
             R = getf(letters[0])
             G = getf(letters[1])
@@ -1089,6 +1099,7 @@ class LiveStackWindow(QDialog):
         if not self.watch_folder:
             self.status_label.setText("❗ No folder selected")
             return
+        self._stop_event.clear()
         # Clear any old record so existing files are re-processed
         self.processed_files.clear()
         # Process all current files once
@@ -1103,6 +1114,7 @@ class LiveStackWindow(QDialog):
         if not self.watch_folder:
             self.status_label.setText("❗ No folder selected")
             return
+        self._stop_event.clear()
         # Populate processed_files with all existing files so they won't be re-processed
         exts = (
             "*.fit", "*.fits", "*.tif", "*.tiff",
@@ -1123,21 +1135,23 @@ class LiveStackWindow(QDialog):
         if not self.watch_folder:
             self.status_label.setText("❗ No folder selected")
             return
+        self._stop_event.clear()
         self.is_running = True
         self.poll_timer.start()
         self.status_label.setText(f"▶ Monitoring: {os.path.basename(self.watch_folder)}")
         self.mode_label.setText("Mode: Linear Average")
 
     def stop_live(self):
-        if self.is_running:
-            self.is_running = False
-            self.poll_timer.stop()
-            self.status_label.setText("■ Stopped")
-        else:
-            self.status_label.setText("■ Already stopped")
+        self._stop_event.set()      # <-- NEW: request cancellation immediately
+        self.is_running = False
+        self.poll_timer.stop()
+        self.status_label.setText("■ Stopped")
+        QApplication.processEvents()
+
 
     def reset_live(self):
         if self.is_running:
+            self._stop_event.set()
             self.is_running = False
             self.poll_timer.stop()
             self.status_label.setText("■ Stopped")
@@ -1251,8 +1265,9 @@ class LiveStackWindow(QDialog):
 
 
     def check_for_new_frames(self):
-        if not self.is_running or not self.watch_folder:
+        if self._should_stop() or not self.watch_folder:
             return
+
 
         # Gather candidates
         exts = (
@@ -1270,23 +1285,27 @@ class LiveStackWindow(QDialog):
         if not candidates:
             return
 
-        # Show first new file name (status only)
         self.status_label.setText(f"➜ New/updated files: {len(candidates)}")
         QApplication.processEvents()
 
-        # Probe each candidate: only process when 'ready'
         processed_now = 0
         for path in candidates:
-            # Skip if we recently penalized this path
+            if self._should_stop():   # <-- NEW
+                self.status_label.setText("■ Stopped")
+                QApplication.processEvents()
+                break
+
             info = self._probe.get(path)
             if info and time.time() < info.get("penalty_until", 0.0):
                 continue
 
-            # Check readiness: stable size/mtime and can open-for-read
             if not self._file_ready(path):
-                continue  # not yet ready; we'll see it again on the next tick
+                continue
 
-            # Only *now* do we mark as processed and actually process the frame
+            # IMPORTANT: still allow stop before committing the path as processed
+            if self._should_stop():   # <-- NEW
+                break
+
             self.processed_files.add(path)
             base = os.path.basename(path)
             self.status_label.setText(f"→ Processing: {base}")
@@ -1310,6 +1329,8 @@ class LiveStackWindow(QDialog):
             QApplication.processEvents()
 
     def process_frame(self, path):
+        if self._should_stop():
+            return        
         if not self._file_ready(path):
             # do not mark as processed here; monitor will retry after cool-down
             return
@@ -1389,6 +1410,9 @@ class LiveStackWindow(QDialog):
                 QApplication.processEvents()
                 return
 
+        if self._should_stop():
+            return
+
         # ——— 2) CALIBRATION (once) ————————————————————————
         # ——— 2a) DETECT MONO→COLOR MODE ————————————————————
         mono_key = None
@@ -1404,11 +1428,17 @@ class LiveStackWindow(QDialog):
         elif self.master_flat is not None:
             img = apply_flat_division_numba(img, self.master_flat)
 
+        if self._should_stop():
+            return
+
         # ——— 3) DEBAYER if BAYERPAT ——————————————————————
         if is_mono and header.get('BAYERPAT'):
             pat = header['BAYERPAT'][0] if isinstance(header['BAYERPAT'], tuple) else header['BAYERPAT']
             img = debayer_fits_fast(img, pat)
             is_mono = False
+
+        if self._should_stop():
+            return
 
         # ——— 5) PROMOTION TO 3-CHANNEL if NOT in mono-mode —————
         if mono_key is None and img.ndim == 2:
@@ -1431,6 +1461,9 @@ class LiveStackWindow(QDialog):
                 plane if plane.ndim == 2 else plane[:, :, None], delta
             ).squeeze()
 
+        if self._should_stop():
+            return
+
         # ——— 8) NORMALIZE —————————————————————————————
         if mono_key:
             norm_plane = stretch_mono_image(plane, target_median=0.3)
@@ -1438,6 +1471,9 @@ class LiveStackWindow(QDialog):
         else:
             norm_color = stretch_color_image(img, target_median=0.3, linked=False)
             norm_plane = np.mean(norm_color, axis=2)
+
+        if self._should_stop():
+            return
 
         # ——— 9) METRICS & SNR —————————————————————————
         sc, fwhm, ecc = compute_frame_star_metrics(norm_plane)
@@ -1457,6 +1493,9 @@ class LiveStackWindow(QDialog):
             else:
                 stack_img = norm_color
         snr_val = estimate_global_snr(stack_img)
+
+        if self._should_stop():
+            return
 
         # ——— 10) CULLING? ————————————————————————————
         flagged = (
@@ -1485,6 +1524,9 @@ class LiveStackWindow(QDialog):
                 self.mode_label.setText("Mode: Linear Average")
                 self.status_label.setText("Started linear stack")
             QApplication.processEvents()
+
+            if self._should_stop():
+                return
 
             if mono_key:
                 # start the filter stack
@@ -1525,6 +1567,9 @@ class LiveStackWindow(QDialog):
                     )
                     self._buffer.append(norm_color.copy())
 
+                    if self._should_stop():
+                        return
+
                     # hit the bootstrap threshold?
                     if n == self.bootstrap_frames:
                         # init Welford stats
@@ -1554,6 +1599,9 @@ class LiveStackWindow(QDialog):
                         (self.frame_count / n) * self.current_stack
                         + (1.0 / n) * clipped
                     )
+
+                    if self._should_stop():
+                        return
 
                     # Welford update
                     delta_mu = clipped - self._mu
@@ -1603,6 +1651,9 @@ class LiveStackWindow(QDialog):
                     buf.append(norm_plane.copy())
                     self.filter_counts[mono_key] = new_count
 
+                    if self._should_stop():
+                        return
+
                     if new_count == self.bootstrap_frames:
                         # init Welford
                         stacked = np.stack(buf, axis=0)
@@ -1636,7 +1687,8 @@ class LiveStackWindow(QDialog):
                         (count / new_count) * self.filter_stacks[mono_key]
                         + (1.0 / new_count) * clipped
                     )
-
+                    if self._should_stop():
+                        return
                     # Welford update on µ and m2
                     delta   = clipped - mu
                     new_mu  = mu + delta / new_count
@@ -1671,6 +1723,9 @@ class LiveStackWindow(QDialog):
                         pass  # Ignore exposure parsing errors
                 QApplication.processEvents()
 
+            if self._should_stop():
+                return
+
             # ─── 13) Update UI ─────────────────────────────────────────
             self.frame_count_label.setText(f"Frames: {self.frame_count}")
             QApplication.processEvents()
@@ -1679,6 +1734,9 @@ class LiveStackWindow(QDialog):
         self.metrics_window.metrics_panel.add_point(
             self.frame_count, fwhm, ecc, sc, snr_val, False
         )
+
+        if self._should_stop():
+            return
 
         # ——— 14) PREVIEW & STATUS LABEL —————————————————————
         if mono_key:
@@ -1698,6 +1756,8 @@ class LiveStackWindow(QDialog):
         Load/calibrate a single frame (RAW or FITS/TIFF), debayer if needed,
         normalize, then build a max‐value “star trail” in self.current_stack.
         """
+        if self._should_stop():
+            return        
         # ─── 1) Load (RAW vs FITS) ─────────────────────────────
         lower = path.lower()
         raw_exts = ('.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf',
@@ -1750,6 +1810,9 @@ class LiveStackWindow(QDialog):
                 QApplication.processEvents()
                 return
 
+        if self._should_stop():
+            return
+
         # ─── 2) Calibration ─────────────────────────────────────
         mono_key = None
         if (self.mono_color_mode
@@ -1768,6 +1831,9 @@ class LiveStackWindow(QDialog):
             img = apply_flat_division_numba(img,
                                             self.master_flat)
 
+        if self._should_stop():
+            return
+
         # ─── 3) Debayer ─────────────────────────────────────────
         if is_mono and header.get('BAYERPAT'):
             pat = (header['BAYERPAT'][0]
@@ -1780,6 +1846,9 @@ class LiveStackWindow(QDialog):
         if not mono_key and img.ndim == 2:
             img = np.stack([img, img, img], axis=2)
 
+        if self._should_stop():
+            return
+
         # ─── 5) Normalize ───────────────────────────────────────
         # for star-trail we want a visible, stretched version:
         if img.ndim == 2:
@@ -1790,6 +1859,9 @@ class LiveStackWindow(QDialog):
                                              target_median=0.3,
                                              linked=False)
 
+        if self._should_stop():
+            return
+
         # ─── 6) Build max-value stack ───────────────────────────
         if self.frame_count == 0:
             self.current_stack = norm_color.copy()
@@ -1797,6 +1869,9 @@ class LiveStackWindow(QDialog):
             # elementwise max over all frames so far
             self.current_stack = np.maximum(self.current_stack,
                                             norm_color)
+
+        if self._should_stop():
+            return
 
         # ─── 7) Update counters and labels ──────────────────────
         self.frame_count += 1
@@ -1822,6 +1897,18 @@ class LiveStackWindow(QDialog):
         self.update_preview(self.current_stack)
         QApplication.processEvents()
 
+    def closeEvent(self, event):
+        # request stop + stop timer
+        self.stop_live()
+
+        # also close the metrics window so it doesn't keep stuff alive
+        try:
+            if self.metrics_window is not None:
+                self.metrics_window.close()
+        except Exception:
+            pass
+
+        event.accept()
 
 
     def update_preview(self, array: np.ndarray):

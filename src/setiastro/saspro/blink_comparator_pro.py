@@ -151,18 +151,18 @@ class MetricsPanel(QWidget):
         return idx, fwhm, ecc, orig_back, star_cnt
 
 
-    def compute_all_metrics(self, loaded_images):
-        """Run SEP over the full list in parallel using threads and cache results."""
+    def compute_all_metrics(self, loaded_images) -> bool:
+        """Run SEP over the full list in parallel using threads and cache results.
+        Returns True if metrics were computed, False if user declined/canceled.
+        """
         n = len(loaded_images)
         if n == 0:
-            # Clear any previous state and bail
             self._orig_images = []
-            self.metrics_data = [np.array([])]*4
+            self.metrics_data = [np.array([])] * 4
             self.flags = []
-            self._threshold_initialized = [False]*4
-            return
+            self._threshold_initialized = [False] * 4
+            return True
 
-        # Heads-up dialog (as you already had)
         settings = QSettings()
         show = settings.value("metrics/showWarning", True, type=bool)
         if show:
@@ -176,53 +176,57 @@ class MetricsPanel(QWidget):
                                 QMessageBox.StandardButton.No)
             cb = QCheckBox(self.tr("Don't show again"), msg)
             msg.setCheckBox(cb)
+
             if msg.exec() != QMessageBox.StandardButton.Yes:
-                return
+                # IMPORTANT: leave caches alone; caller (plot) will clear/return
+                return False
+
             if cb.isChecked():
                 settings.setValue("metrics/showWarning", False)
 
-        # pre-allocate result arrays
-        m0 = np.full(n, np.nan, dtype=np.float32)  # FWHM
-        m1 = np.full(n, np.nan, dtype=np.float32)  # Eccentricity
-        m2 = np.full(n, np.nan, dtype=np.float32)  # Background (cached)
-        m3 = np.full(n, np.nan, dtype=np.float32)  # Star count
-        flags = [e.get('flagged', False) for e in loaded_images]
+            # pre-allocate result arrays
+            m0 = np.full(n, np.nan, dtype=np.float32)  # FWHM
+            m1 = np.full(n, np.nan, dtype=np.float32)  # Eccentricity
+            m2 = np.full(n, np.nan, dtype=np.float32)  # Background (cached)
+            m3 = np.full(n, np.nan, dtype=np.float32)  # Star count
+            flags = [e.get('flagged', False) for e in loaded_images]
 
-        # progress dialog
-        prog = QProgressDialog(self.tr("Computing frame metrics…"), self.tr("Cancel"), 0, n, self)
-        prog.setWindowModality(Qt.WindowModality.WindowModal)
-        prog.setMinimumDuration(0)
-        prog.setValue(0)
-        prog.show()
-        QApplication.processEvents()
+            # progress dialog
+            prog = QProgressDialog(self.tr("Computing frame metrics…"), self.tr("Cancel"), 0, n, self)
+            prog.setWindowModality(Qt.WindowModality.WindowModal)
+            prog.setMinimumDuration(0)
+            prog.setValue(0)
+            prog.show()
+            QApplication.processEvents()
 
-        workers = min(os.cpu_count() or 1, 60)
-        tasks = [(i, loaded_images[i]) for i in range(n)]
-        done = 0  # <-- FIX: initialize before incrementing
+            workers = min(os.cpu_count() or 1, 60)
+            tasks = [(i, loaded_images[i]) for i in range(n)]
+            done = 0  # <-- FIX: initialize before incrementing
 
-        try:
-            with ThreadPoolExecutor(max_workers=workers) as exe:
-                futures = {exe.submit(self._compute_one, t): t[0] for t in tasks}
-                for fut in as_completed(futures):
-                    if prog.wasCanceled():
-                        break
-                    try:
-                        idx, fwhm, ecc, orig_back, star_cnt = fut.result()
-                    except Exception:
-                        # On failure, leave NaNs/sentinels and continue
-                        idx, fwhm, ecc, orig_back, star_cnt = futures[fut], np.nan, np.nan, np.nan, 0
-                    m0[idx], m1[idx], m2[idx], m3[idx] = fwhm, ecc, orig_back, float(star_cnt)
-                    done += 1
-                    prog.setValue(done)
-                    QApplication.processEvents()
-        finally:
-            prog.close()
+            try:
+                with ThreadPoolExecutor(max_workers=workers) as exe:
+                    futures = {exe.submit(self._compute_one, t): t[0] for t in tasks}
+                    for fut in as_completed(futures):
+                        if prog.wasCanceled():
+                            break
+                        try:
+                            idx, fwhm, ecc, orig_back, star_cnt = fut.result()
+                        except Exception:
+                            # On failure, leave NaNs/sentinels and continue
+                            idx, fwhm, ecc, orig_back, star_cnt = futures[fut], np.nan, np.nan, np.nan, 0
+                        m0[idx], m1[idx], m2[idx], m3[idx] = fwhm, ecc, orig_back, float(star_cnt)
+                        done += 1
+                        prog.setValue(done)
+                        QApplication.processEvents()
+            finally:
+                prog.close()
 
-        # stash results
-        self._orig_images = loaded_images
-        self.metrics_data = [m0, m1, m2, m3]
-        self.flags = flags
-        self._threshold_initialized = [False]*4
+            # stash results
+            self._orig_images = loaded_images
+            self.metrics_data = [m0, m1, m2, m3]
+            self.flags = flags
+            self._threshold_initialized = [False] * 4
+            return True
 
 
     def plot(self, loaded_images, indices=None):
@@ -242,7 +246,16 @@ class MetricsPanel(QWidget):
 
         # compute & cache on first call or new image list
         if self._orig_images is not loaded_images or self.metrics_data is None:
-            self.compute_all_metrics(loaded_images)
+            ok = self.compute_all_metrics(loaded_images)
+            if not ok or self.metrics_data is None:
+                # user declined/canceled -> clear plots and exit cleanly
+                for pw, scat, line in zip(self.plots, self.scats, self.lines):
+                    scat.setData(x=[], y=[])
+                    line.setPos(0)
+                    pw.getPlotItem().getViewBox().update()
+                    pw.repaint()
+                return
+
 
         # default to all indices
         if indices is None:
