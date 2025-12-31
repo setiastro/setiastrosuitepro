@@ -1608,6 +1608,7 @@ class ImageSubWindow(QWidget):
                     pass
 
     def set_scale(self, s: float):
+        # Programmatic scale changes must schedule final smooth redraw
         s = float(max(self._min_scale, min(s, self._max_scale)))
         if abs(s - self.scale) < 1e-9:
             return
