@@ -1100,12 +1100,9 @@ class LiveStackWindow(QDialog):
             self.status_label.setText("❗ No folder selected")
             return
         self._stop_event.clear()
-        # Clear any old record so existing files are re-processed
-        self.processed_files.clear()
-        # Process all current files once
-        self.check_for_new_frames()
-        # Now start monitoring
         self.is_running = True
+        self.processed_files.clear()
+        self.check_for_new_frames()
         self.poll_timer.start()
         self.status_label.setText(f"▶ Processing & Monitoring: {os.path.basename(self.watch_folder)}")
 
@@ -1267,67 +1264,71 @@ class LiveStackWindow(QDialog):
     def check_for_new_frames(self):
         if self._should_stop() or not self.watch_folder:
             return
-
-
-        # Gather candidates
-        exts = (
-            "*.fit", "*.fits", "*.tif", "*.tiff",
-            "*.cr2", "*.cr3", "*.nef", "*.arw",
-            "*.dng", "*.raf", "*.orf", "*.rw2", "*.pef", "*.xisf",
-            "*.png", "*.jpg", "*.jpeg"
-        )
-        all_paths = []
-        for ext in exts:
-            all_paths += glob.glob(os.path.join(self.watch_folder, '**', ext), recursive=True)
-
-        # Only consider paths not yet processed
-        candidates = [p for p in sorted(all_paths) if p not in self.processed_files]
-        if not candidates:
+        if getattr(self, "_poll_busy", False):
             return
+        self._poll_busy = True
+        try:
+            # Gather candidates
+            exts = (
+                "*.fit", "*.fits", "*.tif", "*.tiff",
+                "*.cr2", "*.cr3", "*.nef", "*.arw",
+                "*.dng", "*.raf", "*.orf", "*.rw2", "*.pef", "*.xisf",
+                "*.png", "*.jpg", "*.jpeg"
+            )
+            all_paths = []
+            for ext in exts:
+                all_paths += glob.glob(os.path.join(self.watch_folder, '**', ext), recursive=True)
 
-        self.status_label.setText(f"➜ New/updated files: {len(candidates)}")
-        QApplication.processEvents()
+            # Only consider paths not yet processed
+            candidates = [p for p in sorted(all_paths) if p not in self.processed_files]
+            if not candidates:
+                return
 
-        processed_now = 0
-        for path in candidates:
-            if self._should_stop():   # <-- NEW
-                self.status_label.setText("■ Stopped")
-                QApplication.processEvents()
-                break
-
-            info = self._probe.get(path)
-            if info and time.time() < info.get("penalty_until", 0.0):
-                continue
-
-            if not self._file_ready(path):
-                continue
-
-            # IMPORTANT: still allow stop before committing the path as processed
-            if self._should_stop():   # <-- NEW
-                break
-
-            self.processed_files.add(path)
-            base = os.path.basename(path)
-            self.status_label.setText(f"→ Processing: {base}")
+            self.status_label.setText(f"➜ New/updated files: {len(candidates)}")
             QApplication.processEvents()
 
-            try:
-                self.process_frame(path)
-                processed_now += 1
-            except Exception as e:
-                # If anything unexpected happens, clear 'processed' so we can retry later
-                # but add a penalty to avoid tight loops.
-                self.processed_files.discard(path)
-                info = self._probe.get(path) or self._update_probe(path)
-                if info:
-                    info["penalty_until"] = time.time() + self.OPEN_RETRY_PENALTY_SECS
-                self.status_label.setText(f"⚠ Error on {base}: {e}")
+            processed_now = 0
+            for path in candidates:
+                if self._should_stop():   # <-- NEW
+                    self.status_label.setText("■ Stopped")
+                    QApplication.processEvents()
+                    break
+
+                info = self._probe.get(path)
+                if info and time.time() < info.get("penalty_until", 0.0):
+                    continue
+
+                if not self._file_ready(path):
+                    continue
+
+                # IMPORTANT: still allow stop before committing the path as processed
+                if self._should_stop():   # <-- NEW
+                    break
+
+                self.processed_files.add(path)
+                base = os.path.basename(path)
+                self.status_label.setText(f"→ Processing: {base}")
                 QApplication.processEvents()
 
-        if processed_now > 0:
-            self.status_label.setText(f"✔ Processed {processed_now} file(s)")
-            QApplication.processEvents()
+                try:
+                    self.process_frame(path)
+                    processed_now += 1
+                except Exception as e:
+                    # If anything unexpected happens, clear 'processed' so we can retry later
+                    # but add a penalty to avoid tight loops.
+                    self.processed_files.discard(path)
+                    info = self._probe.get(path) or self._update_probe(path)
+                    if info:
+                        info["penalty_until"] = time.time() + self.OPEN_RETRY_PENALTY_SECS
+                    self.status_label.setText(f"⚠ Error on {base}: {e}")
+                    QApplication.processEvents()
 
+            if processed_now > 0:
+                self.status_label.setText(f"✔ Processed {processed_now} file(s)")
+                QApplication.processEvents()
+        finally:
+            self._poll_busy = False
+            
     def process_frame(self, path):
         if self._should_stop():
             return        
