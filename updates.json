@@ -1,9 +1,9 @@
 {
-  "version": "1.6.6",
+  "version": "1.6.7",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.6/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.6/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.6/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.7/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.7/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.7/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.6.6 Major Optimization for switching active views and numerous other smaller updates and fixes."
+  "notes": "Seti Astro Suite Pro V1.6.7 Astro Catalogue Viewer Exporter added. More info on ACV here: https://github.com/thebioguy/Astro-Catalogue-Viewer  ExoPlanet/Transit Detector bug fixes.  Other bug fixes throughout."
 }
