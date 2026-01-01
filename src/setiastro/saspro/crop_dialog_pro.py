@@ -616,6 +616,7 @@ class CropDialogPro(QDialog):
                 if e.type() == QEvent.Type.MouseMove and self._drawing:
                     r = QRectF(self._origin, scene_pt).normalized()
                     r = self._apply_ar_to_rect(r, live=True, scene_pt=scene_pt)
+                    r = self._clamp_rect_to_pixmap(r)
                     self._draw_live_rect(r)
 
                     # ⬇️ live dims from the temporary rect (axis-aligned TL,TR,BR,BL)
@@ -627,7 +628,9 @@ class CropDialogPro(QDialog):
                     self._drawing = False
                     r = QRectF(self._origin, scene_pt).normalized()
                     r = self._apply_ar_to_rect(r, live=False, scene_pt=scene_pt)
+                    r = self._clamp_rect_to_pixmap(r)
                     self._clear_live_rect()
+
                     self._rect_item = ResizableRotatableRectItem(r)
                     self._rect_item.setZValue(10)
                     self._rect_item.setFixedAspectRatio(self._current_ar_value())
@@ -758,6 +761,27 @@ class CropDialogPro(QDialog):
         if hasattr(self, "_live_rect") and self._live_rect:
             self.scene.removeItem(self._live_rect); self._live_rect = None
 
+    def _pixmap_scene_rect(self) -> QRectF | None:
+        """Scene rect occupied by the pixmap (image) item."""
+        if not self._pix_item:
+            return None
+        return self._pix_item.mapRectToScene(self._pix_item.boundingRect())
+
+    def _clamp_rect_to_pixmap(self, r: QRectF) -> QRectF:
+        """Intersect an axis-aligned QRectF with the pixmap scene rect."""
+        bounds = self._pixmap_scene_rect()
+        if bounds is None:
+            return r.normalized()
+        rr = r.normalized().intersected(bounds)
+        # avoid empty rects (keep at least 1x1 scene unit)
+        if rr.isNull() or rr.width() <= 1e-6 or rr.height() <= 1e-6:
+            # fallback: clamp to a 1x1 rect at the nearest point inside bounds
+            x = min(max(r.center().x(), bounds.left()),  bounds.right())
+            y = min(max(r.center().y(), bounds.top()),   bounds.bottom())
+            rr = QRectF(x, y, 1.0, 1.0)
+        return rr.normalized()
+
+
     # ---------- preview toggles ----------
     def _toggle_autostretch(self):
         self._autostretch_on = not self._autostretch_on
@@ -810,7 +834,17 @@ class CropDialogPro(QDialog):
     def _scene_to_img_pixels(self, pt_scene: QPointF, w_img: int, h_img: int):
         pm = self._pix_item.pixmap()
         sx, sy = w_img / pm.width(), h_img / pm.height()
-        return np.array([pt_scene.x() * sx, pt_scene.y() * sy], dtype=np.float32)
+
+        # clamp to pixmap scene rect so we never return negatives / >W/H
+        bounds = self._pixmap_scene_rect()
+        x = pt_scene.x()
+        y = pt_scene.y()
+        if bounds is not None:
+            x = min(max(x, bounds.left()),  bounds.right())
+            y = min(max(y, bounds.top()),   bounds.bottom())
+
+        return np.array([x * sx, y * sy], dtype=np.float32)
+
 
     def _apply_one(self):
         if not self._rect_item:

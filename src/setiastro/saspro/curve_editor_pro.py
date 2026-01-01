@@ -1678,28 +1678,52 @@ class CurvesDialogPro(QDialog):
 
     # 1) Put this helper inside CurvesDialogPro (near other helpers)
     def _map_label_xy_to_image_ij(self, x: float, y: float):
-        """Map label-local coords (x,y) to _preview_img pixel (i,j). Returns (ix, iy) or None."""
+        """
+        Map label-local coords (x,y) to _preview_img pixel (ix, iy).
+        Correct even when the pixmap is centered inside a larger label.
+        Returns None if cursor is outside the displayed pixmap area.
+        """
         if self._pix is None:
             return None
+
         pm_disp = self.label.pixmap()
         if pm_disp is None or pm_disp.isNull():
             return None
 
-        src_w = self._pix.width()          # size of the *source* pixmap (preview image)
-        src_h = self._pix.height()
-        disp_w = pm_disp.width()           # size of the *displayed* pixmap on the label
+        # Displayed pixmap size (after zoom)
+        disp_w = pm_disp.width()
         disp_h = pm_disp.height()
-        if src_w <= 0 or src_h <= 0 or disp_w <= 0 or disp_h <= 0:
+
+        # Label may be bigger -> pixmap is centered with margins
+        lbl_w = self.label.width()
+        lbl_h = self.label.height()
+
+        off_x = max(0, (lbl_w - disp_w) // 2)
+        off_y = max(0, (lbl_h - disp_h) // 2)
+
+        # Remove margins: label-local -> pixmap-local
+        px = float(x) - float(off_x)
+        py = float(y) - float(off_y)
+
+        if px < 0 or py < 0 or px >= disp_w or py >= disp_h:
+            return None  # outside actual image area
+
+        # Now convert displayed pixmap pixel -> source preview pixel
+        src_w = self._pix.width()
+        src_h = self._pix.height()
+        if src_w <= 0 or src_h <= 0:
             return None
 
         sx = disp_w / float(src_w)
         sy = disp_h / float(src_h)
 
-        ix = int(x / sx)
-        iy = int(y / sy)
+        ix = int(px / sx)
+        iy = int(py / sy)
+
         if ix < 0 or iy < 0 or ix >= src_w or iy >= src_h:
             return None
         return ix, iy
+
 
     def _scene_to_norm_points(self, pts_scene: list[tuple[float,float]]) -> list[tuple[float,float]]:
         """(x:[0..360], y:[0..360] down) → (x,y in [0..1] up). Ensures endpoints present & strictly increasing x."""
