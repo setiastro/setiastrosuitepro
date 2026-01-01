@@ -10,7 +10,7 @@ import json
 import sys
 import webbrowser
 from typing import TYPE_CHECKING
-
+import re
 from PyQt6.QtCore import QUrl
 from PyQt6.QtNetwork import QNetworkRequest, QNetworkReply
 from PyQt6.QtWidgets import QMessageBox, QApplication
@@ -58,21 +58,20 @@ class UpdateMixin:
         self._ensure_network_manager()
         url_str = self.settings.value("updates/url", self._updates_url, type=str) or self._updates_url
 
-        # ---- TLS availability guard (prevents crash on OpenSSL mismatch) ----
         if url_str.lower().startswith("https://"):
             try:
                 if not QSslSocket.supportsSsl():
-                    msg = "TLS unavailable in Qt (QSslSocket.supportsSsl()=False). Skipping update check."
                     if self.statusBar():
-                        self.statusBar().showMessage(self.tr("Update check unavailable (TLS missing)."), 5000)
+                        self.statusBar().showMessage(self.tr("Update check unavailable (TLS missing)."), 8000)
                     if interactive:
-                        QMessageBox.information(self, self.tr("Update Check"),
-                                                self.tr("Update check is unavailable because TLS is not available on this system."))
+                        QMessageBox.information(
+                            self, self.tr("Update Check"),
+                            self.tr("Update check is unavailable because TLS is not available on this system.")
+                        )
                     else:
-                        print(f"[updates] {msg}")
+                        print("[updates] TLS unavailable in Qt; skipping update check.")
                     return
             except Exception as e:
-                # If QtNetwork is in a weird state, fail safe (do not attempt TLS)
                 print(f"[updates] TLS probe failed ({e}); skipping update check.")
                 return
 
@@ -111,20 +110,22 @@ class UpdateMixin:
     def _on_update_reply(self, reply: QNetworkReply):
         """Handle network reply from update check or download."""
         interactive = bool(reply.property("interactive"))
-        
+
         # Was this the second request (the actual installer download)?
         if bool(reply.property("is_update_download")):
             self._on_windows_update_download_finished(reply)
             return
-        
+
         try:
             if reply.error() != QNetworkReply.NetworkError.NoError:
                 err = reply.errorString()
                 if self.statusBar():
-                    self.statusBar().showMessage("Update check failed.", 5000)
+                    self.statusBar().showMessage(self.tr("Update check failed."), 5000)
                 if interactive:
-                    QMessageBox.warning(self, self.tr("Update Check Failed"),
-                                        self.tr("Unable to check for updates.\n\n{err}").replace("{err}", err))
+                    QMessageBox.warning(
+                        self, self.tr("Update Check Failed"),
+                        self.tr("Unable to check for updates.\n\n{0}").format(err)
+                    )
                 else:
                     print(f"[updates] check failed: {err}")
                 return
@@ -134,12 +135,14 @@ class UpdateMixin:
                 data = json.loads(raw.decode("utf-8"))
             except Exception as je:
                 if self.statusBar():
-                    self.statusBar().showMessage("Update check failed (bad JSON).", 5000)
+                    self.statusBar().showMessage(self.tr("Update check failed (bad JSON)."), 5000)
                 if interactive:
-                    QMessageBox.warning(self, self.tr("Update Check Failed"),
-                                        self.tr("Update JSON is invalid.\n\n{je}").replace("{je}", str(je)))
+                    QMessageBox.warning(
+                        self, self.tr("Update Check Failed"),
+                        self.tr("Update JSON is invalid.\n\n{0}").format(str(je))
+                    )
                 else:
-                    print(f"[updates] bad JSON: {je}")
+                    print(f"[updates] bad JSON: {je!r}")
                 return
 
             latest_str = str(data.get("version", "")).strip()
@@ -148,25 +151,53 @@ class UpdateMixin:
 
             if not latest_str:
                 if self.statusBar():
-                    self.statusBar().showMessage("Update check failed (no 'version').", 5000)
+                    self.statusBar().showMessage(self.tr("Update check failed (no version)."), 5000)
                 if interactive:
-                    QMessageBox.warning(self, self.tr("Update Check Failed"),
-                                        self.tr("Update JSON missing the 'version' field."))
+                    QMessageBox.warning(
+                        self, self.tr("Update Check Failed"),
+                        self.tr("Update JSON missing the 'version' field.")
+                    )
                 else:
                     print("[updates] JSON missing 'version'")
                 return
 
-            cur_tuple = self._parse_version_tuple(self._current_version_str)
-            latest_tuple = self._parse_version_tuple(latest_str)
-            available = bool(latest_tuple and cur_tuple and latest_tuple > cur_tuple)
+            # ---- PEP 440 version compare ----
+            try:
+                from packaging.version import Version
+                cur_v = Version(str(self._current_version_str).strip())
+                latest_v = Version(latest_str)
+            except Exception as e:
+                if self.statusBar():
+                    self.statusBar().showMessage(self.tr("Update check failed (version parse)."), 5000)
+                if interactive:
+                    QMessageBox.warning(
+                        self, self.tr("Update Check Failed"),
+                        self.tr("Could not compare versions.\n\nCurrent: {0}\nLatest: {1}\n\n{2}")
+                            .format(self._current_version_str, latest_str, str(e))
+                    )
+                else:
+                    print(f"[updates] version parse failed: cur={self._current_version_str!r} latest={latest_str!r} err={e!r}")
+                return
+
+            available = latest_v > cur_v
 
             if available:
                 if self.statusBar():
                     self.statusBar().showMessage(self.tr("Update available: {0}").format(latest_str), 5000)
+
                 msg_box = QMessageBox(self)
                 msg_box.setIcon(QMessageBox.Icon.Information)
                 msg_box.setWindowTitle(self.tr("Update Available"))
-                msg_box.setText(self.tr("A new version ({0}) is available!").format(latest_str))
+                installed_norm = str(cur_v)
+                reported_norm  = str(latest_v)
+
+                msg_box.setText(
+                    self.tr(
+                        "An update is available!\n\n"
+                        "Installed version: {0}\n"
+                        "Available version: {1}"
+                    ).format(installed_norm, reported_norm)
+                )
                 if notes:
                     msg_box.setInformativeText(self.tr("Release Notes:\n{0}").format(notes))
                 msg_box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
@@ -178,27 +209,48 @@ class UpdateMixin:
 
                 if msg_box.exec() == QMessageBox.StandardButton.Yes:
                     plat = sys.platform
-                    link = downloads.get(
+                    key = (
                         "Windows" if plat.startswith("win") else
-                        "macOS" if plat.startswith("darwin") else
-                        "Linux" if plat.startswith("linux") else "", ""
+                        "macOS"   if plat.startswith("darwin") else
+                        "Linux"   if plat.startswith("linux") else
+                        ""
                     )
+                    link = downloads.get(key, "")
                     if not link:
-                        QMessageBox.warning(self, self.tr("Download"), self.tr("No download link available for this platform."))
+                        QMessageBox.warning(self, self.tr("Download"),
+                                            self.tr("No download link available for this platform."))
                         return
 
                     if plat.startswith("win"):
-                        # Use in-app updater for Windows
                         self._start_windows_update_download(link)
                     else:
-                        # Open browser for other platforms
                         webbrowser.open(link)
             else:
                 if self.statusBar():
-                    self.statusBar().showMessage("You're up to date.", 3000)
+                    self.statusBar().showMessage(self.tr("You're up to date."), 3000)
+
                 if interactive:
-                    QMessageBox.information(self, self.tr("Up to Date"),
-                                            self.tr("You're already running the latest version."))
+                    # Use the same parsed versions you already computed
+                    installed_str = str(self._current_version_str).strip()
+                    reported_str  = str(latest_str).strip()
+
+                    # If you have cur_v/latest_v (packaging.Version), use their string forms too
+                    try:
+                        installed_norm = str(cur_v)   # normalized PEP440 (e.g. 1.6.6.post3)
+                        reported_norm  = str(latest_v)
+                    except Exception:
+                        installed_norm = installed_str
+                        reported_norm  = reported_str
+
+                    QMessageBox.information(
+                        self,
+                        self.tr("Up to Date"),
+                        self.tr(
+                            "You're already running the latest version.\n\n"
+                            "Installed version: {0}\n"
+                            "Update source reports: {1}"
+                        ).format(installed_norm, reported_norm)
+                    )
         finally:
             reply.deleteLater()
 
@@ -321,3 +373,39 @@ class UpdateMixin:
 
         # Close app so the installer can overwrite files
         QApplication.instance().quit()
+
+
+    def _normalize_version_str(self, v: str) -> str:
+        v = (v or "").strip()
+        # common cases: "v1.2.3", "Version 1.2.3", "1.2.3 (build xyz)"
+        v = re.sub(r'^[^\d]*', '', v)                # strip leading non-digits
+        v = re.split(r'[\s\(\[]', v, 1)[0].strip()   # stop at whitespace/( or [
+        return v
+
+    def _parse_version(self, v: str):
+        v = self._normalize_version_str(v)
+        if not v:
+            return None
+        # Prefer packaging if present
+        try:
+            from packaging.version import Version
+            return Version(v)
+        except Exception:
+            # Fallback: compare numeric dot parts only
+            parts = re.findall(r'\d+', v)
+            if not parts:
+                return None
+            # normalize length to 3+ (so 1.2 == 1.2.0)
+            nums = [int(x) for x in parts[:6]]
+            while len(nums) < 3:
+                nums.append(0)
+            return tuple(nums)
+
+    def _is_update_available(self, latest_str: str) -> bool:
+        cur = self._parse_version(self._current_version_str)
+        latest = self._parse_version(latest_str)
+        if cur is None or latest is None:
+            # If we cannot compare, do NOT claim "up to date".
+            # Treat as "unknown" and show a failure message in interactive mode.
+            return False
+        return latest > cur
