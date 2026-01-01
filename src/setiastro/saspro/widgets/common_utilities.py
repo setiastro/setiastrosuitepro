@@ -1,3 +1,4 @@
+#src/setiastro/saspro/widgets/common_utilities.py
 """
 Common UI utilities and shared components.
 
@@ -220,32 +221,38 @@ _strip_ui_decorations = strip_ui_decorations
 # ---------------------------------------------------------------------------
 
 def install_crash_handlers(app: 'QApplication') -> None:
-    """
-    Install global crash and exception handlers for the application.
-    
-    Sets up:
-    1. faulthandler for hard crashes (segfaults) → saspro_crash.log
-    2. sys.excepthook for uncaught main thread exceptions
-    3. threading.excepthook for uncaught background thread exceptions
-    
-    All exceptions are logged and displayed in a dialog to the user.
-    
-    Args:
-        app: The QApplication instance
-        
-    Example:
-        app = QApplication(sys.argv)
-        install_crash_handlers(app)
-    """
     import faulthandler
-    
-    # 1) Hard crashes (segfaults, access violations) → saspro_crash.log
+    import tempfile
+    from pathlib import Path
+
+    def _get_crash_log_path() -> str:
+        try:
+            if hasattr(sys, "_MEIPASS"):
+                if sys.platform.startswith("win"):
+                    log_dir = Path(os.path.expandvars("%APPDATA%")) / "SetiAstroSuitePro" / "logs"
+                elif sys.platform.startswith("darwin"):
+                    log_dir = Path.home() / "Library" / "Logs" / "SetiAstroSuitePro"
+                else:
+                    log_dir = Path.home() / ".local" / "share" / "SetiAstroSuitePro" / "logs"
+            else:
+                # dev fallback
+                log_dir = Path("logs")
+
+            log_dir.mkdir(parents=True, exist_ok=True)
+            return str(log_dir / "saspro_crash.log")
+        except Exception:
+            return str(Path(tempfile.gettempdir()) / "saspro_crash.log")
+
+    # 1) Hard crashes → saspro_crash.log
     try:
-        _crash_log = open("saspro_crash.log", "w", encoding="utf-8", errors="replace")
+        crash_path = _get_crash_log_path()
+        _crash_log = open(crash_path, "a", encoding="utf-8", errors="replace")
         faulthandler.enable(file=_crash_log, all_threads=True)
         atexit.register(_crash_log.close)
+        logging.info("Faulthandler crash log: %s", crash_path)
     except Exception:
         logging.exception("Failed to enable faulthandler")
+
     
     def _show_dialog(title: str, head: str, details: str) -> None:
         """Show error dialog marshaled to main thread."""
@@ -261,7 +268,7 @@ def install_crash_handlers(app: 'QApplication') -> None:
             m.setStandardButtons(QMessageBox.StandardButton.Ok)
             m.exec()
         QTimer.singleShot(0, _ui)
-    
+
     # 2) Any uncaught exception on the main thread
     def _excepthook(exc_type, exc_value, exc_tb):
         tb = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))

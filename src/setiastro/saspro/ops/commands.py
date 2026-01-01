@@ -202,7 +202,7 @@ register(CommandSpec(
         "optional targets, inherit_target."
     ),
     call_style="ctx.run_command",
-    import_path="pro.function_bundle",          # <── important
+    import_path="setiastro.saspro.function_bundle",          # <── important
     callable_name="run_function_bundle_command",# <── important
     notes=(
         "Use this command from scripts to run a saved Function Bundle or an "
@@ -274,7 +274,7 @@ register(CommandSpec(
     group="Bundles",
     summary="Internal bundle runner. steps=[...], targets='all_open'|[doc_ptrs], stop_on_error.",
     call_style="ctx.run_command",
-    import_path="pro.function_bundle",
+    import_path="setiastro.saspro.function_bundle",
     callable_name="run_function_bundle_command",
 ))
 
@@ -388,7 +388,7 @@ register(CommandSpec(
     id="ghs",
     name="Generalized Hyperbolic Stretch",
     group="Stretch",
-    import_path="pro.ghs_preset",
+    import_path="setiastro.saspro.ghs_preset",
     callable_name="apply_ghs_via_preset",
     ui_method="open_ghs_with_preset",
     summary=(
@@ -499,7 +499,7 @@ register(CommandSpec(
     id="curves",
     title="Curves",
     group="Stretch",
-    import_path="pro.curves_preset",
+    import_path="setiastro.saspro.curves_preset",
     callable_name="apply_curves_via_preset",
     ui_method="open_curves_with_preset",
     summary=(
@@ -597,7 +597,7 @@ register(CommandSpec(
     id="abe",
     title="Automatic Background Extraction",
     group="Background",
-    import_path="pro.abe_preset",
+    import_path="setiastro.saspro.abe_preset",
     callable_name="apply_abe_via_preset",
     ui_method="open_abe_with_preset",   # ✅ matches your pro/abe_preset.py
     summary=(
@@ -683,7 +683,7 @@ register(CommandSpec(
     id="graxpert",
     title="GraXpert Gradient / Denoise",
     group="Background",
-    import_path="pro.graxpert_preset",
+    import_path="setiastro.saspro.graxpert_preset",
     callable_name="run_graxpert_via_preset",
     # no ui_method here unless you want to open your optional preset dialog from drops
     # ui_method="open_graxpert_with_preset",  # (only if/when you add one)
@@ -807,7 +807,7 @@ register(CommandSpec(
     id="background_neutral",
     name="Background Neutralization",
     group="Background",
-    import_path="pro.backgroundneutral",
+    import_path="setiastro.saspro.backgroundneutral",
     callable_name="run_background_neutral_via_preset",
     summary=(
         "Neutralizes RGB background either automatically or using a user-specified "
@@ -865,7 +865,7 @@ register(CommandSpec(
     id="remove_green",
     name="Remove Green (SCNR)",
     group="Color",
-    import_path="pro.remove_green",
+    import_path="setiastro.saspro.remove_green",
     callable_name="apply_remove_green_preset_to_doc",
     ui_method="open_remove_green_dialog",
     summary=(
@@ -1044,7 +1044,7 @@ register(CommandSpec(
     id="recombine_luminance",
     name="Recombine Luminance",
     group="Luminance",
-    import_path="pro.luminancerecombine",
+    import_path="setiastro.saspro.luminancerecombine",
     callable_name="run_recombine_luminance_via_preset",
     ui_method="_recombine_luminance_ui",
     notes=(
@@ -1144,7 +1144,7 @@ register(CommandSpec(
     id="wavescale_hdr",
     name="WaveScale HDR",
     group="Contrast",
-    import_path="pro.wavescale_hdr_preset",
+    import_path="setiastro.saspro.wavescale_hdr_preset",
     callable_name="run_wavescale_hdr_via_preset",
     ui_method="_open_wavescale_hdr",   # or whatever your main window uses
     summary=(
@@ -1188,7 +1188,7 @@ register(CommandSpec(
     id="wavescale_dark_enhance",
     name="WaveScale Dark Enhance",
     group="Contrast",
-    import_path="pro.wavescalede_preset",
+    import_path="setiastro.saspro.wavescalede_preset",
     callable_name="run_wavescalede_via_preset",
     ui_method="_open_wavescale_dark_enhance",  # adjust if your main window uses a different name
     summary=(
@@ -1295,7 +1295,7 @@ register(CommandSpec(
     id="aberration_ai",
     title="Aberration AI",
     group="Optics",
-    import_path="pro.aberration_ai_preset",
+    import_path="setiastro.saspro.aberration_ai_preset",
     callable_name="run_aberration_ai_via_preset",
     # ui_method="open_aberration_ai_dialog",   # if you have one; otherwise omit
     presets=[
@@ -1338,7 +1338,7 @@ register(CommandSpec(
     id="convo",
     title="Convolution / Deconvolution",
     group="Blur & Sharpen",
-    import_path="pro.convo_preset",
+    import_path="setiastro.saspro.convo_preset",
     callable_name="run_convo_via_preset",
     aliases=[
         "convolution",
@@ -1433,7 +1433,7 @@ register(CommandSpec(
     id="cosmic_clarity",
     title="Cosmic Clarity",
     group="AI",
-    import_path="pro.cosmicclarity_preset",
+    import_path="setiastro.saspro.cosmicclarity_preset",
     callable_name="run_cosmicclarity_via_preset",
     presets=[
         PresetSpec("mode", "enum", default="sharpen",
@@ -1484,7 +1484,7 @@ register(CommandSpec(
     id="debayer",
     title="Debayer",
     group="Color / CFA",
-    import_path="pro.debayer",
+    import_path="setiastro.saspro.debayer",
     callable_name="run_debayer_via_preset",
     presets=[
         PresetSpec(
@@ -1506,7 +1506,7 @@ register(CommandSpec(
     id="linear_fit",
     title="Linear Fit",
     group="Calibration",
-    import_path="pro.linear_fit",
+    import_path="setiastro.saspro.linear_fit",
     callable_name="run_linear_fit_via_preset",
     presets=[
         PresetSpec(
@@ -1527,7 +1527,7 @@ register(CommandSpec(
     id="morphology",
     title="Morphology",
     group="Masks & Morphology",
-    import_path="pro.morphology",
+    import_path="setiastro.saspro.morphology",
     callable_name="apply_morphology_to_doc",
     presets=[
         PresetSpec(
@@ -1556,7 +1556,7 @@ register(CommandSpec(
     id="remove_stars",
     title="Remove Stars",
     group="Star Tools",
-    import_path="pro.remove_stars_preset",
+    import_path="setiastro.saspro.remove_stars_preset",
     callable_name="run_remove_stars_via_preset",
     replay_apply_name="apply_remove_stars_to_doc",
     presets=[

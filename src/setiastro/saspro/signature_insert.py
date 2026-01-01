@@ -57,6 +57,120 @@ def _anchor_point(base_w: int, base_h: int, ins_w: int, ins_h: int,
     }
     return table.get(key, QPointF(right, bottom))  # default BR
 
+# --------------------------- Header helpers (DocManager truth) ---------------------------
+
+def _header_items(header_obj):
+    """
+    Yield (key, value) pairs from whatever DocManager stored as the header.
+    Supports:
+      - astropy Header-like (has .cards OR .keys/.get) without importing astropy
+      - dict-like (has .items)
+      - list/tuple of (k, v) pairs
+    """
+    if header_obj is None:
+        return []
+
+    # dict-like
+    items = getattr(header_obj, "items", None)
+    if callable(items):
+        try:
+            return list(header_obj.items())
+        except Exception:
+            pass
+
+    # astropy Header-like: prefer cards if present
+    cards = getattr(header_obj, "cards", None)
+    if cards is not None:
+        try:
+            out = []
+            for c in cards:
+                k = getattr(c, "keyword", None)
+                v = getattr(c, "value", None)
+                if k is not None:
+                    out.append((k, v))
+            return out
+        except Exception:
+            pass
+
+    # Header-like: keys()+get()
+    keys = getattr(header_obj, "keys", None)
+    getv = getattr(header_obj, "get", None)
+    if callable(keys) and callable(getv):
+        try:
+            out = []
+            for k in header_obj.keys():
+                try:
+                    out.append((k, header_obj.get(k)))
+                except Exception:
+                    continue
+            return out
+        except Exception:
+            pass
+
+    # list of pairs
+    if isinstance(header_obj, (list, tuple)):
+        try:
+            out = []
+            for it in header_obj:
+                if isinstance(it, (list, tuple)) and len(it) >= 2:
+                    out.append((it[0], it[1]))
+            return out
+        except Exception:
+            pass
+
+    return []
+
+
+def _header_to_dict(header_obj) -> dict[str, str]:
+    """
+    Normalize any header-ish object into {KEY: VALUE_STR}.
+    DOES NOT read from disk. Uses what DocManager already has.
+    """
+    out: dict[str, str] = {}
+    for k, v in _header_items(header_obj):
+        if k is None:
+            continue
+        ks = str(k).strip()
+        if not ks:
+            continue
+
+        # Skip non-meaningful values
+        if v is None:
+            continue
+
+        vs = str(v).strip()
+        if not vs:
+            continue
+
+        out[ks] = vs
+    return out
+
+
+def _get_docmanager_header_dict(doc) -> dict[str, str]:
+    """
+    Pull the *current* header already living in doc.metadata, as maintained by DocManager.
+    Priority should match your save logic expectations:
+      - wcs_header (if it's a real header object)
+      - fits_header
+      - original_header
+      - header
+    """
+    meta = getattr(doc, "metadata", None) or {}
+
+    # IMPORTANT: This order matches what you WANT for display:
+    # show WCS-enhanced header if present, otherwise fall back.
+    for key in ("wcs_header", "fits_header", "original_header", "header"):
+        hdr_obj = meta.get(key)
+        if hdr_obj is None:
+            continue
+
+        d = _header_to_dict(hdr_obj)
+        if d:
+            return d
+
+    return {}
+
+
 def apply_signature_preset_to_doc(doc, preset: dict) -> np.ndarray:
     """
     Headless apply of signature/insert using a preset.
@@ -328,29 +442,137 @@ class InsertView(QGraphicsView):
         self.fitInView(r, Qt.AspectRatioMode.KeepAspectRatio)
         self.zoom_factor = 1.0  # logical reset
 
-    # --- context menu to snap inserts ---
     def contextMenuEvent(self, e):
         scene_pos = self.mapToScene(e.pos())
         item = self.scene().itemAt(scene_pos, self.transform())
 
-        # If user clicked the child rect, use the parent pixmap
+        if item is None:
+            return super().contextMenuEvent(e)
+
+        # 1) If user clicked the child rect (bounding box) -> use the parent pixmap insert
         if isinstance(item, QGraphicsRectItem) and item.parentItem() in self.owner.inserts:
             item = item.parentItem()
 
-        if ((isinstance(item, QGraphicsPixmapItem) and item in self.owner.inserts) or
-            isinstance(item, QGraphicsTextItem)):
-            m = QMenu(self)
-            pos = {
-                "Top-Left":"top_left", "Top-Center":"top_center", "Top-Right":"top_right",
-                "Middle-Left":"middle_left","Center":"center","Middle-Right":"middle_right",
-                "Bottom-Left":"bottom_left","Bottom-Center":"bottom_center","Bottom-Right":"bottom_right"
-            }
-            for label, key in pos.items():
-                m.addAction(label, lambda k=key, it=item: self.owner.send_insert_to_position(it, k))
-            m.exec(e.globalPos())
-            return
-        else:
-            super().contextMenuEvent(e)
+        # 2) If user clicked *inside* a TechCard (bg/border/text) -> walk up to TechCardItem
+        # (TechCardItem is a parent of its bg/border/text children)
+        p = item
+        while p is not None and not isinstance(p, TechCardItem):
+            p = p.parentItem()
+        if isinstance(p, TechCardItem):
+            item = p
+
+        # 3) Determine if this is a snap-eligible insert
+        is_pix_insert = isinstance(item, QGraphicsPixmapItem) and item in self.owner.inserts
+        is_text_insert = isinstance(item, QGraphicsTextItem)  # includes OutlinedTextItem
+        is_tech_card = isinstance(item, TechCardItem)
+
+        if not (is_pix_insert or is_text_insert or is_tech_card):
+            return super().contextMenuEvent(e)
+
+        # 4) Build one menu
+        m = QMenu(self)
+        pos = {
+            "Top-Left":      "top_left",
+            "Top-Center":    "top_center",
+            "Top-Right":     "top_right",
+            "Middle-Left":   "middle_left",
+            "Center":        "center",
+            "Middle-Right":  "middle_right",
+            "Bottom-Left":   "bottom_left",
+            "Bottom-Center": "bottom_center",
+            "Bottom-Right":  "bottom_right",
+        }
+        for label, key in pos.items():
+            m.addAction(label, lambda k=key, it=item: self.owner.send_insert_to_position(it, k))
+
+        m.exec(e.globalPos())
+        e.accept()
+
+
+class TechCardItem(QGraphicsItem):
+    def __init__(self, text_item: OutlinedTextItem):
+        super().__init__()
+        self.bg = QGraphicsRectItem(self)
+        self.border = QGraphicsRectItem(self)
+        self.text = text_item
+        self.text.setParentItem(self)
+
+        self.padding = 16
+        self.bg_color = QColor(0, 0, 0)
+        self.bg_opacity = 0.55
+
+        self.border_enabled = True
+        self.border_pen = QPen(QColor("white"), 2, Qt.PenStyle.SolidLine)
+        self.border_pen.setCosmetic(True)
+
+        # ✅ correct: QPen/QBrush objects
+        self.bg.setPen(QPen(Qt.PenStyle.NoPen))
+        self.bg.setBrush(QBrush(self.bg_color))
+        self.bg.setOpacity(self.bg_opacity)
+
+        self.border.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+        self.border.setPen(self.border_pen)
+        self.border.setVisible(self.border_enabled)
+
+        self.setFlags(
+            QGraphicsItem.GraphicsItemFlag.ItemIsMovable |
+            QGraphicsItem.GraphicsItemFlag.ItemIsSelectable |
+            QGraphicsItem.GraphicsItemFlag.ItemIsFocusable |
+            QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges
+        )
+        self.setZValue(1)
+        self._rebuild_geometry()
+
+
+    def boundingRect(self) -> QRectF:
+        # union of child rects (border covers bg; include text)
+        r = QRectF()
+        r = r.united(self.bg.rect())
+        r = r.united(self.border.rect())
+        r = r.united(self.text.mapRectToParent(self.text.boundingRect()))
+        return r
+
+    def paint(self, painter, option, widget=None):
+        # children paint themselves
+        pass
+
+    def set_padding(self, px: int):
+        self.padding = max(0, int(px))
+        self._rebuild_geometry()
+
+    def set_background(self, c: QColor, opacity: float):
+        self.bg_color = QColor(c)
+        self.bg_opacity = max(0.0, min(1.0, float(opacity)))
+        self.bg.setBrush(QBrush(self.bg_color))
+        self.bg.setOpacity(self.bg_opacity)
+
+    def set_border(self, enabled: bool, pen: QPen):
+        self.border_enabled = bool(enabled)
+        self.border_pen = QPen(pen)
+        self.border_pen.setCosmetic(True)
+        self.border.setVisible(self.border_enabled)
+        self.border.setPen(self.border_pen)
+
+    def set_text(self, s: str):
+        self.text.setPlainText(s)
+        self._rebuild_geometry()
+
+    def _rebuild_geometry(self):
+        self.prepareGeometryChange()  # <-- move to top
+
+        self.text.setPos(QPointF(self.padding, self.padding))
+        tr = self.text.mapRectToParent(self.text.boundingRect())
+
+        w = tr.width() + 2 * self.padding
+        h = tr.height() + 2 * self.padding
+
+        rect = QRectF(0, 0, w, h)
+        self.bg.setRect(rect)
+        self.border.setRect(rect)
+
+        self.setTransformOriginPoint(rect.center())
+        self.update()
+
 
 
 # --------------------------- Main dialog ---------------------------
@@ -384,13 +606,24 @@ class SignatureInsertDialogPro(QDialog):
         self.bounding_boxes: list[QGraphicsRectItem] = []
         self.bounding_boxes_enabled = True
         self.bounding_box_pen = QPen(QColor("red"), 2, Qt.PenStyle.DashLine)
+        self.bounding_box_pen.setCosmetic(True)
         self.text_inserts: list[OutlinedTextItem] = []
         self.scene.selectionChanged.connect(self._on_selection_changed)
         # Handle sync timer (keeps the handle parked on the item corner)
         self._timer = QTimer(self); self._timer.timeout.connect(self._sync_handles); self._timer.start(16)
+        self.tech_card_item: TechCardItem | None = None
+        self.tech_card_text: OutlinedTextItem | None = None
+        self.tech_fields_order: list[str] = []
+        self.tech_fields_enabled: set[str] = set()
+        self.tech_bg_color = QColor(0, 0, 0)
+        self.tech_border_color = QColor("white")
+        self.tech_text_fill = QColor("white")
+        self.tech_text_outline = QColor("black")
 
         self._build_ui()
+        
         self._update_base_image()
+        self._tech_init_catalog()
         self.resize(1000, 680)
 
     # -------- UI ----------
@@ -451,6 +684,81 @@ class SignatureInsertDialogPro(QDialog):
         tg.addWidget(QLabel("Outline (px)"), 5, 0); tg.addWidget(self.outline_w, 5, 1)
 
         col.addWidget(txt_grp)
+
+        # --- Tech Card ---------------------------------------------------------
+        tech_grp = QGroupBox("Technical Card")
+        tc = QGridLayout(tech_grp)
+
+        self.cb_tech = QCheckBox("Enable Tech Card")
+        self.cb_tech.stateChanged.connect(self._tech_toggle)
+
+        self.btn_tech_build = QPushButton("Build / Update")
+        self.btn_tech_build.clicked.connect(self._tech_rebuild)
+
+        self.btn_tech_reset = QPushButton("Reset")
+        self.btn_tech_reset.clicked.connect(self._tech_reset_defaults)
+
+        tc.addWidget(self.cb_tech, 0, 0, 1, 2)
+        tc.addWidget(self.btn_tech_build, 0, 2)
+        tc.addWidget(self.btn_tech_reset, 0, 3)
+
+        # field list (simple: checklist combo)
+        self.cmb_tech_field = QComboBox()
+        self.btn_tech_add_field = QPushButton("Add Field")
+        self.btn_tech_remove_field = QPushButton("Remove Field")
+        self.btn_tech_up = QPushButton("Up")
+        self.btn_tech_down = QPushButton("Down")
+
+        self.btn_tech_add_field.clicked.connect(self._tech_add_field)
+        self.btn_tech_remove_field.clicked.connect(self._tech_remove_field)
+        self.btn_tech_up.clicked.connect(lambda: self._tech_move_field(-1))
+        self.btn_tech_down.clicked.connect(lambda: self._tech_move_field(+1))
+
+        tc.addWidget(QLabel("Fields"), 1, 0)
+        tc.addWidget(self.cmb_tech_field, 1, 1, 1, 2)
+        tc.addWidget(self.btn_tech_add_field, 1, 3)
+
+        self.cmb_tech_order = QComboBox()  # shows current ordered selection
+        tc.addWidget(QLabel("Order"), 2, 0)
+        tc.addWidget(self.cmb_tech_order, 2, 1, 1, 2)
+        btns = QHBoxLayout()
+        btns.addWidget(self.btn_tech_remove_field)
+        btns.addWidget(self.btn_tech_up)
+        btns.addWidget(self.btn_tech_down)
+        w_btns = QWidget(); w_btns.setLayout(btns)
+        tc.addWidget(w_btns, 2, 3)
+
+        self.cb_tech_hide_empty = QCheckBox("Hide empty fields")
+        self.cb_tech_hide_empty.setChecked(True)
+        self.cb_tech_hide_empty.stateChanged.connect(lambda: self._tech_rebuild(live=True))
+        tc.addWidget(self.cb_tech_hide_empty, 3, 0, 1, 2)
+
+        # style controls
+        self.sp_tech_padding = QSpinBox(); self.sp_tech_padding.setRange(0, 200); self.sp_tech_padding.setValue(16)
+        self.sp_tech_padding.valueChanged.connect(lambda: self._tech_rebuild(live=True))
+
+        self.sl_tech_bg_opacity = QSlider(Qt.Orientation.Horizontal); self.sl_tech_bg_opacity.setRange(0, 100); self.sl_tech_bg_opacity.setValue(55)
+        self.sl_tech_bg_opacity.valueChanged.connect(lambda: self._tech_rebuild(live=True))
+
+        self.cb_tech_border = QCheckBox("Border"); self.cb_tech_border.setChecked(True)
+        self.cb_tech_border.stateChanged.connect(lambda: self._tech_rebuild(live=True))
+
+        self.sp_tech_border_w = QSpinBox(); self.sp_tech_border_w.setRange(0, 30); self.sp_tech_border_w.setValue(2)
+        self.sp_tech_border_w.valueChanged.connect(lambda: self._tech_rebuild(live=True))
+
+        self.cmb_tech_border_style = QComboBox()
+        self.cmb_tech_border_style.addItems(["Solid","Dash","Dot","DashDot","DashDotDot"])
+        self.cmb_tech_border_style.currentIndexChanged.connect(lambda: self._tech_rebuild(live=True))
+
+        self.btn_tech_bg = QPushButton("BG Color…"); self.btn_tech_bg.clicked.connect(self._tech_pick_bg)
+        self.btn_tech_border_color = QPushButton("Border Color…"); self.btn_tech_border_color.clicked.connect(self._tech_pick_border)
+
+        tc.addWidget(QLabel("Padding"), 4, 0); tc.addWidget(self.sp_tech_padding, 4, 1)
+        tc.addWidget(QLabel("BG Opacity"), 5, 0); tc.addWidget(self.sl_tech_bg_opacity, 5, 1, 1, 3)
+        tc.addWidget(self.btn_tech_bg, 4, 2); tc.addWidget(self.btn_tech_border_color, 4, 3)
+        tc.addWidget(self.cb_tech_border, 6, 0); tc.addWidget(QLabel("Width"), 6, 1); tc.addWidget(self.sp_tech_border_w, 6, 2); tc.addWidget(self.cmb_tech_border_style, 6, 3)
+
+        col.addWidget(tech_grp)
 
 
         # Transform group
@@ -539,6 +847,279 @@ class SignatureInsertDialogPro(QDialog):
         left = QWidget(); left.setLayout(col)
         root.addWidget(left, 0)
         root.addWidget(self.view, 1)
+
+    def _tech_active_doc(self):
+        dm = getattr(self, "doc_manager", None)
+        if dm is not None:
+            try:
+                d = dm.get_active_document()
+                if d is not None:
+                    return d
+            except Exception:
+                pass
+        return getattr(self, "doc", None) or getattr(self, "_doc", None)
+
+    def _tech_pick_header_obj(self, doc):
+        meta = getattr(doc, "metadata", None) or {}
+        for key in ("wcs_header", "fits_header", "original_header", "header"):
+            h = meta.get(key)
+            if h is not None:
+                return h
+        return None
+
+    def _tech_header_to_dict(self, hdr_obj) -> dict[str, str]:
+        """
+        Convert whatever header object DocManager stored into {KEY: VALUE_STR}.
+        No disk IO. No astropy import.
+        """
+        if hdr_obj is None:
+            return {}
+
+        # dict-like
+        items = getattr(hdr_obj, "items", None)
+        if callable(items):
+            try:
+                return {str(k).strip(): str(v).strip() for k, v in hdr_obj.items()
+                        if str(k).strip() and str(v).strip() and str(v).strip() != "None"}
+            except Exception:
+                pass
+
+        # astropy Header-like: cards iterable with .keyword/.value
+        cards = getattr(hdr_obj, "cards", None)
+        if cards is not None:
+            out = {}
+            try:
+                for c in cards:
+                    k = getattr(c, "keyword", None)
+                    v = getattr(c, "value", None)
+                    if k is None or v is None:
+                        continue
+                    ks = str(k).strip()
+                    vs = str(v).strip()
+                    if ks and vs and vs != "None":
+                        out[ks] = vs
+                if out:
+                    return out
+            except Exception:
+                pass
+
+        # Header-like: keys()+get()
+        keys = getattr(hdr_obj, "keys", None)
+        getv = getattr(hdr_obj, "get", None)
+        if callable(keys) and callable(getv):
+            out = {}
+            try:
+                for k in hdr_obj.keys():
+                    try:
+                        v = hdr_obj.get(k)
+                    except Exception:
+                        continue
+                    if v is None:
+                        continue
+                    ks = str(k).strip()
+                    vs = str(v).strip()
+                    if ks and vs and vs != "None":
+                        out[ks] = vs
+                return out
+            except Exception:
+                pass
+
+        return {}
+
+
+    def _tech_init_catalog(self):
+        catalog = self._build_tech_field_catalog()
+        keys = list(catalog.keys())
+        self.cmb_tech_field.clear()
+        self.cmb_tech_field.addItems(keys)
+
+        # defaults: populate order + enabled if empty
+        if not self.tech_fields_order:
+            defaults = ["OBJECT","DATE-OBS","EXPTIME","FILTER","GAIN","OFFSET","INSTRUME","TELESCOP","FOCALLEN","XPIXSZ","BAYERPAT","Size","Bit Depth","Mono"]
+            self.tech_fields_order = [k for k in defaults if k in catalog]
+            self.tech_fields_enabled = set(self.tech_fields_order)
+
+        self._tech_refresh_order_combo()
+
+    def _tech_refresh_order_combo(self):
+        self.cmb_tech_order.blockSignals(True)
+        self.cmb_tech_order.clear()
+        self.cmb_tech_order.addItems(self.tech_fields_order)
+        self.cmb_tech_order.blockSignals(False)
+
+    def _tech_toggle(self, state):
+        enabled = bool(state)
+        if enabled:
+            self._tech_ensure_item()
+            self._tech_rebuild()
+        else:
+            self._tech_remove_item()
+
+    def _tech_ensure_item(self):
+        if self.tech_card_item is not None:
+            return
+
+        # Create a text item for the card (outlined)
+        f = self._current_qfont()
+        self.tech_card_text = OutlinedTextItem("", f, self.tech_text_fill, self.tech_text_outline, outline_w=float(self.outline_w.value()))
+        self.tech_card_text.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)  # card text is not editable directly
+        self.tech_card_text.setZValue(1)
+
+        self.tech_card_item = TechCardItem(self.tech_card_text)
+        self.tech_card_item.setZValue(1)
+        self.scene.addItem(self.tech_card_item)
+
+        TransformHandle(self.tech_card_item, self.scene)
+
+        # drop near bottom-right by default using your snap
+        self.tech_card_item.setSelected(True)
+        self.send_insert_to_position(self.tech_card_item, "top left")
+
+    def _tech_remove_item(self):
+        if self.tech_card_item is None:
+            return
+        # Remove handle tied to tech card
+        for it in list(self.scene.items()):
+            if isinstance(it, TransformHandle) and getattr(it, "parent_item", None) is self.tech_card_item:
+                try: self.scene.removeItem(it)
+                except Exception: pass
+
+        try:
+            self.scene.removeItem(self.tech_card_item)
+        except Exception:
+            pass
+
+        self.tech_card_item = None
+        self.tech_card_text = None
+
+    def _tech_pick_bg(self):
+        c = QColorDialog.getColor(self.tech_bg_color, self, "Tech Card Background")
+        if c.isValid():
+            self.tech_bg_color = c
+            self._tech_rebuild(live=True)
+
+    def _tech_pick_border(self):
+        c = QColorDialog.getColor(self.tech_border_color, self, "Tech Card Border")
+        if c.isValid():
+            self.tech_border_color = c
+            self._tech_rebuild(live=True)
+
+    def _tech_add_field(self):
+        k = self.cmb_tech_field.currentText().strip()
+        if not k:
+            return
+        if k not in self.tech_fields_order:
+            self.tech_fields_order.append(k)
+        self.tech_fields_enabled.add(k)
+        self._tech_refresh_order_combo()
+        self._tech_rebuild(live=True)
+
+    def _tech_remove_field(self):
+        k = self.cmb_tech_order.currentText().strip()
+        if not k:
+            return
+        if k in self.tech_fields_order:
+            self.tech_fields_order.remove(k)
+        self.tech_fields_enabled.discard(k)
+        self._tech_refresh_order_combo()
+        self._tech_rebuild(live=True)
+
+    def _tech_move_field(self, delta: int):
+        k = self.cmb_tech_order.currentText().strip()
+        if not k or k not in self.tech_fields_order:
+            return
+        i = self.tech_fields_order.index(k)
+        j = max(0, min(len(self.tech_fields_order) - 1, i + int(delta)))
+        if i == j:
+            return
+        self.tech_fields_order.insert(j, self.tech_fields_order.pop(i))
+        self._tech_refresh_order_combo()
+        self.cmb_tech_order.setCurrentText(k)
+        self._tech_rebuild(live=True)
+
+    def _tech_reset_defaults(self):
+        self.tech_fields_order = []
+        self.tech_fields_enabled = set()
+        self.tech_bg_color = QColor(0, 0, 0)
+        self.tech_border_color = QColor("white")
+        self.tech_text_fill = QColor("white")
+        self.tech_text_outline = QColor("black")
+        self.sp_tech_padding.setValue(16)
+        self.sl_tech_bg_opacity.setValue(55)
+        self.cb_tech_border.setChecked(True)
+        self.sp_tech_border_w.setValue(2)
+        self.cmb_tech_border_style.setCurrentText("Solid")
+        self.cb_tech_hide_empty.setChecked(True)
+        self._tech_init_catalog()
+        self._tech_rebuild()
+
+    def _tech_format_text(self) -> str:
+        catalog = self._build_tech_field_catalog()
+        hide_empty = self.cb_tech_hide_empty.isChecked()
+
+        lines = []
+        for k in self.tech_fields_order:
+            if k not in self.tech_fields_enabled:
+                continue
+            v = str(catalog.get(k, "")).strip()
+            if hide_empty and not v:
+                continue
+            # Friendly: strip full file path by default (optional)
+            if k == "File" and v:
+                try:
+                    import os
+                    v = os.path.basename(v)
+                except Exception:
+                    pass
+            lines.append(f"{k}: {v}" if v else f"{k}:")
+
+        return "\n".join(lines) if lines else "No fields selected."
+
+    def _tech_border_pen(self) -> QPen:
+        style_map = {
+            "Solid": Qt.PenStyle.SolidLine,
+            "Dash": Qt.PenStyle.DashLine,
+            "Dot": Qt.PenStyle.DotLine,
+            "DashDot": Qt.PenStyle.DashDotLine,
+            "DashDotDot": Qt.PenStyle.DashDotDotLine
+        }
+        pen = QPen(self.tech_border_color, float(self.sp_tech_border_w.value()), style_map[self.cmb_tech_border_style.currentText()])
+        pen.setCosmetic(True)
+        return pen
+
+    def _tech_rebuild(self, live: bool = False):
+        if not self.cb_tech.isChecked():
+            return
+        self._tech_ensure_item()
+        if self.tech_card_item is None or self.tech_card_text is None:
+            return
+
+        # Update text styling from the existing text controls (so UI stays consistent)
+        f = self._current_qfont()
+        self.tech_card_text.set_font(f)
+        self.tech_card_text.set_fill(self.tech_text_fill)
+        ow = float(self.outline_w.value())
+        if ow > 0:
+            self.tech_card_text.set_outline(self.tech_text_outline, ow)
+        else:
+            self.tech_card_text.set_outline(None, 0.0)
+
+        # Update card style
+        pad = int(self.sp_tech_padding.value())
+        bg_op = float(self.sl_tech_bg_opacity.value()) / 100.0
+        self.tech_card_item.set_padding(pad)
+        self.tech_card_item.set_background(self.tech_bg_color, bg_op)
+
+        border_on = self.cb_tech_border.isChecked() and self.sp_tech_border_w.value() > 0
+        self.tech_card_item.set_border(border_on, self._tech_border_pen())
+
+        # Update text content
+        txt = self._tech_format_text()
+        self.tech_card_item.set_text(txt)
+
+        # Keep transform handle correct
+        self._sync_handles()
+
 
     def _selected_text_items(self):
         return [it for it in self.scene.selectedItems() if isinstance(it, QGraphicsTextItem)]
@@ -741,6 +1322,10 @@ class SignatureInsertDialogPro(QDialog):
         bg = QGraphicsPixmapItem(QPixmap.fromImage(qimg))
         bg.setZValue(0)
         self.scene.addItem(bg)
+        self._tech_init_catalog()
+        if self.cb_tech.isChecked():
+            self._tech_rebuild(live=True)
+
 
     def _load_from_file(self):
         fp, _ = QFileDialog.getOpenFileName(self, "Select Insert Image", "", "Images (*.png *.jpg *.jpeg *.tif *.tiff)")
@@ -806,6 +1391,10 @@ class SignatureInsertDialogPro(QDialog):
         # text
         for ti in self._selected_text_items():
             self.send_insert_to_position(ti, key)
+        # tech card
+        if self.tech_card_item is not None and self.tech_card_item.isSelected():
+            self.send_insert_to_position(self.tech_card_item, key)
+
 
     # -------- Commands ----------
     def _rotate_selected(self):
@@ -849,6 +1438,7 @@ class SignatureInsertDialogPro(QDialog):
         }
         self.bounding_box_pen.setWidth(self.sl_thick.value())
         self.bounding_box_pen.setStyle(style_map[self.cmb_style.currentText()])
+        self.bounding_box_pen.setCosmetic(True)
         self._refresh_all_boxes()
 
     def _refresh_all_boxes(self):
@@ -968,6 +1558,8 @@ class SignatureInsertDialogPro(QDialog):
                 items.append(it)
             elif self.bounding_boxes_enabled and isinstance(it, QGraphicsRectItem):
                 items.append(it)
+            elif isinstance(it, TechCardItem):
+                items.append(it)
 
         # compute scene bbox
         bbox = QRectF()
@@ -1025,23 +1617,6 @@ class SignatureInsertDialogPro(QDialog):
             if had_focus:
                 it.setFocus()
 
-        # temporarily hide non-items
-        hidden = []
-        for it in self.scene.items():
-            if it not in items:
-                it.setVisible(False); hidden.append(it)
-
-        # render
-        out = QImage(w, h, QImage.Format.Format_ARGB32)
-        out.fill(Qt.GlobalColor.transparent)
-        p = QPainter(out)
-        self.scene.render(p, target=QRectF(0, 0, w, h), source=QRectF(x, y, w, h))
-        p.end()
-
-        # restore
-        for it in hidden: it.setVisible(True)
-        for r in hidden_boxes: r.setVisible(True)
-
         # drop alpha → RGB, write back to doc
         arr = self._qimage_to_numpy(out)
         if arr.shape[2] == 4:
@@ -1079,6 +1654,86 @@ class SignatureInsertDialogPro(QDialog):
                 pass
         self.bounding_boxes.clear()
 
+    def _build_tech_field_catalog(self) -> dict[str, str]:
+        """
+        Returns a merged catalog of:
+        - header-derived fields (OBJECT/DATE-OBS/etc) from the in-memory doc header
+        - convenience fields (File/Size/Bit Depth/Mono)
+        """
+        doc = self._tech_active_doc()
+        if doc is None:
+            return {}
+
+        meta = getattr(doc, "metadata", None) or {}
+
+        # --- header from DocManager (in-memory) ---
+        hdr_obj = self._tech_pick_header_obj(doc)
+        H = self._tech_header_to_dict(hdr_obj)
+
+        # Case-insensitive getter for FITS keys
+        # (FITS keys are usually uppercase, but play safe)
+        def hget(key: str) -> str:
+            if not key:
+                return ""
+            if key in H:
+                return H.get(key, "") or ""
+            up = key.upper()
+            if up in H:
+                return H.get(up, "") or ""
+            # last resort: scan once (small headers, OK)
+            for k, v in H.items():
+                if str(k).upper() == up:
+                    return v or ""
+            return ""
+
+        # --- computed fields ---
+        # File: prefer actual file path from metadata
+        file_path = meta.get("file_path") or ""
+        # Size: prefer header if available (NAXIS1/2), fallback to image shape
+        naxis1 = hget("NAXIS1")
+        naxis2 = hget("NAXIS2")
+        if naxis1 and naxis2:
+            size_str = f"{naxis1}×{naxis2}"
+        else:
+            img = getattr(doc, "image", None)
+            try:
+                if img is not None and hasattr(img, "shape"):
+                    if img.ndim == 2:
+                        h, w = img.shape[:2]
+                    else:
+                        h, w = img.shape[:2]
+                    size_str = f"{w}×{h}"
+                else:
+                    size_str = ""
+            except Exception:
+                size_str = ""
+
+        bit_depth = meta.get("bit_depth") or ""
+        # Mono: metadata uses is_mono in your loader; your save uses "mono" sometimes; handle both
+        mono_val = meta.get("is_mono", meta.get("mono", None))
+        if mono_val is None:
+            img = getattr(doc, "image", None)
+            mono_val = bool(img.ndim == 2) if hasattr(img, "ndim") else False
+        mono_str = "Yes" if bool(mono_val) else "No"
+
+        # --- build catalog ---
+        catalog: dict[str, str] = {}
+
+        # 1) Header keys: include all FITS keys as selectable fields
+        # (This is why your dropdown will finally show everything in that big list.)
+        for k, v in H.items():
+            ks = str(k).strip()
+            if not ks:
+                continue
+            catalog[ks] = str(v).strip()
+
+        # 2) Friendly extras (these are the ones you have in defaults)
+        catalog.setdefault("File", str(file_path))
+        catalog["Size"] = size_str
+        catalog["Bit Depth"] = str(bit_depth)
+        catalog["Mono"] = mono_str
+
+        return catalog
 
     # ------------------ numpy/QImage bridges ------------------
     def _numpy_to_qimage(self, a: np.ndarray) -> QImage:
