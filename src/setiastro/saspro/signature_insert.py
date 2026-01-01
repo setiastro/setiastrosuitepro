@@ -57,6 +57,120 @@ def _anchor_point(base_w: int, base_h: int, ins_w: int, ins_h: int,
     }
     return table.get(key, QPointF(right, bottom))  # default BR
 
+# --------------------------- Header helpers (DocManager truth) ---------------------------
+
+def _header_items(header_obj):
+    """
+    Yield (key, value) pairs from whatever DocManager stored as the header.
+    Supports:
+      - astropy Header-like (has .cards OR .keys/.get) without importing astropy
+      - dict-like (has .items)
+      - list/tuple of (k, v) pairs
+    """
+    if header_obj is None:
+        return []
+
+    # dict-like
+    items = getattr(header_obj, "items", None)
+    if callable(items):
+        try:
+            return list(header_obj.items())
+        except Exception:
+            pass
+
+    # astropy Header-like: prefer cards if present
+    cards = getattr(header_obj, "cards", None)
+    if cards is not None:
+        try:
+            out = []
+            for c in cards:
+                k = getattr(c, "keyword", None)
+                v = getattr(c, "value", None)
+                if k is not None:
+                    out.append((k, v))
+            return out
+        except Exception:
+            pass
+
+    # Header-like: keys()+get()
+    keys = getattr(header_obj, "keys", None)
+    getv = getattr(header_obj, "get", None)
+    if callable(keys) and callable(getv):
+        try:
+            out = []
+            for k in header_obj.keys():
+                try:
+                    out.append((k, header_obj.get(k)))
+                except Exception:
+                    continue
+            return out
+        except Exception:
+            pass
+
+    # list of pairs
+    if isinstance(header_obj, (list, tuple)):
+        try:
+            out = []
+            for it in header_obj:
+                if isinstance(it, (list, tuple)) and len(it) >= 2:
+                    out.append((it[0], it[1]))
+            return out
+        except Exception:
+            pass
+
+    return []
+
+
+def _header_to_dict(header_obj) -> dict[str, str]:
+    """
+    Normalize any header-ish object into {KEY: VALUE_STR}.
+    DOES NOT read from disk. Uses what DocManager already has.
+    """
+    out: dict[str, str] = {}
+    for k, v in _header_items(header_obj):
+        if k is None:
+            continue
+        ks = str(k).strip()
+        if not ks:
+            continue
+
+        # Skip non-meaningful values
+        if v is None:
+            continue
+
+        vs = str(v).strip()
+        if not vs:
+            continue
+
+        out[ks] = vs
+    return out
+
+
+def _get_docmanager_header_dict(doc) -> dict[str, str]:
+    """
+    Pull the *current* header already living in doc.metadata, as maintained by DocManager.
+    Priority should match your save logic expectations:
+      - wcs_header (if it's a real header object)
+      - fits_header
+      - original_header
+      - header
+    """
+    meta = getattr(doc, "metadata", None) or {}
+
+    # IMPORTANT: This order matches what you WANT for display:
+    # show WCS-enhanced header if present, otherwise fall back.
+    for key in ("wcs_header", "fits_header", "original_header", "header"):
+        hdr_obj = meta.get(key)
+        if hdr_obj is None:
+            continue
+
+        d = _header_to_dict(hdr_obj)
+        if d:
+            return d
+
+    return {}
+
+
 def apply_signature_preset_to_doc(doc, preset: dict) -> np.ndarray:
     """
     Headless apply of signature/insert using a preset.
@@ -328,43 +442,54 @@ class InsertView(QGraphicsView):
         self.fitInView(r, Qt.AspectRatioMode.KeepAspectRatio)
         self.zoom_factor = 1.0  # logical reset
 
-    # --- context menu to snap inserts ---
     def contextMenuEvent(self, e):
         scene_pos = self.mapToScene(e.pos())
         item = self.scene().itemAt(scene_pos, self.transform())
 
-        # If user clicked the child rect, use the parent pixmap
+        if item is None:
+            return super().contextMenuEvent(e)
+
+        # 1) If user clicked the child rect (bounding box) -> use the parent pixmap insert
         if isinstance(item, QGraphicsRectItem) and item.parentItem() in self.owner.inserts:
             item = item.parentItem()
 
-        if isinstance(item, TechCardItem):
-            m = QMenu(self)
-            ...
-            for label, key in pos.items():
-                m.addAction(label, lambda k=key, it=item: self.owner.send_insert_to_position(it, k))
-            m.exec(e.globalPos())
-            return
+        # 2) If user clicked *inside* a TechCard (bg/border/text) -> walk up to TechCardItem
+        # (TechCardItem is a parent of its bg/border/text children)
+        p = item
+        while p is not None and not isinstance(p, TechCardItem):
+            p = p.parentItem()
+        if isinstance(p, TechCardItem):
+            item = p
 
-        if ((isinstance(item, QGraphicsPixmapItem) and item in self.owner.inserts) or
-            isinstance(item, QGraphicsTextItem)):
-            m = QMenu(self)
-            pos = {
-                "Top-Left":"top_left", "Top-Center":"top_center", "Top-Right":"top_right",
-                "Middle-Left":"middle_left","Center":"center","Middle-Right":"middle_right",
-                "Bottom-Left":"bottom_left","Bottom-Center":"bottom_center","Bottom-Right":"bottom_right"
-            }
-            for label, key in pos.items():
-                m.addAction(label, lambda k=key, it=item: self.owner.send_insert_to_position(it, k))
-            m.exec(e.globalPos())
-            return
-        else:
-            super().contextMenuEvent(e)
+        # 3) Determine if this is a snap-eligible insert
+        is_pix_insert = isinstance(item, QGraphicsPixmapItem) and item in self.owner.inserts
+        is_text_insert = isinstance(item, QGraphicsTextItem)  # includes OutlinedTextItem
+        is_tech_card = isinstance(item, TechCardItem)
+
+        if not (is_pix_insert or is_text_insert or is_tech_card):
+            return super().contextMenuEvent(e)
+
+        # 4) Build one menu
+        m = QMenu(self)
+        pos = {
+            "Top-Left":      "top_left",
+            "Top-Center":    "top_center",
+            "Top-Right":     "top_right",
+            "Middle-Left":   "middle_left",
+            "Center":        "center",
+            "Middle-Right":  "middle_right",
+            "Bottom-Left":   "bottom_left",
+            "Bottom-Center": "bottom_center",
+            "Bottom-Right":  "bottom_right",
+        }
+        for label, key in pos.items():
+            m.addAction(label, lambda k=key, it=item: self.owner.send_insert_to_position(it, k))
+
+        m.exec(e.globalPos())
+        e.accept()
+
 
 class TechCardItem(QGraphicsItem):
-    """
-    Composite card: background rect + border rect + outlined text.
-    Moves/selects as a single unit. All geometry in local coords.
-    """
     def __init__(self, text_item: OutlinedTextItem):
         super().__init__()
         self.bg = QGraphicsRectItem(self)
@@ -380,12 +505,14 @@ class TechCardItem(QGraphicsItem):
         self.border_pen = QPen(QColor("white"), 2, Qt.PenStyle.SolidLine)
         self.border_pen.setCosmetic(True)
 
-        # background should not draw outline
-        self.bg.setPen(Qt.PenStyle.NoPen)
+        # ✅ correct: QPen/QBrush objects
+        self.bg.setPen(QPen(Qt.PenStyle.NoPen))
         self.bg.setBrush(QBrush(self.bg_color))
+        self.bg.setOpacity(self.bg_opacity)
 
-        self.border.setBrush(Qt.BrushStyle.NoBrush)
+        self.border.setBrush(QBrush(Qt.BrushStyle.NoBrush))
         self.border.setPen(self.border_pen)
+        self.border.setVisible(self.border_enabled)
 
         self.setFlags(
             QGraphicsItem.GraphicsItemFlag.ItemIsMovable |
@@ -394,8 +521,8 @@ class TechCardItem(QGraphicsItem):
             QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges
         )
         self.setZValue(1)
-        self.setTransformOriginPoint(QPointF(0, 0))
         self._rebuild_geometry()
+
 
     def boundingRect(self) -> QRectF:
         # union of child rects (border covers bg; include text)
@@ -431,24 +558,21 @@ class TechCardItem(QGraphicsItem):
         self._rebuild_geometry()
 
     def _rebuild_geometry(self):
-        # place text at padding
-        self.text.setPos(QPointF(self.padding, self.padding))
+        self.prepareGeometryChange()  # <-- move to top
 
-        # compute text bbox in parent coords
+        self.text.setPos(QPointF(self.padding, self.padding))
         tr = self.text.mapRectToParent(self.text.boundingRect())
 
         w = tr.width() + 2 * self.padding
         h = tr.height() + 2 * self.padding
 
-        # bg/border rect in local coords
         rect = QRectF(0, 0, w, h)
         self.bg.setRect(rect)
         self.border.setRect(rect)
 
-        # update transform origin to center for nicer rotation/scale
         self.setTransformOriginPoint(rect.center())
-        self.prepareGeometryChange()
         self.update()
+
 
 
 # --------------------------- Main dialog ---------------------------
@@ -724,6 +848,85 @@ class SignatureInsertDialogPro(QDialog):
         root.addWidget(left, 0)
         root.addWidget(self.view, 1)
 
+    def _tech_active_doc(self):
+        dm = getattr(self, "doc_manager", None)
+        if dm is not None:
+            try:
+                d = dm.get_active_document()
+                if d is not None:
+                    return d
+            except Exception:
+                pass
+        return getattr(self, "doc", None) or getattr(self, "_doc", None)
+
+    def _tech_pick_header_obj(self, doc):
+        meta = getattr(doc, "metadata", None) or {}
+        for key in ("wcs_header", "fits_header", "original_header", "header"):
+            h = meta.get(key)
+            if h is not None:
+                return h
+        return None
+
+    def _tech_header_to_dict(self, hdr_obj) -> dict[str, str]:
+        """
+        Convert whatever header object DocManager stored into {KEY: VALUE_STR}.
+        No disk IO. No astropy import.
+        """
+        if hdr_obj is None:
+            return {}
+
+        # dict-like
+        items = getattr(hdr_obj, "items", None)
+        if callable(items):
+            try:
+                return {str(k).strip(): str(v).strip() for k, v in hdr_obj.items()
+                        if str(k).strip() and str(v).strip() and str(v).strip() != "None"}
+            except Exception:
+                pass
+
+        # astropy Header-like: cards iterable with .keyword/.value
+        cards = getattr(hdr_obj, "cards", None)
+        if cards is not None:
+            out = {}
+            try:
+                for c in cards:
+                    k = getattr(c, "keyword", None)
+                    v = getattr(c, "value", None)
+                    if k is None or v is None:
+                        continue
+                    ks = str(k).strip()
+                    vs = str(v).strip()
+                    if ks and vs and vs != "None":
+                        out[ks] = vs
+                if out:
+                    return out
+            except Exception:
+                pass
+
+        # Header-like: keys()+get()
+        keys = getattr(hdr_obj, "keys", None)
+        getv = getattr(hdr_obj, "get", None)
+        if callable(keys) and callable(getv):
+            out = {}
+            try:
+                for k in hdr_obj.keys():
+                    try:
+                        v = hdr_obj.get(k)
+                    except Exception:
+                        continue
+                    if v is None:
+                        continue
+                    ks = str(k).strip()
+                    vs = str(v).strip()
+                    if ks and vs and vs != "None":
+                        out[ks] = vs
+                return out
+            except Exception:
+                pass
+
+        return {}
+
+
     def _tech_init_catalog(self):
         catalog = self._build_tech_field_catalog()
         keys = list(catalog.keys())
@@ -770,7 +973,7 @@ class SignatureInsertDialogPro(QDialog):
 
         # drop near bottom-right by default using your snap
         self.tech_card_item.setSelected(True)
-        self.send_insert_to_position(self.tech_card_item, "bottom_right")
+        self.send_insert_to_position(self.tech_card_item, "top left")
 
     def _tech_remove_item(self):
         if self.tech_card_item is None:
@@ -1452,49 +1655,85 @@ class SignatureInsertDialogPro(QDialog):
         self.bounding_boxes.clear()
 
     def _build_tech_field_catalog(self) -> dict[str, str]:
-        meta = getattr(self.doc, "meta", {}) or getattr(self.doc, "metadata", {}) or {}
-        hdr  = meta.get("original_header", None)
+        """
+        Returns a merged catalog of:
+        - header-derived fields (OBJECT/DATE-OBS/etc) from the in-memory doc header
+        - convenience fields (File/Size/Bit Depth/Mono)
+        """
+        doc = self._tech_active_doc()
+        if doc is None:
+            return {}
 
-        out = {}
+        meta = getattr(doc, "metadata", None) or {}
 
-        # Always-present items
-        out["File"] = str(meta.get("file_path", ""))
-        out["Format"] = str(meta.get("original_format", ""))
-        out["Bit Depth"] = str(meta.get("bit_depth", ""))
-        out["Mono"] = "Yes" if bool(meta.get("is_mono", False)) else "No"
+        # --- header from DocManager (in-memory) ---
+        hdr_obj = self._tech_pick_header_obj(doc)
+        H = self._tech_header_to_dict(hdr_obj)
 
-        img = np.asarray(self.doc.image)
-        out["Size"] = f"{img.shape[1]}×{img.shape[0]}"
+        # Case-insensitive getter for FITS keys
+        # (FITS keys are usually uppercase, but play safe)
+        def hget(key: str) -> str:
+            if not key:
+                return ""
+            if key in H:
+                return H.get(key, "") or ""
+            up = key.upper()
+            if up in H:
+                return H.get(up, "") or ""
+            # last resort: scan once (small headers, OK)
+            for k, v in H.items():
+                if str(k).upper() == up:
+                    return v or ""
+            return ""
 
-        # WCS summary if present
-        wcs = meta.get("wcs", None)
-        if wcs is not None:
+        # --- computed fields ---
+        # File: prefer actual file path from metadata
+        file_path = meta.get("file_path") or ""
+        # Size: prefer header if available (NAXIS1/2), fallback to image shape
+        naxis1 = hget("NAXIS1")
+        naxis2 = hget("NAXIS2")
+        if naxis1 and naxis2:
+            size_str = f"{naxis1}×{naxis2}"
+        else:
+            img = getattr(doc, "image", None)
             try:
-                # you can compute center skycoord if your WCS is astropy.wcs.WCS
-                pass
+                if img is not None and hasattr(img, "shape"):
+                    if img.ndim == 2:
+                        h, w = img.shape[:2]
+                    else:
+                        h, w = img.shape[:2]
+                    size_str = f"{w}×{h}"
+                else:
+                    size_str = ""
             except Exception:
-                pass
+                size_str = ""
 
-        # FITS header keys
-        if hdr is not None:
-            try:
-                # fits.Header supports .keys() and .get()
-                # XISF meta dict case: you may already snapshot/sanitize, so treat dict too
-                def _get(k):
-                    try:
-                        return hdr.get(k)
-                    except Exception:
-                        return None
+        bit_depth = meta.get("bit_depth") or ""
+        # Mono: metadata uses is_mono in your loader; your save uses "mono" sometimes; handle both
+        mono_val = meta.get("is_mono", meta.get("mono", None))
+        if mono_val is None:
+            img = getattr(doc, "image", None)
+            mono_val = bool(img.ndim == 2) if hasattr(img, "ndim") else False
+        mono_str = "Yes" if bool(mono_val) else "No"
 
-                for k in ["OBJECT","DATE-OBS","EXPTIME","FILTER","GAIN","OFFSET","INSTRUME","TELESCOP","FOCALLEN","XPIXSZ","YPIXSZ","BAYERPAT"]:
-                    v = _get(k)
-                    if v is not None and str(v).strip() != "":
-                        out[k] = str(v)
-            except Exception:
-                pass
+        # --- build catalog ---
+        catalog: dict[str, str] = {}
 
-        return out
+        # 1) Header keys: include all FITS keys as selectable fields
+        # (This is why your dropdown will finally show everything in that big list.)
+        for k, v in H.items():
+            ks = str(k).strip()
+            if not ks:
+                continue
+            catalog[ks] = str(v).strip()
 
+        # 2) Friendly extras (these are the ones you have in defaults)
+        catalog.setdefault("File", str(file_path))
+        catalog["Size"] = size_str
+        catalog["Bit Depth"] = str(bit_depth)
+        catalog["Mono"] = mono_str
+
+        return catalog
 
     # ------------------ numpy/QImage bridges ------------------
     def _numpy_to_qimage(self, a: np.ndarray) -> QImage:
