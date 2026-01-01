@@ -2850,35 +2850,68 @@ class ImageSubWindow(QWidget):
 
         return super().eventFilter(obj, ev)
 
+    def _viewport_pos_to_image_xy(self, vp_pos: QPoint) -> tuple[int, int] | None:
+        """
+        Convert a point in viewport coordinates to FULL image pixel coordinates.
+        Returns None if the point is outside the displayed pixmap (in margins).
+        """
+        pm = self.label.pixmap()
+        if pm is None:
+            return None
+
+        # Convert viewport point into label coordinates
+        p_label = self.label.mapFrom(self.scroll.viewport(), vp_pos)
+
+        # If label is larger than pixmap, pixmap may be centered inside label.
+        pm_w, pm_h = pm.width(), pm.height()
+        lbl_w, lbl_h = self.label.width(), self.label.height()
+
+        off_x = max(0, (lbl_w - pm_w) // 2)
+        off_y = max(0, (lbl_h - pm_h) // 2)
+
+        px = p_label.x() - off_x
+        py = p_label.y() - off_y
+
+        # Outside the drawn pixmap area → clamp
+        px = max(0, min(px, pm_w - 1))
+        py = max(0, min(py, pm_h - 1))
+
+        s = max(float(self.scale), 1e-12)
+
+        # pixmap pixels -> image pixels (pm = image * scale)
+        xi = int(round(px / s))
+        yi = int(round(py / s))
+        return xi, yi
+
 
     def _finish_preview_rect(self, vp_rect: QRect):
-        # Map viewport rectangle into image coordinates
         if vp_rect.width() < 4 or vp_rect.height() < 4:
             self._cancel_rubber()
             return
 
-        hbar = self.scroll.horizontalScrollBar()
-        vbar = self.scroll.verticalScrollBar()
+        # Convert the two corners from viewport space to image space
+        p0 = self._viewport_pos_to_image_xy(vp_rect.topLeft())
+        p1 = self._viewport_pos_to_image_xy(vp_rect.bottomRight())
 
-        # Upper-left in label coords
-        x_label0 = hbar.value() + vp_rect.left()
-        y_label0 = vbar.value() + vp_rect.top()
-        x_label1 = hbar.value() + vp_rect.right()
-        y_label1 = vbar.value() + vp_rect.bottom()
-
-        s = max(self.scale, 1e-12)
-
-        x0 = int(round(x_label0 / s))
-        y0 = int(round(y_label0 / s))
-        x1 = int(round(x_label1 / s))
-        y1 = int(round(y_label1 / s))
-
-        if x1 <= x0 or y1 <= y0:
+        if p0 is None or p1 is None:
+            # User dragged into margins; you can either cancel or clamp.
+            # Cancel is simplest:
             self._cancel_rubber()
             return
 
-        roi = (x0, y0, x1 - x0, y1 - y0)
-        self._create_preview_from_roi(roi)
+        x0, y0 = p0
+        x1, y1 = p1
+
+        x = min(x0, x1)
+        y = min(y0, y1)
+        w = abs(x1 - x0)
+        h = abs(y1 - y0)
+
+        if w < 1 or h < 1:
+            self._cancel_rubber()
+            return
+
+        self._create_preview_from_roi((x, y, w, h))
         self._cancel_rubber()
 
     def _create_preview_from_roi(self, roi: tuple[int,int,int,int]):
