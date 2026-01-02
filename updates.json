@@ -1,9 +1,9 @@
 {
-  "version": "1.6.8",
+  "version": "1.6.9",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.8/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.8/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.8/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.9/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.9/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.9/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.6.8 Tech Card added to Signature/Insert Adder. Bug fixes: Livestacking, crash log warning, saspro updater, acv icon, others."
+  "notes": "Seti Astro Suite Pro V1.6.9 New options in Statistical Stretch.  Frequency separation opencv gpu wheel compatibility.  Crop updates to prevent cropping non-rotated rectangles outside of the image boundaries.  Preview/ROI drawing bug fix.  Curve tool debounce and smoothness.  Other bug fixes."
 }
