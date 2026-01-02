@@ -60,7 +60,9 @@ class StatisticalStretchDialog(QDialog):
         self.doc = document
         self._last_preview = None
         self._hdr_knee_user_locked = False
-
+        self._pending_close = False
+        self._thread = None
+        self._worker = None
         self._follow_conn = None
         if hasattr(self._main, "currentDocumentChanged"):
             try:
@@ -371,7 +373,7 @@ class StatisticalStretchDialog(QDialog):
         self._set_controls_enabled(False)
         self._show_busy("Statistical Stretch", "Processing…")
 
-        self._thread = QThread(self)
+        self._thread = QThread(self._main)
         self._worker = _StretchWorker(self)
         self._worker.moveToThread(self._thread)
 
@@ -790,15 +792,26 @@ class StatisticalStretchDialog(QDialog):
         # apply mode: reuse your existing apply logic, but using `out` we already computed
         self._apply_out_to_doc(out)
 
-    def closeEvent(self, ev):
-        try:
-            if getattr(self, "_job_running", False):
-                # let thread finish naturally; just hide popup so it doesn’t hang around
-                self._hide_busy()
-        except Exception:
-            pass
+        if getattr(self, "_pending_close", False):
+            self._pending_close = False
+            self.close()
 
-        # existing disconnect logic...
+    def closeEvent(self, ev):
+        # If a job is running, DO NOT close (WA_DeleteOnClose would delete the QThread)
+        if getattr(self, "_job_running", False):
+            self._pending_close = True
+            try:
+                self._hide_busy()
+            except Exception:
+                pass
+            try:
+                self.hide()
+            except Exception:
+                pass
+            ev.ignore()
+            return
+
+        # disconnect follow behavior
         try:
             if self._follow_conn and hasattr(self._main, "currentDocumentChanged"):
                 self._main.currentDocumentChanged.disconnect(self._on_active_doc_changed)
@@ -806,6 +819,7 @@ class StatisticalStretchDialog(QDialog):
             pass
 
         super().closeEvent(ev)
+
 
     def _update_preview_scaled(self):
         if self._preview_qimg is None:

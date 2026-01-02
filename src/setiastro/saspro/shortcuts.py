@@ -1919,50 +1919,160 @@ class ShortcutManager:
         # legacy single-remove (kept for callers)
         self.delete_by_id(sid, persist=True)
 
-
 class _StatStretchPresetDialog(QDialog):
+    """
+    Preset editor for headless replay: command_id="stat_stretch"
+
+    Keys supported:
+      target_median: float
+      linked: bool
+      normalize: bool
+      apply_curves: bool
+      curves_boost: float            # 0..1
+      blackpoint_sigma: float        # 0..1 (matches your slider/100)
+      no_black_clip: bool
+      hdr_compress: bool
+      hdr_amount: float              # 0..1
+      hdr_knee: float                # 0..1
+      luma_only: bool
+      luma_mode: str                 # e.g. "rec709"
+    """
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
         self.setWindowTitle("Statistical Stretch — Preset")
         init = dict(initial or {})
 
+        # --- Target median ---
         self.spin_target = QDoubleSpinBox()
-        self.spin_target.setRange(0.0, 1.0); self.spin_target.setDecimals(3)
+        self.spin_target.setRange(0.0, 1.0)
+        self.spin_target.setDecimals(3)
         self.spin_target.setSingleStep(0.01)
         self.spin_target.setValue(float(init.get("target_median", 0.25)))
 
+        # --- Linked / Normalize ---
         self.chk_linked = QCheckBox("Linked RGB channels")
         self.chk_linked.setChecked(bool(init.get("linked", False)))
 
         self.chk_normalize = QCheckBox("Normalize to [0..1]")
         self.chk_normalize.setChecked(bool(init.get("normalize", False)))
 
-        self.spin_curves = QDoubleSpinBox()
-        self.spin_curves.setRange(0.0, 1.0); self.spin_curves.setDecimals(2)
-        self.spin_curves.setSingleStep(0.05)
-        self.spin_curves.setValue(float(init.get("curves_boost", 0.0 if not init.get("apply_curves") else 0.20)))
+        # --- Curves ---
+        self.chk_curves = QCheckBox("Apply Curves")
+        self.chk_curves.setChecked(bool(init.get("apply_curves", False)))
 
-        form = QFormLayout(self)
+        self.spin_curves = QDoubleSpinBox()
+        self.spin_curves.setRange(0.0, 1.0)
+        self.spin_curves.setDecimals(2)
+        self.spin_curves.setSingleStep(0.05)
+        self.spin_curves.setValue(float(init.get("curves_boost", 0.0)))
+        self.spin_curves.setEnabled(self.chk_curves.isChecked())
+        self.chk_curves.toggled.connect(self.spin_curves.setEnabled)
+
+        # --- Blackpoint sigma ---
+        self.spin_bp = QDoubleSpinBox()
+        self.spin_bp.setRange(0.0, 1.0)
+        self.spin_bp.setDecimals(2)
+        self.spin_bp.setSingleStep(0.05)
+        self.spin_bp.setValue(float(init.get("blackpoint_sigma", 0.0)))
+
+        self.chk_no_black_clip = QCheckBox("No black clip")
+        self.chk_no_black_clip.setChecked(bool(init.get("no_black_clip", False)))
+
+        # --- HDR compress ---
+        self.chk_hdr = QCheckBox("HDR compression")
+        self.chk_hdr.setChecked(bool(init.get("hdr_compress", False)))
+
+        self.spin_hdr_amt = QDoubleSpinBox()
+        self.spin_hdr_amt.setRange(0.0, 1.0)
+        self.spin_hdr_amt.setDecimals(2)
+        self.spin_hdr_amt.setSingleStep(0.05)
+        self.spin_hdr_amt.setValue(float(init.get("hdr_amount", 0.0)))
+
+        self.spin_hdr_knee = QDoubleSpinBox()
+        self.spin_hdr_knee.setRange(0.0, 1.0)
+        self.spin_hdr_knee.setDecimals(2)
+        self.spin_hdr_knee.setSingleStep(0.05)
+        self.spin_hdr_knee.setValue(float(init.get("hdr_knee", 0.5)))
+
+        def _set_hdr_enabled(on: bool):
+            on = bool(on)
+            self.spin_hdr_amt.setEnabled(on)
+            self.spin_hdr_knee.setEnabled(on)
+
+        _set_hdr_enabled(self.chk_hdr.isChecked())
+        self.chk_hdr.toggled.connect(_set_hdr_enabled)
+
+        # --- Luma only ---
+        self.chk_luma_only = QCheckBox("Luma-only mode")
+        self.chk_luma_only.setChecked(bool(init.get("luma_only", False)))
+
+        self.cmb_luma = QComboBox()
+        # keep in sync with your tool’s supported modes
+        self.cmb_luma.addItems(["rec709", "avg", "hsp", "max"])
+        init_mode = str(init.get("luma_mode", "rec709") or "rec709")
+        idx = self.cmb_luma.findText(init_mode)
+        if idx >= 0:
+            self.cmb_luma.setCurrentIndex(idx)
+
+        self.cmb_luma.setEnabled(self.chk_luma_only.isChecked())
+        self.chk_luma_only.toggled.connect(self.cmb_luma.setEnabled)
+
+        # --- Layout ---
+        form = QFormLayout()
+
         form.addRow("Target median:", self.spin_target)
         form.addRow("", self.chk_linked)
         form.addRow("", self.chk_normalize)
-        form.addRow("Curves boost (0–1):", self.spin_curves)
-        form.addRow(QLabel("Curves are applied only if boost > 0."))
 
-        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self)
-        btns.accepted.connect(self.accept); btns.rejected.connect(self.reject)
+        form.addRow("", QLabel("— Tone shaping —"))
+        form.addRow("", self.chk_curves)
+        form.addRow("Curves boost (0–1):", self.spin_curves)
+
+        form.addRow("", QLabel("— Blackpoint / HDR —"))
+        form.addRow("Blackpoint σ (0–1):", self.spin_bp)
+        form.addRow("", self.chk_no_black_clip)
+
+        form.addRow("", self.chk_hdr)
+        form.addRow("HDR amount (0–1):", self.spin_hdr_amt)
+        form.addRow("HDR knee (0–1):", self.spin_hdr_knee)
+
+        form.addRow("", QLabel("— Luma mode —"))
+        form.addRow("", self.chk_luma_only)
+        form.addRow("Luma mode:", self.cmb_luma)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=self
+        )
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
         form.addRow(btns)
 
+        self.setLayout(form)
+
     def result_dict(self) -> dict:
-        boost = float(self.spin_curves.value())
+        hdr_on = bool(self.chk_hdr.isChecked())
+        curves_on = bool(self.chk_curves.isChecked())
+        luma_on = bool(self.chk_luma_only.isChecked())
+
         return {
             "target_median": float(self.spin_target.value()),
             "linked": bool(self.chk_linked.isChecked()),
             "normalize": bool(self.chk_normalize.isChecked()),
-            "apply_curves": bool(boost > 0.0),
-            "curves_boost": boost,
+
+            "apply_curves": curves_on,
+            "curves_boost": float(self.spin_curves.value()) if curves_on else 0.0,
+
+            "blackpoint_sigma": float(self.spin_bp.value()),
+            "no_black_clip": bool(self.chk_no_black_clip.isChecked()),
+
+            "hdr_compress": hdr_on,
+            "hdr_amount": float(self.spin_hdr_amt.value()) if hdr_on else 0.0,
+            "hdr_knee": float(self.spin_hdr_knee.value()) if hdr_on else 0.0,
+
+            "luma_only": luma_on,
+            "luma_mode": str(self.cmb_luma.currentText()) if luma_on else "rec709",
         }
-    
 
 class _StarStretchPresetDialog(QDialog):
     def __init__(self, parent=None, initial: dict | None = None):
