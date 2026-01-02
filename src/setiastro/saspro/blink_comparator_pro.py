@@ -150,7 +150,6 @@ class MetricsPanel(QWidget):
         orig_back = entry.get('orig_background', np.nan)
         return idx, fwhm, ecc, orig_back, star_cnt
 
-
     def compute_all_metrics(self, loaded_images) -> bool:
         """Run SEP over the full list in parallel using threads and cache results.
         Returns True if metrics were computed, False if user declined/canceled.
@@ -163,71 +162,109 @@ class MetricsPanel(QWidget):
             self._threshold_initialized = [False] * 4
             return True
 
+        def _has_metrics(md):
+            try:
+                return md is not None and len(md) == 4 and md[0] is not None and len(md[0]) > 0
+            except Exception:
+                return False
+
         settings = QSettings()
-        show = settings.value("metrics/showWarning", True, type=bool)
-        if show:
+        show_warning = settings.value("metrics/showWarning", True, type=bool)
+
+        if (not show_warning) and (not _has_metrics(getattr(self, "metrics_data", None))):
+            settings.setValue("metrics/showWarning", True)
+            show_warning = True
+
+        # ----------------------------
+        # 1) Optional warning gate
+        # ----------------------------
+        if show_warning:
             msg = QMessageBox(self)
             msg.setWindowTitle(self.tr("Heads-up"))
             msg.setText(self.tr(
                 "This is going to use ALL your CPU cores and the UI may lock up until it finishes.\n\n"
                 "Continue?"
             ))
-            msg.setStandardButtons(QMessageBox.StandardButton.Yes |
-                                QMessageBox.StandardButton.No)
+            msg.setStandardButtons(
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
             cb = QCheckBox(self.tr("Don't show again"), msg)
             msg.setCheckBox(cb)
 
-            if msg.exec() != QMessageBox.StandardButton.Yes:
-                # IMPORTANT: leave caches alone; caller (plot) will clear/return
+            clicked = msg.exec()
+            clicked_yes = (clicked == QMessageBox.StandardButton.Yes)
+
+            if not clicked_yes:
+                # If they said NO, never allow "Don't show again" to lock them out.
+                # Keep the warning enabled so they can opt-in later.
+                if cb.isChecked():
+                    settings.setValue("metrics/showWarning", True)
                 return False
 
+            # They said YES: now it's safe to honor "Don't show again"
             if cb.isChecked():
                 settings.setValue("metrics/showWarning", False)
 
-            # pre-allocate result arrays
-            m0 = np.full(n, np.nan, dtype=np.float32)  # FWHM
-            m1 = np.full(n, np.nan, dtype=np.float32)  # Eccentricity
-            m2 = np.full(n, np.nan, dtype=np.float32)  # Background (cached)
-            m3 = np.full(n, np.nan, dtype=np.float32)  # Star count
-            flags = [e.get('flagged', False) for e in loaded_images]
+        # If show_warning is False, we compute with no prompt.
 
-            # progress dialog
-            prog = QProgressDialog(self.tr("Computing frame metrics…"), self.tr("Cancel"), 0, n, self)
-            prog.setWindowModality(Qt.WindowModality.WindowModal)
-            prog.setMinimumDuration(0)
-            prog.setValue(0)
-            prog.show()
-            QApplication.processEvents()
+        # ----------------------------
+        # 2) Allocate result arrays
+        # ----------------------------
+        m0 = np.full(n, np.nan, dtype=np.float32)  # FWHM
+        m1 = np.full(n, np.nan, dtype=np.float32)  # Eccentricity
+        m2 = np.full(n, np.nan, dtype=np.float32)  # Background (cached)
+        m3 = np.full(n, np.nan, dtype=np.float32)  # Star count
+        flags = [e.get('flagged', False) for e in loaded_images]
 
-            workers = min(os.cpu_count() or 1, 60)
-            tasks = [(i, loaded_images[i]) for i in range(n)]
-            done = 0  # <-- FIX: initialize before incrementing
+        # ----------------------------
+        # 3) Progress dialog
+        # ----------------------------
+        prog = QProgressDialog(self.tr("Computing frame metrics…"), self.tr("Cancel"), 0, n, self)
+        prog.setWindowModality(Qt.WindowModality.WindowModal)
+        prog.setMinimumDuration(0)
+        prog.setValue(0)
+        prog.show()
+        QApplication.processEvents()
 
-            try:
-                with ThreadPoolExecutor(max_workers=workers) as exe:
-                    futures = {exe.submit(self._compute_one, t): t[0] for t in tasks}
-                    for fut in as_completed(futures):
-                        if prog.wasCanceled():
-                            break
-                        try:
-                            idx, fwhm, ecc, orig_back, star_cnt = fut.result()
-                        except Exception:
-                            # On failure, leave NaNs/sentinels and continue
-                            idx, fwhm, ecc, orig_back, star_cnt = futures[fut], np.nan, np.nan, np.nan, 0
+        workers = min(os.cpu_count() or 1, 60)
+        tasks = [(i, loaded_images[i]) for i in range(n)]
+        done = 0
+        canceled = False
+
+        try:
+            with ThreadPoolExecutor(max_workers=workers) as exe:
+                futures = {exe.submit(self._compute_one, t): t[0] for t in tasks}
+                for fut in as_completed(futures):
+                    if prog.wasCanceled():
+                        canceled = True
+                        break
+                    try:
+                        idx, fwhm, ecc, orig_back, star_cnt = fut.result()
+                    except Exception:
+                        idx = futures.get(fut, 0)
+                        fwhm, ecc, orig_back, star_cnt = np.nan, np.nan, np.nan, 0
+
+                    if 0 <= idx < n:
                         m0[idx], m1[idx], m2[idx], m3[idx] = fwhm, ecc, orig_back, float(star_cnt)
-                        done += 1
-                        prog.setValue(done)
-                        QApplication.processEvents()
-            finally:
-                prog.close()
 
-            # stash results
-            self._orig_images = loaded_images
-            self.metrics_data = [m0, m1, m2, m3]
-            self.flags = flags
-            self._threshold_initialized = [False] * 4
-            return True
+                    done += 1
+                    prog.setValue(done)
+                    QApplication.processEvents()
+        finally:
+            prog.close()
 
+        if canceled:
+            # IMPORTANT: leave caches alone; caller will clear/return
+            return False
+
+        # ----------------------------
+        # 4) Stash results
+        # ----------------------------
+        self._orig_images = loaded_images
+        self.metrics_data = [m0, m1, m2, m3]
+        self.flags = flags
+        self._threshold_initialized = [False] * 4
+        return True
 
     def plot(self, loaded_images, indices=None):
         """
