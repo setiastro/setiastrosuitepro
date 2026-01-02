@@ -111,7 +111,7 @@ class StatisticalStretchDialog(QDialog):
         self.sld_bp.setToolTip(bp_tip)
         self.lbl_bp.setToolTip(bp_tip)
         
-        self.chk_no_black_clip = QCheckBox(self.tr("No black clipping"))
+        self.chk_no_black_clip = QCheckBox(self.tr("No black clipping (Old Stat Stretch behavior)"))
         self.chk_no_black_clip.setChecked(False)
         self.chk_no_black_clip.setToolTip(self.tr(
             "Disables black-point clipping.\n"
@@ -297,6 +297,13 @@ class StatisticalStretchDialog(QDialog):
         right.addLayout(zoom_row)                # ← actually add the zoom controls
         right.addWidget(self.preview_scroll, 1)  # preview below the buttons
         main.addLayout(right, 1)
+
+        def _on_no_black_clip_toggled(on: bool):
+            # Grey out blackpoint controls when "No black clipping" is enabled
+            self.row_bp.setEnabled(not on)
+
+        self.chk_no_black_clip.toggled.connect(_on_no_black_clip_toggled)
+        _on_no_black_clip_toggled(self.chk_no_black_clip.isChecked())  
 
         self.btn_zoom_in.clicked.connect(lambda: self._zoom_by(1.25))
         self.btn_zoom_out.clicked.connect(lambda: self._zoom_by(1/1.25))

@@ -14,6 +14,65 @@ try:
 except Exception:
     pywt = None
 
+# CUDA detection - check if OpenCV was built with CUDA support
+_CUDA_AVAILABLE = False
+_CUDA_DEVICE_NAME = "N/A"
+_CUDA_INITIALIZED = False
+_CUDA_DENOISE_INITIALIZED = False  # Track if NLM denoise has been run once
+
+def _warmup_cuda():
+    """Initialize CUDA context and key functions with dummy operations to avoid first-call crashes."""
+    global _CUDA_INITIALIZED
+    if _CUDA_INITIALIZED or not _CUDA_AVAILABLE:
+        return
+    try:
+        # Basic CUDA context initialization
+        dummy = np.zeros((64, 64, 3), dtype=np.uint8)
+        gpu_mat = cv2.cuda_GpuMat()
+        gpu_mat.upload(dummy)
+        _ = gpu_mat.download()
+
+        # Warm up Gaussian filter
+        try:
+            gauss_filter = cv2.cuda.createGaussianFilter(cv2.CV_8UC3, -1, (5, 5), 1.0)
+            gpu_mat.upload(dummy)
+            gpu_result = gauss_filter.apply(gpu_mat)
+            _ = gpu_result.download()
+        except Exception:
+            pass
+
+        # Note: We skip NLM warm-up here because the first real denoise
+        # must run on the main thread to properly initialize CUDA for that operation.
+        # The warm-up for basic CUDA ops (upload/download, Gaussian) is still done above.
+
+        # Synchronize to ensure all GPU operations complete
+        try:
+            cv2.cuda.Stream.Null().waitForCompletion()
+        except Exception:
+            pass
+
+        _CUDA_INITIALIZED = True
+    except Exception:
+        pass
+
+try:
+    if cv2 is not None:
+        _cuda_count = cv2.cuda.getCudaEnabledDeviceCount()
+        if _cuda_count > 0:
+            _CUDA_AVAILABLE = True
+            try:
+                _device_info = cv2.cuda.DeviceInfo(cv2.cuda.getDevice())
+                _CUDA_DEVICE_NAME = _device_info.name()
+            except Exception:
+                _CUDA_DEVICE_NAME = f"{_cuda_count} device(s)"
+            # Warm up CUDA immediately (basic ops only, NLM done on first use)
+            _warmup_cuda()
+except Exception:
+    pass
+
+# Minimum image size (pixels) to benefit from CUDA - smaller images have too much transfer overhead
+_CUDA_MIN_PIXELS = 500_000  # ~700x700 or larger
+
 from PyQt6.QtCore import (
     Qt, QSize, QPoint, QEvent, QThread, pyqtSignal, QTimer
 )
@@ -35,55 +94,210 @@ class FrequencySeperationThread(QThread):
     separation_done = pyqtSignal(np.ndarray, np.ndarray)
     error_signal = pyqtSignal(str)
 
-    def __init__(self, image: np.ndarray, method='Gaussian', radius=10.0, tolerance=50, parent=None):
+    def __init__(self, image: np.ndarray, method='Gaussian', radius=10.0, tolerance=50,
+                 use_cuda=True, parent=None):
         super().__init__(parent)
         self.image = image.astype(np.float32, copy=False)
         self.method = method
         self.radius = float(radius)
         self.tolerance = int(tolerance)
-        try:
-            self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        except Exception:
-            pass  # older PyQt6 versions
+        # Use CUDA if requested, available, and image is large enough
+        h, w = self.image.shape[:2]
+        self.use_cuda = (use_cuda and _CUDA_AVAILABLE and (h * w >= _CUDA_MIN_PIXELS))
+
     def run(self):
         try:
-            if self.image.ndim == 3 and self.image.shape[2] == 3:
-                if cv2 is None:
-                    raise RuntimeError("OpenCV (cv2) is required for color frequency separation.")
-                bgr = cv2.cvtColor(self.image, cv2.COLOR_RGB2BGR)
+            if self.use_cuda:
+                low_rgb, high_rgb = self._run_cuda()
             else:
-                bgr = self.image.copy()
-
-            if self.method == 'Gaussian':
-                if cv2 is None:
-                    raise RuntimeError("OpenCV (cv2) is required for Gaussian blur.")
-                low_bgr = cv2.GaussianBlur(bgr, (0, 0), self.radius)
-            elif self.method == 'Median':
-                if cv2 is None:
-                    raise RuntimeError("OpenCV (cv2) is required for median blur.")
-                ksize = max(1, int(self.radius) // 2 * 2 + 1)
-                low_bgr = cv2.medianBlur(bgr, ksize)
-            elif self.method == 'Bilateral':
-                if cv2 is None:
-                    raise RuntimeError("OpenCV (cv2) is required for bilateral filter.")
-                sigma = 50.0 * (self.tolerance / 100.0)
-                d = max(1, int(self.radius))
-                low_bgr = cv2.bilateralFilter(bgr, d, sigma, sigma)
-            else:
-                # fallback
-                if cv2 is None:
-                    raise RuntimeError("OpenCV (cv2) is required for Gaussian blur.")
-                low_bgr = cv2.GaussianBlur(bgr, (0, 0), self.radius)
-
-            if low_bgr.ndim == 3 and low_bgr.shape[2] == 3:
-                low_rgb = cv2.cvtColor(low_bgr, cv2.COLOR_BGR2RGB)
-            else:
-                low_rgb = low_bgr
-
-            high_rgb = self.image - low_rgb  # keep signed HF
+                low_rgb, high_rgb = self._run_cpu()
             self.separation_done.emit(low_rgb.astype(np.float32), high_rgb.astype(np.float32))
         except Exception as e:
             self.error_signal.emit(str(e))
+
+    def _run_cpu(self):
+        """Original CPU implementation."""
+        if cv2 is None:
+            raise RuntimeError("OpenCV (cv2) is required for frequency separation.")
+
+        if self.image.ndim == 3 and self.image.shape[2] == 3:
+            bgr = cv2.cvtColor(self.image, cv2.COLOR_RGB2BGR)
+        else:
+            bgr = self.image.copy()
+
+        if self.method == 'Gaussian':
+            low_bgr = cv2.GaussianBlur(bgr, (0, 0), self.radius)
+        elif self.method == 'Median':
+            ksize = max(1, int(self.radius) // 2 * 2 + 1)
+            low_bgr = cv2.medianBlur(bgr, ksize)
+        elif self.method == 'Bilateral':
+            sigma = 50.0 * (self.tolerance / 100.0)
+            d = max(1, int(self.radius))
+            low_bgr = cv2.bilateralFilter(bgr, d, sigma, sigma)
+        else:
+            low_bgr = cv2.GaussianBlur(bgr, (0, 0), self.radius)
+
+        if low_bgr.ndim == 3 and low_bgr.shape[2] == 3:
+            low_rgb = cv2.cvtColor(low_bgr, cv2.COLOR_BGR2RGB)
+        else:
+            low_rgb = low_bgr
+
+        high_rgb = self.image - low_rgb
+        return low_rgb, high_rgb
+
+    def _run_cuda(self):
+        """GPU-accelerated separation using CUDA."""
+        if cv2 is None:
+            raise RuntimeError("OpenCV (cv2) is required for frequency separation.")
+
+        # CUDA has a max kernel size of 31 (must be odd and <= 32)
+        # For Gaussian, kernel size is typically 6*sigma, so max sigma ~5
+        # For larger radii, we need to use iterative application or CPU fallback
+        CUDA_MAX_KSIZE = 31
+
+        # Prepare image in BGR format for OpenCV
+        if self.image.ndim == 3 and self.image.shape[2] == 3:
+            bgr = cv2.cvtColor(self.image, cv2.COLOR_RGB2BGR)
+        else:
+            bgr = self.image.copy()
+
+        if self.method == 'Gaussian':
+            # Calculate ideal kernel size
+            ideal_ksize = int(self.radius * 6) | 1  # ensure odd
+
+            if ideal_ksize <= CUDA_MAX_KSIZE:
+                # Single-pass CUDA Gaussian
+                gpu_img = cv2.cuda_GpuMat()
+                gpu_img.upload(bgr)
+                gauss_filter = cv2.cuda.createGaussianFilter(
+                    gpu_img.type(), -1, (ideal_ksize, ideal_ksize), self.radius
+                )
+                gpu_blurred = gauss_filter.apply(gpu_img)
+                low_bgr = gpu_blurred.download()
+            else:
+                # For large radii: use iterative CUDA passes or CPU fallback
+                # Iterative Gaussian: applying sigma N times ≈ sigma * sqrt(N)
+                # So for target sigma, we need N passes of sigma/sqrt(N)
+                # We'll use multiple passes with max allowed kernel
+
+                # Calculate number of passes needed
+                max_sigma_per_pass = (CUDA_MAX_KSIZE - 1) / 6.0  # ~5.0
+                num_passes = max(1, int(np.ceil((self.radius / max_sigma_per_pass) ** 2)))
+                sigma_per_pass = self.radius / np.sqrt(num_passes)
+                ksize_per_pass = max(3, int(sigma_per_pass * 6) | 1)
+                ksize_per_pass = min(ksize_per_pass, CUDA_MAX_KSIZE)
+
+                if num_passes <= 25:  # Allow up to 25 passes for radius up to ~25
+                    gpu_img = cv2.cuda_GpuMat()
+                    gpu_img.upload(bgr)
+                    gauss_filter = cv2.cuda.createGaussianFilter(
+                        gpu_img.type(), -1, (ksize_per_pass, ksize_per_pass), sigma_per_pass
+                    )
+                    for _ in range(num_passes):
+                        gpu_img = gauss_filter.apply(gpu_img)
+                    low_bgr = gpu_img.download()
+                else:
+                    # Too many passes needed, fall back to CPU
+                    low_bgr = cv2.GaussianBlur(bgr, (0, 0), self.radius)
+
+        elif self.method == 'Bilateral':
+            sigma = 50.0 * (self.tolerance / 100.0)
+            d = max(1, int(self.radius))
+
+            # CUDA bilateral requires 8-bit input
+            bgr_u8 = (np.clip(bgr, 0, 1) * 255).astype(np.uint8)
+
+            if d <= CUDA_MAX_KSIZE:
+                # Single-pass CUDA bilateral
+                gpu_u8 = cv2.cuda_GpuMat()
+                gpu_u8.upload(bgr_u8)
+                try:
+                    gpu_blurred = cv2.cuda.bilateralFilter(gpu_u8, d, sigma, sigma)
+                    low_bgr_u8 = gpu_blurred.download()
+                    low_bgr = low_bgr_u8.astype(np.float32) / 255.0
+                except Exception:
+                    low_bgr = cv2.bilateralFilter(bgr, d, sigma, sigma)
+            else:
+                # Iterative bilateral for large radius
+                # Use multiple passes with smaller d to approximate larger bilateral
+                num_passes = max(1, (d + CUDA_MAX_KSIZE - 1) // CUDA_MAX_KSIZE)
+                d_per_pass = min(CUDA_MAX_KSIZE, max(5, d // num_passes) | 1)  # ensure odd
+                sigma_per_pass = sigma / np.sqrt(num_passes)  # reduce sigma per pass
+
+                if num_passes <= 10:  # Allow up to 10 passes
+                    gpu_u8 = cv2.cuda_GpuMat()
+                    gpu_u8.upload(bgr_u8)
+                    try:
+                        for _ in range(num_passes):
+                            gpu_u8 = cv2.cuda.bilateralFilter(gpu_u8, d_per_pass, sigma_per_pass, sigma_per_pass)
+                        low_bgr_u8 = gpu_u8.download()
+                        low_bgr = low_bgr_u8.astype(np.float32) / 255.0
+                    except Exception:
+                        low_bgr = cv2.bilateralFilter(bgr, d, sigma, sigma)
+                else:
+                    # Too many passes, fall back to CPU
+                    low_bgr = cv2.bilateralFilter(bgr, d, sigma, sigma)
+
+        elif self.method == 'Median':
+            ksize = max(1, int(self.radius) // 2 * 2 + 1)  # ensure odd
+
+            # Median requires 8-bit input
+            bgr_u8 = (np.clip(bgr, 0, 1) * 255).astype(np.uint8)
+
+            if ksize <= CUDA_MAX_KSIZE:
+                # Single-pass CUDA median
+                gpu_u8 = cv2.cuda_GpuMat()
+                gpu_u8.upload(bgr_u8)
+                try:
+                    median_filter = cv2.cuda.createMedianFilter(gpu_u8.type(), ksize)
+                    gpu_blurred = median_filter.apply(gpu_u8)
+                    low_bgr_u8 = gpu_blurred.download()
+                    low_bgr = low_bgr_u8.astype(np.float32) / 255.0
+                except (AttributeError, cv2.error):
+                    low_bgr = cv2.medianBlur(bgr, ksize)
+            else:
+                # Iterative median for large radius
+                # Multiple passes with smaller kernel approximate larger kernel
+                num_passes = max(1, (ksize + CUDA_MAX_KSIZE - 1) // CUDA_MAX_KSIZE)
+                ksize_per_pass = min(CUDA_MAX_KSIZE, max(3, ksize // num_passes) | 1)  # ensure odd
+
+                if num_passes <= 10:  # Allow up to 10 passes for larger radii
+                    gpu_u8 = cv2.cuda_GpuMat()
+                    gpu_u8.upload(bgr_u8)
+                    try:
+                        median_filter = cv2.cuda.createMedianFilter(gpu_u8.type(), ksize_per_pass)
+                        for _ in range(num_passes):
+                            gpu_u8 = median_filter.apply(gpu_u8)
+                        low_bgr_u8 = gpu_u8.download()
+                        low_bgr = low_bgr_u8.astype(np.float32) / 255.0
+                    except (AttributeError, cv2.error):
+                        low_bgr = cv2.medianBlur(bgr, ksize)
+                else:
+                    # Too many passes, fall back to CPU
+                    low_bgr = cv2.medianBlur(bgr, ksize)
+
+        else:
+            # Fallback to Gaussian (same logic as above)
+            ideal_ksize = int(self.radius * 6) | 1
+            if ideal_ksize <= CUDA_MAX_KSIZE:
+                gpu_img = cv2.cuda_GpuMat()
+                gpu_img.upload(bgr)
+                gauss_filter = cv2.cuda.createGaussianFilter(
+                    gpu_img.type(), -1, (ideal_ksize, ideal_ksize), self.radius
+                )
+                gpu_blurred = gauss_filter.apply(gpu_img)
+                low_bgr = gpu_blurred.download()
+            else:
+                low_bgr = cv2.GaussianBlur(bgr, (0, 0), self.radius)
+
+        # Convert back to RGB
+        if low_bgr.ndim == 3 and low_bgr.shape[2] == 3:
+            low_rgb = cv2.cvtColor(low_bgr, cv2.COLOR_BGR2RGB)
+        else:
+            low_rgb = low_bgr
+
+        high_rgb = self.image - low_rgb
+        return low_rgb, high_rgb
 
 
 class HFEnhancementThread(QThread):
@@ -101,6 +315,7 @@ class HFEnhancementThread(QThread):
         wavelet_name='db2',
         enable_denoise=False,
         denoise_strength=3.0,
+        use_cuda=True,
         parent=None
     ):
         super().__init__(parent)
@@ -113,27 +328,49 @@ class HFEnhancementThread(QThread):
         self.wavelet_name = str(wavelet_name)
         self.enable_denoise = bool(enable_denoise)
         self.denoise_strength = float(denoise_strength)
+        # Use CUDA if requested, available, and image is large enough
+        h, w = self.hf_image.shape[:2]
+        self.use_cuda = (use_cuda and _CUDA_AVAILABLE and (h * w >= _CUDA_MIN_PIXELS))
 
     def run(self):
         try:
             out = self.hf_image.copy()
 
             if self.enable_scale:
-                out *= self.sharpen_scale
+                if self.use_cuda and cv2 is not None:
+                    out = self._scale_cuda(out, self.sharpen_scale)
+                else:
+                    out *= self.sharpen_scale
 
             if self.enable_wavelet:
                 if pywt is None:
                     raise RuntimeError("PyWavelets (pywt) is required for wavelet sharpening.")
+                # Note: PyWavelets is CPU-only, no CUDA support available
                 out = self._wavelet_sharpen(out, self.wavelet_name, self.wavelet_level, self.wavelet_boost)
 
             if self.enable_denoise:
                 if cv2 is None:
                     raise RuntimeError("OpenCV (cv2) is required for HF denoise.")
-                out = self._denoise_hf(out, self.denoise_strength)
+                if self.use_cuda:
+                    out = self._denoise_hf_cuda(out, self.denoise_strength)
+                else:
+                    out = self._denoise_hf_cpu(out, self.denoise_strength)
 
             self.enhancement_done.emit(out.astype(np.float32))
         except Exception as e:
             self.error_signal.emit(str(e))
+
+    def _scale_cuda(self, img, scale):
+        """GPU-accelerated scaling using CUDA."""
+        try:
+            gpu_img = cv2.cuda_GpuMat()
+            gpu_img.upload(img.astype(np.float32))
+            # Use multiply with scalar
+            gpu_scaled = cv2.cuda.multiply(gpu_img, scale)
+            return gpu_scaled.download()
+        except Exception:
+            # Fallback to CPU
+            return img * scale
 
     def _wavelet_sharpen(self, img, wavelet='db2', level=2, boost=1.2):
         if img.ndim == 3 and img.shape[2] == 3:
@@ -145,19 +382,30 @@ class HFEnhancementThread(QThread):
             return self._wavelet_sharpen_mono(img, wavelet, level, boost)
 
     def _wavelet_sharpen_mono(self, mono, wavelet, level, boost):
-        coeffs = pywt.wavedec2(mono, wavelet=wavelet, level=level, mode='periodization')
-        new_coeffs = [coeffs[0]]
-        for (cH, cV, cD) in coeffs[1:]:
-            new_coeffs.append((cH * boost, cV * boost, cD * boost))
-        rec = pywt.waverec2(new_coeffs, wavelet=wavelet, mode='periodization')
+        h, w = mono.shape[:2]
 
-        # shape guard
-        if rec.shape != mono.shape:
-            h, w = mono.shape[:2]
-            rec = rec[:h, :w]
-        return rec
+        try:
+            # Let pywt determine the max level automatically if needed
+            max_level = pywt.dwt_max_level(min(h, w), wavelet)
+            safe_level = min(level, max_level) if max_level > 0 else level
 
-    def _denoise_hf(self, hf, strength=3.0):
+            coeffs = pywt.wavedec2(mono, wavelet=wavelet, level=safe_level, mode='periodization')
+            new_coeffs = [coeffs[0]]
+            for (cH, cV, cD) in coeffs[1:]:
+                new_coeffs.append((cH * boost, cV * boost, cD * boost))
+            rec = pywt.waverec2(new_coeffs, wavelet=wavelet, mode='periodization')
+
+            # shape guard
+            if rec.shape != mono.shape:
+                rec = rec[:h, :w]
+
+            return rec.astype(np.float32)
+        except Exception as e:
+            # If wavelet processing fails, return original
+            return mono.astype(np.float32)
+
+    def _denoise_hf_cpu(self, hf, strength=3.0):
+        """CPU-based NLM denoising."""
         # Shift to [0..1], denoise, shift back.
         if hf.ndim == 3 and hf.shape[2] == 3:
             bgr = hf[..., ::-1]  # RGB->BGR
@@ -171,6 +419,112 @@ class HFEnhancementThread(QThread):
             u8 = (tmp * 255).astype(np.uint8)
             den = cv2.fastNlMeansDenoising(u8, None, strength, 7, 21)
             return den.astype(np.float32) / 255.0 - 0.5
+
+    def _denoise_hf_cuda(self, hf, strength=3.0):
+        """GPU-accelerated NLM denoising using CUDA."""
+        # Check if CUDA denoising functions are available
+        has_cuda_denoise = False
+        has_cuda_denoise_color = False
+
+        if hasattr(cv2, 'cuda'):
+            has_cuda_denoise = hasattr(cv2.cuda, 'fastNlMeansDenoising')
+            has_cuda_denoise_color = hasattr(cv2.cuda, 'fastNlMeansDenoisingColored')
+
+
+        try:
+            if hf.ndim == 3 and hf.shape[2] == 3:
+                if not has_cuda_denoise_color:
+                    return self._denoise_hf_cpu(hf, strength)
+                bgr = hf[..., ::-1]  # RGB->BGR
+                tmp = np.clip(bgr + 0.5, 0, 1)
+                u8 = (tmp * 255).astype(np.uint8)
+
+                # Ensure contiguous array
+                u8 = np.ascontiguousarray(u8)
+
+                # Upload to GPU - use direct upload method
+                gpu_src = cv2.cuda_GpuMat(u8.shape[0], u8.shape[1], cv2.CV_8UC3)
+                gpu_src.upload(u8)
+
+                # Create destination GpuMat with same size/type
+                gpu_dst = cv2.cuda_GpuMat(u8.shape[0], u8.shape[1], cv2.CV_8UC3)
+
+                # CUDA NLM denoising for color images
+                # API: fastNlMeansDenoisingColored(src, h_luminance, photo_render[, dst[, search_window[, block_size[, stream]]]]) -> dst
+                gpu_dst = cv2.cuda.fastNlMeansDenoisingColored(
+                    gpu_src,        # src
+                    strength,       # h_luminance
+                    strength,       # photo_render
+                    None,           # dst (None = auto-allocate)
+                    21,             # search_window
+                    7               # block_size
+                )
+
+                # Ensure GPU operations complete before downloading
+                try:
+                    cv2.cuda.Stream.Null().waitForCompletion()
+                except Exception:
+                    pass
+
+                # Download result and convert back to float RGB
+                den = gpu_dst.download()
+
+                # Make a complete copy to ensure no GPU memory references remain
+                den = np.array(den, dtype=np.uint8, copy=True)
+                f32 = den.astype(np.float32) / 255.0 - 0.5
+                result = np.array(f32[..., ::-1], dtype=np.float32, copy=True)  # BGR to RGB
+
+                # Clean up GPU memory explicitly
+                del gpu_dst, gpu_src
+
+                return result
+            else:
+                if not has_cuda_denoise:
+                    return self._denoise_hf_cpu(hf, strength)
+                tmp = np.clip(hf + 0.5, 0, 1)
+                u8 = (tmp * 255).astype(np.uint8)
+
+                # Ensure contiguous array
+                u8 = np.ascontiguousarray(u8)
+
+                # Upload to GPU
+                gpu_src = cv2.cuda_GpuMat(u8.shape[0], u8.shape[1], cv2.CV_8UC1)
+                gpu_src.upload(u8)
+
+                # Create destination GpuMat with same size/type
+                gpu_dst = cv2.cuda_GpuMat(u8.shape[0], u8.shape[1], cv2.CV_8UC1)
+
+                # CUDA NLM denoising for grayscale
+                # API: fastNlMeansDenoising(src, h[, dst[, search_window[, block_size[, stream]]]]) -> dst
+                gpu_dst = cv2.cuda.fastNlMeansDenoising(
+                    gpu_src,        # src
+                    strength,       # h
+                    None,           # dst (None = auto-allocate)
+                    21,             # search_window
+                    7               # block_size
+                )
+
+                # Ensure GPU operations complete before downloading
+                try:
+                    cv2.cuda.Stream.Null().waitForCompletion()
+                except Exception:
+                    pass
+
+                # Download result and convert back to float
+                den = gpu_dst.download()
+
+                # Make a complete copy to ensure no GPU memory references remain
+                den = np.array(den, dtype=np.uint8, copy=True)
+                result = np.array(den.astype(np.float32) / 255.0 - 0.5, dtype=np.float32, copy=True)
+
+                # Clean up GPU memory explicitly
+                del gpu_dst, gpu_src
+
+                return result
+
+        except Exception as e:
+            # Fallback to CPU if CUDA denoising fails
+            return self._denoise_hf_cpu(hf, strength)
 
 
 # ---------------------------- Widget ----------------------------
@@ -202,6 +556,25 @@ class FrequencySeperationTab(QWidget):
         self._last_pos: QPoint | None = None
         self._sync_guard = False
         self._hf_history: list[np.ndarray] = []
+        self._split_history: list[tuple[np.ndarray, np.ndarray]] = []  # (LF, HF) pairs
+
+        # Combined preview state
+        self._show_combined = False
+        self._combined_cache: np.ndarray | None = None
+
+        # Pixmap caching for performance
+        self._lf_pixmap_cache: QPixmap | None = None
+        self._hf_pixmap_cache: QPixmap | None = None
+        self._combined_pixmap_cache: QPixmap | None = None
+        self._lf_dirty = True
+        self._hf_dirty = True
+        self._combined_dirty = True
+        self._last_zoom = 1.0
+        # Scaled pixmap cache (avoid rescaling on pan)
+        self._lf_scaled_cache: QPixmap | None = None
+        self._hf_scaled_cache: QPixmap | None = None
+        self._combined_scaled_cache: QPixmap | None = None
+        self._scaled_zoom = 1.0  # zoom level at which scaled caches were created
 
         # parameters
         self.method = 'Gaussian'
@@ -215,17 +588,21 @@ class FrequencySeperationTab(QWidget):
         self.enable_denoise = False
         self.denoise_strength = 3.0
 
+        # GPU acceleration - default to GPU if available
+        self.use_gpu = _CUDA_AVAILABLE
+
         self.proc_thread: FrequencySeperationThread | None = None
         self.hf_thread: HFEnhancementThread | None = None
-        self._auto_loaded = False
+        self._source_doc = None  # Track the source document separately
+        self._cuda_warmed_up = False
         self._build_ui()
 
-        if self.doc is not None and getattr(self.doc, "image", None) is not None:
-            # Preload immediately; avoids any focus/MDI ambiguity
-            self.set_image_from_doc(np.asarray(self.doc.image),
-                                    getattr(self.doc, "metadata", {}))
-            self._auto_loaded = True        
-
+    def showEvent(self, event):
+        """Warm up CUDA on first show to avoid initialization delays during processing."""
+        super().showEvent(event)
+        if not self._cuda_warmed_up and self.use_gpu:
+            _warmup_cuda()
+            self._cuda_warmed_up = True
 
     # ---------------- UI ----------------
     def _build_ui(self):
@@ -236,13 +613,56 @@ class FrequencySeperationTab(QWidget):
         left = QVBoxLayout()
         left_host = QWidget(self); left_host.setLayout(left); left_host.setFixedWidth(280)
 
-        self.fileLabel = QLabel("", self)
+        self.fileLabel = QLabel("(No image loaded)", self)
         left.addWidget(self.fileLabel)
+
+        # Load Source button
+        self.btn_load_source = QPushButton(self.tr("Load Source Image"), self)
+        self.btn_load_source.setToolTip(
+            "Select an open view to use as the source image.\n"
+            "This image will be split into LF and HF components."
+        )
+        self.btn_load_source.clicked.connect(self._load_source_from_view)
+        left.addWidget(self.btn_load_source)
+
+        # GPU acceleration toggle
+        self.cb_use_gpu = QCheckBox(self.tr("Use GPU Acceleration"), self)
+        self.cb_use_gpu.setChecked(self.use_gpu)
+        self.cb_use_gpu.setEnabled(_CUDA_AVAILABLE)
+        if _CUDA_AVAILABLE:
+            self.cb_use_gpu.setToolTip(
+                f"Enable CUDA GPU acceleration for faster processing.\n"
+                f"GPU detected: {_CUDA_DEVICE_NAME}\n\n"
+                f"GPU-accelerated operations:\n"
+                f"  • LF/HF Split: Gaussian, Bilateral, Median blur\n"
+                f"  • HF Scale: Multiplication\n"
+                f"  • HF Denoise: Non-Local Means\n\n"
+                f"CPU-only (no GPU support):\n"
+                f"  • Wavelet Sharpening (PyWavelets library)\n\n"
+                f"Uncheck to force CPU-only processing."
+            )
+        else:
+            self.cb_use_gpu.setToolTip(
+                "GPU acceleration not available.\n"
+                "OpenCV was not built with CUDA support,\n"
+                "or no CUDA-capable GPU was detected.\n\n"
+                "To enable GPU: reinstall OpenCV with CUDA support."
+            )
+        self.cb_use_gpu.toggled.connect(self._on_gpu_toggled)
+        left.addWidget(self.cb_use_gpu)
+
+        left.addSpacing(10)
 
         # Method
         left.addWidget(QLabel(self.tr("Method:"), self))
         self.method_combo = QComboBox(self)
         self.method_combo.addItems(['Gaussian', 'Median', 'Bilateral'])
+        self.method_combo.setToolTip(
+            "Blur method for creating the Low Frequency layer:\n"
+            "- Gaussian: Smooth blur, best for general use\n"
+            "- Median: Preserves edges, good for noise reduction\n"
+            "- Bilateral: Edge-aware blur, protects fine boundaries"
+        )
         self.method_combo.currentTextChanged.connect(self._on_method_changed)
         left.addWidget(self.method_combo)
 
@@ -250,6 +670,12 @@ class FrequencySeperationTab(QWidget):
         self.radius_label = QLabel("Radius: 10.00", self); left.addWidget(self.radius_label)
         self.radius_slider = QSlider(Qt.Orientation.Horizontal, self)
         self.radius_slider.setRange(1, 100); self.radius_slider.setValue(50)
+        self.radius_slider.setToolTip(
+            "Controls the frequency cutoff between LF and HF:\n"
+            "- Small radius: Only finest details go to HF (subtle sharpening)\n"
+            "- Large radius: More structure captured in HF (aggressive sharpening)\n"
+            "Larger values = smoother LF, more detail in HF"
+        )
         self.radius_slider.valueChanged.connect(self._on_radius_changed)
         left.addWidget(self.radius_slider)
 
@@ -257,47 +683,95 @@ class FrequencySeperationTab(QWidget):
         self.tol_label = QLabel("Tolerance: 50%", self); left.addWidget(self.tol_label)
         self.tol_slider = QSlider(Qt.Orientation.Horizontal, self)
         self.tol_slider.setRange(0, 100); self.tol_slider.setValue(50)
+        self.tol_slider.setToolTip(
+            "Bilateral filter edge sensitivity (only for Bilateral method):\n"
+            "- Low: Strong edge preservation, less smoothing across edges\n"
+            "- High: More smoothing, edges less protected"
+        )
         self.tol_slider.valueChanged.connect(self._on_tol_changed)
         left.addWidget(self.tol_slider)
         self._toggle_tol_enabled(False)
 
-        # Apply separation
-        btn_apply = QPushButton(self.tr("Apply - Split HF & LF"), self)
-        btn_apply.clicked.connect(self._apply_separation)
-        left.addWidget(btn_apply)
+        # Apply separation with undo button
+        split_row = QHBoxLayout()
+        self.btn_apply_split = QPushButton(self.tr("Apply - Split HF & LF"), self)
+        self.btn_apply_split.setToolTip(
+            "Split the image into Low Frequency and High Frequency components.\n"
+            "LF = blurred image (smooth tones, gradients)\n"
+            "HF = original - LF (fine details, edges, stars)"
+        )
+        self.btn_apply_split.clicked.connect(self._apply_separation)
+        split_row.addWidget(self.btn_apply_split)
+
+        self.btn_undo_split = QToolButton(self)
+        self.btn_undo_split.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowBack))
+        self.btn_undo_split.setToolTip("Undo last split (restore previous LF/HF)")
+        self.btn_undo_split.setEnabled(False)
+        self.btn_undo_split.clicked.connect(self._undo_split)
+        split_row.addWidget(self.btn_undo_split)
+        left.addLayout(split_row)
 
         left.addWidget(QLabel(self.tr("<b>HF Enhancements</b>"), self))
 
         # Sharpen scale
         self.cb_scale = QCheckBox(self.tr("Enable Sharpen Scale"), self)
-        self.cb_scale.setChecked(True); left.addWidget(self.cb_scale)
+        self.cb_scale.setChecked(True)
+        self.cb_scale.setToolTip("Enable/disable simple multiplication of HF details")
+        left.addWidget(self.cb_scale)
         self.scale_label = QLabel("Sharpen Scale: 1.00", self); left.addWidget(self.scale_label)
         self.scale_slider = QSlider(Qt.Orientation.Horizontal, self)
         self.scale_slider.setRange(10, 300); self.scale_slider.setValue(100)
+        self.scale_slider.setToolTip(
+            "Multiplier for High Frequency details:\n"
+            "- 1.0: No change\n"
+            "- < 1.0: Reduce detail intensity (soften)\n"
+            "- > 1.0: Amplify details (sharpen)\n"
+            "Simple and fast way to adjust overall sharpness"
+        )
         self.scale_slider.valueChanged.connect(lambda v: self._update_scale(v))
         left.addWidget(self.scale_slider)
 
         # Wavelet
         self.cb_wavelet = QCheckBox(self.tr("Enable Wavelet Sharpening"), self)
-        self.cb_wavelet.setChecked(True); left.addWidget(self.cb_wavelet)
+        self.cb_wavelet.setChecked(True)
+        self.cb_wavelet.setToolTip("Enable/disable multi-scale wavelet enhancement")
+        left.addWidget(self.cb_wavelet)
         self.wavelet_level_label = QLabel("Wavelet Level: 2", self); left.addWidget(self.wavelet_level_label)
         self.wavelet_level_slider = QSlider(Qt.Orientation.Horizontal, self)
         self.wavelet_level_slider.setRange(1, 5); self.wavelet_level_slider.setValue(2)
+        self.wavelet_level_slider.setToolTip("Wavelet decomposition levels (1-5): Higher = larger features affected")
         self.wavelet_level_slider.valueChanged.connect(lambda v: self._update_wavelet_level(v))
         left.addWidget(self.wavelet_level_slider)
 
         self.wavelet_boost_label = QLabel("Wavelet Boost: 1.20", self); left.addWidget(self.wavelet_boost_label)
         self.wavelet_boost_slider = QSlider(Qt.Orientation.Horizontal, self)
         self.wavelet_boost_slider.setRange(50, 300); self.wavelet_boost_slider.setValue(120)
+        self.wavelet_boost_slider.setToolTip(
+            "Multiplier for wavelet detail coefficients:\n"
+            "- 1.0: No change\n"
+            "- > 1.0: Enhance details at each wavelet scale\n"
+            "Works with Wavelet Level to control multi-scale sharpening"
+        )
         self.wavelet_boost_slider.valueChanged.connect(lambda v: self._update_wavelet_boost(v))
         left.addWidget(self.wavelet_boost_slider)
 
         # Denoise
         self.cb_denoise = QCheckBox(self.tr("Enable HF Denoise"), self)
-        self.cb_denoise.setChecked(False); left.addWidget(self.cb_denoise)
+        self.cb_denoise.setChecked(False)
+        self.cb_denoise.setToolTip(
+            "Apply noise reduction to the HF layer only.\n"
+            "Reduces noise while preserving the smooth LF layer intact."
+        )
+        left.addWidget(self.cb_denoise)
         self.denoise_label = QLabel("Denoise Strength: 3.00", self); left.addWidget(self.denoise_label)
         self.denoise_slider = QSlider(Qt.Orientation.Horizontal, self)
         self.denoise_slider.setRange(0, 50); self.denoise_slider.setValue(30)  # 0..5.0 (we'll /10)
+        self.denoise_slider.setToolTip(
+            "Strength of Non-Local Means denoising on HF:\n"
+            "- Low: Subtle noise reduction, preserves fine detail\n"
+            "- High: Aggressive noise removal, may soften details\n"
+            "Only affects the HF component"
+        )
         self.denoise_slider.valueChanged.connect(lambda v: self._update_denoise(v))
         left.addWidget(self.denoise_slider)
 
@@ -305,12 +779,16 @@ class FrequencySeperationTab(QWidget):
         row = QHBoxLayout()
         self.btn_apply_hf = QPushButton(self.tr("Apply HF Enhancements"), self)
         self.btn_apply_hf.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
+        self.btn_apply_hf.setToolTip(
+            "Apply the enabled HF enhancements (scale, wavelet, denoise)\n"
+            "to the High Frequency layer. Can be applied multiple times."
+        )
         self.btn_apply_hf.clicked.connect(self._apply_hf_enhancements)
         row.addWidget(self.btn_apply_hf)
 
         self.btn_undo_hf = QToolButton(self)
         self.btn_undo_hf.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowBack))
-        self.btn_undo_hf.setToolTip("Undo last HF enhancement")
+        self.btn_undo_hf.setToolTip("Undo last HF enhancement (restores previous HF state)")
         self.btn_undo_hf.setEnabled(False)
         self.btn_undo_hf.clicked.connect(self._undo_hf)
         row.addWidget(self.btn_undo_hf)
@@ -318,36 +796,74 @@ class FrequencySeperationTab(QWidget):
 
         # Push buttons
         push_row = QHBoxLayout()
-        self.btn_push_lf = QPushButton(self.tr("Push LF"), self); self.btn_push_lf.clicked.connect(lambda: self._push_array(self.low_freq_image, "LF"))
-        self.btn_push_hf = QPushButton(self.tr("Push HF"), self); self.btn_push_hf.clicked.connect(lambda: self._push_array(self._hf_display_for_push(), "HF"))
+        self.btn_push_lf = QPushButton(self.tr("Push LF"), self)
+        self.btn_push_lf.setToolTip("Open the Low Frequency layer in a new view for separate editing")
+        self.btn_push_lf.clicked.connect(lambda: self._push_array(self.low_freq_image, "LF"))
+        self.btn_push_hf = QPushButton(self.tr("Push HF"), self)
+        self.btn_push_hf.setToolTip("Open the High Frequency layer in a new view for separate editing")
+        self.btn_push_hf.clicked.connect(lambda: self._push_array(self._hf_display_for_push(), "HF"))
         push_row.addWidget(self.btn_push_lf); push_row.addWidget(self.btn_push_hf)
         left.addLayout(push_row)
 
-        #load_row = QHBoxLayout()
-        #self.btn_load_hf = QPushButton("Load HF…", self)
-        #self.btn_load_hf.clicked.connect(self._load_hf_from_file)
-        #load_row.addWidget(self.btn_load_hf)
-
-        #self.btn_load_lf = QPushButton("Load LF…", self)
-        #self.btn_load_lf.clicked.connect(self._load_lf_from_file)
-        #load_row.addWidget(self.btn_load_lf)
-
-        #left.addLayout(load_row)
-
         # --- Load from VIEW (active subwindow) ---
         load_row = QHBoxLayout()
-        self.btn_load_hf_view = QPushButton("Load HF (View)", self)
         self.btn_load_lf_view = QPushButton("Load LF (View)", self)
+        self.btn_load_lf_view.setToolTip(
+            "Replace the LF layer with an image from another open view.\n"
+            "Useful for loading an externally processed LF back in."
+        )
+        self.btn_load_hf_view = QPushButton("Load HF (View)", self)
+        self.btn_load_hf_view.setToolTip(
+            "Replace the HF layer with an image from another open view.\n"
+            "Useful for loading an externally processed HF back in."
+        )
         self.btn_load_hf_view.clicked.connect(lambda: self._load_component_from_view("HF"))
         self.btn_load_lf_view.clicked.connect(lambda: self._load_component_from_view("LF"))
-        load_row.addWidget(self.btn_load_lf_view)        
+        load_row.addWidget(self.btn_load_lf_view)
         load_row.addWidget(self.btn_load_hf_view)
 
         left.addLayout(load_row)
 
-        btn_combine_push = QPushButton(self.tr("Combine HF+LF -> Push"), self)
-        btn_combine_push.clicked.connect(self._combine_and_push)
-        left.addWidget(btn_combine_push)
+        # Combine output options
+        combine_row = QHBoxLayout()
+        self.btn_combine_update = QPushButton(self.tr("Combine → Update"), self)
+        self.btn_combine_update.setToolTip(
+            "Recombine LF + HF and apply back to the source document.\n"
+            "Result = clip(LF + HF, 0, 1)\n"
+            "If a mask is active, blends with original using the mask."
+        )
+        self.btn_combine_update.clicked.connect(self._combine_and_update_source)
+        combine_row.addWidget(self.btn_combine_update)
+
+        self.btn_combine_new = QPushButton(self.tr("Combine → New"), self)
+        self.btn_combine_new.setToolTip(
+            "Recombine LF + HF and open in a new view.\n"
+            "Result = clip(LF + HF, 0, 1)\n"
+            "Leaves the source document unchanged."
+        )
+        self.btn_combine_new.clicked.connect(self._combine_and_push_new)
+        combine_row.addWidget(self.btn_combine_new)
+        left.addLayout(combine_row)
+
+        # Combined preview toggle
+        preview_row = QHBoxLayout()
+        self.cb_preview_combined = QCheckBox(self.tr("Preview Combined"), self)
+        self.cb_preview_combined.setChecked(False)
+        self.cb_preview_combined.setToolTip(
+            "Preview the combined LF + HF result before applying.\n"
+            "Shows what the final image will look like."
+        )
+        self.cb_preview_combined.toggled.connect(self._on_preview_combined_toggled)
+        preview_row.addWidget(self.cb_preview_combined)
+
+        self.btn_reset_all = QPushButton(self.tr("Reset All"), self)
+        self.btn_reset_all.setToolTip(
+            "Reset all parameters to defaults and re-run separation.\n"
+            "Clears HF enhancement history and restores initial state."
+        )
+        self.btn_reset_all.clicked.connect(self._reset_to_defaults)
+        preview_row.addWidget(self.btn_reset_all)
+        left.addLayout(preview_row)
 
 
 
@@ -372,9 +888,9 @@ class FrequencySeperationTab(QWidget):
         top_row = QHBoxLayout()
         top_row.addStretch(1)
 
-        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
-        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
-        self.btn_fit      = themed_toolbtn("zoom-fit-best", "Fit to Preview")
+        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In (Mouse Wheel Up)")
+        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out (Mouse Wheel Down)")
+        self.btn_fit      = themed_toolbtn("zoom-fit-best", "Fit image to preview area")
 
         self.btn_zoom_in.clicked.connect(lambda: self._zoom_at_pair(1.25))
         self.btn_zoom_out.clicked.connect(lambda: self._zoom_at_pair(0.8))
@@ -392,7 +908,9 @@ class FrequencySeperationTab(QWidget):
         self.scrollLF = QScrollArea(self); self.scrollLF.setWidgetResizable(False); self.scrollLF.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         self.labelHF = QLabel("High Frequency", self); self.labelHF.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.labelHF.setToolTip("High Frequency layer: fine details, edges, stars\n(displayed with +0.5 offset for visibility)")
         self.labelLF = QLabel("Low Frequency", self); self.labelLF.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.labelLF.setToolTip("Low Frequency layer: smooth tones, gradients, nebulosity\nLeft-click and drag to pan (synced with HF)")
 
         self.scrollHF.setWidget(self.labelHF)
         self.scrollLF.setWidget(self.labelLF)
@@ -451,7 +969,7 @@ class FrequencySeperationTab(QWidget):
         img = getattr(doc, "image", None) if doc is not None else None
         md  = getattr(doc, "metadata", {}) if doc is not None else {}
         if img is not None:
-            self.set_image_from_doc(img, md)
+            self.set_image_from_doc(img, md, source_doc=doc)
             return True
         return False
 
@@ -517,7 +1035,7 @@ class FrequencySeperationTab(QWidget):
 
         if self.image is None and self.low_freq_image is None and self.high_freq_image is None:
             # adopt this as the reference image (so future loads coerce to this)
-            self.set_image_from_doc(imgc, getattr(doc, "metadata", {}))
+            self.set_image_from_doc(imgc, getattr(doc, "metadata", {}), source_doc=doc)
 
         if target == "HF":
             self.high_freq_image = imgc.astype(np.float32, copy=False)
@@ -558,9 +1076,20 @@ class FrequencySeperationTab(QWidget):
         if dm is not None:
             for attr in ("documents", "all_documents", "_docs"):
                 d = getattr(dm, attr, None)
-                if d:
-                    docs = list(d)
-                    break
+                if d is not None:
+                    # If it's a method, call it; otherwise treat as iterable
+                    if callable(d):
+                        try:
+                            docs = list(d())
+                            break
+                        except Exception:
+                            continue
+                    else:
+                        try:
+                            docs = list(d)
+                            break
+                        except (TypeError, Exception):
+                            continue
 
         # If no doc list, scan subwindows
         if not docs and mw is not None:
@@ -649,8 +1178,17 @@ class FrequencySeperationTab(QWidget):
         # Assign and update preview
         if which.upper() == "HF":
             self.high_freq_image = arr.astype(np.float32, copy=False)
+            self._hf_dirty = True
+            self._hf_pixmap_cache = None
+            self._hf_scaled_cache = None
         else:
             self.low_freq_image = arr.astype(np.float32, copy=False)
+            self._lf_dirty = True
+            self._lf_pixmap_cache = None
+            self._lf_scaled_cache = None
+
+        # Invalidate combined cache since a component changed
+        self._invalidate_combined_cache()
 
         # Warn on dimensional mismatch (combine needs same shape)
         if (self.low_freq_image is not None and self.high_freq_image is not None and
@@ -663,6 +1201,48 @@ class FrequencySeperationTab(QWidget):
 
         self._update_previews()
 
+    def _load_source_from_view(self):
+        """Load source image from an open view/document."""
+        doc = self._select_document_via_dropdown("Source")
+        if not doc:
+            return
+        arr = self._image_from_doc(doc)
+        if arr is None:
+            return
+
+        # Store reference to source document for later use
+        self._source_doc = doc
+
+        # Set as the main image and run separation
+        self.image = arr.astype(np.float32, copy=False)
+        md = getattr(doc, "metadata", {}) or {}
+        self.filename = md.get("file_path", None)
+        self.original_header = md.get("original_header", None)
+        self.is_mono = bool(md.get("is_mono", False))
+
+        # Update label with document name
+        doc_name = getattr(doc, "name", None) or os.path.basename(self.filename) if self.filename else "(from view)"
+        self.fileLabel.setText(doc_name)
+
+        # Clear outputs and invalidate all caches
+        self.low_freq_image = None
+        self.high_freq_image = None
+        self._lf_dirty = True
+        self._hf_dirty = True
+        self._lf_pixmap_cache = None
+        self._hf_pixmap_cache = None
+        self._lf_scaled_cache = None
+        self._hf_scaled_cache = None
+        self._invalidate_combined_cache()
+
+        # Clear history
+        self._split_history.clear()
+        self.btn_undo_split.setEnabled(False)
+        self._hf_history.clear()
+        self.btn_undo_hf.setEnabled(False)
+
+        # Run initial separation
+        self._apply_separation()
 
     def _ref_shape(self):
         """
@@ -711,16 +1291,10 @@ class FrequencySeperationTab(QWidget):
 
         # channel reconcile
         if rch == 1 and ch == 3:
-            # convert RGB→mono (use weighted luma for consistency, or mean if desired. Original was mean)
+            # convert RGB→mono (luma or average; we’ll use average)
             a = a.mean(axis=2).astype(np.float32)
         elif rch == 3 and ch == 1:
-            # Broadcast mono to 3 channels without copying
-            # (H,W,1) -> (H,W,3) via broadcasted view if consumer allows,
-            # but usually downstream (like subtraction) handles broadcasting fine.
-            # If explicit physical layout is needed, we must check usage.
-            # Here: used for subtraction (OK) and preview (OK).
-            # We return a view using broadcast_to or striding tricks.
-            a = np.broadcast_to(a, (ah, aw, 3))
+            a = np.repeat(a[..., None], 3, axis=2).astype(np.float32)
 
         return a
 
@@ -762,24 +1336,6 @@ class FrequencySeperationTab(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Load LF", f"Failed to load LF:\n{e}")
 
-
-    # --- NEW: autoload exactly once when the dialog shows ---
-    def showEvent(self, e):
-        super().showEvent(e)
-        if not self._auto_loaded:
-            self._auto_loaded = True
-            # Strong preference order:
-            #   (1) self.doc (injected at construction time)
-            #   (2) active MDI doc (strict — no "last-created" fallback)
-            src_doc = self.doc or self._get_active_document(strict=True)
-            if src_doc is not None and getattr(src_doc, "image", None) is not None:
-                try:
-                    self.set_image_from_doc(np.asarray(src_doc.image),
-                                            getattr(src_doc, "metadata", {}))
-                    return
-                except Exception:
-                    pass
-
     # --------------- helpers ---------------
     def _toggle_tol_enabled(self, on: bool):
         self.tol_slider.setEnabled(on)
@@ -813,19 +1369,33 @@ class FrequencySeperationTab(QWidget):
         self.denoise_label.setText(f"Denoise Strength: {self.denoise_strength:.2f}")
 
     # --------------- image I/O hooks ---------------
-    def set_image_from_doc(self, image: np.ndarray, metadata: dict | None):
-        """Call this from the main app when there’s an active image; or adapt to your ImageManager signal."""
+    def set_image_from_doc(self, image: np.ndarray, metadata: dict | None, source_doc=None):
+        """Call this from the main app when there's an active image; or adapt to your ImageManager signal."""
         if image is None:
             return
         self.image = image.astype(np.float32, copy=False)
+        self._source_doc = source_doc  # Track source for later update
         md = metadata or {}
         self.filename = md.get("file_path", None)
         self.original_header = md.get("original_header", None)
         self.is_mono = bool(md.get("is_mono", False))
-        self.fileLabel.setText(os.path.basename(self.filename) if self.filename else "(from view)")
-        # clear outputs
+        doc_name = getattr(source_doc, "name", None) if source_doc else None
+        self.fileLabel.setText(doc_name or (os.path.basename(self.filename) if self.filename else "(from view)"))
+        # clear outputs and invalidate all caches (base + scaled)
         self.low_freq_image = None
         self.high_freq_image = None
+        self._lf_dirty = True
+        self._hf_dirty = True
+        self._lf_pixmap_cache = None
+        self._hf_pixmap_cache = None
+        self._lf_scaled_cache = None
+        self._hf_scaled_cache = None
+        self._invalidate_combined_cache()
+        # Clear history
+        self._split_history.clear()
+        self.btn_undo_split.setEnabled(False)
+        self._hf_history.clear()
+        self.btn_undo_hf.setEnabled(False)
         self._apply_separation()
 
     # --------------- controls handlers ---------------
@@ -841,18 +1411,28 @@ class FrequencySeperationTab(QWidget):
         self.tolerance = int(v)
         self.tol_label.setText(f"Tolerance: {self.tolerance}%")
 
+    def _on_gpu_toggled(self, checked: bool):
+        self.use_gpu = checked
+
     # --------------- processing ---------------
     def _apply_separation(self):
         if self.image is None:
             QMessageBox.warning(self, "No Image", "Load or select an image first.")
             return
+
+        # Save current state for undo (if we have existing LF/HF)
+        if self.low_freq_image is not None and self.high_freq_image is not None:
+            self._split_history.append((self.low_freq_image.copy(), self.high_freq_image.copy()))
+            self.btn_undo_split.setEnabled(True)
+
         self._show_spinner(True)
 
         if self.proc_thread and self.proc_thread.isRunning():
             self.proc_thread.quit(); self.proc_thread.wait()
 
         self.proc_thread = FrequencySeperationThread(
-            image=self.image, method=self.method, radius=self.radius, tolerance=self.tolerance
+            image=self.image, method=self.method, radius=self.radius, tolerance=self.tolerance,
+            use_cuda=self.use_gpu
         )
         self.proc_thread.separation_done.connect(self._on_sep_done)
         self.proc_thread.error_signal.connect(self._on_sep_error)
@@ -862,6 +1442,15 @@ class FrequencySeperationTab(QWidget):
         self._show_spinner(False)
         self.low_freq_image = lf.astype(np.float32)
         self.high_freq_image = hf.astype(np.float32)
+        # Invalidate all caches (base + scaled)
+        self._lf_dirty = True
+        self._hf_dirty = True
+        self._combined_dirty = True
+        self._lf_pixmap_cache = None
+        self._hf_pixmap_cache = None
+        self._lf_scaled_cache = None
+        self._hf_scaled_cache = None
+        self._invalidate_combined_cache()
         self._update_previews()
 
     def _on_sep_error(self, msg: str):
@@ -869,13 +1458,24 @@ class FrequencySeperationTab(QWidget):
         QMessageBox.critical(self, "Frequency Separation", msg)
 
     def _apply_hf_enhancements(self):
+        global _CUDA_DENOISE_INITIALIZED
+
         if self.high_freq_image is None:
             QMessageBox.information(self, "HF", "No HF image to enhance.")
             return
+
         # history for undo
         self._hf_history.append(self.high_freq_image.copy())
         self.btn_undo_hf.setEnabled(True)
 
+        # If CUDA denoise requested and this is the first time, run synchronously on main thread
+        # to initialize CUDA NLM properly (avoids crash when running in background thread first time)
+        if self.use_gpu and self.cb_denoise.isChecked() and not _CUDA_DENOISE_INITIALIZED:
+            self._apply_hf_sync()
+            _CUDA_DENOISE_INITIALIZED = True
+            return
+
+        # Normal async path
         self._show_spinner(True)
         if self.hf_thread and self.hf_thread.isRunning():
             self.hf_thread.quit(); self.hf_thread.wait()
@@ -888,15 +1488,106 @@ class FrequencySeperationTab(QWidget):
             wavelet_level=self.wavelet_level,
             wavelet_boost=self.wavelet_boost,
             enable_denoise=self.cb_denoise.isChecked(),
-            denoise_strength=self.denoise_strength
+            denoise_strength=self.denoise_strength,
+            use_cuda=self.use_gpu
         )
         self.hf_thread.enhancement_done.connect(self._on_hf_done)
         self.hf_thread.error_signal.connect(self._on_hf_error)
         self.hf_thread.start()
 
+    def _apply_hf_sync(self):
+        """Run HF enhancements synchronously on main thread (used for first CUDA denoise)."""
+        from PyQt6.QtCore import Qt
+        self.setCursor(Qt.CursorShape.WaitCursor)
+        try:
+            out = self.high_freq_image.copy()
+
+            # Scale
+            if self.cb_scale.isChecked():
+                out *= self.sharpen_scale
+
+            # Wavelet (CPU only)
+            if self.cb_wavelet.isChecked() and pywt is not None:
+                out = self._wavelet_sharpen_sync(out)
+
+            # Denoise with CUDA
+            if self.cb_denoise.isChecked() and cv2 is not None:
+                out = self._denoise_sync(out)
+
+            # Update result
+            self.high_freq_image = np.ascontiguousarray(out.astype(np.float32))
+            self._hf_dirty = True
+            self._hf_pixmap_cache = None
+            self._hf_scaled_cache = None
+            self._invalidate_combined_cache()
+            self._update_previews()
+        except Exception as e:
+            QMessageBox.critical(self, "HF Enhancement Error", str(e))
+        finally:
+            self.unsetCursor()
+
+    def _wavelet_sharpen_sync(self, img):
+        """Synchronous wavelet sharpening."""
+        if img.ndim == 3 and img.shape[2] == 3:
+            chs = []
+            for c in range(3):
+                mono = img[..., c]
+                h, w = mono.shape[:2]
+                max_level = pywt.dwt_max_level(min(h, w), 'db2')
+                safe_level = min(self.wavelet_level, max_level) if max_level > 0 else self.wavelet_level
+                coeffs = pywt.wavedec2(mono, wavelet='db2', level=safe_level, mode='periodization')
+                new_coeffs = [coeffs[0]]
+                for (cH, cV, cD) in coeffs[1:]:
+                    new_coeffs.append((cH * self.wavelet_boost, cV * self.wavelet_boost, cD * self.wavelet_boost))
+                rec = pywt.waverec2(new_coeffs, wavelet='db2', mode='periodization')
+                if rec.shape != mono.shape:
+                    rec = rec[:h, :w]
+                chs.append(rec.astype(np.float32))
+            return np.stack(chs, axis=-1)
+        return img
+
+    def _denoise_sync(self, hf):
+        """Synchronous CUDA denoise on main thread."""
+        strength = self.denoise_strength
+
+        if hf.ndim == 3 and hf.shape[2] == 3:
+            bgr = hf[..., ::-1]
+            tmp = np.clip(bgr + 0.5, 0, 1)
+            u8 = (tmp * 255).astype(np.uint8)
+            u8 = np.ascontiguousarray(u8)
+
+            gpu_src = cv2.cuda_GpuMat()
+            gpu_src.upload(u8)
+
+            gpu_dst = cv2.cuda.fastNlMeansDenoisingColored(
+                gpu_src, strength, strength, None, 21, 7
+            )
+
+            cv2.cuda.Stream.Null().waitForCompletion()
+            den = gpu_dst.download()
+
+            den = np.array(den, dtype=np.uint8, copy=True)
+            f32 = den.astype(np.float32) / 255.0 - 0.5
+            result = np.array(f32[..., ::-1], dtype=np.float32, copy=True)
+
+            del gpu_dst, gpu_src
+            return result
+        else:
+            # Grayscale - use CPU for simplicity
+            tmp = np.clip(hf + 0.5, 0, 1)
+            u8 = (tmp * 255).astype(np.uint8)
+            den = cv2.fastNlMeansDenoising(u8, None, strength, 7, 21)
+            return den.astype(np.float32) / 255.0 - 0.5
+
     def _on_hf_done(self, new_hf: np.ndarray):
         self._show_spinner(False)
-        self.high_freq_image = new_hf.astype(np.float32)
+        # Ensure the array is valid and contiguous
+        self.high_freq_image = np.ascontiguousarray(new_hf.astype(np.float32))
+        # Invalidate HF and combined caches (base + scaled)
+        self._hf_dirty = True
+        self._hf_pixmap_cache = None
+        self._hf_scaled_cache = None
+        self._invalidate_combined_cache()
         self._update_previews()
 
     def _on_hf_error(self, msg: str):
@@ -908,7 +1599,121 @@ class FrequencySeperationTab(QWidget):
             return
         self.high_freq_image = self._hf_history.pop()
         self.btn_undo_hf.setEnabled(bool(self._hf_history))
+        self._hf_dirty = True
+        self._hf_pixmap_cache = None
+        self._hf_scaled_cache = None
+        self._invalidate_combined_cache()
         self._update_previews()
+
+    def _undo_split(self):
+        """Restore previous LF/HF separation state."""
+        if not self._split_history:
+            return
+        lf, hf = self._split_history.pop()
+        self.low_freq_image = lf
+        self.high_freq_image = hf
+        self.btn_undo_split.setEnabled(bool(self._split_history))
+        # Invalidate caches and update previews
+        self._lf_dirty = True
+        self._hf_dirty = True
+        self._lf_pixmap_cache = None
+        self._hf_pixmap_cache = None
+        self._lf_scaled_cache = None
+        self._hf_scaled_cache = None
+        self._invalidate_combined_cache()
+        self._update_previews()
+
+    # --------------- combined preview ---------------
+    def _on_preview_combined_toggled(self, checked: bool):
+        self._show_combined = checked
+        if checked:
+            self._invalidate_combined_cache()
+        self._update_previews()
+
+    def _reset_to_defaults(self):
+        """Reset all parameters to defaults and re-run separation."""
+        if self.image is None:
+            return
+
+        # Reset parameters to defaults
+        self.method = 'Gaussian'
+        self.radius = 10.0
+        self.tolerance = 50
+        self.sharpen_scale = 1.0
+        self.wavelet_level = 2
+        self.wavelet_boost = 1.2
+        self.denoise_strength = 3.0
+
+        # Update UI controls to match defaults (block signals to avoid re-triggering)
+        self.method_combo.blockSignals(True)
+        self.method_combo.setCurrentText('Gaussian')
+        self.method_combo.blockSignals(False)
+        self._toggle_tol_enabled(False)
+
+        self.radius_slider.blockSignals(True)
+        self.radius_slider.setValue(50)  # maps to 10.0
+        self.radius_slider.blockSignals(False)
+        self.radius_label.setText("Radius: 10.00")
+
+        self.tol_slider.blockSignals(True)
+        self.tol_slider.setValue(50)
+        self.tol_slider.blockSignals(False)
+        self.tol_label.setText("Tolerance: 50%")
+
+        self.cb_scale.setChecked(True)
+        self.scale_slider.blockSignals(True)
+        self.scale_slider.setValue(100)
+        self.scale_slider.blockSignals(False)
+        self.scale_label.setText("Sharpen Scale: 1.00")
+
+        self.cb_wavelet.setChecked(True)
+        self.wavelet_level_slider.blockSignals(True)
+        self.wavelet_level_slider.setValue(2)
+        self.wavelet_level_slider.blockSignals(False)
+        self.wavelet_level_label.setText("Wavelet Level: 2")
+
+        self.wavelet_boost_slider.blockSignals(True)
+        self.wavelet_boost_slider.setValue(120)
+        self.wavelet_boost_slider.blockSignals(False)
+        self.wavelet_boost_label.setText("Wavelet Boost: 1.20")
+
+        self.cb_denoise.setChecked(False)
+        self.denoise_slider.blockSignals(True)
+        self.denoise_slider.setValue(30)
+        self.denoise_slider.blockSignals(False)
+        self.denoise_label.setText("Denoise Strength: 3.00")
+
+        # Clear HF enhancement history
+        self._hf_history.clear()
+        self.btn_undo_hf.setEnabled(False)
+
+        # Clear split history
+        self._split_history.clear()
+        self.btn_undo_split.setEnabled(False)
+
+        # Uncheck preview combined
+        self.cb_preview_combined.setChecked(False)
+
+        # Re-run separation with default parameters
+        self._apply_separation()
+
+    def _invalidate_combined_cache(self):
+        self._combined_cache = None
+        self._combined_pixmap_cache = None
+        self._combined_scaled_cache = None
+        self._combined_dirty = True
+
+    def _get_combined_image(self) -> np.ndarray | None:
+        """Compute or return cached combined image."""
+        if self.low_freq_image is None or self.high_freq_image is None:
+            return None
+        # Only recompute if cache is None (invalidated)
+        if self._combined_cache is None:
+            # Use np.add with out parameter to avoid intermediate allocation
+            self._combined_cache = np.empty_like(self.low_freq_image)
+            np.add(self.low_freq_image, self.high_freq_image, out=self._combined_cache)
+            np.clip(self._combined_cache, 0.0, 1.0, out=self._combined_cache)
+        return self._combined_cache
 
     # --------------- spinner ---------------
     def _show_spinner(self, on: bool):
@@ -921,37 +1726,154 @@ class FrequencySeperationTab(QWidget):
 
     # --------------- preview rendering ---------------
     def _numpy_to_qpix(self, arr: np.ndarray) -> QPixmap:
-        a = np.clip(arr, 0, 1)
-        if a.ndim == 2:
-            a = np.stack([a]*3, axis=-1)
-        u8 = (a * 255).astype(np.uint8)
-        h, w, ch = u8.shape
-        qimg = QImage(u8.data, w, h, w*ch, QImage.Format.Format_RGB888)
+        """
+        Convert numpy array to QPixmap.
+        Args:
+            arr: Input array (float32, [0-1] or signed for HF)
+        """
+        if arr is None:
+            return QPixmap()
+
+        # Make a copy to avoid issues with non-contiguous or GPU memory
+        arr = np.array(arr, dtype=np.float32, copy=True)
+
+        # Clip to valid range and convert to uint8
+        clipped = np.clip(arr, 0, 1)
+
+        if clipped.ndim == 2:
+            # Mono: stack to RGB
+            u8 = (clipped * 255).astype(np.uint8)
+            u8 = np.stack([u8, u8, u8], axis=-1)
+        elif clipped.ndim == 3 and clipped.shape[2] == 3:
+            # RGB
+            u8 = (clipped * 255).astype(np.uint8)
+        elif clipped.ndim == 3 and clipped.shape[2] == 1:
+            # Single channel 3D -> squeeze and stack
+            u8 = (clipped[:, :, 0] * 255).astype(np.uint8)
+            u8 = np.stack([u8, u8, u8], axis=-1)
+        else:
+            return QPixmap()
+
+        # Ensure contiguous memory layout
+        u8 = np.ascontiguousarray(u8)
+
+        h, w = u8.shape[:2]
+        qimg = QImage(u8.data, w, h, w * 3, QImage.Format.Format_RGB888)
         return QPixmap.fromImage(qimg.copy())
 
-    def _update_previews(self):
-        # LF
-        if self.low_freq_image is not None:
-            pm = self._numpy_to_qpix(self.low_freq_image)
-            scaled = pm.scaled(pm.size() * self.zoom_factor,
-                               Qt.AspectRatioMode.KeepAspectRatio,
-                               Qt.TransformationMode.SmoothTransformation)
-            self.labelLF.setPixmap(scaled)
-            self.labelLF.resize(scaled.size())
-        else:
-            self.labelLF.setText("Low Frequency"); self.labelLF.resize(self.labelLF.sizeHint())
+    def _get_base_pixmap(self, which: str) -> QPixmap | None:
+        """Get or create cached base pixmap for LF, HF, or Combined."""
+        if which == 'lf':
+            if self.low_freq_image is None:
+                return None
+            if self._lf_dirty or self._lf_pixmap_cache is None:
+                self._lf_pixmap_cache = self._numpy_to_qpix(self.low_freq_image)
+                self._lf_dirty = False
+            return self._lf_pixmap_cache
 
-        # HF (offset +0.5 for view)
-        if self.high_freq_image is not None:
-            disp = np.clip(self.high_freq_image + 0.5, 0, 1)
-            pm = self._numpy_to_qpix(disp)
-            scaled = pm.scaled(pm.size() * self.zoom_factor,
-                               Qt.AspectRatioMode.KeepAspectRatio,
-                               Qt.TransformationMode.SmoothTransformation)
-            self.labelHF.setPixmap(scaled)
-            self.labelHF.resize(scaled.size())
+        elif which == 'hf':
+            if self.high_freq_image is None:
+                return None
+            if self._hf_dirty or self._hf_pixmap_cache is None:
+                # HF needs +0.5 offset for visualization
+                disp = self.high_freq_image + 0.5
+                self._hf_pixmap_cache = self._numpy_to_qpix(disp)
+                self._hf_dirty = False
+            return self._hf_pixmap_cache
+
+        elif which == 'combined':
+            combined = self._get_combined_image()
+            if combined is None:
+                return None
+            # Regenerate pixmap if cache is None (invalidated)
+            if self._combined_pixmap_cache is None:
+                self._combined_pixmap_cache = self._numpy_to_qpix(combined)
+                self._combined_dirty = False
+            return self._combined_pixmap_cache
+
+        return None
+
+    def _get_scaled_pixmap(self, which: str) -> QPixmap | None:
+        """
+        Get scaled pixmap with caching. Only rescales if zoom changed or cache is invalidated.
+        which: 'lf', 'hf', or 'combined'
+        """
+        base_pm = self._get_base_pixmap(which)
+        if base_pm is None:
+            return None
+
+        zoom_changed = abs(self._scaled_zoom - self.zoom_factor) > 1e-6
+
+        if which == 'lf':
+            if self._lf_scaled_cache is None or zoom_changed:
+                self._lf_scaled_cache = self._do_scale(base_pm)
+            return self._lf_scaled_cache
+        elif which == 'hf':
+            if self._hf_scaled_cache is None or zoom_changed:
+                self._hf_scaled_cache = self._do_scale(base_pm)
+            return self._hf_scaled_cache
+        elif which == 'combined':
+            if self._combined_scaled_cache is None or zoom_changed:
+                self._combined_scaled_cache = self._do_scale(base_pm)
+            return self._combined_scaled_cache
+        return None
+
+    def _do_scale(self, pm: QPixmap) -> QPixmap:
+        """Perform the actual scaling operation."""
+        if self.zoom_factor == 1.0:
+            return pm
+        return pm.scaled(
+            pm.size() * self.zoom_factor,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
+        )
+
+    def _invalidate_scaled_caches(self):
+        """Invalidate all scaled pixmap caches (call when zoom changes)."""
+        self._lf_scaled_cache = None
+        self._hf_scaled_cache = None
+        self._combined_scaled_cache = None
+
+    def _update_previews(self):
+        zoom_changed = abs(self._scaled_zoom - self.zoom_factor) > 1e-6
+        if zoom_changed:
+            self._invalidate_scaled_caches()
+            self._scaled_zoom = self.zoom_factor
+
+        if self._show_combined:
+            # Combined preview mode: hide HF panel, show combined in LF panel only
+            # Always recompute combined since it's a transient preview
+            self.scrollHF.hide()
+            combined = self._get_combined_image()
+            if combined is not None:
+                pm = self._numpy_to_qpix(combined)
+                scaled = self._do_scale(pm)
+                self.labelLF.setPixmap(scaled)
+                self.labelLF.resize(scaled.size())
+            else:
+                self.labelLF.setText("Combined (no data)")
+                self.labelLF.resize(self.labelLF.sizeHint())
         else:
-            self.labelHF.setText("High Frequency"); self.labelHF.resize(self.labelHF.sizeHint())
+            # Normal mode: show both panels with LF and HF separate
+            self.scrollHF.show()
+
+            # LF
+            lf_scaled = self._get_scaled_pixmap('lf')
+            if lf_scaled is not None:
+                self.labelLF.setPixmap(lf_scaled)
+                self.labelLF.resize(lf_scaled.size())
+            else:
+                self.labelLF.setText("Low Frequency")
+                self.labelLF.resize(self.labelLF.sizeHint())
+
+            # HF
+            hf_scaled = self._get_scaled_pixmap('hf')
+            if hf_scaled is not None:
+                self.labelHF.setPixmap(hf_scaled)
+                self.labelHF.resize(hf_scaled.size())
+            else:
+                self.labelHF.setText("High Frequency")
+                self.labelHF.resize(self.labelHF.sizeHint())
 
         # center if smaller than viewport
         QTimer.singleShot(0, self._center_if_fit)
@@ -1084,15 +2006,15 @@ class FrequencySeperationTab(QWidget):
         # keep signed HF; app stack supports float32 arrays
         return self.high_freq_image.astype(np.float32, copy=False)
 
-    def _combine_and_push(self):
+    def _get_combined_result(self) -> tuple[np.ndarray, dict] | None:
+        """Compute combined image and build metadata. Returns (blended_image, metadata) or None."""
         if self.low_freq_image is None or self.high_freq_image is None:
             QMessageBox.information(self, "Combine", "LF or HF missing.")
-            return
+            return None
 
         combined = np.clip(self.low_freq_image + self.high_freq_image, 0.0, 1.0).astype(np.float32)
-        step_name = "Frequency Separation (Combine HF+LF)"
 
-        # ✅ Blend with active mask (if any)
+        # Blend with active mask (if any)
         blended, mid, mname, masked = self._blend_with_active_mask(combined)
 
         # Build metadata
@@ -1108,71 +2030,100 @@ class FrequencySeperationTab(QWidget):
                 "mask_name": mname,
                 "mask_blend": "m*out + (1-m)*src",
             })
+        return blended, md
 
-        # Prefer applying to the injected ImageDocument
+    def _combine_and_update_source(self):
+        """Combine LF+HF and apply back to the source document."""
+        result = self._get_combined_result()
+        if result is None:
+            return
+        blended, md = result
+        step_name = "Frequency Separation (Combine HF+LF)"
+
+        # Apply to the source document we loaded from
+        if self._source_doc is not None:
+            try:
+                if hasattr(self._source_doc, 'apply_edit'):
+                    self._source_doc.apply_edit(blended, metadata=md, step_name=step_name)
+                elif hasattr(self._source_doc, 'set_image'):
+                    self._source_doc.set_image(blended, md)
+                else:
+                    raise RuntimeError("Source document has no known update method")
+                return
+            except Exception as e:
+                QMessageBox.critical(self, "Apply Failed", f"Could not apply to source document:\n{e}")
+                return
+
+        # Fallback: try the injected doc
         if isinstance(self.doc, ImageDocument):
             try:
                 self.doc.apply_edit(blended, metadata=md, step_name=step_name)
             except Exception as e:
-                QMessageBox.critical(self, "Apply Failed", f"Could not apply to active document:\n{e}")
+                QMessageBox.critical(self, "Apply Failed", f"Could not apply to document:\n{e}")
             return
 
-        # Fallback: push to active via DocManager (still pre-blended)
+        # Last fallback: push to active via DocManager
         self._push_to_active(blended, step_name, extra_md=md)
+
+    def _combine_and_push_new(self):
+        """Combine LF+HF and push to a new view."""
+        result = self._get_combined_result()
+        if result is None:
+            return
+        blended, md = result
+        self._push_array(blended, "Combined")
 
     # --------------- event filter (wheel + drag pan + sync) ---------------
     def eventFilter(self, obj, ev):
-        # -------- Ctrl+Wheel Zoom (safe) --------
+        # -------- Mouse Wheel Zoom --------
         if ev.type() == QEvent.Type.Wheel:
             targets = {self.scrollHF.viewport(), self.labelHF,
                     self.scrollLF.viewport(), self.labelLF}
             if obj in targets:
-                # Only zoom when Ctrl is held; otherwise let normal scrolling work
-                if ev.modifiers() & Qt.KeyboardModifier.ControlModifier:
-                    try:
-                        dy = ev.pixelDelta().y()
-                        if dy == 0:
-                            dy = ev.angleDelta().y()
-                        factor = 1.25 if dy > 0 else 0.8
+                try:
+                    dy = ev.pixelDelta().y()
+                    if dy == 0:
+                        dy = ev.angleDelta().y()
+                    if dy == 0:
+                        return False
+                    factor = 1.25 if dy > 0 else 0.8
 
-                        # Anchor positions (robust mapping child→viewport)
-                        if obj is self.labelHF:
-                            anchor_hf = self.labelHF.mapTo(
-                                self.scrollHF.viewport(), ev.position().toPoint()
-                            )
-                            anchor_lf = QPoint(
-                                self.scrollLF.viewport().width() // 2,
-                                self.scrollLF.viewport().height() // 2
-                            )
-                        elif obj is self.scrollHF.viewport():
-                            anchor_hf = ev.position().toPoint()
-                            anchor_lf = QPoint(
-                                self.scrollLF.viewport().width() // 2,
-                                self.scrollLF.viewport().height() // 2
-                            )
-                        elif obj is self.labelLF:
-                            anchor_lf = self.labelLF.mapTo(
-                                self.scrollLF.viewport(), ev.position().toPoint()
-                            )
-                            anchor_hf = QPoint(
-                                self.scrollHF.viewport().width() // 2,
-                                self.scrollHF.viewport().height() // 2
-                            )
-                        else:  # obj is self.scrollLF.viewport()
-                            anchor_lf = ev.position().toPoint()
-                            anchor_hf = QPoint(
-                                self.scrollHF.viewport().width() // 2,
-                                self.scrollHF.viewport().height() // 2
-                            )
+                    # Anchor positions (robust mapping child→viewport)
+                    if obj is self.labelHF:
+                        anchor_hf = self.labelHF.mapTo(
+                            self.scrollHF.viewport(), ev.position().toPoint()
+                        )
+                        anchor_lf = QPoint(
+                            self.scrollLF.viewport().width() // 2,
+                            self.scrollLF.viewport().height() // 2
+                        )
+                    elif obj is self.scrollHF.viewport():
+                        anchor_hf = ev.position().toPoint()
+                        anchor_lf = QPoint(
+                            self.scrollLF.viewport().width() // 2,
+                            self.scrollLF.viewport().height() // 2
+                        )
+                    elif obj is self.labelLF:
+                        anchor_lf = self.labelLF.mapTo(
+                            self.scrollLF.viewport(), ev.position().toPoint()
+                        )
+                        anchor_hf = QPoint(
+                            self.scrollHF.viewport().width() // 2,
+                            self.scrollHF.viewport().height() // 2
+                        )
+                    else:  # obj is self.scrollLF.viewport()
+                        anchor_lf = ev.position().toPoint()
+                        anchor_hf = QPoint(
+                            self.scrollHF.viewport().width() // 2,
+                            self.scrollHF.viewport().height() // 2
+                        )
 
-                        self._zoom_at_pair(factor, anchor_hf, anchor_lf)
-                    except Exception:
-                        # If anything goes weird (trackpad/gesture edge cases), center-zoom safely
-                        self._zoom_at_pair(1.25 if (ev.angleDelta().y() if hasattr(ev, "angleDelta") else 1) > 0 else 0.8)
-                    ev.accept()
-                    return True
-                # Not Ctrl: let the scroll area do normal scrolling
-                return False
+                    self._zoom_at_pair(factor, anchor_hf, anchor_lf)
+                except Exception:
+                    # If anything goes weird (trackpad/gesture edge cases), center-zoom safely
+                    self._zoom_at_pair(1.25 if (ev.angleDelta().y() if hasattr(ev, "angleDelta") else 1) > 0 else 0.8)
+                ev.accept()
+                return True
 
         # -------- Drag-pan inside each viewport (sync the other) --------
         if obj in (self.scrollHF.viewport(), self.scrollLF.viewport()):

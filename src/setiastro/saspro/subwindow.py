@@ -9,6 +9,7 @@ import json
 import math
 import weakref
 import os
+import re
 try:
     from PyQt6.QtCore import QSignalBlocker
 except Exception:
@@ -136,6 +137,22 @@ DECORATION_PREFIXES = (
     "Active View: ",            # legacy
 )
 
+_GLYPH_RE = re.compile(f"[{re.escape(GLYPHS)}]")
+
+def _strip_ui_decorations(title: str) -> str:
+    if not title:
+        return ""
+    s = str(title).strip()
+
+    # Remove common prefix tag(s)
+    s = s.replace("[LINK]", "").strip()
+
+    # Remove glyphs anywhere (often used as status markers in titles)
+    s = _GLYPH_RE.sub("", s)
+
+    # Collapse repeated whitespace
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
 
 from astropy.wcs import WCS as _AstroWCS
 from astropy.io.fits import Header as _FitsHeader
@@ -331,6 +348,15 @@ def _dnd_dbg_dump_state(tag: str, state: dict):
         print(f"[DNDDBG:{tag}] dump failed: {e}")
 
 _DEBUG_DND_DUP = False
+
+def _strip_ext_if_filename(s: str) -> str:
+    s = (s or "").strip()
+    if not s:
+        return s
+    base, ext = os.path.splitext(s)
+    if ext and len(ext) <= 10:
+        return base
+    return s
 
 class ImageSubWindow(QWidget):
     aboutToClose = pyqtSignal(object)
@@ -829,13 +855,20 @@ class ImageSubWindow(QWidget):
         self._emit_view_transform()
 
     def set_view_transform(self, scale, hval, vval, from_link=False):
-        # Avoid storms while we mutate scrollbars/scale
         self._suppress_link_emit = True
         try:
             scale = float(max(self._min_scale, min(scale, self._max_scale)))
-            if abs(scale - self.scale) > 1e-9:
+
+            scale_changed = (abs(scale - self.scale) > 1e-9)
+            if scale_changed:
                 self.scale = scale
-                self._render(rebuild=False)
+                self._render(rebuild=False)  # fast present for responsiveness
+
+                # ✅ NEW: schedule the final smooth redraw (same as main zoom path)
+                try:
+                    self._request_zoom_redraw()
+                except Exception:
+                    pass
 
             hbar = self.scroll.horizontalScrollBar()
             vbar = self.scroll.verticalScrollBar()
@@ -847,9 +880,9 @@ class ImageSubWindow(QWidget):
         finally:
             self._suppress_link_emit = False
 
-        # IMPORTANT: if this came from a linked peer, do NOT broadcast again.
         if not from_link:
             self._schedule_emit_view_transform()
+
 
     def _on_toggle_wcs_grid(self, on: bool):
         self._show_wcs_grid = bool(on)
@@ -1349,28 +1382,44 @@ class ImageSubWindow(QWidget):
 
     def _rebuild_title(self, *, base: str | None = None):
         sub = self._mdi_subwindow()
-        if not sub: return
+        if not sub:
+            return
+
         if base is None:
             base = self._effective_title() or self.tr("Untitled")
 
-        # ✅ strip any carried-over glyphs (🔗, ■, “Active View: ”) from overrides/doc names
+        # Strip badges (🔗, ■, etc) AND "Active View:" prefix
         core, _ = self._strip_decorations(base)
 
-        title = core
-        if getattr(self, "_link_badge_on", False):
-            title = f"{LINK_PREFIX}{title}"
-        if self._mask_dot_enabled:
-            title = f"{MASK_GLYPH} {title}"
+        # ALSO strip file extensions if it looks like a filename
+        # (this prevents .tiff/.fit coming back via any fallback path)
+        try:
+            b, ext = os.path.splitext(core)
+            if ext and len(ext) <= 10 and not core.endswith("..."):
+                core = b
+        except Exception:
+            pass
 
-        if title != sub.windowTitle():
-            sub.setWindowTitle(title)
-            sub.setToolTip(title)
-            if title != self._last_title_for_emit:
-                self._last_title_for_emit = title
-                try: self.viewTitleChanged.emit(self, title)
-                except Exception as e:
-                    import logging
-                    logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
+        # Build the displayed title with badges
+        shown = core
+        if getattr(self, "_link_badge_on", False):
+            shown = f"{LINK_PREFIX}{shown}"
+        if self._mask_dot_enabled:
+            shown = f"{MASK_GLYPH} {shown}"
+
+        # Update chrome
+        if shown != sub.windowTitle():
+            sub.setWindowTitle(shown)
+            sub.setToolTip(shown)
+
+        # IMPORTANT: emit ONLY the clean core (no badges, no extensions)
+        if core != self._last_title_for_emit:
+            self._last_title_for_emit = core
+            try:
+                self.viewTitleChanged.emit(self, core)
+            except Exception:
+                pass
+
 
 
     def _strip_decorations(self, title: str) -> tuple[str, bool]:
@@ -1399,21 +1448,7 @@ class ImageSubWindow(QWidget):
     def set_active_highlight(self, on: bool):
         self._is_active_flag = bool(on)
         return
-        sub = self._mdi_subwindow()
-        if not sub:
-            return
 
-        core, had_glyph = self._strip_decorations(sub.windowTitle())
-
-        if on and not getattr(self, "_suppress_active_once", False):
-            core = ACTIVE_PREFIX + core
-        self._suppress_active_once = False
-
-        # recompose: glyph (from flag), then active prefix, then base/core
-        if getattr(self, "_mask_dot_enabled", False):
-            core = "■ " + core
-        #sub.setWindowTitle(core)
-        sub.setToolTip(core)
 
     def _set_mask_highlight(self, on: bool):
         self._mask_dot_enabled = bool(on)
@@ -1528,8 +1563,46 @@ class ImageSubWindow(QWidget):
         return w
 
     def _effective_title(self) -> str:
-        # Prefer a per-view override; otherwise doc display name
-        return self._view_title_override or self.document.display_name()
+        """
+        Returns the *core* title for this view (no UI badges like 🔗/■, and no file extension).
+        Badges are added later by _rebuild_title().
+        """
+        # 1) Prefer per-view override if set
+        t = (self._view_title_override or "").strip()
+
+        # 2) Else prefer metadata display_name (what duplicate/rename should set)
+        if not t:
+            try:
+                md = getattr(self.document, "metadata", {}) or {}
+                t = (md.get("display_name") or "").strip()
+            except Exception:
+                t = ""
+
+        # 3) Else fall back to doc.display_name()
+        if not t:
+            try:
+                t = (self.document.display_name() or "").strip()
+            except Exception:
+                t = ""
+
+        t = t or self.tr("Untitled")
+
+        # Strip UI decorations (🔗, ■, Active View:, etc.)
+        try:
+            t, _ = self._strip_decorations(t)
+        except Exception:
+            pass
+
+        # Strip extension if it looks like a filename
+        try:
+            base, ext = os.path.splitext(t)
+            if ext and len(ext) <= 10:
+                t = base
+        except Exception:
+            pass
+
+        return t
+
 
     def _show_ctx_menu(self, pos):
         menu = QMenu(self)
