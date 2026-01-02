@@ -361,6 +361,69 @@ class UiStallDetector(QObject):
             print(f"[UI STALL] tick late by {late_ms:.0f} ms (elapsed={elapsed_ms:.0f} ms)", flush=True)
             self._dump_all_threads_print()
 
+def _strip_filename_ext(title: str) -> str:
+    t = (title or "").strip()
+    if not t:
+        return t
+    base, ext = os.path.splitext(t)
+    # treat as extension only if it looks like one: .fit .fits .tif .tiff .xisf etc
+    if ext and 1 <= len(ext) <= 10 and all(ch.isalnum() for ch in ext[1:]):
+        return base
+    return t
+
+
+
+_DECOR_GLYPHS = "■●◆▲▪▫•◼◻◾◽🔗"
+
+def normalize_doc_title(s: str) -> str:
+    s = (s or "").strip()
+
+    # remove our textual prefix too
+    if s.startswith("[LINK] "):
+        s = s[len("[LINK] "):].strip()
+
+    # strip common UI decorations if you already have this helper
+    try:
+        s = _strip_ui_decorations(s)
+    except Exception:
+        pass
+
+    # remove any leading decorator glyphs repeatedly: "🔗 ", "■ ", etc.
+    while len(s) >= 2 and s[0] in _DECOR_GLYPHS and s[1] == " ":
+        s = s[2:].lstrip()
+
+    # also remove any stray decorator glyphs that got embedded (rare but happens)
+    s = re.sub(rf"[{re.escape(_DECOR_GLYPHS)}]", "", s).strip()
+
+    return s
+
+_VIEW_SUFFIX_RE = re.compile(r"\s+\[View\s+\d+\]\s*$")
+
+def _normalize_title_for_compare(t: str) -> str:
+    t = (t or "").strip()
+    if not t:
+        return ""
+
+    # strip UI decorations (🔗, ■, etc)
+    try:
+        t = _strip_ui_decorations(t)
+    except Exception:
+        pass
+
+    # strip trailing "[View N]" if present
+    t = _VIEW_SUFFIX_RE.sub("", t).strip()
+
+    # strip filename-like extension
+    try:
+        t = _strip_filename_ext(t)
+    except Exception:
+        # fallback: only strip if it looks like an ext
+        base, ext = os.path.splitext(t)
+        if ext and len(ext) <= 10:
+            t = base
+
+    return t.strip()
+
 class AstroSuiteProMainWindow(
     DockMixin, MenuMixin, ToolbarMixin, FileMixin,
     ThemeMixin, GeometryMixin, ViewMixin, HeaderMixin, MaskMixin, UpdateMixin,
@@ -7779,12 +7842,8 @@ class AstroSuiteProMainWindow(
                 return cand
             n += 1
 
+    
     def _doc_window_title(self, doc) -> str:
-        """
-        Best-effort human title for a subwindow.
-        Prefer metadata['display_name'] (what duplication sets),
-        then doc.display_name(), then basename(file_path).
-        """
         md = getattr(doc, "metadata", {}) or {}
 
         t = (md.get("display_name") or "").strip()
@@ -7797,8 +7856,7 @@ class AstroSuiteProMainWindow(
         if not t:
             fp = (md.get("file_path") or "").strip()
             if fp:
-                import os
-                t = os.path.basename(fp)
+                t = os.path.splitext(os.path.basename(fp))[0]   # ✅ strip ext here too
 
         t = t or "Untitled"
 
@@ -7807,8 +7865,11 @@ class AstroSuiteProMainWindow(
             t = _strip_ui_decorations(t)
         except Exception:
             pass
-        return t
 
+        # ✅ ALWAYS strip filename-like extension at the very end
+        t = _strip_filename_ext(t)
+
+        return t
 
     def _spawn_subwindow_for(self, doc, *, force_new: bool = False):
         """
@@ -8208,25 +8269,57 @@ class AstroSuiteProMainWindow(
             "autostretch_target": float(getattr(source_view, "autostretch_target", 0.25)),
         }
 
-        # 2) New name (strip UI decorations if any)
-        base_name = ""
+        # 2) New name (normalized: NO decorators like 🔗■●◆▲▪▫•◼◻◾◽)
         try:
-            base_name = base_doc.display_name() or "Untitled"
+            base_name = self._doc_window_title(base_doc)  # might include decorations
         except Exception:
             base_name = "Untitled"
 
+        # Normalize it so uniqueness checks don't miss decorated titles
         try:
-            base_name = _strip_ui_decorations(base_name)
+            base_name = normalize_doc_title(base_name)
         except Exception:
-            # minimal fallback: remove our known prefix/glyphs
-            while len(base_name) >= 2 and base_name[1] == " " and base_name[0] in "â- â--â--†â-²â-ªâ-«â€¢â--¼â--»â--¾â--½":
-                base_name = base_name[2:]
-            if base_name.startswith("Active View: "):
-                base_name = base_name[len("Active View: "):]
+            base_name = (base_name or "Untitled").strip()
+
+        # Build a set of existing document names (normalized)
+        existing = set()
+        try:
+            dm = getattr(self, "doc_manager", None) or getattr(self, "docman", None)
+            docs = []
+
+            # Prefer an official accessor if you have one
+            if dm is not None:
+                if hasattr(dm, "documents"):
+                    docs = list(dm.documents())
+                elif hasattr(dm, "_docs"):
+                    docs = list(dm._docs)
+
+            for d in docs:
+                try:
+                    dn = ""
+                    md = getattr(d, "metadata", {}) or {}
+                    dn = (md.get("display_name") or "").strip() or (d.display_name() or "").strip()
+                    dn = normalize_doc_title(dn)
+                    if dn:
+                        existing.add(dn)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # Pick a unique duplicate name: base_duplicate, base_duplicate2, ...
+        candidate = f"{base_name}_duplicate"
+        if candidate in existing:
+            n = 2
+            while True:
+                cand = f"{base_name}_duplicate{n}"
+                if cand not in existing:
+                    candidate = cand
+                    break
+                n += 1
 
         # 3) Duplicate the *base* document (not the ROI proxy)
-        #    NOTE: your project uses `self.docman` elsewhere for duplication.
-        new_doc = self.docman.duplicate_document(base_doc, new_name=f"{base_name}_duplicate")
+        new_doc = self.docman.duplicate_document(base_doc, new_name=candidate)
         print(f"  Duplicated document ID {id(base_doc)} -> {id(new_doc)}")
 
         # 4) Ensure the duplicate starts mask-free (so we don't inherit mask UI state)

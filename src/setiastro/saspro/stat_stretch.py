@@ -3,16 +3,39 @@ from __future__ import annotations
 from PyQt6.QtCore import Qt, QSize, QEvent
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QDoubleSpinBox,
-    QCheckBox, QPushButton, QScrollArea, QWidget, QMessageBox, QSlider, QToolBar, QToolButton
+    QCheckBox, QPushButton, QScrollArea, QWidget, QMessageBox, QSlider, QToolBar, QToolButton, QComboBox
 )
 from PyQt6.QtGui import QImage, QPixmap, QMouseEvent, QCursor
 import numpy as np
 from PyQt6 import sip
-
+from PyQt6.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
+from PyQt6.QtWidgets import QProgressDialog, QApplication
 from .doc_manager import ImageDocument
 # use your existing stretch code
 from setiastro.saspro.imageops.stretch import stretch_mono_image, stretch_color_image
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
+from setiastro.saspro.luminancerecombine import LUMA_PROFILES
+
+class _StretchWorker(QObject):
+    finished = pyqtSignal(object, str)  # (out_array_or_None, error_message_or_empty)
+
+    def __init__(self, dialog_ref):
+        super().__init__()
+        self._dlg = dialog_ref
+
+    @pyqtSlot()
+    def run(self):
+        try:
+            # dialog might be closing; guard
+            if self._dlg is None or sip.isdeleted(self._dlg):
+                self.finished.emit(None, "Dialog was closed.")
+                return
+
+            out = self._dlg._run_stretch()
+            self.finished.emit(out, "")
+        except Exception as e:
+            self.finished.emit(None, str(e))
+
 
 class StatisticalStretchDialog(QDialog):
     """
@@ -36,7 +59,10 @@ class StatisticalStretchDialog(QDialog):
         self._main = parent
         self.doc = document
         self._last_preview = None
-
+        self._hdr_knee_user_locked = False
+        self._pending_close = False
+        self._thread = None
+        self._worker = None
         self._follow_conn = None
         if hasattr(self._main, "currentDocumentChanged"):
             try:
@@ -64,6 +90,128 @@ class StatisticalStretchDialog(QDialog):
         self.chk_normalize = QCheckBox(self.tr("Normalize to [0..1]"))
         self.chk_normalize.setChecked(False)
 
+        # --- Black point sigma ---
+        self.row_bp = QWidget()
+        bp_lay = QHBoxLayout(self.row_bp); bp_lay.setContentsMargins(0,0,0,0); bp_lay.setSpacing(8)
+        bp_lay.addWidget(QLabel(self.tr("Black point σ:")))
+        self.sld_bp = QSlider(Qt.Orientation.Horizontal)
+        self.sld_bp.setRange(50, 600)      # 0.50 .. 6.00
+        self.sld_bp.setValue(500)          # default 2.70
+        self.lbl_bp = QLabel("5.00")
+        self.sld_bp.valueChanged.connect(lambda v: self.lbl_bp.setText(f"{v/100:.2f}"))
+        bp_lay.addWidget(self.sld_bp, 1)
+        bp_lay.addWidget(self.lbl_bp)
+        bp_tip = self.tr(
+            "Black point (σ) controls how aggressively the dark background is clipped.\n"
+            "Higher values clip more (darker background, more contrast), but can crush faint dust.\n"
+            "Lower values preserve faint background, but may leave the image gray.\n"
+            "Tip: start around 2.7–5.0 depending on gradient/noise."
+        )
+
+        # Apply tooltip to everything in the row
+        self.row_bp.setToolTip(bp_tip)
+        self.sld_bp.setToolTip(bp_tip)
+        self.lbl_bp.setToolTip(bp_tip)
+        
+        self.chk_no_black_clip = QCheckBox(self.tr("No black clipping (Old Stat Stretch behavior)"))
+        self.chk_no_black_clip.setChecked(False)
+        self.chk_no_black_clip.setToolTip(self.tr(
+            "Disables black-point clipping.\n"
+            "Uses the image minimum as the black point (preserves faint background),\n"
+            "but the result may look flatter / hazier."
+        ))
+        # --- HDR compress ---
+        self.chk_hdr = QCheckBox(self.tr("HDR highlight compress"))
+        self.chk_hdr.setChecked(False)
+
+        self.hdr_row = QWidget()
+        hdr_lay = QVBoxLayout(self.hdr_row); hdr_lay.setContentsMargins(0,0,0,0); hdr_lay.setSpacing(6)
+
+        # amount
+        row_a = QHBoxLayout(); row_a.setContentsMargins(0,0,0,0); row_a.setSpacing(8)
+        row_a.addWidget(QLabel(self.tr("Amount:")))
+        self.sld_hdr_amt = QSlider(Qt.Orientation.Horizontal)
+        self.sld_hdr_amt.setRange(0, 100)     # 0..1
+        self.sld_hdr_amt.setValue(15)         # 0.15 default
+        self.lbl_hdr_amt = QLabel("0.15")
+        self.sld_hdr_amt.valueChanged.connect(lambda v: self.lbl_hdr_amt.setText(f"{v/100:.2f}"))
+        row_a.addWidget(self.sld_hdr_amt, 1)
+        row_a.addWidget(self.lbl_hdr_amt)
+
+        # knee
+        row_k = QHBoxLayout(); row_k.setContentsMargins(0,0,0,0); row_k.setSpacing(8)
+        row_k.addWidget(QLabel(self.tr("Knee:")))
+        self.sld_hdr_knee = QSlider(Qt.Orientation.Horizontal)
+        self.sld_hdr_knee.setRange(10, 95)    # 0.10..0.95
+        self.sld_hdr_knee.setValue(75)        # 0.75 default
+        self.lbl_hdr_knee = QLabel("0.75")
+        self.sld_hdr_knee.valueChanged.connect(lambda v: self.lbl_hdr_knee.setText(f"{v/100:.2f}"))
+        row_k.addWidget(self.sld_hdr_knee, 1)
+        row_k.addWidget(self.lbl_hdr_knee)
+
+        hdr_lay.addLayout(row_a)
+        hdr_lay.addLayout(row_k)
+        self.sld_hdr_knee.sliderPressed.connect(lambda: setattr(self, "_hdr_knee_user_locked", True))
+        self.hdr_row.setEnabled(False)
+        self.chk_hdr.toggled.connect(self.hdr_row.setEnabled)
+        def _suggest_hdr_knee_from_target():
+            # Only auto-update if the user hasn't manually adjusted the knee yet
+            if getattr(self, "_hdr_knee_user_locked", False):
+                return
+
+            t = float(self.spin_target.value())
+            knee = float(np.clip(t + 0.10, 0.10, 0.95))  # or +0.15 if you prefer
+
+            self.sld_hdr_knee.blockSignals(True)
+            self.sld_hdr_knee.setValue(int(round(knee * 100)))
+            self.sld_hdr_knee.blockSignals(False)
+            self.lbl_hdr_knee.setText(f"{knee:.2f}")
+        self.spin_target.valueChanged.connect(_suggest_hdr_knee_from_target)    
+        # HDR tooltips
+        self.chk_hdr.setToolTip(self.tr(
+            "Compresses bright highlights after the stretch.\n"
+            "Use lightly: high values can flatten nebula structure and create star ringing."
+        ))
+
+        self.sld_hdr_amt.setToolTip(self.tr(
+            "Compression strength (0–1).\n"
+            "Start low (0.10–0.15). Too much can flatten the image and ring stars."
+        ))
+
+        self.sld_hdr_knee.setToolTip(self.tr(
+            "Where compression begins (0–1).\n"
+            "Good starting point: knee ≈ target median + 0.10 to + 0.20.\n"
+            "Example: target 0.25 → knee 0.35–0.45."
+        ))
+        self.lbl_hdr_amt.setToolTip(self.sld_hdr_amt.toolTip())
+        self.lbl_hdr_knee.setToolTip(self.sld_hdr_knee.toolTip())
+
+        # --- Luma-only row (checkbox + dropdown on one line) ---
+        self.luma_row = QWidget()
+        lr = QHBoxLayout(self.luma_row)
+        lr.setContentsMargins(0, 0, 0, 0)
+        lr.setSpacing(8)
+
+        self.chk_luma_only = QCheckBox(self.tr("Luminance-only"))
+        self.chk_luma_only.setChecked(False)
+
+        self.cmb_luma = QComboBox()
+        keys = list(LUMA_PROFILES.keys())
+
+        def _cat(k):
+            return str(LUMA_PROFILES.get(k, {}).get("category", ""))
+
+        keys.sort(key=lambda k: (_cat(k), k.lower()))
+        self.cmb_luma.addItems(keys)
+        self.cmb_luma.setCurrentText("rec709")
+
+        lr.addWidget(self.chk_luma_only)
+        lr.addWidget(QLabel(self.tr("Mode:")))
+        lr.addWidget(self.cmb_luma, 1)
+
+        # Start disabled until checkbox is enabled
+        self.cmb_luma.setEnabled(False)
+        self.chk_luma_only.toggled.connect(self.cmb_luma.setEnabled)
         # NEW: Curves boost
         self.chk_curves = QCheckBox(self.tr("Curves boost"))
         self.chk_curves.setChecked(False)
@@ -125,6 +273,11 @@ class StatisticalStretchDialog(QDialog):
         form = QFormLayout()
         form.addRow(self.tr("Target median:"), self.spin_target)
         form.addRow("", self.chk_linked)
+        form.addRow("", self.row_bp)
+        form.addRow("", self.chk_no_black_clip)
+        form.addRow("", self.chk_hdr)
+        form.addRow("", self.hdr_row)
+        form.addRow("", self.luma_row)      
         form.addRow("", self.chk_normalize)
         form.addRow("", self.chk_curves)
         form.addRow("", self.curves_row)
@@ -147,17 +300,92 @@ class StatisticalStretchDialog(QDialog):
         right.addWidget(self.preview_scroll, 1)  # preview below the buttons
         main.addLayout(right, 1)
 
+        def _on_no_black_clip_toggled(on: bool):
+            # Grey out blackpoint controls when "No black clipping" is enabled
+            self.row_bp.setEnabled(not on)
+
+        self.chk_no_black_clip.toggled.connect(_on_no_black_clip_toggled)
+        _on_no_black_clip_toggled(self.chk_no_black_clip.isChecked())  
+
         self.btn_zoom_in.clicked.connect(lambda: self._zoom_by(1.25))
         self.btn_zoom_out.clicked.connect(lambda: self._zoom_by(1/1.25))
         self.btn_zoom_100.clicked.connect(self._zoom_reset_100)
         self.btn_zoom_fit.clicked.connect(self._fit_preview)
 
         self.preview_scroll.viewport().installEventFilter(self)
-        self.preview_label.installEventFilter(self)
 
+        # Let the viewport receive all mouse events (prevents duplicate streams + jitter)
+        self.preview_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        def _on_luma_only_toggled(on: bool):
+            self.chk_linked.setEnabled(not on)
+            # (dropdown enabling is handled by chk_luma_only.toggled -> cmb_luma.setEnabled)
+        self.chk_luma_only.toggled.connect(_on_luma_only_toggled)
+        _suggest_hdr_knee_from_target()
         self._populate_initial_preview()
 
     # ----- helpers -----
+    def _show_busy(self, title: str, text: str):
+        # Avoid stacking dialogs
+        self._hide_busy()
+
+        dlg = QProgressDialog(text, None, 0, 0, self)
+        dlg.setWindowTitle(title)
+        dlg.setWindowModality(Qt.WindowModality.WindowModal)  # blocks only this tool window
+        dlg.setMinimumDuration(0)
+        dlg.setValue(0)
+        dlg.setCancelButton(None)  # no cancel button (keeps it simple)
+        dlg.setAutoClose(False)
+        dlg.setAutoReset(False)
+        dlg.setFixedWidth(320)
+        dlg.show()
+
+        # Ensure it paints before heavy work starts
+        QApplication.processEvents()
+        self._busy = dlg
+
+    def _hide_busy(self):
+        try:
+            if getattr(self, "_busy", None) is not None:
+                self._busy.close()
+                self._busy.deleteLater()
+        except Exception:
+            pass
+        self._busy = None
+
+    def _set_controls_enabled(self, enabled: bool):
+        # Keep this minimal: disable Preview/Apply while running
+        try:
+            self.btn_preview.setEnabled(enabled)
+            self.btn_apply.setEnabled(enabled)
+        except Exception:
+            pass
+
+    def _start_stretch_job(self, mode: str):
+        """
+        mode: 'preview' or 'apply'
+        """
+        if getattr(self, "_job_running", False):
+            return
+
+        self._job_running = True
+        self._job_mode = mode
+
+        self._set_controls_enabled(False)
+        self._show_busy("Statistical Stretch", "Processing…")
+
+        self._thread = QThread(self._main)
+        self._worker = _StretchWorker(self)
+        self._worker.moveToThread(self._thread)
+
+        self._thread.started.connect(self._worker.run)
+        self._worker.finished.connect(self._on_stretch_done)
+        self._worker.finished.connect(self._thread.quit)
+        self._worker.finished.connect(self._worker.deleteLater)
+        self._thread.finished.connect(self._thread.deleteLater)
+
+        self._thread.start()
+
+
     def _get_source_float(self) -> np.ndarray:
         """
         Return a float32 array scaled into ~[0..1] for stretching.
@@ -211,11 +439,42 @@ class StatisticalStretchDialog(QDialog):
         self._update_preview_scaled()
 
     def _zoom_by(self, factor: float):
-        """Incremental zoom around the current center; exits Fit mode."""
+        vp = self.preview_scroll.viewport()
+        center = vp.rect().center()
+        self._zoom_at(factor, center)
+
+    def _zoom_at(self, factor: float, vp_pos):
+        """Zoom keeping the image point under vp_pos (viewport coords) stationary."""
+        if self._preview_qimg is None:
+            return
+
+        old_scale = float(self._preview_scale)
+
+        # Content coords (in scaled-image pixels) currently under the mouse
+        hsb = self.preview_scroll.horizontalScrollBar()
+        vsb = self.preview_scroll.verticalScrollBar()
+        cx = hsb.value() + int(vp_pos.x())
+        cy = vsb.value() + int(vp_pos.y())
+
+        # Convert to image-space coords (unscaled)
+        ix = cx / old_scale
+        iy = cy / old_scale
+
+        # Apply zoom
         self._fit_mode = False
-        new_scale = self._preview_scale * float(factor)
-        self._preview_scale = max(0.05, min(new_scale, 8.0))
+        new_scale = max(0.05, min(old_scale * float(factor), 8.0))
+        self._preview_scale = new_scale
+
+        # Rebuild pixmap/label size
         self._update_preview_scaled()
+
+        # New content coords for same image-space point
+        ncx = int(ix * new_scale)
+        ncy = int(iy * new_scale)
+
+        # Set scrollbars so that point stays under the mouse
+        hsb.setValue(ncx - int(vp_pos.x()))
+        vsb.setValue(ncy - int(vp_pos.y()))
 
 
     # --- MASK helpers ----------------------------------------------------
@@ -239,10 +498,13 @@ class StatisticalStretchDialog(QDialog):
             elif m.ndim == 3:  # RGB/whatever → luminance
                 m = (0.2126*m[...,0] + 0.7152*m[...,1] + 0.0722*m[...,2])
 
-            m = m.astype(np.float32, copy=False)
-            # normalize if integer / out-of-range
-            if m.dtype.kind in "ui":
-                m /= float(np.iinfo(m.dtype).max)
+            orig = m
+            # normalize if integer
+            if orig.dtype.kind in "ui":
+                m = orig.astype(np.float32) / float(np.iinfo(orig.dtype).max)
+            else:
+                m = orig.astype(np.float32, copy=False)
+
             m = np.clip(m, 0.0, 1.0)
 
             th, tw = self.doc.image.shape[:2]
@@ -273,6 +535,13 @@ class StatisticalStretchDialog(QDialog):
         imgf = self._get_source_float()
         if imgf is None:
             return None
+        blackpoint_sigma = float(self.sld_bp.value()) / 100.0
+        hdr_on = bool(self.chk_hdr.isChecked())
+        hdr_amount = float(self.sld_hdr_amt.value()) / 100.0
+        hdr_knee = float(self.sld_hdr_knee.value()) / 100.0
+        luma_only = bool(getattr(self, "chk_luma_only", None) and self.chk_luma_only.isChecked())
+        luma_mode = str(self.cmb_luma.currentText()) if getattr(self, "cmb_luma", None) else "rec709"
+        no_black_clip = bool(self.chk_no_black_clip.isChecked())
 
         target = float(self.spin_target.value())
         linked = bool(self.chk_linked.isChecked())
@@ -287,6 +556,11 @@ class StatisticalStretchDialog(QDialog):
                 normalize=normalize,
                 apply_curves=apply_curves,
                 curves_boost=curves_boost,
+                blackpoint_sigma=blackpoint_sigma,
+                no_black_clip=no_black_clip,
+                hdr_compress=hdr_on,
+                hdr_amount=hdr_amount,
+                hdr_knee=hdr_knee,
             )
         else:
             out = stretch_color_image(
@@ -296,6 +570,13 @@ class StatisticalStretchDialog(QDialog):
                 normalize=normalize,
                 apply_curves=apply_curves,
                 curves_boost=curves_boost,
+                blackpoint_sigma=blackpoint_sigma,
+                no_black_clip=no_black_clip,
+                hdr_compress=hdr_on,
+                hdr_amount=hdr_amount,
+                hdr_knee=hdr_knee,
+                luma_only=luma_only,
+                luma_mode=luma_mode,
             )
 
         # ✅ If a mask is active, blend stretched result with original
@@ -358,54 +639,55 @@ class StatisticalStretchDialog(QDialog):
             self._set_preview_pixmap(np.clip(src, 0, 1))
 
     def _do_preview(self):
-        try:
-            out = self._run_stretch()
-            if out is None:
-                QMessageBox.information(self, "No image", "No image is loaded in the active document.")
-                return
-            self._set_preview_pixmap(out)
-        except Exception as e:
-            QMessageBox.warning(self, "Preview failed", str(e))
+        self._start_stretch_job("preview")
+
 
     def _do_apply(self):
-        try:
-            out = self._run_stretch()
-            if out is None:
-                QMessageBox.information(self, "No image", "No image is loaded in the active document.")
-                return
+        self._start_stretch_job("apply")
 
-            # Preserve mono vs color shape
-            if out.ndim == 3 and out.shape[2] == 3 and (self.doc.image.ndim == 2 or self.doc.image.shape[-1] == 1):
-                out = out[..., 0]
+    def _apply_out_to_doc(self, out: np.ndarray):
+        # Preserve mono vs color shape
+        if out.ndim == 3 and out.shape[2] == 3 and (self.doc.image.ndim == 2 or self.doc.image.shape[-1] == 1):
+            out = out[..., 0]
 
-            # --- Gather current UI state ------------------------------------
-            target = float(self.spin_target.value())
-            linked = bool(self.chk_linked.isChecked())
-            normalize = bool(self.chk_normalize.isChecked())
-            apply_curves = bool(getattr(self, "chk_curves", None) and self.chk_curves.isChecked())
-            curves_boost = 0.0
-            if getattr(self, "sld_curves", None) is not None:
-                curves_boost = float(self.sld_curves.value()) / 100.0
+        # --- Gather current UI state ------------------------------------
+        target = float(self.spin_target.value())
+        linked = bool(self.chk_linked.isChecked())
+        normalize = bool(self.chk_normalize.isChecked())
+        apply_curves = bool(getattr(self, "chk_curves", None) and self.chk_curves.isChecked())
+        curves_boost = float(self.sld_curves.value()) / 100.0 if getattr(self, "sld_curves", None) is not None else 0.0
+        blackpoint_sigma = float(self.sld_bp.value()) / 100.0
+        hdr_on = bool(self.chk_hdr.isChecked())
+        hdr_amount = float(self.sld_hdr_amt.value()) / 100.0
+        hdr_knee = float(self.sld_hdr_knee.value()) / 100.0
+        luma_only = bool(getattr(self, "chk_luma_only", None) and self.chk_luma_only.isChecked())
+        luma_mode = str(self.cmb_luma.currentText()) if getattr(self, "cmb_luma", None) else "rec709"
+        no_black_clip = bool(self.chk_no_black_clip.isChecked())
 
-            # Build human-readable step name
-            parts = [f"target={target:.2f}", "linked" if linked else "unlinked"]
-            if normalize:
-                parts.append("norm")
-            if apply_curves:
-                parts.append(f"curves={curves_boost:.2f}")
-            if self._active_mask_array() is not None:
-                parts.append("masked")
-            step_name = f"Statistical Stretch ({', '.join(parts)})"
+        parts = [f"target={target:.2f}", "linked" if linked else "unlinked"]
+        if normalize:
+            parts.append("norm")
+        if apply_curves:
+            parts.append(f"curves={curves_boost:.2f}")
+        if self._active_mask_array() is not None:
+            parts.append("masked")
+        parts.append(f"bpσ={blackpoint_sigma:.2f}")
+        if hdr_on and hdr_amount > 0:
+            parts.append(f"hdr={hdr_amount:.2f}@{hdr_knee:.2f}")
+        if luma_only:
+            parts.append(f"luma={luma_mode}")
+        if no_black_clip:
+            parts.append("no_black_clip")
 
-            # Apply to document
-            self.doc.apply_edit(out.astype(np.float32, copy=False), step_name=step_name)
+        step_name = f"Statistical Stretch ({', '.join(parts)})"
+        self.doc.apply_edit(out.astype(np.float32, copy=False), step_name=step_name)
 
-            # Turn off display stretch on the active view, if any
-            mw = self.parent()
-            if hasattr(mw, "mdi") and mw.mdi.activeSubWindow():
-                view = mw.mdi.activeSubWindow().widget()
-                if getattr(view, "autostretch_enabled", False):
-                    view.set_autostretch(False)
+        # Turn off display stretch on the active view, if any
+        mw = self.parent()
+        if hasattr(mw, "mdi") and mw.mdi.activeSubWindow():
+            view = mw.mdi.activeSubWindow().widget()
+            if getattr(view, "autostretch_enabled", False):
+                view.set_autostretch(False)
 
             # Existing logging, now using the same values as above
             if hasattr(mw, "_log"):
@@ -414,6 +696,10 @@ class StatisticalStretchDialog(QDialog):
                 mw._log(
                     "Applied Statistical Stretch "
                     f"(target={target:.3f}, linked={linked}, normalize={normalize}, "
+                    f"bp_sigma={blackpoint_sigma:.2f}, "
+                    f"hdr={'ON' if hdr_on else 'OFF'}"
+                    f"{', amt='+str(round(hdr_amount,2))+' knee='+str(round(hdr_knee,2)) if hdr_on else ''}, "
+                    f"luma={'ON' if luma_only else 'OFF'}{', mode='+luma_mode if luma_only else ''}, "
                     f"curves={'ON' if curves_on else 'OFF'}"
                     f"{', boost='+str(round(boost_val,2)) if curves_on else ''}, "
                     f"mask={'ON' if self._active_mask_array() is not None else 'OFF'})"
@@ -427,6 +713,13 @@ class StatisticalStretchDialog(QDialog):
                 "normalize": normalize,
                 "apply_curves": apply_curves,
                 "curves_boost": curves_boost,
+                "blackpoint_sigma": blackpoint_sigma,
+                "no_black_clip": no_black_clip,
+                "hdr_compress": hdr_on,
+                "hdr_amount": hdr_amount,
+                "hdr_knee": hdr_knee,
+                "luma_only": luma_only,
+                "luma_mode": luma_mode,
             }
 
             # ✅ Remember this as the last headless-style command
@@ -454,12 +747,8 @@ class StatisticalStretchDialog(QDialog):
                 # optional debug
                 print("Statistical Stretch: replay recording suppressed for this apply()")
 
-            self.close()
-            return
+        self.close()
 
-
-        except Exception as e:
-            QMessageBox.critical(self, "Apply failed", str(e))
 
     def _refresh_document_from_active(self):
         """
@@ -478,13 +767,57 @@ class StatisticalStretchDialog(QDialog):
         except Exception:
             pass
 
+    @pyqtSlot(object, str)
+    def _on_stretch_done(self, out, err: str):
+        # dialog might be closing; guard
+        if sip.isdeleted(self):
+            return
+
+        self._hide_busy()
+        self._set_controls_enabled(True)
+        self._job_running = False
+
+        if err:
+            QMessageBox.warning(self, "Stretch failed", err)
+            return
+
+        if out is None:
+            QMessageBox.information(self, "No image", "No image is loaded in the active document.")
+            return
+
+        if getattr(self, "_job_mode", "") == "preview":
+            self._set_preview_pixmap(out)
+            return
+
+        # apply mode: reuse your existing apply logic, but using `out` we already computed
+        self._apply_out_to_doc(out)
+
+        if getattr(self, "_pending_close", False):
+            self._pending_close = False
+            self.close()
+
     def closeEvent(self, ev):
-        # disconnect the “follow active document” hook
+        # If a job is running, DO NOT close (WA_DeleteOnClose would delete the QThread)
+        if getattr(self, "_job_running", False):
+            self._pending_close = True
+            try:
+                self._hide_busy()
+            except Exception:
+                pass
+            try:
+                self.hide()
+            except Exception:
+                pass
+            ev.ignore()
+            return
+
+        # disconnect follow behavior
         try:
             if self._follow_conn and hasattr(self._main, "currentDocumentChanged"):
                 self._main.currentDocumentChanged.disconnect(self._on_active_doc_changed)
         except Exception:
             pass
+
         super().closeEvent(ev)
 
 
@@ -509,30 +842,24 @@ class StatisticalStretchDialog(QDialog):
 
     def eventFilter(self, obj, ev):
         # Ctrl+wheel zoom
-        if ev.type() == QEvent.Type.Wheel and (obj is self.preview_scroll.viewport() or obj is self.preview_label):
+        if ev.type() == QEvent.Type.Wheel and obj is self.preview_scroll.viewport():
             if ev.modifiers() & Qt.KeyboardModifier.ControlModifier:
-                factor = 1.25 if ev.angleDelta().y() > 0 else 1/1.25
-                self._fit_mode = False                       # ← ensure we exit Fit mode
-                self._preview_scale = max(0.05, min(self._preview_scale * factor, 8.0))
-                self._update_preview_scaled()
+                factor = 1.25 if ev.angleDelta().y() > 0 else (1/1.25)
+                self._zoom_at(factor, ev.position())
                 return True
             return False
 
         # Click+drag pan (left or middle mouse)
-        if obj is self.preview_scroll.viewport() or obj is self.preview_label:
+        if obj is self.preview_scroll.viewport():
             if ev.type() == QEvent.Type.MouseButtonPress:
-                if ev.buttons() & (Qt.MouseButton.LeftButton | Qt.MouseButton.MiddleButton):
+                if ev.button() in (Qt.MouseButton.LeftButton, Qt.MouseButton.MiddleButton):
                     self._panning = True
-                    self._pan_last = ev.position().toPoint()
-                    # show a "grab" cursor where the drag begins
-                    if obj is self.preview_label:
-                        self.preview_label.setCursor(Qt.CursorShape.ClosedHandCursor)
-                    else:
-                        self.preview_scroll.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
+                    self._pan_last = ev.globalPosition().toPoint()
+                    self.preview_scroll.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
                     return True
 
             elif ev.type() == QEvent.Type.MouseMove and self._panning:
-                pos = ev.position().toPoint()
+                pos = ev.globalPosition().toPoint()
                 delta = pos - self._pan_last
                 self._pan_last = pos
 
@@ -543,12 +870,11 @@ class StatisticalStretchDialog(QDialog):
                 return True
 
             elif ev.type() == QEvent.Type.MouseButtonRelease and self._panning:
-                self._panning = False
-                self._pan_last = None
-                # restore cursor
-                self.preview_label.unsetCursor()
-                self.preview_scroll.viewport().unsetCursor()
-                return True
+                if ev.button() in (Qt.MouseButton.LeftButton, Qt.MouseButton.MiddleButton):
+                    self._panning = False
+                    self._pan_last = None
+                    self.preview_scroll.viewport().unsetCursor()
+                    return True
 
         return super().eventFilter(obj, ev)
      

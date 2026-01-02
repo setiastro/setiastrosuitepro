@@ -579,19 +579,29 @@ class MultiscaleDecompDialog(QDialog):
 
     # ---------- Preview plumbing ----------
     def _spinner_on(self):
-        if getattr(self, "busy_spinner", None) is None:
+        if getattr(self, "_closing", False):
             return
-        self.busy_spinner.setVisible(True)
-        if getattr(self, "_busy_movie", None) is not None:
-            if self._busy_movie.state() != QMovie.MovieState.Running:
-                self._busy_movie.start()
+        try:
+            sp = getattr(self, "busy_spinner", None)
+            if sp is None:
+                return
+            sp.setVisible(True)
+            mv = getattr(self, "_busy_movie", None)
+            if mv is not None and mv.state() != QMovie.MovieState.Running:
+                mv.start()
+        except RuntimeError:
+            return
 
     def _spinner_off(self):
-        if getattr(self, "busy_spinner", None) is None:
+        try:
+            sp = getattr(self, "busy_spinner", None)
+            mv = getattr(self, "_busy_movie", None)
+            if mv is not None:
+                mv.stop()
+            if sp is not None:
+                sp.setVisible(False)
+        except RuntimeError:
             return
-        if getattr(self, "_busy_movie", None) is not None:
-            self._busy_movie.stop()
-        self.busy_spinner.setVisible(False)
 
 
     def _show_busy_overlay(self):
@@ -623,11 +633,13 @@ class MultiscaleDecompDialog(QDialog):
         self._schedule_preview()
 
     def _schedule_preview(self):
-        # generic “something changed” entry point
+        if getattr(self, "_closing", False):
+            return
         self._preview_timer.start(60)
 
     def _schedule_roi_preview(self):
-        # view changed (scroll/zoom/pan) — still debounced
+        if getattr(self, "_closing", False):
+            return
         self._preview_timer.start(60)
 
     def _connect_viewport_signals(self):
@@ -764,8 +776,15 @@ class MultiscaleDecompDialog(QDialog):
         return tuned, residual
 
     def _rebuild_preview(self):
+        if getattr(self, "_closing", False):
+            return
         self._spinner_on()
-        QApplication.processEvents()
+        QTimer.singleShot(0, self._rebuild_preview_impl)
+
+    def _rebuild_preview_impl(self):
+        if getattr(self, "_closing", False):
+            return
+
         #self._begin_busy()
         try:
             # ROI preview can't work until we have *some* pixmap in the scene to derive visible rects from.
@@ -1749,3 +1768,19 @@ class _MultiScaleDecompPresetDialog(QDialog):
             "linked_rgb": bool(self.cb_linked.isChecked()),
             "layers_cfg": out_layers,
         }
+def closeEvent(self, ev):
+    self._closing = True
+    try:
+        if hasattr(self, "_preview_timer"):
+            self._preview_timer.stop()
+        if hasattr(self, "_busy_show_timer"):
+            self._busy_show_timer.stop()
+        # Optional: disconnect scrollbars to stop ROI scheduling
+        try:
+            self.view.horizontalScrollBar().valueChanged.disconnect(self._schedule_roi_preview)
+            self.view.verticalScrollBar().valueChanged.disconnect(self._schedule_roi_preview)
+        except Exception:
+            pass
+    except Exception:
+        pass
+    super().closeEvent(ev)

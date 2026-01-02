@@ -58,7 +58,8 @@ class ResizableRotatableRectItem(QGraphicsRectItem):
         self._rotating = False
         self._angle0 = 0.0
         self._pivot_scene = QPointF()
-
+        self._bounds_scene: QRectF | None = None
+        self._clamp_eps_deg = 0.25  # treat as "unrotated" if |angle| < eps (deg)
         self._grab_pad = 20              # ← extra hit slop in screen px
         self._edge_pad_px = EDGE_GRAB_PX
         self.setZValue(100)             # ← keep above pixmap
@@ -83,7 +84,26 @@ class ResizableRotatableRectItem(QGraphicsRectItem):
         dx = p1.x() - p0.x()
         dy = p1.y() - p0.y()
         return math.hypot(dx, dy)
+    def setBoundsSceneRect(self, r: QRectF | None):
+        """Set the scene-rect bounds we should stay within when unrotated."""
+        self._bounds_scene = QRectF(r) if r is not None else None
 
+    def _is_unrotated(self) -> bool:
+        # normalize angle to [-180, 180]
+        a = float(self.rotation()) % 360.0
+        if a > 180.0:
+            a -= 360.0
+        return abs(a) < self._clamp_eps_deg
+
+    def _bounds_local(self) -> QRectF | None:
+        """Bounds rect mapped into the item's local coordinates (only valid when unrotated)."""
+        if self._bounds_scene is None:
+            return None
+        # When unrotated, this is safe and stable.
+        tl = self.mapFromScene(self._bounds_scene.topLeft())
+        br = self.mapFromScene(self._bounds_scene.bottomRight())
+        return QRectF(tl, br).normalized()
+    
     def _edge_under_cursor(self, scene_pos: QPointF) -> Optional[str]:
         """
         Return 'l', 'r', 't', or 'b' if the pointer is near an edge (within px-tolerance),
@@ -218,11 +238,51 @@ class ResizableRotatableRectItem(QGraphicsRectItem):
             QGraphicsItem.GraphicsItemChange.ItemTransformHasChanged,
         ):
             self._sync_handles()
+
+        if change == QGraphicsItem.GraphicsItemChange.ItemPositionChange:
+            if self._bounds_scene is not None and self._is_unrotated():
+                new_pos = QPointF(value)
+
+                # current scene rect of the item (at current pos)
+                sr0 = self.mapRectToScene(self.rect())  # QRectF in scene coords
+
+                # shift it by the delta between proposed pos and current pos
+                d = new_pos - self.pos()
+                sr = sr0.translated(d)
+
+                b = self._bounds_scene
+                dx = 0.0
+                dy = 0.0
+
+                if sr.left() < b.left():
+                    dx = b.left() - sr.left()
+                elif sr.right() > b.right():
+                    dx = b.right() - sr.right()
+
+                if sr.top() < b.top():
+                    dy = b.top() - sr.top()
+                elif sr.bottom() > b.bottom():
+                    dy = b.bottom() - sr.bottom()
+
+                if dx != 0.0 or dy != 0.0:
+                    return new_pos + QPointF(dx, dy)
+
+                return new_pos
+
         return super().itemChange(change, value)
 
     def _resize_via_handle(self, scene_pt: QPointF):
         r = self.rect()
         p = self.mapFromScene(scene_pt)
+
+        # Clamp handle drag to bounds only when unrotated.
+        if self._bounds_scene is not None and self._is_unrotated():
+            bL = self._bounds_local()
+            if bL is not None:
+                # NOTE: bL is in the same local coordinate space as r/p.
+                px = min(max(p.x(), bL.left()),  bL.right())
+                py = min(max(p.y(), bL.top()),   bL.bottom())
+                p = QPointF(px, py)
 
         # Corners
         if   self._active == "tl": r.setTopLeft(p)
@@ -616,6 +676,7 @@ class CropDialogPro(QDialog):
                 if e.type() == QEvent.Type.MouseMove and self._drawing:
                     r = QRectF(self._origin, scene_pt).normalized()
                     r = self._apply_ar_to_rect(r, live=True, scene_pt=scene_pt)
+                    r = self._clamp_rect_to_pixmap(r)
                     self._draw_live_rect(r)
 
                     # ⬇️ live dims from the temporary rect (axis-aligned TL,TR,BR,BL)
@@ -627,9 +688,12 @@ class CropDialogPro(QDialog):
                     self._drawing = False
                     r = QRectF(self._origin, scene_pt).normalized()
                     r = self._apply_ar_to_rect(r, live=False, scene_pt=scene_pt)
+                    r = self._clamp_rect_to_pixmap(r)
                     self._clear_live_rect()
+
                     self._rect_item = ResizableRotatableRectItem(r)
                     self._rect_item.setZValue(10)
+                    self._rect_item.setBoundsSceneRect(self._bounds_scene_rect())
                     self._rect_item.setFixedAspectRatio(self._current_ar_value())
                     self.scene.addItem(self._rect_item)
 
@@ -715,6 +779,7 @@ class CropDialogPro(QDialog):
         if self._rect_item is None:
             self._rect_item = ResizableRotatableRectItem(r)
             self._rect_item.setZValue(10)
+            self._rect_item.setBoundsSceneRect(self._bounds_scene_rect())
             self.scene.addItem(self._rect_item)
         else:
             self._rect_item.setRotation(0.0)
@@ -758,6 +823,32 @@ class CropDialogPro(QDialog):
         if hasattr(self, "_live_rect") and self._live_rect:
             self.scene.removeItem(self._live_rect); self._live_rect = None
 
+    def _pixmap_scene_rect(self) -> QRectF | None:
+        """Scene rect occupied by the pixmap (image) item."""
+        if not self._pix_item:
+            return None
+        return self._pix_item.mapRectToScene(self._pix_item.boundingRect())
+
+    def _clamp_rect_to_pixmap(self, r: QRectF) -> QRectF:
+        """Intersect an axis-aligned QRectF with the pixmap scene rect."""
+        bounds = self._pixmap_scene_rect()
+        if bounds is None:
+            return r.normalized()
+        rr = r.normalized().intersected(bounds)
+        # avoid empty rects (keep at least 1x1 scene unit)
+        if rr.isNull() or rr.width() <= 1e-6 or rr.height() <= 1e-6:
+            # fallback: clamp to a 1x1 rect at the nearest point inside bounds
+            x = min(max(r.center().x(), bounds.left()),  bounds.right())
+            y = min(max(r.center().y(), bounds.top()),   bounds.bottom())
+            rr = QRectF(x, y, 1.0, 1.0)
+        return rr.normalized()
+
+    def _bounds_scene_rect(self) -> QRectF | None:
+        if not self._pix_item:
+            return None
+        return self._pix_item.mapRectToScene(self._pix_item.boundingRect())
+
+
     # ---------- preview toggles ----------
     def _toggle_autostretch(self):
         self._autostretch_on = not self._autostretch_on
@@ -777,6 +868,7 @@ class CropDialogPro(QDialog):
         r, ang, pos = state
         self._rect_item = ResizableRotatableRectItem(r)
         self._rect_item.setZValue(10)
+        self._rect_item.setBoundsSceneRect(self._bounds_scene_rect())
         self._rect_item.setFixedAspectRatio(self._current_ar_value())
         self._rect_item.setRotation(ang)
         self._rect_item.setPos(pos)
@@ -794,6 +886,7 @@ class CropDialogPro(QDialog):
         r = QRectF(CropDialogPro._prev_rect)
         self._rect_item = ResizableRotatableRectItem(r)
         self._rect_item.setZValue(10)
+        self._rect_item.setBoundsSceneRect(self._bounds_scene_rect())
         self._rect_item.setFixedAspectRatio(self._current_ar_value())
         self._rect_item.setRotation(CropDialogPro._prev_angle)
         self._rect_item.setPos(CropDialogPro._prev_pos)
@@ -811,6 +904,7 @@ class CropDialogPro(QDialog):
         pm = self._pix_item.pixmap()
         sx, sy = w_img / pm.width(), h_img / pm.height()
         return np.array([pt_scene.x() * sx, pt_scene.y() * sy], dtype=np.float32)
+
 
     def _apply_one(self):
         if not self._rect_item:

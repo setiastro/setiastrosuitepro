@@ -521,32 +521,6 @@ class CurveEditor(QGraphicsView):
             if ln is not None:
                 ln.setVisible(False)
 
-    def _scene_to_norm_points(self, pts_scene: list[tuple[float,float]]) -> list[tuple[float,float]]:
-        """(x:[0..360], y:[0..360] down) → (x,y in [0..1] up). Ensures endpoints present & strictly increasing x."""
-        out = []
-        lastx = -1e9
-        for (x, y) in sorted(pts_scene, key=lambda t: t[0]):
-            x = float(np.clip(x, 0.0, 360.0))
-            y = float(np.clip(y, 0.0, 360.0))
-            # strictly increasing X
-            if x <= lastx:
-                x = lastx + 1e-3
-            lastx = x
-            out.append((x / 360.0, 1.0 - (y / 360.0)))
-        # ensure endpoints
-        if not any(abs(px - 0.0)  < 1e-6 for px, _ in out): out.insert(0, (0.0, 0.0))
-        if not any(abs(px - 1.0)  < 1e-6 for px, _ in out): out.append((1.0, 1.0))
-        # clamp
-        return [(float(np.clip(x,0,1)), float(np.clip(y,0,1))) for (x,y) in out]
-
-    def _collect_points_norm_from_editor(self) -> list[tuple[float,float]]:
-        """Take endpoints+handles from editor => normalized points."""
-        pts_scene = []
-        for p in (self.editor.end_points + self.editor.control_points):
-            pos = p.scenePos()
-            pts_scene.append((float(pos.x()), float(pos.y())))
-        return self._scene_to_norm_points(pts_scene)
-
 
     def redistributeHandlesByPivot(self, u: float):
         """
@@ -1048,7 +1022,14 @@ class CurvesDialogPro(QDialog):
         self._cdf = None
         self._cdf_bins = 1024
         self._cdf_total = 0
+        # Debounce: coalesce rapid curve edits into one rebuild
+        self._curve_debounce_ms = 120  # tweak: 80–200ms feels good
+        self._curve_debounce = QTimer(self)
+        self._curve_debounce.setSingleShot(True)
+        self._curve_debounce.timeout.connect(self._rebuild_preview_from_curve_debounced)
 
+        # Optional: generation counter so stale results can't “win”
+        self._curve_gen = 0
         self._clip_scale = 1.0          # preview→full multiplier
         self._cdf_total_full = 0        # total pixels in full image (H*W)
         self._cdf_total_preview = 0     # total pixels in preview (H*W)
@@ -1220,18 +1201,34 @@ class CurvesDialogPro(QDialog):
 
     def _on_editor_curve_changed(self, _lut8=None):
         """
-        Called on every editor redraw/drag. Persist the currently edited curve
-        into the store, refresh overlays, and do a realtime preview.
+        Called on every editor redraw/drag. Persist points and refresh overlays.
+        Preview rebuild is DEBOUNCED to avoid spamming.
         """
         try:
             self._curves_store[self._current_mode_key] = self._editor_points_norm()
         except Exception:
             pass
-        # show the true shapes of other channels too
-        self._refresh_overlays()
-        # now build from *all* current curves (including the just-edited one)
-        self._quick_preview()
 
+        # cheap: overlay redraw is fine every move (or you can debounce this too)
+        self._refresh_overlays()
+
+        # expensive: debounce the preview rebuild
+        self._curve_gen += 1
+        self._curve_debounce.start(self._curve_debounce_ms)
+
+    def _rebuild_preview_from_curve_debounced(self):
+        """
+        Runs after the user pauses dragging for _curve_debounce_ms.
+        Only rebuild if we have images loaded.
+        """
+        if self._preview_orig is None and self._preview_img is None:
+            return
+        # If your preview toggle is off, you may want to skip:
+        if not getattr(self, "btn_preview", None) or not self.btn_preview.isChecked():
+            return
+
+        # Do the real work (what you were doing before)
+        self._quick_preview()
 
     def _active_mode_key(self) -> str:
         for b in self.mode_group.buttons():
@@ -1678,28 +1675,52 @@ class CurvesDialogPro(QDialog):
 
     # 1) Put this helper inside CurvesDialogPro (near other helpers)
     def _map_label_xy_to_image_ij(self, x: float, y: float):
-        """Map label-local coords (x,y) to _preview_img pixel (i,j). Returns (ix, iy) or None."""
+        """
+        Map label-local coords (x,y) to _preview_img pixel (ix, iy).
+        Correct even when the pixmap is centered inside a larger label.
+        Returns None if cursor is outside the displayed pixmap area.
+        """
         if self._pix is None:
             return None
+
         pm_disp = self.label.pixmap()
         if pm_disp is None or pm_disp.isNull():
             return None
 
-        src_w = self._pix.width()          # size of the *source* pixmap (preview image)
-        src_h = self._pix.height()
-        disp_w = pm_disp.width()           # size of the *displayed* pixmap on the label
+        # Displayed pixmap size (after zoom)
+        disp_w = pm_disp.width()
         disp_h = pm_disp.height()
-        if src_w <= 0 or src_h <= 0 or disp_w <= 0 or disp_h <= 0:
+
+        # Label may be bigger -> pixmap is centered with margins
+        lbl_w = self.label.width()
+        lbl_h = self.label.height()
+
+        off_x = max(0, (lbl_w - disp_w) // 2)
+        off_y = max(0, (lbl_h - disp_h) // 2)
+
+        # Remove margins: label-local -> pixmap-local
+        px = float(x) - float(off_x)
+        py = float(y) - float(off_y)
+
+        if px < 0 or py < 0 or px >= disp_w or py >= disp_h:
+            return None  # outside actual image area
+
+        # Now convert displayed pixmap pixel -> source preview pixel
+        src_w = self._pix.width()
+        src_h = self._pix.height()
+        if src_w <= 0 or src_h <= 0:
             return None
 
         sx = disp_w / float(src_w)
         sy = disp_h / float(src_h)
 
-        ix = int(x / sx)
-        iy = int(y / sy)
+        ix = int(px / sx)
+        iy = int(py / sy)
+
         if ix < 0 or iy < 0 or ix >= src_w or iy >= src_h:
             return None
         return ix, iy
+
 
     def _scene_to_norm_points(self, pts_scene: list[tuple[float,float]]) -> list[tuple[float,float]]:
         """(x:[0..360], y:[0..360] down) → (x,y in [0..1] up). Ensures endpoints present & strictly increasing x."""

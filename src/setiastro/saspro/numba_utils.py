@@ -2495,7 +2495,77 @@ def drizzle_deposit_color_naive(image_data, affine_2x3, drizzle_buffer, coverage
 
     return drizzle_buffer, coverage_buffer
 
-@njit(parallel=True, fastmath=True, cache=True)
+@njit(parallel=True, fastmath=True)
+def numba_mono_from_img(img, bp, denom, median_rescaled, target_median):
+    H, W = img.shape
+    out = np.empty_like(img)
+    for y in prange(H):
+        for x in range(W):
+            r = (img[y, x] - bp) / denom
+            numer = (median_rescaled - 1.0) * target_median * r
+            denom2 = median_rescaled * (target_median + r - 1.0) - target_median * r
+            if abs(denom2) < 1e-12:
+                denom2 = 1e-12
+            out[y, x] = numer / denom2
+    return out
+
+@njit(parallel=True, fastmath=True)
+def numba_color_linked_from_img(img, bp, denom, median_rescaled, target_median):
+    H, W, C = img.shape
+    out = np.empty_like(img)
+    for y in prange(H):
+        for x in range(W):
+            for c in range(C):
+                r = (img[y, x, c] - bp) / denom
+                numer = (median_rescaled - 1.0) * target_median * r
+                denom2 = median_rescaled * (target_median + r - 1.0) - target_median * r
+                if abs(denom2) < 1e-12:
+                    denom2 = 1e-12
+                out[y, x, c] = numer / denom2
+    return out
+
+@njit(parallel=True, fastmath=True)
+def numba_color_unlinked_from_img(img, bp3, denom3, meds_rescaled3, target_median):
+    H, W, C = img.shape
+    out = np.empty_like(img)
+    for y in prange(H):
+        for x in range(W):
+            for c in range(C):
+                r = (img[y, x, c] - bp3[c]) / denom3[c]
+                med = meds_rescaled3[c]
+                numer = (med - 1.0) * target_median * r
+                denom2 = med * (target_median + r - 1.0) - target_median * r
+                if abs(denom2) < 1e-12:
+                    denom2 = 1e-12
+                out[y, x, c] = numer / denom2
+    return out
+
+@njit(parallel=True, fastmath=True)
+def numba_mono_final_formula(rescaled, median_rescaled, target_median):
+    """
+    Applies the final formula *after* we already have the rescaled values.
+    
+    rescaled[y,x] = (original[y,x] - black_point) / (1 - black_point)
+    median_rescaled = median(rescaled)
+    
+    out_val = ((median_rescaled - 1) * target_median * r) /
+              ( median_rescaled*(target_median + r -1) - target_median*r )
+    """
+    H, W = rescaled.shape
+    out = np.empty_like(rescaled)
+
+    for y in prange(H):
+        for x in range(W):
+            r = rescaled[y, x]
+            numer = (median_rescaled - 1.0) * target_median * r
+            denom = median_rescaled * (target_median + r - 1.0) - target_median * r
+            if np.abs(denom) < 1e-12:
+                denom = 1e-12
+            out[y, x] = numer / denom
+
+    return out
+
+@njit(parallel=True, fastmath=True)
 def numba_color_final_formula_linked(rescaled, median_rescaled, target_median):
     """
     Linked color transform: we use one median_rescaled for all channels.
@@ -2517,7 +2587,7 @@ def numba_color_final_formula_linked(rescaled, median_rescaled, target_median):
 
     return out
 
-@njit(parallel=True, fastmath=True, cache=True)
+@njit(parallel=True, fastmath=True)
 def numba_color_final_formula_unlinked(rescaled, medians_rescaled, target_median):
     """
     Unlinked color transform: a separate median_rescaled per channel.

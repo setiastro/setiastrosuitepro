@@ -2790,7 +2790,50 @@ def evaluate_polynomial(H: int, W: int, coeffs: np.ndarray, degree: int) -> np.n
     A_full = build_poly_terms(xx.ravel(), yy.ravel(), degree)
     return (A_full @ coeffs).reshape(H, W)
 
+@njit(parallel=True, fastmath=True)
+def numba_mono_from_img(img, bp, denom, median_rescaled, target_median):
+    H, W = img.shape
+    out = np.empty_like(img)
+    for y in prange(H):
+        for x in range(W):
+            r = (img[y, x] - bp) / denom
+            numer = (median_rescaled - 1.0) * target_median * r
+            denom2 = median_rescaled * (target_median + r - 1.0) - target_median * r
+            if abs(denom2) < 1e-12:
+                denom2 = 1e-12
+            out[y, x] = numer / denom2
+    return out
 
+@njit(parallel=True, fastmath=True)
+def numba_color_linked_from_img(img, bp, denom, median_rescaled, target_median):
+    H, W, C = img.shape
+    out = np.empty_like(img)
+    for y in prange(H):
+        for x in range(W):
+            for c in range(C):
+                r = (img[y, x, c] - bp) / denom
+                numer = (median_rescaled - 1.0) * target_median * r
+                denom2 = median_rescaled * (target_median + r - 1.0) - target_median * r
+                if abs(denom2) < 1e-12:
+                    denom2 = 1e-12
+                out[y, x, c] = numer / denom2
+    return out
+
+@njit(parallel=True, fastmath=True)
+def numba_color_unlinked_from_img(img, bp3, denom3, meds_rescaled3, target_median):
+    H, W, C = img.shape
+    out = np.empty_like(img)
+    for y in prange(H):
+        for x in range(W):
+            for c in range(C):
+                r = (img[y, x, c] - bp3[c]) / denom3[c]
+                med = meds_rescaled3[c]
+                numer = (med - 1.0) * target_median * r
+                denom2 = med * (target_median + r - 1.0) - target_median * r
+                if abs(denom2) < 1e-12:
+                    denom2 = 1e-12
+                out[y, x, c] = numer / denom2
+    return out
 
 @njit(parallel=True, fastmath=True)
 def numba_mono_final_formula(rescaled, median_rescaled, target_median):
