@@ -212,7 +212,7 @@ class LayersDock(QDockWidget):
         top.addWidget(self.view_combo, 1)
 
         self.list = QListWidget()
-        self.list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.list.setAlternatingRowColors(True)
         v.addWidget(self.list, 1)
 
@@ -227,8 +227,12 @@ class LayersDock(QDockWidget):
         self.btn_merge_new = QPushButton("Merge → New Document")
         self.btn_merge_new.setToolTip("Flatten the visible layers into a new document (does not modify the base view).")
 
+        self.btn_merge_sel = QPushButton("Merge Selected → Single Layer")
+        self.btn_merge_sel.setToolTip("Merge the selected layers into one raster layer (Photoshop-style).")
+
         row.addWidget(self.btn_merge)
         row.addWidget(self.btn_merge_new)
+        row.addWidget(self.btn_merge_sel)
         row.addStretch(1)
         row.addWidget(self.btn_clear)
         self.setWidget(w)
@@ -247,6 +251,7 @@ class LayersDock(QDockWidget):
 
         self.btn_merge.clicked.connect(self._merge_and_push)
         self.btn_merge_new.clicked.connect(self._merge_to_new_doc)
+        self.btn_merge_sel.clicked.connect(self._merge_selected_to_single_layer)
 
         # initial
         self._refresh_views()
@@ -428,8 +433,105 @@ class LayersDock(QDockWidget):
         self.btn_merge.setEnabled(has_layers)
         self.btn_clear.setEnabled(has_layers)
         if hasattr(self, "btn_merge_new"):
-            self.btn_merge_new.setEnabled(has_layers)        
+            self.btn_merge_new.setEnabled(has_layers)    
+        has_layers = bool(getattr(vw, "_layers", []))
+        self.btn_merge_sel.setEnabled(has_layers)
         self._refresh_row_heights()
+
+    def _selected_layer_indices(self) -> list[int]:
+        vw = self.current_view()
+        if not vw:
+            return []
+        n = len(getattr(vw, "_layers", []) or [])
+        idxs = []
+        for it in self.list.selectedItems():
+            r = self.list.row(it)
+            if 0 <= r < n:
+                idxs.append(r)
+        idxs = sorted(set(idxs))
+        return idxs
+
+    def _render_stack(self, base_img: np.ndarray, layers: list[ImageLayer]) -> np.ndarray:
+        # composite_stack already respects visibility/opacity/modes/masks
+        out = composite_stack(base_img, layers)
+        return out if out is not None else base_img
+
+    def _open_baked_layer_doc(self, base_doc, arr: np.ndarray, title: str):
+        dm = getattr(self.mw, "docman", None)
+        if not dm or not hasattr(dm, "open_array"):
+            return None
+        meta = dict(getattr(base_doc, "metadata", {}) or {})
+        meta.update({
+            "bit_depth": "32-bit floating point",
+            "is_mono": (arr.ndim == 2 or (arr.ndim == 3 and arr.shape[-1] == 1)),
+            "source": "Layers Merge Selected",
+        })
+        return dm.open_array(arr.astype(np.float32, copy=False), metadata=meta, title=title)
+
+    def _merge_selected_to_single_layer(self):
+        vw = self.current_view()
+        if not vw:
+            return
+
+        layers = list(getattr(vw, "_layers", []) or [])
+        if not layers:
+            QMessageBox.information(self, "Layers", "There are no layers to merge.")
+            return
+
+        sel = self._selected_layer_indices()
+        if len(sel) < 2:
+            QMessageBox.information(self, "Layers", "Select two or more layers to merge.")
+            return
+
+        try:
+            base_doc = getattr(vw, "document", None)
+            if base_doc is None or getattr(base_doc, "image", None) is None:
+                QMessageBox.warning(self, "Layers", "No base image available for this view.")
+                return
+            base_img = base_doc.image
+
+            i0, i1 = sel[0], sel[-1]
+
+            # IMPORTANT ASSUMPTION (matches your UI order):
+            # vw._layers is top-to-bottom in the list, and "below" means larger index.
+            layers_above = layers[:i0]
+            layers_sel   = layers[i0:i1+1]
+            layers_below = layers[i1+1:]
+
+            # 1) Render what exists directly under the selected range
+            under = self._render_stack(base_img, layers_below)
+
+            # 2) Render selected layers on top of that "under" image
+            baked = self._render_stack(under, layers_sel)
+
+
+            # 3) Create a baked raster layer (NO new document)
+            merged_layer = ImageLayer(
+                name=f"Merged ({len(layers_sel)})",
+                src_doc=None,
+                pixels=baked.astype(np.float32, copy=False),
+                visible=True,
+                opacity=1.0,
+                mode="Normal",
+            )
+
+            # Keep masks off by default; you can also decide to inherit the topmost mask
+            merged_layer.mask_doc = None
+            merged_layer.mask_use_luma = True
+            merged_layer.mask_invert = False
+
+            new_layers = layers_above + [merged_layer] + layers_below
+            vw._layers = new_layers
+
+            vw._reinstall_layer_watchers()
+            self._rebuild_list()
+            vw.apply_layer_stack(vw._layers)
+
+            QMessageBox.information(self, "Layers", f"Merged {len(layers_sel)} layers into a single layer.")
+        except Exception as ex:
+            print("[LayersDock] merge_selected error:", ex)
+            QMessageBox.critical(self, "Layers", f"Merge Selected failed:\n{ex}")
+
 
     def _layer_count(self) -> int:
         vw = self.current_view()

@@ -1226,18 +1226,6 @@ class ImageSubWindow(QWidget):
         except Exception as e:
             print("[ImageSubWindow] apply_layer_stack error:", e)      
 
-    # --- add to ImageSubWindow ---
-    def _collect_layer_docs(self):
-        docs = set()
-        for L in getattr(self, "_layers", []):
-            d = getattr(L, "src_doc", None)
-            if d is not None:
-                docs.add(d)
-            md = getattr(L, "mask_doc", None)
-            if md is not None:
-                docs.add(md)
-        return docs
-
     def keyPressEvent(self, ev):
         if ev.key() == Qt.Key.Key_Space:
             # only the first time we enter probe mode
@@ -1359,21 +1347,70 @@ class ImageSubWindow(QWidget):
         except Exception as e:
             print("[ImageSubWindow] _on_layer_source_changed error:", e)
 
+    def _collect_layer_docs(self):
+        """
+        Collect unique ImageDocument objects referenced by the layer stack:
+        - layer src_doc (if doc-backed)
+        - layer mask_doc (if any)
+        Raster/baked layers may have src_doc=None; those are ignored.
+        Returns a LIST in a stable order (bottom→top traversal order), de-duped.
+        """
+        out = []
+        seen = set()
+
+        layers = getattr(self, "_layers", None) or []
+        for L in layers:
+            # 1) source doc (may be None for raster/baked layers)
+            d = getattr(L, "src_doc", None)
+            if d is not None:
+                k = id(d)
+                if k not in seen:
+                    seen.add(k)
+                    out.append(d)
+
+            # 2) mask doc (also may be None)
+            md = getattr(L, "mask_doc", None)
+            if md is not None:
+                k = id(md)
+                if k not in seen:
+                    seen.add(k)
+                    out.append(md)
+
+        return out
+
+
     def _reinstall_layer_watchers(self):
+        """
+        Reconnect layer source/mask document watchers to trigger live layer recomposite.
+        Safe against:
+        - raster/baked layers (src_doc=None)
+        - deleted docs / partially-torn-down Qt objects
+        - repeated calls
+        """
+        # Previous watchers
+        olddocs = list(getattr(self, "_watched_docs", []) or [])
+
         # Disconnect old
-        for d in list(self._watched_docs):
+        for d in olddocs:
             try:
+                # Doc may already be deleted or signal gone
                 d.changed.disconnect(self._on_layer_source_changed)
             except Exception:
                 pass
-        # Connect new
+
+        # Collect new
         newdocs = self._collect_layer_docs()
+
+        # Connect new
         for d in newdocs:
             try:
                 d.changed.connect(self._on_layer_source_changed)
             except Exception:
                 pass
+
+        # Store as list (stable)
         self._watched_docs = newdocs
+
 
 
     def toggle_mask_overlay(self):
