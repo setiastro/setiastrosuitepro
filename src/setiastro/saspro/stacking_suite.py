@@ -16,6 +16,7 @@ import hashlib
 from numpy.lib.format import open_memmap 
 import tzlocal
 import weakref
+import ast
 import re
 import unicodedata
 import math            # used in compute_safe_chunk
@@ -4107,6 +4108,74 @@ def _read_center_patch_via_mmimage(path: str, y0: int, y1: int, x0: int, x1: int
         except Exception:
             pass
 
+def _get_key_float(hdr: fits.Header, key: str):
+    try:
+        v = hdr.get(key, None)
+        if v is None:
+            return None
+        # handle strings like "-10.0" or "-10 C"
+        if isinstance(v, str):
+            v = v.strip().replace("C", "").replace("°", "").strip()
+        return float(v)
+    except Exception:
+        return None
+
+def _collect_temp_stats(file_list: list[str]):
+    ccd = []
+    setp = []
+    n_ccd = 0
+    n_set = 0
+
+    for p in file_list:
+        try:
+            hdr = fits.getheader(p, memmap=True)
+        except Exception:
+            continue
+
+        v1 = _get_key_float(hdr, "CCD-TEMP")
+        v2 = _get_key_float(hdr, "SET-TEMP")
+
+        if v1 is not None:
+            ccd.append(v1); n_ccd += 1
+        if v2 is not None:
+            setp.append(v2); n_set += 1
+
+    def _stats(arr):
+        if not arr:
+            return None, None, None, None
+        a = np.asarray(arr, dtype=np.float32)
+        return float(np.median(a)), float(np.min(a)), float(np.max(a)), float(np.std(a))
+
+    c_med, c_min, c_max, c_std = _stats(ccd)
+    s_med, s_min, s_max, s_std = _stats(setp)
+
+    return {
+        "ccd_med": c_med, "ccd_min": c_min, "ccd_max": c_max, "ccd_std": c_std, "ccd_n": n_ccd,
+        "set_med": s_med, "set_min": s_min, "set_max": s_max, "set_std": s_std, "set_n": n_set,
+        "n_files": len(file_list),
+    }
+
+def _temp_to_stem_tag(temp_c: float, *, prefix: str = "") -> str:
+    """
+    Filename-safe temperature token:
+      -10.0  -> 'm10p0C'
+      +5.25  -> 'p5p3C' (rounded to 0.1C if you pass that in)
+    Uses:
+      m = minus, p = plus/decimal separator
+    Never produces '_-' which your _normalize_master_stem would collapse.
+    """
+    try:
+        t = float(temp_c)
+    except Exception:
+        return ""
+
+    sign = "m" if t < 0 else "p"
+    t_abs = abs(t)
+
+    # keep one decimal place (match your earlier plan)
+    s = f"{t_abs:.1f}"          # e.g. "10.0"
+    s = s.replace(".", "p")     # e.g. "10p0"
+    return f"{prefix}{sign}{s}C"
 
 class StackingSuiteDialog(QDialog):
     requestRelaunch = pyqtSignal(str, str)  # old_dir, new_dir
@@ -6659,6 +6728,22 @@ class StackingSuiteDialog(QDialog):
 
         return tab
     
+    def _bucket_temp(self, t: float | None, step: float = 3.0) -> float | None:
+        """Round to stable bucket. Example: -10.2 -> -10.0 when step=1.0"""
+        if t is None:
+            return None
+        try:
+            return round(float(t) / float(step)) * float(step)
+        except Exception:
+            return None
+
+    def _temp_label(self, t: float | None, step: float = 1.0) -> str:
+        if t is None:
+            return "Temp: Unknown"
+        # show fewer decimals if step is 1.0
+        return f"Temp: {t:+.0f}C" if step >= 1.0 else f"Temp: {t:+.1f}C"
+
+
     def _tree_for_type(self, t: str):
         t = (t or "").upper()
         if t == "LIGHT": return getattr(self, "light_tree", None)
@@ -10485,24 +10570,85 @@ class StackingSuiteDialog(QDialog):
                 keyword = self.settings.value("stacking/session_keyword", "Default", type=str)
                 session_tag = self._session_from_manual_keyword(path, keyword) or "Default"
 
+            # --- Temperature (fast: header already loaded) ---
+            ccd_temp = header.get("CCD-TEMP", None)
+            set_temp = header.get("SET-TEMP", None)
+
+            def _to_float_temp(v):
+                try:
+                    if v is None:
+                        return None
+                    if isinstance(v, (int, float)):
+                        return float(v)
+                    s = str(v).strip()
+                    s = s.replace("°", "").replace("C", "").replace("c", "").strip()
+                    return float(s)
+                except Exception:
+                    return None
+
+            ccd_temp_f = _to_float_temp(ccd_temp)
+            set_temp_f = _to_float_temp(set_temp)
+            use_temp_f = ccd_temp_f if ccd_temp_f is not None else set_temp_f
+
+            # --- Common metadata string for leaf rows ---
+            meta_text = f"Size: {image_size} | Session: {session_tag}"
+            if use_temp_f is not None:
+                meta_text += f" | Temp: {use_temp_f:.1f}C"
+                if set_temp_f is not None:
+                    meta_text += f" (Set: {set_temp_f:.1f}C)"
+
             # --- Common metadata string for leaf rows ---
             meta_text = f"Size: {image_size} | Session: {session_tag}"
 
             # === DARKs ===
             if expected_type_u == "DARK":
-                key = f"{exposure_text} ({image_size})"
-                self.dark_files.setdefault(key, []).append(path)
+                # --- temperature for grouping (prefer CCD-TEMP else SET-TEMP) ---
+                ccd_t = _get_key_float(header, "CCD-TEMP")
+                set_t = _get_key_float(header, "SET-TEMP")
+                chosen_t = ccd_t if ccd_t is not None else set_t
 
-                exposure_item = self._dark_group_item.get(key)
+                temp_step = self.settings.value("stacking/temp_group_step", 1.0, type=float)
+                temp_bucket = self._bucket_temp(chosen_t, step=temp_step)
+                temp_label = self._temp_label(temp_bucket, step=temp_step)
+
+                # --- tree grouping: exposure/size -> temp bucket -> files ---
+                base_key = f"{exposure_text} ({image_size})"
+
+                # ensure caches exist
+                if not hasattr(self, "_dark_group_item") or self._dark_group_item is None:
+                    self._dark_group_item = {}
+                if not hasattr(self, "_dark_temp_item") or self._dark_temp_item is None:
+                    self._dark_temp_item = {}  # (base_key, temp_label) -> QTreeWidgetItem
+
+                # top-level exposure group
+                exposure_item = self._dark_group_item.get(base_key)
                 if exposure_item is None:
-                    exposure_item = QTreeWidgetItem([key])
+                    exposure_item = QTreeWidgetItem([base_key, ""])
                     tree.addTopLevelItem(exposure_item)
-                    self._dark_group_item[key] = exposure_item
+                    self._dark_group_item[base_key] = exposure_item
 
-                leaf = QTreeWidgetItem([os.path.basename(path), meta_text])
+                # second-level temp group under that exposure group
+                temp_key = (base_key, temp_label)
+                temp_item = self._dark_temp_item.get(temp_key)
+                if temp_item is None:
+                    temp_item = QTreeWidgetItem([temp_label, ""])
+                    exposure_item.addChild(temp_item)
+                    self._dark_temp_item[temp_key] = temp_item
+
+                # --- store in dict for stacking ---
+                # Key includes session + temp bucket so create_master_dark can split properly.
+                # (We keep compatibility: your create_master_dark already handles tuple keys.)
+                composite_key = (base_key, session_tag, temp_bucket)
+                self.dark_files.setdefault(composite_key, []).append(path)
+
+                # --- leaf row ---
+                # Also add temp info to metadata text so user can see it per file
+                meta_text_dark = f"Size: {image_size} | Session: {session_tag} | {temp_label}"
+                leaf = QTreeWidgetItem([os.path.basename(path), meta_text_dark])
                 leaf.setData(0, Qt.ItemDataRole.UserRole, path)
                 leaf.setData(0, Qt.ItemDataRole.UserRole + 1, session_tag)
-                exposure_item.addChild(leaf)
+                leaf.setData(0, Qt.ItemDataRole.UserRole + 2, temp_bucket)   # handy later
+                temp_item.addChild(leaf)
 
             # === FLATs ===
             elif expected_type_u == "FLAT":
@@ -10664,14 +10810,39 @@ class StackingSuiteDialog(QDialog):
         exposure_tolerance = self.exposure_tolerance_spinbox.value()
 
         # -------------------------------------------------------------------------
-        # Group darks by (exposure +/- tolerance, image size string, session)
-        # self.dark_files can be either:
-        #   legacy:  exposure_key -> [paths]
-        #   session: (exposure_key, session) -> [paths]
+        # Temp helpers
         # -------------------------------------------------------------------------
-        dark_files_by_group: dict[tuple[float, str, str], list[str]] = {}  # (exp, size, session)->list
+        def _bucket_temp(t: float | None, step: float = 3.0) -> float | None:
+            """Round temperature to a stable bucket (e.g. -10.2 -> -10.0 if step=1.0)."""
+            if t is None:
+                return None
+            try:
+                return round(float(t) / step) * step
+            except Exception:
+                return None
+
+        def _read_temp_quick(path: str) -> tuple[float | None, float | None, float | None]:
+            """Fast temp read (CCD, SET, chosen). Uses fits.getheader(memmap=True)."""
+            try:
+                hdr = fits.getheader(path, memmap=True)
+            except Exception:
+                return None, None, None
+            ccd = _get_key_float(hdr, "CCD-TEMP")
+            st  = _get_key_float(hdr, "SET-TEMP")
+            chosen = ccd if ccd is not None else st
+            return ccd, st, chosen
+
+        # -------------------------------------------------------------------------
+        # Group darks by (exposure +/- tolerance, image size, session, temp_bucket)
+        # TEMP_STEP is the rounding bucket (1.0C default)
+        # -------------------------------------------------------------------------
+        TEMP_STEP = self.settings.value("stacking/temp_group_step", 1.0, type=float)
+
+        dark_files_by_group: dict[tuple[float, str, str, float | None], list[str]] = {}  # (exp,size,session,temp)->list
 
         for key, file_list in (self.dark_files or {}).items():
+            # Support both legacy dark_files (key=str) and newer tuple keys.
+            # We DO NOT assume dark_files already contains temp in key — we re-bucket from headers anyway.
             if isinstance(key, tuple) and len(key) >= 2:
                 exposure_key = str(key[0])
                 session = str(key[1]) if str(key[1]).strip() else "Default"
@@ -10683,10 +10854,9 @@ class StackingSuiteDialog(QDialog):
                 exposure_time_str, image_size = exposure_key.split(" (", 1)
                 image_size = image_size.rstrip(")")
             except ValueError:
-                # If some malformed key got in, skip safely
                 continue
 
-            if "Unknown" in exposure_time_str:
+            if "Unknown" in (exposure_time_str or ""):
                 exposure_time = 0.0
             else:
                 try:
@@ -10694,21 +10864,31 @@ class StackingSuiteDialog(QDialog):
                 except Exception:
                     exposure_time = 0.0
 
-            matched_group = None
-            for (existing_exposure, existing_size, existing_session) in list(dark_files_by_group.keys()):
-                if (
-                    existing_session == session
-                    and existing_size == image_size
-                    and abs(existing_exposure - exposure_time) <= exposure_tolerance
-                ):
-                    matched_group = (existing_exposure, existing_size, existing_session)
-                    break
+            # Split the incoming list by temp bucket so mixed temps do not merge.
+            bucketed: dict[float | None, list[str]] = {}
+            for p in (file_list or []):
+                _, _, chosen = _read_temp_quick(p)
+                tb = _bucket_temp(chosen, step=TEMP_STEP)
+                bucketed.setdefault(tb, []).append(p)
 
-            if matched_group is None:
-                matched_group = (exposure_time, image_size, session)
-                dark_files_by_group[matched_group] = []
+            # Apply exposure tolerance grouping PER temp bucket
+            for temp_bucket, paths_in_bucket in bucketed.items():
+                matched_group = None
+                for (existing_exposure, existing_size, existing_session, existing_temp) in list(dark_files_by_group.keys()):
+                    if (
+                        existing_session == session
+                        and existing_size == image_size
+                        and existing_temp == temp_bucket
+                        and abs(existing_exposure - exposure_time) <= exposure_tolerance
+                    ):
+                        matched_group = (existing_exposure, existing_size, existing_session, existing_temp)
+                        break
 
-            dark_files_by_group[matched_group].extend(file_list or [])
+                if matched_group is None:
+                    matched_group = (exposure_time, image_size, session, temp_bucket)
+                    dark_files_by_group[matched_group] = []
+
+                dark_files_by_group[matched_group].extend(paths_in_bucket)
 
         master_dir = os.path.join(self.stacking_directory, "Master_Calibration_Files")
         os.makedirs(master_dir, exist_ok=True)
@@ -10717,11 +10897,11 @@ class StackingSuiteDialog(QDialog):
         # Informative status about discovery
         # -------------------------------------------------------------------------
         try:
-            n_groups = sum(1 for _, v in dark_files_by_group.items() if len(v) >= 2)
+            n_groups_eligible = sum(1 for _, v in dark_files_by_group.items() if len(v) >= 2)
             total_files = sum(len(v) for v in dark_files_by_group.values())
             self.update_status(self.tr(
                 f"🔎 Discovered {len(dark_files_by_group)} grouped exposures "
-                f"({n_groups} eligible to stack) — {total_files} files total."
+                f"({n_groups_eligible} eligible to stack) — {total_files} files total."
             ))
         except Exception:
             pass
@@ -10731,12 +10911,12 @@ class StackingSuiteDialog(QDialog):
         # Pre-count tiles for progress bar (per-group safe chunk sizes)
         # -------------------------------------------------------------------------
         total_tiles = 0
-        group_shapes: dict[tuple[float, str, str], tuple[int, int, int, int, int]] = {}  # (exp,size,session)->(H,W,C,ch,cw)
+        group_shapes: dict[tuple[float, str, str, float | None], tuple[int, int, int, int, int]] = {}
         pref_chunk_h = self.chunk_height
         pref_chunk_w = self.chunk_width
         DTYPE = np.float32
 
-        for (exposure_time, image_size, session), file_list in dark_files_by_group.items():
+        for (exposure_time, image_size, session, temp_bucket), file_list in dark_files_by_group.items():
             if len(file_list) < 2:
                 continue
 
@@ -10754,7 +10934,8 @@ class StackingSuiteDialog(QDialog):
             except MemoryError:
                 chunk_h, chunk_w = pref_chunk_h, pref_chunk_w
 
-            group_shapes[(exposure_time, image_size, session)] = (H, W, C, chunk_h, chunk_w)
+            gk = (exposure_time, image_size, session, temp_bucket)
+            group_shapes[gk] = (H, W, C, chunk_h, chunk_w)
             total_tiles += _count_tiles(H, W, chunk_h, chunk_w)
 
         if total_tiles == 0:
@@ -10767,7 +10948,7 @@ class StackingSuiteDialog(QDialog):
         QApplication.processEvents()
 
         # -------------------------------------------------------------------------
-        # Local CPU reducers (unchanged)
+        # Local CPU reducers
         # -------------------------------------------------------------------------
         def _select_reducer(kind: str, N: int):
             if kind == "dark":
@@ -10811,10 +10992,10 @@ class StackingSuiteDialog(QDialog):
             # ---------------------------------------------------------------------
             # Per-group stacking loop
             # ---------------------------------------------------------------------
-            for (exposure_time, image_size, session), file_list in dark_files_by_group.items():
+            for (exposure_time, image_size, session, temp_bucket), file_list in dark_files_by_group.items():
                 if len(file_list) < 2:
                     self.update_status(self.tr(
-                        f"⚠️ Skipping {exposure_time}s ({image_size}) [{session}] - Not enough frames to stack."
+                        f"⚠️ Skipping {exposure_time:g}s ({image_size}) [{session}] - Not enough frames to stack."
                     ))
                     QApplication.processEvents()
                     continue
@@ -10823,14 +11004,17 @@ class StackingSuiteDialog(QDialog):
                     self.update_status(self.tr("⛔ Master Dark creation cancelled."))
                     break
 
+                temp_txt = "Unknown" if temp_bucket is None else f"{float(temp_bucket):+.1f}C"
                 self.update_status(self.tr(
-                    f"🟢 Processing {len(file_list)} darks for {exposure_time}s ({image_size}) in session '{session}'…"
+                    f"🟢 Processing {len(file_list)} darks for {exposure_time:g}s ({image_size}) "
+                    f"in session '{session}' at {temp_txt}…"
                 ))
                 QApplication.processEvents()
 
                 # --- reference shape and per-group chunk size ---
-                if (exposure_time, image_size, session) in group_shapes:
-                    height, width, channels, chunk_height, chunk_width = group_shapes[(exposure_time, image_size, session)]
+                gk = (exposure_time, image_size, session, temp_bucket)
+                if gk in group_shapes:
+                    height, width, channels, chunk_height, chunk_width = group_shapes[gk]
                 else:
                     ref_data, _, _, _ = load_image(file_list[0])
                     if ref_data is None:
@@ -10870,8 +11054,11 @@ class StackingSuiteDialog(QDialog):
                     QApplication.processEvents()
                     continue
 
-                # Include session to prevent collisions
-                memmap_path = os.path.join(master_dir, f"temp_dark_{session}_{exposure_time}_{image_size}.dat")
+                # Create temp memmap (stem-safe normalization)
+                tb_tag = "notemp" if temp_bucket is None else _temp_to_stem_tag(float(temp_bucket))
+                memmap_base = f"temp_dark_{session}_{exposure_time:g}s_{image_size}_{tb_tag}.dat"
+                memmap_base = self._normalize_master_stem(memmap_base)
+                memmap_path = os.path.join(master_dir, memmap_base)
 
                 self.update_status(self.tr(
                     f"🗂️ Creating temp memmap: {os.path.basename(memmap_path)} "
@@ -10883,6 +11070,7 @@ class StackingSuiteDialog(QDialog):
 
                 tiles = _tile_grid(height, width, chunk_height, chunk_width)
                 total_tiles_group = len(tiles)
+
                 self.update_status(self.tr(
                     f"📦 {total_tiles_group} tiles to process for this group (chunk {chunk_height}×{chunk_width})."
                 ))
@@ -10924,7 +11112,7 @@ class StackingSuiteDialog(QDialog):
                         fut = tp.submit(_read_tile_into, (buf1 if use0 else buf0), ny0, ny1, nx0, nx1)
 
                     pd.set_label(
-                        f"{int(exposure_time)}s ({image_size}) [{session}] — "
+                        f"{int(exposure_time)}s ({image_size}) [{session}] [{temp_txt}] — "
                         f"tile {t_idx}/{total_tiles_group} y:{y0}-{y1} x:{x0}-{x1}"
                     )
 
@@ -10954,6 +11142,7 @@ class StackingSuiteDialog(QDialog):
 
                     if tile_result.ndim == 2:
                         tile_result = tile_result[:, :, None]
+
                     expected_shape = (th, tw, channels)
                     if tile_result.shape != expected_shape:
                         if tile_result.shape[:2] == (th, tw):
@@ -10988,37 +11177,115 @@ class StackingSuiteDialog(QDialog):
                         pass
                     break
 
+                # -------------------------------------------------------------
+                # Materialize final memmap to ndarray for save
+                # -------------------------------------------------------------
                 master_dark_data = np.asarray(final_stacked, dtype=np.float32)
-                del final_stacked
+                try:
+                    del final_stacked
+                except Exception:
+                    pass
                 gc.collect()
+
                 try:
                     os.remove(memmap_path)
                 except Exception:
                     pass
 
-                # Include session in output name
-                master_dark_stem = f"MasterDark_{session}_{int(exposure_time)}s_{image_size}"
+                # -------------------------------------------------------------
+                # Collect temperature stats from input dark headers
+                # -------------------------------------------------------------
+                temp_info = {}
+                try:
+                    temp_info = _collect_temp_stats(file_list) or {}
+                except Exception:
+                    temp_info = {}
+
+                # -------------------------------------------------------------
+                # Build output filename (include session + exposure + size + temp bucket tag)
+                # -------------------------------------------------------------
+                temp_tag = ""
+                try:
+                    if temp_bucket is not None:
+                        temp_tag = "_" + _temp_to_stem_tag(float(temp_bucket))
+                    elif temp_info.get("ccd_med") is not None:
+                        temp_tag = "_" + _temp_to_stem_tag(float(temp_info["ccd_med"]))
+                    elif temp_info.get("set_med") is not None:
+                        temp_tag = "_" + _temp_to_stem_tag(float(temp_info["set_med"]), prefix="set")
+                except Exception:
+                    temp_tag = ""
+
+                master_dark_stem = f"MasterDark_{session}_{int(exposure_time)}s_{image_size}{temp_tag}"
+                master_dark_stem = self._normalize_master_stem(master_dark_stem)
                 master_dark_path = self._build_out(master_dir, master_dark_stem, "fit")
 
+                # -------------------------------------------------------------
+                # Header
+                # -------------------------------------------------------------
                 master_header = fits.Header()
                 master_header["IMAGETYP"] = "DARK"
-                master_header["EXPTIME"] = (exposure_time, "User-specified or from grouping")
-                master_header["SESSION"] = (session, "User session tag")  # optional but useful
-                master_header["NAXIS"] = 3 if channels == 3 else 2
-                master_header["NAXIS1"] = master_dark_data.shape[1]
-                master_header["NAXIS2"] = master_dark_data.shape[0]
+                master_header["EXPTIME"]  = (float(exposure_time), "Exposure time (s)")
+                master_header["SESSION"]  = (str(session), "User session tag")
+                master_header["NCOMBINE"] = (int(N), "Number of darks combined")
+                master_header["NSTACK"]   = (int(N), "Alias of NCOMBINE (SetiAstro)")
+
+                # Temperature provenance (only write keys that exist)
+                if temp_info.get("ccd_med") is not None:
+                    master_header["CCD-TEMP"] = (float(temp_info["ccd_med"]), "Median CCD temp of input darks (C)")
+                    if temp_info.get("ccd_min") is not None:
+                        master_header["CCDTMIN"] = (float(temp_info["ccd_min"]), "Min CCD temp in input darks (C)")
+                    if temp_info.get("ccd_max") is not None:
+                        master_header["CCDTMAX"] = (float(temp_info["ccd_max"]), "Max CCD temp in input darks (C)")
+                    if temp_info.get("ccd_std") is not None:
+                        master_header["CCDTSTD"] = (float(temp_info["ccd_std"]), "Std CCD temp in input darks (C)")
+                    if temp_info.get("ccd_n") is not None:
+                        master_header["CCDTN"] = (int(temp_info["ccd_n"]), "Count of frames with CCD-TEMP")
+
+                if temp_info.get("set_med") is not None:
+                    master_header["SET-TEMP"] = (float(temp_info["set_med"]), "Median setpoint temp of input darks (C)")
+                    if temp_info.get("set_min") is not None:
+                        master_header["SETTMIN"] = (float(temp_info["set_min"]), "Min setpoint in input darks (C)")
+                    if temp_info.get("set_max") is not None:
+                        master_header["SETTMAX"] = (float(temp_info["set_max"]), "Max setpoint in input darks (C)")
+                    if temp_info.get("set_std") is not None:
+                        master_header["SETTSTD"] = (float(temp_info["set_std"]), "Std setpoint in input darks (C)")
+                    if temp_info.get("set_n") is not None:
+                        master_header["SETTN"] = (int(temp_info["set_n"]), "Count of frames with SET-TEMP")
+
+                # Dimensions (save_image usually writes these, but keep your existing behavior)
+                master_header["NAXIS"]  = 3 if channels == 3 else 2
+                master_header["NAXIS1"] = int(master_dark_data.shape[1])
+                master_header["NAXIS2"] = int(master_dark_data.shape[0])
                 if channels == 3:
                     master_header["NAXIS3"] = 3
 
-                save_image(master_dark_data, master_dark_path, "fit", "32-bit floating point", master_header, is_mono=(channels == 1))
+                save_image(
+                    master_dark_data,
+                    master_dark_path,
+                    "fit",
+                    "32-bit floating point",
+                    master_header,
+                    is_mono=(channels == 1)
+                )
 
-                self.add_master_dark_to_tree(f"{exposure_time}s ({image_size}) [{session}]", master_dark_path)
+                # Tree label includes temp for visibility
+                tree_label = f"{exposure_time:g}s ({image_size}) [{session}]"
+                if temp_info.get("ccd_med") is not None:
+                    tree_label += f" [CCD {float(temp_info['ccd_med']):+.1f}C]"
+                elif temp_info.get("set_med") is not None:
+                    tree_label += f" [SET {float(temp_info['set_med']):+.1f}C]"
+                elif temp_bucket is not None:
+                    tree_label += f" [TEMP {float(temp_bucket):+.1f}C]"
+
+                self.add_master_dark_to_tree(tree_label, master_dark_path)
                 self.update_status(self.tr(f"✅ Master Dark saved: {master_dark_path}"))
                 QApplication.processEvents()
 
+                # Refresh assignments + persistence
                 self.assign_best_master_files()
                 self.save_master_paths_to_settings()
 
+            # Post pass refresh (unchanged behavior)
             self.assign_best_master_dark()
             self.update_override_dark_combo()
             self.assign_best_master_files()
@@ -11031,7 +11298,6 @@ class StackingSuiteDialog(QDialog):
                 logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             pd.close()
 
-      
     def add_master_dark_to_tree(self, exposure_label: str, master_dark_path: str):
         """
         Adds the newly created Master Dark to the Master Dark TreeBox and updates the dropdown.
@@ -12079,6 +12345,140 @@ class StackingSuiteDialog(QDialog):
         master_item = QTreeWidgetItem([os.path.basename(master_flat_path)])
         filter_item.addChild(master_item)
 
+    def _parse_float(self, v):
+        try:
+            if v is None:
+                return None
+            if isinstance(v, (int, float)):
+                return float(v)
+            s = str(v).strip()
+            # handle " -10.0 C" or "-10.0C"
+            s = s.replace("°", "").replace("C", "").replace("c", "").strip()
+            return float(s)
+        except Exception:
+            return None
+
+
+    def _read_ccd_set_temp_from_fits(self, path: str) -> tuple[float|None, float|None]:
+        """Read CCD-TEMP and SET-TEMP from FITS header (primary HDU)."""
+        try:
+            with fits.open(path) as hdul:
+                hdr = hdul[0].header
+                ccd = self._parse_float(hdr.get("CCD-TEMP", None))
+                st  = self._parse_float(hdr.get("SET-TEMP", None))
+                return ccd, st
+        except Exception:
+            return None, None
+
+
+    def _temp_for_matching(self, ccd: float|None, st: float|None) -> float|None:
+        """Prefer CCD-TEMP; else SET-TEMP; else None."""
+        return ccd if ccd is not None else (st if st is not None else None)
+
+
+    def _parse_masterdark_name(self, stem: str):
+        """
+        From filename like:
+        MasterDark_Session_300s_4144x2822_m10p0C.fit
+        Return dict fields; temp is optional.
+        """
+        out = {"session": None, "exp": None, "size": None, "temp": None}
+
+        base = os.path.basename(stem)
+        base = os.path.splitext(base)[0]
+
+        # session is between MasterDark_ and _<exp>s_
+        # exp is <num>s
+        # size is <WxH> like 4144x2822
+        m = re.match(r"^MasterDark_(?P<session>.+?)_(?P<exp>[\d._]+)s_(?P<size>\d+x\d+)(?:_(?P<temp>.*))?$", base)
+        if not m:
+            return out
+
+        out["session"] = (m.group("session") or "").strip()
+        # exp might be "2_5" from _normalize_master_stem; convert back
+        exp_txt = (m.group("exp") or "").replace("_", ".")
+        try:
+            out["exp"] = float(exp_txt)
+        except Exception:
+            out["exp"] = None
+
+        out["size"] = m.group("size")
+
+        # temp token like m10p0C / p5p0C / setm10p0C
+        t = (m.group("temp") or "").strip()
+        if t:
+            # pick the first temp-ish token ending in C
+            mt = re.search(r"(set)?([mp])(\d+)p(\d)C", t)
+            if mt:
+                sign = -1.0 if mt.group(2) == "m" else 1.0
+                whole = float(mt.group(3))
+                frac = float(mt.group(4)) / 10.0
+                out["temp"] = sign * (whole + frac)
+
+        return out
+
+
+    def _get_master_dark_meta(self, path: str) -> dict:
+        """
+        Cached metadata for a master dark.
+        Prefers FITS header for temp; falls back to filename temp token.
+        """
+        if not hasattr(self, "_master_dark_meta_cache"):
+            self._master_dark_meta_cache = {}
+        cache = self._master_dark_meta_cache
+
+        p = os.path.normpath(path)
+        if p in cache:
+            return cache[p]
+
+        meta = {"path": p, "session": None, "exp": None, "size": None,
+                "ccd": None, "set": None, "temp": None}
+
+        # filename parse (fast)
+        fn = self._parse_masterdark_name(p)
+        meta["session"] = fn.get("session") or None
+        meta["exp"]     = fn.get("exp")
+        meta["size"]    = fn.get("size")
+        meta["temp"]    = fn.get("temp")
+
+        # header parse (authoritative for temps)
+        ccd, st = self._read_ccd_set_temp_from_fits(p)
+        meta["ccd"] = ccd
+        meta["set"] = st
+        meta["temp"] = self._temp_for_matching(ccd, st) if (ccd is not None or st is not None) else meta["temp"]
+
+        # size from header if missing
+        if not meta["size"]:
+            try:
+                with fits.open(p) as hdul:
+                    data = hdul[0].data
+                    if data is not None:
+                        meta["size"] = f"{data.shape[1]}x{data.shape[0]}"
+            except Exception:
+                pass
+
+        cache[p] = meta
+        return meta
+
+
+    def _get_light_temp(self, light_path: str) -> tuple[float|None, float|None, float|None]:
+        """Return (ccd, set, chosen) with caching."""
+        if not hasattr(self, "_light_temp_cache"):
+            self._light_temp_cache = {}
+        cache = self._light_temp_cache
+
+        p = os.path.normpath(light_path or "")
+        if not p:
+            return None, None, None
+        if p in cache:
+            return cache[p]
+
+        ccd, st = self._read_ccd_set_temp_from_fits(p)
+        chosen = self._temp_for_matching(ccd, st)
+        cache[p] = (ccd, st, chosen)
+        return cache[p]
+
+
     def assign_best_master_files(self, fill_only: bool = True):
         """
         Assign best matching Master Dark and Flat to each Light leaf.
@@ -12138,32 +12538,57 @@ class StackingSuiteDialog(QDialog):
                         if fill_only and curr_dark and curr_dark.lower() != "none":
                             dark_choice = curr_dark
                         else:
-                            # 3) Auto-pick by size+closest exposure
-                            best_dark_match = None
-                            best_dark_diff = float("inf")
-                            for master_key, master_path in self.master_files.items():
-                                dmatch = re.match(r"^([\d.]+)s\b", master_key)  # darks start with "<exp>s"
-                                if not dmatch:
+                            # 3) Auto-pick by size + closest exposure + closest temperature (and prefer same session)
+                            light_path = leaf_item.data(0, Qt.ItemDataRole.UserRole)
+                            l_ccd, l_set, l_temp = self._get_light_temp(light_path)
+
+                            best_path = None
+                            best_score = None
+
+                            for mk, mp in (self.master_files or {}).items():
+                                if not mp:
                                     continue
-                                master_dark_exposure_time = float(dmatch.group(1))
 
-                                # Ensure size known/cached
-                                md_size = master_sizes.get(master_path)
-                                if not md_size:
-                                    try:
-                                        with fits.open(master_path) as hdul:
-                                            md_size = f"{hdul[0].data.shape[1]}x{hdul[0].data.shape[0]}"
-                                    except Exception:
-                                        md_size = "Unknown"
-                                    master_sizes[master_path] = md_size
+                                bn = os.path.basename(mp)
+                                # Only consider MasterDark_* files (cheap gate)
+                                if not bn.startswith("MasterDark_"):
+                                    continue
 
-                                if md_size == image_size:
-                                    diff = abs(master_dark_exposure_time - exposure_time)
-                                    if diff < best_dark_diff:
-                                        best_dark_diff = diff
-                                        best_dark_match = master_path
+                                md = self._get_master_dark_meta(mp)
+                                md_size = md.get("size") or "Unknown"
+                                if md_size != image_size:
+                                    continue
 
-                            dark_choice = os.path.basename(best_dark_match) if best_dark_match else ("None" if not curr_dark else curr_dark)
+                                md_exp = md.get("exp")
+                                if md_exp is None:
+                                    continue
+
+                                # exposure closeness
+                                exp_diff = abs(float(md_exp) - float(exposure_time))
+
+                                # session preference: exact match beats mismatch
+                                md_sess = (md.get("session") or "Default").strip()
+                                sess_mismatch = 0 if md_sess == session_name else 1
+
+                                # temperature closeness (if both known)
+                                md_temp = md.get("temp")
+                                if (l_temp is not None) and (md_temp is not None):
+                                    temp_diff = abs(float(md_temp) - float(l_temp))
+                                    temp_unknown = 0
+                                else:
+                                    # if light has temp but dark doesn't (or vice versa), penalize
+                                    temp_diff = 9999.0
+                                    temp_unknown = 1
+
+                                # Score tuple: lower is better
+                                # Priority: session match -> exposure diff -> temp availability -> temp diff
+                                score = (sess_mismatch, exp_diff, temp_unknown, temp_diff)
+
+                                if best_score is None or score < best_score:
+                                    best_score = score
+                                    best_path = mp
+
+                            dark_choice = os.path.basename(best_path) if best_path else ("None" if not curr_dark else curr_dark)
 
                     # ---------- FLAT RESOLUTION ----------
                     flat_key_full  = f"{filter_name_raw} - {exposure_text}"
@@ -16328,6 +16753,10 @@ class StackingSuiteDialog(QDialog):
             hdr_orig["CREATOR"]  = "SetiAstroSuite"
             hdr_orig["DATE-OBS"] = datetime.utcnow().isoformat()
 
+            n_frames_group = len(file_list)
+            hdr_orig["NCOMBINE"] = (int(n_frames_group), "Number of frames combined")
+            hdr_orig["NSTACK"]   = (int(n_frames_group), "Alias of NCOMBINE (SetiAstro)")
+
             is_mono_orig = (integrated_image.ndim == 2)
             if is_mono_orig:
                 hdr_orig["NAXIS"]  = 2
@@ -16447,6 +16876,8 @@ class StackingSuiteDialog(QDialog):
                     scale=1.0,
                     rect_override=group_rect if group_rect is not None else global_rect
                 )
+                hdr_crop["NCOMBINE"] = (int(n_frames_group), "Number of frames combined")
+                hdr_crop["NSTACK"]   = (int(n_frames_group), "Alias of NCOMBINE (SetiAstro)")
                 is_mono_crop = (cropped_img.ndim == 2)
                 Hc, Wc = (cropped_img.shape[:2] if cropped_img.ndim >= 2 else (H, W))
                 display_group_crop = self._label_with_dims(group_key, Wc, Hc)
@@ -16590,6 +17021,12 @@ class StackingSuiteDialog(QDialog):
                         algo_override=COMET_ALGO  # << comet-friendly reducer
                     )
 
+                    n_usable = int(len(usable))
+                    ref_header_c = ref_header_c or ref_header or fits.Header()
+                    ref_header_c["NCOMBINE"] = (n_usable, "Number of frames combined (comet)")
+                    ref_header_c["NSTACK"]   = (n_usable, "Alias of NCOMBINE (SetiAstro)")
+                    ref_header_c["COMETFR"]  = (n_usable, "Frames used for comet-aligned stack")
+
                     # Save CometOnly
                     Hc, Wc = comet_only.shape[:2]
                     display_group_c = self._label_with_dims(group_key, Wc, Hc)
@@ -16614,6 +17051,10 @@ class StackingSuiteDialog(QDialog):
                             scale=1.0,
                             rect_override=group_rect if group_rect is not None else global_rect
                         )
+                        comet_only_crop, hdr_c_crop = self._apply_autocrop(...)
+                        hdr_c_crop["NCOMBINE"] = (n_usable, "Number of frames combined (comet)")
+                        hdr_c_crop["NSTACK"]   = (n_usable, "Alias of NCOMBINE (SetiAstro)")
+                        hdr_c_crop["COMETFR"]  = (n_usable, "Frames used for comet-aligned stack")                        
                         Hcc, Wcc = comet_only_crop.shape[:2]
                         display_group_cc = self._label_with_dims(group_key, Wcc, Hcc)
                         comet_path_crop = self._build_out(
@@ -17200,246 +17641,6 @@ class StackingSuiteDialog(QDialog):
             npy, _ = self._ensure_float32_memmap(p)
             views[p] = np.load(npy, mmap_mode="r")  # returns numpy.memmap
         return views
-
-
-    def stack_registered_images_chunked(
-        self,
-        grouped_files,
-        frame_weights,
-        chunk_height=2048,
-        chunk_width=2048
-    ):
-        self.update_status(self.tr(f"✅ Chunked stacking {len(grouped_files)} group(s)..."))
-        QApplication.processEvents()
-
-        all_rejection_coords = []
-
-        for group_key, file_list in grouped_files.items():
-            num_files = len(file_list)
-            self.update_status(self.tr(f"📊 Group '{group_key}' has {num_files} aligned file(s)."))
-            QApplication.processEvents()
-            if num_files < 2:
-                self.update_status(self.tr(f"⚠️ Group '{group_key}' does not have enough frames to stack."))
-                continue
-
-            # Reference shape/header (unchanged)
-            ref_file = file_list[0]
-            if not os.path.exists(ref_file):
-                self.update_status(self.tr(f"⚠️ Reference file '{ref_file}' not found, skipping group."))
-                continue
-
-            ref_data, ref_header, _, _ = load_image(ref_file)
-            if ref_data is None:
-                self.update_status(self.tr(f"⚠️ Could not load reference '{ref_file}', skipping group."))
-                continue
-
-            is_color = (ref_data.ndim == 3 and ref_data.shape[2] == 3)
-            height, width = ref_data.shape[:2]
-            channels = 3 if is_color else 1
-
-            # Final output memmap (unchanged)
-            memmap_path = self._build_out(self.stacking_directory, f"chunked_{group_key}", "dat")
-            final_stacked = np.memmap(memmap_path, dtype=np.float32, mode='w+', shape=(height, width, channels))
-
-            # Valid files + weights
-            aligned_paths, weights_list = [], []
-            for fpath in file_list:
-                if os.path.exists(fpath):
-                    aligned_paths.append(fpath)
-                    weights_list.append(frame_weights.get(fpath, 1.0))
-                else:
-                    self.update_status(self.tr(f"⚠️ File not found: {fpath}, skipping."))
-            if len(aligned_paths) < 2:
-                self.update_status(self.tr(f"⚠️ Not enough valid frames in group '{group_key}' to stack."))
-                continue
-
-            weights_list = np.array(weights_list, dtype=np.float32)
-
-            # ⬇️ NEW: open read-only memmaps for all aligned frames (float32 [0..1], HxWxC)
-            mm_views = self._open_memmaps_readonly(aligned_paths)
-
-            self.update_status(self.tr(f"📊 Stacking group '{group_key}' with {self.rejection_algorithm}"))
-            QApplication.processEvents()
-
-            rejection_coords = []
-            N = len(aligned_paths)
-            DTYPE  = self._dtype()
-            pref_h = self.chunk_height
-            pref_w = self.chunk_width
-
-            try:
-                chunk_h, chunk_w = compute_safe_chunk(height, width, N, channels, DTYPE, pref_h, pref_w)
-                self.update_status(self.tr(f"🔧 Using chunk size {chunk_h}×{chunk_w} for {self._dtype()}"))
-            except MemoryError as e:
-                self.update_status(self.tr(f"⚠️ {e}"))
-                return None, {}, None
-
-            # Tile loop (same structure, but tile loading reads from memmaps)
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-            LOADER_WORKERS = min(max(2, (os.cpu_count() or 4) // 2), 8)  # tuned for memory bw
-
-            for y_start in range(0, height, chunk_h):
-                y_end  = min(y_start + chunk_h, height)
-                tile_h = y_end - y_start
-
-                for x_start in range(0, width, chunk_w):
-                    x_end  = min(x_start + chunk_w, width)
-                    tile_w = x_end - x_start
-
-                    # Preallocate tile stack
-                    tile_stack = np.empty((N, tile_h, tile_w, channels), dtype=np.float32)
-
-                    # ⬇️ NEW: fill tile_stack from the memmaps (parallel copy)
-                    def _copy_one(i, path):
-                        v = mm_views[path][y_start:y_end, x_start:x_end]  # view on disk
-                        if v.ndim == 2:
-                            # mono memmap stored as (H,W,1); but if legacy mono npy exists as (H,W),
-                            # make it (H,W,1) here:
-                            vv = v[..., None]
-                        else:
-                            vv = v
-                        if vv.shape[2] == 1 and channels == 3:
-                            vv = np.repeat(vv, 3, axis=2)
-                        tile_stack[i] = vv
-
-                    with ThreadPoolExecutor(max_workers=LOADER_WORKERS) as exe:
-                        futs = {exe.submit(_copy_one, i, p): i for i, p in enumerate(aligned_paths)}
-                        for _ in as_completed(futs):
-                            pass
-
-                    # Rejection (unchanged – uses your Numba kernels)
-                    algo = self.rejection_algorithm
-                    if algo == "Simple Median (No Rejection)":
-                        tile_result  = np.median(tile_stack, axis=0)
-                        tile_rej_map = np.zeros(tile_stack.shape[1:3], dtype=np.bool_)
-                    elif algo == "Simple Average (No Rejection)":
-                        tile_result  = np.average(tile_stack, axis=0, weights=weights_list)
-                        tile_rej_map = np.zeros(tile_stack.shape[1:3], dtype=np.bool_)
-                    elif algo == "Weighted Windsorized Sigma Clipping":
-                        tile_result, tile_rej_map = windsorized_sigma_clip_weighted(
-                            tile_stack, weights_list, lower=self.sigma_low, upper=self.sigma_high
-                        )
-                    elif algo == "Kappa-Sigma Clipping":
-                        tile_result, tile_rej_map = kappa_sigma_clip_weighted(
-                            tile_stack, weights_list, kappa=self.kappa, iterations=self.iterations
-                        )
-                    elif algo == "Trimmed Mean":
-                        tile_result, tile_rej_map = trimmed_mean_weighted(
-                            tile_stack, weights_list, trim_fraction=self.trim_fraction
-                        )
-                    elif algo == "Extreme Studentized Deviate (ESD)":
-                        tile_result, tile_rej_map = esd_clip_weighted(
-                            tile_stack, weights_list, threshold=self.esd_threshold
-                        )
-                    elif algo == "Biweight Estimator":
-                        tile_result, tile_rej_map = biweight_location_weighted(
-                            tile_stack, weights_list, tuning_constant=self.biweight_constant
-                        )
-                    elif algo == "Modified Z-Score Clipping":
-                        tile_result, tile_rej_map = modified_zscore_clip_weighted(
-                            tile_stack, weights_list, threshold=self.modz_threshold
-                        )
-                    elif algo == "Max Value":
-                        tile_result, tile_rej_map = max_value_stack(
-                            tile_stack, weights_list
-                        )
-                    else:
-                        tile_result, tile_rej_map = windsorized_sigma_clip_weighted(
-                            tile_stack, weights_list, lower=self.sigma_low, upper=self.sigma_high
-                        )
-
-                    # Ensure tile_result has correct shape
-                    if tile_result.ndim == 2:
-                        tile_result = tile_result[:, :, None]
-                    expected_shape = (tile_h, tile_w, channels)
-                    if tile_result.shape != expected_shape:
-                        if tile_result.shape[2] == 0:
-                            tile_result = np.zeros(expected_shape, dtype=np.float32)
-                        elif tile_result.shape[:2] == (tile_h, tile_w):
-                            if tile_result.shape[2] > channels:
-                                tile_result = tile_result[:, :, :channels]
-                            else:
-                                tile_result = np.repeat(tile_result, channels, axis=2)[:, :, :channels]
-
-                    # Commit tile
-                    final_stacked[y_start:y_end, x_start:x_end, :] = tile_result
-
-                    # Collect per-tile rejection coords (unchanged logic)
-                    if tile_rej_map.ndim == 3:          # (N, tile_h, tile_w)
-                        combined_rej = np.any(tile_rej_map, axis=0)
-                    elif tile_rej_map.ndim == 4:        # (N, tile_h, tile_w, C)
-                        combined_rej = np.any(tile_rej_map, axis=0)
-                        combined_rej = np.any(combined_rej, axis=-1)
-                    else:
-                        combined_rej = np.zeros((tile_h, tile_w), dtype=np.bool_)
-
-                    ys_tile, xs_tile = np.where(combined_rej)
-                    for dy, dx in zip(ys_tile, xs_tile):
-                        rejection_coords.append((x_start + dx, y_start + dy))
-
-            # Finish/save (unchanged from your version) …
-            final_array = np.array(final_stacked)
-            del final_stacked
-
-            final_array = self._normalize_stack_01(final_array)
-
-            if final_array.ndim == 3 and final_array.shape[-1] == 1:
-                final_array = final_array[..., 0]
-            is_mono = (final_array.ndim == 2)
-
-            if ref_header is None:
-                ref_header = fits.Header()
-            ref_header["IMAGETYP"] = "MASTER STACK"
-            ref_header["BITPIX"] = -32
-            ref_header["STACKED"] = (True, "Stacked using chunked approach")
-            ref_header["CREATOR"] = "SetiAstroSuite"
-            ref_header["DATE-OBS"] = datetime.utcnow().isoformat()
-            if is_mono:
-                ref_header["NAXIS"]  = 2
-                ref_header["NAXIS1"] = final_array.shape[1]
-                ref_header["NAXIS2"] = final_array.shape[0]
-                if "NAXIS3" in ref_header: del ref_header["NAXIS3"]
-            else:
-                ref_header["NAXIS"]  = 3
-                ref_header["NAXIS1"] = final_array.shape[1]
-                ref_header["NAXIS2"] = final_array.shape[0]
-                ref_header["NAXIS3"] = 3
-
-            output_stem = f"MasterLight_{group_key}_{len(aligned_paths)}stacked"
-            output_path  = self._build_out(self.stacking_directory, output_stem, "fit")
-
-            save_image(
-                img_array=final_array,
-                filename=output_path,
-                original_format="fit",
-                bit_depth="32-bit floating point",
-                original_header=ref_header,
-                is_mono=is_mono
-            )
-
-            self.update_status(self.tr(f"✅ Group '{group_key}' stacked {len(aligned_paths)} frame(s)! Saved: {output_path}"))
-
-            print(f"✅ Master Light saved for group '{group_key}': {output_path}")
-
-            # Optionally, you might want to store or log 'rejection_coords' (here appended to all_rejection_coords)
-            all_rejection_coords.extend(rejection_coords)
-
-            # Clean up memmap file
-            try:
-                os.remove(memmap_path)
-            except OSError:
-                pass
-
-        QMessageBox.information(
-            self,
-            "Stacking Complete",
-            f"All stacking finished successfully.\n"
-            f"Frames per group:\n" +
-            "\n".join([f"{group_key}: {len(files)} frame(s)" for group_key, files in grouped_files.items()])
-        )
-
-        # Optionally, you could return the global rejection coordinate list.
-        return all_rejection_coords        
 
     def _start_after_align_worker(self, aligned_light_files: dict[str, list[str]]):
         # Snapshot UI settings
@@ -18455,6 +18656,10 @@ class StackingSuiteDialog(QDialog):
         hdr_orig["CREATOR"]    = "SetiAstroSuite"
         hdr_orig["DATE-OBS"]   = datetime.utcnow().isoformat()
 
+        n_frames = int(len(file_list))
+        hdr_orig["NCOMBINE"] = (n_frames, "Number of frames combined")
+        hdr_orig["NSTACK"]   = (n_frames, "Alias of NCOMBINE (SetiAstro)")
+
         if final_drizzle.ndim == 2:
             hdr_orig["NAXIS"]  = 2
             hdr_orig["NAXIS1"] = final_drizzle.shape[1]
@@ -18484,10 +18689,12 @@ class StackingSuiteDialog(QDialog):
             cropped_drizzle, hdr_crop = self._apply_autocrop(
                 final_drizzle,
                 file_list,
-                hdr.copy() if hdr is not None else fits.Header(),
+                hdr_orig.copy(),
                 scale=float(scale_factor),
                 rect_override=rect_override
             )
+            hdr_crop["NCOMBINE"] = (n_frames, "Number of frames combined")
+            hdr_crop["NSTACK"]   = (n_frames, "Alias of NCOMBINE (SetiAstro)")            
             is_mono_crop = (cropped_drizzle.ndim == 2)
             display_group_driz_crop = self._label_with_dims(group_key, cropped_drizzle.shape[1], cropped_drizzle.shape[0])
             base_crop = f"MasterLight_{display_group_driz_crop}_{len(file_list)}stacked_drizzle_autocrop"
