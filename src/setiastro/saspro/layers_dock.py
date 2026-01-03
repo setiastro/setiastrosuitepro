@@ -218,13 +218,19 @@ class LayersDock(QDockWidget):
 
         # buttons
         row = QHBoxLayout(); v.addLayout(row)
+
         self.btn_clear = QPushButton("Clear All Layers")
-        self.btn_merge = QPushButton("Merge Layers and Push to View")
+
+        self.btn_merge = QPushButton("Merge → Push to View")
         self.btn_merge.setToolTip("Flatten the visible layers into the current view and add an undo step.")
+
+        self.btn_merge_new = QPushButton("Merge → New Document")
+        self.btn_merge_new.setToolTip("Flatten the visible layers into a new document (does not modify the base view).")
+
         row.addWidget(self.btn_merge)
+        row.addWidget(self.btn_merge_new)
         row.addStretch(1)
         row.addWidget(self.btn_clear)
-
         self.setWidget(w)
 
         # dnd (accept drops from views)
@@ -240,6 +246,7 @@ class LayersDock(QDockWidget):
         self.docman.documentRemoved.connect(lambda _d: self._refresh_views())
 
         self.btn_merge.clicked.connect(self._merge_and_push)
+        self.btn_merge_new.clicked.connect(self._merge_to_new_doc)
 
         # initial
         self._refresh_views()
@@ -420,6 +427,8 @@ class LayersDock(QDockWidget):
         has_layers = bool(getattr(vw, "_layers", []))
         self.btn_merge.setEnabled(has_layers)
         self.btn_clear.setEnabled(has_layers)
+        if hasattr(self, "btn_merge_new"):
+            self.btn_merge_new.setEnabled(has_layers)        
         self._refresh_row_heights()
 
     def _layer_count(self) -> int:
@@ -712,3 +721,72 @@ class LayersDock(QDockWidget):
             print("[LayersDock] merge error:", ex)
             QMessageBox.critical(self, "Layers", f"Merge failed:\n{ex}")
 
+    def _merge_to_new_doc(self):
+        vw = self.current_view()
+        if not vw:
+            return
+
+        layers = list(getattr(vw, "_layers", []) or [])
+        if not layers:
+            QMessageBox.information(self, "Layers", "There are no layers to merge.")
+            return
+
+        try:
+            base_doc = getattr(vw, "document", None)
+            if base_doc is None or getattr(base_doc, "image", None) is None:
+                QMessageBox.warning(self, "Layers", "No base image available for this view.")
+                return
+
+            base_img = base_doc.image
+            merged = composite_stack(base_img, layers)
+            if merged is None:
+                QMessageBox.warning(self, "Layers", "Composite failed (empty result).")
+                return
+
+            # Push as a new document (same pattern as stars-only)
+            self._push_merged_as_new_doc(base_doc, merged)
+
+            QMessageBox.information(self, "Layers",
+                                    "Merged visible layers and created a new document.")
+        except Exception as ex:
+            print("[LayersDock] merge_to_new_doc error:", ex)
+            QMessageBox.critical(self, "Layers", f"Merge failed:\n{ex}")
+
+    def _push_merged_as_new_doc(self, base_doc, arr: np.ndarray):
+        dm = getattr(self.mw, "docman", None)
+        if not dm or not hasattr(dm, "open_array"):
+            return
+
+        # Derive a friendly title based on the *view title* if possible
+        title = None
+        try:
+            # Use current view title (respects per-view rename)
+            vw = self.current_view()
+            if vw and hasattr(vw, "_effective_title"):
+                base = (vw._effective_title() or "").strip()
+            else:
+                base = ""
+
+            if not base:
+                dn = getattr(base_doc, "display_name", None)
+                base = dn() if callable(dn) else (dn or "Untitled")
+
+            suffix = "_merged"
+            title = base if base.endswith(suffix) else f"{base}{suffix}"
+        except Exception:
+            title = "Merged Layers"
+
+        try:
+            meta = dict(getattr(base_doc, "metadata", {}) or {})
+            meta.update({
+                "bit_depth": "32-bit floating point",
+                "is_mono": (arr.ndim == 2 or (arr.ndim == 3 and arr.shape[-1] == 1)),
+                "source": "Layers Merge",
+                "step_name": "Layers Merge",
+            })
+
+            newdoc = dm.open_array(arr.astype(np.float32, copy=False), metadata=meta, title=title)
+            if hasattr(self.mw, "_spawn_subwindow_for"):
+                self.mw._spawn_subwindow_for(newdoc)
+        except Exception as ex:
+            print("[LayersDock] _push_merged_as_new_doc error:", ex)
