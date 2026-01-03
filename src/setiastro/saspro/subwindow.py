@@ -887,7 +887,7 @@ class ImageSubWindow(QWidget):
     def _on_toggle_wcs_grid(self, on: bool):
         self._show_wcs_grid = bool(on)
         QSettings().setValue("display/show_wcs_grid", self._show_wcs_grid)
-        self._render(rebuild=False)  # repaint current frame
+        self._render(rebuild=True)  # repaint current frame
 
 
 
