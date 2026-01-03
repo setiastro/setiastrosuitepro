@@ -228,21 +228,116 @@ class WaitForFileWorker(QThread):
     fileFound = pyqtSignal(str)
     cancelled = pyqtSignal()
     error     = pyqtSignal(str)
-    def __init__(self, glob_pat: str, timeout_sec=1800, parent=None):
+
+    def __init__(
+        self,
+        glob_pat: str,
+        timeout_sec: int = 1800,
+        parent=None,
+        *,
+        poll_ms: int = 200,
+        stable_polls: int = 6,          # 6 * 200ms = ~1.2s of stability
+        stable_timeout_sec: int = 120,  # extra time after first detection
+    ):
         super().__init__(parent)
         self._glob = glob_pat
-        self._timeout = timeout_sec
+        self._timeout = int(timeout_sec)
+        self._poll_ms = int(poll_ms)
+        self._stable_polls = int(stable_polls)
+        self._stable_timeout = int(stable_timeout_sec)
         self._running = True
+
+    def stop(self):
+        self._running = False
+
+    def _best_candidate(self, paths: list[str]) -> str | None:
+        if not paths:
+            return None
+        # prefer biggest file; tie-break by newest mtime
+        def key(p):
+            try:
+                st = os.stat(p)
+                return (st.st_size, st.st_mtime)
+            except Exception:
+                return (-1, -1)
+        paths.sort(key=key, reverse=True)
+        return paths[0]
+
+    def _is_stable_and_readable(self, path: str) -> bool:
+        """
+        Consider stable when size+mtime unchanged for N polls in a row AND file is readable.
+        Handles slow writers + Windows "file still locked" issues.
+        """
+        stable = 0
+        last = None
+
+        t0 = time.monotonic()
+        while self._running and (time.monotonic() - t0) < self._stable_timeout:
+            try:
+                st = os.stat(path)
+                cur = (st.st_size, st.st_mtime)
+                if st.st_size <= 0:
+                    stable = 0
+                    last = cur
+                elif cur == last:
+                    stable += 1
+                else:
+                    stable = 0
+                    last = cur
+
+                if stable >= self._stable_polls:
+                    # extra “is it readable?” check (important on Windows)
+                    try:
+                        with open(path, "rb") as f:
+                            f.read(64)
+                        return True
+                    except PermissionError:
+                        # still locked by writer, keep waiting
+                        stable = 0
+                    except Exception:
+                        # transient weirdness: keep waiting, don’t declare failure yet
+                        stable = 0
+
+            except FileNotFoundError:
+                stable = 0
+                last = None
+            except Exception:
+                # don't crash the worker for stat weirdness
+                stable = 0
+
+            time.sleep(self._poll_ms / 1000.0)
+
+        return False
+
     def run(self):
-        start = time.time()
-        while self._running and (time.time() - start < self._timeout):
-            m = glob.glob(self._glob)
-            if m:
-                self.fileFound.emit(m[0]); return
-            time.sleep(1)
-        if self._running: self.error.emit("Output file not found within timeout.")
-        else:             self.cancelled.emit()
-    def stop(self): self._running = False
+        t_start = time.monotonic()
+        seen_first_candidate_at = None
+
+        while self._running and (time.monotonic() - t_start) < self._timeout:
+            matches = glob.glob(self._glob)
+            cand = self._best_candidate(matches)
+
+            if cand:
+                if seen_first_candidate_at is None:
+                    seen_first_candidate_at = time.monotonic()
+
+                if self._is_stable_and_readable(cand):
+                    self.fileFound.emit(cand)
+                    return
+
+                # If we've been seeing candidates for a while but none stabilize,
+                # keep looping until global timeout. (This is common on slow disks.)
+
+            time.sleep(self._poll_ms / 1000.0)
+
+        if not self._running:
+            self.cancelled.emit()
+        else:
+            extra = ""
+            if seen_first_candidate_at is not None:
+                extra = " (output appeared but never stabilized)"
+            self.error.emit("Output file not found within timeout." + extra)
+
 
 
 # =============================================================================
@@ -556,6 +651,12 @@ class CosmicClarityDialogPro(QDialog):
             QMessageBox.critical(self, "Cosmic Clarity", f"Executable not found:\n{exe_path}")
             return
 
+        # ✅ compute base early (we need it for purge + glob)
+        base = self._base_name()
+
+        # ✅ purge any stale outputs for THIS base name (avoids matching old files)
+        _purge_cc_io(self.cosmic_root, clear_input=False, clear_output=True, prefix=base)
+
         # Build args (SASv2 flags mirrored)
         args = []
         if mode == "sharpen":
@@ -599,7 +700,7 @@ class CosmicClarityDialogPro(QDialog):
 
         # Wait for output file
         base = self._base_name()
-        out_glob = os.path.join(self.cosmic_root, "output", f"{base}{suffix}.*")
+        out_glob = os.path.join(self.cosmic_root, "output", f"{base}*{suffix}*.*")
         self._wait = WaitDialog(f"Cosmic Clarity – {mode.title()}", self)
         self._wait.cancelled.connect(self._cancel_all)
         self._wait.show()
