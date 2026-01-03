@@ -8006,7 +8006,8 @@ class AstroSuiteProMainWindow(
         # We target ~60% of the viewport height, clamped to sane bounds.
         # -------------------------------------------------------------------------
         vp = self.mdi.viewport()
-        area = vp.rect() if vp else self.mdi.rect()
+        # Use viewport geometry in MDI coordinates (NOT viewport-local rect)
+        area = vp.geometry() if vp else self.mdi.contentsRect()
         
         # Determine aspect ratio
         img_w = img_h = None
@@ -8049,7 +8050,7 @@ class AstroSuiteProMainWindow(
         # Smart Cascade: Position relative to the *currently active* window
         # (before we make the new one active).
         # -------------------------------------------------------------------------
-        new_x, new_y = 0, 0
+        new_x, new_y = area.left(), area.top()
         
         # Get dominant/active window *before* we activate the new one
         active = self.mdi.activeSubWindow()
@@ -8072,15 +8073,13 @@ class AstroSuiteProMainWindow(
             except Exception:
                 pass
 
-        # Bounds check: don't let it drift completely off-screen
-        # (allow valid title bar to be visible at least)
-        if (new_x + target_w > area.width() + 50) or (new_y + 50 > area.height()):
-            new_x = 0
-            new_y = 0
-        
-        # Clamp to 0 if negative for some reason
-        new_x = max(0, new_x)
-        new_y = max(0, new_y)
+        # Bounds check: keep titlebar visible and stay inside viewport
+        if (new_x + target_w > area.right() - 10) or (new_y + 40 > area.bottom() - 10):
+            new_x = area.left()
+            new_y = area.top()
+
+        new_x = max(area.left(), new_x)
+        new_y = max(area.top(), new_y)
 
         sw.move(new_x, new_y)
 
