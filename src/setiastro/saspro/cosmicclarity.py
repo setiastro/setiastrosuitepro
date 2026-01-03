@@ -716,19 +716,25 @@ class CosmicClarityDialogPro(QDialog):
 
     def _read_proc_output(self, proc: QProcess, which="main"):
         out = proc.readAllStandardOutput().data().decode("utf-8", errors="replace")
-        if not self._wait: return
+        if not self._wait:
+            return
+
         for line in out.splitlines():
             line = line.strip()
-            if not line: continue
+            if not line:
+                continue
+
             if line.startswith("Progress:"):
                 try:
-                    pct = float(line.split()[1].replace("%",""))
+                    pct = float(line.split()[1].replace("%", ""))
                     self._wait.set_progress(int(pct))
                 except Exception:
                     pass
-            else:
-                self._wait.append_output(line)
-        print(f"[CC] {line}")        
+                continue  # <- skip echo
+
+            # non-progress lines: keep showing + printing
+            self._wait.append_output(line)
+            print(f"[CC] {line}")       
 
     def _on_proc_finished(self, mode, suffix, code, status):
         if code != 0:
