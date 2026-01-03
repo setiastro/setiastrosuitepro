@@ -427,8 +427,6 @@ def apply_curves_adjustment(image: np.ndarray,
 
     return np.clip(out, 0.0, 1.0)
 
-
-
 # ---- Public API used by Pro ----
 def stretch_mono_image(image: np.ndarray,
                        target_median: float,

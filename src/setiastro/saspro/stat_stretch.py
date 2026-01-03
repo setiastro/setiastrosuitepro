@@ -8,11 +8,17 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QImage, QPixmap, QMouseEvent, QCursor
 import numpy as np
 from PyQt6 import sip
-from PyQt6.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QObject, QThread, pyqtSignal, pyqtSlot, Qt, QSize, QEvent, QTimer
 from PyQt6.QtWidgets import QProgressDialog, QApplication
 from .doc_manager import ImageDocument
 # use your existing stretch code
-from setiastro.saspro.imageops.stretch import stretch_mono_image, stretch_color_image
+from setiastro.saspro.imageops.stretch import (
+    stretch_mono_image,
+    stretch_color_image,
+    _compute_blackpoint_sigma,
+    _compute_blackpoint_sigma_per_channel,
+)
+
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.luminancerecombine import LUMA_PROFILES
 
@@ -45,74 +51,107 @@ class StatisticalStretchDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Statistical Stretch"))
 
-        # --- IMPORTANT: avoid “attached modal” behavior on some Linux WMs ---
-        # Make this a proper top-level window (tool-style) rather than an attached sheet.
+        # --- Top-level non-modal tool window (Linux WM friendly) ---
         self.setWindowFlag(Qt.WindowType.Window, True)
-        # Non-modal: allow user to switch between images while dialog is open
         self.setWindowModality(Qt.WindowModality.NonModal)
-        # Don’t let the generic modal flag override the explicit modality
         self.setModal(False)
         try:
             self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         except Exception:
-            pass  # older PyQt6 versions
+            pass
+
+        # --- State / refs ---
         self._main = parent
         self.doc = document
+
         self._last_preview = None
+        self._preview_qimg = None
+        self._preview_scale = 1.0
+        self._fit_mode = True
+
+        self._panning = False
+        self._pan_last = None  # QPoint
+
         self._hdr_knee_user_locked = False
         self._pending_close = False
+        self._suppress_replay_record = False
+
+        # ---- Clip-stats scheduling (define EARLY so init callbacks can't crash) ----
+        self._clip_timer = None
+
+        def _schedule_clip_stats():
+            # Safe early stub; once timer exists it will debounce
+            if getattr(self, "_job_running", False):
+                return
+            if sip.isdeleted(self):
+                return
+            t = getattr(self, "_clip_timer", None)
+            if t is None:
+                return
+            t.start()
+
+        self._schedule_clip_stats = _schedule_clip_stats
+
         self._thread = None
         self._worker = None
         self._follow_conn = None
+        self._job_running = False
+        self._job_mode = ""
+
+        # --- Follow active document changes (optional) ---
         if hasattr(self._main, "currentDocumentChanged"):
             try:
-                # store connection so we can cleanly disconnect
                 self._main.currentDocumentChanged.connect(self._on_active_doc_changed)
                 self._follow_conn = True
             except Exception:
                 self._follow_conn = None
-        self._panning = False
-        self._pan_last = None  # QPoint
-        self._preview_scale = 1.0       # NEW: zoom factor for preview
-        self._preview_qimg = None       # NEW: store unscaled QImage for clean scaling
-        self._suppress_replay_record = False
 
-        # --- Controls ---
+        # ------------------------------------------------------------------
+        # Controls
+        # ------------------------------------------------------------------
+
+        # Target median
         self.spin_target = QDoubleSpinBox()
         self.spin_target.setRange(0.01, 0.99)
         self.spin_target.setSingleStep(0.01)
         self.spin_target.setValue(0.25)
         self.spin_target.setDecimals(3)
 
+        # Linked channels
         self.chk_linked = QCheckBox(self.tr("Linked channels"))
         self.chk_linked.setChecked(False)
 
+        # Normalize
         self.chk_normalize = QCheckBox(self.tr("Normalize to [0..1]"))
         self.chk_normalize.setChecked(False)
 
-        # --- Black point sigma ---
+        # --- Black point sigma row ---
         self.row_bp = QWidget()
-        bp_lay = QHBoxLayout(self.row_bp); bp_lay.setContentsMargins(0,0,0,0); bp_lay.setSpacing(8)
+        bp_lay = QHBoxLayout(self.row_bp)
+        bp_lay.setContentsMargins(0, 0, 0, 0)
+        bp_lay.setSpacing(8)
+
         bp_lay.addWidget(QLabel(self.tr("Black point σ:")))
+
         self.sld_bp = QSlider(Qt.Orientation.Horizontal)
-        self.sld_bp.setRange(50, 600)      # 0.50 .. 6.00
-        self.sld_bp.setValue(500)          # default 2.70
-        self.lbl_bp = QLabel("5.00")
-        self.sld_bp.valueChanged.connect(lambda v: self.lbl_bp.setText(f"{v/100:.2f}"))
+        self.sld_bp.setRange(50, 600)   # 0.50 .. 6.00
+        self.sld_bp.setValue(500)       # 5.00 default (matches your label)
         bp_lay.addWidget(self.sld_bp, 1)
+
+        self.lbl_bp = QLabel(f"{self.sld_bp.value()/100:.2f}")
         bp_lay.addWidget(self.lbl_bp)
+
         bp_tip = self.tr(
             "Black point (σ) controls how aggressively the dark background is clipped.\n"
             "Higher values clip more (darker background, more contrast), but can crush faint dust.\n"
             "Lower values preserve faint background, but may leave the image gray.\n"
             "Tip: start around 2.7–5.0 depending on gradient/noise."
         )
-
-        # Apply tooltip to everything in the row
         self.row_bp.setToolTip(bp_tip)
         self.sld_bp.setToolTip(bp_tip)
         self.lbl_bp.setToolTip(bp_tip)
-        
+
+        # No black clipping
         self.chk_no_black_clip = QCheckBox(self.tr("No black clipping (Old Stat Stretch behavior)"))
         self.chk_no_black_clip.setChecked(False)
         self.chk_no_black_clip.setToolTip(self.tr(
@@ -120,71 +159,65 @@ class StatisticalStretchDialog(QDialog):
             "Uses the image minimum as the black point (preserves faint background),\n"
             "but the result may look flatter / hazier."
         ))
+
         # --- HDR compress ---
         self.chk_hdr = QCheckBox(self.tr("HDR highlight compress"))
         self.chk_hdr.setChecked(False)
-
-        self.hdr_row = QWidget()
-        hdr_lay = QVBoxLayout(self.hdr_row); hdr_lay.setContentsMargins(0,0,0,0); hdr_lay.setSpacing(6)
-
-        # amount
-        row_a = QHBoxLayout(); row_a.setContentsMargins(0,0,0,0); row_a.setSpacing(8)
-        row_a.addWidget(QLabel(self.tr("Amount:")))
-        self.sld_hdr_amt = QSlider(Qt.Orientation.Horizontal)
-        self.sld_hdr_amt.setRange(0, 100)     # 0..1
-        self.sld_hdr_amt.setValue(15)         # 0.15 default
-        self.lbl_hdr_amt = QLabel("0.15")
-        self.sld_hdr_amt.valueChanged.connect(lambda v: self.lbl_hdr_amt.setText(f"{v/100:.2f}"))
-        row_a.addWidget(self.sld_hdr_amt, 1)
-        row_a.addWidget(self.lbl_hdr_amt)
-
-        # knee
-        row_k = QHBoxLayout(); row_k.setContentsMargins(0,0,0,0); row_k.setSpacing(8)
-        row_k.addWidget(QLabel(self.tr("Knee:")))
-        self.sld_hdr_knee = QSlider(Qt.Orientation.Horizontal)
-        self.sld_hdr_knee.setRange(10, 95)    # 0.10..0.95
-        self.sld_hdr_knee.setValue(75)        # 0.75 default
-        self.lbl_hdr_knee = QLabel("0.75")
-        self.sld_hdr_knee.valueChanged.connect(lambda v: self.lbl_hdr_knee.setText(f"{v/100:.2f}"))
-        row_k.addWidget(self.sld_hdr_knee, 1)
-        row_k.addWidget(self.lbl_hdr_knee)
-
-        hdr_lay.addLayout(row_a)
-        hdr_lay.addLayout(row_k)
-        self.sld_hdr_knee.sliderPressed.connect(lambda: setattr(self, "_hdr_knee_user_locked", True))
-        self.hdr_row.setEnabled(False)
-        self.chk_hdr.toggled.connect(self.hdr_row.setEnabled)
-        def _suggest_hdr_knee_from_target():
-            # Only auto-update if the user hasn't manually adjusted the knee yet
-            if getattr(self, "_hdr_knee_user_locked", False):
-                return
-
-            t = float(self.spin_target.value())
-            knee = float(np.clip(t + 0.10, 0.10, 0.95))  # or +0.15 if you prefer
-
-            self.sld_hdr_knee.blockSignals(True)
-            self.sld_hdr_knee.setValue(int(round(knee * 100)))
-            self.sld_hdr_knee.blockSignals(False)
-            self.lbl_hdr_knee.setText(f"{knee:.2f}")
-        self.spin_target.valueChanged.connect(_suggest_hdr_knee_from_target)    
-        # HDR tooltips
         self.chk_hdr.setToolTip(self.tr(
             "Compresses bright highlights after the stretch.\n"
-            "Use lightly: high values can flatten nebula structure and create star ringing."
+            "Use lightly: high values can flatten the image and create star ringing."
         ))
+
+        self.hdr_row = QWidget()
+        hdr_lay = QVBoxLayout(self.hdr_row)
+        hdr_lay.setContentsMargins(0, 0, 0, 0)
+        hdr_lay.setSpacing(6)
+
+        # HDR amount row
+        row_a = QHBoxLayout()
+        row_a.setContentsMargins(0, 0, 0, 0)
+        row_a.setSpacing(8)
+        row_a.addWidget(QLabel(self.tr("Amount:")))
+
+        self.sld_hdr_amt = QSlider(Qt.Orientation.Horizontal)
+        self.sld_hdr_amt.setRange(0, 100)
+        self.sld_hdr_amt.setValue(15)
+        row_a.addWidget(self.sld_hdr_amt, 1)
+
+        self.lbl_hdr_amt = QLabel(f"{self.sld_hdr_amt.value()/100:.2f}")
+        row_a.addWidget(self.lbl_hdr_amt)
 
         self.sld_hdr_amt.setToolTip(self.tr(
             "Compression strength (0–1).\n"
             "Start low (0.10–0.15). Too much can flatten the image and ring stars."
         ))
+        self.lbl_hdr_amt.setToolTip(self.sld_hdr_amt.toolTip())
+
+        # HDR knee row
+        row_k = QHBoxLayout()
+        row_k.setContentsMargins(0, 0, 0, 0)
+        row_k.setSpacing(8)
+        row_k.addWidget(QLabel(self.tr("Knee:")))
+
+        self.sld_hdr_knee = QSlider(Qt.Orientation.Horizontal)
+        self.sld_hdr_knee.setRange(10, 95)
+        self.sld_hdr_knee.setValue(75)
+        row_k.addWidget(self.sld_hdr_knee, 1)
+
+        self.lbl_hdr_knee = QLabel(f"{self.sld_hdr_knee.value()/100:.2f}")
+        row_k.addWidget(self.lbl_hdr_knee)
 
         self.sld_hdr_knee.setToolTip(self.tr(
             "Where compression begins (0–1).\n"
             "Good starting point: knee ≈ target median + 0.10 to + 0.20.\n"
             "Example: target 0.25 → knee 0.35–0.45."
         ))
-        self.lbl_hdr_amt.setToolTip(self.sld_hdr_amt.toolTip())
         self.lbl_hdr_knee.setToolTip(self.sld_hdr_knee.toolTip())
+
+        hdr_lay.addLayout(row_a)
+        hdr_lay.addLayout(row_k)
+
+        self.hdr_row.setEnabled(False)
 
         # --- Luma-only row (checkbox + dropdown on one line) ---
         self.luma_row = QWidget()
@@ -204,56 +237,53 @@ class StatisticalStretchDialog(QDialog):
         keys.sort(key=lambda k: (_cat(k), k.lower()))
         self.cmb_luma.addItems(keys)
         self.cmb_luma.setCurrentText("rec709")
+        self.cmb_luma.setEnabled(False)
 
         lr.addWidget(self.chk_luma_only)
         lr.addWidget(QLabel(self.tr("Mode:")))
         lr.addWidget(self.cmb_luma, 1)
 
-        # Start disabled until checkbox is enabled
-        self.cmb_luma.setEnabled(False)
-        self.chk_luma_only.toggled.connect(self.cmb_luma.setEnabled)
-        # NEW: Curves boost
+        # --- Curves boost ---
         self.chk_curves = QCheckBox(self.tr("Curves boost"))
         self.chk_curves.setChecked(False)
 
         self.curves_row = QWidget()
-        cr_lay = QHBoxLayout(self.curves_row); cr_lay.setContentsMargins(0,0,0,0)
+        cr_lay = QHBoxLayout(self.curves_row)
+        cr_lay.setContentsMargins(0, 0, 0, 0)
         cr_lay.setSpacing(8)
+
         cr_lay.addWidget(QLabel(self.tr("Strength:")))
         self.sld_curves = QSlider(Qt.Orientation.Horizontal)
-        self.sld_curves.setRange(0, 100)           # 0.00 … 1.00 mapped to 0…100
-        self.sld_curves.setSingleStep(1)
-        self.sld_curves.setPageStep(5)
-        self.sld_curves.setValue(20)               # default 0.20
-        self.lbl_curves_val = QLabel("0.20")
-        self.sld_curves.valueChanged.connect(lambda v: self.lbl_curves_val.setText(f"{v/100:.2f}"))
+        self.sld_curves.setRange(0, 100)
+        self.sld_curves.setValue(20)
         cr_lay.addWidget(self.sld_curves, 1)
-        cr_lay.addWidget(self.lbl_curves_val)
-        self.curves_row.setEnabled(False)          # disabled until checkbox is ticked
-        self.chk_curves.toggled.connect(self.curves_row.setEnabled)
 
-        # Preview area
+        self.lbl_curves_val = QLabel(f"{self.sld_curves.value()/100:.2f}")
+        cr_lay.addWidget(self.lbl_curves_val)
+
+        self.curves_row.setEnabled(False)
+
+        # ------------------------------------------------------------------
+        # Preview UI
+        # ------------------------------------------------------------------
         self.preview_label = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
         self.preview_label.setMinimumSize(QSize(320, 240))
-        self.preview_label.setScaledContents(False) 
+        self.preview_label.setScaledContents(False)
+        self.preview_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+
         self.preview_scroll = QScrollArea()
-        self.preview_scroll.setWidgetResizable(False)           # <- was True; we manage size
+        self.preview_scroll.setWidgetResizable(False)
         self.preview_scroll.setWidget(self.preview_label)
         self.preview_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.preview_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.preview_scroll.viewport().installEventFilter(self)
 
-        self._fit_mode = True       # NEW: start in Fit mode
-
-        # --- Zoom buttons row (place before the main layout or right above preview) ---
-        # --- Zoom buttons row ---
+        # Zoom buttons
         zoom_row = QHBoxLayout()
-
-        # Use themed tool buttons (consistent with the rest of SASpro)
         self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
         self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
         self.btn_zoom_100 = themed_toolbtn("zoom-original", "1:1")
         self.btn_zoom_fit = themed_toolbtn("zoom-fit-best", "Fit")
-
 
         zoom_row.addStretch(1)
         for b in (self.btn_zoom_out, self.btn_zoom_in, self.btn_zoom_100, self.btn_zoom_fit):
@@ -265,11 +295,18 @@ class StatisticalStretchDialog(QDialog):
         self.btn_apply   = QPushButton(self.tr("Apply"))
         self.btn_close   = QPushButton(self.tr("Close"))
 
-        self.btn_preview.clicked.connect(self._do_preview)
-        self.btn_apply.clicked.connect(self._do_apply)
-        self.btn_close.clicked.connect(self.close)
+        self.btn_clipstats = QPushButton(self.tr("Clip stats"))
+        self.lbl_clipstats = QLabel("")
+        self.lbl_clipstats.setWordWrap(True)
+        self.lbl_clipstats.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.lbl_clipstats.setMinimumHeight(38)
+        self.lbl_clipstats.setFrameShape(QLabel.Shape.StyledPanel)
+        self.lbl_clipstats.setFrameShadow(QLabel.Shadow.Sunken)
+        self.lbl_clipstats.setContentsMargins(6, 4, 6, 4)
 
-        # --- Layout ---
+        # ------------------------------------------------------------------
+        # Layout
+        # ------------------------------------------------------------------
         form = QFormLayout()
         form.addRow(self.tr("Target median:"), self.spin_target)
         form.addRow("", self.chk_linked)
@@ -277,51 +314,107 @@ class StatisticalStretchDialog(QDialog):
         form.addRow("", self.chk_no_black_clip)
         form.addRow("", self.chk_hdr)
         form.addRow("", self.hdr_row)
-        form.addRow("", self.luma_row)      
+        form.addRow("", self.luma_row)
         form.addRow("", self.chk_normalize)
         form.addRow("", self.chk_curves)
         form.addRow("", self.curves_row)
 
         left = QVBoxLayout()
         left.addLayout(form)
-        row = QHBoxLayout()
-        row.addWidget(self.btn_preview)
-        row.addWidget(self.btn_apply)
-        row.addStretch(1)
-        left.addLayout(row)
+
+        btn_row = QHBoxLayout()
+        btn_row.addWidget(self.btn_preview)
+        btn_row.addWidget(self.btn_apply)
+        btn_row.addWidget(self.btn_clipstats)
+        btn_row.addStretch(1)
+        left.addLayout(btn_row)
+
+        left.addWidget(self.lbl_clipstats)
         left.addStretch(1)
+
+        right = QVBoxLayout()
+        right.addLayout(zoom_row)
+        right.addWidget(self.preview_scroll, 1)
 
         main = QHBoxLayout(self)
         main.addLayout(left, 0)
-
-        # NEW: right column with zoom row + preview
-        right = QVBoxLayout()
-        right.addLayout(zoom_row)                # ← actually add the zoom controls
-        right.addWidget(self.preview_scroll, 1)  # preview below the buttons
         main.addLayout(right, 1)
 
+        # ------------------------------------------------------------------
+        # Behavior / wiring
+        # ------------------------------------------------------------------
+
+        # Blackpoint slider -> label + debounced clip stats
+        def _on_bp_changed(v: int):
+            self.lbl_bp.setText(f"{v/100:.2f}")
+            self._schedule_clip_stats()
+
+        self.sld_bp.valueChanged.connect(_on_bp_changed)
+
+        # No-black-clip toggles blackpoint UI + triggers stats
         def _on_no_black_clip_toggled(on: bool):
-            # Grey out blackpoint controls when "No black clipping" is enabled
             self.row_bp.setEnabled(not on)
+            self._schedule_clip_stats()
 
         self.chk_no_black_clip.toggled.connect(_on_no_black_clip_toggled)
-        _on_no_black_clip_toggled(self.chk_no_black_clip.isChecked())  
+        _on_no_black_clip_toggled(self.chk_no_black_clip.isChecked())
 
+        # Curves
+        self.chk_curves.toggled.connect(self.curves_row.setEnabled)
+        self.sld_curves.valueChanged.connect(lambda v: self.lbl_curves_val.setText(f"{v/100:.2f}"))
+
+        # HDR enable toggles HDR row
+        self.chk_hdr.toggled.connect(self.hdr_row.setEnabled)
+        self.sld_hdr_amt.valueChanged.connect(lambda v: self.lbl_hdr_amt.setText(f"{v/100:.2f}"))
+        self.sld_hdr_knee.valueChanged.connect(lambda v: self.lbl_hdr_knee.setText(f"{v/100:.2f}"))
+        self.sld_hdr_knee.sliderPressed.connect(lambda: setattr(self, "_hdr_knee_user_locked", True))
+
+        # Auto-suggest HDR knee from target (unless user locked)
+        def _suggest_hdr_knee_from_target():
+            if getattr(self, "_hdr_knee_user_locked", False):
+                return
+            t = float(self.spin_target.value())
+            knee = float(np.clip(t + 0.10, 0.10, 0.95))
+            self.sld_hdr_knee.blockSignals(True)
+            self.sld_hdr_knee.setValue(int(round(knee * 100)))
+            self.sld_hdr_knee.blockSignals(False)
+            self.lbl_hdr_knee.setText(f"{knee:.2f}")
+
+        self.spin_target.valueChanged.connect(_suggest_hdr_knee_from_target)
+
+        # Luma-only: enables dropdown, disables "linked channels"
+        self.chk_luma_only.toggled.connect(self.cmb_luma.setEnabled)
+
+        def _on_luma_only_toggled(on: bool):
+            self.chk_linked.setEnabled(not on)
+
+        self.chk_luma_only.toggled.connect(_on_luma_only_toggled)
+
+        # Zoom buttons
         self.btn_zoom_in.clicked.connect(lambda: self._zoom_by(1.25))
         self.btn_zoom_out.clicked.connect(lambda: self._zoom_by(1/1.25))
         self.btn_zoom_100.clicked.connect(self._zoom_reset_100)
         self.btn_zoom_fit.clicked.connect(self._fit_preview)
 
-        self.preview_scroll.viewport().installEventFilter(self)
+        # Main buttons
+        self.btn_preview.clicked.connect(self._do_preview)
+        self.btn_apply.clicked.connect(self._do_apply)
+        self.btn_close.clicked.connect(self.close)
+        self.btn_clipstats.clicked.connect(self._do_clip_stats)
 
-        # Let the viewport receive all mouse events (prevents duplicate streams + jitter)
-        self.preview_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        def _on_luma_only_toggled(on: bool):
-            self.chk_linked.setEnabled(not on)
-            # (dropdown enabling is handled by chk_luma_only.toggled -> cmb_luma.setEnabled)
-        self.chk_luma_only.toggled.connect(_on_luma_only_toggled)
+        # Debounced clip stats timer
+        self._clip_timer = QTimer(self)
+        self._clip_timer.setSingleShot(True)
+        self._clip_timer.setInterval(500)
+        self._clip_timer.timeout.connect(self._do_clip_stats)
+
+        # Initialize UI state
         _suggest_hdr_knee_from_target()
+        _on_luma_only_toggled(self.chk_luma_only.isChecked())
+
+        # Initial preview + clip stats
         self._populate_initial_preview()
+
 
     # ----- helpers -----
     def _show_busy(self, title: str, text: str):
@@ -353,12 +446,138 @@ class StatisticalStretchDialog(QDialog):
         self._busy = None
 
     def _set_controls_enabled(self, enabled: bool):
-        # Keep this minimal: disable Preview/Apply while running
         try:
             self.btn_preview.setEnabled(enabled)
             self.btn_apply.setEnabled(enabled)
+            if getattr(self, "btn_clipstats", None) is not None:
+                self.btn_clipstats.setEnabled(enabled)
         except Exception:
             pass
+
+    def _clip_mode_label(self, imgf: np.ndarray) -> str:
+        # Mono image
+        if imgf.ndim == 2 or (imgf.ndim == 3 and imgf.shape[2] == 1):
+            return self.tr("Mono")
+
+        # RGB image
+        luma_only = bool(getattr(self, "chk_luma_only", None) and self.chk_luma_only.isChecked())
+        if luma_only:
+            return self.tr("Luma-only (L ≤ bp)")
+
+        linked = bool(getattr(self, "chk_linked", None) and self.chk_linked.isChecked())
+        if linked:
+            return self.tr("Linked (L ≤ bp)")
+
+        return self.tr("Unlinked (any channel ≤ bp)")
+
+
+    def _do_clip_stats(self):
+        imgf = self._get_source_float()
+        if imgf is None or imgf.size == 0:
+            self.lbl_clipstats.setText(self.tr("No image loaded."))
+            return
+
+        sig = float(self.sld_bp.value()) / 100.0
+        no_black_clip = bool(self.chk_no_black_clip.isChecked())
+
+        # Modes that affect how we count / threshold
+        luma_only = bool(getattr(self, "chk_luma_only", None) and self.chk_luma_only.isChecked())
+        linked = bool(getattr(self, "chk_linked", None) and self.chk_linked.isChecked())
+
+        # Outputs we’ll fill
+        bp = None            # float threshold (mono / L-based modes)
+        bp3 = None           # per-channel thresholds (unlinked RGB)
+        clipped = None       # [H,W] bool
+
+        # --- Compute blackpoint threshold(s) exactly like stretch.py ---
+        if imgf.ndim == 2 or (imgf.ndim == 3 and imgf.shape[2] == 1):
+            mono = imgf.squeeze().astype(np.float32, copy=False)
+            if no_black_clip:
+                bp = float(mono.min())
+            else:
+                bp, _ = _compute_blackpoint_sigma(mono, sig)
+
+            clipped = (mono <= bp)
+
+        else:
+            rgb = imgf.astype(np.float32, copy=False)
+
+            if luma_only or linked:
+                # One threshold for the pixel: use luminance proxy
+                L = 0.2126 * rgb[..., 0] + 0.7152 * rgb[..., 1] + 0.0722 * rgb[..., 2]
+                if no_black_clip:
+                    bp = float(L.min())
+                else:
+                    bp, _ = _compute_blackpoint_sigma(L, sig)
+
+                clipped = (L <= bp)
+
+            else:
+                # Unlinked: per-channel thresholds
+                if no_black_clip:
+                    bp3 = np.array(
+                        [float(rgb[..., 0].min()),
+                        float(rgb[..., 1].min()),
+                        float(rgb[..., 2].min())],
+                        dtype=np.float32
+                    )
+                else:
+                    bp3 = _compute_blackpoint_sigma_per_channel(rgb, sig).astype(np.float32, copy=False)
+
+                # Pixel considered clipped if ANY channel would clip
+                clipped = np.any(rgb <= bp3.reshape((1, 1, 3)), axis=2)
+
+        # --- Count pixels (NOT rgb elements) ---
+        clipped_count = int(np.count_nonzero(clipped))
+        total = int(clipped.size)
+        pct = 100.0 * clipped_count / max(1, total)
+
+        # --- Optional masked-area stats ---
+        masked_note = ""
+        m = self._active_mask_array()
+        if m is not None:
+            affected = (m > 0.01)
+            aff_total = int(np.count_nonzero(affected))
+            aff_clip = int(np.count_nonzero(clipped & affected))
+            aff_pct = 100.0 * aff_clip / max(1, aff_total)
+            masked_note = self.tr(f" | masked area: {aff_clip:,}/{aff_total:,} ({aff_pct:.4f}%)")
+
+        mode_lbl = self._clip_mode_label(imgf)
+
+        # --- No-black-clip message (must be mode-aware) ---
+        if no_black_clip:
+            if imgf.ndim == 2 or (imgf.ndim == 3 and imgf.shape[2] == 1):
+                bp_text = self.tr(f"min={float(bp):.6f}")
+            else:
+                if luma_only or linked:
+                    bp_text = self.tr(f"L min={float(bp):.6f}")
+                else:
+                    # bp3 exists here
+                    bp_text = self.tr(
+                        f"R min={float(bp3[0]):.6f}, G min={float(bp3[1]):.6f}, B min={float(bp3[2]):.6f}"
+                    )
+
+            self.lbl_clipstats.setText(
+                self.tr(f"Black clipping disabled ({mode_lbl}). Threshold={bp_text}: "
+                        f"{clipped_count:,}/{total:,} pixels ({pct:.4f}%)") + masked_note
+            )
+            return
+
+        # --- Normal message: show correct threshold(s) ---
+        if (imgf.ndim == 3 and imgf.shape[2] == 3) and not (luma_only or linked):
+            # Unlinked RGB: show per-channel thresholds
+            bp_disp = self.tr(
+                f"R={float(bp3[0]):.6f}, G={float(bp3[1]):.6f}, B={float(bp3[2]):.6f}"
+            )
+        else:
+            # Mono or L-based: single threshold
+            bp_disp = self.tr(f"{float(bp):.6f}")
+
+        self.lbl_clipstats.setText(
+            self.tr(f"Black clip ({mode_lbl}) @ {bp_disp}: "
+                    f"{clipped_count:,}/{total:,} pixels ({pct:.4f}%)") + masked_note
+        )
+
 
     def _start_stretch_job(self, mode: str):
         """
@@ -630,6 +849,10 @@ class StatisticalStretchDialog(QDialog):
             return
         self.doc = doc
         self._populate_initial_preview()
+        try:
+            self._schedule_clip_stats()
+        except Exception:
+            pass        
 
     # ----- slots -----
     def _populate_initial_preview(self):
@@ -637,6 +860,15 @@ class StatisticalStretchDialog(QDialog):
         src = self._get_source_float()
         if src is not None:
             self._set_preview_pixmap(np.clip(src, 0, 1))
+        try:
+            self.lbl_clipstats.setText(self.tr("Calculating clip stats…"))
+        except Exception:
+            pass
+        try:
+            self._schedule_clip_stats()
+        except Exception:
+            pass
+
 
     def _do_preview(self):
         self._start_stretch_job("preview")

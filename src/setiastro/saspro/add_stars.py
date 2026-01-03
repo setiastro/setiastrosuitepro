@@ -578,10 +578,9 @@ class AddStarsDialog(QDialog):
 
         # Emit (target_doc, blended_image)
         self.stars_added.emit(target_doc, self.blended_image.astype(np.float32, copy=False))
-        # Dialog stays open so user can apply to other images
-        # Refresh combo boxes for next operation
-        self._populate_doc_combos()
-
+        # Close UI after apply
+        self.accept()   # or: self.close()
+        return
 
     # Ensure initial fit once shown
     def showEvent(self, ev):
@@ -606,7 +605,32 @@ def add_stars(main):
 
     dlg = AddStarsDialog(main, parent=main)
     dlg.stars_added.connect(lambda target, arr: _apply_to_doc(main, target, arr))
-    dlg.exec()
+
+    # IMPORTANT: keep a strong reference (non-modal show)
+    if not hasattr(main, "_tool_dialogs"):
+        main._tool_dialogs = []
+    main._tool_dialogs.append(dlg)
+
+    # When the dialog closes, drop the reference
+    def _cleanup(_=None, d=dlg):
+        try:
+            if hasattr(main, "_tool_dialogs") and d in main._tool_dialogs:
+                main._tool_dialogs.remove(d)
+        except Exception:
+            pass
+
+    try:
+        dlg.finished.connect(_cleanup)     # QDialog signal
+    except Exception:
+        pass
+    try:
+        dlg.destroyed.connect(_cleanup)    # QObject signal (extra safety)
+    except Exception:
+        pass
+
+    dlg.show()
+    dlg.raise_()
+    dlg.activateWindow()
 
 
 def _apply_to_doc(main, doc, arr: np.ndarray):
