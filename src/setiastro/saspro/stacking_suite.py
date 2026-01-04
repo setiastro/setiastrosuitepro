@@ -4177,6 +4177,96 @@ def _temp_to_stem_tag(temp_c: float, *, prefix: str = "") -> str:
     s = s.replace(".", "p")     # e.g. "10p0"
     return f"{prefix}{sign}{s}C"
 
+
+def _arr_stats(a: np.ndarray):
+    a = np.asarray(a)
+    fin = np.isfinite(a)
+    if fin.any():
+        v = a[fin]
+        return dict(
+            dtype=str(a.dtype),
+            shape=tuple(a.shape),
+            finite=int(fin.sum()),
+            nan=int(np.isnan(a).sum()),
+            inf=int(np.isinf(a).sum()),
+            min=float(v.min()),
+            max=float(v.max()),
+            p01=float(np.percentile(v, 1)),
+            p50=float(np.percentile(v, 50)),
+            p99=float(np.percentile(v, 99)),
+            mean=float(v.mean()),
+        )
+    return dict(dtype=str(a.dtype), shape=tuple(a.shape), finite=0, nan=int(np.isnan(a).sum()), inf=int(np.isinf(a).sum()))
+
+def _print_stats(tag: str, a: np.ndarray, *, bit_depth=None, hdr=None):
+    s = _arr_stats(a)
+    bd = f", bit_depth={bit_depth}" if bit_depth is not None else ""
+    print(f"🧪 {tag}{bd} dtype={s['dtype']} shape={s['shape']} finite={s['finite']} nan={s['nan']} inf={s['inf']}")
+    if s["finite"] > 0:
+        print(f"    min={s['min']:.6f}  p01={s['p01']:.6f}  p50={s['p50']:.6f}  p99={s['p99']:.6f}  max={s['max']:.6f}  mean={s['mean']:.6f}")
+    # Header hints (best-effort)
+    if hdr is not None:
+        try:
+            # FITS-ish
+            if hasattr(hdr, "get"):
+                print(f"    hdr: BITPIX={hdr.get('BITPIX', 'NA')}  BSCALE={hdr.get('BSCALE', 'NA')}  BZERO={hdr.get('BZERO', 'NA')}")
+        except Exception:
+            pass
+
+def _warn_if_units_mismatch(light: np.ndarray, dark: np.ndarray | None, flat: np.ndarray | None):
+    # Heuristic: if one is ~0..1 and another is hundreds/thousands, you’ve got mixed scaling.
+    def _range_kind(a):
+        if a is None:
+            return None
+        fin = np.isfinite(a)
+        if not fin.any():
+            return None
+        mx = float(np.max(a[fin]))
+        mn = float(np.min(a[fin]))
+        return (mn, mx)
+
+    lr = _range_kind(light)
+    dr = _range_kind(dark)
+    fr = _range_kind(flat)
+
+    def _is_01(r):
+        if r is None: return False
+        mn, mx = r
+        return mx <= 2.5 and mn >= -0.5
+
+    def _is_aduish(r):
+        if r is None: return False
+        mn, mx = r
+        return mx >= 50.0  # conservative
+
+    if lr and dr and _is_01(lr) and _is_aduish(dr):
+        print("🚨 UNITS MISMATCH: light looks ~0–1, but dark looks like ADU (tens/hundreds/thousands). Expect huge negatives after subtraction.")
+    if lr and fr and _is_01(lr) and _is_aduish(fr):
+        print("🚨 UNITS MISMATCH: light looks ~0–1, but flat looks like ADU. Flat division will be wrong unless normalized to ~1 first.")
+
+def _maybe_normalize_16bit_float(a: np.ndarray, *, name: str = "") -> np.ndarray:
+    """
+    Fast guard:
+    - If float array has max > 10, assume it's really 16-bit ADU data stored as float,
+      and normalize to 0..1 by dividing by 65535.
+    """
+    if a is None:
+        return a
+    if not np.issubdtype(a.dtype, np.floating):
+        return a
+
+    fin = np.isfinite(a)
+    if not fin.any():
+        return a
+
+    mx = float(a[fin].max())  # fast reduction
+
+    if mx > 10.0:
+        print(f"🛡️ Units-guard: {name or 'array'} max={mx:.3f} (>10). Assuming 16-bit ADU-in-float; normalizing /65535.")
+        return (a / 65535.0).astype(np.float32, copy=False)
+
+    return a
+
 class StackingSuiteDialog(QDialog):
     requestRelaunch = pyqtSignal(str, str)  # old_dir, new_dir
     status_signal = pyqtSignal(str)
@@ -13178,6 +13268,7 @@ class StackingSuiteDialog(QDialog):
 
                     # ---------- LOAD LIGHT ----------
                     light_data, hdr, bit_depth, is_mono = load_image(light_file)
+                    #_print_stats("LIGHT raw", light_data, bit_depth=bit_depth, hdr=hdr)
                     if light_data is None or hdr is None:
                         self.update_status(self.tr(f"❌ ERROR: Failed to load {os.path.basename(light_file)}"))
                         continue
@@ -13202,7 +13293,10 @@ class StackingSuiteDialog(QDialog):
 
                     # ---------- APPLY DARK (if resolved) ----------
                     if master_dark_path:
-                        dark_data, _, _, dark_is_mono = load_image(master_dark_path)
+                        dark_data, _, dark_bit_depth, dark_is_mono = load_image(master_dark_path)
+                        #_print_stats("DARK raw", dark_data, bit_depth=dark_bit_depth)
+                        dark_data = _maybe_normalize_16bit_float(dark_data, name=os.path.basename(master_dark_path))
+                        #_print_stats("DARK normalized", dark_data, bit_depth=dark_bit_depth)
                         if dark_data is not None:
                             if not dark_is_mono and dark_data.ndim == 3 and dark_data.shape[-1] == 3:
                                 dark_data = dark_data.transpose(2, 0, 1)  # HWC -> CHW
@@ -13218,7 +13312,10 @@ class StackingSuiteDialog(QDialog):
 
                     # ---------- APPLY FLAT (if resolved) ----------
                     if master_flat_path:
-                        flat_data, _, _, flat_is_mono = load_image(master_flat_path)
+                        flat_data, _, flat_bit_depth, flat_is_mono = load_image(master_flat_path)
+                        #_print_stats("FLAT raw", flat_data, bit_depth=flat_bit_depth)
+                        flat_data = _maybe_normalize_16bit_float(flat_data, name=os.path.basename(master_flat_path))
+                        #_print_stats("FLAT normalized", flat_data, bit_depth=flat_bit_depth)
                         if flat_data is not None:
 
                             # Make flat layout match your working light layout:
@@ -13332,8 +13429,10 @@ class StackingSuiteDialog(QDialog):
                     max_val = float(np.max(light_data))
                     self.update_status(self.tr(f"Before saving: min = {min_val:.4f}, max = {max_val:.4f}"))
                     print(f"Before saving: min = {min_val:.4f}, max = {max_val:.4f}")
+                    
+                    _warn_if_units_mismatch(light_data, dark_data if master_dark_path else None, flat_data if master_flat_path else None)
+                    _print_stats("LIGHT final", light_data)
                     QApplication.processEvents()
-
                     # Annotate header
                     try:
                         if hasattr(hdr, "add_history"):
