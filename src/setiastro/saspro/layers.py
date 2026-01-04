@@ -23,18 +23,19 @@ BLEND_MODES = [
 @dataclass
 class ImageLayer:
     name: str
-    src_doc: object                         # ImageDocument
+    src_doc: Optional[object] = None          # ImageDocument (can be None for baked raster)
+    pixels: Optional[np.ndarray] = None       # NEW: baked raster pixels in float32 or any dtype
+
     visible: bool = True
-    opacity: float = 1.0                    # 0..1
-    mode: str = "Normal"                    # one of BLEND_MODES
-    mask_doc: Optional[object] = None       # ImageDocument whose active mask we read
+    opacity: float = 1.0
+    mode: str = "Normal"
+    mask_doc: Optional[object] = None
     mask_invert: bool = False
-    mask_feather: float = 0.0               # (reserved)
+    mask_feather: float = 0.0
     mask_use_luma: bool = False
 
-    # Sigmoid blend parameters
-    sigmoid_center: float = 0.5             # where transition happens (0..1)
-    sigmoid_strength: float = 10.0          # steepness of the curve
+    sigmoid_center: float = 0.5
+    sigmoid_strength: float = 10.0
 
 def _float01(arr: np.ndarray) -> np.ndarray:
     a = np.asarray(arr)
@@ -182,7 +183,10 @@ def composite_stack(base_img: np.ndarray, layers: List[ImageLayer]) -> np.ndarra
     for L in reversed(layers or []):
         if not L.visible:
             continue
-        src = getattr(L.src_doc, "image", None)
+        src = getattr(L, "pixels", None)
+        if src is None:
+            src_doc = getattr(L, "src_doc", None)
+            src = getattr(src_doc, "image", None) if src_doc is not None else None
         if src is None:
             continue
         s = _ensure_3c(_float01(src))

@@ -1,0 +1,24 @@
+<svg width="300" height="300" viewBox="0 0 300 300" xmlns="http://www.w3.org/2000/svg">
+  <!-- Sfondo quadrato arrotondato -->
+  <rect x="20" y="20" width="260" height="260" rx="40" fill="#293375" />
+
+  <!-- Silhouette Satellite -->
+  <g transform="translate(150,150) rotate(-45)">
+     <!-- Pannelli solari -->
+     <rect x="-90" y="-30" width="60" height="60" fill="#0c1236" />
+     <rect x="30" y="-30" width="60" height="60" fill="#0c1236" />
+     <!-- Corpo centrale -->
+     <rect x="-30" y="-50" width="60" height="100" rx="10" fill="#0c1236" />
+     <!-- Antenna -->
+     <line x1="0" y1="-50" x2="0" y2="-100" stroke="#f0f0f0" stroke-width="10" stroke-linecap="round"/>
+     <!-- Raggio inferiore -->
+     <path d="M-10,50 L-20,150 L20,150 L10,50 Z" fill="#f0f0f0" opacity="0.9"/>
+  </g>
+
+  <!-- Segnale di divieto (X rossa) -->
+  <circle cx="230" cy="230" r="60" fill="#e84545" />
+  <g stroke="white" stroke-width="15" stroke-linecap="round">
+    <line x1="210" y1="210" x2="250" y2="250" />
+    <line x1="250" y1="210" x2="210" y2="250" />
+  </g>
+</svg>

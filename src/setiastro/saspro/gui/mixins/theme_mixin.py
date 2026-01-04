@@ -9,12 +9,30 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QBrush, QColor, QFont, QPalette
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtGui import QBrush, QColor, QFont, QPalette, QPainter, QPixmap, QIcon
+from PyQt6.QtWidgets import QApplication, QLabel, QWidget
 
 if TYPE_CHECKING:
     pass
 
+def _force_mdi_subwindow_flags(sw):
+    f = sw.windowFlags()
+
+    # Clear only the *window type* bits (NOT random low bits)
+    f &= ~Qt.WindowType.WindowType_Mask
+
+    # Force true MDI child type
+    f |= Qt.WindowType.SubWindow
+
+    # Add desired buttons/hints
+    f |= (Qt.WindowType.CustomizeWindowHint |
+          Qt.WindowType.WindowTitleHint |
+          Qt.WindowType.WindowSystemMenuHint |
+          Qt.WindowType.WindowMinimizeButtonHint |
+          Qt.WindowType.WindowMaximizeButtonHint |
+          Qt.WindowType.WindowCloseButtonHint)
+
+    sw.setWindowFlags(f)
 
 class ThemeMixin:
     """
@@ -88,7 +106,7 @@ class ThemeMixin:
             app.setPalette(self._gray_palette())
             app.setStyleSheet(
                 "QToolTip { color: #f0f0f0; background-color: #3a3a3a; border: 1px solid #5a5a5a; }"
-            )
+            )            
         elif mode == "light":
             app.setPalette(self._light_palette())
             app.setStyleSheet(
@@ -119,6 +137,11 @@ class ThemeMixin:
         self._repolish_top_levels()
         self._apply_workspace_theme()
         self._style_mdi_titlebars()
+
+        try:
+            self._retint_zoom_icons()
+        except Exception:
+            pass        
         self._menu_view_panels = None
 
         try:
@@ -139,25 +162,148 @@ class ThemeMixin:
             w.setUpdatesEnabled(True)
 
     def _style_mdi_titlebars(self):
-        """Apply theme-specific styles to MDI subwindow titlebars."""
         mode = self._theme_mode()
+
         if mode == "dark":
-            base = "#1b1b1b"   # inactive titlebar
-            active = "#242424"  # active titlebar
+            base = "#1b1b1b"
+            active = "#242424"
             fg = "#dcdcdc"
         elif mode in ("gray", "custom"):
             base = "#3a3a3a"
             active = "#454545"
             fg = "#f0f0f0"
         else:
-            # No override in light / system modes
-            self.mdi.setStyleSheet("")
-            return
+            base = "#eaeaea"
+            active = "#ffffff"
+            fg = "#141414"
 
+        # style *our* titlebar only
         self.mdi.setStyleSheet(f"""
-            QMdiSubWindow::titlebar        {{ background: {base};  color: {fg}; }}
-            QMdiSubWindow::titlebar:active {{ background: {active}; color: {fg}; }}
+            QWidget#sas_mdi_titlebar {{
+                background: {base};
+            }}
+            QWidget#sas_mdi_titlebar[active="true"] {{
+                background: {active};
+            }}
+            QLabel#sas_mdi_title_label {{
+                color: {fg};
+                background: transparent;
+            }}
+            QWidget#sas_mdi_titlebar QToolButton {{
+                color: {fg};
+                background: transparent;
+            }}
+            QWidget#sas_mdi_titlebar QToolButton:hover {{
+                background: rgba(255,255,255,0.10);
+            }}
         """)
+
+
+    def _fix_mdi_titlebar_emboss(self, fg_hex: str):
+        """
+        Fusion/Windows style can draw embossed title text (two-pass).
+        In dark themes that can become white-on-white -> 'double text'.
+        Force the shadow/emboss colors on the *titlebar widget only*.
+        """
+        try:
+            fg = QColor(fg_hex)
+        except Exception:
+            fg = QColor(240, 240, 240)
+
+        for sw in self.mdi.subWindowList():
+            try:
+                tb = sw.findChild(QWidget, "qt_mdi_titlebar")
+                if tb is None:
+                    continue
+
+                pal = tb.palette()
+
+                # Main text
+                pal.setColor(QPalette.ColorRole.WindowText, fg)
+                pal.setColor(QPalette.ColorRole.Text, fg)
+                pal.setColor(QPalette.ColorRole.ButtonText, fg)
+
+                # Critical: make the embossed/shadow pass dark
+                dark = QColor(0, 0, 0)
+                pal.setColor(QPalette.ColorRole.Light, dark)
+                pal.setColor(QPalette.ColorRole.Midlight, dark)
+                pal.setColor(QPalette.ColorRole.Dark, dark)
+                pal.setColor(QPalette.ColorRole.Shadow, dark)
+
+                tb.setPalette(pal)
+
+                # Also push to the label if present (some styles read it from label)
+                lbl = tb.findChild(QLabel)
+                if lbl is not None:
+                    lbl.setPalette(pal)
+            except Exception:
+                pass
+
+    def _tint_icon(self, icon: QIcon, color: QColor) -> QIcon:
+        """
+        Take an existing icon (often fromTheme) and force a single-color glyph.
+        Sets Normal and Active to the same tinted pixmaps to prevent hover flipping.
+        """
+        if icon.isNull():
+            return icon
+
+        out = QIcon()
+        sizes = [16, 20, 24, 32, 48, 64]
+
+        for sz in sizes:
+            pm = icon.pixmap(sz, sz, QIcon.Mode.Normal, QIcon.State.Off)
+            if pm.isNull():
+                continue
+
+            tinted = QPixmap(pm.size())
+            tinted.fill(Qt.GlobalColor.transparent)
+
+            p = QPainter(tinted)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+
+            # Use the original alpha as a mask, fill with our color
+            p.drawPixmap(0, 0, pm)
+            p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+            p.fillRect(tinted.rect(), color)
+            p.end()
+
+            # Normal + Active -> same pixmap (prevents hover flip)
+            out.addPixmap(tinted, QIcon.Mode.Normal, QIcon.State.Off)
+            out.addPixmap(tinted, QIcon.Mode.Active, QIcon.State.Off)
+
+            # Disabled: slightly dimmer (optional)
+            dis = QColor(color)
+            dis.setAlphaF(0.45)
+            dispm = QPixmap(tinted.size())
+            dispm.fill(Qt.GlobalColor.transparent)
+            p2 = QPainter(dispm)
+            p2.drawPixmap(0, 0, tinted)
+            p2.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+            p2.fillRect(dispm.rect(), dis)
+            p2.end()
+            out.addPixmap(dispm, QIcon.Mode.Disabled, QIcon.State.Off)
+
+        return out
+
+    def _retint_zoom_icons(self):
+        """
+        Retint only the zoom actions (the ones built from QIcon.fromTheme).
+        Call after app palette is applied.
+        """
+        pal = QApplication.palette()
+        glyph = pal.color(QPalette.ColorRole.ButtonText)  # or Text; ButtonText tends to match toolbars well
+
+        for name in ("act_zoom_out", "act_zoom_in", "act_zoom_1_1", "act_zoom_fit"):
+            act = getattr(self, name, None)
+            if act is None:
+                continue
+
+            # stash original once so repeated theme flips don't re-tint a tinted icon
+            if not hasattr(act, "_base_icon"):
+                act._base_icon = act.icon()
+
+            act.setIcon(self._tint_icon(act._base_icon, glyph))
 
     def _dark_palette(self) -> QPalette:
         """Create a dark theme palette."""
@@ -172,7 +318,7 @@ class ThemeMixin:
         hi = QColor(30, 144, 255)    # highlight (dodger blue)
 
         p.setColor(QPalette.ColorRole.Window, panel)
-        p.setColor(QPalette.ColorRole.WindowText, text)
+        p.setColor(QPalette.ColorRole.WindowText, QColor(255, 255, 255))
         p.setColor(QPalette.ColorRole.Base, bg)
         p.setColor(QPalette.ColorRole.AlternateBase, altbase)
         p.setColor(QPalette.ColorRole.ToolTipBase, panel)
@@ -270,7 +416,7 @@ class ThemeMixin:
         link = QColor(120, 170, 255)
         linkv = QColor(180, 150, 255)
         hi = QColor(95, 145, 230)
-        hitxt = QColor(255, 255, 255)
+        hitxt = QColor(20, 20, 20)
 
         # Core roles
         p.setColor(QPalette.ColorRole.Window, window)
@@ -300,7 +446,7 @@ class ThemeMixin:
         p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText, dis)
         p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Base, QColor(58, 58, 58))
         p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Highlight, QColor(80, 80, 80))
-        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.HighlightedText, QColor(210, 210, 210))
+        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.HighlightedText, QColor(20, 20, 20))
 
         return p
 

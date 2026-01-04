@@ -1,0 +1,42 @@
+<svg width="500" height="500" viewBox="0 0 500 500" xmlns="http://www.w3.org/2000/svg">
+  
+  <!-- Quadrato Alto Sinistra (Giallo / Più) -->
+  <g transform="translate(10, 10)">
+    <rect width="230" height="230" fill="#fec035" />
+    <!-- Effetto ombra diagonale -->
+    <path d="M230,0 L230,230 L115,230 Z" fill="#fab005" opacity="0.4" />
+    <!-- Simbolo + -->
+    <rect x="95" y="45" width="40" height="140" rx="10" fill="white" />
+    <rect x="45" y="95" width="140" height="40" rx="10" fill="white" />
+  </g>
+
+  <!-- Quadrato Alto Destra (Rosso / Meno) -->
+  <g transform="translate(260, 10)">
+    <rect width="230" height="230" fill="#f15654" />
+    <path d="M230,0 L230,230 L115,230 Z" fill="#d04442" opacity="0.4" />
+    <!-- Simbolo - -->
+    <rect x="45" y="95" width="140" height="30" rx="10" fill="white" />
+  </g>
+
+  <!-- Quadrato Basso Sinistra (Verde / Per) -->
+  <g transform="translate(10, 260)">
+    <rect width="230" height="230" fill="#5cba63" />
+    <path d="M230,0 L230,230 L115,230 Z" fill="#4fa555" opacity="0.4" />
+    <!-- Simbolo X (Ruotato +) -->
+    <g transform="translate(115, 115) rotate(45)">
+      <rect x="-20" y="-70" width="40" height="140" rx="10" fill="white" />
+      <rect x="-70" y="-20" width="140" height="40" rx="10" fill="white" />
+    </g>
+  </g>
+
+  <!-- Quadrato Basso Destra (Blu / Diviso) -->
+  <g transform="translate(260, 260)">
+    <rect width="230" height="230" fill="#427bc9" />
+    <path d="M230,0 L230,230 L115,230 Z" fill="#3664a3" opacity="0.4" />
+    <!-- Simbolo Diviso -->
+    <rect x="45" y="95" width="140" height="30" rx="10" fill="white" />
+    <circle cx="115" cy="55" r="15" fill="white" />
+    <circle cx="115" cy="175" r="15" fill="white" />
+  </g>
+  
+</svg>

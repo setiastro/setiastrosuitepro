@@ -1,0 +1,32 @@
+<svg width="500" height="500" viewBox="0 0 500 500" xmlns="http://www.w3.org/2000/svg">
+  <!-- Bordo quadrato arrotondato -->
+  <rect x="20" y="20" width="460" height="460" rx="80" fill="white" stroke="black" stroke-width="25" />
+
+  <!-- Assi Cartesiani -->
+  <g stroke="black" stroke-width="25" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <!-- Asse Y e X -->
+    <path d="M80,100 L80,420 L420,420" />
+    <!-- Frecce -->
+    <path d="M50,130 L80,90 L110,130" /> <!-- Freccia Y -->
+    <path d="M390,390 L430,420 L390,450" /> <!-- Freccia X -->
+  </g>
+
+  <!-- Punti Dati (Scatter Plot) -->
+  <g fill="#ff3333">
+    <circle cx="160" cy="220" r="20" />
+    <circle cx="200" cy="230" r="20" />
+    <circle cx="160" cy="260" r="20" />
+    <circle cx="220" cy="230" r="20" />
+    <circle cx="270" cy="300" r="20" />
+    <circle cx="320" cy="300" r="20" />
+    <circle cx="240" cy="350" r="20" />
+    <circle cx="330" cy="260" r="20" />
+    <circle cx="360" cy="220" r="20" />
+    <circle cx="300" cy="150" r="20" />
+    <circle cx="370" cy="80" r="20" />
+    <circle cx="450" cy="120" r="20" />
+  </g>
+
+  <!-- Linea di Regressione (Best Fit) -->
+  <line x1="130" y1="370" x2="420" y2="100" stroke="#2d72b5" stroke-width="30" stroke-linecap="round" />
+</svg>

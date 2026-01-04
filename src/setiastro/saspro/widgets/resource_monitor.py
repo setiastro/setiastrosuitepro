@@ -54,19 +54,19 @@ class GPUWorker(QThread):
                 "-ExecutionPolicy", "Bypass",
                 "-Command",
                 (
-                    "$groups = Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine "
-                    "-ErrorAction SilentlyContinue | "
-                    "Group-Object -Property { $_.Name -replace '^pid_\\d+_', '' }; "
-                    "$res_list = $groups | ForEach-Object { ($_.Group | Measure-Object -Property UtilizationPercentage -Sum).Sum }; "
-                    "$max_val = ($res_list | Measure-Object -Maximum).Maximum; "
-                    "if ($max_val) { [math]::Round($max_val, 1) } else { 0 }"
+                    "$x = Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine "
+                    "-ErrorAction SilentlyContinue; "
+                    "if (-not $x) { 0 } else { "
+                    "  $m = ($x | Measure-Object -Property UtilizationPercentage -Maximum).Maximum; "
+                    "  if ($m) { [math]::Round([double]$m, 1) } else { 0 } "
+                    "}"
                 ),
             ]
 
             out = subprocess.check_output(
                 cmd,
                 startupinfo=self._startupinfo_hidden(),
-                timeout=1.0,               # IMPORTANT: don’t allow 5s hangs
+                timeout=2.0,               # IMPORTANT: don’t allow 5s hangs
                 stderr=subprocess.DEVNULL,  # keep it quiet
             )
             val_str = out.decode("utf-8", errors="ignore").strip()

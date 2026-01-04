@@ -514,6 +514,32 @@ class ImageSubWindow(QWidget):
         row.addWidget(self._btn_wcs, 0, Qt.AlignmentFlag.AlignLeft)
         # ─────────────────────────────────────────────────────────────────
 
+        # ---- Inline view title (shown when the MDI subwindow is maximized) ----
+        self._inline_title = QLabel(self)
+        self._inline_title.setText("")
+        self._inline_title.setToolTip(self.tr("Active view"))
+        self._inline_title.setVisible(False)
+        self._inline_title.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._inline_title.setStyleSheet("""
+            QLabel {
+                padding-left: 8px;
+                padding-right: 6px;
+                font-size: 11px;
+                color: rgba(255,255,255,0.80);
+            }
+        """)
+        self._inline_title.setSizePolicy(
+            self._inline_title.sizePolicy().horizontalPolicy(),
+            self._inline_title.sizePolicy().verticalPolicy(),
+        )
+
+        # Push everything after this to the far right
+        row.addStretch(1)
+        row.addWidget(self._inline_title, 0, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
+
+        # (optional) tiny spacing to the edge
+        row.addSpacing(6)
+
         row.addStretch(1)
         lyt.addLayout(row)
 
@@ -593,6 +619,9 @@ class ImageSubWindow(QWidget):
         self._watched_docs = set()
         self._history_doc = None
         self._install_history_watchers()
+
+        QTimer.singleShot(0, self._install_mdi_state_watch)
+        QTimer.singleShot(0, self._update_inline_title_and_buttons)
 
     # ----- link drag payload -----
     def _start_link_drag(self):
@@ -725,7 +754,60 @@ class ImageSubWindow(QWidget):
         except Exception:
             pass
 
-    #------ Replay helpers------
+    # ------------------------------------------------------------
+    # MDI maximize handling: show inline title + avoid duplicate buttons
+    # ------------------------------------------------------------
+    def _mdi_subwindow(self) -> QMdiSubWindow | None:
+        w = self.parentWidget()
+        while w is not None and not isinstance(w, QMdiSubWindow):
+            w = w.parentWidget()
+        return w
+
+    def _install_mdi_state_watch(self):
+        sw = self._mdi_subwindow()
+        if sw is None:
+            return
+        # Watch maximize/restore changes on the hosting QMdiSubWindow
+        sw.installEventFilter(self)
+
+    def _is_mdi_maximized(self) -> bool:
+        sw = self._mdi_subwindow()
+        if sw is None:
+            return False
+        try:
+            return sw.isMaximized()
+        except Exception:
+            return False
+
+    def _set_mdi_minmax_buttons_enabled(self, enabled: bool):
+        return  # leave Qt default buttons alone
+
+    def _current_view_title_for_inline(self) -> str:
+        # Prefer your already-pretty title (strip decorations if needed).
+        try:
+            # If you have _current_view_title_for_drag already, reuse it:
+            return self._current_view_title_for_drag()
+        except Exception:
+            pass
+        try:
+            return (self.windowTitle() or "").strip()
+        except Exception:
+            return ""
+
+    def _update_inline_title_and_buttons(self):
+        maximized = self._is_mdi_maximized()
+
+        # Show inline title only when maximized (optional)
+        try:
+            self._inline_title.setVisible(maximized)
+            if maximized:
+                self._inline_title.setText(self._current_view_title_for_inline() or "Untitled")
+        except Exception:
+            pass
+
+        # IMPORTANT: do NOT change QMdiSubWindow window flags.
+        # Leaving them alone restores the default Qt "double button" behavior.
+
     #------ Replay helpers------
     def _update_replay_button(self):
         """
@@ -887,7 +969,7 @@ class ImageSubWindow(QWidget):
     def _on_toggle_wcs_grid(self, on: bool):
         self._show_wcs_grid = bool(on)
         QSettings().setValue("display/show_wcs_grid", self._show_wcs_grid)
-        self._render(rebuild=False)  # repaint current frame
+        self._render(rebuild=True)  # repaint current frame
 
 
 
@@ -1226,18 +1308,6 @@ class ImageSubWindow(QWidget):
         except Exception as e:
             print("[ImageSubWindow] apply_layer_stack error:", e)      
 
-    # --- add to ImageSubWindow ---
-    def _collect_layer_docs(self):
-        docs = set()
-        for L in getattr(self, "_layers", []):
-            d = getattr(L, "src_doc", None)
-            if d is not None:
-                docs.add(d)
-            md = getattr(L, "mask_doc", None)
-            if md is not None:
-                docs.add(md)
-        return docs
-
     def keyPressEvent(self, ev):
         if ev.key() == Qt.Key.Key_Space:
             # only the first time we enter probe mode
@@ -1359,21 +1429,70 @@ class ImageSubWindow(QWidget):
         except Exception as e:
             print("[ImageSubWindow] _on_layer_source_changed error:", e)
 
+    def _collect_layer_docs(self):
+        """
+        Collect unique ImageDocument objects referenced by the layer stack:
+        - layer src_doc (if doc-backed)
+        - layer mask_doc (if any)
+        Raster/baked layers may have src_doc=None; those are ignored.
+        Returns a LIST in a stable order (bottom→top traversal order), de-duped.
+        """
+        out = []
+        seen = set()
+
+        layers = getattr(self, "_layers", None) or []
+        for L in layers:
+            # 1) source doc (may be None for raster/baked layers)
+            d = getattr(L, "src_doc", None)
+            if d is not None:
+                k = id(d)
+                if k not in seen:
+                    seen.add(k)
+                    out.append(d)
+
+            # 2) mask doc (also may be None)
+            md = getattr(L, "mask_doc", None)
+            if md is not None:
+                k = id(md)
+                if k not in seen:
+                    seen.add(k)
+                    out.append(md)
+
+        return out
+
+
     def _reinstall_layer_watchers(self):
+        """
+        Reconnect layer source/mask document watchers to trigger live layer recomposite.
+        Safe against:
+        - raster/baked layers (src_doc=None)
+        - deleted docs / partially-torn-down Qt objects
+        - repeated calls
+        """
+        # Previous watchers
+        olddocs = list(getattr(self, "_watched_docs", []) or [])
+
         # Disconnect old
-        for d in list(self._watched_docs):
+        for d in olddocs:
             try:
+                # Doc may already be deleted or signal gone
                 d.changed.disconnect(self._on_layer_source_changed)
             except Exception:
                 pass
-        # Connect new
+
+        # Collect new
         newdocs = self._collect_layer_docs()
+
+        # Connect new
         for d in newdocs:
             try:
                 d.changed.connect(self._on_layer_source_changed)
             except Exception:
                 pass
+
+        # Store as list (stable)
         self._watched_docs = newdocs
+
 
 
     def toggle_mask_overlay(self):
@@ -1556,11 +1675,11 @@ class ImageSubWindow(QWidget):
     def is_hard_autostretch(self) -> bool:
         return self.autostretch_profile == "hard"
 
-    def _mdi_subwindow(self) -> QMdiSubWindow | None:
-        w = self.parent()
-        while w is not None and not isinstance(w, QMdiSubWindow):
-            w = w.parent()
-        return w
+    #def _mdi_subwindow(self) -> QMdiSubWindow | None:
+    #    w = self.parent()
+    #    while w is not None and not isinstance(w, QMdiSubWindow):
+    #        w = w.parent()
+    #    return w
 
     def _effective_title(self) -> str:
         """
@@ -2920,6 +3039,12 @@ class ImageSubWindow(QWidget):
                 self._readout_dragging = False
                 return True
             return False
+
+        sw = self._mdi_subwindow()
+        if sw is not None and obj is sw:
+            et = ev.type()
+            if et in (QEvent.Type.WindowStateChange, QEvent.Type.Show, QEvent.Type.Resize):
+                QTimer.singleShot(0, self._update_inline_title_and_buttons)
 
         return super().eventFilter(obj, ev)
 
