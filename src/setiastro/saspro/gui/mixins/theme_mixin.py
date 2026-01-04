@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QBrush, QColor, QFont, QPalette
+from PyQt6.QtGui import QBrush, QColor, QFont, QPalette, QPainter, QPixmap, QIcon
 from PyQt6.QtWidgets import QApplication
 
 if TYPE_CHECKING:
@@ -119,6 +119,10 @@ class ThemeMixin:
         self._repolish_top_levels()
         self._apply_workspace_theme()
         self._style_mdi_titlebars()
+        try:
+            self._retint_zoom_icons()
+        except Exception:
+            pass        
         self._menu_view_panels = None
 
         try:
@@ -158,6 +162,72 @@ class ThemeMixin:
             QMdiSubWindow::titlebar        {{ background: {base};  color: {fg}; }}
             QMdiSubWindow::titlebar:active {{ background: {active}; color: {fg}; }}
         """)
+
+    def _tint_icon(self, icon: QIcon, color: QColor) -> QIcon:
+        """
+        Take an existing icon (often fromTheme) and force a single-color glyph.
+        Sets Normal and Active to the same tinted pixmaps to prevent hover flipping.
+        """
+        if icon.isNull():
+            return icon
+
+        out = QIcon()
+        sizes = [16, 20, 24, 32, 48, 64]
+
+        for sz in sizes:
+            pm = icon.pixmap(sz, sz, QIcon.Mode.Normal, QIcon.State.Off)
+            if pm.isNull():
+                continue
+
+            tinted = QPixmap(pm.size())
+            tinted.fill(Qt.GlobalColor.transparent)
+
+            p = QPainter(tinted)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+
+            # Use the original alpha as a mask, fill with our color
+            p.drawPixmap(0, 0, pm)
+            p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+            p.fillRect(tinted.rect(), color)
+            p.end()
+
+            # Normal + Active -> same pixmap (prevents hover flip)
+            out.addPixmap(tinted, QIcon.Mode.Normal, QIcon.State.Off)
+            out.addPixmap(tinted, QIcon.Mode.Active, QIcon.State.Off)
+
+            # Disabled: slightly dimmer (optional)
+            dis = QColor(color)
+            dis.setAlphaF(0.45)
+            dispm = QPixmap(tinted.size())
+            dispm.fill(Qt.GlobalColor.transparent)
+            p2 = QPainter(dispm)
+            p2.drawPixmap(0, 0, tinted)
+            p2.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+            p2.fillRect(dispm.rect(), dis)
+            p2.end()
+            out.addPixmap(dispm, QIcon.Mode.Disabled, QIcon.State.Off)
+
+        return out
+
+    def _retint_zoom_icons(self):
+        """
+        Retint only the zoom actions (the ones built from QIcon.fromTheme).
+        Call after app palette is applied.
+        """
+        pal = QApplication.palette()
+        glyph = pal.color(QPalette.ColorRole.ButtonText)  # or Text; ButtonText tends to match toolbars well
+
+        for name in ("act_zoom_out", "act_zoom_in", "act_zoom_1_1", "act_zoom_fit"):
+            act = getattr(self, name, None)
+            if act is None:
+                continue
+
+            # stash original once so repeated theme flips don't re-tint a tinted icon
+            if not hasattr(act, "_base_icon"):
+                act._base_icon = act.icon()
+
+            act.setIcon(self._tint_icon(act._base_icon, glyph))
 
     def _dark_palette(self) -> QPalette:
         """Create a dark theme palette."""
