@@ -8174,6 +8174,11 @@ class AstroSuiteProMainWindow(
         except Exception:
             pass
 
+        try:
+            self._fix_mdi_titlebar_emboss("#dcdcdc" if self._theme_mode()=="dark" else "#f0f0f0")
+        except Exception:
+            pass
+
         # -- 11) If this is the first window and it's an image, mimic "Cascade Views"
         try:
             if first_window and not is_table:
@@ -8613,7 +8618,10 @@ class AstroSuiteProMainWindow(
             self._refresh_mask_action_states()
         except Exception:
             pass
-
+        try:
+            self._fix_mdi_titlebar_emboss("#dcdcdc" if self._theme_mode()=="dark" else "#f0f0f0")
+        except Exception:
+            pass
 
     def _sync_docman_active(self, doc):
         dm = self.doc_manager

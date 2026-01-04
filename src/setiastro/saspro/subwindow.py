@@ -514,6 +514,32 @@ class ImageSubWindow(QWidget):
         row.addWidget(self._btn_wcs, 0, Qt.AlignmentFlag.AlignLeft)
         # ─────────────────────────────────────────────────────────────────
 
+        # ---- Inline view title (shown when the MDI subwindow is maximized) ----
+        self._inline_title = QLabel(self)
+        self._inline_title.setText("")
+        self._inline_title.setToolTip(self.tr("Active view"))
+        self._inline_title.setVisible(False)
+        self._inline_title.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._inline_title.setStyleSheet("""
+            QLabel {
+                padding-left: 8px;
+                padding-right: 6px;
+                font-size: 11px;
+                color: rgba(255,255,255,0.80);
+            }
+        """)
+        self._inline_title.setSizePolicy(
+            self._inline_title.sizePolicy().horizontalPolicy(),
+            self._inline_title.sizePolicy().verticalPolicy(),
+        )
+
+        # Push everything after this to the far right
+        row.addStretch(1)
+        row.addWidget(self._inline_title, 0, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
+
+        # (optional) tiny spacing to the edge
+        row.addSpacing(6)
+
         row.addStretch(1)
         lyt.addLayout(row)
 
@@ -593,6 +619,9 @@ class ImageSubWindow(QWidget):
         self._watched_docs = set()
         self._history_doc = None
         self._install_history_watchers()
+
+        QTimer.singleShot(0, self._install_mdi_state_watch)
+        QTimer.singleShot(0, self._update_inline_title_and_buttons)
 
     # ----- link drag payload -----
     def _start_link_drag(self):
@@ -725,7 +754,60 @@ class ImageSubWindow(QWidget):
         except Exception:
             pass
 
-    #------ Replay helpers------
+    # ------------------------------------------------------------
+    # MDI maximize handling: show inline title + avoid duplicate buttons
+    # ------------------------------------------------------------
+    def _mdi_subwindow(self) -> QMdiSubWindow | None:
+        w = self.parentWidget()
+        while w is not None and not isinstance(w, QMdiSubWindow):
+            w = w.parentWidget()
+        return w
+
+    def _install_mdi_state_watch(self):
+        sw = self._mdi_subwindow()
+        if sw is None:
+            return
+        # Watch maximize/restore changes on the hosting QMdiSubWindow
+        sw.installEventFilter(self)
+
+    def _is_mdi_maximized(self) -> bool:
+        sw = self._mdi_subwindow()
+        if sw is None:
+            return False
+        try:
+            return sw.isMaximized()
+        except Exception:
+            return False
+
+    def _set_mdi_minmax_buttons_enabled(self, enabled: bool):
+        return  # leave Qt default buttons alone
+
+    def _current_view_title_for_inline(self) -> str:
+        # Prefer your already-pretty title (strip decorations if needed).
+        try:
+            # If you have _current_view_title_for_drag already, reuse it:
+            return self._current_view_title_for_drag()
+        except Exception:
+            pass
+        try:
+            return (self.windowTitle() or "").strip()
+        except Exception:
+            return ""
+
+    def _update_inline_title_and_buttons(self):
+        maximized = self._is_mdi_maximized()
+
+        # Show inline title only when maximized (optional)
+        try:
+            self._inline_title.setVisible(maximized)
+            if maximized:
+                self._inline_title.setText(self._current_view_title_for_inline() or "Untitled")
+        except Exception:
+            pass
+
+        # IMPORTANT: do NOT change QMdiSubWindow window flags.
+        # Leaving them alone restores the default Qt "double button" behavior.
+
     #------ Replay helpers------
     def _update_replay_button(self):
         """
@@ -1593,11 +1675,11 @@ class ImageSubWindow(QWidget):
     def is_hard_autostretch(self) -> bool:
         return self.autostretch_profile == "hard"
 
-    def _mdi_subwindow(self) -> QMdiSubWindow | None:
-        w = self.parent()
-        while w is not None and not isinstance(w, QMdiSubWindow):
-            w = w.parent()
-        return w
+    #def _mdi_subwindow(self) -> QMdiSubWindow | None:
+    #    w = self.parent()
+    #    while w is not None and not isinstance(w, QMdiSubWindow):
+    #        w = w.parent()
+    #    return w
 
     def _effective_title(self) -> str:
         """
@@ -2957,6 +3039,12 @@ class ImageSubWindow(QWidget):
                 self._readout_dragging = False
                 return True
             return False
+
+        sw = self._mdi_subwindow()
+        if sw is not None and obj is sw:
+            et = ev.type()
+            if et in (QEvent.Type.WindowStateChange, QEvent.Type.Show, QEvent.Type.Resize):
+                QTimer.singleShot(0, self._update_inline_title_and_buttons)
 
         return super().eventFilter(obj, ev)
 
