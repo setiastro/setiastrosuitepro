@@ -12,12 +12,42 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QDockWidget, QPlainTextEdit, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout, QWidget, QTextEdit, QListWidget, QListWidgetItem,
-    QAbstractItemView, QApplication
+    QAbstractItemView, QApplication, QLineEdit, QMenu
 )
-from PyQt6.QtGui import QTextCursor, QAction
+from PyQt6.QtGui import QTextCursor, QAction, QGuiApplication
 
 if TYPE_CHECKING:
     from PyQt6.QtWidgets import QAction
+
+import os
+
+GLYPHS = "■●◆▲▪▫•◼◻◾◽🔗"
+
+def _strip_ui_decorations(text: str) -> str:
+    """
+    Strip UI-only decorations from titles:
+    - Qt mnemonics (&)
+    - link badges like "[LINK]"
+    - your glyph badges
+    - file extension (optional, but nice for Explorer)
+    """
+    if not text:
+        return ""
+    s = str(text)
+
+    # remove mnemonics
+    s = s.replace("&", "")
+
+    # remove common prefixes/badges
+    s = s.replace("[LINK]", "").strip()
+
+    # remove glyph badges
+    s = s.translate({ord(ch): None for ch in GLYPHS})
+
+    # collapse whitespace
+    s = " ".join(s.split())
+
+    return s
 
 
 class DockMixin:
@@ -105,14 +135,44 @@ class DockMixin:
         self._view_panels_menu.removeAction(action)
     
     def _init_explorer_dock(self):
-        self.explorer = QListWidget()
-        # Enter/Return or single-activation: focus if open, else open
+        host = QWidget(self)
+        lay = QVBoxLayout(host)
+        lay.setContentsMargins(4, 4, 4, 4)
+        lay.setSpacing(4)
+
+        # Optional filter box (super useful)
+        self.explorer_filter = QLineEdit(host)
+        self.explorer_filter.setPlaceholderText(self.tr("Filter open documents…"))
+        self.explorer_filter.textChanged.connect(self._explorer_apply_filter)
+        lay.addWidget(self.explorer_filter)
+
+        self.explorer = QTreeWidget(host)
+        self.explorer.setObjectName("ExplorerTree")
+        self.explorer.setColumnCount(3)
+        self.explorer.setHeaderLabels([self.tr("Document"), self.tr("Dims"), self.tr("Type")])
+
+        # Sorting
+        self.explorer.setSortingEnabled(True)
+        self.explorer.header().setSortIndicatorShown(True)
+        self.explorer.sortByColumn(0, Qt.SortOrder.AscendingOrder)
+
+        # Selection/activation behavior
+        self.explorer.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.explorer.itemActivated.connect(self._activate_or_open_from_explorer)
-        # Double-click: same behavior
-        self.explorer.itemDoubleClicked.connect(self._activate_or_open_from_explorer)
+
+        # Inline rename support
+        self.explorer.setEditTriggers(
+            QAbstractItemView.EditTrigger.EditKeyPressed |
+            QAbstractItemView.EditTrigger.SelectedClicked
+        )
+        self.explorer.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.explorer.customContextMenuRequested.connect(self._on_explorer_context_menu)
+        self.explorer.itemChanged.connect(self._on_explorer_item_changed)
+
+        lay.addWidget(self.explorer)
 
         dock = QDockWidget(self.tr("Explorer"), self)
-        dock.setWidget(self.explorer)
+        dock.setWidget(host)
         dock.setObjectName("ExplorerDock")
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
 
@@ -341,35 +401,196 @@ class DockMixin:
         base = self._normalize_base_doc(doc)
 
         # de-dupe by identity on base
-        for i in range(self.explorer.count()):
-            it = self.explorer.item(i)
-            if it.data(Qt.ItemDataRole.UserRole) is base:
-                # refresh text in case dims/name changed
-                it.setText(self._format_explorer_title(base))
+        for i in range(self.explorer.topLevelItemCount()):
+            it = self.explorer.topLevelItem(i)
+            if it.data(0, Qt.ItemDataRole.UserRole) is base:
+                self._refresh_explorer_row(it, base)
                 return
 
-        item = QListWidgetItem(self._format_explorer_title(base))
-        item.setData(Qt.ItemDataRole.UserRole, base)
+        it = QTreeWidgetItem()
+        it.setData(0, Qt.ItemDataRole.UserRole, base)
+
+        # Make name editable; other columns read-only
+        it.setFlags(it.flags() | Qt.ItemFlag.ItemIsEditable | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
+
+        self._refresh_explorer_row(it, base)
+
         fp = (base.metadata or {}).get("file_path")
         if fp:
-            item.setToolTip(fp)
-        self.explorer.addItem(item)
+            it.setToolTip(0, fp)
+
+        self.explorer.addTopLevelItem(it)
 
         # keep row label in sync with edits/resizes/renames
         try:
-            base.changed.connect(lambda *_: self._update_explorer_item_for_doc(base))
+            base.changed.connect(lambda *_, d=base: self._update_explorer_item_for_doc(d))
         except Exception:
             pass
 
+
     def _remove_doc_from_explorer(self, doc):
-        """
-        Remove either the exact doc or its base (handles ROI proxies).
-        """
         base = self._normalize_base_doc(doc)
-        for i in range(self.explorer.count()):
-            it = self.explorer.item(i)
-            d = it.data(Qt.ItemDataRole.UserRole)
+        for i in range(self.explorer.topLevelItemCount()):
+            it = self.explorer.topLevelItem(i)
+            d = it.data(0, Qt.ItemDataRole.UserRole)
             if d is doc or d is base:
-                self.explorer.takeItem(i)
+                self.explorer.takeTopLevelItem(i)
                 break
 
+
+    def _update_explorer_item_for_doc(self, doc):
+        for i in range(self.explorer.topLevelItemCount()):
+            it = self.explorer.topLevelItem(i)
+            if it.data(0, Qt.ItemDataRole.UserRole) is doc:
+                self._refresh_explorer_row(it, doc)
+                return
+
+    def _refresh_explorer_row(self, item, doc):
+        # Column 0: display name (NO glyph decorations)
+        name = _strip_ui_decorations(doc.display_name() or "Untitled")
+
+        name_no_ext, _ext = os.path.splitext(name)
+        if name_no_ext:
+            name = name_no_ext
+
+        item.setText(0, name)
+
+        # Column 1: dims
+        dims = ""
+        try:
+            import numpy as np
+            arr = getattr(doc, "image", None)
+            if isinstance(arr, np.ndarray) and arr.size:
+                h, w = arr.shape[:2]
+                c = arr.shape[2] if arr.ndim == 3 else 1
+                dims = f"{h}×{w}×{c}"
+        except Exception:
+            pass
+        item.setText(1, dims)
+
+        # Column 2: type/bit-depth (whatever you have available)
+        md = (doc.metadata or {})
+        bit = md.get("bit_depth") or md.get("dtype") or ""
+        kind = md.get("format") or md.get("doc_type") or ""
+        t = " / ".join([s for s in (str(kind), str(bit)) if s and s != "None"])
+        item.setText(2, t)
+
+    def _on_explorer_item_changed(self, item, col: int):
+        if col != 0:
+            return
+
+        doc = item.data(0, Qt.ItemDataRole.UserRole)
+        if doc is None:
+            return
+
+        new_name = (item.text(0) or "").strip()
+        if not new_name:
+            # revert to current doc name
+            self._refresh_explorer_row(item, doc)
+            return
+
+        # Avoid infinite loops: only apply if changed
+        cur = _strip_ui_decorations(doc.display_name() or "Untitled")
+        cur_no_ext, _ = os.path.splitext(cur)
+        cur = cur_no_ext or cur
+        if new_name == cur:
+            return
+
+        try:
+            doc.metadata["display_name"] = new_name
+        except Exception:
+            # if metadata missing or immutable, revert
+            self._refresh_explorer_row(item, doc)
+            return
+
+        try:
+            doc.changed.emit()
+        except Exception:
+            pass
+
+    def _on_explorer_context_menu(self, pos):
+        it = self.explorer.itemAt(pos)
+        if it is None:
+            return
+        doc = it.data(0, Qt.ItemDataRole.UserRole)
+        if doc is None:
+            return
+
+        menu = QMenu(self.explorer)
+        a_rename = menu.addAction(self.tr("Rename Document…"))
+        a_close  = menu.addAction(self.tr("Close Document"))
+        menu.addSeparator()
+        a_copy_path = menu.addAction(self.tr("Copy File Path"))
+        a_reveal = menu.addAction(self.tr("Reveal in File Manager"))
+        menu.addSeparator()
+        a_send_shelf = menu.addAction(self.tr("Send View to Shelf"))  # acts on active view for this doc
+
+        act = menu.exec(self.explorer.viewport().mapToGlobal(pos))
+        if act == a_rename:
+            # Start inline editing
+            self.explorer.editItem(it, 0)
+
+        elif act == a_close:
+            # close only if no other subwindows show it: you already do that in _on_view_about_to_close,
+            # but Explorer close is explicit; just close all views of this doc then docman.close_document.
+            try:
+                self._close_all_views_for_doc(doc)
+            except Exception:
+                pass
+
+        elif act == a_copy_path:
+            fp = (doc.metadata or {}).get("file_path", "")
+            if fp:
+                QGuiApplication.clipboard().setText(fp)
+
+        elif act == a_reveal:
+            fp = (doc.metadata or {}).get("file_path", "")
+            if fp:
+                self._reveal_in_file_manager(fp)
+
+        elif act == a_send_shelf:
+            sw = self._find_subwindow_for_doc(doc)
+            if sw and hasattr(sw.widget(), "_send_to_shelf"):
+                try:
+                    sw.widget()._send_to_shelf()
+                except Exception:
+                    pass
+
+    def _close_all_views_for_doc(self, doc):
+        base = self._normalize_base_doc(doc)
+        subs = list(self.mdi.subWindowList())
+        for sw in subs:
+            w = sw.widget()
+            if getattr(w, "base_document", None) is base:
+                try:
+                    sw.close()
+                except Exception:
+                    pass
+        # If none left (or even if close failed), try docman close defensively
+        try:
+            self.docman.close_document(base)
+        except Exception:
+            pass
+
+
+    def _reveal_in_file_manager(self, path: str):
+        import sys, os, subprocess
+        try:
+            if sys.platform.startswith("win"):
+                subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", "-R", path])
+            else:
+                # best-effort on Linux
+                subprocess.Popen(["xdg-open", os.path.dirname(path)])
+        except Exception:
+            pass
+
+    def _explorer_apply_filter(self, text: str):
+        t = (text or "").strip().lower()
+        for i in range(self.explorer.topLevelItemCount()):
+            it = self.explorer.topLevelItem(i)
+            name = (it.text(0) or "").lower()
+            fp = (it.toolTip(0) or "").lower()
+            hide = bool(t) and (t not in name) and (t not in fp)
+            it.setHidden(hide)

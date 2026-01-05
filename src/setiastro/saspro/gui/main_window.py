@@ -2660,10 +2660,27 @@ class AstroSuiteProMainWindow(
         return f"{name}{dims}"
 
     def _update_explorer_item_for_doc(self, doc):
-        for i in range(self.explorer.count()):
-            it = self.explorer.item(i)
-            if it.data(Qt.ItemDataRole.UserRole) is doc:
-                it.setText(self._format_explorer_title(doc))
+        # Delegate to DockMixin implementation if present
+        try:
+            return super()._update_explorer_item_for_doc(doc)
+        except Exception:
+            pass
+
+        # Fallback: tree-safe implementation
+        if not hasattr(self, "explorer") or self.explorer is None:
+            return
+        try:
+            n = self.explorer.topLevelItemCount()
+        except Exception:
+            return
+
+        for i in range(n):
+            it = self.explorer.topLevelItem(i)
+            if it.data(0, Qt.ItemDataRole.UserRole) is doc:
+                try:
+                    self._refresh_explorer_row(it, doc)
+                except Exception:
+                    pass
                 return
     #-----------FUNCTIONS----------------
 
@@ -8473,26 +8490,21 @@ class AstroSuiteProMainWindow(
 
 
     def _activate_or_open_from_explorer(self, item):
-        doc = item.data(Qt.ItemDataRole.UserRole)
-        base = self._normalize_base_doc(doc)
-
-        # 1) Try to focus an existing view for this base
-        for sw in self.mdi.subWindowList():
-            w = sw.widget()
-            if getattr(w, "base_document", None) is base:
-                try:
-                    sw.show(); w.show()
-                    st = sw.windowState()
-                    if st & Qt.WindowState.WindowMinimized:
-                        sw.setWindowState(st & ~Qt.WindowState.WindowMinimized)
-                    self.mdi.setActiveSubWindow(sw)
-                    sw.raise_()
-                except Exception:
-                    pass
-                return
-
-        # 2) None exists -> open one
-        self._open_subwindow_for_added_doc(base)
+        doc = item.data(0, Qt.ItemDataRole.UserRole)
+        if doc is None:
+            return
+        # you already have logic for this; typically:
+        sw = self._find_subwindow_for_doc(doc)
+        if sw:
+            self.mdi.setActiveSubWindow(sw)
+            sw.show()
+            sw.raise_()
+            return
+        # else open it (if your app supports opening closed docs, otherwise no-op)
+        try:
+            self._open_subwindow_for_added_doc(doc)
+        except Exception:
+            pass
 
     def _set_linked_stretch_from_action(self, checked: bool):
         # persist as the default for *new* views
