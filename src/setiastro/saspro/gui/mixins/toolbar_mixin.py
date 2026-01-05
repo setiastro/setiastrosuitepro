@@ -594,7 +594,16 @@ class ToolbarMixin:
                 fit_menu.addAction(self.act_auto_fit_resize)  # use the real action
                 btn_fit.setMenu(fit_menu)
                 btn_fit.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+        tb = self._toolbar_containing_action(self.act_autostretch)
+        if tb:
+            btn = tb.widgetForAction(self.act_autostretch)
+            if isinstance(btn, QToolButton):
+                # ... build menu ...
+                btn.setMenu(menu)
+                btn.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
 
+                # IMPORTANT: re-apply style after action moves / rebind
+                self._style_toggle_toolbutton(btn)
 
     def _bind_view_toolbar_menus(self, tb: DraggableToolBar):
         # --- Display-Stretch menu ---
@@ -1821,4 +1830,10 @@ class ToolbarMixin:
         if hasattr(self, "act_hide_mask"):
             self.act_hide_mask.setEnabled(has_mask and overlay_on)
 
-
+    def _style_toggle_toolbutton(self, btn: QToolButton):
+        # Make sure the action visually shows "on" state
+        btn.setCheckable(True)  # safe even if already
+        btn.setStyleSheet("""
+            QToolButton { color: #dcdcdc; }
+            QToolButton:checked { color: #DAA520; font-weight: 600; }
+        """)
