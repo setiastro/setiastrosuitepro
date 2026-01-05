@@ -15,6 +15,11 @@ from PyQt6.QtWidgets import (
     QLineEdit, QToolButton, QCheckBox, QTextEdit
 )
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from setiastro.saspro.ops.scripts import ScriptEntry
+
 # -----------------------------------------------------------------------------
 # Code editor with line numbers (QPlainTextEdit subclass)
 # -----------------------------------------------------------------------------
