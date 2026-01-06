@@ -407,43 +407,7 @@ def normalize_flat_cfa_inplace(flat2d: np.ndarray, pattern: str, *, combine_gree
     flat2d[flat2d == 0] = 1.0
     return flat2d
 
-@njit(parallel=True, fastmath=True)
-def apply_flat_division_numba_2d(image, master_flat, master_bias=None):
-    """
-    Mono version: image.shape == (H,W)
-    """
-    if master_bias is not None:
-        master_flat = master_flat - master_bias
-        image = image - master_bias
 
-    median_flat = np.mean(master_flat)
-    height, width = image.shape
-
-    for y in prange(height):
-        for x in range(width):
-            image[y, x] /= (master_flat[y, x] / median_flat)
-
-    return image
-
-
-@njit(parallel=True, fastmath=True)
-def apply_flat_division_numba_3d(image, master_flat, master_bias=None):
-    """
-    Color version: image.shape == (H,W,C)
-    """
-    if master_bias is not None:
-        master_flat = master_flat - master_bias
-        image = image - master_bias
-
-    median_flat = np.mean(master_flat)
-    height, width, channels = image.shape
-
-    for y in prange(height):
-        for x in range(width):
-            for c in range(channels):
-                image[y, x, c] /= (master_flat[y, x, c] / median_flat)
-
-    return image
 
 @njit(parallel=True, fastmath=True)
 def _flat_div_2d(img, flat):
@@ -563,24 +527,37 @@ def apply_flat_division_numba_bayer_2d(image, master_flat, med4, pat_id):
     Bayer-aware mono division. image/master_flat are (H,W).
     med4 is [R,G1,G2,B] for that master_flat, pat_id in {0..3}.
     """
+    # parity index = (row&1)*2 + (col&1)
+    # med4 index order: 0=R, 1=G1, 2=G2, 3=B
+
+    # tables map parity_index -> med4 index
+    # parity_index: 0:(0,0) 1:(0,1) 2:(1,0) 3:(1,1)
+    if pat_id == 0:      # RGGB:  (0,0)R (0,1)G1 (1,0)G2 (1,1)B
+        t0, t1, t2, t3 = 0, 1, 2, 3
+    elif pat_id == 1:    # BGGR:  (0,0)B (0,1)G1 (1,0)G2 (1,1)R
+        t0, t1, t2, t3 = 3, 1, 2, 0
+    elif pat_id == 2:    # GRBG:  (0,0)G1 (0,1)R (1,0)B (1,1)G2
+        t0, t1, t2, t3 = 1, 0, 3, 2
+    else:                # GBRG:  (0,0)G1 (0,1)B (1,0)R (1,1)G2
+        t0, t1, t2, t3 = 1, 3, 0, 2
+
     H, W = image.shape
     for y in prange(H):
         y1 = y & 1
         for x in range(W):
             x1 = x & 1
-
-            # map parity->plane index
-            if pat_id == 0:      # RGGB: (0,0)R (0,1)G1 (1,0)G2 (1,1)B
-                pi = 0 if (y1==0 and x1==0) else 1 if (y1==0 and x1==1) else 2 if (y1==1 and x1==0) else 3
-            elif pat_id == 1:    # BGGR
-                pi = 3 if (y1==1 and x1==1) else 1 if (y1==0 and x1==1) else 2 if (y1==1 and x1==0) else 0
-            elif pat_id == 2:    # GRBG
-                pi = 1 if (y1==0 and x1==0) else 0 if (y1==0 and x1==1) else 3 if (y1==1 and x1==0) else 2
-            else:                # GBRG
-                pi = 1 if (y1==0 and x1==0) else 3 if (y1==0 and x1==1) else 0 if (y1==1 and x1==0) else 2
+            p = (y1 << 1) | x1  # 0..3
+            if p == 0:
+                pi = t0
+            elif p == 1:
+                pi = t1
+            elif p == 2:
+                pi = t2
+            else:
+                pi = t3
 
             denom = master_flat[y, x] / med4[pi]
-            if denom == 0.0 or not np.isfinite(denom):
+            if denom == 0.0 or (not np.isfinite(denom)):
                 denom = 1.0
             image[y, x] /= denom
     return image

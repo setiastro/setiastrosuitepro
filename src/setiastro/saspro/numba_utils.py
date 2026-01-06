@@ -317,61 +317,6 @@ def invert_image_numba(image):
                     output[y, x, c] = 1.0 - image[y, x, c]
         return output
 
-
-
-@njit(parallel=True, fastmath=True, cache=True)
-def apply_flat_division_numba_2d(image, master_flat, master_bias=None):
-    """
-    Mono version: image.shape == (H,W)
-    """
-    if master_bias is not None:
-        master_flat = master_flat - master_bias
-        image = image - master_bias
-
-    median_flat = np.mean(master_flat)
-    height, width = image.shape
-
-    for y in prange(height):
-        for x in range(width):
-            image[y, x] /= (master_flat[y, x] / median_flat)
-
-    return image
-
-
-@njit(parallel=True, fastmath=True, cache=True)
-def apply_flat_division_numba_3d(image, master_flat, master_bias=None):
-    """
-    Color version: image.shape == (H,W,C)
-    """
-    if master_bias is not None:
-        master_flat = master_flat - master_bias
-        image = image - master_bias
-
-    median_flat = np.mean(master_flat)
-    height, width, channels = image.shape
-
-    for y in prange(height):
-        for x in range(width):
-            for c in range(channels):
-                image[y, x, c] /= (master_flat[y, x, c] / median_flat)
-
-    return image
-
-def apply_flat_division_numba(image, master_flat, master_bias=None):
-    """
-    Dispatcher that calls the correct Numba function
-    depending on whether 'image' is 2D or 3D.
-    """
-    if image.ndim == 2:
-        # Mono
-        return apply_flat_division_numba_2d(image, master_flat, master_bias)
-    elif image.ndim == 3:
-        # Color
-        return apply_flat_division_numba_3d(image, master_flat, master_bias)
-    else:
-        raise ValueError(f"apply_flat_division_numba: expected 2D or 3D, got shape {image.shape}")
-
-
 @njit(parallel=True, cache=True)
 def subtract_dark_3d(frames, dark_frame):
     """
