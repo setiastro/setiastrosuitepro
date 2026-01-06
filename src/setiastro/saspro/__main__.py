@@ -401,7 +401,7 @@ def _init_splash():
             # --- Copyright ---
             painter.setFont(self.copyright_font)
             painter.setPen(QColor(100, 100, 130))
-            copyright_text = "© 2024-2025 Franklin Marek (Seti Astro)  •  All Rights Reserved"
+            copyright_text = "© 2024-2026 Franklin Marek (Seti Astro)  •  All Rights Reserved"
             copyright_rect = QRect(0, h - 30, w, 20)
             painter.drawText(copyright_rect, Qt.AlignmentFlag.AlignCenter, copyright_text)
             
