@@ -40,20 +40,18 @@ def background_neutralize_rgb(
     img: np.ndarray,
     rect_xywh: tuple[int, int, int, int],
     mode: str = "pivot1",
+    *,
+    remove_pedestal: bool = True,
 ) -> np.ndarray:
     """
-    mode:
-      - "pivot1": scale around 1.0 so sample medians match target, highlights protected
-      - "offset": offset-only median alignment (least destructive)
-
-    Step 0: whole-image pedestal removal (per-channel):
-      out[...,c] = out[...,c] - min(out[...,c])
+    ...
+    Step 0 (optional): whole-image pedestal removal (per-channel)
     """
     if img.ndim != 3 or img.shape[2] != 3:
         raise ValueError("Background Neutralization requires a 3-channel RGB image.")
 
-    # Step 0: pedestal removal on the WHOLE image
-    out = _remove_channel_pedestal(img)
+    # Step 0: pedestal removal on the WHOLE image (optional)
+    out = _remove_channel_pedestal(img) if remove_pedestal else img.astype(np.float32, copy=True)
 
     # Resolve sample rect (use pedestal-free image for medians)
     h, w, _ = out.shape
@@ -238,14 +236,26 @@ def apply_background_neutral_to_doc(doc, preset: dict | None = None):
         raise ValueError("Background Neutralization currently supports RGB images.")
 
     if mode == "rect":
-        rn = preset.get("rect_norm")
-        if not rn or len(rn) != 4:
+        rn = preset.get("rect_norm", None)
+
+        # IMPORTANT: don't do `if not rn` because rn may be a numpy array
+        if rn is None:
             raise ValueError("rect mode requires rect_norm=[x,y,w,h] in normalized coords.")
+
+        # Coerce array-like -> list
+        try:
+            rn = list(rn)
+        except Exception:
+            raise ValueError("rect_norm must be an iterable of 4 numbers.")
+
+        if len(rn) != 4:
+            raise ValueError("rect mode requires rect_norm=[x,y,w,h] (len==4).")
+
         H, W, _ = base.shape
-        x = int(np.clip(rn[0], 0, 1) * W)
-        y = int(np.clip(rn[1], 0, 1) * H)
-        w = int(np.clip(rn[2], 0, 1) * W)
-        h = int(np.clip(rn[3], 0, 1) * H)
+        x = int(np.clip(float(rn[0]), 0.0, 1.0) * W)
+        y = int(np.clip(float(rn[1]), 0.0, 1.0) * H)
+        w = int(np.clip(float(rn[2]), 0.0, 1.0) * W)
+        h = int(np.clip(float(rn[3]), 0.0, 1.0) * H)
         rect = (x, y, max(w, 1), max(h, 1))
     else:
         rect = auto_rect_50x50(base)

@@ -1033,17 +1033,14 @@ class ShortcutCanvas(QWidget):
             return False
         sw = self._top_subwindow_at(e.position().toPoint())
         if sw is None:
-            print("[ShortcutCanvas] _forward_command_drop: no subwindow under cursor", flush=True)
-            QApplication.processEvents()
+
             return False
         try:
             raw = bytes(md.data(MIME_CMD))
             payload = _unpack_cmd_payload(raw)  # your existing helper
-            print(f"[ShortcutCanvas] _forward_command_drop → subwin={sw}, payload={payload!r}", flush=True)
-            QApplication.processEvents()
+
         except Exception as ex:
-            print(f"[ShortcutCanvas] _forward_command_drop: failed to unpack payload: {ex!r}", flush=True)
-            QApplication.processEvents()
+
             return False
         self._mgr.apply_command_to_subwindow(sw, payload)
         e.acceptProposedAction()
@@ -1545,13 +1542,7 @@ class ShortcutManager:
 
     # ---- persistence (QSettings JSON blob) ----
     def save_shortcuts(self):
-        if not self.widgets:
-            try:
-                print("save_shortcuts: widgets empty → about to write [] to Shortcuts/v2")
-                import traceback
-                print(f"save_shortcuts stack:\n" + "".join(traceback.format_stack(limit=12)))
-            except Exception:
-                pass        
+       
         data = []
         for sid, w in list(self.widgets.items()):
             if _is_dead(w):
@@ -1852,12 +1843,7 @@ class ShortcutManager:
 
 
     def clear(self):
-        try:
-            print("CLEAR() called → about to set Shortcuts/v2 to []")
-            import traceback
-            print(f"clear() stack:\n" + "".join(traceback.format_stack(limit=12)))
-        except Exception:
-            pass        
+      
         for sid, w in list(self.widgets.items()):
             try:
                 if not _is_dead(w):
