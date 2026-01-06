@@ -20,11 +20,12 @@ from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 # ----------------------------
 # Core neutralization function
 # ----------------------------
-def background_neutralize_rgb(img: np.ndarray, rect_xywh: tuple[int, int, int, int]) -> np.ndarray:
+def background_neutralize_rgb(img: np.ndarray, rect_xywh: tuple[int,int,int,int],
+                              mode: str = "pivot1") -> np.ndarray:
     """
-    Apply Background Neutralization to an RGB float32 image in [0,1],
-    using an image-space rectangle (x, y, w, h) as the sample region.
-    Returns a new float32 array in [0,1].
+    mode:
+      - "pivot1": scale around 1.0 so sample medians match target, highlights protected
+      - "offset": offset-only median alignment (least destructive)
     """
     if img.ndim != 3 or img.shape[2] != 3:
         raise ValueError("Background Neutralization requires a 3-channel RGB image.")
@@ -37,30 +38,34 @@ def background_neutralize_rgb(img: np.ndarray, rect_xywh: tuple[int, int, int, i
     rh = max(1, min(int(rh), h - y))
 
     sample = img[y:y+rh, x:x+rw, :]
-    medians = np.median(sample, axis=(0, 1)).astype(np.float32)         # (3,)
-    avg_med = float(np.mean(medians))
+    m = np.median(sample, axis=(0, 1)).astype(np.float32)   # (3,)
+    t = float(np.mean(m))
 
-    out = img.copy()
+    out = img.astype(np.float32, copy=True)
     eps = 1e-8
-    
-    # Vectorized neutralization
-    # diff shape: (3,) -> (1, 1, 3) 
-    diffs = (medians - avg_med).reshape(1, 1, 3)
-    
-    # denom shape: (1, 1, 3)
-    denoms = 1.0 - diffs
-    
-    # Avoid div-by-zero (vectorized)
-    # logic: if abs(denom) < eps, set to eps (sign matched)
-    # We can do this efficiently:
-    small_mask = np.abs(denoms) < eps
-    denoms[small_mask] = np.where(denoms[small_mask] >= 0, eps, -eps)
-    
-    # Apply formula: (pixel - diff) / denom
-    out = (out - diffs) / denoms
-    out = np.clip(out, 0.0, 1.0)
 
-    return out.astype(np.float32, copy=False)
+    if mode == "offset":
+        delta = (t - m).reshape(1, 1, 3)
+
+        # optional: cap deltas so we cannot clip
+        ch_min = out.reshape(-1, 3).min(axis=0)
+        ch_max = out.reshape(-1, 3).max(axis=0)
+        delta = np.clip(delta,
+                        (-ch_min + 0.0).reshape(1,1,3),
+                        (1.0 - ch_max).reshape(1,1,3))
+
+        out = np.clip(out + delta, 0.0, 1.0)
+        return out
+
+    # --- pivot around 1.0 scaling ---
+    denom = np.maximum(1.0 - m, eps)        # (3,)
+    g = (1.0 - t) / denom                   # (3,)
+    g = np.clip(g, 0.0, 10.0)               # sanity cap
+
+    # y = 1 - (1-x)*g
+    out = 1.0 - (1.0 - out) * g.reshape(1, 1, 3)
+    out = np.clip(out, 0.0, 1.0)
+    return out
 
 
 # ------------------------------------
