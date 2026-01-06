@@ -294,6 +294,125 @@ class ScriptContext:
         # ✅ Normal run: let DocManager decide (ROI preview vs full)
         dm.update_active_document(img, metadata={}, step_name=step_name)
 
+    def _find_subwindow_for_doc(self, base_doc):
+        """Return (sw, widget) for the first subwindow showing base_doc."""
+        for sw, w in self._iter_open_subwindows():
+            d = self._base_doc_for_widget(w)
+            if d is base_doc:
+                return sw, w
+        return None, None
+
+    def rename_active_view(self, new_title: str) -> bool:
+        """Rename only the active MDI view title (this window)."""
+        w = self.active_view()
+        if w is None:
+            return False
+
+        t = (new_title or "").strip()
+        if not t:
+            return False
+
+        try:
+            # ImageSubWindow convention
+            setattr(w, "_view_title_override", t)
+            if hasattr(w, "_sync_host_title"):
+                w._sync_host_title()
+            return True
+        except Exception:
+            return False
+
+    def rename_active_document(self, new_name: str) -> bool:
+        """Rename the underlying document display name (affects explorer + other views)."""
+        doc = self.active_document()
+        if doc is None:
+            return False
+
+        n = (new_name or "").strip()
+        if not n:
+            return False
+
+        try:
+            old = ""
+            try:
+                old = str(doc.display_name() or "")
+            except Exception:
+                old = str(getattr(doc, "metadata", {}).get("display_name", "") or "")
+
+            doc.metadata["display_name"] = n
+            try:
+                doc.changed.emit()
+            except Exception:
+                pass
+
+            # If the active view had an override equal to the old doc name, drop it (matches your UI behavior)
+            w = self.active_view()
+            if w is not None:
+                try:
+                    if getattr(w, "_view_title_override", None) == old:
+                        setattr(w, "_view_title_override", None)
+                except Exception:
+                    pass
+                try:
+                    if hasattr(w, "_sync_host_title"):
+                        w._sync_host_title()
+                except Exception:
+                    pass
+
+            return True
+        except Exception:
+            return False
+
+    def rename_view(self, view_name_or_uid: str, new_title: str) -> bool:
+        """Rename a specific *view/window* by name/title/uid (first match)."""
+        doc = self.get_document(view_name_or_uid)
+        if doc is None:
+            return False
+
+        sw, w = self._find_subwindow_for_doc(doc)
+        if w is None:
+            return False
+
+        t = (new_title or "").strip()
+        if not t:
+            return False
+
+        try:
+            setattr(w, "_view_title_override", t)
+            if hasattr(w, "_sync_host_title"):
+                w._sync_host_title()
+            return True
+        except Exception:
+            return False
+
+    def rename_document(self, view_name_or_uid: str, new_name: str) -> bool:
+        """Rename a specific *document* by view name/title/uid."""
+        doc = self.get_document(view_name_or_uid)
+        if doc is None:
+            return False
+        n = (new_name or "").strip()
+        if not n:
+            return False
+
+        try:
+            doc.metadata["display_name"] = n
+            try:
+                doc.changed.emit()
+            except Exception:
+                pass
+
+            # resync any window currently showing it
+            sw, w = self._find_subwindow_for_doc(doc)
+            if w is not None and hasattr(w, "_sync_host_title"):
+                try:
+                    w._sync_host_title()
+                except Exception:
+                    pass
+
+            return True
+        except Exception:
+            return False
+
+
     # ---- convenience wrappers into main window ----
     def run_command(self, command_id: str, preset=None, **kwargs):
         return _run_command(self, command_id, preset, **kwargs)

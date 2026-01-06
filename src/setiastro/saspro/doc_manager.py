@@ -310,18 +310,133 @@ class ImageDocument(QObject):
 
     def close(self):
         """
-        Explicit cleanup of swap files.
+        Free all resources held by this document:
+        - delete swap states for undo/redo
+        - clear undo/redo stacks
+        - drop in-memory image array and any in-memory history
+        - clear heavy metadata (headers/WCS)
+        - clear any cached previews/pixmaps
+        - disconnect signals to help break reference cycles
         """
-        sm = get_swap_manager()
-        # Clean up undo stack
-        for swap_id, _, _ in self._undo:
-            sm.delete_state(swap_id)
-        self._undo.clear()
-        
-        # Clean up redo stack
-        for swap_id, _, _ in self._redo:
-            sm.delete_state(swap_id)
-        self._redo.clear()
+        # --- 0) Stop emitting while we tear down (best-effort) --------------
+        try:
+            self.blockSignals(True)
+        except Exception:
+            pass
+
+        # --- 1) Swap cleanup (your existing logic) --------------------------
+        try:
+            sm = get_swap_manager()
+        except Exception:
+            sm = None
+
+        # Undo stack
+        try:
+            for item in list(getattr(self, "_undo", [])):
+                try:
+                    swap_id = item[0]  # (swap_id, ..., ...)
+                except Exception:
+                    swap_id = None
+                if sm is not None and swap_id is not None:
+                    try:
+                        sm.delete_state(swap_id)
+                    except Exception:
+                        pass
+            getattr(self, "_undo", []).clear()
+        except Exception:
+            pass
+
+        # Redo stack
+        try:
+            for item in list(getattr(self, "_redo", [])):
+                try:
+                    swap_id = item[0]
+                except Exception:
+                    swap_id = None
+                if sm is not None and swap_id is not None:
+                    try:
+                        sm.delete_state(swap_id)
+                    except Exception:
+                        pass
+            getattr(self, "_redo", []).clear()
+        except Exception:
+            pass
+
+        # ROI preview stacks if you have them (your code uses _pundo/_predo on ROI docs)
+        for attr in ("_pundo", "_predo"):
+            try:
+                lst = getattr(self, attr, None)
+                if isinstance(lst, list):
+                    # If these also store swap states, delete them too (safe even if not)
+                    if sm is not None:
+                        for item in list(lst):
+                            try:
+                                swap_id = item[0]
+                            except Exception:
+                                swap_id = None
+                            if swap_id is not None:
+                                try:
+                                    sm.delete_state(swap_id)
+                                except Exception:
+                                    pass
+                    lst.clear()
+            except Exception:
+                pass
+
+        # --- 2) Drop the big in-memory image --------------------------------
+        # This is what actually frees the 2–10GB allocations (assuming no other refs).
+        try:
+            self.image = None
+        except Exception:
+            pass
+
+        # --- 3) Clear metadata that can keep large objects alive -------------
+        # fits.Header/WCS objects aren't huge like the image, but they can keep references
+        # and add up; also helps break cycles.
+        try:
+            md = getattr(self, "metadata", None)
+            if isinstance(md, dict):
+                for k in ("wcs", "original_header", "fits_header", "wcs_header", "header"):
+                    md.pop(k, None)
+                # If you keep derived/cached headers anywhere:
+                for k in ("_header_snapshot", "_wcs_snapshot", "roi_wcs_header"):
+                    md.pop(k, None)
+        except Exception:
+            pass
+
+        # --- 4) Clear any preview/pixmap/qimage caches -----------------------
+        # Adjust these attr names to match what your view/doc uses.
+        for attr in ("_qimage_cache", "_pixmap_cache", "_preview_cache", "_render_cache"):
+            try:
+                v = getattr(self, attr, None)
+                if isinstance(v, dict):
+                    v.clear()
+                setattr(self, attr, None)
+            except Exception:
+                pass
+
+        # --- 5) Disconnect signals (helps Qt reference cycles) ---------------
+        # If you connect doc.changed to closures (like ROI docs do), this helps.
+        try:
+            self.changed.disconnect()
+        except Exception:
+            pass
+
+        # If you have other signals, disconnect them similarly:
+        for sig_name in ("imageChanged", "metadataChanged"):
+            try:
+                sig = getattr(self, sig_name, None)
+                if sig is not None:
+                    sig.disconnect()
+            except Exception:
+                pass
+
+        # --- 6) Allow signals again (optional) -------------------------------
+        try:
+            self.blockSignals(False)
+        except Exception:
+            pass
+
 
     def __del__(self):
         # Fallback cleanup if close() wasn't called (though explicit close is better)
@@ -2433,7 +2548,58 @@ class DocManager(QObject):
     def create_document(self, image, metadata: dict | None = None, name: str | None = None) -> ImageDocument:
         return self.open_array(image, metadata=metadata, title=name)
 
+    def _drop_all_roi_for_parent(self, parent_doc):
+        dead = [k for k in list(self._roi_doc_cache.keys()) if k[0] == id(parent_doc)]
+        for k in dead:
+            roi_doc = self._roi_doc_cache.pop(k, None)
+            if roi_doc is not None:
+                try:
+                    roi_doc.close()   # you’ll implement doc.close() to release arrays
+                except Exception:
+                    pass
+
+    def _hard_memory_cleanup(self):
+        # 1) Drop Qt pixmap cache (can hold big chunks)
+        try:
+            from PyQt6.QtGui import QPixmapCache
+            QPixmapCache.clear()
+        except Exception:
+            pass
+
+        # 2) Let pending deleteLater() actually execute
+        try:
+            from PyQt6.QtWidgets import QApplication
+            QApplication.processEvents()
+        except Exception:
+            pass
+
+        # 3) Force Python GC to collect cycles (common with Qt signal/closure cycles)
+        try:
+            import gc
+            gc.collect()
+        except Exception:
+            pass
+
+        # 4) Optional: Linux heap trim (only helps on Linux/glibc)
+        try:
+            import sys
+            if sys.platform.startswith("linux"):
+                import ctypes
+                libc = ctypes.CDLL("libc.so.6")
+                libc.malloc_trim(0)
+        except Exception:
+            pass
+
     def close_document(self, doc):
+        # If ROI wrapper, close parent; if parent, purge ROI cache
+        try:
+            parent = getattr(doc, "_parent_doc", None)
+            if parent is not None:
+                doc = parent
+        except Exception:
+            pass
+
+        self._drop_all_roi_for_parent(doc)
         if doc in self._docs:
             self._docs.remove(doc)
             try:
@@ -2450,6 +2616,7 @@ class DocManager(QObject):
                     print(f"[DocManager] Failed to close document {doc}: {e}")
                     
             self.documentRemoved.emit(doc)
+            self._hard_memory_cleanup()
             
     # --- Active-document helpers (NEW) ---------------------------------
     def all_documents(self):

@@ -1118,13 +1118,14 @@ class ConvoDeconvoDialog(QDialog):
         if img is None:
             QMessageBox.warning(self, "No Image", "Please select an image before estimating PSF.")
             return
+
         img_gray = img.mean(axis=2).astype(np.float32) if (img.ndim == 3) else img.astype(np.float32)
 
-        sigma   = self.sep_threshold_slider.value()
-        minarea = self.sep_minarea_spin.value
-        sat     = self.sep_sat_slider.value()
-        maxstars= self.sep_maxstars_spin.value
-        half_w  = self.sep_stamp_spin.value
+        sigma    = float(self.sep_threshold_slider.value())
+        minarea  = int(self.sep_minarea_spin.value())     # ✅
+        sat      = float(self.sep_sat_slider.value())
+        maxstars = int(self.sep_maxstars_spin.value())    # ✅
+        half_w   = int(self.sep_stamp_spin.value())       # ✅
 
         try:
             psf_kernel = estimate_psf_from_image(
@@ -1136,10 +1137,12 @@ class ConvoDeconvoDialog(QDialog):
                 stamp_half_width=half_w
             )
         except RuntimeError as e:
-            QMessageBox.critical(self, "PSF Error", str(e)); return
+            QMessageBox.critical(self, "PSF Error", str(e))
+            return
 
         self._last_stellar_psf = psf_kernel
         self._show_stellar_psf_preview(psf_kernel)
+
 
     def _show_stellar_psf_preview(self, psf_kernel: np.ndarray):
         h, w = psf_kernel.shape

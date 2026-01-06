@@ -6,8 +6,9 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING
 
-from PyQt6.QtGui import QAction
+from PyQt6.QtGui import QAction, QKeySequence
 from PyQt6.QtWidgets import QMenu, QToolButton, QWidgetAction
+from PyQt6.QtCore import Qt
 
 if TYPE_CHECKING:
     pass
@@ -267,6 +268,14 @@ class MenuMixin:
         m_view.addAction(self.act_tile_grid)        
         m_view.addSeparator()
 
+        # NEW: Minimize All Views
+        self.act_minimize_all_views = QAction(self.tr("Minimize All Views"), self)
+        self.act_minimize_all_views.setShortcut(QKeySequence("Ctrl+Shift+M"))
+        self.act_minimize_all_views.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+        self.act_minimize_all_views.triggered.connect(self._minimize_all_views)
+        m_view.addAction(self.act_minimize_all_views)
+
+        m_view.addSeparator()
 
         # a button that shows current group & opens a drop-down
         self._link_btn = QToolButton(self)
@@ -389,3 +398,19 @@ class MenuMixin:
             if sub is not None:
                 yield from self._iter_menu_actions(sub)
 
+    def _minimize_all_views(self):
+        mdi = getattr(self, "mdi", None)
+        if mdi is None:
+            return
+
+        try:
+            for sw in mdi.subWindowList():
+                try:
+                    if not sw.isVisible():
+                        continue
+                    # Minimize each MDI child
+                    sw.showMinimized()
+                except Exception:
+                    pass
+        except Exception:
+            pass

@@ -30,10 +30,10 @@ cached_star_sources: Optional[np.ndarray] = None
 cached_flux_radii: Optional[np.ndarray] = None
 
 
-def _tone_preserve_bg_neutralize(rgb: np.ndarray) -> np.ndarray:
+def _tone_preserve_bg_neutralize(rgb: np.ndarray, *, return_pivot: bool = False):
     """
     Neutralize background using the darkest grid patch in a tone-preserving way.
-    Operates in-place on a copy; returns the neutralized image (float32 [0,1]).
+    Returns float32 RGB in [0,1]. If return_pivot, also returns the patch median (pivot).
     """
     h, w = rgb.shape[:2]
     patch_size = 10
@@ -56,12 +56,15 @@ def _tone_preserve_bg_neutralize(rgb: np.ndarray) -> np.ndarray:
     out = rgb.copy()
     if best is not None:
         avg = float(np.mean(best))
-        # “tone-preserving” shift+scale channel-wise toward avg
         for c in range(3):
             diff = float(best[c] - avg)
             denom = (1.0 - diff) if abs(1.0 - diff) > 1e-8 else 1e-8
             out[:, :, c] = np.clip((out[:, :, c] - diff) / denom, 0.0, 1.0)
-    return out
+
+    if return_pivot:
+        pivot = best.astype(np.float32) if best is not None else np.median(rgb, axis=(0, 1)).astype(np.float32)
+        return out.astype(np.float32, copy=False), pivot
+    return out.astype(np.float32, copy=False)
 
 
 def apply_star_based_white_balance(
@@ -73,38 +76,16 @@ def apply_star_based_white_balance(
 ) -> Tuple[np.ndarray, int, np.ndarray, np.ndarray, np.ndarray] | Tuple[np.ndarray, int, np.ndarray]:
     """
     Star-based white balance with background neutralization and an RGB overlay of detected stars.
-
-    Parameters
-    ----------
-    image : np.ndarray
-        RGB image (any dtype). Assumed RGB ordering.
-    threshold : float
-        SExtractor detection threshold (in background sigma).
-    autostretch : bool
-        If True, overlay is built from an autostretched view for visibility.
-    reuse_cached_sources : bool
-        If True, reuses star positions measured on a previous call (same scene).
-    return_star_colors : bool
-        If True, also returns (raw_star_pixels, after_star_pixels).
-
-    Returns
-    -------
-    balanced_rgb : float32 RGB in [0,1]
-    star_count   : int
-    overlay_rgb  : float32 RGB in [0,1] with star ellipses drawn
-    (optional) raw_star_pixels : (N,3) float array, colors sampled from ORIGINAL image
-    (optional) after_star_pixels : (N,3) float array, colors sampled after WB
+    (Correct version: does NOT crush data below the pivot.)
     """
     if image.ndim != 3 or image.shape[2] != 3:
         raise ValueError("apply_star_based_white_balance: input must be an RGB image (H,W,3).")
 
-    # 0) normalize
     img_rgb = _to_float01(image)
 
-    # 1) first background neutralization (tone-preserving)
-    bg_neutral = _tone_preserve_bg_neutralize(img_rgb)
+    # 1) background neutralization + pivot (per-channel medians of darkest patch)
+    bg_neutral, pivot = _tone_preserve_bg_neutralize(img_rgb, return_pivot=True)
 
-    # 2) detect / reuse star positions
     if sep is None:
         raise ImportError(
             "apply_star_based_white_balance requires the 'sep' package. "
@@ -135,7 +116,6 @@ def apply_star_based_white_balance(
         cached_star_sources = sources
         cached_flux_radii = r
 
-    # filter: small-ish, star-like
     mask = (r > 0) & (r <= 10)
     sources = sources[mask]
     r = r[mask]
@@ -143,15 +123,14 @@ def apply_star_based_white_balance(
         raise ValueError("All detected sources were rejected as non-stellar (too large).")
 
     h, w = gray.shape
-    # raw colors from ORIGINAL image - optimized vectorized extraction
     xs = sources["x"].astype(np.int32)
     ys = sources["y"].astype(np.int32)
     valid = (xs >= 0) & (xs < w) & (ys >= 0) & (ys < h)
+
     raw_star_pixels = img_rgb[ys[valid], xs[valid], :]
 
-    # 3) build overlay (autostretched if requested) and draw ellipses
+    # overlay
     disp = stretch_color_image(bg_neutral.copy(), 0.25) if autostretch else bg_neutral.copy()
-
     if cv2 is not None:
         overlay_bgr = cv2.cvtColor((disp * 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
         for i in range(len(sources)):
@@ -160,41 +139,35 @@ def apply_star_based_white_balance(
             theta_deg = float(sources["theta"][i] * 180.0 / np.pi)
             center = (int(round(cx)), int(round(cy)))
             axes = (max(1, int(round(3 * a))), max(1, int(round(3 * b))))
-            # red ellipse in BGR
             cv2.ellipse(overlay_bgr, center, axes, angle=theta_deg, startAngle=0, endAngle=360,
                         color=(0, 0, 255), thickness=1)
         overlay_rgb = cv2.cvtColor(overlay_bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
     else:
-        # fallback: no ellipses, just the display image
         overlay_rgb = disp.astype(np.float32, copy=False)
 
-    # 4) compute WB scale using star colors sampled on bg_neutral image
-    # Optimized: vectorized extraction instead of Python loop (10-50x faster)
-    xs = sources["x"].astype(np.int32)
-    ys = sources["y"].astype(np.int32)
-    valid_mask = (xs >= 0) & (xs < w) & (ys >= 0) & (ys < h)
-    
+    # star pixels for WB
+    valid_mask = valid
     if not np.any(valid_mask):
         raise ValueError("No stellar samples available for white balance.")
-    
+
     star_pixels = bg_neutral[ys[valid_mask], xs[valid_mask], :].astype(np.float32)
     avg_color = np.mean(star_pixels, axis=0)
     max_val = float(np.max(avg_color))
-    # protect against divide-by-zero
     avg_color = np.where(avg_color <= 1e-8, 1e-8, avg_color)
-    scaling = max_val / avg_color
+    scaling = (max_val / avg_color).astype(np.float32)  # (3,)
 
-    balanced = (bg_neutral * scaling.reshape((1, 1, 3))).clip(0.0, 1.0)
+    # ✅ Correct median-locked WB (NO hard floor)
+    m = pivot.reshape((1, 1, 3)).astype(np.float32)
+    g = scaling.reshape((1, 1, 3)).astype(np.float32)
 
-    # 5) second background neutralization pass on balanced image
-    balanced = _tone_preserve_bg_neutralize(balanced)
+    balanced = (bg_neutral.astype(np.float32) - m) * g + m
+    balanced = np.clip(balanced, 0.0, 1.0).astype(np.float32, copy=False)
 
-    # 6) collect after-WB star samples - optimized vectorized extraction
     after_star_pixels = balanced[ys[valid_mask], xs[valid_mask], :]
 
     if return_star_colors:
         return (
-            balanced.astype(np.float32, copy=False),
+            balanced,
             int(len(star_pixels)),
             overlay_rgb.astype(np.float32, copy=False),
             np.asarray(raw_star_pixels, dtype=np.float32),
@@ -202,9 +175,7 @@ def apply_star_based_white_balance(
         )
 
     return (
-        balanced.astype(np.float32, copy=False),
+        balanced,
         int(len(star_pixels)),
         overlay_rgb.astype(np.float32, copy=False),
     )
-
-

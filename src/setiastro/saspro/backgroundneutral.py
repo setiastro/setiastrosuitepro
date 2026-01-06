@@ -20,47 +20,75 @@ from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 # ----------------------------
 # Core neutralization function
 # ----------------------------
-def background_neutralize_rgb(img: np.ndarray, rect_xywh: tuple[int, int, int, int]) -> np.ndarray:
+def _remove_channel_pedestal(img_rgb01: np.ndarray) -> np.ndarray:
     """
-    Apply Background Neutralization to an RGB float32 image in [0,1],
-    using an image-space rectangle (x, y, w, h) as the sample region.
-    Returns a new float32 array in [0,1].
+    Remove a per-channel pedestal using the whole image:
+        out[...,c] = out[...,c] - min(out[...,c])
+    Assumes float32-ish data; returns float32 clipped to [0,1].
+    """
+    out = img_rgb01.astype(np.float32, copy=True)
+
+    mins = np.nanmin(out.reshape(-1, 3), axis=0).astype(np.float32)  # (3,)
+    # If a channel is all-NaN, nanmin returns NaN; guard it:
+    mins = np.where(np.isfinite(mins), mins, 0.0).astype(np.float32)
+
+    out -= mins.reshape(1, 1, 3)
+    return np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
+
+
+def background_neutralize_rgb(
+    img: np.ndarray,
+    rect_xywh: tuple[int, int, int, int],
+    mode: str = "pivot1",
+    *,
+    remove_pedestal: bool = True,
+) -> np.ndarray:
+    """
+    ...
+    Step 0 (optional): whole-image pedestal removal (per-channel)
     """
     if img.ndim != 3 or img.shape[2] != 3:
         raise ValueError("Background Neutralization requires a 3-channel RGB image.")
 
-    h, w, _ = img.shape
+    # Step 0: pedestal removal on the WHOLE image (optional)
+    out = _remove_channel_pedestal(img) if remove_pedestal else img.astype(np.float32, copy=True)
+
+    # Resolve sample rect (use pedestal-free image for medians)
+    h, w, _ = out.shape
     x, y, rw, rh = rect_xywh
     x = max(0, min(int(x), w - 1))
     y = max(0, min(int(y), h - 1))
     rw = max(1, min(int(rw), w - x))
     rh = max(1, min(int(rh), h - y))
 
-    sample = img[y:y+rh, x:x+rw, :]
-    medians = np.median(sample, axis=(0, 1)).astype(np.float32)         # (3,)
-    avg_med = float(np.mean(medians))
+    sample = out[y:y + rh, x:x + rw, :]
+    m = np.median(sample, axis=(0, 1)).astype(np.float32)  # (3,)
+    t = float(np.mean(m))
 
-    out = img.copy()
     eps = 1e-8
-    
-    # Vectorized neutralization
-    # diff shape: (3,) -> (1, 1, 3) 
-    diffs = (medians - avg_med).reshape(1, 1, 3)
-    
-    # denom shape: (1, 1, 3)
-    denoms = 1.0 - diffs
-    
-    # Avoid div-by-zero (vectorized)
-    # logic: if abs(denom) < eps, set to eps (sign matched)
-    # We can do this efficiently:
-    small_mask = np.abs(denoms) < eps
-    denoms[small_mask] = np.where(denoms[small_mask] >= 0, eps, -eps)
-    
-    # Apply formula: (pixel - diff) / denom
-    out = (out - diffs) / denoms
-    out = np.clip(out, 0.0, 1.0)
 
-    return out.astype(np.float32, copy=False)
+    if mode == "offset":
+        delta = (t - m).reshape(1, 1, 3)
+
+        # cap deltas so we cannot clip
+        ch_min = out.reshape(-1, 3).min(axis=0)
+        ch_max = out.reshape(-1, 3).max(axis=0)
+        delta = np.clip(
+            delta,
+            (-ch_min + 0.0).reshape(1, 1, 3),
+            (1.0 - ch_max).reshape(1, 1, 3)
+        )
+
+        return np.clip(out + delta, 0.0, 1.0).astype(np.float32, copy=False)
+
+    # pivot around 1.0 scaling (highlight-protect)
+    denom = np.maximum(1.0 - m, eps)         # (3,)
+    g = (1.0 - t) / denom                    # (3,)
+    g = np.clip(g, 0.0, 10.0)                # sanity cap
+
+    out = 1.0 - (1.0 - out) * g.reshape(1, 1, 3)
+    return np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
+
 
 
 # ------------------------------------
@@ -208,14 +236,26 @@ def apply_background_neutral_to_doc(doc, preset: dict | None = None):
         raise ValueError("Background Neutralization currently supports RGB images.")
 
     if mode == "rect":
-        rn = preset.get("rect_norm")
-        if not rn or len(rn) != 4:
+        rn = preset.get("rect_norm", None)
+
+        # IMPORTANT: don't do `if not rn` because rn may be a numpy array
+        if rn is None:
             raise ValueError("rect mode requires rect_norm=[x,y,w,h] in normalized coords.")
+
+        # Coerce array-like -> list
+        try:
+            rn = list(rn)
+        except Exception:
+            raise ValueError("rect_norm must be an iterable of 4 numbers.")
+
+        if len(rn) != 4:
+            raise ValueError("rect mode requires rect_norm=[x,y,w,h] (len==4).")
+
         H, W, _ = base.shape
-        x = int(np.clip(rn[0], 0, 1) * W)
-        y = int(np.clip(rn[1], 0, 1) * H)
-        w = int(np.clip(rn[2], 0, 1) * W)
-        h = int(np.clip(rn[3], 0, 1) * H)
+        x = int(np.clip(float(rn[0]), 0.0, 1.0) * W)
+        y = int(np.clip(float(rn[1]), 0.0, 1.0) * H)
+        w = int(np.clip(float(rn[2]), 0.0, 1.0) * W)
+        h = int(np.clip(float(rn[3]), 0.0, 1.0) * H)
         rect = (x, y, max(w, 1), max(h, 1))
     else:
         rect = auto_rect_50x50(base)

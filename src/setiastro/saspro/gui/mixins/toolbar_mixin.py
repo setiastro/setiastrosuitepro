@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import QMenu, QToolButton
 
 from PyQt6.QtCore import QElapsedTimer
 
+import sys
 
 if TYPE_CHECKING:
     pass
@@ -594,7 +595,16 @@ class ToolbarMixin:
                 fit_menu.addAction(self.act_auto_fit_resize)  # use the real action
                 btn_fit.setMenu(fit_menu)
                 btn_fit.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+        tb = self._toolbar_containing_action(self.act_autostretch)
+        if tb:
+            btn = tb.widgetForAction(self.act_autostretch)
+            if isinstance(btn, QToolButton):
+                # ... build menu ...
+                btn.setMenu(menu)
+                btn.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
 
+                # IMPORTANT: re-apply style after action moves / rebind
+                self._style_toggle_toolbutton(btn)
 
     def _bind_view_toolbar_menus(self, tb: DraggableToolBar):
         # --- Display-Stretch menu ---
@@ -650,6 +660,12 @@ class ToolbarMixin:
             btn_fit.setMenu(fit_menu)
             btn_fit.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
 
+    def _linux_force_text_action(self, act: QAction, text: str) -> None:
+        """On Linux, show text-only for this action (no theme icon)."""
+        if not sys.platform.startswith("linux"):
+            return
+        act.setIcon(QIcon())   # remove whatever theme icon got assigned
+        act.setText(text)      # show the glyph/text
 
     def _create_actions(self):
         # File actions
@@ -771,30 +787,30 @@ class ToolbarMixin:
         self.act_bake_display_stretch.triggered.connect(self._bake_display_stretch)
 
         # --- Zoom controls ---
-        # --- Zoom controls (themed icons) ---
         self.act_zoom_out = QAction(QIcon.fromTheme("zoom-out"), self.tr("Zoom Out"), self)
         self.act_zoom_out.setStatusTip(self.tr("Zoom out"))
         self.act_zoom_out.setShortcuts([QKeySequence("Ctrl+-")])
         self.act_zoom_out.triggered.connect(lambda: self._zoom_step_active(-1))
+        self._linux_force_text_action(self.act_zoom_out, "−")   # true minus
 
         self.act_zoom_in = QAction(QIcon.fromTheme("zoom-in"), self.tr("Zoom In"), self)
         self.act_zoom_in.setStatusTip(self.tr("Zoom in"))
-        self.act_zoom_in.setShortcuts([
-            QKeySequence("Ctrl++"),   # Ctrl + (Shift + = on many keyboards)
-            QKeySequence("Ctrl+="),   # fallback
-        ])
+        self.act_zoom_in.setShortcuts([QKeySequence("Ctrl++"), QKeySequence("Ctrl+=")])
         self.act_zoom_in.triggered.connect(lambda: self._zoom_step_active(+1))
+        self._linux_force_text_action(self.act_zoom_in, "+")
 
         self.act_zoom_1_1 = QAction(QIcon.fromTheme("zoom-original"), self.tr("1:1"), self)
         self.act_zoom_1_1.setStatusTip(self.tr("Zoom to 100% (pixel-for-pixel)"))
         self.act_zoom_1_1.setShortcut(QKeySequence("Ctrl+1"))
         self.act_zoom_1_1.triggered.connect(self._zoom_active_1_1)
+        self._linux_force_text_action(self.act_zoom_1_1, "1:1")
 
         self.act_zoom_fit = QAction(QIcon.fromTheme("zoom-fit-best"), self.tr("Fit"), self)
         self.act_zoom_fit.setStatusTip(self.tr("Fit image to current window"))
         self.act_zoom_fit.setShortcut(QKeySequence("Ctrl+0"))
         self.act_zoom_fit.triggered.connect(self._zoom_active_fit)
         self.act_zoom_fit.setCheckable(True)
+        self._linux_force_text_action(self.act_zoom_fit, "Fit")
 
         self.act_auto_fit_resize = QAction(self.tr("Auto-fit on Resize"), self)
         self.act_auto_fit_resize.setCheckable(True)
@@ -1821,4 +1837,10 @@ class ToolbarMixin:
         if hasattr(self, "act_hide_mask"):
             self.act_hide_mask.setEnabled(has_mask and overlay_on)
 
-
+    def _style_toggle_toolbutton(self, btn: QToolButton):
+        # Make sure the action visually shows "on" state
+        btn.setCheckable(True)  # safe even if already
+        btn.setStyleSheet("""
+            QToolButton { color: #dcdcdc; }
+            QToolButton:checked { color: #DAA520; font-weight: 600; }
+        """)

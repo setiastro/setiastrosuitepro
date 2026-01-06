@@ -48,6 +48,9 @@ from PyQt6.QtWidgets import (QToolBar, QWidget, QToolButton, QMenu, QApplication
                              QInputDialog, QMessageBox, QDialog, QFileDialog,
     QFormLayout, QDialogButtonBox, QDoubleSpinBox, QCheckBox, QLabel, QRubberBand, QRadioButton, QMainWindow, QPushButton)
 
+from setiastro.saspro.backgroundneutral import run_background_neutral_via_preset
+from setiastro.saspro.backgroundneutral import background_neutralize_rgb, auto_rect_50x50
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Utilities
@@ -188,6 +191,12 @@ def compute_gradient_map(sources, delta_flux, shape, method="poly2"):
     else:
         raise ValueError("method must be one of 'poly2','poly3','rbf'")
 
+def _pivot_scale_channel(ch: np.ndarray, gain: np.ndarray | float, pivot: float) -> np.ndarray:
+    """
+    Apply gain around a pivot: pivot + (x - pivot)*gain.
+    gain can be scalar or per-pixel array.
+    """
+    return pivot + (ch - pivot) * gain
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Simple responses viewer (unchanged core logic; useful for diagnostics)
@@ -875,28 +884,89 @@ class SFCCDialog(QDialog):
         return self.wcs.all_pix2world(x, y, 0)
 
     # ── Background neutralization ───────────────────────────────────────
+    def _neutralize_background(self, rgb_f: np.ndarray, *, remove_pedestal: bool = False) -> np.ndarray:
+        img = np.asarray(rgb_f, dtype=np.float32)
 
-    def _neutralize_background(self, rgb_img: np.ndarray, patch_size: int = 50) -> np.ndarray:
-        img = rgb_img.copy()
+        if img.ndim != 3 or img.shape[2] != 3:
+            raise ValueError("Expected RGB image (H,W,3)")
+
+        img = np.clip(img, 0.0, 1.0)
+
+        try:
+            rect = auto_rect_50x50(img)  # same SASv2-ish auto finder
+            out = background_neutralize_rgb(
+                img,
+                rect,
+                mode="pivot1",                # or "offset" if you prefer
+                remove_pedestal=remove_pedestal,
+            )
+            return np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
+
+        except Exception as e:
+            print(f"[SFCC] BN preset failed, falling back to simple neutralization: {e}")
+            return self._neutralize_background_simple(img, patch_size=10)
+
+    def _neutralize_background_simple(self, rgb_f: np.ndarray, patch_size: int = 50) -> np.ndarray:
+        """
+        Simple neutralization: find darkest patch by summed medians,
+        then equalize channel medians around the mean.
+        Assumes rgb_f is float in [0,1] with no negatives.
+        """
+        img = np.asarray(rgb_f, dtype=np.float32).copy()
         h, w = img.shape[:2]
-        ph, pw = h // patch_size, w // patch_size
+        ph, pw = max(1, h // patch_size), max(1, w // patch_size)
+
         min_sum, best_med = np.inf, None
         for i in range(patch_size):
             for j in range(patch_size):
                 y0, x0 = i * ph, j * pw
-                patch = img[y0:min(y0+ph, h), x0:min(x0+pw, w), :]
-                med   = np.median(patch, axis=(0, 1))
-                s     = med.sum()
+                patch = img[y0:min(y0 + ph, h), x0:min(x0 + pw, w), :]
+                if patch.size == 0:
+                    continue
+                med = np.median(patch, axis=(0, 1))
+                s = float(med.sum())
                 if s < min_sum:
                     min_sum, best_med = s, med
+
         if best_med is None:
-            return img
-        target = float(best_med.mean()); eps = 1e-8
+            return np.clip(img, 0.0, 1.0)
+
+        target = float(best_med.mean())
+        eps = 1e-8
         for c in range(3):
             diff = float(best_med[c] - target)
-            if abs(diff) < eps: continue
+            if abs(diff) < eps:
+                continue
+            # Preserve [0,1] scale; keep the same form you were using.
             img[..., c] = np.clip((img[..., c] - diff) / (1.0 - diff), 0.0, 1.0)
-        return img
+
+        return np.clip(img, 0.0, 1.0)
+
+    def _make_working_base_for_sep(self, img_float: np.ndarray) -> np.ndarray:
+        """
+        Build a working copy for SEP + calibration.
+
+        Pedestal removal (per channel):
+            ch <- ch - min(ch)
+
+        Then clamp to [0,1] for stability.
+        """
+        base = np.asarray(img_float, dtype=np.float32).copy()
+
+        if base.ndim != 3 or base.shape[2] != 3:
+            raise ValueError("Expected RGB image (H,W,3)")
+
+        # --- Per-channel pedestal removal: ch -= min(ch) ---
+        mins = base.reshape(-1, 3).min(axis=0)  # (3,)
+        base[..., 0] -= float(mins[0])
+        base[..., 1] -= float(mins[1])
+        base[..., 2] -= float(mins[2])
+
+        # Stability clamp (SEP likes non-negative; your pipeline assumes [0,1])
+        base = np.clip(base, 0.0, 1.0)
+
+        return base
+
 
     # ── SIMBAD/Star fetch ──────────────────────────────────────────────
 
@@ -1035,7 +1105,6 @@ class SFCCDialog(QDialog):
             self.canvas.setVisible(False); self.canvas.draw()
 
     # ── Core SFCC ───────────────────────────────────────────────────────
-
     def run_spcc(self):
         ref_sed_name = self.star_combo.currentData()
         r_filt = self.r_filter_combo.currentText()
@@ -1046,13 +1115,15 @@ class SFCCDialog(QDialog):
         lp_filt2 = self.lp_filter_combo2.currentText()
 
         if not ref_sed_name:
-            QMessageBox.warning(self, "Error", "Select a reference spectral type (e.g. A0V)."); return
+            QMessageBox.warning(self, "Error", "Select a reference spectral type (e.g. A0V).")
+            return
         if r_filt == "(None)" and g_filt == "(None)" and b_filt == "(None)":
-            QMessageBox.warning(self, "Error", "Pick at least one of R, G or B filters."); return
+            QMessageBox.warning(self, "Error", "Pick at least one of R, G or B filters.")
+            return
         if sens_name == "(None)":
-            QMessageBox.warning(self, "Error", "Select a sensor QE curve."); return
+            QMessageBox.warning(self, "Error", "Select a sensor QE curve.")
+            return
 
-        # -- Step 1A: get active image as float32 in [0..1]
         doc = self.doc_manager.get_active_document()
         if doc is None or doc.image is None:
             QMessageBox.critical(self, "Error", "No active document.")
@@ -1064,29 +1135,32 @@ class SFCCDialog(QDialog):
             QMessageBox.critical(self, "Error", "Active document must be RGB (3 channels).")
             return
 
+        # ---- Convert to float working space ----
         if img.dtype == np.uint8:
-            base = img.astype(np.float32) / 255.0
+            img_float = img.astype(np.float32) / 255.0
         else:
-            base = img.astype(np.float32, copy=True)
+            img_float = img.astype(np.float32, copy=False)
 
-        # pedestal removal
-        base = np.clip(base - np.min(base, axis=(0,1)), 0.0, None)
-        # light neutralization
-        base = self._neutralize_background(base, patch_size=10)
+        # ---- Build SEP working copy (ONE pedestal handling only) ----
+        base = self._make_working_base_for_sep(img_float)
+
+        # Optional BN after calibration:
+        # IMPORTANT: do NOT remove pedestal here either (avoid double pedestal removal).
+        if self.neutralize_chk.isChecked():
+            base = self._neutralize_background(base, remove_pedestal=False)
 
         # SEP on grayscale
-        gray = np.mean(base, axis=2)
-        
+        gray = np.mean(base, axis=2).astype(np.float32)
+
         bkg = sep.Background(gray)
         data_sub = gray - bkg.back()
-        err = bkg.globalrms
+        err = float(bkg.globalrms)
 
-        # 👇 get user threshold (default 5.0)
-        if hasattr(self, "sep_thr_spin"):
-            sep_sigma = float(self.sep_thr_spin.value())
-        else:
-            sep_sigma = 5.0
-        self.count_label.setText(f"Detecting stars (SEP σ={sep_sigma:.1f})…"); QApplication.processEvents()
+        # User threshold
+        sep_sigma = float(self.sep_thr_spin.value()) if hasattr(self, "sep_thr_spin") else 5.0
+        self.count_label.setText(f"Detecting stars (SEP σ={sep_sigma:.1f})…")
+        QApplication.processEvents()
+
         sources = sep.extract(data_sub, sep_sigma, err=err)
 
         MAX_SOURCES = 300_000
@@ -1100,32 +1174,51 @@ class SFCCDialog(QDialog):
             return
 
         if sources.size == 0:
-            QMessageBox.critical(self, "SEP Error", "SEP found no sources."); return
-        r_fluxrad, _ = sep.flux_radius(gray, sources["x"], sources["y"], 2.0*sources["a"], 0.5, normflux=sources["flux"], subpix=5)
-        mask = (r_fluxrad > .2) & (r_fluxrad <= 10); sources = sources[mask]
+            QMessageBox.critical(self, "SEP Error", "SEP found no sources.")
+            return
+
+        # Radius filtering (unchanged)
+        r_fluxrad, _ = sep.flux_radius(
+            gray, sources["x"], sources["y"],
+            2.0 * sources["a"], 0.5,
+            normflux=sources["flux"], subpix=5
+        )
+        mask = (r_fluxrad > 0.2) & (r_fluxrad <= 10)
+        sources = sources[mask]
         if sources.size == 0:
-            QMessageBox.critical(self, "SEP Error", "All SEP detections rejected by radius filter."); return
+            QMessageBox.critical(self, "SEP Error", "All SEP detections rejected by radius filter.")
+            return
 
         if not getattr(self, "star_list", None):
-            QMessageBox.warning(self, "Error", "Fetch Stars (with WCS) before running SFCC."); return
+            QMessageBox.warning(self, "Error", "Fetch Stars (with WCS) before running SFCC.")
+            return
 
+        # ---- Match SIMBAD stars to SEP detections ----
         raw_matches = []
         for i, star in enumerate(self.star_list):
-            dx = sources["x"] - star["x"]; dy = sources["y"] - star["y"]
-            j = np.argmin(dx*dx + dy*dy)
-            if (dx[j]**2 + dy[j]**2) < 3.0**2:
-                xi, yi = int(round(sources["x"][j])), int(round(sources["y"][j]))
+            dx = sources["x"] - star["x"]
+            dy = sources["y"] - star["y"]
+            j = int(np.argmin(dx * dx + dy * dy))
+            if (dx[j] * dx[j] + dy[j] * dy[j]) < (3.0 ** 2):
+                xi, yi = int(round(float(sources["x"][j]))), int(round(float(sources["y"][j])))
                 if 0 <= xi < W and 0 <= yi < H:
-                    raw_matches.append({"sim_index": i, "template": star.get("pickles_match") or star["sp_clean"], "x_pix": xi, "y_pix": yi})
+                    raw_matches.append({
+                        "sim_index": i,
+                        "template": star.get("pickles_match") or star["sp_clean"],
+                        "x_pix": xi,
+                        "y_pix": yi
+                    })
+
         if not raw_matches:
-            QMessageBox.warning(self, "No Matches", "No SIMBAD star matched to SEP detections."); return
+            QMessageBox.warning(self, "No Matches", "No SIMBAD star matched to SEP detections.")
+            return
 
         wl_min, wl_max = 3000, 11000
-        wl_grid = np.arange(wl_min, wl_max+1)
+        wl_grid = np.arange(wl_min, wl_max + 1)
 
         def load_curve(ext):
             for p in (self.user_custom_path, self.sasp_data_path):
-                with fits.open(p) as hd:
+                with fits.open(p, memmap=False) as hd:
                     if ext in hd:
                         d = hd[ext].data
                         wl = _ensure_angstrom(d["WAVELENGTH"].astype(float))
@@ -1135,7 +1228,7 @@ class SFCCDialog(QDialog):
 
         def load_sed(ext):
             for p in (self.user_custom_path, self.sasp_data_path):
-                with fits.open(p) as hd:
+                with fits.open(p, memmap=False) as hd:
                     if ext in hd:
                         d = hd[ext].data
                         wl = _ensure_angstrom(d["WAVELENGTH"].astype(float))
@@ -1143,18 +1236,21 @@ class SFCCDialog(QDialog):
                         return wl, fl
             raise KeyError(f"SED '{ext}' not found")
 
-        interp = lambda wl_o, tp_o: np.interp(wl_grid, wl_o, tp_o, left=0., right=0.)
-        T_R = interp(*load_curve(r_filt)) if r_filt!="(None)" else np.ones_like(wl_grid)
-        T_G = interp(*load_curve(g_filt)) if g_filt!="(None)" else np.ones_like(wl_grid)
-        T_B = interp(*load_curve(b_filt)) if b_filt!="(None)" else np.ones_like(wl_grid)
-        QE  = interp(*load_curve(sens_name)) if sens_name!="(None)" else np.ones_like(wl_grid)
-        LP1 = interp(*load_curve(lp_filt))   if lp_filt != "(None)"  else np.ones_like(wl_grid)
-        LP2 = interp(*load_curve(lp_filt2))  if lp_filt2!= "(None)"  else np.ones_like(wl_grid)
+        interp = lambda wl_o, tp_o: np.interp(wl_grid, wl_o, tp_o, left=0.0, right=0.0)
+
+        T_R = interp(*load_curve(r_filt)) if r_filt != "(None)" else np.ones_like(wl_grid)
+        T_G = interp(*load_curve(g_filt)) if g_filt != "(None)" else np.ones_like(wl_grid)
+        T_B = interp(*load_curve(b_filt)) if b_filt != "(None)" else np.ones_like(wl_grid)
+        QE  = interp(*load_curve(sens_name)) if sens_name != "(None)" else np.ones_like(wl_grid)
+        LP1 = interp(*load_curve(lp_filt))   if lp_filt  != "(None)" else np.ones_like(wl_grid)
+        LP2 = interp(*load_curve(lp_filt2))  if lp_filt2 != "(None)" else np.ones_like(wl_grid)
         LP  = LP1 * LP2
-        T_sys_R, T_sys_G, T_sys_B = T_R*QE*LP, T_G*QE*LP, T_B*QE*LP
+
+        T_sys_R, T_sys_G, T_sys_B = T_R * QE * LP, T_G * QE * LP, T_B * QE * LP
 
         wl_ref, fl_ref = load_sed(ref_sed_name)
-        fr_i = np.interp(wl_grid, wl_ref, fl_ref, left=0., right=0.)
+        fr_i = np.interp(wl_grid, wl_ref, fl_ref, left=0.0, right=0.0)
+
         S_ref_R = np.trapezoid(fr_i * T_sys_R, x=wl_grid)
         S_ref_G = np.trapezoid(fr_i * T_sys_G, x=wl_grid)
         S_ref_B = np.trapezoid(fr_i * T_sys_B, x=wl_grid)
@@ -1163,155 +1259,207 @@ class SFCCDialog(QDialog):
         diag_meas_BG, diag_exp_BG = [], []
         enriched = []
 
-        # --- Optimization: Pre-calculate integrals for unique templates ---
+        # ---- Pre-calc integrals for unique templates ----
         unique_simbad_types = set(m["template"] for m in raw_matches)
-        
-        # Map simbad_type -> pickles_template_name
+
         simbad_to_pickles = {}
         pickles_templates_needed = set()
-        
         for sp in unique_simbad_types:
             cands = pickles_match_for_simbad(sp, getattr(self, "pickles_templates", []))
             if cands:
-                pickles_name = cands[0]
-                simbad_to_pickles[sp] = pickles_name
-                pickles_templates_needed.add(pickles_name)
+                pname = cands[0]
+                simbad_to_pickles[sp] = pname
+                pickles_templates_needed.add(pname)
 
-        # Pre-calc integrals for each unique Pickles template
-        # Cache structure: template_name -> (S_sr, S_sg, S_sb)
         template_integrals = {}
-
-        # Cache for load_sed to avoid re-reading even across different calls if desired, 
-        # but here we just optimize the loop.
-        
         for pname in pickles_templates_needed:
             try:
                 wl_s, fl_s = load_sed(pname)
-                fs_i = np.interp(wl_grid, wl_s, fl_s, left=0., right=0.)
-                
+                fs_i = np.interp(wl_grid, wl_s, fl_s, left=0.0, right=0.0)
                 S_sr = np.trapezoid(fs_i * T_sys_R, x=wl_grid)
                 S_sg = np.trapezoid(fs_i * T_sys_G, x=wl_grid)
                 S_sb = np.trapezoid(fs_i * T_sys_B, x=wl_grid)
-                
                 template_integrals[pname] = (S_sr, S_sg, S_sb)
             except Exception as e:
                 print(f"[SFCC] Warning: failed to load/integrate template {pname}: {e}")
 
-        # --- Main Match Loop ---
+        # ---- Main match loop (measure from 'base' only) ----
         for m in raw_matches:
             xi, yi, sp = m["x_pix"], m["y_pix"], m["template"]
-            Rm = float(base[yi, xi, 0]); Gm = float(base[yi, xi, 1]); Bm = float(base[yi, xi, 2])
-            if Gm <= 0: continue
 
-            # 1. Resolve Simbad -> Pickles
+            # measure on the SEP working copy (already BN’d, only one pedestal handling)
+            Rm = float(base[yi, xi, 0])
+            Gm = float(base[yi, xi, 1])
+            Bm = float(base[yi, xi, 2])
+            if Gm <= 0:
+                continue
+
             pname = simbad_to_pickles.get(sp)
-            if not pname: continue
-            
-            # 2. Retrieve pre-calced integrals
-            integrals = template_integrals.get(pname)
-            if not integrals: continue
-            
-            S_sr, S_sg, S_sb = integrals
-            
-            if S_sg <= 0: continue
+            if not pname:
+                continue
 
-            exp_RG = S_sr / S_sg; exp_BG = S_sb / S_sg
-            meas_RG = Rm / Gm;    meas_BG = Bm / Gm
+            integrals = template_integrals.get(pname)
+            if not integrals:
+                continue
+
+            S_sr, S_sg, S_sb = integrals
+            if S_sg <= 0:
+                continue
+
+            exp_RG = S_sr / S_sg
+            exp_BG = S_sb / S_sg
+            meas_RG = Rm / Gm
+            meas_BG = Bm / Gm
 
             diag_meas_RG.append(meas_RG); diag_exp_RG.append(exp_RG)
             diag_meas_BG.append(meas_BG); diag_exp_BG.append(exp_BG)
 
             enriched.append({
-                **m, "R_meas": Rm, "G_meas": Gm, "B_meas": Bm,
+                **m,
+                "R_meas": Rm, "G_meas": Gm, "B_meas": Bm,
                 "S_star_R": S_sr, "S_star_G": S_sg, "S_star_B": S_sb,
                 "exp_RG": exp_RG, "exp_BG": exp_BG
             })
-            
+
         self._last_matched = enriched
-        diag_meas_RG = np.array(diag_meas_RG); diag_exp_RG = np.array(diag_exp_RG)
-        diag_meas_BG = np.array(diag_meas_BG); diag_exp_BG = np.array(diag_exp_BG)
+        diag_meas_RG = np.asarray(diag_meas_RG, dtype=np.float64)
+        diag_exp_RG  = np.asarray(diag_exp_RG,  dtype=np.float64)
+        diag_meas_BG = np.asarray(diag_meas_BG, dtype=np.float64)
+        diag_exp_BG  = np.asarray(diag_exp_BG,  dtype=np.float64)
+
         if diag_meas_RG.size == 0 or diag_meas_BG.size == 0:
-            QMessageBox.information(self, "No Valid Stars", "No stars with valid measured vs expected ratios."); return
-        n_stars = diag_meas_RG.size
+            QMessageBox.information(self, "No Valid Stars", "No stars with valid measured vs expected ratios.")
+            return
 
-        def rms_frac(pred, exp): return np.sqrt(np.mean(((pred/exp) - 1.0) ** 2))
-        slope_only = lambda x, m: m*x
-        affine     = lambda x, m, b: m*x + b
-        quad       = lambda x, a, b, c: a*x**2 + b*x + c
+        n_stars = int(diag_meas_RG.size)
 
-        denR = np.sum(diag_meas_RG**2); denB = np.sum(diag_meas_BG**2)
-        mR_s = (np.sum(diag_meas_RG * diag_exp_RG) / denR) if denR > 0 else 1.0
-        mB_s = (np.sum(diag_meas_BG * diag_exp_BG) / denB) if denB > 0 else 1.0
+        def rms_frac(pred, exp):
+            return float(np.sqrt(np.mean(((pred / exp) - 1.0) ** 2)))
+
+        slope_only = lambda x, m: m * x
+        affine     = lambda x, m, b: m * x + b
+        quad       = lambda x, a, b, c: a * x**2 + b * x + c
+
+        denR = float(np.sum(diag_meas_RG**2))
+        denB = float(np.sum(diag_meas_BG**2))
+        mR_s = (float(np.sum(diag_meas_RG * diag_exp_RG)) / denR) if denR > 0 else 1.0
+        mB_s = (float(np.sum(diag_meas_BG * diag_exp_BG)) / denB) if denB > 0 else 1.0
         rms_s = rms_frac(slope_only(diag_meas_RG, mR_s), diag_exp_RG) + rms_frac(slope_only(diag_meas_BG, mB_s), diag_exp_BG)
 
-        mR_a, bR_a = np.linalg.lstsq(np.vstack([diag_meas_RG, np.ones_like(diag_meas_RG)]).T, diag_exp_RG, rcond=None)[0]
-        mB_a, bB_a = np.linalg.lstsq(np.vstack([diag_meas_BG, np.ones_like(diag_meas_BG)]).T, diag_exp_BG, rcond=None)[0]
+        mR_a, bR_a = np.linalg.lstsq(
+            np.vstack([diag_meas_RG, np.ones_like(diag_meas_RG)]).T, diag_exp_RG, rcond=None
+        )[0]
+        mB_a, bB_a = np.linalg.lstsq(
+            np.vstack([diag_meas_BG, np.ones_like(diag_meas_BG)]).T, diag_exp_BG, rcond=None
+        )[0]
         rms_a = rms_frac(affine(diag_meas_RG, mR_a, bR_a), diag_exp_RG) + rms_frac(affine(diag_meas_BG, mB_a, bB_a), diag_exp_BG)
 
         aR_q, bR_q, cR_q = np.polyfit(diag_meas_RG, diag_exp_RG, 2)
         aB_q, bB_q, cB_q = np.polyfit(diag_meas_BG, diag_exp_BG, 2)
         rms_q = rms_frac(quad(diag_meas_RG, aR_q, bR_q, cR_q), diag_exp_RG) + rms_frac(quad(diag_meas_BG, aB_q, bB_q, cB_q), diag_exp_BG)
 
-        idx = np.argmin([rms_s, rms_a, rms_q])
-        if idx == 0: coeff_R, coeff_B, model_choice = (0, mR_s, 0), (0, mB_s, 0), "slope-only"
-        elif idx == 1: coeff_R, coeff_B, model_choice = (0, mR_a, bR_a), (0, mB_a, bB_a), "affine"
-        else: coeff_R, coeff_B, model_choice = (aR_q, bR_q, cR_q), (aB_q, bB_q, cB_q), "quadratic"
+        idx = int(np.argmin([rms_s, rms_a, rms_q]))
+        if idx == 0:
+            coeff_R, coeff_B, model_choice = (0.0, float(mR_s), 0.0), (0.0, float(mB_s), 0.0), "slope-only"
+        elif idx == 1:
+            coeff_R, coeff_B, model_choice = (0.0, float(mR_a), float(bR_a)), (0.0, float(mB_a), float(bB_a)), "affine"
+        else:
+            coeff_R, coeff_B, model_choice = (float(aR_q), float(bR_q), float(cR_q)), (float(aB_q), float(bB_q), float(cB_q)), "quadratic"
 
-        poly = lambda c, x: c[0]*x**2 + c[1]*x + c[2]
+        poly = lambda c, x: c[0] * x**2 + c[1] * x + c[2]
+
+        # ---- Diagnostics plot (unchanged) ----
         self.figure.clf()
-        #ax1 = self.figure.add_subplot(1, 3, 1); bins=20
-        #ax1.hist(diag_meas_RG, bins=bins, alpha=.65, label="meas R/G", color="firebrick", edgecolor="black")
-        #ax1.hist(diag_exp_RG,  bins=bins, alpha=.55, label="exp R/G",  color="salmon",   edgecolor="black")
-        #ax1.hist(diag_meas_BG, bins=bins, alpha=.65, label="meas B/G", color="royalblue", edgecolor="black")
-        #ax1.hist(diag_exp_BG,  bins=bins, alpha=.55, label="exp B/G",  color="lightskyblue", edgecolor="black")
-        #ax1.set_xlabel("Ratio (band / G)"); ax1.set_ylabel("Count"); ax1.set_title("Measured vs expected"); ax1.legend(fontsize=7, frameon=False)
-
         res0_RG = (diag_meas_RG / diag_exp_RG) - 1.0
         res0_BG = (diag_meas_BG / diag_exp_BG) - 1.0
         res1_RG = (poly(coeff_R, diag_meas_RG) / diag_exp_RG) - 1.0
         res1_BG = (poly(coeff_B, diag_meas_BG) / diag_exp_BG) - 1.0
 
-        ymin = np.min(np.concatenate([res0_RG, res0_BG])); ymax = np.max(np.concatenate([res0_RG, res0_BG]))
-        pad  = 0.05 * (ymax - ymin) if ymax > ymin else 0.02; y_lim = (ymin - pad, ymax + pad)
+        ymin = float(np.min(np.concatenate([res0_RG, res0_BG])))
+        ymax = float(np.max(np.concatenate([res0_RG, res0_BG])))
+        pad  = 0.05 * (ymax - ymin) if ymax > ymin else 0.02
+        y_lim = (ymin - pad, ymax + pad)
+
         def shade(ax, yvals, color):
-            q1, q3 = np.percentile(yvals, [25,75]); ax.axhspan(q1, q3, color=color, alpha=.10, zorder=0)
+            q1, q3 = np.percentile(yvals, [25, 75])
+            ax.axhspan(q1, q3, color=color, alpha=0.10, zorder=0)
 
         ax2 = self.figure.add_subplot(1, 2, 1)
-        ax2.axhline(0, color="0.65", ls="--", lw=1); shade(ax2, res0_RG, "firebrick"); shade(ax2, res0_BG, "royalblue")
-        ax2.scatter(diag_exp_RG, res0_RG, c="firebrick",  marker="o", alpha=.7, label="R/G residual")
-        ax2.scatter(diag_exp_BG, res0_BG, c="royalblue", marker="s", alpha=.7, label="B/G residual")
-        ax2.set_ylim(*y_lim); ax2.set_xlabel("Expected (band/G)"); ax2.set_ylabel("Frac residual (meas/exp − 1)")
-        ax2.set_title("Residuals • BEFORE"); ax2.legend(frameon=False, fontsize=7, loc="lower right")
+        ax2.axhline(0, color="0.65", ls="--", lw=1)
+        shade(ax2, res0_RG, "firebrick"); shade(ax2, res0_BG, "royalblue")
+        ax2.scatter(diag_exp_RG, res0_RG, c="firebrick", marker="o", alpha=0.7, label="R/G residual")
+        ax2.scatter(diag_exp_BG, res0_BG, c="royalblue", marker="s", alpha=0.7, label="B/G residual")
+        ax2.set_ylim(*y_lim)
+        ax2.set_xlabel("Expected (band/G)")
+        ax2.set_ylabel("Frac residual (meas/exp − 1)")
+        ax2.set_title("Residuals • BEFORE")
+        ax2.legend(frameon=False, fontsize=7, loc="lower right")
 
         ax3 = self.figure.add_subplot(1, 2, 2)
-        ax3.axhline(0, color="0.65", ls="--", lw=1); shade(ax3, res1_RG, "firebrick"); shade(ax3, res1_BG, "royalblue")
-        ax3.scatter(diag_exp_RG, res1_RG, c="firebrick",  marker="o", alpha=.7)
-        ax3.scatter(diag_exp_BG, res1_BG, c="royalblue", marker="s", alpha=.7)
-        ax3.set_ylim(*y_lim); ax3.set_xlabel("Expected (band/G)"); ax3.set_ylabel("Frac residual (corrected/exp − 1)")
+        ax3.axhline(0, color="0.65", ls="--", lw=1)
+        shade(ax3, res1_RG, "firebrick"); shade(ax3, res1_BG, "royalblue")
+        ax3.scatter(diag_exp_RG, res1_RG, c="firebrick", marker="o", alpha=0.7)
+        ax3.scatter(diag_exp_BG, res1_BG, c="royalblue", marker="s", alpha=0.7)
+        ax3.set_ylim(*y_lim)
+        ax3.set_xlabel("Expected (band/G)")
+        ax3.set_ylabel("Frac residual (corrected/exp − 1)")
         ax3.set_title("Residuals • AFTER")
-        self.canvas.setVisible(True); self.figure.tight_layout(w_pad=2.); self.canvas.draw()
 
-        self.count_label.setText("Applying SFCC color scales to image…"); QApplication.processEvents()
-        if img.dtype == np.uint8: img_float = img.astype(np.float32) / 255.0
-        else:                     img_float = img.astype(np.float32)
+        self.canvas.setVisible(True)
+        self.figure.tight_layout(w_pad=2.0)
+        self.canvas.draw()
 
-        RG = img_float[..., 0] / np.maximum(img_float[..., 1], 1e-8)
-        BG = img_float[..., 2] / np.maximum(img_float[..., 1], 1e-8)
-        aR, bR, cR = coeff_R; aB, bB, cB = coeff_B
-        RG_corr = aR*RG**2 + bR*RG + cR
-        BG_corr = aB*BG**2 + bB*BG + cB
-        calibrated = img_float.copy()
-        calibrated[..., 0] = RG_corr * img_float[..., 1]
-        calibrated[..., 2] = BG_corr * img_float[..., 1]
-        calibrated = np.clip(calibrated, 0, 1)
+        # ---- Apply SFCC correction to ORIGINAL floats (not the SEP base) ----
+        self.count_label.setText("Applying SFCC color scales to image…")
+        QApplication.processEvents()
 
+        eps = 1e-8
+        calibrated = base.copy()
+
+        R = calibrated[..., 0]
+        G = calibrated[..., 1]
+        B = calibrated[..., 2]
+
+        RG = R / np.maximum(G, eps)
+        BG = B / np.maximum(G, eps)
+
+        aR, bR, cR = coeff_R
+        aB, bB, cB = coeff_B
+
+        mR = aR * RG**2 + bR * RG + cR
+        mB = aB * BG**2 + bB * BG + cB
+
+        mR = np.clip(mR, 0.25, 4.0)
+        mB = np.clip(mB, 0.25, 4.0)
+
+        pR = float(np.median(R))
+        pB = float(np.median(B))
+
+        calibrated[..., 0] = _pivot_scale_channel(R, mR, pR)
+        calibrated[..., 2] = _pivot_scale_channel(B, mB, pB)
+
+        calibrated = np.clip(calibrated, 0.0, 1.0)
+
+        # --- OPTIONAL: apply BN/pedestal to the FINAL calibrated image, not just SEP base ---
         if self.neutralize_chk.isChecked():
-            calibrated = self._neutralize_background(calibrated, patch_size=10)
+            try:
+                print("[SFCC] Applying background neutralization to final calibrated image...")
+                _debug_probe_channels(calibrated, "final_before_BN")
 
+                # If you want pedestal removal as part of BN, set remove_pedestal=True here
+                # (and/or make this a checkbox)
+                calibrated = self._neutralize_background(calibrated, remove_pedestal=True)
+
+                _debug_probe_channels(calibrated, "final_after_BN")
+            except Exception as e:
+                print(f"[SFCC] Final BN failed: {e}")
+
+
+        # Convert back to original dtype
         if img.dtype == np.uint8:
-            calibrated = (np.clip(calibrated, 0, 1) * 255.0).astype(np.uint8)
+            out_img = (np.clip(calibrated, 0.0, 1.0) * 255.0).astype(np.uint8)
         else:
-            calibrated = np.clip(calibrated, 0, 1).astype(np.float32)
+            out_img = np.clip(calibrated, 0.0, 1.0).astype(np.float32)
 
         new_meta = dict(doc.metadata or {})
         new_meta.update({
@@ -1323,25 +1471,31 @@ class SFCCDialog(QDialog):
         })
 
         self.doc_manager.update_active_document(
-            calibrated,
+            out_img,
             metadata=new_meta,
             step_name="SFCC Calibrated",
-            doc=doc,   # 👈 pin to the document we started from
+            doc=doc,
         )
 
         self.count_label.setText(f"Applied SFCC color calibration using {n_stars} stars")
         QApplication.processEvents()
 
-        def pretty(coeff): return coeff[0] + coeff[1] + coeff[2]
-        ratio_R, ratio_B = pretty(coeff_R), pretty(coeff_B)
-        QMessageBox.information(self, "SFCC Complete",
-                                f"Applied SFCC using {n_stars} stars\n"
-                                f"Model: {model_choice}\n"
-                                f"R ratio @ x=1: {ratio_R:.4f}\n"
-                                f"B ratio @ x=1: {ratio_B:.4f}\n"
-                                f"Background neutralisation: {'ON' if self.neutralize_chk.isChecked() else 'OFF'}")
+        def pretty(coeff):
+            # coefficient sum gives you f(1) for quadratic form a*x^2+b*x+c at x=1
+            return float(coeff[0] + coeff[1] + coeff[2])
 
-        self.current_image = calibrated  # keep for gradient step
+        QMessageBox.information(
+            self,
+            "SFCC Complete",
+            f"Applied SFCC using {n_stars} stars\n"
+            f"Model: {model_choice}\n"
+            f"R ratio @ x=1: {pretty(coeff_R):.4f}\n"
+            f"B ratio @ x=1: {pretty(coeff_B):.4f}\n"
+            f"Background neutralisation: {'ON' if self.neutralize_chk.isChecked() else 'OFF'}"
+        )
+
+        self.current_image = out_img  # keep for gradient step
+
 
     # ── Chromatic gradient (optional) ──────────────────────────────────
 
