@@ -1,9 +1,9 @@
 {
-  "version": "1.6.10",
+  "version": "1.6.11",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.10/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.10/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.10/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.11/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.11/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.11/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.6.10 Stacking suite now looks at temperature for darks and lights.  Includes stacked frame numbers in master light header. Multiple UX fixes"
+  "notes": "Seti Astro Suite Pro V1.6.11 Updated and improved algorithms for: Background Neutralization, Star Based White Balance, and SFCC.  Added rename view and doc in scripts api.  Bug fix in convo/deconvo. Various mixin tweaks."
 }
