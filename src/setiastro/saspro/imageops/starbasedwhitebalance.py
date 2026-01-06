@@ -30,11 +30,12 @@ cached_star_sources: Optional[np.ndarray] = None
 cached_flux_radii: Optional[np.ndarray] = None
 
 
-def _tone_preserve_bg_neutralize(rgb: np.ndarray) -> np.ndarray:
+def _tone_preserve_bg_neutralize(rgb: np.ndarray, *, return_pivot: bool = False):
     """
     Neutralize background using the darkest grid patch in a tone-preserving way.
     Operates in-place on a copy; returns the neutralized image (float32 [0,1]).
     """
+    best = None
     h, w = rgb.shape[:2]
     patch_size = 10
     ph = max(1, h // patch_size)
@@ -56,12 +57,15 @@ def _tone_preserve_bg_neutralize(rgb: np.ndarray) -> np.ndarray:
     out = rgb.copy()
     if best is not None:
         avg = float(np.mean(best))
-        # “tone-preserving” shift+scale channel-wise toward avg
         for c in range(3):
             diff = float(best[c] - avg)
             denom = (1.0 - diff) if abs(1.0 - diff) > 1e-8 else 1e-8
             out[:, :, c] = np.clip((out[:, :, c] - diff) / denom, 0.0, 1.0)
-    return out
+
+    if return_pivot:
+        pivot = best.astype(np.float32) if best is not None else np.median(rgb, axis=(0,1)).astype(np.float32)
+        return out.astype(np.float32, copy=False), pivot
+    return out.astype(np.float32, copy=False)
 
 
 def apply_star_based_white_balance(
@@ -102,7 +106,7 @@ def apply_star_based_white_balance(
     img_rgb = _to_float01(image)
 
     # 1) first background neutralization (tone-preserving)
-    bg_neutral = _tone_preserve_bg_neutralize(img_rgb)
+    bg_neutral, pivot = _tone_preserve_bg_neutralize(img_rgb, return_pivot=True)
 
     # 2) detect / reuse star positions
     if sep is None:
@@ -180,14 +184,19 @@ def apply_star_based_white_balance(
     star_pixels = bg_neutral[ys[valid_mask], xs[valid_mask], :].astype(np.float32)
     avg_color = np.mean(star_pixels, axis=0)
     max_val = float(np.max(avg_color))
-    # protect against divide-by-zero
     avg_color = np.where(avg_color <= 1e-8, 1e-8, avg_color)
-    scaling = max_val / avg_color
+    scaling = (max_val / avg_color).astype(np.float32)
 
-    balanced = (bg_neutral * scaling.reshape((1, 1, 3))).clip(0.0, 1.0)
+    # --- median-locked WB: (x - m)*g + m ---
+    m = pivot.reshape((1, 1, 3)).astype(np.float32)
+    g = scaling.reshape((1, 1, 3)).astype(np.float32)
+
+    d = bg_neutral.astype(np.float32) - m
+    d = np.maximum(d, 0.0)          # IMPORTANT: don’t amplify below-background
+    balanced = np.clip(d * g + m, 0.0, 1.0).astype(np.float32, copy=False)
 
     # 5) second background neutralization pass on balanced image
-    balanced = _tone_preserve_bg_neutralize(balanced)
+    #balanced = _tone_preserve_bg_neutralize(balanced)
 
     # 6) collect after-WB star samples - optimized vectorized extraction
     after_star_pixels = balanced[ys[valid_mask], xs[valid_mask], :]

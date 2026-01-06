@@ -1545,6 +1545,13 @@ class ShortcutManager:
 
     # ---- persistence (QSettings JSON blob) ----
     def save_shortcuts(self):
+        if not self.widgets:
+            try:
+                print("save_shortcuts: widgets empty → about to write [] to Shortcuts/v2")
+                import traceback
+                print(f"save_shortcuts stack:\n" + "".join(traceback.format_stack(limit=12)))
+            except Exception:
+                pass        
         data = []
         for sid, w in list(self.widgets.items()):
             if _is_dead(w):
@@ -1845,6 +1852,12 @@ class ShortcutManager:
 
 
     def clear(self):
+        try:
+            print("CLEAR() called → about to set Shortcuts/v2 to []")
+            import traceback
+            print(f"clear() stack:\n" + "".join(traceback.format_stack(limit=12)))
+        except Exception:
+            pass        
         for sid, w in list(self.widgets.items()):
             try:
                 if not _is_dead(w):

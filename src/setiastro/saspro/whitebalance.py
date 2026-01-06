@@ -184,6 +184,30 @@ def apply_white_balance_to_doc(doc, preset: Optional[Dict] = None):
         step_name="White Balance",
     )
 
+def apply_pivot_gain(img: np.ndarray, med: np.ndarray, gains: np.ndarray) -> np.ndarray:
+    # img: HxWx3 float32 in [0,1]
+    med3 = med.reshape(1, 1, 3).astype(np.float32)
+    g3   = gains.reshape(1, 1, 3).astype(np.float32)
+
+    # pivot around median; do not scale negative deltas
+    d = img - med3
+    d = np.maximum(d, 0.0)
+    out = d * g3 + med3
+    return np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
+
+def smoothstep(edge0, edge1, x):
+    t = np.clip((x - edge0) / (edge1 - edge0 + 1e-12), 0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
+
+def apply_soft_protect(img: np.ndarray, out_pivot: np.ndarray, k: float = 0.02) -> np.ndarray:
+    # luminance-based fade-in above median luminance
+    L = 0.2126*img[...,0] + 0.7152*img[...,1] + 0.0722*img[...,2]
+    Lm = float(np.median(L))
+    w = smoothstep(Lm, Lm + k, L).astype(np.float32)
+    w3 = w[..., None]
+    out = img * (1.0 - w3) + out_pivot * w3
+    return np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
+
 
 # -------------------------
 # Interactive dialog (UI)
