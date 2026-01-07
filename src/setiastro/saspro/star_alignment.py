@@ -5356,6 +5356,7 @@ class MosaicMasterDialog(QDialog):
 
     # ---------- Align (Entry Point) ----------
     def align_images(self):
+        # Seestar mode is its own pipeline
         if self.seestarCheckBox.isChecked():
             self.align_images_seestar_mode()
             return
@@ -5366,28 +5367,33 @@ class MosaicMasterDialog(QDialog):
 
         # Show spinner and start animation.
         self.spinnerLabel.show()
-        self.spinnerMovie.start()
+        if self.spinnerMovie:
+            self.spinnerMovie.start()
         QApplication.processEvents()
 
-        # Step 1: Force blind solve if requested.
+        # ------------------------------------------------------------
+        # 1) Plate solve (unless already solved and not forcing blind)
+        # ------------------------------------------------------------
         force_blind = self.forceBlindCheckBox.isChecked()
-        images_to_process = (self.loaded_images if force_blind
-                            else [item for item in self.loaded_images if item.get("wcs") is None])
+        images_to_process = (
+            self.loaded_images if force_blind
+            else [item for item in self.loaded_images if item.get("wcs") is None]
+        )
 
-        # Process each image for plate solving.
         for item in images_to_process:
-            # Check if ASTAP is set.
+            # Ensure ASTAP path (or fall back to blind solve)
             if not self.astap_exe or not os.path.exists(self.astap_exe):
                 executable_filter = "Executables (*.exe);;All Files (*)" if sys.platform.startswith("win") else "Executables (*)"
                 new_path, _ = QFileDialog.getOpenFileName(self, "Select ASTAP Executable", "", executable_filter)
                 if new_path:
                     self._save_astap_exe_to_settings(new_path)
+                    self.astap_exe = new_path
                     QMessageBox.information(self, "Mosaic Master", "ASTAP path updated successfully.")
                 else:
-                    QMessageBox.warning(self, "Mosaic Master", "ASTAP path not provided. Falling back to blind solve.")
+                    self.status_label.setText(f"No ASTAP path; blind solving {item['path']}...")
+                    QApplication.processEvents()
                     solved_header = self.perform_blind_solve(item)
                     if solved_header:
-                        # normalize + build WCS with relax=True so SIP is retained
                         solved_header = self._normalize_wcs_header(solved_header, item["image"].shape)
                         item["wcs"] = self._build_wcs(solved_header, item["image"].shape)
                     continue
@@ -5401,49 +5407,53 @@ class MosaicMasterDialog(QDialog):
                 self.status_label.setText(f"ASTAP failed for {item['path']}. Falling back to blind solve...")
                 QApplication.processEvents()
                 solved_header = self.perform_blind_solve(item)
-            else:
-                self.status_label.setText(f"Plate solve successful using ASTAP for {item['path']}.")
 
             if solved_header:
-                # Single, centralized sanitize → keeps SIP and fixes types
                 solved_header = self._normalize_wcs_header(solved_header, item["image"].shape)
                 item["wcs"] = self._build_wcs(solved_header, item["image"].shape)
             else:
-                print(f"Plate solving failed for {item['path']}.")
+                print(f"[Mosaic] Plate solving failed for {item['path']}.")
 
-        # After processing, get all images with valid WCS.
+        # ------------------------------------------------------------
+        # 2) Gather WCS-valid panels
+        # ------------------------------------------------------------
         wcs_items = [x for x in self.loaded_images if x.get("wcs") is not None]
         if not wcs_items:
-            print("No images have WCS, skipping WCS alignment.")
-            self.spinnerMovie.stop()
+            print("[Mosaic] No images have WCS; cannot build WCS mosaic.")
+            if self.spinnerMovie:
+                self.spinnerMovie.stop()
             self.spinnerLabel.hide()
             return
 
+        # ------------------------------------------------------------
+        # 3) Establish mosaic WCS + output bounding box
+        # ------------------------------------------------------------
+        reference_wcs = self._build_wcs(
+            wcs_items[0]["wcs"].to_header(relax=True),
+            wcs_items[0]["image"].shape
+        ).deepcopy()
 
-        # Use the first image's WCS as reference and compute the mosaic bounding box.
-        # (Rebuild with relax=True just in case, then deepcopy.)
-        reference_wcs = self._build_wcs(wcs_items[0]["wcs"].to_header(relax=True), wcs_items[0]["image"].shape).deepcopy()
         min_x, min_y, max_x, max_y = self.compute_mosaic_bounding_box(wcs_items, reference_wcs)
-        mosaic_width = int(max_x - min_x)
+        mosaic_width  = int(max_x - min_x)
         mosaic_height = int(max_y - min_y)
 
         if mosaic_width < 1 or mosaic_height < 1:
-            print("ERROR: Computed mosaic size is invalid. Check WCS or inputs.")
-            self.spinnerMovie.stop()
+            print("[Mosaic] ERROR: Computed mosaic size invalid. Check WCS/inputs.")
+            if self.spinnerMovie:
+                self.spinnerMovie.stop()
             self.spinnerLabel.hide()
             return
 
-        # Adjust the reference WCS so that (min_x, min_y) becomes (0,0).
         mosaic_wcs = reference_wcs.deepcopy()
         mosaic_wcs.wcs.crpix[0] -= min_x
         mosaic_wcs.wcs.crpix[1] -= min_y
-        # keep SIP in the stored header
         self.wcs_metadata = mosaic_wcs.to_header(relax=True)
 
-        # Set up accumulators.
+        # ------------------------------------------------------------
+        # 4) Allocate accumulators
+        # ------------------------------------------------------------
         is_color = any(not item["is_mono"] for item in wcs_items)
 
-        # stats for optional "unstretch"
         self.stretch_original_mins = []
         self.stretch_original_medians = []
         self.was_single_channel = (not is_color)
@@ -5454,51 +5464,77 @@ class MosaicMasterDialog(QDialog):
             self.final_mosaic, _ = smart_zeros((mosaic_height, mosaic_width), dtype=np.float32)
         self.weight_mosaic, _ = smart_zeros((mosaic_height, mosaic_width), dtype=np.float32)
 
+        # ------------------------------------------------------------
+        # 5) Normalization target — compute ONCE, apply ALWAYS
+        # ------------------------------------------------------------
+        did_normalize = bool(self.normalizeCheckBox.isChecked())
+
+        # IMPORTANT: compute from RAW first panel image, not from dict list in a way that can drift
+        if did_normalize:
+            try:
+                first_raw = wcs_items[0]["image"]
+                self._mosaic_target_median = self._target_median_from_first([{"image": first_raw}])
+            except Exception:
+                # fallback: compute directly
+                a0 = wcs_items[0]["image"].astype(np.float32, copy=False)
+                if a0.ndim == 3:
+                    a0m = np.mean(a0, axis=2)
+                else:
+                    a0m = a0
+                lo = np.percentile(a0m, 1)
+                hi = np.percentile(a0m, 99)
+                self._mosaic_target_median = float(max(np.median(np.clip(a0m, lo, hi)), 1e-6))
+
+            print(f"[Mosaic] normalization target median = {self._mosaic_target_median:.6g}")
+
+        # Reprojection helpers cache
+        if not hasattr(self, "_H_cache"):
+            self._H_cache = {}
+
+        # WCS-only toggle (no star alignment/refinement)
+        wcs_only = bool(getattr(self, "wcsOnlyCheckBox", None) and self.wcsOnlyCheckBox.isChecked())
+
+        # ------------------------------------------------------------
+        # 6) Main loop: normalize -> reproject -> (optional) star align -> accumulate
+        # ------------------------------------------------------------
         first_image = True
+
         for idx, itm in enumerate(wcs_items):
             arr = itm["image"]
+
             self.status_label.setText(f"Mapping {itm['path']} into mosaic frame...")
             QApplication.processEvents()
 
             img_lin = arr.astype(np.float32, copy=False)
 
-            # --- record original stats for optional "unstretch" ---
+            # --- record original stats (pre-normalization) for optional unstretch ---
             mono_for_stats = img_lin if img_lin.ndim == 2 else np.mean(img_lin, axis=2)
             self.stretch_original_mins.append(float(np.min(mono_for_stats)))
             self.stretch_original_medians.append(float(np.median(mono_for_stats)))
 
-            # 1) optional median normalization only
-            if self.normalizeCheckBox.isChecked():
-                target_med = getattr(self, "_mosaic_target_median", None)
-                if target_med is None:
-                    self._mosaic_target_median = self._target_median_from_first(wcs_items)
-                    target_med = self._mosaic_target_median
-                img_lin = self._normalize_linear(img_lin, target_med)
+            # --- ALWAYS normalize here if enabled (even in WCS-only) ---
+            if did_normalize:
+                img_lin = self._normalize_linear(img_lin, float(self._mosaic_target_median))
 
-            # 2) Reprojection (3 modes)
-            if not hasattr(self, "_H_cache"):
-                self._H_cache = {}
-
+            # --- Reprojection mode ---
             mode = self.reprojectModeCombo.currentText()
 
             if mode.startswith("Fast — SIP"):
-                # Exact dense remap (SIP-aware), tiled; keep mono as 2D
                 reprojected = self._warp_via_wcs_remap_exact(
                     img_lin, itm["wcs"], mosaic_wcs, (mosaic_height, mosaic_width), tile=512
-                ).astype(np.float32)
+                ).astype(np.float32, copy=False)
                 reprojected = self._polish_reprojected(reprojected)
                 reproj_red = reprojected[..., 0] if reprojected.ndim == 3 else reprojected
 
             elif mode.startswith("Fast — Homography"):
-                # Single global homography; keep mono as 2D
                 reprojected = self._warp_via_wcs_homography(
                     img_lin, itm["wcs"], mosaic_wcs, (mosaic_height, mosaic_width), H_cache=self._H_cache
-                ).astype(np.float32)
+                ).astype(np.float32, copy=False)
                 reprojected = self._polish_reprojected(reprojected)
                 reproj_red = reprojected[..., 0] if reprojected.ndim == 3 else reprojected
 
             else:
-                # Precise — Full WCS (astropy.reproject); mono stays 2D
+                # Precise — Full WCS
                 if img_lin.ndim == 3:
                     channels = []
                     for c in range(3):
@@ -5508,44 +5544,34 @@ class MosaicMasterDialog(QDialog):
                     reprojected = np.stack(channels, axis=-1)
                     reproj_red = reprojected[..., 0]
                 else:
-                    reproj_red, _ = reproject_interp((img_lin, itm["wcs"]), mosaic_wcs,
-                                                    shape_out=(mosaic_height, mosaic_width))
-                    reprojected = np.nan_to_num(reproj_red, nan=0.0).astype(np.float32)  # 2D mono
-                    # no fake stacking here
+                    rpj, _ = reproject_interp((img_lin, itm["wcs"]), mosaic_wcs,
+                                            shape_out=(mosaic_height, mosaic_width))
+                    reprojected = np.nan_to_num(rpj, nan=0.0).astype(np.float32)
+                    reproj_red = reprojected  # 2D
 
-            self.status_label.setText(f"WCS map: {itm['path']} processed.")
-            QApplication.processEvents()
-
-            # --- Stellar Alignment (optional) ---
-            wcs_only = bool(getattr(self, "wcsOnlyCheckBox", None) and self.wcsOnlyCheckBox.isChecked())
-
+            # --- Optional star alignment/refinement (skipped in WCS-only) ---
             if wcs_only:
-                # WCS placement ONLY: no astroalign, no refined alignment
                 aligned = reprojected
                 if first_image:
                     first_image = False
             else:
-                if not first_image:
+                if first_image:
+                    aligned = reprojected
+                    first_image = False
+                else:
                     transform_method = self.transform_combo.currentText()
                     mosaic_gray = (self.final_mosaic if self.final_mosaic.ndim == 2
                                 else np.mean(self.final_mosaic, axis=-1))
+
                     try:
                         self.status_label.setText("Computing affine transform with astroalign...")
                         QApplication.processEvents()
                         transform_obj, (src_pts, dst_pts) = self._aa_find_transform_with_backoff(reproj_red, mosaic_gray)
                         transform_matrix = transform_obj.params[0:2, :].astype(np.float32)
-                        self.status_label.setText("Astroalign computed transform successfully.")
                     except Exception as e:
                         self.status_label.setText(f"Astroalign failed: {e}. Using identity transform.")
                         transform_matrix = np.eye(2, 3, dtype=np.float32)
 
-                    A = transform_matrix[:, :2]
-                    scale1 = np.linalg.norm(A[:, 0])
-                    scale2 = np.linalg.norm(A[:, 1])
-                    print(f"Computed affine scales: {scale1:.6f}, {scale2:.6f}")
-
-                    self.status_label.setText("Affine alignment computed. Warping image...")
-                    QApplication.processEvents()
                     affine_aligned = cv2.warpAffine(
                         reprojected, transform_matrix, (mosaic_width, mosaic_height),
                         flags=cv2.INTER_LANCZOS4
@@ -5561,10 +5587,6 @@ class MosaicMasterDialog(QDialog):
                             self.status_label.setText(f"Refined alignment succeeded with {best_inliers2} inliers.")
                         else:
                             self.status_label.setText("Refined alignment failed; falling back to affine alignment.")
-                else:
-                    aligned = reprojected
-                    first_image = False
-
 
             # If mosaic is color but aligned is mono, expand for accumulation only
             if is_color and aligned.ndim == 2:
@@ -5572,13 +5594,13 @@ class MosaicMasterDialog(QDialog):
 
             gray_aligned = aligned[..., 0] if aligned.ndim == 3 else aligned
 
-            # Compute weight mask
+            # --- Weight mask ---
             binary_mask = (gray_aligned > 0).astype(np.uint8)
             smooth_mask = cv2.distanceTransform(binary_mask, cv2.DIST_L2, 5)
             smooth_mask = (smooth_mask / np.max(smooth_mask)) if np.max(smooth_mask) > 0 else binary_mask.astype(np.float32)
             smooth_mask = cv2.GaussianBlur(smooth_mask, (15, 15), 0)
 
-            # Accumulate
+            # --- Accumulate ---
             if is_color:
                 self.final_mosaic += aligned * smooth_mask[..., np.newaxis]
             else:
@@ -5588,22 +5610,27 @@ class MosaicMasterDialog(QDialog):
             self.status_label.setText(f"Processed: {itm['path']}")
             QApplication.processEvents()
 
-        # Final blending.
-        nonzero_mask = (self.weight_mosaic > 0)
+        # ------------------------------------------------------------
+        # 7) Final blend
+        # ------------------------------------------------------------
         if is_color:
-            self.final_mosaic = np.where(self.weight_mosaic[..., None] > 0,
-                                        self.final_mosaic / self.weight_mosaic[..., None],
-                                        self.final_mosaic)
+            self.final_mosaic = np.where(
+                self.weight_mosaic[..., None] > 0,
+                self.final_mosaic / np.maximum(self.weight_mosaic[..., None], 1e-12),
+                self.final_mosaic
+            )
         else:
-            self.final_mosaic[nonzero_mask] = self.final_mosaic[nonzero_mask] / self.weight_mosaic[nonzero_mask]
+            nz = (self.weight_mosaic > 0)
+            self.final_mosaic[nz] = self.final_mosaic[nz] / np.maximum(self.weight_mosaic[nz], 1e-12)
 
-        print("WCS + Star Alignment Complete.")
-        self.status_label.setText("WCS + Star Alignment Complete. De-Normalizing Mosaic...")
+        self.status_label.setText("Mosaic built. De-normalizing mosaic...")
+        QApplication.processEvents()
 
-        # Call-guard: only unstretch if we normalized AND we actually recorded stats
-        did_normalize = self.normalizeCheckBox.isChecked()
+        # ------------------------------------------------------------
+        # 8) Optional “unstretch” (your existing logic)
+        # ------------------------------------------------------------
         if (did_normalize and
-            hasattr(self, "_mosaic_target_median") and self._mosaic_target_median > 0 and
+            hasattr(self, "_mosaic_target_median") and float(self._mosaic_target_median) > 0 and
             getattr(self, "stretch_original_medians", None) and len(self.stretch_original_medians) > 0 and
             getattr(self, "stretch_original_mins", None) and len(self.stretch_original_mins) > 0):
             self.final_mosaic = self.unstretch_image(self.final_mosaic)
@@ -5611,15 +5638,22 @@ class MosaicMasterDialog(QDialog):
         self.status_label.setText("Final Mosaic Ready.")
         QApplication.processEvents()
 
-        display_image = (np.stack([self.final_mosaic]*3, axis=-1)
+        display_image = (np.stack([self.final_mosaic] * 3, axis=-1)
                         if self.final_mosaic.ndim == 2 else self.final_mosaic)
         display_image = self._autostretch_if_requested(display_image)
-        MosaicPreviewWindow(display_image, title="Final Mosaic", parent=self,
-                            push_cb=self._push_mosaic_to_new_doc).show()
 
-        self.spinnerMovie.stop()
+        MosaicPreviewWindow(
+            display_image,
+            title=("Final Mosaic (WCS-only)" if wcs_only else "Final Mosaic"),
+            parent=self,
+            push_cb=self._push_mosaic_to_new_doc
+        ).show()
+
+        if self.spinnerMovie:
+            self.spinnerMovie.stop()
         self.spinnerLabel.hide()
         QApplication.processEvents()
+
       
     def _polish_reprojected(self, img: np.ndarray) -> np.ndarray:
         # 1) kill NaNs/Infs from reprojection
