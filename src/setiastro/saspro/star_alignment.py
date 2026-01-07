@@ -4679,7 +4679,23 @@ class MosaicMasterDialog(QDialog):
         self.seestarCheckBox = QCheckBox("Seestar Mode")
         self.seestarCheckBox.setToolTip("Wwen enabled, images are aligned iteratively using astroalign without plate solving.")
         checkbox_layout.addWidget(self.seestarCheckBox)
+
+        # NEW: WCS-only placement mode
+        self.wcsOnlyCheckBox = QCheckBox("Disable Star Alignment (WCS placement only)")
+        self.wcsOnlyCheckBox.setToolTip(
+            "Skips astroalign + refined alignment.\n"
+            "Panels are only reprojected into the mosaic celestial-sphere frame using WCS, then blended.\n"
+            "Useful when panels have little/no overlap but have valid WCS."
+        )
+        checkbox_layout.addWidget(self.wcsOnlyCheckBox)
+
         layout.addLayout(checkbox_layout)
+
+        _settings = QSettings("SetiAstro", "SASpro")
+        self.wcsOnlyCheckBox.setChecked(_settings.value("mosaic/wcs_only", False, type=bool))
+        self.wcsOnlyCheckBox.stateChanged.connect(
+            lambda _: QSettings("SetiAstro", "SASpro").setValue("mosaic/wcs_only", self.wcsOnlyCheckBox.isChecked())
+        )
 
         self.normalizeCheckBox = QCheckBox("Normalize images (median match)")
         self.normalizeCheckBox.setChecked(True)
@@ -4747,6 +4763,28 @@ class MosaicMasterDialog(QDialog):
         self.spinnerLabel.setMovie(self.spinnerMovie)
         self.spinnerLabel.hide() 
         layout.addWidget(self.spinnerLabel)
+        # Optional UX: if WCS-only is enabled, the transform selection is irrelevant
+        def _sync_wcs_only_ui():
+            wcs_only = self.wcsOnlyCheckBox.isChecked()
+
+            # transform_combo is created later in initUI, so guard it
+            if hasattr(self, "transform_combo"):
+                self.transform_combo.setEnabled(not wcs_only)
+                self.transform_combo.setToolTip("" if not wcs_only else "Disabled because WCS-only placement is enabled.")
+
+        self.wcsOnlyCheckBox.stateChanged.connect(lambda _: _sync_wcs_only_ui())
+        _sync_wcs_only_ui()
+
+        # Optional: make Seestar and WCS-only mutually exclusive (recommended)
+        def _sync_mode_exclusive():
+            if self.seestarCheckBox.isChecked() and self.wcsOnlyCheckBox.isChecked():
+                # Prefer Seestar behavior or prefer WCS-only; I recommend auto-disabling WCS-only when Seestar is checked.
+                self.wcsOnlyCheckBox.blockSignals(True)
+                self.wcsOnlyCheckBox.setChecked(False)
+                self.wcsOnlyCheckBox.blockSignals(False)
+                _sync_wcs_only_ui()
+
+        self.seestarCheckBox.stateChanged.connect(lambda _: _sync_mode_exclusive())
 
         self.setLayout(layout)
 
@@ -5426,6 +5464,7 @@ class MosaicMasterDialog(QDialog):
                 reprojected = self._warp_via_wcs_remap_exact(
                     img_lin, itm["wcs"], mosaic_wcs, (mosaic_height, mosaic_width), tile=512
                 ).astype(np.float32)
+                reprojected = self._polish_reprojected(reprojected)
                 reproj_red = reprojected[..., 0] if reprojected.ndim == 3 else reprojected
 
             elif mode.startswith("Fast — Homography"):
@@ -5433,6 +5472,7 @@ class MosaicMasterDialog(QDialog):
                 reprojected = self._warp_via_wcs_homography(
                     img_lin, itm["wcs"], mosaic_wcs, (mosaic_height, mosaic_width), H_cache=self._H_cache
                 ).astype(np.float32)
+                reprojected = self._polish_reprojected(reprojected)
                 reproj_red = reprojected[..., 0] if reprojected.ndim == 3 else reprojected
 
             else:
@@ -5454,44 +5494,55 @@ class MosaicMasterDialog(QDialog):
             self.status_label.setText(f"WCS map: {itm['path']} processed.")
             QApplication.processEvents()
 
-            # --- Stellar Alignment ---
-            if not first_image:
-                transform_method = self.transform_combo.currentText()
-                mosaic_gray = (self.final_mosaic if self.final_mosaic.ndim == 2
-                            else np.mean(self.final_mosaic, axis=-1))
-                try:
-                    self.status_label.setText("Computing affine transform with astroalign...")
-                    QApplication.processEvents()
-                    transform_obj, (src_pts, dst_pts) = self._aa_find_transform_with_backoff(reproj_red, mosaic_gray)
-                    transform_matrix = transform_obj.params[0:2, :].astype(np.float32)
-                    self.status_label.setText("Astroalign computed transform successfully.")
-                except Exception as e:
-                    self.status_label.setText(f"Astroalign failed: {e}. Using identity transform.")
-                    transform_matrix = np.eye(2, 3, dtype=np.float32)
+            # --- Stellar Alignment (optional) ---
+            wcs_only = bool(getattr(self, "wcsOnlyCheckBox", None) and self.wcsOnlyCheckBox.isChecked())
 
-                A = transform_matrix[:, :2]
-                scale1 = np.linalg.norm(A[:, 0])
-                scale2 = np.linalg.norm(A[:, 1])
-                print(f"Computed affine scales: {scale1:.6f}, {scale2:.6f}")
-
-                self.status_label.setText("Affine alignment computed. Warping image...")
-                QApplication.processEvents()
-                affine_aligned = cv2.warpAffine(reprojected, transform_matrix, (mosaic_width, mosaic_height),
-                                                flags=cv2.INTER_LANCZOS4)
-                aligned = affine_aligned
-
-                if transform_method in ["Homography Transform", "Polynomial Warp Based Transform"]:
-                    self.status_label.setText(f"Starting refined alignment using {transform_method}...")
-                    QApplication.processEvents()
-                    refined_result = self.refined_alignment(affine_aligned, mosaic_gray, method=transform_method)
-                    if refined_result is not None:
-                        aligned, best_inliers2 = refined_result
-                        self.status_label.setText(f"Refined alignment succeeded with {best_inliers2} inliers.")
-                    else:
-                        self.status_label.setText("Refined alignment failed; falling back to affine alignment.")
-            else:
+            if wcs_only:
+                # WCS placement ONLY: no astroalign, no refined alignment
                 aligned = reprojected
-                first_image = False
+                if first_image:
+                    first_image = False
+            else:
+                if not first_image:
+                    transform_method = self.transform_combo.currentText()
+                    mosaic_gray = (self.final_mosaic if self.final_mosaic.ndim == 2
+                                else np.mean(self.final_mosaic, axis=-1))
+                    try:
+                        self.status_label.setText("Computing affine transform with astroalign...")
+                        QApplication.processEvents()
+                        transform_obj, (src_pts, dst_pts) = self._aa_find_transform_with_backoff(reproj_red, mosaic_gray)
+                        transform_matrix = transform_obj.params[0:2, :].astype(np.float32)
+                        self.status_label.setText("Astroalign computed transform successfully.")
+                    except Exception as e:
+                        self.status_label.setText(f"Astroalign failed: {e}. Using identity transform.")
+                        transform_matrix = np.eye(2, 3, dtype=np.float32)
+
+                    A = transform_matrix[:, :2]
+                    scale1 = np.linalg.norm(A[:, 0])
+                    scale2 = np.linalg.norm(A[:, 1])
+                    print(f"Computed affine scales: {scale1:.6f}, {scale2:.6f}")
+
+                    self.status_label.setText("Affine alignment computed. Warping image...")
+                    QApplication.processEvents()
+                    affine_aligned = cv2.warpAffine(
+                        reprojected, transform_matrix, (mosaic_width, mosaic_height),
+                        flags=cv2.INTER_LANCZOS4
+                    )
+                    aligned = affine_aligned
+
+                    if transform_method in ["Homography Transform", "Polynomial Warp Based Transform"]:
+                        self.status_label.setText(f"Starting refined alignment using {transform_method}...")
+                        QApplication.processEvents()
+                        refined_result = self.refined_alignment(affine_aligned, mosaic_gray, method=transform_method)
+                        if refined_result is not None:
+                            aligned, best_inliers2 = refined_result
+                            self.status_label.setText(f"Refined alignment succeeded with {best_inliers2} inliers.")
+                        else:
+                            self.status_label.setText("Refined alignment failed; falling back to affine alignment.")
+                else:
+                    aligned = reprojected
+                    first_image = False
+
 
             # If mosaic is color but aligned is mono, expand for accumulation only
             if is_color and aligned.ndim == 2:
@@ -5548,6 +5599,20 @@ class MosaicMasterDialog(QDialog):
         self.spinnerLabel.hide()
         QApplication.processEvents()
       
+    def _polish_reprojected(self, img: np.ndarray) -> np.ndarray:
+        # 1) kill NaNs/Infs from reprojection
+        out = np.nan_to_num(img, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
+
+        # 2) trim tiny negative ringing
+        out[out < 0] = 0.0
+
+        # 3) optional: zero a 1px border to avoid remap edge seams
+        if out.ndim == 2:
+            out[:1, :] = 0; out[-1:, :] = 0; out[:, :1] = 0; out[:, -1:] = 0
+        else:
+            out[:1, :, :] = 0; out[-1:, :, :] = 0; out[:, :1, :] = 0; out[:, -1:, :] = 0
+
+        return out
 
     def debayer_image(self, image, file_path, header):
         from setiastro.saspro.legacy.numba_utils import debayer_raw_fast, debayer_fits_fast  

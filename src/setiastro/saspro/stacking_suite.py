@@ -1856,7 +1856,7 @@ class ReferenceFrameReviewDialog(QDialog):
         self.initUI()
         self.loadImageArray()  # Load the image into self.original_image
         if self.original_image is not None:
-            QTimer.singleShot(0,self.updatePreview(self.original_image, fit=True))
+            QTimer.singleShot(0, lambda: self.updatePreview(self.original_image, fit=True))
         #if self.original_image is not None:
         #    QTimer.singleShot(0, self.zoomIn)            
 
