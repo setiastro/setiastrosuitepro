@@ -4586,11 +4586,12 @@ def load_api_key():
 class MosaicMasterDialog(QDialog):
     def __init__(self, settings: QSettings, parent=None, image_manager=None,
                  doc_manager=None, wrench_path=None, spinner_path=None,
-                 list_open_docs_fn=None):                                 # ← add param
+                 list_open_docs_fn=None):
         super().__init__(parent)
         self.settings = settings
         self.image_manager = image_manager
         self._docman = doc_manager or getattr(parent, "doc_manager", None)
+
         # same pattern as StellarAlignmentDialog
         if list_open_docs_fn is None:
             cand = getattr(parent, "_list_open_docs", None)
@@ -4602,19 +4603,22 @@ class MosaicMasterDialog(QDialog):
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
+
         self.wrench_path = wrench_path
         self.spinner_path = spinner_path
 
         self.resize(600, 400)
-        self.loaded_images = []  
+        self.loaded_images = []
         self.final_mosaic = None
         self.weight_mosaic = None
         self.wcs_metadata = None  # To store mosaic WCS header
         self.astap_exe = self.settings.value("paths/astap", "", type=str)
+
         # Variables to store stretching parameters:
         self.stretch_original_mins = []
         self.stretch_original_medians = []
         self.was_single_channel = False
+
         self.initUI()
 
     def initUI(self):
@@ -4635,12 +4639,11 @@ class MosaicMasterDialog(QDialog):
         layout.addWidget(instructions)
 
         btn_layout = QHBoxLayout()
-        # Button to add image from disk
+
         add_btn = QPushButton("Add Image")
         add_btn.clicked.connect(self.add_image)
         btn_layout.addWidget(add_btn)
 
-        # New button to add an image from one of the ImageManager slots
         add_from_view_btn = QPushButton("Add from View")
         add_from_view_btn.setToolTip("Add an image from any open View")
         add_from_view_btn.clicked.connect(self.add_image_from_view)
@@ -4662,25 +4665,29 @@ class MosaicMasterDialog(QDialog):
         save_btn.clicked.connect(self.save_mosaic_to_new_view)
         btn_layout.addWidget(save_btn)
 
-        # Add the wrench button for settings.
         wrench_btn = QPushButton()
-        wrench_btn.setIcon(QIcon(self.wrench_path))
+        if self.wrench_path:
+            wrench_btn.setIcon(QIcon(self.wrench_path))
         wrench_btn.setToolTip("Mosaic Settings")
         wrench_btn.clicked.connect(self.openSettings)
         btn_layout.addWidget(wrench_btn)
 
         layout.addLayout(btn_layout)
 
-        # Horizontal sizer for checkboxes.
+        # ------------------------------------------------------------------
+        # Mode checkboxes (mutually exclusive: Seestar vs WCS-only)
+        # ------------------------------------------------------------------
         checkbox_layout = QHBoxLayout()
+
         self.forceBlindCheckBox = QCheckBox("Force Blind Solve (ignore existing WCS)")
         checkbox_layout.addWidget(self.forceBlindCheckBox)
-        # New Seestar Mode checkbox:
+
         self.seestarCheckBox = QCheckBox("Seestar Mode")
-        self.seestarCheckBox.setToolTip("Wwen enabled, images are aligned iteratively using astroalign without plate solving.")
+        self.seestarCheckBox.setToolTip(
+            "When enabled, images are aligned iteratively using astroalign without plate solving."
+        )
         checkbox_layout.addWidget(self.seestarCheckBox)
 
-        # NEW: WCS-only placement mode
         self.wcsOnlyCheckBox = QCheckBox("Disable Star Alignment (WCS placement only)")
         self.wcsOnlyCheckBox.setToolTip(
             "Skips astroalign + refined alignment.\n"
@@ -4691,12 +4698,47 @@ class MosaicMasterDialog(QDialog):
 
         layout.addLayout(checkbox_layout)
 
+        # Persisted WCS-only
         _settings = QSettings("SetiAstro", "SASpro")
         self.wcsOnlyCheckBox.setChecked(_settings.value("mosaic/wcs_only", False, type=bool))
-        self.wcsOnlyCheckBox.stateChanged.connect(
-            lambda _: QSettings("SetiAstro", "SASpro").setValue("mosaic/wcs_only", self.wcsOnlyCheckBox.isChecked())
-        )
 
+        # Helpers ----------------------------------------------------------
+        def _set_checked(cb: QCheckBox, checked: bool):
+            cb.blockSignals(True)
+            cb.setChecked(checked)
+            cb.blockSignals(False)
+
+        def _sync_wcs_only_ui():
+            # WCS-only disables transform selection (because refinement is unused)
+            wcs_only = self.wcsOnlyCheckBox.isChecked()
+            if hasattr(self, "transform_combo"):
+                self.transform_combo.setEnabled(not wcs_only)
+                self.transform_combo.setToolTip(
+                    "" if not wcs_only else "Disabled because WCS-only placement is enabled."
+                )
+
+        def _on_seestar_changed(state: int):
+            # If Seestar is turned ON, force WCS-only OFF
+            if self.seestarCheckBox.isChecked():
+                _set_checked(self.wcsOnlyCheckBox, False)
+            _sync_wcs_only_ui()
+
+        def _on_wcs_only_changed(state: int):
+            # Persist setting first (this one is user-visible preference)
+            QSettings("SetiAstro", "SASpro").setValue("mosaic/wcs_only", self.wcsOnlyCheckBox.isChecked())
+
+            # If WCS-only is turned ON, force Seestar OFF
+            if self.wcsOnlyCheckBox.isChecked():
+                _set_checked(self.seestarCheckBox, False)
+            _sync_wcs_only_ui()
+
+        # Wire handlers (NO lambdas, no duplicates)
+        self.seestarCheckBox.stateChanged.connect(_on_seestar_changed)
+        self.wcsOnlyCheckBox.stateChanged.connect(_on_wcs_only_changed)
+
+        # ------------------------------------------------------------------
+        # Other controls
+        # ------------------------------------------------------------------
         self.normalizeCheckBox = QCheckBox("Normalize images (median match)")
         self.normalizeCheckBox.setChecked(True)
         layout.addWidget(self.normalizeCheckBox)
@@ -4720,24 +4762,21 @@ class MosaicMasterDialog(QDialog):
             "Precise — Full WCS: astropy.reproject per channel; slowest, most exact."
         )
 
-        # Persist user choice
-        _settings = QSettings("SetiAstro", "SASpro")
-        _default_mode = _settings.value("mosaic/reproject_mode",
-                                        "Fast — SIP-aware (Exact Remap)")
-        if _default_mode not in [self.reprojectModeCombo.itemText(i) for i in range(self.reprojectModeCombo.count())]:
+        _default_mode = _settings.value("mosaic/reproject_mode", "Fast — SIP-aware (Exact Remap)")
+        valid_modes = [self.reprojectModeCombo.itemText(i) for i in range(self.reprojectModeCombo.count())]
+        if _default_mode not in valid_modes:
             _default_mode = "Fast — SIP-aware (Exact Remap)"
         self.reprojectModeCombo.setCurrentText(_default_mode)
         self.reprojectModeCombo.currentTextChanged.connect(
             lambda t: QSettings("SetiAstro", "SASpro").setValue("mosaic/reproject_mode", t)
         )
 
-        # Add to layout where the old checkbox lived
         row = QHBoxLayout()
         row.addWidget(self.reprojectModeLabel)
         row.addWidget(self.reprojectModeCombo, 1)
         layout.addLayout(row)
 
-
+        # Transform selection
         self.transform_combo = QComboBox()
         self.transform_combo.addItems([
             "Partial Affine Transform",
@@ -4745,11 +4784,14 @@ class MosaicMasterDialog(QDialog):
             "Homography Transform",
             "Polynomial Warp Based Transform"
         ])
-        # Set the default selection to "Affine Transform" (index 1)
         self.transform_combo.setCurrentIndex(1)
         layout.addWidget(QLabel("Select Transformation Method:"))
         layout.addWidget(self.transform_combo)
 
+        # Now that transform_combo exists, apply WCS-only UI state
+        _sync_wcs_only_ui()
+
+        # List + status + spinner
         self.images_list = QListWidget()
         self.images_list.setSelectionMode(self.images_list.SelectionMode.SingleSelection)
         layout.addWidget(self.images_list)
@@ -4759,34 +4801,14 @@ class MosaicMasterDialog(QDialog):
 
         self.spinnerLabel = QLabel(self)
         self.spinnerLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.spinnerMovie = QMovie(self.spinner_path)
-        self.spinnerLabel.setMovie(self.spinnerMovie)
-        self.spinnerLabel.hide() 
+        self.spinnerMovie = QMovie(self.spinner_path) if self.spinner_path else None
+        if self.spinnerMovie:
+            self.spinnerLabel.setMovie(self.spinnerMovie)
+        self.spinnerLabel.hide()
         layout.addWidget(self.spinnerLabel)
-        # Optional UX: if WCS-only is enabled, the transform selection is irrelevant
-        def _sync_wcs_only_ui():
-            wcs_only = self.wcsOnlyCheckBox.isChecked()
-
-            # transform_combo is created later in initUI, so guard it
-            if hasattr(self, "transform_combo"):
-                self.transform_combo.setEnabled(not wcs_only)
-                self.transform_combo.setToolTip("" if not wcs_only else "Disabled because WCS-only placement is enabled.")
-
-        self.wcsOnlyCheckBox.stateChanged.connect(lambda _: _sync_wcs_only_ui())
-        _sync_wcs_only_ui()
-
-        # Optional: make Seestar and WCS-only mutually exclusive (recommended)
-        def _sync_mode_exclusive():
-            if self.seestarCheckBox.isChecked() and self.wcsOnlyCheckBox.isChecked():
-                # Prefer Seestar behavior or prefer WCS-only; I recommend auto-disabling WCS-only when Seestar is checked.
-                self.wcsOnlyCheckBox.blockSignals(True)
-                self.wcsOnlyCheckBox.setChecked(False)
-                self.wcsOnlyCheckBox.blockSignals(False)
-                _sync_wcs_only_ui()
-
-        self.seestarCheckBox.stateChanged.connect(lambda _: _sync_mode_exclusive())
 
         self.setLayout(layout)
+
 
     def _target_median_from_first(self, items):
         # Pick a stable target (median of first image after safe clipping)
