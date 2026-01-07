@@ -3081,7 +3081,6 @@ class ImageSubWindow(QWidget):
         yi = int(round(py / s))
         return xi, yi
 
-
     def _finish_preview_rect(self, vp_rect: QRect):
         if vp_rect.width() < 4 or vp_rect.height() < 4:
             self._cancel_rubber()
@@ -3186,8 +3185,6 @@ class ImageSubWindow(QWidget):
             return
 
         super().mousePressEvent(e)
-
-
 
     def _show_readout(self, xi, yi, sample):
         mw = self._find_main_window()

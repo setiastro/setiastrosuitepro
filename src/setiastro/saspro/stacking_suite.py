@@ -5583,6 +5583,20 @@ class StackingSuiteDialog(QDialog):
 
         left_col.addWidget(gb_general)
 
+        self.temp_group_step_spin = QDoubleSpinBox()
+        self.temp_group_step_spin.setRange(0.0, 20.0)          # 0 disables grouping-by-temp (optional behavior)
+        self.temp_group_step_spin.setDecimals(2)
+        self.temp_group_step_spin.setSingleStep(0.1)
+        self.temp_group_step_spin.setValue(
+            self.settings.value("stacking/temp_group_step", 1.0, type=float)
+        )
+        self.temp_group_step_spin.setToolTip(
+            self.tr("Temperature grouping tolerance in °C.\n"
+                    "Frames within ±step are grouped together.\n"
+                    "Set 0 to disable temperature-based grouping.")
+        )
+        fl_general.addRow(self.tr("Temp grouping step (°C):"), self.temp_group_step_spin)
+
         # --- Distortion / Transform model ---
         # --- Distortion / Transform model ---
         disto_box  = QGroupBox(self.tr("Distortion / Transform"))
@@ -6360,7 +6374,8 @@ class StackingSuiteDialog(QDialog):
         self.settings.setValue("stacking/chunk_width", self.chunk_width)
         self.settings.setValue("stacking/autocrop_enabled", self.autocrop_cb.isChecked())
         self.settings.setValue("stacking/autocrop_pct", float(self.autocrop_pct.value()))
-
+        self.temp_group_step = float(self.temp_group_step_spin.value())
+        self.settings.setValue("stacking/temp_group_step", self.temp_group_step)
         # ----- alignment model (affine | homography | poly3 | poly4) -----
         model_idx = self.align_model_combo.currentIndex()
         if   model_idx == 0: model_name = "affine"
@@ -10828,7 +10843,8 @@ class StackingSuiteDialog(QDialog):
                 set_t = _get_key_float(header, "SET-TEMP")
                 chosen_t = ccd_t if ccd_t is not None else set_t
 
-                temp_step = self.settings.value("stacking/temp_group_step", 1.0, type=float)
+                temp_step = float(self.settings.value("stacking/temp_group_step", 1.0, type=float) or 1.0)
+                temp_step = max(0.0, temp_step)
                 temp_bucket = self._bucket_temp(chosen_t, step=temp_step)
                 temp_label = self._temp_label(temp_bucket, step=temp_step)
 
@@ -11057,7 +11073,8 @@ class StackingSuiteDialog(QDialog):
         # Group darks by (exposure +/- tolerance, image size, session, temp_bucket)
         # TEMP_STEP is the rounding bucket (1.0C default)
         # -------------------------------------------------------------------------
-        TEMP_STEP = self.settings.value("stacking/temp_group_step", 1.0, type=float)
+        TEMP_STEP = float(self.settings.value("stacking/temp_group_step", 1.0, type=float) or 1.0)
+        TEMP_STEP = max(0.0, TEMP_STEP)
 
         dark_files_by_group: dict[tuple[float, str, str, float | None], list[str]] = {}  # (exp,size,session,temp)->list
 
