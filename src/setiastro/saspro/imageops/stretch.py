@@ -504,6 +504,7 @@ def stretch_color_image(image: np.ndarray,
                         hdr_knee: float = 0.75,
                         luma_only: bool = False,
                         luma_mode: str = "rec709",
+                        luma_blend: float = 1.0, 
                         high_range: bool = False,
                         highrange_pedestal: float = 0.001,
                         highrange_soft_ceil_pct: float = 99.0,
@@ -536,61 +537,38 @@ def stretch_color_image(image: np.ndarray,
 
     sig = float(blackpoint_sigma)
 
-    # ----- LUMA ONLY PATH -----
+    # ----- LUMA ONLY PATH (now with optional blending) -----
     if luma_only:
-        resolved_method, w, _profile_name = resolve_luma_profile_weights(luma_mode)
+        b = float(np.clip(luma_blend, 0.0, 1.0))
 
-        # For snr mode, compute_luminance may require noise_sigma; your module supports that,
-        # but for stretch we can keep it simple: treat snr as normal rec709 unless you want
-        # to plumb sigma estimation here too.
-        # If you DO want snr weights, we can reuse _estimate_noise_sigma_per_channel.
-        ns = None
-        if resolved_method == "snr":
-            ns = _estimate_noise_sigma_per_channel(img)  # expects ~[0..1] float
-        L = compute_luminance(img, method=resolved_method, weights=w, noise_sigma=ns)
+        # --- A) Normal linked RGB stretch (same settings, but NOT luma-only) ---
+        # Force linked=True here (matches "normal linked stretch" expectation)
+        # We compute this first so b=0 is fast-ish if you later optimize.
+        if no_black_clip:
+            bp = float(img.min())
+            med_img = float(np.median(img))
+        else:
+            bp, med_img = _compute_blackpoint_sigma(img, sig)
 
-        Ls = stretch_mono_image(
-            L,
-            target_median,
-            normalize=False,
-            apply_curves=apply_curves,
-            curves_boost=curves_boost,
-            blackpoint_sigma=sig,
-            hdr_compress=False,
-            hdr_amount=0.0,
-            hdr_knee=hdr_knee,
-            high_range=False,  # do high_range after recombine
-        )
+        denom = max(1.0 - bp, 1e-12)
+        med_rescaled = (med_img - bp) / denom
+
+        linked_out = numba_color_linked_from_img(img, bp, denom, float(med_rescaled), float(target_median))
+
+        if apply_curves:
+            linked_out = apply_curves_adjustment(linked_out, float(target_median), float(curves_boost))
 
         if hdr_compress and hdr_amount > 0.0:
-            Ls = hdr_compress_highlights(Ls, float(hdr_amount), knee=float(hdr_knee))
-
-        # Choose actual RGB weights for recombine
-        if w is not None and np.asarray(w).size == 3:
-            rw = np.asarray(w, dtype=np.float32)
-            s = float(rw.sum())
-            if s > 0:
-                rw = rw / s
-        else:
-            # If resolver returns None for standard modes, fall back
-            if resolved_method == "rec601":
-                rw = np.array([0.2990, 0.5870, 0.1140], dtype=np.float32)
-            elif resolved_method == "rec2020":
-                rw = np.array([0.2627, 0.6780, 0.0593], dtype=np.float32)
-            else:
-                rw = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
-
-        out = recombine_luminance_linear_scale(
-            img,
-            Ls,
-            weights=rw,
-            blend=1.0,
-            highlight_soft_knee=0.0,  # separate from HDR; keep 0 unless you want extra protection
-        )
+            linked_out = hdr_compress_color_luminance(
+                linked_out,
+                amount=float(hdr_amount),
+                knee=float(hdr_knee),
+                luma_mode="rec709",
+            )
 
         if high_range:
-            out = _high_range_rescale_and_softclip(
-                out,
+            linked_out = _high_range_rescale_and_softclip(
+                linked_out,
                 target_bg=float(target_median),
                 pedestal=float(highrange_pedestal),
                 soft_ceil_pct=float(highrange_soft_ceil_pct),
@@ -601,10 +579,83 @@ def stretch_color_image(image: np.ndarray,
             )
 
         if normalize:
-            mx = float(out.max())
+            mx = float(linked_out.max())
             if mx > 0:
-                out = out / mx
+                linked_out = linked_out / mx
 
+        linked_out = np.clip(linked_out, 0.0, 1.0).astype(np.float32, copy=False)
+
+        # Short-circuit if blend is 0 (pure linked)
+        if b <= 0.0:
+            return linked_out
+
+        # --- B) Your existing luma-only recombine stretch ---
+        resolved_method, w, _profile_name = resolve_luma_profile_weights(luma_mode)
+
+        ns = None
+        if resolved_method == "snr":
+            ns = _estimate_noise_sigma_per_channel(img)
+        L = compute_luminance(img, method=resolved_method, weights=w, noise_sigma=ns)
+
+        Ls = stretch_mono_image(
+            L,
+            target_median,
+            normalize=False,
+            apply_curves=apply_curves,
+            curves_boost=curves_boost,
+            blackpoint_sigma=sig,
+            no_black_clip=no_black_clip,
+            hdr_compress=False,
+            hdr_amount=0.0,
+            hdr_knee=hdr_knee,
+            high_range=False,
+        )
+
+        if hdr_compress and hdr_amount > 0.0:
+            Ls = hdr_compress_highlights(Ls, float(hdr_amount), knee=float(hdr_knee))
+
+        if w is not None and np.asarray(w).size == 3:
+            rw = np.asarray(w, dtype=np.float32)
+            s = float(rw.sum())
+            if s > 0:
+                rw = rw / s
+        else:
+            if resolved_method == "rec601":
+                rw = np.array([0.2990, 0.5870, 0.1140], dtype=np.float32)
+            elif resolved_method == "rec2020":
+                rw = np.array([0.2627, 0.6780, 0.0593], dtype=np.float32)
+            else:
+                rw = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+
+        luma_out = recombine_luminance_linear_scale(
+            img,
+            Ls,
+            weights=rw,
+            blend=1.0,
+            highlight_soft_knee=0.0,
+        )
+
+        if high_range:
+            luma_out = _high_range_rescale_and_softclip(
+                luma_out,
+                target_bg=float(target_median),
+                pedestal=float(highrange_pedestal),
+                soft_ceil_pct=float(highrange_soft_ceil_pct),
+                hard_ceil_pct=float(highrange_hard_ceil_pct),
+                floor_sigma=float(blackpoint_sigma),
+                softclip_threshold=float(highrange_softclip_threshold),
+                softclip_rolloff=float(highrange_softclip_rolloff),
+            )
+
+        if normalize:
+            mx = float(luma_out.max())
+            if mx > 0:
+                luma_out = luma_out / mx
+
+        luma_out = np.clip(luma_out, 0.0, 1.0).astype(np.float32, copy=False)
+
+        # --- Final blend: exactly “blend two separate stretched images” ---
+        out = (1.0 - b) * linked_out + b * luma_out
         return np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
 
     # ----- NORMAL RGB PATH -----

@@ -1935,6 +1935,7 @@ class _StatStretchPresetDialog(QDialog):
       hdr_knee: float                # 0..1
       luma_only: bool
       luma_mode: str                 # e.g. "rec709"
+      luma_blend: float              #0..1 (0=normal linked, 1=pure luma-only)
     """
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
@@ -2013,8 +2014,19 @@ class _StatStretchPresetDialog(QDialog):
         if idx >= 0:
             self.cmb_luma.setCurrentIndex(idx)
 
-        self.cmb_luma.setEnabled(self.chk_luma_only.isChecked())
-        self.chk_luma_only.toggled.connect(self.cmb_luma.setEnabled)
+        self.spin_luma_blend = QDoubleSpinBox()
+        self.spin_luma_blend.setRange(0.0, 1.0)
+        self.spin_luma_blend.setDecimals(2)
+        self.spin_luma_blend.setSingleStep(0.05)
+        self.spin_luma_blend.setValue(float(init.get("luma_blend", 0.70)))
+
+        def _set_luma_enabled(on: bool):
+            on = bool(on)
+            self.cmb_luma.setEnabled(on)
+            self.spin_luma_blend.setEnabled(on)
+
+        _set_luma_enabled(self.chk_luma_only.isChecked())
+        self.chk_luma_only.toggled.connect(_set_luma_enabled)
 
         # --- Layout ---
         form = QFormLayout()
@@ -2038,7 +2050,7 @@ class _StatStretchPresetDialog(QDialog):
         form.addRow("", QLabel("— Luma mode —"))
         form.addRow("", self.chk_luma_only)
         form.addRow("Luma mode:", self.cmb_luma)
-
+        form.addRow("Luma blend (0–1):", self.spin_luma_blend)
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
             parent=self
@@ -2071,6 +2083,7 @@ class _StatStretchPresetDialog(QDialog):
 
             "luma_only": luma_on,
             "luma_mode": str(self.cmb_luma.currentText()) if luma_on else "rec709",
+            "luma_blend": float(self.spin_luma_blend.value()) if luma_on else 0.0,
         }
 
 class _StarStretchPresetDialog(QDialog):
