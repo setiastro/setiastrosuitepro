@@ -590,6 +590,7 @@ class ImageSubWindow(QWidget):
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_ctx_menu)
         QShortcut(QKeySequence("F2"), self, activated=self._rename_view)
+        QShortcut(QKeySequence("F3"), self, activated=self._rename_document)
         #QShortcut(QKeySequence("A"), self, activated=self.toggle_autostretch)
         QShortcut(QKeySequence("Ctrl+Space"), self, activated=self.toggle_autostretch)
         QShortcut(QKeySequence("Alt+Shift+A"), self, activated=self.toggle_autostretch)
@@ -1726,7 +1727,7 @@ class ImageSubWindow(QWidget):
     def _show_ctx_menu(self, pos):
         menu = QMenu(self)
         a_view = menu.addAction(self.tr("Rename View… (F2)"))
-        a_doc  = menu.addAction(self.tr("Rename Document…"))
+        a_doc  = menu.addAction(self.tr("Rename Document…  (F3)"))
         menu.addSeparator()
         a_min  = menu.addAction(self.tr("Send to Shelf"))
         a_clear = menu.addAction(self.tr("Clear View Name (use doc name)"))
