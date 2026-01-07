@@ -243,6 +243,32 @@ class StatisticalStretchDialog(QDialog):
         lr.addWidget(QLabel(self.tr("Mode:")))
         lr.addWidget(self.cmb_luma, 1)
 
+        # --- Luma blend row (only meaningful when Luma-only is enabled) ---
+        self.luma_blend_row = QWidget()
+        lbr = QHBoxLayout(self.luma_blend_row)
+        lbr.setContentsMargins(0, 0, 0, 0)
+        lbr.setSpacing(8)
+
+        lbr.addWidget(QLabel(self.tr("Luma blend:")))
+
+        self.sld_luma_blend = QSlider(Qt.Orientation.Horizontal)
+        self.sld_luma_blend.setRange(0, 100)   # 0=normal linked, 100=luma-only
+        self.sld_luma_blend.setValue(60)       # nice default: “mostly luma” but tame
+        lbr.addWidget(self.sld_luma_blend, 1)
+
+        self.lbl_luma_blend = QLabel(f"{self.sld_luma_blend.value()/100:.2f}")
+        lbr.addWidget(self.lbl_luma_blend)
+
+        tip = self.tr(
+            "Blend between a normal linked RGB stretch (0.00) and a luminance-only stretch (1.00).\n"
+            "Use this to tame the saturation punch of luma-only."
+        )
+        self.luma_blend_row.setToolTip(tip)
+        self.sld_luma_blend.setToolTip(tip)
+        self.lbl_luma_blend.setToolTip(tip)
+
+        self.luma_blend_row.setEnabled(False)
+
         # --- Curves boost ---
         self.chk_curves = QCheckBox(self.tr("Curves boost"))
         self.chk_curves.setChecked(False)
@@ -315,6 +341,7 @@ class StatisticalStretchDialog(QDialog):
         form.addRow("", self.chk_hdr)
         form.addRow("", self.hdr_row)
         form.addRow("", self.luma_row)
+        form.addRow("", self.luma_blend_row)
         form.addRow("", self.chk_normalize)
         form.addRow("", self.chk_curves)
         form.addRow("", self.curves_row)
@@ -410,6 +437,15 @@ class StatisticalStretchDialog(QDialog):
 
         # Initialize UI state
         _suggest_hdr_knee_from_target()
+        self.sld_luma_blend.valueChanged.connect(
+            lambda v: self.lbl_luma_blend.setText(f"{v/100:.2f}")
+        )
+
+        def _on_luma_only_toggled(on: bool):
+            self.chk_linked.setEnabled(not on)
+            self.luma_blend_row.setEnabled(on)
+
+        self.chk_luma_only.toggled.connect(_on_luma_only_toggled)
         _on_luma_only_toggled(self.chk_luma_only.isChecked())
 
         # Initial preview + clip stats
@@ -761,6 +797,7 @@ class StatisticalStretchDialog(QDialog):
         luma_only = bool(getattr(self, "chk_luma_only", None) and self.chk_luma_only.isChecked())
         luma_mode = str(self.cmb_luma.currentText()) if getattr(self, "cmb_luma", None) else "rec709"
         no_black_clip = bool(self.chk_no_black_clip.isChecked())
+        luma_blend = float(self.sld_luma_blend.value()) / 100.0 if getattr(self, "sld_luma_blend", None) else 1.0
 
         target = float(self.spin_target.value())
         linked = bool(self.chk_linked.isChecked())
@@ -796,6 +833,7 @@ class StatisticalStretchDialog(QDialog):
                 hdr_knee=hdr_knee,
                 luma_only=luma_only,
                 luma_mode=luma_mode,
+                luma_blend=luma_blend,   # <-- NEW
             )
 
         # ✅ If a mask is active, blend stretched result with original
@@ -895,6 +933,7 @@ class StatisticalStretchDialog(QDialog):
         luma_only = bool(getattr(self, "chk_luma_only", None) and self.chk_luma_only.isChecked())
         luma_mode = str(self.cmb_luma.currentText()) if getattr(self, "cmb_luma", None) else "rec709"
         no_black_clip = bool(self.chk_no_black_clip.isChecked())
+        luma_blend = float(self.sld_luma_blend.value()) / 100.0 if getattr(self, "sld_luma_blend", None) else 1.0
 
         parts = [f"target={target:.2f}", "linked" if linked else "unlinked"]
         if normalize:
@@ -908,6 +947,7 @@ class StatisticalStretchDialog(QDialog):
             parts.append(f"hdr={hdr_amount:.2f}@{hdr_knee:.2f}")
         if luma_only:
             parts.append(f"luma={luma_mode}")
+            parts.append(f"blend={luma_blend:.2f}")
         if no_black_clip:
             parts.append("no_black_clip")
 
@@ -952,6 +992,7 @@ class StatisticalStretchDialog(QDialog):
                 "hdr_knee": hdr_knee,
                 "luma_only": luma_only,
                 "luma_mode": luma_mode,
+                "luma_blend": luma_blend,
             }
 
             # ✅ Remember this as the last headless-style command

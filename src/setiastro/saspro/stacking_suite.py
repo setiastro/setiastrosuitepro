@@ -1715,11 +1715,20 @@ class _MMFits:
             raise ValueError(f"Unsupported ndim={self.ndim} for {path}")
 
     def _apply_fixed_fits_scale(self, arr: np.ndarray) -> np.ndarray:
+        """
+        Map 8/16-bit FITS integer samples to [0,1] using a fixed divisor.
+        IMPORTANT: Only do this for integer dtypes. If Astropy already returned
+        float (e.g. BSCALE/BZERO applied), do NOT divide again.
+        """
+        # Only scale raw integer pixel arrays
+        if arr.dtype.kind not in ("u", "i"):
+            return arr
+
         bitpix = getattr(self, "_bitpix", 0)
         if bitpix == 8:
-            arr /= 255.0
+            return arr / 255.0
         elif bitpix == 16:
-            arr /= 65535.0
+            return arr / 65535.0
         return arr
 
     def read_tile(self, y0, y1, x0, x1) -> np.ndarray:
@@ -1847,9 +1856,9 @@ class ReferenceFrameReviewDialog(QDialog):
         self.initUI()
         self.loadImageArray()  # Load the image into self.original_image
         if self.original_image is not None:
-            self.updatePreview(self.original_image)  # Ensure the first image is shown
-        if self.original_image is not None:
-            QTimer.singleShot(0, self.zoomIn)            
+            QTimer.singleShot(0, lambda: self.updatePreview(self.original_image, fit=True))
+        #if self.original_image is not None:
+        #    QTimer.singleShot(0, self.zoomIn)            
 
 
     def initUI(self):
@@ -1907,6 +1916,89 @@ class ReferenceFrameReviewDialog(QDialog):
         self.setLayout(main_layout)
         self.zoomIn()
     
+    def _ensure_hwc(self, x: np.ndarray) -> np.ndarray:
+        """Ensure HWC for RGB, HW for mono."""
+        if x is None:
+            return None
+        x = np.asarray(x)
+        # CHW -> HWC
+        if x.ndim == 3 and x.shape[0] == 3 and x.shape[-1] != 3:
+            x = np.transpose(x, (1, 2, 0))
+        # squeeze HWC with singleton
+        if x.ndim == 3 and x.shape[-1] == 1:
+            x = np.squeeze(x, axis=-1)
+        return x
+
+
+    def _robust_preview_stretch(self, img: np.ndarray,
+                            lo_pct: float = 0.25,
+                            hi_pct: float = 99.75,
+                            gamma: float = 0.65) -> np.ndarray:
+        """
+        Robust preview stretch:
+        - nan/inf safe
+        - pedestal remove per channel (img - min)
+        - percentile clip to kill outliers
+        - scale to 0..1
+        - gentle gamma (default <1 brightens)
+        Returns float32 in [0,1] and preserves mono vs RGB.
+        """
+        x = self._ensure_hwc(img)
+        if x is None:
+            return None
+
+        x = np.asarray(x, dtype=np.float32)
+        x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # Mono
+        if x.ndim == 2:
+            x = x - float(x.min())
+            # percentile clip on non-flat data
+            p_lo = float(np.percentile(x, lo_pct))
+            p_hi = float(np.percentile(x, hi_pct))
+            if p_hi > p_lo:
+                x = np.clip(x, p_lo, p_hi)
+                x = (x - p_lo) / (p_hi - p_lo)
+            else:
+                mx = float(x.max())
+                if mx > 0:
+                    x = x / mx
+            if gamma is not None and gamma > 0:
+                x = np.power(np.clip(x, 0.0, 1.0), gamma)
+            return np.clip(x, 0.0, 1.0).astype(np.float32, copy=False)
+
+        # RGB (HWC)
+        if x.ndim == 3 and x.shape[2] == 3:
+            out = np.empty_like(x, dtype=np.float32)
+            for c in range(3):
+                ch = x[..., c]
+                ch = ch - float(ch.min())
+                p_lo = float(np.percentile(ch, lo_pct))
+                p_hi = float(np.percentile(ch, hi_pct))
+                if p_hi > p_lo:
+                    ch = np.clip(ch, p_lo, p_hi)
+                    ch = (ch - p_lo) / (p_hi - p_lo)
+                else:
+                    mx = float(ch.max())
+                    if mx > 0:
+                        ch = ch / mx
+                out[..., c] = ch
+
+            if gamma is not None and gamma > 0:
+                out = np.power(np.clip(out, 0.0, 1.0), gamma)
+
+            return np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
+
+        # Fallback: treat as scalar field
+        x = x - float(x.min())
+        mx = float(x.max())
+        if mx > 0:
+            x = x / mx
+        if gamma is not None and gamma > 0:
+            x = np.power(np.clip(x, 0.0, 1.0), gamma)
+        return np.clip(x, 0.0, 1.0).astype(np.float32, copy=False)
+
+
     def fitToPreview(self):
         """Calculate and set the zoom factor so that the image fills the preview area."""
         if self.original_image is None:
@@ -1933,32 +2025,46 @@ class ReferenceFrameReviewDialog(QDialog):
 
     def _normalize_preview_01(self, img: np.ndarray) -> np.ndarray:
         """
-        Normalize image to [0,1] for preview/stretch:
-
-        1. Handle NaNs/inf safely.
-        2. If min < 0 or max > 1, do (img - min) / (max - min).
-        3. Always return float32 in [0,1].
+        Always normalize to [0,1]:
+        img = img - min(img)
+        img = img / max(img)
+        Per-channel if RGB, global if mono.
         """
         if img is None:
             return None
 
-        img = np.asarray(img, dtype=np.float32)
-        img = np.nan_to_num(img, nan=0.0, posinf=0.0, neginf=0.0)
+        x = np.asarray(img, dtype=np.float32)
+        x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
 
-        finite = np.isfinite(img)
-        if not finite.any():
-            return np.zeros_like(img, dtype=np.float32)
+        if x.ndim == 2:
+            mn = float(x.min())
+            x = x - mn
+            mx = float(x.max())
+            if mx > 0:
+                x = x / mx
+            return np.clip(x, 0.0, 1.0).astype(np.float32, copy=False)
 
-        mn = float(img[finite].min())
-        mx = float(img[finite].max())
-        if mx == mn:
-            # flat frame → just zero it
-            return np.zeros_like(img, dtype=np.float32)
+        if x.ndim == 3 and x.shape[2] == 3:
+            # per-channel pedestal remove + normalize
+            out = x.copy()
+            for c in range(3):
+                ch = out[..., c]
+                mn = float(ch.min())
+                ch = ch - mn
+                mx = float(ch.max())
+                if mx > 0:
+                    ch = ch / mx
+                out[..., c] = ch
+            return np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
 
-        if mn < 0.0 or mx > 1.0:
-            img = (img - mn) / (mx - mn)
+        # fallback
+        mn = float(x.min())
+        x = x - mn
+        mx = float(x.max())
+        if mx > 0:
+            x = x / mx
+        return np.clip(x, 0.0, 1.0).astype(np.float32, copy=False)
 
-        return np.clip(img, 0.0, 1.0)
 
 
     def loadImageArray(self):
@@ -1981,22 +2087,44 @@ class ReferenceFrameReviewDialog(QDialog):
 
         self.original_image = img
 
+    def _fit_zoom_to_viewport(self, image: np.ndarray):
+        """Set zoom_factor so image fits inside the scrollArea viewport."""
+        if image is None:
+            return
+
+        img = self._ensure_hwc(image)
+
+        if img.ndim == 2:
+            h, w = img.shape
+        elif img.ndim == 3 and img.shape[2] == 3:
+            h, w = img.shape[:2]
+        else:
+            return
+
+        vp = self.scrollArea.viewport().size()
+        if vp.width() <= 0 or vp.height() <= 0 or w <= 0 or h <= 0:
+            return
+
+        # Fit-to-viewport zoom
+        self.zoom_factor = min(vp.width() / w, vp.height() / h)
     
-    def updatePreview(self, image):
-        """
-        Convert a given image array to a QPixmap and update the preview label.
-        """
+    def updatePreview(self, image, *, fit: bool = False):
         self.current_preview_image = image
+
+        if fit:
+            self._fit_zoom_to_viewport(image)
+
         pixmap = self.convertArrayToPixmap(image)
         if pixmap is None or pixmap.isNull():
             self.previewLabel.setText(self.tr("Unable to load preview."))
-        else:
-            available_size = self.scrollArea.viewport().size()
-            new_size = QSize(int(available_size.width() * self.zoom_factor),
-                             int(available_size.height() * self.zoom_factor))
-            scaled_pixmap = pixmap.scaled(new_size, Qt.AspectRatioMode.KeepAspectRatio,
-                                          Qt.TransformationMode.SmoothTransformation)
-            self.previewLabel.setPixmap(scaled_pixmap)
+            return
+
+        scaled = pixmap.scaled(
+            pixmap.size() * self.zoom_factor,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
+        )
+        self.previewLabel.setPixmap(scaled)
     
     def _preview_boost(self, img: np.ndarray) -> np.ndarray:
         """Robust, very gentle stretch for display when image would quantize to black."""
@@ -2014,62 +2142,48 @@ class ReferenceFrameReviewDialog(QDialog):
         if image is None:
             return None
 
-        img = image.astype(np.float32, copy=False)
-
-        # If image is so dim or flat that 8-bit will zero-out, boost for preview
-        ptp = float(img.max() - img.min())
-        needs_boost = (float(img.max()) <= (1.0 / 255.0)) or (ptp < 1e-6) or (not np.isfinite(img).all())
-        if needs_boost:
-            img = self._preview_boost(np.nan_to_num(img, nan=0.0, posinf=0.0, neginf=0.0))
+        # ALWAYS normalize to [0,1]
+        img = self._normalize_preview_01(image)
 
         # Convert to 8-bit for QImage
         display_image = (img * 255.0).clip(0, 255).astype(np.uint8)
 
+        # IMPORTANT: ensure contiguous memory
+        display_image = np.ascontiguousarray(display_image)
+
+        # Keep a reference so Qt's QImage always has valid backing memory
+        self._last_preview_u8 = display_image
+
         if display_image.ndim == 2:
             h, w = display_image.shape
-            q_image = QImage(display_image.data, w, h, w, QImage.Format.Format_Grayscale8)
+            q_image = QImage(self._last_preview_u8.data, w, h, w, QImage.Format.Format_Grayscale8)
+            q_image = q_image.copy()  # detach from numpy buffer (extra safety)
         elif display_image.ndim == 3 and display_image.shape[2] == 3:
             h, w, _ = display_image.shape
-            q_image = QImage(display_image.data, w, h, 3 * w, QImage.Format.Format_RGB888)
+            q_image = QImage(self._last_preview_u8.data, w, h, 3 * w, QImage.Format.Format_RGB888)
+            q_image = q_image.copy()  # detach
         else:
             return None
+
         return QPixmap.fromImage(q_image)
-    
+
     def toggleAutostretch(self):
         if self.original_image is None:
             QMessageBox.warning(self, self.tr("Error"), self.tr("Reference image not loaded."))
             return
 
-        # 🔹 Ensure the image we feed to Statistical Stretch is in [0,1]
-        base = self._normalize_preview_01(self.original_image)
-
         self.autostretch_enabled = not self.autostretch_enabled
+
         if self.autostretch_enabled:
-            if base.ndim == 2:
-                new_image = stretch_mono_image(
-                    base,
-                    target_median=0.3,
-                    normalize=True,
-                    apply_curves=False
-                )
-            elif base.ndim == 3 and base.shape[2] == 3:
-                new_image = stretch_color_image(
-                    base,
-                    target_median=0.3,
-                    linked=False,
-                    normalize=True,
-                    apply_curves=False
-                )
-            else:
-                new_image = base
+            new_image = self._robust_preview_stretch(self.original_image)
             self.toggleAutoStretchButton.setText(self.tr("Disable Autostretch"))
         else:
-            new_image = base
+            new_image = self._normalize_preview_01(self.original_image)
             self.toggleAutoStretchButton.setText(self.tr("Enable Autostretch"))
 
-        self.updatePreview(new_image)
+        self.updatePreview(new_image, fit=True)
 
-    
+        
     def zoomIn(self):
         self.zoom_factor *= 1.2
         if self.current_preview_image is not None:
@@ -3532,7 +3646,8 @@ class _MMImage:
         self._orig_dtype = None
         self._color_axis = None
         self._spat_axes = (0, 1)
-
+        self._dbg = bool(os.environ.get("SASPRO_MMIMAGE_DEBUG", "0") == "1")
+        self._dbg_count = 0
         self._xisf = None
         self._xisf_memmap = None   # np.memmap when possible
         self._xisf_arr = None      # decompressed ndarray when needed
@@ -3553,6 +3668,11 @@ class _MMImage:
             # let FITS try anyway so you get a useful error text
             self._open_fits(path)
             self._kind = "fits"
+
+    def _dbg_log(self, msg: str):
+        if not getattr(self, "_dbg", False):
+            return
+        print(msg)  # or your logger
 
     # ---------------- FITS ----------------
     def _open_fits(self, path: str):
@@ -3659,17 +3779,27 @@ class _MMImage:
     # ---------------- common API ----------------
     def _apply_fixed_fits_scale(self, arr: np.ndarray) -> np.ndarray:
         """
-        Map 8/16-bit FITS (already BZERO/BSCALE-scaled by Astropy) to [0,1]
-        using a fixed divisor. No per-frame img/max(img) normalization.
+        Map 8/16-bit FITS integer samples to [0,1] using a fixed divisor.
+        IMPORTANT: Only do this for integer dtypes. If Astropy already returned
+        float (e.g. BSCALE/BZERO applied), do NOT divide again.
         """
+        # Only scale raw integer pixel arrays
+        if arr.dtype.kind not in ("u", "i"):
+            return arr
+
         bitpix = getattr(self, "_bitpix", 0)
         if bitpix == 8:
-            arr /= 255.0
+            return arr / 255.0
         elif bitpix == 16:
-            arr /= 65535.0
+            return arr / 65535.0
         return arr
 
+
     def read_tile(self, y0, y1, x0, x1) -> np.ndarray:
+        import os
+        import numpy as np
+
+        # ---- FITS / XISF tile read (unchanged) ----
         if self._kind == "fits":
             d = self._fits_data
             if self.ndim == 2:
@@ -3683,23 +3813,23 @@ class _MMImage:
                     tile = np.moveaxis(tile, self._color_axis, -1)
         else:
             if self._xisf_memmap is not None:
-                # memmapped (C,H,W) → slice, then move to (H,W,C)
                 C = 1 if self.ndim == 2 else self.shape[2]
                 if C == 1:
                     tile = self._xisf_memmap[0, y0:y1, x0:x1]
                 else:
-                    tile = np.moveaxis(
-                        self._xisf_memmap[:, y0:y1, x0:x1], 0, -1
-                    )
+                    tile = np.moveaxis(self._xisf_memmap[:, y0:y1, x0:x1], 0, -1)
             else:
                 tile = self._xisf_arr[y0:y1, x0:x1]
 
-        # Cast to float32
+        # Cast to float32 copy (what you actually feed the stacker)
         out = np.array(tile, dtype=np.float32, copy=True, order="C")
 
-        # For FITS, apply fixed 8/16-bit normalization
+
+        # ---- APPLY FIXED SCALE (your real suspect) ----
         if self._kind == "fits":
-            out = self._apply_fixed_fits_scale(out)
+            out2 = self._apply_fixed_fits_scale(out)
+
+            out = out2
 
         # ensure (h,w,3) or (h,w)
         if out.ndim == 3 and out.shape[-1] not in (1, 3):
@@ -3707,6 +3837,7 @@ class _MMImage:
                 out = np.moveaxis(out, 0, -1)
         if out.ndim == 3 and out.shape[-1] == 1:
             out = np.squeeze(out, axis=-1)
+
         return out
 
     def read_full(self) -> np.ndarray:
