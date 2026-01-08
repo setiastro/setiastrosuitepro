@@ -13,7 +13,7 @@ IS_APPLE_ARM = (sys.platform == "darwin" and platform.machine() == "arm64")
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QStandardPaths, QSettings
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFileDialog,
-    QComboBox, QSpinBox, QProgressBar, QMessageBox, QCheckBox, QLineEdit
+    QComboBox, QSpinBox, QProgressBar, QMessageBox, QCheckBox, QLineEdit, QApplication
 )
 from PyQt6.QtGui import QIcon
 from setiastro.saspro.config import Config
@@ -145,10 +145,13 @@ def _restore_output(arr: np.ndarray, channels_last: bool, was_uint16: bool, H: i
         arr = arr[0]                 # (H,W)
     return arr
 
-def run_onnx_tiled(session, img: np.ndarray, patch_size=512, overlap=64, progress_cb=None) -> np.ndarray:
+def run_onnx_tiled(session, img: np.ndarray, patch_size=512, overlap=64,
+                  progress_cb=None, cancel_cb=None) -> np.ndarray:
     """
     session: onnxruntime.InferenceSession
     img: mono (H,W) or RGB (H,W,3) numpy array
+
+    cancel_cb: callable -> bool, return True to cancel
     """
     arr, channels_last, was_uint16 = _prepare_input(img)      # (C,H,W)
     arr, H0, W0 = _pad_C_HW(arr, patch_size)
@@ -168,11 +171,15 @@ def run_onnx_tiled(session, img: np.ndarray, patch_size=512, overlap=64, progres
     for c in range(C):
         for i in hs:
             for j in ws:
-                patch = arr[c:c+1, i:i+patch_size, j:j+patch_size]  # (1, P, P)
+                if cancel_cb and cancel_cb():
+                    raise RuntimeError("Canceled")
+
+                patch = arr[c:c+1, i:i+patch_size, j:j+patch_size]  # (1,P,P)
                 inp = np.ascontiguousarray(patch[np.newaxis, ...], dtype=np.float32)  # (1,1,P,P)
 
                 out_patch = session.run(None, {inp_name: inp})[0]   # (1,1,P,P)
                 out_patch = np.squeeze(out_patch, axis=0)           # (1,P,P)
+
                 out[c:c+1, i:i+patch_size, j:j+patch_size] += out_patch * win
                 wgt[c:c+1, i:i+patch_size, j:j+patch_size] += win
 
@@ -183,7 +190,6 @@ def run_onnx_tiled(session, img: np.ndarray, patch_size=512, overlap=64, progres
     wgt[wgt == 0] = 1.0
     arr = out / wgt
     return _restore_output(arr, channels_last, was_uint16, H0, W0)
-
 
 # ---------- providers ----------
 def pick_providers(auto_gpu=True) -> list[str]:
@@ -248,9 +254,10 @@ def _preserve_border(dst: np.ndarray, src: np.ndarray, px: int = 10) -> np.ndarr
 
 # ---------- worker ----------
 class _ONNXWorker(QThread):
-    progressed = pyqtSignal(int)         # 0..100
-    failed     = pyqtSignal(str)
-    finished_ok= pyqtSignal(np.ndarray)
+    progressed   = pyqtSignal(int)          # 0..100
+    failed       = pyqtSignal(str)
+    finished_ok  = pyqtSignal(np.ndarray)
+    canceled     = pyqtSignal()
 
     def __init__(self, model_path: str, image: np.ndarray, patch: int, overlap: int, providers: list[str]):
         super().__init__()
@@ -260,11 +267,26 @@ class _ONNXWorker(QThread):
         self.overlap = overlap
         self.providers = providers
         self.used_provider = None
+        self._cancel = False  # cooperative flag
+
+    def cancel(self):
+        # Safe to call from UI thread
+        self._cancel = True
+        self.requestInterruption()
+
+    def _is_canceled(self) -> bool:
+        return self._cancel or self.isInterruptionRequested()
 
     def run(self):
         if ort is None:
             self.failed.emit("onnxruntime is not installed.")
             return
+
+        # If canceled before start, exit cleanly
+        if self._is_canceled():
+            self.canceled.emit()
+            return
+
         try:
             sess = ort.InferenceSession(self.model_path, providers=self.providers)
             self.used_provider = (sess.get_providers()[0] if sess.get_providers() else None)
@@ -272,7 +294,7 @@ class _ONNXWorker(QThread):
             # fallback CPU if GPU fails
             try:
                 sess = ort.InferenceSession(self.model_path, providers=["CPUExecutionProvider"])
-                self.used_provider = "CPUExecutionProvider"  # NEW
+                self.used_provider = "CPUExecutionProvider"
             except Exception as e2:
                 self.failed.emit(f"Failed to init ONNX session:\n{e2}")
                 return
@@ -281,12 +303,28 @@ class _ONNXWorker(QThread):
             self.progressed.emit(int(frac * 100))
 
         try:
-            out = run_onnx_tiled(sess, self.image, self.patch, self.overlap, cb)
+            out = run_onnx_tiled(
+                sess,
+                self.image,
+                self.patch,
+                self.overlap,
+                progress_cb=cb,
+                cancel_cb=self._is_canceled,
+            )
         except Exception as e:
-            self.failed.emit(str(e)); return
+            # Normalize cancel
+            msg = str(e) or "Error"
+            if "Canceled" in msg:
+                self.canceled.emit()
+            else:
+                self.failed.emit(msg)
+            return
+
+        if self._is_canceled():
+            self.canceled.emit()
+            return
 
         self.finished_ok.emit(out)
-
 
 # ---------- dialog ----------
 class AberrationAIDialog(QDialog):

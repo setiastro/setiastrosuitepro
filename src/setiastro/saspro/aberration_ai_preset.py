@@ -4,7 +4,7 @@ import os
 import time
 import numpy as np
 from PyQt6.QtCore import QTimer
-from PyQt6.QtWidgets import QDialog, QVBoxLayout, QProgressBar, QPushButton, QMessageBox, QFormLayout, QDialogButtonBox, QSpinBox, QCheckBox, QComboBox, QLabel
+from PyQt6.QtWidgets import QDialog, QVBoxLayout, QProgressBar, QPushButton, QMessageBox, QFormLayout, QDialogButtonBox, QSpinBox, QCheckBox, QComboBox, QLabel, QApplication
 
 from PyQt6.QtCore import QSettings
 # reuse everything from the UI module
@@ -91,13 +91,29 @@ def run_aberration_ai_via_preset(main, preset: dict | None = None, doc=None):
     worker = _ONNXWorker(model, img, patch, overlap, providers)
     worker.progressed.connect(bar.setValue)
 
+    def _cancel_clicked():
+        btn.setEnabled(False)
+        btn.setText("Canceling…")
+        worker.cancel()  # <-- SAFE
+        QApplication.processEvents()
+
     def _fail(msg: str):
         try:
             if hasattr(main, "_log"):
                 main._log(f"❌ Aberration AI failed: {msg}")
         except Exception:
             pass
-        QMessageBox.critical(main, "Aberration AI", msg)
+        # If canceled, don't pop an error box
+        if "Canceled" not in (msg or ""):
+            QMessageBox.critical(main, "Aberration AI", msg)
+        dlg.close()
+
+    def _canceled():
+        try:
+            if hasattr(main, "_log"):
+                main._log("⛔ Aberration AI canceled.")
+        except Exception:
+            pass
         dlg.close()
 
     def _ok(out: np.ndarray):
@@ -157,12 +173,22 @@ def run_aberration_ai_via_preset(main, preset: dict | None = None, doc=None):
             dlg.close()
 
     worker.failed.connect(_fail)
+    worker.canceled.connect(_canceled)          # <-- NEW
     worker.finished_ok.connect(_ok)
     worker.finished.connect(lambda: btn.setEnabled(False))
-    btn.clicked.connect(worker.terminate)
+
+    btn.clicked.connect(_cancel_clicked)
+
+    # If user closes dialog via window X, also cancel
+    dlg.rejected.connect(_cancel_clicked)
 
     worker.start()
     dlg.exec()
+
+    # Ensure the worker is not left running after the modal closes
+    if worker.isRunning():
+        worker.cancel()
+        worker.wait(2000)  # don't hang forever; just give it a moment
 
     # clear the guard after a brief tick so downstream signals don’t re-open UI
     def _clear():
