@@ -893,7 +893,7 @@ class ToolbarMixin:
         self.act_linear_fit.setShortcut("Ctrl+L")
         self.act_linear_fit.triggered.connect(self._open_linear_fit)
 
-        self.act_remove_green = QAction(QIcon(green_path), self.tr("Remove Green..."), self)
+        self.act_remove_green = QAction(QIcon(green_path), self.tr("Remove Green (SCNR)..."), self)
         self.act_remove_green.setToolTip(self.tr("SCNR-style green channel removal."))
         self.act_remove_green.setIconVisibleInMenu(True)
         self.act_remove_green.triggered.connect(self._open_remove_green)

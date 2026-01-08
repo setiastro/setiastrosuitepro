@@ -164,7 +164,7 @@ class RemoveGreenDialog(QDialog):
 
     def _build_ui(self):
         lay = QVBoxLayout(self)
-        lay.addWidget(QLabel(self.tr("Select the amount to remove green noise:")))
+        lay.addWidget(QLabel(self.tr("Select the amount to remove green:")))
 
         # amount
         self.slider = QSlider(Qt.Orientation.Horizontal)

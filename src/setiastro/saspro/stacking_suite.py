@@ -4324,8 +4324,6 @@ def _arr_stats(a: np.ndarray):
             max=float(v.max()),
             p01=float(np.percentile(v, 1)),
             p50=float(np.percentile(v, 50)),
-            p99=float(np.percentile(v, 99)),
-            mean=float(v.mean()),
         )
     return dict(dtype=str(a.dtype), shape=tuple(a.shape), finite=0, nan=int(np.isnan(a).sum()), inf=int(np.isinf(a).sum()))
 
@@ -4334,7 +4332,7 @@ def _print_stats(tag: str, a: np.ndarray, *, bit_depth=None, hdr=None):
     bd = f", bit_depth={bit_depth}" if bit_depth is not None else ""
     print(f"🧪 {tag}{bd} dtype={s['dtype']} shape={s['shape']} finite={s['finite']} nan={s['nan']} inf={s['inf']}")
     if s["finite"] > 0:
-        print(f"    min={s['min']:.6f}  p01={s['p01']:.6f}  p50={s['p50']:.6f}  p99={s['p99']:.6f}  max={s['max']:.6f}  mean={s['mean']:.6f}")
+        print(f"    min={s['min']:.6f}  p01={s['p01']:.6f}  p50={s['p50']:.6f}  max={s['max']:.6f}")
     # Header hints (best-effort)
     if hdr is not None:
         try:
