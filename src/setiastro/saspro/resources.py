@@ -301,6 +301,7 @@ class Icons:
     COLOR_WHEEL = property(lambda self: _resource_path('colorwheel.png'))
     SELECTIVE_COLOR = property(lambda self: _resource_path('selectivecolor.png'))
     NB_TO_RGB = property(lambda self: _resource_path('nbtorgb.png'))
+    NARROWBANDNORMALIZATION = property(lambda self: _resource_path('narrowbandnormalization.png'))
     
     # Stretching
     STAT_STRETCH = property(lambda self: _resource_path('statstretch.png'))
@@ -531,6 +532,7 @@ def _init_legacy_paths():
         'collage_path': get_icon_path('collage.png'),
         'annotated_path': get_icon_path('annotated.png'),
         'colorwheel_path': get_icon_path('colorwheel.png'),
+        'narrowbandnormalization_path': get_icon_path('narrowbandnormalization.png'),
         'font_path': get_icon_path('font.png'),
         'csv_icon_path': get_icon_path('cvs.png'),
         'spinner_path': get_data_path('spinner.gif'),

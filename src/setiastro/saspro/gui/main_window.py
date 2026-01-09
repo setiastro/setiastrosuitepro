@@ -129,7 +129,7 @@ from PyQt6.QtGui import (QPixmap, QColor, QIcon, QKeySequence, QShortcut,
 
 # ----- QtCore -----
 from PyQt6.QtCore import (Qt, pyqtSignal, QCoreApplication, QTimer, QSize, QSignalBlocker,  QModelIndex, QThread, QUrl, QSettings, QEvent, QByteArray, QObject,
-    QPropertyAnimation, QEasingCurve, QElapsedTimer
+    QPropertyAnimation, QEasingCurve, QElapsedTimer, QPoint
 )
 
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
@@ -193,7 +193,7 @@ from setiastro.saspro.resources import (
     nbtorgb_path, freqsep_path, contsub_path, halo_path, cosmic_path,
     satellite_path, imagecombine_path, wrench_path, eye_icon_path,multiscale_decomp_path,
     disk_icon_path, nuke_path, hubble_path, collage_path, annotated_path,
-    colorwheel_path, font_path, csv_icon_path, spinner_path, wims_path,
+    colorwheel_path, font_path, csv_icon_path, spinner_path, wims_path, narrowbandnormalization_path,
     wimi_path, linearfit_path, debayer_path, aberration_path, acv_icon_path,
     functionbundles_path, viewbundles_path, selectivecolor_path, rgbalign_path,
     background_path, script_icon_path
@@ -604,7 +604,10 @@ class AstroSuiteProMainWindow(
         self.docman.documentAdded.connect(self._on_document_added)
         self.mdi.viewStateDropped.connect(self._on_mdi_viewstate_drop)
         self.mdi.linkViewDropped.connect(self._on_linkview_drop)
-
+        self._mdi_open_batch = 0
+        self._mdi_place_mode = "cascade"   # or "tile"
+        self._mdi_next_pos = None          # QPoint in MDI coords
+        self._mdi_cascade_step = 28
         self.doc_manager.set_mdi_area(self.mdi)
         # Coalesce undo/redo label refreshes
         self._undo_redo_refresh_pending = False
@@ -3904,6 +3907,19 @@ class AstroSuiteProMainWindow(
         )
 
         dlg.show()
+
+    def _open_narrowband_normalization_tool(self):
+        # Correct module import
+        from setiastro.saspro.narrowband_normalization import NarrowbandNormalization
+
+        w = NarrowbandNormalization(doc_manager=self.docman, parent=self)
+        w.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        w.setWindowTitle("Narrowband Normalization")
+        try:
+            w.setWindowIcon(QIcon(narrowbandnormalization_path))
+        except Exception:
+            pass
+        w.show()
 
     def _open_ppp_tool(self):
         from setiastro.saspro.perfect_palette_picker import PerfectPalettePicker
@@ -7888,6 +7904,43 @@ class AstroSuiteProMainWindow(
 
         return t
 
+    def _mdi_begin_open_batch(self, mode: str = "cascade"):
+        self._mdi_open_batch += 1
+        self._mdi_place_mode = mode or "cascade"
+        self._mdi_next_pos = None
+
+    def _mdi_end_open_batch(self):
+        self._mdi_open_batch = max(0, self._mdi_open_batch - 1)
+        if self._mdi_open_batch == 0:
+            self._mdi_next_pos = None
+
+    def _mdi_compute_initial_pos(self) -> QPoint:
+        area = (self.mdi.viewport().geometry() if self.mdi.viewport() else self.mdi.contentsRect())
+        # Put first window a bit inset so titlebars don’t clip
+        return QPoint(area.left() + 18, area.top() + 18)
+
+    def _mdi_place_subwindow(self, sw, target_w: int, target_h: int):
+        """Deterministic placement. Uses a stable cursor during batch opens."""
+        vp = self.mdi.viewport()
+        area = vp.geometry() if vp else self.mdi.contentsRect()
+
+        if self._mdi_next_pos is None:
+            self._mdi_next_pos = self._mdi_compute_initial_pos()
+
+        x = self._mdi_next_pos.x()
+        y = self._mdi_next_pos.y()
+
+        # keep inside viewport; reset when we hit edge
+        if (x + target_w > area.right() - 10) or (y + 40 > area.bottom() - 10):
+            x = area.left() + 18
+            y = area.top() + 18
+
+        sw.move(x, y)
+
+        # advance cursor
+        step = int(self._mdi_cascade_step)
+        self._mdi_next_pos = QPoint(x + step, y + step)
+
     def _spawn_subwindow_for(self, doc, *, force_new: bool = False):
         """
         Open a subwindow for `doc`. If one already exists and force_new=False,
@@ -8061,52 +8114,22 @@ class AstroSuiteProMainWindow(
         target_h = max(200, target_h)
 
         sw.resize(target_w, target_h)
-        sw.showNormal()  # CRITICAL: clears any "maximized" flag from previous active window
+        sw.showNormal()  # clears any "maximized" flag from previous active window
 
-        # -------------------------------------------------------------------------
-        # Smart Cascade: Position relative to the *currently active* window
-        # (before we make the new one active).
-        # -------------------------------------------------------------------------
-        new_x, new_y = area.left(), area.top()
-        
-        # Get dominant/active window *before* we activate the new one
-        active = self.mdi.activeSubWindow()
-        if active and active.isVisible() and not (active.windowState() & Qt.WindowState.WindowMinimized):
-            # Cascade from the active window
-            geo = active.geometry()
-            new_x = geo.x() + 30
-            new_y = geo.y() + 30
-        else:
-            # Fallback: try to find the "last added" visible window to cascade from
-            # (useful if active is None but windows exist)
+        # Deterministic placement (batch-aware)
+        try:
+            self._mdi_place_subwindow(sw, target_w, target_h)
+        except Exception:
+            # absolute fallback: top-left-ish
             try:
-                subs = [s for s in self.mdi.subWindowList() if s.isVisible() and s is not sw]
-                if subs:
-                    # simplistic "last created" might be at end of list
-                    last = subs[-1]
-                    geo = last.geometry()
-                    new_x = geo.x() + 30
-                    new_y = geo.y() + 30
+                sw.move(area.left() + 18, area.top() + 18)
             except Exception:
                 pass
-
-        # Bounds check: keep titlebar visible and stay inside viewport
-        if (new_x + target_w > area.right() - 10) or (new_y + 40 > area.bottom() - 10):
-            new_x = area.left()
-            new_y = area.top()
-
-        new_x = max(area.left(), new_x)
-        new_y = max(area.top(), new_y)
-
-        sw.move(new_x, new_y)
-
-        # âŒ removed the "fill MDI viewport" block - we *don't* want full-monitor first window
 
         # Show / activate
         sw.show()
         sw.raise_()
         self.mdi.setActiveSubWindow(sw)
-        # (no second setWindowTitle() here)
 
         # Optional minimize/restore interceptor
         if hasattr(self, "_minimize_interceptor"):

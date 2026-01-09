@@ -7,7 +7,7 @@ import os
 from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QFileDialog, QMessageBox, QProgressDialog
+from PyQt6.QtWidgets import QFileDialog, QMessageBox, QProgressDialog, QApplication
 
 if TYPE_CHECKING:
     pass
@@ -85,7 +85,6 @@ class FileMixin:
         self._save_recent_lists()
         if hasattr(self, "_rebuild_recent_menus"):
             self._rebuild_recent_menus()
-# Extracted FILE methods
 
     def open_files(self):
         # One-stop "All Supported" plus focused groups the user can switch to
@@ -114,21 +113,41 @@ class FileMixin:
         except Exception:
             pass
 
-        # open each path (doc_manager should emit documentAdded; no manual spawn)
-        for p in paths:
-            try:
-                doc = self.docman.open_path(p)   # this emits documentAdded
-                self._log(f"Opened: {p}")
-                self._add_recent_image(p)        # âœ... track in MRU
-                
-                # Increment statistics
+        # ---- BEGIN batch open (stable placement) ----
+        try:
+            self._mdi_begin_open_batch(mode="cascade")
+        except Exception:
+            pass
+
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            # open each path (doc_manager should emit documentAdded; no manual spawn)
+            for p in paths:
                 try:
-                    count = self.settings.value("stats/opened_images_count", 0, type=int)
-                    self.settings.setValue("stats/opened_images_count", count + 1)
-                except Exception:
-                    pass
-            except Exception as e:
-                QMessageBox.warning(self, self.tr("Open failed"), f"{p}\n\n{e}")
+                    _ = self.docman.open_path(p)   # emits documentAdded; spawn will happen
+                    self._log(f"Opened: {p}")
+                    self._add_recent_image(p)      # track MRU
+
+                    # Increment statistics
+                    try:
+                        count = self.settings.value("stats/opened_images_count", 0, type=int)
+                        self.settings.setValue("stats/opened_images_count", count + 1)
+                    except Exception:
+                        pass
+
+                    # Let Qt paint newly spawned subwindows as we go
+                    QApplication.processEvents()
+
+                except Exception as e:
+                    QMessageBox.warning(self, self.tr("Open failed"), f"{p}\n\n{e}")
+                    QApplication.processEvents()
+        finally:
+            QApplication.restoreOverrideCursor()
+            try:
+                self._mdi_end_open_batch()
+            except Exception:
+                pass
+
 
     def save_active(self):
         from setiastro.saspro.main_helpers import (

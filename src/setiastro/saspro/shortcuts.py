@@ -503,7 +503,6 @@ class DraggableToolBar(QToolBar):
 
         m.exec(gpos)
 
-
     def contextMenuEvent(self, ev):
         # Right-click on empty toolbar area
         m = QMenu(self)
@@ -513,12 +512,12 @@ class DraggableToolBar(QToolBar):
         act_lock = m.addAction(self.tr("Lock Toolbar Icons"))
         act_lock.setCheckable(True)
         act_lock.setChecked(is_locked)
-        
+
         def _toggle_lock(checked):
             self._set_locked(checked)
-            
+
         act_lock.triggered.connect(_toggle_lock)
-        
+
         m.addSeparator()
 
         # Submenu listing hidden actions for this toolbar
@@ -529,12 +528,13 @@ class DraggableToolBar(QToolBar):
         any_hidden = False
         if tb_hidden:
             for act in tb_hidden.actions():
-                # Skip separators
                 if act.isSeparator():
                     continue
                 any_hidden = True
-                sub.addAction(act.text() or (act.property("command_id") or act.objectName() or "item"),
-                              lambda a=act: mw._unhide_action_from_hidden_toolbar(a))
+                sub.addAction(
+                    act.text() or (act.property("command_id") or act.objectName() or "item"),
+                    lambda a=act: mw._unhide_action_from_hidden_toolbar(a)
+                )
 
         if not any_hidden:
             sub.setEnabled(False)
@@ -542,7 +542,14 @@ class DraggableToolBar(QToolBar):
         m.addSeparator()
         m.addAction(self.tr("Reset hidden icons"), self._reset_hidden_icons)
 
+        # ✅ NEW: Factory reset for all toolbars
+        m.addSeparator()
+        reset_all = m.addAction(self.tr("Reset ALL Toolbars (Factory Layout)"))
+        reset_all.setStatusTip(self.tr("Clears saved toolbar positions/orders/hidden state and restores defaults"))
+        reset_all.triggered.connect(lambda: getattr(self.window(), "_reset_all_toolbars_to_factory", lambda: None)())
+
         m.exec(ev.globalPos())
+
 
     def _reset_hidden_icons(self):
         mw = self.window()
