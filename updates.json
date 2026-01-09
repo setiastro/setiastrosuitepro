@@ -1,9 +1,9 @@
 {
-  "version": "1.6.11",
+  "version": "1.6.13",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.11/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.11/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.11/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.13/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.13/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.13/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.6.11 Updated and improved algorithms for: Background Neutralization, Star Based White Balance, and SFCC.  Added rename view and doc in scripts api.  Bug fix in convo/deconvo. Various mixin tweaks."
+  "notes": "Seti Astro Suite Pro V1.6.13 Scaffolding created for future narrowband normalization addition. Beta version can be accessed if you ask nicely for the keyboard shortcut key.  A lot of other error and UX changes."
 }
