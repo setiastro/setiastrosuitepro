@@ -57,8 +57,13 @@ numba = "*"
 
 # neural net
 onnx = "*"
-onnxruntime = "*"
-onnxruntime-directml = {version = "*", markers = "sys_platform == 'win32'"}
+
+# Choose ONE runtime per platform.
+# - Windows: DirectML (GPU on NVIDIA/AMD/Intel without CUDA hassles)
+onnxruntime-directml = {version="*", markers="sys_platform == 'win32'"}
+
+# - Non-Windows: CPU runtime
+onnxruntime = {version="*", markers="sys_platform != 'win32'"}
 
 # image formats & camera raw
 xisf = "*"
