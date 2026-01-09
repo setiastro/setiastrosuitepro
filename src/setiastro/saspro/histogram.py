@@ -4,7 +4,7 @@ import numpy as np
 
 from PyQt6.QtCore import Qt, QSettings, QTimer, QEvent, pyqtSignal
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QPushButton, QScrollArea,
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QPushButton, QScrollArea,QWidget,
     QTableWidget, QTableWidgetItem, QMessageBox, QToolButton, QInputDialog, QSplitter, QSizePolicy, QHeaderView
 )
 from PyQt6.QtGui import QPixmap, QPainter, QPen, QColor, QFont, QPalette
@@ -125,7 +125,12 @@ class HistogramDialog(QDialog):
 
         splitter.addWidget(self.scroll_area)
 
-        # right: stats table
+        # right: stats panel (table + button under it)
+        stats_panel = QWidget(self)
+        stats_v = QVBoxLayout(stats_panel)
+        stats_v.setContentsMargins(0, 0, 0, 0)
+        stats_v.setSpacing(6)
+
         self.stats_table = QTableWidget(self)
         self.stats_table.setRowCount(7)
         self.stats_table.setColumnCount(1)
@@ -137,15 +142,21 @@ class HistogramDialog(QDialog):
         # Let it grow/shrink with the splitter
         self.stats_table.setMinimumWidth(320)
         self.stats_table.setSizePolicy(
-            QSizePolicy.Policy.Preferred,      # <- was Fixed
+            QSizePolicy.Policy.Preferred,
             QSizePolicy.Policy.Expanding,
         )
 
-        # Make the columns use available width nicely
         hdr = self.stats_table.horizontalHeader()
         hdr.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        # hdr.setStretchLastSection(True)
-        splitter.addWidget(self.stats_table)
+
+        stats_v.addWidget(self.stats_table, 1)
+
+        # NEW: button directly under the table
+        self.btn_more_stats = QPushButton(self.tr("More Stats…"), self)
+        self.btn_more_stats.clicked.connect(self._show_more_stats)
+        stats_v.addWidget(self.btn_more_stats, 0)
+
+        splitter.addWidget(stats_panel)
 
         # Give more space to histogram side by default
         splitter.setStretchFactor(0, 3)
@@ -630,6 +641,167 @@ class HistogramDialog(QDialog):
                 self.stats_table.setItem(r, c_idx, it)
 
         self._adjust_stats_width()        
+
+    def _show_more_stats(self):
+        if self.image is None:
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(self.tr("Image Statistics"))
+        dlg.setWindowModality(Qt.WindowModality.NonModal)
+        dlg.setModal(False)
+
+        root = QVBoxLayout(dlg)
+
+        info = QLabel(self.tr(
+            "Detailed robust statistics and percentiles.\n"
+            "Computed on normalized float image values in [0,1]."
+        ))
+        info.setWordWrap(True)
+        root.addWidget(info)
+
+        tbl = QTableWidget(dlg)
+        tbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        root.addWidget(tbl, 1)
+
+        btn_row = QHBoxLayout()
+        btn_copy = QPushButton(self.tr("Copy as Text"), dlg)
+        btn_close = QPushButton(self.tr("Close"), dlg)
+        btn_row.addStretch(1)
+        btn_row.addWidget(btn_copy)
+        btn_row.addWidget(btn_close)
+        root.addLayout(btn_row)
+
+        btn_close.clicked.connect(dlg.accept)
+
+        # ---- compute stats ----
+        img = self.image
+        if img.ndim == 3 and img.shape[2] == 3:
+            chans = [img[..., 0], img[..., 1], img[..., 2]]
+            col_names = ["R", "G", "B"]
+        else:
+            chan = img if img.ndim == 2 else img[..., 0]
+            chans = [chan]
+            col_names = ["Gray"]
+
+        row_defs = [
+            ("Min", "min"),
+            ("Max", "max"),
+            ("Mean", "mean"),
+            ("Median", "median"),
+            ("StdDev", "std"),
+            ("Variance", "var"),
+            ("MAD", "mad"),
+            ("IQR (p75-p25)", "iqr"),
+            ("p0.1", "p0.1"),
+            ("p1", "p1"),
+            ("p5", "p5"),
+            ("p25", "p25"),
+            ("p50", "p50"),
+            ("p75", "p75"),
+            ("p95", "p95"),
+            ("p99", "p99"),
+            ("p99.9", "p99.9"),
+            ("Low Clipped (<=0)", "lowclip"),
+            ("High Clipped (>=TrueMax)", "highclip"),
+        ]
+
+        tbl.setRowCount(len(row_defs))
+        tbl.setColumnCount(len(chans))
+        tbl.setHorizontalHeaderLabels(col_names)
+        tbl.setVerticalHeaderLabels([r[0] for r in row_defs])
+
+        # Precompute thresholds for clipping
+        eps = 1e-6
+        hi_thr = max(eps, float(self.sensor_max01) - eps)
+
+        def _fmt(x):
+            return f"{float(x):.6f}"
+
+        def _fmt_clip(k, n):
+            pct = 100.0 * float(k) / float(max(1, n))
+            return f"{int(k)} ({pct:.3f}%)"
+
+        # Percentiles we want
+        pct_list = [0.1, 1, 5, 25, 50, 75, 95, 99, 99.9]
+
+        # Fill table
+        for c_idx, c_arr in enumerate(chans):
+            flat = np.asarray(c_arr, dtype=np.float32).ravel()
+            if flat.size > 20_000_000:
+                idx = np.random.default_rng(0).choice(flat.size, size=5_000_000, replace=False)
+                flat = flat[idx]
+
+            n = int(flat.size) if flat.size else 1
+
+            # basic moments
+            cmin = float(np.min(flat))
+            cmax = float(np.max(flat))
+            cmean = float(np.mean(flat))
+            cmed = float(np.median(flat))
+            cstd = float(np.std(flat))
+            cvar = float(np.var(flat))
+
+            # robust
+            mad = float(np.median(np.abs(flat - cmed)))
+            pcts = np.percentile(flat, pct_list) if flat.size else np.zeros(len(pct_list), dtype=np.float32)
+            p25, p75 = float(pcts[3]), float(pcts[5])
+            iqr = float(p75 - p25)
+
+            # clipping
+            low_k = int(np.count_nonzero(flat <= eps))
+            high_k = int(np.count_nonzero(flat >= hi_thr))
+
+            values = {
+                "min": cmin,
+                "max": cmax,
+                "mean": cmean,
+                "median": cmed,
+                "std": cstd,
+                "var": cvar,
+                "mad": mad,
+                "iqr": iqr,
+                "p0.1": float(pcts[0]),
+                "p1": float(pcts[1]),
+                "p5": float(pcts[2]),
+                "p25": float(pcts[3]),
+                "p50": float(pcts[4]),
+                "p75": float(pcts[5]),
+                "p95": float(pcts[6]),
+                "p99": float(pcts[7]),
+                "p99.9": float(pcts[8]),
+                "lowclip": _fmt_clip(low_k, n),
+                "highclip": _fmt_clip(high_k, n),
+            }
+
+            for r, (_, key) in enumerate(row_defs):
+                v = values[key]
+                text = v if isinstance(v, str) else _fmt(v)
+                it = QTableWidgetItem(text)
+                it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                tbl.setItem(r, c_idx, it)
+
+        hdr = tbl.horizontalHeader()
+        hdr.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+
+        def _copy_as_text():
+            # TSV with rows
+            lines = []
+            lines.append("\t" + "\t".join(col_names))
+            for r, (lab, _) in enumerate(row_defs):
+                row = [lab]
+                for c in range(len(col_names)):
+                    item = tbl.item(r, c)
+                    row.append(item.text() if item else "")
+                lines.append("\t".join(row))
+            QApplication.clipboard().setText("\n".join(lines))
+            QMessageBox.information(dlg, self.tr("Copied"), self.tr("Statistics copied to clipboard."))
+
+        btn_copy.clicked.connect(_copy_as_text)
+
+        dlg.resize(720, 520)
+        dlg.show()
+
 
     def _theoretical_native_max_from_meta(self):
         meta = getattr(self.doc, "metadata", None) or {}

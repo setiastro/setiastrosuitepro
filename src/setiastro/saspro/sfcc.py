@@ -20,6 +20,7 @@ from datetime import datetime
 from typing import List, Tuple, Optional
 
 import numpy as np
+import numpy.ma as ma
 import pandas as pd
 
 # ── SciPy bits
@@ -32,6 +33,7 @@ from astropy.wcs import WCS
 import astropy.units as u
 from astropy.coordinates import SkyCoord
 from astroquery.simbad import Simbad
+from astropy.wcs.wcs import NoConvergence
 
 # ── SEP (Source Extractor)
 import sep
@@ -969,8 +971,105 @@ class SFCCDialog(QDialog):
 
 
     # ── SIMBAD/Star fetch ──────────────────────────────────────────────
+    def initialize_wcs_from_header(self, header):
+        """
+        Build a robust 2D celestial WCS from the provided header.
+
+        - Normalizes deprecated RADECSYS/EPOCH keywords.
+        - Uses relax=True.
+        - Stores:
+            self.wcs (WCS)
+            self.wcs_header (fits.Header)
+            self.pixscale (arcsec/pixel approx)
+            self.center_ra, self.center_dec (deg)
+            self.orientation (deg, if derivable)
+        """
+        if header is None:
+            print("[SFCC] No FITS header available; cannot build WCS.")
+            self.wcs = None
+            return
+
+        try:
+            hdr = header.copy()
+
+            # --- normalize deprecated keywords ---
+            if "RADECSYS" in hdr and "RADESYS" not in hdr:
+                radesys_val = str(hdr["RADECSYS"]).strip()
+                hdr["RADESYS"] = radesys_val
+                try:
+                    del hdr["RADECSYS"]
+                except Exception:
+                    pass
+
+                # Carry to alternate WCS letters if present (CTYPE1A, CTYPE2A, etc.)
+                alt_letters = {
+                    k[-1]
+                    for k in hdr.keys()
+                    if re.match(r"^CTYPE[12][A-Z]$", k)
+                }
+                for a in alt_letters:
+                    key = f"RADESYS{a}"
+                    if key not in hdr:
+                        hdr[key] = radesys_val
+
+            if "EPOCH" in hdr and "EQUINOX" not in hdr:
+                hdr["EQUINOX"] = hdr["EPOCH"]
+                try:
+                    del hdr["EPOCH"]
+                except Exception:
+                    pass
+
+            # Build WCS
+            self.wcs = WCS(hdr, naxis=2, relax=True)
+
+            # Pixel scale estimate (arcsec/px) from pixel_scale_matrix if available
+            try:
+                psm = self.wcs.pixel_scale_matrix
+                self.pixscale = float(np.hypot(psm[0, 0], psm[1, 0]) * 3600.0)
+            except Exception:
+                self.pixscale = None
+
+            # CRVAL center
+            try:
+                self.center_ra, self.center_dec = [float(x) for x in self.wcs.wcs.crval]
+            except Exception:
+                self.center_ra, self.center_dec = None, None
+
+            # Save normalized header form
+            try:
+                self.wcs_header = self.wcs.to_header(relax=True)
+            except Exception:
+                self.wcs_header = None
+
+            # Orientation (optional)
+            if "CROTA2" in hdr:
+                try:
+                    self.orientation = float(hdr["CROTA2"])
+                except Exception:
+                    self.orientation = None
+            else:
+                self.orientation = self.calculate_orientation(hdr)
+
+            if getattr(self, "orientation_label", None) is not None:
+                if self.orientation is not None:
+                    self.orientation_label.setText(f"Orientation: {self.orientation:.2f}°")
+                else:
+                    self.orientation_label.setText("Orientation: N/A")
+
+        except Exception as e:
+            print("[SFCC] WCS initialization error:\n", e)
+            self.wcs = None
+
 
     def fetch_stars(self):
+        import time
+        from astropy.coordinates import SkyCoord
+        import astropy.units as u
+        from astropy.wcs.wcs import NoConvergence
+        from astroquery.simbad import Simbad
+        from astropy.io import fits
+        from PyQt6.QtWidgets import QMessageBox, QApplication
+
         # 0) Grab current image + header from the active document
         img, hdr, _meta = self._get_active_image_and_header()
         self.current_image = img
@@ -986,7 +1085,7 @@ class SFCCDialog(QDialog):
             self.pickles_templates = []
             for p in (self.user_custom_path, self.sasp_data_path):
                 try:
-                    with fits.open(p) as hd:
+                    with fits.open(p, memmap=False) as hd:
                         for hdu in hd:
                             if (isinstance(hdu, fits.BinTableHDU)
                                     and hdu.header.get("CTYPE", "").upper() == "SED"):
@@ -994,115 +1093,250 @@ class SFCCDialog(QDialog):
                                 if extname and extname not in self.pickles_templates:
                                     self.pickles_templates.append(extname)
                 except Exception as e:
-                    print(f"[fetch_stars] Could not load Pickles templates from {p}: {e}")
+                    print(f"[SFCC] [fetch_stars] Could not load Pickles templates from {p}: {e}")
+            self.pickles_templates.sort()
 
         # Build WCS
         try:
             self.initialize_wcs_from_header(self.current_header)
         except Exception:
-            QMessageBox.critical(self, "WCS Error", "Could not build a 2D WCS from header."); return
+            QMessageBox.critical(self, "WCS Error", "Could not build a 2D WCS from header.")
+            return
+
+        if not getattr(self, "wcs", None):
+            QMessageBox.critical(self, "WCS Error", "Could not build a 2D WCS from header.")
+            return
+
+        # Use celestial WCS if possible (safe when WCS has extra axes)
+        wcs2 = self.wcs.celestial if hasattr(self.wcs, "celestial") else self.wcs
 
         H, W = self.current_image.shape[:2]
-        pix = np.array([[W/2, H/2], [0,0], [W,0], [0,H], [W,H]])
-        try:
-            sky = self.wcs.all_pix2world(pix, 0)
-        except Exception as e:
-            QMessageBox.critical(self, "WCS Conversion Error", str(e)); return
-        center_sky  = SkyCoord(ra=sky[0,0]*u.deg, dec=sky[0,1]*u.deg, frame="icrs")
-        corners_sky = SkyCoord(ra=sky[1:,0]*u.deg, dec=sky[1:,1]*u.deg, frame="icrs")
-        radius_deg  = center_sky.separation(corners_sky).max().deg
 
-        # Simbad fields
+        # --- original radius method (center + 4 corners) ---
+        pix = np.array([[W / 2, H / 2], [0, 0], [W, 0], [0, H], [W, H]], dtype=float)
+        try:
+            sky = wcs2.all_pix2world(pix, 0)
+        except Exception as e:
+            QMessageBox.critical(self, "WCS Conversion Error", str(e))
+            return
+
+        center_sky = SkyCoord(ra=float(sky[0, 0]) * u.deg, dec=float(sky[0, 1]) * u.deg, frame="icrs")
+        corners_sky = SkyCoord(ra=sky[1:, 0] * u.deg, dec=sky[1:, 1] * u.deg, frame="icrs")
+        radius = center_sky.separation(corners_sky).max() * 1.05  # small margin
+
+        # --- SIMBAD fields (NEW first, fallback to legacy) ---
         Simbad.reset_votable_fields()
+
+        def _try_new_fields():
+            # new names: B,V,R + ra,dec
+            Simbad.add_votable_fields("sp", "B", "V", "R", "ra", "dec")
+
+        def _try_legacy_fields():
+            # legacy names
+            Simbad.add_votable_fields("sp", "flux(B)", "flux(V)", "flux(R)", "ra(d)", "dec(d)")
+
+        ok = False
+        for _ in range(5):
+            try:
+                _try_new_fields()
+                ok = True
+                break
+            except Exception:
+                QApplication.processEvents()
+                time.sleep(0.8)
+
+        if not ok:
+            for _ in range(5):
+                try:
+                    _try_legacy_fields()
+                    ok = True
+                    break
+                except Exception:
+                    QApplication.processEvents()
+                    time.sleep(0.8)
+
+        if not ok:
+            QMessageBox.critical(self, "SIMBAD Error", "Could not configure SIMBAD votable fields.")
+            return
+
+        Simbad.ROW_LIMIT = 10000
+
+        # --- Query SIMBAD ---
+        result = None
         for attempt in range(1, 6):
             try:
-                Simbad.add_votable_fields('sp', 'flux(B)', 'flux(V)', 'flux(R)')
+                if getattr(self, "count_label", None) is not None:
+                    self.count_label.setText(f"Attempt {attempt}/5 to query SIMBAD…")
+                QApplication.processEvents()
+                result = Simbad.query_region(center_sky, radius=radius)
                 break
             except Exception:
                 QApplication.processEvents()
                 time.sleep(1.2)
-        Simbad.ROW_LIMIT = 10000
-
-        for attempt in range(1, 6):
-            try:
-                result = Simbad.query_region(center_sky, radius=radius_deg * u.deg)
-                break
-            except Exception as e:
-                self.count_label.setText(f"Attempt {attempt}/5 to query SIMBAD…")
-                QApplication.processEvents(); time.sleep(1.2)
                 result = None
+
         if result is None or len(result) == 0:
             QMessageBox.information(self, "No Stars", "SIMBAD returned zero objects in that region.")
-            self.star_list = []; self.star_combo.clear(); self.star_combo.addItem("Vega (A0V)", userData="A0V"); return
+            self.star_list = []
+            if getattr(self, "star_combo", None) is not None:
+                self.star_combo.clear()
+                self.star_combo.addItem("Vega (A0V)", userData="A0V")
+            return
+
+        # --- helpers ---
+        def _unmask_num(x):
+            try:
+                if x is None:
+                    return None
+                if ma.isMaskedArray(x) and ma.is_masked(x):
+                    return None
+                return float(x)
+            except Exception:
+                return None
 
         def infer_letter(bv):
-            if bv is None or (isinstance(bv, float) and np.isnan(bv)): return None
-            if   bv < 0.00: return "B"
-            elif bv < 0.30: return "A"
-            elif bv < 0.58: return "F"
-            elif bv < 0.81: return "G"
-            elif bv < 1.40: return "K"
-            elif bv > 1.40: return "M"
-            else: return "U"
+            if bv is None or (isinstance(bv, float) and np.isnan(bv)):
+                return None
+            if bv < 0.00:
+                return "B"
+            elif bv < 0.30:
+                return "A"
+            elif bv < 0.58:
+                return "F"
+            elif bv < 0.81:
+                return "G"
+            elif bv < 1.40:
+                return "K"
+            elif bv > 1.40:
+                return "M"
+            return None
 
-        self.star_list = []; templates_for_hist = []
-        for row in result:
-            raw_sp = row['sp_type']
-            bmag, vmag, rmag = row['B'], row['V'], row['R']
-            ra_deg, dec_deg  = float(row['ra']), float(row['dec'])
+        def safe_world2pix(ra_deg, dec_deg):
             try:
-                sc = SkyCoord(ra=ra_deg*u.deg, dec=dec_deg*u.deg, frame="icrs")
+                xpix, ypix = wcs2.all_world2pix(ra_deg, dec_deg, 0)
+                xpix, ypix = float(xpix), float(ypix)
+                if np.isfinite(xpix) and np.isfinite(ypix):
+                    return xpix, ypix
+                return None
+            except NoConvergence as e:
+                try:
+                    xpix, ypix = e.best_solution
+                    xpix, ypix = float(xpix), float(ypix)
+                    if np.isfinite(xpix) and np.isfinite(ypix):
+                        return xpix, ypix
+                except Exception:
+                    pass
+                return None
             except Exception:
+                return None
+
+        # Column names (astroquery changed these)
+        cols_lower = {c.lower(): c for c in result.colnames}
+
+        # RA/Dec in degrees:
+        ra_col = cols_lower.get("ra", None) or cols_lower.get("ra(d)", None) or cols_lower.get("ra_d", None)
+        dec_col = cols_lower.get("dec", None) or cols_lower.get("dec(d)", None) or cols_lower.get("dec_d", None)
+
+        # Mag columns:
+        b_col = cols_lower.get("b", None) or cols_lower.get("flux_b", None)
+        v_col = cols_lower.get("v", None) or cols_lower.get("flux_v", None)
+        r_col = cols_lower.get("r", None) or cols_lower.get("flux_r", None)
+
+        if ra_col is None or dec_col is None:
+            QMessageBox.critical(
+                self,
+                "SIMBAD Columns",
+                "SIMBAD result did not include degree RA/Dec columns (ra/dec).\n"
+                "Print result.colnames to see what's returned."
+            )
+            return
+
+        # --- main loop ---
+        self.star_list = []
+        templates_for_hist = []
+
+        for row in result:
+            # spectral type column name in table
+            raw_sp = None
+            if "SP_TYPE" in result.colnames:
+                raw_sp = row["SP_TYPE"]
+            elif "sp_type" in result.colnames:
+                raw_sp = row["sp_type"]
+
+            bmag = _unmask_num(row[b_col]) if b_col is not None else None
+            vmag = _unmask_num(row[v_col]) if v_col is not None else None
+            rmag = _unmask_num(row[r_col]) if r_col is not None else None
+
+            # ra/dec degrees
+            ra_deg = _unmask_num(row[ra_col])
+            dec_deg = _unmask_num(row[dec_col])
+            if ra_deg is None or dec_deg is None:
                 continue
 
-            def _unmask_num(x):
-                try:
-                    if x is None or np.ma.isMaskedArray(x) and np.ma.is_masked(x):
-                        return None
-                    return float(x)
-                except Exception:
-                    return None
-
-            # inside your SIMBAD row loop:
-            bmag = _unmask_num(row['B'])
-            vmag = _unmask_num(row['V'])
+            try:
+                sc = SkyCoord(ra=ra_deg * u.deg, dec=dec_deg * u.deg, frame="icrs")
+            except Exception:
+                continue
 
             sp_clean = None
             if raw_sp and str(raw_sp).strip():
                 sp = str(raw_sp).strip().upper()
                 if not (sp.startswith("SN") or sp.startswith("KA")):
                     sp_clean = sp
-            elif bmag is not None and vmag is not None:
-                bv = bmag - vmag
-                sp_clean = infer_letter(bv)
-            if not sp_clean: continue
+            elif (bmag is not None) and (vmag is not None):
+                sp_clean = infer_letter(bmag - vmag)
+
+            if not sp_clean:
+                continue
 
             match_list = pickles_match_for_simbad(sp_clean, self.pickles_templates)
             best_template = match_list[0] if match_list else None
-            xpix, ypix = self.wcs.all_world2pix(sc.ra.deg, sc.dec.deg, 0)
+
+            xy = safe_world2pix(sc.ra.deg, sc.dec.deg)
+            if xy is None:
+                continue
+
+            xpix, ypix = xy
             if 0 <= xpix < W and 0 <= ypix < H:
                 self.star_list.append({
-                    "ra": sc.ra.deg, "dec": sc.dec.deg, "sp_clean": sp_clean,
-                    "pickles_match": best_template, "x": xpix, "y": ypix,
-                    "Bmag": float(bmag) if bmag else None,
-                    "Vmag": float(vmag) if vmag else None,
-                    "Rmag": float(rmag) if rmag else None,
+                    "ra": sc.ra.deg, "dec": sc.dec.deg,
+                    "sp_clean": sp_clean,
+                    "pickles_match": best_template,
+                    "x": xpix, "y": ypix,
+                    # IMPORTANT: do not use "if bmag" (0.0 becomes None)
+                    "Bmag": float(bmag) if bmag is not None else None,
+                    "Vmag": float(vmag) if vmag is not None else None,
+                    "Rmag": float(rmag) if rmag is not None else None,
                 })
-                if best_template is not None: templates_for_hist.append(best_template)
+                if best_template is not None:
+                    templates_for_hist.append(best_template)
 
-        self.figure.clf()
+        # --- plot / UI feedback (unchanged) ---
+        if getattr(self, "figure", None) is not None:
+            self.figure.clf()
+
         if templates_for_hist:
             uniq, cnt = np.unique(templates_for_hist, return_counts=True)
-            types_str = ", ".join(uniq)
-            self.count_label.setText(f"Found {len(templates_for_hist)} stars; templates: {types_str}")
-            ax = self.figure.add_subplot(111)
-            ax.bar(uniq, cnt, edgecolor="black")
-            ax.set_xlabel("Spectral Type"); ax.set_ylabel("Count"); ax.set_title("Spectral Distribution")
-            ax.tick_params(axis='x', rotation=90); ax.grid(axis="y", linestyle="--", alpha=0.3)
-            self.canvas.setVisible(True); self.canvas.draw()
+            types_str = ", ".join([str(u) for u in uniq])
+            if getattr(self, "count_label", None) is not None:
+                self.count_label.setText(f"Found {len(self.star_list)} stars; templates: {types_str}")
+
+            if getattr(self, "figure", None) is not None and getattr(self, "canvas", None) is not None:
+                ax = self.figure.add_subplot(111)
+                ax.bar(uniq, cnt, edgecolor="black")
+                ax.set_xlabel("Spectral Type")
+                ax.set_ylabel("Count")
+                ax.set_title("Spectral Distribution")
+                ax.tick_params(axis='x', rotation=90)
+                ax.grid(axis="y", linestyle="--", alpha=0.3)
+                self.canvas.setVisible(True)
+                self.canvas.draw()
         else:
-            self.count_label.setText("Found 0 stars with Pickles matches.")
-            self.canvas.setVisible(False); self.canvas.draw()
+            if getattr(self, "count_label", None) is not None:
+                self.count_label.setText(f"Found {len(self.star_list)} in-frame SIMBAD stars (0 with Pickles matches).")
+            if getattr(self, "canvas", None) is not None:
+                self.canvas.setVisible(False)
+                self.canvas.draw()
 
     # ── Core SFCC ───────────────────────────────────────────────────────
     def run_spcc(self):

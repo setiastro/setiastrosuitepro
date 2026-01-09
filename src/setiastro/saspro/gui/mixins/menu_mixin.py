@@ -170,6 +170,7 @@ class MenuMixin:
         m_tools.addAction(self.act_freqsep)
         m_tools.addAction(self.act_image_combine)
         m_tools.addAction(self.act_multiscale_decomp)
+        #m_tools.addAction(self.act_narrowband_normalization)
         m_tools.addAction(self.act_nbtorgb)
         m_tools.addAction(self.act_ppp)
         m_tools.addAction(self.act_selective_color)

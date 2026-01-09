@@ -31,7 +31,7 @@ from setiastro.saspro.resources import (
     stacking_path, pedestal_icon_path, starspike_path, astrospike_path,
     signature_icon_path, livestacking_path, convoicon_path, spcc_icon_path,
     exoicon_path, peeker_icon, dse_icon_path, isophote_path, statstretch_path,
-    starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path,
+    starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path, narrowbandnormalization_path,
     nbtorgb_path, freqsep_path, multiscale_decomp_path, contsub_path, halo_path, cosmic_path,
     satellite_path, imagecombine_path, wims_path, wimi_path, linearfit_path,
     debayer_path, aberration_path, functionbundles_path, viewbundles_path,
@@ -256,6 +256,7 @@ class ToolbarMixin:
         tb_tl.addAction(self.act_blink)  # Tools start here; Blink shows with QIcon(blink_path)
         tb_tl.addAction(self.act_ppp)    # Perfect Palette Picker
         tb_tl.addAction(self.act_nbtorgb)
+        #tb_tl.addAction(self.act_narrowband_normalization)
         tb_tl.addAction(self.act_selective_color)
         tb_tl.addAction(self.act_freqsep)
         tb_tl.addAction(self.act_multiscale_decomp)
@@ -367,6 +368,7 @@ class ToolbarMixin:
         tb_hidden.setObjectName("Hidden")
         tb_hidden.setSettingsKey("Toolbar/Hidden")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_hidden)
+        #tb_hidden.addAction(self.act_narrowband_normalization)
         tb_hidden.setVisible(False)  # <- always hidden
 
         # This can move actions between toolbars, so do it after each toolbar has its base order restored.
@@ -893,7 +895,7 @@ class ToolbarMixin:
         self.act_linear_fit.setShortcut("Ctrl+L")
         self.act_linear_fit.triggered.connect(self._open_linear_fit)
 
-        self.act_remove_green = QAction(QIcon(green_path), self.tr("Remove Green..."), self)
+        self.act_remove_green = QAction(QIcon(green_path), self.tr("Remove Green (SCNR)..."), self)
         self.act_remove_green.setToolTip(self.tr("SCNR-style green channel removal."))
         self.act_remove_green.setIconVisibleInMenu(True)
         self.act_remove_green.triggered.connect(self._open_remove_green)
@@ -1117,6 +1119,16 @@ class ToolbarMixin:
         self.act_ppp = QAction(QIcon(ppp_path), self.tr("Perfect Palette Picker..."), self)
         self.act_ppp.setStatusTip(self.tr("Pick the perfect palette for your image"))
         self.act_ppp.triggered.connect(self._open_ppp_tool) 
+
+        self.act_narrowband_normalization = QAction(QIcon(narrowbandnormalization_path), self.tr("Narrowband Normalization..."), self)
+        self.act_narrowband_normalization.setStatusTip(
+            self.tr("Normalize HOO/SHO/HSO/HOS (PixelMath port by Bill Blanshan and Mike Cranfield)")
+        )
+        self.act_narrowband_normalization.setIconVisibleInMenu(False)
+        self.act_narrowband_normalization.setShortcut(QKeySequence("Ctrl+Alt+Shift+N"))
+        self.act_narrowband_normalization.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+        self.addAction(self.act_narrowband_normalization)
+        self.act_narrowband_normalization.triggered.connect(self._open_narrowband_normalization_tool)
 
         self.act_nbtorgb = QAction(QIcon(nbtorgb_path), self.tr("NB->RGB Stars..."), self)
         self.act_nbtorgb.setStatusTip(self.tr("Combine narrowband to RGB with optional OSC stars"))
@@ -1361,6 +1373,7 @@ class ToolbarMixin:
         reg("nbtorgb",       self.act_nbtorgb)
         reg("freqsep",       self.act_freqsep)
         reg("selective_color", self.act_selective_color)
+        reg("narrowband_normalization", self.act_narrowband_normalization)
         reg("contsub",      self.act_contsub)
         reg("abe",          self.act_abe)
         reg("create_mask", self.act_create_mask)
@@ -1422,6 +1435,83 @@ class ToolbarMixin:
         reg("aberrationai", self.actAberrationAI)
         reg("view_bundles", self.act_view_bundles)
         reg("function_bundles", self.act_function_bundles)
+
+    def _reset_all_toolbars_to_factory(self):
+        """
+        Clears all persisted toolbar membership/order/hidden state so the UI
+        returns to the factory layout defined in code.
+        """
+        if not hasattr(self, "settings"):
+            return
+
+        # 1) Clear global toolbar persistence
+        keys_to_clear = [
+            "Toolbar/Assignments",
+            "Toolbar/HiddenPrev",
+            "Toolbar/HiddenMigrationDone",
+
+            # Per-toolbar order lists
+            "Toolbar/View",
+            "Toolbar/Functions",
+            "Toolbar/Cosmic",
+            "Toolbar/Tools",
+            "Toolbar/Geometry",
+            "Toolbar/StarStuff",
+            "Toolbar/Masks",
+            "Toolbar/WhatsInMy",
+            "Toolbar/Bundles",
+            "Toolbar/Hidden",
+        ]
+
+        for k in keys_to_clear:
+            try:
+                self.settings.remove(k)
+            except Exception:
+                pass
+
+        # 2) Clear legacy hidden lists (old system) if they exist
+        # (These are the ones like "Toolbar/Tools/Hidden")
+        try:
+            # brute-force remove known ones
+            legacy_hidden = [
+                "Toolbar/View/Hidden",
+                "Toolbar/Functions/Hidden",
+                "Toolbar/Cosmic/Hidden",
+                "Toolbar/Tools/Hidden",
+                "Toolbar/Geometry/Hidden",
+                "Toolbar/StarStuff/Hidden",
+                "Toolbar/Masks/Hidden",
+                "Toolbar/WhatsInMy/Hidden",
+                "Toolbar/Bundles/Hidden",
+            ]
+            for k in legacy_hidden:
+                self.settings.remove(k)
+        except Exception:
+            pass
+
+        try:
+            self.settings.sync()
+        except Exception:
+            pass
+
+        # 3) Rebuild toolbars from code defaults
+        # Safest approach: remove existing toolbars and rebuild.
+        from setiastro.saspro.shortcuts import DraggableToolBar
+        for tb in self.findChildren(DraggableToolBar):
+            try:
+                self.removeToolBar(tb)
+                tb.deleteLater()
+            except Exception:
+                pass
+
+        # Build fresh
+        self._init_toolbar()
+
+        # Optional: ensure Hidden stays hidden
+        tb_hidden = self._hidden_toolbar()
+        if tb_hidden:
+            tb_hidden.setVisible(False)
+
 
     def _restore_toolbar_order(self, tb, settings_key: str):
         """

@@ -590,6 +590,7 @@ class ImageSubWindow(QWidget):
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_ctx_menu)
         QShortcut(QKeySequence("F2"), self, activated=self._rename_view)
+        QShortcut(QKeySequence("F3"), self, activated=self._rename_document)
         #QShortcut(QKeySequence("A"), self, activated=self.toggle_autostretch)
         QShortcut(QKeySequence("Ctrl+Space"), self, activated=self.toggle_autostretch)
         QShortcut(QKeySequence("Alt+Shift+A"), self, activated=self.toggle_autostretch)
@@ -1726,7 +1727,7 @@ class ImageSubWindow(QWidget):
     def _show_ctx_menu(self, pos):
         menu = QMenu(self)
         a_view = menu.addAction(self.tr("Rename View… (F2)"))
-        a_doc  = menu.addAction(self.tr("Rename Document…"))
+        a_doc  = menu.addAction(self.tr("Rename Document…  (F3)"))
         menu.addSeparator()
         a_min  = menu.addAction(self.tr("Send to Shelf"))
         a_clear = menu.addAction(self.tr("Clear View Name (use doc name)"))
@@ -3081,7 +3082,6 @@ class ImageSubWindow(QWidget):
         yi = int(round(py / s))
         return xi, yi
 
-
     def _finish_preview_rect(self, vp_rect: QRect):
         if vp_rect.width() < 4 or vp_rect.height() < 4:
             self._cancel_rubber()
@@ -3186,8 +3186,6 @@ class ImageSubWindow(QWidget):
             return
 
         super().mousePressEvent(e)
-
-
 
     def _show_readout(self, xi, yi, sample):
         mw = self._find_main_window()
