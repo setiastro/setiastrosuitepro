@@ -11031,13 +11031,15 @@ class StackingSuiteDialog(QDialog):
         """
         Format exposure time for use in filenames, preserving precision.
         Uses 3 decimal places for sub-second exposures, otherwise uses general format.
+        The point (.) is used as decimal separator in the exposure value itself.
+        Other fields in the filename are separated by underscores.
         
         Examples:
-            1.5 -> "1.5"
-            1.7 -> "1.7"
-            1.567 -> "1.567"
-            30.0 -> "30"
-            0.5 -> "0.5"
+            1.5 -> "1.5"   (used in: MasterDark_session_1.5s_size_tag)
+            1.512 -> "1.512" (used in: MasterDark_session_1.512s_size_tag)
+            1.7 -> "1.7"   (used in: MasterDark_session_1.7s_size_tag)
+            30.0 -> "30"   (used in: MasterDark_session_30s_size_tag)
+            0.5 -> "0.5"   (used in: MasterDark_session_0.5s_size_tag)
         """
         try:
             exposure_time = float(exposure_time)
@@ -19549,12 +19551,13 @@ class StackingSuiteDialog(QDialog):
         Clean up common artifacts in master filenames:
         - collapse _-_ / -_ / _- into a single _
         - turn 40.0s → 40s (strip trailing .0…)
-        - keep non-integer exposures filename-safe (e.g., 2.5s → 2p5s)
+        - preserve decimal points in exposure values (e.g., 1.512s → 1.512s, not 1_512s)
         """
         # 1) collapse weird joiners like "_-_" or "-_" or "_-"
         stem = re.sub(r'(?:_-+|-+_)+', '_', stem)
 
         # 2) normalize exposures: <number>s
+        # Keep decimal points in exposure values, only strip trailing .0 for integers
         def _fix_exp(m):
             txt = m.group(1)  # the numeric part
             try:
@@ -19565,8 +19568,8 @@ class StackingSuiteDialog(QDialog):
             # If it's an integer (e.g., 40.0) → 40s
             if abs(val - round(val)) < 1e-6:
                 return f"{int(round(val))}s"
-            # Otherwise make it filename-friendly by replacing '.' with '_' → 2_5s
-            return txt.replace('.', '_') + 's'
+            # Otherwise preserve the decimal point (e.g., 1.512s → 1.512s)
+            return txt + 's'
 
         stem = re.sub(r'(\d+(?:\.\d+)?)s', _fix_exp, stem)
 
