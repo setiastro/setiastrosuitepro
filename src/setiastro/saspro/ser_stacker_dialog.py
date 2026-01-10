@@ -403,6 +403,35 @@ class _StackWorker(QThread):
             msg = f"{e}\n\n{traceback.format_exc()}"
             self.failed.emit(msg)
 
+class _ReAlignWorker(QThread):
+    progress = pyqtSignal(int, int, str)   # done, total, phase
+    finished_ok = pyqtSignal(object)       # updated AnalyzeResult
+    failed = pyqtSignal(str)
+
+    def __init__(self, cfg: SERStackConfig, analysis: AnalyzeResult, *, debayer: bool, to_rgb: bool):
+        super().__init__()
+        self.cfg = cfg
+        self.analysis = analysis
+        self.debayer = bool(debayer)
+        self.to_rgb = bool(to_rgb)
+
+    def run(self):
+        try:
+            def cb(done: int, total: int, phase: str):
+                self.progress.emit(int(done), int(total), str(phase))
+
+            from setiastro.saspro.ser_stacker import realign_ser  # you’ll add this below
+            out_analysis = realign_ser(
+                self.cfg,
+                self.analysis,
+                debayer=self.debayer,
+                to_rgb=self.to_rgb,
+                progress_cb=cb,
+            )
+            self.finished_ok.emit(out_analysis)
+        except Exception as e:
+            self.failed.emit(f"{e}\n\n{traceback.format_exc()}")
+
 
 class SERStackerDialog(QDialog):
     """
@@ -507,9 +536,6 @@ class SERStackerDialog(QDialog):
 
         self.graph = QualityGraph(self)
 
-        self.chk_multipoint = QCheckBox("Multi-point alignment (APs) — soon", self)
-        self.chk_multipoint.setChecked(False)
-        self.chk_multipoint.setEnabled(True)  # enable now just as UI; stacker will ignore for now
         self.spin_ap_min = QDoubleSpinBox(self)
         self.spin_ap_min.setRange(0.0, 1.0)
         self.spin_ap_min.setDecimals(3)
@@ -532,7 +558,7 @@ class SERStackerDialog(QDialog):
 
         fA.addRow("Reference", self.cmb_ref)
         fA.addRow("Ref stack N", self.spin_refN)
-        fA.addRow("", self.chk_multipoint)
+
         fA.addRow("AP size (px)", self.spin_ap_size)
         fA.addRow("AP spacing (px)", self.spin_ap_spacing)
 
@@ -590,8 +616,34 @@ class SERStackerDialog(QDialog):
                 centers = dlg.ap_centers()
                 self._analysis.ap_centers = centers
                 self._append_log(f"APs set: {int(centers.shape[0])} points")
-                self._append_log("Re-run Analyze to recompute alignment with new APs.")
+
+                # Recompute alignment only (no full analyze)
+                cfg = SERStackConfig(
+                    ser_path=self._ser_path,
+                    roi=self._roi,
+                    track_mode=self._track_mode_value(),
+                    surface_anchor=self._surface_anchor,
+                    keep_percent=float(self.spin_keep.value()),
+                    multipoint=True,
+                    ap_size=int(self.spin_ap_size.value()),
+                    ap_spacing=int(self.spin_ap_spacing.value()),
+                    ap_min_mean=float(self.spin_ap_min.value()),
+                )
+
+                self.lbl_prog.setVisible(True)
+                self.prog.setVisible(True)
+                self.prog.setRange(0, 100)
+                self.prog.setValue(0)
+                self.lbl_prog.setText("Re-aligning with APs…")
                 self.btn_stack.setEnabled(False)
+                self.btn_analyze.setEnabled(False)
+                self.btn_edit_aps.setEnabled(False)
+
+                self._worker_realign = _ReAlignWorker(cfg, self._analysis, debayer=bool(self.chk_debayer.isChecked()), to_rgb=False)
+                self._worker_realign.progress.connect(self._on_analyze_progress)  # reuse progress UI
+                self._worker_realign.finished_ok.connect(self._on_realign_ok)
+                self._worker_realign.failed.connect(self._on_analyze_fail)
+                self._worker_realign.start()
             else:
                 self._append_log("AP edit cancelled.")
         except Exception as e:
@@ -599,6 +651,16 @@ class SERStackerDialog(QDialog):
             QMessageBox.critical(self, "AP Editor Error", f"{e}\n\n{tb}")
             self._append_log(f"AP editor failed: {e}")
             self._append_log(tb)
+
+    def _on_realign_ok(self, ar: AnalyzeResult):
+        self._analysis = ar
+        self.prog.setVisible(False)
+        self.lbl_prog.setVisible(False)
+        self.btn_stack.setEnabled(True)
+        self.btn_analyze.setEnabled(True)
+        self.btn_edit_aps.setEnabled(True)
+        self._append_log("Re-align done (dx/dy/conf updated from APs).")
+
 
     def _append_log(self, s: str):
         try:
@@ -645,7 +707,7 @@ class SERStackerDialog(QDialog):
             track_mode=mode,
             surface_anchor=self._surface_anchor,
             keep_percent=float(self.spin_keep.value()),
-            multipoint=bool(self.chk_multipoint.isChecked()),
+            multipoint=True,
             ap_size=int(self.spin_ap_size.value()),
             ap_spacing=int(self.spin_ap_spacing.value()),
             ap_min_mean=float(self.spin_ap_min.value()),
@@ -726,7 +788,7 @@ class SERStackerDialog(QDialog):
             track_mode=mode,
             surface_anchor=self._surface_anchor,
             keep_percent=float(self.spin_keep.value()),
-            multipoint=bool(self.chk_multipoint.isChecked()),
+            multipoint=True,
             ap_size=int(self.spin_ap_size.value()),
             ap_spacing=int(self.spin_ap_spacing.value()),
             ap_min_mean=float(self.spin_ap_min.value()),

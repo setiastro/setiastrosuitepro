@@ -346,14 +346,12 @@ def analyze_ser(
     dx = np.zeros((n,), dtype=np.float32)
     dy = np.zeros((n,), dtype=np.float32)
     conf = np.ones((n,), dtype=np.float32)
-    ap_centers = None
-    if getattr(cfg, "multipoint", False):
-        ap_centers = _autoplace_aps(
-            ref_img,
-            ap_size=int(getattr(cfg, "ap_size", 64)),
-            ap_spacing=int(getattr(cfg, "ap_spacing", 48)),
-            ap_min_mean=float(getattr(cfg, "ap_min_mean", 0.03)),
-        )
+    ap_centers = _autoplace_aps(
+        ref_img,
+        ap_size=int(getattr(cfg, "ap_size", 64)),
+        ap_spacing=int(getattr(cfg, "ap_spacing", 48)),
+        ap_min_mean=float(getattr(cfg, "ap_min_mean", 0.03)),
+    )
         
     if cfg.track_mode == "off" or cv2 is None:
         return AnalyzeResult(
@@ -501,6 +499,140 @@ def analyze_ser(
         ref_image=ref_img,
         ap_centers=ap_centers,
     )
+
+def realign_ser(
+    cfg: SERStackConfig,
+    analysis: AnalyzeResult,
+    *,
+    debayer: bool = True,
+    to_rgb: bool = False,
+    max_dim: int = 512,
+    progress_cb=None,
+    workers: Optional[int] = None,
+) -> AnalyzeResult:
+    """
+    Recompute dx/dy/conf only using analysis.ref_image and analysis.ap_centers.
+    Keeps quality/order/ref_image unchanged.
+    """
+    if analysis is None:
+        raise ValueError("analysis is None")
+    if analysis.ref_image is None:
+        raise ValueError("analysis.ref_image is missing")
+
+    n = int(analysis.frames_total)
+    roi = analysis.roi_used
+    ref_img = analysis.ref_image
+
+    ap_centers = getattr(analysis, "ap_centers", None)
+    if ap_centers is None or np.asarray(ap_centers).size == 0:
+        # fallback to auto-place (but you usually won’t hit this)
+        ap_centers = _autoplace_aps(
+            ref_img,
+            ap_size=int(getattr(cfg, "ap_size", 64)),
+            ap_spacing=int(getattr(cfg, "ap_spacing", 48)),
+            ap_min_mean=float(getattr(cfg, "ap_min_mean", 0.03)),
+        )
+        analysis.ap_centers = ap_centers
+
+    dx = np.zeros((n,), dtype=np.float32)
+    dy = np.zeros((n,), dtype=np.float32)
+    conf = np.ones((n,), dtype=np.float32)
+
+    if cfg.track_mode == "off" or cv2 is None:
+        analysis.dx = dx
+        analysis.dy = dy
+        analysis.conf = conf
+        return analysis
+
+    if workers is None:
+        cpu = os.cpu_count() or 4
+        workers = max(1, min(cpu, 24))
+
+    idxs = np.arange(n, dtype=np.int32)
+    chunks2 = np.array_split(idxs, max(1, workers))
+
+    if progress_cb:
+        progress_cb(0, n, "Align")
+
+    # surface vs planetary setup
+    if cfg.track_mode == "surface":
+        if cfg.surface_anchor is None:
+            raise ValueError("track_mode='surface' requires cfg.surface_anchor (ROI-space)")
+
+        ax, ay, aw, ah = [int(v) for v in cfg.surface_anchor]
+        H, W = ref_img.shape[:2]
+        ax = max(0, min(W - 1, ax))
+        ay = max(0, min(H - 1, ay))
+        aw = max(2, min(W - ax, aw))
+        ah = max(2, min(H - ay, ah))
+
+        ref_patch = ref_img[ay:ay + ah, ax:ax + aw]
+        ref_m = _downsample_mono01(ref_patch, max_dim=max_dim)
+        refH, refW = ref_m.shape[:2]
+        sx = float(aw) / float(refW)
+        sy = float(ah) / float(refH)
+
+        def _shift_chunk(chunk: np.ndarray):
+            out_i, out_dx, out_dy, out_cf = [], [], [], []
+            with SERReader(cfg.ser_path, cache_items=0) as r:
+                for i in chunk.tolist():
+                    img = r.get_frame(int(i), roi=roi, debayer=debayer, to_float01=True, force_rgb=bool(to_rgb))
+                    cur_m_full = _to_mono01(img).astype(np.float32, copy=False)
+
+                    dx_i, dy_i, cf_i = _ap_phase_shift(
+                        _to_mono01(ref_img).astype(np.float32, copy=False),
+                        cur_m_full,
+                        ap_centers=np.asarray(ap_centers, np.int32),
+                        ap_size=int(getattr(cfg, "ap_size", 64)),
+                        max_dim=max_dim,
+                    )
+
+                    # NOTE: _ap_phase_shift already returns ROI-pixel dx/dy, so no sx/sy scaling needed here.
+                    out_i.append(int(i)); out_dx.append(float(dx_i)); out_dy.append(float(dy_i)); out_cf.append(float(cf_i))
+            return (np.asarray(out_i, np.int32),
+                    np.asarray(out_dx, np.float32),
+                    np.asarray(out_dy, np.float32),
+                    np.asarray(out_cf, np.float32))
+
+    else:
+        def _shift_chunk(chunk: np.ndarray):
+            out_i, out_dx, out_dy, out_cf = [], [], [], []
+            with SERReader(cfg.ser_path, cache_items=0) as r:
+                for i in chunk.tolist():
+                    img = r.get_frame(int(i), roi=roi, debayer=debayer, to_float01=True, force_rgb=bool(to_rgb))
+                    cur_m_full = _to_mono01(img).astype(np.float32, copy=False)
+
+                    dx_i, dy_i, cf_i = _ap_phase_shift(
+                        _to_mono01(ref_img).astype(np.float32, copy=False),
+                        cur_m_full,
+                        ap_centers=np.asarray(ap_centers, np.int32),
+                        ap_size=int(getattr(cfg, "ap_size", 64)),
+                        max_dim=max_dim,
+                    )
+                    out_i.append(int(i)); out_dx.append(float(dx_i)); out_dy.append(float(dy_i)); out_cf.append(float(cf_i))
+            return (np.asarray(out_i, np.int32),
+                    np.asarray(out_dx, np.float32),
+                    np.asarray(out_dy, np.float32),
+                    np.asarray(out_cf, np.float32))
+
+    done_ct = 0
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futs = [ex.submit(_shift_chunk, c) for c in chunks2 if c.size > 0]
+        for fut in as_completed(futs):
+            ii, ddx, ddy, ccf = fut.result()
+            dx[ii] = ddx
+            dy[ii] = ddy
+            conf[ii] = np.clip(ccf, 0.05, 1.0).astype(np.float32, copy=False)
+
+            done_ct += int(ii.size)
+            if progress_cb:
+                progress_cb(done_ct, n, "Align")
+
+    analysis.dx = dx
+    analysis.dy = dy
+    analysis.conf = conf
+    return analysis
+
 
 def _autoplace_aps(ref_img01: np.ndarray, ap_size: int, ap_spacing: int, ap_min_mean: float) -> np.ndarray:
     """
