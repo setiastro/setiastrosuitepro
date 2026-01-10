@@ -195,7 +195,7 @@ from setiastro.saspro.resources import (
     disk_icon_path, nuke_path, hubble_path, collage_path, annotated_path,
     colorwheel_path, font_path, csv_icon_path, spinner_path, wims_path, narrowbandnormalization_path,
     wimi_path, linearfit_path, debayer_path, aberration_path, acv_icon_path,
-    functionbundles_path, viewbundles_path, selectivecolor_path, rgbalign_path,
+    functionbundles_path, viewbundles_path, selectivecolor_path, rgbalign_path, planetarystacker_path,
     background_path, script_icon_path
 )
 
@@ -4270,6 +4270,14 @@ class AstroSuiteProMainWindow(
         )
         dlg.setWindowFlag(Qt.WindowType.Window, True)
         dlg.setWindowIcon(QIcon(livestacking_path))
+        dlg.show()
+
+    def _open_planetary_stacker(self):
+        # import locally to avoid startup cost / circular imports
+        from setiastro.saspro.serviewer import SERViewer
+        dlg = SERViewer(self)
+        dlg.setWindowFlag(Qt.WindowType.Window, True)
+        dlg.setWindowIcon(QIcon(planetarystacker_path))        
         dlg.show()
 
     def _open_stacking_suite(self):

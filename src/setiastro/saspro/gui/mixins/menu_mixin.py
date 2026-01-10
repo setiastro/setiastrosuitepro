@@ -201,6 +201,7 @@ class MenuMixin:
         m_star.addAction(self.act_isophote)
         m_star.addAction(self.act_live_stacking)
         m_star.addAction(self.act_mosaic_master)
+        m_star.addAction(self.act_planetary_stacker)
         m_star.addAction(self.act_plate_solve)
         m_star.addAction(self.act_psf_viewer)
         m_star.addAction(self.act_rgb_align)

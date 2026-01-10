@@ -34,7 +34,7 @@ from setiastro.saspro.resources import (
     starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path, narrowbandnormalization_path,
     nbtorgb_path, freqsep_path, multiscale_decomp_path, contsub_path, halo_path, cosmic_path,
     satellite_path, imagecombine_path, wims_path, wimi_path, linearfit_path,
-    debayer_path, aberration_path, functionbundles_path, viewbundles_path,
+    debayer_path, aberration_path, functionbundles_path, viewbundles_path, planetarystacker_path,
     selectivecolor_path, rgbalign_path,
 )
 
@@ -303,6 +303,7 @@ class ToolbarMixin:
         tb_star.addAction(self.act_psf_viewer)
         tb_star.addAction(self.act_stacking_suite)
         tb_star.addAction(self.act_live_stacking)
+        tb_star.addAction(self.act_planetary_stacker)
         tb_star.addAction(self.act_plate_solve)
         tb_star.addAction(self.act_star_align)
         tb_star.addAction(self.act_star_register)
@@ -1177,6 +1178,11 @@ class ToolbarMixin:
         self.act_live_stacking.setStatusTip(self.tr("Live monitor and stack incoming frames"))
         self.act_live_stacking.triggered.connect(self._open_live_stacking)
 
+        self.act_planetary_stacker = QAction(QIcon(planetarystacker_path), self.tr("Planetary Stacker..."), self)
+        self.act_planetary_stacker.setIconVisibleInMenu(True)
+        self.act_planetary_stacker.setStatusTip(self.tr("Stack SER videos (planetary/solar/lunar)"))
+        self.act_planetary_stacker.triggered.connect(self._open_planetary_stacker)
+
         self.act_plate_solve = QAction(QIcon(platesolve_path), self.tr("Plate Solver..."), self)
         self.act_plate_solve.setIconVisibleInMenu(True)
         self.act_plate_solve.setStatusTip(self.tr("Solve WCS/SIP for the active image or a file"))
@@ -1398,7 +1404,7 @@ class ToolbarMixin:
         reg("pixel_math", self.act_pixelmath)
         reg("signature_insert", self.act_signature) 
         reg("halo_b_gon", self.act_halobgon)
-
+        reg("planetary_stacker", self.act_planetary_stacker)
         reg("multiscale_decomp", self.act_multiscale_decomp)        
         reg("geom_invert",                 self.act_geom_invert)
         reg("geom_flip_horizontal",        self.act_geom_flip_h)

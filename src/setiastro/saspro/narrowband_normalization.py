@@ -27,6 +27,10 @@ from setiastro.saspro.linear_fit import linear_fit_mono_to_ref, _nanmedian
 
 from setiastro.saspro.imageops.narrowband_normalization import normalize_narrowband, NBNParams
 
+from setiastro.saspro.backgroundneutral import background_neutralize_rgb, auto_rect_50x50
+from setiastro.saspro.widgets.image_utils import extract_mask_from_document as _active_mask_array_from_doc
+
+
 @dataclass
 class _NBNJob:
     ha: np.ndarray | None
@@ -137,6 +141,8 @@ class NarrowbandNormalization(QWidget):
         colB = QVBoxLayout(); colB.setSpacing(8)
 
         # Column A: loaders
+        colA.addWidget(self.grp_import)
+
         colA.addWidget(QLabel("<b>Load channels</b>"))
 
         self.grp_nb = QGroupBox("Narrowband channels", self)
@@ -180,7 +186,7 @@ class NarrowbandNormalization(QWidget):
         left_row.addLayout(colA, 1)
         left_row.addLayout(colB, 1)
 
-        left_scroll.setMinimumWidth(420)
+        left_scroll.setMinimumWidth(480)
         left_scroll.setMaximumWidth(640)
         root.addWidget(left_scroll, 0)
 
@@ -259,13 +265,28 @@ class NarrowbandNormalization(QWidget):
         outer.addWidget(self.lbl_credits, 0)
 
         self.setLayout(outer)
-        self.setMinimumSize(1080, 640)
+        self.setMinimumSize(1080, 720)
 
         # Initial state
         self._refresh_visibility()
 
 
     def _init_widgets(self):
+        # -------- Import mapped RGB (Perfect Palette / existing composites) --------
+        self.grp_import = QGroupBox("Import mapped RGB view", self)
+        impv = QVBoxLayout(self.grp_import)
+        impv.setSpacing(6)
+
+        # Use themed buttons for consistency
+        self.btn_imp_sho = QPushButton("Load SHO View…", self)
+        self.btn_imp_hso = QPushButton("Load HSO View…", self)
+        self.btn_imp_hos = QPushButton("Load HOS View…", self)
+        self.btn_imp_hoo = QPushButton("Load HOO View…", self)
+
+        for b in (self.btn_imp_sho, self.btn_imp_hso, self.btn_imp_hos, self.btn_imp_hoo):
+            b.setMinimumHeight(28)
+            impv.addWidget(b)
+
         # -------- Channel load buttons + labels --------
         self.btn_ha = QPushButton("Load Ha…", self)
         self.btn_oiii = QPushButton("Load OIII…", self)
@@ -362,8 +383,11 @@ class NarrowbandNormalization(QWidget):
         self.chk_scnr = QCheckBox("SCNR (reduce green cast)", self)
         self.chk_scnr.setChecked(True)
 
-        self.chk_linear_fit = QCheckBox("Quick Linear Fit (match medians)", self)
+        self.chk_linear_fit = QCheckBox("Linear Fit (highest signal)", self)
         self.chk_linear_fit.setChecked(False)
+
+        self.chk_bg_neutral = QCheckBox("Background Neutralization (∇-descent)", self)
+        self.chk_bg_neutral.setChecked(True)  # your call on default
 
         # Layout (use QLabel so we can rename rows dynamically)
         form.addRow("Scenario:", self.cmb_scenario)
@@ -401,6 +425,7 @@ class NarrowbandNormalization(QWidget):
 
         form.addRow("", self.chk_scnr)
         form.addRow("", self.chk_linear_fit)
+        form.addRow("", self.chk_bg_neutral)   
         form.addRow("", self.chk_preview_autostretch)
 
         grp.setLayout(form)
@@ -408,6 +433,10 @@ class NarrowbandNormalization(QWidget):
 
     def _connect_signals(self):
         # Loaders
+        self.btn_imp_sho.clicked.connect(lambda: self._import_mapped_view("SHO"))
+        self.btn_imp_hso.clicked.connect(lambda: self._import_mapped_view("HSO"))
+        self.btn_imp_hos.clicked.connect(lambda: self._import_mapped_view("HOS"))
+        self.btn_imp_hoo.clicked.connect(lambda: self._import_mapped_view("HOO"))        
         self.btn_ha.clicked.connect(lambda: self._load_channel("Ha"))
         self.btn_oiii.clicked.connect(lambda: self._load_channel("OIII"))
         self.btn_sii.clicked.connect(lambda: self._load_channel("SII"))
@@ -424,6 +453,7 @@ class NarrowbandNormalization(QWidget):
         self.cmb_scenario.currentIndexChanged.connect(self._refresh_visibility)
         self.cmb_mode.currentIndexChanged.connect(self._refresh_visibility)
         self.cmb_lightness.currentIndexChanged.connect(self._schedule_preview)
+        self.chk_bg_neutral.toggled.connect(self._schedule_preview)
 
         for w in (
             self.spin_blackpoint, self.spin_hlrecover, self.spin_hlreduct, self.spin_brightness,
@@ -553,8 +583,10 @@ class NarrowbandNormalization(QWidget):
             return
 
         def on_done(out: np.ndarray, step_name: str):
-            # Preview DISPLAY path (may autostretch for viewing)
-            disp = out
+            out2 = self._maybe_background_neutralize_rgb(out, doc_for_mask=None)
+            self.final = out2
+
+            disp = out2
             if self.chk_preview_autostretch.isChecked():
                 disp = np.clip(stretch_color_image(disp, target_median=0.25, linked=True), 0.0, 1.0)
 
@@ -578,6 +610,30 @@ class NarrowbandNormalization(QWidget):
             on_fail=on_fail,
         )
 
+    def _maybe_background_neutralize_rgb(self, rgb: np.ndarray, *, doc_for_mask=None) -> np.ndarray:
+        """
+        Apply BN to an RGB float image in [0,1] if the checkbox is enabled.
+        If doc_for_mask is provided, blend result using destination active mask (headless behavior).
+        """
+        if not getattr(self, "chk_bg_neutral", None) or not self.chk_bg_neutral.isChecked():
+            return rgb
+
+        if rgb is None or rgb.ndim != 3 or rgb.shape[2] != 3:
+            return rgb
+
+        # auto rect + neutralize (same logic as headless BN default)
+        rect = auto_rect_50x50(rgb)
+        out = background_neutralize_rgb(rgb.astype(np.float32, copy=False), rect)
+
+        # destination active-mask blend (same as apply_background_neutral_to_doc)
+        if doc_for_mask is not None:
+            m = _active_mask_array_from_doc(doc_for_mask)
+            if m is not None:
+                m3 = np.repeat(m[..., None], 3, axis=2).astype(np.float32, copy=False)
+                base_for_blend = rgb.astype(np.float32, copy=False)
+                out = base_for_blend * (1.0 - m3) + out * m3
+
+        return out.astype(np.float32, copy=False)
 
     def _requirements_met(self, ha, oo, si) -> tuple[bool, str]:
         scen = self._scenario()
@@ -762,6 +818,128 @@ class NarrowbandNormalization(QWidget):
         self.status.setText(f"{which} loaded ({'mono' if img.ndim==2 else 'RGB'}) shape={img.shape}")
 
         self._schedule_preview()
+
+    def _import_mapped_view(self, scenario: str):
+        """
+        Import an already-mapped RGB composite (e.g. from Perfect Palette Picker)
+        and split it into Ha/OIII/SII channels according to scenario mapping.
+        """
+        # Force scenario selection to match the mapping the user chose
+        idx = self.cmb_scenario.findText(scenario)
+        if idx >= 0:
+            self.cmb_scenario.setCurrentIndex(idx)
+
+        views = self._list_open_views()
+        if not views:
+            QMessageBox.warning(self, "No Views", "No open image views were found.")
+            return
+
+        labels = [lab for lab, _ in views]
+        choice, ok = QInputDialog.getItem(
+            self, f"Select {scenario} View", "Choose a mapped RGB view:", labels, 0, False
+        )
+        if not ok or not choice:
+            return
+
+        sw = dict(views)[choice]
+        doc = getattr(sw, "document", None)
+        if doc is None or getattr(doc, "image", None) is None:
+            QMessageBox.warning(self, "Empty View", "Selected view has no image.")
+            return
+
+        img = doc.image
+        if img.ndim == 2 or (img.ndim == 3 and img.shape[2] == 1):
+            QMessageBox.warning(
+                self, "Not RGB",
+                "That view is mono. Import requires an RGB mapped composite (3-channel)."
+            )
+            return
+
+        if img.ndim != 3 or img.shape[2] != 3:
+            QMessageBox.warning(
+                self, "Unsupported Shape",
+                f"Expected RGB (H,W,3). Got {img.shape}."
+            )
+            return
+
+        rgb = self._as_float01(img)
+
+        ha, oiii, sii = self._split_mapped_rgb(rgb, scenario)
+
+        # Store as mono float [0..1]
+        self.ha = ha
+        self.oiii = oiii
+        self.sii = sii
+
+        # Clear OSC helpers (we’re now using direct NB channels)
+        self.osc1 = None
+        self.osc2 = None
+
+        # Labels
+        src = f"From View: {choice}"
+        if scenario == "HOO":
+            self._set_status_label("Ha",   f"{src} (Ha←R)")
+            self._set_status_label("OIII", f"{src} (OIII←G/B)")
+            self._set_status_label("SII",  None)
+        else:
+            # indicate mapping
+            map_txt = {
+                "SHO": "(SII←R, Ha←G, OIII←B)",
+                "HSO": "(Ha←R, SII←G, OIII←B)",
+                "HOS": "(Ha←R, OIII←G, SII←B)",
+            }.get(scenario, "")
+            self._set_status_label("Ha",   f"{src} {map_txt}")
+            self._set_status_label("OIII", f"{src} {map_txt}")
+            self._set_status_label("SII",  f"{src} {map_txt}")
+
+        self.status.setText(f"Imported mapped {scenario} view → channels loaded.")
+        self._schedule_preview()
+
+
+    def _split_mapped_rgb(self, rgb: np.ndarray, scenario: str) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+        """
+        Given an RGB mapped composite in [0..1], return (Ha, OIII, SII) mono channels.
+        For HOO, returns (Ha, OIII, None).
+        """
+        r = rgb[..., 0].astype(np.float32, copy=False)
+        g = rgb[..., 1].astype(np.float32, copy=False)
+        b = rgb[..., 2].astype(np.float32, copy=False)
+
+        scen = scenario.upper().strip()
+
+        if scen == "SHO":
+            # R=SII, G=Ha, B=OIII
+            sii = r
+            ha = g
+            oiii = b
+            return ha, oiii, sii
+
+        if scen == "HSO":
+            # R=Ha, G=SII, B=OIII
+            ha = r
+            sii = g
+            oiii = b
+            return ha, oiii, sii
+
+        if scen == "HOS":
+            # R=Ha, G=OIII, B=SII
+            ha = r
+            oiii = g
+            sii = b
+            return ha, oiii, sii
+
+        if scen == "HOO":
+            # Common mapping: R=Ha, G/B = OIII-ish
+            ha = r
+            oiii = 0.5 * (g + b)
+            return ha, oiii.astype(np.float32, copy=False), None
+
+        # Fallback: treat as HOS-ish
+        ha = r
+        oiii = g
+        sii = b
+        return ha, oiii, sii
+
 
     def _load_from_view(self, which):
         views = self._list_open_views()
@@ -1277,13 +1455,23 @@ class NarrowbandNormalization(QWidget):
 
         def on_done(out: np.ndarray, step_name: str):
             try:
-                if hasattr(doc, "set_image"):
-                    doc.set_image(out, step_name="Narrowband Normalization")
+                out2 = self._maybe_background_neutralize_rgb(out, doc_for_mask=doc)
+
+                # Prefer apply_edit if your doc supports it (history + metadata)
+                if hasattr(doc, "apply_edit"):
+                    meta = {"step_name": "Narrowband Normalization"}
+                    if self.chk_bg_neutral.isChecked():
+                        meta["post_step"] = "Background Neutralization (auto)"
+                    doc.apply_edit(out2.astype(np.float32, copy=False), metadata=meta, step_name="Narrowband Normalization")
+                elif hasattr(doc, "set_image"):
+                    doc.set_image(out2, step_name="Narrowband Normalization")
                 else:
-                    doc.image = out
+                    doc.image = out2
+
                 self.status.setText("Applied normalization to current view.")
             except Exception as e:
                 QMessageBox.critical(self, "Apply Error", f"Failed to apply:\n{e}")
+
 
         self._start_job(
             downsample=False,                 # FULL RES
@@ -1309,12 +1497,20 @@ class NarrowbandNormalization(QWidget):
 
         def on_done(out: np.ndarray, step_name: str):
             try:
+                # Apply optional headless BN to the RESULT before pushing
+                out2 = self._maybe_background_neutralize_rgb(out, doc_for_mask=None)
+
+                meta = {"is_mono": False}
+                if getattr(self, "chk_bg_neutral", None) and self.chk_bg_neutral.isChecked():
+                    meta["post_step"] = "Background Neutralization (auto)"
+
                 if hasattr(dm, "open_array"):
-                    dm.open_array(out, metadata={"is_mono": False}, title=title)
+                    dm.open_array(out2, metadata=meta, title=title)
                 elif hasattr(dm, "create_document"):
-                    dm.create_document(image=out, metadata={"is_mono": False}, name=title)
+                    dm.create_document(image=out2, metadata=meta, name=title)
                 else:
                     raise RuntimeError("DocManager lacks open_array/create_document")
+
                 self.status.setText("Opened result in a new view.")
             except Exception as e:
                 QMessageBox.critical(self, "Push Error", f"Failed to open new view:\n{e}")
