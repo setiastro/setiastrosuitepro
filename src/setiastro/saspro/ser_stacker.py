@@ -401,13 +401,25 @@ def analyze_ser(
                     cur_m_full = _to_mono01(img).astype(np.float32, copy=False)
 
                     if ap_centers is not None:
-                        dx_i, dy_i, cf_i = _ap_phase_shift(
-                            _to_mono01(ref_img).astype(np.float32, copy=False),
-                            cur_m_full,
-                            ap_centers=ap_centers,
-                            ap_size=int(getattr(cfg, "ap_size", 64)),
-                            max_dim=max_dim,
-                        )
+                        ref_m_full = _to_mono01(ref_img).astype(np.float32, copy=False)
+                        cur_m_full = _to_mono01(img).astype(np.float32, copy=False)
+
+                        ap_size = int(getattr(cfg, "ap_size", 64))
+                        if bool(getattr(cfg, "ap_multiscale", False)):
+                            dx_i, dy_i, cf_i = _ap_phase_shift_multiscale(
+                                ref_m_full, cur_m_full,
+                                ap_centers=ap_centers,
+                                base_ap_size=ap_size,
+                                max_dim=max_dim,
+                            )
+                        else:
+                            dx_i, dy_i, cf_i = _ap_phase_shift(
+                                ref_m_full, cur_m_full,
+                                ap_centers=ap_centers,
+                                ap_size=ap_size,
+                                max_dim=max_dim,
+                            )
+
                     else:
                         # old single-point: downsample full frame and correlate
                         cur_m = _downsample_mono01(img, max_dim=max_dim)
@@ -579,13 +591,25 @@ def realign_ser(
                     img = r.get_frame(int(i), roi=roi, debayer=debayer, to_float01=True, force_rgb=bool(to_rgb))
                     cur_m_full = _to_mono01(img).astype(np.float32, copy=False)
 
-                    dx_i, dy_i, cf_i = _ap_phase_shift(
-                        _to_mono01(ref_img).astype(np.float32, copy=False),
-                        cur_m_full,
-                        ap_centers=np.asarray(ap_centers, np.int32),
-                        ap_size=int(getattr(cfg, "ap_size", 64)),
-                        max_dim=max_dim,
-                    )
+                    ref_m_full = _to_mono01(ref_img).astype(np.float32, copy=False)
+                    cur_m_full = _to_mono01(img).astype(np.float32, copy=False)
+
+                    ap_size = int(getattr(cfg, "ap_size", 64))
+                    if bool(getattr(cfg, "ap_multiscale", False)):
+                        dx_i, dy_i, cf_i = _ap_phase_shift_multiscale(
+                            ref_m_full, cur_m_full,
+                            ap_centers=ap_centers,
+                            base_ap_size=ap_size,
+                            max_dim=max_dim,
+                        )
+                    else:
+                        dx_i, dy_i, cf_i = _ap_phase_shift(
+                            ref_m_full, cur_m_full,
+                            ap_centers=ap_centers,
+                            ap_size=ap_size,
+                            max_dim=max_dim,
+                        )
+
 
                     # NOTE: _ap_phase_shift already returns ROI-pixel dx/dy, so no sx/sy scaling needed here.
                     out_i.append(int(i)); out_dx.append(float(dx_i)); out_dy.append(float(dy_i)); out_cf.append(float(cf_i))
@@ -602,13 +626,25 @@ def realign_ser(
                     img = r.get_frame(int(i), roi=roi, debayer=debayer, to_float01=True, force_rgb=bool(to_rgb))
                     cur_m_full = _to_mono01(img).astype(np.float32, copy=False)
 
-                    dx_i, dy_i, cf_i = _ap_phase_shift(
-                        _to_mono01(ref_img).astype(np.float32, copy=False),
-                        cur_m_full,
-                        ap_centers=np.asarray(ap_centers, np.int32),
-                        ap_size=int(getattr(cfg, "ap_size", 64)),
-                        max_dim=max_dim,
-                    )
+                    ref_m_full = _to_mono01(ref_img).astype(np.float32, copy=False)
+                    cur_m_full = _to_mono01(img).astype(np.float32, copy=False)
+
+                    ap_size = int(getattr(cfg, "ap_size", 64))
+                    if bool(getattr(cfg, "ap_multiscale", False)):
+                        dx_i, dy_i, cf_i = _ap_phase_shift_multiscale(
+                            ref_m_full, cur_m_full,
+                            ap_centers=ap_centers,
+                            base_ap_size=ap_size,
+                            max_dim=max_dim,
+                        )
+                    else:
+                        dx_i, dy_i, cf_i = _ap_phase_shift(
+                            ref_m_full, cur_m_full,
+                            ap_centers=ap_centers,
+                            ap_size=ap_size,
+                            max_dim=max_dim,
+                        )
+
                     out_i.append(int(i)); out_dx.append(float(dx_i)); out_dy.append(float(dy_i)); out_cf.append(float(cf_i))
             return (np.asarray(out_i, np.int32),
                     np.asarray(out_dx, np.float32),
@@ -669,6 +705,18 @@ def _autoplace_aps(ref_img01: np.ndarray, ap_size: int, ap_spacing: int, ap_min_
 
     return np.asarray(pts, dtype=np.int32)
 
+def _scaled_ap_sizes(base: int) -> tuple[int, int, int]:
+    b = int(base)
+    s2 = int(round(b * 2.0))
+    s1 = int(round(b * 1.0))
+    s05 = int(round(b * 0.5))
+    # clamp to sane limits
+    s2 = max(16, min(256, s2))
+    s1 = max(16, min(256, s1))
+    s05 = max(16, min(256, s05))
+    return s2, s1, s05
+
+
 def _ap_phase_shift(
     ref_m: np.ndarray,
     cur_m: np.ndarray,
@@ -725,3 +773,34 @@ def _ap_phase_shift(
     conf = float(np.median(np.asarray(resps, np.float32)))
 
     return dx_med, dy_med, conf
+
+def _ap_phase_shift_multiscale(
+    ref_m: np.ndarray,
+    cur_m: np.ndarray,
+    ap_centers: np.ndarray,
+    base_ap_size: int,
+    max_dim: int,
+) -> tuple[float, float, float]:
+    """
+    Multi-scale AP shift:
+    - compute shifts at 2×, 1×, ½× AP sizes using same centers
+    - combine using confidence weights (favoring coarser slightly)
+    Returns (dx, dy, conf) in ROI pixels.
+    """
+    s2, s1, s05 = _scaled_ap_sizes(base_ap_size)
+
+    dx2, dy2, cf2 = _ap_phase_shift(ref_m, cur_m, ap_centers, s2, max_dim)
+    dx1, dy1, cf1 = _ap_phase_shift(ref_m, cur_m, ap_centers, s1, max_dim)
+    dx0, dy0, cf0 = _ap_phase_shift(ref_m, cur_m, ap_centers, s05, max_dim)
+
+    # weights: confidence * slight preference for larger scale (stability)
+    w2 = max(1e-3, float(cf2)) * 1.25
+    w1 = max(1e-3, float(cf1)) * 1.00
+    w0 = max(1e-3, float(cf0)) * 0.85
+
+    wsum = (w2 + w1 + w0)
+    dx = (w2 * dx2 + w1 * dx1 + w0 * dx0) / wsum
+    dy = (w2 * dy2 + w1 * dy1 + w0 * dy0) / wsum
+    conf = float(np.clip((w2 * cf2 + w1 * cf1 + w0 * cf0) / wsum, 0.0, 1.0))
+
+    return float(dx), float(dy), float(conf)

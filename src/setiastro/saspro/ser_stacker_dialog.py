@@ -559,6 +559,10 @@ class SERStackerDialog(QDialog):
         fA.addRow("Reference", self.cmb_ref)
         fA.addRow("Ref stack N", self.spin_refN)
 
+        self.cmb_ap_scale = QComboBox(self)
+        self.cmb_ap_scale.addItems(["Single", "Multi-scale (2× / 1× / ½×)"])
+        fA.addRow("AP scale", self.cmb_ap_scale)
+
         fA.addRow("AP size (px)", self.spin_ap_size)
         fA.addRow("AP spacing (px)", self.spin_ap_spacing)
 
@@ -628,6 +632,7 @@ class SERStackerDialog(QDialog):
                     ap_size=int(self.spin_ap_size.value()),
                     ap_spacing=int(self.spin_ap_spacing.value()),
                     ap_min_mean=float(self.spin_ap_min.value()),
+                    ap_multiscale=(self.cmb_ap_scale.currentIndex() == 1),
                 )
 
                 self.lbl_prog.setVisible(True)
@@ -711,6 +716,7 @@ class SERStackerDialog(QDialog):
             ap_size=int(self.spin_ap_size.value()),
             ap_spacing=int(self.spin_ap_spacing.value()),
             ap_min_mean=float(self.spin_ap_min.value()),
+            ap_multiscale=(self.cmb_ap_scale.currentIndex() == 1),
         )
 
         self.btn_analyze.setEnabled(False)
@@ -792,6 +798,7 @@ class SERStackerDialog(QDialog):
             ap_size=int(self.spin_ap_size.value()),
             ap_spacing=int(self.spin_ap_spacing.value()),
             ap_min_mean=float(self.spin_ap_min.value()),
+            ap_multiscale=(self.cmb_ap_scale.currentIndex() == 1),
         )
 
         debayer = bool(self.chk_debayer.isChecked())

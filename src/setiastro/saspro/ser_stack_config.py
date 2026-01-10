@@ -17,4 +17,5 @@ class SERStackConfig:
     multipoint: bool = False
     ap_size: int = 64
     ap_spacing: int = 48
-    ap_min_mean: float = 0.03     
+    ap_min_mean: float = 0.03    
+    ap_multiscale: bool = False 
