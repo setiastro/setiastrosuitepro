@@ -5,7 +5,7 @@ import numpy as np
 from PyQt6.QtCore import Qt, QSettings, QTimer, QEvent, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QPushButton, QScrollArea,QWidget,
-    QTableWidget, QTableWidgetItem, QMessageBox, QToolButton, QInputDialog, QSplitter, QSizePolicy, QHeaderView
+    QTableWidget, QTableWidgetItem, QMessageBox, QToolButton, QInputDialog, QSplitter, QSizePolicy, QHeaderView, QApplication
 )
 from PyQt6.QtGui import QPixmap, QPainter, QPen, QColor, QFont, QPalette
 
