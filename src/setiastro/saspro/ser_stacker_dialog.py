@@ -5,11 +5,11 @@ import traceback
 import numpy as np
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QRectF
-from PyQt6.QtWidgets import (QWidget, QSpinBox,
+from PyQt6.QtWidgets import (QWidget, QSpinBox, QMessageBox,
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGroupBox,
     QFormLayout, QComboBox, QDoubleSpinBox, QCheckBox, QTextEdit, QProgressBar
 )
-from PyQt6.QtGui import QPainter, QPen, QColor
+from PyQt6.QtGui import QPainter, QPen, QColor, QImage, QPixmap
 
 from setiastro.saspro.ser_stack_config import SERStackConfig
 
@@ -101,6 +101,171 @@ def _push_as_new_doc(main, source_doc, arr: np.ndarray, *, title_suffix="_stack"
         return newdoc
     except Exception:
         return None
+
+class APEditorDialog(QDialog):
+    """
+    Simple AP editor:
+    - Displays the reference image (from AnalyzeResult.ref_image).
+    - Draws AP boxes (size = ap_size).
+    - Left click: add AP at cursor.
+    - Right click: delete nearest AP (within radius).
+    - Auto-place / Clear / OK / Cancel.
+    Returns centers in ROI coords as (M,2) int32.
+    """
+    def __init__(self, parent=None, *, ref_img01: np.ndarray, ap_size: int, ap_spacing: int, ap_min_mean: float,
+                 initial_centers: np.ndarray | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Edit Alignment Points (APs)")
+        self.setModal(True)
+
+        self._ref = np.asarray(ref_img01, dtype=np.float32)
+        self._ap_size = int(ap_size)
+        self._ap_spacing = int(ap_spacing)
+        self._ap_min_mean = float(ap_min_mean)
+
+        self._centers = None if initial_centers is None else np.asarray(initial_centers, dtype=np.int32).copy()
+
+        self._pix = QLabel(self)
+        self._pix.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._pix.setMouseTracking(True)
+        self._pix.setMinimumSize(600, 400)
+
+        self._lbl_hint = QLabel("Left click: add AP   |   Right click: delete nearest AP", self)
+        self._lbl_hint.setStyleSheet("color:#aaa;")
+
+        btn_row = QHBoxLayout()
+        self.btn_auto = QPushButton("Auto-place", self)
+        self.btn_clear = QPushButton("Clear", self)
+        self.btn_ok = QPushButton("OK", self)
+        self.btn_cancel = QPushButton("Cancel", self)
+        btn_row.addWidget(self.btn_auto)
+        btn_row.addWidget(self.btn_clear)
+        btn_row.addStretch(1)
+        btn_row.addWidget(self.btn_ok)
+        btn_row.addWidget(self.btn_cancel)
+
+        lay = QVBoxLayout(self)
+        lay.addWidget(self._pix, 1)
+        lay.addWidget(self._lbl_hint, 0)
+        lay.addLayout(btn_row)
+
+        self.btn_cancel.clicked.connect(self.reject)
+        self.btn_ok.clicked.connect(self.accept)
+        self.btn_auto.clicked.connect(self._do_autoplace)
+        self.btn_clear.clicked.connect(self._do_clear)
+
+        # intercept mouse clicks on label
+        self._pix.mousePressEvent = self._on_mouse_press  # type: ignore
+
+        if self._centers is None:
+            self._do_autoplace()
+        else:
+            self._render()
+
+    def ap_centers(self) -> np.ndarray:
+        if self._centers is None:
+            return np.zeros((0, 2), dtype=np.int32)
+        return self._centers
+
+    # ---------- drawing ----------
+    def _render(self):
+        # display-stretch for visibility
+        img = self._ref
+        mono = img if img.ndim == 2 else img[..., 0]
+        mono = np.clip(mono, 0.0, 1.0)
+
+        # simple robust stretch
+        lo = float(np.percentile(mono, 1.0))
+        hi = float(np.percentile(mono, 99.5))
+        if hi <= lo + 1e-8:
+            hi = lo + 1e-3
+        v = (mono - lo) / (hi - lo)
+        v = np.clip(v, 0.0, 1.0)
+
+        u8 = (v * 255.0 + 0.5).astype(np.uint8)
+        h, w = u8.shape[:2]
+
+        qimg = QImage(u8.data, w, h, w, QImage.Format.Format_Grayscale8)
+        pm = QPixmap.fromImage(qimg.copy())  # copy so backing store persists
+
+        # draw AP boxes
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        s = int(max(8, self._ap_size))
+        half = s // 2
+
+        pen = QPen(QColor(0, 255, 0), 2)
+        p.setPen(pen)
+
+        if self._centers is not None and self._centers.size > 0:
+            for cx, cy in self._centers.tolist():
+                x0 = int(cx - half)
+                y0 = int(cy - half)
+                p.drawRect(x0, y0, s, s)
+
+        p.end()
+
+        self._pix.setPixmap(pm)
+        self._pix.setFixedSize(pm.size())
+
+    # ---------- actions ----------
+    def _do_autoplace(self):
+        from setiastro.saspro.ser_stacker import _autoplace_aps  # reuse exact logic
+        self._centers = _autoplace_aps(self._ref, self._ap_size, self._ap_spacing, self._ap_min_mean)
+        self._render()
+
+    def _do_clear(self):
+        self._centers = np.zeros((0, 2), dtype=np.int32)
+        self._render()
+
+    # ---------- mouse handling ----------
+    def _on_mouse_press(self, ev):
+        pm = self._pix.pixmap()
+        if pm is None:
+            return
+
+        x = int(ev.position().x())
+        y = int(ev.position().y())
+
+        # clamp to image bounds
+        w = pm.width()
+        h = pm.height()
+        x = max(0, min(w - 1, x))
+        y = max(0, min(h - 1, y))
+
+        if ev.button() == Qt.MouseButton.LeftButton:
+            self._add_point(x, y)
+        elif ev.button() == Qt.MouseButton.RightButton:
+            self._delete_nearest(x, y)
+
+    def _add_point(self, x: int, y: int):
+        s = int(max(8, self._ap_size))
+        half = s // 2
+        H, W = self._ref.shape[:2]
+
+        # ensure AP box fits fully
+        x = max(half, min(W - 1 - half, x))
+        y = max(half, min(H - 1 - half, y))
+
+        if self._centers is None or self._centers.size == 0:
+            self._centers = np.asarray([[x, y]], dtype=np.int32)
+        else:
+            self._centers = np.vstack([self._centers, np.asarray([[x, y]], dtype=np.int32)])
+        self._render()
+
+    def _delete_nearest(self, x: int, y: int):
+        if self._centers is None or self._centers.size == 0:
+            return
+
+        pts = self._centers.astype(np.float32)
+        d2 = (pts[:, 0] - x) ** 2 + (pts[:, 1] - y) ** 2
+        j = int(np.argmin(d2))
+        # only delete if close enough
+        radius = max(10.0, float(self._ap_size) * 0.6)
+        if float(d2[j]) <= radius * radius:
+            self._centers = np.delete(self._centers, j, axis=0)
+            self._render()
 
 
 class QualityGraph(QWidget):
@@ -397,23 +562,43 @@ class SERStackerDialog(QDialog):
         self.lbl_prog.setVisible(False)
         outer.addWidget(self.lbl_prog)
 
-        self.prog = QProgressBar(self)
-        self.prog.setVisible(False)
-        outer.addWidget(self.prog)
-        self.log = QTextEdit(self)
-        self.log.setReadOnly(True)
-        self.log.setMinimumHeight(180)
-        outer.addWidget(self.log, 1)
-
         # --- Signals ---
         self.btn_close.clicked.connect(self.close)
         self.btn_stack.clicked.connect(self._start_stack)
         self.cmb_track.currentIndexChanged.connect(self._update_anchor_warning)
         self.btn_analyze.clicked.connect(self._start_analyze)
+        self.btn_edit_aps.clicked.connect(self._edit_aps)
 
         # When keep% changes, update cutoff line if analyzed
         self.spin_keep.valueChanged.connect(self._update_graph_cutoff)
+
     # ---------------- helpers ----------------
+    def _edit_aps(self):
+        if self._analysis is None:
+            return
+
+        try:
+            dlg = APEditorDialog(
+                self,
+                ref_img01=self._analysis.ref_image,
+                ap_size=int(self.spin_ap_size.value()),
+                ap_spacing=int(self.spin_ap_spacing.value()),
+                ap_min_mean=float(self.spin_ap_min.value()),
+                initial_centers=getattr(self._analysis, "ap_centers", None),
+            )
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                centers = dlg.ap_centers()
+                self._analysis.ap_centers = centers
+                self._append_log(f"APs set: {int(centers.shape[0])} points")
+                self._append_log("Re-run Analyze to recompute alignment with new APs.")
+                self.btn_stack.setEnabled(False)
+            else:
+                self._append_log("AP edit cancelled.")
+        except Exception as e:
+            tb = traceback.format_exc()
+            QMessageBox.critical(self, "AP Editor Error", f"{e}\n\n{tb}")
+            self._append_log(f"AP editor failed: {e}")
+            self._append_log(tb)
 
     def _append_log(self, s: str):
         try:

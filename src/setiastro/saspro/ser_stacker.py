@@ -29,6 +29,7 @@ class AnalyzeResult:
     ref_mode: str              # "best_frame" | "best_stack"
     ref_count: int
     ref_image: np.ndarray      # float32 [0..1], ROI-sized
+    ap_centers: Optional[np.ndarray] = None  # (M,2) int32 in ROI coords
 
 @dataclass
 class FrameEval:
@@ -353,6 +354,7 @@ def analyze_ser(
             ap_spacing=int(getattr(cfg, "ap_spacing", 48)),
             ap_min_mean=float(getattr(cfg, "ap_min_mean", 0.03)),
         )
+        
     if cfg.track_mode == "off" or cv2 is None:
         return AnalyzeResult(
             frames_total=n,
@@ -366,6 +368,7 @@ def analyze_ser(
             ref_mode=ref_mode,
             ref_count=ref_count,
             ref_image=ref_img,
+            ap_centers=ap_centers,
         )
 
     # Prepare reference mono used by phase correlation + scaling back to ROI pixels
@@ -496,6 +499,7 @@ def analyze_ser(
         ref_mode=ref_mode,
         ref_count=ref_count,
         ref_image=ref_img,
+        ap_centers=ap_centers,
     )
 
 def _autoplace_aps(ref_img01: np.ndarray, ap_size: int, ap_spacing: int, ap_min_mean: float) -> np.ndarray:
