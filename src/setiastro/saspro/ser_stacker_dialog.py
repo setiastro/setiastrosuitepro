@@ -543,7 +543,7 @@ class SERStackerDialog(QDialog):
         self.spin_ap_min.setValue(0.03)  # good default
         fA.addRow("AP min mean (0..1)", self.spin_ap_min)
 
-        self.btn_edit_aps = QPushButton("Edit APs…", self)
+        self.btn_edit_aps = QPushButton("(2) Edit APs…", self)
         self.btn_edit_aps.setEnabled(False)  # enable after analyze has ref_image
         fA.addRow("", self.btn_edit_aps)
         self.spin_ap_size = QSpinBox(self)
@@ -566,9 +566,9 @@ class SERStackerDialog(QDialog):
         outer.addWidget(self.graph, 0)
 
         row = QHBoxLayout()
-        self.btn_analyze = QPushButton("Analyze", self)
+        self.btn_analyze = QPushButton("(1) Analyze", self)
         self.btn_analyze.setEnabled(True)        
-        self.btn_stack = QPushButton("Stack Now", self)
+        self.btn_stack = QPushButton("(3) Stack Now", self)
         self.btn_close = QPushButton("Close", self)
 
         row.addWidget(self.btn_analyze)
