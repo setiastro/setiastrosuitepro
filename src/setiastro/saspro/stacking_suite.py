@@ -7202,6 +7202,8 @@ class StackingSuiteDialog(QDialog):
         )
         main_layout.addWidget(self.clear_master_flat_selection_btn)
         self.override_dark_combo.currentIndexChanged[int].connect(self.override_selected_master_dark_for_flats)
+        # Connect selection change to update combobox
+        self.flat_tree.itemSelectionChanged.connect(self._on_flat_tree_selection_changed)
         self.update_override_dark_combo()
         self.rebuild_flat_tree()
     
@@ -11749,6 +11751,51 @@ class StackingSuiteDialog(QDialog):
 
 
 
+    def _on_flat_tree_selection_changed(self):
+        """Update the override_dark_combo to reflect the value stored in the selected row."""
+        items = self.flat_tree.selectedItems()
+        if not items:
+            return
+        
+        # Get the first top-level item (group row, not a leaf)
+        selected_item = None
+        for it in items:
+            if not it.parent():  # Top-level item (group row)
+                selected_item = it
+                break
+        
+        if not selected_item:
+            return
+        
+        # Read the stored value from column 2
+        ud = selected_item.data(2, Qt.ItemDataRole.UserRole)
+        
+        # Block signals to avoid triggering override_selected_master_dark_for_flats
+        self.override_dark_combo.blockSignals(True)
+        try:
+            # Find the matching index in the combobox
+            if ud is None:
+                # "None (Use Auto-Select)" should be at index 0
+                self.override_dark_combo.setCurrentIndex(0)
+            elif ud == "__NO_DARK__":
+                # "None (Use no Dark to Calibrate)" should be at index 1
+                self.override_dark_combo.setCurrentIndex(1)
+            else:
+                # Find the item with matching userData (path)
+                found_idx = -1
+                for i in range(self.override_dark_combo.count()):
+                    item_ud = self.override_dark_combo.itemData(i)
+                    if item_ud == ud:
+                        found_idx = i
+                        break
+                if found_idx >= 0:
+                    self.override_dark_combo.setCurrentIndex(found_idx)
+                else:
+                    # If not found, default to index 0
+                    self.override_dark_combo.setCurrentIndex(0)
+        finally:
+            self.override_dark_combo.blockSignals(False)
+
     def override_selected_master_dark_for_flats(self, idx: int):
         """Apply combo choice to selected flat groups; stores path/token in row + dict."""
         items = self.flat_tree.selectedItems()
@@ -11764,7 +11811,7 @@ class StackingSuiteDialog(QDialog):
                 os.path.basename(str(ud)))
 
         for it in items:
-            # ensure we’re on a group row (no parent)
+            # ensure we're on a group row (no parent)
             if it.parent():
                 continue
             gk = it.data(0, Qt.ItemDataRole.UserRole)
