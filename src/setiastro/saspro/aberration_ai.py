@@ -7,8 +7,32 @@ import numpy as np
 import sys
 import platform  # add
 import time
+import subprocess
 
 IS_APPLE_ARM = (sys.platform == "darwin" and platform.machine() == "arm64")
+
+def _has_nvidia_gpu() -> bool:
+    """Check if system has an NVIDIA GPU (Linux/Windows)."""
+    try:
+        if platform.system() == "Linux":
+            r = subprocess.run(["nvidia-smi", "-L"], capture_output=True, timeout=2)
+            return "GPU" in (r.stdout.decode("utf-8", errors="ignore") or "")
+        elif platform.system() == "Windows":
+            try:
+                ps = subprocess.run(
+                    ["powershell", "-NoProfile", "-Command",
+                     "(Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name) -join ';'"],
+                    capture_output=True, timeout=2
+                )
+                out = (ps.stdout.decode("utf-8", errors="ignore") or "").lower()
+                return "nvidia" in out
+            except Exception:
+                w = subprocess.run(["wmic", "path", "win32_VideoController", "get", "name"],
+                                  capture_output=True, timeout=2)
+                return "nvidia" in (w.stdout.decode("utf-8", errors="ignore") or "").lower()
+    except Exception:
+        pass
+    return False
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QStandardPaths, QSettings
 from PyQt6.QtWidgets import (
@@ -258,6 +282,7 @@ class _ONNXWorker(QThread):
     failed       = pyqtSignal(str)
     finished_ok  = pyqtSignal(np.ndarray)
     canceled     = pyqtSignal()
+    log_message  = pyqtSignal(str)          # for console logging
 
     def __init__(self, model_path: str, image: np.ndarray, patch: int, overlap: int, providers: list[str]):
         super().__init__()
@@ -287,16 +312,67 @@ class _ONNXWorker(QThread):
             self.canceled.emit()
             return
 
+        # Log available providers for debugging
+        avail_providers = ort.get_available_providers()
+        gpu_providers = [p for p in self.providers if p != "CPUExecutionProvider"]
+        has_nvidia = _has_nvidia_gpu()
+        
+        self.log_message.emit(f"🔍 Available ONNX providers: {', '.join(avail_providers)}")
+        self.log_message.emit(f"🔍 Attempting providers: {', '.join(self.providers)}")
+        print(f"🔍 Available ONNX providers: {', '.join(avail_providers)}")
+        print(f"🔍 Attempting providers: {', '.join(self.providers)}")
+        
+        # Check if NVIDIA GPU is present but CUDA provider is missing
+        if has_nvidia and "CUDAExecutionProvider" not in avail_providers:
+            msg = ("⚠️ GPU NVIDIA détecté mais CUDAExecutionProvider n'est pas disponible.\n"
+                   "   Vous devez installer 'onnxruntime-gpu' au lieu de 'onnxruntime'.\n"
+                   "   Commande: pip uninstall onnxruntime && pip install onnxruntime-gpu")
+            self.log_message.emit(msg)
+            print(msg)
+        
         try:
             sess = ort.InferenceSession(self.model_path, providers=self.providers)
             self.used_provider = (sess.get_providers()[0] if sess.get_providers() else None)
-        except Exception:
+            # Log successful GPU usage
+            if self.used_provider != "CPUExecutionProvider" and gpu_providers:
+                msg = f"✅ Aberration AI: Using GPU provider {self.used_provider}"
+                self.log_message.emit(msg)
+                print(msg)
+            elif has_nvidia and self.used_provider == "CPUExecutionProvider":
+                msg = ("⚠️ GPU NVIDIA détecté mais utilisation du CPU.\n"
+                       "   Installez 'onnxruntime-gpu' pour utiliser le GPU.")
+                self.log_message.emit(msg)
+                print(msg)
+        except Exception as e:
+            # Log the actual error for debugging
+            error_msg = str(e)
+            msg = f"⚠️ Aberration AI: GPU provider failed: {error_msg}"
+            self.log_message.emit(msg)
+            print(msg)
+            self.log_message.emit(f"Available providers: {', '.join(avail_providers)}")
+            print(f"Available providers: {', '.join(avail_providers)}")
+            self.log_message.emit(f"Attempted providers: {', '.join(self.providers)}")
+            print(f"Attempted providers: {', '.join(self.providers)}")
+            
+            # Check if onnxruntime-gpu is installed (CUDA provider should be available if it is)
+            if "CUDAExecutionProvider" in self.providers and "CUDAExecutionProvider" not in avail_providers:
+                if has_nvidia:
+                    msg = ("❌ CUDAExecutionProvider non disponible alors qu'un GPU NVIDIA est présent.\n"
+                           "   Installez 'onnxruntime-gpu': pip uninstall onnxruntime && pip install onnxruntime-gpu")
+                else:
+                    msg = "⚠️ CUDAExecutionProvider not available. You may need to install onnxruntime-gpu instead of onnxruntime."
+                self.log_message.emit(msg)
+                print(msg)
+            
             # fallback CPU if GPU fails
             try:
                 sess = ort.InferenceSession(self.model_path, providers=["CPUExecutionProvider"])
                 self.used_provider = "CPUExecutionProvider"
+                msg = f"⚠️ Aberration AI: Falling back to CPU (GPU initialization failed: {error_msg})"
+                self.log_message.emit(msg)
+                print(msg)
             except Exception as e2:
-                self.failed.emit(f"Failed to init ONNX session:\n{e2}")
+                self.failed.emit(f"Failed to init ONNX session:\nGPU error: {error_msg}\nCPU error: {e2}")
                 return
 
         def cb(frac):
@@ -796,6 +872,7 @@ class AberrationAIDialog(QDialog):
         self._worker.failed.connect(self._on_failed)
         self._worker.finished_ok.connect(self._on_ok)
         self._worker.finished.connect(self._on_worker_finished)
+        self._worker.log_message.connect(self._log)  # Connect log messages to console
         self._worker.start()
 
 

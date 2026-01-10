@@ -90,6 +90,17 @@ def run_aberration_ai_via_preset(main, preset: dict | None = None, doc=None):
 
     worker = _ONNXWorker(model, img, patch, overlap, providers)
     worker.progressed.connect(bar.setValue)
+    
+    # Connect log messages to console
+    def _log_msg(msg: str):
+        try:
+            if hasattr(main, "_log"):
+                main._log(msg)
+        except Exception:
+            pass
+        print(msg)  # Also print to console
+    
+    worker.log_message.connect(_log_msg)
 
     def _cancel_clicked():
         btn.setEnabled(False)

@@ -57,8 +57,12 @@ numba = "*"
 
 # neural net
 onnx = "*"
-onnxruntime = "*"
-onnxruntime-directml = {version = "*", markers = "sys_platform == 'win32'"}
+# Use GPU version on Linux, DirectML on Windows, CPU version on macOS/others
+# Note: onnxruntime-gpu includes CUDA support and also provides CPUExecutionProvider as fallback
+# You cannot install both onnxruntime and onnxruntime-gpu simultaneously
+"onnxruntime-gpu" = {version = "*", markers = "sys_platform == 'linux'"}
+"onnxruntime-directml" = {version = "*", markers = "sys_platform == 'win32'"}
+onnxruntime = {version = "*", markers = "sys_platform != 'linux' and sys_platform != 'win32'"}
 
 # image formats & camera raw
 xisf = "*"
