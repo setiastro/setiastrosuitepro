@@ -17,6 +17,7 @@ from setiastro.saspro.imageops.serloader import SERReader
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.ser_stack_config import SERStackConfig
 from setiastro.saspro.ser_stacker import stack_ser
+from setiastro.saspro.ser_stacker_dialog import SERStackerDialog
 
 # Use your stretch functions for DISPLAY
 try:
@@ -65,6 +66,8 @@ class SERViewer(QDialog):
         self._zoom = 1.0
         self._fit_mode = True
         self._last_qimg: QImage | None = None
+        self._last_disp_arr: np.ndarray | None = None   # the float [0..1] image we displayed (after stretch + tone)
+        self._last_overlay = None                       # dict with overlay info for _render_last()
 
         self._build_ui()
 
@@ -77,7 +80,7 @@ class SERViewer(QDialog):
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(8)
 
-        # ---------- LEFT: playback + scrubber + preview ----------
+        # ---------- LEFT: playback + scrubber + preview + zoom ----------
         left = QVBoxLayout()
         left.setSpacing(8)
         root.addLayout(left, 1)
@@ -132,13 +135,23 @@ class SERViewer(QDialog):
         self.scroll.setWidget(self.preview)
         left.addWidget(self.scroll, 1)
 
-        # ---------- RIGHT: controls panel ----------
+        # Zoom buttons (NOW under preview, centered)
+        zoom_row = QHBoxLayout()
+        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
+        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
+        self.btn_zoom_1_1  = themed_toolbtn("zoom-original", "1:1")
+        self.btn_zoom_fit  = themed_toolbtn("zoom-fit-best", "Fit")
+
+        zoom_row.addStretch(1)
+        for b in (self.btn_zoom_out, self.btn_zoom_in, self.btn_zoom_1_1, self.btn_zoom_fit):
+            zoom_row.addWidget(b)
+        zoom_row.addStretch(1)
+        left.addLayout(zoom_row)
+
+        # ---------- RIGHT: options + stacking ----------
         right = QVBoxLayout()
         right.setSpacing(8)
         root.addLayout(right, 0)
-
-        # We'll keep the group boxes, but place them in a right-side column.
-        # (Optionally wrap them in one "Controls" group if you want a single panel look.)
 
         # Preview Options (right)
         opts = QGroupBox("Preview Options", self)
@@ -150,7 +163,7 @@ class SERViewer(QDialog):
         self.chk_debayer.setChecked(True)
 
         self.chk_autostretch = QCheckBox("Autostretch preview (linked)", self)
-        self.chk_autostretch.setChecked(True)
+        self.chk_autostretch.setChecked(False)
 
         # ROI controls
         self.spin_x = QSpinBox(self); self.spin_x.setRange(0, 999999)
@@ -213,7 +226,7 @@ class SERViewer(QDialog):
             "Ctrl+Shift+drag to define it (within ROI)."
         )
 
-        self.btn_stack = QPushButton("Stack", self)
+        self.btn_stack = QPushButton("Open Stacker…", self)
         self.btn_stack.setEnabled(False)   # enabled once SER loaded
 
         sform.addRow("Tracking", self.cmb_track)
@@ -223,31 +236,11 @@ class SERViewer(QDialog):
 
         right.addWidget(stack, 0)
 
-        # Zoom buttons (right column)
-        zoom = QGroupBox("Zoom", self)
-        zlay = QVBoxLayout(zoom)
-        zlay.setContentsMargins(8, 8, 8, 8)
-        zlay.setSpacing(6)
-
-        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
-        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
-        self.btn_zoom_1_1  = themed_toolbtn("zoom-original", "1:1")
-        self.btn_zoom_fit  = themed_toolbtn("zoom-fit-best", "Fit")
-
-        zlay.addWidget(self.btn_zoom_in)
-        zlay.addWidget(self.btn_zoom_out)
-        zlay.addWidget(self.btn_zoom_1_1)
-        zlay.addWidget(self.btn_zoom_fit)
-
-        right.addWidget(zoom, 0)
-
         right.addStretch(1)
 
-        # Give the right panel a sensible width so it feels like a column
-        # (You can tweak this; it prevents the panel from stretching too wide.)
-        # NOTE: layouts don’t have width, so set minimum widths on the group boxes.
-        for gb in (opts, stack, zoom):
-            gb.setMinimumWidth(340)
+        # Keep the right panel from getting too wide
+        for gb in (opts, stack):
+            gb.setMinimumWidth(360)
 
         # ---------- Signals ----------
         self.btn_open.clicked.connect(self._open_ser)
@@ -268,9 +261,10 @@ class SERViewer(QDialog):
                 w.valueChanged.connect(self._refresh)
 
         self.cmb_track.currentIndexChanged.connect(self._on_track_mode_changed)
-        self.btn_stack.clicked.connect(self._run_stack_clicked)
+        self.btn_stack.clicked.connect(self._open_stacker_clicked)
 
         self.resize(1200, 800)
+
 
     #-----qsettings
     def _settings(self) -> QSettings:
@@ -297,48 +291,6 @@ class SERViewer(QDialog):
 
 
     # ---------------- actions ----------------
-    def _run_stack_clicked(self):
-        if self.reader is None:
-            return
-
-        track_mode = self._track_mode_value()
-        if track_mode == "surface" and self._surface_anchor is None:
-            QMessageBox.information(
-                self,
-                "SER Viewer",
-                "Surface tracking requires an anchor.\n\n"
-                "Ctrl+Shift+drag a small box over detailed surface texture\n"
-                "(craters, rilles, sunspots, etc.) to set the anchor."
-            )
-            return
-
-        cfg = SERStackConfig(
-            ser_path=self.reader.path,
-            roi=self._roi_tuple(),
-            track_mode=track_mode,  # "off" / "planetary" / "surface"
-            surface_anchor=self._surface_anchor,
-            keep_percent=float(self.spin_keep.value()),
-        )
-
-        debayer = bool(self.chk_debayer.isChecked())
-
-        try:
-            out, diag = stack_ser(cfg, debayer=debayer, to_rgb=False)
-        except Exception as e:
-            QMessageBox.critical(self, "SER Viewer", f"Stack failed:\n{e}")
-            return
-
-        # For now: show result as preview (quick win)
-        # Later: save dialog + push to DocManager / ImageDocument history.
-        try:
-            qimg = self._to_qimage(out)
-            self._last_qimg = qimg
-            self._fit_mode = True
-            self._render_last()
-            self.lbl_info.setText(self.lbl_info.text() + f"<br><b>Stacked:</b> kept {diag.get('frames_kept')} / {diag.get('frames_total')}")
-        except Exception:
-            pass
-
 
     def _apply_preview_tone(self, img: np.ndarray) -> np.ndarray:
         """
@@ -516,6 +468,7 @@ class SERViewer(QDialog):
             # nudge the user
             self.lbl_anchor.setText("Surface anchor: REQUIRED  •  Ctrl+Shift+drag to set")
             self.lbl_anchor.setStyleSheet("color:#c66;")
+        self._refresh()    
 
     def _track_mode_value(self) -> str:
         t = self.cmb_track.currentText().strip().lower()
@@ -631,13 +584,6 @@ class SERViewer(QDialog):
                                         self.spin_w.setValue(w)
                                         self.spin_h.setValue(h)
 
-                                        # ROI change invalidates anchor
-                                        self._surface_anchor = None
-                                        try:
-                                            self._settings().setValue("serviewer/surface_anchor", None)
-                                        except Exception:
-                                            pass
-
                                         self._refresh()
 
                                     elif self._drag_mode == "anchor":
@@ -645,10 +591,7 @@ class SERViewer(QDialog):
                                         if anchor is not None:
                                             self._surface_anchor = anchor
                                             self._update_anchor_label()
-                                            try:
-                                                self._settings().setValue("serviewer/surface_anchor", list(anchor))
-                                            except Exception:
-                                                pass
+
 
                             self._drag_mode = None
                             event.accept()
@@ -681,6 +624,221 @@ class SERViewer(QDialog):
 
         return super().eventFilter(obj, event)
 
+    def _open_stacker_clicked(self):
+        if self.reader is None:
+            return
+
+        ser_path = self.get_ser_path()
+        if not ser_path:
+            return
+
+        # Grab current ROI + anchor from viewer state
+        roi = self.get_roi()  # (x,y,w,h) full-frame or None
+        anchor = self.get_surface_anchor()  # (x,y,w,h) ROI-space or None
+
+        # Find the *real* main window (the one that has docman / mdi)
+        main = self.parent()
+        if main is None:
+            main = self
+
+        # Try to find the active/current document (best-effort)
+        current_doc = None
+        try:
+            if hasattr(main, "active_document"):
+                current_doc = main.active_document()
+            elif hasattr(main, "currentDocument"):
+                current_doc = main.currentDocument()
+            elif hasattr(main, "docman") and hasattr(main.docman, "current_document"):
+                current_doc = main.docman.current_document()
+            elif hasattr(main, "docman") and hasattr(main.docman, "current"):
+                current_doc = main.docman.current()
+        except Exception:
+            current_doc = None
+
+        dlg = SERStackerDialog(
+            parent=self,
+            main=main,
+            source_doc=current_doc,     # can be None; stacker will still work
+            ser_path=ser_path,
+            roi=roi,
+            track_mode=self._track_mode_value(),
+            surface_anchor=anchor,
+            debayer=bool(self.chk_debayer.isChecked()),
+            keep_percent=float(self.spin_keep.value()),
+        )
+
+        dlg.stackProduced.connect(self._on_stacker_produced)
+
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
+
+
+    def _on_stacker_produced(self, out: np.ndarray, diag: dict):
+        """
+        Viewer should NOT decide “save vs new view” long-term.
+        For now, we just hand it to the parent/main if it supports a hook.
+        """
+        # Try common patterns without hard dependency:
+        # - main window has doc manager: main.push_array_to_new_view(...)
+        # - or a generic method: main.open_image_from_array(...)
+        main = self.parent()
+
+        # 1) Example hook you can implement in MainWindow/DocManager:
+        if main is not None and hasattr(main, "push_array_to_new_view"):
+            try:
+                title = f"Stacked SER ({diag.get('frames_kept')}/{diag.get('frames_total')})"
+                main.push_array_to_new_view(out, title=title, meta={"ser_diag": diag})
+                return
+            except Exception:
+                pass
+
+        # 2) Fallback: show it in this viewer preview (temporary)
+        try:
+            qimg = self._to_qimage(out)
+            self._last_qimg = qimg
+            self._fit_mode = True
+            self._render_last()
+            self.lbl_info.setText(
+                self.lbl_info.text()
+                + f"<br><b>Stacked (from stacker):</b> kept {diag.get('frames_kept')} / {diag.get('frames_total')}"
+            )
+        except Exception:
+            pass
+
+    def _compute_planet_com_px(self, img01: np.ndarray) -> tuple[float, float] | None:
+        """
+        Compute a quick center-of-mass in *image pixel coords* of the currently displayed image (ROI-space).
+        Uses a simple brightness-weighted COM with background subtraction.
+        """
+        try:
+            if img01 is None:
+                return None
+            if img01.ndim == 3:
+                # simple luma (no extra deps)
+                m = 0.2126 * img01[..., 0] + 0.7152 * img01[..., 1] + 0.0722 * img01[..., 2]
+            else:
+                m = img01
+
+            m = np.asarray(m, dtype=np.float32)
+            H, W = m.shape[:2]
+            if H < 2 or W < 2:
+                return None
+
+            # Robust-ish background subtraction to focus on the planet
+            bg = float(np.percentile(m, 60))  # helps ignore dark background
+            w = np.clip(m - bg, 0.0, None)
+
+            s = float(w.sum())
+            if s <= 1e-8:
+                return None
+
+            ys = np.arange(H, dtype=np.float32)[:, None]
+            xs = np.arange(W, dtype=np.float32)[None, :]
+            cy = float((w * ys).sum() / s)
+            cx = float((w * xs).sum() / s)
+            return (cx, cy)
+        except Exception:
+            return None
+
+
+    def _img_xy_to_pixmap_xy(self, x: float, y: float) -> tuple[int, int] | None:
+        """
+        Map a point in ORIGINAL IMAGE pixel coords (of _last_qimg) into current pixmap coords.
+        In this viewer, pixmap size == preview label size in both fit and manual modes.
+        """
+        if self._last_qimg is None:
+            return None
+        pm = self.preview.pixmap()
+        if pm is None or pm.isNull():
+            return None
+
+        ow = max(1, self._last_qimg.width())
+        oh = max(1, self._last_qimg.height())
+        pw = max(1, pm.width())
+        ph = max(1, pm.height())
+
+        px = int(round((x / ow) * pw))
+        py = int(round((y / oh) * ph))
+        return (px, py)
+
+
+    def _roi_rect_to_pixmap_rect(self, rect_roi: tuple[int, int, int, int]) -> QRect | None:
+        """
+        rect_roi is ROI-space (0..roi_w,0..roi_h) but the displayed image is also ROI-sized
+        whenever ROI checkbox is ON (because get_frame(roi=roi) crops).
+        So ROI-space == displayed image pixel space. Great.
+        """
+        if rect_roi is None:
+            return None
+
+        x, y, w, h = [int(v) for v in rect_roi]
+        p1 = self._img_xy_to_pixmap_xy(x, y)
+        p2 = self._img_xy_to_pixmap_xy(x + w, y + h)
+        if p1 is None or p2 is None:
+            return None
+        x1, y1 = p1
+        x2, y2 = p2
+        left, right = (x1, x2) if x1 <= x2 else (x2, x1)
+        top, bottom = (y1, y2) if y1 <= y2 else (y2, y1)
+        return QRect(left, top, max(1, right - left), max(1, bottom - top))
+
+
+    def _paint_overlays_on_current_pixmap(self):
+        """
+        Draw overlays (COM crosshair and/or anchor rectangle) onto the CURRENT pixmap.
+        Call this at the end of _render_last().
+        """
+        pm = self.preview.pixmap()
+        if pm is None or pm.isNull():
+            return
+        if self._last_disp_arr is None:
+            return
+
+        mode = self._track_mode_value()
+
+        # Make a paintable copy
+        pm2 = pm.copy()
+        p = QPainter(pm2)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        # --- Surface anchor box overlay ---
+        if mode == "surface" and self._surface_anchor is not None:
+            r = self._roi_rect_to_pixmap_rect(self._surface_anchor)
+            if r is not None:
+                pen = QPen(QColor(0, 170, 255))
+                pen.setWidth(3)
+                p.setPen(pen)
+                p.setBrush(QColor(0, 170, 255, 30))
+                p.drawRect(r)
+
+        # --- Planetary COM crosshair overlay ---
+        if mode == "planetary":
+            com = self._compute_planet_com_px(self._last_disp_arr)
+            if com is not None:
+                cx, cy = com
+                qpt = self._img_xy_to_pixmap_xy(cx, cy)
+                if qpt is not None:
+                    px, py = qpt
+
+                    pen = QPen(QColor(255, 220, 0))  # bright yellow
+                    pen.setWidth(3)
+                    p.setPen(pen)
+
+                    # crosshair size in pixmap pixels (constant visibility)
+                    r = 10
+                    p.drawLine(px - r, py, px + r, py)
+                    p.drawLine(px, py - r, px, py + r)
+
+                    # small center dot
+                    p.setBrush(QColor(255, 220, 0))
+                    p.drawEllipse(px - 2, py - 2, 4, 4)
+
+        p.end()
+
+        self.preview.setPixmap(pm2)
+
 
     def _render_last(self, anchor=None):
         if self._last_qimg is None:
@@ -699,6 +857,7 @@ class SERViewer(QDialog):
                             Qt.TransformationMode.SmoothTransformation)
             self.preview.setPixmap(pm2)
             self.preview.resize(pm2.size())     # in fit mode, label == pixmap size
+            self._paint_overlays_on_current_pixmap()
             return
 
         # Manual zoom: label becomes the scaled size so scrollbars are correct/stable
@@ -737,6 +896,7 @@ class SERViewer(QDialog):
         # restore scrollbars so anchor stays put
         hbar.setValue(int(fx * new_w - anchor.x()))
         vbar.setValue(int(fy * new_h - anchor.y()))
+        self._paint_overlays_on_current_pixmap()
 
 
 
@@ -782,15 +942,10 @@ class SERViewer(QDialog):
         self.spin_y.setValue(cy)
         self.spin_w.setValue(min(512, m.width))
         self.spin_h.setValue(min(512, m.height))
-        # restore saved anchor if present
-        try:
-            v = self._settings().value("serviewer/surface_anchor", None)
-            if isinstance(v, (list, tuple)) and len(v) == 4:
-                self._surface_anchor = tuple(int(x) for x in v)
-        except Exception:
-            self._surface_anchor = None
+
         self.btn_play.setEnabled(True)
         self.btn_stack.setEnabled(True)
+        self._surface_anchor = None
         self._update_anchor_label()
         self.btn_play.setText("Play")
         self._playing = False
@@ -869,6 +1024,9 @@ class SERViewer(QDialog):
             img = self._apply_preview_tone(img)
         except Exception:
             pass
+
+        # store for overlay calculations (ROI-sized if ROI is on)
+        self._last_disp_arr = img
 
         qimg = self._to_qimage(img)
         self._last_qimg = qimg

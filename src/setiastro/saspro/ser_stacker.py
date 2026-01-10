@@ -221,3 +221,4 @@ def stack_ser(
             "track_mode": cfg.track_mode,
         }
         return out, diag
+
