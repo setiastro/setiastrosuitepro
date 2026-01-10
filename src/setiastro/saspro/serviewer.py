@@ -9,13 +9,14 @@ from PyQt6.QtGui import QImage, QPixmap, QPainter, QPen, QColor
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFileDialog,
     QScrollArea, QSlider, QCheckBox, QGroupBox, QFormLayout, QSpinBox,
-    QMessageBox, QRubberBand
+    QMessageBox, QRubberBand, QComboBox, QDoubleSpinBox
 )
 
 from setiastro.saspro.imageops.serloader import SERReader
 
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
-
+from setiastro.saspro.ser_stack_config import SERStackConfig
+from setiastro.saspro.ser_stacker import stack_ser
 
 # Use your stretch functions for DISPLAY
 try:
@@ -67,31 +68,37 @@ class SERViewer(QDialog):
 
         self._build_ui()
 
+
     # ---------------- UI ----------------
 
     def _build_ui(self):
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(8, 8, 8, 8)
-        outer.setSpacing(8)
+        # Root: left (viewer) + right (controls)
+        root = QHBoxLayout(self)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(8)
 
-        # Top controls
+        # ---------- LEFT: playback + scrubber + preview ----------
+        left = QVBoxLayout()
+        left.setSpacing(8)
+        root.addLayout(left, 1)
+
+        # Top controls (left)
         top = QHBoxLayout()
         self.btn_open = QPushButton("Open SER…", self)
         self.btn_play = QPushButton("Play", self)
         self.btn_play.setEnabled(False)
 
-        self.lbl_info = QLabel("No SER loaded.", self)
-        self.lbl_info.setStyleSheet("color:#888;")
-        self.lbl_info.setWordWrap(True)
-
         top.addWidget(self.btn_open)
         top.addWidget(self.btn_play)
         top.addStretch(1)
-        outer.addLayout(top)
+        left.addLayout(top)
 
-        outer.addWidget(self.lbl_info)
+        self.lbl_info = QLabel("No SER loaded.", self)
+        self.lbl_info.setStyleSheet("color:#888;")
+        self.lbl_info.setWordWrap(True)
+        left.addWidget(self.lbl_info)
 
-        # Scrubber
+        # Scrubber (left)
         scrub = QHBoxLayout()
         self.sld = QSlider(Qt.Orientation.Horizontal, self)
         self.sld.setRange(0, 0)
@@ -99,13 +106,46 @@ class SERViewer(QDialog):
         self.lbl_frame = QLabel("0 / 0", self)
         scrub.addWidget(self.sld, 1)
         scrub.addWidget(self.lbl_frame, 0)
-        outer.addLayout(scrub)
+        left.addLayout(scrub)
 
-        # Options panel
+        # Preview area (left)
+        self.scroll = QScrollArea(self)
+        # IMPORTANT: for sane zoom + scrollbars, do NOT let the scroll area auto-resize the widget
+        self.scroll.setWidgetResizable(False)
+        self.scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.scroll.viewport().installEventFilter(self)
+        self.scroll.viewport().setMouseTracking(True)
+        self.scroll.viewport().setCursor(Qt.CursorShape.ArrowCursor)
+
+        # Rubber band for Shift+drag ROI (thick, bright green, always visible)
+        self._rubber = QRubberBand(QRubberBand.Shape.Rectangle, self.scroll.viewport())
+        self._rubber.setStyleSheet(
+            "QRubberBand {"
+            "  border: 3px solid #00ff00;"
+            "  background: rgba(0,255,0,30);"
+            "}"
+        )
+        self._rubber.hide()
+
+        self.preview = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
+        self.preview.setMinimumSize(640, 360)
+        self.scroll.setWidget(self.preview)
+        left.addWidget(self.scroll, 1)
+
+        # ---------- RIGHT: controls panel ----------
+        right = QVBoxLayout()
+        right.setSpacing(8)
+        root.addLayout(right, 0)
+
+        # We'll keep the group boxes, but place them in a right-side column.
+        # (Optionally wrap them in one "Controls" group if you want a single panel look.)
+
+        # Preview Options (right)
         opts = QGroupBox("Preview Options", self)
         form = QFormLayout(opts)
 
         self.chk_roi = QCheckBox("Use ROI (crop for preview)", self)
+
         self.chk_debayer = QCheckBox("Debayer (Bayer SER)", self)
         self.chk_debayer.setChecked(True)
 
@@ -119,18 +159,22 @@ class SERViewer(QDialog):
         self.spin_h = QSpinBox(self); self.spin_h.setRange(1, 999999); self.spin_h.setValue(512)
 
         form.addRow("", self.chk_roi)
+
         row1 = QHBoxLayout()
+        row1.setContentsMargins(0, 0, 0, 0)
         row1.addWidget(QLabel("x:", self)); row1.addWidget(self.spin_x)
         row1.addWidget(QLabel("y:", self)); row1.addWidget(self.spin_y)
         form.addRow("ROI origin", row1)
 
         row2 = QHBoxLayout()
+        row2.setContentsMargins(0, 0, 0, 0)
         row2.addWidget(QLabel("w:", self)); row2.addWidget(self.spin_w)
         row2.addWidget(QLabel("h:", self)); row2.addWidget(self.spin_h)
         form.addRow("ROI size", row2)
 
         form.addRow("", self.chk_debayer)
         form.addRow("", self.chk_autostretch)
+
         # --- Preview tone controls (DISPLAY ONLY) ---
         self.sld_brightness = QSlider(Qt.Orientation.Horizontal, self)
         self.sld_brightness.setRange(-100, 100)   # maps to -0.25 .. +0.25
@@ -144,45 +188,68 @@ class SERViewer(QDialog):
 
         form.addRow("Brightness", self.sld_brightness)
         form.addRow("Gamma", self.sld_gamma)
-        outer.addWidget(opts, 0)
 
-        # Zoom buttons (use SASpro themed tool buttons like Statistical Stretch)
-        zoom_row = QHBoxLayout()
-        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
+        right.addWidget(opts, 0)
+
+        # Stacking Options (right)
+        stack = QGroupBox("Stacking Options", self)
+        sform = QFormLayout(stack)
+
+        self.cmb_track = QComboBox(self)
+        self.cmb_track.addItems(["Planetary", "Surface", "Off"])   # map to config
+        self.cmb_track.setCurrentText("Planetary")
+
+        self.spin_keep = QDoubleSpinBox(self)
+        self.spin_keep.setRange(0.1, 100.0)
+        self.spin_keep.setDecimals(1)
+        self.spin_keep.setSingleStep(1.0)
+        self.spin_keep.setValue(20.0)
+
+        self.lbl_anchor = QLabel("Surface anchor: (not set)", self)
+        self.lbl_anchor.setStyleSheet("color:#888;")
+        self.lbl_anchor.setWordWrap(True)
+        self.lbl_anchor.setToolTip(
+            "Surface tracking needs an anchor patch.\n"
+            "Ctrl+Shift+drag to define it (within ROI)."
+        )
+
+        self.btn_stack = QPushButton("Stack", self)
+        self.btn_stack.setEnabled(False)   # enabled once SER loaded
+
+        sform.addRow("Tracking", self.cmb_track)
+        sform.addRow("Keep %", self.spin_keep)
+        sform.addRow("", self.lbl_anchor)
+        sform.addRow("", self.btn_stack)
+
+        right.addWidget(stack, 0)
+
+        # Zoom buttons (right column)
+        zoom = QGroupBox("Zoom", self)
+        zlay = QVBoxLayout(zoom)
+        zlay.setContentsMargins(8, 8, 8, 8)
+        zlay.setSpacing(6)
+
         self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
+        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
         self.btn_zoom_1_1  = themed_toolbtn("zoom-original", "1:1")
         self.btn_zoom_fit  = themed_toolbtn("zoom-fit-best", "Fit")
 
-        zoom_row.addStretch(1)
-        for b in (self.btn_zoom_out, self.btn_zoom_in, self.btn_zoom_1_1, self.btn_zoom_fit):
-            zoom_row.addWidget(b)
-        zoom_row.addStretch(1)
-        outer.addLayout(zoom_row)
+        zlay.addWidget(self.btn_zoom_in)
+        zlay.addWidget(self.btn_zoom_out)
+        zlay.addWidget(self.btn_zoom_1_1)
+        zlay.addWidget(self.btn_zoom_fit)
 
+        right.addWidget(zoom, 0)
 
-        # Preview area
-        self.scroll = QScrollArea(self)
-        # IMPORTANT: for sane zoom + scrollbars, do NOT let the scroll area auto-resize the widget
-        self.scroll.setWidgetResizable(False)
-        self.scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.scroll.viewport().installEventFilter(self)
-        self.scroll.viewport().setMouseTracking(True)
-        self.scroll.viewport().setCursor(Qt.CursorShape.ArrowCursor)
-        # Rubber band for Shift+drag ROI (thick, bright green, always visible)
-        self._rubber = QRubberBand(QRubberBand.Shape.Rectangle, self.scroll.viewport())
-        self._rubber.setStyleSheet(
-            "QRubberBand {"
-            "  border: 3px solid #00ff00;"
-            "  background: rgba(0,255,0,30);"
-            "}"
-        )
-        self._rubber.hide()        
-        self.preview = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
-        self.preview.setMinimumSize(640, 360)
-        self.scroll.setWidget(self.preview)
-        outer.addWidget(self.scroll, 1)
+        right.addStretch(1)
 
-        # Signals
+        # Give the right panel a sensible width so it feels like a column
+        # (You can tweak this; it prevents the panel from stretching too wide.)
+        # NOTE: layouts don’t have width, so set minimum widths on the group boxes.
+        for gb in (opts, stack, zoom):
+            gb.setMinimumWidth(340)
+
+        # ---------- Signals ----------
         self.btn_open.clicked.connect(self._open_ser)
         self.btn_play.clicked.connect(self._toggle_play)
         self.sld.valueChanged.connect(self._on_slider_changed)
@@ -192,16 +259,18 @@ class SERViewer(QDialog):
         self.btn_zoom_1_1.clicked.connect(lambda: self._set_zoom(1.0, anchor=self._viewport_center_anchor()))
         self.btn_zoom_fit.clicked.connect(self._set_fit_mode)
 
-
         for w in (self.chk_roi, self.chk_debayer, self.chk_autostretch,
-                  self.spin_x, self.spin_y, self.spin_w, self.spin_h,
-                  self.sld_brightness, self.sld_gamma):
+                self.spin_x, self.spin_y, self.spin_w, self.spin_h,
+                self.sld_brightness, self.sld_gamma):
             if hasattr(w, "toggled"):
                 w.toggled.connect(self._refresh)
             if hasattr(w, "valueChanged"):
                 w.valueChanged.connect(self._refresh)
 
-        self.resize(1100, 800)
+        self.cmb_track.currentIndexChanged.connect(self._on_track_mode_changed)
+        self.btn_stack.clicked.connect(self._run_stack_clicked)
+
+        self.resize(1200, 800)
 
     #-----qsettings
     def _settings(self) -> QSettings:
@@ -228,6 +297,49 @@ class SERViewer(QDialog):
 
 
     # ---------------- actions ----------------
+    def _run_stack_clicked(self):
+        if self.reader is None:
+            return
+
+        track_mode = self._track_mode_value()
+        if track_mode == "surface" and self._surface_anchor is None:
+            QMessageBox.information(
+                self,
+                "SER Viewer",
+                "Surface tracking requires an anchor.\n\n"
+                "Ctrl+Shift+drag a small box over detailed surface texture\n"
+                "(craters, rilles, sunspots, etc.) to set the anchor."
+            )
+            return
+
+        cfg = SERStackConfig(
+            ser_path=self.reader.path,
+            roi=self._roi_tuple(),
+            track_mode=track_mode,  # "off" / "planetary" / "surface"
+            surface_anchor=self._surface_anchor,
+            keep_percent=float(self.spin_keep.value()),
+        )
+
+        debayer = bool(self.chk_debayer.isChecked())
+
+        try:
+            out, diag = stack_ser(cfg, debayer=debayer, to_rgb=False)
+        except Exception as e:
+            QMessageBox.critical(self, "SER Viewer", f"Stack failed:\n{e}")
+            return
+
+        # For now: show result as preview (quick win)
+        # Later: save dialog + push to DocManager / ImageDocument history.
+        try:
+            qimg = self._to_qimage(out)
+            self._last_qimg = qimg
+            self._fit_mode = True
+            self._render_last()
+            self.lbl_info.setText(self.lbl_info.text() + f"<br><b>Stacked:</b> kept {diag.get('frames_kept')} / {diag.get('frames_total')}")
+        except Exception:
+            pass
+
+
     def _apply_preview_tone(self, img: np.ndarray) -> np.ndarray:
         """
         Preview-only brightness + gamma.
@@ -388,6 +500,31 @@ class SERViewer(QDialog):
 
         return (ix, iy, iw, ih)
 
+    def _update_anchor_label(self):
+        a = getattr(self, "_surface_anchor", None)
+        if a is None:
+            self.lbl_anchor.setText("Surface anchor: (not set)  •  Ctrl+Shift+drag to set")
+            self.lbl_anchor.setStyleSheet("color:#888;")
+        else:
+            x, y, w, h = a
+            self.lbl_anchor.setText(f"Surface anchor: x={x}, y={y}, w={w}, h={h}  •  Ctrl+Shift+drag to change")
+            self.lbl_anchor.setStyleSheet("color:#4a4;")
+
+    def _on_track_mode_changed(self):
+        mode = self._track_mode_value()
+        if mode == "surface" and self._surface_anchor is None:
+            # nudge the user
+            self.lbl_anchor.setText("Surface anchor: REQUIRED  •  Ctrl+Shift+drag to set")
+            self.lbl_anchor.setStyleSheet("color:#c66;")
+
+    def _track_mode_value(self) -> str:
+        t = self.cmb_track.currentText().strip().lower()
+        if t.startswith("planet"):
+            return "planetary"
+        if t.startswith("surface"):
+            return "surface"
+        return "off"
+
 
     def eventFilter(self, obj, event):
         vp = self.scroll.viewport()
@@ -507,6 +644,7 @@ class SERViewer(QDialog):
                                         anchor = self._full_to_roi_space(rect_full)
                                         if anchor is not None:
                                             self._surface_anchor = anchor
+                                            self._update_anchor_label()
                                             try:
                                                 self._settings().setValue("serviewer/surface_anchor", list(anchor))
                                             except Exception:
@@ -652,6 +790,8 @@ class SERViewer(QDialog):
         except Exception:
             self._surface_anchor = None
         self.btn_play.setEnabled(True)
+        self.btn_stack.setEnabled(True)
+        self._update_anchor_label()
         self.btn_play.setText("Play")
         self._playing = False
 

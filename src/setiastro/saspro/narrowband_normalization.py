@@ -187,7 +187,7 @@ class NarrowbandNormalization(QWidget):
         left_row.addLayout(colB, 1)
 
         left_scroll.setMinimumWidth(480)
-        left_scroll.setMaximumWidth(640)
+        #left_scroll.setMaximumWidth(720)
         root.addWidget(left_scroll, 0)
 
         # ---------------- RIGHT PANEL (Preview) ----------------
@@ -465,6 +465,13 @@ class NarrowbandNormalization(QWidget):
             if hasattr(w, "currentIndexChanged"):
                 w.currentIndexChanged.connect(self._schedule_preview)
 
+        # Slider releases should also schedule preview (tracking is already False)
+        for s in (
+            self.sld_blackpoint, self.sld_hlrecover, self.sld_hlreduct, self.sld_brightness,
+            self.sld_hablend, self.sld_oiiiboost, self.sld_siiboost, self.sld_oiiiboost2
+        ):
+            s.valueChanged.connect(self._schedule_preview)
+
         self.chk_scnr.toggled.connect(self._schedule_preview)
         self.chk_linear_fit.toggled.connect(self._schedule_preview)
         self.chk_preview_autostretch.toggled.connect(self._schedule_preview)
@@ -515,7 +522,7 @@ class NarrowbandNormalization(QWidget):
     def _schedule_preview(self):
         """Call this on ANY UI change that should recompute preview."""
         self._calc_seq += 1
-        self.status.setText("Waiting for input…")
+        self.status.setText("Updating preview...")
         self._debounce.start()
 
     def _dbg(self, msg: str):
@@ -878,8 +885,8 @@ class NarrowbandNormalization(QWidget):
         # Labels
         src = f"From View: {choice}"
         if scenario == "HOO":
-            self._set_status_label("Ha",   f"{src} (Ha←R)")
-            self._set_status_label("OIII", f"{src} (OIII←G/B)")
+            self._set_status_label("Ha",   f"(Ha←R)")
+            self._set_status_label("OIII", f"(OIII←G/B)")
             self._set_status_label("SII",  None)
         else:
             # indicate mapping
@@ -888,9 +895,9 @@ class NarrowbandNormalization(QWidget):
                 "HSO": "(Ha←R, SII←G, OIII←B)",
                 "HOS": "(Ha←R, OIII←G, SII←B)",
             }.get(scenario, "")
-            self._set_status_label("Ha",   f"{src} {map_txt}")
-            self._set_status_label("OIII", f"{src} {map_txt}")
-            self._set_status_label("SII",  f"{src} {map_txt}")
+            self._set_status_label("Ha",   f"{map_txt}")
+            self._set_status_label("OIII", f"{map_txt}")
+            self._set_status_label("SII",  f"{map_txt}")
 
         self.status.setText(f"Imported mapped {scenario} view → channels loaded.")
         self._schedule_preview()
