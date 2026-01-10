@@ -8,7 +8,13 @@ TrackMode = Literal["off", "planetary", "surface"]
 @dataclass
 class SERStackConfig:
     ser_path: str
-    roi: Optional[Tuple[int,int,int,int]] = None     # x,y,w,h
-    track_mode: TrackMode = "planetary"
-    surface_anchor: Optional[Tuple[int,int,int,int]] = None  # x,y,w,h in ROI-space
+    roi: Optional[Tuple[int, int, int, int]] = None
+    track_mode: str = "planetary"          # planetary/surface/off
+    surface_anchor: Optional[Tuple[int,int,int,int]] = None
     keep_percent: float = 20.0
+
+    # --- multipoint alignment ---
+    multipoint: bool = False
+    ap_size: int = 64
+    ap_spacing: int = 48
+    ap_min_mean: float = 0.03     

@@ -345,7 +345,16 @@ class SERStackerDialog(QDialog):
         self.chk_multipoint = QCheckBox("Multi-point alignment (APs) — soon", self)
         self.chk_multipoint.setChecked(False)
         self.chk_multipoint.setEnabled(True)  # enable now just as UI; stacker will ignore for now
+        self.spin_ap_min = QDoubleSpinBox(self)
+        self.spin_ap_min.setRange(0.0, 1.0)
+        self.spin_ap_min.setDecimals(3)
+        self.spin_ap_min.setSingleStep(0.005)
+        self.spin_ap_min.setValue(0.03)  # good default
+        fA.addRow("AP min mean (0..1)", self.spin_ap_min)
 
+        self.btn_edit_aps = QPushButton("Edit APs…", self)
+        self.btn_edit_aps.setEnabled(False)  # enable after analyze has ref_image
+        fA.addRow("", self.btn_edit_aps)
         self.spin_ap_size = QSpinBox(self)
         self.spin_ap_size.setRange(16, 256)
         self.spin_ap_size.setSingleStep(8)
@@ -451,6 +460,10 @@ class SERStackerDialog(QDialog):
             track_mode=mode,
             surface_anchor=self._surface_anchor,
             keep_percent=float(self.spin_keep.value()),
+            multipoint=bool(self.chk_multipoint.isChecked()),
+            ap_size=int(self.spin_ap_size.value()),
+            ap_spacing=int(self.spin_ap_spacing.value()),
+            ap_min_mean=float(self.spin_ap_min.value()),
         )
 
         self.btn_analyze.setEnabled(False)
@@ -493,6 +506,7 @@ class SERStackerDialog(QDialog):
         k = max(1, min(ar.frames_total, k))
         q_sorted = ar.quality[ar.order]
         self.graph.set_data(q_sorted, keep_k=k)
+        self.btn_edit_aps.setEnabled(True)
 
     def _on_analyze_fail(self, msg: str):
         self.prog.setVisible(False)
@@ -527,6 +541,10 @@ class SERStackerDialog(QDialog):
             track_mode=mode,
             surface_anchor=self._surface_anchor,
             keep_percent=float(self.spin_keep.value()),
+            multipoint=bool(self.chk_multipoint.isChecked()),
+            ap_size=int(self.spin_ap_size.value()),
+            ap_spacing=int(self.spin_ap_spacing.value()),
+            ap_min_mean=float(self.spin_ap_min.value()),
         )
 
         debayer = bool(self.chk_debayer.isChecked())

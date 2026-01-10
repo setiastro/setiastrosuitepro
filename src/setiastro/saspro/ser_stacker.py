@@ -345,7 +345,14 @@ def analyze_ser(
     dx = np.zeros((n,), dtype=np.float32)
     dy = np.zeros((n,), dtype=np.float32)
     conf = np.ones((n,), dtype=np.float32)
-
+    ap_centers = None
+    if getattr(cfg, "multipoint", False):
+        ap_centers = _autoplace_aps(
+            ref_img,
+            ap_size=int(getattr(cfg, "ap_size", 64)),
+            ap_spacing=int(getattr(cfg, "ap_spacing", 48)),
+            ap_min_mean=float(getattr(cfg, "ap_min_mean", 0.03)),
+        )
     if cfg.track_mode == "off" or cv2 is None:
         return AnalyzeResult(
             frames_total=n,
@@ -390,25 +397,29 @@ def analyze_ser(
             with SERReader(cfg.ser_path, cache_items=0) as r:
                 for i in chunk.tolist():
                     img = r.get_frame(int(i), roi=roi, debayer=debayer, to_float01=True, force_rgb=bool(to_rgb))
+                    cur_m_full = _to_mono01(img).astype(np.float32, copy=False)
 
-                    H2, W2 = img.shape[:2]
-                    ax2 = max(0, min(W2 - 1, ax))
-                    ay2 = max(0, min(H2 - 1, ay))
-                    aw2 = max(2, min(W2 - ax2, aw))
-                    ah2 = max(2, min(H2 - ay2, ah))
-
-                    patch = img[ay2:ay2 + ah2, ax2:ax2 + aw2]
-                    cur_m = _downsample_mono01(patch, max_dim=max_dim)
-
-                    if cur_m.shape != ref_m.shape:
-                        cur_m = cv2.resize(cur_m, (refW, refH), interpolation=cv2.INTER_AREA)
-
-                    sdx, sdy, resp = _phase_corr_shift(ref_m, cur_m)
+                    if ap_centers is not None:
+                        dx_i, dy_i, cf_i = _ap_phase_shift(
+                            _to_mono01(ref_img).astype(np.float32, copy=False),
+                            cur_m_full,
+                            ap_centers=ap_centers,
+                            ap_size=int(getattr(cfg, "ap_size", 64)),
+                            max_dim=max_dim,
+                        )
+                    else:
+                        # old single-point: downsample full frame and correlate
+                        cur_m = _downsample_mono01(img, max_dim=max_dim)
+                        if cur_m.shape != ref_m.shape:
+                            cur_m = cv2.resize(cur_m, (refW, refH), interpolation=cv2.INTER_AREA)
+                        sdx, sdy, cf_i = _phase_corr_shift(ref_m, cur_m)
+                        dx_i = float(sdx * sx)
+                        dy_i = float(sdy * sy)
 
                     out_i.append(int(i))
-                    out_dx.append(float(sdx * sx))
-                    out_dy.append(float(sdy * sy))
-                    out_cf.append(float(resp))
+                    out_dx.append(float(dx_i))
+                    out_dy.append(float(dy_i))
+                    out_cf.append(float(cf_i))
 
             return (
                 np.asarray(out_i, np.int32),
@@ -486,3 +497,95 @@ def analyze_ser(
         ref_count=ref_count,
         ref_image=ref_img,
     )
+
+def _autoplace_aps(ref_img01: np.ndarray, ap_size: int, ap_spacing: int, ap_min_mean: float) -> np.ndarray:
+    """
+    Return AP centers as int32 array of shape (M,2) with columns (cx, cy) in ROI coords.
+    We grid-scan by spacing and keep patches whose mean brightness exceeds ap_min_mean.
+    """
+    m = _to_mono01(ref_img01).astype(np.float32, copy=False)
+    H, W = m.shape[:2]
+    s = int(max(16, ap_size))
+    step = int(max(4, ap_spacing))
+
+    half = s // 2
+    xs = list(range(half, max(half + 1, W - half), step))
+    ys = list(range(half, max(half + 1, H - half), step))
+
+    pts = []
+    for cy in ys:
+        y0 = cy - half
+        y1 = y0 + s
+        if y0 < 0 or y1 > H:
+            continue
+        for cx in xs:
+            x0 = cx - half
+            x1 = x0 + s
+            if x0 < 0 or x1 > W:
+                continue
+            patch = m[y0:y1, x0:x1]
+            if float(patch.mean()) >= float(ap_min_mean):
+                pts.append((cx, cy))
+
+    if not pts:
+        # absolute fallback: a single center point (behaves like single-point)
+        pts = [(W // 2, H // 2)]
+
+    return np.asarray(pts, dtype=np.int32)
+
+def _ap_phase_shift(
+    ref_m: np.ndarray,
+    cur_m: np.ndarray,
+    ap_centers: np.ndarray,
+    ap_size: int,
+    max_dim: int,
+) -> tuple[float, float, float]:
+    """
+    Compute a robust global shift from multiple local AP shifts.
+    Returns (dx, dy, conf) in ROI pixel units.
+    conf is median of per-AP phase correlation responses.
+    """
+    s = int(max(16, ap_size))
+    half = s // 2
+
+    H, W = ref_m.shape[:2]
+    dxs = []
+    dys = []
+    resps = []
+
+    # downsample reference patches once per AP? (fast enough as-is; M is usually modest)
+    for (cx, cy) in ap_centers.tolist():
+        x0 = cx - half
+        y0 = cy - half
+        x1 = x0 + s
+        y1 = y0 + s
+        if x0 < 0 or y0 < 0 or x1 > W or y1 > H:
+            continue
+
+        ref_patch = ref_m[y0:y1, x0:x1]
+        cur_patch = cur_m[y0:y1, x0:x1]
+
+        rp = _downsample_mono01(ref_patch, max_dim=max_dim)
+        cp = _downsample_mono01(cur_patch, max_dim=max_dim)
+
+        if rp.shape != cp.shape:
+            cp = cv2.resize(cp, (rp.shape[1], rp.shape[0]), interpolation=cv2.INTER_AREA)
+
+        sdx, sdy, resp = _phase_corr_shift(rp, cp)
+
+        # scale back to ROI pixels (patch pixels -> ROI pixels)
+        sx = float(s) / float(rp.shape[1])
+        sy = float(s) / float(rp.shape[0])
+
+        dxs.append(float(sdx * sx))
+        dys.append(float(sdy * sy))
+        resps.append(float(resp))
+
+    if not dxs:
+        return 0.0, 0.0, 0.5
+
+    dx_med = float(np.median(np.asarray(dxs, np.float32)))
+    dy_med = float(np.median(np.asarray(dys, np.float32)))
+    conf = float(np.median(np.asarray(resps, np.float32)))
+
+    return dx_med, dy_med, conf
