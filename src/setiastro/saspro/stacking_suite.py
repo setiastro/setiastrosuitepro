@@ -11027,6 +11027,28 @@ class StackingSuiteDialog(QDialog):
                 self.update_status(self.tr(f"❌ ERROR: Failed to load master file {file_path} - {e}"))
                 QApplication.processEvents()
 
+    def _format_exposure_for_filename(self, exposure_time: float) -> str:
+        """
+        Format exposure time for use in filenames, preserving precision.
+        Uses 3 decimal places for sub-second exposures, otherwise uses general format.
+        
+        Examples:
+            1.5 -> "1.5"
+            1.7 -> "1.7"
+            1.567 -> "1.567"
+            30.0 -> "30"
+            0.5 -> "0.5"
+        """
+        try:
+            exposure_time = float(exposure_time)
+            # If it's a whole number, use integer format
+            if exposure_time == int(exposure_time):
+                return str(int(exposure_time))
+            # Otherwise, use 3 decimal places
+            return f"{exposure_time:.3f}".rstrip('0').rstrip('.')
+        except (ValueError, TypeError):
+            return str(int(exposure_time)) if exposure_time else "0"
+
     def create_master_dark(self):
         """Creates master darks with minimal RAM usage by loading frames in small tiles
         (GPU-accelerated if available), with adaptive reducers, using a memmap-based
@@ -11348,7 +11370,7 @@ class StackingSuiteDialog(QDialog):
                         fut = tp.submit(_read_tile_into, (buf1 if use0 else buf0), ny0, ny1, nx0, nx1)
 
                     pd.set_label(
-                        f"{int(exposure_time)}s ({image_size}) [{session}] [{temp_txt}] — "
+                        f"{exposure_time:g}s ({image_size}) [{session}] [{temp_txt}] — "
                         f"tile {t_idx}/{total_tiles_group} y:{y0}-{y1} x:{x0}-{x1}"
                     )
 
@@ -11438,6 +11460,28 @@ class StackingSuiteDialog(QDialog):
                     temp_info = {}
 
                 # -------------------------------------------------------------
+                # Calculate average exposure time from actual files (more accurate than group key)
+                # -------------------------------------------------------------
+                actual_exposure_times = []
+                for p in file_list:
+                    try:
+                        hdr = fits.getheader(p, memmap=True)
+                        exp_val = hdr.get("EXPOSURE", hdr.get("EXPTIME", None))
+                        if exp_val is not None:
+                            try:
+                                actual_exposure_times.append(float(exp_val))
+                            except (ValueError, TypeError):
+                                pass
+                    except Exception:
+                        pass
+                
+                # Use average if we have multiple values, otherwise use the group key value
+                if len(actual_exposure_times) > 0:
+                    avg_exposure_time = sum(actual_exposure_times) / len(actual_exposure_times)
+                else:
+                    avg_exposure_time = exposure_time
+
+                # -------------------------------------------------------------
                 # Build output filename (include session + exposure + size + temp bucket tag)
                 # -------------------------------------------------------------
                 temp_tag = ""
@@ -11451,7 +11495,7 @@ class StackingSuiteDialog(QDialog):
                 except Exception:
                     temp_tag = ""
 
-                master_dark_stem = f"MasterDark_{session}_{int(exposure_time)}s_{image_size}{temp_tag}"
+                master_dark_stem = f"MasterDark_{session}_{self._format_exposure_for_filename(avg_exposure_time)}s_{image_size}{temp_tag}"
                 master_dark_stem = self._normalize_master_stem(master_dark_stem)
                 master_dark_path = self._build_out(master_dir, master_dark_stem, "fit")
 
@@ -11460,7 +11504,7 @@ class StackingSuiteDialog(QDialog):
                 # -------------------------------------------------------------
                 master_header = fits.Header()
                 master_header["IMAGETYP"] = "DARK"
-                master_header["EXPTIME"]  = (float(exposure_time), "Exposure time (s)")
+                master_header["EXPTIME"]  = (float(avg_exposure_time), "Exposure time (s)")
                 master_header["SESSION"]  = (str(session), "User session tag")
                 master_header["NCOMBINE"] = (int(N), "Number of darks combined")
                 master_header["NSTACK"]   = (int(N), "Alias of NCOMBINE (SetiAstro)")
@@ -11505,7 +11549,7 @@ class StackingSuiteDialog(QDialog):
                 )
 
                 # Tree label includes temp for visibility
-                tree_label = f"{exposure_time:g}s ({image_size}) [{session}]"
+                tree_label = f"{avg_exposure_time:g}s ({image_size}) [{session}]"
                 if temp_info.get("ccd_med") is not None:
                     tree_label += f" [CCD {float(temp_info['ccd_med']):+.1f}C]"
                 elif temp_info.get("set_med") is not None:
@@ -12511,16 +12555,36 @@ class StackingSuiteDialog(QDialog):
                 except Exception:
                     pass
 
-                # If mono, squeeze to 2D (prevents accidental “(H,W,1)” weirdness later)
+                # If mono, squeeze to 2D (prevents accidental "(H,W,1)" weirdness later)
                 if channels == 1 and master_flat_data.ndim == 3 and master_flat_data.shape[2] == 1:
                     master_flat_data = master_flat_data[:, :, 0]
 
-                master_flat_stem = f"MasterFlat_{session}_{int(exposure_time)}s_{image_size}_{filter_name}"
+                # Calculate average exposure time from actual files (more accurate than group key)
+                actual_exposure_times = []
+                for p in file_list:
+                    try:
+                        hdr = fits.getheader(p, memmap=True)
+                        exp_val = hdr.get("EXPOSURE", hdr.get("EXPTIME", None))
+                        if exp_val is not None:
+                            try:
+                                actual_exposure_times.append(float(exp_val))
+                            except (ValueError, TypeError):
+                                pass
+                    except Exception:
+                        pass
+                
+                # Use average if we have multiple values, otherwise use the group key value
+                if len(actual_exposure_times) > 0:
+                    avg_exposure_time = sum(actual_exposure_times) / len(actual_exposure_times)
+                else:
+                    avg_exposure_time = exposure_time
+
+                master_flat_stem = f"MasterFlat_{session}_{self._format_exposure_for_filename(avg_exposure_time)}s_{image_size}_{filter_name}"
                 master_flat_path = self._build_out(master_dir, master_flat_stem, "fit")
 
                 header = fits.Header()
                 header["IMAGETYP"] = "FLAT"
-                header["EXPTIME"] = (exposure_time, "grouped exposure")
+                header["EXPTIME"] = (avg_exposure_time, "grouped exposure")
                 header["FILTER"] = filter_name
                 if channels == 3:
                     header["NAXIS"] = 3
