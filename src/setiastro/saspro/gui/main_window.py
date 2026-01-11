@@ -4323,6 +4323,115 @@ class AstroSuiteProMainWindow(
             except Exception:
                 pass
 
+    def _convert_mono_to_rgb_active(self):
+        """
+        Convert active mono document to RGB by duplicating the channel.
+        Updates the active document in-place (undoable).
+        """
+        dm = getattr(self, "docman", None)
+        if dm is None:
+            return
+
+        try:
+            doc = dm.get_active_document()
+        except Exception:
+            doc = None
+        if doc is None:
+            return
+
+        img = getattr(doc, "image", None)
+        if img is None:
+            return
+
+        import numpy as np
+
+        x = np.asarray(img)
+
+        # Already RGB?
+        if x.ndim == 3 and x.shape[-1] == 3:
+            try:
+                name = getattr(doc, "display_name", lambda: None)() or getattr(doc, "name", "") or "Active"
+            except Exception:
+                name = "Active"
+            if hasattr(self, "_log"):
+                self._log(f"Mono → RGB: '{name}' is already RGB (shape={getattr(x,'shape',None)}).")
+            return
+
+        # Determine what we're converting FROM
+        src_desc = "unknown"
+        if x.ndim == 2:
+            mono = x
+            src_desc = "mono (H×W)"
+        elif x.ndim == 3 and x.shape[-1] == 1:
+            mono = x[..., 0]
+            src_desc = "mono (H×W×1)"
+        else:
+            # Unknown format (e.g., multi-channel >3)
+            try:
+                name = getattr(doc, "display_name", lambda: None)() or getattr(doc, "name", "") or "Active"
+            except Exception:
+                name = "Active"
+            if hasattr(self, "_log"):
+                self._log(f"Mono → RGB: '{name}' not convertible (shape={getattr(x,'shape',None)}).")
+            return
+
+        before_shape = getattr(x, "shape", None)
+        before_dtype = getattr(x, "dtype", None)
+
+        mono = mono.astype(np.float32, copy=False)
+        rgb = np.stack([mono, mono, mono], axis=-1)
+
+        # metadata: preserve existing, but force "not mono"
+        try:
+            md = dict(getattr(doc, "metadata", None) or {})
+        except Exception:
+            md = {}
+
+        md["is_mono"] = False
+        md["color_model"] = "RGB"
+        md["channels"] = 3
+        md["source"] = (md.get("source") or "Edit")
+
+        # If you track op params for history explorer
+        md["__op_params__"] = {
+            "op": "mono_to_rgb",
+            "mode": "triplicate",
+            "from": str(src_desc),
+            "from_shape": tuple(before_shape) if before_shape is not None else None,
+            "to_shape": tuple(rgb.shape),
+        }
+
+        # name for logging
+        try:
+            name = getattr(doc, "display_name", lambda: None)() or getattr(doc, "name", "") or "Active"
+        except Exception:
+            name = "Active"
+
+        try:
+            dm.update_active_document(
+                rgb,
+                metadata=md,
+                step_name="Mono → RGB",
+                doc=doc,  # explicit is safer
+            )
+
+            if hasattr(self, "_log"):
+                self._log(
+                    f"Mono → RGB: '{name}' converted {src_desc} "
+                    f"(shape={before_shape}, dtype={before_dtype}) → "
+                    f"RGB (shape={rgb.shape}, dtype={rgb.dtype})."
+                )
+
+        except Exception:
+            import traceback
+            try:
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.critical(self, "Mono → RGB", traceback.format_exc())
+            except Exception:
+                pass
+
+
+
     def _on_stackingsuite_relaunch(self, old_dir: str, new_dir: str):
         # Optional: respond to dialog's relaunch request
         try:

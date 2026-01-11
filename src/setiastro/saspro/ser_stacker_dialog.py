@@ -1,6 +1,6 @@
 # src/setiastro/saspro/ser_stacker_dialog.py
 from __future__ import annotations
-
+import os
 import traceback
 import numpy as np
 
@@ -21,6 +21,29 @@ from PyQt6.QtGui import QPainter, QPen, QColor, QImage, QPixmap
 from setiastro.saspro.ser_stack_config import SERStackConfig
 
 from setiastro.saspro.ser_stacker import stack_ser, analyze_ser, AnalyzeResult
+
+def _source_basename_from_source(source: SourceSpec | None) -> str:
+    """
+    Best-effort base name from the SER source:
+      - if source is "path/to/file.ser" -> "file"
+      - if source is [paths...] -> first path stem
+      - else -> ""
+    """
+    try:
+        if isinstance(source, str) and source.strip():
+            p = source.strip()
+            base = os.path.basename(p)
+            stem, _ = os.path.splitext(base)
+            return stem.strip()
+        if isinstance(source, (list, tuple)) and len(source) > 0:
+            first = source[0]
+            if isinstance(first, str) and first.strip():
+                base = os.path.basename(first.strip())
+                stem, _ = os.path.splitext(base)
+                return stem.strip()
+    except Exception:
+        pass
+    return ""
 
 
 def _derive_view_base_title(main, doc) -> str:
@@ -75,17 +98,35 @@ def _derive_view_base_title(main, doc) -> str:
     return (getattr(doc, "name", "") or "Image").strip()
 
 
-def _push_as_new_doc(main, source_doc, arr: np.ndarray, *, title_suffix="_stack", source="SER Stacking"):
+def _push_as_new_doc(
+    main,
+    source_doc,
+    arr: np.ndarray,
+    *,
+    title_suffix: str = "_stack",
+    source: str = "Planetary Stacker",
+    source_path: SourceSpec | None = None,
+):
     dm = getattr(main, "docman", None)
     if not dm or not hasattr(dm, "open_array"):
         return None
 
     try:
-        base = "SER"
+        # --- Base title ---
+        base = ""
         if source_doc is not None:
-            base = _derive_view_base_title(main, source_doc) or base
+            base = _derive_view_base_title(main, source_doc) or ""
+        if not base:
+            base = _source_basename_from_source(source_path) or ""
+        if not base:
+            base = "Stack"
 
-        title = base if (title_suffix and base.endswith(title_suffix)) else f"{base}{title_suffix}"
+        # Avoid double suffix
+        suf = title_suffix or ""
+        if suf and base.lower().endswith(suf.lower()):
+            title = base
+        else:
+            title = f"{base}{suf}"
 
         x = np.asarray(arr)
         # keep mono mono
@@ -107,6 +148,7 @@ def _push_as_new_doc(main, source_doc, arr: np.ndarray, *, title_suffix="_stack"
         return newdoc
     except Exception:
         return None
+
 
 class APEditorDialog(QDialog):
     """
@@ -1024,7 +1066,8 @@ class SERStackerDialog(QDialog):
             self._source_doc,
             out,
             title_suffix="_stack",
-            source="SER Stack"
+            source="Planetary Stacker",
+            source_path=self._source,
         )
 
         # Optional: stash diag on the document metadata (handy later)

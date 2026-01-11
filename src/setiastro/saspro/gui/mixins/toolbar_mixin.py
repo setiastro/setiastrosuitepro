@@ -256,7 +256,7 @@ class ToolbarMixin:
         tb_tl.addAction(self.act_blink)  # Tools start here; Blink shows with QIcon(blink_path)
         tb_tl.addAction(self.act_ppp)    # Perfect Palette Picker
         tb_tl.addAction(self.act_nbtorgb)
-        #tb_tl.addAction(self.act_narrowband_normalization)
+        tb_tl.addAction(self.act_narrowband_normalization)
         tb_tl.addAction(self.act_selective_color)
         tb_tl.addAction(self.act_freqsep)
         tb_tl.addAction(self.act_multiscale_decomp)
@@ -832,6 +832,10 @@ class ToolbarMixin:
         self.act_paste_view.setShortcut("Ctrl+Shift+V")
         self.act_copy_view.triggered.connect(self._copy_active_view)
         self.act_paste_view.triggered.connect(self._paste_active_view)
+        # --- Edit: Mono -> RGB (triplicate channels) ---
+        self.act_mono_to_rgb = QAction(self.tr("Convert Mono to RGB"), self)
+        self.act_mono_to_rgb.setStatusTip(self.tr("Convert a mono image to RGB by duplicating the channel"))
+        self.act_mono_to_rgb.triggered.connect(self._convert_mono_to_rgb_active)
 
         # Functions
         self.act_crop = QAction(QIcon(cropicon_path), self.tr("Crop..."), self)
