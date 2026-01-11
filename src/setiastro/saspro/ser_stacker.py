@@ -373,6 +373,8 @@ def analyze_ser(
 
     with ThreadPoolExecutor(max_workers=workers) as ex:
         futs = [ex.submit(_q_chunk, c) for c in chunks if c.size > 0]
+        if progress_cb:
+            progress_cb(0, n, "Quality: opening source / decoding first frames…")
         for fut in as_completed(futs):
             ii, qq = fut.result()
             quality[ii] = qq
@@ -389,6 +391,8 @@ def analyze_ser(
     ref_mode = "best_stack" if ref_mode == "best_stack" else "best_frame"
 
     src_ref, owns_ref = _ensure_source(source_obj, cache_items=2)
+    if progress_cb:
+        progress_cb(0, n, f"Building reference ({ref_mode}, N={ref_count})…")    
     try:
         ref_img = _build_reference(
             src_ref,
@@ -409,6 +413,8 @@ def analyze_ser(
     # -------------------------------------------------------------------------
     # Autoplace APs (ALWAYS; at least one center is returned)
     # -------------------------------------------------------------------------
+    if progress_cb:
+        progress_cb(0, n, "Placing alignment points…")    
     ap_centers = _autoplace_aps(
         ref_img,
         ap_size=int(getattr(cfg, "ap_size", 64)),
@@ -596,10 +602,13 @@ def analyze_ser(
     done_ct = 0
     if progress_cb:
         progress_cb(0, n, "Align")
-
+    if progress_cb:
+        progress_cb(0, n, f"Align: starting ({workers} workers)…")
     chunks2 = np.array_split(idxs, max(1, workers))
     with ThreadPoolExecutor(max_workers=workers) as ex:
         futs = [ex.submit(_shift_chunk, c) for c in chunks2 if c.size > 0]
+        if progress_cb:
+            progress_cb(0, n, "Align: opening source / computing initial shifts…")        
         for fut in as_completed(futs):
             ii, ddx, ddy, ccf = fut.result()
             dx[ii] = ddx
