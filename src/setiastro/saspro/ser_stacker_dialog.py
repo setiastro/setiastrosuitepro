@@ -8,7 +8,7 @@ from typing import Optional, Union, Sequence
 
 SourceSpec = Union[str, Sequence[str]]
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QRectF
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QRectF, QEvent
 from PyQt6.QtWidgets import (
     QWidget, QSpinBox, QMessageBox,
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGroupBox,
@@ -295,7 +295,7 @@ class APEditorDialog(QDialog):
         # Ctrl+wheel zoom
         try:
             if obj is self._scroll.viewport():
-                if event.type() == event.Type.Wheel:
+                if event.type() == QEvent.Type.Wheel:
                     if bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier):
                         delta = event.angleDelta().y()
                         if delta > 0:
@@ -570,7 +570,8 @@ class _AnalyzeWorker(QThread):
             self.failed.emit(msg)
 
 class _StackWorker(QThread):
-    finished_ok = pyqtSignal(object, object)   # out(np.ndarray), diag(dict)
+    progress = pyqtSignal(int, int, str)        # ✅ add this
+    finished_ok = pyqtSignal(object, object)    # out(np.ndarray), diag(dict)
     failed = pyqtSignal(str)
 
     def __init__(self, cfg: SERStackConfig, analysis: AnalyzeResult | None, *, debayer: bool, to_rgb: bool):
@@ -582,7 +583,9 @@ class _StackWorker(QThread):
 
     def run(self):
         try:
-            # NOTE: stack_ser expects "source" directly (path/list/PlanetaryFrameSource)
+            def cb(done: int, total: int, phase: str):
+                self.progress.emit(int(done), int(total), str(phase))
+
             out, diag = stack_ser(
                 self.cfg.source,
                 roi=self.cfg.roi,
@@ -590,13 +593,15 @@ class _StackWorker(QThread):
                 keep_percent=float(getattr(self.cfg, "keep_percent", 20.0)),
                 track_mode=str(getattr(self.cfg, "track_mode", "planetary")),
                 surface_anchor=getattr(self.cfg, "surface_anchor", None),
-                # If your stack_ser supports analysis injection later,
-                # you can add analysis=self.analysis here.
+                analysis=self.analysis,
+                local_warp=True,
+                progress_cb=cb,              # ✅ pass it through
             )
             self.finished_ok.emit(out, diag)
         except Exception as e:
             msg = f"{e}\n\n{traceback.format_exc()}"
             self.failed.emit(msg)
+
 
 class _ReAlignWorker(QThread):
     progress = pyqtSignal(int, int, str)   # done, total, phase
@@ -991,7 +996,9 @@ class SERStackerDialog(QDialog):
         self.lbl_prog.setVisible(False)
 
         self.btn_analyze.setEnabled(True)
-        self.btn_stack.setEnabled(True)
+        had_analysis = self._analysis is not None and getattr(self._analysis, "ref_image", None) is not None
+        self.btn_stack.setEnabled(bool(had_analysis))
+        self.btn_edit_aps.setEnabled(bool(had_analysis))
         self.btn_close.setEnabled(True)
 
         self._append_log("ANALYZE FAILED:")
@@ -1038,24 +1045,33 @@ class SERStackerDialog(QDialog):
         self.btn_stack.setEnabled(False)
         self.btn_close.setEnabled(False)
         self.btn_analyze.setEnabled(False)
+        self.btn_edit_aps.setEnabled(False)
+
+        self.lbl_prog.setVisible(True)
         self.prog.setVisible(True)
+        self.prog.setRange(0, 100)
+        self.prog.setValue(0)
+        self.lbl_prog.setText("Stack: 0%")
+
         self._append_log("Stacking...")
 
-        # Pass analysis to worker (so stacker can use dx/dy/conf/order)
         self._worker = _StackWorker(cfg, analysis=self._analysis, debayer=debayer, to_rgb=False)
+        self._worker.progress.connect(self._on_analyze_progress)   # ✅ reuse your progress handler
         self._worker.finished_ok.connect(self._on_stack_ok)
         self._worker.failed.connect(self._on_stack_fail)
         self._worker.start()
-
 
     def _on_stack_ok(self, out, diag):
         self._last_out = out
         self._last_diag = diag
 
         self.prog.setVisible(False)
+        self.lbl_prog.setVisible(False)
+
         self.btn_stack.setEnabled(True)
         self.btn_close.setEnabled(True)
         self.btn_analyze.setEnabled(True)
+        self.btn_edit_aps.setEnabled(True)
 
         self._append_log(f"Done. Kept {diag.get('frames_kept')} / {diag.get('frames_total')}")
         self._append_log(f"Track: {diag.get('track_mode')}  ROI: {diag.get('roi_used')}")

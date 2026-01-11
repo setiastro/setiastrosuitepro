@@ -1,6 +1,8 @@
 # src/setiastro/saspro/ser_stacker.py
 from __future__ import annotations
 import os
+import threading
+
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from dataclasses import dataclass
@@ -30,6 +32,8 @@ class AnalyzeResult:
     ref_count: int
     ref_image: np.ndarray      # float32 [0..1], ROI-sized
     ap_centers: Optional[np.ndarray] = None  # (M,2) int32 in ROI coords
+    ap_size: int = 64
+    ap_multiscale: bool = False    
 
 @dataclass
 class FrameEval:
@@ -151,82 +155,156 @@ def _ensure_source(source, cache_items: int = 10) -> tuple[PlanetaryFrameSource,
 def stack_ser(
     source: str | list[str] | PlanetaryFrameSource,
     *,
-    roi: tuple[int, int, int, int] | None = None,     # full-frame coords
+    roi=None,
     debayer: bool = True,
     keep_percent: float = 20.0,
-    track_mode: str = "planetary",                    # "planetary" | "surface" | "off"
-    surface_anchor: tuple[int, int, int, int] | None = None,   # ROI-space
-    # ... keep your other existing params here ...
+    track_mode: str = "planetary",
+    surface_anchor=None,
+    analysis: AnalyzeResult | None = None,
+    local_warp: bool = True,
+    max_dim: int = 512,
+    progress_cb=None,
     cache_items: int = 10,
+    workers: int | None = None,          # ✅ add
+    chunk_size: int | None = None,       # ✅ add (optional tuning)
 ) -> tuple[np.ndarray, dict]:
-    """
-    Stack frames from any supported planetary source (SER/AVI/video/images/sequence).
+    source_obj = source  # keep name consistent with analyze
 
-    source:
-      - path to SER/AVI/MP4/etc
-      - list of image paths (sequence)
-      - PlanetaryFrameSource (already opened)
-    """
-    src, owns = _ensure_source(source, cache_items=cache_items)
+    # ---- Worker count ----
+    if workers is None:
+        cpu = os.cpu_count() or 4
+        workers = max(1, min(cpu, 24))
 
+    if cv2 is not None:
+        try:
+            cv2.setNumThreads(1)
+        except Exception:
+            pass
+
+    # ---- Open once to get meta + first frame shape ----
+    src0, owns0 = _ensure_source(source_obj, cache_items=cache_items)
     try:
-        m = src.meta
-        n = int(m.frames)
-
-        # ---- validate inputs ----
-        keep_percent = float(keep_percent)
-        keep_percent = max(0.1, min(100.0, keep_percent))
+        n = int(src0.meta.frames)
+        keep_percent = max(0.1, min(100.0, float(keep_percent)))
         k = max(1, int(round(n * (keep_percent / 100.0))))
 
-        # ---- decide ROI used for reading ----
-        read_roi = roi  # full-frame coords (your loader handles cropping)
+        if analysis is None or analysis.ref_image is None or analysis.ap_centers is None:
+            raise ValueError("stack_ser now expects analysis with ref_image + ap_centers (run Analyze first).")
 
-        # ---- frame selection / quality scoring ----
-        # (keep your existing logic here; below is only a placeholder)
-        # Example: choose first k frames if you don't have ranking here:
-        keep_idx = list(range(n))[:k]
+        order = np.asarray(analysis.order, np.int32)
+        keep_idx = order[:k].astype(np.int32, copy=False)
 
-        # ---- read frames ----
-        frames = []
-        for i in keep_idx:
-            fr = src.get_frame(
-                i,
-                roi=read_roi,
-                debayer=debayer,
-                to_float01=True,
-                force_rgb=False,   # keep as loader decides; stacker can convert as needed
-            )
-            frames.append(fr)
+        # reference / APs
+        ref_img = analysis.ref_image.astype(np.float32, copy=False)
+        ref_m = _to_mono01(ref_img).astype(np.float32, copy=False)
+        ap_centers = np.asarray(analysis.ap_centers, np.int32)
 
-        if not frames:
-            raise RuntimeError("No frames read from source.")
+        ap_size = int(getattr(analysis, "ap_size", getattr(getattr(analysis, "cfg", None), "ap_size", 64)) or 64)
 
-        # ---- stack (replace this with your existing alignment/stack code) ----
-        # For now: simple mean stack placeholder
-        stack = np.mean(np.stack(frames, axis=0).astype(np.float32), axis=0)
-
-        diag = {
-            "source_kind": getattr(m, "source_kind", "unknown"),
-            "source_path": getattr(m, "path", None),
-            "frames_total": n,
-            "frames_kept": len(frames),
-            "keep_percent": keep_percent,
-            "debayer": bool(debayer),
-            "roi": roi,
-            "track_mode": track_mode,
-            "surface_anchor": surface_anchor,
-            "width": int(getattr(m, "width", 0)),
-            "height": int(getattr(m, "height", 0)),
-        }
-
-        return stack, diag
-
+        # frame shape (mono or RGB) for accumulator
+        first = src0.get_frame(int(keep_idx[0]), roi=roi, debayer=debayer, to_float01=True, force_rgb=False)
+        acc_shape = first.shape
     finally:
-        if owns:
+        if owns0:
             try:
-                src.close()
+                src0.close()
             except Exception:
                 pass
+
+    # ---- Progress aggregation (thread-safe) ----
+    done_lock = threading.Lock()
+    done_ct = 0
+    total_ct = int(len(keep_idx))
+
+    def _bump_progress(delta: int, phase: str = "Stack"):
+        nonlocal done_ct
+        if progress_cb is None:
+            return
+        with done_lock:
+            done_ct += int(delta)
+            d = done_ct
+        progress_cb(d, total_ct, phase)
+
+    # ---- Chunking ----
+    idx_list = keep_idx.tolist()
+    if chunk_size is None:
+        # heuristic: enough chunks so each worker stays busy
+        chunk_size = max(8, int(np.ceil(len(idx_list) / float(workers * 2))))
+
+    chunks: list[list[int]] = [idx_list[i:i + chunk_size] for i in range(0, len(idx_list), chunk_size)]
+
+    if progress_cb:
+        progress_cb(0, total_ct, "Stack")
+
+    # ---- Worker: accumulate its own sum ----
+    def _stack_chunk(chunk: list[int]) -> tuple[np.ndarray, float]:
+        src, owns = _ensure_source(source_obj, cache_items=0)
+        try:
+            acc = np.zeros(acc_shape, dtype=np.float32)
+            wacc = 0.0
+
+            for i in chunk:
+                img = src.get_frame(int(i), roi=roi, debayer=debayer, to_float01=True, force_rgb=False).astype(np.float32, copy=False)
+                cur_m = _to_mono01(img).astype(np.float32, copy=False)
+
+                if cv2 is None or (not local_warp):
+                    dx = float(analysis.dx[int(i)]) if analysis.dx is not None else 0.0
+                    dy = float(analysis.dy[int(i)]) if analysis.dy is not None else 0.0
+                    warped = _shift_image(img, dx, dy)
+                else:
+                    # per-AP shifts for this frame
+                    ap_dx, ap_dy, ap_cf = _ap_phase_shifts(ref_m, cur_m, ap_centers, ap_size=ap_size, max_dim=max_dim)
+
+                    # ✅ OPTIONAL global-prior add (recommended)
+                    gdx = float(analysis.dx[int(i)]) if analysis.dx is not None else 0.0
+                    gdy = float(analysis.dy[int(i)]) if analysis.dy is not None else 0.0
+                    ap_dx = ap_dx + gdx
+                    ap_dy = ap_dy + gdy
+
+                    dx_field, dy_field = _dense_field_from_ap_shifts(
+                        img.shape[0], img.shape[1],
+                        ap_centers, ap_dx, ap_dy, ap_cf,
+                        grid=32, power=2.0, conf_floor=0.15,
+                        radius=float(ap_size) * 3.0,
+                    )
+                    warped = _warp_by_dense_field(img, dx_field, dy_field)
+
+                acc += warped
+                wacc += 1.0
+
+            _bump_progress(len(chunk), "Stack")
+            return acc, wacc
+        finally:
+            if owns:
+                try:
+                    src.close()
+                except Exception:
+                    pass
+
+    # ---- Parallel run + reduce ----
+    acc_total = np.zeros(acc_shape, dtype=np.float32)
+    wacc_total = 0.0
+
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futs = [ex.submit(_stack_chunk, c) for c in chunks if c]
+        for fut in as_completed(futs):
+            acc_c, w_c = fut.result()
+            acc_total += acc_c
+            wacc_total += float(w_c)
+
+    out = np.clip(acc_total / max(1e-6, wacc_total), 0.0, 1.0).astype(np.float32, copy=False)
+
+    diag = {
+        "frames_total": int(n),
+        "frames_kept": int(len(keep_idx)),
+        "roi_used": roi,
+        "track_mode": track_mode,
+        "local_warp": bool(local_warp),
+        "workers": int(workers),
+        "chunk_size": int(chunk_size),
+    }
+    return out, diag
+
 
 def _build_reference(
     src: PlanetaryFrameSource,
@@ -608,7 +686,7 @@ def analyze_ser(
     with ThreadPoolExecutor(max_workers=workers) as ex:
         futs = [ex.submit(_shift_chunk, c) for c in chunks2 if c.size > 0]
         if progress_cb:
-            progress_cb(0, n, "Align: opening source / computing initial shifts…")        
+            progress_cb(0, n, "Align: computing initial shifts…")        
         for fut in as_completed(futs):
             ii, ddx, ddy, ccf = fut.result()
             dx[ii] = ddx
@@ -912,6 +990,141 @@ def _scaled_ap_sizes(base: int) -> tuple[int, int, int]:
     s1 = max(16, min(256, s1))
     s05 = max(16, min(256, s05))
     return s2, s1, s05
+
+def _ap_phase_shifts(
+    ref_m: np.ndarray,
+    cur_m: np.ndarray,
+    ap_centers: np.ndarray,
+    ap_size: int,
+    max_dim: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Per-AP shifts.
+    Returns:
+      ap_dx: (M,) float32  ROI pixels
+      ap_dy: (M,) float32
+      ap_cf: (M,) float32 0..1 response
+    """
+    s = int(max(16, ap_size))
+    half = s // 2
+    H, W = ref_m.shape[:2]
+
+    M = int(ap_centers.shape[0])
+    ap_dx = np.zeros((M,), np.float32)
+    ap_dy = np.zeros((M,), np.float32)
+    ap_cf = np.zeros((M,), np.float32)
+
+    for j, (cx, cy) in enumerate(ap_centers.tolist()):
+        x0 = cx - half; y0 = cy - half
+        x1 = x0 + s;   y1 = y0 + s
+        if x0 < 0 or y0 < 0 or x1 > W or y1 > H:
+            ap_cf[j] = 0.0
+            continue
+
+        ref_patch = ref_m[y0:y1, x0:x1]
+        cur_patch = cur_m[y0:y1, x0:x1]
+
+        rp = _downsample_mono01(ref_patch, max_dim=max_dim)
+        cp = _downsample_mono01(cur_patch, max_dim=max_dim)
+        if rp.shape != cp.shape:
+            cp = cv2.resize(cp, (rp.shape[1], rp.shape[0]), interpolation=cv2.INTER_AREA)
+
+        sdx, sdy, resp = _phase_corr_shift(rp, cp)
+
+        sx = float(s) / float(rp.shape[1])
+        sy = float(s) / float(rp.shape[0])
+
+        ap_dx[j] = float(sdx * sx)
+        ap_dy[j] = float(sdy * sy)
+        ap_cf[j] = float(resp)
+
+    return ap_dx, ap_dy, ap_cf
+
+def _dense_field_from_ap_shifts(
+    H: int, W: int,
+    ap_centers: np.ndarray,        # (M,2)
+    ap_dx: np.ndarray,             # (M,)
+    ap_dy: np.ndarray,             # (M,)
+    ap_cf: np.ndarray,             # (M,)
+    *,
+    grid: int = 32,                # coarse grid resolution (32 or 48 are good)
+    power: float = 2.0,
+    conf_floor: float = 0.15,
+    radius: float | None = None,   # optional clamp in pixels (ROI coords)
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Returns dense (dx_field, dy_field) as float32 arrays (H,W) in ROI pixels.
+    Computed on coarse grid then upsampled.
+    """
+    # coarse grid points
+    gh = max(4, int(grid))
+    gw = max(4, int(round(grid * (W / max(1, H)))))
+
+    ys = np.linspace(0, H - 1, gh, dtype=np.float32)
+    xs = np.linspace(0, W - 1, gw, dtype=np.float32)
+    gx, gy = np.meshgrid(xs, ys)  # (gh,gw)
+
+    pts = ap_centers.astype(np.float32)
+    px = pts[:, 0].reshape(-1, 1, 1)  # (M,1,1)
+    py = pts[:, 1].reshape(-1, 1, 1)  # (M,1,1)
+
+    cf = np.maximum(ap_cf.astype(np.float32), 0.0)
+    good = cf >= float(conf_floor)
+
+    if not np.any(good):
+        dxg = np.zeros((gh, gw), np.float32)
+        dyg = np.zeros((gh, gw), np.float32)
+    else:
+        px = px[good]
+        py = py[good]
+        dx = ap_dx[good].astype(np.float32).reshape(-1, 1, 1)
+        dy = ap_dy[good].astype(np.float32).reshape(-1, 1, 1)
+        cw = cf[good].astype(np.float32).reshape(-1, 1, 1)
+
+        dxp = px - gx[None, :, :]   # (M,gh,gw)
+        dyp = py - gy[None, :, :]   # (M,gh,gw)
+        d2 = dxp * dxp + dyp * dyp  # (M,gh,gw)
+
+        if radius is not None:
+            r2 = float(radius) * float(radius)
+            far = d2 > r2
+        else:
+            far = None
+
+        w = 1.0 / np.maximum(d2, 1.0) ** (power * 0.5)
+        w *= cw
+
+        if far is not None:
+            w = np.where(far, 0.0, w)
+
+        wsum = np.sum(w, axis=0)  # (gh,gw)
+
+        dxg = np.sum(w * dx, axis=0) / np.maximum(wsum, 1e-6)
+        dyg = np.sum(w * dy, axis=0) / np.maximum(wsum, 1e-6)
+
+
+    # upsample to full res
+    dx_field = cv2.resize(dxg, (W, H), interpolation=cv2.INTER_CUBIC).astype(np.float32, copy=False)
+    dy_field = cv2.resize(dyg, (W, H), interpolation=cv2.INTER_CUBIC).astype(np.float32, copy=False)
+    return dx_field, dy_field
+
+def _warp_by_dense_field(img01: np.ndarray, dx_field: np.ndarray, dy_field: np.ndarray) -> np.ndarray:
+    """
+    img01 (H,W) or (H,W,3)
+    dx_field/dy_field are (H,W) in pixels: shifting cur by (dx,dy) aligns to ref.
+    """
+    H, W = dx_field.shape
+    # remap wants map_x/map_y = source sampling coordinates
+    # If we want output aligned-to-ref, we sample from cur at (x - dx, y - dy)
+    xs, ys = np.meshgrid(np.arange(W, dtype=np.float32), np.arange(H, dtype=np.float32))
+    map_x = xs - dx_field
+    map_y = ys - dy_field
+
+    if img01.ndim == 2:
+        return cv2.remap(img01, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+    else:
+        return cv2.remap(img01, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+
 
 def _ap_phase_shift_with_coarse(
     ref_m: np.ndarray,
