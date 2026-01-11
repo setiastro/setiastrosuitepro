@@ -583,6 +583,7 @@ class _StackWorker(QThread):
 
     def run(self):
         try:
+            print(f"tracking mode = {str(getattr(self.cfg, "track_mode", "planetary"))}")
             def cb(done: int, total: int, phase: str):
                 self.progress.emit(int(done), int(total), str(phase))
 

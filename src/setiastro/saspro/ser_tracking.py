@@ -126,38 +126,30 @@ class SurfaceTracker:
             a *= self._win
         self._ref_fft = np.fft.rfft2(a)
 
-    def _phase_corr(self, cur_patch: np.ndarray) -> tuple[float, float, float]:
-        b = _to_mono01(cur_patch).astype(np.float32)
-        if b.shape != self.ref.shape:
+    def _phase_corr_shift(ref_m: np.ndarray, cur_m: np.ndarray) -> tuple[float, float, float]:
+        """
+        Returns (dx, dy, response) such that shifting cur by (dx,dy) aligns to ref.
+        Uses cv2.phaseCorrelate with mean subtraction + Hann window.
+        """
+        if cv2 is None:
             return 0.0, 0.0, 0.0
 
-        b = b - float(np.mean(b))
-        if self._win is not None:
-            b *= self._win
+        ref = ref_m.astype(np.float32, copy=False)
+        cur = cur_m.astype(np.float32, copy=False)
 
-        B = np.fft.rfft2(b)
-        R = self._ref_fft * np.conj(B)
-        denom = np.maximum(np.abs(R), 1e-8)
-        R /= denom
-        cc = np.fft.irfft2(R)
-        # peak
-        y, x = np.unravel_index(np.argmax(cc), cc.shape)
-        peak = float(cc[y, x])
+        # stabilize
+        ref = ref - float(ref.mean())
+        cur = cur - float(cur.mean())
 
-        h, w = cc.shape
-        # wrap to signed shift
-        if x > w // 2:
-            x = x - w
-        if y > h // 2:
-            y = y - h
+        # hann window (OpenCV expects float32)
+        try:
+            win = cv2.createHanningWindow((ref.shape[1], ref.shape[0]), cv2.CV_32F)
+            (dx, dy), resp = cv2.phaseCorrelate(ref, cur, win)
+        except Exception:
+            (dx, dy), resp = cv2.phaseCorrelate(ref, cur)
 
-        # dx/dy to move current -> reference
-        dx = -float(x)
-        dy = -float(y)
+        return float(dx), float(dy), float(resp)
 
-        # confidence from peak (rough)
-        conf = float(np.clip((peak - 0.05) / 0.95, 0.0, 1.0))
-        return dx, dy, conf
 
     def step(self, cur_patch: np.ndarray) -> tuple[float, float, float]:
         return self._phase_corr(cur_patch)

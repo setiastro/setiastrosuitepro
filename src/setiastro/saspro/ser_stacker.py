@@ -26,14 +26,18 @@ class AnalyzeResult:
     quality: np.ndarray        # (N,) float32 higher=better
     dx: np.ndarray             # (N,) float32
     dy: np.ndarray             # (N,) float32
-    conf: np.ndarray           # (N,) float32 0..1
+    conf: np.ndarray           # (N,) float32 0..1  (final conf used by stacking)
     order: np.ndarray          # (N,) int indices sorted by quality desc
     ref_mode: str              # "best_frame" | "best_stack"
     ref_count: int
     ref_image: np.ndarray      # float32 [0..1], ROI-sized
     ap_centers: Optional[np.ndarray] = None  # (M,2) int32 in ROI coords
     ap_size: int = 64
-    ap_multiscale: bool = False    
+    ap_multiscale: bool = False
+
+    # ✅ NEW: surface anchor confidence (coarse tracker)
+    coarse_conf: Optional[np.ndarray] = None  # (N,) float32 0..1
+ 
 
 @dataclass
 class FrameEval:
@@ -42,6 +46,47 @@ class FrameEval:
     dx: float
     dy: float
     conf: float
+
+def _print_surface_debug(
+    *,
+    dx: np.ndarray,
+    dy: np.ndarray,
+    conf: np.ndarray,
+    coarse_conf: np.ndarray | None,
+    floor: float = 0.05,
+    prefix: str = "[SER][Surface]"
+) -> None:
+    try:
+        dx = np.asarray(dx, dtype=np.float32)
+        dy = np.asarray(dy, dtype=np.float32)
+        conf = np.asarray(conf, dtype=np.float32)
+
+        dx_min = float(np.min(dx)) if dx.size else 0.0
+        dx_max = float(np.max(dx)) if dx.size else 0.0
+        dy_min = float(np.min(dy)) if dy.size else 0.0
+        dy_max = float(np.max(dy)) if dy.size else 0.0
+
+        conf_mean = float(np.mean(conf)) if conf.size else 0.0
+        conf_min = float(np.min(conf)) if conf.size else 0.0
+
+        msg = (
+            f"{prefix} dx[min,max]=({dx_min:.2f},{dx_max:.2f})  "
+            f"dy[min,max]=({dy_min:.2f},{dy_max:.2f})  "
+            f"conf[mean,min]=({conf_mean:.3f},{conf_min:.3f})"
+        )
+
+        if coarse_conf is not None:
+            cc = np.asarray(coarse_conf, dtype=np.float32)
+            cc_mean = float(np.mean(cc)) if cc.size else 0.0
+            cc_min = float(np.min(cc)) if cc.size else 0.0
+            cc_bad = float(np.mean(cc < 0.2)) if cc.size else 0.0
+            msg += f"  coarse_conf[mean,min]=({cc_mean:.3f},{cc_min:.3f})  frac<0.2={cc_bad:.2%}"
+
+        if conf_mean <= floor + 1e-6:
+            msg += f"  ⚠ conf.mean near floor ({floor}); alignment likely failing"
+        print(msg)
+    except Exception as e:
+        print(f"{prefix} debug print failed: {e}")
 
 
 def _clamp_roi_in_bounds(roi: Tuple[int, int, int, int], w: int, h: int) -> Tuple[int, int, int, int]:
@@ -66,6 +111,29 @@ def _quality_laplacian(img01: np.ndarray) -> float:
     dx = np.abs(m[:, 1:] - m[:, :-1]).mean()
     dy = np.abs(m[1:, :] - m[:-1, :]).mean()
     return float(dx + dy)
+
+def _subpix_patch(img_mono: np.ndarray, cx: float, cy: float, size: int) -> np.ndarray | None:
+    """
+    Extract a size×size patch centered at (cx,cy) with subpixel accuracy.
+    Returns None if patch would go out of bounds.
+    """
+    if cv2 is None:
+        # fallback: integer crop
+        half = size // 2
+        ix = int(round(cx))
+        iy = int(round(cy))
+        x0, y0 = ix - half, iy - half
+        x1, y1 = x0 + size, y0 + size
+        H, W = img_mono.shape[:2]
+        if x0 < 0 or y0 < 0 or x1 > W or y1 > H:
+            return None
+        return img_mono[y0:y1, x0:x1]
+
+    H, W = img_mono.shape[:2]
+    half = size / 2.0
+    if (cx - half) < 0 or (cy - half) < 0 or (cx + half) >= W or (cy + half) >= H:
+        return None
+    return cv2.getRectSubPix(img_mono, (int(size), int(size)), (float(cx), float(cy)))
 
 
 def _shift_image(img01: np.ndarray, dx: float, dy: float) -> np.ndarray:
@@ -116,6 +184,84 @@ def _downsample_mono01(img01: np.ndarray, max_dim: int = 512) -> np.ndarray:
     nh = max(2, int(round(H * scale)))
     nw = max(2, int(round(W * scale)))
     return cv2.resize(m, (nw, nh), interpolation=cv2.INTER_AREA).astype(np.float32, copy=False)
+
+def _anchor_match_shift(
+    ref_m: np.ndarray,
+    cur_m: np.ndarray,
+    anchor: tuple[int, int, int, int],
+    *,
+    search_radius: int = 96,
+    max_dim: int = 512,
+) -> tuple[float, float, float]:
+    """
+    Find ref anchor patch inside a search window of cur using normalized cross-correlation.
+    Returns (dx, dy, conf) where shifting cur by (dx,dy) aligns cur->ref in ROI pixels.
+
+    - anchor is (ax,ay,aw,ah) in ROI coords, defined on reference.
+    - search_radius expands a window around the anchor location to allow drift.
+    """
+    if cv2 is None:
+        return 0.0, 0.0, 0.0
+
+    ax, ay, aw, ah = [int(v) for v in anchor]
+    H, W = ref_m.shape[:2]
+
+    # clamp anchor to bounds
+    ax = max(0, min(W - 2, ax))
+    ay = max(0, min(H - 2, ay))
+    aw = max(8, min(W - ax, aw))
+    ah = max(8, min(H - ay, ah))
+
+    ref_t = ref_m[ay:ay + ah, ax:ax + aw]
+    if ref_t.size == 0:
+        return 0.0, 0.0, 0.0
+
+    # search window in current frame
+    r = int(max(8, search_radius))
+    x0 = max(0, ax - r)
+    y0 = max(0, ay - r)
+    x1 = min(W, ax + aw + r)
+    y1 = min(H, ay + ah + r)
+
+    cur_win = cur_m[y0:y1, x0:x1]
+    if cur_win.shape[0] < ah or cur_win.shape[1] < aw:
+        return 0.0, 0.0, 0.0
+
+    # downsample both for speed if needed (keep same scale factor)
+    def _ds(img: np.ndarray) -> np.ndarray:
+        return _downsample_mono01(img, max_dim=max_dim)
+
+    ref_t_ds = _ds(ref_t)
+    cur_w_ds = _ds(cur_win)
+
+    # ensure template fits
+    th, tw = ref_t_ds.shape[:2]
+    wh, ww = cur_w_ds.shape[:2]
+    if wh < th or ww < tw:
+        return 0.0, 0.0, 0.0
+
+    # stabilize illumination differences
+    ref_t_ds = ref_t_ds.astype(np.float32, copy=False) - float(ref_t_ds.mean())
+    cur_w_ds = cur_w_ds.astype(np.float32, copy=False) - float(cur_w_ds.mean())
+
+    # NCC match
+    res = cv2.matchTemplate(cur_w_ds, ref_t_ds, cv2.TM_CCOEFF_NORMED)
+    _, max_val, _, max_loc = cv2.minMaxLoc(res)  # max_loc = (x,y) in ds coords
+    conf = float(np.clip(max_val, 0.0, 1.0))
+
+    # convert ds match location back to full-res ROI coords
+    # scale factors:
+    sx = float((x1 - x0)) / float(cur_w_ds.shape[1])
+    sy = float((y1 - y0)) / float(cur_w_ds.shape[0])
+
+    mx_ds, my_ds = max_loc
+    mx = float(x0) + float(mx_ds) * sx  # top-left of matched template in full-res
+    my = float(y0) + float(my_ds) * sy
+
+    # shift needed so matched top-left aligns to reference anchor top-left
+    dx = float(ax) - mx
+    dy = float(ay) - my
+    return dx, dy, conf
 
 
 def _phase_corr_shift(ref_m: np.ndarray, cur_m: np.ndarray) -> tuple[float, float, float]:
@@ -507,6 +653,9 @@ def analyze_ser(
     dy = np.zeros((n,), dtype=np.float32)
     conf = np.ones((n,), dtype=np.float32)
 
+    # ✅ track coarse confidence separately (surface only)
+    coarse_conf = None
+
     if cfg.track_mode == "off" or cv2 is None:
         return AnalyzeResult(
             frames_total=n,
@@ -523,38 +672,33 @@ def analyze_ser(
             ap_centers=ap_centers,
         )
 
-    # Precompute reference mono full-res once
     ref_m_full = _to_mono01(ref_img).astype(np.float32, copy=False)
-
     ap_size = int(getattr(cfg, "ap_size", 64))
     use_multiscale = bool(getattr(cfg, "ap_multiscale", False))
 
-    # ---- surface vs planetary setup ----
     if cfg.track_mode == "surface":
         if cfg.surface_anchor is None:
             raise ValueError("track_mode='surface' requires cfg.surface_anchor (ROI-space)")
 
+        coarse_conf = np.zeros((n,), dtype=np.float32)
+
         ax, ay, aw, ah = [int(v) for v in cfg.surface_anchor]
         H, W = ref_img.shape[:2]
-        ax = max(0, min(W - 1, ax))
-        ay = max(0, min(H - 1, ay))
-        aw = max(2, min(W - ax, aw))
-        ah = max(2, min(H - ay, ah))
+        ax = max(0, min(W - 2, ax))
+        ay = max(0, min(H - 2, ay))
+        aw = max(8, min(W - ax, aw))
+        ah = max(8, min(H - ay, ah))
 
-        # Reference anchor patch (full-res)
-        ref_patch_full = ref_m_full[ay:ay + ah, ax:ax + aw]
-        ref_patch_ds = _downsample_mono01(ref_patch_full, max_dim=max_dim)
-        refPH, refPW = ref_patch_ds.shape[:2]
+        # reasonable default search radius: 2× anchor size, but clamp
+        base_r = int(max(aw, ah) * 2)
+        search_r = int(max(32, min(base_r, max(W, H) // 2)))
 
-        # Scale downsampled-patch shifts back to ROI pixels
-        sx = float(aw) / float(refPW)
-        sy = float(ah) / float(refPH)
-
-        def _shift_chunk(chunk: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        def _shift_chunk(chunk: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
             out_i: list[int] = []
             out_dx: list[float] = []
             out_dy: list[float] = []
             out_cf: list[float] = []
+            out_cc: list[float] = []
 
             src, owns = _ensure_source(source_obj, cache_items=0)
             try:
@@ -568,17 +712,15 @@ def analyze_ser(
                     )
                     cur_m_full = _to_mono01(img).astype(np.float32, copy=False)
 
-                    # --- coarse shift from anchor patch (follows drift) ---
-                    cur_patch_full = cur_m_full[ay:ay + ah, ax:ax + aw]
-                    cur_patch_ds = _downsample_mono01(cur_patch_full, max_dim=max_dim)
-                    if cur_patch_ds.shape != ref_patch_ds.shape:
-                        cur_patch_ds = cv2.resize(cur_patch_ds, (refPW, refPH), interpolation=cv2.INTER_AREA)
+                    # ✅ Coarse: anchor template match inside search window (tracks drift!)
+                    coarse_dx, coarse_dy, cc = _anchor_match_shift(
+                        ref_m_full, cur_m_full,
+                        (ax, ay, aw, ah),
+                        search_radius=search_r,
+                        max_dim=max_dim,
+                    )
 
-                    sdx, sdy, coarse_resp = _phase_corr_shift(ref_patch_ds, cur_patch_ds)
-                    coarse_dx = float(sdx * sx)
-                    coarse_dy = float(sdy * sy)
-
-                    # --- refine using APs, sampling cur at (cx+coarse_dx, cy+coarse_dy) ---
+                    # ✅ Refine using APs, sampling cur at (cx+coarse_dx, cy+coarse_dy) with subpixel patch
                     if use_multiscale:
                         s2, s1, s05 = _scaled_ap_sizes(ap_size)
                         dx2, dy2, cf2 = _ap_phase_shift_with_coarse(ref_m_full, cur_m_full, ap_centers, s2, max_dim, coarse_dx, coarse_dy)
@@ -592,9 +734,9 @@ def analyze_ser(
 
                         dx_i = (w2 * dx2 + w1 * dx1 + w0 * dx0) / wsum
                         dy_i = (w2 * dy2 + w1 * dy1 + w0 * dy0) / wsum
-                        cf_i = float(np.clip((w2 * cf2 + w1 * cf1 + w0 * cf0) / wsum, 0.0, 1.0))
+                        cf_ap = float(np.clip((w2 * cf2 + w1 * cf1 + w0 * cf0) / wsum, 0.0, 1.0))
                     else:
-                        dx_i, dy_i, cf_i = _ap_phase_shift_with_coarse(
+                        dx_i, dy_i, cf_ap = _ap_phase_shift_with_coarse(
                             ref_m_full, cur_m_full,
                             ap_centers=ap_centers,
                             ap_size=ap_size,
@@ -602,13 +744,16 @@ def analyze_ser(
                             coarse_dx=coarse_dx,
                             coarse_dy=coarse_dy,
                         )
-                        # combine coarse response into confidence a bit (helps when APs are weak)
-                        cf_i = float(np.clip(0.5 * cf_i + 0.5 * float(coarse_resp), 0.0, 1.0))
+
+                    # ✅ Final confidence blends anchor confidence + AP confidence
+                    # anchor match tends to be very indicative of success/failure
+                    cf_i = float(np.clip(0.55 * float(cc) + 0.45 * float(cf_ap), 0.0, 1.0))
 
                     out_i.append(int(i))
                     out_dx.append(float(dx_i))
                     out_dy.append(float(dy_i))
                     out_cf.append(float(cf_i))
+                    out_cc.append(float(cc))
             finally:
                 if owns:
                     try:
@@ -621,10 +766,11 @@ def analyze_ser(
                 np.asarray(out_dx, np.float32),
                 np.asarray(out_dy, np.float32),
                 np.asarray(out_cf, np.float32),
+                np.asarray(out_cc, np.float32),
             )
 
     else:
-        # planetary: ALWAYS multi-point AP-based shift across ROI
+        # planetary: AP-based shift across full ROI
         def _shift_chunk(chunk: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
             out_i: list[int] = []
             out_dx: list[float] = []
@@ -680,15 +826,20 @@ def analyze_ser(
     done_ct = 0
     if progress_cb:
         progress_cb(0, n, "Align")
-    if progress_cb:
         progress_cb(0, n, f"Align: starting ({workers} workers)…")
+
     chunks2 = np.array_split(idxs, max(1, workers))
     with ThreadPoolExecutor(max_workers=workers) as ex:
         futs = [ex.submit(_shift_chunk, c) for c in chunks2 if c.size > 0]
         if progress_cb:
-            progress_cb(0, n, "Align: computing initial shifts…")        
+            progress_cb(0, n, "Align: computing shifts…")
         for fut in as_completed(futs):
-            ii, ddx, ddy, ccf = fut.result()
+            if cfg.track_mode == "surface":
+                ii, ddx, ddy, ccf, ccc = fut.result()
+                coarse_conf[ii] = ccc
+            else:
+                ii, ddx, ddy, ccf = fut.result()
+
             dx[ii] = ddx
             dy[ii] = ddy
             conf[ii] = np.clip(ccf, 0.05, 1.0).astype(np.float32, copy=False)
@@ -696,6 +847,20 @@ def analyze_ser(
             done_ct += int(ii.size)
             if progress_cb:
                 progress_cb(done_ct, n, "Align")
+
+    # ✅ DEBUG PRINTS (surface only)
+    if cfg.track_mode == "surface":
+        _print_surface_debug(dx=dx, dy=dy, conf=conf, coarse_conf=coarse_conf, floor=0.05, prefix="[SER][Surface]")
+
+        # Also warn in-progress channel if you want (optional)
+        if progress_cb is not None:
+            try:
+                dx_min = float(np.min(dx)); dx_max = float(np.max(dx))
+                dy_min = float(np.min(dy)); dy_max = float(np.max(dy))
+                cc_mean = float(np.mean(coarse_conf)) if coarse_conf is not None else 0.0
+                progress_cb(n, n, f"Surface debug: dx[{dx_min:.1f},{dx_max:.1f}] dy[{dy_min:.1f},{dy_max:.1f}] coarse_conf_mean={cc_mean:.2f}")
+            except Exception:
+                pass
 
     return AnalyzeResult(
         frames_total=n,
@@ -710,7 +875,11 @@ def analyze_ser(
         ref_count=ref_count,
         ref_image=ref_img,
         ap_centers=ap_centers,
+        ap_size=ap_size,
+        ap_multiscale=use_multiscale,
+        coarse_conf=coarse_conf,  # ✅ new field (or remove if you didn’t edit dataclass)
     )
+
 
 def realign_ser(
     cfg: SERStackConfig,
@@ -745,6 +914,9 @@ def realign_ser(
         analysis.dx = np.zeros((n,), dtype=np.float32)
         analysis.dy = np.zeros((n,), dtype=np.float32)
         analysis.conf = np.ones((n,), dtype=np.float32)
+        # optional
+        if hasattr(analysis, "coarse_conf"):
+            analysis.coarse_conf = None
         return analysis
 
     # Ensure AP centers exist
@@ -776,14 +948,19 @@ def realign_ser(
     dy = np.zeros((n,), dtype=np.float32)
     conf = np.ones((n,), dtype=np.float32)
 
-    if progress_cb:
-        progress_cb(0, n, "Align")
-
     # Precompute reference mono once
     ref_m_full = _to_mono01(ref_img).astype(np.float32, copy=False)
 
     ap_size = int(getattr(cfg, "ap_size", 64))
     use_multiscale = bool(getattr(cfg, "ap_multiscale", False))
+
+    # ✅ surface-only coarse confidence (anchor NCC)
+    coarse_conf = None
+    if cfg.track_mode == "surface":
+        coarse_conf = np.zeros((n,), dtype=np.float32)
+
+    if progress_cb:
+        progress_cb(0, n, "Align")
 
     if cfg.track_mode == "surface":
         if cfg.surface_anchor is None:
@@ -791,22 +968,21 @@ def realign_ser(
 
         ax, ay, aw, ah = [int(v) for v in cfg.surface_anchor]
         H, W = ref_img.shape[:2]
-        ax = max(0, min(W - 1, ax))
-        ay = max(0, min(H - 1, ay))
-        aw = max(2, min(W - ax, aw))
-        ah = max(2, min(H - ay, ah))
+        ax = max(0, min(W - 2, ax))
+        ay = max(0, min(H - 2, ay))
+        aw = max(8, min(W - ax, aw))
+        ah = max(8, min(H - ay, ah))
 
-        ref_patch_full = ref_m_full[ay:ay + ah, ax:ax + aw]
-        ref_patch_ds = _downsample_mono01(ref_patch_full, max_dim=max_dim)
-        refPH, refPW = ref_patch_ds.shape[:2]
-        sx = float(aw) / float(refPW)
-        sy = float(ah) / float(refPH)
+        # ✅ define a sane search radius (2× anchor size, clamped)
+        base_r = int(max(aw, ah) * 2)
+        search_r = int(max(32, min(base_r, max(W, H) // 2)))
 
         def _shift_chunk(chunk: np.ndarray):
             out_i: list[int] = []
             out_dx: list[float] = []
             out_dy: list[float] = []
             out_cf: list[float] = []
+            out_cc: list[float] = []
 
             src, owns = _ensure_source(source_obj, cache_items=0)
             try:
@@ -820,19 +996,18 @@ def realign_ser(
                     )
                     cur_m_full = _to_mono01(img).astype(np.float32, copy=False)
 
-                    # coarse from anchor patch
-                    cur_patch_full = cur_m_full[ay:ay + ah, ax:ax + aw]
-                    cur_patch_ds = _downsample_mono01(cur_patch_full, max_dim=max_dim)
-                    if cur_patch_ds.shape != ref_patch_ds.shape:
-                        cur_patch_ds = cv2.resize(cur_patch_ds, (refPW, refPH), interpolation=cv2.INTER_AREA)
+                    # ✅ coarse: anchor template match inside window
+                    coarse_dx, coarse_dy, cc = _anchor_match_shift(
+                        ref_m_full, cur_m_full,
+                        (ax, ay, aw, ah),
+                        search_radius=search_r,
+                        max_dim=max_dim,
+                    )
 
-                    sdx, sdy, coarse_resp = _phase_corr_shift(ref_patch_ds, cur_patch_ds)
-                    coarse_dx = float(sdx * sx)
-                    coarse_dy = float(sdy * sy)
-
-                    # refine using APs following drift
+                    # ✅ refine: APs follow drift using subpixel patch sampling
                     if use_multiscale:
                         s2, s1, s05 = _scaled_ap_sizes(ap_size)
+
                         dx2, dy2, cf2 = _ap_phase_shift_with_coarse(ref_m_full, cur_m_full, ap_centers, s2, max_dim, coarse_dx, coarse_dy)
                         dx1, dy1, cf1 = _ap_phase_shift_with_coarse(ref_m_full, cur_m_full, ap_centers, s1, max_dim, coarse_dx, coarse_dy)
                         dx0, dy0, cf0 = _ap_phase_shift_with_coarse(ref_m_full, cur_m_full, ap_centers, s05, max_dim, coarse_dx, coarse_dy)
@@ -844,9 +1019,9 @@ def realign_ser(
 
                         dx_i = (w2 * dx2 + w1 * dx1 + w0 * dx0) / wsum
                         dy_i = (w2 * dy2 + w1 * dy1 + w0 * dy0) / wsum
-                        cf_i = float(np.clip((w2 * cf2 + w1 * cf1 + w0 * cf0) / wsum, 0.0, 1.0))
+                        cf_ap = float(np.clip((w2 * cf2 + w1 * cf1 + w0 * cf0) / wsum, 0.0, 1.0))
                     else:
-                        dx_i, dy_i, cf_i = _ap_phase_shift_with_coarse(
+                        dx_i, dy_i, cf_ap = _ap_phase_shift_with_coarse(
                             ref_m_full, cur_m_full,
                             ap_centers=ap_centers,
                             ap_size=ap_size,
@@ -854,12 +1029,15 @@ def realign_ser(
                             coarse_dx=coarse_dx,
                             coarse_dy=coarse_dy,
                         )
-                        cf_i = float(np.clip(0.5 * cf_i + 0.5 * float(coarse_resp), 0.0, 1.0))
+
+                    # ✅ final conf: blend coarse anchor match + AP confidence
+                    cf_i = float(np.clip(0.55 * float(cc) + 0.45 * float(cf_ap), 0.0, 1.0))
 
                     out_i.append(int(i))
                     out_dx.append(float(dx_i))
                     out_dy.append(float(dy_i))
                     out_cf.append(float(cf_i))
+                    out_cc.append(float(cc))
             finally:
                 if owns:
                     try:
@@ -872,6 +1050,7 @@ def realign_ser(
                 np.asarray(out_dx, np.float32),
                 np.asarray(out_dy, np.float32),
                 np.asarray(out_cf, np.float32),
+                np.asarray(out_cc, np.float32),
             )
 
     else:
@@ -931,7 +1110,12 @@ def realign_ser(
     with ThreadPoolExecutor(max_workers=workers) as ex:
         futs = [ex.submit(_shift_chunk, c) for c in chunks2 if c.size > 0]
         for fut in as_completed(futs):
-            ii, ddx, ddy, ccf = fut.result()
+            if cfg.track_mode == "surface":
+                ii, ddx, ddy, ccf, ccc = fut.result()
+                coarse_conf[ii] = ccc
+            else:
+                ii, ddx, ddy, ccf = fut.result()
+
             dx[ii] = ddx
             dy[ii] = ddy
             conf[ii] = np.clip(ccf, 0.05, 1.0).astype(np.float32, copy=False)
@@ -940,9 +1124,22 @@ def realign_ser(
             if progress_cb:
                 progress_cb(done_ct, n, "Align")
 
+    # ✅ store results
     analysis.dx = dx
     analysis.dy = dy
     analysis.conf = conf
+
+    # ✅ store coarse_conf if your AnalyzeResult has it
+    if hasattr(analysis, "coarse_conf"):
+        analysis.coarse_conf = coarse_conf
+
+    # ✅ DEBUG PRINTS (surface only)
+    if cfg.track_mode == "surface":
+        _print_surface_debug(
+            dx=dx, dy=dy, conf=conf, coarse_conf=coarse_conf,
+            floor=0.05, prefix="[SER][Surface][realign]"
+        )
+
     return analysis
 
 def _autoplace_aps(ref_img01: np.ndarray, ap_size: int, ap_spacing: int, ap_min_mean: float) -> np.ndarray:
@@ -1135,42 +1332,29 @@ def _ap_phase_shift_with_coarse(
     coarse_dx: float,
     coarse_dy: float,
 ) -> tuple[float, float, float]:
-    """
-    Same as _ap_phase_shift, but each AP patch in cur is sampled at (cx+coarse_dx, cy+coarse_dy)
-    so APs follow drift.
-    Returns total (dx, dy, conf) in ROI pixels.
-    """
     s = int(max(16, ap_size))
     half = s // 2
     H, W = ref_m.shape[:2]
 
-    dxs = []
-    dys = []
-    resps = []
+    dxs, dys, resps = [], [], []
 
-    for (cx, cy) in ap_centers.tolist():
-        # ref patch fixed
-        rx0 = cx - half
-        ry0 = cy - half
+    for (cx_i, cy_i) in ap_centers.tolist():
+        cx = float(cx_i)
+        cy = float(cy_i)
+
+        # ref patch fixed (integer crop is fine)
+        rx0 = int(cx_i - half)
+        ry0 = int(cy_i - half)
         rx1 = rx0 + s
         ry1 = ry0 + s
-
-        # cur patch shifted by coarse drift
-        ccx = int(round(cx + coarse_dx))
-        ccy = int(round(cy + coarse_dy))
-        cx0 = ccx - half
-        cy0 = ccy - half
-        cx1 = cx0 + s
-        cy1 = cy0 + s
-
-        # bounds check
         if rx0 < 0 or ry0 < 0 or rx1 > W or ry1 > H:
             continue
-        if cx0 < 0 or cy0 < 0 or cx1 > W or cy1 > H:
-            continue
-
         ref_patch = ref_m[ry0:ry1, rx0:rx1]
-        cur_patch = cur_m[cy0:cy1, cx0:cx1]
+
+        # cur patch follows drift SUBPIXEL
+        cur_patch = _subpix_patch(cur_m, cx + coarse_dx, cy + coarse_dy, s)
+        if cur_patch is None or cur_patch.shape != ref_patch.shape:
+            continue
 
         rp = _downsample_mono01(ref_patch, max_dim=max_dim)
         cp = _downsample_mono01(cur_patch, max_dim=max_dim)
@@ -1193,8 +1377,8 @@ def _ap_phase_shift_with_coarse(
     dy_med = float(np.median(np.asarray(dys, np.float32)))
     conf = float(np.median(np.asarray(resps, np.float32)))
 
-    # total shift = coarse + AP refinement
     return float(coarse_dx + dx_med), float(coarse_dy + dy_med), conf
+
 
 
 def _ap_phase_shift(

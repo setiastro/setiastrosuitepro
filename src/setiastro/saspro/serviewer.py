@@ -466,11 +466,16 @@ class SERViewer(QDialog):
 
     def _on_track_mode_changed(self):
         mode = self._track_mode_value()
+
+        # ✅ always reflect current anchor state
+        self._update_anchor_label()
+
         if mode == "surface" and self._surface_anchor is None:
-            # nudge the user
             self.lbl_anchor.setText("Surface anchor: REQUIRED  •  Ctrl+Shift+drag to set")
             self.lbl_anchor.setStyleSheet("color:#c66;")
-        self._refresh()    
+
+        self._refresh()
+    
 
     def _track_mode_value(self) -> str:
         t = self.cmb_track.currentText().strip().lower()
@@ -593,6 +598,7 @@ class SERViewer(QDialog):
                                         if anchor is not None:
                                             self._surface_anchor = anchor
                                             self._update_anchor_label()
+                                            self._render_last()
 
 
                             self._drag_mode = None
