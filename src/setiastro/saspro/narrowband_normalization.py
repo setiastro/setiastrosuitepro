@@ -243,7 +243,7 @@ class NarrowbandNormalization(QWidget):
             """
             <div style="text-align:center;">
             <span style="font-size:12px; color:#b8b8b8;">
-                PixelMath narrowband normalization concept &amp; formulas by
+                PixelMath narrowband normalization concept &amp; SHO/HOS/HSO/HOO formulas by
                 <b>Bill Blanshan</b> and <b>Mike Cranfield</b><br>
                 <a style="color:#9ecbff;" href="https://www.youtube.com/@anotherastrochannel2173">Bill Blanshan (YouTube)</a>
                 &nbsp;&nbsp;|&nbsp;&nbsp;

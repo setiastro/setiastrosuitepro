@@ -12,7 +12,8 @@ from PyQt6.QtWidgets import (
     QMessageBox, QRubberBand, QComboBox, QDoubleSpinBox
 )
 
-from setiastro.saspro.imageops.serloader import SERReader
+from setiastro.saspro.imageops.serloader import open_planetary_source, PlanetaryFrameSource
+
 
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.ser_stack_config import SERStackConfig
@@ -40,7 +41,7 @@ class SERViewer(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("SER Viewer")
+        self.setWindowTitle("Planetary Stacker Viewer")
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setWindowModality(Qt.WindowModality.NonModal)
         try:
@@ -51,7 +52,7 @@ class SERViewer(QDialog):
         self._pan_start_pos = None          # QPoint in viewport coords
         self._pan_start_h = 0
         self._pan_start_v = 0
-        self.reader: SERReader | None = None
+        self.reader: PlanetaryFrameSource | None = None
         self._cur = 0
         self._playing = False
         self._roi_dragging = False
@@ -63,6 +64,7 @@ class SERViewer(QDialog):
         self._timer.timeout.connect(self._tick_playback)
         self._drag_mode = None  # None / "roi" / "anchor"
         self._surface_anchor = None  # (x,y,w,h) in ROI-space
+        self._source_spec = None  # str or list[str]
         self._zoom = 1.0
         self._fit_mode = True
         self._last_qimg: QImage | None = None
@@ -87,7 +89,7 @@ class SERViewer(QDialog):
 
         # Top controls (left)
         top = QHBoxLayout()
-        self.btn_open = QPushButton("Open SER…", self)
+        self.btn_open = QPushButton("Open SER/AVI/Frames…", self)
         self.btn_play = QPushButton("Play", self)
         self.btn_play.setEnabled(False)
 
@@ -243,7 +245,7 @@ class SERViewer(QDialog):
             gb.setMinimumWidth(360)
 
         # ---------- Signals ----------
-        self.btn_open.clicked.connect(self._open_ser)
+        self.btn_open.clicked.connect(self._open_source)
         self.btn_play.clicked.connect(self._toggle_play)
         self.sld.valueChanged.connect(self._on_slider_changed)
 
@@ -628,20 +630,17 @@ class SERViewer(QDialog):
         if self.reader is None:
             return
 
-        ser_path = self.get_ser_path()
-        if not ser_path:
+        source = self.get_source_spec()
+        if not source:
             return
 
-        # Grab current ROI + anchor from viewer state
-        roi = self.get_roi()  # (x,y,w,h) full-frame or None
-        anchor = self.get_surface_anchor()  # (x,y,w,h) ROI-space or None
+        # Only meaningful for single-file sources; OK to pass None for sequences
+        ser_path = source if isinstance(source, str) else None
 
-        # Find the *real* main window (the one that has docman / mdi)
-        main = self.parent()
-        if main is None:
-            main = self
+        roi = self.get_roi()
+        anchor = self.get_surface_anchor()
 
-        # Try to find the active/current document (best-effort)
+        main = self.parent() or self
         current_doc = None
         try:
             if hasattr(main, "active_document"):
@@ -658,8 +657,9 @@ class SERViewer(QDialog):
         dlg = SERStackerDialog(
             parent=self,
             main=main,
-            source_doc=current_doc,     # can be None; stacker will still work
-            ser_path=ser_path,
+            source_doc=current_doc,
+            ser_path=ser_path,          # optional; OK if None
+            source=source,              # ✅ list[str] for PNG sequences
             roi=roi,
             track_mode=self._track_mode_value(),
             surface_anchor=anchor,
@@ -668,12 +668,9 @@ class SERViewer(QDialog):
         )
 
         dlg.stackProduced.connect(self._on_stacker_produced)
-
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()
-
-
 
     def _on_stacker_produced(self, out: np.ndarray, diag: dict):
         """
@@ -900,34 +897,79 @@ class SERViewer(QDialog):
 
 
 
-    def _open_ser(self):
+    def _open_source(self):
         start_dir = self._last_open_dir()
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Open SER Video",
-            start_dir if start_dir else "",
-            "SER Videos (*.ser);;All Files (*)"
-        )
-        if not path:
+
+        # Let user either:
+        # - pick a single SER/AVI
+        # - OR multi-select images for a sequence
+        dlg = QFileDialog(self, "Open Planetary Frames")
+        if start_dir:
+            dlg.setDirectory(start_dir)
+        dlg.setFileMode(QFileDialog.FileMode.ExistingFiles)
+        dlg.setNameFilters([
+            "Planetary Sources (*.ser *.avi *.mp4 *.mov *.mkv *.png *.tif *.tiff *.jpg *.jpeg *.bmp *.webp)",
+            "SER Videos (*.ser)",
+            "AVI/Video (*.avi *.mp4 *.mov *.mkv)",
+            "Images (*.png *.tif *.tiff *.jpg *.jpeg *.bmp *.webp)",
+            "All Files (*)",
+        ])
+
+        if not dlg.exec():
             return
+
+        files = dlg.selectedFiles()
+        if not files:
+            return
+
+        # Heuristic:
+        # - If exactly one file and it's .ser/.avi/etc -> open as that
+        # - If multiple files -> treat as image sequence (sorted)
+        files = [os.fspath(f) for f in files]
+        files_sorted = sorted(files, key=lambda p: os.path.basename(p).lower())
+        self._source_spec = files_sorted[0] if len(files_sorted) == 1 else files_sorted
 
         try:
             if self.reader is not None:
                 self.reader.close()
-            self.reader = SERReader(path, cache_items=10)
+        except Exception:
+            pass
+        self.reader = None
+
+        try:
+            if len(files_sorted) == 1:
+                src = open_planetary_source(files_sorted[0], cache_items=10)
+                self._set_last_open_dir(files_sorted[0])
+            else:
+                src = open_planetary_source(files_sorted, cache_items=10)
+                self._set_last_open_dir(files_sorted[0])
+
+            self.reader = src
+
         except Exception as e:
             QMessageBox.critical(self, "SER Viewer", f"Failed to open:\n{e}")
             self.reader = None
             return
 
-        self._set_last_open_dir(path)
-
         m = self.reader.meta
-        base = os.path.basename(path)
+        base = os.path.basename(m.path or (files_sorted[0] if files_sorted else ""))
+
+        # Nice info string
+        src_kind = getattr(m, "source_kind", "unknown")
+        extra = ""
+        if src_kind == "sequence":
+            extra = f" • sequence={m.frames}"
+        elif src_kind == "avi":
+            extra = f" • video={m.frames}"
+        elif src_kind == "ser":
+            extra = f" • frames={m.frames}"
+        else:
+            extra = f" • frames={m.frames}"
+
         self.lbl_info.setText(
             f"<b>{base}</b><br>"
-            f"{m.width}×{m.height} • frames={m.frames} • depth={m.pixel_depth}-bit • format={m.color_name}"
-            + (" • timestamps" if m.has_timestamps else "")
+            f"{m.width}×{m.height}{extra} • depth={m.pixel_depth}-bit • format={m.color_name}"
+            + (" • timestamps" if getattr(m, "has_timestamps", False) else "")
         )
 
         self._cur = 0
@@ -935,7 +977,7 @@ class SERViewer(QDialog):
         self.sld.setRange(0, max(0, m.frames - 1))
         self.sld.setValue(0)
 
-        # Set ROI defaults to a centered box (nice for planets)
+        # Set ROI defaults to centered box
         cx = max(0, (m.width // 2) - 256)
         cy = max(0, (m.height // 2) - 256)
         self.spin_x.setValue(cx)
@@ -943,14 +985,16 @@ class SERViewer(QDialog):
         self.spin_w.setValue(min(512, m.width))
         self.spin_h.setValue(min(512, m.height))
 
+        # Debayer only makes sense for SER Bayer; but leaving enabled is fine (no-op elsewhere)
         self.btn_play.setEnabled(True)
-        self.btn_stack.setEnabled(True)
+        self.btn_stack.setEnabled(True)  # (see note below about stacker input)
         self._surface_anchor = None
         self._update_anchor_label()
         self.btn_play.setText("Play")
         self._playing = False
 
         self._refresh()
+
 
     def _toggle_play(self):
         if self.reader is None:
@@ -1094,7 +1138,7 @@ class SERViewer(QDialog):
         return (int(x), int(y), int(w), int(h))
 
 
-    def get_ser_path(self) -> str | None:
+    def get_source_path(self) -> str | None:
         return getattr(self.reader, "path", None) if self.reader is not None else None
 
     def get_roi(self):
@@ -1102,3 +1146,23 @@ class SERViewer(QDialog):
 
     def get_surface_anchor(self):
         return getattr(self, "_surface_anchor", None)
+
+    def get_source_spec(self):
+        if self.reader is None:
+            return None
+
+        m = getattr(self.reader, "meta", None)
+        if m is not None:
+            # ✅ If this is an image sequence, use the full file list
+            fl = getattr(m, "file_list", None)
+            if isinstance(fl, (list, tuple)) and len(fl) > 0:
+                return list(fl)
+
+            # Otherwise fall back to the meta path (SER/AVI)
+            p = getattr(m, "path", None)
+            if isinstance(p, str) and p:
+                return p
+
+        # Fallback
+        return getattr(self.reader, "path", None)
+

@@ -12,18 +12,96 @@ except Exception:
     _HAS_PCHIP = False
 
 
-
 # ---------------------- preset schema ----------------------
+# Legacy (v1 single-curve) preset:
 # {
+#   "name": "MyPreset",
 #   "mode": "K (Brightness)" | "R" | "G" | "B" | "L*" | "a*" | "b*" | "Chroma" | "Saturation" | aliases ("rgb","k","lum"…),
-#   "shape": "linear" | "s_mild" | "s_med" | "s_strong" | "lift_shadows" | "crush_shadows"
-#            | "fade_blacks" | "rolloff_highlights" | "flatten" | "custom",
-#   "amount": 0..1  (intensity, ignored for custom),
-#   "points_norm": [[x,y], ...]  # optional when shape="custom" (normalized 0..1 domain/range)
+#   "shape": "linear" | "s_mild" | ... | "custom",
+#   "amount": 0..1,
+#   "points_norm": [[x,y], ...]  # normalized 0..1 domain/range
 # }
 #
-# Default if missing: mode="K (Brightness)", shape="linear", amount=0.5
+# New (v2 multi-curve) preset:
+# {
+#   "name": "MyPreset",
+#   "kind": "curves_multi",
+#   "version": 2,
+#   "active": "K" | "R" | "G" | "B" | "L*" | "a*" | "b*" | "Chroma" | "Saturation",
+#   "modes": {
+#       "K": [[x,y], ...],
+#       "R": [[x,y], ...],
+#       ...
+#   }
+# }
 
+_MODE_KEY_TO_LABEL = {
+    "K": "K (Brightness)",
+    "R": "R",
+    "G": "G",
+    "B": "B",
+    "L*": "L*",
+    "a*": "a*",
+    "b*": "b*",
+    "Chroma": "Chroma",
+    "Saturation": "Saturation",
+}
+
+
+_LABEL_TO_MODE_KEY = {v: k for k, v in _MODE_KEY_TO_LABEL.items()}
+
+_APPLY_ORDER_KEYS = ["K", "R", "G", "B", "L*", "a*", "b*", "Chroma", "Saturation"]
+
+def _is_linear_points_norm(pts) -> bool:
+    try:
+        return (
+            isinstance(pts, (list, tuple)) and len(pts) == 2
+            and tuple(pts[0]) == (0.0, 0.0)
+            and tuple(pts[1]) == (1.0, 1.0)
+        )
+    except Exception:
+        return False
+    
+def _coerce_points_norm(raw) -> List[Tuple[float, float]] | None:
+    if not isinstance(raw, (list, tuple)) or len(raw) < 2:
+        return None
+    out: List[Tuple[float, float]] = []
+    for e in raw:
+        if isinstance(e, (list, tuple)) and len(e) >= 2:
+            x, y = e[0], e[1]
+        elif isinstance(e, dict):
+            x, y = e.get("x"), e.get("y")
+        else:
+            continue
+        if x is None or y is None:
+            continue
+        out.append((float(x), float(y)))
+    return out if len(out) >= 2 else None
+
+def _coerce_modes_dict(raw) -> Dict[str, List[Tuple[float, float]]]:
+    """
+    Return {mode_key: points_norm}, filtering junk but keeping backward-compat.
+    Accepts keys as internal mode keys ("K") or labels ("K (Brightness)").
+    """
+    modes: Dict[str, List[Tuple[float, float]]] = {}
+    if not isinstance(raw, dict):
+        return modes
+
+    for k, v in raw.items():
+        key = str(k)
+        # allow labels or keys
+        if key in _MODE_KEY_TO_LABEL:
+            mode_key = key
+        else:
+            mode_label = _norm_mode(key)  # converts aliases -> proper label
+            mode_key = _LABEL_TO_MODE_KEY.get(mode_label, "K")
+
+        pts = _coerce_points_norm(v)
+        if pts is None:
+            continue
+        modes[mode_key] = pts
+
+    return modes
 # ---------------------- shape library (normalized) ----------------------
 def _shape_points_norm(shape: str, amount: float) -> List[Tuple[float, float]]:
     a = float(max(0.0, min(1.0, amount)))
@@ -141,32 +219,38 @@ def _unwrap_preset_dict(preset: Dict) -> Dict:
     """
     Accept a variety of containers and peel down to the actual curve data.
 
-    Examples we handle:
-      {"step_name":"Curves","mode":..., "preset":{...}}
-      {"curves": {...}}
-      {"state": {...}}   # if state contains curve points
+    Handles:
+      - {"preset": {...}}
+      - {"curves": {...}}
+      - {"state": {...}}
+      - multi presets with {"modes": {...}}
     """
     p = dict(preset or {})
 
-    # Case 1: full metadata from doc.apply_edit: {"step_name":"Curves", "mode":..., "preset": {...}}
+    def _looks_like_curve_dict(d: dict) -> bool:
+        return (
+            isinstance(d, dict)
+            and (
+                "points_norm" in d
+                or "handles" in d
+                or "points_scene" in d
+                or "scene_points" in d
+                or "modes" in d  # <-- multi
+            )
+        )
+
     inner = p.get("preset")
-    if isinstance(inner, dict) and ("points_norm" in inner or "handles" in inner
-                                    or "points_scene" in inner or "scene_points" in inner):
+    if _looks_like_curve_dict(inner):
         return inner
 
-    # Case 2: payloads like {"curves": {...}}
     inner = p.get("curves")
-    if isinstance(inner, dict) and ("points_norm" in inner or "handles" in inner
-                                    or "points_scene" in inner or "scene_points" in inner):
+    if _looks_like_curve_dict(inner):
         return inner
 
-    # Case 3: {"state": {...}} (if you stored the curve state under that key)
     inner = p.get("state")
-    if isinstance(inner, dict) and ("points_norm" in inner or "handles" in inner
-                                    or "points_scene" in inner or "scene_points" in inner):
+    if _looks_like_curve_dict(inner):
         return inner
 
-    # Otherwise assume p already *is* the preset
     return p
 
 
@@ -179,7 +263,9 @@ def _settings() -> QSettings | None:
         return None
 
 def list_custom_presets() -> list[dict]:
-    """Return a list of dicts: {"name", "mode", "shape":"custom", "points_norm":[[x,y],...]}"""
+    """
+    Returns a list of preset dicts (v1 single-curve or v2 multi-curve).
+    """
     s = _settings()
     if not s:
         return []
@@ -187,29 +273,82 @@ def list_custom_presets() -> list[dict]:
     try:
         lst = json.loads(raw)
         if isinstance(lst, list):
-            return [p for p in lst if isinstance(p, dict)]
+            out = [p for p in lst if isinstance(p, dict)]
+            # normalize missing name fields (defensive)
+            for p in out:
+                if "name" not in p:
+                    p["name"] = "(unnamed)"
+            return out
     except Exception:
         pass
     return []
 
-def save_custom_preset(name: str, mode: str, points_norm: list[tuple[float,float]]) -> bool:
-    """Create/overwrite by name."""
+def save_custom_preset(name: str, mode_or_preset, points_norm: list[tuple[float, float]] | None = None) -> bool:
+    """
+    Save a custom preset. Supports:
+      - legacy: save_custom_preset(name, mode, points_norm)
+      - new:    save_custom_preset(name, preset_dict)
+    """
     s = _settings()
     if not s:
         return False
+
     name = (name or "").strip()
     if not name:
         return False
-    preset = {
-        "name": name,
-        "mode": _norm_mode(mode),
-        "shape": "custom",
-        "amount": 1.0,
-        "points_norm": [(float(x), float(y)) for (x, y) in points_norm],
-    }
+
+    # --- build preset dict ---
+    preset: dict
+
+    if isinstance(mode_or_preset, dict):
+        # v2 (or v1 dict passed directly)
+        preset = dict(mode_or_preset)
+        preset["name"] = name  # enforce
+
+        # If it's a multi preset, sanitize modes
+        if preset.get("kind") == "curves_multi" or isinstance(preset.get("modes"), dict):
+            modes = _coerce_modes_dict(preset.get("modes", {}))
+            # fill missing keys with linear so UI always has a full set
+            full_modes = {}
+            for k in _MODE_KEY_TO_LABEL.keys():
+                full_modes[k] = modes.get(k, [(0.0, 0.0), (1.0, 1.0)])
+            preset = {
+                "name": name,
+                "kind": "curves_multi",
+                "version": 2,
+                "active": str(preset.get("active") or "K"),
+                "modes": {k: [(float(x), float(y)) for (x, y) in v] for k, v in full_modes.items()},
+            }
+
+        else:
+            # treat as v1 single-curve dict
+            mode_label = _norm_mode(preset.get("mode"))
+            pts = _coerce_points_norm(preset.get("points_norm")) or [(0.0, 0.0), (1.0, 1.0)]
+            preset = {
+                "name": name,
+                "mode": mode_label,
+                "shape": str(preset.get("shape", "custom")),
+                "amount": float(preset.get("amount", 1.0)),
+                "points_norm": [(float(x), float(y)) for (x, y) in pts],
+            }
+
+    else:
+        # legacy signature
+        mode = _norm_mode(str(mode_or_preset))
+        pts = points_norm or [(0.0, 0.0), (1.0, 1.0)]
+        preset = {
+            "name": name,
+            "mode": mode,
+            "shape": "custom",
+            "amount": 1.0,
+            "points_norm": [(float(x), float(y)) for (x, y) in pts],
+        }
+
+    # --- upsert by name (case-insensitive) ---
     lst = list_custom_presets()
-    lst = [p for p in lst if (p.get("name","").lower() != name.lower())]
+    lst = [p for p in lst if (p.get("name", "").lower() != name.lower())]
     lst.append(preset)
+
     s.setValue(_SETTINGS_KEY, json.dumps(lst))
     s.sync()
     return True
@@ -218,8 +357,11 @@ def delete_custom_preset(name: str) -> bool:
     s = _settings()
     if not s:
         return False
+    nm = (name or "").strip().lower()
+    if not nm:
+        return False
     lst = list_custom_presets()
-    lst = [p for p in lst if (p.get("name","").lower() != (name or "").strip().lower())]
+    lst = [p for p in lst if (p.get("name", "").strip().lower() != nm)]
     s.setValue(_SETTINGS_KEY, json.dumps(lst))
     s.sync()
     return True
@@ -228,7 +370,7 @@ def delete_custom_preset(name: str) -> bool:
 # ---------------------- headless apply ----------------------
 def apply_curves_via_preset(main_window, doc, preset: Dict):
     import numpy as _np
-    from setiastro.saspro.curves_preset import _lut_from_preset, _unwrap_preset_dict  # self
+    from setiastro.saspro.curves_preset import _unwrap_preset_dict  # self
     # lazy import to avoid cycle
     from setiastro.saspro.curve_editor_pro import _apply_mode_any
 
@@ -236,8 +378,7 @@ def apply_curves_via_preset(main_window, doc, preset: Dict):
     if img is None:
         return
 
-    # Accept full last-action dicts and unwrap down to the actual curve definition
-    core_preset = _unwrap_preset_dict(preset or {})
+    core = _unwrap_preset_dict(preset or {})
 
     arr = _np.asarray(img)
     if arr.dtype.kind in "ui":
@@ -248,18 +389,52 @@ def apply_curves_via_preset(main_window, doc, preset: Dict):
     else:
         arr01 = arr.astype(_np.float32)
 
-    lut01, mode = _lut_from_preset(core_preset)
+    # -------- MULTI --------
+    if core.get("kind") == "curves_multi" or isinstance(core.get("modes"), dict):
+        modes = _coerce_modes_dict(core.get("modes", {}))
+
+        out01 = arr01
+        used_any = False
+
+        for mode_key in _APPLY_ORDER_KEYS:
+            pts = modes.get(mode_key)
+            if not pts:
+                continue
+            if _is_linear_points_norm(pts):
+                continue
+
+            pts_scene = _points_norm_to_scene(pts)
+            fn = _interpolator_from_scene_points(pts_scene)
+            lut01 = build_curve_lut(fn, size=65536)
+
+            mode_label = _MODE_KEY_TO_LABEL.get(mode_key, "K (Brightness)")
+            out01 = _apply_mode_any(out01, mode_label, lut01)
+            used_any = True
+
+        if not used_any:
+            return
+
+        meta = {
+            "step_name": "Curves",
+            "mode": _MODE_KEY_TO_LABEL.get(str(core.get("active") or "K"), "K (Brightness)"),
+            "preset": dict(core),
+        }
+        doc.apply_edit(out01, metadata=meta, step_name="Curves")
+        return
+
+    # -------- LEGACY SINGLE --------
+    lut01, mode = _lut_from_preset(core)
     out01 = _apply_mode_any(arr01, mode, lut01)
 
     meta = {
         "step_name": "Curves",
         "mode": mode,
-        "preset": dict(core_preset),  # store the normalized core preset
+        "preset": dict(core),
     }
     doc.apply_edit(out01, metadata=meta, step_name="Curves")
 
 
-# ---------------------- open UI with preset ----------------------
+
 # ---------------------- open UI with preset ----------------------
 def open_curves_with_preset(main_window, preset: Dict | None = None):
     # lazy import UI to avoid cycle
@@ -274,20 +449,47 @@ def open_curves_with_preset(main_window, preset: Dict | None = None):
 
     dlg = CurvesDialogPro(main_window, doc)
 
-    # Peel down any wrapper (metadata / last-action container) to the actual curve definition
-    core_preset = _unwrap_preset_dict(preset or {})
+    core = _unwrap_preset_dict(preset or {})
 
-    # set mode radio from the *core* preset
-    want = _norm_mode(core_preset.get("mode"))
+    # -------- MULTI --------
+    if core.get("kind") == "curves_multi" or isinstance(core.get("modes"), dict):
+        modes = _coerce_modes_dict(core.get("modes", {}))
+
+        # Fill dialog store for every key
+        for k in getattr(dlg, "_curves_store", {}).keys():
+            dlg._curves_store[k] = modes.get(k, [(0.0, 0.0), (1.0, 1.0)])
+
+        # Choose active key
+        active_key = str(core.get("active") or "K")
+        if active_key not in dlg._curves_store:
+            active_key = "K"
+        dlg._current_mode_key = active_key
+
+        # Set the radio to match active
+        want_label = _MODE_KEY_TO_LABEL.get(active_key, "K (Brightness)")
+        for b in dlg.mode_group.buttons():
+            if b.text().lower() == want_label.lower():
+                b.setChecked(True)
+                break
+
+        # Push active curve into editor
+        dlg._editor_set_from_norm(dlg._curves_store.get(active_key, [(0.0, 0.0), (1.0, 1.0)]))
+        dlg._refresh_overlays()
+        dlg._quick_preview()
+
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+        return
+
+    # -------- LEGACY SINGLE --------
+    want = _norm_mode(core.get("mode"))
     for b in dlg.mode_group.buttons():
         if b.text().lower() == want.lower():
             b.setChecked(True)
             break
 
-    # Seed control handles from the same logic used by LUT building
-    pts_scene = _scene_points_from_preset(core_preset)
-
-    # remove exact endpoints if present; editor expects control handles only
+    pts_scene = _scene_points_from_preset(core)
     filt = [(x, y) for (x, y) in pts_scene if x > 0.0 + 1e-6 and x < 360.0 - 1e-6]
     dlg.editor.setControlHandles(filt)
 

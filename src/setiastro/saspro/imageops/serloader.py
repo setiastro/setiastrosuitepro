@@ -6,15 +6,16 @@ import io
 import mmap
 import struct
 from dataclasses import dataclass
-from typing import Optional, Tuple, Dict
+from typing import Optional, Tuple, Dict, List, Sequence, Union
 from collections import OrderedDict
 
 import numpy as np
 
-try:
-    import cv2
-except Exception:
-    cv2 = None
+
+import cv2
+
+
+from PIL import Image
 
 
 # ---------------------------------------------------------------------
@@ -191,6 +192,7 @@ class SERReader:
         self._mm = mmap.mmap(self._fh.fileno(), 0, access=mmap.ACCESS_READ)
 
         self.meta = self._parse_header(self._mm)
+        self.meta.path = self.path
         self._cache = _LRUCache(max_items=cache_items)
 
     def close(self):
@@ -425,3 +427,343 @@ class SERReader:
             return None
         (v,) = struct.unpack("<Q", b)
         return int(v)
+
+
+
+# -----------------------------
+# Common reader interface/meta
+# -----------------------------
+
+@dataclass
+class PlanetaryMeta:
+    """
+    Common metadata shape used by SERViewer / stacker.
+    """
+    path: str
+    width: int
+    height: int
+    frames: int
+    pixel_depth: int              # 8/16 typical (AVI usually 8)
+    color_name: str               # "MONO", "RGB", "BGR", "BAYER_*", etc
+    has_timestamps: bool = False
+    source_kind: str = "unknown"  # "ser" / "avi" / "sequence"
+    file_list: Optional[List[str]] = None
+
+
+class PlanetaryFrameSource:
+    """
+    Minimal protocol-like base. (Duck-typed by viewer/stacker)
+    """
+    meta: PlanetaryMeta
+    path: str
+
+    def close(self) -> None:
+        raise NotImplementedError
+
+    def get_frame(
+        self,
+        i: int,
+        *,
+        roi: Optional[Tuple[int, int, int, int]] = None,
+        debayer: bool = True,
+        to_float01: bool = False,
+        force_rgb: bool = False,
+    ) -> np.ndarray:
+        raise NotImplementedError
+
+
+# -----------------------------
+# AVI reader (OpenCV)
+# -----------------------------
+
+class AVIReader(PlanetaryFrameSource):
+    """
+    Frame-accurate random access using cv2.VideoCapture.
+    Notes:
+      - Many codecs only support approximate seeking; good enough for preview/scrub.
+      - Frames come out as BGR uint8 by default.
+    """
+    def __init__(self, path: str, *, cache_items: int = 10):
+        if cv2 is None:
+            raise RuntimeError("OpenCV (cv2) is required to read AVI files.")
+        self.path = os.fspath(path)
+        self._cap = cv2.VideoCapture(self.path)
+        if not self._cap.isOpened():
+            raise ValueError(f"Failed to open video: {self.path}")
+
+        w = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+        h = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+        n = int(self._cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+
+        # AVI decoded frames are almost always 8-bit
+        self.meta = PlanetaryMeta(
+            path=self.path,
+            width=w,
+            height=h,
+            frames=max(0, n),
+            pixel_depth=8,
+            color_name="BGR",
+            has_timestamps=False,
+            source_kind="avi",
+        )
+
+        self._cache = _LRUCache(max_items=cache_items)
+
+    def close(self):
+        try:
+            self._cache.clear()
+        except Exception:
+            pass
+        try:
+            if self._cap is not None:
+                self._cap.release()
+        except Exception:
+            pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+
+    def _read_raw_frame_bgr(self, i: int) -> np.ndarray:
+        i = int(i)
+        if i < 0 or (self.meta.frames > 0 and i >= self.meta.frames):
+            raise IndexError(f"Frame index {i} out of range")
+
+        # Seek
+        self._cap.set(cv2.CAP_PROP_POS_FRAMES, float(i))
+        ok, frame = self._cap.read()
+        if not ok or frame is None:
+            raise ValueError(f"Failed to read frame {i}")
+
+        # frame is BGR uint8, shape (H,W,3)
+        return frame
+
+    def get_frame(
+        self,
+        i: int,
+        *,
+        roi: Optional[Tuple[int, int, int, int]] = None,
+        debayer: bool = True,
+        to_float01: bool = False,
+        force_rgb: bool = False,
+    ) -> np.ndarray:
+        roi_key = None if roi is None else tuple(int(v) for v in roi)
+        key = ("avi", int(i), roi_key, bool(to_float01), bool(force_rgb))
+        cached = self._cache.get(key)
+        if cached is not None:
+            return cached
+
+        bgr = self._read_raw_frame_bgr(i)
+
+        # ROI
+        if roi is not None:
+            x, y, w, h = [int(v) for v in roi]
+            H, W = bgr.shape[:2]
+            x = max(0, min(W - 1, x))
+            y = max(0, min(H - 1, y))
+            w = max(1, min(W - x, w))
+            h = max(1, min(H - y, h))
+            bgr = bgr[y:y + h, x:x + w]
+
+        # BGR -> RGB
+        rgb = bgr[..., ::-1].copy()
+
+        img: np.ndarray = rgb
+
+        # force_rgb no-op (already rgb)
+        if to_float01:
+            img = img.astype(np.float32) / 255.0
+
+        self._cache.put(key, img)
+        return img
+
+
+# -----------------------------
+# Image-sequence reader
+# -----------------------------
+
+def _imread_any(path: str) -> np.ndarray:
+    """
+    Read PNG/JPG/TIF/etc into numpy.
+    Tries cv2 first (fast), falls back to PIL.
+    Returns:
+      - grayscale: (H,W) uint8/uint16
+      - color:     (H,W,3) uint8/uint16 in RGB (we normalize to RGB)
+    """
+    p = os.fspath(path)
+
+    # Prefer cv2 if available
+    if cv2 is not None:
+        img = cv2.imdecode(np.fromfile(p, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+        if img is not None:
+            # cv2 gives:
+            # - gray: HxW
+            # - color: HxWx3 (BGR)
+            # - sometimes HxWx4 (BGRA)
+            if img.ndim == 3 and img.shape[2] >= 3:
+                img = img[..., :3]  # drop alpha if present
+                img = img[..., ::-1].copy()  # BGR -> RGB
+            return img
+
+    # PIL fallback
+    if Image is None:
+        raise RuntimeError("Neither OpenCV nor PIL are available to read images.")
+    im = Image.open(p)
+    # Preserve 16-bit if possible; PIL handles many TIFFs.
+    if im.mode in ("I;16", "I;16B", "I"):
+        arr = np.array(im)
+        return arr
+    if im.mode in ("L",):
+        return np.array(im)
+    im = im.convert("RGB")
+    return np.array(im)
+
+
+def _infer_bit_depth(arr: np.ndarray) -> int:
+    if arr.dtype == np.uint16:
+        return 16
+    if arr.dtype == np.uint8:
+        return 8
+    # if float, assume 32 for “depth”
+    if arr.dtype in (np.float32, np.float64):
+        return 32
+    return 8
+
+
+class ImageSequenceReader(PlanetaryFrameSource):
+    """
+    Reads a list of image files as frames.
+    Supports random access; caches decoded frames for smooth scrubbing.
+    """
+    def __init__(self, files: Sequence[str], *, cache_items: int = 10):
+        flist = [os.fspath(f) for f in files]
+        if not flist:
+            raise ValueError("Empty image sequence.")
+        self.files = flist
+        self.path = flist[0]
+
+        # Probe first frame
+        first = _imread_any(flist[0])
+        h, w = first.shape[:2]
+        depth = _infer_bit_depth(first)
+        if first.ndim == 2:
+            cname = "MONO"
+        else:
+            cname = "RGB"
+
+        self.meta = PlanetaryMeta(
+            path=self.path,
+            width=int(w),
+            height=int(h),
+            frames=len(flist),
+            pixel_depth=int(depth),
+            color_name=cname,
+            has_timestamps=False,
+            source_kind="sequence",
+            file_list=list(flist),
+        )
+
+        self._cache = _LRUCache(max_items=cache_items)
+
+    def close(self):
+        try:
+            self._cache.clear()
+        except Exception:
+            pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+
+    def get_frame(
+        self,
+        i: int,
+        *,
+        roi: Optional[Tuple[int, int, int, int]] = None,
+        debayer: bool = True,
+        to_float01: bool = False,
+        force_rgb: bool = False,
+    ) -> np.ndarray:
+        i = int(i)
+        if i < 0 or i >= self.meta.frames:
+            raise IndexError(f"Frame index {i} out of range (0..{self.meta.frames-1})")
+
+        roi_key = None if roi is None else tuple(int(v) for v in roi)
+        key = ("seq", i, roi_key, bool(to_float01), bool(force_rgb))
+        cached = self._cache.get(key)
+        if cached is not None:
+            return cached
+
+        img = _imread_any(self.files[i])
+
+        # Basic consistency checks (don’t hard fail; some sequences have slight differences)
+        # If sizes differ, we’ll just use whatever comes back for that frame.
+        H, W = img.shape[:2]
+
+        # ROI
+        if roi is not None:
+            x, y, w, h = [int(v) for v in roi]
+            x = max(0, min(W - 1, x))
+            y = max(0, min(H - 1, y))
+            w = max(1, min(W - x, w))
+            h = max(1, min(H - y, h))
+            img = img[y:y + h, x:x + w]
+
+        # Force RGB for mono
+        if force_rgb and img.ndim == 2:
+            img = np.stack([img, img, img], axis=-1)
+
+        # Normalize to float01
+        if to_float01:
+            if img.dtype == np.uint8:
+                img = img.astype(np.float32) / 255.0
+            elif img.dtype == np.uint16:
+                img = img.astype(np.float32) / 65535.0
+            else:
+                img = img.astype(np.float32)
+                img = np.clip(img, 0.0, 1.0)
+
+        self._cache.put(key, img)
+        return img
+
+
+# -----------------------------
+# Factory
+# -----------------------------
+
+def open_planetary_source(
+    path_or_files: Union[str, Sequence[str]],
+    *,
+    cache_items: int = 10,
+) -> PlanetaryFrameSource:
+    """
+    Open SER / AVI / image sequence under one API.
+    """
+    # Sequence
+    if not isinstance(path_or_files, (str, os.PathLike)):
+        return ImageSequenceReader(path_or_files, cache_items=cache_items)
+
+    path = os.fspath(path_or_files)
+    ext = os.path.splitext(path)[1].lower()
+
+    if ext == ".ser":
+        r = SERReader(path, cache_items=cache_items)
+        # ---- SER tweak: ensure meta.path is set ----
+        try:
+            r.meta.path = path  # type: ignore
+        except Exception:
+            pass
+        return r
+
+    if ext in (".avi", ".mp4", ".mov", ".mkv"):
+        return AVIReader(path, cache_items=cache_items)
+
+    # If user passes a single image, treat it as a 1-frame sequence
+    if ext in (".png", ".tif", ".tiff", ".jpg", ".jpeg", ".bmp", ".webp"):
+        return ImageSequenceReader([path], cache_items=cache_items)
+
+    raise ValueError(f"Unsupported input: {path}")

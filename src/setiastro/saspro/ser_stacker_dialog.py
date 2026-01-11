@@ -4,17 +4,23 @@ from __future__ import annotations
 import traceback
 import numpy as np
 
+from typing import Optional, Union, Sequence
+
+SourceSpec = Union[str, Sequence[str]]
+
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QRectF
-from PyQt6.QtWidgets import (QWidget, QSpinBox, QMessageBox,
+from PyQt6.QtWidgets import (
+    QWidget, QSpinBox, QMessageBox,
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGroupBox,
-    QFormLayout, QComboBox, QDoubleSpinBox, QCheckBox, QTextEdit, QProgressBar
+    QFormLayout, QComboBox, QDoubleSpinBox, QCheckBox, QTextEdit, QProgressBar,
+    QScrollArea, QSlider
 )
+
 from PyQt6.QtGui import QPainter, QPen, QColor, QImage, QPixmap
 
 from setiastro.saspro.ser_stack_config import SERStackConfig
 
 from setiastro.saspro.ser_stacker import stack_ser, analyze_ser, AnalyzeResult
-
 
 
 def _derive_view_base_title(main, doc) -> str:
@@ -104,34 +110,90 @@ def _push_as_new_doc(main, source_doc, arr: np.ndarray, *, title_suffix="_stack"
 
 class APEditorDialog(QDialog):
     """
-    Simple AP editor:
-    - Displays the reference image (from AnalyzeResult.ref_image).
-    - Draws AP boxes (size = ap_size).
-    - Left click: add AP at cursor.
-    - Right click: delete nearest AP (within radius).
-    - Auto-place / Clear / OK / Cancel.
-    Returns centers in ROI coords as (M,2) int32.
+    AP editor (AutoStakkert-ish):
+    - Scrollable preview (fits to window by default)
+    - Zoom controls (+/-/slider, Fit, 1:1)
+    - Constant on-screen AP box thickness (draw boxes after scaling)
+    - Left click: add AP
+    - Right click: delete nearest AP
     """
-    def __init__(self, parent=None, *, ref_img01: np.ndarray, ap_size: int, ap_spacing: int, ap_min_mean: float,
-                 initial_centers: np.ndarray | None = None):
+    def __init__(
+        self,
+        parent=None,
+        *,
+        ref_img01: np.ndarray,
+        ap_size: int,
+        ap_spacing: int,
+        ap_min_mean: float,
+        initial_centers: np.ndarray | None = None
+    ):
         super().__init__(parent)
         self.setWindowTitle("Edit Alignment Points (APs)")
         self.setModal(True)
+        self.resize(1000, 750)
 
         self._ref = np.asarray(ref_img01, dtype=np.float32)
+        self._H, self._W = self._ref.shape[:2]
+
         self._ap_size = int(ap_size)
         self._ap_spacing = int(ap_spacing)
         self._ap_min_mean = float(ap_min_mean)
 
         self._centers = None if initial_centers is None else np.asarray(initial_centers, dtype=np.int32).copy()
 
+        # zoom state
+        self._zoom = 1.0
+        self._fit_pending = True  # do initial "fit to window" after first show
+
+        # ---- Build UI ---------------------------------------------------------
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(10, 10, 10, 10)
+        outer.setSpacing(8)
+
+        # scroll area + pix label
         self._pix = QLabel(self)
         self._pix.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._pix.setMouseTracking(True)
-        self._pix.setMinimumSize(600, 400)
+        self._pix.setStyleSheet("background:#111;")  # makes the viewport look sane
 
-        self._lbl_hint = QLabel("Left click: add AP   |   Right click: delete nearest AP", self)
+        self._scroll = QScrollArea(self)
+        self._scroll.setWidgetResizable(False)       # we control label size
+        self._scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._scroll.setWidget(self._pix)
+
+        outer.addWidget(self._scroll, 1)
+
+        # Zoom row (under preview)
+        zoom_row = QHBoxLayout()
+        self.btn_zoom_out = QPushButton("–", self)
+        self.btn_zoom_in = QPushButton("+", self)
+        self.btn_fit = QPushButton("Fit", self)
+        self.btn_100 = QPushButton("1:1", self)
+
+        self.sld_zoom = QSlider(Qt.Orientation.Horizontal, self)
+        self.sld_zoom.setRange(10, 400)     # percent
+        self.sld_zoom.setValue(100)
+        self.lbl_zoom = QLabel("100%", self)
+        self.lbl_zoom.setStyleSheet("color:#aaa; min-width:60px;")
+
+        self.btn_zoom_out.setFixedWidth(34)
+        self.btn_zoom_in.setFixedWidth(34)
+
+        zoom_row.addWidget(QLabel("Zoom:", self))
+        zoom_row.addWidget(self.btn_zoom_out)
+        zoom_row.addWidget(self.sld_zoom, 1)
+        zoom_row.addWidget(self.btn_zoom_in)
+        zoom_row.addWidget(self.lbl_zoom)
+        zoom_row.addSpacing(10)
+        zoom_row.addWidget(self.btn_fit)
+        zoom_row.addWidget(self.btn_100)
+
+        outer.addLayout(zoom_row)
+
+        # hint + buttons
+        self._lbl_hint = QLabel("Left click: add AP   |   Right click: delete nearest AP   |   Ctrl+Wheel: zoom", self)
         self._lbl_hint.setStyleSheet("color:#aaa;")
+        outer.addWidget(self._lbl_hint, 0)
 
         btn_row = QHBoxLayout()
         self.btn_auto = QPushButton("Auto-place", self)
@@ -143,66 +205,144 @@ class APEditorDialog(QDialog):
         btn_row.addStretch(1)
         btn_row.addWidget(self.btn_ok)
         btn_row.addWidget(self.btn_cancel)
+        outer.addLayout(btn_row)
 
-        lay = QVBoxLayout(self)
-        lay.addWidget(self._pix, 1)
-        lay.addWidget(self._lbl_hint, 0)
-        lay.addLayout(btn_row)
-
+        # signals
         self.btn_cancel.clicked.connect(self.reject)
         self.btn_ok.clicked.connect(self.accept)
         self.btn_auto.clicked.connect(self._do_autoplace)
         self.btn_clear.clicked.connect(self._do_clear)
 
+        self.btn_fit.clicked.connect(self._fit_to_window)
+        self.btn_100.clicked.connect(lambda: self._set_zoom(1.0))
+        self.btn_zoom_in.clicked.connect(lambda: self._set_zoom(self._zoom * 1.25))
+        self.btn_zoom_out.clicked.connect(lambda: self._set_zoom(self._zoom / 1.25))
+        self.sld_zoom.valueChanged.connect(self._on_zoom_slider)
+
         # intercept mouse clicks on label
         self._pix.mousePressEvent = self._on_mouse_press  # type: ignore
 
+        # enable Ctrl+Wheel zoom on the scroll area's viewport
+        self._scroll.viewport().installEventFilter(self)
+
+        # precompute display base image (uint8) once
+        self._base_u8 = self._make_display_u8(self._ref)
+
+        # init centers
         if self._centers is None:
             self._do_autoplace()
-        else:
-            self._render()
+
+        # first render
+        self._render()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        if self._fit_pending:
+            self._fit_pending = False
+            self._fit_to_window()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        # keep a "fit" feel when the dialog is resized, but don't fight the user
+        # only auto-fit if they're near fit zoom already
+        # (comment this out if you *never* want auto-adjust)
+        # self._fit_to_window()
+        self._render()
+
+    def eventFilter(self, obj, event):
+        # Ctrl+wheel zoom
+        try:
+            if obj is self._scroll.viewport():
+                if event.type() == event.Type.Wheel:
+                    if bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+                        delta = event.angleDelta().y()
+                        if delta > 0:
+                            self._set_zoom(self._zoom * 1.15)
+                        elif delta < 0:
+                            self._set_zoom(self._zoom / 1.15)
+                        return True
+        except Exception:
+            pass
+        return super().eventFilter(obj, event)
 
     def ap_centers(self) -> np.ndarray:
         if self._centers is None:
             return np.zeros((0, 2), dtype=np.int32)
         return self._centers
 
-    # ---------- drawing ----------
-    def _render(self):
-        # display-stretch for visibility
-        img = self._ref
-        mono = img if img.ndim == 2 else img[..., 0]
+    # ---------- image prep ----------
+    @staticmethod
+    def _make_display_u8(img01: np.ndarray) -> np.ndarray:
+        mono = img01 if img01.ndim == 2 else img01[..., 0]
         mono = np.clip(mono, 0.0, 1.0)
 
-        # simple robust stretch
         lo = float(np.percentile(mono, 1.0))
         hi = float(np.percentile(mono, 99.5))
         if hi <= lo + 1e-8:
             hi = lo + 1e-3
+
         v = (mono - lo) / (hi - lo)
         v = np.clip(v, 0.0, 1.0)
+        return (v * 255.0 + 0.5).astype(np.uint8)
 
-        u8 = (v * 255.0 + 0.5).astype(np.uint8)
+    # ---------- zoom helpers ----------
+    def _on_zoom_slider(self, value: int):
+        z = float(value) / 100.0
+        self._set_zoom(z)
+
+    def _set_zoom(self, z: float):
+        z = float(z)
+        z = max(0.10, min(4.00, z))  # clamp 10%..400%
+        self._zoom = z
+
+        block = self.sld_zoom.blockSignals(True)
+        try:
+            self.sld_zoom.setValue(int(round(z * 100.0)))
+        finally:
+            self.sld_zoom.blockSignals(block)
+
+        self.lbl_zoom.setText(f"{int(round(z * 100.0))}%")
+        self._render()
+
+    def _fit_to_window(self):
+        # fit image into scroll viewport with a little padding
+        vw = max(1, self._scroll.viewport().width() - 10)
+        vh = max(1, self._scroll.viewport().height() - 10)
+        if self._W <= 0 or self._H <= 0:
+            return
+        z = min(vw / float(self._W), vh / float(self._H))
+        self._set_zoom(z)
+
+    # ---------- drawing ----------
+    def _render(self):
+        u8 = self._base_u8
         h, w = u8.shape[:2]
 
         qimg = QImage(u8.data, w, h, w, QImage.Format.Format_Grayscale8)
-        pm = QPixmap.fromImage(qimg.copy())  # copy so backing store persists
+        base_pm = QPixmap.fromImage(qimg.copy())  # copy so backing store persists
 
-        # draw AP boxes
+        # scale to display zoom (keeps UI sane)
+        zw = max(1, int(round(w * self._zoom)))
+        zh = max(1, int(round(h * self._zoom)))
+        pm = base_pm.scaled(zw, zh, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
+
+        # draw AP boxes in *display coords* so thickness doesn't scale
         p = QPainter(pm)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
-        s = int(max(8, self._ap_size))
-        half = s // 2
+        s_img = int(max(8, self._ap_size))
+        half_img = s_img // 2
+        s_disp = max(2, int(round(s_img * self._zoom)))
+        half_disp = s_disp // 2
 
-        pen = QPen(QColor(0, 255, 0), 2)
+        pen = QPen(QColor(0, 255, 0), 2)  # constant on-screen thickness
         p.setPen(pen)
 
         if self._centers is not None and self._centers.size > 0:
             for cx, cy in self._centers.tolist():
-                x0 = int(cx - half)
-                y0 = int(cy - half)
-                p.drawRect(x0, y0, s, s)
+                x = int(round(cx * self._zoom))
+                y = int(round(cy * self._zoom))
+                p.drawRect(int(x - half_disp), int(y - half_disp), int(s_disp), int(s_disp))
 
         p.end()
 
@@ -225,28 +365,30 @@ class APEditorDialog(QDialog):
         if pm is None:
             return
 
-        x = int(ev.position().x())
-        y = int(ev.position().y())
+        # display coords in the label
+        dx = float(ev.position().x())
+        dy = float(ev.position().y())
+
+        # map to image coords
+        ix = int(round(dx / max(1e-6, self._zoom)))
+        iy = int(round(dy / max(1e-6, self._zoom)))
 
         # clamp to image bounds
-        w = pm.width()
-        h = pm.height()
-        x = max(0, min(w - 1, x))
-        y = max(0, min(h - 1, y))
+        ix = max(0, min(self._W - 1, ix))
+        iy = max(0, min(self._H - 1, iy))
 
         if ev.button() == Qt.MouseButton.LeftButton:
-            self._add_point(x, y)
+            self._add_point(ix, iy)
         elif ev.button() == Qt.MouseButton.RightButton:
-            self._delete_nearest(x, y)
+            self._delete_nearest(ix, iy)
 
     def _add_point(self, x: int, y: int):
         s = int(max(8, self._ap_size))
         half = s // 2
-        H, W = self._ref.shape[:2]
 
         # ensure AP box fits fully
-        x = max(half, min(W - 1 - half, x))
-        y = max(half, min(H - 1 - half, y))
+        x = max(half, min(self._W - 1 - half, x))
+        y = max(half, min(self._H - 1 - half, y))
 
         if self._centers is None or self._centers.size == 0:
             self._centers = np.asarray([[x, y]], dtype=np.int32)
@@ -259,14 +401,14 @@ class APEditorDialog(QDialog):
             return
 
         pts = self._centers.astype(np.float32)
-        d2 = (pts[:, 0] - x) ** 2 + (pts[:, 1] - y) ** 2
+        d2 = (pts[:, 0] - float(x)) ** 2 + (pts[:, 1] - float(y)) ** 2
         j = int(np.argmin(d2))
-        # only delete if close enough
+
+        # radius in image pixels (so behavior is stable regardless of zoom)
         radius = max(10.0, float(self._ap_size) * 0.6)
         if float(d2[j]) <= radius * radius:
             self._centers = np.delete(self._centers, j, axis=0)
             self._render()
-
 
 class QualityGraph(QWidget):
     """
@@ -365,6 +507,7 @@ class _AnalyzeWorker(QThread):
         self.ref_mode = ref_mode
         self.ref_count = int(ref_count)
         self._cancel = False
+        self._worker_realign: _ReAlignWorker | None = None
 
     def run(self):
         try:
@@ -388,16 +531,26 @@ class _StackWorker(QThread):
     finished_ok = pyqtSignal(object, object)   # out(np.ndarray), diag(dict)
     failed = pyqtSignal(str)
 
-    def __init__(self, cfg: SERStackConfig, *, debayer: bool, to_rgb: bool):
+    def __init__(self, cfg: SERStackConfig, analysis: AnalyzeResult | None, *, debayer: bool, to_rgb: bool):
         super().__init__()
         self.cfg = cfg
+        self.analysis = analysis
         self.debayer = bool(debayer)
         self.to_rgb = bool(to_rgb)
 
     def run(self):
         try:
-            analysis = getattr(self, "_analysis", None)
-            out, diag = stack_ser(self.cfg, debayer=self.debayer, to_rgb=self.to_rgb, analysis=analysis)
+            # NOTE: stack_ser expects "source" directly (path/list/PlanetaryFrameSource)
+            out, diag = stack_ser(
+                self.cfg.source,
+                roi=self.cfg.roi,
+                debayer=self.debayer,
+                keep_percent=float(getattr(self.cfg, "keep_percent", 20.0)),
+                track_mode=str(getattr(self.cfg, "track_mode", "planetary")),
+                surface_anchor=getattr(self.cfg, "surface_anchor", None),
+                # If your stack_ser supports analysis injection later,
+                # you can add analysis=self.analysis here.
+            )
             self.finished_ok.emit(out, diag)
         except Exception as e:
             msg = f"{e}\n\n{traceback.format_exc()}"
@@ -448,31 +601,58 @@ class SERStackerDialog(QDialog):
         self,
         parent=None,
         *,
-        main,             
-        source_doc,               
-        ser_path: str,
-        roi=None,                 # (x,y,w,h) full-frame coords or None
+        main,
+        source_doc=None,
+        ser_path: Optional[str] = None,   # ✅ typed + default
+        source: Optional[SourceSpec] = None,
+        roi=None,
         track_mode: str = "planetary",
-        surface_anchor=None,      # (x,y,w,h) ROI-space or None
+        surface_anchor=None,
         debayer: bool = True,
         keep_percent: float = 20.0,
     ):
         super().__init__(parent)
-        self.setWindowTitle("SER Stacker")
+        self.setWindowTitle("Planetary Stacker - Beta")
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
+        # ---- Normalize inputs ------------------------------------------------
+        # If caller provided only `source`, treat string-source as ser_path too.
+        if source is None:
+            source = ser_path
+
+        # If source is a single path string and ser_path is missing, fill it.
+        if ser_path is None and isinstance(source, str) and source:
+            ser_path = source
+
+        if source is None:
+            raise ValueError("SERStackerDialog requires source (path or list of paths).")
+
         self._main = main
+        self._source = source
         self._source_doc = source_doc
+
+        # IMPORTANT: now _ser_path is never empty for the common SER case
         self._ser_path = ser_path
+
+        self._track_mode = track_mode
         self._roi = roi
         self._surface_anchor = surface_anchor
         self._debayer = bool(debayer)
-        self._analysis: AnalyzeResult | None = None
-        self._worker_analyze: _AnalyzeWorker | None = None
-        self._worker: _StackWorker | None = None
-        self._last_out: np.ndarray | None = None
-        self._last_diag: dict | None = None
+        self._keep_percent = float(keep_percent)
+
+        self._analysis = None
+        self._worker_analyze = None
+        self._worker = None
+        self._last_out = None
+        self._last_diag = None
+        try:
+            if isinstance(self._source, (list, tuple)):
+                self._append_log(f"Source: sequence ({len(self._source)} frames)  first={self._source[0]}")
+            else:
+                self._append_log(f"Source: {self._source}")
+        except Exception:
+            pass
 
         self._build_ui()
 
@@ -483,8 +663,13 @@ class SERStackerDialog(QDialog):
         self.spin_keep.setValue(float(keep_percent))
         self.chk_debayer.setChecked(bool(debayer))
         self._update_anchor_warning()
-
-        self._append_log(f"SER: {ser_path}")
+        try:
+            if isinstance(self._source, (list, tuple)):
+                self._append_log(f"Source: sequence ({len(self._source)} frames)")
+            else:
+                self._append_log(f"Source: {self._source}")
+        except Exception:
+            self._append_log("Source: (unknown)")
         self._append_log(f"ROI: {roi if roi is not None else '(full frame)'}")
         if track_mode == "surface":
             self._append_log(f"Surface anchor (ROI-space): {surface_anchor}")
@@ -591,6 +776,12 @@ class SERStackerDialog(QDialog):
         self.lbl_prog.setStyleSheet("color:#aaa;")
         self.lbl_prog.setVisible(False)
         outer.addWidget(self.lbl_prog)
+        # --- Log ---
+        self.log = QTextEdit(self)
+        self.log.setReadOnly(True)
+        self.log.setMinimumHeight(120)
+        self.log.setPlaceholderText("Log…")
+        outer.addWidget(self.log, 1)
 
         # --- Signals ---
         self.btn_close.clicked.connect(self.close)
@@ -622,18 +813,7 @@ class SERStackerDialog(QDialog):
                 self._append_log(f"APs set: {int(centers.shape[0])} points")
 
                 # Recompute alignment only (no full analyze)
-                cfg = SERStackConfig(
-                    ser_path=self._ser_path,
-                    roi=self._roi,
-                    track_mode=self._track_mode_value(),
-                    surface_anchor=self._surface_anchor,
-                    keep_percent=float(self.spin_keep.value()),
-                    multipoint=True,
-                    ap_size=int(self.spin_ap_size.value()),
-                    ap_spacing=int(self.spin_ap_spacing.value()),
-                    ap_min_mean=float(self.spin_ap_min.value()),
-                    ap_multiscale=(self.cmb_ap_scale.currentIndex() == 1),
-                )
+                cfg = self._make_cfg()
 
                 self.lbl_prog.setVisible(True)
                 self.prog.setVisible(True)
@@ -659,12 +839,17 @@ class SERStackerDialog(QDialog):
 
     def _on_realign_ok(self, ar: AnalyzeResult):
         self._analysis = ar
+
         self.prog.setVisible(False)
         self.lbl_prog.setVisible(False)
+
         self.btn_stack.setEnabled(True)
         self.btn_analyze.setEnabled(True)
         self.btn_edit_aps.setEnabled(True)
+        self.btn_close.setEnabled(True)
+
         self._append_log("Re-align done (dx/dy/conf updated from APs).")
+
 
 
     def _append_log(self, s: str):
@@ -706,18 +891,7 @@ class SERStackerDialog(QDialog):
         ref_mode = "best_stack" if self.cmb_ref.currentText().lower().startswith("best stack") else "best_frame"
         refN = int(self.spin_refN.value()) if ref_mode == "best_stack" else 1
 
-        cfg = SERStackConfig(
-            ser_path=self._ser_path,
-            roi=self._roi,
-            track_mode=mode,
-            surface_anchor=self._surface_anchor,
-            keep_percent=float(self.spin_keep.value()),
-            multipoint=True,
-            ap_size=int(self.spin_ap_size.value()),
-            ap_spacing=int(self.spin_ap_spacing.value()),
-            ap_min_mean=float(self.spin_ap_min.value()),
-            ap_multiscale=(self.cmb_ap_scale.currentIndex() == 1),
-        )
+        cfg = self._make_cfg()
 
         self.btn_analyze.setEnabled(False)
         self.btn_stack.setEnabled(False)
@@ -728,12 +902,18 @@ class SERStackerDialog(QDialog):
         self.prog.setRange(0, 100)
         self.prog.setValue(0)
 
-        self._worker_analyze = _AnalyzeWorker(cfg, debayer=bool(self.chk_debayer.isChecked()), to_rgb=False,
-                                            ref_mode=ref_mode, ref_count=refN)
+        self._worker_analyze = _AnalyzeWorker(
+            cfg,
+            debayer=bool(self.chk_debayer.isChecked()),
+            to_rgb=False,
+            ref_mode=ref_mode,
+            ref_count=refN,
+        )
         self._worker_analyze.finished_ok.connect(self._on_analyze_ok)
         self._worker_analyze.failed.connect(self._on_analyze_fail)
         self._worker_analyze.progress.connect(self._on_analyze_progress)
         self._worker_analyze.start()
+
 
     def _on_analyze_progress(self, done: int, total: int, phase: str):
         total = max(1, int(total))
@@ -746,7 +926,10 @@ class SERStackerDialog(QDialog):
 
     def _on_analyze_ok(self, ar: AnalyzeResult):
         self._analysis = ar
+
         self.prog.setVisible(False)
+        self.lbl_prog.setVisible(False)
+
         self.btn_analyze.setEnabled(True)
         self.btn_stack.setEnabled(True)
         self.btn_close.setEnabled(True)
@@ -763,9 +946,12 @@ class SERStackerDialog(QDialog):
 
     def _on_analyze_fail(self, msg: str):
         self.prog.setVisible(False)
+        self.lbl_prog.setVisible(False)
+
         self.btn_analyze.setEnabled(True)
         self.btn_stack.setEnabled(True)
         self.btn_close.setEnabled(True)
+
         self._append_log("ANALYZE FAILED:")
         self._append_log(msg)
 
@@ -778,29 +964,33 @@ class SERStackerDialog(QDialog):
         q_sorted = self._analysis.quality[self._analysis.order]
         self.graph.set_data(q_sorted, keep_k=k)
 
-
-    def _start_stack(self):
-        if not self._ser_path:
-            return
-
-        mode = self._track_mode_value()
-        if mode == "surface" and self._surface_anchor is None:
-            self._append_log("Surface mode requires an anchor. Set it in the viewer (Ctrl+Shift+drag).")
-            return
-
-        cfg = SERStackConfig(
-            ser_path=self._ser_path,
+    def _make_cfg(self) -> SERStackConfig:
+        """
+        Build SERStackConfig using the new 'source' field (path or list of paths).
+        Multipoint is implied by the presence of AP settings in SERStackConfig.
+        """
+        return SERStackConfig(
+            source=self._source,
             roi=self._roi,
-            track_mode=mode,
+            track_mode=self._track_mode_value(),
             surface_anchor=self._surface_anchor,
             keep_percent=float(self.spin_keep.value()),
-            multipoint=True,
+            # multipoint=True,  # ❌ removed (no longer a config field)
             ap_size=int(self.spin_ap_size.value()),
             ap_spacing=int(self.spin_ap_spacing.value()),
             ap_min_mean=float(self.spin_ap_min.value()),
             ap_multiscale=(self.cmb_ap_scale.currentIndex() == 1),
         )
 
+
+
+    def _start_stack(self):
+        mode = self._track_mode_value()
+        if mode == "surface" and self._surface_anchor is None:
+            self._append_log("Surface mode requires an anchor. Set it in the viewer (Ctrl+Shift+drag).")
+            return
+
+        cfg = self._make_cfg()
         debayer = bool(self.chk_debayer.isChecked())
 
         self.btn_stack.setEnabled(False)
@@ -809,9 +999,8 @@ class SERStackerDialog(QDialog):
         self.prog.setVisible(True)
         self._append_log("Stacking...")
 
-        # pass analysis through the worker by storing on self (simple)
-        self._worker = _StackWorker(cfg, debayer=debayer, to_rgb=False)
-        self._worker._analysis = self._analysis  # attach dynamically (or extend worker ctor cleanly)
+        # Pass analysis to worker (so stacker can use dx/dy/conf/order)
+        self._worker = _StackWorker(cfg, analysis=self._analysis, debayer=debayer, to_rgb=False)
         self._worker.finished_ok.connect(self._on_stack_ok)
         self._worker.failed.connect(self._on_stack_fail)
         self._worker.start()
@@ -824,6 +1013,7 @@ class SERStackerDialog(QDialog):
         self.prog.setVisible(False)
         self.btn_stack.setEnabled(True)
         self.btn_close.setEnabled(True)
+        self.btn_analyze.setEnabled(True)
 
         self._append_log(f"Done. Kept {diag.get('frames_kept')} / {diag.get('frames_total')}")
         self._append_log(f"Track: {diag.get('track_mode')}  ROI: {diag.get('roi_used')}")
@@ -856,5 +1046,6 @@ class SERStackerDialog(QDialog):
         self.prog.setVisible(False)
         self.btn_stack.setEnabled(True)
         self.btn_close.setEnabled(True)
+        self.btn_analyze.setEnabled(True)
         self._append_log("FAILED:")
         self._append_log(msg)
