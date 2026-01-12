@@ -924,10 +924,23 @@ class SERStackerDialog(QDialog):
         if self._surface_anchor is None:
             self.lbl_anchor.setText("REQUIRED (set in SER Viewer with Ctrl+Shift+drag)")
             self.lbl_anchor.setStyleSheet("color:#c66;")
-        else:
-            x, y, w, h = self._surface_anchor
-            self.lbl_anchor.setText(f"x={x}, y={y}, w={w}, h={h} (ROI-space)")
-            self.lbl_anchor.setStyleSheet("color:#4a4;")
+            return
+
+        x, y, w, h = [int(v) for v in self._surface_anchor]
+
+        # Always show ROI-space (that’s what the tracker uses)
+        txt = f"✅ ROI-space: x={x}, y={y}, w={w}, h={h}"
+
+        # If an ROI is set, also show full-frame coords for sanity/debug
+        if self._roi is not None:
+            rx, ry, rw, rh = [int(v) for v in self._roi]
+            fx = rx + x
+            fy = ry + y
+            txt += f"   |   Full-frame: x={fx}, y={fy}, w={w}, h={h}"
+
+        self.lbl_anchor.setText(txt)
+        self.lbl_anchor.setStyleSheet("color:#4a4;")
+
 
     # ---------------- actions ----------------
     def _start_analyze(self):
