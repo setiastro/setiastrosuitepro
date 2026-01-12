@@ -55,19 +55,22 @@ class PlanetaryTracker:
         return out
 
     def _centroid(self, m: np.ndarray, mask: np.ndarray) -> tuple[float, float, float]:
-        """
-        Weighted centroid using intensity. Returns (cx, cy, confidence).
-        """
-        w = m * (mask > 0)
-        s = float(w.sum())
-        if s <= 1e-8:
+        if cv2 is None:
+            # fallback: simple average of mask pixels
+            ys, xs = np.nonzero(mask > 0)
+            if len(xs) < 10:
+                return (0.0, 0.0, 0.0)
+            return (float(xs.mean()), float(ys.mean()), 1.0)
+
+        mm = cv2.moments((mask > 0).astype(np.uint8), binaryImage=True)
+        if mm["m00"] <= 0:
             return (0.0, 0.0, 0.0)
-        ys, xs = np.indices(m.shape, dtype=np.float32)
-        cx = float((w * xs).sum() / s)
-        cy = float((w * ys).sum() / s)
-        # confidence: fraction of bright energy captured
-        conf = float(np.clip(s / (float(m.sum()) + 1e-8), 0.0, 1.0))
-        return cx, cy, conf
+        cx = float(mm["m10"] / mm["m00"])
+        cy = float(mm["m01"] / mm["m00"])
+        # confidence: area fraction
+        conf = float(np.clip(mm["m00"] / float(mask.size), 0.0, 1.0))
+        return (cx, cy, conf)
+
 
     def step(self, img01: np.ndarray) -> tuple[float, float, float]:
         """
@@ -97,6 +100,33 @@ class PlanetaryTracker:
         dy = ry - cy
         return float(dx), float(dy), conf
 
+    def compute_center(self, img01: np.ndarray) -> tuple[float, float, float]:
+        """
+        Compute (cx, cy, conf) in pixels in the provided image coordinate system.
+        Uses the same pipeline as step(): blur -> percentile thresh -> largest CC -> centroid.
+        """
+        m = _to_mono01(img01)
+        m2 = self._blur(m)
+
+        t = float(np.percentile(m2, self.thresh_pct))
+        if not np.isfinite(t):
+            return 0.0, 0.0, 0.0
+
+        mask = (m2 >= t).astype(np.uint8) * 255
+        mask = self._largest_component_mask(mask)
+
+        cx, cy, conf = self._centroid(m2, mask)
+        return float(cx), float(cy), float(conf)
+
+    def shift_to_ref(self, img01: np.ndarray, ref_center: tuple[float, float]) -> tuple[float, float, float]:
+        """
+        Returns (dx, dy, conf) shifting FROM current frame TO the provided reference center.
+        """
+        cx, cy, conf = self.compute_center(img01)
+        if conf <= 0.0:
+            return 0.0, 0.0, 0.0
+        rx, ry = ref_center
+        return float(rx - cx), float(ry - cy), float(conf)
 
 class SurfaceTracker:
     """
@@ -151,5 +181,26 @@ class SurfaceTracker:
         return float(dx), float(dy), float(resp)
 
 
+    @staticmethod
+    def _phase_corr(ref_m: np.ndarray, cur_m: np.ndarray) -> tuple[float, float, float]:
+        if cv2 is None:
+            return 0.0, 0.0, 0.0
+
+        ref = ref_m.astype(np.float32, copy=False)
+        cur = cur_m.astype(np.float32, copy=False)
+
+        ref = ref - float(ref.mean())
+        cur = cur - float(cur.mean())
+
+        try:
+            win = cv2.createHanningWindow((ref.shape[1], ref.shape[0]), cv2.CV_32F)
+            (dx, dy), resp = cv2.phaseCorrelate(ref, cur, win)
+        except Exception:
+            (dx, dy), resp = cv2.phaseCorrelate(ref, cur)
+
+        return float(dx), float(dy), float(resp)
+
     def step(self, cur_patch: np.ndarray) -> tuple[float, float, float]:
-        return self._phase_corr(cur_patch)
+        cur = _to_mono01(np.asarray(cur_patch, dtype=np.float32))
+        ref = self.ref
+        return self._phase_corr(ref, cur)

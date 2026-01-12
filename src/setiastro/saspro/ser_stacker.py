@@ -946,7 +946,23 @@ def analyze_ser(
             )
 
     else:
-        # planetary (unchanged): AP global phase-corr median shift
+        # planetary: centroid tracking (same as viewer) for GLOBAL dx/dy/conf
+        # APs are still computed and used later by stack_ser for local_warp residuals.
+        tracker = PlanetaryTracker(
+            smooth_sigma=float(getattr(cfg, "planet_smooth_sigma", smooth_sigma)),
+            thresh_pct=float(getattr(cfg, "planet_thresh_pct", thresh_pct)),
+        )
+
+        # IMPORTANT: reference center is computed from the SAME reference image that Analyze chose
+        ref_cx, ref_cy, ref_cc = tracker.compute_center(ref_img)
+        if ref_cc <= 0.0:
+            # fallback: center of ROI
+            mref = _to_mono01(ref_img)
+            ref_cx = float(mref.shape[1] * 0.5)
+            ref_cy = float(mref.shape[0] * 0.5)
+
+        ref_center = (float(ref_cx), float(ref_cy))
+
         def _shift_chunk(chunk: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
             out_i: list[int] = []
             out_dx: list[float] = []
@@ -963,22 +979,8 @@ def analyze_ser(
                         to_float01=True,
                         force_rgb=bool(to_rgb),
                     )
-                    cur_m_full = _to_mono01(img).astype(np.float32, copy=False)
 
-                    if use_multiscale:
-                        dx_i, dy_i, cf_i = _ap_phase_shift_multiscale(
-                            ref_m_full, cur_m_full,
-                            ap_centers=ap_centers,
-                            base_ap_size=ap_size,
-                            max_dim=max_dim,
-                        )
-                    else:
-                        dx_i, dy_i, cf_i = _ap_phase_shift(
-                            ref_m_full, cur_m_full,
-                            ap_centers=ap_centers,
-                            ap_size=ap_size,
-                            max_dim=max_dim,
-                        )
+                    dx_i, dy_i, cf_i = tracker.shift_to_ref(img, ref_center)
 
                     out_i.append(int(i))
                     out_dx.append(float(dx_i))
@@ -997,6 +999,7 @@ def analyze_ser(
                 np.asarray(out_dy, np.float32),
                 np.asarray(out_cf, np.float32),
             )
+
 
     done_ct = 0
     with ThreadPoolExecutor(max_workers=workers) as ex:
@@ -1259,6 +1262,21 @@ def realign_ser(
             )
 
     else:
+        # planetary: centroid tracking (same as viewer)
+        tracker = PlanetaryTracker(
+            smooth_sigma=float(getattr(cfg, "planet_smooth_sigma", 1.5)),
+            thresh_pct=float(getattr(cfg, "planet_thresh_pct", 92.0)),
+        )
+
+        # Reference center comes from analysis.ref_image (same anchor as analyze_ser)
+        ref_cx, ref_cy, ref_cc = tracker.compute_center(ref_img)
+        if ref_cc <= 0.0:
+            mref = _to_mono01(ref_img)
+            ref_cx = float(mref.shape[1] * 0.5)
+            ref_cy = float(mref.shape[0] * 0.5)
+
+        ref_center = (float(ref_cx), float(ref_cy))
+
         def _shift_chunk(chunk: np.ndarray):
             out_i: list[int] = []
             out_dx: list[float] = []
@@ -1275,22 +1293,8 @@ def realign_ser(
                         to_float01=True,
                         force_rgb=bool(to_rgb),
                     )
-                    cur_m = _to_mono01(img).astype(np.float32, copy=False)
 
-                    if use_multiscale:
-                        dx_i, dy_i, cf_i = _ap_phase_shift_multiscale(
-                            ref_m, cur_m,
-                            ap_centers=ap_centers,
-                            base_ap_size=ap_size,
-                            max_dim=max_dim,
-                        )
-                    else:
-                        dx_i, dy_i, cf_i = _ap_phase_shift(
-                            ref_m, cur_m,
-                            ap_centers=ap_centers,
-                            ap_size=ap_size,
-                            max_dim=max_dim,
-                        )
+                    dx_i, dy_i, cf_i = tracker.shift_to_ref(img, ref_center)
 
                     out_i.append(int(i))
                     out_dx.append(float(dx_i))
@@ -1309,6 +1313,7 @@ def realign_ser(
                 np.asarray(out_dy, np.float32),
                 np.asarray(out_cf, np.float32),
             )
+
 
     done_ct = 0
     with ThreadPoolExecutor(max_workers=workers) as ex:
