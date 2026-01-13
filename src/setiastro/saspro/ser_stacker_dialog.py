@@ -8,7 +8,7 @@ from typing import Optional, Union, Sequence
 
 SourceSpec = Union[str, Sequence[str]]
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QRectF, QEvent
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QRectF, QEvent, QTimer
 from PyQt6.QtWidgets import (
     QWidget, QSpinBox, QMessageBox,
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGroupBox,
@@ -237,6 +237,33 @@ class APEditorDialog(QDialog):
         self._lbl_hint.setStyleSheet("color:#aaa;")
         outer.addWidget(self._lbl_hint, 0)
 
+        # --- AP settings (in-dialog) ---
+        ap_row = QHBoxLayout()
+
+        self.lbl_ap = QLabel("AP:", self)
+        self.lbl_ap.setStyleSheet("color:#aaa;")
+
+        self.spin_ap_size = QSpinBox(self)
+        self.spin_ap_size.setRange(16, 256)
+        self.spin_ap_size.setSingleStep(8)
+        self.spin_ap_size.setValue(int(self._ap_size))
+
+        self.spin_ap_spacing = QSpinBox(self)
+        self.spin_ap_spacing.setRange(8, 256)
+        self.spin_ap_spacing.setSingleStep(8)
+        self.spin_ap_spacing.setValue(int(self._ap_spacing))
+
+        ap_row.addWidget(self.lbl_ap)
+        ap_row.addSpacing(6)
+        ap_row.addWidget(QLabel("Size", self))
+        ap_row.addWidget(self.spin_ap_size)
+        ap_row.addSpacing(10)
+        ap_row.addWidget(QLabel("Spacing", self))
+        ap_row.addWidget(self.spin_ap_spacing)
+        ap_row.addStretch(1)
+
+        outer.addLayout(ap_row, 0)
+
         btn_row = QHBoxLayout()
         self.btn_auto = QPushButton("Auto-place", self)
         self.btn_clear = QPushButton("Clear", self)
@@ -264,6 +291,15 @@ class APEditorDialog(QDialog):
         # intercept mouse clicks on label
         self._pix.mousePressEvent = self._on_mouse_press  # type: ignore
 
+        self._ap_debounce = QTimer(self)
+        self._ap_debounce.setSingleShot(True)
+        self._ap_debounce.setInterval(250)  # ms
+        self._ap_debounce.timeout.connect(self._apply_ap_params_and_relayout)
+
+        # apply redraw when changed
+        self.spin_ap_size.valueChanged.connect(self._schedule_ap_relayout)
+        self.spin_ap_spacing.valueChanged.connect(self._schedule_ap_relayout)
+
         # enable Ctrl+Wheel zoom on the scroll area's viewport
         self._scroll.viewport().installEventFilter(self)
 
@@ -276,6 +312,29 @@ class APEditorDialog(QDialog):
 
         # first render
         self._render()
+
+    def ap_size(self) -> int:
+        return int(self._ap_size)
+
+    def ap_spacing(self) -> int:
+        return int(self._ap_spacing)
+
+    def _schedule_ap_relayout(self):
+        # Restart the timer each change
+        try:
+            self._ap_debounce.start()
+        except Exception:
+            # fallback: apply immediately if timer fails for some reason
+            self._apply_ap_params_and_relayout()
+
+    def _apply_ap_params_and_relayout(self):
+        # Commit params
+        self._ap_size = int(self.spin_ap_size.value())
+        self._ap_spacing = int(self.spin_ap_spacing.value())
+
+        # Re-autoplace using the updated params
+        self._do_autoplace()
+
 
     def showEvent(self, e):
         super().showEvent(e)
@@ -354,6 +413,15 @@ class APEditorDialog(QDialog):
             return
         z = min(vw / float(self._W), vh / float(self._H))
         self._set_zoom(z)
+
+    def _on_ap_params_changed(self):
+        # Update internal params
+        self._ap_size = int(self.spin_ap_size.value())
+        self._ap_spacing = int(self.spin_ap_spacing.value())
+
+        # Just redraw boxes (does not re-place points automatically)
+        self._render()
+
 
     # ---------- drawing ----------
     def _render(self):
@@ -796,6 +864,11 @@ class SERStackerDialog(QDialog):
         self.cmb_ap_scale.addItems(["Single", "Multi-scale (2× / 1× / ½×)"])
         fA.addRow("AP scale", self.cmb_ap_scale)
 
+        self.chk_ssd_bruteforce = QCheckBox("SSD refine: brute force (slower, can rescue tough data)", self)
+        self.chk_ssd_bruteforce.setChecked(False)
+        fA.addRow("", self.chk_ssd_bruteforce)
+
+
         fA.addRow("AP size (px)", self.spin_ap_size)
         fA.addRow("AP spacing (px)", self.spin_ap_spacing)
 
@@ -858,7 +931,18 @@ class SERStackerDialog(QDialog):
             if dlg.exec() == QDialog.DialogCode.Accepted:
                 centers = dlg.ap_centers()
                 self._analysis.ap_centers = centers
-                self._append_log(f"APs set: {int(centers.shape[0])} points")
+
+                # ✅ pull size/spacing changes from the editor back into the main UI
+                try:
+                    self.spin_ap_size.setValue(int(dlg.ap_size()))
+                    self.spin_ap_spacing.setValue(int(dlg.ap_spacing()))
+                except Exception:
+                    pass
+
+                self._append_log(
+                    f"APs set: {int(centers.shape[0])} points   "
+                    f"(size={int(self.spin_ap_size.value())}, spacing={int(self.spin_ap_spacing.value())})"
+                )
 
                 # Recompute alignment only (no full analyze)
                 cfg = self._make_cfg()
@@ -1043,6 +1127,7 @@ class SERStackerDialog(QDialog):
             ap_spacing=int(self.spin_ap_spacing.value()),
             ap_min_mean=float(self.spin_ap_min.value()),
             ap_multiscale=(self.cmb_ap_scale.currentIndex() == 1),
+            ssd_refine_bruteforce=bool(getattr(self, "chk_ssd_bruteforce", None) and self.chk_ssd_bruteforce.isChecked()),
         )
 
 

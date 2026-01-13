@@ -97,6 +97,199 @@ def _clamp_roi_in_bounds(roi: Tuple[int, int, int, int], w: int, h: int) -> Tupl
     rh = max(1, min(h - y, rh))
     return x, y, rw, rh
 
+def _grad_img(m: np.ndarray) -> np.ndarray:
+    """Simple, robust edge image for SSD refine."""
+    m = m.astype(np.float32, copy=False)
+    if cv2 is None:
+        # fallback: finite differences
+        gx = np.zeros_like(m); gx[:, 1:] = m[:, 1:] - m[:, :-1]
+        gy = np.zeros_like(m); gy[1:, :] = m[1:, :] - m[:-1, :]
+        g = np.abs(gx) + np.abs(gy)
+        g -= float(g.mean())
+        s = float(g.std()) + 1e-6
+        return g / s
+
+    gx = cv2.Sobel(m, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(m, cv2.CV_32F, 0, 1, ksize=3)
+    g = cv2.magnitude(gx, gy)
+    g -= float(g.mean())
+    s = float(g.std()) + 1e-6
+    return (g / s).astype(np.float32, copy=False)
+
+def _ssd_confidence(
+    ref_m: np.ndarray,
+    cur_m: np.ndarray,
+    dx: float,
+    dy: float,
+    *,
+    crop: float = 0.80,
+) -> float:
+    """
+    Compute confidence from SSD on gradients, higher=better (0..1).
+    Uses a central crop to avoid border artifacts.
+    """
+    ref_m = ref_m.astype(np.float32, copy=False)
+    cur_m = cur_m.astype(np.float32, copy=False)
+
+    # shift current by the proposed shift
+    cur_s = _shift_image(cur_m, float(dx), float(dy))
+
+    # gradients (illumination-robust)
+    rg = _grad_img(ref_m)
+    cg = _grad_img(cur_s)
+
+    H, W = rg.shape[:2]
+    cfx = max(8, int(W * (1.0 - float(crop)) * 0.5))
+    cfy = max(8, int(H * (1.0 - float(crop)) * 0.5))
+    x0, x1 = cfx, W - cfx
+    y0, y1 = cfy, H - cfy
+
+    rgc = rg[y0:y1, x0:x1]
+    cgc = cg[y0:y1, x0:x1]
+
+    d = rgc - cgc
+    ssd = float(np.mean(d * d))
+
+    # map SSD -> confidence (tunable but robust)
+    # smaller SSD => closer to 1
+    # 0.002 is a decent starting scale for gradient SSD on [0..1] images
+    scale = 0.002
+    conf = float(np.exp(-ssd / max(1e-12, scale)))
+    return float(np.clip(conf, 0.0, 1.0))
+
+
+def _refine_shift_ssd(
+    ref_m: np.ndarray,
+    cur_m: np.ndarray,
+    dx0: float,
+    dy0: float,
+    *,
+    radius: int = 10,
+    crop: float = 0.80,
+    bruteforce: bool = False,
+    max_steps: int | None = None,
+) -> tuple[float, float, float]:
+    """
+    Returns (dx_refine, dy_refine, conf) where conf is higher=better (0..1).
+
+    If bruteforce=True, calls _refine_shift_ssd_bruteforce and returns immediately.
+    Otherwise uses fast 8-neighbor hill-climb on _ssd_confidence.
+    """
+    if bruteforce:
+        return _refine_shift_ssd_bruteforce(ref_m, cur_m, dx0, dy0, radius=int(radius), crop=float(crop))
+
+    r = int(max(0, radius))
+    if max_steps is None:
+        max_steps = max(1, r)  # usually enough
+
+    best_dx = 0
+    best_dy = 0
+    best_score = _ssd_confidence(ref_m, cur_m, dx0, dy0, crop=crop)
+
+    # 8-neighborhood hill climb
+    neigh = ((-1,0),(1,0),(0,-1),(0,1),(-1,-1),(-1,1),(1,-1),(1,1))
+
+    for _ in range(int(max_steps)):
+        improved = False
+        for sx, sy in neigh:
+            cand_dx = best_dx + sx
+            cand_dy = best_dy + sy
+            if abs(cand_dx) > r or abs(cand_dy) > r:
+                continue
+
+            s = _ssd_confidence(ref_m, cur_m, dx0 + cand_dx, dy0 + cand_dy, crop=crop)
+            if s > best_score:
+                best_score = s
+                best_dx = cand_dx
+                best_dy = cand_dy
+                improved = True
+
+        if not improved:
+            break
+
+    return float(best_dx), float(best_dy), float(best_score)
+
+
+def _refine_shift_ssd_bruteforce(
+    ref_m: np.ndarray,
+    cur_m: np.ndarray,
+    dx0: float,
+    dy0: float,
+    *,
+    radius: int = 2,          # search +/- radius pixels
+    crop: float = 0.80,       # central crop fraction to avoid borders
+) -> tuple[float, float, float]:
+    """
+    Returns (dx_refine, dy_refine, conf) where shifting cur by (dx0+dx_refine, dy0+dy_refine)
+    best matches ref in SSD sense (on gradients).
+    """
+    ref_m = ref_m.astype(np.float32, copy=False)
+    cur_m = cur_m.astype(np.float32, copy=False)
+
+    # Apply current estimate first
+    cur0 = _shift_image(cur_m, dx0, dy0)
+
+    # Use gradients (illumination-robust)
+    rg = _grad_img(ref_m)
+    cg = _grad_img(cur0)
+
+    H, W = rg.shape[:2]
+    cfx = max(8, int(W * (1.0 - crop) * 0.5))
+    cfy = max(8, int(H * (1.0 - crop) * 0.5))
+    x0 = cfx; x1 = W - cfx
+    y0 = cfy; y1 = H - cfy
+    rgc = rg[y0:y1, x0:x1]
+    cgc = cg[y0:y1, x0:x1]
+
+    # brute-force integer search in tiny window
+    best = (0, 0)
+    best_ssd = float("inf")
+    ssds = {}  # for subpixel parabola fit
+
+    for j in range(-radius, radius + 1):
+        for i in range(-radius, radius + 1):
+            shifted = _shift_image(cgc, float(i), float(j))
+            d = rgc - shifted
+            ssd = float(np.mean(d * d))
+            ssds[(i, j)] = ssd
+            if ssd < best_ssd:
+                best_ssd = ssd
+                best = (i, j)
+
+    bx, by = best
+
+    # Subpixel quadratic fit (separable) if neighbors exist
+    def _quad_peak(vm, v0, vp):
+        # fit parabola through (-1,vm),(0,v0),(+1,vp) -> vertex offset
+        denom = (vm - 2.0 * v0 + vp)
+        if abs(denom) < 1e-12:
+            return 0.0
+        return 0.5 * (vm - vp) / denom
+
+    dx_sub = 0.0
+    dy_sub = 0.0
+    if (bx - 1, by) in ssds and (bx + 1, by) in ssds:
+        dx_sub = _quad_peak(ssds[(bx - 1, by)], ssds[(bx, by)], ssds[(bx + 1, by)])
+    if (bx, by - 1) in ssds and (bx, by + 1) in ssds:
+        dy_sub = _quad_peak(ssds[(bx, by - 1)], ssds[(bx, by)], ssds[(bx, by + 1)])
+
+    dxr = float(bx + np.clip(dx_sub, -0.75, 0.75))
+    dyr = float(by + np.clip(dy_sub, -0.75, 0.75))
+
+    # crude confidence: convert "how much better than neighbors" into 0..1
+    # (higher = stronger minimum)
+    neigh = []
+    for j in range(-radius, radius + 1):
+        for i in range(-radius, radius + 1):
+            if (i, j) != (bx, by):
+                neigh.append(ssds[(i, j)])
+    neigh_med = float(np.median(np.asarray(neigh, np.float32))) if neigh else best_ssd
+    sharp = max(0.0, neigh_med - best_ssd)
+    conf = float(np.clip(sharp / max(1e-6, neigh_med), 0.0, 1.0))
+
+    return dxr, dyr, conf
+
+
 def _bandpass(m: np.ndarray) -> np.ndarray:
     """Illumination-robust image for tracking (float32)."""
     m = m.astype(np.float32, copy=False)
@@ -157,22 +350,26 @@ def _coarse_surface_ref_locked(
     *,
     n: int,
     roi,
+    roi_used=None,
     debayer: bool,
     to_rgb: bool,
     progress_cb=None,
     progress_every: int = 25,
     # tuning:
-    down: int = 2,                 # 2 is usually better than 4 for the Moon
-    template_size: int = 256,       # template patch on reference (in downsampled pixels!)
-    search_radius: int = 96,        # search radius around predicted pos (downsampled pixels)
+    down: int = 2,
+    template_size: int = 256,
+    search_radius: int = 96,
     bandpass: bool = True,
+    # ✅ NEW: parallel coarse
+    workers: int | None = None,
+    stride: int = 16,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Surface coarse tracking that DOES NOT DRIFT:
-    - Locks to frame0 reference.
-    - Uses predicted shift (from previous frame) + local search window.
-    - NCC match for integer shift + phase-corr for subpixel refine.
-    Returns dx,dy in FULL-RES pixels (ROI coords), and conf in [0,1].
+    - Locks to frame0 reference (in roi=roi_track coords).
+    - Uses NCC + subpixel phaseCorr.
+    - Optional parallelization by chunking time into segments of length=stride.
+      Each segment runs sequentially (keeps pred window), segments run in parallel.
     """
     if cv2 is None:
         dx = np.zeros((n,), np.float32)
@@ -188,115 +385,244 @@ def _coarse_surface_ref_locked(
         if down <= 1:
             return m.astype(np.float32, copy=False)
         H, W = m.shape[:2]
-        return cv2.resize(m, (max(2, W // down), max(2, H // down)), interpolation=cv2.INTER_AREA).astype(np.float32, copy=False)
+        return cv2.resize(
+            m,
+            (max(2, W // down), max(2, H // down)),
+            interpolation=cv2.INTER_AREA,
+        ).astype(np.float32, copy=False)
 
-    src, owns = _ensure_source(source_obj, cache_items=2)
+    def _pick_anchor_center_ds(W: int, H: int) -> tuple[int, int]:
+        cx = W // 2
+        cy = H // 2
+        if roi_used is None or roi is None:
+            return int(cx), int(cy)
+        try:
+            xt, yt, wt, ht = [int(v) for v in roi]
+            xu, yu, wu, hu = [int(v) for v in roi_used]
+            cux = xu + (wu * 0.5)
+            cuy = yu + (hu * 0.5)
+            cx_full = cux - xt
+            cy_full = cuy - yt
+            cx = int(round(cx_full / max(1, int(down))))
+            cy = int(round(cy_full / max(1, int(down))))
+            cx = max(0, min(W - 1, cx))
+            cy = max(0, min(H - 1, cy))
+        except Exception:
+            pass
+        return int(cx), int(cy)
+
+    # ---------------------------
+    # Prep ref/template once
+    # ---------------------------
+    src0, owns0 = _ensure_source(source_obj, cache_items=2)
     try:
-        img0 = src.get_frame(0, roi=roi, debayer=debayer, to_float01=True, force_rgb=bool(to_rgb))
+        img0 = src0.get_frame(0, roi=roi, debayer=debayer, to_float01=True, force_rgb=bool(to_rgb))
         ref0 = _to_mono01(img0).astype(np.float32, copy=False)
         ref0 = _downN(ref0)
-        if bandpass:
-            ref0p = _bandpass(ref0)
-        else:
-            ref0p = ref0 - float(ref0.mean())
+        ref0p = _bandpass(ref0) if bandpass else (ref0 - float(ref0.mean()))
 
         H, W = ref0p.shape[:2]
         ts = int(max(64, min(template_size, min(H, W) - 4)))
         half = ts // 2
 
-        # choose a “good” template center:
-        # default: center of ROI (better: pick highest-variance tile, but keep it simple first)
-        cx0 = W // 2
-        cy0 = H // 2
-
-        # reference template (fixed)
+        cx0, cy0 = _pick_anchor_center_ds(W, H)
         rx0 = max(0, min(W - ts, cx0 - half))
         ry0 = max(0, min(H - ts, cy0 - half))
         ref_t = ref0p[ry0:ry0 + ts, rx0:rx0 + ts].copy()
+    finally:
+        if owns0:
+            try:
+                src0.close()
+            except Exception:
+                pass
 
-        dx[0] = 0.0
-        dy[0] = 0.0
-        cc[0] = 1.0
+    dx[0] = 0.0
+    dy[0] = 0.0
+    cc[0] = 1.0
 
-        if progress_cb:
-            progress_cb(0, n, "Surface: coarse (ref-locked NCC+subpix)…")
+    if progress_cb:
+        progress_cb(0, n, "Surface: coarse (ref-locked NCC+subpix)…")
 
-        # predicted location in current frame (downsampled coords)
-        pred_x = float(rx0)
-        pred_y = float(ry0)
+    # If no workers requested (or too small), fall back to sequential
+    if workers is None:
+        cpu = os.cpu_count() or 4
+        workers = max(1, min(cpu, 48))
+    workers = int(max(1, workers))
+    stride = int(max(4, stride))
 
-        for i in range(1, n):
-            img = src.get_frame(i, roi=roi, debayer=debayer, to_float01=True, force_rgb=bool(to_rgb))
+    # ---------------------------
+    # Core "one frame" matcher
+    # ---------------------------
+    def _match_one(curp: np.ndarray, pred_x: float, pred_y: float, r: int) -> tuple[float, float, float, float, float]:
+        # returns (mx_ds, my_ds, dx_full, dy_full, conf)
+        x0 = int(max(0, min(W - 1, pred_x - r)))
+        y0 = int(max(0, min(H - 1, pred_y - r)))
+        x1 = int(min(W, pred_x + r + ts))
+        y1 = int(min(H, pred_y + r + ts))
+
+        win = curp[y0:y1, x0:x1]
+        if win.shape[0] < ts or win.shape[1] < ts:
+            return float(pred_x), float(pred_y), 0.0, 0.0, 0.0
+
+        res = cv2.matchTemplate(win, ref_t, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, max_loc = cv2.minMaxLoc(res)
+        conf_ncc = float(np.clip(max_val, 0.0, 1.0))
+
+        mx_ds = float(x0 + max_loc[0])
+        my_ds = float(y0 + max_loc[1])
+
+        # subpix refine on the matched patch
+        mx_i = int(round(mx_ds))
+        my_i = int(round(my_ds))
+        cur_t = curp[my_i:my_i + ts, mx_i:mx_i + ts]
+        if cur_t.shape == ref_t.shape:
+            (sdx, sdy), resp = cv2.phaseCorrelate(ref_t.astype(np.float32), cur_t.astype(np.float32))
+            sub_dx = float(sdx)
+            sub_dy = float(sdy)
+            conf_pc = float(np.clip(resp, 0.0, 1.0))
+        else:
+            sub_dx = 0.0
+            sub_dy = 0.0
+            conf_pc = 0.0
+
+        dx_ds = float(rx0 - mx_ds) + sub_dx
+        dy_ds = float(ry0 - my_ds) + sub_dy
+        dx_full = float(dx_ds * down)
+        dy_full = float(dy_ds * down)
+
+        conf = float(np.clip(0.65 * conf_ncc + 0.35 * conf_pc, 0.0, 1.0))
+        return float(mx_ds), float(my_ds), dx_full, dy_full, conf
+
+    # ---------------------------
+    # Keyframe boundary pass (sequential)
+    # ---------------------------
+    boundaries = list(range(0, n, stride))
+    start_pred = {}  # b -> (pred_x, pred_y)
+    start_pred[0] = (float(rx0), float(ry0))
+
+    # We use a slightly larger radius for boundary frames to be extra safe
+    r_key = int(max(16, int(search_radius) * 2))
+
+    srck, ownsk = _ensure_source(source_obj, cache_items=2)
+    try:
+        pred_x, pred_y = float(rx0), float(ry0)
+        for b in boundaries[1:]:
+            img = srck.get_frame(b, roi=roi, debayer=debayer, to_float01=True, force_rgb=bool(to_rgb))
             cur = _to_mono01(img).astype(np.float32, copy=False)
             cur = _downN(cur)
             curp = _bandpass(cur) if bandpass else (cur - float(cur.mean()))
 
-            # search window around predicted top-left
-            r = int(max(16, search_radius))
-            x0 = int(max(0, min(W - 1, pred_x - r)))
-            y0 = int(max(0, min(H - 1, pred_y - r)))
-            x1 = int(min(W, pred_x + r + ts))
-            y1 = int(min(H, pred_y + r + ts))
+            mx_ds, my_ds, dx_b, dy_b, conf_b = _match_one(curp, pred_x, pred_y, r_key)
 
-            win = curp[y0:y1, x0:x1]
-            if win.shape[0] < ts or win.shape[1] < ts:
-                # fallback: keep previous shift
-                dx[i] = dx[i - 1]
-                dy[i] = dy[i - 1]
-                cc[i] = 0.0
-                continue
+            # store boundary predictor (template top-left in this frame)
+            start_pred[b] = (mx_ds, my_ds)
 
-            # NCC match for integer (downsampled) location
-            res = cv2.matchTemplate(win, ref_t, cv2.TM_CCOEFF_NORMED)
-            _, max_val, _, max_loc = cv2.minMaxLoc(res)
-            conf_ncc = float(np.clip(max_val, 0.0, 1.0))
+            # update for next boundary
+            pred_x, pred_y = mx_ds, my_ds
 
-            mx_ds = x0 + max_loc[0]
-            my_ds = y0 + max_loc[1]
-
-            # subpixel refine using phase correlation on the matched patches
-            cur_t = curp[my_ds:my_ds + ts, mx_ds:mx_ds + ts]
-            if cur_t.shape == ref_t.shape:
-                (sdx, sdy), resp = cv2.phaseCorrelate(ref_t.astype(np.float32), cur_t.astype(np.float32))
-                # dx/dy that shift CUR to REF: dx = (ref_pos - cur_pos) + subpix
-                sub_dx = float(sdx)
-                sub_dy = float(sdy)
-                conf_pc = float(np.clip(resp, 0.0, 1.0))
-            else:
-                sub_dx = 0.0
-                sub_dy = 0.0
-                conf_pc = 0.0
-
-            dx_ds = float(rx0 - mx_ds) + sub_dx
-            dy_ds = float(ry0 - my_ds) + sub_dy
-
-            dx[i] = float(dx_ds * down)
-            dy[i] = float(dy_ds * down)
-
-            # update prediction for next frame
-            pred_x = float(mx_ds)
-            pred_y = float(my_ds)
-
-            cc[i] = float(np.clip(0.65 * conf_ncc + 0.35 * conf_pc, 0.0, 1.0))
-
-            # reliability fallback: if confidence is awful, freeze motion
-            if cc[i] < 0.15:
-                dx[i] = dx[i - 1]
-                dy[i] = dy[i - 1]
-
-            if progress_cb and (i % int(max(1, progress_every)) == 0 or i == n - 1):
-                progress_cb(i, n, "Surface: coarse (ref-locked NCC+subpix)…")
-
+            # also fill boundary output immediately (optional but nice)
+            dx[b] = dx_b
+            dy[b] = dy_b
+            cc[b] = conf_b
+            if conf_b < 0.15 and b > 0:
+                dx[b] = dx[b - 1]
+                dy[b] = dy[b - 1]
     finally:
-        if owns:
+        if ownsk:
             try:
-                src.close()
+                srck.close()
             except Exception:
                 pass
 
+    # ---------------------------
+    # Parallel per-chunk scan (each chunk sequential)
+    # ---------------------------
+    r = int(max(16, search_radius))
+
+    def _run_chunk(b: int, e: int) -> int:
+        src, owns = _ensure_source(source_obj, cache_items=0)
+        try:
+            pred_x, pred_y = start_pred.get(b, (float(rx0), float(ry0)))
+            # if boundary already computed above, keep it; start after b
+            i0 = b
+            if i0 == 0:
+                i0 = 1  # frame0 is fixed
+            for i in range(i0, e):
+                # if this is exactly a boundary we already filled, use its pred and continue
+                if i in start_pred and i != b:
+                    pred_x, pred_y = start_pred[i]
+                    continue
+
+                img = src.get_frame(i, roi=roi, debayer=debayer, to_float01=True, force_rgb=bool(to_rgb))
+                cur = _to_mono01(img).astype(np.float32, copy=False)
+                cur = _downN(cur)
+                curp = _bandpass(cur) if bandpass else (cur - float(cur.mean()))
+
+                mx_ds, my_ds, dx_i, dy_i, conf_i = _match_one(curp, pred_x, pred_y, r)
+
+                dx[i] = dx_i
+                dy[i] = dy_i
+                cc[i] = conf_i
+
+                pred_x, pred_y = mx_ds, my_ds
+
+                if conf_i < 0.15 and i > 0:
+                    dx[i] = dx[i - 1]
+                    dy[i] = dy[i - 1]
+            return (e - b)
+        finally:
+            if owns:
+                try:
+                    src.close()
+                except Exception:
+                    pass
+
+    if workers <= 1 or n <= stride * 2:
+        # small job: just do sequential scan exactly like before
+        src, owns = _ensure_source(source_obj, cache_items=2)
+        try:
+            pred_x, pred_y = float(rx0), float(ry0)
+            for i in range(1, n):
+                img = src.get_frame(i, roi=roi, debayer=debayer, to_float01=True, force_rgb=bool(to_rgb))
+                cur = _to_mono01(img).astype(np.float32, copy=False)
+                cur = _downN(cur)
+                curp = _bandpass(cur) if bandpass else (cur - float(cur.mean()))
+
+                mx_ds, my_ds, dx_i, dy_i, conf_i = _match_one(curp, pred_x, pred_y, r)
+                dx[i] = dx_i
+                dy[i] = dy_i
+                cc[i] = conf_i
+                pred_x, pred_y = mx_ds, my_ds
+
+                if conf_i < 0.15:
+                    dx[i] = dx[i - 1]
+                    dy[i] = dy[i - 1]
+
+                if progress_cb and (i % int(max(1, progress_every)) == 0 or i == n - 1):
+                    progress_cb(i, n, "Surface: coarse (ref-locked NCC+subpix)…")
+        finally:
+            if owns:
+                try:
+                    src.close()
+                except Exception:
+                    pass
+        return dx, dy, cc
+
+    # Parallel chunks
+    done = 0
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futs = []
+        for b in boundaries:
+            e = min(n, b + stride)
+            futs.append(ex.submit(_run_chunk, b, e))
+
+        for fut in as_completed(futs):
+            done += int(fut.result())
+            if progress_cb:
+                # best-effort: done is "frames processed" not exact index
+                progress_cb(min(done, n - 1), n, "Surface: coarse (ref-locked NCC+subpix)…")
+
     return dx, dy, cc
-
-
 
 
 def _shift_image(img01: np.ndarray, dx: float, dy: float) -> np.ndarray:
@@ -404,7 +730,7 @@ def stack_ser(
     # ---- Worker count ----
     if workers is None:
         cpu = os.cpu_count() or 4
-        workers = max(1, min(cpu, 24))
+        workers = max(1, min(cpu, 48))
 
     if cv2 is not None:
         try:
@@ -655,7 +981,7 @@ def analyze_ser(
     # ---- Worker count ----
     if workers is None:
         cpu = os.cpu_count() or 4
-        workers = max(1, min(cpu, 24))
+        workers = max(1, min(cpu, 48))
 
     if cv2 is not None:
         try:
@@ -683,7 +1009,8 @@ def analyze_ser(
     # -------------------------------------------------------------------------
     quality = np.zeros((n,), dtype=np.float32)
     idxs = np.arange(n, dtype=np.int32)
-    n_chunks = max(1, min(int(n), int(workers) * 2))
+    n_chunks = max(5, int(workers) * int(getattr(cfg, "progress_chunk_factor", 5)))
+    n_chunks = max(1, min(int(n), n_chunks))
     chunks = np.array_split(idxs, n_chunks)
 
     if progress_cb:
@@ -822,6 +1149,7 @@ def analyze_ser(
             source_obj,
             n=n,
             roi=roi_track,
+            roi_used=roi_used,   # ✅ NEW
             debayer=debayer,
             to_rgb=to_rgb,
             progress_cb=progress_cb,
@@ -830,6 +1158,8 @@ def analyze_ser(
             template_size=256,
             search_radius=96,
             bandpass=True,
+            workers=min(workers, 8),   # coarse doesn’t need 48; 4–8 is usually ideal
+            stride=16,                 # 8–32 typical            
         )
         dx[:] = dx_chain
         dy[:] = dy_chain
@@ -837,11 +1167,17 @@ def analyze_ser(
 
     # ---- chunked refine ----
     idxs2 = np.arange(n, dtype=np.int32)
-    n_chunks2 = max(1, min(int(n), int(workers) * 2))
+
+    # More/smaller chunks => progress updates sooner (futures complete more frequently)
+    chunk_factor = int(getattr(cfg, "progress_chunk_factor", 5))  # optional knob
+    min_chunks = 5
+    n_chunks2 = max(min_chunks, int(workers) * chunk_factor)
+    n_chunks2 = max(1, min(int(n), n_chunks2))
+
     chunks2 = np.array_split(idxs2, n_chunks2)
 
     if progress_cb:
-        progress_cb(0, n, "Align")
+        progress_cb(0, n, "SSD Refine")
 
     if cfg.track_mode == "surface":
         # FAST surface refine:
@@ -921,11 +1257,24 @@ def analyze_ser(
                             dx_res, dy_res, cf_ap = 0.0, 0.0, 0.25
 
                     # Final = coarse + residual (residual is relative to coarse-shifted frame)
+                    # Final = coarse + residual (residual is relative to coarse-shifted frame)
                     dx_i = float(coarse_dx + dx_res)
                     dy_i = float(coarse_dy + dy_res)
 
+                    # Final lock-in refinement: minimize (ref-cur)^2 on gradients in a tiny window
+                    # NOTE: pass *unshifted* cur_m with the current dx_i/dy_i estimate
+                    dxr, dyr, c_ssd = _refine_shift_ssd(
+                        ref_m_full, cur_m, dx_i, dy_i,
+                        radius=5, crop=0.80,
+                        bruteforce=bool(getattr(cfg, "ssd_refine_bruteforce", False)),
+                    )
+                    dx_i += float(dxr)
+                    dy_i += float(dyr)
+
+                    # Confidence: combine coarse + AP, then optionally nudge with SSD
                     cc = float(coarse_conf[int(i)]) if coarse_conf is not None else 0.5
                     cf_i = float(np.clip(0.60 * cc + 0.40 * float(cf_ap), 0.0, 1.0))
+                    cf_i = float(np.clip(0.85 * cf_i + 0.15 * float(c_ssd), 0.05, 1.0))
 
                     out_i.append(int(i))
                     out_dx.append(dx_i)
@@ -962,6 +1311,7 @@ def analyze_ser(
             ref_cy = float(mref.shape[0] * 0.5)
 
         ref_center = (float(ref_cx), float(ref_cy))
+        ref_m_full = _to_mono01(ref_img).astype(np.float32, copy=False)
 
         def _shift_chunk(chunk: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
             out_i: list[int] = []
@@ -982,6 +1332,17 @@ def analyze_ser(
 
                     dx_i, dy_i, cf_i = tracker.shift_to_ref(img, ref_center)
 
+                    if float(cf_i) >= 0.25:
+                        cur_m = _to_mono01(img).astype(np.float32, copy=False)
+                        dxr, dyr, c_ssd = _refine_shift_ssd(
+                            ref_m_full, cur_m, dx_i, dy_i,
+                            radius=5, crop=0.80,
+                            bruteforce=bool(getattr(cfg, "ssd_refine_bruteforce", False)),
+                        )
+
+                        dx_i = float(dx_i) + dxr
+                        dy_i = float(dy_i) + dyr
+                        cf_i = float(np.clip(0.85 * float(cf_i) + 0.15 * c_ssd, 0.05, 1.0))
                     out_i.append(int(i))
                     out_dx.append(float(dx_i))
                     out_dy.append(float(dy_i))
@@ -1012,7 +1373,7 @@ def analyze_ser(
 
             done_ct += int(ii.size)
             if progress_cb:
-                progress_cb(done_ct, n, "Align")
+                progress_cb(done_ct, n, "SSD Refine")
 
     if cfg.track_mode == "surface":
         _print_surface_debug(dx=dx, dy=dy, conf=conf, coarse_conf=coarse_conf, floor=0.05, prefix="[SER][Surface]")
@@ -1088,7 +1449,7 @@ def realign_ser(
 
     if workers is None:
         cpu = os.cpu_count() or 4
-        workers = max(1, min(cpu, 24))
+        workers = max(1, min(cpu, 48))
 
     if cv2 is not None:
         try:
@@ -1122,9 +1483,16 @@ def realign_ser(
 
     roi_track = _surface_tracking_roi() if cfg.track_mode == "surface" else roi_used
 
-    idxs = np.arange(n, dtype=np.int32)
-    n_chunks2 = max(1, min(int(n), int(workers) * 2))
-    chunks2 = np.array_split(idxs, n_chunks2)
+    # ---- chunked refine ----
+    idxs2 = np.arange(n, dtype=np.int32)
+
+    # More/smaller chunks => progress updates sooner (futures complete more frequently)
+    chunk_factor = int(getattr(cfg, "progress_chunk_factor", 5))  # optional knob
+    min_chunks = 5
+    n_chunks2 = max(min_chunks, int(workers) * chunk_factor)
+    n_chunks2 = max(1, min(int(n), n_chunks2))
+
+    chunks2 = np.array_split(idxs2, n_chunks2)
 
     dx = np.zeros((n,), dtype=np.float32)
     dy = np.zeros((n,), dtype=np.float32)
@@ -1145,6 +1513,7 @@ def realign_ser(
             source_obj,
             n=n,
             roi=roi_track,
+            roi_used=roi_used,   # ✅ NEW
             debayer=debayer,
             to_rgb=to_rgb,
             progress_cb=progress_cb,
@@ -1153,13 +1522,16 @@ def realign_ser(
             template_size=256,
             search_radius=96,
             bandpass=True,
+            workers=min(workers, 8),   # coarse doesn’t need 48; 4–8 is usually ideal
+            stride=16,                 # 8–32 typical            
         )
+
         dx[:] = dx_chain
         dy[:] = dy_chain
         coarse_conf[:] = cc_chain
 
     if progress_cb:
-        progress_cb(0, n, "Align")
+        progress_cb(0, n, "SSD Refine")
 
     if cfg.track_mode == "surface":
         def _shift_chunk(chunk: np.ndarray):
@@ -1236,10 +1608,21 @@ def realign_ser(
                         else:
                             dx_res, dy_res, cf_ap = 0.0, 0.0, 0.25
 
+                    # Final = coarse + residual (residual is relative to coarse-shifted frame)
                     dx_i = float(coarse_dx + dx_res)
                     dy_i = float(coarse_dy + dy_res)
 
-                    cf_i = float(np.clip(0.60 * float(cc) + 0.40 * float(cf_ap), 0.0, 1.0))
+                    # Final lock-in refinement: minimize (ref-cur)^2 on gradients in a tiny window
+                    # NOTE: pass *unshifted* cur_m with the current dx_i/dy_i estimate
+                    dxr, dyr, c_ssd = _refine_shift_ssd(ref_m, cur_m, dx_i, dy_i, radius=5, crop=0.80, bruteforce=bool(getattr(cfg, "ssd_refine_bruteforce", False)))
+                    dx_i += float(dxr)
+                    dy_i += float(dyr)
+
+                    # Confidence: combine coarse + AP, then optionally nudge with SSD
+                    cc = float(coarse_conf[int(i)]) if coarse_conf is not None else 0.5
+                    cf_i = float(np.clip(0.60 * cc + 0.40 * float(cf_ap), 0.0, 1.0))
+                    cf_i = float(np.clip(0.85 * cf_i + 0.15 * float(c_ssd), 0.05, 1.0))
+
 
                     out_i.append(int(i))
                     out_dx.append(dx_i)
@@ -1276,6 +1659,7 @@ def realign_ser(
             ref_cy = float(mref.shape[0] * 0.5)
 
         ref_center = (float(ref_cx), float(ref_cy))
+        ref_m_full = _to_mono01(ref_img).astype(np.float32, copy=False)
 
         def _shift_chunk(chunk: np.ndarray):
             out_i: list[int] = []
@@ -1295,11 +1679,18 @@ def realign_ser(
                     )
 
                     dx_i, dy_i, cf_i = tracker.shift_to_ref(img, ref_center)
-
+                    
+                    if float(cf_i) >= 0.25:
+                        cur_m = _to_mono01(img).astype(np.float32, copy=False)
+                        dxr, dyr, c_ssd = _refine_shift_ssd(ref_m_full, cur_m, float(dx_i), float(dy_i), radius=2, crop=0.80, bruteforce=bool(getattr(cfg, "ssd_refine_bruteforce", False)))
+                        dx_i = float(dx_i) + dxr
+                        dy_i = float(dy_i) + dyr
+                        cf_i = float(np.clip(0.85 * float(cf_i) + 0.15 * c_ssd, 0.05, 1.0))
                     out_i.append(int(i))
                     out_dx.append(float(dx_i))
                     out_dy.append(float(dy_i))
                     out_cf.append(float(cf_i))
+
             finally:
                 if owns:
                     try:
@@ -1332,7 +1723,7 @@ def realign_ser(
 
             done_ct += int(ii.size)
             if progress_cb:
-                progress_cb(done_ct, n, "Align")
+                progress_cb(done_ct, n, "SSD Refine")
 
     analysis.dx = dx
     analysis.dy = dy

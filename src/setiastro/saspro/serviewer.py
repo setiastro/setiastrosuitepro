@@ -396,12 +396,11 @@ class SERViewer(QDialog):
         from PyQt6.QtCore import QRect
         return QRect(left, top, right - left, bottom - top)
 
-
-    def _viewport_rect_to_image_roi(self, r_vp):
+    def _viewport_rect_to_display_image(self, r_vp):
         """
-        Convert a viewport-rect (in viewport coords) into an ROI in IMAGE coords:
-        returns (x,y,w,h) in original frame pixel space.
-        Works in both fit mode and manual zoom mode, with centered label.
+        Convert a viewport QRect (rubberband geometry) into coords in the CURRENT DISPLAYED IMAGE.
+        That image is exactly self._last_qimg (ROI-sized if ROI is enabled).
+        Returns (x,y,w,h) in _last_qimg pixel space.
         """
         if self._last_qimg is None:
             return None
@@ -409,35 +408,34 @@ class SERViewer(QDialog):
         if pm is None or pm.isNull():
             return None
 
-        # Label rect inside viewport (centered)
-        vp = self.scroll.viewport()
-        vp_w, vp_h = vp.width(), vp.height()
+        # preview widget top-left inside viewport coords
+        wp = self.preview.pos()
+        lbl_left = int(wp.x())
+        lbl_top  = int(wp.y())
 
-        lbl_w, lbl_h = self.preview.width(), self.preview.height()
-        # Where the label sits inside the viewport (centered)
-        lbl_left = (vp_w - lbl_w) // 2
-        lbl_top  = (vp_h - lbl_h) // 2
+        lbl_w = int(self.preview.width())
+        lbl_h = int(self.preview.height())
+        if lbl_w < 2 or lbl_h < 2:
+            return None
 
-        # ROI corners in label coords
-        x1 = r_vp.left() - lbl_left
-        y1 = r_vp.top() - lbl_top
-        x2 = r_vp.right() - lbl_left
-        y2 = r_vp.bottom() - lbl_top
+        # rect corners in preview-widget coords
+        x1 = int(r_vp.left()   - lbl_left)
+        y1 = int(r_vp.top()    - lbl_top)
+        x2 = int(r_vp.right()  - lbl_left)
+        y2 = int(r_vp.bottom() - lbl_top)
 
-        # Clamp to label bounds
+        # clamp to widget bounds
         x1 = max(0, min(lbl_w - 1, x1))
         y1 = max(0, min(lbl_h - 1, y1))
         x2 = max(0, min(lbl_w - 1, x2))
         y2 = max(0, min(lbl_h - 1, y2))
-
         if x2 <= x1 or y2 <= y1:
             return None
 
-        # Map label coords -> original image coords
+        # map widget coords -> displayed image coords (_last_qimg space)
         ow = max(1, self._last_qimg.width())
         oh = max(1, self._last_qimg.height())
 
-        # label displays scaled pixmap; label size == pixmap size in both modes
         scale_x = ow / float(lbl_w)
         scale_y = oh / float(lbl_h)
 
@@ -446,7 +444,65 @@ class SERViewer(QDialog):
         iw = int(round((x2 - x1) * scale_x))
         ih = int(round((y2 - y1) * scale_y))
 
-        # clamp to image bounds, enforce >=1
+        # clamp to image bounds
+        ix = max(0, min(ow - 1, ix))
+        iy = max(0, min(oh - 1, iy))
+        iw = max(1, min(ow - ix, iw))
+        ih = max(1, min(oh - iy, ih))
+
+        return (ix, iy, iw, ih)
+
+
+    def _viewport_rect_to_image_roi(self, r_vp):
+        """
+        Convert a viewport-rect (viewport coords) into an ROI in IMAGE coords:
+        returns (x,y,w,h) in original frame pixel space.
+        Works in both fit mode and manual zoom mode, with scrollbars and centering.
+        """
+        if self._last_qimg is None:
+            return None
+        pm = self.preview.pixmap()
+        if pm is None or pm.isNull():
+            return None
+
+        # Where the preview widget actually is inside the viewport (accounts for scroll + centering)
+        wp = self.preview.pos()  # QPoint in viewport coords
+        lbl_left = int(wp.x())
+        lbl_top  = int(wp.y())
+
+        lbl_w = int(self.preview.width())
+        lbl_h = int(self.preview.height())
+        if lbl_w < 2 or lbl_h < 2:
+            return None
+
+        # ROI corners in widget coords
+        x1 = int(r_vp.left()   - lbl_left)
+        y1 = int(r_vp.top()    - lbl_top)
+        x2 = int(r_vp.right()  - lbl_left)
+        y2 = int(r_vp.bottom() - lbl_top)
+
+        # Clamp to widget bounds
+        x1 = max(0, min(lbl_w - 1, x1))
+        y1 = max(0, min(lbl_h - 1, y1))
+        x2 = max(0, min(lbl_w - 1, x2))
+        y2 = max(0, min(lbl_h - 1, y2))
+
+        if x2 <= x1 or y2 <= y1:
+            return None
+
+        # Map widget coords -> original image coords
+        ow = max(1, self._last_qimg.width())
+        oh = max(1, self._last_qimg.height())
+
+        scale_x = ow / float(lbl_w)
+        scale_y = oh / float(lbl_h)
+
+        ix = int(round(x1 * scale_x))
+        iy = int(round(y1 * scale_y))
+        iw = int(round((x2 - x1) * scale_x))
+        ih = int(round((y2 - y1) * scale_y))
+
+        # clamp to image bounds
         ix = max(0, min(ow - 1, ix))
         iy = max(0, min(oh - 1, iy))
         iw = max(1, min(ow - ix, iw))
@@ -581,25 +637,37 @@ class SERViewer(QDialog):
                             self._roi_start = None
 
                             if r_vp is not None and r_vp.width() >= 4 and r_vp.height() >= 4:
-                                rect_full = self._viewport_rect_to_image_roi(r_vp)  # FULL coords
-                                if rect_full is not None:
+                                rect_disp = self._viewport_rect_to_display_image(r_vp)  # coords in _last_qimg space (ROI-sized if ROI enabled)
+                                if rect_disp is not None:
                                     if self._drag_mode == "roi":
-                                        x, y, w, h = rect_full
-                                        self.chk_roi.setChecked(True)
-                                        self.spin_x.setValue(x)
-                                        self.spin_y.setValue(y)
-                                        self.spin_w.setValue(w)
-                                        self.spin_h.setValue(h)
+                                        # If ROI is already enabled, the displayed image is ROI-space.
+                                        # The user is drawing a NEW ROI inside that ROI -> convert to full-frame.
+                                        if self.chk_roi.isChecked():
+                                            rx, ry, rw, rh = self._roi_bounds()
+                                            x, y, w, h = rect_disp
+                                            x_full = int(rx + x)
+                                            y_full = int(ry + y)
+                                            self.spin_x.setValue(x_full)
+                                            self.spin_y.setValue(y_full)
+                                            self.spin_w.setValue(int(w))
+                                            self.spin_h.setValue(int(h))
+                                        else:
+                                            x, y, w, h = rect_disp
+                                            self.spin_x.setValue(int(x))
+                                            self.spin_y.setValue(int(y))
+                                            self.spin_w.setValue(int(w))
+                                            self.spin_h.setValue(int(h))
 
+                                        self.chk_roi.setChecked(True)
                                         self._refresh()
 
                                     elif self._drag_mode == "anchor":
-                                        anchor = self._full_to_roi_space(rect_full)
-                                        if anchor is not None:
-                                            self._surface_anchor = anchor
-                                            self._update_anchor_label()
-                                            self._render_last()
-
+                                        # Anchor is ALWAYS stored in ROI-space.
+                                        # When ROI is enabled, displayed image == ROI-space, so rect_disp is already correct.
+                                        # When ROI is disabled, ROI-space == full-frame, so rect_disp is still correct.
+                                        self._surface_anchor = tuple(int(v) for v in rect_disp)
+                                        self._update_anchor_label()
+                                        self._render_last()
 
                             self._drag_mode = None
                             event.accept()

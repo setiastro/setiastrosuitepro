@@ -455,7 +455,7 @@ class MultiscaleDecompDialog(QDialog):
 
         # --- Spin boxes ---
         self.spin_gain = QDoubleSpinBox()
-        self.spin_gain.setRange(0.0, 3.0)
+        self.spin_gain.setRange(0.0, 10.0)
         self.spin_gain.setSingleStep(0.05)
         self.spin_gain.setValue(1.0)
         self.spin_gain.setToolTip(
@@ -491,7 +491,7 @@ class MultiscaleDecompDialog(QDialog):
 
         # --- Sliders (int ranges, mapped to spins) ---
         self.slider_gain = QSlider(Qt.Orientation.Horizontal)
-        self.slider_gain.setRange(0, 300)         # 0..3.00
+        self.slider_gain.setRange(0, 1000)         # 0..10.00
         self.slider_gain.setToolTip(self.spin_gain.toolTip())
 
         self.slider_thr = QSlider(Qt.Orientation.Horizontal)

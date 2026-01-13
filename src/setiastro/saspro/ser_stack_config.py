@@ -20,10 +20,12 @@ class SERStackConfig:
     ap_spacing: int = 48
     ap_min_mean: float = 0.03
     ap_multiscale: bool = False
+    ssd_refine_bruteforce: bool = False
 
     def __init__(self, source: PlanetarySource, **kwargs):
         # Allow deprecated/ignored kwargs without crashing
         kwargs.pop("multipoint", None)  # accept but ignore
+
         # Now assign known fields
         self.source = source
         self.roi = kwargs.pop("roi", None)
@@ -34,5 +36,10 @@ class SERStackConfig:
         self.ap_spacing = int(kwargs.pop("ap_spacing", 48))
         self.ap_min_mean = float(kwargs.pop("ap_min_mean", 0.03))
         self.ap_multiscale = bool(kwargs.pop("ap_multiscale", False))
+
+        # ✅ NEW: SSD refine mode
+        self.ssd_refine_bruteforce = bool(kwargs.pop("ssd_refine_bruteforce", False))
+
         if kwargs:
             raise TypeError(f"Unexpected config keys: {sorted(kwargs.keys())}")
+
