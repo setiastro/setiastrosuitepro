@@ -861,6 +861,11 @@ def stack_ser(
     cache_items: int = 10,
     workers: int | None = None,
     chunk_size: int | None = None,
+    # ✅ NEW drizzle knobs
+    drizzle_scale: float = 1.0,
+    drizzle_pixfrac: float = 0.80,
+    drizzle_kernel: str = "gaussian",
+    drizzle_sigma: float = 0.0,
 ) -> tuple[np.ndarray, dict]:
     source_obj = source
 
@@ -874,6 +879,14 @@ def stack_ser(
             cv2.setNumThreads(1)
         except Exception:
             pass
+
+    drizzle_scale = float(drizzle_scale)
+    drizzle_on = drizzle_scale > 1.0001
+    drizzle_pixfrac = float(drizzle_pixfrac)
+    drizzle_kernel = str(drizzle_kernel).strip().lower()
+    if drizzle_kernel not in ("square", "circle", "gaussian"):
+        drizzle_kernel = "gaussian"
+    drizzle_sigma = float(drizzle_sigma)
 
     # ---- Open once to get meta + first frame shape ----
     src0, owns0 = _ensure_source(source_obj, cache_items=cache_items)
@@ -892,12 +905,11 @@ def stack_ser(
         ref_img = analysis.ref_image.astype(np.float32, copy=False)
         ref_m = _to_mono01(ref_img).astype(np.float32, copy=False)
         ap_centers_all = np.asarray(analysis.ap_centers, np.int32)
-
         ap_size = int(getattr(analysis, "ap_size", 64) or 64)
 
         # frame shape for accumulator
         first = src0.get_frame(int(keep_idx[0]), roi=roi, debayer=debayer, to_float01=True, force_rgb=False)
-        acc_shape = first.shape
+        acc_shape = first.shape  # (H,W) or (H,W,3)
     finally:
         if owns0:
             try:
@@ -928,30 +940,64 @@ def stack_ser(
     if progress_cb:
         progress_cb(0, total_ct, "Stack")
 
-    # ---- Worker: accumulate its own sum ----
-    def _stack_chunk(chunk: list[int]) -> tuple[np.ndarray, float]:
+    # ---- drizzle helpers ----
+    if drizzle_on:
+        from setiastro.saspro.legacy.numba_utils import (
+            drizzle_deposit_numba_kernel_mono,
+            drizzle_deposit_color_kernel,
+            finalize_drizzle_2d,
+            finalize_drizzle_3d,
+        )
+
+        # map kernel string -> code used by your numba
+        kernel_code = {"square": 0, "circle": 1, "gaussian": 2}[drizzle_kernel]
+
+        # If gaussian sigma isn't provided, use something tied to pixfrac.
+        # Your numba interprets gaussian sigma as "sigma_out", and also enforces >= drop_shrink*0.5.
+        if drizzle_sigma <= 1e-9:
+            # a good practical default: sigma ~ pixfrac*0.5
+            drizzle_sigma_eff = max(1e-3, float(drizzle_pixfrac) * 0.5)
+        else:
+            drizzle_sigma_eff = drizzle_sigma
+
+        H, W = int(acc_shape[0]), int(acc_shape[1])
+        outH = int(round(H * drizzle_scale))
+        outW = int(round(W * drizzle_scale))
+
+        # Identity transform from input pixels -> aligned/reference pixel coords
+        # drizzle_factor applies the scale.
+        T = np.zeros((2, 3), dtype=np.float32)
+        T[0, 0] = 1.0
+        T[1, 1] = 1.0
+
+    # ---- Worker: accumulate its own sum OR its own drizzle buffers ----
+    def _stack_chunk(chunk: list[int]):
         src, owns = _ensure_source(source_obj, cache_items=0)
         try:
-            acc = np.zeros(acc_shape, dtype=np.float32)
-            wacc = 0.0
+            if drizzle_on:
+                if len(acc_shape) == 2:
+                    dbuf = np.zeros((outH, outW), dtype=np.float32)
+                    cbuf = np.zeros((outH, outW), dtype=np.float32)
+                else:
+                    dbuf = np.zeros((outH, outW, acc_shape[2]), dtype=np.float32)
+                    cbuf = np.zeros((outH, outW, acc_shape[2]), dtype=np.float32)
+            else:
+                acc = np.zeros(acc_shape, dtype=np.float32)
+                wacc = 0.0
 
             for i in chunk:
                 img = src.get_frame(int(i), roi=roi, debayer=debayer, to_float01=True, force_rgb=False).astype(np.float32, copy=False)
-                cur_m = _to_mono01(img).astype(np.float32, copy=False)
 
                 # Global prior (from Analyze)
                 gdx = float(analysis.dx[int(i)]) if (analysis.dx is not None) else 0.0
                 gdy = float(analysis.dy[int(i)]) if (analysis.dy is not None) else 0.0
 
-                # Global prior (from Analyze) is ALWAYS applied first
+                # Global prior always first
                 warped_g = _shift_image(img, gdx, gdy)
 
-                # If no OpenCV or local_warp disabled -> just global shift
                 if cv2 is None or (not local_warp):
                     warped = warped_g
                 else:
-                    # FAST path: NO SEARCH.
-                    # Compute per-AP *residual* shifts using phase correlation on the globally-shifted frame.
                     cur_m_g = _to_mono01(warped_g).astype(np.float32, copy=False)
 
                     ap_rdx, ap_rdy, ap_resp = _ap_phase_shifts_per_ap(
@@ -960,11 +1006,8 @@ def stack_ser(
                         ap_size=ap_size,
                         max_dim=max_dim,
                     )
-
-                    # Use phase response as confidence
                     ap_cf = np.clip(ap_resp.astype(np.float32, copy=False), 0.0, 1.0)
 
-                    # Reject outliers BEFORE dense field fit
                     keep = _reject_ap_outliers(ap_rdx, ap_rdy, ap_cf, z=3.5)
                     if np.any(keep):
                         ap_centers = ap_centers_all[keep]
@@ -972,25 +1015,47 @@ def stack_ser(
                         ap_dy_k = ap_rdy[keep]
                         ap_cf_k = ap_cf[keep]
 
-                        # Dense residual field (residuals are relative to warped_g)
                         dx_field, dy_field = _dense_field_from_ap_shifts(
                             warped_g.shape[0], warped_g.shape[1],
                             ap_centers, ap_dx_k, ap_dy_k, ap_cf_k,
                             grid=32, power=2.0, conf_floor=0.15,
                             radius=float(ap_size) * 3.0,
                         )
-                        # Warp the globally aligned frame by residual field
                         warped = _warp_by_dense_field(warped_g, dx_field, dy_field)
                     else:
-                        # fallback: no good APs, just global shift
                         warped = warped_g
 
-
-                acc += warped
-                wacc += 1.0
+                if drizzle_on:
+                    # deposit aligned frame into drizzle buffers
+                    fw = 1.0  # frame_weight (could later use quality weights)
+                    if warped.ndim == 2:
+                        drizzle_deposit_numba_kernel_mono(
+                            warped, T, dbuf, cbuf,
+                            drizzle_factor=drizzle_scale,
+                            drop_shrink=drizzle_pixfrac,
+                            frame_weight=fw,
+                            kernel_code=kernel_code,
+                            gaussian_sigma_or_radius=drizzle_sigma_eff,
+                        )
+                    else:
+                        drizzle_deposit_color_kernel(
+                            warped, T, dbuf, cbuf,
+                            drizzle_factor=drizzle_scale,
+                            drop_shrink=drizzle_pixfrac,
+                            frame_weight=fw,
+                            kernel_code=kernel_code,
+                            gaussian_sigma_or_radius=drizzle_sigma_eff,
+                        )
+                else:
+                    acc += warped
+                    wacc += 1.0
 
             _bump_progress(len(chunk), "Stack")
+
+            if drizzle_on:
+                return dbuf, cbuf
             return acc, wacc
+
         finally:
             if owns:
                 try:
@@ -999,17 +1064,44 @@ def stack_ser(
                     pass
 
     # ---- Parallel run + reduce ----
-    acc_total = np.zeros(acc_shape, dtype=np.float32)
-    wacc_total = 0.0
+    if drizzle_on:
+        # reduce drizzle buffers
+        if len(acc_shape) == 2:
+            dbuf_total = np.zeros((outH, outW), dtype=np.float32)
+            cbuf_total = np.zeros((outH, outW), dtype=np.float32)
+        else:
+            dbuf_total = np.zeros((outH, outW, acc_shape[2]), dtype=np.float32)
+            cbuf_total = np.zeros((outH, outW, acc_shape[2]), dtype=np.float32)
 
-    with ThreadPoolExecutor(max_workers=workers) as ex:
-        futs = [ex.submit(_stack_chunk, c) for c in chunks if c]
-        for fut in as_completed(futs):
-            acc_c, w_c = fut.result()
-            acc_total += acc_c
-            wacc_total += float(w_c)
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futs = [ex.submit(_stack_chunk, c) for c in chunks if c]
+            for fut in as_completed(futs):
+                db, cb = fut.result()
+                dbuf_total += db
+                cbuf_total += cb
 
-    out = np.clip(acc_total / max(1e-6, wacc_total), 0.0, 1.0).astype(np.float32, copy=False)
+        # finalize
+        if len(acc_shape) == 2:
+            out = np.zeros((outH, outW), dtype=np.float32)
+            finalize_drizzle_2d(dbuf_total, cbuf_total, out)
+        else:
+            out = np.zeros((outH, outW, acc_shape[2]), dtype=np.float32)
+            finalize_drizzle_3d(dbuf_total, cbuf_total, out)
+
+        out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
+
+    else:
+        acc_total = np.zeros(acc_shape, dtype=np.float32)
+        wacc_total = 0.0
+
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futs = [ex.submit(_stack_chunk, c) for c in chunks if c]
+            for fut in as_completed(futs):
+                acc_c, w_c = fut.result()
+                acc_total += acc_c
+                wacc_total += float(w_c)
+
+        out = np.clip(acc_total / max(1e-6, wacc_total), 0.0, 1.0).astype(np.float32, copy=False)
 
     diag = {
         "frames_total": int(n),
@@ -1019,9 +1111,12 @@ def stack_ser(
         "local_warp": bool(local_warp),
         "workers": int(workers),
         "chunk_size": int(chunk_size),
+        "drizzle_scale": float(drizzle_scale),
+        "drizzle_pixfrac": float(drizzle_pixfrac),
+        "drizzle_kernel": str(drizzle_kernel),
+        "drizzle_sigma": float(drizzle_sigma),
     }
     return out, diag
-
 
 def _build_reference(
     src: PlanetaryFrameSource,

@@ -568,12 +568,27 @@ class QualityGraph(QWidget):
             return r.bottom() - ((val - qmin) / (qmax - qmin)) * r.height()
 
         # ---- median dashed line ----
-        qmed = qmin + 0.5 * (qmax - qmin)
+        # ---- horizontal reference lines ----
+        # 1) midrange (between min/max) - dashed
+        qmid = qmin + 0.5 * (qmax - qmin)
+        ymid = y_for(qmid)
+        pen_mid = QPen(QColor(120, 120, 120), 1)
+        pen_mid.setStyle(Qt.PenStyle.DashLine)
+        p.setPen(pen_mid)
+        p.drawLine(int(r.left()), int(ymid), int(r.right()), int(ymid))
+
+        # 2) true median of q - dotted (or dash-dot)
+        qmed = float(np.median(q))
         ymed = y_for(qmed)
-        pen_med = QPen(QColor(120, 120, 120), 1)
-        pen_med.setStyle(Qt.PenStyle.DashLine)
+        pen_med = QPen(QColor(160, 160, 160), 1)
+        pen_med.setStyle(Qt.PenStyle.DotLine)  # or DashDotLine
         p.setPen(pen_med)
         p.drawLine(int(r.left()), int(ymed), int(r.right()), int(ymed))
+
+        # small "Med" label on the right of the median line
+        p.setPen(QPen(QColor(180, 180, 180), 1))
+        p.drawText(int(r.right()) - 34, int(ymed) - 2, "Med")
+
 
         # ---- curve ----
         p.setPen(QPen(QColor(0, 220, 0), 2))
@@ -597,11 +612,12 @@ class QualityGraph(QWidget):
         p.drawText(self.rect().adjusted(6, 0, 0, 0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom, "Best")
         p.drawText(self.rect().adjusted(0, 0, -6, 0), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom, "Worst")
 
-        # y labels: max, median, min
+        # y labels: max, mid, median, min
         p.drawText(4, int(r.top()) + 10, f"{qmax:.3g}")
-        p.drawText(4, int(ymed) + 4,  f"{qmed:.3g}")
-        p.drawText(4, int(r.bottom()), f"{qmin:.3g}")
-
+        p.drawText(4, int(ymid) + 4,    f"{qmid:.3g}")   # midrange
+        p.drawText(4, int(ymed) + 4,    f"{qmed:.3g}")   # true median
+        p.drawText(4, int(r.bottom()),  f"{qmin:.3g}")
+        
         p.end()
 
 class _AnalyzeWorker(QThread):
@@ -651,7 +667,7 @@ class _StackWorker(QThread):
 
     def run(self):
         try:
-            print(f"tracking mode = {str(getattr(self.cfg, "track_mode", "planetary"))}")
+            print(f"tracking mode = {getattr(self.cfg, 'track_mode', 'planetary')}")
             def cb(done: int, total: int, phase: str):
                 self.progress.emit(int(done), int(total), str(phase))
 
@@ -664,8 +680,14 @@ class _StackWorker(QThread):
                 surface_anchor=getattr(self.cfg, "surface_anchor", None),
                 analysis=self.analysis,
                 local_warp=True,
-                progress_cb=cb,              # ✅ pass it through
+                progress_cb=cb,
+
+                drizzle_scale=float(getattr(self.cfg, "drizzle_scale", 1.0)),
+                drizzle_pixfrac=float(getattr(self.cfg, "drizzle_pixfrac", 0.80)),
+                drizzle_kernel=str(getattr(self.cfg, "drizzle_kernel", "gaussian")),
+                drizzle_sigma=float(getattr(self.cfg, "drizzle_sigma", 0.0)),
             )
+
             self.finished_ok.emit(out, diag)
         except Exception as e:
             msg = f"{e}\n\n{traceback.format_exc()}"
@@ -822,6 +844,63 @@ class SERStackerDialog(QDialog):
         form.addRow("Surface anchor", self.lbl_anchor)
 
         outer.addWidget(gb, 0)
+
+        # --- Drizzle (separate box) ---
+        gbD = QGroupBox("Drizzle", self)
+        fD = QFormLayout(gbD)
+
+        self.cmb_drizzle = QComboBox(self)
+        self.cmb_drizzle.addItems(["Off (1x)", "1.5x", "2x"])
+
+        self.spin_pixfrac = QDoubleSpinBox(self)
+        self.spin_pixfrac.setRange(0.30, 1.00)
+        self.spin_pixfrac.setDecimals(2)
+        self.spin_pixfrac.setSingleStep(0.05)
+        self.spin_pixfrac.setValue(0.80)
+
+        self.cmb_kernel = QComboBox(self)
+        self.cmb_kernel.addItems(["Gaussian", "Circle", "Square"])
+
+        self.spin_sigma = QDoubleSpinBox(self)
+        self.spin_sigma.setRange(0.00, 10.00)
+        self.spin_sigma.setDecimals(2)
+        self.spin_sigma.setSingleStep(0.05)
+        self.spin_sigma.setValue(0.00)   # 0 = auto
+        self.spin_sigma.setToolTip("Gaussian sigma in output pixels (0 = auto from pixfrac)")
+
+        fD.addRow("Scale", self.cmb_drizzle)
+        fD.addRow("Pixfrac", self.spin_pixfrac)
+        fD.addRow("Kernel", self.cmb_kernel)
+        fD.addRow("Sigma", self.spin_sigma)
+
+        def _sync_drizzle_ui():
+            t = self.cmb_drizzle.currentText()
+            off = "Off" in t
+            self.spin_pixfrac.setEnabled(not off)
+            self.cmb_kernel.setEnabled(not off)
+
+            k = self.cmb_kernel.currentText().lower()
+            is_gauss = ("gaussian" in k)
+            self.spin_sigma.setEnabled((not off) and is_gauss)
+
+            # sensible defaults when enabling drizzle
+            if off:
+                return
+            if "1.5" in t:
+                # only nudge if user hasn't already changed it a lot
+                if abs(self.spin_pixfrac.value() - 0.80) < 1e-6 or self.spin_pixfrac.value() in (0.70,):
+                    self.spin_pixfrac.setValue(0.80)
+            elif "2" in t:
+                if abs(self.spin_pixfrac.value() - 0.70) < 1e-6 or self.spin_pixfrac.value() in (0.80,):
+                    self.spin_pixfrac.setValue(0.70)
+
+        self.cmb_drizzle.currentIndexChanged.connect(lambda _=None: _sync_drizzle_ui())
+        self.cmb_kernel.currentIndexChanged.connect(lambda _=None: _sync_drizzle_ui())
+        _sync_drizzle_ui()
+
+        # add drizzle box right under stack settings
+        outer.addWidget(gbD, 0)
+
 
         # --- Actions row ---
         # --- Analysis / Reference / APs ---
@@ -1116,18 +1195,39 @@ class SERStackerDialog(QDialog):
         Build SERStackConfig using the new 'source' field (path or list of paths).
         Multipoint is implied by the presence of AP settings in SERStackConfig.
         """
+        # --- Drizzle UI -> config ---
+        t = (self.cmb_drizzle.currentText() or "").strip().lower()
+        if "1.5" in t:
+            drizzle_scale = 1.5
+        elif "2" in t:
+            drizzle_scale = 2.0
+        else:
+            drizzle_scale = 1.0
+
+        # Kernel UI is "Gaussian/Circle/Square" -> "gaussian/circle/square"
+        drizzle_kernel = (self.cmb_kernel.currentText() or "Gaussian").strip().lower()
+
         return SERStackConfig(
             source=self._source,
             roi=self._roi,
             track_mode=self._track_mode_value(),
             surface_anchor=self._surface_anchor,
             keep_percent=float(self.spin_keep.value()),
-            # multipoint=True,  # ❌ removed (no longer a config field)
+
+            # AP / alignment
             ap_size=int(self.spin_ap_size.value()),
             ap_spacing=int(self.spin_ap_spacing.value()),
             ap_min_mean=float(self.spin_ap_min.value()),
             ap_multiscale=(self.cmb_ap_scale.currentIndex() == 1),
-            ssd_refine_bruteforce=bool(getattr(self, "chk_ssd_bruteforce", None) and self.chk_ssd_bruteforce.isChecked()),
+            ssd_refine_bruteforce=bool(
+                getattr(self, "chk_ssd_bruteforce", None) and self.chk_ssd_bruteforce.isChecked()
+            ),
+
+            # ✅ Drizzle
+            drizzle_scale=float(drizzle_scale),
+            drizzle_pixfrac=float(self.spin_pixfrac.value()),
+            drizzle_kernel=str(drizzle_kernel),
+            drizzle_sigma=float(self.spin_sigma.value()),
         )
 
 
@@ -1145,7 +1245,17 @@ class SERStackerDialog(QDialog):
         self.btn_close.setEnabled(False)
         self.btn_analyze.setEnabled(False)
         self.btn_edit_aps.setEnabled(False)
+        scale_text = self.cmb_drizzle.currentText()
+        if "1.5" in scale_text:
+            drizzle_scale = 1.5
+        elif "2" in scale_text:
+            drizzle_scale = 2.0
+        else:
+            drizzle_scale = 1.0
 
+        drizzle_kernel = self.cmb_kernel.currentText().strip().lower()  # "gaussian"/"circle"/"square"
+        drizzle_pixfrac = float(self.spin_pixfrac.value())
+        drizzle_sigma = float(self.spin_sigma.value())
         self.lbl_prog.setVisible(True)
         self.prog.setVisible(True)
         self.prog.setRange(0, 100)
