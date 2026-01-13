@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QWidget, QSpinBox, QMessageBox,
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGroupBox,
     QFormLayout, QComboBox, QDoubleSpinBox, QCheckBox, QTextEdit, QProgressBar,
-    QScrollArea, QSlider
+    QScrollArea, QSlider, QToolButton
 )
 
 from PyQt6.QtGui import QPainter, QPen, QColor, QImage, QPixmap
@@ -525,27 +525,82 @@ class QualityGraph(QWidget):
     AS-style quality plot (sorted curve expected):
     - Curve: q[0] best ... q[N-1] worst
     - Vertical cutoff line at keep_k
-    - Dashed horizontal median line (q50)
-    - Minimal axis labels: Best/Worst, min/median/max
+    - Midrange horizontal line (min/max midpoint)
+    - True median horizontal line labeled 'Med'
+    - Click / drag adjusts keep line and emits keepChanged(k, N)
     """
+    keepChanged = pyqtSignal(int, int)  # keep_k, total_N
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._q: np.ndarray | None = None
         self._keep_k: int | None = None
         self.setMinimumHeight(160)
+        self._dragging = False
 
     def set_data(self, q: np.ndarray | None, keep_k: int | None = None):
         self._q = None if q is None else np.asarray(q, dtype=np.float32)
         self._keep_k = keep_k
         self.update()
 
+    def _plot_rect(self):
+        # room for labels
+        return self.rect().adjusted(34, 10, -10, -22)
+
+    def _x_to_keep_k(self, x: float) -> int | None:
+        if self._q is None or self._q.size < 2:
+            return None
+        r = self._plot_rect()
+        if r.width() <= 1:
+            return None
+        N = int(self._q.size)
+
+        # clamp x to plot rect
+        xx = max(float(r.left()), min(float(r.right()), float(x)))
+
+        # map x back to index i in [0..N-1]
+        t = (xx - float(r.left())) / float(max(1, r.width()))
+        i = int(round(t * float(N - 1)))
+        i = max(0, min(N - 1, i))
+
+        # keep_k is count of frames kept => i=0 means keep 1, i=N-1 means keep N
+        return int(i + 1)
+
+    def mousePressEvent(self, ev):
+        if ev.button() != Qt.MouseButton.LeftButton:
+            return super().mousePressEvent(ev)
+        self._dragging = True
+        k = self._x_to_keep_k(ev.position().x())
+        if k is not None:
+            self._keep_k = int(k)
+            self.update()
+            self.keepChanged.emit(int(k), int(self._q.size))  # type: ignore
+        ev.accept()
+
+    def mouseMoveEvent(self, ev):
+        if not self._dragging:
+            return super().mouseMoveEvent(ev)
+        k = self._x_to_keep_k(ev.position().x())
+        if k is not None:
+            if self._keep_k != int(k):
+                self._keep_k = int(k)
+                self.update()
+                self.keepChanged.emit(int(k), int(self._q.size))  # type: ignore
+        ev.accept()
+
+    def mouseReleaseEvent(self, ev):
+        if ev.button() == Qt.MouseButton.LeftButton:
+            self._dragging = False
+            ev.accept()
+            return
+        return super().mouseReleaseEvent(ev)
+
     def paintEvent(self, e):
         p = QPainter(self)
         p.fillRect(self.rect(), QColor(20, 20, 20))
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
-        # room for labels
-        r = self.rect().adjusted(34, 10, -10, -22)
+        r = self._plot_rect()
 
         # frame
         p.setPen(QPen(QColor(80, 80, 80), 1))
@@ -559,6 +614,7 @@ class QualityGraph(QWidget):
 
         q = self._q
         N = int(q.size)
+
         qmin = float(np.min(q))
         qmax = float(np.max(q))
         if qmax <= qmin + 1e-12:
@@ -567,7 +623,6 @@ class QualityGraph(QWidget):
         def y_for(val: float) -> float:
             return r.bottom() - ((val - qmin) / (qmax - qmin)) * r.height()
 
-        # ---- median dashed line ----
         # ---- horizontal reference lines ----
         # 1) midrange (between min/max) - dashed
         qmid = qmin + 0.5 * (qmax - qmin)
@@ -581,14 +636,13 @@ class QualityGraph(QWidget):
         qmed = float(np.median(q))
         ymed = y_for(qmed)
         pen_med = QPen(QColor(160, 160, 160), 1)
-        pen_med.setStyle(Qt.PenStyle.DotLine)  # or DashDotLine
+        pen_med.setStyle(Qt.PenStyle.DotLine)
         p.setPen(pen_med)
         p.drawLine(int(r.left()), int(ymed), int(r.right()), int(ymed))
 
         # small "Med" label on the right of the median line
         p.setPen(QPen(QColor(180, 180, 180), 1))
         p.drawText(int(r.right()) - 34, int(ymed) - 2, "Med")
-
 
         # ---- curve ----
         p.setPen(QPen(QColor(0, 220, 0), 2))
@@ -602,22 +656,30 @@ class QualityGraph(QWidget):
 
         # ---- cutoff line ----
         if self._keep_k is not None and N > 1:
-            k = int(max(1, min(N, self._keep_k)))
+            k = int(max(1, min(N, int(self._keep_k))))
             xcut = r.left() + ((k - 1) / (N - 1)) * r.width()
             p.setPen(QPen(QColor(255, 220, 0), 2))
             p.drawLine(int(xcut), int(r.top()), int(xcut), int(r.bottom()))
 
         # ---- labels ----
         p.setPen(QPen(QColor(180, 180, 180), 1))
-        p.drawText(self.rect().adjusted(6, 0, 0, 0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom, "Best")
-        p.drawText(self.rect().adjusted(0, 0, -6, 0), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom, "Worst")
+        p.drawText(
+            self.rect().adjusted(6, 0, 0, 0),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom,
+            "Best",
+        )
+        p.drawText(
+            self.rect().adjusted(0, 0, -6, 0),
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom,
+            "Worst",
+        )
 
         # y labels: max, mid, median, min
         p.drawText(4, int(r.top()) + 10, f"{qmax:.3g}")
         p.drawText(4, int(ymid) + 4,    f"{qmid:.3g}")   # midrange
         p.drawText(4, int(ymed) + 4,    f"{qmed:.3g}")   # true median
         p.drawText(4, int(r.bottom()),  f"{qmin:.3g}")
-        
+
         p.end()
 
 class _AnalyzeWorker(QThread):
@@ -813,13 +875,32 @@ class SERStackerDialog(QDialog):
             self._append_log(f"Surface anchor (ROI-space): {surface_anchor}")
 
     # ---------------- UI ----------------
-
     def _build_ui(self):
+        # ----- Dialog layout -----
         outer = QVBoxLayout(self)
         outer.setContentsMargins(10, 10, 10, 10)
         outer.setSpacing(8)
 
-        # --- Options ---
+        # Split into two columns so we don't exceed monitor height:
+        # Left: settings/analyze/actions/progress
+        # Right: quality graph + log
+        cols = QHBoxLayout()
+        cols.setSpacing(10)
+        outer.addLayout(cols, 1)
+
+        left = QVBoxLayout()
+        left.setSpacing(8)
+        right = QVBoxLayout()
+        right.setSpacing(8)
+
+        cols.addLayout(left, 0)
+        cols.addLayout(right, 1)
+
+        # =========================
+        # LEFT COLUMN
+        # =========================
+
+        # --- Stack Settings ---
         gb = QGroupBox("Stack Settings", self)
         form = QFormLayout(gb)
 
@@ -843,14 +924,11 @@ class SERStackerDialog(QDialog):
         form.addRow("", self.chk_debayer)
         form.addRow("Surface anchor", self.lbl_anchor)
 
-        outer.addWidget(gb, 0)
+        left.addWidget(gb, 0)
 
-        # --- Drizzle (separate box) ---
+        # --- Drizzle ---
         gbD = QGroupBox("Drizzle", self)
         fD = QFormLayout(gbD)
-
-        self.cmb_drizzle = QComboBox(self)
-        self.cmb_drizzle.addItems(["Off (1x)", "1.5x", "2x"])
 
         self.spin_pixfrac = QDoubleSpinBox(self)
         self.spin_pixfrac.setRange(0.30, 1.00)
@@ -868,7 +946,25 @@ class SERStackerDialog(QDialog):
         self.spin_sigma.setValue(0.00)   # 0 = auto
         self.spin_sigma.setToolTip("Gaussian sigma in output pixels (0 = auto from pixfrac)")
 
-        fD.addRow("Scale", self.cmb_drizzle)
+        # scale row: combo + info button in same row
+        scale_row = QHBoxLayout()
+        scale_row.setContentsMargins(0, 0, 0, 0)
+
+        self.cmb_drizzle = QComboBox(self)
+        self.cmb_drizzle.addItems(["Off (1x)", "1.5x", "2x"])
+
+        self.btn_drizzle_info = QToolButton(self)
+        self.btn_drizzle_info.setText("?")
+        self.btn_drizzle_info.setToolTip("Drizzle info")
+        self.btn_drizzle_info.setFixedSize(22, 22)
+
+        scale_row.addWidget(self.cmb_drizzle, 1)
+        scale_row.addWidget(self.btn_drizzle_info, 0)
+
+        scale_row_w = QWidget(self)
+        scale_row_w.setLayout(scale_row)
+
+        fD.addRow("Scale", scale_row_w)
         fD.addRow("Pixfrac", self.spin_pixfrac)
         fD.addRow("Kernel", self.cmb_kernel)
         fD.addRow("Sigma", self.spin_sigma)
@@ -887,7 +983,6 @@ class SERStackerDialog(QDialog):
             if off:
                 return
             if "1.5" in t:
-                # only nudge if user hasn't already changed it a lot
                 if abs(self.spin_pixfrac.value() - 0.80) < 1e-6 or self.spin_pixfrac.value() in (0.70,):
                     self.spin_pixfrac.setValue(0.80)
             elif "2" in t:
@@ -898,12 +993,33 @@ class SERStackerDialog(QDialog):
         self.cmb_kernel.currentIndexChanged.connect(lambda _=None: _sync_drizzle_ui())
         _sync_drizzle_ui()
 
-        # add drizzle box right under stack settings
-        outer.addWidget(gbD, 0)
+        def _show_drizzle_info():
+            QMessageBox.information(
+                self,
+                "Drizzle Info",
+                "Drizzle increases output resolution by resampling and re-depositing pixels.\n\n"
+                "Compute cost:\n"
+                "• 1.5× drizzle ≈ 225% compute (2.25×)\n"
+                "• 2× drizzle ≈ 400% compute (4×)\n\n"
+                "Pixfrac (drop shrink):\n"
+                "• Controls how large each input pixel’s “drop” is in the output grid.\n"
+                "• Lower pixfrac = tighter drops (sharper, but can create gaps/noise).\n"
+                "• Higher pixfrac = smoother coverage (less noise, slightly softer).\n\n"
+                "When drizzle helps:\n"
+                "• Best when you are under-sampled and you have good alignment / many frames.\n"
+                "• Helps most with stable seeing and lots of usable frames.\n\n"
+                "When drizzle may NOT help:\n"
+                "• If you’re already well-sampled (common around f/10–f/20 depending on pixel size),\n"
+                "  gains can be minimal.\n"
+                "• If seeing is very poor, drizzle often just magnifies blur/noise.\n\n"
+                "Tip: Start with 1.5× and pixfrac ~0.8. If coverage looks sparse/noisy, increase pixfrac."
+            )
 
+        self.btn_drizzle_info.clicked.connect(_show_drizzle_info)
 
-        # --- Actions row ---
-        # --- Analysis / Reference / APs ---
+        left.addWidget(gbD, 0)
+
+        # --- Analyze settings (no graph in left column anymore) ---
         gbA = QGroupBox("Analyze", self)
         fA = QFormLayout(gbA)
 
@@ -914,18 +1030,17 @@ class SERStackerDialog(QDialog):
         self.spin_refN.setRange(2, 200)
         self.spin_refN.setValue(10)
 
-        self.graph = QualityGraph(self)
-
         self.spin_ap_min = QDoubleSpinBox(self)
         self.spin_ap_min.setRange(0.0, 1.0)
         self.spin_ap_min.setDecimals(3)
         self.spin_ap_min.setSingleStep(0.005)
-        self.spin_ap_min.setValue(0.03)  # good default
+        self.spin_ap_min.setValue(0.03)
         fA.addRow("AP min mean (0..1)", self.spin_ap_min)
 
         self.btn_edit_aps = QPushButton("(2) Edit APs…", self)
-        self.btn_edit_aps.setEnabled(False)  # enable after analyze has ref_image
+        self.btn_edit_aps.setEnabled(False)
         fA.addRow("", self.btn_edit_aps)
+
         self.spin_ap_size = QSpinBox(self)
         self.spin_ap_size.setRange(16, 256)
         self.spin_ap_size.setSingleStep(8)
@@ -947,16 +1062,15 @@ class SERStackerDialog(QDialog):
         self.chk_ssd_bruteforce.setChecked(False)
         fA.addRow("", self.chk_ssd_bruteforce)
 
-
         fA.addRow("AP size (px)", self.spin_ap_size)
         fA.addRow("AP spacing (px)", self.spin_ap_spacing)
 
-        outer.addWidget(gbA, 0)
-        outer.addWidget(self.graph, 0)
+        left.addWidget(gbA, 0)
 
+        # --- Action buttons ---
         row = QHBoxLayout()
         self.btn_analyze = QPushButton("(1) Analyze", self)
-        self.btn_analyze.setEnabled(True)        
+        self.btn_analyze.setEnabled(True)
         self.btn_stack = QPushButton("(3) Stack Now", self)
         self.btn_close = QPushButton("Close", self)
 
@@ -965,33 +1079,87 @@ class SERStackerDialog(QDialog):
         row.addWidget(self.btn_stack)
         row.addWidget(self.btn_close)
 
-        outer.addLayout(row)
+        left.addLayout(row, 0)
 
-        # --- Progress + log ---
+        # --- Progress ---
         self.prog = QProgressBar(self)
         self.prog.setRange(0, 0)
         self.prog.setVisible(False)
-        outer.addWidget(self.prog)
+        left.addWidget(self.prog, 0)
+
         self.lbl_prog = QLabel("", self)
         self.lbl_prog.setStyleSheet("color:#aaa;")
         self.lbl_prog.setVisible(False)
-        outer.addWidget(self.lbl_prog)
+        left.addWidget(self.lbl_prog, 0)
+
+        left.addStretch(1)
+
+        # =========================
+        # RIGHT COLUMN
+        # =========================
+
+        # --- Quality Graph ---
+        gbQ = QGroupBox("Quality", self)
+        vQ = QVBoxLayout(gbQ)
+        vQ.setContentsMargins(8, 8, 8, 8)
+        vQ.setSpacing(6)
+
+        self.graph = QualityGraph(self)
+        self.graph.setMinimumHeight(180)
+
+        # small hint under the graph
+        self.lbl_graph_hint = QLabel("Tip: click the graph to set Keep cutoff.", self)
+        self.lbl_graph_hint.setStyleSheet("color:#888; font-size:11px;")
+        self.lbl_graph_hint.setWordWrap(True)
+
+        vQ.addWidget(self.graph, 1)
+        vQ.addWidget(self.lbl_graph_hint, 0)
+
+        right.addWidget(gbQ, 1)
+
         # --- Log ---
+        gbL = QGroupBox("Log", self)
+        vL = QVBoxLayout(gbL)
+        vL.setContentsMargins(8, 8, 8, 8)
+
         self.log = QTextEdit(self)
         self.log.setReadOnly(True)
-        self.log.setMinimumHeight(120)
+        self.log.setMinimumHeight(140)
         self.log.setPlaceholderText("Log…")
-        outer.addWidget(self.log, 1)
 
-        # --- Signals ---
+        vL.addWidget(self.log, 1)
+        right.addWidget(gbL, 1)
+
+        # =========================
+        # Signals / wiring
+        # =========================
+
         self.btn_close.clicked.connect(self.close)
         self.btn_stack.clicked.connect(self._start_stack)
         self.cmb_track.currentIndexChanged.connect(self._update_anchor_warning)
         self.btn_analyze.clicked.connect(self._start_analyze)
         self.btn_edit_aps.clicked.connect(self._edit_aps)
 
-        # When keep% changes, update cutoff line if analyzed
+        # Keep % edits update the cutoff line
         self.spin_keep.valueChanged.connect(self._update_graph_cutoff)
+
+        # Clicking on the graph updates Keep %
+        def _on_graph_keep_changed(k: int, total: int):
+            total = max(1, int(total))
+            k = max(1, min(total, int(k)))
+            pct = 100.0 * float(k) / float(total)
+
+            block = self.spin_keep.blockSignals(True)
+            try:
+                self.spin_keep.setValue(float(pct))
+            finally:
+                self.spin_keep.blockSignals(block)
+
+            # update graph line (using current analysis ordering)
+            self._update_graph_cutoff()
+            self._append_log(f"Keep set from graph: {pct:.1f}% ({k}/{total})")
+
+        self.graph.keepChanged.connect(_on_graph_keep_changed)
 
     # ---------------- helpers ----------------
     def _edit_aps(self):
@@ -1191,21 +1359,15 @@ class SERStackerDialog(QDialog):
         self.graph.set_data(q_sorted, keep_k=k)
 
     def _make_cfg(self) -> SERStackConfig:
-        """
-        Build SERStackConfig using the new 'source' field (path or list of paths).
-        Multipoint is implied by the presence of AP settings in SERStackConfig.
-        """
-        # --- Drizzle UI -> config ---
-        t = (self.cmb_drizzle.currentText() or "").strip().lower()
-        if "1.5" in t:
+        scale_text = self.cmb_drizzle.currentText()
+        if "1.5" in scale_text:
             drizzle_scale = 1.5
-        elif "2" in t:
+        elif "2" in scale_text:
             drizzle_scale = 2.0
         else:
             drizzle_scale = 1.0
 
-        # Kernel UI is "Gaussian/Circle/Square" -> "gaussian/circle/square"
-        drizzle_kernel = (self.cmb_kernel.currentText() or "Gaussian").strip().lower()
+        drizzle_kernel = self.cmb_kernel.currentText().strip().lower()  # gaussian/circle/square
 
         return SERStackConfig(
             source=self._source,
@@ -1214,7 +1376,6 @@ class SERStackerDialog(QDialog):
             surface_anchor=self._surface_anchor,
             keep_percent=float(self.spin_keep.value()),
 
-            # AP / alignment
             ap_size=int(self.spin_ap_size.value()),
             ap_spacing=int(self.spin_ap_spacing.value()),
             ap_min_mean=float(self.spin_ap_min.value()),
@@ -1223,13 +1384,12 @@ class SERStackerDialog(QDialog):
                 getattr(self, "chk_ssd_bruteforce", None) and self.chk_ssd_bruteforce.isChecked()
             ),
 
-            # ✅ Drizzle
+            # ✅ drizzle
             drizzle_scale=float(drizzle_scale),
             drizzle_pixfrac=float(self.spin_pixfrac.value()),
             drizzle_kernel=str(drizzle_kernel),
             drizzle_sigma=float(self.spin_sigma.value()),
         )
-
 
 
     def _start_stack(self):
