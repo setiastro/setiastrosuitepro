@@ -116,6 +116,72 @@ def _grad_img(m: np.ndarray) -> np.ndarray:
     s = float(g.std()) + 1e-6
     return (g / s).astype(np.float32, copy=False)
 
+def _ssd_prepare_ref(ref_m: np.ndarray, crop: float = 0.80):
+    """
+    Precompute reference gradient + crop window once.
+
+    Returns:
+      rg   : full reference gradient image (float32)
+      rgc  : cropped view of rg
+      sl   : (y0,y1,x0,x1) crop slices
+    """
+    ref_m = ref_m.astype(np.float32, copy=False)
+    rg = _grad_img(ref_m)  # compute ONCE
+
+    H, W = rg.shape[:2]
+    cfx = max(8, int(W * (1.0 - float(crop)) * 0.5))
+    cfy = max(8, int(H * (1.0 - float(crop)) * 0.5))
+    x0, x1 = cfx, W - cfx
+    y0, y1 = cfy, H - cfy
+
+    rgc = rg[y0:y1, x0:x1]  # view
+    return rg, rgc, (y0, y1, x0, x1)
+
+def _subpixel_quadratic_1d(vm: float, v0: float, vp: float) -> float:
+    """
+    Given SSD at (-1,0,+1): (vm, v0, vp), return vertex offset in [-0.5,0.5]-ish.
+    Works for minimizing SSD.
+    """
+    denom = (vm - 2.0 * v0 + vp)
+    if abs(denom) < 1e-12:
+        return 0.0
+    # vertex of parabola fit through -1,0,+1
+    t = 0.5 * (vm - vp) / denom
+    return float(np.clip(t, -0.75, 0.75))
+
+
+def _ssd_confidence_prepared(
+    rgc: np.ndarray,
+    cgc0: np.ndarray,
+    dx_i: int,
+    dy_i: int,
+) -> float:
+    """
+    Compute SSD between rgc and cgc0 shifted by (dx_i,dy_i) using slicing overlap.
+    Returns SSD (lower is better).
+
+    NOTE: This is integer-only and extremely fast (no warps).
+    """
+    H, W = rgc.shape[:2]
+
+    # Overlap slices for rgc and shifted cgc0
+    x0r = max(0, dx_i)
+    x1r = min(W, W + dx_i)
+    y0r = max(0, dy_i)
+    y1r = min(H, H + dy_i)
+
+    x0c = max(0, -dx_i)
+    x1c = min(W, W - dx_i)
+    y0c = max(0, -dy_i)
+    y1c = min(H, H - dy_i)
+
+    rr = rgc[y0r:y1r, x0r:x1r]
+    cc = cgc0[y0c:y1c, x0c:x1c]
+
+    d = rr - cc
+    return float(np.mean(d * d))
+
+
 def _ssd_confidence(
     ref_m: np.ndarray,
     cur_m: np.ndarray,
@@ -125,8 +191,14 @@ def _ssd_confidence(
     crop: float = 0.80,
 ) -> float:
     """
-    Compute confidence from SSD on gradients, higher=better (0..1).
-    Uses a central crop to avoid border artifacts.
+    Original API: confidence from gradient SSD, higher=better (0..1).
+
+    Optimized:
+      - computes ref grad once per call (still OK if used standalone)
+      - uses one warp for (dx,dy)
+      - no extra work beyond necessary
+
+    For iterative search, use _refine_shift_ssd() which avoids redoing work.
     """
     ref_m = ref_m.astype(np.float32, copy=False)
     cur_m = cur_m.astype(np.float32, copy=False)
@@ -134,25 +206,15 @@ def _ssd_confidence(
     # shift current by the proposed shift
     cur_s = _shift_image(cur_m, float(dx), float(dy))
 
-    # gradients (illumination-robust)
-    rg = _grad_img(ref_m)
+    rg, rgc, sl = _ssd_prepare_ref(ref_m, crop=crop)
+    y0, y1, x0, x1 = sl
+
     cg = _grad_img(cur_s)
-
-    H, W = rg.shape[:2]
-    cfx = max(8, int(W * (1.0 - float(crop)) * 0.5))
-    cfy = max(8, int(H * (1.0 - float(crop)) * 0.5))
-    x0, x1 = cfx, W - cfx
-    y0, y1 = cfy, H - cfy
-
-    rgc = rg[y0:y1, x0:x1]
     cgc = cg[y0:y1, x0:x1]
 
     d = rgc - cgc
     ssd = float(np.mean(d * d))
 
-    # map SSD -> confidence (tunable but robust)
-    # smaller SSD => closer to 1
-    # 0.002 is a decent starting scale for gradient SSD on [0..1] images
     scale = 0.002
     conf = float(np.exp(-ssd / max(1e-12, scale)))
     return float(np.clip(conf, 0.0, 1.0))
@@ -170,23 +232,60 @@ def _refine_shift_ssd(
     max_steps: int | None = None,
 ) -> tuple[float, float, float]:
     """
-    Returns (dx_refine, dy_refine, conf) where conf is higher=better (0..1).
+    Returns (dx_refine, dy_refine, conf) where you ADD refine to (dx0,dy0).
 
-    If bruteforce=True, calls _refine_shift_ssd_bruteforce and returns immediately.
-    Otherwise uses fast 8-neighbor hill-climb on _ssd_confidence.
+    CPU-optimized:
+      - precompute ref gradient crop once
+      - apply (dx0,dy0) shift ONCE
+      - compute gradient ONCE for shifted cur
+      - evaluate integer candidates via slicing overlap SSD (no warps)
+
+    If bruteforce=True, does full window scan in [-r,r]^2 (fast).
+    Otherwise does 8-neighbor hill-climb over integer offsets (very fast).
+
+    Optional subpixel polish:
+      - after choosing best integer (best_dx,best_dy), do a tiny separable quadratic
+        fit along x and y using SSD at +/-1 around the best integer.
+      - does NOT require any new gradients/warps (just 4 extra SSD evals).
     """
-    if bruteforce:
-        return _refine_shift_ssd_bruteforce(ref_m, cur_m, dx0, dy0, radius=int(radius), crop=float(crop))
-
     r = int(max(0, radius))
+    if r == 0:
+        # nothing to do; just compute confidence at dx0/dy0
+        c = _ssd_confidence(ref_m, cur_m, dx0, dy0, crop=crop)
+        return 0.0, 0.0, float(c)
+
+    # Prepare ref grad crop ONCE
+    _, rgc, sl = _ssd_prepare_ref(ref_m, crop=crop)
+    y0, y1, x0, x1 = sl
+
+    # Shift cur by the current estimate ONCE, then gradient ONCE
+    cur_m = cur_m.astype(np.float32, copy=False)
+    cur0 = _shift_image(cur_m, float(dx0), float(dy0))
+    cg0 = _grad_img(cur0)
+    cgc0 = cg0[y0:y1, x0:x1]
+
+    # Helper: parabola vertex for minimizing SSD, using (-1,0,+1) samples
+    def _quad_min_offset(vm: float, v0: float, vp: float) -> float:
+        denom = (vm - 2.0 * v0 + vp)
+        if abs(denom) < 1e-12:
+            return 0.0
+        t = 0.5 * (vm - vp) / denom
+        return float(np.clip(t, -0.75, 0.75))
+
+    if bruteforce:
+        # NOTE: your bruteforce path currently includes a subpixel step already.
+        # If you want to keep using that exact implementation, just call it:
+        dxr, dyr, conf = _refine_shift_ssd_bruteforce(ref_m, cur_m, dx0, dy0, radius=r, crop=crop)
+        return float(dxr), float(dyr), float(conf)
+
+    # Hill-climb in integer space minimizing SSD
     if max_steps is None:
-        max_steps = max(1, r)  # usually enough
+        max_steps = max(1, min(r, 6))  # small cap helps speed; tune if you want
 
     best_dx = 0
     best_dy = 0
-    best_score = _ssd_confidence(ref_m, cur_m, dx0, dy0, crop=crop)
+    best_ssd = _ssd_confidence_prepared(rgc, cgc0, 0, 0)
 
-    # 8-neighborhood hill climb
     neigh = ((-1,0),(1,0),(0,-1),(0,1),(-1,-1),(-1,1),(1,-1),(1,1))
 
     for _ in range(int(max_steps)):
@@ -197,9 +296,9 @@ def _refine_shift_ssd(
             if abs(cand_dx) > r or abs(cand_dy) > r:
                 continue
 
-            s = _ssd_confidence(ref_m, cur_m, dx0 + cand_dx, dy0 + cand_dy, crop=crop)
-            if s > best_score:
-                best_score = s
+            ssd = _ssd_confidence_prepared(rgc, cgc0, cand_dx, cand_dy)
+            if ssd < best_ssd:
+                best_ssd = ssd
                 best_dx = cand_dx
                 best_dy = cand_dy
                 improved = True
@@ -207,7 +306,45 @@ def _refine_shift_ssd(
         if not improved:
             break
 
-    return float(best_dx), float(best_dy), float(best_score)
+    # ---- subpixel quadratic polish around best integer (cheap) ----
+    # Uses SSD at +/-1 around best integer in X and Y (separable).
+    dx_sub = 0.0
+    dy_sub = 0.0
+    if r >= 1:
+        # X samples at (best_dx-1, best_dy), (best_dx, best_dy), (best_dx+1, best_dy)
+        if abs(best_dx - 1) <= r:
+            s_xm = _ssd_confidence_prepared(rgc, cgc0, best_dx - 1, best_dy)
+        else:
+            s_xm = best_ssd
+        s_x0 = best_ssd
+        if abs(best_dx + 1) <= r:
+            s_xp = _ssd_confidence_prepared(rgc, cgc0, best_dx + 1, best_dy)
+        else:
+            s_xp = best_ssd
+        dx_sub = _quad_min_offset(s_xm, s_x0, s_xp)
+
+        # Y samples at (best_dx, best_dy-1), (best_dx, best_dy), (best_dx, best_dy+1)
+        if abs(best_dy - 1) <= r:
+            s_ym = _ssd_confidence_prepared(rgc, cgc0, best_dx, best_dy - 1)
+        else:
+            s_ym = best_ssd
+        s_y0 = best_ssd
+        if abs(best_dy + 1) <= r:
+            s_yp = _ssd_confidence_prepared(rgc, cgc0, best_dx, best_dy + 1)
+        else:
+            s_yp = best_ssd
+        dy_sub = _quad_min_offset(s_ym, s_y0, s_yp)
+
+    best_dx_f = float(best_dx) + float(dx_sub)
+    best_dy_f = float(best_dy) + float(dy_sub)
+
+    # Confidence: keep based on best *integer* SSD (no subpixel warp needed)
+    scale = 0.002
+    conf = float(np.exp(-best_ssd / max(1e-12, scale)))
+    conf = float(np.clip(conf, 0.0, 1.0))
+
+    return float(best_dx_f), float(best_dy_f), float(conf)
+
 
 
 def _refine_shift_ssd_bruteforce(
@@ -216,41 +353,48 @@ def _refine_shift_ssd_bruteforce(
     dx0: float,
     dy0: float,
     *,
-    radius: int = 2,          # search +/- radius pixels
-    crop: float = 0.80,       # central crop fraction to avoid borders
+    radius: int = 2,
+    crop: float = 0.80,
 ) -> tuple[float, float, float]:
     """
-    Returns (dx_refine, dy_refine, conf) where shifting cur by (dx0+dx_refine, dy0+dy_refine)
-    best matches ref in SSD sense (on gradients).
+    Full brute-force scan in [-radius,+radius]^2, but optimized:
+      - shift by (dx0,dy0) ONCE
+      - compute gradients ONCE
+      - evaluate candidates via slicing overlap SSD (no warps)
+      - keep your separable quadratic subpixel fit
     """
     ref_m = ref_m.astype(np.float32, copy=False)
     cur_m = cur_m.astype(np.float32, copy=False)
 
-    # Apply current estimate first
-    cur0 = _shift_image(cur_m, dx0, dy0)
+    r = int(max(0, radius))
+    if r == 0:
+        c = _ssd_confidence(ref_m, cur_m, dx0, dy0, crop=crop)
+        return 0.0, 0.0, float(c)
 
-    # Use gradients (illumination-robust)
+    # Apply current estimate once
+    cur0 = _shift_image(cur_m, float(dx0), float(dy0))
+
+    # Gradients once
     rg = _grad_img(ref_m)
-    cg = _grad_img(cur0)
+    cg0 = _grad_img(cur0)
 
     H, W = rg.shape[:2]
-    cfx = max(8, int(W * (1.0 - crop) * 0.5))
-    cfy = max(8, int(H * (1.0 - crop) * 0.5))
-    x0 = cfx; x1 = W - cfx
-    y0 = cfy; y1 = H - cfy
-    rgc = rg[y0:y1, x0:x1]
-    cgc = cg[y0:y1, x0:x1]
+    cfx = max(8, int(W * (1.0 - float(crop)) * 0.5))
+    cfy = max(8, int(H * (1.0 - float(crop)) * 0.5))
+    x0, x1 = cfx, W - cfx
+    y0, y1 = cfy, H - cfy
 
-    # brute-force integer search in tiny window
+    rgc = rg[y0:y1, x0:x1]
+    cgc0 = cg0[y0:y1, x0:x1]
+
+    # brute-force integer search
     best = (0, 0)
     best_ssd = float("inf")
-    ssds = {}  # for subpixel parabola fit
+    ssds: dict[tuple[int, int], float] = {}
 
-    for j in range(-radius, radius + 1):
-        for i in range(-radius, radius + 1):
-            shifted = _shift_image(cgc, float(i), float(j))
-            d = rgc - shifted
-            ssd = float(np.mean(d * d))
+    for j in range(-r, r + 1):
+        for i in range(-r, r + 1):
+            ssd = _ssd_confidence_prepared(rgc, cgc0, i, j)
             ssds[(i, j)] = ssd
             if ssd < best_ssd:
                 best_ssd = ssd
@@ -260,7 +404,6 @@ def _refine_shift_ssd_bruteforce(
 
     # Subpixel quadratic fit (separable) if neighbors exist
     def _quad_peak(vm, v0, vp):
-        # fit parabola through (-1,vm),(0,v0),(+1,vp) -> vertex offset
         denom = (vm - 2.0 * v0 + vp)
         if abs(denom) < 1e-12:
             return 0.0
@@ -276,19 +419,13 @@ def _refine_shift_ssd_bruteforce(
     dxr = float(bx + np.clip(dx_sub, -0.75, 0.75))
     dyr = float(by + np.clip(dy_sub, -0.75, 0.75))
 
-    # crude confidence: convert "how much better than neighbors" into 0..1
-    # (higher = stronger minimum)
-    neigh = []
-    for j in range(-radius, radius + 1):
-        for i in range(-radius, radius + 1):
-            if (i, j) != (bx, by):
-                neigh.append(ssds[(i, j)])
+    # Confidence: use your “sharpness” idea (median neighbor vs best)
+    neigh = [v for (k, v) in ssds.items() if k != (bx, by)]
     neigh_med = float(np.median(np.asarray(neigh, np.float32))) if neigh else best_ssd
     sharp = max(0.0, neigh_med - best_ssd)
     conf = float(np.clip(sharp / max(1e-6, neigh_med), 0.0, 1.0))
 
     return dxr, dyr, conf
-
 
 def _bandpass(m: np.ndarray) -> np.ndarray:
     """Illumination-robust image for tracking (float32)."""

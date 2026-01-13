@@ -120,37 +120,41 @@ def soft_threshold(x: np.ndarray, t: float):
 def apply_layer_ops(
     w: np.ndarray,
     bias_gain: float,
-    thr_sigma: float,                 # threshold in units of σ
+    thr_sigma: float,
     amount: float,
     denoise_strength: float = 0.0,
     sigma: float | np.ndarray | None = None,
+    layer_index: int | None = None,
     *,
     mode: str = "μ–σ Thresholding",
 ):
     w2 = w
 
-    # Normalize mode to something robust to label wording
     m = (mode or "").strip().lower()
     is_linear = m.startswith("linear")
-
-    # --- Linear mode: strictly linear multiscale transform ---
     if is_linear:
-        # Ignore thresholding and denoise; just apply gain
-        if abs(bias_gain - 1.0) > 1e-6:
-            return w * bias_gain
-        return w
+        return w * bias_gain if abs(bias_gain - 1.0) > 1e-6 else w
 
-    # --- μ–σ Thresholding mode (robust nonlinear) ---
     # 1) Noise reduction step (MMT-style NR)
     if denoise_strength > 0.0:
         if sigma is None:
             sigma = _robust_sigma(w2)
         sigma_f = float(sigma)
-        # 3σ at denoise=1, scaled linearly
-        t_dn = max(0.0, denoise_strength * 3.0 * sigma_f)
+
+        i = int(layer_index or 0)
+
+        # --- SMOOTH scaling option (pick ONE) ---
+        # Option A: linear growth (very controllable)
+        # scale = 1.0 + 0.75 * i
+
+        # Option B: sqrt growth of 2^i (gentle, "natural")
+        scale = (2.0 ** i) ** 0.5   # 1, 1.41, 2, 2.83, 4, ...
+
+        # Base: 3σ at denoise=1 for layer 0, increases by scale
+        t_dn = denoise_strength * 3.0 * scale * sigma_f
+
         if t_dn > 0.0:
             w_dn = soft_threshold(w2, t_dn)
-            # Blend original vs denoised based on denoise_strength
             w2 = (1.0 - denoise_strength) * w2 + denoise_strength * w_dn
 
     # 2) Threshold in σ units + bias shaping
@@ -158,7 +162,7 @@ def apply_layer_ops(
         if sigma is None:
             sigma = _robust_sigma(w2)
         sigma_f = float(sigma)
-        t = thr_sigma * sigma_f         # convert N·σ → absolute threshold
+        t = thr_sigma * sigma_f
         if t > 0.0:
             wt = soft_threshold(w2, t)
             w2 = (1.0 - amount) * w2 + amount * wt
@@ -166,7 +170,6 @@ def apply_layer_ops(
     if abs(bias_gain - 1.0) > 1e-6:
         w2 = w2 * bias_gain
     return w2
-
 
 def _robust_sigma(arr: np.ndarray) -> float:
     """
@@ -748,6 +751,9 @@ class MultiscaleDecompDialog(QDialog):
             cfg = self.cfgs[i]
             if not cfg.enabled:
                 return i, np.zeros_like(w)
+
+            layer_sigma = self.base_sigma * (2 ** i)
+
             sigma = self._layer_noise[i] if self._layer_noise and i < len(self._layer_noise) else None
             out = apply_layer_ops(
                 w,
@@ -756,6 +762,7 @@ class MultiscaleDecompDialog(QDialog):
                 cfg.amount,
                 cfg.denoise,
                 sigma,
+                layer_index=i,
                 mode=mode,
             )
             return i, out
@@ -1264,10 +1271,16 @@ class MultiscaleDecompDialog(QDialog):
             cfg = self.cfgs[i]
             if not cfg.enabled:
                 return i, np.zeros_like(w)
+
+            layer_sigma = base_sigma * (2 ** i)
+
             return i, apply_layer_ops(
                 w, cfg.bias_gain, cfg.thr, cfg.amount, cfg.denoise,
-                layer_noise[i], mode=mode
+                layer_noise[i],
+                layer_index=i,
+                mode=mode
             )
+
 
         tuned = [None] * len(details)
         max_workers = min(os.cpu_count() or 4, len(details) or 1)

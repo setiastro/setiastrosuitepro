@@ -77,7 +77,7 @@ class NarrowbandNormalization(QWidget):
             pass    
 
         self.doc_manager = doc_manager
-        self.setWindowTitle("Narrowband Normalization - Beta")
+        self.setWindowTitle("Narrowband Normalization")
 
         # raw channels (float32 [0..1])
         self.ha: np.ndarray | None = None
