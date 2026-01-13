@@ -1769,13 +1769,37 @@ class CurvesDialogPro(QDialog):
         name, ok = QInputDialog.getText(self, self.tr("Save Curves Preset"), self.tr("Preset name:"))
         if not ok or not name.strip():
             return
-        pts_norm = self._collect_points_norm_from_editor()
-        mode = self._current_mode()
-        if save_custom_preset(name.strip(), mode, pts_norm):
-            self._set_status(self.tr("Saved preset “{0}”.").format(name.strip()))
+        name = name.strip()
+
+        # 0) flush active editor -> store (CRITICAL)
+        try:
+            self._curves_store[self._current_mode_key] = self._editor_points_norm()
+        except Exception:
+            pass
+
+        # 1) build a full multi-curve payload
+        modes = {}
+        for k, pts in self._curves_store.items():
+            if not isinstance(pts, (list, tuple)) or len(pts) < 2:
+                continue
+            # ensure floats (QSettings/JSON safety)
+            modes[k] = [(float(x), float(y)) for (x, y) in pts]
+
+        preset = {
+            "name": name,
+            "version": 2,
+            "kind": "curves_multi",
+            "active": self._current_mode_key,  # "K", "R", ...
+            "modes": modes,
+        }
+
+        # 2) save via your existing persistence
+        if save_custom_preset(name, preset):   # <-- change signature (see section 3)
+            self._set_status(self.tr("Saved preset “{0}”.").format(name))
             self._rebuild_presets_menu()
         else:
             QMessageBox.warning(self, self.tr("Save failed"), self.tr("Could not save preset."))
+
 
     def _rebuild_presets_menu(self):
         m = QMenu(self)
@@ -2400,43 +2424,69 @@ class CurvesDialogPro(QDialog):
     def _apply_preset_dict(self, preset: dict):
         preset = preset or {}
 
-        # 1) set mode radio
+        # -------- MULTI-CURVE (v2) --------
+        if preset.get("kind") == "curves_multi" or ("modes" in preset and isinstance(preset.get("modes"), dict)):
+            modes = preset.get("modes", {}) or {}
+
+            # 0) load all curves into store (fill missing keys with linear)
+            for k in self._curves_store.keys():
+                pts = modes.get(k)
+                if isinstance(pts, (list, tuple)) and len(pts) >= 2:
+                    self._curves_store[k] = [(float(x), float(y)) for (x, y) in pts]
+                else:
+                    self._curves_store[k] = [(0.0, 0.0), (1.0, 1.0)]
+
+            # 1) choose active key (default to K)
+            active = str(preset.get("active") or "K")
+            if active not in self._curves_store:
+                active = "K"
+            self._current_mode_key = active
+
+            # 2) set radio button that corresponds to active key
+            # map internal key -> radio label
+            key_to_label = {v: k for (k, v) in self._mode_key_map.items()}  # "K"->"K (Brightness)"
+            want_label = key_to_label.get(active, "K (Brightness)")
+            for b in self.mode_group.buttons():
+                if b.text() == want_label:
+                    b.setChecked(True)
+                    break
+
+            # 3) push active curve into editor
+            self._editor_set_from_norm(self._curves_store[active])
+
+            # 4) refresh overlays + preview
+            self._refresh_overlays()
+            self._quick_preview()
+
+            self._set_status(self.tr("Preset: {0}  [multi]").format(preset.get("name", self.tr("(built-in)"))))
+            return
+
+        # -------- LEGACY SINGLE-CURVE --------
+        # your existing single-curve behavior (slightly adjusted: store it too)
         want = _norm_mode(preset.get("mode"))
         for b in self.mode_group.buttons():
             if b.text().lower() == want.lower():
                 b.setChecked(True)
                 break
 
-        # 2) get points_norm — if absent, build from shape/amount (built-ins)
         ptsN = preset.get("points_norm")
-        shape = preset.get("shape")  # may be None for custom presets
+        shape = preset.get("shape")
         amount = float(preset.get("amount", 1.0))
 
         if not (isinstance(ptsN, (list, tuple)) and len(ptsN) >= 2):
             try:
-                # build from a named shape (built-ins); default to linear
                 ptsN = _shape_points_norm(str(shape or "linear"), amount)
             except Exception:
-                ptsN = [(0.0, 0.0), (1.0, 1.0)]  # safe fallback
+                ptsN = [(0.0, 0.0), (1.0, 1.0)]
 
-        # 3) apply handles to the editor (strip exact endpoints)
-        pts_scene = _points_norm_to_scene(ptsN)
-        filt = [(x, y) for (x, y) in pts_scene if 1e-6 < x < 360.0 - 1e-6]
-
-        if hasattr(self.editor, "clearSymmetryLine"):
-            self.editor.clearSymmetryLine()
-
-        self.editor.setControlHandles(filt)
-        self.editor.updateCurve()   # ensure redraw
-
-        # persist into store & refresh
+        self._editor_set_from_norm(ptsN)
         self._curves_store[self._current_mode_key] = self._editor_points_norm()
         self._refresh_overlays()
         self._quick_preview()
 
-        # 4) status: don’t assume shape exists
         shape_tag = f"[{shape}]" if shape else "[custom]"
-        self._set_status(self.tr("Preset: {0}  {1}").format(preset.get('name', self.tr('(built-in)')), shape_tag))
+        self._set_status(self.tr("Preset: {0}  {1}").format(preset.get("name", self.tr("(built-in)")), shape_tag))
+
 
 
 def apply_curves_ops(doc, op: dict):

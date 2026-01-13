@@ -1,4 +1,4 @@
-#legacy.numba_utils.py
+#src.setiastro.saspro.legacy.numba_utils.py
 import numpy as np
 from numba import njit, prange
 from numba.typed import List

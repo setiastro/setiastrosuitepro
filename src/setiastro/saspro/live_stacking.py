@@ -1328,7 +1328,23 @@ class LiveStackWindow(QDialog):
                 QApplication.processEvents()
         finally:
             self._poll_busy = False
-            
+
+    def _match_master_to_image(self, master: np.ndarray, img: np.ndarray) -> np.ndarray:
+        """
+        Coerce master (dark/flat) to match img dimensionality.
+        - If img is RGB (H,W,3) and master is mono (H,W), expand to (H,W,1).
+        - If img is mono (H,W) and master is RGB (H,W,3), collapse to mono via mean.
+        """
+        if master is None:
+            return None
+
+        if img.ndim == 3 and master.ndim == 2:
+            return master[..., None]  # (H,W,1) broadcasts to (H,W,3)
+        if img.ndim == 2 and master.ndim == 3:
+            return master.mean(axis=2)  # (H,W)
+        return master
+
+
     def process_frame(self, path):
         if self._should_stop():
             return        
@@ -1422,12 +1438,16 @@ class LiveStackWindow(QDialog):
 
         # ——— 2b) CALIBRATION (once) ————————————————————————
         if self.master_dark is not None:
-            img = img.astype(np.float32) - self.master_dark
+            md = self._match_master_to_image(self.master_dark, img).astype(np.float32, copy=False)
+            img = img.astype(np.float32, copy=False) - md
         # prefer per-filter flat if we’re in mono→color and have one
         if mono_key and mono_key in self.master_flats:
-            img = apply_flat_division_numba(img, self.master_flats[mono_key])
+            mf = self._match_master_to_image(self.master_flats[mono_key], img).astype(np.float32, copy=False)
+            img = apply_flat_division_numba(img, mf)
         elif self.master_flat is not None:
-            img = apply_flat_division_numba(img, self.master_flat)
+            mf = self._match_master_to_image(self.master_flat, img).astype(np.float32, copy=False)
+            img = apply_flat_division_numba(img, mf)
+
 
         if self._should_stop():
             return

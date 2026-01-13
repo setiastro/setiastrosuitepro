@@ -121,6 +121,9 @@ class MenuMixin:
         m_edit = mb.addMenu(self.tr("&Edit"))
         m_edit.addAction(self.act_undo)
         m_edit.addAction(self.act_redo)
+        m_edit.addSeparator()
+        m_edit.addAction(self.act_mono_to_rgb)
+
 
         # Functions
         m_fn = mb.addMenu(self.tr("&Functions"))
@@ -170,7 +173,7 @@ class MenuMixin:
         m_tools.addAction(self.act_freqsep)
         m_tools.addAction(self.act_image_combine)
         m_tools.addAction(self.act_multiscale_decomp)
-        #m_tools.addAction(self.act_narrowband_normalization)
+        m_tools.addAction(self.act_narrowband_normalization)
         m_tools.addAction(self.act_nbtorgb)
         m_tools.addAction(self.act_ppp)
         m_tools.addAction(self.act_selective_color)
@@ -201,6 +204,7 @@ class MenuMixin:
         m_star.addAction(self.act_isophote)
         m_star.addAction(self.act_live_stacking)
         m_star.addAction(self.act_mosaic_master)
+        m_star.addAction(self.act_planetary_stacker)
         m_star.addAction(self.act_plate_solve)
         m_star.addAction(self.act_psf_viewer)
         m_star.addAction(self.act_rgb_align)

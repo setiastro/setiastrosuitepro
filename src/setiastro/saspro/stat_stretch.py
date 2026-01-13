@@ -3,7 +3,7 @@ from __future__ import annotations
 from PyQt6.QtCore import Qt, QSize, QEvent
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QDoubleSpinBox,
-    QCheckBox, QPushButton, QScrollArea, QWidget, QMessageBox, QSlider, QToolBar, QToolButton, QComboBox
+    QCheckBox, QPushButton, QScrollArea, QWidget, QMessageBox, QSlider, QToolBar, QToolButton, QComboBox,QProgressBar, QApplication
 )
 from PyQt6.QtGui import QImage, QPixmap, QMouseEvent, QCursor
 import numpy as np
@@ -320,6 +320,7 @@ class StatisticalStretchDialog(QDialog):
         self.btn_preview = QPushButton(self.tr("Preview"))
         self.btn_apply   = QPushButton(self.tr("Apply"))
         self.btn_close   = QPushButton(self.tr("Close"))
+        self.btn_reset = QPushButton(self.tr("Reset ⟳"))  
 
         self.btn_clipstats = QPushButton(self.tr("Clip stats"))
         self.lbl_clipstats = QLabel("")
@@ -329,6 +330,24 @@ class StatisticalStretchDialog(QDialog):
         self.lbl_clipstats.setFrameShape(QLabel.Shape.StyledPanel)
         self.lbl_clipstats.setFrameShadow(QLabel.Shadow.Sunken)
         self.lbl_clipstats.setContentsMargins(6, 4, 6, 4)
+
+        # --- In-UI busy indicator (Wayland-friendly) ---
+        self.busy_row = QWidget()
+        br = QHBoxLayout(self.busy_row)
+        br.setContentsMargins(0, 0, 0, 0)
+        br.setSpacing(8)
+
+        self.lbl_busy = QLabel(self.tr("Processing…"))
+        self.lbl_busy.setStyleSheet("color:#888;")
+        self.pbar_busy = QProgressBar()
+        self.pbar_busy.setRange(0, 0)          # indeterminate
+        self.pbar_busy.setTextVisible(False)
+        self.pbar_busy.setFixedHeight(10)
+
+        br.addWidget(self.lbl_busy)
+        br.addWidget(self.pbar_busy, 1)
+
+        self.busy_row.setVisible(False)        # hidden until needed
 
         # ------------------------------------------------------------------
         # Layout
@@ -353,10 +372,13 @@ class StatisticalStretchDialog(QDialog):
         btn_row.addWidget(self.btn_preview)
         btn_row.addWidget(self.btn_apply)
         btn_row.addWidget(self.btn_clipstats)
+        btn_row.addStretch(1)        
+        btn_row.addWidget(self.btn_reset)  
         btn_row.addStretch(1)
         left.addLayout(btn_row)
 
         left.addWidget(self.lbl_clipstats)
+        left.addWidget(self.busy_row)
         left.addStretch(1)
 
         right = QVBoxLayout()
@@ -409,14 +431,6 @@ class StatisticalStretchDialog(QDialog):
 
         self.spin_target.valueChanged.connect(_suggest_hdr_knee_from_target)
 
-        # Luma-only: enables dropdown, disables "linked channels"
-        self.chk_luma_only.toggled.connect(self.cmb_luma.setEnabled)
-
-        def _on_luma_only_toggled(on: bool):
-            self.chk_linked.setEnabled(not on)
-
-        self.chk_luma_only.toggled.connect(_on_luma_only_toggled)
-
         # Zoom buttons
         self.btn_zoom_in.clicked.connect(lambda: self._zoom_by(1.25))
         self.btn_zoom_out.clicked.connect(lambda: self._zoom_by(1/1.25))
@@ -426,6 +440,7 @@ class StatisticalStretchDialog(QDialog):
         # Main buttons
         self.btn_preview.clicked.connect(self._do_preview)
         self.btn_apply.clicked.connect(self._do_apply)
+        self.btn_reset.clicked.connect(self._reset_defaults)   
         self.btn_close.clicked.connect(self.close)
         self.btn_clipstats.clicked.connect(self._do_clip_stats)
 
@@ -441,12 +456,23 @@ class StatisticalStretchDialog(QDialog):
             lambda v: self.lbl_luma_blend.setText(f"{v/100:.2f}")
         )
 
+        # Luma-only: one unified handler for all dependent UI state
         def _on_luma_only_toggled(on: bool):
+            # enable luma mode dropdown only when luma-only is on
+            self.cmb_luma.setEnabled(on)
+
+            # linked channels doesn't make sense in luma-only mode
             self.chk_linked.setEnabled(not on)
+
+            # luma blend row only meaningful when luma-only is enabled
             self.luma_blend_row.setEnabled(on)
+
+            # mode-affecting => refresh clip stats
+            self._schedule_clip_stats()
 
         self.chk_luma_only.toggled.connect(_on_luma_only_toggled)
         _on_luma_only_toggled(self.chk_luma_only.isChecked())
+
 
         # Initial preview + clip stats
         self._populate_initial_preview()
@@ -454,41 +480,162 @@ class StatisticalStretchDialog(QDialog):
 
     # ----- helpers -----
     def _show_busy(self, title: str, text: str):
-        # Avoid stacking dialogs
-        self._hide_busy()
-
-        dlg = QProgressDialog(text, None, 0, 0, self)
-        dlg.setWindowTitle(title)
-        dlg.setWindowModality(Qt.WindowModality.WindowModal)  # blocks only this tool window
-        dlg.setMinimumDuration(0)
-        dlg.setValue(0)
-        dlg.setCancelButton(None)  # no cancel button (keeps it simple)
-        dlg.setAutoClose(False)
-        dlg.setAutoReset(False)
-        dlg.setFixedWidth(320)
-        dlg.show()
-
-        # Ensure it paints before heavy work starts
-        QApplication.processEvents()
-        self._busy = dlg
+        # title kept for signature compatibility; not shown
+        try:
+            self.lbl_busy.setText(text or self.tr("Processing…"))
+            self.busy_row.setVisible(True)
+            # make sure UI repaints before thread work starts
+            QApplication.processEvents()
+        except Exception:
+            pass
 
     def _hide_busy(self):
         try:
-            if getattr(self, "_busy", None) is not None:
-                self._busy.close()
-                self._busy.deleteLater()
+            if getattr(self, "busy_row", None) is not None:
+                self.busy_row.setVisible(False)
         except Exception:
             pass
-        self._busy = None
+
 
     def _set_controls_enabled(self, enabled: bool):
         try:
             self.btn_preview.setEnabled(enabled)
             self.btn_apply.setEnabled(enabled)
+            if getattr(self, "btn_reset", None) is not None:
+                self.btn_reset.setEnabled(enabled)  # <-- NEW
             if getattr(self, "btn_clipstats", None) is not None:
                 self.btn_clipstats.setEnabled(enabled)
         except Exception:
             pass
+
+    def _reset_defaults(self):
+        """Reset all controls back to factory defaults."""
+        if getattr(self, "_job_running", False):
+            return
+
+        # Defaults (must match your __init__ setValue/setChecked calls)
+        DEFAULT_TARGET = 0.25
+        DEFAULT_LINKED = False
+        DEFAULT_NORMALIZE = False
+        DEFAULT_BP_SLIDER = 500          # 5.00
+        DEFAULT_NO_BLACK_CLIP = False
+
+        DEFAULT_HDR_ON = False
+        DEFAULT_HDR_AMT = 15             # 0.15
+        DEFAULT_HDR_KNEE = 75            # 0.75
+
+        DEFAULT_LUMA_ONLY = False
+        DEFAULT_LUMA_MODE = "rec709"
+        DEFAULT_LUMA_BLEND = 60          # 0.60
+
+        DEFAULT_CURVES_ON = False
+        DEFAULT_CURVES_STRENGTH = 20     # 0.20
+
+        # Avoid cascading signal storms while we set everything
+        widgets = [
+            self.spin_target,
+            self.chk_linked,
+            self.chk_normalize,
+            self.sld_bp,
+            self.chk_no_black_clip,
+            self.chk_hdr,
+            self.sld_hdr_amt,
+            self.sld_hdr_knee,
+            self.chk_luma_only,
+            self.cmb_luma,
+            self.sld_luma_blend,
+            self.chk_curves,
+            self.sld_curves,
+        ]
+
+        old_blocks = []
+        for w in widgets:
+            try:
+                old_blocks.append((w, w.blockSignals(True)))
+            except Exception:
+                pass
+
+        try:
+            # Reset “user locked” HDR knee behavior
+            self._hdr_knee_user_locked = False
+
+            # Core controls
+            self.spin_target.setValue(DEFAULT_TARGET)
+            self.chk_linked.setChecked(DEFAULT_LINKED)
+            self.chk_normalize.setChecked(DEFAULT_NORMALIZE)
+
+            # Black point
+            self.chk_no_black_clip.setChecked(DEFAULT_NO_BLACK_CLIP)
+            self.sld_bp.setValue(DEFAULT_BP_SLIDER)
+            self.lbl_bp.setText(f"{DEFAULT_BP_SLIDER/100:.2f}")
+
+            # HDR
+            self.chk_hdr.setChecked(DEFAULT_HDR_ON)
+            self.sld_hdr_amt.setValue(DEFAULT_HDR_AMT)
+            self.lbl_hdr_amt.setText(f"{DEFAULT_HDR_AMT/100:.2f}")
+            self.sld_hdr_knee.setValue(DEFAULT_HDR_KNEE)
+            self.lbl_hdr_knee.setText(f"{DEFAULT_HDR_KNEE/100:.2f}")
+
+            # Luma-only + mode + blend
+            self.chk_luma_only.setChecked(DEFAULT_LUMA_ONLY)
+            if DEFAULT_LUMA_MODE:
+                self.cmb_luma.setCurrentText(DEFAULT_LUMA_MODE)
+            self.sld_luma_blend.setValue(DEFAULT_LUMA_BLEND)
+            self.lbl_luma_blend.setText(f"{DEFAULT_LUMA_BLEND/100:.2f}")
+
+            # Curves
+            self.chk_curves.setChecked(DEFAULT_CURVES_ON)
+            self.sld_curves.setValue(DEFAULT_CURVES_STRENGTH)
+            self.lbl_curves_val.setText(f"{DEFAULT_CURVES_STRENGTH/100:.2f}")
+
+        finally:
+            # Restore signal states
+            for w, _prev in old_blocks:
+                try:
+                    w.blockSignals(False)
+                except Exception:
+                    pass
+
+        # Re-apply dependent enable/disable states exactly like normal interactions
+        try:
+            # no-black-clip disables BP row
+            self.row_bp.setEnabled(not self.chk_no_black_clip.isChecked())
+        except Exception:
+            pass
+
+        try:
+            # HDR enables HDR row
+            self.hdr_row.setEnabled(self.chk_hdr.isChecked())
+        except Exception:
+            pass
+
+        try:
+            # Curves enables curves row
+            self.curves_row.setEnabled(self.chk_curves.isChecked())
+        except Exception:
+            pass
+
+        try:
+            # Luma-only enables dropdown + blend row, disables linked
+            luma_on = self.chk_luma_only.isChecked()
+            self.cmb_luma.setEnabled(luma_on)
+            self.luma_blend_row.setEnabled(luma_on)
+            self.chk_linked.setEnabled(not luma_on)
+        except Exception:
+            pass
+
+        # Auto-suggest HDR knee from target (since we cleared lock)
+        try:
+            t = float(self.spin_target.value())
+            knee = float(np.clip(t + 0.10, 0.10, 0.95))
+            self.sld_hdr_knee.setValue(int(round(knee * 100)))
+            self.lbl_hdr_knee.setText(f"{knee:.2f}")
+        except Exception:
+            pass
+
+        # Refresh baseline preview + clip stats
+        self._populate_initial_preview()
+
 
     def _clip_mode_label(self, imgf: np.ndarray) -> str:
         # Mono image
@@ -626,7 +773,8 @@ class StatisticalStretchDialog(QDialog):
         self._job_mode = mode
 
         self._set_controls_enabled(False)
-        self._show_busy("Statistical Stretch", "Processing…")
+        self._show_busy("Statistical Stretch", "Processing preview…" if mode == "preview" else "Applying stretch…")
+
 
         self._thread = QThread(self._main)
         self._worker = _StretchWorker(self)
