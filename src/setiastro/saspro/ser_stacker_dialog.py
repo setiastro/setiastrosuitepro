@@ -831,7 +831,8 @@ class SERStackerDialog(QDialog):
         self._main = main
         self._source = source
         self._source_doc = source_doc
-
+        self.setMinimumWidth(980)     # or 1024 if you want it beefier
+        self.resize(1040, 720)        # initial size (width, height)
         # IMPORTANT: now _ser_path is never empty for the common SER case
         self._ser_path = ser_path
 
@@ -1106,6 +1107,7 @@ class SERStackerDialog(QDialog):
 
         self.graph = QualityGraph(self)
         self.graph.setMinimumHeight(180)
+        self.graph.setMinimumWidth(480)  # keeps the right column from scrunching
 
         # small hint under the graph
         self.lbl_graph_hint = QLabel("Tip: click the graph to set Keep cutoff.", self)
