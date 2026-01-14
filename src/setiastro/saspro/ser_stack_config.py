@@ -15,6 +15,7 @@ class SERStackConfig:
     track_mode: TrackMode = "planetary"
     surface_anchor: Optional[Tuple[int, int, int, int]] = None
     keep_percent: float = 20.0
+    bayer_pattern: Optional[str] = None
 
     # AP / alignment
     ap_size: int = 64
@@ -38,7 +39,12 @@ class SERStackConfig:
         self.track_mode = kwargs.pop("track_mode", "planetary")
         self.surface_anchor = kwargs.pop("surface_anchor", None)
         self.keep_percent = float(kwargs.pop("keep_percent", 20.0))
-
+        self.bayer_pattern = kwargs.pop("bayer_pattern", None)
+        if isinstance(self.bayer_pattern, str):
+            s = self.bayer_pattern.strip().upper()
+            self.bayer_pattern = s if s in ("RGGB", "BGGR", "GRBG", "GBRG") else None
+        else:
+            self.bayer_pattern = None
         self.ap_size = int(kwargs.pop("ap_size", 64))
         self.ap_spacing = int(kwargs.pop("ap_spacing", 48))
         self.ap_min_mean = float(kwargs.pop("ap_min_mean", 0.03))

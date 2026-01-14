@@ -18,6 +18,56 @@ from setiastro.saspro.ser_stack_config import SERStackConfig
 from setiastro.saspro.ser_tracking import PlanetaryTracker, SurfaceTracker, _to_mono01
 from setiastro.saspro.imageops.serloader import open_planetary_source, PlanetaryFrameSource
 
+_BAYER_TO_CV2 = {
+    "RGGB": cv2.COLOR_BayerRG2RGB,
+    "BGGR": cv2.COLOR_BayerBG2RGB,
+    "GRBG": cv2.COLOR_BayerGR2RGB,
+    "GBRG": cv2.COLOR_BayerGB2RGB,
+}
+
+def _cfg_bayer_pattern(cfg) -> str | None:
+    # cfg.bayer_pattern might be missing in older saved projects; be defensive
+    return getattr(cfg, "bayer_pattern", None)
+
+def _cfg_debayer_enabled(cfg, src_meta_color_name: str) -> bool:
+    """
+    Decide if we should debayer.
+    - If user specifies a pattern (not AUTO/None), debayer is meaningful (especially for AVI mosaic).
+    - If source is already RGB/BGR, debayer flag does nothing.
+    - If source is MONO and user did not request a pattern, leave mono.
+    """
+    pat = _cfg_bayer_pattern(cfg)
+    if pat is None:
+        return True  # safe default; SERReader will only debayer if _is_bayer(color_name)
+    # user specified something (RGGB/GRBG/etc) -> debayer should be on
+    return True
+
+def _get_frame(src, idx: int, *, roi, debayer: bool, to_float01: bool, force_rgb: bool, bayer_pattern: str | None):
+    """
+    Drop-in wrapper:
+    - passes cfg.bayer_pattern down to sources that support it
+    - stays compatible with sources whose get_frame() doesn't accept bayer_pattern yet
+    """
+    try:
+        return src.get_frame(
+            int(idx),
+            roi=roi,
+            debayer=debayer,
+            to_float01=to_float01,
+            force_rgb=force_rgb,
+            bayer_pattern=bayer_pattern,
+        )
+    except TypeError:
+        # Back-compat: older PlanetaryFrameSource implementations
+        return src.get_frame(
+            int(idx),
+            roi=roi,
+            debayer=debayer,
+            to_float01=to_float01,
+            force_rgb=force_rgb,
+        )
+
+
 @dataclass
 class AnalyzeResult:
     frames_total: int
@@ -553,7 +603,8 @@ def _coarse_surface_ref_locked(
     # ---------------------------
     src0, owns0 = _ensure_source(source_obj, cache_items=2)
     try:
-        img0 = src0.get_frame(0, roi=roi, debayer=debayer, to_float01=True, force_rgb=bool(to_rgb))
+        img0 = _get_frame(src0, 0, roi=roi, debayer=debayer, to_float01=True, force_rgb=bool(to_rgb), bayer_pattern=bayer_pattern)
+
         ref0 = _to_mono01(img0).astype(np.float32, copy=False)
         ref0 = _downN(ref0)
         ref0p = _bandpass(ref0) if bandpass else (ref0 - float(ref0.mean()))
@@ -644,7 +695,8 @@ def _coarse_surface_ref_locked(
     try:
         pred_x, pred_y = float(rx0), float(ry0)
         for b in boundaries[1:]:
-            img = srck.get_frame(b, roi=roi, debayer=debayer, to_float01=True, force_rgb=bool(to_rgb))
+            img = _get_frame(srck, b, roi=roi, debayer=debayer, to_float01=True, force_rgb=bool(to_rgb), bayer_pattern=bayer_pattern)
+
             cur = _to_mono01(img).astype(np.float32, copy=False)
             cur = _downN(cur)
             curp = _bandpass(cur) if bandpass else (cur - float(cur.mean()))
@@ -690,7 +742,7 @@ def _coarse_surface_ref_locked(
                     pred_x, pred_y = start_pred[i]
                     continue
 
-                img = src.get_frame(i, roi=roi, debayer=debayer, to_float01=True, force_rgb=bool(to_rgb))
+                img = _get_frame(src, i, roi=roi, debayer=debayer, to_float01=True, force_rgb=bool(to_rgb), bayer_pattern=bayer_pattern)
                 cur = _to_mono01(img).astype(np.float32, copy=False)
                 cur = _downN(cur)
                 curp = _bandpass(cur) if bandpass else (cur - float(cur.mean()))
@@ -720,7 +772,7 @@ def _coarse_surface_ref_locked(
         try:
             pred_x, pred_y = float(rx0), float(ry0)
             for i in range(1, n):
-                img = src.get_frame(i, roi=roi, debayer=debayer, to_float01=True, force_rgb=bool(to_rgb))
+                img = _get_frame(src, i, roi=roi, debayer=debayer, to_float01=True, force_rgb=bool(to_rgb), bayer_pattern=bayer_pattern)
                 cur = _to_mono01(img).astype(np.float32, copy=False)
                 cur = _downN(cur)
                 curp = _bandpass(cur) if bandpass else (cur - float(cur.mean()))
@@ -854,6 +906,8 @@ def stack_ser(
     keep_percent: float = 20.0,
     track_mode: str = "planetary",
     surface_anchor=None,
+    to_rgb: bool = False,                 # ✅ add this
+    bayer_pattern: Optional[str] = None,  # ✅ strongly recommended since dialog passes it    
     analysis: AnalyzeResult | None = None,
     local_warp: bool = True,
     max_dim: int = 512,
@@ -866,6 +920,7 @@ def stack_ser(
     drizzle_pixfrac: float = 0.80,
     drizzle_kernel: str = "gaussian",
     drizzle_sigma: float = 0.0,
+
 ) -> tuple[np.ndarray, dict]:
     source_obj = source
 
@@ -908,7 +963,7 @@ def stack_ser(
         ap_size = int(getattr(analysis, "ap_size", 64) or 64)
 
         # frame shape for accumulator
-        first = src0.get_frame(int(keep_idx[0]), roi=roi, debayer=debayer, to_float01=True, force_rgb=False)
+        first = _get_frame(src0, int(keep_idx[0]), roi=roi, debayer=debayer, to_float01=True, force_rgb=False, bayer_pattern=bayer_pattern)
         acc_shape = first.shape  # (H,W) or (H,W,3)
     finally:
         if owns0:
@@ -986,7 +1041,7 @@ def stack_ser(
                 wacc = 0.0
 
             for i in chunk:
-                img = src.get_frame(int(i), roi=roi, debayer=debayer, to_float01=True, force_rgb=False).astype(np.float32, copy=False)
+                img = _get_frame(src, int(i), roi=roi, debayer=debayer, to_float01=True, force_rgb=False, bayer_pattern=bayer_pattern).astype(np.float32, copy=False)
 
                 # Global prior (from Analyze)
                 gdx = float(analysis.dx[int(i)]) if (analysis.dx is not None) else 0.0
@@ -1127,6 +1182,7 @@ def _build_reference(
     to_rgb: bool,
     ref_mode: str,
     ref_count: int,
+    bayer_pattern=None,
 ) -> np.ndarray:
     """
     ref_mode:
@@ -1134,7 +1190,7 @@ def _build_reference(
       - "best_stack": return mean of best ref_count frames
     """
     best_idx = int(order[0])
-    f0 = src.get_frame(best_idx, roi=roi, debayer=debayer, to_float01=True, force_rgb=bool(to_rgb))
+    f0 = _get_frame(src, best_idx, roi=roi, debayer=debayer, to_float01=True, force_rgb=bool(to_rgb), bayer_pattern=bayer_pattern)
     if ref_mode != "best_stack" or ref_count <= 1:
         return f0.astype(np.float32, copy=False)
 
@@ -1142,7 +1198,7 @@ def _build_reference(
     acc = np.zeros_like(f0, dtype=np.float32)
     for j in range(k):
         idx = int(order[j])
-        fr = src.get_frame(idx, roi=roi, debayer=debayer, to_float01=True, force_rgb=bool(to_rgb))
+        fr = _get_frame(src, idx, roi=roi, debayer=debayer, to_float01=True, force_rgb=bool(to_rgb), bayer_pattern=bayer_pattern)
         acc += fr.astype(np.float32, copy=False)
     ref = acc / float(k)
     return np.clip(ref, 0.0, 1.0).astype(np.float32, copy=False)
@@ -1168,6 +1224,7 @@ def analyze_ser(
     smooth_sigma: float = 1.5,   # kept for API compat
     thresh_pct: float = 92.0,    # kept for API compat
     ref_mode: str = "best_frame",    # "best_frame" or "best_stack"
+    bayer_pattern: Optional[str] = None,
     ref_count: int = 5,
     max_dim: int = 512,
     progress_cb=None,
@@ -1187,7 +1244,10 @@ def analyze_ser(
             (B) AP search+refine that follows coarse, with outlier rejection,
             (C) robust median -> final dx/dy/conf
     """
+
     source_obj = _cfg_get_source(cfg)
+    bpat = _cfg_bayer_pattern(cfg)
+
     if not source_obj:
         raise ValueError("SERStackConfig.source/ser_path is empty")
 
@@ -1254,12 +1314,13 @@ def analyze_ser(
         src, owns = _ensure_source(source_obj, cache_items=0)
         try:
             for i in chunk.tolist():
-                img = src.get_frame(
-                    int(i),
+                img = _get_frame(
+                    src, int(i),
                     roi=roi_used,
                     debayer=debayer,
                     to_float01=True,
                     force_rgb=bool(to_rgb),
+                    bayer_pattern=bpat,
                 )
                 m = _downsample_mono01(img, max_dim=max_dim)
 
@@ -1305,9 +1366,12 @@ def analyze_ser(
     try:
         if cfg.track_mode == "surface":
             # Surface ref must be frame 0 in roi_used coords
-            ref_img = src_ref.get_frame(
-                0, roi=roi_used, debayer=debayer, to_float01=True, force_rgb=bool(to_rgb)
+            ref_img = _get_frame(
+                src_ref, 0,
+                roi=roi_used, debayer=debayer, to_float01=True, force_rgb=bool(to_rgb),
+                bayer_pattern=bpat,
             ).astype(np.float32, copy=False)
+
             ref_mode = "first_frame"
             ref_count = 1
         else:
@@ -1319,7 +1383,9 @@ def analyze_ser(
                 to_rgb=to_rgb,
                 ref_mode=ref_mode,
                 ref_count=ref_count,
+                bayer_pattern=bpat,   # ✅ add this
             ).astype(np.float32, copy=False)
+
     finally:
         if owns_ref:
             try:
@@ -1384,6 +1450,7 @@ def analyze_ser(
             roi_used=roi_used,   # ✅ NEW
             debayer=debayer,
             to_rgb=to_rgb,
+            bayer_pattern=bpat,
             progress_cb=progress_cb,
             progress_every=25,
             down=2,
@@ -1426,12 +1493,13 @@ def analyze_ser(
             src, owns = _ensure_source(source_obj, cache_items=0)
             try:
                 for i in chunk.tolist():
-                    img = src.get_frame(
-                        int(i),
+                    img = _get_frame(
+                        src, int(i),
                         roi=roi_used,
                         debayer=debayer,
                         to_float01=True,
                         force_rgb=bool(to_rgb),
+                        bayer_pattern=bpat,
                     )
                     cur_m = _to_mono01(img).astype(np.float32, copy=False)
 
@@ -1554,12 +1622,13 @@ def analyze_ser(
             src, owns = _ensure_source(source_obj, cache_items=0)
             try:
                 for i in chunk.tolist():
-                    img = src.get_frame(
-                        int(i),
+                    img = _get_frame(
+                        src, int(i),
                         roi=roi_used,
                         debayer=debayer,
                         to_float01=True,
                         force_rgb=bool(to_rgb),
+                        bayer_pattern=bpat,
                     )
 
                     dx_i, dy_i, cf_i = tracker.shift_to_ref(img, ref_center)
@@ -1647,6 +1716,8 @@ def realign_ser(
       - recompute coarse drift (ref-locked) on roi_track
       - refine via AP search+refine FOLLOWING coarse + outlier rejection
     """
+    bpat = _cfg_bayer_pattern(cfg)
+
     if analysis is None:
         raise ValueError("analysis is None")
     if analysis.ref_image is None:
@@ -1748,6 +1819,7 @@ def realign_ser(
             roi_used=roi_used,   # ✅ NEW
             debayer=debayer,
             to_rgb=to_rgb,
+            bayer_pattern=bpat,
             progress_cb=progress_cb,
             progress_every=25,
             down=2,
@@ -1776,12 +1848,13 @@ def realign_ser(
             src, owns = _ensure_source(source_obj, cache_items=0)
             try:
                 for i in chunk.tolist():
-                    img = src.get_frame(
-                        int(i),
+                    img = _get_frame(
+                        src, int(i),
                         roi=roi_used,
                         debayer=debayer,
                         to_float01=True,
                         force_rgb=bool(to_rgb),
+                        bayer_pattern=bpat,
                     )
                     cur_m = _to_mono01(img).astype(np.float32, copy=False)
 
@@ -1902,12 +1975,13 @@ def realign_ser(
             src, owns = _ensure_source(source_obj, cache_items=0)
             try:
                 for i in chunk.tolist():
-                    img = src.get_frame(
-                        int(i),
+                    img = _get_frame(
+                        src, int(i),
                         roi=roi_used,
                         debayer=debayer,
                         to_float01=True,
                         force_rgb=bool(to_rgb),
+                        bayer_pattern=bpat,
                     )
 
                     dx_i, dy_i, cf_i = tracker.shift_to_ref(img, ref_center)

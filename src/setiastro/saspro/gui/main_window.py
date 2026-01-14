@@ -4430,6 +4430,93 @@ class AstroSuiteProMainWindow(
             except Exception:
                 pass
 
+    def _swap_rb_active(self):
+        """
+        Swap R and B channels in the active RGB document (undoable).
+        Intended for debayer/channel-order mismatches.
+        """
+        dm = getattr(self, "docman", None)
+        if dm is None:
+            return
+
+        try:
+            doc = dm.get_active_document()
+        except Exception:
+            doc = None
+        if doc is None:
+            return
+
+        img = getattr(doc, "image", None)
+        if img is None:
+            return
+
+        import numpy as np
+        x = np.asarray(img)
+
+        # Must be RGB
+        if not (x.ndim == 3 and x.shape[-1] == 3):
+            try:
+                name = getattr(doc, "display_name", lambda: None)() or getattr(doc, "name", "") or "Active"
+            except Exception:
+                name = "Active"
+
+            if hasattr(self, "_log"):
+                self._log(f"Swap R/B: '{name}' is not RGB (shape={getattr(x,'shape',None)}).")
+            return
+
+        before_shape = x.shape
+        before_dtype = x.dtype
+
+        # swap channels without changing dtype
+        # (copy is safest so we don't mutate shared views)
+        out = x.copy()
+        out[..., 0], out[..., 2] = x[..., 2], x[..., 0]
+
+        # metadata: preserve existing, but annotate operation
+        try:
+            md = dict(getattr(doc, "metadata", None) or {})
+        except Exception:
+            md = {}
+
+        md["color_model"] = md.get("color_model", "RGB")
+        md["channels"] = 3
+        md["is_mono"] = False
+        md["source"] = (md.get("source") or "Edit")
+
+        # If you track op params for history explorer
+        md["__op_params__"] = {
+            "op": "swap_rb",
+            "from_shape": tuple(before_shape),
+            "to_shape": tuple(out.shape),
+            "dtype": str(before_dtype),
+        }
+
+        try:
+            name = getattr(doc, "display_name", lambda: None)() or getattr(doc, "name", "") or "Active"
+        except Exception:
+            name = "Active"
+
+        try:
+            dm.update_active_document(
+                out,
+                metadata=md,
+                step_name="Swap R ↔ B",
+                doc=doc,
+            )
+
+            if hasattr(self, "_log"):
+                self._log(
+                    f"Swap R/B: '{name}' swapped channels "
+                    f"(shape={before_shape}, dtype={before_dtype})."
+                )
+
+        except Exception:
+            import traceback
+            try:
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.critical(self, "Swap R/B", traceback.format_exc())
+            except Exception:
+                pass
 
 
     def _on_stackingsuite_relaunch(self, old_dir: str, new_dir: str):
