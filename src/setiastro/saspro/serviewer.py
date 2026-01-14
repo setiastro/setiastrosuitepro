@@ -113,6 +113,25 @@ class SERViewer(QDialog):
         scrub.addWidget(self.lbl_frame, 0)
         left.addLayout(scrub)
 
+        # Trim Options (right)
+        trim = QGroupBox("Trim", self)
+        tform = QFormLayout(trim)
+
+        self.spin_trim_start = QSpinBox(self)
+        self.spin_trim_end = QSpinBox(self)
+        self.spin_trim_start.setRange(0, 0)
+        self.spin_trim_end.setRange(0, 0)
+
+        self.btn_save_trimmed = QPushButton("Save Trimmed SER…", self)
+        self.btn_save_trimmed.setEnabled(False)
+
+        tform.addRow("Start frame", self.spin_trim_start)
+        tform.addRow("End frame", self.spin_trim_end)
+        tform.addRow("", self.btn_save_trimmed)
+
+        left.addWidget(trim, 0)
+
+
         # Preview area (left)
         self.scroll = QScrollArea(self)
         # IMPORTANT: for sane zoom + scrollbars, do NOT let the scroll area auto-resize the widget
@@ -271,6 +290,10 @@ class SERViewer(QDialog):
         self.cmb_bayer.currentIndexChanged.connect(self._refresh)
         self.chk_debayer.toggled.connect(lambda v: self.cmb_bayer.setEnabled(bool(v)))
         self.cmb_bayer.setEnabled(self.chk_debayer.isChecked())
+        self.spin_trim_start.valueChanged.connect(self._on_trim_changed)
+        self.spin_trim_end.valueChanged.connect(self._on_trim_changed)
+        self.btn_save_trimmed.clicked.connect(self._save_trimmed_ser)
+
         self.resize(1200, 800)
 
 
@@ -1066,6 +1089,18 @@ class SERViewer(QDialog):
         self.sld.setRange(0, max(0, m.frames - 1))
         self.sld.setValue(0)
 
+        self.spin_trim_start.blockSignals(True)
+        self.spin_trim_end.blockSignals(True)
+        self.spin_trim_start.setRange(0, max(0, m.frames - 1))
+        self.spin_trim_end.setRange(0, max(0, m.frames - 1))
+        self.spin_trim_start.setValue(0)
+        self.spin_trim_end.setValue(max(0, m.frames - 1))
+        self.spin_trim_start.blockSignals(False)
+        self.spin_trim_end.blockSignals(False)
+
+        self.btn_save_trimmed.setEnabled(m.frames > 0)
+
+
         # Set ROI defaults to centered box
         cx = max(0, (m.width // 2) - 256)
         cy = max(0, (m.height // 2) - 256)
@@ -1118,6 +1153,66 @@ class SERViewer(QDialog):
             return None
         return (int(self.spin_x.value()), int(self.spin_y.value()),
                 int(self.spin_w.value()), int(self.spin_h.value()))
+
+    def _on_trim_changed(self):
+        if self.reader is None:
+            return
+        n = max(0, int(self.reader.meta.frames) - 1)
+        a = int(self.spin_trim_start.value())
+        b = int(self.spin_trim_end.value())
+        a = max(0, min(n, a))
+        b = max(0, min(n, b))
+        if a > b:
+            # keep it intuitive: clamp end to start
+            b = a
+            self.spin_trim_end.blockSignals(True)
+            self.spin_trim_end.setValue(b)
+            self.spin_trim_end.blockSignals(False)
+
+    def _save_trimmed_ser(self):
+        if self.reader is None:
+            return
+
+        start = int(self.spin_trim_start.value())
+        end = int(self.spin_trim_end.value())
+        if end < start:
+            end = start
+
+        # default output name next to source
+        src = self.get_source_spec()
+        if isinstance(src, str) and src:
+            base_dir = os.path.dirname(src)
+            base_name = os.path.splitext(os.path.basename(src))[0]
+        else:
+            base_dir = self._last_open_dir() or os.getcwd()
+            base_name = "trimmed"
+
+        default_path = os.path.join(base_dir, f"{base_name}_trim_{start:05d}-{end:05d}.ser")
+
+        out_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Trimmed SER",
+            default_path,
+            "SER Videos (*.ser)"
+        )
+        if not out_path:
+            return
+        if not out_path.lower().endswith(".ser"):
+            out_path += ".ser"
+
+        try:
+            from setiastro.saspro.imageops.serloader import export_trimmed_to_ser
+            export_trimmed_to_ser(self.reader, out_path, start, end)
+        except Exception as e:
+            QMessageBox.critical(self, "Trim", f"Failed to save trimmed SER:\n{e}")
+            return
+
+        QMessageBox.information(
+            self,
+            "Trim",
+            f"Saved trimmed SER:\n{out_path}\n\nFrames: {start}..{end} ({end-start+1})"
+        )
+
 
     def _refresh(self):
         if self.reader is None:

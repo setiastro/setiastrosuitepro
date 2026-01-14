@@ -242,34 +242,69 @@ def texture_clarity_headless(
 class TextureClarityWorker(QThread):
     preview_ready = pyqtSignal(object)  # np.ndarray [0..1]
 
-    def __init__(self, image: np.ndarray, params: dict):
+    def __init__(self, image: np.ndarray, params: dict, mask01: np.ndarray | None = None):
         super().__init__()
         self.image = image
         self.params = params
+        self.mask01 = mask01  # (H,W) float [0..1] or None
 
     def run(self):
         src = _to_float01(self.image)
-        if src is None: return
+        if src is None:
+            return
 
-        # Re-implement core logic efficiently for preview
-        texture_amt = self.params.get("t_amt", 0.0)
-        texture_rad = self.params.get("t_rad", 1.0)
-        clarity_amt = self.params.get("c_amt", 0.0)
-        clarity_rad = self.params.get("c_rad", 1.0)
+        texture_amt = float(self.params.get("t_amt", 0.0))
+        texture_rad = float(self.params.get("t_rad", 1.0))
+        clarity_amt  = float(self.params.get("c_amt", 0.0))
+        clarity_rad  = float(self.params.get("c_rad", 1.0))
 
         is_rgb = (src.ndim == 3 and src.shape[2] >= 3)
+
         if is_rgb:
             R, G, B = src[..., 0], src[..., 1], src[..., 2]
             L = 0.2126 * R + 0.7152 * G + 0.0722 * B
             L_new = _compute_texture_clarity(L, texture_amt, texture_rad, clarity_amt, clarity_rad)
+
             eps = 1e-7
             ratio = L_new / (L + eps)
             out = src[..., :3] * ratio[..., None]
         else:
-            if src.ndim == 3: src = src.squeeze()
-            out = _compute_texture_clarity(src, texture_amt, texture_rad, clarity_amt, clarity_rad)
-        
-        self.preview_ready.emit(np.clip(out, 0.0, 1.0).astype(np.float32))
+            s = src.squeeze() if src.ndim == 3 else src
+            out = _compute_texture_clarity(s, texture_amt, texture_rad, clarity_amt, clarity_rad)
+            if src.ndim == 3:  # preserve HxWx1 if that’s what caller had
+                out = out[..., None]
+
+        out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
+
+        # ✅ mask-aware blend (same behavior as headless)
+        m = self.mask01
+        if m is not None:
+            h, w = out.shape[:2]
+            if m.shape != (h, w):
+                if cv2 is not None:
+                    m = cv2.resize(m, (w, h), interpolation=cv2.INTER_NEAREST)
+                else:
+                    yi = (np.linspace(0, m.shape[0] - 1, h)).astype(np.int32)
+                    xi = (np.linspace(0, m.shape[1] - 1, w)).astype(np.int32)
+                    m = m[yi][:, xi]
+
+            # expand mask to channels
+            if out.ndim == 3 and m.ndim == 2:
+                m = m[:, :, None]
+
+            # make src match out shape for blending
+            src_f = src
+            if out.ndim == 2 and src_f.ndim == 3:
+                src_f = src_f.squeeze()
+            if out.ndim == 3 and src_f.ndim == 2:
+                src_f = np.repeat(src_f[:, :, None], out.shape[2], axis=2)
+            if out.ndim == 3 and src_f.ndim == 3 and src_f.shape[2] > out.shape[2]:
+                src_f = src_f[..., :out.shape[2]]
+
+            out = np.clip(src_f * (1.0 - m) + out * m, 0.0, 1.0).astype(np.float32, copy=False)
+
+        self.preview_ready.emit(out)
+
 
 # ---------- Dialog ----------
 
@@ -454,7 +489,10 @@ class TextureClarityDialog(QDialog):
             self._worker.terminate()
             self._worker.wait()
 
-        self._worker = TextureClarityWorker(self.doc.image, params)
+        # ✅ grab active mask at trigger time
+        mask01 = _active_mask_array_from_doc(self.doc)
+
+        self._worker = TextureClarityWorker(self.doc.image, params, mask01=mask01)
         self._worker.preview_ready.connect(self._on_preview_ready)
         self._worker.start()
 

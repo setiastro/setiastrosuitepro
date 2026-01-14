@@ -208,6 +208,128 @@ def _try_numba_debayer(mosaic: np.ndarray, pattern: str) -> Optional[np.ndarray]
             continue
     return None
 
+def _ser_color_id_from_name(color_name: str) -> int:
+    cn = str(color_name).strip().upper()
+    rev = {
+        "MONO": 0,
+        "BAYER_RGGB": 8,
+        "BAYER_GRBG": 9,
+        "BAYER_GBRG": 10,
+        "BAYER_BGGR": 11,
+        "RGB": 24,
+        "BGR": 25,
+        "RGBA": 26,
+        "BGRA": 27,
+    }
+    return rev.get(cn, 0)
+
+
+def export_trimmed_to_ser(src: "PlanetaryFrameSource", out_path: str, start: int, end: int) -> None:
+    """
+    Export frames [start..end] (inclusive) to a NEW .ser file.
+
+    - If src is SERReader: fast byte-copy of header + frame bytes (+ timestamps if present)
+    - Otherwise: decode each frame and write as RGB24 SER (8-bit)
+    """
+    start = int(start)
+    end = int(end)
+    if end < start:
+        end = start
+
+    meta = src.meta
+    n = int(meta.frames)
+    if n <= 0:
+        raise ValueError("Source has no frames.")
+    if start < 0 or start >= n or end < 0 or end >= n:
+        raise ValueError(f"Trim range out of bounds: {start}..{end} (0..{n-1})")
+
+    out_frames = end - start + 1
+
+    # ------------------------------------------------------------
+    # FAST PATH: SER -> SER (raw copy)
+    # ------------------------------------------------------------
+    if isinstance(src, SERReader):
+        mm = src._mm  # internal, but we're in the same module file
+        in_meta = src.meta
+
+        # Copy existing 178-byte header and patch the "frames" field
+        hdr = bytearray(mm[:SER_HEADER_SIZE])
+        # frames is the 7th uint32 in the <7I block starting at offset 14
+        # signature(14) + 6*4 bytes = 38
+        struct.pack_into("<I", hdr, SER_SIGNATURE_LEN + 6 * 4, int(out_frames))
+
+        # Write output
+        with open(out_path, "wb") as f:
+            f.write(hdr)
+
+            # Copy frames
+            fb = int(in_meta.frame_bytes)
+            for i in range(start, end + 1):
+                off = in_meta.data_offset + i * fb
+                f.write(mm[off:off + fb])
+
+            # Copy timestamps if present
+            if bool(in_meta.has_timestamps):
+                ts_base = in_meta.data_offset + in_meta.frames * fb
+                for i in range(start, end + 1):
+                    off = ts_base + i * 8
+                    f.write(mm[off:off + 8])
+
+        return
+
+    # ------------------------------------------------------------
+    # GENERIC PATH: AVI/sequence -> SER (encode)
+    # We write RGB24, 8-bit, little-endian, no timestamps.
+    # ------------------------------------------------------------
+    w = int(meta.width)
+    h = int(meta.height)
+    if w <= 0 or h <= 0:
+        # infer from a frame
+        fr0 = src.get_frame(start, roi=None, debayer=True, to_float01=False, force_rgb=True, bayer_pattern=None)
+        h, w = fr0.shape[:2]
+
+    # Build SER header from scratch
+    sig = b"LUCAM-RECORDER"
+    sig = sig[:SER_SIGNATURE_LEN].ljust(SER_SIGNATURE_LEN, b"\x00")
+
+    lu_id = 0
+    color_id = 24          # RGB
+    little_endian = 1
+    pixel_depth = 8
+    frames_u32 = int(out_frames)
+
+    hdr = bytearray(SER_HEADER_SIZE)
+    hdr[:SER_SIGNATURE_LEN] = sig
+    struct.pack_into("<7I", hdr, SER_SIGNATURE_LEN,
+                     int(lu_id), int(color_id), int(little_endian),
+                     int(w), int(h), int(pixel_depth), int(frames_u32))
+
+    # observer/instrument/telescope left blank (zeros)
+
+    with open(out_path, "wb") as f:
+        f.write(hdr)
+
+        for i in range(start, end + 1):
+            # Get RGB frame (force_rgb True handles mono)
+            img = src.get_frame(i, roi=None, debayer=True, to_float01=False, force_rgb=True, bayer_pattern=None)
+
+            # Ensure RGB uint8
+            if img.ndim == 2:
+                img = np.stack([img, img, img], axis=-1)
+            if img.shape[2] > 3:
+                img = img[..., :3]
+
+            if img.dtype != np.uint8:
+                if img.dtype in (np.float32, np.float64):
+                    img = np.clip(img, 0.0, 1.0)
+                    img = (img * 255.0).astype(np.uint8)
+                else:
+                    # uint16 etc -> downscale to 8-bit
+                    img = (img.astype(np.float32) / float(np.iinfo(img.dtype).max) * 255.0).astype(np.uint8)
+
+            # Write packed RGB bytes
+            f.write(img.tobytes(order="C"))
+
 
 class _LRUCache:
     """Tiny LRU cache for decoded frames."""
