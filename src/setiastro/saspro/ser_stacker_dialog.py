@@ -252,6 +252,12 @@ class APEditorDialog(QDialog):
         self.spin_ap_spacing.setRange(8, 256)
         self.spin_ap_spacing.setSingleStep(8)
         self.spin_ap_spacing.setValue(int(self._ap_spacing))
+        self.spin_ap_min_mean = QDoubleSpinBox(self)
+        self.spin_ap_min_mean.setRange(0.0, 1.0)
+        self.spin_ap_min_mean.setDecimals(3)
+        self.spin_ap_min_mean.setSingleStep(0.005)
+        self.spin_ap_min_mean.setValue(float(self._ap_min_mean))
+        self.spin_ap_min_mean.setToolTip("Minimum mean intensity (0..1) required for an AP tile to be placed.")
 
         ap_row.addWidget(self.lbl_ap)
         ap_row.addSpacing(6)
@@ -260,6 +266,9 @@ class APEditorDialog(QDialog):
         ap_row.addSpacing(10)
         ap_row.addWidget(QLabel("Spacing", self))
         ap_row.addWidget(self.spin_ap_spacing)
+        ap_row.addSpacing(10)
+        ap_row.addWidget(QLabel("Min mean", self))
+        ap_row.addWidget(self.spin_ap_min_mean)        
         ap_row.addStretch(1)
 
         outer.addLayout(ap_row, 0)
@@ -295,6 +304,7 @@ class APEditorDialog(QDialog):
         self._ap_debounce.setSingleShot(True)
         self._ap_debounce.setInterval(250)  # ms
         self._ap_debounce.timeout.connect(self._apply_ap_params_and_relayout)
+        self.spin_ap_min_mean.valueChanged.connect(self._schedule_ap_relayout)
 
         # apply redraw when changed
         self.spin_ap_size.valueChanged.connect(self._schedule_ap_relayout)
@@ -331,9 +341,11 @@ class APEditorDialog(QDialog):
         # Commit params
         self._ap_size = int(self.spin_ap_size.value())
         self._ap_spacing = int(self.spin_ap_spacing.value())
+        self._ap_min_mean = float(self.spin_ap_min_mean.value())
 
         # Re-autoplace using the updated params
         self._do_autoplace()
+
 
 
     def showEvent(self, e):
@@ -1190,6 +1202,7 @@ class SERStackerDialog(QDialog):
                 try:
                     self.spin_ap_size.setValue(int(dlg.ap_size()))
                     self.spin_ap_spacing.setValue(int(dlg.ap_spacing()))
+                    self.spin_ap_min.setValue(float(dlg.ap_min_mean()))
                 except Exception:
                     pass
 
