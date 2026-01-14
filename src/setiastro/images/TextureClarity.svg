@@ -1,0 +1,56 @@
+<svg width="500" height="500" viewBox="0 0 500 500" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="skyGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#0d0221;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#2a0e66;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="sunGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#ff9a00;stop-opacity:1" />
+      <stop offset="40%" style="stop-color:#ff0055;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#9900ff;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="textGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00ffff;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#ff00ff;stop-opacity:1" />
+    </linearGradient>
+    <filter id="neonGlow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="3.0" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <rect width="500" height="500" fill="url(#skyGradient)" />
+  <g transform="translate(250, 220)">
+    <circle r="120" fill="url(#sunGradient)" />
+    <rect x="-120" y="20" width="240" height="4" fill="#2a0e66" opacity="0.8" />
+    <rect x="-120" y="35" width="240" height="6" fill="#2a0e66" opacity="0.8" />
+    <rect x="-120" y="52" width="240" height="8" fill="#2a0e66" opacity="0.8" />
+    <rect x="-120" y="72" width="240" height="12" fill="#2a0e66" opacity="0.8" />
+    <rect x="-120" y="96" width="240" height="16" fill="#2a0e66" opacity="0.8" />
+  </g>
+  <g stroke="#ff00ff" stroke-width="2" opacity="0.4">
+    <line x1="0" y1="350" x2="500" y2="350" />
+    <line x1="0" y1="380" x2="500" y2="380" />
+    <line x1="0" y1="420" x2="500" y2="420" />
+    <line x1="0" y1="470" x2="500" y2="470" />
+    <line x1="250" y1="350" x2="250" y2="500" />
+    <line x1="250" y1="350" x2="50" y2="500" />
+    <line x1="250" y1="350" x2="-150" y2="500" />
+    <line x1="250" y1="350" x2="450" y2="500" />
+    <line x1="250" y1="350" x2="650" y2="500" />
+  </g>
+  <g font-family="'Times New Roman', Times, serif" font-weight="bold" font-style="italic" font-size="360" text-anchor="middle">
+    <text x="217" y="390" fill="#00ffff" opacity="0.7">TC</text>
+    <text x="233" y="390" fill="#ff0055" opacity="0.7">TC</text>
+    <text x="225" y="390" fill="url(#textGradient)" stroke="#ffffff" stroke-width="3" filter="url(#neonGlow)">TC</text>
+  </g>
+  <g fill="#ffffff" opacity="0.8">
+    <circle cx="50" cy="50" r="2" />
+    <circle cx="450" cy="80" r="2" />
+    <circle cx="100" cy="150" r="1.5" />
+    <circle cx="400" cy="20" r="1.5" />
+    <path d="M420 120 L422 130 L432 132 L422 134 L420 144 L418 134 L408 132 L418 130 Z" fill="#00ffff" />
+  </g>
+</svg>

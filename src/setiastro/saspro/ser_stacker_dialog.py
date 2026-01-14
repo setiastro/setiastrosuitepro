@@ -21,6 +21,7 @@ from PyQt6.QtGui import QPainter, QPen, QColor, QImage, QPixmap
 from setiastro.saspro.ser_stack_config import SERStackConfig
 
 from setiastro.saspro.ser_stacker import stack_ser, analyze_ser, AnalyzeResult
+from setiastro.saspro.ser_stacker import _shift_image
 
 def _source_basename_from_source(source: SourceSpec | None) -> str:
     """
@@ -328,6 +329,9 @@ class APEditorDialog(QDialog):
 
     def ap_spacing(self) -> int:
         return int(self._ap_spacing)
+
+    def ap_min_mean(self) -> float:
+        return float(self._ap_min_mean)
 
     def _schedule_ap_relayout(self):
         # Restart the timer each change
@@ -762,6 +766,7 @@ class _StackWorker(QThread):
                 drizzle_pixfrac=float(getattr(self.cfg, "drizzle_pixfrac", 0.80)),
                 drizzle_kernel=str(getattr(self.cfg, "drizzle_kernel", "gaussian")),
                 drizzle_sigma=float(getattr(self.cfg, "drizzle_sigma", 0.0)),
+                keep_mask=getattr(self.cfg, "keep_mask", None),
             )
 
 
@@ -794,6 +799,7 @@ class _ReAlignWorker(QThread):
                 self.analysis,
                 debayer=self.debayer,
                 to_rgb=self.to_rgb,
+                bayer_pattern=getattr(self.cfg, "bayer_pattern", None),
                 progress_cb=cb,
             )
             self.finished_ok.emit(out_analysis)
@@ -833,6 +839,7 @@ class SERStackerDialog(QDialog):
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         self._bayer_pattern = bayer_pattern
+        self._keep_mask = None  # np.ndarray bool shape (N,) or None
         # ---- Normalize inputs ------------------------------------------------
         # If caller provided only `source`, treat string-source as ser_path too.
         if source is None:
@@ -1089,10 +1096,13 @@ class SERStackerDialog(QDialog):
         row = QHBoxLayout()
         self.btn_analyze = QPushButton("(1) Analyze", self)
         self.btn_analyze.setEnabled(True)
-        self.btn_stack = QPushButton("(3) Stack Now", self)
+        self.btn_blink = QPushButton("(3) Blink Keepers", self)   # ✅ new
+        self.btn_stack = QPushButton("(4) Stack Now", self)
         self.btn_close = QPushButton("Close", self)
 
         row.addWidget(self.btn_analyze)
+        row.addStretch(1)
+        row.addWidget(self.btn_blink) 
         row.addStretch(1)
         row.addWidget(self.btn_stack)
         row.addWidget(self.btn_close)
@@ -1155,9 +1165,11 @@ class SERStackerDialog(QDialog):
 
         self.btn_close.clicked.connect(self.close)
         self.btn_stack.clicked.connect(self._start_stack)
+        self.btn_blink.clicked.connect(self._blink_keepers)
         self.cmb_track.currentIndexChanged.connect(self._update_anchor_warning)
         self.btn_analyze.clicked.connect(self._start_analyze)
         self.btn_edit_aps.clicked.connect(self._edit_aps)
+        self.spin_keep.valueChanged.connect(self._on_keep_changed)
 
         # Keep % edits update the cutoff line
         self.spin_keep.valueChanged.connect(self._update_graph_cutoff)
@@ -1344,6 +1356,7 @@ class SERStackerDialog(QDialog):
 
         self.btn_analyze.setEnabled(True)
         self.btn_stack.setEnabled(True)
+        self.btn_blink.setEnabled(True)
         self.btn_close.setEnabled(True)
 
         self._append_log(f"Analyze done. frames={ar.frames_total}  track={ar.track_mode}")
@@ -1378,6 +1391,42 @@ class SERStackerDialog(QDialog):
         q_sorted = self._analysis.quality[self._analysis.order]
         self.graph.set_data(q_sorted, keep_k=k)
 
+    def _blink_keepers(self):
+        if self._analysis is None:
+            return
+
+        N = int(self._analysis.frames_total)
+        keep_k = int(round(N * (float(self.spin_keep.value()) / 100.0)))
+        keep_k = max(1, min(N, keep_k))
+
+        cfg = self._make_cfg()
+        cfg.keep_mask = getattr(cfg, "keep_mask", None)
+
+        try:
+            dlg = BlinkKeepersDialog(
+                self,
+                cfg=cfg,
+                analysis=self._analysis,
+                debayer=bool(self.chk_debayer.isChecked()),
+                to_rgb=False,
+                keep_k=keep_k,
+            )
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                km = dlg.keep_mask_all_frames()
+                self._keep_mask = km
+
+                # log stats
+                kept = int(np.count_nonzero(km))
+                self._append_log(f"Blink Keepers: kept {kept}/{N} after manual rejects.")
+            else:
+                self._append_log("Blink Keepers cancelled (no changes).")
+        except Exception as e:
+            tb = traceback.format_exc()
+            QMessageBox.critical(self, "Blink Keepers Error", f"{e}\n\n{tb}")
+            self._append_log(f"Blink Keepers failed: {e}")
+            self._append_log(tb)
+
+
     def _make_cfg(self) -> SERStackConfig:
         scale_text = self.cmb_drizzle.currentText()
         if "1.5" in scale_text:
@@ -1396,6 +1445,7 @@ class SERStackerDialog(QDialog):
             surface_anchor=self._surface_anchor,
             keep_percent=float(self.spin_keep.value()),
             bayer_pattern=self._bayer_pattern,
+            keep_mask=getattr(self, "_keep_mask", None), 
 
             ap_size=int(self.spin_ap_size.value()),
             ap_spacing=int(self.spin_ap_spacing.value()),
@@ -1412,6 +1462,8 @@ class SERStackerDialog(QDialog):
             drizzle_sigma=float(self.spin_sigma.value()),
         )
 
+    def _on_keep_changed(self, _v):
+        self._keep_mask = None
 
     def _start_stack(self):
         mode = self._track_mode_value()
@@ -1420,6 +1472,7 @@ class SERStackerDialog(QDialog):
             return
 
         cfg = self._make_cfg()
+        cfg.keep_mask = self._keep_mask
         debayer = bool(self.chk_debayer.isChecked())
 
         self.btn_stack.setEnabled(False)
@@ -1498,3 +1551,288 @@ class SERStackerDialog(QDialog):
         self.btn_analyze.setEnabled(True)
         self._append_log("FAILED:")
         self._append_log(msg)
+
+class BlinkKeepersDialog(QDialog):
+    """
+    Blink through the frames currently selected to keep, allow user to reject any.
+    Returns a keep_mask (bool) for ALL frames, True=keep.
+    """
+    def __init__(self, parent=None, *, cfg: SERStackConfig, analysis: AnalyzeResult,
+                 debayer: bool, to_rgb: bool, keep_k: int):
+        super().__init__(parent)
+        self.setWindowTitle("Blink Keepers")
+        self.resize(1000, 750)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setFocus()  # so keypress works immediately
+        self.cfg = cfg
+        self.analysis = analysis
+        self.debayer = bool(debayer)
+        self.to_rgb = bool(to_rgb)
+
+        self.N = int(analysis.frames_total)
+        keep_k = max(1, min(self.N, int(keep_k)))
+
+        # keeper frame indices in original frame space
+        self.keepers = np.asarray(analysis.order[:keep_k], dtype=np.int32)
+
+        # rejection only over the keeper list
+        self.rejected = np.zeros((self.keepers.size,), dtype=bool)
+
+        # ---- UI ----
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(10, 10, 10, 10)
+        outer.setSpacing(8)
+
+        self.lbl = QLabel(self)
+        self.lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl.setStyleSheet("background:#111;")
+        self.lbl.setMinimumHeight(480)
+        outer.addWidget(self.lbl, 1)
+        # --- Instructions / shortcuts ---
+        self.lbl_help = QLabel(self)
+        self.lbl_help.setWordWrap(True)
+        self.lbl_help.setStyleSheet(
+            "color:#9aa; background:#151515; border:1px solid #2a2a2a;"
+            "border-radius:6px; padding:6px; font-size:11px;"
+        )
+        self.lbl_help.setText(
+            "Shortcuts: "
+            "←/→ (or ↑/↓) = Prev/Next   |   PgUp/PgDn = Prev/Next\n"
+            "R or Space = Toggle Reject + Next   |   Backspace = Toggle Reject + Prev\n"
+            "Esc = Cancel   |   Enter = OK"
+        )
+        outer.addWidget(self.lbl_help, 0)
+        info_row = QHBoxLayout()
+        self.lbl_info = QLabel("", self)
+        self.lbl_info.setStyleSheet("color:#bbb;")
+        self.lbl_info.setWordWrap(True)
+        info_row.addWidget(self.lbl_info, 1)
+
+        self.btn_toggle = QPushButton("Reject", self)
+        self.btn_toggle.setCheckable(True)
+        info_row.addWidget(self.btn_toggle, 0)
+
+        outer.addLayout(info_row)
+
+        nav = QHBoxLayout()
+        self.btn_prev = QPushButton("◀ Prev", self)
+        self.btn_next = QPushButton("Next ▶", self)
+
+        self.sld = QSlider(Qt.Orientation.Horizontal, self)
+        self.sld.setRange(0, max(0, self.keepers.size - 1))
+        self.sld.setValue(0)
+
+        self.lbl_pos = QLabel("", self)
+        self.lbl_pos.setStyleSheet("color:#aaa; min-width:90px;")
+
+        nav.addWidget(self.btn_prev)
+        nav.addWidget(self.sld, 1)
+        nav.addWidget(self.btn_next)
+        nav.addWidget(self.lbl_pos)
+        outer.addLayout(nav)
+
+        btns = QHBoxLayout()
+        self.btn_ok = QPushButton("OK", self)
+        self.btn_cancel = QPushButton("Cancel", self)
+        btns.addStretch(1)
+        btns.addWidget(self.btn_ok)
+        btns.addWidget(self.btn_cancel)
+        outer.addLayout(btns)
+
+        # ---- signals ----
+        self.btn_cancel.clicked.connect(self.reject)
+        self.btn_ok.clicked.connect(self.accept)
+        self.btn_prev.clicked.connect(lambda: self._step(-1))
+        self.btn_next.clicked.connect(lambda: self._step(+1))
+        self.sld.valueChanged.connect(self._show_index)
+        self.btn_toggle.clicked.connect(lambda: self._toggle_reject_and_advance(+1))
+
+        # ---- load source ----
+        from setiastro.saspro.imageops.serloader import open_planetary_source
+        self.src = open_planetary_source(
+            self.cfg.source,
+            cache_items=20,
+        )
+        self._debayer = bool(debayer)
+        self._bayer_pattern = getattr(self.cfg, "bayer_pattern", None)
+        self._force_rgb = True
+        self.lbl.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.sld.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_prev.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_next.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_toggle.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._show_index(0)
+
+    def _toggle_reject_at(self, idx: int):
+        if 0 <= idx < self.rejected.size:
+            self.rejected[idx] = ~self.rejected[idx]
+            self._update_labels()
+
+    def _toggle_reject_and_advance(self, step: int = +1):
+        i = int(self.sld.value())
+        if self.keepers.size <= 0:
+            return
+
+        self._toggle_reject_at(i)
+
+        # advance (clamped)
+        j = i + int(step)
+        j = max(0, min(int(self.keepers.size) - 1, j))
+        self.sld.setValue(j)
+
+    def keyPressEvent(self, e):
+        k = e.key()
+        mods = e.modifiers()
+
+        # ignore if user is holding Ctrl/Alt/Meta (don’t fight standard shortcuts)
+        if mods & (Qt.KeyboardModifier.ControlModifier |
+                Qt.KeyboardModifier.AltModifier |
+                Qt.KeyboardModifier.MetaModifier):
+            super().keyPressEvent(e)
+            return
+
+        if k in (Qt.Key.Key_Right, Qt.Key.Key_Down, Qt.Key.Key_PageDown):
+            self._step(+1)
+            e.accept()
+            return
+
+        if k in (Qt.Key.Key_Left, Qt.Key.Key_Up, Qt.Key.Key_PageUp):
+            self._step(-1)
+            e.accept()
+            return
+
+        # R toggles reject and moves to next
+        if k == Qt.Key.Key_R:
+            self._toggle_reject_and_advance(+1)
+            e.accept()
+            return
+
+        # Space does the same (nice for rapid triage)
+        if k == Qt.Key.Key_Space:
+            self._toggle_reject_and_advance(+1)
+            e.accept()
+            return
+
+        # Optional: backspace toggles and moves back
+        if k == Qt.Key.Key_Backspace:
+            self._toggle_reject_and_advance(-1)
+            e.accept()
+            return
+        if k == Qt.Key.Key_Escape:
+            self.reject()
+            e.accept()
+            return
+        if k in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self.accept()
+            e.accept()
+            return
+        super().keyPressEvent(e)
+
+
+    def _step(self, d: int):
+        i = int(self.sld.value()) + int(d)
+        i = max(0, min(int(self.keepers.size) - 1, i))
+        self.sld.setValue(i)
+
+    def _toggle_reject_current(self, checked: bool):
+        i = int(self.sld.value())
+        if 0 <= i < self.rejected.size:
+            self.rejected[i] = bool(checked)
+            self._update_labels()
+
+    def _update_labels(self):
+        i = int(self.sld.value())
+        fi = int(self.keepers[i]) if self.keepers.size else 0
+        q = float(self.analysis.quality[fi]) if self.analysis.quality is not None else 0.0
+
+        is_rej = bool(self.rejected[i]) if self.rejected.size else False
+
+        self.lbl_pos.setText(f"{i+1}/{int(self.keepers.size)}")
+        self.lbl_info.setText(
+            f"Keeper #{i+1}  |  Frame index: {fi}  |  Quality: {q:.6g}  |  "
+            f"{'REJECTED' if is_rej else 'KEEP'}"
+        )
+
+        # ✅ colorize text when rejected
+        if is_rej:
+            self.lbl_info.setStyleSheet("color:#f66; font-weight:600;")   # red
+            self.lbl_pos.setStyleSheet("color:#f66; min-width:90px;")
+            # optional: make the button look “danger”
+            self.btn_toggle.setStyleSheet("background:#3a1111; color:#f66;")
+        else:
+            self.lbl_info.setStyleSheet("color:#bbb;")
+            self.lbl_pos.setStyleSheet("color:#aaa; min-width:90px;")
+            self.btn_toggle.setStyleSheet("")  # back to default
+
+        block = self.btn_toggle.blockSignals(True)
+        try:
+            self.btn_toggle.setChecked(is_rej)
+            self.btn_toggle.setText("Un-reject" if is_rej else "Reject")
+        finally:
+            self.btn_toggle.blockSignals(block)
+
+
+    @staticmethod
+    def _disp_u8(mono01: np.ndarray) -> np.ndarray:
+        mono = np.asarray(mono01, dtype=np.float32)
+        mono = np.clip(mono, 0.0, 1.0)
+        lo = float(np.percentile(mono, 1.0))
+        hi = float(np.percentile(mono, 99.5))
+        if hi <= lo + 1e-8:
+            hi = lo + 1e-3
+        v = (mono - lo) / (hi - lo)
+        v = np.clip(v, 0.0, 1.0)
+        return (v * 255.0 + 0.5).astype(np.uint8)
+
+    def _show_index(self, i: int):
+        if self.keepers.size == 0:
+            return
+        i = int(max(0, min(int(self.keepers.size) - 1, int(i))))
+        fi = int(self.keepers[i])
+
+        roi = getattr(self.cfg, "roi", None)
+        img = self.src.get_frame(
+            fi,
+            roi=roi,
+            debayer=bool(self._debayer),
+            to_float01=True,
+            force_rgb=bool(self._force_rgb),
+            bayer_pattern=getattr(self, "_bayer_pattern", None),
+        ).astype(np.float32, copy=False)
+
+        # ✅ apply analyze global alignment (same as stack_ser does first)
+        gdx = float(self.analysis.dx[int(fi)]) if (getattr(self.analysis, "dx", None) is not None) else 0.0
+        gdy = float(self.analysis.dy[int(fi)]) if (getattr(self.analysis, "dy", None) is not None) else 0.0
+        img = _shift_image(img, gdx, gdy)
+
+        # display mono channel
+        if img.ndim == 3:
+            img = img[..., 0]
+
+        u8 = self._disp_u8(img)
+        h, w = u8.shape
+        qimg = QImage(u8.data, w, h, w, QImage.Format.Format_Grayscale8)
+        pm = QPixmap.fromImage(qimg.copy())
+
+        self.lbl.setPixmap(pm.scaled(
+            self.lbl.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
+        ))
+        self._update_labels()
+
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._show_index(self.sld.value())
+
+    def keep_mask_all_frames(self) -> np.ndarray:
+        """
+        Convert keeper+rejected into a full N-length keep mask.
+        """
+        km = np.zeros((self.N,), dtype=bool)
+        km[self.keepers] = True
+        # turn off rejected keepers
+        if self.keepers.size:
+            km[self.keepers[self.rejected]] = False
+        return km

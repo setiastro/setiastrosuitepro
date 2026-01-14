@@ -13,13 +13,14 @@ from PyQt6.QtWidgets import QMenu, QToolButton
 from PyQt6.QtCore import QElapsedTimer
 
 import sys
+import os
 
 if TYPE_CHECKING:
     pass
 
 # Import icon paths - these are needed at runtime
 from setiastro.saspro.resources import (
-    icon_path, green_path, neutral_path, whitebalance_path,
+    icon_path, green_path, neutral_path, whitebalance_path, texture_clarity_path,
     morpho_path, clahe_path, starnet_path, staradd_path, LExtract_path,
     LInsert_path, rgbcombo_path, rgbextract_path, graxperticon_path,
     cropicon_path, openfile_path, abeicon_path, undoicon_path, redoicon_path,
@@ -222,6 +223,7 @@ class ToolbarMixin:
         tb_fn.addAction(self.act_wavescale_hdr)
         tb_fn.addAction(self.act_wavescale_de)
         tb_fn.addAction(self.act_clahe)
+        tb_fn.addAction(self.act_texture_clarity)
         tb_fn.addAction(self.act_morphology)
         tb_fn.addAction(self.act_pixelmath)
         tb_fn.addAction(self.act_signature)
@@ -257,6 +259,7 @@ class ToolbarMixin:
         tb_tl.addAction(self.act_ppp)    # Perfect Palette Picker
         tb_tl.addAction(self.act_nbtorgb)
         tb_tl.addAction(self.act_narrowband_normalization)
+        
         tb_tl.addAction(self.act_selective_color)
         tb_tl.addAction(self.act_freqsep)
         tb_tl.addAction(self.act_multiscale_decomp)
@@ -907,6 +910,12 @@ class ToolbarMixin:
         self.act_remove_green.setIconVisibleInMenu(True)
         self.act_remove_green.triggered.connect(self._open_remove_green)
 
+        # Texture and Clarity
+        self.act_texture_clarity = QAction(QIcon(texture_clarity_path), self.tr("Texture and Clarity..."), self)
+        self.act_texture_clarity.setToolTip(self.tr("Enhance texture and clarity using Unsharp Masking"))
+        self.act_texture_clarity.setIconVisibleInMenu(True)
+        self.act_texture_clarity.triggered.connect(self._open_texture_clarity)
+
         self.act_background_neutral = QAction(QIcon(neutral_path), self.tr("Background Neutralization..."), self)
         self.act_background_neutral.setStatusTip(self.tr("Neutralize background color balance using a sampled region"))
         self.act_background_neutral.setIconVisibleInMenu(True)
@@ -1131,10 +1140,7 @@ class ToolbarMixin:
         self.act_narrowband_normalization.setStatusTip(
             self.tr("Normalize HOO/SHO/HSO/HOS (PixelMath port by Bill Blanshan and Mike Cranfield)")
         )
-        self.act_narrowband_normalization.setIconVisibleInMenu(False)
-        self.act_narrowband_normalization.setShortcut(QKeySequence("Ctrl+Alt+Shift+N"))
-        self.act_narrowband_normalization.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
-        self.addAction(self.act_narrowband_normalization)
+
         self.act_narrowband_normalization.triggered.connect(self._open_narrowband_normalization_tool)
 
         self.act_nbtorgb = QAction(QIcon(nbtorgb_path), self.tr("NB->RGB Stars..."), self)
@@ -1394,6 +1400,7 @@ class ToolbarMixin:
         reg("add_stars", self.act_add_stars)
         reg("pedestal",       self.act_pedestal)
         reg("remove_green",   self.act_remove_green)
+        reg("texture_clarity", self.act_texture_clarity)
         reg("background_neutral", self.act_background_neutral)
         reg("white_balance", self.act_white_balance)
         reg("sfcc",    self.act_sfcc)

@@ -1,7 +1,13 @@
 # src/setiastro/saspro/ser_stack_config.py
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Optional, Tuple, Literal, Union, Sequence
+from typing import Optional, Tuple, Literal, Union, Sequence, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import numpy as np
+    KeepMask = "np.ndarray"
+else:
+    KeepMask = object
 
 from setiastro.saspro.imageops.serloader import PlanetaryFrameSource
 
@@ -23,6 +29,7 @@ class SERStackConfig:
     ap_min_mean: float = 0.03
     ap_multiscale: bool = False
     ssd_refine_bruteforce: bool = False
+    keep_mask: Optional[KeepMask] = None
 
     # ✅ Drizzle
     drizzle_scale: float = 1.0          # 1.0 = off, 1.5, 2.0
@@ -50,6 +57,7 @@ class SERStackConfig:
         self.ap_min_mean = float(kwargs.pop("ap_min_mean", 0.03))
         self.ap_multiscale = bool(kwargs.pop("ap_multiscale", False))
         self.ssd_refine_bruteforce = bool(kwargs.pop("ssd_refine_bruteforce", False))
+        self.keep_mask = kwargs.pop("keep_mask", None)
 
         # ✅ NEW: Drizzle params
         self.drizzle_scale = float(kwargs.pop("drizzle_scale", 1.0))

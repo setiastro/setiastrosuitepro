@@ -4619,9 +4619,16 @@ class AstroSuiteProMainWindow(
         # Create a callback to set the image back to the document
         def set_image_callback(image_data, step_name):
             """Apply the result image back to the active document."""
-            if active_doc and hasattr(active_doc, "set_image"):
+            if active_doc and hasattr(active_doc, "apply_edit"):
                 print(f"[AstroSpike] Setting image back to document, shape: {image_data.shape}")
-                # Pass metadata as empty dict and step_name separately
+                # Use apply_edit for proper undo/redo integration
+                meta = {
+                    "step_name": step_name,
+                    "astrospike": True
+                }
+                active_doc.apply_edit(image_data.astype(np.float32, copy=False), metadata=meta, step_name=step_name)
+            elif active_doc and hasattr(active_doc, "set_image"):
+                print(f"[AstroSpike] Setting image via set_image, shape: {image_data.shape}")
                 active_doc.set_image(image_data, metadata={}, step_name=step_name)
             elif active_doc and hasattr(active_doc, "image"):
                 print(f"[AstroSpike] Setting image directly, shape: {image_data.shape}")
@@ -9113,6 +9120,13 @@ class AstroSuiteProMainWindow(
                 return
 
         super().keyPressEvent(event)
+
+    def _open_texture_clarity(self):
+        try:
+            from setiastro.saspro.texture_clarity import open_texture_clarity_dialog
+            open_texture_clarity_dialog(self)
+        except Exception as e:
+            print(f"Error opening Texture & Clarity: {e}")
 
     def _update_usage_stats(self):
         try:

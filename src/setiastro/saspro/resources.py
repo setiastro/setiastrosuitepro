@@ -167,6 +167,7 @@ class Icons:
     GREEN = property(lambda self: _resource_path('green.png'))
     NEUTRAL = property(lambda self: _resource_path('neutral.png'))
     WHITE_BALANCE = property(lambda self: _resource_path('whitebalance.png'))
+    TEXTURE_CLARITY = property(lambda self: _resource_path('TextureClarity.svg'))
     MORPHOLOGY = property(lambda self: _resource_path('morpho.png'))
     CLAHE = property(lambda self: _resource_path('clahe.png'))
     HDR = property(lambda self: _resource_path('hdr.png'))
@@ -413,6 +414,7 @@ def _init_legacy_paths():
         'green_path': get_icon_path('green.png'),
         'neutral_path': get_icon_path('neutral.png'),
         'whitebalance_path': get_icon_path('whitebalance.png'),
+        'texture_clarity_path': get_icon_path('TextureClarity.svg'),
         'morpho_path': get_icon_path('morpho.png'),
         'clahe_path': get_icon_path('clahe.png'),
         'starnet_path': get_icon_path('starnet.png'),

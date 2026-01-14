@@ -685,9 +685,51 @@ def render_spikes(output: np.ndarray, stars: List[Star], config: SpikeConfig, ct
         
         # Main spikes
         if config.intensity > 0:
-            for i in range(qty):
-                theta = main_angle_rad + (i * (math.pi * 2) / float(qty))
-                ...
+            rainbow_str = config.rainbow_spike_intensity if (config.enable_rainbow and config.rainbow_spikes) else 0
+            for i in range(int(config.quantity)):
+                theta = main_angle_rad + (i * (math.pi * 2) / float(config.quantity))
+                cos_t = math.cos(theta)
+                sin_t = math.sin(theta)
+                
+                start_x = star.x + cos_t * 0.5
+                start_y = star.y + sin_t * 0.5
+                end_x = star.x + cos_t * base_length
+                end_y = star.y + sin_t * base_length
+                
+                # Standard Spike
+                # Base star color, fading to zero alpha
+                c_end = (star.color.r/255.0, star.color.g/255.0, star.color.b/255.0, 0.0)
+                
+                # If rainbow enabled, standard spike is dimmed (matches preview logic)
+                opacity_mult = 0.4 if rainbow_str > 0 else 1.0
+                c_start = (color[0], color[1], color[2], color[3] * opacity_mult)
+                
+                draw_line_gradient(output, start_x, start_y, end_x, end_y,
+                                  c_start, c_end, thickness, config.sharpness)
+                
+                # Rainbow Overlay
+                if rainbow_str > 0:
+                    stops = 10
+                    for s in range(stops):
+                        p1 = s / stops
+                        p2 = (s + 1) / stops
+                        if p1 > config.rainbow_spike_length:
+                            break
+                        
+                        hue = (p1 * 360.0 * config.rainbow_spike_frequency) % 360.0
+                        a_rainbow = min(1.0, config.intensity * rainbow_str * 2.0) * (1.0 - p1)
+                        r_seg, g_seg, b_seg = hsl_to_rgb(hue / 360.0, 0.8, 0.6)
+                        c_seg = (r_seg, g_seg, b_seg, a_rainbow)
+                        
+                        # Calculate segment positions
+                        sx = start_x + (end_x - start_x) * p1
+                        sy = start_y + (end_y - start_y) * p1
+                        ex = start_x + (end_x - start_x) * p2
+                        ey = start_y + (end_y - start_y) * p2
+                        
+                        # Draw rainbow segment with constant color
+                        draw_line_gradient(output, sx, sy, ex, ey,
+                                          c_seg, c_seg, thickness, 1.0)
         
         # Secondary spikes
         if config.secondary_intensity > 0:
