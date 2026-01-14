@@ -155,6 +155,7 @@ class MenuMixin:
         m_fn.addAction(self.act_signature)
         m_fn.addAction(self.act_star_stretch)
         m_fn.addAction(self.act_stat_stretch)
+        m_fn.addAction(self.act_texture_clarity)
         m_fn.addAction(self.act_wavescale_de)
         m_fn.addAction(self.act_wavescale_hdr)
         m_fn.addAction(self.act_white_balance)
@@ -177,7 +178,7 @@ class MenuMixin:
         m_tools.addAction(self.act_narrowband_normalization)
         m_tools.addAction(self.act_nbtorgb)
         m_tools.addAction(self.act_ppp)
-        m_tools.addAction(self.act_texture_clarity)
+        
         m_tools.addAction(self.act_selective_color)
         m_tools.addSeparator()
         m_tools.addAction(self.act_view_bundles) 

@@ -223,6 +223,7 @@ class ToolbarMixin:
         tb_fn.addAction(self.act_wavescale_hdr)
         tb_fn.addAction(self.act_wavescale_de)
         tb_fn.addAction(self.act_clahe)
+        tb_fn.addAction(self.act_texture_clarity)
         tb_fn.addAction(self.act_morphology)
         tb_fn.addAction(self.act_pixelmath)
         tb_fn.addAction(self.act_signature)
@@ -258,7 +259,7 @@ class ToolbarMixin:
         tb_tl.addAction(self.act_ppp)    # Perfect Palette Picker
         tb_tl.addAction(self.act_nbtorgb)
         tb_tl.addAction(self.act_narrowband_normalization)
-        tb_tl.addAction(self.act_texture_clarity)
+        
         tb_tl.addAction(self.act_selective_color)
         tb_tl.addAction(self.act_freqsep)
         tb_tl.addAction(self.act_multiscale_decomp)
