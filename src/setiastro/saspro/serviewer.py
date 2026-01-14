@@ -163,6 +163,9 @@ class SERViewer(QDialog):
 
         self.chk_debayer = QCheckBox("Debayer (Bayer SER)", self)
         self.chk_debayer.setChecked(True)
+        self.cmb_bayer = QComboBox(self)
+        self.cmb_bayer.addItems(["AUTO", "RGGB", "GRBG", "GBRG", "BGGR"])
+        self.cmb_bayer.setCurrentText("AUTO")  # ✅ default for raw mosaic AVI
 
         self.chk_autostretch = QCheckBox("Autostretch preview (linked)", self)
         self.chk_autostretch.setChecked(False)
@@ -188,6 +191,7 @@ class SERViewer(QDialog):
         form.addRow("ROI size", row2)
 
         form.addRow("", self.chk_debayer)
+        form.addRow("Bayer pattern", self.cmb_bayer)        
         form.addRow("", self.chk_autostretch)
 
         # --- Preview tone controls (DISPLAY ONLY) ---
@@ -264,7 +268,9 @@ class SERViewer(QDialog):
 
         self.cmb_track.currentIndexChanged.connect(self._on_track_mode_changed)
         self.btn_stack.clicked.connect(self._open_stacker_clicked)
-
+        self.cmb_bayer.currentIndexChanged.connect(self._refresh)
+        self.chk_debayer.toggled.connect(lambda v: self.cmb_bayer.setEnabled(bool(v)))
+        self.cmb_bayer.setEnabled(self.chk_debayer.isChecked())
         self.resize(1200, 800)
 
 
@@ -728,18 +734,27 @@ class SERViewer(QDialog):
         except Exception:
             current_doc = None
 
+        debayer = bool(self.chk_debayer.isChecked())
+
+        # Normalize: "AUTO" means "let the loader decide"
+        bp = self.cmb_bayer.currentText().strip().upper()
+        if not debayer or bp == "AUTO":
+            bp = None
+
         dlg = SERStackerDialog(
             parent=self,
             main=main,
             source_doc=current_doc,
-            ser_path=ser_path,          # optional; OK if None
-            source=source,              # ✅ list[str] for PNG sequences
+            ser_path=ser_path,
+            source=source,
             roi=roi,
             track_mode=self._track_mode_value(),
             surface_anchor=anchor,
-            debayer=bool(self.chk_debayer.isChecked()),
+            debayer=debayer,
+            bayer_pattern=bp,                 # ✅ THIS IS THE FIX
             keep_percent=float(self.spin_keep.value()),
         )
+
 
         dlg.stackProduced.connect(self._on_stacker_produced)
         dlg.show()
@@ -1119,8 +1134,9 @@ class SERViewer(QDialog):
                 self._cur,
                 roi=roi,
                 debayer=debayer,
-                to_float01=True,    # float32 [0..1]
+                to_float01=True,
                 force_rgb=False,
+                bayer_pattern=self.cmb_bayer.currentText(),  # ✅ NEW
             )
         except Exception as e:
             QMessageBox.warning(self, "SER Viewer", f"Frame read failed:\n{e}")

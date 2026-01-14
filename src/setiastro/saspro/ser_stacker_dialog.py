@@ -706,6 +706,7 @@ class _AnalyzeWorker(QThread):
                 self.cfg,
                 debayer=self.debayer,
                 to_rgb=self.to_rgb,
+                bayer_pattern=getattr(self.cfg, "bayer_pattern", None),
                 ref_mode=self.ref_mode,
                 ref_count=self.ref_count,
                 progress_cb=cb,
@@ -737,18 +738,20 @@ class _StackWorker(QThread):
                 self.cfg.source,
                 roi=self.cfg.roi,
                 debayer=self.debayer,
+                to_rgb=self.to_rgb,
+                bayer_pattern=getattr(self.cfg, "bayer_pattern", None),  # ✅ add this
                 keep_percent=float(getattr(self.cfg, "keep_percent", 20.0)),
                 track_mode=str(getattr(self.cfg, "track_mode", "planetary")),
                 surface_anchor=getattr(self.cfg, "surface_anchor", None),
                 analysis=self.analysis,
                 local_warp=True,
                 progress_cb=cb,
-
                 drizzle_scale=float(getattr(self.cfg, "drizzle_scale", 1.0)),
                 drizzle_pixfrac=float(getattr(self.cfg, "drizzle_pixfrac", 0.80)),
                 drizzle_kernel=str(getattr(self.cfg, "drizzle_kernel", "gaussian")),
                 drizzle_sigma=float(getattr(self.cfg, "drizzle_sigma", 0.0)),
             )
+
 
             self.finished_ok.emit(out, diag)
         except Exception as e:
@@ -810,12 +813,14 @@ class SERStackerDialog(QDialog):
         surface_anchor=None,
         debayer: bool = True,
         keep_percent: float = 20.0,
+        bayer_pattern: Optional[str] = None,
     ):
         super().__init__(parent)
         self.setWindowTitle("Planetary Stacker - Beta")
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
+        self._bayer_pattern = bayer_pattern
         # ---- Normalize inputs ------------------------------------------------
         # If caller provided only `source`, treat string-source as ser_path too.
         if source is None:
@@ -1377,6 +1382,7 @@ class SERStackerDialog(QDialog):
             track_mode=self._track_mode_value(),
             surface_anchor=self._surface_anchor,
             keep_percent=float(self.spin_keep.value()),
+            bayer_pattern=self._bayer_pattern,
 
             ap_size=int(self.spin_ap_size.value()),
             ap_spacing=int(self.spin_ap_spacing.value()),
