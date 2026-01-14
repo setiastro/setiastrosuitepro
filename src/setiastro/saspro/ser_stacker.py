@@ -29,18 +29,6 @@ def _cfg_bayer_pattern(cfg) -> str | None:
     # cfg.bayer_pattern might be missing in older saved projects; be defensive
     return getattr(cfg, "bayer_pattern", None)
 
-def _cfg_debayer_enabled(cfg, src_meta_color_name: str) -> bool:
-    """
-    Decide if we should debayer.
-    - If user specifies a pattern (not AUTO/None), debayer is meaningful (especially for AVI mosaic).
-    - If source is already RGB/BGR, debayer flag does nothing.
-    - If source is MONO and user did not request a pattern, leave mono.
-    """
-    pat = _cfg_bayer_pattern(cfg)
-    if pat is None:
-        return True  # safe default; SERReader will only debayer if _is_bayer(color_name)
-    # user specified something (RGGB/GRBG/etc) -> debayer should be on
-    return True
 
 def _get_frame(src, idx: int, *, roi, debayer: bool, to_float01: bool, force_rgb: bool, bayer_pattern: str | None):
     """
@@ -540,6 +528,7 @@ def _coarse_surface_ref_locked(
     roi_used=None,
     debayer: bool,
     to_rgb: bool,
+    bayer_pattern: Optional[str] = None,
     progress_cb=None,
     progress_every: int = 25,
     # tuning:
@@ -734,11 +723,13 @@ def _coarse_surface_ref_locked(
             pred_x, pred_y = start_pred.get(b, (float(rx0), float(ry0)))
             # if boundary already computed above, keep it; start after b
             i0 = b
+            if b in start_pred and b != 0:
+                i0 = b + 1   # boundary already solved with r_key
+
             if i0 == 0:
-                i0 = 1  # frame0 is fixed
+                i0 = 1
             for i in range(i0, e):
-                # if this is exactly a boundary we already filled, use its pred and continue
-                if i in start_pred and i != b:
+                if i in start_pred:
                     pred_x, pred_y = start_pred[i]
                     continue
 
@@ -1041,7 +1032,7 @@ def stack_ser(
                 wacc = 0.0
 
             for i in chunk:
-                img = _get_frame(src, int(i), roi=roi, debayer=debayer, to_float01=True, force_rgb=False, bayer_pattern=bayer_pattern).astype(np.float32, copy=False)
+                img = _get_frame(src, int(i), roi=roi, debayer=debayer, to_float01=True, force_rgb=bool(to_rgb), bayer_pattern=bayer_pattern).astype(np.float32, copy=False)
 
                 # Global prior (from Analyze)
                 gdx = float(analysis.dx[int(i)]) if (analysis.dx is not None) else 0.0
@@ -1246,7 +1237,7 @@ def analyze_ser(
     """
 
     source_obj = _cfg_get_source(cfg)
-    bpat = _cfg_bayer_pattern(cfg)
+    bpat = bayer_pattern or _cfg_bayer_pattern(cfg)
 
     if not source_obj:
         raise ValueError("SERStackConfig.source/ser_path is empty")
@@ -1716,7 +1707,7 @@ def realign_ser(
       - recompute coarse drift (ref-locked) on roi_track
       - refine via AP search+refine FOLLOWING coarse + outlier rejection
     """
-    bpat = _cfg_bayer_pattern(cfg)
+    bpat = bayer_pattern or _cfg_bayer_pattern(cfg)
 
     if analysis is None:
         raise ValueError("analysis is None")
