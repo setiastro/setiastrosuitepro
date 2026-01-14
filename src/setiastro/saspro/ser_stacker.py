@@ -911,7 +911,7 @@ def stack_ser(
     drizzle_pixfrac: float = 0.80,
     drizzle_kernel: str = "gaussian",
     drizzle_sigma: float = 0.0,
-
+    keep_mask=None, 
 ) -> tuple[np.ndarray, dict]:
     source_obj = source
 
@@ -947,6 +947,16 @@ def stack_ser(
         order = np.asarray(analysis.order, np.int32)
         keep_idx = order[:k].astype(np.int32, copy=False)
 
+        # ✅ NEW: apply keep_mask (global mask in original frame index space)
+        if keep_mask is not None:
+            km = np.asarray(keep_mask, dtype=bool)
+            if km.ndim != 1 or km.shape[0] != n:
+                raise ValueError(f"keep_mask must be 1D bool of length {n}, got shape {km.shape}")
+            keep_idx = keep_idx[km[keep_idx]]
+
+            # Ensure at least one frame survives (or decide to error)
+            if keep_idx.size == 0:
+                raise ValueError("keep_mask rejected all frames in the Keep% set.")
         # reference / APs
         ref_img = analysis.ref_image.astype(np.float32, copy=False)
         ref_m = _to_mono01(ref_img).astype(np.float32, copy=False)
@@ -1697,6 +1707,7 @@ def realign_ser(
     to_rgb: bool = False,
     max_dim: int = 512,
     progress_cb=None,
+    bayer_pattern: Optional[str] = None,
     workers: Optional[int] = None,
 ) -> AnalyzeResult:
     """
