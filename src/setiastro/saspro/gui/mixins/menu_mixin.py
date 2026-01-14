@@ -177,6 +177,7 @@ class MenuMixin:
         m_tools.addAction(self.act_narrowband_normalization)
         m_tools.addAction(self.act_nbtorgb)
         m_tools.addAction(self.act_ppp)
+        m_tools.addAction(self.act_texture_clarity)
         m_tools.addAction(self.act_selective_color)
         m_tools.addSeparator()
         m_tools.addAction(self.act_view_bundles) 
