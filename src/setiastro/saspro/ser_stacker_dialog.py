@@ -1588,7 +1588,20 @@ class BlinkKeepersDialog(QDialog):
         self.lbl.setStyleSheet("background:#111;")
         self.lbl.setMinimumHeight(480)
         outer.addWidget(self.lbl, 1)
-
+        # --- Instructions / shortcuts ---
+        self.lbl_help = QLabel(self)
+        self.lbl_help.setWordWrap(True)
+        self.lbl_help.setStyleSheet(
+            "color:#9aa; background:#151515; border:1px solid #2a2a2a;"
+            "border-radius:6px; padding:6px; font-size:11px;"
+        )
+        self.lbl_help.setText(
+            "Shortcuts: "
+            "←/→ (or ↑/↓) = Prev/Next   |   PgUp/PgDn = Prev/Next\n"
+            "R or Space = Toggle Reject + Next   |   Backspace = Toggle Reject + Prev\n"
+            "Esc = Cancel   |   Enter = OK"
+        )
+        outer.addWidget(self.lbl_help, 0)
         info_row = QHBoxLayout()
         self.lbl_info = QLabel("", self)
         self.lbl_info.setStyleSheet("color:#bbb;")
@@ -1643,7 +1656,11 @@ class BlinkKeepersDialog(QDialog):
         self._debayer = bool(debayer)
         self._bayer_pattern = getattr(self.cfg, "bayer_pattern", None)
         self._force_rgb = True
-
+        self.lbl.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.sld.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_prev.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_next.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_toggle.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._show_index(0)
 
     def _toggle_reject_at(self, idx: int):
@@ -1701,7 +1718,14 @@ class BlinkKeepersDialog(QDialog):
             self._toggle_reject_and_advance(-1)
             e.accept()
             return
-
+        if k == Qt.Key.Key_Escape:
+            self.reject()
+            e.accept()
+            return
+        if k in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self.accept()
+            e.accept()
+            return
         super().keyPressEvent(e)
 
 
