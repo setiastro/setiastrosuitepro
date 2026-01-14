@@ -1356,17 +1356,103 @@ class SERViewer(QDialog):
         def _on_finished(path: str):
             try:
                 _cleanup_ui()
-                QMessageBox.information(
+
+                # Ask whether to open the newly saved SER
+                resp = QMessageBox.question(
                     self,
                     "Trim",
-                    f"Saved trimmed SER:\n{path}\n\nFrames: {start}..{end} ({total})"
+                    f"Saved trimmed SER:\n{path}\n\nFrames: {start}..{end} ({total})\n\nOpen it now?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.Yes,
                 )
+
+                if resp == QMessageBox.StandardButton.Yes:
+                    # Open it immediately in the same viewer
+                    try:
+                        # Close existing source first
+                        if self.reader is not None:
+                            try:
+                                self.reader.close()
+                            except Exception:
+                                pass
+                        self.reader = None
+
+                        # Open new file
+                        src = open_planetary_source(path, cache_items=10)
+                        self.reader = src
+                        self._source_spec = path
+                        self._set_last_open_dir(path)
+
+                        # Update UI to match _open_source() behavior
+                        m = self.reader.meta
+                        base = os.path.basename(m.path or path)
+
+                        src_kind = getattr(m, "source_kind", "unknown")
+                        if src_kind == "sequence":
+                            extra = f" • sequence={m.frames}"
+                        elif src_kind == "avi":
+                            extra = f" • video={m.frames}"
+                        else:
+                            extra = f" • frames={m.frames}"
+
+                        self.lbl_info.setText(
+                            f"<b>{base}</b><br>"
+                            f"{m.width}×{m.height}{extra} • depth={m.pixel_depth}-bit • format={m.color_name}"
+                            + (" • timestamps" if getattr(m, "has_timestamps", False) else "")
+                        )
+
+                        self._cur = 0
+                        self.sld.setEnabled(True)
+                        self.sld.setRange(0, max(0, m.frames - 1))
+                        self.sld.setValue(0)
+
+                        self.spin_trim_start.blockSignals(True)
+                        self.spin_trim_end.blockSignals(True)
+                        self.spin_trim_start.setRange(0, max(0, m.frames - 1))
+                        self.spin_trim_end.setRange(0, max(0, m.frames - 1))
+                        self.spin_trim_start.setValue(0)
+                        self.spin_trim_end.setValue(max(0, m.frames - 1))
+                        self.spin_trim_start.blockSignals(False)
+                        self.spin_trim_end.blockSignals(False)
+
+                        self.btn_save_trimmed.setEnabled(m.frames > 0)
+
+                        # ROI defaults centered
+                        cx = max(0, (m.width // 2) - 256)
+                        cy = max(0, (m.height // 2) - 256)
+                        self.spin_x.setValue(cx)
+                        self.spin_y.setValue(cy)
+                        self.spin_w.setValue(min(512, m.width))
+                        self.spin_h.setValue(min(512, m.height))
+
+                        self.btn_play.setEnabled(True)
+                        self.btn_stack.setEnabled(True)
+                        self._surface_anchor = None
+                        self._update_anchor_label()
+                        self.btn_play.setText("Play")
+                        self._playing = False
+
+                        self._fit_mode = True
+                        self._refresh()
+
+                    except Exception as e:
+                        QMessageBox.warning(self, "Trim", f"Saved, but failed to open:\n{e}")
+
+                else:
+                    # Just inform (optional; you can remove this if you prefer quieter UX)
+                    QMessageBox.information(
+                        self,
+                        "Trim",
+                        f"Saved trimmed SER:\n{path}\n\nFrames: {start}..{end} ({total})"
+                    )
+
             finally:
                 try:
                     thread.quit()
                     thread.wait(2000)
                 except Exception:
                     pass
+
 
         @pyqtSlot(str)
         def _on_failed(err: str):

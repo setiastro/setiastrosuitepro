@@ -231,16 +231,8 @@ def _make_progress_updater(
     cb: Optional[ProgressCB],
     *,
     every: int = 10,
-    min_interval_s: float = 0.10,   # also throttle by time (smooth UI)
+    min_interval_s: float = 0.10,
 ) -> Callable[[int], None]:
-    """
-    Returns a function update(done) that will call cb(done, total) safely.
-
-    Throttling:
-      - Always emits at done==0 and done==total
-      - Emits every N frames (every>=1)
-      - Also enforces a minimum time interval to avoid UI spam
-    """
     total_i = max(0, int(total))
     every_i = max(1, int(every)) if every is not None else 10
     last_emit_t = 0.0
@@ -252,41 +244,37 @@ def _make_progress_updater(
             return
 
         d = int(done)
-        # clamp
         if total_i > 0:
-            if d < 0:
-                d = 0
-            elif d > total_i:
-                d = total_i
+            d = max(0, min(total_i, d))
         else:
             d = max(0, d)
 
         # always emit start/end
         must_emit = (d == 0) or (d == total_i)
 
-        # emit on step
+        # emit strictly every N frames
         if not must_emit and (d % every_i == 0):
             must_emit = True
 
-        # time throttle (unless start/end)
-        now = time.monotonic()
-        if not must_emit and (now - last_emit_t) >= float(min_interval_s):
-            must_emit = True
+        # optional time throttle: ONLY if we've advanced at least `every_i` frames since last emit
+        if not must_emit:
+            now = time.monotonic()
+            if (now - last_emit_t) >= float(min_interval_s) and (d - last_emit_done) >= every_i:
+                must_emit = True
 
         if not must_emit:
             return
 
-        # avoid duplicate emits
+        # avoid duplicate emits (except start/end)
         if d == last_emit_done and (d != 0 and d != total_i):
             return
 
         try:
             cb(d, total_i)
         except Exception:
-            # Never let progress UI crash export
             pass
 
-        last_emit_t = now
+        last_emit_t = time.monotonic()
         last_emit_done = d
 
     return update
