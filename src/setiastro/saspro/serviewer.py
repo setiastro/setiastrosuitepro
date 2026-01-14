@@ -13,6 +13,9 @@ from PyQt6.QtWidgets import (
 )
 
 from setiastro.saspro.imageops.serloader import open_planetary_source, PlanetaryFrameSource
+import threading
+from PyQt6.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
+from PyQt6.QtWidgets import QProgressDialog
 
 
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
@@ -26,6 +29,73 @@ try:
 except Exception:
     stretch_mono_image = None
     stretch_color_image = None
+
+class _TrimExportWorker(QObject):
+    progress = pyqtSignal(int, int)   # done, total
+    finished = pyqtSignal(str)        # out_path
+    failed = pyqtSignal(str)          # error text
+    canceled = pyqtSignal()
+
+    def __init__(
+        self,
+        src: PlanetaryFrameSource,
+        out_path: str,
+        start: int,
+        end: int,
+        *,
+        bayer_pattern: str | None,
+        store_raw_mosaic_if_forced: bool,
+        progress_every: int = 10,
+    ):
+        super().__init__()
+        self._src = src
+        self._out_path = out_path
+        self._start = int(start)
+        self._end = int(end)
+        self._bp = bayer_pattern
+        self._store_raw = bool(store_raw_mosaic_if_forced)
+        self._progress_every = int(progress_every)
+
+        self._cancel_evt = threading.Event()
+
+    def request_cancel(self) -> None:
+        self._cancel_evt.set()
+
+    @pyqtSlot()
+    def run(self) -> None:
+        try:
+            from setiastro.saspro.imageops.serloader import export_trimmed_to_ser
+
+            # Progress callback executed from worker thread.
+            # It emits a Qt signal (thread-safe), and checks cancel.
+            def _cb(done: int, total: int) -> None:
+                if self._cancel_evt.is_set():
+                    # Abort export ASAP (exporter swallows callback errors,
+                    # so we also raise a hard exception to stop loops).
+                    raise RuntimeError("CANCELLED_BY_USER")
+                self.progress.emit(int(done), int(total))
+
+            export_trimmed_to_ser(
+                self._src,
+                self._out_path,
+                self._start,
+                self._end,
+                bayer_pattern=self._bp,
+                store_raw_mosaic_if_forced=self._store_raw,
+                progress_cb=_cb,
+                progress_every=self._progress_every,
+            )
+
+            # Ensure UI sees final state even if last callback was throttled
+            self.progress.emit(int(self._end - self._start + 1), int(self._end - self._start + 1))
+            self.finished.emit(self._out_path)
+
+        except Exception as e:
+            msg = str(e) if e is not None else "Unknown error"
+            if "CANCELLED_BY_USER" in msg:
+                self.canceled.emit()
+            else:
+                self.failed.emit(msg)
 
 
 class SERViewer(QDialog):
@@ -129,7 +199,7 @@ class SERViewer(QDialog):
         tform.addRow("End frame", self.spin_trim_end)
         tform.addRow("", self.btn_save_trimmed)
 
-        left.addWidget(trim, 0)
+        
 
 
         # Preview area (left)
@@ -177,7 +247,7 @@ class SERViewer(QDialog):
         # Preview Options (right)
         opts = QGroupBox("Preview Options", self)
         form = QFormLayout(opts)
-
+        right.addWidget(trim, 0)
         self.chk_roi = QCheckBox("Use ROI (crop for preview)", self)
 
         self.chk_debayer = QCheckBox("Debayer (Bayer SER)", self)
@@ -1178,7 +1248,6 @@ class SERViewer(QDialog):
         if end < start:
             end = start
 
-        # default output name next to source
         src = self.get_source_spec()
         if isinstance(src, str) and src:
             base_dir = os.path.dirname(src)
@@ -1200,18 +1269,135 @@ class SERViewer(QDialog):
         if not out_path.lower().endswith(".ser"):
             out_path += ".ser"
 
-        try:
-            from setiastro.saspro.imageops.serloader import export_trimmed_to_ser
-            export_trimmed_to_ser(self.reader, out_path, start, end)
-        except Exception as e:
-            QMessageBox.critical(self, "Trim", f"Failed to save trimmed SER:\n{e}")
-            return
+        # Use the user's current debayer selection to decide output format
+        debayer = bool(self.chk_debayer.isChecked())
+        bp = self.cmb_bayer.currentText().strip().upper()
+        if (not debayer) or (bp == "AUTO"):
+            bp = None  # means: don't force, export RGB
+        else:
+            # match serloader's accepted forms: "RGGB" -> "BAYER_RGGB" etc handled there
+            bp = bp  # keep short name; serloader normalizes it
 
-        QMessageBox.information(
-            self,
-            "Trim",
-            f"Saved trimmed SER:\n{out_path}\n\nFrames: {start}..{end} ({end-start+1})"
+        total = int(end - start + 1)
+
+        # Disable UI controls during export (prevents state changes mid-write)
+        self.btn_save_trimmed.setEnabled(False)
+        self.btn_open.setEnabled(False)
+        self.btn_play.setEnabled(False)
+        self.btn_stack.setEnabled(False)
+
+        # Progress dialog
+        pd = QProgressDialog("Exporting trimmed SER…", "Cancel", 0, total, self)
+        pd.setWindowTitle("Saving Trimmed SER")
+        pd.setWindowModality(Qt.WindowModality.WindowModal)
+        pd.setAutoClose(False)
+        pd.setAutoReset(False)
+        pd.setMinimumDuration(0)
+        pd.setValue(0)
+        pd.show()
+
+        # Thread + worker
+        thread = QThread(self)
+        worker = _TrimExportWorker(
+            self.reader,
+            out_path,
+            start,
+            end,
+            bayer_pattern=bp,
+            store_raw_mosaic_if_forced=True,   # key: makes Bayer SER if bp is set
+            progress_every=100,
         )
+        worker.moveToThread(thread)
+
+        # Keep references so they don't get GC'd
+        self._trim_thread = thread
+        self._trim_worker = worker
+        self._trim_progress = pd
+
+        # Cancel hook
+        def _on_cancel():
+            try:
+                worker.request_cancel()
+                pd.setLabelText("Canceling… (finishing current frame)")
+                pd.setCancelButtonText("Canceling…")
+                pd.setEnabled(False)  # prevents repeated clicks
+            except Exception:
+                pass
+        pd.canceled.connect(_on_cancel)
+
+        # Progress updates (runs on GUI thread)
+        @pyqtSlot(int, int)
+        def _on_progress(done: int, tot: int):
+            try:
+                pd.setMaximum(int(tot))
+                pd.setValue(int(done))
+                pd.setLabelText(f"Exporting trimmed SER… {done}/{tot}")
+            except Exception:
+                pass
+        worker.progress.connect(_on_progress)
+
+        # Finish / fail / canceled cleanup
+        def _cleanup_ui():
+            try:
+                pd.close()
+            except Exception:
+                pass
+            self.btn_save_trimmed.setEnabled(True)
+            self.btn_open.setEnabled(True)
+            self.btn_play.setEnabled(self.reader is not None)
+            self.btn_stack.setEnabled(self.reader is not None)
+
+            # release refs
+            self._trim_progress = None
+            self._trim_worker = None
+            self._trim_thread = None
+
+        @pyqtSlot(str)
+        def _on_finished(path: str):
+            try:
+                _cleanup_ui()
+                QMessageBox.information(
+                    self,
+                    "Trim",
+                    f"Saved trimmed SER:\n{path}\n\nFrames: {start}..{end} ({total})"
+                )
+            finally:
+                try:
+                    thread.quit()
+                    thread.wait(2000)
+                except Exception:
+                    pass
+
+        @pyqtSlot(str)
+        def _on_failed(err: str):
+            try:
+                _cleanup_ui()
+                QMessageBox.critical(self, "Trim", f"Failed to save trimmed SER:\n{err}")
+            finally:
+                try:
+                    thread.quit()
+                    thread.wait(2000)
+                except Exception:
+                    pass
+
+        @pyqtSlot()
+        def _on_canceled():
+            try:
+                _cleanup_ui()
+                QMessageBox.information(self, "Trim", "Export canceled.")
+            finally:
+                try:
+                    thread.quit()
+                    thread.wait(2000)
+                except Exception:
+                    pass
+
+        worker.finished.connect(_on_finished)
+        worker.failed.connect(_on_failed)
+        worker.canceled.connect(_on_canceled)
+
+        thread.started.connect(worker.run)
+        thread.start()
 
 
     def _refresh(self):

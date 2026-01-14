@@ -6,11 +6,10 @@ import io
 import mmap
 import struct
 from dataclasses import dataclass
-from typing import Optional, Tuple, Dict, List, Sequence, Union
+from typing import Optional, Tuple, Dict, List, Sequence, Union, Callable
 from collections import OrderedDict
-
 import numpy as np
-
+import time
 
 import cv2
 
@@ -224,12 +223,98 @@ def _ser_color_id_from_name(color_name: str) -> int:
     return rev.get(cn, 0)
 
 
-def export_trimmed_to_ser(src: "PlanetaryFrameSource", out_path: str, start: int, end: int) -> None:
+ProgressCB = Callable[[int, int], None]  # (done, total)
+
+
+def _make_progress_updater(
+    total: int,
+    cb: Optional[ProgressCB],
+    *,
+    every: int = 10,
+    min_interval_s: float = 0.10,   # also throttle by time (smooth UI)
+) -> Callable[[int], None]:
+    """
+    Returns a function update(done) that will call cb(done, total) safely.
+
+    Throttling:
+      - Always emits at done==0 and done==total
+      - Emits every N frames (every>=1)
+      - Also enforces a minimum time interval to avoid UI spam
+    """
+    total_i = max(0, int(total))
+    every_i = max(1, int(every)) if every is not None else 10
+    last_emit_t = 0.0
+    last_emit_done = -1
+
+    def update(done: int) -> None:
+        nonlocal last_emit_t, last_emit_done
+        if cb is None:
+            return
+
+        d = int(done)
+        # clamp
+        if total_i > 0:
+            if d < 0:
+                d = 0
+            elif d > total_i:
+                d = total_i
+        else:
+            d = max(0, d)
+
+        # always emit start/end
+        must_emit = (d == 0) or (d == total_i)
+
+        # emit on step
+        if not must_emit and (d % every_i == 0):
+            must_emit = True
+
+        # time throttle (unless start/end)
+        now = time.monotonic()
+        if not must_emit and (now - last_emit_t) >= float(min_interval_s):
+            must_emit = True
+
+        if not must_emit:
+            return
+
+        # avoid duplicate emits
+        if d == last_emit_done and (d != 0 and d != total_i):
+            return
+
+        try:
+            cb(d, total_i)
+        except Exception:
+            # Never let progress UI crash export
+            pass
+
+        last_emit_t = now
+        last_emit_done = d
+
+    return update
+
+
+def export_trimmed_to_ser(
+    src: "PlanetaryFrameSource",
+    out_path: str,
+    start: int,
+    end: int,
+    *,
+    bayer_pattern: Optional[str] = None,
+    store_raw_mosaic_if_forced: bool = True,
+    progress_cb: Optional[ProgressCB] = None,
+    progress_every: int = 10,
+) -> None:
     """
     Export frames [start..end] (inclusive) to a NEW .ser file.
 
-    - If src is SERReader: fast byte-copy of header + frame bytes (+ timestamps if present)
-    - Otherwise: decode each frame and write as RGB24 SER (8-bit)
+    Rules:
+    - SER -> SER: raw byte copy + patch header frames (and timestamps).
+    - AVI/sequence -> SER:
+        - If bayer_pattern is provided (not AUTO) AND store_raw_mosaic_if_forced=True,
+          write SER as BAYER_* (color_id 8..11) with 1-channel mosaic frames so the
+          output SER can be debayered later.
+        - Otherwise write RGB24 SER (color_id 24) 8-bit.
+
+    NOTE: For raw-mosaic AVI that OpenCV decodes as 3-channel, we take channel 0 as mosaic.
     """
     start = int(start)
     end = int(end)
@@ -243,93 +328,150 @@ def export_trimmed_to_ser(src: "PlanetaryFrameSource", out_path: str, start: int
     if start < 0 or start >= n or end < 0 or end >= n:
         raise ValueError(f"Trim range out of bounds: {start}..{end} (0..{n-1})")
 
-    out_frames = end - start + 1
+    out_frames = int(end - start + 1)
+
+    # progress helper (works for both fast and generic paths)
+    progress = _make_progress_updater(out_frames, progress_cb, every=progress_every)
+    progress(0)
+
+    # Normalize pattern
+    user_pat = _normalize_bayer_pattern(bayer_pattern)  # None means AUTO/invalid
 
     # ------------------------------------------------------------
     # FAST PATH: SER -> SER (raw copy)
     # ------------------------------------------------------------
     if isinstance(src, SERReader):
-        mm = src._mm  # internal, but we're in the same module file
+        mm = src._mm
         in_meta = src.meta
 
-        # Copy existing 178-byte header and patch the "frames" field
         hdr = bytearray(mm[:SER_HEADER_SIZE])
-        # frames is the 7th uint32 in the <7I block starting at offset 14
-        # signature(14) + 6*4 bytes = 38
-        struct.pack_into("<I", hdr, SER_SIGNATURE_LEN + 6 * 4, int(out_frames))
+        struct.pack_into("<I", hdr, SER_SIGNATURE_LEN + 6 * 4, int(out_frames))  # frames field
 
-        # Write output
         with open(out_path, "wb") as f:
             f.write(hdr)
 
-            # Copy frames
             fb = int(in_meta.frame_bytes)
+            done = 0
+
             for i in range(start, end + 1):
                 off = in_meta.data_offset + i * fb
                 f.write(mm[off:off + fb])
+                done += 1
+                progress(done)
 
-            # Copy timestamps if present
+            # timestamps are extra bytes; we keep progress tied to frame count (simple & stable)
             if bool(in_meta.has_timestamps):
                 ts_base = in_meta.data_offset + in_meta.frames * fb
                 for i in range(start, end + 1):
                     off = ts_base + i * 8
                     f.write(mm[off:off + 8])
 
+        progress(out_frames)
         return
 
     # ------------------------------------------------------------
     # GENERIC PATH: AVI/sequence -> SER (encode)
-    # We write RGB24, 8-bit, little-endian, no timestamps.
     # ------------------------------------------------------------
     w = int(meta.width)
     h = int(meta.height)
     if w <= 0 or h <= 0:
-        # infer from a frame
-        fr0 = src.get_frame(start, roi=None, debayer=True, to_float01=False, force_rgb=True, bayer_pattern=None)
+        fr0 = src.get_frame(start, roi=None, debayer=False, to_float01=False, force_rgb=False, bayer_pattern=None)
         h, w = fr0.shape[:2]
 
-    # Build SER header from scratch
+    # Decide output mode
+    write_as_bayer = bool(user_pat is not None and store_raw_mosaic_if_forced)
+
+    # SER header basics
     sig = b"LUCAM-RECORDER"
     sig = sig[:SER_SIGNATURE_LEN].ljust(SER_SIGNATURE_LEN, b"\x00")
 
     lu_id = 0
-    color_id = 24          # RGB
     little_endian = 1
+
+    # For video sources, we write 8-bit output
     pixel_depth = 8
-    frames_u32 = int(out_frames)
+
+    if write_as_bayer:
+        color_name = user_pat  # e.g. "BAYER_RGGB"
+        color_id = _ser_color_id_from_name(color_name)  # 8..11
+    else:
+        color_id = 24  # RGB
 
     hdr = bytearray(SER_HEADER_SIZE)
     hdr[:SER_SIGNATURE_LEN] = sig
-    struct.pack_into("<7I", hdr, SER_SIGNATURE_LEN,
-                     int(lu_id), int(color_id), int(little_endian),
-                     int(w), int(h), int(pixel_depth), int(frames_u32))
-
-    # observer/instrument/telescope left blank (zeros)
+    struct.pack_into(
+        "<7I",
+        hdr,
+        SER_SIGNATURE_LEN,
+        int(lu_id),
+        int(color_id),
+        int(little_endian),
+        int(w),
+        int(h),
+        int(pixel_depth),
+        int(out_frames),
+    )
 
     with open(out_path, "wb") as f:
         f.write(hdr)
 
+        done = 0
         for i in range(start, end + 1):
-            # Get RGB frame (force_rgb True handles mono)
-            img = src.get_frame(i, roi=None, debayer=True, to_float01=False, force_rgb=True, bayer_pattern=None)
+            if write_as_bayer:
+                # Get RAW mosaic (no debayer). If AVI frame is packed 3-channel, take channel 0.
+                frame = src.get_frame(i, roi=None, debayer=False, to_float01=False, force_rgb=False, bayer_pattern=None)
 
-            # Ensure RGB uint8
-            if img.ndim == 2:
-                img = np.stack([img, img, img], axis=-1)
-            if img.shape[2] > 3:
-                img = img[..., :3]
-
-            if img.dtype != np.uint8:
-                if img.dtype in (np.float32, np.float64):
-                    img = np.clip(img, 0.0, 1.0)
-                    img = (img * 255.0).astype(np.uint8)
+                if frame.ndim == 3 and frame.shape[2] >= 3:
+                    mosaic = frame[..., 0]
+                elif frame.ndim == 3 and frame.shape[2] == 1:
+                    mosaic = frame[..., 0]
                 else:
-                    # uint16 etc -> downscale to 8-bit
-                    img = (img.astype(np.float32) / float(np.iinfo(img.dtype).max) * 255.0).astype(np.uint8)
+                    mosaic = frame  # already HxW
 
-            # Write packed RGB bytes
-            f.write(img.tobytes(order="C"))
+                # Ensure uint8 mosaic
+                if mosaic.dtype != np.uint8:
+                    if mosaic.dtype in (np.float32, np.float64):
+                        mosaic = np.clip(mosaic, 0.0, 1.0)
+                        mosaic = (mosaic * 255.0).astype(np.uint8)
+                    else:
+                        mosaic_f = mosaic.astype(np.float32)
+                        if np.issubdtype(mosaic.dtype, np.integer):
+                            mx = float(np.iinfo(mosaic.dtype).max)
+                        else:
+                            mx = 255.0
+                        mosaic_f = np.clip(mosaic_f / max(1.0, mx), 0.0, 1.0)
+                        mosaic = (mosaic_f * 255.0).astype(np.uint8)
 
+                f.write(mosaic.tobytes(order="C"))
+
+            else:
+                # Write RGB SER (debayer/convert handled by source)
+                img = src.get_frame(i, roi=None, debayer=True, to_float01=False, force_rgb=True, bayer_pattern=user_pat)
+
+                if img.ndim == 2:
+                    img = np.stack([img, img, img], axis=-1)
+                if img.shape[2] > 3:
+                    img = img[..., :3]
+
+                if img.dtype != np.uint8:
+                    if img.dtype in (np.float32, np.float64):
+                        img = np.clip(img, 0.0, 1.0)
+                        img = (img * 255.0).astype(np.uint8)
+                    else:
+                        img_f = img.astype(np.float32)
+                        if np.issubdtype(img.dtype, np.integer):
+                            mx = float(np.iinfo(img.dtype).max)
+                        else:
+                            mx = 255.0
+                        img_f = np.clip(img_f / max(1.0, mx), 0.0, 1.0)
+                        img = (img_f * 255.0).astype(np.uint8)
+
+                f.write(img.tobytes(order="C"))
+
+            done += 1
+            progress(done)
+
+    progress(out_frames)
 
 class _LRUCache:
     """Tiny LRU cache for decoded frames."""
@@ -634,21 +776,38 @@ class SERReader:
             img = img[..., ::-1].copy()
 
         # Debayer if needed
-        if _is_bayer(color_name):
-            if debayer:
-                mosaic = img if img.ndim == 2 else img[..., 0]
-                pat = active_bayer or color_name  # active_bayer will usually be set here
+        # Debayer if needed (normal Bayer SER OR user-forced)
+        user_forced_bayer = (user_pat is not None)
+        stored_is_bayer = _is_bayer(color_name)
 
+        if debayer and (stored_is_bayer or user_forced_bayer):
+            # We can debayer:
+            # - real Bayer SER (stored_is_bayer)
+            # - or MONO/RGB SER that is actually mosaic and user forced a pattern
+            pat = active_bayer or user_pat or (color_name if stored_is_bayer else None) or "BAYER_RGGB"
+
+            # Determine mosaic source:
+            # - if stored is 1-channel: use that
+            # - if stored is 3-channel but user forced bayer: treat as packed mosaic and use channel 0
+            if img.ndim == 3 and img.shape[2] >= 3:
+                mosaic = img[..., 0] if user_forced_bayer else None
+            else:
+                mosaic = img if img.ndim == 2 else img[..., 0]
+
+            if mosaic is None:
+                # not a mosaic; leave as-is
+                pass
+            else:
                 out = _try_numba_debayer(mosaic, pat)
                 if out is None:
-                    out = _cv2_debayer(mosaic, pat)  # already RGB
+                    out = _cv2_debayer(mosaic, pat)  # RGB
                 else:
                     out = _maybe_swap_rb_to_match_cv2(mosaic, pat, out)
-
                 img = out
-            else:
-                img = img if img.ndim == 2 else img[..., 0]
 
+        elif stored_is_bayer and (not debayer):
+            # Explicitly requested "no debayer": return raw mosaic
+            img = img if img.ndim == 2 else img[..., 0]
 
         # Force RGB for mono (useful for consistent preview pipeline)
         if force_rgb and img.ndim == 2:
