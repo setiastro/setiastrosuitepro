@@ -1140,10 +1140,7 @@ class ToolbarMixin:
         self.act_narrowband_normalization.setStatusTip(
             self.tr("Normalize HOO/SHO/HSO/HOS (PixelMath port by Bill Blanshan and Mike Cranfield)")
         )
-        self.act_narrowband_normalization.setIconVisibleInMenu(False)
-        self.act_narrowband_normalization.setShortcut(QKeySequence("Ctrl+Alt+Shift+N"))
-        self.act_narrowband_normalization.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
-        self.addAction(self.act_narrowband_normalization)
+
         self.act_narrowband_normalization.triggered.connect(self._open_narrowband_normalization_tool)
 
         self.act_nbtorgb = QAction(QIcon(nbtorgb_path), self.tr("NB->RGB Stars..."), self)
