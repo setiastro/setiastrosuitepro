@@ -1,9 +1,9 @@
 {
-  "version": "1.7.0",
+  "version": "1.7.0.post1",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.7.0/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.7.0/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.7.0/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.7.0.post1/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.7.0.post1/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.7.0.post1/setiastrosuitepro_linux.tar.xz"
   },
   "notes": "Seti Astro Suite Pro V1.7.0 Planetary Stacker: Compatible with .ser, .avi, .mp4, .png, and many more formats. Use planetary or surface tracking, single or multiscale alignment points, robust Sum of Square Differences surface refinement custom algorithm, drizzle options, and more! Narrowband Normalization: Port of the popular narrowband normalization by Bill Blanshan and Mike Cranfield which uses their math directly for HSO, SHO, HOO, and HOS. Bolted on my very robust Linear Fit and Background Neutralization to further offer better background control."
 }
