@@ -37,17 +37,21 @@ SER_SIGNATURE_LEN = 14
 SER_COLOR = {
     0: "MONO",
 
-    # Bayer (most common in planetary SER)
     8:  "BAYER_RGGB",
     9:  "BAYER_GRBG",
     10: "BAYER_GBRG",
     11: "BAYER_BGGR",
 
-    # Packed color
     24: "RGB",
     25: "BGR",
     26: "RGBA",
     27: "BGRA",
+
+    # PIPP / some writers use 100+ for packed color
+    100: "RGB",
+    101: "BGR",
+    102: "RGBA",
+    103: "BGRA",
 }
 
 BAYER_NAMES = {"BAYER_RGGB", "BAYER_GRBG", "BAYER_GBRG", "BAYER_BGGR"}
@@ -502,6 +506,8 @@ class SERReader:
         self.meta.path = self.path
         self._cache = _LRUCache(max_items=cache_items)
         self._fast_debayer_is_bgr: Optional[bool] = None
+        self._endian_override: Optional[bool] = None  # None=unknown, else True/False for data little-endian
+
 
     def close(self):
         try:
@@ -736,8 +742,40 @@ class SERReader:
         arr = np.frombuffer(buf, dtype=dtype)
 
         # byteswap if big-endian storage (rare, but spec supports it)
-        if (dtype == np.uint16) and (not meta.little_endian):
-            arr = arr.byteswap()
+        if dtype == np.uint16:
+            data_is_little = meta.little_endian
+
+            # If header says big-endian, verify once with a heuristic (PIPP sometimes lies)
+            if self._endian_override is None and (not meta.little_endian):
+                # Look at a chunk of raw uint16 values as-read (little interpretation),
+                # and the swapped version. Choose the one with a "richer" low byte.
+                sample = arr[:min(arr.size, 200000)]
+                if sample.size >= 1024:
+                    lo_u = np.bitwise_and(sample, 0xFF).astype(np.uint8)
+                    lo_s = np.bitwise_and(sample.byteswap(), 0xFF).astype(np.uint8)
+
+                    u_unique = int(np.unique(lo_u).size)
+                    s_unique = int(np.unique(lo_s).size)
+
+                    # If one has *much* richer low-byte variation, that’s probably correct.
+                    # (12-bit/14-bit camera data typically has lots of low-byte variation
+                    # when interpreted with the correct endianness.)
+                    if u_unique >= s_unique + 32:
+                        self._endian_override = True
+                    elif s_unique >= u_unique + 32:
+                        self._endian_override = False
+                    else:
+                        # ambiguous → fall back to header
+                        self._endian_override = data_is_little
+
+                else:
+                    self._endian_override = data_is_little
+
+            if self._endian_override is not None:
+                data_is_little = bool(self._endian_override)
+
+            if not data_is_little:
+                arr = arr.byteswap()
 
         if ch == 1:
             img = arr.reshape(meta.height, meta.width)
