@@ -495,7 +495,7 @@ class _LRUCache:
     def clear(self):
         self._d.clear()
 
-SASPRO_SER_DEBUG=True
+SASPRO_SER_DEBUG=False
 
 def _env_flag(name: str, default: bool = False) -> bool:
     v = os.environ.get(name)
