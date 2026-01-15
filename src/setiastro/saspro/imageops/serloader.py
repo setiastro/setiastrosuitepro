@@ -35,27 +35,36 @@ SER_SIGNATURE_LEN = 14
 #   8..11 = Bayer (RGGB/GRBG/GBRG/BGGR)
 #   24..27 = RGB/BGR/RGBA/BGRA
 SER_COLOR = {
-    0: "MONO",
-
-    8:  "BAYER_RGGB",
-    9:  "BAYER_GRBG",
-    10: "BAYER_GBRG",
-    11: "BAYER_BGGR",
-
-    24: "RGB",
-    25: "BGR",
-    26: "RGBA",
-    27: "BGRA",
-
-    # PIPP / some writers use 100+ for packed color
+    # ---- Spec ----
+    0:   "MONO",
+    8:   "BAYER_RGGB",
+    9:   "BAYER_GRBG",
+    10:  "BAYER_GBRG",
+    11:  "BAYER_BGGR",
+    16:  "BAYER_CYYM",
+    17:  "BAYER_YCMY",
+    18:  "BAYER_YMCY",
+    19:  "BAYER_MYYC",
     100: "RGB",
     101: "BGR",
+
+    # ---- Non-standard, but keep for compatibility ----
+    24:  "RGB",
+    25:  "BGR",
+    26:  "RGBA",
+    27:  "BGRA",
     102: "RGBA",
     103: "BGRA",
 }
 
-BAYER_NAMES = {"BAYER_RGGB", "BAYER_GRBG", "BAYER_GBRG", "BAYER_BGGR"}
-BAYER_PATTERNS = ("BAYER_RGGB", "BAYER_GRBG", "BAYER_GBRG", "BAYER_BGGR")
+BAYER_NAMES = {
+    "BAYER_RGGB","BAYER_GRBG","BAYER_GBRG","BAYER_BGGR",
+    "BAYER_CYYM","BAYER_YCMY","BAYER_YMCY","BAYER_MYYC",
+}
+BAYER_PATTERNS = tuple(sorted(BAYER_NAMES))
+
+def _is_rgb(color_name: str) -> bool:
+    return color_name in {"RGB", "BGR", "RGBA", "BGRA"}
 
 def _normalize_bayer_pattern(p: Optional[str]) -> Optional[str]:
     if not p:
@@ -106,9 +115,9 @@ def _bytes_per_sample(pixel_depth_bits: int) -> int:
 def _is_bayer(color_name: str) -> bool:
     return color_name in BAYER_NAMES
 
-
-def _is_rgb(color_name: str) -> bool:
-    return color_name in {"RGB", "BGR", "RGBA", "BGRA"}
+def _rot180(img: np.ndarray) -> np.ndarray:
+    # Works for mono (H,W) and RGB(A) (H,W,C)
+    return img[::-1, ::-1].copy()
 
 
 def _roi_evenize_for_bayer(x: int, y: int) -> Tuple[int, int]:
@@ -486,6 +495,13 @@ class _LRUCache:
     def clear(self):
         self._d.clear()
 
+SASPRO_SER_DEBUG=True
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    v = os.environ.get(name)
+    if v is None:
+        return default
+    return str(v).strip().lower() in {"1", "true", "yes", "on"}
 
 class SERReader:
     """
@@ -504,6 +520,22 @@ class SERReader:
 
         self.meta = self._parse_header(self._mm)
         self.meta.path = self.path
+        self._debug = SASPRO_SER_DEBUG
+
+        self._printed_endian = False        
+        if self._debug:
+            try:
+                meta = self.meta
+                print(f"[SER] signature={self._mm[:14]!r}")
+                print(
+                    f"[SER] {os.path.basename(self.path)} "
+                    f"{meta.width}x{meta.height} frames={meta.frames} "
+                    f"depth={meta.pixel_depth} color_id={meta.color_id} "
+                    f"color={meta.color_name} little_endian_flag={meta.little_endian} "
+                    f"frame_bytes={meta.frame_bytes} ts={meta.has_timestamps}"
+                )
+            except Exception:
+                pass      
         self._cache = _LRUCache(max_items=cache_items)
         self._fast_debayer_is_bgr: Optional[bool] = None
         self._endian_override: Optional[bool] = None  # None=unknown, else True/False for data little-endian
@@ -537,16 +569,13 @@ class SERReader:
 
         hdr = mm[:SER_HEADER_SIZE]
 
+        # Signature (informational only; we stay permissive)
         sig = hdr[:SER_SIGNATURE_LEN]
-        sig_txt = _decode_cstr(sig)
-
-        # Be permissive: many SERs start with LUCAM-RECORDER
-        # If not, still try parsing.
-        # (Some writers use other signatures but the v3 field layout often matches.)
+        _ = _decode_cstr(sig)
 
         try:
             (lu_id, color_id, little_endian_u32,
-            w, h, pixel_depth, frames) = struct.unpack_from("<7I", hdr, SER_SIGNATURE_LEN)
+             w, h, pixel_depth, frames) = struct.unpack_from("<7I", hdr, SER_SIGNATURE_LEN)
         except Exception as e:
             raise ValueError(f"Failed to parse SER header fields: {e}")
 
@@ -558,7 +587,6 @@ class SERReader:
 
         color_name = SER_COLOR.get(int(color_id), f"UNKNOWN({color_id})")
 
-        bps = _bytes_per_sample(int(pixel_depth))
         data_offset = SER_HEADER_SIZE
         file_size = mm.size()
 
@@ -566,100 +594,96 @@ class SERReader:
             base = data_offset + int(frames) * int(frame_bytes)
             return base + (int(frames) * 8 if with_ts else 0)
 
-        # --- candidate interpretations ---
-        # Bayer/MONO: 1 sample per pixel
-        fb_1 = int(w) * int(h) * 1 * int(bps)
+        # ------------------------------------------------------------
+        # Robust inference:
+        # Some writers lie about pixel_depth. So we infer:
+        #   - channels ∈ {1,3,4}
+        #   - bytes-per-sample (bps) ∈ {1,2}
+        #   - timestamps present?
+        # by matching file size to expected sizes.
+        # ------------------------------------------------------------
+        candidates: list[tuple[int, int, int, bool]] = []  # (channels, bps, frame_bytes, has_ts)
 
-        # RGB/BGR: 3 samples per pixel
-        fb_3 = int(w) * int(h) * 3 * int(bps)
+        for ch in (1, 3, 4):
+            for bps in (1, 2):
+                fb = int(w) * int(h) * ch * bps
+                if fb <= 0:
+                    continue
+                if file_size == expected_size(fb, with_ts=False):
+                    candidates.append((ch, bps, fb, False))
+                if file_size == expected_size(fb, with_ts=True):
+                    candidates.append((ch, bps, fb, True))
 
-        # RGBA/BGRA: 4 samples per pixel
-        fb_4 = int(w) * int(h) * 4 * int(bps)
+        picked: Optional[tuple[int, int, int, bool]] = None
 
-        # Decide initial channels from color_name
-        if color_name in {"RGB", "BGR"}:
-            channels = 3
-            frame_bytes = fb_3
-        elif color_name in {"RGBA", "BGRA"}:
-            channels = 4
-            frame_bytes = fb_4
-        else:
-            # MONO + Bayer variants should land here
-            channels = 1
-            frame_bytes = fb_1
+        if len(candidates) == 1:
+            picked = candidates[0]
+        elif len(candidates) > 1:
+            # Tie-break using header hints, but don't fully trust them.
 
-        # --- sanity check against file size ---
-        # If the header mapping is wrong (very common culprit), infer channels by file size.
-        # We consider both "no timestamps" and "with timestamps".
-        def matches(frame_bytes: int) -> tuple[bool, bool]:
-            no_ts = (file_size == expected_size(frame_bytes, with_ts=False))
-            yes_ts = (file_size == expected_size(frame_bytes, with_ts=True))
-            return no_ts, yes_ts
+            # Channel hint from color_name
+            hinted_ch = 1
+            if color_name in {"RGB", "BGR"}:
+                hinted_ch = 3
+            elif color_name in {"RGBA", "BGRA"}:
+                hinted_ch = 4
 
-        m1_no, m1_ts = matches(fb_1)
-        m3_no, m3_ts = matches(fb_3)
-        m4_no, m4_ts = matches(fb_4)
+            pool = [c for c in candidates if c[0] == hinted_ch] or candidates
 
-        # Prefer an exact match if one exists.
-        # Tie-break: if header says Bayer-ish, prefer 1ch; if header says RGB-ish, prefer 3/4ch.
-        picked = None  # (channels, frame_bytes, has_ts)
+            # bps hint from pixel_depth
+            hinted_bps = 1 if int(pixel_depth) <= 8 else 2
+            pool2 = [c for c in pool if c[1] == hinted_bps] or pool
 
-        # If our current interpretation matches, keep it
-        cur_no, cur_ts = matches(frame_bytes)
-        if cur_no or cur_ts:
-            picked = (channels, frame_bytes, bool(cur_ts))
-
-        else:
-            # Try to infer by file size
-            # Unique matches:
-            candidates = []
-            if m1_no: candidates.append((1, fb_1, False))
-            if m1_ts: candidates.append((1, fb_1, True))
-            if m3_no: candidates.append((3, fb_3, False))
-            if m3_ts: candidates.append((3, fb_3, True))
-            if m4_no: candidates.append((4, fb_4, False))
-            if m4_ts: candidates.append((4, fb_4, True))
-
-            if len(candidates) == 1:
-                picked = candidates[0]
-            elif len(candidates) > 1:
-                # tie-break using header hint
+            # If still multiple, prefer:
+            # - 1ch if header says MONO/BAYER-ish
+            # - else 3ch if RGB-ish
+            if len(pool2) > 1:
                 if _is_bayer(color_name) or color_name == "MONO":
-                    # choose first 1ch match
-                    for c in candidates:
-                        if c[0] == 1:
-                            picked = c
-                            break
+                    pool3 = [c for c in pool2 if c[0] == 1] or pool2
                 elif color_name in {"RGB", "BGR"}:
-                    for c in candidates:
-                        if c[0] == 3:
-                            picked = c
-                            break
+                    pool3 = [c for c in pool2 if c[0] == 3] or pool2
                 elif color_name in {"RGBA", "BGRA"}:
-                    for c in candidates:
-                        if c[0] == 4:
-                            picked = c
-                            break
-                # still ambiguous: just pick the first (rare)
-                if picked is None:
-                    picked = candidates[0]
+                    pool3 = [c for c in pool2 if c[0] == 4] or pool2
+                else:
+                    pool3 = pool2
+            else:
+                pool3 = pool2
+
+            picked = pool3[0]
 
         if picked is None:
-            # Couldn’t reconcile sizes; fall back to header interpretation and best-effort ts flag
-            expected_no_ts = expected_size(frame_bytes, with_ts=False)
-            expected_with_ts = expected_size(frame_bytes, with_ts=True)
-            has_ts = (file_size == expected_with_ts)
-        else:
-            channels, frame_bytes, has_ts = picked
+            # Fall back to header interpretation (best-effort)
+            bps = _bytes_per_sample(int(pixel_depth))
+            if color_name in {"RGB", "BGR"}:
+                channels = 3
+            elif color_name in {"RGBA", "BGRA"}:
+                channels = 4
+            else:
+                channels = 1
 
-            # If we inferred channels that contradict the header color_name, adjust color_name
-            # so the rest of the pipeline (debayer, etc.) behaves sensibly.
+            frame_bytes = int(w) * int(h) * channels * int(bps)
+            has_ts = (file_size == expected_size(frame_bytes, with_ts=True))
+        else:
+            channels, bps, frame_bytes, has_ts = picked
+
+            # If bps contradicts header pixel_depth, coerce pixel_depth to a sane value
+            # (If bps==2 but header said 8, we treat it as 16-bit container.)
+            if bps == 1:
+                # Keep header's pixel_depth if it is <=8, else clamp
+                pixel_depth = int(pixel_depth) if int(pixel_depth) <= 8 else 8
+            else:
+                # If header says 10/12/14/16, keep it; if header says <=8, promote to 16
+                if int(pixel_depth) <= 8:
+                    pixel_depth = 16
+                else:
+                    pixel_depth = int(pixel_depth)
+
+            # If inferred channels contradict header color_name, adjust color_name for sane downstream behavior
             if channels == 1:
-                # If header said RGB but file is clearly 1ch, it's almost certainly Bayer.
-                # Keep UNKNOWN(...) if we truly don't know the Bayer order.
                 if color_name in {"RGB", "BGR", "RGBA", "BGRA"}:
-                    # safest default: treat as RGGB if we have no better info
+                    # If header claimed RGB but file is 1ch, safest is treat as Bayer RGGB by default
                     color_name = "BAYER_RGGB"
+                # If it was UNKNOWN(...) keep it as-is, unless you want to force MONO.
             elif channels == 3:
                 if color_name not in {"RGB", "BGR"}:
                     color_name = "RGB"
@@ -675,7 +699,7 @@ class SERReader:
             pixel_depth=int(pixel_depth),
             color_id=int(color_id),
             color_name=color_name,
-            little_endian=little_endian,
+            little_endian=bool(little_endian),
             data_offset=int(data_offset),
             frame_bytes=int(frame_bytes),
             has_timestamps=bool(has_ts),
@@ -683,7 +707,6 @@ class SERReader:
             instrument=instrument,
             telescope=telescope,
         )
-
 
     # ---------------- core access ----------------
 
@@ -701,21 +724,14 @@ class SERReader:
         debayer: bool = True,
         to_float01: bool = False,
         force_rgb: bool = False,
-        bayer_pattern: Optional[str] = None,   # ✅ NEW
+        bayer_pattern: Optional[str] = None,
     ) -> np.ndarray:
-        """
-        Returns:
-          - MONO: (H,W) uint8/uint16 or float32 [0..1]
-          - RGB:  (H,W,3) uint8/uint16 or float32 [0..1]
-
-        roi is applied before debayer (and ROI origin evenized for Bayer).
-        """
         meta = self.meta
+      
         color_name = meta.color_name
         user_pat = _normalize_bayer_pattern(bayer_pattern)
         active_bayer = user_pat if user_pat is not None else (color_name if _is_bayer(color_name) else None)
 
-        # Cache key includes ROI + flags
         roi_key = None if roi is None else tuple(int(v) for v in roi)
         key = (int(i), roi_key, bool(debayer), active_bayer, bool(to_float01), bool(force_rgb))
         cached = self._cache.get(key)
@@ -725,13 +741,11 @@ class SERReader:
         off = self.frame_offset(i)
         buf = self._mm[off:off + meta.frame_bytes]
 
+        # dtype from inferred/parsed pixel_depth
         bps = _bytes_per_sample(meta.pixel_depth)
-        if bps == 1:
-            dtype = np.uint8
-        else:
-            dtype = np.uint16
+        dtype = np.uint8 if bps == 1 else np.uint16
 
-        # Determine channels stored
+        # Determine channels stored (from color_name; frame_bytes inference already fixed bps)
         if color_name in {"RGB", "BGR"}:
             ch = 3
         elif color_name in {"RGBA", "BGRA"}:
@@ -740,15 +754,69 @@ class SERReader:
             ch = 1
 
         arr = np.frombuffer(buf, dtype=dtype)
+        # byteswap if endianness is wrong (SER header endian flag is often unreliable)
+        if dtype == np.uint16:
+            # Decide once per reader instance; cache in self._endian_override
+            if self._endian_override is None:
+                # Compare "as-read" vs "byteswapped" on a sample.
+                sample = arr[:min(arr.size, 200000)]
+                if sample.size >= 2048:
+                    a = sample
+                    b = sample.byteswap()
+
+                    # Heuristic #1: low-byte richness (correct endian tends to have richer low byte)
+                    lo_a = (a & 0x00FF).astype(np.uint8)
+                    lo_b = (b & 0x00FF).astype(np.uint8)
+                    ua = int(np.unique(lo_a).size)
+                    ub = int(np.unique(lo_b).size)
+
+                    # Heuristic #2: "plausible dynamic range" vs declared pixel_depth (if 10/12/14)
+                    pd = int(getattr(meta, "pixel_depth", 16) or 16)
+                    # only meaningful if pd is 9..15 (packed in uint16)
+                    if 8 < pd < 16:
+                        maxv = (1 << pd) - 1
+                        # take a high percentile, not max (avoid hot pixels)
+                        p_a = float(np.percentile(a, 99.9))
+                        p_b = float(np.percentile(b, 99.9))
+                        # prefer the interpretation whose 99.9% sits closer to the expected range
+                        da = abs(p_a - maxv)
+                        db = abs(p_b - maxv)
+                    else:
+                        da = db = 0.0
+
+                    # Decide:
+                    # - if low-byte richness strongly prefers one, trust it
+                    # - else if pixel_depth is 10/12/14, use the percentile distance
+                    # - else fall back to header flag
+                    if ua >= ub + 32:
+                        self._endian_override = True   # data is little-endian (as-read)
+                    elif ub >= ua + 32:
+                        self._endian_override = False  # data is big-endian (need swap)
+                    elif (8 < pd < 16) and (da != db):
+                        self._endian_override = (da <= db)  # True = keep, False = swap
+                    else:
+                        self._endian_override = bool(meta.little_endian)
+
+                else:
+                    # too small to be confident
+                    self._endian_override = bool(meta.little_endian)
+
+            # Apply decision
+            if self._endian_override is False:
+                arr = arr.byteswap()
+
+            if self._debug and (not self._printed_endian):
+                self._printed_endian = True
+                try:
+                    print(f"[SER] endian_decision: override={self._endian_override} (True=keep, False=swap)")
+                except Exception:
+                    pass
 
         # byteswap if big-endian storage (rare, but spec supports it)
         if dtype == np.uint16:
             data_is_little = meta.little_endian
 
-            # If header says big-endian, verify once with a heuristic (PIPP sometimes lies)
             if self._endian_override is None and (not meta.little_endian):
-                # Look at a chunk of raw uint16 values as-read (little interpretation),
-                # and the swapped version. Choose the one with a "richer" low byte.
                 sample = arr[:min(arr.size, 200000)]
                 if sample.size >= 1024:
                     lo_u = np.bitwise_and(sample, 0xFF).astype(np.uint8)
@@ -757,17 +825,12 @@ class SERReader:
                     u_unique = int(np.unique(lo_u).size)
                     s_unique = int(np.unique(lo_s).size)
 
-                    # If one has *much* richer low-byte variation, that’s probably correct.
-                    # (12-bit/14-bit camera data typically has lots of low-byte variation
-                    # when interpreted with the correct endianness.)
                     if u_unique >= s_unique + 32:
                         self._endian_override = True
                     elif s_unique >= u_unique + 32:
                         self._endian_override = False
                     else:
-                        # ambiguous → fall back to header
                         self._endian_override = data_is_little
-
                 else:
                     self._endian_override = data_is_little
 
@@ -797,33 +860,26 @@ class SERReader:
 
             img = img[y:y + h, x:x + w]
 
+        # --- SER global orientation fix (rotate 180) ---
+        img = _rot180(img)
+
         # Convert BGR->RGB if needed
         if color_name == "BGR" and img.ndim == 3 and img.shape[2] >= 3:
             img = img[..., ::-1].copy()
 
         # Debayer if needed
-        # Debayer if needed (normal Bayer SER OR user-forced)
         user_forced_bayer = (user_pat is not None)
         stored_is_bayer = _is_bayer(color_name)
 
         if debayer and (stored_is_bayer or user_forced_bayer):
-            # We can debayer:
-            # - real Bayer SER (stored_is_bayer)
-            # - or MONO/RGB SER that is actually mosaic and user forced a pattern
             pat = active_bayer or user_pat or (color_name if stored_is_bayer else None) or "BAYER_RGGB"
 
-            # Determine mosaic source:
-            # - if stored is 1-channel: use that
-            # - if stored is 3-channel but user forced bayer: treat as packed mosaic and use channel 0
             if img.ndim == 3 and img.shape[2] >= 3:
                 mosaic = img[..., 0] if user_forced_bayer else None
             else:
                 mosaic = img if img.ndim == 2 else img[..., 0]
 
-            if mosaic is None:
-                # not a mosaic; leave as-is
-                pass
-            else:
+            if mosaic is not None:
                 out = _try_numba_debayer(mosaic, pat)
                 if out is None:
                     out = _cv2_debayer(mosaic, pat)  # RGB
@@ -832,19 +888,26 @@ class SERReader:
                 img = out
 
         elif stored_is_bayer and (not debayer):
-            # Explicitly requested "no debayer": return raw mosaic
             img = img if img.ndim == 2 else img[..., 0]
 
-        # Force RGB for mono (useful for consistent preview pipeline)
+        # Force RGB for mono
         if force_rgb and img.ndim == 2:
             img = np.stack([img, img, img], axis=-1)
 
-        # Normalize to float01
+        # ----------------------------
+        # Normalize to float01 (BONUS)
+        # ----------------------------
         if to_float01:
             if img.dtype == np.uint8:
                 img = img.astype(np.float32) / 255.0
             elif img.dtype == np.uint16:
-                img = img.astype(np.float32) / 65535.0
+                pd = int(getattr(meta, "pixel_depth", 16) or 16)
+                # Many cameras are 10/12/14-bit stored in uint16.
+                if 8 < pd < 16:
+                    denom = float((1 << pd) - 1)
+                else:
+                    denom = 65535.0
+                img = img.astype(np.float32) / max(1.0, denom)
             else:
                 img = img.astype(np.float32)
                 img = np.clip(img, 0.0, 1.0)
@@ -1028,7 +1091,10 @@ class AVIReader(PlanetaryFrameSource):
 
             frame = frame[y:y + h, x:x + w]
 
+        frame = _rot180(frame)
+
         img: np.ndarray
+
 
         # ---------------------------------------------------------
         # RAW MOSAIC AVI SUPPORT
