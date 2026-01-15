@@ -115,6 +115,20 @@ def _bytes_per_sample(pixel_depth_bits: int) -> int:
 def _is_bayer(color_name: str) -> bool:
     return color_name in BAYER_NAMES
 
+def _roi_unrotate_180(roi: Tuple[int, int, int, int], W: int, H: int) -> Tuple[int, int, int, int]:
+    """
+    Convert an ROI specified in *post-rot180/display coords* into *raw/pre-rot coords*.
+    """
+    x, y, w, h = [int(v) for v in roi]
+    x2 = x + w
+    y2 = y + h
+
+    x_raw = int(W - x2)
+    y_raw = int(H - y2)
+
+    return (x_raw, y_raw, int(w), int(h))
+
+
 def _rot180(img: np.ndarray) -> np.ndarray:
     # Works for mono (H,W) and RGB(A) (H,W,C)
     return img[::-1, ::-1].copy()
@@ -847,7 +861,9 @@ class SERReader:
 
         # ROI (apply before debayer; for Bayer enforce even-even origin)
         if roi is not None:
-            x, y, w, h = [int(v) for v in roi]
+            # ✅ roi is specified in DISPLAY coords (post-rot180)
+            x, y, w, h = _roi_unrotate_180(roi, meta.width, meta.height)
+
             x = max(0, min(meta.width - 1, x))
             y = max(0, min(meta.height - 1, y))
             w = max(1, min(meta.width - x, w))
@@ -862,7 +878,6 @@ class SERReader:
 
         # --- SER global orientation fix (rotate 180) ---
         img = _rot180(img)
-
         # Convert BGR->RGB if needed
         if color_name == "BGR" and img.ndim == 3 and img.shape[2] >= 3:
             img = img[..., ::-1].copy()
@@ -1075,15 +1090,16 @@ class AVIReader(PlanetaryFrameSource):
 
         # ROI first (but if we are going to debayer mosaic, ROI origin must be even-even)
         if roi is not None:
-            x, y, w, h = [int(v) for v in roi]
             H, W = frame.shape[:2]
+
+            # ✅ roi is specified in DISPLAY coords (post-rot180)
+            x, y, w, h = _roi_unrotate_180(roi, W, H)
+
             x = max(0, min(W - 1, x))
             y = max(0, min(H - 1, y))
             w = max(1, min(W - x, w))
             h = max(1, min(H - y, h))
 
-            # If user explicitly requests debayering, preserve Bayer phase
-            # (even-even origin) exactly like SER
             if debayer and user_pat is not None:
                 x, y = _roi_evenize_for_bayer(x, y)
                 w = max(1, min(W - x, w))
