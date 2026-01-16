@@ -246,6 +246,7 @@ class Icons:
     LIVE_STACKING = property(lambda self: _resource_path('livestacking.png'))
     IMAGE_COMBINE = property(lambda self: _resource_path('imagecombine.png'))
     PLANETARY_STACKER = property(lambda self: _resource_path('planetarystacker.png'))
+    PLANET_PROJECTION = property(lambda self: _resource_path('3dplanet.png'))   
     
     # Moon phase (WIMS)
     MOON_NEW            = property(lambda self: _resource_path('new_moon.png'))
@@ -551,6 +552,7 @@ def _init_legacy_paths():
         'rgbalign_path': get_icon_path('rgbalign.png'),
         'background_path': get_icon_path('background.png'), 
         'script_icon_path': get_icon_path('script.png'),
+        'planetprojection_path': get_icon_path('3dplanet.png'),
     }
 
 
