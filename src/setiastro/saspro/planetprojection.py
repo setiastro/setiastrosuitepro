@@ -10,7 +10,7 @@ from PyQt6.QtGui import QImage, QPixmap, QPainter, QPen, QColor
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGroupBox,
     QFormLayout, QDoubleSpinBox, QSpinBox, QCheckBox, QComboBox, QMessageBox,
-    QSizePolicy, QFileDialog, QLineEdit, QSlider
+    QSizePolicy, QFileDialog, QLineEdit, QSlider, QWidget
 )
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 
@@ -382,11 +382,18 @@ def make_pseudo_surface_pair(
     return left, right, maskL, maskR
 
 
-def make_stereo_pair(roi_rgb: np.ndarray, theta_deg: float = 10.0, disk_mask: np.ndarray | None = None):
+def make_stereo_pair(
+    roi_rgb: np.ndarray,
+    theta_deg: float = 10.0,
+    disk_mask: np.ndarray | None = None,
+    *,
+    interp: int = None,
+):
     if cv2 is None:
         dummy_mask = np.ones(roi_rgb.shape[:2], dtype=bool)
         return roi_rgb, roi_rgb, dummy_mask, dummy_mask
-
+    if interp is None:
+        interp = cv2.INTER_LANCZOS4
     x = roi_rgb
     orig_dtype = x.dtype
 
@@ -417,9 +424,9 @@ def make_stereo_pair(roi_rgb: np.ndarray, theta_deg: float = 10.0, disk_mask: np
 
     mapLx, mapLy, mapRx, mapRy, _ = _sphere_reproject_maps(H, W, theta_deg, radius_px=radius)
 
-    left = cv2.remap(xf, mapLx, mapLy, interpolation=cv2.INTER_LANCZOS4,
+    left = cv2.remap(xf, mapLx, mapLy, interpolation=interp,
                      borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-    right = cv2.remap(xf, mapRx, mapRy, interpolation=cv2.INTER_LANCZOS4,
+    right = cv2.remap(xf, mapRx, mapRy, interpolation=interp,
                       borderMode=cv2.BORDER_CONSTANT, borderValue=0)
 
     # Warp the disk mask through the SAME maps
@@ -689,7 +696,6 @@ def _bilinear_sample_rgb(img01: np.ndarray, u: np.ndarray, v: np.ndarray) -> np.
     c1 = c01 * (1 - fv)[:, None] + c11 * fv[:, None]
     return c0 * (1 - fu)[:, None] + c1 * fu[:, None]
 
-
 def _build_ring_mesh(n_theta: int = 360):
     """Returns (x,y,z,I,J,K) for a unit annulus strip with two radii per theta."""
     th = np.linspace(0, 2*np.pi, n_theta, endpoint=False).astype(np.float32)
@@ -835,47 +841,62 @@ def export_planet_sphere_html(
             b_in  = max(1.0, a_in  * tilt)
 
             ringMask = _ellipse_annulus_mask(H0, W0, cx0, cy0, a_out, b_out, a_in, b_in, pa_deg)
-            # ---- Build FLOAT mask for alpha sampling (0/1), do NOT bake it into RGB
-            ringMask_f = ringMask.astype(np.float32)
+            ring_tex01 = roi01.copy()
+            ring_tex01[~ringMask] = 0.0
 
-            # ---- Sample RGB from ORIGINAL roi01 (no zero contamination)
-            cols = _bilinear_sample_rgb(roi01, u, v)  # (N,3) float01
-            rgb8 = np.clip(cols * 255.0, 0, 255).astype(np.uint8)
+            # --- Geometry: annulus in planet radii in the ring plane
+            th, I2, J2, K2 = _build_ring_mesh(n_theta=360)
 
-            # ---- Sample alpha from mask (bilinear on mask), then threshold
-            H0, W0 = roi01.shape[:2]
-            uu = np.asarray(u, np.float32)
-            vv = np.asarray(v, np.float32)
+            rin = np.full_like(th, k_in,  dtype=np.float32)
+            rout = np.full_like(th, k_out, dtype=np.float32)
 
-            u0 = np.floor(uu).astype(np.int32)
-            v0 = np.floor(vv).astype(np.int32)
-            u1 = np.clip(u0 + 1, 0, W0 - 1)
-            v1 = np.clip(v0 + 1, 0, H0 - 1)
-            u0 = np.clip(u0, 0, W0 - 1)
-            v0 = np.clip(v0, 0, H0 - 1)
+            # Base ring plane coordinates (world-ish): x right, y up
+            # We'll apply tilt in 3D, then rotate by PA, then finally flip Y for Plotly.
+            xi = rin * np.cos(th);  yi = rin * np.sin(th)
+            xo = rout * np.cos(th); yo = rout * np.sin(th)
 
-            fu = uu - np.floor(uu)
-            fv = vv - np.floor(vv)
+            x = np.empty((th.size * 2,), np.float32)
+            y = np.empty((th.size * 2,), np.float32)
+            z = np.zeros((th.size * 2,), np.float32)
+            x[0::2] = xi; x[1::2] = xo
+            y[0::2] = yi; y[1::2] = yo
 
-            m00 = ringMask_f[v0, u0]
-            m01 = ringMask_f[v0, u1]
-            m10 = ringMask_f[v1, u0]
-            m11 = ringMask_f[v1, u1]
+            # Tilt: tilt=b/a = cos(inc) -> inc = arccos(tilt)
+            inc = float(np.arccos(np.clip(tilt, 0.0, 1.0)))
+            ci, si = np.cos(inc), np.sin(inc)
 
-            m0 = m00 * (1.0 - fu) + m01 * fu
-            m1 = m10 * (1.0 - fu) + m11 * fu
-            m  = m0 * (1.0 - fv) + m1 * fv
+            # Tilt around X (foreshorten Y, push into Z)
+            y2 = y * ci
+            z2 = y * si
 
-            alpha = (m > 0.5).astype(np.uint8) * 255  # crisp ring edges
+            # Rotate around Z by PA (MATCH refinement/UI)
+            a = np.deg2rad(pa_deg)
+            ca, sa = np.cos(a), np.sin(a)
+            x3 = x * ca - y2 * sa
+            y3 = x * sa + y2 * ca
+            z3 = z2 + 0.002  # tiny lift to reduce z-fighting
 
-            # ---- Occlude far-side ring that passes behind the planet disk
-            # Use planet-space BEFORE Plotly y-flip: x3, y3, z3
-            inside_disk = (x3 * x3 + y3 * y3) <= 1.0
-            behind_planet = (z3 < 0.0)
-            alpha[inside_disk & behind_planet] = 0  # or =255 with rgb8=0 for "black cutout"
+            # --- Vertex colors: sample ring_tex01 using the SAME mapping as the mask
+            # Map ring plane coords -> image pixels:
+            # 1) rotate by PA in image plane
+            # 2) apply tilt on y (minor axis)
+            ap = np.deg2rad(pa_deg)
+            c, s = np.cos(ap), np.sin(ap)
 
-            vcol_ring = np.concatenate([rgb8, alpha[:, None]], axis=1)
+            xr = x
+            yr = y
 
+            # rotate into image ellipse frame (same sign convention as _ellipse_annulus_mask)
+            xr2 = xr * c + yr * s
+            yr2 = -xr * s + yr * c
+
+            u = cx0 + (xr2 * rpx)
+            v = cy0 + (yr2 * rpx * tilt)
+
+            cols = _bilinear_sample_rgb(ring_tex01, u, v)  # (N,3) float01
+            rgba = np.clip(cols * 255.0, 0, 255).astype(np.uint8)
+            alpha = (np.any(rgba > 0, axis=1)).astype(np.uint8) * 255
+            vcol_ring = np.concatenate([rgba, alpha[:, None]], axis=1)
 
             # Double-sided: duplicate tris with reversed winding
             I2 = np.asarray(I2, dtype=np.int32)
@@ -967,6 +988,7 @@ class PlanetProjectionDialog(QDialog):
         self._disk_last_was_user = False   # True once user clicks "Use This Disk"
 
         self._build_ui()
+        QTimer.singleShot(0, self._apply_initial_layout_fix)        
         self._update_enable()
 
     def _build_ui(self):
@@ -1079,8 +1101,8 @@ class PlanetProjectionDialog(QDialog):
         self.spin_ps_blur.setToolTip("Smooth height map to avoid noisy depth.")
         ps_form.addRow("Depth blur (px):", self.spin_ps_blur)
 
-        self.chk_ps_invert = QCheckBox("Invert depth (bright = farther)")
-        self.chk_ps_invert.setChecked(False)
+        self.chk_ps_invert = QCheckBox("Normal depth (bright = closer), uncheck for inverted")
+        self.chk_ps_invert.setChecked(True)
         ps_form.addRow("", self.chk_ps_invert)
 
         form.addRow(ps_box)
@@ -1107,19 +1129,20 @@ class PlanetProjectionDialog(QDialog):
         form.addRow("ROI max size:", self.spin_max)
 
         # Disk review + reset row
-        disk_row = QHBoxLayout()
+        disk_row_w = QWidget()
+        disk_row = QHBoxLayout(disk_row_w)
+        disk_row.setContentsMargins(0, 0, 0, 0)
+
         self.chk_adjust_disk = QCheckBox("Review / adjust detected disk before generating")
         self.chk_adjust_disk.setChecked(True)
         disk_row.addWidget(self.chk_adjust_disk)
 
         self.btn_reset_disk = themed_toolbtn("edit-undo", "Reset disk detection")
-        self.btn_reset_disk.setToolTip("Forget the last accepted disk (center/radius) for this image and re-detect.")
-        self.btn_reset_disk.setEnabled(False)  # only enabled once we have a cached disk
-        self.btn_reset_disk.clicked.connect(self._reset_disk_cache)
+        ...
         disk_row.addStretch(1)
         disk_row.addWidget(self.btn_reset_disk)
 
-        form.addRow("", disk_row)
+        form.addRow("", disk_row_w)
 
 
         self.chk_starfield = QCheckBox("Add static starfield background (no parallax)")
@@ -1159,7 +1182,7 @@ class PlanetProjectionDialog(QDialog):
 
         self.sld_bg_depth = QSlider(Qt.Orientation.Horizontal)
         self.sld_bg_depth.setRange(-1000, 1000)   # -2.00 .. 10.00 in steps of 0.01
-        self.sld_bg_depth.setValue(-300)
+        self.sld_bg_depth.setValue(300)
         self.sld_bg_depth.setSingleStep(5)       # 0.05
         self.sld_bg_depth.setPageStep(25)        # 0.25
         bg_depth_row.addWidget(self.sld_bg_depth, 1)
@@ -1213,8 +1236,9 @@ class PlanetProjectionDialog(QDialog):
             is_sat = (t == 1)
             is_pseudo = (t == 2)
 
-            rings_box.setEnabled(is_sat)
-            ps_box.setEnabled(is_pseudo)
+            rings_box.setVisible(is_sat)
+            ps_box.setVisible(is_pseudo)
+            self.adjustSize()  # shrink/grow dialog to fit
 
             # These are “planet disk” concepts; don’t use for pseudo surface
             self.chk_auto_roi.setEnabled(not is_pseudo)
@@ -1243,11 +1267,36 @@ class PlanetProjectionDialog(QDialog):
 
         self.cmb_planet_type.currentIndexChanged.connect(_update_type_enable)
         _update_type_enable()
-
+        def _set_form_row_visible(form_layout: QFormLayout, field_widget: QWidget, visible: bool):
+            """Hide/show the entire row in a QFormLayout that contains field_widget."""
+            for r in range(form_layout.rowCount()):
+                item = form_layout.itemAt(r, QFormLayout.ItemRole.FieldRole)
+                if item and item.widget() is field_widget:
+                    label_item = form_layout.itemAt(r, QFormLayout.ItemRole.LabelRole)
+                    if label_item and label_item.widget():
+                        label_item.widget().setVisible(visible)
+                    field_widget.setVisible(visible)
+                    return
 
         self.btn_generate.clicked.connect(self._generate)
         self.btn_stop.clicked.connect(self._stop_wiggle)
         self.btn_close.clicked.connect(self.close)
+
+    def _apply_initial_layout_fix(self):
+        # Re-run the same logic you already use (rings_box/ps_box visibility + adjustSize)
+        try:
+            # call your existing closure logic by nudging without changing index
+            # simplest: just call adjustSize + clamp to something sane
+            self.adjustSize()
+
+            # Optional: clamp width/height so it doesn't blow out
+            sh = self.sizeHint()
+            w = max(self.minimumWidth(), sh.width())
+            h = max(self.minimumHeight(), sh.height())
+            self.resize(w, h)
+        except Exception:
+            pass
+
 
     def _reset_disk_cache(self):
         # Forget disk refinement for the CURRENT image only.
@@ -1263,8 +1312,20 @@ class PlanetProjectionDialog(QDialog):
 
 
     def _current_image_key(self, img: np.ndarray):
-        # good enough: changes whenever a new numpy array is assigned / new size/dtype
-        return (id(img), img.shape, str(img.dtype))
+        """
+        Stable key for the underlying image buffer, even if we take views like img[..., :3].
+        """
+        a = np.asarray(img)
+
+        # Walk to the base ndarray so views/slices map to the same identity
+        base = a
+        while isinstance(getattr(base, "base", None), np.ndarray):
+            base = base.base
+
+        # Use raw data pointer + base dtype/shape (stable across views)
+        ptr = int(base.__array_interface__["data"][0])
+        return (ptr, tuple(base.shape), str(base.dtype))
+
 
 
     def _set_preview_zoom(self, z: float):
@@ -1323,11 +1384,22 @@ class PlanetProjectionDialog(QDialog):
         self._preview_win.set_frame_u8(rgb8)
 
 
-    def _bg_depth_internal(self) -> float:
-        # slider is -200..1000 representing -2.00..10.00
-        # internal is (-2..10) * 1000 => -2000..10000
-        return float(self.sld_bg_depth.value()) * 10.0
+    def _bg_depth_internal_signed(self) -> float:
+        """
+        Read background depth from the UI slider, apply Saturn sign flip.
 
+        Slider shows -10.00 .. +10.00 (label uses v/100).
+        We'll interpret slider units as "percent * 100":
+            depth_pct = (slider_value / 100.0)
+        so slider=25 -> 0.25 (25% of planet disparity).
+        """
+        v = float(self.sld_bg_depth.value())  # int
+        # Saturn: invert background direction
+        if self.cmb_planet_type.currentIndex() == 1:  # 1 = Saturn
+            v = -v
+        return v
+
+    
     def _set_bg_depth_internal(self, v: float):
         # internal -2000..10000 -> slider -200..1000
         self.sld_bg_depth.setValue(int(round(float(v) / 10.0)))
@@ -1367,20 +1439,23 @@ class PlanetProjectionDialog(QDialog):
 
     def _generate(self):
         self._stop_wiggle()
+        mode = int(self.cmb_mode.currentIndex())
 
         if self.image is None:
             QMessageBox.information(self, "Planet Projection", "No image loaded.")
             return
 
         img = np.asarray(self.image)
+        key = self._current_image_key(img) 
         if img.ndim != 3 or img.shape[2] < 3:
             QMessageBox.information(self, "Planet Projection", "Image must be RGB (3 channels).")
             return
-        
-        ptype = self.cmb_planet_type.currentIndex()
-        is_pseudo = (ptype == 2)
 
+        img = img[..., :3]  # ensure exactly RGB
         Hfull, Wfull = img.shape[:2]
+
+        ptype = int(self.cmb_planet_type.currentIndex())
+        is_pseudo = (ptype == 2)
 
         # ---- 0) reset cached disk if image changed ----
         key = self._current_image_key(img)
@@ -1391,7 +1466,6 @@ class PlanetProjectionDialog(QDialog):
 
         # ---- 1) initial disk estimate (FULL IMAGE coords) ----
         if self._disk_last is not None:
-            # Use last accepted disk for this image
             cx, cy, r = self._disk_last
         else:
             c = _planet_centroid_and_area(img[..., 1])
@@ -1410,7 +1484,7 @@ class PlanetProjectionDialog(QDialog):
             and getattr(self, "chk_adjust_disk", None) is not None
             and self.chk_adjust_disk.isChecked()
         ):
-            is_saturn = (getattr(self, "cmb_planet_type", None) is not None and self.cmb_planet_type.currentIndex() == 1)
+            is_saturn = (self.cmb_planet_type.currentIndex() == 1)
             rings_on = bool(is_saturn and getattr(self, "chk_rings", None) is not None and self.chk_rings.isChecked())
 
             dlg = PlanetDiskAdjustDialog(
@@ -1423,7 +1497,6 @@ class PlanetProjectionDialog(QDialog):
             )
 
             if dlg.exec() != QDialog.DialogCode.Accepted:
-                # IMPORTANT: if user cancels, keep previously accepted disk (if any)
                 return
 
             cx, cy, r = dlg.get_result()
@@ -1434,12 +1507,9 @@ class PlanetProjectionDialog(QDialog):
                 self.spin_ring_outer.setValue(kout)
                 self.spin_ring_inner.setValue(kin)
 
-            # Persist for future generates (parallel/cross/wiggle/html) within this dialog session
             self._disk_last = (float(cx), float(cy), float(r))
             self._disk_last_was_user = True
         else:
-            # Even if adjust dialog is disabled, keep auto-detected disk cached for this image
-            # so switching modes doesn't re-detect differently each time.
             if self._disk_last is None:
                 self._disk_last = (float(cx), float(cy), float(r))
                 self._disk_last_was_user = False
@@ -1447,16 +1517,13 @@ class PlanetProjectionDialog(QDialog):
         if hasattr(self, "btn_reset_disk") and self.btn_reset_disk is not None:
             self.btn_reset_disk.setEnabled(self._disk_last is not None)
 
-        # ---- 3) ROI from adjusted disk (still uses your existing pad/min/max) ----
+        # ---- 3) ROI size from adjusted disk (pad/min/max) ----
         pad_mul = float(self.spin_pad.value())
         s = int(np.clip(r * pad_mul, float(self.spin_min.value()), float(self.spin_max.value())))
 
-        ptype = self.cmb_planet_type.currentIndex()
-        is_pseudo = (ptype == 2)
-
+        # ---- PSEUDO SURFACE MODE: early exit, no rings/background/disk ----
         if is_pseudo:
-            # Use the whole image as ROI (no disk detection, no rings)
-            roi = img[..., :3]
+            roi = img  # whole image
             theta = float(self.spin_theta.value())
 
             left_w, right_w, maskL, maskR = make_pseudo_surface_pair(
@@ -1473,16 +1540,10 @@ class PlanetProjectionDialog(QDialog):
             Lw01 = np.clip(Lw01, 0.0, 1.0)
             Rw01 = np.clip(Rw01, 0.0, 1.0)
 
-            Ldisp8 = np.clip(Lw01 * 255.0, 0, 255).astype(np.uint8)
-            Rdisp8 = np.clip(Rw01 * 255.0, 0, 255).astype(np.uint8)
-
-            self._left = Ldisp8
-            self._right = Rdisp8
+            self._left = np.clip(Lw01 * 255.0, 0, 255).astype(np.uint8)
+            self._right = np.clip(Rw01 * 255.0, 0, 255).astype(np.uint8)
             self._wiggle_state = False
 
-            mode = self.cmb_mode.currentIndex()
-
-            # Disallow HTML sphere on pseudo type
             if mode == 4:
                 QMessageBox.information(self, "Planet Projection", "Interactive 3D Sphere is not available for Pseudo surface.")
                 return
@@ -1499,18 +1560,17 @@ class PlanetProjectionDialog(QDialog):
                     QMessageBox.warning(self, "Anaglyph", f"Failed to build anaglyph:\n{e}")
                 return
 
-            cross_eye = (mode == 0)
+            cross_eye = (mode == 1)  # 1 = Cross-eye (R|L)
             self._show_stereo_pair(cross_eye=cross_eye)
             return
 
-
-        # If Saturn rings are enabled, expand ROI to fully include the *rotated* outer ellipse
+        # ---- Saturn rings ROI expansion (only increases s) ----
         is_saturn = (self.cmb_planet_type.currentIndex() == 1)
-        rings_on = bool(is_saturn and self.chk_rings.isChecked())
+        rings_on = bool(is_saturn and getattr(self, "chk_rings", None) is not None and self.chk_rings.isChecked())
 
         if rings_on:
             tilt = float(self.spin_ring_tilt.value())      # b/a
-            pa   = float(self.spin_ring_pa.value())
+            pa = float(self.spin_ring_pa.value())
             k_out = float(self.spin_ring_outer.value())
 
             outer_boost = 1.05
@@ -1518,289 +1578,234 @@ class PlanetProjectionDialog(QDialog):
             b_out = max(1.0, a_out * tilt)
 
             th = np.deg2rad(pa)
-            c, s2 = np.cos(th), np.sin(th)
+            cth, sth = np.cos(th), np.sin(th)
 
-            # half-extents of a rotated ellipse (bounding box)
-            dx = np.sqrt((a_out * c)**2 + (b_out * s2)**2)
-            dy = np.sqrt((a_out * s2)**2 + (b_out * c)**2)
+            dx = np.sqrt((a_out * cth) ** 2 + (b_out * sth) ** 2)
+            dy = np.sqrt((a_out * sth) ** 2 + (b_out * cth) ** 2)
             need_half = float(max(dx, dy))
 
-            margin = 12.0  # pixels safety
+            margin = 12.0
             s_need = int(np.ceil(2.0 * (need_half + margin)))
-
-            # ensure ROI big enough for rings
             s = max(s, s_need)
 
-            # still respect min/max
-            s = int(np.clip(s, float(self.spin_min.value()), float(self.spin_max.value())))
+        s = int(np.clip(s, float(self.spin_min.value()), float(self.spin_max.value())))
 
+        # ---- ROI crop ALWAYS (for normal/saturn) ----
+        cx_i, cy_i = int(round(cx)), int(round(cy))
+        x0 = max(0, cx_i - s // 2)
+        y0 = max(0, cy_i - s // 2)
+        x1 = min(Wfull, x0 + s)
+        y1 = min(Hfull, y0 + s)
 
-            cx_i, cy_i = int(round(cx)), int(round(cy))
-            x0 = max(0, cx_i - s // 2)
-            y0 = max(0, cy_i - s // 2)
-            x1 = min(Wfull, x0 + s)
-            y1 = min(Hfull, y0 + s)
+        roi = img[y0:y1, x0:x1, :3]
 
-            roi = img[y0:y1, x0:x1, :3]
+        # ---- disk mask (ROI coords) ----
+        H0, W0 = roi.shape[:2]
+        yy, xx = np.mgrid[0:H0, 0:W0].astype(np.float32)
+        cx0 = float(cx - x0)
+        cy0 = float(cy - y0)
+        disk = ((xx - cx0) ** 2 + (yy - cy0) ** 2) <= (float(r) ** 2)
 
-            # ---- 4) disk mask from adjusted circle (ROI coords) ----
-            H0, W0 = roi.shape[:2]
-            yy, xx = np.mgrid[0:H0, 0:W0].astype(np.float32)
-            cx0 = float(cx - x0)
-            cy0 = float(cy - y0)
+        def to01(x):
+            if x.dtype == np.uint8:
+                return x.astype(np.float32) / 255.0
+            if x.dtype == np.uint16:
+                return x.astype(np.float32) / 65535.0
+            return x.astype(np.float32, copy=False)
 
-            disk = ((xx - cx0) ** 2 + (yy - cy0) ** 2) <= (float(r) ** 2)
+        if disk is None:
+            cx0 = (W0 - 1) * 0.5
+            cy0 = (H0 - 1) * 0.5
+            r0 = 0.49 * min(W0, H0)
+            disk = ((xx - cx0) ** 2 + (yy - cy0) ** 2) <= (r0 * r0)
 
-            # --------- helper: float01 ----------
-            def to01(x):
-                if x.dtype == np.uint8:
-                    return x.astype(np.float32) / 255.0
-                if x.dtype == np.uint16:
-                    return x.astype(np.float32) / 65535.0
-                return x.astype(np.float32, copy=False)
+        theta = float(self.spin_theta.value())
 
-            # IMPORTANT: disk mask for Plotly sphere export (and safe fallbacks)
+        # ---- BODY (sphere reprojection) ----
+        # pseudo already returned; use high-quality for body
+        interp = cv2.INTER_LANCZOS4
 
-            if disk is None:
-                # fallback: simple centered circle inside ROI
-                H0, W0 = roi.shape[:2]
-                yy, xx = np.mgrid[0:H0, 0:W0].astype(np.float32)
-                cx0 = (W0 - 1) * 0.5
-                cy0 = (H0 - 1) * 0.5
-                r0 = 0.49 * min(W0, H0)
-                disk = ((xx - cx0) ** 2 + (yy - cy0) ** 2) <= (r0 * r0)
+        left_w, right_w, maskL, maskR = make_stereo_pair(
+            roi, theta_deg=theta, disk_mask=disk, interp=interp
+        )
 
-            theta = float(self.spin_theta.value())
+        Lw01 = to01(left_w)
+        Rw01 = to01(right_w)
 
-            # ------------- BODY (sphere reprojection) -------------
-            left_w, right_w, maskL, maskR = make_stereo_pair(roi, theta_deg=theta, disk_mask=disk)
+        # ---- SATURN RINGS (optional) ----
+        ringL01 = ringR01 = None
+        ringL_front = ringL_back = ringR_front = ringR_back = None
 
-            Lw01 = to01(left_w)
-            Rw01 = to01(right_w)
+        if rings_on:
+            tilt = float(self.spin_ring_tilt.value())
+            pa = float(self.spin_ring_pa.value())
+            k_out = float(self.spin_ring_outer.value())
+            k_in = float(self.spin_ring_inner.value())
 
-            # ------------- SATURN RINGS (optional) -------------
-            is_saturn = (getattr(self, "cmb_planet_type", None) is not None and self.cmb_planet_type.currentIndex() == 1)
+            outer_boost = 1.05
+            a_out = k_out * float(r) * outer_boost
+            b_out = max(1.0, a_out * tilt)
 
-            ringL01 = ringR01 = None
-            ringMask = ringFront = ringBack = None
+            a_in = k_in * float(r)
+            b_in = max(1.0, a_in * tilt)
 
-            if is_saturn and getattr(self, "chk_rings", None) is not None and self.chk_rings.isChecked():
-                # build ring mask in ROI coords using the *body* center/radius
-                # (cx0,cy0) already computed, and r is body radius in FULL coords; same r applies in ROI coords
-                tilt = float(self.spin_ring_tilt.value())      # b/a
-                pa   = float(self.spin_ring_pa.value())
-                k_out = float(self.spin_ring_outer.value())
-                k_in  = float(self.spin_ring_inner.value())
+            ringMask = _ellipse_annulus_mask(H0, W0, cx0, cy0, a_out, b_out, a_in, b_in, pa)
 
-                outer_boost = 1.05  # +5% outer radius only
-                a_out = k_out * float(r) * outer_boost
-                b_out = max(1.0, a_out * tilt)
+            roi01 = to01(roi)
+            ring_tex01 = roi01.copy()
+            ring_tex01[~ringMask] = 0.0
 
-                a_in  = k_in * float(r)              # inner stays exactly the same
-                b_in  = max(1.0, a_in * tilt)
+            mapLx, mapLy, mapRx, mapRy = _yaw_warp_maps(H0, W0, theta, cx0, cy0)
 
-                ringMask = _ellipse_annulus_mask(H0, W0, cx0, cy0, a_out, b_out, a_in, b_in, pa)
+            ringL01 = cv2.remap(ring_tex01, mapLx, mapLy, interpolation=cv2.INTER_LINEAR,
+                                borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+            ringR01 = cv2.remap(ring_tex01, mapRx, mapRy, interpolation=cv2.INTER_LINEAR,
+                                borderMode=cv2.BORDER_CONSTANT, borderValue=0)
 
-                # ring texture comes from the ROI itself, but only ring pixels
-                roi01 = to01(roi)
-                ring_tex01 = roi01.copy()
-                ring_tex01[~ringMask] = 0.0
+            front0, back0 = _ring_front_back_masks(H0, W0, cx0, cy0, pa, ringMask)
+            f_u8 = (front0.astype(np.uint8) * 255)
+            b_u8 = (back0.astype(np.uint8) * 255)
 
-                # warp rings with planar yaw (NOT sphere)
-                mapLx, mapLy, mapRx, mapRy = _yaw_warp_maps(H0, W0, theta, cx0, cy0)
-                ringL01 = cv2.remap(ring_tex01, mapLx, mapLy, interpolation=cv2.INTER_LINEAR,
-                                    borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-                ringR01 = cv2.remap(ring_tex01, mapRx, mapRy, interpolation=cv2.INTER_LINEAR,
-                                    borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-
-                # warp ring masks too
-                ring_u8 = (ringMask.astype(np.uint8) * 255)
-                ringL_m = cv2.remap(ring_u8, mapLx, mapLy, interpolation=cv2.INTER_NEAREST,
+            ringL_front = cv2.remap(f_u8, mapLx, mapLy, interpolation=cv2.INTER_NEAREST,
                                     borderMode=cv2.BORDER_CONSTANT, borderValue=0) > 127
-                ringR_m = cv2.remap(ring_u8, mapRx, mapRy, interpolation=cv2.INTER_NEAREST,
+            ringL_back = cv2.remap(b_u8, mapLx, mapLy, interpolation=cv2.INTER_NEAREST,
+                                borderMode=cv2.BORDER_CONSTANT, borderValue=0) > 127
+            ringR_front = cv2.remap(f_u8, mapRx, mapRy, interpolation=cv2.INTER_NEAREST,
                                     borderMode=cv2.BORDER_CONSTANT, borderValue=0) > 127
+            ringR_back = cv2.remap(b_u8, mapRx, mapRy, interpolation=cv2.INTER_NEAREST,
+                                borderMode=cv2.BORDER_CONSTANT, borderValue=0) > 127
 
-                # front/back split (do it in unwarped space, then warp each half)
-                front0, back0 = _ring_front_back_masks(H0, W0, cx0, cy0, pa, ringMask)
-                f_u8 = (front0.astype(np.uint8) * 255)
-                b_u8 = (back0.astype(np.uint8) * 255)
+        # ---- centroid lock (planet-only) ----
+        cL = _mask_centroid(maskL)
+        cR = _mask_centroid(maskR)
+        if cL is not None and cR is not None:
+            tx = 0.5 * (cL[0] + cR[0])
+            ty = 0.5 * (cL[1] + cR[1])
 
-                ringL_front = cv2.remap(f_u8, mapLx, mapLy, interpolation=cv2.INTER_NEAREST,
-                                        borderMode=cv2.BORDER_CONSTANT, borderValue=0) > 127
-                ringL_back  = cv2.remap(b_u8, mapLx, mapLy, interpolation=cv2.INTER_NEAREST,
-                                        borderMode=cv2.BORDER_CONSTANT, borderValue=0) > 127
-                ringR_front = cv2.remap(f_u8, mapRx, mapRy, interpolation=cv2.INTER_NEAREST,
-                                        borderMode=cv2.BORDER_CONSTANT, borderValue=0) > 127
-                ringR_back  = cv2.remap(b_u8, mapRx, mapRy, interpolation=cv2.INTER_NEAREST,
-                                        borderMode=cv2.BORDER_CONSTANT, borderValue=0) > 127
+            dxL, dyL = (tx - cL[0]), (ty - cL[1])
+            dxR, dyR = (tx - cR[0]), (ty - cR[1])
 
+            Lw01 = _shift_image(Lw01, dxL, dyL, border_value=0)
+            Rw01 = _shift_image(Rw01, dxR, dyR, border_value=0)
+            maskL = _shift_mask(maskL, dxL, dyL)
+            maskR = _shift_mask(maskR, dxR, dyR)
 
-            Lw01 = to01(left_w)
-            Rw01 = to01(right_w)
+        # ---- build background (bg01) ----
+        H, W = roi.shape[:2]
+        if self.chk_bg_image.isChecked() and self._bg_img01 is not None:
+            bg = cv2.resize(self._bg_img01, (W, H), interpolation=cv2.INTER_AREA)
+            bg01 = np.clip(bg.astype(np.float32, copy=False), 0.0, 1.0)
+        else:
+            bg01 = np.zeros((H, W, 3), dtype=np.float32)
 
-            # ---- centroid lock (planet-only) ----
-            cL = _mask_centroid(maskL)
-            cR = _mask_centroid(maskR)
-            if cL is not None and cR is not None:
-                tx = 0.5 * (cL[0] + cR[0])
-                ty = 0.5 * (cL[1] + cR[1])
+        if self.chk_starfield.isChecked():
+            bg01 = _add_starfield(
+                bg01,
+                density=float(self.spin_density.value()),
+                seed=int(self.spin_seed.value()),
+                star_sigma=0.8,
+                brightness=0.9,
+            )
 
-                dxL, dyL = (tx - cL[0]), (ty - cL[1])
-                dxR, dyR = (tx - cR[0]), (ty - cR[1])
+        # ---- background parallax ----
+        # ---- background parallax ----
+        cL2 = _mask_centroid(maskL)
+        cR2 = _mask_centroid(maskR)
 
-                # shift planet images + masks (planet-only alignment)
-                Lw01 = _shift_image(Lw01, dxL, dyL, border_value=0)
-                Rw01 = _shift_image(Rw01, dxR, dyR, border_value=0)
-                maskL = _shift_mask(maskL, dxL, dyL)
-                maskR = _shift_mask(maskR, dxR, dyR)
+        planet_disp_px = float(cL2[0] - cR2[0]) if (cL2 is not None and cR2 is not None) else 0.0
 
-            # ---- build background (bg01) first (float32 RGB [0,1]) ----
-            H, W = roi.shape[:2]
-            if self.chk_bg_image.isChecked() and self._bg_img01 is not None:
-                bg = cv2.resize(self._bg_img01, (W, H), interpolation=cv2.INTER_AREA)
-                bg01 = np.clip(bg.astype(np.float32, copy=False), 0.0, 1.0)
-            else:
-                bg01 = np.zeros((H, W, 3), dtype=np.float32)
+        # If Saturn is selected, invert the background depth value (not the planet disparity).
+        depth_pct = float(self._bg_depth_internal_signed()) / 100.0  # <-- flipped for Saturn
+        bg_disp_px = planet_disp_px * depth_pct
+        bg_shift = 0.5 * bg_disp_px
 
-            if self.chk_starfield.isChecked():
-                bg01 = _add_starfield(
-                    bg01,
-                    density=float(self.spin_density.value()),
-                    seed=int(self.spin_seed.value()),
-                    star_sigma=0.8,
-                    brightness=0.9,
+        max_bg_shift = 10.0 * min(H, W)
+        bg_shift = float(np.clip(bg_shift, -max_bg_shift, +max_bg_shift))
+
+        bgL = _shift_image(bg01, +bg_shift, 0.0, border_value=0)
+        bgR = _shift_image(bg01, -bg_shift, 0.0, border_value=0)
+
+        # ---- composite ----
+        Ldisp01 = bgL.copy()
+        Rdisp01 = bgR.copy()
+
+        if ringL01 is not None:
+            Ldisp01[ringL_back & (~maskL)] = ringL01[ringL_back & (~maskL)]
+            Rdisp01[ringR_back & (~maskR)] = ringR01[ringR_back & (~maskR)]
+
+        Ldisp01[maskL] = Lw01[maskL]
+        Rdisp01[maskR] = Rw01[maskR]
+
+        if ringL01 is not None:
+            Ldisp01[ringL_front] = ringL01[ringL_front]
+            Rdisp01[ringR_front] = ringR01[ringR_front]
+
+        self._left = np.clip(Ldisp01 * 255.0, 0, 255).astype(np.uint8)
+        self._right = np.clip(Rdisp01 * 255.0, 0, 255).astype(np.uint8)
+        self._wiggle_state = False
+
+        # ---- mode handling ----
+        if mode == 4:
+            try:
+                rings_kwargs = None
+                if rings_on:
+                    rings_kwargs = dict(
+                        cx=float(cx0),
+                        cy=float(cy0),
+                        r=float(r),
+                        pa=float(self.spin_ring_pa.value()),
+                        tilt=float(self.spin_ring_tilt.value()),
+                        k_out=float(self.spin_ring_outer.value()),
+                        k_in=float(self.spin_ring_inner.value()),
+                    )
+
+                html, default_path = export_planet_sphere_html(
+                    roi_rgb=roi,
+                    disk_mask=disk,
+                    out_path=None,
+                    n_lat=140,
+                    n_lon=280,
+                    title="Saturn" if rings_on else "Planet Sphere",
+                    rings=rings_kwargs,
                 )
 
-            # ---- background parallax depth control ----
-            cL2 = _mask_centroid(maskL)
-            cR2 = _mask_centroid(maskR)
-            if cL2 is not None and cR2 is not None:
-                planet_disp_px = float(cL2[0] - cR2[0])  # L - R disparity in pixels (signed)
-            else:
-                planet_disp_px = 0.0
+                fn, _ = QFileDialog.getSaveFileName(
+                    self,
+                    "Save Planet Sphere As",
+                    default_path,
+                    "HTML Files (*.html)"
+                )
+                if fn:
+                    if not fn.lower().endswith(".html"):
+                        fn += ".html"
+                    with open(fn, "w", encoding="utf-8") as f:
+                        f.write(html)
 
-            depth_pct = float(self._bg_depth_internal()) / 100.0
-            bg_disp_px = planet_disp_px * depth_pct
-            bg_shift = 0.5 * bg_disp_px
+                import tempfile, webbrowser
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".html", mode="w", encoding="utf-8")
+                tmp.write(html)
+                tmp.close()
+                webbrowser.open("file://" + tmp.name)
 
-            # allow BIG shifts (you asked for -1000 etc.)
-            max_bg_shift = 10.0 * min(H, W)
-            bg_shift = float(np.clip(bg_shift, -max_bg_shift, +max_bg_shift))
-
-            bgL = _shift_image(bg01, +bg_shift, 0.0, border_value=0)
-            bgR = _shift_image(bg01, -bg_shift, 0.0, border_value=0)
-
-            # ---- composite ----
-            Ldisp01 = bgL.copy()
-            Rdisp01 = bgR.copy()
-
-            # 1) back rings (behind planet)
-            if ringL01 is not None:
-                # back rings only show where NOT covered by disk
-                Ldisp01[ringL_back & (~maskL)] = ringL01[ringL_back & (~maskL)]
-                Rdisp01[ringR_back & (~maskR)] = ringR01[ringR_back & (~maskR)]
-
-            # 2) planet body
-            Ldisp01[maskL] = Lw01[maskL]
-            Rdisp01[maskR] = Rw01[maskR]
-
-            # 3) front rings (on top)
-            if ringL01 is not None:
-                Ldisp01[ringL_front] = ringL01[ringL_front]
-                Rdisp01[ringR_front] = ringR01[ringR_front]
-
-
-            Ldisp8 = np.clip(Ldisp01 * 255.0, 0, 255).astype(np.uint8)
-            Rdisp8 = np.clip(Rdisp01 * 255.0, 0, 255).astype(np.uint8)
-
-            self._left = Ldisp8
-            self._right = Rdisp8
-            self._wiggle_state = False
-
-            mode = self.cmb_mode.currentIndex()
-
-            # NOTE:
-            # 0 = Stereo (Parallel)  L|R
-            # 1 = Stereo (Cross-eye) R|L
-            # 2 = Wiggle
-            # 3 = Interactive 3D Sphere (HTML)
-            if mode == 4:
-                # ---- Plotly interactive sphere export (HTML) ----
-                try:
-                    is_saturn = (
-                        getattr(self, "cmb_planet_type", None) is not None
-                        and self.cmb_planet_type.currentIndex() == 1
-                    )
-                    rings_on = bool(is_saturn and getattr(self, "chk_rings", None) is not None and self.chk_rings.isChecked())
-
-                    rings_kwargs = None
-                    if rings_on:
-                        # ROI coords + body radius in px
-                        rings_kwargs = dict(
-                            cx=float(cx0),
-                            cy=float(cy0),
-                            r=float(r),
-                            pa=float(self.spin_ring_pa.value()),
-                            tilt=float(self.spin_ring_tilt.value()),
-                            k_out=float(self.spin_ring_outer.value()),
-                            k_in=float(self.spin_ring_inner.value()),
-                        )
-
-                    html, default_path = export_planet_sphere_html(
-                        roi_rgb=roi,
-                        disk_mask=disk,
-                        out_path=None,
-                        n_lat=140,
-                        n_lon=280,
-                        title="Saturn" if rings_on else "Planet Sphere",
-                        rings=rings_kwargs,   # <-- NEW (ignored when None)
-                    )
-
-                    # Save prompt like WIMI
-                    fn, _ = QFileDialog.getSaveFileName(
-                        self,
-                        "Save Planet Sphere As",
-                        default_path,
-                        "HTML Files (*.html)"
-                    )
-                    if fn:
-                        if not fn.lower().endswith(".html"):
-                            fn += ".html"
-                        with open(fn, "w", encoding="utf-8") as f:
-                            f.write(html)
-
-                    # Always open a temp preview
-                    import tempfile, webbrowser
-                    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".html", mode="w", encoding="utf-8")
-                    tmp.write(html)
-                    tmp.close()
-                    webbrowser.open("file://" + tmp.name)
-
-                except Exception as e:
-                    QMessageBox.warning(self, "Planet Sphere", f"Failed to generate 3D sphere:\n{e}")
-                return
-
+            except Exception as e:
+                QMessageBox.warning(self, "Planet Sphere", f"Failed to generate 3D sphere:\n{e}")
+            return
 
         if mode == 2:
             self._start_wiggle()
+            return
 
         if mode == 3:
-            # Anaglyph preview (single image)
             try:
-                L8 = self._left if self._left.dtype == np.uint8 else _to_u8_preview(self._left)
-                R8 = self._right if self._right.dtype == np.uint8 else _to_u8_preview(self._right)
-
-                # usually no swap needed; if depth feels inverted, set swap_eyes=True
-                ana = _make_anaglyph(L8, R8, swap_eyes=False)
+                ana = _make_anaglyph(self._left, self._right, swap_eyes=False)
                 self._push_preview_u8(ana)
             except Exception as e:
                 QMessageBox.warning(self, "Anaglyph", f"Failed to build anaglyph:\n{e}")
             return
 
-        else:
-            # cross-eye view should swap L/R
-            cross_eye = (mode == 0)
-            self._show_stereo_pair(cross_eye=cross_eye)
+        cross_eye = (mode == 0)
+        self._show_stereo_pair(cross_eye=cross_eye)
+        return
 
     def _show_stereo_pair(self, cross_eye: bool = False):
         if self._left is None or self._right is None:
