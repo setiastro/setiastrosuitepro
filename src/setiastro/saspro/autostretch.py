@@ -4,12 +4,18 @@ import numpy as np
 _MAX_STATS_PIXELS = 1_000_000
 _DEFAULT_SIGMA = 3
 _U8_MAX  = 4095  # 12-bit output for better gradations than 255
-_U16_MAX = 65535
+_U24_MAX = 16777215  # 24-bit output for better gradations
 
 # ---------- helpers (generic N-level pipeline) ----------
 def _to_uN(a: np.ndarray, maxv: int) -> np.ndarray:
-    """Convert to uint8/uint16 [0..maxv] for cheap hist/LUT work."""
-    tgt_dtype = np.uint16 if maxv > _U8_MAX else np.uint8
+    """Convert to uint8/uint16/uint32 [0..maxv] for cheap hist/LUT work."""
+    # uint8 for maxv <= 255, uint16 for 256..65535, uint32 for larger (24-bit)
+    if maxv > 65535:
+        tgt_dtype = np.uint32
+    elif maxv > 255:
+        tgt_dtype = np.uint16
+    else:
+        tgt_dtype = np.uint8
     if a.dtype == tgt_dtype:
         return a
     if np.issubdtype(a.dtype, np.integer):
@@ -17,10 +23,12 @@ def _to_uN(a: np.ndarray, maxv: int) -> np.ndarray:
         if info.max <= 0:
             return np.zeros_like(a, dtype=tgt_dtype)
         scaled = np.clip(a.astype(np.float32), 0, info.max) * (maxv / float(info.max))
-        return (scaled + 0.5).astype(tgt_dtype)
+        # Clamp to maxv to avoid index-out-of-bounds when used as LUT indices
+        return np.minimum((scaled + 0.5).astype(tgt_dtype), maxv)
     # float-ish
     af = np.clip(a.astype(np.float32), 0.0, 1.0)
-    return (af * maxv + 0.5).astype(tgt_dtype)
+    # Clamp to maxv: when af=1.0, af*maxv+0.5 can exceed maxv
+    return np.minimum((af * maxv + 0.5).astype(tgt_dtype), maxv)
 
 def _choose_stride(h: int, w: int, max_pixels: int) -> tuple[int, int]:
     n = h * w
@@ -132,29 +140,21 @@ def autostretch(
     linked: bool = False,
     sigma: float = _DEFAULT_SIGMA,
     *,
-    use_16bit: bool | None = None,
+    use_24bit: bool | None = None,
 ) -> np.ndarray:
-    """
-    High-quality autostretch that can operate in 16-bit (HQ, default) or 8-bit (fast) mode.
 
-    • 16-bit mode: smooth gradients, minimal posterization (recommended).
-    • 8-bit mode: slightly faster on very large images, lower fidelity.
-
-    If use_16bit is None, we try to read QSettings("display/autostretch_16bit") and
-    default to True on failure (no Qt in context).
-    """
     if img is None:
         return None
 
     # Optional auto-read from QSettings if caller didn’t pass a flag.
-    if use_16bit is None:
+    if use_24bit is None:
         try:
             from PyQt6.QtCore import QSettings
-            use_16bit = QSettings().value("display/autostretch_16bit", True, type=bool)
+            use_24bit = QSettings().value("display/autostretch_24bit", True, type=bool)
         except Exception:
-            use_16bit = True
+            use_24bit = True
 
-    maxv = _U16_MAX if use_16bit else _U8_MAX
+    maxv = _U24_MAX if use_24bit else _U8_MAX
     a = np.asarray(img)
 
     # MONO (or pseudo-mono)

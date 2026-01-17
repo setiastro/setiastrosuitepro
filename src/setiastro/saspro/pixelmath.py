@@ -1179,7 +1179,7 @@ class PixelMathDialogPro(QDialog):
                     target_median=float(getattr(self, "_as_target", 0.25)),
                     linked=bool(getattr(self, "_as_linked", True)),
                     sigma=float(getattr(self, "_as_sigma", 3.0)),
-                    use_16bit=bool(getattr(self, "_as_16bit", True)),
+                    use_24bit=bool(getattr(self, "_as_24bit", True)),
                 )
 
             self._set_preview_image(out)

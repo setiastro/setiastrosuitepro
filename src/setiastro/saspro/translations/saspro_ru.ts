@@ -5093,7 +5093,7 @@ Ctrl+Клик на гистограмме для точки pivot.</translation>
       <translation>Очистить</translation>
     </message>
     <message>
-      <source>Compute autostretch on a 16-bit histogram (smoother gradients).</source>
+      <source>Compute autostretch on a 24-bit histogram (smoother gradients).</source>
       <translation>Авто-растяжение по 16-бит гистограмме (плавные градиенты).</translation>
     </message>
     <message>
@@ -5125,7 +5125,7 @@ Ctrl+Клик на гистограмме для точки pivot.</translation>
       <translation>Исполняемый файл GraXpert:</translation>
     </message>
     <message>
-      <source>High-quality autostretch (16-bit; better gradients)</source>
+      <source>High-quality autostretch (24-bit; better gradients)</source>
       <translation>Высококачественное авто-растяжение (16-бит)</translation>
     </message>
     <message>
