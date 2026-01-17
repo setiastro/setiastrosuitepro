@@ -354,7 +354,8 @@ class SERViewer(QDialog):
                 w.toggled.connect(self._refresh)
             if hasattr(w, "valueChanged"):
                 w.valueChanged.connect(self._refresh)
-
+        for s in (self.spin_x, self.spin_y, self.spin_w, self.spin_h):
+            s.valueChanged.connect(self._sanitize_roi_controls)
         self.cmb_track.currentIndexChanged.connect(self._on_track_mode_changed)
         self.btn_stack.clicked.connect(self._open_stacker_clicked)
         self.cmb_bayer.currentIndexChanged.connect(self._refresh)
@@ -746,16 +747,23 @@ class SERViewer(QDialog):
                                             x, y, w, h = rect_disp
                                             x_full = int(rx + x)
                                             y_full = int(ry + y)
+                                            w = int(w)
+                                            h = int(h)
+
+                                            x_full, y_full, w, h = self._even_roi(x_full, y_full, w, h)
+
                                             self.spin_x.setValue(x_full)
                                             self.spin_y.setValue(y_full)
-                                            self.spin_w.setValue(int(w))
-                                            self.spin_h.setValue(int(h))
+                                            self.spin_w.setValue(w)
+                                            self.spin_h.setValue(h)
                                         else:
                                             x, y, w, h = rect_disp
-                                            self.spin_x.setValue(int(x))
-                                            self.spin_y.setValue(int(y))
-                                            self.spin_w.setValue(int(w))
-                                            self.spin_h.setValue(int(h))
+                                            x, y, w, h = self._even_roi(int(x), int(y), int(w), int(h))
+
+                                            self.spin_x.setValue(x)
+                                            self.spin_y.setValue(y)
+                                            self.spin_w.setValue(w)
+                                            self.spin_h.setValue(h)
 
                                         self.chk_roi.setChecked(True)
                                         self._refresh()
@@ -1217,12 +1225,65 @@ class SERViewer(QDialog):
         self._refresh()
 
     # ---------------- rendering ----------------
+    def _even_roi(self, x: int, y: int, w: int, h: int):
+        """Force ROI x,y,w,h to even numbers (preserves Bayer phase)."""
+        if self.reader is None:
+            return x, y, w, h
+
+        m = self.reader.meta
+        W = int(m.width)
+        H = int(m.height)
+
+        # Clamp first
+        x = max(0, min(W - 1, int(x)))
+        y = max(0, min(H - 1, int(y)))
+        w = max(1, int(w))
+        h = max(1, int(h))
+
+        # Make origin even (keep Bayer phase)
+        x &= ~1
+        y &= ~1
+
+        # Make size even
+        w &= ~1
+        h &= ~1
+        if w < 2: w = 2
+        if h < 2: h = 2
+
+        # Fit inside image (keep evenness)
+        if x + w > W:
+            w = (W - x) & ~1
+            if w < 2:
+                x = max(0, (W - 2) & ~1)
+                w = 2
+        if y + h > H:
+            h = (H - y) & ~1
+            if h < 2:
+                y = max(0, (H - 2) & ~1)
+                h = 2
+
+        return int(x), int(y), int(w), int(h)
+
+    def _sanitize_roi_controls(self):
+        if self.reader is None:
+            return
+        x = int(self.spin_x.value()); y = int(self.spin_y.value())
+        w = int(self.spin_w.value()); h = int(self.spin_h.value())
+        ex, ey, ew, eh = self._even_roi(x, y, w, h)
+        if (ex, ey, ew, eh) != (x, y, w, h):
+            self.spin_x.blockSignals(True); self.spin_y.blockSignals(True)
+            self.spin_w.blockSignals(True); self.spin_h.blockSignals(True)
+            self.spin_x.setValue(ex); self.spin_y.setValue(ey)
+            self.spin_w.setValue(ew); self.spin_h.setValue(eh)
+            self.spin_x.blockSignals(False); self.spin_y.blockSignals(False)
+            self.spin_w.blockSignals(False); self.spin_h.blockSignals(False)
 
     def _roi_tuple(self):
         if not self.chk_roi.isChecked():
             return None
-        return (int(self.spin_x.value()), int(self.spin_y.value()),
-                int(self.spin_w.value()), int(self.spin_h.value()))
+        x, y, w, h = (int(self.spin_x.value()), int(self.spin_y.value()),
+                    int(self.spin_w.value()), int(self.spin_h.value()))
+        return self._even_roi(x, y, w, h)
 
     def _on_trim_changed(self):
         if self.reader is None:
