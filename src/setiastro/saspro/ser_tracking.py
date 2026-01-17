@@ -19,14 +19,22 @@ def _to_mono01(img: np.ndarray) -> np.ndarray:
 
 
 class PlanetaryTracker:
-    """
-    Tracks by centroid of the brightest connected component inside ROI.
-    Good for: planets, full disk objects.
-    """
-    def __init__(self, smooth_sigma: float = 1.5, thresh_pct: float = 92.0):
+    def __init__(
+        self,
+        *,
+        smooth_sigma: float = 1.5,
+        thresh_pct: float = 92.0,
+        min_val: float = 0.02,          # ✅ NEW
+        use_norm: bool = True,
+        norm_hi_pct: float = 99.5,
+        norm_lo_pct: float = 1.0,
+    ):
         self.smooth_sigma = float(smooth_sigma)
         self.thresh_pct = float(thresh_pct)
-        self._ref_center = None  # (cx, cy)
+        self.min_val = float(min_val)  # ✅ store
+        self.use_norm = bool(use_norm)
+        self.norm_hi_pct = float(norm_hi_pct)
+        self.norm_lo_pct = float(norm_lo_pct)
 
     def reset(self):
         self._ref_center = None
@@ -71,23 +79,20 @@ class PlanetaryTracker:
         conf = float(np.clip(mm["m00"] / float(mask.size), 0.0, 1.0))
         return (cx, cy, conf)
 
+    def _normalize_for_detect(self, m: np.ndarray) -> np.ndarray:
+        if not self.use_norm:
+            return m
+
+        lo = float(np.percentile(m, self.norm_lo_pct))
+        hi = float(np.percentile(m, self.norm_hi_pct))
+        if (not np.isfinite(lo)) or (not np.isfinite(hi)) or (hi <= lo + 1e-12):
+            return m
+
+        det = (m - lo) / (hi - lo)
+        return np.clip(det, 0.0, 1.0).astype(np.float32, copy=False)
 
     def step(self, img01: np.ndarray) -> tuple[float, float, float]:
-        """
-        Returns (dx, dy, conf) where dx/dy shifts FROM current frame TO reference.
-        """
-        m = _to_mono01(img01)
-        m2 = self._blur(m)
-
-        # adaptive threshold by percentile
-        t = float(np.percentile(m2, self.thresh_pct))
-        if not np.isfinite(t):
-            return 0.0, 0.0, 0.0
-
-        mask = (m2 >= t).astype(np.uint8) * 255
-        mask = self._largest_component_mask(mask)
-
-        cx, cy, conf = self._centroid(m2, mask)
+        cx, cy, conf = self.compute_center(img01)
         if conf <= 0.0:
             return 0.0, 0.0, 0.0
 
@@ -98,25 +103,42 @@ class PlanetaryTracker:
         rx, ry = self._ref_center
         dx = rx - cx
         dy = ry - cy
-        return float(dx), float(dy), conf
+        return float(dx), float(dy), float(conf)
+    
+    def _prep_mono01(self, img01: np.ndarray) -> np.ndarray:
+        m = _to_mono01(img01).astype(np.float32, copy=False)
+        m = np.nan_to_num(m, nan=0.0, posinf=0.0, neginf=0.0)
 
-    def compute_center(self, img01: np.ndarray) -> tuple[float, float, float]:
-        """
-        Compute (cx, cy, conf) in pixels in the provided image coordinate system.
-        Uses the same pipeline as step(): blur -> percentile thresh -> largest CC -> centroid.
-        """
-        m = _to_mono01(img01)
-        m2 = self._blur(m)
+        # match step(): blur then lo/hi percentile normalize
+        if self.smooth_sigma > 0.0 and cv2 is not None:
+            m = cv2.GaussianBlur(m, (0, 0), float(self.smooth_sigma))
 
-        t = float(np.percentile(m2, self.thresh_pct))
-        if not np.isfinite(t):
-            return 0.0, 0.0, 0.0
+        m = self._normalize_for_detect(m)
+        return np.clip(m, 0.0, 1.0).astype(np.float32, copy=False)
 
-        mask = (m2 >= t).astype(np.uint8) * 255
-        mask = self._largest_component_mask(mask)
+    def compute_center(self, img01: np.ndarray):
+        m = self._prep_mono01(img01)  # already blurred + normalized
 
-        cx, cy, conf = self._centroid(m2, mask)
-        return float(cx), float(cy), float(conf)
+        thr = float(np.percentile(m, np.clip(self.thresh_pct, 0.0, 100.0)))
+        if not np.isfinite(thr):
+            return (m.shape[1] * 0.5), (m.shape[0] * 0.5), 0.0
+
+        # ✅ critical: threshold cannot be below min_val (same domain: normalized [0..1])
+        thr = max(thr, float(self.min_val))
+
+        mask = (m >= thr).astype(np.uint8)
+        if int(mask.sum()) < 10:
+            return (m.shape[1] * 0.5), (m.shape[0] * 0.5), 0.0
+
+        ys, xs = np.nonzero(mask)
+        w = m[ys, xs]
+        sw = float(w.sum()) + 1e-12
+        cx = float((xs * w).sum() / sw)
+        cy = float((ys * w).sum() / sw)
+
+        conf = float(np.clip((float(np.mean(w)) - thr) / max(1e-6, (1.0 - thr)), 0.0, 1.0))
+        return cx, cy, conf
+
 
     def shift_to_ref(self, img01: np.ndarray, ref_center: tuple[float, float]) -> tuple[float, float, float]:
         """

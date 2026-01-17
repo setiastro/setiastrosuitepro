@@ -5,14 +5,14 @@ import numpy as np
 import os
 import tempfile, webbrowser
 import plotly.graph_objects as go
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QImage, QPixmap
+from PyQt6.QtCore import Qt, QTimer, QPoint, QSize
+from PyQt6.QtGui import QImage, QPixmap, QPainter, QPen, QColor
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGroupBox,
     QFormLayout, QDoubleSpinBox, QSpinBox, QCheckBox, QComboBox, QMessageBox,
     QSizePolicy, QFileDialog, QLineEdit, QSlider
 )
-
+from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 
 import cv2
 
@@ -137,6 +137,33 @@ def _add_starfield(bg01_rgb: np.ndarray, density: float = 0.02, seed: int = 1,
     out[..., 2] = np.clip(out[..., 2] + stars, 0.0, 1.0)
     return out
 
+def _make_anaglyph(L_rgb8: np.ndarray, R_rgb8: np.ndarray, *, swap_eyes: bool = False) -> np.ndarray:
+    """
+    Build a red/cyan anaglyph from two uint8 RGB images.
+    Output is uint8 RGB.
+
+    Red channel comes from LEFT eye luminance.
+    Cyan (G+B) comes from RIGHT eye luminance.
+
+    swap_eyes=True flips which eye feeds red vs cyan (useful if glasses seem inverted).
+    """
+    if swap_eyes:
+        L_rgb8, R_rgb8 = R_rgb8, L_rgb8
+
+    L = L_rgb8.astype(np.float32)
+    R = R_rgb8.astype(np.float32)
+
+    # luminance (more robust than using only R/G/B)
+    Llum = 0.299 * L[..., 0] + 0.587 * L[..., 1] + 0.114 * L[..., 2]
+    Rlum = 0.299 * R[..., 0] + 0.587 * R[..., 1] + 0.114 * R[..., 2]
+
+    out = np.zeros_like(L, dtype=np.float32)
+    out[..., 0] = Llum           # red
+    out[..., 1] = Rlum           # green (cyan)
+    out[..., 2] = Rlum           # blue  (cyan)
+
+    return np.clip(out, 0, 255).astype(np.uint8)
+
 
 
 def _sphere_reproject_maps(H: int, W: int, theta_deg: float, radius_px: float | None = None):
@@ -182,7 +209,7 @@ def _sphere_reproject_maps(H: int, W: int, theta_deg: float, radius_px: float | 
     return mapLx, mapLy, mapRx, mapRy, mask
 
 
-def make_stereo_pair(roi_rgb: np.ndarray, theta_deg: float = 10.0):
+def make_stereo_pair(roi_rgb: np.ndarray, theta_deg: float = 10.0, disk_mask: np.ndarray | None = None):
     if cv2 is None:
         dummy_mask = np.ones(roi_rgb.shape[:2], dtype=bool)
         return roi_rgb, roi_rgb, dummy_mask, dummy_mask
@@ -191,7 +218,7 @@ def make_stereo_pair(roi_rgb: np.ndarray, theta_deg: float = 10.0):
     orig_dtype = x.dtype
 
     # Build a REAL disk mask from ROI (use green channel)
-    disk = _planet_disk_mask(roi_rgb[..., 1])
+    disk = disk_mask if disk_mask is not None else _planet_disk_mask(roi_rgb[...,1])
     if disk is None:
         # fallback: simple circle
         H, W = roi_rgb.shape[:2]
@@ -589,6 +616,9 @@ def export_planet_sphere_html(roi_rgb: np.ndarray, disk_mask: np.ndarray,
 class PlanetProjectionDialog(QDialog):
     def __init__(self, parent=None, document=None):
         super().__init__(parent)
+        self.setMinimumSize(520, 520)
+        self.setMaximumSize(560, 640)
+        self.resize(560, 640)        
         self.setWindowTitle("Planet Projection — Stereo / Wiggle")
         self.setModal(False)
         self.parent = parent
@@ -601,6 +631,13 @@ class PlanetProjectionDialog(QDialog):
         self._wiggle_timer = QTimer(self)
         self._wiggle_timer.timeout.connect(self._on_wiggle_tick)
         self._wiggle_state = False
+        self._preview_zoom = 1.0  # kept for compatibility but preview window owns zoom now
+        self._preview_win = None
+
+        # Persist disk refinement within this dialog session (per image)
+        self._disk_key = None              # identifies the current image
+        self._disk_last = None             # (cx, cy, r) in FULL IMAGE coords
+        self._disk_last_was_user = False   # True once user clicks "Use This Disk"
 
         self._build_ui()
         self._update_enable()
@@ -619,13 +656,16 @@ class PlanetProjectionDialog(QDialog):
         self.lbl_top.setWordWrap(True)
         outer.addWidget(self.lbl_top)
 
-        # Preview
-        self.preview = QLabel()
-        self.preview.setMinimumSize(780, 420)
-        self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview.setStyleSheet("background:#111; border:1px solid #333;")
-        self.preview.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        outer.addWidget(self.preview)
+        prev_row = QHBoxLayout()
+        self.btn_open_preview = QPushButton("Open Preview")
+        self.btn_raise_preview = QPushButton("Show Preview")
+        prev_row.addWidget(self.btn_open_preview)
+        prev_row.addWidget(self.btn_raise_preview)
+        prev_row.addStretch(1)
+        outer.addLayout(prev_row)
+
+        self.btn_open_preview.clicked.connect(self._open_preview_window)
+        self.btn_raise_preview.clicked.connect(self._raise_preview_window)
 
         # Controls
         box = QGroupBox("Parameters")
@@ -636,6 +676,7 @@ class PlanetProjectionDialog(QDialog):
             "Stereo (Parallel)  L | R",
             "Stereo (Cross-eye)  R | L",
             "Wiggle stereo (toggle L/R)",
+            "Anaglyph (Red/Cyan 3D Glasses)",
             "Interactive 3D Sphere (HTML)",
         ])
         form.addRow("Output:", self.cmb_mode)
@@ -667,6 +708,22 @@ class PlanetProjectionDialog(QDialog):
         self.spin_max.setRange(128, 5000)
         self.spin_max.setValue(900)
         form.addRow("ROI max size:", self.spin_max)
+
+        # Disk review + reset row
+        disk_row = QHBoxLayout()
+        self.chk_adjust_disk = QCheckBox("Review / adjust detected disk before generating")
+        self.chk_adjust_disk.setChecked(True)
+        disk_row.addWidget(self.chk_adjust_disk)
+
+        self.btn_reset_disk = themed_toolbtn("edit-undo", "Reset disk detection")
+        self.btn_reset_disk.setToolTip("Forget the last accepted disk (center/radius) for this image and re-detect.")
+        self.btn_reset_disk.setEnabled(False)  # only enabled once we have a cached disk
+        self.btn_reset_disk.clicked.connect(self._reset_disk_cache)
+        disk_row.addStretch(1)
+        disk_row.addWidget(self.btn_reset_disk)
+
+        form.addRow("", disk_row)
+
 
         self.chk_starfield = QCheckBox("Add static starfield background (no parallax)")
         self.chk_starfield.setChecked(True)
@@ -704,8 +761,8 @@ class PlanetProjectionDialog(QDialog):
         bg_depth_row = QHBoxLayout()
 
         self.sld_bg_depth = QSlider(Qt.Orientation.Horizontal)
-        self.sld_bg_depth.setRange(-200, 1000)   # -2.00 .. 10.00 in steps of 0.01
-        self.sld_bg_depth.setValue(300)
+        self.sld_bg_depth.setRange(-1000, 1000)   # -2.00 .. 10.00 in steps of 0.01
+        self.sld_bg_depth.setValue(-300)
         self.sld_bg_depth.setSingleStep(5)       # 0.05
         self.sld_bg_depth.setPageStep(25)        # 0.25
         bg_depth_row.addWidget(self.sld_bg_depth, 1)
@@ -757,6 +814,80 @@ class PlanetProjectionDialog(QDialog):
         self.btn_stop.clicked.connect(self._stop_wiggle)
         self.btn_close.clicked.connect(self.close)
 
+    def _reset_disk_cache(self):
+        # Forget disk refinement for the CURRENT image only.
+        self._disk_last = None
+        self._disk_last_was_user = False
+
+        # Disable until we detect/accept again
+        if hasattr(self, "btn_reset_disk") and self.btn_reset_disk is not None:
+            self.btn_reset_disk.setEnabled(False)
+
+        # Optional: small user feedback
+        QMessageBox.information(self, "Planet Projection", "Disk refinement reset. Next Generate will re-detect.")
+
+
+    def _current_image_key(self, img: np.ndarray):
+        # good enough: changes whenever a new numpy array is assigned / new size/dtype
+        return (id(img), img.shape, str(img.dtype))
+
+
+    def _set_preview_zoom(self, z: float):
+        """
+        z = 1.0 => Fit-to-window (KeepAspectRatio)
+        z = 0.0 => True 1:1 (no scaling, centered)
+        otherwise => scale relative to Fit (e.g., 0.7 = smaller than fit, 1.4 = bigger than fit)
+        """
+        if z < 0.05 and z != 0.0:
+            z = 0.05
+        if z > 6.0:
+            z = 6.0
+        self._preview_zoom = float(z)
+
+        # re-show last content
+        if self._left is not None and self._right is not None:
+            mode = self.cmb_mode.currentIndex()
+            if mode == 2:
+                # wiggle uses _set_preview_u8 directly; force refresh of current wiggle frame
+                frame = self._right if self._wiggle_state else self._left
+                self._set_preview_u8(frame)
+            else:
+                cross_eye = (mode == 0)
+                self._show_stereo_pair(cross_eye=cross_eye)
+
+    def _fit_scaled_size(self, img_w: int, img_h: int) -> tuple[int, int]:
+        """Compute the fit-to-preview size (KeepAspectRatio)."""
+        pw = max(1, self.preview.width())
+        ph = max(1, self.preview.height())
+        s = min(pw / float(img_w), ph / float(img_h))
+        return int(round(img_w * s)), int(round(img_h * s))
+
+    def _open_preview_window(self):
+        if self._preview_win is None:
+            self._preview_win = PlanetProjectionPreviewDialog(self)
+            try:
+                self._preview_win.resize(980, 600)
+            except Exception:
+                pass
+        self._preview_win.show()
+        self._preview_win.raise_()
+        self._preview_win.activateWindow()
+
+    def _raise_preview_window(self):
+        if self._preview_win is None:
+            self._open_preview_window()
+            return
+        self._preview_win.show()
+        self._preview_win.raise_()
+        self._preview_win.activateWindow()
+
+    def _push_preview_u8(self, rgb8: np.ndarray):
+        # ensure preview exists
+        if self._preview_win is None or not self._preview_win.isVisible():
+            self._open_preview_window()
+        self._preview_win.set_frame_u8(rgb8)
+
+
     def _bg_depth_internal(self) -> float:
         # slider is -200..1000 representing -2.00..10.00
         # internal is (-2..10) * 1000 => -2000..10000
@@ -768,10 +899,11 @@ class PlanetProjectionDialog(QDialog):
 
 
     def _update_enable(self):
-        ok = self.image is not None and isinstance(self.image, np.ndarray) and self.image.ndim == 3 and self.image.shape[2] >= 3
+        ok = (
+            self.image is not None and isinstance(self.image, np.ndarray)
+            and self.image.ndim == 3 and self.image.shape[2] >= 3
+        )
         self.btn_generate.setEnabled(bool(ok))
-        if not ok:
-            self.preview.setText("Open an RGB image (planet) first.")
 
     def _compute_roi(self):
         img = np.asarray(self.image)
@@ -810,8 +942,74 @@ class PlanetProjectionDialog(QDialog):
             QMessageBox.information(self, "Planet Projection", "Image must be RGB (3 channels).")
             return
 
-        x0, y0, x1, y1 = self._compute_roi()
+        Hfull, Wfull = img.shape[:2]
+
+        # ---- 0) reset cached disk if image changed ----
+        key = self._current_image_key(img)
+        if self._disk_key != key:
+            self._disk_key = key
+            self._disk_last = None
+            self._disk_last_was_user = False
+
+        # ---- 1) initial disk estimate (FULL IMAGE coords) ----
+        if self._disk_last is not None:
+            # Use last accepted disk for this image
+            cx, cy, r = self._disk_last
+        else:
+            c = _planet_centroid_and_area(img[..., 1])
+            if c is not None:
+                cx, cy, area = c
+                r = max(32.0, float(np.sqrt(area / np.pi)))
+            else:
+                cx = 0.5 * (Wfull - 1)
+                cy = 0.5 * (Hfull - 1)
+                r = 0.25 * min(Wfull, Hfull)
+
+        # ---- 2) optional user adjustment (preloads previous) ----
+        if (
+            self.chk_auto_roi.isChecked()
+            and getattr(self, "chk_adjust_disk", None) is not None
+            and self.chk_adjust_disk.isChecked()
+        ):
+            dlg = PlanetDiskAdjustDialog(self, img[..., :3], cx, cy, r)
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                # IMPORTANT: if user cancels, keep previously accepted disk (if any)
+                return
+
+            cx, cy, r = dlg.get_result()
+
+            # Persist for future generates (parallel/cross/wiggle/html) within this dialog session
+            self._disk_last = (float(cx), float(cy), float(r))
+            self._disk_last_was_user = True
+        else:
+            # Even if adjust dialog is disabled, keep auto-detected disk cached for this image
+            # so switching modes doesn't re-detect differently each time.
+            if self._disk_last is None:
+                self._disk_last = (float(cx), float(cy), float(r))
+                self._disk_last_was_user = False
+
+        if hasattr(self, "btn_reset_disk") and self.btn_reset_disk is not None:
+            self.btn_reset_disk.setEnabled(self._disk_last is not None)
+
+        # ---- 3) ROI from adjusted disk (still uses your existing pad/min/max) ----
+        pad_mul = float(self.spin_pad.value())
+        s = int(np.clip(r * pad_mul, float(self.spin_min.value()), float(self.spin_max.value())))
+
+        cx_i, cy_i = int(round(cx)), int(round(cy))
+        x0 = max(0, cx_i - s // 2)
+        y0 = max(0, cy_i - s // 2)
+        x1 = min(Wfull, x0 + s)
+        y1 = min(Hfull, y0 + s)
+
         roi = img[y0:y1, x0:x1, :3]
+
+        # ---- 4) disk mask from adjusted circle (ROI coords) ----
+        H0, W0 = roi.shape[:2]
+        yy, xx = np.mgrid[0:H0, 0:W0].astype(np.float32)
+        cx0 = float(cx - x0)
+        cy0 = float(cy - y0)
+
+        disk = ((xx - cx0) ** 2 + (yy - cy0) ** 2) <= (float(r) ** 2)
 
         # --------- helper: float01 ----------
         def to01(x):
@@ -822,7 +1020,7 @@ class PlanetProjectionDialog(QDialog):
             return x.astype(np.float32, copy=False)
 
         # IMPORTANT: disk mask for Plotly sphere export (and safe fallbacks)
-        disk = _planet_disk_mask(roi[..., 1])
+
         if disk is None:
             # fallback: simple centered circle inside ROI
             H0, W0 = roi.shape[:2]
@@ -833,7 +1031,7 @@ class PlanetProjectionDialog(QDialog):
             disk = ((xx - cx0) ** 2 + (yy - cy0) ** 2) <= (r0 * r0)
 
         theta = float(self.spin_theta.value())
-        left_w, right_w, maskL, maskR = make_stereo_pair(roi, theta_deg=theta)
+        left_w, right_w, maskL, maskR = make_stereo_pair(roi, theta_deg=theta, disk_mask=disk)
 
         Lw01 = to01(left_w)
         Rw01 = to01(right_w)
@@ -910,7 +1108,7 @@ class PlanetProjectionDialog(QDialog):
         # 1 = Stereo (Cross-eye) R|L
         # 2 = Wiggle
         # 3 = Interactive 3D Sphere (HTML)
-        if mode == 3:
+        if mode == 4:
             # ---- Plotly interactive sphere export (HTML) ----
             try:
                 # IMPORTANT: this function must exist (see helper code we added)
@@ -950,6 +1148,20 @@ class PlanetProjectionDialog(QDialog):
 
         if mode == 2:
             self._start_wiggle()
+
+        if mode == 3:
+            # Anaglyph preview (single image)
+            try:
+                L8 = self._left if self._left.dtype == np.uint8 else _to_u8_preview(self._left)
+                R8 = self._right if self._right.dtype == np.uint8 else _to_u8_preview(self._right)
+
+                # usually no swap needed; if depth feels inverted, set swap_eyes=True
+                ana = _make_anaglyph(L8, R8, swap_eyes=False)
+                self._push_preview_u8(ana)
+            except Exception as e:
+                QMessageBox.warning(self, "Anaglyph", f"Failed to build anaglyph:\n{e}")
+            return
+
         else:
             # cross-eye view should swap L/R
             cross_eye = (mode == 0)
@@ -981,7 +1193,8 @@ class PlanetProjectionDialog(QDialog):
         canvas[:L8.shape[0], :L8.shape[1]] = L8
         canvas[:R8.shape[0], L8.shape[1] + gap:L8.shape[1] + gap + R8.shape[1]] = R8
 
-        self._set_preview_u8(canvas)
+
+        self._push_preview_u8(canvas)
 
     def _choose_bg(self):
         fn, _ = QFileDialog.getOpenFileName(
@@ -1022,16 +1235,6 @@ class PlanetProjectionDialog(QDialog):
             self._bg_img01 = None
             QMessageBox.warning(self, "Background Image", f"Failed to load background:\n{e}")
 
-
-    def _set_preview_u8(self, rgb8: np.ndarray):
-        qimg = QImage(rgb8.data, rgb8.shape[1], rgb8.shape[0], rgb8.strides[0], QImage.Format.Format_RGB888)
-        pix = QPixmap.fromImage(qimg).scaled(
-            self.preview.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        self.preview.setPixmap(pix)
-
     def _start_wiggle(self):
         self.btn_stop.setEnabled(True)
         self._wiggle_state = False
@@ -1049,8 +1252,418 @@ class PlanetProjectionDialog(QDialog):
 
         self._wiggle_state = not self._wiggle_state
         frame = self._right if self._wiggle_state else self._left
-        self._set_preview_u8(frame)
+        self._push_preview_u8(frame)
 
     def closeEvent(self, e):
         self._stop_wiggle()
         super().closeEvent(e)
+
+class PlanetDiskAdjustDialog(QDialog):
+    """
+    Manual override for planet disk center/radius.
+    - Ctrl+drag to move center.
+    - +/- or slider/spin to change radius.
+    - Arrow buttons (and arrow keys) to nudge.
+    Returns cx, cy, r in FULL IMAGE pixel coords.
+    """
+    def __init__(self, parent, img_rgb: np.ndarray, cx: float, cy: float, r: float):
+        super().__init__(parent)
+
+
+        self.setWindowTitle("Adjust Planet Disk")
+        self.setModal(True)
+        self._preview_zoom = 1.0   # 1.0 = Fit
+        self.img = np.asarray(img_rgb)
+        self.H, self.W = self.img.shape[:2]
+
+        self.cx = float(cx)
+        self.cy = float(cy)
+        self.r = float(r)
+
+        self._dragging = False
+        self._drag_offset = (0.0, 0.0)
+
+        # preview state
+        self._disp8 = _to_u8_preview(self.img[..., :3])
+        self._scale = 1.0
+        self._offx = 0.0
+        self._offy = 0.0
+
+        self._build_ui()
+        self._redraw()
+
+    def _build_ui(self):
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(10, 10, 10, 10)
+        outer.setSpacing(8)
+
+        self.lbl_help = QLabel(
+            "Ctrl+Click+Drag to move the circle.\n"
+            "Use Radius controls and arrow nudges for precision."
+        )
+        self.lbl_help.setWordWrap(True)
+        outer.addWidget(self.lbl_help)
+
+        # Zoom controls (for relaxed parallel viewing)
+        zoom_row = QHBoxLayout()
+        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
+        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
+        self.btn_zoom_100 = themed_toolbtn("zoom-original", "1:1")
+        self.btn_zoom_fit = themed_toolbtn("zoom-fit-best", "Fit")
+
+        zoom_row.addStretch(1)
+        zoom_row.addWidget(self.btn_zoom_out)
+        zoom_row.addWidget(self.btn_zoom_fit)
+        zoom_row.addWidget(self.btn_zoom_100)
+        zoom_row.addWidget(self.btn_zoom_in)
+        outer.addLayout(zoom_row)
+
+        self.btn_zoom_out.clicked.connect(lambda: self._set_preview_zoom(self._preview_zoom * 0.8))
+        self.btn_zoom_in.clicked.connect(lambda: self._set_preview_zoom(self._preview_zoom * 1.25))
+        self.btn_zoom_fit.clicked.connect(lambda: self._set_preview_zoom(1.0))
+        self.btn_zoom_100.clicked.connect(lambda: self._set_preview_zoom(0.0))  # 0.0 means "true 1:1 pixels"
+
+        # preview label
+        self.preview = QLabel(self)
+        self.preview.setMinimumSize(780, 420)
+        self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview.setStyleSheet("background:#111; border:1px solid #333;")
+        self.preview.setMouseTracking(True)
+        self.preview.installEventFilter(self)
+        outer.addWidget(self.preview)
+
+        # radius row
+        rad_row = QHBoxLayout()
+        self.btn_r_minus = QPushButton("Radius -")
+        self.btn_r_plus = QPushButton("Radius +")
+        self.spin_r = QDoubleSpinBox()
+        self.spin_r.setRange(5.0, float(max(self.W, self.H)))
+        self.spin_r.setDecimals(2)
+        self.spin_r.setSingleStep(1.0)
+        self.spin_r.setValue(self.r)
+        self.spin_r.valueChanged.connect(self._on_radius_spin)
+
+        self.sld_r = QSlider(Qt.Orientation.Horizontal)
+        self.sld_r.setRange(5, int(max(self.W, self.H)))
+        self.sld_r.setValue(int(round(self.r)))
+        self.sld_r.valueChanged.connect(self._on_radius_slider)
+
+        self.btn_r_minus.clicked.connect(lambda: self._bump_radius(-2.0))
+        self.btn_r_plus.clicked.connect(lambda: self._bump_radius(+2.0))
+
+        rad_row.addWidget(self.btn_r_minus)
+        rad_row.addWidget(self.btn_r_plus)
+        rad_row.addWidget(QLabel("R:"))
+        rad_row.addWidget(self.spin_r)
+        rad_row.addWidget(self.sld_r, 1)
+        outer.addLayout(rad_row)
+
+        # nudge row
+        nud_row = QHBoxLayout()
+        self.spin_step = QSpinBox()
+        self.spin_step.setRange(1, 200)
+        self.spin_step.setValue(2)
+        nud_row.addWidget(QLabel("Nudge (px):"))
+        nud_row.addWidget(self.spin_step)
+
+        self.btn_left = QPushButton("◀")
+        self.btn_right = QPushButton("▶")
+        self.btn_up = QPushButton("▲")
+        self.btn_down = QPushButton("▼")
+
+        self.btn_left.clicked.connect(lambda: self._nudge(-1, 0))
+        self.btn_right.clicked.connect(lambda: self._nudge(+1, 0))
+        self.btn_up.clicked.connect(lambda: self._nudge(0, -1))
+        self.btn_down.clicked.connect(lambda: self._nudge(0, +1))
+
+        nud_row.addStretch(1)
+        nud_row.addWidget(self.btn_up)
+        nud_row.addWidget(self.btn_left)
+        nud_row.addWidget(self.btn_right)
+        nud_row.addWidget(self.btn_down)
+        outer.addLayout(nud_row)
+
+        # status
+        self.lbl_status = QLabel("")
+        outer.addWidget(self.lbl_status)
+
+        # ok/cancel
+        btn_row = QHBoxLayout()
+        self.btn_ok = QPushButton("Use This Disk")
+        self.btn_cancel = QPushButton("Cancel")
+        btn_row.addWidget(self.btn_ok)
+        btn_row.addStretch(1)
+        btn_row.addWidget(self.btn_cancel)
+        outer.addLayout(btn_row)
+
+        self.btn_ok.clicked.connect(self.accept)
+        self.btn_cancel.clicked.connect(self.reject)
+
+    # ---------- coordinate helpers ----------
+    def _compute_fit_transform(self):
+        # label size
+        pw = max(1, self.preview.width())
+        ph = max(1, self.preview.height())
+
+        # scale factor to fit image into label
+        sw = pw / float(self.W)
+        sh = ph / float(self.H)
+        self._scale = float(min(sw, sh))
+
+        # the fitted draw size (in LABEL coords)
+        draw_w = self.W * self._scale
+        draw_h = self.H * self._scale
+
+        # offsets in LABEL coords (letterboxing)
+        self._offx = 0.5 * (pw - draw_w)
+        self._offy = 0.5 * (ph - draw_h)
+
+        # ALSO store pixmap-space scale after scaling
+        # (pixmap is the scaled-to-fit image)
+        self._pix_w = int(round(draw_w))
+        self._pix_h = int(round(draw_h))
+
+        # pixmap space has NO offx/offy; it starts at (0,0)
+        self._pix_scale = self._scale
+
+    def _img_to_label(self, x: float, y: float) -> tuple[float, float]:
+        return (self._offx + x * self._scale, self._offy + y * self._scale)
+
+    def _label_to_img(self, x: float, y: float) -> tuple[float, float]:
+        ix = (x - self._offx) / max(self._scale, 1e-9)
+        iy = (y - self._offy) / max(self._scale, 1e-9)
+        return (ix, iy)
+
+    def _img_to_pix(self, x: float, y: float) -> tuple[float, float]:
+        # pixmap coords (0..pix_w, 0..pix_h)
+        return (x * self._pix_scale, y * self._pix_scale)
+    # ---------- drawing ----------
+    def _redraw(self):
+        self._compute_fit_transform()
+
+        # base pixmap (this pixmap is ALREADY the fitted size)
+        qimg = QImage(self._disp8.data, self.W, self.H, self._disp8.strides[0], QImage.Format.Format_RGB888)
+        pix = QPixmap.fromImage(qimg).scaled(
+            self.preview.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+
+        # ---- draw overlay in PIXMAP coordinates ----
+        painter = QPainter(pix)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        pen = QPen(QColor(0, 255, 0))
+        pen.setWidth(3)
+        painter.setPen(pen)
+
+        # map image center/radius -> pixmap coords
+        cxp, cyp = self._img_to_pix(self.cx, self.cy)
+        rv = self.r * self._pix_scale
+
+        painter.drawEllipse(QPoint(int(round(cxp)), int(round(cyp))), int(round(rv)), int(round(rv)))
+
+        # center crosshair
+        pen2 = QPen(QColor(0, 255, 0))
+        pen2.setWidth(2)
+        painter.setPen(pen2)
+        painter.drawLine(int(round(cxp - 8)), int(round(cyp)), int(round(cxp + 8)), int(round(cyp)))
+        painter.drawLine(int(round(cxp)), int(round(cyp - 8)), int(round(cxp)), int(round(cyp + 8)))
+
+        painter.end()
+
+        # set pixmap on label (Qt handles centering within the label)
+        self.preview.setPixmap(pix)
+
+        self.lbl_status.setText(f"Center: ({self.cx:.1f}, {self.cy:.1f})   Radius: {self.r:.1f}px")
+
+
+    # ---------- UI callbacks ----------
+    def _clamp(self):
+        self.cx = float(np.clip(self.cx, 0.0, self.W - 1.0))
+        self.cy = float(np.clip(self.cy, 0.0, self.H - 1.0))
+        # radius cannot exceed image bounds too much; keep sane
+        self.r = float(np.clip(self.r, 5.0, 2.0 * max(self.W, self.H)))
+
+    def _bump_radius(self, dr: float):
+        self.r += float(dr)
+        self._clamp()
+        self.spin_r.blockSignals(True)
+        self.sld_r.blockSignals(True)
+        self.spin_r.setValue(self.r)
+        self.sld_r.setValue(int(round(self.r)))
+        self.spin_r.blockSignals(False)
+        self.sld_r.blockSignals(False)
+        self._redraw()
+
+    def _on_radius_spin(self, v: float):
+        self.r = float(v)
+        self._clamp()
+        self.sld_r.blockSignals(True)
+        self.sld_r.setValue(int(round(self.r)))
+        self.sld_r.blockSignals(False)
+        self._redraw()
+
+    def _on_radius_slider(self, v: int):
+        self.r = float(v)
+        self._clamp()
+        self.spin_r.blockSignals(True)
+        self.spin_r.setValue(self.r)
+        self.spin_r.blockSignals(False)
+        self._redraw()
+
+    def _nudge(self, dx: int, dy: int):
+        step = int(self.spin_step.value())
+        self.cx += dx * step
+        self.cy += dy * step
+        self._clamp()
+        self._redraw()
+
+    # ---------- events ----------
+    def keyPressEvent(self, e):
+        key = e.key()
+        if key == Qt.Key.Key_Left:
+            self._nudge(-1, 0); return
+        if key == Qt.Key.Key_Right:
+            self._nudge(+1, 0); return
+        if key == Qt.Key.Key_Up:
+            self._nudge(0, -1); return
+        if key == Qt.Key.Key_Down:
+            self._nudge(0, +1); return
+        super().keyPressEvent(e)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._redraw()
+
+    def eventFilter(self, obj, ev):
+        if obj is self.preview:
+            if ev.type() == ev.Type.MouseButtonPress:
+                if ev.button() == Qt.MouseButton.LeftButton and (ev.modifiers() & Qt.KeyboardModifier.ControlModifier):
+                    self._compute_fit_transform()
+                    mx, my = float(ev.position().x()), float(ev.position().y())
+                    ix, iy = self._label_to_img(mx, my)
+                    # store drag offset so the center doesn't jump
+                    self._dragging = True
+                    self._drag_offset = (self.cx - ix, self.cy - iy)
+                    return True
+
+            if ev.type() == ev.Type.MouseMove and self._dragging:
+                self._compute_fit_transform()
+                mx, my = float(ev.position().x()), float(ev.position().y())
+                ix, iy = self._label_to_img(mx, my)
+                ox, oy = self._drag_offset
+                self.cx = ix + ox
+                self.cy = iy + oy
+                self._clamp()
+                self._redraw()
+                return True
+
+            if ev.type() == ev.Type.MouseButtonRelease and self._dragging:
+                self._dragging = False
+                return True
+
+        return super().eventFilter(obj, ev)
+
+    def get_result(self) -> tuple[float, float, float]:
+        return (float(self.cx), float(self.cy), float(self.r))
+
+class PlanetProjectionPreviewDialog(QDialog):
+    """
+    Separate preview window:
+    - Shows the latest output frame (stereo pair or wiggle frame)
+    - Provides Zoom controls: Fit / 100% / +/-.
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Planet Projection — Preview")
+        self.setModal(False)
+
+        self._preview_zoom = 1.0  # 1.0 = Fit, 0.0 = 1:1, else relative to Fit
+
+        self._build_ui()
+
+    def _build_ui(self):
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(10, 10, 10, 10)
+        outer.setSpacing(8)
+
+        # Zoom controls (toolbtn icons like the rest of SASpro)
+        zoom_row = QHBoxLayout()
+        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
+        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
+        self.btn_zoom_100 = themed_toolbtn("zoom-original", "1:1")
+        self.btn_zoom_fit = themed_toolbtn("zoom-fit-best", "Fit")
+
+        zoom_row.addStretch(1)
+        zoom_row.addWidget(self.btn_zoom_out)
+        zoom_row.addWidget(self.btn_zoom_fit)
+        zoom_row.addWidget(self.btn_zoom_100)
+        zoom_row.addWidget(self.btn_zoom_in)
+        outer.addLayout(zoom_row)
+
+        self.btn_zoom_out.clicked.connect(lambda: self.set_zoom(self._preview_zoom * 0.8 if self._preview_zoom not in (0.0, 1.0) else 0.8))
+        self.btn_zoom_in.clicked.connect(lambda: self.set_zoom(self._preview_zoom * 1.25 if self._preview_zoom not in (0.0, 1.0) else 1.25))
+        self.btn_zoom_fit.clicked.connect(lambda: self.set_zoom(1.0))
+        self.btn_zoom_100.clicked.connect(lambda: self.set_zoom(0.0))
+
+        # Preview label
+        self.preview = QLabel(self)
+        self.preview.setMinimumSize(900, 520)
+        self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview.setStyleSheet("background:#111; border:1px solid #333;")
+        self.preview.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        outer.addWidget(self.preview)
+
+        self._last_rgb8 = None
+
+    def set_zoom(self, z: float):
+        if z < 0.05 and z != 0.0:
+            z = 0.05
+        if z > 8.0:
+            z = 8.0
+        self._preview_zoom = float(z)
+        if self._last_rgb8 is not None:
+            self.set_frame_u8(self._last_rgb8)
+
+    def _fit_scaled_size(self, img_w: int, img_h: int) -> tuple[int, int]:
+        pw = max(1, self.preview.width())
+        ph = max(1, self.preview.height())
+        s = min(pw / float(img_w), ph / float(img_h))
+        return int(round(img_w * s)), int(round(img_h * s))
+
+    def set_frame_u8(self, rgb8: np.ndarray):
+        """rgb8 must be uint8 RGB (H,W,3)."""
+        self._last_rgb8 = rgb8
+
+        qimg = QImage(rgb8.data, rgb8.shape[1], rgb8.shape[0], rgb8.strides[0], QImage.Format.Format_RGB888)
+        base = QPixmap.fromImage(qimg)
+
+        if self._preview_zoom == 1.0:
+            pix = base.scaled(
+                self.preview.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            self.preview.setPixmap(pix)
+            return
+
+        if self._preview_zoom == 0.0:
+            self.preview.setPixmap(base)
+            return
+
+        fit_w, fit_h = self._fit_scaled_size(rgb8.shape[1], rgb8.shape[0])
+        target_w = max(1, int(round(fit_w * self._preview_zoom)))
+        target_h = max(1, int(round(fit_h * self._preview_zoom)))
+
+        pix = base.scaled(
+            QSize(target_w, target_h),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self.preview.setPixmap(pix)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if self._last_rgb8 is not None:
+            self.set_frame_u8(self._last_rgb8)

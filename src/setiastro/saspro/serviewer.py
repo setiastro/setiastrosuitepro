@@ -9,7 +9,7 @@ from PyQt6.QtGui import QImage, QPixmap, QPainter, QPen, QColor
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFileDialog,
     QScrollArea, QSlider, QCheckBox, QGroupBox, QFormLayout, QSpinBox,
-    QMessageBox, QRubberBand, QComboBox, QDoubleSpinBox
+    QMessageBox, QRubberBand, QComboBox, QDoubleSpinBox, QWidget
 )
 
 from setiastro.saspro.imageops.serloader import open_planetary_source, PlanetaryFrameSource
@@ -323,9 +323,80 @@ class SERViewer(QDialog):
 
         self.btn_stack = QPushButton("Open Stacker…", self)
         self.btn_stack.setEnabled(False)   # enabled once SER loaded
+        self.chk_planet_norm = QCheckBox("Normalize for planetary centroid detect")
+        self.chk_planet_norm.setChecked(True)
+        self.chk_planet_norm.setToolTip("Detection-only normalization (does not change stacking pixels). Helps dim planets.")
+
+        self.spin_planet_thresh = QDoubleSpinBox()
+        self.spin_planet_thresh.setRange(50.0, 99.9)
+        self.spin_planet_thresh.setDecimals(1)
+        self.spin_planet_thresh.setSingleStep(0.5)
+        self.spin_planet_thresh.setValue(92.0)
+        self.spin_planet_thresh.setToolTip("Percentile used to threshold the blob for centroid detection.")
+        self.spin_planet_min = QDoubleSpinBox()
+        self.spin_planet_min.setRange(0.0, 0.5)     # abs floor in [0..1]
+        self.spin_planet_min.setDecimals(3)
+        self.spin_planet_min.setSingleStep(0.005)
+        self.spin_planet_min.setValue(0.02)
+        self.spin_planet_min.setToolTip(
+            "Minimum normalized intensity (0..1) allowed for detection thresholding.\n"
+            "If percentile threshold is too low on dim planets, this prevents the mask from vanishing.\n"
+            "Typical: 0.01–0.05."
+        )
+
+        self.spin_planet_smooth = QDoubleSpinBox()
+        self.spin_planet_smooth.setRange(0.0, 10.0)
+        self.spin_planet_smooth.setDecimals(2)
+        self.spin_planet_smooth.setSingleStep(0.25)
+        self.spin_planet_smooth.setValue(1.5)
+        self.spin_planet_smooth.setToolTip("Gaussian blur sigma used before thresholding. 1.0–2.0 is typical.")
+
+        self.spin_norm_lo = QDoubleSpinBox(); self.spin_norm_lo.setRange(0.0, 20.0); self.spin_norm_lo.setValue(1.0)
+        self.spin_norm_hi = QDoubleSpinBox(); self.spin_norm_hi.setRange(80.0, 100.0); self.spin_norm_hi.setValue(99.5)
+       
+        # -----------------------------
+        # Advanced detection settings
+        # -----------------------------
+        adv = QGroupBox("Advanced detection settings", self)
+        adv.setCheckable(True)
+        adv.setChecked(False)
+
+        adv_body = QWidget(adv)                 # <- content container
+        adv_form = QFormLayout(adv_body)
+        adv_form.setContentsMargins(8, 8, 8, 8)
+        adv_form.setVerticalSpacing(6)
+        adv_form.setHorizontalSpacing(10)
+
+        adv_form.addRow("", self.chk_planet_norm)
+        adv_form.addRow("Planet detect thresh (%)", self.spin_planet_thresh)
+        adv_form.addRow("Norm low pct", self.spin_norm_lo)
+        adv_form.addRow("Norm high pct", self.spin_norm_hi)
+        adv_form.addRow("Planet min val", self.spin_planet_min)
+        adv_form.addRow("Planet smooth σ", self.spin_planet_smooth)
+
+        # Put the body into the groupbox layout
+        adv_layout = QVBoxLayout(adv)
+        adv_layout.setContentsMargins(8, 8, 8, 8)
+        adv_layout.addWidget(adv_body)
+
+        # show/hide only the body
+        adv_body.setVisible(False)
+        adv.toggled.connect(adv_body.setVisible)
 
         sform.addRow("Tracking", self.cmb_track)
         sform.addRow("Keep %", self.spin_keep)
+
+        # instead of adding the detection rows directly:
+        # sform.addRow("", self.chk_planet_norm)
+        # sform.addRow("Planet detect thresh (%)", self.spin_planet_thresh)
+        # sform.addRow("Norm low pct", self.spin_norm_lo)
+        # sform.addRow("Norm high pct", self.spin_norm_hi)
+        # sform.addRow("Planet min val", self.spin_planet_min)
+        # sform.addRow("Planet smooth σ", self.spin_planet_smooth)
+
+        # add the advanced groupbox as a single row spanning the form
+        sform.addRow(adv)
+
         sform.addRow("", self.lbl_anchor)
         sform.addRow("", self.btn_stack)
 
@@ -852,10 +923,16 @@ class SERViewer(QDialog):
             track_mode=self._track_mode_value(),
             surface_anchor=anchor,
             debayer=debayer,
-            bayer_pattern=bp,                 # ✅ THIS IS THE FIX
+            bayer_pattern=bp,
             keep_percent=float(self.spin_keep.value()),
-        )
 
+            # ✅ planetary detect knobs
+            planet_min_val=float(self.spin_planet_min.value()),
+            planet_use_norm=bool(self.chk_planet_norm.isChecked()),
+            planet_norm_hi_pct=float(self.spin_norm_hi.value()),   # <-- you already have this
+            planet_thresh_pct=float(self.spin_planet_thresh.value()),
+            planet_smooth_sigma=float(self.spin_planet_smooth.value()),
+        )          
 
         dlg.stackProduced.connect(self._on_stacker_produced)
         dlg.show()
@@ -1098,10 +1175,10 @@ class SERViewer(QDialog):
             dlg.setDirectory(start_dir)
         dlg.setFileMode(QFileDialog.FileMode.ExistingFiles)
         dlg.setNameFilters([
-            "Planetary Sources (*.ser *.avi *.mp4 *.mov *.mkv *.png *.tif *.tiff *.jpg *.jpeg *.bmp *.webp)",
+            "Planetary Sources (*.ser *.avi *.mp4 *.mov *.mkv *.png *.tif *.tiff *.jpg *.jpeg *.bmp *.webp *.fit *.fits)",
             "SER Videos (*.ser)",
             "AVI/Video (*.avi *.mp4 *.mov *.mkv)",
-            "Images (*.png *.tif *.tiff *.jpg *.jpeg *.bmp *.webp)",
+            "Images (*.png *.tif *.tiff *.jpg *.jpeg *.bmp *.webp *.fit *.fits)",
             "All Files (*)",
         ])
 
@@ -1603,17 +1680,27 @@ class SERViewer(QDialog):
 
     def _to_qimage(self, arr: np.ndarray) -> QImage:
         a = np.clip(arr, 0.0, 1.0)
+
         if a.ndim == 2:
-            u = (a * 255.0).astype(np.uint8)
+            u = (a * 255.0).astype(np.uint8, copy=False)
+            # ✅ FITS/memmap correction: ensure C-contiguous rows
+            if not u.flags["C_CONTIGUOUS"]:
+                u = np.ascontiguousarray(u)
+
             h, w = u.shape
             return QImage(u.data, w, h, w, QImage.Format.Format_Grayscale8).copy()
 
         if a.ndim == 3 and a.shape[2] >= 3:
-            u = (a[..., :3] * 255.0).astype(np.uint8)
+            u = (a[..., :3] * 255.0).astype(np.uint8, copy=False)
+            # ✅ FITS/memmap correction: ensure C-contiguous packed RGB
+            if not u.flags["C_CONTIGUOUS"]:
+                u = np.ascontiguousarray(u)
+
             h, w, _ = u.shape
             return QImage(u.data, w, h, w * 3, QImage.Format.Format_RGB888).copy()
 
         raise ValueError(f"Unexpected image shape: {a.shape}")
+
 
     def _roi_bounds(self):
         """

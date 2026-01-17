@@ -10,6 +10,7 @@ from typing import Optional, Tuple, Dict, List, Sequence, Union, Callable
 from collections import OrderedDict
 import numpy as np
 import time
+from PyQt6 import sip
 
 import cv2
 
@@ -1176,13 +1177,45 @@ class AVIReader(PlanetaryFrameSource):
 
 def _imread_any(path: str) -> np.ndarray:
     """
-    Read PNG/JPG/TIF/etc into numpy.
-    Tries cv2 first (fast), falls back to PIL.
+    Read PNG/JPG/TIF/FITS/etc into numpy.
     Returns:
-      - grayscale: (H,W) uint8/uint16
-      - color:     (H,W,3) uint8/uint16 in RGB (we normalize to RGB)
+      - grayscale: (H,W)
+      - color:     (H,W,3) in RGB when applicable
     """
     p = os.fspath(path)
+    ext = os.path.splitext(p)[1].lower()
+
+    # ---- FITS / FIT ----
+    if ext in (".fit", ".fits"):
+        try:
+            from astropy.io import fits
+
+            data = fits.getdata(p, memmap=False)
+            if data is None:
+                raise ValueError("Empty FITS data.")
+
+            arr = np.asarray(data)
+
+            # Common shapes:
+            # (H,W) -> mono
+            # (C,H,W) -> convert to (H,W,C)
+            # (H,W,C) -> already fine
+            if arr.ndim == 3:
+                # If first axis is small (1/3/4), assume CHW
+                if arr.shape[0] in (1, 3, 4) and arr.shape[1] > 8 and arr.shape[2] > 8:
+                    arr = np.moveaxis(arr, 0, -1)  # CHW -> HWC
+
+                # If now HWC and has alpha, drop it
+                if arr.shape[-1] >= 4:
+                    arr = arr[..., :3]
+
+                # If single channel, squeeze
+                if arr.shape[-1] == 1:
+                    arr = arr[..., 0]
+
+            return arr
+        except Exception as e:
+            raise RuntimeError(f"Failed to read FITS: {p}\n{e}")
 
     # Prefer cv2 if available
     if cv2 is not None:
@@ -1209,6 +1242,47 @@ def _imread_any(path: str) -> np.ndarray:
         return np.array(im)
     im = im.convert("RGB")
     return np.array(im)
+
+def _to_float01_robust(img: np.ndarray) -> np.ndarray:
+    """
+    Robust float01 conversion for preview:
+    - uint8/uint16/int types scale by dtype max
+    - float types:
+        * if already ~[0,1], keep
+        * else percentile-scale (0.1..99.9) to [0,1]
+    Works for mono or RGB arrays.
+    """
+    a = np.asarray(img)
+
+    if a.dtype == np.uint8:
+        return a.astype(np.float32) / 255.0
+    if a.dtype == np.uint16:
+        return a.astype(np.float32) / 65535.0
+    if np.issubdtype(a.dtype, np.integer):
+        info = np.iinfo(a.dtype)
+        denom = float(info.max) if info.max > 0 else 1.0
+        return (a.astype(np.float32) / denom).clip(0.0, 1.0)
+
+    # float path
+    f = a.astype(np.float32, copy=False)
+
+    # If it already looks like [0,1], don’t mess with it
+    mn = float(np.nanmin(f))
+    mx = float(np.nanmax(f))
+    if (mn >= -1e-3) and (mx <= 1.0 + 1e-3):
+        return np.clip(f, 0.0, 1.0)
+
+    # Percentile scale (planetary-friendly)
+    lo = float(np.nanpercentile(f, 0.1))
+    hi = float(np.nanpercentile(f, 99.9))
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo + 1e-12:
+        # fallback to min/max
+        lo, hi = mn, mx
+        if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo + 1e-12:
+            return np.zeros_like(f, dtype=np.float32)
+
+    out = (f - lo) / (hi - lo)
+    return np.clip(out, 0.0, 1.0)
 
 
 def _infer_bit_depth(arr: np.ndarray) -> int:
@@ -1311,13 +1385,7 @@ class ImageSequenceReader(PlanetaryFrameSource):
 
         # Normalize to float01
         if to_float01:
-            if img.dtype == np.uint8:
-                img = img.astype(np.float32) / 255.0
-            elif img.dtype == np.uint16:
-                img = img.astype(np.float32) / 65535.0
-            else:
-                img = img.astype(np.float32)
-                img = np.clip(img, 0.0, 1.0)
+            img = _to_float01_robust(img)
 
         self._cache.put(key, img)
         return img
@@ -1355,7 +1423,7 @@ def open_planetary_source(
         return AVIReader(path, cache_items=cache_items)
 
     # If user passes a single image, treat it as a 1-frame sequence
-    if ext in (".png", ".tif", ".tiff", ".jpg", ".jpeg", ".bmp", ".webp"):
+    if ext in (".png", ".tif", ".tiff", ".jpg", ".jpeg", ".bmp", ".webp", ".fit", ".fits"):
         return ImageSequenceReader([path], cache_items=cache_items)
 
     raise ValueError(f"Unsupported input: {path}")
