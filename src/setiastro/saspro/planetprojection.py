@@ -1033,6 +1033,11 @@ def export_pseudo_surface_html(
     depth_gamma: float = 1.15,
     blur_sigma: float = 1.2,
     invert: bool = False,
+    # NEW: make depth coherent (kills spikes)
+    block: int = 10,           # 10 => 10x10 pixel average height
+    block_blur_sigma: float = 0.6,  # tiny blur after block for step edges
+    # NEW: safety cap so browsers don't melt if someone cranks max_dim
+    max_vertices: int = 220_000,     # ~470x470 grid
 ):
     """
     Interactive Plotly Mesh3d of a displaced heightfield:
@@ -1042,6 +1047,8 @@ def export_pseudo_surface_html(
 
     Uses image-style coordinates: +x right, +y down.
     """
+    import os
+    import numpy as np
     import plotly.graph_objects as go
 
     x = np.asarray(rgb)
@@ -1060,6 +1067,9 @@ def export_pseudo_surface_html(
     H, W = img01.shape[:2]
 
     # ---- downsample for mesh size ----
+    # clamp requested max_dim (prevents accidental 2k exports)
+    max_dim = int(np.clip(max_dim, 128, 900))
+
     s = float(max_dim) / float(max(H, W))
     if s < 1.0:
         newW = max(64, int(round(W * s)))
@@ -1070,11 +1080,18 @@ def export_pseudo_surface_html(
 
     hH, hW = img01_ds.shape[:2]
 
-    # ---- build height map from luminance (same philosophy as make_pseudo_surface_pair) ----
+    # ---- safety: cap vertex count (triangles scale ~2*(H-1)*(W-1)) ----
+    if hH * hW > max_vertices:
+        scale = np.sqrt(float(max_vertices) / float(hH * hW))
+        newW = max(64, int(round(hW * scale)))
+        newH = max(64, int(round(hH * scale)))
+        img01_ds = cv2.resize(img01_ds, (newW, newH), interpolation=cv2.INTER_AREA)
+        hH, hW = img01_ds.shape[:2]
+
+    # ---- build height map from luminance ----
     lum = (0.299 * img01_ds[..., 0] + 0.587 * img01_ds[..., 1] + 0.114 * img01_ds[..., 2]).astype(np.float32)
 
-    # Robust normalize (don’t “clip stars” aggressively):
-    # Use wider percentiles so bright stars don’t all smash into 1.0.
+    # Robust normalize (keep your existing behavior)
     p_lo = float(np.percentile(lum, 1.0))
     p_hi = float(np.percentile(lum, 99.5))
     if p_hi <= p_lo + 1e-9:
@@ -1086,13 +1103,26 @@ def export_pseudo_surface_html(
     if invert:
         h01 = 1.0 - h01
 
+    # ---- NEW: block smoothing to make depth coherent like wiggle ----
+    # each block shares one height value (10x10 average by default)
+    b = int(max(1, block))
+    if b > 1:
+        # cv2.blur is a fast box filter (mean filter)
+        h01 = cv2.blur(h01, (b, b), borderType=cv2.BORDER_REFLECT101)
+
+    # optional tiny blur after blocking to soften terraces
+    if block_blur_sigma and block_blur_sigma > 0:
+        h01 = cv2.GaussianBlur(h01, (0, 0), float(block_blur_sigma))
+
+    # your existing smooth (kept; you can set blur_sigma=0 if you want)
     if blur_sigma and blur_sigma > 0:
         h01 = cv2.GaussianBlur(h01, (0, 0), float(blur_sigma))
 
+    # gamma shape
     g = float(max(1e-3, depth_gamma))
     h01 = np.clip(h01, 0.0, 1.0) ** g
 
-    # Centered displacement [-1,+1]
+    # centered displacement [-1,+1]
     h = (h01 * 2.0 - 1.0).astype(np.float32)
 
     # Z scale in pixels-ish
@@ -1101,33 +1131,22 @@ def export_pseudo_surface_html(
 
     # ---- mesh vertices ----
     yy, xx = np.mgrid[0:hH, 0:hW].astype(np.float32)
-    # center around 0, and keep y-down image convention
     X = (xx - (hW - 1) * 0.5).reshape(-1)
     Y = (yy - (hH - 1) * 0.5).reshape(-1)
     Z = z.reshape(-1)
 
-    # vertex colors from downsampled RGB
+    # vertex colors
     cols = np.clip(img01_ds.reshape(-1, 3) * 255.0, 0, 255).astype(np.uint8)
     alpha = np.full((cols.shape[0], 1), 255, dtype=np.uint8)
     vcol = np.concatenate([cols, alpha], axis=1)
 
-    # ---- triangles (two per cell) ----
-    def vid(r, c): return r * hW + c
-
-    I = []
-    J = []
-    K = []
-    # ---- triangles (two per cell) ----
-    # Build a grid of vertex indices
-    grid = (np.arange(hH * hW, dtype=np.int32).reshape(hH, hW))
-
+    # ---- triangles (vectorized) ----
+    grid = np.arange(hH * hW, dtype=np.int32).reshape(hH, hW)
     p00 = grid[:-1, :-1].ravel()
     p01 = grid[:-1,  1:].ravel()
     p10 = grid[ 1:, :-1].ravel()
     p11 = grid[ 1:,  1:].ravel()
 
-    # Two triangles per quad:
-    # (p00, p10, p11) and (p00, p11, p01)
     I = np.concatenate([p00, p00]).astype(np.int32)
     J = np.concatenate([p10, p11]).astype(np.int32)
     K = np.concatenate([p11, p01]).astype(np.int32)
@@ -1157,7 +1176,6 @@ def export_pseudo_surface_html(
             yaxis=dict(visible=False),
             zaxis=dict(visible=False),
             bgcolor="black",
-            # Make Plotly behave like IMAGE coords (+y down)
             camera=dict(
                 eye=dict(x=0.0, y=-1.6, z=1.2),
                 up=dict(x=0.0, y=-1.0, z=0.0),
@@ -1172,7 +1190,6 @@ def export_pseudo_surface_html(
     if out_path is None:
         out_path = os.path.expanduser("~/pseudo_surface.html")
     return html, out_path
-
 
 # -----------------------------
 # UI dialog
@@ -1196,8 +1213,12 @@ class PlanetProjectionDialog(QDialog):
         self._wiggle_timer = QTimer(self)
         self._wiggle_timer.timeout.connect(self._on_wiggle_tick)
         self._wiggle_state = False
+        self._last_preview_u8 = None  # last frame we pushed to preview (H,W,3) uint8
         self._preview_zoom = 1.0  # kept for compatibility but preview window owns zoom now
         self._preview_win = None
+        self._wiggle_frames = None   # list of RGB uint8 frames
+        self._wiggle_idx = 0
+        self._wiggle_steps = 36      # default smoothness (can make this a UI control later)
 
         # Persist disk refinement within this dialog session (per image)
         self._disk_key = None              # identifies the current image
@@ -1223,16 +1244,19 @@ class PlanetProjectionDialog(QDialog):
         outer.addWidget(self.lbl_top)
 
         prev_row = QHBoxLayout()
-        self.btn_open_preview = QPushButton("Open Preview")
-        self.btn_raise_preview = QPushButton("Show Preview")
-        prev_row.addWidget(self.btn_open_preview)
-        prev_row.addWidget(self.btn_raise_preview)
+        self.btn_preview = QPushButton("Preview")
+        self.btn_save_still = QPushButton("Save Still…")
+        self.btn_save_wiggle = QPushButton("Save Wiggle…")
+
+        prev_row.addWidget(self.btn_preview)
+        prev_row.addWidget(self.btn_save_still)
+        prev_row.addWidget(self.btn_save_wiggle)
         prev_row.addStretch(1)
         outer.addLayout(prev_row)
 
-        self.btn_open_preview.clicked.connect(self._open_preview_window)
-        self.btn_raise_preview.clicked.connect(self._raise_preview_window)
-
+        self.btn_preview.clicked.connect(self._show_preview_window)
+        self.btn_save_still.clicked.connect(self._save_still)
+        self.btn_save_wiggle.clicked.connect(self._save_wiggle)
         # Controls
         box = QGroupBox("Parameters")
         form = QFormLayout(box)
@@ -1575,6 +1599,18 @@ class PlanetProjectionDialog(QDialog):
         s = min(pw / float(img_w), ph / float(img_h))
         return int(round(img_w * s)), int(round(img_h * s))
 
+    def _show_preview_window(self):
+        if self._preview_win is None:
+            self._preview_win = PlanetProjectionPreviewDialog(self)
+            try:
+                self._preview_win.resize(980, 600)
+            except Exception:
+                pass
+        self._preview_win.show()
+        self._preview_win.raise_()
+        self._preview_win.activateWindow()
+
+
     def _open_preview_window(self):
         if self._preview_win is None:
             self._preview_win = PlanetProjectionPreviewDialog(self)
@@ -1595,6 +1631,16 @@ class PlanetProjectionDialog(QDialog):
         self._preview_win.activateWindow()
 
     def _push_preview_u8(self, rgb8: np.ndarray):
+        rgb8 = np.asarray(rgb8)
+        if rgb8.dtype != np.uint8:
+            rgb8 = np.clip(rgb8, 0, 255).astype(np.uint8)
+        if rgb8.ndim == 2:
+            rgb8 = np.stack([rgb8, rgb8, rgb8], axis=2)
+        if rgb8.shape[2] > 3:
+            rgb8 = rgb8[..., :3]
+
+        self._last_preview_u8 = rgb8
+
         # ensure preview exists
         if self._preview_win is None or not self._preview_win.isVisible():
             self._open_preview_window()
@@ -1663,7 +1709,6 @@ class PlanetProjectionDialog(QDialog):
             return
 
         img = np.asarray(self.image)
-        key = self._current_image_key(img) 
         if img.ndim != 3 or img.shape[2] < 3:
             QMessageBox.information(self, "Planet Projection", "Image must be RGB (3 channels).")
             return
@@ -1738,7 +1783,7 @@ class PlanetProjectionDialog(QDialog):
         pad_mul = float(self.spin_pad.value())
         s = int(np.clip(r * pad_mul, float(self.spin_min.value()), float(self.spin_max.value())))
 
-        # ---- PSEUDO SURFACE MODE: early exit, no rings/background/disk ----
+        # ---- PSEUDO SURFACE MODE: early exit ----
         if is_pseudo:
             roi = img  # whole image
             theta = float(self.spin_theta.value())
@@ -1751,7 +1796,6 @@ class PlanetProjectionDialog(QDialog):
                 invert=bool(self.chk_ps_invert.isChecked()),
             )
 
-            # store as uint8 for preview pipeline
             Lw01 = left_w.astype(np.float32) / 255.0 if left_w.dtype == np.uint8 else left_w.astype(np.float32, copy=False)
             Rw01 = right_w.astype(np.float32) / 255.0 if right_w.dtype == np.uint8 else right_w.astype(np.float32, copy=False)
             Lw01 = np.clip(Lw01, 0.0, 1.0)
@@ -1759,6 +1803,9 @@ class PlanetProjectionDialog(QDialog):
 
             self._left = np.clip(Lw01 * 255.0, 0, 255).astype(np.uint8)
             self._right = np.clip(Rw01 * 255.0, 0, 255).astype(np.uint8)
+
+            # smooth wiggle not implemented for pseudo surface (yet) — keep toggle behavior
+            self._wiggle_frames = None
             self._wiggle_state = False
 
             if mode == 4:
@@ -1786,7 +1833,6 @@ class PlanetProjectionDialog(QDialog):
                         with open(fn, "w", encoding="utf-8") as f:
                             f.write(html)
 
-                    # EXACTLY like planet/saturn block:
                     import tempfile, webbrowser
                     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".html", mode="w", encoding="utf-8")
                     tmp.write(html)
@@ -1796,8 +1842,6 @@ class PlanetProjectionDialog(QDialog):
                 except Exception as e:
                     QMessageBox.warning(self, "Pseudo Surface", f"Failed to generate 3D pseudo surface:\n{e}")
                 return
-
-
 
             if mode == 2:
                 self._start_wiggle()
@@ -1811,7 +1855,7 @@ class PlanetProjectionDialog(QDialog):
                     QMessageBox.warning(self, "Anaglyph", f"Failed to build anaglyph:\n{e}")
                 return
 
-            cross_eye = (mode == 1)  # 1 = Cross-eye (R|L)
+            cross_eye = (mode == 1)
             self._show_stereo_pair(cross_eye=cross_eye)
             return
 
@@ -1820,7 +1864,7 @@ class PlanetProjectionDialog(QDialog):
         rings_on = bool(is_saturn and getattr(self, "chk_rings", None) is not None and self.chk_rings.isChecked())
 
         if rings_on:
-            tilt = float(self.spin_ring_tilt.value())      # b/a
+            tilt = float(self.spin_ring_tilt.value())
             pa = float(self.spin_ring_pa.value())
             k_out = float(self.spin_ring_outer.value())
 
@@ -1864,22 +1908,13 @@ class PlanetProjectionDialog(QDialog):
                 return x.astype(np.float32) / 65535.0
             return x.astype(np.float32, copy=False)
 
-        if disk is None:
-            cx0 = (W0 - 1) * 0.5
-            cy0 = (H0 - 1) * 0.5
-            r0 = 0.49 * min(W0, H0)
-            disk = ((xx - cx0) ** 2 + (yy - cy0) ** 2) <= (r0 * r0)
-
         theta = float(self.spin_theta.value())
 
         # ---- BODY (sphere reprojection) ----
-        # pseudo already returned; use high-quality for body
         interp = cv2.INTER_LANCZOS4
-
         left_w, right_w, maskL, maskR = make_stereo_pair(
             roi, theta_deg=theta, disk_mask=disk, interp=interp
         )
-
         Lw01 = to01(left_w)
         Rw01 = to01(right_w)
 
@@ -1941,6 +1976,15 @@ class PlanetProjectionDialog(QDialog):
             maskL = _shift_mask(maskL, dxL, dyL)
             maskR = _shift_mask(maskR, dxR, dyR)
 
+            # IMPORTANT for smooth wiggle: ring masks/textures need to be shifted too
+            if ringL01 is not None:
+                ringL01 = _shift_image(ringL01, dxL, dyL, border_value=0)
+                ringR01 = _shift_image(ringR01, dxR, dyR, border_value=0)
+                ringL_front = _shift_mask(ringL_front, dxL, dyL) if ringL_front is not None else None
+                ringL_back  = _shift_mask(ringL_back,  dxL, dyL) if ringL_back  is not None else None
+                ringR_front = _shift_mask(ringR_front, dxR, dyR) if ringR_front is not None else None
+                ringR_back  = _shift_mask(ringR_back,  dxR, dyR) if ringR_back  is not None else None
+
         # ---- build background (bg01) ----
         H, W = roi.shape[:2]
         if self.chk_bg_image.isChecked() and self._bg_img01 is not None:
@@ -1958,15 +2002,12 @@ class PlanetProjectionDialog(QDialog):
                 brightness=0.9,
             )
 
-        # ---- background parallax ----
-        # ---- background parallax ----
+        # ---- background parallax (for the still L/R that you already show) ----
         cL2 = _mask_centroid(maskL)
         cR2 = _mask_centroid(maskR)
-
         planet_disp_px = float(cL2[0] - cR2[0]) if (cL2 is not None and cR2 is not None) else 0.0
 
-        # If Saturn is selected, invert the background depth value (not the planet disparity).
-        depth_pct = float(self._bg_depth_internal_signed()) / 100.0  # <-- flipped for Saturn
+        depth_pct = float(self._bg_depth_internal_signed()) / 100.0
         bg_disp_px = planet_disp_px * depth_pct
         bg_shift = 0.5 * bg_disp_px
 
@@ -1976,7 +2017,7 @@ class PlanetProjectionDialog(QDialog):
         bgL = _shift_image(bg01, +bg_shift, 0.0, border_value=0)
         bgR = _shift_image(bg01, -bg_shift, 0.0, border_value=0)
 
-        # ---- composite ----
+        # ---- composite L/R ----
         Ldisp01 = bgL.copy()
         Rdisp01 = bgR.copy()
 
@@ -2058,6 +2099,120 @@ class PlanetProjectionDialog(QDialog):
         self._show_stereo_pair(cross_eye=cross_eye)
         return
 
+    def _render_composited_view_u8(self, theta_deg: float) -> np.ndarray:
+        """
+        Render ONE view (not L/R pair) at a given theta using the real reprojection math.
+        Returns RGB uint8 frame for preview/save.
+        """
+        if not hasattr(self, "_wiggle_ctx") or self._wiggle_ctx is None:
+            return None
+
+        ctx = self._wiggle_ctx
+        roi = ctx["roi"]
+        disk = ctx["disk"]
+        bg01 = ctx["bg01"]
+        H0, W0 = roi.shape[:2]
+        cx0, cy0 = float(ctx["cx0"]), float(ctx["cy0"])
+
+        def to01(x):
+            x = np.asarray(x)
+            if x.dtype == np.uint8:
+                return x.astype(np.float32) / 255.0
+            if x.dtype == np.uint16:
+                return x.astype(np.float32) / 65535.0
+            return x.astype(np.float32, copy=False)
+
+        # --- BODY: we can reuse make_stereo_pair by asking for a symmetric pair
+        # and then choosing the "left" for +theta and "right" for -theta.
+        # Easiest: call make_stereo_pair with theta_deg and take left_w/maskL as view.
+        interp = cv2.INTER_LANCZOS4
+        left_w, right_w, maskL, maskR = make_stereo_pair(roi, theta_deg=float(theta_deg), disk_mask=disk, interp=interp)
+
+        view01 = to01(left_w)
+        mask = maskL
+
+        # --- RINGS (optional): warp ring texture with same theta and composite back/front
+        ring01 = None
+        ring_front = ring_back = None
+        if ctx["rings_on"]:
+            tilt = float(ctx["ring_tilt"])
+            pa = float(ctx["ring_pa"])
+            k_out = float(ctx["ring_outer"])
+            k_in = float(ctx["ring_inner"])
+            r = float(ctx["r"])
+
+            outer_boost = 1.05
+            a_out = k_out * r * outer_boost
+            b_out = max(1.0, a_out * tilt)
+            a_in = k_in * r
+            b_in = max(1.0, a_in * tilt)
+
+            ringMask = _ellipse_annulus_mask(H0, W0, cx0, cy0, a_out, b_out, a_in, b_in, pa)
+
+            roi01 = to01(roi)
+            ring_tex01 = roi01.copy()
+            ring_tex01[~ringMask] = 0.0
+
+            mapLx, mapLy, mapRx, mapRy = _yaw_warp_maps(H0, W0, float(theta_deg), cx0, cy0)
+            ring01 = cv2.remap(ring_tex01, mapLx, mapLy, interpolation=cv2.INTER_LINEAR,
+                            borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+
+            front0, back0 = _ring_front_back_masks(H0, W0, cx0, cy0, pa, ringMask)
+            f_u8 = (front0.astype(np.uint8) * 255)
+            b_u8 = (back0.astype(np.uint8) * 255)
+            ring_front = (cv2.remap(f_u8, mapLx, mapLy, interpolation=cv2.INTER_NEAREST,
+                                    borderMode=cv2.BORDER_CONSTANT, borderValue=0) > 127)
+            ring_back  = (cv2.remap(b_u8, mapLx, mapLy, interpolation=cv2.INTER_NEAREST,
+                                    borderMode=cv2.BORDER_CONSTANT, borderValue=0) > 127)
+
+        # --- BACKGROUND PARALLAX: compute disparity for this theta using centroids in this view vs the opposite view
+        # We already have maskL/maskR from make_stereo_pair.
+        cL = _mask_centroid(maskL)
+        cR = _mask_centroid(maskR)
+        planet_disp_px = float(cL[0] - cR[0]) if (cL is not None and cR is not None) else 0.0
+
+        depth_pct = float(self._bg_depth_internal_signed()) / 100.0
+        bg_disp_px = planet_disp_px * depth_pct
+        bg_shift = 0.5 * bg_disp_px
+        max_bg_shift = 10.0 * min(H0, W0)
+        bg_shift = float(np.clip(bg_shift, -max_bg_shift, +max_bg_shift))
+
+        bg = _shift_image(bg01, +bg_shift, 0.0, border_value=0)  # single-view bg
+
+        # --- COMPOSITE
+        out01 = bg.copy()
+
+        if ring01 is not None:
+            out01[ring_back & (~mask)] = ring01[ring_back & (~mask)]
+
+        out01[mask] = view01[mask]
+
+        if ring01 is not None:
+            out01[ring_front] = ring01[ring_front]
+
+        out8 = np.clip(out01 * 255.0, 0, 255).astype(np.uint8)
+        return out8
+
+    def _build_smooth_wiggle_frames(self):
+        if not hasattr(self, "_wiggle_ctx") or self._wiggle_ctx is None:
+            self._wiggle_frames = None
+            return
+
+        theta_max = float(self.spin_theta.value())
+        steps = int(getattr(self, "_wiggle_steps", 36))
+        steps = max(8, min(240, steps))
+
+        frames = []
+        for i in range(steps):
+            phase = (2.0 * np.pi * i) / float(steps)
+            theta_i = theta_max * float(np.sin(phase))  # smooth motion
+            f = self._render_composited_view_u8(theta_i)
+            if f is not None:
+                frames.append(f)
+
+        self._wiggle_frames = frames if frames else None
+
+
     def _show_stereo_pair(self, cross_eye: bool = False):
         if self._left is None or self._right is None:
             return
@@ -2127,23 +2282,155 @@ class PlanetProjectionDialog(QDialog):
             QMessageBox.warning(self, "Background Image", f"Failed to load background:\n{e}")
 
     def _start_wiggle(self):
+        if self._left is None or self._right is None:
+            QMessageBox.information(self, "Wiggle", "Nothing to wiggle yet. Click Generate first.")
+            return
+
         self.btn_stop.setEnabled(True)
         self._wiggle_state = False
-        self._wiggle_timer.start(int(self.spin_wiggle_ms.value()))
+
+        interval = int(self.spin_wiggle_ms.value())  # old meaning: toggle period
+        interval = max(10, interval)
+
+        self._wiggle_timer.start(interval)
         self._on_wiggle_tick()
+
 
     def _stop_wiggle(self):
         if self._wiggle_timer.isActive():
             self._wiggle_timer.stop()
         self.btn_stop.setEnabled(False)
 
+
     def _on_wiggle_tick(self):
         if self._left is None or self._right is None:
             return
 
-        self._wiggle_state = not self._wiggle_state
         frame = self._right if self._wiggle_state else self._left
+        self._wiggle_state = not self._wiggle_state
         self._push_preview_u8(frame)
+
+    def _save_still(self):
+        if self._last_preview_u8 is None:
+            QMessageBox.information(self, "Save Still", "Nothing to save yet. Click Generate first.")
+            return
+
+        fn, filt = QFileDialog.getSaveFileName(
+            self,
+            "Save Still Image",
+            "",
+            "PNG (*.png);;JPEG (*.jpg *.jpeg);;TIFF (*.tif *.tiff)"
+        )
+        if not fn:
+            return
+
+        img = self._last_preview_u8  # RGB uint8
+
+        # decide format from extension (default to png)
+        ext = os.path.splitext(fn)[1].lower()
+        if ext == "":
+            fn += ".png"
+            ext = ".png"
+
+        try:
+            # use PIL for consistent RGB save
+            from PIL import Image
+            im = Image.fromarray(img, mode="RGB")
+            if ext in (".jpg", ".jpeg"):
+                im.save(fn, quality=95, subsampling=0)
+            else:
+                im.save(fn)
+        except Exception as e:
+            QMessageBox.warning(self, "Save Still", f"Failed to save:\n{e}")
+
+    def _save_wiggle(self):
+        if self._left is None or self._right is None:
+            QMessageBox.information(self, "Save Wiggle", "Nothing to save yet. Click Generate first.")
+            return
+
+        fn, filt = QFileDialog.getSaveFileName(
+            self,
+            "Save Wiggle Animation",
+            "",
+            "Animated GIF (*.gif);;MP4 Video (*.mp4)"
+        )
+        if not fn:
+            return
+
+        want_mp4 = ("*.mp4" in filt) or fn.lower().endswith(".mp4")
+        want_gif = ("*.gif" in filt) or fn.lower().endswith(".gif")
+
+        # add extension if missing
+        if os.path.splitext(fn)[1] == "":
+            fn += ".mp4" if want_mp4 else ".gif"
+            want_mp4 = fn.lower().endswith(".mp4")
+            want_gif = fn.lower().endswith(".gif")
+
+        def _ensure_rgb_u8(x):
+            x = np.asarray(x)
+            if x.dtype != np.uint8:
+                x = np.clip(x, 0, 255).astype(np.uint8)
+            if x.ndim == 2:
+                x = np.stack([x, x, x], axis=2)
+            if x.shape[2] > 3:
+                x = x[..., :3]
+            return x
+
+        L = _ensure_rgb_u8(self._left)
+        R = _ensure_rgb_u8(self._right)
+
+        toggle_ms = int(self.spin_wiggle_ms.value())
+        toggle_ms = max(10, toggle_ms)
+
+        # old behavior: ~2 seconds total, alternating every toggle_ms
+        fps = 1000.0 / float(toggle_ms)
+        n_frames = max(2, int(round(2.0 * fps)))
+        if n_frames % 2 == 1:
+            n_frames += 1
+
+        frames = [R if (i % 2 == 1) else L for i in range(n_frames)]
+
+        if want_gif:
+            try:
+                from PIL import Image
+                pil_frames = [Image.fromarray(f, mode="RGB") for f in frames]
+                pil_frames[0].save(
+                    fn,
+                    save_all=True,
+                    append_images=pil_frames[1:],
+                    duration=toggle_ms,
+                    loop=0,
+                    disposal=2,
+                    optimize=False
+                )
+                return
+            except Exception as e:
+                QMessageBox.warning(self, "Save Wiggle", f"Failed to save GIF:\n{e}")
+                return
+
+        # MP4
+        try:
+            import cv2
+            h, w = frames[0].shape[:2]
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            vw = cv2.VideoWriter(fn, fourcc, float(fps), (w, h))
+            if not vw.isOpened():
+                raise RuntimeError("Could not open MP4 encoder (mp4v). This system may lack an MP4 codec.")
+
+            for f in frames:
+                vw.write(f[..., ::-1])  # RGB->BGR
+            vw.release()
+            return
+
+        except Exception as e:
+            QMessageBox.warning(
+                self,
+                "Save Wiggle (MP4)",
+                "Failed to save MP4.\n\n"
+                f"{e}\n\n"
+                "Tip: GIF export should always work. If you need MP4 reliably, we can bundle/use ffmpeg."
+            )
+            return
 
     def closeEvent(self, e):
         self._stop_wiggle()
