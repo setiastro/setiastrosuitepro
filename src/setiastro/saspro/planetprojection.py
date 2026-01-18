@@ -288,9 +288,11 @@ def make_pseudo_surface_pair(
     invert: bool = False,
 ):
     """
-    Pseudo surface stereo:
-      - height = normalized luminance (brighter = closer by default)
+    Pseudo surface stereo (astro-friendly):
+      - height = luminance deviation around median (NO 0..1 normalization)
+      - robust amplitude scaling using MAD so stars don't dominate
       - per-pixel horizontal disparity warp
+
     Returns (left, right, maskL, maskR) where masks are valid sampling regions.
     """
     if cv2 is None:
@@ -300,49 +302,57 @@ def make_pseudo_surface_pair(
     x = np.asarray(rgb)
     orig_dtype = x.dtype
 
-    # --- float01 ---
+    # --- float01 for remap (image sampling) ---
     if x.dtype == np.uint8:
         xf = x.astype(np.float32) / 255.0
     elif x.dtype == np.uint16:
         xf = x.astype(np.float32) / 65535.0
     else:
         xf = x.astype(np.float32, copy=False)
+        # for float inputs we assume "image-like" but keep it sane for remap
         xf = np.clip(xf, 0.0, 1.0)
 
     H, W = xf.shape[:2]
 
-    # --- luminance height map ---
+    # --- luminance (float32) ---
     lum = (0.299 * xf[..., 0] + 0.587 * xf[..., 1] + 0.114 * xf[..., 2]).astype(np.float32)
 
-    # robust normalize to 0..1 using percentiles (ignore hot pixels / black border)
-    p_lo = float(np.percentile(lum, 2.0))
-    p_hi = float(np.percentile(lum, 98.0))
-    if p_hi <= p_lo + 1e-9:
-        h01 = np.clip(lum, 0.0, 1.0)
-    else:
-        h01 = (lum - p_lo) / (p_hi - p_lo)
-        h01 = np.clip(h01, 0.0, 1.0)
-
-    if invert:
-        h01 = 1.0 - h01
-
-    # smooth to avoid “cardboard noise” depth
+    # Optional smoothing to reduce noisy depth
     if blur_sigma and blur_sigma > 0:
-        h01 = cv2.GaussianBlur(h01, (0, 0), float(blur_sigma))
+        lum_s = cv2.GaussianBlur(lum, (0, 0), float(blur_sigma))
+    else:
+        lum_s = lum
 
-    # gamma shape: >1 pushes depth toward bright peaks; <1 broadens depth
-    g = float(max(1e-3, depth_gamma))
-    h01 = np.clip(h01, 0.0, 1.0) ** g
+    # Center around median so "background" ~ 0 height
+    h = lum_s - float(np.median(lum_s))
 
-    # center height to [-1, +1]
-    h = (h01 * 2.0 - 1.0).astype(np.float32)
+    # Optional gamma shaping (on magnitude, preserving sign)
+    g = float(max(1e-6, depth_gamma))
+    if abs(g - 1.0) > 1e-6:
+        h = np.sign(h) * (np.abs(h) ** g)
+
+    # Invert AFTER centering/shaping (so it just flips relief)
+    if invert:
+        h = -h
+
+    # Robust amplitude scaling so a few bright stars don't explode the height
+    # MAD ~ median(|x - median(x)|)
+    mad = float(np.median(np.abs(h)) + 1e-9)
+
+    # "gain" controls how punchy the height is.
+    # Larger gain_div => flatter relief (safer for stars).
+    gain_div = 6.0
+    h = (h / (gain_div * mad)).astype(np.float32)
+
+    # Keep height in a sane range so disparity doesn't go nuts
+    h = np.clip(h, -1.0, 1.0)
 
     # --- disparity scale ---
     # Empirical mapping: theta 6deg on ~600px gives ~15-20px max disparity.
     max_disp = (float(theta_deg) / 25.0) * (0.12 * float(min(H, W)))
     max_disp = float(np.clip(max_disp, 0.0, 0.35 * min(H, W)))
 
-    disp = h * max_disp  # signed pixels: bright=>positive => "closer"
+    disp = h * max_disp  # signed pixels: positive => "closer"
 
     yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
 
@@ -351,6 +361,7 @@ def make_pseudo_surface_pair(
     mapRx = xx - 0.5 * disp
     mapy = yy
 
+    # IMPORTANT: INTER_LINEAR avoids Lanczos ringing on stars
     left = cv2.remap(
         xf, mapLx, mapy,
         interpolation=cv2.INTER_LINEAR,
@@ -368,7 +379,7 @@ def make_pseudo_surface_pair(
     maskL = (mapLx >= 0.0) & (mapLx <= (W - 1))
     maskR = (mapRx >= 0.0) & (mapRx <= (W - 1))
 
-    # back to original dtype
+    # Back to original dtype (preserve your existing behavior)
     if orig_dtype == np.uint8:
         left = np.clip(left * 255.0, 0, 255).astype(np.uint8)
         right = np.clip(right * 255.0, 0, 255).astype(np.uint8)
@@ -376,6 +387,7 @@ def make_pseudo_surface_pair(
         left = np.clip(left * 65535.0, 0, 65535).astype(np.uint16)
         right = np.clip(right * 65535.0, 0, 65535).astype(np.uint16)
     else:
+        # float inputs come back as float (same dtype), but remap ran on float32
         left = left.astype(orig_dtype, copy=False)
         right = right.astype(orig_dtype, copy=False)
 
@@ -666,7 +678,7 @@ def _sample_tex_colors(tex: np.ndarray, lats: np.ndarray, lons: np.ndarray) -> n
     c = c0 * (1 - fu)[:, None] + c1 * fu[:, None]
 
     rgba = np.clip(c * 255.0, 0, 255).astype(np.uint8)
-    alpha = (np.any(rgba > 0, axis=1)).astype(np.uint8) * 255
+    alpha = np.full((rgba.shape[0],), 255, dtype=np.uint8)
     vertexcolor = np.concatenate([rgba, alpha[:, None]], axis=1)
     return vertexcolor
 
@@ -929,7 +941,7 @@ def export_planet_sphere_html(
             cols_u8 = np.clip(cols01 * 255.0, 0, 255).astype(np.uint8)
 
             # --- validity mask for alpha (do this BEFORE shadowing to avoid alpha=0 for black shadow)
-            valid = np.any(cols_u8 > 0, axis=1)
+            valid = np.any(cols_u8 > 2, axis=1)
 
             # --- Occlude ring where Saturn's disk covers it (true disk silhouette)
             # Planet is unit sphere centered at origin; camera from +Z.
