@@ -30,7 +30,12 @@ class SERStackConfig:
     ap_multiscale: bool = False
     ssd_refine_bruteforce: bool = False
     keep_mask: Optional[KeepMask] = None
-
+    planet_smooth_sigma: float = 1.5
+    planet_thresh_pct: float = 92.0
+    planet_use_norm: bool = True
+    planet_norm_lo_pct: float = 1.0
+    planet_norm_hi_pct: float = 99.5
+    planet_min_val: float = 0.02
     # ✅ Drizzle
     drizzle_scale: float = 1.0          # 1.0 = off, 1.5, 2.0
     drizzle_pixfrac: float = 0.80       # "drop shrink" in output pixels (roughly)
@@ -58,7 +63,22 @@ class SERStackConfig:
         self.ap_multiscale = bool(kwargs.pop("ap_multiscale", False))
         self.ssd_refine_bruteforce = bool(kwargs.pop("ssd_refine_bruteforce", False))
         self.keep_mask = kwargs.pop("keep_mask", None)
+        # Planetary centroid knobs (pure data, no UI references)
+        self.planet_smooth_sigma = float(kwargs.pop("planet_smooth_sigma", 1.5))
+        self.planet_thresh_pct   = float(kwargs.pop("planet_thresh_pct", 92.0))
+        self.planet_min_val      = float(kwargs.pop("planet_min_val", 0.02))
+        self.planet_use_norm     = bool(kwargs.pop("planet_use_norm", True))
+        self.planet_norm_lo_pct  = float(kwargs.pop("planet_norm_lo_pct", 1.0))
+        self.planet_norm_hi_pct  = float(kwargs.pop("planet_norm_hi_pct", 99.5))
 
+        # sanitize
+        self.planet_smooth_sigma = max(0.0, self.planet_smooth_sigma)
+        self.planet_thresh_pct   = float(np.clip(self.planet_thresh_pct, 0.0, 100.0)) if "np" in globals() else self.planet_thresh_pct
+        self.planet_min_val      = float(max(0.0, min(1.0, self.planet_min_val)))
+        self.planet_norm_lo_pct  = float(np.clip(self.planet_norm_lo_pct, 0.0, 100.0)) if "np" in globals() else self.planet_norm_lo_pct
+        self.planet_norm_hi_pct  = float(np.clip(self.planet_norm_hi_pct, 0.0, 100.0)) if "np" in globals() else self.planet_norm_hi_pct
+        if self.planet_norm_hi_pct <= self.planet_norm_lo_pct:
+            self.planet_norm_hi_pct = min(100.0, self.planet_norm_lo_pct + 1.0)
         # ✅ NEW: Drizzle params
         self.drizzle_scale = float(kwargs.pop("drizzle_scale", 1.0))
         if self.drizzle_scale not in (1.0, 1.5, 2.0):

@@ -196,7 +196,7 @@ from setiastro.saspro.resources import (
     colorwheel_path, font_path, csv_icon_path, spinner_path, wims_path, narrowbandnormalization_path,
     wimi_path, linearfit_path, debayer_path, aberration_path, acv_icon_path,
     functionbundles_path, viewbundles_path, selectivecolor_path, rgbalign_path, planetarystacker_path,
-    background_path, script_icon_path
+    background_path, script_icon_path, planetprojection_path,
 )
 
 import faulthandler
@@ -4279,6 +4279,29 @@ class AstroSuiteProMainWindow(
         dlg.setWindowFlag(Qt.WindowType.Window, True)
         dlg.setWindowIcon(QIcon(planetarystacker_path))        
         dlg.show()
+
+    def _open_planet_projection(self):
+        from setiastro.saspro.planetprojection import PlanetProjectionDialog
+        sw = self.mdi.activeSubWindow()
+        if not sw:
+            QMessageBox.information(self, "No image", "Open an image first.")
+            return
+
+        view = sw.widget()
+        doc = self.doc_manager.get_document_for_view(view)
+
+        dlg = PlanetProjectionDialog(self, doc)
+        try:
+            # dlg.setWindowIcon(QIcon(planetprojection_path))
+            pass
+        except Exception:
+            pass
+        dlg.resize(980, 720)
+        dlg.setWindowFlag(Qt.WindowType.Window, True)
+        dlg.setWindowIcon(QIcon(planetprojection_path))         
+        dlg.show()
+        self._log("Functions: opened Planet Projection.")
+
 
     def _open_stacking_suite(self):
         # Reuse if we already have one

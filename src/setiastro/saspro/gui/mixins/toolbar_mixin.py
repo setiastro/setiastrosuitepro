@@ -36,7 +36,7 @@ from setiastro.saspro.resources import (
     nbtorgb_path, freqsep_path, multiscale_decomp_path, contsub_path, halo_path, cosmic_path,
     satellite_path, imagecombine_path, wims_path, wimi_path, linearfit_path,
     debayer_path, aberration_path, functionbundles_path, viewbundles_path, planetarystacker_path,
-    selectivecolor_path, rgbalign_path,
+    selectivecolor_path, rgbalign_path, planetprojection_path,
 )
 
 # Import shortcuts module
@@ -307,6 +307,7 @@ class ToolbarMixin:
         tb_star.addAction(self.act_stacking_suite)
         tb_star.addAction(self.act_live_stacking)
         tb_star.addAction(self.act_planetary_stacker)
+        tb_star.addAction(self.act_planet_projection)
         tb_star.addAction(self.act_plate_solve)
         tb_star.addAction(self.act_star_align)
         tb_star.addAction(self.act_star_register)
@@ -1195,6 +1196,11 @@ class ToolbarMixin:
         self.act_planetary_stacker.setStatusTip(self.tr("Stack SER videos (planetary/solar/lunar)"))
         self.act_planetary_stacker.triggered.connect(self._open_planetary_stacker)
 
+        self.act_planet_projection = QAction(QIcon(planetprojection_path), self.tr("Planetary Projection..."), self)
+        self.act_planet_projection.setIconVisibleInMenu(True)
+        self.act_planet_projection.setStatusTip(self.tr("View your planets with stereographic projection"))
+        self.act_planet_projection.triggered.connect(self._open_planet_projection)
+
         self.act_plate_solve = QAction(QIcon(platesolve_path), self.tr("Plate Solver..."), self)
         self.act_plate_solve.setIconVisibleInMenu(True)
         self.act_plate_solve.setStatusTip(self.tr("Solve WCS/SIP for the active image or a file"))
@@ -1439,6 +1445,7 @@ class ToolbarMixin:
         reg("image_peeker", self.act_image_peeker)
         reg("live_stacking", self.act_live_stacking)
         reg("stacking_suite", self.act_stacking_suite)
+        reg("planet_projection", self.act_planet_projection)
         reg("supernova_hunter", self.act_supernova_hunter)
         reg("star_spikes", self.act_star_spikes)
         reg("astrospike", self.act_astrospike)

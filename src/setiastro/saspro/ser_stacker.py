@@ -1601,6 +1601,9 @@ def analyze_ser(
         tracker = PlanetaryTracker(
             smooth_sigma=float(getattr(cfg, "planet_smooth_sigma", smooth_sigma)),
             thresh_pct=float(getattr(cfg, "planet_thresh_pct", thresh_pct)),
+            min_val=float(getattr(cfg, "planet_min_val", 0.02)),
+            use_norm=bool(getattr(cfg, "planet_use_norm", False)),
+            norm_hi_pct=float(getattr(cfg, "planet_norm_hi_pct", 99.5)),
         )
 
         # IMPORTANT: reference center is computed from the SAME reference image that Analyze chose
@@ -1954,8 +1957,11 @@ def realign_ser(
     else:
         # planetary: centroid tracking (same as viewer)
         tracker = PlanetaryTracker(
-            smooth_sigma=float(getattr(cfg, "planet_smooth_sigma", 1.5)),
-            thresh_pct=float(getattr(cfg, "planet_thresh_pct", 92.0)),
+            smooth_sigma=float(getattr(cfg, "planet_smooth_sigma", smooth_sigma)),
+            thresh_pct=float(getattr(cfg, "planet_thresh_pct", thresh_pct)),
+            min_val=float(getattr(cfg, "planet_min_val", 0.02)),
+            use_norm=bool(getattr(cfg, "planet_use_norm", False)),
+            norm_hi_pct=float(getattr(cfg, "planet_norm_hi_pct", 99.5)),
         )
 
         # Reference center comes from analysis.ref_image (same anchor as analyze_ser)

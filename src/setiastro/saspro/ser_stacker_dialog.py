@@ -442,22 +442,29 @@ class APEditorDialog(QDialog):
     # ---------- drawing ----------
     def _render(self):
         u8 = self._base_u8
+        # ✅ memmap/FITS-safe: QImage assumes row-major contiguous when we pass bytesPerLine=w
+        if not u8.flags["C_CONTIGUOUS"]:
+            u8 = np.ascontiguousarray(u8)
+
         h, w = u8.shape[:2]
 
-        qimg = QImage(u8.data, w, h, w, QImage.Format.Format_Grayscale8)
-        base_pm = QPixmap.fromImage(qimg.copy())  # copy so backing store persists
+        qimg = QImage(u8.data, w, h, w, QImage.Format.Format_Grayscale8).copy()
+        base_pm = QPixmap.fromImage(qimg)  # already detached above
 
         # scale to display zoom (keeps UI sane)
         zw = max(1, int(round(w * self._zoom)))
         zh = max(1, int(round(h * self._zoom)))
-        pm = base_pm.scaled(zw, zh, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        pm = base_pm.scaled(
+            zw, zh,
+            Qt.AspectRatioMode.IgnoreAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
+        )
 
         # draw AP boxes in *display coords* so thickness doesn't scale
         p = QPainter(pm)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
         s_img = int(max(8, self._ap_size))
-        half_img = s_img // 2
         s_disp = max(2, int(round(s_img * self._zoom)))
         half_disp = s_disp // 2
 
@@ -832,6 +839,8 @@ class SERStackerDialog(QDialog):
         debayer: bool = True,
         keep_percent: float = 20.0,
         bayer_pattern: Optional[str] = None,
+        planet_min_val=0.02, planet_use_norm=False, planet_norm_hi_pct=99.5,
+        planet_thresh_pct=92.0, planet_smooth_sigma=1.5, **kwargs
     ):
         super().__init__(parent)
         self.setWindowTitle("Planetary Stacker - Beta")
@@ -840,6 +849,13 @@ class SERStackerDialog(QDialog):
         self.setModal(False)
         self._bayer_pattern = bayer_pattern
         self._keep_mask = None  # np.ndarray bool shape (N,) or None
+
+        self._planet_min_val = float(planet_min_val)
+        self._planet_use_norm = bool(planet_use_norm)
+        self._planet_norm_hi_pct = float(planet_norm_hi_pct)
+        self._planet_thresh_pct = float(planet_thresh_pct)
+        self._planet_smooth_sigma = float(planet_smooth_sigma)
+
         # ---- Normalize inputs ------------------------------------------------
         # If caller provided only `source`, treat string-source as ser_path too.
         if source is None:
@@ -1445,7 +1461,7 @@ class SERStackerDialog(QDialog):
             surface_anchor=self._surface_anchor,
             keep_percent=float(self.spin_keep.value()),
             bayer_pattern=self._bayer_pattern,
-            keep_mask=getattr(self, "_keep_mask", None), 
+            keep_mask=getattr(self, "_keep_mask", None),
 
             ap_size=int(self.spin_ap_size.value()),
             ap_spacing=int(self.spin_ap_spacing.value()),
@@ -1455,7 +1471,14 @@ class SERStackerDialog(QDialog):
                 getattr(self, "chk_ssd_bruteforce", None) and self.chk_ssd_bruteforce.isChecked()
             ),
 
-            # ✅ drizzle
+            # ✅ NEW: planetary centroid knobs (add UI controls or set defaults)
+            planet_smooth_sigma=self._planet_smooth_sigma,
+            planet_thresh_pct=self._planet_thresh_pct,
+            planet_min_val=self._planet_min_val,
+            planet_use_norm=self._planet_use_norm,
+            planet_norm_hi_pct=self._planet_norm_hi_pct,
+
+            # drizzle
             drizzle_scale=float(drizzle_scale),
             drizzle_pixfrac=float(self.spin_pixfrac.value()),
             drizzle_kernel=str(drizzle_kernel),
@@ -1783,7 +1806,7 @@ class BlinkKeepersDialog(QDialog):
         v = (mono - lo) / (hi - lo)
         v = np.clip(v, 0.0, 1.0)
         return (v * 255.0 + 0.5).astype(np.uint8)
-
+    
     def _show_index(self, i: int):
         if self.keepers.size == 0:
             return
@@ -1810,9 +1833,14 @@ class BlinkKeepersDialog(QDialog):
             img = img[..., 0]
 
         u8 = self._disp_u8(img)
+
+        # ✅ memmap/FITS-safe: guarantee tight row stride for bytesPerLine=w
+        if not u8.flags["C_CONTIGUOUS"]:
+            u8 = np.ascontiguousarray(u8)
+
         h, w = u8.shape
-        qimg = QImage(u8.data, w, h, w, QImage.Format.Format_Grayscale8)
-        pm = QPixmap.fromImage(qimg.copy())
+        qimg = QImage(u8.data, w, h, w, QImage.Format.Format_Grayscale8).copy()
+        pm = QPixmap.fromImage(qimg)
 
         self.lbl.setPixmap(pm.scaled(
             self.lbl.size(),
@@ -1820,7 +1848,6 @@ class BlinkKeepersDialog(QDialog):
             Qt.TransformationMode.SmoothTransformation
         ))
         self._update_labels()
-
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
