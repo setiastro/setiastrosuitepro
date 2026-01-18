@@ -717,6 +717,55 @@ def _build_ring_mesh(n_theta: int = 360):
         K.extend([i1, i1])
     return th, np.asarray(I, np.int32), np.asarray(J, np.int32), np.asarray(K, np.int32)
 
+def _build_ring_grid(n_r: int = 160, n_theta: int = 720):
+    th = np.linspace(0, 2*np.pi, n_theta, endpoint=False).astype(np.float32)
+    rr = np.linspace(0.0, 1.0, n_r, endpoint=True).astype(np.float32)  # normalized radius
+    TH, RR = np.meshgrid(th, rr)  # (n_r, n_theta)
+
+    # indices
+    def vid(r, t): return r*n_theta + t
+    I = []; J = []; K = []
+    for r in range(n_r - 1):
+        for t in range(n_theta):
+            t2 = (t + 1) % n_theta
+            p00 = vid(r, t)
+            p01 = vid(r, t2)
+            p10 = vid(r+1, t)
+            p11 = vid(r+1, t2)
+            I += [p00, p00]
+            J += [p10, p11]
+            K += [p11, p01]
+    return TH.reshape(-1), RR.reshape(-1), np.asarray(I,np.int32), np.asarray(J,np.int32), np.asarray(K,np.int32)
+
+def _ring_to_polar_texture(roi01, cx0, cy0, rpx, pa_deg, tilt, k_in, k_out,
+                           n_r=160, n_theta=720):
+    H, W = roi01.shape[:2]
+    th = np.linspace(0, 2*np.pi, n_theta, endpoint=False).astype(np.float32)
+    rr = np.linspace(k_in, k_out, n_r, endpoint=True).astype(np.float32)
+
+    TH, RR = np.meshgrid(th, rr)  # (n_r, n_theta)
+
+    x_e = RR * np.cos(TH)
+    y_e = RR * np.sin(TH) * tilt
+
+    a = np.deg2rad(pa_deg)
+    c, s = np.cos(a), np.sin(a)
+
+    x_img = cx0 + rpx * (x_e*c - y_e*s)
+    y_img = cy0 + rpx * (x_e*s + y_e*c)
+
+    mapx = x_img.astype(np.float32)
+    mapy = y_img.astype(np.float32)
+
+    polar = cv2.remap(
+        roi01, mapx, mapy,
+        interpolation=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0
+    )
+    return polar  # (n_r, n_theta, 3) float01
+
+
 def export_planet_sphere_html(
     roi_rgb: np.ndarray,
     disk_mask: np.ndarray,
@@ -815,7 +864,7 @@ def export_planet_sphere_html(
     data = [sphere_mesh]
 
     # -----------------------------
-    # 6) Optional rings mesh (Saturn)
+    # 6) Optional rings mesh (Saturn) — POLAR TEXTURE + GRID MESH
     # -----------------------------
     if rings is not None:
         try:
@@ -831,72 +880,70 @@ def export_planet_sphere_html(
             if k_out <= k_in:
                 k_out = k_in + 0.05
 
-            H0, W0 = roi01.shape[:2]
+            # Pick resolution (you can expose these as args if you want)
+            n_r = int(rings.get("n_r", 180))
+            n_theta = int(rings.get("n_theta", 720))
 
-            # --- Build ring mask in IMAGE coords (same as refinement overlay)
-            outer_boost = 1.05  # match your compositor (+5% outer)
-            a_out = k_out * rpx * outer_boost
-            b_out = max(1.0, a_out * tilt)
-            a_in  = k_in  * rpx
-            b_in  = max(1.0, a_in  * tilt)
+            # --- Build POLAR texture (n_r x n_theta x 3) float01
+            # IMPORTANT: sample directly from roi01 (no pre-masking) to avoid bilinear edge darkening
+            ring_polar01 = _ring_to_polar_texture(
+                roi01,
+                cx0=cx0, cy0=cy0,
+                rpx=rpx,
+                pa_deg=pa_deg,
+                tilt=tilt,
+                k_in=k_in, k_out=k_out,
+                n_r=n_r, n_theta=n_theta
+            )
 
-            ringMask = _ellipse_annulus_mask(H0, W0, cx0, cy0, a_out, b_out, a_in, b_in, pa_deg)
-            ring_tex01 = roi01.copy()
-            ring_tex01[~ringMask] = 0.0
+            # --- Build GRID mesh topology aligned with polar texture
+            TH_flat, RRn_flat, I2, J2, K2 = _build_ring_grid(n_r=n_r, n_theta=n_theta)
 
-            # --- Geometry: annulus in planet radii in the ring plane
-            th, I2, J2, K2 = _build_ring_mesh(n_theta=360)
+            # Convert normalized radius -> actual radius in planet radii
+            RR_flat = (k_in + RRn_flat * (k_out - k_in)).astype(np.float32)
 
-            rin = np.full_like(th, k_in,  dtype=np.float32)
-            rout = np.full_like(th, k_out, dtype=np.float32)
+            # Base ring plane coords (world-ish): x right, y up
+            x = (RR_flat * np.cos(TH_flat)).astype(np.float32)
+            y = (RR_flat * np.sin(TH_flat)).astype(np.float32)
+            z = np.zeros_like(x, dtype=np.float32)
 
-            # Base ring plane coordinates (world-ish): x right, y up
-            # We'll apply tilt in 3D, then rotate by PA, then finally flip Y for Plotly.
-            xi = rin * np.cos(th);  yi = rin * np.sin(th)
-            xo = rout * np.cos(th); yo = rout * np.sin(th)
-
-            x = np.empty((th.size * 2,), np.float32)
-            y = np.empty((th.size * 2,), np.float32)
-            z = np.zeros((th.size * 2,), np.float32)
-            x[0::2] = xi; x[1::2] = xo
-            y[0::2] = yi; y[1::2] = yo
-
-            # Tilt: tilt=b/a = cos(inc) -> inc = arccos(tilt)
+            # --- 3D tilt: tilt=b/a = cos(inc) -> inc=arccos(tilt)
             inc = float(np.arccos(np.clip(tilt, 0.0, 1.0)))
-            ci, si = np.cos(inc), np.sin(inc)
+            ci, si = float(np.cos(inc)), float(np.sin(inc))
 
-            # Tilt around X (foreshorten Y, push into Z)
+            # Tilt around X: foreshorten Y, push into Z
             y2 = y * ci
             z2 = y * si
 
             # Rotate around Z by PA (MATCH refinement/UI)
             a = np.deg2rad(pa_deg)
-            ca, sa = np.cos(a), np.sin(a)
+            ca, sa = float(np.cos(a)), float(np.sin(a))
             x3 = x * ca - y2 * sa
             y3 = x * sa + y2 * ca
             z3 = z2 + 0.002  # tiny lift to reduce z-fighting
 
-            # --- Vertex colors: sample ring_tex01 using the SAME mapping as the mask
-            # Map ring plane coords -> image pixels:
-            # 1) rotate by PA in image plane
-            # 2) apply tilt on y (minor axis)
-            ap = np.deg2rad(pa_deg)
-            c, s = np.cos(ap), np.sin(ap)
+            # --- Vertex colors from polar texture (aligned!)
+            # ring_polar01 shape: (n_r, n_theta, 3)
+            # _build_ring_grid flattens in meshgrid order (rr rows, th cols) -> matches reshape(-1)
+            cols01 = ring_polar01.reshape(-1, 3)
+            cols_u8 = np.clip(cols01 * 255.0, 0, 255).astype(np.uint8)
 
-            xr = x
-            yr = y
+            # --- validity mask for alpha (do this BEFORE shadowing to avoid alpha=0 for black shadow)
+            valid = np.any(cols_u8 > 0, axis=1)
 
-            # rotate into image ellipse frame (same sign convention as _ellipse_annulus_mask)
-            xr2 = xr * c + yr * s
-            yr2 = -xr * s + yr * c
+            # --- Occlude ring where Saturn's disk covers it (true disk silhouette)
+            # Planet is unit sphere centered at origin; camera from +Z.
+            r2 = x3*x3 + y3*y3
+            inside = r2 <= 1.0
+            z_front = np.sqrt(np.clip(1.0 - r2, 0.0, 1.0))
+            shadow = inside & (z3 < z_front)
 
-            u = cx0 + (xr2 * rpx)
-            v = cy0 + (yr2 * rpx * tilt)
+            if np.any(shadow):
+                cols_u8 = cols_u8.copy()
+                cols_u8[shadow, :3] = 0  # paint ring behind planet black
 
-            cols = _bilinear_sample_rgb(ring_tex01, u, v)  # (N,3) float01
-            rgba = np.clip(cols * 255.0, 0, 255).astype(np.uint8)
-            alpha = (np.any(rgba > 0, axis=1)).astype(np.uint8) * 255
-            vcol_ring = np.concatenate([rgba, alpha[:, None]], axis=1)
+            alpha = (valid.astype(np.uint8) * 255)[:, None]
+            vcol_ring = np.concatenate([cols_u8, alpha], axis=1)
 
             # Double-sided: duplicate tris with reversed winding
             I2 = np.asarray(I2, dtype=np.int32)
@@ -906,7 +953,7 @@ def export_planet_sphere_html(
             J_all = np.concatenate([J2, K2])
             K_all = np.concatenate([K2, J2])
 
-            # --- Flip Y for Plotly to match image coords (same as sphere)
+            # Flip Y for Plotly (match IMAGE coords y-down like sphere)
             y3_plot = -y3
 
             ring_mesh = go.Mesh3d(
@@ -914,7 +961,10 @@ def export_planet_sphere_html(
                 i=I_all, j=J_all, k=K_all,
                 vertexcolor=vcol_ring,
                 flatshading=False,
-                lighting=dict(ambient=0.75, diffuse=0.65, specular=0.10, roughness=1.0, fresnel=0.05),
+                lighting=dict(
+                    ambient=0.75, diffuse=0.65, specular=0.10,
+                    roughness=1.0, fresnel=0.05
+                ),
                 name="Rings",
                 hoverinfo="skip",
                 showscale=False,
@@ -925,6 +975,7 @@ def export_planet_sphere_html(
         except Exception:
             # If rings fail, still return the sphere.
             pass
+
 
     # -----------------------------
     # 7) Figure + layout
@@ -942,7 +993,8 @@ def export_planet_sphere_html(
             bgcolor="black",
             camera=dict(
                 eye=dict(x=0.0, y=0.0, z=2.2),
-                up=dict(x=0.0, y=-1.0, z=0.0),  # <--- matches our Y flip (image y-down)
+                center=dict(x=0.0, y=0.0, z=0.0),
+                up=dict(x=0.0, y=-1.0, z=0.0),   # image y-down
             ),
         ),
         paper_bgcolor="black",
@@ -956,6 +1008,159 @@ def export_planet_sphere_html(
         out_path = os.path.expanduser("~/planet_sphere.html")
 
     return html, out_path
+
+def export_pseudo_surface_html(
+    rgb: np.ndarray,
+    out_path: str | None = None,
+    *,
+    title: str = "Pseudo Surface (Height from Brightness)",
+    # mesh size control (trade quality vs HTML size)
+    max_dim: int = 420,
+    # height controls
+    z_scale: float = 0.35,     # relative to min(W,H) after downsample
+    depth_gamma: float = 1.15,
+    blur_sigma: float = 1.2,
+    invert: bool = False,
+):
+    """
+    Interactive Plotly Mesh3d of a displaced heightfield:
+      - XY is image plane
+      - Z is derived from luminance (pseudo surface)
+      - Vertex colors come from RGB
+
+    Uses image-style coordinates: +x right, +y down.
+    """
+    import plotly.graph_objects as go
+
+    x = np.asarray(rgb)
+    if x.ndim != 3 or x.shape[2] < 3:
+        raise ValueError("export_pseudo_surface_html expects RGB image (H,W,3).")
+
+    # ---- float01 ----
+    if x.dtype == np.uint8:
+        img01 = x[..., :3].astype(np.float32) / 255.0
+    elif x.dtype == np.uint16:
+        img01 = x[..., :3].astype(np.float32) / 65535.0
+    else:
+        img01 = x[..., :3].astype(np.float32, copy=False)
+        img01 = np.clip(img01, 0.0, 1.0)
+
+    H, W = img01.shape[:2]
+
+    # ---- downsample for mesh size ----
+    s = float(max_dim) / float(max(H, W))
+    if s < 1.0:
+        newW = max(64, int(round(W * s)))
+        newH = max(64, int(round(H * s)))
+        img01_ds = cv2.resize(img01, (newW, newH), interpolation=cv2.INTER_AREA)
+    else:
+        img01_ds = img01
+
+    hH, hW = img01_ds.shape[:2]
+
+    # ---- build height map from luminance (same philosophy as make_pseudo_surface_pair) ----
+    lum = (0.299 * img01_ds[..., 0] + 0.587 * img01_ds[..., 1] + 0.114 * img01_ds[..., 2]).astype(np.float32)
+
+    # Robust normalize (don’t “clip stars” aggressively):
+    # Use wider percentiles so bright stars don’t all smash into 1.0.
+    p_lo = float(np.percentile(lum, 1.0))
+    p_hi = float(np.percentile(lum, 99.5))
+    if p_hi <= p_lo + 1e-9:
+        h01 = np.clip(lum, 0.0, 1.0)
+    else:
+        h01 = (lum - p_lo) / (p_hi - p_lo)
+        h01 = np.clip(h01, 0.0, 1.0)
+
+    if invert:
+        h01 = 1.0 - h01
+
+    if blur_sigma and blur_sigma > 0:
+        h01 = cv2.GaussianBlur(h01, (0, 0), float(blur_sigma))
+
+    g = float(max(1e-3, depth_gamma))
+    h01 = np.clip(h01, 0.0, 1.0) ** g
+
+    # Centered displacement [-1,+1]
+    h = (h01 * 2.0 - 1.0).astype(np.float32)
+
+    # Z scale in pixels-ish
+    zmax = float(min(hH, hW)) * float(z_scale)
+    z = h * zmax
+
+    # ---- mesh vertices ----
+    yy, xx = np.mgrid[0:hH, 0:hW].astype(np.float32)
+    # center around 0, and keep y-down image convention
+    X = (xx - (hW - 1) * 0.5).reshape(-1)
+    Y = (yy - (hH - 1) * 0.5).reshape(-1)
+    Z = z.reshape(-1)
+
+    # vertex colors from downsampled RGB
+    cols = np.clip(img01_ds.reshape(-1, 3) * 255.0, 0, 255).astype(np.uint8)
+    alpha = np.full((cols.shape[0], 1), 255, dtype=np.uint8)
+    vcol = np.concatenate([cols, alpha], axis=1)
+
+    # ---- triangles (two per cell) ----
+    def vid(r, c): return r * hW + c
+
+    I = []
+    J = []
+    K = []
+    # ---- triangles (two per cell) ----
+    # Build a grid of vertex indices
+    grid = (np.arange(hH * hW, dtype=np.int32).reshape(hH, hW))
+
+    p00 = grid[:-1, :-1].ravel()
+    p01 = grid[:-1,  1:].ravel()
+    p10 = grid[ 1:, :-1].ravel()
+    p11 = grid[ 1:,  1:].ravel()
+
+    # Two triangles per quad:
+    # (p00, p10, p11) and (p00, p11, p01)
+    I = np.concatenate([p00, p00]).astype(np.int32)
+    J = np.concatenate([p10, p11]).astype(np.int32)
+    K = np.concatenate([p11, p01]).astype(np.int32)
+
+    mesh = go.Mesh3d(
+        x=X, y=Y, z=Z,
+        i=I, j=J, k=K,
+        vertexcolor=vcol,
+        flatshading=False,
+        lighting=dict(
+            ambient=0.55, diffuse=0.85, specular=0.20,
+            roughness=0.95, fresnel=0.10
+        ),
+        lightposition=dict(x=2, y=1, z=3),
+        hoverinfo="skip",
+        name="PseudoSurface",
+        showscale=False,
+    )
+
+    fig = go.Figure(data=[mesh])
+    fig.update_layout(
+        title=title,
+        margin=dict(l=0, r=0, b=0, t=40),
+        scene=dict(
+            aspectmode="data",
+            xaxis=dict(visible=False),
+            yaxis=dict(visible=False),
+            zaxis=dict(visible=False),
+            bgcolor="black",
+            # Make Plotly behave like IMAGE coords (+y down)
+            camera=dict(
+                eye=dict(x=0.0, y=-1.6, z=1.2),
+                up=dict(x=0.0, y=-1.0, z=0.0),
+            ),
+        ),
+        paper_bgcolor="black",
+        plot_bgcolor="black",
+        showlegend=False,
+    )
+
+    html = fig.to_html(include_plotlyjs="cdn", full_html=True)
+    if out_path is None:
+        out_path = os.path.expanduser("~/pseudo_surface.html")
+    return html, out_path
+
 
 # -----------------------------
 # UI dialog
@@ -1545,8 +1750,42 @@ class PlanetProjectionDialog(QDialog):
             self._wiggle_state = False
 
             if mode == 4:
-                QMessageBox.information(self, "Planet Projection", "Interactive 3D Sphere is not available for Pseudo surface.")
+                try:
+                    html, default_path = export_pseudo_surface_html(
+                        roi,
+                        out_path=None,
+                        title="Pseudo Surface (Height from Brightness)",
+                        max_dim=2048,
+                        z_scale=0.35,
+                        depth_gamma=float(self.spin_ps_gamma.value()),
+                        blur_sigma=float(self.spin_ps_blur.value()),
+                        invert=not bool(self.chk_ps_invert.isChecked()),
+                    )
+
+                    fn, _ = QFileDialog.getSaveFileName(
+                        self,
+                        "Save Pseudo Surface As",
+                        default_path,
+                        "HTML Files (*.html)"
+                    )
+                    if fn:
+                        if not fn.lower().endswith(".html"):
+                            fn += ".html"
+                        with open(fn, "w", encoding="utf-8") as f:
+                            f.write(html)
+
+                    # EXACTLY like planet/saturn block:
+                    import tempfile, webbrowser
+                    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".html", mode="w", encoding="utf-8")
+                    tmp.write(html)
+                    tmp.close()
+                    webbrowser.open("file://" + tmp.name)
+
+                except Exception as e:
+                    QMessageBox.warning(self, "Pseudo Surface", f"Failed to generate 3D pseudo surface:\n{e}")
                 return
+
+
 
             if mode == 2:
                 self._start_wiggle()
@@ -1991,36 +2230,40 @@ class PlanetDiskAdjustDialog(QDialog):
             rings_box = QGroupBox("Saturn ring alignment")
             rings_form = QFormLayout(rings_box)
 
-            self.spin_ring_pa = QDoubleSpinBox()
-            self.spin_ring_pa.setRange(-180.0, 180.0)
-            self.spin_ring_pa.setSingleStep(1.0)
-            self.spin_ring_pa.setValue(self.ring_pa)
-            rings_form.addRow("Ring PA (deg):", self.spin_ring_pa)
+            # Ring PA (deg): -180..180 step 1
+            row, self.sld_ring_pa, self.spin_ring_pa = self._make_slider_spin_row(
+                min_v=-180.0, max_v=180.0, step_v=1.0,
+                value=self.ring_pa, decimals=0,
+                on_change=self._on_ring_widgets_changed
+            )
+            rings_form.addRow("Ring PA (deg):", row)
 
-            self.spin_ring_tilt = QDoubleSpinBox()
-            self.spin_ring_tilt.setRange(0.05, 1.0)
-            self.spin_ring_tilt.setSingleStep(0.02)
-            self.spin_ring_tilt.setValue(self.ring_tilt)
-            rings_form.addRow("Ring tilt (b/a):", self.spin_ring_tilt)
+            # Ring tilt (b/a): 0.05..1.00 step 0.01 (or 0.02 if you prefer)
+            row, self.sld_ring_tilt, self.spin_ring_tilt = self._make_slider_spin_row(
+                min_v=0.05, max_v=1.0, step_v=0.01,
+                value=self.ring_tilt, decimals=2,
+                on_change=self._on_ring_widgets_changed
+            )
+            rings_form.addRow("Ring tilt (b/a):", row)
 
-            self.spin_ring_outer = QDoubleSpinBox()
-            self.spin_ring_outer.setRange(1.0, 4.0)
-            self.spin_ring_outer.setSingleStep(0.05)
-            self.spin_ring_outer.setValue(self.ring_outer)
-            rings_form.addRow("Outer factor:", self.spin_ring_outer)
+            # Outer factor: 1.00..4.00 step 0.01 (you can keep 0.05 if you want coarser)
+            row, self.sld_ring_outer, self.spin_ring_outer = self._make_slider_spin_row(
+                min_v=1.0, max_v=4.0, step_v=0.01,
+                value=self.ring_outer, decimals=2,
+                on_change=self._on_ring_widgets_changed
+            )
+            rings_form.addRow("Outer factor:", row)
 
-            self.spin_ring_inner = QDoubleSpinBox()
-            self.spin_ring_inner.setRange(0.2, 3.5)
-            self.spin_ring_inner.setSingleStep(0.05)
-            self.spin_ring_inner.setValue(self.ring_inner)
-            rings_form.addRow("Inner factor:", self.spin_ring_inner)
-
-            self.spin_ring_pa.valueChanged.connect(self._on_ring_changed)
-            self.spin_ring_tilt.valueChanged.connect(self._on_ring_changed)
-            self.spin_ring_outer.valueChanged.connect(self._on_ring_changed)
-            self.spin_ring_inner.valueChanged.connect(self._on_ring_changed)
+            # Inner factor: 0.20..3.50 step 0.01
+            row, self.sld_ring_inner, self.spin_ring_inner = self._make_slider_spin_row(
+                min_v=0.2, max_v=3.5, step_v=0.01,
+                value=self.ring_inner, decimals=2,
+                on_change=self._on_ring_widgets_changed
+            )
+            rings_form.addRow("Inner factor:", row)
 
             outer.addWidget(rings_box)
+
 
         # radius row
         rad_row = QHBoxLayout()
@@ -2090,6 +2333,64 @@ class PlanetDiskAdjustDialog(QDialog):
         self.btn_cancel.clicked.connect(self.reject)
 
     # ---------- coordinate helpers ----------
+    def _make_slider_spin_row(self, *,
+                            min_v: float, max_v: float, step_v: float,
+                            value: float, decimals: int,
+                            on_change):
+        """
+        Returns (row_layout, slider, spin).
+        Slider is int-based; spin is float. They stay in sync.
+        """
+        scale = int(round(1.0 / step_v))  # e.g. 0.05 -> 20, 0.02 -> 50
+        if scale <= 0:
+            scale = 1
+
+        sld = QSlider(Qt.Orientation.Horizontal, self)
+        sld.setRange(int(round(min_v * scale)), int(round(max_v * scale)))
+        sld.setSingleStep(1)
+        sld.setPageStep(max(1, int(round(10 * scale * step_v))))  # about 10 steps
+        sld.setValue(int(round(value * scale)))
+
+        spn = QDoubleSpinBox(self)
+        spn.setRange(min_v, max_v)
+        spn.setDecimals(decimals)
+        spn.setSingleStep(step_v)
+        spn.setValue(value)
+        spn.setFixedWidth(100)
+
+        def sld_to_spin(iv: int):
+            fv = iv / float(scale)
+            spn.blockSignals(True)
+            spn.setValue(fv)
+            spn.blockSignals(False)
+            on_change()
+
+        def spin_to_sld(fv: float):
+            iv = int(round(fv * scale))
+            sld.blockSignals(True)
+            sld.setValue(iv)
+            sld.blockSignals(False)
+            on_change()
+
+        sld.valueChanged.connect(sld_to_spin)
+        spn.valueChanged.connect(spin_to_sld)
+
+        row = QHBoxLayout()
+        row.addWidget(sld, 1)
+        row.addWidget(spn)
+
+        return row, sld, spn
+
+
+    def _on_ring_widgets_changed(self):
+        # Read spins (source of truth)
+        self.ring_pa = float(self.spin_ring_pa.value())
+        self.ring_tilt = float(self.spin_ring_tilt.value())
+        self.ring_outer = float(self.spin_ring_outer.value())
+        self.ring_inner = float(self.spin_ring_inner.value())
+        self._redraw()
+
+
     def get_ring_result(self) -> tuple[float, float, float, float]:
         return (float(self.ring_pa), float(self.ring_tilt),
                 float(self.ring_outer), float(self.ring_inner))
