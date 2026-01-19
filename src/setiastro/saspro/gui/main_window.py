@@ -435,7 +435,23 @@ class AstroSuiteProMainWindow(
                  version: str = "dev", build_timestamp: str = "dev"):
         super().__init__(parent)
         # Prevent white flash: start strictly transparent and force dark bg
-        self.setWindowOpacity(0.0)
+        from PyQt6.QtGui import QGuiApplication
+
+        def _is_wayland() -> bool:
+            try:
+                plat = (QGuiApplication.platformName() or "").lower()
+                if "wayland" in plat:
+                    return True
+            except Exception:
+                pass
+            # fallback env checks
+            return bool(os.environ.get("WAYLAND_DISPLAY")) and not bool(os.environ.get("DISPLAY"))
+
+        # Prevent white flash: start strictly transparent and force dark bg
+        if not _is_wayland():
+            self.setWindowOpacity(0.0)
+        self.setStyleSheet("QMainWindow { background-color: #0F0F19; }")
+
         self.setStyleSheet("QMainWindow { background-color: #0F0F19; }")
         #self._stall = UiStallDetector(self, interval_ms=50, threshold_ms=250)
         #self._stall.start()

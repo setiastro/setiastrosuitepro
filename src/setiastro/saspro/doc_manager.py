@@ -2276,6 +2276,7 @@ class DocManager(QObject):
         bit_depth: str | None = None,
         *,
         bit_depth_override: str | None = None,
+        jpeg_quality: int | None = None,   # <-- NEW
     ):
         """
         Save the given ImageDocument to 'path'.
@@ -2289,7 +2290,8 @@ class DocManager(QObject):
         ext = _normalize_ext(os.path.splitext(path)[1])
         img = doc.image
         meta = doc.metadata or {}
-
+        if jpeg_quality is not None:
+            meta["jpeg_quality"] = int(jpeg_quality)
         # ── MASSIVE DEBUG: show everything we know coming in ───────────────
         debug_dump_metadata_print(meta, context="save_document: BEFORE HEADER PICK")
 
@@ -2359,6 +2361,7 @@ class DocManager(QObject):
             image_meta=meta.get("image_meta"),
             file_meta=meta.get("file_meta"),
             wcs_header=meta.get("wcs_header"),
+            jpeg_quality=jpeg_quality,
         )
 
         # ── Update metadata in memory to match what we just wrote ─────────

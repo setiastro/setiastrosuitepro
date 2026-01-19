@@ -12,6 +12,24 @@ called via the `main()` function when invoked as an entry point.
 import sys
 import os
 
+def _is_wayland_session() -> bool:
+    # Best-effort detection that does NOT require a QApplication instance
+    xdg = (os.environ.get("XDG_SESSION_TYPE") or "").lower()
+    if xdg == "wayland":
+        return True
+    # QT can still run wayland even if XDG_SESSION_TYPE isn't set
+    if os.environ.get("WAYLAND_DISPLAY"):
+        return True
+    return False
+
+def _allow_window_opacity_effects() -> bool:
+    # User override: allow opacity effects even on Wayland if they want
+    if os.environ.get("SASPRO_ALLOW_OPACITY", "").strip().lower() in ("1","true","yes","on"):
+        return True
+    # Default: disable opacity effects on Wayland
+    return not _is_wayland_session()
+
+
 from pathlib import Path
 
 if sys.platform.startswith("win"):
@@ -414,6 +432,9 @@ def _init_splash():
             self.deleteLater()
 
         def start_fade_out(self):
+            if not _allow_window_opacity_effects():
+                self.finish()
+                return
             """Smoothly fade out the splash screen."""
             self._anim = QPropertyAnimation(self, b"windowOpacity")
             self._anim.setDuration(1000)
@@ -424,7 +445,9 @@ def _init_splash():
             self._anim.start()
     
         def start_fade_in(self):
-            """Smoothly fade in the splash screen."""
+            if not _allow_window_opacity_effects():
+                self.setWindowOpacity(1.0)
+                return
             self.setWindowOpacity(0.0)
             self._anim = QPropertyAnimation(self, b"windowOpacity")
             self._anim.setDuration(800)
@@ -882,20 +905,33 @@ def main():
         # --- Smooth Transition: App Fade In + Splash Fade Out ---
         # MITIGATION: Prevent "White Flash" on startup
         # 1. Force a dark background immediately so if opacity lags, it's dark not white
-        win.setStyleSheet("QMainWindow { background-color: #0F0F19; }") 
-        # 2. Ensure native window handle exists so setWindowOpacity works immediately
+        win.setStyleSheet("QMainWindow { background-color: #0F0F19; }")
         win.winId()
-        # 3. Set opacity to 0
-        win.setWindowOpacity(0.0)
-        
+
+        if _allow_window_opacity_effects():
+            win.setWindowOpacity(0.0)
+
         win.show()
-        
-        # 1. Animate Main Window Fade In
-        anim_app = QPropertyAnimation(win, b"windowOpacity")
-        anim_app.setDuration(1200)
-        anim_app.setStartValue(0.0)
-        anim_app.setEndValue(1.0)
-        anim_app.setEasingCurve(QEasingCurve.Type.OutQuad)
+
+        if _allow_window_opacity_effects():
+            anim_app = QPropertyAnimation(win, b"windowOpacity")
+            anim_app.setDuration(1200)
+            anim_app.setStartValue(0.0)
+            anim_app.setEndValue(1.0)
+            anim_app.setEasingCurve(QEasingCurve.Type.OutQuad)
+
+            def _on_fade_in_finished():
+                win.setStyleSheet("")
+                if hasattr(win, "on_fade_in_complete"):
+                    win.on_fade_in_complete()
+
+            anim_app.finished.connect(_on_fade_in_finished)
+            anim_app.start()
+        else:
+            # No opacity animation on Wayland: just show immediately and clear the temp stylesheet
+            win.setStyleSheet("")
+            if hasattr(win, "on_fade_in_complete"):
+                win.on_fade_in_complete()
         
         # Cleanup temp stylesheet upon completion to avoid interfering with ThemeMixin
         def _on_fade_in_finished():

@@ -2007,7 +2007,8 @@ def save_image(img_array,
                is_mono=False,
                image_meta=None,
                file_meta=None,
-               wcs_header=None):   # 🔥 NEW
+               wcs_header=None, 
+               jpeg_quality: int | None = None):  
     """
     Save an image array to a file in the specified format and bit depth.
     - Robust to mis-ordered positional args (header/bit_depth swap).
@@ -2060,9 +2061,14 @@ def save_image(img_array,
 
         if fmt == "jpg":
             img = Image.fromarray((np.clip(img_array, 0, 1) * 255).astype(np.uint8))
-            # You can pass quality=95, subsampling=0 if you want
-            img.save(filename)
-            print(f"Saved 8-bit JPG image to: {filename}")
+
+            q = 95 if jpeg_quality is None else int(jpeg_quality)
+            q = max(1, min(100, q))
+
+            # subsampling=0 keeps best chroma quality; optimize can reduce size a bit
+            img.save(filename, quality=q, subsampling=0, optimize=True)
+
+            print(f"Saved 8-bit JPG image to: {filename} (quality={q})")
             return
 
         # ---------------------------------------------------------------------
