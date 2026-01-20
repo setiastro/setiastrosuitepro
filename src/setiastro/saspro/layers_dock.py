@@ -8,12 +8,133 @@ from PyQt6.QtCore import Qt, pyqtSignal, QByteArray, QTimer
 from PyQt6.QtWidgets import (
     QDockWidget, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
     QListWidget, QListWidgetItem, QAbstractItemView, QSlider, QCheckBox,
-    QPushButton, QFrame, QMessageBox
+    QPushButton, QFrame, QMessageBox,QDialog, QFormLayout, QDoubleSpinBox, QDialogButtonBox
 )
 from PyQt6.QtGui import QIcon, QDragEnterEvent, QDropEvent, QPixmap, QCursor
 
+from setiastro.saspro.layers import LayerTransform
 from setiastro.saspro.dnd_mime import MIME_VIEWSTATE, MIME_MASK
 from setiastro.saspro.layers import composite_stack, ImageLayer, BLEND_MODES
+
+class _TransformDialog(QDialog):
+    """
+    Live-preview transform dialog.
+    - Updates the layer transform as the user edits values (debounced).
+    - Cancel restores original transform.
+    - OK keeps current previewed transform.
+    """
+    def __init__(self, parent=None, *, t: LayerTransform | None = None,
+                 apply_cb=None, cancel_cb=None, debounce_ms: int = 200):
+        super().__init__(parent)
+        self.setWindowTitle("Layer Transform")
+        self.setModal(True)
+
+        self._apply_cb = apply_cb
+        self._cancel_cb = cancel_cb
+
+        self._t0 = t or LayerTransform()
+        # snapshot original so Cancel can revert even if layer mutated live
+        self._orig = LayerTransform(
+            tx=float(self._t0.tx), ty=float(self._t0.ty),
+            rot_deg=float(self._t0.rot_deg),
+            sx=float(self._t0.sx), sy=float(self._t0.sy),
+            pivot_x=self._t0.pivot_x, pivot_y=self._t0.pivot_y,
+        )
+
+        # debounce timer
+        self._tmr = QTimer(self)
+        self._tmr.setSingleShot(True)
+        self._tmr.timeout.connect(self._apply_live)
+        self._debounce_ms = int(debounce_ms)
+
+        lay = QVBoxLayout(self)
+        form = QFormLayout()
+        lay.addLayout(form)
+
+        def mk_spin(minv, maxv, step, dec, val):
+            s = QDoubleSpinBox(self)
+            s.setRange(minv, maxv)
+            s.setSingleStep(step)
+            s.setDecimals(dec)
+            s.setValue(float(val))
+            return s
+
+        self.tx = mk_spin(-100000, 100000, 1.0, 2, self._t0.tx)
+        self.ty = mk_spin(-100000, 100000, 1.0, 2, self._t0.ty)
+        self.rot = mk_spin(-3600, 3600, 0.1, 3, self._t0.rot_deg)
+        self.sx = mk_spin(0.001, 1000.0, 0.01, 4, self._t0.sx)
+        self.sy = mk_spin(0.001, 1000.0, 0.01, 4, self._t0.sy)
+
+        form.addRow("Translate X (px)", self.tx)
+        form.addRow("Translate Y (px)", self.ty)
+        form.addRow("Rotate (deg)", self.rot)
+        form.addRow("Scale X", self.sx)
+        form.addRow("Scale Y", self.sy)
+
+        # Buttons
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel,
+            parent=self
+        )
+        lay.addWidget(btns)
+
+        self.btn_reset = QPushButton("Reset")
+        btns.addButton(self.btn_reset, QDialogButtonBox.ButtonRole.ResetRole)
+
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        self.btn_reset.clicked.connect(self._reset)
+
+        # Any value change triggers debounced live preview
+        for w in (self.tx, self.ty, self.rot, self.sx, self.sy):
+            w.valueChanged.connect(self._schedule_live)
+
+        # Apply initial once so opening dialog matches actual preview
+        self._schedule_live()
+
+    def _reset(self):
+        self.tx.setValue(0.0)
+        self.ty.setValue(0.0)
+        self.rot.setValue(0.0)
+        self.sx.setValue(1.0)
+        self.sy.setValue(1.0)
+        self._schedule_live()
+
+    def _schedule_live(self, *_):
+        # restart debounce
+        self._tmr.start(self._debounce_ms)
+
+    def _current_transform(self) -> LayerTransform:
+        return LayerTransform(
+            tx=float(self.tx.value()),
+            ty=float(self.ty.value()),
+            rot_deg=float(self.rot.value()),
+            sx=float(self.sx.value()),
+            sy=float(self.sy.value()),
+            pivot_x=None,
+            pivot_y=None,
+        )
+
+    def _apply_live(self):
+        if callable(self._apply_cb):
+            self._apply_cb(self._current_transform())
+
+    def reject(self):
+        # Cancel: restore original, then close
+        if callable(self._cancel_cb):
+            self._cancel_cb(self._orig)
+        super().reject()
+
+    def accept(self):
+        # OK: ensure latest values are applied (in case debounce pending)
+        try:
+            if self._tmr.isActive():
+                self._tmr.stop()
+        except Exception:
+            pass
+        self._apply_live()
+        super().accept()
 
 # ---------- Small row widget for a layer ----------
 class _LayerRow(QWidget):
@@ -21,6 +142,7 @@ class _LayerRow(QWidget):
     requestDelete = pyqtSignal()
     moveUp = pyqtSignal()
     moveDown = pyqtSignal()
+    requestTransform = pyqtSignal()
 
     def __init__(self, name: str, mode: str = "Normal", opacity: float = 1.0,
                  visible: bool = True, parent=None, *, is_base: bool = False):
@@ -41,9 +163,10 @@ class _LayerRow(QWidget):
         self.btn_up = QPushButton("↑"); self.btn_up.setFixedWidth(28)
         self.btn_dn = QPushButton("↓"); self.btn_dn.setFixedWidth(28)
         self.btn_x  = QPushButton("✕"); self.btn_x.setFixedWidth(28)
-
+        self.btn_tf = QPushButton("Transform…")
+        self.btn_tf.setFixedWidth(92)
         r1.addWidget(self.chk); r1.addWidget(self.lbl, 1)
-        r1.addWidget(self.mode); r1.addWidget(QLabel("Opacity")); r1.addWidget(self.sld, 1)
+        r1.addWidget(self.mode); r1.addWidget(QLabel("Opacity")); r1.addWidget(self.sld, 1); r1.addWidget(self.btn_tf)
         r1.addWidget(self.btn_up); r1.addWidget(self.btn_dn); r1.addWidget(self.btn_x)
 
         # row 2: mask controls (hidden for base)
@@ -89,7 +212,7 @@ class _LayerRow(QWidget):
 
         if self._is_base:
             # Base row is informational only
-            for w in (self.chk, self.mode, self.sld, self.btn_up, self.btn_dn, self.btn_x,
+            for w in (self.chk, self.mode, self.sld, self.btn_up, self.btn_tf, self.btn_dn, self.btn_x,
                       self.mask_combo, self.mask_invert, self.btn_clear_mask):
                 w.setEnabled(False)
             self.lbl.setStyleSheet("color: palette(mid);")
@@ -104,6 +227,8 @@ class _LayerRow(QWidget):
             self.btn_up.clicked.connect(self.moveUp.emit)
             self.btn_dn.clicked.connect(self.moveDown.emit)
 
+            self.btn_tf.clicked.connect(self.requestTransform.emit)
+
             # Sigmoid controls emit change + only show for Sigmoid mode
             if self.sig_center is not None:
                 self.sig_center.valueChanged.connect(self._emit)
@@ -115,6 +240,17 @@ class _LayerRow(QWidget):
             )
             # Initial visibility
             self._update_extra_controls(self.mode.currentText())
+
+    def setTransformDirty(self, dirty: bool):
+        if hasattr(self, "btn_tf") and self.btn_tf is not None:
+            self.btn_tf.setText("Transform… *" if dirty else "Transform…")
+
+
+    def _on_transform_clicked(self):
+        # Let the dock handle it; row doesn't own the layer object
+        self.changed.emit()  # (no-op, but keeps pattern)
+        # We'll have the dock connect this via a custom signal (see next step).
+
 
     def _on_mode_changed(self, _idx: int):
         # Update which extra controls are visible
@@ -420,7 +556,12 @@ class LayersDock(QDockWidget):
             it.setSizeHint(roww.sizeHint())
             self.list.addItem(it)
             self.list.setItemWidget(it, roww)
-
+            t = getattr(lyr, "transform", None)
+            dirty = False
+            if t is not None:
+                dirty = (abs(t.tx) > 1e-6 or abs(t.ty) > 1e-6 or abs(t.rot_deg) > 1e-6 or
+                        abs(t.sx - 1.0) > 1e-6 or abs(t.sy - 1.0) > 1e-6)
+            roww.setTransformDirty(dirty)
         base_name = getattr(vw, "_effective_title", None)
         base_name = base_name() if callable(base_name) else "Current View"
         base_label = f"Base • {base_name}"
@@ -545,6 +686,58 @@ class LayersDock(QDockWidget):
         roww.requestDelete.connect(lambda: self._delete_row(roww))
         roww.moveUp.connect(lambda: self._move_row(roww, -1))
         roww.moveDown.connect(lambda: self._move_row(roww, +1))
+        roww.requestTransform.connect(lambda rw=roww: self._edit_transform_for_row(rw))
+
+    def _edit_transform_for_row(self, roww: _LayerRow):
+        vw = self.current_view()
+        if not vw:
+            return
+        idx = self._find_row_index(roww)
+        if idx < 0 or idx >= self._layer_count():
+            return
+
+        lyr = vw._layers[idx]
+
+        # Ensure transform exists
+        t = getattr(lyr, "transform", None)
+        if t is None:
+            t = LayerTransform()
+            lyr.transform = t
+
+        # Helper: apply transform + refresh preview
+        def _apply_t(new_t: LayerTransform):
+            lyr.transform = new_t
+            # update the row star immediately (optional)
+            dirty = (abs(new_t.tx) > 1e-6 or abs(new_t.ty) > 1e-6 or abs(new_t.rot_deg) > 1e-6 or
+                    abs(new_t.sx - 1.0) > 1e-6 or abs(new_t.sy - 1.0) > 1e-6)
+            try:
+                roww.setTransformDirty(dirty)
+            except Exception:
+                pass
+
+            # Live preview refresh
+            vw.apply_layer_stack(vw._layers)
+
+        # Helper: cancel revert
+        def _cancel_revert(orig_t: LayerTransform):
+            lyr.transform = orig_t
+            dirty = (abs(orig_t.tx) > 1e-6 or abs(orig_t.ty) > 1e-6 or abs(orig_t.rot_deg) > 1e-6 or
+                    abs(orig_t.sx - 1.0) > 1e-6 or abs(orig_t.sy - 1.0) > 1e-6)
+            try:
+                roww.setTransformDirty(dirty)
+            except Exception:
+                pass
+            vw.apply_layer_stack(vw._layers)
+
+        dlg = _TransformDialog(
+            self,
+            t=lyr.transform,
+            apply_cb=_apply_t,
+            cancel_cb=_cancel_revert,
+            debounce_ms=200,   # tweak 150–300
+        )
+        dlg.exec()
+
 
     def _apply_list_to_view_debounced(self):
         # restart the timer on every slider tick
