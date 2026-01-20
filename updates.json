@@ -1,9 +1,9 @@
 {
-  "version": "1.7.2.post1",
+  "version": "1.7.3.post1",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.7.2/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.7.2/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.7.2/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.7.3/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.7.3/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.7.3/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.7.2 New Tool: Planetary and Surface Projection. Create 3D images with your data for parallel or cross eyed viewing, wiggle, 3D red cyan glasses, or a full 3D model!  Planetary Stacker now accepts FITS format. Improved planetary and disc tracking."
+  "notes": "Seti Astro Suite Pro V1.7.3 New Galaxy Polar Projection in the 3D projection tool.  New zoom features for stereo viewing and pushing to a new document. New tranformation option in layers: translate, rotate, and scale your layer to do manual alignment of layers. New mask options when you right click an image. Jpeg quality options when saving. Multiple bug fixes"
 }
