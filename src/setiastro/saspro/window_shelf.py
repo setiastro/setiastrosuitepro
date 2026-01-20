@@ -133,6 +133,10 @@ class WindowShelf(QDockWidget):
                 QTimer.singleShot(30, apply_rect)
                 QTimer.singleShot(120, apply_rect)
 
+            mdi = sub.mdiArea()
+            if mdi is not None:
+                mdi.setActiveSubWindow(sub)
+
             sub.raise_()
             sub.activateWindow()
         finally:
@@ -163,6 +167,8 @@ class WindowShelf(QDockWidget):
         self._saved_state.clear()
         self.hide()
 
+from PyQt6.QtWidgets import QMdiArea
+
 class MinimizeInterceptor(QObject):
     """Redirect native minimize → shelf entry, capturing geometry BEFORE hiding."""
     def __init__(self, shelf: WindowShelf, parent: QWidget | None = None):
@@ -172,7 +178,6 @@ class MinimizeInterceptor(QObject):
     def eventFilter(self, obj, ev):
         if isinstance(obj, QMdiSubWindow) and ev.type() == QEvent.Type.WindowStateChange:
             if obj.windowState() & Qt.WindowState.WindowMinimized:
-                # Capture state FIRST, then cancel minimize and hide.
                 self.shelf.pre_capture_state(obj)
                 QTimer.singleShot(0, lambda o=obj: self._redirect(o))
                 return True
@@ -183,3 +188,59 @@ class MinimizeInterceptor(QObject):
         sub.setWindowState(sub.windowState() & ~Qt.WindowState.WindowMinimized)
         sub.hide()
         self.shelf.add_entry(sub)
+
+        # NEW: pick a new active subwindow (so the hidden one isn't "active")
+        QTimer.singleShot(0, lambda s=sub: self._activate_next_visible(s))
+
+    def _activate_next_visible(self, hidden_sub: QMdiSubWindow):
+        mdi = hidden_sub.mdiArea()
+        if mdi is None:
+            return
+
+        # Prefer an order that feels stable to users
+        try:
+            subs = mdi.subWindowList(QMdiArea.WindowOrder.CreationOrder)
+        except Exception:
+            subs = mdi.subWindowList()
+
+        # Only candidates that can actually be "active"
+        cand = []
+        for sw in subs:
+            if sw is None or sw is hidden_sub:
+                continue
+            # hidden subwindows won't accept activation
+            if not sw.isVisible():
+                continue
+            # sanity: ignore minimized (shouldn't happen since you intercept)
+            if sw.windowState() & Qt.WindowState.WindowMinimized:
+                continue
+            cand.append(sw)
+
+        if not cand:
+            # Nothing else to activate
+            try:
+                mdi.setActiveSubWindow(None)  # may be ignored on some platforms
+            except Exception:
+                pass
+            return
+
+        # Pick "next" relative to where the hidden window was in the list
+        try:
+            idx = subs.index(hidden_sub)
+        except Exception:
+            idx = -1
+
+        # Rotate forward to the next candidate
+        picked = None
+        if idx >= 0:
+            for off in range(1, len(subs) + 1):
+                sw = subs[(idx + off) % len(subs)]
+                if sw in cand:
+                    picked = sw
+                    break
+        if picked is None:
+            picked = cand[0]
+
+        mdi.setActiveSubWindow(picked)
+        picked.raise_()
+        picked.widget().setFocus(Qt.FocusReason.OtherFocusReason)
