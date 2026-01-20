@@ -141,10 +141,21 @@ def autostretch(
     sigma: float = _DEFAULT_SIGMA,
     *,
     use_24bit: bool | None = None,
+    use_16bit: bool | None = None,   # <-- legacy compat (ignored / mapped)
+    **_ignored_kwargs,               # <-- swallow any other legacy flags safely
 ) -> np.ndarray:
 
     if img is None:
         return None
+
+    # ---- legacy compat -------------------------------------------------
+    # Old callers may pass use_16bit. We no longer support 16-bit preview output.
+    # If they pass it, we just treat it as "use higher precision display", i.e. 24-bit.
+    if use_16bit is not None:
+        # If caller explicitly asked for 16-bit, we interpret that as "high precision".
+        # Only override if caller didn't explicitly pass use_24bit.
+        if use_24bit is None:
+            use_24bit = True
 
     # Optional auto-read from QSettings if caller didn’t pass a flag.
     if use_24bit is None:
