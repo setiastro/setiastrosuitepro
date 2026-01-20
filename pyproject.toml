@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "setiastrosuitepro"
-version = "1.7.3.post1"
+version = "1.7.3.post2"
 description = "Seti Astro Suite Pro - Advanced astrophotography toolkit for image calibration, stacking, registration, photometry, and visualization"
 authors = ["Franklin Marek <info@setiastro.com>"]
 readme = "README.md"
@@ -94,7 +94,7 @@ build-backend = "poetry.core.masonry.api"
 # Optional extras can be added here if needed in the future
 
 [tool.poetry.scripts]
-setiastrosuitepro = "setiastro.saspro:main"
+setiastrosuitepro = "setiastro.saspro.__main__:main"
 saspro-export-requirements = "ops.export_requirements:main"
 saspro-write-build-info = "ops.write_build_info:main"
 saspro-prime-matplotlib-cache = "ops.prime_matplotlib_cache:main"
