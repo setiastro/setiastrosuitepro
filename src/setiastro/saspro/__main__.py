@@ -933,14 +933,6 @@ def main():
             if hasattr(win, "on_fade_in_complete"):
                 win.on_fade_in_complete()
         
-        # Cleanup temp stylesheet upon completion to avoid interfering with ThemeMixin
-        def _on_fade_in_finished():
-            win.setStyleSheet("")
-            if hasattr(win, "on_fade_in_complete"):
-                win.on_fade_in_complete()
-            
-        anim_app.finished.connect(_on_fade_in_finished)
-        anim_app.start()
 
         # Start background Numba warmup after UI is visible
         try:
