@@ -6037,8 +6037,8 @@ Legen Sie ihn in Einstellungen → ASTAP-Programmdatei fest.</translation>
       <translation>Löschen</translation>
     </message>
     <message>
-      <source>Compute autostretch on a 16-bit histogram (smoother gradients).</source>
-      <translation>Autostretch auf einem 16-Bit-Histogramm berechnen (glattere Gradienten).</translation>
+      <source>Compute autostretch on a 24-bit histogram (smoother gradients).</source>
+      <translation>Autostretch auf einem 24-Bit-Histogramm berechnen (glattere Gradienten).</translation>
     </message>
     <message>
       <source>Cosmic Clarity folder:</source>
@@ -6069,8 +6069,8 @@ Legen Sie ihn in Einstellungen → ASTAP-Programmdatei fest.</translation>
       <translation>GraXpert-Ausführbare Datei:</translation>
     </message>
     <message>
-      <source>High-quality autostretch (16-bit; better gradients)</source>
-      <translation>Hochwertiger Autostretch (16-Bit; bessere Gradienten)</translation>
+      <source>High-quality autostretch (24-bit; better gradients)</source>
+      <translation>Hochwertiger Autostretch (24-Bit; bessere Gradienten)</translation>
     </message>
     <message>
       <source>Italian</source>

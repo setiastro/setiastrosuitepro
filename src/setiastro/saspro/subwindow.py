@@ -589,7 +589,7 @@ class ImageSubWindow(QWidget):
         # Context menu + shortcuts
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_ctx_menu)
-        QShortcut(QKeySequence("F2"), self, activated=self._rename_view)
+        QShortcut(QKeySequence("F2"), self, activated=self._rename_document)
         QShortcut(QKeySequence("F3"), self, activated=self._rename_document)
         #QShortcut(QKeySequence("A"), self, activated=self.toggle_autostretch)
         QShortcut(QKeySequence("Ctrl+Space"), self, activated=self.toggle_autostretch)
@@ -1726,8 +1726,8 @@ class ImageSubWindow(QWidget):
 
     def _show_ctx_menu(self, pos):
         menu = QMenu(self)
-        a_view = menu.addAction(self.tr("Rename View… (F2)"))
-        a_doc  = menu.addAction(self.tr("Rename Document…  (F3)"))
+        #a_view = menu.addAction(self.tr("Rename View… (F2)"))
+        a_doc  = menu.addAction(self.tr("Rename Document…  (F2)"))
         menu.addSeparator()
         a_min  = menu.addAction(self.tr("Send to Shelf"))
         a_clear = menu.addAction(self.tr("Clear View Name (use doc name)"))
@@ -1763,9 +1763,7 @@ class ImageSubWindow(QWidget):
 
         act = menu.exec(self.mapToGlobal(pos))
 
-        if act == a_view:
-            self._rename_view()
-        elif act == a_doc:
+        if act == a_doc:
             self._rename_document()
         elif act == a_min:
             self._send_to_shelf()
@@ -1801,39 +1799,34 @@ class ImageSubWindow(QWidget):
             sub.hide()
             mw.window_shelf.add_entry(sub)
 
-
     def _rename_view(self):
-        current = self._view_title_override or self.document.display_name()
-        new, ok = QInputDialog.getText(self, self.tr("Rename View"), self.tr("New view name:"), text=current)
-        if ok and new.strip():
-            self._view_title_override = new.strip()
-            self._sync_host_title()  # calls _rebuild_title → emits viewTitleChanged
+        """LEGACY: View rename removed. Keep as shim so older calls don't break."""
+        return self._rename_document()
 
-            # optional: directly ping layers dock (defensive)
-            mw = self._find_main_window()
-            if mw and hasattr(mw, "layers_dock") and mw.layers_dock:
-                try:
-                    mw.layers_dock._refresh_titles_only()
-                except Exception:
-                    pass
 
     def _rename_document(self):
         current = self.document.display_name()
-        new, ok = QInputDialog.getText(self, self.tr("Rename Document"), self.tr("New document name:"), text=current)
-        if ok and new.strip():
-            # store on the doc so Explorer + other views update too
-            self.document.metadata["display_name"] = new.strip()
-            self.document.changed.emit()  # triggers all listeners
-            # If this view had an override equal to the old name, drop it
-            if self._view_title_override and self._view_title_override == current:
-                self._view_title_override = None
-            self._sync_host_title()
-            mw = self._find_main_window()
-            if mw and hasattr(mw, "layers_dock") and mw.layers_dock:
-                try:
-                    mw.layers_dock._refresh_titles_only()
-                except Exception:
-                    pass
+        new, ok = QInputDialog.getText(
+            self, self.tr("Rename Document"), self.tr("New name:"), text=current
+        )
+        if not (ok and new.strip()):
+            return
+
+        new_name = new.strip()
+        if new_name == current:
+            return
+
+        self.document.metadata["display_name"] = new_name
+        self.document.changed.emit()  # everyone listening updates
+        self._sync_host_title()       # update this subwindow title immediately
+
+        mw = self._find_main_window()
+        if mw and hasattr(mw, "layers_dock") and mw.layers_dock:
+            try:
+                mw.layers_dock._refresh_titles_only()
+            except Exception:
+                pass
+
 
     def set_scale(self, s: float):
         # Programmatic scale changes must schedule final smooth redraw
@@ -2528,7 +2521,7 @@ class ImageSubWindow(QWidget):
                 target_median=self.autostretch_target,
                 sigma=self.autostretch_sigma,
                 linked=(not is_mono and self._autostretch_linked),
-                use_16bit=None,
+                use_24bit=None,
             )
         else:
             vis = arr

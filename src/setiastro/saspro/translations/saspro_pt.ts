@@ -6505,7 +6505,7 @@ Defina-o em Preferências → Executável do ASTAP.</translation>
       <translation>Limpar</translation>
     </message>
     <message>
-      <source>Compute autostretch on a 16-bit histogram (smoother gradients).</source>
+      <source>Compute autostretch on a 24-bit histogram (smoother gradients).</source>
       <translation>Calcular autostretch em um histograma de 16 bits (gradientes mais suaves).</translation>
     </message>
     <message>
@@ -6537,7 +6537,7 @@ Defina-o em Preferências → Executável do ASTAP.</translation>
       <translation>Executável GraXpert:</translation>
     </message>
     <message>
-      <source>High-quality autostretch (16-bit; better gradients)</source>
+      <source>High-quality autostretch (24-bit; better gradients)</source>
       <translation>Autostretch de alta qualidade (16 bits; melhores gradientes)</translation>
     </message>
     <message>

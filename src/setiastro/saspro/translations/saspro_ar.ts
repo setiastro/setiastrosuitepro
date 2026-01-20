@@ -6463,7 +6463,7 @@ Set it in Preferences → ASTAP executable.</source>
       <translation>مسح</translation>
     </message>
     <message>
-      <source>Compute autostretch on a 16-bit histogram (smoother gradients).</source>
+      <source>Compute autostretch on a 24-bit histogram (smoother gradients).</source>
       <translation>حساب التمدد التلقائي على هيستوجرام 16-بت (تدرجات أكثر سلاسة).</translation>
     </message>
     <message>
@@ -6495,7 +6495,7 @@ Set it in Preferences → ASTAP executable.</source>
       <translation>ملف GraXpert التنفيذي:</translation>
     </message>
     <message>
-      <source>High-quality autostretch (16-bit; better gradients)</source>
+      <source>High-quality autostretch (24-bit; better gradients)</source>
       <translation>تمدد تلقائي عالي الجودة (16-بت؛ تدرجات أفضل)</translation>
     </message>
     <message>

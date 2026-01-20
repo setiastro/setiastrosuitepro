@@ -6793,7 +6793,7 @@ Set it in Preferences → ASTAP executable.</source>
       <translation>साफ़ करें</translation>
     </message>
     <message>
-      <source>Compute autostretch on a 16-bit histogram (smoother gradients).</source>
+      <source>Compute autostretch on a 24-bit histogram (smoother gradients).</source>
       <translation>16-बिट हिस्टोग्राम पर ऑटोस्ट्रेच की गणना करें (सुचारू ग्रेडिएंट्स)।</translation>
     </message>
     <message>
@@ -6825,7 +6825,7 @@ Set it in Preferences → ASTAP executable.</source>
       <translation>GraXpert निष्पादन योग्य:</translation>
     </message>
     <message>
-      <source>High-quality autostretch (16-bit; better gradients)</source>
+      <source>High-quality autostretch (24-bit; better gradients)</source>
       <translation>उच्च गुणवत्ता वाला ऑटोस्ट्रेच (16-बिट; बेहतर ग्रेडिएंट्स)</translation>
     </message>
     <message>

@@ -6805,7 +6805,7 @@ Set it in Preferences → ASTAP executable.</source>
       <translation>清除</translation>
     </message>
     <message>
-      <source>Compute autostretch on a 16-bit histogram (smoother gradients).</source>
+      <source>Compute autostretch on a 24-bit histogram (smoother gradients).</source>
       <translation>在 16 位直方图上计算自动拉伸（更平滑的渐变）。</translation>
     </message>
     <message>
@@ -6837,7 +6837,7 @@ Set it in Preferences → ASTAP executable.</source>
       <translation>GraXpert 可执行文件：</translation>
     </message>
     <message>
-      <source>High-quality autostretch (16-bit; better gradients)</source>
+      <source>High-quality autostretch (24-bit; better gradients)</source>
       <translation>高质量自动拉伸（16 位；更好的渐变）</translation>
     </message>
     <message>

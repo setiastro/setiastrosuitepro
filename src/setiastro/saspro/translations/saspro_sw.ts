@@ -6757,7 +6757,7 @@ Iweke katika Mapendeleo → ASTAP inayoweza kutekelezwa.</translation>
       <translation>Futa</translation>
     </message>
     <message>
-      <source>Compute autostretch on a 16-bit histogram (smoother gradients).</source>
+      <source>Compute autostretch on a 24-bit histogram (smoother gradients).</source>
       <translation>Kokotoa autostretch kwenye histogram ya bit 16 (gradient laini zaidi).</translation>
     </message>
     <message>
@@ -6789,7 +6789,7 @@ Iweke katika Mapendeleo → ASTAP inayoweza kutekelezwa.</translation>
       <translation>GraXpert inayoweza kutekelezwa:</translation>
     </message>
     <message>
-      <source>High-quality autostretch (16-bit; better gradients)</source>
+      <source>High-quality autostretch (24-bit; better gradients)</source>
       <translation>Autostretch ya hali ya juu (bit 16; gradient bora zaidi)</translation>
     </message>
     <message>

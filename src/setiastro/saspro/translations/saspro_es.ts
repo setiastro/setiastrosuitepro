@@ -9236,7 +9236,7 @@ Configúrelo en Preferencias → Ejecutable ASTAP.</translation>
       <translation>Limpiar</translation>
     </message>
     <message>
-      <source>Compute autostretch on a 16-bit histogram (smoother gradients).</source>
+      <source>Compute autostretch on a 24-bit histogram (smoother gradients).</source>
       <translation>Calcular auto-estiramiento en histograma de 16-bit (gradientes más suaves).</translation>
     </message>
     <message>
@@ -9458,7 +9458,7 @@ Configúrelo en Preferencias → Ejecutable ASTAP.</translation>
       <translation>Alta</translation>
     </message>
     <message>
-      <source>High-quality autostretch (16-bit; better gradients)</source>
+      <source>High-quality autostretch (24-bit; better gradients)</source>
       <translation>Auto-estiramiento de alta calidad (16-bit; mejores gradientes)</translation>
     </message>
     <message>

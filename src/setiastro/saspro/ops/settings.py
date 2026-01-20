@@ -96,8 +96,8 @@ class SettingsDialog(QDialog):
         self.sp_min_alt = QDoubleSpinBox(); self.sp_min_alt.setRange(0.0, 90.0);  self.sp_min_alt.setDecimals(1)
         self.sp_obj_limit = QSpinBox(); self.sp_obj_limit.setRange(1, 1000)
 
-        self.chk_autostretch_16bit = QCheckBox(self.tr("High-quality autostretch (16-bit; better gradients)"))
-        self.chk_autostretch_16bit.setToolTip(self.tr("Compute autostretch on a 16-bit histogram (smoother gradients)."))
+        self.chk_autostretch_24bit = QCheckBox(self.tr("High-quality autostretch (24-bit; better gradients)"))
+        self.chk_autostretch_24bit.setToolTip(self.tr("Compute autostretch on a 24-bit histogram (smoother gradients)."))
 
         self.slider_bg_opacity = QSlider(Qt.Orientation.Horizontal)
         self.slider_bg_opacity.setRange(0, 100)
@@ -178,7 +178,7 @@ class SettingsDialog(QDialog):
 
         # ---- Display (moved under Theme) ----
         left_col.addRow(QLabel(self.tr("<b>Display</b>")))
-        left_col.addRow(self.chk_autostretch_16bit)
+        left_col.addRow(self.chk_autostretch_24bit)
         left_col.addRow(self.tr("Background Opacity:"), w_bg_opacity)
         left_col.addRow(self.tr("Background Image:"), w_bg_image)
 
@@ -296,8 +296,8 @@ class SettingsDialog(QDialog):
         self.sp_obj_limit.setValue(self.settings.value("object_limit", 100, type=int))
         
         # Display
-        self.chk_autostretch_16bit.setChecked(
-            self.settings.value("display/autostretch_16bit", True, type=bool)
+        self.chk_autostretch_24bit.setChecked(
+            self.settings.value("display/autostretch_24bit", True, type=bool)
         )
         
         current_opacity = self.settings.value("display/bg_opacity", 50, type=int)
@@ -464,7 +464,7 @@ class SettingsDialog(QDialog):
         # Updates + Display
         self.settings.setValue("updates/check_on_startup", self.chk_updates_startup.isChecked())
         self.settings.setValue("updates/url", self.le_updates_url.text().strip())
-        self.settings.setValue("display/autostretch_16bit", self.chk_autostretch_16bit.isChecked())
+        self.settings.setValue("display/autostretch_24bit", self.chk_autostretch_24bit.isChecked())
 
         # Custom background: persist the chosen path (empty -> remove)
         bg_path = (self.le_bg_path.text() or "").strip()
