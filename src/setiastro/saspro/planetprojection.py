@@ -2691,12 +2691,19 @@ class PlanetDiskAdjustDialog(QDialog):
 
             # ONLY Saturn gets inner/outer
             if self.overlay_mode == "saturn":
-                row, self.sld_ring_outer, self.spin_ring_outer = self._make_slider_spin_row(...)
+                row, self.sld_ring_outer, self.spin_ring_outer = self._make_slider_spin_row(
+                    min_v=1.0, max_v=4.0, step_v=0.05,
+                    value=self.ring_outer, decimals=2,
+                    on_change=self._on_ring_widgets_changed,
+                )
                 rings_form.addRow("Outer factor:", row)
 
-                row, self.sld_ring_inner, self.spin_ring_inner = self._make_slider_spin_row(...)
+                row, self.sld_ring_inner, self.spin_ring_inner = self._make_slider_spin_row(
+                    min_v=0.2, max_v=3.5, step_v=0.05,
+                    value=self.ring_inner, decimals=2,
+                    on_change=self._on_ring_widgets_changed,
+                )
                 rings_form.addRow("Inner factor:", row)
-
             outer.addWidget(rings_box)
 
         if self.overlay_mode == "saturn":
