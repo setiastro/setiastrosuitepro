@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QFormLayout, QDoubleSpinBox, QSpinBox, QCheckBox, QComboBox, QMessageBox,
     QSizePolicy, QFileDialog, QLineEdit, QSlider, QWidget
 )
+from PyQt6 import sip
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 
 import cv2
@@ -1191,6 +1192,55 @@ def export_pseudo_surface_html(
         out_path = os.path.expanduser("~/pseudo_surface.html")
     return html, out_path
 
+def deproject_galaxy_topdown_u8(
+    roi01: np.ndarray,  # float32 [0..1], (H,W,3)
+    cx0: float, cy0: float,
+    rpx: float,
+    pa_deg: float,
+    tilt: float,        # b/a
+    out_size: int = 800
+) -> np.ndarray:
+    """
+    Returns RGB uint8 top-down view, outside-disk black.
+    """
+    import numpy as np
+    import cv2
+
+    H, W = roi01.shape[:2]
+    out = int(max(64, out_size))
+
+    # grid in disk plane [-1,1]
+    yy, xx = np.mgrid[0:out, 0:out].astype(np.float32)
+    u = (xx - (out - 1) * 0.5) / ((out - 1) * 0.5)
+    v = (yy - (out - 1) * 0.5) / ((out - 1) * 0.5)
+    rho = np.sqrt(u*u + v*v)
+
+    # ellipse squash (inclination): y compressed by tilt
+    tilt = float(np.clip(tilt, 0.02, 1.0))
+    xe = u
+    ye = v * tilt
+
+    # rotate by PA
+    a = np.deg2rad(pa_deg)
+    ca, sa = float(np.cos(a)), float(np.sin(a))
+    xr = xe * ca - ye * sa
+    yr = xe * sa + ye * ca
+
+    # scale to pixels + translate to ROI coords
+    mapx = (cx0 + xr * rpx).astype(np.float32)
+    mapy = (cy0 + yr * rpx).astype(np.float32)
+
+    # sample
+    img = np.clip(roi01, 0.0, 1.0)
+    top01 = cv2.remap(img, mapx, mapy, interpolation=cv2.INTER_LINEAR,
+                      borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+
+    # mask outside disk-plane circle
+    top01[rho > 1.0] = 0.0
+
+    return np.clip(top01 * 255.0, 0, 255).astype(np.uint8)
+
+
 # -----------------------------
 # UI dialog
 # -----------------------------
@@ -1268,6 +1318,7 @@ class PlanetProjectionDialog(QDialog):
             "Wiggle stereo (toggle L/R)",
             "Anaglyph (Red/Cyan 3D Glasses)",
             "Interactive 3D Sphere (HTML)",
+            "Galaxy Polar View (Top-Down)",
         ])
         form.addRow("Output:", self.cmb_mode)
 
@@ -1276,6 +1327,7 @@ class PlanetProjectionDialog(QDialog):
             "Normal (Sphere only)",
             "Saturn (Sphere + Rings)",
             "Pseudo surface (Height from brightness)",
+            "Galaxy (Disk deprojection)",
         ])
         form.addRow("Planet type:", self.cmb_planet_type)
 
@@ -1471,22 +1523,33 @@ class PlanetProjectionDialog(QDialog):
         btns.addWidget(self.btn_close)
         outer.addLayout(btns)
 
+        def _set_form_row_visible(form_layout: QFormLayout, field_widget: QWidget, visible: bool):
+            """Hide/show the entire row in a QFormLayout that contains field_widget."""
+            for r in range(form_layout.rowCount()):
+                item = form_layout.itemAt(r, QFormLayout.ItemRole.FieldRole)
+                if item and item.widget() is field_widget:
+                    label_item = form_layout.itemAt(r, QFormLayout.ItemRole.LabelRole)
+                    if label_item and label_item.widget():
+                        label_item.widget().setVisible(visible)
+                    field_widget.setVisible(visible)
+                    return
+
+
 
         def _update_type_enable():
             t = self.cmb_planet_type.currentIndex()
             is_sat = (t == 1)
+            is_gal = (t == 3)
             is_pseudo = (t == 2)
 
-            rings_box.setVisible(is_sat)
+            rings_box.setVisible(is_sat or is_gal)
             ps_box.setVisible(is_pseudo)
-            self.adjustSize()  # shrink/grow dialog to fit
 
             # These are “planet disk” concepts; don’t use for pseudo surface
             self.chk_auto_roi.setEnabled(not is_pseudo)
             self.spin_pad.setEnabled(not is_pseudo)
             self.spin_min.setEnabled(not is_pseudo)
             self.spin_max.setEnabled(not is_pseudo)
-
             if hasattr(self, "chk_adjust_disk"):
                 self.chk_adjust_disk.setEnabled(not is_pseudo)
 
@@ -1500,24 +1563,27 @@ class PlanetProjectionDialog(QDialog):
             self.sld_bg_depth.setEnabled(not is_pseudo)
             self.lbl_bg_depth.setEnabled(not is_pseudo)
 
-            # HTML sphere output doesn't apply to pseudo surface
-            if is_pseudo:
-                # disable / remove the HTML mode
-                # easiest: just prevent generation in mode==4 below
-                pass
+            # --- Galaxy vs Saturn UI tweaks inside rings_box ---
+            if is_gal:
+                rings_box.setTitle("Galaxy disk")
+                self.chk_rings.setVisible(False)  # only meaningful for Saturn
+                _set_form_row_visible(rings_form, self.spin_ring_outer, False)
+                _set_form_row_visible(rings_form, self.spin_ring_inner, False)
+
+                # force output to Galaxy Polar View (optional, but prevents confusion)
+                if self.cmb_mode.currentIndex() != 5:
+                    self.cmb_mode.setCurrentIndex(5)
+            else:
+                rings_box.setTitle("Saturn rings")
+                self.chk_rings.setVisible(True)
+                _set_form_row_visible(rings_form, self.spin_ring_outer, True)
+                _set_form_row_visible(rings_form, self.spin_ring_inner, True)
+
+            self.adjustSize()  # shrink/grow dialog to fit
+
 
         self.cmb_planet_type.currentIndexChanged.connect(_update_type_enable)
         _update_type_enable()
-        def _set_form_row_visible(form_layout: QFormLayout, field_widget: QWidget, visible: bool):
-            """Hide/show the entire row in a QFormLayout that contains field_widget."""
-            for r in range(form_layout.rowCount()):
-                item = form_layout.itemAt(r, QFormLayout.ItemRole.FieldRole)
-                if item and item.widget() is field_widget:
-                    label_item = form_layout.itemAt(r, QFormLayout.ItemRole.LabelRole)
-                    if label_item and label_item.widget():
-                        label_item.widget().setVisible(visible)
-                    field_widget.setVisible(visible)
-                    return
 
         self.btn_generate.clicked.connect(self._generate)
         self.btn_stop.clicked.connect(self._stop_wiggle)
@@ -1646,6 +1712,37 @@ class PlanetProjectionDialog(QDialog):
             self._open_preview_window()
         self._preview_win.set_frame_u8(rgb8)
 
+    def _compose_side_by_side_u8(self, left8: np.ndarray, right8: np.ndarray, *, swap_eyes: bool, gap_px: int) -> np.ndarray:
+        L = np.asarray(left8)
+        R = np.asarray(right8)
+
+        if L.dtype != np.uint8:
+            L = np.clip(L, 0, 255).astype(np.uint8)
+        if R.dtype != np.uint8:
+            R = np.clip(R, 0, 255).astype(np.uint8)
+
+        if L.ndim == 2:
+            L = np.stack([L, L, L], axis=2)
+        if R.ndim == 2:
+            R = np.stack([R, R, R], axis=2)
+
+        if L.shape[2] > 3:
+            L = L[..., :3]
+        if R.shape[2] > 3:
+            R = R[..., :3]
+
+        if swap_eyes:
+            L, R = R, L
+
+        gap = int(max(0, gap_px))
+        H = max(L.shape[0], R.shape[0])
+        W = L.shape[1] + gap + R.shape[1]
+
+        canvas = np.zeros((H, W, 3), dtype=np.uint8)
+        canvas[:L.shape[0], :L.shape[1]] = L
+        canvas[:R.shape[0], L.shape[1] + gap:L.shape[1] + gap + R.shape[1]] = R
+        return canvas
+
 
     def _bg_depth_internal_signed(self) -> float:
         """
@@ -1746,28 +1843,42 @@ class PlanetProjectionDialog(QDialog):
             and getattr(self, "chk_adjust_disk", None) is not None
             and self.chk_adjust_disk.isChecked()
         ):
-            is_saturn = (self.cmb_planet_type.currentIndex() == 1)
-            rings_on = bool(is_saturn and getattr(self, "chk_rings", None) is not None and self.chk_rings.isChecked())
+            is_saturn = (ptype == 1)
+            rings_on = bool(
+                is_saturn
+                and getattr(self, "chk_rings", None) is not None
+                and self.chk_rings.isChecked()
+            )
+            is_galaxy = (ptype == 3)
+            overlay_mode = "none"
+            if is_galaxy:
+                overlay_mode = "galaxy"
+            elif is_saturn and rings_on:
+                overlay_mode = "saturn"
 
             dlg = PlanetDiskAdjustDialog(
                 self, img[..., :3], cx, cy, r,
-                show_rings=rings_on,
-                ring_pa=float(self.spin_ring_pa.value()) if hasattr(self, "spin_ring_pa") else 0.0,
-                ring_tilt=float(self.spin_ring_tilt.value()) if hasattr(self, "spin_ring_tilt") else 0.35,
-                ring_outer=float(self.spin_ring_outer.value()) if hasattr(self, "spin_ring_outer") else 2.2,
-                ring_inner=float(self.spin_ring_inner.value()) if hasattr(self, "spin_ring_inner") else 1.25,
+                overlay_mode=overlay_mode,
+                ring_pa=float(self.spin_ring_pa.value()),
+                ring_tilt=float(self.spin_ring_tilt.value()),
+                ring_outer=float(self.spin_ring_outer.value()),
+                ring_inner=float(self.spin_ring_inner.value()),
             )
 
             if dlg.exec() != QDialog.DialogCode.Accepted:
                 return
-
             cx, cy, r = dlg.get_result()
-            if rings_on:
+            self._disk_last = (float(cx), float(cy), float(r))
+            self._disk_last_was_user = True
+
+            if overlay_mode in ("galaxy", "saturn"):
                 pa, tilt, kout, kin = dlg.get_ring_result()
                 self.spin_ring_pa.setValue(pa)
                 self.spin_ring_tilt.setValue(tilt)
-                self.spin_ring_outer.setValue(kout)
-                self.spin_ring_inner.setValue(kin)
+                if overlay_mode == "saturn":
+                    self.spin_ring_outer.setValue(kout)
+                    self.spin_ring_inner.setValue(kin)
+
 
             self._disk_last = (float(cx), float(cy), float(r))
             self._disk_last_was_user = True
@@ -1909,6 +2020,42 @@ class PlanetProjectionDialog(QDialog):
             return x.astype(np.float32, copy=False)
 
         theta = float(self.spin_theta.value())
+
+        # ---- GALAXY TOP-DOWN (early exit) ----
+        is_galaxy = (ptype == 3) or (mode == 5)  # planet_type==Galaxy OR output==Galaxy Polar View
+
+        if is_galaxy:
+            # Galaxy wants the ROI disk params (cx0, cy0, r) + PA/tilt
+            roi01 = to01(roi)
+
+            pa = float(self.spin_ring_pa.value())      # reuse ring PA widget as galaxy PA
+            tilt = float(self.spin_ring_tilt.value())  # reuse ring tilt widget as galaxy b/a
+
+            # choose output size: use ROI size or clamp to something reasonable
+            out_size = int(max(256, min(2000, max(roi.shape[0], roi.shape[1]))))
+
+            try:
+                top8 = deproject_galaxy_topdown_u8(
+                    roi01,
+                    cx0=float(cx0), cy0=float(cy0),
+                    rpx=float(r),
+                    pa_deg=pa,
+                    tilt=tilt,
+                    out_size=out_size,
+                )
+            except Exception as e:
+                QMessageBox.warning(self, "Galaxy Polar View", f"Failed to deproject galaxy:\n{e}")
+                return
+
+            # push single-frame output
+            self._left = None
+            self._right = None
+            self._wiggle_frames = None
+            self._wiggle_state = False
+
+            self._last_preview_u8 = top8
+            self._push_preview_u8(top8)
+            return
 
         # ---- BODY (sphere reprojection) ----
         interp = cv2.INTER_LANCZOS4
@@ -2217,30 +2364,25 @@ class PlanetProjectionDialog(QDialog):
         if self._left is None or self._right is None:
             return
 
-        L = self._left
-        R = self._right
-        if cross_eye:
-            L, R = R, L  # swap
+        # Ensure preview exists (same logic as _push_preview_u8)
+        if self._preview_win is None or not self._preview_win.isVisible():
+            self._open_preview_window()
 
-        # compose side-by-side with small gap
-        gap = 10
-        H = max(L.shape[0], R.shape[0])
-        W = L.shape[1] + gap + R.shape[1]
+        # IMPORTANT: pass the RAW L and R (do NOT pre-compose into one canvas)
+        # swap_eyes handles parallel vs cross-eye ordering inside the preview window
+        self._preview_win.set_stereo_u8(
+            self._left,
+            self._right,
+            swap_eyes=bool(cross_eye),
+            gap_px=16
+        )
 
-        # upcast for display composition
-        if L.dtype != np.uint8:
-            L8 = _to_u8_preview(L)
-            R8 = _to_u8_preview(R)
-        else:
-            L8 = L
-            R8 = R
-
-        canvas = np.zeros((H, W, 3), dtype=np.uint8)
-        canvas[:L8.shape[0], :L8.shape[1]] = L8
-        canvas[:R8.shape[0], L8.shape[1] + gap:L8.shape[1] + gap + R8.shape[1]] = R8
-
-
-        self._push_preview_u8(canvas)
+        # keep "last still" meaningful for Save Still…
+        # If you want Save Still to save the side-by-side, ask preview for its composed canvas,
+        # but for now, we’ll store a simple composed copy here:
+        self._last_preview_u8 = self._compose_side_by_side_u8(
+            self._left, self._right, swap_eyes=bool(cross_eye), gap_px=16
+        )
 
     def _choose_bg(self):
         fn, _ = QFileDialog.getOpenFileName(
@@ -2445,7 +2587,7 @@ class PlanetDiskAdjustDialog(QDialog):
     Returns cx, cy, r in FULL IMAGE pixel coords.
     """
     def __init__(self, parent, img_rgb: np.ndarray, cx: float, cy: float, r: float,
-                *, show_rings: bool = False,
+                *, show_rings: bool = False, overlay_mode: str = "none",
                 ring_pa: float = 0.0, ring_tilt: float = 0.35,
                 ring_outer: float = 2.2, ring_inner: float = 1.25):
         super().__init__(parent)
@@ -2453,7 +2595,8 @@ class PlanetDiskAdjustDialog(QDialog):
         self.setWindowTitle("Adjust Planet Disk")
         self.setModal(True)
         self._preview_zoom = 1.0   # 1.0 = Fit
-
+        self.overlay_mode = str(overlay_mode)
+        self.show_rings = (self.overlay_mode in ("saturn", "galaxy"))
         self.img = np.asarray(img_rgb)
         self.H, self.W = self.img.shape[:2]
 
@@ -2462,7 +2605,7 @@ class PlanetDiskAdjustDialog(QDialog):
         self.r = float(r)
 
         # --- rings (optional) ---
-        self.show_rings = bool(show_rings)
+
         self.ring_pa = float(ring_pa)
         self.ring_tilt = float(ring_tilt)
         self.ring_outer = float(ring_outer)
@@ -2525,44 +2668,42 @@ class PlanetDiskAdjustDialog(QDialog):
         outer.addWidget(self.preview)
 
         # --- rings controls (optional) ---
-        if self.show_rings:
-            rings_box = QGroupBox("Saturn ring alignment")
+        if self.overlay_mode in ("saturn", "galaxy"):
+            title = "Galaxy disk alignment" if self.overlay_mode == "galaxy" else "Saturn ring alignment"
+            rings_box = QGroupBox(title)
             rings_form = QFormLayout(rings_box)
 
-            # Ring PA (deg): -180..180 step 1
+            # PA
             row, self.sld_ring_pa, self.spin_ring_pa = self._make_slider_spin_row(
                 min_v=-180.0, max_v=180.0, step_v=1.0,
                 value=self.ring_pa, decimals=0,
                 on_change=self._on_ring_widgets_changed
             )
-            rings_form.addRow("Ring PA (deg):", row)
+            rings_form.addRow("Disk PA (deg):" if self.overlay_mode=="galaxy" else "Ring PA (deg):", row)
 
-            # Ring tilt (b/a): 0.05..1.00 step 0.01 (or 0.02 if you prefer)
+            # tilt
             row, self.sld_ring_tilt, self.spin_ring_tilt = self._make_slider_spin_row(
                 min_v=0.05, max_v=1.0, step_v=0.01,
                 value=self.ring_tilt, decimals=2,
                 on_change=self._on_ring_widgets_changed
             )
-            rings_form.addRow("Ring tilt (b/a):", row)
+            rings_form.addRow("Disk tilt (b/a):" if self.overlay_mode=="galaxy" else "Ring tilt (b/a):", row)
 
-            # Outer factor: 1.00..4.00 step 0.01 (you can keep 0.05 if you want coarser)
-            row, self.sld_ring_outer, self.spin_ring_outer = self._make_slider_spin_row(
-                min_v=1.0, max_v=4.0, step_v=0.01,
-                value=self.ring_outer, decimals=2,
-                on_change=self._on_ring_widgets_changed
-            )
-            rings_form.addRow("Outer factor:", row)
+            # ONLY Saturn gets inner/outer
+            if self.overlay_mode == "saturn":
+                row, self.sld_ring_outer, self.spin_ring_outer = self._make_slider_spin_row(...)
+                rings_form.addRow("Outer factor:", row)
 
-            # Inner factor: 0.20..3.50 step 0.01
-            row, self.sld_ring_inner, self.spin_ring_inner = self._make_slider_spin_row(
-                min_v=0.2, max_v=3.5, step_v=0.01,
-                value=self.ring_inner, decimals=2,
-                on_change=self._on_ring_widgets_changed
-            )
-            rings_form.addRow("Inner factor:", row)
+                row, self.sld_ring_inner, self.spin_ring_inner = self._make_slider_spin_row(...)
+                rings_form.addRow("Inner factor:", row)
 
             outer.addWidget(rings_box)
 
+        if self.overlay_mode == "saturn":
+            help_txt += "\nAdjust ring PA / tilt / inner / outer to match Saturn's rings."
+        elif self.overlay_mode == "galaxy":
+            help_txt += "\nAdjust disk PA / tilt to match the galaxy's projected ellipse."
+        self.lbl_help.setText(help_txt)
 
         # radius row
         rad_row = QHBoxLayout()
@@ -2682,17 +2823,33 @@ class PlanetDiskAdjustDialog(QDialog):
 
 
     def _on_ring_widgets_changed(self):
-        # Read spins (source of truth)
-        self.ring_pa = float(self.spin_ring_pa.value())
-        self.ring_tilt = float(self.spin_ring_tilt.value())
-        self.ring_outer = float(self.spin_ring_outer.value())
-        self.ring_inner = float(self.spin_ring_inner.value())
+        # Always present in saturn+galaxy
+        if hasattr(self, "spin_ring_pa"):
+            self.ring_pa = float(self.spin_ring_pa.value())
+        if hasattr(self, "spin_ring_tilt"):
+            self.ring_tilt = float(self.spin_ring_tilt.value())
+
+        # Only present for saturn
+        if self.overlay_mode == "saturn":
+            if hasattr(self, "spin_ring_outer"):
+                self.ring_outer = float(self.spin_ring_outer.value())
+            if hasattr(self, "spin_ring_inner"):
+                self.ring_inner = float(self.spin_ring_inner.value())
+
         self._redraw()
 
-
     def get_ring_result(self) -> tuple[float, float, float, float]:
-        return (float(self.ring_pa), float(self.ring_tilt),
-                float(self.ring_outer), float(self.ring_inner))
+        pa = float(getattr(self, "ring_pa", 0.0))
+        tilt = float(getattr(self, "ring_tilt", 0.35))
+
+        if self.overlay_mode == "saturn":
+            kout = float(getattr(self, "ring_outer", 2.2))
+            kin  = float(getattr(self, "ring_inner", 1.25))
+        else:
+            kout = float(getattr(self, "ring_outer", 2.2))  # harmless
+            kin  = float(getattr(self, "ring_inner", 1.25))
+
+        return (pa, tilt, kout, kin)
 
     def _on_ring_changed(self, *_):
         self.ring_pa = float(self.spin_ring_pa.value())
@@ -2754,8 +2911,14 @@ class PlanetDiskAdjustDialog(QDialog):
     def _redraw(self):
         self._compute_fit_transform()
 
-        # base pixmap
-        qimg = QImage(self._disp8.data, self.W, self.H, self._disp8.strides[0], QImage.Format.Format_RGB888)
+        # base pixmap (fit into preview)
+        qimg = QImage(
+            self._disp8.data,
+            self.W,
+            self.H,
+            int(self._disp8.strides[0]),
+            QImage.Format.Format_RGB888,
+        )
         pix = QPixmap.fromImage(qimg).scaled(
             self.preview.size(),
             Qt.AspectRatioMode.KeepAspectRatio,
@@ -2765,67 +2928,152 @@ class PlanetDiskAdjustDialog(QDialog):
         painter = QPainter(pix)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
-        # main disk circle
-        pen = QPen(QColor(0, 255, 0))
-        pen.setWidth(3)
-        painter.setPen(pen)
+        # Determine overlay mode:
+        # - "saturn": inner+outer ellipses
+        # - "galaxy": single disk ellipse
+        # - otherwise: none
+        overlay_mode = getattr(self, "overlay_mode", None)
+        if overlay_mode is None:
+            # backwards compatibility with old flag
+            overlay_mode = "saturn" if getattr(self, "show_rings", False) else "none"
+        overlay_mode = str(overlay_mode).lower()
 
+        # Map center to pix coords
         cxp, cyp = self._img_to_pix(self.cx, self.cy)
-        rv = self.r * self._pix_scale
-        painter.drawEllipse(QPoint(int(round(cxp)), int(round(cyp))), int(round(rv)), int(round(rv)))
+
+        # -----------------------------
+        # Main circle + crosshair
+        # -----------------------------
+        # In galaxy mode, the ellipse is the important overlay; circle is optional.
+        DRAW_MAIN_CIRCLE_IN_GALAXY = True  # set False if you want ONLY ellipse for galaxy
+
+        if overlay_mode != "galaxy" or DRAW_MAIN_CIRCLE_IN_GALAXY:
+            pen = QPen(QColor(0, 255, 0))
+            pen.setWidth(3)
+            painter.setPen(pen)
+
+            rv = float(self.r) * float(self._pix_scale)
+            painter.drawEllipse(
+                QPoint(int(round(cxp)), int(round(cyp))),
+                int(round(rv)),
+                int(round(rv)),
+            )
 
         # center crosshair
         pen2 = QPen(QColor(0, 255, 0))
         pen2.setWidth(2)
         painter.setPen(pen2)
-        painter.drawLine(int(round(cxp - 8)), int(round(cyp)), int(round(cxp + 8)), int(round(cyp)))
-        painter.drawLine(int(round(cxp)), int(round(cyp - 8)), int(round(cxp)), int(round(cyp + 8)))
+        painter.drawLine(int(round(cxp - 8)), int(round(cyp)),     int(round(cxp + 8)), int(round(cyp)))
+        painter.drawLine(int(round(cxp)),     int(round(cyp - 8)), int(round(cxp)),     int(round(cyp + 8)))
 
-        # --- rings overlay (optional) ---
-        if getattr(self, "show_rings", False):
+        # -----------------------------
+        # Ellipse overlays
+        # -----------------------------
+        if overlay_mode in ("saturn", "galaxy"):
             try:
-                pa = float(self.ring_pa)
-                tilt = float(self.ring_tilt)
-                k_out = float(self.ring_outer)
-                k_in = float(self.ring_inner)
+                pa = float(getattr(self, "ring_pa", 0.0))
+                tilt = float(getattr(self, "ring_tilt", 0.35))
+                tilt = max(0.01, min(1.0, tilt))
 
-                a_out = k_out * float(self.r)
-                b_out = max(1.0, a_out * tilt)
-                a_in  = k_in  * float(self.r)
-                b_in  = max(1.0, a_in  * tilt)
+                # ellipse semi-axes in SOURCE pixels
+                if overlay_mode == "galaxy":
+                    # ONE ellipse: major axis = r, minor = r * tilt
+                    a = float(self.r)
+                    b = max(1.0, a * tilt)
 
-                a_out_p = a_out * self._pix_scale
-                b_out_p = b_out * self._pix_scale
-                a_in_p  = a_in  * self._pix_scale
-                b_in_p  = b_in  * self._pix_scale
+                    # convert to PIX coords
+                    a_p = a * float(self._pix_scale)
+                    b_p = b * float(self._pix_scale)
 
-                painter.save()
-                painter.translate(cxp, cyp)
-                painter.rotate(pa)
+                    painter.save()
+                    painter.translate(cxp, cyp)
+                    painter.rotate(pa)
 
-                penr = QPen(QColor(0, 255, 0))
-                penr.setWidth(2)
-                painter.setPen(penr)
+                    penr = QPen(QColor(0, 255, 0))
+                    penr.setWidth(2)
+                    painter.setPen(penr)
 
-                painter.drawEllipse(int(round(-a_out_p)), int(round(-b_out_p)),
-                                    int(round(2*a_out_p)), int(round(2*b_out_p)))
-                painter.drawEllipse(int(round(-a_in_p)), int(round(-b_in_p)),
-                                    int(round(2*a_in_p)), int(round(2*b_in_p)))
+                    painter.drawEllipse(
+                        int(round(-a_p)), int(round(-b_p)),
+                        int(round(2 * a_p)), int(round(2 * b_p)),
+                    )
 
-                # minor-axis guide
-                pena = QPen(QColor(0, 200, 0))
-                pena.setWidth(2)
-                painter.setPen(pena)
-                painter.drawLine(0, int(round(-b_out_p)), 0, int(round(b_out_p)))
+                    # minor-axis guide
+                    pena = QPen(QColor(0, 200, 0))
+                    pena.setWidth(2)
+                    painter.setPen(pena)
+                    painter.drawLine(0, int(round(-b_p)), 0, int(round(b_p)))
 
-                painter.restore()
+                    painter.restore()
+
+                else:
+                    # SATURN: inner + outer ellipse annulus
+                    k_out = float(getattr(self, "ring_outer", 2.2))
+                    k_in  = float(getattr(self, "ring_inner", 1.25))
+
+                    a_out = k_out * float(self.r)
+                    b_out = max(1.0, a_out * tilt)
+                    a_in  = k_in  * float(self.r)
+                    b_in  = max(1.0, a_in  * tilt)
+
+                    a_out_p = a_out * float(self._pix_scale)
+                    b_out_p = b_out * float(self._pix_scale)
+                    a_in_p  = a_in  * float(self._pix_scale)
+                    b_in_p  = b_in  * float(self._pix_scale)
+
+                    painter.save()
+                    painter.translate(cxp, cyp)
+                    painter.rotate(pa)
+
+                    penr = QPen(QColor(0, 255, 0))
+                    penr.setWidth(2)
+                    painter.setPen(penr)
+
+                    painter.drawEllipse(
+                        int(round(-a_out_p)), int(round(-b_out_p)),
+                        int(round(2 * a_out_p)), int(round(2 * b_out_p)),
+                    )
+                    painter.drawEllipse(
+                        int(round(-a_in_p)), int(round(-b_in_p)),
+                        int(round(2 * a_in_p)), int(round(2 * b_in_p)),
+                    )
+
+                    # minor-axis guide
+                    pena = QPen(QColor(0, 200, 0))
+                    pena.setWidth(2)
+                    painter.setPen(pena)
+                    painter.drawLine(0, int(round(-b_out_p)), 0, int(round(b_out_p)))
+
+                    painter.restore()
+
             except Exception:
+                # keep UI alive if something weird happens
                 pass
 
         painter.end()
 
         self.preview.setPixmap(pix)
-        self.lbl_status.setText(f"Center: ({self.cx:.1f}, {self.cy:.1f})   Radius: {self.r:.1f}px")
+
+        # status label
+        if overlay_mode == "galaxy":
+            pa = float(getattr(self, "ring_pa", 0.0))
+            tilt = float(getattr(self, "ring_tilt", 0.35))
+            self.lbl_status.setText(
+                f"Center: ({self.cx:.1f}, {self.cy:.1f})   Radius: {self.r:.1f}px   "
+                f"PA: {pa:.1f}°   Tilt(b/a): {tilt:.2f}"
+            )
+        elif overlay_mode == "saturn":
+            pa = float(getattr(self, "ring_pa", 0.0))
+            tilt = float(getattr(self, "ring_tilt", 0.35))
+            kout = float(getattr(self, "ring_outer", 2.2))
+            kin  = float(getattr(self, "ring_inner", 1.25))
+            self.lbl_status.setText(
+                f"Center: ({self.cx:.1f}, {self.cy:.1f})   Radius: {self.r:.1f}px   "
+                f"PA: {pa:.1f}°   Tilt(b/a): {tilt:.2f}   Outer: {kout:.2f}   Inner: {kin:.2f}"
+            )
+        else:
+            self.lbl_status.setText(f"Center: ({self.cx:.1f}, {self.cy:.1f})   Radius: {self.r:.1f}px")
+
 
     # ---------- UI callbacks ----------
     def _clamp(self):
@@ -2927,6 +3175,24 @@ class PlanetProjectionPreviewDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Planet Projection — Preview")
         self.setModal(False)
+        self._img_zoom = 1.0      # content zoom (1.0 = full view)
+        self._img_pan_x = 0.0     # in source pixels, relative to center
+        self._img_pan_y = 0.0
+        self._dragging = False
+        self._last_pos = None
+        self._last_left8 = None
+        self._last_right8 = None
+        self._last_swap = False
+        self._gap_px = 16
+        self._last_L8 = None
+        self._last_R8 = None
+        self._last_swap_eyes = False
+        self._last_gap_px = 16
+        self._last_frame_u8 = None
+        # content zoom is RELATIVE TO FIT (1.0 = fit)
+        self._content_zoom = 1.0
+        self._pan_x = 0.0  # pan in SOURCE PIXELS
+        self._pan_y = 0.0
 
         self._preview_zoom = 1.0  # 1.0 = Fit, 0.0 = 1:1, else relative to Fit
 
@@ -2943,18 +3209,42 @@ class PlanetProjectionPreviewDialog(QDialog):
         self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
         self.btn_zoom_100 = themed_toolbtn("zoom-original", "1:1")
         self.btn_zoom_fit = themed_toolbtn("zoom-fit-best", "Fit")
+        self.btn_save_view = themed_toolbtn("document-save", "Save current preview view…")
+        self.btn_push = QPushButton("Push to New Document")
 
+
+
+        self.btn_save_view.clicked.connect(self._save_current_view)
+        self.btn_push.clicked.connect(self._push_to_new_document)
         zoom_row.addStretch(1)
         zoom_row.addWidget(self.btn_zoom_out)
         zoom_row.addWidget(self.btn_zoom_fit)
         zoom_row.addWidget(self.btn_zoom_100)
         zoom_row.addWidget(self.btn_zoom_in)
+        zoom_row.addWidget(self.btn_save_view)
+        zoom_row.addWidget(self.btn_push)
         outer.addLayout(zoom_row)
 
         self.btn_zoom_out.clicked.connect(lambda: self.set_zoom(self._preview_zoom * 0.8 if self._preview_zoom not in (0.0, 1.0) else 0.8))
         self.btn_zoom_in.clicked.connect(lambda: self.set_zoom(self._preview_zoom * 1.25 if self._preview_zoom not in (0.0, 1.0) else 1.25))
         self.btn_zoom_fit.clicked.connect(lambda: self.set_zoom(1.0))
         self.btn_zoom_100.clicked.connect(lambda: self.set_zoom(0.0))
+
+        imgzoom_row = QHBoxLayout()
+        self.btn_img_reset = themed_toolbtn("edit-undo", "Reset Image Pan/Zoom")
+
+        self.sld_img_zoom = QSlider(Qt.Orientation.Horizontal, self)
+        self.sld_img_zoom.setRange(0, 200)   # 0 -> fit, +200 -> zoom in
+        self.sld_img_zoom.setValue(0)
+        self.sld_img_zoom.setToolTip("Zoom into the image content (pan with mouse drag)")
+
+        imgzoom_row.addWidget(QLabel("Image zoom:"))
+        imgzoom_row.addWidget(self.sld_img_zoom, 1)
+        imgzoom_row.addWidget(self.btn_img_reset)
+        outer.addLayout(imgzoom_row)
+
+        self.sld_img_zoom.valueChanged.connect(self._on_img_zoom_changed)
+        self.btn_img_reset.clicked.connect(self._reset_img_view)
 
         # Preview label
         self.preview = QLabel(self)
@@ -2963,7 +3253,8 @@ class PlanetProjectionPreviewDialog(QDialog):
         self.preview.setStyleSheet("background:#111; border:1px solid #333;")
         self.preview.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         outer.addWidget(self.preview)
-
+        self.preview.setMouseTracking(True)
+        self.preview.installEventFilter(self)
         self._last_rgb8 = None
 
     def set_zoom(self, z: float):
@@ -2972,7 +3263,11 @@ class PlanetProjectionPreviewDialog(QDialog):
         if z > 8.0:
             z = 8.0
         self._preview_zoom = float(z)
-        if self._last_rgb8 is not None:
+
+        # IMPORTANT: redraw whichever mode we’re in
+        if self._last_left8 is not None and self._last_right8 is not None:
+            self._redraw()  # stereo path uses _preview_zoom inside _render_stereo()
+        elif self._last_rgb8 is not None:
             self.set_frame_u8(self._last_rgb8)
 
     def _fit_scaled_size(self, img_w: int, img_h: int) -> tuple[int, int]:
@@ -2982,26 +3277,43 @@ class PlanetProjectionPreviewDialog(QDialog):
         return int(round(img_w * s)), int(round(img_h * s))
 
     def set_frame_u8(self, rgb8: np.ndarray):
-        """rgb8 must be uint8 RGB (H,W,3)."""
-        self._last_rgb8 = rgb8
+        self._last_rgb8 = np.asarray(rgb8)
 
-        qimg = QImage(rgb8.data, rgb8.shape[1], rgb8.shape[0], rgb8.strides[0], QImage.Format.Format_RGB888)
+        # apply content zoom/pan by cropping to viewport size
+        disp8 = self._apply_camera_crop(self._last_rgb8)
+
+        # NEW: cache “what user is looking at” for Push-to-Doc
+        self._last_frame_u8 = np.asarray(disp8)
+
+        # --- sanitize for QImage ---
+        disp8 = np.asarray(disp8, dtype=np.uint8)
+        if disp8.ndim == 2:
+            disp8 = np.stack([disp8, disp8, disp8], axis=2)
+        if disp8.shape[2] > 3:
+            disp8 = disp8[..., :3]
+        if not disp8.flags["C_CONTIGUOUS"]:
+            disp8 = np.ascontiguousarray(disp8)
+
+        # IMPORTANT: keep buffer alive on self for as long as pixmap uses it
+        self._qimg_buf = disp8
+
+        h, w = disp8.shape[:2]
+        bytes_per_line = int(disp8.strides[0])
+
+        ptr = sip.voidptr(disp8.ctypes.data)
+        qimg = QImage(ptr, w, h, bytes_per_line, QImage.Format.Format_RGB888)
         base = QPixmap.fromImage(qimg)
 
+        # NOTE: from this point onward, use disp8 dimensions (not rgb8)
         if self._preview_zoom == 1.0:
-            pix = base.scaled(
-                self.preview.size(),
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            self.preview.setPixmap(pix)
+            self.preview.setPixmap(base)  # already fit-with-aspect (letterboxed by QLabel alignment)
             return
 
         if self._preview_zoom == 0.0:
             self.preview.setPixmap(base)
             return
 
-        fit_w, fit_h = self._fit_scaled_size(rgb8.shape[1], rgb8.shape[0])
+        fit_w, fit_h = self._fit_scaled_size(w, h)
         target_w = max(1, int(round(fit_w * self._preview_zoom)))
         target_h = max(1, int(round(fit_h * self._preview_zoom)))
 
@@ -3012,7 +3324,524 @@ class PlanetProjectionPreviewDialog(QDialog):
         )
         self.preview.setPixmap(pix)
 
+    def set_stereo_u8(self, left8: np.ndarray, right8: np.ndarray, *, swap_eyes: bool, gap_px: int = 16):
+        self._last_left8 = np.asarray(left8)
+        self._last_right8 = np.asarray(right8)
+        self._last_swap = bool(swap_eyes)
+        self._gap_px = int(max(0, gap_px))
+
+        # keep save-view path in sync
+        self._last_L8 = self._last_left8
+        self._last_R8 = self._last_right8
+        self._last_swap_eyes = self._last_swap
+        self._last_gap_px = self._gap_px
+
+        self._clamp_pan()
+        self._redraw()
+
+    def _redraw(self):
+        if self._last_left8 is None or self._last_right8 is None:
+            # fallback: if you still use set_frame_u8 for non-stereo cases
+            if getattr(self, "_last_rgb8", None) is not None:
+                self.set_frame_u8(self._last_rgb8)
+            return
+        self._render_stereo()
+
+    def _render_stereo(self):
+        L = self._ensure_rgb8(self._last_left8)
+        R = self._ensure_rgb8(self._last_right8)
+
+        Hs, Ws = L.shape[:2]
+
+        pw = max(8, self.preview.width())
+        ph = max(8, self.preview.height())
+        gap = int(self._gap_px)
+
+        view_w = max(8, (pw - gap) // 2)
+        view_h = max(8, ph)
+
+        # --- NEW: fit-rect INSIDE each eye viewport (letterbox/pillarbox) ---
+        rx, ry, rw, rh = self._fit_rect(view_w, view_h, Ws, Hs)
+        rw = max(8, rw); rh = max(8, rh)
+
+        # cache the actual displayed rect for pan math (drag + clamp)
+        self._eye_fit_rect = (rx, ry, rw, rh, view_w, view_h)
+
+        # render each eye ONLY into rw x rh (aspect-safe), then paste into a black canvas
+        Limg = self._crop_and_scale(L, rw, rh)
+        Rimg = self._crop_and_scale(R, rw, rh)
+
+        if self._last_swap:
+            Limg, Rimg = Rimg, Limg
+
+        Lcan = np.zeros((view_h, view_w, 3), dtype=np.uint8)
+        Rcan = np.zeros((view_h, view_w, 3), dtype=np.uint8)
+        Lcan[ry:ry+rh, rx:rx+rw] = Limg
+        Rcan[ry:ry+rh, rx:rx+rw] = Rimg
+
+        canvas_w = view_w + gap + view_w
+        canvas = np.zeros((view_h, canvas_w, 3), dtype=np.uint8)
+        canvas[:, 0:view_w] = Lcan
+        canvas[:, view_w:view_w + gap] = 0
+        canvas[:, view_w + gap:view_w + gap + view_w] = Rcan
+        self._last_frame_u8 = canvas
+
+        self._qimg_buf = canvas
+        h, w = canvas.shape[:2]
+        ptr = sip.voidptr(canvas.ctypes.data)
+        qimg = QImage(ptr, w, h, int(canvas.strides[0]), QImage.Format.Format_RGB888)
+        base = QPixmap.fromImage(qimg)
+
+        # preview zoom (same as before)
+        if self._preview_zoom == 1.0:
+            pix = base.scaled(self.preview.size(), Qt.AspectRatioMode.KeepAspectRatio,
+                            Qt.TransformationMode.SmoothTransformation)
+            self.preview.setPixmap(pix)
+            return
+        if self._preview_zoom == 0.0:
+            self.preview.setPixmap(base)
+            return
+
+        fit_w, fit_h = self._fit_scaled_size(w, h)
+        target_w = max(1, int(round(fit_w * self._preview_zoom)))
+        target_h = max(1, int(round(fit_h * self._preview_zoom)))
+        pix = base.scaled(QSize(target_w, target_h), Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation)
+        self.preview.setPixmap(pix)
+
+
+    def _ensure_rgb8(self, img: np.ndarray) -> np.ndarray:
+        x = np.asarray(img)
+        if x.ndim == 2:
+            x = np.stack([x, x, x], axis=2)
+        if x.shape[2] > 3:
+            x = x[..., :3]
+        if x.dtype != np.uint8:
+            x = np.clip(x, 0, 255).astype(np.uint8)
+        if not x.flags["C_CONTIGUOUS"]:
+            x = np.ascontiguousarray(x)
+        return x
+
+    def _crop_and_scale(self, src: np.ndarray, out_w: int, out_h: int) -> np.ndarray:
+        # content zoom is RELATIVE TO FIT
+        H, W = src.shape[:2]
+
+        # fit scale into per-eye viewport
+        s_fit = min(out_w / float(W), out_h / float(H))
+        s_fit = max(1e-9, float(s_fit))
+
+        z = float(max(1e-6, self._content_zoom))
+
+        # visible window in SOURCE pixels:
+        win_w = int(round(out_w / (s_fit * z)))
+        win_h = int(round(out_h / (s_fit * z)))
+        win_w = max(8, min(W, win_w))
+        win_h = max(8, min(H, win_h))
+
+        cx = (W - 1) * 0.5 + float(self._pan_x)
+        cy = (H - 1) * 0.5 + float(self._pan_y)
+
+        x0 = int(round(cx - 0.5 * win_w))
+        y0 = int(round(cy - 0.5 * win_h))
+        x0 = max(0, min(W - win_w, x0))
+        y0 = max(0, min(H - win_h, y0))
+
+        crop = src[y0:y0 + win_h, x0:x0 + win_w]
+
+        if crop.shape[1] != out_w or crop.shape[0] != out_h:
+            crop = cv2.resize(crop, (out_w, out_h), interpolation=cv2.INTER_LINEAR)
+
+        return crop
+
+    def _clamp_pan(self):
+        if self._last_left8 is None:
+            return
+
+        src = self._ensure_rgb8(self._last_left8)
+        H, W = src.shape[:2]
+
+        pw = max(8, self.preview.width())
+        ph = max(8, self.preview.height())
+        gap = int(self._gap_px)
+        view_w = max(8, (pw - gap) // 2)
+        view_h = max(8, ph)
+
+        # use the SAME fit rect used for drawing
+        rx, ry, rw, rh = self._fit_rect(view_w, view_h, W, H)
+        rw = max(8, rw); rh = max(8, rh)
+
+        s_fit = min(rw / float(W), rh / float(H))
+        s_fit = max(1e-9, float(s_fit))
+        z = float(max(1e-6, self._content_zoom))
+
+        win_w = int(round(rw / (s_fit * z)))
+        win_h = int(round(rh / (s_fit * z)))
+
+        max_pan_x = max(0.0, (W - win_w) * 0.5)
+        max_pan_y = max(0.0, (H - win_h) * 0.5)
+
+        self._pan_x = float(np.clip(self._pan_x, -max_pan_x, +max_pan_x))
+        self._pan_y = float(np.clip(self._pan_y, -max_pan_y, +max_pan_y))
+
+
     def resizeEvent(self, e):
         super().resizeEvent(e)
-        if self._last_rgb8 is not None:
+
+        # Clamp whichever pan system you’re using
+        self._clamp_pan()
+        self._clamp_img_view()
+
+        # Redraw correct mode
+        if self._last_left8 is not None and self._last_right8 is not None:
+            self._redraw()
+        elif self._last_rgb8 is not None:
             self.set_frame_u8(self._last_rgb8)
+
+
+    def _on_img_zoom_changed(self, v: int):
+        # 0 -> 1.0 (fit), +50 -> 2.0, +100 -> 4.0
+        # negative values zoom OUT from fit: -50 -> 0.5, -100 -> 0.25
+        self._content_zoom = float(2.0 ** (v / 50.0))
+        self._clamp_pan()
+        self._redraw()
+
+    def _reset_img_view(self):
+        self._content_zoom = 1.0
+        self._pan_x = 0.0
+        self._pan_y = 0.0
+        self.sld_img_zoom.blockSignals(True)
+        self.sld_img_zoom.setValue(0)
+        self.sld_img_zoom.blockSignals(False)
+        self._redraw()
+
+    def _clamp_img_view(self):
+        if self._last_rgb8 is None:
+            return
+        img = self._last_rgb8
+        H, W = img.shape[:2]
+        z = float(max(1e-6, self._img_zoom))
+
+        # viewport size in *label* pixels (content crop target)
+        vw = max(8, self.preview.width())
+        vh = max(8, self.preview.height())
+
+        # crop window size in source pixels
+        win_w = int(round(vw / z))
+        win_h = int(round(vh / z))
+        win_w = max(8, min(W, win_w))
+        win_h = max(8, min(H, win_h))
+
+        max_pan_x = max(0.0, (W - win_w) * 0.5)
+        max_pan_y = max(0.0, (H - win_h) * 0.5)
+
+        self._img_pan_x = float(np.clip(self._img_pan_x, -max_pan_x, +max_pan_x))
+        self._img_pan_y = float(np.clip(self._img_pan_y, -max_pan_y, +max_pan_y))
+
+    def _fit_rect(self, view_w: int, view_h: int, img_w: int, img_h: int) -> tuple[int,int,int,int]:
+        """Return (x,y,w,h) of the largest rect inside view that matches img aspect."""
+        if img_w <= 0 or img_h <= 0:
+            return (0, 0, view_w, view_h)
+        s = min(view_w / float(img_w), view_h / float(img_h))
+        w = max(1, int(round(img_w * s)))
+        h = max(1, int(round(img_h * s)))
+        x = (view_w - w) // 2
+        y = (view_h - h) // 2
+        return (x, y, w, h)
+
+    def _crop_to_aspect(self, W: int, H: int, target_aspect: float) -> tuple[int,int]:
+        """Return (win_w, win_h) clamped to image bounds with exact target aspect."""
+        win_w = W
+        win_h = int(round(win_w / target_aspect))
+        if win_h > H:
+            win_h = H
+            win_w = int(round(win_h * target_aspect))
+        win_w = max(8, min(W, win_w))
+        win_h = max(8, min(H, win_h))
+        return win_w, win_h
+
+
+    def _apply_camera_crop(self, rgb8: np.ndarray) -> np.ndarray:
+        img = np.asarray(rgb8)
+        H, W = img.shape[:2]
+
+        vw = max(8, self.preview.width())
+        vh = max(8, self.preview.height())
+
+        # IMPORTANT: we fit INSIDE the label, preserving image aspect (letterbox)
+        _, _, out_w, out_h = self._fit_rect(vw, vh, W, H)
+        out_w = max(8, out_w)
+        out_h = max(8, out_h)
+
+        a = out_w / float(out_h)  # target aspect matches IMAGE aspect, not label’s
+
+        z = float(max(1e-6, self._img_zoom))
+
+        # aspect-correct window size in source pixels, driven by zoom
+        win_w = int(round(W / z))
+        win_h = int(round(win_w / a))
+        if win_h > H:
+            win_h = int(round(H / z))
+            win_w = int(round(win_h * a))
+
+        win_w, win_h = self._crop_to_aspect(W, H, a)
+
+        cx = (W - 1) * 0.5 + float(self._img_pan_x)
+        cy = (H - 1) * 0.5 + float(self._img_pan_y)
+
+        x0 = int(round(cx - win_w * 0.5))
+        y0 = int(round(cy - win_h * 0.5))
+        x0 = max(0, min(W - win_w, x0))
+        y0 = max(0, min(H - win_h, y0))
+
+        crop = img[y0:y0 + win_h, x0:x0 + win_w]
+
+        # scale to out_w/out_h (aspect matched => no warp)
+        if crop.shape[1] != out_w or crop.shape[0] != out_h:
+            crop = cv2.resize(crop, (out_w, out_h), interpolation=cv2.INTER_LINEAR)
+        return crop
+
+    def eventFilter(self, obj, ev):
+        if obj is self.preview:
+            if ev.type() == ev.Type.MouseButtonPress and ev.button() == Qt.MouseButton.LeftButton:
+                self._dragging = True
+                self._last_pos = ev.position().toPoint()
+                return True
+
+            if ev.type() == ev.Type.MouseMove and self._dragging:
+                p = ev.position().toPoint()
+                d = p - self._last_pos
+                self._last_pos = p
+
+                # compute s_fit for current viewport
+                if self._last_left8 is not None:
+                    src = self._ensure_rgb8(self._last_left8)
+                    H, W = src.shape[:2]
+
+                    pw = max(8, self.preview.width())
+                    ph = max(8, self.preview.height())
+                    view_w = max(8, (pw - int(self._gap_px)) // 2)
+                    view_h = ph
+
+                    rx, ry, rw, rh = self._fit_rect(view_w, view_h, W, H)
+                    rw = max(8, rw); rh = max(8, rh)
+                    s_fit = min(rw / float(W), rh / float(H))
+                    s_fit = max(1e-9, float(s_fit))
+
+                    z = float(max(1e-6, self._content_zoom))
+                    scale = s_fit * z  # view_px per source_px
+
+                    # drag right should move content right (so we pan LEFT in source coords)
+                    self._pan_x -= float(d.x()) / scale
+                    self._pan_y -= float(d.y()) / scale
+
+                    self._clamp_pan()
+                    self._redraw()
+                return True
+
+            if ev.type() == ev.Type.MouseButtonRelease and ev.button() == Qt.MouseButton.LeftButton:
+                self._dragging = False
+                self._last_pos = None
+                return True
+
+            if ev.type() == ev.Type.Wheel:
+                # wheel zoom: update slider (keeps everything synced)
+                delta = ev.angleDelta().y()
+                step = 6 if delta > 0 else -6
+                v = int(self.sld_img_zoom.value()) + step
+                v = max(self.sld_img_zoom.minimum(), min(self.sld_img_zoom.maximum(), v))
+                self.sld_img_zoom.setValue(v)
+                return True
+
+        return super().eventFilter(obj, ev)
+    
+    def _get_current_view_canvas_u8(self) -> np.ndarray | None:
+        """
+        Return exactly what the preview is displaying as an RGB uint8 canvas:
+        [left_view | gap | right_view], including linked pan/zoom and preview scaling.
+        """
+        if self._last_L8 is None or self._last_R8 is None:
+            return None
+
+        L = np.asarray(self._last_L8)
+        R = np.asarray(self._last_R8)
+
+        # sanitize
+        def _to_rgb_u8(x):
+            x = np.asarray(x)
+            if x.dtype != np.uint8:
+                x = np.clip(x, 0, 255).astype(np.uint8)
+            if x.ndim == 2:
+                x = np.stack([x, x, x], axis=2)
+            if x.shape[2] > 3:
+                x = x[..., :3]
+            if not x.flags["C_CONTIGUOUS"]:
+                x = np.ascontiguousarray(x)
+            return x
+
+        L = _to_rgb_u8(L)
+        R = _to_rgb_u8(R)
+
+        if self._last_swap_eyes:
+            L, R = R, L
+
+        gap = int(max(0, self._last_gap_px))
+
+        # --- per-eye viewport size in label pixels ---
+        pw = max(8, self.preview.width())
+        ph = max(8, self.preview.height())
+
+        # reserve gap inside the label width
+        view_w = max(8, (pw - gap) // 2)
+        view_h = max(8, ph)
+
+        # --- crop+scale each eye independently to its viewport ---
+        Lview = self._crop_and_scale(L, view_w, view_h)
+        Rview = self._crop_and_scale(R, view_w, view_h)
+
+        # compose L|gap|R at label resolution
+        canvas = np.zeros((view_h, view_w + gap + view_w, 3), dtype=np.uint8)
+        canvas[:, :view_w] = Lview
+        canvas[:, view_w + gap:view_w + gap + view_w] = Rview
+
+        # --- now apply the existing "preview zoom" (fit/100%/relative-to-fit)
+        # Fit is already "canvas == label size", so:
+        if self._preview_zoom == 1.0:
+            return canvas
+
+        if self._preview_zoom == 0.0:
+            # 1:1 means: no scaling beyond current composed pixels
+            return canvas
+
+        # relative-to-fit scaling
+        target_w = max(8, int(round(canvas.shape[1] * float(self._preview_zoom))))
+        target_h = max(8, int(round(canvas.shape[0] * float(self._preview_zoom))))
+        canvas = cv2.resize(canvas, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+        return canvas
+
+    def _apply_camera_crop_to_viewport(self, rgb8: np.ndarray, view_w: int, view_h: int) -> np.ndarray:
+        """
+        Apply linked pan/zoom (_img_zoom/_img_pan_x/_img_pan_y) to ONE eye image,
+        producing exactly (view_h, view_w, 3) uint8.
+        """
+        img = np.asarray(rgb8)
+        H, W = img.shape[:2]
+
+        z = float(max(1e-6, self._img_zoom))
+
+        win_w = int(round(view_w / z))
+        win_h = int(round(view_h / z))
+        win_w = max(8, min(W, win_w))
+        win_h = max(8, min(H, win_h))
+
+        cx = (W - 1) * 0.5 + float(self._img_pan_x)
+        cy = (H - 1) * 0.5 + float(self._img_pan_y)
+
+        x0 = int(round(cx - win_w * 0.5))
+        y0 = int(round(cy - win_h * 0.5))
+
+        x0 = max(0, min(W - win_w, x0))
+        y0 = max(0, min(H - win_h, y0))
+
+        crop = img[y0:y0 + win_h, x0:x0 + win_w]
+
+        if crop.shape[1] != view_w or crop.shape[0] != view_h:
+            crop = cv2.resize(crop, (view_w, view_h), interpolation=cv2.INTER_LINEAR)
+
+        return crop
+
+    def _save_current_view(self):
+        canvas = self._get_current_view_canvas_u8()
+        if canvas is None:
+            QMessageBox.information(self, "Save View", "No preview image to save yet.")
+            return
+
+        fn, filt = QFileDialog.getSaveFileName(
+            self,
+            "Save Preview View",
+            "",
+            "PNG (*.png);;JPEG (*.jpg *.jpeg)"
+        )
+        if not fn:
+            return
+
+        ext = os.path.splitext(fn)[1].lower()
+        if ext == "":
+            fn += ".png"
+            ext = ".png"
+
+        try:
+            from PIL import Image
+            im = Image.fromarray(canvas, mode="RGB")
+            if ext in (".jpg", ".jpeg"):
+                im.save(fn, quality=95, subsampling=0)
+            else:
+                im.save(fn)
+        except Exception as e:
+            QMessageBox.warning(self, "Save View", f"Failed to save:\n{e}")
+
+    def _find_main_window(self):
+        w = self
+        from PyQt6.QtWidgets import QMainWindow, QApplication
+        while w is not None and not isinstance(w, QMainWindow):
+            w = w.parentWidget()
+        if w:
+            return w
+        for tlw in QApplication.topLevelWidgets():
+            if isinstance(tlw, QMainWindow):
+                return tlw
+        return None
+
+
+    def _push_to_new_document(self):
+        img_u8 = None
+
+        # Prefer exact displayed canvas for stereo
+        if self._last_L8 is not None and self._last_R8 is not None:
+            img_u8 = self._get_current_view_canvas_u8()
+        else:
+            img_u8 = getattr(self, "_last_frame_u8", None)
+
+        if img_u8 is None:
+            QMessageBox.warning(self, "Push to New Document", "Nothing to push yet.")
+            return
+
+        # Convert to float32 [0..1] for SASpro docs (matches your other tools)
+
+        arr = np.asarray(img_u8)
+        if arr.ndim == 2:
+            arr01 = arr.astype(np.float32) / 255.0
+            meta = {"is_mono": True, "bit_depth": "8-bit"}
+        else:
+            if arr.shape[2] > 3:
+                arr = arr[..., :3]
+            arr01 = arr.astype(np.float32) / 255.0
+            meta = {"is_mono": False, "bit_depth": "8-bit"}
+
+        mw = self._find_main_window()
+        dm = getattr(mw, "docman", None) if mw else None
+        if not mw or not dm:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Push to New Document", "Main window or DocManager not available.")
+            return
+
+        title = "Planet Projection Preview"
+        try:
+            if hasattr(dm, "open_array"):
+                doc = dm.open_array(arr01, metadata=meta, title=title)
+            elif hasattr(dm, "create_document"):
+                doc = dm.create_document(image=arr01, metadata=meta, name=title)
+            else:
+                raise RuntimeError("DocManager lacks open_array/create_document")
+
+            # Spawn a view (same pattern as NBtoRGBStars)
+            if hasattr(mw, "_spawn_subwindow_for"):
+                mw._spawn_subwindow_for(doc)
+            else:
+                from setiastro.saspro.subwindow import ImageSubWindow
+                sw = ImageSubWindow(doc, parent=mw)
+                sw.setWindowTitle(title)
+                sw.show()
+
+        except Exception as e:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Push to New Document", f"Failed to open new view:\n{e}")
