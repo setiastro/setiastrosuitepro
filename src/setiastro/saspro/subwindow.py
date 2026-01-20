@@ -1737,6 +1737,29 @@ class ImageSubWindow(QWidget):
         a_help = menu.addAction(self.tr("Show pixel/WCS readout hint"))
         menu.addSeparator()
         a_prev = menu.addAction(self.tr("Create Preview (drag rectangle)"))
+        # --- Mask actions (requested in zoom/context menu) ---
+        mw = self._find_main_window()
+        vw = self  # this ImageSubWindow is the view
+        doc = getattr(vw, "document", None)
+
+        has_mask = bool(doc and getattr(doc, "active_mask_id", None))
+
+        menu.addSeparator()
+        menu.addSection(self.tr("Mask"))
+
+        # 1) Toggle overlay (single item: Show/Hide)
+        a_mask_overlay = menu.addAction(self.tr("Show Mask Overlay"))
+        a_mask_overlay.setCheckable(True)
+        a_mask_overlay.setChecked(bool(getattr(vw, "show_mask_overlay", False)))
+        a_mask_overlay.setEnabled(has_mask)
+
+        # 2) Invert mask
+        a_invert = menu.addAction(self.tr("Invert Mask"))
+        a_invert.setEnabled(has_mask)
+
+        # 3) Remove mask
+        a_remove = menu.addAction(self.tr("Remove Mask"))
+        a_remove.setEnabled(has_mask)
 
         act = menu.exec(self.mapToGlobal(pos))
 
@@ -1756,7 +1779,19 @@ class ImageSubWindow(QWidget):
         elif act == a_prev:
             self._preview_btn.setChecked(True)
             self._toggle_preview_select_mode(True)
-
+        # --- Mask dispatch ---
+        elif act == a_mask_overlay:
+            if mw:
+                if a_mask_overlay.isChecked():
+                    mw._show_mask_overlay()
+                else:
+                    mw._hide_mask_overlay()
+        elif act == a_invert:
+            if mw:
+                mw._invert_mask()
+        elif act == a_remove:
+            if mw:
+                mw._remove_mask_menu()
 
 
     def _send_to_shelf(self):

@@ -216,14 +216,18 @@ class FileMixin:
         # --- Bit depth selection ----------------------------------------
         from setiastro.saspro.save_options import SaveOptionsDialog
         current_bd = doc.metadata.get("bit_depth")
-        dlg = SaveOptionsDialog(self, ext_norm, current_bd)
+        current_jq = (doc.metadata or {}).get("jpeg_quality", None)
+
+        dlg = SaveOptionsDialog(self, ext_norm, current_bd, current_jpeg_quality=current_jq)
         if dlg.exec() != dlg.DialogCode.Accepted:
             return
+
         chosen_bd = dlg.selected_bit_depth()
+        chosen_jq = dlg.selected_jpeg_quality()
 
         # --- Save & remember folder ----------------------------------------
         try:
-            self.docman.save_document(doc, path, bit_depth_override=chosen_bd)
+            self.docman.save_document(doc, path, bit_depth_override=chosen_bd, jpeg_quality=chosen_jq)
             self._log(f"Saved: {path} ({chosen_bd})")
             self.settings.setValue("paths/last_save_dir", os.path.dirname(path))
         except Exception as e:
