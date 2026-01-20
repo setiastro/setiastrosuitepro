@@ -3,14 +3,10 @@
 """
 Seti Astro Suite Pro - Main Entry Point
 
-This file is kept for backwards compatibility. The main application logic
-has been moved to setiastro.saspro.__main__.py. This file simply imports
-and calls the main function from the package.
+Backwards compatibility shim.
 """
 
-from setiastro.saspro import main
+from setiastro.saspro.__main__ import main
 
 if __name__ == "__main__":
     main()
-
-
