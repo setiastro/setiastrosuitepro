@@ -1229,7 +1229,7 @@ class ABEDialog(QDialog):
         self._preview_source_f01 = a  # ← no np.clip
 
         src_to_show = (hard_autostretch(self._preview_source_f01, target_median=0.5, sigma=2,
-                                        linked=False, use_16bit=True)
+                                        linked=False, use_24bit=True)
                     if getattr(self, "_autostretch_on", False) else self._preview_source_f01)
 
         if src_to_show.ndim == 2 or (src_to_show.ndim == 3 and src_to_show.shape[2] == 1):
@@ -1349,7 +1349,7 @@ class ABEDialog(QDialog):
         # Prefer float source (avoids 8-bit clipping); fall back to decoding _last_preview if needed
         arr = self._preview_source_f01 if self._preview_source_f01 is not None else (self._last_preview.astype(np.float32)/255.0)
 
-        stretched = hard_autostretch(arr, target_median=0.5, sigma=2, linked=False, use_16bit=True)
+        stretched = hard_autostretch(arr, target_median=0.5, sigma=2, linked=False, use_24bit=True)
 
         buf8 = (np.clip(stretched, 0.0, 1.0) * 255.0).astype(np.uint8)
         if buf8.ndim == 2:
@@ -1367,7 +1367,7 @@ class ABEDialog(QDialog):
         if self._preview_source_f01 is None:
             return
         stretched = hard_autostretch(self._preview_source_f01, target_median=0.5, sigma=2,
-                             linked=False, use_16bit=True)
+                             linked=False, use_24bit=True)
         buf8 = (np.clip(stretched, 0.0, 1.0) * 255.0).astype(np.uint8)
         if buf8.ndim == 2:
             buf8 = np.stack([buf8] * 3, axis=-1)

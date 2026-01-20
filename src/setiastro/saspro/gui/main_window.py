@@ -2798,7 +2798,7 @@ class AstroSuiteProMainWindow(
         target = float(self.settings.value("display/target", 0.30, type=float))
         sigma  = float(self.settings.value("display/sigma", 5.0, type=float))
         linked = bool(self.settings.value("display/stretch_linked", False, type=bool))
-        use_16 = self.settings.value("display/autostretch_16bit", True, type=bool)
+        use_24 = self.settings.value("display/autostretch_24bit", True, type=bool)
 
         # if your view exposes per-view overrides, prefer those
         if hasattr(view, "autostretch_target"):
@@ -2824,7 +2824,7 @@ class AstroSuiteProMainWindow(
                 target_median=target,
                 linked=linked,
                 sigma=sigma,
-                use_16bit=use_16,
+                use_24bit=use_24,
             )
         except Exception as e:
             QMessageBox.warning(self, "Display-Stretch", f"Failed to apply autostretch:\n{e}")

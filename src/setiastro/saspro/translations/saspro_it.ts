@@ -8037,8 +8037,8 @@ Impostalo in Preferenze → Eseguibile ASTAP.</translation>
       <translation>Cancella</translation>
     </message>
     <message>
-      <source>Compute autostretch on a 16-bit histogram (smoother gradients).</source>
-      <translation>Calcola autostretch su istogramma 16-bit (gradienti più uniformi).</translation>
+      <source>Compute autostretch on a 24-bit histogram (smoother gradients).</source>
+      <translation>Calcola autostretch su istogramma 24-bit (gradienti più uniformi).</translation>
     </message>
     <message>
       <source>Cosmic Clarity folder:</source>
@@ -8069,8 +8069,8 @@ Impostalo in Preferenze → Eseguibile ASTAP.</translation>
       <translation>Eseguibile GraXpert:</translation>
     </message>
     <message>
-      <source>High-quality autostretch (16-bit; better gradients)</source>
-      <translation>Autostretch alta qualità (16-bit; gradienti migliori)</translation>
+      <source>High-quality autostretch (24-bit; better gradients)</source>
+      <translation>Autostretch alta qualità (24-bit; gradienti migliori)</translation>
     </message>
     <message>
       <source>Italian</source>

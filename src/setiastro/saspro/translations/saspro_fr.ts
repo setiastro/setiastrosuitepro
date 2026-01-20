@@ -9402,7 +9402,7 @@ Définissez-le dans Préférences → Exécutable ASTAP.</translation>
       <translation>Effacer</translation>
     </message>
     <message>
-      <source>Compute autostretch on a 16-bit histogram (smoother gradients).</source>
+      <source>Compute autostretch on a 24-bit histogram (smoother gradients).</source>
       <translation>Calculer l'auto-étirement sur un histogramme 16-bit (dégradés plus doux).</translation>
     </message>
     <message>
@@ -9474,7 +9474,7 @@ Définissez-le dans Préférences → Exécutable ASTAP.</translation>
       <translation>Haute</translation>
     </message>
     <message>
-      <source>High-quality autostretch (16-bit; better gradients)</source>
+      <source>High-quality autostretch (24-bit; better gradients)</source>
       <translation>Auto-étirement haute qualité (16-bit; meilleurs dégradés)</translation>
     </message>
     <message>

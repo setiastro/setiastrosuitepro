@@ -9216,7 +9216,7 @@ Set it in Preferences → ASTAP executable.</source>
       <translation>Очистити</translation>
     </message>
     <message>
-      <source>Compute autostretch on a 16-bit histogram (smoother gradients).</source>
+      <source>Compute autostretch on a 24-bit histogram (smoother gradients).</source>
       <translation>Обчислювати авто-стретч на 16-бітній гістограмі (плавніші градієнти).</translation>
     </message>
     <message>
@@ -9438,7 +9438,7 @@ Set it in Preferences → ASTAP executable.</source>
       <translation>Висока</translation>
     </message>
     <message>
-      <source>High-quality autostretch (16-bit; better gradients)</source>
+      <source>High-quality autostretch (24-bit; better gradients)</source>
       <translation>Високоякісний авто-стретч (16-біт; кращі градієнти)</translation>
     </message>
     <message>

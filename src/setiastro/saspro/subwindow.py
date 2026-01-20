@@ -2521,7 +2521,7 @@ class ImageSubWindow(QWidget):
                 target_median=self.autostretch_target,
                 sigma=self.autostretch_sigma,
                 linked=(not is_mono and self._autostretch_linked),
-                use_16bit=None,
+                use_24bit=None,
             )
         else:
             vis = arr
