@@ -951,7 +951,7 @@ class ABEDialog(QDialog):
 
         # show autostretched or raw; siril_style_autostretch() already clips its result
         src_to_show = (hard_autostretch(self._preview_source_f01, target_median=0.5, sigma=2,
-                                        linked=False, use_16bit=True)
+                                        linked=False, use_24bit=True)
                     if getattr(self, "_autostretch_on", False) else self._preview_source_f01)
 
         if src_to_show.ndim == 2 or (src_to_show.ndim == 3 and src_to_show.shape[2] == 1):
