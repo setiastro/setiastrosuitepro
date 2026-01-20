@@ -20,6 +20,12 @@ from datetime import datetime
 from typing import List, Tuple, Optional
 
 import numpy as np
+
+try:
+    _trapz = np.trapezoid
+except AttributeError:
+    _trapz = np.trapz
+
 import numpy.ma as ma
 import pandas as pd
 
@@ -313,8 +319,8 @@ class SaspViewer(QMainWindow):
             for color in ("red","green","blue"):
                 data = rgb_data[color]
                 if data is not None:
-                    S_star = np.trapezoid(data["response"], x=common_wl)
-                    S_veg  = np.trapezoid(fl_veg_c * data["T_sys"], x=common_wl)
+                    S_star = _trapz(data["response"], x=common_wl)
+                    S_veg  = _trapz(fl_veg_c * data["T_sys"], x=common_wl)
                     if S_veg>0 and S_star>0:
                         mag = -2.5 * np.log10(S_star / S_veg)
                         mag_texts.append(f"{color[0].upper()}→{data['filter_name']}: {mag:.2f}")
@@ -1485,9 +1491,9 @@ class SFCCDialog(QDialog):
         wl_ref, fl_ref = load_sed(ref_sed_name)
         fr_i = np.interp(wl_grid, wl_ref, fl_ref, left=0.0, right=0.0)
 
-        S_ref_R = np.trapezoid(fr_i * T_sys_R, x=wl_grid)
-        S_ref_G = np.trapezoid(fr_i * T_sys_G, x=wl_grid)
-        S_ref_B = np.trapezoid(fr_i * T_sys_B, x=wl_grid)
+        S_ref_R = _trapz(fr_i * T_sys_R, x=wl_grid)
+        S_ref_G = _trapz(fr_i * T_sys_G, x=wl_grid)
+        S_ref_B = _trapz(fr_i * T_sys_B, x=wl_grid)
 
         diag_meas_RG, diag_exp_RG = [], []
         diag_meas_BG, diag_exp_BG = [], []
@@ -1510,9 +1516,9 @@ class SFCCDialog(QDialog):
             try:
                 wl_s, fl_s = load_sed(pname)
                 fs_i = np.interp(wl_grid, wl_s, fl_s, left=0.0, right=0.0)
-                S_sr = np.trapezoid(fs_i * T_sys_R, x=wl_grid)
-                S_sg = np.trapezoid(fs_i * T_sys_G, x=wl_grid)
-                S_sb = np.trapezoid(fs_i * T_sys_B, x=wl_grid)
+                S_sr = _trapz(fs_i * T_sys_R, x=wl_grid)
+                S_sg = _trapz(fs_i * T_sys_G, x=wl_grid)
+                S_sb = _trapz(fs_i * T_sys_B, x=wl_grid)
                 template_integrals[pname] = (S_sr, S_sg, S_sb)
             except Exception as e:
                 print(f"[SFCC] Warning: failed to load/integrate template {pname}: {e}")
