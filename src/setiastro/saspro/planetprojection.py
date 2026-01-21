@@ -1026,35 +1026,31 @@ def export_pseudo_surface_html(
     rgb: np.ndarray,
     out_path: str | None = None,
     *,
-    title: str = "Pseudo Surface (Height from Brightness)",
-    # mesh size control (trade quality vs HTML size)
+    title: str = "Pseudo Surface (Point Cloud)",
     max_dim: int = 420,
-    # height controls
-    z_scale: float = 0.35,     # relative to min(W,H) after downsample
+    z_scale: float = 0.35,          # original scale
     depth_gamma: float = 1.15,
     blur_sigma: float = 1.2,
     invert: bool = False,
-    # NEW: make depth coherent (kills spikes)
-    block: int = 10,           # 10 => 10x10 pixel average height
-    block_blur_sigma: float = 0.6,  # tiny blur after block for step edges
-    # NEW: safety cap so browsers don't melt if someone cranks max_dim
-    max_vertices: int = 220_000,     # ~470x470 grid
+    block: int = 10,
+    block_blur_sigma: float = 0.6,
+    max_vertices: int = 900_000,
+    point_size: float = 1.6,        # NEW: visual density control
 ):
     """
-    Interactive Plotly Mesh3d of a displaced heightfield:
-      - XY is image plane
-      - Z is derived from luminance (pseudo surface)
-      - Vertex colors come from RGB
-
-    Uses image-style coordinates: +x right, +y down.
+    Interactive Plotly Scatter3d point cloud:
+      - XY = image plane
+      - Z  = luminance-derived height
+      - Point color = RGB
     """
     import os
     import numpy as np
+    import cv2
     import plotly.graph_objects as go
 
     x = np.asarray(rgb)
     if x.ndim != 3 or x.shape[2] < 3:
-        raise ValueError("export_pseudo_surface_html expects RGB image (H,W,3).")
+        raise ValueError("RGB image required")
 
     # ---- float01 ----
     if x.dtype == np.uint8:
@@ -1062,112 +1058,88 @@ def export_pseudo_surface_html(
     elif x.dtype == np.uint16:
         img01 = x[..., :3].astype(np.float32) / 65535.0
     else:
-        img01 = x[..., :3].astype(np.float32, copy=False)
-        img01 = np.clip(img01, 0.0, 1.0)
+        img01 = np.clip(x[..., :3].astype(np.float32), 0.0, 1.0)
 
     H, W = img01.shape[:2]
 
-    # ---- downsample for mesh size ----
-    # clamp requested max_dim (prevents accidental 2k exports)
+    # ---- downsample ----
     max_dim = int(np.clip(max_dim, 128, 900))
-
-    s = float(max_dim) / float(max(H, W))
+    s = max_dim / float(max(H, W))
     if s < 1.0:
-        newW = max(64, int(round(W * s)))
-        newH = max(64, int(round(H * s)))
-        img01_ds = cv2.resize(img01, (newW, newH), interpolation=cv2.INTER_AREA)
-    else:
-        img01_ds = img01
+        img01 = cv2.resize(
+            img01,
+            (max(64, int(W * s)), max(64, int(H * s))),
+            interpolation=cv2.INTER_AREA,
+        )
 
-    hH, hW = img01_ds.shape[:2]
+    hH, hW = img01.shape[:2]
 
-    # ---- safety: cap vertex count (triangles scale ~2*(H-1)*(W-1)) ----
+    # ---- vertex cap ----
     if hH * hW > max_vertices:
-        scale = np.sqrt(float(max_vertices) / float(hH * hW))
-        newW = max(64, int(round(hW * scale)))
-        newH = max(64, int(round(hH * scale)))
-        img01_ds = cv2.resize(img01_ds, (newW, newH), interpolation=cv2.INTER_AREA)
-        hH, hW = img01_ds.shape[:2]
+        scale = np.sqrt(max_vertices / float(hH * hW))
+        img01 = cv2.resize(
+            img01,
+            (int(hW * scale), int(hH * scale)),
+            interpolation=cv2.INTER_AREA,
+        )
+        hH, hW = img01.shape[:2]
 
-    # ---- build height map from luminance ----
-    lum = (0.299 * img01_ds[..., 0] + 0.587 * img01_ds[..., 1] + 0.114 * img01_ds[..., 2]).astype(np.float32)
+    # ---- luminance → height ----
+    lum = (
+        0.299 * img01[..., 0]
+        + 0.587 * img01[..., 1]
+        + 0.114 * img01[..., 2]
+    ).astype(np.float32)
 
-    # Robust normalize (keep your existing behavior)
-    p_lo = float(np.percentile(lum, 1.0))
-    p_hi = float(np.percentile(lum, 99.5))
-    if p_hi <= p_lo + 1e-9:
-        h01 = np.clip(lum, 0.0, 1.0)
-    else:
-        h01 = (lum - p_lo) / (p_hi - p_lo)
-        h01 = np.clip(h01, 0.0, 1.0)
+    p_lo = np.percentile(lum, 1.0)
+    p_hi = np.percentile(lum, 99.5)
+    h01 = np.clip((lum - p_lo) / max(p_hi - p_lo, 1e-9), 0.0, 1.0)
 
     if invert:
         h01 = 1.0 - h01
 
-    # ---- NEW: block smoothing to make depth coherent like wiggle ----
-    # each block shares one height value (10x10 average by default)
-    b = int(max(1, block))
+    # ---- coherence smoothing ----
+    b = max(1, int(block))
     if b > 1:
-        # cv2.blur is a fast box filter (mean filter)
         h01 = cv2.blur(h01, (b, b), borderType=cv2.BORDER_REFLECT101)
 
-    # optional tiny blur after blocking to soften terraces
     if block_blur_sigma and block_blur_sigma > 0:
         h01 = cv2.GaussianBlur(h01, (0, 0), float(block_blur_sigma))
 
-    # your existing smooth (kept; you can set blur_sigma=0 if you want)
     if blur_sigma and blur_sigma > 0:
         h01 = cv2.GaussianBlur(h01, (0, 0), float(blur_sigma))
 
-    # gamma shape
-    g = float(max(1e-3, depth_gamma))
-    h01 = np.clip(h01, 0.0, 1.0) ** g
+    h01 = np.clip(h01, 0.0, 1.0) ** max(1e-3, depth_gamma)
 
-    # centered displacement [-1,+1]
-    h = (h01 * 2.0 - 1.0).astype(np.float32)
+    # ---- FINAL DEPTH (HALF HEIGHT) ----
+    zmax = 0.5 * min(hH, hW) * float(z_scale)
+    Z = (h01 * 2.0 - 1.0) * zmax
 
-    # Z scale in pixels-ish
-    zmax = float(min(hH, hW)) * float(z_scale)
-    z = h * zmax
-
-    # ---- mesh vertices ----
-    yy, xx = np.mgrid[0:hH, 0:hW].astype(np.float32)
+    # ---- XY grid ----
+    yy, xx = np.mgrid[0:hH, 0:hW]
     X = (xx - (hW - 1) * 0.5).reshape(-1)
     Y = (yy - (hH - 1) * 0.5).reshape(-1)
-    Z = z.reshape(-1)
+    Z = Z.reshape(-1)
 
-    # vertex colors
-    cols = np.clip(img01_ds.reshape(-1, 3) * 255.0, 0, 255).astype(np.uint8)
-    alpha = np.full((cols.shape[0], 1), 255, dtype=np.uint8)
-    vcol = np.concatenate([cols, alpha], axis=1)
+    # ---- colors ----
+    colors = np.clip(img01.reshape(-1, 3) * 255.0, 0, 255).astype(np.uint8)
+    rgb_strings = [f"rgb({r},{g},{b})" for r, g, b in colors]
 
-    # ---- triangles (vectorized) ----
-    grid = np.arange(hH * hW, dtype=np.int32).reshape(hH, hW)
-    p00 = grid[:-1, :-1].ravel()
-    p01 = grid[:-1,  1:].ravel()
-    p10 = grid[ 1:, :-1].ravel()
-    p11 = grid[ 1:,  1:].ravel()
-
-    I = np.concatenate([p00, p00]).astype(np.int32)
-    J = np.concatenate([p10, p11]).astype(np.int32)
-    K = np.concatenate([p11, p01]).astype(np.int32)
-
-    mesh = go.Mesh3d(
-        x=X, y=Y, z=Z,
-        i=I, j=J, k=K,
-        vertexcolor=vcol,
-        flatshading=False,
-        lighting=dict(
-            ambient=0.55, diffuse=0.85, specular=0.20,
-            roughness=0.95, fresnel=0.10
+    cloud = go.Scatter3d(
+        x=X,
+        y=Y,
+        z=Z,
+        mode="markers",
+        marker=dict(
+            size=point_size,
+            color=rgb_strings,
+            opacity=1.0,
         ),
-        lightposition=dict(x=2, y=1, z=3),
         hoverinfo="skip",
-        name="PseudoSurface",
-        showscale=False,
+        name="PointCloud",
     )
 
-    fig = go.Figure(data=[mesh])
+    fig = go.Figure(data=[cloud])
     fig.update_layout(
         title=title,
         margin=dict(l=0, r=0, b=0, t=40),
@@ -1178,7 +1150,7 @@ def export_pseudo_surface_html(
             zaxis=dict(visible=False),
             bgcolor="black",
             camera=dict(
-                eye=dict(x=0.0, y=-1.6, z=1.2),
+                eye=dict(x=0.0, y=-1.6, z=1.0),
                 up=dict(x=0.0, y=-1.0, z=0.0),
             ),
         ),
@@ -1189,8 +1161,10 @@ def export_pseudo_surface_html(
 
     html = fig.to_html(include_plotlyjs="cdn", full_html=True)
     if out_path is None:
-        out_path = os.path.expanduser("~/pseudo_surface.html")
+        out_path = os.path.expanduser("~/pseudo_surface_pointcloud.html")
+
     return html, out_path
+
 
 def deproject_galaxy_topdown_u8(
     roi01: np.ndarray,  # float32 [0..1], (H,W,3)
