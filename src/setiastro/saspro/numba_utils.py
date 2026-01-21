@@ -1,5 +1,6 @@
 import numpy as np
 from numba import njit, prange
+from numba.typed import List
 import cv2 
 import math
 
@@ -317,7 +318,255 @@ def invert_image_numba(image):
                     output[y, x, c] = 1.0 - image[y, x, c]
         return output
 
-@njit(parallel=True, cache=True)
+@njit(parallel=True, fastmath=True)
+def rotate_180_numba(image):
+    """
+    Rotates the image 180 degrees.
+    Works with both mono (2D) and color (3D) images.
+    """
+    if image.ndim == 2:
+        height, width = image.shape
+        output = np.empty((height, width), dtype=image.dtype)
+        for y in prange(height):
+            for x in prange(width):
+                output[y, x] = image[height - 1 - y, width - 1 - x]
+        return output
+    else:
+        height, width, channels = image.shape
+        output = np.empty((height, width, channels), dtype=image.dtype)
+        for y in prange(height):
+            for x in prange(width):
+                for c in range(channels):
+                    output[y, x, c] = image[height - 1 - y, width - 1 - x, c]
+        return output
+
+def normalize_flat_cfa_inplace(flat2d: np.ndarray, pattern: str, *, combine_greens: bool = True) -> np.ndarray:
+    """
+    Normalize a Bayer/mosaic flat so each CFA plane has median 1.0.
+    Operates in-place on flat2d and returns it.
+
+    pattern: 'RGGB','BGGR','GRBG','GBRG'
+    combine_greens: if True, use one median for both greens (reduces checkerboard risk)
+    """
+    pat = (pattern or "RGGB").strip().upper()
+    if pat not in ("RGGB", "BGGR", "GRBG", "GBRG"):
+        pat = "RGGB"
+
+    # map (row_parity, col_parity) -> plane key
+    # row0: even rows, row1: odd rows; col0: even cols, col1: odd cols
+    if pat == "RGGB":
+        m = {(0,0):"R",  (0,1):"G1", (1,0):"G2", (1,1):"B"}
+    elif pat == "BGGR":
+        m = {(0,0):"B",  (0,1):"G1", (1,0):"G2", (1,1):"R"}
+    elif pat == "GRBG":
+        m = {(0,0):"G1", (0,1):"R",  (1,0):"B",  (1,1):"G2"}
+    else:  # "GBRG"
+        m = {(0,0):"G1", (0,1):"B",  (1,0):"R",  (1,1):"G2"}
+
+    # build slice views
+    planes = {
+        m[(0,0)]: flat2d[0::2, 0::2],
+        m[(0,1)]: flat2d[0::2, 1::2],
+        m[(1,0)]: flat2d[1::2, 0::2],
+        m[(1,1)]: flat2d[1::2, 1::2],
+    }
+
+    def safe_median(a: np.ndarray) -> float:
+        v = a[np.isfinite(a) & (a > 0)]
+        if v.size == 0:
+            return 1.0
+        d = float(np.median(v))
+        return d if np.isfinite(d) and d > 0 else 1.0
+
+    # greens
+    if combine_greens and ("G1" in planes) and ("G2" in planes):
+        g = np.concatenate([
+            planes["G1"][np.isfinite(planes["G1"]) & (planes["G1"] > 0)].ravel(),
+            planes["G2"][np.isfinite(planes["G2"]) & (planes["G2"] > 0)].ravel(),
+        ])
+        denom_g = float(np.median(g)) if g.size else 1.0
+        if not np.isfinite(denom_g) or denom_g <= 0:
+            denom_g = 1.0
+        planes["G1"][:] = planes["G1"] / denom_g
+        planes["G2"][:] = planes["G2"] / denom_g
+    else:
+        for k in ("G1","G2"):
+            if k in planes:
+                d = safe_median(planes[k])
+                planes[k][:] = planes[k] / d
+
+    # R / B
+    for k in ("R","B"):
+        if k in planes:
+            d = safe_median(planes[k])
+            planes[k][:] = planes[k] / d
+
+    # final safety
+    np.nan_to_num(flat2d, copy=False, nan=1.0, posinf=1.0, neginf=1.0)
+    flat2d[flat2d == 0] = 1.0
+    return flat2d
+
+
+
+@njit(parallel=True, fastmath=True)
+def _flat_div_2d(img, flat):
+    h, w = img.shape
+    for y in prange(h):
+        for x in range(w):
+            f = flat[y, x]
+            if (not np.isfinite(f)) or f <= 0.0:
+                f = 1.0
+            img[y, x] = img[y, x] / f
+    return img
+
+@njit(parallel=True, fastmath=True)
+def _flat_div_hwc(img, flat):
+    h, w, c = img.shape
+    flat_is_2d = (flat.ndim == 2)
+    for y in prange(h):
+        for x in range(w):
+            if flat_is_2d:
+                f0 = flat[y, x]
+                if (not np.isfinite(f0)) or f0 <= 0.0:
+                    f0 = 1.0
+                for k in range(c):
+                    img[y, x, k] = img[y, x, k] / f0
+            else:
+                for k in range(c):
+                    f = flat[y, x, k]
+                    if (not np.isfinite(f)) or f <= 0.0:
+                        f = 1.0
+                    img[y, x, k] = img[y, x, k] / f
+    return img
+
+@njit(parallel=True, fastmath=True)
+def _flat_div_chw(img, flat):
+    c, h, w = img.shape
+    flat_is_2d = (flat.ndim == 2)
+    for y in prange(h):
+        for x in range(w):
+            if flat_is_2d:
+                f0 = flat[y, x]
+                if (not np.isfinite(f0)) or f0 <= 0.0:
+                    f0 = 1.0
+                for k in range(c):
+                    img[k, y, x] = img[k, y, x] / f0
+            else:
+                for k in range(c):
+                    f = flat[k, y, x]
+                    if (not np.isfinite(f)) or f <= 0.0:
+                        f = 1.0
+                    img[k, y, x] = img[k, y, x] / f
+    return img
+
+def apply_flat_division_numba(image, master_flat, master_bias=None):
+    """
+    Supports:
+      - 2D mono/bayer: (H,W)
+      - Color HWC:     (H,W,3)
+      - Color CHW:     (3,H,W)
+
+    NOTE: master_bias arg kept for API compatibility; do bias/dark subtraction outside.
+    """
+    if image.ndim == 2:
+        return _flat_div_2d(image, master_flat)
+
+    if image.ndim == 3:
+        # CHW common in your pipeline
+        if image.shape[0] == 3 and image.shape[-1] != 3:
+            return _flat_div_chw(image, master_flat)
+        # HWC
+        if image.shape[-1] == 3:
+            return _flat_div_hwc(image, master_flat)
+
+        # fallback: treat as HWC
+        return _flat_div_hwc(image, master_flat)
+
+    raise ValueError(f"apply_flat_division_numba: expected 2D or 3D, got shape {image.shape}")
+
+def _bayerpat_to_id(pat: str) -> int:
+    pat = (pat or "RGGB").strip().upper()
+    if pat == "RGGB": return 0
+    if pat == "BGGR": return 1
+    if pat == "GRBG": return 2
+    if pat == "GBRG": return 3
+    return 0
+
+def _bayer_plane_medians(flat2d: np.ndarray, pat: str) -> np.ndarray:
+    pat = (pat or "RGGB").strip().upper()
+    if pat == "RGGB":
+        r  = np.median(flat2d[0::2, 0::2])
+        g1 = np.median(flat2d[0::2, 1::2])
+        g2 = np.median(flat2d[1::2, 0::2])
+        b  = np.median(flat2d[1::2, 1::2])
+    elif pat == "BGGR":
+        b  = np.median(flat2d[0::2, 0::2])
+        g1 = np.median(flat2d[0::2, 1::2])
+        g2 = np.median(flat2d[1::2, 0::2])
+        r  = np.median(flat2d[1::2, 1::2])
+    elif pat == "GRBG":
+        g1 = np.median(flat2d[0::2, 0::2])
+        r  = np.median(flat2d[0::2, 1::2])
+        b  = np.median(flat2d[1::2, 0::2])
+        g2 = np.median(flat2d[1::2, 1::2])
+    else:  # GBRG
+        g1 = np.median(flat2d[0::2, 0::2])
+        b  = np.median(flat2d[0::2, 1::2])
+        r  = np.median(flat2d[1::2, 0::2])
+        g2 = np.median(flat2d[1::2, 1::2])
+
+    med4 = np.array([r, g1, g2, b], dtype=np.float32)
+    med4[~np.isfinite(med4)] = 1.0
+    med4[med4 <= 0] = 1.0
+    return med4
+
+@njit(parallel=True, fastmath=True)
+def apply_flat_division_numba_bayer_2d(image, master_flat, med4, pat_id):
+    """
+    Bayer-aware mono division. image/master_flat are (H,W).
+    med4 is [R,G1,G2,B] for that master_flat, pat_id in {0..3}.
+    """
+    # parity index = (row&1)*2 + (col&1)
+    # med4 index order: 0=R, 1=G1, 2=G2, 3=B
+
+    # tables map parity_index -> med4 index
+    # parity_index: 0:(0,0) 1:(0,1) 2:(1,0) 3:(1,1)
+    if pat_id == 0:      # RGGB:  (0,0)R (0,1)G1 (1,0)G2 (1,1)B
+        t0, t1, t2, t3 = 0, 1, 2, 3
+    elif pat_id == 1:    # BGGR:  (0,0)B (0,1)G1 (1,0)G2 (1,1)R
+        t0, t1, t2, t3 = 3, 1, 2, 0
+    elif pat_id == 2:    # GRBG:  (0,0)G1 (0,1)R (1,0)B (1,1)G2
+        t0, t1, t2, t3 = 1, 0, 3, 2
+    else:                # GBRG:  (0,0)G1 (0,1)B (1,0)R (1,1)G2
+        t0, t1, t2, t3 = 1, 3, 0, 2
+
+    H, W = image.shape
+    for y in prange(H):
+        y1 = y & 1
+        for x in range(W):
+            x1 = x & 1
+            p = (y1 << 1) | x1  # 0..3
+            if p == 0:
+                pi = t0
+            elif p == 1:
+                pi = t1
+            elif p == 2:
+                pi = t2
+            else:
+                pi = t3
+
+            denom = master_flat[y, x] / med4[pi]
+            if denom == 0.0 or (not np.isfinite(denom)):
+                denom = 1.0
+            image[y, x] /= denom
+    return image
+
+def apply_flat_division_bayer(image2d: np.ndarray, flat2d: np.ndarray, bayerpat: str):
+    med4 = _bayer_plane_medians(flat2d, bayerpat)
+    pid = _bayerpat_to_id(bayerpat)
+    return apply_flat_division_numba_bayer_2d(image2d, flat2d, med4, pid)
+
+@njit(parallel=True)
 def subtract_dark_3d(frames, dark_frame):
     """
     For mono stack:
@@ -1395,34 +1644,31 @@ def subtract_dark_with_pedestal(frames, dark_frame, pedestal):
 
 
 @njit(parallel=True, fastmath=True, cache=True)
-def parallel_measure_frames(images):
-    """
-    Parallel processing for measuring simple stats (mean only).
-    'images' is a list (or array) of N images, each of which can be:
-      - 2D (H,W) for a single mono image
-      - 3D (H,W,C) for a single color image
-      - Possibly 3D or 4D if you're storing multi-frame stacks in 'images'
-    We just compute np.mean(...) of each image, no matter how many dims.
-    """
-    n = len(images)
-    means = np.zeros(n, dtype=np.float32)
-
+def _parallel_measure_frames_stack(stack):  # stack: float32[N,H,W] or float32[N,H,W,C]
+    n = stack.shape[0]
+    means = np.empty(n, np.float32)
     for i in prange(n):
-        arr = images[i]
-        # arr could have shape (H,W) or (H,W,C) or (F,H,W) etc.
-        # np.mean works for any dimension, so no special logic needed.
-        means[i] = np.float32(np.mean(arr))
+        # Option A: mean then cast
+        # m = np.mean(stack[i])
+        # means[i] = np.float32(m)
 
+        # Option B (often a hair faster): sum / size then cast
+        s = np.sum(stack[i])          # no kwargs
+        means[i] = np.float32(s / stack[i].size)
     return means
 
-
+def parallel_measure_frames(images_py):
+    a = [np.ascontiguousarray(x, dtype=np.float32) for x in images_py]
+    a = [x[:, :, None] if x.ndim == 2 else x for x in a]
+    stack = np.ascontiguousarray(np.stack(a, axis=0))  # (N,H,W,C)
+    return _parallel_measure_frames_stack(stack)
 @njit(fastmath=True, cache=True)
 def fast_mad(image):
     """ Computes the Median Absolute Deviation (MAD) as a robust noise estimator. """
-    flat_image = image.ravel()  # âœ… Flatten the 2D array into 1D
+    flat_image = image.ravel()  # ✅ Flatten the 2D array into 1D
     median_val = np.median(flat_image)  # Compute median
     mad = np.median(np.abs(flat_image - median_val))  # Compute MAD
-    return mad * 1.4826  # âœ… Scale MAD to match standard deviation (for Gaussian noise)
+    return mad * 1.4826  # ✅ Scale MAD to match standard deviation (for Gaussian noise)
 
 
 
@@ -1441,95 +1687,235 @@ def compute_noise(image):
     """ Estimates noise using Median Absolute Deviation (MAD). """
     return fast_mad(image)
 
+def _downsample_for_stars(img: np.ndarray, factor: int = 4) -> np.ndarray:
+    """
+    Very cheap spatial downsample for star counting.
+    Works on mono or RGB. Returns float32 2D.
+    """
+    if img.ndim == 3 and img.shape[-1] == 3:
+        # luma first
+        r, g, b = img[..., 0], img[..., 1], img[..., 2]
+        img = 0.2126*r + 0.7152*g + 0.0722*b
+    img = np.asarray(img, dtype=np.float32, order="C")
+    if factor <= 1:
+        return img
+    # stride (fast & cache friendly), not interpolation
+    return img[::factor, ::factor]
 
 
+def fast_star_count_lite(img: np.ndarray,
+                         sample_stride: int = 8,
+                         localmax_k: int = 3,
+                         thr_sigma: float = 4.0,
+                         max_ecc_samples: int = 200) -> tuple[int, float]:
+    """
+    Super-fast star counter:
+      • sample a tiny subset to estimate background mean/std
+      • local-maxima on small image
+      • optional rough eccentricity on a small random subset
+    Returns (count, avg_ecc).
+    """
+    # img is 2D float32, already downsampled
+    H, W = img.shape
+    # 1) quick background stats on a sparse grid
+    samp = img[::sample_stride, ::sample_stride]
+    mu = float(np.mean(samp))
+    sigma = float(np.std(samp))
+    thr = mu + thr_sigma * max(sigma, 1e-6)
+
+    # 2) find local maxima above threshold
+    # small structuring element; k must be odd
+    k = localmax_k if (localmax_k % 2 == 1) else (localmax_k + 1)
+    se = np.ones((k, k), np.uint8)
+    # dilate the image (on float -> do it via cv2.dilate after scaling)
+    # scale to 16-bit to keep numeric fidelity (cheap)
+    scaled = (img * (65535.0 / max(np.max(img), 1e-6))).astype(np.uint16)
+    dil = cv2.dilate(scaled, se)
+    # peaks are pixels that equal the local max and exceed thr
+    peaks = (scaled == dil) & (img > thr)
+    count = int(np.count_nonzero(peaks))
+
+    # 3) (optional) rough eccentricity on a tiny subset
+    if count == 0:
+        return 0, 0.0
+    if max_ecc_samples <= 0:
+        return count, 0.0
+
+    ys, xs = np.where(peaks)
+    if xs.size > max_ecc_samples:
+        idx = np.random.choice(xs.size, max_ecc_samples, replace=False)
+        xs, ys = xs[idx], ys[idx]
+
+    ecc_vals = []
+    # small window around each peak
+    r = 2  # 5×5 window
+    for x, y in zip(xs, ys):
+        x0, x1 = max(0, x - r), min(W, x + r + 1)
+        y0, y1 = max(0, y - r), min(H, y + r + 1)
+        patch = img[y0:y1, x0:x1]
+        if patch.size < 9:
+            continue
+        # second moments for ellipse approximation
+        yy, xx = np.mgrid[y0:y1, x0:x1]
+        yy = yy.astype(np.float32) - y
+        xx = xx.astype(np.float32) - x
+        w = patch - patch.min()
+        s = float(w.sum())
+        if s <= 0:
+            continue
+        mxx = float((w * (xx*xx)).sum() / s)
+        myy = float((w * (yy*yy)).sum() / s)
+        # approximate major/minor from variances
+        a = math.sqrt(max(mxx, myy))
+        b = math.sqrt(min(mxx, myy))
+        if a > 1e-6:
+            e = math.sqrt(max(0.0, 1.0 - (b*b)/(a*a)))
+            ecc_vals.append(e)
+    avg_ecc = float(np.mean(ecc_vals)) if ecc_vals else 0.0
+    return count, avg_ecc
+
+
+
+def compute_star_count_fast_preview(preview_2d: np.ndarray) -> tuple[int, float]:
+    """
+    Wrapper used in measurement: downsample aggressively and run the lite counter.
+    """
+    tiny = _downsample_for_stars(preview_2d, factor=4)  # try 4–8 depending on your sensor
+    return fast_star_count_lite(tiny, sample_stride=8, localmax_k=3, thr_sigma=4.0, max_ecc_samples=120)
 
 def compute_star_count(image):
-    """ Uses fast star detection instead of DAOStarFinder. """
     return fast_star_count(image)
 
-
 def fast_star_count(
-    image, 
-    blur_size=15,      # Smaller blur preserves faint/small stars
-    threshold_factor=0.8, 
-    min_area=2, 
-    max_area=5000
+    image,
+    blur_size=None,
+    threshold_factor=0.8,
+    min_area=None,
+    max_area=None,
+    *,
+    # robust stretch controls (file1)
+    stretch=True,
+    gamma=0.45,
+    p_lo=0.1,
+    p_hi=99.8,
+    # morphology behavior
+    morph_open="auto",   # "auto" | True | False
 ):
     """
-    Estimate star count + average eccentricity by:
-      1) Convert to 8-bit grayscale
-      2) Blur => subtract => enhance stars
-      3) Otsu's threshold * threshold_factor => final threshold
-      4) Contour detection + ellipse fit => eccentricity
     Returns (star_count, avg_ecc).
+
+    stretch=True (default): robust for linear astro images (percentile stretch + gamma)
+    stretch=False: simple min/max normalize (legacy behavior)
     """
 
-    # 1) Convert to grayscale if needed
+    # 1) grayscale float32
     if image.ndim == 3:
-        image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-
-    # 2) Normalize to 8-bit
-    img_min, img_max = image.min(), image.max()
-    if img_max > img_min:
-        image_8u = (255.0 * (image - img_min) / (img_max - img_min)).astype(np.uint8)
+        r, g, b = image[..., 0], image[..., 1], image[..., 2]
+        img = (0.2126 * r + 0.7152 * g + 0.0722 * b).astype(np.float32, copy=False)
     else:
-        return 0, 0.0  # All pixels identical => no stars
+        img = np.asarray(image, dtype=np.float32, order="C")
 
-    # 3) Blur + subtract => enhance
+    H, W = img.shape[:2]
+    short_side = max(1, min(H, W))
+
+    # 2) adaptive params (file1 style)
+    if blur_size is None:
+        k = max(3, int(round(short_side / 80)))
+        blur_size = k if (k % 2 == 1) else (k + 1)
+
+    if min_area is None:
+        min_area = 1
+
+    if max_area is None:
+        max_area = max(100, int(0.01 * H * W))
+
+    # 3) build 8-bit working image
+    if stretch:
+        lo = float(np.percentile(img, p_lo))
+        hi = float(np.percentile(img, p_hi))
+        if not (hi > lo):
+            lo, hi = float(img.min()), float(img.max())
+            if not (hi > lo):
+                return 0, 0.0
+
+        norm = (img - lo) / max(1e-8, (hi - lo))
+        norm = np.clip(norm, 0.0, 1.0)
+
+        if gamma and gamma > 0:
+            norm = np.power(norm, gamma, dtype=np.float32)
+
+        image_8u = (norm * 255.0).astype(np.uint8)
+    else:
+        img_min = float(img.min())
+        img_max = float(img.max())
+        if img_max > img_min:
+            image_8u = (255.0 * (img - img_min) / (img_max - img_min)).astype(np.uint8)
+        else:
+            return 0, 0.0
+
+    # 4) blur + subtract
     blurred = cv2.GaussianBlur(image_8u, (blur_size, blur_size), 0)
-    subtracted = cv2.absdiff(image_8u, blurred)
+    sub = cv2.absdiff(image_8u, blurred)
 
-    # 4) Otsu's threshold on 'subtracted'
-    otsu_thresh_val, _ = cv2.threshold(subtracted, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
-    # Scale it down if we want to detect more/fainter stars
-    final_thresh_val = int(otsu_thresh_val * threshold_factor)
-    if final_thresh_val < 2:
-        final_thresh_val = 2  # avoid going below 2
+    # 5) Otsu + threshold_factor
+    otsu, _ = cv2.threshold(sub, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+    thr = max(2, int(otsu * threshold_factor))
+    _, mask = cv2.threshold(sub, thr, 255, cv2.THRESH_BINARY)
 
-    # 5) Apply threshold
-    _, thresh = cv2.threshold(subtracted, final_thresh_val, 255, cv2.THRESH_BINARY)
+    # 6) morphology
+    do_morph = False
+    if morph_open == "auto":
+        do_morph = short_side >= 600
+    elif morph_open is True:
+        do_morph = True
 
-    # 6) (Optional) Morphological opening to remove single-pixel noise
-    #    Adjust kernel size if you get too many/few stars
-    kernel = np.ones((2, 2), np.uint8)
-    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+    if do_morph:
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
 
-    # 7) Find contours
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # 7) contours -> ellipse ecc
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    # 8) Filter contours by area, fit ellipse => compute eccentricity
     star_count = 0
     ecc_values = []
     for c in contours:
         area = cv2.contourArea(c)
         if area < min_area or area > max_area:
             continue
-
         if len(c) < 5:
-            continue  # Need >=5 points to fit an ellipse
-
-        # Fit ellipse
-        ellipse = cv2.fitEllipse(c)
-        (cx, cy), (major_axis, minor_axis), angle = ellipse
-
-        # major_axis >= minor_axis
-        if minor_axis > major_axis:
-            major_axis, minor_axis = minor_axis, major_axis
-
-        if major_axis > 0:
-            ecc = math.sqrt(1.0 - (minor_axis**2 / major_axis**2))
-        else:
-            ecc = 0.0
-
-        ecc_values.append(ecc)
+            continue
+        (_, _), (a, b), _ = cv2.fitEllipse(c)
+        if b > a:
+            a, b = b, a
+        e = math.sqrt(max(0.0, 1.0 - (b * b) / (a * a))) if a > 0 else 0.0
+        ecc_values.append(e)
         star_count += 1
 
-    if star_count > 0:
-        avg_ecc = float(np.mean(ecc_values))
-    else:
-        avg_ecc = 0.0
+    # 8) fallback if too few
+    if star_count < 5:
+        k2 = max(3, (blur_size // 2) | 1)
+        blurred2 = cv2.GaussianBlur(image_8u, (k2, k2), 0)
+        sub2 = cv2.absdiff(image_8u, blurred2)
+        otsu2, _ = cv2.threshold(sub2, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+        thr2 = max(2, int(otsu2 * 0.6))
+        _, mask2 = cv2.threshold(sub2, thr2, 255, cv2.THRESH_BINARY)
+        contours2, _ = cv2.findContours(mask2, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
+        star_count = 0
+        ecc_values = []
+        for c in contours2:
+            area = cv2.contourArea(c)
+            if area < 1 or area > max_area:
+                continue
+            if len(c) < 5:
+                continue
+            (_, _), (a, b), _ = cv2.fitEllipse(c)
+            if b > a:
+                a, b = b, a
+            e = math.sqrt(max(0.0, 1.0 - (b * b) / (a * a))) if a > 0 else 0.0
+            ecc_values.append(e)
+            star_count += 1
+
+    avg_ecc = float(np.mean(ecc_values)) if star_count > 0 else 0.0
     return star_count, avg_ecc
 
 @njit(parallel=True, fastmath=True, cache=True)
@@ -1600,6 +1986,33 @@ def normalize_images(stack, ref_median):
 
 
 @njit(parallel=True, fastmath=True, cache=True)
+def _bilinear_interpolate_numba(out):
+    H, W, C = out.shape
+    for c in range(C):
+        for y in prange(H):
+            for x in range(W):
+                if out[y, x, c] == 0:
+                    sumv = 0.0
+                    cnt = 0
+                    # 3x3 neighborhood average of non-zero samples (simple & fast)
+                    for dy in (-1, 0, 1):
+                        yy = y + dy
+                        if yy < 0 or yy >= H: 
+                            continue
+                        for dx in (-1, 0, 1):
+                            xx = x + dx
+                            if xx < 0 or xx >= W:
+                                continue
+                            v = out[yy, xx, c]
+                            if v != 0:
+                                sumv += v
+                                cnt += 1
+                    if cnt > 0:
+                        out[y, x, c] = sumv / cnt
+    return out
+
+
+@njit(parallel=True, fastmath=True)
 def _edge_aware_interpolate_numba(out):
     """
     For each pixel in out (shape: (H,W,3)) where out[y,x,c] == 0,
@@ -1696,137 +2109,99 @@ def _edge_aware_interpolate_numba(out):
 # and that we want a full (H,W,3) output.
 
 @njit(parallel=True, fastmath=True, cache=True)
-def debayer_RGGB_fullres_fast(image):
-    """
-    For an RGGB pattern:
-      - Even rows: even cols = Red, odd cols = Green.
-      - Odd rows: even cols = Green, odd cols = Blue.
-    """
+def debayer_RGGB_fullres_fast(image, interpolate=True):
     H, W = image.shape
     out = np.zeros((H, W, 3), dtype=image.dtype)
     for y in prange(H):
         for x in range(W):
             if (y & 1) == 0:
-                if (x & 1) == 0:
-                    # Even row, even col: Red
-                    out[y, x, 0] = image[y, x]
-                else:
-                    # Even row, odd col: Green
-                    out[y, x, 1] = image[y, x]
+                if (x & 1) == 0: out[y, x, 0] = image[y, x]  # R
+                else:            out[y, x, 1] = image[y, x]  # G
             else:
-                if (x & 1) == 0:
-                    # Odd row, even col: Green
-                    out[y, x, 1] = image[y, x]
-                else:
-                    # Odd row, odd col: Blue
-                    out[y, x, 2] = image[y, x]
-    _edge_aware_interpolate_numba(out)
+                if (x & 1) == 0: out[y, x, 1] = image[y, x]  # G
+                else:            out[y, x, 2] = image[y, x]  # B
+    if interpolate:
+        _edge_aware_interpolate_numba(out)
     return out
 
 @njit(parallel=True, fastmath=True, cache=True)
-def debayer_BGGR_fullres_fast(image):
-    """
-    For a BGGR pattern:
-      - Even rows: even cols = Blue, odd cols = Green.
-      - Odd rows: even cols = Green, odd cols = Red.
-    """
+def debayer_BGGR_fullres_fast(image, interpolate=True):
     H, W = image.shape
     out = np.zeros((H, W, 3), dtype=image.dtype)
     for y in prange(H):
         for x in range(W):
             if (y & 1) == 0:
-                if (x & 1) == 0:
-                    # Even row, even col: Blue
-                    out[y, x, 2] = image[y, x]
-                else:
-                    # Even row, odd col: Green
-                    out[y, x, 1] = image[y, x]
+                if (x & 1) == 0: out[y, x, 2] = image[y, x]  # B
+                else:            out[y, x, 1] = image[y, x]  # G
             else:
-                if (x & 1) == 0:
-                    # Odd row, even col: Green
-                    out[y, x, 1] = image[y, x]
-                else:
-                    # Odd row, odd col: Red
-                    out[y, x, 0] = image[y, x]
-    _edge_aware_interpolate_numba(out)
+                if (x & 1) == 0: out[y, x, 1] = image[y, x]  # G
+                else:            out[y, x, 0] = image[y, x]  # R
+    if interpolate:
+        _edge_aware_interpolate_numba(out)
     return out
 
 @njit(parallel=True, fastmath=True, cache=True)
-def debayer_GRBG_fullres_fast(image):
-    """
-    For a GRBG pattern:
-      - Even rows: even cols = Green, odd cols = Red.
-      - Odd rows: even cols = Blue, odd cols = Green.
-    """
+def debayer_GRBG_fullres_fast(image, interpolate=True):
     H, W = image.shape
     out = np.zeros((H, W, 3), dtype=image.dtype)
     for y in prange(H):
         for x in range(W):
             if (y & 1) == 0:
-                if (x & 1) == 0:
-                    # Even row, even col: Green
-                    out[y, x, 1] = image[y, x]
-                else:
-                    # Even row, odd col: Red
-                    out[y, x, 0] = image[y, x]
+                if (x & 1) == 0: out[y, x, 1] = image[y, x]  # G
+                else:            out[y, x, 0] = image[y, x]  # R
             else:
-                if (x & 1) == 0:
-                    # Odd row, even col: Blue
-                    out[y, x, 2] = image[y, x]
-                else:
-                    # Odd row, odd col: Green
-                    out[y, x, 1] = image[y, x]
-    _edge_aware_interpolate_numba(out)
+                if (x & 1) == 0: out[y, x, 2] = image[y, x]  # B
+                else:            out[y, x, 1] = image[y, x]  # G
+    if interpolate:
+        _edge_aware_interpolate_numba(out)
     return out
 
 @njit(parallel=True, fastmath=True, cache=True)
-def debayer_GBRG_fullres_fast(image):
-    """
-    For a GBRG pattern:
-      - Even rows: even cols = Green, odd cols = Blue.
-      - Odd rows: even cols = Red, odd cols = Green.
-    """
+def debayer_GBRG_fullres_fast(image, interpolate=True):
     H, W = image.shape
     out = np.zeros((H, W, 3), dtype=image.dtype)
     for y in prange(H):
         for x in range(W):
             if (y & 1) == 0:
-                if (x & 1) == 0:
-                    # Even row, even col: Green
-                    out[y, x, 1] = image[y, x]
-                else:
-                    # Even row, odd col: Blue
-                    out[y, x, 2] = image[y, x]
+                if (x & 1) == 0: out[y, x, 1] = image[y, x]  # G
+                else:            out[y, x, 2] = image[y, x]  # B
             else:
-                if (x & 1) == 0:
-                    # Odd row, even col: Red
-                    out[y, x, 0] = image[y, x]
-                else:
-                    # Odd row, odd col: Green
-                    out[y, x, 1] = image[y, x]
-    _edge_aware_interpolate_numba(out)
+                if (x & 1) == 0: out[y, x, 0] = image[y, x]  # R
+                else:            out[y, x, 1] = image[y, x]  # G
+    if interpolate:
+        _edge_aware_interpolate_numba(out)
     return out
 
-# === Python-Level Dispatch Function ===
-# Since Numba cannot easily compare strings in nopython mode,
-# we do the if/elif check here in Python and then call the appropriate njit function.
 
-def debayer_fits_fast(image_data, bayer_pattern):
-    bp = bayer_pattern.upper()
-    if bp == 'RGGB':
-        return debayer_RGGB_fullres_fast(image_data)
-    elif bp == 'BGGR':
-        return debayer_BGGR_fullres_fast(image_data)
-    elif bp == 'GRBG':
-        return debayer_GRBG_fullres_fast(image_data)
-    elif bp == 'GBRG':
-        return debayer_GBRG_fullres_fast(image_data)
+def debayer_fits_fast(image_data, bayer_pattern, cfa_drizzle=False, method="edge"):
+    bp = (bayer_pattern or "").upper()
+    interpolate = not cfa_drizzle
+
+    # 1) lay down samples; skip interpolate here so we can select method later
+    if bp == "RGGB":
+        out = debayer_RGGB_fullres_fast(image_data, interpolate=False)
+    elif bp == "BGGR":
+        out = debayer_BGGR_fullres_fast(image_data, interpolate=False)
+    elif bp == "GRBG":
+        out = debayer_GRBG_fullres_fast(image_data, interpolate=False)
+    elif bp == "GBRG":
+        out = debayer_GBRG_fullres_fast(image_data, interpolate=False)
     else:
         raise ValueError(f"Unsupported Bayer pattern: {bayer_pattern}")
 
-def debayer_raw_fast(raw_image_data, bayer_pattern="RGGB"):
-    # For RAW images, use the same full-resolution demosaicing logic.
-    return debayer_fits_fast(raw_image_data, bayer_pattern)
+    # 2) interpolate unless CFA drizzle
+    if interpolate:
+        m = (method or "edge").lower()
+        if m == "bilinear":
+            _bilinear_interpolate_numba(out)
+        else:
+            _edge_aware_interpolate_numba(out)
+
+    return out
+
+
+def debayer_raw_fast(raw_image_data, bayer_pattern="RGGB", cfa_drizzle=False, method="edge"):
+    return debayer_fits_fast(raw_image_data, bayer_pattern, cfa_drizzle=cfa_drizzle, method=method)
 
 
 @njit(parallel=True, fastmath=True, cache=True)
@@ -1896,7 +2271,7 @@ def adjust_saturation_numba(image_array, saturation_factor):
 
                 r, g, b = r + m, g + m, b + m  # Add m to shift brightness
 
-            # âœ… Fix: Explicitly cast indices to integers
+            # ✅ Fix: Explicitly cast indices to integers
             output[int(y), int(x), 0] = r
             output[int(y), int(x), 1] = g
             output[int(y), int(x), 2] = b
@@ -1916,7 +2291,7 @@ def applySCNR_numba(image_array):
             r, g, b = image_array[y, x]
             g = min(g, (r + b) / 2)  # Reduce green to the average of red & blue
             
-            # âœ… Fix: Assign channels individually instead of a tuple
+            # ✅ Fix: Assign channels individually instead of a tuple
             output[int(y), int(x), 0] = r
             output[int(y), int(x), 1] = g
             output[int(y), int(x), 2] = b
@@ -2214,123 +2589,193 @@ def hsv_to_rgb_numba(hsv):
     return out
 
 @njit(parallel=True, fastmath=True, cache=True)
-def _cosmetic_correction_numba_fixed(corrected, H, W, C, hot_sigma, cold_sigma):
+def _cosmetic_correction_core(src, dst, H, W, C,
+                              hot_sigma, cold_sigma,
+                              star_mean_ratio,  # e.g. 0.18..0.30
+                              star_max_ratio,   # e.g. 0.45..0.65
+                              sat_threshold,    # absolute cutoff in src units
+                              cold_cluster_max  # max # of neighbors below low before we skip
+                              ):
     """
-    Optimized Numba-compiled local outlier correction.
-    - Computes median and standard deviation from 8 surrounding pixels (excluding center).
-    - If the center pixel is greater than (median + hot_sigma * std_dev), it is replaced with the median.
-    - If the center pixel is less than (median - cold_sigma * std_dev), it is replaced with the median.
-    - Edge pixels are skipped (avoiding padding artifacts).
+    Read from src, write to dst. Center is EXCLUDED from stats.
+    Star guard: if ring mean or ring max are a decent fraction of center, skip (likely a PSF).
+    Cold guard: if many neighbors are also low, skip (structure/shadow, not a dead pixel).
     """
-    local_vals = np.empty(9, dtype=np.float32)  # Holds 8 surrounding pixels
+    local_vals = np.empty(8, dtype=np.float32)
 
-    # Process pixels in parallel, skipping edges
-    for y in prange(1, H - 1):  # Skip first and last rows
-        for x in range(1, W - 1):  # Skip first and last columns
-            # If the image is grayscale, set C=1 and handle accordingly
-            for c_i in prange(C if corrected.ndim == 3 else 1):
+    for y in prange(1, H-1):
+        for x in range(1, W-1):
+            for c in range(C if src.ndim == 3 else 1):
+                # gather 8-neighbor ring (no center)
                 k = 0
-                for dy in range(-1, 2):  # -1, 0, +1
-                    for dx in range(-1, 2):  # -1, 0, +1
-                        if corrected.ndim == 3:  # Color image
-                            local_vals[k] = corrected[y + dy, x + dx, c_i]
-                        else:  # Grayscale image
-                            local_vals[k] = corrected[y + dy, x + dx]
+                ring_sum = 0.0
+                ring_max = -1e30
+                for dy in (-1, 0, 1):
+                    for dx in (-1, 0, 1):
+                        if dy == 0 and dx == 0:
+                            continue
+                        if src.ndim == 3:
+                            v = src[y+dy, x+dx, c]
+                        else:
+                            v = src[y+dy, x+dx]
+                        local_vals[k] = v
+                        ring_sum += v
+                        if v > ring_max:
+                            ring_max = v
                         k += 1
 
-                # Compute median
+                # median and MAD from ring only
                 M = np.median(local_vals)
-
-                # Compute MAD manually
-                abs_devs = np.abs(local_vals - M)
+                abs_devs = np.empty(8, dtype=np.float32)
+                for i in range(8):
+                    abs_devs[i] = abs(local_vals[i] - M)
                 MAD = np.median(abs_devs)
+                sigma = 1.4826 * MAD + 1e-8  # epsilon guard
 
-                # Convert MAD to an approximation of standard deviation
-                sigma_mad = 1.4826 * MAD  
+                # center
+                T = src[y, x, c] if src.ndim == 3 else src[y, x]
 
-                # Get center pixel
-                if corrected.ndim == 3:
-                    T = corrected[y, x, c_i]
+                # saturation guard
+                if T >= sat_threshold:
+                    if src.ndim == 3: dst[y, x, c] = T
+                    else:             dst[y, x]    = T
+                    continue
+
+                high = M + hot_sigma  * sigma
+                low  = M - cold_sigma * sigma
+
+                replace = False
+
+                if T > high:
+                    # Star guard for HOT: neighbors should not form a footprint
+                    ring_mean = ring_sum / 8.0
+                    if (ring_mean / (T + 1e-8) < star_mean_ratio) and (ring_max / (T + 1e-8) < star_max_ratio):
+                        replace = True
+                elif T < low:
+                    # Cold pixel: only if it's isolated (few neighbors also low)
+                    count_below = 0
+                    for i in range(8):
+                        if local_vals[i] < low:
+                            count_below += 1
+                    if count_below <= cold_cluster_max:
+                        replace = True
+
+                if replace:
+                    if src.ndim == 3: dst[y, x, c] = M
+                    else:             dst[y, x]    = M
                 else:
-                    T = corrected[y, x]
+                    if src.ndim == 3: dst[y, x, c] = T
+                    else:             dst[y, x]    = T
 
-                threshold_high = M + (hot_sigma * sigma_mad)
-                threshold_low = M - (cold_sigma * sigma_mad)
 
-                # **Apply correction ONLY if center pixel is an outlier**
-                if T > threshold_high or T < threshold_low:
-                    if corrected.ndim == 3:
-                        corrected[y, x, c_i] = M  # Replace center pixel in color image
-                    else:
-                        corrected[y, x] = M  # Replace center pixel in grayscale image
-
-def bulk_cosmetic_correction_bayer(image, hot_sigma=5.0, cold_sigma=5.0):
+def bulk_cosmetic_correction_numba(image,
+                                   hot_sigma=5.0,
+                                   cold_sigma=5.0,
+                                   star_mean_ratio=0.22,
+                                   star_max_ratio=0.55,
+                                   sat_quantile=0.9995):
     """
-    Perform cosmetic correction on a single-channel Bayer mosaic.
-    Assumes a default Bayer pattern "RGGB":
-      - Red: even rows, even columns
-      - Green1: even rows, odd columns
-      - Green2: odd rows, even columns
-      - Blue: odd rows, odd columns
-    Applies cosmetic correction separately on each channel and reassembles them.
+    Star-safe cosmetic correction for 2D (mono) or 3D (RGB) arrays.
+    Reads from the original, writes to a new array (two-pass).
+    - star_mean_ratio: how large neighbor mean must be vs center to *skip* (PSF)
+    - star_max_ratio : how large neighbor max must be vs center to *skip* (PSF)
+    - sat_quantile   : top quantile to protect from edits (bright cores)
     """
-    H, W = image.shape
-    # Create a copy to hold the corrected image.
-    corrected = image.astype(np.float32).copy()
-    
-    # For each channel, extract the subarray and apply the standard correction.
-    # We use your existing bulk_cosmetic_correction_numba function, which accepts a 2D array.
-    # Red channel (even rows, even cols)
-    red = corrected[0:H:2, 0:W:2]
-    red_corrected = bulk_cosmetic_correction_numba(red, hot_sigma, cold_sigma)
-    corrected[0:H:2, 0:W:2] = red_corrected
-
-    # Blue channel (odd rows, odd cols)
-    blue = corrected[1:H:2, 1:W:2]
-    blue_corrected = bulk_cosmetic_correction_numba(blue, hot_sigma, cold_sigma)
-    corrected[1:H:2, 1:W:2] = blue_corrected
-
-    # Green channel: two sets:
-    # Green1 (even rows, odd cols)
-    green1 = corrected[0:H:2, 1:W:2]
-    green1_corrected = bulk_cosmetic_correction_numba(green1, hot_sigma, cold_sigma)
-    corrected[0:H:2, 1:W:2] = green1_corrected
-
-    # Green2 (odd rows, even cols)
-    green2 = corrected[1:H:2, 0:W:2]
-    green2_corrected = bulk_cosmetic_correction_numba(green2, hot_sigma, cold_sigma)
-    corrected[1:H:2, 0:W:2] = green2_corrected
-
-    return corrected
-
-def bulk_cosmetic_correction_numba(image, hot_sigma=3.0, cold_sigma=3.0, window_size=3):
-    """
-    Optimized local outlier correction using Numba.
-    - Identifies hot and cold outliers based on local neighborhood statistics.
-    - Uses median and standard deviation from surrounding pixels to detect and replace outliers.
-    - Applies separate hot_sigma and cold_sigma thresholds.
-    - Skips edge pixels to avoid padding artifacts.
-    """
-
-    was_gray = False
-
-    if image.ndim == 2:  # Convert grayscale to 3D
-        H, W = image.shape
-        C = 1
-        was_gray = True
-        image = image[:, :, np.newaxis]  # Explicitly add a color channel dimension
-
+    img = image.astype(np.float32, copy=False)
+    was_gray = (img.ndim == 2)
+    if was_gray:
+        src = img[:, :, None]
     else:
-        H, W, C = image.shape
+        src = img
 
-    # Copy the image for modification
-    corrected = image.astype(np.float32).copy()
+    H, W, C = src.shape
+    dst = src.copy()
 
-    # Apply fast correction (no padding, edges skipped)
-    _cosmetic_correction_numba_fixed(corrected, H, W, C, hot_sigma, cold_sigma)
+    # per-channel saturation guards
+    sat_thresholds = np.empty(C, dtype=np.float32)
+    for ci in range(C):
+        plane = src[:, :, ci]
+        # Compute in Python (Numba doesn't support np.quantile well)
+        sat_thresholds[ci] = float(np.quantile(plane, sat_quantile))
+
+    # run per-channel to use per-channel saturation
+    for ci in range(C):
+        _cosmetic_correction_core(src[:, :, ci], dst[:, :, ci],
+                                  H, W, 1,
+                                  float(hot_sigma), float(cold_sigma),
+                                  float(star_mean_ratio), float(star_max_ratio),
+                                  float(sat_thresholds[ci]),
+                                  1)  # cold_cluster_max: allow 1 neighbor to be low
 
     if was_gray:
-        corrected = corrected[:, :, 0]  # Convert back to 2D if originally grayscale
+        return dst[:, :, 0]
+    return dst
+
+
+def bulk_cosmetic_correction_bayer(image,
+                                   hot_sigma=5.5,
+                                   cold_sigma=5.0,
+                                   star_mean_ratio=0.22,
+                                   star_max_ratio=0.55,
+                                   sat_quantile=0.9995,
+                                   pattern="RGGB"):
+    """
+    Bayer-safe cosmetic correction. Work on same-color sub-planes (2-px stride),
+    then write results back. Defaults assume normalized or 16/32f data.
+    """
+    H, W = image.shape
+    corrected = image.astype(np.float32).copy()
+
+    if pattern.upper() not in ("RGGB", "BGGR", "GRBG", "GBRG"):
+        pattern = "RGGB"
+
+    # index maps for each CFA pattern (row0,col0 offsets)
+    if pattern.upper() == "RGGB":
+        r0, c0 = 0, 0
+        g1r, g1c = 0, 1
+        g2r, g2c = 1, 0
+        b0, b0c = 1, 1
+    elif pattern.upper() == "BGGR":
+        r0, c0 = 1, 1
+        g1r, g1c = 1, 0
+        g2r, g2c = 0, 1
+        b0, b0c = 0, 0
+    elif pattern.upper() == "GRBG":
+        r0, c0 = 0, 1
+        g1r, g1c = 0, 0
+        g2r, g2c = 1, 1
+        b0, b0c = 1, 0
+    else:  # GBRG
+        r0, c0 = 1, 0
+        g1r, g1c = 0, 0
+        g2r, g2c = 1, 1
+        b0, b0c = 0, 1
+
+    # helper to process a same-color plane view
+    def _process_plane(view):
+        return bulk_cosmetic_correction_numba(
+            view,
+            hot_sigma=hot_sigma,
+            cold_sigma=cold_sigma,
+            star_mean_ratio=star_mean_ratio,
+            star_max_ratio=star_max_ratio,
+            sat_quantile=sat_quantile
+        )
+
+    # Red
+    red = corrected[r0:H:2, c0:W:2]
+    corrected[r0:H:2, c0:W:2] = _process_plane(red)
+
+    # Blue
+    blue = corrected[b0:H:2, b0c:W:2]
+    corrected[b0:H:2, b0c:W:2] = _process_plane(blue)
+
+    # Greens
+    g1 = corrected[g1r:H:2, g1c:W:2]
+    corrected[g1r:H:2, g1c:W:2] = _process_plane(g1)
+
+    g2 = corrected[g2r:H:2, g2c:W:2]
+    corrected[g2r:H:2, g2c:W:2] = _process_plane(g2)
 
     return corrected
 
@@ -2803,8 +3248,245 @@ def drizzle_deposit_numba_footprint(
 
     return drizzle_buffer, coverage_buffer
 
+@njit(fastmath=True)
+def _drizzle_kernel_weights(kernel_code: int, Xo: float, Yo: float,
+                            min_x: int, max_x: int, min_y: int, max_y: int,
+                            sigma_out: float,
+                            weights_out):  # preallocated 2D view (max_y-min_y+1, max_x-min_x+1)
+    """
+    Fill `weights_out` with unnormalized kernel weights centered at (Xo,Yo).
+    Returns (sum_w, count_used).
+    """
+    H = max_y - min_y + 1
+    W = max_x - min_x + 1
+    r2_limit = sigma_out * sigma_out  # for circle, sigma_out := radius
 
-@njit(parallel=True, cache=True)
+    sum_w = 0.0
+    cnt = 0
+    for j in range(H):
+        oy = min_y + j
+        cy = (oy + 0.5) - Yo  # pixel-center distance
+        for i in range(W):
+            ox = min_x + i
+            cx = (ox + 0.5) - Xo
+            w = 0.0
+
+            if kernel_code == 0:
+                # square = uniform weight in the bounding box
+                w = 1.0
+            elif kernel_code == 1:
+                # circle = uniform weight if inside radius
+                if (cx*cx + cy*cy) <= r2_limit:
+                    w = 1.0
+            else:  # gaussian
+                # gaussian centered at (Xo,Yo) with sigma_out
+                z = (cx*cx + cy*cy) / (2.0 * sigma_out * sigma_out)
+                # drop tiny far-away contributions to keep perf ok
+                if z <= 9.0:  # ~3σ
+                    w = math.exp(-z)
+
+            weights_out[j, i] = w
+            sum_w += w
+            if w > 0.0:
+                cnt += 1
+
+    return sum_w, cnt
+
+
+@njit(fastmath=True)
+def drizzle_deposit_numba_kernel_mono(
+    img_data, transform, drizzle_buffer, coverage_buffer,
+    drizzle_factor: float, drop_shrink: float, frame_weight: float,
+    kernel_code: int, gaussian_sigma_or_radius: float
+):
+    H, W = img_data.shape
+    outH, outW = drizzle_buffer.shape
+
+    # build 3x3
+    M = np.zeros((3, 3), dtype=np.float32)
+    M[0,0], M[0,1], M[0,2] = transform[0,0], transform[0,1], transform[0,2]
+    M[1,0], M[1,1], M[1,2] = transform[1,0], transform[1,1], transform[1,2]
+    M[2,2] = 1.0
+
+    v = np.zeros(3, dtype=np.float32); v[2] = 1.0
+
+    # interpret width parameter:
+    # - square/circle: radius = drop_shrink * 0.5   (pixfrac-like)
+    # - gaussian: sigma_out = max(gaussian_sigma_or_radius, drop_shrink * 0.5)
+    radius = drop_shrink * 0.5
+    sigma_out = gaussian_sigma_or_radius if kernel_code == 2 else radius
+    if sigma_out < 1e-6:
+        sigma_out = 1e-6
+
+    # temp weights tile (safely sized later per pixel)
+    for y in range(H):
+        for x in range(W):
+            val = img_data[y, x]
+            if val == 0.0:
+                continue
+
+            v[0] = x; v[1] = y
+            out_coords = M @ v
+            Xo = out_coords[0] * drizzle_factor
+            Yo = out_coords[1] * drizzle_factor
+
+            # choose bounds
+            if kernel_code == 2:
+                r = int(math.ceil(3.0 * sigma_out))
+            else:
+                r = int(math.ceil(radius))
+
+            if r <= 0:
+                # degenerate → nearest pixel
+                ox = int(Xo); oy = int(Yo)
+                if 0 <= ox < outW and 0 <= oy < outH:
+                    drizzle_buffer[oy, ox] += val * frame_weight
+                    coverage_buffer[oy, ox] += frame_weight
+                continue
+
+            min_x = int(math.floor(Xo - r))
+            max_x = int(math.floor(Xo + r))
+            min_y = int(math.floor(Yo - r))
+            max_y = int(math.floor(Yo + r))
+            if max_x < 0 or min_x >= outW or max_y < 0 or min_y >= outH:
+                continue
+            if min_x < 0: min_x = 0
+            if min_y < 0: min_y = 0
+            if max_x >= outW: max_x = outW - 1
+            if max_y >= outH: max_y = outH - 1
+
+            Ht = max_y - min_y + 1
+            Wt = max_x - min_x + 1
+            if Ht <= 0 or Wt <= 0:
+                continue
+
+            # allocate small tile (Numba-friendly: fixed-size via stack array)
+            weights = np.zeros((Ht, Wt), dtype=np.float32)
+            sum_w, cnt = _drizzle_kernel_weights(kernel_code, Xo, Yo,
+                                                 min_x, max_x, min_y, max_y,
+                                                 sigma_out, weights)
+            if cnt == 0 or sum_w <= 1e-12:
+                # fallback to nearest
+                ox = int(Xo); oy = int(Yo)
+                if 0 <= ox < outW and 0 <= oy < outH:
+                    drizzle_buffer[oy, ox] += val * frame_weight
+                    coverage_buffer[oy, ox] += frame_weight
+                continue
+
+            scale = (val * frame_weight) / sum_w
+            cov_scale = frame_weight / sum_w
+            for j in range(Ht):
+                oy = min_y + j
+                for i in range(Wt):
+                    w = weights[j, i]
+                    if w > 0.0:
+                        ox = min_x + i
+                        drizzle_buffer[oy, ox] += w * scale
+                        coverage_buffer[oy, ox] += w * cov_scale
+
+    return drizzle_buffer, coverage_buffer
+
+
+@njit(fastmath=True)
+def drizzle_deposit_color_kernel(
+    img_data, transform, drizzle_buffer, coverage_buffer,
+    drizzle_factor: float, drop_shrink: float, frame_weight: float,
+    kernel_code: int, gaussian_sigma_or_radius: float
+):
+    H, W, C = img_data.shape
+    outH, outW, _ = drizzle_buffer.shape
+
+    M = np.zeros((3, 3), dtype=np.float32)
+    M[0,0], M[0,1], M[0,2] = transform[0,0], transform[0,1], transform[0,2]
+    M[1,0], M[1,1], M[1,2] = transform[1,0], transform[1,1], transform[1,2]
+    M[2,2] = 1.0
+
+    v = np.zeros(3, dtype=np.float32); v[2] = 1.0
+
+    radius = drop_shrink * 0.5
+    sigma_out = gaussian_sigma_or_radius if kernel_code == 2 else radius
+    if sigma_out < 1e-6:
+        sigma_out = 1e-6
+
+    for y in range(H):
+        for x in range(W):
+            # (minor optimization) skip all-zero triplets
+            nz = False
+            for cc in range(C):
+                if img_data[y, x, cc] != 0.0:
+                    nz = True; break
+            if not nz:
+                continue
+
+            v[0] = x; v[1] = y
+            out_coords = M @ v
+            Xo = out_coords[0] * drizzle_factor
+            Yo = out_coords[1] * drizzle_factor
+
+            if kernel_code == 2:
+                r = int(math.ceil(3.0 * sigma_out))
+            else:
+                r = int(math.ceil(radius))
+
+            if r <= 0:
+                ox = int(Xo); oy = int(Yo)
+                if 0 <= ox < outW and 0 <= oy < outH:
+                    for c in range(C):
+                        val = img_data[y, x, c]
+                        if val != 0.0:
+                            drizzle_buffer[oy, ox, c] += val * frame_weight
+                            coverage_buffer[oy, ox, c] += frame_weight
+                continue
+
+            min_x = int(math.floor(Xo - r))
+            max_x = int(math.floor(Xo + r))
+            min_y = int(math.floor(Yo - r))
+            max_y = int(math.floor(Yo + r))
+            if max_x < 0 or min_x >= outW or max_y < 0 or min_y >= outH:
+                continue
+            if min_x < 0: min_x = 0
+            if min_y < 0: min_y = 0
+            if max_x >= outW: max_x = outW - 1
+            if max_y >= outH: max_y = outH - 1
+
+            Ht = max_y - min_y + 1
+            Wt = max_x - min_x + 1
+            if Ht <= 0 or Wt <= 0:
+                continue
+
+            weights = np.zeros((Ht, Wt), dtype=np.float32)
+            sum_w, cnt = _drizzle_kernel_weights(kernel_code, Xo, Yo,
+                                                 min_x, max_x, min_y, max_y,
+                                                 sigma_out, weights)
+            if cnt == 0 or sum_w <= 1e-12:
+                ox = int(Xo); oy = int(Yo)
+                if 0 <= ox < outW and 0 <= oy < outH:
+                    for c in range(C):
+                        val = img_data[y, x, c]
+                        if val != 0.0:
+                            drizzle_buffer[oy, ox, c] += val * frame_weight
+                            coverage_buffer[oy, ox, c] += frame_weight
+                continue
+
+            inv_sum = 1.0 / sum_w
+            for c in range(C):
+                val = img_data[y, x, c]
+                if val == 0.0:
+                    continue
+                scale = (val * frame_weight) * inv_sum
+                cov_scale = frame_weight * inv_sum
+                for j in range(Ht):
+                    oy = min_y + j
+                    for i in range(Wt):
+                        w = weights[j, i]
+                        if w > 0.0:
+                            ox = min_x + i
+                            drizzle_buffer[oy, ox, c] += w * scale
+                            coverage_buffer[oy, ox, c] += w * cov_scale
+
+    return drizzle_buffer, coverage_buffer
+
+@njit(parallel=True)
 def finalize_drizzle_2d(drizzle_buffer, coverage_buffer, final_out):
     """
     parallel-friendly final step: final_out = drizzle_buffer / coverage_buffer,
@@ -3083,6 +3765,52 @@ def fast_star_detect(image,
         return np.empty((0,2), dtype=np.float32)
     else:
         return np.array(star_positions, dtype=np.float32)
+
+
+@njit(fastmath=True)
+def _drizzle_kernel_weights(kernel_code: int, Xo: float, Yo: float,
+                            min_x: int, max_x: int, min_y: int, max_y: int,
+                            sigma_out: float,
+                            weights_out):  # preallocated 2D view (max_y-min_y+1, max_x-min_x+1)
+    """
+    Fill `weights_out` with unnormalized kernel weights centered at (Xo,Yo).
+    Returns (sum_w, count_used).
+    """
+    H = max_y - min_y + 1
+    W = max_x - min_x + 1
+    r2_limit = sigma_out * sigma_out  # for circle, sigma_out := radius
+
+    sum_w = 0.0
+    cnt = 0
+    for j in range(H):
+        oy = min_y + j
+        cy = (oy + 0.5) - Yo  # pixel-center distance
+        for i in range(W):
+            ox = min_x + i
+            cx = (ox + 0.5) - Xo
+            w = 0.0
+
+            if kernel_code == 0:
+                # square = uniform weight in the bounding box
+                w = 1.0
+            elif kernel_code == 1:
+                # circle = uniform weight if inside radius
+                if (cx*cx + cy*cy) <= r2_limit:
+                    w = 1.0
+            else:  # gaussian
+                # gaussian centered at (Xo,Yo) with sigma_out
+                z = (cx*cx + cy*cy) / (2.0 * sigma_out * sigma_out)
+                # drop tiny far-away contributions to keep perf ok
+                if z <= 9.0:  # ~3σ
+                    w = math.exp(-z)
+
+            weights_out[j, i] = w
+            sum_w += w
+            if w > 0.0:
+                cnt += 1
+
+    return sum_w, cnt
+
 
 
 @njit(fastmath=True, cache=True)
