@@ -1022,26 +1022,51 @@ def export_planet_sphere_html(
 
     return html, out_path
 
+
 def export_pseudo_surface_html(
     rgb: np.ndarray,
     out_path: str | None = None,
     *,
     title: str = "Pseudo Surface (Point Cloud)",
     max_dim: int = 420,
-    z_scale: float = 0.35,          # original scale
+    z_scale: float = 0.35,
     depth_gamma: float = 1.15,
     blur_sigma: float = 1.2,
     invert: bool = False,
     block: int = 10,
     block_blur_sigma: float = 0.6,
-    max_vertices: int = 900_000,
-    point_size: float = 1.6,        # NEW: visual density control
+    max_vertices: int = 250_000,
+    point_size: float = 1.6,
+
+    # height source(s)
+    height_from: str = "brightness",      # "brightness" | "color" | "dual"
+
+    # how points are COLORED (from dropdown)
+    color_mode: str = "brightness",       # "brightness" | "depth" | "dual"
+    depth_colorscale: str = "Turbo",
+    depth_opacity: float = 0.55,
+    depth_point_size: float | None = None,
+
+    # Dual height controls (saturation-height layer)
+    sat_opacity: float = 0.45,
+    sat_point_size: float | None = None,
+
+    # Optional: reduce saturation-height noise in dark background
+    sat_luma_gate: float = 0.02,
+    sat_luma_soft: float = 0.18,
 ):
     """
-    Interactive Plotly Scatter3d point cloud:
-      - XY = image plane
-      - Z  = luminance-derived height
-      - Point color = RGB
+    Interactive Plotly Scatter3d point cloud.
+
+    Z (height_from):
+      • "brightness": luminance-derived height
+      • "color":      saturation-derived height
+      • "dual":       overlays TWO clouds (brightness-height + saturation-height)
+
+    Coloring (color_mode) is ALWAYS honored, even for dual heights:
+      • "brightness": RGB image colors
+      • "depth":      colormap by height
+      • "dual":       RGB + depth overlay (per height cloud)
     """
     import os
     import numpy as np
@@ -1050,7 +1075,16 @@ def export_pseudo_surface_html(
 
     x = np.asarray(rgb)
     if x.ndim != 3 or x.shape[2] < 3:
-        raise ValueError("RGB image required")
+        raise ValueError("export_pseudo_surface_html expects RGB image (H,W,3).")
+
+    # normalize mode strings
+    cmode = (color_mode or "brightness").strip().lower()
+    if cmode not in ("brightness", "depth", "dual"):
+        cmode = "brightness"
+
+    hmode = (height_from or "brightness").strip().lower()
+    if hmode not in ("brightness", "color", "dual"):
+        hmode = "brightness"
 
     # ---- float01 ----
     if x.dtype == np.uint8:
@@ -1058,88 +1092,191 @@ def export_pseudo_surface_html(
     elif x.dtype == np.uint16:
         img01 = x[..., :3].astype(np.float32) / 65535.0
     else:
-        img01 = np.clip(x[..., :3].astype(np.float32), 0.0, 1.0)
+        img01 = np.clip(x[..., :3].astype(np.float32, copy=False), 0.0, 1.0)
 
     H, W = img01.shape[:2]
 
     # ---- downsample ----
-    max_dim = int(np.clip(max_dim, 128, 900))
-    s = max_dim / float(max(H, W))
+    max_dim = int(np.clip(max_dim, 128, 2048))
+    s = float(max_dim) / float(max(H, W))
     if s < 1.0:
-        img01 = cv2.resize(
-            img01,
-            (max(64, int(W * s)), max(64, int(H * s))),
-            interpolation=cv2.INTER_AREA,
-        )
+        newW = max(64, int(round(W * s)))
+        newH = max(64, int(round(H * s)))
+        img01 = cv2.resize(img01, (newW, newH), interpolation=cv2.INTER_AREA)
 
     hH, hW = img01.shape[:2]
 
     # ---- vertex cap ----
+    max_vertices = int(max(10_000, max_vertices))
     if hH * hW > max_vertices:
-        scale = np.sqrt(max_vertices / float(hH * hW))
-        img01 = cv2.resize(
-            img01,
-            (int(hW * scale), int(hH * scale)),
-            interpolation=cv2.INTER_AREA,
-        )
+        scale = np.sqrt(float(max_vertices) / float(hH * hW))
+        newW = max(64, int(round(hW * scale)))
+        newH = max(64, int(round(hH * scale)))
+        img01 = cv2.resize(img01, (newW, newH), interpolation=cv2.INTER_AREA)
         hH, hW = img01.shape[:2]
 
-    # ---- luminance → height ----
-    lum = (
-        0.299 * img01[..., 0]
-        + 0.587 * img01[..., 1]
-        + 0.114 * img01[..., 2]
-    ).astype(np.float32)
+    # ---- helpers ----
+    def _robust01(base: np.ndarray) -> np.ndarray:
+        base = base.astype(np.float32, copy=False)
+        p_lo = float(np.percentile(base, 1.0))
+        p_hi = float(np.percentile(base, 99.5))
+        h = np.clip((base - p_lo) / max(p_hi - p_lo, 1e-9), 0.0, 1.0)
 
-    p_lo = np.percentile(lum, 1.0)
-    p_hi = np.percentile(lum, 99.5)
-    h01 = np.clip((lum - p_lo) / max(p_hi - p_lo, 1e-9), 0.0, 1.0)
+        if invert:
+            h = 1.0 - h
 
-    if invert:
-        h01 = 1.0 - h01
+        # coherence smoothing
+        b = max(1, int(block))
+        if b > 1:
+            h = cv2.blur(h, (b, b), borderType=cv2.BORDER_REFLECT101)
 
-    # ---- coherence smoothing ----
-    b = max(1, int(block))
-    if b > 1:
-        h01 = cv2.blur(h01, (b, b), borderType=cv2.BORDER_REFLECT101)
+        if block_blur_sigma and block_blur_sigma > 0:
+            h = cv2.GaussianBlur(h, (0, 0), float(block_blur_sigma))
 
-    if block_blur_sigma and block_blur_sigma > 0:
-        h01 = cv2.GaussianBlur(h01, (0, 0), float(block_blur_sigma))
+        if blur_sigma and blur_sigma > 0:
+            h = cv2.GaussianBlur(h, (0, 0), float(blur_sigma))
 
-    if blur_sigma and blur_sigma > 0:
-        h01 = cv2.GaussianBlur(h01, (0, 0), float(blur_sigma))
+        h = np.clip(h, 0.0, 1.0) ** max(1e-3, float(depth_gamma))
+        return h.astype(np.float32)
 
-    h01 = np.clip(h01, 0.0, 1.0) ** max(1e-3, depth_gamma)
+    # luminance (also used for saturation gating)
+    lum = (0.299 * img01[..., 0] + 0.587 * img01[..., 1] + 0.114 * img01[..., 2]).astype(np.float32)
+    h01_lum = _robust01(lum)
 
-    # ---- FINAL DEPTH (HALF HEIGHT) ----
-    zmax = 0.5 * min(hH, hW) * float(z_scale)
-    Z = (h01 * 2.0 - 1.0) * zmax
+    # saturation
+    hsv = cv2.cvtColor(img01.astype(np.float32), cv2.COLOR_RGB2HSV)
+    sat = hsv[..., 1].astype(np.float32)
+    h01_sat = _robust01(sat)
+
+    # Optional: suppress sat-height in very dark background
+    if sat_luma_soft and sat_luma_soft > 0:
+        gate = float(sat_luma_gate)
+        soft = float(sat_luma_soft)
+        wgt = np.clip((lum - gate) / max(soft, 1e-6), 0.0, 1.0).astype(np.float32)
+        h01_sat = h01_sat * wgt
+
+    # ---- depth scaling ----
+    zmax = 0.5 * float(min(hH, hW)) * float(z_scale)
+    Z_lum = ((h01_lum * 2.0) - 1.0) * zmax
+    Z_sat = ((h01_sat * 2.0) - 1.0) * zmax
 
     # ---- XY grid ----
     yy, xx = np.mgrid[0:hH, 0:hW]
     X = (xx - (hW - 1) * 0.5).reshape(-1)
     Y = (yy - (hH - 1) * 0.5).reshape(-1)
-    Z = Z.reshape(-1)
 
-    # ---- colors ----
-    colors = np.clip(img01.reshape(-1, 3) * 255.0, 0, 255).astype(np.uint8)
-    rgb_strings = [f"rgb({r},{g},{b})" for r, g, b in colors]
+    Zlum = Z_lum.reshape(-1)
+    Zsat = Z_sat.reshape(-1)
 
-    cloud = go.Scatter3d(
-        x=X,
-        y=Y,
-        z=Z,
-        mode="markers",
-        marker=dict(
-            size=point_size,
-            color=rgb_strings,
-            opacity=1.0,
-        ),
-        hoverinfo="skip",
-        name="PointCloud",
-    )
+    # ---- RGB strings ----
+    rgb_u8 = np.clip(img01.reshape(-1, 3) * 255.0, 0, 255).astype(np.uint8)
+    rgb_strings = [f"rgb({r},{g},{b})" for r, g, b in rgb_u8]
 
-    fig = go.Figure(data=[cloud])
+    traces: list = []
+
+    # sizes / opacities per cloud
+    ps_lum = float(point_size)
+    ps_sat = float(sat_point_size) if sat_point_size is not None else float(point_size) * 1.05
+    op_lum = 0.95
+    op_sat = float(np.clip(sat_opacity, 0.05, 1.0))
+
+    dps = float(depth_point_size) if depth_point_size is not None else float(point_size)
+
+    def _add_cloud(
+        *,
+        name_prefix: str,
+        Z: np.ndarray,
+        size_rgb: float,
+        size_depth: float,
+        op_rgb: float,
+        op_depth: float,
+    ):
+        """
+        Add traces for a single height cloud, honoring cmode.
+        """
+        if cmode in ("brightness", "dual"):
+            traces.append(
+                go.Scatter3d(
+                    x=X, y=Y, z=Z,
+                    mode="markers",
+                    marker=dict(
+                        size=float(size_rgb),
+                        color=rgb_strings,
+                        opacity=1.0 if cmode == "brightness" else float(op_rgb),
+                    ),
+                    hoverinfo="skip",
+                    name=f"{name_prefix} (RGB)" if cmode != "brightness" else f"{name_prefix}",
+                )
+            )
+
+        if cmode in ("depth", "dual"):
+            traces.append(
+                go.Scatter3d(
+                    x=X, y=Y, z=Z,
+                    mode="markers",
+                    marker=dict(
+                        size=float(size_depth),
+                        color=Z,  # numeric -> colorscale
+                        colorscale=depth_colorscale,
+                        cmin=float(Z.min()),
+                        cmax=float(Z.max()),
+                        opacity=1.0 if cmode == "depth" else float(op_depth),
+                        showscale=(cmode == "depth"),
+                        colorbar=dict(
+                            title="Depth",
+                            thickness=14,
+                            len=0.6,
+                        ) if cmode == "depth" else None,
+                    ),
+                    hoverinfo="skip",
+                    name=f"{name_prefix} (Depth)" if cmode != "depth" else f"{name_prefix}",
+                )
+            )
+
+    if hmode == "brightness":
+        _add_cloud(
+            name_prefix="Brightness Height",
+            Z=Zlum,
+            size_rgb=ps_lum,
+            size_depth=dps,
+            op_rgb=0.95,
+            op_depth=depth_opacity,
+        )
+        show_legend = (cmode == "dual")
+
+    elif hmode == "color":
+        _add_cloud(
+            name_prefix="Color Height",
+            Z=Zsat,
+            size_rgb=ps_lum,     # reuse point_size for single-mode
+            size_depth=dps,
+            op_rgb=0.95,
+            op_depth=depth_opacity,
+        )
+        show_legend = (cmode == "dual")
+
+    else:
+        # dual heights: add BOTH clouds, each honoring cmode
+        _add_cloud(
+            name_prefix="Brightness Height",
+            Z=Zlum,
+            size_rgb=ps_lum,
+            size_depth=dps,
+            op_rgb=op_lum,
+            op_depth=depth_opacity,
+        )
+        _add_cloud(
+            name_prefix="Color Height",
+            Z=Zsat,
+            size_rgb=ps_sat,
+            size_depth=dps,
+            op_rgb=op_sat,
+            op_depth=min(1.0, depth_opacity * 0.85),  # slightly softer overlay feels nicer
+        )
+        show_legend = True  # dual heights should show what’s what
+
+    # ---- figure ----
+    fig = go.Figure(data=traces)
     fig.update_layout(
         title=title,
         margin=dict(l=0, r=0, b=0, t=40),
@@ -1156,7 +1293,11 @@ def export_pseudo_surface_html(
         ),
         paper_bgcolor="black",
         plot_bgcolor="black",
-        showlegend=False,
+        showlegend=bool(show_legend),
+        legend=dict(
+            bgcolor="rgba(0,0,0,0)",
+            font=dict(color="white"),
+        ),
     )
 
     html = fig.to_html(include_plotlyjs="cdn", full_html=True)
@@ -1225,7 +1366,7 @@ class PlanetProjectionDialog(QDialog):
         self.setMinimumSize(520, 520)
 
         self.resize(560, 640)        
-        self.setWindowTitle("Planet Projection — Stereo / Wiggle")
+        self.setWindowTitle("3D Projection")
         self.setModal(False)
         self.parent = parent
         self.doc = document
@@ -1291,7 +1432,7 @@ class PlanetProjectionDialog(QDialog):
             "Stereo (Cross-eye)  R | L",
             "Wiggle stereo (toggle L/R)",
             "Anaglyph (Red/Cyan 3D Glasses)",
-            "Interactive 3D Sphere (HTML)",
+            "Interactive 3D (HTML)",
             "Galaxy Polar View (Top-Down)",
         ])
         form.addRow("Output:", self.cmb_mode)
@@ -1372,6 +1513,61 @@ class PlanetProjectionDialog(QDialog):
         self.chk_ps_invert.setChecked(True)
         ps_form.addRow("", self.chk_ps_invert)
 
+
+        # Pseudo-surface 3D coloring mode (how points are COLORED)
+        self.cmb_ps_3d_mode = QComboBox(self)
+        self.cmb_ps_3d_mode.addItems([
+            "Brightness (RGB)",
+            "Depth (Height Colormap)",
+            "Dual (RGB + Depth)",
+        ])
+        self.cmb_ps_3d_mode.setToolTip(
+            "3D point cloud coloring:\n"
+            "• Brightness: points colored from the image (RGB)\n"
+            "• Depth: points colored by height (colormap)\n"
+            "• Dual: overlays RGB + depth coloring"
+        )
+        ps_form.addRow("3D Color Mode:", self.cmb_ps_3d_mode)
+
+        # Height-from (what drives HEIGHT / Z)
+        self.cmb_ps_height_from = QComboBox(self)
+        self.cmb_ps_height_from.addItems([
+            "Brightness (Luminance)",
+            "Color Intensity (Saturation)",
+            "Dual (Brightness + Color)",
+        ])
+        self.cmb_ps_height_from.setToolTip(
+            "What drives the HEIGHT (Z) of the 3D point cloud:\n"
+            "• Brightness: luminance-derived height\n"
+            "• Color Intensity: saturation/chroma-derived height\n"
+            "• Dual: overlays TWO clouds (brightness height + saturation height)\n\n"
+            "Tip: Dual gives nebulae \"bulk\" even where brightness is flatter."
+        )
+        ps_form.addRow("Height From:", self.cmb_ps_height_from)
+
+        # Max points (vertex cap)
+        self.spin_ps_max_points = QSpinBox(self)
+        self.spin_ps_max_points.setRange(50_000, 900_000)   # tune if you want
+        self.spin_ps_max_points.setSingleStep(50_000)
+        self.spin_ps_max_points.setValue(250_000)           # good default
+        self.spin_ps_max_points.setToolTip(
+            "Maximum number of points used in the 3D plot.\n"
+            "Higher = more detail but heavier in the browser."
+        )
+        ps_form.addRow("Max Points:", self.spin_ps_max_points)
+
+        # Dual saturation cloud opacity (only used when Height From == Dual)
+        self.spin_ps_sat_opacity = QDoubleSpinBox(self)
+        self.spin_ps_sat_opacity.setRange(0.05, 1.0)
+        self.spin_ps_sat_opacity.setSingleStep(0.05)
+        self.spin_ps_sat_opacity.setValue(0.45)
+        self.spin_ps_sat_opacity.setToolTip(
+            "Opacity of the saturation-height cloud when Height From is Dual.\n"
+            "Lower = subtle bulk; higher = more pronounced volume."
+        )
+        ps_form.addRow("Dual Sat Opacity:", self.spin_ps_sat_opacity)
+
+        # (Keep your existing)
         form.addRow(ps_box)
 
         self.chk_auto_roi = QCheckBox("Auto ROI from planet centroid (green channel)")
@@ -1895,15 +2091,50 @@ class PlanetProjectionDialog(QDialog):
 
             if mode == 4:
                 try:
+                    # color mode (how points are colored)
+                    idx = int(self.cmb_ps_3d_mode.currentIndex()) if hasattr(self, "cmb_ps_3d_mode") else 0
+                    color_mode = ("brightness", "depth", "dual")[max(0, min(2, idx))]
+
+                    # height source (what drives Z)
+                    hidx = int(self.cmb_ps_height_from.currentIndex()) if hasattr(self, "cmb_ps_height_from") else 0
+                    height_from = ("brightness", "color", "dual")[max(0, min(2, hidx))]
+
+                    # cap
+                    max_pts = int(self.spin_ps_max_points.value()) if hasattr(self, "spin_ps_max_points") else 250_000
+
+                    # dual saturation opacity (only used in height_from="dual")
+                    sat_opacity = float(self.spin_ps_sat_opacity.value()) if hasattr(self, "spin_ps_sat_opacity") else 0.45
+
+                    # title
+                    if height_from == "brightness":
+                        ht = "Brightness Height"
+                    elif height_from == "color":
+                        ht = "Color Intensity Height"
+                    else:
+                        ht = "Dual Height (Brightness + Color)"
+
                     html, default_path = export_pseudo_surface_html(
                         roi,
                         out_path=None,
-                        title="Pseudo Surface (Height from Brightness)",
+                        title=f"Pseudo Surface ({ht})",
                         max_dim=2048,
                         z_scale=0.35,
                         depth_gamma=float(self.spin_ps_gamma.value()),
                         blur_sigma=float(self.spin_ps_blur.value()),
-                        invert=not bool(self.chk_ps_invert.isChecked()),
+                        invert=bool(self.chk_ps_invert.isChecked()),
+                        block=10,
+                        block_blur_sigma=0.6,
+                        max_vertices=max_pts,
+                        point_size=1.6,
+                        height_from=height_from,          # "brightness" | "color" | "dual"
+                        color_mode=color_mode,            # "brightness" | "depth" | "dual"
+                        depth_colorscale="Turbo",
+                        depth_opacity=0.55,
+                        depth_point_size=1.9,
+                        sat_opacity=sat_opacity,          # used in height_from="dual"
+                        sat_point_size=1.75,              # slightly different size looks great
+                        sat_luma_gate=0.02,               # suppress color-noise in very dark background
+                        sat_luma_soft=0.18,               # soft knee range
                     )
 
                     fn, _ = QFileDialog.getSaveFileName(
@@ -3154,7 +3385,7 @@ class PlanetProjectionPreviewDialog(QDialog):
     """
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Planet Projection — Preview")
+        self.setWindowTitle("3D Projection — Preview")
         self.setModal(False)
         self._img_zoom = 1.0      # content zoom (1.0 = full view)
         self._img_pan_x = 0.0     # in source pixels, relative to center
