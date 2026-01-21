@@ -1278,7 +1278,7 @@ class ToolbarMixin:
         self.act_script_editor.setStatusTip(self.tr("Open the built-in script editor"))
         self.act_script_editor.triggered.connect(self._show_script_editor)
 
-        self.act_open_user_scripts_github = QAction(self.tr("Open User Scripts (GitHub)..."), self)
+        self.act_open_user_scripts_github = QAction(self.tr("Open User Scripts (GoogleDrive)..."), self)
         self.act_open_user_scripts_github.triggered.connect(self._open_user_scripts_github)
 
         self.act_open_scripts_discord = QAction(self.tr("Open Scripts Forum (Discord)..."), self)

@@ -1473,7 +1473,7 @@ class AstroSuiteProMainWindow(
 
     def _open_user_scripts_github(self):
         # User script examples on GitHub
-        url = QUrl("https://github.com/setiastro/setiastrosuitepro/tree/main/scripts")
+        url = QUrl("https://drive.google.com/drive/folders/1TSxKZey4R_t7F2RsB53Hd1SBIGXv3-Nl?usp=drive_link")
         QDesktopServices.openUrl(url)
 
     def _open_scripts_discord_forum(self):
