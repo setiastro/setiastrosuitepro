@@ -84,7 +84,7 @@ from setiastro.saspro.legacy.numba_utils import (
     finalize_drizzle_2d,
     finalize_drizzle_3d,
 )
-from setiastro.saspro.numba_utils import (
+from setiastro.saspro.legacy.numba_utils import (
     bulk_cosmetic_correction_numba,
     drizzle_deposit_numba_naive,
     drizzle_deposit_color_naive,
@@ -6522,6 +6522,18 @@ class StackingSuiteDialog(QDialog):
                 w.blockSignals(True); w.setValue(v); w.blockSignals(False)
 
     def _get_drizzle_scale(self) -> float:
+        # UI combo wins if it exists
+        combo = getattr(self, "drizzle_scale_combo", None)
+        if combo is not None:
+            try:
+                txt = str(combo.currentText()).strip().lower()
+                if txt.endswith("x"):
+                    txt = txt[:-1]
+                return float(txt)
+            except Exception:
+                pass
+
+        # fallback to settings
         val = self.settings.value("stacking/drizzle_scale", "2x")
         if isinstance(val, (int, float)):
             return float(val)
@@ -6534,6 +6546,7 @@ class StackingSuiteDialog(QDialog):
             except Exception:
                 return 2.0
         return 2.0
+
 
 
     def _set_drizzle_scale(self, r: float | str) -> None:
@@ -8848,8 +8861,8 @@ class StackingSuiteDialog(QDialog):
         tab.setLayout(layout)
 
         self.drizzle_checkbox.setChecked(self.settings.value("stacking/drizzle_enabled", False, type=bool))
-        self.drizzle_scale_combo.setCurrentText(self.settings.value("stacking/drizzle_scale", "2x", type=str))
-        self.drizzle_drop_shrink_spin.setValue(self.settings.value("stacking/drizzle_drop", 0.65, type=float))
+        self.drizzle_scale_combo.setCurrentText(f"{int(self._get_drizzle_scale())}x")
+        self.drizzle_drop_shrink_spin.setValue(self._get_drizzle_pixfrac())
 
         drizzle_on = self.settings.value("stacking/drizzle_enabled", False, type=bool)
         self.cfa_drizzle_cb.setEnabled(drizzle_on)
@@ -8903,6 +8916,7 @@ class StackingSuiteDialog(QDialog):
         # wire it
         self.comet_cb.toggled.connect(lambda _v: self._refresh_comet_starless_enable())
         self.comet_save_starless_cb.toggled.connect(lambda _v: self._refresh_comet_starless_enable())  # optional belt/suspenders
+        self.drizzle_drop_shrink_spin.valueChanged.connect(self._on_drizzle_param_changed)
 
         # run once AFTER you restore all initial states from settings
         self._refresh_comet_starless_enable()
@@ -8965,11 +8979,16 @@ class StackingSuiteDialog(QDialog):
         self._update_drizzle_summary_columns()
 
     def _on_drizzle_param_changed(self, *_):
-        # Persist drizzle params whenever changed
-        self.settings.setValue("stacking/drizzle_scale", self.drizzle_scale_combo.currentText())
-        self.settings.setValue("stacking/drizzle_drop", float(self.drizzle_drop_shrink_spin.value()))
-        # If you reflect params to tree rows, update here:
-        # self._refresh_reg_tree_drizzle_column()
+        # persist scale from UI
+        if hasattr(self, "drizzle_scale_combo"):
+            self._set_drizzle_scale(self.drizzle_scale_combo.currentText())
+
+        # (optional) persist pixfrac too if you want “global controls are canonical”
+        if hasattr(self, "drizzle_drop_shrink_spin"):
+            self._set_drizzle_pixfrac(float(self.drizzle_drop_shrink_spin.value()))
+
+        self.settings.sync()
+        self._update_drizzle_summary_columns()   # if you show “1x / 0.65” in the tree
 
     def _on_star_trail_toggled(self, enabled: bool):
         """
@@ -15799,7 +15818,7 @@ class StackingSuiteDialog(QDialog):
             filters = "TIFF (*.tif);;PNG (*.png);;JPEG (*.jpg *.jpeg);;FITS (*.fits);;XISF (*.xisf)"
             path, chosen_filter = QFileDialog.getSaveFileName(
                 self, "Save Star-Trail Image",
-                os.path.join(self.stacking_directory, default_name),
+                os.path.join(self._master_light_dir(), default_name),
                 "TIFF (*.tif);;PNG (*.png);;JPEG (*.jpg *.jpeg);;FITS (*.fits);;XISF (*.xisf)"
             )
             if not path:
@@ -15926,8 +15945,11 @@ class StackingSuiteDialog(QDialog):
         """
         Take aligned OSC frames and produce per-band aligned mono FITS.
 
-        Uses the same classifier and grouping behavior as _split_dual_band_osc,
-        but operates on the *aligned* frames.
+        IMPORTANT (for drizzle correctness):
+        - We also populate self._split_drizzle_info so drizzle can deposit from the
+        *parent original* pixels while using the same transforms solved from originals.
+        Mapping:
+            split_aligned_path -> {"orig": <parent original>, "chan": "R"|"G"|None}
 
         Returns a new light_files-style dict:
             { "Ha - ...":   [aligned_Ha_*.fit...],
@@ -15942,18 +15964,35 @@ class StackingSuiteDialog(QDialog):
         out_dir = os.path.join(self.stacking_directory, "DualBand_Split")
         os.makedirs(out_dir, exist_ok=True)
 
+        # split_aligned_path -> {"orig": <parent original>, "chan": "R"|"G"|None}
+        if not hasattr(self, "_split_drizzle_info") or self._split_drizzle_info is None:
+            self._split_drizzle_info = {}
+        else:
+            # Clear any previous run’s mapping to avoid mixing sessions
+            self._split_drizzle_info.clear()
+
+        split_info = self._split_drizzle_info
+
         # Collect per-band file lists (some may already be mono NB)
         ha_files, sii_files, oiii_files, hb_files = [], [], [], []
-        inherit_map: dict[str, set[str]] = {}   # new_group_key -> set(parent_group)
         parent_of: dict[str, str] = {}          # new_path_or_existing -> parent_group
 
         # Snapshot old drizzle configs so we can inherit to the new NB groups
         old_drizzle = dict(getattr(self, "per_group_drizzle", {}))
         selected_groups = set(getattr(self, "_reg_selected_groups", set()))
 
+        # Normalized aligned->original map (should exist from your registration pipeline)
+        oba = getattr(self, "orig_by_aligned", {}) or {}
+
         # --- Pass 1: classify + split each aligned frame ---
         for group, files in aligned_light_files.items():
             for fp in files:
+                fpn = os.path.normpath(fp)
+
+                # Find parent original for this aligned frame (for drizzle)
+                parent_orig = oba.get(fpn) or oba.get(os.path.normpath(fp))
+                parent_orig = os.path.normpath(parent_orig) if parent_orig else None
+
                 try:
                     with fits.open(fp, memmap=False) as hdul:
                         data = hdul[0].data
@@ -15974,16 +16013,12 @@ class StackingSuiteDialog(QDialog):
                 # ----------------------------------------
                 # Detect layout: mono vs RGB, CHW vs HWC
                 # ----------------------------------------
-                layout = None
-
                 if arr.ndim == 2:
                     layout = "MONO"
                 elif arr.ndim == 3:
                     c0, c1, c2 = arr.shape
-                    # channels-first (C, H, W)
                     if c0 in (1, 3) and c1 > 8 and c2 > 8:
                         layout = "CHW"
-                    # channels-last (H, W, C)
                     elif c2 in (1, 3) and c0 > 8 and c1 > 8:
                         layout = "HWC"
                     else:
@@ -15992,7 +16027,11 @@ class StackingSuiteDialog(QDialog):
                     layout = "UNKNOWN"
 
                 # ---- MONO narrowband frames (Ha/SII/OIII/Hb) ----
-                if layout == "MONO" or (layout == "CHW" and arr.shape[0] == 1) or (layout == "HWC" and arr.shape[-1] == 1):
+                if (
+                    layout == "MONO"
+                    or (layout == "CHW" and arr.shape[0] == 1)
+                    or (layout == "HWC" and arr.shape[-1] == 1)
+                ):
                     # Treat as mono NB based on classifier
                     if cls == "MONO_HA":
                         ha_files.append(fp);   parent_of[fp] = group
@@ -16002,7 +16041,14 @@ class StackingSuiteDialog(QDialog):
                         oiii_files.append(fp); parent_of[fp] = group
                     elif cls == "MONO_HB":
                         hb_files.append(fp);   parent_of[fp] = group
-                    # UNKNOWN mono: ignore for NB split
+                    else:
+                        # Unknown mono: ignore for NB split
+                        pass
+
+                    # For drizzle mapping: if this is a split pipeline, we still may want
+                    # aligned mono to drizzle from parent original (chan None means “use mono as-is”)
+                    if parent_orig:
+                        split_info[fpn] = {"orig": parent_orig, "chan": None}
                     continue
 
                 # ---- RGB / OSC case (what we expect for dual-band) ----
@@ -16019,39 +16065,55 @@ class StackingSuiteDialog(QDialog):
                     R = arr[..., 0]
                     G = arr[..., 1]
                 else:
-                    # layout == "CHW" → (C, H, W)
-                    # C should be 3
+                    # (C, H, W)
                     R = arr[0, ...]
                     G = arr[1, ...]
 
                 base = os.path.splitext(os.path.basename(fp))[0]
 
+                def _map_split(path_written: str, chan: str):
+                    """Record drizzle info for this newly created split aligned file."""
+                    if parent_orig:
+                        split_info[os.path.normpath(path_written)] = {"orig": parent_orig, "chan": chan}
+
                 if cls == "DUAL_HA_OIII":
                     ha_path   = os.path.join(out_dir, f"{base}_Ha.fit")
                     oiii_path = os.path.join(out_dir, f"{base}_OIII.fit")
-                    self._write_band_fit(ha_path,  R, hdr, "Ha",  src_filter=filt)
+                    self._write_band_fit(ha_path,   R, hdr, "Ha",   src_filter=filt)
                     self._write_band_fit(oiii_path, G, hdr, "OIII", src_filter=filt)
+
                     ha_files.append(ha_path);     parent_of[ha_path]   = group
                     oiii_files.append(oiii_path); parent_of[oiii_path] = group
+
+                    _map_split(ha_path, "R")
+                    _map_split(oiii_path, "G")
 
                 elif cls == "DUAL_SII_OIII":
                     sii_path  = os.path.join(out_dir, f"{base}_SII.fit")
                     oiii_path = os.path.join(out_dir, f"{base}_OIII.fit")
-                    self._write_band_fit(sii_path, R, hdr, "SII",  src_filter=filt)
+                    self._write_band_fit(sii_path,  R, hdr, "SII",  src_filter=filt)
                     self._write_band_fit(oiii_path, G, hdr, "OIII", src_filter=filt)
-                    sii_files.append(sii_path);    parent_of[sii_path]  = group
-                    oiii_files.append(oiii_path);  parent_of[oiii_path] = group
+
+                    sii_files.append(sii_path);     parent_of[sii_path]  = group
+                    oiii_files.append(oiii_path);   parent_of[oiii_path] = group
+
+                    _map_split(sii_path, "R")
+                    _map_split(oiii_path, "G")
 
                 elif cls == "DUAL_SII_HB":
                     sii_path = os.path.join(out_dir, f"{base}_SII.fit")
                     hb_path  = os.path.join(out_dir, f"{base}_Hb.fit")
                     self._write_band_fit(sii_path, R, hdr, "SII", src_filter=filt)
                     self._write_band_fit(hb_path,  G, hdr, "Hb",  src_filter=filt)
+
                     sii_files.append(sii_path); parent_of[sii_path] = group
                     hb_files.append(hb_path);   parent_of[hb_path]  = group
 
+                    _map_split(sii_path, "R")
+                    _map_split(hb_path, "G")
+
                 else:
-                    # UNKNOWN dual → ignore, they won't show up in NB groups
+                    # UNKNOWN dual → ignore
                     continue
 
         # --- Pass 2: group the new files (band + exposure + size), same as before ---
@@ -16067,7 +16129,7 @@ class StackingSuiteDialog(QDialog):
                 return f"{band} - ? - ?x?"
 
         new_groups: dict[str, list[str]] = {}
-        inherit_map = {}
+        inherit_map: dict[str, set[str]] = {}
 
         for band, flist in (
             ("Ha",   ha_files),
@@ -16090,7 +16152,6 @@ class StackingSuiteDialog(QDialog):
             return aligned_light_files
 
         # --- Replace light_files with NB groups & seed drizzle configs ---
-
         self.light_files = new_groups
 
         self.per_group_drizzle = {}
@@ -16133,6 +16194,11 @@ class StackingSuiteDialog(QDialog):
         ))
         return new_groups
 
+
+    def _master_light_dir(self) -> str:
+        out_dir = os.path.join(self.stacking_directory, "Master_Light")
+        os.makedirs(out_dir, exist_ok=True)
+        return out_dir
 
     def on_registration_complete(self, success, msg):
        
@@ -16551,7 +16617,7 @@ class StackingSuiteDialog(QDialog):
 
                     group_key, frames = self._mf_queue.pop(0)
 
-                    out_dir = os.path.join(self.stacking_directory, "Masters")
+                    out_dir = self._master_light_dir()
                     os.makedirs(out_dir, exist_ok=True)
                     out_path = os.path.join(out_dir, f"MasterLight_{group_key}_MFDeconv.fit")
 
@@ -17067,7 +17133,7 @@ class StackingSuiteDialog(QDialog):
             display_group = self._label_with_dims(group_key, W, H)
             base = f"MasterLight_{display_group}_{n_frames_group}stacked"
             base = self._normalize_master_stem(base)
-            out_path_orig = self._build_out(self.stacking_directory, base, "fit")
+            out_path_orig = self._build_out(self._master_light_dir(), base, "fit")
 
             # Try to attach rejection maps that were accumulated during integration
             maps = getattr(self, "_rej_maps", {}).get(group_key)
@@ -17175,7 +17241,7 @@ class StackingSuiteDialog(QDialog):
                 display_group_crop = self._label_with_dims(group_key, Wc, Hc)
                 base_crop = f"MasterLight_{display_group_crop}_{n_frames_group}stacked_autocrop"
                 base_crop = self._normalize_master_stem(base_crop)
-                out_path_crop = self._build_out(self.stacking_directory, base_crop, "fit")
+                out_path_crop = self._build_out(self._master_light_dir(), base_crop, "fit")
 
                 save_image(
                     img_array=cropped_img,
@@ -17323,7 +17389,7 @@ class StackingSuiteDialog(QDialog):
                     Hc, Wc = comet_only.shape[:2]
                     display_group_c = self._label_with_dims(group_key, Wc, Hc)
                     comet_path = self._build_out(
-                        self.stacking_directory,
+                        self._master_light_dir(),
                         f"MasterCometOnly_{display_group_c}_{len(usable)}stacked",
                         "fit"
                     )
@@ -17350,7 +17416,7 @@ class StackingSuiteDialog(QDialog):
                         Hcc, Wcc = comet_only_crop.shape[:2]
                         display_group_cc = self._label_with_dims(group_key, Wcc, Hcc)
                         comet_path_crop = self._build_out(
-                            self.stacking_directory,
+                            self._master_light_dir(),
                             f"MasterCometOnly_{display_group_cc}_{len(usable)}stacked_autocrop",
                             "fit"
                         )
@@ -17379,7 +17445,7 @@ class StackingSuiteDialog(QDialog):
 
                         is_mono_blend = (blend.ndim == 2) or (blend.ndim == 3 and blend.shape[2] == 1)
                         blend_path = self._build_out(
-                            self.stacking_directory,
+                            self._master_light_dir(),
                             f"MasterCometBlend_{display_group_c}_{len(usable)}stacked",
                             "fit"
                         )
@@ -17399,7 +17465,7 @@ class StackingSuiteDialog(QDialog):
                             Hb, Wb = blend_crop.shape[:2]
                             display_group_bc = self._label_with_dims(group_key, Wb, Hb)
                             blend_path_crop = self._build_out(
-                                self.stacking_directory,
+                                self._master_light_dir(),
                                 f"MasterCometBlend_{display_group_bc}_{len(usable)}stacked_autocrop",
                                 "fit"
                             )
@@ -17456,13 +17522,37 @@ class StackingSuiteDialog(QDialog):
 
             rejections_for_group = group_integration_data[group_key]["rejection_map"]
             n_frames_group = group_integration_data[group_key]["n_frames"]
+            # Build drizzle entries for each group
+            split_info = getattr(self, "_split_drizzle_info", {}) or {}
+            oba = getattr(self, "orig_by_aligned", {}) or {}
+
+            entries_by_group = {}
+            for gk, aligned_list in grouped_files.items():
+                entries = []
+                for ap in aligned_list:
+                    apn = os.path.normpath(ap)
+                    info = split_info.get(apn)
+
+                    if info and info.get("orig"):
+                        entries.append({
+                            "orig": os.path.normpath(info["orig"]),  # parent original pixels
+                            "aligned": apn,                          # split aligned (rej/weights)
+                            "chan": info.get("chan", None),          # 'R'/'G'/None
+                        })
+                    else:
+                        # normal (non-split) case
+                        op = oba.get(apn)
+                        if op:
+                            entries.append({"orig": os.path.normpath(op), "aligned": apn, "chan": None})
+
+                entries_by_group[gk] = entries
 
             log(f"📐 Drizzle for '{group_key}' at {scale_factor}× (drop={drop_shrink}) using {n_frames_group} frame(s).")
 
             self.drizzle_stack_one_group(
                 group_key=group_key,
                 file_list=file_list,
-                original_list=originals_by_group.get(group_key, []),
+                entries=entries_by_group.get(group_key, []),
                 transforms_dict=transforms_dict,
                 frame_weights=frame_weights,
                 scale_factor=scale_factor,
@@ -17472,6 +17562,7 @@ class StackingSuiteDialog(QDialog):
                 rect_override=global_rect,
                 status_cb=log
             )
+
 
         # Build summary lines
         for group_key, info in group_integration_data.items():
@@ -18066,7 +18157,7 @@ class StackingSuiteDialog(QDialog):
                 return
 
             group_key, frames = self._mf_queue.pop(0)
-            out_dir = os.path.join(self.stacking_directory, "Masters")
+            out_dir = self._master_light_dir()
             os.makedirs(out_dir, exist_ok=True)
 
             # Settings snapshot
@@ -18695,8 +18786,8 @@ class StackingSuiteDialog(QDialog):
         self,
         *,
         group_key,
-        file_list,           # registered _n_r.fit (keep for headers/metadata)
-        original_list,       # NEW: originals (normalized), used as pixel sources
+        file_list,           # still the aligned split files (for headers/metadata)
+        entries,             # NEW: list of {orig, aligned, chan}
         transforms_dict,
         frame_weights,
         scale_factor,
@@ -18706,8 +18797,15 @@ class StackingSuiteDialog(QDialog):
         rect_override,
         status_cb
     ):
-        # Load per-frame transforms (SASD v2)
-        log = status_cb or (lambda *_: None)        
+        import os
+
+        import cv2
+        from datetime import datetime
+        from astropy.io import fits
+
+        log = status_cb or (lambda *_: None)
+
+        # ---- load SASD v2 transforms (keyed by ORIGINAL path) ----
         sasd_path = os.path.join(self.stacking_directory, "alignment_transforms.sasd")
         ref_H, ref_W, xforms = self._load_sasd_v2(sasd_path)
         if not (ref_H and ref_W):
@@ -18715,26 +18813,33 @@ class StackingSuiteDialog(QDialog):
             rs = getattr(self, "ref_shape_for_drizzle", None)
             if isinstance(rs, tuple) and len(rs) == 2 and all(int(v) > 0 for v in rs):
                 ref_H, ref_W = int(rs[0]), int(rs[1])
-                status_cb(f"ℹ️ Using in-memory REF_SHAPE fallback: {ref_H}×{ref_W}")
+                log(f"ℹ️ Using in-memory REF_SHAPE fallback: {ref_H}×{ref_W}")
             else:
-                status_cb("⚠️ Missing REF_SHAPE in SASD; cannot drizzle.")
+                log("⚠️ Missing REF_SHAPE in SASD; cannot drizzle.")
                 return
 
         log(f"✅ SASD v2: loaded {len(xforms)} transform(s).")
-        # Debug (first few):
+
+        # ---- sanity: entries must exist ----
+        if not entries:
+            log(f"⚠️ Group '{group_key}' has no drizzle entries – skipping.")
+            return
+
+        # Debug (first few)
         try:
-            sample_need = [os.path.basename(p) for p in original_list[:5]]
+            sample_need = [os.path.basename(os.path.normpath(e.get("orig", ""))) for e in entries[:5]]
             sample_have = [os.path.basename(p) for p in list(xforms.keys())[:5]]
             log(f"   originals needed (sample): {sample_need}")
             log(f"   sasd FILEs (sample):       {sample_have}")
         except Exception:
             pass
 
-        canvas_H, canvas_W = int(ref_H * scale_factor), int(ref_W * scale_factor)        
+        # ---- output canvas ----
+        canvas_H = int(ref_H * scale_factor)
+        canvas_W = int(ref_W * scale_factor)
 
-
-        # --- kernel config from settings ---
-        kernel_name = self.settings.value("stacking/drizzle_kernel", "square", type=str).lower()
+        # ---- kernel config from settings ----
+        kernel_name = (self.settings.value("stacking/drizzle_kernel", "square", type=str) or "square").lower()
         gauss_sigma = self.settings.value(
             "stacking/drizzle_gauss_sigma", float(drop_shrink) * 0.5, type=float
         )
@@ -18748,80 +18853,78 @@ class StackingSuiteDialog(QDialog):
         total_rej = sum(len(v) for v in (rejection_map or {}).values())
         log(f"🔭 Drizzle stacking for group '{group_key}' with {total_rej} total rejected pixels.")
 
+        # Need at least 2 frames to be worth it
         if len(file_list) < 2:
             log(f"⚠️ Group '{group_key}' does not have enough frames to drizzle.")
             return
 
-        # --- establish geometry + is_mono before choosing depositor ---
+        # ---- establish header + default dims from first aligned file (metadata only) ----
         first_file = file_list[0]
         first_img, hdr, _, _ = load_image(first_file)
         if first_img is None:
             log(f"⚠️ Could not load {first_file} to determine drizzle shape!")
             return
 
-        if first_img.ndim == 2:
+        # Force mono if any entry is channel-split (dual-band drizzle output should be mono)
+        force_mono = any((e.get("chan") in ("R", "G", "B")) for e in entries)
+
+        if force_mono:
             is_mono = True
-            h, w = first_img.shape
+            h, w = first_img.shape[:2]
             c = 1
         else:
-            is_mono = False
-            h, w, c = first_img.shape
+            if first_img.ndim == 2:
+                is_mono = True
+                h, w = first_img.shape
+                c = 1
+            else:
+                is_mono = False
+                h, w, c = first_img.shape
 
         # --- choose depositor ONCE (and log it) ---
-        if _kcode == 0 and drop_shrink >= 0.99:
-            # square + pixfrac≈1 → naive “one-to-one” deposit
+        use_kernelized = not (_kcode == 0 and drop_shrink >= 0.99)
+
+        if not use_kernelized:
             deposit_func = drizzle_deposit_numba_naive if is_mono else drizzle_deposit_color_naive
             kinf = "naive (square, pixfrac≈1)"
         else:
-            # Any other case → kernelized path (square/circular/gaussian)
             deposit_func = drizzle_deposit_numba_kernel_mono if is_mono else drizzle_deposit_color_kernel
             kinf = ["square", "circular", "gaussian"][_kcode]
-        log(f"Using {kinf} kernel drizzle ({'mono' if is_mono else 'color'}).")
 
-        # --- allocate buffers ---
+        log(f"Using {kinf} drizzle ({'mono' if is_mono else 'color'}).")
+
+        # ---- allocate buffers ----
         out_h = int(canvas_H)
         out_w = int(canvas_W)
         drizzle_buffer  = np.zeros((out_h, out_w) if is_mono else (out_h, out_w, c), dtype=self._dtype())
         coverage_buffer = np.zeros_like(drizzle_buffer, dtype=self._dtype())
         finalize_func   = finalize_drizzle_2d if is_mono else finalize_drizzle_3d
 
-        def _invert_2x3(A23: np.ndarray) -> np.ndarray:
-            A23 = np.asarray(A23, np.float32).reshape(2, 3)
-            A33 = np.eye(3, dtype=np.float32); A33[:2] = A23
-            return np.linalg.inv(A33)  # 3x3
+        # ---- main loop over ENTRIES ----
+        # each entry: {"orig": <original path>, "aligned": <aligned path>, "chan": "R"/"G"/None}
+        for i, ent in enumerate(entries):
+            orig_file = os.path.normpath(ent.get("orig", ""))
+            aligned_file = os.path.normpath(ent.get("aligned", ""))  # this is what rejections/weights reference
+            chan = ent.get("chan", None)
 
-        def _apply_H_point(H: np.ndarray, x: float, y: float) -> tuple[int, int]:
-            v = H @ np.array([x, y, 1.0], dtype=np.float32)
-            if abs(v[2]) < 1e-8:
-                return (int(round(v[0])), int(round(v[1])))
-            return (int(round(v[0] / v[2])), int(round(v[1] / v[2])))
+            if not orig_file or not aligned_file:
+                log(f"⚠️ Bad drizzle entry (missing orig/aligned) – skipping: {ent}")
+                continue
 
+            # Weight: prefer aligned key (that matches your rejection/weights mapping)
+            weight = frame_weights.get(aligned_file, frame_weights.get(orig_file, 1.0))
 
-        # --- main loop ---
-        # Map original (normalized) → aligned path (for weights & rejection map lookups)
-        orig_to_aligned = {}
-        for op in original_list:
-            ap = transforms_dict.get(os.path.normpath(op))
-            if ap:
-                orig_to_aligned[os.path.normpath(op)] = os.path.normpath(ap)
-
-        for orig_file in original_list:
-            orig_key = os.path.normpath(orig_file)
-            aligned_file = orig_to_aligned.get(orig_key)
-
-            weight = frame_weights.get(aligned_file, frame_weights.get(orig_key, 1.0))
-
-            kind, X = xforms.get(orig_key, (None, None))
-            log(f"🧭 Drizzle uses {kind or '-'} for {os.path.basename(orig_key)}")
+            kind, X = xforms.get(orig_file, (None, None))
+            log(f"🧭 Drizzle uses {kind or '-'} for {os.path.basename(orig_file)} (chan={chan or 'all'})")
             if kind is None:
                 log(f"⚠️ No usable transform for {os.path.basename(orig_file)} – skipping")
                 continue
 
-            # --- choose pixel source + mapping ---
+            # choose pixel source + mapping
             pixels_are_registered = False
             img_data = None
 
-            if isinstance(kind, str) and (kind.startswith("poly") or kind in ("tps","thin_plate_spline")):
+            if isinstance(kind, str) and (kind.startswith("poly") or kind in ("tps", "thin_plate_spline")):
                 # Already warped to reference during registration
                 pixel_path = aligned_file
                 if not pixel_path:
@@ -18831,6 +18934,7 @@ class StackingSuiteDialog(QDialog):
                 pixels_are_registered = True
 
             elif kind == "affine" and X is not None:
+                # Use ORIGINAL pixels + affine subpixel mapping
                 pixel_path = orig_file
                 H_canvas = np.eye(3, dtype=np.float32)
                 H_canvas[:2] = np.asarray(X, np.float32).reshape(2, 3)
@@ -18843,6 +18947,7 @@ class StackingSuiteDialog(QDialog):
                     log(f"⚠️ Failed to read {os.path.basename(pixel_path)} – skipping")
                     continue
                 H = np.asarray(X, np.float32).reshape(3, 3)
+
                 if raw_img.ndim == 2:
                     img_data = cv2.warpPerspective(
                         raw_img, H, (ref_W, ref_H),
@@ -18857,6 +18962,7 @@ class StackingSuiteDialog(QDialog):
                             borderMode=cv2.BORDER_CONSTANT, borderValue=0
                         ) for ch in range(raw_img.shape[2])
                     ], axis=2)
+
                 H_canvas = np.eye(3, dtype=np.float32)
                 pixels_are_registered = True
 
@@ -18871,28 +18977,43 @@ class StackingSuiteDialog(QDialog):
                     log(f"⚠️ Failed to read {os.path.basename(pixel_path)} – skipping")
                     continue
 
-            # --- debug bbox once ---
-            if orig_file is original_list[0]:
-                x0, y0 = 0, 0; x1, y1 = ref_W-1, ref_H-1
+            # If this is a split dual-band entry, extract channel from the pixel source
+            if chan in ("R", "G", "B"):
+                if img_data.ndim == 3 and img_data.shape[2] >= 3:
+                    ch_idx = {"R": 0, "G": 1, "B": 2}[chan]
+                    img_data = img_data[..., ch_idx]  # mono plane
+                # if already mono, leave it alone
+
+            # Debug bbox once
+            if i == 0:
+                x0, y0 = 0, 0
+                x1, y1 = ref_W - 1, ref_H - 1
                 p0 = H_canvas @ np.array([x0, y0, 1], np.float32); p0 /= max(p0[2], 1e-8)
                 p1 = H_canvas @ np.array([x1, y1, 1], np.float32); p1 /= max(p1[2], 1e-8)
-                log(f"   bbox(ref)→reg: ({p0[0]:.1f},{p0[1]:.1f}) to ({p1[0]:.1f},{p1[1]:.1f}); "
-                    f"canvas {int(ref_W*scale_factor)}×{int(ref_H*scale_factor)} @ {scale_factor}×")
+                log(
+                    f"   bbox(ref)→reg: ({p0[0]:.1f},{p0[1]:.1f}) to ({p1[0]:.1f},{p1[1]:.1f}); "
+                    f"canvas {int(ref_W * scale_factor)}×{int(ref_H * scale_factor)} @ {scale_factor}×"
+                )
 
-            # --- apply per-file rejections ---
+            # ---- apply per-file rejections (lookup by ALIGNED file) ----
             if rejection_map and aligned_file in rejection_map:
                 coords_for_this_file = rejection_map.get(aligned_file, [])
                 if coords_for_this_file:
                     dilate_px = int(self.settings.value("stacking/reject_dilate_px", 0, type=int))
-                    dilate_shape = self.settings.value("stacking/reject_dilate_shape", "square", type=str).lower()
+                    dilate_shape = (self.settings.value("stacking/reject_dilate_shape", "square", type=str) or "square").lower()
+
                     offsets = [(0, 0)]
                     if dilate_px > 0:
                         r = dilate_px
-                        offsets = [(dx, dy) for dx in range(-r, r+1) for dy in range(-r, r+1)]
+                        offsets = [(dx, dy) for dx in range(-r, r + 1) for dy in range(-r, r + 1)]
                         if dilate_shape.startswith("dia"):
-                            offsets = [(dx, dy) for (dx,dy) in offsets if (abs(dx)+abs(dy) <= r)]
+                            offsets = [(dx, dy) for (dx, dy) in offsets if (abs(dx) + abs(dy) <= r)]
 
-                    Hraw, Wraw = img_data.shape[0], img_data.shape[1]
+                    # after optional channel extraction, img_data may be 2D
+                    if img_data.ndim == 2:
+                        Hraw, Wraw = img_data.shape
+                    else:
+                        Hraw, Wraw = img_data.shape[0], img_data.shape[1]
 
                     if pixels_are_registered:
                         # Directly zero registered pixels
@@ -18900,9 +19021,12 @@ class StackingSuiteDialog(QDialog):
                             for (ox, oy) in offsets:
                                 xr, yr = x_r + ox, y_r + oy
                                 if 0 <= xr < Wraw and 0 <= yr < Hraw:
-                                    img_data[yr, xr] = 0.0
+                                    if img_data.ndim == 2:
+                                        img_data[yr, xr] = 0.0
+                                    else:
+                                        img_data[yr, xr, :] = 0.0
                     else:
-                        # Back-project via inverse affine
+                        # Back-project via inverse affine (H_canvas)
                         Hinv = np.linalg.inv(H_canvas)
                         for (x_r, y_r) in coords_for_this_file:
                             for (ox, oy) in offsets:
@@ -18911,35 +19035,43 @@ class StackingSuiteDialog(QDialog):
                                 x_raw = int(round(v[0] / max(v[2], 1e-8)))
                                 y_raw = int(round(v[1] / max(v[2], 1e-8)))
                                 if 0 <= x_raw < Wraw and 0 <= y_raw < Hraw:
-                                    img_data[y_raw, x_raw] = 0.0
+                                    if img_data.ndim == 2:
+                                        img_data[y_raw, x_raw] = 0.0
+                                    else:
+                                        img_data[y_raw, x_raw, :] = 0.0
 
-            # --- deposit (identity for registered pixels) ---
+            # ---- deposit ----
+            A23 = H_canvas[:2, :]
+
             if deposit_func is drizzle_deposit_numba_naive:
                 drizzle_buffer, coverage_buffer = deposit_func(
-                    img_data, H_canvas[:2], drizzle_buffer, coverage_buffer, scale_factor, weight
+                    img_data, A23, drizzle_buffer, coverage_buffer,
+                    scale_factor, weight
                 )
+
             elif deposit_func is drizzle_deposit_color_naive:
                 drizzle_buffer, coverage_buffer = deposit_func(
-                    img_data, H_canvas[:2], drizzle_buffer, coverage_buffer, scale_factor, drop_shrink, weight
+                    img_data, A23, drizzle_buffer, coverage_buffer,
+                    scale_factor, drop_shrink, weight
                 )
+
             else:
-                A23 = H_canvas[:2, :]
+                # kernel mono OR kernel color
                 drizzle_buffer, coverage_buffer = deposit_func(
                     img_data, A23, drizzle_buffer, coverage_buffer,
                     scale_factor, drop_shrink, weight, _kcode, float(gauss_sigma)
                 )
 
-
-        # --- finalize, save, optional autocrop ---
+        # ---- finalize ----
         final_drizzle = np.zeros_like(drizzle_buffer, dtype=np.float32)
         final_drizzle = finalize_func(drizzle_buffer, coverage_buffer, final_drizzle)
 
-        # Save original drizzle (single-HDU; no rejection layers here)
+        # ---- save (single-HDU; no rejection layers here) ----
         Hd, Wd = final_drizzle.shape[:2] if final_drizzle.ndim >= 2 else (0, 0)
         display_group_driz = self._label_with_dims(group_key, Wd, Hd)
         base_stem = f"MasterLight_{display_group_driz}_{len(file_list)}stacked_drizzle"
-        base_stem = self._normalize_master_stem(base_stem) 
-        out_path_orig = self._build_out(self.stacking_directory, base_stem, "fit")
+        base_stem = self._normalize_master_stem(base_stem)
+        out_path_orig = self._build_out(self._master_light_dir(), base_stem, "fit")
 
         hdr_orig = hdr.copy() if hdr is not None else fits.Header()
         hdr_orig["IMAGETYP"]   = "MASTER STACK - DRIZZLE"
@@ -18976,7 +19108,7 @@ class StackingSuiteDialog(QDialog):
         )
         log(f"✅ Drizzle (original) saved: {out_path_orig}")
 
-        # Optional auto-crop (respects global rect if provided)
+        # ---- optional auto-crop ----
         if autocrop_enabled:
             cropped_drizzle, hdr_crop = self._apply_autocrop(
                 final_drizzle,
@@ -18986,12 +19118,14 @@ class StackingSuiteDialog(QDialog):
                 rect_override=rect_override
             )
             hdr_crop["NCOMBINE"] = (n_frames, "Number of frames combined")
-            hdr_crop["NSTACK"]   = (n_frames, "Alias of NCOMBINE (SetiAstro)")            
+            hdr_crop["NSTACK"]   = (n_frames, "Alias of NCOMBINE (SetiAstro)")
+
             is_mono_crop = (cropped_drizzle.ndim == 2)
             display_group_driz_crop = self._label_with_dims(group_key, cropped_drizzle.shape[1], cropped_drizzle.shape[0])
             base_crop = f"MasterLight_{display_group_driz_crop}_{len(file_list)}stacked_drizzle_autocrop"
-            base_crop = self._normalize_master_stem(base_crop) 
-            out_path_crop = self._build_out(self.stacking_directory, base_crop, "fit")
+            base_crop = self._normalize_master_stem(base_crop)
+            out_path_crop = self._build_out(self._master_light_dir(), base_crop, "fit")
+
             cropped_drizzle = self._normalize_stack_01(cropped_drizzle)
             save_image(
                 img_array=cropped_drizzle,

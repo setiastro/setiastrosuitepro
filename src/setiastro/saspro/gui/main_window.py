@@ -691,8 +691,8 @@ class AstroSuiteProMainWindow(
         self.apply_theme_from_settings()
         self._populate_view_panels_menu()
         # Startup check (no lambdas)
-        if self.settings.value("updates/check_on_startup", True, type=bool):
-            QTimer.singleShot(1500, self.check_for_updates_startup)
+        #if self.settings.value("updates/check_on_startup", True, type=bool):
+        #    QTimer.singleShot(1500, self.check_for_updates_startup)
 
         self._hdr_refresh_timer = QTimer(self)
         self._hdr_refresh_timer.setSingleShot(True)
@@ -1473,7 +1473,7 @@ class AstroSuiteProMainWindow(
 
     def _open_user_scripts_github(self):
         # User script examples on GitHub
-        url = QUrl("https://github.com/setiastro/setiastrosuitepro/tree/main/scripts")
+        url = QUrl("https://drive.google.com/drive/folders/1TSxKZey4R_t7F2RsB53Hd1SBIGXv3-Nl?usp=drive_link")
         QDesktopServices.openUrl(url)
 
     def _open_scripts_discord_forum(self):

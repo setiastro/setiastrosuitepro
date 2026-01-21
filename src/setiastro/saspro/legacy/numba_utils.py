@@ -5,7 +5,7 @@ from numba.typed import List
 import cv2 
 import math
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def blend_add_numba(A, B, alpha):
     H, W, C = A.shape
     out = np.empty_like(A)
@@ -19,7 +19,7 @@ def blend_add_numba(A, B, alpha):
                 out[y,x,c] = v
     return out
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def blend_subtract_numba(A, B, alpha):
     H, W, C = A.shape
     out = np.empty_like(A)
@@ -32,7 +32,7 @@ def blend_subtract_numba(A, B, alpha):
                 out[y,x,c] = v
     return out
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def blend_multiply_numba(A, B, alpha):
     H, W, C = A.shape
     out = np.empty_like(A)
@@ -45,7 +45,7 @@ def blend_multiply_numba(A, B, alpha):
                 out[y,x,c] = v
     return out
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def blend_divide_numba(A, B, alpha):
     H, W, C = A.shape
     out = np.empty_like(A)
@@ -66,7 +66,7 @@ def blend_divide_numba(A, B, alpha):
                 out[y,x,c] = v
     return out
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def blend_screen_numba(A, B, alpha):
     H, W, C = A.shape
     out = np.empty_like(A)
@@ -83,7 +83,7 @@ def blend_screen_numba(A, B, alpha):
                 out[y,x,c] = v
     return out
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def blend_overlay_numba(A, B, alpha):
     H, W, C = A.shape
     out = np.empty_like(A)
@@ -105,7 +105,7 @@ def blend_overlay_numba(A, B, alpha):
                 out[y,x,c] = v
     return out
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def blend_difference_numba(A, B, alpha):
     H, W, C = A.shape
     out = np.empty_like(A)
@@ -123,7 +123,7 @@ def blend_difference_numba(A, B, alpha):
                 out[y,x,c] = v
     return out
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def rescale_image_numba(image, factor):
     """
     Custom rescale function using bilinear interpolation optimized with numba.
@@ -169,7 +169,7 @@ def rescale_image_numba(image, factor):
                                        image[y1, x1, c] * dx * dy)
         return output
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def bin2x2_numba(image):
     """
     Downsample the image by 2×2 via simple averaging (“integer binning”).
@@ -205,7 +205,7 @@ def bin2x2_numba(image):
 
     return out
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def flip_horizontal_numba(image):
     """
     Flips an image horizontally using Numba JIT.
@@ -228,7 +228,7 @@ def flip_horizontal_numba(image):
         return output
 
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def flip_vertical_numba(image):
     """
     Flips an image vertically using Numba JIT.
@@ -251,7 +251,7 @@ def flip_vertical_numba(image):
         return output
 
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def rotate_90_clockwise_numba(image):
     """
     Rotates the image 90 degrees clockwise.
@@ -274,7 +274,7 @@ def rotate_90_clockwise_numba(image):
         return output
 
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def rotate_90_counterclockwise_numba(image):
     """
     Rotates the image 90 degrees counterclockwise.
@@ -297,7 +297,7 @@ def rotate_90_counterclockwise_numba(image):
         return output
 
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def invert_image_numba(image):
     """
     Inverts an image (1 - pixel value) using Numba JIT.
@@ -585,7 +585,7 @@ def subtract_dark_3d(frames, dark_frame):
     return result
 
 
-@njit(parallel=True)
+@njit(parallel=True, cache=True)
 def subtract_dark_4d(frames, dark_frame):
     """
     For color stack:
@@ -626,7 +626,7 @@ from numba import njit, prange
 # Windsorized Sigma Clipping (Weighted, Iterative)
 # -------------------------------
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def windsorized_sigma_clip_weighted_3d_iter(stack, weights, lower=2.5, upper=2.5, iterations=2):
     """
     Iterative Weighted Windsorized Sigma Clipping for a 3D mono stack.
@@ -685,7 +685,7 @@ def windsorized_sigma_clip_weighted_3d_iter(stack, weights, lower=2.5, upper=2.5
     return clipped, rej_mask
 
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def windsorized_sigma_clip_weighted_4d_iter(stack, weights, lower=2.5, upper=2.5, iterations=2):
     """
     Iterative Weighted Windsorized Sigma Clipping for a 4D color stack.
@@ -760,7 +760,7 @@ def windsorized_sigma_clip_weighted(stack, weights, lower=2.5, upper=2.5, iterat
 # Kappa-Sigma Clipping (Weighted)
 # -------------------------------
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def kappa_sigma_clip_weighted_3d(stack, weights, kappa=2.5, iterations=3):
     """
     Kappa-Sigma Clipping for a 3D mono stack.
@@ -824,7 +824,7 @@ def kappa_sigma_clip_weighted_3d(stack, weights, kappa=2.5, iterations=3):
     return clipped, rej_mask
 
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def kappa_sigma_clip_weighted_4d(stack, weights, kappa=2.5, iterations=3):
     """
     Kappa-Sigma Clipping for a 4D color stack.
@@ -904,7 +904,7 @@ def kappa_sigma_clip_weighted(stack, weights, kappa=2.5, iterations=3):
 # Trimmed Mean (Weighted)
 # -------------------------------
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def trimmed_mean_weighted_3d(stack, weights, trim_fraction=0.1):
     """
     Trimmed Mean for a 3D mono stack.
@@ -975,7 +975,7 @@ def trimmed_mean_weighted_3d(stack, weights, trim_fraction=0.1):
     return clipped, rej_mask
 
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def trimmed_mean_weighted_4d(stack, weights, trim_fraction=0.1):
     """
     Trimmed Mean for a 4D color stack.
@@ -1057,7 +1057,7 @@ def trimmed_mean_weighted(stack, weights, trim_fraction=0.1):
 # Extreme Studentized Deviate (ESD) Clipping (Weighted)
 # -------------------------------
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def esd_clip_weighted_3d(stack, weights, threshold=3.0):
     """
     ESD Clipping for a 3D mono stack.
@@ -1121,7 +1121,7 @@ def esd_clip_weighted_3d(stack, weights, threshold=3.0):
     return clipped, rej_mask
 
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def esd_clip_weighted_4d(stack, weights, threshold=3.0):
     """
     ESD Clipping for a 4D color stack.
@@ -1201,7 +1201,7 @@ def esd_clip_weighted(stack, weights, threshold=3.0):
 # Biweight Location (Weighted)
 # -------------------------------
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def biweight_location_weighted_3d(stack, weights, tuning_constant=6.0):
     """
     Biweight Location for a 3D mono stack.
@@ -1265,7 +1265,7 @@ def biweight_location_weighted_3d(stack, weights, tuning_constant=6.0):
     return clipped, rej_mask
 
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def biweight_location_weighted_4d(stack, weights, tuning_constant=6.0):
     """
     Biweight Location for a 4D color stack.
@@ -1344,7 +1344,7 @@ def biweight_location_weighted(stack, weights, tuning_constant=6.0):
 # Modified Z-Score Clipping (Weighted)
 # -------------------------------
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def modified_zscore_clip_weighted_3d(stack, weights, threshold=3.5):
     """
     Modified Z-Score Clipping for a 3D mono stack.
@@ -1407,7 +1407,7 @@ def modified_zscore_clip_weighted_3d(stack, weights, threshold=3.5):
     return clipped, rej_mask
 
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def modified_zscore_clip_weighted_4d(stack, weights, threshold=3.5):
     """
     Modified Z-Score Clipping for a 4D color stack.
@@ -1487,7 +1487,7 @@ def modified_zscore_clip_weighted(stack, weights, threshold=3.5):
 # Windsorized Sigma Clipping (Non-weighted)
 # -------------------------------
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def windsorized_sigma_clip_3d(stack, lower=2.5, upper=2.5):
     """
     Windsorized Sigma Clipping for a 3D mono stack (non-weighted).
@@ -1516,7 +1516,7 @@ def windsorized_sigma_clip_3d(stack, lower=2.5, upper=2.5):
     return clipped, rej_mask
 
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def windsorized_sigma_clip_4d(stack, lower=2.5, upper=2.5):
     """
     Windsorized Sigma Clipping for a 4D color stack (non-weighted).
@@ -1569,7 +1569,7 @@ def max_value_stack(stack, weights=None):
     rej_mask = np.zeros(stack.shape, dtype=bool)
     return clipped, rej_mask
 
-@njit(parallel=True)
+@njit(parallel=True, cache=True)
 def subtract_dark_with_pedestal_3d(frames, dark_frame, pedestal):
     """
     For mono stack:
@@ -1594,7 +1594,7 @@ def subtract_dark_with_pedestal_3d(frames, dark_frame, pedestal):
 
     return result
 
-@njit(parallel=True)
+@njit(parallel=True, cache=True)
 def subtract_dark_with_pedestal_4d(frames, dark_frame, pedestal):
     """
     For color stack:
@@ -1654,8 +1654,7 @@ def parallel_measure_frames(images_py):
     a = [x[:, :, None] if x.ndim == 2 else x for x in a]
     stack = np.ascontiguousarray(np.stack(a, axis=0))  # (N,H,W,C)
     return _parallel_measure_frames_stack(stack)
-
-@njit(fastmath=True)
+@njit(fastmath=True, cache=True)
 def fast_mad(image):
     """ Computes the Median Absolute Deviation (MAD) as a robust noise estimator. """
     flat_image = image.ravel()  # ✅ Flatten the 2D array into 1D
@@ -1665,7 +1664,7 @@ def fast_mad(image):
 
 
 
-@njit(fastmath=True)
+@njit(fastmath=True, cache=True)
 def compute_snr(image):
     """ Computes the Signal-to-Noise Ratio (SNR) using fast Numba std. """
     mean_signal = np.mean(image)
@@ -1675,7 +1674,7 @@ def compute_snr(image):
 
 
 
-@njit(fastmath=True)
+@njit(fastmath=True, cache=True)
 def compute_noise(image):
     """ Estimates noise using Median Absolute Deviation (MAD). """
     return fast_mad(image)
@@ -1776,30 +1775,33 @@ def compute_star_count_fast_preview(preview_2d: np.ndarray) -> tuple[int, float]
     tiny = _downsample_for_stars(preview_2d, factor=4)  # try 4–8 depending on your sensor
     return fast_star_count_lite(tiny, sample_stride=8, localmax_k=3, thr_sigma=4.0, max_ecc_samples=120)
 
-
-
 def compute_star_count(image):
-    """Fast star detection with robust pre-stretch for linear data."""
     return fast_star_count(image)
 
 def fast_star_count(
     image,
-    blur_size=None,           # adaptive if None
+    blur_size=None,
     threshold_factor=0.8,
-    min_area=None,            # adaptive if None
-    max_area=None,            # adaptive if None
+    min_area=None,
+    max_area=None,
     *,
-    gamma=0.45,               # <1 brightens faint signal; 0.35–0.55 is a good range
-    p_lo=0.1,                 # robust low percentile for stretch
-    p_hi=99.8                 # robust high percentile for stretch
+    # robust stretch controls (file1)
+    stretch=True,
+    gamma=0.45,
+    p_lo=0.1,
+    p_hi=99.8,
+    # morphology behavior
+    morph_open="auto",   # "auto" | True | False
 ):
     """
-    Estimate star count + avg eccentricity from a 2D float/uint8 image.
-    Now does robust percentile stretch + gamma in float BEFORE 8-bit/Otsu.
+    Returns (star_count, avg_ecc).
+
+    stretch=True (default): robust for linear astro images (percentile stretch + gamma)
+    stretch=False: simple min/max normalize (legacy behavior)
     """
-    # 1) Ensure 2D grayscale (stay float32)
+
+    # 1) grayscale float32
     if image.ndim == 3:
-        # RGB -> luma
         r, g, b = image[..., 0], image[..., 1], image[..., 2]
         img = (0.2126 * r + 0.7152 * g + 0.0722 * b).astype(np.float32, copy=False)
     else:
@@ -1808,48 +1810,61 @@ def fast_star_count(
     H, W = img.shape[:2]
     short_side = max(1, min(H, W))
 
-    # Adaptive params
+    # 2) adaptive params (file1 style)
     if blur_size is None:
         k = max(3, int(round(short_side / 80)))
         blur_size = k if (k % 2 == 1) else (k + 1)
+
     if min_area is None:
         min_area = 1
+
     if max_area is None:
         max_area = max(100, int(0.01 * H * W))
 
-    # 2) Robust percentile stretch in float (no 8-bit yet)
-    #    This lifts the sky background and pulls faint stars up before thresholding.
-    lo = float(np.percentile(img, p_lo))
-    hi = float(np.percentile(img, p_hi))
-    if not (hi > lo):
-        lo, hi = float(img.min()), float(img.max())
+    # 3) build 8-bit working image
+    if stretch:
+        lo = float(np.percentile(img, p_lo))
+        hi = float(np.percentile(img, p_hi))
         if not (hi > lo):
+            lo, hi = float(img.min()), float(img.max())
+            if not (hi > lo):
+                return 0, 0.0
+
+        norm = (img - lo) / max(1e-8, (hi - lo))
+        norm = np.clip(norm, 0.0, 1.0)
+
+        if gamma and gamma > 0:
+            norm = np.power(norm, gamma, dtype=np.float32)
+
+        image_8u = (norm * 255.0).astype(np.uint8)
+    else:
+        img_min = float(img.min())
+        img_max = float(img.max())
+        if img_max > img_min:
+            image_8u = (255.0 * (img - img_min) / (img_max - img_min)).astype(np.uint8)
+        else:
             return 0, 0.0
 
-    norm = (img - lo) / max(1e-8, (hi - lo))
-    norm = np.clip(norm, 0.0, 1.0)
-
-    # 3) Gamma (<1 brightens low end)
-    if gamma and gamma > 0:
-        norm = np.power(norm, gamma, dtype=np.float32)
-
-    # 4) Convert to 8-bit ONLY after stretch/gamma (preserves faint structure)
-    image_8u = (norm * 255.0).astype(np.uint8)
-
-    # 5) Blur + subtract (unsharp-ish)
+    # 4) blur + subtract
     blurred = cv2.GaussianBlur(image_8u, (blur_size, blur_size), 0)
     sub = cv2.absdiff(image_8u, blurred)
 
-    # 6) Otsu + threshold_factor
+    # 5) Otsu + threshold_factor
     otsu, _ = cv2.threshold(sub, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
     thr = max(2, int(otsu * threshold_factor))
     _, mask = cv2.threshold(sub, thr, 255, cv2.THRESH_BINARY)
 
-    # 7) Morph open *only* on larger frames (tiny frames lose stars otherwise)
-    if short_side >= 600:
+    # 6) morphology
+    do_morph = False
+    if morph_open == "auto":
+        do_morph = short_side >= 600
+    elif morph_open is True:
+        do_morph = True
+
+    if do_morph:
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
 
-    # 8) Contours → area filter → eccentricity
+    # 7) contours -> ellipse ecc
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     star_count = 0
@@ -1861,23 +1876,22 @@ def fast_star_count(
         if len(c) < 5:
             continue
         (_, _), (a, b), _ = cv2.fitEllipse(c)
-        if b > a: a, b = b, a
-        if a > 0:
-            e = math.sqrt(max(0.0, 1.0 - (b * b) / (a * a)))
-        else:
-            e = 0.0
+        if b > a:
+            a, b = b, a
+        e = math.sqrt(max(0.0, 1.0 - (b * b) / (a * a))) if a > 0 else 0.0
         ecc_values.append(e)
         star_count += 1
 
-    # 9) Gentle fallback if too few detections: lower threshold & smaller blur
+    # 8) fallback if too few
     if star_count < 5:
         k2 = max(3, (blur_size // 2) | 1)
         blurred2 = cv2.GaussianBlur(image_8u, (k2, k2), 0)
         sub2 = cv2.absdiff(image_8u, blurred2)
         otsu2, _ = cv2.threshold(sub2, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
-        thr2 = max(2, int(otsu2 * 0.6))              # more permissive
+        thr2 = max(2, int(otsu2 * 0.6))
         _, mask2 = cv2.threshold(sub2, thr2, 255, cv2.THRESH_BINARY)
         contours2, _ = cv2.findContours(mask2, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
         star_count = 0
         ecc_values = []
         for c in contours2:
@@ -1887,7 +1901,8 @@ def fast_star_count(
             if len(c) < 5:
                 continue
             (_, _), (a, b), _ = cv2.fitEllipse(c)
-            if b > a: a, b = b, a
+            if b > a:
+                a, b = b, a
             e = math.sqrt(max(0.0, 1.0 - (b * b) / (a * a))) if a > 0 else 0.0
             ecc_values.append(e)
             star_count += 1
@@ -1895,7 +1910,8 @@ def fast_star_count(
     avg_ecc = float(np.mean(ecc_values)) if star_count > 0 else 0.0
     return star_count, avg_ecc
 
-@njit(parallel=True, fastmath=True)
+
+@njit(parallel=True, fastmath=True, cache=True)
 def normalize_images_3d(stack, ref_median):
     """
     Normalizes each frame in a 3D mono stack (F,H,W)
@@ -1918,7 +1934,7 @@ def normalize_images_3d(stack, ref_median):
 
     return normalized_stack
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def normalize_images_4d(stack, ref_median):
     """
     Normalizes each frame in a 4D color stack (F,H,W,C)
@@ -1961,7 +1977,7 @@ def normalize_images(stack, ref_median):
     else:
         raise ValueError(f"normalize_images: stack must be 3D or 4D, got shape {stack.shape}")
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def _bilinear_interpolate_numba(out):
     H, W, C = out.shape
     for c in range(C):
@@ -2084,7 +2100,7 @@ def _edge_aware_interpolate_numba(out):
 # These njit functions assume the raw image is arranged in a Bayer pattern
 # and that we want a full (H,W,3) output.
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def debayer_RGGB_fullres_fast(image, interpolate=True):
     H, W = image.shape
     out = np.zeros((H, W, 3), dtype=image.dtype)
@@ -2100,7 +2116,7 @@ def debayer_RGGB_fullres_fast(image, interpolate=True):
         _edge_aware_interpolate_numba(out)
     return out
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def debayer_BGGR_fullres_fast(image, interpolate=True):
     H, W = image.shape
     out = np.zeros((H, W, 3), dtype=image.dtype)
@@ -2116,7 +2132,7 @@ def debayer_BGGR_fullres_fast(image, interpolate=True):
         _edge_aware_interpolate_numba(out)
     return out
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def debayer_GRBG_fullres_fast(image, interpolate=True):
     H, W = image.shape
     out = np.zeros((H, W, 3), dtype=image.dtype)
@@ -2132,7 +2148,7 @@ def debayer_GRBG_fullres_fast(image, interpolate=True):
         _edge_aware_interpolate_numba(out)
     return out
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def debayer_GBRG_fullres_fast(image, interpolate=True):
     H, W = image.shape
     out = np.zeros((H, W, 3), dtype=image.dtype)
@@ -2148,43 +2164,39 @@ def debayer_GBRG_fullres_fast(image, interpolate=True):
         _edge_aware_interpolate_numba(out)
     return out
 
-# === Python-Level Dispatch Function ===
-# Since Numba cannot easily compare strings in nopython mode,
-# we do the if/elif check here in Python and then call the appropriate njit function.
 
 def debayer_fits_fast(image_data, bayer_pattern, cfa_drizzle=False, method="edge"):
     bp = (bayer_pattern or "").upper()
     interpolate = not cfa_drizzle
 
-    # 1) lay down the known samples per CFA
-    if bp == 'RGGB':
+    # 1) lay down samples; skip interpolate here so we can select method later
+    if bp == "RGGB":
         out = debayer_RGGB_fullres_fast(image_data, interpolate=False)
-    elif bp == 'BGGR':
+    elif bp == "BGGR":
         out = debayer_BGGR_fullres_fast(image_data, interpolate=False)
-    elif bp == 'GRBG':
+    elif bp == "GRBG":
         out = debayer_GRBG_fullres_fast(image_data, interpolate=False)
-    elif bp == 'GBRG':
+    elif bp == "GBRG":
         out = debayer_GBRG_fullres_fast(image_data, interpolate=False)
     else:
         raise ValueError(f"Unsupported Bayer pattern: {bayer_pattern}")
 
-    # 2) perform interpolation unless doing CFA-drizzle
+    # 2) interpolate unless CFA drizzle
     if interpolate:
         m = (method or "edge").lower()
-        if m == "edge":
-            _edge_aware_interpolate_numba(out)
-        elif m == "bilinear":
+        if m == "bilinear":
             _bilinear_interpolate_numba(out)
         else:
-            # fallback to edge-aware if unknown
             _edge_aware_interpolate_numba(out)
 
     return out
 
+
 def debayer_raw_fast(raw_image_data, bayer_pattern="RGGB", cfa_drizzle=False, method="edge"):
     return debayer_fits_fast(raw_image_data, bayer_pattern, cfa_drizzle=cfa_drizzle, method=method)
 
-@njit(parallel=True, fastmath=True)
+
+@njit(parallel=True, fastmath=True, cache=True)
 def applyPixelMath_numba(image_array, amount):
     factor = 3 ** amount
     denom_factor = 3 ** amount - 1
@@ -2199,7 +2211,7 @@ def applyPixelMath_numba(image_array, amount):
     
     return output
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def adjust_saturation_numba(image_array, saturation_factor):
     height, width, channels = image_array.shape
     output = np.empty_like(image_array, dtype=np.float32)
@@ -2261,7 +2273,7 @@ def adjust_saturation_numba(image_array, saturation_factor):
 
 
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def applySCNR_numba(image_array):
     height, width, _ = image_array.shape
     output = np.empty_like(image_array, dtype=np.float32)
@@ -2298,7 +2310,7 @@ _M_xyz2rgb = np.array([
 
 
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def apply_lut_gray(image_in, lut):
     """
     Numba-accelerated application of 'lut' to a single-channel image_in in [0..1].
@@ -2318,7 +2330,7 @@ def apply_lut_gray(image_in, lut):
 
     return out
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def apply_lut_color(image_in, lut):
     """
     Numba-accelerated application of 'lut' to a 3-channel image_in in [0..1].
@@ -2339,7 +2351,7 @@ def apply_lut_color(image_in, lut):
 
     return out
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def apply_lut_mono_inplace(array2d, lut):
     """
     In-place LUT application on a single-channel 2D array in [0..1].
@@ -2357,7 +2369,7 @@ def apply_lut_mono_inplace(array2d, lut):
                 idx = size_lut
             array2d[y, x] = lut[idx]
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def apply_lut_color_inplace(array3d, lut):
     """
     In-place LUT application on a 3-channel array in [0..1].
@@ -2376,7 +2388,7 @@ def apply_lut_color_inplace(array3d, lut):
                     idx = size_lut
                 array3d[y, x, c] = lut[idx]
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def rgb_to_xyz_numba(rgb):
     """
     Convert an image from sRGB to XYZ (D65).
@@ -2399,7 +2411,7 @@ def rgb_to_xyz_numba(rgb):
             out[y, x, 2] = Z
     return out
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def xyz_to_rgb_numba(xyz):
     """
     Convert an image from XYZ (D65) to sRGB.
@@ -2429,7 +2441,7 @@ def xyz_to_rgb_numba(xyz):
             out[y, x, 2] = b
     return out
 
-@njit
+@njit(cache=True)
 def f_lab_numba(t):
     delta = 6/29
     out = np.empty_like(t, dtype=np.float32)
@@ -2441,7 +2453,7 @@ def f_lab_numba(t):
             out.flat[i] = val/(3*delta*delta) + (4/29)
     return out
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def xyz_to_lab_numba(xyz):
     """
     xyz => shape(H,W,3), in D65. 
@@ -2465,7 +2477,7 @@ def xyz_to_lab_numba(xyz):
             out[y, x, 2] = b
     return out
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def lab_to_xyz_numba(lab):
     """
     lab => shape(H,W,3): L in [0..100], a,b in ~[-128..127].
@@ -2504,7 +2516,7 @@ def lab_to_xyz_numba(lab):
             out[y, x, 2] = Z
     return out
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def rgb_to_hsv_numba(rgb):
     H, W, _ = rgb.shape
     out = np.empty((H,W,3), dtype=np.float32)
@@ -2535,7 +2547,7 @@ def rgb_to_hsv_numba(rgb):
             out[y,x,2] = v
     return out
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def hsv_to_rgb_numba(hsv):
     H, W, _ = hsv.shape
     out = np.empty((H,W,3), dtype=np.float32)
@@ -2568,7 +2580,7 @@ def hsv_to_rgb_numba(hsv):
             out[y,x,2] = (b + m)
     return out
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def _cosmetic_correction_core(src, dst, H, W, C,
                               hot_sigma, cold_sigma,
                               star_mean_ratio,  # e.g. 0.18..0.30
@@ -2767,6 +2779,102 @@ def evaluate_polynomial(H: int, W: int, coeffs: np.ndarray, degree: int) -> np.n
     A_full = build_poly_terms(xx.ravel(), yy.ravel(), degree)
     return (A_full @ coeffs).reshape(H, W)
 
+
+@njit(parallel=True, fastmath=True, cache=True)
+def numba_mono_final_formula(rescaled, median_rescaled, target_median):
+    """
+    Applies the final formula *after* we already have the rescaled values.
+    
+    rescaled[y,x] = (original[y,x] - black_point) / (1 - black_point)
+    median_rescaled = median(rescaled)
+    
+    out_val = ((median_rescaled - 1) * target_median * r) /
+              ( median_rescaled*(target_median + r -1) - target_median*r )
+    """
+    H, W = rescaled.shape
+    out = np.empty_like(rescaled)
+
+    for y in prange(H):
+        for x in range(W):
+            r = rescaled[y, x]
+            numer = (median_rescaled - 1.0) * target_median * r
+            denom = median_rescaled * (target_median + r - 1.0) - target_median * r
+            if np.abs(denom) < 1e-12:
+                denom = 1e-12
+            out[y, x] = numer / denom
+
+    return out
+
+@njit(parallel=True, fastmath=True)
+def drizzle_deposit_numba_naive(image_data, affine_2x3, drizzle_buffer, coverage_buffer, scale, weight):
+    """
+    Naive drizzle deposit (point-to-point-ish) for Mono images.
+    Maps input (x,y) -> output (u,v) via affine, deposits 'weight' at nearest integer pixel.
+    
+    image_data: (H, W)
+    affine_2x3: (2, 3) matrix mapping source->canvas
+    drizzle_buffer: (Ho, Wo)
+    coverage_buffer: (Ho, Wo)
+    """
+    H, W = image_data.shape
+    Ho, Wo = drizzle_buffer.shape
+    
+    # We iterate over source pixels
+    for y in prange(H):
+        for x in range(W):
+            val = image_data[y, x]
+            if val == 0:
+                continue
+
+            # Project center of pixel (x, y)
+            # u = a*x + b*y + tx
+            # v = c*x + d*y + ty
+            
+            u = affine_2x3[0, 0] * x + affine_2x3[0, 1] * y + affine_2x3[0, 2]
+            v = affine_2x3[1, 0] * x + affine_2x3[1, 1] * y + affine_2x3[1, 2]
+            
+            # Nearest neighbor deposit
+            ui = int(round(u))
+            vi = int(round(v))
+            
+            if 0 <= ui < Wo and 0 <= vi < Ho:
+                # Accumulate
+                drizzle_buffer[vi, ui] += val * weight
+                coverage_buffer[vi, ui] += weight
+                
+    return drizzle_buffer, coverage_buffer
+
+
+@njit(parallel=True, fastmath=True)
+def drizzle_deposit_color_naive(image_data, affine_2x3, drizzle_buffer, coverage_buffer, scale, drop_shrink, weight):
+    """
+    Naive drizzle deposit for Color images (H,W,C).
+    image_data: (H, W, C)
+    affine_2x3: (2, 3)
+    drizzle_buffer: (Ho, Wo, C)
+    coverage_buffer: (Ho, Wo, C)
+    """
+    H, W, C = image_data.shape
+    Ho, Wo, _ = drizzle_buffer.shape
+    
+    for y in prange(H):
+        for x in range(W):
+            # Check if pixel has any data (simple check: if sum > 0 or checks per channel)
+            # usually we just project.
+            
+            u = affine_2x3[0, 0] * x + affine_2x3[0, 1] * y + affine_2x3[0, 2]
+            v = affine_2x3[1, 0] * x + affine_2x3[1, 1] * y + affine_2x3[1, 2]
+            
+            ui = int(round(u))
+            vi = int(round(v))
+            
+            if 0 <= ui < Wo and 0 <= vi < Ho:
+                for c in range(C):
+                    val = image_data[y, x, c]
+                    drizzle_buffer[vi, ui, c] += val * weight
+                    coverage_buffer[vi, ui, c] += weight
+
+    return drizzle_buffer, coverage_buffer
 @njit(parallel=True, fastmath=True)
 def numba_mono_from_img(img, bp, denom, median_rescaled, target_median):
     H, W = img.shape
@@ -2960,7 +3068,7 @@ def generate_sample_points(image: np.ndarray, num_points: int = 100) -> np.ndarr
 
     return np.array(points, dtype=np.int32)  # Return all collected points
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def numba_unstretch(image: np.ndarray, stretch_original_medians: np.ndarray, stretch_original_mins: np.ndarray) -> np.ndarray:
     """
     Numba-optimized function to undo the unlinked stretch.
@@ -2990,7 +3098,7 @@ def numba_unstretch(image: np.ndarray, stretch_original_medians: np.ndarray, str
     return np.clip(out, 0, 1)  # Clip to valid range
 
 
-@njit(fastmath=True)
+@njit(fastmath=True, cache=True)
 def drizzle_deposit_numba_naive(
     img_data,       # shape (H, W), mono
     transform,      # shape (2, 3), e.g. [[a,b,tx],[c,d,ty]]
@@ -3047,7 +3155,7 @@ def drizzle_deposit_numba_naive(
     return drizzle_buffer, coverage_buffer
 
 
-@njit(fastmath=True)
+@njit(fastmath=True, cache=True)
 def drizzle_deposit_numba_footprint(
     img_data,       # shape (H, W), mono
     transform,      # shape (2, 3)
@@ -3384,7 +3492,7 @@ def finalize_drizzle_2d(drizzle_buffer, coverage_buffer, final_out):
                 final_out[y, x] = drizzle_buffer[y, x] / cov
     return final_out
 
-@njit(fastmath=True)
+@njit(fastmath=True, cache=True)
 def drizzle_deposit_color_naive(
     img_data,         # shape (H,W,C)
     transform,        # shape (2,3)
@@ -3437,7 +3545,7 @@ def drizzle_deposit_color_naive(
                         coverage_buffer[Yo, Xo, cidx] += frame_weight
 
     return drizzle_buffer, coverage_buffer
-@njit(fastmath=True)
+@njit(fastmath=True, cache=True)
 def drizzle_deposit_color_footprint(
     img_data,         # shape (H,W,C)
     transform,        # shape (2,3)
@@ -3521,7 +3629,7 @@ def drizzle_deposit_color_footprint(
     return drizzle_buffer, coverage_buffer
 
 
-@njit
+@njit(cache=True)
 def finalize_drizzle_3d(drizzle_buffer, coverage_buffer, final_out):
     """
     final_out[y,x,c] = drizzle_buffer[y,x,c] / coverage_buffer[y,x,c]
@@ -3540,7 +3648,7 @@ def finalize_drizzle_3d(drizzle_buffer, coverage_buffer, final_out):
 
 
 
-@njit
+@njit(cache=True)
 def piecewise_linear(val, xvals, yvals):
     """
     Performs piecewise linear interpolation:
@@ -3561,7 +3669,7 @@ def piecewise_linear(val, xvals, yvals):
             return yvals[i] + ratio * dy
     return yvals[-1]
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def apply_curves_numba(image, xvals, yvals):
     """
     Numba-accelerated routine to apply piecewise linear interpolation 
@@ -3694,3 +3802,77 @@ def _drizzle_kernel_weights(kernel_code: int, Xo: float, Yo: float,
     return sum_w, cnt
 
 
+
+@njit(fastmath=True, cache=True)
+def gradient_descent_to_dim_spot_numba(gray_small, start_x, start_y, patch_size):
+    """
+    Numba implementation of _gradient_descent_to_dim_spot.
+    Walks to the local minimum (median-of-patch) around (start_x, start_y).
+    gray_small: 2D float32 array
+    """
+    H, W = gray_small.shape
+    half = patch_size // 2
+    
+    cx = int(min(max(start_x, 0), W - 1))
+    cy = int(min(max(start_y, 0), H - 1))
+
+    # Helper to compute patch median manually or efficiently
+    # Numba supports np.median on arrays, but slicing inside a loop can be costly.
+    # However, for small patches (e.g. 15x15), it should be okay.
+    
+    for _ in range(60):
+        # Current value
+        x0 = max(0, cx - half)
+        x1 = min(W, cx + half + 1)
+        y0 = max(0, cy - half)
+        y1 = min(H, cy + half + 1)
+        sub = gray_small[y0:y1, x0:x1].flatten()
+        if sub.size == 0:
+            cur_val = 1e9 # Should not happen
+        else:
+            cur_val = np.median(sub)
+
+        best_x, best_y = cx, cy
+        best_val = cur_val
+        
+        # 3x3 search
+        changed = False
+        
+        # Unroll for strict 3x3 neighborhood
+        for dy in range(-1, 2):
+            for dx in range(-1, 2):
+                if dx == 0 and dy == 0:
+                    continue
+                
+                nx = cx + dx
+                ny = cy + dy
+                
+                if nx < 0 or ny < 0 or nx >= W or ny >= H:
+                    continue
+                
+                # Compute median for neighbor
+                nx0 = max(0, nx - half)
+                nx1 = min(W, nx + half + 1)
+                ny0 = max(0, ny - half)
+                ny1 = min(H, ny + half + 1)
+                
+                # In Numba, median on a slice creates a copy.
+                # For small patches this is acceptable given the huge speedup vs Python interpreter overhead.
+                n_sub = gray_small[ny0:ny1, nx0:nx1].flatten()
+                if n_sub.size == 0:
+                    val = 1e9
+                else:
+                    val = np.median(n_sub)
+                
+                if val < best_val:
+                    best_val = val
+                    best_x = nx
+                    best_y = ny
+                    changed = True
+        
+        if not changed:
+            break
+            
+        cx, cy = best_x, best_y
+        
+    return cx, cy

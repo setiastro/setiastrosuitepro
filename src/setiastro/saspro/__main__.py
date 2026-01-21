@@ -440,17 +440,25 @@ def _init_splash():
             self.close()
             self.deleteLater()
 
-        def start_fade_out(self):
+        def start_fade_out(self, on_finished=None):
             if not _allow_window_opacity_effects():
                 self.finish()
+                if callable(on_finished):
+                    on_finished()
                 return
-            """Smoothly fade out the splash screen."""
+
             self._anim = QPropertyAnimation(self, b"windowOpacity")
             self._anim.setDuration(1000)
             self._anim.setStartValue(1.0)
             self._anim.setEndValue(0.0)
             self._anim.setEasingCurve(QEasingCurve.Type.OutQuad)
-            self._anim.finished.connect(self.finish)
+
+            def _done():
+                self.finish()
+                if callable(on_finished):
+                    on_finished()
+
+            self._anim.finished.connect(_done)
             self._anim.start()
     
         def start_fade_in(self):
@@ -790,6 +798,7 @@ def main():
     - When running as a module: python -m setiastro.saspro
     """
     global _splash, _app, _splash_initialized
+    from PyQt6.QtCore import QTimer
     
     # Initialize splash if not already done
     if not _splash_initialized:
@@ -910,7 +919,16 @@ def main():
             version=VERSION,
             build_timestamp=BUILD_TIMESTAMP,
         )
-        
+
+        def _kick_updates_after_splash():
+            try:
+                win.raise_()
+                win.activateWindow()
+                if win.settings.value("updates/check_on_startup", True, type=bool):
+                    QTimer.singleShot(1000, win.check_for_updates_startup)
+            except Exception:
+                pass
+
         if _splash:
             _splash.setMessage(QCoreApplication.translate("Splash", "Showing main window..."))
             _splash.setProgress(95)
@@ -965,7 +983,7 @@ def main():
             
             # 2. Animate Splash Fade Out
             # Note: We do NOT use finish() directly here. The animation calls it when done.
-            _splash.start_fade_out()
+            _splash.start_fade_out(on_finished=_kick_updates_after_splash)
             
             # NOTE: We keep a reference to _splash (global) so it doesn't get GC'd during animation.
             # It will deleteLater() itself.
