@@ -181,3 +181,6 @@ __MACOSX
 # WIP
 
 optimized/
+
+#scripts
+scripts/

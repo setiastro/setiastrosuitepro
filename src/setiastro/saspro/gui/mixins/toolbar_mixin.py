@@ -1196,7 +1196,7 @@ class ToolbarMixin:
         self.act_planetary_stacker.setStatusTip(self.tr("Stack SER videos (planetary/solar/lunar)"))
         self.act_planetary_stacker.triggered.connect(self._open_planetary_stacker)
 
-        self.act_planet_projection = QAction(QIcon(planetprojection_path), self.tr("Planetary Projection..."), self)
+        self.act_planet_projection = QAction(QIcon(planetprojection_path), self.tr("3D Projection..."), self)
         self.act_planet_projection.setIconVisibleInMenu(True)
         self.act_planet_projection.setStatusTip(self.tr("View your planets with stereographic projection"))
         self.act_planet_projection.triggered.connect(self._open_planet_projection)
