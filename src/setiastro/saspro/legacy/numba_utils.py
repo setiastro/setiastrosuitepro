@@ -3694,3 +3694,77 @@ def _drizzle_kernel_weights(kernel_code: int, Xo: float, Yo: float,
     return sum_w, cnt
 
 
+
+@njit(fastmath=True, cache=True)
+def gradient_descent_to_dim_spot_numba(gray_small, start_x, start_y, patch_size):
+    """
+    Numba implementation of _gradient_descent_to_dim_spot.
+    Walks to the local minimum (median-of-patch) around (start_x, start_y).
+    gray_small: 2D float32 array
+    """
+    H, W = gray_small.shape
+    half = patch_size // 2
+    
+    cx = int(min(max(start_x, 0), W - 1))
+    cy = int(min(max(start_y, 0), H - 1))
+
+    # Helper to compute patch median manually or efficiently
+    # Numba supports np.median on arrays, but slicing inside a loop can be costly.
+    # However, for small patches (e.g. 15x15), it should be okay.
+    
+    for _ in range(60):
+        # Current value
+        x0 = max(0, cx - half)
+        x1 = min(W, cx + half + 1)
+        y0 = max(0, cy - half)
+        y1 = min(H, cy + half + 1)
+        sub = gray_small[y0:y1, x0:x1].flatten()
+        if sub.size == 0:
+            cur_val = 1e9 # Should not happen
+        else:
+            cur_val = np.median(sub)
+
+        best_x, best_y = cx, cy
+        best_val = cur_val
+        
+        # 3x3 search
+        changed = False
+        
+        # Unroll for strict 3x3 neighborhood
+        for dy in range(-1, 2):
+            for dx in range(-1, 2):
+                if dx == 0 and dy == 0:
+                    continue
+                
+                nx = cx + dx
+                ny = cy + dy
+                
+                if nx < 0 or ny < 0 or nx >= W or ny >= H:
+                    continue
+                
+                # Compute median for neighbor
+                nx0 = max(0, nx - half)
+                nx1 = min(W, nx + half + 1)
+                ny0 = max(0, ny - half)
+                ny1 = min(H, ny + half + 1)
+                
+                # In Numba, median on a slice creates a copy.
+                # For small patches this is acceptable given the huge speedup vs Python interpreter overhead.
+                n_sub = gray_small[ny0:ny1, nx0:nx1].flatten()
+                if n_sub.size == 0:
+                    val = 1e9
+                else:
+                    val = np.median(n_sub)
+                
+                if val < best_val:
+                    best_val = val
+                    best_x = nx
+                    best_y = ny
+                    changed = True
+        
+        if not changed:
+            break
+            
+        cx, cy = best_x, best_y
+        
+    return cx, cy

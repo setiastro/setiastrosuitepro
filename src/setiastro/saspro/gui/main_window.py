@@ -691,8 +691,8 @@ class AstroSuiteProMainWindow(
         self.apply_theme_from_settings()
         self._populate_view_panels_menu()
         # Startup check (no lambdas)
-        if self.settings.value("updates/check_on_startup", True, type=bool):
-            QTimer.singleShot(1500, self.check_for_updates_startup)
+        #if self.settings.value("updates/check_on_startup", True, type=bool):
+        #    QTimer.singleShot(1500, self.check_for_updates_startup)
 
         self._hdr_refresh_timer = QTimer(self)
         self._hdr_refresh_timer.setSingleShot(True)
