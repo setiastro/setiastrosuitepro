@@ -196,7 +196,7 @@ from setiastro.saspro.resources import (
     colorwheel_path, font_path, csv_icon_path, spinner_path, wims_path, narrowbandnormalization_path,
     wimi_path, linearfit_path, debayer_path, aberration_path, acv_icon_path,
     functionbundles_path, viewbundles_path, selectivecolor_path, rgbalign_path, planetarystacker_path,
-    background_path, script_icon_path, planetprojection_path,
+    background_path, script_icon_path, planetprojection_path,clonestampicon_path,
 )
 
 import faulthandler
@@ -3559,6 +3559,27 @@ class AstroSuiteProMainWindow(
             pass
         dlg.resize(900, 650)
         dlg.show()
+
+    def _open_clone_stamp(self):
+        from setiastro.saspro.clone_stamp import CloneStampDialogPro
+        sw = self.mdi.activeSubWindow()
+        if not sw:
+            QMessageBox.information(self, "Clone Stamp", "No active image window.")
+            return
+        view = sw.widget()
+        doc  = getattr(view, "document", None)
+        if doc is None or getattr(doc, "image", None) is None:
+            QMessageBox.information(self, "Clone Stamp", "Active document has no image.")
+            return
+
+        dlg = CloneStampDialogPro(self, doc)
+        try:
+            dlg.setWindowIcon(QIcon(clonestampicon_path))
+        except Exception:
+            pass
+        dlg.resize(900, 650)
+        dlg.show()
+
 
     def _open_wavescale_hdr(self):
         from setiastro.saspro.wavescale_hdr import WaveScaleHDRDialogPro

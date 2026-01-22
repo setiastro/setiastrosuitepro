@@ -214,6 +214,7 @@ class Icons:
     OPEN_FILE = property(lambda self: _resource_path('openfile.png'))
     ABE = property(lambda self: _resource_path('abeicon.png'))
     BLASTER = property(lambda self: _resource_path('blaster.png'))
+    CLONESTAMP = property(lambda self: _resource_path('clonestamp.png'))
     
     # Undo/Redo
     UNDO = property(lambda self: _resource_path('undoicon.png'))
@@ -475,6 +476,7 @@ def _init_legacy_paths():
         'undoicon_path': get_icon_path('undoicon.png'),
         'redoicon_path': get_icon_path('redoicon.png'),
         'blastericon_path': get_icon_path('blaster.png'),
+        'clonestampicon_path': get_icon_path('clonestamp.png'),
         'hdr_path': get_icon_path('hdr.png'),
         'invert_path': get_icon_path('invert.png'),
         'fliphorizontal_path': get_icon_path('fliphorizontal.png'),

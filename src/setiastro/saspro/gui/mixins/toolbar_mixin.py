@@ -36,7 +36,7 @@ from setiastro.saspro.resources import (
     nbtorgb_path, freqsep_path, multiscale_decomp_path, contsub_path, halo_path, cosmic_path,
     satellite_path, imagecombine_path, wims_path, wimi_path, linearfit_path,
     debayer_path, aberration_path, functionbundles_path, viewbundles_path, planetarystacker_path,
-    selectivecolor_path, rgbalign_path, planetprojection_path,
+    selectivecolor_path, rgbalign_path, planetprojection_path, clonestampicon_path,
 )
 
 # Import shortcuts module
@@ -204,22 +204,11 @@ class ToolbarMixin:
         tb_fn.addAction(self.act_remove_green)
         tb_fn.addAction(self.act_convo)
         tb_fn.addAction(self.act_extract_luma)
-
-        #btn_luma = tb_fn.widgetForAction(self.act_extract_luma)
-        #if isinstance(btn_luma, QToolButton):
-        #    luma_menu = QMenu(btn_luma)
-        #    luma_menu.addActions(self._luma_group.actions())
-        #    btn_luma.setMenu(luma_menu)
-        #    btn_luma.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
-        #    btn_luma.setStyleSheet("""
-        #        QToolButton { color: #dcdcdc; }
-        #        QToolButton:pressed, QToolButton:checked { color: #DAA520; font-weight: 600; }
-        #    """)
-
         tb_fn.addAction(self.act_recombine_luma)
         tb_fn.addAction(self.act_rgb_extract)
         tb_fn.addAction(self.act_rgb_combine)
         tb_fn.addAction(self.act_blemish)
+        tb_fn.addAction(self.act_clone_stamp) 
         tb_fn.addAction(self.act_wavescale_hdr)
         tb_fn.addAction(self.act_wavescale_de)
         tb_fn.addAction(self.act_clahe)
@@ -1005,6 +994,11 @@ class ToolbarMixin:
         self.act_blemish.setStatusTip(self.tr("Interactive blemish removal on the active view"))
         self.act_blemish.triggered.connect(self._open_blemish_blaster)
 
+        self.act_clone_stamp = QAction(QIcon(clonestampicon_path), self.tr("Clone Stamp..."), self)
+        self.act_clone_stamp.setIconVisibleInMenu(True)
+        self.act_clone_stamp.setStatusTip(self.tr("Interactive clone stamp on the active view"))
+        self.act_clone_stamp.triggered.connect(self._open_clone_stamp)
+
         self.act_wavescale_hdr = QAction(QIcon(hdr_path), self.tr("WaveScale HDR..."), self)
         self.act_wavescale_hdr.setStatusTip(self.tr("Wave-scale HDR with luminance-masked starlet"))
         self.act_wavescale_hdr.setIconVisibleInMenu(True)
@@ -1416,6 +1410,7 @@ class ToolbarMixin:
         reg("rgb_extract", self.act_rgb_extract)
         reg("rgb_combine", self.act_rgb_combine)
         reg("blemish_blaster", self.act_blemish)
+        reg("clone_stamp", self.act_clone_stamp)
         reg("wavescale_hdr", self.act_wavescale_hdr)
         reg("wavescale_dark_enhance", self.act_wavescale_de)
         reg("clahe", self.act_clahe)
