@@ -2295,6 +2295,36 @@ def compute_safe_chunk(height, width, N, channels, dtype, pref_h, pref_w):
 
 _DIM_RE = re.compile(r"\s*\(\d+\s*x\s*\d+\)\s*")
 
+
+def build_rejection_layers(rejection_map: dict, ref_H: int, ref_W: int, n_frames: int,
+                           *, comb_threshold_frac: float = 0.02):
+    """
+    Returns:
+      rej_cnt  : (H,W) uint16 (or uint32 if needed)
+      rej_frac : (H,W) float32 in [0..1]
+      rej_any  : (H,W) bool  (thresholded, not "ever rejected")
+    """
+    if n_frames <= 0:
+        raise ValueError("n_frames must be > 0")
+
+    # Use uint32 if you might exceed 65535 rejections (rare)
+    rej_cnt = np.zeros((ref_H, ref_W), dtype=np.uint32)
+
+    # rejection_map keys are per-file, values are coords in REGISTERED space
+    for _fpath, coords in (rejection_map or {}).items():
+        for (x, y) in coords:
+            xi = int(x); yi = int(y)
+            if 0 <= xi < ref_W and 0 <= yi < ref_H:
+                rej_cnt[yi, xi] += 1
+
+    rej_frac = (rej_cnt.astype(np.float32) / float(n_frames))
+
+    # “combined mask” becomes “rejected in >= threshold% of frames”
+    rej_any = (rej_frac >= float(comb_threshold_frac))
+
+    return rej_cnt, rej_frac, rej_any
+
+
 class _Responder(QObject):
     finished = pyqtSignal(object)   # emits the edited dict or None
 
@@ -2472,36 +2502,38 @@ def _save_master_with_rejection_layers(
     hdr: "fits.Header",
     out_path: str,
     *,
-    rej_any: "np.ndarray | None" = None,     # 2D bool
+    rej_any: "np.ndarray | None" = None,     # 2D bool (recommended: thresholded)
     rej_frac: "np.ndarray | None" = None,    # 2D float32 [0..1]
+    rej_cnt: "np.ndarray | None" = None,     # 2D uint16/uint32 counts
 ):
     """
     Writes a MEF (multi-extension FITS) file:
       - Primary HDU: the master image (2D or 3D) as float32
         * Mono: (H, W)
-        * Color: (3, H, W)  <-- channels-first for FITS
-      - Optional EXTNAME=REJ_COMB: uint8 (0/1) combined rejection mask
-      - Optional EXTNAME=REJ_FRAC: float32 fraction-of-frames rejected per pixel
+        * Color: (C, H, W) channels-first for FITS
+      - Optional EXTNAME=REJ_COMB: uint8 (0/1) thresholded rejection mask
+      - Optional EXTNAME=REJ_FRAC: float32 fraction-of-frames rejected per pixel [0..1]
+      - Optional EXTNAME=REJ_CNT : uint16/uint32 count of frames rejected per pixel
     """
+
+    from astropy.io import fits
+    from datetime import datetime
+
     # --- sanitize/shape primary data ---
     data = np.asarray(img_array, dtype=np.float32, order="C")
 
     # If channels-last, move to channels-first for FITS
     if data.ndim == 3:
-        # squeeze accidental singleton channels
         if data.shape[-1] == 1:
-            data = np.squeeze(data, axis=-1)  # becomes (H, W)
-        elif data.shape[-1] in (3, 4):       # RGB or RGBA
-            data = np.transpose(data, (2, 0, 1))  # (C, H, W)
-        # If already (C, H, W) leave it as-is.
+            data = np.squeeze(data, axis=-1)              # (H, W)
+        elif data.shape[-1] in (3, 4):
+            data = np.transpose(data, (2, 0, 1))          # (C, H, W)
 
-    # After squeeze/transpose, re-evaluate dims
     if data.ndim not in (2, 3):
         raise ValueError(f"Unsupported master image shape for FITS: {data.shape}")
 
     # --- clone + annotate header, and align NAXIS* with 'data' ---
     H = (hdr.copy() if hdr is not None else fits.Header())
-    # purge prior NAXIS keys to avoid conflicts after transpose/squeeze
     for k in ("NAXIS", "NAXIS1", "NAXIS2", "NAXIS3", "NAXIS4"):
         if k in H:
             del H[k]
@@ -2512,41 +2544,50 @@ def _save_master_with_rejection_layers(
     H["CREATOR"]  = "SetiAstroSuite"
     H["DATE-OBS"] = datetime.utcnow().isoformat()
 
-    # Fill NAXIS* to match data (optional; Astropy will infer if omitted)
     if data.ndim == 2:
         H["NAXIS"]  = 2
-        H["NAXIS1"] = int(data.shape[1])  # width
-        H["NAXIS2"] = int(data.shape[0])  # height
+        H["NAXIS1"] = int(data.shape[1])
+        H["NAXIS2"] = int(data.shape[0])
     else:
-        # data.shape == (C, H, W)
         C, Hh, Ww = data.shape
         H["NAXIS"]  = 3
-        H["NAXIS1"] = int(Ww)  # width
-        H["NAXIS2"] = int(Hh)  # height
-        H["NAXIS3"] = int(C)   # channels/planes
+        H["NAXIS1"] = int(Ww)
+        H["NAXIS2"] = int(Hh)
+        H["NAXIS3"] = int(C)
 
-    # --- build HDU list ---
     prim = fits.PrimaryHDU(data=data, header=H)
     hdul = [prim]
 
-    # Optional layers: must be 2D (H, W). Convert types safely.
+    # --- Optional layers: all must be 2D (H, W) in REGISTERED space ---
     if rej_any is not None:
         rej_any_2d = np.asarray(rej_any, dtype=bool)
         if rej_any_2d.ndim != 2:
             raise ValueError(f"REJ_COMB must be 2D, got {rej_any_2d.shape}")
         h = fits.Header()
         h["EXTNAME"] = "REJ_COMB"
-        h["COMMENT"] = "Combined rejection mask (any algorithm / any frame)"
+        h["COMMENT"] = "Thresholded rejection mask (1=frequently rejected, not merely 'ever')"
         hdul.append(fits.ImageHDU(data=rej_any_2d.astype(np.uint8, copy=False), header=h))
 
-    #if rej_frac is not None:
-    #    rej_frac_2d = np.asarray(rej_frac, dtype=np.float32)
-    #    if rej_frac_2d.ndim != 2:
-    #        raise ValueError(f"REJ_FRAC must be 2D, got {rej_frac_2d.shape}")
-    #    h = fits.Header()
-    #    h["EXTNAME"] = "REJ_FRAC"
-    #    h["COMMENT"] = "Per-pixel fraction of frames rejected [0..1]"
-    #    hdul.append(fits.ImageHDU(data=rej_frac_2d, header=h))
+    if rej_frac is not None:
+        rej_frac_2d = np.asarray(rej_frac, dtype=np.float32)
+        if rej_frac_2d.ndim != 2:
+            raise ValueError(f"REJ_FRAC must be 2D, got {rej_frac_2d.shape}")
+        h = fits.Header()
+        h["EXTNAME"] = "REJ_FRAC"
+        h["COMMENT"] = "Per-pixel fraction of frames rejected [0..1]"
+        hdul.append(fits.ImageHDU(data=rej_frac_2d, header=h))
+
+    if rej_cnt is not None:
+        rej_cnt_2d = np.asarray(rej_cnt)
+        if rej_cnt_2d.ndim != 2:
+            raise ValueError(f"REJ_CNT must be 2D, got {rej_cnt_2d.shape}")
+        # keep integer type; clamp to uint16 if you prefer smaller files
+        if rej_cnt_2d.dtype not in (np.uint16, np.uint32, np.int32, np.int64):
+            rej_cnt_2d = rej_cnt_2d.astype(np.uint32, copy=False)
+        h = fits.Header()
+        h["EXTNAME"] = "REJ_CNT"
+        h["COMMENT"] = "Per-pixel count of frames rejected"
+        hdul.append(fits.ImageHDU(data=rej_cnt_2d, header=h))
 
     fits.HDUList(hdul).writeto(out_path, overwrite=True)
 
@@ -17139,16 +17180,29 @@ class StackingSuiteDialog(QDialog):
             maps = getattr(self, "_rej_maps", {}).get(group_key)
             save_layers = self.settings.value("stacking/save_rejection_layers", True, type=bool)
 
-            if maps and save_layers:
+            save_layers = self.settings.value("stacking/save_rejection_layers", True, type=bool)
+
+            if rejection_map and save_layers:
                 try:
+                    # integrated_image is already normalized above; rejection coords are assumed in this (H,W) space
+                    rej_cnt, rej_frac, rej_any = build_rejection_layers(
+                        rejection_map=rejection_map,
+                        ref_H=H,
+                        ref_W=W,
+                        n_frames=n_frames_group,
+                        comb_threshold_frac=0.02,  # tweakable
+                    )
+
                     _save_master_with_rejection_layers(
-                        integrated_image,
-                        hdr_orig,
-                        out_path_orig,
-                        rej_any = maps.get("any"),
-                        rej_frac= maps.get("frac"),
+                        img_array=integrated_image,
+                        hdr=hdr_orig,
+                        out_path=out_path_orig,
+                        rej_any=rej_any,
+                        rej_frac=rej_frac,
+                        rej_cnt=rej_cnt,
                     )
                     log(f"✅ Saved integrated image (with rejection layers) for '{group_key}': {out_path_orig}")
+
                 except Exception as e:
                     log(f"⚠️ MEF save failed ({e}); falling back to single-HDU save.")
                     save_image(
@@ -17160,8 +17214,8 @@ class StackingSuiteDialog(QDialog):
                         is_mono=is_mono_orig
                     )
                     log(f"✅ Saved integrated image (single-HDU) for '{group_key}': {out_path_orig}")
+
             else:
-                # No maps available or feature disabled → single-HDU save
                 save_image(
                     img_array=integrated_image,
                     filename=out_path_orig,
@@ -17481,19 +17535,14 @@ class StackingSuiteDialog(QDialog):
                 sasr_path = os.path.join(self.stacking_directory, f"{group_key}_rejections.sasr")
                 self.save_rejection_map_sasr(rejection_map, sasr_path)
                 log(f"✅ Saved rejection map to {sasr_path}")
-                group_integration_data[group_key] = {
-                    "integrated_image": integrated_image,
-                    "rejection_map": rejection_map,
-                    "n_frames": n_frames_group,
-                    "drizzled": True
-                }
-            else:
-                group_integration_data[group_key] = {
-                    "integrated_image": integrated_image,
-                    "rejection_map": None,
-                    "n_frames": n_frames_group,
-                    "drizzled": False
-                }
+
+            group_integration_data[group_key] = {
+                "integrated_image": integrated_image,
+                "rejection_map": rejection_map if drizzle_enabled_global else None,
+                "n_frames": n_frames_group,
+                "drizzled": False,  # <-- ALWAYS false here
+            }
+            if not drizzle_enabled_global:
                 log(f"ℹ️ Skipping rejection map save for '{group_key}' (drizzle disabled).")
 
         QApplication.processEvents()
@@ -17549,19 +17598,27 @@ class StackingSuiteDialog(QDialog):
 
             log(f"📐 Drizzle for '{group_key}' at {scale_factor}× (drop={drop_shrink}) using {n_frames_group} frame(s).")
 
-            self.drizzle_stack_one_group(
-                group_key=group_key,
-                file_list=file_list,
-                entries=entries_by_group.get(group_key, []),
-                transforms_dict=transforms_dict,
-                frame_weights=frame_weights,
-                scale_factor=scale_factor,
-                drop_shrink=drop_shrink,
-                rejection_map=rejections_for_group,
-                autocrop_enabled=autocrop_enabled,
-                rect_override=global_rect,
-                status_cb=log
-            )
+            ok = False
+            try:
+                ok = bool(self.drizzle_stack_one_group(
+                    group_key=group_key,
+                    file_list=file_list,
+                    entries=entries_by_group.get(group_key, []),
+                    transforms_dict=transforms_dict,
+                    frame_weights=frame_weights,
+                    scale_factor=scale_factor,
+                    drop_shrink=drop_shrink,
+                    rejection_map=rejections_for_group,
+                    autocrop_enabled=autocrop_enabled,
+                    rect_override=global_rect,
+                    status_cb=log
+                ))
+            except Exception as e:
+                log(f"⚠️ Drizzle failed for '{group_key}': {e!r}")
+                ok = False
+
+            if ok:
+                group_integration_data[group_key]["drizzled"] = True
 
 
         # Build summary lines
@@ -18823,7 +18880,7 @@ class StackingSuiteDialog(QDialog):
         # ---- sanity: entries must exist ----
         if not entries:
             log(f"⚠️ Group '{group_key}' has no drizzle entries – skipping.")
-            return
+            return False
 
         # Debug (first few)
         try:
@@ -18856,14 +18913,14 @@ class StackingSuiteDialog(QDialog):
         # Need at least 2 frames to be worth it
         if len(file_list) < 2:
             log(f"⚠️ Group '{group_key}' does not have enough frames to drizzle.")
-            return
+            return False
 
         # ---- establish header + default dims from first aligned file (metadata only) ----
         first_file = file_list[0]
         first_img, hdr, _, _ = load_image(first_file)
         if first_img is None:
             log(f"⚠️ Could not load {first_file} to determine drizzle shape!")
-            return
+            return False
 
         # Force mono if any entry is channel-split (dual-band drizzle output should be mono)
         force_mono = any((e.get("chan") in ("R", "G", "B")) for e in entries)
@@ -19139,6 +19196,7 @@ class StackingSuiteDialog(QDialog):
                 self._autocrop_outputs = []
             self._autocrop_outputs.append((group_key, out_path_crop))
             log(f"✂️ Drizzle (auto-cropped) saved: {out_path_crop}")
+        return True
 
     def _load_sasd_v2(self, path: str):
         """

@@ -134,6 +134,7 @@ class MenuMixin:
         m_fn.addAction(self.act_background_neutral)
         m_fn.addAction(self.act_blemish)
         m_fn.addAction(self.act_clahe)
+        m_fn.addAction(self.act_clone_stamp) 
         m_fn.addAction(self.act_convo)
         m_fn.addAction(self.act_crop)
         m_fn.addAction(self.act_curves)
