@@ -1,9 +1,9 @@
 {
-  "version": "1.7.4",
+  "version": "1.7.5",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.7.4/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.7.4/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.7.4/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.7.5/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.7.5/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.7.5/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.7.4 New pseudo surface interactive 3d features. Scripts user repository changed. Drizzling now works with Splitting Duo-Band Filters. Harmonized all master lights to be created in a Master_Light folder. Harmonized many njit and numba functions. Changed timing on checking for updates until fade window completely closed."
+  "notes": "Seti Astro Suite Pro V1.7.5 New Tool: Clone Stamp"
 }
