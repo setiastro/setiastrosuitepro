@@ -6,8 +6,8 @@ from typing import Optional
 from PyQt6.QtCore import Qt, QEvent, QPointF, QRunnable, QThreadPool, pyqtSlot, QObject, pyqtSignal
 from PyQt6.QtGui import QImage, QPixmap, QPen, QBrush, QAction, QKeySequence, QColor, QWheelEvent, QIcon
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox, QLabel, QPushButton, QSlider,
-    QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGraphicsEllipseItem, QMessageBox, QScrollArea, QCheckBox, QDoubleSpinBox    
+    QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox, QLabel, QPushButton, QSlider, QSizePolicy,
+    QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGraphicsEllipseItem, QMessageBox, QScrollArea, QCheckBox, QDoubleSpinBox, QWidget, QFrame    
 )
 from setiastro.saspro.imageops.stretch import stretch_color_image, stretch_mono_image 
 
@@ -209,7 +209,7 @@ class BlemishBlasterDialogPro(QDialog):
         self.scroll = QScrollArea(self)
         self.scroll.setWidgetResizable(True)
         self.scroll.setWidget(self.view)
-
+        self.scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         # --- Zoom controls (buttons) ---------------------------------
         # --- Zoom controls (standard themed toolbuttons) ---------------
         self._zoom = 1.0  # initial zoom factor
@@ -273,17 +273,57 @@ class BlemishBlasterDialogPro(QDialog):
         bb.addWidget(self.btn_apply)
         bb.addWidget(self.btn_close)
 
-        main = QVBoxLayout(self)
-        main.addWidget(self.scroll)
-        zoom_bar = QHBoxLayout()
-        zoom_bar.addStretch()
-        zoom_bar.addWidget(self.btn_zoom_out)
-        zoom_bar.addWidget(self.btn_zoom_in)
-        zoom_bar.addWidget(self.btn_zoom_fit)
-        zoom_bar.addStretch()
-        main.addLayout(zoom_bar)        
-        main.addWidget(ctrls)
-        main.addLayout(bb)
+        # ─────────────────────────────────────────────────────────────
+        # Layout: Left = Controls, Right = Preview (so preview gets height)
+        # ─────────────────────────────────────────────────────────────
+        root = QHBoxLayout(self)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(10)
+
+        # ---- LEFT: Zoom + Controls + Buttons (scrollable on small screens) ----
+        left = QVBoxLayout()
+        left.setSpacing(10)
+
+        zoom_box = QGroupBox(self.tr("Zoom"))
+        zoom_lay = QHBoxLayout(zoom_box)
+        zoom_lay.addStretch(1)
+        zoom_lay.addWidget(self.btn_zoom_out)
+        zoom_lay.addWidget(self.btn_zoom_in)
+        zoom_lay.addWidget(self.btn_zoom_fit)
+        zoom_lay.addStretch(1)
+
+        left.addWidget(zoom_box)
+        left.addWidget(ctrls, 0)
+
+        btn_row = QWidget(self)
+        btn_row.setLayout(bb)
+        left.addWidget(btn_row, 0)
+
+        left.addStretch(1)
+
+        left_widget = QWidget(self)
+        left_widget.setLayout(left)
+
+        left_scroll = QScrollArea(self)
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setMinimumWidth(320)   # tweak 300–360
+        left_scroll.setWidget(left_widget)
+
+        # ---- vertical separator ----
+        sep = QFrame(self)
+        sep.setFrameShape(QFrame.Shape.VLine)
+        sep.setFrameShadow(QFrame.Shadow.Sunken)
+
+        # ---- RIGHT: Preview ----
+        right = QVBoxLayout()
+        right.setSpacing(8)
+        right.addWidget(self.scroll, 1)
+
+        # Add in order: controls left, preview right
+        root.addWidget(left_scroll, 0)
+        root.addWidget(sep)
+        root.addLayout(right, 1)
+
 
         # behavior
         self._threadpool = QThreadPool.globalInstance()

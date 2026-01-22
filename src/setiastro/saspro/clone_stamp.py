@@ -4,12 +4,12 @@ from __future__ import annotations
 import numpy as np
 from typing import Optional, Tuple
 
-from PyQt6.QtCore import Qt, QEvent, QPointF
-from PyQt6.QtGui import QImage, QPixmap, QPen, QBrush, QAction, QKeySequence, QColor, QWheelEvent
+from PyQt6.QtCore import Qt, QEvent, QPointF,QTimer
+from PyQt6.QtGui import QImage, QPixmap, QPen, QBrush, QAction, QKeySequence, QColor, QWheelEvent, QPainter
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox, QLabel, QPushButton, QSlider,
     QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGraphicsEllipseItem, QMessageBox,
-    QScrollArea, QCheckBox, QDoubleSpinBox, QGraphicsLineItem
+    QScrollArea, QCheckBox, QDoubleSpinBox, QGraphicsLineItem, QWidget, QFrame, QSizePolicy
 )
 
 from setiastro.saspro.imageops.stretch import stretch_color_image, stretch_mono_image
@@ -39,94 +39,83 @@ def _circle_mask(radius: int, feather: float) -> np.ndarray:
     fall = np.clip((float(r) - d) / max(1e-6, float(r) - inner), 0.0, 1.0)
     return np.where(d <= inner, 1.0, np.where(d <= r, fall, 0.0)).astype(np.float32)
 
-
-def _blend_clone(
+def _blend_clone_inplace(
     img: np.ndarray,
-    tgt_xy: Tuple[int, int],
-    src_xy: Tuple[int, int],
-    radius: int,
-    feather: float,
+    tx: int, ty: int,
+    sx: int, sy: int,
+    mask_full: np.ndarray,   # (2r+1,2r+1)
+    r: int,
     opacity: float,
-) -> np.ndarray:
+) -> None:
     """
-    Clone-dab: copy from src patch into tgt patch with feathered mask and opacity.
-    img is float32 HxWx3 in [0..1].
-    Returns new img (copy-on-write for the modified region).
+    In-place clone dab. img is float32 HxWx3 in [0..1].
+    mask_full already includes feather falloff (0..1). We multiply by opacity here.
     """
     h, w = img.shape[:2]
-    tx, ty = int(tgt_xy[0]), int(tgt_xy[1])
-    sx, sy = int(src_xy[0]), int(src_xy[1])
-    r = int(max(1, radius))
 
-    # Bounding boxes
+    # target bounds
     x0 = tx - r; x1 = tx + r + 1
     y0 = ty - r; y1 = ty + r + 1
 
-    # Clip to image
+    # clip target
     cx0 = max(0, x0); cx1 = min(w, x1)
     cy0 = max(0, y0); cy1 = min(h, y1)
     if cx0 >= cx1 or cy0 >= cy1:
-        return img
+        return
 
-    # Corresponding source region (same shape as clipped target)
-    # Compute offset from unclipped target window
-    ox0 = cx0 - x0
-    oy0 = cy0 - y0
+    # map to mask coords
+    mx0 = cx0 - x0
+    my0 = cy0 - y0
+    tw = cx1 - cx0
+    th = cy1 - cy0
 
-    # Source window aligned
-    sx0 = (sx - r) + ox0
-    sy0 = (sy - r) + oy0
-    sx1 = sx0 + (cx1 - cx0)
-    sy1 = sy0 + (cy1 - cy0)
+    # source aligned bounds for same shape
+    sx0 = (sx - r) + mx0
+    sy0 = (sy - r) + my0
+    sx1 = sx0 + tw
+    sy1 = sy0 + th
 
-    # If source window extends out of bounds, clip both source and target accordingly
-    # (keep them same shape)
+    # clip both if source out of bounds
     adj_cx0, adj_cy0, adj_cx1, adj_cy1 = cx0, cy0, cx1, cy1
-
     if sx0 < 0:
-        shift = -sx0
+        d = -sx0
         sx0 = 0
-        adj_cx0 += shift
+        adj_cx0 += d
     if sy0 < 0:
-        shift = -sy0
+        d = -sy0
         sy0 = 0
-        adj_cy0 += shift
+        adj_cy0 += d
     if sx1 > w:
-        shift = sx1 - w
+        d = sx1 - w
         sx1 = w
-        adj_cx1 -= shift
+        adj_cx1 -= d
     if sy1 > h:
-        shift = sy1 - h
+        d = sy1 - h
         sy1 = h
-        adj_cy1 -= shift
+        adj_cy1 -= d
 
     if adj_cx0 >= adj_cx1 or adj_cy0 >= adj_cy1:
-        return img
+        return
 
-    # Recompute final shapes
     tw = adj_cx1 - adj_cx0
     th = adj_cy1 - adj_cy0
     if tw <= 0 or th <= 0:
-        return img
+        return
 
-    tgt_patch = img[adj_cy0:adj_cy1, adj_cx0:adj_cx1, :]
-    src_patch = img[sy0:sy0+th, sx0:sx0+tw, :]
-
-    # Mask slice for this clipped patch
-    mask_full = _circle_mask(r, feather)
+    # recompute mask slice indices after clipping shift
     mx0 = adj_cx0 - x0
     my0 = adj_cy0 - y0
-    mask = mask_full[my0:my0+th, mx0:mx0+tw].astype(np.float32)
 
-    a = float(np.clip(opacity, 0.0, 1.0)) * mask
+    tgt = img[adj_cy0:adj_cy1, adj_cx0:adj_cx1, :]
+    src = img[sy0:sy0+th, sx0:sx0+tw, :]
+
+    a = (mask_full[my0:my0+th, mx0:mx0+tw] * float(opacity)).astype(np.float32)
     if a.max() <= 0:
-        return img
+        return
 
-    out = img.copy()
-    # broadcast mask to 3 channels
     a3 = a[:, :, None]
-    out[adj_cy0:adj_cy1, adj_cx0:adj_cx1, :] = (1.0 - a3) * tgt_patch + a3 * src_patch
-    return out
+    # in-place blend
+    tgt[:] = (1.0 - a3) * tgt + a3 * src
 
 
 class CloneStampDialogPro(QDialog):
@@ -143,6 +132,8 @@ class CloneStampDialogPro(QDialog):
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         self.setMinimumSize(900, 650)
+        self._mask_cache_key = None
+        self._mask_cache = None
 
         self._doc = doc
         base = getattr(doc, "image", None)
@@ -214,7 +205,7 @@ class CloneStampDialogPro(QDialog):
         self.scroll = QScrollArea(self)
         self.scroll.setWidgetResizable(True)
         self.scroll.setWidget(self.view)
-
+        self.scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         # Zoom controls
         self._zoom = 1.0
         self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
@@ -233,6 +224,11 @@ class CloneStampDialogPro(QDialog):
         form.addRow(self.tr("Feather:"), self.s_feather)
         form.addRow(self.tr("Opacity:"), self.s_opacity)
 
+        self.brush_preview = QLabel(self)
+        self.brush_preview.setFixedSize(90, 90)
+        self.brush_preview.setStyleSheet("background:#000; border:1px solid #333;")
+        form.addRow(self.tr("Brush preview:"), self.brush_preview)
+
         self.lbl_help = QLabel(self.tr(
             "Ctrl+Click to set source. Then Left-drag to paint.\n"
             "Source follows the cursor (classic clone stamp)."
@@ -247,7 +243,7 @@ class CloneStampDialogPro(QDialog):
 
         # Preview autostretch (display only)
         self.cb_autostretch = QCheckBox(self.tr("Auto-stretch preview"))
-        self.cb_autostretch.setChecked(True)
+        self.cb_autostretch.setChecked(False)
         form.addRow(self.cb_autostretch)
 
         self.s_target_median = QDoubleSpinBox()
@@ -284,19 +280,62 @@ class CloneStampDialogPro(QDialog):
         bb.addWidget(self.btn_apply)
         bb.addWidget(self.btn_close)
 
-        main = QVBoxLayout(self)
-        main.addWidget(self.scroll)
+        # ─────────────────────────────────────────────────────────────
+        # Layout: Left = Preview, Right = Zoom + Controls + Buttons
+        # ─────────────────────────────────────────────────────────────
+        root = QHBoxLayout(self)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(10)
 
-        zoom_bar = QHBoxLayout()
-        zoom_bar.addStretch()
-        zoom_bar.addWidget(self.btn_zoom_out)
-        zoom_bar.addWidget(self.btn_zoom_in)
-        zoom_bar.addWidget(self.btn_zoom_fit)
-        zoom_bar.addStretch()
-        main.addLayout(zoom_bar)
+        # ---- LEFT: Preview ----
+        left = QVBoxLayout()
+        left.setSpacing(8)
 
-        main.addWidget(ctrls)
-        main.addLayout(bb)
+        left.addWidget(self.scroll, 1)  # preview expands
+
+
+        # optional vertical separator (nice on wide screens)
+        sep = QFrame(self)
+        sep.setFrameShape(QFrame.Shape.VLine)
+        sep.setFrameShadow(QFrame.Shadow.Sunken)
+
+        # ---- RIGHT: Zoom + Controls + Buttons ----
+        right = QVBoxLayout()
+        right.setSpacing(10)
+
+        # Zoom group (top of right column)
+        zoom_box = QGroupBox(self.tr("Zoom"))
+        zoom_lay = QHBoxLayout(zoom_box)
+        zoom_lay.addStretch(1)
+        zoom_lay.addWidget(self.btn_zoom_out)
+        zoom_lay.addWidget(self.btn_zoom_in)
+        zoom_lay.addWidget(self.btn_zoom_fit)
+        zoom_lay.addStretch(1)
+
+        right.addWidget(zoom_box)
+
+        # Controls group (already built as `ctrls`)
+        right.addWidget(ctrls, 0)
+
+        # Bottom buttons row (already built as `bb`)
+        btn_row = QWidget(self)
+        btn_row.setLayout(bb)
+        right.addWidget(btn_row, 0)
+
+        right.addStretch(1)
+
+        # Wrap right column in a scroll area so small monitors don't get cramped
+        right_widget = QWidget(self)
+        right_widget.setLayout(right)
+
+        right_scroll = QScrollArea(self)
+        right_scroll.setWidgetResizable(True)
+        right_scroll.setMinimumWidth(320)   # adjust if you want (300–360 is good)
+        right_scroll.setWidget(right_widget)
+
+        root.addWidget(right_scroll, 0)  # RIGHT column becomes LEFT side now
+        root.addWidget(sep)
+        root.addLayout(left, 1)          # preview becomes RIGHT side now
 
         # behavior
         self.view.setMouseTracking(True)
@@ -310,19 +349,48 @@ class CloneStampDialogPro(QDialog):
         self.btn_close.clicked.connect(self.reject)
         self.btn_undo.clicked.connect(self._undo_step)
         self.btn_redo.clicked.connect(self._redo_step)
-
+        self.s_radius.valueChanged.connect(self._update_brush_preview)
+        self.s_feather.valueChanged.connect(self._update_brush_preview)
+        self.s_opacity.valueChanged.connect(self._update_brush_preview)
         self._undo, self._redo = [], []
         self._update_undo_redo_buttons()
 
         self._update_display_autostretch()
         self._fit_view()
+        self._stroke_last_pos: Optional[Tuple[float, float]] = None
+        self._stroke_spacing_frac = 0.25  # dab spacing = radius * this
+
+        self._paint_refresh_pending = False
+        self._paint_refresh_timer = QTimer(self)
+        self._paint_refresh_timer.setSingleShot(True)
+        self._paint_refresh_timer.timeout.connect(self._do_paint_refresh)
 
         # shortcuts
         a_undo = QAction(self); a_undo.setShortcut(QKeySequence.StandardKey.Undo); a_undo.triggered.connect(self._undo_step)
         a_redo = QAction(self); a_redo.setShortcut(QKeySequence.StandardKey.Redo); a_redo.triggered.connect(self._redo_step)
         self.addAction(a_undo); self.addAction(a_redo)
+        self._update_brush_preview()
+
+    def _schedule_paint_refresh(self):
+        if self._paint_refresh_pending:
+            return
+        self._paint_refresh_pending = True
+        self._paint_refresh_timer.start(33)  # ~30 FPS
+
+    def _do_paint_refresh(self):
+        self._paint_refresh_pending = False
+        self._display = self._image
+        self._refresh_pix()
+
 
     # ──────────────────────────────────────────────────────────────────────────
+    def _get_mask(self, r: int, feather: float) -> np.ndarray:
+        key = (int(r), float(feather))
+        if self._mask_cache_key != key or self._mask_cache is None:
+            self._mask_cache_key = key
+            self._mask_cache = _circle_mask(r, feather)
+        return self._mask_cache
+
 
     def _clear_source(self):
         self._has_source = False
@@ -353,6 +421,47 @@ class CloneStampDialogPro(QDialog):
 
         self._display = disp.astype(np.float32, copy=False)
         self._refresh_pix()
+
+    def _update_brush_preview(self):
+        w = self.brush_preview.width()
+        h = self.brush_preview.height()
+
+        # Use a fixed "preview radius" so the graphic always fills nicely.
+        # Feather/opacity are the main teaching tools here.
+        r = min(w, h) * 0.42
+
+        feather = float(self.s_feather.value()) / 100.0
+        opacity = float(self.s_opacity.value()) / 100.0
+
+        # Build a tiny mask using the same logic as the real stamp.
+        # Convert radius -> int pixel radius for the preview buffer.
+        pr = int(max(1, round(r)))
+        mask = _circle_mask(pr, feather)  # (2pr+1, 2pr+1) float32
+
+        # Make preview canvas
+        canvas = np.zeros((h, w), dtype=np.float32)
+
+        # Center the mask
+        cy, cx = h // 2, w // 2
+        y0 = cy - pr
+        x0 = cx - pr
+        y1 = y0 + mask.shape[0]
+        x1 = x0 + mask.shape[1]
+
+        # Clip just in case
+        yy0 = max(0, y0); xx0 = max(0, x0)
+        yy1 = min(h, y1); xx1 = min(w, x1)
+
+        my0 = yy0 - y0; mx0 = xx0 - x0
+        my1 = my0 + (yy1 - yy0); mx1 = mx0 + (xx1 - xx0)
+
+        canvas[yy0:yy1, xx0:xx1] = mask[my0:my1, mx0:mx1] * opacity
+
+        # Convert to QPixmap (grayscale)
+        arr8 = np.ascontiguousarray(np.clip(canvas * 255.0, 0, 255).astype(np.uint8))
+        qimg = QImage(arr8.data, w, h, w, QImage.Format.Format_Grayscale8)
+        self.brush_preview.setPixmap(QPixmap.fromImage(qimg))
+
 
     # ── Event filter
     def eventFilter(self, src, ev):
@@ -390,7 +499,7 @@ class CloneStampDialogPro(QDialog):
         self.circle.setVisible(True)
 
         if self._painting and self._has_source:
-            self._paint_at(scene_pos)
+            self._paint_segment(scene_pos)
 
         # Update source overlay while hovering (and while painting)
         self._update_source_overlay(scene_pos)
@@ -429,14 +538,59 @@ class CloneStampDialogPro(QDialog):
         self._update_undo_redo_buttons()
 
         self._painting = True
-        self._last_tgt = None
-        self._paint_at(scene_pos)
+        self._stroke_last_pos = (scene_pos.x(), scene_pos.y())
+        self._paint_segment(scene_pos)  # do first dab
 
     def _end_paint(self):
         self._painting = False
         self._last_tgt = None
-        # refresh display (autostretch) once at end too
+        self._stroke_last_pos = None
+        # Now do the expensive autostretch once:
         self._update_display_autostretch()
+
+    def _paint_segment(self, scene_pos: QPointF):
+        if not (self._painting and self._has_source):
+            return
+
+        x1, y1 = float(scene_pos.x()), float(scene_pos.y())
+        if self._stroke_last_pos is None:
+            self._stroke_last_pos = (x1, y1)
+
+        x0, y0 = self._stroke_last_pos
+        dx = x1 - x0
+        dy = y1 - y0
+        dist = float((dx*dx + dy*dy) ** 0.5)
+
+        radius  = int(self.s_radius.value())
+        feather = float(self.s_feather.value()) / 100.0
+        opacity = float(self.s_opacity.value()) / 100.0
+
+        # spacing: smaller = smoother (but more compute)
+        spacing = max(1.0, radius * self._stroke_spacing_frac)
+        steps = max(1, int(dist / spacing))
+
+        mask = self._get_mask(radius, feather)
+        ox, oy = self._offset
+
+        h, w = self._image.shape[:2]
+
+        # stamp along the line
+        for i in range(1, steps + 1):
+            t = i / steps
+            xt = x0 + dx * t
+            yt = y0 + dy * t
+            tx, ty = int(round(xt)), int(round(yt))
+            if not (0 <= tx < w and 0 <= ty < h):
+                continue
+            sx, sy = tx + ox, ty + oy
+            _blend_clone_inplace(self._image, tx, ty, sx, sy, mask, radius, opacity)
+
+        self._stroke_last_pos = (x1, y1)
+
+        # During painting: do NOT autostretch every dab.
+        # Just show linear buffer quickly.
+        self._schedule_paint_refresh()
+
 
     def _paint_at(self, scene_pos: QPointF):
         tx, ty = int(round(scene_pos.x())), int(round(scene_pos.y()))
