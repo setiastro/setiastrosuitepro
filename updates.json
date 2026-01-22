@@ -1,9 +1,9 @@
 {
-  "version": "1.7.3.post2",
+  "version": "1.7.4",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.7.3/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.7.3/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.7.3/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.7.4/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.7.4/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.7.4/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.7.3 New Galaxy Polar Projection in the 3D projection tool.  New zoom features for stereo viewing and pushing to a new document. New tranformation option in layers: translate, rotate, and scale your layer to do manual alignment of layers. New mask options when you right click an image. Jpeg quality options when saving. Multiple bug fixes"
+  "notes": "Seti Astro Suite Pro V1.7.4 New pseudo surface interactive 3d features. Scripts user repository changed. Drizzling now works with Splitting Duo-Band Filters. Harmonized all master lights to be created in a Master_Light folder. Harmonized many njit and numba functions. Changed timing on checking for updates until fade window completely closed."
 }
