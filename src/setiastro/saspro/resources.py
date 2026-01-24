@@ -557,6 +557,58 @@ def _init_legacy_paths():
         'planetprojection_path': get_icon_path('3dplanet.png'),
     }
 
+class Resources:
+    """
+    Centralized data resource paths.
+    """
+    SASP_DATA = property(lambda self: _resource_path('data/SASP_data.fits'))
+    ASTROBIN_FILTERS_CSV = property(lambda self: _resource_path('data/catalogs/astrobin_filters.csv'))
+    SPINNER_GIF = property(lambda self: _resource_path('spinner.gif'))
+
+    # --- Models root ---
+    MODELS_DIR = property(lambda self: _resource_path('data/models'))
+
+    # --- Cosmic Clarity Sharpen ---
+    CC_STELLAR_SHARP_PTH  = property(lambda self: _resource_path('data/models/deep_sharp_stellar_cnn_AI3_5s.pth'))
+    CC_STELLAR_SHARP_ONNX = property(lambda self: _resource_path('data/models/deep_sharp_stellar_cnn_AI3_5s.onnx'))
+
+    CC_NS1_PTH  = property(lambda self: _resource_path('data/models/deep_nonstellar_sharp_cnn_radius_1AI3_5s.pth'))
+    CC_NS1_ONNX = property(lambda self: _resource_path('data/models/deep_nonstellar_sharp_cnn_radius_1AI3_5s.onnx'))
+
+    CC_NS2_PTH  = property(lambda self: _resource_path('data/models/deep_nonstellar_sharp_cnn_radius_2AI3_5s.pth'))
+    CC_NS2_ONNX = property(lambda self: _resource_path('data/models/deep_nonstellar_sharp_cnn_radius_2AI3_5s.onnx'))
+
+    CC_NS4_PTH  = property(lambda self: _resource_path('data/models/deep_nonstellar_sharp_cnn_radius_4AI3_5s.pth'))
+    CC_NS4_ONNX = property(lambda self: _resource_path('data/models/deep_nonstellar_sharp_cnn_radius_4AI3_5s.onnx'))
+
+    CC_NS8_PTH  = property(lambda self: _resource_path('data/models/deep_nonstellar_sharp_cnn_radius_8AI3_5s.pth'))
+    CC_NS8_ONNX = property(lambda self: _resource_path('data/models/deep_nonstellar_sharp_cnn_radius_8AI3_5s.onnx'))
+
+    CC_DENOISE_PTH  = property(lambda self: _resource_path('data/models/deep_denoise_cnn_AI3_6.pth'))
+    CC_DENOISE_ONNX = property(lambda self: _resource_path('data/models/deep_denoise_cnn_AI3_6.onnx'))
+
+    # --- Super Resolution ---
+    CC_SUPERRES_2X_PTH  = property(lambda self: _resource_path('data/models/superres_2x.pth'))
+    CC_SUPERRES_2X_ONNX = property(lambda self: _resource_path('data/models/superres_2x.onnx'))
+
+    CC_SUPERRES_3X_PTH  = property(lambda self: _resource_path('data/models/superres_3x.pth'))
+    CC_SUPERRES_3X_ONNX = property(lambda self: _resource_path('data/models/superres_3x.onnx'))
+
+    CC_SUPERRES_4X_PTH  = property(lambda self: _resource_path('data/models/superres_4x.pth'))
+    CC_SUPERRES_4X_ONNX = property(lambda self: _resource_path('data/models/superres_4x.onnx'))
+
+    # --- Dark Star (Star Removal) ---
+    CC_DARKSTAR_MONO_PTH   = property(lambda self: _resource_path('data/models/darkstar_v2.1.pth'))
+    CC_DARKSTAR_MONO_ONNX  = property(lambda self: _resource_path('data/models/darkstar_v2.1.onnx'))
+
+    CC_DARKSTAR_COLOR_PTH  = property(lambda self: _resource_path('data/models/darkstar_v2.1c.pth'))
+    CC_DARKSTAR_COLOR_ONNX = property(lambda self: _resource_path('data/models/darkstar_v2.1c.onnx'))
+
+
+@lru_cache(maxsize=8)
+def get_models_dir() -> str:
+    return _resource_path('data/models')
+
 
 # Export all legacy paths as module-level variables
 _legacy = _init_legacy_paths()
