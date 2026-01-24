@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox, QLabel, QPushButton,
     QSlider, QCheckBox, QColorDialog, QComboBox, QFileDialog, QInputDialog, QMenu,
     QMessageBox, QWidget, QGraphicsView, QGraphicsScene, QGraphicsItem,QFontComboBox, QGraphicsTextItem,
-    QGraphicsPixmapItem, QGraphicsEllipseItem, QGraphicsRectItem, QSpinBox
+    QGraphicsPixmapItem, QGraphicsEllipseItem, QGraphicsRectItem, QSpinBox, QScrollArea
 )
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 
@@ -844,8 +844,19 @@ class SignatureInsertDialogPro(QDialog):
         row_commit.addStretch(1)
         col.addLayout(row_commit)
 
-        left = QWidget(); left.setLayout(col)
-        root.addWidget(left, 0)
+        left = QWidget()
+        left.setLayout(col)
+
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setWidget(left)
+
+        # Optional: make it feel less “webby”
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+
+        root.addWidget(scroll, 0)   # instead of root.addWidget(left, 0)
         root.addWidget(self.view, 1)
 
     def _tech_active_doc(self):
