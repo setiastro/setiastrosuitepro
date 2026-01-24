@@ -63,6 +63,7 @@ class MetricsPanel(QWidget):
         self.flags = None              # list of bools
         self._threshold_initialized = [False]*4
         self._open_previews = []
+        self._show_guides = True  # default on (or False if you prefer)
 
         self.plots, self.scats, self.lines = [], [], []
         titles = [self.tr("FWHM (px)"), self.tr("Eccentricity"), self.tr("Background"), self.tr("Star Count")]
@@ -86,10 +87,100 @@ class MetricsPanel(QWidget):
                 lambda ln, m=idx: self._on_line_move(m, ln))
             pw.addItem(line)
 
+            # --- dashed reference lines: median + ±3σ (robust) ---
+            median_ln = pg.InfiniteLine(pos=0, angle=0, movable=False,
+                                        pen=pg.mkPen((220, 220, 220, 170), width=1, style=Qt.PenStyle.DashLine))
+            sigma_lo  = pg.InfiniteLine(pos=0, angle=0, movable=False,
+                                        pen=pg.mkPen((220, 220, 220, 120), width=1, style=Qt.PenStyle.DashLine))
+            sigma_hi  = pg.InfiniteLine(pos=0, angle=0, movable=False,
+                                        pen=pg.mkPen((220, 220, 220, 120), width=1, style=Qt.PenStyle.DashLine))
+
+            # keep them behind points/threshold visually
+            median_ln.setZValue(-10)
+            sigma_lo.setZValue(-10)
+            sigma_hi.setZValue(-10)
+
+            pw.addItem(median_ln)
+            pw.addItem(sigma_lo)
+            pw.addItem(sigma_hi)
+
+            # create the lists once
+            if not hasattr(self, "median_lines"):
+                self.median_lines = []
+                self.sigma_lines = []   # list of (lo, hi)
+
+            self.median_lines.append(median_ln)
+            self.sigma_lines.append((sigma_lo, sigma_hi))
             grid.addWidget(pw, idx//2, idx%2)
             self.plots.append(pw)
             self.scats.append(scat)
             self.lines.append(line)
+
+    def set_guides_visible(self, on: bool):
+        self._show_guides = bool(on)
+
+        if not self._show_guides:
+            # ✅ hide immediately
+            if hasattr(self, "median_lines"):
+                for ln in self.median_lines:
+                    ln.hide()
+            if hasattr(self, "sigma_lines"):
+                for lo, hi in self.sigma_lines:
+                    lo.hide()
+                    hi.hide()
+            return
+
+        # ✅ turning ON: recompute/restore based on what’s currently plotted
+        self._refresh_guides_from_current_plot()
+
+    def _refresh_guides_from_current_plot(self):
+        """Recompute/position guide lines using current plot data (if any)."""
+        if not getattr(self, "_show_guides", True):
+            return
+        if not hasattr(self, "median_lines") or not hasattr(self, "sigma_lines"):
+            return
+        # Use the scatter data already in each panel
+        for m, scat in enumerate(self.scats):
+            x, y = scat.getData()[:2]
+            if y is None or len(y) == 0:
+                self.median_lines[m].hide()
+                lo, hi = self.sigma_lines[m]
+                lo.hide(); hi.hide()
+                continue
+
+            med, sig = self._median_and_robust_sigma(np.asarray(y, dtype=np.float32))
+            mline = self.median_lines[m]
+            lo_ln, hi_ln = self.sigma_lines[m]
+
+            if np.isfinite(med):
+                mline.setPos(med); mline.show()
+            else:
+                mline.hide()
+
+            if np.isfinite(med) and np.isfinite(sig) and sig > 0:
+                lo = med - 3.0 * sig
+                hi = med + 3.0 * sig
+                if m == 3:
+                    lo = max(0.0, lo)
+                lo_ln.setPos(lo); hi_ln.setPos(hi)
+                lo_ln.show(); hi_ln.show()
+            else:
+                lo_ln.hide(); hi_ln.hide()
+
+
+    @staticmethod
+    def _median_and_robust_sigma(y: np.ndarray):
+        """Return (median, sigma) using MAD-based robust sigma. Ignores NaN/Inf."""
+        y = np.asarray(y, dtype=np.float32)
+        finite = np.isfinite(y)
+        if not finite.any():
+            return np.nan, np.nan
+        v = y[finite]
+        med = float(np.nanmedian(v))
+        mad = float(np.nanmedian(np.abs(v - med)))
+        sigma = 1.4826 * mad  # robust sigma estimate
+        return med, float(sigma)
+
 
     @staticmethod
     def _compute_one(i_entry):
@@ -324,6 +415,15 @@ class MetricsPanel(QWidget):
                 line.setPos(0)
                 pw.getPlotItem().getViewBox().update()
                 pw.repaint()
+
+            # ✅ hide guides too
+            if hasattr(self, "median_lines"):
+                for ln in self.median_lines:
+                    ln.hide()
+            if hasattr(self, "sigma_lines"):
+                for lo, hi in self.sigma_lines:
+                    lo.hide()
+                    hi.hide()
             return
 
         # compute & cache on first call or new image list
@@ -357,6 +457,41 @@ class MetricsPanel(QWidget):
                 for idx in indices
             ]
             scat.setData(x=x, y=y, brush=brushes, pen=pg.mkPen(None), size=8)
+
+            # --- update dashed reference lines (median + ±3σ) ---
+            if getattr(self, "_show_guides", True):
+                try:
+                    med, sig = self._median_and_robust_sigma(y)
+                    mline = self.median_lines[m]
+                    lo_ln, hi_ln = self.sigma_lines[m]
+
+                    if np.isfinite(med):
+                        mline.setPos(med)
+                        mline.show()
+                    else:
+                        mline.hide()
+
+                    if np.isfinite(med) and np.isfinite(sig) and sig > 0:
+                        lo = med - 3.0 * sig
+                        hi = med + 3.0 * sig
+                        if m == 3:
+                            lo = max(0.0, lo)
+                        lo_ln.setPos(lo); hi_ln.setPos(hi)
+                        lo_ln.show(); hi_ln.show()
+                    else:
+                        lo_ln.hide(); hi_ln.hide()
+                except Exception:
+                    if hasattr(self, "median_lines") and m < len(self.median_lines):
+                        self.median_lines[m].hide()
+                        a, b = self.sigma_lines[m]
+                        a.hide(); b.hide()
+            else:
+                # guides disabled -> force-hide
+                if hasattr(self, "median_lines") and m < len(self.median_lines):
+                    self.median_lines[m].hide()
+                    a, b = self.sigma_lines[m]
+                    a.hide(); b.hide()
+
 
             # initialize threshold line once
             if not self._threshold_initialized[m]:
@@ -456,7 +591,10 @@ class MetricsWindow(QWidget):
         instr.setWordWrap(True)
         instr.setStyleSheet("color: #ccc; font-size: 12px;")
         vbox.addWidget(instr)
-
+        self.chk_guides = QCheckBox(self.tr("Show median and ±3σ guides"), self)
+        self.chk_guides.setChecked(True)  # default on
+        self.chk_guides.toggled.connect(self._on_toggle_guides)
+        vbox.addWidget(self.chk_guides)
         # → filter selector
         self.group_combo = QComboBox(self)
         self.group_combo.addItem(self.tr("All"))
@@ -478,6 +616,10 @@ class MetricsWindow(QWidget):
         # internal storage
         self._all_images = []
         self._current_indices: Optional[List[int]] = None
+
+    def _on_toggle_guides(self, on: bool):
+        if hasattr(self, "metrics_panel") and self.metrics_panel is not None:
+            self.metrics_panel.set_guides_visible(on)
 
 
     def _update_status(self, *args):
@@ -537,6 +679,7 @@ class MetricsWindow(QWidget):
         self._current_indices = self._order_all
         self._apply_thresholds("All")
         self.metrics_panel.plot(self._all_images, indices=self._current_indices)
+        self.metrics_panel.set_guides_visible(self.chk_guides.isChecked())
         self._update_status()
 
     def _reindex_list_after_remove(self, lst: List[int] | None, removed: List[int]) -> List[int] | None:
@@ -666,7 +809,8 @@ class MetricsWindow(QWidget):
         grp = self.group_combo.currentText()
         # save it for this group
         self._thresholds_per_group[grp][metric_idx] = new_val
-
+        self.metrics_panel.plot(self._all_images, indices=self._current_indices)
+        self.metrics_panel.set_guides_visible(self.chk_guides.isChecked())
         # (if you also want immediate re-flagging in the tree, keep your BlinkTab logic hooked here)
 
     def _apply_thresholds(self, group_name: str):

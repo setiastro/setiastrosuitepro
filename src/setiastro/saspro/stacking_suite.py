@@ -2296,34 +2296,90 @@ def compute_safe_chunk(height, width, N, channels, dtype, pref_h, pref_w):
 _DIM_RE = re.compile(r"\s*\(\d+\s*x\s*\d+\)\s*")
 
 
-def build_rejection_layers(rejection_map: dict, ref_H: int, ref_W: int, n_frames: int,
-                           *, comb_threshold_frac: float = 0.02):
+def build_rejection_layers(
+    rejection_map: dict,
+    ref_H: int,
+    ref_W: int,
+    n_frames: int,
+    *,
+    comb_threshold_frac: float = 0.02
+):
     """
-    Returns:
-      rej_cnt  : (H,W) uint16 (or uint32 if needed)
-      rej_frac : (H,W) float32 in [0..1]
-      rej_any  : (H,W) bool  (thresholded, not "ever rejected")
+    Supports BOTH formats:
+
+    Old format:
+        rejection_map[file] = [(x, y), (x, y), ...]
+
+    New format (tile masks):
+        rejection_map[file] = [(x0, y0, mask_bool_thx_tw), ...]
+        where mask_bool is (th, tw) boolean array for the tile at (x0,y0) in ref space.
     """
+    import numpy as np
+
     if n_frames <= 0:
         raise ValueError("n_frames must be > 0")
 
-    # Use uint32 if you might exceed 65535 rejections (rare)
     rej_cnt = np.zeros((ref_H, ref_W), dtype=np.uint32)
 
-    # rejection_map keys are per-file, values are coords in REGISTERED space
-    for _fpath, coords in (rejection_map or {}).items():
-        for (x, y) in coords:
-            xi = int(x); yi = int(y)
-            if 0 <= xi < ref_W and 0 <= yi < ref_H:
-                rej_cnt[yi, xi] += 1
+    for _fpath, items in (rejection_map or {}).items():
+        if not items:
+            continue
+
+        # Detect format by peeking at first item
+        first = items[0]
+
+        # ---- NEW tile-mask format ----
+        if isinstance(first, (tuple, list)) and len(first) == 3:
+            for it in items:
+                try:
+                    x0, y0, m = it
+                except Exception:
+                    continue
+                if m is None:
+                    continue
+
+                mm = np.asarray(m, dtype=np.bool_)
+                if mm.ndim != 2:
+                    # if somehow stored as (th,tw,1) etc.
+                    mm = np.squeeze(mm)
+                    if mm.ndim != 2:
+                        continue
+
+                th, tw = mm.shape
+                if th <= 0 or tw <= 0:
+                    continue
+
+                x0i = int(x0)
+                y0i = int(y0)
+                if x0i >= ref_W or y0i >= ref_H:
+                    continue
+
+                x1i = min(ref_W, x0i + tw)
+                y1i = min(ref_H, y0i + th)
+                if x1i <= x0i or y1i <= y0i:
+                    continue
+
+                # add 1 rejection count wherever mask is True
+                sub = rej_cnt[y0i:y1i, x0i:x1i]
+                sub += mm[: (y1i - y0i), : (x1i - x0i)].astype(np.uint32)
+
+        # ---- OLD coord-list format ----
+        else:
+            for it in items:
+                try:
+                    x, y = it
+                except Exception:
+                    # tolerate weird entries
+                    continue
+                xi = int(x)
+                yi = int(y)
+                if 0 <= xi < ref_W and 0 <= yi < ref_H:
+                    rej_cnt[yi, xi] += 1
 
     rej_frac = (rej_cnt.astype(np.float32) / float(n_frames))
-
-    # “combined mask” becomes “rejected in >= threshold% of frames”
     rej_any = (rej_frac >= float(comb_threshold_frac))
 
     return rej_cnt, rej_frac, rej_any
-
 
 class _Responder(QObject):
     finished = pyqtSignal(object)   # emits the edited dict or None
@@ -3834,6 +3890,94 @@ class _MMImage:
         elif bitpix == 16:
             return arr / 65535.0
         return arr
+
+    def read_tile_into(self, dst: np.ndarray, y0, y1, x0, x1, channels: int):
+        """
+        Fill dst (shape (th,tw,C) float32) with the tile.
+        No per-tile allocations.
+        """
+        import numpy as np
+
+        th = y1 - y0
+        tw = x1 - x0
+
+        # dst is (th,tw,C)
+        if self._kind == "fits":
+            d = self._fits_data
+
+            if self.ndim == 2:
+                tile = d[y0:y1, x0:x1]  # may be view (memmap) or array
+                # scale BEFORE float cast (tile dtype still int if int on disk)
+                if tile.dtype.kind in ("u", "i"):
+                    if self._bitpix == 8:
+                        np.multiply(tile, (1.0/255.0), out=dst[..., 0], casting="unsafe")
+                    elif self._bitpix == 16:
+                        np.multiply(tile, (1.0/65535.0), out=dst[..., 0], casting="unsafe")
+                    else:
+                        dst[..., 0] = tile
+                else:
+                    dst[..., 0] = tile  # astropy already float-scaled
+
+                if channels == 3:
+                    dst[..., 1] = dst[..., 0]
+                    dst[..., 2] = dst[..., 0]
+                return
+
+            # ndim==3
+            sl = [slice(None)] * 3
+            sl[self._spat_axes[0]] = slice(y0, y1)
+            sl[self._spat_axes[1]] = slice(x0, x1)
+            tile = d[tuple(sl)]
+            if (self._color_axis is not None) and (self._color_axis != 2):
+                tile = np.moveaxis(tile, self._color_axis, -1)  # now HWC-ish
+
+            # tile might be (th,tw,3) or (3,th,tw) in weird cases; handle quick
+            if tile.ndim == 3 and tile.shape[-1] != 3 and tile.shape[0] == 3:
+                tile = np.moveaxis(tile, 0, -1)
+
+            # scale if integer
+            if tile.dtype.kind in ("u", "i"):
+                div = 1.0
+                if self._bitpix == 8:
+                    div = 255.0
+                elif self._bitpix == 16:
+                    div = 65535.0
+                # dst float32 = tile / div
+                np.divide(tile, div, out=dst[..., :3], casting="unsafe")
+            else:
+                dst[..., :3] = tile
+
+            # if caller requested mono, collapse to dst[...,0]
+            if channels == 1:
+                # simple luma or first channel; you can choose policy
+                dst[..., 0] = dst[..., 0]  # keep R
+            return
+
+        # XISF
+        if self._xisf_memmap is not None:
+            C = 1 if self.ndim == 2 else self.shape[2]
+            if C == 1:
+                tile = self._xisf_memmap[0, y0:y1, x0:x1]
+                dst[..., 0] = tile
+                if channels == 3:
+                    dst[..., 1] = dst[..., 0]
+                    dst[..., 2] = dst[..., 0]
+            else:
+                tile = np.moveaxis(self._xisf_memmap[:, y0:y1, x0:x1], 0, -1)
+                dst[..., :3] = tile
+                if channels == 1:
+                    dst[..., 0] = dst[..., 0]
+        else:
+            tile = self._xisf_arr[y0:y1, x0:x1]
+            if tile.ndim == 2:
+                dst[..., 0] = tile
+                if channels == 3:
+                    dst[..., 1] = dst[..., 0]
+                    dst[..., 2] = dst[..., 0]
+            else:
+                dst[..., :3] = tile
+                if channels == 1:
+                    dst[..., 0] = dst[..., 0]
 
 
     def read_tile(self, y0, y1, x0, x1) -> np.ndarray:
@@ -11382,10 +11526,7 @@ class StackingSuiteDialog(QDialog):
                     tw = x1 - x0
                     ts = buf[:N, :th, :tw, :channels]
                     for i, src in enumerate(sources):
-                        sub = src.read_tile(y0, y1, x0, x1)
-                        if sub.ndim == 2:
-                            sub = sub[:, :, None] if channels == 1 else sub[:, :, None].repeat(3, axis=2)
-                        ts[i, :, :, :] = sub
+                        src.read_tile_into(ts[i], y0, y1, x0, x1, channels)
                     return th, tw
 
                 tp = ThreadPoolExecutor(max_workers=1)
@@ -16965,33 +17106,217 @@ class StackingSuiteDialog(QDialog):
         QApplication.processEvents()
 
 
-    def save_rejection_map_sasr(self, rejection_map, out_file):
+    def save_rejection_map_sasr(self, rejection_map: dict, out_path: str):
         """
-        Writes the per-file rejection map to a custom text file.
-        Format:
-            FILE: path/to/file1
-            x1, y1
-            x2, y2
+        Save per-file rejection information to .sasr (JSON).
 
-            FILE: path/to/file2
-            ...
+        Supports BOTH formats:
+        Old: rejection_map[file] = [(x, y), ...]
+        New: rejection_map[file] = [(x0, y0, mask_bool_thx_tw), ...]
+            where mask_bool is a 2D boolean ndarray for that tile in REF space.
+
+        For the new format we bit-pack masks to keep files small.
         """
-        with open(out_file, "w") as f:
-            for fpath, coords_list in rejection_map.items():
-                f.write(f"FILE: {fpath}\n")
-                for (x, y) in coords_list:
-                    # Convert to Python int in case they're NumPy int64
-                    f.write(f"{int(x)}, {int(y)}\n")
-                f.write("\n")  # blank line to separate blocks
+        import os, json, base64
+        import numpy as np
+
+        def _is_tile_item(it) -> bool:
+            return isinstance(it, (tuple, list)) and len(it) == 3
+
+        def _is_xy_item(it) -> bool:
+            return isinstance(it, (tuple, list)) and len(it) == 2
+
+        payload = {
+            "version": 2,   # bump because we now support tile masks
+            "kind": "mixed",  # per-file can be xy or tiles
+            "files": {}
+        }
+
+        for fpath, items in (rejection_map or {}).items():
+            if not items:
+                continue
+
+            # detect which format this file uses
+            first = items[0]
+            if _is_tile_item(first):
+                out_items = []
+                for it in items:
+                    try:
+                        x0, y0, m = it
+                    except Exception:
+                        continue
+                    if m is None:
+                        continue
+
+                    mm = np.asarray(m, dtype=np.bool_)
+                    if mm.ndim != 2:
+                        mm = np.squeeze(mm)
+                        if mm.ndim != 2:
+                            continue
+
+                    th, tw = mm.shape
+                    if th <= 0 or tw <= 0:
+                        continue
+
+                    packed = np.packbits(mm.reshape(-1).astype(np.uint8))
+                    b64 = base64.b64encode(packed.tobytes()).decode("ascii")
+
+                    out_items.append({
+                        "x0": int(x0),
+                        "y0": int(y0),
+                        "h": int(th),
+                        "w": int(tw),
+                        "bits": b64
+                    })
+
+                payload["files"][os.path.normpath(fpath)] = {
+                    "format": "tilemask",
+                    "tiles": out_items
+                }
+
+            elif _is_xy_item(first):
+                # old (x,y) list
+                xy = []
+                for it in items:
+                    try:
+                        x, y = it
+                    except Exception:
+                        continue
+                    xy.append([int(x), int(y)])
+
+                payload["files"][os.path.normpath(fpath)] = {
+                    "format": "xy",
+                    "coords": xy
+                }
+
+            else:
+                # Unknown / mixed junk — try to salvage
+                xy = []
+                tiles = []
+                for it in items:
+                    if _is_xy_item(it):
+                        x, y = it
+                        xy.append([int(x), int(y)])
+                    elif _is_tile_item(it):
+                        x0, y0, m = it
+                        mm = np.asarray(m, dtype=np.bool_)
+                        if mm.ndim != 2:
+                            mm = np.squeeze(mm)
+                            if mm.ndim != 2:
+                                continue
+                        th, tw = mm.shape
+                        packed = np.packbits(mm.reshape(-1).astype(np.uint8))
+                        b64 = base64.b64encode(packed.tobytes()).decode("ascii")
+                        tiles.append({"x0": int(x0), "y0": int(y0), "h": int(th), "w": int(tw), "bits": b64})
+
+                if tiles:
+                    payload["files"][os.path.normpath(fpath)] = {"format": "tilemask", "tiles": tiles}
+                elif xy:
+                    payload["files"][os.path.normpath(fpath)] = {"format": "xy", "coords": xy}
+
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+
 
     def load_rejection_map_sasr(self, in_file):
         """
-        Reads a .sasr text file and rebuilds the rejection map dictionary.
-        Returns a dict { fpath: [(x, y), (x, y), ...], ... }
+        Load a .sasr rejection map.
+
+        Supports:
+        - V1 legacy text format:
+            FILE: <path>
+            x, y
+            x, y
+
+            Returns: { fpath: [(x, y), ...] }
+
+        - V2 JSON format (tile masks, bit-packed):
+            Returns: { fpath: [(x0, y0, mask_bool_2d), ...] }
+
+        Notes:
+        - This function returns whatever the file contains (xy or tilemask).
+        - Your drizzle path expects tilemask format keyed by *aligned path*.
         """
+        import os, re, json, base64
+        import numpy as np
+
+        # Read file
+        with open(in_file, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        s = content.lstrip()
+
+        # -----------------------
+        # V2: JSON tilemask format
+        # -----------------------
+        if s.startswith("{") or s.startswith("["):
+            try:
+                obj = json.loads(content)
+            except Exception:
+                obj = None
+
+            if isinstance(obj, dict) and "files" in obj:
+                files = obj.get("files") or {}
+                rejections = {}
+
+                for raw_path, entry in files.items():
+                    if not isinstance(entry, dict):
+                        continue
+                    fmt = (entry.get("format") or "").lower()
+
+                    if fmt == "xy":
+                        coords = []
+                        for xy in entry.get("coords") or []:
+                            try:
+                                x, y = xy
+                                coords.append((int(x), int(y)))
+                            except Exception:
+                                continue
+                        if coords:
+                            rejections[os.path.normpath(raw_path)] = coords
+
+                    elif fmt == "tilemask":
+                        tiles_out = []
+                        for t in entry.get("tiles") or []:
+                            try:
+                                x0 = int(t["x0"])
+                                y0 = int(t["y0"])
+                                h  = int(t["h"])
+                                w  = int(t["w"])
+                                b64 = t["bits"]
+                            except Exception:
+                                continue
+
+                            try:
+                                packed = np.frombuffer(base64.b64decode(b64.encode("ascii")), dtype=np.uint8)
+                                bits = np.unpackbits(packed)  # 1D, length >= h*w
+                                bits = bits[: (h * w)]
+                                mask = (bits.reshape(h, w).astype(bool))
+                            except Exception:
+                                continue
+
+                            tiles_out.append((x0, y0, mask))
+
+                        if tiles_out:
+                            rejections[os.path.normpath(raw_path)] = tiles_out
+
+                    else:
+                        # Unknown entry type; ignore
+                        continue
+
+                return rejections
+
+            # If JSON but not our format, fall through to legacy parse attempt
+            # (some people may have old text that starts with '{' accidentally)
+
+        # -----------------------
+        # V1: legacy text format
+        # -----------------------
         rejections = {}
-        with open(in_file, "r") as f:
-            content = f.read().strip()
+        content = content.strip()
+        if not content:
+            return rejections
 
         # Split on blank lines
         blocks = re.split(r"\n\s*\n", content)
@@ -17000,21 +17325,23 @@ class StackingSuiteDialog(QDialog):
             if not lines:
                 continue
 
-            # First line should be 'FILE: <path>'
             if lines[0].startswith("FILE:"):
                 raw_path = lines[0].replace("FILE:", "").strip()
                 coords = []
                 for line in lines[1:]:
-                    # Each subsequent line is "x, y"
                     parts = line.split(",")
                     if len(parts) == 2:
                         x_str, y_str = parts
-                        x = int(x_str.strip())
-                        y = int(y_str.strip())
+                        try:
+                            x = int(x_str.strip())
+                            y = int(y_str.strip())
+                        except Exception:
+                            continue
                         coords.append((x, y))
-                rejections[raw_path] = coords
-        return rejections
+                if coords:
+                    rejections[os.path.normpath(raw_path)] = coords
 
+        return rejections
 
     @pyqtSlot(list, dict, result=object)   # (files: list[str], initial_xy: dict[str, (x,y)]) -> dict|None
     def show_comet_preview(self, files, initial_xy):
@@ -17532,6 +17859,14 @@ class StackingSuiteDialog(QDialog):
 
             # ---- Drizzle bookkeeping for this group ----
             if drizzle_enabled_global:
+
+                try:
+                    any_key = next(iter(rejection_map))
+                    first_item = rejection_map[any_key][0] if rejection_map[any_key] else None
+                    log(f"🔎 rej_map sample: key={os.path.basename(any_key)} item_type={type(first_item)} len={len(first_item) if hasattr(first_item,'__len__') else 'NA'}")
+                except Exception:
+                    pass
+
                 sasr_path = os.path.join(self.stacking_directory, f"{group_key}_rejections.sasr")
                 self.save_rejection_map_sasr(rejection_map, sasr_path)
                 log(f"✅ Saved rejection map to {sasr_path}")
@@ -17650,7 +17985,8 @@ class StackingSuiteDialog(QDialog):
         *,
         algo_override: str | None = None
     ):
-        
+        collect_per_file = bool(self._get_drizzle_enabled())
+        per_file_rejections = {f: [] for f in file_list} if collect_per_file else None
         debug_starrem = bool(self.settings.value("stacking/comet_starrem/debug_dump", False, type=bool))
         debug_dir = os.path.join(self.stacking_directory, "debug_comet_starrem")
         os.makedirs(debug_dir, exist_ok=True)        
@@ -17969,10 +18305,13 @@ class StackingSuiteDialog(QDialog):
                 rej_any[y0:y1, x0:x1]  |= np.any(trm, axis=0)
                 rej_count[y0:y1, x0:x1] += trm.sum(axis=0).astype(np.uint16)
 
-                for i, fpath in enumerate(file_list):
-                    ys, xs = np.where(trm[i])
-                    if ys.size:
-                        per_file_rejections[fpath].extend(zip(x0 + xs, y0 + ys))
+                if collect_per_file:
+                    for i, fpath in enumerate(file_list):
+                        m = trm[i]
+                        if np.any(m):
+                            # store as a tile mask, not coord list
+                            per_file_rejections[fpath].append((x0, y0, m.copy()))
+
 
         # Close readers and clean temp
         for s in sources:
@@ -18849,13 +19188,13 @@ class StackingSuiteDialog(QDialog):
         frame_weights,
         scale_factor,
         drop_shrink,
-        rejection_map,
+        rejection_map,       # NEW FORMAT: { aligned_path: [(x0,y0,mask_bool), ...] }
         autocrop_enabled,
         rect_override,
         status_cb
     ):
         import os
-
+        import numpy as np
         import cv2
         from datetime import datetime
         from astropy.io import fits
@@ -18873,7 +19212,7 @@ class StackingSuiteDialog(QDialog):
                 log(f"ℹ️ Using in-memory REF_SHAPE fallback: {ref_H}×{ref_W}")
             else:
                 log("⚠️ Missing REF_SHAPE in SASD; cannot drizzle.")
-                return
+                return False
 
         log(f"✅ SASD v2: loaded {len(xforms)} transform(s).")
 
@@ -18907,8 +19246,14 @@ class StackingSuiteDialog(QDialog):
         else:
             _kcode = 0  # square
 
-        total_rej = sum(len(v) for v in (rejection_map or {}).values())
-        log(f"🔭 Drizzle stacking for group '{group_key}' with {total_rej} total rejected pixels.")
+        # Rejection logging: now "tiles", not "pixels"
+        total_tiles = 0
+        if rejection_map:
+            try:
+                total_tiles = sum(len(v) for v in rejection_map.values())
+            except Exception:
+                total_tiles = 0
+        log(f"🔭 Drizzle stacking for group '{group_key}' with {total_tiles} rejection tiles.")
 
         # Need at least 2 frames to be worth it
         if len(file_list) < 2:
@@ -18953,9 +19298,118 @@ class StackingSuiteDialog(QDialog):
         # ---- allocate buffers ----
         out_h = int(canvas_H)
         out_w = int(canvas_W)
-        drizzle_buffer  = np.zeros((out_h, out_w) if is_mono else (out_h, out_w, c), dtype=self._dtype())
+        drizzle_buffer = np.zeros((out_h, out_w) if is_mono else (out_h, out_w, c), dtype=self._dtype())
         coverage_buffer = np.zeros_like(drizzle_buffer, dtype=self._dtype())
-        finalize_func   = finalize_drizzle_2d if is_mono else finalize_drizzle_3d
+        finalize_func = finalize_drizzle_2d if is_mono else finalize_drizzle_3d
+
+        # ---- helpers for rejection masks ----
+        dilate_px = int(self.settings.value("stacking/reject_dilate_px", 0, type=int))
+        dilate_shape = (self.settings.value("stacking/reject_dilate_shape", "square", type=str) or "square").lower()
+
+        def _make_dilate_kernel(r: int, shape_name: str):
+            if r <= 0:
+                return None
+            ksz = 2 * r + 1
+            if shape_name.startswith("dia"):
+                k = np.zeros((ksz, ksz), np.uint8)
+                for yy in range(-r, r + 1):
+                    for xx in range(-r, r + 1):
+                        if (abs(xx) + abs(yy)) <= r:
+                            k[yy + r, xx + r] = 1
+                return k
+            # square default
+            return np.ones((ksz, ksz), np.uint8)
+
+        _dilate_kernel = _make_dilate_kernel(dilate_px, dilate_shape)
+
+        def _build_rej_mask_ref(aligned_key: str):
+            """
+            Build a full-frame ref-space rejection mask (ref_H, ref_W) from tile masks:
+                rejection_map[aligned_key] = [(x0,y0,mask_bool_thx_tw), ...]
+            Returns None if no tiles.
+            """
+            if not rejection_map:
+                return None
+            tiles = rejection_map.get(aligned_key, None)
+            if not tiles:
+                return None
+
+            mref = np.zeros((ref_H, ref_W), dtype=np.bool_)
+            for item in tiles:
+                try:
+                    x0, y0, m = item
+                except Exception:
+                    continue
+                if m is None:
+                    continue
+                # ensure bool
+                mm = np.asarray(m, dtype=np.bool_)
+                th, tw = mm.shape[:2]
+                if th <= 0 or tw <= 0:
+                    continue
+                x0i = int(x0); y0i = int(y0)
+                if x0i >= ref_W or y0i >= ref_H:
+                    continue
+                x1i = min(ref_W, x0i + tw)
+                y1i = min(ref_H, y0i + th)
+                if x1i <= x0i or y1i <= y0i:
+                    continue
+                mref[y0i:y1i, x0i:x1i] |= mm[:(y1i - y0i), :(x1i - x0i)]
+
+            if _dilate_kernel is not None:
+                mref = cv2.dilate(mref.astype(np.uint8), _dilate_kernel, iterations=1).astype(bool)
+            return mref
+
+        def _apply_rejections_to_img(img_data: np.ndarray, rej_mask_ref: np.ndarray, pixels_are_registered: bool, A23: np.ndarray):
+            """
+            Apply ref-space rejection mask to img_data:
+            - if pixels_are_registered: img_data is already in ref space -> direct apply
+            - else: img_data is raw/original and A23 maps raw->ref -> warp mask ref->raw once, then apply
+            """
+            if rej_mask_ref is None:
+                return img_data
+
+            # after channel extraction, img_data may be 2D
+            if img_data.ndim == 2:
+                Hraw, Wraw = img_data.shape
+            else:
+                Hraw, Wraw = img_data.shape[0], img_data.shape[1]
+
+            if pixels_are_registered:
+                # Clip mask to actual image dims (paranoia)
+                hh = min(rej_mask_ref.shape[0], Hraw)
+                ww = min(rej_mask_ref.shape[1], Wraw)
+                m = rej_mask_ref[:hh, :ww]
+                if img_data.ndim == 2:
+                    img_data[:hh, :ww][m] = 0.0
+                else:
+                    img_data[:hh, :ww, :][m, :] = 0.0
+                return img_data
+
+            # affine case: A23 maps raw->ref. Need ref-mask in raw space -> warp with inverse affine.
+            try:
+                invA23 = cv2.invertAffineTransform(A23.astype(np.float32))
+            except Exception:
+                # fallback to numpy invert of 3x3, then slice
+                Hc = np.eye(3, dtype=np.float32)
+                Hc[:2, :] = A23.astype(np.float32)
+                Hinv = np.linalg.inv(Hc)
+                invA23 = Hinv[:2, :].astype(np.float32)
+
+            raw_mask = cv2.warpAffine(
+                rej_mask_ref.astype(np.uint8),
+                invA23,
+                (Wraw, Hraw),
+                flags=cv2.INTER_NEAREST,
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=0
+            ).astype(bool)
+
+            if img_data.ndim == 2:
+                img_data[raw_mask] = 0.0
+            else:
+                img_data[raw_mask, :] = 0.0
+            return img_data
 
         # ---- main loop over ENTRIES ----
         # each entry: {"orig": <original path>, "aligned": <aligned path>, "chan": "R"/"G"/None}
@@ -19052,50 +19506,16 @@ class StackingSuiteDialog(QDialog):
                     f"canvas {int(ref_W * scale_factor)}×{int(ref_H * scale_factor)} @ {scale_factor}×"
                 )
 
-            # ---- apply per-file rejections (lookup by ALIGNED file) ----
-            if rejection_map and aligned_file in rejection_map:
-                coords_for_this_file = rejection_map.get(aligned_file, [])
-                if coords_for_this_file:
-                    dilate_px = int(self.settings.value("stacking/reject_dilate_px", 0, type=int))
-                    dilate_shape = (self.settings.value("stacking/reject_dilate_shape", "square", type=str) or "square").lower()
-
-                    offsets = [(0, 0)]
-                    if dilate_px > 0:
-                        r = dilate_px
-                        offsets = [(dx, dy) for dx in range(-r, r + 1) for dy in range(-r, r + 1)]
-                        if dilate_shape.startswith("dia"):
-                            offsets = [(dx, dy) for (dx, dy) in offsets if (abs(dx) + abs(dy) <= r)]
-
-                    # after optional channel extraction, img_data may be 2D
-                    if img_data.ndim == 2:
-                        Hraw, Wraw = img_data.shape
-                    else:
-                        Hraw, Wraw = img_data.shape[0], img_data.shape[1]
-
-                    if pixels_are_registered:
-                        # Directly zero registered pixels
-                        for (x_r, y_r) in coords_for_this_file:
-                            for (ox, oy) in offsets:
-                                xr, yr = x_r + ox, y_r + oy
-                                if 0 <= xr < Wraw and 0 <= yr < Hraw:
-                                    if img_data.ndim == 2:
-                                        img_data[yr, xr] = 0.0
-                                    else:
-                                        img_data[yr, xr, :] = 0.0
-                    else:
-                        # Back-project via inverse affine (H_canvas)
-                        Hinv = np.linalg.inv(H_canvas)
-                        for (x_r, y_r) in coords_for_this_file:
-                            for (ox, oy) in offsets:
-                                xr, yr = x_r + ox, y_r + oy
-                                v = Hinv @ np.array([xr, yr, 1.0], np.float32)
-                                x_raw = int(round(v[0] / max(v[2], 1e-8)))
-                                y_raw = int(round(v[1] / max(v[2], 1e-8)))
-                                if 0 <= x_raw < Wraw and 0 <= y_raw < Hraw:
-                                    if img_data.ndim == 2:
-                                        img_data[y_raw, x_raw] = 0.0
-                                    else:
-                                        img_data[y_raw, x_raw, :] = 0.0
+            # ---- apply per-file rejections (FAST: tile masks -> full mask -> optional warp) ----
+            rej_mask_ref = _build_rej_mask_ref(aligned_file)
+            if rej_mask_ref is not None:
+                A23_for_mask = H_canvas[:2, :]  # raw->ref affine (or identity)
+                img_data = _apply_rejections_to_img(
+                    img_data=img_data,
+                    rej_mask_ref=rej_mask_ref,
+                    pixels_are_registered=pixels_are_registered,
+                    A23=A23_for_mask
+                )
 
             # ---- deposit ----
             A23 = H_canvas[:2, :]
@@ -19131,24 +19551,24 @@ class StackingSuiteDialog(QDialog):
         out_path_orig = self._build_out(self._master_light_dir(), base_stem, "fit")
 
         hdr_orig = hdr.copy() if hdr is not None else fits.Header()
-        hdr_orig["IMAGETYP"]   = "MASTER STACK - DRIZZLE"
+        hdr_orig["IMAGETYP"] = "MASTER STACK - DRIZZLE"
         hdr_orig["DRIZFACTOR"] = (float(scale_factor), "Drizzle scale factor")
-        hdr_orig["DROPFRAC"]   = (float(drop_shrink),  "Drizzle drop shrink/pixfrac")
-        hdr_orig["CREATOR"]    = "SetiAstroSuite"
-        hdr_orig["DATE-OBS"]   = datetime.utcnow().isoformat()
+        hdr_orig["DROPFRAC"] = (float(drop_shrink), "Drizzle drop shrink/pixfrac")
+        hdr_orig["CREATOR"] = "SetiAstroSuite"
+        hdr_orig["DATE-OBS"] = datetime.utcnow().isoformat()
 
         n_frames = int(len(file_list))
         hdr_orig["NCOMBINE"] = (n_frames, "Number of frames combined")
-        hdr_orig["NSTACK"]   = (n_frames, "Alias of NCOMBINE (SetiAstro)")
+        hdr_orig["NSTACK"] = (n_frames, "Alias of NCOMBINE (SetiAstro)")
 
         if final_drizzle.ndim == 2:
-            hdr_orig["NAXIS"]  = 2
+            hdr_orig["NAXIS"] = 2
             hdr_orig["NAXIS1"] = final_drizzle.shape[1]
             hdr_orig["NAXIS2"] = final_drizzle.shape[0]
             if "NAXIS3" in hdr_orig:
                 del hdr_orig["NAXIS3"]
         else:
-            hdr_orig["NAXIS"]  = 3
+            hdr_orig["NAXIS"] = 3
             hdr_orig["NAXIS1"] = final_drizzle.shape[1]
             hdr_orig["NAXIS2"] = final_drizzle.shape[0]
             hdr_orig["NAXIS3"] = final_drizzle.shape[2]
@@ -19175,7 +19595,7 @@ class StackingSuiteDialog(QDialog):
                 rect_override=rect_override
             )
             hdr_crop["NCOMBINE"] = (n_frames, "Number of frames combined")
-            hdr_crop["NSTACK"]   = (n_frames, "Alias of NCOMBINE (SetiAstro)")
+            hdr_crop["NSTACK"] = (n_frames, "Alias of NCOMBINE (SetiAstro)")
 
             is_mono_crop = (cropped_drizzle.ndim == 2)
             display_group_driz_crop = self._label_with_dims(group_key, cropped_drizzle.shape[1], cropped_drizzle.shape[0])
@@ -19196,6 +19616,7 @@ class StackingSuiteDialog(QDialog):
                 self._autocrop_outputs = []
             self._autocrop_outputs.append((group_key, out_path_crop))
             log(f"✂️ Drizzle (auto-cropped) saved: {out_path_crop}")
+
         return True
 
     def _load_sasd_v2(self, path: str):
@@ -19310,7 +19731,8 @@ class StackingSuiteDialog(QDialog):
         algo_override: str | None = None
     ):
         import errno
-
+        collect_per_file = bool(self._get_drizzle_enabled())
+        per_file_rejections = {f: [] for f in file_list} if collect_per_file else None
         log = status_cb or (lambda *_: None)
         log(f"Starting integration for group '{group_key}' with {len(file_list)} files.")
         if not file_list:
@@ -19622,10 +20044,12 @@ class StackingSuiteDialog(QDialog):
                 rej_count[y0:y1, x0:x1] += trm.sum(axis=0).astype(np.uint16)
 
                 # per-file coords (existing behavior)
-                for i, fpath in enumerate(file_list):
-                    ys, xs = np.where(trm[i])
-                    if ys.size:
-                        per_file_rejections[fpath].extend(zip(x0 + xs, y0 + ys))
+                if collect_per_file:
+                    for i, fpath in enumerate(file_list):
+                        m = trm[i]
+                        if np.any(m):
+                            # store as a tile mask, not coord list
+                            per_file_rejections[fpath].append((x0, y0, m.copy()))
 
                 # perf log
                 dt = time.perf_counter() - t0
