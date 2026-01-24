@@ -1,9 +1,9 @@
 {
-  "version": "1.7.5",
+  "version": "1.7.5.post1",
   "downloads": {
     "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.7.5/setiastrosuitepro_windows.zip",
     "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.7.5/setiastrosuitepro_mac.tar.gz",
     "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.7.5/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.7.5 New Tool: Clone Stamp"
+  "notes": "Seti Astro Suite Pro V1.7.5 New Tool: Clone Stamp.  Visual Guides for Blink Comparator Metrics.  Improved Stacking integration speed"
 }
