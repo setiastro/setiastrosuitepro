@@ -4,7 +4,10 @@ from PyQt6.QtWidgets import (
     QHBoxLayout, QVBoxLayout, QWidget, QCheckBox, QComboBox, QSpinBox, QDoubleSpinBox, QLabel, QColorDialog, QFontDialog, QSlider)
 from PyQt6.QtCore import QSettings, Qt
 import pytz  # for timezone list
-
+from setiastro.saspro.accel_installer import current_backend
+import sys, platform
+from PyQt6.QtWidgets import QToolButton, QProgressDialog
+from PyQt6.QtCore import QThread
 # i18n support
 from setiastro.saspro.i18n import get_available_languages, get_saved_language, save_language
 
@@ -24,7 +27,7 @@ class SettingsDialog(QDialog):
 
         # ---- Existing fields (paths, checkboxes, etc.) ----
         self.le_graxpert = QLineEdit()
-        self.le_cosmic   = QLineEdit()
+
         self.le_starnet  = QLineEdit()
         self.le_astap    = QLineEdit()
 
@@ -75,12 +78,12 @@ class SettingsDialog(QDialog):
         self._initial_language = "en" # placeholder, set in refresh_ui
 
         btn_grax  = QPushButton(self.tr("Browse…")); btn_grax.clicked.connect(lambda: self._browse_into(self.le_graxpert))
-        btn_ccl   = QPushButton(self.tr("Browse…")); btn_ccl.clicked.connect(lambda: self._browse_dir(self.le_cosmic))
+
         btn_star  = QPushButton(self.tr("Browse…")); btn_star.clicked.connect(lambda: self._browse_into(self.le_starnet))
         btn_astap = QPushButton(self.tr("Browse…")); btn_astap.clicked.connect(lambda: self._browse_into(self.le_astap))
 
         row_grax  = QHBoxLayout(); row_grax.addWidget(self.le_graxpert); row_grax.addWidget(btn_grax)
-        row_ccl   = QHBoxLayout(); row_ccl.addWidget(self.le_cosmic);   row_ccl.addWidget(btn_ccl)
+
         row_star  = QHBoxLayout(); row_star.addWidget(self.le_starnet); row_star.addWidget(btn_star)
         row_astap = QHBoxLayout(); row_astap.addWidget(self.le_astap);  row_astap.addWidget(btn_astap)
 
@@ -163,7 +166,7 @@ class SettingsDialog(QDialog):
         # ---- Left column: Paths & Integrations ----
         left_col.addRow(QLabel(self.tr("<b>Paths & Integrations</b>")))
         w = QWidget(); w.setLayout(row_grax);  left_col.addRow(self.tr("GraXpert executable:"), w)
-        w = QWidget(); w.setLayout(row_ccl);   left_col.addRow(self.tr("Cosmic Clarity folder:"), w)
+
         w = QWidget(); w.setLayout(row_star);  left_col.addRow(self.tr("StarNet executable:"), w)
         w = QWidget(); w.setLayout(row_astap); left_col.addRow(self.tr("ASTAP executable:"), w)
         left_col.addRow(self.tr("Astrometry.net API key:"), self.le_astrometry)
@@ -182,6 +185,26 @@ class SettingsDialog(QDialog):
         left_col.addRow(self.tr("Background Opacity:"), w_bg_opacity)
         left_col.addRow(self.tr("Background Image:"), w_bg_image)
 
+        left_col.addRow(QLabel(self.tr("<b>Acceleration</b>")))
+
+        accel_row = QHBoxLayout()
+        self.backend_label = QLabel(self.tr("Backend: {0}").format(current_backend()))
+        accel_row.addWidget(self.backend_label)
+
+        self.install_accel_btn = QPushButton(self.tr("Install/Update GPU Acceleration…"))
+        self.install_accel_btn.setToolTip(self.tr("Downloads PyTorch with the right backend (CUDA/MPS/CPU). One-time per machine."))
+        accel_row.addWidget(self.install_accel_btn)
+
+        gpu_help_btn = QToolButton()
+        gpu_help_btn.setText("?")
+        gpu_help_btn.setToolTip(self.tr("If GPU still not being used — click for fix steps"))
+        gpu_help_btn.clicked.connect(self._show_gpu_accel_fix_help)
+        accel_row.addWidget(gpu_help_btn)
+
+        accel_row.addStretch(1)
+        w_accel = QWidget()
+        w_accel.setLayout(accel_row)
+        left_col.addRow(w_accel)
         # ---- Right column: WIMS + RA/Dec + Updates + Display ----
         right_col.addRow(QLabel(self.tr("<b>What's In My Sky — Defaults</b>")))
         right_col.addRow(self.tr("Latitude (°):"), self.sp_lat)
@@ -230,9 +253,82 @@ class SettingsDialog(QDialog):
         btns.accepted.connect(self._save_and_accept)
         btns.rejected.connect(self.reject)
         root.addWidget(btns)
-
+        self.install_accel_btn.clicked.connect(self._install_or_update_accel)
         # Initial Load:
         self.refresh_ui()
+
+    def _show_gpu_accel_fix_help(self):
+        from PyQt6.QtWidgets import QMessageBox
+        QMessageBox.information(
+            self, self.tr("GPU Acceleration Help"),
+            self.tr(
+                "If GPU is not being used:\n"
+                " • Click Install/Update GPU Acceleration…\n"
+                " • Restart SAS Pro\n"
+                " • On NVIDIA systems, verify drivers and that 'nvidia-smi' works.\n"
+                " • On Windows non-NVIDIA, DirectML may be used.\n"
+            )
+        )
+
+    def _install_or_update_accel(self):
+        import sys, platform
+        from PyQt6.QtWidgets import QMessageBox, QProgressDialog
+        from PyQt6.QtCore import Qt, QThread
+        from setiastro.saspro.accel_installer import current_backend
+        from setiastro.saspro.accel_workers import AccelInstallWorker  # wherever yours lives
+
+        v = sys.version_info
+        if not (v.major == 3 and v.minor in (10, 11, 12)):
+            why = self.tr("This app is running on Python {0}.{1}. GPU acceleration requires Python 3.10, 3.11, or 3.12.").format(v.major, v.minor)
+            tip = ""
+            sysname = platform.system()
+            if sysname == "Darwin":
+                tip = self.tr("\n\nmacOS tip (Apple Silicon):\n • Install Python 3.12:  brew install python@3.12\n • Relaunch the app.")
+            elif sysname == "Windows":
+                tip = self.tr("\n\nWindows tip:\n • Install Python 3.12/3.11/3.10 (x64) from python.org\n • Relaunch the app.")
+            else:
+                tip = self.tr("\n\nLinux tip:\n • Install python3.12 or 3.11 via your package manager\n • Relaunch the app.")
+
+            QMessageBox.warning(self, self.tr("Unsupported Python Version"), why + tip)
+            self.backend_label.setText(self.tr("Backend: CPU (Python version not supported for GPU install)"))
+            return
+
+        self.install_accel_btn.setEnabled(False)
+        self.backend_label.setText(self.tr("Backend: installing…"))
+
+        self._accel_pd = QProgressDialog(self.tr("Preparing runtime…"), self.tr("Cancel"), 0, 0, self)
+        self._accel_pd.setWindowTitle(self.tr("Installing GPU Acceleration"))
+        self._accel_pd.setWindowModality(Qt.WindowModality.ApplicationModal)
+        self._accel_pd.setAutoClose(True)
+        self._accel_pd.setMinimumDuration(0)
+        self._accel_pd.show()
+
+        self._accel_thread = QThread(self)
+        self._accel_worker = AccelInstallWorker(prefer_gpu=True)
+        self._accel_worker.moveToThread(self._accel_thread)
+
+        self._accel_thread.started.connect(self._accel_worker.run, Qt.ConnectionType.QueuedConnection)
+        self._accel_worker.progress.connect(self._accel_pd.setLabelText, Qt.ConnectionType.QueuedConnection)
+
+        def _cancel():
+            if self._accel_thread.isRunning():
+                self._accel_thread.requestInterruption()
+        self._accel_pd.canceled.connect(_cancel, Qt.ConnectionType.QueuedConnection)
+
+        def _done(ok: bool, msg: str):
+            if getattr(self, "_accel_pd", None):
+                self._accel_pd.reset(); self._accel_pd.deleteLater(); self._accel_pd = None
+            self._accel_thread.quit(); self._accel_thread.wait()
+            self.install_accel_btn.setEnabled(True)
+            self.backend_label.setText(self.tr("Backend: {0}").format(current_backend()))
+            if ok: QMessageBox.information(self, self.tr("Acceleration"), self.tr("✅ {0}").format(msg))
+            else:  QMessageBox.warning(self, self.tr("Acceleration"), self.tr("❌ {0}").format(msg))
+
+        self._accel_worker.finished.connect(_done, Qt.ConnectionType.QueuedConnection)
+        self._accel_thread.finished.connect(self._accel_worker.deleteLater, Qt.ConnectionType.QueuedConnection)
+        self._accel_thread.finished.connect(self._accel_thread.deleteLater, Qt.ConnectionType.QueuedConnection)
+        self._accel_thread.start()
+
 
     def refresh_ui(self):
         """
@@ -279,7 +375,7 @@ class SettingsDialog(QDialog):
         
         # Path fields
         self.le_graxpert.setText(self.settings.value("paths/graxpert", "", type=str))
-        self.le_cosmic.setText(self.settings.value("paths/cosmic_clarity", "", type=str))
+
         self.le_starnet.setText(self.settings.value("paths/starnet", "", type=str))
         self.le_astap.setText(self.settings.value("paths/astap", "", type=str))
         self.le_astrometry.setText(self.settings.value("api/astrometry_key", "", type=str))
@@ -329,6 +425,9 @@ class SettingsDialog(QDialog):
         self.sp_wcs_step.setValue(self.settings.value("wcs_grid/step_value", 1.0, type=float))
         self.sp_wcs_step.setEnabled(self.cb_wcs_mode.currentIndex() == 1)
         self.sp_wcs_step.setSuffix(" °" if self.cb_wcs_unit.currentIndex() == 0 else " arcmin")
+
+        from setiastro.saspro.accel_installer import current_backend
+        self.backend_label.setText(self.tr("Backend: {0}").format(current_backend()))
 
     def reject(self):
         """User cancelled: restore the original background opacity (revert live changes)."""
@@ -439,7 +538,7 @@ class SettingsDialog(QDialog):
     def _save_and_accept(self):
         # Paths / Integrations
         self.settings.setValue("paths/graxpert", self.le_graxpert.text().strip())
-        self.settings.setValue("paths/cosmic_clarity", self.le_cosmic.text().strip())
+
         self.settings.setValue("paths/starnet", self.le_starnet.text().strip())
         self.settings.setValue("paths/astap", self.le_astap.text().strip())
         self.settings.setValue("shortcuts/save_on_exit", self.chk_save_shortcuts.isChecked())
@@ -519,6 +618,11 @@ class SettingsDialog(QDialog):
         
         if hasattr(p, "mdi") and hasattr(p.mdi, "viewport"):
                 p.mdi.viewport().update()
+
+        try:
+            self.settings.remove("paths/cosmic_clarity")
+        except Exception:
+            pass
 
         self.accept()
 

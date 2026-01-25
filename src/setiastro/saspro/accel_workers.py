@@ -1,4 +1,4 @@
-# pro/accel_workers.py
+# saspro/accel_workers.py
 from __future__ import annotations
 from PyQt6.QtCore import QObject, pyqtSignal, QThread
 from setiastro.saspro.accel_installer import ensure_torch_installed

@@ -1,4 +1,4 @@
-# pro/accel_installer.py
+# saspro/accel_installer.py
 from __future__ import annotations
 import platform
 import subprocess
