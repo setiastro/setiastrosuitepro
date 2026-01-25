@@ -2347,6 +2347,20 @@ class AstroSuiteProMainWindow(
                 # Log error but don't crash if preload fails
                 print(f"Error preloading settings: {e}")
 
+    def _open_benchmark(self):
+        from setiastro.saspro.ops.benchmark import BenchmarkDialog  # new file below
+
+        if getattr(self, "_bench_dlg_cache", None) is None:
+            self._bench_dlg_cache = BenchmarkDialog(self)
+
+        dlg = self._bench_dlg_cache
+        if hasattr(dlg, "refresh_ui"):
+            dlg.refresh_ui()
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
+
     def _open_settings(self):
         from setiastro.saspro.ops.settings import SettingsDialog
         

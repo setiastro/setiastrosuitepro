@@ -333,6 +333,8 @@ class MenuMixin:
 
         m_settings = mb.addMenu(self.tr("&Settings"))
         m_settings.addAction(self.tr("Preferences..."), self._open_settings)
+        m_settings.addSeparator()
+        m_settings.addAction(self.tr("Benchmark..."), self._open_benchmark)
 
         m_about = mb.addMenu(self.tr("&About"))
         m_about.addAction(self.act_docs)  
