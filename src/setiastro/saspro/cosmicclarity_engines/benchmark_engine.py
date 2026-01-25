@@ -1,10 +1,10 @@
 # src/setiastro/saspro/cosmicclarity_engines/benchmark_engine.py
 from __future__ import annotations
 
-import os, time, json, platform
+import os, time, platform
 from pathlib import Path
-from typing import Callable, Optional, Literal, Tuple, Dict, Any
-
+from typing import Callable, Optional, Literal, Dict, Any
+import cpuinfo
 import numpy as np
 from astropy.io import fits
 
@@ -328,154 +328,15 @@ def get_system_info() -> dict:
 
 
 # -----------------------------
-# Torch benchmark (uses your runtime torch)
-# -----------------------------
-def _load_sharpen_model_for_benchmark(*, use_gpu: bool, status_cb: Optional[ProgressCB] = None):
-    """
-    Don’t duplicate model code here.
-    Reuse your existing Cosmic Clarity sharpen engine model loader if you have one.
-    Fallback: load a known .pth from your packaged models.
-    """
-    # ✅ Prefer: reuse your existing sharpen engine loader (recommended)
-    # Example (adjust to your actual function name):
-    # from setiastro.saspro.cosmicclarity_engines.sharpen_engine import get_sharpen_models
-    # models = get_sharpen_models(use_gpu=use_gpu, status_cb=status_cb)
-    # model = models["stellar"] or similar
-    # device = models["device"]
-    # return model, device
-
-    # If you *don’t* have a sharable loader yet, keep the old network here.
-    # But since you said “like Dark Star / satellite / sharpen / denoise”, you probably already do.
-    raise RuntimeError("Benchmark model loader not wired yet. Point this at your existing sharpen model loader.")
-
-
-def torch_benchmark(
-    patches_nchw: np.ndarray,
-    *,
-    use_gpu: bool,
-    use_amp: bool,
-    progress_cb: Optional[Callable[[int, int], bool]] = None,  # return False to cancel
-    status_cb: Optional[ProgressCB] = None,
-) -> Tuple[float, float, str]:
-    """
-    Returns (avg_ms_per_patch, total_ms, backend_string)
-    """
-    from setiastro.saspro.runtime_torch import add_runtime_to_sys_path
-    add_runtime_to_sys_path(status_cb=lambda *_: None)
-    import torch
-
-    # Decide device
-    backend = "CPU"
-    device = torch.device("cpu")
-    if use_gpu:
-        if getattr(torch, "cuda", None) and torch.cuda.is_available():
-            device = torch.device("cuda")
-            backend = "CUDA"
-        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            device = torch.device("mps")
-            backend = "MPS"
-
-    if status_cb:
-        status_cb(f"Torch benchmark on {backend}…")
-
-    model, _device = _load_sharpen_model_for_benchmark(use_gpu=use_gpu, status_cb=status_cb)
-    # model loader may decide device; honor it
-    device = _device if _device is not None else device
-
-    x = torch.from_numpy(patches_nchw).to(device=device, dtype=torch.float32, non_blocking=True)
-
-    total_ms = 0.0
-    n = int(x.shape[0])
-
-    # AMP only makes sense on CUDA/MPS; your app already has fp16-broken detection logic
-    do_amp = bool(use_amp and device.type in ("cuda", "mps"))
-
-    with torch.no_grad():
-        if do_amp and device.type == "cuda":
-            ctx = torch.cuda.amp.autocast()
-        elif do_amp and device.type == "mps":
-            # no torch.mps.amp.autocast officially; keep it off unless you have a known-safe method
-            ctx = None
-            do_amp = False
-        else:
-            ctx = None
-
-        if ctx is None:
-            for i in range(n):
-                t0 = time.time()
-                _ = model(x[i:i+1])
-                if device.type == "cuda":
-                    torch.cuda.synchronize()
-                total_ms += (time.time() - t0) * 1000.0
-                if progress_cb and (not progress_cb(i + 1, n)):
-                    raise RuntimeError("Canceled.")
-        else:
-            with ctx:
-                for i in range(n):
-                    t0 = time.time()
-                    _ = model(x[i:i+1])
-                    torch.cuda.synchronize()
-                    total_ms += (time.time() - t0) * 1000.0
-                    if progress_cb and (not progress_cb(i + 1, n)):
-                        raise RuntimeError("Canceled.")
-
-    return (total_ms / n), total_ms, backend
-
-
-# -----------------------------
-# ONNX benchmark (Windows only)
-# -----------------------------
-def onnx_benchmark(
-    patches_nchw: np.ndarray,
-    *,
-    onnx_path: Path,
-    progress_cb: Optional[Callable[[int, int], bool]] = None,
-    status_cb: Optional[ProgressCB] = None,
-) -> Tuple[float, float, str]:
-    import onnxruntime as ort
-
-    if not Path(onnx_path).exists():
-        raise RuntimeError(f"ONNX model not found: {onnx_path}")
-
-    providers = ort.get_available_providers()
-    if "DmlExecutionProvider" in providers:
-        provider = "DmlExecutionProvider"
-    elif "CUDAExecutionProvider" in providers:
-        provider = "CUDAExecutionProvider"
-    else:
-        provider = "CPUExecutionProvider"
-
-    if status_cb:
-        status_cb(f"ONNX benchmark provider: {provider}")
-
-    sess = ort.InferenceSession(str(onnx_path), providers=[provider])
-    input_name = sess.get_inputs()[0].name
-
-    total_ms = 0.0
-    n = int(patches_nchw.shape[0])
-    for i in range(n):
-        patch = patches_nchw[i:i+1].astype(np.float32, copy=False)
-        t0 = time.time()
-        sess.run(None, {input_name: patch})
-        total_ms += (time.time() - t0) * 1000.0
-        if progress_cb and (not progress_cb(i + 1, n)):
-            raise RuntimeError("Canceled.")
-
-    return (total_ms / n), total_ms, provider
-
-
-# -----------------------------
 # One-stop runner
 # -----------------------------
 def run_benchmark(
     *,
     mode: Literal["CPU", "GPU", "Both"] = "Both",
     use_gpu: bool = True,
-    use_amp: bool = True,
     benchmark_fits_path: Optional[Path] = None,
     status_cb: Optional[ProgressCB] = None,
     progress_cb: Optional[Callable[[int, int], bool]] = None,
-    onnx_model_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """
     Returns results dict safe to json.dumps.
@@ -507,25 +368,28 @@ def run_benchmark(
         }
 
     if mode in ("GPU", "Both"):
-        if status_cb: status_cb("Running Torch benchmark…")
-        avg_ms, total_ms, backend = torch_benchmark(
-            patches, use_gpu=use_gpu, use_amp=use_amp,
-            progress_cb=progress_cb, status_cb=status_cb
-        )
-        results[f"Torch Time ({backend})"] = {"avg_ms": float(avg_ms), "total_ms": float(total_ms)}
+        if status_cb: status_cb("Running Stellar model benchmark…")
 
+        # Torch (or CPU fallback if torch path)
+        avg_ms, total_ms, backend = torch_benchmark_stellar(
+            patches,
+            use_gpu=use_gpu,
+            progress_cb=progress_cb,
+            status_cb=status_cb,
+        )
+        results[f"Stellar Torch ({backend})"] = {"avg_ms": float(avg_ms), "total_ms": float(total_ms)}
+
+        # ONNX benchmark (DirectML when available; otherwise CPU/CUDA if present)
         if platform.system() == "Windows":
-            if onnx_model_path is None:
-                # You should point this at your packaged ONNX model path
-                # e.g. from your resources/models directory
-                raise RuntimeError("onnx_model_path not provided.")
-            if status_cb: status_cb("Running ONNX benchmark…")
-            avg_o, total_o, provider = onnx_benchmark(
-                patches, onnx_path=Path(onnx_model_path),
-                progress_cb=progress_cb, status_cb=status_cb
+            avg_o, total_o, provider = onnx_benchmark_stellar(
+                patches,
+                use_gpu=use_gpu,
+                progress_cb=progress_cb,
+                status_cb=status_cb,
             )
-            results[f"ONNX Time ({provider})"] = {"avg_ms": float(avg_o), "total_ms": float(total_o)}
+            results[f"Stellar ONNX ({provider})"] = {"avg_ms": float(avg_o), "total_ms": float(total_o)}
         else:
-            results["ONNX Time"] = "ONNX benchmark only available on Windows."
+            results["Stellar ONNX"] = "ONNX benchmark only available on Windows."
+
 
     return results

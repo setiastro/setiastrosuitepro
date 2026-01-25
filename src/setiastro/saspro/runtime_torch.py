@@ -477,7 +477,8 @@ except Exception as e:
     return bool(data.get("has_xpu")), data.get("err")
 
 
-def _install_torch(venv_python: Path, prefer_cuda: bool, prefer_xpu: bool, status_cb=print):
+def _install_torch(venv_python: Path, prefer_cuda: bool, prefer_xpu: bool, prefer_dml: bool, status_cb=print):
+
     """
     Install torch into the per-user venv with best-effort backend detection:
       • macOS arm64 → PyPI (MPS)
@@ -494,14 +495,6 @@ def _install_torch(venv_python: Path, prefer_cuda: bool, prefer_xpu: bool, statu
         return subprocess.run([str(venv_python), "-m", "pip", *args],
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=e)
 
-    def _pip_ok(cmd: list[str]) -> bool:
-        r = _pip(*cmd)
-        if r.returncode != 0:
-            # surface tail of pip log for the UI
-            tail = (r.stdout or "").strip()
-            status_cb(tail[-4000:])
-        return r.returncode == 0
-
     def _pyver() -> tuple[int, int]:
         code = "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
         out = subprocess.check_output([str(venv_python), "-c", code], text=True).strip()
@@ -511,6 +504,36 @@ def _install_torch(venv_python: Path, prefer_cuda: bool, prefer_xpu: bool, statu
     sysname = _plat.system()
     machine = _plat.machine().lower()
     py_major, py_minor = _pyver()
+
+    def _pip_ok(cmd: list[str]) -> bool:
+        r = _pip(*cmd)
+        if r.returncode != 0:
+            tail = (r.stdout or "").strip()
+            status_cb(tail[-4000:])
+        return r.returncode == 0
+
+    # NEW: DirectML FIRST (Windows, non-NVIDIA)
+    if sysname == "Windows" and prefer_dml:
+        status_cb("Installing PyTorch with DirectML (torch-directml)…")
+
+        # Clean slate helps resolver if something already got partially installed
+        _pip_ok(["uninstall", "-y", "torch", "torchvision", "torchaudio", "torch-directml"])
+
+        if not _pip_ok(["install", "--prefer-binary", "--no-cache-dir", "torch-directml"]):
+            raise RuntimeError("Failed to install torch-directml.")
+
+        # You still need torchvision/torchaudio for your app; let pip resolve compatible versions.
+        _pip_ok(["install", "--prefer-binary", "--no-cache-dir", "torchvision", "torchaudio"])
+
+        # Verify import + device creation
+        code = "import torch, torch_directml; d=torch_directml.device(); x=torch.tensor([1]).to(d); y=torch.tensor([2]).to(d); print(int((x+y).item()))"
+        r = subprocess.run([str(venv_python), "-c", code], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        if r.returncode != 0 or "3" not in (r.stdout or ""):
+            status_cb((r.stdout or "")[-2000:])
+            raise RuntimeError("torch-directml installed, but DirectML verification failed.")
+
+        status_cb("Installed DirectML backend successfully.")
+        return
 
     if sysname == "Darwin" and ("arm64" in machine or "aarch64" in machine):
         if py_minor >= 13:
@@ -608,7 +631,7 @@ def _install_torch(venv_python: Path, prefer_cuda: bool, prefer_xpu: bool, statu
 # Public entry points
 # ──────────────────────────────────────────────────────────────────────────────
 
-def import_torch(prefer_cuda: bool = True, prefer_xpu: bool = False, status_cb=print):
+def import_torch(prefer_cuda: bool = True, prefer_xpu: bool = False, prefer_dml: bool = False, status_cb=print):
     """
     Ensure a per-user venv exists with torch installed; return the imported module.
     Hardened against shadow imports, broken wheels, concurrent installs, and partial markers.
@@ -644,7 +667,7 @@ def import_torch(prefer_cuda: bool = True, prefer_xpu: bool = False, status_cb=p
             with _install_lock(rt):
                 # Re-check inside lock in case another process finished
                 if not marker.exists():
-                    _install_torch(vp, prefer_cuda=prefer_cuda, prefer_xpu=prefer_xpu, status_cb=status_cb)
+                    _install_torch(vp, prefer_cuda=prefer_cuda, prefer_xpu=prefer_xpu, prefer_dml=prefer_dml, status_cb=status_cb)
         except Exception as e:
             if _is_access_denied(e):
                 raise OSError(_access_denied_msg(rt)) from e
@@ -672,7 +695,13 @@ def import_torch(prefer_cuda: bool = True, prefer_xpu: bool = False, status_cb=p
                         "torch", "torchvision", "torchaudio"], check=False)
         subprocess.run([str(vp), "-m", "pip", "cache", "purge"], check=False)
         with _install_lock(rt):
-            _install_torch(vp, prefer_cuda=prefer_cuda, prefer_xpu=prefer_xpu, status_cb=status_cb)
+            _install_torch(
+                vp,
+                prefer_cuda=prefer_cuda,
+                prefer_xpu=prefer_xpu,
+                prefer_dml=prefer_dml,
+                status_cb=status_cb,
+            )
         importlib.invalidate_caches()
         _demote_shadow_torch_paths(status_cb=status_cb)
 

@@ -17,7 +17,11 @@ class AccelInstallWorker(QObject):
 
     def run(self):
         # pure backend work; no QWidget/QMessageBox etc. in this method
-        ok, msg = ensure_torch_installed(self.prefer_gpu, self._log)
+        ok, msg = ensure_torch_installed(
+            prefer_gpu=self.prefer_gpu,
+            preferred_backend=self.preferred_backend,
+            log_cb=self.progress.emit
+        )
 
         # honor cancellation if requested
         if QThread.currentThread().isInterruptionRequested():

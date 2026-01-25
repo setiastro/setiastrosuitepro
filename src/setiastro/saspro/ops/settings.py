@@ -10,7 +10,8 @@ from PyQt6.QtWidgets import QToolButton, QProgressDialog
 from PyQt6.QtCore import QThread
 # i18n support
 from setiastro.saspro.i18n import get_available_languages, get_saved_language, save_language
-
+import importlib.util
+import importlib.metadata
 
 class SettingsDialog(QDialog):
     """
@@ -190,9 +191,33 @@ class SettingsDialog(QDialog):
         accel_row = QHBoxLayout()
         self.backend_label = QLabel(self.tr("Backend: {0}").format(current_backend()))
         accel_row.addWidget(self.backend_label)
+        # NEW: dependency status label (rich text)
+        self.accel_deps_label = QLabel()
+        self.accel_deps_label.setTextFormat(Qt.TextFormat.RichText)
+        self.accel_deps_label.setStyleSheet("color:#888;")  # subtle
+        self.accel_deps_label.setToolTip(self.tr("Installed acceleration-related Python packages"))
+        accel_row.addSpacing(12)
+        accel_row.addWidget(self.accel_deps_label)
+
+        # NEW: preference combo
+        self.cb_accel_pref = QComboBox()
+        self.cb_accel_pref.addItems([
+            "Auto (recommended)",
+            "CUDA (NVIDIA)",
+            "Intel XPU (Arc/Xe)",
+            "DirectML (Windows AMD/Intel)",
+            "CPU only",
+        ])
+        # hide DirectML option on non-Windows if you want:
+        if platform.system() != "Windows":
+            # remove the DirectML entry (index 3)
+            self.cb_accel_pref.removeItem(3)
+
+        accel_row.addSpacing(8)
+        accel_row.addWidget(QLabel(self.tr("Preference:")))
+        accel_row.addWidget(self.cb_accel_pref)
 
         self.install_accel_btn = QPushButton(self.tr("Install/Update GPU Acceleration…"))
-        self.install_accel_btn.setToolTip(self.tr("Downloads PyTorch with the right backend (CUDA/MPS/CPU). One-time per machine."))
         accel_row.addWidget(self.install_accel_btn)
 
         gpu_help_btn = QToolButton()
@@ -270,6 +295,46 @@ class SettingsDialog(QDialog):
             )
         )
 
+    def _pkg_status(self, dist_name: str, import_name: str | None = None) -> tuple[bool, str]:
+        """
+        Returns (installed?, display_text). Does NOT import the module.
+        dist_name  = pip distribution name used for version lookup (e.g., 'torchvision')
+        import_name = python import name used for find_spec (e.g., 'torch_directml')
+        """
+        mod = import_name or dist_name.replace("-", "_")
+        present = importlib.util.find_spec(mod) is not None
+
+        ver = ""
+        if present:
+            try:
+                ver = importlib.metadata.version(dist_name)
+            except importlib.metadata.PackageNotFoundError:
+                # Sometimes dist name differs; fall back to "installed" without version
+                ver = ""
+            except Exception:
+                ver = ""
+
+        if present:
+            return True, (f"✅ {ver}" if ver else "✅ installed")
+        return False, "— not installed"
+
+
+    def _format_accel_deps_text(self) -> str:
+        # Torch + friends
+        torch_ok, torch_txt = self._pkg_status("torch", "torch")
+        dml_ok, dml_txt     = self._pkg_status("torch-directml", "torch_directml")
+        ta_ok, ta_txt       = self._pkg_status("torchaudio", "torchaudio")
+        tv_ok, tv_txt       = self._pkg_status("torchvision", "torchvision")
+
+        # Pretty, compact, and stable in a QLabel
+        return (
+            f"Torch: <b>{torch_txt}</b><br>"
+            f"Torch-DirectML: <b>{dml_txt}</b><br>"
+            f"TorchAudio: <b>{ta_txt}</b><br>"
+            f"TorchVision: <b>{tv_txt}</b>"
+        )
+
+
     def _install_or_update_accel(self):
         import sys, platform
         from PyQt6.QtWidgets import QMessageBox, QProgressDialog
@@ -295,7 +360,8 @@ class SettingsDialog(QDialog):
 
         self.install_accel_btn.setEnabled(False)
         self.backend_label.setText(self.tr("Backend: installing…"))
-
+        pref = (self.settings.value("accel/preferred_backend", "auto", type=str) or "auto").lower()
+        self._accel_worker = AccelInstallWorker(prefer_gpu=True, preferred_backend=pref)
         self._accel_pd = QProgressDialog(self.tr("Preparing runtime…"), self.tr("Cancel"), 0, 0, self)
         self._accel_pd.setWindowTitle(self.tr("Installing GPU Acceleration"))
         self._accel_pd.setWindowModality(Qt.WindowModality.ApplicationModal)
@@ -321,6 +387,10 @@ class SettingsDialog(QDialog):
             self._accel_thread.quit(); self._accel_thread.wait()
             self.install_accel_btn.setEnabled(True)
             self.backend_label.setText(self.tr("Backend: {0}").format(current_backend()))
+            try:
+                self.accel_deps_label.setText(self._format_accel_deps_text())
+            except Exception:
+                pass
             if ok: QMessageBox.information(self, self.tr("Acceleration"), self.tr("✅ {0}").format(msg))
             else:  QMessageBox.warning(self, self.tr("Acceleration"), self.tr("❌ {0}").format(msg))
 
@@ -426,8 +496,24 @@ class SettingsDialog(QDialog):
         self.sp_wcs_step.setEnabled(self.cb_wcs_mode.currentIndex() == 1)
         self.sp_wcs_step.setSuffix(" °" if self.cb_wcs_unit.currentIndex() == 0 else " arcmin")
 
+        pref = (self.settings.value("accel/preferred_backend", "auto", type=str) or "auto").lower()
+
+        # map stored -> combobox index (adjust if you removed DirectML on non-Windows)
+        idx_map = {"auto": 0, "cuda": 1, "xpu": 2, "directml": 3, "cpu": 4}
+
+        idx = idx_map.get(pref, 0)
+        # if non-Windows and directml was saved earlier, clamp to Auto
+        if platform.system() != "Windows" and pref == "directml":
+            idx = 0
+
+        self.cb_accel_pref.setCurrentIndex(idx)
+
         from setiastro.saspro.accel_installer import current_backend
         self.backend_label.setText(self.tr("Backend: {0}").format(current_backend()))
+        try:
+            self.accel_deps_label.setText(self._format_accel_deps_text())
+        except Exception:
+            self.accel_deps_label.setText(self.tr("Torch: — unknown"))
 
     def reject(self):
         """User cancelled: restore the original background opacity (revert live changes)."""
@@ -564,6 +650,12 @@ class SettingsDialog(QDialog):
         self.settings.setValue("updates/check_on_startup", self.chk_updates_startup.isChecked())
         self.settings.setValue("updates/url", self.le_updates_url.text().strip())
         self.settings.setValue("display/autostretch_24bit", self.chk_autostretch_24bit.isChecked())
+
+        # accel preference
+        pref_idx = self.cb_accel_pref.currentIndex()
+        # map index -> stored string (again, adjust if DirectML removed on non-Windows)
+        inv = {0:"auto", 1:"cuda", 2:"xpu", 3:"directml", 4:"cpu"}
+        self.settings.setValue("accel/preferred_backend", inv.get(pref_idx, "auto"))
 
         # Custom background: persist the chosen path (empty -> remove)
         bg_path = (self.le_bg_path.text() or "").strip()

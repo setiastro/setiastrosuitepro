@@ -1,8 +1,8 @@
 # src/setiastro/saspro/ops/benchmark.py
 from __future__ import annotations
 
-import json, platform
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject
+import json
+from PyQt6.QtCore import QThread, pyqtSignal, QObject
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox,
     QProgressBar, QTextEdit, QMessageBox, QApplication
@@ -12,8 +12,6 @@ from setiastro.saspro.cosmicclarity_engines.benchmark_engine import (
     benchmark_image_path, download_benchmark_image, run_benchmark,  # keep your run_benchmark
 )
 from setiastro.saspro.cosmicclarity_engines.benchmark_engine import BENCHMARK_FITS_URL  # or define here
-
-BENCHMARK_FITS_URL = "https://github.com/setiastro/setiastrosuitepro/releases/download/benchmarkFIT/benchmarkimage.fit"
 
 class _BenchWorker(QObject):
     log = pyqtSignal(str)
@@ -42,7 +40,11 @@ class _BenchWorker(QObject):
             )
             self.done.emit(True, results, "")
         except Exception as e:
-            self.done.emit(False, {}, str(e))
+            msg = str(e)
+            if "Canceled" in msg or "cancel" in msg.lower():
+                self.done.emit(False, {}, "Canceled.")
+            else:
+                self.done.emit(False, {}, msg)
 
 
 class _DownloadWorker(QObject):
@@ -202,6 +204,12 @@ class BenchmarkDialog(QDialog):
             QMessageBox.warning(self, "Download failed", msg)
             self.refresh_ui()
 
+    def closeEvent(self, e):
+        self._stop_thread_if_any()
+        self.pbar.setRange(0, 100)
+        super().closeEvent(e)
+
+
     # ---------- run benchmark ----------
     def _run_benchmark(self):
         p = benchmark_image_path()
@@ -210,7 +218,8 @@ class BenchmarkDialog(QDialog):
             return
 
         self._stop_thread_if_any()
-
+        self.btn_run.setEnabled(False)
+        self.btn_dl.setEnabled(False)
         self._results = None
         self.btn_copy.setEnabled(False)
         self.btn_save.setEnabled(False)
@@ -242,9 +251,14 @@ class BenchmarkDialog(QDialog):
         t.quit(); t.wait()
         self._thread = None
         self.pbar.setValue(100 if ok else 0)
-
+        self.btn_run.setEnabled(True)
+        self.btn_dl.setEnabled(True)
         if not ok:
             self._log(f"❌ Benchmark failed: {err}")
+            if str(err).strip().lower().startswith("canceled"):
+                # no scary dialog for user-cancel
+                self.pbar.setValue(0)
+                return
             QMessageBox.warning(self, "Benchmark failed", err)
             return
 

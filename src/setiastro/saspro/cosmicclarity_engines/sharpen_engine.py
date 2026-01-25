@@ -25,10 +25,15 @@ ProgressCB = Callable[[int, int, str], None]  # (done, total, stage)
 
 
 # ---------------- Torch model defs (needed for .pth) ----------------
-
-def _get_torch(status_cb=print):
+def _get_torch(*, prefer_cuda: bool, prefer_dml: bool, status_cb=print):
     from setiastro.saspro.runtime_torch import import_torch
-    return import_torch(prefer_cuda=True, prefer_xpu=False, status_cb=status_cb)
+    return import_torch(
+        prefer_cuda=prefer_cuda,
+        prefer_xpu=False,
+        prefer_dml=prefer_dml,
+        status_cb=status_cb,
+    )
+
 
 
 def _nullcontext():
@@ -224,19 +229,21 @@ class SharpenModels:
 _MODELS_CACHE: dict[tuple[str, bool], SharpenModels] = {}  # (backend_tag, use_gpu)
 
 def load_sharpen_models(use_gpu: bool, status_cb=print) -> SharpenModels:
-    """
-    Loads either Torch (cuda/cpu) or ONNX (DirectML) models.
-    Model file paths come from setiastro.saspro.resources.Resources.
-    Cached by (backend_tag, use_gpu).
-    """
     backend_tag = "cc_sharpen_ai3_5s"
     key = (backend_tag, bool(use_gpu))
     if key in _MODELS_CACHE:
         return _MODELS_CACHE[key]
-    
-    # Prefer torch CUDA if available & allowed
-    torch = _get_torch(status_cb=status_cb)
 
+    is_windows = (os.name == "nt")
+
+    # ask runtime to prefer DML only on Windows + when user wants GPU
+    torch = _get_torch(
+        prefer_cuda=bool(use_gpu),                 # still try CUDA first
+        prefer_dml=bool(use_gpu and is_windows),   # enable DML install/usage path
+        status_cb=status_cb,
+    )
+
+    # 1) CUDA
     if use_gpu and hasattr(torch, "cuda") and torch.cuda.is_available():
         device = torch.device("cuda")
         status_cb(f"CosmicClarity Sharpen: using CUDA ({torch.cuda.get_device_name(0)})")
@@ -244,18 +251,36 @@ def load_sharpen_models(use_gpu: bool, status_cb=print) -> SharpenModels:
         _MODELS_CACHE[key] = models
         return models
 
-    # DirectML ONNX fallback (Windows)
+    # 2) Torch-DirectML (Windows)
+    if use_gpu and is_windows:
+        try:
+            import torch_directml  # provided by torch-directml
+            dml = torch_directml.device()
+            status_cb("CosmicClarity Sharpen: using DirectML (torch-directml)")
+            models = _load_torch_models(torch, dml)
+            _MODELS_CACHE[key] = models
+            status_cb(f"torch.__version__={getattr(torch,'__version__',None)}; "
+                    f"cuda_available={bool(getattr(torch,'cuda',None) and torch.cuda.is_available())}")
+            return models
+                    
+        except Exception:
+            pass
+
+    # 3) ONNX Runtime DirectML fallback
     if use_gpu and ort is not None and "DmlExecutionProvider" in ort.get_available_providers():
         status_cb("CosmicClarity Sharpen: using DirectML (ONNX Runtime)")
         models = _load_onnx_models()
         _MODELS_CACHE[key] = models
         return models
 
-    # CPU torch
+    # 4) CPU
     device = torch.device("cpu")
     status_cb("CosmicClarity Sharpen: using CPU")
     models = _load_torch_models(torch, device)
     _MODELS_CACHE[key] = models
+    status_cb(f"Sharpen backend resolved: "
+            f"{'onnx' if models.is_onnx else 'torch'} / device={models.device!r}")
+
     return models
 
 

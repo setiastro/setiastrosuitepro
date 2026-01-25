@@ -25,9 +25,14 @@ except Exception:
     ort = None
 
 
-def _get_torch(status_cb=print):
+def _get_torch(*, prefer_cuda: bool, prefer_dml: bool, status_cb=print):
     from setiastro.saspro.runtime_torch import import_torch
-    return import_torch(prefer_cuda=True, prefer_xpu=False, status_cb=status_cb)
+    return import_torch(
+        prefer_cuda=prefer_cuda,
+        prefer_xpu=False,
+        prefer_dml=prefer_dml,
+        status_cb=status_cb,
+    )
 
 
 def _nullcontext():
@@ -119,30 +124,57 @@ def load_models(use_gpu: bool = True, status_cb=print) -> Dict[str, Any]:
     if key in _cached_models:
         return _cached_models[key]
 
-    torch = _get_torch(status_cb=status_cb)
+    is_windows = (os.name == "nt")
 
-    # Prefer torch CUDA if available & allowed
+    torch = _get_torch(
+        prefer_cuda=bool(use_gpu),
+        prefer_dml=bool(use_gpu and is_windows),
+        status_cb=status_cb,
+    )
+
+    # 1) CUDA
     if use_gpu and hasattr(torch, "cuda") and torch.cuda.is_available():
         device = torch.device("cuda")
         status_cb(f"CosmicClarity Denoise: using CUDA ({torch.cuda.get_device_name(0)})")
         mono_model = _load_torch_model(torch, device, R.CC_DENOISE_PTH)
         models = {"device": device, "is_onnx": False, "mono_model": mono_model, "torch": torch}
+        status_cb(f"Denoise backend resolved: "
+                f"{'onnx' if models['is_onnx'] else 'torch'} / device={models['device']!r}")        
         _cached_models[key] = models
         return models
 
-    # DirectML ONNX fallback (Windows)
+    # 2) Torch-DirectML (Windows)
+    if use_gpu and is_windows:
+        try:
+            import torch_directml
+            dml = torch_directml.device()
+            status_cb("CosmicClarity Denoise: using DirectML (torch-directml)")
+            mono_model = _load_torch_model(torch, dml, R.CC_DENOISE_PTH)
+            models = {"device": dml, "is_onnx": False, "mono_model": mono_model, "torch": torch}
+            status_cb(f"Denoise backend resolved: "
+                    f"{'onnx' if models['is_onnx'] else 'torch'} / device={models['device']!r}")                 
+            _cached_models[key] = models
+            return models
+        except Exception:
+            pass
+
+    # 3) ORT DirectML fallback
     if use_gpu and ort is not None and ("DmlExecutionProvider" in ort.get_available_providers()):
         status_cb("CosmicClarity Denoise: using DirectML (ONNX Runtime)")
         mono_model = ort.InferenceSession(R.CC_DENOISE_ONNX, providers=["DmlExecutionProvider"])
         models = {"device": "DirectML", "is_onnx": True, "mono_model": mono_model, "torch": None}
+        status_cb(f"Denoise backend resolved: "
+                f"{'onnx' if models['is_onnx'] else 'torch'} / device={models['device']!r}")             
         _cached_models[key] = models
         return models
 
-    # CPU torch
+    # 4) CPU
     device = torch.device("cpu")
     status_cb("CosmicClarity Denoise: using CPU")
     mono_model = _load_torch_model(torch, device, R.CC_DENOISE_PTH)
     models = {"device": device, "is_onnx": False, "mono_model": mono_model, "torch": torch}
+    status_cb(f"Denoise backend resolved: "
+            f"{'onnx' if models['is_onnx'] else 'torch'} / device={models['device']!r}")         
     _cached_models[key] = models
     return models
 
@@ -455,9 +487,9 @@ def denoise_channel(channel: np.ndarray, models: Dict[str, Any], *, progress_cb:
             chunk_tensor = chunk_tensor.expand(1, 3, chunk_tensor.shape[2], chunk_tensor.shape[3])
 
             with torch.no_grad(), _autocast_context(torch, device):
-                den = model(chunk_tensor).squeeze().detach().cpu().numpy()
+                out = model(chunk_tensor).detach().cpu().numpy()  # (1,3,H,W)
 
-            denoised_chunk = den[0] if den.ndim == 3 else den
+            denoised_chunk = out[0, 0, :original_chunk_shape[0], :original_chunk_shape[1]]
 
         denoised_chunks.append((denoised_chunk, i, j))
 
