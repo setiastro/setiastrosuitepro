@@ -96,16 +96,26 @@ def _get_stellar_model_for_benchmark(use_gpu: bool, status_cb=None):
     """
     Returns (models, backend_tag)
       - models: SharpenModels (torch or onnx)
-      - backend_tag: string like 'CUDA', 'CPU', 'DirectML'
+      - backend_tag: 'CUDA', 'CPU', 'DirectML', 'MPS', etc.
     """
     models = load_sharpen_models(use_gpu=use_gpu, status_cb=status_cb or (lambda *_: None))
 
     if models.is_onnx:
         return models, "DirectML"
+
     dev = models.device
-    if getattr(dev, "type", "") == "cuda":
+    dev_type = getattr(dev, "type", "")
+    if dev_type == "cuda":
         return models, "CUDA"
+    if dev_type == "mps":
+        return models, "MPS"
+
+    # torch-directml devices don’t have .type == 'dml' typically; handle by string
+    if "dml" in str(dev).lower() or "directml" in str(dev).lower():
+        return models, "DirectML"
+
     return models, "CPU"
+
 
 
 def torch_benchmark_stellar(
@@ -156,7 +166,6 @@ def torch_benchmark_stellar(
 
     return (total_ms / n), total_ms, tag
 
-
 def onnx_benchmark_stellar(
     patches_nchw: np.ndarray,
     *,
@@ -165,31 +174,49 @@ def onnx_benchmark_stellar(
     status_cb=None,
 ) -> tuple[float, float, str]:
     """
-    ONNX benchmark using the SAME provider selection as sharpen_engine (DirectML when available).
-    Uses the already-loaded session from load_sharpen_models when is_onnx=True,
-    otherwise it can still run ONNX on CPU/CUDA if you want by creating a session.
+    ONNX benchmark:
+      - If sharpen_engine selected ONNX (DirectML), reuse that exact session.
+      - Otherwise, on Windows, prefer DirectML provider if available (when use_gpu=True),
+        then CUDA EP if present, else CPU.
     """
     status_cb = status_cb or (lambda *_: None)
 
-    # Prefer: if sharpen_engine chose ONNX (DirectML), use that session directly
+    # Reuse sharpen_engine session if it already chose ONNX (typically DirectML on Windows)
     models, tag = _get_stellar_model_for_benchmark(use_gpu=use_gpu, status_cb=status_cb)
     if models.is_onnx:
         sess = models.stellar
-        provider = "DmlExecutionProvider"
+        # Use the provider that the session actually has (best-effort label)
+        try:
+            provs = sess.get_providers()
+            provider = provs[0] if provs else "ONNX"
+        except Exception:
+            provider = "DmlExecutionProvider"
     else:
-        # If sharpen_engine chose torch, we can still run ONNX benchmark (Windows only),
-        # using your packaged ONNX model path.
         import onnxruntime as ort
         R = get_resources()
         onnx_path = R.CC_STELLAR_SHARP_ONNX
 
-        providers = ort.get_available_providers()
-        if "CUDAExecutionProvider" in providers:
-            provider = "CUDAExecutionProvider"
-        else:
-            provider = "CPUExecutionProvider"
+        providers_avail = ort.get_available_providers()
 
-        sess = ort.InferenceSession(onnx_path, providers=[provider])
+        # Prefer DirectML if possible (Windows) when GPU requested
+        providers = []
+        if use_gpu and ("DmlExecutionProvider" in providers_avail):
+            providers.append("DmlExecutionProvider")
+        # If no DML (or user disabled GPU), try CUDA EP if available
+        if use_gpu and ("CUDAExecutionProvider" in providers_avail):
+            providers.append("CUDAExecutionProvider")
+        # Always end with CPU
+        providers.append("CPUExecutionProvider")
+
+        # Build session
+        sess = ort.InferenceSession(str(onnx_path), providers=providers)
+
+        # Label by what actually got picked
+        try:
+            provs = sess.get_providers()
+            provider = provs[0] if provs else providers[0]
+        except Exception:
+            provider = providers[0]
 
     input_name = sess.get_inputs()[0].name
     total_ms = 0.0

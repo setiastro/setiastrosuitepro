@@ -6,14 +6,20 @@ from typing import Optional, Dict, Any, Tuple
 
 import numpy as np
 import cv2
+cv2.setNumThreads(1)
 try:
     import onnxruntime as ort
 except Exception:
     ort = None
 
-def _get_torch(status_cb=print):
+def _get_torch(*, prefer_cuda: bool, prefer_dml: bool, status_cb=print):
     from setiastro.saspro.runtime_torch import import_torch
-    return import_torch(prefer_cuda=True, prefer_xpu=False, status_cb=status_cb)
+    return import_torch(
+        prefer_cuda=prefer_cuda,
+        prefer_xpu=False,
+        prefer_dml=prefer_dml,
+        status_cb=status_cb,
+    )
 
 
 from setiastro.saspro.resources import get_resources
@@ -209,7 +215,9 @@ def load_superres(scale: int, use_gpu: bool = True, status_cb=print) -> Dict[str
     if scale not in (2, 3, 4):
         raise ValueError("scale must be 2, 3, or 4")
 
-    torch = _get_torch(status_cb=status_cb)
+    is_windows = (os.name == "nt")
+    torch = _get_torch(prefer_cuda=bool(use_gpu), prefer_dml=bool(use_gpu and is_windows), status_cb=status_cb)
+
     pth_path, onnx_path = _superres_paths(scale)
 
     # --- DEBUG (remove later) ---
@@ -233,6 +241,23 @@ def load_superres(scale: int, use_gpu: bool = True, status_cb=print) -> Dict[str
         out = {"backend": "pytorch", "device": device, "model": model, "scale": scale, "torch": torch}
         _cached[key] = out
         return out
+
+    # Torch-DirectML (Windows)
+    if use_gpu and is_windows:
+        try:
+            import torch_directml
+            dml = torch_directml.device()
+            status_cb("CosmicClarity SuperRes: using DirectML (torch-directml)")
+            key = (_BACKEND_TAG, scale, "torch_dml")
+            if key in _cached:
+                return _cached[key]
+            model = _load_torch_superres_model(torch, dml, pth_path)
+            out = {"backend": "pytorch", "device": dml, "model": model, "scale": scale, "torch": torch}
+            _cached[key] = out
+            return out
+        except Exception:
+            pass
+
 
     # DirectML ONNX fallback (Windows)
     if dml_ok:
@@ -328,7 +353,8 @@ def superres_rgb01(
 
         processed = []
         use_amp = (engine["backend"] == "pytorch") and _amp_ok(engine["torch"], engine["device"])
-
+        dev = engine["device"]
+        dev_type = getattr(dev, "type", None)
         for idx, (patch, i, j) in enumerate(chunks):
             ph, pw = patch.shape[:2]
 
@@ -344,7 +370,7 @@ def superres_rgb01(
                 pt = t.from_numpy(patch_in.transpose(2, 0, 1)).unsqueeze(0).to(engine["device"])
 
                 with t.no_grad():
-                    if use_amp and engine["device"].type == "cuda":
+                    if use_amp and dev_type == "cuda":
                         with t.cuda.amp.autocast():
                             out = engine["model"](pt)
                     else:

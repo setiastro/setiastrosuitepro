@@ -275,12 +275,22 @@ class SettingsDialog(QDialog):
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self
         )
+        self.cb_accel_pref.currentIndexChanged.connect(self._accel_pref_changed)
+
+
+
         btns.accepted.connect(self._save_and_accept)
         btns.rejected.connect(self.reject)
         root.addWidget(btns)
         self.install_accel_btn.clicked.connect(self._install_or_update_accel)
         # Initial Load:
         self.refresh_ui()
+
+    def _accel_pref_changed(self, idx: int):
+        inv = {0:"auto", 1:"cuda", 2:"xpu", 3:"directml", 4:"cpu"}
+        val = inv.get(idx, "auto")
+        self.settings.setValue("accel/preferred_backend", val)
+        self.settings.sync()
 
     def _show_gpu_accel_fix_help(self):
         from PyQt6.QtWidgets import QMessageBox
@@ -360,8 +370,9 @@ class SettingsDialog(QDialog):
 
         self.install_accel_btn.setEnabled(False)
         self.backend_label.setText(self.tr("Backend: installing…"))
+
         pref = (self.settings.value("accel/preferred_backend", "auto", type=str) or "auto").lower()
-        self._accel_worker = AccelInstallWorker(prefer_gpu=True, preferred_backend=pref)
+
         self._accel_pd = QProgressDialog(self.tr("Preparing runtime…"), self.tr("Cancel"), 0, 0, self)
         self._accel_pd.setWindowTitle(self.tr("Installing GPU Acceleration"))
         self._accel_pd.setWindowModality(Qt.WindowModality.ApplicationModal)
@@ -370,7 +381,7 @@ class SettingsDialog(QDialog):
         self._accel_pd.show()
 
         self._accel_thread = QThread(self)
-        self._accel_worker = AccelInstallWorker(prefer_gpu=True)
+        self._accel_worker = AccelInstallWorker(prefer_gpu=True, preferred_backend=pref)
         self._accel_worker.moveToThread(self._accel_thread)
 
         self._accel_thread.started.connect(self._accel_worker.run, Qt.ConnectionType.QueuedConnection)
@@ -383,20 +394,29 @@ class SettingsDialog(QDialog):
 
         def _done(ok: bool, msg: str):
             if getattr(self, "_accel_pd", None):
-                self._accel_pd.reset(); self._accel_pd.deleteLater(); self._accel_pd = None
-            self._accel_thread.quit(); self._accel_thread.wait()
+                self._accel_pd.reset()
+                self._accel_pd.deleteLater()
+                self._accel_pd = None
+
+            self._accel_thread.quit()
+            self._accel_thread.wait()
+
             self.install_accel_btn.setEnabled(True)
             self.backend_label.setText(self.tr("Backend: {0}").format(current_backend()))
             try:
                 self.accel_deps_label.setText(self._format_accel_deps_text())
             except Exception:
                 pass
-            if ok: QMessageBox.information(self, self.tr("Acceleration"), self.tr("✅ {0}").format(msg))
-            else:  QMessageBox.warning(self, self.tr("Acceleration"), self.tr("❌ {0}").format(msg))
+
+            if ok:
+                QMessageBox.information(self, self.tr("Acceleration"), self.tr("✅ {0}").format(msg))
+            else:
+                QMessageBox.warning(self, self.tr("Acceleration"), self.tr("❌ {0}").format(msg))
 
         self._accel_worker.finished.connect(_done, Qt.ConnectionType.QueuedConnection)
         self._accel_thread.finished.connect(self._accel_worker.deleteLater, Qt.ConnectionType.QueuedConnection)
         self._accel_thread.finished.connect(self._accel_thread.deleteLater, Qt.ConnectionType.QueuedConnection)
+
         self._accel_thread.start()
 
 

@@ -20,9 +20,17 @@ except Exception:
 
 ProgressCB = Callable[[int, int], None]  # (done, total)
 
-def _get_torch(status_cb=print):
+# ---------- Torch import (updated: CUDA + torch-directml awareness) ----------
+
+def _get_torch(*, prefer_cuda: bool, prefer_dml: bool, status_cb=print):
     from setiastro.saspro.runtime_torch import import_torch
-    return import_torch(prefer_cuda=True, prefer_xpu=False, status_cb=status_cb)
+    return import_torch(
+        prefer_cuda=prefer_cuda,
+        prefer_xpu=False,
+        prefer_dml=prefer_dml,
+        status_cb=status_cb,
+    )
+
 
 def _nullcontext():
     from contextlib import nullcontext
@@ -188,44 +196,88 @@ def _load_model_weights_lenient(torch, nn, model, checkpoint_path: str, device):
     model.load_state_dict(filtered, strict=False)
     return model
 
+# ---------- Satellite model cache + loader (updated for torch-directml + ORT DML) ----------
+
 _SAT_CACHE: Dict[Tuple[str, str, str, str], Dict[str, Any]] = {}
 
 def get_satellite_models(resources: Any = None, use_gpu: bool = True, status_cb=print) -> Dict[str, Any]:
+    """
+    Backend order:
+      1) CUDA (PyTorch)
+      2) DirectML (torch-directml)        [Windows]
+      3) DirectML (ONNX Runtime DML EP)   [Windows]
+      4) MPS (PyTorch)                   [macOS]
+      5) CPU (PyTorch)
+
+    Cache key includes backend tag, so switching GPU on/off never reuses the wrong backend.
+    """
+    import os
+
     if resources is None:
         resources = get_resources()
 
     p_det1 = resources.CC_SAT_DETECT1_PTH
     p_det2 = resources.CC_SAT_DETECT2_PTH
     p_rem  = resources.CC_SAT_REMOVE_PTH
+
     o_det1 = resources.CC_SAT_DETECT1_ONNX
     o_det2 = resources.CC_SAT_DETECT2_ONNX
     o_rem  = resources.CC_SAT_REMOVE_ONNX
 
-    # Decide whether DirectML is available (no torch required for this path)
-    want_dml = bool(use_gpu) and (ort is not None) and ("DmlExecutionProvider" in ort.get_available_providers())
+    is_windows = (os.name == "nt")
 
-    # Prefer torch cuda if torch exists + cuda is available
+    # ORT DirectML availability
+    ort_dml_ok = bool(use_gpu) and (ort is not None) and ("DmlExecutionProvider" in ort.get_available_providers())
+
+    # Torch: ask runtime_torch to prefer what we want (CUDA first, DML on Windows)
     torch = None
-    want_cuda = False
-    if use_gpu:
-        try:
-            torch = _get_torch(status_cb=status_cb)
-            want_cuda = hasattr(torch, "cuda") and torch.cuda.is_available()
-        except Exception:
-            torch = None
-            want_cuda = False
+    if use_gpu or True:
+        torch = _get_torch(
+            prefer_cuda=bool(use_gpu),
+            prefer_dml=bool(use_gpu and is_windows),
+            status_cb=status_cb,
+        )
 
-    backend = "cuda" if want_cuda else ("dml" if want_dml else "cpu")
+    # Decide backend
+    backend = "cpu"
+
+    # 1) CUDA
+    if use_gpu and hasattr(torch, "cuda") and torch.cuda.is_available():
+        backend = "cuda"
+    else:
+        # 2) torch-directml (Windows)
+        if use_gpu and is_windows:
+            try:
+                import torch_directml  # optional
+                _ = torch_directml.device()
+                backend = "torch_dml"
+            except Exception:
+                backend = "ort_dml" if ort_dml_ok else "cpu"
+        else:
+            # 4) MPS (macOS)
+            if use_gpu and hasattr(torch, "backends") and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                backend = "mps"
+            else:
+                backend = "cpu"
+
     key = (p_det1, p_det2, p_rem, backend)
     if key in _SAT_CACHE:
         return _SAT_CACHE[key]
 
-    if backend == "dml":
-        # ORT DirectML sessions
+    # ---------------- DirectML via ONNX Runtime ----------------
+    if backend == "ort_dml":
+        if ort is None:
+            raise RuntimeError("onnxruntime not available, cannot use ORT DirectML backend.")
+        # sanity: need ONNX paths
+        if not (o_det1 and o_det2 and o_rem):
+            raise FileNotFoundError("Satellite ONNX model paths are missing in resources.")
+
         det1 = ort.InferenceSession(o_det1, providers=["DmlExecutionProvider"])
         det2 = ort.InferenceSession(o_det2, providers=["DmlExecutionProvider"])
         rem  = ort.InferenceSession(o_rem,  providers=["DmlExecutionProvider"])
+
         out = {
+            "backend": "ort_dml",
             "detection_model1": det1,
             "detection_model2": det2,
             "removal_model": rem,
@@ -236,14 +288,20 @@ def get_satellite_models(resources: Any = None, use_gpu: bool = True, status_cb=
         status_cb("CosmicClarity Satellite: using DirectML (ONNX Runtime)")
         return out
 
-    # Torch required for cuda/cpu path
-    if torch is None:
-        torch = _get_torch(status_cb=status_cb)
-
-    device = torch.device("cuda" if (use_gpu and hasattr(torch, "cuda") and torch.cuda.is_available()) else "cpu")
-    if device.type == "cuda":
+    # ---------------- Torch backends (CUDA / torch-directml / MPS / CPU) ----------------
+    # pick device
+    if backend == "cuda":
+        device = torch.device("cuda")
         status_cb(f"CosmicClarity Satellite: using CUDA ({torch.cuda.get_device_name(0)})")
+    elif backend == "mps":
+        device = torch.device("mps")
+        status_cb("CosmicClarity Satellite: using MPS")
+    elif backend == "torch_dml":
+        import torch_directml
+        device = torch_directml.device()
+        status_cb("CosmicClarity Satellite: using DirectML (torch-directml)")
     else:
+        device = torch.device("cpu")
         status_cb("CosmicClarity Satellite: using CPU")
 
     nn, SatelliteRemoverCNN, BinaryClassificationCNN, BinaryClassificationCNN2, tfm = _build_torch_models(torch)
@@ -258,13 +316,14 @@ def get_satellite_models(resources: Any = None, use_gpu: bool = True, status_cb=
     rem = _load_model_weights_lenient(torch, nn, rem, p_rem, device).eval()
 
     out = {
+        "backend": backend,
         "detection_model1": det1,
         "detection_model2": det2,
         "removal_model": rem,
         "device": device,
         "is_onnx": False,
         "torch": torch,
-        "tfm": tfm,  # keep the composed resize/toTensor transform cached too
+        "tfm": tfm,
     }
     _SAT_CACHE[key] = out
     return out
@@ -362,15 +421,25 @@ def _apply_clip_trail_logic(processed: np.ndarray, original: np.ndarray, sensiti
     mask = np.where(clipped < sensitivity, 0.0, 1.0).astype(np.float32)
     return np.clip(original - mask, 0.0, 1.0)
 
+# ---------- Torch detection (FIX: tfm expects PIL/ndarray, not Tensor; avoid double ToTensor) ----------
 
 def _torch_detect(tile_rgb01: np.ndarray, models: Dict[str, Any]) -> bool:
+    """
+    Your tfm = ToTensor()+Resize(256,256). It expects HxWxC numpy in [0..1] (or uint8).
+    Do NOT feed it a tensor.
+    """
     torch = models["torch"]
     device = models["device"]
     det1 = models["detection_model1"]
     det2 = models["detection_model2"]
     tfm = models["tfm"]
 
-    inp = tfm(tile_rgb01).unsqueeze(0).to(device)
+    a = np.asarray(tile_rgb01, np.float32)
+    a = np.clip(a, 0.0, 1.0)
+
+    # torchvision transform pipeline
+    inp = tfm(a)               # -> Tensor [C,H,W], float32
+    inp = inp.unsqueeze(0).to(device)
 
     with torch.no_grad():
         o1 = float(det1(inp).item())
@@ -380,6 +449,7 @@ def _torch_detect(tile_rgb01: np.ndarray, models: Dict[str, Any]) -> bool:
     with torch.no_grad():
         o2 = float(det2(inp).item())
     return (o2 > 0.25)
+
 
 
 def _torch_remove(tile_rgb01: np.ndarray, models: Dict[str, Any]) -> np.ndarray:
@@ -463,6 +533,7 @@ def satellite_remove_image(
 
     return out_rgb.astype(np.float32), detected
 
+# ---------- Satellite remove loop (FIX: use correct ONNX sessions, not det1/rem confusion) ----------
 
 def _satellite_remove_rgb(
     rgb01: np.ndarray,
@@ -475,16 +546,15 @@ def _satellite_remove_rgb(
     border_size: int,
     progress_cb: Optional[Callable[[int, int], None]],
 ) -> Tuple[np.ndarray, bool]:
-    det1 = models["detection_model1"]
-
-    rem  = models["removal_model"]
+    """
+    Uses BOTH detectors like your torch path.
+    ONNX path now calls det1+det2+rem sessions correctly.
+    """
     is_onnx = bool(models.get("is_onnx", False))
-
 
     H, W = rgb01.shape[:2]
     trail_any = False
 
-    # chunk loop
     all_tiles = list(_split_chunks(rgb01, chunk_size, overlap))
     total = len(all_tiles)
     out_tiles = []
@@ -493,13 +563,24 @@ def _satellite_remove_rgb(
         orig = tile.astype(np.float32, copy=False)
 
         if is_onnx:
-            detected = _onnx_detect(orig, det1)
+            det1_sess = models["detection_model1"]
+            det2_sess = models["detection_model2"]
+            rem_sess  = models["removal_model"]
+
+            d1 = _onnx_detect(orig, det1_sess)
+            if d1:
+                d2 = _onnx_detect(orig, det2_sess)
+            else:
+                d2 = False
+
+            detected = bool(d1 and d2)
             if detected:
                 trail_any = True
-                pred = _onnx_remove(orig, rem)
+                pred = _onnx_remove(orig, rem_sess)
                 final = _apply_clip_trail_logic(pred, orig, sensitivity) if clip_trail else pred
             else:
                 final = orig
+
         else:
             detected = _torch_detect(orig, models)
             if detected:
@@ -516,7 +597,7 @@ def _satellite_remove_rgb(
 
     out = _stitch_ignore_border(out_tiles, (H, W, 3), border=border_size)
 
-    # Replace border like your standalone replace_border() (keeps edges unchanged)
+    # keep edges unchanged
     if border_size > 0:
         out[:border_size, :, :] = rgb01[:border_size, :, :]
         out[-border_size:, :, :] = rgb01[-border_size:, :, :]
@@ -525,7 +606,6 @@ def _satellite_remove_rgb(
 
     out = np.clip(out, 0.0, 1.0).astype(np.float32)
 
-    # If no trail detected, return input unmodified (matches your standalone intent)
     if not trail_any:
         return rgb01.astype(np.float32, copy=False), False
 

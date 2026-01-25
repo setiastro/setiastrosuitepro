@@ -19,9 +19,14 @@ ProgressCB = Callable[[int, int, str], None]  # (done, total, stage)
 
 # ---------------- Torch import (your existing runtime_torch helper) ----------------
 
-def _get_torch(status_cb=print):
+def _get_torch(*, prefer_cuda: bool, prefer_dml: bool, status_cb=print):
     from setiastro.saspro.runtime_torch import import_torch
-    return import_torch(prefer_cuda=True, prefer_xpu=False, status_cb=status_cb)
+    return import_torch(
+        prefer_cuda=prefer_cuda,
+        prefer_xpu=False,
+        prefer_dml=prefer_dml,
+        status_cb=status_cb,
+    )
 
 
 def _nullcontext():
@@ -303,12 +308,22 @@ class DarkStarModels:
     chunk_size: int = 512  # used for ONNX fixed shapes
 
 
-_MODELS_CACHE: dict[tuple[str, bool, bool], DarkStarModels] = {}  # (tag,use_gpu,color)
+# ---------------- Model loading (cached) ----------------
+
+_MODELS_CACHE: dict[tuple[str, str], DarkStarModels] = {}  # (tag, backend_id)
 
 def load_darkstar_models(*, use_gpu: bool, color: bool, status_cb=print) -> DarkStarModels:
+    """
+    Backend order:
+      1) CUDA (PyTorch)
+      2) DirectML (torch-directml)  [Windows]
+      3) DirectML (ONNX Runtime)    [Windows]
+      4) MPS (PyTorch)              [macOS]
+      5) CPU (PyTorch)
+    Cache key includes backend_id so we never "stick" on CPU when GPU is later enabled.
+    """
     R = get_resources()
 
-    # you’ll want these resource keys added (see note below)
     if color:
         pth = R.CC_DARKSTAR_COLOR_PTH
         onnx = R.CC_DARKSTAR_COLOR_ONNX
@@ -318,53 +333,107 @@ def load_darkstar_models(*, use_gpu: bool, color: bool, status_cb=print) -> Dark
         onnx = R.CC_DARKSTAR_MONO_ONNX
         tag = "cc_darkstar_mono"
 
-    key = (tag, bool(use_gpu), bool(color))
-    if key in _MODELS_CACHE:
-        return _MODELS_CACHE[key]
+    import os
+    is_windows = os.name == "nt"
 
-    torch = _get_torch(status_cb=status_cb)
+    # Request torch with the right preferences (runtime_torch decides what it can do)
+    torch = _get_torch(
+        prefer_cuda=bool(use_gpu),
+        prefer_dml=bool(use_gpu and is_windows),
+        status_cb=status_cb,
+    )
 
-    # CUDA torch first
+    # ---------------- CUDA (torch) ----------------
     if use_gpu and hasattr(torch, "cuda") and torch.cuda.is_available():
+        backend_id = "cuda"
+        key = (tag, backend_id)
+        if key in _MODELS_CACHE:
+            return _MODELS_CACHE[key]
+
         dev = torch.device("cuda")
         status_cb(f"Dark Star: using CUDA ({torch.cuda.get_device_name(0)})")
         Net = _build_darkstar_torch_models(torch)
         net = Net(pth, None).eval().to(dev)
+
         m = DarkStarModels(device=dev, is_onnx=False, model=net, torch=torch, chunk_size=512)
         _MODELS_CACHE[key] = m
         return m
 
-    # Windows DirectML ONNX
+    # ---------------- DirectML (torch-directml) ----------------
+    if use_gpu and is_windows:
+        try:
+            import torch_directml  # optional
+            backend_id = "torch_dml"
+            key = (tag, backend_id)
+            if key in _MODELS_CACHE:
+                return _MODELS_CACHE[key]
+
+            dev = torch_directml.device()
+            status_cb("Dark Star: using DirectML (torch-directml)")
+            Net = _build_darkstar_torch_models(torch)
+            net = Net(pth, None).eval().to(dev)
+
+            m = DarkStarModels(device=dev, is_onnx=False, model=net, torch=torch, chunk_size=512)
+            _MODELS_CACHE[key] = m
+            return m
+        except Exception:
+            pass
+
+    # ---------------- DirectML (ONNX Runtime) ----------------
     if use_gpu and ort is not None and ("DmlExecutionProvider" in ort.get_available_providers()):
         if onnx and onnx.strip():
+            backend_id = "ort_dml"
+            key = (tag, backend_id)
+            if key in _MODELS_CACHE:
+                return _MODELS_CACHE[key]
+
             status_cb("Dark Star: using DirectML (ONNX Runtime)")
             sess = ort.InferenceSession(onnx, providers=["DmlExecutionProvider"])
-            # fixed input: [1,3,H,W]
+
+            # fixed-ish input: [1,3,H,W]; some exports have static shapes
             inp = sess.get_inputs()[0]
-            cs = int(inp.shape[2]) if inp.shape and inp.shape[2] else 512
+            cs = 512
+            try:
+                if getattr(inp, "shape", None) and len(inp.shape) >= 4:
+                    if inp.shape[2] not in (None, "None"):
+                        cs = int(inp.shape[2])
+            except Exception:
+                pass
+
             m = DarkStarModels(device="DirectML", is_onnx=True, model=sess, torch=None, chunk_size=cs)
             _MODELS_CACHE[key] = m
             return m
 
-    # MPS torch
-    if use_gpu and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+    # ---------------- MPS (torch) ----------------
+    if use_gpu and hasattr(torch, "backends") and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        backend_id = "mps"
+        key = (tag, backend_id)
+        if key in _MODELS_CACHE:
+            return _MODELS_CACHE[key]
+
         dev = torch.device("mps")
         status_cb("Dark Star: using MPS")
         Net = _build_darkstar_torch_models(torch)
         net = Net(pth, None).eval().to(dev)
+
         m = DarkStarModels(device=dev, is_onnx=False, model=net, torch=torch, chunk_size=512)
         _MODELS_CACHE[key] = m
         return m
 
-    # CPU torch
+    # ---------------- CPU (torch) ----------------
+    backend_id = "cpu"
+    key = (tag, backend_id)
+    if key in _MODELS_CACHE:
+        return _MODELS_CACHE[key]
+
     dev = torch.device("cpu")
     status_cb("Dark Star: using CPU")
     Net = _build_darkstar_torch_models(torch)
     net = Net(pth, None).eval().to(dev)
+
     m = DarkStarModels(device=dev, is_onnx=False, model=net, torch=torch, chunk_size=512)
     _MODELS_CACHE[key] = m
     return m
-
 
 # ---------------- Core inference on one HxWx3 image ----------------
 
@@ -374,24 +443,33 @@ def _infer_tile(models: DarkStarModels, tile_rgb: np.ndarray) -> np.ndarray:
 
     if models.is_onnx:
         cs = int(models.chunk_size)
+
+        # pad/crop robustly to (cs,cs,3)
         if (h0 != cs) or (w0 != cs):
             pad = np.zeros((cs, cs, 3), np.float32)
-            pad[:h0, :w0, :] = tile_rgb
+            hh = min(h0, cs)
+            ww = min(w0, cs)
+            pad[:hh, :ww, :] = tile_rgb[:hh, :ww, :]
             tile_rgb = pad
+
         inp = tile_rgb.transpose(2, 0, 1)[None, ...]  # 1,3,H,W
         sess = models.model
         out = sess.run(None, {sess.get_inputs()[0].name: inp})[0][0]  # 3,H,W
         out = out.transpose(1, 2, 0)
-        return out[:h0, :w0, :].astype(np.float32, copy=False)
 
-    # torch
+        hh = min(h0, cs)
+        ww = min(w0, cs)
+        return out[:hh, :ww, :].astype(np.float32, copy=False)
+
+    # torch (CUDA / MPS / CPU / torch-directml)
     torch = models.torch
     dev = models.device
     t = torch.from_numpy(tile_rgb.transpose(2, 0, 1)).unsqueeze(0).to(dev)
+
     with torch.no_grad(), _autocast_context(torch, dev):
         y = models.model(t)[0].detach().cpu().numpy().transpose(1, 2, 0)
-    return y[:h0, :w0, :].astype(np.float32, copy=False)
 
+    return y[:h0, :w0, :].astype(np.float32, copy=False)
 
 # ---------------- Public API ----------------
 
@@ -433,14 +511,14 @@ def darkstar_starremoval_rgb01(
     img3 = np.clip(img3, 0.0, 1.0)
 
     # decide "true RGB" vs "3-channel mono"
-    same_rg = np.allclose(img3[...,0], img3[...,1], rtol=0, atol=1e-6)
-    same_rb = np.allclose(img3[...,0], img3[...,2], rtol=0, atol=1e-6)
+    same_rg = np.allclose(img3[..., 0], img3[..., 1], rtol=0, atol=1e-6)
+    same_rb = np.allclose(img3[..., 0], img3[..., 2], rtol=0, atol=1e-6)
     is_true_rgb = not (same_rg and same_rb)
 
     models = load_darkstar_models(use_gpu=params.use_gpu, color=is_true_rgb, status_cb=status_cb)
 
-    # border + optional stretch decision (like your script)
-    stretch_needed = float(np.median(img3)) < 0.125
+    # stretch decision: pedestal-aware (matches other engines more closely)
+    stretch_needed = float(np.median(img3 - float(np.min(img3)))) < 0.125
     if stretch_needed:
         stretched, orig_min, orig_meds = stretch_image_unlinked_rgb(img3)
     else:
@@ -469,24 +547,20 @@ def darkstar_starremoval_rgb01(
         border_size=5,
     )
 
-    # un-stretch if applied
     if stretch_needed:
         starless_b = unstretch_image_unlinked_rgb(starless_b, orig_meds, orig_min)
 
-    # remove border
     starless = remove_border(starless_b, border_size=5)
-
     starless = np.clip(starless, 0.0, 1.0).astype(np.float32, copy=False)
 
     stars_only = None
     if params.output_stars_only:
         if params.mode == "additive":
-            stars_only = np.clip(img3 - starless, 0.0, 1.0)
+            stars_only = np.clip(img3 - starless, 0.0, 1.0).astype(np.float32, copy=False)
         else:  # unscreen
             denom = np.maximum(1.0 - starless, 1e-6)
             stars_only = np.clip((img3 - starless) / denom, 0.0, 1.0).astype(np.float32, copy=False)
 
-    # if input was mono, return mono-ish output? (your CC behavior usually returns HxWx1)
     if was_mono:
         starless = np.mean(starless, axis=2, keepdims=True).astype(np.float32, copy=False)
         if stars_only is not None:

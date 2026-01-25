@@ -4,26 +4,21 @@ from PyQt6.QtCore import QObject, pyqtSignal, QThread
 from setiastro.saspro.accel_installer import ensure_torch_installed
 
 class AccelInstallWorker(QObject):
-    progress = pyqtSignal(str)        # emitted from worker thread; GUI updates must connect with QueuedConnection
+    progress = pyqtSignal(str)        # emitted from worker thread
     finished = pyqtSignal(bool, str)  # (ok, message)
 
-    def __init__(self, prefer_gpu: bool = True):
+    def __init__(self, prefer_gpu: bool = True, preferred_backend: str = "auto"):
         super().__init__()
-        self.prefer_gpu = prefer_gpu
-
-    def _log(self, s: str):
-        # Never touch widgets here; just emit text
-        self.progress.emit(s)
+        self.prefer_gpu = bool(prefer_gpu)
+        self.preferred_backend = (preferred_backend or "auto").lower()
 
     def run(self):
-        # pure backend work; no QWidget/QMessageBox etc. in this method
         ok, msg = ensure_torch_installed(
             prefer_gpu=self.prefer_gpu,
             preferred_backend=self.preferred_backend,
             log_cb=self.progress.emit
         )
 
-        # honor cancellation if requested
         if QThread.currentThread().isInterruptionRequested():
             self.finished.emit(False, "Canceled.")
             return
