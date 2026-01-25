@@ -1056,10 +1056,7 @@ class CosmicClaritySatelliteDialogPro(QDialog):
             return
 
         finally:
-            try:
-                pd.close()
-            except Exception:
-                pass
+            pass
 
         # ----------------------------
         # Handle cancel / skip-save
