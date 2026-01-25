@@ -21,7 +21,7 @@ except Exception:
     ort = None
 
 
-ProgressCB = Callable[[int, int, str], None]  # (done, total, stage)
+ProgressCB = Callable[[int, int, str], bool]  # True=continue, False=cancel
 
 
 # ---------------- Torch model defs (needed for .pth) ----------------
@@ -418,7 +418,7 @@ def sharpen_image_array(image: np.ndarray,
     Pure in-memory sharpen. Returns (out_image, was_mono).
     """
     if progress_cb is None:
-        progress_cb = lambda done, total, stage: None
+        progress_cb = lambda done, total, stage: True
 
     img = np.asarray(image)
     if img.dtype != np.float32:
@@ -483,7 +483,9 @@ def _sharpen_plane(models: SharpenModels,
             y = _infer_chunk(models, models.stellar, chunk)
             blended = blend_images(chunk, y, params.stellar_amount)
             out_chunks.append((blended, i, j, is_edge))
-            progress_cb(k, total, "Stellar sharpening")
+            if progress_cb(k, total, "Stellar sharpening") is False:
+                
+                return plane
         plane = stitch_chunks_ignore_border(out_chunks, plane.shape, border_size=16)
 
         if params.mode == "Stellar Only":
@@ -524,6 +526,8 @@ def _sharpen_plane(models: SharpenModels,
 
             blended = blend_images(chunk, y, params.nonstellar_amount)
             out_chunks.append((blended, i, j, is_edge))
+            if progress_cb(k, total, "Non-stellar sharpening") is False:
+                return plane
             progress_cb(k, total, "Non-stellar sharpening")
 
         plane = stitch_chunks_ignore_border(out_chunks, plane.shape, border_size=16)
@@ -540,7 +544,7 @@ def sharpen_rgb01(
     auto_detect_psf: bool = True,
     separate_channels: bool = False,
     use_gpu: bool = True,
-    progress_cb: Optional[Callable[[int, int], None]] = None,
+    progress_cb: Optional[Callable[[int, int], bool]] = None,
     status_cb=print,
 ) -> np.ndarray:
     """
@@ -551,13 +555,13 @@ def sharpen_rgb01(
     # Adapt UI progress_cb(done,total) -> engine progress_cb(done,total,stage)
     if progress_cb is None:
         def _prog(done, total, stage):  # noqa
-            return
+            return True
     else:
         def _prog(done, total, stage):
             try:
-                progress_cb(int(done), int(total))
+                return bool(progress_cb(int(done), int(total)))
             except Exception:
-                pass
+                return True
 
     params = SharpenParams(
         mode=str(sharpening_mode),

@@ -8,7 +8,7 @@ import tempfile
 import uuid
 import numpy as np
 
-from PyQt6.QtCore import Qt, QTimer, QSettings, QThread, pyqtSignal, QFileSystemWatcher, QEvent
+from PyQt6.QtCore import Qt, QTimer, QSettings, QThread, pyqtSignal, QFileSystemWatcher, QEvent, QTimer
 from PyQt6.QtGui import QIcon, QAction, QImage, QPixmap
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, QGridLayout, QLabel, QPushButton,
@@ -124,14 +124,15 @@ class CosmicClarityEngineWorker(QThread):
         base_pct: starting % for this stage
         """
         def _cb(done: int, total: int):
-            if self._cancel:
-                return
+            if self._cancel or self.isInterruptionRequested():
+                return False
             if total <= 0:
-                return
+                return True
             frac = float(done) / float(total)
             pct = base_pct + stage_weight * 100.0 * frac
             self.progress.emit(int(max(0, min(100, round(pct)))))
             # optional: throttle logs; keep it quiet
+            return True
         return _cb
 
     def run(self):
@@ -283,6 +284,8 @@ class CosmicClarityDialogPro(QDialog):
 
         self.parent_ref = parent
         self.doc = doc
+        self._engine_thread = None
+        self._closing_after_cancel = False        
         self.orig = np.clip(np.asarray(doc.image, dtype=np.float32), 0.0, 1.0)
         self.cosmic_root = ""   # no longer used by in-process engines
 
@@ -524,31 +527,42 @@ class CosmicClarityDialogPro(QDialog):
         self._engine_thread.error.connect(self._on_engine_error)
         self._engine_thread.result.connect(self._on_engine_result)
 
+        # IMPORTANT: cleanup when the thread actually finishes
+        self._engine_thread.finished.connect(self._engine_cleanup_and_maybe_close)
+
         self._engine_thread.start()
 
 
     def _cancel_all_engine(self):
-        try:
-            if getattr(self, "_engine_thread", None) is not None:
-                self._engine_thread.cancel()
-        except Exception:
-            pass
+        thr = getattr(self, "_engine_thread", None)
+        if thr is not None:
+            try:
+                thr.cancel()                # your flag
+                thr.requestInterruption()   # Qt-native interruption request
+            except Exception:
+                pass
+
+        # Keep the wait dialog open (or show "Canceling…") instead of closing immediately
         if self._wait:
-            self._wait.close()
-            self._wait = None
+            self._wait.append_output("Cancel requested… waiting for worker to stop.")
+            self._wait.set_progress(0)
+            # optionally disable cancel button to avoid spam clicks:
+            # (you'd need to store the cancel button in WaitDialog to disable it)
+
+            # If you really want to hide it, do hide() not close() (close may cascade deletes)
+            # self._wait.hide()
+
 
     def _on_engine_error(self, msg: str):
         if self._wait:
             self._wait.close()
             self._wait = None
-        self._engine_thread = None
         QMessageBox.critical(self, "Cosmic Clarity", msg)
 
     def _on_engine_result(self, out_arr: np.ndarray, step_title: str):
         if self._wait:
             self._wait.close()
             self._wait = None
-        self._engine_thread = None
 
         create_new = (self.cmb_target.currentIndex() == 1)
         if create_new:
@@ -684,6 +698,35 @@ class CosmicClarityDialogPro(QDialog):
 
         return preset
 
+    def closeEvent(self, e):
+        # If engine is running, cancel and delay close until thread finishes
+        if self._engine_thread is not None and self._engine_thread.isRunning():
+            self._closing_after_cancel = True
+            self._cancel_all_engine()   # triggers cancel
+            e.ignore()
+            return
+        super().closeEvent(e)
+
+    def reject(self):
+        # Close button uses reject(); apply same guard
+        if self._engine_thread is not None and self._engine_thread.isRunning():
+            self._closing_after_cancel = True
+            self._cancel_all_engine()
+            return
+        super().reject()
+
+    def _engine_cleanup_and_maybe_close(self):
+        # Called when thread has truly stopped
+        try:
+            if self._engine_thread is not None:
+                self._engine_thread.deleteLater()
+        except Exception:
+            pass
+        self._engine_thread = None
+
+        if self._closing_after_cancel:
+            self._closing_after_cancel = False
+            super().reject()
 
 # =============================================================================
 # Satellite removal 

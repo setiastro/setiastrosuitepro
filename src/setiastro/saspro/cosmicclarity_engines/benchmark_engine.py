@@ -4,13 +4,14 @@ from __future__ import annotations
 import os, time, platform
 from pathlib import Path
 from typing import Callable, Optional, Literal, Dict, Any
-import cpuinfo
+
 import numpy as np
 from astropy.io import fits
 
 from numba import njit, prange
 import psutil
-import cpuinfo
+
+import cpuinfo 
 
 ProgressCB = Callable[[str], None]
 CancelCB = Callable[[], bool]
