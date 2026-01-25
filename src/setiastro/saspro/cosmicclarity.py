@@ -26,7 +26,10 @@ from setiastro.saspro.imageops.stretch import stretch_mono_image, stretch_color_
 from setiastro.saspro.cosmicclarity_engines.sharpen_engine import sharpen_rgb01
 from setiastro.saspro.cosmicclarity_engines.denoise_engine import denoise_rgb01
 from setiastro.saspro.cosmicclarity_engines.superres_engine import superres_rgb01
-
+from setiastro.saspro.cosmicclarity_engines.satellite_engine import (
+    get_satellite_models,
+    satellite_remove_image,
+)
 # Import centralized preview dialog
 from setiastro.saspro.widgets.preview_dialogs import ImagePreviewDialog
 
@@ -708,7 +711,7 @@ class CosmicClaritySatelliteDialogPro(QDialog):
                 logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
         self.settings = QSettings()
-        self.cosmic_clarity_folder = self.settings.value("paths/cosmic_clarity", "", type=str) or ""
+
         self.input_folder  = ""
         self.output_folder = ""
         self.sensitivity = 0.10  # 0.01–0.50
@@ -780,11 +783,6 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         self.btn_monitor = QPushButton("Live Monitor Input Folder"); self.btn_monitor.clicked.connect(self._live_monitor)
         left.addWidget(self.btn_monitor)
 
-        # Folder display + chooser for Cosmic Clarity root
-        self.lbl_root = QLabel(f"Folder: {self.cosmic_clarity_folder or 'Not set'}")
-        left.addWidget(self.lbl_root)
-        self.btn_pick_root = QPushButton("Choose Cosmic Clarity Folder…"); self.btn_pick_root.clicked.connect(self._choose_root)
-        left.addWidget(self.btn_pick_root)
 
         left.addStretch(1)
 
@@ -809,13 +807,7 @@ class CosmicClaritySatelliteDialogPro(QDialog):
 
         self.resize(900, 600)
 
-    # ---------- Settings / root ----------
-    def _choose_root(self):
-        folder = QFileDialog.getExistingDirectory(self, "Select Cosmic Clarity Folder", self.cosmic_clarity_folder or "")
-        if not folder: return
-        self.cosmic_clarity_folder = folder
-        self.settings.setValue("paths/cosmic_clarity", folder)
-        self.lbl_root.setText(f"Folder: {folder}")
+
 
     # ---------- IO folders ----------
     def _choose_input(self):
@@ -918,146 +910,202 @@ class CosmicClaritySatelliteDialogPro(QDialog):
 
     # ---------- Single image processing ----------
     def _process_single_image(self):
-        # Gather possible open views
-        views = self._collect_open_views()
+        from PyQt6.QtCore import QCoreApplication, Qt
+        from PyQt6.QtWidgets import QMessageBox, QFileDialog, QInputDialog, QProgressDialog
 
+        from setiastro.saspro.cosmicclarity_engines.satellite_engine import (
+            get_satellite_models,
+            satellite_remove_image,
+        )
+
+        # ----------------------------
         # Decide source: view or file
+        # ----------------------------
+        views = self._collect_open_views()
         use_view = False
+
         if views:
             mb = QMessageBox(self)
             mb.setWindowTitle("Process Single Image")
             mb.setText("Choose the source to process:")
-            btn_view  = mb.addButton("Open View", QMessageBox.ButtonRole.AcceptRole)
-            btn_file  = mb.addButton("File on Disk", QMessageBox.ButtonRole.AcceptRole)
+            btn_view = mb.addButton("Open View", QMessageBox.ButtonRole.AcceptRole)
+            btn_file = mb.addButton("File on Disk", QMessageBox.ButtonRole.AcceptRole)
             mb.addButton(QMessageBox.StandardButton.Cancel)
             mb.exec()
+
             if mb.clickedButton() is btn_view:
                 use_view = True
-            elif mb.clickedButton() is None or mb.clickedButton() == mb.buttons()[-1]:  # Cancel
+            elif mb.clickedButton() is btn_file:
+                use_view = False
+            else:
                 return
 
-        # --- Branch 1: Process an OPEN VIEW ---
+        # ----------------------------
+        # Gather engine params from UI
+        # ----------------------------
+        use_gpu = (self.cmb_gpu.currentText() == "Yes")
+        mode = self.cmb_mode.currentText().lower()
+        clip_trail = bool(self.chk_clip.isChecked())
+        sensitivity = float(self.sensitivity)
+        skip_if_none = bool(self.chk_skip.isChecked())
+
+        # ----------------------------------------------------
+        # Acquire input image FIRST (no progress dialog yet)
+        # ----------------------------------------------------
+        hdr = None
+        mono = False
+        chosen_doc = None
+        file_path = None
+
         if use_view:
-            # If multiple views, ask which one
-            chosen_doc = None
+            # Choose which doc
             if len(views) == 1:
                 chosen_doc = views[0][1]
-                base_name  = self._base_name_for_doc(chosen_doc)
             else:
                 titles = [t for (t, _) in views]
                 sel, ok = QInputDialog.getItem(self, "Select View", "Choose an open view:", titles, 0, False)
                 if not ok:
                     return
-                idx = titles.index(sel)
-                chosen_doc = views[idx][1]
-                base_name  = self._base_name_for_doc(chosen_doc)
+                chosen_doc = views[titles.index(sel)][1]
 
-            # Stage image from the chosen view
-            temp_in  = self._create_temp_folder()
-            temp_out = self._create_temp_folder()
-            staged_in = os.path.join(temp_in, f"{base_name}.tif")
-
-            try:
-                # 32-bit float TIFF like SASv2
-                img = np.clip(np.asarray(chosen_doc.image, dtype=np.float32), 0.0, 1.0)
-                save_image(
-                    img, staged_in,
-                    "tiff", "32-bit floating point",
-                    getattr(chosen_doc, "original_header", None),
-                    getattr(chosen_doc, "is_mono", False)
-                )
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to stage view for processing:\n{e}")
+            if chosen_doc is None or getattr(chosen_doc, "image", None) is None:
+                QMessageBox.warning(self, "Warning", "Selected view has no image.")
                 return
 
-            # Run satellite
             try:
-                self._run_satellite(input_dir=temp_in, output_dir=temp_out, live=False)
+                img = np.asarray(chosen_doc.image, dtype=np.float32)
+                img = np.clip(img, 0.0, 1.0)
             except Exception as e:
-                QMessageBox.critical(self, "Error", f"Error processing image:\n{e}")
+                QMessageBox.critical(self, "Error", f"Failed to read image from view:\n{e}")
                 return
 
-            # Pick up result and apply back to the view
-            out = glob.glob(os.path.join(temp_out, "*_satellited.*"))
-            if not out:
-                # Likely --skip-save and no trail, or failure
-                QMessageBox.information(self, "Satellite Removal", "No output produced (possibly no satellite trail detected).")
-            else:
-                out_path = out[0]
-                try:
-                    result, hdr, bd, mono = load_image(out_path)
-                    if result is None:
-                        raise RuntimeError("Unable to load output image.")
-                    result = result.astype(np.float32, copy=False)
+        else:
+            file_path, _ = QFileDialog.getOpenFileName(
+                self, "Select Image", "",
+                "Image Files (*.png *.tif *.tiff *.fit *.fits *.xisf *.cr2 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef *.jpg *.jpeg)"
+            )
+            if not file_path:
+                return  # user cancelled file dialog
 
-                    # Apply back to the chosen doc
-                    if hasattr(chosen_doc, "set_image"):
-                        chosen_doc.set_image(result, step_name="Cosmic Clarity – Satellite Removal")
-                    elif hasattr(chosen_doc, "apply_numpy"):
-                        chosen_doc.apply_numpy(result, step_name="Cosmic Clarity – Satellite Removal")
-                    else:
-                        chosen_doc.image = result
-                except Exception as e:
-                    QMessageBox.critical(self, "Error", f"Failed to apply result to view:\n{e}")
-                    # fall through to cleanup
-                finally:
-                    # Clean up temp files
-                    try:
-                        if os.path.exists(out_path): os.remove(out_path)
-                    except Exception:
-                        pass
-
-            # Clean up temp dirs
             try:
-                shutil.rmtree(temp_in, ignore_errors=True)
-                shutil.rmtree(temp_out, ignore_errors=True)
-            except Exception:
-                pass
+                img, hdr, bd, mono = load_image(file_path)
+                if img is None:
+                    raise RuntimeError("load_image returned None.")
+                img = np.asarray(img, dtype=np.float32)
+                img = np.clip(img, 0.0, 1.0)
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to load image:\n{e}")
+                return
 
-            return  # done
-
-        # --- Branch 2: Process a FILE on disk ---
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Select Image", "",
-            "Image Files (*.png *.tif *.tiff *.fit *.fits *.xisf *.cr2 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef *.jpg *.jpeg)"
-        )
-        if not file_path:
-            QMessageBox.warning(self, "Warning", "No file selected.")
-            return
-
-        temp_in  = self._create_temp_folder()
-        temp_out = self._create_temp_folder()
+        # ----------------------------
+        # Load/cached models ONCE
+        # ----------------------------
         try:
-            shutil.copy(file_path, temp_in)
+            models = get_satellite_models(use_gpu=use_gpu, status_cb=lambda s: None)
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to stage input:\n{e}")
+            QMessageBox.critical(self, "Error", f"Failed to load Satellite models:\n{e}")
             return
 
+        # ----------------------------
+        # Progress dialog helper
+        #   IMPORTANT: create/show AFTER input is chosen
+        # ----------------------------
+        pd = QProgressDialog("Satellite removal…", "Cancel", 0, 100, self)
+        pd.setWindowModality(Qt.WindowModality.WindowModal)
+        pd.setMinimumDuration(250)   # helps prevent weird cancel behavior
+        pd.setAutoClose(True)
+        pd.setAutoReset(True)
+        pd.setValue(0)
+
+        cancelled = {"flag": False}
+
+        def _on_cancel():
+            cancelled["flag"] = True
+
+        pd.canceled.connect(_on_cancel)
+
+        def _progress(done: int, total: int):
+            if total > 0:
+                pd.setValue(int((done * 100) / total))
+            else:
+                pd.setValue(0)
+
+            QCoreApplication.processEvents()
+
+            # IMPORTANT: return True to continue, False to cancel
+            return (not cancelled["flag"]) and (not pd.wasCanceled())
+
+        # ----------------------------
+        # Run engine
+        # ----------------------------
         try:
-            self._run_satellite(input_dir=temp_in, output_dir=temp_out, live=False)
+            cancelled["flag"] = False  # reset right before run
+            pd.show()
+
+            out, detected = satellite_remove_image(
+                img,
+                models=models,
+                mode=mode,
+                clip_trail=clip_trail,
+                sensitivity=sensitivity,
+                progress_cb=_progress,
+            )
+
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error processing image:\n{e}")
             return
 
-        # Move output back next to original
-        out = glob.glob(os.path.join(temp_out, "*_satellited.*"))
-        if out:
-            dst = os.path.join(os.path.dirname(file_path), os.path.basename(out[0]))
+        finally:
             try:
-                shutil.move(out[0], dst)
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to save result:\n{e}")
-                return
-            QMessageBox.information(self, "Success", f"Processed image saved to:\n{dst}")
-        else:
-            QMessageBox.warning(self, "Warning", "No output file found.")
+                pd.close()
+            except Exception:
+                pass
 
-        # Cleanup
+        # ----------------------------
+        # Handle cancel / skip-save
+        # ----------------------------
+        if cancelled["flag"]:
+            QMessageBox.information(self, "Cancelled", "Operation cancelled.")
+            return
+
+        if skip_if_none and (not detected):
+            QMessageBox.information(self, "Satellite Removal", "No satellite trail detected (skip-save enabled).")
+            return
+
+        out = np.asarray(out, dtype=np.float32, order="C")
+
+        # ----------------------------
+        # Apply or save
+        # ----------------------------
+        if use_view:
+            if hasattr(chosen_doc, "set_image"):
+                chosen_doc.set_image(out, step_name="Cosmic Clarity – Satellite Removal")
+            elif hasattr(chosen_doc, "apply_numpy"):
+                chosen_doc.apply_numpy(out, step_name="Cosmic Clarity – Satellite Removal")
+            else:
+                chosen_doc.image = out
+            return
+
+        # file path save
         try:
-            shutil.rmtree(temp_in, ignore_errors=True)
-            shutil.rmtree(temp_out, ignore_errors=True)
-        except Exception:
-            pass
+            base, ext = os.path.splitext(file_path)
+            dst = base + "_satellited" + ext
+
+            el = ext.lower()
+            if el in (".tif", ".tiff"):
+                fmt, bitdepth = "tiff", "32-bit floating point"
+            elif el in (".fit", ".fits"):
+                fmt, bitdepth = "fits", "32-bit floating point"
+            elif el == ".xisf":
+                fmt, bitdepth = "xisf", "32-bit floating point"
+            else:
+                fmt, bitdepth = "auto", None
+
+            save_image(out, dst, fmt, bitdepth, hdr, mono)
+            QMessageBox.information(self, "Success", f"Processed image saved to:\n{dst}")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to save result:\n{e}")
 
     def _collect_open_views(self):
         """
@@ -1104,66 +1152,50 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         return "image"
 
 
-    # ---------- Batch ----------
     def _batch_process(self):
         if not self.input_folder or not self.output_folder:
             QMessageBox.warning(self, "Warning", "Please select both input and output folders.")
             return
-        exe = os.path.join(self.cosmic_clarity_folder, _satellite_exe_name())
-        if not os.path.exists(exe):
-            QMessageBox.critical(self, "Error", f"Executable not found:\n{exe}")
-            return
 
-        cmd = self._build_cmd(exe, self.input_folder, self.output_folder, batch=True, monitor=False)
-        self._run_threaded(cmd, title="Satellite – Batch processing")
+        self._run_engine_thread(monitor=False, title="Satellite – Batch processing")
 
-    # ---------- Live monitor ----------
+
     def _live_monitor(self):
         if not self.input_folder or not self.output_folder:
             QMessageBox.warning(self, "Warning", "Please select both input and output folders.")
             return
-        exe = os.path.join(self.cosmic_clarity_folder, _satellite_exe_name())
-        if not os.path.exists(exe):
-            QMessageBox.critical(self, "Error", f"Executable not found:\n{exe}")
-            return
 
-        cmd = self._build_cmd(exe, self.input_folder, self.output_folder, batch=False, monitor=True)
         self.sld_sens.setEnabled(False)
-        self._run_threaded(cmd, title="Satellite – Live monitoring", on_finish=lambda: self.sld_sens.setEnabled(True))
+        self._run_engine_thread(monitor=True, title="Satellite – Live monitoring",
+                                on_finish=lambda: self.sld_sens.setEnabled(True))
 
-    # ---------- Command / run ----------
-    def _build_cmd(self, exe_path: str, in_dir: str, out_dir: str, *, batch: bool, monitor: bool):
-        cmd = [
-            exe_path,
-            "--input", in_dir,
-            "--output", out_dir,
-            "--mode", self.cmb_mode.currentText().lower(),
-        ]
-        if self.cmb_gpu.currentText() == "Yes":
-            cmd.append("--use-gpu")
-        if self.chk_clip.isChecked():
-            cmd.append("--clip-trail")
-        else:
-            cmd.append("--no-clip-trail")
-        if self.chk_skip.isChecked():
-            cmd.append("--skip-save")
-        if batch:
-            cmd.append("--batch")
-        if monitor:
-            cmd.append("--monitor")
-        cmd += ["--sensitivity", f"{self.sensitivity}"]
-        return cmd
+    def _run_engine_thread(self, *, monitor: bool, title: str, on_finish=None):
+        use_gpu = (self.cmb_gpu.currentText() == "Yes")
+        mode = self.cmb_mode.currentText().lower()  # "full" / "luminance"
+        clip_trail = bool(self.chk_clip.isChecked())
+        sensitivity = float(self.sensitivity)
+        skip_save = bool(self.chk_skip.isChecked())
 
-    def _run_threaded(self, cmd, title="Processing…", on_finish=None):
-        # Wait dialog + threaded subprocess (mirrors SASv2 SatelliteProcessingThread)
         self._wait = WaitDialog(title, self)
         self._wait.show()
 
-        self._sat_thread = SatelliteProcessingThread(cmd)
+        self._sat_thread = SatelliteEngineThread(
+            input_dir=self.input_folder,
+            output_dir=self.output_folder,
+            use_gpu=use_gpu,
+            mode=mode,
+            clip_trail=clip_trail,
+            sensitivity=sensitivity,
+            skip_save=skip_save,
+            monitor=monitor,
+        )
         self._sat_thread.log_signal.connect(self._wait.append_output)
         self._sat_thread.finished_signal.connect(lambda: self._on_thread_finished(on_finish))
         self._wait.cancelled.connect(self._cancel_sat_thread)
         self._sat_thread.start()
+
+
+    # ---------- Command / run ----------
 
     def _cancel_sat_thread(self):
         if self._sat_thread:
@@ -1181,16 +1213,6 @@ class CosmicClaritySatelliteDialogPro(QDialog):
                 logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
         QMessageBox.information(self, "Done", "Processing finished.")
 
-    def _run_satellite(self, *, input_dir: str, output_dir: str, live: bool):
-        if not self.cosmic_clarity_folder:
-            raise RuntimeError("Cosmic Clarity folder not set. Choose it in Preferences or with the button below.")
-        exe = os.path.join(self.cosmic_clarity_folder, _satellite_exe_name())
-        if not os.path.exists(exe):
-            raise FileNotFoundError(f"Executable not found: {exe}")
-
-        cmd = self._build_cmd(exe, input_dir, output_dir, batch=not live, monitor=live)
-        print("Running command:", " ".join(cmd))
-        subprocess.run(cmd, check=True)
 
     # ---------- Utils ----------
     @staticmethod
@@ -1200,57 +1222,130 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         os.makedirs(temp_folder, exist_ok=True)
         return temp_folder
 
-
-class SatelliteProcessingThread(QThread):
+class SatelliteEngineThread(QThread):
     log_signal = pyqtSignal(str)
     finished_signal = pyqtSignal()
-    def __init__(self, command):
+    progress_signal = pyqtSignal(int, int)  # done, total
+
+    def __init__(self, *, input_dir: str, output_dir: str,
+                 use_gpu: bool, mode: str, clip_trail: bool,
+                 sensitivity: float, skip_save: bool, monitor: bool,
+                 poll_seconds: float = 1.0):
         super().__init__()
-        self.command = command
-        self.process = None
+        self.input_dir = input_dir
+        self.output_dir = output_dir
+        self.use_gpu = use_gpu
+        self.mode = mode
+        self.clip_trail = clip_trail
+        self.sensitivity = sensitivity
+        self.skip_save = skip_save
+        self.monitor = monitor
+        self.poll_seconds = poll_seconds
+
+        self._cancel = False
+        self._seen = set()
 
     def cancel(self):
-        if self.process:
-            try:
-                self.process.kill()
-            except Exception:
-                pass
+        self._cancel = True
+
+    def _iter_files(self):
+        exts = ('.png', '.tif', '.tiff', '.fit', '.fits', '.xisf',
+                '.cr2', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2', '.pef', '.jpg', '.jpeg')
+        try:
+            for fn in sorted(os.listdir(self.input_dir)):
+                if fn.lower().endswith(exts):
+                    yield fn
+        except Exception:
+            return
 
     def run(self):
         try:
-            self.log_signal.emit("Running command: " + " ".join(self.command))
-            self.process = subprocess.Popen(
-                self.command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                universal_newlines=True,
-                text=True
+            from setiastro.saspro.cosmicclarity_engines.satellite_engine import (
+                get_satellite_models, satellite_remove_image
             )
-            # Read output to prevent deadlock
-            for line in iter(self.process.stdout.readline, ""):
-                if not line: break
-                # Optional: emit log signal for verbose output? 
-                # The original code didn't log stdout, but blocked.
-                # Let's just log it if we want, or consume it.
-                # The prompt says "I think starnet stops but the window doesnt close"
-                # so maybe verbose logging isn't the priority, but consuming stdout is mandatory.
-                # However, the original code used subprocess.run which captures output if specified,
-                # but it didn't specify capture_output=True or stdout/stderr args in the snippet I saw?
-                # Wait, let's check the snippet I saw earlier for SatelliteProcessingThread.
-                pass
-            
-            # Close stdout to ensure cleanup
-            if self.process.stdout:
-                self.process.stdout.close()
 
-            rc = self.process.wait()
-            if rc == 0:
-                self.log_signal.emit("Processing complete.")
+            self.log_signal.emit("Loading Satellite models...")
+            models = get_satellite_models(use_gpu=self.use_gpu, status_cb=lambda s: None)
+            self.log_signal.emit("Models loaded.")
+
+            os.makedirs(self.output_dir, exist_ok=True)
+
+            def process_one(fp_in: str, fp_out: str):
+                # NOTE: assumes load_image/save_image exist in your module scope
+                img, hdr, bd, mono = load_image(fp_in)
+                if img is None:
+                    self.log_signal.emit(f"Failed to load: {os.path.basename(fp_in)}")
+                    return
+
+                img = np.asarray(img, dtype=np.float32)
+                img = np.clip(img, 0.0, 1.0)
+
+                out, detected = satellite_remove_image(
+                    img,
+                    models=models,
+                    mode=self.mode,
+                    clip_trail=self.clip_trail,
+                    sensitivity=float(self.sensitivity),
+                    progress_cb=None,  # keep this simple; we emit per-file progress instead
+                )
+
+                if self.skip_save and (not detected):
+                    self.log_signal.emit(f"Skip (no trail): {os.path.basename(fp_in)}")
+                    return
+
+                out = np.asarray(out, dtype=np.float32, order="C")
+                out = np.clip(out, 0.0, 1.0)
+
+                # Choose save behavior: keep original extension/name
+                # (You can change naming here if you want.)
+                save_image(out, fp_out, "auto", None, hdr, mono)
+                self.log_signal.emit(f"Saved: {os.path.basename(fp_out)}")
+
+            # -------- batch (single pass) OR monitor (loop) --------
+            while not self._cancel:
+                files = list(self._iter_files())
+
+                # monitor: only process new files
+                todo = [fn for fn in files if fn not in self._seen]
+                total = len(todo)
+                done = 0
+
+                for fn in todo:
+                    if self._cancel:
+                        break
+
+                    self._seen.add(fn)
+                    fp_in = os.path.join(self.input_dir, fn)
+                    fp_out = os.path.join(self.output_dir, fn)
+
+                    # if output already exists, treat as seen
+                    if os.path.exists(fp_out):
+                        self.log_signal.emit(f"Exists, skipping: {fn}")
+                        done += 1
+                        self.progress_signal.emit(done, total)
+                        continue
+
+                    self.log_signal.emit(f"Processing: {fn}")
+                    try:
+                        process_one(fp_in, fp_out)
+                    except Exception as e:
+                        self.log_signal.emit(f"Error {fn}: {e}")
+
+                    done += 1
+                    self.progress_signal.emit(done, total)
+
+                if not self.monitor:
+                    break
+
+                # monitor mode: sleep/poll
+                self.msleep(int(max(50, self.poll_seconds * 1000)))
+
+            if self._cancel:
+                self.log_signal.emit("Cancelled.")
             else:
-                self.log_signal.emit(f"Processing failed with code {rc}")
+                self.log_signal.emit("Done.")
 
         except Exception as e:
             self.log_signal.emit(f"Unexpected error: {e}")
         finally:
-            self.process = None
             self.finished_signal.emit()

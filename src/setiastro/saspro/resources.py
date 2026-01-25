@@ -604,6 +604,16 @@ class Resources:
     CC_DARKSTAR_COLOR_PTH  = property(lambda self: _resource_path('data/models/darkstar_v2.1c.pth'))
     CC_DARKSTAR_COLOR_ONNX = property(lambda self: _resource_path('data/models/darkstar_v2.1c.onnx'))
 
+    # --- Cosmic Clarity Satellite Removal ---
+    CC_SAT_DETECT1_PTH  = property(lambda self: _resource_path('data/models/satellite_trail_detector_AI3.5.pth'))
+    CC_SAT_DETECT1_ONNX = property(lambda self: _resource_path('data/models/satellite_trail_detector_AI3.5.onnx'))
+
+    CC_SAT_DETECT2_PTH  = property(lambda self: _resource_path('data/models/satellite_trail_detector_mobilenetv2.5.pth'))
+    CC_SAT_DETECT2_ONNX = property(lambda self: _resource_path('data/models/satellite_trail_detector_mobilenetv2.5.onnx'))
+
+    CC_SAT_REMOVE_PTH   = property(lambda self: _resource_path('data/models/satelliteremovalAI3.5.pth'))
+    CC_SAT_REMOVE_ONNX  = property(lambda self: _resource_path('data/models/satelliteremovalAI3.5.onnx'))
+
 
 @lru_cache(maxsize=8)
 def get_models_dir() -> str:

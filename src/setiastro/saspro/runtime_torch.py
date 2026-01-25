@@ -172,6 +172,24 @@ def _purge_bad_torch_from_sysmodules(status_cb=print) -> None:
     except Exception:
         pass
 
+def _torch_stack_sanity_check(status_cb=print) -> None:
+    """
+    Ensure torch imports sanely AND torchvision/torchaudio are importable.
+    (Satellite engine requires torchvision; we install torchaudio too for safety.)
+    """
+    _torch_sanity_check(status_cb=status_cb)
+
+    try:
+        import torchvision  # noqa
+    except Exception as e:
+        raise RuntimeError(f"torchvision import failed: {e}") from e
+
+    try:
+        import torchaudio  # noqa
+    except Exception as e:
+        raise RuntimeError(f"torchaudio import failed: {e}") from e
+
+
 def _torch_sanity_check(status_cb=print):
     try:
         import torch
@@ -513,13 +531,16 @@ def _install_torch(venv_python: Path, prefer_cuda: bool, prefer_xpu: bool, statu
         base = ["install", "--prefer-binary", "--no-cache-dir"]
         if index_url:
             base += ["--index-url", index_url]
-        # latest for that index first
-        if _pip_ok(base + ["torch"]):
+
+        # First try "latest trio" from that index
+        if _pip_ok(base + ["torch", "torchvision", "torchaudio"]):
             return True
-        # walk the ladder
+
+        # Walk the ladder: pin all three to the same version family
         for v in versions:
-            if _pip_ok(base + [f"torch=={v}"]):
+            if _pip_ok(base + [f"torch=={v}", f"torchvision=={v}", f"torchaudio=={v}"]):
                 return True
+
         return False
 
     # macOS Apple Silicon → MPS wheels on PyPI
@@ -596,10 +617,12 @@ def import_torch(prefer_cuda: bool = True, prefer_xpu: bool = False, status_cb=p
     _ban_shadow_torch_paths(status_cb=status_cb)
     _purge_bad_torch_from_sysmodules(status_cb=status_cb)
 
+    add_runtime_to_sys_path(status_cb=lambda *_: None)
+
     # Fast path: if torch already importable and sane, use it
     try:
         import torch  # noqa
-        _torch_sanity_check(status_cb=status_cb)
+        _torch_stack_sanity_check(status_cb=status_cb)
         return torch
     except Exception:
         pass
@@ -638,12 +661,21 @@ def import_torch(prefer_cuda: bool = True, prefer_xpu: bool = False, status_cb=p
             status_cb("Detected broken/shadowed Torch import → attempting clean repair…")
         except Exception:
             pass
-        subprocess.run([str(vp), "-m", "pip", "uninstall", "-y", "torch"], check=False)
+
+        # remove marker so future launches don't skip install
+        try:
+            marker.unlink()
+        except Exception:
+            pass
+
+        subprocess.run([str(vp), "-m", "pip", "uninstall", "-y",
+                        "torch", "torchvision", "torchaudio"], check=False)
         subprocess.run([str(vp), "-m", "pip", "cache", "purge"], check=False)
         with _install_lock(rt):
             _install_torch(vp, prefer_cuda=prefer_cuda, prefer_xpu=prefer_xpu, status_cb=status_cb)
         importlib.invalidate_caches()
         _demote_shadow_torch_paths(status_cb=status_cb)
+
 
     try:
         _ensure_numpy(vp, status_cb=status_cb)
@@ -652,21 +684,45 @@ def import_torch(prefer_cuda: bool = True, prefer_xpu: bool = False, status_cb=p
 
     try:
         import torch  # noqa
-        _torch_sanity_check(status_cb=status_cb)
+        _torch_stack_sanity_check(status_cb=status_cb)
         # write/update marker only when sane
         if not marker.exists():
             pyver = f"{sys.version_info.major}.{sys.version_info.minor}"
-            marker.write_text(json.dumps({"installed": True, "python": pyver, "when": int(time.time())}), encoding="utf-8")
+            try:
+                import torch, torchvision, torchaudio
+                marker.write_text(json.dumps({
+                    "installed": True,
+                    "python": pyver,
+                    "when": int(time.time()),
+                    "torch": getattr(torch, "__version__", None),
+                    "torchvision": getattr(torchvision, "__version__", None),
+                    "torchaudio": getattr(torchaudio, "__version__", None),
+                }), encoding="utf-8")
+            except Exception:
+                marker.write_text(json.dumps({"installed": True, "python": pyver, "when": int(time.time())}), encoding="utf-8")
+
         return torch
     except Exception:
         _force_repair()
         _purge_bad_torch_from_sysmodules(status_cb=status_cb)
         _ban_shadow_torch_paths(status_cb=status_cb)
         import torch  # retry
-        _torch_sanity_check(status_cb=status_cb)
+        _torch_stack_sanity_check(status_cb=status_cb)
         if not marker.exists():
             pyver = f"{sys.version_info.major}.{sys.version_info.minor}"
-            marker.write_text(json.dumps({"installed": True, "python": pyver, "when": int(time.time())}), encoding="utf-8")
+            try:
+                import torch, torchvision, torchaudio
+                marker.write_text(json.dumps({
+                    "installed": True,
+                    "python": pyver,
+                    "when": int(time.time()),
+                    "torch": getattr(torch, "__version__", None),
+                    "torchvision": getattr(torchvision, "__version__", None),
+                    "torchaudio": getattr(torchaudio, "__version__", None),
+                }), encoding="utf-8")
+            except Exception:
+                marker.write_text(json.dumps({"installed": True, "python": pyver, "when": int(time.time())}), encoding="utf-8")
+
         return torch
 
 def _find_system_python_cmd() -> list[str]:

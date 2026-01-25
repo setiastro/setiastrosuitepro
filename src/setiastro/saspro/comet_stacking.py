@@ -13,14 +13,51 @@ from functools import lru_cache
 from astropy.io import fits
 from astropy.stats import sigma_clipped_stats
 import sep
-from setiastro.saspro.remove_stars import (
-    _get_setting_any,
-    _mtf_params_linked, _apply_mtf_linked_rgb, _invert_mtf_linked_rgb,
-    _resolve_darkstar_exe, _ensure_exec_bit, _purge_darkstar_io
-
+from setiastro.saspro.cosmicclarity_engines.darkstar_engine import (
+    darkstar_starremoval_rgb01,
+    DarkStarParams,
 )
+
+
 from setiastro.saspro.legacy.image_manager import (load_image, save_image)
 from setiastro.saspro.imageops.stretch import stretch_color_image, stretch_mono_image
+
+def _get_setting_any(settings, keys, default=None):
+    """
+    Try multiple keys against QSettings-like or dict-like settings.
+    keys: iterable of strings
+    """
+    if settings is None:
+        return default
+
+    # QSettings / object with .value()
+    if hasattr(settings, "value") and callable(getattr(settings, "value")):
+        for k in keys:
+            try:
+                v = settings.value(k, None)
+            except Exception:
+                v = None
+            if v not in (None, "", "None"):
+                return v
+        return default
+
+    # dict-like
+    if isinstance(settings, dict):
+        for k in keys:
+            if k in settings and settings[k] not in (None, "", "None"):
+                return settings[k]
+        return default
+
+    # fallback: attribute lookup
+    for k in keys:
+        try:
+            v = getattr(settings, k)
+        except Exception:
+            v = None
+        if v not in (None, "", "None"):
+            return v
+    return default
+
 
 def _blackpoint_nonzero(img_norm: np.ndarray, p: float = 0.1) -> float:
     """Scalar blackpoint from non-zero pixels across all channels (linked).
@@ -65,6 +102,18 @@ def _u16_to_float01(x: np.ndarray) -> np.ndarray:
     return (x.astype(np.float32) / 65535.0)
 
 # comet_stacking.py (or wherever this lives)
+
+def _ensure_exec_bit(path: str) -> None:
+    try:
+        if os.name == "nt":
+            return
+        p = os.path.realpath(path)
+        st = os.stat(p)
+        if not (st.st_mode & 0o111):
+            os.chmod(p, st.st_mode | 0o111)
+    except Exception:
+        return
+
 
 def starnet_starless_pair_from_array(
     src_rgb01,
@@ -211,78 +260,42 @@ def starnet_starless_pair_from_array(
     return np.clip(protected_unstretch, 0.0, 1.0), np.clip(protected_unstretch, 0.0, 1.0)
 
 
-
-def darkstar_starless_from_array(src_rgb01: np.ndarray, settings, **_ignored) -> np.ndarray:
+def darkstar_starless_from_array(
+    src_rgb01: np.ndarray,
+    settings,
+    *,
+    use_gpu: bool = True,
+    chunk_size: int = 512,
+    overlap_frac: float = 0.125,
+    mode: str = "unscreen",
+    progress_cb=None,
+    status_cb=None,
+) -> np.ndarray:
     """
-    Headless CosmicClarity DarkStar run for a single RGB frame.
-    Returns starless RGB in [0..1]. Uses CC’s input/output folders.
+    In-process Dark Star removal via darkstar_engine.py
+    Input:  float32 [0..1], HxW or HxWx1 or HxWx3
+    Output: float32 [0..1], same "mono-ness" behavior as engine (HxWx1 if mono input)
     """
-    # normalize channels
-    img = src_rgb01.astype(np.float32, copy=False)
-    # Delay expansion: if it's 2D/Mono, send it as-is if DarkStar supports it, 
-    # but DarkStar expects 3-channel TIF usually. 
-    # We'll just expand for the save call, not "in place" if possible.
-    # Actually DarkStar runner saves `img` directly.
-    # So we'll expand just for that save to avoid holding 2 copies in memory.
-    if img.ndim == 2: 
-        img_to_save = np.stack([img]*3, axis=-1)
-    elif img.ndim == 3 and img.shape[2] == 1: 
-        img_to_save = np.repeat(img, 3, axis=2)
-    else:
-        img_to_save = img
+    if progress_cb is None:
+        progress_cb = lambda done, total, stage: None
+    if status_cb is None:
+        status_cb = lambda msg: None
 
-    # resolve exe and base folder
-    exe, base = _resolve_darkstar_exe(type("Dummy", (), {"settings": settings})())
-    if not exe or not base:
-        raise RuntimeError("Cosmic Clarity DarkStar executable path is not set.")
+    img = np.asarray(src_rgb01, np.float32)
+    params = DarkStarParams(
+        use_gpu=bool(use_gpu),
+        chunk_size=int(chunk_size),
+        overlap_frac=float(overlap_frac),
+        mode=str(mode),
+        output_stars_only=False,
+    )
 
-    _ensure_exec_bit(exe)
-
-    input_dir  = os.path.join(base, "input")
-    output_dir = os.path.join(base, "output")
-    os.makedirs(input_dir, exist_ok=True)
-    os.makedirs(output_dir, exist_ok=True)
-
-    # purge any prior files (safe; scoped to imagetoremovestars*)
-    _purge_darkstar_io(base, prefix="imagetoremovestars", clear_input=True, clear_output=True)
-
-    in_path  = os.path.join(input_dir, "imagetoremovestars.tif")
-    out_path = os.path.join(output_dir, "imagetoremovestars_starless.tif")
-
-    # save input as float32 TIFF
-    # save input as float32 TIFF
-    save_image(img_to_save, in_path, original_format="tif", bit_depth="32-bit floating point",
-                   original_header=None, is_mono=False, image_meta=None, file_meta=None)
-
-    # build command (SASv2 parity): default unscreen, show extracted stars off, stride 512
-    cmd = [exe, "--star_removal_mode", "unscreen", "--chunk_size", "512"]
-
-    rc = subprocess.call(cmd, cwd=output_dir)
-    if rc != 0 or not os.path.exists(out_path):
-        try: os.remove(in_path)
-        except Exception as e:
-            import logging
-            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
-        raise RuntimeError(f"DarkStar failed (rc={rc}).")
-
-    starless, _, _, _ = load_image(out_path)
-    # cleanup
-    try:
-        os.remove(in_path)
-        os.remove(out_path)
-        _purge_darkstar_io(base, prefix="imagetoremovestars", clear_input=True, clear_output=True)
-    except Exception:
-        pass
-
-    if starless is None:
-        raise RuntimeError("DarkStar produced no output.")
-
-    # Delayed expansion
-    if starless.ndim == 2: 
-        starless = np.stack([starless]*3, axis=-1)
-    elif starless.ndim == 3 and starless.shape[2] == 1: 
-        starless = np.repeat(starless, 3, axis=2)
-        
+    starless, _stars_only, _was_mono = darkstar_starremoval_rgb01(
+        img,
+        params=params,
+        progress_cb=progress_cb,
+        status_cb=status_cb,
+    )
     return np.clip(starless.astype(np.float32, copy=False), 0.0, 1.0)
 
 # ---------- small helpers ----------
@@ -1106,15 +1119,36 @@ def _starless_frame_for_comet(img: np.ndarray,
 
     # run
     if tool == "CosmicClarityDarkStar":
-        # DarkStar returns in the same domain we fed in.
-        base_for_mask = src
-        starless = darkstar_starless_from_array(src, settings)
+        base_for_mask = src  # RGB [0..1]
 
-        # protect nucleus (blend original back where mask=1), in *current* domain
+        # optional: forward progress from comet stacking if you want
+        def _ds_progress(done, total, stage):
+            # stage is like "Dark Star removal"
+            # you can route to log or status_cb; keep lightweight
+            pass
+
+        starless = darkstar_starless_from_array(
+            src,
+            settings,
+            use_gpu=True,
+            chunk_size=512,
+            overlap_frac=0.125,
+            mode="unscreen",
+            progress_cb=_ds_progress,
+            status_cb=None,  # or log
+        )
+
+        # DarkStar may return HxWx1 for mono-ish inputs — expand to RGB for nucleus protection
+        if starless.ndim == 2:
+            starless = np.repeat(starless[..., None], 3, axis=2)
+        elif starless.ndim == 3 and starless.shape[2] == 1:
+            starless = np.repeat(starless, 3, axis=2)
+
         m = core_mask.astype(np.float32)
         m3 = np.repeat(m[..., None], 3, axis=2)
         protected = starless * (1.0 - m3) + base_for_mask * m3
         return np.clip(protected, 0.0, 1.0)
+
 
     else:
         # StarNet path: do mask-blend inside the function (in its stretched domain)
@@ -1302,13 +1336,7 @@ class CometCentroidPreview(QDialog):
     def _prep_slider(self, s, lo, hi, val):
         s.setRange(lo, hi); s.setValue(val); s.setSingleStep(1); s.setPageStep(5)
 
-    def eventFilter(self, obj, ev):
-        if obj is self.view.viewport() and ev.type() == QEvent.Type.MouseButtonPress:
-            if ev.button() == Qt.MouseButton.LeftButton:
-                pos = self.view.mapToScene(ev.position().toPoint())
-                self._set_xy_current(pos.x(), pos.y())
-                return True
-        return super().eventFilter(obj, ev)
+
 
     def keyPressEvent(self, ev):
         k = ev.key()

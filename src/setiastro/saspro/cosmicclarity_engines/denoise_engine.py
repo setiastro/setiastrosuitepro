@@ -7,80 +7,102 @@ from dataclasses import dataclass
 from typing import Optional, Dict, Any, Tuple
 
 import numpy as np
-import torch
-import torch.nn as nn
-import onnxruntime as ort
+
 import cv2
 
-from astropy.io import fits
-from PIL import Image
-import tifffile as tiff
-from xisf import XISF
 
 from setiastro.saspro.resources import get_resources
 
 warnings.filterwarnings("ignore")
 
+from typing import Callable
 
-# ----------------------------
-# Mixed precision guard
-# ----------------------------
-def has_broken_fp16() -> bool:
+ProgressCB = Callable[[int, int], None]  # (done, total)
+
+try:
+    import onnxruntime as ort
+except Exception:
+    ort = None
+
+
+def _get_torch(status_cb=print):
+    from setiastro.saspro.runtime_torch import import_torch
+    return import_torch(prefer_cuda=True, prefer_xpu=False, status_cb=status_cb)
+
+
+def _nullcontext():
+    from contextlib import nullcontext
+    return nullcontext()
+
+
+def _autocast_context(torch, device):
+    """
+    Match your current policy (cap >= 8.0 only).
+    """
     try:
-        cc = torch.cuda.get_device_capability()
-        # Your existing policy:
-        return cc[0] < 8
+        if hasattr(device, "type") and device.type == "cuda":
+            major, minor = torch.cuda.get_device_capability()
+            cap = float(f"{major}.{minor}")
+            if cap >= 8.0:
+                return torch.cuda.amp.autocast()
     except Exception:
-        return True
-
-DISABLE_MIXED_PRECISION = has_broken_fp16()
+        pass
+    return _nullcontext()
 
 
 # ----------------------------
 # Model definitions (unchanged)
 # ----------------------------
-class ResidualBlock(nn.Module):
-    def __init__(self, channels: int):
-        super().__init__()
-        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
-        self.relu = nn.ReLU()
-        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+def _load_torch_model(torch, device, ckpt_path: str):
+    nn = torch.nn
 
-    def forward(self, x):
-        residual = x
-        out = self.relu(self.conv1(x))
-        out = self.conv2(out)
-        out = self.relu(out + residual)
-        return out
+    class ResidualBlock(nn.Module):
+        def __init__(self, channels: int):
+            super().__init__()
+            self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+            self.relu = nn.ReLU()
+            self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
 
+        def forward(self, x):
+            residual = x
+            out = self.relu(self.conv1(x))
+            out = self.conv2(out)
+            out = self.relu(out + residual)
+            return out
 
-class DenoiseCNN(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.encoder1 = nn.Sequential(nn.Conv2d(3, 16, 3, padding=1), nn.ReLU(), ResidualBlock(16))
-        self.encoder2 = nn.Sequential(nn.Conv2d(16, 32, 3, padding=1), nn.ReLU(), ResidualBlock(32))
-        self.encoder3 = nn.Sequential(nn.Conv2d(32, 64, 3, padding=2, dilation=2), nn.ReLU(), ResidualBlock(64))
-        self.encoder4 = nn.Sequential(nn.Conv2d(64, 128, 3, padding=1), nn.ReLU(), ResidualBlock(128))
-        self.encoder5 = nn.Sequential(nn.Conv2d(128, 256, 3, padding=2, dilation=2), nn.ReLU(), ResidualBlock(256))
+    class DenoiseCNN(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.encoder1 = nn.Sequential(nn.Conv2d(3, 16, 3, padding=1), nn.ReLU(), ResidualBlock(16))
+            self.encoder2 = nn.Sequential(nn.Conv2d(16, 32, 3, padding=1), nn.ReLU(), ResidualBlock(32))
+            self.encoder3 = nn.Sequential(nn.Conv2d(32, 64, 3, padding=2, dilation=2), nn.ReLU(), ResidualBlock(64))
+            self.encoder4 = nn.Sequential(nn.Conv2d(64, 128, 3, padding=1), nn.ReLU(), ResidualBlock(128))
+            self.encoder5 = nn.Sequential(nn.Conv2d(128, 256, 3, padding=2, dilation=2), nn.ReLU(), ResidualBlock(256))
 
-        self.decoder5 = nn.Sequential(nn.Conv2d(256 + 128, 128, 3, padding=1), nn.ReLU(), ResidualBlock(128))
-        self.decoder4 = nn.Sequential(nn.Conv2d(128 + 64, 64, 3, padding=1), nn.ReLU(), ResidualBlock(64))
-        self.decoder3 = nn.Sequential(nn.Conv2d(64 + 32, 32, 3, padding=1), nn.ReLU(), ResidualBlock(32))
-        self.decoder2 = nn.Sequential(nn.Conv2d(32 + 16, 16, 3, padding=1), nn.ReLU(), ResidualBlock(16))
-        self.decoder1 = nn.Sequential(nn.Conv2d(16, 3, 3, padding=1), nn.Sigmoid())
+            self.decoder5 = nn.Sequential(nn.Conv2d(256 + 128, 128, 3, padding=1), nn.ReLU(), ResidualBlock(128))
+            self.decoder4 = nn.Sequential(nn.Conv2d(128 +  64,  64, 3, padding=1), nn.ReLU(), ResidualBlock(64))
+            self.decoder3 = nn.Sequential(nn.Conv2d( 64 +  32,  32, 3, padding=1), nn.ReLU(), ResidualBlock(32))
+            self.decoder2 = nn.Sequential(nn.Conv2d( 32 +  16,  16, 3, padding=1), nn.ReLU(), ResidualBlock(16))
+            self.decoder1 = nn.Sequential(nn.Conv2d(16, 3, 3, padding=1), nn.Sigmoid())
 
-    def forward(self, x):
-        e1 = self.encoder1(x)
-        e2 = self.encoder2(e1)
-        e3 = self.encoder3(e2)
-        e4 = self.encoder4(e3)
-        e5 = self.encoder5(e4)
+        def forward(self, x):
+            e1 = self.encoder1(x)
+            e2 = self.encoder2(e1)
+            e3 = self.encoder3(e2)
+            e4 = self.encoder4(e3)
+            e5 = self.encoder5(e4)
 
-        d5 = self.decoder5(torch.cat([e5, e4], dim=1))
-        d4 = self.decoder4(torch.cat([d5, e3], dim=1))
-        d3 = self.decoder3(torch.cat([d4, e2], dim=1))
-        d2 = self.decoder2(torch.cat([d3, e1], dim=1))
-        return self.decoder1(d2)
+            d5 = self.decoder5(torch.cat([e5, e4], dim=1))
+            d4 = self.decoder4(torch.cat([d5, e3], dim=1))
+            d3 = self.decoder3(torch.cat([d4, e2], dim=1))
+            d2 = self.decoder2(torch.cat([d3, e1], dim=1))
+            return self.decoder1(d2)
+
+    net = DenoiseCNN().to(device)
+    ckpt = torch.load(ckpt_path, map_location=device)
+    net.load_state_dict(ckpt.get("model_state_dict", ckpt))
+    net.eval()
+    return net
 
 
 # ----------------------------
@@ -92,99 +114,89 @@ _BACKEND_TAG = "cc_denoise_ai3_6"
 R = get_resources()
 
 
-def load_models(use_gpu: bool = True) -> Dict[str, Any]:
+def load_models(use_gpu: bool = True, status_cb=print) -> Dict[str, Any]:
     key = (_BACKEND_TAG, bool(use_gpu))
     if key in _cached_models:
         return _cached_models[key]
 
-    # Decide backend
-    if use_gpu and torch.cuda.is_available():
+    torch = _get_torch(status_cb=status_cb)
+
+    # Prefer torch CUDA if available & allowed
+    if use_gpu and hasattr(torch, "cuda") and torch.cuda.is_available():
         device = torch.device("cuda")
-        is_onnx = False
-    elif use_gpu and ("DmlExecutionProvider" in ort.get_available_providers()):
-        device = "DirectML"
-        is_onnx = True
-    else:
-        device = torch.device("cpu")
-        is_onnx = False
+        status_cb(f"CosmicClarity Denoise: using CUDA ({torch.cuda.get_device_name(0)})")
+        mono_model = _load_torch_model(torch, device, R.CC_DENOISE_PTH)
+        models = {"device": device, "is_onnx": False, "mono_model": mono_model, "torch": torch}
+        _cached_models[key] = models
+        return models
 
-    if not is_onnx:
-        mono = DenoiseCNN().to(device)
-        ckpt = torch.load(R.CC_DENOISE_PTH, map_location=device)
-        mono.load_state_dict(ckpt.get("model_state_dict", ckpt))
-        mono.eval()
-        mono_model = mono
-    else:
+    # DirectML ONNX fallback (Windows)
+    if use_gpu and ort is not None and ("DmlExecutionProvider" in ort.get_available_providers()):
+        status_cb("CosmicClarity Denoise: using DirectML (ONNX Runtime)")
         mono_model = ort.InferenceSession(R.CC_DENOISE_ONNX, providers=["DmlExecutionProvider"])
+        models = {"device": "DirectML", "is_onnx": True, "mono_model": mono_model, "torch": None}
+        _cached_models[key] = models
+        return models
 
-    models = {"device": device, "is_onnx": is_onnx, "mono_model": mono_model}
+    # CPU torch
+    device = torch.device("cpu")
+    status_cb("CosmicClarity Denoise: using CPU")
+    mono_model = _load_torch_model(torch, device, R.CC_DENOISE_PTH)
+    models = {"device": device, "is_onnx": False, "mono_model": mono_model, "torch": torch}
     _cached_models[key] = models
     return models
-
-
 
 
 # ----------------------------
 # Your helpers: luminance/chroma, chunks, borders, stretch
 # (paste your existing implementations here)
 # ----------------------------
+def extract_luminance(image: np.ndarray):
+    """
+    Input: mono HxW, mono HxWx1, or RGB HxWx3 float32 in [0,1].
+    Output: (Y, Cb, Cr) where:
+      - Y is HxW
+      - Cb/Cr are HxW in [0,1] (with +0.5 offset already applied)
+    """
+    x = np.asarray(image, dtype=np.float32)
 
-def extract_luminance(image):
-    # Ensure the image is a NumPy array in 32-bit float format
-    if isinstance(image, Image.Image):
-        image = np.array(image).astype(np.float32) / 255.0  # Ensure it's in 32-bit float format
+    # Ensure 3-channel
+    if x.ndim == 2:
+        x = np.stack([x, x, x], axis=-1)
+    elif x.ndim == 3 and x.shape[-1] == 1:
+        x = np.repeat(x, 3, axis=-1)
 
-    # Check if the image is grayscale (single channel), and convert it to 3-channel RGB if so
-    if image.ndim == 2:
-        image = np.stack([image, image, image], axis=-1)
-    elif image.ndim == 3 and image.shape[-1] == 1:
-        image = np.repeat(image, 3, axis=-1)
+    if x.ndim != 3 or x.shape[-1] != 3:
+        raise ValueError("extract_luminance expects HxW, HxWx1, or HxWx3")
 
-    # Conversion matrix for RGB to YCbCr (ITU-R BT.601 standard)
-    conversion_matrix = np.array([[0.299, 0.587, 0.114],
-                                  [-0.168736, -0.331264, 0.5],
-                                  [0.5, -0.418688, -0.081312]], dtype=np.float32)
+    # RGB -> YCbCr (BT.601) (same numbers as your sharpen_engine)
+    M = np.array([[0.299, 0.587, 0.114],
+                  [-0.168736, -0.331264, 0.5],
+                  [0.5, -0.418688, -0.081312]], dtype=np.float32)
 
-    # Apply the RGB to YCbCr conversion matrix
-    ycbcr_image = np.dot(image, conversion_matrix.T)
+    ycbcr = x @ M.T
+    y  = ycbcr[..., 0]
+    cb = ycbcr[..., 1] + 0.5
+    cr = ycbcr[..., 2] + 0.5
+    return y, cb, cr
 
-    # Split the channels: Y is luminance, Cb and Cr are chrominance
-    y_channel = ycbcr_image[:, :, 0]
-    cb_channel = ycbcr_image[:, :, 1] + 0.5  # Offset back to [0, 1] range
-    cr_channel = ycbcr_image[:, :, 2] + 0.5  # Offset back to [0, 1] range
+def ycbcr_to_rgb(y: np.ndarray, cb: np.ndarray, cr: np.ndarray) -> np.ndarray:
+    y = np.asarray(y, np.float32)
+    cb = np.asarray(cb, np.float32) - 0.5
+    cr = np.asarray(cr, np.float32) - 0.5
+    ycbcr = np.stack([y, cb, cr], axis=-1)
 
-    # Return the Y (luminance) channel in 32-bit float and the Cb, Cr channels for later use
-    return y_channel, cb_channel, cr_channel
+    M = np.array([[1.0, 0.0, 1.402],
+                  [1.0, -0.344136, -0.714136],
+                  [1.0, 1.772, 0.0]], dtype=np.float32)
 
-def merge_luminance(y_channel, cb_channel, cr_channel):
-    # Ensure all channels are 32-bit float and in the range [0, 1]
-    y_channel = np.clip(y_channel, 0, 1).astype(np.float32)
-    cb_channel = np.clip(cb_channel, 0, 1).astype(np.float32) - 0.5  # Adjust Cb to [-0.5, 0.5]
-    cr_channel = np.clip(cr_channel, 0, 1).astype(np.float32) - 0.5  # Adjust Cr to [-0.5, 0.5]
-
-    # Convert YCbCr to RGB in 32-bit float format
-    rgb_image = ycbcr_to_rgb(y_channel, cb_channel, cr_channel)
-
-    return rgb_image
+    rgb = ycbcr @ M.T
+    return np.clip(rgb, 0.0, 1.0)
 
 
-# Helper function to convert YCbCr (32-bit float) to RGB
-def ycbcr_to_rgb(y_channel, cb_channel, cr_channel):
-    # Combine Y, Cb, Cr channels into one array for matrix multiplication
-    ycbcr_image = np.stack([y_channel, cb_channel, cr_channel], axis=-1)
+def merge_luminance(y: np.ndarray, cb: np.ndarray, cr: np.ndarray) -> np.ndarray:
+    return ycbcr_to_rgb(np.clip(y, 0, 1), np.clip(cb, 0, 1), np.clip(cr, 0, 1))
 
-    # Conversion matrix for YCbCr to RGB (ITU-R BT.601 standard)
-    conversion_matrix = np.array([[1.0,  0.0, 1.402],
-                                  [1.0, -0.344136, -0.714136],
-                                  [1.0,  1.772, 0.0]], dtype=np.float32)
-
-    # Apply the YCbCr to RGB conversion matrix in 32-bit float
-    rgb_image = np.dot(ycbcr_image, conversion_matrix.T)
-
-    # Clip to ensure the RGB values stay within [0, 1] range
-    rgb_image = np.clip(rgb_image, 0.0, 1.0)
-
-    return rgb_image
 
 def _guided_filter(guide: np.ndarray, src: np.ndarray, radius: int, eps: float) -> np.ndarray:
     """
@@ -410,12 +422,7 @@ def remove_border(image, border_size: int = 16):
 # Channel denoise (paste + keep)
 # IMPORTANT: remove print() spam; instead accept an optional progress callback
 # ----------------------------
-def denoise_channel(
-    channel: np.ndarray,
-    models: Dict[str, Any],
-    *,
-    progress_cb=None,   # progress_cb(done:int, total:int) -> None
-) -> np.ndarray:
+def denoise_channel(channel: np.ndarray, models: Dict[str, Any], *, progress_cb: ProgressCB | None = None) -> np.ndarray:
     device = models["device"]
     is_onnx = models["is_onnx"]
     model = models["mono_model"]
@@ -443,15 +450,12 @@ def denoise_channel(
             denoised_chunk = out[0, 0, :original_chunk_shape[0], :original_chunk_shape[1]]
 
         else:
+            torch = models["torch"]
             chunk_tensor = torch.tensor(chunk, dtype=torch.float32).unsqueeze(0).unsqueeze(0).to(device)
             chunk_tensor = chunk_tensor.expand(1, 3, chunk_tensor.shape[2], chunk_tensor.shape[3])
 
-            with torch.no_grad():
-                if (not DISABLE_MIXED_PRECISION) and isinstance(device, torch.device) and device.type == "cuda":
-                    with torch.cuda.amp.autocast():
-                        den = model(chunk_tensor).squeeze().detach().cpu().numpy()
-                else:
-                    den = model(chunk_tensor).squeeze().detach().cpu().numpy()
+            with torch.no_grad(), _autocast_context(torch, device):
+                den = model(chunk_tensor).squeeze().detach().cpu().numpy()
 
             denoised_chunk = den[0] if den.ndim == 3 else den
 
@@ -461,7 +465,6 @@ def denoise_channel(
             progress_cb(idx + 1, total)
 
     return stitch_chunks_ignore_border(denoised_chunks, channel.shape, border_size=16)
-
 
 # ----------------------------
 # High-level denoise for a loaded RGB float image (0..1)

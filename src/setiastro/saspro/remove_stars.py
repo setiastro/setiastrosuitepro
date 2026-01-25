@@ -516,18 +516,20 @@ def _inverse_statstretch_from_starless(starless_s01: np.ndarray, meta: dict) -> 
     out = out + bp
     return np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
 
-
 def _run_starnet(main, doc):
     import os
     import platform
     import numpy as np
+    import re
     from PyQt6.QtWidgets import QFileDialog, QMessageBox
 
     # --- Resolve StarNet exe, persist in settings
     exe = _get_setting_any(getattr(main, "settings", None),
                            ("starnet/exe_path", "paths/starnet"), "")
     if not exe or not os.path.exists(exe):
-        exe_path, _ = QFileDialog.getOpenFileName(main, "Select StarNet Executable", "", "Executable Files (*)")
+        exe_path, _ = QFileDialog.getOpenFileName(
+            main, "Select StarNet Executable", "", "Executable Files (*)"
+        )
         if not exe_path:
             return
         exe = exe_path
@@ -541,8 +543,10 @@ def _run_starnet(main, doc):
 
     sysname = platform.system()
     if sysname not in ("Windows", "Darwin", "Linux"):
-        QMessageBox.critical(main, "Unsupported OS",
-                             f"The current operating system '{sysname}' is not supported.")
+        QMessageBox.critical(
+            main, "Unsupported OS",
+            f"The current operating system '{sysname}' is not supported."
+        )
         return
 
     # --- Ask linearity (SASv2 behavior)
@@ -552,7 +556,9 @@ def _run_starnet(main, doc):
         QMessageBox.StandardButton.No
     )
     is_linear = (reply == QMessageBox.StandardButton.Yes)
-    did_stretch = is_linear 
+    did_stretch = is_linear
+
+    # stash params for replay-last
     try:
         main._last_remove_stars_params = {
             "engine": "StarNet",
@@ -562,6 +568,7 @@ def _run_starnet(main, doc):
         }
     except Exception:
         pass
+
     # 🔁 Record headless command for Replay Last
     try:
         main._last_headless_command = {
@@ -577,35 +584,35 @@ def _run_starnet(main, doc):
                 f"{'yes' if is_linear else 'no'})"
             )
     except Exception:
-        pass    
-    # --- Ensure RGB float32 in safe range (without expanding yet)
-    # Starnet needs RGB eventually, but we can compute stats/normalization on mono
+        pass
+
+    # --- Ensure float32 and sane values (no forced RGB expansion yet)
     src = np.asarray(doc.image)
     if src.ndim == 3 and src.shape[2] == 1:
-        # standardizing shape is cheap
         processing_image = src[..., 0]
     else:
         processing_image = src
-        
-    processing_image = np.nan_to_num(processing_image.astype(np.float32, copy=False),
-                                     nan=0.0, posinf=0.0, neginf=0.0)
+
+    processing_image = np.nan_to_num(
+        processing_image.astype(np.float32, copy=False),
+        nan=0.0, posinf=0.0, neginf=0.0
+    )
 
     # --- Scale normalization if >1.0
-    scale_factor = float(np.max(processing_image))
+    scale_factor = float(np.max(processing_image)) if processing_image.size else 1.0
     if scale_factor > 1.0:
         processing_norm = processing_image / scale_factor
     else:
         processing_norm = processing_image
 
-    # --- Build input/output paths
+    # --- Build input/output paths (StarNet folder)
     starnet_dir = os.path.dirname(exe) or os.getcwd()
-    input_image_path  = os.path.join(starnet_dir, "imagetoremovestars.tif")
+    input_image_path = os.path.join(starnet_dir, "imagetoremovestars.tif")
     output_image_path = os.path.join(starnet_dir, "starless.tif")
 
-    # --- Prepare input for StarNet (Siril-style MTF pre-stretch for linear data) ---
+    # --- Prepare input for StarNet (Siril-style unlinked MTF pre-stretch for linear data) ---
     img_for_starnet = processing_norm
     if is_linear:
-        # Siril-style unlinked MTF params from linear normalized image
         mtf_params = _mtf_params_unlinked(processing_norm, shadows_clipping=-2.8, targetbg=0.25)
         img_for_starnet = _apply_mtf_unlinked_rgb(processing_norm, mtf_params)
 
@@ -622,20 +629,24 @@ def _run_starnet(main, doc):
             pass
     else:
         # non-linear: do not try to invert any pre-stretch later
-        if hasattr(main, "_starnet_stat_meta"):
-            delattr(main, "_starnet_stat_meta")
+        try:
+            if hasattr(main, "_starnet_stat_meta"):
+                delattr(main, "_starnet_stat_meta")
+        except Exception:
+            pass
 
-
-    # --- Write TIFF for StarNet
+    # --- Write TIFF for StarNet (16-bit)
     try:
-        save_image(img_for_starnet, input_image_path,
-                   original_format="tif", bit_depth="16-bit",
-                   original_header=None, is_mono=False, image_meta=None, file_meta=None)
+        save_image(
+            img_for_starnet, input_image_path,
+            original_format="tif", bit_depth="16-bit",
+            original_header=None, is_mono=False, image_meta=None, file_meta=None
+        )
     except Exception as e:
         QMessageBox.critical(main, "StarNet", f"Failed to write input TIFF:\n{e}")
         return
 
-    # --- Launch StarNet in a worker (keeps your progress dialog)
+    # --- Build command
     exe_name = os.path.basename(exe).lower()
     if sysname in ("Windows", "Linux"):
         command = [exe, input_image_path, output_image_path, "256"]
@@ -645,35 +656,27 @@ def _run_starnet(main, doc):
         else:
             command = [exe, input_image_path, output_image_path]
 
+    # --- Progress dialog + worker
     dlg = _ProcDialog(main, title="StarNet Progress")
-    dlg.reset_progress("Running StarNet…")
-    dlg.pbar.setRange(0, 0)  # indeterminate busy bar
-    dlg.append_text("Launching StarNet...\n")    
+    dlg.reset_progress("Starting StarNet…")
+    dlg.pbar.setRange(0, 100)
+    dlg.pbar.setValue(0)
+    dlg.pbar.setFormat("0%")
+    dlg.append_text("Launching StarNet...\n")
+
     thr = _ProcThread(command, cwd=starnet_dir)
-    def _on_out(line: str):
-        dlg.append_text(line)
-        low = line.lower()
-        if "load" in low and "model" in low:
-            dlg.lbl_stage.setText("Loading model…")
-        elif "process" in low:
-            dlg.lbl_stage.setText("Processing…")
-        elif "sav" in low or "writ" in low:
-            dlg.lbl_stage.setText("Writing output…")
 
-    import re
-
-    # near the top of _run_starnet()
+    # ---- Output parsing (stages + percent finished + tile count) ----
     _re_pct = re.compile(r"^\s*(\d{1,3})%\s+finished\s*$")
     _re_tiles = re.compile(r"Total number of tiles:\s*(\d+)\s*$")
 
-    tile_total = {"n": 0}     # mutable closures
+    tile_total = {"n": 0}
     last_pct = {"v": -1}
 
     def _stage_from_line(low: str) -> str | None:
-        # keep it simple + robust
         if "reading input image" in low:
             return "Reading input image…"
-        if "bits per sample" in low or "samples per pixel" in low or "height:" in low or "width:" in low:
+        if ("bits per sample" in low) or ("samples per pixel" in low) or ("height:" in low) or ("width:" in low):
             return "Inspecting input…"
         if "restoring neural network checkpoint" in low:
             return "Loading model checkpoint…"
@@ -689,35 +692,45 @@ def _run_starnet(main, doc):
             return "Writing output…"
         return None
 
-    def _on_out(line: str):
-        dlg.append_text(line)
+    def _is_noise(low: str) -> bool:
+        # Keep progress + stage parsing, but optionally suppress spam in the log box.
+        # You can loosen/tighten this anytime.
+        return (
+            (low.startswith("202") and "tensorflow/" in low) or
+            ("cpu_feature_guard" in low) or
+            ("mlir" in low) or
+            ("ptxas" in low) or
+            ("bfc_allocator" in low) or
+            ("garbage collection" in low)
+        )
 
+    def _on_out(line: str):
         low = line.lower()
 
-        # stage
+        # stage updates
         st = _stage_from_line(low)
         if st:
-            dlg.lbl_stage.setText(st)
+            try:
+                dlg.lbl_stage.setText(st)
+            except Exception:
+                pass
 
         # tile total
         m = _re_tiles.search(line)
         if m:
             try:
                 tile_total["n"] = int(m.group(1))
-                dlg.append_text(f"Detected {tile_total['n']} tiles.\n")
             except Exception:
-                pass
+                tile_total["n"] = 0
 
-        # percent
+        # percent updates (throttled)
         m = _re_pct.match(line)
         if m:
             try:
                 pct = int(m.group(1))
                 pct = max(0, min(100, pct))
-                # throttle duplicates (your output repeats a lot)
                 if pct != last_pct["v"]:
                     last_pct["v"] = pct
-                    # Use done/total if we know tiles (optional)
                     if tile_total["n"] > 0:
                         done = int(round(tile_total["n"] * (pct / 100.0)))
                         dlg.set_progress(done, tile_total["n"], "Processing tiles…")
@@ -726,20 +739,28 @@ def _run_starnet(main, doc):
             except Exception:
                 pass
 
+        # append (optionally suppress TF spam)
+        if not _is_noise(low):
+            dlg.append_text(line)
+
     thr.output_signal.connect(_on_out)
 
+    # finished -> apply + cleanup
+    def _on_finish(rc: int):
+        try:
+            # snap to 100% for UX (even if StarNet ended abruptly, it will be overwritten by error handling)
+            dlg.set_progress(100, 100, "StarNet finished. Loading output…")
+        except Exception:
+            pass
+        _on_starnet_finished(main, doc, rc, dlg, input_image_path, output_image_path, did_stretch)
 
-    # Capture everything we need in the closure for finish handler
-    thr.finished_signal.connect(
-        lambda rc, ds=did_stretch: _on_starnet_finished(
-            main, doc, rc, dlg, input_image_path, output_image_path, ds
-        )
-    )
+    thr.finished_signal.connect(_on_finish)
+
+    # cancel kills subprocess
     dlg.cancel_button.clicked.connect(thr.cancel)
 
     thr.start()
     dlg.exec()
-
 
 def _on_starnet_finished(main, doc, return_code, dialog, input_path, output_path, did_stretch):
     import os
@@ -1485,3 +1506,76 @@ class DarkStarConfigDialog(QDialog):
             "show_extracted_stars": self.chk_show_stars.isChecked(),
             "stride": int(self.cmb_stride.currentData()),
         }
+
+
+def darkstar_starless_from_array(
+    arr_rgb01: np.ndarray,
+    *,
+    use_gpu: bool = True,
+    chunk_size: int = 512,
+    overlap_frac: float = 0.125,
+    mode: str = "unscreen",              # "unscreen" | "additive"
+    output_stars_only: bool = False,
+    progress_cb=None,                    # (done:int, total:int, stage:str) -> None
+    status_cb=None                       # (msg:str) -> None
+) -> tuple[np.ndarray, np.ndarray | None, bool]:
+    """
+    Headless DarkStar:
+      input: float32 [0..1], mono or RGB
+      output: (starless, stars_only_or_None, was_mono)
+    """
+    x = np.asarray(arr_rgb01, dtype=np.float32)
+
+    was_mono = (x.ndim == 2) or (x.ndim == 3 and x.shape[2] == 1)
+
+    # Normalize shape to what engine expects (it can accept mono or rgb, but keep it consistent)
+    if x.ndim == 3 and x.shape[2] == 1:
+        x = x[..., 0]  # collapse to (H,W) for mono
+
+    x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
+    x = np.clip(x, 0.0, 1.0)
+
+    params = DarkStarParams(
+        use_gpu=bool(use_gpu),
+        chunk_size=int(chunk_size),
+        overlap_frac=float(overlap_frac),
+        mode=str(mode),
+        output_stars_only=bool(output_stars_only),
+    )
+
+    def _prog(done, total, stage):
+        if callable(progress_cb):
+            try:
+                progress_cb(int(done), int(total), str(stage))
+            except Exception:
+                pass
+
+    def _status(msg: str):
+        if callable(status_cb):
+            try:
+                status_cb(str(msg))
+            except Exception:
+                pass
+
+    starless, stars_only, engine_was_mono = darkstar_starremoval_rgb01(
+        x,
+        params=params,
+        progress_cb=_prog if callable(progress_cb) else None,
+        status_cb=_status if callable(status_cb) else None,
+    )
+
+    # Engine should return [0..1] float32, but enforce it anyway
+    if starless is not None:
+        starless = np.clip(np.asarray(starless, dtype=np.float32), 0.0, 1.0)
+
+    if stars_only is not None:
+        stars_only = np.clip(np.asarray(stars_only, dtype=np.float32), 0.0, 1.0)
+
+    # If input was mono, guarantee mono out (some paths may hand back rgb)
+    if was_mono and starless is not None and starless.ndim == 3:
+        starless = starless.mean(axis=2).astype(np.float32, copy=False)
+
+    if was_mono and stars_only is not None and stars_only.ndim == 3:
+        stars_only = stars_only.mean(axis=2).astype(np.float32, copy=False)
+
+    return starless, (stars_only if output_stars_only else None), bool(was_mono)
