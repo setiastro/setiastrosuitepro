@@ -184,16 +184,22 @@ class BenchmarkDialog(QDialog):
     def _dl_progress(self, done: int, total: int):
         if total > 0:
             pct = int(done * 100 / total)
+            self.pbar.setRange(0, 100)
             self.pbar.setValue(max(0, min(100, pct)))
+
+            # 👇 add this
+            self.pbar.setFormat(f"{pct}%  ({done/1e6:.0f}/{total/1e6:.0f} MB)")
         else:
             # unknown length
             self.pbar.setRange(0, 0)
+            self.pbar.setFormat(f"{done/1e6:.0f} MB")
 
     def _dl_done(self, ok: bool, msg: str, t: QThread, w: QObject):
         t.quit(); t.wait()
         self._thread = None
 
         self.pbar.setRange(0, 100)
+        self.pbar.setFormat("%p%")
         self.btn_dl.setEnabled(True)
 
         if ok:

@@ -47,6 +47,38 @@ BENCHMARK_URLS = [
 # Keep for backwards compat (some code imports BENCHMARK_FITS_URL)
 BENCHMARK_FITS_URL = BENCHMARK_URLS[-1]
 
+
+from urllib.parse import urljoin
+
+def _looks_like_html_prefix(b: bytes) -> bool:
+    head = (b or b"").lstrip()[:256].lower()
+    return head.startswith(b"<!doctype html") or head.startswith(b"<html") or b"<html" in head
+
+def _parse_gdrive_download_form(html: str) -> tuple[str, dict] | tuple[None, None]:
+    """
+    Parse the Google Drive virus-scan warning page.
+    Extracts:
+      - form action URL (often https://drive.usercontent.google.com/download)
+      - all hidden input fields needed for the download
+    """
+    # action="..."
+    m = re.search(r'<form[^>]+id="download-form"[^>]+action="([^"]+)"', html)
+    if not m:
+        return None, None
+    action = m.group(1)
+
+    # hidden inputs: <input type="hidden" name="X" value="Y">
+    inputs = {}
+    for name, val in re.findall(r'<input[^>]+type="hidden"[^>]+name="([^"]+)"[^>]*value="([^"]*)"', html):
+        inputs[name] = val
+
+    # Some pages omit value="" explicitly; handle name-only hidden inputs too (rare)
+    for name in re.findall(r'<input[^>]+type="hidden"[^>]+name="([^"]+)"(?![^>]*value=)', html):
+        inputs.setdefault(name, "")
+
+    return action, inputs
+
+
 def _gdrive_file_id(url: str) -> Optional[str]:
     """
     Extract Google Drive file id from:
@@ -100,6 +132,26 @@ def _normalize_download_url(url: str) -> tuple[str, Optional[str]]:
         return _gdrive_direct_url(fid), f"Google Drive ({fid})"
     return url, None
 
+def _looks_like_html_prefix(b: bytes) -> bool:
+    if not b:
+        return False
+    head = b.lstrip()[:64].lower()
+    return head.startswith(b"<!doctype html") or head.startswith(b"<html") or b"<html" in head
+
+def _is_probably_valid_fits(path: Path, *, min_bytes: int = 1_000_000) -> bool:
+    try:
+        if path.stat().st_size < min_bytes:
+            return False
+        with open(path, "rb") as f:
+            first = f.read(80)
+        # FITS primary header should start with SIMPLE  =
+        if b"SIMPLE" not in first[:20]:
+            return False
+        return True
+    except Exception:
+        return False
+
+
 # -----------------------------
 # Download benchmark FITS
 # -----------------------------
@@ -149,31 +201,34 @@ def download_benchmark_image(
 
             # Use a session so Drive confirm/cookies work reliably
             with requests.Session() as s:
-                # First request
                 r = s.get(dl_url, stream=True, timeout=timeout, allow_redirects=True)
 
-                # If Google Drive interstitial HTML, extract confirm token and retry
                 ctype = (r.headers.get("Content-Type") or "").lower()
-                if "text/html" in ctype and "drive.google.com" in dl_url:
-                    # Read a small chunk of text (not entire file) to find confirm token
-                    html = r.text if hasattr(r, "text") else ""
-                    token = _gdrive_confirm_token(html)
-                    if token:
-                        # Append confirm token and retry
-                        sep = "&" if ("?" in dl_url) else "?"
-                        dl_url2 = f"{dl_url}{sep}confirm={token}"
-                        r.close()
-                        r = s.get(dl_url2, stream=True, timeout=timeout, allow_redirects=True)
+
+                # If we got HTML, it’s probably the virus-scan warning page
+                if "text/html" in ctype:
+                    html = r.text  # reads page into memory (small)
+                    r.close()
+
+                    action, params = _parse_gdrive_download_form(html)
+                    if action and params:
+                        # Submit the "Download anyway" form with the SAME session/cookies
+                        r = s.get(action, params=params, stream=True, timeout=timeout, allow_redirects=True)
+                        ctype = (r.headers.get("Content-Type") or "").lower()
+                    else:
+                        raise RuntimeError("Google Drive returned an interstitial HTML page, but download form could not be parsed.")
 
                 r.raise_for_status()
-
                 total = int(r.headers.get("Content-Length") or 0)
                 done = 0
                 t_start = time.time()
                 t_last = t_start
                 done_last = 0
-                ema_bps = None  # exponential moving average bytes/sec
+                ema_bps = None
+
                 tmp.parent.mkdir(parents=True, exist_ok=True)
+
+                first_chunk = True
                 with open(tmp, "wb") as f:
                     for chunk in r.iter_content(chunk_size=1024 * 1024):
                         if cancel_cb and cancel_cb():
@@ -183,22 +238,27 @@ def download_benchmark_image(
                             except Exception:
                                 pass
                             raise RuntimeError("Download canceled.")
+
                         if not chunk:
                             continue
+
+                        # SNIFF FIRST BYTES: if it's HTML, abort this source immediately
+                        if first_chunk:
+                            first_chunk = False
+                            if _looks_like_html_prefix(chunk[:256]):
+                                raise RuntimeError("Google Drive returned HTML (not the FITS). Link likely requires confirm/permission.")
+
                         f.write(chunk)
                         done += len(chunk)
+
                         if progress_cb:
                             progress_cb(done, total)
+
                         now = time.time()
                         dt = now - t_last
-                        if dt >= 0.5:  # update ~2x/sec
+                        if dt >= 0.5:
                             inst_bps = (done - done_last) / max(dt, 1e-9)
-                            # smooth it so the ETA isn't jumpy
-                            if ema_bps is None:
-                                ema_bps = inst_bps
-                            else:
-                                alpha = 0.25
-                                ema_bps = (1 - alpha) * ema_bps + alpha * inst_bps
+                            ema_bps = inst_bps if ema_bps is None else (0.75 * ema_bps + 0.25 * inst_bps)
 
                             eta = None
                             if total > 0 and ema_bps and ema_bps > 1:
@@ -216,12 +276,18 @@ def download_benchmark_image(
 
                             t_last = now
                             done_last = done
+
             # atomic replace only after a full success
             os.replace(str(tmp), str(dst))
+
+            # VALIDATE: size + FITS header sanity. If invalid, treat as failure and try next URL.
+            if not _is_probably_valid_fits(dst, min_bytes=10_000_000):  # 10MB floor; tune as you like
+                raise RuntimeError("Downloaded file is not a valid FITS (too small or missing SIMPLE).")
 
             if status_cb:
                 status_cb(f"Benchmark image ready: {dst}")
             return dst
+
 
         except Exception as e:
             last_err = e
@@ -518,6 +584,68 @@ def get_system_info() -> dict:
 
     return info
 
+def _fmt_ms(first_ms: float, avg_ms: float) -> str:
+    return f"First: {first_ms:.2f} ms | Avg: {avg_ms:.2f} ms"
+
+def _fmt_gpu(avg_ms: float, total_ms: float) -> str:
+    return f"Avg: {avg_ms:.2f} ms | Total: {total_ms:.2f} ms"
+
+def _legacy_results_schema(results: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Convert internal structured results -> legacy/human schema expected by submitter.
+    """
+    out: Dict[str, Any] = {}
+
+    # --- CPU ---
+    cpu_mad = results.get("CPU MAD (Single Core)")
+    if isinstance(cpu_mad, dict):
+        out["CPU MAD (Single Core)"] = _fmt_ms(cpu_mad.get("first_ms", 0.0), cpu_mad.get("avg_ms", 0.0))
+    elif cpu_mad is not None:
+        out["CPU MAD (Single Core)"] = str(cpu_mad)
+
+    cpu_flat = results.get("CPU Flat-Field (Multi-Core)")
+    if isinstance(cpu_flat, dict):
+        out["CPU Flat-Field (Multi-Core)"] = _fmt_ms(cpu_flat.get("first_ms", 0.0), cpu_flat.get("avg_ms", 0.0))
+    elif cpu_flat is not None:
+        out["CPU Flat-Field (Multi-Core)"] = str(cpu_flat)
+
+    # --- GPU / Torch ---
+    # Your internal key looks like "Stellar Torch (CUDA)" or "(CPU)" etc.
+    torch_key = next((k for k in results.keys() if k.startswith("Stellar Torch (")), None)
+    if torch_key and isinstance(results.get(torch_key), dict):
+        backend = torch_key[len("Stellar Torch ("):-1]  # extract tag inside (...)
+        t = results[torch_key]
+        out[f"GPU Time ({backend})"] = _fmt_gpu(t.get("avg_ms", 0.0), t.get("total_ms", 0.0))
+
+    # --- ONNX ---
+    onnx_key = next((k for k in results.keys() if k.startswith("Stellar ONNX")), None)
+    if onnx_key is None:
+        # you used this on non-windows
+        if "Stellar ONNX" in results:
+            out["ONNX Time"] = str(results["Stellar ONNX"])
+        else:
+            out["ONNX Time"] = "ONNX benchmark not run."
+    else:
+        v = results.get(onnx_key)
+        if isinstance(v, dict):
+            # keep it under the legacy key name
+            out["ONNX Time"] = _fmt_gpu(v.get("avg_ms", 0.0), v.get("total_ms", 0.0))
+        else:
+            out["ONNX Time"] = str(v)
+
+    # --- System Info ---
+    # If you want to match your example more closely, drop Python/torch versions.
+    si = results.get("System Info", {})
+    if isinstance(si, dict):
+        keep = {
+            "OS", "CPU", "RAM",
+            "CUDA Available", "MPS Available", "ONNX Providers", "GPU"
+        }
+        out["System Info"] = {k: si[k] for k in keep if k in si}
+    else:
+        out["System Info"] = si
+
+    return out
 
 # -----------------------------
 # One-stop runner
@@ -583,5 +711,5 @@ def run_benchmark(
         else:
             results["Stellar ONNX"] = "ONNX benchmark only available on Windows."
 
-
+    results = _legacy_results_schema(results)
     return results
