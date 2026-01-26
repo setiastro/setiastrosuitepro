@@ -1,4 +1,4 @@
-# pro/accel_installer.py
+# saspro/accel_installer.py
 from __future__ import annotations
 import platform
 import subprocess
@@ -77,21 +77,34 @@ def _nvidia_driver_ok(log_cb: LogCB) -> bool:
         return False
 
 
-def ensure_torch_installed(prefer_gpu: bool, log_cb: LogCB) -> tuple[bool, Optional[str]]:
+def ensure_torch_installed(prefer_gpu: bool, log_cb: LogCB, preferred_backend: str = "auto") -> tuple[bool, Optional[str]]:
+
     try:
+        preferred_backend = (preferred_backend or "auto").lower()
         is_windows = platform.system() == "Windows"
+
         has_nv = _has_nvidia() and platform.system() in ("Windows", "Linux")
         has_intel = (not has_nv) and _has_intel_arc() and platform.system() in ("Windows", "Linux")
 
-        prefer_cuda = prefer_gpu and has_nv
-        prefer_xpu  = prefer_gpu and (not has_nv) and has_intel
+        prefer_cuda = prefer_gpu and (preferred_backend in ("auto", "cuda")) and has_nv
+        prefer_xpu  = prefer_gpu and (preferred_backend in ("auto", "xpu")) and (not has_nv) and has_intel
 
-        if prefer_cuda and not _nvidia_driver_ok(log_cb):
-            log_cb("CUDA requested but NVIDIA driver not detected/working; CUDA wheels may not initialize.")
-        log_cb(f"PyTorch install preference: prefer_cuda={prefer_cuda}, prefer_xpu={prefer_xpu} (OS={platform.system()})")
+        # NEW: DirectML preference is ONLY meaningful on Windows with no NVIDIA
+        prefer_dml = (
+            is_windows
+            and (not has_nv)
+            and preferred_backend in ("directml", "auto")
+            and prefer_gpu
+            and (not prefer_xpu)   # if Intel XPU actually works, prefer that over DML
+        )
+
+        # If user forced CPU, disable everything
+        if preferred_backend == "cpu":
+            prefer_cuda = prefer_xpu = prefer_dml = False
 
         # Install torch (tries CUDA → XPU → CPU)
-        torch = import_torch(prefer_cuda=prefer_cuda, prefer_xpu=prefer_xpu, status_cb=log_cb)
+        torch = import_torch(prefer_cuda=prefer_cuda, prefer_xpu=prefer_xpu, prefer_dml=prefer_dml, status_cb=log_cb)
+
 
         cuda_ok = bool(getattr(torch, "cuda", None) and torch.cuda.is_available())
         xpu_ok  = bool(hasattr(torch, "xpu") and torch.xpu.is_available())

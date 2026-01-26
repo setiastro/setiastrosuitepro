@@ -1,4 +1,4 @@
-# pro/cosmicclarity.py
+# setiastro/saspro/cosmicclarity.py
 from __future__ import annotations
 import os
 import sys
@@ -8,7 +8,7 @@ import tempfile
 import uuid
 import numpy as np
 
-from PyQt6.QtCore import Qt, QTimer, QSettings, QThread, pyqtSignal, QFileSystemWatcher, QEvent
+from PyQt6.QtCore import Qt, QTimer, QSettings, QThread, pyqtSignal, QFileSystemWatcher, QEvent, QTimer
 from PyQt6.QtGui import QIcon, QAction, QImage, QPixmap
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, QGridLayout, QLabel, QPushButton,
@@ -23,57 +23,19 @@ from setiastro.saspro.legacy.image_manager import load_image, save_image
 
 from setiastro.saspro.imageops.stretch import stretch_mono_image, stretch_color_image
 
+from setiastro.saspro.cosmicclarity_engines.sharpen_engine import sharpen_rgb01
+from setiastro.saspro.cosmicclarity_engines.denoise_engine import denoise_rgb01
+from setiastro.saspro.cosmicclarity_engines.superres_engine import superres_rgb01
+from setiastro.saspro.cosmicclarity_engines.satellite_engine import (
+    get_satellite_models,
+    satellite_remove_image,
+)
 # Import centralized preview dialog
 from setiastro.saspro.widgets.preview_dialogs import ImagePreviewDialog
 
 import shutil
 import subprocess
 
-# --- replace your _atomic_fsync_replace with this ---
-def _atomic_fsync_replace(src_bytes_writer, final_path: str):
-    """
-    Write to a unique temp file next to final_path, fsync it, then atomically
-    replace final_path. src_bytes_writer(tmp_path) must CREATE tmp_path.
-    """
-    d = os.path.dirname(final_path) or "."
-    os.makedirs(d, exist_ok=True)
-
-    # Use same extension so writers (like your save_image) don't append a new one.
-    ext = os.path.splitext(final_path)[1] or ".tmp"
-    tmp_path = os.path.join(d, f".stage_{uuid.uuid4().hex}{ext}")
-
-    try:
-        # Let caller create/write the file at tmp_path
-        src_bytes_writer(tmp_path)
-
-        # Ensure written bytes are on disk
-        try:
-            with open(tmp_path, "rb", buffering=0) as f:
-                os.fsync(f.fileno())
-        except Exception:
-            # If a backend keeps the file open exclusively or doesn't support fsync,
-            # we still continue; replace() below is atomic on the same filesystem.
-            pass
-
-        # Promote atomically
-        os.replace(tmp_path, final_path)
-
-        # POSIX-only: best-effort directory entry fsync (Windows doesn't support this)
-        if os.name != "nt":
-            try:
-                dirfd = os.open(d, os.O_DIRECTORY)
-                try: os.fsync(dirfd)
-                finally: os.close(dirfd)
-            except Exception:
-                pass
-
-    finally:
-        # Cleanup if anything left behind
-        try:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-        except Exception:
-            pass
 
 def resolve_cosmic_root(parent=None) -> str:
     s = QSettings()
@@ -115,27 +77,6 @@ def resolve_cosmic_root(parent=None) -> str:
         return folder
     return ""  # caller should handle "not set"
 
-def _wait_stable_file(path: str, timeout_ms: int = 4000, poll_ms: int = 50) -> bool:
-    """Return True when path exists and its size doesn't change for 2 polls in a row."""
-    t0 = time.monotonic()
-    last = (-1, -1.0)  # (size, mtime)
-    stable_count = 0
-    while (time.monotonic() - t0) * 1000 < timeout_ms:
-        try:
-            st = os.stat(path)
-            cur = (st.st_size, st.st_mtime)
-            if cur == last and st.st_size > 0:
-                stable_count += 1
-                if stable_count >= 2:
-                    return True
-            else:
-                stable_count = 0
-            last = cur
-        except FileNotFoundError:
-            stable_count = 0
-        time.sleep(poll_ms / 1000.0)
-    return False
-
 
 # =============================================================================
 # Small helpers
@@ -145,70 +86,8 @@ def _satellite_exe_name() -> str:
     return f"{base}.exe" if os.name == "nt" else base
 
 
-def _get_cosmic_root_from_settings() -> str:
-    return resolve_cosmic_root(parent=None)  # or pass self as parent
-
-def _ensure_dirs(root: str):
-    os.makedirs(os.path.join(root, "input"), exist_ok=True)
-    os.makedirs(os.path.join(root, "output"), exist_ok=True)
-
-_IMG_EXTS = ('.png', '.tif', '.tiff', '.fit', '.fits', '.xisf',
-             '.cr2', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2', '.pef',
-             '.jpg', '.jpeg')
-
-def _purge_dir(path: str, *, prefix: str | None = None):
-    """Delete lingering image-like files in a folder. Safe: files only."""
-    try:
-        if not os.path.isdir(path):
-            return
-        for fn in os.listdir(path):
-            fp = os.path.join(path, fn)
-            if not os.path.isfile(fp):
-                continue
-            if prefix and not fn.startswith(prefix):
-                continue
-            if os.path.splitext(fn)[1].lower() in _IMG_EXTS:
-                try: os.remove(fp)
-                except Exception as e:
-                    import logging
-                    logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
-    except Exception:
-        pass
-
-def _purge_cc_io(root: str, *, clear_input: bool, clear_output: bool, prefix: str | None = None):
-    """Convenience to purge CC input/output dirs."""
-    try:
-        if clear_input:
-            _purge_dir(os.path.join(root, "input"),  prefix=prefix)
-        if clear_output:
-            _purge_dir(os.path.join(root, "output"), prefix=prefix)
-    except Exception:
-        pass
-
-def _platform_exe_names(mode: str) -> str:
-    """
-    Return executable filename for sharpen/denoise based on OS.
-    Matches SASv2 you pasted:
-      - Windows: SetiAstroCosmicClarity.exe / SetiAstroCosmicClarity_denoise.exe
-      - macOS  : SetiAstroCosmicClaritymac / SetiAstroCosmicClarity_denoisemac
-      - Linux  : SetiAstroCosmicClarity / SetiAstroCosmicClarity_denoise
-    """
-    is_win = os.name == "nt"
-    is_mac = sys.platform == "darwin"
-    if mode == "sharpen":
-        return "SetiAstroCosmicClarity.exe" if is_win else ("SetiAstroCosmicClaritymac" if is_mac else "SetiAstroCosmicClarity")
-    elif mode == "denoise":
-        return "SetiAstroCosmicClarity_denoise.exe" if is_win else ("SetiAstroCosmicClarity_denoisemac" if is_mac else "SetiAstroCosmicClarity_denoise")
-    elif mode == "superres":
-        # SASv2 used lowercase for superres on Windows
-        return "setiastrocosmicclarity_superres.exe" if is_win else "setiastrocosmicclarity_superres"
-    else:
-        return ""
 
 
-# =============================================================================
-# Wait UI
-# =============================================================================
 class WaitDialog(QDialog):
     cancelled = pyqtSignal()
     def __init__(self, title="Processing…", parent=None):
@@ -223,121 +102,145 @@ class WaitDialog(QDialog):
     def append_output(self, line: str): self.txt.append(line)
     def set_progress(self, p: int):      self.pb.setValue(int(max(0, min(100, p))))
 
+class CosmicClarityEngineWorker(QThread):
+    progress = pyqtSignal(int)      # 0..100
+    log      = pyqtSignal(str)
+    result   = pyqtSignal(object, str)  # (np.ndarray float32 RGB01, final_step_title)
+    error    = pyqtSignal(str)
 
-class WaitForFileWorker(QThread):
-    fileFound = pyqtSignal(str)
-    cancelled = pyqtSignal()
-    error     = pyqtSignal(str)
-
-    def __init__(
-        self,
-        glob_pat: str,
-        timeout_sec: int = 1800,
-        parent=None,
-        *,
-        poll_ms: int = 200,
-        stable_polls: int = 6,          # 6 * 200ms = ~1.2s of stability
-        stable_timeout_sec: int = 120,  # extra time after first detection
-    ):
+    def __init__(self, img_rgb01: np.ndarray, preset: dict, parent=None):
         super().__init__(parent)
-        self._glob = glob_pat
-        self._timeout = int(timeout_sec)
-        self._poll_ms = int(poll_ms)
-        self._stable_polls = int(stable_polls)
-        self._stable_timeout = int(stable_timeout_sec)
-        self._running = True
+        self._img = np.asarray(img_rgb01, dtype=np.float32)
+        self._preset = dict(preset)
+        self._cancel = False
 
-    def stop(self):
-        self._running = False
+    def cancel(self):
+        self._cancel = True
 
-    def _best_candidate(self, paths: list[str]) -> str | None:
-        if not paths:
-            return None
-        # prefer biggest file; tie-break by newest mtime
-        def key(p):
-            try:
-                st = os.stat(p)
-                return (st.st_size, st.st_mtime)
-            except Exception:
-                return (-1, -1)
-        paths.sort(key=key, reverse=True)
-        return paths[0]
-
-    def _is_stable_and_readable(self, path: str) -> bool:
+    # ---- progress adapter ----
+    def _mk_progress_cb(self, stage_label: str, stage_weight: float, base_pct: float, total_stages: int):
         """
-        Consider stable when size+mtime unchanged for N polls in a row AND file is readable.
-        Handles slow writers + Windows "file still locked" issues.
+        stage_weight: fraction of total progress reserved for this stage (0..1)
+        base_pct: starting % for this stage
         """
-        stable = 0
-        last = None
-
-        t0 = time.monotonic()
-        while self._running and (time.monotonic() - t0) < self._stable_timeout:
-            try:
-                st = os.stat(path)
-                cur = (st.st_size, st.st_mtime)
-                if st.st_size <= 0:
-                    stable = 0
-                    last = cur
-                elif cur == last:
-                    stable += 1
-                else:
-                    stable = 0
-                    last = cur
-
-                if stable >= self._stable_polls:
-                    # extra “is it readable?” check (important on Windows)
-                    try:
-                        with open(path, "rb") as f:
-                            f.read(64)
-                        return True
-                    except PermissionError:
-                        # still locked by writer, keep waiting
-                        stable = 0
-                    except Exception:
-                        # transient weirdness: keep waiting, don’t declare failure yet
-                        stable = 0
-
-            except FileNotFoundError:
-                stable = 0
-                last = None
-            except Exception:
-                # don't crash the worker for stat weirdness
-                stable = 0
-
-            time.sleep(self._poll_ms / 1000.0)
-
-        return False
+        def _cb(done: int, total: int):
+            if self._cancel or self.isInterruptionRequested():
+                return False
+            if total <= 0:
+                return True
+            frac = float(done) / float(total)
+            pct = base_pct + stage_weight * 100.0 * frac
+            self.progress.emit(int(max(0, min(100, round(pct)))))
+            # optional: throttle logs; keep it quiet
+            return True
+        return _cb
 
     def run(self):
-        t_start = time.monotonic()
-        seen_first_candidate_at = None
+        try:
+            p = self._preset
+            mode = str(p.get("mode", "sharpen")).lower()
 
-        while self._running and (time.monotonic() - t_start) < self._timeout:
-            matches = glob.glob(self._glob)
-            cand = self._best_candidate(matches)
+            use_gpu = bool(p.get("gpu", True))
+            create_new_view = bool(p.get("create_new_view", False))  # not used here; dialog decides
 
-            if cand:
-                if seen_first_candidate_at is None:
-                    seen_first_candidate_at = time.monotonic()
+            img = np.clip(self._img, 0.0, 1.0).astype(np.float32, copy=False)
 
-                if self._is_stable_and_readable(cand):
-                    self.fileFound.emit(cand)
+            # Decide stage plan
+            stages = []
+            if mode == "sharpen":
+                stages = ["sharpen"]
+            elif mode == "denoise":
+                stages = ["denoise"]
+            elif mode == "both":
+                stages = ["sharpen", "denoise"]
+            elif mode == "superres":
+                stages = ["superres"]
+            else:
+                stages = ["sharpen"]
+
+            n = max(1, len(stages))
+            stage_weight = 1.0 / float(n)
+
+            out = img
+            self.progress.emit(0)
+
+            for si, st in enumerate(stages):
+                if self._cancel:
+                    self.error.emit("Cancelled.")
                     return
 
-                # If we've been seeing candidates for a while but none stabilize,
-                # keep looping until global timeout. (This is common on slow disks.)
+                base_pct = (100.0 * si) / float(n)
+                self.log.emit(f"Running {st}…")
 
-            time.sleep(self._poll_ms / 1000.0)
+                if st == "sharpen":
+                    # UI preset fields mirror your existing UI naming
+                    sharpening_mode = p.get("sharpening_mode", "Both")
+                    stellar_amount = float(p.get("stellar_amount", 0.5))
+                    nonstellar_amount = float(p.get("nonstellar_amount", 0.5))
+                    nonstellar_psf = float(p.get("nonstellar_psf", 3.0))
+                    auto_psf = bool(p.get("auto_psf", True))
+                    sharpen_sep = bool(p.get("sharpen_channels_separately", False))
 
-        if not self._running:
-            self.cancelled.emit()
-        else:
-            extra = ""
-            if seen_first_candidate_at is not None:
-                extra = " (output appeared but never stabilized)"
-            self.error.emit("Output file not found within timeout." + extra)
+                    prog = self._mk_progress_cb("sharpen", stage_weight, base_pct, n)
 
+                    out = sharpen_rgb01(
+                        out,
+                        sharpening_mode=str(sharpening_mode),
+                        stellar_amount=float(stellar_amount),
+                        nonstellar_amount=float(nonstellar_amount),
+                        nonstellar_strength=float(nonstellar_psf),
+                        auto_detect_psf=bool(auto_psf),
+                        separate_channels=bool(sharpen_sep),
+                        use_gpu=bool(use_gpu),
+                        progress_cb=prog,
+                    )
+
+                elif st == "denoise":
+                    den_luma = float(p.get("denoise_luma", 0.5))
+                    den_col = float(p.get("denoise_color", 0.5))
+                    den_mode = str(p.get("denoise_mode", "full"))
+                    sep = bool(p.get("separate_channels", False))
+
+                    prog = self._mk_progress_cb("denoise", stage_weight, base_pct, n)
+
+                    out = denoise_rgb01(
+                        out,
+                        denoise_strength=float(den_luma),
+                        denoise_mode=str(den_mode),
+                        separate_channels=bool(sep),
+                        color_denoise_strength=float(den_col),
+                        use_gpu=bool(use_gpu),
+                        progress_cb=prog,
+                    )
+
+                elif st == "superres":
+                    scale = int(p.get("scale", 2))
+                    prog = self._mk_progress_cb("superres", stage_weight, base_pct, n)
+
+                    out = superres_rgb01(
+                        out,
+                        scale=int(scale),
+                        use_gpu=True,   # keep matching your old UI behavior (GPU hidden for SR)
+                        progress_cb=prog,
+                    )
+
+                else:
+                    raise RuntimeError(f"Unknown stage: {st}")
+
+            self.progress.emit(100)
+
+            # Title for history
+            if mode == "both":
+                step_title = "Cosmic Clarity – Sharpen + Denoise"
+            elif mode == "superres":
+                step_title = "Cosmic Clarity – Super Resolution"
+            else:
+                step_title = f"Cosmic Clarity – {mode.title()}"
+
+            self.result.emit(np.clip(out, 0.0, 1.0).astype(np.float32, copy=False), step_title)
+
+        except Exception as e:
+            self.error.emit(str(e))
 
 
 # =============================================================================
@@ -381,8 +284,10 @@ class CosmicClarityDialogPro(QDialog):
 
         self.parent_ref = parent
         self.doc = doc
+        self._engine_thread = None
+        self._closing_after_cancel = False        
         self.orig = np.clip(np.asarray(doc.image, dtype=np.float32), 0.0, 1.0)
-        self.cosmic_root = _get_cosmic_root_from_settings()
+        self.cosmic_root = ""   # no longer used by in-process engines
 
         v = QVBoxLayout(self)
 
@@ -398,8 +303,11 @@ class CosmicClarityDialogPro(QDialog):
         grid.addWidget(self.cmb_mode, 0, 1, 1, 2)
 
         # GPU
-        grid.addWidget(QLabel(self.tr("Use GPU:")), 1, 0)
-        self.cmb_gpu = QComboBox(); self.cmb_gpu.addItems([self.tr("Yes"), self.tr("No")])
+        self.lbl_gpu = QLabel(self.tr("Use GPU:"))
+        grid.addWidget(self.lbl_gpu, 1, 0)
+
+        self.cmb_gpu = QComboBox()
+        self.cmb_gpu.addItems([self.tr("Yes"), self.tr("No")])
         grid.addWidget(self.cmb_gpu, 1, 1)
 
         # Sharpen block
@@ -474,8 +382,7 @@ class CosmicClarityDialogPro(QDialog):
         self._mode_changed()  # set initial visibility
 
         self._wait = None
-        self._wait_thread = None
-        self._proc = None
+
 
         self._headless = bool(headless)
         if self._headless:
@@ -546,26 +453,27 @@ class CosmicClarityDialogPro(QDialog):
             w.setVisible(show_sr)
 
         # GPU hidden for superres (matches your SASv2)
-        self.cmb_gpu.setVisible(not show_sr)
-        self.parentWidget()
+        show_gpu = (not show_sr)
+        self.lbl_gpu.setVisible(show_gpu)
+        self.cmb_gpu.setVisible(show_gpu)
 
     # ----- Validation -----
     def _validate_root(self) -> bool:
-        if not self.cosmic_root:
-            QMessageBox.warning(self, "Cosmic Clarity", "No Cosmic Clarity folder is set. Set it in Preferences (Settings).")
-            return False
-        # basic presence check (don’t force a specific exe here, we do that later)
-        if not os.path.isdir(self.cosmic_root):
-            QMessageBox.warning(self, "Cosmic Clarity", "The Cosmic Clarity folder in Settings doesn’t exist anymore.")
-            return False
         return True
 
     # ----- Execution -----
     def _run_main(self):
-        if not self._validate_root():
+        # --- Basic safety: make sure we have an image ---
+        try:
+            img = np.asarray(getattr(self.doc, "image", None))
+            if img is None or img.size == 0:
+                QMessageBox.warning(self, "Cosmic Clarity", "No image loaded in the active view.")
+                return
+        except Exception:
+            QMessageBox.warning(self, "Cosmic Clarity", "No image loaded in the active view.")
             return
 
-        # --- Register this run as "last action" for replay ---
+        # --- Register this run as "last action" for replay (same as you had) ---
         try:
             main = self.parent_ref or self.parent()
             if main is not None:
@@ -573,282 +481,103 @@ class CosmicClarityDialogPro(QDialog):
                 payload = {
                     "cid": "cosmic_clarity",
                     "preset": preset,
-                    # optional label for your UI if you use it
                     "label": f"Cosmic Clarity ({preset.get('mode', 'sharpen')})",
                 }
-
-                # Preferred: use the same helper you used for CLAHE / Morphology / PixelMath
                 if hasattr(main, "_set_last_headless_command"):
                     main._set_last_headless_command(payload)
                 else:
-                    # Fallback: write directly if you're using a bare _last_headless_command dict
                     setattr(main, "_last_headless_command", payload)
                     if hasattr(main, "_update_replay_button"):
                         main._update_replay_button()
         except Exception:
-            # Never let replay bookkeeping kill the effect itself
-            pass
+            pass  # never block processing
 
-        _ensure_dirs(self.cosmic_root)
-        _purge_cc_io(self.cosmic_root, clear_input=True, clear_output=False)
+        # --- Snapshot UI preset ---
+        preset = self.build_preset_from_ui()
+        mode = str(preset.get("mode", "sharpen")).lower()
 
-
-        # Determine queue of operations
-        mode_idx = self.cmb_mode.currentIndex()
-        if mode_idx == 3:
-            # Super-res path
-            self._run_superres(); return
-        elif mode_idx == 0:
-            ops = [("sharpen", "_sharpened")]
-        elif mode_idx == 1:
-            ops = [("denoise", "_denoised")]
+        # --- Normalize to float32 RGB01 for the engines ---
+        # Your engines expect RGB01; keep mono as 3-ch internally.
+        arr = np.asarray(self.doc.image, dtype=np.float32)
+        if arr.ndim == 2:
+            arr = np.repeat(arr[..., None], 3, axis=2)
+        elif arr.ndim == 3 and arr.shape[2] == 1:
+            arr = np.repeat(arr, 3, axis=2)
+        elif arr.ndim == 3 and arr.shape[2] >= 3:
+            arr = arr[..., :3]
         else:
-            ops = [("sharpen", "_sharpened"), ("denoise", "_denoised")]
-
-        # Save current doc image to input
-        base = self._base_name()
-        in_path = os.path.join(self.cosmic_root, "input", f"{base}.tif")
-        try:
-            # Use atomic fsync
-            base = self._base_name()
-            in_path = os.path.join(self.cosmic_root, "input", f"{base}.tif")
-            arr = self.orig  # already float32 [0..1]
-
-            def _writer(tmp_path):
-                # reuse your save_image impl to tmp
-                save_image(arr, tmp_path, "tiff", "32-bit floating point",
-                        getattr(self.doc, "original_header", None),
-                        getattr(self.doc, "is_mono", False))
-
-            try:
-                _atomic_fsync_replace(_writer, in_path)
-            except Exception as e:
-                print("Atomic save failed:", repr(e))
-                raise
-
-            # ensure stable on disk before launching
-            if not _wait_stable_file(in_path):
-                QMessageBox.critical(self, "Cosmic Clarity", "Failed to stage input TIFF (not stable on disk).")
-                return
-        except Exception as e:
-            QMessageBox.critical(self, "Cosmic Clarity", f"Failed to save input TIFF:\n{e}")
+            QMessageBox.critical(self, "Cosmic Clarity", f"Unsupported image shape: {arr.shape}")
             return
 
-        # Run queue
-        self._op_queue = ops
-        self._current_input = in_path
-        self._run_next()
+        arr = np.clip(arr, 0.0, 1.0).astype(np.float32, copy=False)
 
-    def _run_next(self):
-        if not self._op_queue:
-            # If we ever get here without more steps, we’re done.
-            self.accept()
-            return
-        mode, suffix = self._op_queue.pop(0)
-        exe_name = _platform_exe_names(mode)
-        exe_path = os.path.join(self.cosmic_root, exe_name)
-        if not os.path.exists(exe_path):
-            QMessageBox.critical(self, "Cosmic Clarity", f"Executable not found:\n{exe_path}")
-            return
-
-        # ✅ compute base early (we need it for purge + glob)
-        base = self._base_name()
-
-        # ✅ purge any stale outputs for THIS base name (avoids matching old files)
-        _purge_cc_io(self.cosmic_root, clear_input=False, clear_output=True, prefix=base)
-
-        # Build args (SASv2 flags mirrored)
-        args = []
-        if mode == "sharpen":
-            psf = self.sld_psf.value()/10.0
-            args += [
-                "--sharpening_mode", self.cmb_sh_mode.currentText(),
-                "--stellar_amount", f"{self.sld_st_amt.value()/100:.2f}",
-                "--nonstellar_strength", f"{psf:.1f}",
-                "--nonstellar_amount", f"{self.sld_nst_amt.value()/100:.2f}"
-            ]
-            # NEW: per-channel sharpen toggle
-            if self.chk_sh_sep.isChecked():
-                args.append("--sharpen_channels_separately")
-
-            if self.chk_auto_psf.isChecked():
-                args.append("--auto_detect_psf")
-        elif mode == "denoise":
-            args += ["--denoise_strength", f"{self.sld_dn_lum.value()/100:.2f}",
-                     "--color_denoise_strength", f"{self.sld_dn_col.value()/100:.2f}",
-                     "--denoise_mode", self.cmb_dn_mode.currentText()]
-            if self.chk_dn_sep.isChecked():
-                args.append("--separate_channels")
-
-        if self.cmb_gpu.currentText() == "No" and mode in ("sharpen","denoise"):
-            args.append("--disable_gpu")
-
-        # Run process
-        self._proc = QProcess(self)
-        self._proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
-        self._proc.setWorkingDirectory(self.cosmic_root)  # <-- add this line
-
-        self._proc.readyReadStandardOutput.connect(self._read_proc_output_main)
-        from functools import partial
-        self._proc.finished.connect(partial(self._on_proc_finished, mode, suffix))
-        self._proc.setProgram(exe_path)
-        self._proc.setArguments(args)
-        self._proc.start()
-        if not self._proc.waitForStarted(3000):
-            QMessageBox.critical(self, "Cosmic Clarity", "Failed to start process.")
-            return
-
-        # Wait for output file
-        base = self._base_name()
-        out_glob = os.path.join(self.cosmic_root, "output", f"{base}*{suffix}*.*")
-        self._wait = WaitDialog(f"Cosmic Clarity – {mode.title()}", self)
-        self._wait.cancelled.connect(self._cancel_all)
+        # --- Show wait/progress UI ---
+        title = "Cosmic Clarity – " + (
+            "Sharpen + Denoise" if mode == "both" else
+            "Super Resolution"  if mode == "superres" else
+            mode.title()
+        )
+        self._wait = WaitDialog(title, self)
+        self._wait.set_progress(0)
+        self._wait.append_output("Starting…")
+        self._wait.cancelled.connect(self._cancel_all_engine)
         self._wait.show()
 
-        self._wait_thread = WaitForFileWorker(out_glob, timeout_sec=1800, parent=self)
-        self._wait_thread.fileFound.connect(lambda path, mode=mode: self._on_output_file(path, mode))
-        self._wait_thread.error.connect(self._on_wait_error)
-        self._wait_thread.cancelled.connect(self._on_wait_cancel)
-        self._wait_thread.start()
+        # --- Run the in-process engine worker ---
+        self._engine_thread = CosmicClarityEngineWorker(arr, preset, parent=self)
 
-    def _read_proc_output_main(self):
-        self._read_proc_output(self._proc, which="main")
+        self._engine_thread.progress.connect(lambda p: self._wait.set_progress(int(p)) if self._wait else None)
+        self._engine_thread.log.connect(lambda s: self._wait.append_output(str(s)) if self._wait else None)
+        self._engine_thread.error.connect(self._on_engine_error)
+        self._engine_thread.result.connect(self._on_engine_result)
 
-    def _read_proc_output(self, proc: QProcess, which="main"):
-        out = proc.readAllStandardOutput().data().decode("utf-8", errors="replace")
-        if not self._wait:
-            return
+        # IMPORTANT: cleanup when the thread actually finishes
+        self._engine_thread.finished.connect(self._engine_cleanup_and_maybe_close)
 
-        for line in out.splitlines():
-            line = line.strip()
-            if not line:
-                continue
+        self._engine_thread.start()
 
-            if line.startswith("Progress:"):
-                try:
-                    pct = float(line.split()[1].replace("%", ""))
-                    self._wait.set_progress(int(pct))
-                except Exception:
-                    pass
-                continue  # <- skip echo
 
-            # non-progress lines: keep showing + printing
-            self._wait.append_output(line)
-            print(f"[CC] {line}")       
-
-    def _on_proc_finished(self, mode, suffix, code, status):
-        if code != 0:
-            if self._wait: self._wait.append_output(f"Process exited with code {code}.")
-            # still let the file-watcher decide success/failure (some exes write before exit)
-
-    def _on_output_file(self, out_path: str, mode: str):
-        # stop waiting UI
-        if self._wait: self._wait.close(); self._wait = None
-        if self._wait_thread: self._wait_thread.stop(); self._wait_thread = None
-
-        has_more = bool(self._op_queue)
-        
-        # --- Optimization: Chained Execution Fast Path ---
-        # If we have more steps, skip the expensive load/display/save cycle.
-        # Just move the output file to be the input for the next step.
-        if has_more:
-            if not out_path or not os.path.exists(out_path):
-                QMessageBox.critical(self, "Cosmic Clarity", "Output file missing during chain execution.")
-                self._op_queue.clear()
-                return
-
-            base     = self._base_name()
-            next_in  = os.path.join(self.cosmic_root, "input", f"{base}.tif")
-            prev_in  = getattr(self, "_current_input", None)
-
+    def _cancel_all_engine(self):
+        thr = getattr(self, "_engine_thread", None)
+        if thr is not None:
             try:
-                # Direct move/copy instead of decode+encode
-                if os.path.abspath(out_path) != os.path.abspath(next_in):
-                    # Windows cannot atomic replace if target exists via os.rename usually,
-                    # but shutil.move is generally robust. 
-                    # We remove target first to be sure.
-                    if os.path.exists(next_in):
-                        os.remove(next_in)
-                    shutil.move(out_path, next_in)
-                
-                # Ensure stability of the *new* input
-                if not _wait_stable_file(next_in):
-                     QMessageBox.critical(self, "Cosmic Clarity", "Staged input for next step is unstable.")
-                     self._op_queue.clear()
-                     return
+                thr.cancel()                # your flag
+                thr.requestInterruption()   # Qt-native interruption request
+            except Exception:
+                pass
 
-                self._current_input = next_in
+        # Keep the wait dialog open (or show "Canceling…") instead of closing immediately
+        if self._wait:
+            self._wait.append_output("Cancel requested… waiting for worker to stop.")
+            self._wait.set_progress(0)
+            # optionally disable cancel button to avoid spam clicks:
+            # (you'd need to store the cancel button in WaitDialog to disable it)
 
-                # Cleanup previous input if distinct
-                if prev_in and prev_in != next_in and os.path.exists(prev_in):
-                    os.remove(prev_in)
-
-            except Exception as e:
-                QMessageBox.critical(self, "Cosmic Clarity", f"Failed to stage next step:\n{e}")
-                self._op_queue.clear()
-                return
-
-            # Trigger next step immediately
-            QTimer.singleShot(50, self._run_next)
-            return
-
-        # --- Final Step (or Single Step): Load and Display ---
-        try:
-            img, hdr, bd, mono = load_image(out_path)
-            if img is None:
-                raise RuntimeError("Unable to load output image.")
-        except Exception as e:
-            QMessageBox.critical(self, "Cosmic Clarity", f"Failed to load output:\n{e}")
-            return
-
-        dest = img.astype(np.float32, copy=False)
-
-        # Apply to document
-        step_title = f"Cosmic Clarity – {mode.title()}"
-        create_new = (self.cmb_target.currentIndex() == 1)
-
-        if create_new:
-            ok = self._spawn_new_doc_from_numpy(dest, step_title)
-            if not ok:
-                self._apply_to_active(dest, step_title)
-        else:
-            self._apply_to_active(dest, step_title)
-
-        # Cleanup final output
-        if out_path and os.path.exists(out_path):
-            try: os.remove(out_path)
-            except OSError: pass
-        
-        # Cleanup final input
-        prev_in = getattr(self, "_current_input", None)
-        if prev_in and os.path.exists(prev_in):
-            try: os.remove(prev_in)
-            except OSError: pass
-
-        # Final purge
-        try:
-            _purge_cc_io(self.cosmic_root, clear_input=True, clear_output=True)
-        except Exception:
-            pass
-        self.accept()
+            # If you really want to hide it, do hide() not close() (close may cascade deletes)
+            # self._wait.hide()
 
 
-    def _on_wait_error(self, msg: str):
-        if self._wait: self._wait.close(); self._wait = None
-        if self._wait_thread: self._wait_thread.stop(); self._wait_thread = None
+    def _on_engine_error(self, msg: str):
+        if self._wait:
+            self._wait.close()
+            self._wait = None
         QMessageBox.critical(self, "Cosmic Clarity", msg)
 
-    def _on_wait_cancel(self):
-        if self._wait: self._wait.close(); self._wait = None
-        if self._wait_thread: self._wait_thread.stop(); self._wait_thread = None
+    def _on_engine_result(self, out_arr: np.ndarray, step_title: str):
+        if self._wait:
+            self._wait.close()
+            self._wait = None
 
-    def _cancel_all(self):
-        try:
-            if self._proc: self._proc.kill()
-        except Exception as e:
-            import logging
-            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
-        self._on_wait_cancel()
+        create_new = (self.cmb_target.currentIndex() == 1)
+        if create_new:
+            ok = self._spawn_new_doc_from_numpy(out_arr, step_title)
+            if not ok:
+                self._apply_to_active(out_arr, step_title)
+        else:
+            self._apply_to_active(out_arr, step_title)
+
+        self.accept()
+
 
     def _base_name(self) -> str:
         fp = getattr(self.doc, "file_path", None)
@@ -904,64 +633,6 @@ class CosmicClarityDialogPro(QDialog):
 
 
     # ----- Super-resolution -----
-    def _run_superres(self):
-        exe_name = _platform_exe_names("superres")
-        exe_path = os.path.join(self.cosmic_root, exe_name)
-        if not os.path.exists(exe_path):
-            QMessageBox.critical(self, "Cosmic Clarity", f"Super Resolution executable not found:\n{exe_path}")
-            return
-
-        _ensure_dirs(self.cosmic_root)
-        # 🔸 purge output too so any file that appears is from THIS run
-        _purge_cc_io(self.cosmic_root, clear_input=True, clear_output=True)
-
-        base = self._base_name()
-        in_path = os.path.join(self.cosmic_root, "input", f"{base}.tif")
-        try:
-            save_image(self.orig, in_path, "tiff", "32-bit floating point",
-                    getattr(self.doc, "original_header", None),
-                    getattr(self.doc, "is_mono", False))
-        except Exception as e:
-            QMessageBox.critical(self, "Cosmic Clarity", f"Failed to save input TIFF:\n{e}")
-            return
-        self._current_input = in_path
-
-        scale = int(self.cmb_scale.currentText().replace("x", ""))
-        # keep args as-is if your superres build expects explicit paths
-        args = [
-            "--input", in_path,
-            "--output_dir", os.path.join(self.cosmic_root, "output"),
-            "--scale", str(scale),
-            "--model_dir", self.cosmic_root
-        ]
-
-        self._proc = QProcess(self)
-        self._proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
-        self._proc.readyReadStandardOutput.connect(self._read_superres_output_main)
-        # finished handler not required; the file watcher drives success
-        self._proc.setProgram(exe_path)
-        self._proc.setArguments(args)
-        self._proc.start()
-        if not self._proc.waitForStarted(3000):
-            QMessageBox.critical(self, "Cosmic Clarity", "Failed to start Super Resolution process.")
-            return
-
-        self._wait = WaitDialog("Cosmic Clarity – Super Resolution", self)
-        self._wait.cancelled.connect(self._cancel_all)
-        self._wait.show()
-
-        # 🔸 Watch broadly; we purged output so the first file is from this run.
-        # We'll still re-pick the exact file in the slot for safety.
-        self._sr_base = base
-        self._sr_scale = scale
-        out_glob = os.path.join(self.cosmic_root, "output", "*.*")
-
-        self._wait_thread = WaitForFileWorker(out_glob, timeout_sec=1800, parent=self)
-        self._wait_thread.fileFound.connect(self._on_superres_file)   # path arg is ignored; we reselect
-        self._wait_thread.error.connect(self._on_wait_error)
-        self._wait_thread.cancelled.connect(self._on_wait_cancel)
-        self._wait_thread.start()
-
 
     def apply_preset(self, p: dict):
         # Mode
@@ -1031,100 +702,35 @@ class CosmicClarityDialogPro(QDialog):
 
         return preset
 
-
-
-    def _read_superres_output_main(self):
-        self._read_superres_output(self._proc)
-
-    def _read_superres_output(self, proc: QProcess):
-        out = proc.readAllStandardOutput().data().decode("utf-8", errors="replace")
-        if not self._wait: return
-        for line in out.splitlines():
-            if line.startswith("PROGRESS:") or line.startswith("Progress:"):
-                try:
-                    tail = line.split(":",1)[1] if ":" in line else line.split()[1]
-                    pct = int(float(tail.strip().replace("%","")))
-                    self._wait.set_progress(pct)
-                except Exception:
-                    pass
-            else:
-                self._wait.append_output(line)
-
-    def _pick_superres_output(self, base: str, scale: int) -> str | None:
-        """
-        Find the most plausible super-res output file. We try several common
-        name patterns, then fall back to the newest/largest file in the output dir.
-        """
-        out_dir = os.path.join(self.cosmic_root, "output")
-
-        def _best(paths: list[str]) -> str | None:
-            if not paths:
-                return None
-            # prefer bigger file; tie-break by newest mtime
-            paths.sort(key=lambda p: (os.path.getsize(p), os.path.getmtime(p)), reverse=True)
-            return paths[0]
-
-        # common patterns used by different builds
-        patterns = [
-            f"{base}_upscaled{scale}.*",
-            f"{base}_upscaled*.*",
-            f"{base}*upscal*.*",
-            f"{base}*superres*.*",
-        ]
-        for pat in patterns:
-            hit = _best(glob.glob(os.path.join(out_dir, pat)))
-            if hit:
-                return hit
-
-        # fallback: anything in output (we purge it first, so whatever appears is ours)
-        return _best(glob.glob(os.path.join(out_dir, "*.*")))
-
-
-    def _on_superres_file(self, _first_path_from_watcher: str):
-        # stop waiting UI
-        if self._wait: self._wait.close(); self._wait = None
-        if self._wait_thread: self._wait_thread.stop(); self._wait_thread = None
-
-        # pick the actual output (robust to naming)
-        base  = getattr(self, "_sr_base", self._base_name())
-        scale = int(getattr(self, "_sr_scale", int(self.cmb_scale.currentText().replace("x",""))))
-        out_path = self._pick_superres_output(base, scale)
-        if not out_path or not os.path.exists(out_path):
-            QMessageBox.critical(self, "Cosmic Clarity", "Super Resolution output file not found.")
+    def closeEvent(self, e):
+        # If engine is running, cancel and delay close until thread finishes
+        if self._engine_thread is not None and self._engine_thread.isRunning():
+            self._closing_after_cancel = True
+            self._cancel_all_engine()   # triggers cancel
+            e.ignore()
             return
+        super().closeEvent(e)
 
-        try:
-            img, hdr, bd, mono = load_image(out_path)
-            if img is None:
-                raise RuntimeError("Unable to load output image.")
-        except Exception as e:
-            QMessageBox.critical(self, "Cosmic Clarity", f"Failed to load Super Resolution output:\n{e}")
+    def reject(self):
+        # Close button uses reject(); apply same guard
+        if self._engine_thread is not None and self._engine_thread.isRunning():
+            self._closing_after_cancel = True
+            self._cancel_all_engine()
             return
+        super().reject()
 
-        dest = img.astype(np.float32, copy=False)
-        step_title = "Cosmic Clarity – Super Resolution"
-        create_new = (self.cmb_target.currentIndex() == 1)
-
-        if create_new:
-            ok = self._spawn_new_doc_from_numpy(dest, step_title)
-            if not ok:
-                self._apply_to_active(dest, step_title)
-        else:
-            self._apply_to_active(dest, step_title)
-
-        # cleanup mirrors sharpen/denoise
+    def _engine_cleanup_and_maybe_close(self):
+        # Called when thread has truly stopped
         try:
-            if getattr(self, "_current_input", None) and os.path.exists(self._current_input):
-                os.remove(self._current_input)
-            if os.path.exists(out_path):
-                os.remove(out_path)
-            _purge_cc_io(self.cosmic_root, clear_input=True, clear_output=True)
+            if self._engine_thread is not None:
+                self._engine_thread.deleteLater()
         except Exception:
             pass
+        self._engine_thread = None
 
-        self.accept()
-
-
+        if self._closing_after_cancel:
+            self._closing_after_cancel = False
+            super().reject()
 
 # =============================================================================
 # Satellite removal 
@@ -1152,7 +758,7 @@ class CosmicClaritySatelliteDialogPro(QDialog):
                 logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
         self.settings = QSettings()
-        self.cosmic_clarity_folder = self.settings.value("paths/cosmic_clarity", "", type=str) or ""
+
         self.input_folder  = ""
         self.output_folder = ""
         self.sensitivity = 0.10  # 0.01–0.50
@@ -1224,11 +830,6 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         self.btn_monitor = QPushButton("Live Monitor Input Folder"); self.btn_monitor.clicked.connect(self._live_monitor)
         left.addWidget(self.btn_monitor)
 
-        # Folder display + chooser for Cosmic Clarity root
-        self.lbl_root = QLabel(f"Folder: {self.cosmic_clarity_folder or 'Not set'}")
-        left.addWidget(self.lbl_root)
-        self.btn_pick_root = QPushButton("Choose Cosmic Clarity Folder…"); self.btn_pick_root.clicked.connect(self._choose_root)
-        left.addWidget(self.btn_pick_root)
 
         left.addStretch(1)
 
@@ -1253,13 +854,7 @@ class CosmicClaritySatelliteDialogPro(QDialog):
 
         self.resize(900, 600)
 
-    # ---------- Settings / root ----------
-    def _choose_root(self):
-        folder = QFileDialog.getExistingDirectory(self, "Select Cosmic Clarity Folder", self.cosmic_clarity_folder or "")
-        if not folder: return
-        self.cosmic_clarity_folder = folder
-        self.settings.setValue("paths/cosmic_clarity", folder)
-        self.lbl_root.setText(f"Folder: {folder}")
+
 
     # ---------- IO folders ----------
     def _choose_input(self):
@@ -1362,146 +957,199 @@ class CosmicClaritySatelliteDialogPro(QDialog):
 
     # ---------- Single image processing ----------
     def _process_single_image(self):
-        # Gather possible open views
-        views = self._collect_open_views()
+        from PyQt6.QtCore import QCoreApplication, Qt
+        from PyQt6.QtWidgets import QMessageBox, QFileDialog, QInputDialog, QProgressDialog
 
+        from setiastro.saspro.cosmicclarity_engines.satellite_engine import (
+            get_satellite_models,
+            satellite_remove_image,
+        )
+
+        # ----------------------------
         # Decide source: view or file
+        # ----------------------------
+        views = self._collect_open_views()
         use_view = False
+
         if views:
             mb = QMessageBox(self)
             mb.setWindowTitle("Process Single Image")
             mb.setText("Choose the source to process:")
-            btn_view  = mb.addButton("Open View", QMessageBox.ButtonRole.AcceptRole)
-            btn_file  = mb.addButton("File on Disk", QMessageBox.ButtonRole.AcceptRole)
+            btn_view = mb.addButton("Open View", QMessageBox.ButtonRole.AcceptRole)
+            btn_file = mb.addButton("File on Disk", QMessageBox.ButtonRole.AcceptRole)
             mb.addButton(QMessageBox.StandardButton.Cancel)
             mb.exec()
+
             if mb.clickedButton() is btn_view:
                 use_view = True
-            elif mb.clickedButton() is None or mb.clickedButton() == mb.buttons()[-1]:  # Cancel
+            elif mb.clickedButton() is btn_file:
+                use_view = False
+            else:
                 return
 
-        # --- Branch 1: Process an OPEN VIEW ---
+        # ----------------------------
+        # Gather engine params from UI
+        # ----------------------------
+        use_gpu = (self.cmb_gpu.currentText() == "Yes")
+        mode = self.cmb_mode.currentText().lower()
+        clip_trail = bool(self.chk_clip.isChecked())
+        sensitivity = float(self.sensitivity)
+        skip_if_none = bool(self.chk_skip.isChecked())
+
+        # ----------------------------------------------------
+        # Acquire input image FIRST (no progress dialog yet)
+        # ----------------------------------------------------
+        hdr = None
+        mono = False
+        chosen_doc = None
+        file_path = None
+
         if use_view:
-            # If multiple views, ask which one
-            chosen_doc = None
+            # Choose which doc
             if len(views) == 1:
                 chosen_doc = views[0][1]
-                base_name  = self._base_name_for_doc(chosen_doc)
             else:
                 titles = [t for (t, _) in views]
                 sel, ok = QInputDialog.getItem(self, "Select View", "Choose an open view:", titles, 0, False)
                 if not ok:
                     return
-                idx = titles.index(sel)
-                chosen_doc = views[idx][1]
-                base_name  = self._base_name_for_doc(chosen_doc)
+                chosen_doc = views[titles.index(sel)][1]
 
-            # Stage image from the chosen view
-            temp_in  = self._create_temp_folder()
-            temp_out = self._create_temp_folder()
-            staged_in = os.path.join(temp_in, f"{base_name}.tif")
-
-            try:
-                # 32-bit float TIFF like SASv2
-                img = np.clip(np.asarray(chosen_doc.image, dtype=np.float32), 0.0, 1.0)
-                save_image(
-                    img, staged_in,
-                    "tiff", "32-bit floating point",
-                    getattr(chosen_doc, "original_header", None),
-                    getattr(chosen_doc, "is_mono", False)
-                )
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to stage view for processing:\n{e}")
+            if chosen_doc is None or getattr(chosen_doc, "image", None) is None:
+                QMessageBox.warning(self, "Warning", "Selected view has no image.")
                 return
 
-            # Run satellite
             try:
-                self._run_satellite(input_dir=temp_in, output_dir=temp_out, live=False)
+                img = np.asarray(chosen_doc.image, dtype=np.float32)
+                img = np.clip(img, 0.0, 1.0)
             except Exception as e:
-                QMessageBox.critical(self, "Error", f"Error processing image:\n{e}")
+                QMessageBox.critical(self, "Error", f"Failed to read image from view:\n{e}")
                 return
 
-            # Pick up result and apply back to the view
-            out = glob.glob(os.path.join(temp_out, "*_satellited.*"))
-            if not out:
-                # Likely --skip-save and no trail, or failure
-                QMessageBox.information(self, "Satellite Removal", "No output produced (possibly no satellite trail detected).")
-            else:
-                out_path = out[0]
-                try:
-                    result, hdr, bd, mono = load_image(out_path)
-                    if result is None:
-                        raise RuntimeError("Unable to load output image.")
-                    result = result.astype(np.float32, copy=False)
+        else:
+            file_path, _ = QFileDialog.getOpenFileName(
+                self, "Select Image", "",
+                "Image Files (*.png *.tif *.tiff *.fit *.fits *.xisf *.cr2 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef *.jpg *.jpeg)"
+            )
+            if not file_path:
+                return  # user cancelled file dialog
 
-                    # Apply back to the chosen doc
-                    if hasattr(chosen_doc, "set_image"):
-                        chosen_doc.set_image(result, step_name="Cosmic Clarity – Satellite Removal")
-                    elif hasattr(chosen_doc, "apply_numpy"):
-                        chosen_doc.apply_numpy(result, step_name="Cosmic Clarity – Satellite Removal")
-                    else:
-                        chosen_doc.image = result
-                except Exception as e:
-                    QMessageBox.critical(self, "Error", f"Failed to apply result to view:\n{e}")
-                    # fall through to cleanup
-                finally:
-                    # Clean up temp files
-                    try:
-                        if os.path.exists(out_path): os.remove(out_path)
-                    except Exception:
-                        pass
-
-            # Clean up temp dirs
             try:
-                shutil.rmtree(temp_in, ignore_errors=True)
-                shutil.rmtree(temp_out, ignore_errors=True)
-            except Exception:
-                pass
+                img, hdr, bd, mono = load_image(file_path)
+                if img is None:
+                    raise RuntimeError("load_image returned None.")
+                img = np.asarray(img, dtype=np.float32)
+                img = np.clip(img, 0.0, 1.0)
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to load image:\n{e}")
+                return
 
-            return  # done
-
-        # --- Branch 2: Process a FILE on disk ---
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Select Image", "",
-            "Image Files (*.png *.tif *.tiff *.fit *.fits *.xisf *.cr2 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef *.jpg *.jpeg)"
-        )
-        if not file_path:
-            QMessageBox.warning(self, "Warning", "No file selected.")
-            return
-
-        temp_in  = self._create_temp_folder()
-        temp_out = self._create_temp_folder()
+        # ----------------------------
+        # Load/cached models ONCE
+        # ----------------------------
         try:
-            shutil.copy(file_path, temp_in)
+            models = get_satellite_models(use_gpu=use_gpu, status_cb=lambda s: None)
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to stage input:\n{e}")
+            QMessageBox.critical(self, "Error", f"Failed to load Satellite models:\n{e}")
             return
 
+        # ----------------------------
+        # Progress dialog helper
+        #   IMPORTANT: create/show AFTER input is chosen
+        # ----------------------------
+        pd = QProgressDialog("Satellite removal…", "Cancel", 0, 100, self)
+        pd.setWindowModality(Qt.WindowModality.WindowModal)
+        pd.setMinimumDuration(250)   # helps prevent weird cancel behavior
+        pd.setAutoClose(True)
+        pd.setAutoReset(True)
+        pd.setValue(0)
+
+        cancelled = {"flag": False}
+
+        def _on_cancel():
+            cancelled["flag"] = True
+
+        pd.canceled.connect(_on_cancel)
+
+        def _progress(done: int, total: int):
+            if total > 0:
+                pd.setValue(int((done * 100) / total))
+            else:
+                pd.setValue(0)
+
+            QCoreApplication.processEvents()
+
+            # IMPORTANT: return True to continue, False to cancel
+            return (not cancelled["flag"]) and (not pd.wasCanceled())
+
+        # ----------------------------
+        # Run engine
+        # ----------------------------
         try:
-            self._run_satellite(input_dir=temp_in, output_dir=temp_out, live=False)
+            cancelled["flag"] = False  # reset right before run
+            pd.show()
+
+            out, detected = satellite_remove_image(
+                img,
+                models=models,
+                mode=mode,
+                clip_trail=clip_trail,
+                sensitivity=sensitivity,
+                progress_cb=_progress,
+            )
+
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error processing image:\n{e}")
             return
 
-        # Move output back next to original
-        out = glob.glob(os.path.join(temp_out, "*_satellited.*"))
-        if out:
-            dst = os.path.join(os.path.dirname(file_path), os.path.basename(out[0]))
-            try:
-                shutil.move(out[0], dst)
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to save result:\n{e}")
-                return
-            QMessageBox.information(self, "Success", f"Processed image saved to:\n{dst}")
-        else:
-            QMessageBox.warning(self, "Warning", "No output file found.")
-
-        # Cleanup
-        try:
-            shutil.rmtree(temp_in, ignore_errors=True)
-            shutil.rmtree(temp_out, ignore_errors=True)
-        except Exception:
+        finally:
             pass
+
+        # ----------------------------
+        # Handle cancel / skip-save
+        # ----------------------------
+        if cancelled["flag"]:
+            QMessageBox.information(self, "Cancelled", "Operation cancelled.")
+            return
+
+        if skip_if_none and (not detected):
+            QMessageBox.information(self, "Satellite Removal", "No satellite trail detected (skip-save enabled).")
+            return
+
+        out = np.asarray(out, dtype=np.float32, order="C")
+
+        # ----------------------------
+        # Apply or save
+        # ----------------------------
+        if use_view:
+            if hasattr(chosen_doc, "set_image"):
+                chosen_doc.set_image(out, step_name="Cosmic Clarity – Satellite Removal")
+            elif hasattr(chosen_doc, "apply_numpy"):
+                chosen_doc.apply_numpy(out, step_name="Cosmic Clarity – Satellite Removal")
+            else:
+                chosen_doc.image = out
+            return
+
+        # file path save
+        try:
+            base, ext = os.path.splitext(file_path)
+            dst = base + "_satellited" + ext
+
+            el = ext.lower()
+            if el in (".tif", ".tiff"):
+                fmt, bitdepth = "tiff", "32-bit floating point"
+            elif el in (".fit", ".fits"):
+                fmt, bitdepth = "fits", "32-bit floating point"
+            elif el == ".xisf":
+                fmt, bitdepth = "xisf", "32-bit floating point"
+            else:
+                fmt, bitdepth = "auto", None
+
+            save_image(out, dst, fmt, bitdepth, hdr, mono)
+            QMessageBox.information(self, "Success", f"Processed image saved to:\n{dst}")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to save result:\n{e}")
 
     def _collect_open_views(self):
         """
@@ -1548,66 +1196,50 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         return "image"
 
 
-    # ---------- Batch ----------
     def _batch_process(self):
         if not self.input_folder or not self.output_folder:
             QMessageBox.warning(self, "Warning", "Please select both input and output folders.")
             return
-        exe = os.path.join(self.cosmic_clarity_folder, _satellite_exe_name())
-        if not os.path.exists(exe):
-            QMessageBox.critical(self, "Error", f"Executable not found:\n{exe}")
-            return
 
-        cmd = self._build_cmd(exe, self.input_folder, self.output_folder, batch=True, monitor=False)
-        self._run_threaded(cmd, title="Satellite – Batch processing")
+        self._run_engine_thread(monitor=False, title="Satellite – Batch processing")
 
-    # ---------- Live monitor ----------
+
     def _live_monitor(self):
         if not self.input_folder or not self.output_folder:
             QMessageBox.warning(self, "Warning", "Please select both input and output folders.")
             return
-        exe = os.path.join(self.cosmic_clarity_folder, _satellite_exe_name())
-        if not os.path.exists(exe):
-            QMessageBox.critical(self, "Error", f"Executable not found:\n{exe}")
-            return
 
-        cmd = self._build_cmd(exe, self.input_folder, self.output_folder, batch=False, monitor=True)
         self.sld_sens.setEnabled(False)
-        self._run_threaded(cmd, title="Satellite – Live monitoring", on_finish=lambda: self.sld_sens.setEnabled(True))
+        self._run_engine_thread(monitor=True, title="Satellite – Live monitoring",
+                                on_finish=lambda: self.sld_sens.setEnabled(True))
 
-    # ---------- Command / run ----------
-    def _build_cmd(self, exe_path: str, in_dir: str, out_dir: str, *, batch: bool, monitor: bool):
-        cmd = [
-            exe_path,
-            "--input", in_dir,
-            "--output", out_dir,
-            "--mode", self.cmb_mode.currentText().lower(),
-        ]
-        if self.cmb_gpu.currentText() == "Yes":
-            cmd.append("--use-gpu")
-        if self.chk_clip.isChecked():
-            cmd.append("--clip-trail")
-        else:
-            cmd.append("--no-clip-trail")
-        if self.chk_skip.isChecked():
-            cmd.append("--skip-save")
-        if batch:
-            cmd.append("--batch")
-        if monitor:
-            cmd.append("--monitor")
-        cmd += ["--sensitivity", f"{self.sensitivity}"]
-        return cmd
+    def _run_engine_thread(self, *, monitor: bool, title: str, on_finish=None):
+        use_gpu = (self.cmb_gpu.currentText() == "Yes")
+        mode = self.cmb_mode.currentText().lower()  # "full" / "luminance"
+        clip_trail = bool(self.chk_clip.isChecked())
+        sensitivity = float(self.sensitivity)
+        skip_save = bool(self.chk_skip.isChecked())
 
-    def _run_threaded(self, cmd, title="Processing…", on_finish=None):
-        # Wait dialog + threaded subprocess (mirrors SASv2 SatelliteProcessingThread)
         self._wait = WaitDialog(title, self)
         self._wait.show()
 
-        self._sat_thread = SatelliteProcessingThread(cmd)
+        self._sat_thread = SatelliteEngineThread(
+            input_dir=self.input_folder,
+            output_dir=self.output_folder,
+            use_gpu=use_gpu,
+            mode=mode,
+            clip_trail=clip_trail,
+            sensitivity=sensitivity,
+            skip_save=skip_save,
+            monitor=monitor,
+        )
         self._sat_thread.log_signal.connect(self._wait.append_output)
         self._sat_thread.finished_signal.connect(lambda: self._on_thread_finished(on_finish))
         self._wait.cancelled.connect(self._cancel_sat_thread)
         self._sat_thread.start()
+
+
+    # ---------- Command / run ----------
 
     def _cancel_sat_thread(self):
         if self._sat_thread:
@@ -1625,16 +1257,6 @@ class CosmicClaritySatelliteDialogPro(QDialog):
                 logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
         QMessageBox.information(self, "Done", "Processing finished.")
 
-    def _run_satellite(self, *, input_dir: str, output_dir: str, live: bool):
-        if not self.cosmic_clarity_folder:
-            raise RuntimeError("Cosmic Clarity folder not set. Choose it in Preferences or with the button below.")
-        exe = os.path.join(self.cosmic_clarity_folder, _satellite_exe_name())
-        if not os.path.exists(exe):
-            raise FileNotFoundError(f"Executable not found: {exe}")
-
-        cmd = self._build_cmd(exe, input_dir, output_dir, batch=not live, monitor=live)
-        print("Running command:", " ".join(cmd))
-        subprocess.run(cmd, check=True)
 
     # ---------- Utils ----------
     @staticmethod
@@ -1644,57 +1266,130 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         os.makedirs(temp_folder, exist_ok=True)
         return temp_folder
 
-
-class SatelliteProcessingThread(QThread):
+class SatelliteEngineThread(QThread):
     log_signal = pyqtSignal(str)
     finished_signal = pyqtSignal()
-    def __init__(self, command):
+    progress_signal = pyqtSignal(int, int)  # done, total
+
+    def __init__(self, *, input_dir: str, output_dir: str,
+                 use_gpu: bool, mode: str, clip_trail: bool,
+                 sensitivity: float, skip_save: bool, monitor: bool,
+                 poll_seconds: float = 1.0):
         super().__init__()
-        self.command = command
-        self.process = None
+        self.input_dir = input_dir
+        self.output_dir = output_dir
+        self.use_gpu = use_gpu
+        self.mode = mode
+        self.clip_trail = clip_trail
+        self.sensitivity = sensitivity
+        self.skip_save = skip_save
+        self.monitor = monitor
+        self.poll_seconds = poll_seconds
+
+        self._cancel = False
+        self._seen = set()
 
     def cancel(self):
-        if self.process:
-            try:
-                self.process.kill()
-            except Exception:
-                pass
+        self._cancel = True
+
+    def _iter_files(self):
+        exts = ('.png', '.tif', '.tiff', '.fit', '.fits', '.xisf',
+                '.cr2', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2', '.pef', '.jpg', '.jpeg')
+        try:
+            for fn in sorted(os.listdir(self.input_dir)):
+                if fn.lower().endswith(exts):
+                    yield fn
+        except Exception:
+            return
 
     def run(self):
         try:
-            self.log_signal.emit("Running command: " + " ".join(self.command))
-            self.process = subprocess.Popen(
-                self.command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                universal_newlines=True,
-                text=True
+            from setiastro.saspro.cosmicclarity_engines.satellite_engine import (
+                get_satellite_models, satellite_remove_image
             )
-            # Read output to prevent deadlock
-            for line in iter(self.process.stdout.readline, ""):
-                if not line: break
-                # Optional: emit log signal for verbose output? 
-                # The original code didn't log stdout, but blocked.
-                # Let's just log it if we want, or consume it.
-                # The prompt says "I think starnet stops but the window doesnt close"
-                # so maybe verbose logging isn't the priority, but consuming stdout is mandatory.
-                # However, the original code used subprocess.run which captures output if specified,
-                # but it didn't specify capture_output=True or stdout/stderr args in the snippet I saw?
-                # Wait, let's check the snippet I saw earlier for SatelliteProcessingThread.
-                pass
-            
-            # Close stdout to ensure cleanup
-            if self.process.stdout:
-                self.process.stdout.close()
 
-            rc = self.process.wait()
-            if rc == 0:
-                self.log_signal.emit("Processing complete.")
+            self.log_signal.emit("Loading Satellite models...")
+            models = get_satellite_models(use_gpu=self.use_gpu, status_cb=lambda s: None)
+            self.log_signal.emit("Models loaded.")
+
+            os.makedirs(self.output_dir, exist_ok=True)
+
+            def process_one(fp_in: str, fp_out: str):
+                # NOTE: assumes load_image/save_image exist in your module scope
+                img, hdr, bd, mono = load_image(fp_in)
+                if img is None:
+                    self.log_signal.emit(f"Failed to load: {os.path.basename(fp_in)}")
+                    return
+
+                img = np.asarray(img, dtype=np.float32)
+                img = np.clip(img, 0.0, 1.0)
+
+                out, detected = satellite_remove_image(
+                    img,
+                    models=models,
+                    mode=self.mode,
+                    clip_trail=self.clip_trail,
+                    sensitivity=float(self.sensitivity),
+                    progress_cb=None,  # keep this simple; we emit per-file progress instead
+                )
+
+                if self.skip_save and (not detected):
+                    self.log_signal.emit(f"Skip (no trail): {os.path.basename(fp_in)}")
+                    return
+
+                out = np.asarray(out, dtype=np.float32, order="C")
+                out = np.clip(out, 0.0, 1.0)
+
+                # Choose save behavior: keep original extension/name
+                # (You can change naming here if you want.)
+                save_image(out, fp_out, "auto", None, hdr, mono)
+                self.log_signal.emit(f"Saved: {os.path.basename(fp_out)}")
+
+            # -------- batch (single pass) OR monitor (loop) --------
+            while not self._cancel:
+                files = list(self._iter_files())
+
+                # monitor: only process new files
+                todo = [fn for fn in files if fn not in self._seen]
+                total = len(todo)
+                done = 0
+
+                for fn in todo:
+                    if self._cancel:
+                        break
+
+                    self._seen.add(fn)
+                    fp_in = os.path.join(self.input_dir, fn)
+                    fp_out = os.path.join(self.output_dir, fn)
+
+                    # if output already exists, treat as seen
+                    if os.path.exists(fp_out):
+                        self.log_signal.emit(f"Exists, skipping: {fn}")
+                        done += 1
+                        self.progress_signal.emit(done, total)
+                        continue
+
+                    self.log_signal.emit(f"Processing: {fn}")
+                    try:
+                        process_one(fp_in, fp_out)
+                    except Exception as e:
+                        self.log_signal.emit(f"Error {fn}: {e}")
+
+                    done += 1
+                    self.progress_signal.emit(done, total)
+
+                if not self.monitor:
+                    break
+
+                # monitor mode: sleep/poll
+                self.msleep(int(max(50, self.poll_seconds * 1000)))
+
+            if self._cancel:
+                self.log_signal.emit("Cancelled.")
             else:
-                self.log_signal.emit(f"Processing failed with code {rc}")
+                self.log_signal.emit("Done.")
 
         except Exception as e:
             self.log_signal.emit(f"Unexpected error: {e}")
         finally:
-            self.process = None
             self.finished_signal.emit()

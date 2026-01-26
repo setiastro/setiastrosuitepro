@@ -4,10 +4,14 @@ from PyQt6.QtWidgets import (
     QHBoxLayout, QVBoxLayout, QWidget, QCheckBox, QComboBox, QSpinBox, QDoubleSpinBox, QLabel, QColorDialog, QFontDialog, QSlider)
 from PyQt6.QtCore import QSettings, Qt
 import pytz  # for timezone list
-
+from setiastro.saspro.accel_installer import current_backend
+import sys, platform
+from PyQt6.QtWidgets import QToolButton, QProgressDialog
+from PyQt6.QtCore import QThread
 # i18n support
 from setiastro.saspro.i18n import get_available_languages, get_saved_language, save_language
-
+import importlib.util
+import importlib.metadata
 
 class SettingsDialog(QDialog):
     """
@@ -24,7 +28,7 @@ class SettingsDialog(QDialog):
 
         # ---- Existing fields (paths, checkboxes, etc.) ----
         self.le_graxpert = QLineEdit()
-        self.le_cosmic   = QLineEdit()
+
         self.le_starnet  = QLineEdit()
         self.le_astap    = QLineEdit()
 
@@ -75,12 +79,12 @@ class SettingsDialog(QDialog):
         self._initial_language = "en" # placeholder, set in refresh_ui
 
         btn_grax  = QPushButton(self.tr("Browse…")); btn_grax.clicked.connect(lambda: self._browse_into(self.le_graxpert))
-        btn_ccl   = QPushButton(self.tr("Browse…")); btn_ccl.clicked.connect(lambda: self._browse_dir(self.le_cosmic))
+
         btn_star  = QPushButton(self.tr("Browse…")); btn_star.clicked.connect(lambda: self._browse_into(self.le_starnet))
         btn_astap = QPushButton(self.tr("Browse…")); btn_astap.clicked.connect(lambda: self._browse_into(self.le_astap))
 
         row_grax  = QHBoxLayout(); row_grax.addWidget(self.le_graxpert); row_grax.addWidget(btn_grax)
-        row_ccl   = QHBoxLayout(); row_ccl.addWidget(self.le_cosmic);   row_ccl.addWidget(btn_ccl)
+
         row_star  = QHBoxLayout(); row_star.addWidget(self.le_starnet); row_star.addWidget(btn_star)
         row_astap = QHBoxLayout(); row_astap.addWidget(self.le_astap);  row_astap.addWidget(btn_astap)
 
@@ -163,7 +167,7 @@ class SettingsDialog(QDialog):
         # ---- Left column: Paths & Integrations ----
         left_col.addRow(QLabel(self.tr("<b>Paths & Integrations</b>")))
         w = QWidget(); w.setLayout(row_grax);  left_col.addRow(self.tr("GraXpert executable:"), w)
-        w = QWidget(); w.setLayout(row_ccl);   left_col.addRow(self.tr("Cosmic Clarity folder:"), w)
+
         w = QWidget(); w.setLayout(row_star);  left_col.addRow(self.tr("StarNet executable:"), w)
         w = QWidget(); w.setLayout(row_astap); left_col.addRow(self.tr("ASTAP executable:"), w)
         left_col.addRow(self.tr("Astrometry.net API key:"), self.le_astrometry)
@@ -182,6 +186,50 @@ class SettingsDialog(QDialog):
         left_col.addRow(self.tr("Background Opacity:"), w_bg_opacity)
         left_col.addRow(self.tr("Background Image:"), w_bg_image)
 
+        left_col.addRow(QLabel(self.tr("<b>Acceleration</b>")))
+
+        accel_row = QHBoxLayout()
+        self.backend_label = QLabel(self.tr("Backend: {0}").format(current_backend()))
+        accel_row.addWidget(self.backend_label)
+        # NEW: dependency status label (rich text)
+        self.accel_deps_label = QLabel()
+        self.accel_deps_label.setTextFormat(Qt.TextFormat.RichText)
+        self.accel_deps_label.setStyleSheet("color:#888;")  # subtle
+        self.accel_deps_label.setToolTip(self.tr("Installed acceleration-related Python packages"))
+        accel_row.addSpacing(12)
+        accel_row.addWidget(self.accel_deps_label)
+
+        # NEW: preference combo
+        self.cb_accel_pref = QComboBox()
+        self.cb_accel_pref.addItems([
+            "Auto (recommended)",
+            "CUDA (NVIDIA)",
+            "Intel XPU (Arc/Xe)",
+            "DirectML (Windows AMD/Intel)",
+            "CPU only",
+        ])
+        # hide DirectML option on non-Windows if you want:
+        if platform.system() != "Windows":
+            # remove the DirectML entry (index 3)
+            self.cb_accel_pref.removeItem(3)
+
+        accel_row.addSpacing(8)
+        accel_row.addWidget(QLabel(self.tr("Preference:")))
+        accel_row.addWidget(self.cb_accel_pref)
+
+        self.install_accel_btn = QPushButton(self.tr("Install/Update GPU Acceleration…"))
+        accel_row.addWidget(self.install_accel_btn)
+
+        gpu_help_btn = QToolButton()
+        gpu_help_btn.setText("?")
+        gpu_help_btn.setToolTip(self.tr("If GPU still not being used — click for fix steps"))
+        gpu_help_btn.clicked.connect(self._show_gpu_accel_fix_help)
+        accel_row.addWidget(gpu_help_btn)
+
+        accel_row.addStretch(1)
+        w_accel = QWidget()
+        w_accel.setLayout(accel_row)
+        left_col.addRow(w_accel)
         # ---- Right column: WIMS + RA/Dec + Updates + Display ----
         right_col.addRow(QLabel(self.tr("<b>What's In My Sky — Defaults</b>")))
         right_col.addRow(self.tr("Latitude (°):"), self.sp_lat)
@@ -227,12 +275,150 @@ class SettingsDialog(QDialog):
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self
         )
+        self.cb_accel_pref.currentIndexChanged.connect(self._accel_pref_changed)
+
+
+
         btns.accepted.connect(self._save_and_accept)
         btns.rejected.connect(self.reject)
         root.addWidget(btns)
-
+        self.install_accel_btn.clicked.connect(self._install_or_update_accel)
         # Initial Load:
         self.refresh_ui()
+
+    def _accel_pref_changed(self, idx: int):
+        inv = {0:"auto", 1:"cuda", 2:"xpu", 3:"directml", 4:"cpu"}
+        val = inv.get(idx, "auto")
+        self.settings.setValue("accel/preferred_backend", val)
+        self.settings.sync()
+
+    def _show_gpu_accel_fix_help(self):
+        from PyQt6.QtWidgets import QMessageBox
+        QMessageBox.information(
+            self, self.tr("GPU Acceleration Help"),
+            self.tr(
+                "If GPU is not being used:\n"
+                " • Click Install/Update GPU Acceleration…\n"
+                " • Restart SAS Pro\n"
+                " • On NVIDIA systems, verify drivers and that 'nvidia-smi' works.\n"
+                " • On Windows non-NVIDIA, DirectML may be used.\n"
+            )
+        )
+
+    def _pkg_status(self, dist_name: str, import_name: str | None = None) -> tuple[bool, str]:
+        """
+        Returns (installed?, display_text). Does NOT import the module.
+        dist_name  = pip distribution name used for version lookup (e.g., 'torchvision')
+        import_name = python import name used for find_spec (e.g., 'torch_directml')
+        """
+        mod = import_name or dist_name.replace("-", "_")
+        present = importlib.util.find_spec(mod) is not None
+
+        ver = ""
+        if present:
+            try:
+                ver = importlib.metadata.version(dist_name)
+            except importlib.metadata.PackageNotFoundError:
+                # Sometimes dist name differs; fall back to "installed" without version
+                ver = ""
+            except Exception:
+                ver = ""
+
+        if present:
+            return True, (f"✅ {ver}" if ver else "✅ installed")
+        return False, "— not installed"
+
+
+    def _format_accel_deps_text(self) -> str:
+        # Torch + friends
+        torch_ok, torch_txt = self._pkg_status("torch", "torch")
+        dml_ok, dml_txt     = self._pkg_status("torch-directml", "torch_directml")
+        ta_ok, ta_txt       = self._pkg_status("torchaudio", "torchaudio")
+        tv_ok, tv_txt       = self._pkg_status("torchvision", "torchvision")
+
+        # Pretty, compact, and stable in a QLabel
+        return (
+            f"Torch: <b>{torch_txt}</b><br>"
+            f"Torch-DirectML: <b>{dml_txt}</b><br>"
+            f"TorchAudio: <b>{ta_txt}</b><br>"
+            f"TorchVision: <b>{tv_txt}</b>"
+        )
+
+
+    def _install_or_update_accel(self):
+        import sys, platform
+        from PyQt6.QtWidgets import QMessageBox, QProgressDialog
+        from PyQt6.QtCore import Qt, QThread
+        from setiastro.saspro.accel_installer import current_backend
+        from setiastro.saspro.accel_workers import AccelInstallWorker  # wherever yours lives
+
+        v = sys.version_info
+        if not (v.major == 3 and v.minor in (10, 11, 12)):
+            why = self.tr("This app is running on Python {0}.{1}. GPU acceleration requires Python 3.10, 3.11, or 3.12.").format(v.major, v.minor)
+            tip = ""
+            sysname = platform.system()
+            if sysname == "Darwin":
+                tip = self.tr("\n\nmacOS tip (Apple Silicon):\n • Install Python 3.12:  brew install python@3.12\n • Relaunch the app.")
+            elif sysname == "Windows":
+                tip = self.tr("\n\nWindows tip:\n • Install Python 3.12/3.11/3.10 (x64) from python.org\n • Relaunch the app.")
+            else:
+                tip = self.tr("\n\nLinux tip:\n • Install python3.12 or 3.11 via your package manager\n • Relaunch the app.")
+
+            QMessageBox.warning(self, self.tr("Unsupported Python Version"), why + tip)
+            self.backend_label.setText(self.tr("Backend: CPU (Python version not supported for GPU install)"))
+            return
+
+        self.install_accel_btn.setEnabled(False)
+        self.backend_label.setText(self.tr("Backend: installing…"))
+
+        pref = (self.settings.value("accel/preferred_backend", "auto", type=str) or "auto").lower()
+
+        self._accel_pd = QProgressDialog(self.tr("Preparing runtime…"), self.tr("Cancel"), 0, 0, self)
+        self._accel_pd.setWindowTitle(self.tr("Installing GPU Acceleration"))
+        self._accel_pd.setWindowModality(Qt.WindowModality.ApplicationModal)
+        self._accel_pd.setAutoClose(True)
+        self._accel_pd.setMinimumDuration(0)
+        self._accel_pd.show()
+
+        self._accel_thread = QThread(self)
+        self._accel_worker = AccelInstallWorker(prefer_gpu=True, preferred_backend=pref)
+        self._accel_worker.moveToThread(self._accel_thread)
+
+        self._accel_thread.started.connect(self._accel_worker.run, Qt.ConnectionType.QueuedConnection)
+        self._accel_worker.progress.connect(self._accel_pd.setLabelText, Qt.ConnectionType.QueuedConnection)
+
+        def _cancel():
+            if self._accel_thread.isRunning():
+                self._accel_thread.requestInterruption()
+        self._accel_pd.canceled.connect(_cancel, Qt.ConnectionType.QueuedConnection)
+
+        def _done(ok: bool, msg: str):
+            if getattr(self, "_accel_pd", None):
+                self._accel_pd.reset()
+                self._accel_pd.deleteLater()
+                self._accel_pd = None
+
+            self._accel_thread.quit()
+            self._accel_thread.wait()
+
+            self.install_accel_btn.setEnabled(True)
+            self.backend_label.setText(self.tr("Backend: {0}").format(current_backend()))
+            try:
+                self.accel_deps_label.setText(self._format_accel_deps_text())
+            except Exception:
+                pass
+
+            if ok:
+                QMessageBox.information(self, self.tr("Acceleration"), self.tr("✅ {0}").format(msg))
+            else:
+                QMessageBox.warning(self, self.tr("Acceleration"), self.tr("❌ {0}").format(msg))
+
+        self._accel_worker.finished.connect(_done, Qt.ConnectionType.QueuedConnection)
+        self._accel_thread.finished.connect(self._accel_worker.deleteLater, Qt.ConnectionType.QueuedConnection)
+        self._accel_thread.finished.connect(self._accel_thread.deleteLater, Qt.ConnectionType.QueuedConnection)
+
+        self._accel_thread.start()
+
 
     def refresh_ui(self):
         """
@@ -279,7 +465,7 @@ class SettingsDialog(QDialog):
         
         # Path fields
         self.le_graxpert.setText(self.settings.value("paths/graxpert", "", type=str))
-        self.le_cosmic.setText(self.settings.value("paths/cosmic_clarity", "", type=str))
+
         self.le_starnet.setText(self.settings.value("paths/starnet", "", type=str))
         self.le_astap.setText(self.settings.value("paths/astap", "", type=str))
         self.le_astrometry.setText(self.settings.value("api/astrometry_key", "", type=str))
@@ -329,6 +515,25 @@ class SettingsDialog(QDialog):
         self.sp_wcs_step.setValue(self.settings.value("wcs_grid/step_value", 1.0, type=float))
         self.sp_wcs_step.setEnabled(self.cb_wcs_mode.currentIndex() == 1)
         self.sp_wcs_step.setSuffix(" °" if self.cb_wcs_unit.currentIndex() == 0 else " arcmin")
+
+        pref = (self.settings.value("accel/preferred_backend", "auto", type=str) or "auto").lower()
+
+        # map stored -> combobox index (adjust if you removed DirectML on non-Windows)
+        idx_map = {"auto": 0, "cuda": 1, "xpu": 2, "directml": 3, "cpu": 4}
+
+        idx = idx_map.get(pref, 0)
+        # if non-Windows and directml was saved earlier, clamp to Auto
+        if platform.system() != "Windows" and pref == "directml":
+            idx = 0
+
+        self.cb_accel_pref.setCurrentIndex(idx)
+
+        from setiastro.saspro.accel_installer import current_backend
+        self.backend_label.setText(self.tr("Backend: {0}").format(current_backend()))
+        try:
+            self.accel_deps_label.setText(self._format_accel_deps_text())
+        except Exception:
+            self.accel_deps_label.setText(self.tr("Torch: — unknown"))
 
     def reject(self):
         """User cancelled: restore the original background opacity (revert live changes)."""
@@ -439,7 +644,7 @@ class SettingsDialog(QDialog):
     def _save_and_accept(self):
         # Paths / Integrations
         self.settings.setValue("paths/graxpert", self.le_graxpert.text().strip())
-        self.settings.setValue("paths/cosmic_clarity", self.le_cosmic.text().strip())
+
         self.settings.setValue("paths/starnet", self.le_starnet.text().strip())
         self.settings.setValue("paths/astap", self.le_astap.text().strip())
         self.settings.setValue("shortcuts/save_on_exit", self.chk_save_shortcuts.isChecked())
@@ -465,6 +670,12 @@ class SettingsDialog(QDialog):
         self.settings.setValue("updates/check_on_startup", self.chk_updates_startup.isChecked())
         self.settings.setValue("updates/url", self.le_updates_url.text().strip())
         self.settings.setValue("display/autostretch_24bit", self.chk_autostretch_24bit.isChecked())
+
+        # accel preference
+        pref_idx = self.cb_accel_pref.currentIndex()
+        # map index -> stored string (again, adjust if DirectML removed on non-Windows)
+        inv = {0:"auto", 1:"cuda", 2:"xpu", 3:"directml", 4:"cpu"}
+        self.settings.setValue("accel/preferred_backend", inv.get(pref_idx, "auto"))
 
         # Custom background: persist the chosen path (empty -> remove)
         bg_path = (self.le_bg_path.text() or "").strip()
@@ -519,6 +730,11 @@ class SettingsDialog(QDialog):
         
         if hasattr(p, "mdi") and hasattr(p.mdi, "viewport"):
                 p.mdi.viewport().update()
+
+        try:
+            self.settings.remove("paths/cosmic_clarity")
+        except Exception:
+            pass
 
         self.accept()
 

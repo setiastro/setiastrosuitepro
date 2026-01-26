@@ -7,11 +7,16 @@ import stat
 import tempfile
 import numpy as np
 
-from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtCore import QThread, pyqtSignal, Qt
 from PyQt6.QtWidgets import (
     QInputDialog, QMessageBox, QFileDialog,
-    QDialog, QVBoxLayout, QTextEdit, QPushButton,
+    QDialog, QVBoxLayout, QTextEdit, QPushButton, QProgressBar,
     QLabel, QComboBox, QCheckBox, QSpinBox, QFormLayout, QDialogButtonBox, QWidget, QHBoxLayout
+)
+
+from setiastro.saspro.cosmicclarity_engines.darkstar_engine import (
+    darkstar_starremoval_rgb01,
+    DarkStarParams,
 )
 
 # use your legacy I/O functions (as requested)
@@ -24,6 +29,7 @@ except Exception:
 
 # Shared utilities
 from setiastro.saspro.widgets.image_utils import extract_mask_from_document as _active_mask_array_from_doc
+
 
 _MAD_NORM = 1.4826
 
@@ -393,55 +399,6 @@ def starnet_starless_from_array(arr_rgb01: np.ndarray, settings, *, tmp_prefix="
 
     return result
 
-
-def darkstar_starless_from_array(arr_rgb01: np.ndarray, settings, *, tmp_prefix="comet",
-                                 disable_gpu=False, mode="unscreen", stride=512) -> np.ndarray:
-    """
-    Save arr -> run DarkStar -> load starless -> return starless RGB float32 [0..1].
-    """
-    exe, base = _resolve_darkstar_exe(type("dummy", (), {"settings": settings}) )
-    if not exe or not base:
-        raise RuntimeError("Cosmic Clarity DarkStar executable not configured.")
-    arr = np.asarray(arr_rgb01, dtype=np.float32)
-    was_single = (arr.ndim == 2) or (arr.ndim == 3 and arr.shape[2] == 1)
-    input_dir  = os.path.join(base, "input")
-    output_dir = os.path.join(base, "output")
-    os.makedirs(input_dir, exist_ok=True)
-    os.makedirs(output_dir, exist_ok=True)
-    _purge_darkstar_io(base, prefix=None, clear_input=True, clear_output=True)
-
-    in_path = os.path.join(input_dir, f"{tmp_prefix}_in.tif")
-    save_image(
-        arr, in_path,
-        original_format="tif", bit_depth="32-bit floating point",
-        original_header=None, is_mono=was_single, image_meta=None, file_meta=None
-    )
-
-    args = []
-    if disable_gpu: args.append("--disable_gpu")
-    args += ["--star_removal_mode", mode, "--chunk_size", str(int(stride))]
-    import subprocess
-    rc = subprocess.call([exe] + args, cwd=output_dir)
-    if rc != 0:
-        _safe_rm(in_path); raise RuntimeError(f"DarkStar failed rc={rc}")
-
-    starless_path = os.path.join(output_dir, "imagetoremovestars_starless.tif")
-    starless, _, _, _ = load_image(starless_path)
-    if starless is None:
-        _safe_rm(in_path); raise RuntimeError("DarkStar produced no starless image.")
-    if starless.ndim == 2 or (starless.ndim == 3 and starless.shape[2] == 1):
-        starless = np.stack([starless] * 3, axis=-1)
-    starless = np.clip(starless.astype(np.float32, copy=False), 0.0, 1.0)
-
-    # If the source was mono, collapse back to single channel
-    if was_single and starless.ndim == 3:
-        starless = starless.mean(axis=2)
-
-    # cleanup typical outputs
-    _purge_darkstar_io(base, prefix="imagetoremovestars", clear_input=True, clear_output=True)
-    return starless
-
-
 # ------------------------------------------------------------
 # Public entry
 # ------------------------------------------------------------
@@ -559,21 +516,20 @@ def _inverse_statstretch_from_starless(starless_s01: np.ndarray, meta: dict) -> 
     out = out + bp
     return np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
 
-
-# ------------------------------------------------------------
-# StarNet (SASv2-like: 16-bit TIFF in StarNet folder)
-# ------------------------------------------------------------
 def _run_starnet(main, doc):
     import os
     import platform
     import numpy as np
+    import re
     from PyQt6.QtWidgets import QFileDialog, QMessageBox
 
     # --- Resolve StarNet exe, persist in settings
     exe = _get_setting_any(getattr(main, "settings", None),
                            ("starnet/exe_path", "paths/starnet"), "")
     if not exe or not os.path.exists(exe):
-        exe_path, _ = QFileDialog.getOpenFileName(main, "Select StarNet Executable", "", "Executable Files (*)")
+        exe_path, _ = QFileDialog.getOpenFileName(
+            main, "Select StarNet Executable", "", "Executable Files (*)"
+        )
         if not exe_path:
             return
         exe = exe_path
@@ -587,8 +543,10 @@ def _run_starnet(main, doc):
 
     sysname = platform.system()
     if sysname not in ("Windows", "Darwin", "Linux"):
-        QMessageBox.critical(main, "Unsupported OS",
-                             f"The current operating system '{sysname}' is not supported.")
+        QMessageBox.critical(
+            main, "Unsupported OS",
+            f"The current operating system '{sysname}' is not supported."
+        )
         return
 
     # --- Ask linearity (SASv2 behavior)
@@ -598,7 +556,9 @@ def _run_starnet(main, doc):
         QMessageBox.StandardButton.No
     )
     is_linear = (reply == QMessageBox.StandardButton.Yes)
-    did_stretch = is_linear 
+    did_stretch = is_linear
+
+    # stash params for replay-last
     try:
         main._last_remove_stars_params = {
             "engine": "StarNet",
@@ -608,6 +568,7 @@ def _run_starnet(main, doc):
         }
     except Exception:
         pass
+
     # 🔁 Record headless command for Replay Last
     try:
         main._last_headless_command = {
@@ -623,35 +584,35 @@ def _run_starnet(main, doc):
                 f"{'yes' if is_linear else 'no'})"
             )
     except Exception:
-        pass    
-    # --- Ensure RGB float32 in safe range (without expanding yet)
-    # Starnet needs RGB eventually, but we can compute stats/normalization on mono
+        pass
+
+    # --- Ensure float32 and sane values (no forced RGB expansion yet)
     src = np.asarray(doc.image)
     if src.ndim == 3 and src.shape[2] == 1:
-        # standardizing shape is cheap
         processing_image = src[..., 0]
     else:
         processing_image = src
-        
-    processing_image = np.nan_to_num(processing_image.astype(np.float32, copy=False),
-                                     nan=0.0, posinf=0.0, neginf=0.0)
+
+    processing_image = np.nan_to_num(
+        processing_image.astype(np.float32, copy=False),
+        nan=0.0, posinf=0.0, neginf=0.0
+    )
 
     # --- Scale normalization if >1.0
-    scale_factor = float(np.max(processing_image))
+    scale_factor = float(np.max(processing_image)) if processing_image.size else 1.0
     if scale_factor > 1.0:
         processing_norm = processing_image / scale_factor
     else:
         processing_norm = processing_image
 
-    # --- Build input/output paths
+    # --- Build input/output paths (StarNet folder)
     starnet_dir = os.path.dirname(exe) or os.getcwd()
-    input_image_path  = os.path.join(starnet_dir, "imagetoremovestars.tif")
+    input_image_path = os.path.join(starnet_dir, "imagetoremovestars.tif")
     output_image_path = os.path.join(starnet_dir, "starless.tif")
 
-    # --- Prepare input for StarNet (Siril-style MTF pre-stretch for linear data) ---
+    # --- Prepare input for StarNet (Siril-style unlinked MTF pre-stretch for linear data) ---
     img_for_starnet = processing_norm
     if is_linear:
-        # Siril-style unlinked MTF params from linear normalized image
         mtf_params = _mtf_params_unlinked(processing_norm, shadows_clipping=-2.8, targetbg=0.25)
         img_for_starnet = _apply_mtf_unlinked_rgb(processing_norm, mtf_params)
 
@@ -668,20 +629,24 @@ def _run_starnet(main, doc):
             pass
     else:
         # non-linear: do not try to invert any pre-stretch later
-        if hasattr(main, "_starnet_stat_meta"):
-            delattr(main, "_starnet_stat_meta")
+        try:
+            if hasattr(main, "_starnet_stat_meta"):
+                delattr(main, "_starnet_stat_meta")
+        except Exception:
+            pass
 
-
-    # --- Write TIFF for StarNet
+    # --- Write TIFF for StarNet (16-bit)
     try:
-        save_image(img_for_starnet, input_image_path,
-                   original_format="tif", bit_depth="16-bit",
-                   original_header=None, is_mono=False, image_meta=None, file_meta=None)
+        save_image(
+            img_for_starnet, input_image_path,
+            original_format="tif", bit_depth="16-bit",
+            original_header=None, is_mono=False, image_meta=None, file_meta=None
+        )
     except Exception as e:
         QMessageBox.critical(main, "StarNet", f"Failed to write input TIFF:\n{e}")
         return
 
-    # --- Launch StarNet in a worker (keeps your progress dialog)
+    # --- Build command
     exe_name = os.path.basename(exe).lower()
     if sysname in ("Windows", "Linux"):
         command = [exe, input_image_path, output_image_path, "256"]
@@ -691,29 +656,122 @@ def _run_starnet(main, doc):
         else:
             command = [exe, input_image_path, output_image_path]
 
+    # --- Progress dialog + worker
     dlg = _ProcDialog(main, title="StarNet Progress")
-    thr = _ProcThread(command, cwd=starnet_dir)
-    thr.output_signal.connect(dlg.append_text)
+    dlg.reset_progress("Starting StarNet…")
+    dlg.pbar.setRange(0, 100)
+    dlg.pbar.setValue(0)
+    dlg.pbar.setFormat("0%")
+    dlg.append_text("Launching StarNet...\n")
 
-    # Capture everything we need in the closure for finish handler
-    thr.finished_signal.connect(
-        lambda rc, ds=did_stretch: _on_starnet_finished(
-            main, doc, rc, dlg, input_image_path, output_image_path, ds
+    thr = _ProcThread(command, cwd=starnet_dir)
+
+    # ---- Output parsing (stages + percent finished + tile count) ----
+    _re_pct = re.compile(r"^\s*(\d{1,3})%\s+finished\s*$")
+    _re_tiles = re.compile(r"Total number of tiles:\s*(\d+)\s*$")
+
+    tile_total = {"n": 0}
+    last_pct = {"v": -1}
+
+    def _stage_from_line(low: str) -> str | None:
+        if "reading input image" in low:
+            return "Reading input image…"
+        if ("bits per sample" in low) or ("samples per pixel" in low) or ("height:" in low) or ("width:" in low):
+            return "Inspecting input…"
+        if "restoring neural network checkpoint" in low:
+            return "Loading model checkpoint…"
+        if "created device" in low and "gpu" in low:
+            return "Initializing GPU…"
+        if "loaded cudnn version" in low:
+            return "Initializing cuDNN…"
+        if "total number of tiles" in low:
+            return "Tiling image…"
+        if "% finished" in low:
+            return "Processing tiles…"
+        if "writing" in low or "saving" in low:
+            return "Writing output…"
+        return None
+
+    def _is_noise(low: str) -> bool:
+        # Keep progress + stage parsing, but optionally suppress spam in the log box.
+        # You can loosen/tighten this anytime.
+        return (
+            (low.startswith("202") and "tensorflow/" in low) or
+            ("cpu_feature_guard" in low) or
+            ("mlir" in low) or
+            ("ptxas" in low) or
+            ("bfc_allocator" in low) or
+            ("garbage collection" in low)
         )
-    )
+
+    def _on_out(line: str):
+        low = line.lower()
+
+        # stage updates
+        st = _stage_from_line(low)
+        if st:
+            try:
+                dlg.lbl_stage.setText(st)
+            except Exception:
+                pass
+
+        # tile total
+        m = _re_tiles.search(line)
+        if m:
+            try:
+                tile_total["n"] = int(m.group(1))
+            except Exception:
+                tile_total["n"] = 0
+
+        # percent updates (throttled)
+        m = _re_pct.match(line)
+        if m:
+            try:
+                pct = int(m.group(1))
+                pct = max(0, min(100, pct))
+                if pct != last_pct["v"]:
+                    last_pct["v"] = pct
+                    if tile_total["n"] > 0:
+                        done = int(round(tile_total["n"] * (pct / 100.0)))
+                        dlg.set_progress(done, tile_total["n"], "Processing tiles…")
+                    else:
+                        dlg.set_progress(pct, 100, "Processing…")
+            except Exception:
+                pass
+
+        # append (optionally suppress TF spam)
+        if not _is_noise(low):
+            dlg.append_text(line)
+
+    thr.output_signal.connect(_on_out)
+
+    # finished -> apply + cleanup
+    def _on_finish(rc: int):
+        try:
+            # snap to 100% for UX (even if StarNet ended abruptly, it will be overwritten by error handling)
+            dlg.set_progress(100, 100, "StarNet finished. Loading output…")
+        except Exception:
+            pass
+        _on_starnet_finished(main, doc, rc, dlg, input_image_path, output_image_path, did_stretch)
+
+    thr.finished_signal.connect(_on_finish)
+
+    # cancel kills subprocess
     dlg.cancel_button.clicked.connect(thr.cancel)
 
-    dlg.show()
     thr.start()
     dlg.exec()
-
 
 def _on_starnet_finished(main, doc, return_code, dialog, input_path, output_path, did_stretch):
     import os
     import numpy as np
     from PyQt6.QtWidgets import QMessageBox
     from setiastro.saspro.imageops.stretch import stretch_mono_image  # used for statistical inverse
-
+    try:
+        dialog.pbar.setRange(0, 100)
+        dialog.set_progress(100, 100, "StarNet finished. Loading output…")
+    except Exception:
+        pass
     def _first_nonzero_bp_per_channel(img3: np.ndarray) -> np.ndarray:
         bps = np.zeros(3, dtype=np.float32)
         for c in range(3):
@@ -917,48 +975,28 @@ def _on_starnet_finished(main, doc, return_code, dialog, input_path, output_path
 # CosmicClarityDarkStar
 # ------------------------------------------------------------
 def _run_darkstar(main, doc):
-    exe, base = _resolve_darkstar_exe(main)
-    if not exe or not base:
-        QMessageBox.critical(main, "Cosmic Clarity Folder Error",
-                             "Cosmic Clarity Dark Star executable not set.")
-        return
+    import numpy as np
+    from PyQt6.QtWidgets import QMessageBox
 
-    # --- Input/output folders per SASv2 ---
-    input_dir  = os.path.join(base, "input")
-    output_dir = os.path.join(base, "output")
-    os.makedirs(input_dir, exist_ok=True)
-    os.makedirs(output_dir, exist_ok=True)
-    _purge_darkstar_io(base, prefix=None, clear_input=True, clear_output=True)
-
-    # --- Config dialog (same as before) ---
+    # --- Config dialog (keep as-is) ---
     cfg = DarkStarConfigDialog(main)
     if not cfg.exec():
         return
-    params = cfg.get_values()
-    disable_gpu = params["disable_gpu"]
-    mode = params["mode"]                         # "unscreen" or "additive"
-    show_extracted_stars = params["show_extracted_stars"]
-    stride = params["stride"]                     # 64..1024, default 512
+    v = cfg.get_values()
 
-    # 🔹 Ask if image is linear (so we know whether to MTF-prestretch)
-    reply = QMessageBox.question(
-        main, "Image Linearity", "Is the current image linear?",
-        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        QMessageBox.StandardButton.Yes
-    )
-    is_linear = (reply == QMessageBox.StandardButton.Yes)
-    did_prestretch = is_linear
+    disable_gpu = bool(v["disable_gpu"])
+    mode = str(v["mode"])                         # "unscreen" | "additive"
+    show_extracted_stars = bool(v["show_extracted_stars"])
+    stride = int(v["stride"])                     # chunk size
 
-    # 🔹 Stash parameters for replay-last
+    # 🔹 Stash parameters for replay-last (same structure as you had)
     try:
         main._last_remove_stars_params = {
-            "engine": "CosmicClarityDarkStar",
+            "engine": "DarkStar",
             "disable_gpu": bool(disable_gpu),
             "mode": mode,
             "show_extracted_stars": bool(show_extracted_stars),
             "stride": int(stride),
-            "is_linear": bool(is_linear),
-            "did_prestretch": bool(did_prestretch),
             "label": "Remove Stars (DarkStar)",
         }
     except Exception:
@@ -974,344 +1012,155 @@ def _run_darkstar(main, doc):
                 "mode": mode,
                 "show_extracted_stars": bool(show_extracted_stars),
                 "stride": int(stride),
-                "is_linear": bool(is_linear),
-                "did_prestretch": bool(did_prestretch),
             },
         }
         if hasattr(main, "_log"):
             main._log(
                 "[Replay] Recorded remove_stars (DarkStar, "
-                f"mode={mode}, stride={int(stride)}, "
+                f"mode={mode}, chunk={int(stride)}, "
                 f"gpu={'off' if disable_gpu else 'on'}, "
-                f"stars={'on' if show_extracted_stars else 'off'}, "
-                f"linear={'yes' if is_linear else 'no'})"
+                f"stars={'on' if show_extracted_stars else 'off'})"
             )
     except Exception:
         pass
 
-    # --- Build processing image (RGB float32, normalized) ---
-    # DarkStar needs RGB, but we can delay expansion until save
+    # --- Build input image for engine: float32 [0..1], HxWx3/1/mono ok ---
     src = np.asarray(doc.image)
-    if src.ndim == 3 and src.shape[2] == 1:
-        processing_image = src[..., 0]
-    else:
-        processing_image = src
+    orig_was_mono = (src.ndim == 2) or (src.ndim == 3 and src.shape[2] == 1)
 
-    processing_image = np.nan_to_num(
-        processing_image.astype(np.float32, copy=False),
-        nan=0.0, posinf=0.0, neginf=0.0
+    x = np.nan_to_num(src.astype(np.float32, copy=False), nan=0.0, posinf=0.0, neginf=0.0)
+
+    # If your doc domain can exceed 1.0, normalize to [0..1] for the engine.
+    # (Matches what you were already doing for external DarkStar.)
+    scale_factor = float(np.max(x)) if x.size else 1.0
+    if scale_factor > 1.0:
+        x = x / scale_factor
+    x = np.clip(x, 0.0, 1.0).astype(np.float32, copy=False)
+
+    params = DarkStarParams(
+        use_gpu=(not disable_gpu),
+        chunk_size=int(stride),
+        overlap_frac=0.125,
+        mode=mode,
+        output_stars_only=show_extracted_stars,
     )
 
-    scale_factor = float(np.max(processing_image)) if processing_image.size else 1.0
-    if scale_factor > 1.0:
-        processing_norm = processing_image / scale_factor
-    else:
-        processing_norm = processing_image
-    processing_norm = np.clip(processing_norm, 0.0, 1.0)
+    dlg = _ProcDialog(main, title="Dark Star Progress")
+    dlg.append_text("Starting Dark Star (engine)…\n")
 
-    # --- Optional Siril-style MTF pre-stretch for linear data ---
-    img_for_darkstar = processing_norm
-    if is_linear:
-        try:
-            mtf_params = _mtf_params_unlinked(
-                processing_norm,
-                shadows_clipping=-2.8,
-                targetbg=0.25
-            )
-            img_for_darkstar = _apply_mtf_unlinked_rgb(processing_norm, mtf_params)
+    thr = _DarkStarThread(x, params, parent=dlg)
 
-            # 🔐 Stash EXACT params for inverse step later
-            setattr(main, "_darkstar_mtf_meta", {
-                "s": np.asarray(mtf_params["s"], dtype=np.float32),
-                "m": np.asarray(mtf_params["m"], dtype=np.float32),
-                "h": np.asarray(mtf_params["h"], dtype=np.float32),
-                "scale": float(scale_factor),
-            })
-            if hasattr(main, "_log"):
-                main._log("[DarkStar] Applying Siril-style MTF pre-stretch for linear image.")
-        except Exception as e:
-            # If anything goes wrong, fall back to un-stretched normalized image
-            img_for_darkstar = processing_norm
+    def _on_prog(done, total, stage):
+        dlg.set_progress(done, total, stage)
+
+    def _on_done(starless, stars_only, was_mono, err):
+        if err:
+            QMessageBox.critical(main, "Dark Star Error", f"Dark Star failed:\n{err}")
+            dlg.close()
+            return
+
+        # Engine returns float32 [0..1]; if we normalized >1, restore scale if you want.
+        # BUT you later clip to [0..1] for doc anyway, so this is mostly for consistency.
+        if scale_factor > 1.0:
             try:
-                if hasattr(main, "_darkstar_mtf_meta"):
-                    delattr(main, "_darkstar_mtf_meta")
+                starless = starless * scale_factor
+                if stars_only is not None:
+                    stars_only = stars_only * scale_factor
             except Exception:
                 pass
-            if hasattr(main, "_log"):
-                main._log(f"[DarkStar] MTF pre-stretch failed, using normalized image only: {e}")
-    else:
-        # Non-linear: don't store any pre-stretch meta
+
+        # Original as RGB for blending math
+        orig = np.asarray(doc.image).astype(np.float32, copy=False)
+        if orig.ndim == 2:
+            original_rgb = np.stack([orig]*3, axis=-1)
+        elif orig.ndim == 3 and orig.shape[2] == 1:
+            original_rgb = np.repeat(orig, 3, axis=2)
+        else:
+            original_rgb = orig
+
+        # Starless as RGB for blending math
+        if starless.ndim == 2:
+            starless_rgb = np.stack([starless]*3, axis=-1)
+        elif starless.ndim == 3 and starless.shape[2] == 1:
+            starless_rgb = np.repeat(starless, 3, axis=2)
+        else:
+            starless_rgb = starless
+
+        starless_rgb = starless_rgb.astype(np.float32, copy=False)
+
+        # ---- Optional stars-only push ----
+        if show_extracted_stars:
+            if stars_only is None:
+                # Safety fallback if someone changes engine params later
+                stars_only_rgb = np.clip(original_rgb - starless_rgb, 0.0, 1.0).astype(np.float32, copy=False)
+            else:
+                if stars_only.ndim == 2:
+                    stars_only_rgb = np.stack([stars_only]*3, axis=-1)
+                elif stars_only.ndim == 3 and stars_only.shape[2] == 1:
+                    stars_only_rgb = np.repeat(stars_only, 3, axis=2)
+                else:
+                    stars_only_rgb = stars_only.astype(np.float32, copy=False)
+
+            m3 = _active_mask3_from_doc(doc, stars_only_rgb.shape[1], stars_only_rgb.shape[0])
+            if m3 is not None:
+                stars_only_rgb *= m3
+                dlg.append_text("✅ Applied active mask to stars-only image.\n")
+
+            if orig_was_mono:
+                stars_to_push = stars_only_rgb.mean(axis=2).astype(np.float32, copy=False)
+            else:
+                stars_to_push = stars_only_rgb
+
+            _push_as_new_doc(main, doc, stars_to_push, title_suffix="_stars", source="Stars-Only (DarkStar)")
+            dlg.append_text("Stars-only image pushed.\n")
+
+        # ---- Mask-blend starless into current doc ----
+        final_starless = _mask_blend_with_doc_mask(doc, starless_rgb, original_rgb)
+
+        if orig_was_mono:
+            final_to_apply = final_starless.mean(axis=2).astype(np.float32, copy=False)
+        else:
+            final_to_apply = final_starless.astype(np.float32, copy=False)
+
+        # Clip to [0..1] because that’s what your pipeline expects almost everywhere
+        final_to_apply = np.clip(final_to_apply, 0.0, 1.0).astype(np.float32, copy=False)
+
         try:
-            if hasattr(main, "_darkstar_mtf_meta"):
-                delattr(main, "_darkstar_mtf_meta")
-        except Exception:
-            pass
+            meta = {
+                "step_name": "Stars Removed",
+                "bit_depth": "32-bit floating point",
+                "is_mono": bool(orig_was_mono),
+            }
 
-    # --- Save pre-stretched image as 32-bit float TIFF for DarkStar ---
-    in_path = os.path.join(input_dir, "imagetoremovestars.tif")
-    try:
-        # Check if we need to expand on-the-fly for DarkStar (it expects RGB input)
-        # If img_for_darkstar is mono, save_image might save mono.
-        # "is_mono=False" flag to save_image hints we want RGB.
-        # If the array is 2D, save_image might still save mono unless we feed it 3D.
-        # For safety with DarkStar, we create the 3D view now if needed.
-        
-        to_save = img_for_darkstar
-        if to_save.ndim == 2:
-            to_save = np.stack([to_save]*3, axis=-1)
-        elif to_save.ndim == 3 and to_save.shape[2] == 1:
-            to_save = np.repeat(to_save, 3, axis=2)
-            
-        save_image(
-            to_save,
-            in_path,
-            original_format="tif",
-            bit_depth="32-bit floating point",
-            original_header=None,
-            is_mono=False,  # we always send RGB to DarkStar
-            image_meta=None,
-            file_meta=None
-        )
-    except Exception as e:
-        QMessageBox.critical(main, "Cosmic Clarity", f"Failed to write input TIFF:\n{e}")
-        return
+            rp = getattr(main, "_last_remove_stars_params", None)
+            replay_params = dict(rp) if isinstance(rp, dict) else {"engine": "DarkStar", "label": "Remove Stars (DarkStar)"}
+            replay_params.setdefault("engine", "DarkStar")
+            replay_params.setdefault("label", "Remove Stars (DarkStar)")
 
-    # --- Build CLI exactly like SASv2 (using --chunk_size, not chunk_size) ---
-    args = []
-    if disable_gpu:
-        args.append("--disable_gpu")
-    args += ["--star_removal_mode", mode]
-    if show_extracted_stars:
-        args.append("--show_extracted_stars")
-    args += ["--chunk_size", str(stride)]
+            meta["replay_last"] = {"op": "remove_stars", "params": replay_params}
 
-    command = [exe] + args
+            try:
+                if hasattr(main, "_last_remove_stars_params"):
+                    delattr(main, "_last_remove_stars_params")
+            except Exception:
+                pass
 
-    dlg = _ProcDialog(main, title="CosmicClarityDarkStar Progress")
-    thr = _ProcThread(command, cwd=output_dir)
-    thr.output_signal.connect(dlg.append_text)
-    thr.finished_signal.connect(
-        lambda rc, base=base, ds=did_prestretch: _on_darkstar_finished(
-            main, doc, rc, dlg, in_path, output_dir, base, ds
-        )
-    )
-    dlg.cancel_button.clicked.connect(thr.cancel)
+            doc.apply_edit(final_to_apply, metadata=meta, step_name="Stars Removed")
+            if hasattr(main, "_log"):
+                main._log("Stars Removed (DarkStar)")
+        except Exception as e:
+            QMessageBox.critical(main, "Dark Star Error", f"Failed to apply result:\n{e}")
 
+        dlg.append_text("Done.\n")
+        dlg.close()
+
+    thr.progress_signal.connect(_on_prog)
+    thr.finished_signal.connect(_on_done)
+
+    dlg.cancel_button.clicked.connect(lambda: dlg.append_text("Cancel not supported for in-process engine.\n"))
     dlg.show()
     thr.start()
     dlg.exec()
-
-
-
-
-def _resolve_darkstar_exe(main):
-    """
-    Return (exe_path, base_folder) or (None, None) on cancel/error.
-    Accepts either a folder (stored) or a direct executable path.
-    Saves the folder back to QSettings under 'paths/cosmic_clarity'.
-    """
-    settings = getattr(main, "settings", None)
-    raw = _get_setting_any(settings, ("paths/cosmic_clarity", "cosmic_clarity_folder"), "")
-
-    def _platform_exe_name():
-        return "setiastrocosmicclarity_darkstar.exe" if platform.system() == "Windows" \
-               else "setiastrocosmicclarity_darkstar"
-
-    exe_name = _platform_exe_name()
-
-    exe_path = None
-    base_folder = None
-
-    if raw:
-        if os.path.isfile(raw):
-            # user stored the executable path directly
-            exe_path = raw
-            base_folder = os.path.dirname(raw)
-        elif os.path.isdir(raw):
-            # user stored the parent folder
-            base_folder = raw
-            exe_path = os.path.join(base_folder, exe_name)
-
-    # if missing or invalid, let user pick the executable directly
-    if not exe_path or not os.path.exists(exe_path):
-        picked, _ = QFileDialog.getOpenFileName(main, "Select CosmicClarityDarkStar Executable", "", "Executable Files (*)")
-        if not picked:
-            return None, None
-        exe_path = picked
-        base_folder = os.path.dirname(picked)
-
-    # ensure exec bit on POSIX
-    if platform.system() in ("Darwin", "Linux"):
-        _ensure_exec_bit(exe_path)
-
-    # persist folder (not the exe) to the canonical key
-    if settings:
-        settings.setValue("paths/cosmic_clarity", base_folder)
-        settings.sync()
-
-    return exe_path, base_folder
-
-
-def _on_darkstar_finished(main, doc, return_code, dialog, in_path, output_dir, base_folder, did_prestretch):
-    dialog.append_text(f"\nProcess finished with return code {return_code}.\n")
-    if return_code != 0:
-        QMessageBox.critical(main, "CosmicClarityDarkStar Error",
-                             f"CosmicClarityDarkStar failed with return code {return_code}.")
-        _safe_rm(in_path); dialog.close(); return
-
-    starless_path = os.path.join(output_dir, "imagetoremovestars_starless.tif")
-    if not os.path.exists(starless_path):
-        QMessageBox.critical(main, "CosmicClarityDarkStar Error", "Starless image was not created.")
-        _safe_rm(in_path); dialog.close(); return
-
-    dialog.append_text(f"Loading starless image from {starless_path}...\n")
-    starless, _, _, _ = load_image(starless_path)
-    if starless is None:
-        QMessageBox.critical(main, "CosmicClarityDarkStar Error", "Failed to load starless image.")
-        _safe_rm(in_path); dialog.close(); return
-
-    if starless.ndim == 2 or (starless.ndim == 3 and starless.shape[2] == 1):
-        starless_rgb = np.stack([starless] * 3, axis=-1)
-    else:
-        starless_rgb = starless
-    starless_rgb = starless_rgb.astype(np.float32, copy=False)
-
-    src = np.asarray(doc.image)
-    if src.ndim == 2:
-        original_rgb = np.stack([src] * 3, axis=-1)
-        orig_was_mono = True
-    elif src.ndim == 3 and src.shape[2] == 1:
-        original_rgb = np.repeat(src, 3, axis=2)
-        orig_was_mono = True
-    else:
-        original_rgb = src
-        orig_was_mono = False
-    original_rgb = original_rgb.astype(np.float32, copy=False)
-
-    # --- Undo the MTF pre-stretch (if we did one) ---
-    if did_prestretch:
-        meta = getattr(main, "_darkstar_mtf_meta", None)
-        if isinstance(meta, dict):
-            dialog.append_text("Unstretching starless result (DarkStar MTF inverse)...\n")
-            try:
-                s_vec = np.asarray(meta.get("s"), dtype=np.float32)
-                m_vec = np.asarray(meta.get("m"), dtype=np.float32)
-                h_vec = np.asarray(meta.get("h"), dtype=np.float32)
-                scale = float(meta.get("scale", 1.0))
-
-                p = {"s": s_vec, "m": m_vec, "h": h_vec}
-                inv = _invert_mtf_unlinked_rgb(starless_rgb, p)
-
-                if scale > 1.0:
-                    inv *= scale
-
-                starless_rgb = np.clip(inv, 0.0, 1.0)
-            except Exception as e:
-                dialog.append_text(f"⚠️ DarkStar MTF inverse failed: {e}\n")
-
-        # Clean up pre-stretch meta so it can't leak into another op
-        try:
-            if hasattr(main, "_darkstar_mtf_meta"):
-                delattr(main, "_darkstar_mtf_meta")
-        except Exception:
-            pass
-
-    # --- stars-only optional push (as before) ---
-    stars_path = os.path.join(output_dir, "imagetoremovestars_stars_only.tif")
-    if os.path.exists(stars_path):
-        dialog.append_text(f"Loading stars-only image from {stars_path}...\n")
-        stars_only, _, _, _ = load_image(stars_path)
-        if stars_only is not None:
-            if stars_only.ndim == 2 or (stars_only.ndim == 3 and stars_only.shape[2] == 1):
-                stars_only = np.stack([stars_only] * 3, axis=-1)
-            stars_only = stars_only.astype(np.float32, copy=False)
-            m3 = _active_mask3_from_doc(doc, stars_only.shape[1], stars_only.shape[0])
-            if m3 is not None:
-                stars_only *= m3
-                dialog.append_text("✅ Applied active mask to stars-only image.\n")
-            else:
-                dialog.append_text("ℹ️ Mask not active for stars-only; skipping.\n")
-
-            # If the original doc was mono, collapse stars-only back to single channel
-            if orig_was_mono:
-                stars_to_push = stars_only.mean(axis=2).astype(np.float32, copy=False)
-            else:
-                stars_to_push = stars_only
-
-            _push_as_new_doc(main, doc, stars_to_push, title_suffix="_stars", source="Stars-Only (DarkStar)")
-        else:
-            dialog.append_text("Failed to load stars-only image.\n")
-    else:
-        dialog.append_text("No stars-only image generated.\n")
-
-    # --- Mask-blend starless → overwrite current doc (in original domain) ---
-    dialog.append_text("Mask-blending starless image before update...\n")
-    final_starless = _mask_blend_with_doc_mask(doc, starless_rgb, original_rgb)
-
-    # If the original doc was mono, collapse back to single-channel
-    if orig_was_mono:
-        final_to_apply = final_starless.mean(axis=2).astype(np.float32, copy=False)
-    else:
-        final_to_apply = final_starless.astype(np.float32, copy=False)
-
-    try:
-        meta = {
-            "step_name": "Stars Removed",
-            "bit_depth": "32-bit floating point",
-            "is_mono": bool(orig_was_mono),
-        }
-
-        # 🔹 Attach replay-last metadata
-        rp = getattr(main, "_last_remove_stars_params", None)
-        if isinstance(rp, dict):
-            replay_params = dict(rp)
-        else:
-            replay_params = {
-                "engine": "CosmicClarityDarkStar",
-                "label": "Remove Stars (DarkStar)",
-            }
-
-        replay_params.setdefault("engine", "CosmicClarityDarkStar")
-        replay_params.setdefault("label", "Remove Stars (DarkStar)")
-
-        meta["replay_last"] = {
-            "op": "remove_stars",
-            "params": replay_params,
-        }
-
-        # Clean up stash
-        try:
-            if hasattr(main, "_last_remove_stars_params"):
-                delattr(main, "_last_remove_stars_params")
-        except Exception:
-            pass
-
-        doc.apply_edit(
-            final_to_apply,
-            metadata=meta,
-            step_name="Stars Removed"
-        )
-        if hasattr(main, "_log"):
-            main._log("Stars Removed (DarkStar)")
-    except Exception as e:
-        QMessageBox.critical(main, "CosmicClarityDarkStar", f"Failed to apply result:\n{e}")
-
-    # --- cleanup ---
-    try:
-        _safe_rm(in_path)
-        _safe_rm(starless_path)
-        _safe_rm(os.path.join(output_dir, "imagetoremovestars_stars_only.tif"))
-
-        # 🔸 Final sweep: nuke any imagetoremovestars* leftovers in both dirs
-        base_folder = os.path.dirname(output_dir)  # <-- derive CC base from output_dir
-        _purge_darkstar_io(base_folder, prefix="imagetoremovestars", clear_input=True, clear_output=True)
-
-        dialog.append_text("Temporary files cleaned up.\n")
-    except Exception as e:
-        dialog.append_text(f"Cleanup error: {e}\n")
-
-    dialog.close()
-
 
 # ------------------------------------------------------------
 # Mask helpers (doc-centric)
@@ -1453,32 +1302,6 @@ def _safe_rm(p):
     except Exception:
         pass
 
-def _safe_rm_globs(patterns: list[str]):
-    for pat in patterns:
-        try:
-            for fp in glob.glob(pat):
-                _safe_rm(fp)
-        except Exception:
-            pass
-
-def _purge_darkstar_io(base_folder: str, *, prefix: str | None = None, clear_input=True, clear_output=True):
-    """Delete old image-like files from CC DarkStar input/output."""
-    try:
-        inp = os.path.join(base_folder, "input")
-        out = os.path.join(base_folder, "output")
-        if clear_input and os.path.isdir(inp):
-            for fn in os.listdir(inp):
-                fp = os.path.join(inp, fn)
-                if os.path.isfile(fp) and (prefix is None or fn.startswith(prefix)):
-                    _safe_rm(fp)
-        if clear_output and os.path.isdir(out):
-            for fn in os.listdir(out):
-                fp = os.path.join(out, fn)
-                if os.path.isfile(fp) and (prefix is None or fn.startswith(prefix)):
-                    _safe_rm(fp)
-    except Exception:
-        pass
-
 
 # ------------------------------------------------------------
 # Proc runner & dialog (merged stdout/stderr)
@@ -1530,15 +1353,34 @@ class _ProcThread(QThread):
             self.process = None
         self.finished_signal.emit(rc)
 
-
 class _ProcDialog(QDialog):
     def __init__(self, parent, title="Process"):
         super().__init__(parent)
         self.setWindowTitle(title)
-        self.setMinimumSize(600, 420)
+        self.setMinimumSize(600, 460)
+
+        self._last_pct = -1  # for throttling UI updates
+
         lay = QVBoxLayout(self)
-        self.text = QTextEdit(self); self.text.setReadOnly(True)
-        lay.addWidget(self.text)
+
+        # --- status line + progress bar ---
+        self.lbl_stage = QLabel("", self)
+        self.lbl_stage.setWordWrap(True)
+        self.lbl_stage.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        lay.addWidget(self.lbl_stage)
+
+        self.pbar = QProgressBar(self)
+        self.pbar.setRange(0, 100)
+        self.pbar.setValue(0)
+        self.pbar.setTextVisible(True)
+        lay.addWidget(self.pbar)
+
+        # --- log output ---
+        self.text = QTextEdit(self)
+        self.text.setReadOnly(True)
+        lay.addWidget(self.text, 1)
+
+        # --- cancel ---
         self.cancel_button = QPushButton("Cancel", self)
         lay.addWidget(self.cancel_button)
 
@@ -1547,6 +1389,73 @@ class _ProcDialog(QDialog):
             self.text.append(s)
         except Exception:
             pass
+
+    def set_progress(self, done: int, total: int, stage: str = ""):
+        """
+        Update stage label + progress bar.
+        `total<=0` puts the bar into an indeterminate-ish state (0%).
+        Throttles updates when percent hasn't changed.
+        """
+        try:
+            if stage:
+                self.lbl_stage.setText(stage)
+
+            if total and total > 0:
+                pct = int(round(100.0 * float(done) / float(total)))
+                pct = max(0, min(100, pct))
+            else:
+                pct = 0
+
+            # throttle: only repaint if percent changed or we're at end
+            if pct != self._last_pct or done == total:
+                self._last_pct = pct
+                self.pbar.setValue(pct)
+
+                # keep the text helpful
+                if total and total > 0:
+                    self.pbar.setFormat(f"{pct}%  ({done}/{total})")
+                else:
+                    self.pbar.setFormat(f"{pct}%")
+        except Exception:
+            pass
+
+    def reset_progress(self, stage: str = ""):
+        self._last_pct = -1
+        if stage:
+            try:
+                self.lbl_stage.setText(stage)
+            except Exception:
+                pass
+        try:
+            self.pbar.setValue(0)
+            self.pbar.setFormat("0%")
+        except Exception:
+            pass
+
+class _DarkStarThread(QThread):
+    progress_signal = pyqtSignal(int, int, str)   # done, total, stage
+    finished_signal = pyqtSignal(object, object, bool, str)  # starless, stars_only, was_mono, errstr
+
+    def __init__(self, img_rgb01: np.ndarray, params: DarkStarParams, parent=None):
+        super().__init__(parent)
+        self._img = img_rgb01
+        self._params = params
+
+    def run(self):
+        try:
+            def prog(done, total, stage):
+                self.progress_signal.emit(int(done), int(total), str(stage))
+
+            # status_cb is optional; keep quiet or route to progress text if you want
+            starless, stars_only, was_mono = darkstar_starremoval_rgb01(
+                self._img,
+                params=self._params,
+                progress_cb=prog,
+                status_cb=lambda s: None,
+            )
+            self.finished_signal.emit(starless, stars_only, bool(was_mono), "")
+        except Exception as e:
+            self.finished_signal.emit(None, None, False, str(e))
 
 
 class DarkStarConfigDialog(QDialog):
@@ -1597,3 +1506,76 @@ class DarkStarConfigDialog(QDialog):
             "show_extracted_stars": self.chk_show_stars.isChecked(),
             "stride": int(self.cmb_stride.currentData()),
         }
+
+
+def darkstar_starless_from_array(
+    arr_rgb01: np.ndarray,
+    *,
+    use_gpu: bool = True,
+    chunk_size: int = 512,
+    overlap_frac: float = 0.125,
+    mode: str = "unscreen",              # "unscreen" | "additive"
+    output_stars_only: bool = False,
+    progress_cb=None,                    # (done:int, total:int, stage:str) -> None
+    status_cb=None                       # (msg:str) -> None
+) -> tuple[np.ndarray, np.ndarray | None, bool]:
+    """
+    Headless DarkStar:
+      input: float32 [0..1], mono or RGB
+      output: (starless, stars_only_or_None, was_mono)
+    """
+    x = np.asarray(arr_rgb01, dtype=np.float32)
+
+    was_mono = (x.ndim == 2) or (x.ndim == 3 and x.shape[2] == 1)
+
+    # Normalize shape to what engine expects (it can accept mono or rgb, but keep it consistent)
+    if x.ndim == 3 and x.shape[2] == 1:
+        x = x[..., 0]  # collapse to (H,W) for mono
+
+    x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
+    x = np.clip(x, 0.0, 1.0)
+
+    params = DarkStarParams(
+        use_gpu=bool(use_gpu),
+        chunk_size=int(chunk_size),
+        overlap_frac=float(overlap_frac),
+        mode=str(mode),
+        output_stars_only=bool(output_stars_only),
+    )
+
+    def _prog(done, total, stage):
+        if callable(progress_cb):
+            try:
+                progress_cb(int(done), int(total), str(stage))
+            except Exception:
+                pass
+
+    def _status(msg: str):
+        if callable(status_cb):
+            try:
+                status_cb(str(msg))
+            except Exception:
+                pass
+
+    starless, stars_only, engine_was_mono = darkstar_starremoval_rgb01(
+        x,
+        params=params,
+        progress_cb=_prog if callable(progress_cb) else None,
+        status_cb=_status if callable(status_cb) else None,
+    )
+
+    # Engine should return [0..1] float32, but enforce it anyway
+    if starless is not None:
+        starless = np.clip(np.asarray(starless, dtype=np.float32), 0.0, 1.0)
+
+    if stars_only is not None:
+        stars_only = np.clip(np.asarray(stars_only, dtype=np.float32), 0.0, 1.0)
+
+    # If input was mono, guarantee mono out (some paths may hand back rgb)
+    if was_mono and starless is not None and starless.ndim == 3:
+        starless = starless.mean(axis=2).astype(np.float32, copy=False)
+
+    if was_mono and stars_only is not None and stars_only.ndim == 3:
+        stars_only = stars_only.mean(axis=2).astype(np.float32, copy=False)
+
+    return starless, (stars_only if output_stars_only else None), bool(was_mono)
