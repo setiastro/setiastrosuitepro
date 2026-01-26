@@ -36,6 +36,41 @@ from setiastro.saspro.widgets.preview_dialogs import ImagePreviewDialog
 import shutil
 import subprocess
 
+def _cc_models_installed() -> tuple[bool, str]:
+    """
+    Returns (ok, detail). Since your model download is all-or-nothing (zip),
+    we use a single sentinel check to avoid maintaining long required lists.
+    """
+    # Prefer whatever your app uses as the canonical models directory.
+    models_dir = ""
+    try:
+        from setiastro.saspro.resources import get_models_dir
+        models_dir = get_models_dir()
+    except Exception:
+        pass
+
+    if not models_dir or not os.path.isdir(models_dir):
+        return False, "Models directory is missing."
+
+    # Sentinel approach: pick ONE file that is guaranteed in the zip.
+
+    sentinel = os.path.join(models_dir, "deep_sharp_stellar_cnn_AI3_5s.pth")
+
+    if not os.path.exists(sentinel):
+        return False, f"Missing sentinel: {os.path.basename(sentinel)}"
+
+    return True, ""
+
+def _warn_models_missing_and_close(parent: QWidget, detail: str = ""):
+    msg = (
+        "Cosmic Clarity AI models are not installed.\n\n"
+        "Please download and extract the Cosmic Clarity models ZIP so that the models folder is populated.\n"
+    )
+    if detail:
+        msg += f"\nDetails: {detail}\n"
+
+    QMessageBox.warning(parent, "Cosmic Clarity", msg)
+
 
 def resolve_cosmic_root(parent=None) -> str:
     s = QSettings()
@@ -259,6 +294,9 @@ class CosmicClarityDialogPro(QDialog):
     """
     def __init__(self, parent, doc, icon: QIcon | None = None, *, headless: bool=False, bypass_guard: bool=False):
         super().__init__(parent)
+        self._engine_thread = None
+        self._closing_after_cancel = False
+        self._wait = None
         # Hard guard unless explicitly bypassed (used by preset runner)
         if not bypass_guard and self._headless_guard_active():
             # avoid any flash; never show
@@ -267,7 +305,18 @@ class CosmicClarityDialogPro(QDialog):
                 import logging
                 logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             QTimer.singleShot(0, self.reject)
-            return        
+            return     
+
+        ok, detail = _cc_models_installed()
+        if not ok:
+            _warn_models_missing_and_close(self, detail)
+            try:
+                self.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+            except Exception:
+                pass
+            QTimer.singleShot(0, self.reject)
+            return
+
         self.setWindowTitle(self.tr("Cosmic Clarity"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setWindowModality(Qt.WindowModality.NonModal)
@@ -392,6 +441,27 @@ class CosmicClarityDialogPro(QDialog):
                 import logging
                 logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
         self.resize(560, 540)
+
+    def _ensure_models_installed_or_bail(self) -> bool:
+        missing = _missing_cc_models()
+        if not missing:
+            return True
+
+        # Friendly, actionable message
+        msg = (
+            "Cosmic Clarity AI models are not installed (or are incomplete).\n\n"
+            "To install them:\n"
+            "  Preferences → AI Models → Download/Update Models\n\n"
+            "Missing files:\n  - " + "\n  - ".join(missing[:12]) +
+            ("\n  ..." if len(missing) > 12 else "")
+        )
+
+        QMessageBox.warning(self, "Cosmic Clarity", msg)
+
+        # Close immediately
+        QTimer.singleShot(0, self.reject)
+        return False
+
 
     # ----- UI helpers -----
     def _headless_guard_active(self) -> bool:
@@ -703,17 +773,17 @@ class CosmicClarityDialogPro(QDialog):
         return preset
 
     def closeEvent(self, e):
-        # If engine is running, cancel and delay close until thread finishes
-        if self._engine_thread is not None and self._engine_thread.isRunning():
+        thr = getattr(self, "_engine_thread", None)
+        if thr is not None and thr.isRunning():
             self._closing_after_cancel = True
-            self._cancel_all_engine()   # triggers cancel
+            self._cancel_all_engine()
             e.ignore()
             return
         super().closeEvent(e)
 
     def reject(self):
-        # Close button uses reject(); apply same guard
-        if self._engine_thread is not None and self._engine_thread.isRunning():
+        thr = getattr(self, "_engine_thread", None)
+        if thr is not None and thr.isRunning():
             self._closing_after_cancel = True
             self._cancel_all_engine()
             return
@@ -747,6 +817,19 @@ class CosmicClaritySatelliteDialogPro(QDialog):
     """
     def __init__(self, parent, doc=None, icon: QIcon | None = None):
         super().__init__(parent)
+        self._engine_thread = None
+        self._closing_after_cancel = False
+        self._wait = None
+        ok, detail = _cc_models_installed()
+        if not ok:
+            _warn_models_missing_and_close(self, detail)
+            try:
+                self.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+            except Exception:
+                pass
+            QTimer.singleShot(0, self.reject)
+            return
+
         self.setWindowTitle("Cosmic Clarity – Satellite Removal")
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setWindowModality(Qt.WindowModality.NonModal)

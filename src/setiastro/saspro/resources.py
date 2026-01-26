@@ -566,7 +566,7 @@ class Resources:
     SPINNER_GIF = property(lambda self: _resource_path('spinner.gif'))
 
     # --- Models root ---
-    MODELS_DIR = property(lambda self: _resource_path('data/models'))
+    MODELS_DIR = property(lambda self: get_models_dir())
 
     # --- Cosmic Clarity Sharpen ---
     CC_STELLAR_SHARP_PTH  = property(lambda self: _resource_path('data/models/deep_sharp_stellar_cnn_AI3_5s.pth'))
@@ -617,8 +617,23 @@ class Resources:
 
 @lru_cache(maxsize=8)
 def get_models_dir() -> str:
+    # Prefer user-installed models
+    try:
+        from setiastro.saspro.model_manager import models_root
+        p = models_root()
+        # quick sanity check: any .pth/.onnx exists
+        if os.path.isdir(p):
+            for fn in os.listdir(p):
+                if fn.lower().endswith((".pth", ".onnx")):
+                    return p
+    except Exception:
+        pass
+
+    # Fallback to packaged (dev/frozen) path
     return _resource_path('data/models')
 
+def model_path(filename: str) -> str:
+    return os.path.join(get_models_dir(), filename)
 
 # Export all legacy paths as module-level variables
 _legacy = _init_legacy_paths()
