@@ -360,7 +360,9 @@ class SettingsDialog(QDialog):
             self.lbl_models_status.setText(self.tr("Status: not installed"))
             return
         fid = m.get("file_id", "")
-        self.lbl_models_status.setText(self.tr("Status: installed (Drive id: {0})\nLocation: {1}").format(fid, models_root()))
+        self.lbl_models_status.setText(
+            self.tr("Status: installed\nLocation: {0}").format(models_root())
+        )
 
 
     def _accel_pref_changed(self, idx: int):

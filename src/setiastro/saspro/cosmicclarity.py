@@ -64,7 +64,7 @@ def _cc_models_installed() -> tuple[bool, str]:
 def _warn_models_missing_and_close(parent: QWidget, detail: str = ""):
     msg = (
         "Cosmic Clarity AI models are not installed.\n\n"
-        "Please download and extract the Cosmic Clarity models ZIP so that the models folder is populated.\n"
+        "Please go to Setting->Preferences to Download and Install.\n"
     )
     if detail:
         msg += f"\nDetails: {detail}\n"
