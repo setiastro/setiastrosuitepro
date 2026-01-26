@@ -1,8 +1,9 @@
 # ops.settings.py
 from PyQt6.QtWidgets import (
-    QLineEdit, QDialogButtonBox, QFileDialog, QDialog, QPushButton, QFormLayout,QApplication,
+    QLineEdit, QDialogButtonBox, QFileDialog, QDialog, QPushButton, QFormLayout,QApplication, QMenu,
     QHBoxLayout, QVBoxLayout, QWidget, QCheckBox, QComboBox, QSpinBox, QDoubleSpinBox, QLabel, QColorDialog, QFontDialog, QSlider)
 from PyQt6.QtCore import QSettings, Qt
+from PyQt6.QtGui import QAction
 import pytz  # for timezone list
 from setiastro.saspro.accel_installer import current_backend
 import sys, platform
@@ -12,6 +13,7 @@ from PyQt6.QtCore import QThread
 from setiastro.saspro.i18n import get_available_languages, get_saved_language, save_language
 import importlib.util
 import importlib.metadata
+import webbrowser
 
 class SettingsDialog(QDialog):
     """
@@ -240,7 +242,23 @@ class SettingsDialog(QDialog):
 
         self.btn_models_update = QPushButton(self.tr("Download/Update Models…"))
         self.btn_models_update.clicked.connect(self._models_update_clicked)
-        right_col.addRow(self.btn_models_update)
+
+        self.btn_models_install_zip = QPushButton(self.tr("Install from ZIP…"))
+        self.btn_models_install_zip.setToolTip(self.tr("Use a manually downloaded models .zip file"))
+        self.btn_models_install_zip.clicked.connect(self._models_install_from_zip_clicked)
+
+        self.btn_models_open_drive = QPushButton(self.tr("Open Drive…"))
+        self.btn_models_open_drive.setToolTip(self.tr("Open the models folder in your browser (Primary/Backup)"))
+        self.btn_models_open_drive.clicked.connect(self._models_open_drive_clicked)
+
+        row_models = QHBoxLayout()
+        row_models.addWidget(self.btn_models_update, 1)
+        row_models.addWidget(self.btn_models_install_zip)
+        row_models.addWidget(self.btn_models_open_drive)
+
+        w_models = QWidget()
+        w_models.setLayout(row_models)
+        right_col.addRow(w_models)
 
         # ---- Right column: WIMS + RA/Dec + Updates + Display ----
         right_col.addRow(QLabel(self.tr("<b>What's In My Sky — Defaults</b>")))
@@ -297,6 +315,86 @@ class SettingsDialog(QDialog):
         self.install_accel_btn.clicked.connect(self._install_or_update_accel)
         # Initial Load:
         self.refresh_ui()
+
+    def _models_open_drive_clicked(self):
+        PRIMARY_FOLDER = "https://drive.google.com/drive/folders/1-fktZb3I9l-mQimJX2fZAmJCBj_t0yAF?usp=drive_link"
+        BACKUP_FOLDER  = "https://drive.google.com/drive/folders/1j46RV6touQtOmtxkhdFWGm_LQKwEpTl9?usp=drive_link"
+
+        menu = QMenu(self)
+        act_primary = menu.addAction(self.tr("Primary"))
+        act_backup  = menu.addAction(self.tr("Backup"))
+
+        chosen = menu.exec(self.btn_models_open_drive.mapToGlobal(self.btn_models_open_drive.rect().bottomLeft()))
+        if chosen == act_primary:
+            webbrowser.open(PRIMARY_FOLDER)
+        elif chosen == act_backup:
+            webbrowser.open(BACKUP_FOLDER)
+
+
+    def _models_install_from_zip_clicked(self):
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox, QProgressDialog
+        from PyQt6.QtCore import Qt, QThread
+        import os
+
+        zip_path, _ = QFileDialog.getOpenFileName(
+            self,
+            self.tr("Select models ZIP"),
+            "",
+            self.tr("ZIP files (*.zip);;All files (*)")
+        )
+        if not zip_path:
+            return
+
+        if not os.path.exists(zip_path):
+            QMessageBox.warning(self, self.tr("Models"), self.tr("File not found."))
+            return
+
+        self.btn_models_update.setEnabled(False)
+        self.btn_models_install_zip.setEnabled(False)
+
+        pd = QProgressDialog(self.tr("Preparing…"), self.tr("Cancel"), 0, 0, self)
+        pd.setWindowTitle(self.tr("Installing Models"))
+        pd.setWindowModality(Qt.WindowModality.ApplicationModal)
+        pd.setAutoClose(True)
+        pd.setMinimumDuration(0)
+        pd.show()
+
+        from setiastro.saspro.model_workers import ModelsInstallZipWorker
+
+        self._models_thread = QThread(self)
+        self._models_worker = ModelsInstallZipWorker(zip_path)
+        self._models_worker.moveToThread(self._models_thread)
+
+        self._models_thread.started.connect(self._models_worker.run, Qt.ConnectionType.QueuedConnection)
+        self._models_worker.progress.connect(pd.setLabelText, Qt.ConnectionType.QueuedConnection)
+
+        def _cancel():
+            if self._models_thread.isRunning():
+                self._models_thread.requestInterruption()
+        pd.canceled.connect(_cancel, Qt.ConnectionType.QueuedConnection)
+
+        def _done(ok: bool, msg: str):
+            pd.reset()
+            pd.deleteLater()
+
+            self._models_thread.quit()
+            self._models_thread.wait()
+
+            self.btn_models_update.setEnabled(True)
+            self.btn_models_install_zip.setEnabled(True)
+            self._refresh_models_status()
+
+            if ok:
+                QMessageBox.information(self, self.tr("Models"), self.tr("✅ {0}").format(msg))
+            else:
+                QMessageBox.warning(self, self.tr("Models"), self.tr("❌ {0}").format(msg))
+
+        self._models_worker.finished.connect(_done, Qt.ConnectionType.QueuedConnection)
+        self._models_thread.finished.connect(self._models_worker.deleteLater, Qt.ConnectionType.QueuedConnection)
+        self._models_thread.finished.connect(self._models_thread.deleteLater, Qt.ConnectionType.QueuedConnection)
+
+        self._models_thread.start()
+
 
     def _models_update_clicked(self):
         from PyQt6.QtWidgets import QMessageBox, QProgressDialog

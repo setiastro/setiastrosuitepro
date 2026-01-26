@@ -13,6 +13,43 @@ from setiastro.saspro.model_manager import (
     sha256_file,
 )
 
+class ModelsInstallZipWorker(QObject):
+    progress = pyqtSignal(str)
+    finished = pyqtSignal(bool, str)
+
+    def __init__(self, zip_path: str, should_cancel=None):
+        super().__init__()
+        self.zip_path = zip_path
+        self.should_cancel = should_cancel  # optional callable
+
+    def run(self):
+        try:
+            from setiastro.saspro.model_manager import install_models_zip, sha256_file
+
+            if not self.zip_path or not os.path.exists(self.zip_path):
+                raise RuntimeError("ZIP file not found.")
+
+            self.progress.emit("Verifying ZIP…")
+            # quick hash (optional but helpful for support logs)
+            zhash = sha256_file(self.zip_path)
+
+            manifest = {
+                "source": "manual_zip",
+                "file": os.path.basename(self.zip_path),
+                "sha256": zhash,
+            }
+
+            install_models_zip(
+                self.zip_path,
+                progress_cb=lambda s: self.progress.emit(s),
+                manifest=manifest,
+            )
+
+            self.finished.emit(True, "Models installed successfully from ZIP.")
+        except Exception as e:
+            self.finished.emit(False, str(e))
+
+
 class ModelsDownloadWorker(QObject):
     progress = pyqtSignal(str)
     finished = pyqtSignal(bool, str)
