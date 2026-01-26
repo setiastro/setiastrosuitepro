@@ -34,14 +34,77 @@ def benchmark_cache_dir() -> Path:
 def benchmark_image_path() -> Path:
     return benchmark_cache_dir() / "benchmarkimage.fit"
 
-BENCHMARK_FITS_URL = "https://github.com/setiastro/setiastrosuitepro/releases/download/benchmarkFIT/benchmarkimage.fit"
+from typing import Sequence, Union
+from urllib.parse import urlparse, parse_qs
+import re
 
+BENCHMARK_URLS = [
+    "https://drive.google.com/file/d/1wgp6Ydn8JgF1j9FVnF6PgjyN-6ptJTnK/view?usp=drive_link",
+    "https://drive.google.com/file/d/1QhsmuKjvksAMq45M3aHKHylZgZEd8Nh0/view?usp=drive_link",
+    "https://github.com/setiastro/setiastrosuitepro/releases/download/benchmarkFIT/benchmarkimage.fit",
+]
+
+# Keep for backwards compat (some code imports BENCHMARK_FITS_URL)
+BENCHMARK_FITS_URL = BENCHMARK_URLS[-1]
+
+def _gdrive_file_id(url: str) -> Optional[str]:
+    """
+    Extract Google Drive file id from:
+      - https://drive.google.com/file/d/<ID>/view
+      - https://drive.google.com/open?id=<ID>
+      - https://drive.google.com/uc?id=<ID>&export=download
+    """
+    try:
+        u = urlparse(url)
+        if "drive.google.com" not in (u.netloc or ""):
+            return None
+
+        # /file/d/<id>/...
+        m = re.search(r"/file/d/([^/]+)", u.path or "")
+        if m:
+            return m.group(1)
+
+        # ?id=<id>
+        qs = parse_qs(u.query or "")
+        if "id" in qs and qs["id"]:
+            return qs["id"][0]
+    except Exception:
+        pass
+    return None
+
+
+def _gdrive_direct_url(file_id: str) -> str:
+    # export=download is essential; confirm token may be appended later if needed
+    return f"https://drive.google.com/uc?export=download&id={file_id}"
+
+
+def _gdrive_confirm_token(html: str) -> Optional[str]:
+    """
+    When Drive shows the "can't scan for viruses" interstitial,
+    it includes a confirm token in a download link.
+    """
+    # Typical patterns include confirm=<TOKEN>
+    m = re.search(r"confirm=([0-9A-Za-z_]+)", html)
+    if m:
+        return m.group(1)
+    return None
+
+
+def _normalize_download_url(url: str) -> tuple[str, Optional[str]]:
+    """
+    Returns (normalized_url, label_for_logging).
+    If Google Drive view/open link, returns a direct uc?export=download&id= URL.
+    """
+    fid = _gdrive_file_id(url)
+    if fid:
+        return _gdrive_direct_url(fid), f"Google Drive ({fid})"
+    return url, None
 
 # -----------------------------
 # Download benchmark FITS
 # -----------------------------
 def download_benchmark_image(
-    url: str,
+    url: Union[str, Sequence[str], None] = None,
     dst: Optional[Path] = None,
     *,
     status_cb: Optional[ProgressCB] = None,
@@ -50,48 +113,149 @@ def download_benchmark_image(
     timeout: int = 30,
 ) -> Path:
     """
-    Download benchmarkimage.fit from your repo URL into runtime cache.
+    Download benchmarkimage.fit into runtime cache.
+
+    url:
+      - None -> try BENCHMARK_URLS in order
+      - str  -> try that one (but will still handle Drive confirms)
+      - list/tuple -> try each in order
+
     Uses streaming download + atomic replace. Supports cancel.
     """
     if dst is None:
         dst = benchmark_image_path()
     dst = Path(dst)
-
     tmp = dst.with_suffix(dst.suffix + ".part")
 
-    if status_cb:
-        status_cb(f"Downloading benchmark image…")
+    # Build candidate list
+    if url is None:
+        candidates = list(BENCHMARK_URLS)
+    elif isinstance(url, (list, tuple)):
+        candidates = list(url)
+    else:
+        candidates = [url]
 
     import requests  # local import keeps startup lighter
 
-    with requests.get(url, stream=True, timeout=timeout) as r:
-        r.raise_for_status()
-        total = int(r.headers.get("Content-Length") or 0)
-        done = 0
+    last_err = None
 
-        tmp.parent.mkdir(parents=True, exist_ok=True)
-        with open(tmp, "wb") as f:
-            for chunk in r.iter_content(chunk_size=1024 * 1024):
-                if cancel_cb and cancel_cb():
-                    try:
-                        f.close()
-                        tmp.unlink(missing_ok=True)
-                    except Exception:
-                        pass
-                    raise RuntimeError("Download canceled.")
-                if not chunk:
-                    continue
-                f.write(chunk)
-                done += len(chunk)
-                if progress_cb:
-                    progress_cb(done, total)
+    for idx, raw in enumerate(candidates, start=1):
+        try:
+            dl_url, label = _normalize_download_url(raw)
+            src_label = label or raw
 
-    # atomic replace
-    os.replace(str(tmp), str(dst))
+            if status_cb:
+                status_cb(f"Downloading benchmark image… (source {idx}/{len(candidates)}: {src_label})")
 
-    if status_cb:
-        status_cb(f"Benchmark image ready: {dst}")
-    return dst
+            # Use a session so Drive confirm/cookies work reliably
+            with requests.Session() as s:
+                # First request
+                r = s.get(dl_url, stream=True, timeout=timeout, allow_redirects=True)
+
+                # If Google Drive interstitial HTML, extract confirm token and retry
+                ctype = (r.headers.get("Content-Type") or "").lower()
+                if "text/html" in ctype and "drive.google.com" in dl_url:
+                    # Read a small chunk of text (not entire file) to find confirm token
+                    html = r.text if hasattr(r, "text") else ""
+                    token = _gdrive_confirm_token(html)
+                    if token:
+                        # Append confirm token and retry
+                        sep = "&" if ("?" in dl_url) else "?"
+                        dl_url2 = f"{dl_url}{sep}confirm={token}"
+                        r.close()
+                        r = s.get(dl_url2, stream=True, timeout=timeout, allow_redirects=True)
+
+                r.raise_for_status()
+
+                total = int(r.headers.get("Content-Length") or 0)
+                done = 0
+                t_start = time.time()
+                t_last = t_start
+                done_last = 0
+                ema_bps = None  # exponential moving average bytes/sec
+                tmp.parent.mkdir(parents=True, exist_ok=True)
+                with open(tmp, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=1024 * 1024):
+                        if cancel_cb and cancel_cb():
+                            try:
+                                f.close()
+                                tmp.unlink(missing_ok=True)
+                            except Exception:
+                                pass
+                            raise RuntimeError("Download canceled.")
+                        if not chunk:
+                            continue
+                        f.write(chunk)
+                        done += len(chunk)
+                        if progress_cb:
+                            progress_cb(done, total)
+                        now = time.time()
+                        dt = now - t_last
+                        if dt >= 0.5:  # update ~2x/sec
+                            inst_bps = (done - done_last) / max(dt, 1e-9)
+                            # smooth it so the ETA isn't jumpy
+                            if ema_bps is None:
+                                ema_bps = inst_bps
+                            else:
+                                alpha = 0.25
+                                ema_bps = (1 - alpha) * ema_bps + alpha * inst_bps
+
+                            eta = None
+                            if total > 0 and ema_bps and ema_bps > 1:
+                                eta = (total - done) / ema_bps
+
+                            if status_cb:
+                                pct = (done * 100.0 / total) if total > 0 else None
+                                if pct is None:
+                                    status_cb(f"Downloading… {_fmt_bytes(done)} at {_fmt_bytes(ema_bps)}/s • ETA {_fmt_eta(None)}")
+                                else:
+                                    status_cb(
+                                        f"Downloading… {pct:5.1f}% • {_fmt_bytes(done)}/{_fmt_bytes(total)} "
+                                        f"at {_fmt_bytes(ema_bps)}/s • ETA {_fmt_eta(eta)}"
+                                    )
+
+                            t_last = now
+                            done_last = done
+            # atomic replace only after a full success
+            os.replace(str(tmp), str(dst))
+
+            if status_cb:
+                status_cb(f"Benchmark image ready: {dst}")
+            return dst
+
+        except Exception as e:
+            last_err = e
+            # clean partial
+            try:
+                tmp.unlink(missing_ok=True)
+            except Exception:
+                pass
+            if status_cb:
+                status_cb(f"Source {idx} failed: {e}")
+
+    raise RuntimeError(f"All benchmark download sources failed. Last error: {last_err}")
+
+def _fmt_bytes(n: float) -> str:
+    units = ["B", "KB", "MB", "GB", "TB"]
+    n = float(max(0.0, n))
+    for u in units:
+        if n < 1024.0 or u == units[-1]:
+            return f"{n:.1f} {u}" if u != "B" else f"{n:.0f} {u}"
+        n /= 1024.0
+    return f"{n:.1f} TB"
+
+def _fmt_eta(seconds: Optional[float]) -> str:
+    if seconds is None or seconds <= 0 or not np.isfinite(seconds):
+        return "—"
+    s = int(seconds + 0.5)
+    m, s = divmod(s, 60)
+    h, m = divmod(m, 60)
+    if h:
+        return f"{h:d}h {m:02d}m"
+    if m:
+        return f"{m:d}m {s:02d}s"
+    return f"{s:d}s"
+
 
 def _get_stellar_model_for_benchmark(use_gpu: bool, status_cb=None):
     """

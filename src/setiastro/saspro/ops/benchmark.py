@@ -68,7 +68,7 @@ class _DownloadWorker(QObject):
                 return QThread.currentThread().isInterruptionRequested()
 
             p = download_benchmark_image(
-                self.url,
+                None,
                 status_cb=status_cb,
                 progress_cb=progress_cb,
                 cancel_cb=cancel_cb,

@@ -71,6 +71,7 @@ imageio = "*"
 
 # utilities
 pytz = "*"
+py-cpuinfo = "*"
 
 # GUI
 PyQt6 = "*"
