@@ -303,8 +303,11 @@ class CosmicClarityDialogPro(QDialog):
         grid.addWidget(self.cmb_mode, 0, 1, 1, 2)
 
         # GPU
-        grid.addWidget(QLabel(self.tr("Use GPU:")), 1, 0)
-        self.cmb_gpu = QComboBox(); self.cmb_gpu.addItems([self.tr("Yes"), self.tr("No")])
+        self.lbl_gpu = QLabel(self.tr("Use GPU:"))
+        grid.addWidget(self.lbl_gpu, 1, 0)
+
+        self.cmb_gpu = QComboBox()
+        self.cmb_gpu.addItems([self.tr("Yes"), self.tr("No")])
         grid.addWidget(self.cmb_gpu, 1, 1)
 
         # Sharpen block
@@ -450,8 +453,9 @@ class CosmicClarityDialogPro(QDialog):
             w.setVisible(show_sr)
 
         # GPU hidden for superres (matches your SASv2)
-        self.cmb_gpu.setVisible(not show_sr)
-        self.parentWidget()
+        show_gpu = (not show_sr)
+        self.lbl_gpu.setVisible(show_gpu)
+        self.cmb_gpu.setVisible(show_gpu)
 
     # ----- Validation -----
     def _validate_root(self) -> bool:
