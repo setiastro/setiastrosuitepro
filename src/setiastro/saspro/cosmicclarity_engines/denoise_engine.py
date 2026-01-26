@@ -40,19 +40,25 @@ def _nullcontext():
     return nullcontext()
 
 
-def _autocast_context(torch, device):
+def _autocast_context(torch, device) -> Any:
     """
-    Match your current policy (cap >= 8.0 only).
+    Use new torch.amp.autocast('cuda') when available.
+    Keep your cap >= 8.0 rule.
     """
     try:
         if hasattr(device, "type") and device.type == "cuda":
             major, minor = torch.cuda.get_device_capability()
             cap = float(f"{major}.{minor}")
             if cap >= 8.0:
+                # Preferred API (torch >= 1.10-ish; definitely in 2.x)
+                if hasattr(torch, "amp") and hasattr(torch.amp, "autocast"):
+                    return torch.amp.autocast(device_type="cuda")
+                # Fallback for older torch
                 return torch.cuda.amp.autocast()
     except Exception:
         pass
     return _nullcontext()
+
 
 
 # ----------------------------
