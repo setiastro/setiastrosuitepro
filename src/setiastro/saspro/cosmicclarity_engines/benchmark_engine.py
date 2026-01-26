@@ -647,6 +647,10 @@ def _legacy_results_schema(results: Dict[str, Any]) -> Dict[str, Any]:
 
     return out
 
+def _picked_backend(use_gpu: bool, status_cb=None) -> str:
+    models, tag = _get_stellar_model_for_benchmark(use_gpu=use_gpu, status_cb=status_cb)
+    return "ONNX" if models.is_onnx else "TORCH"
+
 # -----------------------------
 # One-stop runner
 # -----------------------------
@@ -690,26 +694,39 @@ def run_benchmark(
     if mode in ("GPU", "Both"):
         if status_cb: status_cb("Running Stellar model benchmark…")
 
-        # Torch (or CPU fallback if torch path)
-        avg_ms, total_ms, backend = torch_benchmark_stellar(
-            patches,
-            use_gpu=use_gpu,
-            progress_cb=progress_cb,
-            status_cb=status_cb,
-        )
-        results[f"Stellar Torch ({backend})"] = {"avg_ms": float(avg_ms), "total_ms": float(total_ms)}
+        picked = _picked_backend(use_gpu=use_gpu, status_cb=status_cb)
 
-        # ONNX benchmark (DirectML when available; otherwise CPU/CUDA if present)
-        if platform.system() == "Windows":
-            avg_o, total_o, provider = onnx_benchmark_stellar(
+        if picked == "TORCH":
+            avg_ms, total_ms, backend = torch_benchmark_stellar(
                 patches,
                 use_gpu=use_gpu,
                 progress_cb=progress_cb,
                 status_cb=status_cb,
             )
-            results[f"Stellar ONNX ({provider})"] = {"avg_ms": float(avg_o), "total_ms": float(total_o)}
+            results[f"Stellar Torch ({backend})"] = {"avg_ms": float(avg_ms), "total_ms": float(total_ms)}
+
+            # Optional: also run ONNX on Windows for comparison
+            if platform.system() == "Windows":
+                avg_o, total_o, provider = onnx_benchmark_stellar(
+                    patches,
+                    use_gpu=use_gpu,
+                    progress_cb=progress_cb,
+                    status_cb=status_cb,
+                )
+                results[f"Stellar ONNX ({provider})"] = {"avg_ms": float(avg_o), "total_ms": float(total_o)}
+
         else:
-            results["Stellar ONNX"] = "ONNX benchmark only available on Windows."
+            # Picked ONNX (DirectML). Run ONNX benchmark as the “GPU benchmark”.
+            if platform.system() == "Windows":
+                avg_o, total_o, provider = onnx_benchmark_stellar(
+                    patches,
+                    use_gpu=use_gpu,
+                    progress_cb=progress_cb,
+                    status_cb=status_cb,
+                )
+                results[f"Stellar ONNX ({provider})"] = {"avg_ms": float(avg_o), "total_ms": float(total_o)}
+            else:
+                results["Stellar ONNX"] = "ONNX benchmark only available on Windows."
 
     results = _legacy_results_schema(results)
     return results
