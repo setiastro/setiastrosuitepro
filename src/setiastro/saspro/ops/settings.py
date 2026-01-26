@@ -230,6 +230,18 @@ class SettingsDialog(QDialog):
         w_accel = QWidget()
         w_accel.setLayout(accel_row)
         left_col.addRow(w_accel)
+
+        # ---- Models ----
+        right_col.addRow(QLabel(self.tr("<b>AI Models</b>")))
+
+        self.lbl_models_status = QLabel(self.tr("Status: (unknown)"))
+        self.lbl_models_status.setStyleSheet("color:#888;")
+        right_col.addRow(self.lbl_models_status)
+
+        self.btn_models_update = QPushButton(self.tr("Download/Update Models…"))
+        self.btn_models_update.clicked.connect(self._models_update_clicked)
+        right_col.addRow(self.btn_models_update)
+
         # ---- Right column: WIMS + RA/Dec + Updates + Display ----
         right_col.addRow(QLabel(self.tr("<b>What's In My Sky — Defaults</b>")))
         right_col.addRow(self.tr("Latitude (°):"), self.sp_lat)
@@ -285,6 +297,73 @@ class SettingsDialog(QDialog):
         self.install_accel_btn.clicked.connect(self._install_or_update_accel)
         # Initial Load:
         self.refresh_ui()
+
+    def _models_update_clicked(self):
+        from PyQt6.QtWidgets import QMessageBox, QProgressDialog
+        from PyQt6.QtCore import Qt, QThread
+
+        # NOTE: these must be FILE links or file IDs, not folder links.
+        # Put your actual *zip file* share links here once you create them.
+        PRIMARY = "https://drive.google.com/file/d/1n4p0grtNpfllalMqtgaEmsTYaFhT5u7Y/view?usp=drive_link"
+        BACKUP  = "https://drive.google.com/file/d/1uRGJCITlfMMN89ZkOO5ICWEKMH24KGit/view?usp=drive_link"
+
+
+        self.btn_models_update.setEnabled(False)
+
+        pd = QProgressDialog(self.tr("Preparing…"), self.tr("Cancel"), 0, 0, self)
+        pd.setWindowTitle(self.tr("Updating Models"))
+        pd.setWindowModality(Qt.WindowModality.ApplicationModal)
+        pd.setAutoClose(True)
+        pd.setMinimumDuration(0)
+        pd.show()
+
+        from setiastro.saspro.model_workers import ModelsDownloadWorker
+
+        self._models_thread = QThread(self)
+        self._models_worker = ModelsDownloadWorker(PRIMARY, BACKUP, expected_sha256=None)
+        self._models_worker.moveToThread(self._models_thread)
+
+        self._models_thread.started.connect(self._models_worker.run, Qt.ConnectionType.QueuedConnection)
+        self._models_worker.progress.connect(pd.setLabelText, Qt.ConnectionType.QueuedConnection)
+        def should_cancel():
+            return self._models_thread.isInterruptionRequested()
+        def _cancel():
+            if self._models_thread.isRunning():
+                self._models_thread.requestInterruption()
+        pd.canceled.connect(_cancel, Qt.ConnectionType.QueuedConnection)
+
+        def _done(ok: bool, msg: str):
+            pd.reset()
+            pd.deleteLater()
+
+            self._models_thread.quit()
+            self._models_thread.wait()
+
+            self.btn_models_update.setEnabled(True)
+            self._refresh_models_status()
+
+            if ok:
+                QMessageBox.information(self, self.tr("Models"), self.tr("✅ {0}").format(msg))
+            else:
+                QMessageBox.warning(self, self.tr("Models"), self.tr("❌ {0}").format(msg))
+
+        self._models_worker.finished.connect(_done, Qt.ConnectionType.QueuedConnection)
+        self._models_thread.finished.connect(self._models_worker.deleteLater, Qt.ConnectionType.QueuedConnection)
+        self._models_thread.finished.connect(self._models_thread.deleteLater, Qt.ConnectionType.QueuedConnection)
+
+        self._models_thread.start()
+
+    def _refresh_models_status(self):
+        from setiastro.saspro.model_manager import read_installed_manifest, models_root
+        m = read_installed_manifest()
+        if not m:
+            self.lbl_models_status.setText(self.tr("Status: not installed"))
+            return
+        fid = m.get("file_id", "")
+        self.lbl_models_status.setText(
+            self.tr("Status: installed\nLocation: {0}").format(models_root())
+        )
+
 
     def _accel_pref_changed(self, idx: int):
         inv = {0:"auto", 1:"cuda", 2:"xpu", 3:"directml", 4:"cpu"}
@@ -534,6 +613,10 @@ class SettingsDialog(QDialog):
             self.accel_deps_label.setText(self._format_accel_deps_text())
         except Exception:
             self.accel_deps_label.setText(self.tr("Torch: — unknown"))
+        try:
+            self._refresh_models_status()
+        except Exception:
+            pass
 
     def reject(self):
         """User cancelled: restore the original background opacity (revert live changes)."""
