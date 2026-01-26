@@ -424,8 +424,8 @@ def onnx_benchmark_stellar(
             provider = "DmlExecutionProvider"
     else:
         import onnxruntime as ort
-        R = get_resources()
-        onnx_path = R.CC_STELLAR_SHARP_ONNX
+        from setiastro.saspro.model_manager import require_model
+        onnx_path = require_model("deep_sharp_stellar_cnn_AI3_5s.onnx")
 
         providers_avail = ort.get_available_providers()
 

@@ -17,6 +17,24 @@ APP_FOLDER_NAME = "SetiAstroSuitePro"  # keep stable
 ProgressCB = Optional[Callable[[str], None]]
 
 
+def model_path(filename: str) -> Path:
+    p = Path(models_root()) / filename
+    return p
+
+def require_model(filename: str) -> Path:
+    """
+    Return full path to a runtime-managed model file.
+    Raises FileNotFoundError with a helpful message if missing.
+    """
+    p = model_path(filename)
+    if not p.exists():
+        raise FileNotFoundError(
+            f"Model not found: {p}\n"
+            f"Expected models in: {models_root()}\n"
+            f"Please install/download the Cosmic Clarity models."
+        )
+    return p
+
 def app_data_root() -> str:
     """
     Frozen-safe persistent data root.
