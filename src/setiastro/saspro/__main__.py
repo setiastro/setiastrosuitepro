@@ -538,7 +538,18 @@ def _bootstrap_imports():
     add_runtime_to_sys_path(status_cb=lambda *_: None)
     _ban_shadow_torch_paths(status_cb=lambda *_: None)
     _purge_bad_torch_from_sysmodules(status_cb=lambda *_: None)
-
+    _update_splash(QCoreApplication.translate("Splash", "Preparing AI runtime cache..."), 7)
+    try:
+        from setiastro.saspro.runtime_torch import prewarm_torch_cache
+        prewarm_torch_cache(
+            status_cb=lambda *_: None,   # keep console clean during splash
+            require_torchaudio=True,
+            ensure_venv=True,
+            ensure_numpy=False,
+            validate_marker=True,
+        )
+    except Exception:
+        pass
     _update_splash(QCoreApplication.translate("Splash", "Loading standard libraries..."), 10)
 
     # ----------------------------------------

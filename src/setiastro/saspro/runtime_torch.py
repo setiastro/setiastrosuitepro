@@ -16,23 +16,13 @@ from contextlib import contextmanager
 import platform as _plat
 from pathlib import Path as _Path
 
+
 def _rt_dbg(msg: str, status_cb=print):
     try:
         status_cb(f"[RT] {msg}")
     except Exception:
         print(f"[RT] {msg}", flush=True)
 
-
-def _maybe_find_torch_shm_manager(torch_mod) -> str | None:
-    # Only Linux wheels include/use this helper binary.
-    if _plat.system() != "Linux":
-        return None
-    try:
-        base = _Path(getattr(torch_mod, "__file__", "")).parent
-        p = base / "bin" / "torch_shm_manager"
-        return str(p) if p.exists() else None
-    except Exception:
-        return None
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Paths & runtime selection
@@ -116,9 +106,6 @@ def _user_runtime_dir(status_cb=print) -> Path:
     _rt_dbg(f"_user_runtime_dir() -> {chosen}", status_cb)
     return chosen
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Shadowing & sanity checks
-# ──────────────────────────────────────────────────────────────────────────────
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Shadowing & sanity checks
@@ -191,26 +178,6 @@ def _purge_bad_torch_from_sysmodules(status_cb=print) -> None:
         importlib.invalidate_caches()
     except Exception:
         pass
-
-def _torch_stack_sanity_check(status_cb=print):
-    """
-    Ensure torch imports sanely AND torchvision/torchaudio are importable.
-    IMPORTANT: In frozen builds, torchvision can fail due to missing stdlib modules
-    (e.g., modulefinder). That is NOT a torch install problem and should NOT
-    trigger a venv reinstall.
-    """
-    _torch_sanity_check(status_cb=status_cb)
-
-    try:
-        import torchvision  # noqa
-    except Exception as e:
-        raise RuntimeError(f"torchvision import failed: {type(e).__name__}: {e}") from e
-
-    try:
-        import torchaudio  # noqa
-    except Exception as e:
-        raise RuntimeError(f"torchaudio import failed: {type(e).__name__}: {e}") from e
-
 
 
 def _torch_sanity_check(status_cb=print):
@@ -757,6 +724,153 @@ def _venv_has_torch_stack(
     ok_all = (ok_t and ok_v and ok_a) if require_torchaudio else (ok_t and ok_v)
     return ok_all, info
 
+def _marker_says_ready(
+    marker: Path,
+    site: Path,
+    venv_ver: tuple[int, int] | None,
+    *,
+    require_torchaudio: bool = True,
+    max_age_days: int = 180,
+) -> bool:
+    """
+    Advisory fast-path gate ONLY.
+
+    Returns True if the marker looks sane enough that an in-process import attempt
+    is worth trying *without* doing the expensive subprocess venv probes.
+
+    IMPORTANT:
+      - This must NOT be used to decide whether to install/uninstall anything.
+      - If this returns True and the in-process import fails, we fall back to the
+        definitive venv probe (_venv_has_torch_stack).
+    """
+    try:
+        if not marker.exists():
+            return False
+
+        raw = marker.read_text(encoding="utf-8", errors="replace")
+        data = json.loads(raw) if raw else {}
+        if not isinstance(data, dict):
+            return False
+
+        if not data.get("installed", False):
+            return False
+
+        # Age gate (advisory only).
+        when = data.get("when")
+        if isinstance(when, (int, float)):
+            age_s = max(0.0, time.time() - float(when))
+            if age_s > (max_age_days * 86400):
+                return False
+
+        # Marker python version should match the RUNTIME VENV python (not the app interpreter).
+        py = data.get("python")
+        if not (isinstance(py, str) and py.strip()):
+            return False
+
+        try:
+            maj_s, min_s = py.strip().split(".", 1)
+            marker_ver = (int(maj_s), int(min_s))
+        except Exception:
+            return False
+
+        # If we can't determine venv version, treat marker as unreliable for fast-path.
+        if venv_ver is None:
+            return False
+
+        if marker_ver != venv_ver:
+            return False
+
+        # Check that recorded files (if present) live under the computed site-packages path.
+        site_s = str(site)
+        tf = data.get("torch_file")
+        tvf = data.get("torchvision_file")
+        taf = data.get("torchaudio_file")
+
+        def _under_site(p: str | None) -> bool:
+            if not p or not isinstance(p, str):
+                return False
+            return site_s in p
+
+        if not _under_site(tf):
+            return False
+        if not _under_site(tvf):
+            return False
+        if require_torchaudio and not _under_site(taf):
+            return False
+
+        return True
+    except Exception:
+        return False
+
+
+def _qt_settings():
+    """
+    Create QSettings without importing PyQt6 at module import time.
+    We only import it inside the function so runtime_torch stays usable
+    in non-GUI contexts.
+    """
+    try:
+        from PyQt6.QtCore import QSettings
+        # Must match what your app sets via QCoreApplication.setOrganizationName / setApplicationName
+        return QSettings()
+    except Exception:
+        return None
+
+
+def _qcache_get():
+    s = _qt_settings()
+    if not s:
+        return None
+    s.beginGroup("runtime_torch")
+    data = {
+        "tag": s.value("tag", "", str),
+        "rt_dir": s.value("rt_dir", "", str),
+        "site": s.value("site", "", str),
+        "python": s.value("python", "", str),
+        "torch": s.value("torch", "", str),
+        "torchvision": s.value("torchvision", "", str),
+        "torchaudio": s.value("torchaudio", "", str),
+        "when": s.value("when", 0, int),
+        "require_torchaudio": s.value("require_torchaudio", True, bool),
+    }
+    s.endGroup()
+    return data
+
+
+def _qcache_set(*, tag: str, rt_dir: Path, site: Path, python_ver: str | None,
+               torch_ver: str | None, tv_ver: str | None, ta_ver: str | None,
+               require_torchaudio: bool):
+    s = _qt_settings()
+    if not s:
+        return
+    s.beginGroup("runtime_torch")
+    s.setValue("tag", tag)
+    s.setValue("rt_dir", str(rt_dir))
+    s.setValue("site", str(site))
+    s.setValue("python", python_ver or "")
+    s.setValue("torch", torch_ver or "")
+    s.setValue("torchvision", tv_ver or "")
+    s.setValue("torchaudio", ta_ver or "")
+    s.setValue("when", int(time.time()))
+    s.setValue("require_torchaudio", bool(require_torchaudio))
+    s.endGroup()
+    s.sync()
+
+
+def _qcache_clear():
+    s = _qt_settings()
+    if not s:
+        return
+    s.beginGroup("runtime_torch")
+    s.remove("")   # remove all keys in group
+    s.endGroup()
+    s.sync()
+
+
+# module-level cache (optional but recommended)
+# module-level cache (optional but recommended)
+_TORCH_CACHED = None
+
 
 def import_torch(
     prefer_cuda: bool = True,
@@ -769,12 +883,52 @@ def import_torch(
     """
     Ensure a per-user venv exists with torch installed; return the imported torch module.
 
+    ULTRA FAST PATH:
+      - Use QSettings cached site-packages (no subprocess at all) and attempt in-process import.
+
+    FAST PATH:
+      - If marker looks valid, compute site-packages (1 subprocess) and try in-process imports.
+      - If that works, skip expensive subprocess probes.
+
+    SLOW PATH:
+      - Probe runtime venv via subprocess (torch/torchvision/torchaudio).
+      - Install only if missing, then re-probe.
+      - Finally import in-process from venv site-packages.
+
     NEW RULES:
-      - The marker is advisory only.
+      - Marker/QSettings are advisory only (fast path gates).
       - If torch/torchvision(/torchaudio) exist in the runtime venv, USE THEM. Do nothing else.
       - Only if missing in the runtime venv should we install.
       - NEVER auto-uninstall user torch/torchvision/torchaudio. No automatic repair.
     """
+    global _TORCH_CACHED
+    if _TORCH_CACHED is not None:
+        return _TORCH_CACHED
+
+    def _write_qcache_best_effort(rt: Path, site: Path, venv_ver: tuple[int,int] | None):
+        """
+        Write QSettings cache only after we have proven imports work in-process.
+        """
+        try:
+            import torch as _t  # noqa
+            import torchvision as _tv  # noqa
+            _ta = None
+            if require_torchaudio:
+                import torchaudio as _ta  # noqa
+
+            _qcache_set(
+                tag=rt.name,  # IMPORTANT: runtime tag, not sys.version_info tag
+                rt_dir=rt,
+                site=site,
+                python_ver=(f"{venv_ver[0]}.{venv_ver[1]}" if venv_ver else ""),
+                torch_ver=getattr(_t, "__version__", None),
+                tv_ver=getattr(_tv, "__version__", None),
+                ta_ver=getattr(_ta, "__version__", None) if _ta else None,
+                require_torchaudio=require_torchaudio,
+            )
+        except Exception:
+            pass
+
     _rt_dbg(f"sys.frozen={getattr(sys,'frozen',False)}", status_cb)
     _rt_dbg(f"sys.executable={sys.executable}", status_cb)
     _rt_dbg(f"sys.version={sys.version}", status_cb)
@@ -785,12 +939,62 @@ def import_torch(
     _ban_shadow_torch_paths(status_cb=status_cb)
     _purge_bad_torch_from_sysmodules(status_cb=status_cb)
 
+    # ------------------------------------------------------------
     # Choose runtime + ensure venv exists
+    # ------------------------------------------------------------
     rt = _user_runtime_dir(status_cb=status_cb)
     vp = _ensure_venv(rt, status_cb=status_cb)
+
+    # ------------------------------------------------------------
+    # ULTRA FAST PATH (runtime-aware): QSettings cache.
+    # Now we can compare the cache tag against the RUNTIME tag, not sys.version_info.
+    # This stays correct for "app python != runtime venv python" cases.
+    # ------------------------------------------------------------
+    try:
+        qc = _qcache_get()
+        if qc:
+            site_s = (qc.get("site") or "").strip()
+            rt_s   = (qc.get("rt_dir") or "").strip()
+            req_ta = bool(qc.get("require_torchaudio", True))
+            tag    = (qc.get("tag") or "").strip()
+
+            # Accept cache only if it matches this runtime folder tag
+            if (
+                tag == rt.name
+                and site_s and Path(site_s).exists()
+                and rt_s and Path(rt_s).exists()
+                and (req_ta == require_torchaudio)
+            ):
+                status_cb("[RT] QSettings cache hit (runtime tag match); attempting zero-subprocess import.")
+
+                if site_s not in sys.path:
+                    sys.path.insert(0, site_s)
+
+                _demote_shadow_torch_paths(status_cb=status_cb)
+                _purge_bad_torch_from_sysmodules(status_cb=status_cb)
+
+                import torch  # noqa
+                import torchvision  # noqa
+                if require_torchaudio:
+                    import torchaudio  # noqa
+
+                _TORCH_CACHED = torch
+
+                return torch
+
+    except Exception as e:
+        status_cb(f"[RT] QSettings fast-path failed: {type(e).__name__}: {e}. Continuing…")
+        try:
+            _qcache_clear()
+        except Exception:
+            pass
+
+    # site-packages path (subprocess but relatively cheap)
     site = _site_packages(vp)
     marker = rt / "torch_installed.json"
+    venv_ver = _venv_pyver(vp)
 
+    _rt_dbg(f"venv_ver={venv_ver}", status_cb)
     _rt_dbg(f"rt={rt}", status_cb)
     _rt_dbg(f"venv_python={vp}", status_cb)
     _rt_dbg(f"marker={marker} exists={marker.exists()}", status_cb)
@@ -803,7 +1007,45 @@ def import_torch(
         pass
 
     # ------------------------------------------------------------
-    # THE IMPORTANT PART: Probe the runtime venv FIRST.
+    # FAST PATH: if marker looks valid, try in-process import NOW.
+    # This avoids the 3 subprocess probes on every launch.
+    # ------------------------------------------------------------
+    try:
+        if _marker_says_ready(marker, site, venv_ver, require_torchaudio=require_torchaudio):
+            status_cb("[RT] Marker valid; attempting fast in-process import (skipping venv probe).")
+
+            sp = str(site)
+            if sp not in sys.path:
+                sys.path.insert(0, sp)
+
+            _demote_shadow_torch_paths(status_cb=status_cb)
+            _purge_bad_torch_from_sysmodules(status_cb=status_cb)
+
+            import torch  # noqa
+            import torchvision  # noqa
+            if require_torchaudio:
+                import torchaudio  # noqa
+
+            # refresh marker (best-effort)
+            try:
+                _write_torch_marker(marker, status_cb=status_cb)
+            except Exception:
+                pass
+
+            _TORCH_CACHED = torch
+            _write_qcache_best_effort(rt, site, venv_ver)
+            return torch
+
+    except Exception as e:
+        status_cb(f"[RT] Marker fast-path failed: {type(e).__name__}: {e}. Falling back to full probe…")
+        # if marker fast path fails, your cached site-packages may also be stale
+        try:
+            _qcache_clear()
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------
+    # SLOW PATH: Probe the runtime venv definitively.
     # If it has torch stack, we're DONE (no installs, no repair).
     # ------------------------------------------------------------
     ok_all, info = _venv_has_torch_stack(vp, status_cb=status_cb, require_torchaudio=require_torchaudio)
@@ -864,16 +1106,23 @@ def import_torch(
     if sp not in sys.path:
         sys.path.insert(0, sp)
 
-    # Re-ban shadowers after sys.path change
     _demote_shadow_torch_paths(status_cb=status_cb)
     _purge_bad_torch_from_sysmodules(status_cb=status_cb)
 
-    # Import torch from venv site-packages
     try:
         import torch  # noqa
+
+        _TORCH_CACHED = torch
+        _write_qcache_best_effort(rt, site, venv_ver)
         return torch
+
     except Exception as e:
-        # DO NOT UNINSTALL. This is usually PyInstaller stdlib / packaging.
+        # prevent repeatedly hitting a bad cached site path on next launch
+        try:
+            _qcache_clear()
+        except Exception:
+            pass
+
         msg = "\n".join([f"{k}: ok={ok} :: {out}" for k, (ok, out) in info.items()])
         raise RuntimeError(
             "Runtime venv probe says torch stack exists, but in-process import failed.\n"
@@ -881,6 +1130,7 @@ def import_torch(
             f"Original error: {type(e).__name__}: {e}\n\n"
             "Runtime venv probe:\n" + msg
         ) from e
+
 
 def _find_system_python_cmd() -> list[str]:
     import platform as _plat
@@ -965,3 +1215,69 @@ def add_runtime_to_sys_path(status_cb=print) -> None:
         _demote_shadow_torch_paths(status_cb=status_cb)
     except Exception:
         return
+
+def prewarm_torch_cache(
+    status_cb=print,
+    *,
+    require_torchaudio: bool = True,
+    ensure_venv: bool = True,
+    ensure_numpy: bool = False,
+    validate_marker: bool = True,
+) -> None:
+    """
+    Build and persist the QSettings cache early (startup), so the first real
+    import_torch() call can be zero-subprocess.
+
+    By default this does NOT import torch (keeps startup lighter).
+    It only computes runtime rt/vpy/site and writes QSettings.
+    """
+    try:
+        _ban_shadow_torch_paths(status_cb=status_cb)
+        _purge_bad_torch_from_sysmodules(status_cb=status_cb)
+
+        rt = _user_runtime_dir(status_cb=status_cb)
+        p = _venv_paths(rt)
+        vp = p["python"]
+
+        if ensure_venv:
+            vp = _ensure_venv(rt, status_cb=status_cb)
+
+        if not vp.exists():
+            return
+
+        if ensure_numpy:
+            try:
+                _ensure_numpy(vp, status_cb=status_cb)
+            except Exception:
+                pass
+
+        site = _site_packages(vp)
+        marker = rt / "torch_installed.json"
+        venv_ver = _venv_pyver(vp)
+
+        # Optionally only cache if marker looks valid (recommended),
+        # otherwise you may cache a site-packages that doesn't actually contain torch yet.
+        if validate_marker:
+            if not _marker_says_ready(marker, site, venv_ver, require_torchaudio=require_torchaudio):
+                status_cb("[RT] prewarm: marker not valid; skipping QSettings cache write.")
+                return
+
+        # IMPORTANT: use runtime tag, not app interpreter tag, for mixed-version scenarios
+        cache_tag = rt.name  # e.g. "py312"
+
+        _qcache_set(
+            tag=cache_tag,
+            rt_dir=rt,
+            site=site,
+            python_ver=(f"{venv_ver[0]}.{venv_ver[1]}" if venv_ver else ""),
+            torch_ver=None,
+            tv_ver=None,
+            ta_ver=None,
+            require_torchaudio=require_torchaudio,
+        )
+        status_cb("[RT] prewarm: QSettings cache written.")
+    except Exception as e:
+        try:
+            status_cb(f"[RT] prewarm failed: {type(e).__name__}: {e}")
+        except Exception:
+            pass

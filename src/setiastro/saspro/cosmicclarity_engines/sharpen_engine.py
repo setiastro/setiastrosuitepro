@@ -26,17 +26,18 @@ import sys, time, tempfile, traceback
 _DEBUG_SHARPEN = True  # flip False later
 
 def _dbg(msg: str, status_cb=print):
-    """Debug print to terminal; also tries status_cb."""
-    if not _DEBUG_SHARPEN:
-        return
+    pass
+    #"""Debug print to terminal; also tries status_cb."""
+    #if not _DEBUG_SHARPEN:
+    #    return
 
-    ts = time.strftime("%H:%M:%S")
-    line = f"[SharpenDBG {ts}] {msg}"
-    print(line, flush=True)
-    try:
-        status_cb(line)
-    except Exception:
-        pass
+    #ts = time.strftime("%H:%M:%S")
+    #line = f"[SharpenDBG {ts}] {msg}"
+    #print(line, flush=True)
+    #try:
+    #    status_cb(line)
+    #except Exception:
+    #    pass
 
 
 ProgressCB = Callable[[int, int, str], bool]  # True=continue, False=cancel
