@@ -140,6 +140,8 @@ def split_image_into_chunks_with_overlap(image2d: np.ndarray, chunk_size: int, o
         for j in range(0, W, step):
             ei = min(i + chunk_size, H)
             ej = min(j + chunk_size, W)
+            if ei <= i or ej <= j:
+                continue
             chunk = image2d[i:ei, j:ej]
             is_edge = (i == 0) or (j == 0) or (i + chunk_size >= H) or (j + chunk_size >= W)
             out.append((chunk, i, j, is_edge))
@@ -147,19 +149,53 @@ def split_image_into_chunks_with_overlap(image2d: np.ndarray, chunk_size: int, o
 
 
 def stitch_chunks_ignore_border(chunks, image_shape, border_size: int = 16):
-    stitched = np.zeros(image_shape, dtype=np.float32)
-    weights  = np.zeros(image_shape, dtype=np.float32)
+    H, W = image_shape
+    stitched = np.zeros((H, W), dtype=np.float32)
+    weights  = np.zeros((H, W), dtype=np.float32)
 
     for chunk, i, j, _is_edge in chunks:
         h, w = chunk.shape
+        if h <= 0 or w <= 0:
+            continue
+
         bh = min(border_size, h // 2)
         bw = min(border_size, w // 2)
+
+        y0 = i + bh
+        y1 = i + h - bh
+        x0 = j + bw
+        x1 = j + w - bw
+
+        # empty inner region? skip
+        if y1 <= y0 or x1 <= x0:
+            continue
+
         inner = chunk[bh:h-bh, bw:w-bw]
-        stitched[i+bh:i+h-bh, j+bw:j+w-bw] += inner
-        weights[i+bh:i+h-bh,  j+bw:j+w-bw] += 1.0
+
+        # clip destination to image bounds
+        yy0 = max(0, y0)
+        yy1 = min(H, y1)
+        xx0 = max(0, x0)
+        xx1 = min(W, x1)
+
+        # did clipping erase it?
+        if yy1 <= yy0 or xx1 <= xx0:
+            continue
+
+        # clip source to match clipped destination
+        sy0 = yy0 - y0
+        sy1 = sy0 + (yy1 - yy0)
+        sx0 = xx0 - x0
+        sx1 = sx0 + (xx1 - xx0)
+
+        src = inner[sy0:sy1, sx0:sx1]
+
+        stitched[yy0:yy1, xx0:xx1] += src
+        weights[yy0:yy1,  xx0:xx1] += 1.0
 
     stitched /= np.maximum(weights, 1.0)
     return stitched
+
 
 
 def add_border(image: np.ndarray, border_size: int = 16) -> np.ndarray:

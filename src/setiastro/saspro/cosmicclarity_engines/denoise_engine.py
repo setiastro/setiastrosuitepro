@@ -336,15 +336,18 @@ def denoise_chroma(cb: np.ndarray,
 def split_image_into_chunks_with_overlap(image, chunk_size, overlap):
     height, width = image.shape[:2]
     chunks = []
-    step_size = chunk_size - overlap  # Define how much to step over (overlapping area)
+    step_size = chunk_size - overlap
 
     for i in range(0, height, step_size):
         for j in range(0, width, step_size):
             end_i = min(i + chunk_size, height)
             end_j = min(j + chunk_size, width)
+            if end_i <= i or end_j <= j:
+                continue
             chunk = image[i:end_i, j:end_j]
-            chunks.append((chunk, i, j))  # Return chunk and its position
+            chunks.append((chunk, i, j))
     return chunks
+
 
 def blend_images(before, after, amount):
     return (1 - amount) * before + amount * after
@@ -353,28 +356,59 @@ def stitch_chunks_ignore_border(chunks, image_shape, border_size: int = 16):
     """
     chunks: list of (chunk, i, j) or (chunk, i, j, is_edge)
     image_shape: (H,W)
+    Robust to boundary clipping (prevents 256x256 -> 256x0 broadcasts).
     """
     H, W = image_shape
     stitched = np.zeros((H, W), dtype=np.float32)
     weights  = np.zeros((H, W), dtype=np.float32)
 
     for entry in chunks:
-        # accept both 3-tuple and 4-tuple
         if len(entry) == 3:
             chunk, i, j = entry
         else:
             chunk, i, j, _ = entry
 
         h, w = chunk.shape[:2]
+        if h <= 0 or w <= 0:
+            continue
+
         bh = min(border_size, h // 2)
         bw = min(border_size, w // 2)
 
+        # inner region in chunk coords
+        y0 = i + bh
+        y1 = i + h - bh
+        x0 = j + bw
+        x1 = j + w - bw
+
+        if y1 <= y0 or x1 <= x0:
+            continue
+
         inner = chunk[bh:h-bh, bw:w-bw]
-        stitched[i+bh:i+h-bh, j+bw:j+w-bw] += inner
-        weights[i+bh:i+h-bh, j+bw:j+w-bw] += 1.0
+
+        # clip destination to image bounds
+        yy0 = max(0, y0)
+        yy1 = min(H, y1)
+        xx0 = max(0, x0)
+        xx1 = min(W, x1)
+
+        if yy1 <= yy0 or xx1 <= xx0:
+            continue
+
+        # clip source to match clipped destination
+        sy0 = yy0 - y0
+        sy1 = sy0 + (yy1 - yy0)
+        sx0 = xx0 - x0
+        sx1 = sx0 + (xx1 - xx0)
+
+        src = inner[sy0:sy1, sx0:sx1]
+
+        stitched[yy0:yy1, xx0:xx1] += src
+        weights[yy0:yy1,  xx0:xx1] += 1.0
 
     stitched /= np.maximum(weights, 1.0)
     return stitched
+
 
 def replace_border(original_image, processed_image, border_size=16):
     # Ensure the dimensions of both images match
@@ -492,16 +526,19 @@ def denoise_channel(channel: np.ndarray, models: Dict[str, Any], *, progress_cb:
         original_chunk_shape = chunk.shape
 
         if is_onnx:
-            chunk_input = chunk[np.newaxis, np.newaxis, :, :].astype(np.float32)
-            chunk_input = np.tile(chunk_input, (1, 3, 1, 1))
-            if chunk_input.shape[2] != chunk_size or chunk_input.shape[3] != chunk_size:
+            h, w = original_chunk_shape  # <- the real chunk size
+
+            chunk_input = chunk[np.newaxis, np.newaxis, :, :].astype(np.float32)  # (1,1,h,w)
+            chunk_input = np.tile(chunk_input, (1, 3, 1, 1))                      # (1,3,h,w)
+
+            if h != chunk_size or w != chunk_size:
                 padded = np.zeros((1, 3, chunk_size, chunk_size), dtype=np.float32)
-                padded[:, :, :chunk_input.shape[2], :chunk_input.shape[3]] = chunk_input
+                padded[:, :, :h, :w] = chunk_input
                 chunk_input = padded
 
             input_name = model.get_inputs()[0].name
-            out = model.run(None, {input_name: chunk_input})[0]
-            denoised_chunk = out[0, 0, :original_chunk_shape[0], :original_chunk_shape[1]]
+            out = model.run(None, {input_name: chunk_input})[0]                   # (1,3,256,256) usually
+            denoised_chunk = out[0, 0, :h, :w]
 
         else:
             torch = models["torch"]

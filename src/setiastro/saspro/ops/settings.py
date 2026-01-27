@@ -248,7 +248,8 @@ class SettingsDialog(QDialog):
         self.btn_models_install_zip.clicked.connect(self._models_install_from_zip_clicked)
 
         self.btn_models_open_drive = QPushButton(self.tr("Open Drive…"))
-        self.btn_models_open_drive.setToolTip(self.tr("Open the models folder in your browser (Primary/Backup)"))
+        self.btn_models_open_drive.setToolTip(self.tr("Download models (Primary/Backup/GitHub mirror)"))
+
         self.btn_models_open_drive.clicked.connect(self._models_open_drive_clicked)
 
         row_models = QHBoxLayout()
@@ -319,16 +320,22 @@ class SettingsDialog(QDialog):
     def _models_open_drive_clicked(self):
         PRIMARY_FOLDER = "https://drive.google.com/drive/folders/1-fktZb3I9l-mQimJX2fZAmJCBj_t0yAF?usp=drive_link"
         BACKUP_FOLDER  = "https://drive.google.com/drive/folders/1j46RV6touQtOmtxkhdFWGm_LQKwEpTl9?usp=drive_link"
+        GITHUB_ZIP     = "https://github.com/setiastro/setiastrosuitepro/releases/download/benchmarkFIT/SASPro_Models_Latest.zip"
 
         menu = QMenu(self)
-        act_primary = menu.addAction(self.tr("Primary"))
-        act_backup  = menu.addAction(self.tr("Backup"))
+        act_primary = menu.addAction(self.tr("Primary (Google Drive)"))
+        act_backup  = menu.addAction(self.tr("Backup (Google Drive)"))
+        menu.addSeparator()
+        act_gh      = menu.addAction(self.tr("GitHub (no quota limit)"))
 
         chosen = menu.exec(self.btn_models_open_drive.mapToGlobal(self.btn_models_open_drive.rect().bottomLeft()))
         if chosen == act_primary:
             webbrowser.open(PRIMARY_FOLDER)
         elif chosen == act_backup:
             webbrowser.open(BACKUP_FOLDER)
+        elif chosen == act_gh:
+            webbrowser.open(GITHUB_ZIP)
+
 
 
     def _models_install_from_zip_clicked(self):
@@ -404,6 +411,7 @@ class SettingsDialog(QDialog):
         # Put your actual *zip file* share links here once you create them.
         PRIMARY = "https://drive.google.com/file/d/1n4p0grtNpfllalMqtgaEmsTYaFhT5u7Y/view?usp=drive_link"
         BACKUP  = "https://drive.google.com/file/d/1uRGJCITlfMMN89ZkOO5ICWEKMH24KGit/view?usp=drive_link"
+        TERTIARY = "https://github.com/setiastro/setiastrosuitepro/releases/download/benchmarkFIT/SASPro_Models_Latest.zip"
 
 
         self.btn_models_update.setEnabled(False)
@@ -418,7 +426,7 @@ class SettingsDialog(QDialog):
         from setiastro.saspro.model_workers import ModelsDownloadWorker
 
         self._models_thread = QThread(self)
-        self._models_worker = ModelsDownloadWorker(PRIMARY, BACKUP, expected_sha256=None)
+        self._models_worker = ModelsDownloadWorker(PRIMARY, BACKUP, TERTIARY, expected_sha256=None)
         self._models_worker.moveToThread(self._models_thread)
 
         self._models_thread.started.connect(self._models_worker.run, Qt.ConnectionType.QueuedConnection)
@@ -457,10 +465,39 @@ class SettingsDialog(QDialog):
         if not m:
             self.lbl_models_status.setText(self.tr("Status: not installed"))
             return
-        fid = m.get("file_id", "")
-        self.lbl_models_status.setText(
-            self.tr("Status: installed\nLocation: {0}").format(models_root())
-        )
+
+        # New fields (preferred)
+        src = (m.get("source") or "").strip()
+        ref = (m.get("source_ref") or "").strip()
+        sha = (m.get("sha256") or "").strip()
+
+        # Back-compat with older manifests
+        if not src:
+            # old versions used google_drive + file_id
+            src = "google_drive" if m.get("file_id") else (m.get("source") or "unknown")
+        if not ref:
+            ref = (m.get("file_id") or m.get("file") or "").strip()
+
+        # Keep it short + readable
+        src_label = {
+            "google_drive": "Google Drive",
+            "http": "GitHub/HTTP",
+            "manual_zip": "Manual ZIP",
+        }.get(src, src or "Unknown")
+
+        lines = [self.tr("Status: installed"),
+                self.tr("Location: {0}").format(models_root())]
+
+        if ref:
+            # show just a compact hint (id or url or filename)
+            lines.append(self.tr("Source: {0}").format(src_label))
+            lines.append(self.tr("Ref: {0}").format(ref))
+
+        if sha:
+            lines.append(self.tr("SHA256: {0}").format(sha[:12] + "…"))
+
+        self.lbl_models_status.setText("\n".join(lines))
+        self.lbl_models_status.setStyleSheet("color:#888;")
 
 
     def _accel_pref_changed(self, idx: int):

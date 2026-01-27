@@ -603,23 +603,27 @@ class Resources:
 
 @lru_cache(maxsize=8)
 def get_models_dir() -> str:
-    # Prefer user-installed models
-    try:
-        from setiastro.saspro.model_manager import models_root
-        p = Path(models_root())
-        if p.is_dir():
-            if any(p.rglob("*.pth")) or any(p.rglob("*.onnx")):
-                return str(p)
-    except Exception:
-        pass
+    """
+    Models are NOT packaged resources. They must be installed via the model manager.
+    This returns the user models root and never falls back to _internal/data/models.
+    """
+    from setiastro.saspro.model_manager import models_root
+    p = Path(models_root())
+    # Ensure dir exists (models_root should already do this, but harmless)
+    p.mkdir(parents=True, exist_ok=True)
+    return str(p)
 
-    # Fallback to packaged (dev/frozen) path
-    return _resource_path('data/models')
+
+def _assert_not_internal_models_path(p: str):
+    s = str(p).lower().replace("/", "\\")
+    if "\\_internal\\" in s and "\\data\\models\\" in s:
+        raise RuntimeError(f"Legacy internal model path detected: {p}")
 
 def model_path(filename: str) -> str:
-    base = Path(get_models_dir())
-    path = base / filename
-    return str(path)
+    from setiastro.saspro.model_manager import require_model
+    p = str(require_model(filename))
+    _assert_not_internal_models_path(p)
+    return p
 
 # Export all legacy paths as module-level variables
 _legacy = _init_legacy_paths()
