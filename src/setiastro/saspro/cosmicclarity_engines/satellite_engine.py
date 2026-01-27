@@ -46,15 +46,19 @@ def _autocast_context(torch, device) -> Any:
             major, minor = torch.cuda.get_device_capability()
             cap = float(f"{major}.{minor}")
             if cap >= 8.0:
-                # Preferred API (torch >= 1.10-ish; definitely in 2.x)
                 if hasattr(torch, "amp") and hasattr(torch.amp, "autocast"):
                     return torch.amp.autocast(device_type="cuda")
-                # Fallback for older torch
                 return torch.cuda.amp.autocast()
+
+        elif hasattr(device, "type") and device.type == "mps":
+            # MPS often benefits from autocast in newer torch versions
+            if hasattr(torch, "amp") and hasattr(torch.amp, "autocast"):
+                return torch.amp.autocast(device_type="mps")
+
     except Exception:
         pass
-    return _nullcontext()
 
+    return _nullcontext()
 
 
 # ----------------------------

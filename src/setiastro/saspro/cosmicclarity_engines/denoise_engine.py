@@ -12,6 +12,7 @@ import cv2
 
 
 from setiastro.saspro.resources import get_resources
+from setiastro.saspro.runtime_torch import _user_runtime_dir, _venv_paths, _check_cuda_in_venv
 
 warnings.filterwarnings("ignore")
 
@@ -50,15 +51,19 @@ def _autocast_context(torch, device) -> Any:
             major, minor = torch.cuda.get_device_capability()
             cap = float(f"{major}.{minor}")
             if cap >= 8.0:
-                # Preferred API (torch >= 1.10-ish; definitely in 2.x)
                 if hasattr(torch, "amp") and hasattr(torch.amp, "autocast"):
                     return torch.amp.autocast(device_type="cuda")
-                # Fallback for older torch
                 return torch.cuda.amp.autocast()
+
+        elif hasattr(device, "type") and device.type == "mps":
+            # MPS often benefits from autocast in newer torch versions
+            if hasattr(torch, "amp") and hasattr(torch.amp, "autocast"):
+                return torch.amp.autocast(device_type="mps")
+
     except Exception:
         pass
-    return _nullcontext()
 
+    return _nullcontext()
 
 
 # ----------------------------
@@ -148,7 +153,18 @@ def load_models(use_gpu: bool = True, status_cb=print) -> Dict[str, Any]:
                 f"{'onnx' if models['is_onnx'] else 'torch'} / device={models['device']!r}")        
         _cached_models[key] = models
         return models
-
+    # >>> ADD THIS BLOCK HERE <<<
+    # 2) MPS (macOS Apple Silicon)
+    if use_gpu and hasattr(torch, "backends") and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        device = torch.device("mps")
+        status_cb("CosmicClarity Denoise: using MPS")
+        mono_model = _load_torch_model(torch, device, R.CC_DENOISE_PTH)
+        models = {"device": device, "is_onnx": False, "mono_model": mono_model, "torch": torch}
+        status_cb(f"Denoise backend resolved: "
+                f"{'onnx' if models['is_onnx'] else 'torch'} / device={models['device']!r}")
+        _cached_models[key] = models
+        return models
+    # >>> END INSERT <<<
     # 2) Torch-DirectML (Windows)
     if use_gpu and is_windows:
         try:

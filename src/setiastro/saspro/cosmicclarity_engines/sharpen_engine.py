@@ -7,6 +7,7 @@ from typing import Callable, Optional, Any
 import os
 import numpy as np
 from setiastro.saspro.resources import get_resources
+from setiastro.saspro.runtime_torch import _user_runtime_dir, _venv_paths, _check_cuda_in_venv
 
 
 # Optional deps used by auto-PSF
@@ -19,6 +20,23 @@ try:
     import onnxruntime as ort
 except Exception:
     ort = None
+
+import sys, time, tempfile, traceback
+
+_DEBUG_SHARPEN = True  # flip False later
+
+def _dbg(msg: str, status_cb=print):
+    """Debug print to terminal; also tries status_cb."""
+    if not _DEBUG_SHARPEN:
+        return
+
+    ts = time.strftime("%H:%M:%S")
+    line = f"[SharpenDBG {ts}] {msg}"
+    print(line, flush=True)
+    try:
+        status_cb(line)
+    except Exception:
+        pass
 
 
 ProgressCB = Callable[[int, int, str], bool]  # True=continue, False=cancel
@@ -51,14 +69,20 @@ def _autocast_context(torch, device) -> Any:
             major, minor = torch.cuda.get_device_capability()
             cap = float(f"{major}.{minor}")
             if cap >= 8.0:
-                # Preferred API (torch >= 1.10-ish; definitely in 2.x)
                 if hasattr(torch, "amp") and hasattr(torch.amp, "autocast"):
                     return torch.amp.autocast(device_type="cuda")
-                # Fallback for older torch
                 return torch.cuda.amp.autocast()
+
+        elif hasattr(device, "type") and device.type == "mps":
+            # MPS often benefits from autocast in newer torch versions
+            if hasattr(torch, "amp") and hasattr(torch.amp, "autocast"):
+                return torch.amp.autocast(device_type="mps")
+
     except Exception:
         pass
+
     return _nullcontext()
+
 
 
 
@@ -231,62 +255,180 @@ class SharpenModels:
     torch: Any | None = None    # set for torch path
 
 
-_MODELS_CACHE: dict[tuple[str, bool], SharpenModels] = {}  # (backend_tag, use_gpu)
+# Cache by (backend_tag, resolved_backend)
+_MODELS_CACHE: dict[tuple[str, str], SharpenModels] = {}  # (backend_tag, resolved)
 
 def load_sharpen_models(use_gpu: bool, status_cb=print) -> SharpenModels:
     backend_tag = "cc_sharpen_ai3_5s"
-    key = (backend_tag, bool(use_gpu))
-    if key in _MODELS_CACHE:
-        return _MODELS_CACHE[key]
-
     is_windows = (os.name == "nt")
+    _dbg(f"ENTER load_sharpen_models(use_gpu={use_gpu})", status_cb=status_cb)
 
-    # ask runtime to prefer DML only on Windows + when user wants GPU
-    torch = _get_torch(
-        prefer_cuda=bool(use_gpu),                 # still try CUDA first
-        prefer_dml=bool(use_gpu and is_windows),   # enable DML install/usage path
-        status_cb=status_cb,
-    )
+    # ---- torch runtime import ----
+    t0 = time.time()
+    try:
+        _dbg("Calling _get_torch(...)", status_cb=status_cb)
+        torch = _get_torch(
+            prefer_cuda=bool(use_gpu),
+            prefer_dml=False,
+            status_cb=status_cb,
+        )
+        _dbg(f"_get_torch OK in {time.time()-t0:.3f}s; torch={getattr(torch,'__version__',None)} file={getattr(torch,'__file__',None)}",
+             status_cb=status_cb)
+    except Exception as e:
+        _dbg("ERROR in _get_torch:\n" + "".join(traceback.format_exception(type(e), e, e.__traceback__)),
+             status_cb=status_cb)
+        raise
 
-    # 1) CUDA
-    if use_gpu and hasattr(torch, "cuda") and torch.cuda.is_available():
-        device = torch.device("cuda")
-        status_cb(f"CosmicClarity Sharpen: using CUDA ({torch.cuda.get_device_name(0)})")
-        models = _load_torch_models(torch, device)
-        _MODELS_CACHE[key] = models
-        return models
+    # ---- runtime venv CUDA probe (subprocess) ----
+    try:
+        rt = _user_runtime_dir()
+        vpy = _venv_paths(rt)["python"]
+        _dbg(f"Runtime dir={rt} venv_python={vpy}", status_cb=status_cb)
+        t1 = time.time()
+        ok, cuda_tag, err = _check_cuda_in_venv(vpy, status_cb=status_cb)
+        _dbg(f"CUDA probe finished in {time.time()-t1:.3f}s: ok={ok}, torch.version.cuda={cuda_tag}, err={err!r}",
+             status_cb=status_cb)
+    except Exception as e:
+        _dbg("Runtime CUDA probe FAILED:\n" + "".join(traceback.format_exception(type(e), e, e.__traceback__)),
+             status_cb=status_cb)
 
-    # 2) Torch-DirectML (Windows)
-    if use_gpu and is_windows:
+    # ---- CUDA branch ----
+    if use_gpu:
+        _dbg("Checking torch.cuda.is_available() ...", status_cb=status_cb)
         try:
-            import torch_directml  # provided by torch-directml
-            dml = torch_directml.device()
-            status_cb("CosmicClarity Sharpen: using DirectML (torch-directml)")
-            models = _load_torch_models(torch, dml)
-            _MODELS_CACHE[key] = models
-            status_cb(f"torch.__version__={getattr(torch,'__version__',None)}; "
-                    f"cuda_available={bool(getattr(torch,'cuda',None) and torch.cuda.is_available())}")
-            return models
-                    
+            t2 = time.time()
+            cuda_ok = bool(getattr(torch, "cuda", None) and torch.cuda.is_available())
+            _dbg(f"torch.cuda.is_available()={cuda_ok} (took {time.time()-t2:.3f}s)", status_cb=status_cb)
+        except Exception as e:
+            _dbg("torch.cuda.is_available() raised:\n" + "".join(traceback.format_exception(type(e), e, e.__traceback__)),
+                 status_cb=status_cb)
+            cuda_ok = False
+
+        if cuda_ok:
+            cache_key = (backend_tag, "cuda")
+            if cache_key in _MODELS_CACHE:
+                _dbg("Returning cached CUDA models.", status_cb=status_cb)
+                return _MODELS_CACHE[cache_key]
+
+            try:
+                _dbg("Creating torch.device('cuda') ...", status_cb=status_cb)
+                device = torch.device("cuda")
+                _dbg("Querying torch.cuda.get_device_name(0) ...", status_cb=status_cb)
+                name = torch.cuda.get_device_name(0)
+                _dbg(f"Using CUDA device: {name}", status_cb=status_cb)
+
+                _dbg("Loading torch .pth models (CUDA) ...", status_cb=status_cb)
+                t3 = time.time()
+                models = _load_torch_models(torch, device)
+                _dbg(f"Loaded CUDA models in {time.time()-t3:.3f}s", status_cb=status_cb)
+
+                _MODELS_CACHE[cache_key] = models
+                return models
+            except Exception as e:
+                _dbg("CUDA path failed:\n" + "".join(traceback.format_exception(type(e), e, e.__traceback__)),
+                     status_cb=status_cb)
+                # fall through to DML/ORT/CPU
+    # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+    # ADD THE MPS BLOCK RIGHT HERE (after CUDA, before DirectML)
+    # ---- MPS branch (macOS Apple Silicon) ----
+    if use_gpu:
+        try:
+            mps_ok = bool(
+                hasattr(torch, "backends")
+                and hasattr(torch.backends, "mps")
+                and torch.backends.mps.is_available()
+            )
         except Exception:
-            pass
+            mps_ok = False
 
-    # 3) ONNX Runtime DirectML fallback
-    if use_gpu and ort is not None and "DmlExecutionProvider" in ort.get_available_providers():
-        status_cb("CosmicClarity Sharpen: using DirectML (ONNX Runtime)")
-        models = _load_onnx_models()
-        _MODELS_CACHE[key] = models
+        if mps_ok:
+            cache_key = (backend_tag, "mps")
+            if cache_key in _MODELS_CACHE:
+                _dbg("Returning cached MPS models.", status_cb=status_cb)
+                return _MODELS_CACHE[cache_key]
+
+            try:
+                device = torch.device("mps")
+                _dbg("CosmicClarity Sharpen: using MPS", status_cb=status_cb)
+
+                t_m = time.time()
+                models = _load_torch_models(torch, device)
+                _dbg(f"Loaded MPS models in {time.time()-t_m:.3f}s", status_cb=status_cb)
+
+                _MODELS_CACHE[cache_key] = models
+                return models
+            except Exception as e:
+                _dbg("MPS path failed:\n" + "".join(traceback.format_exception(type(e), e, e.__traceback__)),
+                     status_cb=status_cb)
+                # fall through
+    # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+    # ---- Torch DirectML branch ----
+    if use_gpu and is_windows:
+        _dbg("Trying torch-directml path ...", status_cb=status_cb)
+        try:
+            import torch_directml
+            cache_key = (backend_tag, "dml_torch")
+            if cache_key in _MODELS_CACHE:
+                _dbg("Returning cached DML-torch models.", status_cb=status_cb)
+                return _MODELS_CACHE[cache_key]
+
+            t4 = time.time()
+            dml = torch_directml.device()
+            _dbg(f"torch_directml.device() OK in {time.time()-t4:.3f}s", status_cb=status_cb)
+
+            _dbg("Loading torch .pth models (DirectML) ...", status_cb=status_cb)
+            t5 = time.time()
+            models = _load_torch_models(torch, dml)
+            _dbg(f"Loaded DML-torch models in {time.time()-t5:.3f}s", status_cb=status_cb)
+
+            _MODELS_CACHE[cache_key] = models
+            return models
+        except Exception as e:
+            _dbg("DirectML (torch-directml) failed:\n" + "".join(traceback.format_exception(type(e), e, e.__traceback__)),
+                 status_cb=status_cb)
+
+    # ---- ONNX Runtime DirectML fallback ----
+    if use_gpu and ort is not None:
+        _dbg("Checking ORT providers ...", status_cb=status_cb)
+        try:
+            prov = ort.get_available_providers()
+            _dbg(f"ORT providers: {prov}", status_cb=status_cb)
+            if "DmlExecutionProvider" in prov:
+                cache_key = (backend_tag, "dml_ort")
+                if cache_key in _MODELS_CACHE:
+                    _dbg("Returning cached DML-ORT models.", status_cb=status_cb)
+                    return _MODELS_CACHE[cache_key]
+
+                _dbg("Loading ONNX models (DML EP) ...", status_cb=status_cb)
+                t6 = time.time()
+                models = _load_onnx_models()
+                _dbg(f"Loaded ONNX models in {time.time()-t6:.3f}s", status_cb=status_cb)
+
+                _MODELS_CACHE[cache_key] = models
+                return models
+        except Exception as e:
+            _dbg("ORT provider check/load failed:\n" + "".join(traceback.format_exception(type(e), e, e.__traceback__)),
+                 status_cb=status_cb)
+
+    # ---- CPU fallback ----
+    cache_key = (backend_tag, "cpu")
+    if cache_key in _MODELS_CACHE:
+        _dbg("Returning cached CPU models.", status_cb=status_cb)
+        return _MODELS_CACHE[cache_key]
+
+    try:
+        _dbg("Falling back to CPU torch models ...", status_cb=status_cb)
+        device = torch.device("cpu")
+        t7 = time.time()
+        models = _load_torch_models(torch, device)
+        _dbg(f"Loaded CPU models in {time.time()-t7:.3f}s", status_cb=status_cb)
+        _MODELS_CACHE[cache_key] = models
         return models
+    except Exception as e:
+        _dbg("CPU model load failed:\n" + "".join(traceback.format_exception(type(e), e, e.__traceback__)),
+             status_cb=status_cb)
+        raise
 
-    # 4) CPU
-    device = torch.device("cpu")
-    status_cb("CosmicClarity Sharpen: using CPU")
-    models = _load_torch_models(torch, device)
-    _MODELS_CACHE[key] = models
-    status_cb(f"Sharpen backend resolved: "
-            f"{'onnx' if models.is_onnx else 'torch'} / device={models.device!r}")
-
-    return models
 
 
 def _load_onnx_models() -> SharpenModels:
@@ -381,6 +523,7 @@ def _infer_chunk(models: SharpenModels, model: Any, chunk2d: np.ndarray) -> np.n
     h0, w0 = chunk2d.shape
 
     if models.is_onnx:
+        t0 = time.time()
         inp = chunk2d[np.newaxis, np.newaxis, :, :].astype(np.float32)  # (1,1,H,W)
         inp = np.tile(inp, (1, 3, 1, 1))                                # (1,3,H,W)
         h, w = inp.shape[2:]
@@ -391,15 +534,54 @@ def _infer_chunk(models: SharpenModels, model: Any, chunk2d: np.ndarray) -> np.n
         name_in  = model.get_inputs()[0].name
         name_out = model.get_outputs()[0].name
         out = model.run([name_out], {name_in: inp})[0][0, 0]
-        return out[:h0, :w0].astype(np.float32, copy=False)
+        y = out[:h0, :w0].astype(np.float32, copy=False)
+        if _DEBUG_SHARPEN:
+            _dbg(f"ORT infer OK {h0}x{w0} in {time.time()-t0:.3f}s", status_cb=lambda *_: None)
+        return y
 
     # torch path
     torch = models.torch
     dev = models.device
-    t = torch.tensor(chunk2d, dtype=torch.float32).unsqueeze(0).unsqueeze(0).to(dev)
-    with torch.no_grad(), _autocast_context(torch, dev):
-        y = model(t.repeat(1, 3, 1, 1)).squeeze().detach().cpu().numpy()[0]
-    return y[:h0, :w0].astype(np.float32, copy=False)
+
+    t0 = time.time()
+    if _DEBUG_SHARPEN:
+        _dbg(f"Torch infer start chunk={h0}x{w0} dev={getattr(dev,'type',dev)}", status_cb=lambda *_: None)
+
+    try:
+        # tensor creation (CPU)
+        t_cpu = torch.tensor(chunk2d, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+
+        # move to device (this can hang if CUDA context is broken)
+        if _DEBUG_SHARPEN:
+            _dbg("  moving tensor to device ...", status_cb=lambda *_: None)
+        t = t_cpu.to(dev)
+
+        # optional: force CUDA sync right after first transfer
+        if _DEBUG_SHARPEN and hasattr(dev, "type") and dev.type == "cuda":
+            _dbg("  cuda.synchronize after .to(dev) ...", status_cb=lambda *_: None)
+            torch.cuda.synchronize()
+
+        with torch.no_grad(), _autocast_context(torch, dev):
+            if _DEBUG_SHARPEN:
+                _dbg("  running model forward ...", status_cb=lambda *_: None)
+            y = model(t.repeat(1, 3, 1, 1))
+
+            if _DEBUG_SHARPEN and hasattr(dev, "type") and dev.type == "cuda":
+                _dbg("  cuda.synchronize after forward ...", status_cb=lambda *_: None)
+                torch.cuda.synchronize()
+
+            y = y.squeeze().detach().cpu().numpy()[0]
+
+        out = y[:h0, :w0].astype(np.float32, copy=False)
+        if _DEBUG_SHARPEN:
+            _dbg(f"Torch infer OK in {time.time()-t0:.3f}s", status_cb=lambda *_: None)
+        return out
+
+    except Exception as e:
+        if _DEBUG_SHARPEN:
+            _dbg("Torch infer ERROR:\n" + "".join(traceback.format_exception(type(e), e, e.__traceback__)),
+                 status_cb=lambda *_: None)
+        raise
 
 
 # ---------------- Main API ----------------
@@ -419,79 +601,123 @@ def sharpen_image_array(image: np.ndarray,
                         params: SharpenParams,
                         progress_cb: Optional[ProgressCB] = None,
                         status_cb=print) -> tuple[np.ndarray, bool]:
-    """
-    Pure in-memory sharpen. Returns (out_image, was_mono).
-    """
     if progress_cb is None:
         progress_cb = lambda done, total, stage: True
 
-    img = np.asarray(image)
-    if img.dtype != np.float32:
-        img = img.astype(np.float32, copy=False)
+    _dbg("ENTER sharpen_image_array()", status_cb=status_cb)
+    t_all = time.time()
 
-    img3, was_mono = _to_3ch(img)
-    img3 = np.clip(img3, 0.0, 1.0)
+    try:
+        img = np.asarray(image)
+        _dbg(f"Input shape={img.shape} dtype={img.dtype} min={float(np.nanmin(img)):.6f} max={float(np.nanmax(img)):.6f}",
+             status_cb=status_cb)
 
-    models = load_sharpen_models(use_gpu=params.use_gpu, status_cb=status_cb)
+        if img.dtype != np.float32:
+            img = img.astype(np.float32, copy=False)
+            _dbg("Converted input to float32", status_cb=status_cb)
 
-    # border & stretch
-    bordered = add_border(img3, border_size=16)
-    stretch_needed = (np.median(bordered - np.min(bordered)) < 0.08)
+        img3, was_mono = _to_3ch(img)
+        img3 = np.clip(img3, 0.0, 1.0)
+        _dbg(f"After _to_3ch: shape={img3.shape} was_mono={was_mono}", status_cb=status_cb)
 
-    if stretch_needed:
-        stretched, orig_min, orig_meds = stretch_image_unlinked_rgb(bordered)
-    else:
-        stretched, orig_min, orig_meds = bordered, None, None
+        # prove progress_cb works
+        try:
+            progress_cb(0, 1, "Loading models")
+        except Exception:
+            pass
 
-    # per-channel sharpening option (color only)
-    if params.sharpen_channels_separately and (not was_mono):
-        out = np.empty_like(stretched)
-        for c, label in enumerate(("R", "G", "B")):
-            progress_cb(0, 1, f"Sharpening {label} channel")
-            out[..., c] = _sharpen_plane(models, stretched[..., c], params, progress_cb)
-        sharpened = out
-    else:
-        # luminance pipeline (works for mono too, since mono is in all 3 chans)
-        y, cb, cr = extract_luminance_rgb(stretched)
-        y2 = _sharpen_plane(models, y, params, progress_cb)
-        sharpened = merge_luminance(y2, cb, cr)
+        models = load_sharpen_models(use_gpu=params.use_gpu, status_cb=status_cb)
+        _dbg(f"Models loaded: is_onnx={models.is_onnx} device={models.device!r}", status_cb=status_cb)
 
-    # unstretch / deborder
-    if stretch_needed:
-        sharpened = unstretch_image_unlinked_rgb(sharpened, orig_meds, orig_min, was_mono)
+        # border & stretch
+        bordered = add_border(img3, border_size=16)
+        med_metric = float(np.median(bordered - np.min(bordered)))
+        stretch_needed = (med_metric < 0.08)
+        _dbg(f"Bordered shape={bordered.shape}; stretch_metric={med_metric:.6f}; stretch_needed={stretch_needed}",
+             status_cb=status_cb)
 
-    sharpened = remove_border(sharpened, border_size=16)
+        if stretch_needed:
+            _dbg("Stretching unlinked RGB ...", status_cb=status_cb)
+            stretched, orig_min, orig_meds = stretch_image_unlinked_rgb(bordered)
+        else:
+            stretched, orig_min, orig_meds = bordered, None, None
 
-    # return mono as HxWx1 if it came in mono (matches your CC behavior)
-    if was_mono:
-        if sharpened.ndim == 3 and sharpened.shape[2] == 3:
-            sharpened = np.mean(sharpened, axis=2, keepdims=True).astype(np.float32, copy=False)
+        # per-channel sharpening option (color only)
+        if params.sharpen_channels_separately and (not was_mono):
+            _dbg("Sharpen per-channel path", status_cb=status_cb)
+            out = np.empty_like(stretched)
+            for c, label in enumerate(("R", "G", "B")):
+                progress_cb(0, 1, f"Sharpening {label} channel")
+                out[..., c] = _sharpen_plane(models, stretched[..., c], params, progress_cb)
+            sharpened = out
+        else:
+            _dbg("Sharpen luminance path", status_cb=status_cb)
+            y, cb, cr = extract_luminance_rgb(stretched)
+            y2 = _sharpen_plane(models, y, params, progress_cb)
+            sharpened = merge_luminance(y2, cb, cr)
 
-    return np.clip(sharpened, 0.0, 1.0), was_mono
+        # unstretch / deborder
+        if stretch_needed:
+            _dbg("Unstretching ...", status_cb=status_cb)
+            sharpened = unstretch_image_unlinked_rgb(sharpened, orig_meds, orig_min, was_mono)
+
+        sharpened = remove_border(sharpened, border_size=16)
+
+        if was_mono:
+            if sharpened.ndim == 3 and sharpened.shape[2] == 3:
+                sharpened = np.mean(sharpened, axis=2, keepdims=True).astype(np.float32, copy=False)
+
+        out = np.clip(sharpened, 0.0, 1.0)
+        _dbg(f"EXIT sharpen_image_array total_time={time.time()-t_all:.2f}s out_shape={out.shape}", status_cb=status_cb)
+        return out, was_mono
+
+    except Exception as e:
+        _dbg("sharpen_image_array ERROR:\n" + "".join(traceback.format_exception(type(e), e, e.__traceback__)),
+             status_cb=status_cb)
+        raise
 
 
 def _sharpen_plane(models: SharpenModels,
                    plane: np.ndarray,
                    params: SharpenParams,
                    progress_cb: ProgressCB) -> np.ndarray:
-    """
-    Sharpen a single 2D plane using your two-stage pipeline.
-    """
     plane = np.asarray(plane, np.float32)
     chunks = split_image_into_chunks_with_overlap(plane, chunk_size=256, overlap=64)
     total = len(chunks)
 
+    # prove we got here
+    try:
+        progress_cb(0, max(total, 1), f"Sharpen start ({total} chunks)")
+    except Exception:
+        pass
+
+    _dbg(f"_sharpen_plane: mode={params.mode} total_chunks={total} auto_psf={params.auto_detect_psf} dev={models.device!r}",
+         status_cb=lambda *_: None)
+
+    def _every(n: int) -> bool:
+        return _DEBUG_SHARPEN and (n == 1 or n % 10 == 0 or n == total)
+
     # Stage 1: stellar
     if params.mode in ("Stellar Only", "Both"):
+        _dbg("Stage 1: stellar BEGIN", status_cb=lambda *_: None)
         out_chunks = []
+        t_stage = time.time()
+
         for k, (chunk, i, j, is_edge) in enumerate(chunks, start=1):
+            t0 = time.time()
             y = _infer_chunk(models, models.stellar, chunk)
             blended = blend_images(chunk, y, params.stellar_amount)
             out_chunks.append((blended, i, j, is_edge))
+
+            if _every(k):
+                _dbg(f"  stellar chunk {k}/{total} ({time.time()-t0:.3f}s)", status_cb=lambda *_: None)
+
             if progress_cb(k, total, "Stellar sharpening") is False:
-                
+                _dbg("Stage 1: stellar CANCELLED", status_cb=lambda *_: None)
                 return plane
+
         plane = stitch_chunks_ignore_border(out_chunks, plane.shape, border_size=16)
+        _dbg(f"Stage 1: stellar END ({time.time()-t_stage:.2f}s)", status_cb=lambda *_: None)
 
         if params.mode == "Stellar Only":
             return plane
@@ -502,11 +728,14 @@ def _sharpen_plane(models: SharpenModels,
 
     # Stage 2: non-stellar
     if params.mode in ("Non-Stellar Only", "Both"):
+        _dbg("Stage 2: non-stellar BEGIN", status_cb=lambda *_: None)
         out_chunks = []
         radii = np.array([1.0, 2.0, 4.0, 8.0], dtype=float)
         model_map = {1.0: models.ns1, 2.0: models.ns2, 4.0: models.ns4, 8.0: models.ns8}
+        t_stage = time.time()
 
         for k, (chunk, i, j, is_edge) in enumerate(chunks, start=1):
+            t0 = time.time()
             if params.auto_detect_psf:
                 fwhm = measure_psf_fwhm(chunk, default_fwhm=3.0)
                 r = float(np.clip(fwhm, radii[0], radii[-1]))
@@ -531,13 +760,20 @@ def _sharpen_plane(models: SharpenModels,
 
             blended = blend_images(chunk, y, params.nonstellar_amount)
             out_chunks.append((blended, i, j, is_edge))
+
+            if _every(k):
+                _dbg(f"  nonstellar chunk {k}/{total} r={r:.2f} lo={lo} hi={hi} ({time.time()-t0:.3f}s)",
+                     status_cb=lambda *_: None)
+
             if progress_cb(k, total, "Non-stellar sharpening") is False:
+                _dbg("Stage 2: non-stellar CANCELLED", status_cb=lambda *_: None)
                 return plane
-            progress_cb(k, total, "Non-stellar sharpening")
 
         plane = stitch_chunks_ignore_border(out_chunks, plane.shape, border_size=16)
+        _dbg(f"Stage 2: non-stellar END ({time.time()-t_stage:.2f}s)", status_cb=lambda *_: None)
 
     return plane
+
 
 def sharpen_rgb01(
     image_rgb01: np.ndarray,

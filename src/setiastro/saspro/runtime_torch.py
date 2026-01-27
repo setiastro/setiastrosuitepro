@@ -16,6 +16,13 @@ from contextlib import contextmanager
 import platform as _plat
 from pathlib import Path as _Path
 
+def _rt_dbg(msg: str, status_cb=print):
+    try:
+        status_cb(f"[RT] {msg}")
+    except Exception:
+        print(f"[RT] {msg}", flush=True)
+
+
 def _maybe_find_torch_shm_manager(torch_mod) -> str | None:
     # Only Linux wheels include/use this helper binary.
     if _plat.system() != "Linux":
@@ -67,14 +74,25 @@ def _runtime_base_dir() -> Path:
 def _current_tag() -> str:
     return f"py{sys.version_info.major}{sys.version_info.minor}"
 
-def _discover_existing_runtime_dir() -> Path | None:
+def _discover_existing_runtime_dir(status_cb=print) -> Path | None:
     """
-    Return the newest existing runtime dir that already has a venv python,
-    using the venv interpreter's REAL version instead of just the folder name.
+    Prefer an existing runtime that MATCHES the current interpreter minor.
+    Only if none exists, fall back to the highest available.
     """
     base = _runtime_base_dir()
     if not base.exists():
         return None
+
+    cur_tag = _current_tag()  # e.g. py311, py312
+    cur_dir = base / cur_tag
+    cur_vpy = cur_dir / "venv" / ("Scripts/python.exe" if platform.system() == "Windows" else "bin/python")
+
+    # 1) If matching-current exists and has a venv python, use it.
+    if cur_vpy.exists():
+        _rt_dbg(f"Found matching runtime for current interpreter: {cur_dir}", status_cb)
+        return cur_dir
+
+    # 2) Otherwise, fall back to "newest existing"
     candidates: list[tuple[int, int, Path]] = []
     for p in base.glob("py*"):
         vpy = p / "venv" / ("Scripts/python.exe" if platform.system() == "Windows" else "bin/python")
@@ -83,18 +101,20 @@ def _discover_existing_runtime_dir() -> Path | None:
         ver = _venv_pyver(vpy)
         if ver:
             candidates.append((ver[0], ver[1], p))
+
     if not candidates:
         return None
-    candidates.sort()  # pick the highest Python (major, minor)
-    return candidates[-1][2]
 
-def _user_runtime_dir() -> Path:
-    """
-    Use an existing runtime if we find one; otherwise select a directory for the
-    current interpreter version (py310/py311/py312...).
-    """
-    existing = _discover_existing_runtime_dir()
-    return existing or (_runtime_base_dir() / _current_tag())
+    candidates.sort()
+    chosen = candidates[-1][2]
+    _rt_dbg(f"No matching runtime; using newest existing: {chosen}", status_cb)
+    return chosen
+
+def _user_runtime_dir(status_cb=print) -> Path:
+    existing = _discover_existing_runtime_dir(status_cb=status_cb)
+    chosen = existing or (_runtime_base_dir() / _current_tag())
+    _rt_dbg(f"_user_runtime_dir() -> {chosen}", status_cb)
+    return chosen
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Shadowing & sanity checks
@@ -172,22 +192,25 @@ def _purge_bad_torch_from_sysmodules(status_cb=print) -> None:
     except Exception:
         pass
 
-def _torch_stack_sanity_check(status_cb=print) -> None:
+def _torch_stack_sanity_check(status_cb=print):
     """
     Ensure torch imports sanely AND torchvision/torchaudio are importable.
-    (Satellite engine requires torchvision; we install torchaudio too for safety.)
+    IMPORTANT: In frozen builds, torchvision can fail due to missing stdlib modules
+    (e.g., modulefinder). That is NOT a torch install problem and should NOT
+    trigger a venv reinstall.
     """
     _torch_sanity_check(status_cb=status_cb)
 
     try:
         import torchvision  # noqa
     except Exception as e:
-        raise RuntimeError(f"torchvision import failed: {e}") from e
+        raise RuntimeError(f"torchvision import failed: {type(e).__name__}: {e}") from e
 
     try:
         import torchaudio  # noqa
     except Exception as e:
-        raise RuntimeError(f"torchaudio import failed: {e}") from e
+        raise RuntimeError(f"torchaudio import failed: {type(e).__name__}: {e}") from e
+
 
 
 def _torch_sanity_check(status_cb=print):
@@ -631,128 +654,233 @@ def _install_torch(venv_python: Path, prefer_cuda: bool, prefer_xpu: bool, prefe
 # Public entry points
 # ──────────────────────────────────────────────────────────────────────────────
 
-def import_torch(prefer_cuda: bool = True, prefer_xpu: bool = False, prefer_dml: bool = False, status_cb=print):
+def _venv_import_probe(venv_python: Path, modname: str) -> tuple[bool, str]:
     """
-    Ensure a per-user venv exists with torch installed; return the imported module.
-    Hardened against shadow imports, broken wheels, concurrent installs, and partial markers.
+    Try importing a module INSIDE the runtime venv python.
+    Returns (ok, output_or_error_tail).
     """
-    # Before any attempt, demote shadowing paths (CWD / random folders)
-    _ban_shadow_torch_paths(status_cb=status_cb)
-    _purge_bad_torch_from_sysmodules(status_cb=status_cb)
+    code = (
+        "import importlib, sys\n"
+        f"m=importlib.import_module('{modname}')\n"
+        "print('OK', getattr(m,'__version__',None), getattr(m,'__file__',None))\n"
+    )
+    r = subprocess.run([str(venv_python), "-c", code],
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    out = (r.stdout or "").strip()
+    if r.returncode == 0 and out.startswith("OK"):
+        return True, out
+    return False, out[-4000:] if out else "no output"
 
-    add_runtime_to_sys_path(status_cb=lambda *_: None)
 
-    # Fast path: if torch already importable and sane, use it
+def _write_torch_marker(marker: Path, status_cb=print) -> None:
+    """
+    Create torch_installed.json based on runtime venv imports.
+    Safe to call repeatedly.
+    """
+    rt = marker.parent
+    vp = _venv_paths(rt)["python"]
+
+    ok_t, out_t = _venv_import_probe(vp, "torch")
+    ok_v, out_v = _venv_import_probe(vp, "torchvision")
+    ok_a, out_a = _venv_import_probe(vp, "torchaudio")
+
+    payload = {
+        "installed": bool(ok_t),
+        "when": int(time.time()),
+        "python": None,
+        "torch": None,
+        "torchvision": None,
+        "torchaudio": None,
+        "torch_file": None,
+        "torchvision_file": None,
+        "torchaudio_file": None,
+        "probe": {
+            "torch": out_t,
+            "torchvision": out_v,
+            "torchaudio": out_a,
+        }
+    }
+
+    # get venv python version
     try:
-        import torch  # noqa
-        _torch_stack_sanity_check(status_cb=status_cb)
-        return torch
+        r = subprocess.run([str(vp), "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
+                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        if r.returncode == 0:
+            payload["python"] = (r.stdout or "").strip()
     except Exception:
         pass
 
-    rt = _user_runtime_dir()
+    # parse "OK ver file" lines
+    def _parse_ok(s: str):
+        # format: "OK <ver> <file>"
+        try:
+            parts = s.split(" ", 2)
+            ver = parts[1] if len(parts) > 1 else None
+            f = parts[2] if len(parts) > 2 else None
+            return ver, f
+        except Exception:
+            return None, None
+
+    if ok_t:
+        payload["torch"], payload["torch_file"] = _parse_ok(out_t)
+    if ok_v:
+        payload["torchvision"], payload["torchvision_file"] = _parse_ok(out_v)
+    if ok_a:
+        payload["torchaudio"], payload["torchaudio_file"] = _parse_ok(out_a)
+
+    try:
+        marker.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        status_cb(f"[RT] Wrote marker: {marker}")
+    except Exception as e:
+        status_cb(f"[RT] Failed to write marker {marker}: {e!r}")
+
+def _venv_has_torch_stack(
+    vp: Path,
+    status_cb=print,
+    *,
+    require_torchaudio: bool = True
+) -> tuple[bool, dict]:
+    """
+    Definitive check: can the RUNTIME VENV import torch/torchvision/(torchaudio)?
+    This does NOT use the frozen app interpreter to decide installation state.
+    """
+    ok_t, out_t = _venv_import_probe(vp, "torch")
+    ok_v, out_v = _venv_import_probe(vp, "torchvision")
+    ok_a, out_a = _venv_import_probe(vp, "torchaudio")
+
+    info = {
+        "torch": (ok_t, out_t),
+        "torchvision": (ok_v, out_v),
+        "torchaudio": (ok_a, out_a),
+    }
+
+    ok_all = (ok_t and ok_v and ok_a) if require_torchaudio else (ok_t and ok_v)
+    return ok_all, info
+
+
+def import_torch(
+    prefer_cuda: bool = True,
+    prefer_xpu: bool = False,
+    prefer_dml: bool = False,
+    status_cb=print,
+    *,
+    require_torchaudio: bool = True,
+):
+    """
+    Ensure a per-user venv exists with torch installed; return the imported torch module.
+
+    NEW RULES:
+      - The marker is advisory only.
+      - If torch/torchvision(/torchaudio) exist in the runtime venv, USE THEM. Do nothing else.
+      - Only if missing in the runtime venv should we install.
+      - NEVER auto-uninstall user torch/torchvision/torchaudio. No automatic repair.
+    """
+    _rt_dbg(f"sys.frozen={getattr(sys,'frozen',False)}", status_cb)
+    _rt_dbg(f"sys.executable={sys.executable}", status_cb)
+    _rt_dbg(f"sys.version={sys.version}", status_cb)
+    _rt_dbg(f"current_tag={_current_tag()}", status_cb)
+    _rt_dbg(f"SASPRO_RUNTIME_DIR={os.getenv('SASPRO_RUNTIME_DIR')!r}", status_cb)
+
+    # Remove obvious shadowing paths (repo folders / cwd torch trees)
+    _ban_shadow_torch_paths(status_cb=status_cb)
+    _purge_bad_torch_from_sysmodules(status_cb=status_cb)
+
+    # Choose runtime + ensure venv exists
+    rt = _user_runtime_dir(status_cb=status_cb)
     vp = _ensure_venv(rt, status_cb=status_cb)
     site = _site_packages(vp)
     marker = rt / "torch_installed.json"
 
+    _rt_dbg(f"rt={rt}", status_cb)
+    _rt_dbg(f"venv_python={vp}", status_cb)
+    _rt_dbg(f"marker={marker} exists={marker.exists()}", status_cb)
+    _rt_dbg(f"site={site}", status_cb)
+
+    # Best-effort ensure numpy in venv (harmless if already there)
     try:
         _ensure_numpy(vp, status_cb=status_cb)
     except Exception:
-        # Non-fatal; we'll try again if torch complains at runtime
         pass
 
-    # If no marker, perform install under a lock
-    if not marker.exists():
+    # ------------------------------------------------------------
+    # THE IMPORTANT PART: Probe the runtime venv FIRST.
+    # If it has torch stack, we're DONE (no installs, no repair).
+    # ------------------------------------------------------------
+    ok_all, info = _venv_has_torch_stack(vp, status_cb=status_cb, require_torchaudio=require_torchaudio)
+    status_cb(
+        "[RT] venv probe: "
+        f"torch={info['torch'][0]} "
+        f"torchvision={info['torchvision'][0]} "
+        f"torchaudio={info['torchaudio'][0]}"
+    )
+
+    if not ok_all:
+        missing = []
+        if not info["torch"][0]:
+            missing.append("torch")
+        if not info["torchvision"][0]:
+            missing.append("torchvision")
+        if require_torchaudio and (not info["torchaudio"][0]):
+            missing.append("torchaudio")
+
+        status_cb(f"[RT] Missing in runtime venv: {missing}. Installing…")
+
         try:
             with _install_lock(rt):
-                # Re-check inside lock in case another process finished
-                if not marker.exists():
-                    _install_torch(vp, prefer_cuda=prefer_cuda, prefer_xpu=prefer_xpu, prefer_dml=prefer_dml, status_cb=status_cb)
+                _install_torch(
+                    vp,
+                    prefer_cuda=prefer_cuda,
+                    prefer_xpu=prefer_xpu,
+                    prefer_dml=prefer_dml,
+                    status_cb=status_cb,
+                )
         except Exception as e:
             if _is_access_denied(e):
                 raise OSError(_access_denied_msg(rt)) from e
             raise
 
-    # Ensure the venv site is first on sys.path, then demote shadowers again
-    if str(site) not in sys.path:
-        sys.path.insert(0, str(site))
-    _demote_shadow_torch_paths(status_cb=status_cb)
+        # Re-probe after install
+        ok_all, info = _venv_has_torch_stack(vp, status_cb=status_cb, require_torchaudio=require_torchaudio)
+        status_cb(
+            "[RT] venv re-probe: "
+            f"torch={info['torch'][0]} "
+            f"torchvision={info['torchvision'][0]} "
+            f"torchaudio={info['torchaudio'][0]}"
+        )
+        if not ok_all:
+            msg = "\n".join([f"{k}: ok={ok} :: {out}" for k, (ok, out) in info.items()])
+            raise RuntimeError("Torch stack still not importable in runtime venv after install:\n" + msg)
 
-    # Import + sanity. If broken, force a clean repair (all OSes).
-    def _force_repair():
-        try:
-            status_cb("Detected broken/shadowed Torch import → attempting clean repair…")
-        except Exception:
-            pass
-
-        # remove marker so future launches don't skip install
-        try:
-            marker.unlink()
-        except Exception:
-            pass
-
-        subprocess.run([str(vp), "-m", "pip", "uninstall", "-y",
-                        "torch", "torchvision", "torchaudio"], check=False)
-        subprocess.run([str(vp), "-m", "pip", "cache", "purge"], check=False)
-        with _install_lock(rt):
-            _install_torch(
-                vp,
-                prefer_cuda=prefer_cuda,
-                prefer_xpu=prefer_xpu,
-                prefer_dml=prefer_dml,
-                status_cb=status_cb,
-            )
-        importlib.invalidate_caches()
-        _demote_shadow_torch_paths(status_cb=status_cb)
-
-
+    # Always write/update marker for convenience, but never trust it for decisions.
     try:
-        _ensure_numpy(vp, status_cb=status_cb)
+        _write_torch_marker(marker, status_cb=status_cb)
     except Exception:
         pass
 
+    # ------------------------------------------------------------
+    # Now import torch in-process, but ONLY after putting runtime site first.
+    # ------------------------------------------------------------
+    sp = str(site)
+    if sp not in sys.path:
+        sys.path.insert(0, sp)
+
+    # Re-ban shadowers after sys.path change
+    _demote_shadow_torch_paths(status_cb=status_cb)
+    _purge_bad_torch_from_sysmodules(status_cb=status_cb)
+
+    # Import torch from venv site-packages
     try:
         import torch  # noqa
-        _torch_stack_sanity_check(status_cb=status_cb)
-        # write/update marker only when sane
-        if not marker.exists():
-            pyver = f"{sys.version_info.major}.{sys.version_info.minor}"
-            try:
-                import torch, torchvision, torchaudio
-                marker.write_text(json.dumps({
-                    "installed": True,
-                    "python": pyver,
-                    "when": int(time.time()),
-                    "torch": getattr(torch, "__version__", None),
-                    "torchvision": getattr(torchvision, "__version__", None),
-                    "torchaudio": getattr(torchaudio, "__version__", None),
-                }), encoding="utf-8")
-            except Exception:
-                marker.write_text(json.dumps({"installed": True, "python": pyver, "when": int(time.time())}), encoding="utf-8")
-
         return torch
-    except Exception:
-        _force_repair()
-        _purge_bad_torch_from_sysmodules(status_cb=status_cb)
-        _ban_shadow_torch_paths(status_cb=status_cb)
-        import torch  # retry
-        _torch_stack_sanity_check(status_cb=status_cb)
-        if not marker.exists():
-            pyver = f"{sys.version_info.major}.{sys.version_info.minor}"
-            try:
-                import torch, torchvision, torchaudio
-                marker.write_text(json.dumps({
-                    "installed": True,
-                    "python": pyver,
-                    "when": int(time.time()),
-                    "torch": getattr(torch, "__version__", None),
-                    "torchvision": getattr(torchvision, "__version__", None),
-                    "torchaudio": getattr(torchaudio, "__version__", None),
-                }), encoding="utf-8")
-            except Exception:
-                marker.write_text(json.dumps({"installed": True, "python": pyver, "when": int(time.time())}), encoding="utf-8")
-
-        return torch
+    except Exception as e:
+        # DO NOT UNINSTALL. This is usually PyInstaller stdlib / packaging.
+        msg = "\n".join([f"{k}: ok={ok} :: {out}" for k, (ok, out) in info.items()])
+        raise RuntimeError(
+            "Runtime venv probe says torch stack exists, but in-process import failed.\n"
+            "This typically indicates a frozen-stdlib / PyInstaller packaging issue, not a bad torch install.\n\n"
+            f"Original error: {type(e).__name__}: {e}\n\n"
+            "Runtime venv probe:\n" + msg
+        ) from e
 
 def _find_system_python_cmd() -> list[str]:
     import platform as _plat
@@ -814,7 +942,7 @@ def add_runtime_to_sys_path(status_cb=print) -> None:
     """
     Warm up sys.path so a fresh launch can see the runtime immediately.
     """
-    rt = _user_runtime_dir()
+    rt = _user_runtime_dir(status_cb=status_cb)
     p  = _venv_paths(rt)
     vpy = p["python"]
     if not vpy.exists():
