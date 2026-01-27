@@ -7,6 +7,7 @@ from typing import Any, Callable, Optional
 import numpy as np
 
 from setiastro.saspro.resources import get_resources
+from setiastro.saspro.runtime_torch import _user_runtime_dir, _venv_paths, _check_cuda_in_venv
 
 # Optional deps
 try:
@@ -44,13 +45,18 @@ def _autocast_context(torch, device) -> Any:
             major, minor = torch.cuda.get_device_capability()
             cap = float(f"{major}.{minor}")
             if cap >= 8.0:
-                # Preferred API (torch >= 1.10-ish; definitely in 2.x)
                 if hasattr(torch, "amp") and hasattr(torch.amp, "autocast"):
                     return torch.amp.autocast(device_type="cuda")
-                # Fallback for older torch
                 return torch.cuda.amp.autocast()
+
+        elif hasattr(device, "type") and device.type == "mps":
+            # MPS often benefits from autocast in newer torch versions
+            if hasattr(torch, "amp") and hasattr(torch.amp, "autocast"):
+                return torch.amp.autocast(device_type="mps")
+
     except Exception:
         pass
+
     return _nullcontext()
 
 
@@ -365,7 +371,21 @@ def load_darkstar_models(*, use_gpu: bool, color: bool, status_cb=print) -> Dark
         m = DarkStarModels(device=dev, is_onnx=False, model=net, torch=torch, chunk_size=512)
         _MODELS_CACHE[key] = m
         return m
+    # ---------------- MPS (torch) ----------------
+    if use_gpu and hasattr(torch, "backends") and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        backend_id = "mps"
+        key = (tag, backend_id)
+        if key in _MODELS_CACHE:
+            return _MODELS_CACHE[key]
 
+        dev = torch.device("mps")
+        status_cb("Dark Star: using MPS")
+        Net = _build_darkstar_torch_models(torch)
+        net = Net(pth, None).eval().to(dev)
+
+        m = DarkStarModels(device=dev, is_onnx=False, model=net, torch=torch, chunk_size=512)
+        _MODELS_CACHE[key] = m
+        return m
     # ---------------- DirectML (torch-directml) ----------------
     if use_gpu and is_windows:
         try:

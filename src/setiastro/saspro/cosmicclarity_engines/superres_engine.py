@@ -20,6 +20,7 @@ def _get_torch(*, prefer_cuda: bool, prefer_dml: bool, status_cb=print):
         prefer_dml=prefer_dml,
         status_cb=status_cb,
     )
+from setiastro.saspro.runtime_torch import _user_runtime_dir, _venv_paths, _check_cuda_in_venv
 
 
 from setiastro.saspro.resources import get_resources
