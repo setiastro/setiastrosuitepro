@@ -1,9 +1,9 @@
 {
-  "version": "1.8.0.post2",
+  "version": "1.8.1",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.8.0/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.8.0/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.8.0/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.8.1/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.8.1/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.8.1/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.8.0 Major Update: Cosmic Clarity now incorporated directly into SASpro. No need to separately download Cosmic Clarity. This will also allow much faster Cosmic Clarity code updates via SASpro updates. Be sure to download the CC latest models via Settings->Preferences.  Updated Install GPU Acceleration which now can be found in Setting->Preferences.  Benchmark tool for SASpro now under Settings->Benchmark"
+  "notes": "Seti Astro Suite Pro V1.8.1 Major Fix for all users using the Installer Versions. Includes fixes for running cosmic clarity, stacking suite, modulefinder not found error, PIL frozen environment errors, python minor versioning errors, MPS use in the sharpen, denoise, and darkstar engines, prewarm AI cacheing, and many many more issues that came up yesterday."
 }
