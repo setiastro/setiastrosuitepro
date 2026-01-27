@@ -2175,6 +2175,52 @@ class PlanetProjectionDialog(QDialog):
             self._show_stereo_pair(cross_eye=cross_eye)
             return
 
+        # ---- GALAXY TOP-DOWN (early exit) ----
+        # IMPORTANT: do this BEFORE any ROI crop, otherwise huge galaxies get clipped by ROI sizing.
+        is_galaxy = (ptype == 3) or (mode == 5)  # planet_type==Galaxy OR output==Galaxy Polar View
+        if is_galaxy:
+            def to01(x):
+                if x.dtype == np.uint8:
+                    return x.astype(np.float32) / 255.0
+                if x.dtype == np.uint16:
+                    return x.astype(np.float32) / 65535.0
+                return x.astype(np.float32, copy=False)
+
+            roi = img[..., :3]          # FULL IMAGE
+            cx0 = float(cx)             # FULL-IMAGE coords
+            cy0 = float(cy)
+            roi01 = to01(roi)
+
+            pa = float(self.spin_ring_pa.value())      # reuse ring PA widget as galaxy PA
+            tilt = float(self.spin_ring_tilt.value())  # reuse ring tilt widget as galaxy b/a
+
+            # output size: tied to full image (clamped)
+            out_size = int(max(256, min(2400, max(roi.shape[0], roi.shape[1]))))
+
+            try:
+                top8 = deproject_galaxy_topdown_u8(
+                    roi01,
+                    cx0=cx0, cy0=cy0,
+                    rpx=float(r),
+                    pa_deg=pa,
+                    tilt=tilt,
+                    out_size=out_size,
+                )
+            except Exception as e:
+                QMessageBox.warning(self, "Galaxy Polar View", f"Failed to deproject galaxy:\n{e}")
+                return
+
+            # push single-frame output
+            self._left = None
+            self._right = None
+            self._wiggle_frames = None
+            self._wiggle_state = False
+
+            self._last_preview_u8 = top8
+            self._push_preview_u8(top8)
+            return
+
+
         # ---- Saturn rings ROI expansion (only increases s) ----
         is_saturn = (self.cmb_planet_type.currentIndex() == 1)
         rings_on = bool(is_saturn and getattr(self, "chk_rings", None) is not None and self.chk_rings.isChecked())
@@ -2209,6 +2255,28 @@ class PlanetProjectionDialog(QDialog):
         y1 = min(Hfull, y0 + s)
 
         roi = img[y0:y1, x0:x1, :3]
+        # ---- GALAXY ROI expansion (ensure full projected ellipse fits) ----
+        if ptype == 3:
+            tilt = float(self.spin_ring_tilt.value())
+            pa   = float(self.spin_ring_pa.value())
+
+            tilt = float(np.clip(tilt, 0.02, 1.0))
+
+            # ellipse in SOURCE pixels
+            a = float(r)              # semi-major
+            b = max(1.0, a * tilt)    # semi-minor
+
+            th = np.deg2rad(pa)
+            cth, sth = np.cos(th), np.sin(th)
+
+            # bounding half-extents of rotated ellipse
+            dx = np.sqrt((a * cth) ** 2 + (b * sth) ** 2)
+            dy = np.sqrt((a * sth) ** 2 + (b * cth) ** 2)
+            need_half = float(max(dx, dy))
+
+            margin = 12.0
+            s_need = int(np.ceil(2.0 * (need_half + margin)))
+            s = max(s, s_need)
 
         # ---- disk mask (ROI coords) ----
         H0, W0 = roi.shape[:2]
@@ -2225,42 +2293,6 @@ class PlanetProjectionDialog(QDialog):
             return x.astype(np.float32, copy=False)
 
         theta = float(self.spin_theta.value())
-
-        # ---- GALAXY TOP-DOWN (early exit) ----
-        is_galaxy = (ptype == 3) or (mode == 5)  # planet_type==Galaxy OR output==Galaxy Polar View
-
-        if is_galaxy:
-            # Galaxy wants the ROI disk params (cx0, cy0, r) + PA/tilt
-            roi01 = to01(roi)
-
-            pa = float(self.spin_ring_pa.value())      # reuse ring PA widget as galaxy PA
-            tilt = float(self.spin_ring_tilt.value())  # reuse ring tilt widget as galaxy b/a
-
-            # choose output size: use ROI size or clamp to something reasonable
-            out_size = int(max(256, min(2000, max(roi.shape[0], roi.shape[1]))))
-
-            try:
-                top8 = deproject_galaxy_topdown_u8(
-                    roi01,
-                    cx0=float(cx0), cy0=float(cy0),
-                    rpx=float(r),
-                    pa_deg=pa,
-                    tilt=tilt,
-                    out_size=out_size,
-                )
-            except Exception as e:
-                QMessageBox.warning(self, "Galaxy Polar View", f"Failed to deproject galaxy:\n{e}")
-                return
-
-            # push single-frame output
-            self._left = None
-            self._right = None
-            self._wiggle_frames = None
-            self._wiggle_state = False
-
-            self._last_preview_u8 = top8
-            self._push_preview_u8(top8)
-            return
 
         # ---- BODY (sphere reprojection) ----
         interp = cv2.INTER_LANCZOS4

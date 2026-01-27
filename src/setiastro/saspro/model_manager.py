@@ -131,6 +131,71 @@ def _parse_gdrive_download_form(html: str) -> tuple[Optional[str], Optional[dict
 
     return action, params
 
+def download_http_file(
+    url: str,
+    dst_path: str | os.PathLike,
+    *,
+    progress_cb: ProgressCB = None,
+    should_cancel=None,
+    timeout: int = 60,
+    chunk_size: int = 1024 * 1024,
+) -> Path:
+    import requests
+
+    dst = Path(dst_path)
+    tmp = dst.with_suffix(dst.suffix + ".part")
+    tmp.parent.mkdir(parents=True, exist_ok=True)
+
+    def log(msg: str):
+        if progress_cb:
+            progress_cb(msg)
+
+    try:
+        tmp.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+    with requests.Session() as s:
+        log(f"Connecting… {url}")
+        r = s.get(url, stream=True, timeout=timeout, allow_redirects=True)
+        r.raise_for_status()
+
+        total = int(r.headers.get("Content-Length") or 0)
+        done = 0
+        t_last = time.time()
+        done_last = 0
+
+        with open(tmp, "wb") as f:
+            for chunk in r.iter_content(chunk_size=chunk_size):
+                if should_cancel and should_cancel():
+                    try:
+                        f.close()
+                        tmp.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                    raise RuntimeError("Download canceled.")
+
+                if not chunk:
+                    continue
+
+                f.write(chunk)
+                done += len(chunk)
+
+                now = time.time()
+                if now - t_last >= 0.5:
+                    if total > 0:
+                        pct = (done * 100.0) / total
+                        log(f"Downloading… {pct:5.1f}% ({done}/{total} bytes)")
+                    else:
+                        bps = (done - done_last) / max(now - t_last, 1e-9)
+                        log(f"Downloading… {done} bytes ({bps/1024/1024:.1f} MB/s)")
+                    t_last = now
+                    done_last = done
+
+    os.replace(str(tmp), str(dst))
+    log(f"Download complete: {dst}")
+    return dst
+
 
 def download_google_drive_file(
     file_id: str,
