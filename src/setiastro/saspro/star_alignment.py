@@ -5,6 +5,104 @@ import os
 import math
 import random
 import sys
+from PyQt6.QtCore import QByteArray
+
+def _qs_raw(settings, key, default=None):
+    try:
+        return settings.value(key, default)
+    except Exception:
+        return default
+
+def _qs_text(v):
+    """Best-effort: convert QByteArray/bytes -> str, preserve strings, else None."""
+    try:
+        if isinstance(v, QByteArray):
+            # PyQt6-safe
+            v = bytes(v.data()).decode("utf-8", "ignore")
+        elif isinstance(v, (bytes, bytearray)):
+            v = bytes(v).decode("utf-8", "ignore")
+        if isinstance(v, str):
+            return v.strip()
+    except Exception:
+        pass
+    return None
+
+def _purge(settings, key):
+    try:
+        settings.remove(key)
+    except Exception:
+        pass
+
+def qs_int(settings, key, default=0, *, purge_bad=True):
+    v = _qs_raw(settings, key, default)
+    try:
+        if isinstance(v, bool):
+            return int(v)
+        if isinstance(v, int):
+            return v
+        if isinstance(v, float):
+            return int(v)
+
+        s = _qs_text(v)
+        if s is not None:
+            if s == "":
+                return default
+            s = s.replace(",", ".")   # locale fix
+            return int(float(s))      # handles "3.0"
+
+        # Last resort: try numeric conversion, but don't guess on random objects
+        return int(v)
+    except Exception:
+        if purge_bad:
+            _purge(settings, key)
+        return default
+
+def qs_float(settings, key, default=0.0, *, purge_bad=True):
+    v = _qs_raw(settings, key, default)
+    try:
+        if isinstance(v, bool):
+            return float(int(v))
+        if isinstance(v, (int, float)):
+            return float(v)
+
+        s = _qs_text(v)
+        if s is not None:
+            if s == "":
+                return default
+            s = s.replace(",", ".")  # locale fix
+            return float(s)
+
+        return float(v)
+    except Exception:
+        if purge_bad:
+            _purge(settings, key)
+        return default
+
+def qs_bool(settings, key, default=False, *, purge_bad=True):
+    v = _qs_raw(settings, key, default)
+    try:
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, (int, float)):
+            return bool(int(v))
+
+        s = _qs_text(v)
+        if s is not None:
+            s = s.lower()
+            if s in ("1", "true", "yes", "on"):
+                return True
+            if s in ("0", "false", "no", "off"):
+                return False
+            return default
+
+        # Do NOT guess truthiness of random objects; that's how weirdness spreads
+        return default
+    except Exception:
+        if purge_bad:
+            _purge(settings, key)
+        return default
+
+
 # ---------------------------------------------------------------------
 # Executor helper: avoid ProcessPool in frozen (PyInstaller) builds
 # ---------------------------------------------------------------------
@@ -637,6 +735,7 @@ class StellarAlignmentDialog(QDialog):
             pass  # older PyQt6 versions
 
         self.settings = settings
+
         self.parent_window = parent
         self._docman = doc_manager or getattr(parent, "doc_manager", None)
 
@@ -4169,65 +4268,98 @@ class MosaicSettingsDialog(QDialog):
         self.setWindowTitle("Mosaic Master Settings")
         self.initUI()
 
+    def _set_2dec(self, spin):
+        """Safely force 2-dec display regardless of CustomDoubleSpinBox implementation."""
+        try:
+            # Standard QAbstractSpinBox API
+            le = spin.lineEdit()
+            if le is not None:
+                le.setText(f"{spin.value():.2f}")
+                return
+        except Exception:
+            pass
+
+        # Fallback: your custom class might expose .lineEdit as an attribute
+        try:
+            le = getattr(spin, "lineEdit", None)
+            if le is not None:
+                le.setText(f"{spin.value():.2f}")
+        except Exception:
+            pass
+
     def initUI(self):
         layout = QFormLayout(self)
 
         # Number of Stars to Attempt to Use
-        self.starCountSpin = CustomSpinBox(minimum=1, maximum=1000,
-                                        initial=self.settings.value("mosaic/num_stars", 150, type=int),
-                                        step=1)
+        self.starCountSpin = CustomSpinBox(
+            minimum=1, maximum=1000,
+            initial=qs_int(self.settings, "mosaic/num_stars", 150),
+            step=1
+        )
         layout.addRow("Number of Stars:", self.starCountSpin)
 
         # Translation Max Tolerance
-        self.transTolSpin = CustomDoubleSpinBox(minimum=0.0, maximum=10.0,
-                                                initial=self.settings.value("mosaic/translation_max_tolerance", 3.0, type=float),
-                                                step=0.1)
+        self.transTolSpin = CustomDoubleSpinBox(
+            minimum=0.0, maximum=10.0,
+            initial=qs_float(self.settings, "mosaic/translation_max_tolerance", 3.0),
+            step=0.1
+        )
         layout.addRow("Translation Max Tolerance:", self.transTolSpin)
 
         # Scale Min Tolerance
-        self.scaleMinSpin = CustomDoubleSpinBox(minimum=0.0, maximum=10.0,
-                                                initial=self.settings.value("mosaic/scale_min_tolerance", 0.8, type=float),
-                                                step=0.1)
+        self.scaleMinSpin = CustomDoubleSpinBox(
+            minimum=0.0, maximum=10.0,
+            initial=qs_float(self.settings, "mosaic/scale_min_tolerance", 0.8),
+            step=0.1
+        )
         layout.addRow("Scale Min Tolerance:", self.scaleMinSpin)
 
         # Scale Max Tolerance
-        self.scaleMaxSpin = CustomDoubleSpinBox(minimum=0.0, maximum=10.0,
-                                                initial=self.settings.value("mosaic/scale_max_tolerance", 1.25, type=float),
-                                                step=0.1)
+        self.scaleMaxSpin = CustomDoubleSpinBox(
+            minimum=0.0, maximum=10.0,
+            initial=qs_float(self.settings, "mosaic/scale_max_tolerance", 1.25),
+            step=0.1
+        )
         layout.addRow("Scale Max Tolerance:", self.scaleMaxSpin)
 
         # Rotation Max Tolerance
-        self.rotationMaxSpin = CustomDoubleSpinBox(minimum=0.0, maximum=180.0,
-                                                initial=self.settings.value("mosaic/rotation_max_tolerance", 45.0, type=float),
-                                                step=0.1)
-        # Force two decimals in display
-        self.rotationMaxSpin.lineEdit.setText(f"{self.rotationMaxSpin.value():.2f}")
+        self.rotationMaxSpin = CustomDoubleSpinBox(
+            minimum=0.0, maximum=180.0,
+            initial=qs_float(self.settings, "mosaic/rotation_max_tolerance", 45.0),
+            step=0.1, decimals=2
+        )
         layout.addRow("Rotation Max Tolerance (°):", self.rotationMaxSpin)
 
         # Skew Max Tolerance
-        self.skewMaxSpin = CustomDoubleSpinBox(minimum=0.0, maximum=1.0,
-                                            initial=self.settings.value("mosaic/skew_max_tolerance", 0.1, type=float),
-                                            step=0.01)
+        self.skewMaxSpin = CustomDoubleSpinBox(
+            minimum=0.0, maximum=1.0,
+            initial=qs_float(self.settings, "mosaic/skew_max_tolerance", 0.1),
+            step=0.01
+        )
         layout.addRow("Skew Max Tolerance:", self.skewMaxSpin)
 
         # FWHM for Star Detection
-        self.fwhmSpin = CustomDoubleSpinBox(minimum=0.0, maximum=20.0,
-                                            initial=self.settings.value("mosaic/star_fwhm", 3.0, type=float),
-                                            step=0.1)
-        self.fwhmSpin.lineEdit.setText(f"{self.fwhmSpin.value():.2f}")
+        self.fwhmSpin = CustomDoubleSpinBox(
+            minimum=0.0, maximum=20.0,
+            initial=qs_float(self.settings, "mosaic/star_fwhm", 3.0),
+            step=0.1, decimals=2
+        )
         layout.addRow("FWHM for Star Detection:", self.fwhmSpin)
 
         # Sigma for Star Detection
-        self.sigmaSpin = CustomDoubleSpinBox(minimum=0.0, maximum=10.0,
-                                            initial=self.settings.value("mosaic/star_sigma", 3.0, type=float),
-                                            step=0.1)
-        self.sigmaSpin.lineEdit.setText(f"{self.sigmaSpin.value():.2f}")
+        self.sigmaSpin = CustomDoubleSpinBox(
+            minimum=0.0, maximum=10.0,
+            initial=qs_float(self.settings, "mosaic/star_sigma", 3.0),
+            step=0.1, decimals=2
+        )
         layout.addRow("Sigma for Star Detection:", self.sigmaSpin)
 
         # Polynomial Degree
-        self.polyDegreeSpin = CustomSpinBox(minimum=1, maximum=6,
-                                            initial=self.settings.value("mosaic/poly_degree", 3, type=int),
-                                            step=1)
+        self.polyDegreeSpin = CustomSpinBox(
+            minimum=1, maximum=6,
+            initial=qs_int(self.settings, "mosaic/poly_degree", 3),
+            step=1
+        )
         layout.addRow("Polynomial Degree:", self.polyDegreeSpin)
 
         buttons = QDialogButtonBox(
@@ -4239,16 +4371,18 @@ class MosaicSettingsDialog(QDialog):
         layout.addRow(buttons)
 
     def accept(self):
-        # Save the values to QSettings
-        self.settings.setValue("mosaic/num_stars", self.starCountSpin.value)
-        self.settings.setValue("mosaic/translation_max_tolerance", self.transTolSpin.value())
-        self.settings.setValue("mosaic/scale_min_tolerance", self.scaleMinSpin.value())
-        self.settings.setValue("mosaic/scale_max_tolerance", self.scaleMaxSpin.value())
-        self.settings.setValue("mosaic/rotation_max_tolerance", self.rotationMaxSpin.value())
-        self.settings.setValue("mosaic/skew_max_tolerance", self.skewMaxSpin.value())
-        self.settings.setValue("mosaic/star_fwhm", self.fwhmSpin.value())
-        self.settings.setValue("mosaic/star_sigma", self.sigmaSpin.value())
-        self.settings.setValue("mosaic/poly_degree", self.polyDegreeSpin.value)
+        # Save the values to QSettings (IMPORTANT: call value() not value)
+        self.settings.setValue("mosaic/num_stars", int(self.starCountSpin.value()))
+        self.settings.setValue("mosaic/translation_max_tolerance", float(self.transTolSpin.value()))
+        self.settings.setValue("mosaic/scale_min_tolerance", float(self.scaleMinSpin.value()))
+        self.settings.setValue("mosaic/scale_max_tolerance", float(self.scaleMaxSpin.value()))
+        self.settings.setValue("mosaic/rotation_max_tolerance", float(self.rotationMaxSpin.value()))
+        self.settings.setValue("mosaic/skew_max_tolerance", float(self.skewMaxSpin.value()))
+        self.settings.setValue("mosaic/star_fwhm", float(self.fwhmSpin.value()))
+        self.settings.setValue("mosaic/star_sigma", float(self.sigmaSpin.value()))
+        self.settings.setValue("mosaic/poly_degree", int(self.polyDegreeSpin.value()))
+
+        self.settings.sync()
         super().accept()
 
 class PolyGradientRemoval:
@@ -4618,6 +4752,7 @@ class MosaicMasterDialog(QDialog):
         self.stretch_original_mins = []
         self.stretch_original_medians = []
         self.was_single_channel = False
+        self._migrate_mosaic_settings()
 
         self.initUI()
 
@@ -4699,8 +4834,9 @@ class MosaicMasterDialog(QDialog):
         layout.addLayout(checkbox_layout)
 
         # Persisted WCS-only
-        _settings = QSettings("SetiAstro", "SASpro")
-        self.wcsOnlyCheckBox.setChecked(_settings.value("mosaic/wcs_only", False, type=bool))
+        self.wcsOnlyCheckBox.setChecked(qs_bool(self.settings, "mosaic/wcs_only", False))
+
+
 
         # Helpers ----------------------------------------------------------
         def _set_checked(cb: QCheckBox, checked: bool):
@@ -4725,7 +4861,8 @@ class MosaicMasterDialog(QDialog):
 
         def _on_wcs_only_changed(state: int):
             # Persist setting first (this one is user-visible preference)
-            QSettings("SetiAstro", "SASpro").setValue("mosaic/wcs_only", self.wcsOnlyCheckBox.isChecked())
+            self.settings.setValue("mosaic/wcs_only", self.wcsOnlyCheckBox.isChecked())
+            self.settings.sync()
 
             # If WCS-only is turned ON, force Seestar OFF
             if self.wcsOnlyCheckBox.isChecked():
@@ -4762,14 +4899,15 @@ class MosaicMasterDialog(QDialog):
             "Precise — Full WCS: astropy.reproject per channel; slowest, most exact."
         )
 
-        _default_mode = _settings.value("mosaic/reproject_mode", "Fast — SIP-aware (Exact Remap)")
+        _default_mode = self.settings.value("mosaic/reproject_mode", "Fast — SIP-aware (Exact Remap)", type=str)
+
         valid_modes = [self.reprojectModeCombo.itemText(i) for i in range(self.reprojectModeCombo.count())]
         if _default_mode not in valid_modes:
             _default_mode = "Fast — SIP-aware (Exact Remap)"
         self.reprojectModeCombo.setCurrentText(_default_mode)
-        self.reprojectModeCombo.currentTextChanged.connect(
-            lambda t: QSettings("SetiAstro", "SASpro").setValue("mosaic/reproject_mode", t)
-        )
+        self.reprojectModeCombo.currentTextChanged.connect(self._on_reproject_mode_changed)
+
+        self.settings.sync()
 
         row = QHBoxLayout()
         row.addWidget(self.reprojectModeLabel)
@@ -4809,6 +4947,18 @@ class MosaicMasterDialog(QDialog):
 
         self.setLayout(layout)
 
+    def _on_reproject_mode_changed(self, t: str):
+        self.settings.setValue("mosaic/reproject_mode", t)
+        self.settings.sync()
+
+
+    def _migrate_mosaic_settings(self):
+        s = self.settings
+        _ = qs_int(s, "mosaic/poly_degree", 3)
+        _ = qs_float(s, "mosaic/star_sigma", 3.0)
+        _ = qs_float(s, "mosaic/star_fwhm", 3.0)
+        # etc...
+        s.sync()
 
     def _target_median_from_first(self, items):
         # Pick a stable target (median of first image after safe clipping)
@@ -5043,82 +5193,6 @@ class MosaicMasterDialog(QDialog):
         return [(self._title_for_doc(d), d) for d in docs]
 
 
-    # --- title helpers -------------------------------------------------
-    def _callmaybe(self, obj, attr):
-        """Return obj.attr() if callable, else obj.attr; else None."""
-        try:
-            v = getattr(obj, attr, None)
-            return v() if callable(v) else v
-        except Exception:
-            return None
-
-    def _best_title_from_obj(self, o):
-        """Try common title/name providers on a QWidget/ImageDocument."""
-        if o is None:
-            return None
-        # 1) display_name (method or attr)
-        t = self._callmaybe(o, "display_name")
-        if isinstance(t, str) and t.strip():
-            return t
-        # 2) windowTitle / objectName (Qt)
-        for a in ("windowTitle", "objectName", "title", "name"):
-            t = self._callmaybe(o, a)
-            if isinstance(t, str) and t.strip():
-                return t
-        # 3) metadata.display_name
-        try:
-            md = getattr(o, "metadata", {}) or {}
-            t = md.get("display_name")
-            if isinstance(t, str) and t.strip():
-                return t
-        except Exception:
-            pass
-        return None
-
-    def _resolve_view_title(self, view, doc, title_hint=None):
-        """Prefer the host-provided title, then view, then doc, then a safe default."""
-        # host-provided title from _list_open_docs()
-        if isinstance(title_hint, str) and title_hint.strip():
-            return title_hint.strip()
-        # view wins over doc
-        t = self._best_title_from_obj(view) or self._best_title_from_obj(doc)
-        return t if t else "Untitled View"
-
-
-    def _pick_view_dialog(self):
-        items = self._iter_docs()
-        if not items:
-            QMessageBox.information(self, "Add from View", "No open views found.")
-            return None
-
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Select View")
-        v = QVBoxLayout(dlg)
-        v.addWidget(QLabel("Choose a view to add:"))
-
-        combo = QComboBox()
-        for (_, doc) in items:
-            title = self._fmt_doc_title(doc)
-            # append dims if available
-            try:
-                img = _doc_image(doc)  # same utility used by Stellar Alignment
-                if img is not None:
-                    h, w = img.shape[:2]
-                    title = f"{title} — {w}×{h}"
-            except Exception:
-                pass
-            combo.addItem(title, userData=doc)
-        v.addWidget(combo)
-
-        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |
-                            QDialogButtonBox.StandardButton.Cancel)
-        bb.accepted.connect(dlg.accept)
-        bb.rejected.connect(dlg.reject)
-        v.addWidget(bb)
-
-        return combo.currentData() if dlg.exec() else None
-
-
     def openSettings(self):
         dlg = MosaicSettingsDialog(self.settings, self)
         if dlg.exec():
@@ -5130,31 +5204,37 @@ class MosaicMasterDialog(QDialog):
             self,
             "Add Image(s)",
             "",
-            "Images (*.png *.jpg *.jpeg *.tif *.tiff *.fits *.fit *.fz *.fz *.xisf *.cr2 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef)"
+            "Images (*.png *.jpg *.jpeg *.tif *.tiff *.fits *.fit *.fz *.xisf *.cr2 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef)"
         )
-        if paths:
-            for path in paths:
-                arr, header, bitdepth, ismono = load_image(path)
-                header = sanitize_wcs_header(header) if header else None
-                wcs_obj = get_wcs_from_header(header) if header else None
-                d = {
-                    "path": path,
-                    "image": arr,
-                    "header": header,
-                    "wcs": wcs_obj,
-                    "bit_depth": bitdepth,
-                    "is_mono": ismono,
-                    "transform": None
-                }
-                self.loaded_images.append(d)
+        if not paths:
+            return
 
-                text = os.path.basename(path)
-                if wcs_obj is not None:
-                    text += " [WCS]"
-                item = QListWidgetItem(text)
-                item.setToolTip(path)
-                self.images_list.addItem(item)
-            self.update_status()
+        for path in paths:
+            arr, header, bitdepth, ismono = load_image(path)
+            header = sanitize_wcs_header(header) if header else None
+            wcs_obj = get_wcs_from_header(header) if header else None
+
+            base_name = os.path.basename(path)  # <- what you want in status strings
+
+            d = {
+                "path": path,            # internal identity
+                "display": base_name,    # user-facing label
+                "image": arr,
+                "header": header,
+                "wcs": wcs_obj,
+                "bit_depth": bitdepth,
+                "is_mono": ismono,
+                "transform": None
+            }
+            self.loaded_images.append(d)
+
+            # list text can include decorations like [WCS]
+            list_text = base_name + (" [WCS]" if wcs_obj is not None else "")
+            item = QListWidgetItem(list_text)
+            item.setToolTip(path)  # still used for removal
+            self.images_list.addItem(item)
+
+        self.update_status()
 
     def add_image_from_view(self):
         items = self._iter_docs()
@@ -5165,38 +5245,31 @@ class MosaicMasterDialog(QDialog):
         candidates = []
         for title, doc in items:
             # image
-            img = None
             try:
-                if hasattr(doc, "get_image") and callable(doc.get_image):
-                    img = doc.get_image()
-                else:
-                    img = getattr(doc, "image", None)
+                img = doc.get_image() if hasattr(doc, "get_image") and callable(doc.get_image) else getattr(doc, "image", None)
             except Exception:
                 img = None
             if not isinstance(img, np.ndarray):
                 continue
 
             # metadata/header
-            meta = {}
             try:
-                if hasattr(doc, "get_metadata") and callable(doc.get_metadata):
-                    meta = doc.get_metadata() or {}
-                else:
-                    meta = getattr(doc, "metadata", {}) or {}
+                meta = doc.get_metadata() if hasattr(doc, "get_metadata") and callable(doc.get_metadata) else getattr(doc, "metadata", {}) or {}
             except Exception:
                 meta = {}
 
-            header = (meta.get("original_header")
-                    or meta.get("header")
-                    or meta.get("fits_header"))
+            header = (meta.get("original_header") or meta.get("header") or meta.get("fits_header"))
             header = sanitize_wcs_header(header) if header else None
             wcs_obj = get_wcs_from_header(header) if header else None
 
             h, w = img.shape[:2]
-            label = f"{title} — {w}×{h}"
-            key = f"view://{id(doc)}"  # stable pseudo-path for removal
 
-            candidates.append((label, img, meta, key, header, wcs_obj))
+            display_name = str(title).strip() if title else "View"     # <- clean
+            list_label = f"{display_name} — {w}×{h}"                   # <- fancy UI
+
+            key = f"view://{id(doc)}"
+
+            candidates.append((list_label, display_name, img, meta, key, header, wcs_obj))
 
         if not candidates:
             QMessageBox.information(self, "Add from View", "No views with image data are open.")
@@ -5207,10 +5280,11 @@ class MosaicMasterDialog(QDialog):
         if not ok or not choice:
             return
 
-        label, image, metadata, path_key, header, wcs_obj = candidates[labels.index(choice)]
+        list_label, display_name, image, metadata, path_key, header, wcs_obj = candidates[labels.index(choice)]
 
         d = {
-            "path": path_key,
+            "path": path_key,             # internal id for removal
+            "display": display_name,      # <- used by status strings / logs
             "image": image,
             "header": header,
             "wcs": wcs_obj,
@@ -5220,12 +5294,24 @@ class MosaicMasterDialog(QDialog):
         }
         self.loaded_images.append(d)
 
-        txt = label + (" [WCS]" if wcs_obj is not None else "")
+        txt = list_label + (" [WCS]" if wcs_obj is not None else "")
         item = QListWidgetItem(txt)
         item.setToolTip(path_key)
         self.images_list.addItem(item)
         self.update_status()
 
+
+    def _item_label(self, item: dict) -> str:
+        # 1) explicit display label wins
+        d = item.get("display")
+        if isinstance(d, str) and d.strip():
+            return d.strip()
+
+        # 2) fallback from path (disk or view://)
+        p = item.get("path", "")
+        if isinstance(p, str) and p.startswith("view://"):
+            return "View"
+        return os.path.basename(str(p)) if p else "Item"
 
     def remove_selected(self):
         s = self.images_list.selectedItems()
@@ -5257,42 +5343,6 @@ class MosaicMasterDialog(QDialog):
                 MosaicPreviewWindow(disp, title="Preview Selected", parent=self,
                                     push_cb=self._push_mosaic_to_new_doc).show()
                 break
-
-    def _resolve_view_title(self, *objs) -> str:
-        """
-        Try hard to get a meaningful title from any of the passed objects
-        (view, subwindow, doc, etc.). Returns a non-empty string or 'Untitled View'.
-        """
-        def first_str(x):
-            return str(x).strip() if x is not None and str(x).strip() else None
-
-        for o in objs:
-            if o is None:
-                continue
-            # Methods that return a title
-            for meth in ("windowTitle", "title", "displayTitle", "text"):
-                fn = getattr(o, meth, None)
-                if callable(fn):
-                    s = first_str(fn())
-                    if s: return s
-            # Properties/attributes that might hold a title
-            for attr in ("title", "display_title", "name", "objectName", "display_name"):
-                s = first_str(getattr(o, attr, None))
-                if s: return s
-            # From metadata
-            meta = getattr(o, "metadata", None)
-            if isinstance(meta, dict):
-                s = first_str(meta.get("display_name") or meta.get("title") or meta.get("name"))
-                if s: return s
-            # From file path-ish things
-            for attr in ("file_path", "filepath", "path", "filename"):
-                p = getattr(o, attr, None)
-                if p:
-                    base = os.path.basename(str(p))
-                    s = first_str(base)
-                    if s: return s
-
-        return "Untitled View"
 
     # --- WCS/SIP helpers ---------------------------------------------------------
     def _ensure_image_naxis(self, hdr: dict | fits.Header, shape):
@@ -5390,7 +5440,7 @@ class MosaicMasterDialog(QDialog):
                     self.astap_exe = new_path
                     QMessageBox.information(self, "Mosaic Master", "ASTAP path updated successfully.")
                 else:
-                    self.status_label.setText(f"No ASTAP path; blind solving {item['path']}...")
+                    self.status_label.setText(f"No ASTAP path; blind solving {self._item_label(item)}...")
                     QApplication.processEvents()
                     solved_header = self.perform_blind_solve(item)
                     if solved_header:
@@ -5399,12 +5449,13 @@ class MosaicMasterDialog(QDialog):
                     continue
 
             # Attempt ASTAP solve.
-            self.status_label.setText(f"Attempting ASTAP solve for {item['path']}...")
+            self.status_label.setText(f"Attempting ASTAP solve for {self._item_label(item)}...")
+
             QApplication.processEvents()
             solved_header = self.attempt_astap_solve(item)
 
             if solved_header is None:
-                self.status_label.setText(f"ASTAP failed for {item['path']}. Falling back to blind solve...")
+                self.status_label.setText(f"ASTAP failed for {self._item_label(item)}. Falling back to blind solve...")
                 QApplication.processEvents()
                 solved_header = self.perform_blind_solve(item)
 
@@ -5412,7 +5463,8 @@ class MosaicMasterDialog(QDialog):
                 solved_header = self._normalize_wcs_header(solved_header, item["image"].shape)
                 item["wcs"] = self._build_wcs(solved_header, item["image"].shape)
             else:
-                print(f"[Mosaic] Plate solving failed for {item['path']}.")
+                print(f"[Mosaic] Plate solving failed for {self._item_label(item)} ({item.get('path','')}).")
+
 
         # ------------------------------------------------------------
         # 2) Gather WCS-valid panels
@@ -5502,7 +5554,7 @@ class MosaicMasterDialog(QDialog):
         for idx, itm in enumerate(wcs_items):
             arr = itm["image"]
 
-            self.status_label.setText(f"Mapping {itm['path']} into mosaic frame...")
+            self.status_label.setText(f"Mapping {self._item_label(itm)} into mosaic frame...")
             QApplication.processEvents()
 
             img_lin = arr.astype(np.float32, copy=False)
@@ -5607,7 +5659,7 @@ class MosaicMasterDialog(QDialog):
                 self.final_mosaic += gray_aligned * smooth_mask
             self.weight_mosaic += smooth_mask
 
-            self.status_label.setText(f"Processed: {itm['path']}")
+            self.status_label.setText(f"Processed: {self._item_label(itm)}")
             QApplication.processEvents()
 
         # ------------------------------------------------------------
@@ -6497,7 +6549,7 @@ class MosaicMasterDialog(QDialog):
         - If refinement fails, returns None.
         """
         print("\n--- Starting Refined Alignment ---")
-        poly_degree = self.settings.value("mosaic/poly_degree", 3, type=int)
+        poly_degree = qs_int(self.settings, "mosaic/poly_degree", 3)
         self.status_label.setText("Refinement: Converting images to grayscale...")
         QApplication.processEvents()
         
