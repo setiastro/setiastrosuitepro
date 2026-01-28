@@ -77,9 +77,8 @@ class CustomSpinBox(QWidget):
 
         self._update_button_states()
 
-    def value(self) -> int:
-        """Qt-style getter."""
-        return int(self._value)
+    def setStep(self, step):
+        self.setSingleStep(step)
 
     def setValue(self, val: int) -> None:
         val = int(val)
@@ -213,9 +212,8 @@ class CustomDoubleSpinBox(QWidget):
 
         self._update_button_states()
 
-    def value(self) -> float:
-        """Qt-style getter."""
-        return float(self._value)
+    def setStep(self, step):
+        self.setSingleStep(step)
 
     def setValue(self, val: float) -> None:
         val = float(val)
@@ -271,7 +269,7 @@ class CustomDoubleSpinBox(QWidget):
     def _on_editing_finished(self) -> None:
         """Handle manual text entry."""
         try:
-            val = float(self.lineEdit.text())
+            val = float(self.lineEdit.text().replace(",", "."))
             self.setValue(val)
         except ValueError:
             self.lineEdit.setText(f"{self._value:.{self.decimals}f}")
