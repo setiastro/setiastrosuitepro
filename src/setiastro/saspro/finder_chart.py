@@ -5,18 +5,24 @@ from dataclasses import dataclass
 from typing import Optional, Tuple, TYPE_CHECKING
 
 import numpy as np
-
+import csv
+import re
+from pathlib import Path
+from typing import List, Dict, Any
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox,
-    QCheckBox, QFileDialog, QMessageBox, QSpinBox, QSlider, QApplication
+    QCheckBox, QFileDialog, QMessageBox, QSpinBox, QSlider, QApplication, QDoubleSpinBox
 )
 
 from astropy.wcs import WCS
 from astropy.io import fits
 from astropy.coordinates import SkyCoord
+from astropy.wcs.utils import proj_plane_pixel_scales
 
+from pathlib import Path
+from setiastro.saspro.resources import get_data_path
 from setiastro.saspro.bright_stars import BRIGHT_STARS
 
 if TYPE_CHECKING:
@@ -32,12 +38,380 @@ class FinderChartRequest:
     survey: str
     scale_mult: int
     show_grid: bool
+
+    # star overlay
     show_star_names: bool = False
-    star_mag_limit: float = 2.0   # optional, for later
+    star_mag_limit: float = 2.0
+    star_max_labels: int = 30
+
+    # deep-sky overlay
+    show_dso: bool = False
+    dso_catalog: str = "Messier"
+    dso_mag_limit: float = 10.0
+    dso_max_labels: int = 30
+
+    # chart aids
+    show_compass: bool = True
+    show_scale_bar: bool = True
+
     out_px: int = 900
     overlay_opacity: float = 0.35
 
+# ---------------- Catalog loading (cached) ----------------
 
+_CATALOG_CACHE: Dict[str, List[Dict[str, Any]]] = {}
+
+def _catalog_path(name: str) -> Path:
+    """
+    Resolve catalog CSV paths via resources.get_data_path so it works in:
+      - PyInstaller (_MEIPASS)
+      - dev source tree
+      - pip installs
+    """
+    # Your canonical catalog files (note: you spelled it "celestrial_catalog.csv")
+    if name in ("Messier", "Messier+NGC+IC", "All (DSO)"):
+        return Path(get_data_path("data/catalogs/celestrial_catalog.csv"))
+
+    if name == "Galaxies (Distances)":
+        return Path(get_data_path("data/catalogs/List_of_Galaxies_with_Distances_Gly.csv"))
+
+    # fallback
+    return Path(get_data_path("data/catalogs/celestrial_catalog.csv"))
+
+
+
+def _safe_float(v, default=None):
+    try:
+        if v is None:
+            return default
+        s = str(v).strip()
+        if not s:
+            return default
+        return float(s)
+    except Exception:
+        return default
+
+
+_size_re = re.compile(r"(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)")
+
+def _parse_size_arcmin(info: str) -> Optional[tuple]:
+    """
+    Parse sizes like " 6.0x4.0" or "90x40" from Info field.
+    Returns (w_arcmin, h_arcmin) or None.
+    """
+    if not info:
+        return None
+    m = _size_re.search(str(info))
+    if not m:
+        return None
+    w = _safe_float(m.group(1), None)
+    h = _safe_float(m.group(2), None)
+    if w is None or h is None:
+        return None
+    # Assume arcminutes (matches your Messier examples)
+    return (float(w), float(h))
+
+
+def _load_catalog_rows(kind: str) -> List[Dict[str, Any]]:
+    """
+    Returns list of dict rows with at least: name, ra, dec, mag, info, catalog, type.
+    Cached per kind.
+    """
+    if kind in _CATALOG_CACHE:
+        return _CATALOG_CACHE[kind]
+
+    path = _catalog_path(kind)
+    rows: List[Dict[str, Any]] = []
+
+    if not path.exists():
+        _CATALOG_CACHE[kind] = rows
+        return rows
+
+    with path.open("r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        for r in reader:
+            # Two supported schemas:
+            # 1) celestrial_catalog.csv: Name,RA,Dec,Alt Name,Type,Magnitude,Info,Catalog
+            # 2) galaxies distances: RA,Dec,NAME,Diameter,Type,LongType,...
+            name = (r.get("Name") or r.get("NAME") or "").strip()
+
+            # tolerate weird header casing / whitespace
+            ra = _safe_float(r.get("RA") or r.get("Ra") or r.get("ra"), None)
+            dec = _safe_float(r.get("Dec") or r.get("DEC") or r.get("dec"), None)
+
+            if not name or ra is None or dec is None:
+                continue
+
+            if not name or ra is None or dec is None:
+                continue
+
+            mag = _safe_float(r.get("Magnitude"), None)
+            info = (r.get("Info") or r.get("Diameter") or "").strip()
+            cat = (r.get("Catalog") or "").strip()
+            typ = (r.get("Type") or r.get("LongType") or "").strip()
+
+            rows.append({
+                "name": name,
+                "ra": float(ra),
+                "dec": float(dec),
+                "mag": mag,       # may be None
+                "info": info,
+                "catalog": cat,
+                "type": typ,
+            })
+
+    # Apply per-kind filtering
+    if kind == "Messier":
+        rows = [r for r in rows if (r.get("catalog") or "").strip().lower() == "messier"]
+    elif kind == "Messier+NGC+IC":
+        keep = {"messier", "ngc", "ic"}
+        rows = [r for r in rows if (r.get("catalog") or "").strip().lower() in keep]
+    elif kind == "All (DSO)":
+        pass
+    elif kind == "Galaxies (Distances)":
+        # already correct file
+        pass
+
+    _CATALOG_CACHE[kind] = rows
+    return rows
+
+
+def _pixel_scale_arcsec(bg_wcs: "WCS") -> Optional[float]:
+    """
+    Approx arcsec/pixel using astropy helper. Works for TAN-ish WCS.
+    """
+    if bg_wcs is None:
+        return None
+    try:
+        # returns degrees/pixel per axis
+        sc = proj_plane_pixel_scales(bg_wcs)  # deg/pix
+        deg_per_pix = float(np.nanmedian(sc))
+        if not np.isfinite(deg_per_pix) or deg_per_pix <= 0:
+            return None
+        return deg_per_pix * 3600.0
+    except Exception:
+        return None
+
+def _draw_dso_overlay(ax, bg_wcs: "WCS", center: "SkyCoord", fov_deg: float, req: FinderChartRequest):
+    """
+    Plot catalog objects within ~0.75*fov radius; declutter via coarse grid.
+    """
+    if bg_wcs is None or center is None:
+        return
+
+    import astropy.units as u
+    from astropy.coordinates import SkyCoord
+
+    rows = _load_catalog_rows(req.dso_catalog)
+    if not rows:
+        return
+
+    ra0 = float(center.ra.deg)
+    dec0 = float(center.dec.deg)
+    radius = float(fov_deg) * 0.75
+
+    c0 = SkyCoord(ra0*u.deg, dec0*u.deg, frame="icrs")
+
+    # filter by radius + mag
+    cand = []
+    for r in rows:
+        if abs(r["dec"] - dec0) > radius + 2.0:
+            continue
+        c1 = SkyCoord(r["ra"]*u.deg, r["dec"]*u.deg, frame="icrs")
+        if c0.separation(c1).deg > radius:
+            continue
+
+        mag = r.get("mag", None)
+        if mag is not None and mag > float(req.dso_mag_limit):
+            continue
+
+        # score: brighter first; unknown mag goes later
+        score = (mag if mag is not None else 99.0)
+        cand.append((score, r))
+
+    if not cand:
+        return
+
+    cand.sort(key=lambda t: t[0])
+    cand = cand[:max(1, int(req.dso_max_labels) * 4)]  # keep a bit extra before declutter
+
+    # project
+    coords = SkyCoord([t[1]["ra"] for t in cand]*u.deg, [t[1]["dec"] for t in cand]*u.deg, frame="icrs")
+    xs, ys = bg_wcs.world_to_pixel(coords)
+
+    # declutter: one label per coarse cell
+    kept = []
+    cell = 34  # px
+    used = set()
+
+    for (t, x, y) in zip(cand, xs, ys):
+        if not (np.isfinite(x) and np.isfinite(y)):
+            continue
+        gx = int(x // cell)
+        gy = int(y // cell)
+        key = (gx, gy)
+        if key in used:
+            continue
+        used.add(key)
+        kept.append((t[1], float(x), float(y)))
+        if len(kept) >= int(req.dso_max_labels):
+            break
+
+    if not kept:
+        return
+
+    # optional size ellipse (Info field, arcmin)
+    arcsec_per_pix = _pixel_scale_arcsec(bg_wcs)
+
+    for (r, x, y) in kept:
+        name = r["name"]
+
+        # marker
+        ax.plot([x], [y], marker="s", markersize=3.5, alpha=0.85, transform=ax.get_transform("pixel"))
+
+        # size ellipse if we can parse it
+        if arcsec_per_pix is not None:
+            sz = _parse_size_arcmin(r.get("info", ""))
+            if sz is not None:
+                w_arcmin, h_arcmin = sz
+                w_px = (w_arcmin * 60.0) / arcsec_per_pix
+                h_px = (h_arcmin * 60.0) / arcsec_per_pix
+                if np.isfinite(w_px) and np.isfinite(h_px) and w_px > 2 and h_px > 2:
+                    try:
+                        from matplotlib.patches import Ellipse
+                        e = Ellipse((x, y), width=w_px, height=h_px, fill=False, linewidth=1.0, alpha=0.7,
+                                    transform=ax.get_transform("pixel"))
+                        ax.add_patch(e)
+                    except Exception:
+                        pass
+
+        # label
+        ax.text(
+            x + 7, y + 5,
+            name,
+            fontsize=9,
+            alpha=0.9,
+            transform=ax.get_transform("pixel"),
+        )
+
+
+def _draw_compass_NE(ax, bg_wcs: "WCS", out_px: int, fov_deg: float):
+    """
+    Draw N/E arrows in the bottom-right using image pixel/data coordinates.
+    Works reliably with WCSAxes.
+    """
+    if bg_wcs is None:
+        return
+
+    import astropy.units as u
+    from astropy.coordinates import SkyCoord
+
+    # place near bottom-right in IMAGE pixel coords
+    cx = out_px * 0.86
+    cy = out_px * 0.12
+    base_len = out_px * 0.09  # pixels
+
+    # choose a small sky step relative to FOV (avoid huge jumps on big FOV)
+    step_deg = max(0.01, min(0.15, float(fov_deg) * 0.08)) * u.deg
+
+    try:
+        csky = bg_wcs.pixel_to_world(out_px * 0.5, out_px * 0.5)
+        ra = csky.ra.to(u.deg)
+        dec = csky.dec.to(u.deg)
+
+        # North: +Dec
+        cn = SkyCoord(ra, dec + step_deg, frame="icrs")
+
+        # East: +RA (compensate a bit for cos(dec))
+        cosd = max(0.15, float(np.cos(dec.to_value(u.rad))))
+        ce = SkyCoord(ra + (step_deg / cosd), dec, frame="icrs")
+
+        x0, y0 = bg_wcs.world_to_pixel(SkyCoord(ra, dec, frame="icrs"))
+        xn, yn = bg_wcs.world_to_pixel(cn)
+        xe, ye = bg_wcs.world_to_pixel(ce)
+
+        vn = np.array([float(xn - x0), float(yn - y0)], dtype=np.float64)
+        ve = np.array([float(xe - x0), float(ye - y0)], dtype=np.float64)
+
+        def _n(v):
+            n = float(np.hypot(v[0], v[1])) or 1.0
+            return v / n
+
+        vn = _n(vn) * base_len
+        ve = _n(ve) * base_len
+
+    except Exception:
+        # fallback: at least show something
+        vn = np.array([0.0, base_len])
+        ve = np.array([base_len, 0.0])
+
+    # Draw in DATA coords (image pixels) — this is the big fix
+    tx = ax.transData
+
+    ax.annotate(
+        "", xy=(cx + ve[0], cy + ve[1]), xytext=(cx, cy),
+        xycoords=tx, textcoords=tx,
+        arrowprops=dict(arrowstyle="->", linewidth=2.2, color="white", alpha=0.95)
+    )
+    ax.annotate(
+        "", xy=(cx + vn[0], cy + vn[1]), xytext=(cx, cy),
+        xycoords=tx, textcoords=tx,
+        arrowprops=dict(arrowstyle="->", linewidth=2.2, color="white", alpha=0.95)
+    )
+
+    bbox = dict(boxstyle="round,pad=0.15", facecolor=(0, 0, 0, 0.55), edgecolor=(1, 1, 1, 0.15))
+
+    ax.text(cx + ve[0] + 6, cy + ve[1] + 2, "E",
+            transform=tx, fontsize=10, color="white", alpha=0.98, bbox=bbox)
+    ax.text(cx + vn[0] + 6, cy + vn[1] + 2, "N",
+            transform=tx, fontsize=10, color="white", alpha=0.98, bbox=bbox)
+
+
+def _draw_scale_bar(ax, bg_wcs: "WCS", out_px: int, fov_deg: float):
+    """
+    Draw a scale bar bottom-left with units + arcsec/pixel.
+    """
+    if bg_wcs is None:
+        return
+
+    arcsec_per_pix = _pixel_scale_arcsec(bg_wcs)
+    if arcsec_per_pix is None:
+        return
+
+    fov_arcmin = float(fov_deg) * 60.0
+    if fov_arcmin >= 240:
+        bar_arcmin = 30
+    elif fov_arcmin >= 120:
+        bar_arcmin = 20
+    elif fov_arcmin >= 60:
+        bar_arcmin = 10
+    else:
+        bar_arcmin = 5
+
+    bar_px = (bar_arcmin * 60.0) / arcsec_per_pix
+    if not np.isfinite(bar_px) or bar_px < 30:
+        return
+
+    x0 = out_px * 0.08
+    y0 = out_px * 0.10
+    x1 = x0 + bar_px
+
+    tx = ax.transData  # BIG FIX
+
+    ax.plot([x0, x1], [y0, y0], linewidth=3, color="white", alpha=0.95, transform=tx)
+    ax.plot([x0, x0], [y0 - 5, y0 + 5], linewidth=2, color="white", alpha=0.95, transform=tx)
+    ax.plot([x1, x1], [y0 - 5, y0 + 5], linewidth=2, color="white", alpha=0.95, transform=tx)
+
+    bbox = dict(boxstyle="round,pad=0.2", facecolor=(0, 0, 0, 0.55), edgecolor=(1, 1, 1, 0.12))
+    ax.text(
+        x0, y0 + 14,
+        f"{bar_arcmin}′  ({arcsec_per_pix:.2f}″/px)",
+        transform=tx,
+        fontsize=10,
+        color="white",
+        alpha=0.98,
+        bbox=bbox
+    )
 
 
 def get_doc_wcs(meta: dict) -> Optional["AstropyWCS"]:
@@ -353,7 +727,7 @@ def _rgb_u8_to_qimage(rgb_u8: np.ndarray) -> QImage:
     # QImage uses the buffer; to be safe, copy via .copy() when making pixmap
     return QImage(rgb_u8.data, w, h, bpl, QImage.Format.Format_RGB888)
 
-def _draw_star_names(ax, bg_wcs: "WCS", center: "SkyCoord", fov_deg: float, *, max_labels: int = 30):
+def _draw_star_names(ax, bg_wcs: "WCS", center: "SkyCoord", fov_deg: float, *, mag_limit: float = 2.0, max_labels: int = 30):
     if bg_wcs is None:
         return
 
@@ -369,6 +743,8 @@ def _draw_star_names(ax, bg_wcs: "WCS", center: "SkyCoord", fov_deg: float, *, m
 
     rows = []
     for (name, ra, dec, vmag) in BRIGHT_STARS:
+        if float(vmag) > float(mag_limit):
+            continue        
         # quick dec prefilter
         if abs(dec - dec0) > radius + 2.0:
             continue
@@ -518,7 +894,31 @@ def render_finder_chart_cached(
     # ---- star names overlay ----
     if getattr(req, "show_star_names", False) and (bg_wcs is not None):
         try:
-            _draw_star_names(ax, bg_wcs, center[0], fov_deg)
+            _draw_star_names(
+                ax, bg_wcs, center[0], fov_deg,
+                mag_limit=float(getattr(req, "star_mag_limit", 2.0)),
+                max_labels=int(getattr(req, "star_max_labels", 30)),
+            )
+        except Exception:
+            pass
+
+    # ---- deep-sky overlay ----
+    if getattr(req, "show_dso", False) and (bg_wcs is not None):
+        try:
+            _draw_dso_overlay(ax, bg_wcs, center[0], fov_deg, req)
+        except Exception:
+            pass
+
+    # ---- compass + scale bar ----
+    if bg_wcs is not None and getattr(req, "show_compass", True):
+        try:
+            _draw_compass_NE(ax, bg_wcs, int(req.out_px), float(fov_deg))
+        except Exception:
+            pass
+
+    if bg_wcs is not None and getattr(req, "show_scale_bar", True):
+        try:
+            _draw_scale_bar(ax, bg_wcs, int(req.out_px), float(fov_deg))
         except Exception:
             pass
 
@@ -565,39 +965,108 @@ class FinderChartDialog(QDialog):
 
         root = QVBoxLayout(self)
 
-        # controls
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Survey:"))
+        # controls row 1 (primary)
+        row1 = QHBoxLayout()
+
+        row1.addWidget(QLabel("Survey:"))
         self.cmb_survey = QComboBox()
         self.cmb_survey.addItems(["DSS2", "Pan-STARRS", "Gaia"])
-        row.addWidget(self.cmb_survey)
+        row1.addWidget(self.cmb_survey)
 
-        row.addSpacing(12)
-        row.addWidget(QLabel("Size:"))
+        row1.addSpacing(12)
+        row1.addWidget(QLabel("Size:"))
         self.cmb_size = QComboBox()
         self.cmb_size.addItems(["2× FOV", "4× FOV", "8× FOV"])
-        row.addWidget(self.cmb_size)
+        row1.addWidget(self.cmb_size)
 
-        row.addSpacing(12)
+        row1.addSpacing(12)
         self.chk_grid = QCheckBox("Show grid")
-        row.addWidget(self.chk_grid)
-        row.addSpacing(6)
-        self.chk_stars = QCheckBox("Star names")
-        row.addWidget(self.chk_stars)
+        row1.addWidget(self.chk_grid)
 
-        row.addSpacing(12)
-        row.addWidget(QLabel("Image opacity:"))
+        row1.addSpacing(12)
+        row1.addWidget(QLabel("Output px:"))
+        self.sb_px = QSpinBox()
+        self.sb_px.setRange(300, 2400)
+        self.sb_px.setSingleStep(100)
+        self.sb_px.setValue(900)
+        row1.addWidget(self.sb_px)
+
+        row1.addStretch(1)
+        self.btn_render = QPushButton("Render")
+        row1.addWidget(self.btn_render)
+
+        root.addLayout(row1)
+
+        # controls row 2 (overlays)
+        row2 = QHBoxLayout()
+
+        self.chk_stars = QCheckBox("Star names")
+        row2.addWidget(self.chk_stars)
+
+        row2.addSpacing(8)
+        row2.addWidget(QLabel("Star ≤"))
+        self.sb_star_mag = QDoubleSpinBox()
+        self.sb_star_mag.setRange(-2.0, 8.0)
+        self.sb_star_mag.setSingleStep(0.5)
+        self.sb_star_mag.setValue(2.0)
+        self.sb_star_mag.setFixedWidth(70)
+        row2.addWidget(self.sb_star_mag)
+
+        row2.addWidget(QLabel("Max"))
+        self.sb_star_max = QSpinBox()
+        self.sb_star_max.setRange(5, 200)
+        self.sb_star_max.setValue(30)
+        self.sb_star_max.setFixedWidth(60)
+        row2.addWidget(self.sb_star_max)
+
+        row2.addSpacing(12)
+        self.chk_dso = QCheckBox("Deep-sky")
+        row2.addWidget(self.chk_dso)
+
+        self.cmb_dso = QComboBox()
+        self.cmb_dso.addItems(["Messier", "Messier+NGC+IC", "All (DSO)", "Galaxies (Distances)"])
+        self.cmb_dso.setFixedWidth(170)
+        row2.addWidget(self.cmb_dso)
+
+        row2.addWidget(QLabel("Mag ≤"))
+        self.sb_dso_mag = QDoubleSpinBox()
+        self.sb_dso_mag.setRange(-2.0, 30.0)
+        self.sb_dso_mag.setSingleStep(0.5)
+        self.sb_dso_mag.setValue(10.0)
+        self.sb_dso_mag.setFixedWidth(70)
+        row2.addWidget(self.sb_dso_mag)
+
+        row2.addWidget(QLabel("Max"))
+        self.sb_dso_max = QSpinBox()
+        self.sb_dso_max.setRange(5, 300)
+        self.sb_dso_max.setValue(30)
+        self.sb_dso_max.setFixedWidth(60)
+        row2.addWidget(self.sb_dso_max)
+
+        row2.addSpacing(12)
+        self.chk_compass = QCheckBox("Compass")
+        self.chk_compass.setChecked(True)
+        row2.addWidget(self.chk_compass)
+
+        self.chk_scale = QCheckBox("Scale bar")
+        self.chk_scale.setChecked(True)
+        row2.addWidget(self.chk_scale)
+
+        row2.addSpacing(12)
+        row2.addWidget(QLabel("Image opacity:"))
         self.sld_opacity = QSlider(Qt.Orientation.Horizontal)
         self.sld_opacity.setRange(0, 100)
-        self.sld_opacity.setValue(35)   # matches default 0.35
+        self.sld_opacity.setValue(35)
         self.sld_opacity.setFixedWidth(140)
-        row.addWidget(self.sld_opacity)
+        row2.addWidget(self.sld_opacity)
 
         self.lbl_opacity = QLabel("35%")
         self.lbl_opacity.setFixedWidth(40)
-        row.addWidget(self.lbl_opacity)
+        row2.addWidget(self.lbl_opacity)
 
-        row.addStretch(1)
+        row2.addStretch(1)
+        root.addLayout(row2)
+
 
         row.addWidget(QLabel("Output px:"))
         self.sb_px = QSpinBox()
@@ -651,6 +1120,17 @@ class FinderChartDialog(QDialog):
         # placeholder so the user sees *something* immediately
         self.lbl.setText("Fetching survey background…")
         self.lbl.setStyleSheet("QLabel { background:#111; border:1px solid #333; color:#ccc; }")
+        self.chk_stars.toggled.connect(lambda _=False: self._schedule_render(force_refetch=False, delay_ms=150))
+        self.sb_star_mag.valueChanged.connect(lambda _=0: self._schedule_render(force_refetch=False, delay_ms=150))
+        self.sb_star_max.valueChanged.connect(lambda _=0: self._schedule_render(force_refetch=False, delay_ms=150))
+
+        self.chk_dso.toggled.connect(lambda _=False: self._schedule_render(force_refetch=False, delay_ms=150))
+        self.cmb_dso.currentIndexChanged.connect(lambda _=0: self._schedule_render(force_refetch=False, delay_ms=150))
+        self.sb_dso_mag.valueChanged.connect(lambda _=0: self._schedule_render(force_refetch=False, delay_ms=150))
+        self.sb_dso_max.valueChanged.connect(lambda _=0: self._schedule_render(force_refetch=False, delay_ms=150))
+
+        self.chk_compass.toggled.connect(lambda _=False: self._schedule_render(force_refetch=False, delay_ms=150))
+        self.chk_scale.toggled.connect(lambda _=False: self._schedule_render(force_refetch=False, delay_ms=150))
 
         self.chk_stars.toggled.connect(lambda _=False: self._schedule_render(force_refetch=False, delay_ms=150))
 
@@ -727,16 +1207,29 @@ class FinderChartDialog(QDialog):
         mult = {0: 2, 1: 4, 2: 8}.get(int(self.cmb_size.currentIndex()), 2)
         show_grid = bool(self.chk_grid.isChecked())
         out_px = int(self.sb_px.value())
-        overlay_opacity = float(getattr(self, "sld_opacity", None).value() if hasattr(self, "sld_opacity") else 35) / 100.0
-        show_star_names = bool(self.chk_stars.isChecked())
+        overlay_opacity = float(self.sld_opacity.value()) / 100.0
+
         return FinderChartRequest(
             survey=survey,
             scale_mult=mult,
             show_grid=show_grid,
-            show_star_names=show_star_names,
+
+            show_star_names=bool(self.chk_stars.isChecked()),
+            star_mag_limit=float(self.sb_star_mag.value()),
+            star_max_labels=int(self.sb_star_max.value()),
+
+            show_dso=bool(self.chk_dso.isChecked()),
+            dso_catalog=str(self.cmb_dso.currentText()),
+            dso_mag_limit=float(self.sb_dso_mag.value()),
+            dso_max_labels=int(self.sb_dso_max.value()),
+
+            show_compass=bool(self.chk_compass.isChecked()),
+            show_scale_bar=bool(self.chk_scale.isChecked()),
+
             out_px=out_px,
             overlay_opacity=overlay_opacity,
         )
+
 
     def _render(self, *, force_refetch: bool = False):
         self._set_busy(True, "Rendering finder chart…")
