@@ -1,9 +1,9 @@
 {
-  "version": "1.8.1.post2",
+  "version": "1.8.2",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.8.1/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.8.1/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.8.1/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.8.2/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.8.2/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.8.2/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.8.1 Major Fix for all users using the Installer Versions. Includes fixes for running cosmic clarity, stacking suite, modulefinder not found error, PIL frozen environment errors, python minor versioning errors, MPS use in the sharpen, denoise, and darkstar engines, prewarm AI cacheing, and many many more issues that came up yesterday."
+  "notes": "Seti Astro Suite Pro V1.8.2 New Tool under Whats In My->Finder Chart. Simple Finder Chart to pull in a sky survey, overlay your image, and show prominent features. Runtime Torch Improvements. Lot's of small optimizations."
 }
