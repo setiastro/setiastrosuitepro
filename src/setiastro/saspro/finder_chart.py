@@ -1067,19 +1067,6 @@ class FinderChartDialog(QDialog):
         row2.addStretch(1)
         root.addLayout(row2)
 
-
-        row.addWidget(QLabel("Output px:"))
-        self.sb_px = QSpinBox()
-        self.sb_px.setRange(300, 2400)
-        self.sb_px.setSingleStep(100)
-        self.sb_px.setValue(900)
-        row.addWidget(self.sb_px)
-
-        self.btn_render = QPushButton("Render")
-        row.addWidget(self.btn_render)
-
-        root.addLayout(row)
-
         # preview
         self.lbl = QLabel()
         self.lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1102,8 +1089,6 @@ class FinderChartDialog(QDialog):
         self.btn_save.clicked.connect(self._save_png)
         self.btn_send.clicked.connect(self._send_to_new_doc)
         self.btn_close.clicked.connect(self.close)
-        # button: immediate + force refetch
-        self.btn_render.clicked.connect(lambda: self._render_now(force_refetch=True))
 
         # grid: debounced (no refetch)
         self.chk_grid.toggled.connect(lambda _=False: self._schedule_render(force_refetch=False, delay_ms=150))
