@@ -19,7 +19,7 @@ try:
 except Exception:  # pragma: no cover
     cv2 = None
 
-from PyQt6.QtCore import Qt, QSize, QEvent, QPointF, QTimer, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QSize, QEvent, QPointF, QTimer
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QSpinBox,
     QCheckBox, QPushButton, QScrollArea, QWidget, QMessageBox, QComboBox,
@@ -38,10 +38,6 @@ from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 # =============================================================================
 #                         Headless ABE Core (poly + RBF)
 # =============================================================================
-
-def _asfloat32(x: np.ndarray) -> np.ndarray:
-    a = np.asarray(x)
-    return a if a.dtype == np.float32 else a.astype(np.float32, copy=False)
 
 def _downsample_area(img: np.ndarray, scale: int) -> np.ndarray:
     if scale <= 1:
@@ -165,7 +161,7 @@ def _gradient_descent_to_dim_spot(image: np.ndarray, x: int, y: int, max_iter: i
     return cx, cy
 
 
-def _generate_sample_points(image: np.ndarray, num_points: int = 100, exclusion_mask: np.ndarray | None = None, patch_size: int = 15, exclusion_fraction: float = 0.5) -> np.ndarray:
+def _generate_sample_points(image: np.ndarray, num_points: int = 100, exclusion_mask: np.ndarray | None = None, patch_size: int = 15) -> np.ndarray:
     H, W = image.shape[:2]
     pts: list[tuple[int, int]] = []
     border = 10
@@ -211,7 +207,7 @@ def _generate_sample_points(image: np.ndarray, num_points: int = 100, exclusion_
     for _, (yslc, xslc, (x0, y0)) in quarts.items():
         sub = image[yslc, xslc]
         gray = _to_luminance(sub)
-        bright_mask = _exclude_bright_regions(gray, exclusion_fraction=exclusion_fraction)
+        bright_mask = _exclude_bright_regions(gray, exclusion_fraction=0.5)
         if exclusion_mask is not None:
             bright_mask &= exclusion_mask[yslc, xslc]
         elig = np.argwhere(bright_mask)
@@ -344,8 +340,6 @@ def abe_run(
     return_background: bool = True,
     progress_cb=None,
     legacy_prestretch: bool = True,   # <-- SASv2 parity switch
-    correction_mode: str = "Subtraction", # "Subtraction" or "Division"
-    exclusion_fraction: float = 0.5,
 ) -> tuple[np.ndarray, np.ndarray] | np.ndarray:
     """Two-stage ABE (poly + optional RBF) with SASv2-compatible pre/post stretch."""
     if image is None:
@@ -415,29 +409,12 @@ def abe_run(
 
         if progress_cb: progress_cb("Combining backgrounds & finalizing…")
         total_bg = (total_bg + bg_rbf).astype(np.float32)
-        
-        if correction_mode == "Division":
-            # Division (Multiplicative) correction
-            # out = (img / bg) * median
-            # avoid division by zero
-            denom = np.where(total_bg <= 1e-6, 1e-6, total_bg)
-            corrected = (img_rgb / denom) * orig_med
-        else:
-            # Subtraction correction
-            corrected = img_rgb - total_bg
-            med2 = float(np.median(corrected))
-            corrected = corrected + (orig_med - med2)
-        
-        corrected = np.clip(corrected, 0.0, 1.0)
+        corrected = img_rgb - total_bg
+        med2 = float(np.median(corrected))
+        corrected = np.clip(corrected + (orig_med - med2), 0.0, 1.0)
     else:
         if progress_cb: progress_cb("Finalizing…")
-        if correction_mode == "Division":
-            denom = np.where(total_bg <= 1e-6, 1e-6, total_bg)
-            corrected = (img_rgb / denom) * orig_med
-        else:
-            corrected = after_poly
-        
-        corrected = np.clip(corrected, 0.0, 1.0)
+        corrected = after_poly
 
     # --- Undo SASv2 modeling domain if used -------------------------------
     if legacy_prestretch and stretch_state is not None:
@@ -495,358 +472,277 @@ def siril_style_autostretch(image: np.ndarray, sigma: float = 3.0) -> np.ndarray
 #                                   UI Dialog
 # =============================================================================
 
-class ABEWorker(QThread):
-    """
-    Worker thread for running ABE in the background.
-    """
-    finished = pyqtSignal(object, object)  # corrected, bg
-    progress = pyqtSignal(str)
-    error = pyqtSignal(str)
-
-    def __init__(self, imgf, deg, npts, dwn, patch, use_rbf, rbf_smooth, excl_mask, corr_mode, exh_frac):
-        super().__init__()
-        self.imgf = imgf
-        self.deg = deg
-        self.npts = npts
-        self.dwn = dwn
-        self.patch = patch
-        self.use_rbf = use_rbf
-        self.rbf_smooth = rbf_smooth
-        self.excl_mask = excl_mask
-        self.corr_mode = corr_mode
-        self.exh_frac = exh_frac
-    
-    def run(self):
-        try:
-            # We must not touch GUI here. abe_run is pure numpy/math.
-            corrected, bg = abe_run(
-                self.imgf,
-                degree=self.deg, num_samples=self.npts, downsample=self.dwn, patch_size=self.patch,
-                use_rbf=self.use_rbf, rbf_smooth=self.rbf_smooth,
-                exclusion_mask=self.excl_mask, return_background=True,
-                correction_mode=self.corr_mode,
-                exclusion_fraction=self.exh_frac,
-                progress_cb=self.progress.emit # Proxy progress callbacks to signal
-            )
-            self.finished.emit(corrected, bg)
-        except Exception as e:
-            self.error.emit(str(e))
+def _asfloat32(x: np.ndarray) -> np.ndarray:
+    a = np.asarray(x)                  # zero-copy view when possible
+    return a if a.dtype == np.float32 else a.astype(np.float32, copy=False)
 
 class ABEDialog(QDialog):
-    def __init__(self, main_window, doc: ImageDocument):
-        super().__init__(main_window)
-        self._main = main_window
-        self.doc = doc
-        self.setWindowTitle("Automatic Background Extraction (ABE)")
-        self.resize(1000, 700)
-        
-        # State
-        self._polygons = []
-        self._drawing_poly = None
+    """
+    Non-destructive preview with polygon exclusions and optional RBF stage.
+    Apply commits to the document image with undo. Optionally spawns a
+    background document containing the extracted gradient.
+    """
+    def __init__(self, parent, document: ImageDocument):
+        super().__init__(parent)
+        self.setWindowTitle(self.tr("Automatic Background Extraction (ABE)"))
+
+        # IMPORTANT: avoid “attached modal sheet” behavior on some Linux WMs
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        # Non-modal: allow user to switch between images while dialog is open
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
+        try:
+            self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        except Exception:
+            pass  # older PyQt6 versions
+
+        self._main = parent
+        self.doc = document
+
+        self._connected_current_doc_changed = False
+        if hasattr(self._main, "currentDocumentChanged"):
+            try:
+                self._main.currentDocumentChanged.connect(self._on_active_doc_changed)
+                self._connected_current_doc_changed = True
+            except Exception:
+                self._connected_current_doc_changed = False
+
         self._preview_scale = 1.0
+        self._preview_qimg = None
+        self._last_preview = None  # backing ndarray for QImage lifetime
+        self._overlay = None
+
+
+        # image-space polygons: list[list[QPointF]] in ORIGINAL IMAGE COORDS
+        self._polygons: list[list[QPointF]] = []
+        self._drawing_poly: list[QPointF] | None = None
         self._panning = False
         self._pan_last = None
-        
-        self._preview_qimg: QImage | None = None
-        self._base_pixmap: QPixmap | None = None
-        self._preview_source_f01: np.ndarray | None = None
-        self._last_preview: np.ndarray | None = None
-        
-        # Worker
-        self._worker = None
-        
-        # State: Default Autostretch ON
-        self._autostretch_on = True
+        self._preview_source_f01 = None 
 
-        # UI Setup
-        self._setup_ui()
+        # ---------------- Controls ----------------
+        self.sp_degree = QSpinBox(); self.sp_degree.setRange(0, 6); self.sp_degree.setValue(2)
+        self.sp_samples = QSpinBox(); self.sp_samples.setRange(20, 10000); self.sp_samples.setSingleStep(20); self.sp_samples.setValue(120)
+        self.sp_down = QSpinBox(); self.sp_down.setRange(1, 32); self.sp_down.setValue(4)
+        self.sp_patch = QSpinBox(); self.sp_patch.setRange(5, 151); self.sp_patch.setSingleStep(2); self.sp_patch.setValue(15)
+        self.chk_use_rbf = QCheckBox(self.tr("Enable RBF refinement (after polynomial)")); self.chk_use_rbf.setChecked(True)
+        self.sp_rbf = QSpinBox(); self.sp_rbf.setRange(0, 1000); self.sp_rbf.setValue(100)  # shown as ×0.01 below
+        self.chk_make_bg_doc = QCheckBox(self.tr("Create background document")); self.chk_make_bg_doc.setChecked(False)
+        self.chk_preview_bg   = QCheckBox(self.tr("Preview background instead of corrected")); self.chk_preview_bg.setChecked(False)
 
-        # Initial data
-        self._populate_initial_preview()
-        
-        # Connections
-        self._connected_current_doc_changed = True
-        if hasattr(self._main, "currentDocumentChanged"):
-            self._main.currentDocumentChanged.connect(self._on_active_doc_changed)
-
-    def _setup_ui(self):
-        main_layout = QHBoxLayout(self)
-        
-        # --- Left: Controls ---
-        ctrl_panel = QWidget()
-        ctrl_layout = QVBoxLayout(ctrl_panel)
-        ctrl_panel.setFixedWidth(300)
-        
-        # Group: Model Parameters
-        grp_param = QGroupBox("Model Parameters")
-        form = QFormLayout(grp_param)
-        
-        self.sp_degree = QSpinBox()
-        self.sp_degree.setRange(0, 6)
-        self.sp_degree.setValue(2)
-        self.sp_degree.setToolTip("Polynomial Degree (0 = Off)")
-        self.sp_degree.valueChanged.connect(self._degree_changed)
-        form.addRow("Degree:", self.sp_degree)
-        
-        self.sp_samples = QSpinBox()
-        self.sp_samples.setRange(10, 10000)
-        self.sp_samples.setValue(100)
-        self.sp_samples.setSingleStep(10)
-        form.addRow("Num Samples:", self.sp_samples)
-        
-        self.sp_down = QSpinBox()
-        self.sp_down.setRange(1, 16)
-        self.sp_down.setValue(4)
-        form.addRow("Downsample:", self.sp_down)
-        
-        self.sp_patch = QSpinBox()
-        self.sp_patch.setRange(5, 50)
-        self.sp_patch.setValue(15)
-        form.addRow("Patch Size:", self.sp_patch)
-        
-        self.sp_tolerance = QSpinBox()
-        self.sp_tolerance.setRange(1, 100)
-        self.sp_tolerance.setValue(50)
-        self.sp_tolerance.setSuffix("%")
-        self.sp_tolerance.setToolTip("Exclude brightest % of pixels from modeling")
-        form.addRow("Exclusion Thr:", self.sp_tolerance)
-        
-        ctrl_layout.addWidget(grp_param)
-        
-        # Group: Correction Method
-        grp_corr = QGroupBox("Correction")
-        v_corr = QVBoxLayout(grp_corr)
-        self.cb_corr_mode = QComboBox()
-        self.cb_corr_mode.addItems(["Subtraction", "Division"])
-        v_corr.addWidget(self.cb_corr_mode)
-        ctrl_layout.addWidget(grp_corr)
-        
-        # Group: RBF Refinement
-        grp_rbf = QGroupBox("RBF Refinement")
-        v_rbf = QVBoxLayout(grp_rbf)
-        
-        self.chk_use_rbf = QCheckBox("Enable RBF")
-        self.chk_use_rbf.setChecked(True)
-        v_rbf.addWidget(self.chk_use_rbf)
-        
-        bg_rbf = QWidget()
-        form_rbf = QFormLayout(bg_rbf)
-        self.sp_rbf = QSpinBox()
-        self.sp_rbf.setRange(1, 500)
-        self.sp_rbf.setValue(30) # 0.30
-        self.sp_rbf.setSuffix(" / 100")
-        form_rbf.addRow("Smoothness:", self.sp_rbf)
-        v_rbf.addWidget(bg_rbf)
-        
-        ctrl_layout.addWidget(grp_rbf)
-        
-        # Group: Options
-        grp_opts = QGroupBox("Output")
-        v_opts = QVBoxLayout(grp_opts)
-        
-        self.chk_make_bg_doc = QCheckBox("Create background document")
-        self.chk_make_bg_doc.setChecked(False)
-        v_opts.addWidget(self.chk_make_bg_doc)
-        
-        self.chk_preview_bg = QCheckBox("Preview Background Model")
-        self.chk_preview_bg.setChecked(False)
-        self.chk_preview_bg.toggled.connect(self._do_preview)
-        v_opts.addWidget(self.chk_preview_bg)
-        
-        ctrl_layout.addWidget(grp_opts)
-        
-        # Status
-        self.lbl_status = QLabel("Ready")
-        self.lbl_status.setStyleSheet("color: #888;")
-        ctrl_layout.addWidget(self.lbl_status)
-        
-        ctrl_layout.addStretch()
-        
-        # Actions
-        h_btn = QHBoxLayout()
-        self.btn_preview = QPushButton("Update Preview")
-        self.btn_preview.clicked.connect(self._do_preview)
-        h_btn.addWidget(self.btn_preview)
-        
-        self.btn_apply = QPushButton("Apply")
-        self.btn_apply.clicked.connect(self._do_apply)
-        h_btn.addWidget(self.btn_apply)
-        
-        ctrl_layout.addLayout(h_btn)
-        
-        self.btn_close = QPushButton("Close")
-        self.btn_close.clicked.connect(self.close)
-        ctrl_layout.addWidget(self.btn_close)
-        
-        # --- Right: Preview ---
-        preview_panel = QWidget()
-        preview_layout = QVBoxLayout(preview_panel)
-        self.preview_area = QWidget() # wrapper
-        
-        # Toolbar
-        tbar = QHBoxLayout()
-        # Use QPushButton with text to ensure they are visible on all systems
-        self.btn_autostr = QPushButton(" Autostretch (On)")
-        self.btn_autostr.setCheckable(True)
-        self.btn_autostr.setChecked(True)
-        self.btn_autostr.clicked.connect(self.autostretch_preview)
-        
-        self.btn_zoom_in = QPushButton("Zoom In (+)")
-        self.btn_zoom_in.clicked.connect(self.zoom_in)
-        self.btn_zoom_out = QPushButton("Zoom Out (-)")
-        self.btn_zoom_out.clicked.connect(self.zoom_out)
-        self.btn_fit = QPushButton("Fit to View")
-        self.btn_fit.clicked.connect(self.fit_to_preview)
-        
-        self.btn_clear_polys = QPushButton("Clear Polys")
-        self.btn_clear_polys.setToolTip("Clear all exclusion polygons")
-        self.btn_clear_polys.clicked.connect(self._clear_polys)
-        
-        tbar.addWidget(QLabel("<b>Preview</b> (Draw polygons to exclude)"))
-        tbar.addStretch()
-        tbar.addWidget(self.btn_autostr)
-        tbar.addWidget(self.btn_clear_polys)
-        tbar.addWidget(self.btn_zoom_in)
-        tbar.addWidget(self.btn_zoom_out)
-        tbar.addWidget(self.btn_fit)
-        
-        preview_layout.addLayout(tbar)
-        
+        # Preview area
+        self.preview_label = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
+        self.preview_label.setMinimumSize(QSize(480, 360))
+        self.preview_label.setScaledContents(False)
         self.preview_scroll = QScrollArea()
-        self.preview_scroll.setWidgetResizable(False) # we manage size
-        self.preview_scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_scroll.setStyleSheet("background-color: #222;")
-        
-        self.preview_label = QLabel()
-        self.preview_label.setMouseTracking(True)
-        self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview_scroll.setWidgetResizable(False)
         self.preview_scroll.setWidget(self.preview_label)
-        
-        preview_layout.addWidget(self.preview_scroll)
-        
-        main_layout.addWidget(ctrl_panel)
-        main_layout.addWidget(preview_panel, stretch=1)
-        
+        self.preview_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.preview_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+        # Buttons
+        self.btn_preview = QPushButton(self.tr("Preview"))
+        self.btn_apply   = QPushButton(self.tr("Apply"))
+        self.btn_close   = QPushButton(self.tr("Close"))
+        self.btn_clear   = QPushButton(self.tr("Clear Exclusions"))
+        self.btn_preview.clicked.connect(self._do_preview)
+        self.btn_apply.clicked.connect(self._do_apply)
+        self.btn_close.clicked.connect(self.close)
+        self.btn_clear.clicked.connect(self._clear_polys)
+
+        # Layout
+        params = QFormLayout()
+        params.addRow(self.tr("Polynomial degree:"), self.sp_degree)
+        params.addRow(self.tr("# sample points:"),   self.sp_samples)
+        params.addRow(self.tr("Downsample factor:"), self.sp_down)
+        params.addRow(self.tr("Patch size (px):"),   self.sp_patch)
+
+        rbf_box = QGroupBox(self.tr("RBF Refinement"))
+        rbf_form = QFormLayout()
+        rbf_form.addRow(self.chk_use_rbf)
+        rbf_form.addRow(self.tr("Smooth (x0.01):"), self.sp_rbf)
+        rbf_box.setLayout(rbf_form)
+
+        opts = QVBoxLayout()
+        opts.addLayout(params)
+        opts.addWidget(rbf_box)
+        opts.addWidget(self.chk_make_bg_doc)
+        opts.addWidget(self.chk_preview_bg)
+        row = QHBoxLayout(); row.addWidget(self.btn_preview); row.addWidget(self.btn_apply); row.addStretch(1)
+        opts.addLayout(row)
+        opts.addWidget(self.btn_clear)
+        opts.addStretch(1)
+
+        # ▼ New status label
+        self.status_label = QLabel("Ready")
+        self.status_label.setWordWrap(True)
+        opts.addWidget(self.status_label)
+
+        opts.addStretch(1)
+
+        # ⬇️ New right-side stack: toolbar row ABOVE the preview
+        right = QVBoxLayout()
+        right.addLayout(self._build_toolbar())      # Zoom In / Out / Fit / Autostretch
+        right.addWidget(self.preview_scroll, 1)     # Preview below the buttons
+
+        main = QHBoxLayout(self)
+        main.addLayout(opts, 0)                     # Left controls
+        main.addLayout(right, 1)                    # Right: buttons above preview
+
+        self._base_pixmap = None  # clean, scaled image with no overlays
+        self.preview_scroll.viewport().installEventFilter(self)
+        self.preview_label.installEventFilter(self)
         self._install_zoom_filters()
+        self._populate_initial_preview()
+        self.sp_degree.valueChanged.connect(self._degree_changed) 
 
-    def _set_status(self, msg: str):
-        self.lbl_status.setText(msg)
-        QApplication.processEvents() # allow immediate update
+        QTimer.singleShot(0, self._post_init_fit_and_stretch)
 
-    def _get_source_float(self) -> np.ndarray | None:
-        """Return the current document's image as float32 [0..1]."""
-        # Robust check: if we have a doc with an image, use it.
-        # Strict validation against DocManager list can be flaky with proxies.
-        if self.doc and hasattr(self.doc, "image") and self.doc.image is not None:
-             return np.asarray(self.doc.image).astype(np.float32, copy=False)
-        return None
+    def _post_init_fit_and_stretch(self) -> None:
+        # Only run if we have an image preview
+        if self._preview_qimg is None:
+            return
+        # Fit to the viewport
+        self.fit_to_preview()
+        # Turn autostretch ON if it's not already
+        if not getattr(self, "_autostretch_on", False):
+            self.autostretch_preview()
 
-    def _degree_changed(self, v: int):
-        if v == 0:
-            self.chk_use_rbf.setChecked(True)
-            self._set_status("Polynomial disabled (degree 0) -> RBF-only.")
-        else:
-            self._set_status("Ready")
+    def _set_status(self, text: str) -> None:
+        self.status_label.setText(text)
+        QApplication.processEvents()
 
-    def _populate_initial_preview(self):
-        src = self._get_source_float()
-        if src is not None:
-             self._set_preview_from_float(src)
-             self.fit_to_preview()
+    def _build_toolbar(self):
+        """
+        Returns a QHBoxLayout with: Zoom In, Zoom Out, Fit, Autostretch.
+        Call: opts.addLayout(self._build_toolbar()) in __init__.
+        """
+        bar = QHBoxLayout()
 
+        # QToolButtons with theme icons
+        self.btn_zoom_in  = themed_toolbtn("zoom-in",        "Zoom In")
+        self.btn_zoom_out = themed_toolbtn("zoom-out",       "Zoom Out")
+        self.btn_fit      = themed_toolbtn("zoom-fit-best",  "Fit to Preview")
+        self.btn_autostr  = themed_toolbtn("color-picker",   "Autostretch")  # pick your preferred icon
+
+        self.btn_zoom_in.clicked.connect(self.zoom_in)
+        self.btn_zoom_out.clicked.connect(self.zoom_out)
+        self.btn_fit.clicked.connect(self.fit_to_preview)
+        self.btn_autostr.clicked.connect(self.autostretch_preview)
+
+        bar.addWidget(self.btn_zoom_in)
+        bar.addWidget(self.btn_zoom_out)
+        bar.addWidget(self.btn_fit)
+        bar.addStretch(1)
+        bar.addWidget(self.btn_autostr)
+        return bar
+
+    # ----- active document change -----
     def _on_active_doc_changed(self, doc):
-        if doc is not self.doc:
-            self._refresh_document_from_active()
-    
-    def _run_abe_async(self, is_preview: bool):
+        """Called when user clicks a different image window."""
+        if doc is None or getattr(doc, "image", None) is None:
+            return
+        self.doc = doc
+        self._polygons.clear()
+        self._drawing_poly = None
+        self._preview_source_f01 = None
+        self._populate_initial_preview()
+
+    # ----- data helpers -----
+    def _get_source_float(self) -> np.ndarray | None:
+        src = np.asarray(self.doc.image)
+        if src is None or src.size == 0:
+            return None
+        if np.issubdtype(src.dtype, np.integer):
+            scale = float(np.iinfo(src.dtype).max)
+            return (src.astype(np.float32) / scale).clip(0.0, 1.0)
+        # float path: do NOT normalize; just clip to [0,1] like Crop does upstream
+        return np.clip(src.astype(np.float32, copy=False), 0.0, 1.0)
+
+    # ----- preview/applier -----
+    def _run_abe(self, excl_mask: np.ndarray | None, progress=None):
         imgf = self._get_source_float()
         if imgf is None:
-            QMessageBox.information(self, "No image", "No image is loaded.")
-            return
-
-        # Disable UI
-        self._set_ui_busy(True)
-        self._set_status("Starting ABE worker...")
-
-        # Params
+            return None, None
         deg   = int(self.sp_degree.value())
         npts  = int(self.sp_samples.value())
         dwn   = int(self.sp_down.value())
         patch = int(self.sp_patch.value())
         use_rbf = bool(self.chk_use_rbf.isChecked())
         rbf_smooth = float(self.sp_rbf.value()) * 0.01
-        corr_mode = str(self.cb_corr_mode.currentText())
-        exh_frac = float(self.sp_tolerance.value()) * 0.01
-        
-        excl = self._build_exclusion_mask() # This is fast enough to do on main thread? (It's drawing polygons on small mask)
-        # Verify overhead of _build_exclusion_mask? It rasterizes polygons. Should be fast.
 
-        self._worker = ABEWorker(imgf, deg, npts, dwn, patch, use_rbf, rbf_smooth, excl, corr_mode, exh_frac)
-        
-        if is_preview:
-            self._worker.finished.connect(self._on_preview_finished)
+        return abe_run(
+            imgf,
+            degree=deg, num_samples=npts, downsample=dwn, patch_size=patch,
+            use_rbf=use_rbf, rbf_smooth=rbf_smooth,
+            exclusion_mask=excl_mask, return_background=True,
+            progress_cb=progress  # ◀️ forward progress
+        )
+
+    def _degree_changed(self, v: int):
+        # Make it clear what 0 means, and default RBF on (can still be unchecked)
+        if v == 0:
+            self.chk_use_rbf.setChecked(True)
+            if hasattr(self, "_set_status"):
+                self._set_status("Polynomial disabled (degree 0) → RBF-only.")
         else:
-            self._worker.finished.connect(self._on_apply_finished)
-            
-        self._worker.progress.connect(self._set_status)
-        self._worker.error.connect(self._on_worker_error)
-        
-        # Ensure cleanup
-        self._worker.finished.connect(lambda: self._set_ui_busy(False))
-        self._worker.error.connect(lambda: self._set_ui_busy(False))
-        self._worker.finished.connect(self._worker.deleteLater)
-        self._worker.error.connect(self._worker.deleteLater)
-        
-        self._worker.start()
+            if hasattr(self, "_set_status"):
+                self._set_status("Ready")
 
-    def _set_ui_busy(self, busy: bool):
-        self.btn_apply.setEnabled(not busy)
-        self.btn_preview.setEnabled(not busy)
-        self.btn_close.setEnabled(not busy)
-        
-        self.sp_degree.setEnabled(not busy)
-        self.sp_samples.setEnabled(not busy)
-        self.sp_down.setEnabled(not busy)
-        self.sp_patch.setEnabled(not busy)
-        self.chk_use_rbf.setEnabled(not busy)
-        self.sp_rbf.setEnabled(not busy)
-        self.chk_make_bg_doc.setEnabled(not busy)
-        self.chk_preview_bg.setEnabled(not busy)
-        
-        if busy:
-            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        else:
-            QApplication.restoreOverrideCursor()
+    def _populate_initial_preview(self):
+        src = self._get_source_float()
+        if src is not None:
+            self._set_preview_pixmap(np.clip(src, 0, 1))
 
-    def _on_worker_error(self, msg):
-        QMessageBox.warning(self, "ABE Error", f"Worker failed: {msg}")
-        self._set_status("Error")
-
-    def _on_preview_finished(self, corrected, bg):
+    def _do_preview(self):
         try:
+            self._set_status("Building exclusion mask…")
+            excl = self._build_exclusion_mask()
+
+            self._set_status("Running ABE preview…")
+            corrected, bg = self._run_abe(excl, progress=self._set_status)
+            if corrected is None:
+                QMessageBox.information(self, "No image", "No image is loaded in the active document.")
+                self._set_status("Ready")
+                return
+
             show = bg if self.chk_preview_bg.isChecked() else corrected
+
+            # ✅ If previewing the corrected image, honor the active mask
             if not self.chk_preview_bg.isChecked():
                 srcf = self._get_source_float()
                 show = self._blend_with_mask_float(show, srcf)
 
-            self._set_status("Rendering preview...")
+            self._set_status("Rendering preview…")
             self._set_preview_pixmap(show)
             self._set_status("Ready")
         except Exception as e:
-             self._on_worker_error(str(e))
+            self._set_status("Error")
+            QMessageBox.warning(self, "Preview failed", str(e))
 
-    def _on_apply_finished(self, corrected, bg):
+    def _do_apply(self):
         try:
-            # Preserve mono vs color
+            self._set_status("Building exclusion mask…")
+            excl = self._build_exclusion_mask()
+
+            self._set_status("Running ABE (apply)…")
+            corrected, bg = self._run_abe(excl, progress=self._set_status)
+            if corrected is None:
+                QMessageBox.information(self, "No image", "No image is loaded in the active document.")
+                self._set_status("Ready")
+                return
+
+            # Preserve mono vs color shape w.r.t. source
             out = corrected
             if out.ndim == 3 and out.shape[2] == 3 and (self.doc.image.ndim == 2 or (self.doc.image.ndim == 3 and self.doc.image.shape[2] == 1)):
                 out = out[..., 0]
 
-            # Blend
+            # ✅ Blend with active mask before committing
             srcf = self._get_source_float()
             out_masked = self._blend_with_mask_float(out, srcf)
 
-            # Metadata/Undo logic
+            # Build step name for undo stack
+            # Build step name + params for undo stack + Replay
             deg   = int(self.sp_degree.value())
             npts  = int(self.sp_samples.value())
             dwn   = int(self.sp_down.value())
@@ -854,27 +750,24 @@ class ABEDialog(QDialog):
             use_rbf = bool(self.chk_use_rbf.isChecked())
             rbf_smooth = float(self.sp_rbf.value()) * 0.01
             make_bg_doc = bool(self.chk_make_bg_doc.isChecked())
-            corr_mode = str(self.cb_corr_mode.currentText())
-            ex_thr = int(self.sp_tolerance.value())
 
             step_name = (
-                f"ABE ({corr_mode}, deg={deg}, samples={npts}, ds={dwn}, patch={patch}, "
-                f"rbf={'on' if use_rbf else 'off'}, s={rbf_smooth:.3f}, excl={ex_thr}%)"
+                f"ABE (deg={deg}, samples={npts}, ds={dwn}, patch={patch}, "
+                f"rbf={'on' if use_rbf else 'off'}, s={rbf_smooth:.3f})"
             )
 
+            # Normalized preset params (same schema as abe_preset.apply_abe_via_preset)
             params = {
-                "mode": corr_mode,
                 "degree": deg,
                 "samples": npts,
                 "downsample": dwn,
                 "patch": patch,
                 "rbf": use_rbf,
                 "rbf_smooth": rbf_smooth,
-                "exclusion_threshold": ex_thr,
                 "make_background_doc": make_bg_doc,
             }
 
-            # Replay memory
+            # 🔁 Remember this as the last headless-style command for Replay
             mw = self.parent()
             try:
                 remember = getattr(mw, "remember_last_headless_command", None)
@@ -882,13 +775,22 @@ class ABEDialog(QDialog):
                     remember = getattr(mw, "_remember_last_headless_command", None)
                 if callable(remember):
                     remember("abe", params, description="Automatic Background Extraction")
+                    try:
+                        if hasattr(mw, "_log"):
+                            mw._log(
+                                f"[Replay] ABE UI apply stored: "
+                                f"command_id='abe', preset_keys={list(params.keys())}"
+                            )
+                    except Exception:
+                        pass
             except Exception:
+                # don’t block the actual ABE apply if remembering fails
                 pass
-            
-            # Mask metadata
+
+            # ✅ mask bookkeeping in metadata
             _marr, mid, mname = self._active_mask_layer()
             abe_meta = dict(params)
-            abe_meta["exclusion"] = "polygons" if self._polygons else "none"
+            abe_meta["exclusion"] = "polygons" if excl is not None else "none"
 
             meta = {
                 "step_name": "ABE",
@@ -898,23 +800,21 @@ class ABEDialog(QDialog):
                 "mask_name": mname,
                 "mask_blend": "m*out + (1-m)*src",
             }
-            
-            if hasattr(self, "_set_status"):
-                self._set_status("Committing edit...")
-            
+
+            self._set_status("Committing edit…")
             self.doc.apply_edit(
                 out_masked.astype(np.float32, copy=False),
                 step_name=step_name,
                 metadata=meta,
             )
 
-            if make_bg_doc and bg is not None:
-                if hasattr(self, "_set_status"):
-                    self._set_status("Creating background document...")
+
+            if self.chk_make_bg_doc.isChecked() and bg is not None:
+                self._set_status("Creating background document…")
                 mw = self.parent()
                 dm = getattr(mw, "docman", None)
                 if dm is not None:
-                    base = os.path.splitext(self.doc.display_name())[0] if self.doc else "Image"
+                    base = os.path.splitext(self.doc.display_name())[0]
                     meta = {
                         "bit_depth": "32-bit floating point",
                         "is_mono": (bg.ndim == 2),
@@ -925,7 +825,7 @@ class ABEDialog(QDialog):
                     if hasattr(mw, "_spawn_subwindow_for"):
                         mw._spawn_subwindow_for(doc_bg)
 
-            # Restore autostretch
+            # Preserve the current view's autostretch state: capture before/restore after
             mw = self.parent()
             prev_autostretch = False
             view = None
@@ -934,29 +834,29 @@ class ABEDialog(QDialog):
                     view = mw.mdi.activeSubWindow().widget()
                     prev_autostretch = bool(getattr(view, "autostretch_enabled", False))
             except Exception:
-                pass
+                prev_autostretch = False
+
 
             if hasattr(mw, "_log"):
                 mw._log(step_name)
 
+            # Restore autostretch state on the view (recompute display) so the
+            # user's display-stretch choice survives the edit.
             try:
                 if view is not None and hasattr(view, "set_autostretch") and callable(view.set_autostretch):
                     view.set_autostretch(prev_autostretch)
             except Exception:
                 pass
 
-            if hasattr(self, "_set_status"):
-                self._set_status("Done")
+            self._set_status("Done")
+            # Dialog stays open so user can apply to other images
+            # Refresh to use the now-active document for next operation
             self.close()
+            return
 
         except Exception as e:
-            self._on_worker_error(str(e))
-
-    def _do_preview(self):
-        self._run_abe_async(is_preview=True)
-
-    def _do_apply(self):
-         self._run_abe_async(is_preview=False)
+            self._set_status("Error")
+            QMessageBox.critical(self, "Apply failed", str(e))
 
     def closeEvent(self, ev):
         # 1) Disconnect active-doc tracking (Fabio hook)
@@ -1323,9 +1223,31 @@ class ABEDialog(QDialog):
         self.preview_label.installEventFilter(self)
         
     def _set_preview_from_float(self, arr: np.ndarray):
-        """Legacy wrapper for _set_preview_pixmap."""
-        self._set_preview_pixmap(arr)
+        if arr is None or arr.size == 0:
+            return
+        a = _asfloat32(arr)
+        self._preview_source_f01 = a  # ← no np.clip
 
+        src_to_show = (hard_autostretch(self._preview_source_f01, target_median=0.5, sigma=2,
+                                        linked=False, use_24bit=True)
+                    if getattr(self, "_autostretch_on", False) else self._preview_source_f01)
+
+        if src_to_show.ndim == 2 or (src_to_show.ndim == 3 and src_to_show.shape[2] == 1):
+            mono = src_to_show if src_to_show.ndim == 2 else src_to_show[..., 0]
+            buf8_mono = (mono * 255.0).astype(np.uint8)               # ← no np.clip
+            buf8_mono = np.ascontiguousarray(buf8_mono)
+            self._last_preview = np.ascontiguousarray(np.stack([buf8_mono]*3, axis=-1))
+            h, w = buf8_mono.shape
+            qimg = QImage(buf8_mono.data, w, h, w, QImage.Format.Format_Grayscale8)
+        else:
+            buf8 = (src_to_show * 255.0).astype(np.uint8)             # ← no np.clip
+            buf8 = np.ascontiguousarray(buf8)
+            self._last_preview = buf8
+            h, w, _ = buf8.shape
+            qimg = QImage(buf8.data, w, h, buf8.strides[0], QImage.Format.Format_RGB888)
+
+        self._preview_qimg = qimg
+        self._update_preview_scaled()
         self._redraw_overlay()
 
     # --- mask helpers ---------------------------------------------------
@@ -1391,22 +1313,53 @@ class ABEDialog(QDialog):
     def autostretch_preview(self, sigma: float = 3.0) -> None:
         """
         Toggle Siril-style MAD autostretch on the *preview only* (non-destructive).
-        Uses the button's checked state to drive the internal status and re-renders.
+        First press applies; second press restores the original preview.
+        Works from the float [0..1] preview source to avoid double-clipping.
         """
-        if self._preview_source_f01 is None:
+        if self._preview_source_f01 is None and self._last_preview is None:
             return
 
-        # Update internal state from button
-        self._autostretch_on = self.btn_autostr.isChecked()
-        
-        # Update text
-        if self._autostretch_on:
-            self.btn_autostr.setText(" Autostretch (On)")
-        else:
-            self.btn_autostr.setText("Autostretch")
-            
-        # Re-render from the float source (which stays clean)
-        self._set_preview_pixmap(self._preview_source_f01)
+        # Lazy init toggle state
+        if not hasattr(self, "_autostretch_on"):
+            self._autostretch_on = False
+        if not hasattr(self, "_orig_preview8"):
+            self._orig_preview8 = None
+
+        def _rebuild_from_last():
+            h, w = self._last_preview.shape[:2]
+            ptr = sip.voidptr(self._last_preview.ctypes.data)
+            qimg = QImage(ptr, w, h, self._last_preview.strides[0], QImage.Format.Format_RGB888)
+            self._preview_qimg = qimg
+            self._update_preview_scaled()
+            self._redraw_overlay()
+
+        # Toggle OFF → restore original preview bytes
+        if self._autostretch_on and self._orig_preview8 is not None:
+            self._last_preview = np.ascontiguousarray(self._orig_preview8)
+            _rebuild_from_last()
+            self._autostretch_on = False
+            if hasattr(self, "btn_autostr"):
+                self.btn_autostr.setText("Autostretch")
+            return
+
+        # Toggle ON → cache original and apply stretch from float source
+        if self._last_preview is not None:
+            self._orig_preview8 = np.ascontiguousarray(self._last_preview)
+
+        # Prefer float source (avoids 8-bit clipping); fall back to decoding _last_preview if needed
+        arr = self._preview_source_f01 if self._preview_source_f01 is not None else (self._last_preview.astype(np.float32)/255.0)
+
+        stretched = hard_autostretch(arr, target_median=0.5, sigma=2, linked=False, use_24bit=True)
+
+        buf8 = (np.clip(stretched, 0.0, 1.0) * 255.0).astype(np.uint8)
+        if buf8.ndim == 2:
+            buf8 = np.stack([buf8] * 3, axis=-1)
+        self._last_preview = np.ascontiguousarray(buf8)
+
+        _rebuild_from_last()
+        self._autostretch_on = True
+        if hasattr(self, "btn_autostr"):
+            self.btn_autostr.setText("Autostretch (On)")
 
 
     def _apply_autostretch_inplace(self, sigma: float = 3.0):
