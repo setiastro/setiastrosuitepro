@@ -118,6 +118,25 @@ def _open_catalog_csv(path: Path):
     # If we get here, decoding failed for all options
     raise last or UnicodeDecodeError("utf-8", b"", 0, 1, "Unknown decode error")
 
+def _canon_catalog_code(name: str, catalog: str) -> str:
+    n = (name or "").strip().upper()
+    c = (catalog or "").strip().upper()
+
+    # --- Sharpless (SH2) ---
+    if c in {"SHARPLESS", "SH2", "SH-2", "SH 2", "SH_2"}:
+        return "SH2"
+    if n.startswith(("SH2-", "SH2 ", "SH-2", "SH 2", "SH_2")):
+        return "SH2"
+
+    # --- Planetary Nebula Galactic (PN-G / PNG) ---
+    if c in {"PNG", "PN-G", "PN G", "PN_G"}:
+        return "PN-G"
+    if n.startswith(("PN-G", "PN G", "PN_G", "PNG ")):
+        return "PN-G"
+
+    # Keep the catalog column as-is for everything else (NGC/IC/Abell/etc.)
+    return c
+
 
 def _load_catalog_rows(kind: str) -> List[Dict[str, Any]]:
     if kind in _CATALOG_CACHE:
@@ -152,8 +171,10 @@ def _load_catalog_rows(kind: str) -> List[Dict[str, Any]]:
 
                 mag  = _safe_float(getk("Magnitude", "MAG", "mag"), None)
                 info = str(getk("Info", "Diameter") or "").strip()
-                cat  = str(getk("Catalog") or "").strip()
                 typ  = str(getk("Type", "LongType") or "").strip()
+                cat  = str(getk("Catalog") or "").strip()
+                name = str(getk("Name", "NAME") or "").strip()
+                canon = _canon_catalog_code(name, cat)
 
                 rows.append({
                     "name": name,
@@ -161,7 +182,8 @@ def _load_catalog_rows(kind: str) -> List[Dict[str, Any]]:
                     "dec": float(dec),
                     "mag": mag,
                     "info": info,
-                    "catalog": cat,
+                    "catalog": cat,          # raw
+                    "catalog_code": canon,   # canonical (used for filtering)
                     "type": typ,
                 })
 
@@ -179,17 +201,18 @@ def _load_catalog_rows(kind: str) -> List[Dict[str, Any]]:
         "NGC": {"NGC"},
         "IC": {"IC"},
         "ABELL": {"ABELL"},
-        "SH2": {"SH2", "SH-2", "SH 2"},
+        "SH2": {"SH2"},
         "LBN": {"LBN"},
         "LDN": {"LDN"},
-        "PN-G": {"PN-G", "PNG", "PN G", "PN_G"},
-        "ALL (DSO)": None,  # no filtering
+        "PN-G": {"PN-G"},
+        "ALL (DSO)": None,
     }
 
     allowed = allowed_map.get(k, None)
 
     def _catcode(row) -> str:
-        return (row.get("catalog") or "").strip().upper()
+        return (row.get("catalog_code") or row.get("catalog") or "").strip().upper()
+
 
     if allowed is not None:
         rows = [r for r in rows if _catcode(r) in allowed]
@@ -227,7 +250,9 @@ def _draw_dso_overlay(ax, bg_wcs: "WCS", center: "SkyCoord", fov_deg: float, req
  
     if not rows:
         return
-
+    out_px = int(getattr(ax.figure, "_sas_out_px", 0) or 0)
+    if out_px <= 0:
+        out_px = int(ax.figure.get_figwidth() * ax.figure.dpi)
     ra0 = float(center.ra.deg)
     dec0 = float(center.dec.deg)
     radius = float(fov_deg) * 0.75
@@ -260,13 +285,18 @@ def _draw_dso_overlay(ax, bg_wcs: "WCS", center: "SkyCoord", fov_deg: float, req
     # project
     coords = SkyCoord([t[1]["ra"] for t in cand]*u.deg, [t[1]["dec"] for t in cand]*u.deg, frame="icrs")
     xs, ys = bg_wcs.world_to_pixel(coords)
-
+    out_px = int(getattr(ax.figure, "_sas_out_px", 0) or 0)
+    if out_px <= 0:
+        out_px = int(ax.figure.get_figwidth() * ax.figure.dpi)
     # declutter: one label per coarse cell
     kept = []
     cell = 34  # px
     used = set()
 
     for (t, x, y) in zip(cand, xs, ys):
+        x = float(x); y = float(y)
+        if not _inside_px(x, y, out_px, pad=0):
+            continue        
         if not (np.isfinite(x) and np.isfinite(y)):
             continue
         gx = int(x // cell)
@@ -328,19 +358,12 @@ def _draw_dso_overlay(ax, bg_wcs: "WCS", center: "SkyCoord", fov_deg: float, req
                         pass
 
         # label
-        t = ax.text(
-            x + 7, y + 5,
-            name,
-            fontsize=9,
-            color="white",          # <-- IMPORTANT (default is black)
-            alpha=0.95,
-            transform=ax.get_transform("pixel"),
+        _place_label_inside(
+            ax, x, y, name,
+            dx=7, dy=5, fontsize=9,
+            color="white", alpha=0.95, outline=True,
+            out_px=out_px, pad=4
         )
-        t.set_path_effects([
-            pe.Stroke(linewidth=2.0, foreground=(0, 0, 0, 0.85)),
-            pe.Normal(),
-        ])
-
 
 def _draw_compass_NE(ax, bg_wcs: "WCS", out_px: int, fov_deg: float):
     """
@@ -543,6 +566,104 @@ def estimate_fov_deg(corners: "AstropySkyCoord") -> Tuple[float, float]:
     height = 0.5 * (h1 + h2)
 
     return float(width), float(height)
+
+def _wcs_shift_for_crop(w: WCS, x0: int, y0: int) -> WCS:
+    """
+    Return a copy of WCS adjusted for cropping (x0,y0) pixels off left/bottom.
+    Array pixels are 0-based; FITS WCS CRPIX is 1-based, but the shift is the same in pixels.
+    """
+    if w is None:
+        return None
+    try:
+        wc = w.deepcopy()
+        # CRPIX is in pixel units; subtract crop origin
+        wc.wcs.crpix = np.array(wc.wcs.crpix, dtype=float) - np.array([float(x0), float(y0)], dtype=float)
+        return wc
+    except Exception:
+        return w
+
+
+def _crop_center(bg_rgb01: np.ndarray, bg_wcs: Optional[WCS], out_px: int):
+    """
+    Center-crop bg to (out_px,out_px). Returns (cropped_bg, cropped_wcs, (x0,y0)).
+    """
+    H, W = bg_rgb01.shape[:2]
+    out_px = int(out_px)
+    if out_px <= 0 or out_px > min(H, W):
+        return bg_rgb01, bg_wcs, (0, 0)
+
+    x0 = int((W - out_px) // 2)
+    y0 = int((H - out_px) // 2)
+
+    crop = bg_rgb01[y0:y0 + out_px, x0:x0 + out_px, :]
+    wc = _wcs_shift_for_crop(bg_wcs, x0, y0) if bg_wcs is not None else None
+    return crop, wc, (x0, y0)
+
+def _inside_px(x: float, y: float, out_px: int, pad: int = 0) -> bool:
+    if not (np.isfinite(x) and np.isfinite(y)):
+        return False
+    return (-pad) <= x <= (out_px - 1 + pad) and (-pad) <= y <= (out_px - 1 + pad)
+
+def _place_label_inside(ax, x, y, text, *, dx=6, dy=4, fontsize=9,
+                        color="white", alpha=0.95, outline=True,
+                        out_px=900, pad=3):
+    """
+    Place a label near (x,y) but ensure its bounding box stays inside [0,out_px).
+    Returns Text or None.
+    """
+    # First try: preferred offset (right/up)
+    t = ax.text(
+        x + dx, y + dy, text,
+        fontsize=fontsize, color=color, alpha=alpha,
+        transform=ax.get_transform("pixel"),
+        clip_on=True,
+    )
+    if outline:
+        t.set_path_effects([pe.Stroke(linewidth=2.0, foreground=(0, 0, 0, 0.85)), pe.Normal()])
+
+    # Need a renderer to compute bbox in pixels
+    fig = ax.figure
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+
+    bb = t.get_window_extent(renderer=renderer)
+
+    # Convert chart pixel coords -> display coords for clamping
+    # since we used transform("pixel"), data units are already pixel-ish; easiest: clamp in data space
+    # But bbox is in display coords; compute how far outside in display, then adjust in data.
+    # We'll approximate by clamping in *data* by converting two points.
+    inv = ax.get_transform("pixel").inverted()
+
+    # Bbox corners in display -> data (pixel) coords
+    (x0, y0) = inv.transform((bb.x0, bb.y0))
+    (x1, y1) = inv.transform((bb.x1, bb.y1))
+
+    shift_x = 0.0
+    shift_y = 0.0
+
+    if x0 < pad:
+        shift_x += (pad - x0)
+    if x1 > (out_px - pad):
+        shift_x -= (x1 - (out_px - pad))
+    if y0 < pad:
+        shift_y += (pad - y0)
+    if y1 > (out_px - pad):
+        shift_y -= (y1 - (out_px - pad))
+
+    if shift_x != 0.0 or shift_y != 0.0:
+        # Apply shift
+        t.set_position((x + dx + shift_x, y + dy + shift_y))
+        fig.canvas.draw()
+
+        # Re-check; if still outside badly (can happen near corners), just drop it
+        bb2 = t.get_window_extent(renderer=renderer)
+        (xx0, yy0) = inv.transform((bb2.x0, bb2.y0))
+        (xx1, yy1) = inv.transform((bb2.x1, bb2.y1))
+        if (xx0 < 0) or (yy0 < 0) or (xx1 > out_px) or (yy1 > out_px):
+            t.remove()
+            return None
+
+    return t
 
 
 def _survey_to_hips_id(label: str) -> str:
@@ -812,33 +933,43 @@ def _draw_star_names(ax, bg_wcs: "WCS", center: "SkyCoord", fov_deg: float, *, m
     coords = SkyCoord([r[1] for r in rows]*u.deg, [r[2] for r in rows]*u.deg, frame="icrs")
     xs, ys = bg_wcs.world_to_pixel(coords)
 
-    # 4) Anti-clutter: keep only one label per cell in a coarse grid
-    #    (fast, good enough, avoids “wall of text”)
+    out_px = int(getattr(ax.figure, "_sas_out_px", 0) or 0)
+    if out_px <= 0:
+        # fallback if not set
+        out_px = int(ax.figure.get_figwidth() * ax.figure.dpi)
+
+    # 4) Bounds + declutter: only consider points inside the final square
     kept = []
-    cell = 28  # px, tweak to taste
+    cell = 28
     used = set()
 
     for (row, x, y) in zip(rows, xs, ys):
-        if not (np.isfinite(x) and np.isfinite(y)):
+        if not _inside_px(float(x), float(y), out_px, pad=0):
             continue
-        gx = int(x // cell)
-        gy = int(y // cell)
+
+        gx = int(float(x) // cell)
+        gy = int(float(y) // cell)
         key = (gx, gy)
         if key in used:
             continue
         used.add(key)
         kept.append((row[0], float(x), float(y), row[3]))
+        if len(kept) >= int(max_labels):
+            break
 
-    # 5) Draw
+    # 5) Draw (markers + labels kept inside)
     for (name, x, y, vmag) in kept:
-        # marker
-        ax.plot(
-            [x], [y],
-            marker="o",
-            markersize=2.5,
-            alpha=0.85,
-            color="#ffb000",  # orange
-            transform=ax.get_transform("pixel"),
+        ax.plot([x], [y],
+                marker="o", markersize=2.5, alpha=0.85,
+                color="#ffb000",
+                transform=ax.get_transform("pixel"),
+                clip_on=True)
+
+        _place_label_inside(
+            ax, x, y, name,
+            dx=6, dy=4, fontsize=9,
+            color="#ffb000", alpha=0.95, outline=True,
+            out_px=out_px, pad=4
         )
 
         # label (orange + thin black outline)
@@ -874,6 +1005,7 @@ def render_finder_chart_cached(
     import matplotlib.pyplot as plt
 
     fig = plt.figure(figsize=(req.out_px / 100.0, req.out_px / 100.0), dpi=100)
+    fig._sas_out_px = int(req.out_px)
 
     # Use WCSAxes when we have bg_wcs so we can draw RA/Dec labels & grid properly
     if bg_wcs is not None:
@@ -1283,24 +1415,46 @@ class FinderChartDialog(QDialog):
         return doc_wcs, corners, center, float(fov)
 
     def _ensure_hips_background(self, req: FinderChartRequest, center: SkyCoord, fov_deg: float, *, force: bool = False):
-        # Key only on fetch-driving inputs
+        # Overscan factor: enough to cover the half-diagonal circle of the final square
+        # sqrt(2) covers exactly; add a hair for safety near edges.
+        s = float(math.sqrt(2.0) * 1.02)
+
+        out_px = int(req.out_px)
+        fetch_px = int(math.ceil(out_px * s))
+
+        # IMPORTANT: scale FOV by the same factor so arcsec/px stays the same
+        fetch_fov = float(fov_deg) * s
+
+        # Cache key must reflect the *fetch* parameters, not just final output
         key = (
             str(req.survey),
-            int(req.out_px),
+            int(fetch_px),
             round(float(center.ra.deg), 8),
             round(float(center.dec.deg), 8),
-            round(float(fov_deg), 8),
+            round(float(fetch_fov), 8),
         )
 
         if (not force) and (self._hips_cache_key == key) and (self._hips_bg is not None):
-            return  # cache hit
+            return
 
-        bg, bg_wcs, err = try_fetch_hips_cutout(center, fov_deg=fov_deg, out_px=req.out_px, survey_label=req.survey)
+        bg_big, wcs_big, err = try_fetch_hips_cutout(
+            center,
+            fov_deg=fetch_fov,
+            out_px=fetch_px,
+            survey_label=req.survey,
+        )
+
+        if bg_big is not None:
+            # Crop back down to the user-requested size, and shift WCS accordingly
+            bg, wcs_cropped, _ = _crop_center(bg_big, wcs_big, out_px)
+        else:
+            bg, wcs_cropped = None, None
 
         self._hips_cache_key = key
         self._hips_bg = bg
-        self._hips_wcs = bg_wcs
+        self._hips_wcs = wcs_cropped
         self._hips_err = err
+
 
     def _doc_key(self, img: np.ndarray, meta: dict) -> tuple:
         # cheap-ish: shape + metadata wcs fingerprint (or header checksum if you have one)
