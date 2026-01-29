@@ -1526,8 +1526,12 @@ def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = 
                 # 1) PixInsight astrometric solution (fallback only)
                 try:
                     if not all(k in hdr for k in ("CRPIX1","CRPIX2","CRVAL1","CRVAL2")):
-                        ref_img = props['PCL:AstrometricSolution:ReferenceImageCoordinates']['value']
-                        ref_sky = props['PCL:AstrometricSolution:ReferenceCelestialCoordinates']['value']
+                        p_img = props['PCL:AstrometricSolution:ReferenceImageCoordinates']
+                        p_sky = props['PCL:AstrometricSolution:ReferenceCelestialCoordinates']
+                        
+                        # Resolve lazy properties (decode base64/binary)
+                        ref_img = xisf.resolve_property(p_img)
+                        ref_sky = xisf.resolve_property(p_sky)
 
                         # Some files store extra values; only first two are CRPIX/CRVAL
                         im0, im1 = float(ref_img[0]), float(ref_img[1])
@@ -1547,7 +1551,9 @@ def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = 
                 # 2) CD matrix (fallback only)
                 try:
                     if not all(k in hdr for k in ("CD1_1","CD1_2","CD2_1","CD2_2")):
-                        lin = np.asarray(props['PCL:AstrometricSolution:LinearTransformationMatrix']['value'], float)
+                        p_mat = props['PCL:AstrometricSolution:LinearTransformationMatrix']
+                        lin = np.asarray(xisf.resolve_property(p_mat), float)
+                        
                         hdr['CD1_1'], hdr['CD1_2'] = float(lin[0,0]), float(lin[0,1])
                         hdr['CD2_1'], hdr['CD2_2'] = float(lin[1,0]), float(lin[1,1])
                         _filled |= {'CD1_1','CD1_2','CD2_1','CD2_2'}

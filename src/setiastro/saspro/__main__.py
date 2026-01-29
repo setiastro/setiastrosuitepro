@@ -584,11 +584,11 @@ def _bootstrap_imports():
     # ----------------------------------------
     # Third-party imports
     # ----------------------------------------
-    import numpy as np
+    # numpy deferred to modules that need it
 
-    _update_splash(QCoreApplication.translate("Splash", "Loading image libraries..."), 20)
-    from tifffile import imwrite
-    from setiastro.saspro.xisf import XISF
+
+    # Image libraries (tifffile, XISF) deferred
+
 
     _update_splash(QCoreApplication.translate("Splash", "Configuring matplotlib..."), 25)
     from setiastro.saspro.config_bootstrap import ensure_mpl_config_dir
@@ -667,20 +667,11 @@ def _bootstrap_imports():
         install_crash_handlers,
     )
 
-    _update_splash(QCoreApplication.translate("Splash", "Loading reproject library..."), 35)
+    # reproject deferred
 
-    try:
-        from reproject import reproject_interp
-    except ImportError:
-        reproject_interp = None
 
-    _update_splash(QCoreApplication.translate("Splash", "Loading OpenCV..."), 40)
+    # OpenCV deferred
 
-    try:
-        import cv2
-        OPENCV_AVAILABLE = True
-    except ImportError:
-        OPENCV_AVAILABLE = False
 
     _update_splash(QCoreApplication.translate("Splash", "Loading PyQt6 components..."), 45)
 

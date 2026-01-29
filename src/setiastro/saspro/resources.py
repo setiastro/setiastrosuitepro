@@ -400,244 +400,183 @@ def get_data_path(name: str) -> str:
 
 # Legacy compatibility: export paths as module-level variables
 # These match the original variable names in setiastrosuitepro.py
-def _init_legacy_paths():
-    """Initialize legacy path variables for backward compatibility."""
-    return {
-        'icon_path': get_icon_path('astrosuitepro.png'),
-        'windowslogo_path': get_icon_path('astrosuitepro.ico'),
-        'green_path': get_icon_path('green.png'),
-        'neutral_path': get_icon_path('neutral.png'),
-        'whitebalance_path': get_icon_path('whitebalance.png'),
-        'texture_clarity_path': get_icon_path('TextureClarity.svg'),
-        'morpho_path': get_icon_path('morpho.png'),
-        'clahe_path': get_icon_path('clahe.png'),
-        'starnet_path': get_icon_path('starnet.png'),
-        'staradd_path': get_icon_path('staradd.png'),
-        'LExtract_path': get_icon_path('LExtract.png'),
-        'LInsert_path': get_icon_path('LInsert.png'),
-        'slot0_path': get_icon_path('slot0.png'),
-        'slot1_path': get_icon_path('slot1.png'),
-        'slot2_path': get_icon_path('slot2.png'),
-        'slot3_path': get_icon_path('slot3.png'),
-        'slot4_path': get_icon_path('slot4.png'),
-        'slot5_path': get_icon_path('slot5.png'),
-        'slot6_path': get_icon_path('slot6.png'),
-        'slot7_path': get_icon_path('slot7.png'),
-        'slot8_path': get_icon_path('slot8.png'),
-        'slot9_path': get_icon_path('slot9.png'),
-        'acv_icon_path': get_icon_path('acv_icon.png'),
 
-        'moon_new_path': get_icon_path('new_moon.png'),
-        'moon_waxing_crescent_1_path': get_icon_path('waxing_crescent_1.png'),
-        'moon_waxing_crescent_2_path': get_icon_path('waxing_crescent_2.png'),
-        'moon_waxing_crescent_3_path': get_icon_path('waxing_crescent_3.png'),
-        'moon_waxing_crescent_4_path': get_icon_path('waxing_crescent_4.png'),
-        'moon_waxing_crescent_5_path': get_icon_path('waxing_crescent_5.png'),
+# Map definitions (lazy)
+_LEGACY_MAP = {
+    'icon_path': 'astrosuitepro.png',
+    'windowslogo_path': 'astrosuitepro.ico',
+    'green_path': 'green.png',
+    'neutral_path': 'neutral.png',
+    'whitebalance_path': 'whitebalance.png',
+    'texture_clarity_path': 'TextureClarity.svg',
+    'morpho_path': 'morpho.png',
+    'clahe_path': 'clahe.png',
+    'starnet_path': 'starnet.png',
+    'staradd_path': 'staradd.png',
+    'LExtract_path': 'LExtract.png',
+    'LInsert_path': 'LInsert.png',
+    'slot0_path': 'slot0.png',
+    'slot1_path': 'slot1.png',
+    'slot2_path': 'slot2.png',
+    'slot3_path': 'slot3.png',
+    'slot4_path': 'slot4.png',
+    'slot5_path': 'slot5.png',
+    'slot6_path': 'slot6.png',
+    'slot7_path': 'slot7.png',
+    'slot8_path': 'slot8.png',
+    'slot9_path': 'slot9.png',
+    'acv_icon_path': 'acv_icon.png',
 
-        'moon_first_quarter_path': get_icon_path('first_quarter.png'),
+    'moon_new_path': 'new_moon.png',
+    'moon_waxing_crescent_1_path': 'waxing_crescent_1.png',
+    'moon_waxing_crescent_2_path': 'waxing_crescent_2.png',
+    'moon_waxing_crescent_3_path': 'waxing_crescent_3.png',
+    'moon_waxing_crescent_4_path': 'waxing_crescent_4.png',
+    'moon_waxing_crescent_5_path': 'waxing_crescent_5.png',
 
-        'moon_waxing_gibbous_1_path': get_icon_path('waxing_gibbous_1.png'),
-        'moon_waxing_gibbous_2_path': get_icon_path('waxing_gibbous_2.png'),
-        'moon_waxing_gibbous_3_path': get_icon_path('waxing_gibbous_3.png'),
-        'moon_waxing_gibbous_4_path': get_icon_path('waxing_gibbous_4.png'),
-        'moon_waxing_gibbous_5_path': get_icon_path('waxing_gibbous_5.png'),
+    'moon_first_quarter_path': 'first_quarter.png',
 
-        'moon_full_path': get_icon_path('full_moon.png'),
+    'moon_waxing_gibbous_1_path': 'waxing_gibbous_1.png',
+    'moon_waxing_gibbous_2_path': 'waxing_gibbous_2.png',
+    'moon_waxing_gibbous_3_path': 'waxing_gibbous_3.png',
+    'moon_waxing_gibbous_4_path': 'waxing_gibbous_4.png',
+    'moon_waxing_gibbous_5_path': 'waxing_gibbous_5.png',
 
-        'moon_waning_gibbous_1_path': get_icon_path('waning_gibbous_1.png'),
-        'moon_waning_gibbous_2_path': get_icon_path('waning_gibbous_2.png'),
-        'moon_waning_gibbous_3_path': get_icon_path('waning_gibbous_3.png'),
-        'moon_waning_gibbous_4_path': get_icon_path('waning_gibbous_4.png'),
-        'moon_waning_gibbous_5_path': get_icon_path('waning_gibbous_5.png'),
+    'moon_full_path': 'full_moon.png',
 
-        'moon_last_quarter_path': get_icon_path('last_quarter.png'),
+    'moon_waning_gibbous_1_path': 'waning_gibbous_1.png',
+    'moon_waning_gibbous_2_path': 'waning_gibbous_2.png',
+    'moon_waning_gibbous_3_path': 'waning_gibbous_3.png',
+    'moon_waning_gibbous_4_path': 'waning_gibbous_4.png',
+    'moon_waning_gibbous_5_path': 'waning_gibbous_5.png',
 
-        'moon_waning_crescent_1_path': get_icon_path('waning_crescent_1.png'),
-        'moon_waning_crescent_2_path': get_icon_path('waning_crescent_2.png'),
-        'moon_waning_crescent_3_path': get_icon_path('waning_crescent_3.png'),
-        'moon_waning_crescent_4_path': get_icon_path('waning_crescent_4.png'),
-        'moon_waning_crescent_5_path': get_icon_path('waning_crescent_5.png'),
+    'moon_last_quarter_path': 'last_quarter.png',
 
-        'rgbcombo_path': get_icon_path('rgbcombo.png'),
-        'rgbextract_path': get_icon_path('rgbextract.png'),
-        'copyslot_path': get_icon_path('copyslot.png'),
-        'graxperticon_path': get_icon_path('graxpert.png'),
-        'cropicon_path': get_icon_path('cropicon.png'),
-        'openfile_path': get_icon_path('openfile.png'),
-        'abeicon_path': get_icon_path('abeicon.png'),
-        'undoicon_path': get_icon_path('undoicon.png'),
-        'redoicon_path': get_icon_path('redoicon.png'),
-        'blastericon_path': get_icon_path('blaster.png'),
-        'clonestampicon_path': get_icon_path('clonestamp.png'),
-        'hdr_path': get_icon_path('hdr.png'),
-        'invert_path': get_icon_path('invert.png'),
-        'fliphorizontal_path': get_icon_path('fliphorizontal.png'),
-        'flipvertical_path': get_icon_path('flipvertical.png'),
-        'rotateclockwise_path': get_icon_path('rotateclockwise.png'),
-        'rotatecounterclockwise_path': get_icon_path('rotatecounterclockwise.png'),
-        'rotate180_path': get_icon_path('rotate180.png'),
-        'rotatearbitrary_path': get_icon_path('rotatearbitrary.png'),
-        'maskcreate_path': get_icon_path('maskcreate.png'),
-        'maskapply_path': get_icon_path('maskapply.png'),
-        'maskremove_path': get_icon_path('maskremove.png'),
-        'pixelmath_path': get_icon_path('pixelmath.png'),
-        'histogram_path': get_icon_path('histogram.png'),
-        'mosaic_path': get_icon_path('mosaic.png'),
-        'rescale_path': get_icon_path('rescale.png'),
-        'staralign_path': get_icon_path('staralign.png'),
-        'mask_path': get_icon_path('maskapply.png'),
-        'platesolve_path': get_icon_path('platesolve.png'),
-        'psf_path': get_icon_path('psf.png'),
-        'supernova_path': get_icon_path('supernova.png'),
-        'starregistration_path': get_icon_path('starregistration.png'),
-        'stacking_path': get_icon_path('stacking.png'),
-        'pedestal_icon_path': get_icon_path('pedestal.png'),
-        'starspike_path': get_icon_path('starspike.png'),
-        'astrospike_path': get_icon_path('Astro_Spikes.png'),
-        'aperture_path': get_icon_path('aperture.png'),
-        'jwstpupil_path': get_icon_path('jwstpupil.png'),
-        'signature_icon_path': get_icon_path('pen.png'),
-        'livestacking_path': get_icon_path('livestacking.png'),
-        'hrdiagram_path': get_icon_path('HRDiagram.png'),
-        'convoicon_path': get_icon_path('convo.png'),
-        'spcc_icon_path': get_icon_path('spcc.png'),
-        'sasp_data_path': get_data_path('data/SASP_data.fits'),
-        'exoicon_path': get_icon_path('exoicon.png'),
-        'peeker_icon': get_icon_path('gridicon.png'),
-        'dse_icon_path': get_icon_path('dse.png'),
-        'astrobin_filters_csv_path': get_data_path('data/catalogs/astrobin_filters.csv'),
-        'isophote_path': get_icon_path('isophote.png'),
-        'statstretch_path': get_icon_path('statstretch.png'),
-        'starstretch_path': get_icon_path('starstretch.png'),
-        'curves_path': get_icon_path('curves.png'),
-        'disk_path': get_icon_path('disk.png'),
-        'uhs_path': get_icon_path('uhs.png'),
-        'blink_path': get_icon_path('blink.png'),
-        'ppp_path': get_icon_path('ppp.png'),
-        'nbtorgb_path': get_icon_path('nbtorgb.png'),
-        'freqsep_path': get_icon_path('freqsep.png'),
-        'multiscale_decomp_path': get_icon_path('multiscale_decomp.png'),
-        'contsub_path': get_icon_path('contsub.png'),
-        'halo_path': get_icon_path('halo.png'),
-        'cosmic_path': get_icon_path('cosmic.png'),
-        'satellite_path': get_icon_path('cosmicsat.png'),
-        'imagecombine_path': get_icon_path('imagecombine.png'),
-        'wrench_path': get_icon_path('wrench_icon.png'),
-        'eye_icon_path': get_icon_path('eye.png'),
-        'disk_icon_path': get_icon_path('disk.png'),
-        'nuke_path': get_icon_path('nuke.png'),
-        'hubble_path': get_icon_path('hubble.png'),
-        'collage_path': get_icon_path('collage.png'),
-        'annotated_path': get_icon_path('annotated.png'),
-        'colorwheel_path': get_icon_path('colorwheel.png'),
-        'narrowbandnormalization_path': get_icon_path('narrowbandnormalization.png'),
-        'font_path': get_icon_path('font.png'),
-        'csv_icon_path': get_icon_path('cvs.png'),
-        'spinner_path': get_data_path('spinner.gif'),
-        'wims_path': get_icon_path('wims.png'),
-        'wimi_path': get_icon_path('wimi_icon_256x256.png'),
-        'linearfit_path': get_icon_path('linearfit.png'),
-        'debayer_path': get_icon_path('debayer.png'),
-        'aberration_path': get_icon_path('aberration.png'),
-        'functionbundles_path': get_icon_path('functionbundle.png'),
-        'planetarystacker_path': get_icon_path('planetarystacker.png'),
-        'viewbundles_path': get_icon_path('viewbundle.png'),
-        'selectivecolor_path': get_icon_path('selectivecolor.png'),
-        'rgbalign_path': get_icon_path('rgbalign.png'),
-        'background_path': get_icon_path('background.png'), 
-        'script_icon_path': get_icon_path('script.png'),
-        'planetprojection_path': get_icon_path('3dplanet.png'),
-        'finderchart_path': get_icon_path('finderchart.png'),
-    }
+    'moon_waning_crescent_1_path': 'waning_crescent_1.png',
+    'moon_waning_crescent_2_path': 'waning_crescent_2.png',
+    'moon_waning_crescent_3_path': 'waning_crescent_3.png',
+    'moon_waning_crescent_4_path': 'waning_crescent_4.png',
+    'moon_waning_crescent_5_path': 'waning_crescent_5.png',
 
-class Resources:
+    'rgbcombo_path': 'rgbcombo.png',
+    'rgbextract_path': 'rgbextract.png',
+    'copyslot_path': 'copyslot.png',
+    'graxperticon_path': 'graxpert.png',
+    'cropicon_path': 'cropicon.png',
+    'openfile_path': 'openfile.png',
+    'abeicon_path': 'abeicon.png',
+    'undoicon_path': 'undoicon.png',
+    'redoicon_path': 'redoicon.png',
+    'blastericon_path': 'blaster.png',
+    'clonestampicon_path': 'clonestamp.png',
+    'hdr_path': 'hdr.png',
+    'invert_path': 'invert.png',
+    'fliphorizontal_path': 'fliphorizontal.png',
+    'flipvertical_path': 'flipvertical.png',
+    'rotateclockwise_path': 'rotateclockwise.png',
+    'rotatecounterclockwise_path': 'rotatecounterclockwise.png',
+    'rotate180_path': 'rotate180.png',
+    'rotatearbitrary_path': 'rotatearbitrary.png',
+    'maskcreate_path': 'maskcreate.png',
+    'maskapply_path': 'maskapply.png',
+    'maskremove_path': 'maskremove.png',
+    'pixelmath_path': 'pixelmath.png',
+    'histogram_path': 'histogram.png',
+    'mosaic_path': 'mosaic.png',
+    'rescale_path': 'rescale.png',
+    'staralign_path': 'staralign.png',
+    'mask_path': 'maskapply.png',
+    'platesolve_path': 'platesolve.png',
+    'psf_path': 'psf.png',
+    'supernova_path': 'supernova.png',
+    'starregistration_path': 'starregistration.png',
+    'stacking_path': 'stacking.png',
+    'pedestal_icon_path': 'pedestal.png',
+    'starspike_path': 'starspike.png',
+    'astrospike_path': 'Astro_Spikes.png',
+    'aperture_path': 'aperture.png',
+    'jwstpupil_path': 'jwstpupil.png',
+    'signature_icon_path': 'pen.png',
+    'livestacking_path': 'livestacking.png',
+    'hrdiagram_path': 'HRDiagram.png',
+    'convoicon_path': 'convo.png',
+    'spcc_icon_path': 'spcc.png',
+    # Data paths need special handling if they are not in _LEGACY_MAP as simple PNGs
+    'exoicon_path': 'exoicon.png',
+    'peeker_icon': 'gridicon.png',
+    'dse_icon_path': 'dse.png',
+    'isophote_path': 'isophote.png',
+    'statstretch_path': 'statstretch.png',
+    'starstretch_path': 'starstretch.png',
+    'curves_path': 'curves.png',
+    'disk_path': 'disk.png',
+    'uhs_path': 'uhs.png',
+    'blink_path': 'blink.png',
+    'ppp_path': 'ppp.png',
+    'nbtorgb_path': 'nbtorgb.png',
+    'freqsep_path': 'freqsep.png',
+    'multiscale_decomp_path': 'multiscale_decomp.png',
+    'contsub_path': 'contsub.png',
+    'halo_path': 'halo.png',
+    'cosmic_path': 'cosmic.png',
+    'satellite_path': 'cosmicsat.png',
+    'imagecombine_path': 'imagecombine.png',
+    'wrench_path': 'wrench_icon.png',
+    'eye_icon_path': 'eye.png',
+    'disk_icon_path': 'disk.png',
+    'nuke_path': 'nuke.png',
+    'hubble_path': 'hubble.png',
+    'collage_path': 'collage.png',
+    'annotated_path': 'annotated.png',
+    'colorwheel_path': 'colorwheel.png',
+    'narrowbandnormalization_path': 'narrowbandnormalization.png',
+    'font_path': 'font.png',
+    'csv_icon_path': 'cvs.png',
+    'wims_path': 'wims.png',
+    'wimi_path': 'wimi_icon_256x256.png',
+    'linearfit_path': 'linearfit.png',
+    'debayer_path': 'debayer.png',
+    'aberration_path': 'aberration.png',
+    'functionbundles_path': 'functionbundle.png',
+    'planetarystacker_path': 'planetarystacker.png',
+    'viewbundles_path': 'viewbundle.png',
+    'selectivecolor_path': 'selectivecolor.png',
+    'rgbalign_path': 'rgbalign.png',
+    'background_path': 'background.png',
+    'script_icon_path': 'script.png',
+    'planetprojection_path': '3dplanet.png',
+    'finderchart_path': 'finderchart.png',
+}
+
+_SPECIAL_DATA_MAP = {
+    'sasp_data_path': 'data/SASP_data.fits',
+    'astrobin_filters_csv_path': 'data/catalogs/astrobin_filters.csv',
+    'spinner_path': 'spinner.gif',
+    'background_startup_path': 'Background_startup.jpg',
+}
+
+def __getattr__(name: str):
     """
-    Centralized data resource paths.
+    Lazy load legacy resource paths to avoid massive I/O on import.
     """
-    SASP_DATA = property(lambda self: _resource_path('data/SASP_data.fits'))
-    ASTROBIN_FILTERS_CSV = property(lambda self: _resource_path('data/catalogs/astrobin_filters.csv'))
-    SPINNER_GIF = property(lambda self: _resource_path('spinner.gif'))
+    if name in _LEGACY_MAP:
+        return get_icon_path(_LEGACY_MAP[name])
+    if name in _SPECIAL_DATA_MAP:
+        return get_data_path(_SPECIAL_DATA_MAP[name])
+    # resource_monitor_qml was also exposed
+    if name == 'resource_monitor_qml':
+        return _resource_path(os.path.join("qml", "ResourceMonitor.qml"))
+        
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
-    # --- Models root ---
-    MODELS_DIR = property(lambda self: get_models_dir())
+def __dir__():
+    return list(globals().keys()) + list(_LEGACY_MAP.keys()) + list(_SPECIAL_DATA_MAP.keys()) + ['resource_monitor_qml']
 
-    # --- Cosmic Clarity Sharpen ---
-    CC_STELLAR_SHARP_PTH  = property(lambda self: model_path('deep_sharp_stellar_cnn_AI3_5s.pth'))
-    CC_STELLAR_SHARP_ONNX = property(lambda self: model_path('deep_sharp_stellar_cnn_AI3_5s.onnx'))
+# Background for startup (exported via __getattr__ above)
+# background_startup_path = ... 
 
-    CC_NS1_PTH  = property(lambda self: model_path('deep_nonstellar_sharp_cnn_radius_1AI3_5s.pth'))
-    CC_NS1_ONNX = property(lambda self: model_path('deep_nonstellar_sharp_cnn_radius_1AI3_5s.onnx'))
-
-    CC_NS2_PTH  = property(lambda self: model_path('deep_nonstellar_sharp_cnn_radius_2AI3_5s.pth'))
-    CC_NS2_ONNX = property(lambda self: model_path('deep_nonstellar_sharp_cnn_radius_2AI3_5s.onnx'))
-    CC_NS4_PTH  = property(lambda self: model_path('deep_nonstellar_sharp_cnn_radius_4AI3_5s.pth'))
-    CC_NS4_ONNX = property(lambda self: model_path('deep_nonstellar_sharp_cnn_radius_4AI3_5s.onnx'))
-
-    CC_NS8_PTH  = property(lambda self: model_path('deep_nonstellar_sharp_cnn_radius_8AI3_5s.pth'))
-    CC_NS8_ONNX = property(lambda self: model_path('deep_nonstellar_sharp_cnn_radius_8AI3_5s.onnx'))
-
-    CC_DENOISE_PTH  = property(lambda self: model_path('deep_denoise_cnn_AI3_6.pth'))
-    CC_DENOISE_ONNX = property(lambda self: model_path('deep_denoise_cnn_AI3_6.onnx'))
-
-    # --- Super Resolution ---
-    CC_SUPERRES_2X_PTH  = property(lambda self: model_path('superres_2x.pth'))
-    CC_SUPERRES_2X_ONNX = property(lambda self: model_path('superres_2x.onnx'))
-    CC_SUPERRES_3X_PTH  = property(lambda self: model_path('superres_3x.pth'))
-    CC_SUPERRES_3X_ONNX = property(lambda self: model_path('superres_3x.onnx'))
-
-    CC_SUPERRES_4X_PTH  = property(lambda self: model_path('superres_4x.pth'))
-    CC_SUPERRES_4X_ONNX = property(lambda self: model_path('superres_4x.onnx'))
-
-    # --- Dark Star (Star Removal) ---
-    CC_DARKSTAR_MONO_PTH   = property(lambda self: model_path('darkstar_v2.1.pth'))
-    CC_DARKSTAR_MONO_ONNX  = property(lambda self: model_path('darkstar_v2.1.onnx'))
-    CC_DARKSTAR_COLOR_PTH  = property(lambda self: model_path('darkstar_v2.1c.pth'))
-    CC_DARKSTAR_COLOR_ONNX = property(lambda self: model_path('darkstar_v2.1c.onnx'))
-
-    # --- Cosmic Clarity Satellite Removal ---
-    CC_SAT_DETECT1_PTH  = property(lambda self: model_path('satellite_trail_detector_AI3.5.pth'))
-    CC_SAT_DETECT1_ONNX = property(lambda self: model_path('satellite_trail_detector_AI3.5.onnx'))
-    CC_SAT_DETECT2_PTH  = property(lambda self: model_path('satellite_trail_detector_mobilenetv2.5.pth'))
-    CC_SAT_DETECT2_ONNX = property(lambda self: model_path('satellite_trail_detector_mobilenetv2.5.onnx'))
-
-    CC_SAT_REMOVE_PTH   = property(lambda self: model_path('satelliteremovalAI3.5.pth'))
-    CC_SAT_REMOVE_ONNX  = property(lambda self: model_path('satelliteremovalAI3.5.onnx'))
-
-@lru_cache(maxsize=8)
-def get_models_dir() -> str:
-    """
-    Models are NOT packaged resources. They must be installed via the model manager.
-    This returns the user models root and never falls back to _internal/data/models.
-    """
-    from setiastro.saspro.model_manager import models_root
-    p = Path(models_root())
-    # Ensure dir exists (models_root should already do this, but harmless)
-    p.mkdir(parents=True, exist_ok=True)
-    return str(p)
-
-
-def _assert_not_internal_models_path(p: str):
-    s = str(p).lower().replace("/", "\\")
-    if "\\_internal\\" in s and "\\data\\models\\" in s:
-        raise RuntimeError(f"Legacy internal model path detected: {p}")
-
-def model_path(filename: str) -> str:
-    from setiastro.saspro.model_manager import require_model
-    p = str(require_model(filename))
-    _assert_not_internal_models_path(p)
-    return p
-
-# Export all legacy paths as module-level variables
-_legacy = _init_legacy_paths()
-globals().update(_legacy)
-
-
-# Background for startup
-background_startup_path = _resource_path('Background_startup.jpg')
-_legacy['background_startup_path'] = background_startup_path
-
-# QML helper
-resource_monitor_qml = _resource_path(os.path.join("qml", "ResourceMonitor.qml"))
+# QML helper (exported via __getattr__ above)
+# resource_monitor_qml = ...
 
 # Export list for `from setiastro.saspro.resources import *`
 __all__ = [
@@ -645,5 +584,5 @@ __all__ = [
     'get_icons', 'get_resources',
     'get_icon_path', 'get_data_path',
     'background_startup_path',
-] + list(_legacy.keys())
+] + list(_LEGACY_MAP.keys()) + list(_SPECIAL_DATA_MAP.keys()) + ['resource_monitor_qml']
 

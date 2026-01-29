@@ -33,8 +33,8 @@ from urllib.parse import quote, quote_plus
 # ============================================================================
 import numpy as np
 import matplotlib
-from tifffile import imwrite
-from setiastro.saspro.xisf import XISF
+# tifffile and XISF imports removed (unused in this file)
+
 
 # ============================================================================
 # Bootstrap Configuration (must run early)
@@ -93,18 +93,8 @@ from setiastro.saspro.widgets.common_utilities import (
 )
 
 
-# Reproject for WCS-based alignment
-try:
-    from reproject import reproject_interp
-except ImportError:
-    reproject_interp = None  # fallback if not installed
+# Reproject and OpenCV imports removed (unused or available via lazy_imports)
 
-# OpenCV for transform estimation & warping
-try:
-    import cv2
-    OPENCV_AVAILABLE = True
-except ImportError:
-    OPENCV_AVAILABLE = False
 
 
 
