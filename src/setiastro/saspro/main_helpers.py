@@ -1,3 +1,4 @@
+
 # pro/main_helpers.py
 """
 Helper functions extracted from the main module.
@@ -7,12 +8,15 @@ Contains utility functions used throughout the main window:
 - Document name/type detection
 - Widget safety checks
 - WCS/FITS header utilities
+- UI responsiveness helpers
 """
 
 import os
+import time
 from typing import Optional, Tuple
 
 from PyQt6 import sip
+from PyQt6.QtWidgets import QApplication
 
 from setiastro.saspro.file_utils import (
     _normalize_ext,
@@ -21,6 +25,20 @@ from setiastro.saspro.file_utils import (
     REPLACE_SPACES_WITH_UNDERSCORES,
     WIN_RESERVED_NAMES,
 )
+
+
+def non_blocking_sleep(duration_sec: float):
+    """
+    Sleep for duration_sec seconds while keeping the UI responsive.
+    Uses QApplication.processEvents() to process pending events.
+    """
+    end_time = time.time() + duration_sec
+    while time.time() < end_time:
+        QApplication.processEvents()
+        # Sleep a tiny bit to avoid 100% CPU usage
+        sleep_time = min(0.05, end_time - time.time())
+        if sleep_time > 0:
+            time.sleep(sleep_time)
 
 
 def safe_join_dir_and_name(directory: str, basename: str) -> str:

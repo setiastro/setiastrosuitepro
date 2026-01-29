@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from setiastro.saspro.main_helpers import non_blocking_sleep
+
 import os
 import shutil
 import tempfile
@@ -713,13 +715,13 @@ class ExoPlanetWindow(QDialog):
                     img_meta = xisf.get_images_metadata()[0].get('FITSKeywords', {})
                     if 'DATE-OBS' in img_meta:
                         ds = img_meta['DATE-OBS'][0]['value']
-                except:
+                except Exception:
                     ds = None
             elif ext in ('.fit', '.fits', '.fz'):
                 try:
                     hdr0, _ = get_valid_header(p)
                     ds      = hdr0.get('DATE-OBS')
-                except:
+                except Exception:
                     ds = None
 
             # Use robust header time parsing (UT-OBS -> DATE-OBS -> MJD-OBS fallback)
@@ -796,24 +798,24 @@ class ExoPlanetWindow(QDialog):
                         elif 'EXPTIME' in fits_kw: val = fits_kw['EXPTIME'][0].get('value')
                         try:
                             self.exposure_time = float(val)
-                        except:
+                        except (ValueError, TypeError):
                             print(f"[DEBUG] Could not parse exposure_time={val!r}")
 
                 am = None
                 if isinstance(hdr, fits.Header):
                     if 'AIRMASS' in hdr:
                         try: am = float(hdr['AIRMASS'])
-                        except: am = None
+                        except ValueError: am = None
                     if am is None:
                         alt = (hdr.get('OBJCTALT') or hdr.get('ALT') or hdr.get('ALTITUDE') or hdr.get('EL'))
                         try: am = self.estimate_airmass_from_altitude(float(alt))
-                        except: am = 1.0
+                        except (ValueError, TypeError): am = 1.0
                 elif isinstance(hdr, dict):
                     img_meta = hdr.get('image_meta', {}) or {}
                     fits_kw  = img_meta.get('FITSKeywords', {})
                     if 'AIRMASS' in fits_kw:
                         try: am = float(fits_kw['AIRMASS'][0]['value'])
-                        except: am = None
+                        except (ValueError, TypeError): am = None
                     if am is None:
                         for key in ('OBJCTALT','ALT','ALTITUDE','EL'):
                             ent = fits_kw.get(key)
@@ -871,12 +873,12 @@ class ExoPlanetWindow(QDialog):
                     img_meta = xisf.get_images_metadata()[0]
                     kw       = img_meta.get('FITSKeywords', {})
                     if 'DATE-OBS' in kw: ds = kw['DATE-OBS'][0]['value']
-                except: ds = None
+                except Exception: ds = None
             elif ext in ('.fit', '.fits', '.fz'):
                 try:
                     hdr0, _ = get_valid_header(p)
                     ds      = hdr0.get('DATE-OBS')
-                except: ds = None
+                except Exception: ds = None
             # Use robust header time parsing (UT-OBS -> DATE-OBS -> MJD-OBS fallback)
             t = None
             try:
@@ -947,23 +949,23 @@ class ExoPlanetWindow(QDialog):
                         if 'EXPOSURE' in fits_kw: val = fits_kw['EXPOSURE'][0].get('value')
                         elif 'EXPTIME' in fits_kw: val = fits_kw['EXPTIME'][0].get('value')
                         try: self.exposure_time = float(val)
-                        except: print(f"[DEBUG] Could not parse exposure_time={val!r}")
+                        except (ValueError, TypeError): print(f"[DEBUG] Could not parse exposure_time={val!r}")
 
                 am = None
                 if isinstance(hdr, fits.Header):
                     if 'AIRMASS' in hdr:
                         try: am = float(hdr['AIRMASS'])
-                        except: am = None
+                        except ValueError: am = None
                     if am is None:
                         alt = (hdr.get('OBJCTALT') or hdr.get('ALT') or hdr.get('ALTITUDE') or hdr.get('EL'))
                         try: am = self.estimate_airmass_from_altitude(float(alt))
-                        except: am = 1.0
+                        except (ValueError, TypeError): am = 1.0
                 elif isinstance(hdr, dict):
                     img_meta = hdr.get('image_meta', {}) or {}
                     fits_kw  = img_meta.get('FITSKeywords', {})
                     if 'AIRMASS' in fits_kw:
                         try: am = float(fits_kw['AIRMASS'][0]['value'])
-                        except: am = None
+                        except (ValueError, TypeError): am = None
                     if am is None:
                         for key in ('OBJCTALT','ALT','ALTITUDE','EL'):
                             ent = fits_kw.get(key)
@@ -1812,7 +1814,8 @@ class ExoPlanetWindow(QDialog):
                 if attempt == 5:
                     QMessageBox.critical(self, "SIMBAD Error", f"Could not reach SIMBAD after 5 tries:\n{e}")
                     return
-                time.sleep(1)
+                # Use non-blocking sleep
+                non_blocking_sleep(1)
 
         if result is None or len(result) == 0:
             QMessageBox.information(self, "No SIMBAD Matches", f"No objects found within 5″ of {ra:.6f}, {dec:.6f}.")
@@ -1880,7 +1883,7 @@ class ExoPlanetWindow(QDialog):
                 if attempt == 5:
                     QMessageBox.critical(self, "SIMBAD Error", f"Could not reach SIMBAD after 5 tries:\n{e}")
                     return None
-                time.sleep(1)
+                non_blocking_sleep(1)
         if table is None or len(table) == 0:
             return None
         try:
@@ -1905,7 +1908,8 @@ class ExoPlanetWindow(QDialog):
                 if attempt==5:
                     QMessageBox.critical(self, "SIMBAD Error", f"Could not reach SIMBAD after 5 tries:\n{e}")
                     return None, None
-                time.sleep(1)
+                non_blocking_sleep(1)
+        
         if table is None or len(table)==0:
             return None, None
         try:
@@ -2181,10 +2185,11 @@ class ExoPlanetWindow(QDialog):
                     QMessageBox.information(self, "No TESS Data", "There are no TESS cutouts available at that position.")
                     self.status_label.setText("No TESScut data found.")
                     return
-                time.sleep(2)
+                non_blocking_sleep(2)
 
         self.status_label.setText("Querying TESScut…")
         QApplication.processEvents()
+
         cache_dir = os.path.join(os.path.expanduser("~"), ".setiastro", "tesscut_cache")
         os.makedirs(cache_dir, exist_ok=True)
 
@@ -2242,7 +2247,7 @@ class ExoPlanetWindow(QDialog):
                     QMessageBox.critical(self, "TESScut Error", f"TESScut failed after {MAX_RETRIES} attempts.\n\n{de}")
                     self.status_label.setText("TESScut fetch failed.")
                 else:
-                    time.sleep(2)
+                    non_blocking_sleep(2)
 
     # ---------------- Pixel → Sky helper ----------------
 

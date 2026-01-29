@@ -1,6 +1,8 @@
 # pro/blink_comparator_pro.py
 from __future__ import annotations
 
+from setiastro.saspro.main_helpers import non_blocking_sleep
+
 # ⬇️ keep your existing imports used by the code you pasted
 import os
 import re
@@ -2099,7 +2101,7 @@ class BlinkTab(QWidget):
             attempt += 1
             if remaining:
                 print(f"[Retry] {len(remaining)} images will be retried after {RETRY_DELAY}s...")
-                time.sleep(RETRY_DELAY)
+                non_blocking_sleep(RETRY_DELAY)
 
         if remaining:
             print(f"[FAILURE] These files failed to load after {MAX_RETRIES} retries:")

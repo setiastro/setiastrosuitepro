@@ -154,7 +154,7 @@ def _apply_clarity(image: np.ndarray, amount: float, radius: float) -> np.ndarra
             print(f"Bilateral Filter failed: {e}")
             try:
                 base = cv2.GaussianBlur(img_f32, (0, 0), sigma_space_target)
-            except:
+            except Exception:
                 return image
     else:
         return image

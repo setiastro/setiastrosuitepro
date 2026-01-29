@@ -1797,6 +1797,14 @@ class DocManager(QObject):
     def get_document_by_uid(self, uid: str):
         return self._by_uid.get(uid)
 
+    def is_doc_valid(self, doc) -> bool:
+        """Check if a document is currently managed/open (supports proxies)."""
+        if doc in self._docs:
+            return True
+        # Handle proxies/wrappers that point to a real doc
+        base = getattr(doc, "_base", None) or getattr(doc, "_parent_doc", None)
+        return bool(base and base in self._docs)
+
 
     def _register_doc(self, doc):
         import weakref

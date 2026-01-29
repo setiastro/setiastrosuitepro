@@ -1,5 +1,6 @@
 # pro/continuum_subtract.py
 from __future__ import annotations
+from setiastro.saspro.main_helpers import non_blocking_sleep
 import os
 import numpy as np
 import time          # NEW
@@ -1616,5 +1617,5 @@ class ContinuumProcessingThread(QThread):
                         return last
                 except Exception:
                     return last
-            time.sleep(poll)
+            non_blocking_sleep(poll)
         return ""

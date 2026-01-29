@@ -128,30 +128,34 @@ class LRUDict(OrderedDict):
     When maxsize is exceeded, oldest items are evicted.
     Thread-safe for basic operations.
     """
-    __slots__ = ('maxsize',)
+    __slots__ = ('maxsize', '_lock')
     
     def __init__(self, maxsize: int = 500):
         super().__init__()
         self.maxsize = maxsize
+        self._lock = threading.RLock()
     
     def __getitem__(self, key):
-        # Move to end on access (most recently used)
-        self.move_to_end(key)
-        return super().__getitem__(key)
-    
-    def get(self, key, default=None):
-        if key in self:
+        with self._lock:
+            # Move to end on access (most recently used)
             self.move_to_end(key)
             return super().__getitem__(key)
-        return default
+    
+    def get(self, key, default=None):
+        with self._lock:
+            if key in self:
+                self.move_to_end(key)
+                return super().__getitem__(key)
+            return default
     
     def __setitem__(self, key, value):
-        if key in self:
-            self.move_to_end(key)
-        super().__setitem__(key, value)
-        # Evict oldest if over limit
-        while len(self) > self.maxsize:
-            self.popitem(last=False)  # Remove oldest
+        with self._lock:
+            if key in self:
+                self.move_to_end(key)
+            super().__setitem__(key, value)
+            # Evict oldest if over limit
+            while len(self) > self.maxsize:
+                self.popitem(last=False)  # Remove oldest
 
 
 # ============================================================================

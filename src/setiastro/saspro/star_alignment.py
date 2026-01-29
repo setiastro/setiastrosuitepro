@@ -7172,6 +7172,7 @@ class MosaicMasterDialog(QDialog):
         return None
 
     def poll_submission_status(self, subid):
+        from setiastro.saspro.main_helpers import non_blocking_sleep
         url = ASTROMETRY_API_URL + f"submissions/{subid}"
         for attempt in range(90):  # up to ~15 minutes
             response = robust_api_request("GET", url)
@@ -7180,11 +7181,12 @@ class MosaicMasterDialog(QDialog):
                 if jobs and jobs[0] is not None:
                     return jobs[0]
             print(f"Polling attempt {attempt+1}: Job ID not ready yet.")
-            time.sleep(10)
+            non_blocking_sleep(10)
         QMessageBox.critical(self, "Blind Solve Failed", "Failed to retrieve job ID from Astrometry.net after multiple attempts.")
         return None
 
     def poll_calibration_data(self, job_id):
+        from setiastro.saspro.main_helpers import non_blocking_sleep
         url = ASTROMETRY_API_URL + f"jobs/{job_id}/calibration/"
         for attempt in range(90):
             response = robust_api_request("GET", url)
@@ -7192,7 +7194,7 @@ class MosaicMasterDialog(QDialog):
                 print("Calibration data retrieved:", response)
                 return response
             print(f"Calibration data not available yet (attempt {attempt+1})")
-            time.sleep(10)
+            non_blocking_sleep(10)
         QMessageBox.critical(self, "Blind Solve Failed", "Calibration data did not complete in the expected timeframe.")
         return None
 

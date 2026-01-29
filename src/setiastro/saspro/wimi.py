@@ -28,6 +28,7 @@ import lz4.block
 import zstandard
 import base64
 import ast
+from setiastro.saspro.main_helpers import non_blocking_sleep
 import platform
 from pathlib import Path
 import glob
@@ -6789,7 +6790,7 @@ class WIMIDialog(QDialog):
             except Exception as e:
                 last_err = e
                 if attempt < 4:
-                    time.sleep(1)  # or QThread.msleep(1000) if you want less UI freeze
+                    non_blocking_sleep(1)
                 else:
                     # After 5 attempts total, stop with a helpful message
                     err_txt = str(last_err) if last_err is not None else "Unknown error"

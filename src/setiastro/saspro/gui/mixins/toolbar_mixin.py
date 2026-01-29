@@ -36,7 +36,7 @@ from setiastro.saspro.resources import (
     nbtorgb_path, freqsep_path, multiscale_decomp_path, contsub_path, halo_path, cosmic_path,
     satellite_path, imagecombine_path, wims_path, wimi_path, linearfit_path,
     debayer_path, aberration_path, functionbundles_path, viewbundles_path, planetarystacker_path,
-    selectivecolor_path, rgbalign_path, planetprojection_path, clonestampicon_path,
+    selectivecolor_path, rgbalign_path, planetprojection_path, clonestampicon_path, finderchart_path,
 )
 
 # Import shortcuts module
@@ -298,6 +298,7 @@ class ToolbarMixin:
         tb_star.addAction(self.act_planetary_stacker)
         tb_star.addAction(self.act_planet_projection)
         tb_star.addAction(self.act_plate_solve)
+        
         tb_star.addAction(self.act_star_align)
         tb_star.addAction(self.act_star_register)
         tb_star.addAction(self.act_rgb_align)
@@ -332,6 +333,7 @@ class ToolbarMixin:
         tb_wim = DraggableToolBar(self.tr("What's In My..."), self)
         tb_wim.setObjectName("What's In My...")
         tb_wim.setSettingsKey("Toolbar/WhatsInMy")
+        tb_wim.addAction(self.act_finder_chart)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_wim)
 
         tb_wim.addAction(self.act_whats_in_my_sky)
@@ -1245,6 +1247,11 @@ class ToolbarMixin:
         self.act_rgb_align.setStatusTip(self.tr("Align R and B channels to G using astroalign (affine/homography/poly)"))
         self.act_rgb_align.triggered.connect(self._open_rgb_align)
 
+        self.act_finder_chart = QAction(QIcon(finderchart_path), self.tr("Finder Chart..."), self)
+        self.act_finder_chart.setIconVisibleInMenu(True)
+        self.act_finder_chart.setStatusTip(self.tr("Show a finder chart for the active plate-solved image"))
+        self.act_finder_chart.triggered.connect(self._open_finder_chart)
+
         self.act_whats_in_my_sky = QAction(QIcon(wims_path), self.tr("What's In My Sky..."), self)
         self.act_whats_in_my_sky.setIconVisibleInMenu(True)
         self.act_whats_in_my_sky.setStatusTip(self.tr("Plan targets by altitude, transit time, and lunar separation"))
@@ -1446,6 +1453,7 @@ class ToolbarMixin:
         reg("astrospike", self.act_astrospike)
         reg("exo_detector", self.act_exo_detector)
         reg("isophote", self.act_isophote) 
+        reg("finder_chart", self.act_finder_chart)
         reg("rgb_align", self.act_rgb_align) 
         reg("whats_in_my_sky", self.act_whats_in_my_sky)
         reg("whats_in_my_image", self.act_wimi)

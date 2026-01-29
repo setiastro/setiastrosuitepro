@@ -584,11 +584,11 @@ def _bootstrap_imports():
     # ----------------------------------------
     # Third-party imports
     # ----------------------------------------
-    import numpy as np
+    # numpy deferred to modules that need it
 
-    _update_splash(QCoreApplication.translate("Splash", "Loading image libraries..."), 20)
-    from tifffile import imwrite
-    from setiastro.saspro.xisf import XISF
+
+    # Image libraries (tifffile, XISF) deferred
+
 
     _update_splash(QCoreApplication.translate("Splash", "Configuring matplotlib..."), 25)
     from setiastro.saspro.config_bootstrap import ensure_mpl_config_dir
@@ -667,20 +667,11 @@ def _bootstrap_imports():
         install_crash_handlers,
     )
 
-    _update_splash(QCoreApplication.translate("Splash", "Loading reproject library..."), 35)
+    # reproject deferred
 
-    try:
-        from reproject import reproject_interp
-    except ImportError:
-        reproject_interp = None
 
-    _update_splash(QCoreApplication.translate("Splash", "Loading OpenCV..."), 40)
+    # OpenCV deferred
 
-    try:
-        import cv2
-        OPENCV_AVAILABLE = True
-    except ImportError:
-        OPENCV_AVAILABLE = False
 
     _update_splash(QCoreApplication.translate("Splash", "Loading PyQt6 components..."), 45)
 
@@ -710,28 +701,28 @@ def _bootstrap_imports():
     _update_splash(QCoreApplication.translate("Splash", "Loading resources..."), 50)
 
     from setiastro.saspro.resources import (
-        icon_path, windowslogo_path, green_path, neutral_path, whitebalance_path,
-        morpho_path, clahe_path, starnet_path, staradd_path, LExtract_path,
-        LInsert_path, slot0_path, slot1_path, slot2_path, slot3_path, slot4_path,
-        rgbcombo_path, rgbextract_path, copyslot_path, graxperticon_path,
-        cropicon_path, openfile_path, abeicon_path, undoicon_path, redoicon_path,
-        blastericon_path, hdr_path, invert_path, fliphorizontal_path,
-        flipvertical_path, rotateclockwise_path, rotatecounterclockwise_path,
-        rotate180_path, maskcreate_path, maskapply_path, maskremove_path,
-        slot5_path, slot6_path, slot7_path, slot8_path, slot9_path, pixelmath_path,
-        histogram_path, mosaic_path, rescale_path, staralign_path, mask_path,
-        platesolve_path, psf_path, supernova_path, starregistration_path,
-        stacking_path, pedestal_icon_path, starspike_path, aperture_path,
-        jwstpupil_path, signature_icon_path, livestacking_path, hrdiagram_path,
-        convoicon_path, spcc_icon_path, sasp_data_path, exoicon_path, peeker_icon,
-        dse_icon_path, astrobin_filters_csv_path, isophote_path, statstretch_path,
-        starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path,
-        nbtorgb_path, freqsep_path, contsub_path, halo_path, cosmic_path,
-        satellite_path, imagecombine_path, wrench_path, eye_icon_path,
-        disk_icon_path, nuke_path, hubble_path, collage_path, annotated_path,
-        colorwheel_path, font_path, csv_icon_path, spinner_path, wims_path,
-        wimi_path, linearfit_path, debayer_path, aberration_path,
-        functionbundles_path, viewbundles_path, selectivecolor_path, rgbalign_path,
+        icon_path, windowslogo_path, # green_path, neutral_path, whitebalance_path,
+        #morpho_path, clahe_path, starnet_path, staradd_path, LExtract_path,
+        #LInsert_path, slot0_path, slot1_path, slot2_path, slot3_path, slot4_path,
+        #rgbcombo_path, rgbextract_path, copyslot_path, graxperticon_path,
+        #cropicon_path, openfile_path, abeicon_path, undoicon_path, redoicon_path,
+        #blastericon_path, hdr_path, invert_path, fliphorizontal_path,
+        #flipvertical_path, rotateclockwise_path, rotatecounterclockwise_path,
+        #rotate180_path, maskcreate_path, maskapply_path, maskremove_path,
+        #slot5_path, slot6_path, slot7_path, slot8_path, slot9_path, pixelmath_path,
+        #histogram_path, mosaic_path, rescale_path, staralign_path, mask_path,
+        #platesolve_path, psf_path, supernova_path, starregistration_path,
+        #stacking_path, pedestal_icon_path, starspike_path, aperture_path,
+        #jwstpupil_path, signature_icon_path, livestacking_path, hrdiagram_path,
+        #convoicon_path, spcc_icon_path, sasp_data_path, exoicon_path, peeker_icon,
+        #dse_icon_path, astrobin_filters_csv_path, isophote_path, statstretch_path,
+        #starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path,
+        #nbtorgb_path, freqsep_path, contsub_path, halo_path, cosmic_path,
+        #satellite_path, imagecombine_path, wrench_path, eye_icon_path,
+        #disk_icon_path, nuke_path, hubble_path, collage_path, annotated_path,
+        #colorwheel_path, font_path, csv_icon_path, spinner_path, wims_path,
+        #wimi_path, linearfit_path, debayer_path, aberration_path,
+        #functionbundles_path, viewbundles_path, selectivecolor_path, rgbalign_path,
     )
 
     _update_splash(QCoreApplication.translate("Splash", "Configuring Qt message handler..."), 55)

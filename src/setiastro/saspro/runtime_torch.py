@@ -228,31 +228,71 @@ def _pip_ok(venv_python: Path, args: list[str], status_cb=print) -> bool:
 
 def _ensure_numpy(venv_python: Path, status_cb=print) -> None:
     """
-    Torch wheels may not pull NumPy; ensure NumPy is present in the SAME venv.
+    Ensure NumPy exists in the runtime venv AND is ABI-compatible with common
+    torch/vision/audio wheels. In practice: enforce numpy<2.
+
     Safe to call repeatedly.
     """
     def _numpy_present() -> bool:
         code = "import importlib.util; print('OK' if importlib.util.find_spec('numpy') else 'MISS')"
         try:
             out = subprocess.check_output([str(venv_python), "-c", code], text=True).strip()
-            return (out == "OK")
+            return out == "OK"
         except Exception:
             return False
 
-    if _numpy_present():
-        return
+    def _numpy_major() -> int | None:
+        code = (
+            "import numpy as np\n"
+            "v = np.__version__.split('+',1)[0]\n"
+            "print(int(v.split('.',1)[0]))\n"
+        )
+        try:
+            out = subprocess.check_output([str(venv_python), "-c", code], text=True).strip()
+            return int(out)
+        except Exception:
+            return None
 
-    # Keep tools fresh, then install a compatible NumPy (Torch 2.x is fine with NumPy 1.26–2.x)
+    # Keep tools fresh
     _pip_ok(venv_python, ["install", "--upgrade", "pip", "setuptools", "wheel"], status_cb=status_cb)
 
-    # Prefer latest available in [1.26, 3.0)
-    if not _pip_ok(venv_python, ["install", "--prefer-binary", "--no-cache-dir", "numpy>=1.26,<3"], status_cb=status_cb):
-        # Final fallback to a broadly available pin
-        _pip_ok(venv_python, ["install", "--prefer-binary", "--no-cache-dir", "numpy==1.26.*"], status_cb=status_cb)
+    # 1) If NumPy missing → install safe pin
+    if not _numpy_present():
+        status_cb("[RT] Installing NumPy (pinning to numpy<2 for torch wheel compatibility)…")
+        if not _pip_ok(
+            venv_python,
+            ["install", "--prefer-binary", "--no-cache-dir", "numpy<2"],
+            status_cb=status_cb,
+        ):
+            # last-ditch fallback (very widely available)
+            _pip_ok(
+                venv_python,
+                ["install", "--prefer-binary", "--no-cache-dir", "numpy==1.26.*"],
+                status_cb=status_cb,
+            )
 
-    # Post-install verification
+    # 2) If NumPy present but major>=2 → downgrade to numpy<2
+    maj = _numpy_major()
+    if maj is not None and maj >= 2:
+        status_cb("[RT] NumPy 2.x detected in runtime venv; downgrading to numpy<2…")
+        if not _pip_ok(
+            venv_python,
+            ["install", "--prefer-binary", "--no-cache-dir", "--force-reinstall", "numpy<2"],
+            status_cb=status_cb,
+        ):
+            _pip_ok(
+                venv_python,
+                ["install", "--prefer-binary", "--no-cache-dir", "--force-reinstall", "numpy==1.26.*"],
+                status_cb=status_cb,
+            )
+
+    # Post verification
     if not _numpy_present():
         raise RuntimeError("Failed to install NumPy into the SASpro runtime venv.")
+    maj2 = _numpy_major()
+    if maj2 is not None and maj2 >= 2:
+        raise RuntimeError("NumPy is still 2.x in the SASpro runtime venv after pinning; torch stack may not import.")
+
 
 
 def _is_access_denied(exc: BaseException) -> bool:
@@ -1076,6 +1116,7 @@ def import_torch(
                     prefer_dml=prefer_dml,
                     status_cb=status_cb,
                 )
+                _ensure_numpy(vp, status_cb=status_cb)
         except Exception as e:
             if _is_access_denied(e):
                 raise OSError(_access_denied_msg(rt)) from e
