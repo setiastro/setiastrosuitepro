@@ -1072,7 +1072,7 @@ class XISF:
         }
         try:
             return _dtypes[s]
-        except:
+        except KeyError:
             raise NotImplementedError(f"sampleFormat {s} not implemented")
 
     # Return XISF data type from numpy dtype
@@ -1087,7 +1087,7 @@ class XISF:
         }
         try:
             return _sampleFormats[str(dtype)]
-        except:
+        except KeyError:
             raise NotImplementedError(f"sampleFormat for {dtype} not implemented")
 
     @staticmethod
@@ -1121,7 +1121,7 @@ class XISF:
         }
         try:
             return _dtypes[type_prefix]
-        except:
+        except KeyError:
             raise NotImplementedError(f"data type {type_name} not implemented")
 
     # __/ Auxiliary functions for compression/shuffling \________

@@ -1,5 +1,6 @@
 # pro/cosmicclarity_preset.py
 from __future__ import annotations
+from setiastro.saspro.main_helpers import non_blocking_sleep
 import os
 import sys
 import time
@@ -243,7 +244,7 @@ class _CCHeadlessWorker(QThread):
                         return last
                 except Exception:
                     return last
-            time.sleep(poll)
+            non_blocking_sleep(poll)
         return ""
 
 

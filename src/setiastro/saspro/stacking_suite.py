@@ -6728,7 +6728,7 @@ class StackingSuiteDialog(QDialog):
                 s = s[:-1]
             try:
                 return float(s)
-            except Exception:
+            except (ValueError, TypeError):
                 return 2.0
         return 2.0
 
@@ -6737,7 +6737,7 @@ class StackingSuiteDialog(QDialog):
     def _set_drizzle_scale(self, r: float | str) -> None:
         if isinstance(r, str):
             try: r = float(r.rstrip("xX"))
-            except: r = 2.0
+            except ValueError: r = 2.0
         r = float(max(1.0, min(3.0, r)))
         # store as “Nx” so the combo’s string stays in sync
         self.settings.setValue("stacking/drizzle_scale", f"{int(r)}x")
@@ -6754,7 +6754,8 @@ class StackingSuiteDialog(QDialog):
         if cb is not None:
             try:
                 return bool(cb.isChecked())
-            except Exception:
+            except (RuntimeError, AttributeError):
+                # Wrapped object might be deleted or invalid
                 pass
         # fallback to settings (headless / older flows)
         return bool(self.settings.value("stacking/drizzle_enabled", False, type=bool))

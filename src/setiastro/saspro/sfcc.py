@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+from setiastro.saspro.main_helpers import non_blocking_sleep
+
 import os
 import re
 import cv2
@@ -1149,7 +1151,7 @@ class SFCCDialog(QDialog):
                 break
             except Exception:
                 QApplication.processEvents()
-                time.sleep(0.8)
+                non_blocking_sleep(0.8)
 
         if not ok:
             for _ in range(5):
@@ -1159,7 +1161,7 @@ class SFCCDialog(QDialog):
                     break
                 except Exception:
                     QApplication.processEvents()
-                    time.sleep(0.8)
+                    non_blocking_sleep(0.8)
 
         if not ok:
             QMessageBox.critical(self, "SIMBAD Error", "Could not configure SIMBAD votable fields.")
@@ -1178,7 +1180,7 @@ class SFCCDialog(QDialog):
                 break
             except Exception:
                 QApplication.processEvents()
-                time.sleep(1.2)
+                non_blocking_sleep(1.2)
                 result = None
 
         if result is None or len(result) == 0:

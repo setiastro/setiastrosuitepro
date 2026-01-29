@@ -62,7 +62,15 @@ if sys.platform.startswith("linux"):
         os.environ.setdefault("QT_OPENGL", "software")
         os.environ.setdefault("LIBGL_ALWAYS_SOFTWARE", "1")
 
-from PyQt6.QtCore import QCoreApplication
+import logging
+import traceback
+import tempfile
+import multiprocessing
+import warnings
+from PyQt6.QtCore import QCoreApplication, QTimer, QPropertyAnimation, QEasingCurve
+from PyQt6.QtWidgets import QIcon, QApplication, QWidget, QMessageBox
+from PyQt6.QtGui import QIcon, QPixmap, QColor, QPainter, QFont, QLinearGradient
+from setiastro.saspro.crash_handler import install_crash_handlers
 
 # Global variables for splash screen and app
 _splash = None
@@ -301,8 +309,13 @@ def _init_splash():
                 cur = start + (target - start) * factor
                 self.progress_value = cur
                 self.repaint()
-                if _app: _app.processEvents()
-                time.sleep(dt)
+                
+                # Non-blocking sleep for animation
+                t_end = time.time() + dt
+                while time.time() < t_end:
+                    if _app: _app.processEvents()
+                    # small sleep to yield CPU
+                    time.sleep(min(0.001, dt))
 
             self.progress_value = target
             self.repaint()
@@ -881,6 +894,11 @@ def main():
             handlers=[logging.StreamHandler(sys.stdout)]
         )
         print(f"Warning: Could not write to log file {log_file_path}: {e}")
+    
+    # Define icon paths
+    icon_path = os.path.join(os.path.dirname(__file__), "images", "icon.ico")
+    windowslogo_path = os.path.join(os.path.dirname(__file__), "images", "windowslogo.png")
+    
         print("Using console-only logging")
         
 
@@ -920,6 +938,9 @@ def main():
         if _splash:
             _splash.setMessage(QCoreApplication.translate("Splash", "Creating image manager..."))
             _splash.setProgress(85)
+            
+        from setiastro.saspro.mainwindow import AstroSuiteProMainWindow
+        
         imgr = ImageManager(max_slots=100)
         
         if _splash:
@@ -990,7 +1011,10 @@ def main():
             
             # Small delay to ensure "Ready!" is seen briefly before fade starts
             import time
-            time.sleep(0.1)
+            end_ready = time.time() + 0.1
+            while time.time() < end_ready:
+                _app.processEvents()
+                time.sleep(0.01)
             
             # 2. Animate Splash Fade Out
             # Note: We do NOT use finish() directly here. The animation calls it when done.
