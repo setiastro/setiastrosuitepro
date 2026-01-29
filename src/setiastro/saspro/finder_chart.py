@@ -990,10 +990,21 @@ class FinderChartDialog(QDialog):
         self.sb_px.setSingleStep(100)
         self.sb_px.setValue(900)
         row1.addWidget(self.sb_px)
+        row1.addSpacing(12)
+        row1.addWidget(QLabel("Image opacity:"))
+        self.sld_opacity = QSlider(Qt.Orientation.Horizontal)
+        self.sld_opacity.setRange(0, 100)
+        self.sld_opacity.setValue(35)
+        self.sld_opacity.setFixedWidth(140)
+        row1.addWidget(self.sld_opacity)
 
+        self.lbl_opacity = QLabel("35%")
+        self.lbl_opacity.setFixedWidth(40)
+        row1.addWidget(self.lbl_opacity)
         row1.addStretch(1)
         self.btn_render = QPushButton("Render")
         row1.addWidget(self.btn_render)
+
 
         root.addLayout(row1)
 
@@ -1052,17 +1063,7 @@ class FinderChartDialog(QDialog):
         self.chk_scale.setChecked(True)
         row2.addWidget(self.chk_scale)
 
-        row2.addSpacing(12)
-        row2.addWidget(QLabel("Image opacity:"))
-        self.sld_opacity = QSlider(Qt.Orientation.Horizontal)
-        self.sld_opacity.setRange(0, 100)
-        self.sld_opacity.setValue(35)
-        self.sld_opacity.setFixedWidth(140)
-        row2.addWidget(self.sld_opacity)
 
-        self.lbl_opacity = QLabel("35%")
-        self.lbl_opacity.setFixedWidth(40)
-        row2.addWidget(self.lbl_opacity)
 
         row2.addStretch(1)
         root.addLayout(row2)
@@ -1105,22 +1106,51 @@ class FinderChartDialog(QDialog):
         # placeholder so the user sees *something* immediately
         self.lbl.setText("Fetching survey background…")
         self.lbl.setStyleSheet("QLabel { background:#111; border:1px solid #333; color:#ccc; }")
-        self.chk_stars.toggled.connect(lambda _=False: self._schedule_render(force_refetch=False, delay_ms=150))
-        self.sb_star_mag.valueChanged.connect(lambda _=0: self._schedule_render(force_refetch=False, delay_ms=150))
-        self.sb_star_max.valueChanged.connect(lambda _=0: self._schedule_render(force_refetch=False, delay_ms=150))
+        # --- overlay enable/disable: update enabled state + one refresh ---
+        self.chk_stars.toggled.connect(lambda _=False: (self._set_overlay_controls_enabled(),
+                                                       self._schedule_render(force_refetch=False, delay_ms=150)))
 
-        self.chk_dso.toggled.connect(lambda _=False: self._schedule_render(force_refetch=False, delay_ms=150))
-        self.cmb_dso.currentIndexChanged.connect(lambda _=0: self._schedule_render(force_refetch=False, delay_ms=150))
-        self.sb_dso_mag.valueChanged.connect(lambda _=0: self._schedule_render(force_refetch=False, delay_ms=150))
-        self.sb_dso_max.valueChanged.connect(lambda _=0: self._schedule_render(force_refetch=False, delay_ms=150))
+        self.chk_dso.toggled.connect(lambda _=False: (self._set_overlay_controls_enabled(),
+                                                     self._schedule_render(force_refetch=False, delay_ms=150)))
+
+        # --- star params: ONLY refresh if Star names is ON ---
+        self.sb_star_mag.valueChanged.connect(lambda _=0: self._maybe_schedule_stars(150))
+        self.sb_star_max.valueChanged.connect(lambda _=0: self._maybe_schedule_stars(150))
+
+        # --- dso params: ONLY refresh if Deep-sky is ON ---
+        self.cmb_dso.currentIndexChanged.connect(lambda _=0: self._maybe_schedule_dso(150))
+        self.sb_dso_mag.valueChanged.connect(lambda _=0: self._maybe_schedule_dso(150))
+        self.sb_dso_max.valueChanged.connect(lambda _=0: self._maybe_schedule_dso(150))
 
         self.chk_compass.toggled.connect(lambda _=False: self._schedule_render(force_refetch=False, delay_ms=150))
         self.chk_scale.toggled.connect(lambda _=False: self._schedule_render(force_refetch=False, delay_ms=150))
 
-        self.chk_stars.toggled.connect(lambda _=False: self._schedule_render(force_refetch=False, delay_ms=150))
-
+        self._set_overlay_controls_enabled()
         # kick initial render AFTER the dialog has had a chance to show/paint
         QTimer.singleShot(0, self._initial_render)
+
+    def _maybe_schedule_stars(self, delay_ms: int = 150):
+        # Only auto-refresh if the overlay is enabled
+        if not self.chk_stars.isChecked():
+            return
+        self._schedule_render(force_refetch=False, delay_ms=delay_ms)
+
+    def _maybe_schedule_dso(self, delay_ms: int = 150):
+        # Only auto-refresh if the overlay is enabled
+        if not self.chk_dso.isChecked():
+            return
+        self._schedule_render(force_refetch=False, delay_ms=delay_ms)
+
+    def _set_overlay_controls_enabled(self):
+        stars_on = self.chk_stars.isChecked()
+        self.sb_star_mag.setEnabled(stars_on)
+        self.sb_star_max.setEnabled(stars_on)
+
+        dso_on = self.chk_dso.isChecked()
+        self.cmb_dso.setEnabled(dso_on)
+        self.sb_dso_mag.setEnabled(dso_on)
+        self.sb_dso_max.setEnabled(dso_on)
+
 
     def _set_busy(self, busy: bool, msg: str = "Working…"):
         # lightweight busy state (no threads)
