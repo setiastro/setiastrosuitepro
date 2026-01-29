@@ -236,7 +236,7 @@ def _pixel_scale_arcsec(bg_wcs: "WCS") -> Optional[float]:
     except Exception:
         return None
 
-def _draw_dso_overlay(ax, bg_wcs: "WCS", center: "SkyCoord", fov_deg: float, req: FinderChartRequest):
+def _draw_dso_overlay(ax, bg_wcs: "WCS", center: "SkyCoord", fov_deg: float, req: FinderChartRequest, renderer):
     """
     Plot catalog objects within ~0.75*fov radius; declutter via coarse grid.
     """
@@ -362,7 +362,7 @@ def _draw_dso_overlay(ax, bg_wcs: "WCS", center: "SkyCoord", fov_deg: float, req
             ax, x, y, name,
             dx=7, dy=5, fontsize=9,
             color="white", alpha=0.95, outline=True,
-            out_px=out_px, pad=4
+            out_px=out_px, pad=4, renderer=renderer
         )
 
 def _draw_compass_NE(ax, bg_wcs: "WCS", out_px: int, fov_deg: float):
@@ -606,35 +606,30 @@ def _inside_px(x: float, y: float, out_px: int, pad: int = 0) -> bool:
 
 def _place_label_inside(ax, x, y, text, *, dx=6, dy=4, fontsize=9,
                         color="white", alpha=0.95, outline=True,
-                        out_px=900, pad=3):
+                        out_px=900, pad=3, renderer=None):
     """
     Place a label near (x,y) but ensure its bounding box stays inside [0,out_px).
-    Returns Text or None.
+    Requires a renderer (create once per chart render).
     """
-    # First try: preferred offset (right/up)
-    t = ax.text(
-        x + dx, y + dy, text,
-        fontsize=fontsize, color=color, alpha=alpha,
-        transform=ax.get_transform("pixel"),
-        clip_on=True,
-    )
+    if renderer is None:
+        # best-effort fallback (still avoids draw); may be None on some backends until first draw
+        renderer = getattr(ax.figure.canvas, "get_renderer", lambda: None)()
+        if renderer is None:
+            # can't measure; just place it and clip
+            t = ax.text(x + dx, y + dy, text, fontsize=fontsize, color=color, alpha=alpha,
+                        transform=ax.get_transform("pixel"), clip_on=True)
+            if outline:
+                t.set_path_effects([pe.Stroke(linewidth=2.0, foreground=(0, 0, 0, 0.85)), pe.Normal()])
+            return t
+
+    t = ax.text(x + dx, y + dy, text, fontsize=fontsize, color=color, alpha=alpha,
+                transform=ax.get_transform("pixel"), clip_on=True)
     if outline:
         t.set_path_effects([pe.Stroke(linewidth=2.0, foreground=(0, 0, 0, 0.85)), pe.Normal()])
 
-    # Need a renderer to compute bbox in pixels
-    fig = ax.figure
-    fig.canvas.draw()
-    renderer = fig.canvas.get_renderer()
-
     bb = t.get_window_extent(renderer=renderer)
-
-    # Convert chart pixel coords -> display coords for clamping
-    # since we used transform("pixel"), data units are already pixel-ish; easiest: clamp in data space
-    # But bbox is in display coords; compute how far outside in display, then adjust in data.
-    # We'll approximate by clamping in *data* by converting two points.
     inv = ax.get_transform("pixel").inverted()
 
-    # Bbox corners in display -> data (pixel) coords
     (x0, y0) = inv.transform((bb.x0, bb.y0))
     (x1, y1) = inv.transform((bb.x1, bb.y1))
 
@@ -650,12 +645,10 @@ def _place_label_inside(ax, x, y, text, *, dx=6, dy=4, fontsize=9,
     if y1 > (out_px - pad):
         shift_y -= (y1 - (out_px - pad))
 
-    if shift_x != 0.0 or shift_y != 0.0:
-        # Apply shift
+    if shift_x or shift_y:
         t.set_position((x + dx + shift_x, y + dy + shift_y))
-        fig.canvas.draw()
 
-        # Re-check; if still outside badly (can happen near corners), just drop it
+        # Re-check once (no draw needed)
         bb2 = t.get_window_extent(renderer=renderer)
         (xx0, yy0) = inv.transform((bb2.x0, bb2.y0))
         (xx1, yy1) = inv.transform((bb2.x1, bb2.y1))
@@ -895,29 +888,26 @@ def _rgb_u8_to_qimage(rgb_u8: np.ndarray) -> QImage:
     # QImage uses the buffer; to be safe, copy via .copy() when making pixmap
     return QImage(rgb_u8.data, w, h, bpl, QImage.Format.Format_RGB888)
 
-def _draw_star_names(ax, bg_wcs: "WCS", center: "SkyCoord", fov_deg: float, *, mag_limit: float = 2.0, max_labels: int = 30):
+def _draw_star_names(ax, bg_wcs: "WCS", center: "SkyCoord", fov_deg: float, *,
+                     mag_limit: float = 2.0, max_labels: int = 30, renderer=None):
     if bg_wcs is None:
         return
 
     import astropy.units as u
     from astropy.coordinates import SkyCoord
 
-    # 1) Cull by a simple spherical radius from center
     ra0 = float(center.ra.deg)
     dec0 = float(center.dec.deg)
-
-    # generous radius: half-diagonal-ish
     radius = float(fov_deg) * 0.75
+
+    c0 = SkyCoord(ra0*u.deg, dec0*u.deg, frame="icrs")  # <-- MOVE OUTSIDE LOOP
 
     rows = []
     for (name, ra, dec, vmag) in BRIGHT_STARS:
         if float(vmag) > float(mag_limit):
-            continue        
-        # quick dec prefilter
+            continue
         if abs(dec - dec0) > radius + 2.0:
             continue
-        # use SkyCoord sep for correctness
-        c0 = SkyCoord(ra0*u.deg, dec0*u.deg, frame="icrs")
         c1 = SkyCoord(float(ra)*u.deg, float(dec)*u.deg, frame="icrs")
         if c0.separation(c1).deg <= radius:
             rows.append((name, float(ra), float(dec), float(vmag)))
@@ -925,40 +915,35 @@ def _draw_star_names(ax, bg_wcs: "WCS", center: "SkyCoord", fov_deg: float, *, m
     if not rows:
         return
 
-    # 2) Sort by brightness (lowest mag first), then cap
     rows.sort(key=lambda r: r[3])
     rows = rows[:max_labels]
 
-    # 3) Project to pixels
     coords = SkyCoord([r[1] for r in rows]*u.deg, [r[2] for r in rows]*u.deg, frame="icrs")
     xs, ys = bg_wcs.world_to_pixel(coords)
 
     out_px = int(getattr(ax.figure, "_sas_out_px", 0) or 0)
     if out_px <= 0:
-        # fallback if not set
         out_px = int(ax.figure.get_figwidth() * ax.figure.dpi)
 
-    # 4) Bounds + declutter: only consider points inside the final square
     kept = []
     cell = 28
     used = set()
 
     for (row, x, y) in zip(rows, xs, ys):
-        if not _inside_px(float(x), float(y), out_px, pad=0):
+        x = float(x); y = float(y)
+        if not _inside_px(x, y, out_px, pad=0):
             continue
-
-        gx = int(float(x) // cell)
-        gy = int(float(y) // cell)
+        gx = int(x // cell)
+        gy = int(y // cell)
         key = (gx, gy)
         if key in used:
             continue
         used.add(key)
-        kept.append((row[0], float(x), float(y), row[3]))
+        kept.append((row[0], x, y))
         if len(kept) >= int(max_labels):
             break
 
-    # 5) Draw (markers + labels kept inside)
-    for (name, x, y, vmag) in kept:
+    for (name, x, y) in kept:
         ax.plot([x], [y],
                 marker="o", markersize=2.5, alpha=0.85,
                 color="#ffb000",
@@ -969,22 +954,9 @@ def _draw_star_names(ax, bg_wcs: "WCS", center: "SkyCoord", fov_deg: float, *, m
             ax, x, y, name,
             dx=6, dy=4, fontsize=9,
             color="#ffb000", alpha=0.95, outline=True,
-            out_px=out_px, pad=4
+            out_px=out_px, pad=4,
+            renderer=renderer,          # <-- PASS IT
         )
-
-        # label (orange + thin black outline)
-        t = ax.text(
-            x + 6, y + 4,
-            name,
-            fontsize=9,
-            color="#ffb000",   # orange
-            alpha=0.95,
-            transform=ax.get_transform("pixel"),
-        )
-        t.set_path_effects([
-            pe.Stroke(linewidth=2.0, foreground=(0, 0, 0, 0.85)),
-            pe.Normal(),
-        ])
 
 
 def render_finder_chart_cached(
@@ -1090,13 +1062,17 @@ def render_finder_chart_cached(
             ax.set_yticks([])
             ax.set_axis_off()
 
+    # After background + grid setup (before overlays that need bbox measurements)
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+
     # ---- star names overlay ----
     if getattr(req, "show_star_names", False) and (bg_wcs is not None):
         try:
             _draw_star_names(
                 ax, bg_wcs, center[0], fov_deg,
                 mag_limit=float(getattr(req, "star_mag_limit", 2.0)),
-                max_labels=int(getattr(req, "star_max_labels", 30)),
+                max_labels=int(getattr(req, "star_max_labels", 30)), renderer=renderer
             )
         except Exception:
             pass
@@ -1106,7 +1082,7 @@ def render_finder_chart_cached(
 
         if bg_wcs is not None:
             try:
-                _draw_dso_overlay(ax, bg_wcs, center[0], fov_deg, req)
+                _draw_dso_overlay(ax, bg_wcs, center[0], fov_deg, req, renderer=renderer)
             except Exception as e:
                 print(f"[DSO] overlay error: {type(e).__name__}: {e}")
 
