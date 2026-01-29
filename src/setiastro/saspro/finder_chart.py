@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from typing import Optional, Tuple, TYPE_CHECKING
-
+import io
 import numpy as np
 import csv
 import re
@@ -20,7 +20,7 @@ from astropy.wcs import WCS
 from astropy.io import fits
 from astropy.coordinates import SkyCoord
 from astropy.wcs.utils import proj_plane_pixel_scales
-
+from matplotlib import patheffects as pe
 from pathlib import Path
 from setiastro.saspro.resources import get_data_path
 from setiastro.saspro.bright_stars import BRIGHT_STARS
@@ -62,21 +62,8 @@ class FinderChartRequest:
 _CATALOG_CACHE: Dict[str, List[Dict[str, Any]]] = {}
 
 def _catalog_path(name: str) -> Path:
-    """
-    Resolve catalog CSV paths via resources.get_data_path so it works in:
-      - PyInstaller (_MEIPASS)
-      - dev source tree
-      - pip installs
-    """
-    # Your canonical catalog files (note: you spelled it "celestrial_catalog.csv")
-    if name in ("Messier", "Messier+NGC+IC", "All (DSO)"):
-        return Path(get_data_path("data/catalogs/celestrial_catalog.csv"))
-
-    if name == "Galaxies (Distances)":
-        return Path(get_data_path("data/catalogs/List_of_Galaxies_with_Distances_Gly.csv"))
-
-    # fallback
-    return Path(get_data_path("data/catalogs/celestrial_catalog.csv"))
+    # everything now comes from celestial_catalog.csv
+    return Path(get_data_path("data/catalogs/celestial_catalog.csv"))
 
 
 
@@ -111,12 +98,28 @@ def _parse_size_arcmin(info: str) -> Optional[tuple]:
     # Assume arcminutes (matches your Messier examples)
     return (float(w), float(h))
 
+def _open_catalog_csv(path: Path):
+    """
+    Catalogs may be saved as UTF-8, UTF-8 with BOM, or Windows-1252 / latin-1.
+    IMPORTANT: we must *force a decode* here (open() alone doesn't decode until read).
+    Returns a *text* file-like object suitable for csv.DictReader.
+    """
+    data = path.read_bytes()
+
+    last = None
+    for enc in ("latin-1", "utf-8-sig", "utf-8", "cp1252"):
+        try:
+            text = data.decode(enc)  # <-- force decode NOW
+            # newline="" behavior like open(..., newline="") for csv module
+            return io.StringIO(text, newline="")
+        except UnicodeDecodeError as e:
+            last = e
+
+    # If we get here, decoding failed for all options
+    raise last or UnicodeDecodeError("utf-8", b"", 0, 1, "Unknown decode error")
+
 
 def _load_catalog_rows(kind: str) -> List[Dict[str, Any]]:
-    """
-    Returns list of dict rows with at least: name, ra, dec, mag, info, catalog, type.
-    Cached per kind.
-    """
     if kind in _CATALOG_CACHE:
         return _CATALOG_CACHE[kind]
 
@@ -124,57 +127,75 @@ def _load_catalog_rows(kind: str) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
 
     if not path.exists():
+        print(f"[DSO] catalog path missing: {path}")
         _CATALOG_CACHE[kind] = rows
         return rows
 
-    with path.open("r", encoding="utf-8", newline="") as f:
-        reader = csv.DictReader(f)
-        for r in reader:
-            # Two supported schemas:
-            # 1) celestrial_catalog.csv: Name,RA,Dec,Alt Name,Type,Magnitude,Info,Catalog
-            # 2) galaxies distances: RA,Dec,NAME,Diameter,Type,LongType,...
-            name = (r.get("Name") or r.get("NAME") or "").strip()
+    try:
+        with _open_catalog_csv(path) as f:
+            reader = csv.DictReader(f)
+            for r in reader:
+                def getk(*keys):
+                    for k in keys:
+                        if k in r and r[k] is not None:
+                            return r[k]
+                        kb = "\ufeff" + k
+                        if kb in r and r[kb] is not None:
+                            return r[kb]
+                    return None
 
-            # tolerate weird header casing / whitespace
-            ra = _safe_float(r.get("RA") or r.get("Ra") or r.get("ra"), None)
-            dec = _safe_float(r.get("Dec") or r.get("DEC") or r.get("dec"), None)
+                name = str(getk("Name", "NAME") or "").strip()
+                ra   = _safe_float(getk("RA", "Ra", "ra"), None)
+                dec  = _safe_float(getk("Dec", "DEC", "dec"), None)
+                if not name or ra is None or dec is None:
+                    continue
 
-            if not name or ra is None or dec is None:
-                continue
+                mag  = _safe_float(getk("Magnitude", "MAG", "mag"), None)
+                info = str(getk("Info", "Diameter") or "").strip()
+                cat  = str(getk("Catalog") or "").strip()
+                typ  = str(getk("Type", "LongType") or "").strip()
 
-            if not name or ra is None or dec is None:
-                continue
+                rows.append({
+                    "name": name,
+                    "ra": float(ra),
+                    "dec": float(dec),
+                    "mag": mag,
+                    "info": info,
+                    "catalog": cat,
+                    "type": typ,
+                })
 
-            mag = _safe_float(r.get("Magnitude"), None)
-            info = (r.get("Info") or r.get("Diameter") or "").strip()
-            cat = (r.get("Catalog") or "").strip()
-            typ = (r.get("Type") or r.get("LongType") or "").strip()
+    except Exception as e:
+        print(f"[DSO] catalog read failed: {path} ({type(e).__name__}: {e})")
+        _CATALOG_CACHE[kind] = []
+        return []
 
-            rows.append({
-                "name": name,
-                "ra": float(ra),
-                "dec": float(dec),
-                "mag": mag,       # may be None
-                "info": info,
-                "catalog": cat,
-                "type": typ,
-            })
+    # per-kind filtering (based on Catalog column in celestial_catalog.csv)
+    k = (kind or "").strip().upper()
 
-    # Apply per-kind filtering
-    if kind == "Messier":
-        rows = [r for r in rows if (r.get("catalog") or "").strip().lower() == "messier"]
-    elif kind == "Messier+NGC+IC":
-        keep = {"messier", "ngc", "ic"}
-        rows = [r for r in rows if (r.get("catalog") or "").strip().lower() in keep]
-    elif kind == "All (DSO)":
-        pass
-    elif kind == "Galaxies (Distances)":
-        # already correct file
-        pass
+    # Map UI label -> allowed catalog codes (also uppercase)
+    allowed_map = {
+        "M": {"M", "MESSIER"},
+        "NGC": {"NGC"},
+        "IC": {"IC"},
+        "ABELL": {"ABELL"},
+        "SH2": {"SH2", "SH-2", "SH 2"},
+        "LBN": {"LBN"},
+        "LDN": {"LDN"},
+        "PN-G": {"PN-G", "PNG", "PN G", "PN_G"},
+        "ALL (DSO)": None,  # no filtering
+    }
+
+    allowed = allowed_map.get(k, None)
+
+    def _catcode(row) -> str:
+        return (row.get("catalog") or "").strip().upper()
+
+    if allowed is not None:
+        rows = [r for r in rows if _catcode(r) in allowed]
 
     _CATALOG_CACHE[kind] = rows
     return rows
-
 
 def _pixel_scale_arcsec(bg_wcs: "WCS") -> Optional[float]:
     """
@@ -203,6 +224,7 @@ def _draw_dso_overlay(ax, bg_wcs: "WCS", center: "SkyCoord", fov_deg: float, req
     from astropy.coordinates import SkyCoord
 
     rows = _load_catalog_rows(req.dso_catalog)
+ 
     if not rows:
         return
 
@@ -267,32 +289,57 @@ def _draw_dso_overlay(ax, bg_wcs: "WCS", center: "SkyCoord", fov_deg: float, req
         name = r["name"]
 
         # marker
-        ax.plot([x], [y], marker="s", markersize=3.5, alpha=0.85, transform=ax.get_transform("pixel"))
+        ax.plot(
+            [x], [y],
+            marker="s",
+            markersize=3.5,
+            alpha=0.9,
+            color="#66ccff",  # light cyan (optional)
+            transform=ax.get_transform("pixel"),
+        )
 
-        # size ellipse if we can parse it
+        # size circle if we can parse it (Info field, arcmin)
         if arcsec_per_pix is not None:
             sz = _parse_size_arcmin(r.get("info", ""))
             if sz is not None:
                 w_arcmin, h_arcmin = sz
-                w_px = (w_arcmin * 60.0) / arcsec_per_pix
-                h_px = (h_arcmin * 60.0) / arcsec_per_pix
-                if np.isfinite(w_px) and np.isfinite(h_px) and w_px > 2 and h_px > 2:
+
+                # Use the MAJOR axis only (honest; no PA info)
+                major_arcmin = float(max(w_arcmin, h_arcmin))
+
+                # convert major-axis diameter arcmin -> pixel radius
+                diam_px = (major_arcmin * 60.0) / arcsec_per_pix
+                rad_px = 0.5 * diam_px
+
+                if np.isfinite(rad_px) and rad_px > 2:
                     try:
-                        from matplotlib.patches import Ellipse
-                        e = Ellipse((x, y), width=w_px, height=h_px, fill=False, linewidth=1.0, alpha=0.7,
-                                    transform=ax.get_transform("pixel"))
-                        ax.add_patch(e)
+                        from matplotlib.patches import Circle
+                        c = Circle(
+                            (x, y),
+                            radius=rad_px,
+                            fill=False,
+                            linewidth=1,
+                            alpha=0.75,
+                            edgecolor="#5145ff",   # cyan outline (NOT black)
+                            transform=ax.get_transform("pixel"),
+                        )
+                        ax.add_patch(c)
                     except Exception:
                         pass
 
         # label
-        ax.text(
+        t = ax.text(
             x + 7, y + 5,
             name,
             fontsize=9,
-            alpha=0.9,
+            color="white",          # <-- IMPORTANT (default is black)
+            alpha=0.95,
             transform=ax.get_transform("pixel"),
         )
+        t.set_path_effects([
+            pe.Stroke(linewidth=2.0, foreground=(0, 0, 0, 0.85)),
+            pe.Normal(),
+        ])
 
 
 def _draw_compass_NE(ax, bg_wcs: "WCS", out_px: int, fov_deg: float):
@@ -784,15 +831,29 @@ def _draw_star_names(ax, bg_wcs: "WCS", center: "SkyCoord", fov_deg: float, *, m
 
     # 5) Draw
     for (name, x, y, vmag) in kept:
-        # a tiny marker + label
-        ax.plot([x], [y], marker="o", markersize=2.5, alpha=0.8, transform=ax.get_transform("pixel"))
-        ax.text(
+        # marker
+        ax.plot(
+            [x], [y],
+            marker="o",
+            markersize=2.5,
+            alpha=0.85,
+            color="#ffb000",  # orange
+            transform=ax.get_transform("pixel"),
+        )
+
+        # label (orange + thin black outline)
+        t = ax.text(
             x + 6, y + 4,
             name,
             fontsize=9,
-            alpha=0.9,
+            color="#ffb000",   # orange
+            alpha=0.95,
             transform=ax.get_transform("pixel"),
         )
+        t.set_path_effects([
+            pe.Stroke(linewidth=2.0, foreground=(0, 0, 0, 0.85)),
+            pe.Normal(),
+        ])
 
 
 def render_finder_chart_cached(
@@ -806,6 +867,7 @@ def render_finder_chart_cached(
     bg: Optional[np.ndarray],
     bg_wcs: Optional[WCS],
     err: Optional[str],
+    base_u8: Optional[np.ndarray] = None,   # <-- NEW
 ) -> np.ndarray:
     import matplotlib
     matplotlib.use("Agg")
@@ -825,15 +887,20 @@ def render_finder_chart_cached(
         msg = "No HiPS background.\n" + (err or "Unknown error")
         ax.text(0.5, 0.5, msg, ha="center", va="center", transform=ax.transAxes)
     else:
-        # overlay (optional)
-        if bg_wcs is not None and doc_wcs is not None and req.overlay_opacity > 0.0:
-            try:
-                overlay_u8 = _overlay_doc_on_bg(bg, bg_wcs, doc_image, doc_wcs, alpha=req.overlay_opacity)
-                ax.imshow(overlay_u8, origin="lower")
-            except Exception:
-                ax.imshow(bg, origin="lower")
+        # If provided, base_u8 already includes hips + optional warped doc overlay.
+        if base_u8 is not None:
+            ax.imshow(base_u8, origin="lower")
         else:
-            ax.imshow(bg, origin="lower")
+            # fallback (old path)
+            if bg_wcs is not None and doc_wcs is not None and req.overlay_opacity > 0.0:
+                try:
+                    overlay_u8 = _overlay_doc_on_bg(bg, bg_wcs, doc_image, doc_wcs, alpha=req.overlay_opacity)
+                    ax.imshow(overlay_u8, origin="lower")
+                except Exception:
+                    ax.imshow(bg, origin="lower")
+            else:
+                ax.imshow(bg, origin="lower")
+
 
         # footprint polygon in pixel coords
         if bg_wcs is not None:
@@ -903,11 +970,13 @@ def render_finder_chart_cached(
             pass
 
     # ---- deep-sky overlay ----
-    if getattr(req, "show_dso", False) and (bg_wcs is not None):
-        try:
-            _draw_dso_overlay(ax, bg_wcs, center[0], fov_deg, req)
-        except Exception:
-            pass
+    if getattr(req, "show_dso", False):
+
+        if bg_wcs is not None:
+            try:
+                _draw_dso_overlay(ax, bg_wcs, center[0], fov_deg, req)
+            except Exception as e:
+                print(f"[DSO] overlay error: {type(e).__name__}: {e}")
 
     # ---- compass + scale bar ----
     if bg_wcs is not None and getattr(req, "show_compass", True):
@@ -954,6 +1023,8 @@ class FinderChartDialog(QDialog):
         self._render_timer.setSingleShot(True)
         self._render_timer.timeout.connect(self._render_debounced_fire)
         self._pending_force_refetch = False
+        self._base_cache_key = None
+        self._base_u8 = None        
         # Cached geometry derived from the current doc WCS (used for overlays/labels)
         self._doc_wcs_cached = None
         self._corners_cached = None
@@ -1019,7 +1090,7 @@ class FinderChartDialog(QDialog):
         self.sb_star_mag = QDoubleSpinBox()
         self.sb_star_mag.setRange(-2.0, 8.0)
         self.sb_star_mag.setSingleStep(0.5)
-        self.sb_star_mag.setValue(2.0)
+        self.sb_star_mag.setValue(5.0)
         self.sb_star_mag.setFixedWidth(70)
         row2.addWidget(self.sb_star_mag)
 
@@ -1035,7 +1106,7 @@ class FinderChartDialog(QDialog):
         row2.addWidget(self.chk_dso)
 
         self.cmb_dso = QComboBox()
-        self.cmb_dso.addItems(["Messier", "Messier+NGC+IC", "All (DSO)", "Galaxies (Distances)"])
+        self.cmb_dso.addItems(["All (DSO)", "M", "NGC", "IC", "Abell", "SH2", "LBN", "LDN", "PN-G"])
         self.cmb_dso.setFixedWidth(170)
         row2.addWidget(self.cmb_dso)
 
@@ -1043,7 +1114,7 @@ class FinderChartDialog(QDialog):
         self.sb_dso_mag = QDoubleSpinBox()
         self.sb_dso_mag.setRange(-2.0, 30.0)
         self.sb_dso_mag.setSingleStep(0.5)
-        self.sb_dso_mag.setValue(10.0)
+        self.sb_dso_mag.setValue(12.0)
         self.sb_dso_mag.setFixedWidth(70)
         row2.addWidget(self.sb_dso_mag)
 
@@ -1077,11 +1148,18 @@ class FinderChartDialog(QDialog):
 
         # buttons
         brow = QHBoxLayout()
+
+        self.lbl_status = QLabel("")                 # <-- NEW
+        self.lbl_status.setStyleSheet("color:#bbb;") # subtle
+        self.lbl_status.setMinimumWidth(160)
+        brow.addWidget(self.lbl_status)              # <-- NEW
+
+        brow.addStretch(1)
+
         self.btn_send = QPushButton("Send to New Document")
         self.btn_save = QPushButton("Save PNG…")
         self.btn_close = QPushButton("Close")
         brow.addWidget(self.btn_send)
-        brow.addStretch(1)
         brow.addWidget(self.btn_save)
         brow.addWidget(self.btn_close)
         root.addLayout(brow)
@@ -1152,11 +1230,17 @@ class FinderChartDialog(QDialog):
         self.sb_dso_max.setEnabled(dso_on)
 
 
-    def _set_busy(self, busy: bool, msg: str = "Working…"):
-        # lightweight busy state (no threads)
+    def _set_busy(self, busy: bool, msg: str = "Rendering…"):
         self.btn_render.setEnabled(not busy)
         self.btn_send.setEnabled((not busy) and (self._last_rgb_u8 is not None))
         self.btn_save.setEnabled((not busy) and (self._last_rgb_u8 is not None))
+
+        if hasattr(self, "lbl_status") and self.lbl_status is not None:
+            self.lbl_status.setText(msg if busy else "")
+            self.lbl_status.setVisible(True)
+
+        # ensures the label paints immediately before heavy work
+        QApplication.processEvents()
 
 
     def _initial_render(self):
@@ -1166,10 +1250,12 @@ class FinderChartDialog(QDialog):
 
 
     def _schedule_render(self, *, force_refetch: bool = False, delay_ms: int = 200):
-        # Accumulate "force" requests until the next fire
-        self._pending_force_refetch = self._pending_force_refetch or bool(force_refetch)
+        # show immediate feedback during debounce
+        if hasattr(self, "lbl_status") and self.lbl_status is not None:
+            self.lbl_status.setText("Rendering…")
+            QApplication.processEvents()
 
-        # Restart debounce timer
+        self._pending_force_refetch = self._pending_force_refetch or bool(force_refetch)
         self._render_timer.stop()
         self._render_timer.start(int(delay_ms))
 
@@ -1216,6 +1302,22 @@ class FinderChartDialog(QDialog):
         self._hips_wcs = bg_wcs
         self._hips_err = err
 
+    def _doc_key(self, img: np.ndarray, meta: dict) -> tuple:
+        # cheap-ish: shape + metadata wcs fingerprint (or header checksum if you have one)
+        w = meta.get("wcs")
+        w_id = id(w) if w is not None else id(meta.get("original_header") or meta.get("fits_header") or meta.get("header"))
+        return (img.shape, w_id, int(self.cmb_size.currentIndex()))  # size affects scale_mult
+
+    def _compute_doc_geometry_cached(self, img, meta, req):
+        key = self._doc_key(img, meta)
+        if getattr(self, "_geom_cache_key", None) == key and self._doc_wcs_cached is not None:
+            return self._doc_wcs_cached, self._corners_cached, self._center_cached, self._fov_deg_cached
+
+        doc_wcs, corners, center, fov_deg = self._compute_doc_geometry(img, meta, req)
+        self._geom_cache_key = key
+        self._doc_wcs_cached, self._corners_cached, self._center_cached, self._fov_deg_cached = doc_wcs, corners, center, fov_deg
+        return doc_wcs, corners, center, fov_deg
+
 
     def _req(self) -> FinderChartRequest:
         survey = str(self.cmb_survey.currentText())
@@ -1254,7 +1356,7 @@ class FinderChartDialog(QDialog):
             req = self._req()
 
             # 1) compute geometry from doc WCS
-            doc_wcs, corners, center, fov_deg = self._compute_doc_geometry(img, meta, req)
+            doc_wcs, corners, center, fov_deg = self._compute_doc_geometry_cached(img, meta, req)
             if doc_wcs is None:
                 QMessageBox.warning(self, "Finder Chart", "Could not render finder chart (missing WCS).")
                 return
@@ -1267,8 +1369,11 @@ class FinderChartDialog(QDialog):
 
             # 2) fetch background only if needed
             self._ensure_hips_background(req, center[0], fov_deg, force=force_refetch)
-
+            # 2.5) build/cache base raster (NO re-warp on overlay toggles)
+            self._ensure_base_raster(req, img, doc_wcs, corners, center, fov_deg)
             # 3) render using cached background (NO network)
+
+
             rgb = render_finder_chart_cached(
                 doc_image=img,
                 doc_wcs=doc_wcs,
@@ -1279,6 +1384,7 @@ class FinderChartDialog(QDialog):
                 bg=self._hips_bg,
                 bg_wcs=self._hips_wcs,
                 err=self._hips_err,
+                base_u8=self._base_u8,
             )
 
             self._last_rgb_u8 = rgb
@@ -1289,6 +1395,30 @@ class FinderChartDialog(QDialog):
             QMessageBox.critical(self, "Finder Chart", str(e))
         finally:
             self._set_busy(False)
+
+    def _ensure_base_raster(self, req, img, doc_wcs, corners, center, fov_deg):
+        doc_sig = (img.shape, str(type(self._doc)), id(self._doc))
+        base_key = (
+            self._hips_cache_key,                 # ties to survey/out_px/center/fov
+            round(req.overlay_opacity, 4),
+            id(doc_wcs),
+            doc_sig,
+        )
+        if getattr(self, "_base_cache_key", None) == base_key:
+            return
+
+        if self._hips_bg is None:
+            self._base_u8 = None
+            self._base_cache_key = base_key
+            return
+
+        if self._hips_wcs is not None and req.overlay_opacity > 0:
+            self._base_u8 = _overlay_doc_on_bg(self._hips_bg, self._hips_wcs, img, doc_wcs, alpha=req.overlay_opacity)
+        else:
+            self._base_u8 = (np.clip(self._hips_bg, 0, 1) * 255.0 + 0.5).astype(np.uint8)
+
+        self._base_cache_key = base_key
+
 
     def _on_opacity_changed(self, v: int):
         self.lbl_opacity.setText(f"{int(v)}%")

@@ -298,7 +298,7 @@ class ToolbarMixin:
         tb_star.addAction(self.act_planetary_stacker)
         tb_star.addAction(self.act_planet_projection)
         tb_star.addAction(self.act_plate_solve)
-        tb_star.addAction(self.act_finder_chart)
+        
         tb_star.addAction(self.act_star_align)
         tb_star.addAction(self.act_star_register)
         tb_star.addAction(self.act_rgb_align)
@@ -333,6 +333,7 @@ class ToolbarMixin:
         tb_wim = DraggableToolBar(self.tr("What's In My..."), self)
         tb_wim.setObjectName("What's In My...")
         tb_wim.setSettingsKey("Toolbar/WhatsInMy")
+        tb_wim.addAction(self.act_finder_chart)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_wim)
 
         tb_wim.addAction(self.act_whats_in_my_sky)

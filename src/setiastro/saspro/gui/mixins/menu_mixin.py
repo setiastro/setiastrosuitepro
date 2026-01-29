@@ -204,7 +204,7 @@ class MenuMixin:
 
         m_star.addAction(self.act_astrospike)
         m_star.addAction(self.act_exo_detector)
-        m_star.addAction(self.act_finder_chart) 
+
         m_star.addAction(self.act_image_peeker)
         m_star.addAction(self.act_isophote)
         m_star.addAction(self.act_live_stacking)
@@ -234,6 +234,7 @@ class MenuMixin:
         m_wim = mb.addMenu(self.tr("&What's In My..."))
         m_wim.addAction(self.act_whats_in_my_sky)
         m_wim.addAction(self.act_wimi)
+        m_wim.addAction(self.act_finder_chart) 
 
         m_scripts = mb.addMenu(self.tr("&Scripts"))
         self.menu_scripts = m_scripts
