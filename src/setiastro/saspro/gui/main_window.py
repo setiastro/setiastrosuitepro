@@ -196,7 +196,7 @@ from setiastro.saspro.resources import (
     colorwheel_path, font_path, csv_icon_path, spinner_path, wims_path, narrowbandnormalization_path,
     wimi_path, linearfit_path, debayer_path, aberration_path, acv_icon_path,
     functionbundles_path, viewbundles_path, selectivecolor_path, rgbalign_path, planetarystacker_path,
-    background_path, script_icon_path, planetprojection_path,clonestampicon_path,
+    background_path, script_icon_path, planetprojection_path,clonestampicon_path, finderchart_path,
 )
 
 import faulthandler
@@ -4238,6 +4238,38 @@ class AstroSuiteProMainWindow(
         except Exception:
             pass
 
+    def _doc_has_wcs(self, doc) -> bool:
+        if doc is None:
+            return False
+        meta = getattr(doc, "metadata", None) or {}
+        if meta.get("wcs") is not None:
+            return True
+
+        hdr = meta.get("original_header") or meta.get("fits_header") or meta.get("header")
+        if hdr is None:
+            return False
+
+        try:
+            keys = {str(k).upper() for k in hdr.keys()}
+        except Exception:
+            try:
+                keys = {str(k).upper() for k in dict(hdr).keys()}
+            except Exception:
+                return False
+
+        return {"CTYPE1","CTYPE2","CRVAL1","CRVAL2"}.issubset(keys)
+
+
+    def _open_finder_chart(self):
+        doc = self._active_doc()
+        if not self._doc_has_wcs(doc):
+            QMessageBox.information(self, self.tr("Finder Chart"), self.tr("Active image has no astrometric solution (WCS). Plate solve first."))
+            return
+
+        from setiastro.saspro.finder_chart import FinderChartDialog
+        dlg = FinderChartDialog(doc=doc, settings=self.settings, parent=self)
+        dlg.setWindowIcon(QIcon(finderchart_path))
+        dlg.show()
 
     def _open_stellar_alignment(self):
         from setiastro.saspro.star_alignment import StellarAlignmentDialog

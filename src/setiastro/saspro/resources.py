@@ -340,6 +340,7 @@ class Icons:
     DEBAYER = property(lambda self: _resource_path('debayer.png'))
     FUNCTION_BUNDLES = property(lambda self: _resource_path('functionbundle.png'))
     VIEW_BUNDLES = property(lambda self: _resource_path('viewbundle.png'))
+    FINDER_CHART = property(lambda self: _resource_path('finderchart.png'))
 
 # Singleton instances for easy access
 _icons_instance = None
@@ -546,6 +547,7 @@ def _init_legacy_paths():
         'background_path': get_icon_path('background.png'), 
         'script_icon_path': get_icon_path('script.png'),
         'planetprojection_path': get_icon_path('3dplanet.png'),
+        'finderchart_path': get_icon_path('finderchart.png'),
     }
 
 class Resources:

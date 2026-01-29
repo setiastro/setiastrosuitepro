@@ -204,6 +204,7 @@ class MenuMixin:
 
         m_star.addAction(self.act_astrospike)
         m_star.addAction(self.act_exo_detector)
+        m_star.addAction(self.act_finder_chart) 
         m_star.addAction(self.act_image_peeker)
         m_star.addAction(self.act_isophote)
         m_star.addAction(self.act_live_stacking)
