@@ -66,7 +66,9 @@ def numpy_to_qimage(arr: np.ndarray, normalize: bool = True) -> QImage:
     if arr.ndim == 2:
         # Grayscale
         h, w = arr.shape
-        return QImage(arr.data, w, h, w, QImage.Format.Format_Grayscale8).copy()
+        img = QImage(arr.data, w, h, w, QImage.Format.Format_Grayscale8)
+        img._buf = arr # Keep alive
+        return img
     
     elif arr.ndim == 3:
         h, w, c = arr.shape
@@ -74,17 +76,23 @@ def numpy_to_qimage(arr: np.ndarray, normalize: bool = True) -> QImage:
         if c == 1:
             # Grayscale with channel dim
             arr = arr.squeeze()
-            return QImage(arr.data, w, h, w, QImage.Format.Format_Grayscale8).copy()
+            img = QImage(arr.data, w, h, w, QImage.Format.Format_Grayscale8)
+            img._buf = arr
+            return img
         
         elif c == 3:
             # RGB
             bytes_per_line = 3 * w
-            return QImage(arr.data, w, h, bytes_per_line, QImage.Format.Format_RGB888).copy()
+            img = QImage(arr.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+            img._buf = arr
+            return img
         
         elif c == 4:
             # RGBA
             bytes_per_line = 4 * w
-            return QImage(arr.data, w, h, bytes_per_line, QImage.Format.Format_RGBA8888).copy()
+            img = QImage(arr.data, w, h, bytes_per_line, QImage.Format.Format_RGBA8888)
+            img._buf = arr
+            return img
         
         else:
             raise ValueError(f"Unsupported number of channels: {c}")

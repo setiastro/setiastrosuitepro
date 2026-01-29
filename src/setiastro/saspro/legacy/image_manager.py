@@ -242,8 +242,16 @@ class ImageManager(QObject):
     def set_image(self, new_image, metadata, step_name=None):
         slot = self.current_slot
         if self._images[slot] is not None:
+            # OPTIMIZATION: If we are setting the EXACT SAME image object (e.g. metadata update),
+            # do not deep-copy the image data to undo stack.
+            # This saves massive memory when just renaming a slot or changing WCS.
+            if new_image is self._images[slot]:
+                 stored_img = self._images[slot] # Shallow copy / reference
+            else:
+                 stored_img = self._images[slot].copy() # Deep copy for safety
+
             self._undo_stacks[slot].append(
-                (self._images[slot].copy(), self._metadata[slot].copy(), step_name or "Unnamed Step")
+                (stored_img, self._metadata[slot].copy(), step_name or "Unnamed Step")
             )
             self._redo_stacks[slot].clear()
             print(f"ImageManager: Previous image in slot {slot} pushed to undo stack.")
