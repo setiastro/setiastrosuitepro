@@ -165,7 +165,7 @@ def _gradient_descent_to_dim_spot(image: np.ndarray, x: int, y: int, max_iter: i
     return cx, cy
 
 
-def _generate_sample_points(image: np.ndarray, num_points: int = 100, exclusion_mask: np.ndarray | None = None, patch_size: int = 15) -> np.ndarray:
+def _generate_sample_points(image: np.ndarray, num_points: int = 100, exclusion_mask: np.ndarray | None = None, patch_size: int = 15, exclusion_fraction: float = 0.5) -> np.ndarray:
     H, W = image.shape[:2]
     pts: list[tuple[int, int]] = []
     border = 10
@@ -211,7 +211,7 @@ def _generate_sample_points(image: np.ndarray, num_points: int = 100, exclusion_
     for _, (yslc, xslc, (x0, y0)) in quarts.items():
         sub = image[yslc, xslc]
         gray = _to_luminance(sub)
-        bright_mask = _exclude_bright_regions(gray, exclusion_fraction=0.5)
+        bright_mask = _exclude_bright_regions(gray, exclusion_fraction=exclusion_fraction)
         if exclusion_mask is not None:
             bright_mask &= exclusion_mask[yslc, xslc]
         elig = np.argwhere(bright_mask)
@@ -344,6 +344,8 @@ def abe_run(
     return_background: bool = True,
     progress_cb=None,
     legacy_prestretch: bool = True,   # <-- SASv2 parity switch
+    correction_mode: str = "Subtraction", # "Subtraction" or "Division"
+    exclusion_fraction: float = 0.5,
 ) -> tuple[np.ndarray, np.ndarray] | np.ndarray:
     """Two-stage ABE (poly + optional RBF) with SASv2-compatible pre/post stretch."""
     if image is None:
@@ -413,12 +415,29 @@ def abe_run(
 
         if progress_cb: progress_cb("Combining backgrounds & finalizing…")
         total_bg = (total_bg + bg_rbf).astype(np.float32)
-        corrected = img_rgb - total_bg
-        med2 = float(np.median(corrected))
-        corrected = np.clip(corrected + (orig_med - med2), 0.0, 1.0)
+        
+        if correction_mode == "Division":
+            # Division (Multiplicative) correction
+            # out = (img / bg) * median
+            # avoid division by zero
+            denom = np.where(total_bg <= 1e-6, 1e-6, total_bg)
+            corrected = (img_rgb / denom) * orig_med
+        else:
+            # Subtraction correction
+            corrected = img_rgb - total_bg
+            med2 = float(np.median(corrected))
+            corrected = corrected + (orig_med - med2)
+        
+        corrected = np.clip(corrected, 0.0, 1.0)
     else:
         if progress_cb: progress_cb("Finalizing…")
-        corrected = after_poly
+        if correction_mode == "Division":
+            denom = np.where(total_bg <= 1e-6, 1e-6, total_bg)
+            corrected = (img_rgb / denom) * orig_med
+        else:
+            corrected = after_poly
+        
+        corrected = np.clip(corrected, 0.0, 1.0)
 
     # --- Undo SASv2 modeling domain if used -------------------------------
     if legacy_prestretch and stretch_state is not None:
@@ -484,7 +503,7 @@ class ABEWorker(QThread):
     progress = pyqtSignal(str)
     error = pyqtSignal(str)
 
-    def __init__(self, imgf, deg, npts, dwn, patch, use_rbf, rbf_smooth, excl_mask):
+    def __init__(self, imgf, deg, npts, dwn, patch, use_rbf, rbf_smooth, excl_mask, corr_mode, exh_frac):
         super().__init__()
         self.imgf = imgf
         self.deg = deg
@@ -494,6 +513,8 @@ class ABEWorker(QThread):
         self.use_rbf = use_rbf
         self.rbf_smooth = rbf_smooth
         self.excl_mask = excl_mask
+        self.corr_mode = corr_mode
+        self.exh_frac = exh_frac
     
     def run(self):
         try:
@@ -503,6 +524,8 @@ class ABEWorker(QThread):
                 degree=self.deg, num_samples=self.npts, downsample=self.dwn, patch_size=self.patch,
                 use_rbf=self.use_rbf, rbf_smooth=self.rbf_smooth,
                 exclusion_mask=self.excl_mask, return_background=True,
+                correction_mode=self.corr_mode,
+                exclusion_fraction=self.exh_frac,
                 progress_cb=self.progress.emit # Proxy progress callbacks to signal
             )
             self.finished.emit(corrected, bg)
@@ -531,6 +554,9 @@ class ABEDialog(QDialog):
         
         # Worker
         self._worker = None
+        
+        # State: Default Autostretch ON
+        self._autostretch_on = True
 
         # UI Setup
         self._setup_ui()
@@ -578,7 +604,22 @@ class ABEDialog(QDialog):
         self.sp_patch.setValue(15)
         form.addRow("Patch Size:", self.sp_patch)
         
+        self.sp_tolerance = QSpinBox()
+        self.sp_tolerance.setRange(1, 100)
+        self.sp_tolerance.setValue(50)
+        self.sp_tolerance.setSuffix("%")
+        self.sp_tolerance.setToolTip("Exclude brightest % of pixels from modeling")
+        form.addRow("Exclusion Thr:", self.sp_tolerance)
+        
         ctrl_layout.addWidget(grp_param)
+        
+        # Group: Correction Method
+        grp_corr = QGroupBox("Correction")
+        v_corr = QVBoxLayout(grp_corr)
+        self.cb_corr_mode = QComboBox()
+        self.cb_corr_mode.addItems(["Subtraction", "Division"])
+        v_corr.addWidget(self.cb_corr_mode)
+        ctrl_layout.addWidget(grp_corr)
         
         # Group: RBF Refinement
         grp_rbf = QGroupBox("RBF Refinement")
@@ -644,20 +685,27 @@ class ABEDialog(QDialog):
         
         # Toolbar
         tbar = QHBoxLayout()
-        self.btn_zoom_in = themed_toolbtn("magnify_plus", "Zoom In")
+        # Use QPushButton with text to ensure they are visible on all systems
+        self.btn_autostr = QPushButton(" Autostretch (On)")
+        self.btn_autostr.setCheckable(True)
+        self.btn_autostr.setChecked(True)
+        self.btn_autostr.clicked.connect(self.autostretch_preview)
+        
+        self.btn_zoom_in = QPushButton("Zoom In (+)")
         self.btn_zoom_in.clicked.connect(self.zoom_in)
-        self.btn_zoom_out = themed_toolbtn("magnify_minus", "Zoom Out")
+        self.btn_zoom_out = QPushButton("Zoom Out (-)")
         self.btn_zoom_out.clicked.connect(self.zoom_out)
-        self.btn_fit = themed_toolbtn("arrow_expand_all", "Fit to View")
+        self.btn_fit = QPushButton("Fit to View")
         self.btn_fit.clicked.connect(self.fit_to_preview)
         
-        self.btn_autostr = QPushButton("Autostretch")
-        self.btn_autostr.setCheckable(True)
-        self.btn_autostr.clicked.connect(self.autostretch_preview)
+        self.btn_clear_polys = QPushButton("Clear Polys")
+        self.btn_clear_polys.setToolTip("Clear all exclusion polygons")
+        self.btn_clear_polys.clicked.connect(self._clear_polys)
         
         tbar.addWidget(QLabel("<b>Preview</b> (Draw polygons to exclude)"))
         tbar.addStretch()
         tbar.addWidget(self.btn_autostr)
+        tbar.addWidget(self.btn_clear_polys)
         tbar.addWidget(self.btn_zoom_in)
         tbar.addWidget(self.btn_zoom_out)
         tbar.addWidget(self.btn_fit)
@@ -727,11 +775,13 @@ class ABEDialog(QDialog):
         patch = int(self.sp_patch.value())
         use_rbf = bool(self.chk_use_rbf.isChecked())
         rbf_smooth = float(self.sp_rbf.value()) * 0.01
+        corr_mode = str(self.cb_corr_mode.currentText())
+        exh_frac = float(self.sp_tolerance.value()) * 0.01
         
         excl = self._build_exclusion_mask() # This is fast enough to do on main thread? (It's drawing polygons on small mask)
         # Verify overhead of _build_exclusion_mask? It rasterizes polygons. Should be fast.
 
-        self._worker = ABEWorker(imgf, deg, npts, dwn, patch, use_rbf, rbf_smooth, excl)
+        self._worker = ABEWorker(imgf, deg, npts, dwn, patch, use_rbf, rbf_smooth, excl, corr_mode, exh_frac)
         
         if is_preview:
             self._worker.finished.connect(self._on_preview_finished)
@@ -804,19 +854,23 @@ class ABEDialog(QDialog):
             use_rbf = bool(self.chk_use_rbf.isChecked())
             rbf_smooth = float(self.sp_rbf.value()) * 0.01
             make_bg_doc = bool(self.chk_make_bg_doc.isChecked())
+            corr_mode = str(self.cb_corr_mode.currentText())
+            ex_thr = int(self.sp_tolerance.value())
 
             step_name = (
-                f"ABE (deg={deg}, samples={npts}, ds={dwn}, patch={patch}, "
-                f"rbf={'on' if use_rbf else 'off'}, s={rbf_smooth:.3f})"
+                f"ABE ({corr_mode}, deg={deg}, samples={npts}, ds={dwn}, patch={patch}, "
+                f"rbf={'on' if use_rbf else 'off'}, s={rbf_smooth:.3f}, excl={ex_thr}%)"
             )
 
             params = {
+                "mode": corr_mode,
                 "degree": deg,
                 "samples": npts,
                 "downsample": dwn,
                 "patch": patch,
                 "rbf": use_rbf,
                 "rbf_smooth": rbf_smooth,
+                "exclusion_threshold": ex_thr,
                 "make_background_doc": make_bg_doc,
             }
 
@@ -1269,31 +1323,9 @@ class ABEDialog(QDialog):
         self.preview_label.installEventFilter(self)
         
     def _set_preview_from_float(self, arr: np.ndarray):
-        if arr is None or arr.size == 0:
-            return
-        a = _asfloat32(arr)
-        self._preview_source_f01 = a  # ← no np.clip
+        """Legacy wrapper for _set_preview_pixmap."""
+        self._set_preview_pixmap(arr)
 
-        src_to_show = (hard_autostretch(self._preview_source_f01, target_median=0.5, sigma=2,
-                                        linked=False, use_24bit=True)
-                    if getattr(self, "_autostretch_on", False) else self._preview_source_f01)
-
-        if src_to_show.ndim == 2 or (src_to_show.ndim == 3 and src_to_show.shape[2] == 1):
-            mono = src_to_show if src_to_show.ndim == 2 else src_to_show[..., 0]
-            buf8_mono = (mono * 255.0).astype(np.uint8)               # ← no np.clip
-            buf8_mono = np.ascontiguousarray(buf8_mono)
-            self._last_preview = np.ascontiguousarray(np.stack([buf8_mono]*3, axis=-1))
-            h, w = buf8_mono.shape
-            qimg = QImage(buf8_mono.data, w, h, w, QImage.Format.Format_Grayscale8)
-        else:
-            buf8 = (src_to_show * 255.0).astype(np.uint8)             # ← no np.clip
-            buf8 = np.ascontiguousarray(buf8)
-            self._last_preview = buf8
-            h, w, _ = buf8.shape
-            qimg = QImage(buf8.data, w, h, buf8.strides[0], QImage.Format.Format_RGB888)
-
-        self._preview_qimg = qimg
-        self._update_preview_scaled()
         self._redraw_overlay()
 
     # --- mask helpers ---------------------------------------------------
@@ -1359,53 +1391,22 @@ class ABEDialog(QDialog):
     def autostretch_preview(self, sigma: float = 3.0) -> None:
         """
         Toggle Siril-style MAD autostretch on the *preview only* (non-destructive).
-        First press applies; second press restores the original preview.
-        Works from the float [0..1] preview source to avoid double-clipping.
+        Uses the button's checked state to drive the internal status and re-renders.
         """
-        if self._preview_source_f01 is None and self._last_preview is None:
+        if self._preview_source_f01 is None:
             return
 
-        # Lazy init toggle state
-        if not hasattr(self, "_autostretch_on"):
-            self._autostretch_on = False
-        if not hasattr(self, "_orig_preview8"):
-            self._orig_preview8 = None
-
-        def _rebuild_from_last():
-            h, w = self._last_preview.shape[:2]
-            ptr = sip.voidptr(self._last_preview.ctypes.data)
-            qimg = QImage(ptr, w, h, self._last_preview.strides[0], QImage.Format.Format_RGB888)
-            self._preview_qimg = qimg
-            self._update_preview_scaled()
-            self._redraw_overlay()
-
-        # Toggle OFF → restore original preview bytes
-        if self._autostretch_on and self._orig_preview8 is not None:
-            self._last_preview = np.ascontiguousarray(self._orig_preview8)
-            _rebuild_from_last()
-            self._autostretch_on = False
-            if hasattr(self, "btn_autostr"):
-                self.btn_autostr.setText("Autostretch")
-            return
-
-        # Toggle ON → cache original and apply stretch from float source
-        if self._last_preview is not None:
-            self._orig_preview8 = np.ascontiguousarray(self._last_preview)
-
-        # Prefer float source (avoids 8-bit clipping); fall back to decoding _last_preview if needed
-        arr = self._preview_source_f01 if self._preview_source_f01 is not None else (self._last_preview.astype(np.float32)/255.0)
-
-        stretched = hard_autostretch(arr, target_median=0.5, sigma=2, linked=False, use_24bit=True)
-
-        buf8 = (np.clip(stretched, 0.0, 1.0) * 255.0).astype(np.uint8)
-        if buf8.ndim == 2:
-            buf8 = np.stack([buf8] * 3, axis=-1)
-        self._last_preview = np.ascontiguousarray(buf8)
-
-        _rebuild_from_last()
-        self._autostretch_on = True
-        if hasattr(self, "btn_autostr"):
-            self.btn_autostr.setText("Autostretch (On)")
+        # Update internal state from button
+        self._autostretch_on = self.btn_autostr.isChecked()
+        
+        # Update text
+        if self._autostretch_on:
+            self.btn_autostr.setText(" Autostretch (On)")
+        else:
+            self.btn_autostr.setText("Autostretch")
+            
+        # Re-render from the float source (which stays clean)
+        self._set_preview_pixmap(self._preview_source_f01)
 
 
     def _apply_autostretch_inplace(self, sigma: float = 3.0):
