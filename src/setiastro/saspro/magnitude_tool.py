@@ -39,10 +39,10 @@ from astropy.wcs import WCS
 from PyQt6.QtCore import Qt, QRect, QEvent, QPointF, QRectF, QTimer
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QSpinBox, QDoubleSpinBox, QGroupBox, QFormLayout,QComboBox,
+    QSpinBox, QDoubleSpinBox, QGroupBox, QFormLayout,QComboBox, QGraphicsPathItem, QGraphicsEllipseItem,
     QMessageBox, QApplication, QGraphicsView, QGraphicsScene, QGraphicsRectItem, QGraphicsItem
 )
-from PyQt6.QtGui import QImage, QPixmap, QPen, QColor, QPainter
+from PyQt6.QtGui import QImage, QPixmap, QPen, QColor, QPainter, QPainterPath
 from astropy.coordinates import SkyCoord
 import astropy.units as u
 from astroquery.simbad import Simbad
@@ -89,22 +89,16 @@ def _to_float_image(img: np.ndarray) -> np.ndarray:
 
     raise ValueError("Unsupported image shape for magnitude tool.")
 
+def _mask_sum(img_f: np.ndarray, mask: np.ndarray):
+    m = mask.astype(bool)
+    if img_f.ndim == 2:
+        return float(np.sum(img_f[m], dtype=np.float64))
+    else:
+        v = img_f[..., :3][m]
+        return v.reshape(-1, 3).sum(axis=0).astype(np.float64)
 
-
-def _get_exptime_from_header(hdr) -> Optional[float]:
-    if hdr is None:
-        return None
-    try:
-        # hdr may be fits.Header or dict-like
-        for k in ("EXPTIME", "EXPOSURE", "EXP_TIME", "ELAPTIME"):
-            if k in hdr:
-                v = float(hdr[k])
-                if np.isfinite(v) and v > 0:
-                    return v
-    except Exception:
-        pass
-    return None
-
+def _mask_area(mask: np.ndarray) -> int:
+    return int(np.count_nonzero(mask))
 
 def _build_wcs_and_pixscale(header) -> Tuple[Optional[WCS], Optional[float]]:
     if header is None:
@@ -131,6 +125,46 @@ def _build_wcs_and_pixscale(header) -> Tuple[Optional[WCS], Optional[float]]:
         pixscale = None
 
     return wcs, pixscale
+
+def _rect_pixels(img_f: np.ndarray, rect: QRect) -> np.ndarray:
+    H, W = img_f.shape[:2]
+    x0 = max(0, rect.left()); y0 = max(0, rect.top())
+    x1 = min(W, rect.right() + 1); y1 = min(H, rect.bottom() + 1)
+    if x1 <= x0 or y1 <= y0:
+        return np.array([], dtype=np.float32)
+    patch = img_f[y0:y1, x0:x1]
+    return patch.reshape(-1, 3) if (img_f.ndim == 3) else patch.reshape(-1)
+
+def _bg_stats(img_f: np.ndarray, bg_rect: QRect):
+    p = _rect_pixels(img_f, bg_rect)
+    if p.size == 0:
+        return None
+    # robust: median + MAD->sigma
+    if img_f.ndim == 2:
+        med = float(np.median(p))
+        mad = float(np.median(np.abs(p - med)))
+        sigma = 1.4826 * mad
+        mean = float(np.mean(p))
+        return {"mean": mean, "median": med, "sigma": sigma}
+    else:
+        med = np.median(p, axis=0)
+        mad = np.median(np.abs(p - med), axis=0)
+        sigma = 1.4826 * mad
+        mean = np.mean(p, axis=0)
+        return {"mean": mean.astype(float), "median": med.astype(float), "sigma": sigma.astype(float)}
+
+_LOGC = 2.5 / math.log(10.0)  # 1.085736...
+
+def _mag_err_from_flux(flux: float, flux_err: float, zp_err: float) -> Optional[float]:
+    if not (flux > 0) or flux_err is None or zp_err is None:
+        return None
+    # clamp
+    flux_err = max(0.0, float(flux_err))
+    return float(math.sqrt(zp_err*zp_err + (_LOGC * (flux_err / float(flux)))**2))
+
+def _mu_err_from_flux(flux: float, flux_err: float, zp_err: float) -> Optional[float]:
+    # same functional form as magnitude; dividing by area doesn't change relative error in flux
+    return _mag_err_from_flux(flux, flux_err, zp_err)
 
 
 def _sigma_clip(vals: np.ndarray, sigma: float = 2.5, iters: int = 3) -> np.ndarray:
@@ -264,7 +298,9 @@ def _compute_zero_points_mono(matches, img_f, r_ap, r_in, r_out, band="L", clip_
 
     zps = _sigma_clip(np.asarray(zps, dtype=np.float64), sigma=clip_sigma)
     if zps.size == 0:
-        return {"ZP": None, "n": 0, "std": None, "band": band, "magkey": magkey, "used_matches": used}
+        sd = float(np.std(zps))
+        sem = float(sd / math.sqrt(zps.size)) if zps.size > 1 else None
+        return {"ZP": float(np.median(zps)), "n": int(zps.size), "std": sd, "sem": sem, "band": band, "magkey": magkey, "used_matches": used}
 
     return {
         "ZP": float(np.median(zps)),
@@ -327,17 +363,22 @@ def _compute_zero_points(
 
     def summarize(arr):
         if arr.size == 0:
-            return None, 0, None
-        return float(np.median(arr)), int(arr.size), float(np.std(arr))
+            return None, 0, None, None
+        med = float(np.median(arr))
+        sd  = float(np.std(arr))
+        n   = int(arr.size)
+        sem = float(sd / math.sqrt(n)) if (n > 1 and np.isfinite(sd)) else None
+        return med, n, sd, sem
 
-    ZP_R, nR, sR = summarize(zp_R)
-    ZP_G, nG, sG = summarize(zp_G)
-    ZP_B, nB, sB = summarize(zp_B)
+    ZP_R, nR, sR, semR = summarize(zp_R)
+    ZP_G, nG, sG, semG = summarize(zp_G)
+    ZP_B, nB, sB, semB = summarize(zp_B)
 
     return {
         "ZP_R": ZP_R, "ZP_G": ZP_G, "ZP_B": ZP_B,
         "n_R": nR, "n_G": nG, "n_B": nB,
         "std_R": sR, "std_G": sG, "std_B": sB,
+        "sem_R": semR, "sem_G": semG, "sem_B": semB,
         "used_matches": used,
     }
 
@@ -397,7 +438,13 @@ class MagnitudeRegionDialog(QDialog):
         self._main = parent
         self.doc_manager = doc_manager
         self.doc = self.doc_manager.get_active_document()
-
+        self._path = QPainterPath()
+        self._path_item: QGraphicsPathItem | None = None
+        self._ellipse_item: QGraphicsEllipseItem | None = None
+        self._pen_live = QPen(QColor(0, 255, 0), 3, Qt.PenStyle.DashLine)
+        self._pen_live.setCosmetic(True)
+        self._pen_final = QPen(QColor(255, 0, 0), 3)
+        self._pen_final.setCosmetic(True)
         if icon:
             try: self.setWindowIcon(icon)
             except Exception: pass
@@ -442,6 +489,11 @@ class MagnitudeRegionDialog(QDialog):
         self.lbl = QLabel("Draw a Target box. Background will be auto-selected (gold).")
         self.lbl.setWordWrap(True)
         v.addWidget(self.lbl)
+
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(["Box", "Ellipse", "Freehand"])
+        v.insertWidget(1, self.mode_combo)  # under label, above view
+
         v.addWidget(self.view, 1)
 
         btn_row = QHBoxLayout()
@@ -456,15 +508,21 @@ class MagnitudeRegionDialog(QDialog):
         btn_row.addWidget(self.btn_find_bg)
         v.addLayout(btn_row)
 
+        from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
+
         zoom_row = QHBoxLayout()
-        self.btn_zoom_out = QPushButton("−")
-        self.btn_fit      = QPushButton("Fit")
-        self.btn_zoom_in  = QPushButton("+")
+        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
+        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
+        self.btn_zoom_100 = themed_toolbtn("zoom-original", "1:1")
+        self.btn_zoom_fit = themed_toolbtn("zoom-fit-best", "Fit")
+
         zoom_row.addWidget(self.btn_zoom_out)
-        zoom_row.addWidget(self.btn_fit)
         zoom_row.addWidget(self.btn_zoom_in)
+        zoom_row.addWidget(self.btn_zoom_100)
+        zoom_row.addWidget(self.btn_zoom_fit)
         zoom_row.addStretch(1)
         v.addLayout(zoom_row)
+
 
         # wiring
         self.btn_cancel.clicked.connect(self.close)
@@ -472,7 +530,8 @@ class MagnitudeRegionDialog(QDialog):
         self.btn_find_bg.clicked.connect(self._on_find_background)
         self.btn_zoom_in.clicked.connect(lambda: self._zoom(1.25))
         self.btn_zoom_out.clicked.connect(lambda: self._zoom(0.8))
-        self.btn_fit.clicked.connect(self.fit_to_view)
+        self.btn_zoom_100.clicked.connect(self.zoom_100)
+        self.btn_zoom_fit.clicked.connect(self.fit_to_view)
         self.btn_apply.clicked.connect(self._on_use_target)
 
         # mouse events
@@ -632,6 +691,11 @@ class MagnitudeRegionDialog(QDialog):
 
         self.view.scale(factor, factor)
 
+    def zoom_100(self):
+        self._user_zoomed = True
+        self.view.resetTransform()
+        self.view.scale(1.0, 1.0)
+
 
     def fit_to_view(self):
         self._user_zoomed = False
@@ -666,7 +730,53 @@ class MagnitudeRegionDialog(QDialog):
         rect_scene = QRectF(float(x), float(y), float(w), float(h))
         self.bg_item = self.scene.addRect(rect_scene, pen)
 
+    def _target_mask(self) -> Optional[np.ndarray]:
+        if self._pixmap_item is None:
+            return None
+        bounds = self._pixmap_item.boundingRect()
+        W = int(bounds.width())
+        H = int(bounds.height())
+        if W <= 0 or H <= 0:
+            return None
+
+        mode = self.mode_combo.currentText()
+
+        # start with empty mask
+        mask_img = QImage(W, H, QImage.Format.Format_Grayscale8)
+        mask_img.fill(0)
+
+        p = QPainter(mask_img)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(255, 255, 255))
+
+        if mode == "Box" and not self.target_rect_scene.isNull():
+            p.drawRect(self.target_rect_scene.toRect())
+        elif mode == "Ellipse" and not self.target_rect_scene.isNull():
+            p.drawEllipse(self.target_rect_scene)
+        elif mode == "Freehand" and not self._path.isEmpty():
+            p.drawPath(self._path)
+
+        p.end()
+
+        ptr = mask_img.bits()
+        ptr.setsize(mask_img.bytesPerLine() * H)
+        arr = np.frombuffer(ptr, dtype=np.uint8).reshape(H, mask_img.bytesPerLine())
+        arr = arr[:, :W]
+        return (arr > 0)
+
+
     # ---------- target drawing ----------
+    def _clear_target_items(self):
+        for it in (self.target_item, self._ellipse_item, self._path_item):
+            if it is not None:
+                try: self.scene.removeItem(it)
+                except Exception: pass
+        self.target_item = None
+        self._ellipse_item = None
+        self._path_item = None
+        self.target_rect_scene = QRectF()
+        self._path = QPainterPath()
+
     def eventFilter(self, source, event):
         if source is self.view.viewport():
             et = event.type()
@@ -674,52 +784,82 @@ class MagnitudeRegionDialog(QDialog):
             if et == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
                 self._drawing = True
                 self._origin_scene = self.view.mapToScene(event.pos())
-                # clear previous target
-                if self.target_item:
-                    try: self.scene.removeItem(self.target_item)
-                    except Exception: pass
-                    self.target_item = None
-            elif et == QEvent.Type.Wheel:
-                # fast while rolling, smooth after debounce
-                self._begin_interactive_present()
+                mode = self.mode_combo.currentText()
 
-                # typical “one notch” zoom feel
-                angle = event.angleDelta().y()
-                if angle == 0:
-                    return True
+                self._clear_target_items()
 
-                factor = 1.25 if angle > 0 else 0.8
-                self._zoom(factor)
+                if mode == "Freehand":
+                    self._path = QPainterPath(self._origin_scene)
+                    self._path_item = self.scene.addPath(self._path, self._pen_live)
+
                 return True
+
             elif et == QEvent.Type.MouseMove and self._drawing:
                 cur = self.view.mapToScene(event.pos())
-                self.target_rect_scene = QRectF(self._origin_scene, cur).normalized()
-                if self.target_item:
-                    try: self.scene.removeItem(self.target_item)
-                    except Exception: pass
-                pen = QPen(QColor(0, 255, 0), 3, Qt.PenStyle.DashLine)
-                pen.setCosmetic(True)  
-                self.target_item = self.scene.addRect(self.target_rect_scene, pen)
+                mode = self.mode_combo.currentText()
+
+                if mode == "Box":
+                    self.target_rect_scene = QRectF(self._origin_scene, cur).normalized()
+                    if self.target_item is None:
+                        self.target_item = self.scene.addRect(self.target_rect_scene, self._pen_live)
+                    else:
+                        self.target_item.setRect(self.target_rect_scene)
+
+                elif mode == "Ellipse":
+                    self.target_rect_scene = QRectF(self._origin_scene, cur).normalized()
+                    if self._ellipse_item is None:
+                        self._ellipse_item = self.scene.addEllipse(self.target_rect_scene, self._pen_live)
+                    else:
+                        self._ellipse_item.setRect(self.target_rect_scene)
+
+                else:  # Freehand
+                    self._path.lineTo(cur)
+                    if self._path_item is not None:
+                        self._path_item.setPath(self._path)
+
+                return True
 
             elif et == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton and self._drawing:
                 self._drawing = False
                 cur = self.view.mapToScene(event.pos())
-                self.target_rect_scene = QRectF(self._origin_scene, cur).normalized()
+                mode = self.mode_combo.currentText()
 
-                if self.target_item:
-                    try: self.scene.removeItem(self.target_item)
-                    except Exception: pass
-                    self.target_item = None
+                if mode in ("Box", "Ellipse"):
+                    self.target_rect_scene = QRectF(self._origin_scene, cur).normalized()
+                    if self.target_rect_scene.width() < 10 or self.target_rect_scene.height() < 10:
+                        QMessageBox.warning(self, "Selection Too Small", "Please draw a larger target selection.")
+                        self._clear_target_items()
+                        return True
 
-                if self.target_rect_scene.width() < 10 or self.target_rect_scene.height() < 10:
-                    QMessageBox.warning(self, "Selection Too Small", "Please draw a larger target selection box.")
-                    self.target_rect_scene = QRectF()
-                else:
-                    pen = QPen(QColor(255, 0, 0), 3, Qt.PenStyle.SolidLine)  # red final
-                    pen.setCosmetic(True)  
-                    self.target_item = self.scene.addRect(self.target_rect_scene, pen)
+                    # finalize pen
+                    if mode == "Box" and self.target_item is not None:
+                        self.target_item.setPen(self._pen_final)
+                    if mode == "Ellipse" and self._ellipse_item is not None:
+                        self._ellipse_item.setPen(self._pen_final)
+
+                else:  # Freehand
+                    # close path and finalize
+                    if self._path.elementCount() < 10:
+                        QMessageBox.warning(self, "Selection Too Small", "Freehand selection too small.")
+                        self._clear_target_items()
+                        return True
+                    self._path.closeSubpath()
+                    if self._path_item is not None:
+                        self._path_item.setPen(self._pen_final)
+                        self._path_item.setPath(self._path)
+
+                return True
+
+            elif et == QEvent.Type.Wheel:
+                self._begin_interactive_present()
+                angle = event.angleDelta().y()
+                if angle == 0:
+                    return True
+                self._zoom(1.25 if angle > 0 else 0.8)
+                return True
 
         return super().eventFilter(source, event)
+
 
     def _scene_rect_to_qrect(self, r: QRectF) -> QRect:
         if r is None or r.isNull():
@@ -733,9 +873,9 @@ class MagnitudeRegionDialog(QDialog):
         return QRect(x, y, w, h)
 
     def _on_use_target(self):
-        tgt = self._scene_rect_to_qrect(self.target_rect_scene)
-        if tgt.isNull():
-            QMessageBox.warning(self, "No Target", "Draw a target rectangle first.")
+        mask = self._target_mask()
+        if mask is None or int(mask.sum()) < 25:
+            QMessageBox.warning(self, "No Target", "Draw a target selection first.")
             return
 
         # background is whatever is drawn (gold); if missing, recompute
@@ -746,22 +886,39 @@ class MagnitudeRegionDialog(QDialog):
         if self.bg_item is not None:
             bgq = self._scene_rect_to_qrect(self.bg_item.rect())
 
+        # compute a bbox for info text (optional, but useful)
+        try:
+            ys, xs = np.nonzero(mask)
+            if xs.size > 0 and ys.size > 0:
+                x0, x1 = int(xs.min()), int(xs.max())
+                y0, y1 = int(ys.min()), int(ys.max())
+                bbox = QRect(x0, y0, (x1 - x0 + 1), (y1 - y0 + 1))
+            else:
+                bbox = QRect()
+        except Exception:
+            bbox = QRect()
+
         # push to parent MagnitudeToolDialog if it has setters
         parent = self.parent()
         if parent is not None:
-            if hasattr(parent, "set_object_rect"):
-                parent.set_object_rect(tgt)
+            if hasattr(parent, "set_object_mask"):
+                parent.set_object_mask(mask)
+
+            # (optional but recommended) also pass bg as mask if you add the setter
             if hasattr(parent, "set_background_rect"):
                 parent.set_background_rect(bgq)
 
             # convenience: update label if present
             if hasattr(parent, "lbl_info"):
                 parent.lbl_info.setText(
-                    f"Target set: x={tgt.x()}, y={tgt.y()}, w={tgt.width()}, h={tgt.height()}\n"
+                    f"Target set: {int(mask.sum())} px"
+                    + (f"  (bbox x={bbox.x()}, y={bbox.y()}, w={bbox.width()}, h={bbox.height()})" if not bbox.isNull() else "")
+                    + "\n"
                     f"Background(auto): x={bgq.x()}, y={bgq.y()}, w={bgq.width()}, h={bgq.height()}"
                 )
 
         self.close()
+
 
     def _on_active_doc_changed(self, doc):
         if doc is None or getattr(doc, "image", None) is None:
@@ -777,6 +934,12 @@ class MagnitudeRegionDialog(QDialog):
             pass
         self._connected_current_doc_changed = False
 
+def _combine_err(stat: Optional[float], sys: Optional[float]) -> Optional[float]:
+    if stat is None and sys is None:
+        return None
+    a = 0.0 if stat is None else float(stat)
+    b = 0.0 if sys is None else float(sys)
+    return float(math.sqrt(a*a + b*b))
 
 
 class MagnitudeToolDialog(QDialog):
@@ -799,7 +962,9 @@ class MagnitudeToolDialog(QDialog):
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         self.setMinimumSize(520, 320)
-
+        self.sys_floor_mag = 0.10  # mag (typical 0.05–0.15)
+        self.object_mask = None
+        self.background_mask = None
         self.doc_manager = doc_manager
 
         self.star_list: List[dict] = []
@@ -825,15 +990,16 @@ class MagnitudeToolDialog(QDialog):
         self.btn_zp = QPushButton("Step 2: Compute Zero Points")
         self.btn_zp.clicked.connect(self.compute_zero_points)
         row.addWidget(self.btn_zp)
-
         v.addLayout(row)
+
         self.btn_pick = QPushButton("Pick Target Region…")
         self.btn_pick.clicked.connect(self.open_region_picker)
         v.addWidget(self.btn_pick)
 
         box = QGroupBox("Photometry settings")
         form = QFormLayout(box)
-        # --- Band mapping (for mono; also can be used for "L" on RGB if you want later) ---
+
+        # --- Band mapping (mono only) ---
         self.band_combo = QComboBox()
         self.band_combo.addItems(["L", "R", "G", "B"])
         self.band_combo.setCurrentText("L")
@@ -872,6 +1038,21 @@ class MagnitudeToolDialog(QDialog):
         self.clip_sigma.setValue(2.5)
         form.addRow("ZP sigma-clip", self.clip_sigma)
 
+        # --- Systematic uncertainty floor (rolled into total; popup reports totals only) ---
+        self.sys_floor_spin = QDoubleSpinBox()
+        self.sys_floor_spin.setRange(0.0, 1.0)
+        self.sys_floor_spin.setDecimals(3)
+        self.sys_floor_spin.setSingleStep(0.01)
+        self.sys_floor_spin.setValue(float(getattr(self, "sys_floor_mag", 0.10) or 0.0))
+        form.addRow("Systematic floor (mag)", self.sys_floor_spin)
+
+        hint = QLabel(
+            "Popup reports total 3σ only: sqrt(stat² + sys_floor²). "
+            "sys_floor is a conservative calibration mismatch term."
+        )
+        hint.setWordWrap(True)
+        form.addRow("", hint)
+
         v.addWidget(box)
 
         self.lbl_info = QLabel("No stars fetched yet.")
@@ -889,6 +1070,11 @@ class MagnitudeToolDialog(QDialog):
         v.addLayout(row2)
 
     # --- external wiring (from your ROI tool) ---
+    def set_object_mask(self, mask: np.ndarray):
+        self.object_mask = mask
+
+    def set_background_mask(self, mask: np.ndarray):
+        self.background_mask = mask
 
     def _active_is_rgb(self) -> bool:
         img, _hdr, _doc = self._get_active_image_and_header()
@@ -1024,12 +1210,12 @@ class MagnitudeToolDialog(QDialog):
             self.last_zp = {"mode": "rgb", **zp}
 
             self.lbl_info.setText(
-                "Zero points:\n"
-                f"  ZP_R={zp['ZP_R']} (n={zp['n_R']}, σ={zp['std_R']})\n"
-                f"  ZP_G={zp['ZP_G']} (n={zp['n_G']}, σ={zp['std_G']})\n"
-                f"  ZP_B={zp['ZP_B']} (n={zp['n_B']}, σ={zp['std_B']})"
+                "Zero points (median ± SEM):\n"
+                f"  ZP_R={zp['ZP_R']} (n={zp['n_R']}, scatter={zp['std_R']}, sem={zp['sem_R']})\n"
+                f"  ZP_G={zp['ZP_G']} (n={zp['n_G']}, scatter={zp['std_G']}, sem={zp['sem_G']})\n"
+                f"  ZP_B={zp['ZP_B']} (n={zp['n_B']}, scatter={zp['std_B']}, sem={zp['sem_B']})"
             )
-            
+
     def measure_object_region(self):
         img, hdr, doc = self._get_active_image_and_header()
         if img is None:
@@ -1038,96 +1224,244 @@ class MagnitudeToolDialog(QDialog):
         if not self.last_zp:
             QMessageBox.warning(self, "No ZP", "Compute zero points first.")
             return
-        if self.object_rect.isNull() or self.background_rect.isNull():
-            QMessageBox.information(
-                self, "No Regions",
-                "Set an Object rect and a Background rect first.\n"
-                "Wire this dialog to your ROI selection tool via set_object_rect()/set_background_rect()."
-            )
-            return
-        if self.background_rect.isNull():
-            img_f = _to_float_image(img)
-            bx, by, bw, bh = auto_rect_50x50(img_f)
-            self.background_rect = QRect(bx, by, bw, bh)
 
         img_f = _to_float_image(img)
+        H, W = img_f.shape[:2]
 
-        # Region sums
-        obj_sum = _rect_sum(img_f, self.object_rect)
-        bkg_sum = _rect_sum(img_f, self.background_rect)
+        def rect_to_mask(r: QRect) -> Optional[np.ndarray]:
+            if r is None or r.isNull():
+                return None
+            x0 = max(0, int(r.left()))
+            y0 = max(0, int(r.top()))
+            x1 = min(W, int(r.right()) + 1)
+            y1 = min(H, int(r.bottom()) + 1)
+            if x1 <= x0 or y1 <= y0:
+                return None
+            m = np.zeros((H, W), dtype=bool)
+            m[y0:y1, x0:x1] = True
+            return m
 
-        obj_area = _rect_area_px(img_f, self.object_rect)
-        bkg_area = _rect_area_px(img_f, self.background_rect)
+        def sigma_from_mask(img_f: np.ndarray, m: np.ndarray):
+            # robust sigma via MAD on masked pixels
+            m = np.asarray(m, dtype=bool)
+            if m.shape != (H, W):
+                return None
+            if np.count_nonzero(m) < 25:
+                return None
+
+            if img_f.ndim == 2:
+                v = img_f[m].astype(np.float64, copy=False)
+                med = float(np.median(v))
+                mad = float(np.median(np.abs(v - med)))
+                sig = 1.4826 * mad
+                return sig
+            else:
+                v = img_f[..., :3][m].reshape(-1, 3).astype(np.float64, copy=False)
+                med = np.median(v, axis=0)
+                mad = np.median(np.abs(v - med), axis=0)
+                sig = 1.4826 * mad
+                return sig.astype(float)
+
+        # ---------------- choose object mask ----------------
+        obj_mask = self.object_mask
+        if obj_mask is None:
+            # fallback to rect mode if someone wired it
+            obj_mask = rect_to_mask(self.object_rect)
+
+        if obj_mask is None or np.count_nonzero(obj_mask) < 25:
+            QMessageBox.information(self, "No Regions", "Pick a target region first.")
+            return
+        if obj_mask.shape != (H, W):
+            QMessageBox.warning(self, "Mask Mismatch", "Object mask size does not match the active image.")
+            return
+
+        # ---------------- choose background mask ----------------
+        bg_mask = self.background_mask
+
+        if bg_mask is None:
+            # if a rect exists, use it
+            bg_mask = rect_to_mask(self.background_rect)
+
+        if bg_mask is None:
+            # auto-pick a background rect, then convert to mask
+            try:
+                img_f0 = img_f
+                if img_f0.ndim == 2:
+                    img_f0 = np.dstack([img_f0] * 3)
+                bx, by, bw, bh = auto_rect_50x50(img_f0)
+                self.background_rect = QRect(int(bx), int(by), int(bw), int(bh))
+                bg_mask = rect_to_mask(self.background_rect)
+            except Exception:
+                bg_mask = None
+
+        if bg_mask is None or np.count_nonzero(bg_mask) < 25:
+            QMessageBox.warning(self, "Background", "Background region is missing or too small.")
+            return
+        if bg_mask.shape != (H, W):
+            QMessageBox.warning(self, "Mask Mismatch", "Background mask size does not match the active image.")
+            return
+
+        # ---------------- compute sums/areas via masks ----------------
+        obj_sum = _mask_sum(img_f, obj_mask)
+        bkg_sum = _mask_sum(img_f, bg_mask)
+
+        obj_area = _mask_area(obj_mask)
+        bkg_area = _mask_area(bg_mask)
         if obj_area <= 0 or bkg_area <= 0:
             QMessageBox.warning(self, "Bad Regions", "Object or background region has zero area.")
             return
 
-        # Scale background to object area and subtract
-        #bkg_scaled = bkg_sum * (float(obj_area) / float(bkg_area))
-        #net = obj_sum - bkg_scaled
-        net = obj_sum
+        # background scaled to object area
+        scale = float(obj_area) / max(1.0, float(bkg_area))
+        net = obj_sum - (bkg_sum * scale)
+
+        # ---------------- flux uncertainty from background sigma ----------------
+        sigma_bg = sigma_from_mask(img_f, bg_mask)
+        if sigma_bg is None:
+            QMessageBox.warning(self, "Background", "Background stats failed.")
+            return
+
+        if img_f.ndim == 2:
+            flux_err = float(sigma_bg) * math.sqrt(float(obj_area))
+        else:
+            sigma_bg = np.asarray(sigma_bg, dtype=float)          # (3,)
+            flux_err = sigma_bg * math.sqrt(float(obj_area))      # (3,)
 
         mode = (self.last_zp.get("mode") or ("mono" if img_f.ndim == 2 else "rgb"))
 
+        # pixscale / area for surface brightness
         _, pixscale = _build_wcs_and_pixscale(hdr)
-        area_asec2 = float(obj_area) * float(pixscale) * float(pixscale) if (pixscale and pixscale > 0) else None
+        area_asec2 = (float(obj_area) * float(pixscale) * float(pixscale)) if (pixscale and pixscale > 0) else None
+
+        # systematic floor (mag) rolled into TOTAL only
+        try:
+            sys_floor = float(self.sys_floor_spin.value()) if hasattr(self, "sys_floor_spin") else float(getattr(self, "sys_floor_mag", 0.0) or 0.0)
+        except Exception:
+            sys_floor = float(getattr(self, "sys_floor_mag", 0.0) or 0.0)
 
         def fmt(x):
             return "N/A" if x is None else f"{x:.3f}"
 
+        def fmt_sci(x):
+            try:
+                return "N/A" if x is None else f"{float(x):.6g}"
+            except Exception:
+                return "N/A"
+
+        def total_sigma(stat_mag_err: Optional[float]) -> Optional[float]:
+            return _combine_err(stat_mag_err, sys_floor)
+
+        def total_3sigma(stat_mag_err: Optional[float]) -> Optional[float]:
+            t = total_sigma(stat_mag_err)
+            return None if t is None else (3.0 * float(t))
+
+        # -------- MONO --------
         if img_f.ndim == 2 or mode == "mono":
             ZP = self.last_zp.get("ZP")
             band = self.last_zp.get("band", self.band_combo.currentText().strip().upper())
             magkey = self.last_zp.get("magkey", _magkey_for_band(band))
 
-            m = _mag_from_flux(float(net), ZP)
-            mu = _mu_from_flux(float(net), float(area_asec2), ZP) if area_asec2 is not None else None
+            # ZP uncertainty: prefer SEM; fallback to std/sqrt(n)
+            zp_sem = self.last_zp.get("sem")
+            if zp_sem is None:
+                sd = self.last_zp.get("std")
+                n = int(self.last_zp.get("n") or 0)
+                zp_sem = (float(sd) / math.sqrt(n)) if (sd is not None and n > 1) else None
+
+            net_f = float(net)
+            m = _mag_from_flux(net_f, ZP)
+            mu = _mu_from_flux(net_f, float(area_asec2), ZP) if area_asec2 is not None else None
+
+            m_stat = _mag_err_from_flux(net_f, float(flux_err), float(zp_sem)) if (zp_sem is not None) else None
+            mu_stat = _mu_err_from_flux(net_f, float(flux_err), float(zp_sem)) if (zp_sem is not None and area_asec2 is not None) else None
+
+            m_3 = total_3sigma(m_stat)
+            mu_3 = total_3sigma(mu_stat)
 
             msg = (
                 "Object region photometry (background-subtracted):\n"
-                f"  Net flux: {float(net):.6g}\n\n"
+                f"  Net flux: {fmt_sci(net_f)}   (flux σ: {fmt_sci(flux_err)})\n"
+                f"  Object area: {obj_area} px   Background area: {bkg_area} px\n"
+                f"  Systematic floor (included): ±{sys_floor:.3f} mag\n\n"
                 f"Integrated magnitude ({band}, catalog {magkey}):\n"
-                f"  m={fmt(m)}\n\n"
+                f"  m = {fmt(m)} ± {fmt(m_3)}  (total 3σ)\n\n"
             )
+
             if area_asec2 is not None:
                 msg += (
                     f"Surface brightness (mag/arcsec²)  [area={area_asec2:.3f} arcsec²]:\n"
-                    f"  μ={fmt(mu)}\n"
+                    f"  μ = {fmt(mu)} ± {fmt(mu_3)}  (total 3σ)\n"
                 )
             else:
                 msg += "Surface brightness: N/A (no pixscale from WCS)\n"
 
+            QMessageBox.information(self, "Magnitude Results", msg)
+            return
+
+        # -------- RGB --------
+        ZP_R = self.last_zp.get("ZP_R")
+        ZP_G = self.last_zp.get("ZP_G")
+        ZP_B = self.last_zp.get("ZP_B")
+
+        sem_R = self.last_zp.get("sem_R")
+        sem_G = self.last_zp.get("sem_G")
+        sem_B = self.last_zp.get("sem_B")
+
+        netR, netG, netB = float(net[0]), float(net[1]), float(net[2])
+        errR, errG, errB = float(flux_err[0]), float(flux_err[1]), float(flux_err[2])
+
+        mR = _mag_from_flux(netR, ZP_R)
+        mG = _mag_from_flux(netG, ZP_G)
+        mB = _mag_from_flux(netB, ZP_B)
+
+        mR_stat = _mag_err_from_flux(netR, errR, float(sem_R)) if (sem_R is not None) else None
+        mG_stat = _mag_err_from_flux(netG, errG, float(sem_G)) if (sem_G is not None) else None
+        mB_stat = _mag_err_from_flux(netB, errB, float(sem_B)) if (sem_B is not None) else None
+
+        mR_3 = total_3sigma(mR_stat)
+        mG_3 = total_3sigma(mG_stat)
+        mB_3 = total_3sigma(mB_stat)
+
+        muR = muG = muB = None
+        muR_3 = muG_3 = muB_3 = None
+
+        if area_asec2 is not None:
+            A = float(area_asec2)
+            muR = _mu_from_flux(netR, A, ZP_R)
+            muG = _mu_from_flux(netG, A, ZP_G)
+            muB = _mu_from_flux(netB, A, ZP_B)
+
+            muR_stat = _mu_err_from_flux(netR, errR, float(sem_R)) if (sem_R is not None) else None
+            muG_stat = _mu_err_from_flux(netG, errG, float(sem_G)) if (sem_G is not None) else None
+            muB_stat = _mu_err_from_flux(netB, errB, float(sem_B)) if (sem_B is not None) else None
+
+            muR_3 = total_3sigma(muR_stat)
+            muG_3 = total_3sigma(muG_stat)
+            muB_3 = total_3sigma(muB_stat)
+
+        msg = (
+            "Object region photometry (background-subtracted):\n"
+            f"  Net flux (R,G,B): {fmt_sci(netR)}, {fmt_sci(netG)}, {fmt_sci(netB)}\n"
+            f"  Flux σ   (R,G,B): {fmt_sci(errR)}, {fmt_sci(errG)}, {fmt_sci(errB)}\n"
+            f"  Object area: {obj_area} px   Background area: {bkg_area} px\n"
+            f"  Systematic floor (included): ±{sys_floor:.3f} mag\n\n"
+            "Integrated magnitude (total 3σ):\n"
+            f"  m_R = {fmt(mR)} ± {fmt(mR_3)}\n"
+            f"  m_G = {fmt(mG)} ± {fmt(mG_3)}\n"
+            f"  m_B = {fmt(mB)} ± {fmt(mB_3)}\n\n"
+        )
+
+        if area_asec2 is not None:
+            msg += (
+                f"Surface brightness (mag/arcsec²)  [area={area_asec2:.3f} arcsec²] (total 3σ):\n"
+                f"  μ_R = {fmt(muR)} ± {fmt(muR_3)}\n"
+                f"  μ_G = {fmt(muG)} ± {fmt(muG_3)}\n"
+                f"  μ_B = {fmt(muB)} ± {fmt(muB_3)}\n"
+            )
         else:
-            ZP_R = self.last_zp.get("ZP_R")
-            ZP_G = self.last_zp.get("ZP_G")
-            ZP_B = self.last_zp.get("ZP_B")
-
-            mR = _mag_from_flux(float(net[0]), ZP_R)
-            mG = _mag_from_flux(float(net[1]), ZP_G)
-            mB = _mag_from_flux(float(net[2]), ZP_B)
-
-            muR = muG = muB = None
-            if area_asec2 is not None:
-                muR = _mu_from_flux(float(net[0]), float(area_asec2), ZP_R)
-                muG = _mu_from_flux(float(net[1]), float(area_asec2), ZP_G)
-                muB = _mu_from_flux(float(net[2]), float(area_asec2), ZP_B)
-
-            msg = (
-                "Object region photometry (background-subtracted):\n"
-                f"  Net flux (R,G,B): {net[0]:.6g}, {net[1]:.6g}, {net[2]:.6g}\n\n"
-                "Integrated magnitude:\n"
-                f"  m_R={fmt(mR)}  m_G={fmt(mG)}  m_B={fmt(mB)}\n\n"
-            )
-            if area_asec2 is not None:
-                msg += (
-                    f"Surface brightness (mag/arcsec²)  [area={area_asec2:.3f} arcsec²]:\n"
-                    f"  μ_R={fmt(muR)}  μ_G={fmt(muG)}  μ_B={fmt(muB)}\n"
-                )
-            else:
-                msg += "Surface brightness: N/A (no pixscale from WCS)\n"
+            msg += "Surface brightness: N/A (no pixscale from WCS)\n"
 
         QMessageBox.information(self, "Magnitude Results", msg)
-
 
     def _fetch_simbad_stars_and_cache(self, img, hdr, doc) -> List[dict]:
         """
