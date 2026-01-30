@@ -1377,7 +1377,10 @@ class MagnitudeToolDialog(QDialog):
         # pixscale / area for surface brightness
         _, pixscale = _build_wcs_and_pixscale(hdr)
         area_asec2 = (float(obj_area) * float(pixscale) * float(pixscale)) if (pixscale and pixscale > 0) else None
+        pix_area_asec2 = (float(pixscale) * float(pixscale)) if (pixscale and pixscale > 0) else None
 
+        # background mean flux per pixel (mono: float, rgb: (3,))
+        bkg_mean = (bkg_sum / float(bkg_area)) if bkg_area > 0 else None
         # systematic floor (mag) rolled into TOTAL only
         try:
             sys_floor = float(self.sys_floor_spin.value()) if hasattr(self, "sys_floor_spin") else float(getattr(self, "sys_floor_mag", 0.0) or 0.0)
@@ -1416,7 +1419,9 @@ class MagnitudeToolDialog(QDialog):
             net_f = float(net)
             m = _mag_from_flux(net_f, ZP)
             mu = _mu_from_flux(net_f, float(area_asec2), ZP) if area_asec2 is not None else None
-
+            mu_bg = None
+            if pix_area_asec2 is not None and bkg_mean is not None:
+                mu_bg = _mu_from_flux(float(bkg_mean), float(pix_area_asec2), ZP)
             m_stat = _mag_err_from_flux(net_f, float(flux_err), float(zp_sem)) if (zp_sem is not None) else None
             mu_stat = _mu_err_from_flux(net_f, float(flux_err), float(zp_sem)) if (zp_sem is not None and area_asec2 is not None) else None
 
@@ -1431,7 +1436,10 @@ class MagnitudeToolDialog(QDialog):
                 f"Integrated magnitude ({band}, catalog {magkey}):\n"
                 f"  m = {fmt(m)} ± {fmt(m_3)}  (total 3σ)\n\n"
             )
+            if pix_area_asec2 is not None:
+                msg += f"  Background μ (mag/arcsec²): {fmt(mu_bg)}\n"
 
+            msg += "\n"
             if area_asec2 is not None:
                 msg += (
                     f"Surface brightness (mag/arcsec²)  [area={area_asec2:.3f} arcsec²]:\n"
@@ -1467,6 +1475,15 @@ class MagnitudeToolDialog(QDialog):
         mG_3 = total_3sigma(mG_stat)
         mB_3 = total_3sigma(mB_stat)
 
+        mu_bg_R = mu_bg_G = mu_bg_B = None
+        if pix_area_asec2 is not None and bkg_mean is not None:
+            # bkg_mean is (3,)
+            bR, bG, bB = float(bkg_mean[0]), float(bkg_mean[1]), float(bkg_mean[2])
+            mu_bg_R = _mu_from_flux(bR, float(pix_area_asec2), ZP_R) if (ZP_R is not None and bR > 0) else None
+            mu_bg_G = _mu_from_flux(bG, float(pix_area_asec2), ZP_G) if (ZP_G is not None and bG > 0) else None
+            mu_bg_B = _mu_from_flux(bB, float(pix_area_asec2), ZP_B) if (ZP_B is not None and bB > 0) else None
+
+
         muR = muG = muB = None
         muR_3 = muG_3 = muB_3 = None
 
@@ -1495,6 +1512,13 @@ class MagnitudeToolDialog(QDialog):
             f"  m_G = {fmt(mG)} ± {fmt(mG_3)}\n"
             f"  m_B = {fmt(mB)} ± {fmt(mB_3)}\n\n"
         )
+
+        if pix_area_asec2 is not None:
+            msg += (
+                f"Background surface brightness (mag/arcsec²):\n"
+                f"  μ_bg_R = {fmt(mu_bg_R)}   μ_bg_G = {fmt(mu_bg_G)}   μ_bg_B = {fmt(mu_bg_B)}\n\n"
+            )
+
 
         if area_asec2 is not None:
             msg += (
