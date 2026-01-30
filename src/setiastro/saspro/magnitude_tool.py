@@ -486,7 +486,8 @@ class MagnitudeRegionDialog(QDialog):
         self.view.setOptimizationFlag(QGraphicsView.OptimizationFlag.DontAdjustForAntialiasing, True)
         # --- layout ---
         v = QVBoxLayout(self)
-        self.lbl = QLabel("Draw a Target box. Background will be auto-selected (gold).")
+        self.lbl = QLabel("Draw a Target region (Box/Ellipse/Freehand). Background will be auto-selected (gold).")
+
         self.lbl.setWordWrap(True)
         v.addWidget(self.lbl)
 
@@ -595,9 +596,14 @@ class MagnitudeRegionDialog(QDialog):
 
     def _doc_image_float01(self) -> np.ndarray:
         doc = self._active_doc()
-        img = np.asarray(getattr(doc, "image", None))
-        if img is None or img.size == 0:
-            return img
+        img = getattr(doc, "image", None)
+        if img is None:
+            raise ValueError("No active image.")
+
+        img = np.asarray(img)
+        if img.size == 0:
+            raise ValueError("No active image.")
+
         # normalize integers → [0,1]
         if img.dtype.kind in "ui":
             mx = float(np.iinfo(img.dtype).max)
@@ -605,9 +611,19 @@ class MagnitudeRegionDialog(QDialog):
         else:
             img = img.astype(np.float32, copy=False)
 
-        if img.ndim != 3 or img.shape[2] < 3:
-            raise ValueError("Magnitude tool ROI picker requires an RGB image.")
-        return img[..., :3]
+        # ---- allow mono for ROI picking (convert to RGB for DISPLAY only) ----
+        if img.ndim == 2:
+            return np.dstack([img, img, img]).astype(np.float32, copy=False)
+
+        if img.ndim == 3:
+            if img.shape[2] == 1:
+                m = img[..., 0]
+                return np.dstack([m, m, m]).astype(np.float32, copy=False)
+            if img.shape[2] >= 3:
+                return img[..., :3].astype(np.float32, copy=False)
+
+        raise ValueError(f"Unsupported image shape for ROI picker: {img.shape}")
+
 
     def _display_rgb01(self, img_rgb01: np.ndarray) -> np.ndarray:
         # preview-only stretch
@@ -992,7 +1008,7 @@ class MagnitudeToolDialog(QDialog):
         row.addWidget(self.btn_zp)
         v.addLayout(row)
 
-        self.btn_pick = QPushButton("Pick Target Region…")
+        self.btn_pick = QPushButton("Step 3: Pick Target Region…")
         self.btn_pick.clicked.connect(self.open_region_picker)
         v.addWidget(self.btn_pick)
 
@@ -1060,7 +1076,7 @@ class MagnitudeToolDialog(QDialog):
         v.addWidget(self.lbl_info)
 
         row2 = QHBoxLayout()
-        self.btn_measure = QPushButton("Step 3: Measure Object Region")
+        self.btn_measure = QPushButton("Step 4: Measure Object Region")
         self.btn_measure.clicked.connect(self.measure_object_region)
         row2.addWidget(self.btn_measure)
 

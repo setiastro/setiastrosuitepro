@@ -3535,13 +3535,53 @@ class AstroSuiteProMainWindow(
         base = base_title or (getattr(doc, "display_name", lambda: None)() or "RGB")
 
         def _open(arr, suffix):
-            meta = {
+            from astropy.io import fits
+
+            # ---- 1) start from source metadata (preserve headers/WCS) ----
+            src_meta = getattr(doc, "metadata", {}) or {}
+            meta = dict(src_meta)  # shallow copy of top-level dict
+
+            # Preserve header objects safely
+            fits_hdr = src_meta.get("fits_header")
+            wcs_hdr  = src_meta.get("wcs_header")
+            orig_hdr = src_meta.get("original_header")
+
+            # Keep them if they are astropy Headers; otherwise fall back gracefully
+            meta["fits_header"] = fits_hdr.copy() if isinstance(fits_hdr, fits.Header) else fits_hdr
+            meta["wcs_header"]  = wcs_hdr.copy()  if isinstance(wcs_hdr,  fits.Header) else wcs_hdr
+            meta["original_header"] = orig_hdr.copy() if isinstance(orig_hdr, fits.Header) else orig_hdr
+
+            # Preserve WCS object + flags (ok if None)
+            if "wcs" in src_meta:
+                meta["wcs"] = src_meta.get("wcs")
+            if "HasAstrometricSolution" in src_meta:
+                meta["HasAstrometricSolution"] = src_meta.get("HasAstrometricSolution")
+
+            # Preserve image_meta mirror, but make it a copy so we don't mutate parent
+            im = src_meta.get("image_meta")
+            if isinstance(im, dict):
+                meta["image_meta"] = dict(im)
+
+            # ---- 2) overwrite/extend with RGB-extract specific fields ----
+            base = base_title or (getattr(doc, "display_name", lambda: None)() or "RGB")
+            title = f"{base}_{suffix}"
+            try:
+                fh = meta.get("fits_header")
+                if isinstance(fh, fits.Header):
+                    fh["NAXIS"] = 2
+                    if "NAXIS3" in fh:
+                        del fh["NAXIS3"]
+            except Exception:
+                pass
+            meta.update({
                 "source": "RGB Extract",
                 "is_mono": True,
                 "bit_depth": "32-bit floating point",
                 "parent_title": base,
-            }
-            title = f"{base}_{suffix}"
+                "channel": suffix,   # handy for later
+            })
+
+            # ---- 3) create doc ----
             try:
                 if hasattr(dm, "open_array"):
                     newdoc = dm.open_array(arr, metadata=meta, title=title)
@@ -3549,9 +3589,22 @@ class AstroSuiteProMainWindow(
                     newdoc = dm.open_numpy(arr, metadata=meta, title=title)
                 else:
                     newdoc = dm.create_document(image=arr, metadata=meta, name=title)
+
+                # ---- 4) ensure WCS is internally consistent on the new doc ----
+                # If source had a WCS solution, rebuild original_header+wcs using your canonical path.
+                try:
+                    if meta.get("HasAstrometricSolution") or (meta.get("wcs_header") is not None):
+                        wcs_dict = self._extract_wcs_dict(doc)  # from SOURCE doc
+                        if wcs_dict:
+                            self._apply_wcs_dict_to_doc(newdoc, dict(wcs_dict))
+                except Exception:
+                    pass
+
                 self._spawn_subwindow_for(newdoc)
+
             except Exception as ex:
                 QMessageBox.critical(self, "RGB Extract", f"Failed to open '{title}':\n{ex}")
+
 
         _open(r, "R")
         _open(g, "G")
