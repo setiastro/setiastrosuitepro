@@ -186,7 +186,7 @@ from setiastro.saspro.resources import (
     colorwheel_path, font_path, csv_icon_path, spinner_path, wims_path, narrowbandnormalization_path,
     wimi_path, linearfit_path, debayer_path, aberration_path, acv_icon_path,
     functionbundles_path, viewbundles_path, selectivecolor_path, rgbalign_path, planetarystacker_path,
-    background_path, script_icon_path, planetprojection_path,clonestampicon_path, finderchart_path,
+    background_path, script_icon_path, planetprojection_path,clonestampicon_path, finderchart_path,magnitude_path,
 )
 
 import faulthandler
@@ -3184,6 +3184,45 @@ class AstroSuiteProMainWindow(
         except Exception:
             pass
         self.SFCC_window.show()
+
+    def _open_magnitude_tool(self):
+        import os
+        from PyQt6.QtGui import QIcon
+        from PyQt6.QtWidgets import QMessageBox
+
+        # Keep same window-singleton behavior as SFCC
+        if getattr(self, "MAG_window", None) and self.MAG_window.isVisible():
+            self.MAG_window.raise_()
+            self.MAG_window.activateWindow()
+            return
+
+        # ensure we have a DocManager (mirror SFCC pattern)
+        from setiastro.saspro.doc_manager import DocManager
+        if not hasattr(self, "doc_manager") or self.doc_manager is None:
+            self.doc_manager = DocManager(image_manager=getattr(self, "image_manager", None), parent=self)
+
+        # import tool
+        from setiastro.saspro.magnitude_tool import MagnitudeToolDialog
+
+        self.MAG_window = MagnitudeToolDialog(
+            doc_manager=self.doc_manager,
+            parent=self
+        )
+
+        # optional icon
+        try:
+            self.MAG_window.setWindowIcon(QIcon(magnitude_path))
+        except Exception:
+            pass
+
+        # cleanup
+        try:
+            self.MAG_window.destroyed.connect(lambda _=None: setattr(self, "MAG_window", None))
+        except Exception:
+            pass
+
+        self.MAG_window.show()
+
 
     def show_convo_deconvo(self, doc=None):
         # Reuse existing dialog if it's already open

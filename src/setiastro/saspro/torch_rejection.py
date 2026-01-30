@@ -5,7 +5,7 @@ import numpy as np
 
 # Always route through our runtime shim so ALL GPU users share the same backend.
 # Nothing heavy happens at import; we only resolve Torch when needed.
-from .runtime_torch import import_torch, add_runtime_to_sys_path
+from .runtime_torch import import_torch, add_runtime_to_sys_path, best_device
 
 # Algorithms supported by the GPU path here (names match your UI/CPU counterparts)
 _SUPPORTED = {
@@ -31,46 +31,36 @@ _SUPPORTED = {
 _TORCH = None
 _DEVICE = None
 
-def _get_torch(prefer_cuda: bool = True):
-    """
-    Resolve and cache the torch module via the SAS runtime shim.
-    This may install/repair torch into the per-user runtime if needed.
-    """
+
+
+def _get_torch(prefer_cuda: bool = True, prefer_dml: bool = False):
     global _TORCH, _DEVICE
     if _TORCH is not None:
         return _TORCH
 
-    # In frozen builds, help the process see the runtime site-packages first.
     try:
         add_runtime_to_sys_path(lambda *_: None)
     except Exception:
         pass
 
-    # Import (and if necessary, install) torch using the unified runtime.
-    torch = import_torch(prefer_cuda=prefer_cuda, status_cb=lambda *_: None)
+    # Let runtime_torch install the right stack
+    torch = import_torch(prefer_cuda=prefer_cuda, prefer_dml=prefer_dml, status_cb=lambda *_: None)
+    _DEVICE = best_device(torch, prefer_cuda=True, prefer_dml=prefer_dml)
     _TORCH = torch
     _force_fp32_policy(torch)
 
-    # Choose the best device once; cheap calls, but cached anyway
-    try:
-        if hasattr(torch, "cuda") and torch.cuda.is_available():
-            _DEVICE = torch.device("cuda")
-        elif getattr(getattr(torch, "backends", None), "mps", None) and torch.backends.mps.is_available():
-            _DEVICE = torch.device("mps")
-        else:
-            # Try DirectML for AMD/Intel GPUs on Windows
-            try:
-                import torch_directml
-                dml_device = torch_directml.device()
-                # Quick sanity check
-                _ = (torch.ones(1, device=dml_device) + 1).item()
-                _DEVICE = dml_device
-            except Exception:
-                _DEVICE = torch.device("cpu")
-    except Exception:
+    # Device selection: CUDA first, else CPU.
+    # (If runtime_torch installed DML, then your app should choose DML device elsewhere
+    #  OR you add a runtime_torch helper to return it.)
+    if hasattr(torch, "cuda") and torch.cuda.is_available():
+        _DEVICE = torch.device("cuda")
+    elif getattr(getattr(torch, "backends", None), "mps", None) and torch.backends.mps.is_available():
+        _DEVICE = torch.device("mps")
+    else:
         _DEVICE = torch.device("cpu")
 
     return _TORCH
+
 
 def _device():
     if _DEVICE is not None:
@@ -246,11 +236,52 @@ def torch_reduce_tile(
     ts = torch.from_numpy(ts_np).to(dev, dtype=torch.float32, non_blocking=True)
 
     # Weights broadcast to 4D
+    # Weights -> broadcastable 4D tensor (F,1,1,1) or (F,1,1,C) or (F,H,W,1) or (F,H,W,C)
     weights_np = np.asarray(weights_np, dtype=np.float32)
+
+    if weights_np.ndim == 0:
+        # scalar -> per-frame scalar (rare)
+        weights_np = np.full((F,), float(weights_np), dtype=np.float32)
+
     if weights_np.ndim == 1:
-        w = torch.from_numpy(weights_np).to(dev, dtype=torch.float32, non_blocking=True).view(F,1,1,1)
+        if weights_np.shape[0] != F:
+            raise ValueError(f"weights shape {weights_np.shape} does not match F={F}")
+        w_np = weights_np.reshape(F, 1, 1, 1)
+
+    elif weights_np.ndim == 2:
+        # Most important fix: (F,C) per-channel weights
+        if weights_np.shape == (F, C):
+            w_np = weights_np.reshape(F, 1, 1, C)
+        # Sometimes people accidentally pass (F,H) or (F,W) -> reject loudly
+        else:
+            raise ValueError(
+                f"Unsupported 2D weights shape {weights_np.shape}. "
+                f"Expected (F,C)=({F},{C}) for per-channel weights."
+            )
+
+    elif weights_np.ndim == 3:
+        # (F,H,W) -> treat as single-channel weight map
+        if weights_np.shape == (F, H, W):
+            w_np = weights_np[..., None]  # (F,H,W,1)
+        else:
+            raise ValueError(
+                f"Unsupported 3D weights shape {weights_np.shape}. Expected (F,H,W)=({F},{H},{W})."
+            )
+
+    elif weights_np.ndim == 4:
+        if weights_np.shape == (F, H, W, 1) or weights_np.shape == (F, H, W, C):
+            w_np = weights_np
+        else:
+            raise ValueError(
+                f"Unsupported 4D weights shape {weights_np.shape}. "
+                f"Expected (F,H,W,1) or (F,H,W,C)=({F},{H},{W},{C})."
+            )
     else:
-        w = torch.from_numpy(weights_np).to(dev, dtype=torch.float32, non_blocking=True)
+        raise ValueError(f"Unsupported weights ndim={weights_np.ndim} shape={weights_np.shape}")
+
+    # Host -> device
+    w = torch.from_numpy(w_np).to(dev, dtype=torch.float32, non_blocking=False)
+
 
     algo = algo_name
     valid = torch.isfinite(ts)

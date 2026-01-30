@@ -528,7 +528,7 @@ class SFCCDialog(QDialog):
         self.run_spcc_btn.clicked.connect(self.run_spcc)
         row4.addWidget(self.run_spcc_btn)
 
-        self.neutralize_chk = QCheckBox(self.tr("Background Neutralization")); self.neutralize_chk.setChecked(True); row4.addWidget(self.neutralize_chk)
+        self.neutralize_chk = QCheckBox(self.tr("Background Neutralization")); self.neutralize_chk.setChecked(False); row4.addWidget(self.neutralize_chk)
 
         self.run_grad_btn = QPushButton(self.tr("Run Gradient Extraction (Beta)"))
         f3 = self.run_grad_btn.font(); f3.setBold(True); self.run_grad_btn.setFont(f3)
@@ -822,65 +822,6 @@ class SFCCDialog(QDialog):
         idx = self.sens_combo.findText(current_s); self.sens_combo.setCurrentIndex(idx if idx != -1 else 0)
 
     # ── WCS utilities ──────────────────────────────────────────────────
-    def initialize_wcs_from_header(self, header):
-        if header is None:
-            print("No FITS header available; cannot build WCS.")
-            return
-        try:
-            hdr = header.copy()
-
-            # --- normalize deprecated keywords ---
-            if "RADECSYS" in hdr and "RADESYS" not in hdr:
-                radesys_val = str(hdr["RADECSYS"]).strip()
-                hdr["RADESYS"] = radesys_val
-                try:
-                    del hdr["RADECSYS"]
-                except Exception:
-                    pass
-
-                alt_letters = {
-                    k[-1]
-                    for k in hdr.keys()
-                    if re.match(r"^CTYPE[12][A-Z]$", k)
-                }
-                for a in alt_letters:
-                    key = f"RADESYS{a}"
-                    if key not in hdr:
-                        hdr[key] = radesys_val
-
-            if "EPOCH" in hdr and "EQUINOX" not in hdr:
-                hdr["EQUINOX"] = hdr["EPOCH"]
-                try:
-                    del hdr["EPOCH"]
-                except Exception:
-                    pass
-
-            # IMPORTANT: use the normalized hdr, not the original header
-            self.wcs = WCS(hdr, naxis=2, relax=True)
-
-            psm = self.wcs.pixel_scale_matrix
-            self.pixscale = np.hypot(psm[0, 0], psm[1, 0]) * 3600.0
-            self.center_ra, self.center_dec = self.wcs.wcs.crval
-            self.wcs_header = self.wcs.to_header(relax=True)
-
-            # Orientation from normalized header
-            if "CROTA2" in hdr:
-                try:
-                    self.orientation = float(hdr["CROTA2"])
-                except Exception:
-                    self.orientation = None
-            else:
-                self.orientation = self.calculate_orientation(hdr)
-
-            if self.orientation is not None:
-                self.orientation_label.setText(f"Orientation: {self.orientation:.2f}°")
-            else:
-                self.orientation_label.setText("Orientation: N/A")
-
-        except Exception as e:
-            print("WCS initialization error:\n", e)
-
-
     def calculate_orientation(self, header):
         try:
             cd1_1 = float(header.get("CD1_1", 0.0))
@@ -1322,7 +1263,11 @@ class SFCCDialog(QDialog):
         # --- plot / UI feedback (unchanged) ---
         if getattr(self, "figure", None) is not None:
             self.figure.clf()
-
+        doc = self.doc_manager.get_active_document()
+        if doc is not None:
+            meta = dict(doc.metadata or {})
+            meta["SFCC_star_list"] = list(self.star_list)  # keep it JSON-ish
+            self.doc_manager.update_active_document(doc.image, metadata=meta, step_name="SFCC Stars Cached", doc=doc)
         if templates_for_hist:
             uniq, cnt = np.unique(templates_for_hist, return_counts=True)
             types_str = ", ".join([str(u) for u in uniq])
@@ -1442,14 +1387,24 @@ class SFCCDialog(QDialog):
             dy = sources["y"] - star["y"]
             j = int(np.argmin(dx * dx + dy * dy))
             if (dx[j] * dx[j] + dy[j] * dy[j]) < (3.0 ** 2):
-                xi, yi = int(round(float(sources["x"][j]))), int(round(float(sources["y"][j])))
-                if 0 <= xi < W and 0 <= yi < H:
-                    raw_matches.append({
-                        "sim_index": i,
-                        "template": star.get("pickles_match") or star["sp_clean"],
-                        "x_pix": xi,
-                        "y_pix": yi
-                    })
+                x_c = float(sources["x"][j])
+                y_c = float(sources["y"][j])
+
+                raw_matches.append({
+                    "sim_index": i,
+                    "template": star.get("pickles_match") or star["sp_clean"],
+                    "src_index": j,
+
+                    # New canonical centroid keys
+                    "x": x_c,
+                    "y": y_c,
+
+                    # Back-compat keys used elsewhere (gradient step, older code paths)
+                    "x_pix": x_c,
+                    "y_pix": y_c,
+
+                    "a": float(sources["a"][j]),
+                })
 
         if not raw_matches:
             QMessageBox.warning(self, "No Matches", "No SIMBAD star matched to SEP detections.")
@@ -1525,14 +1480,65 @@ class SFCCDialog(QDialog):
             except Exception as e:
                 print(f"[SFCC] Warning: failed to load/integrate template {pname}: {e}")
 
+        def measure_star_rgb_aperture(img_rgb_f32: np.ndarray, x: float, y: float, r: float,
+                                    rin: float, rout: float) -> tuple[float, float, float]:
+            # SEP expects float32, C-contiguous, and (x,y) in pixel coords
+            R = np.ascontiguousarray(img_rgb_f32[..., 0], dtype=np.float32)
+            G = np.ascontiguousarray(img_rgb_f32[..., 1], dtype=np.float32)
+            B = np.ascontiguousarray(img_rgb_f32[..., 2], dtype=np.float32)
+
+            # sum_circle returns (flux, fluxerr, flag) when err not provided; handle either form
+            def _sum(ch):
+                out = sep.sum_circle(ch, np.array([x]), np.array([y]), r,
+                                    subpix=5, bkgann=(rin, rout))
+                # Depending on sep version, out can be (flux, fluxerr, flag) or (flux, flag)
+                if len(out) == 3:
+                    flux, _fluxerr, flag = out
+                else:
+                    flux, flag = out
+                return float(flux[0]), int(flag[0])
+
+            fR, flR = _sum(R)
+            fG, flG = _sum(G)
+            fB, flB = _sum(B)
+
+            # If any flags set, you can reject (edge, etc.)
+            if (flR | flG | flB) != 0:
+                return None, None, None
+
+            return fR, fG, fB
+
+
         # ---- Main match loop (measure from 'base' only) ----
         for m in raw_matches:
-            xi, yi, sp = m["x_pix"], m["y_pix"], m["template"]
+            xi = float(m.get("x_pix", m["x"]))
+            yi = float(m.get("y_pix", m["y"]))
+            sp = m["template"]
 
             # measure on the SEP working copy (already BN’d, only one pedestal handling)
-            Rm = float(base[yi, xi, 0])
-            Gm = float(base[yi, xi, 1])
-            Bm = float(base[yi, xi, 2])
+            x = float(m["x"])
+            y = float(m["y"])
+
+            # Aperture radius choice (simple + robust)
+            # sources["a"] is roughly semi-major sigma-ish from SEP; a common quick rule:
+            # r ~ 2.5 * a, with sane clamps.
+            a = float(m.get("a", 1.5))
+            r = float(np.clip(2.5 * a, 2.0, 12.0))
+
+            # Annulus (your “kicker”): inner/outer in pixels
+            rin  = float(np.clip(3.0 * r, 6.0, 40.0))
+            rout = float(np.clip(5.0 * r, rin + 2.0, 60.0))
+
+            meas = measure_star_rgb_aperture(base, x, y, r, rin, rout)
+            if meas[0] is None:
+                continue
+            Rm, Gm, Bm = meas
+
+            if Gm <= 0:
+                continue
+            meas_RG = Rm / Gm
+            meas_BG = Bm / Gm
+
             if Gm <= 0:
                 continue
 
@@ -1656,7 +1662,8 @@ class SFCCDialog(QDialog):
         QApplication.processEvents()
 
         eps = 1e-8
-        calibrated = base.copy()
+        #calibrated = base.copy()
+        calibrated = img_float.copy() 
 
         R = calibrated[..., 0]
         G = calibrated[..., 1]
