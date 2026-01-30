@@ -254,6 +254,7 @@ class ToolbarMixin:
         tb_tl.addAction(self.act_multiscale_decomp)
         tb_tl.addAction(self.act_contsub)
         tb_tl.addAction(self.act_image_combine)
+        tb_tl.addAction(self.act_magnitude)
 
         self._restore_toolbar_order(tb_tl, "Toolbar/Tools")
         try:
