@@ -53,7 +53,7 @@ from setiastro.saspro.sfcc import pickles_match_for_simbad
 
 # Reuse useful SFCC pieces
 from setiastro.saspro.sfcc import non_blocking_sleep  # already used in SFCC; optional
-from setiastro.saspro.backgroundneutral import auto_rect_50x50
+from setiastro.saspro.backgroundneutral import auto_rect_box, auto_rect_50x50
 from setiastro.saspro.imageops.stretch import stretch_color_image
 # We *intentionally* do NOT reuse SFCC pedestal-removal/clamp for photometry.
 
@@ -732,19 +732,33 @@ class MagnitudeRegionDialog(QDialog):
     def _on_find_background(self):
         try:
             img = self._doc_image_float01()
-            x, y, w, h = auto_rect_50x50(img)
+
+            # Pull desired box size from the parent tool if available
+            box = 50
+            p = self.parent()
+            if p is not None and hasattr(p, "bg_box_size"):
+                try:
+                    box = int(p.bg_box_size.value())
+                except Exception:
+                    box = 50
+
+            x, y, w, h = auto_rect_box(img, box=box, margin=100)
+            # (or auto_rect_50x50(img) if you want fixed behavior)
         except Exception as e:
             QMessageBox.warning(self, "Background", str(e))
             return
 
         if self.bg_item:
-            try: self.scene.removeItem(self.bg_item)
-            except Exception: pass
+            try:
+                self.scene.removeItem(self.bg_item)
+            except Exception:
+                pass
 
         pen = QPen(QColor(255, 215, 0), 3)  # gold
-        pen.setCosmetic(True)  
+        pen.setCosmetic(True)
         rect_scene = QRectF(float(x), float(y), float(w), float(h))
         self.bg_item = self.scene.addRect(rect_scene, pen)
+
 
     def _target_mask(self) -> Optional[np.ndarray]:
         if self._pixmap_item is None:
@@ -973,7 +987,7 @@ class MagnitudeToolDialog(QDialog):
     """
     def __init__(self, doc_manager, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Magnitude / Surface Brightness (v0)")
+        self.setWindowTitle("Magnitude / Surface Brightness")
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
@@ -1062,6 +1076,12 @@ class MagnitudeToolDialog(QDialog):
         self.sys_floor_spin.setValue(float(getattr(self, "sys_floor_mag", 0.10) or 0.0))
         form.addRow("Systematic floor (mag)", self.sys_floor_spin)
 
+        self.bg_box_size = QSpinBox()
+        self.bg_box_size.setRange(10, 300)
+        self.bg_box_size.setSingleStep(5)
+        self.bg_box_size.setValue(50)
+        form.addRow("Auto background box (px)", self.bg_box_size)
+
         hint = QLabel(
             "Popup reports total 3σ only: sqrt(stat² + sys_floor²). "
             "sys_floor is a conservative calibration mismatch term."
@@ -1117,6 +1137,13 @@ class MagnitudeToolDialog(QDialog):
     def open_region_picker(self):
         dlg = MagnitudeRegionDialog(parent=self, doc_manager=self.doc_manager)
         dlg.show()
+
+        # optional: keep bg box updated when size changes
+        try:
+            self.bg_box_size.valueChanged.connect(lambda _v: dlg._on_find_background())
+        except Exception:
+            pass
+
 
     def set_object_rect(self, rect: QRect):
         self.object_rect = QRect(rect)
@@ -1304,7 +1331,9 @@ class MagnitudeToolDialog(QDialog):
                 img_f0 = img_f
                 if img_f0.ndim == 2:
                     img_f0 = np.dstack([img_f0] * 3)
-                bx, by, bw, bh = auto_rect_50x50(img_f0)
+                box = int(self.bg_box_size.value()) if hasattr(self, "bg_box_size") else 50
+
+                bx, by, bw, bh = auto_rect_box(img_f0, box=box, margin=100)
                 self.background_rect = QRect(int(bx), int(by), int(bw), int(bh))
                 bg_mask = rect_to_mask(self.background_rect)
             except Exception:

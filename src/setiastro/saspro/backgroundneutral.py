@@ -168,40 +168,78 @@ def _find_best_patch_center(lum: np.ndarray) -> tuple[int, int]:
     return best_pt
 
 
-def auto_rect_50x50(img_rgb: np.ndarray) -> tuple[int, int, int, int]:
-    """
-    Find a robust 50×50 background rectangle (≥100 px margins) in image space.
-    Returns (x, y, w, h).
-    """
-    h, w, ch = img_rgb.shape
-    if ch != 3:
-        raise ValueError("Auto background finder expects a 3-channel RGB image.")
-    lum = img_rgb.mean(axis=2).astype(np.float32)
 
+def auto_rect_box(img_rgb: np.ndarray, box: int = 50, margin: int = 100) -> tuple[int, int, int, int]:
+    """
+    Find a robust box×box background rectangle (>= margin px margins) in image space.
+    Returns (x, y, w, h).
+
+    Notes:
+      - img_rgb must be HxWx3 float/uint in any range (we only use relative luminance).
+      - box is clamped so it always fits within the image + margins.
+    """
+    if img_rgb.ndim != 3 or img_rgb.shape[2] != 3:
+        raise ValueError("Auto background finder expects a 3-channel RGB image.")
+
+    H, W, _ = img_rgb.shape
+    box = int(box)
+
+    # Clamp box so it fits inside the image after margins.
+    # Ensure at least 10px and at least 1px interior.
+    max_box_w = max(10, W - 2 * margin - 2)
+    max_box_h = max(10, H - 2 * margin - 2)
+    max_box = max(10, min(max_box_w, max_box_h))
+    box = int(np.clip(box, 10, max_box))
+
+    half = box // 2
+
+    # Luminance proxy
+    lum = img_rgb.mean(axis=2).astype(np.float32, copy=False)
+
+    # Your existing routine (assumed to return (cy, cx) in image coords)
     cy, cx = _find_best_patch_center(lum)
 
-    margin = 100
-    half = 25
-    min_cx, max_cx = margin + half, w - (margin + half)
-    min_cy, max_cy = margin + half, h - (margin + half)
+    # Keep center far enough from edges so the full box fits
+    min_cx, max_cx = margin + half, W - (margin + half)
+    min_cy, max_cy = margin + half, H - (margin + half)
     cx = int(np.clip(cx, min_cx, max_cx))
     cy = int(np.clip(cy, min_cy, max_cy))
 
-    # refine by ±half
+    # Refine around the center.
+    # Step scales with box so the search is meaningful at different sizes.
+    step = max(4, half // 2)  # e.g. 50->12, 80->20, 30->7
     best_val = np.inf
     ty, tx = cy, cx
-    for dy in (-half, 0, +half):
-        for dx in (-half, 0, +half):
+
+    for dy in (-step, 0, +step):
+        for dx in (-step, 0, +step):
             y = int(np.clip(cy + dy, min_cy, max_cy))
             x = int(np.clip(cx + dx, min_cx, max_cx))
-            y0, y1 = y - half, y + half
-            x0, x1 = x - half, x + half
-            m = np.median(lum[y0:y1, x0:x1])
+            y0, y1 = y - half, y - half + box
+            x0, x1 = x - half, x - half + box
+
+            # Safety (should already be safe due to clamping, but keep it robust)
+            if y0 < 0 or x0 < 0 or y1 > H or x1 > W:
+                continue
+
+            m = float(np.median(lum[y0:y1, x0:x1]))
             if m < best_val:
                 best_val, ty, tx = m, y, x
 
-    return (tx - half, ty - half, 50, 50)
+    # Top-left anchored rect, exact box size
+    x0 = int(tx - half)
+    y0 = int(ty - half)
 
+    # Final clamp (again, belt + suspenders)
+    x0 = int(np.clip(x0, margin, W - margin - box))
+    y0 = int(np.clip(y0, margin, H - margin - box))
+
+    return (x0, y0, box, box)
+
+
+def auto_rect_50x50(img_rgb: np.ndarray) -> tuple[int, int, int, int]:
+    """Backward-compatible wrapper."""
+    return auto_rect_box(img_rgb, box=50, margin=100)
 
 # --------------------------------
 # Headless apply (doc + preset in)
