@@ -34,7 +34,6 @@ from setiastro.saspro.widgets.image_utils import extract_mask_from_document as _
 _MAD_NORM = 1.4826
 
 # --------- deterministic, invertible stretch used for StarNet ----------
-# ---------- Siril-like MTF (linked) pre-stretch for StarNet ----------
 def _robust_peak_sigma(gray: np.ndarray) -> tuple[float, float]:
     gray = gray.astype(np.float32, copy=False)
     med = float(np.median(gray))
@@ -61,18 +60,6 @@ def _mtf_apply(x: np.ndarray, shadows: float, midtones: float, highlights: float
     return np.clip(y, 0.0, 1.0).astype(np.float32, copy=False)
 
 def _mtf_inverse(y: np.ndarray, shadows: float, midtones: float, highlights: float) -> np.ndarray:
-    """
-    Pseudoinverse of MTF, matching Siril's MTF_pseudoinverse() implementation.
-
-    C reference:
-
-    float MTF_pseudoinverse(float y, struct mtf_params params) {
-        return ((((params.shadows + params.highlights) * params.midtones
-                - params.shadows) * y - params.shadows * params.midtones
-                + params.shadows)
-                / ((2 * params.midtones - 1) * y - params.midtones + 1));
-    }
-    """
     s = float(shadows)
     m = float(midtones)
     h = float(highlights)
@@ -107,7 +94,7 @@ def _mtf_params_linked(img_rgb01: np.ndarray, shadowclip_sigma: float = -2.8, ta
     s = peak + shadowclip_sigma * sigma
     # keep [0..1) with margin
     s = float(np.clip(s, gray.min(), max(gray.max() - 1e-6, 0.0)))
-    h = 1.0  # Siril effectively normalizes to <=1 before 16-bit TIFF
+    h = 1.0  
     # solve for midtones m so that mtf(xp(peak)) = targetbg
     x = (peak - s) / max(h - s, 1e-8)
     x = float(np.clip(x, 1e-6, 1.0 - 1e-6))
@@ -136,14 +123,14 @@ def _mtf_params_unlinked(img_rgb01: np.ndarray,
                          shadows_clipping: float = -2.8,
                          targetbg: float = 0.25) -> dict:
     """
-    Siril-style per-channel MTF parameter estimation, matching
+    per-channel MTF parameter estimation, matching
     find_unlinked_midtones_balance_default() / find_unlinked_midtones_balance().
 
     Works on float32 data assumed in [0,1].
     Returns dict with arrays: {'s': (C,), 'm': (C,), 'h': (C,)}.
     """
     """
-    Siril-style per-channel MTF parameter estimation, matching
+    per-channel MTF parameter estimation, matching
     find_unlinked_midtones_balance_default() / find_unlinked_midtones_balance().
 
     Works on float32 data assumed in [0,1].
@@ -221,8 +208,6 @@ def _mtf_params_unlinked(img_rgb01: np.ndarray,
 
 def _mtf_scalar(x: float, m: float, lo: float = 0.0, hi: float = 1.0) -> float:
     """
-    Scalar midtones transfer function matching the PixInsight / Siril spec.
-
     For x in [lo, hi], rescale to [0,1] and apply:
 
         M(x; m) = (m - 1) * xp / ((2*m - 1)*xp - m)
@@ -250,7 +235,7 @@ def _mtf_scalar(x: float, m: float, lo: float = 0.0, hi: float = 1.0) -> float:
         return 0.5
 
     y = num / den
-    # clamp to [0,1] as PI/Siril do
+
     if y < 0.0:
         y = 0.0
     elif y > 1.0:
@@ -308,10 +293,8 @@ def _get_setting_any(settings, keys: tuple[str, ...], default: str = "") -> str:
 
 def starnet_starless_from_array(arr_rgb01: np.ndarray, settings, *, tmp_prefix="comet") -> np.ndarray:
     """
-    Siril-style MTF round-trip for 32-bit data:
-
       1) Normalize to [0,1] (preserving overall scale separately)
-      2) Compute unlinked MTF params per channel (Siril auto-stretch)
+      2) Compute unlinked MTF params per channel
       3) Apply unlinked MTF -> 16-bit TIFF for StarNet
       4) StarNet -> read starless 16-bit TIFF
       5) Apply per-channel MTF pseudoinverse with SAME params
@@ -351,7 +334,7 @@ def starnet_starless_from_array(arr_rgb01: np.ndarray, settings, *, tmp_prefix="
     xin = (x_in / scale_factor) if scale_factor > 1.0 else x_in
     xin = np.clip(xin, 0.0, 1.0)
 
-    # --- Siril-style unlinked MTF params + pre-stretch ---
+
     mtf_params = _mtf_params_unlinked(xin, shadows_clipping=-2.8, targetbg=0.25)
     x_for_starnet = _apply_mtf_unlinked_rgb(xin, mtf_params).astype(np.float32, copy=False)
 
@@ -384,7 +367,7 @@ def starnet_starless_from_array(arr_rgb01: np.ndarray, settings, *, tmp_prefix="
         starless_s = np.repeat(starless_s, 3, axis=2)
     starless_s = np.clip(starless_s.astype(np.float32, copy=False), 0.0, 1.0)
 
-    # --- Apply Siril-style pseudoinverse MTF with SAME params ---
+
     starless_lin01 = _invert_mtf_unlinked_rgb(starless_s, mtf_params)
 
     # Restore original scale if we normalized earlier
@@ -610,7 +593,7 @@ def _run_starnet(main, doc):
     input_image_path = os.path.join(starnet_dir, "imagetoremovestars.tif")
     output_image_path = os.path.join(starnet_dir, "starless.tif")
 
-    # --- Prepare input for StarNet (Siril-style unlinked MTF pre-stretch for linear data) ---
+
     img_for_starnet = processing_norm
     if is_linear:
         mtf_params = _mtf_params_unlinked(processing_norm, shadows_clipping=-2.8, targetbg=0.25)
@@ -619,7 +602,7 @@ def _run_starnet(main, doc):
         # 🔐 Stash EXACT params for inverse step later
         try:
             setattr(main, "_starnet_stat_meta", {
-                "scheme": "siril_mtf",
+                "scheme": "stretch_mtf",
                 "s": np.asarray(mtf_params["s"], dtype=np.float32),
                 "m": np.asarray(mtf_params["m"], dtype=np.float32),
                 "h": np.asarray(mtf_params["h"], dtype=np.float32),
@@ -825,12 +808,12 @@ def _on_starnet_finished(main, doc, return_code, dialog, input_path, output_path
 
     # ---- Inversion back to the document’s domain ----
     if did_stretch:
-        # Prefer the new Siril-style MTF meta if present
+
         meta = getattr(main, "_starnet_stat_meta", None)
         mtf_params_legacy = getattr(main, "_starnet_last_mtf_params", None)
 
-        if isinstance(meta, dict) and meta.get("scheme") == "siril_mtf":
-            dialog.append_text("Unstretching (Siril-style MTF pseudoinverse)...\n")
+        if isinstance(meta, dict) and meta.get("scheme") == "stretch_mtf":
+            dialog.append_text("Unstretching (MTF pseudoinverse)...\n")
             try:
                 s_vec = np.asarray(meta.get("s"), dtype=np.float32)
                 m_vec = np.asarray(meta.get("m"), dtype=np.float32)
@@ -845,7 +828,7 @@ def _on_starnet_finished(main, doc, return_code, dialog, input_path, output_path
 
                 starless_rgb = np.clip(inv, 0.0, 1.0)
             except Exception as e:
-                dialog.append_text(f"⚠️ Siril-style MTF inverse failed: {e}\n")
+                dialog.append_text(f"⚠️ MTF inverse failed: {e}\n")
 
         elif isinstance(meta, dict) and meta.get("scheme") == "statstretch":
             # Back-compat: statistical round-trip with bp/m0
