@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox,
     QCheckBox, QFileDialog, QMessageBox, QSpinBox, QSlider, QApplication, QDoubleSpinBox
 )
-
+from astropy.io.fits import Header
 from astropy.wcs import WCS
 from astropy.io import fits
 from astropy.coordinates import SkyCoord
@@ -32,6 +32,152 @@ else:
     AstropyWCS = object
     AstropySkyCoord = object
 
+
+_NONFITS_META_KEYS = {
+    "FILE_PATH",
+    "FITS_HEADER",
+    "BIT_DEPTH",
+    "WCS_HEADER",
+    "__HEADER_SNAPSHOT__",
+    "ORIGINAL_HEADER",
+    "PRE_SOLVE_HEADER",
+}
+
+def _strip_nonfits_meta_keys_from_header(h: Header | None) -> Header:
+    if not isinstance(h, Header):
+        return Header()
+    out = h.copy()
+    for k in list(out.keys()):
+        if k.upper() in _NONFITS_META_KEYS:
+            try:
+                out.remove(k)
+            except Exception:
+                pass
+    return out
+
+
+_FITS_PREFIXES = (
+    "FITS Header.",   # what your CSV shows
+    "FITS_HEADER.",   # sometimes people normalize this way
+)
+
+def _header_from_prefixed_meta(meta: dict) -> Header | None:
+    """
+    Rebuild a proper astropy Header from flattened keys like:
+      "FITS Header.CTYPE1": "RA---TAN-SIP"
+    """
+    if not isinstance(meta, dict):
+        return None
+
+    items = []
+
+    # 1) Flattened "FITS Header.KEY" style
+    for k, v in meta.items():
+        if not isinstance(k, str):
+            continue
+        for p in _FITS_PREFIXES:
+            if k.startswith(p):
+                card = k[len(p):].strip()
+                if card:
+                    items.append((card, v))
+                break
+
+    if not items:
+        return None
+
+    h = Header()
+    for k, v in items:
+        try:
+            kk = str(k).upper()
+            # skip things that are clearly not FITS cards
+            if not kk or len(kk) > 32:
+                continue
+            h[kk] = v
+        except Exception:
+            pass
+    return h if len(h) else None
+
+
+def _header_from_nested_meta(meta: dict) -> Header | None:
+    """
+    Rebuild Header if metadata stores a nested mapping under something like:
+      meta["FITS Header"] = {...} or meta["FITS_HEADER"] = {...}
+    """
+    for key in ("original_header", "fits_header", "header", "FITS Header", "FITS_HEADER"):
+        obj = meta.get(key)
+        if obj is None:
+            continue
+        # already a fits.Header?
+        if isinstance(obj, Header):
+            return obj
+
+        # mapping -> Header
+        if hasattr(obj, "items"):
+            h = Header()
+            for k, v in obj.items():
+                try:
+                    h[str(k).upper()] = v
+                except Exception:
+                    pass
+            if len(h):
+                return h
+    return None
+
+
+def _best_header_from_meta(meta: dict) -> Header | None:
+    # 1) normal keys / nested header objects
+    h = _header_from_nested_meta(meta)
+    if isinstance(h, Header) and len(h):
+        return h
+
+    # 2) flattened "FITS Header.KEY" export style
+    h = _header_from_prefixed_meta(meta)
+    if isinstance(h, Header) and len(h):
+        return h
+
+    return None
+
+def _as_header(hdr_like) -> Header | None:
+    if hdr_like is None:
+        return None
+    if isinstance(hdr_like, Header):
+        return hdr_like
+    try:
+        d = dict(hdr_like)
+        h = Header()
+        for k, v in d.items():
+            try:
+                h[str(k).upper()] = v
+            except Exception:
+                pass
+        return h
+    except Exception:
+        return None
+
+def get_doc_wcs_from_metadata(meta: dict) -> WCS | None:
+    if not isinstance(meta, dict):
+        return None
+
+    # 1) Prefer prebuilt WCS object stored by platesolve flow
+    w = meta.get("wcs", None)
+    if w is not None and hasattr(w, "pixel_to_world") and hasattr(w, "wcs"):
+        try:
+            return w.celestial if getattr(w, "celestial", None) is not None else w
+        except Exception:
+            return w
+
+    # 2) Build from *best* header representation in metadata
+    hdr = _best_header_from_meta(meta)
+    if not isinstance(hdr, Header) or len(hdr) == 0:
+        return None
+
+    hdr = _strip_nonfits_meta_keys_from_header(hdr)
+
+    try:
+        w2 = WCS(hdr, relax=True)
+        return w2.celestial if getattr(w2, "celestial", None) is not None else w2
+    except Exception:
+        return None
 
 @dataclass
 class FinderChartRequest:
@@ -483,46 +629,55 @@ def _draw_scale_bar(ax, bg_wcs: "WCS", out_px: int, fov_deg: float):
         bbox=bbox
     )
 
+def _as_fits_header(hdr_like) -> Optional["fits.Header"]:
+    if hdr_like is None or fits is None:
+        return None
+    if isinstance(hdr_like, fits.Header):
+        return hdr_like
 
-def get_doc_wcs(meta: dict) -> Optional["AstropyWCS"]:
-    """Prefer prebuilt WCS object; else build from header. Always return *celestial* (2D) WCS."""
-    if WCS is None:
+    # Some parts of SASpro store header as dict-like; normalize it
+    try:
+        h2 = fits.Header()
+        if hasattr(hdr_like, "items"):
+            items = hdr_like.items()
+        else:
+            items = dict(hdr_like).items()
+
+        for k, v in items:
+            try:
+                # FITS keys must be str, <= 8 chars, etc. Let astropy reject bad ones.
+                h2[str(k)] = v
+            except Exception:
+                pass
+        return h2
+    except Exception:
         return None
 
-    w = meta.get("wcs")
-    if w is None:
-        hdr = meta.get("original_header") or meta.get("fits_header") or meta.get("header")
-        if hdr is None:
-            return None
 
-        # normalize to fits.Header if needed
-        if fits is not None and not isinstance(hdr, fits.Header):
-            try:
-                h2 = fits.Header()
-                for k, v in dict(hdr).items():
-                    try:
-                        h2[k] = v
-                    except Exception:
-                        pass
-                hdr = h2
-            except Exception:
-                return None
-
-        try:
-            w = WCS(hdr, relax=True)
-        except Exception:
-            return None
-
-    # --- CRITICAL FIX: if WCS has extra axes, use celestial slice ---
+def _ensure_tan_sip_if_needed(hdr: "fits.Header") -> "fits.Header":
+    """
+    If SIP distortion terms exist, make sure CTYPE has '-SIP' so WCS behaves like your platesolve path.
+    Best-effort and harmless if already correct.
+    """
     try:
-        if hasattr(w, "celestial"):
-            wc = w.celestial
-            if wc is not None:
-                return wc
-    except Exception:
-        pass
+        # SIP keywords commonly present: A_ORDER/B_ORDER or SIP-related cards
+        has_sip = any(k in hdr for k in ("A_ORDER", "B_ORDER", "AP_ORDER", "BP_ORDER"))
+        if not has_sip:
+            return hdr
 
-    return w
+        for ax in (1, 2):
+            k = f"CTYPE{ax}"
+            c = str(hdr.get(k, "")).upper()
+            if c and ("-SIP" not in c):
+                # If it’s TAN-ish, append SIP; otherwise still append to be explicit.
+                hdr[k] = c + "-SIP"
+        return hdr
+    except Exception:
+        return hdr
+
+
+def get_doc_wcs(meta: dict) -> WCS | None:
+    return get_doc_wcs_from_metadata(meta)
 
 
 def image_footprint_sky(wcs: "WCS", w: int, h: int):
@@ -1499,6 +1654,10 @@ class FinderChartDialog(QDialog):
             # 1) compute geometry from doc WCS
             doc_wcs, corners, center, fov_deg = self._compute_doc_geometry_cached(img, meta, req)
             if doc_wcs is None:
+                hdr = _best_header_from_meta(meta)
+                print("[FinderChart] header cards:", 0 if hdr is None else len(hdr))
+                print("[FinderChart] has CTYPE1:", False if hdr is None else ("CTYPE1" in hdr))
+                print("[FinderChart] meta keys sample:", list(meta.keys())[:20])                
                 QMessageBox.warning(self, "Finder Chart", "Could not render finder chart (missing WCS).")
                 return
 
