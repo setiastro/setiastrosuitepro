@@ -1,9 +1,9 @@
 {
-  "version": "1.8.2",
+  "version": "1.8.3",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.8.2/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.8.2/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.8.2/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.8.3/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.8.3/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.8.3/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.8.2 New Tool under Whats In My->Finder Chart. Simple Finder Chart to pull in a sky survey, overlay your image, and show prominent features. Runtime Torch Improvements. Lot's of small optimizations."
+  "notes": "Seti Astro Suite Pro V1.8.3 Flux Measurement tool for integrated and surface flux added. More options in Finder Chart. Multiple bug fixes and tweaks all around."
 }
