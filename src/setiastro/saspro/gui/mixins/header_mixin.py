@@ -36,15 +36,30 @@ class HeaderMixin:
     }
 
     def _ensure_header_map(self, doc):
-        """Ensure doc has a header dictionary in metadata, return it."""
+        """Ensure doc has an original_header container; preserve fits.Header if present."""
         meta = getattr(doc, "metadata", None)
         if meta is None:
             return None
+
         hdr = meta.get("original_header")
-        if not isinstance(hdr, dict):
-            hdr = {}
-            meta["original_header"] = hdr
+
+        # Preserve astropy Header
+        try:
+            from astropy.io.fits import Header
+            if isinstance(hdr, Header):
+                return hdr
+        except Exception:
+            pass
+
+        # Preserve dict
+        if isinstance(hdr, dict):
+            return hdr
+
+        # If missing/unknown, create dict (but do NOT overwrite a valid Header above)
+        hdr = {}
+        meta["original_header"] = hdr
         return hdr
+
 
     def _coerce_wcs_numbers(self, d: dict) -> dict:
         """Convert common WCS/SIP values to int/float where appropriate."""
@@ -72,23 +87,33 @@ class HeaderMixin:
         return out
 
     def _extract_wcs_dict(self, doc) -> dict:
-        """Collect a complete WCS/SIP dict from the doc's header/meta."""
         if doc is None:
             return {}
-        src = (getattr(doc, "metadata", {}) or {}).get("original_header")
+
+        meta = getattr(doc, "metadata", {}) or {}
+
+        # 0) Preferred: astropy WCS object in metadata
+        w = meta.get("wcs", None)
+        try:
+            from astropy.wcs import WCS as _AstroWCS
+            if isinstance(w, _AstroWCS):
+                h = w.to_header(relax=True)
+                return self._coerce_wcs_numbers({k.upper(): h[k] for k in h.keys()})
+        except Exception:
+            pass
+
+        src = meta.get("original_header")
 
         wcs = {}
-        if src is None:
-            pass
-        else:
+        src = meta.get("original_header")
+        if src is not None:
             try:
-                for k, v in dict(src).items():
+                # fits.Header has .keys()
+                items = src.items() if hasattr(src, "items") else dict(src).items()
+                for k, v in items:
                     K = str(k).upper()
-                    if (K.startswith(("CRPIX", "CRVAL", "CDELT", "CD", "PC", "CROTA", "CTYPE", "CUNIT",
-                                      "WCSAXES", "LONPOLE", "LATPOLE", "EQUINOX", "PV")) or
-                        K in {"RADECSYS", "RADESYS", "NAXIS1", "NAXIS2"} or
-                        K.startswith(("A_", "B_", "AP_", "BP_"))):
-                        wcs[K] = v
+                    ...
+                    wcs[K] = v
             except Exception:
                 pass
 

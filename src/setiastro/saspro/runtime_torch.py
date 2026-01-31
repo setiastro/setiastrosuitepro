@@ -106,6 +106,26 @@ def _user_runtime_dir(status_cb=print) -> Path:
     _rt_dbg(f"_user_runtime_dir() -> {chosen}", status_cb)
     return chosen
 
+def best_device(torch, *, prefer_cuda=True, prefer_dml=False, prefer_xpu=False):
+    if prefer_cuda and getattr(torch, "cuda", None) and torch.cuda.is_available():
+        return torch.device("cuda")
+
+    # DirectML (Windows)
+    if prefer_dml and platform.system() == "Windows":
+        try:
+            import torch_directml
+            d = torch_directml.device()
+            _ = (torch.ones(1, device=d) + 1).item()
+            return d
+        except Exception:
+            pass
+
+    # MPS
+    if getattr(getattr(torch, "backends", None), "mps", None) and torch.backends.mps.is_available():
+        return torch.device("mps")
+
+    return torch.device("cpu")
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Shadowing & sanity checks

@@ -302,6 +302,7 @@ class Icons:
     
     # Color
     SPCC = property(lambda self: _resource_path('spcc.png'))
+    MAGNITUDE = property(lambda self: _resource_path('magnitude.png'))
     DSE = property(lambda self: _resource_path('dse.png'))
     COLOR_WHEEL = property(lambda self: _resource_path('colorwheel.png'))
     SELECTIVE_COLOR = property(lambda self: _resource_path('selectivecolor.png'))
@@ -538,6 +539,7 @@ _LEGACY_ICON_MAP = {
     'script_icon_path': 'script.png',
     'planetprojection_path': '3dplanet.png',
     'finderchart_path': 'finderchart.png',
+    'magnitude_path': 'magnitude.png',
 }
 
 _LEGACY_DATA_MAP = {

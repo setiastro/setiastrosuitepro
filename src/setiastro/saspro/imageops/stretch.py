@@ -1,4 +1,4 @@
-# imageops/stretch.py
+# src/setiastro/saspro/imageops/stretch.py
 from __future__ import annotations
 import numpy as np
 

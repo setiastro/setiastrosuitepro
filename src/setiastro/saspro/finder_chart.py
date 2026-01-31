@@ -658,16 +658,26 @@ def _place_label_inside(ax, x, y, text, *, dx=6, dy=4, fontsize=9,
 
     return t
 
+SURVEY_HIPS = {
+    # Optical
+    "DSS2 (Color)": "CDS/P/DSS2/color",
+    "DSS2 (Red)":   "CDS/P/DSS2/red",
+    "DSS2 (Blue)":  "CDS/P/DSS2/blue",
+    "DSS2 (IR)":    "CDS/P/DSS2/IR",
+    "Pan-STARRS DR1 (Color)": "CDS/P/PanSTARRS/DR1/color",
+    "SDSS9 (Color Alt)":      "CDS/P/SDSS9/color-alt",
+    "DESI Legacy DR10 (Color)": "CDS/P/DESI-Legacy-Surveys/DR10/color",
+
+    # Infrared
+    "2MASS (J)": "CDS/P/2MASS/J",
+    "2MASS (H)": "CDS/P/2MASS/H",
+
+    # Gaia
+    "Gaia DR3 (Flux Color)": "CDS/P/Gaia/DR3/flux-color",
+}
 
 def _survey_to_hips_id(label: str) -> str:
-    key = (label or "").strip().lower()
-    if "dss" in key:
-        return "CDS/P/DSS2/color"
-    if "pan" in key:
-        return "CDS/P/PanSTARRS/DR1/color"
-    if "gaia" in key:
-        return "CDS/P/Gaia/DR3/flux-color"
-    return "CDS/P/DSS2/color"
+    return SURVEY_HIPS.get(label, "CDS/P/DSS2/color")
 
 def try_fetch_hips_cutout(center: "SkyCoord", fov_deg: float, out_px: int, survey_label: str):
     """
@@ -1149,7 +1159,8 @@ class FinderChartDialog(QDialog):
 
         row1.addWidget(QLabel("Survey:"))
         self.cmb_survey = QComboBox()
-        self.cmb_survey.addItems(["DSS2", "Pan-STARRS", "Gaia"])
+        self.cmb_survey.clear()
+        self.cmb_survey.addItems(list(SURVEY_HIPS.keys()))
         row1.addWidget(self.cmb_survey)
 
         row1.addSpacing(12)
