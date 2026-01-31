@@ -465,7 +465,7 @@ class AstroSuiteProMainWindow(
         self._doc = None
         self._force_close_all = False
         self._is_restarting = False  # Flag to bypass exit confirmation on restart
-        self.settings = QSettings("SetiAstro", "SetiAstroSuitePro")
+        self.settings = self.settings = QSettings()
         
         # Optimization: Cache the settings dialog for instant opening
         self._settings_dlg_cache = None
@@ -2350,6 +2350,23 @@ class AstroSuiteProMainWindow(
         dlg.raise_()
         dlg.activateWindow()
 
+    def apply_display_settings_to_open_views(self):
+        try:
+            from setiastro.saspro.subwindow import ImageSubWindow
+            for sw in list(ImageSubWindow._registry.values()):
+                try:
+                    sw.reload_display_settings()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # also repaint the mdi area
+        try:
+            if hasattr(self, "mdi") and hasattr(self.mdi, "viewport"):
+                self.mdi.viewport().update()
+        except Exception:
+            pass
 
     def _open_settings(self):
         from setiastro.saspro.ops.settings import SettingsDialog

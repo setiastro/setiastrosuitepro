@@ -408,6 +408,9 @@ class ImageSubWindow(QWidget):
         self._linked_views = weakref.WeakSet()
         ImageSubWindow._registry[id(self)] = self
         self._link_badge_on = False
+        s = getattr(self, "_settings", None) or QSettings()
+        self._settings = s
+        self._smooth_zoom = s.value("display/smooth_zoom_settle", True, type=bool)
 
 
 
@@ -623,6 +626,20 @@ class ImageSubWindow(QWidget):
 
         QTimer.singleShot(0, self._install_mdi_state_watch)
         QTimer.singleShot(0, self._update_inline_title_and_buttons)
+
+    def reload_display_settings(self):
+        s = getattr(self, "_settings", None) or QSettings()
+        self._settings = s
+
+        # re-read any settings that are cached in the view
+        self._smooth_zoom = s.value("display/smooth_zoom_settle", True, type=bool)
+        self._autostretch_linked = s.value("display/stretch_linked", False, type=bool)
+
+        # if you cache bg opacity or other display keys here, re-read them too
+        # self._bg_opacity = s.value("display/bg_opacity", 50, type=int) / 100.0
+
+        # force redraw
+        self.update()
 
     # ----- link drag payload -----
     def _start_link_drag(self):
@@ -948,10 +965,8 @@ class ImageSubWindow(QWidget):
                 self._render(rebuild=False)  # fast present for responsiveness
 
                 # ✅ NEW: schedule the final smooth redraw (same as main zoom path)
-                try:
+                if self._smooth_zoom:
                     self._request_zoom_redraw()
-                except Exception:
-                    pass
 
             hbar = self.scroll.horizontalScrollBar()
             vbar = self.scroll.verticalScrollBar()
@@ -1838,10 +1853,8 @@ class ImageSubWindow(QWidget):
         self._schedule_emit_view_transform()
 
         # ✅ NEW: ensure we do the final smooth redraw (same as manual zoom)
-        try:
+        if self._smooth_zoom:
             self._request_zoom_redraw()
-        except Exception:
-            pass
 
 
 
@@ -2892,7 +2905,8 @@ class ImageSubWindow(QWidget):
         vbar.setValue(new_v)
 
         # Defer one final smooth redraw (and WCS overlay) after the burst
-        self._request_zoom_redraw()
+        if self._smooth_zoom:
+            self._request_zoom_redraw()
 
 
     def _request_zoom_redraw(self):
@@ -2907,11 +2921,8 @@ class ImageSubWindow(QWidget):
 
 
     def _apply_zoom_redraw(self):
-        """
-        Final “settled” redraw:
-        - SmoothTransformation
-        - Optional WCS grid overlay
-        """
+        if not getattr(self, "_smooth_zoom", True):
+            return
         if getattr(self, "_pm_src", None) is None:
             return
         self._present_scaled(interactive=False)

@@ -104,7 +104,11 @@ class SettingsDialog(QDialog):
 
         self.chk_autostretch_24bit = QCheckBox(self.tr("High-quality autostretch (24-bit; better gradients)"))
         self.chk_autostretch_24bit.setToolTip(self.tr("Compute autostretch on a 24-bit histogram (smoother gradients)."))
-
+        self.chk_smooth_zoom_settle = QCheckBox(self.tr("Smooth zoom final redraw (higher quality when zoom stops)"))
+        self.chk_smooth_zoom_settle.setToolTip(self.tr(
+            "When enabled, zooming is fast while scrolling, then a single high-quality redraw occurs after you stop zooming.\n"
+            "Disable if you prefer maximum responsiveness or older GPUs/CPUs."
+        ))
         self.slider_bg_opacity = QSlider(Qt.Orientation.Horizontal)
         self.slider_bg_opacity.setRange(0, 100)
         self._initial_bg_opacity = 50
@@ -185,6 +189,7 @@ class SettingsDialog(QDialog):
         # ---- Display (moved under Theme) ----
         left_col.addRow(QLabel(self.tr("<b>Display</b>")))
         left_col.addRow(self.chk_autostretch_24bit)
+        left_col.addRow(self.chk_smooth_zoom_settle) 
         left_col.addRow(self.tr("Background Opacity:"), w_bg_opacity)
         left_col.addRow(self.tr("Background Image:"), w_bg_image)
 
@@ -699,7 +704,9 @@ class SettingsDialog(QDialog):
         self.chk_autostretch_24bit.setChecked(
             self.settings.value("display/autostretch_24bit", True, type=bool)
         )
-        
+        self.chk_smooth_zoom_settle.setChecked(
+            self.settings.value("display/smooth_zoom_settle", True, type=bool)
+        )
         current_opacity = self.settings.value("display/bg_opacity", 50, type=int)
         self.slider_bg_opacity.blockSignals(True)
         self.slider_bg_opacity.setValue(current_opacity)
@@ -888,6 +895,7 @@ class SettingsDialog(QDialog):
         self.settings.setValue("updates/check_on_startup", self.chk_updates_startup.isChecked())
         self.settings.setValue("updates/url", self.le_updates_url.text().strip())
         self.settings.setValue("display/autostretch_24bit", self.chk_autostretch_24bit.isChecked())
+        self.settings.setValue("display/smooth_zoom_settle", self.chk_smooth_zoom_settle.isChecked())
 
         # accel preference
         pref_idx = self.cb_accel_pref.currentIndex()
@@ -948,7 +956,11 @@ class SettingsDialog(QDialog):
         
         if hasattr(p, "mdi") and hasattr(p.mdi, "viewport"):
                 p.mdi.viewport().update()
-
+        if p and hasattr(p, "apply_display_settings_to_open_views"):
+            try:
+                p.apply_display_settings_to_open_views()
+            except Exception:
+                pass
         try:
             self.settings.remove("paths/cosmic_clarity")
         except Exception:
