@@ -4,7 +4,7 @@ import os
 import numpy as np
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QRadioButton,
-    QGroupBox, QFileDialog, QComboBox, QButtonGroup, QMessageBox
+    QGroupBox, QFileDialog, QComboBox, QButtonGroup, QMessageBox, QFormLayout
 )
 from PyQt6.QtCore import Qt
 
@@ -87,11 +87,21 @@ class RGBCombinationDialogPro(QDialog):
 
         # ── open-views widgets
         views_box = QGroupBox(self.tr("Select Open Views for R / G / B"))
-        vl = QHBoxLayout(views_box)
-        self.cmb_r = QComboBox(); self.cmb_g = QComboBox(); self.cmb_b = QComboBox()
-        vl.addLayout(self._labeled(self.tr("Red:"),   self.cmb_r))
-        vl.addLayout(self._labeled(self.tr("Green:"), self.cmb_g))
-        vl.addLayout(self._labeled(self.tr("Blue:"),  self.cmb_b))
+        vf = QFormLayout(views_box)
+
+        self.cmb_r = QComboBox()
+        self.cmb_g = QComboBox()
+        self.cmb_b = QComboBox()
+
+        # optional: make long titles usable without widening the dialog
+        for cmb in (self.cmb_r, self.cmb_g, self.cmb_b):
+            cmb.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            cmb.setMinimumContentsLength(24)  # tweak if you want
+
+        vf.addRow(self.tr("Red:"), self.cmb_r)
+        vf.addRow(self.tr("Green:"), self.cmb_g)
+        vf.addRow(self.tr("Blue:"), self.cmb_b)
+
 
         # ── buttons
         self.btn_combine = QPushButton(self.tr("Combine"))

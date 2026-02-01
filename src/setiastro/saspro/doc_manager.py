@@ -493,7 +493,7 @@ class ImageDocument(QObject):
         roi_info = getattr(self, "_roi_info", None)
         if roi_info:
             parent = roi_info.get("parent_doc")
-            roi    = roi_info.get("roi")
+            roi = roi_info.get("roi")
             if isinstance(parent, ImageDocument) and (getattr(parent, "image", None) is not None) and roi:
                 x, y, w, h = map(int, roi)
 
@@ -512,23 +512,27 @@ class ImageDocument(QObject):
                     img = np.repeat(img[..., None], base.shape[2], axis=2)
 
                 new_full = base.copy()
-                new_full[y:y+h, x:x+w] = img
+                new_full[y:y + h, x:x + w] = img
 
                 # push onto the PARENT’s history
                 if metadata:
                     parent.metadata = _merge_meta(parent.metadata, metadata, step_name)
                 else:
                     parent.metadata.setdefault("step_name", step_name)
-                
+
                 sm = get_swap_manager()
                 sid = sm.save_state(parent.image)
                 if sid:
                     parent._undo.append((sid, parent.metadata.copy(), step_name))
-                
+                    sm.pin_state(sid)
+                    parent._pin_last_undos(keep=5)
+
+                # Clear redo stack and delete files (unpin first)
                 for old_sid, _, _ in parent._redo:
+                    sm.unpin_state(old_sid)
                     sm.delete_state(old_sid)
                 parent._redo.clear()
-                
+
                 parent.image = new_full
                 parent.dirty = True
                 parent.changed.emit()
@@ -547,16 +551,16 @@ class ImageDocument(QObject):
         if self._cow_source is not None and self.image is not None:
             self.image = self.image.copy()
             self._cow_source = None
-        
+
         if self.image is not None:
             # snapshot current image + metadata for undo
             try:
                 curr = np.asarray(self.image, dtype=np.float32)
                 curr = ensure_contiguous(curr)
-                
+
                 sm = get_swap_manager()
                 sid = sm.save_state(curr)
-                
+
                 _debug_log_undo(
                     "ImageDocument.apply_edit.snapshot",
                     doc_id=id(self),
@@ -569,12 +573,15 @@ class ImageDocument(QObject):
                 )
                 if sid:
                     self._undo.append((sid, self.metadata.copy(), step_name))
+                    sm.pin_state(sid)
+                    self._pin_last_undos(keep=5)
             except Exception as e:
                 print(f"[ImageDocument] apply_edit: failed to snapshot current image for undo: {e}")
-            
-            # Clear redo stack and delete files
+
+            # Clear redo stack and delete files (unpin first)
             sm = get_swap_manager()
             for old_sid, _, _ in self._redo:
+                sm.unpin_state(old_sid)
                 sm.delete_state(old_sid)
             self._redo.clear()
 
@@ -613,7 +620,6 @@ class ImageDocument(QObject):
             pass
 
 
-
     def undo(self) -> str | None:
         # Extra-safe: if stack is empty, bail early.
         if not self._undo:
@@ -633,6 +639,8 @@ class ImageDocument(QObject):
             top_step=self._undo[-1][2] if self._undo else None,
         )
 
+        sm = get_swap_manager()
+
         # Pop with an extra guard in case something cleared _undo between
         # the check above and this call (re-entrancy / threading).
         try:
@@ -647,19 +655,20 @@ class ImageDocument(QObject):
             )
             return None
 
-        # Load previous image from swap
-        sm = get_swap_manager()
+        # Consume previous image from swap (exactly once)
+        sm.unpin_state(prev_sid)
         prev_img = sm.load_state(prev_sid)
-        
-        # We can delete the swap file now that we have it in RAM
-        # (unless we want to keep it for some reason, but standard undo consumes the state)
         sm.delete_state(prev_sid)
 
+        # Re-pin last N undos after pop
+        self._pin_last_undos(keep=5)
+
         if prev_img is None:
-             print(f"[ImageDocument] undo: failed to load swap state {prev_sid}")
-             return None
+            print(f"[ImageDocument] undo: failed to load swap state {prev_sid}")
+            return None
 
         # Normalize previous image before using it
+        import numpy as np
         try:
             prev_arr = np.asarray(prev_img, dtype=np.float32)
             if prev_arr.size == 0:
@@ -667,8 +676,6 @@ class ImageDocument(QObject):
             prev_arr = np.ascontiguousarray(prev_arr)
         except Exception as e:
             print(f"[ImageDocument] undo: invalid prev_img in stack ({type(prev_img)}): {e}")
-            # Put it back so we don't corrupt history further? 
-            # Actually if load failed we are in trouble.
             return None
 
         _debug_log_undo(
@@ -688,13 +695,14 @@ class ImageDocument(QObject):
             if curr_img is not None:
                 curr_arr = np.asarray(curr_img, dtype=np.float32)
                 curr_arr = np.ascontiguousarray(curr_arr)
-                
+
                 # Save to swap for Redo
                 sid = sm.save_state(curr_arr)
                 if sid:
                     self._redo.append((sid, dict(curr_meta), name))
+                    # optional: pin redo states if you want them extra snappy
+                    # sm.pin_state(sid)
             else:
-                # Handle None image? Should not happen usually
                 pass
         except Exception as e:
             print(f"[ImageDocument] undo: failed to snapshot current image for redo: {e}")
@@ -740,10 +748,12 @@ class ImageDocument(QObject):
             top_step=self._redo[-1][2] if self._redo else None,
         )
 
+        sm = get_swap_manager()
+
         nxt_sid, nxt_meta, name = self._redo.pop()
 
-        # Load next image from swap
-        sm = get_swap_manager()
+        # Consume next image from swap (exactly once)
+        sm.unpin_state(nxt_sid)
         nxt_img = sm.load_state(nxt_sid)
         sm.delete_state(nxt_sid)
 
@@ -752,6 +762,7 @@ class ImageDocument(QObject):
             return None
 
         # Normalize next image before using it
+        import numpy as np
         try:
             nxt_arr = np.asarray(nxt_img, dtype=np.float32)
             if nxt_arr.size == 0:
@@ -760,7 +771,7 @@ class ImageDocument(QObject):
         except Exception as e:
             print(f"[ImageDocument] redo: invalid nxt_img in stack ({type(nxt_img)}): {e}")
             return None
-            
+
         _debug_log_undo(
             "ImageDocument.redo.normalized_next",
             doc_id=id(self),
@@ -770,21 +781,28 @@ class ImageDocument(QObject):
             step_name=name,
             meta_step=nxt_meta.get("step_name", None) if isinstance(nxt_meta, dict) else None,
         )
+
+        # Snapshot current state for undo (best-effort)
         curr_img = self.image
         curr_meta = self.metadata
         try:
             if curr_img is not None:
                 curr_arr = np.asarray(curr_img, dtype=np.float32)
                 curr_arr = np.ascontiguousarray(curr_arr)
-                
+
                 # Save current to swap for Undo
                 sid = sm.save_state(curr_arr)
                 if sid:
                     self._undo.append((sid, dict(curr_meta), name))
+                    sm.pin_state(sid)
             else:
                 pass
         except Exception as e:
             print(f"[ImageDocument] redo: failed to snapshot current image for undo: {e}")
+
+        # Re-pin last N undos after pushing
+        self._pin_last_undos(keep=5)
+
         _debug_log_undo(
             "ImageDocument.redo.before_apply",
             doc_id=id(self),
@@ -792,6 +810,7 @@ class ImageDocument(QObject):
             curr_shape=getattr(curr_img, "shape", None) if curr_img is not None else None,
             curr_dtype=getattr(curr_img, "dtype", None) if curr_img is not None else None,
         )
+
         self.image = nxt_arr
         self.metadata = dict(nxt_meta or {})
         self.dirty = True
@@ -812,6 +831,19 @@ class ImageDocument(QObject):
 
         return name
 
+    def _pin_last_undos(self, keep: int = 5):
+        sm = get_swap_manager()
+
+        # Pin the last `keep` undo swap_ids (most recent)
+        undo = list(getattr(self, "_undo", []))
+        for i, item in enumerate(undo):
+            sid = item[0] if item else None
+            if not sid:
+                continue
+            if i >= len(undo) - keep:
+                sm.pin_state(sid)
+            else:
+                sm.unpin_state(sid)
 
     # existing methods unchanged below...
     def set_image(self, img: np.ndarray, metadata: dict | None = None, step_name: str = "Edit"):

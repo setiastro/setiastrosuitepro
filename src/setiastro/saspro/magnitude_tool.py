@@ -32,13 +32,13 @@ import numpy as np
 import numpy.ma as ma
 
 import sep
-
+import time
 from astropy.io import fits
 from astropy.wcs import WCS
 
 from PyQt6.QtCore import Qt, QRect, QEvent, QPointF, QRectF, QTimer
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTabWidget, QWidget,
     QSpinBox, QDoubleSpinBox, QGroupBox, QFormLayout,QComboBox, QGraphicsPathItem, QGraphicsEllipseItem,
     QMessageBox, QApplication, QGraphicsView, QGraphicsScene, QGraphicsRectItem, QGraphicsItem
 )
@@ -47,7 +47,8 @@ from astropy.coordinates import SkyCoord
 import astropy.units as u
 from astroquery.simbad import Simbad
 from astropy.wcs.wcs import NoConvergence
-
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
 # IMPORTANT: use the centralized one (adjust import path to where you moved it)
 from setiastro.saspro.sfcc import pickles_match_for_simbad
 
@@ -283,6 +284,7 @@ def _compute_zero_points_mono(matches, img_f, r_ap, r_in, r_out, band="L", clip_
 
     zps = []
     used = 0
+    x, y = [], []
     for i, m in enumerate(matches):
         st = m["star"]
         f = float(flux_net[i])
@@ -294,22 +296,28 @@ def _compute_zero_points_mono(matches, img_f, r_ap, r_in, r_out, band="L", clip_
             continue
 
         zps.append(float(mag) + 2.5 * math.log10(f))
+        x.append(float(-2.5 * math.log10(f)))
+        y.append(float(mag))
         used += 1
 
     zps = _sigma_clip(np.asarray(zps, dtype=np.float64), sigma=clip_sigma)
-    if zps.size == 0:
-        sd = float(np.std(zps))
-        sem = float(sd / math.sqrt(zps.size)) if zps.size > 1 else None
-        return {"ZP": float(np.median(zps)), "n": int(zps.size), "std": sd, "sem": sem, "band": band, "magkey": magkey, "used_matches": used}
-
-    return {
-        "ZP": float(np.median(zps)),
+    out = {
+        "ZP": float(np.median(zps)) if zps.size else None,
         "n": int(zps.size),
-        "std": float(np.std(zps)),
+        "std": float(np.std(zps)) if zps.size else None,
+        "sem": (float(np.std(zps))/math.sqrt(int(zps.size))) if zps.size > 1 else None,
         "band": band,
         "magkey": magkey,
         "used_matches": used,
+        "plot": {
+            "Mono": {
+                "x": x, "y": y,
+                "zp": float(np.median(zps)) if zps.size else None,
+                "title": f"Mono: {magkey} vs m_inst (y = x + ZP)",
+            }
+        }
     }
+    return out
 
 def _compute_zero_points(
     matches: List[dict],
@@ -333,6 +341,10 @@ def _compute_zero_points(
 
     # Collect ZP candidates
     zp_R, zp_G, zp_B = [], [], []
+    xR, yR = [], []
+    xG, yG = [], []
+    xB, yB = [], []
+
     used = 0
 
     for i, m in enumerate(matches):
@@ -341,7 +353,8 @@ def _compute_zero_points(
         # reject non-positive net flux
         if not (fR > 0 or fG > 0 or fB > 0):
             continue
-
+        def minst(f):
+            return float(-2.5 * math.log10(f)) if f > 0 else None
         # catalog mags
         Rmag = _unmask_num(st.get("Rmag"))
         Vmag = _unmask_num(st.get("Vmag"))
@@ -350,10 +363,15 @@ def _compute_zero_points(
         # NO flux/sec — use flux directly
         if fR > 0 and Rmag is not None:
             zp_R.append(float(Rmag) + 2.5 * math.log10(fR))
+            xR.append(minst(fR)); yR.append(float(Rmag))
+
         if fG > 0 and Vmag is not None:
             zp_G.append(float(Vmag) + 2.5 * math.log10(fG))
+            xG.append(minst(fG)); yG.append(float(Vmag))
+
         if fB > 0 and Bmag is not None:
             zp_B.append(float(Bmag) + 2.5 * math.log10(fB))
+            xB.append(minst(fB)); yB.append(float(Bmag))
 
         used += 1
 
@@ -380,6 +398,11 @@ def _compute_zero_points(
         "std_R": sR, "std_G": sG, "std_B": sB,
         "sem_R": semR, "sem_G": semG, "sem_B": semB,
         "used_matches": used,
+        "plot": {
+            "R": {"x": xR, "y": yR, "zp": ZP_R, "title": "Red channel: Rmag vs m_inst (y = x + ZP_R)"},
+            "G": {"x": xG, "y": yG, "zp": ZP_G, "title": "Green channel: Vmag vs m_inst (y = x + ZP_G)"},
+            "B": {"x": xB, "y": yB, "zp": ZP_B, "title": "Blue channel: Bmag vs m_inst (y = x + ZP_B)"},
+        },
     }
 
 BAND_TO_MAGKEY = {
@@ -426,6 +449,52 @@ def _mu_from_flux(flux: float, area_asec2: float, zp: Optional[float]) -> Option
     if zp is None or not (flux > 0) or not (area_asec2 > 0):
         return None
     return float(-2.5 * math.log10(flux / area_asec2) + float(zp))
+
+
+class ZeroPointPlotsDialog(QDialog):
+    """
+    Shows ZP scatter plot(s):
+      x = instrumental magnitude = -2.5 log10(flux)
+      y = catalog magnitude (SIMBAD)
+      overlay line y = x + ZP (slope fixed to 1)
+    """
+    def __init__(self, parent, plots: dict):
+        super().__init__(parent)
+        self.setWindowTitle("Zero Point Graphs")
+        self.resize(900, 700)
+
+        root = QVBoxLayout(self)
+        tabs = QTabWidget(self)
+        root.addWidget(tabs)
+
+        # plots: { "Mono": {...} } or { "R": {...}, "G": {...}, "B": {...} }
+        for name, payload in plots.items():
+            w = QWidget()
+            lay = QVBoxLayout(w)
+
+            fig = Figure(figsize=(6, 4), dpi=100)
+            canvas = FigureCanvas(fig)
+            ax = fig.add_subplot(111)
+
+            x = payload.get("x", [])
+            y = payload.get("y", [])
+            zp = payload.get("zp", None)
+            title = payload.get("title", name)
+
+            ax.scatter(x, y, s=16, alpha=0.8)
+            ax.set_title(title)
+            ax.set_xlabel("Instrumental magnitude  m_inst = -2.5 log10(flux)")
+            ax.set_ylabel("Catalog magnitude  m_cat (SIMBAD)")
+
+            # reference line for your model
+            if zp is not None and len(x) > 0:
+                xmin = float(min(x)); xmax = float(max(x))
+                ax.plot([xmin, xmax], [xmin + float(zp), xmax + float(zp)], linewidth=2)
+
+            ax.grid(True, alpha=0.25)
+
+            lay.addWidget(canvas)
+            tabs.addTab(w, name)
 
 # ---------------------------- UI dialog (initial) ----------------------------
 class MagnitudeRegionDialog(QDialog):
@@ -1025,7 +1094,10 @@ class MagnitudeToolDialog(QDialog):
         self.btn_pick = QPushButton("Step 3: Pick Target Region…")
         self.btn_pick.clicked.connect(self.open_region_picker)
         v.addWidget(self.btn_pick)
-
+        self.btn_zp_plot = QPushButton("Show ZP Graphs…")
+        self.btn_zp_plot.clicked.connect(self.show_zp_graphs)
+        self.btn_zp_plot.setEnabled(False)
+        v.addWidget(self.btn_zp_plot)
         box = QGroupBox("Photometry settings")
         form = QFormLayout(box)
 
@@ -1106,6 +1178,14 @@ class MagnitudeToolDialog(QDialog):
         v.addLayout(row2)
 
     # --- external wiring (from your ROI tool) ---
+    def show_zp_graphs(self):
+        p = self.last_zp.get("plot") if isinstance(self.last_zp, dict) else None
+        if not p:
+            QMessageBox.information(self, "ZP Graphs", "Compute zero points first.")
+            return
+        dlg = ZeroPointPlotsDialog(self, p)
+        dlg.exec()
+
     def set_object_mask(self, mask: np.ndarray):
         self.object_mask = mask
 
@@ -1180,7 +1260,16 @@ class MagnitudeToolDialog(QDialog):
                 QApplication.processEvents()
                 self.star_list = self._fetch_simbad_stars_and_cache(img, hdr, doc)
             except Exception as e:
-                QMessageBox.critical(self, "Fetch Stars Failed", str(e))
+                # SIMBAD down / timeout / network issue → don't scare user with a stacky error
+                self.lbl_info.setText("SIMBAD unreachable right now. Try again in a couple minutes.")
+                print(f"[MagnitudeTool] SIMBAD fetch failed: {e}", flush=True)
+                QApplication.processEvents()
+                QMessageBox.information(
+                    self,
+                    "SIMBAD Unreachable",
+                    "SIMBAD appears unreachable right now.\n\n"
+                    "Please try again in a couple minutes."
+                )
                 return
 
         # WCS / pixscale / exptime
@@ -1235,6 +1324,7 @@ class MagnitudeToolDialog(QDialog):
                 clip_sigma=float(self.clip_sigma.value()),
             )
             self.last_zp = {"mode": "mono", **zp}
+            self.btn_zp_plot.setEnabled(bool(self.last_zp.get("plot")))
 
             self.lbl_info.setText(
                 "Zero point (mono):\n"
@@ -1251,6 +1341,7 @@ class MagnitudeToolDialog(QDialog):
                 clip_sigma=float(self.clip_sigma.value()),
             )
             self.last_zp = {"mode": "rgb", **zp}
+            self.btn_zp_plot.setEnabled(bool(self.last_zp.get("plot")))
 
             self.lbl_info.setText(
                 "Zero points (median ± SEM):\n"
@@ -1556,6 +1647,41 @@ class MagnitudeToolDialog(QDialog):
         center_sky = SkyCoord(ra=float(sky[0, 0]) * u.deg, dec=float(sky[0, 1]) * u.deg, frame="icrs")
         corners_sky = SkyCoord(ra=sky[1:, 0] * u.deg, dec=sky[1:, 1] * u.deg, frame="icrs")
         radius = center_sky.separation(corners_sky).max() * 1.05
+        # ---- SIMBAD safety: timeout + mirror fallback ----
+        # astroquery.simbad has a module-level config with a timeout (default 60s). :contentReference[oaicite:2]{index=2}
+        try:
+            from astroquery.simbad import conf as simbad_conf
+        except Exception:
+            simbad_conf = None
+
+        # Hard cap per request (connect+read). Also try legacy Simbad.TIMEOUT knob. :contentReference[oaicite:3]{index=3}
+        HARD_TIMEOUT_S = 20 # tweak as you like (10–20 is a good UX range)
+        try:
+            if simbad_conf is not None:
+                simbad_conf.timeout = HARD_TIMEOUT_S
+        except Exception:
+            pass
+        try:
+            Simbad.TIMEOUT = HARD_TIMEOUT_S
+        except Exception:
+            pass
+
+        # Rotate mirrors (the simbad_conf.server default list includes both). :contentReference[oaicite:4]{index=4}
+        servers = []
+        try:
+            if simbad_conf is not None:
+                # config item can be list-like; keep order
+                servers = list(getattr(simbad_conf, "server", []) or [])
+        except Exception:
+            servers = []
+
+        # Fallback list in case config lookup fails
+        if not servers:
+            servers = ["simbad.u-strasbg.fr", "simbad.harvard.edu"]
+
+        # Overall time budget across all retries/servers
+        OVERALL_DEADLINE_S = 120
+        t0 = time.monotonic()
 
         # ---- SIMBAD fields (new then legacy) ----
         Simbad.reset_votable_fields()
@@ -1592,17 +1718,48 @@ class MagnitudeToolDialog(QDialog):
         Simbad.ROW_LIMIT = 10000
 
         # ---- query ----
+        # ---- query (timeout + mirror fallback + overall deadline) ----
         result = None
-        for attempt in range(1, 6):
+        last_err = None
+
+        for si, server in enumerate(servers, start=1):
+            # Set mirror if possible
             try:
-                self.lbl_info.setText(f"Querying SIMBAD… (attempt {attempt}/5)")
-                QApplication.processEvents()
-                result = Simbad.query_region(center_sky, radius=radius)
-                break
+                if simbad_conf is not None:
+                    simbad_conf.server = server
             except Exception:
-                QApplication.processEvents()
-                non_blocking_sleep(1.2)
-                result = None
+                pass
+
+            for attempt in range(1, 6):
+                # overall deadline check
+                if (time.monotonic() - t0) > OVERALL_DEADLINE_S:
+                    last = f"{last_err}" if last_err else "timeout"
+                    raise RuntimeError(
+                        f"SIMBAD not responding (overall timeout {OVERALL_DEADLINE_S}s). "
+                        f"Last error: {last}"
+                    )
+
+                try:
+                    self.lbl_info.setText(
+                        f"Querying SIMBAD… server {server} ({si}/{len(servers)}), attempt {attempt}/5 "
+                        f"(timeout {HARD_TIMEOUT_S}s)"
+                    )
+                    QApplication.processEvents()
+
+                    result = Simbad.query_region(center_sky, radius=radius)
+                    last_err = None
+                    break
+
+                except Exception as e:
+                    last_err = e
+                    QApplication.processEvents()
+                    non_blocking_sleep(0.6)  # shorter backoff feels snappier
+
+                    result = None
+
+            if result is not None:
+                break
+
 
         if result is None or len(result) == 0:
             # cache empty list to avoid re-query spam
