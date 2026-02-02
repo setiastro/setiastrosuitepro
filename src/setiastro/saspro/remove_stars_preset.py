@@ -4,11 +4,14 @@ import os
 import platform
 import shutil
 import numpy as np
-from PyQt6.QtCore import QTimer
+
 from PyQt6.QtWidgets import QMessageBox, QDialog, QFormLayout, QDialogButtonBox, QComboBox, QCheckBox, QSpinBox, QLabel
-
+from PyQt6.QtCore import QThread, pyqtSignal
 from setiastro.saspro.legacy.image_manager import save_image, load_image
-
+from setiastro.saspro.cosmicclarity_engines.darkstar_engine import (
+    darkstar_starremoval_rgb01,
+    DarkStarParams,
+)
 # Reuse helpers & plumbing from the interactive module
 from .remove_stars import (
     _ProcThread, _ProcDialog,
@@ -279,44 +282,106 @@ def _resolve_darkstar_exe_headless(main, override: str | None) -> tuple[str | No
     return exe, base
 
 def _run_darkstar_headless(main, doc, p):
-    exe, base = _resolve_darkstar_exe_headless(main, p.get("darkstar_exe") or p.get("exe"))
-    if not exe or not base:
-        QMessageBox.warning(main, "CosmicClarity DarkStar", "DarkStar path not set. Open the interactive tool once to set it.")
-        return
+    # --- Build input for engine: float32 [0..1] ---
+    src = np.asarray(doc.image)
+    orig_was_mono = (src.ndim == 2) or (src.ndim == 3 and src.shape[2] == 1)
 
-    input_dir  = os.path.join(base, "input")
-    output_dir = os.path.join(base, "output")
-    os.makedirs(input_dir, exist_ok=True)
-    os.makedirs(output_dir, exist_ok=True)
+    x = np.nan_to_num(src.astype(np.float32, copy=False), nan=0.0, posinf=0.0, neginf=0.0)
 
-    in_path = os.path.join(input_dir, "imagetoremovestars.tif")
-    try:
-        save_image(doc.image, in_path, original_format="tif",
-                   bit_depth="32-bit floating point",
-                   original_header=None, is_mono=False, image_meta=None, file_meta=None)
-    except Exception as e:
-        QMessageBox.critical(main, "CosmicClarity DarkStar", f"Failed to write input TIFF:\n{e}")
-        return
+    # Normalize to [0..1] for engine if needed (matches interactive)
+    scale_factor = float(np.max(x)) if x.size else 1.0
+    if scale_factor > 1.0:
+        x = x / scale_factor
+    x = np.clip(x, 0.0, 1.0).astype(np.float32, copy=False)
 
     disable_gpu = bool(p.get("disable_gpu", False))
     mode = str(p.get("mode", "unscreen"))
     show = bool(p.get("show_extracted_stars", True))
     stride = int(p.get("stride", 512))
 
-    args = []
-    if disable_gpu: args.append("--disable_gpu")
-    args += ["--star_removal_mode", mode]
-    if show: args.append("--show_extracted_stars")
-    args += ["--chunk_size", str(stride)]
+    params = DarkStarParams(
+        use_gpu=(not disable_gpu),
+        chunk_size=int(stride),
+        overlap_frac=0.125,
+        mode=mode,
+        output_stars_only=show,
+    )
 
-    command = [exe] + args
+    dlg = _ProcDialog(main, title="Dark Star Progress")
+    dlg.append_text("Starting Dark Star (integrated engine)…\n")
 
-    dlg = _ProcDialog(main, title="CosmicClarityDarkStar Progress")
-    thr = _ProcThread(command, cwd=base)
-    thr.output_signal.connect(dlg.append_text)
-    thr.finished_signal.connect(lambda rc: _finish_darkstar(main, doc, rc, dlg, in_path, output_dir))
-    dlg.cancel_button.clicked.connect(thr.terminate)
-    dlg.show(); thr.start(); dlg.exec()
+    thr = _DarkStarEngineThread(x, params, parent=dlg)
+
+    def _on_prog(done, total, stage):
+        dlg.set_progress(done, total, stage)
+
+    def _on_done(starless, stars_only, was_mono, err):
+        if err:
+            QMessageBox.critical(main, "CosmicClarity DarkStar", f"DarkStar failed:\n{err}")
+            dlg.close()
+            return
+
+        # restore scale if we normalized (>1 domain docs)
+        if scale_factor > 1.0:
+            try:
+                starless = starless * scale_factor
+                if stars_only is not None:
+                    stars_only = stars_only * scale_factor
+            except Exception:
+                pass
+
+        # convert to RGB for blend math
+        starless_arr = np.asarray(starless, dtype=np.float32)
+        if starless_arr.ndim == 2 or (starless_arr.ndim == 3 and starless_arr.shape[2] == 1):
+            starless_rgb = np.stack([starless_arr.squeeze()] * 3, axis=-1)
+        else:
+            starless_rgb = starless_arr[..., :3]
+
+        orig = np.asarray(doc.image, dtype=np.float32)
+        if orig.ndim == 2:
+            original_rgb = np.stack([orig] * 3, axis=-1)
+        elif orig.ndim == 3 and orig.shape[2] == 1:
+            original_rgb = np.repeat(orig, 3, axis=2)
+        else:
+            original_rgb = orig[..., :3]
+
+        # push stars-only doc if requested + available
+        if show and stars_only is not None:
+            so = np.asarray(stars_only, dtype=np.float32)
+            if so.ndim == 2 or (so.ndim == 3 and so.shape[2] == 1):
+                so_rgb = np.stack([so.squeeze()] * 3, axis=-1)
+            else:
+                so_rgb = so[..., :3]
+
+            m3 = _active_mask3_from_doc(doc, so_rgb.shape[1], so_rgb.shape[0])
+            if m3 is not None:
+                so_rgb *= m3
+            _push_as_new_doc(main, doc,
+                             so_rgb.mean(axis=2).astype(np.float32) if orig_was_mono else so_rgb,
+                             title_suffix="_stars", source="Stars-Only (DarkStar)")
+
+        final_starless = _mask_blend_with_doc_mask(doc, starless_rgb, original_rgb)
+        final_to_apply = final_starless.mean(axis=2).astype(np.float32, copy=False) if orig_was_mono else final_starless
+        final_to_apply = np.clip(final_to_apply, 0.0, 1.0).astype(np.float32, copy=False)
+
+        try:
+            meta = {"step_name": "Stars Removed", "bit_depth": "32-bit floating point", "is_mono": bool(orig_was_mono)}
+            doc.apply_edit(final_to_apply, metadata=meta, step_name="Stars Removed")
+            if hasattr(main, "_log"):
+                main._log("Stars Removed (DarkStar, headless/integrated)")
+        except Exception as e:
+            QMessageBox.critical(main, "CosmicClarity DarkStar", f"Failed to apply starless result:\n{e}")
+
+        dlg.close()
+
+    thr.progress_signal.connect(_on_prog)
+    thr.finished_signal.connect(_on_done)
+
+    dlg.cancel_button.clicked.connect(lambda: dlg.append_text("Cancel not supported for in-process engine.\n"))
+    dlg.show()
+    thr.start()
+    dlg.exec()
+
 
 def _finish_darkstar(main, doc, rc, dlg, in_path, output_dir):
     if rc != 0:
@@ -435,6 +500,30 @@ class RemoveStarsPresetDialog(QDialog):
             "show_extracted_stars": bool(self.chk_show.isChecked()),
             "stride": int(self.cmb_stride.currentData()),
         }
+
+class _DarkStarEngineThread(QThread):
+    progress_signal = pyqtSignal(int, int, str)           # done, total, stage
+    finished_signal = pyqtSignal(object, object, bool, str)  # starless, stars_only, was_mono, errstr
+
+    def __init__(self, img_rgb01: np.ndarray, params: DarkStarParams, parent=None):
+        super().__init__(parent)
+        self._img = img_rgb01
+        self._params = params
+
+    def run(self):
+        try:
+            def prog(done, total, stage):
+                self.progress_signal.emit(int(done), int(total), str(stage))
+
+            starless, stars_only, was_mono = darkstar_starremoval_rgb01(
+                self._img,
+                params=self._params,
+                progress_cb=prog,
+                status_cb=lambda s: None,
+            )
+            self.finished_signal.emit(starless, stars_only, bool(was_mono), "")
+        except Exception as e:
+            self.finished_signal.emit(None, None, False, str(e))
 
 
 # ---------- local util ----------

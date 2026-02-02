@@ -31,6 +31,51 @@ _SUPPORTED = {
 _TORCH = None
 _DEVICE = None
 
+import warnings
+
+_DML_REDUCE_WARNED = False
+
+def _is_directml_privateuse(dev) -> bool:
+    """
+    torch-directml uses a PrivateUse backend and the device string usually contains:
+      'privateuseone:0'
+    The reporter typo'd it as 'privateuserone:0' so we accept both.
+    """
+    try:
+        s = str(dev).lower()
+    except Exception:
+        return False
+    return ("privateuseone" in s) or ("privateuserone" in s)
+
+def _warn_dml_reduce_once():
+    global _DML_REDUCE_WARNED
+    if _DML_REDUCE_WARNED:
+        return
+    _DML_REDUCE_WARNED = True
+    warnings.warn(
+        "DirectML detected (privateuseone). Forcing nan reducers (nanmedian/nanquantile/nanstd) to CPU "
+        "to avoid a known torch-directml fallback bug (can return empty tensors).",
+        RuntimeWarning
+    )
+
+def _cpu_reduce_then_back(torch, x, dim: int, op: str, q: float | None = None):
+    """
+    Force a reduction to run on CPU (workaround for DirectML broken fallbacks),
+    then move the result back to x.device.
+    """
+    x_cpu = x.detach().to("cpu")
+
+    if op == "nanmedian":
+        y = torch.nanmedian(x_cpu, dim=dim).values
+    elif op == "nanquantile":
+        y = torch.nanquantile(x_cpu, float(q), dim=dim)
+    elif op == "nanstd":
+        y = torch.nanstd(x_cpu, dim=dim, unbiased=False)
+    else:
+        raise ValueError(f"Unknown op: {op}")
+
+    return y.to(x.device)
+
 
 
 def _get_torch(prefer_cuda: bool = True, prefer_dml: bool = False):
@@ -43,23 +88,32 @@ def _get_torch(prefer_cuda: bool = True, prefer_dml: bool = False):
     except Exception:
         pass
 
-    # Let runtime_torch install the right stack
+    # Let runtime_torch install/resolve the right torch stack
     torch = import_torch(prefer_cuda=prefer_cuda, prefer_dml=prefer_dml, status_cb=lambda *_: None)
-    _DEVICE = best_device(torch, prefer_cuda=True, prefer_dml=prefer_dml)
+
+    # IMPORTANT: honor best_device() (it may return DirectML / privateuseone)
+    try:
+        _DEVICE = best_device(torch, prefer_cuda=prefer_cuda, prefer_dml=prefer_dml)
+    except Exception:
+        _DEVICE = None
+
     _TORCH = torch
     _force_fp32_policy(torch)
 
-    # Device selection: CUDA first, else CPU.
-    # (If runtime_torch installed DML, then your app should choose DML device elsewhere
-    #  OR you add a runtime_torch helper to return it.)
-    if hasattr(torch, "cuda") and torch.cuda.is_available():
-        _DEVICE = torch.device("cuda")
-    elif getattr(getattr(torch, "backends", None), "mps", None) and torch.backends.mps.is_available():
-        _DEVICE = torch.device("mps")
-    else:
-        _DEVICE = torch.device("cpu")
+    # If best_device failed, fall back conservatively
+    if _DEVICE is None:
+        try:
+            if hasattr(torch, "cuda") and torch.cuda.is_available():
+                _DEVICE = torch.device("cuda")
+            elif getattr(getattr(torch, "backends", None), "mps", None) and torch.backends.mps.is_available():
+                _DEVICE = torch.device("mps")
+            else:
+                _DEVICE = torch.device("cpu")
+        except Exception:
+            _DEVICE = torch.device("cpu")
 
     return _TORCH
+
 
 
 def _device():
@@ -83,9 +137,26 @@ def gpu_algo_supported(algo_name: str) -> bool:
 # Helpers (nan-safe reducers) – assume torch is available *inside* callers
 # ---------------------------------------------------------------------------
 def _nanmedian(torch, x, dim: int):
+    # DirectML workaround: force CPU reducer (avoids broken fallback returning empty tensor)
+    if _is_directml_privateuse(getattr(x, "device", None)):
+        _warn_dml_reduce_once()
+        try:
+            y = _cpu_reduce_then_back(torch, x, dim, op="nanmedian")
+            if getattr(y, "numel", lambda: 1)() == 0:
+                raise RuntimeError("nanmedian returned empty tensor on DirectML")
+            return y
+        except Exception:
+            # fall through to generic fallback below
+            pass
+
     try:
-        return torch.nanmedian(x, dim=dim).values
+        y = torch.nanmedian(x, dim=dim).values
+        # Guard: some broken backends return empty tensor instead of real result
+        if getattr(y, "numel", lambda: 1)() == 0:
+            raise RuntimeError("nanmedian returned empty tensor")
+        return y
     except Exception:
+        # Generic safe fallback (sort-based)
         m = torch.isfinite(x)
         x2 = x.clone()
         x2[~m] = float("inf")
@@ -96,9 +167,23 @@ def _nanmedian(torch, x, dim: int):
         return x.gather(dim, gather_idx).squeeze(dim)
 
 def _nanstd(torch, x, dim: int):
+    if _is_directml_privateuse(getattr(x, "device", None)):
+        _warn_dml_reduce_once()
+        try:
+            y = _cpu_reduce_then_back(torch, x, dim, op="nanstd")
+            if getattr(y, "numel", lambda: 1)() == 0:
+                raise RuntimeError("nanstd returned empty tensor on DirectML")
+            return y
+        except Exception:
+            pass
+
     try:
-        return torch.nanstd(x, dim=dim, unbiased=False)
+        y = torch.nanstd(x, dim=dim, unbiased=False)
+        if getattr(y, "numel", lambda: 1)() == 0:
+            raise RuntimeError("nanstd returned empty tensor")
+        return y
     except Exception:
+        # Fallback: compute nan-safe variance from sums
         m = torch.isfinite(x)
         cnt = m.sum(dim=dim).clamp_min(1)
         s1 = torch.where(m, x, torch.zeros_like(x)).sum(dim=dim)
@@ -108,18 +193,32 @@ def _nanstd(torch, x, dim: int):
         return var.clamp_min(0).sqrt()
 
 def _nanquantile(torch, x, q: float, dim: int):
+    if _is_directml_privateuse(getattr(x, "device", None)):
+        _warn_dml_reduce_once()
+        try:
+            y = _cpu_reduce_then_back(torch, x, dim, op="nanquantile", q=float(q))
+            if getattr(y, "numel", lambda: 1)() == 0:
+                raise RuntimeError("nanquantile returned empty tensor on DirectML")
+            return y
+        except Exception:
+            pass
+
     try:
-        return torch.nanquantile(x, q, dim=dim)
+        y = torch.nanquantile(x, float(q), dim=dim)
+        if getattr(y, "numel", lambda: 1)() == 0:
+            raise RuntimeError("nanquantile returned empty tensor")
+        return y
     except Exception:
+        # Fallback: argsort finite values and take kth
         m = torch.isfinite(x)
         x2 = x.clone()
         x2[~m] = float("inf")
         idx = x2.argsort(dim=dim)
         n = m.sum(dim=dim).clamp_min(1)
-        kth = (q * (n - 1)).round().to(torch.long)
-        kth = kth.clamp(min=0)
+        kth = (float(q) * (n - 1)).round().to(torch.long).clamp(min=0)
         gather_idx = idx.gather(dim, kth.unsqueeze(dim))
         return x.gather(dim, gather_idx).squeeze(dim)
+
 
 def _no_amp_ctx(torch, dev):
     """
@@ -290,7 +389,7 @@ def torch_reduce_tile(
     with _safe_inference_ctx(torch), _no_amp_ctx(torch, dev):
         # ---------------- simple, no-rejection reducers ----------------
         if algo in ("Comet Median", "Simple Median (No Rejection)"):
-            out = ts.median(dim=0).values
+            out = _nanmedian(torch, ts, dim=0)
             rej = torch.zeros((F, H, W, C), dtype=torch.bool, device=dev)
             return out.to(dtype=torch.float32).contiguous().cpu().numpy(), rej.cpu().numpy()
 
