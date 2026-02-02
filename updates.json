@@ -1,9 +1,9 @@
 {
-  "version": "1.8.3.post2",
+  "version": "1.8.4",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.8.3/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.8.3/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.8.3/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.8.4/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.8.4/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.8.4/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.8.3.post2 This will update will reset some of your preferences (i apologize) but will not happen again. Flux Measurement tool for integrated and surface flux added. More options in Finder Chart. Multiple bug fixes and tweaks all around."
+  "notes": "Seti Astro Suite Pro V1.8.4 Updated Magnitude Calculations.  DirectML torch rejection error fix.  Smooth Zoom option in Preferences.  Remove Stars Preset (dark star) fixed.  Undo/Redo Stack optimizations.  Live Stacking Fix.  Other bug fixes."
 }
