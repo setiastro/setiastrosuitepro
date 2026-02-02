@@ -700,7 +700,7 @@ def _normalize_for_astap(img: np.ndarray) -> np.ndarray:
     if f01.ndim == 2 or (f01.ndim == 3 and f01.shape[2] == 1):
         if stretch_mono_image is not None:
             try:
-                print("DEBUG stretching mono")
+
                 out = stretch_mono_image(f01, 0.1, False)
                 return np.clip(out.astype(np.float32), 0.0, 1.0)
             except Exception as e:
@@ -710,7 +710,7 @@ def _normalize_for_astap(img: np.ndarray) -> np.ndarray:
     # Color
     if stretch_color_image is not None:
         try:
-            print("DEBUG stretching color")
+
             out = stretch_color_image(f01, 0.1, False, False)
             return np.clip(out.astype(np.float32), 0.0, 1.0)
         except Exception as e:
@@ -1895,7 +1895,7 @@ def plate_solve_doc_inplace(parent, doc, settings) -> Tuple[bool, Header | str]:
 
         # Build WCS object from the same header we just stored
         try:
-            wcs_obj = WCS(hdr_final)
+            wcs_obj = WCS(hdr_final, naxis=2)
             doc.metadata["wcs"] = wcs_obj
         except Exception as e:
             print("WCS build FAILED:", e)
@@ -1927,6 +1927,13 @@ def plate_solve_doc_inplace(parent, doc, settings) -> Tuple[bool, Header | str]:
         if not ok_solve:
             _status_popup_close()
 
+def _wcs_from_header_2d(hdr: Header, *, relax: bool = True) -> WCS:
+    """
+    Build a 2-D celestial WCS even if the FITS header advertises NAXIS=3 (RGB cube).
+    This avoids WCSLIB SIP/distortion errors with 3D core WCS.
+    """
+    hdr = _strip_nonfits_meta_keys_from_header(hdr)
+    return WCS(hdr, naxis=2, relax=relax)
 
 
 def _estimate_scale_arcsec_from_header(hdr: Header) -> float | None:
@@ -1940,7 +1947,7 @@ def _estimate_scale_arcsec_from_header(hdr: Header) -> float | None:
 
     # 1) Try astropy WCS, which handles CD vs PC*CDELT automatically
     try:
-        w = WCS(hdr)
+        w = _wcs_from_header_2d(hdr, relax=True)
         from astropy.wcs.utils import proj_plane_pixel_scales
         scales_deg = proj_plane_pixel_scales(w)  # degrees/pixel
         if scales_deg is not None and len(scales_deg) >= 2:

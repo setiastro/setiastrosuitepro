@@ -32,13 +32,14 @@ import numpy as np
 import numpy.ma as ma
 
 import sep
-
+import time
 from astropy.io import fits
 from astropy.wcs import WCS
+from astroquery.vizier import Vizier
 
 from PyQt6.QtCore import Qt, QRect, QEvent, QPointF, QRectF, QTimer
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTabWidget, QWidget,
     QSpinBox, QDoubleSpinBox, QGroupBox, QFormLayout,QComboBox, QGraphicsPathItem, QGraphicsEllipseItem,
     QMessageBox, QApplication, QGraphicsView, QGraphicsScene, QGraphicsRectItem, QGraphicsItem
 )
@@ -47,7 +48,8 @@ from astropy.coordinates import SkyCoord
 import astropy.units as u
 from astroquery.simbad import Simbad
 from astropy.wcs.wcs import NoConvergence
-
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
 # IMPORTANT: use the centralized one (adjust import path to where you moved it)
 from setiastro.saspro.sfcc import pickles_match_for_simbad
 
@@ -56,6 +58,115 @@ from setiastro.saspro.sfcc import non_blocking_sleep  # already used in SFCC; op
 from setiastro.saspro.backgroundneutral import auto_rect_box, auto_rect_50x50
 from setiastro.saspro.imageops.stretch import stretch_color_image
 # We *intentionally* do NOT reuse SFCC pedestal-removal/clamp for photometry.
+
+import socket
+
+import multiprocessing as mp
+import queue
+import traceback
+
+def _run_in_subprocess(timeout_s: float, target, *args, **kwargs):
+    """
+    Run `target(*args, **kwargs)` in a fresh subprocess.
+    If it hangs (TLS/SSL wedged), terminate the process.
+    Returns target result or raises.
+    """
+    ctx = mp.get_context("spawn")  # safest on Windows/macOS
+    q = ctx.Queue()
+
+    def _worker(q_, args_, kwargs_):
+        try:
+            out = target(*args_, **kwargs_)
+            q_.put(("ok", out))
+        except Exception as e:
+            q_.put(("err", (repr(e), traceback.format_exc())))
+
+    p = ctx.Process(target=_worker, args=(q, args, kwargs))
+    p.daemon = True
+    p.start()
+    p.join(timeout_s)
+
+    if p.is_alive():
+        p.terminate()
+        p.join(2.0)
+        raise TimeoutError(f"Catalog query timed out after {timeout_s:.1f}s (killed subprocess).")
+
+    try:
+        kind, payload = q.get_nowait()
+    except queue.Empty:
+        raise RuntimeError("Catalog subprocess ended without returning a result.")
+
+    if kind == "ok":
+        return payload
+
+    err_repr, tb = payload
+    raise RuntimeError(f"Catalog query failed: {err_repr}\n{tb}")
+
+def _row_get(tab_row, colname: str):
+    try:
+        return tab_row[colname]
+    except Exception:
+        return None
+
+def _simbad_query_worker(center_ra_deg: float, center_dec_deg: float, radius_deg: float,
+                        servers: list[str], hard_timeout_s: float, row_limit: int):
+    # Import inside subprocess
+    from astroquery import conf as aq_conf
+    from astroquery.simbad import Simbad, conf as simbad_conf
+    import astropy.units as u
+    from astropy.coordinates import SkyCoord
+
+    aq_conf.timeout = float(hard_timeout_s)
+    try:
+        simbad_conf.timeout = float(hard_timeout_s)
+    except Exception:
+        pass
+
+    Simbad.reset_votable_fields()
+    # try “new” fields first, then fallback
+    try:
+        Simbad.add_votable_fields("sp", "B", "V", "R", "ra", "dec")
+    except Exception:
+        Simbad.add_votable_fields("sp", "flux(B)", "flux(V)", "flux(R)", "ra(d)", "dec(d)")
+
+    Simbad.ROW_LIMIT = int(row_limit)
+
+    center = SkyCoord(center_ra_deg * u.deg, center_dec_deg * u.deg, frame="icrs")
+
+    last_err = None
+    for server in (servers or []):
+        try:
+            try:
+                simbad_conf.server = server
+            except Exception:
+                pass
+            tab = Simbad.query_region(center, radius=radius_deg * u.deg)
+            if tab is None:
+                continue
+            # Return as “simple” python structures (picklable)
+            return {
+                "colnames": list(tab.colnames),
+                "rows": [ {c: tab[i][c] for c in tab.colnames} for i in range(len(tab)) ]
+            }
+        except Exception as e:
+            last_err = e
+            continue
+
+    raise RuntimeError(f"SIMBAD failed on all servers. Last error: {last_err!r}")
+
+
+def _tcp_reachable(host: str, port: int, timeout_s: float = 2.0) -> bool:
+    """
+    Fast reachability check that catches DNS failures + connect stalls.
+    This is *not* a full HTTP check; it's enough to avoid UI hangs.
+    """
+    try:
+        # create_connection does DNS + connect and obeys timeout_s
+        with socket.create_connection((host, port), timeout=timeout_s):
+            return True
+    except Exception:
+        return False
+
 
 # ---------------------------- helpers ----------------------------
 
@@ -283,6 +394,7 @@ def _compute_zero_points_mono(matches, img_f, r_ap, r_in, r_out, band="L", clip_
 
     zps = []
     used = 0
+    x, y = [], []
     for i, m in enumerate(matches):
         st = m["star"]
         f = float(flux_net[i])
@@ -294,22 +406,28 @@ def _compute_zero_points_mono(matches, img_f, r_ap, r_in, r_out, band="L", clip_
             continue
 
         zps.append(float(mag) + 2.5 * math.log10(f))
+        x.append(float(-2.5 * math.log10(f)))
+        y.append(float(mag))
         used += 1
 
     zps = _sigma_clip(np.asarray(zps, dtype=np.float64), sigma=clip_sigma)
-    if zps.size == 0:
-        sd = float(np.std(zps))
-        sem = float(sd / math.sqrt(zps.size)) if zps.size > 1 else None
-        return {"ZP": float(np.median(zps)), "n": int(zps.size), "std": sd, "sem": sem, "band": band, "magkey": magkey, "used_matches": used}
-
-    return {
-        "ZP": float(np.median(zps)),
+    out = {
+        "ZP": float(np.median(zps)) if zps.size else None,
         "n": int(zps.size),
-        "std": float(np.std(zps)),
+        "std": float(np.std(zps)) if zps.size else None,
+        "sem": (float(np.std(zps))/math.sqrt(int(zps.size))) if zps.size > 1 else None,
         "band": band,
         "magkey": magkey,
         "used_matches": used,
+        "plot": {
+            "Mono": {
+                "x": x, "y": y,
+                "zp": float(np.median(zps)) if zps.size else None,
+                "title": f"Mono: {magkey} vs m_inst (y = x + ZP)",
+            }
+        }
     }
+    return out
 
 def _compute_zero_points(
     matches: List[dict],
@@ -333,6 +451,10 @@ def _compute_zero_points(
 
     # Collect ZP candidates
     zp_R, zp_G, zp_B = [], [], []
+    xR, yR = [], []
+    xG, yG = [], []
+    xB, yB = [], []
+
     used = 0
 
     for i, m in enumerate(matches):
@@ -341,7 +463,8 @@ def _compute_zero_points(
         # reject non-positive net flux
         if not (fR > 0 or fG > 0 or fB > 0):
             continue
-
+        def minst(f):
+            return float(-2.5 * math.log10(f)) if f > 0 else None
         # catalog mags
         Rmag = _unmask_num(st.get("Rmag"))
         Vmag = _unmask_num(st.get("Vmag"))
@@ -350,10 +473,15 @@ def _compute_zero_points(
         # NO flux/sec — use flux directly
         if fR > 0 and Rmag is not None:
             zp_R.append(float(Rmag) + 2.5 * math.log10(fR))
+            xR.append(minst(fR)); yR.append(float(Rmag))
+
         if fG > 0 and Vmag is not None:
             zp_G.append(float(Vmag) + 2.5 * math.log10(fG))
+            xG.append(minst(fG)); yG.append(float(Vmag))
+
         if fB > 0 and Bmag is not None:
             zp_B.append(float(Bmag) + 2.5 * math.log10(fB))
+            xB.append(minst(fB)); yB.append(float(Bmag))
 
         used += 1
 
@@ -380,6 +508,11 @@ def _compute_zero_points(
         "std_R": sR, "std_G": sG, "std_B": sB,
         "sem_R": semR, "sem_G": semG, "sem_B": semB,
         "used_matches": used,
+        "plot": {
+            "R": {"x": xR, "y": yR, "zp": ZP_R, "title": "Red channel: Rmag vs m_inst (y = x + ZP_R)"},
+            "G": {"x": xG, "y": yG, "zp": ZP_G, "title": "Green channel: Vmag vs m_inst (y = x + ZP_G)"},
+            "B": {"x": xB, "y": yB, "zp": ZP_B, "title": "Blue channel: Bmag vs m_inst (y = x + ZP_B)"},
+        },
     }
 
 BAND_TO_MAGKEY = {
@@ -426,6 +559,131 @@ def _mu_from_flux(flux: float, area_asec2: float, zp: Optional[float]) -> Option
     if zp is None or not (flux > 0) or not (area_asec2 > 0):
         return None
     return float(-2.5 * math.log10(flux / area_asec2) + float(zp))
+
+# ---------------------------- SQM/Bortle helpers ----------------------------
+
+_BORTLE_BINS = [
+    (1, 21.99, 99.0,  "Excellent (B1)"),
+    (2, 21.89, 21.99, "Typical Dark (B2)"),
+    (3, 21.69, 21.89, "Rural (B3)"),
+    (4, 20.49, 21.69, "Rural/Suburban (B4)"),
+    (5, 19.50, 20.49, "Suburban (B5)"),
+    (6, 18.94, 19.50, "Bright Suburban (B6)"),
+    (7, 18.38, 18.94, "Suburban/Urban (B7)"),
+    (8, 17.80, 18.38, "City (B8)"),
+    (9, -99.0, 17.80, "Inner City (B9)"),
+]
+
+def _bortle_from_sqm(mu_mag_arcsec2: Optional[float]) -> Optional[dict]:
+    """
+    Map sky surface brightness (mag/arcsec^2) to a Bortle estimate.
+    Returns dict with {bortle, label, range, mu}.
+    """
+    if mu_mag_arcsec2 is None:
+        return None
+    try:
+        mu = float(mu_mag_arcsec2)
+    except Exception:
+        return None
+    if not np.isfinite(mu):
+        return None
+
+    for bortle, lo, hi, label in _BORTLE_BINS:
+        if (mu >= lo) and (mu < hi):
+            return {
+                "bortle": int(bortle),
+                "label": str(label),
+                "range": f"{lo:.2f}–{hi:.2f}" if (lo > -90 and hi < 90) else (f"≥{lo:.2f}" if hi >= 90 else f"<{hi:.2f}"),
+                "mu": mu,
+            }
+    return None
+
+def _header_str(header, key: str) -> str:
+    try:
+        if header is None:
+            return ""
+        v = header.get(key, "")
+        return str(v).strip()
+    except Exception:
+        return ""
+
+def _is_narrowband_like(header) -> bool:
+    """
+    Best-effort heuristic. If we can see a filter name like Ha/OIII/SII, or NB,
+    we should NOT present a Bortle estimate.
+    """
+    if header is None:
+        return False
+
+    # Common FITS keys people have
+    candidates = [
+        _header_str(header, "FILTER"),
+        _header_str(header, "FILTER1"),
+        _header_str(header, "FILTER2"),
+        _header_str(header, "FILTNAME"),
+        _header_str(header, "OBJECT"),     # sometimes includes "Ha" etc (not ideal but helps)
+        _header_str(header, "IMAGETYP"),
+    ]
+    s = " ".join([c for c in candidates if c]).upper()
+
+    # Narrowband tokens
+    nb_tokens = [
+        "HA", "H-A", "Hα", "HALPHA", "H_ALPHA", "H-ALPHA",
+        "OIII", "O3", "[OIII]", "O-III", "O_III",
+        "SII", "S2", "[SII]", "S-II", "S_II",
+        "HBETA", "H-BETA", "H_BETA",
+        "NARROW", "NARROWBAND", "NB",
+        "DUOBAND", "TRIBAND", "QUADBAND",
+        "L-ENHANCE", "L-EXTREME", "L-ULTIMATE",
+        "ALP-T", "ALPT", "ALP", "ANTLIA",  # some common LP/NB product names
+    ]
+    return any(tok in s for tok in nb_tokens)
+
+
+class ZeroPointPlotsDialog(QDialog):
+    """
+    Shows ZP scatter plot(s):
+      x = instrumental magnitude = -2.5 log10(flux)
+      y = catalog magnitude (SIMBAD)
+      overlay line y = x + ZP (slope fixed to 1)
+    """
+    def __init__(self, parent, plots: dict):
+        super().__init__(parent)
+        self.setWindowTitle("Zero Point Graphs")
+        self.resize(900, 700)
+
+        root = QVBoxLayout(self)
+        tabs = QTabWidget(self)
+        root.addWidget(tabs)
+
+        # plots: { "Mono": {...} } or { "R": {...}, "G": {...}, "B": {...} }
+        for name, payload in plots.items():
+            w = QWidget()
+            lay = QVBoxLayout(w)
+
+            fig = Figure(figsize=(6, 4), dpi=100)
+            canvas = FigureCanvas(fig)
+            ax = fig.add_subplot(111)
+
+            x = payload.get("x", [])
+            y = payload.get("y", [])
+            zp = payload.get("zp", None)
+            title = payload.get("title", name)
+
+            ax.scatter(x, y, s=16, alpha=0.8)
+            ax.set_title(title)
+            ax.set_xlabel("Instrumental magnitude  m_inst = -2.5 log10(flux)")
+            ax.set_ylabel("Catalog magnitude  m_cat (SIMBAD)")
+
+            # reference line for your model
+            if zp is not None and len(x) > 0:
+                xmin = float(min(x)); xmax = float(max(x))
+                ax.plot([xmin, xmax], [xmin + float(zp), xmax + float(zp)], linewidth=2)
+
+            ax.grid(True, alpha=0.25)
+
+            lay.addWidget(canvas)
+            tabs.addTab(w, name)
 
 # ---------------------------- UI dialog (initial) ----------------------------
 class MagnitudeRegionDialog(QDialog):
@@ -549,6 +807,7 @@ class MagnitudeRegionDialog(QDialog):
         self.finished.connect(self._cleanup_connections)
 
         self._pixmap_item = None
+        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         self._load_image()
         QTimer.singleShot(0, self.fit_to_view)
 
@@ -624,6 +883,34 @@ class MagnitudeRegionDialog(QDialog):
 
         raise ValueError(f"Unsupported image shape for ROI picker: {img.shape}")
 
+    def _capture_view_state(self):
+        """
+        Capture current view transform + center point in scene coords.
+        """
+        try:
+            t = self.view.transform()
+            center_scene = self.view.mapToScene(self.view.viewport().rect().center())
+            return (t, center_scene)
+        except Exception:
+            return None
+
+    def _restore_view_state(self, state):
+        """
+        Restore transform + center point.
+        """
+        if not state:
+            return
+        try:
+            t, center_scene = state
+            self.view.setTransform(t)
+            self.view.centerOn(center_scene)
+        except Exception:
+            pass
+
+    def _on_mode_changed(self, _idx):
+        # If the user changes drawing mode, clear any existing selection
+        # so it’s always “exactly one region”.
+        self._clear_target_items()
 
     def _display_rgb01(self, img_rgb01: np.ndarray) -> np.ndarray:
         # preview-only stretch
@@ -654,45 +941,52 @@ class MagnitudeRegionDialog(QDialog):
 
 
     # ---------- render ----------
-    def _load_image(self):
-        self.scene.clear()
-        self.target_item = None
-        self.bg_item = None
-        self.target_rect_scene = QRectF()
-
+    def _load_image(self, preserve_view_state=None, keep_overlays=True):
         try:
             img = self._doc_image_float01()
         except Exception as e:
             QMessageBox.warning(self, "No Image", str(e))
             self.close()
             return
-        if img is None or img.size == 0:
-            QMessageBox.warning(self, "No Image", "Open an image first.")
-            self.close()
-            return
 
         disp = self._display_rgb01(img)
         h, w, _ = disp.shape
-        buf8 = np.ascontiguousarray((np.clip(disp, 0, 1) * 255).astype(np.uint8))
-        qimg = QImage(buf8.data, w, h, buf8.strides[0], QImage.Format.Format_RGB888)
+
+        self._disp_buf8 = np.ascontiguousarray((np.clip(disp, 0, 1) * 255).astype(np.uint8))
+        qimg = QImage(self._disp_buf8.data, w, h, self._disp_buf8.strides[0], QImage.Format.Format_RGB888)
         pix = QPixmap.fromImage(qimg)
 
-        self._pixmap_item = self.scene.addPixmap(pix)
-        self._pixmap_item.setCacheMode(QGraphicsItem.CacheMode.DeviceCoordinateCache)
-        self._pixmap_item.setPos(0, 0)
+        if self._pixmap_item is None or (not keep_overlays):
+            self.scene.clear()
+            self._pixmap_item = self.scene.addPixmap(pix)
+            self._pixmap_item.setPos(0, 0)
+        else:
+            self._pixmap_item.setPixmap(pix)
+            self._pixmap_item.setPos(0, 0)
+
         self.scene.setSceneRect(0, 0, pix.width(), pix.height())
 
-        self.view.resetTransform()
-        self.view.fitInView(self._pixmap_item, Qt.AspectRatioMode.KeepAspectRatio)
-        self._user_zoomed = False
+        if preserve_view_state is not None:
+            self._restore_view_state(preserve_view_state)
+        else:
+            self.view.resetTransform()
+            self.view.fitInView(self._pixmap_item, Qt.AspectRatioMode.KeepAspectRatio)
+            self._user_zoomed = False
 
-        # always compute an initial background box
-        self._on_find_background()
+        # If you're keeping overlays, DON'T blow away bg/target here.
+        # Only auto-find bg if bg doesn't exist.
+        if self.bg_item is None:
+            self._on_find_background()
+
 
     def _toggle_autostretch(self):
+        view_state = self._capture_view_state() if self._user_zoomed else None
+
         self.auto_stretch = not self.auto_stretch
         self.btn_toggle.setText("Disable Auto-Stretch" if self.auto_stretch else "Enable Auto-Stretch")
-        self._load_image()
+
+        # reload image but keep zoom/pan if user zoomed
+        self._load_image(preserve_view_state=view_state, keep_overlays=True)
 
     def _zoom(self, factor: float):
         self._user_zoomed = True
@@ -1013,7 +1307,7 @@ class MagnitudeToolDialog(QDialog):
         v = QVBoxLayout(self)
 
         row = QHBoxLayout()
-        self.btn_fetch = QPushButton("Step 1: Fetch SIMBAD Stars (needs WCS)")
+        self.btn_fetch = QPushButton("Step 1: Fetch Catalog Stars (needs WCS)")
         self.btn_fetch.clicked.connect(self.fetch_stars_from_active_doc)
         row.addWidget(self.btn_fetch)
 
@@ -1025,7 +1319,10 @@ class MagnitudeToolDialog(QDialog):
         self.btn_pick = QPushButton("Step 3: Pick Target Region…")
         self.btn_pick.clicked.connect(self.open_region_picker)
         v.addWidget(self.btn_pick)
-
+        self.btn_zp_plot = QPushButton("Show ZP Graphs…")
+        self.btn_zp_plot.clicked.connect(self.show_zp_graphs)
+        self.btn_zp_plot.setEnabled(False)
+        v.addWidget(self.btn_zp_plot)
         box = QGroupBox("Photometry settings")
         form = QFormLayout(box)
 
@@ -1106,6 +1403,14 @@ class MagnitudeToolDialog(QDialog):
         v.addLayout(row2)
 
     # --- external wiring (from your ROI tool) ---
+    def show_zp_graphs(self):
+        p = self.last_zp.get("plot") if isinstance(self.last_zp, dict) else None
+        if not p:
+            QMessageBox.information(self, "ZP Graphs", "Compute zero points first.")
+            return
+        dlg = ZeroPointPlotsDialog(self, p)
+        dlg.exec()
+
     def set_object_mask(self, mask: np.ndarray):
         self.object_mask = mask
 
@@ -1169,27 +1474,54 @@ class MagnitudeToolDialog(QDialog):
             return
 
         meta = getattr(doc, "metadata", {}) or {}
-        sl = meta.get("SFCC_star_list")
+        cached = meta.get("SFCC_star_list")
+        cached_catalog = str(meta.get("SFCC_catalog") or "").strip()
 
-        if isinstance(sl, list) and len(sl) > 0:
-            self.star_list = sl
+        # 0) If we already have APASS cached, use it (fast path, no network)
+        if isinstance(cached, list) and len(cached) > 0 and cached_catalog.upper().startswith("APASS"):
+            self.star_list = cached
         else:
-            # no cached list → fetch now
+            # 1) APASS first
+            apass_ok = False
             try:
-                self.lbl_info.setText("No cached SFCC stars — fetching from SIMBAD…")
+                self.lbl_info.setText("Querying APASS (VizieR)…")
                 QApplication.processEvents()
-                self.star_list = self._fetch_simbad_stars_and_cache(img, hdr, doc)
-            except Exception as e:
-                QMessageBox.critical(self, "Fetch Stars Failed", str(e))
-                return
 
-        # WCS / pixscale / exptime
+                apass = self._fetch_apass_stars_and_cache(img, hdr, doc)
+                if isinstance(apass, list) and len(apass) > 0:
+                    self.star_list = apass
+                    apass_ok = True
+            except Exception:
+                apass_ok = False
+
+            # 2) Fall back to cached stars (any catalog) if APASS failed/empty
+            if not apass_ok:
+                if isinstance(cached, list) and len(cached) > 0:
+                    self.star_list = cached
+                else:
+                    # 3) Finally SIMBAD
+                    try:
+                        self.lbl_info.setText("Querying SIMBAD (subprocess)…")
+                        QApplication.processEvents()
+                        self.star_list = self._fetch_simbad_stars_and_cache(img, hdr, doc)
+                    except Exception:
+                        QMessageBox.information(
+                            self, "Catalog Unavailable",
+                            "APASS query failed (or returned no stars), no cached stars available, "
+                            "and SIMBAD is currently unavailable.\n\n"
+                            "Please try again later."
+                        )
+                        return
+
+        # WCS / pixscale
         self.wcs, self.pixscale = _build_wcs_and_pixscale(hdr)
 
-        n = len(self.star_list)
+        n = len(self.star_list or [])
         ps = f"{self.pixscale:.3f} arcsec/px" if self.pixscale else "N/A"
+        cat = str((getattr(doc, "metadata", {}) or {}).get("SFCC_catalog") or cached_catalog or "Unknown")
 
-        self.lbl_info.setText(f"Loaded {n} SIMBAD stars. Pixscale: {ps}")
+        self.lbl_info.setText(f"Loaded {n} catalog stars ({cat}). Pixscale: {ps}")
+
 
 
     def compute_zero_points(self):
@@ -1235,6 +1567,7 @@ class MagnitudeToolDialog(QDialog):
                 clip_sigma=float(self.clip_sigma.value()),
             )
             self.last_zp = {"mode": "mono", **zp}
+            self.btn_zp_plot.setEnabled(bool(self.last_zp.get("plot")))
 
             self.lbl_info.setText(
                 "Zero point (mono):\n"
@@ -1251,6 +1584,7 @@ class MagnitudeToolDialog(QDialog):
                 clip_sigma=float(self.clip_sigma.value()),
             )
             self.last_zp = {"mode": "rgb", **zp}
+            self.btn_zp_plot.setEnabled(bool(self.last_zp.get("plot")))
 
             self.lbl_info.setText(
                 "Zero points (median ± SEM):\n"
@@ -1422,6 +1756,10 @@ class MagnitudeToolDialog(QDialog):
             mu_bg = None
             if pix_area_asec2 is not None and bkg_mean is not None:
                 mu_bg = _mu_from_flux(float(bkg_mean), float(pix_area_asec2), ZP)
+            # --- Bortle estimate from background μ (mono uses its own channel; still okay) ---
+            bortle_info = None
+            if not _is_narrowband_like(hdr):
+                bortle_info = _bortle_from_sqm(mu_bg)                
             m_stat = _mag_err_from_flux(net_f, float(flux_err), float(zp_sem)) if (zp_sem is not None) else None
             mu_stat = _mu_err_from_flux(net_f, float(flux_err), float(zp_sem)) if (zp_sem is not None and area_asec2 is not None) else None
 
@@ -1438,7 +1776,15 @@ class MagnitudeToolDialog(QDialog):
             )
             if pix_area_asec2 is not None:
                 msg += f"  Background μ (mag/arcsec²): {fmt(mu_bg)}\n"
-
+            if pix_area_asec2 is not None:
+                msg += f"  Background μ (mag/arcsec²): {fmt(mu_bg)}\n"
+                if _is_narrowband_like(hdr):
+                    msg += "  Estimated Bortle: N/A (narrowband-like filter detected)\n"
+                else:
+                    if bortle_info is not None:
+                        msg += f"  Estimated Bortle: {bortle_info['label']} (μ≈{bortle_info['mu']:.2f})\n"
+                    else:
+                        msg += "  Estimated Bortle: N/A\n"
             msg += "\n"
             if area_asec2 is not None:
                 msg += (
@@ -1501,6 +1847,11 @@ class MagnitudeToolDialog(QDialog):
             muG_3 = total_3sigma(muG_stat)
             muB_3 = total_3sigma(muB_stat)
 
+        # --- Bortle estimate from GREEN channel background μ ---
+        bortle_info = None
+        if not _is_narrowband_like(hdr):
+            bortle_info = _bortle_from_sqm(mu_bg_G)
+
         msg = (
             "Object region photometry (background-subtracted):\n"
             f"  Net flux (R,G,B): {fmt_sci(netR)}, {fmt_sci(netG)}, {fmt_sci(netB)}\n"
@@ -1516,8 +1867,15 @@ class MagnitudeToolDialog(QDialog):
         if pix_area_asec2 is not None:
             msg += (
                 f"Background surface brightness (mag/arcsec²):\n"
-                f"  μ_bg_R = {fmt(mu_bg_R)}   μ_bg_G = {fmt(mu_bg_G)}   μ_bg_B = {fmt(mu_bg_B)}\n\n"
+                f"  μ_bg_R = {fmt(mu_bg_R)}   μ_bg_G = {fmt(mu_bg_G)}   μ_bg_B = {fmt(mu_bg_B)}\n"
             )
+            if _is_narrowband_like(hdr):
+                msg += "  Estimated Bortle: N/A (narrowband-like filter detected)\n\n"
+            else:
+                if bortle_info is not None:
+                    msg += f"  Estimated Bortle (from GREEN): {bortle_info['label']} (μ≈{bortle_info['mu']:.2f})\n\n"
+                else:
+                    msg += "  Estimated Bortle (from GREEN): N/A\n\n"
 
 
         if area_asec2 is not None:
@@ -1532,10 +1890,104 @@ class MagnitudeToolDialog(QDialog):
 
         QMessageBox.information(self, "Magnitude Results", msg)
 
+    def _fetch_apass_stars_and_cache(self, img, hdr, doc) -> List[dict]:
+        wcs, _ = _build_wcs_and_pixscale(hdr)
+        if wcs is None:
+            raise RuntimeError("Could not build WCS for APASS query.")
+
+        wcs2 = wcs.celestial if hasattr(wcs, "celestial") else wcs
+        H, W = img.shape[:2]
+
+        # center + radius (same logic as SIMBAD)
+        pix = np.array([[W/2, H/2], [0,0], [W,0], [0,H], [W,H]], dtype=float)
+        sky = wcs2.all_pix2world(pix, 0)
+        center = SkyCoord(sky[0,0]*u.deg, sky[0,1]*u.deg)
+        radius = center.separation(SkyCoord(sky[1:,0]*u.deg, sky[1:,1]*u.deg)).max() * 1.05
+
+        Vizier.ROW_LIMIT = 20000
+
+        # Ask for several likely “red” columns; VizieR will ignore unknown ones
+        Vizier.columns = ["RAJ2000", "DEJ2000", "Bmag", "Vmag", "r'mag", "rmag", "Rmag"]
+
+        self.lbl_info.setText("Querying APASS (VizieR)…")
+        QApplication.processEvents()
+
+        result = Vizier.query_region(center, radius=radius, catalog="II/336/apass9")
+        if not result:
+            return []
+
+        tab = result[0]
+        cols_lower = {c.strip().lower(): c for c in tab.colnames}
+
+        def pick_col(*cands: str) -> Optional[str]:
+            for c in cands:
+                k = c.strip().lower()
+                if k in cols_lower:
+                    return cols_lower[k]
+            return None
+
+        ra_col  = pick_col("RAJ2000")
+        dec_col = pick_col("DEJ2000")
+        b_col   = pick_col("Bmag")
+        v_col   = pick_col("Vmag")
+
+        # “Red” in APASS is usually Sloan r′ => r'mag
+        r_col   = pick_col("r'mag", "rmag", "Rmag")
+
+        if ra_col is None or dec_col is None:
+            raise RuntimeError(f"APASS table missing RA/Dec columns. colnames={tab.colnames}")
+
+        stars = []
+        for row in tab:
+            ra  = _unmask_num(_row_get(row, ra_col))
+            dec = _unmask_num(_row_get(row, dec_col))
+            if ra is None or dec is None:
+                continue
+
+            try:
+                x, y = wcs2.all_world2pix(ra, dec, 0)
+            except Exception:
+                continue
+
+            if not (0 <= x < W and 0 <= y < H):
+                continue
+
+            bmag = _unmask_num(_row_get(row, b_col)) if b_col else None
+            vmag = _unmask_num(_row_get(row, v_col)) if v_col else None
+            rmag = _unmask_num(_row_get(row, r_col)) if r_col else None  # this is r′ most of the time
+
+            stars.append({
+                "ra": float(ra),
+                "dec": float(dec),
+                "x": float(x),
+                "y": float(y),
+                "Bmag": bmag,
+                "Vmag": vmag,
+                # Store APASS r′ as “Rmag” for your tool’s red channel mapping:
+                "Rmag": rmag,
+                "sp_clean": None,
+                "pickles_match": None,
+            })
+
+        meta = dict(getattr(doc, "metadata", {}) or {})
+        meta["SFCC_star_list"] = stars
+        meta["SFCC_catalog"] = "APASS_DR9"
+        self.doc_manager.update_active_document(
+            doc.image, metadata=meta,
+            step_name="Magnitude Stars Cached (APASS)", doc=doc
+        )
+
+        # optional: quick debug to confirm which column you used
+        # print("APASS colnames:", tab.colnames, "picked red:", r_col)
+
+        return stars
+
+
     def _fetch_simbad_stars_and_cache(self, img, hdr, doc) -> List[dict]:
         """
-        SFCC-like star fetch, but UI-free.
-        Produces list of dicts with keys: ra, dec, sp_clean, pickles_match, x, y, Bmag, Vmag, Rmag
+        Fetch SIMBAD stars using a subprocess worker (prevents GUI hangs when TLS/SSL wedges).
+        Produces list of dicts with keys:
+        ra, dec, sp_clean, pickles_match, x, y, Bmag, Vmag, Rmag
         Caches into doc.metadata['SFCC_star_list'].
         """
         # ---- build WCS ----
@@ -1553,66 +2005,78 @@ class MagnitudeToolDialog(QDialog):
         except Exception as e:
             raise RuntimeError(f"WCS Conversion Error: {e}")
 
-        center_sky = SkyCoord(ra=float(sky[0, 0]) * u.deg, dec=float(sky[0, 1]) * u.deg, frame="icrs")
+        center_ra = float(sky[0, 0])
+        center_dec = float(sky[0, 1])
+
+        center_sky = SkyCoord(ra=center_ra * u.deg, dec=center_dec * u.deg, frame="icrs")
         corners_sky = SkyCoord(ra=sky[1:, 0] * u.deg, dec=sky[1:, 1] * u.deg, frame="icrs")
         radius = center_sky.separation(corners_sky).max() * 1.05
+        radius_deg = float(radius.to_value(u.deg))
 
-        # ---- SIMBAD fields (new then legacy) ----
-        Simbad.reset_votable_fields()
+        # ---- mirror list (use yours or keep static) ----
+        servers = ["simbad.u-strasbg.fr", "simbad.harvard.edu"]
+        HARD_TIMEOUT_S = 20.0
+        ROW_LIMIT = 10000
 
-        def _try_new_fields():
-            Simbad.add_votable_fields("sp", "B", "V", "R", "ra", "dec")
+        # Total wall time allowed for the whole subprocess run.
+        # Should be > HARD_TIMEOUT_S, because worker may try multiple mirrors.
+        SUBPROC_TIMEOUT_S = 60.0
 
-        def _try_legacy_fields():
-            Simbad.add_votable_fields("sp", "flux(B)", "flux(V)", "flux(R)", "ra(d)", "dec(d)")
+        # status text (safe; no astroquery here)
+        try:
+            self.lbl_info.setText("Querying SIMBAD (subprocess)…")
+            QApplication.processEvents()
+        except Exception:
+            pass
 
-        ok = False
-        for _ in range(5):
-            try:
-                _try_new_fields()
-                ok = True
-                break
-            except Exception:
-                QApplication.processEvents()
-                non_blocking_sleep(0.8)
+        # ---- run astroquery in subprocess ----
+        payload = _run_in_subprocess(
+            SUBPROC_TIMEOUT_S,
+            _simbad_query_worker,
+            center_ra, center_dec, radius_deg,
+            servers,
+            HARD_TIMEOUT_S,
+            ROW_LIMIT,
+        )
 
-        if not ok:
-            for _ in range(5):
-                try:
-                    _try_legacy_fields()
-                    ok = True
-                    break
-                except Exception:
-                    QApplication.processEvents()
-                    non_blocking_sleep(0.8)
+        # payload: {"colnames":[...], "rows":[{col: value, ...}, ...]}
+        colnames = list(payload.get("colnames", []) or [])
+        rows = list(payload.get("rows", []) or [])
 
-        if not ok:
-            raise RuntimeError("Could not configure SIMBAD votable fields.")
-
-        Simbad.ROW_LIMIT = 10000
-
-        # ---- query ----
-        result = None
-        for attempt in range(1, 6):
-            try:
-                self.lbl_info.setText(f"Querying SIMBAD… (attempt {attempt}/5)")
-                QApplication.processEvents()
-                result = Simbad.query_region(center_sky, radius=radius)
-                break
-            except Exception:
-                QApplication.processEvents()
-                non_blocking_sleep(1.2)
-                result = None
-
-        if result is None or len(result) == 0:
+        if not rows:
             # cache empty list to avoid re-query spam
             meta = dict(getattr(doc, "metadata", {}) or {})
             meta["SFCC_star_list"] = []
-            self.doc_manager.update_active_document(doc.image, metadata=meta, step_name="Magnitude Stars Cached", doc=doc)
+            meta["SFCC_catalog"] = "SIMBAD"
+            self.doc_manager.update_active_document(doc.image, metadata=meta, step_name="Magnitude Stars Cached (SIMBAD)", doc=doc)
             return []
 
-        # ---- helpers ----
-        def infer_letter(bv):
+        # ---- helpers for parsing returned dict rows ----
+        cols_lower = {str(c).strip().lower(): str(c) for c in colnames}
+
+        def _pick_col(*cands: str) -> Optional[str]:
+            for c in cands:
+                key = str(c).strip().lower()
+                if key in cols_lower:
+                    return cols_lower[key]
+            return None
+
+        # SIMBAD columns vary depending on field names used/returned
+        ra_col  = _pick_col("ra", "ra(d)", "ra_d", "ra_deg")
+        dec_col = _pick_col("dec", "dec(d)", "dec_d", "dec_deg")
+
+        # mags
+        b_col = _pick_col("b", "flux_b", "flux(b)", "bmag")
+        v_col = _pick_col("v", "flux_v", "flux(v)", "vmag")
+        r_col = _pick_col("r", "flux_r", "flux(r)", "rmag")
+
+        # spectral type
+        sp_col = _pick_col("sp", "sp_type", "sptype", "spectral_type")
+
+        if ra_col is None or dec_col is None:
+            raise RuntimeError(f"SIMBAD result missing ra/dec columns. colnames={colnames}")
+
+        def infer_letter(bv: Optional[float]) -> Optional[str]:
             if bv is None or (isinstance(bv, float) and np.isnan(bv)):
                 return None
             if bv < 0.00:   return "B"
@@ -1623,7 +2087,7 @@ class MagnitudeToolDialog(QDialog):
             if bv > 1.40:   return "M"
             return None
 
-        def safe_world2pix(ra_deg, dec_deg):
+        def safe_world2pix(ra_deg: float, dec_deg: float):
             try:
                 xpix, ypix = wcs2.all_world2pix(ra_deg, dec_deg, 0)
                 xpix, ypix = float(xpix), float(ypix)
@@ -1642,20 +2106,7 @@ class MagnitudeToolDialog(QDialog):
             except Exception:
                 return None
 
-        cols_lower = {c.lower(): c for c in result.colnames}
-
-        ra_col  = cols_lower.get("ra") or cols_lower.get("ra(d)")  or cols_lower.get("ra_d")
-        dec_col = cols_lower.get("dec") or cols_lower.get("dec(d)") or cols_lower.get("dec_d")
-        b_col   = cols_lower.get("b") or cols_lower.get("flux_b")
-        v_col   = cols_lower.get("v") or cols_lower.get("flux_v")
-        r_col   = cols_lower.get("r") or cols_lower.get("flux_r")
-
-        if ra_col is None or dec_col is None:
-            raise RuntimeError(f"SIMBAD result missing ra/dec degree columns. colnames={result.colnames}")
-
-        # ---- pickles templates (optional) ----
-        # If you want pickles matching for later use, you need a templates list.
-        # If you don't have it here yet, we can still keep pickles_match=None and proceed.
+        # pickles templates (optional)
         pickles_templates = getattr(self, "pickles_templates", None)
         if pickles_templates is None:
             pickles_templates = []
@@ -1663,22 +2114,23 @@ class MagnitudeToolDialog(QDialog):
 
         star_list: List[dict] = []
 
-        for row in result:
-            # spectral type column name
-            raw_sp = row["SP_TYPE"] if "SP_TYPE" in result.colnames else (row["sp_type"] if "sp_type" in result.colnames else None)
-
-            bmag = _unmask_num(row[b_col]) if b_col is not None else None
-            vmag = _unmask_num(row[v_col]) if v_col is not None else None
-            rmag = _unmask_num(row[r_col]) if r_col is not None else None
-
-            ra_deg = _unmask_num(row[ra_col])
-            dec_deg = _unmask_num(row[dec_col])
+        for row in rows:
+            # row is plain dict {colname: value}
+            ra_deg  = _unmask_num(row.get(ra_col))
+            dec_deg = _unmask_num(row.get(dec_col))
             if ra_deg is None or dec_deg is None:
                 continue
 
+            bmag = _unmask_num(row.get(b_col)) if b_col else None
+            vmag = _unmask_num(row.get(v_col)) if v_col else None
+            rmag = _unmask_num(row.get(r_col)) if r_col else None
+
+            raw_sp = row.get(sp_col) if sp_col else None
+
             sp_clean = None
-            if raw_sp and str(raw_sp).strip():
+            if raw_sp is not None and str(raw_sp).strip():
                 sp = str(raw_sp).strip().upper()
+                # keep your original filtering
                 if not (sp.startswith("SN") or sp.startswith("KA")):
                     sp_clean = sp
             elif (bmag is not None) and (vmag is not None):
@@ -1687,36 +2139,40 @@ class MagnitudeToolDialog(QDialog):
             if not sp_clean:
                 continue
 
-            xy = safe_world2pix(ra_deg, dec_deg)
+            xy = safe_world2pix(float(ra_deg), float(dec_deg))
             if xy is None:
                 continue
             xpix, ypix = xy
 
-            if 0 <= xpix < W and 0 <= ypix < H:
-                best_template = None
-                try:
-                    matches = pickles_match_for_simbad(sp_clean, pickles_templates) if pickles_templates is not None else []
-                    best_template = matches[0] if matches else None
-                except Exception:
-                    best_template = None
+            if not (0 <= xpix < W and 0 <= ypix < H):
+                continue
 
-                star_list.append({
-                    "ra": float(ra_deg), "dec": float(dec_deg),
-                    "sp_clean": sp_clean,
-                    "pickles_match": best_template,
-                    "x": float(xpix), "y": float(ypix),
-                    "Bmag": float(bmag) if bmag is not None else None,
-                    "Vmag": float(vmag) if vmag is not None else None,
-                    "Rmag": float(rmag) if rmag is not None else None,
-                })
+            best_template = None
+            try:
+                matches = pickles_match_for_simbad(sp_clean, pickles_templates) if pickles_templates is not None else []
+                best_template = matches[0] if matches else None
+            except Exception:
+                best_template = None
+
+            star_list.append({
+                "ra": float(ra_deg),
+                "dec": float(dec_deg),
+                "sp_clean": sp_clean,
+                "pickles_match": best_template,
+                "x": float(xpix),
+                "y": float(ypix),
+                "Bmag": float(bmag) if bmag is not None else None,
+                "Vmag": float(vmag) if vmag is not None else None,
+                "Rmag": float(rmag) if rmag is not None else None,
+            })
 
         # ---- cache into metadata ----
         meta = dict(getattr(doc, "metadata", {}) or {})
         meta["SFCC_star_list"] = list(star_list)  # JSON-ish
-        self.doc_manager.update_active_document(doc.image, metadata=meta, step_name="Magnitude Stars Cached", doc=doc)
+        meta["SFCC_catalog"] = "SIMBAD"
+        self.doc_manager.update_active_document(doc.image, metadata=meta, step_name="Magnitude Stars Cached (SIMBAD)", doc=doc)
 
         return star_list
-
 
 def open_magnitude_tool(doc_manager, parent=None) -> MagnitudeToolDialog:
     dlg = MagnitudeToolDialog(doc_manager=doc_manager, parent=parent)

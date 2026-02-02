@@ -23,9 +23,8 @@ import rawpy
 
 import exifread
 
-
 import sep
-import exifread
+
 
 # your helpers/utilities
 from setiastro.saspro.imageops.stretch import stretch_mono_image, stretch_color_image
@@ -873,9 +872,8 @@ class LiveStackWindow(QDialog):
                 self.reference_image_2d = norm.copy()
         else:
             cnt = self.filter_counts[key]
-            self.filter_stacks[key] = (cnt/self.filter_counts[key]+1)*self.filter_stacks[key] \
-                                      + (1.0/(cnt+1))*norm
-            self.filter_counts[key] += 1
+            self.filter_stacks[key] = (cnt/(cnt+1))*self.filter_stacks[key] + (1.0/(cnt+1))*norm
+            self.filter_counts[key] = cnt + 1
 
     # ── New helper: build an RGB preview from whatever channels we have
     def _build_color_composite(self):
@@ -1121,7 +1119,7 @@ class LiveStackWindow(QDialog):
         all_paths = []
         for ext in exts:
             all_paths += glob.glob(os.path.join(self.watch_folder, "**", ext), recursive=True)
-        self.processed_files = set(all_paths)
+        self.processed_files = {self._norm_path(p) for p in all_paths}
 
         # Start monitoring
         self.is_running = True
@@ -1199,16 +1197,15 @@ class LiveStackWindow(QDialog):
 
 
     def _update_probe(self, path: str) -> dict:
-        """Update probe info (size, mtime) for path and return the info dict."""
+        orig_path = path
+        path = self._norm_path(path)
         try:
             st = os.stat(path)
         except FileNotFoundError:
-            # file disappeared; clear any probe info
             self._probe.pop(path, None)
             return None
         now = time.time()
         size, mtime = st.st_size, st.st_mtime
-
         info = self._probe.get(path)
         if info is None:
             info = {"size": size, "mtime": mtime, "since": now, "penalty_until": 0.0}
@@ -1227,6 +1224,10 @@ class LiveStackWindow(QDialog):
         Try a tiny open+read to ensure the writer has released the handle.
         If we hit PermissionError / OSError, we mark a penalty and say 'not ready'.
         """
+        orig_path = path
+        path = self._norm_path(path)
+
+
         try:
             with open(path, "rb") as f:
                 _ = f.read(1)
@@ -1241,25 +1242,34 @@ class LiveStackWindow(QDialog):
     def _file_ready(self, path: str) -> bool:
         """
         A file is 'ready' when:
-          - we are not inside a penalty window,
-          - size+mtime have been unchanged for FILE_STABLE_SECS,
-          - and we can actually open it for reading.
+        - it exists,
+        - we are not inside a penalty window,
+        - size + mtime have been unchanged for FILE_STABLE_SECS,
+        - and we can actually open it for reading.
         """
-        info = self._update_probe(path)
+        # Normalize once and use consistently
+        norm = self._norm_path(path)
+
+        # Update or fetch probe info (keyed by normalized path)
+        info = self._update_probe(norm)
         if info is None:
-            return False  # missing
+            return False  # file disappeared
 
         now = time.time()
-        if now < info.get("penalty_until", 0.0):
+
+        # Respect penalty window (e.g. previous permission / read failure)
+        penalty_until = info.get("penalty_until", 0.0)
+        if now < penalty_until:
             return False
 
-        # Require size+mtime to be unchanged for FILE_STABLE_SECS
-        if (now - info["since"]) < self.FILE_STABLE_SECS:
+        # Require size + mtime stability
+        stable_for = now - info.get("since", now)
+        if stable_for < self.FILE_STABLE_SECS:
             return False
 
-        # Finally confirm we can open the file (this also sets penalty if it fails)
-        return self._can_open_for_read(path)
-
+        # Final check: confirm we can actually open it
+        # (_can_open_for_read will set a new penalty if this fails)
+        return self._can_open_for_read(norm)
 
     def check_for_new_frames(self):
         if self._should_stop() or not self.watch_folder:
@@ -1280,7 +1290,11 @@ class LiveStackWindow(QDialog):
                 all_paths += glob.glob(os.path.join(self.watch_folder, '**', ext), recursive=True)
 
             # Only consider paths not yet processed
-            candidates = [p for p in sorted(all_paths) if p not in self.processed_files]
+            # normalize everything
+            all_norm = [(self._norm_path(p), p) for p in all_paths]
+
+            # use normalized keys for "already processed"
+            candidates = [orig for (norm, orig) in sorted(all_norm) if norm not in self.processed_files]
             if not candidates:
                 return
 
@@ -1294,34 +1308,31 @@ class LiveStackWindow(QDialog):
                     QApplication.processEvents()
                     break
 
-                info = self._probe.get(path)
+                norm = self._norm_path(path)
+                info = self._probe.get(norm)
                 if info and time.time() < info.get("penalty_until", 0.0):
                     continue
 
                 if not self._file_ready(path):
                     continue
 
-                # IMPORTANT: still allow stop before committing the path as processed
-                if self._should_stop():   # <-- NEW
-                    break
-
-                self.processed_files.add(path)
-                base = os.path.basename(path)
-                self.status_label.setText(f"→ Processing: {base}")
-                QApplication.processEvents()
-
                 try:
                     self.process_frame(path)
+                    self.processed_files.add(norm)
                     processed_now += 1
                 except Exception as e:
-                    # If anything unexpected happens, clear 'processed' so we can retry later
-                    # but add a penalty to avoid tight loops.
-                    self.processed_files.discard(path)
-                    info = self._probe.get(path) or self._update_probe(path)
-                    if info:
-                        info["penalty_until"] = time.time() + self.OPEN_RETRY_PENALTY_SECS
-                    self.status_label.setText(f"⚠ Error on {base}: {e}")
+                    info = self._probe.get(norm) or {"fails": 0, "penalty_until": 0.0}
+                    info["fails"] = info.get("fails", 0) + 1
+                    info["penalty_until"] = time.time() + self.OPEN_RETRY_PENALTY_SECS
+                    self._probe[norm] = info
+
+                    if info["fails"] >= 3:
+                        self.processed_files.add(norm)
+                        self.status_label.setText(f"⚠ Skipping {os.path.basename(path)} after {info['fails']} failures: {e}")
+                    else:
+                        self.status_label.setText(f"⚠ Error on {os.path.basename(path)} (try {info['fails']}): {e}")
                     QApplication.processEvents()
+
 
             if processed_now > 0:
                 self.status_label.setText(f"✔ Processed {processed_now} file(s)")
@@ -1344,6 +1355,10 @@ class LiveStackWindow(QDialog):
             return master.mean(axis=2)  # (H,W)
         return master
 
+    def _norm_path(self, p: str) -> str:
+        # normpath fixes slashes, normcase fixes Windows case-insensitive matching
+        return os.path.normcase(os.path.normpath(os.path.abspath(p)))
+
 
     def process_frame(self, path):
         if self._should_stop():
@@ -1351,6 +1366,8 @@ class LiveStackWindow(QDialog):
         if not self._file_ready(path):
             # do not mark as processed here; monitor will retry after cool-down
             return
+        orig_path = path
+        path = self._norm_path(path)
 
         # if star-trail mode is on, bypass the normal pipeline entirely:
         if self.star_trail_mode:
