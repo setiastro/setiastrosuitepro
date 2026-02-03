@@ -830,8 +830,8 @@ class ToolbarMixin:
         self.act_paste_view.triggered.connect(self._paste_active_view)
         # --- Edit: Mono -> RGB (triplicate channels) ---
 
-        self.act_copy = QAction(self.tr("Copy"), self)
-        self.act_paste = QAction(self.tr("Paste"), self)
+        self.act_copy = QAction(QIcon.fromTheme("edit-copy"), self.tr("Copy"), self)
+        self.act_paste = QAction(QIcon.fromTheme("edit-paste"),self.tr("Paste"), self)
 
         self.act_copy.setShortcut(QKeySequence.StandardKey.Copy)    # Ctrl+C
         self.act_paste.setShortcut(QKeySequence.StandardKey.Paste)  # Ctrl+V
