@@ -2013,6 +2013,118 @@ import logging
 
 log = logging.getLogger(__name__)
 
+def _compute_resize_target(h: int, w: int, export_opts: dict) -> tuple[int, int, float]:
+    """
+    Returns (new_h, new_w, scale) where scale is new_w/old_w (== new_h/old_h).
+    If no resize requested, returns original dims and scale=1.0.
+    """
+    export_opts = export_opts or {}
+    mode = (export_opts.get("resize_mode") or "none").lower()
+
+    if mode == "percent":
+        pct = int(export_opts.get("resize_percent") or 100)
+        pct = max(1, min(400, pct))
+        scale = pct / 100.0
+        new_w = max(1, int(round(w * scale)))
+        new_h = max(1, int(round(h * scale)))
+        return new_h, new_w, scale
+
+    if mode == "long_edge":
+        long_edge = int(export_opts.get("resize_long_edge") or 0)
+        if long_edge <= 0:
+            return h, w, 1.0
+        long0 = max(h, w)
+        if long0 <= 0:
+            return h, w, 1.0
+        scale = float(long_edge) / float(long0)
+        new_w = max(1, int(round(w * scale)))
+        new_h = max(1, int(round(h * scale)))
+        return new_h, new_w, scale
+
+    return h, w, 1.0
+
+
+def _resize_float01_image(img: np.ndarray, new_h: int, new_w: int) -> np.ndarray:
+    """
+    Resize float image in [0..1], preserving mono (H,W) or RGB (H,W,3).
+    Uses PIL LANCZOS for quality.
+    """
+    if new_h <= 0 or new_w <= 0:
+        return img
+
+    if img.ndim == 2:
+        pil = Image.fromarray(np.clip(img, 0, 1).astype(np.float32), mode="F")
+        pil2 = pil.resize((new_w, new_h), resample=Image.Resampling.LANCZOS)
+        out = np.asarray(pil2, dtype=np.float32)
+        return out
+
+    if img.ndim == 3 and img.shape[2] == 3:
+        # resize per-channel in float to avoid 8-bit banding
+        chans = []
+        for c in range(3):
+            pil = Image.fromarray(np.clip(img[..., c], 0, 1).astype(np.float32), mode="F")
+            pil2 = pil.resize((new_w, new_h), resample=Image.Resampling.LANCZOS)
+            chans.append(np.asarray(pil2, dtype=np.float32))
+        out = np.stack(chans, axis=-1)
+        return out
+
+    if img.ndim == 3 and img.shape[2] == 1:
+        return _resize_float01_image(img[..., 0], new_h, new_w)[:, :, None].astype(np.float32)
+
+    # fallback: try squeeze mono
+    return _resize_float01_image(np.squeeze(img), new_h, new_w)
+
+
+def _scale_wcs_in_header(hdr: fits.Header | None, scale: float) -> fits.Header | None:
+    """
+    Update WCS for an image resized by 'scale' (new = old * scale).
+    Handles CRPIX and CD/CDELT. Leaves CRVAL unchanged.
+    Uses FITS pixel-center convention: ref pixel center at 1-based coords.
+    """
+    if hdr is None or not isinstance(hdr, fits.Header):
+        return hdr
+    if scale == 1.0:
+        return hdr
+
+    h2 = hdr.copy()
+
+    # CRPIX update: (crpix - 0.5)*scale + 0.5
+    if "CRPIX1" in h2:
+        try:
+            h2["CRPIX1"] = (float(h2["CRPIX1"]) - 0.5) * scale + 0.5
+        except Exception:
+            pass
+    if "CRPIX2" in h2:
+        try:
+            h2["CRPIX2"] = (float(h2["CRPIX2"]) - 0.5) * scale + 0.5
+        except Exception:
+            pass
+
+    # CD matrix scales inversely with pixel scale (more pixels => smaller deg/pix)
+    cd_keys = ("CD1_1", "CD1_2", "CD2_1", "CD2_2")
+    if any(k in h2 for k in cd_keys):
+        for k in cd_keys:
+            if k in h2:
+                try:
+                    h2[k] = float(h2[k]) / scale
+                except Exception:
+                    pass
+    else:
+        # Or CDELT
+        if "CDELT1" in h2:
+            try:
+                h2["CDELT1"] = float(h2["CDELT1"]) / scale
+            except Exception:
+                pass
+        if "CDELT2" in h2:
+            try:
+                h2["CDELT2"] = float(h2["CDELT2"]) / scale
+            except Exception:
+                pass
+
+    return h2
+
+
 def save_image(img_array,
                filename,
                original_format,
@@ -2022,7 +2134,8 @@ def save_image(img_array,
                image_meta=None,
                file_meta=None,
                wcs_header=None, 
-               jpeg_quality: int | None = None):  
+               jpeg_quality: int | None = None,
+               export_opts: dict | None = None):  
     """
     Save an image array to a file in the specified format and bit depth.
     - Robust to mis-ordered positional args (header/bit_depth swap).
@@ -2030,6 +2143,7 @@ def save_image(img_array,
     - FITS always written as float32; header is sanitized or synthesized.
     """
     # 🔊 Debug what we got
+    export_opts = dict(export_opts or {})
     if isinstance(original_header, fits.Header):
         log.debug(
             "[legacy_save_image] original_header: fits.Header with %d cards, first few:",
@@ -2059,6 +2173,31 @@ def save_image(img_array,
 
     # Ensure correct byte order for numpy data
     img_array = ensure_native_byte_order(img_array)
+    # ---------------------------------------------------------------------
+    # Optional resize (applies before all encoders)
+    # ---------------------------------------------------------------------
+    h0, w0 = img_array.shape[:2]
+    new_h, new_w, scale = _compute_resize_target(h0, w0, export_opts)
+
+    if scale != 1.0 and (new_h != h0 or new_w != w0):
+        print(f"[legacy_save_image] Resizing {w0}x{h0} -> {new_w}x{new_h} (scale={scale:.6f})")
+
+        # resize pixels
+        if img_array.ndim == 2:
+            img_array = _resize_float01_image(img_array, new_h, new_w)
+        elif img_array.ndim == 3 and img_array.shape[2] in (1, 3):
+            img_array = _resize_float01_image(img_array, new_h, new_w)
+        else:
+            # last resort: squeeze then resize
+            img_array = _resize_float01_image(np.squeeze(img_array), new_h, new_w)
+
+        img_array = np.asarray(img_array, dtype=np.float32, order="C")
+
+        # If we have WCS headers, scale them to match the resized image
+        if isinstance(original_header, fits.Header):
+            original_header = _scale_wcs_in_header(original_header, scale)
+        if isinstance(wcs_header, fits.Header):
+            wcs_header = _scale_wcs_in_header(wcs_header, scale)
 
     # Detect XISF origin (safely)
     is_xisf = _looks_like_xisf_header(original_header) or _has_xisf_props(image_meta)
@@ -2090,14 +2229,44 @@ def save_image(img_array,
         # ---------------------------------------------------------------------
         if fmt in ("tif",):
             bd = bit_depth or "32-bit floating point"
+
+            # --- DPI / resolution metadata ---
+            dpi = export_opts.get("dpi")
+            resolution = None
+            if dpi is not None:
+                try:
+                    dpi = int(dpi)
+                    if dpi > 0:
+                        # tifffile expects (xres, yres) and a unit
+                        resolution = (dpi, dpi)
+                except Exception:
+                    dpi = None
+
+            # --- compression ---
+            comp = (export_opts.get("tiff_compression") or "").strip().lower()
+            if comp in ("none", "", "off"):
+                comp = None
+            elif comp in ("zip", "deflate"):
+                comp = "deflate"
+            elif comp in ("lzw",):
+                comp = "lzw"
+            else:
+                comp = None  # safe fallback
+
+            kwargs = {}
+            if resolution is not None:
+                kwargs["resolution"] = resolution
+                kwargs["resolutionunit"] = "inch"
+            if comp is not None:
+                kwargs["compression"] = comp
             if bd == "8-bit":
-                tiff.imwrite(filename, (np.clip(img_array, 0, 1) * 255).astype(np.uint8))
+                tiff.imwrite(filename, (np.clip(img_array, 0, 1) * 255).astype(np.uint8), **kwargs)
             elif bd == "16-bit":
-                tiff.imwrite(filename, (np.clip(img_array, 0, 1) * 65535).astype(np.uint16))
+                tiff.imwrite(filename, (np.clip(img_array, 0, 1) * 65535).astype(np.uint16), **kwargs)
             elif bd == "32-bit unsigned":
-                tiff.imwrite(filename, (np.clip(img_array, 0, 1) * 4294967295).astype(np.uint32))
+                tiff.imwrite(filename, (np.clip(img_array, 0, 1) * 4294967295).astype(np.uint32), **kwargs)
             elif bd == "32-bit floating point":
-                tiff.imwrite(filename, img_array.astype(np.float32))
+                tiff.imwrite(filename, img_array.astype(np.float32), **kwargs)
             else:
                 raise ValueError(f"Unsupported bit depth for TIFF: {bd}")
             print(f"Saved {bd} TIFF image to: {filename}")

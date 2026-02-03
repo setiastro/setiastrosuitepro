@@ -214,20 +214,30 @@ class FileMixin:
             self._log(f"Adjusted filename for safety:\n  {before}\n-> {path}")
 
         # --- Bit depth selection ----------------------------------------
-        from setiastro.saspro.save_options import SaveOptionsDialog
+        from setiastro.saspro.save_options import ExportDialog
         current_bd = doc.metadata.get("bit_depth")
         current_jq = (doc.metadata or {}).get("jpeg_quality", None)
 
-        dlg = SaveOptionsDialog(self, ext_norm, current_bd, current_jpeg_quality=current_jq)
+        dlg = ExportDialog(
+            self, ext_norm, current_bd,
+            current_jpeg_quality=current_jq,
+            settings=self.settings,   # so it remembers per-format defaults
+        )
         if dlg.exec() != dlg.DialogCode.Accepted:
             return
 
         chosen_bd = dlg.selected_bit_depth()
         chosen_jq = dlg.selected_jpeg_quality()
+        export_opts = dlg.export_options()
 
         # --- Save & remember folder ----------------------------------------
         try:
-            self.docman.save_document(doc, path, bit_depth_override=chosen_bd, jpeg_quality=chosen_jq)
+            self.docman.save_document(
+                doc, path,
+                bit_depth_override=chosen_bd,
+                jpeg_quality=chosen_jq,
+                export_opts=export_opts,
+            )
             self._log(f"Saved: {path} ({chosen_bd})")
             self.settings.setValue("paths/last_save_dir", os.path.dirname(path))
         except Exception as e:

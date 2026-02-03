@@ -67,21 +67,13 @@ import traceback
 
 def _run_in_subprocess(timeout_s: float, target, *args, **kwargs):
     """
-    Run `target(*args, **kwargs)` in a fresh subprocess.
-    If it hangs (TLS/SSL wedged), terminate the process.
-    Returns target result or raises.
+    Run `target(*args, **kwargs)` in a fresh subprocess (spawn-safe).
+    If it hangs, terminate it. Returns target result or raises.
     """
     ctx = mp.get_context("spawn")  # safest on Windows/macOS
     q = ctx.Queue()
 
-    def _worker(q_, args_, kwargs_):
-        try:
-            out = target(*args_, **kwargs_)
-            q_.put(("ok", out))
-        except Exception as e:
-            q_.put(("err", (repr(e), traceback.format_exc())))
-
-    p = ctx.Process(target=_worker, args=(q, args, kwargs))
+    p = ctx.Process(target=_subproc_entry, args=(q, target, args, kwargs))
     p.daemon = True
     p.start()
     p.join(timeout_s)
@@ -102,11 +94,23 @@ def _run_in_subprocess(timeout_s: float, target, *args, **kwargs):
     err_repr, tb = payload
     raise RuntimeError(f"Catalog query failed: {err_repr}\n{tb}")
 
+
 def _row_get(tab_row, colname: str):
     try:
         return tab_row[colname]
     except Exception:
         return None
+
+def _subproc_entry(q, target, args, kwargs):
+    """
+    Top-level worker entry for multiprocessing spawn (must be picklable).
+    """
+    try:
+        out = target(*args, **kwargs)
+        q.put(("ok", out))
+    except Exception as e:
+        q.put(("err", (repr(e), traceback.format_exc())))
+
 
 def _simbad_query_worker(center_ra_deg: float, center_dec_deg: float, radius_deg: float,
                         servers: list[str], hard_timeout_s: float, row_limit: int):
@@ -1396,13 +1400,77 @@ class MagnitudeToolDialog(QDialog):
         self.btn_measure = QPushButton("Step 4: Measure Object Region")
         self.btn_measure.clicked.connect(self.measure_object_region)
         row2.addWidget(self.btn_measure)
-
+        self.btn_clear_all = QPushButton("Clear All")
+        self.btn_clear_all.clicked.connect(self.clear_all)
+        row2.addWidget(self.btn_clear_all)
         self.btn_close = QPushButton("Close")
         self.btn_close.clicked.connect(self.reject)
         row2.addWidget(self.btn_close)
         v.addLayout(row2)
 
     # --- external wiring (from your ROI tool) ---
+    def clear_all(self):
+        """
+        Clear ALL cached state:
+          - in-memory stars + zero points + masks/rects
+          - any cached catalog stars stored in the active document metadata
+        """
+        if QMessageBox.question(
+            self, "Clear All",
+            "Clear all cached stars, zero points, and regions for this image?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        ) != QMessageBox.StandardButton.Yes:
+            return        
+        # ---- clear in-memory state ----
+        self.star_list = []
+        self.last_zp = {}
+
+        self.wcs = None
+        self.pixscale = None
+
+        self.object_mask = None
+        self.background_mask = None
+
+        self.object_rect = QRect()
+        self.background_rect = QRect()
+
+        # UI state
+        try:
+            self.btn_zp_plot.setEnabled(False)
+        except Exception:
+            pass
+
+        self.lbl_info.setText("Cleared. No stars fetched yet.")
+
+        # ---- clear cached metadata on the active document ----
+        img, hdr, doc = self._get_active_image_and_header()
+        if doc is None:
+            return
+
+        meta = dict(getattr(doc, "metadata", {}) or {})
+
+        # Remove the shared SFCC cache keys (used by this tool too)
+        meta.pop("SFCC_star_list", None)
+        meta.pop("SFCC_catalog", None)
+
+        # Optional: if you add magnitude-specific caches later, clear them here too:
+        meta.pop("MAG_star_list", None)
+        meta.pop("MAG_catalog", None)
+        meta.pop("MAG_last_zp", None)
+
+        # Write back
+        try:
+            self.doc_manager.update_active_document(
+                doc.image,
+                metadata=meta,
+                step_name="Magnitude Tool: Clear All",
+                doc=doc,
+            )
+        except Exception:
+            # If doc_manager refuses updates in some contexts, at least we've cleared local state.
+            pass
+
+
     def show_zp_graphs(self):
         p = self.last_zp.get("plot") if isinstance(self.last_zp, dict) else None
         if not p:
@@ -1475,43 +1543,45 @@ class MagnitudeToolDialog(QDialog):
 
         meta = getattr(doc, "metadata", {}) or {}
         cached = meta.get("SFCC_star_list")
-        cached_catalog = str(meta.get("SFCC_catalog") or "").strip()
+        cached_catalog = str(meta.get("SFCC_catalog") or "").strip().upper()
 
-        # 0) If we already have APASS cached, use it (fast path, no network)
-        if isinstance(cached, list) and len(cached) > 0 and cached_catalog.upper().startswith("APASS"):
+        cached_ok = isinstance(cached, list) and len(cached) > 0
+
+        # 0) Fast path: any cached stars are always better than re-querying
+        #    (and avoids your “APASS empty” and “SIMBAD wedged” scenarios entirely)
+        if cached_ok:
             self.star_list = cached
         else:
-            # 1) APASS first
-            apass_ok = False
+            # 1) Try APASS (may legitimately return empty)
+            apass = []
             try:
                 self.lbl_info.setText("Querying APASS (VizieR)…")
                 QApplication.processEvents()
-
-                apass = self._fetch_apass_stars_and_cache(img, hdr, doc)
-                if isinstance(apass, list) and len(apass) > 0:
-                    self.star_list = apass
-                    apass_ok = True
+                apass = self._fetch_apass_stars_and_cache(img, hdr, doc) or []
             except Exception:
-                apass_ok = False
+                apass = []
 
-            # 2) Fall back to cached stars (any catalog) if APASS failed/empty
-            if not apass_ok:
-                if isinstance(cached, list) and len(cached) > 0:
-                    self.star_list = cached
-                else:
-                    # 3) Finally SIMBAD
-                    try:
-                        self.lbl_info.setText("Querying SIMBAD (subprocess)…")
-                        QApplication.processEvents()
-                        self.star_list = self._fetch_simbad_stars_and_cache(img, hdr, doc)
-                    except Exception:
-                        QMessageBox.information(
-                            self, "Catalog Unavailable",
-                            "APASS query failed (or returned no stars), no cached stars available, "
-                            "and SIMBAD is currently unavailable.\n\n"
-                            "Please try again later."
-                        )
-                        return
+            if isinstance(apass, list) and len(apass) > 0:
+                self.star_list = apass
+            else:
+                # 2) If APASS is empty, try SIMBAD
+                try:
+                    self.lbl_info.setText("Querying SIMBAD (subprocess)…")
+                    QApplication.processEvents()
+                    self.star_list = self._fetch_simbad_stars_and_cache(img, hdr, doc) or []
+                except Exception as e:
+                    self.star_list = []
+                    QMessageBox.warning(self, "SIMBAD Error", str(e))
+
+                if not self.star_list:
+                    QMessageBox.information(
+                        self, "Catalog Unavailable",
+                        "APASS returned no stars (or failed), no cached stars were available, "
+                        "and SIMBAD is currently unavailable.\n\n"
+                        "Try a wider field / verify WCS / try again later."
+                    )
+                    return
+
 
         # WCS / pixscale
         self.wcs, self.pixscale = _build_wcs_and_pixscale(hdr)
