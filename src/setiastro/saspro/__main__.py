@@ -3,10 +3,13 @@ from __future__ import annotations
 import sys
 
 CLI_SUBCOMMANDS = {
-    "cosmicclarity",
-    "cc",
-    "denoise",
-    "sharpen",
+    # wrapper aliases
+    "cosmicclarity", "cc",
+
+    # cosmicclarity subcommands
+    "sharpen", "denoise", "both", "superres", "satellite",
+
+    # other CLI tools you may add
     "benchmark",
 }
 
