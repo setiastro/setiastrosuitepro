@@ -311,29 +311,48 @@ def _detect_sources(gray: np.ndarray, sigma: float = 5.0) -> np.ndarray:
 
 
 def _match_starlist_to_sources(star_list: List[dict], sources: np.ndarray, max_dist_px: float = 3.0) -> List[dict]:
-    if sources is None or sources.size == 0:
+    if sources is None or len(sources) == 0:
         return []
     sx = sources["x"].astype(np.float64)
     sy = sources["y"].astype(np.float64)
 
-    out = []
-    r2max = float(max_dist_px) ** 2
-
+    # precompute nearest catalog index for each source (mutual requirement)
+    cat_xy = []
     for st in star_list:
         x0 = float(st.get("x", np.nan))
         y0 = float(st.get("y", np.nan))
+        if np.isfinite(x0) and np.isfinite(y0):
+            cat_xy.append((x0, y0))
+        else:
+            cat_xy.append((np.nan, np.nan))
+    cat_xy = np.asarray(cat_xy, dtype=np.float64)
+
+    # source -> nearest catalog
+    src_to_cat = np.full(len(sx), -1, dtype=int)
+    src_to_d2  = np.full(len(sx), np.inf, dtype=np.float64)
+
+    for j in range(len(sx)):
+        dx = cat_xy[:, 0] - sx[j]
+        dy = cat_xy[:, 1] - sy[j]
+        d2 = dx*dx + dy*dy
+        i = int(np.nanargmin(d2))
+        src_to_cat[j] = i
+        src_to_d2[j] = float(d2[i])
+
+    out = []
+    r2max = float(max_dist_px)**2
+
+    # catalog -> nearest source, but require mutual
+    for i, st in enumerate(star_list):
+        x0, y0 = cat_xy[i]
         if not (np.isfinite(x0) and np.isfinite(y0)):
             continue
         dx = sx - x0
         dy = sy - y0
-        j = int(np.argmin(dx * dx + dy * dy))
-        if float(dx[j] * dx[j] + dy[j] * dy[j]) <= r2max:
-            out.append({
-                "star": st,
-                "src": sources[j],
-                "x": float(sx[j]),
-                "y": float(sy[j]),
-            })
+        j = int(np.argmin(dx*dx + dy*dy))
+        d2 = float(dx[j]*dx[j] + dy[j]*dy[j])
+        if d2 <= r2max and src_to_cat[j] == i and src_to_d2[j] <= r2max:
+            out.append({"star": st, "src": sources[j], "x": float(sx[j]), "y": float(sy[j])})
     return out
 
 def _aperture_photometry_mono(img_f, xs, ys, r_ap, r_in, r_out):
@@ -1269,6 +1288,34 @@ def _combine_err(stat: Optional[float], sys: Optional[float]) -> Optional[float]
     b = 0.0 if sys is None else float(sys)
     return float(math.sqrt(a*a + b*b))
 
+def _nearest_dist_stats(star_list, sources):
+    if sources is None or len(sources) == 0:
+        return None
+    sx = sources["x"].astype(np.float64)
+    sy = sources["y"].astype(np.float64)
+
+    d = []
+    for st in star_list:
+        x0 = float(st.get("x", np.nan))
+        y0 = float(st.get("y", np.nan))
+        if not (np.isfinite(x0) and np.isfinite(y0)):
+            continue
+        dx = sx - x0
+        dy = sy - y0
+        j = int(np.argmin(dx*dx + dy*dy))
+        d.append(float(np.hypot(dx[j], dy[j])))
+
+    if not d:
+        return None
+    d = np.asarray(d)
+    return {
+        "n": int(d.size),
+        "p50": float(np.percentile(d, 50)),
+        "p90": float(np.percentile(d, 90)),
+        "min": float(d.min()),
+        "max": float(d.max()),
+    }
+
 
 class MagnitudeToolDialog(QDialog):
     """
@@ -1448,7 +1495,11 @@ class MagnitudeToolDialog(QDialog):
             return
 
         meta = dict(getattr(doc, "metadata", {}) or {})
-
+        # Remove / invalidate the shared SFCC cache keys (used by this tool too)
+        # IMPORTANT: set to None so metadata-merge update overwrites old values.
+        for k in ("SFCC_star_list", "SFCC_catalog",
+                  "MAG_star_list", "MAG_catalog", "MAG_last_zp"):
+            meta[k] = None
         # Remove the shared SFCC cache keys (used by this tool too)
         meta.pop("SFCC_star_list", None)
         meta.pop("SFCC_catalog", None)
@@ -1457,7 +1508,10 @@ class MagnitudeToolDialog(QDialog):
         meta.pop("MAG_star_list", None)
         meta.pop("MAG_catalog", None)
         meta.pop("MAG_last_zp", None)
-
+        try:
+            doc.metadata = meta
+        except Exception:
+            pass
         # Write back
         try:
             self.doc_manager.update_active_document(
@@ -1466,9 +1520,8 @@ class MagnitudeToolDialog(QDialog):
                 step_name="Magnitude Tool: Clear All",
                 doc=doc,
             )
-        except Exception:
-            # If doc_manager refuses updates in some contexts, at least we've cleared local state.
-            pass
+        except Exception as e:
+            print("MagnitudeTool clear_all: metadata update failed:", e)
 
 
     def show_zp_graphs(self):
@@ -1616,14 +1669,59 @@ class MagnitudeToolDialog(QDialog):
             QMessageBox.warning(self, "SEP", "SEP found no sources.")
             return
 
-        matches = _match_starlist_to_sources(self.star_list, sources, max_dist_px=3.0)
+        for r in (3.0, 6.0, 12.0, 24.0):
+            matches = _match_starlist_to_sources(self.star_list, sources, max_dist_px=r)
+            if len(matches) >= 16:
+                break
+
         if not matches:
-            QMessageBox.warning(self, "No Matches", "No SIMBAD stars matched SEP detections.")
+            QMessageBox.warning(self, "No Matches",
+                "No catalog stars matched SEP detections.\n\n"
+                "Likely causes:\n"
+                "• Cached star list from different crop/scale\n"
+                "• WCS header doesn't match this pixel grid\n"
+                "• Solve is offset/rotated beyond match tolerance\n"
+            )
             return
 
+        # --- warn if match quality is suspiciously low ---
+        n_cat = len(self.star_list or [])
+        n_m   = len(matches)
+
+        frac_cat = (n_m / max(1, n_cat))
+
+        # Optional: keep SEP count ONLY for informational text (not gating)
+        try:
+            n_src = int(len(sources))
+        except Exception:
+            n_src = int(getattr(sources, "size", 0) or 0)
+        frac_src = (n_m / max(1, n_src)) if n_src else 0.0
+
+        # thresholds:
+        # - if you have a real catalog (>= 20 stars), warn if you match < 15%
+        # - always warn if absolute matches are very low (WCS/crop mismatch often gives < ~10-12)
+        warn = ((n_cat >= 20) and (frac_cat < 0.15)) or (n_m < 12)
+
+        if warn:
+            msg = (
+                "Low catalog↔source match rate.\n\n"
+                f"Catalog stars: {n_cat}\n"
+                f"Matched:       {n_m}\n"
+                f"Matched/Catalog: {frac_cat*100:.1f}%\n\n"
+                # informational only:
+                f"(SEP sources: {n_src}, Matched/Sources: {frac_src*100:.1f}% — informational)\n\n"
+                "This can mean the WCS header does not match the current pixel grid "
+                "(crop/resize/CRPIX shift), or cached stars were generated from a different image.\n\n"
+                "Recommended:\n"
+                "• Re-solve (or blind-solve) THIS exact image/crop.\n"
+                "• Then re-run Step 1 and Step 2.\n\n"
+                "If the image is noisy, consider raising SEP detect σ to reduce non-stellar detections."
+            )
+            QMessageBox.warning(self, "WCS / Match Warning", msg)
         self.lbl_info.setText(f"Matched {len(matches)} stars. Measuring apertures…")
         QApplication.processEvents()
-
+        stats = _nearest_dist_stats(self.star_list, sources)
+        print("nearest dist stats:", stats)
         band = self.band_combo.currentText().strip().upper()
 
         if img_f.ndim == 2:

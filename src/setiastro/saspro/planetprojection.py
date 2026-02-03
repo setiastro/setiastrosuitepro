@@ -1391,6 +1391,7 @@ class PlanetProjectionDialog(QDialog):
         self._disk_last_was_user = False   # True once user clicks "Use This Disk"
 
         self._build_ui()
+        self._update_window_title()
         QTimer.singleShot(0, self._apply_initial_layout_fix)        
         self._update_enable()
 
@@ -1748,7 +1749,7 @@ class PlanetProjectionDialog(QDialog):
                 self.chk_rings.setVisible(True)
                 _set_form_row_visible(rings_form, self.spin_ring_outer, True)
                 _set_form_row_visible(rings_form, self.spin_ring_inner, True)
-
+            self._update_window_title()
             self.adjustSize()  # shrink/grow dialog to fit
 
 
@@ -1774,18 +1775,111 @@ class PlanetProjectionDialog(QDialog):
         except Exception:
             pass
 
+    def _mode_name(self) -> str:
+        """Human-friendly output mode name for titles/dialogs."""
+        try:
+            mode = int(self.cmb_mode.currentIndex())
+        except Exception:
+            mode = 0
+
+        return {
+            0: "Stereo (Parallel)",
+            1: "Stereo (Cross-eye)",
+            2: "Wiggle Stereo",
+            3: "Anaglyph",
+            4: "Interactive 3D (HTML)",
+            5: "Galaxy Polar View",
+        }.get(mode, "Projection")
+
+    def _ptype_name(self) -> str:
+        """Human-friendly planet type name for titles/dialogs."""
+        try:
+            ptype = int(self.cmb_planet_type.currentIndex())
+        except Exception:
+            ptype = 0
+
+        return {
+            0: "Planet Projection",
+            1: "Saturn Projection",
+            2: "Pseudo Surface",
+            3: "Galaxy Projection",
+        }.get(ptype, "Projection")
+
+    def _native_output_u8_for_push(self) -> np.ndarray | None:
+        """
+        Return the image we want to push to a new document at NATIVE pixel size.
+        Never returns a preview-scaled frame.
+        """
+        mode = int(self.cmb_mode.currentIndex()) if hasattr(self, "cmb_mode") else 0
+        ptype = int(self.cmb_planet_type.currentIndex()) if hasattr(self, "cmb_planet_type") else 0
+
+        img = None
+
+        # Galaxy polar view is always single-frame output stored in _last_preview_u8
+        if (ptype == 3) or (mode == 5):
+            img = self._last_preview_u8
+
+        # Pseudo surface: stereo modes -> side-by-side, otherwise last frame
+        elif ptype == 2:
+            if mode in (0, 1) and (self._left is not None) and (self._right is not None):
+                swap = (mode == 1)  # cross-eye => swap
+                img = self._compose_side_by_side_u8(self._left, self._right, swap_eyes=swap, gap_px=16)
+            else:
+                img = self._last_preview_u8
+
+        # Normal/Saturn
+        else:
+            if mode in (0, 1) and (self._left is not None) and (self._right is not None):
+                swap = (mode == 1)  # cross-eye => swap
+                img = self._compose_side_by_side_u8(self._left, self._right, swap_eyes=swap, gap_px=16)
+            else:
+                img = self._last_preview_u8
+
+        if img is None:
+            return None
+
+        img = np.asarray(img)
+        if img.dtype != np.uint8:
+            img = np.clip(img, 0, 255).astype(np.uint8)
+        if img.ndim == 2:
+            img = np.stack([img, img, img], axis=2)
+        if img.ndim == 3 and img.shape[2] > 3:
+            img = img[..., :3]
+        return img
+
+
+    def _ui_title(self) -> str:
+        """
+        Single place for dialog titles + QMessageBox titles.
+        Prefer Pseudo Surface / Galaxy when selected, otherwise Planet/Saturn.
+        """
+        ptype = int(self.cmb_planet_type.currentIndex()) if hasattr(self, "cmb_planet_type") else 0
+        mode  = int(self.cmb_mode.currentIndex()) if hasattr(self, "cmb_mode") else 0
+
+        if ptype == 2:
+            return "Pseudo Surface"
+        if (ptype == 3) or (mode == 5):
+            return "Galaxy Polar View"
+        if ptype == 1:
+            return "Saturn Projection"
+        return "Planet Projection"
+
+    def _update_window_title(self):
+        """Call this after any mode/type change to keep UI honest."""
+        try:
+            self.setWindowTitle(self._ui_title())
+        except Exception:
+            pass
 
     def _reset_disk_cache(self):
-        # Forget disk refinement for the CURRENT image only.
         self._disk_last = None
         self._disk_last_was_user = False
 
-        # Disable until we detect/accept again
         if hasattr(self, "btn_reset_disk") and self.btn_reset_disk is not None:
             self.btn_reset_disk.setEnabled(False)
 
-        # Optional: small user feedback
-        QMessageBox.information(self, "Planet Projection", "Disk refinement reset. Next Generate will re-detect.")
+        QMessageBox.information(self, self._ui_title(), "Disk refinement reset. Next Generate will re-detect.")
+
 
 
     def _current_image_key(self, img: np.ndarray):
@@ -1972,12 +2066,12 @@ class PlanetProjectionDialog(QDialog):
         mode = int(self.cmb_mode.currentIndex())
 
         if self.image is None:
-            QMessageBox.information(self, "Planet Projection", "No image loaded.")
+            QMessageBox.information(self, self._ui_title(), "No image loaded.")
             return
 
         img = np.asarray(self.image)
         if img.ndim != 3 or img.shape[2] < 3:
-            QMessageBox.information(self, "Planet Projection", "Image must be RGB (3 channels).")
+            QMessageBox.information(self, self._ui_title(), "Image must be RGB (3 channels).")
             return
 
         img = img[..., :3]  # ensure exactly RGB
@@ -2690,37 +2784,140 @@ class PlanetProjectionDialog(QDialog):
         self._push_preview_u8(frame)
 
     def _save_still(self):
-        if self._last_preview_u8 is None:
-            QMessageBox.information(self, "Save Still", "Nothing to save yet. Click Generate first.")
+        title = self._ui_title()
+
+        # Decide what we want to save (native pixel data)
+        # - Stereo: compose from self._left/_right (native)
+        # - Single-frame: use self._last_preview_u8 (already native if you set it that way)
+        mode = int(self.cmb_mode.currentIndex()) if hasattr(self, "cmb_mode") else 0
+        ptype = int(self.cmb_planet_type.currentIndex()) if hasattr(self, "cmb_planet_type") else 0
+
+        # Prefer native sources over anything “preview-scaled”
+        img = None
+
+        # Galaxy polar view and pseudo-surface can be single-frame depending on mode
+        if (ptype == 3) or (mode == 5):
+            img = self._last_preview_u8
+
+        elif ptype == 2:
+            # Pseudo surface:
+            # - Wiggle saves frames elsewhere
+            # - Stereo modes should save side-by-side
+            if mode in (0, 1):
+                if self._left is not None and self._right is not None:
+                    swap = (mode == 1)  # cross-eye => swap eyes
+                    img = self._compose_side_by_side_u8(self._left, self._right, swap_eyes=swap, gap_px=16)
+            else:
+                img = self._last_preview_u8
+
+        else:
+            # Normal/Saturn:
+            if mode in (0, 1):
+                if self._left is not None and self._right is not None:
+                    swap = (mode == 0)  # NOTE: your code treats mode==0 as cross_eye in one place; keep consistent here:
+                    # If your UI mapping is: 0=Parallel, 1=Cross-eye, then swap should be (mode==1).
+                    # Most people expect: Cross-eye swaps.
+                    swap = (mode == 1)
+                    img = self._compose_side_by_side_u8(self._left, self._right, swap_eyes=swap, gap_px=16)
+            elif mode == 3:
+                img = self._last_preview_u8
+            else:
+                # If not stereo/anaglyph, whatever is last preview is fine
+                img = self._last_preview_u8
+
+        if img is None:
+            QMessageBox.information(self, title, "Nothing to save yet. Click Generate first.")
             return
+
+        img = np.asarray(img)
+        if img.dtype != np.uint8:
+            img = np.clip(img, 0, 255).astype(np.uint8)
+        if img.ndim == 2:
+            img = np.stack([img, img, img], axis=2)
+        if img.shape[2] > 3:
+            img = img[..., :3]
+
+        # Suggest a reasonable default name
+        base = f"{self._ui_title()} - {self._mode_name()}"
+        base = base.replace("/", "-").replace("\\", "-")
 
         fn, filt = QFileDialog.getSaveFileName(
             self,
-            "Save Still Image",
-            "",
+            f"Save Still — {title}",
+            base,
             "PNG (*.png);;JPEG (*.jpg *.jpeg);;TIFF (*.tif *.tiff)"
         )
         if not fn:
             return
 
-        img = self._last_preview_u8  # RGB uint8
-
-        # decide format from extension (default to png)
         ext = os.path.splitext(fn)[1].lower()
         if ext == "":
             fn += ".png"
             ext = ".png"
 
         try:
-            # use PIL for consistent RGB save
             from PIL import Image
             im = Image.fromarray(img, mode="RGB")
+
             if ext in (".jpg", ".jpeg"):
                 im.save(fn, quality=95, subsampling=0)
+            elif ext in (".tif", ".tiff"):
+                im.save(fn, compression="tiff_lzw")
             else:
                 im.save(fn)
+
         except Exception as e:
-            QMessageBox.warning(self, "Save Still", f"Failed to save:\n{e}")
+            QMessageBox.warning(self, f"Save Still — {title}", f"Failed to save:\n{e}")
+
+    def _push_to_new_document(self):
+        title = self._ui_title()
+        img_u8 = self._native_output_u8_for_push()
+        if img_u8 is None:
+            QMessageBox.information(self, title, "Nothing to push yet. Click Generate first.")
+            return
+
+        # Build a nice doc title
+        name = f"{self._ui_title()} — {self._mode_name()}"
+
+        # Copy metadata from source doc if you want (optional)
+        meta = {}
+        try:
+            if self.doc is not None:
+                meta = getattr(self.doc, "metadata", {}) or {}
+        except Exception:
+            meta = {}
+
+        # IMPORTANT: do NOT create from a scaled QImage/QPixmap.
+        # Push numpy directly into a new document via your app’s doc manager.
+        try:
+            # Try to use whatever your main window uses
+            parent = self.parent
+            dm = getattr(parent, "doc_manager", None) or getattr(parent, "docManager", None)
+
+            if dm is None:
+                # fallback: some apps expose a method on main window
+                add_doc = getattr(parent, "add_document", None)
+                if callable(add_doc):
+                    add_doc(image=img_u8, title=name, metadata=meta)
+                    return
+
+                raise RuntimeError("DocManager not found on parent window.")
+
+            # Common patterns:
+            # - dm.new_document(image, title=..., metadata=...)
+            # - dm.create_document(...)
+            # - dm.open_array(...)
+            if hasattr(dm, "new_document") and callable(dm.new_document):
+                dm.new_document(img_u8, title=name, metadata=meta)
+            elif hasattr(dm, "create_document") and callable(dm.create_document):
+                dm.create_document(image=img_u8, title=name, metadata=meta)
+            elif hasattr(dm, "open_array") and callable(dm.open_array):
+                dm.open_array(img_u8, title=name, metadata=meta)
+            else:
+                raise RuntimeError("DocManager has no known 'new document from array' method.")
+        except Exception as e:
+            QMessageBox.warning(self, title, f"Failed to push to new document:\n{e}")
+
 
     def _save_wiggle(self):
         if self._left is None or self._right is None:
@@ -3666,6 +3863,43 @@ class PlanetProjectionPreviewDialog(QDialog):
             x = np.ascontiguousarray(x)
         return x
 
+    def _get_current_view_native_u8(self) -> np.ndarray | None:
+        """
+        Return what the user is looking at, but rendered at NATIVE pixel resolution
+        (not QLabel size, not preview-zoom scaling).
+        """
+        # ---- Stereo path ----
+        if self._last_L8 is not None and self._last_R8 is not None:
+            L = self._ensure_rgb8(self._last_L8)
+            R = self._ensure_rgb8(self._last_R8)
+
+            if self._last_swap_eyes:
+                L, R = R, L
+
+            Hs, Ws = L.shape[:2]
+            gap = int(max(0, self._last_gap_px))
+
+            # Render each eye to the native eye size using current pan/zoom
+            Lview = self._crop_and_scale(L, Ws, Hs)
+            Rview = self._crop_and_scale(R, Ws, Hs)
+
+            canvas = np.zeros((Hs, Ws + gap + Ws, 3), dtype=np.uint8)
+            canvas[:, :Ws] = Lview
+            canvas[:, Ws + gap:Ws + gap + Ws] = Rview
+            return canvas
+
+        # ---- Single-frame path ----
+        if getattr(self, "_last_rgb8", None) is None:
+            return None
+
+        img = np.asarray(self._last_rgb8)
+        img = self._ensure_rgb8(img)
+        H, W = img.shape[:2]
+
+        # Apply the "single image" pan/zoom at native size
+        return self._apply_camera_crop_to_viewport(img, W, H)
+
+
     def _crop_and_scale(self, src: np.ndarray, out_w: int, out_h: int) -> np.ndarray:
         # content zoom is RELATIVE TO FIT
         H, W = src.shape[:2]
@@ -3827,7 +4061,7 @@ class PlanetProjectionPreviewDialog(QDialog):
             win_h = int(round(H / z))
             win_w = int(round(win_h * a))
 
-        win_w, win_h = self._crop_to_aspect(W, H, a)
+        #win_w, win_h = self._crop_to_aspect(W, H, a)
 
         cx = (W - 1) * 0.5 + float(self._img_pan_x)
         cy = (H - 1) * 0.5 + float(self._img_pan_y)
@@ -4035,21 +4269,11 @@ class PlanetProjectionPreviewDialog(QDialog):
                 return tlw
         return None
 
-
     def _push_to_new_document(self):
-        img_u8 = None
-
-        # Prefer exact displayed canvas for stereo
-        if self._last_L8 is not None and self._last_R8 is not None:
-            img_u8 = self._get_current_view_canvas_u8()
-        else:
-            img_u8 = getattr(self, "_last_frame_u8", None)
-
+        img_u8 = self._get_current_view_native_u8()
         if img_u8 is None:
             QMessageBox.warning(self, "Push to New Document", "Nothing to push yet.")
             return
-
-        # Convert to float32 [0..1] for SASpro docs (matches your other tools)
 
         arr = np.asarray(img_u8)
         if arr.ndim == 2:
@@ -4064,7 +4288,6 @@ class PlanetProjectionPreviewDialog(QDialog):
         mw = self._find_main_window()
         dm = getattr(mw, "docman", None) if mw else None
         if not mw or not dm:
-            from PyQt6.QtWidgets import QMessageBox
             QMessageBox.critical(self, "Push to New Document", "Main window or DocManager not available.")
             return
 
@@ -4077,7 +4300,6 @@ class PlanetProjectionPreviewDialog(QDialog):
             else:
                 raise RuntimeError("DocManager lacks open_array/create_document")
 
-            # Spawn a view (same pattern as NBtoRGBStars)
             if hasattr(mw, "_spawn_subwindow_for"):
                 mw._spawn_subwindow_for(doc)
             else:
@@ -4087,5 +4309,4 @@ class PlanetProjectionPreviewDialog(QDialog):
                 sw.show()
 
         except Exception as e:
-            from PyQt6.QtWidgets import QMessageBox
             QMessageBox.critical(self, "Push to New Document", f"Failed to open new view:\n{e}")

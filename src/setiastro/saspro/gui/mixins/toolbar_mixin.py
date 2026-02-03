@@ -829,6 +829,19 @@ class ToolbarMixin:
         self.act_copy_view.triggered.connect(self._copy_active_view)
         self.act_paste_view.triggered.connect(self._paste_active_view)
         # --- Edit: Mono -> RGB (triplicate channels) ---
+
+        self.act_copy = QAction(self.tr("Copy"), self)
+        self.act_paste = QAction(self.tr("Paste"), self)
+
+        self.act_copy.setShortcut(QKeySequence.StandardKey.Copy)    # Ctrl+C
+        self.act_paste.setShortcut(QKeySequence.StandardKey.Paste)  # Ctrl+V
+
+        self.act_copy.setIconVisibleInMenu(True)
+        self.act_paste.setIconVisibleInMenu(True)
+
+        self.act_copy.triggered.connect(self._copy_active_to_clipboard)
+        self.act_paste.triggered.connect(self._paste_clipboard_as_new_document)
+
         self.act_mono_to_rgb = QAction(self.tr("Convert Mono to RGB"), self)
         self.act_mono_to_rgb.setStatusTip(self.tr("Convert a mono image to RGB by duplicating the channel"))
         self.act_mono_to_rgb.triggered.connect(self._convert_mono_to_rgb_active)

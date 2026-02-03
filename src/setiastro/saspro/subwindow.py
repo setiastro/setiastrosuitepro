@@ -2429,6 +2429,66 @@ class ImageSubWindow(QWidget):
             mm = 0; dd += 1
         return f"{sign}{dd:02d}:{mm:02d}:{ss:02d}"
 
+    def copy_viewport_to_clipboard_image(self) -> QImage | None:
+        """
+        Returns a QImage of exactly what the user is currently seeing:
+        - includes autostretch + mask overlay (because it uses the rendered pixmap)
+        - includes current zoom scale + pan position (viewport crop)
+        - works for Full tab and Preview tabs (because _pm_src is built from active source)
+        """
+        # Make sure we have something rendered
+        pm = getattr(self, "_pm_src", None)
+        if pm is None or pm.isNull():
+            # Try to build it once (slow path) if needed
+            try:
+                self._render(rebuild=True)
+                pm = getattr(self, "_pm_src", None)
+            except Exception:
+                pm = None
+
+        if pm is None or pm.isNull():
+            return None
+
+        # We need the *currently displayed* pixmap size, not the source pixmap
+        # Because _present_scaled likely sets label pixmap to a scaled version.
+        shown_pm = self.label.pixmap()
+        if shown_pm is None or shown_pm.isNull():
+            # fallback to unscaled source if label doesn't have one
+            shown_pm = pm
+
+        vp = self.scroll.viewport()
+        hbar = self.scroll.horizontalScrollBar()
+        vbar = self.scroll.verticalScrollBar()
+
+        # Visible rect in label coordinates:
+        # scrollbars are offsets into the label widget.
+        x = int(hbar.value())
+        y = int(vbar.value())
+        w = int(vp.width())
+        h = int(vp.height())
+
+        # Clamp crop to pixmap bounds (important when image smaller than viewport)
+        px_w = int(shown_pm.width())
+        px_h = int(shown_pm.height())
+
+        if px_w <= 0 or px_h <= 0:
+            return None
+
+        if x < 0: x = 0
+        if y < 0: y = 0
+        if x >= px_w or y >= px_h:
+            return None
+
+        w = min(w, px_w - x)
+        h = min(h, px_h - y)
+        if w <= 0 or h <= 0:
+            return None
+
+        cropped = shown_pm.copy(QRect(x, y, w, h))
+        if cropped.isNull():
+            return None
+
+        return cropped.toImage()
 
     # ---------- rendering ----------
     def _render(self, rebuild: bool = False):
