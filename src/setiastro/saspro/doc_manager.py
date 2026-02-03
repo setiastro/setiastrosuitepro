@@ -2317,6 +2317,7 @@ class DocManager(QObject):
         *,
         bit_depth_override: str | None = None,
         jpeg_quality: int | None = None,   # <-- NEW
+        export_opts: dict | None = None,
     ):
         """
         Save the given ImageDocument to 'path'.
@@ -2330,6 +2331,7 @@ class DocManager(QObject):
         ext = _normalize_ext(os.path.splitext(path)[1])
         img = doc.image
         meta = doc.metadata or {}
+        export_opts = dict(export_opts or {})
         if jpeg_quality is not None:
             meta["jpeg_quality"] = int(jpeg_quality)
         # ── MASSIVE DEBUG: show everything we know coming in ───────────────
@@ -2363,34 +2365,62 @@ class DocManager(QObject):
         img_to_save = np.clip(img, 0.0, 1.0) if needs_clip else img
 
         # --- PICK THE HEADER EXPLICITLY -----------------------------------
-        # Priority:
-        #   1) wcs_header
-        #   2) fits_header
-        #   3) original_header
-        #   4) header
-        effective_header = None
-        for key in ("original_header", "fits_header", "wcs_header", "header"):
-            val = meta.get(key)
-            if isinstance(val, fits.Header):
-                effective_header = val
+        # We want:
+        #   - effective_header: "best full FITS-like header" (fits_header/original_header/header)
+        #   - wcs_hdr: explicit WCS-only header if present (to be merged by legacy_save_image)
+        #
+        # NOTE: do NOT use wcs_header as the "effective_header" unless that's all you have,
+        # because it's often missing lots of other cards.
+        def _to_fits_header(v):
+            if isinstance(v, fits.Header):
+                return v
+            if isinstance(v, dict):
+                try:
+                    return fits.Header(v)
+                except Exception:
+                    return None
+            return None
 
+        effective_header = None
+        for key in ("fits_header", "original_header", "header"):
+            val = _to_fits_header(meta.get(key))
+            if val is not None:
+                effective_header = val
                 break
 
-        #if effective_header is None:
-        #    print("[save_document] WARNING: No fits.Header in metadata, "
-        #          "legacy_save_image will pick a default header.")
-        #else:
-        #    # Print first few cards so we can confirm we have the SIP stuff
-        #    print("[save_document] effective_header preview (first 25 cards):")
-        #    for i, card in enumerate(effective_header.cards):
-        #        if i >= 25:
-        #            print("  ... (truncated)")
-        #            break
-        #        print(f"  {card.keyword:8s} = {card.value!r}")
+        wcs_hdr = _to_fits_header(meta.get("wcs_header"))
+
+        # --- If export requested resize, pre-scale WCS in the headers we pass ---
+        # This keeps in-memory metadata aligned with the file written.
+        try:
+            mode = (export_opts.get("resize_mode") or "none").lower()
+            h0, w0 = img.shape[:2]
+
+            scale = 1.0
+            if mode == "percent":
+                pct = int(export_opts.get("resize_percent") or 100)
+                pct = max(1, min(400, pct))
+                scale = pct / 100.0
+            elif mode == "long_edge":
+                long_edge = int(export_opts.get("resize_long_edge") or 0)
+                if long_edge > 0:
+                    long0 = max(h0, w0)
+                    if long0 > 0:
+                        scale = float(long_edge) / float(long0)
+
+            if scale != 1.0:
+                # Import the helper from legacy where we added it
+                from setiastro.saspro.legacy.image_manager import _scale_wcs_in_header
+
+                if isinstance(effective_header, fits.Header):
+                    effective_header = _scale_wcs_in_header(effective_header, scale)
+                if isinstance(wcs_hdr, fits.Header):
+                    wcs_hdr = _scale_wcs_in_header(wcs_hdr, scale)
+
+        except Exception as e:
+            print("[save_document] WCS pre-scale for resize failed:", e)
 
         # ── Call the legacy saver ─────────────────────────────────────────
-
-
         legacy_save_image(
             img_array=img_to_save,
             filename=path,
@@ -2400,8 +2430,9 @@ class DocManager(QObject):
             is_mono=meta.get("mono", img.ndim == 2),
             image_meta=meta.get("image_meta"),
             file_meta=meta.get("file_meta"),
-            wcs_header=meta.get("wcs_header"),
+            wcs_header=wcs_hdr,                 # <-- use the pre-scaled wcs header
             jpeg_quality=jpeg_quality,
+            export_opts=export_opts,
         )
 
         # ── Update metadata in memory to match what we just wrote ─────────
@@ -2409,14 +2440,9 @@ class DocManager(QObject):
         meta["original_format"] = ext
         meta["bit_depth"] = final_bit_depth
 
+        # Store the header we actually used (already scaled if resized)
         if isinstance(effective_header, fits.Header):
             meta["original_header"] = effective_header
-
-            # If you have this helper, keep it; if not, you can skip it
-            try:
-                _snapshot_header_for_metadata(meta)
-            except Exception as e:
-                print("[save_document] _snapshot_header_for_metadata error:", e)
 
         doc.metadata = meta
 
