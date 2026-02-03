@@ -1889,16 +1889,11 @@ def plate_solve_doc_inplace(parent, doc, settings) -> Tuple[bool, Header | str]:
         doc.metadata = meta
 
         # Store merged header as the current "original_header"
-        doc.metadata["original_header"] = hdr_final
+        _post_solve_metadata_cleanup(doc.metadata, hdr_final)
+
         _debug_dump_header("DOC.METADATA['original_header'] AFTER SOLVE", doc.metadata.get("original_header"))
+        _debug_dump_header("DOC.METADATA['wcs_header'] AFTER SOLVE", doc.metadata.get("wcs_header"))
 
-
-        # Build WCS object from the same header we just stored
-        try:
-            wcs_obj = WCS(hdr_final, naxis=2)
-            doc.metadata["wcs"] = wcs_obj
-        except Exception as e:
-            print("WCS build FAILED:", e)
 
         # Notify UI
         if hasattr(doc, "changed"):
@@ -2027,15 +2022,18 @@ def _seed_header_from_meta(meta: dict) -> Header:
 
     # 1) Use explicit wcs_header if present
     raw_wcs = meta.get("wcs_header")
+
+    # Prefer Header objects only (canonical). Ignore strings by default to avoid stale blobs.
     if isinstance(raw_wcs, Header):
         wcs_hdr = raw_wcs
     elif isinstance(raw_wcs, str):
-        # This is your case: stored as Header.tostring()
-        try:
-            # In real metadata this likely has newlines; sep='\n' handles that.
-            wcs_hdr = fits.Header.fromstring(raw_wcs, sep='\n')
-        except Exception as e:
-            print("Seed: failed to parse wcs_header string:", e)
+        # Optional: only accept string blobs if we DO NOT already have original_header WCS
+        # (this prevents stale string overrides from winning)
+        if not isinstance(base, Header) or ("CRVAL1" not in base and "CD1_1" not in base and "PC1_1" not in base):
+            try:
+                wcs_hdr = fits.Header.fromstring(raw_wcs, sep="\n")
+            except Exception as e:
+                print("Seed: failed to parse wcs_header string:", e)
 
     # 2) Fallback: derive from WCS object if we still don't have a header
     if wcs_hdr is None:
@@ -2082,6 +2080,93 @@ def plate_solve_active_document(parent, settings) -> tuple[bool, Header | str]:
         return False, QCoreApplication.translate("PlateSolver", "No active document to plate-solve.")
 
     return plate_solve_doc_inplace(parent, doc, settings)
+
+def _wcs_only_from_header(hdr: Header) -> Header:
+    """
+    Extract only WCS/SIP-ish cards from a header and return them as a new Header.
+    This is what we store in meta['wcs_header'] so it can never go stale or include junk.
+    """
+    if not isinstance(hdr, Header):
+        return Header()
+
+    hdr = _strip_nonfits_meta_keys_from_header(hdr)
+
+    w = Header()
+    wcs_prefixes = (
+        "CRPIX", "CRVAL", "CDELT", "CD1_", "CD2_", "PC",
+        "CTYPE", "CUNIT", "PV1_", "PV2_", "A_", "B_", "AP_", "BP_"
+    )
+    wcs_extras = {
+        "WCSAXES", "LATPOLE", "LONPOLE", "EQUINOX",
+        "RADESYS", "RADECSYS", "PLTSOLVD", "WARNING",
+        "CROTA1", "CROTA2", "A_ORDER","B_ORDER","AP_ORDER","BP_ORDER",
+    }
+
+    for k, v in hdr.items():
+        ku = str(k).upper()
+        if ku.startswith(wcs_prefixes) or ku in wcs_extras:
+            try:
+                w[ku] = v
+            except Exception:
+                pass
+
+    # numeric coercion + TAN-SIP normalization
+    d = _ensure_ctypes(_coerce_wcs_numbers(dict(w)))
+
+    try:
+        sip_present = any(re.match(r"^(A|B|AP|BP)_\d+_\d+$", kk) for kk in d.keys())
+        if sip_present:
+            if not str(d.get("CTYPE1", "RA---TAN")).endswith("-SIP"):
+                d["CTYPE1"] = "RA---TAN-SIP"
+            if not str(d.get("CTYPE2", "DEC--TAN")).endswith("-SIP"):
+                d["CTYPE2"] = "DEC--TAN-SIP"
+    except Exception:
+        pass
+
+    out = Header()
+    for k, v in d.items():
+        try:
+            out[k] = v
+        except Exception:
+            pass
+    return out
+
+
+def _post_solve_metadata_cleanup(meta: dict, hdr_final: Header) -> None:
+    """
+    Make solved WCS canonical in metadata and eliminate stale/legacy WCS sources.
+    Mutates meta in place.
+    """
+    # Canonical current header
+    meta["original_header"] = hdr_final
+
+    # Canonical WCS object
+    try:
+        meta["wcs"] = WCS(hdr_final, naxis=2)
+    except Exception as e:
+        print("post_solve: WCS build failed:", e)
+        meta.pop("wcs", None)
+
+    # Canonical WCS header (WCS-only)
+    meta["wcs_header"] = _wcs_only_from_header(hdr_final)
+
+    # Kill common stale/duplicate keys (case variants + old conventions)
+    for k in (
+        "WCS_HEADER", "FITS_HEADER", "ORIGINAL_HEADER", "PRE_SOLVE_HEADER", "__HEADER_SNAPSHOT__",
+        "FILE_PATH", "BIT_DEPTH", "WCSAXES"
+    ):
+        # only remove the ALLCAPS legacy variants — keep your lowercase canonical ones
+        if k in meta:
+            meta.pop(k, None)
+
+    # Invalidate caches that depend on WCS (these names are examples; add yours)
+    for k in (
+        "SFCC_star_list", "SFCC_catalog", "SFCC_wcs_sig",
+        "star_list", "catalog_stars", "matched_stars", "photometry_cache"
+    ):
+        if k in meta:
+            meta[k] = None  # set-to-None works even if metadata merges elsewhere
+
 
 # ---------------------------------------------------------------------
 # Dialog UI with Active/File and Batch modes

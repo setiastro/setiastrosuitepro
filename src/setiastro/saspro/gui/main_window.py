@@ -106,23 +106,22 @@ from collections import defaultdict
 from PyQt6 import sip
 
 # ----- QtWidgets -----
-from PyQt6.QtWidgets import (QDialog, QApplication, QMainWindow, QWidget, QHBoxLayout, QFileDialog, QMessageBox, QSizePolicy, QToolBar, QPushButton, QAbstractItemDelegate,
-    QLineEdit, QMenu, QListWidget, QListWidgetItem, QSplashScreen, QDockWidget, QListView, QCompleter, QMdiArea, QMdiArea, QMdiSubWindow, QWidgetAction, QAbstractItemView,
-    QInputDialog, QVBoxLayout, QLabel, QCheckBox, QProgressBar, QProgressDialog, QGraphicsItem, QTabWidget, QTableWidget, QHeaderView, QTableWidgetItem, QToolButton, QPlainTextEdit
+from PyQt6.QtWidgets import (QDialog, QApplication, QMainWindow, QWidget, QHBoxLayout, QFileDialog, QMessageBox, QSizePolicy, QToolBar, 
+    QLineEdit, QMenu, QDockWidget, QListView, QCompleter, QMdiArea, QMdiArea, QMdiSubWindow, 
+    QInputDialog, QCheckBox, QProgressDialog, 
 )
 
 # ----- QtGui -----
 from PyQt6.QtGui import (QPixmap, QColor, QIcon, QKeySequence, QShortcut,
      QGuiApplication, QStandardItemModel, QStandardItem, QAction, QPalette,
-     QBrush, QActionGroup, QDesktopServices, QFont, QTextCursor, QPainter
+     QBrush, QDesktopServices, QPainter, QImage
 )
 
 # ----- QtCore -----
-from PyQt6.QtCore import (Qt, pyqtSignal, QCoreApplication, QTimer, QSize, QSignalBlocker,  QModelIndex, QThread, QUrl, QSettings, QEvent, QByteArray, QObject,
-    QPropertyAnimation, QEasingCurve, QElapsedTimer, QPoint
+from PyQt6.QtCore import (Qt, pyqtSignal, QTimer, QSize, QModelIndex, QUrl, QSettings, QEvent, QByteArray, QObject,
+    QPropertyAnimation, QEasingCurve, QPoint
 )
 
-from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 
 
 # Math functions
@@ -280,6 +279,53 @@ import time
 import threading
 import traceback
 from PyQt6.QtCore import QObject, QTimer
+import time
+from PyQt6.QtWidgets import QApplication, QMessageBox
+
+def qimage_to_float01_rgb(qimg: QImage) -> np.ndarray:
+    """
+    Convert a QImage to float32 RGB in [0,1], shape (H,W,3).
+    Drops alpha if present.
+    """
+    if qimg.isNull():
+        raise ValueError("Clipboard image is null")
+
+    # Force to RGBA8888 so memory layout is predictable
+    img = qimg.convertToFormat(QImage.Format.Format_RGBA8888)
+    w = img.width()
+    h = img.height()
+
+    ptr = img.bits()
+    ptr.setsize(h * w * 4)
+    arr = np.frombuffer(ptr, dtype=np.uint8).reshape((h, w, 4))
+
+    rgb = arr[..., :3].astype(np.float32) / 255.0
+    return np.ascontiguousarray(rgb)
+
+def float01_to_qimage(img: np.ndarray) -> QImage:
+    """
+    Convert float32 [0,1] mono or RGB numpy to QImage (8-bit).
+    Intended for clipboard, not archival.
+    """
+    a = np.asarray(img)
+    if a.ndim == 2:
+        # mono -> RGB for clipboard
+        a = np.repeat(a[..., None], 3, axis=2)
+    elif a.ndim == 3 and a.shape[2] == 1:
+        a = np.repeat(a, 3, axis=2)
+    elif a.ndim != 3 or a.shape[2] < 3:
+        raise ValueError(f"Unsupported image shape for clipboard: {a.shape}")
+
+    rgb = a[..., :3]
+    rgb8 = np.clip(rgb * 255.0 + 0.5, 0, 255).astype(np.uint8)
+
+    h, w = rgb8.shape[:2]
+    # QImage needs bytesPerLine
+    bytes_per_line = 3 * w
+    qimg = QImage(rgb8.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+    # Important: detach from numpy buffer (copy) so clipboard stays valid
+    return qimg.copy()
+
 
 class UiStallDetector(QObject):
     """
@@ -3316,6 +3362,94 @@ class AstroSuiteProMainWindow(
             dm.add_document(new_doc)
         except Exception:
             doc.apply_edit(L.astype(np.float32), step_name="Extract Luminance")
+
+    def _copy_active_to_clipboard(self):
+        sw = None
+        try:
+            if getattr(self, "mdi", None) is not None:
+                sw = self.mdi.activeSubWindow()
+        except Exception:
+            sw = None
+
+        vw = None
+        if sw is not None:
+            try:
+                vw = sw.widget()
+            except Exception:
+                vw = None
+
+        # Preferred: copy what the user is actually seeing (viewport crop)
+        if vw is not None and hasattr(vw, "copy_viewport_to_clipboard_image"):
+            try:
+                qimg = vw.copy_viewport_to_clipboard_image()
+                if qimg is not None and not qimg.isNull():
+                    QApplication.clipboard().setImage(qimg)
+                    return
+            except Exception as e:
+                QMessageBox.warning(self, "Copy", f"Failed to copy viewport:\n\n{e}")
+                return
+
+        # Fallback: old behavior (raw doc -> full image)
+        doc = self.docman.get_active_document()
+        if doc is None or getattr(doc, "image", None) is None:
+            QMessageBox.information(self, "Copy", "No active image to copy.")
+            return
+
+        try:
+            qimg = float01_to_qimage(doc.image)
+            QApplication.clipboard().setImage(qimg)
+        except Exception as e:
+            QMessageBox.warning(self, "Copy", f"Failed to copy image:\n\n{e}")
+
+
+    def _paste_clipboard_as_new_document(self):
+        cb = QApplication.clipboard()
+        md = cb.mimeData()
+
+        # 1) If clipboard contains an image, paste as new document
+        if cb.mimeData().hasImage():
+            try:
+                qimg = cb.image()
+                arr = qimage_to_float01_rgb(qimg)
+
+                meta = {
+                    "display_name": f"Pasted {time.strftime('%H-%M-%S')}",
+                    "bit_depth": "32-bit floating point",
+                    "original_format": "clipboard",
+                    "is_mono": False,
+                    # IMPORTANT: clipboard has no FITS header/WCS
+                }
+                self.docman.open_array(arr, metadata=meta, title=meta["display_name"])
+                return
+            except Exception as e:
+                QMessageBox.warning(self, "Paste", f"Failed to paste image:\n\n{e}")
+                return
+
+        # 2) Nice-to-have: paste file paths (copy file in Explorer/Finder)
+        if md.hasUrls():
+            urls = md.urls()
+            paths = []
+            for u in urls:
+                try:
+                    if u.isLocalFile():
+                        paths.append(u.toLocalFile())
+                except Exception:
+                    pass
+
+            if paths:
+                opened = 0
+                for p in paths:
+                    try:
+                        self.docman.open_path(p)
+                        opened += 1
+                    except Exception:
+                        pass
+                if opened:
+                    return
+
+        QMessageBox.information(self, "Paste", "Clipboard does not contain an image (or valid file paths).")
+
+
 
     def _extract_luminance(self, doc=None, preset: dict | None = None):
         from PyQt6.QtWidgets import QMessageBox

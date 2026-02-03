@@ -122,6 +122,9 @@ class MenuMixin:
         m_edit.addAction(self.act_undo)
         m_edit.addAction(self.act_redo)
         m_edit.addSeparator()
+        m_edit.addAction(self.act_copy)
+        m_edit.addAction(self.act_paste)
+        m_edit.addSeparator()        
         m_edit.addAction(self.act_mono_to_rgb)
         m_edit.addAction(self.act_swap_rb)  
 
