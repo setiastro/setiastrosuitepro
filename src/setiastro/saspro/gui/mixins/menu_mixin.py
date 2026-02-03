@@ -185,6 +185,7 @@ class MenuMixin:
         
         m_tools.addAction(self.act_selective_color)
         m_tools.addAction(self.act_magnitude)
+        m_tools.addAction(self.act_snr)
         m_tools.addSeparator()
         m_tools.addAction(self.act_view_bundles) 
         m_tools.addAction(self.act_function_bundles)

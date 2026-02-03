@@ -34,7 +34,7 @@ from setiastro.saspro.resources import (
     exoicon_path, peeker_icon, dse_icon_path, isophote_path, statstretch_path,
     starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path, narrowbandnormalization_path,
     nbtorgb_path, freqsep_path, multiscale_decomp_path, contsub_path, halo_path, cosmic_path,
-    satellite_path, imagecombine_path, wims_path, wimi_path, linearfit_path,
+    satellite_path, imagecombine_path, wims_path, wimi_path, linearfit_path, snr_path,
     debayer_path, aberration_path, functionbundles_path, viewbundles_path, planetarystacker_path,
     selectivecolor_path, rgbalign_path, planetprojection_path, clonestampicon_path, finderchart_path,magnitude_path,
 )
@@ -255,6 +255,7 @@ class ToolbarMixin:
         tb_tl.addAction(self.act_contsub)
         tb_tl.addAction(self.act_image_combine)
         tb_tl.addAction(self.act_magnitude)
+        tb_tl.addAction(self.act_snr)
 
         self._restore_toolbar_order(tb_tl, "Toolbar/Tools")
         try:
@@ -1168,6 +1169,11 @@ class ToolbarMixin:
         self.act_magnitude.setIconVisibleInMenu(True)
         self.act_magnitude.triggered.connect(self._open_magnitude_tool)
 
+        self.act_snr = QAction(QIcon(snr_path), self.tr("Object SNR..."), self)
+        self.act_snr.setStatusTip(self.tr("Measure object SNR vs background in a selected region"))
+        self.act_snr.setIconVisibleInMenu(True)
+        self.act_snr.triggered.connect(self._open_snr_tool)
+
         # NEW: Frequency Separation
         self.act_freqsep = QAction(QIcon(freqsep_path), self.tr("Frequency Separation..."), self)
         self.act_freqsep.setStatusTip(self.tr("Split into LF/HF and enhance HF (scale, wavelet, denoise)"))
@@ -1461,6 +1467,7 @@ class ToolbarMixin:
         reg("psf_viewer", self.act_psf_viewer)
         reg("plate_solve", self.act_plate_solve)
         reg("magnitude_tool", self.act_magnitude)
+        reg("snr_tool", self.act_snr)
         reg("star_align", self.act_star_align)
         reg("star_register", self.act_star_register)
         reg("mosaic_master", self.act_mosaic_master)
