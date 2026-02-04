@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QTextEdit, QPushButton, QProgressBar, QDoubleSpinBox,
     QLabel, QComboBox, QCheckBox, QSpinBox, QFormLayout, QDialogButtonBox, QWidget, QHBoxLayout
 )
-from PyQt6.QtGui import QDesktopServices
+from PyQt6.QtGui import QDesktopServices, QIcon
 
 from setiastro.saspro.cosmicclarity_engines.darkstar_engine import (
     darkstar_starremoval_rgb01,
@@ -35,15 +35,15 @@ except Exception:
 
 # Shared utilities
 from setiastro.saspro.widgets.image_utils import extract_mask_from_document as _active_mask_array_from_doc
-from setiastro.saspro.resources import get_resources
+from setiastro.saspro.resources import get_resources, starnet_path
 
 _ENABLE_SYQON = True  # flip to True only after you get permission
 
 # --- Star Removal tool registry ---
 _STAR_REMOVAL_TOOLS = [
-    {"key": "syqon", "label": "SyQon Starless", "runner": "_run_syqon"},    
-    {"key": "starnet", "label": "StarNet", "runner": "_run_starnet"},
-    {"key": "darkstar", "label": "CosmicClarity Dark Star", "runner": "_run_darkstar"},
+    {"key": "syqon", "label": "SyQon Starless", "runner": "_run_syqon", "icon_path": starnet_path},    
+    {"key": "starnet", "label": "StarNet", "runner": "_run_starnet", "icon_path": starnet_path},
+    {"key": "darkstar", "label": "CosmicClarity Dark Star", "runner": "_run_darkstar", "icon_path": starnet_path},
 ]
 
 _MAD_NORM = 1.4826
@@ -444,7 +444,7 @@ def remove_stars(main, target_doc=None):
     # dispatch
     fn = globals().get(tool["runner"])
     if callable(fn):
-        fn(main, doc)
+        fn(main, doc, icon_path=tool.get("icon_path"))
 
 
 
@@ -503,8 +503,6 @@ def _prepare_statstretch_input_for_starnet(img_rgb01: np.ndarray) -> tuple[np.nd
 # SyQon Starless integration
 # -----------------------------------------------------------------------------
 
-_SYQON_BASE_URL = "https://siril.syqon.it"
-
 def _syqon_data_dir() -> Path:
     """
     Store SyQon assets alongside other downloadable models (models_root()).
@@ -524,7 +522,7 @@ def _syqon_data_dir() -> Path:
 # --- SyQon model naming (purchased) ---
 # Model file is named: "nadir" (no extension)
 
-_SYQON_BUY_URL: str | None = None  # set later when you have it
+_SYQON_BUY_URL = "https://donate.stripe.com/14AdR9fZFbw85Rb4Wq2B204"
 
 def _syqon_model_path(d: Path) -> Path:
     return d / "nadir"
@@ -582,57 +580,6 @@ def _syqon_compute_target_bg_from_doc(doc) -> float:
     # keep within engine UI constraints
     return float(np.clip(med, 0.01, 0.50))
 
-
-class _SyQonDownloadThread(QThread):
-    progress = pyqtSignal(int)      # 0..100
-    status = pyqtSignal(str)
-    finished = pyqtSignal(bool)
-
-    def __init__(self, data_dir: Path, parent=None):
-        super().__init__(parent)
-        self.data_dir = data_dir
-        self._cancel = False
-
-    def cancel(self):
-        self._cancel = True
-
-    def run(self):
-        try:
-            # engine
-            self.status.emit("Downloading inference engine…")
-            def p1(g, t):
-                if t > 0:
-                    self.progress.emit(int((g / t) * 10.0))  # 0-10
-            ok = _syqon_download_file(
-                f"{_SYQON_BASE_URL}/syqon_starless_inference.py",
-                _syqon_engine_path(self.data_dir),
-                progress_cb=p1
-            )
-            if not ok or self._cancel:
-                self.finished.emit(False)
-                return
-
-            # model
-            self.status.emit("Downloading Zenith model (377 MB)…")
-            def p2(g, t):
-                if t > 0:
-                    self.progress.emit(10 + int((g / t) * 90.0))  # 10-100
-            ok = _syqon_download_file(
-                f"{_SYQON_BASE_URL}/zenith.pt",
-                _syqon_model_path(self.data_dir),
-                progress_cb=p2
-            )
-            if not ok or self._cancel:
-                self.finished.emit(False)
-                return
-
-            self.progress.emit(100)
-            self.status.emit("Download complete.")
-            self.finished.emit(True)
-        except Exception:
-            self.finished.emit(False)
-
-
 class _SyQonProcessThread(QThread):
     progress = pyqtSignal(int, str)          # percent, stage
     finished = pyqtSignal(object, object, dict, str)  # starless_s, stars_s, info, err
@@ -689,22 +636,20 @@ class _SyQonProcessThread(QThread):
 
 
 class SyQonStarlessDialog(QDialog):
-    """
-    SyQon UI consistent with SASPro (purchase + manual install):
-      - 'Get Starless Model Here…' opens SyQon purchase page (URL TBD)
-      - 'Install Downloaded Model…' copies downloaded 'nadir' into SASPro models folder
-      - Process enabled only when model is installed
-    """
-    def __init__(self, main, doc, parent=None):
-        super().__init__(parent or main)
+    def __init__(self, main, doc, parent=None, icon: QIcon | None = None):
+        super().__init__(parent)  # <-- NOT (parent or main)
         self.main = main
         self.doc = doc
-
-        self.data_dir = _syqon_data_dir()
+        self.data_dir = _syqon_data_dir() 
         self.proc_thr = None
-
         self.setWindowTitle("SyQon Starless")
         self.setMinimumSize(560, 520)
+
+        if icon is not None:
+            try:
+                self.setWindowIcon(icon)
+            except Exception:
+                pass
 
         lay = QVBoxLayout(self)
 
@@ -750,11 +695,11 @@ class SyQonStarlessDialog(QDialog):
 
         self.spin_tile = QSpinBox(self)
         self.spin_tile.setRange(128, 2048)
-        self.spin_tile.setSingleStep(64)
+        self.spin_tile.setSingleStep(512)
 
         self.spin_overlap = QSpinBox(self)
         self.spin_overlap.setRange(16, 512)
-        self.spin_overlap.setSingleStep(16)
+        self.spin_overlap.setSingleStep(128)
 
         self.spin_shadow = QDoubleSpinBox(self)
         self.spin_shadow.setRange(0.5, 5.0)
@@ -784,30 +729,30 @@ class SyQonStarlessDialog(QDialog):
         self.spin_pad = QSpinBox(self)
         self.spin_pad.setRange(0, 1024)
         self.spin_pad.setSingleStep(16)
-        self.spin_pad.setValue(128)
+        self.spin_pad.setValue(256)
 
         self.cmb_stars_extract = QComboBox(self)
-        self.cmb_stars_extract.addItems(["subtract", "unscreen"])
-        self.cmb_stars_extract.setCurrentText("subtract")
+        self.cmb_stars_extract.addItems(["unscreen", "subtract"])
+        self.cmb_stars_extract.setCurrentText("unscreen")
         # load persisted values
         s = getattr(main, "settings", None)
         if s:
             self.spin_tile.setValue(int(s.value("syqon/tile_size", 512)))
-            self.spin_overlap.setValue(int(s.value("syqon/overlap", 64)))
+            self.spin_overlap.setValue(int(s.value("syqon/overlap", 128)))
             self.spin_shadow.setValue(float(s.value("syqon/shadow_clip", 2.8)))
             self.chk_make_stars.setChecked(bool(s.value("syqon/make_stars", True, type=bool)))
             self.chk_pad.setChecked(bool(s.value("syqon/pad_edges", True, type=bool)))
-            self.spin_pad.setValue(int(s.value("syqon/pad_pixels", 128)))
-            self.cmb_stars_extract.setCurrentText(str(s.value("syqon/stars_extract", "subtract")))
+            self.spin_pad.setValue(int(s.value("syqon/pad_pixels", 256)))
+            self.cmb_stars_extract.setCurrentText(str(s.value("syqon/stars_extract", "unscreen")))
             self.chk_mtf.setChecked(bool(s.value("syqon/use_mtf", True, type=bool)))
             
         else:
             self.spin_tile.setValue(512)
-            self.spin_overlap.setValue(64)
+            self.spin_overlap.setValue(128)
             self.spin_shadow.setValue(2.8)
             self.chk_pad.setChecked(True)
-            self.spin_pad.setValue(128)
-            self.cmb_stars_extract.setCurrentText("subtract")
+            self.spin_pad.setValue(256)
+            self.cmb_stars_extract.setCurrentText("unscreen")
 
         form.addRow("Tile size:", self.spin_tile)
         form.addRow("Overlap:", self.spin_overlap)
@@ -1250,7 +1195,7 @@ class SyQonStarlessDialog(QDialog):
         super().closeEvent(ev)
 
 
-def _run_syqon(main, doc):
+def _run_syqon(main, doc, icon_path=starnet_path):
     from PyQt6.QtWidgets import QMessageBox
 
     if not _ENABLE_SYQON:
@@ -1261,10 +1206,11 @@ def _run_syqon(main, doc):
         )
         return
 
-    dlg = SyQonStarlessDialog(main, doc, parent=main)
+    dlg = SyQonStarlessDialog(main, doc, parent=main, icon=QIcon(starnet_path))
+   
     dlg.exec()
 
-def _run_starnet(main, doc):
+def _run_starnet(main, doc, icon_path=None):
     import os
     import platform
     import numpy as np
@@ -1722,12 +1668,15 @@ def _on_starnet_finished(main, doc, return_code, dialog, input_path, output_path
 # ------------------------------------------------------------
 # CosmicClarityDarkStar
 # ------------------------------------------------------------
-def _run_darkstar(main, doc):
+def _run_darkstar(main, doc, icon_path=None):
     import numpy as np
     from PyQt6.QtWidgets import QMessageBox
 
     # --- Config dialog (keep as-is) ---
     cfg = DarkStarConfigDialog(main)
+    if icon_path:
+        try: cfg.setWindowIcon(QIcon(starnet_path))
+        except Exception: pass
     if not cfg.exec():
         return
     v = cfg.get_values()
