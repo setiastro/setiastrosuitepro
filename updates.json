@@ -1,9 +1,9 @@
 {
-  "version": "1.8.4.post2",
+  "version": "1.9.0.post1",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.8.4/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.8.4/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.8.4/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.9.0/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.9.0/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.9.0/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.8.4 Updated Magnitude Calculations.  DirectML torch rejection error fix.  Smooth Zoom option in Preferences.  Remove Stars Preset (dark star) fixed.  Undo/Redo Stack optimizations.  Live Stacking Fix.  Other bug fixes."
+  "notes": "Seti Astro Suite Pro V1.9.0 CLI (command line interface) for cosmic clarity to run on files directly. New SNR Tool. New copy and paste images directly into SASpro. New SyQon starless integration. More tweaks and robustness around platesolving, magnitude tool, SFCC photometry, etc. Many bug and UX fixes."
 }
