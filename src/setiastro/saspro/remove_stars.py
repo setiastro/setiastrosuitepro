@@ -500,13 +500,7 @@ def _prepare_statstretch_input_for_starnet(img_rgb01: np.ndarray) -> tuple[np.nd
     return x_for_starnet, meta
 
 # -----------------------------------------------------------------------------
-# SyQon Starless (download-on-demand) integration
-# (c) Adrian Knagg-Baugh 2026 - MIT
-# SASPro integration: dropdown runner + dialog + doc apply pipeline
-#
-# NOTE:
-#   The SyQon inference engine + Zenith model are NOT shipped with SASPro.
-#   They are downloaded at runtime into the user's SASPro data folder.
+# SyQon Starless integration
 # -----------------------------------------------------------------------------
 
 _SYQON_BASE_URL = "https://siril.syqon.it"
@@ -766,9 +760,11 @@ class SyQonStarlessDialog(QDialog):
         self.spin_shadow.setRange(0.5, 5.0)
         self.spin_shadow.setSingleStep(0.1)
         self.spin_shadow.setDecimals(1)
-
+        self.chk_mtf = QCheckBox("Apply temporary stretch for model (recommended)", self)
+        self.chk_mtf.setChecked(True)
         # target bg (auto, optional)
         self._auto_bg = _syqon_compute_target_bg_from_doc(doc)
+        self.lbl_target_bg = QLabel("Target background:", self)
         self.spin_bg = QDoubleSpinBox(self)
         self.spin_bg.setRange(0.01, 0.50)
         self.spin_bg.setSingleStep(0.01)
@@ -803,6 +799,7 @@ class SyQonStarlessDialog(QDialog):
             self.chk_pad.setChecked(bool(s.value("syqon/pad_edges", True, type=bool)))
             self.spin_pad.setValue(int(s.value("syqon/pad_pixels", 128)))
             self.cmb_stars_extract.setCurrentText(str(s.value("syqon/stars_extract", "subtract")))
+            self.chk_mtf.setChecked(bool(s.value("syqon/use_mtf", True, type=bool)))
             
         else:
             self.spin_tile.setValue(512)
@@ -818,8 +815,10 @@ class SyQonStarlessDialog(QDialog):
 
         self.lbl_bginfo = QLabel(f"Target background (auto): {self._auto_bg:.3f}", self)
         form.addRow(self.lbl_bginfo)
-        form.addRow("Target background:", self.spin_bg)
+
+        form.addRow(self.lbl_target_bg, self.spin_bg)
         form.addRow("", self.chk_show_bg)
+        form.addRow("", self.chk_mtf)        
         form.addRow("", self.chk_make_stars)
 
         form.addRow("", self.chk_pad)
@@ -840,8 +839,10 @@ class SyQonStarlessDialog(QDialog):
         btns.addWidget(self.btn_close)
         lay.addLayout(btns)
 
-        self.spin_bg.setVisible(False)
+        self._toggle_bg(self.chk_show_bg.isChecked())
+
         self._refresh_state()
+
 
     # ------------------------------------------------------------------
     # helpers
@@ -881,7 +882,6 @@ class SyQonStarlessDialog(QDialog):
         stars_extract_mode = str(self.cmb_stars_extract.currentText())
 
         # retrieve cached things you computed before launching thread
-        mtf_params = self._mtf_params
         scale_factor = self._scale_factor
         H0, W0 = self._H0, self._W0
         orig_was_mono = self._orig_was_mono
@@ -890,7 +890,13 @@ class SyQonStarlessDialog(QDialog):
         if starless_s.ndim == 2:
             starless_s = np.stack([starless_s]*3, axis=-1)
 
-        starless_lin = _invert_mtf_unlinked_rgb(starless_s, mtf_params)
+        mtf_params = self._mtf_params
+        do_mtf = bool(getattr(self, "_do_mtf", True))
+
+        if do_mtf and mtf_params is not None:
+            starless_lin = _invert_mtf_unlinked_rgb(starless_s, mtf_params)
+        else:
+            starless_lin = starless_s
 
         if scale_factor > 1.01:
             starless_lin = np.clip(starless_lin * scale_factor, 0.0, 1.0).astype(np.float32, copy=False)
@@ -941,6 +947,7 @@ class SyQonStarlessDialog(QDialog):
                     "stars_extract": str(stars_extract_mode),
                     "model_path": str(self._model_dst_path()),
                     "label": "Remove Stars (SyQon)",
+                    "use_mtf": bool(do_mtf),
                 }
             }
         }
@@ -963,6 +970,7 @@ class SyQonStarlessDialog(QDialog):
                     "pad_edges": bool(pad_edges),
                     "pad_pixels": int(pad_pixels),
                     "stars_extract": str(stars_extract_mode),
+                    "use_mtf": bool(do_mtf),
                 },
             }
         except Exception:
@@ -984,7 +992,10 @@ class SyQonStarlessDialog(QDialog):
             return False
 
     def _toggle_bg(self, on: bool):
-        self.spin_bg.setVisible(bool(on))
+        on = bool(on)
+        self.lbl_bginfo.setVisible(on)      # optional
+        self.lbl_target_bg.setVisible(on)
+        self.spin_bg.setVisible(on)
 
     def _refresh_state(self):
         dst = self._model_dst_path()
@@ -1154,6 +1165,7 @@ class SyQonStarlessDialog(QDialog):
             s.setValue("syqon/pad_edges", bool(self.chk_pad.isChecked()))
             s.setValue("syqon/pad_pixels", int(self.spin_pad.value()))
             s.setValue("syqon/stars_extract", str(self.cmb_stars_extract.currentText()))
+            s.setValue("syqon/use_mtf", bool(self.chk_mtf.isChecked()))
 
         pad_edges = bool(self.chk_pad.isChecked())
         pad_pixels = int(self.spin_pad.value())
@@ -1185,9 +1197,14 @@ class SyQonStarlessDialog(QDialog):
         H0, W0 = xrgb.shape[:2]
         if pad_edges and pad_pixels > 0:
             xrgb = _pad_reflect(xrgb, pad_pixels)
-
-        mtf_params = _mtf_params_unlinked(xrgb, shadows_clipping=-2.8, targetbg=0.25)
-        x_for_net = _apply_mtf_unlinked_rgb(xrgb, mtf_params)
+        do_mtf = bool(self.chk_mtf.isChecked())
+        # MTF only if requested
+        if do_mtf:
+            mtf_params = _mtf_params_unlinked(xrgb, shadows_clipping=-2.8, targetbg=0.25)
+            x_for_net = _apply_mtf_unlinked_rgb(xrgb, mtf_params)
+        else:
+            mtf_params = None
+            x_for_net = xrgb
 
         # Cache values needed by finish handler
         self._mtf_params = mtf_params
@@ -1195,6 +1212,8 @@ class SyQonStarlessDialog(QDialog):
         self._H0, self._W0 = H0, W0
         self._orig_was_mono = orig_was_mono
         self._target_bg = target_bg
+        self._do_mtf = do_mtf
+        self._mtf_params = mtf_params
 
         # Start worker thread
         self._set_busy(True)
