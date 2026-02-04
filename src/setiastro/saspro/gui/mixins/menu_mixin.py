@@ -100,6 +100,7 @@ class MenuMixin:
         m_file.addAction(self.act_open)
         m_file.addSeparator()
         m_file.addAction(self.act_save)
+        m_file.addAction(self.act_checkpoint_save) 
         m_file.addSeparator()
         m_file.addAction(self.act_clear_views) 
         m_file.addSeparator()

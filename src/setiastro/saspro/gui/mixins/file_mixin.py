@@ -4,13 +4,73 @@ File operations mixin for AstroSuiteProMainWindow.
 """
 from __future__ import annotations
 import os
-from typing import TYPE_CHECKING
+import re
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Optional, List, Tuple
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QFileDialog, QMessageBox, QProgressDialog, QApplication
 
 if TYPE_CHECKING:
     pass
+
+
+_PROC_SCAN_RE = re.compile(r"^(?P<prefix>.+)_proc(?P<n>\d+)(?P<tag>_[^.]*)?$", re.IGNORECASE)
+
+def _split_stars_suffix(name_no_ext: str) -> Tuple[str, bool]:
+    if name_no_ext.lower().endswith("_stars"):
+        return name_no_ext[:-6], True
+    return name_no_ext, False
+
+def _strip_proc_tail(base_no_ext: str) -> str:
+    """
+    If base already ends in _procN or _procN_tag, strip that whole tail so we build from the true prefix.
+    """
+    m = _PROC_SCAN_RE.match(base_no_ext)
+    if not m:
+        return base_no_ext
+    return m.group("prefix")
+
+def _safe_ext_from_path(path: str) -> str:
+    ext = os.path.splitext(path)[1] or ""
+    return ext.lower()
+
+def _next_proc_index_for(prefix: str, workdir: str, stars: bool, tag: str, ext: str) -> int:
+    """
+    Find next N by scanning the directory for files that match:
+      prefix_procN{tag}{_stars}{ext}
+    """
+    # normalize
+    tag_part = tag or ""          # e.g. "_dbe" or ""
+    stars_part = "_stars" if stars else ""
+
+    patt = re.compile(
+        r"^" + re.escape(prefix)
+        + r"_proc(\d+)"
+        + re.escape(tag_part)
+        + re.escape(stars_part)
+        + re.escape(ext)
+        + r"$",
+        re.IGNORECASE
+    )
+
+    max_n = 0
+    try:
+        for fn in os.listdir(workdir):
+            m = patt.match(fn)
+            if m:
+                max_n = max(max_n, int(m.group(1)))
+    except Exception:
+        pass
+
+    return max_n + 1
+
+@dataclass
+class _CheckpointSpec:
+    mode_all_open: bool = False            # default active only
+    format_override: Optional[str] = None  # e.g. ".fits" or ".xisf" or None meaning same-as-source
+    tag: str = ""                          # e.g. "_dbe" or "" (must start with "_" if non-empty)
+    include_paired_stars: bool = True      # if base exists and paired stars exists, save both
 
 
 class FileMixin:
@@ -481,3 +541,131 @@ class FileMixin:
                 pass
         return docs
 
+    def checkpoint_save(self):
+        """
+        Public entrypoint bound to QAction. Default behavior = active-only, same format, no tag.
+        If you later add a small dialog, it can call _checkpoint_save_with_spec(spec).
+        """
+        spec = _CheckpointSpec(
+            mode_all_open=False,
+            format_override=None,
+            tag="",
+            include_paired_stars=True
+        )
+        self._checkpoint_save_with_spec(spec)
+
+    def _checkpoint_save_with_spec(self, spec: _CheckpointSpec):
+        dm = getattr(self, "doc_manager", None) or getattr(self, "docman", None)
+        if dm is None:
+            QMessageBox.warning(self, self.tr("Checkpoint Save"), self.tr("Document manager not available."))
+            return
+
+        # Collect docs to save
+        docs = []
+        if spec.mode_all_open:
+            docs = self._collect_open_documents()
+        else:
+            d = self._active_doc()
+            if d:
+                docs = [d]
+
+        if not docs:
+            return
+
+        # Build a quick lookup for paired stars docs by "base title"
+        # We'll use best_doc_name(doc) for stable naming.
+        from setiastro.saspro.main_helpers import best_doc_name as _best_doc_name
+
+        name_to_doc = {}
+        for d in docs if spec.mode_all_open else self._collect_open_documents():
+            try:
+                nm = os.path.splitext(_best_doc_name(d))[0]
+                name_to_doc[nm] = d
+            except Exception:
+                pass
+
+        saved_any = False
+        for doc in docs:
+            try:
+                ok = self._checkpoint_save_one(doc, spec, name_to_doc=name_to_doc)
+                saved_any = saved_any or ok
+            except Exception as e:
+                QMessageBox.warning(self, self.tr("Checkpoint Save"), str(e))
+
+        if saved_any:
+            self._log("Checkpoint Save complete.")
+
+    def _checkpoint_save_one(self, doc, spec: _CheckpointSpec, name_to_doc: Optional[dict] = None) -> bool:
+        from setiastro.saspro.main_helpers import best_doc_name as _best_doc_name
+
+        # Determine source file path (real filesystem path, not "::HDU" etc)
+        meta = getattr(doc, "metadata", {}) or {}
+        orig_path = meta.get("file_path", "") or ""
+        if "::" in orig_path:
+            orig_path_fs = orig_path.split("::", 1)[0]
+        else:
+            orig_path_fs = orig_path
+
+        if not orig_path_fs:
+            # Official tool could prompt for folder; for now we follow your style and warn.
+            self._log(f"Checkpoint skipped (unsaved doc): {_best_doc_name(doc)}")
+            return False
+
+        workdir = os.path.dirname(orig_path_fs)
+        if not workdir or not os.path.isdir(workdir):
+            self._log(f"Checkpoint skipped (bad folder): {orig_path_fs}")
+            return False
+
+        base = os.path.splitext(os.path.basename(orig_path_fs))[0]  # file base, not window title
+        ext_src = _safe_ext_from_path(orig_path_fs)                 # includes dot, e.g. ".fits"
+        ext = (spec.format_override or ext_src or ".fits").lower()
+
+        # normalize tag
+        tag = (spec.tag or "").strip()
+        if tag and not tag.startswith("_"):
+            tag = "_" + tag
+
+        # stars suffix (based on current doc name, not path base) — but your pipeline expects _stars in title commonly
+        # We'll infer from best_doc_name(doc) to match your window naming.
+        doc_title_no_ext = os.path.splitext(_best_doc_name(doc))[0]
+        doc_base_no_stars, is_stars = _split_stars_suffix(doc_title_no_ext)
+
+        # Use the *filesystem base* as prefix source, but strip any proc tail
+        # This keeps checkpoint files grouped with the original file on disk.
+        prefix = _strip_proc_tail(base)
+
+        n_next = _next_proc_index_for(prefix, workdir, is_stars, tag, ext)
+        out_base = f"{prefix}_proc{n_next}{tag}" + ("_stars" if is_stars else "")
+        out_path = os.path.join(workdir, out_base + ext)
+
+        # Save using DocManager so headers/bit depth handling remains consistent
+        # Use doc's current bit depth unless you want "same as save_active dialog" later.
+        chosen_bd = meta.get("bit_depth", None)
+
+        self.docman.save_document(
+            doc, out_path,
+            bit_depth_override=chosen_bd,
+            jpeg_quality=(meta.get("jpeg_quality", None) if ext in (".jpg", ".jpeg") else None),
+            export_opts=None,
+        )
+        self._log(f"Checkpoint saved: {out_path}")
+
+        # Optional: also save paired stars doc if requested
+        if spec.include_paired_stars and (not is_stars) and name_to_doc:
+            paired_name = doc_title_no_ext + "_stars"
+            paired_doc = name_to_doc.get(paired_name)
+            if paired_doc is not None:
+                # Save paired as well with same N
+                out_base2 = f"{prefix}_proc{n_next}{tag}_stars"
+                out_path2 = os.path.join(workdir, out_base2 + ext)
+                meta2 = getattr(paired_doc, "metadata", {}) or {}
+                bd2 = meta2.get("bit_depth", None)
+                self.docman.save_document(
+                    paired_doc, out_path2,
+                    bit_depth_override=bd2,
+                    jpeg_quality=(meta2.get("jpeg_quality", None) if ext in (".jpg", ".jpeg") else None),
+                    export_opts=None,
+                )
+                self._log(f"Checkpoint saved (paired stars): {out_path2}")
+
+        return True

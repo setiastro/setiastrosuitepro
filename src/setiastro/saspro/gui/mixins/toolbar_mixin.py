@@ -85,6 +85,7 @@ class ToolbarMixin:
 
         tb.addAction(self.act_open)
         tb.addAction(self.act_save)
+        tb.addAction(self.act_checkpoint_save) 
         tb.addSeparator()
         tb.addAction(self.act_undo)
         tb.addAction(self.act_redo)
@@ -683,6 +684,11 @@ class ToolbarMixin:
         self.act_project_new.setStatusTip(self.tr("Close all views and clear shortcuts"))
         self.act_project_save.setStatusTip(self.tr("Save all views, histories, and shortcuts to a .sas file"))
         self.act_project_load.setStatusTip(self.tr("Load a .sas project (views, histories, shortcuts)"))
+
+        self.act_checkpoint_save = QAction(QIcon.fromTheme("document-save"), self.tr("Checkpoint Save"), self)
+        self.act_checkpoint_save.setIconVisibleInMenu(True)
+        self.act_checkpoint_save.setStatusTip(self.tr("Save a numbered checkpoint copy (e.g., _proc1, _proc2, ...)"))
+        self.act_checkpoint_save.triggered.connect(self.checkpoint_save)
 
         self.act_project_new.triggered.connect(self._new_project)
         self.act_project_save.triggered.connect(self._save_project)
@@ -1408,6 +1414,7 @@ class ToolbarMixin:
         # register whatever you want draggable/launchable
         reg("open",           self.act_open)
         reg("save_as",        self.act_save)
+        reg("checkpoint_save", self.act_checkpoint_save)
         reg("undo",           self.act_undo)
         reg("redo",           self.act_redo)
         reg("autostretch",    self.act_autostretch)
