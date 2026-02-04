@@ -36,6 +36,51 @@ from setiastro.saspro.widgets.preview_dialogs import ImagePreviewDialog
 import shutil
 import subprocess
 
+
+def _save_fmt_and_bitdepth_from_path_for_legacy(path: str):
+    ext = os.path.splitext(path)[1].lower()
+
+    if ext in (".fit", ".fits", ".fits.gz", ".fit.gz", ".fz"):
+        return "fits", "32-bit floating point"
+
+    if ext in (".tif", ".tiff"):
+        return "tif", "32-bit floating point"
+
+    if ext == ".xisf":
+        return "xisf", "32-bit floating point"
+
+    if ext == ".png":
+        return "png", None  # legacy always saves 8-bit PNG
+
+    if ext in (".jpg", ".jpeg"):
+        return "jpg", None  # legacy always saves 8-bit JPG
+
+    return None, None
+
+
+def _save_image_no_auto_legacy(img, dst_path: str, hdr, mono, *, image_meta=None, file_meta=None, wcs_header=None):
+    fmt, bd = _save_fmt_and_bitdepth_from_path_for_legacy(dst_path)
+
+    # Unknown/unsupported extension -> force FITS output
+    if fmt is None:
+        base, _ = os.path.splitext(dst_path)
+        dst_path = base + ".fits"
+        fmt, bd = "fits", "32-bit floating point"
+
+    save_image(
+        img,
+        dst_path,
+        fmt,
+        bd,
+        hdr,
+        mono,
+        image_meta=image_meta,
+        file_meta=file_meta,
+        wcs_header=wcs_header,
+    )
+    return dst_path
+
+
 def _cc_models_installed() -> tuple[bool, str]:
     """
     Returns (ok, detail). Since your model download is all-or-nothing (zip),
@@ -1218,18 +1263,8 @@ class CosmicClaritySatelliteDialogPro(QDialog):
             base, ext = os.path.splitext(file_path)
             dst = base + "_satellited" + ext
 
-            el = ext.lower()
-            if el in (".tif", ".tiff"):
-                fmt, bitdepth = "tiff", "32-bit floating point"
-            elif el in (".fit", ".fits"):
-                fmt, bitdepth = "fits", "32-bit floating point"
-            elif el == ".xisf":
-                fmt, bitdepth = "xisf", "32-bit floating point"
-            else:
-                fmt, bitdepth = "auto", None
-
-            save_image(out, dst, fmt, bitdepth, hdr, mono)
-            QMessageBox.information(self, "Success", f"Processed image saved to:\n{dst}")
+            dst_final = _save_image_no_auto_legacy(out, dst, hdr, mono)
+            QMessageBox.information(self, "Success", f"Processed image saved to:\n{dst_final}")
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to save result:\n{e}")
@@ -1425,8 +1460,8 @@ class SatelliteEngineThread(QThread):
 
                 # Choose save behavior: keep original extension/name
                 # (You can change naming here if you want.)
-                save_image(out, fp_out, "auto", None, hdr, mono)
-                self.log_signal.emit(f"Saved: {os.path.basename(fp_out)}")
+                fp_out_final = _save_image_no_auto_legacy(out, fp_out, hdr, mono)
+                self.log_signal.emit(f"Saved: {os.path.basename(fp_out_final)}")
 
             # -------- batch (single pass) OR monitor (loop) --------
             while not self._cancel:
