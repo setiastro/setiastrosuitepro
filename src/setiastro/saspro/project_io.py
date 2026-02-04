@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 from PyQt6.QtWidgets import QMdiSubWindow
 from PyQt6.QtCore import QPoint, QRect, QTimer
-
+from setiastro.saspro.swap_manager import get_swap_manager
 
 try:
     from PyQt6 import sip
@@ -347,14 +347,34 @@ class ProjectWriter:
 
                 # --- history stacks --------------------------------------------------
                 # --- history stacks --------------------------------------------------
+                # _undo/_redo now store (swap_id, meta, name). We must load the swap states
+                # and embed the image payloads into the project file.
+                try:
+                    sm = get_swap_manager()
+                except Exception:
+                    sm = None
+
                 undo_list = []
-                for i, (img, m, name) in enumerate(getattr(doc, "_undo", []) or []):
+                for i, entry in enumerate(getattr(doc, "_undo", []) or []):
+                    try:
+                        sid, m, name = entry
+                    except Exception:
+                        continue
+                    if not sid or sm is None:
+                        continue
+
+                    img = None
+                    try:
+                        img = sm.load_state(sid)
+                    except Exception:
+                        img = None
+                    if img is None:
+                        continue
+
                     fname = f"history/undo_{i:04d}.{hist_ext}"
                     try:
                         payload = _np_save_to_bytes(img, compress=compress)
-                    except Exception as exc:
-                        # Skip bad entries but keep saving the rest of the project
-                        # (optional: log exc somewhere)
+                    except Exception:
                         continue
 
                     undo_list.append({
@@ -365,12 +385,26 @@ class ProjectWriter:
                     z.writestr(f"{base}/{fname}", payload)
 
                 redo_list = []
-                for i, (img, m, name) in enumerate(getattr(doc, "_redo", []) or []):
+                for i, entry in enumerate(getattr(doc, "_redo", []) or []):
+                    try:
+                        sid, m, name = entry
+                    except Exception:
+                        continue
+                    if not sid or sm is None:
+                        continue
+
+                    img = None
+                    try:
+                        img = sm.load_state(sid)
+                    except Exception:
+                        img = None
+                    if img is None:
+                        continue
+
                     fname = f"history/redo_{i:04d}.{hist_ext}"
                     try:
                         payload = _np_save_to_bytes(img, compress=compress)
                     except Exception:
-                        # Same logic: skip broken entries
                         continue
 
                     redo_list.append({
@@ -384,6 +418,7 @@ class ProjectWriter:
                     f"{base}/history/stack.json",
                     json.dumps({"undo": undo_list, "redo": redo_list}, indent=2),
                 )
+
 
 
 
@@ -491,30 +526,71 @@ class ProjectReader:
                     pass
 
                 # --- history -------------------------------------------------------
+                # --- history -------------------------------------------------------
                 try:
                     stack = json.loads(z.read(f"{base}/history/stack.json").decode("utf-8"))
                 except Exception:
                     stack = {"undo": [], "redo": []}
 
-                undo_tuples = []
+                try:
+                    sm = get_swap_manager()
+                except Exception:
+                    sm = None
+
+                doc._undo = []
+                doc._redo = []
+
+                # Recreate undo stack
                 for entry in stack.get("undo", []):
                     fname = entry.get("file")
+                    if not fname:
+                        continue
                     try:
                         arr = _np_load_from_bytes(z.read(f"{base}/{fname}"))
-                        undo_tuples.append((arr, entry.get("meta") or {}, entry.get("name") or "Edit"))
                     except Exception:
                         continue
-                doc._undo = undo_tuples
 
-                redo_tuples = []
+                    if sm is None:
+                        # fallback: cannot rebuild swap; skip (or store array somewhere if you prefer)
+                        continue
+
+                    try:
+                        sid = sm.save_state(arr)
+                        if sid:
+                            sm.pin_state(sid)
+                            doc._undo.append((sid, entry.get("meta") or {}, entry.get("name") or "Edit"))
+                    except Exception:
+                        continue
+
+                # Recreate redo stack
                 for entry in stack.get("redo", []):
                     fname = entry.get("file")
+                    if not fname:
+                        continue
                     try:
                         arr = _np_load_from_bytes(z.read(f"{base}/{fname}"))
-                        redo_tuples.append((arr, entry.get("meta") or {}, entry.get("name") or "Edit"))
                     except Exception:
                         continue
-                doc._redo = redo_tuples
+
+                    if sm is None:
+                        continue
+
+                    try:
+                        sid = sm.save_state(arr)
+                        if sid:
+                            # you currently don't pin redo states (fine). If you want, you can pin here too.
+                            # sm.pin_state(sid)
+                            doc._redo.append((sid, entry.get("meta") or {}, entry.get("name") or "Edit"))
+                    except Exception:
+                        continue
+
+                # Pin policy: keep last N undo swap states pinned, unpin older
+                try:
+                    if hasattr(doc, "_pin_last_undos"):
+                        doc._pin_last_undos(keep=5)
+                except Exception:
+                    pass
+
 
             # restore UI geometry/minimized
             try:
@@ -548,6 +624,7 @@ class ProjectReader:
 
             # Defer to avoid racing with dock/MDI state changes during project open/close
             QTimer.singleShot(0, _do_restore)
+        print("UNDO LEN:", len(doc._undo), "REDO LEN:", len(doc._redo), "TOP:", doc._undo[-1] if doc._undo else None)    
 
     # --- NEW: cache folder for extracted sources ------------------------------
     def _ensure_project_cache(self, project_path: str) -> str:
