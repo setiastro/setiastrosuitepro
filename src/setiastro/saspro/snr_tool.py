@@ -105,6 +105,24 @@ def _native_channel_count(img01: np.ndarray) -> int:
         return 3 if img01.shape[2] >= 3 else img01.shape[2]
     return 1
 
+def _bbox_from_mask(mask: np.ndarray) -> QRect:
+    ys, xs = np.nonzero(mask)
+    if xs.size == 0 or ys.size == 0:
+        return QRect()
+    x0, x1 = int(xs.min()), int(xs.max())
+    y0, y1 = int(ys.min()), int(ys.max())
+    return QRect(x0, y0, (x1 - x0 + 1), (y1 - y0 + 1))
+
+
+def _expand_rect(r: QRect, margin: int, W: int, H: int) -> QRect:
+    if r.isNull():
+        return QRect()
+    x0 = max(0, r.x() - margin)
+    y0 = max(0, r.y() - margin)
+    x1 = min(W, r.x() + r.width() + margin)
+    y1 = min(H, r.y() + r.height() + margin)
+    return QRect(x0, y0, max(1, x1 - x0), max(1, y1 - y0))
+
 
 def _get_channel_plane(img01: np.ndarray, c: int) -> np.ndarray:
     """Return 2D plane for channel c for mono or RGB."""
@@ -209,7 +227,21 @@ class SNRToolDialog(QDialog):
         snr_tab_l.setContentsMargins(0, 0, 0, 0)
         snr_tab_l.addWidget(self.canvas_snr)
         self.tabs_plots.addTab(snr_tab, "SNR Chart")
+        # --- Tab 3: ROI Preview ---
+        self.lbl_roi = QLabel("ROI preview will appear after you run Calculate.")
+        self.lbl_roi.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_roi.setMinimumHeight(220)
+        self.lbl_roi.setStyleSheet("border: 1px solid rgba(255,255,255,40); padding: 6px;")
 
+        roi_tab = QWidget()
+        roi_tab_l = QVBoxLayout(roi_tab)
+        roi_tab_l.setContentsMargins(6, 6, 6, 6)
+        roi_tab_l.addWidget(self.lbl_roi, 1)
+
+        self.tabs_plots.addTab(roi_tab, "ROI Preview")
+
+        # Keep a reference to the pixmap so it doesn't get GC'ed weirdly
+        self._roi_pix = None
         plots_box.addWidget(self.tabs_plots, 1)
 
         mid.addLayout(plots_box, 1)
@@ -336,6 +368,7 @@ class SNRToolDialog(QDialog):
         # update plots
         self._plot_snr_bars(ch_names, snr_vals, snr_db_vals)
         self._refresh_distribution_plot()
+        self._update_roi_preview()
 
     def _ensure_plot_channels(self, img01: np.ndarray):
         """Update channel dropdown to match the active image (L or R/G/B)."""
@@ -380,6 +413,116 @@ class SNRToolDialog(QDialog):
         ax.legend(handles1 + handles2, labels1 + labels2, loc="best")
 
         self.canvas_snr.draw_idle()
+
+    def _roi_display_rgb01(self, crop01: np.ndarray) -> np.ndarray:
+        """
+        Convert a crop (mono or rgb) into display-ready RGB in [0,1].
+        Uses your stretch_color_image for visibility.
+        """
+        a = np.asarray(crop01, dtype=np.float32)
+
+        # ensure RGB for display
+        if a.ndim == 2:
+            a = np.dstack([a, a, a])
+        elif a.ndim == 3 and a.shape[2] == 1:
+            m = a[..., 0]
+            a = np.dstack([m, m, m])
+        elif a.ndim == 3 and a.shape[2] >= 3:
+            a = a[..., :3]
+        else:
+            # fallback
+            a = np.dstack([a, a, a])
+
+        # stretch for view (doesn't affect measurement)
+        try:
+            disp = stretch_color_image(
+                a,
+                target_median=0.35,
+                linked=True,
+                normalize=False,
+                apply_curves=False,
+                curves_boost=0.0,
+                blackpoint_sigma=3.5,
+                no_black_clip=False,
+                hdr_compress=False,
+                hdr_amount=0.0,
+                hdr_knee=0.75,
+                luma_only=False,
+                high_range=False,
+            )
+            return np.clip(disp, 0.0, 1.0).astype(np.float32, copy=False)
+        except Exception:
+            return np.clip(a, 0.0, 1.0).astype(np.float32, copy=False)
+
+    def _update_roi_preview(self):
+        """
+        Build a small cropped preview around the target + overlays.
+        Requires: self._last_calc present.
+        """
+        if not self._last_calc:
+            self.lbl_roi.setText("ROI preview will appear after you run Calculate.")
+            self.lbl_roi.setPixmap(QPixmap())
+            self._roi_pix = None
+            return
+
+        img01 = self._last_calc["img01"]
+        obj_mask = self._last_calc["obj_mask"]
+        bg_mask = self._last_calc["bg_mask"]
+
+        H, W = img01.shape[:2]
+
+        # bbox from target mask (tight)
+        bbox = _bbox_from_mask(obj_mask)
+        if bbox.isNull():
+            self.lbl_roi.setText("No target mask (ROI preview unavailable).")
+            self.lbl_roi.setPixmap(QPixmap())
+            self._roi_pix = None
+            return
+
+        # expand a bit so you can see context
+        crop_rect = _expand_rect(bbox, margin=40, W=W, H=H)
+
+        # crop image + masks
+        x, y, w, h = crop_rect.x(), crop_rect.y(), crop_rect.width(), crop_rect.height()
+
+        crop_img = img01[y:y+h, x:x+w]
+        crop_obj = obj_mask[y:y+h, x:x+w]
+        crop_bg  = bg_mask[y:y+h, x:x+w]
+
+        disp = self._roi_display_rgb01(crop_img)
+
+        # make RGBA buffer for overlays
+        rgb8 = np.ascontiguousarray((disp * 255.0).astype(np.uint8))
+        rgba = np.zeros((h, w, 4), dtype=np.uint8)
+        rgba[..., :3] = rgb8
+        rgba[..., 3] = 255
+
+        # overlay: object mask in red
+        # overlay: object mask in red (alpha blend)
+        alpha_obj = 0.25  # <-- OPACITY: 0.0 transparent, 1.0 solid red
+        obj_color = np.array([255, 0, 0], dtype=np.float32)
+
+        base = rgba[..., :3].astype(np.float32)
+        m = crop_obj
+
+        base[m] = (1.0 - alpha_obj) * base[m] + alpha_obj * obj_color
+        rgba[..., :3] = np.clip(base, 0, 255).astype(np.uint8)
+
+        # overlay: background mask in gold-ish tint (subtle)
+        gold = np.array([255, 215, 0], dtype=np.uint8)
+        bg_idx = crop_bg & (~crop_obj)
+        rgba[bg_idx, 0] = ((rgba[bg_idx, 0].astype(np.uint16) + gold[0]) // 2).astype(np.uint8)
+        rgba[bg_idx, 1] = ((rgba[bg_idx, 1].astype(np.uint16) + gold[1]) // 2).astype(np.uint8)
+        rgba[bg_idx, 2] = ((rgba[bg_idx, 2].astype(np.uint16) + gold[2]) // 2).astype(np.uint8)
+
+        qimg = QImage(rgba.data, w, h, rgba.strides[0], QImage.Format.Format_RGBA8888)
+        pix = QPixmap.fromImage(qimg.copy())  # copy to detach from numpy buffer
+        self._roi_pix = pix
+
+        # scale to label
+        scaled = pix.scaled(self.lbl_roi.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        self.lbl_roi.setPixmap(scaled)
+        self.lbl_roi.setText("")
 
 
     def _refresh_distribution_plot(self):
@@ -437,6 +580,12 @@ class SNRToolDialog(QDialog):
 
         self.canvas_dist.draw_idle()
 
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        # rescale ROI pixmap if we have one
+        if self._roi_pix is not None and not self._roi_pix.isNull():
+            scaled = self._roi_pix.scaled(self.lbl_roi.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            self.lbl_roi.setPixmap(scaled)
 
     def _copy(self):
         try:
