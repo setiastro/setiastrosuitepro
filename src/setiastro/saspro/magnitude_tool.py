@@ -1438,6 +1438,39 @@ class MagnitudeToolDialog(QDialog):
         form.addRow("", hint)
 
         v.addWidget(box)
+        # --- ROI preview (cropped) ---
+        roi_box = QGroupBox("ROI preview")
+        roi_lay = QHBoxLayout(roi_box)
+
+        self.roi_preview = QLabel("No target selected.")
+        self.roi_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.roi_preview.setMinimumSize(220, 220)
+        self.roi_preview.setStyleSheet("border: 1px solid #444;")
+        roi_lay.addWidget(self.roi_preview, 1)
+
+        side = QVBoxLayout()
+        roi_lay.addLayout(side)
+
+        self.roi_opacity = QDoubleSpinBox()
+        self.roi_opacity.setRange(0.0, 1.0)
+        self.roi_opacity.setSingleStep(0.05)
+        self.roi_opacity.setDecimals(2)
+        self.roi_opacity.setValue(0.25)
+        self.roi_opacity.valueChanged.connect(self._update_roi_preview)
+        side.addWidget(QLabel("ROI overlay opacity"))
+        side.addWidget(self.roi_opacity)
+
+        self.roi_pad = QSpinBox()
+        self.roi_pad.setRange(0, 200)
+        self.roi_pad.setSingleStep(5)
+        self.roi_pad.setValue(20)
+        self.roi_pad.valueChanged.connect(self._update_roi_preview)
+        side.addWidget(QLabel("ROI padding (px)"))
+        side.addWidget(self.roi_pad)
+
+        side.addStretch(1)
+
+        v.addWidget(roi_box)
 
         self.lbl_info = QLabel("No stars fetched yet.")
         self.lbl_info.setWordWrap(True)
@@ -1534,6 +1567,7 @@ class MagnitudeToolDialog(QDialog):
 
     def set_object_mask(self, mask: np.ndarray):
         self.object_mask = mask
+        self._update_roi_preview()
 
     def set_background_mask(self, mask: np.ndarray):
         self.background_mask = mask
@@ -1558,6 +1592,123 @@ class MagnitudeToolDialog(QDialog):
             )
         else:
             self.band_hint.setText("Mapping: L→V, R→R, G→V, B→B (SIMBAD provides B/V/R).")
+
+    def _doc_image_rgb01_for_display(self) -> np.ndarray:
+        """
+        Display-only RGB float in [0,1]. Safe for mono too (replicates to RGB).
+        DOES NOT affect photometry.
+        """
+        img, _hdr, _doc = self._get_active_image_and_header()
+        if img is None:
+            raise ValueError("No active image.")
+        a = np.asarray(img)
+
+        # normalize ints
+        if a.dtype.kind in "ui":
+            mx = float(np.iinfo(a.dtype).max)
+            a = a.astype(np.float32) / (mx if mx > 0 else 1.0)
+        else:
+            a = a.astype(np.float32, copy=False)
+
+        if a.ndim == 2:
+            a = np.dstack([a, a, a])
+        elif a.ndim == 3:
+            if a.shape[2] == 1:
+                m = a[..., 0]
+                a = np.dstack([m, m, m])
+            else:
+                a = a[..., :3]
+        else:
+            raise ValueError(f"Unsupported image shape: {a.shape}")
+
+        # stretch for preview (fast + visible)
+        try:
+            disp = stretch_color_image(
+                a,
+                target_median=0.35,
+                linked=True,
+                normalize=False,
+                apply_curves=False,
+                curves_boost=0.0,
+                blackpoint_sigma=3.5,
+                no_black_clip=False,
+                hdr_compress=False,
+                hdr_amount=0.0,
+                hdr_knee=0.75,
+                luma_only=False,
+                high_range=False,
+            )
+            return np.clip(disp, 0.0, 1.0).astype(np.float32, copy=False)
+        except Exception:
+            return np.clip(a, 0.0, 1.0).astype(np.float32, copy=False)
+
+
+    def _update_roi_preview(self):
+        """
+        Show a cropped preview around the current object_mask with a red alpha overlay.
+        """
+        if self.roi_preview is None:
+            return
+
+        img, _hdr, _doc = self._get_active_image_and_header()
+        if img is None or self.object_mask is None:
+            self.roi_preview.setText("No target selected.")
+            self.roi_preview.setPixmap(QPixmap())
+            return
+
+        try:
+            disp = self._doc_image_rgb01_for_display()
+        except Exception:
+            self.roi_preview.setText("No image.")
+            self.roi_preview.setPixmap(QPixmap())
+            return
+
+        mask = np.asarray(self.object_mask, dtype=bool)
+        H, W = disp.shape[:2]
+        if mask.shape != (H, W):
+            self.roi_preview.setText("ROI mask size mismatch.")
+            self.roi_preview.setPixmap(QPixmap())
+            return
+
+        if np.count_nonzero(mask) < 10:
+            self.roi_preview.setText("ROI too small.")
+            self.roi_preview.setPixmap(QPixmap())
+            return
+
+        # bbox + padding
+        ys, xs = np.nonzero(mask)
+        pad = int(self.roi_pad.value()) if hasattr(self, "roi_pad") else 20
+        x0 = max(0, int(xs.min()) - pad)
+        x1 = min(W, int(xs.max()) + pad + 1)
+        y0 = max(0, int(ys.min()) - pad)
+        y1 = min(H, int(ys.max()) + pad + 1)
+
+        crop = disp[y0:y1, x0:x1, :]
+        crop_mask = mask[y0:y1, x0:x1]
+
+        # to 8-bit RGB for QImage
+        rgb8 = np.ascontiguousarray((crop * 255.0).clip(0, 255).astype(np.uint8))
+
+        # alpha blend overlay (red)
+        alpha = float(self.roi_opacity.value()) if hasattr(self, "roi_opacity") else 0.35
+        alpha = max(0.0, min(1.0, alpha))
+        if alpha > 0.0:
+            base = rgb8.astype(np.float32)
+            red = np.array([255.0, 0.0, 0.0], dtype=np.float32)
+            m = crop_mask
+            base[m] = (1.0 - alpha) * base[m] + alpha * red
+            rgb8 = np.ascontiguousarray(base.clip(0, 255).astype(np.uint8))
+
+        h, w = rgb8.shape[:2]
+        qimg = QImage(rgb8.data, w, h, rgb8.strides[0], QImage.Format.Format_RGB888)
+        pix = QPixmap.fromImage(qimg.copy())  # copy protects against buffer lifetime issues
+
+        # scale to label
+        target = self.roi_preview.size()
+        pix = pix.scaled(target, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+
+        self.roi_preview.setText("")
+        self.roi_preview.setPixmap(pix)
 
 
     def open_region_picker(self):

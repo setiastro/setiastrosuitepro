@@ -1,18 +1,24 @@
-# pro/remove_stars.py
+# src/setiastro/saspro/remove_stars.py
 from __future__ import annotations
 import os
+import sys
+import time
+import urllib.request
+import urllib.error
+from pathlib import Path
 import platform
 import shutil
 import stat
 import tempfile
 import numpy as np
 
-from PyQt6.QtCore import QThread, pyqtSignal, Qt
+from PyQt6.QtCore import QThread, pyqtSignal, Qt, QSettings, QUrl
 from PyQt6.QtWidgets import (
-    QInputDialog, QMessageBox, QFileDialog,
-    QDialog, QVBoxLayout, QTextEdit, QPushButton, QProgressBar,
+    QInputDialog, QMessageBox, QFileDialog,QGroupBox,
+    QDialog, QVBoxLayout, QTextEdit, QPushButton, QProgressBar, QDoubleSpinBox,
     QLabel, QComboBox, QCheckBox, QSpinBox, QFormLayout, QDialogButtonBox, QWidget, QHBoxLayout
 )
+from PyQt6.QtGui import QDesktopServices, QIcon
 
 from setiastro.saspro.cosmicclarity_engines.darkstar_engine import (
     darkstar_starremoval_rgb01,
@@ -29,11 +35,21 @@ except Exception:
 
 # Shared utilities
 from setiastro.saspro.widgets.image_utils import extract_mask_from_document as _active_mask_array_from_doc
+from setiastro.saspro.resources import get_resources, starnet_path
 
+_ENABLE_SYQON = True  # flip to True only after you get permission
+
+# --- Star Removal tool registry ---
+_STAR_REMOVAL_TOOLS = [
+    {"key": "syqon", "label": "SyQon Starless", "runner": "_run_syqon", "icon_path": starnet_path},    
+    {"key": "starnet", "label": "StarNet", "runner": "_run_starnet", "icon_path": starnet_path},
+    {"key": "darkstar", "label": "CosmicClarity Dark Star", "runner": "_run_darkstar", "icon_path": starnet_path},
+]
 
 _MAD_NORM = 1.4826
 
 # --------- deterministic, invertible stretch used for StarNet ----------
+# ---------- stretch-like MTF (linked) pre-stretch for StarNet ----------
 def _robust_peak_sigma(gray: np.ndarray) -> tuple[float, float]:
     gray = gray.astype(np.float32, copy=False)
     med = float(np.median(gray))
@@ -60,6 +76,18 @@ def _mtf_apply(x: np.ndarray, shadows: float, midtones: float, highlights: float
     return np.clip(y, 0.0, 1.0).astype(np.float32, copy=False)
 
 def _mtf_inverse(y: np.ndarray, shadows: float, midtones: float, highlights: float) -> np.ndarray:
+    """
+    Pseudoinverse of MTF, matching stretch's MTF_pseudoinverse() implementation.
+
+    C reference:
+
+    float MTF_pseudoinverse(float y, struct mtf_params params) {
+        return ((((params.shadows + params.highlights) * params.midtones
+                - params.shadows) * y - params.shadows * params.midtones
+                + params.shadows)
+                / ((2 * params.midtones - 1) * y - params.midtones + 1));
+    }
+    """
     s = float(shadows)
     m = float(midtones)
     h = float(highlights)
@@ -94,7 +122,7 @@ def _mtf_params_linked(img_rgb01: np.ndarray, shadowclip_sigma: float = -2.8, ta
     s = peak + shadowclip_sigma * sigma
     # keep [0..1) with margin
     s = float(np.clip(s, gray.min(), max(gray.max() - 1e-6, 0.0)))
-    h = 1.0  
+    h = 1.0  # stretch effectively normalizes to <=1 before 16-bit TIFF
     # solve for midtones m so that mtf(xp(peak)) = targetbg
     x = (peak - s) / max(h - s, 1e-8)
     x = float(np.clip(x, 1e-6, 1.0 - 1e-6))
@@ -123,14 +151,14 @@ def _mtf_params_unlinked(img_rgb01: np.ndarray,
                          shadows_clipping: float = -2.8,
                          targetbg: float = 0.25) -> dict:
     """
-    per-channel MTF parameter estimation, matching
+    stretch-style per-channel MTF parameter estimation, matching
     find_unlinked_midtones_balance_default() / find_unlinked_midtones_balance().
 
     Works on float32 data assumed in [0,1].
     Returns dict with arrays: {'s': (C,), 'm': (C,), 'h': (C,)}.
     """
     """
-    per-channel MTF parameter estimation, matching
+    stretch-style per-channel MTF parameter estimation, matching
     find_unlinked_midtones_balance_default() / find_unlinked_midtones_balance().
 
     Works on float32 data assumed in [0,1].
@@ -235,7 +263,7 @@ def _mtf_scalar(x: float, m: float, lo: float = 0.0, hi: float = 1.0) -> float:
         return 0.5
 
     y = num / den
-
+    # clamp to [0,1] 
     if y < 0.0:
         y = 0.0
     elif y > 1.0:
@@ -294,7 +322,7 @@ def _get_setting_any(settings, keys: tuple[str, ...], default: str = "") -> str:
 def starnet_starless_from_array(arr_rgb01: np.ndarray, settings, *, tmp_prefix="comet") -> np.ndarray:
     """
       1) Normalize to [0,1] (preserving overall scale separately)
-      2) Compute unlinked MTF params per channel
+      2) Compute unlinked MTF params per channel (auto-stretch)
       3) Apply unlinked MTF -> 16-bit TIFF for StarNet
       4) StarNet -> read starless 16-bit TIFF
       5) Apply per-channel MTF pseudoinverse with SAME params
@@ -334,7 +362,7 @@ def starnet_starless_from_array(arr_rgb01: np.ndarray, settings, *, tmp_prefix="
     xin = (x_in / scale_factor) if scale_factor > 1.0 else x_in
     xin = np.clip(xin, 0.0, 1.0)
 
-
+    # --- stretch-style unlinked MTF params + pre-stretch ---
     mtf_params = _mtf_params_unlinked(xin, shadows_clipping=-2.8, targetbg=0.25)
     x_for_starnet = _apply_mtf_unlinked_rgb(xin, mtf_params).astype(np.float32, copy=False)
 
@@ -367,7 +395,7 @@ def starnet_starless_from_array(arr_rgb01: np.ndarray, settings, *, tmp_prefix="
         starless_s = np.repeat(starless_s, 3, axis=2)
     starless_s = np.clip(starless_s.astype(np.float32, copy=False), 0.0, 1.0)
 
-
+    # --- Apply stretch-style pseudoinverse MTF with SAME params ---
     starless_lin01 = _invert_mtf_unlinked_rgb(starless_s, mtf_params)
 
     # Restore original scale if we normalized earlier
@@ -386,20 +414,23 @@ def starnet_starless_from_array(arr_rgb01: np.ndarray, settings, *, tmp_prefix="
 # Public entry
 # ------------------------------------------------------------
 def remove_stars(main, target_doc=None):
-    # block interactive UI during/just-after a headless preset run
     if getattr(main, "_remove_stars_headless_running", False):
         return
     if getattr(main, "_remove_stars_guard", False):
-        return    
+        return
 
-    tool, ok = QInputDialog.getItem(
+    labels = [t["label"] for t in _STAR_REMOVAL_TOOLS]
+    label, ok = QInputDialog.getItem(
         main, "Select Star Removal Tool", "Choose a tool:",
-        ["StarNet", "CosmicClarityDarkStar"], 0, False
+        labels, 0, False
     )
     if not ok:
         return
 
-    # explicit doc wins; otherwise fall back to _active_doc
+    tool = next((t for t in _STAR_REMOVAL_TOOLS if t["label"] == label), None)
+    if not tool:
+        return
+
     doc = target_doc
     if doc is None:
         doc = getattr(main, "_active_doc", None)
@@ -410,10 +441,10 @@ def remove_stars(main, target_doc=None):
         QMessageBox.warning(main, "No Image", "Please load an image before removing stars.")
         return
 
-    if tool == "CosmicClarityDarkStar":
-        _run_darkstar(main, doc)
-    else:
-        _run_starnet(main, doc)
+    # dispatch
+    fn = globals().get(tool["runner"])
+    if callable(fn):
+        fn(main, doc, icon_path=tool.get("icon_path"))
 
 
 
@@ -468,38 +499,718 @@ def _prepare_statstretch_input_for_starnet(img_rgb01: np.ndarray) -> tuple[np.nd
     }
     return x_for_starnet, meta
 
+# -----------------------------------------------------------------------------
+# SyQon Starless integration
+# -----------------------------------------------------------------------------
 
-def _inverse_statstretch_from_starless(starless_s01: np.ndarray, meta: dict) -> np.ndarray:
+def _syqon_data_dir() -> Path:
     """
-    Inverse of the stat-stretch prep:
-      • per-channel stretch back to each original median m0[c]
-      • add back the saved pedestal bp[c]
-    Returns starless in 0..1 domain (float32).
+    Store SyQon assets alongside other downloadable models (models_root()).
     """
-    import numpy as np
-    from setiastro.saspro.imageops.stretch import stretch_mono_image
+    try:
+        r = get_resources()
+        # MODELS_DIR is your user model root (from model_manager.models_root)
+        base = Path(r.MODELS_DIR)
+        d = base / "syqon_starless"
+    except Exception:
+        # last resort fallback
+        d = Path.home() / ".saspro" / "models" / "syqon_starless"
 
-    s = np.asarray(starless_s01, dtype=np.float32)
-    if s.ndim == 2:
-        s = np.stack([s]*3, axis=-1)
-    elif s.ndim == 3 and s.shape[2] == 1:
-        s = np.repeat(s, 3, axis=2)
-    s = np.clip(s, 0.0, 1.0)
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
-    bp = np.asarray(meta.get("bp"), dtype=np.float32).reshape((1, 1, 3))
-    m0 = np.asarray(meta.get("m0"), dtype=np.float32)
+# --- SyQon model naming (purchased) ---
+# Model file is named: "nadir" (no extension)
 
-    out = np.empty_like(s, dtype=np.float32)
-    for c in range(3):
-        out[..., c] = stretch_mono_image(
-            s[..., c], target_median=float(m0[c]),
-            normalize=False, apply_curves=False, curves_boost=0.0
+_SYQON_BUY_URL = "https://donate.stripe.com/14AdR9fZFbw85Rb4Wq2B204"
+
+def _syqon_model_path(d: Path) -> Path:
+    return d / "nadir"
+
+def _syqon_have_deps(d: Path) -> tuple[bool, bool]:
+    # engine_ok, model_ok  (you’re not shipping engine anyway; just track model here)
+    return True, _syqon_model_path(d).exists()
+
+
+def _syqon_download_file(url: str, dst: Path, progress_cb=None) -> bool:
+    try:
+        with urllib.request.urlopen(url) as resp:
+            total = int(resp.headers.get("Content-Length", 0) or 0)
+            got = 0
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            with open(dst, "wb") as f:
+                while True:
+                    chunk = resp.read(1024 * 64)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    got += len(chunk)
+                    if callable(progress_cb) and total > 0:
+                        progress_cb(got, total)
+        return True
+    except urllib.error.URLError:
+        return False
+    except Exception:
+        return False
+
+
+def _syqon_compute_target_bg_from_doc(doc) -> float:
+    """
+    Auto-target background: median luminance proxy.
+    doc.image is assumed float32, typically [0..1], but we sanitize.
+    """
+    x = np.asarray(doc.image).astype(np.float32, copy=False)
+    x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+
+    # If doc is RGB, use mean luminance proxy; if mono, use itself
+    if x.ndim == 3 and x.shape[2] >= 3:
+        gray = x[..., :3].mean(axis=2)
+    elif x.ndim == 3 and x.shape[2] == 1:
+        gray = x[..., 0]
+    else:
+        gray = x
+
+    # If image exceeds 1.0, normalize for robust bg estimation
+    mx = float(np.max(gray)) if gray.size else 1.0
+    if mx > 1.01:
+        gray = gray / mx
+
+    gray = np.clip(gray, 0.0, 1.0)
+    med = float(np.median(gray)) if gray.size else 0.12
+    # keep within engine UI constraints
+    return float(np.clip(med, 0.01, 0.50))
+
+class _SyQonProcessThread(QThread):
+    progress = pyqtSignal(int, str)          # percent, stage
+    finished = pyqtSignal(object, object, dict, str)  # starless_s, stars_s, info, err
+
+    def __init__(self, x_for_net: np.ndarray, ckpt_path: str,
+                 tile: int, overlap: int, target_bg: float, shadow_clip: float,
+                 parent=None):
+        super().__init__(parent)
+        self.x_for_net = x_for_net
+        self.ckpt_path = ckpt_path
+        self.tile = int(tile)
+        self.overlap = int(overlap)
+        self.target_bg = float(target_bg)
+        self.shadow_clip = float(shadow_clip)
+        self._cancel = False
+
+    def cancel(self):
+        self._cancel = True
+
+    def run(self):
+        try:
+            # import torch via your runtime shim (optional)
+            try:
+                from setiastro.saspro.runtime_torch import import_torch
+                import_torch(prefer_cuda=True, prefer_xpu=False, status_cb=lambda s: None)
+            except Exception:
+                pass
+
+            from setiastro.saspro.starless_engines.syqon_nafnet_engine import nafnet_starless_rgb01
+
+            def _prog(done, total, stage):
+                if self._cancel:
+                    raise RuntimeError("Cancelled")
+                pct = int(100.0 * float(done) / max(float(total), 1.0))
+                self.progress.emit(pct, str(stage or ""))
+
+            starless_s, stars_s, info = nafnet_starless_rgb01(
+                self.x_for_net,
+                ckpt_path=self.ckpt_path,
+                tile=self.tile,
+                overlap=self.overlap,
+                prefer_cuda=True,
+                residual_mode=True,
+                progress_cb=_prog,
+            )
+
+            # info might be None in your engine — normalize to dict
+            if info is None:
+                info = {}
+            self.finished.emit(starless_s, stars_s, info, "")
+
+        except Exception as e:
+            self.finished.emit(None, None, {}, str(e))
+
+
+class SyQonStarlessDialog(QDialog):
+    def __init__(self, main, doc, parent=None, icon: QIcon | None = None):
+        super().__init__(parent)  # <-- NOT (parent or main)
+        self.main = main
+        self.doc = doc
+        self.data_dir = _syqon_data_dir() 
+        self.proc_thr = None
+        self.setWindowTitle("SyQon Starless")
+        self.setMinimumSize(560, 520)
+
+        if icon is not None:
+            try:
+                self.setWindowIcon(icon)
+            except Exception:
+                pass
+
+        lay = QVBoxLayout(self)
+
+        # --- status ---
+        self.lbl = QLabel("Checking SyQon model…", self)
+        self.lbl.setWordWrap(True)
+        lay.addWidget(self.lbl)
+
+        self.pbar = QProgressBar(self)
+        self.pbar.setRange(0, 100)
+        self.pbar.setValue(0)
+        self.pbar.setVisible(False)
+        lay.addWidget(self.pbar)
+
+        # --- model box ---
+        model_box = QGroupBox("Model", self)
+        model_lay = QVBoxLayout(model_box)
+
+        self.lbl_model_path = QLabel("", self)
+        self.lbl_model_path.setWordWrap(True)
+        model_lay.addWidget(self.lbl_model_path)
+
+        row = QHBoxLayout()
+        self.btn_buy = QPushButton("Get Starless Model Here…", self)
+        self.btn_install = QPushButton("Install Downloaded Model…", self)
+        self.btn_remove = QPushButton("Remove Model", self)
+
+        self.btn_buy.clicked.connect(self._open_buy_page)
+        self.btn_install.clicked.connect(self._install_model)
+        self.btn_remove.clicked.connect(self._remove_model)
+
+        row.addWidget(self.btn_buy)
+        row.addWidget(self.btn_install)
+        row.addWidget(self.btn_remove)
+        row.addStretch(1)
+        model_lay.addLayout(row)
+
+        lay.addWidget(model_box)
+
+        # --- params (your existing ones) ---
+        formw = QWidget(self)
+        form = QFormLayout(formw)
+
+        self.spin_tile = QSpinBox(self)
+        self.spin_tile.setRange(128, 2048)
+        self.spin_tile.setSingleStep(512)
+
+        self.spin_overlap = QSpinBox(self)
+        self.spin_overlap.setRange(16, 512)
+        self.spin_overlap.setSingleStep(128)
+
+        self.spin_shadow = QDoubleSpinBox(self)
+        self.spin_shadow.setRange(0.5, 5.0)
+        self.spin_shadow.setSingleStep(0.1)
+        self.spin_shadow.setDecimals(1)
+        self.chk_mtf = QCheckBox("Apply temporary stretch for model (recommended)", self)
+        self.chk_mtf.setChecked(True)
+        # target bg (auto, optional)
+        self._auto_bg = _syqon_compute_target_bg_from_doc(doc)
+        self.lbl_target_bg = QLabel("Target background:", self)
+        self.spin_bg = QDoubleSpinBox(self)
+        self.spin_bg.setRange(0.01, 0.50)
+        self.spin_bg.setSingleStep(0.01)
+        self.spin_bg.setDecimals(3)
+        self.spin_bg.setValue(self._auto_bg)
+
+        self.chk_show_bg = QCheckBox("Advanced: show Target Background control", self)
+        self.chk_show_bg.setChecked(False)
+        self.chk_show_bg.toggled.connect(self._toggle_bg)
+
+        self.chk_make_stars = QCheckBox("Also create stars-only document (_stars)", self)
+        self.chk_make_stars.setChecked(True)
+        # --- padding + stars-only extraction ---
+        self.chk_pad = QCheckBox("Pad edges (improves edge star removal)", self)
+        self.chk_pad.setChecked(True)
+
+        self.spin_pad = QSpinBox(self)
+        self.spin_pad.setRange(0, 1024)
+        self.spin_pad.setSingleStep(16)
+        self.spin_pad.setValue(256)
+
+        self.cmb_stars_extract = QComboBox(self)
+        self.cmb_stars_extract.addItems(["unscreen", "subtract"])
+        self.cmb_stars_extract.setCurrentText("unscreen")
+        # load persisted values
+        s = getattr(main, "settings", None)
+        if s:
+            self.spin_tile.setValue(int(s.value("syqon/tile_size", 512)))
+            self.spin_overlap.setValue(int(s.value("syqon/overlap", 128)))
+            self.spin_shadow.setValue(float(s.value("syqon/shadow_clip", 2.8)))
+            self.chk_make_stars.setChecked(bool(s.value("syqon/make_stars", True, type=bool)))
+            self.chk_pad.setChecked(bool(s.value("syqon/pad_edges", True, type=bool)))
+            self.spin_pad.setValue(int(s.value("syqon/pad_pixels", 256)))
+            self.cmb_stars_extract.setCurrentText(str(s.value("syqon/stars_extract", "unscreen")))
+            self.chk_mtf.setChecked(bool(s.value("syqon/use_mtf", True, type=bool)))
+            
+        else:
+            self.spin_tile.setValue(512)
+            self.spin_overlap.setValue(128)
+            self.spin_shadow.setValue(2.8)
+            self.chk_pad.setChecked(True)
+            self.spin_pad.setValue(256)
+            self.cmb_stars_extract.setCurrentText("unscreen")
+
+        form.addRow("Tile size:", self.spin_tile)
+        form.addRow("Overlap:", self.spin_overlap)
+        form.addRow("Shadow clip (k):", self.spin_shadow)
+
+        self.lbl_bginfo = QLabel(f"Target background (auto): {self._auto_bg:.3f}", self)
+        form.addRow(self.lbl_bginfo)
+
+        form.addRow(self.lbl_target_bg, self.spin_bg)
+        form.addRow("", self.chk_show_bg)
+        form.addRow("", self.chk_mtf)        
+        form.addRow("", self.chk_make_stars)
+
+        form.addRow("", self.chk_pad)
+        form.addRow("Pad pixels:", self.spin_pad)
+        form.addRow("Stars-only extraction:", self.cmb_stars_extract)        
+        lay.addWidget(formw)
+
+        # --- bottom buttons ---
+        btns = QHBoxLayout()
+        self.btn_process = QPushButton("Process", self)
+        self.btn_close = QPushButton("Close", self)
+
+        self.btn_process.clicked.connect(self._process)
+        self.btn_close.clicked.connect(self.close)
+
+        btns.addWidget(self.btn_process)
+        btns.addStretch(1)
+        btns.addWidget(self.btn_close)
+        lay.addLayout(btns)
+
+        self._toggle_bg(self.chk_show_bg.isChecked())
+
+        self._refresh_state()
+
+
+    # ------------------------------------------------------------------
+    # helpers
+    # ------------------------------------------------------------------
+
+    def _set_busy(self, busy: bool):
+        self.btn_process.setEnabled(not busy)
+        self.btn_close.setEnabled(not busy)
+        self.btn_buy.setEnabled(not busy)
+        self.btn_install.setEnabled(not busy)
+        self.btn_remove.setEnabled((not busy) and self._have_model())
+        self.pbar.setVisible(busy)
+        if busy:
+            self.pbar.setRange(0, 100)
+            self.pbar.setValue(0)
+
+    def _on_worker_progress(self, pct: int, stage: str):
+        self.pbar.setValue(int(pct))
+        if stage:
+            self.lbl.setText(stage)
+
+    def _on_worker_finished(self, starless_s, stars_s, info: dict, err: str):
+        from PyQt6.QtWidgets import QMessageBox
+        import numpy as np
+
+        if err:
+            self._set_busy(False)
+            QMessageBox.critical(self, "SyQon", err)
+            self._refresh_state()
+            return
+
+        # --- Continue with the code you currently run AFTER nafnet_starless_rgb01 ---
+        # Everything below runs on GUI thread now, so safe to touch widgets and doc.
+
+        pad_edges = bool(self.chk_pad.isChecked())
+        pad_pixels = int(self.spin_pad.value())
+        stars_extract_mode = str(self.cmb_stars_extract.currentText())
+
+        # retrieve cached things you computed before launching thread
+        scale_factor = self._scale_factor
+        H0, W0 = self._H0, self._W0
+        orig_was_mono = self._orig_was_mono
+        target_bg = self._target_bg
+
+        if starless_s.ndim == 2:
+            starless_s = np.stack([starless_s]*3, axis=-1)
+
+        mtf_params = self._mtf_params
+        do_mtf = bool(getattr(self, "_do_mtf", True))
+
+        if do_mtf and mtf_params is not None:
+            starless_lin = _invert_mtf_unlinked_rgb(starless_s, mtf_params)
+        else:
+            starless_lin = starless_s
+
+        if scale_factor > 1.01:
+            starless_lin = np.clip(starless_lin * scale_factor, 0.0, 1.0).astype(np.float32, copy=False)
+
+        if pad_edges and pad_pixels > 0:
+            starless_lin = _crop_unpad(starless_lin, pad_pixels, H0, W0)
+
+        # original_rgb for stars-only + blending
+        orig = np.asarray(self.doc.image).astype(np.float32, copy=False)
+        if orig.ndim == 2:
+            original_rgb = np.stack([orig]*3, axis=-1)
+        elif orig.ndim == 3 and orig.shape[2] == 1:
+            original_rgb = np.repeat(orig, 3, axis=2)
+        else:
+            original_rgb = orig[..., :3] if orig.ndim == 3 else orig
+
+        starless_rgb = starless_lin.astype(np.float32, copy=False)
+
+        if self.chk_make_stars.isChecked():
+            stars_only = _extract_stars_only(original_rgb, starless_rgb, mode=stars_extract_mode)
+
+            m3 = _active_mask3_from_doc(self.doc, stars_only.shape[1], stars_only.shape[0])
+            if m3 is not None:
+                stars_only *= m3
+
+            stars_to_push = stars_only.mean(axis=2).astype(np.float32, copy=False) if orig_was_mono else stars_only
+            _push_as_new_doc(self.main, self.doc, stars_to_push, title_suffix="_stars", source="Stars-Only (SyQon)")
+
+        final_starless = _mask_blend_with_doc_mask(self.doc, starless_rgb, original_rgb)
+        final_to_apply = final_starless.mean(axis=2).astype(np.float32, copy=False) if orig_was_mono else final_starless
+        final_to_apply = np.clip(final_to_apply, 0.0, 1.0).astype(np.float32, copy=False)
+
+        meta = {
+            "step_name": "Stars Removed",
+            "bit_depth": "32-bit floating point",
+            "is_mono": bool(orig_was_mono),
+            "replay_last": {
+                "op": "remove_stars",
+                "params": {
+                    "engine": "SyQon",
+                    "tile_size": int(self.spin_tile.value()),
+                    "overlap": int(self.spin_overlap.value()),
+                    "shadow_clip": float(self.spin_shadow.value()),
+                    "target_bg": float(target_bg),
+                    "make_stars": bool(self.chk_make_stars.isChecked()),
+                    "pad_edges": bool(pad_edges),
+                    "pad_pixels": int(pad_pixels),
+                    "stars_extract": str(stars_extract_mode),
+                    "model_path": str(self._model_dst_path()),
+                    "label": "Remove Stars (SyQon)",
+                    "use_mtf": bool(do_mtf),
+                }
+            }
+        }
+
+        self.doc.apply_edit(final_to_apply, metadata=meta, step_name="Stars Removed")
+        if hasattr(self.main, "_log"):
+            self.main._log("Stars Removed (SyQon)")
+
+        try:
+            self.main._last_headless_command = {
+                "command_id": "remove_stars",
+                "preset": {
+                    "tool": "syqon",
+                    "tile_size": int(self.spin_tile.value()),
+                    "overlap": int(self.spin_overlap.value()),
+                    "shadow_clip": float(self.spin_shadow.value()),
+                    "target_bg": float(target_bg),
+                    "make_stars": bool(self.chk_make_stars.isChecked()),
+                    "model_path": str(self._model_dst_path()),
+                    "pad_edges": bool(pad_edges),
+                    "pad_pixels": int(pad_pixels),
+                    "stars_extract": str(stars_extract_mode),
+                    "use_mtf": bool(do_mtf),
+                },
+            }
+        except Exception:
+            pass
+
+        self._set_busy(False)
+        self.lbl.setText("Complete!")
+        self.close()
+
+
+    def _model_dst_path(self) -> Path:
+        return _syqon_model_path(self.data_dir)  # .../syqon_starless/nadir
+
+    def _have_model(self) -> bool:
+        try:
+            p = self._model_dst_path()
+            return p.exists() and p.is_file()
+        except Exception:
+            return False
+
+    def _toggle_bg(self, on: bool):
+        on = bool(on)
+        self.lbl_bginfo.setVisible(on)      # optional
+        self.lbl_target_bg.setVisible(on)
+        self.spin_bg.setVisible(on)
+
+    def _refresh_state(self):
+        dst = self._model_dst_path()
+        self.lbl_model_path.setText(f"Installed model path:\n{str(dst)}")
+
+        if self._have_model():
+            self.lbl.setText("Ready (SyQon model installed).")
+            self.btn_process.setEnabled(True)
+            self.btn_remove.setEnabled(True)
+        else:
+            self.lbl.setText(
+                "SyQon model is not installed.\n\n"
+                "1) Click “Get Starless Model Here…” to purchase/download it.\n"
+                "2) Then click “Install Downloaded Model…” and select the downloaded file named:\n"
+                "   nadir   (no file extension)\n"
+            )
+            self.btn_process.setEnabled(False)
+            self.btn_remove.setEnabled(False)
+
+        # Buy button UX: enable always, but show message if URL unset
+        self.btn_buy.setEnabled(True)
+        if not _SYQON_BUY_URL:
+            self.btn_buy.setToolTip("Purchase URL not configured yet.")
+        else:
+            self.btn_buy.setToolTip("Open SyQon website to purchase/download the model.")
+
+        self.btn_install.setEnabled(True)
+
+    # ------------------------------------------------------------------
+    # buy / install / remove
+    # ------------------------------------------------------------------
+    def _open_buy_page(self):
+        from PyQt6.QtWidgets import QMessageBox
+
+        if not _SYQON_BUY_URL:
+            QMessageBox.information(
+                self,
+                "SyQon",
+                "SyQon purchase URL is not configured yet.\n\n"
+                "For now, please obtain the model from SyQon directly, then use:\n"
+                "“Install Downloaded Model…” and select the file named “nadir”."
+            )
+            return
+
+        QDesktopServices.openUrl(QUrl(_SYQON_BUY_URL))
+
+    def _install_model(self):
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox
+
+        # Let user pick any file; we validate name afterward
+        src_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select SyQon Model File (nadir)",
+            "",
+            "All Files (*)"
         )
+        if not src_path:
+            return
 
-    out = out + bp
-    return np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
+        src = Path(src_path)
+        if not src.exists():
+            QMessageBox.warning(self, "SyQon", "Selected file does not exist.")
+            return
 
-def _run_starnet(main, doc):
+        # Validate required name
+        # SyQon says: file is literally "nadir" (no extension)
+        name_ok = (src.name.lower() == "nadir")
+        ext_ok = (src.suffix == "")  # preferred
+        if not name_ok:
+            QMessageBox.warning(
+                self,
+                "SyQon",
+                "That doesn’t look like the SyQon model file.\n\n"
+                "Expected a file named:\n"
+                "  nadir   (no extension)\n\n"
+                f"You selected:\n  {src.name}"
+            )
+            return
+
+        if not ext_ok:
+            # Allow it if they somehow got "nadir.something", but warn strongly.
+            reply = QMessageBox.question(
+                self,
+                "SyQon",
+                "The file name is “nadir”, but it has an extension.\n\n"
+                f"Selected: {src.name}\n\n"
+                "SyQon indicates the model should have no extension.\n"
+                "Install anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
+        dst = self._model_dst_path()
+        dst.parent.mkdir(parents=True, exist_ok=True)
+
+        self.pbar.setVisible(True)
+        self.pbar.setRange(0, 0)  # indeterminate
+        self.lbl.setText("Installing model…")
+
+        try:
+            shutil.copy2(str(src), str(dst))
+        except Exception as e:
+            self.pbar.setVisible(False)
+            QMessageBox.critical(self, "SyQon", f"Failed to install model:\n{e}")
+            self._refresh_state()
+            return
+
+        self.pbar.setVisible(False)
+        self.lbl.setText("Model installed.")
+
+        s = getattr(self.main, "settings", None)
+        if s:
+            s.setValue("syqon/model_src_path", str(src))
+            s.setValue("syqon/model_installed_path", str(dst))
+
+        self._refresh_state()
+
+    def _remove_model(self):
+        from PyQt6.QtWidgets import QMessageBox
+
+        dst = self._model_dst_path()
+        if not dst.exists():
+            self._refresh_state()
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Remove Model",
+            "Remove the installed SyQon model from disk?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            dst.unlink(missing_ok=True)
+        except Exception:
+            try:
+                if dst.exists():
+                    os.remove(str(dst))
+            except Exception:
+                pass
+
+        self._refresh_state()
+
+    # ------------------------------------------------------------------
+    # Process: use your existing nafnet path, but point at 'nadir'
+    # ------------------------------------------------------------------
+    def _process(self):
+        from PyQt6.QtWidgets import QMessageBox
+        import numpy as np
+
+        if not self._have_model():
+            QMessageBox.warning(self, "SyQon", "Model is not installed. Install it first.")
+            return
+
+        # persist settings (unchanged)
+        s = getattr(self.main, "settings", None)
+        if s:
+            s.setValue("syqon/tile_size", int(self.spin_tile.value()))
+            s.setValue("syqon/overlap", int(self.spin_overlap.value()))
+            s.setValue("syqon/shadow_clip", float(self.spin_shadow.value()))
+            s.setValue("syqon/make_stars", bool(self.chk_make_stars.isChecked()))
+            s.setValue("syqon/pad_edges", bool(self.chk_pad.isChecked()))
+            s.setValue("syqon/pad_pixels", int(self.spin_pad.value()))
+            s.setValue("syqon/stars_extract", str(self.cmb_stars_extract.currentText()))
+            s.setValue("syqon/use_mtf", bool(self.chk_mtf.isChecked()))
+
+        pad_edges = bool(self.chk_pad.isChecked())
+        pad_pixels = int(self.spin_pad.value())
+
+        target_bg = float(self._auto_bg)
+        if self.chk_show_bg.isChecked():
+            target_bg = float(self.spin_bg.value())
+
+        ckpt_path = str(self._model_dst_path())
+
+        # --- Build input (same as you have) ---
+        src = np.asarray(self.doc.image).astype(np.float32, copy=False)
+        orig_was_mono = (src.ndim == 2) or (src.ndim == 3 and src.shape[2] == 1)
+        x = np.nan_to_num(src, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
+
+        scale_factor = float(np.max(x)) if x.size else 1.0
+        if scale_factor > 1.01:
+            x01 = np.clip(x / scale_factor, 0.0, 1.0)
+        else:
+            x01 = np.clip(x, 0.0, 1.0)
+
+        if x01.ndim == 2:
+            xrgb = np.stack([x01]*3, axis=-1)
+        elif x01.ndim == 3 and x01.shape[2] == 1:
+            xrgb = np.repeat(x01, 3, axis=2)
+        else:
+            xrgb = x01[..., :3]
+
+        H0, W0 = xrgb.shape[:2]
+        if pad_edges and pad_pixels > 0:
+            xrgb = _pad_reflect(xrgb, pad_pixels)
+        do_mtf = bool(self.chk_mtf.isChecked())
+        # MTF only if requested
+        if do_mtf:
+            mtf_params = _mtf_params_unlinked(xrgb, shadows_clipping=-2.8, targetbg=0.25)
+            x_for_net = _apply_mtf_unlinked_rgb(xrgb, mtf_params)
+        else:
+            mtf_params = None
+            x_for_net = xrgb
+
+        # Cache values needed by finish handler
+        self._mtf_params = mtf_params
+        self._scale_factor = scale_factor
+        self._H0, self._W0 = H0, W0
+        self._orig_was_mono = orig_was_mono
+        self._target_bg = target_bg
+        self._do_mtf = do_mtf
+        self._mtf_params = mtf_params
+
+        # Start worker thread
+        self._set_busy(True)
+        self.lbl.setText("Processing…")
+
+        # Stop any prior thread (safety)
+        try:
+            if self.proc_thr is not None and self.proc_thr.isRunning():
+                self.proc_thr.cancel()
+                self.proc_thr.wait(200)
+        except Exception:
+            pass
+
+        self.proc_thr = _SyQonProcessThread(
+            x_for_net=x_for_net,
+            ckpt_path=ckpt_path,
+            tile=int(self.spin_tile.value()),
+            overlap=int(self.spin_overlap.value()),
+            target_bg=float(target_bg),
+            shadow_clip=float(self.spin_shadow.value()),
+            parent=self
+        )
+        self.proc_thr.progress.connect(self._on_worker_progress)
+        self.proc_thr.finished.connect(self._on_worker_finished)
+        self.proc_thr.start()
+
+    def closeEvent(self, ev):
+        try:
+            if self.proc_thr is not None and self.proc_thr.isRunning():
+                self.proc_thr.cancel()
+                self.proc_thr.wait(500)
+        except Exception:
+            pass
+        super().closeEvent(ev)
+
+
+def _run_syqon(main, doc, icon_path=starnet_path):
+    from PyQt6.QtWidgets import QMessageBox
+
+    if not _ENABLE_SYQON:
+        QMessageBox.information(
+            main,
+            "SyQon",
+            "SyQon is disabled until permission/licensing is confirmed."
+        )
+        return
+
+    dlg = SyQonStarlessDialog(main, doc, parent=main, icon=QIcon(starnet_path))
+   
+    dlg.exec()
+
+def _run_starnet(main, doc, icon_path=None):
     import os
     import platform
     import numpy as np
@@ -593,7 +1304,7 @@ def _run_starnet(main, doc):
     input_image_path = os.path.join(starnet_dir, "imagetoremovestars.tif")
     output_image_path = os.path.join(starnet_dir, "starless.tif")
 
-
+    # --- Prepare input for StarNet 
     img_for_starnet = processing_norm
     if is_linear:
         mtf_params = _mtf_params_unlinked(processing_norm, shadows_clipping=-2.8, targetbg=0.25)
@@ -808,12 +1519,12 @@ def _on_starnet_finished(main, doc, return_code, dialog, input_path, output_path
 
     # ---- Inversion back to the document’s domain ----
     if did_stretch:
-
+        # Prefer the new MTF meta if present
         meta = getattr(main, "_starnet_stat_meta", None)
         mtf_params_legacy = getattr(main, "_starnet_last_mtf_params", None)
 
         if isinstance(meta, dict) and meta.get("scheme") == "stretch_mtf":
-            dialog.append_text("Unstretching (MTF pseudoinverse)...\n")
+            dialog.append_text("Unstretching (stretch-style MTF pseudoinverse)...\n")
             try:
                 s_vec = np.asarray(meta.get("s"), dtype=np.float32)
                 m_vec = np.asarray(meta.get("m"), dtype=np.float32)
@@ -828,7 +1539,7 @@ def _on_starnet_finished(main, doc, return_code, dialog, input_path, output_path
 
                 starless_rgb = np.clip(inv, 0.0, 1.0)
             except Exception as e:
-                dialog.append_text(f"⚠️ MTF inverse failed: {e}\n")
+                dialog.append_text(f"⚠️ stretch-style MTF inverse failed: {e}\n")
 
         elif isinstance(meta, dict) and meta.get("scheme") == "statstretch":
             # Back-compat: statistical round-trip with bp/m0
@@ -957,12 +1668,15 @@ def _on_starnet_finished(main, doc, return_code, dialog, input_path, output_path
 # ------------------------------------------------------------
 # CosmicClarityDarkStar
 # ------------------------------------------------------------
-def _run_darkstar(main, doc):
+def _run_darkstar(main, doc, icon_path=None):
     import numpy as np
     from PyQt6.QtWidgets import QMessageBox
 
     # --- Config dialog (keep as-is) ---
     cfg = DarkStarConfigDialog(main)
+    if icon_path:
+        try: cfg.setWindowIcon(QIcon(starnet_path))
+        except Exception: pass
     if not cfg.exec():
         return
     v = cfg.get_values()
@@ -1285,6 +1999,61 @@ def _safe_rm(p):
     except Exception:
         pass
 
+def _pad_reflect(img: np.ndarray, pad: int) -> np.ndarray:
+    """
+    Reflect-pad HxW or HxWxC image by `pad` pixels on all sides.
+    """
+    pad = int(max(0, pad))
+    if pad <= 0:
+        return img
+    if img.ndim == 2:
+        return np.pad(img, ((pad, pad), (pad, pad)), mode="reflect")
+    if img.ndim == 3:
+        return np.pad(img, ((pad, pad), (pad, pad), (0, 0)), mode="reflect")
+    return img
+
+
+def _crop_unpad(img: np.ndarray, pad: int, h: int, w: int) -> np.ndarray:
+    """
+    Crop back to original (h,w) after padding by `pad`.
+    """
+    pad = int(max(0, pad))
+    if pad <= 0:
+        return img
+    if img.ndim == 2:
+        return img[pad:pad + h, pad:pad + w]
+    if img.ndim == 3:
+        return img[pad:pad + h, pad:pad + w, :]
+    return img
+
+
+def _extract_stars_only(original_rgb: np.ndarray,
+                        starless_rgb: np.ndarray,
+                        mode: str = "subtract",
+                        eps: float = 1e-6) -> np.ndarray:
+    """
+    Compute stars-only from (original, starless).
+
+    mode="subtract":
+        stars = clip(original - starless)
+
+    mode="unscreen":
+        assumes: original = screen(starless, stars)
+        screen(A,B) = 1 - (1-A)*(1-B)
+        => stars = 1 - (1-original)/(1-starless)
+
+    Both inputs are expected float32 in [0..1] (RGB).
+    """
+    o = np.asarray(original_rgb, dtype=np.float32)
+    s = np.asarray(starless_rgb, dtype=np.float32)
+
+    if mode.lower() != "unscreen":
+        return np.clip(o - s, 0.0, 1.0).astype(np.float32, copy=False)
+
+    denom = np.clip(1.0 - s, eps, 1.0)               # avoid divide by 0 near white cores
+    stars = 1.0 - (1.0 - o) / denom
+    return np.clip(stars, 0.0, 1.0).astype(np.float32, copy=False)
+
 
 # ------------------------------------------------------------
 # Proc runner & dialog (merged stdout/stderr)
@@ -1446,7 +2215,7 @@ class DarkStarConfigDialog(QDialog):
     SASv2-style config UI:
       - Disable GPU: Yes/No (default No)
       - Star Removal Mode: unscreen | additive (default unscreen)
-      - Show Extracted Stars: Yes/No (default No)
+      - Show Extracted Stars: Yes/No (default Yes)
       - Stride (powers of 2): 64,128,256,512,1024 (default 512)
     """
     def __init__(self, parent=None):

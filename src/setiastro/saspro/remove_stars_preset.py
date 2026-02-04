@@ -17,8 +17,9 @@ from .remove_stars import (
     _ProcThread, _ProcDialog,
     _mtf_params_unlinked, _apply_mtf_unlinked_rgb, _invert_mtf_unlinked_rgb,
     _active_mask3_from_doc, _mask_blend_with_doc_mask, _push_as_new_doc,
-    _ensure_exec_bit,
+    _ensure_exec_bit,_pad_reflect, _crop_unpad, _extract_stars_only,
 )
+from setiastro.saspro.starless_engines.syqon_nafnet_engine import nafnet_starless_rgb01
 
 # ---------- Headless public entry ----------
 def run_remove_stars_via_preset(main, doc_or_preset=None, preset: dict | None = None, target_doc=None):
@@ -74,6 +75,8 @@ def run_remove_stars_via_preset(main, doc_or_preset=None, preset: dict | None = 
             _run_starnet_headless(main, doc, p)
         elif tool in ("darkstar", "cosmicclarity", "cosmic_clarity"):
             _run_darkstar_headless(main, doc, p)
+        elif tool in ("syqon", "syqon_starless"):
+            _run_syqon_headless(main, doc, p)   # NEW
         else:
             QMessageBox.critical(main, "Remove Stars", f"Unknown tool '{tool}'.")
     finally:
@@ -449,7 +452,7 @@ class RemoveStarsPresetDialog(QDialog):
         p = dict(initial or {})
 
         self.cmb_tool = QComboBox()
-        self.cmb_tool.addItems(["StarNet", "CosmicClarity DarkStar"])
+        self.cmb_tool.addItems(["StarNet", "CosmicClarity DarkStar", "SyQon"])
         self.cmb_tool.setCurrentIndex(0 if str(p.get("tool","starnet")).lower().startswith("star") else 1)
 
         # StarNet options
@@ -467,6 +470,19 @@ class RemoveStarsPresetDialog(QDialog):
         for v in (64,128,256,512,1024): self.cmb_stride.addItem(str(v), v)
         self.cmb_stride.setCurrentText(str(int(p.get("stride", 512))))
 
+        # SyQon options
+        self.syq_tile = QSpinBox(); self.syq_tile.setRange(128, 2048); self.syq_tile.setSingleStep(64)
+        self.syq_overlap = QSpinBox(); self.syq_overlap.setRange(16, 512); self.syq_overlap.setSingleStep(16)
+        self.syq_make_stars = QCheckBox("Also create stars-only document (_stars)")
+        self.syq_make_stars.setChecked(True)
+
+        self.syq_pad = QCheckBox("Pad edges (reflect)")
+        self.syq_pad.setChecked(True)
+        self.syq_pad_px = QSpinBox(); self.syq_pad_px.setRange(0, 1024); self.syq_pad_px.setSingleStep(16); self.syq_pad_px.setValue(128)
+
+        self.syq_extract = QComboBox(); self.syq_extract.addItems(["subtract", "unscreen"])
+
+
         form = QFormLayout(self)
         form.addRow("Tool:", self.cmb_tool)
         form.addRow(QLabel("— StarNet —"))
@@ -476,6 +492,13 @@ class RemoveStarsPresetDialog(QDialog):
         form.addRow("Stride:", self.cmb_stride)
         form.addRow("", self.chk_disable_gpu)
         form.addRow("", self.chk_show)
+        form.addRow(QLabel("— SyQon —"))
+        form.addRow("Tile size:", self.syq_tile)
+        form.addRow("Overlap:", self.syq_overlap)
+        form.addRow("", self.syq_make_stars)
+        form.addRow("", self.syq_pad)
+        form.addRow("Pad pixels:", self.syq_pad_px)
+        form.addRow("Stars-only extraction:", self.syq_extract)
 
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self)
         btns.accepted.connect(self.accept); btns.rejected.connect(self.reject)
@@ -483,23 +506,45 @@ class RemoveStarsPresetDialog(QDialog):
 
         # show/hide sections depending on tool
         def _toggle():
-            star = self.cmb_tool.currentIndex() == 0
-            self.chk_linear.setEnabled(star)
+            idx = self.cmb_tool.currentIndex()
+            is_starnet = (idx == 0)
+            is_darkstar = (idx == 1)
+            is_syqon = (idx == 2)
+
+            self.chk_linear.setEnabled(is_starnet)
+
             for w in (self.cmb_mode, self.cmb_stride, self.chk_disable_gpu, self.chk_show):
-                w.setEnabled(not star)
+                w.setEnabled(is_darkstar)
+
+            for w in (self.syq_tile, self.syq_overlap, self.syq_make_stars, self.syq_pad, self.syq_pad_px, self.syq_extract):
+                w.setEnabled(is_syqon)
+
         self.cmb_tool.currentIndexChanged.connect(lambda _: _toggle())
         _toggle()
 
     def result_dict(self) -> dict:
-        if self.cmb_tool.currentIndex() == 0:
+        idx = self.cmb_tool.currentIndex()
+        if idx == 0:
             return {"tool": "starnet", "linear": bool(self.chk_linear.isChecked())}
+        if idx == 1:
+            return {
+                "tool": "darkstar",
+                "disable_gpu": bool(self.chk_disable_gpu.isChecked()),
+                "mode": self.cmb_mode.currentText(),
+                "show_extracted_stars": bool(self.chk_show.isChecked()),
+                "stride": int(self.cmb_stride.currentData()),
+            }
+        # SyQon
         return {
-            "tool": "darkstar",
-            "disable_gpu": bool(self.chk_disable_gpu.isChecked()),
-            "mode": self.cmb_mode.currentText(),
-            "show_extracted_stars": bool(self.chk_show.isChecked()),
-            "stride": int(self.cmb_stride.currentData()),
+            "tool": "syqon",
+            "tile_size": int(self.syq_tile.value()),
+            "overlap": int(self.syq_overlap.value()),
+            "make_stars": bool(self.syq_make_stars.isChecked()),
+            "pad_edges": bool(self.syq_pad.isChecked()),
+            "pad_pixels": int(self.syq_pad_px.value()),
+            "stars_extract": str(self.syq_extract.currentText()),
         }
+
 
 class _DarkStarEngineThread(QThread):
     progress_signal = pyqtSignal(int, int, str)           # done, total, stage
@@ -524,6 +569,183 @@ class _DarkStarEngineThread(QThread):
             self.finished_signal.emit(starless, stars_only, bool(was_mono), "")
         except Exception as e:
             self.finished_signal.emit(None, None, False, str(e))
+
+class _SyQonEngineThread(QThread):
+    progress_signal = pyqtSignal(int, int, str)           # done, total, stage
+    finished_signal = pyqtSignal(object, object, dict, str)  # starless_s, info, aux, err
+
+    def __init__(self, x_for_net_rgb01: np.ndarray, ckpt_path: str,
+                 tile: int, overlap: int, parent=None):
+        super().__init__(parent)
+        self._x = x_for_net_rgb01
+        self._ckpt = ckpt_path
+        self._tile = int(tile)
+        self._overlap = int(overlap)
+
+    def run(self):
+        try:
+            def prog(done, total, stage):
+                self.progress_signal.emit(int(done), int(total), str(stage))
+
+            starless_s, stars_s, info = nafnet_starless_rgb01(
+                self._x,
+                ckpt_path=self._ckpt,
+                tile=self._tile,
+                overlap=self._overlap,
+                prefer_cuda=True,
+                residual_mode=True,
+                progress_cb=prog,
+            )
+            self.finished_signal.emit(starless_s, info, {"stars_s": stars_s}, "")
+        except Exception as e:
+            self.finished_signal.emit(None, None, {}, str(e))
+
+def _run_syqon_headless(main, doc, p):
+    # ---- model path (same location as your dialog installs) ----
+    # IMPORTANT: point this at exactly the same syqon_starless/nadir that the dialog uses.
+    # If you already have a helper like _syqon_data_dir/_syqon_model_path in remove_stars.py,
+    # import and call it instead of reimplementing.
+    try:
+        from .remove_stars import _syqon_data_dir, _syqon_model_path
+        ckpt_path = str(_syqon_model_path(_syqon_data_dir()))
+    except Exception:
+        ckpt_path = str(p.get("model_path", ""))
+
+    if not ckpt_path or not os.path.exists(ckpt_path):
+        QMessageBox.warning(main, "SyQon", "SyQon model not installed. Run the interactive SyQon tool once to install it.")
+        return
+
+    # ---- params ----
+    tile = int(p.get("tile_size", 512))
+    overlap = int(p.get("overlap", 64))
+    shadow_clip = float(p.get("shadow_clip", 2.8))  # not used by nafnet wrapper here unless your engine uses it
+    make_stars = bool(p.get("make_stars", True))
+
+    pad_edges = bool(p.get("pad_edges", True))
+    pad_pixels = int(p.get("pad_pixels", 128))
+    stars_extract = str(p.get("stars_extract", "subtract")).lower()  # subtract | unscreen
+
+    # ---- prep image (float32) ----
+    src = np.asarray(doc.image)
+    orig_was_mono = (src.ndim == 2) or (src.ndim == 3 and src.shape[2] == 1)
+
+    x = np.nan_to_num(src.astype(np.float32, copy=False), nan=0.0, posinf=0.0, neginf=0.0)
+
+    # normalize to [0..1]
+    scale_factor = float(np.max(x)) if x.size else 1.0
+    x01 = (x / scale_factor) if scale_factor > 1.01 else x
+    x01 = np.clip(x01, 0.0, 1.0).astype(np.float32, copy=False)
+
+    # to RGB
+    if x01.ndim == 2:
+        xrgb = np.stack([x01] * 3, axis=-1)
+    elif x01.ndim == 3 and x01.shape[2] == 1:
+        xrgb = np.repeat(x01, 3, axis=2)
+    else:
+        xrgb = x01[..., :3]
+
+    H0, W0 = xrgb.shape[:2]
+
+    if pad_edges and pad_pixels > 0:
+        xrgb = _pad_reflect(xrgb, pad_pixels)
+
+    # MTF stretch for net
+    mtf_params = _mtf_params_unlinked(xrgb, shadows_clipping=-2.8, targetbg=0.25)
+    x_for_net = _apply_mtf_unlinked_rgb(xrgb, mtf_params)
+
+    # ---- UI progress dialog + thread ----
+    dlg = _ProcDialog(main, title="SyQon Progress")
+    dlg.append_text("Starting SyQon…\n")
+
+    thr = _SyQonEngineThread(x_for_net, ckpt_path=ckpt_path, tile=tile, overlap=overlap, parent=dlg)
+
+    def _on_prog(done, total, stage):
+        dlg.set_progress(done, total, stage)
+
+    def _on_done(starless_s, info, aux, err):
+        if err or starless_s is None:
+            QMessageBox.critical(main, "SyQon", f"SyQon failed:\n{err or 'Unknown error'}")
+            dlg.close()
+            return
+
+        starless_s = np.asarray(starless_s, dtype=np.float32)
+        if starless_s.ndim == 2:
+            starless_s = np.stack([starless_s] * 3, axis=-1)
+
+        # inverse MTF
+        starless_lin = _invert_mtf_unlinked_rgb(starless_s, mtf_params)
+
+        # restore original scale domain (if we normalized)
+        if scale_factor > 1.01:
+            starless_lin = np.clip(starless_lin * scale_factor, 0.0, 1.0).astype(np.float32, copy=False)
+
+        # unpad back to original size
+        if pad_edges and pad_pixels > 0:
+            starless_lin = _crop_unpad(starless_lin, pad_pixels, H0, W0)
+
+        # original RGB (for stars-only/blend)
+        orig = np.asarray(doc.image, dtype=np.float32)
+        if orig.ndim == 2:
+            original_rgb = np.stack([orig] * 3, axis=-1)
+        elif orig.ndim == 3 and orig.shape[2] == 1:
+            original_rgb = np.repeat(orig, 3, axis=2)
+        else:
+            original_rgb = orig[..., :3]
+
+        starless_rgb = starless_lin.astype(np.float32, copy=False)
+
+        # optional stars-only doc
+        if make_stars:
+            stars_only = _extract_stars_only(original_rgb, starless_rgb, mode=stars_extract)
+
+            m3 = _active_mask3_from_doc(doc, stars_only.shape[1], stars_only.shape[0])
+            if m3 is not None:
+                stars_only *= m3
+
+            stars_to_push = stars_only.mean(axis=2).astype(np.float32, copy=False) if orig_was_mono else stars_only
+            _push_as_new_doc(main, doc, stars_to_push, title_suffix="_stars", source="Stars-Only (SyQon)")
+
+        # blend w/ active mask and apply
+        final_starless = _mask_blend_with_doc_mask(doc, starless_rgb, original_rgb)
+        final_to_apply = final_starless.mean(axis=2).astype(np.float32, copy=False) if orig_was_mono else final_starless
+        final_to_apply = np.clip(final_to_apply, 0.0, 1.0).astype(np.float32, copy=False)
+
+        meta = {
+            "step_name": "Stars Removed",
+            "bit_depth": "32-bit floating point",
+            "is_mono": bool(orig_was_mono),
+            "replay_last": {
+                "op": "remove_stars",
+                "params": {
+                    "tool": "syqon",
+                    "tile_size": tile,
+                    "overlap": overlap,
+                    "shadow_clip": shadow_clip,
+                    "make_stars": make_stars,
+                    "pad_edges": pad_edges,
+                    "pad_pixels": pad_pixels,
+                    "stars_extract": stars_extract,
+                    "model_path": ckpt_path,
+                }
+            }
+        }
+
+        try:
+            doc.apply_edit(final_to_apply, metadata=meta, step_name="Stars Removed")
+            if hasattr(main, "_log"):
+                main._log("Stars Removed (SyQon, headless)")
+        except Exception as e:
+            QMessageBox.critical(main, "SyQon", f"Failed to apply result:\n{e}")
+
+        dlg.close()
+
+    thr.progress_signal.connect(_on_prog)
+    thr.finished_signal.connect(_on_done)
+
+    dlg.cancel_button.clicked.connect(lambda: dlg.append_text("Cancel not supported for SyQon thread yet.\n"))
+    dlg.show()
+    thr.start()
+    dlg.exec()
 
 
 # ---------- local util ----------

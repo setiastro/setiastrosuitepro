@@ -183,7 +183,7 @@ from setiastro.saspro.resources import (
     satellite_path, imagecombine_path, wrench_path, eye_icon_path,multiscale_decomp_path,
     disk_icon_path, nuke_path, hubble_path, collage_path, annotated_path,
     colorwheel_path, font_path, csv_icon_path, spinner_path, wims_path, narrowbandnormalization_path,
-    wimi_path, linearfit_path, debayer_path, aberration_path, acv_icon_path,
+    wimi_path, linearfit_path, debayer_path, aberration_path, acv_icon_path, snr_path,
     functionbundles_path, viewbundles_path, selectivecolor_path, rgbalign_path, planetarystacker_path,
     background_path, script_icon_path, planetprojection_path,clonestampicon_path, finderchart_path,magnitude_path,
 )
@@ -511,7 +511,7 @@ class AstroSuiteProMainWindow(
         self._doc = None
         self._force_close_all = False
         self._is_restarting = False  # Flag to bypass exit confirmation on restart
-        self.settings = self.settings = QSettings()
+        self.settings = QSettings()
         
         # Optimization: Cache the settings dialog for instant opening
         self._settings_dlg_cache = None
@@ -758,8 +758,12 @@ class AstroSuiteProMainWindow(
         self._link_views_enabled = QSettings().value("view/link_scroll_zoom", True, type=bool)
 
         self.status_log_dock.hide()
-
+        self.restore_main_window_state()
     # _init_log_dock, _hook_stdout_stderr, and _append_log_text are now in DockMixin
+
+
+    def _mw_key(self) -> str:
+        return "main_window"
 
     def _schedule_undo_redo_label_refresh(self):
         # Coalesce many triggers into one UI update
@@ -3285,6 +3289,33 @@ class AstroSuiteProMainWindow(
             pass
 
         self.MAG_window.show()
+
+    def _open_snr_tool(self):
+        from PyQt6.QtGui import QIcon
+
+        if getattr(self, "SNR_window", None) and self.SNR_window.isVisible():
+            self.SNR_window.raise_()
+            self.SNR_window.activateWindow()
+            return
+
+        from setiastro.saspro.doc_manager import DocManager
+        if not hasattr(self, "doc_manager") or self.doc_manager is None:
+            self.doc_manager = DocManager(image_manager=getattr(self, "image_manager", None), parent=self)
+
+        from setiastro.saspro.snr_tool import SNRToolDialog
+
+        self.SNR_window = SNRToolDialog(
+            parent=self,
+            doc_manager=self.doc_manager,
+            icon=QIcon(snr_path),
+        )
+
+        try:
+            self.SNR_window.destroyed.connect(lambda _=None: setattr(self, "SNR_window", None))
+        except Exception:
+            pass
+
+        self.SNR_window.show()
 
 
     def show_convo_deconvo(self, doc=None):
@@ -9486,9 +9517,83 @@ class AstroSuiteProMainWindow(
         except Exception:
             pass
 
+    def restore_main_window_state(self):
+        s = self.settings
+        k = self._mw_key()
+
+        # 1) restore dock/layout state first OR geometry first?
+        # Qt generally works best with: restoreState then restoreGeometry, then apply maximized.
+        st = s.value(f"{k}/state", None)
+        if st is not None:
+            try:
+                self.restoreState(st)
+            except Exception:
+                pass
+
+        geom = s.value(f"{k}/geometry", None)
+        if geom is not None:
+            try:
+                self.restoreGeometry(geom)
+            except Exception:
+                pass
+
+        # Maximized/fullscreen flags should be applied last
+        was_max = s.value(f"{k}/maximized", False, type=bool)
+        was_full = s.value(f"{k}/fullscreen", False, type=bool)
+
+        if was_full:
+            try:
+                self.showFullScreen()
+            except Exception:
+                pass
+        elif was_max:
+            try:
+                self.showMaximized()
+            except Exception:
+                pass
+
+    def save_main_window_state(self):
+        s = self.settings
+        k = self._mw_key()
+
+        # If maximized/fullscreen, geometry can be “last normal” or weird depending on platform.
+        # Store flags separately.
+        is_full = bool(self.windowState() & Qt.WindowState.WindowFullScreen)
+        is_max  = bool(self.windowState() & Qt.WindowState.WindowMaximized)
+
+        s.setValue(f"{k}/fullscreen", is_full)
+        s.setValue(f"{k}/maximized", is_max)
+
+        # Save “normal” geometry even if maximized, so restore feels sane.
+        # Qt provides normalGeometry() for QMainWindow/QWidget.
+        try:
+            if is_max or is_full:
+                s.setValue(f"{k}/geometry_normal", self.normalGeometry())
+            else:
+                s.setValue(f"{k}/geometry_normal", None)
+        except Exception:
+            pass
+
+        # Primary geometry/state payloads
+        try:
+            s.setValue(f"{k}/geometry", self.saveGeometry())
+        except Exception:
+            pass
+        try:
+            s.setValue(f"{k}/state", self.saveState())
+        except Exception:
+            pass
+
+        s.sync()
+
+
     def closeEvent(self, e):
         self._update_usage_stats()
 
+        try:
+            self.save_main_window_state()
+        except Exception:
+            pass
 
         # Optimization: If restarting (e.g. language change), bypass confirmation and close immediately
         if getattr(self, "_is_restarting", False):
