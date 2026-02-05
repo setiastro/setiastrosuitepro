@@ -390,29 +390,47 @@ class SNRToolDialog(QDialog):
         ax = self.fig_snr.add_subplot(111)
 
         x = np.arange(len(ch_names), dtype=float)
-        # Plot SNR (linear). For readability, we plot linear but clamp extreme values a bit.
-        snr_plot = np.array(snr_vals, dtype=float)
-        snr_plot = np.clip(snr_plot, 0.0, np.nanmax(snr_plot) if np.isfinite(np.nanmax(snr_plot)) else 1.0)
 
-        ax.bar(x - 0.15, snr_plot, width=0.3, label="SNR")
+        snr_plot = np.array(snr_vals, dtype=float)
+        snr_plot = np.clip(
+            snr_plot,
+            0.0,
+            np.nanmax(snr_plot) if np.isfinite(np.nanmax(snr_plot)) else 1.0
+        )
+
+        # --- SNR (linear) bars ---
+        b1 = ax.bar(
+            x - 0.15,
+            snr_plot,
+            width=0.3,
+            label="SNR",
+            color="tab:blue",
+            alpha=0.90
+        )
         ax.set_xticks(x)
         ax.set_xticklabels(ch_names)
         ax.set_ylabel("SNR (linear)")
 
-        # Second axis for dB
+        # --- dB bars on twin axis ---
         ax2 = ax.twinx()
-        ax2.bar(x + 0.15, snr_db_vals, width=0.3, label="dB")
+        b2 = ax2.bar(
+            x + 0.15,
+            snr_db_vals,
+            width=0.3,
+            label="dB",
+            color="tab:orange",
+            alpha=0.80
+        )
         ax2.set_ylabel("SNR (dB)")
 
         ax.set_title("Object SNR")
         ax.grid(True, axis="y", alpha=0.25)
 
-        # Simple legend handling across twin axes
-        handles1, labels1 = ax.get_legend_handles_labels()
-        handles2, labels2 = ax2.get_legend_handles_labels()
-        ax.legend(handles1 + handles2, labels1 + labels2, loc="best")
+        # Legend across both axes
+        ax.legend([b1, b2], ["SNR", "dB"], loc="best")
 
         self.canvas_snr.draw_idle()
+
 
     def _roi_display_rgb01(self, crop01: np.ndarray) -> np.ndarray:
         """

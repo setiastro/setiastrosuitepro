@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 import numpy as np
 from typing import Callable, Optional, Tuple
+import os
 
 def _infer_device(torch, *, prefer_cuda: bool = True, prefer_dml: bool = True):
     # CUDA
@@ -24,10 +25,7 @@ def _infer_device(torch, *, prefer_cuda: bool = True, prefer_dml: bool = True):
 
     return torch.device("cpu")
 
-
-
-def _load_state_dict(ckpt_path: str):
-    import torch
+def _load_state_dict(torch, ckpt_path: str):
     ckpt = torch.load(ckpt_path, map_location="cpu")
     if isinstance(ckpt, dict):
         if "state_dict" in ckpt and isinstance(ckpt["state_dict"], dict):
@@ -71,48 +69,46 @@ def _infer_nafnet_cfg_from_sd(sd: dict) -> Tuple[int, int]:
     return base_ch, levels
 
 
-def load_nafnet_model(ckpt_path: str, *, use_gpu: bool = True, prefer_dml: bool = True):
+def load_nafnet_model(ckpt_path: str, *, use_gpu: bool, prefer_dml: bool):
     from setiastro.saspro.runtime_torch import import_torch
 
-    # IMPORTANT: this ensures we import torch from the SASpro runtime
     torch = import_torch(
-        prefer_cuda=bool(use_gpu),
+        prefer_cuda=use_gpu,
         prefer_xpu=False,
-        prefer_dml=bool(prefer_dml),
+        prefer_dml=prefer_dml,
         status_cb=lambda *_: None,
     )
 
     from setiastro.saspro.syqon_model.model import create_model
 
-    sd, meta = _load_state_dict(ckpt_path)
+    sd, meta = _load_state_dict(torch, ckpt_path)
     base_ch, depth = _infer_nafnet_cfg_from_sd(sd)
 
     model = create_model(base_ch=base_ch, depth=depth)
     model.load_state_dict(sd, strict=False)
     model.eval()
 
-    device = _infer_device(torch, prefer_cuda=bool(use_gpu), prefer_dml=bool(prefer_dml))
+    device = _infer_device(torch, prefer_cuda=use_gpu, prefer_dml=prefer_dml)
     model.to(device)
 
     info = {
         "base_ch": base_ch,
         "depth": depth,
         "meta": meta,
-        "torch_file": getattr(torch, "__file__", None),
-        "torch_version": getattr(torch, "__version__", None),
         "device": str(device),
+        "torch_version": torch.__version__,
+        "torch_file": torch.__file__,
     }
-    return model, device, info
+    return model, device, info, torch
 
 
-def _to_torch_chw(img_chw: np.ndarray, device):
-    import torch
+def _to_torch_chw(img_chw, device, torch):
     x = np.asarray(img_chw, dtype=np.float32)
     if x.ndim != 3:
         raise ValueError("expected CHW float32")
     x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
     x = np.clip(x, 0.0, 1.0)
-    t = torch.from_numpy(x[None, ...])  # 1CHW
+    t = torch.from_numpy(x[None, ...])
     return t.to(device=device, dtype=torch.float32)
 
 
@@ -124,6 +120,7 @@ def _predict_tile(
     use_amp: bool,
     amp_dtype: str,
     info: dict,
+    torch,
 ):
     """
     Run model(t) and return pred as HWC float32 numpy.
@@ -131,7 +128,6 @@ def _predict_tile(
     If AMP is enabled and non-finite output occurs, fallback to fp32 for this tile
     and record info["amp_fallback"] / info["amp_reason"].
     """
-    import torch
 
     def _to_numpy(pred_t):
         # pred_t: 1CHW torch
@@ -201,8 +197,6 @@ def nafnet_starless_rgb01(
     Input: HWC float32 [0,1], RGB (or mono HxW)
     Output: starless HWC float32 [0,1] and stars_only HWC float32 [0,1]
     """
-    import torch
-
     x = np.asarray(img_rgb01, dtype=np.float32)
     was_mono = (x.ndim == 2) or (x.ndim == 3 and x.shape[2] == 1)
 
@@ -218,13 +212,16 @@ def nafnet_starless_rgb01(
     overlap = int(overlap)
     stride = max(tile - overlap, 1)
 
-    model, device, info = load_nafnet_model(
+    model, device, info, torch = load_nafnet_model(
         ckpt_path,
         use_gpu=use_gpu,
         prefer_dml=prefer_dml,
     )
-    info = dict(info or {})
 
+    info = dict(info or {})
+    info["device"] = str(device)
+    info["torch_version"] = getattr(torch, "__version__", None)
+    info["torch_file"] = getattr(torch, "__file__", None)
     # AMP config
     use_amp_requested = bool(use_amp)
     amp_dtype = (amp_dtype or "fp16").lower()
@@ -266,7 +263,7 @@ def nafnet_starless_rgb01(
                     patch = pad
 
                 chw = patch.transpose(2, 0, 1)  # CHW
-                t = _to_torch_chw(chw, device)
+                t = _to_torch_chw(chw, device, torch)
 
                 pred = _predict_tile(
                     model,
@@ -275,6 +272,7 @@ def nafnet_starless_rgb01(
                     use_amp=use_amp_effective,
                     amp_dtype=amp_dtype,
                     info=info,
+                    torch=torch,
                 )  # HWC float32
 
                 if residual_mode:

@@ -886,7 +886,14 @@ class SyQonStarlessDialog(QDialog):
             QMessageBox.critical(self, "SyQon", err)
             self._refresh_state()
             return
-
+        try:
+            if hasattr(self.main, "_log"):
+                self.main._log(
+                    f"SyQon backend: device={info.get('device')} "
+                    f"torch={info.get('torch_version')} file={info.get('torch_file')}"
+                )
+        except Exception:
+            pass
         # --- Continue with the code you currently run AFTER nafnet_starless_rgb01 ---
         # Everything below runs on GUI thread now, so safe to touch widgets and doc.
 
