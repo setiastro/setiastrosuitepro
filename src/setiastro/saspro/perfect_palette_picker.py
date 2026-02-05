@@ -513,7 +513,9 @@ class PerfectPalettePicker(QWidget):
             return None
 
         sw = dict(views)[choice]
-        doc = getattr(sw, "document", None)
+        vw = sw.widget()
+        doc = getattr(vw, "document", None)
+
         if doc is None or getattr(doc, "image", None) is None:
             QMessageBox.warning(self, "Empty View", "Selected view has no image.")
             return None
@@ -1027,30 +1029,145 @@ class PerfectPalettePicker(QWidget):
         raise ValueError(f"Unexpected image shape: {a.shape}")
 
     def _find_main_window(self):
-        w = self
         from PyQt6.QtWidgets import QMainWindow, QApplication
-        while w is not None and not isinstance(w, QMainWindow):
+
+        # 1) walk parents first
+        w = self
+        while w is not None:
+            if isinstance(w, QMainWindow):
+                return w
             w = w.parentWidget()
-        if w: return w
-        for tlw in QApplication.topLevelWidgets():
+
+        app = QApplication.instance()
+        if app is None:
+            return None
+
+        # 2) prefer active window if it's a QMainWindow
+        aw = app.activeWindow()
+        if isinstance(aw, QMainWindow):
+            return aw
+
+        # 3) prefer one that has an mdi attribute (your real main window does)
+        for tlw in app.topLevelWidgets():
+            if isinstance(tlw, QMainWindow) and hasattr(tlw, "mdi"):
+                return tlw
+
+        # 4) last resort: any QMainWindow
+        for tlw in app.topLevelWidgets():
             if isinstance(tlw, QMainWindow):
                 return tlw
+
         return None
 
     def _list_open_views(self):
         mw = self._find_main_window()
-        if not mw:
+        if mw is None:
             return []
+
+        # Import ImageSubWindow (same class you showed)
         try:
             from setiastro.saspro.subwindow import ImageSubWindow
-            subs = mw.findChildren(ImageSubWindow)
         except Exception:
-            subs = []
+            ImageSubWindow = None
+
         out = []
-        for sw in subs:
-            title = getattr(sw, "view_title", None) or sw.windowTitle() or getattr(sw.document, "display_name", lambda: "Untitled")()
-            out.append((str(title), sw))
-        return out
+
+        # ── 1) Best source: MDI subWindowList() ─────────────────────────────
+        mdi = getattr(mw, "mdi", None)
+        if mdi is not None:
+            try:
+                for sub in mdi.subWindowList():
+                    try:
+                        view = sub.widget()  # should be ImageSubWindow
+                        if ImageSubWindow is not None and not isinstance(view, ImageSubWindow):
+                            continue
+
+                        doc = getattr(view, "document", None)
+                        img = getattr(doc, "image", None) if doc is not None else None
+                        if img is None:
+                            continue
+
+                        # Clean, user-visible title (your view emits clean core titles already)
+                        title = ""
+                        try:
+                            title = (sub.windowTitle() or "").strip()
+                        except Exception:
+                            title = ""
+                        if not title:
+                            try:
+                                title = (view._effective_title() or "").strip()
+                            except Exception:
+                                title = ""
+                        if not title:
+                            try:
+                                title = (doc.display_name() or "").strip()
+                            except Exception:
+                                title = "Untitled"
+
+                        out.append((title, sub))
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+
+        # ── 2) Fallback: your registry (VERY reliable) ──────────────────────
+        if not out and ImageSubWindow is not None:
+            try:
+                # registry holds ImageSubWindow widgets
+                for view in list(ImageSubWindow._registry.values()):
+                    try:
+                        doc = getattr(view, "document", None)
+                        img = getattr(doc, "image", None) if doc is not None else None
+                        if img is None:
+                            continue
+
+                        sub = None
+                        try:
+                            sub = view._mdi_subwindow()
+                        except Exception:
+                            sub = None
+                        if sub is None:
+                            continue
+
+                        title = ""
+                        try:
+                            title = (sub.windowTitle() or "").strip()
+                        except Exception:
+                            title = ""
+                        if not title:
+                            try:
+                                title = (view._effective_title() or "").strip()
+                            except Exception:
+                                title = ""
+                        if not title:
+                            try:
+                                title = (doc.display_name() or "").strip()
+                            except Exception:
+                                title = "Untitled"
+
+                        out.append((title, sub))
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+
+        # De-dupe titles (keep stable order; disambiguate duplicates)
+        seen = set()
+        uniq = []
+        for t, sub in out:
+            tt = str(t)
+            if tt in seen:
+                i = 2
+                cand = f"{tt} ({i})"
+                while cand in seen:
+                    i += 1
+                    cand = f"{tt} ({i})"
+                tt = cand
+            seen.add(tt)
+            uniq.append((tt, sub))
+
+        return uniq
+
     
     def eventFilter(self, obj, ev):
         # Ctrl+wheel = zoom at mouse (no scrolling). Wheel without Ctrl = eaten.

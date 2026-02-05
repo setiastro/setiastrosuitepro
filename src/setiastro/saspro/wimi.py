@@ -1117,8 +1117,8 @@ class CustomGraphicsView(QGraphicsView):
 
                 # Store the line and text in annotation items for future reference
                 measurement_line = QLineF(self.measurement_start, measurement_end)
-                self.annotation_items.append(('line', measurement_line))  # Store QLineF, not QGraphicsLineItem
-                self.annotation_items.append(('text', distance_text, midpoint, Qt.GlobalColor.green))
+                self.annotation_items.append(('line', measurement_line, QColor(0, 255, 0)))
+                self.annotation_items.append(('text', distance_text, midpoint, QColor(0, 255, 0)))
 
             # Clear the temporary measurement line item without removing the final line
             self.drawing_item = None
@@ -1143,7 +1143,7 @@ class CustomGraphicsView(QGraphicsView):
                 pos = self.drawing_item.pos()
                 text = self.drawing_item.toPlainText()
                 color = self.drawing_item.defaultTextColor()
-                self.annotation_items.append(('text', pos, text, color))
+                self.annotation_items.append(('text', text, pos, color))
             elif isinstance(self.drawing_item, QGraphicsPathItem):  # Handle Freehand
                 path = self.drawing_item.path()
                 color = self.drawing_item.pen().color()
@@ -1182,8 +1182,10 @@ class CustomGraphicsView(QGraphicsView):
         self.parent.main_scene.addItem(text_item)
         
         # Append both line and text to annotation_items
-        self.annotation_items.append(('line', line_item))
-        self.annotation_items.append(('text', midpoint, distance_ddmmss, QColor(0, 255, 255)))
+        line = QLineF(self.measurement_start, self.measurement_end)
+        self.annotation_items.append(('line', line, QColor(0, 255, 255)))
+        self.annotation_items.append(('text', distance_ddmmss, midpoint, QColor(0, 255, 255)))
+
 
 
     
@@ -1218,14 +1220,28 @@ class CustomGraphicsView(QGraphicsView):
                     self.parent.main_scene.addItem(rect_item)
                 elif item[0] == 'line':
                     line = item[1]
-                    color = item[2]
+
+                    # accept either QLineF or QGraphicsLineItem
+                    if isinstance(line, QGraphicsLineItem):
+                        line = line.line()
+
+                    color = item[2] if len(item) > 2 else QColor(0, 255, 0)
+
                     line_item = QGraphicsLineItem(line)
                     line_item.setPen(QPen(color, 2))
                     self.parent.main_scene.addItem(line_item)
+
                 elif item[0] == 'text':
-                    text = item[1]            # The text string
-                    pos = item[2]             # A QPointF for the position
-                    color = item[3]           # The color for the text
+                    # support BOTH tuple shapes:
+                    #   ('text', text, pos, color)
+                    #   ('text', pos, text, color)
+                    a1, a2 = item[1], item[2]
+                    if isinstance(a1, QPointF) and isinstance(a2, str):
+                        pos, text = a1, a2
+                    else:
+                        text, pos = a1, a2
+
+                    color = item[3] if len(item) > 3 else QColor(255, 255, 255)
 
                     text_item = QGraphicsTextItem(text)
                     text_item.setPos(pos)
