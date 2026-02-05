@@ -1,47 +1,42 @@
 #src/setiastro/saspro/starless_engines/syqon_nafnet_engine.py
 from __future__ import annotations
-import numpy as np
+
 from pathlib import Path
+import numpy as np
 from typing import Callable, Optional, Tuple
 
-def _infer_device(prefer_cuda=True):
+def _infer_device(prefer_cuda: bool = True):
     import torch
     if prefer_cuda and torch.cuda.is_available():
         return torch.device("cuda")
-    # (optional) MPS support if you want:
     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         return torch.device("mps")
     return torch.device("cpu")
+
 
 def _load_state_dict(ckpt_path: str):
     import torch
     ckpt = torch.load(ckpt_path, map_location="cpu")
     if isinstance(ckpt, dict):
-        # common patterns
         if "state_dict" in ckpt and isinstance(ckpt["state_dict"], dict):
             return ckpt["state_dict"], ckpt
         if "model" in ckpt and isinstance(ckpt["model"], dict):
             return ckpt["model"], ckpt
-        # or it might already be a raw sd
-        if any(k.startswith(("intro.", "ending.", "encoders.", "downs.", "middle.", "decoders.", "ups.")) for k in ckpt.keys()):
+        if any(
+            k.startswith(
+                (
+                    "intro.", "ending.", "encoders.", "downs.", "middle.", "decoders.", "ups."
+                )
+            )
+            for k in ckpt.keys()
+        ):
             return ckpt, {}
     raise RuntimeError("Unsupported checkpoint format (expected state_dict-like dict).")
 
+
 def _infer_nafnet_cfg_from_sd(sd: dict) -> Tuple[int, int]:
-    """
-    Infer NAFNet config from state_dict produced by our NAFNet class.
+    base_ch = int(sd["intro.weight"].shape[0]) if "intro.weight" in sd else 32
 
-    Returns:
-        base_ch: intro conv out channels
-        levels: number of encoder/decoder levels (len(encoders) == len(downs) == levels)
-    """
-    base_ch = None
-    if "intro.weight" in sd:
-        base_ch = int(sd["intro.weight"].shape[0])
-    else:
-        base_ch = 32  # safe fallback
-
-    # Prefer downs.N.* indices (most robust for our architecture)
     downs_idx = set()
     for k in sd.keys():
         if k.startswith("downs."):
@@ -52,24 +47,21 @@ def _infer_nafnet_cfg_from_sd(sd: dict) -> Tuple[int, int]:
     if downs_idx:
         levels = max(downs_idx) + 1
     else:
-        # Fallback to encoders.N.*
         enc_idx = set()
         for k in sd.keys():
             if k.startswith("encoders."):
                 parts = k.split(".")
                 if len(parts) > 1 and parts[1].isdigit():
                     enc_idx.add(int(parts[1]))
-        levels = (max(enc_idx) + 1) if enc_idx else 4  # reasonable default
+        levels = (max(enc_idx) + 1) if enc_idx else 4
 
-    # Clamp to something sane
     levels = max(1, min(8, int(levels)))
-
     return base_ch, levels
 
 
-def load_nafnet_model(ckpt_path: str, prefer_cuda=True):
-    import torch
-    from setiastro.saspro.syqon_model.model import create_model  # <-- you will place model.py here
+def load_nafnet_model(ckpt_path: str, prefer_cuda: bool = True):
+    from setiastro.saspro.syqon_model.model import create_model
+
     sd, meta = _load_state_dict(ckpt_path)
     base_ch, depth = _infer_nafnet_cfg_from_sd(sd)
 
@@ -82,6 +74,7 @@ def load_nafnet_model(ckpt_path: str, prefer_cuda=True):
 
     return model, device, {"base_ch": base_ch, "depth": depth, "meta": meta}
 
+
 def _to_torch_chw(img_chw: np.ndarray, device):
     import torch
     x = np.asarray(img_chw, dtype=np.float32)
@@ -92,6 +85,75 @@ def _to_torch_chw(img_chw: np.ndarray, device):
     t = torch.from_numpy(x[None, ...])  # 1CHW
     return t.to(device=device, dtype=torch.float32)
 
+
+def _predict_tile(
+    model,
+    t,
+    *,
+    device,
+    use_amp: bool,
+    amp_dtype: str,
+    info: dict,
+):
+    """
+    Run model(t) and return pred as HWC float32 numpy.
+
+    If AMP is enabled and non-finite output occurs, fallback to fp32 for this tile
+    and record info["amp_fallback"] / info["amp_reason"].
+    """
+    import torch
+
+    def _to_numpy(pred_t):
+        # pred_t: 1CHW torch
+        pred_np = pred_t[0].detach().to("cpu").numpy().transpose(1, 2, 0)
+        return pred_np.astype(np.float32, copy=False)
+
+    # --- AMP path (if requested & supported) ---
+    if use_amp and device.type == "cuda":
+        dtype = torch.float16 if amp_dtype == "fp16" else torch.bfloat16
+        with torch.cuda.amp.autocast(dtype=dtype):
+            pred_t = model(t)
+        pred = _to_numpy(pred_t)
+
+        if not np.isfinite(pred).all():
+            # fallback to fp32 for this tile
+            info["amp_fallback"] = True
+            info["amp_reason"] = "non-finite output detected under CUDA AMP; reran tile in fp32"
+            pred_t = model(t)
+            pred = _to_numpy(pred_t)
+
+        return pred
+
+    if use_amp and device.type == "mps":
+        # Conservative: autocast enabled, no explicit dtype forcing
+        try:
+            with torch.autocast(device_type="mps"):
+                pred_t = model(t)
+            pred = _to_numpy(pred_t)
+
+            if not np.isfinite(pred).all():
+                info["amp_fallback"] = True
+                info["amp_reason"] = "non-finite output detected under MPS autocast; reran tile in fp32"
+                pred_t = model(t)
+                pred = _to_numpy(pred_t)
+
+            return pred
+        except Exception:
+            # If autocast isn't supported in their torch build, just do fp32
+            pred_t = model(t)
+            pred = _to_numpy(pred_t)
+            return pred
+
+    # --- fp32 path ---
+    pred_t = model(t)
+    pred = _to_numpy(pred_t)
+
+    if not np.isfinite(pred).all():
+        raise RuntimeError("Non-finite output detected in fp32 inference.")
+
+    return pred
+
+
 def nafnet_starless_rgb01(
     img_rgb01: np.ndarray,
     ckpt_path: str,
@@ -100,6 +162,8 @@ def nafnet_starless_rgb01(
     overlap: int = 64,
     prefer_cuda: bool = True,
     residual_mode: bool = True,  # True = model predicts stars; starless = x - pred
+    use_amp: bool = False,
+    amp_dtype: str = "fp16",
     progress_cb: Optional[Callable[[int, int, str], None]] = None,
 ):
     """
@@ -112,7 +176,7 @@ def nafnet_starless_rgb01(
     was_mono = (x.ndim == 2) or (x.ndim == 3 and x.shape[2] == 1)
 
     if x.ndim == 2:
-        x = np.stack([x]*3, axis=-1)
+        x = np.stack([x] * 3, axis=-1)
     elif x.ndim == 3 and x.shape[2] == 1:
         x = np.repeat(x, 3, axis=2)
     else:
@@ -124,17 +188,29 @@ def nafnet_starless_rgb01(
     stride = max(tile - overlap, 1)
 
     model, device, info = load_nafnet_model(ckpt_path, prefer_cuda=prefer_cuda)
+    info = dict(info or {})
+
+    # AMP config
+    use_amp_requested = bool(use_amp)
+    amp_dtype = (amp_dtype or "fp16").lower()
+    if amp_dtype not in ("fp16", "bf16"):
+        amp_dtype = "fp16"
+
+    # only allow AMP where it makes sense
+    use_amp_effective = bool(use_amp_requested) and (device.type in ("cuda", "mps"))
+    info["use_amp_requested"] = use_amp_requested
+    info["use_amp_effective"] = use_amp_effective
+    info["amp_dtype"] = amp_dtype
 
     out_acc = np.zeros((H, W, 3), dtype=np.float32)
     w_acc = np.zeros((H, W, 1), dtype=np.float32)
 
-    # simple feather weight (cosine-ish)
+    # feather weight
     wy = np.hanning(tile).astype(np.float32)
     wx = np.hanning(tile).astype(np.float32)
     w2 = (wy[:, None] * wx[None, :]).astype(np.float32)
-    w2 = w2[..., None]  # H W 1
+    w2 = w2[..., None]  # tile x tile x 1
 
-    # tile loops
     ys = list(range(0, H, stride))
     xs = list(range(0, W, stride))
     total = len(ys) * len(xs)
@@ -145,9 +221,10 @@ def nafnet_starless_rgb01(
             for x0 in xs:
                 y1 = min(y0 + tile, H)
                 x1 = min(x0 + tile, W)
-                # pad to tile
+
                 patch = x[y0:y1, x0:x1, :]
                 ph, pw = patch.shape[:2]
+
                 if ph != tile or pw != tile:
                     pad = np.zeros((tile, tile, 3), dtype=np.float32)
                     pad[:ph, :pw, :] = patch
@@ -155,8 +232,15 @@ def nafnet_starless_rgb01(
 
                 chw = patch.transpose(2, 0, 1)  # CHW
                 t = _to_torch_chw(chw, device)
-                pred = model(t)  # 1CHW
-                pred = pred[0].detach().to("cpu").numpy().transpose(1, 2, 0)  # HWC
+
+                pred = _predict_tile(
+                    model,
+                    t,
+                    device=device,
+                    use_amp=use_amp_effective,
+                    amp_dtype=amp_dtype,
+                    info=info,
+                )  # HWC float32
 
                 if residual_mode:
                     starless_patch = patch - pred
@@ -168,7 +252,6 @@ def nafnet_starless_rgb01(
                 starless_patch = np.clip(starless_patch, 0.0, 1.0).astype(np.float32, copy=False)
                 stars_patch = np.clip(stars_patch, 0.0, 1.0).astype(np.float32, copy=False)
 
-                # crop back to valid region
                 starless_patch = starless_patch[:ph, :pw, :]
                 wlocal = w2[:ph, :pw, :]
 
@@ -184,5 +267,9 @@ def nafnet_starless_rgb01(
     stars_only = np.clip(x - starless, 0.0, 1.0).astype(np.float32, copy=False)
 
     if was_mono:
-        return starless.mean(axis=2).astype(np.float32, copy=False), stars_only.mean(axis=2).astype(np.float32, copy=False), info
+        return (
+            starless.mean(axis=2).astype(np.float32, copy=False),
+            stars_only.mean(axis=2).astype(np.float32, copy=False),
+            info,
+        )
     return starless, stars_only, info

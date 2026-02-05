@@ -580,33 +580,63 @@ def _syqon_compute_target_bg_from_doc(doc) -> float:
     # keep within engine UI constraints
     return float(np.clip(med, 0.01, 0.50))
 
+
+
 class _SyQonProcessThread(QThread):
-    progress = pyqtSignal(int, str)          # percent, stage
+    progress = pyqtSignal(int, str)                 # percent, stage
     finished = pyqtSignal(object, object, dict, str)  # starless_s, stars_s, info, err
 
-    def __init__(self, x_for_net: np.ndarray, ckpt_path: str,
-                 tile: int, overlap: int, target_bg: float, shadow_clip: float,
-                 parent=None):
+    def __init__(
+        self,
+        x_for_net: np.ndarray,
+        ckpt_path: str,
+        tile: int,
+        overlap: int,
+        target_bg: float,
+        shadow_clip: float,
+        use_amp: bool = False,
+        amp_dtype: str = "fp16",
+        parent=None,
+    ):
         super().__init__(parent)
+
         self.x_for_net = x_for_net
-        self.ckpt_path = ckpt_path
+        self.ckpt_path = str(ckpt_path)
+
         self.tile = int(tile)
         self.overlap = int(overlap)
         self.target_bg = float(target_bg)
         self.shadow_clip = float(shadow_clip)
+
+        self.use_amp = bool(use_amp)
+        ad = (amp_dtype or "fp16").lower().strip()
+        if ad not in ("fp16", "bf16"):
+            ad = "fp16"
+        self.amp_dtype = ad
+
         self._cancel = False
 
     def cancel(self):
         self._cancel = True
 
     def run(self):
+        info = {
+            "engine": "syqon_nafnet",
+            "use_amp_requested": bool(self.use_amp),
+            "amp_dtype_requested": str(self.amp_dtype),
+        }
+
         try:
-            # import torch via your runtime shim (optional)
+            if self._cancel:
+                raise RuntimeError("Cancelled")
+
+            # Import torch via your runtime shim (optional)
             try:
                 from setiastro.saspro.runtime_torch import import_torch
                 import_torch(prefer_cuda=True, prefer_xpu=False, status_cb=lambda s: None)
-            except Exception:
-                pass
+            except Exception as e:
+                # Not fatal; just record it
+                info["runtime_torch_import"] = f"{type(e).__name__}: {e}"
 
             from setiastro.saspro.starless_engines.syqon_nafnet_engine import nafnet_starless_rgb01
 
@@ -616,24 +646,40 @@ class _SyQonProcessThread(QThread):
                 pct = int(100.0 * float(done) / max(float(total), 1.0))
                 self.progress.emit(pct, str(stage or ""))
 
-            starless_s, stars_s, info = nafnet_starless_rgb01(
+            # NOTE: target_bg / shadow_clip are used earlier in your pipeline (MTF etc).
+            # The engine call itself doesn't need them unless you add those behaviors there.
+            starless_s, stars_s, engine_info = nafnet_starless_rgb01(
                 self.x_for_net,
                 ckpt_path=self.ckpt_path,
                 tile=self.tile,
                 overlap=self.overlap,
                 prefer_cuda=True,
                 residual_mode=True,
+                use_amp=self.use_amp,
+                amp_dtype=self.amp_dtype,
                 progress_cb=_prog,
             )
 
-            # info might be None in your engine — normalize to dict
-            if info is None:
-                info = {}
+            if self._cancel:
+                raise RuntimeError("Cancelled")
+
+            if engine_info:
+                try:
+                    info.update(dict(engine_info))
+                except Exception:
+                    info["engine_info"] = engine_info
+
             self.finished.emit(starless_s, stars_s, info, "")
+            return
 
         except Exception as e:
-            self.finished.emit(None, None, {}, str(e))
-
+            # emit whatever info we collected + error
+            try:
+                info["error_type"] = type(e).__name__
+                info["error"] = str(e)
+            except Exception:
+                pass
+            self.finished.emit(None, None, info, str(e))
 
 class SyQonStarlessDialog(QDialog):
     def __init__(self, main, doc, parent=None, icon: QIcon | None = None):
@@ -725,7 +771,8 @@ class SyQonStarlessDialog(QDialog):
         # --- padding + stars-only extraction ---
         self.chk_pad = QCheckBox("Pad edges (improves edge star removal)", self)
         self.chk_pad.setChecked(True)
-
+        self.chk_amp = QCheckBox("Use AMP (mixed precision) — faster on some GPUs", self)
+        self.chk_amp.setChecked(False)  # your preference: OFF by default
         self.spin_pad = QSpinBox(self)
         self.spin_pad.setRange(0, 1024)
         self.spin_pad.setSingleStep(16)
@@ -745,6 +792,7 @@ class SyQonStarlessDialog(QDialog):
             self.spin_pad.setValue(int(s.value("syqon/pad_pixels", 256)))
             self.cmb_stars_extract.setCurrentText(str(s.value("syqon/stars_extract", "unscreen")))
             self.chk_mtf.setChecked(bool(s.value("syqon/use_mtf", True, type=bool)))
+            self.chk_amp.setChecked(bool(s.value("syqon/use_amp", False, type=bool)))
             
         else:
             self.spin_tile.setValue(512)
@@ -768,6 +816,7 @@ class SyQonStarlessDialog(QDialog):
 
         form.addRow("", self.chk_pad)
         form.addRow("Pad pixels:", self.spin_pad)
+        form.addRow("", self.chk_amp)
         form.addRow("Stars-only extraction:", self.cmb_stars_extract)        
         lay.addWidget(formw)
 
@@ -812,6 +861,24 @@ class SyQonStarlessDialog(QDialog):
     def _on_worker_finished(self, starless_s, stars_s, info: dict, err: str):
         from PyQt6.QtWidgets import QMessageBox
         import numpy as np
+        import json
+
+        # ---- DEBUG: print engine info -----------------------------------------
+        try:
+            info = info or {}
+            safe_info = {}
+            for k, v in dict(info).items():
+                try:
+                    json.dumps(v)  # JSON-able?
+                    safe_info[k] = v
+                except Exception:
+                    safe_info[k] = repr(v)
+
+            print("\n[SyQon] Engine info:")
+            print(json.dumps(safe_info, indent=2, sort_keys=True))
+        except Exception as e:
+            print(f"[SyQon] Failed to print info: {type(e).__name__}: {e}")
+        # ----------------------------------------------------------------------
 
         if err:
             self._set_busy(False)
@@ -893,6 +960,7 @@ class SyQonStarlessDialog(QDialog):
                     "model_path": str(self._model_dst_path()),
                     "label": "Remove Stars (SyQon)",
                     "use_mtf": bool(do_mtf),
+                    "use_amp": bool(self.chk_amp.isChecked()),
                 }
             }
         }
@@ -1111,6 +1179,7 @@ class SyQonStarlessDialog(QDialog):
             s.setValue("syqon/pad_pixels", int(self.spin_pad.value()))
             s.setValue("syqon/stars_extract", str(self.cmb_stars_extract.currentText()))
             s.setValue("syqon/use_mtf", bool(self.chk_mtf.isChecked()))
+            s.setValue("syqon/use_amp", bool(self.chk_amp.isChecked()))
 
         pad_edges = bool(self.chk_pad.isChecked())
         pad_pixels = int(self.spin_pad.value())
@@ -1179,6 +1248,8 @@ class SyQonStarlessDialog(QDialog):
             overlap=int(self.spin_overlap.value()),
             target_bg=float(target_bg),
             shadow_clip=float(self.spin_shadow.value()),
+            use_amp=bool(self.chk_amp.isChecked()),
+            amp_dtype="fp16",
             parent=self
         )
         self.proc_thr.progress.connect(self._on_worker_progress)

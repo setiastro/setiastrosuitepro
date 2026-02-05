@@ -775,12 +775,6 @@ class ImageSubWindow(QWidget):
     # ------------------------------------------------------------
     # MDI maximize handling: show inline title + avoid duplicate buttons
     # ------------------------------------------------------------
-    def _mdi_subwindow(self) -> QMdiSubWindow | None:
-        w = self.parentWidget()
-        while w is not None and not isinstance(w, QMdiSubWindow):
-            w = w.parentWidget()
-        return w
-
     def _install_mdi_state_watch(self):
         sw = self._mdi_subwindow()
         if sw is None:
@@ -1690,12 +1684,6 @@ class ImageSubWindow(QWidget):
 
     def is_hard_autostretch(self) -> bool:
         return self.autostretch_profile == "hard"
-
-    #def _mdi_subwindow(self) -> QMdiSubWindow | None:
-    #    w = self.parent()
-    #    while w is not None and not isinstance(w, QMdiSubWindow):
-    #        w = w.parent()
-    #    return w
 
     def _effective_title(self) -> str:
         """
