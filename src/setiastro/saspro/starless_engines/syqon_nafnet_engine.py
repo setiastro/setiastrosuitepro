@@ -5,13 +5,25 @@ from pathlib import Path
 import numpy as np
 from typing import Callable, Optional, Tuple
 
-def _infer_device(prefer_cuda: bool = True):
-    import torch
-    if prefer_cuda and torch.cuda.is_available():
+def _infer_device(torch, *, prefer_cuda: bool = True, prefer_dml: bool = True):
+    # CUDA
+    if prefer_cuda and getattr(torch, "cuda", None) and torch.cuda.is_available():
         return torch.device("cuda")
+
+    # DirectML (Windows)
+    if prefer_dml and (os.name == "nt"):
+        try:
+            import torch_directml
+            return torch_directml.device()
+        except Exception:
+            pass
+
+    # MPS (macOS)
     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         return torch.device("mps")
+
     return torch.device("cpu")
+
 
 
 def _load_state_dict(ckpt_path: str):
@@ -59,7 +71,17 @@ def _infer_nafnet_cfg_from_sd(sd: dict) -> Tuple[int, int]:
     return base_ch, levels
 
 
-def load_nafnet_model(ckpt_path: str, prefer_cuda: bool = True):
+def load_nafnet_model(ckpt_path: str, *, use_gpu: bool = True, prefer_dml: bool = True):
+    from setiastro.saspro.runtime_torch import import_torch
+
+    # IMPORTANT: this ensures we import torch from the SASpro runtime
+    torch = import_torch(
+        prefer_cuda=bool(use_gpu),
+        prefer_xpu=False,
+        prefer_dml=bool(prefer_dml),
+        status_cb=lambda *_: None,
+    )
+
     from setiastro.saspro.syqon_model.model import create_model
 
     sd, meta = _load_state_dict(ckpt_path)
@@ -69,10 +91,18 @@ def load_nafnet_model(ckpt_path: str, prefer_cuda: bool = True):
     model.load_state_dict(sd, strict=False)
     model.eval()
 
-    device = _infer_device(prefer_cuda=prefer_cuda)
+    device = _infer_device(torch, prefer_cuda=bool(use_gpu), prefer_dml=bool(prefer_dml))
     model.to(device)
 
-    return model, device, {"base_ch": base_ch, "depth": depth, "meta": meta}
+    info = {
+        "base_ch": base_ch,
+        "depth": depth,
+        "meta": meta,
+        "torch_file": getattr(torch, "__file__", None),
+        "torch_version": getattr(torch, "__version__", None),
+        "device": str(device),
+    }
+    return model, device, info
 
 
 def _to_torch_chw(img_chw: np.ndarray, device):
@@ -164,6 +194,7 @@ def nafnet_starless_rgb01(
     residual_mode: bool = True,  # True = model predicts stars; starless = x - pred
     use_amp: bool = False,
     amp_dtype: str = "fp16",
+    use_gpu: bool = True, prefer_dml: bool = True,
     progress_cb: Optional[Callable[[int, int, str], None]] = None,
 ):
     """
@@ -187,7 +218,11 @@ def nafnet_starless_rgb01(
     overlap = int(overlap)
     stride = max(tile - overlap, 1)
 
-    model, device, info = load_nafnet_model(ckpt_path, prefer_cuda=prefer_cuda)
+    model, device, info = load_nafnet_model(
+        ckpt_path,
+        use_gpu=use_gpu,
+        prefer_dml=prefer_dml,
+    )
     info = dict(info or {})
 
     # AMP config

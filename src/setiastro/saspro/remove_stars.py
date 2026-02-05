@@ -653,7 +653,8 @@ class _SyQonProcessThread(QThread):
                 ckpt_path=self.ckpt_path,
                 tile=self.tile,
                 overlap=self.overlap,
-                prefer_cuda=True,
+                use_gpu=True,          # or your checkbox state
+                prefer_dml=True,       # on Windows when GPU requested
                 residual_mode=True,
                 use_amp=self.use_amp,
                 amp_dtype=self.amp_dtype,
