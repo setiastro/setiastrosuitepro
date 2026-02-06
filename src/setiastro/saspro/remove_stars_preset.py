@@ -301,6 +301,11 @@ def _run_darkstar_headless(main, doc, p):
     mode = str(p.get("mode", "unscreen"))
     show = bool(p.get("show_extracted_stars", True))
     stride = int(p.get("stride", 512))
+    i = self.cmb_stride.findData(stride)
+    if i >= 0:
+        self.cmb_stride.setCurrentIndex(i)
+    else:
+        self.cmb_stride.setCurrentText(str(stride))
 
     params = DarkStarParams(
         use_gpu=(not disable_gpu),
@@ -453,7 +458,16 @@ class RemoveStarsPresetDialog(QDialog):
 
         self.cmb_tool = QComboBox()
         self.cmb_tool.addItems(["StarNet", "CosmicClarity DarkStar", "SyQon"])
-        self.cmb_tool.setCurrentIndex(0 if str(p.get("tool","starnet")).lower().startswith("star") else 1)
+        tool = str(p.get("tool", "starnet")).strip().lower()
+
+        if tool in ("starnet", "star_net", "sn"):
+            idx = 0
+        elif tool in ("syqon", "syqon_starless", "nafnet"):
+            idx = 2
+        else:
+            idx = 1  # darkstar/cosmicclarity/etc.
+
+        self.cmb_tool.setCurrentIndex(idx)
 
         # StarNet options
         self.chk_linear = QCheckBox("Image is linear (apply temporary stretch)")
@@ -482,7 +496,14 @@ class RemoveStarsPresetDialog(QDialog):
 
         self.syq_extract = QComboBox(); self.syq_extract.addItems(["subtract", "unscreen"])
 
+        self.syq_tile.setValue(int(p.get("tile_size", 512)))
+        self.syq_overlap.setValue(int(p.get("overlap", 64)))
+        self.syq_make_stars.setChecked(bool(p.get("make_stars", True)))
+        self.syq_pad.setChecked(bool(p.get("pad_edges", True)))
+        self.syq_pad_px.setValue(int(p.get("pad_pixels", 128)))
 
+        sx = str(p.get("stars_extract", "subtract")).lower()
+        self.syq_extract.setCurrentText("unscreen" if sx == "unscreen" else "subtract")
         form = QFormLayout(self)
         form.addRow("Tool:", self.cmb_tool)
         form.addRow(QLabel("— StarNet —"))
@@ -572,7 +593,7 @@ class _DarkStarEngineThread(QThread):
 
 class _SyQonEngineThread(QThread):
     progress_signal = pyqtSignal(int, int, str)           # done, total, stage
-    finished_signal = pyqtSignal(object, object, dict, str)  # starless_s, info, aux, err
+    finished_signal = pyqtSignal(object, dict, dict, str)  # starless_s, info, aux, err
 
     def __init__(self, x_for_net_rgb01: np.ndarray, ckpt_path: str,
                  tile: int, overlap: int, parent=None):
