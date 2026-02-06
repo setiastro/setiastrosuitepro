@@ -114,10 +114,11 @@ def _load_torch_model(torch, device, ckpt_path: str):
             d2 = self.decoder2(torch.cat([d3, e1], dim=1))
             return self.decoder1(d2)
 
-    net = DenoiseCNN().to(device)
-    ckpt = torch.load(ckpt_path, map_location=device)
+    net = DenoiseCNN()
+    ckpt = torch.load(ckpt_path, map_location="cpu")   # ✅ always safe
     net.load_state_dict(ckpt.get("model_state_dict", ckpt))
     net.eval()
+    net = net.to(device)                               # ✅ move after load
     return net
 
 
@@ -178,16 +179,28 @@ def load_models(use_gpu: bool = True, status_cb=print) -> Dict[str, Any]:
                 return _cached_models[key]
 
             dml = torch_directml.device()
-            _ = (torch.ones(1, device=dml) + 1).to("cpu").item()  # <-- verify
+            _ = (torch.ones(1, device=dml) + 1).to("cpu").item()  # verify
 
             status_cb("CosmicClarity Denoise: using DirectML (torch-directml)")
             mono_model = _load_torch_model(torch, dml, R.CC_DENOISE_PTH)
+
+            # OPTIONAL: extra sanity (catches unsupported ops early)
+            try:
+                with torch.no_grad():
+                    z = torch.zeros((1, 3, 64, 64), device=dml)
+                    _ = mono_model(z).to("cpu").numpy()
+            except Exception as e:
+                raise RuntimeError(f"DirectML model smoke test failed: {e}") from e
+
             models = {"device": dml, "is_onnx": False, "mono_model": mono_model, "torch": torch}
             status_cb(f"Denoise backend resolved: torch / device={models['device']!r}")
             _cached_models[key] = models
             return models
-        except Exception:
-            pass
+
+        except Exception as e:
+            status_cb(f"CosmicClarity Denoise: DirectML (torch-directml) failed, falling back. Reason: {type(e).__name__}: {e}")
+            # fall through
+
 
 
     # 3) ORT DirectML fallback
