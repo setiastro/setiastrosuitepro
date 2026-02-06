@@ -16,10 +16,6 @@ try:
 except Exception:
     sep = None
 
-try:
-    import onnxruntime as ort
-except Exception:
-    ort = None
 
 import sys, time, tempfile, traceback
 
@@ -53,6 +49,19 @@ def _get_torch(*, prefer_cuda: bool, prefer_dml: bool, status_cb=print):
         status_cb=status_cb,
     )
 
+def _get_ort(status_cb=print):
+    """
+    Import onnxruntime AFTER runtime_torch has added runtime site-packages to sys.path.
+    """
+    try:
+        import onnxruntime as ort  # type: ignore
+        return ort
+    except Exception as e:
+        try:
+            status_cb(f"CosmicClarity Sharpen: onnxruntime not available ({type(e).__name__}: {e})")
+        except Exception:
+            pass
+        return None
 
 
 def _nullcontext():
@@ -315,7 +324,7 @@ def load_sharpen_models(use_gpu: bool, status_cb=print) -> SharpenModels:
         _dbg("ERROR in _get_torch:\n" + "".join(traceback.format_exception(type(e), e, e.__traceback__)),
              status_cb=status_cb)
         raise
-
+    ort = _get_ort(status_cb=status_cb)
     # ---- runtime venv CUDA probe (subprocess) ----
     try:
         rt = _user_runtime_dir()
@@ -440,7 +449,7 @@ def load_sharpen_models(use_gpu: bool, status_cb=print) -> SharpenModels:
 
                 _dbg("Loading ONNX models (DML EP) ...", status_cb=status_cb)
                 t6 = time.time()
-                models = _load_onnx_models()
+                models = _load_onnx_models(ort)
                 _dbg(f"Loaded ONNX models in {time.time()-t6:.3f}s", status_cb=status_cb)
 
                 _MODELS_CACHE[cache_key] = models
@@ -470,8 +479,8 @@ def load_sharpen_models(use_gpu: bool, status_cb=print) -> SharpenModels:
 
 
 
-def _load_onnx_models() -> SharpenModels:
-    assert ort is not None
+def _load_onnx_models(ort) -> SharpenModels:
+
     prov = ["DmlExecutionProvider", "CPUExecutionProvider"]
     R = get_resources()
 
@@ -538,9 +547,12 @@ def _load_torch_models(torch, device) -> SharpenModels:
 
     def m(path: str):
         net = SharpeningCNN()
-        net.load_state_dict(torch.load(path, map_location=device))
-        net.eval().to(device)
+        sd = torch.load(path, map_location="cpu")  # ✅ always safe
+        net.load_state_dict(sd)
+        net.eval()
+        net = net.to(device)                       # ✅ move after load
         return net
+
 
     return SharpenModels(
         device=device,
