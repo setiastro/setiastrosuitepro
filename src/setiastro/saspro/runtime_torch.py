@@ -562,28 +562,7 @@ def _install_torch(venv_python: Path, prefer_cuda: bool, prefer_xpu: bool, prefe
             status_cb(tail[-4000:])
         return r.returncode == 0
 
-    # NEW: DirectML FIRST (Windows, non-NVIDIA)
-    if sysname == "Windows" and prefer_dml:
-        status_cb("Installing PyTorch with DirectML (torch-directml)…")
 
-        # Clean slate helps resolver if something already got partially installed
-        _pip_ok(["uninstall", "-y", "torch", "torchvision", "torchaudio", "torch-directml"])
-
-        if not _pip_ok(["install", "--prefer-binary", "--no-cache-dir", "torch-directml"]):
-            raise RuntimeError("Failed to install torch-directml.")
-
-        # You still need torchvision/torchaudio for your app; let pip resolve compatible versions.
-        _pip_ok(["install", "--prefer-binary", "--no-cache-dir", "torchvision", "torchaudio"])
-
-        # Verify import + device creation
-        code = "import torch, torch_directml; d=torch_directml.device(); x=torch.tensor([1]).to(d); y=torch.tensor([2]).to(d); print(int((x+y).item()))"
-        r = subprocess.run([str(venv_python), "-c", code], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        if r.returncode != 0 or "3" not in (r.stdout or ""):
-            status_cb((r.stdout or "")[-2000:])
-            raise RuntimeError("torch-directml installed, but DirectML verification failed.")
-
-        status_cb("Installed DirectML backend successfully.")
-        return
 
     if sysname == "Darwin" and ("arm64" in machine or "aarch64" in machine):
         if py_minor >= 13:
@@ -667,6 +646,30 @@ def _install_torch(venv_python: Path, prefer_cuda: bool, prefer_xpu: bool, prefe
                 _pip_ok(["uninstall", "-y", "torch", "torchvision", "torchaudio"])
         else:
             status_cb("No matching Intel XPU wheel for this Python/OS.")
+    
+    # NEW: DirectML FIRST (Windows, non-NVIDIA)
+    if sysname == "Windows" and prefer_dml:
+        status_cb("Installing PyTorch with DirectML (torch-directml)…")
+
+        # Clean slate helps resolver if something already got partially installed
+        _pip_ok(["uninstall", "-y", "torch", "torchvision", "torchaudio", "torch-directml"])
+
+        if not _pip_ok(["install", "--prefer-binary", "--no-cache-dir", "torch-directml"]):
+            raise RuntimeError("Failed to install torch-directml.")
+
+        # You still need torchvision/torchaudio for your app; let pip resolve compatible versions.
+        _pip_ok(["install", "--prefer-binary", "--no-cache-dir", "torchvision", "torchaudio"])
+
+        # Verify import + device creation
+        code = "import torch, torch_directml; d=torch_directml.device(); x=torch.tensor([1]).to(d); y=torch.tensor([2]).to(d); print(int((x+y).item()))"
+        r = subprocess.run([str(venv_python), "-c", code], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        if r.returncode != 0 or "3" not in (r.stdout or ""):
+            status_cb((r.stdout or "")[-2000:])
+            raise RuntimeError("torch-directml installed, but DirectML verification failed.")
+
+        status_cb("Installed DirectML backend successfully.")
+        return    
+    
     # CPU path
     status_cb("Installing PyTorch (CPU)…")
     if _try_series(None, ladder):
@@ -680,6 +683,27 @@ def _install_torch(venv_python: Path, prefer_cuda: bool, prefer_xpu: bool, prefe
 # ──────────────────────────────────────────────────────────────────────────────
 # Public entry points
 # ──────────────────────────────────────────────────────────────────────────────
+
+def _ensure_torch_directml_in_venv(venv_python: Path, status_cb=print) -> None:
+    """
+    If prefer_dml=True on Windows, ensure torch_directml is importable INSIDE the runtime venv.
+    We do NOT uninstall torch stack; we only add torch-directml if missing.
+    """
+    ok, out = _venv_import_probe(venv_python, "torch_directml")
+    if ok:
+        status_cb("[RT] torch_directml already present in runtime venv.")
+        return
+
+    status_cb("[RT] torch_directml missing; installing torch-directml into runtime venv…")
+    r = _pip_run(venv_python, ["install", "--prefer-binary", "--no-cache-dir", "torch-directml"], status_cb=status_cb)
+    if r.returncode != 0:
+        tail = (r.stdout or "").strip()
+        raise RuntimeError("Failed to install torch-directml:\n" + tail[-4000:])
+
+    ok2, out2 = _venv_import_probe(venv_python, "torch_directml")
+    if not ok2:
+        raise RuntimeError("torch-directml installed but torch_directml still not importable:\n" + out2)
+
 
 def _venv_import_probe(venv_python: Path, modname: str) -> tuple[bool, str]:
     """
@@ -964,7 +988,10 @@ def import_torch(
     global _TORCH_CACHED
     if _TORCH_CACHED is not None:
         return _TORCH_CACHED
-
+    if platform.system() == "Windows" and prefer_cuda:
+        # If we are preferring CUDA, do NOT treat DirectML as a co-equal install target.
+        # DirectML should only be a fallback after CUDA probe fails.
+        prefer_dml = False
     def _write_qcache_best_effort(rt: Path, site: Path, venv_ver: tuple[int,int] | None):
         """
         Write QSettings cache only after we have proven imports work in-process.
