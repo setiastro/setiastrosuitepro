@@ -124,17 +124,14 @@ def _load_torch_model(torch, device, ckpt_path: str):
 # ----------------------------
 # Model cache
 # ----------------------------
-_cached_models: dict[tuple[str, bool], Dict[str, Any]] = {}  # (backend_tag, use_gpu)
+_cached_models: dict[tuple[str, str], Dict[str, Any]] = {}  # (backend_tag, resolved_backend)
 _BACKEND_TAG = "cc_denoise_ai3_6"
 
 R = get_resources()
 
 
 def load_models(use_gpu: bool = True, status_cb=print) -> Dict[str, Any]:
-    key = (_BACKEND_TAG, bool(use_gpu))
-    if key in _cached_models:
-        return _cached_models[key]
-
+    # resolved backend key will be assigned per-branch below
     is_windows = (os.name == "nt")
 
     torch = _get_torch(
@@ -145,6 +142,9 @@ def load_models(use_gpu: bool = True, status_cb=print) -> Dict[str, Any]:
 
     # 1) CUDA
     if use_gpu and hasattr(torch, "cuda") and torch.cuda.is_available():
+        key = (_BACKEND_TAG, "cuda")
+        if key in _cached_models:
+            return _cached_models[key]
         device = torch.device("cuda")
         status_cb(f"CosmicClarity Denoise: using CUDA ({torch.cuda.get_device_name(0)})")
         mono_model = _load_torch_model(torch, device, R.CC_DENOISE_PTH)
@@ -156,6 +156,10 @@ def load_models(use_gpu: bool = True, status_cb=print) -> Dict[str, Any]:
     # >>> ADD THIS BLOCK HERE <<<
     # 2) MPS (macOS Apple Silicon)
     if use_gpu and hasattr(torch, "backends") and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        key = (_BACKEND_TAG, "mps")
+        if key in _cached_models:
+            return _cached_models[key]
+
         device = torch.device("mps")
         status_cb("CosmicClarity Denoise: using MPS")
         mono_model = _load_torch_model(torch, device, R.CC_DENOISE_PTH)
@@ -169,28 +173,43 @@ def load_models(use_gpu: bool = True, status_cb=print) -> Dict[str, Any]:
     if use_gpu and is_windows:
         try:
             import torch_directml
+            key = (_BACKEND_TAG, "dml_torch")
+            if key in _cached_models:
+                return _cached_models[key]
+
             dml = torch_directml.device()
+            _ = (torch.ones(1, device=dml) + 1).to("cpu").item()  # <-- verify
+
             status_cb("CosmicClarity Denoise: using DirectML (torch-directml)")
             mono_model = _load_torch_model(torch, dml, R.CC_DENOISE_PTH)
             models = {"device": dml, "is_onnx": False, "mono_model": mono_model, "torch": torch}
-            status_cb(f"Denoise backend resolved: "
-                    f"{'onnx' if models['is_onnx'] else 'torch'} / device={models['device']!r}")                 
+            status_cb(f"Denoise backend resolved: torch / device={models['device']!r}")
             _cached_models[key] = models
             return models
         except Exception:
             pass
 
+
     # 3) ORT DirectML fallback
     if use_gpu and ort is not None and ("DmlExecutionProvider" in ort.get_available_providers()):
+        key = (_BACKEND_TAG, "dml_ort")
+        if key in _cached_models:
+            return _cached_models[key]
+
         status_cb("CosmicClarity Denoise: using DirectML (ONNX Runtime)")
-        mono_model = ort.InferenceSession(R.CC_DENOISE_ONNX, providers=["DmlExecutionProvider"])
+        mono_model = ort.InferenceSession(
+            R.CC_DENOISE_ONNX,
+            providers=["DmlExecutionProvider", "CPUExecutionProvider"],
+        )
         models = {"device": "DirectML", "is_onnx": True, "mono_model": mono_model, "torch": None}
-        status_cb(f"Denoise backend resolved: "
-                f"{'onnx' if models['is_onnx'] else 'torch'} / device={models['device']!r}")             
+        status_cb(f"Denoise backend resolved: onnx / device={models['device']!r}")
         _cached_models[key] = models
         return models
 
     # 4) CPU
+    key = (_BACKEND_TAG, "cpu")
+    if key in _cached_models:
+        return _cached_models[key]    
     device = torch.device("cpu")
     status_cb("CosmicClarity Denoise: using CPU")
     mono_model = _load_torch_model(torch, device, R.CC_DENOISE_PTH)

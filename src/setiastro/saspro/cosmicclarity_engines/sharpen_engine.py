@@ -306,7 +306,7 @@ def load_sharpen_models(use_gpu: bool, status_cb=print) -> SharpenModels:
         _dbg("Calling _get_torch(...)", status_cb=status_cb)
         torch = _get_torch(
             prefer_cuda=bool(use_gpu),
-            prefer_dml=False,
+            prefer_dml=bool(use_gpu) and (os.name == "nt"),
             status_cb=status_cb,
         )
         _dbg(f"_get_torch OK in {time.time()-t0:.3f}s; torch={getattr(torch,'__version__',None)} file={getattr(torch,'__file__',None)}",
@@ -411,6 +411,8 @@ def load_sharpen_models(use_gpu: bool, status_cb=print) -> SharpenModels:
 
             t4 = time.time()
             dml = torch_directml.device()
+            # verify DML actually works
+            _ = (torch.ones(1, device=dml) + 1).to("cpu").item()            
             _dbg(f"torch_directml.device() OK in {time.time()-t4:.3f}s", status_cb=status_cb)
 
             _dbg("Loading torch .pth models (DirectML) ...", status_cb=status_cb)
@@ -470,7 +472,7 @@ def load_sharpen_models(use_gpu: bool, status_cb=print) -> SharpenModels:
 
 def _load_onnx_models() -> SharpenModels:
     assert ort is not None
-    prov = ["DmlExecutionProvider"]
+    prov = ["DmlExecutionProvider", "CPUExecutionProvider"]
     R = get_resources()
 
     def s(path: str):
