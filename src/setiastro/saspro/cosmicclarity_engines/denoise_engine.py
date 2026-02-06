@@ -20,11 +20,6 @@ from typing import Callable
 
 ProgressCB = Callable[[int, int], None]  # (done, total)
 
-try:
-    import onnxruntime as ort
-except Exception:
-    ort = None
-
 
 def _get_torch(*, prefer_cuda: bool, prefer_dml: bool, status_cb=print):
     from setiastro.saspro.runtime_torch import import_torch
@@ -34,6 +29,20 @@ def _get_torch(*, prefer_cuda: bool, prefer_dml: bool, status_cb=print):
         prefer_dml=prefer_dml,
         status_cb=status_cb,
     )
+
+def _get_ort(status_cb=print):
+    """
+    Import onnxruntime AFTER runtime_torch has added runtime site-packages to sys.path.
+    """
+    try:
+        import onnxruntime as ort  # type: ignore
+        return ort
+    except Exception as e:
+        try:
+            status_cb(f"CosmicClarity Denoise: onnxruntime not available ({type(e).__name__}: {e})")
+        except Exception:
+            pass
+        return None
 
 
 def _nullcontext():
@@ -140,6 +149,7 @@ def load_models(use_gpu: bool = True, status_cb=print) -> Dict[str, Any]:
         prefer_dml=bool(use_gpu and is_windows),
         status_cb=status_cb,
     )
+    ort = _get_ort(status_cb=status_cb)
 
     # 1) CUDA
     if use_gpu and hasattr(torch, "cuda") and torch.cuda.is_available():
