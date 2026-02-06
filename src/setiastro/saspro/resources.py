@@ -599,6 +599,7 @@ class Resources:
 
     CC_NS8_PTH  = property(lambda self: model_path('deep_nonstellar_sharp_cnn_radius_8AI3_5s.pth'))
     CC_NS8_ONNX = property(lambda self: model_path('deep_nonstellar_sharp_cnn_radius_8AI3_5s.onnx'))
+    CC_NS_PTH = property(lambda self: model_path('deep_nonstellar_sharp_conditional_psf_AI4.pth'))
 
     CC_DENOISE_PTH  = property(lambda self: model_path('deep_denoise_cnn_AI3_6.pth'))
     CC_DENOISE_ONNX = property(lambda self: model_path('deep_denoise_cnn_AI3_6.onnx'))

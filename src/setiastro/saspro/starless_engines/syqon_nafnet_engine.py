@@ -25,22 +25,32 @@ def _infer_device(torch, *, prefer_cuda: bool = True, prefer_dml: bool = True):
 
     return torch.device("cpu")
 
+def _torch_load_fallback(torch, ckpt_path: str):
+    try:
+        return torch.load(ckpt_path, map_location="cpu"), {"torch_load_encoding": "utf-8/default"}
+    except UnicodeDecodeError:
+        return torch.load(ckpt_path, map_location="cpu", encoding="latin1"), {"torch_load_encoding": "latin1"}
+
 def _load_state_dict(torch, ckpt_path: str):
-    ckpt = torch.load(ckpt_path, map_location="cpu")
+    ckpt, load_meta = _torch_load_fallback(torch, ckpt_path)
+
     if isinstance(ckpt, dict):
         if "state_dict" in ckpt and isinstance(ckpt["state_dict"], dict):
-            return ckpt["state_dict"], ckpt
+            meta = dict(ckpt)
+            meta.update(load_meta)
+            return ckpt["state_dict"], meta
+
         if "model" in ckpt and isinstance(ckpt["model"], dict):
-            return ckpt["model"], ckpt
+            meta = dict(ckpt)
+            meta.update(load_meta)
+            return ckpt["model"], meta
+
         if any(
-            k.startswith(
-                (
-                    "intro.", "ending.", "encoders.", "downs.", "middle.", "decoders.", "ups."
-                )
-            )
+            k.startswith(("intro.", "ending.", "encoders.", "downs.", "middle.", "decoders.", "ups."))
             for k in ckpt.keys()
         ):
-            return ckpt, {}
+            return ckpt, load_meta  # was raw state_dict, so meta is just load_meta
+
     raise RuntimeError("Unsupported checkpoint format (expected state_dict-like dict).")
 
 
