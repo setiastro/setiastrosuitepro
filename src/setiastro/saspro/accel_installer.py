@@ -5,7 +5,7 @@ import subprocess
 import sys
 import os
 from typing import Callable, Optional
-from PyQt6.QtWidgets import QMessageBox
+
 from setiastro.saspro.runtime_torch import import_torch, add_runtime_to_sys_path, _user_runtime_dir, _venv_paths
 
 LogCB = Callable[[str], None]

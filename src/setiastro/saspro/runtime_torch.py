@@ -886,69 +886,35 @@ def _marker_says_ready(
     except Exception:
         return False
 
+def _cache_file(rt: Path) -> Path:
+    return rt / "torch_cache.json"
 
-def _qt_settings():
-    """
-    Create QSettings without importing PyQt6 at module import time.
-    We only import it inside the function so runtime_torch stays usable
-    in non-GUI contexts.
-    """
+def _fcache_get(rt: Path) -> dict | None:
     try:
-        from PyQt6.QtCore import QSettings
-        # Must match what your app sets via QCoreApplication.setOrganizationName / setApplicationName
-        return QSettings()
+        p = _cache_file(rt)
+        if not p.exists():
+            return None
+        raw = p.read_text(encoding="utf-8", errors="replace")
+        return json.loads(raw) if raw else None
     except Exception:
         return None
 
+def _fcache_set(rt: Path, payload: dict) -> None:
+    try:
+        p = _cache_file(rt)
+        tmp = p.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        tmp.replace(p)
+    except Exception:
+        pass
 
-def _qcache_get():
-    s = _qt_settings()
-    if not s:
-        return None
-    s.beginGroup("runtime_torch")
-    data = {
-        "tag": s.value("tag", "", str),
-        "rt_dir": s.value("rt_dir", "", str),
-        "site": s.value("site", "", str),
-        "python": s.value("python", "", str),
-        "torch": s.value("torch", "", str),
-        "torchvision": s.value("torchvision", "", str),
-        "torchaudio": s.value("torchaudio", "", str),
-        "when": s.value("when", 0, int),
-        "require_torchaudio": s.value("require_torchaudio", True, bool),
-    }
-    s.endGroup()
-    return data
-
-
-def _qcache_set(*, tag: str, rt_dir: Path, site: Path, python_ver: str | None,
-               torch_ver: str | None, tv_ver: str | None, ta_ver: str | None,
-               require_torchaudio: bool):
-    s = _qt_settings()
-    if not s:
-        return
-    s.beginGroup("runtime_torch")
-    s.setValue("tag", tag)
-    s.setValue("rt_dir", str(rt_dir))
-    s.setValue("site", str(site))
-    s.setValue("python", python_ver or "")
-    s.setValue("torch", torch_ver or "")
-    s.setValue("torchvision", tv_ver or "")
-    s.setValue("torchaudio", ta_ver or "")
-    s.setValue("when", int(time.time()))
-    s.setValue("require_torchaudio", bool(require_torchaudio))
-    s.endGroup()
-    s.sync()
-
-
-def _qcache_clear():
-    s = _qt_settings()
-    if not s:
-        return
-    s.beginGroup("runtime_torch")
-    s.remove("")   # remove all keys in group
-    s.endGroup()
-    s.sync()
+def _fcache_clear(rt: Path) -> None:
+    try:
+        p = _cache_file(rt)
+        if p.exists():
+            p.unlink()
+    except Exception:
+        pass
 
 
 # module-level cache (optional but recommended)
@@ -992,10 +958,8 @@ def import_torch(
         # If we are preferring CUDA, do NOT treat DirectML as a co-equal install target.
         # DirectML should only be a fallback after CUDA probe fails.
         prefer_dml = False
-    def _write_qcache_best_effort(rt: Path, site: Path, venv_ver: tuple[int,int] | None):
-        """
-        Write QSettings cache only after we have proven imports work in-process.
-        """
+
+    def _write_cache_best_effort(rt: Path, site: Path, venv_ver: tuple[int,int] | None):
         try:
             import torch as _t  # noqa
             import torchvision as _tv  # noqa
@@ -1003,16 +967,17 @@ def import_torch(
             if require_torchaudio:
                 import torchaudio as _ta  # noqa
 
-            _qcache_set(
-                tag=rt.name,  # IMPORTANT: runtime tag, not sys.version_info tag
-                rt_dir=rt,
-                site=site,
-                python_ver=(f"{venv_ver[0]}.{venv_ver[1]}" if venv_ver else ""),
-                torch_ver=getattr(_t, "__version__", None),
-                tv_ver=getattr(_tv, "__version__", None),
-                ta_ver=getattr(_ta, "__version__", None) if _ta else None,
-                require_torchaudio=require_torchaudio,
-            )
+            _fcache_set(rt, {
+                "tag": rt.name,
+                "rt_dir": str(rt),
+                "site": str(site),
+                "python": (f"{venv_ver[0]}.{venv_ver[1]}" if venv_ver else ""),
+                "torch": getattr(_t, "__version__", None),
+                "torchvision": getattr(_tv, "__version__", None),
+                "torchaudio": getattr(_ta, "__version__", None) if _ta else None,
+                "when": int(time.time()),
+                "require_torchaudio": bool(require_torchaudio),
+            })
         except Exception:
             pass
 
@@ -1037,22 +1002,22 @@ def import_torch(
     # Now we can compare the cache tag against the RUNTIME tag, not sys.version_info.
     # This stays correct for "app python != runtime venv python" cases.
     # ------------------------------------------------------------
+
     try:
-        qc = _qcache_get()
+        qc = _fcache_get(rt)
         if qc:
             site_s = (qc.get("site") or "").strip()
             rt_s   = (qc.get("rt_dir") or "").strip()
             req_ta = bool(qc.get("require_torchaudio", True))
             tag    = (qc.get("tag") or "").strip()
 
-            # Accept cache only if it matches this runtime folder tag
             if (
                 tag == rt.name
                 and site_s and Path(site_s).exists()
                 and rt_s and Path(rt_s).exists()
                 and (req_ta == require_torchaudio)
             ):
-                status_cb("[RT] QSettings cache hit (runtime tag match); attempting zero-subprocess import.")
+                status_cb("[RT] File cache hit (runtime tag match); attempting zero-subprocess import.")
 
                 if site_s not in sys.path:
                     sys.path.insert(0, site_s)
@@ -1066,15 +1031,11 @@ def import_torch(
                     import torchaudio  # noqa
 
                 _TORCH_CACHED = torch
-
                 return torch
 
     except Exception as e:
-        status_cb(f"[RT] QSettings fast-path failed: {type(e).__name__}: {e}. Continuing…")
-        try:
-            _qcache_clear()
-        except Exception:
-            pass
+        status_cb(f"[RT] File-cache fast-path failed: {type(e).__name__}: {e}. Continuing…")
+        _fcache_clear(rt)
 
     # site-packages path (subprocess but relatively cheap)
     site = _site_packages(vp)
@@ -1120,14 +1081,14 @@ def import_torch(
                 pass
 
             _TORCH_CACHED = torch
-            _write_qcache_best_effort(rt, site, venv_ver)
+            _write_cache_best_effort(rt, site, venv_ver)
             return torch
 
     except Exception as e:
         status_cb(f"[RT] Marker fast-path failed: {type(e).__name__}: {e}. Falling back to full probe…")
         # if marker fast path fails, your cached site-packages may also be stale
         try:
-            _qcache_clear()
+            _fcache_clear(rt)
         except Exception:
             pass
 
@@ -1201,13 +1162,13 @@ def import_torch(
         import torch  # noqa
 
         _TORCH_CACHED = torch
-        _write_qcache_best_effort(rt, site, venv_ver)
+        _write_cache_best_effort(rt, site, venv_ver)
         return torch
 
     except Exception as e:
         # prevent repeatedly hitting a bad cached site path on next launch
         try:
-            _qcache_clear()
+            _fcache_clear(rt)
         except Exception:
             pass
 
@@ -1353,17 +1314,18 @@ def prewarm_torch_cache(
         # IMPORTANT: use runtime tag, not app interpreter tag, for mixed-version scenarios
         cache_tag = rt.name  # e.g. "py312"
 
-        _qcache_set(
-            tag=cache_tag,
-            rt_dir=rt,
-            site=site,
-            python_ver=(f"{venv_ver[0]}.{venv_ver[1]}" if venv_ver else ""),
-            torch_ver=None,
-            tv_ver=None,
-            ta_ver=None,
-            require_torchaudio=require_torchaudio,
-        )
-        status_cb("[RT] prewarm: QSettings cache written.")
+        _fcache_set(rt, {
+            "tag": rt.name,
+            "rt_dir": str(rt),
+            "site": str(site),
+            "python": (f"{venv_ver[0]}.{venv_ver[1]}" if venv_ver else ""),
+            "torch": None,
+            "torchvision": None,
+            "torchaudio": None,
+            "when": int(time.time()),
+            "require_torchaudio": bool(require_torchaudio),
+        })
+        status_cb("[RT] prewarm: file cache written.")
     except Exception as e:
         try:
             status_cb(f"[RT] prewarm failed: {type(e).__name__}: {e}")
