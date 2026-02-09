@@ -7,11 +7,11 @@ import cv2
 from typing import Optional
 
 from PyQt6.QtCore import Qt, QEvent, QPointF, QRectF, pyqtSignal, QPoint, QTimer
-from PyQt6.QtGui import QPixmap, QImage, QPen, QBrush, QColor
+from PyQt6.QtGui import QPixmap, QImage, QPen, QBrush, QColor, QPainterPath
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox, QToolButton,
     QMessageBox, QGraphicsScene, QGraphicsView, QGraphicsRectItem, QGraphicsEllipseItem,
-    QGraphicsItem, QGraphicsPixmapItem, QSpinBox 
+    QGraphicsItem, QGraphicsPixmapItem, QSpinBox, QGraphicsPathItem
 )
 
 from setiastro.saspro.wcs_update import update_wcs_after_crop
@@ -62,10 +62,46 @@ class ResizableRotatableRectItem(QGraphicsRectItem):
         self._clamp_eps_deg = 0.25  # treat as "unrotated" if |angle| < eps (deg)
         self._grab_pad = 20              # ← extra hit slop in screen px
         self._edge_pad_px = EDGE_GRAB_PX
+        # --- center crosshair / X ---
+        self._crosshair = QGraphicsPathItem(self)
+        pen_x = QPen(QColor(0, 255, 0), 1, Qt.PenStyle.SolidLine)  # green, thin
+        pen_x.setCosmetic(True)  # constant screen width
+        self._crosshair.setPen(pen_x)
+        self._crosshair.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+        self._crosshair.setZValue(self.zValue() + 2)        
         self.setZValue(100)             # ← keep above pixmap
 
         self._mk_handles()
         self.setTransformOriginPoint(self.rect().center())
+        self._sync_crosshair()
+
+    def _sync_crosshair(self):
+        r = self.rect()
+        c = r.center()
+
+        # size of crosshair relative to box (clamped)
+        # these units are in item coords (image pixels), so scale naturally with the box.
+        s = 0.12 * min(r.width(), r.height())
+        s = max(10.0, min(40.0, float(s)))  # clamp so it's always visible but not huge
+
+        p = QPainterPath()
+
+        # "+" crosshair
+        p.moveTo(c.x() - s, c.y()); p.lineTo(c.x() + s, c.y())
+        p.moveTo(c.x(), c.y() - s); p.lineTo(c.x(), c.y() + s)
+
+        # "X" diagonals
+        p.moveTo(c.x() - s, c.y() - s); p.lineTo(c.x() + s, c.y() + s)
+        p.moveTo(c.x() - s, c.y() + s); p.lineTo(c.x() + s, c.y() - s)
+
+        self._crosshair.setPath(p)
+
+    def set_crosshair_visible(self, on: bool):
+        try:
+            self._crosshair.setVisible(bool(on))
+        except Exception:
+            pass
+
 
     def setFixedAspectRatio(self, ratio: Optional[float]):
         self._fixed_ar = ratio
@@ -168,6 +204,8 @@ class ResizableRotatableRectItem(QGraphicsRectItem):
         }
         for k, it in self._handles.items():
             it.setPos(pos[k])
+
+        self._sync_crosshair()    
 
     def hoverMoveEvent(self, e):
         # Corner handles take priority
@@ -336,6 +374,7 @@ class CropDialogPro(QDialog):
         self.setModal(False)
         self._main = parent
         self.doc = document
+        self._live_cross = None
 
         self._follow_conn = False
         if hasattr(self._main, "currentDocumentChanged"):
@@ -816,12 +855,32 @@ class CropDialogPro(QDialog):
     def _draw_live_rect(self, r: QRectF):
         if hasattr(self, "_live_rect") and self._live_rect:
             self.scene.removeItem(self._live_rect)
+        if getattr(self, "_live_cross", None):
+            self.scene.removeItem(self._live_cross)
+            self._live_cross = None
+
         pen = QPen(QColor(0,255,0), 2, Qt.PenStyle.DashLine); pen.setCosmetic(True)
         self._live_rect = self.scene.addRect(r, pen)
+
+        # add center crosshair/X for live preview
+        s = 0.12 * min(r.width(), r.height())
+        s = max(10.0, min(40.0, float(s)))
+        c = r.center()
+
+        p = QPainterPath()
+        p.moveTo(c.x() - s, c.y()); p.lineTo(c.x() + s, c.y())
+        p.moveTo(c.x(), c.y() - s); p.lineTo(c.x(), c.y() + s)
+        p.moveTo(c.x() - s, c.y() - s); p.lineTo(c.x() + s, c.y() + s)
+        p.moveTo(c.x() - s, c.y() + s); p.lineTo(c.x() + s, c.y() - s)
+
+        self._live_cross = self.scene.addPath(p, QPen(QColor(0,255,0), 1))
+        self._live_cross.pen().setCosmetic(True)
 
     def _clear_live_rect(self):
         if hasattr(self, "_live_rect") and self._live_rect:
             self.scene.removeItem(self._live_rect); self._live_rect = None
+        if getattr(self, "_live_cross", None):
+            self.scene.removeItem(self._live_cross); self._live_cross = None
 
     def _pixmap_scene_rect(self) -> QRectF | None:
         """Scene rect occupied by the pixmap (image) item."""
