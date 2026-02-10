@@ -14,6 +14,8 @@ from setiastro.saspro.i18n import get_available_languages, get_saved_language, s
 import importlib.util
 import importlib.metadata
 import webbrowser
+import shutil
+import subprocess
 
 class SettingsDialog(QDialog):
     """
@@ -208,17 +210,20 @@ class SettingsDialog(QDialog):
 
         # NEW: preference combo
         self.cb_accel_pref = QComboBox()
-        self.cb_accel_pref.addItems([
-            "Auto (recommended)",
-            "CUDA (NVIDIA)",
-            "Intel XPU (Arc/Xe)",
-            "DirectML (Windows AMD/Intel)",
-            "CPU only",
-        ])
-        # hide DirectML option on non-Windows if you want:
-        if platform.system() != "Windows":
-            # remove the DirectML entry (index 3)
-            self.cb_accel_pref.removeItem(3)
+        self._accel_items = [("Auto (recommended)", "auto"),
+                            ("CUDA (NVIDIA)", "cuda"),
+                            ("Intel XPU (Arc/Xe)", "xpu")]
+
+        if platform.system() == "Windows":
+            self._accel_items.append(("DirectML (Windows AMD/Intel)", "directml"))
+
+        self._accel_items.append(("CPU only", "cpu"))
+
+        self.cb_accel_pref.clear()
+        for label, _key in self._accel_items:
+            self.cb_accel_pref.addItem(label)
+
+        self.cb_accel_pref.currentIndexChanged.connect(self._accel_pref_changed)
 
         accel_row.addSpacing(8)
         accel_row.addWidget(QLabel(self.tr("Preference:")))
@@ -311,9 +316,6 @@ class SettingsDialog(QDialog):
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self
         )
-        self.cb_accel_pref.currentIndexChanged.connect(self._accel_pref_changed)
-
-
 
         btns.accepted.connect(self._save_and_accept)
         btns.rejected.connect(self.reject)
@@ -504,12 +506,13 @@ class SettingsDialog(QDialog):
         self.lbl_models_status.setText("\n".join(lines))
         self.lbl_models_status.setStyleSheet("color:#888;")
 
-
     def _accel_pref_changed(self, idx: int):
-        inv = {0:"auto", 1:"cuda", 2:"xpu", 3:"directml", 4:"cpu"}
-        val = inv.get(idx, "auto")
-        self.settings.setValue("accel/preferred_backend", val)
+        key = "auto"
+        if 0 <= idx < len(getattr(self, "_accel_items", [])):
+            key = (self._accel_items[idx][1] or "auto").lower()
+        self.settings.setValue("accel/preferred_backend", key)
         self.settings.sync()
+
 
     def _show_gpu_accel_fix_help(self):
         from PyQt6.QtWidgets import QMessageBox
@@ -549,13 +552,17 @@ class SettingsDialog(QDialog):
 
 
     def _format_accel_deps_text(self) -> str:
-        # Torch + friends
+        try:
+            from setiastro.saspro.runtime_torch import add_runtime_to_sys_path
+            add_runtime_to_sys_path(status_cb=lambda *_: None)
+        except Exception:
+            pass
+
         torch_ok, torch_txt = self._pkg_status("torch", "torch")
         dml_ok, dml_txt     = self._pkg_status("torch-directml", "torch_directml")
         ta_ok, ta_txt       = self._pkg_status("torchaudio", "torchaudio")
         tv_ok, tv_txt       = self._pkg_status("torchvision", "torchvision")
 
-        # Pretty, compact, and stable in a QLabel
         return (
             f"Torch: <b>{torch_txt}</b><br>"
             f"Torch-DirectML: <b>{dml_txt}</b><br>"
@@ -564,33 +571,140 @@ class SettingsDialog(QDialog):
         )
 
 
+    def _run_capture(self, cmd: list[str]) -> tuple[int, str]:
+        """Run a command and return (returncode, combined_output)."""
+        try:
+            r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            return r.returncode, (r.stdout or "")
+        except Exception as e:
+            return 999, str(e)
+
+    def _probe_python_version(self, cmd: list[str]) -> tuple[bool, tuple[int, int] | None, str]:
+        """
+        Try to execute cmd and read sys.version_info.major/minor.
+        Returns (ok, (maj,min) or None, display_string).
+        """
+        code = "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
+        rc, out = self._run_capture(cmd + ["-c", code])
+        if rc != 0:
+            return False, None, (out.strip() or "failed")
+
+        s = (out.strip().splitlines()[-1] if out.strip() else "")
+        try:
+            maj_s, min_s = s.split(".", 1)
+            ver = (int(maj_s), int(min_s))
+            return True, ver, s
+        except Exception:
+            return False, None, s or "unknown"
+
+    def _find_python312_cmd(self) -> tuple[list[str] | None, str]:
+        """
+        Find a runnable Python 3.12 command on this system.
+        Returns (cmd or None, info_text).
+        """
+        sysname = platform.system()
+
+        # Windows: prefer py launcher
+        if sysname == "Windows":
+            candidates = [
+                ["py", "-3.12"],
+                ["python3.12"],
+                ["python", "-3.12"],  # uncommon but harmless to try
+            ]
+            for cmd in candidates:
+                ok, ver, disp = self._probe_python_version(cmd)
+                if ok and ver == (3, 12):
+                    return cmd, f"{' '.join(cmd)} -> {disp}"
+            return None, "No runnable Python 3.12 found via 'py -3.12' or python3.12."
+
+        # macOS: common Homebrew locations + PATH
+        if sysname == "Darwin":
+            candidates = [
+                ["/opt/homebrew/bin/python3.12"],
+                ["/usr/local/bin/python3.12"],
+                ["/usr/bin/python3.12"],
+                ["python3.12"],
+            ]
+            for cmd in candidates:
+                exe = cmd[0]
+                if exe.startswith("/") and not os.path.exists(exe):
+                    continue
+                ok, ver, disp = self._probe_python_version(cmd)
+                if ok and ver == (3, 12):
+                    return cmd, f"{' '.join(cmd)} -> {disp}"
+            return None, "No runnable Python 3.12 found (Homebrew/PATH)."
+
+        # Linux: PATH
+        candidates = [
+            ["python3.12"],
+        ]
+        for cmd in candidates:
+            ok, ver, disp = self._probe_python_version(cmd)
+            if ok and ver == (3, 12):
+                return cmd, f"{' '.join(cmd)} -> {disp}"
+
+        return None, "No runnable python3.12 found in PATH."
+
+    def _gate_python312_for_accel_install(self) -> bool:
+        """
+        HARD STOP unless a runnable Python 3.12 is available on the system.
+        (We use this because runtime GPU wheels are only supported/validated for 3.12.)
+        """
+        from PyQt6.QtWidgets import QMessageBox
+
+        cmd, info = self._find_python312_cmd()
+        if cmd is not None:
+            return True  # Python 3.12 is available
+
+        v = sys.version_info
+        running = f"{v.major}.{v.minor}"
+
+        # Stronger wording for 3.13/3.14 (your “full stop” policy)
+        is_future = (v.major, v.minor) >= (3, 13)
+
+        if is_future:
+            title = self.tr("Unsupported Python Version")
+            headline = self.tr("GPU acceleration cannot be installed with Python {0}.").format(running)
+            details = self.tr(
+                "SAS Pro hardware acceleration requires Python 3.12.\n\n"
+                "Please install Python 3.12 and re-launch SAS Pro.\n\n"
+                "Probe details: {0}"
+            ).format(info)
+        else:
+            title = self.tr("Python 3.12 Required")
+            headline = self.tr("Python 3.12 was not found on this system.")
+            details = self.tr(
+                "GPU acceleration setup requires a runnable Python 3.12.\n\n"
+                "You are currently running Python {0}.\n\n"
+                "Install Python 3.12 and re-launch SAS Pro.\n\n"
+                "Probe details: {1}"
+            ).format(running, info)
+
+        QMessageBox.warning(self, title, headline + "\n\n" + details)
+        return False
+
     def _install_or_update_accel(self):
-        import sys, platform
+        # Single hard-stop gate
+        if not self._gate_python312_for_accel_install():
+            self.backend_label.setText(self.tr("Backend: CPU (Python 3.12 required)"))
+            return
+
         from PyQt6.QtWidgets import QMessageBox, QProgressDialog
         from PyQt6.QtCore import Qt, QThread
         from setiastro.saspro.accel_installer import current_backend
-        from setiastro.saspro.accel_workers import AccelInstallWorker  # wherever yours lives
-
-        v = sys.version_info
-        if not (v.major == 3 and v.minor in (10, 11, 12)):
-            why = self.tr("This app is running on Python {0}.{1}. GPU acceleration requires Python 3.10, 3.11, or 3.12.").format(v.major, v.minor)
-            tip = ""
-            sysname = platform.system()
-            if sysname == "Darwin":
-                tip = self.tr("\n\nmacOS tip (Apple Silicon):\n • Install Python 3.12:  brew install python@3.12\n • Relaunch the app.")
-            elif sysname == "Windows":
-                tip = self.tr("\n\nWindows tip:\n • Install Python 3.12/3.11/3.10 (x64) from python.org\n • Relaunch the app.")
-            else:
-                tip = self.tr("\n\nLinux tip:\n • Install python3.12 or 3.11 via your package manager\n • Relaunch the app.")
-
-            QMessageBox.warning(self, self.tr("Unsupported Python Version"), why + tip)
-            self.backend_label.setText(self.tr("Backend: CPU (Python version not supported for GPU install)"))
-            return
+        from setiastro.saspro.accel_workers import AccelInstallWorker
 
         self.install_accel_btn.setEnabled(False)
         self.backend_label.setText(self.tr("Backend: installing…"))
 
-        pref = (self.settings.value("accel/preferred_backend", "auto", type=str) or "auto").lower()
+        # Read preference using the dynamic accel list
+        pref_key = "auto"
+        try:
+            idx = int(self.cb_accel_pref.currentIndex())
+            if 0 <= idx < len(self._accel_items):
+                pref_key = (self._accel_items[idx][1] or "auto").lower()
+        except Exception:
+            pref_key = (self.settings.value("accel/preferred_backend", "auto", type=str) or "auto").lower()
 
         self._accel_pd = QProgressDialog(self.tr("Preparing runtime…"), self.tr("Cancel"), 0, 0, self)
         self._accel_pd.setWindowTitle(self.tr("Installing GPU Acceleration"))
@@ -600,7 +714,7 @@ class SettingsDialog(QDialog):
         self._accel_pd.show()
 
         self._accel_thread = QThread(self)
-        self._accel_worker = AccelInstallWorker(prefer_gpu=True, preferred_backend=pref)
+        self._accel_worker = AccelInstallWorker(prefer_gpu=True, preferred_backend=pref_key)
         self._accel_worker.moveToThread(self._accel_thread)
 
         self._accel_thread.started.connect(self._accel_worker.run, Qt.ConnectionType.QueuedConnection)
@@ -738,15 +852,7 @@ class SettingsDialog(QDialog):
         self.sp_wcs_step.setSuffix(" °" if self.cb_wcs_unit.currentIndex() == 0 else " arcmin")
 
         pref = (self.settings.value("accel/preferred_backend", "auto", type=str) or "auto").lower()
-
-        # map stored -> combobox index (adjust if you removed DirectML on non-Windows)
-        idx_map = {"auto": 0, "cuda": 1, "xpu": 2, "directml": 3, "cpu": 4}
-
-        idx = idx_map.get(pref, 0)
-        # if non-Windows and directml was saved earlier, clamp to Auto
-        if platform.system() != "Windows" and pref == "directml":
-            idx = 0
-
+        idx = next((i for i, (_lbl, key) in enumerate(self._accel_items) if key == pref), 0)
         self.cb_accel_pref.setCurrentIndex(idx)
 
         from setiastro.saspro.accel_installer import current_backend
@@ -897,11 +1003,12 @@ class SettingsDialog(QDialog):
         self.settings.setValue("display/autostretch_24bit", self.chk_autostretch_24bit.isChecked())
         self.settings.setValue("display/smooth_zoom_settle", self.chk_smooth_zoom_settle.isChecked())
 
-        # accel preference
-        pref_idx = self.cb_accel_pref.currentIndex()
-        # map index -> stored string (again, adjust if DirectML removed on non-Windows)
-        inv = {0:"auto", 1:"cuda", 2:"xpu", 3:"directml", 4:"cpu"}
-        self.settings.setValue("accel/preferred_backend", inv.get(pref_idx, "auto"))
+        # accel preference (dynamic)
+        pref_idx = int(self.cb_accel_pref.currentIndex())
+        pref_key = "auto"
+        if 0 <= pref_idx < len(getattr(self, "_accel_items", [])):
+            pref_key = (self._accel_items[pref_idx][1] or "auto").lower()
+        self.settings.setValue("accel/preferred_backend", pref_key)
 
         # Custom background: persist the chosen path (empty -> remove)
         bg_path = (self.le_bg_path.text() or "").strip()

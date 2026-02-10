@@ -13,9 +13,6 @@ import re
 from pathlib import Path
 from contextlib import contextmanager
 
-import platform as _plat
-from pathlib import Path as _Path
-
 
 def _rt_dbg(msg: str, status_cb=print):
     try:
@@ -62,43 +59,22 @@ def _runtime_base_dir() -> Path:
     return base
 
 def _current_tag() -> str:
-    return f"py{sys.version_info.major}{sys.version_info.minor}"
+    # HARD POLICY: runtime is always Python 3.12
+    return "py312"
 
 def _discover_existing_runtime_dir(status_cb=print) -> Path | None:
-    """
-    Prefer an existing runtime that MATCHES the current interpreter minor.
-    Only if none exists, fall back to the highest available.
-    """
     base = _runtime_base_dir()
     if not base.exists():
         return None
 
-    cur_tag = _current_tag()  # e.g. py311, py312
-    cur_dir = base / cur_tag
+    cur_dir = base / _current_tag()  # always py312 now
     cur_vpy = cur_dir / "venv" / ("Scripts/python.exe" if platform.system() == "Windows" else "bin/python")
-
-    # 1) If matching-current exists and has a venv python, use it.
     if cur_vpy.exists():
-        _rt_dbg(f"Found matching runtime for current interpreter: {cur_dir}", status_cb)
+        _rt_dbg(f"Found runtime: {cur_dir}", status_cb)
         return cur_dir
 
-    # 2) Otherwise, fall back to "newest existing"
-    candidates: list[tuple[int, int, Path]] = []
-    for p in base.glob("py*"):
-        vpy = p / "venv" / ("Scripts/python.exe" if platform.system() == "Windows" else "bin/python")
-        if not vpy.exists():
-            continue
-        ver = _venv_pyver(vpy)
-        if ver:
-            candidates.append((ver[0], ver[1], p))
+    return None
 
-    if not candidates:
-        return None
-
-    candidates.sort()
-    chosen = candidates[-1][2]
-    _rt_dbg(f"No matching runtime; using newest existing: {chosen}", status_cb)
-    return chosen
 
 def _user_runtime_dir(status_cb=print) -> Path:
     existing = _discover_existing_runtime_dir(status_cb=status_cb)
@@ -110,7 +86,9 @@ def best_device(torch, *, prefer_cuda=True, prefer_dml=False, prefer_xpu=False):
     if prefer_cuda and getattr(torch, "cuda", None) and torch.cuda.is_available():
         return torch.device("cuda")
 
-    # DirectML (Windows)
+    if prefer_xpu and hasattr(torch, "xpu") and torch.xpu.is_available():
+        return torch.device("xpu")
+
     if prefer_dml and platform.system() == "Windows":
         try:
             import torch_directml
@@ -120,11 +98,12 @@ def best_device(torch, *, prefer_cuda=True, prefer_dml=False, prefer_xpu=False):
         except Exception:
             pass
 
-    # MPS
-    if getattr(getattr(torch, "backends", None), "mps", None) and torch.backends.mps.is_available():
+    # Only pick MPS if caller wants “gpu-ish” behavior.
+    if (prefer_cuda or prefer_xpu or prefer_dml) and getattr(getattr(torch, "backends", None), "mps", None) and torch.backends.mps.is_available():
         return torch.device("mps")
 
     return torch.device("cpu")
+
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -363,12 +342,12 @@ def _ensure_venv(rt: Path, status_cb=print) -> Path:
             # detect its version to ensure the folder tag matches
             out = subprocess.check_output(py_cmd + ["-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"], text=True).strip()
             maj, min_ = map(int, out.split("."))
-            desired_tag = _tag_for_pyver(maj, min_)
-            if rt.name != desired_tag:
-                rt = _runtime_base_dir() / desired_tag
-                p = _venv_paths(rt)
-                status_cb(f"Adjusted runtime folder to match Python {maj}.{min_}: {rt}")
-                p["venv"].mkdir(parents=True, exist_ok=True)
+
+            if (maj, min_) != (3, 12):
+                raise RuntimeError(
+                    f"GPU acceleration runtime requires Python 3.12, but found {maj}.{min_}.\n"
+                    "Install Python 3.12 and relaunch SAS Pro."
+                )
 
             env = os.environ.copy(); env.pop("PYTHONHOME", None); env.pop("PYTHONPATH", None)
             subprocess.check_call(py_cmd + ["-m", "venv", str(p["venv"])], env=env)
@@ -387,12 +366,11 @@ def _ensure_venv(rt: Path, status_cb=print) -> Path:
     else:
         # venv already exists — verify its interpreter version matches the folder tag
         ver = _venv_pyver(p["python"])
-        if ver and rt.name != _tag_for_pyver(*ver):
-            status_cb(f"Runtime folder/version mismatch ({rt.name} vs Python {ver[0]}.{ver[1]}). Rebuilding.")
+        if ver and (ver != (3, 12) or rt.name != "py312"):
+            status_cb(f"Runtime venv is Python {ver[0]}.{ver[1]} but policy requires 3.12. Rebuilding py312 runtime.")
             shutil.rmtree(p["venv"], ignore_errors=True)
-            # recreate at the correct tag
-            corrected = _runtime_base_dir() / _tag_for_pyver(*ver)
-            return _ensure_venv(corrected, status_cb=status_cb)
+            return _ensure_venv(_runtime_base_dir() / "py312", status_cb=status_cb)
+
 
     return p["python"]
 
@@ -428,8 +406,6 @@ def _install_lock(rt: Path, timeout_s: int = 600):
 # coarse but practical ladder by Python minor
 _TORCH_VERSION_LADDER: dict[tuple[int, int], list[str]] = {
     (3, 12): ["2.4.*", "2.3.*", "2.2.*"],
-    (3, 11): ["2.4.*", "2.3.*", "2.2.*", "2.1.*"],
-    (3, 10): ["2.4.*", "2.3.*", "2.2.*", "2.1.*", "1.13.*"],
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -562,15 +538,8 @@ def _install_torch(venv_python: Path, prefer_cuda: bool, prefer_xpu: bool, prefe
             status_cb(tail[-4000:])
         return r.returncode == 0
 
-
-
-    if sysname == "Darwin" and ("arm64" in machine or "aarch64" in machine):
-        if py_minor >= 13:
-            raise RuntimeError(
-                f"PyTorch wheels are not available for macOS arm64 on Python {py_major}.{py_minor}. "
-                "Please install Python 3.12 (e.g. `brew install python@3.12`) so SAS Pro can create "
-                "its runtime with 3.12 and install the MPS-enabled torch wheel."
-            )
+    if (py_major, py_minor) != (3, 12):
+        raise RuntimeError(f"Runtime must be Python 3.12 (found {py_major}.{py_minor}).")
 
     ladder = _TORCH_VERSION_LADDER.get((py_major, py_minor), ["2.4.*", "2.3.*", "2.2.*"])
 
@@ -683,27 +652,6 @@ def _install_torch(venv_python: Path, prefer_cuda: bool, prefer_xpu: bool, prefe
 # ──────────────────────────────────────────────────────────────────────────────
 # Public entry points
 # ──────────────────────────────────────────────────────────────────────────────
-
-def _ensure_torch_directml_in_venv(venv_python: Path, status_cb=print) -> None:
-    """
-    If prefer_dml=True on Windows, ensure torch_directml is importable INSIDE the runtime venv.
-    We do NOT uninstall torch stack; we only add torch-directml if missing.
-    """
-    ok, out = _venv_import_probe(venv_python, "torch_directml")
-    if ok:
-        status_cb("[RT] torch_directml already present in runtime venv.")
-        return
-
-    status_cb("[RT] torch_directml missing; installing torch-directml into runtime venv…")
-    r = _pip_run(venv_python, ["install", "--prefer-binary", "--no-cache-dir", "torch-directml"], status_cb=status_cb)
-    if r.returncode != 0:
-        tail = (r.stdout or "").strip()
-        raise RuntimeError("Failed to install torch-directml:\n" + tail[-4000:])
-
-    ok2, out2 = _venv_import_probe(venv_python, "torch_directml")
-    if not ok2:
-        raise RuntimeError("torch-directml installed but torch_directml still not importable:\n" + out2)
-
 
 def _venv_import_probe(venv_python: Path, modname: str) -> tuple[bool, str]:
     """
@@ -1182,59 +1130,79 @@ def import_torch(
 
 
 def _find_system_python_cmd() -> list[str]:
+    """
+    Find a SYSTEM Python command suitable for creating the SASpro runtime venv.
+
+    HARD POLICY:
+      - Runtime venv must be created with Python 3.12.
+      - Do NOT fall back to other minors (3.11/3.13/etc).
+      - If 3.12 isn't available, raise with a clear message.
+
+    Returns a list of argv tokens (e.g. ["py","-3.12"] or ["/opt/homebrew/bin/python3.12"]).
+    """
     import platform as _plat
-    if _plat.system() == "Darwin":
-        # Prefer versions that have PyTorch wheels on arm64.
+
+    def _is_py312(cmd: list[str]) -> bool:
+        try:
+            r = subprocess.run(
+                cmd + ["-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
+            return r.returncode == 0 and (r.stdout or "").strip() == "3.12"
+        except Exception:
+            return False
+
+    sysname = _plat.system()
+
+    # macOS: prefer explicit python3.12 locations (Homebrew first)
+    if sysname == "Darwin":
         candidates = [
-            "/opt/homebrew/bin/python3.12",
-            "/usr/local/bin/python3.12",
-            "/usr/bin/python3.12",
-            "/opt/homebrew/bin/python3.11",
-            "/usr/local/bin/python3.11",
-            "/usr/bin/python3.11",
-            "/opt/homebrew/bin/python3.10",
-            "/usr/local/bin/python3.10",
-            "/usr/bin/python3.10",
-            # finally, unversioned fallbacks (may be 3.13 — last resort)
-            "/opt/homebrew/bin/python3",
-            "/usr/local/bin/python3",
-            "/usr/bin/python3",
+            ["/opt/homebrew/bin/python3.12"],
+            ["/usr/local/bin/python3.12"],
+            ["/usr/bin/python3.12"],
         ]
-        for exe in candidates:
-            if shutil.which(exe) or os.path.exists(exe):
-                try:
-                    r = subprocess.run([exe, "-c", "import sys; print(sys.version)"],
-                                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-                    if r.returncode == 0:
-                        return [exe]
-                except Exception:
-                    pass
-    if _plat.system() == "Windows":
-        for args in (["py","-3.12"], ["py","-3.11"], ["py","-3.10"], ["py","-3"], ["python3"], ["python"]):
-            try:
-                r = subprocess.run(args + ["-c","import sys; print(sys.version)"],
-                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-                if r.returncode == 0:
-                    return args
-            except Exception:
-                pass
-    else:
-        for exe in ("python3.12","python3.11","python3.10","python3"):
-            p = shutil.which(exe)
-            if p:
-                try:
-                    r = subprocess.run([p,"-c","import sys; print(sys.version)"],
-                                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-                    if r.returncode == 0:
-                        return [p]
-                except Exception:
-                    pass
-        p = shutil.which("python")
-        if p:
+        for cmd in candidates:
+            exe = cmd[0]
+            if os.path.exists(exe) and os.access(exe, os.X_OK) and _is_py312(cmd):
+                return cmd
+        # also try PATH python3.12 if present
+        p = shutil.which("python3.12")
+        if p and _is_py312([p]):
             return [p]
+
+        raise RuntimeError(
+            "Could not find Python 3.12 to create the SASpro runtime venv on macOS.\n"
+            "Install Python 3.12 (Apple Silicon: `brew install python@3.12`) and relaunch."
+        )
+
+    # Windows: use the Python Launcher and ONLY 3.12
+    if sysname == "Windows":
+        for cmd in (["py", "-3.12"],):
+            if _is_py312(cmd):
+                return cmd
+
+        # As a backup, try an explicit python3.12 on PATH (rare on Windows, but possible)
+        p = shutil.which("python3.12")
+        if p and _is_py312([p]):
+            return [p]
+
+        raise RuntimeError(
+            "Could not find Python 3.12 to create the SASpro runtime venv on Windows.\n"
+            "Install Python 3.12 from python.org and ensure the Python Launcher is installed,\n"
+            "then confirm `py -3.12 --version` works, and relaunch SAS Pro."
+        )
+
+    # Linux / other: only accept python3.12
+    p = shutil.which("python3.12")
+    if p and _is_py312([p]):
+        return [p]
+
     raise RuntimeError(
-        "Could not find a system Python to create the runtime environment.\n"
-        "Install Python 3.10+ or set SASPRO_RUNTIME_DIR to a writable path."
+        "Could not find Python 3.12 to create the SASpro runtime venv.\n"
+        "Install Python 3.12 and ensure `python3.12 --version` returns 3.12, then relaunch.\n"
+        "Or set SASPRO_RUNTIME_DIR to a writable path (this does not replace the need for Python 3.12)."
     )
 
 def add_runtime_to_sys_path(status_cb=print) -> None:

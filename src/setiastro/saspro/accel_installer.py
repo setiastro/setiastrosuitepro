@@ -104,7 +104,8 @@ def ensure_torch_installed(prefer_gpu: bool, log_cb: LogCB, preferred_backend: s
 
         # Install torch (tries CUDA → XPU → CPU)
         torch = import_torch(prefer_cuda=prefer_cuda, prefer_xpu=prefer_xpu, prefer_dml=prefer_dml, status_cb=log_cb)
-
+        from setiastro.saspro.runtime_torch import add_runtime_to_sys_path
+        add_runtime_to_sys_path(status_cb=log_cb)
 
         cuda_ok = bool(getattr(torch, "cuda", None) and torch.cuda.is_available())
         xpu_ok  = bool(hasattr(torch, "xpu") and torch.xpu.is_available())
@@ -170,6 +171,12 @@ def ensure_torch_installed(prefer_gpu: bool, log_cb: LogCB, preferred_backend: s
                         log_cb("DirectML import failed after install; staying on CPU.")
                 else:
                     log_cb("DirectML install failed; staying on CPU.")
+
+        try:
+            import importlib
+            _t = importlib.import_module("torch")
+        except Exception as e:
+            return False, f"PyTorch import failed after install: {e}"
 
         return True, None
     except Exception as e:
