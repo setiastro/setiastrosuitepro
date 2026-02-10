@@ -1,3 +1,4 @@
+# src/setiastro/saspro/cli.py
 from __future__ import annotations
 
 import argparse
@@ -7,6 +8,31 @@ from pathlib import Path
 from setiastro.saspro.cosmicclarity_headless import run_cosmicclarity_on_file
 
 
+# ───────────────────────────────────────────────────────────────
+# GUI dispatch (you already have a main entrypoint elsewhere)
+# ───────────────────────────────────────────────────────────────
+def _launch_gui(open_paths: list[str] | None = None) -> int:
+    """
+    Launch SASpro GUI. If open_paths provided, open them on startup.
+    Implement this using your existing __main__.py entrypoint / main_window logic.
+    """
+    from setiastro.saspro.gui_entry import main as gui_main
+    return int(gui_main(open_paths) or 0)   # open_paths is argv-style list
+
+
+def _looks_like_path_token(tok: str) -> bool:
+    if not tok or tok.startswith("-"):
+        return False
+    try:
+        p = Path(tok)
+        return p.exists()
+    except Exception:
+        return False
+
+
+# ───────────────────────────────────────────────────────────────
+# Existing CC CLI
+# ───────────────────────────────────────────────────────────────
 def _add_common_io(p: argparse.ArgumentParser):
     p.add_argument("-i", "--input", required=True, help="Input image path")
     p.add_argument("-o", "--output", required=True, help="Output image path")
@@ -14,20 +40,18 @@ def _add_common_io(p: argparse.ArgumentParser):
 
 
 def _progress_print(done: int, total: int) -> bool:
-    # we use (pct,100) in our adapter
     pct = int(0 if total <= 0 else (100 * done / total))
     print(f"PROGRESS: {pct}%", flush=True)
     return True
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_cc_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="setiastrosuitepro cc",
         description="SetiAstro Cosmic Clarity (in-process) CLI",
     )
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    # sharpen
     p = sub.add_parser("sharpen", help="Sharpen only")
     _add_common_io(p)
     p.add_argument("--sharpening-mode", default="Both", choices=["Both", "Stellar Only", "Non-Stellar Only"])
@@ -37,7 +61,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--auto-psf", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--sharpen-channels-separately", action="store_true", default=False)
 
-    # denoise
     p = sub.add_parser("denoise", help="Denoise only")
     _add_common_io(p)
     p.add_argument("--denoise-luma", type=float, default=0.5)
@@ -45,28 +68,23 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--denoise-mode", default="full", choices=["full", "luminance"])
     p.add_argument("--separate-channels", action="store_true", default=False)
 
-    # both
     p = sub.add_parser("both", help="Sharpen then denoise")
     _add_common_io(p)
-    # sharpen args
     p.add_argument("--sharpening-mode", default="Both", choices=["Both", "Stellar Only", "Non-Stellar Only"])
     p.add_argument("--stellar-amount", type=float, default=0.5)
     p.add_argument("--nonstellar-amount", type=float, default=0.5)
     p.add_argument("--nonstellar-psf", type=float, default=3.0)
     p.add_argument("--auto-psf", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--sharpen-channels-separately", action="store_true", default=False)
-    # denoise args
     p.add_argument("--denoise-luma", type=float, default=0.5)
     p.add_argument("--denoise-color", type=float, default=0.5)
     p.add_argument("--denoise-mode", default="full", choices=["full", "luminance"])
     p.add_argument("--separate-channels", action="store_true", default=False)
 
-    # superres
     p = sub.add_parser("superres", help="Super resolution")
     _add_common_io(p)
     p.add_argument("--scale", type=int, default=2, choices=[2, 3, 4])
 
-    # satellite
     p = sub.add_parser("satellite", help="Satellite trail removal")
     _add_common_io(p)
     p.add_argument("--mode", dest="sat_mode", default="full", choices=["full", "luminance"])
@@ -76,21 +94,11 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
-def main(argv: list[str] | None = None) -> int:
-    argv = list(sys.argv[1:] if argv is None else argv)
-
-    # Allow wrapper tokens if someone passes them in anyway
-    if argv and argv[0].lower() in ("cc", "cosmicclarity"):
-        argv = argv[1:]
-        if not argv:
-            argv = ["--help"]
-
-    args = build_parser().parse_args(argv)
+def _run_cc(argv: list[str]) -> int:
+    args = build_cc_parser().parse_args(argv)
 
     inp = str(Path(args.input))
     out = str(Path(args.output))
-
-    # build preset dict using YOUR canonical keys
     preset = {"gpu": bool(args.gpu)}
 
     if args.cmd == "sharpen":
@@ -139,6 +147,33 @@ def main(argv: list[str] | None = None) -> int:
 
     run_cosmicclarity_on_file(inp, out, preset, progress_cb=_progress_print)
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+
+    # 0) No args → GUI
+    if not argv:
+        return _launch_gui()
+
+    # 1) "cc ..." wrapper stays supported
+    if argv and argv[0].lower() in ("cc", "cosmicclarity"):
+        return _run_cc(argv[1:] or ["--help"])
+
+    # 2) If first token is a real path (file/dir), open GUI + those paths
+    #    (supports: setiastrosuitepro img.fit  img2.fit)
+    if _looks_like_path_token(argv[0]):
+        paths = [str(Path(a)) for a in argv if _looks_like_path_token(a)]
+        return _launch_gui(open_paths=paths)
+
+    # 3) Otherwise treat as CC for backward compat OR show help
+    #    (optional: if you don't want this, just launch GUI here instead)
+    known = {"sharpen", "denoise", "both", "superres", "satellite", "--help", "-h"}
+    if argv[0].lower() in known:
+        return _run_cc(argv)
+
+    # Default: GUI (more intuitive than trying to parse random tokens)
+    return _launch_gui()
 
 
 if __name__ == "__main__":

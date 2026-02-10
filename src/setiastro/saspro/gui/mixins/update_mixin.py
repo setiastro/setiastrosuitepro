@@ -251,6 +251,10 @@ class UpdateMixin:
                             "Update source reports: {1}"
                         ).format(installed_norm, reported_norm)
                     )
+            try:
+                self._maybe_warn_missing_ai4_models(interactive=interactive)
+            except Exception as e:
+                print(f"[models] ai4 check failed: {type(e).__name__}: {e}")                   
         finally:
             reply.deleteLater()
 
@@ -409,3 +413,117 @@ class UpdateMixin:
             # Treat as "unknown" and show a failure message in interactive mode.
             return False
         return latest > cur
+    
+    def _ai4_required_models(self) -> dict[str, list[str]]:
+        # Group them so the dialog can be clearer
+        return {
+            "Cosmic Clarity Sharpen (AI4)": [
+                "deep_sharp_stellar_AI4.pth",
+                "deep_sharp_stellar_AI4.onnx",
+                "deep_nonstellar_sharp_conditional_psf_AI4.pth",
+                "deep_nonstellar_sharp_conditional_psf_AI4.onnx",
+            ],
+            "Cosmic Clarity Denoise (AI4)": [
+                "deep_denoise_mono_AI4.pth",
+                "deep_denoise_mono_AI4.onnx",
+                "deep_denoise_color_AI4.pth",
+                "deep_denoise_color_AI4.onnx",
+            ],
+        }
+
+    def _find_missing_ai4_models(self) -> dict[str, list[str]]:
+        from setiastro.saspro.model_manager import model_path
+        missing: dict[str, list[str]] = {}
+        for group, files in self._ai4_required_models().items():
+            m = [fn for fn in files if not model_path(fn).exists()]
+            if m:
+                missing[group] = m
+        return missing
+
+    def _maybe_warn_missing_ai4_models(self, *, interactive: bool):
+        """
+        Warn user if AI4 models are missing.
+        If missing models exist, ALWAYS alert the user (no “warn once” suppression).
+        """
+        missing = self._find_missing_ai4_models()
+        if not missing:
+            return
+
+        from setiastro.saspro.model_manager import models_root, read_installed_manifest
+        man = read_installed_manifest() or {}
+        src = (man.get("source") or "").strip()
+        sha = (man.get("sha256") or "").strip()
+
+        lines = []
+        for group, files in missing.items():
+            lines.append(group + ":")
+            for fn in files:
+                lines.append(f"  - {fn}")
+
+        msg = (
+            "New Cosmic Clarity AI4 models are required, but they were not found.\n\n"
+            f"Models folder:\n{models_root()}\n\n"
+            "Missing files:\n" + "\n".join(lines)
+        )
+
+        info_bits = []
+        if src:
+            info_bits.append(f"Installed source: {src}")
+        if sha:
+            info_bits.append(f"Manifest SHA256: {sha}")
+        info = "\n".join(info_bits)
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(self.tr("Cosmic Clarity Models Missing"))
+        box.setText(self.tr(msg))
+        if info:
+            box.setInformativeText(self.tr(info))
+
+        dl_btn = box.addButton(self.tr("Download/Update Models…"), QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(QMessageBox.StandardButton.Ok)
+
+        box.exec()
+
+        if box.clickedButton() == dl_btn:
+            try:
+                self._download_models_now()
+            except Exception:
+                pass
+
+    def _open_preferences_models(self):
+        """Open Preferences and focus the AI Models section."""
+        from setiastro.saspro.ops.settings import SettingsDialog
+
+        # If you already cache settings dialog elsewhere, reuse it.
+        if getattr(self, "_settings_dlg", None) is None:
+            # 'self.settings' is your QSettings instance on the main window
+            self._settings_dlg = SettingsDialog(self, self.settings)
+
+        dlg = self._settings_dlg
+        try:
+            dlg.refresh_ui()
+        except Exception:
+            pass
+
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
+        # optional: visually cue the models button
+        try:
+            btn = dlg.btn_models_update
+            btn.setStyleSheet("border:2px solid #f5c542;")  # gold
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(2500, lambda: btn.setStyleSheet(""))
+        except Exception:
+            pass
+
+
+    def _download_models_now(self):
+        """Open Preferences and immediately start the models update workflow."""
+        self._open_preferences_models()
+        try:
+            self._settings_dlg.start_models_update()
+        except Exception:
+            pass

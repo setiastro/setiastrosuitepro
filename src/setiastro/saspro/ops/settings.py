@@ -16,6 +16,7 @@ import importlib.metadata
 import webbrowser
 import shutil
 import subprocess
+import os
 
 class SettingsDialog(QDialog):
     """
@@ -343,7 +344,8 @@ class SettingsDialog(QDialog):
         elif chosen == act_gh:
             webbrowser.open(GITHUB_ZIP)
 
-
+    def start_models_update(self):
+        self._models_update_clicked()
 
     def _models_install_from_zip_clicked(self):
         from PyQt6.QtWidgets import QFileDialog, QMessageBox, QProgressDialog
