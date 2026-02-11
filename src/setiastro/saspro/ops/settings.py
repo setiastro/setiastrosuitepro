@@ -328,7 +328,7 @@ class SettingsDialog(QDialog):
     def _models_open_drive_clicked(self):
         PRIMARY_FOLDER = "https://drive.google.com/drive/folders/1-fktZb3I9l-mQimJX2fZAmJCBj_t0yAF?usp=drive_link"
         BACKUP_FOLDER  = "https://drive.google.com/drive/folders/1j46RV6touQtOmtxkhdFWGm_LQKwEpTl9?usp=drive_link"
-        GITHUB_ZIP     = "https://github.com/setiastro/setiastrosuitepro/releases/download/benchmarkFIT/SASPro_Models_Latest.zip"
+        GITHUB_ZIP     = "https://github.com/setiastro/setiastrosuitepro/releases/download/benchmarkFIT/SASPro_Models_AI4.zip"
 
         menu = QMenu(self)
         act_primary = menu.addAction(self.tr("Primary (Google Drive)"))
@@ -418,9 +418,9 @@ class SettingsDialog(QDialog):
 
         # NOTE: these must be FILE links or file IDs, not folder links.
         # Put your actual *zip file* share links here once you create them.
-        PRIMARY = "https://drive.google.com/file/d/1n4p0grtNpfllalMqtgaEmsTYaFhT5u7Y/view?usp=drive_link"
-        BACKUP  = "https://drive.google.com/file/d/1uRGJCITlfMMN89ZkOO5ICWEKMH24KGit/view?usp=drive_link"
-        TERTIARY = "https://github.com/setiastro/setiastrosuitepro/releases/download/benchmarkFIT/SASPro_Models_Latest.zip"
+        PRIMARY = "https://drive.google.com/file/d/1d0wQr8Oau9UH3IalMW5anC0_oddxBjh3/view?usp=drive_link"
+        BACKUP  = "https://drive.google.com/file/d/1XgqKNd8iBgV3LW8CfzGyS4jigxsxIf86/view?usp=drive_link"
+        TERTIARY = "https://github.com/setiastro/setiastrosuitepro/releases/download/benchmarkFIT/SASPro_Models_AI4.zip"
 
 
         self.btn_models_update.setEnabled(False)
