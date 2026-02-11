@@ -23,7 +23,9 @@ from setiastro.saspro.legacy.image_manager import load_image, save_image
 
 from setiastro.saspro.imageops.stretch import stretch_mono_image, stretch_color_image
 
+
 from setiastro.saspro.cosmicclarity_engines.sharpen_engine import sharpen_rgb01
+
 from setiastro.saspro.cosmicclarity_engines.denoise_engine import denoise_rgb01
 from setiastro.saspro.cosmicclarity_engines.superres_engine import superres_rgb01
 from setiastro.saspro.cosmicclarity_engines.satellite_engine import (
@@ -99,7 +101,7 @@ def _cc_models_installed() -> tuple[bool, str]:
 
     # Sentinel approach: pick ONE file that is guaranteed in the zip.
 
-    sentinel = os.path.join(models_dir, "deep_sharp_stellar_cnn_AI3_5s.pth")
+    sentinel = os.path.join(models_dir, "deep_sharp_stellar_AI4.pth")
 
     if not os.path.exists(sentinel):
         return False, f"Missing sentinel: {os.path.basename(sentinel)}"
@@ -262,7 +264,8 @@ class CosmicClarityEngineWorker(QThread):
                     sharpen_sep = bool(p.get("sharpen_channels_separately", False))
 
                     prog = self._mk_progress_cb("sharpen", stage_weight, base_pct, n)
-
+                    chunk_size = int(p.get("chunk_size", 256))
+                    overlap    = int(p.get("overlap", 64))
                     out = sharpen_rgb01(
                         out,
                         sharpening_mode=str(sharpening_mode),
@@ -272,6 +275,10 @@ class CosmicClarityEngineWorker(QThread):
                         auto_detect_psf=bool(auto_psf),
                         separate_channels=bool(sharpen_sep),
                         use_gpu=bool(use_gpu),
+
+                        chunk_size=int(p.get("chunk_size", 256)),
+                        overlap=int(p.get("overlap", 64)),
+
                         progress_cb=prog,
                     )
 
@@ -283,13 +290,18 @@ class CosmicClarityEngineWorker(QThread):
 
                     prog = self._mk_progress_cb("denoise", stage_weight, base_pct, n)
 
+                    lite = bool(p.get("denoise_lite", False))
+
                     out = denoise_rgb01(
                         out,
-                        denoise_strength=float(den_luma),
-                        denoise_mode=str(den_mode),
-                        separate_channels=bool(sep),
-                        color_denoise_strength=float(den_col),
-                        use_gpu=bool(use_gpu),
+                        denoise_strength=den_luma,
+                        denoise_mode=den_mode,
+                        separate_channels=sep,
+                        color_denoise_strength=den_col,
+                        use_gpu=use_gpu,
+                        chunk_size=int(p.get("chunk_size", 256)),
+                        overlap=int(p.get("overlap", 64)),
+                        lite=lite,   
                         progress_cb=prog,
                     )
 
@@ -435,7 +447,28 @@ class CosmicClarityDialogPro(QDialog):
 
         self.sld_nst_amt.valueChanged.connect(self._on_nst_amt)
         grid.addWidget(self.lbl_nst_amt, 8, 0, 1, 2); grid.addWidget(self.sld_nst_amt, 9, 0, 1, 3)
+        # Chunk size
+        self.lbl_chunk = QLabel("Chunk Size:")
+        self.cmb_chunk = QComboBox()
+        self.cmb_chunk.addItems(["128", "192", "256", "320", "384", "512", "640", "768", "1024"])
+        self.cmb_chunk.setCurrentText("256")
+        grid.addWidget(self.lbl_chunk, 18, 0)
+        grid.addWidget(self.cmb_chunk, 18, 1)
 
+        # Overlap
+        self.lbl_ov = QLabel("Overlap:")
+        self.cmb_ov = QComboBox()
+        self.cmb_ov.addItems(["16", "32", "48", "64", "80", "96", "128","192", "256", "320", "384", "512"])
+        self.cmb_ov.setCurrentText("64")
+        grid.addWidget(self.lbl_ov, 19, 0)
+        grid.addWidget(self.cmb_ov, 19, 1)
+        self._load_chunk_overlap_settings()
+
+        # Save whenever user changes either dropdown
+        self.cmb_chunk.currentTextChanged.connect(self._save_chunk_overlap_settings)
+        self.cmb_ov.currentTextChanged.connect(self._save_chunk_overlap_settings)
+        self.cmb_chunk.currentTextChanged.connect(self._enforce_overlap_vs_chunk)
+        self.cmb_ov.currentTextChanged.connect(self._enforce_overlap_vs_chunk)        
         # Denoise block
         self.lbl_dn_lum = QLabel("Luminance Denoise (0–1): 0.50")
         self.sld_dn_lum = QSlider(Qt.Orientation.Horizontal); self.sld_dn_lum.setRange(0, 100); self.sld_dn_lum.setValue(50)
@@ -451,8 +484,16 @@ class CosmicClarityDialogPro(QDialog):
         self.cmb_dn_mode = QComboBox(); self.cmb_dn_mode.addItems(["full", "luminance"])
         grid.addWidget(self.lbl_dn_mode, 14, 0); grid.addWidget(self.cmb_dn_mode, 14, 1)
 
-        self.chk_dn_sep = QCheckBox("Process RGB channels separately")
+        self.chk_dn_sep = QCheckBox("Denoise RGB channels separately (May Achieve Better Results but Slower)")
+        self.chk_dn_sep.toggled.connect(self._dn_sep_changed)
+        #self.chk_dn_sep.setChecked(True)
         grid.addWidget(self.chk_dn_sep, 15, 1)
+
+        self.chk_dn_lite = QCheckBox("Use Lite denoise model (faster)")
+        self.chk_dn_lite.setToolTip("Loads width=32 denoise models (AI4_lite). Faster, slightly less detail.")
+        grid.addWidget(self.chk_dn_lite, 15, 0)  # adjust row/col as needed
+        self._load_cc_ui_settings()
+        self.chk_dn_lite.toggled.connect(self._save_cc_ui_settings)
 
         # Super-res
         self.lbl_scale = QLabel("Scale Factor:")
@@ -487,25 +528,118 @@ class CosmicClarityDialogPro(QDialog):
                 logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
         self.resize(560, 540)
 
+    def _load_cc_ui_settings(self):
+        s = QSettings()
+        self.chk_dn_lite.setChecked(s.value("cc/denoise_lite", False, type=bool))
+
+    def _save_cc_ui_settings(self):
+        s = QSettings()
+        s.setValue("cc/denoise_lite", self.chk_dn_lite.isChecked())
+
+    def _dn_sep_changed(self, checked: bool):
+        """Separate-channels means mono model per RGB channel, so disable chroma controls."""
+        self._update_denoise_dependent_ui()
+
+    def _update_denoise_dependent_ui(self):
+        # Only relevant when Denoise controls are currently in play (Denoise or Both mode)
+        idx = self.cmb_mode.currentIndex()
+        denoise_active = idx in (1, 2)  # 1 Denoise, 2 Both
+        if not denoise_active:
+            return
+
+        sep = bool(self.chk_dn_sep.isChecked())
+
+        # Option A: DISABLE (recommended: user sees it exists but is inactive)
+        self.lbl_dn_col.setEnabled(not sep)
+        self.sld_dn_col.setEnabled(not sep)
+
+        self.lbl_dn_mode.setEnabled(not sep)
+        self.cmb_dn_mode.setEnabled(not sep)
+
+        # Optional: tooltip explanation when disabled
+        tip = ("Disabled because 'Process RGB channels separately' uses the mono model on R/G/B "
+            "and does not use the color model.")
+        if sep:
+            self.lbl_dn_col.setToolTip(tip)
+            self.sld_dn_col.setToolTip(tip)
+            self.lbl_dn_mode.setToolTip(tip)
+            self.cmb_dn_mode.setToolTip(tip)
+        else:
+            self.lbl_dn_col.setToolTip("")
+            self.sld_dn_col.setToolTip("")
+            self.lbl_dn_mode.setToolTip("")
+            self.cmb_dn_mode.setToolTip("")
+
+
+    def _load_chunk_overlap_settings(self):
+        s = QSettings()
+        # pick stable keys (your call on naming)
+        chunk = s.value("cc/chunk_size", "256")
+        ov    = s.value("cc/overlap", "64")
+
+        # only apply if present in the dropdown lists
+        if self.cmb_chunk.findText(str(chunk)) >= 0:
+            self.cmb_chunk.setCurrentText(str(chunk))
+        if self.cmb_ov.findText(str(ov)) >= 0:
+            self.cmb_ov.setCurrentText(str(ov))
+
+        self._enforce_overlap_vs_chunk()
+
+    def _save_chunk_overlap_settings(self):
+        s = QSettings()
+        s.setValue("cc/chunk_size", self.cmb_chunk.currentText())
+        s.setValue("cc/overlap", self.cmb_ov.currentText())
+
+    def _enforce_overlap_vs_chunk(self):
+        """Ensure overlap < chunk_size. If not, snap overlap down to the largest valid option."""
+        try:
+            chunk = int(self.cmb_chunk.currentText())
+            ov    = int(self.cmb_ov.currentText())
+        except Exception:
+            return
+
+        max_ov = max(0, chunk - 1)
+        if ov <= max_ov:
+            return
+
+        # choose the largest overlap option <= max_ov
+        best = None
+        for i in range(self.cmb_ov.count()):
+            try:
+                v = int(self.cmb_ov.itemText(i))
+            except Exception:
+                continue
+            if v <= max_ov:
+                best = v
+
+        if best is None:
+            best = 0
+
+        # only set if it exists in the list
+        if self.cmb_ov.findText(str(best)) >= 0:
+            self.cmb_ov.setCurrentText(str(best))
+        else:
+            # fallback: if list doesn't include it, pick first item
+            self.cmb_ov.setCurrentIndex(0)
+
+
     def _ensure_models_installed_or_bail(self) -> bool:
-        missing = _missing_cc_models()
-        if not missing:
+        ok, detail = _cc_models_installed()
+        if ok:
             return True
 
-        # Friendly, actionable message
         msg = (
             "Cosmic Clarity AI models are not installed (or are incomplete).\n\n"
             "To install them:\n"
-            "  Preferences → AI Models → Download/Update Models\n\n"
-            "Missing files:\n  - " + "\n  - ".join(missing[:12]) +
-            ("\n  ..." if len(missing) > 12 else "")
+            "  Preferences → AI Models → Download/Update Models\n"
         )
+        if detail:
+            msg += f"\nDetails: {detail}\n"
 
         QMessageBox.warning(self, "Cosmic Clarity", msg)
-
-        # Close immediately
         QTimer.singleShot(0, self.reject)
         return False
+
 
 
     # ----- UI helpers -----
@@ -559,7 +693,8 @@ class CosmicClarityDialogPro(QDialog):
 
         # Denoise controls visible if Denoise or Both
         show_dn = idx in (1, 2)
-        for w in (self.lbl_dn_lum, self.sld_dn_lum, self.lbl_dn_col, self.sld_dn_col, self.lbl_dn_mode, self.cmb_dn_mode, self.chk_dn_sep):
+        for w in (self.lbl_dn_lum, self.sld_dn_lum, self.lbl_dn_col, self.sld_dn_col,
+                self.lbl_dn_mode, self.cmb_dn_mode, self.chk_dn_sep, self.chk_dn_lite):
             w.setVisible(show_dn)
 
         # Super-res controls visible if Super-Res
@@ -571,6 +706,8 @@ class CosmicClarityDialogPro(QDialog):
         show_gpu = (not show_sr)
         self.lbl_gpu.setVisible(show_gpu)
         self.cmb_gpu.setVisible(show_gpu)
+
+        self._update_denoise_dependent_ui()
 
     # ----- Validation -----
     def _validate_root(self) -> bool:
@@ -765,12 +902,18 @@ class CosmicClarityDialogPro(QDialog):
         self.sld_nst_amt.setValue(int(max(0, min(100, round(float(p.get("nonstellar_amount",0.5))*100)))))
         # NEW: allow presets to opt into per-channel sharpen (still defaults off without a preset)
         self.chk_sh_sep.setChecked(bool(p.get("sharpen_channels_separately", False)))
-
+        if "chunk_size" in p:
+            self.cmb_chunk.setCurrentText(str(int(p["chunk_size"])))
+        if "overlap" in p:
+            self.cmb_ov.setCurrentText(str(int(p["overlap"])))
         # Denoise
         self.sld_dn_lum.setValue(int(max(0, min(100, round(float(p.get("denoise_luma",0.5))*100)))))
         self.sld_dn_col.setValue(int(max(0, min(100, round(float(p.get("denoise_color",0.5))*100)))))
         self.cmb_dn_mode.setCurrentText(str(p.get("denoise_mode","full")))
         self.chk_dn_sep.setChecked(bool(p.get("separate_channels", False)))
+        self.chk_dn_lite.setChecked(bool(p.get("denoise_lite", False)))
+
+        self._update_denoise_dependent_ui()
         # Super-Res
         self.cmb_scale.setCurrentText(str(int(p.get("scale",2))))
 
@@ -786,6 +929,7 @@ class CosmicClarityDialogPro(QDialog):
         }
 
         # Sharpen / Both block
+        # Sharpen / Both block
         if mode in ("sharpen", "both"):
             preset.update({
                 "sharpening_mode": self.cmb_sh_mode.currentText(),
@@ -794,7 +938,10 @@ class CosmicClarityDialogPro(QDialog):
                 "stellar_amount": self.sld_st_amt.value() / 100.0,     # 0–100 → 0–1
                 "nonstellar_amount": self.sld_nst_amt.value() / 100.0, # 0–100 → 0–1
                 "sharpen_channels_separately": self.chk_sh_sep.isChecked(),
+                "chunk_size": int(self.cmb_chunk.currentText()),
+                "overlap": int(self.cmb_ov.currentText()),
             })
+
 
         # Denoise / Both block
         if mode in ("denoise", "both"):
@@ -803,6 +950,7 @@ class CosmicClarityDialogPro(QDialog):
                 "denoise_color": self.sld_dn_col.value() / 100.0,
                 "denoise_mode": self.cmb_dn_mode.currentText(),
                 "separate_channels": self.chk_dn_sep.isChecked(),
+                "denoise_lite": self.chk_dn_lite.isChecked(),
             })
 
         # Super-res
