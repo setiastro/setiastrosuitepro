@@ -1,9 +1,9 @@
 {
-  "version": "1.9.1.post4",
+  "version": "1.10.0",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.9.1/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.9.1/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.9.1/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.10.1/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.10.1/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.10.1/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.9.1 Adding AMP support for Syqon Nadir, fixed directML bug. Full history in project saving and writing fix. PPP no views bug fix. WIMI bug fix. Cosmic Clarity Satellite Removal Save bug fix. SNRtool bar color fix. V1.9.0 CLI (command line interface) for cosmic clarity to run on files directly. New SNR Tool. New copy and paste images directly into SASpro. New SyQon starless integration. More tweaks and robustness around platesolving, magnitude tool, SFCC photometry, etc. Many bug and UX fixes."
+  "notes": "Seti Astro Suite Pro V1.10.0 Major update to Cosmic Clarity Sharpen and Denoise. Completely different neural net architecture. New AI4 models will need to be downloaded. There is a Lite Denoise model which may run faster for those with slower computers. Overall massive leap in Cosmic Clarity. Crop Dialog now has center crosshair. Numerous other updates and improvements throughout."
 }
