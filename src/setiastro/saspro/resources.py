@@ -600,11 +600,23 @@ class Resources:
     CC_NS8_PTH  = property(lambda self: model_path('deep_nonstellar_sharp_cnn_radius_8AI3_5s.pth'))
     CC_NS8_ONNX = property(lambda self: model_path('deep_nonstellar_sharp_cnn_radius_8AI3_5s.onnx'))
 
-    CC_S_PTH = property(lambda self: model_path('deep_stellar_sharp_conditional_psf_AI4.pth'))
-    CC_STELLAR_NAF_ONNX = property(lambda self: model_path('deep_stellar_sharp_conditional_psf_AI4.onnx'))
+    CC_S_PTH = property(lambda self: model_path('deep_sharp_stellar_AI4.pth'))
+    CC_STELLAR_NAF_ONNX = property(lambda self: model_path('deep_sharp_stellar_AI4.onnx'))
     CC_NS_PTH = property(lambda self: model_path('deep_nonstellar_sharp_conditional_psf_AI4.pth'))
     CC_NS_COND_NAF_ONNX = property(lambda self: model_path('deep_nonstellar_sharp_conditional_psf_AI4.onnx'))
 
+    # --- Cosmic Clarity Denoise (NAFNet AI4) ---
+    CC_DENOISE_MONO_PTH  = property(lambda self: model_path('deep_denoise_mono_AI4.pth'))
+    CC_DENOISE_MONO_ONNX = property(lambda self: model_path('deep_denoise_mono_AI4.onnx'))
+
+    CC_DENOISE_COLOR_PTH  = property(lambda self: model_path('deep_denoise_color_AI4.pth'))
+    CC_DENOISE_COLOR_ONNX = property(lambda self: model_path('deep_denoise_color_AI4.onnx'))
+
+    CC_DENOISE_MONO_PTH_LITE  = property(lambda self: model_path('deep_denoise_mono_AI4_lite.pth'))
+    CC_DENOISE_MONO_ONNX_LITE = property(lambda self: model_path('deep_denoise_mono_AI4_lite.onnx'))
+
+    CC_DENOISE_COLOR_PTH_LITE  = property(lambda self: model_path('deep_denoise_color_AI4_lite.pth'))
+    CC_DENOISE_COLOR_ONNX_LITE = property(lambda self: model_path('deep_denoise_color_AI4_lite.onnx'))
 
     CC_DENOISE_PTH  = property(lambda self: model_path('deep_denoise_cnn_AI3_6.pth'))
     CC_DENOISE_ONNX = property(lambda self: model_path('deep_denoise_cnn_AI3_6.onnx'))

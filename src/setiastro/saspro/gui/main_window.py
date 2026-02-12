@@ -119,7 +119,7 @@ from PyQt6.QtGui import (QPixmap, QColor, QIcon, QKeySequence, QShortcut,
 
 # ----- QtCore -----
 from PyQt6.QtCore import (Qt, pyqtSignal, QTimer, QSize, QModelIndex, QUrl, QSettings, QEvent, QByteArray, QObject,
-    QPropertyAnimation, QEasingCurve, QPoint
+    QPropertyAnimation, QEasingCurve, QPoint, QCoreApplication
 )
 
 

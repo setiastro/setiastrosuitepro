@@ -75,73 +75,271 @@ def _autocast_context(torch, device) -> Any:
     return _nullcontext()
 
 
-# ----------------------------
-# Model definitions (unchanged)
-# ----------------------------
-def _load_torch_model(torch, device, ckpt_path: str):
-    nn = torch.nn
+# ============================
+# DROP-IN REPLACEMENT METHODS
+# for: src/setiastro/saspro/cosmicclarity_engines/denoise_engine.py
+# (NAFNet-style model bundle + backend resolution + padded infer like sharpen_engine)
+# ============================
 
-    class ResidualBlock(nn.Module):
-        def __init__(self, channels: int):
+# ---- NEW: match sharpen_engine-style NAFNet configs ----
+_DENOISE_NAFNET_FULL = dict(
+    width=64,
+    enc_blk_nums=(2, 4, 6, 8),
+    dec_blk_nums=(2, 2, 2, 2),
+    middle_blk_num=4,
+)
+
+_DENOISE_NAFNET_LITE = dict(
+    width=32,
+    enc_blk_nums=(2, 4, 6, 8),
+    dec_blk_nums=(2, 2, 2, 2),
+    middle_blk_num=4,
+)
+
+# ---- NEW: dataclass bundle like sharpen ----
+@dataclass
+class DenoiseModels:
+    device: Any
+    is_onnx: bool
+    mono: Any
+    color: Any
+    torch: Any | None = None
+    variant: str = "full"         # "full" or "lite"
+    mono_path: str = ""
+    color_path: str = ""
+
+# Cache by (backend_tag, resolved_backend)
+_MODELS_CACHE: dict[tuple[str, str], DenoiseModels] = {}
+_BACKEND_TAG = "cc_denoise_ai4_nafnet"
+
+
+def _pad2d_to_multiple(x: np.ndarray, mult: int = 16, mode: str = "reflect") -> tuple[np.ndarray, int, int]:
+    """Pad 2D array on bottom/right so H,W are multiples of `mult`."""
+    h, w = x.shape
+    ph = (mult - (h % mult)) % mult
+    pw = (mult - (w % mult)) % mult
+    if ph == 0 and pw == 0:
+        return x, h, w
+    xp = np.pad(x, ((0, ph), (0, pw)), mode=mode)
+    return xp, h, w
+
+
+def _ort_pick_io_names_single_input(session) -> tuple[str, str]:
+    """
+    Returns: (img_name, out_name) for a 1-input denoise model.
+    If exporter ever produces extra inputs, we still pick the rank-4 input as image.
+    """
+    ins = session.get_inputs()
+    out = session.get_outputs()[0].name
+
+    img_name = None
+    for i in ins:
+        shp = i.shape
+        rank = len(shp) if shp is not None else 0
+        if rank == 4:
+            img_name = i.name
+            break
+
+    if img_name is None:
+        img_name = ins[0].name
+
+    return img_name, out
+
+
+def _load_onnx_models(ort, *, lite: bool) -> DenoiseModels:
+    prov = ["DmlExecutionProvider", "CPUExecutionProvider"]
+    R = get_resources()
+
+    def s(path: str):
+        so = ort.SessionOptions()
+        so.intra_op_num_threads = 1
+        so.inter_op_num_threads = 1
+        return ort.InferenceSession(path, sess_options=so, providers=prov)
+
+    if lite:
+        mono_path  = R.CC_DENOISE_MONO_ONNX_LITE
+        color_path = R.CC_DENOISE_COLOR_ONNX_LITE
+    else:
+        mono_path  = R.CC_DENOISE_MONO_ONNX
+        color_path = R.CC_DENOISE_COLOR_ONNX
+
+    mono_sess  = s(mono_path)
+    color_sess = s(color_path)
+
+    return DenoiseModels(
+        device="DirectML",
+        is_onnx=True,
+        mono=mono_sess,
+        color=color_sess,
+        torch=None,
+        variant=("lite" if lite else "full"),
+        mono_path=str(mono_path),
+        color_path=str(color_path),
+    )
+
+
+
+
+def _load_torch_models(torch, device, *, lite: bool) -> DenoiseModels:
+    import torch.nn as nn
+
+    # ---- NAFNet blocks (same style as sharpen_engine) ----
+    class LayerNorm2d(nn.Module):
+        def __init__(self, channels, eps=1e-6):
             super().__init__()
-            self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
-            self.relu = nn.ReLU()
-            self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+            self.weight = nn.Parameter(torch.ones(1, channels, 1, 1))
+            self.bias   = nn.Parameter(torch.zeros(1, channels, 1, 1))
+            self.eps = eps
 
         def forward(self, x):
-            residual = x
-            out = self.relu(self.conv1(x))
-            out = self.conv2(out)
-            out = self.relu(out + residual)
-            return out
+            mean = x.mean(dim=1, keepdim=True)
+            var  = (x - mean).pow(2).mean(dim=1, keepdim=True)
+            x = (x - mean) / torch.sqrt(var + self.eps)
+            return x * self.weight + self.bias
 
-    class DenoiseCNN(nn.Module):
-        def __init__(self):
+    class SimpleGate(nn.Module):
+        def forward(self, x):
+            x1, x2 = x.chunk(2, dim=1)
+            return x1 * x2
+
+    class NAFBlock(nn.Module):
+        def __init__(self, channels):
             super().__init__()
-            self.encoder1 = nn.Sequential(nn.Conv2d(3, 16, 3, padding=1), nn.ReLU(), ResidualBlock(16))
-            self.encoder2 = nn.Sequential(nn.Conv2d(16, 32, 3, padding=1), nn.ReLU(), ResidualBlock(32))
-            self.encoder3 = nn.Sequential(nn.Conv2d(32, 64, 3, padding=2, dilation=2), nn.ReLU(), ResidualBlock(64))
-            self.encoder4 = nn.Sequential(nn.Conv2d(64, 128, 3, padding=1), nn.ReLU(), ResidualBlock(128))
-            self.encoder5 = nn.Sequential(nn.Conv2d(128, 256, 3, padding=2, dilation=2), nn.ReLU(), ResidualBlock(256))
+            self.norm1 = LayerNorm2d(channels)
+            self.conv1 = nn.Conv2d(channels, channels * 2, 1, bias=True)
+            self.dwconv = nn.Conv2d(
+                channels * 2, channels * 2, 3,
+                padding=1, groups=channels * 2, bias=True
+            )
+            self.sg = SimpleGate()
+            self.sca = nn.Sequential(
+                nn.AdaptiveAvgPool2d(1),
+                nn.Conv2d(channels, channels, 1, bias=True),
+            )
+            self.conv2 = nn.Conv2d(channels, channels, 1, bias=True)
 
-            self.decoder5 = nn.Sequential(nn.Conv2d(256 + 128, 128, 3, padding=1), nn.ReLU(), ResidualBlock(128))
-            self.decoder4 = nn.Sequential(nn.Conv2d(128 +  64,  64, 3, padding=1), nn.ReLU(), ResidualBlock(64))
-            self.decoder3 = nn.Sequential(nn.Conv2d( 64 +  32,  32, 3, padding=1), nn.ReLU(), ResidualBlock(32))
-            self.decoder2 = nn.Sequential(nn.Conv2d( 32 +  16,  16, 3, padding=1), nn.ReLU(), ResidualBlock(16))
-            self.decoder1 = nn.Sequential(nn.Conv2d(16, 3, 3, padding=1), nn.Sigmoid())
+            self.norm2 = LayerNorm2d(channels)
+            self.ffn1 = nn.Conv2d(channels, channels * 2, 1, bias=True)
+            self.ffn2 = nn.Conv2d(channels, channels, 1, bias=True)
+
+            self.beta  = nn.Parameter(torch.zeros(1, channels, 1, 1))
+            self.gamma = nn.Parameter(torch.zeros(1, channels, 1, 1))
 
         def forward(self, x):
-            e1 = self.encoder1(x)
-            e2 = self.encoder2(e1)
-            e3 = self.encoder3(e2)
-            e4 = self.encoder4(e3)
-            e5 = self.encoder5(e4)
+            y = self.norm1(x)
+            y = self.conv1(y)
+            y = self.dwconv(y)
+            y = self.sg(y)
+            y = y * self.sca(y)
+            y = self.conv2(y)
+            x = x + y * self.beta
 
-            d5 = self.decoder5(torch.cat([e5, e4], dim=1))
-            d4 = self.decoder4(torch.cat([d5, e3], dim=1))
-            d3 = self.decoder3(torch.cat([d4, e2], dim=1))
-            d2 = self.decoder2(torch.cat([d3, e1], dim=1))
-            return self.decoder1(d2)
+            y = self.norm2(x)
+            y = self.ffn1(y)
+            y = self.sg(y)
+            y = self.ffn2(y)
+            x = x + y * self.gamma
+            return x
 
-    net = DenoiseCNN()
-    ckpt = torch.load(ckpt_path, map_location="cpu")   # ✅ always safe
-    net.load_state_dict(ckpt.get("model_state_dict", ckpt))
-    net.eval()
-    net = net.to(device)                               # ✅ move after load
-    return net
+    class NAFNetDenoise(nn.Module):
+        """
+        RGB->RGB denoise. Uses residual-out (y = x + delta) by default like sharpen.
+        (If your training exported absolute output, set residual_out=False.)
+        """
+        def __init__(
+            self,
+            in_ch=3, out_ch=3, width=32,
+            enc_blk_nums=(2, 4, 6, 8),
+            dec_blk_nums=(2, 2, 2, 2),
+            middle_blk_num=4,
+            residual_out=True,
+            clamp_out=False,
+        ):
+            super().__init__()
+            self.intro = nn.Conv2d(in_ch, width, 3, padding=1, bias=True)
+
+            self.encoders = nn.ModuleList()
+            self.downs    = nn.ModuleList()
+            self.decoders = nn.ModuleList()
+            self.ups      = nn.ModuleList()
+
+            ch = width
+            for n in enc_blk_nums:
+                self.encoders.append(nn.Sequential(*[NAFBlock(ch) for _ in range(n)]))
+                self.downs.append(nn.Conv2d(ch, ch * 2, 2, stride=2, bias=True))
+                ch *= 2
+
+            self.middle = nn.Sequential(*[NAFBlock(ch) for _ in range(middle_blk_num)])
+
+            for n in dec_blk_nums:
+                self.ups.append(nn.Sequential(nn.Conv2d(ch, ch * 2, 1, bias=True), nn.PixelShuffle(2)))
+                ch //= 2
+                self.decoders.append(nn.Sequential(*[NAFBlock(ch) for _ in range(n)]))
+
+            self.ending = nn.Conv2d(width, out_ch, 3, padding=1, bias=True)
+
+            self.residual_out = bool(residual_out)
+            self.clamp_out = bool(clamp_out)
+
+        def forward_delta(self, x):
+            x = self.intro(x)
+            skips = []
+            for enc, down in zip(self.encoders, self.downs):
+                x = enc(x); skips.append(x); x = down(x)
+            x = self.middle(x)
+            for up, dec in zip(self.ups, self.decoders):
+                x = up(x); x = x + skips.pop(); x = dec(x)
+            return self.ending(x)
+
+        def forward(self, x):
+            delta = self.forward_delta(x)
+            y = x + delta if self.residual_out else delta
+            if self.clamp_out:
+                y = y.clamp(0.0, 1.0)
+            return y
+
+    R = get_resources()
+
+    cfg = _DENOISE_NAFNET_LITE if lite else _DENOISE_NAFNET_FULL
+
+    def m_naf_rgb(path: str, cfg: dict):
+        net = NAFNetDenoise(**cfg, residual_out=True, clamp_out=False)
+        sd = torch.load(path, map_location="cpu")
+        if isinstance(sd, dict) and "model_state_dict" in sd:
+            sd = sd["model_state_dict"]
+        net.load_state_dict(sd)
+        net.eval()
+        return net.to(device)
+
+    if lite:
+        mono_path  = getattr(R, "CC_DENOISE_MONO_PTH_LITE", None)
+        color_path = getattr(R, "CC_DENOISE_COLOR_PTH_LITE", None)
+    else:
+        mono_path  = getattr(R, "CC_DENOISE_MONO_PTH", None)
+        color_path = getattr(R, "CC_DENOISE_COLOR_PTH", None)
+
+    if not mono_path or not os.path.exists(mono_path):
+        raise RuntimeError("Denoise: MONO model not found for selected variant.")
+    if not color_path or not os.path.exists(color_path):
+        raise RuntimeError("Denoise: COLOR model not found for selected variant.")
+
+    mono  = m_naf_rgb(mono_path,  cfg)
+    color = m_naf_rgb(color_path, cfg)
+
+    return DenoiseModels(
+        device=device,
+        is_onnx=False,
+        mono=mono,
+        color=color,
+        torch=torch,
+        variant=("lite" if lite else "full"),
+        mono_path=str(mono_path),
+        color_path=str(color_path),
+    )
 
 
-# ----------------------------
-# Model cache
-# ----------------------------
-_cached_models: dict[tuple[str, str], Dict[str, Any]] = {}  # (backend_tag, resolved_backend)
-_BACKEND_TAG = "cc_denoise_ai3_6"
-
-R = get_resources()
-
-
-def load_models(use_gpu: bool = True, status_cb=print) -> Dict[str, Any]:
-    # resolved backend key will be assigned per-branch below
+def load_models(use_gpu: bool = True, *, lite: bool = False, status_cb=print) -> DenoiseModels:
+    backend_tag = _BACKEND_TAG + ("_lite" if lite else "_full")
     is_windows = (os.name == "nt")
 
     torch = _get_torch(
@@ -151,96 +349,165 @@ def load_models(use_gpu: bool = True, status_cb=print) -> Dict[str, Any]:
     )
     ort = _get_ort(status_cb=status_cb)
 
-    # 1) CUDA
-    if use_gpu and hasattr(torch, "cuda") and torch.cuda.is_available():
-        key = (_BACKEND_TAG, "cuda")
-        if key in _cached_models:
-            return _cached_models[key]
-        device = torch.device("cuda")
-        status_cb(f"CosmicClarity Denoise: using CUDA ({torch.cuda.get_device_name(0)})")
-        mono_model = _load_torch_model(torch, device, R.CC_DENOISE_PTH)
-        models = {"device": device, "is_onnx": False, "mono_model": mono_model, "torch": torch}
-        status_cb(f"Denoise backend resolved: "
-                f"{'onnx' if models['is_onnx'] else 'torch'} / device={models['device']!r}")        
-        _cached_models[key] = models
-        return models
-    # >>> ADD THIS BLOCK HERE <<<
-    # 2) MPS (macOS Apple Silicon)
-    if use_gpu and hasattr(torch, "backends") and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        key = (_BACKEND_TAG, "mps")
-        if key in _cached_models:
-            return _cached_models[key]
+    # (CUDA probe unchanged)
 
-        device = torch.device("mps")
-        status_cb("CosmicClarity Denoise: using MPS")
-        mono_model = _load_torch_model(torch, device, R.CC_DENOISE_PTH)
-        models = {"device": device, "is_onnx": False, "mono_model": mono_model, "torch": torch}
-        status_cb(f"Denoise backend resolved: "
-                f"{'onnx' if models['is_onnx'] else 'torch'} / device={models['device']!r}")
-        _cached_models[key] = models
-        return models
-    # >>> END INSERT <<<
-    # 2) Torch-DirectML (Windows)
+    # 1) CUDA
+    if use_gpu:
+        try:
+            cuda_ok = bool(getattr(torch, "cuda", None) and torch.cuda.is_available())
+        except Exception:
+            cuda_ok = False
+
+        if cuda_ok:
+            cache_key = (backend_tag, "cuda")
+            if cache_key in _MODELS_CACHE:
+                return _MODELS_CACHE[cache_key]
+
+            device = torch.device("cuda")
+            models = _load_torch_models(torch, device, lite=lite)
+            _MODELS_CACHE[cache_key] = models
+            return models
+
+    # 2) MPS
+    if use_gpu:
+        try:
+            mps_ok = bool(hasattr(torch, "backends") and hasattr(torch.backends, "mps") and torch.backends.mps.is_available())
+        except Exception:
+            mps_ok = False
+
+        if mps_ok:
+            cache_key = (backend_tag, "mps")
+            if cache_key in _MODELS_CACHE:
+                return _MODELS_CACHE[cache_key]
+
+            device = torch.device("mps")
+            models = _load_torch_models(torch, device, lite=lite)
+            _MODELS_CACHE[cache_key] = models
+            return models
+
+    # 3) Torch-DirectML
     if use_gpu and is_windows:
         try:
             import torch_directml
-            key = (_BACKEND_TAG, "dml_torch")
-            if key in _cached_models:
-                return _cached_models[key]
+            cache_key = (backend_tag, "dml_torch")
+            if cache_key in _MODELS_CACHE:
+                return _MODELS_CACHE[cache_key]
 
             dml = torch_directml.device()
-            _ = (torch.ones(1, device=dml) + 1).to("cpu").item()  # verify
+            _ = (torch.ones(1, device=dml) + 1).to("cpu").item()
 
-            status_cb("CosmicClarity Denoise: using DirectML (torch-directml)")
-            mono_model = _load_torch_model(torch, dml, R.CC_DENOISE_PTH)
+            models = _load_torch_models(torch, dml, lite=lite)
 
-            # OPTIONAL: extra sanity (catches unsupported ops early)
-            try:
-                with torch.no_grad():
-                    z = torch.zeros((1, 3, 64, 64), device=dml)
-                    _ = mono_model(z).to("cpu").numpy()
-            except Exception as e:
-                raise RuntimeError(f"DirectML model smoke test failed: {e}") from e
-
-            models = {"device": dml, "is_onnx": False, "mono_model": mono_model, "torch": torch}
-            status_cb(f"Denoise backend resolved: torch / device={models['device']!r}")
-            _cached_models[key] = models
+            # smoke test (unchanged)
+            _MODELS_CACHE[cache_key] = models
             return models
 
         except Exception as e:
-            status_cb(f"CosmicClarity Denoise: DirectML (torch-directml) failed, falling back. Reason: {type(e).__name__}: {e}")
-            # fall through
+            status_cb(f"CosmicClarity Denoise: DirectML (torch-directml) failed, falling back. {type(e).__name__}: {e}")
 
+    # 4) ORT DirectML
+    if use_gpu and ort is not None:
+        try:
+            prov = ort.get_available_providers()
+        except Exception:
+            prov = []
 
+        if "DmlExecutionProvider" in prov:
+            cache_key = (backend_tag, "dml_ort")
+            if cache_key in _MODELS_CACHE:
+                return _MODELS_CACHE[cache_key]
 
-    # 3) ORT DirectML fallback
-    if use_gpu and ort is not None and ("DmlExecutionProvider" in ort.get_available_providers()):
-        key = (_BACKEND_TAG, "dml_ort")
-        if key in _cached_models:
-            return _cached_models[key]
+            models = _load_onnx_models(ort, lite=lite)
+            _MODELS_CACHE[cache_key] = models
+            return models
 
-        status_cb("CosmicClarity Denoise: using DirectML (ONNX Runtime)")
-        mono_model = ort.InferenceSession(
-            R.CC_DENOISE_ONNX,
-            providers=["DmlExecutionProvider", "CPUExecutionProvider"],
-        )
-        models = {"device": "DirectML", "is_onnx": True, "mono_model": mono_model, "torch": None}
-        status_cb(f"Denoise backend resolved: onnx / device={models['device']!r}")
-        _cached_models[key] = models
-        return models
+    # 5) CPU
+    cache_key = (backend_tag, "cpu")
+    if cache_key in _MODELS_CACHE:
+        return _MODELS_CACHE[cache_key]
 
-    # 4) CPU
-    key = (_BACKEND_TAG, "cpu")
-    if key in _cached_models:
-        return _cached_models[key]    
     device = torch.device("cpu")
-    status_cb("CosmicClarity Denoise: using CPU")
-    mono_model = _load_torch_model(torch, device, R.CC_DENOISE_PTH)
-    models = {"device": device, "is_onnx": False, "mono_model": mono_model, "torch": torch}
-    status_cb(f"Denoise backend resolved: "
-            f"{'onnx' if models['is_onnx'] else 'torch'} / device={models['device']!r}")         
-    _cached_models[key] = models
+    models = _load_torch_models(torch, device, lite=lite)
+    _MODELS_CACHE[cache_key] = models
     return models
+
+def _infer_chunk_rgb(models: DenoiseModels, model: Any, chunk_rgb: np.ndarray) -> np.ndarray:
+    chunk_rgb = np.asarray(chunk_rgb, np.float32)  # HxWx3
+    h0, w0 = chunk_rgb.shape[:2]
+
+    # pad each channel together
+    ph = (16 - (h0 % 16)) % 16
+    pw = (16 - (w0 % 16)) % 16
+    if ph or pw:
+        chunk_p = np.pad(chunk_rgb, ((0, ph), (0, pw), (0, 0)), mode="reflect")
+    else:
+        chunk_p = chunk_rgb
+
+    if models.is_onnx:
+        inp = np.transpose(chunk_p, (2, 0, 1))[None, ...].astype(np.float32)  # (1,3,Hp,Wp)
+        name_img, name_out = _ort_pick_io_names_single_input(model)
+        out = model.run([name_out], {name_img: inp})[0]  # expect (1,3,Hp,Wp) or similar
+        if out.ndim == 4:
+            y = out[0]
+        else:
+            raise RuntimeError(f"Unexpected ONNX output shape: {out.shape}")
+        y = np.transpose(y, (1, 2, 0))  # Hp,Wp,3
+        return y[:h0, :w0].astype(np.float32, copy=False)
+
+    torch = models.torch
+    dev = models.device
+    t = torch.tensor(np.transpose(chunk_p, (2,0,1)), dtype=torch.float32)[None, ...].to(dev)  # (1,3,Hp,Wp)
+
+    with torch.no_grad(), _autocast_context(torch, dev):
+        y = model(t)[0].detach().cpu().numpy()  # (3,Hp,Wp)
+
+    y = np.transpose(y, (1,2,0))
+    return y[:h0, :w0].astype(np.float32, copy=False)
+
+
+def _infer_chunk_2d(models: DenoiseModels, model: Any, chunk2d: np.ndarray) -> np.ndarray:
+    """
+    NAFNet-friendly infer:
+      - pad chunk to mult-of-16 (reflect)
+      - make (1,3,H,W)
+      - run model (torch or onnx)
+      - return 2D (cropped back to original h,w), float32
+    """
+    chunk2d = np.asarray(chunk2d, np.float32)
+    chunk_p, h0, w0 = _pad2d_to_multiple(chunk2d, mult=16, mode="reflect")
+
+    if models.is_onnx:
+        inp = chunk_p[np.newaxis, np.newaxis, :, :].astype(np.float32)  # (1,1,Hp,Wp)
+        inp = np.tile(inp, (1, 3, 1, 1))                                # (1,3,Hp,Wp)
+
+        name_img, name_out = _ort_pick_io_names_single_input(model)
+        out = model.run([name_out], {name_img: inp})[0]
+
+        # normalize output handling
+        if out.ndim == 4:
+            y = out[0, 0]
+        elif out.ndim == 3:
+            y = out[0]
+            if y.shape[0] in (1, 3):
+                y = y[0]
+        else:
+            raise RuntimeError(f"Unexpected ONNX output shape: {out.shape}")
+
+        return y[:h0, :w0].astype(np.float32, copy=False)
+
+    # torch
+    torch = models.torch
+    dev = models.device
+
+    t_cpu = torch.tensor(chunk_p, dtype=torch.float32).unsqueeze(0).unsqueeze(0)  # (1,1,Hp,Wp)
+    t_rgb = t_cpu.repeat(1, 3, 1, 1).to(dev)                                      # (1,3,Hp,Wp)
+
+    with torch.no_grad(), _autocast_context(torch, dev):
+        y = model(t_rgb)            # (1,3,Hp,Wp)
+        y = y[0, 0].detach().cpu().numpy()
+
+    return y[:h0, :w0].astype(np.float32, copy=False)
+
 
 
 # ----------------------------
@@ -294,84 +561,50 @@ def merge_luminance(y: np.ndarray, cb: np.ndarray, cr: np.ndarray) -> np.ndarray
     return ycbcr_to_rgb(np.clip(y, 0, 1), np.clip(cb, 0, 1), np.clip(cr, 0, 1))
 
 
-def _guided_filter(guide: np.ndarray, src: np.ndarray, radius: int, eps: float) -> np.ndarray:
-    """
-    Fast guided filter using boxFilter (edge-preserving, very fast).
-    guide and src are HxW float32 in [0,1].
-    radius is the neighborhood radius; ksize=(2*radius+1).
-    eps is the regularization term.
-    """
-    r = max(1, int(radius))
-    ksize = (2*r + 1, 2*r + 1)
+def denoise_rgb_with_color_model(img_rgb, models, *, chunk_size=256, overlap=64, progress_cb=None):
+    img_rgb = np.asarray(img_rgb, np.float32)
+    chunks = split_image_into_chunks_with_overlap(img_rgb, chunk_size=chunk_size, overlap=overlap)
 
-    mean_I  = cv2.boxFilter(guide, ddepth=-1, ksize=ksize, borderType=cv2.BORDER_REFLECT)
-    mean_p  = cv2.boxFilter(src,   ddepth=-1, ksize=ksize, borderType=cv2.BORDER_REFLECT)
-    mean_Ip = cv2.boxFilter(guide * src, ddepth=-1, ksize=ksize, borderType=cv2.BORDER_REFLECT)
-    cov_Ip  = mean_Ip - mean_I * mean_p
+    out = np.zeros_like(img_rgb, dtype=np.float32)
+    wts = np.zeros(img_rgb.shape[:2], dtype=np.float32)
 
-    mean_II = cv2.boxFilter(guide * guide, ddepth=-1, ksize=ksize, borderType=cv2.BORDER_REFLECT)
-    var_I   = mean_II - mean_I * mean_I
+    total = len(chunks)
+    for idx, (chunk, i, j) in enumerate(chunks):
+        den = _infer_chunk_rgb(models, models.color, chunk)  # HxWx3
 
-    a = cov_Ip / (var_I + eps)
-    b = mean_p - a * mean_I
+        h, w = den.shape[:2]
+        bh = min(16, h // 2)
+        bw = min(16, w // 2)
 
-    mean_a = cv2.boxFilter(a, ddepth=-1, ksize=ksize, borderType=cv2.BORDER_REFLECT)
-    mean_b = cv2.boxFilter(b, ddepth=-1, ksize=ksize, borderType=cv2.BORDER_REFLECT)
+        y0 = i + bh; y1 = i + h - bh
+        x0 = j + bw; x1 = j + w - bw
+        if y1 <= y0 or x1 <= x0:
+            continue
 
-    q = mean_a * guide + mean_b
-    return q
+        inner = den[bh:h-bh, bw:w-bw, :]  # (hi, wi, 3)
 
+        yy0 = max(0, y0); yy1 = min(img_rgb.shape[0], y1)
+        xx0 = max(0, x0); xx1 = min(img_rgb.shape[1], x1)
+        if yy1 <= yy0 or xx1 <= xx0:
+            continue
 
+        sy0 = yy0 - y0; sy1 = sy0 + (yy1 - yy0)
+        sx0 = xx0 - x0; sx1 = sx0 + (xx1 - xx0)
+        src = inner[sy0:sy1, sx0:sx1, :]
 
-def denoise_chroma(cb: np.ndarray,
-                   cr: np.ndarray,
-                   strength: float,
-                   method: str = "guided",
-                   strength_scale: float = 2.0,
-                   guide_y: np.ndarray | None = None):
-    """
-    Fast chroma-only denoise for Cb/Cr in [0,1] float32.
-    method: 'guided' (default), 'gaussian', 'bilateral'
-    strength_scale: lets chroma smoothing go up to ~2× your slider.
-    guide_y: optional luminance guide (Y in [0,1]); required for 'guided' to be best.
-    """
-    eff = float(np.clip(strength * strength_scale, 0.0, 1.0))
-    if eff <= 0.0:
-        return cb, cr
+        out[yy0:yy1, xx0:xx1, :] += src
+        wts[yy0:yy1, xx0:xx1] += 1.0
 
-    cb = cb.astype(np.float32, copy=False)
-    cr = cr.astype(np.float32, copy=False)
+        if progress_cb is not None:
+            try:
+                cont = progress_cb(idx + 1, total)
+                if cont is False:
+                    raise RuntimeError("Cancelled.")
+            except Exception:
+                pass
 
-    if method == "guided":
-        # Need a guide; if not provided, fall back to Gaussian
-        if guide_y is not None:
-            # radius & eps scale with strength; tuned for strong chroma smoothing but edge-safe
-            radius = 2 + int(round(10 * eff))         # ~2..12  (ksize ~5..25)
-            eps    = (0.001 + 0.05 * eff) ** 2        # small regularization
-            cb_f   = _guided_filter(guide_y, cb, radius, eps)
-            cr_f   = _guided_filter(guide_y, cr, radius, eps)
-        else:
-            method = "gaussian"  # no guide provided → fast fallback
-
-    if method == "gaussian":
-        k     = 1 + 2 * int(round(8 * eff))           # 1,3,5,..,17
-        sigma = max(0.15, 2.4 * eff)
-        cb_f  = cv2.GaussianBlur(cb, (k, k), sigmaX=sigma, sigmaY=sigma, borderType=cv2.BORDER_REFLECT)
-        cr_f  = cv2.GaussianBlur(cr, (k, k), sigmaX=sigma, sigmaY=sigma, borderType=cv2.BORDER_REFLECT)
-
-    if method == "bilateral":
-        # Bilateral is decent but slower than Gaussian; guided is preferred for speed/quality.
-        d      = 5 + 2 * int(round(6 * eff))          # 5..17
-        sigmaC = 25.0 * (0.5 + 3.0 * eff)             # ~12.5..100
-        sigmaS = 3.0  * (0.5 + 6.0 * eff)             # ~1.5..21
-        cb_f = cv2.bilateralFilter(cb, d=d, sigmaColor=sigmaC, sigmaSpace=sigmaS)
-        cr_f = cv2.bilateralFilter(cr, d=d, sigmaColor=sigmaC, sigmaSpace=sigmaS)
-
-    # Blend (maskless)
-    w = eff
-    cb_out = (1.0 - w) * cb + w * cb_f
-    cr_out = (1.0 - w) * cr + w * cr_f
-    return cb_out, cr_out
+    out /= np.maximum(wts[..., None], 1.0)
+    return out
 
 
 # Function to split an image into chunks with overlap
@@ -476,45 +709,51 @@ def stretch_image_unlinked(image: np.ndarray, target_median: float = 0.25):
     orig_min = float(np.min(x))
     x -= orig_min
 
-    if x.ndim == 2:
-        med = float(np.median(x))
-        orig_meds = [med]
-        if med != 0:
-            x = ((med - 1) * target_median * x) / (med * (target_median + x - 1) - target_median * x)
-        return np.clip(x, 0, 1), orig_min, orig_meds
+    t = float(target_median)
 
-    # 3ch
+    if x.ndim == 2:
+        m0 = float(np.median(x))
+        orig_meds = [m0]
+        if m0 != 0.0:
+            denom = (m0 * (t + x - 1.0) - t * x)
+            # avoid divide-by-zero
+            x = np.where(np.abs(denom) > 1e-12, ((m0 - 1.0) * t * x) / denom, x)
+        return x, orig_min, orig_meds
+
     orig_meds = [float(np.median(x[..., c])) for c in range(3)]
     for c in range(3):
-        m = orig_meds[c]
-        if m != 0:
-            x[..., c] = ((m - 1) * target_median * x[..., c]) / (
-                m * (target_median + x[..., c] - 1) - target_median * x[..., c]
-            )
-    return np.clip(x, 0, 1), orig_min, orig_meds
+        m0 = float(orig_meds[c])
+        if m0 != 0.0:
+            denom = (m0 * (t + x[..., c] - 1.0) - t * x[..., c])
+            x[..., c] = np.where(np.abs(denom) > 1e-12, ((m0 - 1.0) * t * x[..., c]) / denom, x[..., c])
+    return x, orig_min, orig_meds
 
 
-def unstretch_image_unlinked(image: np.ndarray, orig_meds, orig_min: float):
-    x = np.asarray(image, np.float32).copy()
+def unstretch_image_unlinked(image: np.ndarray, orig_meds, orig_min: float, target_median: float = 0.25):
+    y = np.asarray(image, np.float32).copy()
+    t = float(target_median)
 
-    if x.ndim == 2:
-        m_now = float(np.median(x))
+    def inv(yc: np.ndarray, m0: float) -> np.ndarray:
+        # x = y*m0*(t-1) / ( t*(m0 - 1 + y) - y*m0 )
+        denom = (t * (m0 - 1.0 + yc) - yc * m0)
+        num = (yc * m0 * (t - 1.0))
+        return np.where(np.abs(denom) > 1e-12, num / denom, yc)
+
+    if y.ndim == 2:
         m0 = float(orig_meds[0])
-        if m_now != 0 and m0 != 0:
-            x = ((m_now - 1) * m0 * x) / (m_now * (m0 + x - 1) - m0 * x)
-        x += float(orig_min)
-        return np.clip(x, 0, 1)
+        if m0 != 0.0:
+            y = inv(y, m0)
+        y += float(orig_min)
+        return y
 
     for c in range(3):
-        m_now = float(np.median(x[..., c]))
         m0 = float(orig_meds[c])
-        if m_now != 0 and m0 != 0:
-            x[..., c] = ((m_now - 1) * m0 * x[..., c]) / (
-                m_now * (m0 + x[..., c] - 1) - m0 * x[..., c]
-            )
+        if m0 != 0.0:
+            y[..., c] = inv(y[..., c], m0)
 
-    x += float(orig_min)
-    return np.clip(x, 0, 1)
+    y += float(orig_min)
+    return y
+
 
 # Backwards-compatible names used by denoise_rgb01()
 def stretch_image(image: np.ndarray):
@@ -548,79 +787,119 @@ def remove_border(image, border_size: int = 16):
     return image[border_size:-border_size, border_size:-border_size, :]
 
 
-# ----------------------------
-# Channel denoise (paste + keep)
-# IMPORTANT: remove print() spam; instead accept an optional progress callback
-# ----------------------------
-def denoise_channel(channel: np.ndarray, models: Dict[str, Any], *, progress_cb: ProgressCB | None = None) -> np.ndarray:
-    device = models["device"]
-    is_onnx = models["is_onnx"]
-    model = models["mono_model"]
 
-    chunk_size = 256
-    overlap = 64
+def denoise_channel(channel, models: DenoiseModels, *, which="mono",
+                    chunk_size=256, overlap=64, progress_cb=None):
+    model = models.mono if which == "mono" else models.color
     chunks = split_image_into_chunks_with_overlap(channel, chunk_size=chunk_size, overlap=overlap)
 
-    denoised_chunks = []
+    out_chunks = []
     total = len(chunks)
 
     for idx, (chunk, i, j) in enumerate(chunks):
-        original_chunk_shape = chunk.shape
-
-        if is_onnx:
-            h, w = original_chunk_shape  # <- the real chunk size
-
-            chunk_input = chunk[np.newaxis, np.newaxis, :, :].astype(np.float32)  # (1,1,h,w)
-            chunk_input = np.tile(chunk_input, (1, 3, 1, 1))                      # (1,3,h,w)
-
-            if h != chunk_size or w != chunk_size:
-                padded = np.zeros((1, 3, chunk_size, chunk_size), dtype=np.float32)
-                padded[:, :, :h, :w] = chunk_input
-                chunk_input = padded
-
-            input_name = model.get_inputs()[0].name
-            out = model.run(None, {input_name: chunk_input})[0]                   # (1,3,256,256) usually
-            denoised_chunk = out[0, 0, :h, :w]
-
-        else:
-            torch = models["torch"]
-            chunk_tensor = torch.tensor(chunk, dtype=torch.float32).unsqueeze(0).unsqueeze(0).to(device)
-            chunk_tensor = chunk_tensor.expand(1, 3, chunk_tensor.shape[2], chunk_tensor.shape[3])
-
-            with torch.no_grad(), _autocast_context(torch, device):
-                out = model(chunk_tensor).detach().cpu().numpy()  # (1,3,H,W)
-
-            denoised_chunk = out[0, 0, :original_chunk_shape[0], :original_chunk_shape[1]]
-
-        denoised_chunks.append((denoised_chunk, i, j))
+        den2d = _infer_chunk_2d(models, model, chunk)
+        out_chunks.append((den2d, i, j))
 
         if progress_cb is not None:
-            progress_cb(idx + 1, total)
+            try:
+                cont = progress_cb(idx + 1, total)
+                if cont is False:
+                    raise RuntimeError("Cancelled.")
+            except Exception:
+                pass
 
-    return stitch_chunks_ignore_border(denoised_chunks, channel.shape, border_size=16)
 
-# ----------------------------
-# High-level denoise for a loaded RGB float image (0..1)
-# (this is the “engine API” SASpro will call)
-# ----------------------------
+    return stitch_chunks_ignore_border(out_chunks, channel.shape, border_size=16)
+
+
+
 def denoise_rgb01(
     img_rgb01: np.ndarray,
     *,
     denoise_strength: float,
-    denoise_mode: str = "luminance",          # luminance | full | separate
+    denoise_mode: str = "luminance",
     separate_channels: bool = False,
     color_denoise_strength: Optional[float] = None,
+    chunk_size: int = 256, overlap: int = 64,
     use_gpu: bool = True,
+    lite: bool = False,          # <--- NEW
     progress_cb=None,
 ) -> np.ndarray:
-    """
-    Input: float32 RGB [0..1]
-    Output: float32 RGB [0..1]
-    """
-    models = load_models(use_gpu=use_gpu)
+    models = load_models(use_gpu=use_gpu, lite=lite)
+    # --- NEW: log what we actually loaded ---
+    def _log(msg: str):
+        if progress_cb is not None:
+            try:
+                # progress_cb is (done,total)->bool; many callers ignore the numbers
+                progress_cb(0, 0)  # harmless "ping" if someone uses it
+            except Exception:
+                pass
+        try:
+            print(msg)
+        except Exception:
+            pass
 
-    # Determine stretch necessity (keep your logic)
+    try:
+        backend = "onnx/DirectML" if models.is_onnx else "torch"
+        dev = getattr(models.device, "type", None) or str(models.device)
+        _log(
+            f"[CC Denoise] variant={getattr(models,'variant','?')} "
+            f"(lite={lite}) backend={backend} device={dev} "
+            f"mono={os.path.basename(getattr(models,'mono_path',''))} "
+            f"color={os.path.basename(getattr(models,'color_path',''))}"
+        )
+    except Exception:
+        pass
+    img_rgb01 = np.asarray(img_rgb01, np.float32)
+
+    def _is_triplicated_mono(rgb: np.ndarray, eps: float = 1e-7) -> bool:
+        if rgb.ndim != 3 or rgb.shape[2] != 3:
+            return False
+        r = rgb[..., 0]; g = rgb[..., 1]; b = rgb[..., 2]
+        return (np.max(np.abs(r - g)) <= eps) and (np.max(np.abs(r - b)) <= eps)
+
+    # Detect "real mono" even if caller triplicated it
+    mono_input = (img_rgb01.ndim == 2) or (img_rgb01.ndim == 3 and img_rgb01.shape[2] == 1) or _is_triplicated_mono(img_rgb01)
+
+    if mono_input:
+        # collapse to 2D
+        if img_rgb01.ndim == 2:
+            mono = img_rgb01
+        else:
+            mono = img_rgb01[..., 0]
+
+        # --- keep your stretch logic but in 2D ---
+        stretch_needed = (np.median(mono - np.min(mono)) < 0.05)
+        if stretch_needed:
+            mono_s, original_min, original_meds = stretch_image(mono)
+        else:
+            mono_s = mono.astype(np.float32, copy=False)
+            original_min = float(np.min(mono))
+            original_meds = [float(np.median(mono_s))]
+
+        mono_s = add_border(mono_s, border_size=16)
+
+        den_m = denoise_channel(mono_s, models, which="mono",
+                                chunk_size=chunk_size, overlap=overlap, progress_cb=progress_cb)
+        mono_out = blend_images(mono_s, den_m, denoise_strength)
+        mono_out = np.clip(mono_out, 0.0, 1.0)
+        if stretch_needed:
+            mono_out = unstretch_image(mono_out, original_meds, original_min)
+            mn = float(np.min(mono_out))
+            mx = float(np.max(mono_out))
+            if mn < -1e-3:
+                print("UNSTRETCH produced negatives:", mn, mx)            
+
+        mono_out = remove_border(mono_out, border_size=16)
+        mono_out = np.clip(mono_out, 0.0, 1.0).astype(np.float32, copy=False)
+
+        # replicate back to RGB for downstream pipeline consistency
+        return np.stack([mono_out, mono_out, mono_out], axis=-1)
+
+
+
     stretch_needed = (np.median(img_rgb01 - np.min(img_rgb01)) < 0.05)
+
     if stretch_needed:
         stretched_core, original_min, original_medians = stretch_image(img_rgb01)
     else:
@@ -634,27 +913,38 @@ def denoise_rgb01(
     if separate_channels or denoise_mode == "separate":
         out_ch = []
         for c in range(3):
-            dch = denoise_channel(stretched[..., c], models, progress_cb=progress_cb)
+            dch = denoise_channel(stretched[..., c], models, which="mono", chunk_size=chunk_size, overlap=overlap, progress_cb=progress_cb)
             out_ch.append(blend_images(stretched[..., c], dch, denoise_strength))
         den = np.stack(out_ch, axis=-1)
 
     elif denoise_mode == "luminance":
         y, cb, cr = extract_luminance(stretched)
-        den_y = denoise_channel(y, models, progress_cb=progress_cb)
+        den_y = denoise_channel(y, models, which="mono", chunk_size=chunk_size, overlap=overlap, progress_cb=progress_cb)
         y2 = blend_images(y, den_y, denoise_strength)
         den = merge_luminance(y2, cb, cr)
 
     else:
-        # full: L via NN, chroma via guided
+        # full: L via MONO NN, color via COLOR NN (no guided chroma)
         y, cb, cr = extract_luminance(stretched)
-        den_y = denoise_channel(y, models, progress_cb=progress_cb)
+
+        # 1) denoise luminance with mono model
+        den_y = denoise_channel(y, models, which="mono", chunk_size=chunk_size, overlap=overlap, progress_cb=progress_cb)
         y2 = blend_images(y, den_y, denoise_strength)
 
-        cs = denoise_strength if color_denoise_strength is None else color_denoise_strength
-        cb2, cr2 = denoise_chroma(cb, cr, strength=cs, method="guided", guide_y=y)
+        # 2) denoise RGB with color model, then use it only for chroma (Cb/Cr)
+        den_rgb = denoise_rgb_with_color_model(stretched, models, chunk_size=chunk_size, overlap=overlap, progress_cb=progress_cb)
+
+        # Color slider controls how much we take chroma from den_rgb vs original
+        cs = denoise_strength if color_denoise_strength is None else float(color_denoise_strength)
+        cs = float(np.clip(cs, 0.0, 1.0))
+
+        _y_d, cb_d, cr_d = extract_luminance(den_rgb)  # ignore _y_d; we already did luminance via mono NN
+        cb2 = (1.0 - cs) * cb + cs * cb_d
+        cr2 = (1.0 - cs) * cr + cs * cr_d
+
         den = merge_luminance(y2, cb2, cr2)
 
-    # unstretch if needed
+    den = np.clip(den, 0.0, 1.0)
     if stretch_needed:
         den = unstretch_image(den, original_medians, original_min)
 

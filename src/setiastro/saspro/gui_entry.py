@@ -91,6 +91,26 @@ _EARLY_VERSION = get_app_version("setiastrosuitepro")
 
 VERSION = _EARLY_VERSION
 
+def _collect_open_paths(argv: list[str] | None) -> list[str]:
+    if not argv:
+        return []
+    out: list[str] = []
+    for a in argv:
+        if not a or a.startswith("-"):
+            continue
+        # strip surrounding quotes if any
+        s = a.strip().strip('"').strip("'")
+        try:
+            p = Path(s)
+        except Exception:
+            continue
+        if p.exists() and p.is_file():
+            out.append(str(p))
+        else:
+            print(f"[startup] ignoring arg (not a file): {p}  exists={p.exists()} is_file={p.is_file()}")
+
+    return out
+
 def _init_splash():
     """Initialize the splash screen. Safe to call multiple times."""
     global _splash, _app, _splash_initialized
@@ -812,6 +832,8 @@ def main(argv: list[str] | None = None) -> int:
     """
     global _splash, _app, _splash_initialized
     from PyQt6.QtCore import QTimer
+
+    open_paths = _collect_open_paths(argv)
     
     # Initialize splash if not already done
     if not _splash_initialized:
@@ -956,6 +978,20 @@ def main(argv: list[str] | None = None) -> int:
             win.setWindowOpacity(0.0)
 
         win.show()
+        
+        if open_paths:
+            def _open_cli_paths():
+                dm = getattr(win, "docman", None) or getattr(win, "doc_manager", None)
+                if dm is None:
+                    print("[startup open] No doc manager on main window")
+                    return
+                for p in open_paths:
+                    try:
+                        dm.open_path(p)
+                    except Exception as e:
+                        print("[startup open] failed:", p, e)
+
+            QTimer.singleShot(0, _open_cli_paths)
 
         if _allow_window_opacity_effects():
             anim_app = QPropertyAnimation(win, b"windowOpacity")

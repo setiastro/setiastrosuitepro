@@ -9023,7 +9023,7 @@ class StackingSuiteDialog(QDialog):
 
         self._registration_busy = False
 
-        self.integrate_registered_btn = QPushButton(self.tr("Integrate Previously Registered Images"))
+        self.integrate_registered_btn = QPushButton(self.tr("Skip Registration and Integrate"))
         self.integrate_registered_btn.clicked.connect(self.integrate_registered_images)
         self.integrate_registered_btn.setStyleSheet("""
             QPushButton {
