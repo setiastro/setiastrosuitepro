@@ -5568,6 +5568,106 @@ class StackingSuiteDialog(QDialog):
 
         self.settings.sync()
 
+    def _ensure_builtin_stacking_profiles(self) -> None:
+        """
+        Ensure built-in stacking profiles exist (one-time install).
+        Never overwrites an existing profile with the same name.
+        """
+        profile_name = "Frank's Settings (Recommended)"
+
+        # If it already exists, do nothing
+        if profile_name in self._stacking_profile_names():
+            return
+
+        base_prefix    = "stacking/"
+        profile_prefix = f"stacking/profiles/{profile_name}/"
+
+        # ---- Frank's settings snapshot (explicit keys) ----
+        # IMPORTANT: keys under profile are stored WITHOUT the "stacking/" prefix,
+        # because _load_profile_into_settings() rebuilds stacking/<subkey>.
+        kv = {
+            # General
+            "internal_dtype": "float32",
+            "chunk_height": 256,
+            "chunk_width": 256,
+            "temp_group_step": 5.0,
+
+            # Distortion / Transform
+            "align/model": "homography",
+            "align/max_cp": 200,
+            "align/downsample": 2,
+            "align/h_reproj": 3.0,
+
+            # Alignment
+            "refinement_passes": 1,
+            "shift_tolerance": 0.2,
+            "accept_shift_px": 2.0,
+            "align/det_sigma": 24.0,
+            "align/auto_threshold": True,
+            "align/minarea": 20,
+            "align/limit_stars": 150,
+            "align/timeout_per_job_sec": 300,
+
+            # Performance
+            "use_hardware_accel": True,
+            "mfdeconv/engine": "normal",
+
+            # Gradient
+            "grad_poly2/enabled": False,
+
+            # Drizzle
+            "drizzle_kernel": "gaussian",
+            "drop_shrink": 0.9,
+            "drizzle_gauss_sigma": 0.325,
+
+            # MFDeconv
+            "mfdeconv/seed_mode": "median",
+            "mfdeconv/star_mask/thresh_sigma": 5.0,
+            "mfdeconv/star_mask/grow_px": 16,
+            "mfdeconv/star_mask/soft_sigma": 3.0,
+            "mfdeconv/star_mask/max_radius_px": 50,
+            "mfdeconv/star_mask/max_objs": 10000,
+            "mfdeconv/star_mask/keep_floor": 0.10,
+            "mfdeconv/star_mask/ellipse_scale": 1.12,
+            "mfdeconv/varmap/sample_stride": 8,
+            "mfdeconv/varmap/smooth_sigma": 3.0,
+            "mfdeconv/varmap/floor": 1e-8,  # "VarMap floor: -8" => 10^-8
+
+            # Rejection
+            "rejection_algorithm": "Weighted Windsorized Sigma Clipping",
+            "sigma_high": 4.0,
+            "sigma_low": 4.0,
+
+            # Cosmetic (Advanced)
+            "cosmetic/custom_enable": True,
+            "cosmetic/hot_sigma": 3.5,
+            "cosmetic/cold_sigma": 3.5,
+            "cosmetic/star_mean_ratio": 0.22,
+            "cosmetic/star_max_ratio": 0.55,
+            "cosmetic/sat_quantile": 0.9995,
+
+            # Comet
+            "comet_hclip_k": 0.10,
+            "comet_hclip_p": 20.0,
+
+            # Comet star removal
+            "comet_starrem/enabled": True,
+            "comet_starrem/tool": "StarNet",
+            "comet_starrem/core_r": 100.0,
+            "comet_starrem/core_soft": 25.0,
+        }
+
+        # Write profile keys
+        for subkey, val in kv.items():
+            self.settings.setValue(profile_prefix + subkey, val)
+
+        # Register profile name
+        names = self._stacking_profile_names()
+        names.append(profile_name)
+        self._set_stacking_profile_names(names)
+
+        self.settings.sync()
+
 
     def open_stacking_settings(self):
         """Opens a 2-column Stacking Settings dialog."""
@@ -5576,6 +5676,7 @@ class StackingSuiteDialog(QDialog):
             QLabel, QLineEdit, QPushButton, QComboBox, QSpinBox, QDoubleSpinBox,
             QCheckBox, QDialogButtonBox, QScrollArea, QWidget, QInputDialog
         )
+        self._ensure_builtin_stacking_profiles()
         dialog = QDialog(self)
         dialog.setWindowTitle(self.tr("Stacking Settings"))
 
