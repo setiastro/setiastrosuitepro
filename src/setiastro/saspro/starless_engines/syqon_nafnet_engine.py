@@ -109,7 +109,13 @@ def _infer_nafnet_cfg_from_sd(sd: dict) -> Tuple[int, int]:
     return base_ch, levels
 
 
-def load_nafnet_model(ckpt_path: str, *, use_gpu: bool, prefer_dml: bool):
+def load_nafnet_model(
+    ckpt_path: str,
+    *,
+    use_gpu: bool,
+    prefer_dml: bool,
+    model_kind: str = "nadir",
+):
     from setiastro.saspro.runtime_torch import import_torch
 
     torch = import_torch(
@@ -119,12 +125,33 @@ def load_nafnet_model(ckpt_path: str, *, use_gpu: bool, prefer_dml: bool):
         status_cb=lambda *_: None,
     )
 
+    # unified factory (supports variant="nadir" | "axiomv2")
     from setiastro.saspro.syqon_model.model import create_model
 
     sd, meta = _load_state_dict(torch, ckpt_path)
     base_ch, depth = _infer_nafnet_cfg_from_sd(sd)
 
-    model = create_model(base_ch=base_ch, depth=depth)
+    variant = (model_kind or "nadir").lower().strip()
+    if variant not in ("nadir", "axiomv2"):
+        variant = "nadir"
+
+    model = create_model(base_ch=base_ch, depth=depth, variant=variant)
+
+    # OPTIONAL: fail fast if it's clearly the wrong architecture/width
+    # (still keep strict=False for robustness if SyQon adds extra keys)
+    try:
+        iw = sd.get("intro.weight", None)
+        if iw is not None and hasattr(iw, "shape"):
+            sd_width = int(iw.shape[0])  # out_channels of intro conv
+            if int(base_ch) != sd_width:
+                raise RuntimeError(
+                    f"SyQon checkpoint width mismatch: state_dict intro.weight[0]={sd_width} "
+                    f"but inferred base_ch={base_ch} (variant={variant})."
+                )
+    except Exception:
+        # if anything about the check fails, just proceed with load_state_dict
+        pass
+
     model.load_state_dict(sd, strict=False)
     model.eval()
 
@@ -132,14 +159,16 @@ def load_nafnet_model(ckpt_path: str, *, use_gpu: bool, prefer_dml: bool):
     model.to(device)
 
     info = {
+        "model_kind": variant,
         "base_ch": base_ch,
         "depth": depth,
-        "meta": meta,
+        #"meta": meta,
         "device": str(device),
-        "torch_version": torch.__version__,
-        "torch_file": torch.__file__,
+        "torch_version": getattr(torch, "__version__", None),
+        "torch_file": getattr(torch, "__file__", None),
     }
     return model, device, info, torch
+
 
 
 def _to_torch_chw(img_chw, device, torch):
@@ -230,6 +259,7 @@ def nafnet_starless_rgb01(
     residual_mode: bool = True,  # True = model predicts stars; starless = x - pred
     use_amp: bool = False,
     amp_dtype: str = "fp16",
+    model_kind: str = "nadir",
     use_gpu: bool = True, prefer_dml: bool = True,
     progress_cb: Optional[Callable[[int, int, str], None]] = None,
 ):
@@ -256,6 +286,7 @@ def nafnet_starless_rgb01(
         ckpt_path,
         use_gpu=use_gpu,
         prefer_dml=prefer_dml,
+        model_kind=model_kind,
     )
 
     info = dict(info or {})
@@ -431,10 +462,11 @@ def syqon_starless_from_array(
     return starless, stars, info
 
 class syqonnafnetSession:
-    def __init__(self, ckpt_path: str, *, use_gpu: bool, prefer_dml: bool):
+    def __init__(self, ckpt_path: str, *, use_gpu: bool, prefer_dml: bool, model_kind: str = "nadir"):
         self.ckpt_path = ckpt_path
+        self.model_kind = (model_kind or "nadir").lower().strip()
         self.model, self.device, self.info, self.torch = load_nafnet_model(
-            ckpt_path, use_gpu=use_gpu, prefer_dml=prefer_dml
+            ckpt_path, use_gpu=use_gpu, prefer_dml=prefer_dml, model_kind=self.model_kind
         )
 
     def run_starless_rgb01(
