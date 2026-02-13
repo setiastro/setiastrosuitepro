@@ -335,7 +335,7 @@ def _pad2d_to_multiple(x: np.ndarray, mult: int = 16, mode: str = "reflect") -> 
 _MODELS_CACHE: dict[tuple[str, str], SharpenModels] = {}  # (backend_tag, resolved)
 
 def load_sharpen_models(use_gpu: bool, status_cb=print) -> SharpenModels:
-    backend_tag = "cc_sharpen_ai3_5s"
+    backend_tag = "cc_sharpen_ai4"
     is_windows = (os.name == "nt")
     _dbg(f"ENTER load_sharpen_models(use_gpu={use_gpu})", status_cb=status_cb)
 

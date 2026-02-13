@@ -21,6 +21,7 @@ from setiastro.saspro.cosmicclarity_engines.darkstar_engine import (
 
 from setiastro.saspro.legacy.image_manager import (load_image, save_image)
 from setiastro.saspro.imageops.stretch import stretch_color_image, stretch_mono_image
+from setiastro.saspro.starless_engines.syqon_nafnet_engine import syqonnafnetSession
 
 def _get_setting_any(settings, keys, default=None):
     """
@@ -1148,8 +1149,16 @@ def _starless_frame_for_comet(img: np.ndarray,
         m3 = np.repeat(m[..., None], 3, axis=2)
         protected = starless * (1.0 - m3) + base_for_mask * m3
         return np.clip(protected, 0.0, 1.0)
+    elif tool == "syqonnafnet":
+        from setiastro.saspro.starless_engines.syqon_nafnet_engine import syqon_starless_from_array
 
+        starless, _stars, _info = syqon_starless_from_array(
+            src, settings, residual_mode=True
+        )
 
+        m3 = np.repeat(core_mask.astype(np.float32)[..., None], 3, axis=2)
+        protected = starless * (1.0 - m3) + src * m3
+        return np.clip(protected, 0.0, 1.0)
     else:
         # StarNet path: do mask-blend inside the function (in its stretched domain)
         protected, _ = starnet_starless_pair_from_array(

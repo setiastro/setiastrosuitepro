@@ -425,7 +425,7 @@ def onnx_benchmark_stellar(
     else:
         import onnxruntime as ort
         from setiastro.saspro.model_manager import require_model
-        onnx_path = require_model("deep_sharp_stellar_cnn_AI3_5s.onnx")
+        onnx_path = require_model("deep_sharp_stellar_AI4.onnx")
 
         providers_avail = ort.get_available_providers()
 

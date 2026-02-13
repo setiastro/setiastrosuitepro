@@ -30,6 +30,7 @@ from setiastro.saspro.memory_utils import (
     should_use_memmap, cleanup_memmap, get_thumbnail_cache,
     LRUDict,  # LRU-bounded dict for caches
 )
+from setiastro.saspro.cfa_utils import effective_bayer_from_header, roworder_is_bottom_up
 
 from PyQt6.QtCore import Qt, QTimer, QSettings, pyqtSignal, QObject, pyqtSlot, QThread, QEvent, QPoint, QSize, QEventLoop, QCoreApplication, QRectF, QPointF, QMetaObject
 from PyQt6.QtGui import QIcon, QImage, QPixmap, QAction, QIntValidator, QDoubleValidator, QFontMetrics, QTextCursor, QPalette, QPainter, QPen, QTransform, QColor, QBrush, QCursor
@@ -4581,6 +4582,48 @@ def _maybe_normalize_16bit_float(a: np.ndarray, *, name: str = "") -> np.ndarray
 
     return a
 
+def _resolve_syqon_ckpt_for_comet(settings) -> str:
+    """
+    Resolve SyQon NAFNet checkpoint path with fallbacks:
+      1) stacking/comet_starrem/syqon_ckpt   (explicit override)
+      2) syqon/model_installed_path          (what Remove Stars dialog writes)
+      3) default models_root()/syqon_starless/nadir
+    Returns a filesystem path string (may not exist).
+    """
+    import os
+    from pathlib import Path
+
+    def _get_str(key: str) -> str:
+        try:
+            v = settings.value(key, "", type=str)
+        except Exception:
+            v = settings.value(key, "")
+        return (v or "").strip()
+
+    ckpt = _get_str("stacking/comet_starrem/syqon_ckpt")
+    if ckpt:
+        return ckpt
+
+    ckpt = _get_str("syqon/model_installed_path")
+    if ckpt:
+        return ckpt
+
+    # Default location used by Remove Stars
+    try:
+        from setiastro.saspro.remove_stars import _syqon_data_dir, _syqon_model_path
+        ckpt = str(_syqon_model_path(_syqon_data_dir()))
+        return ckpt
+    except Exception:
+        # Last-resort fallback without importing remove_stars
+        try:
+            from setiastro.saspro.resources import get_resources
+            r = get_resources()
+            models_dir = Path(getattr(r, "MODELS_DIR"))
+            return str(models_dir / "syqon_starless" / "nadir")
+        except Exception:
+            return str(Path.home() / ".saspro" / "models" / "syqon_starless" / "nadir")
+
+
 class StackingSuiteDialog(QDialog):
     requestRelaunch = pyqtSignal(str, str)  # old_dir, new_dir
     status_signal = pyqtSignal(str)
@@ -5334,23 +5377,43 @@ class StackingSuiteDialog(QDialog):
 
         # --- FITS (already mosaic) ---
         if ext.endswith(('.fits','.fit','.fz')):
-            bp = (str(header.get('BAYERPAT') or header.get('BAYERPATN') or header.get('CFA_PATTERN') or "")).upper()
-            if bp in {"RGGB","BGGR","GRBG","GBRG"}:
+            if image is None:
+                return image
+
+            img = np.asarray(image)
+
+            # Only demosaic mosaics
+            if not (img.ndim == 2 or (img.ndim == 3 and img.shape[-1] == 1)):
+                return image
+
+            if img.ndim == 3 and img.shape[-1] == 1:
+                img = np.squeeze(img, axis=-1)
+
+            H = int(img.shape[0]) if img.ndim >= 2 else 0
+            eff_bp, xoff, yoff, roworder = effective_bayer_from_header(header, height=H)
+
+            if eff_bp in {"RGGB","BGGR","GRBG","GBRG"}:
+                # If bottom-up, flip pixels so the image is upright before demosaic
+                if roworder_is_bottom_up(roworder):
+                    img = np.ascontiguousarray(np.flipud(img))
+
+                # Stamp what we actually used (leave BAYERPAT as-is)
+                try:
+                    header["BAYER_EFF"] = eff_bp
+                    header["XBAYROFF"]  = int(xoff)
+                    header["YBAYROFF"]  = int(yoff)
+                    header["ROWORDER"]  = str(roworder)
+                    header["DEBAYERED"] = True
+                except Exception:
+                    pass
+
                 try:
                     from setiastro.saspro.legacy.numba_utils import debayer_raw_fast
-                    return debayer_raw_fast(image, bayer_pattern=bp, cfa_drizzle=cfa, method="edge")
+                    return debayer_raw_fast(img, bayer_pattern=eff_bp, cfa_drizzle=cfa, method="edge")
                 except Exception:
-                    return debayer_fits_fast(image, bp, cfa_drizzle=cfa)
+                    return debayer_fits_fast(img, eff_bp, cfa_drizzle=cfa)
 
-            # If FITS came from Fuji RAW (RAF) and no BAYERPAT, it was likely X-Trans;
-            # without the RAW we cannot demosaic now, so keep mosaic but mark it.
-            if _probably_fuji_xtrans(file_path, header):
-                try: header['XTRANS'] = True
-                except Exception as e:
-                    import logging
-                    logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
-                print("[INFO] FITS likely from X-Trans; cannot demosaic without RAW. Keeping mosaic.")
-                return image
+            return image
 
         return image
 
@@ -5568,6 +5631,106 @@ class StackingSuiteDialog(QDialog):
 
         self.settings.sync()
 
+    def _ensure_builtin_stacking_profiles(self) -> None:
+        """
+        Ensure built-in stacking profiles exist (one-time install).
+        Never overwrites an existing profile with the same name.
+        """
+        profile_name = "Frank's Settings (Recommended)"
+
+        # If it already exists, do nothing
+        if profile_name in self._stacking_profile_names():
+            return
+
+        base_prefix    = "stacking/"
+        profile_prefix = f"stacking/profiles/{profile_name}/"
+
+        # ---- Frank's settings snapshot (explicit keys) ----
+        # IMPORTANT: keys under profile are stored WITHOUT the "stacking/" prefix,
+        # because _load_profile_into_settings() rebuilds stacking/<subkey>.
+        kv = {
+            # General
+            "internal_dtype": "float32",
+            "chunk_height": 256,
+            "chunk_width": 256,
+            "temp_group_step": 5.0,
+
+            # Distortion / Transform
+            "align/model": "homography",
+            "align/max_cp": 200,
+            "align/downsample": 2,
+            "align/h_reproj": 3.0,
+
+            # Alignment
+            "refinement_passes": 1,
+            "shift_tolerance": 0.2,
+            "accept_shift_px": 2.0,
+            "align/det_sigma": 24.0,
+            "align/auto_threshold": True,
+            "align/minarea": 20,
+            "align/limit_stars": 150,
+            "align/timeout_per_job_sec": 300,
+
+            # Performance
+            "use_hardware_accel": True,
+            "mfdeconv/engine": "normal",
+
+            # Gradient
+            "grad_poly2/enabled": False,
+
+            # Drizzle
+            "drizzle_kernel": "gaussian",
+            "drop_shrink": 0.9,
+            "drizzle_gauss_sigma": 0.325,
+
+            # MFDeconv
+            "mfdeconv/seed_mode": "median",
+            "mfdeconv/star_mask/thresh_sigma": 5.0,
+            "mfdeconv/star_mask/grow_px": 16,
+            "mfdeconv/star_mask/soft_sigma": 3.0,
+            "mfdeconv/star_mask/max_radius_px": 50,
+            "mfdeconv/star_mask/max_objs": 10000,
+            "mfdeconv/star_mask/keep_floor": 0.10,
+            "mfdeconv/star_mask/ellipse_scale": 1.12,
+            "mfdeconv/varmap/sample_stride": 8,
+            "mfdeconv/varmap/smooth_sigma": 3.0,
+            "mfdeconv/varmap/floor": 1e-8,  # "VarMap floor: -8" => 10^-8
+
+            # Rejection
+            "rejection_algorithm": "Weighted Windsorized Sigma Clipping",
+            "sigma_high": 4.0,
+            "sigma_low": 4.0,
+
+            # Cosmetic (Advanced)
+            "cosmetic/custom_enable": True,
+            "cosmetic/hot_sigma": 3.5,
+            "cosmetic/cold_sigma": 3.5,
+            "cosmetic/star_mean_ratio": 0.22,
+            "cosmetic/star_max_ratio": 0.55,
+            "cosmetic/sat_quantile": 0.9995,
+
+            # Comet
+            "comet_hclip_k": 0.10,
+            "comet_hclip_p": 20.0,
+
+            # Comet star removal
+            "comet_starrem/enabled": True,
+            "comet_starrem/tool": "StarNet",
+            "comet_starrem/core_r": 100.0,
+            "comet_starrem/core_soft": 25.0,
+        }
+
+        # Write profile keys
+        for subkey, val in kv.items():
+            self.settings.setValue(profile_prefix + subkey, val)
+
+        # Register profile name
+        names = self._stacking_profile_names()
+        names.append(profile_name)
+        self._set_stacking_profile_names(names)
+
+        self.settings.sync()
+
 
     def open_stacking_settings(self):
         """Opens a 2-column Stacking Settings dialog."""
@@ -5576,6 +5739,7 @@ class StackingSuiteDialog(QDialog):
             QLabel, QLineEdit, QPushButton, QComboBox, QSpinBox, QDoubleSpinBox,
             QCheckBox, QDialogButtonBox, QScrollArea, QWidget, QInputDialog
         )
+        self._ensure_builtin_stacking_profiles()
         dialog = QDialog(self)
         dialog.setWindowTitle(self.tr("Stacking Settings"))
 
@@ -6471,12 +6635,38 @@ class StackingSuiteDialog(QDialog):
         self.csr_enable = QCheckBox(self.tr("Remove stars on comet-aligned frames"))
         self.csr_enable.setChecked(self.settings.value("stacking/comet_starrem/enabled", False, type=bool))
         fl_csr.addRow(self.csr_enable)
-        self.csr_enable.toggled.connect(lambda v: self.settings.setValue("stacking/comet_starrem/enabled", bool(v)))
 
         self.csr_tool = QComboBox()
-        self.csr_tool.addItems(["StarNet", "CosmicClarityDarkStar"])
-        curr_tool = self.settings.value("stacking/comet_starrem/tool", "StarNet", type=str)
-        self.csr_tool.setCurrentText(curr_tool if curr_tool in ("StarNet","CosmicClarityDarkStar") else "StarNet")
+
+        # Store stable tokens in userData; show friendly labels
+        CSR_TOOLS = [
+            ("starnet", "StarNet"),
+            ("darkstar", "CosmicClarityDarkStar"),
+            ("syqonnafnet", "SyQon"),
+        ]
+        for key, label in CSR_TOOLS:
+            self.csr_tool.addItem(label, key)
+
+        # restore saved value (token-based)
+        saved_key = (self.settings.value("stacking/comet_starrem/tool", "starnet", type=str) or "starnet").lower()
+
+        # accept older configs that stored display text
+        raw = (self.settings.value("stacking/comet_starrem/tool", "starnet", type=str) or "starnet")
+        norm = raw.strip().lower().replace(" ", "")
+
+        legacy_map = {
+            "starnet": "starnet",
+            "cosmicclaritydarkstar": "darkstar",
+            "darkstar": "darkstar",
+            "syqonnafnet": "syqonnafnet",
+        }
+        norm = legacy_map.get(norm, norm)
+
+        idx = self.csr_tool.findData(norm)
+        if idx < 0:
+            idx = self.csr_tool.findData("starnet")
+        self.csr_tool.setCurrentIndex(idx)
+
         fl_csr.addRow(self.tr("Tool:"), self.csr_tool)
 
         self.csr_core_r = QDoubleSpinBox(); self.csr_core_r.setRange(2.0, 200.0); self.csr_core_r.setDecimals(1)
@@ -6490,10 +6680,12 @@ class StackingSuiteDialog(QDialog):
         def _toggle_csr(on: bool):
             for w in (self.csr_tool, self.csr_core_r, self.csr_core_soft):
                 w.setEnabled(on)
+
         _toggle_csr(self.csr_enable.isChecked())
         self.csr_enable.toggled.connect(_toggle_csr)
 
         right_col.addWidget(gb_csr)
+
 
         right_col.addStretch(1)
 
@@ -6621,8 +6813,13 @@ class StackingSuiteDialog(QDialog):
         self.settings.setValue("stacking/use_hardware_accel", self.hw_accel_cb.isChecked())
         self.use_gpu_integration = bool(self.hw_accel_cb.isChecked())
 
-        self.settings.setValue("stacking/comet_starrem/enabled", self.csr_enable.isChecked())
-        self.settings.setValue("stacking/comet_starrem/tool", self.csr_tool.currentText())
+        self.settings.setValue("stacking/comet_starrem/enabled", bool(self.csr_enable.isChecked()))
+
+        tool_key = self.csr_tool.currentData()
+        if not tool_key:
+            # ultra-safe fallback if userData missing
+            tool_key = (self.csr_tool.currentText() or "StarNet").strip().lower().replace(" ", "")
+        self.settings.setValue("stacking/comet_starrem/tool", tool_key)
         self.settings.setValue("stacking/comet_starrem/core_r", float(self.csr_core_r.value()))
         self.settings.setValue("stacking/comet_starrem/core_soft", float(self.csr_core_soft.value()))
 
@@ -15524,11 +15721,17 @@ class StackingSuiteDialog(QDialog):
 
                             img = _to_writable_f32(img)
 
-                            bayer = self._hdr_get(hdr, 'BAYERPAT')
+                            bayerish = (
+                                self._hdr_get(hdr, 'BAYERPAT')
+                                or self._hdr_get(hdr, 'CFA_PATTERN')
+                                or self._hdr_get(hdr, 'BAYERPATN')
+                                or self._hdr_get(hdr, 'BAYER_PATTERN')
+                            )
                             splitdb = bool(self._hdr_get(hdr, 'SPLITDB', False))
-                            if bayer and not splitdb and (img.ndim == 2 or (img.ndim == 3 and img.shape[-1] == 1)):
+
+                            if bayerish and not splitdb and (img.ndim == 2 or (img.ndim == 3 and img.shape[-1] == 1)):
                                 self.update_status(self.tr(f"📦 Debayering {os.path.basename(fp)}…"))
-                                img = self.debayer_image(img, fp, hdr)  # HxWx3
+                                img = self.debayer_image(img, fp, hdr)
                             else:
                                 if img.ndim == 3 and img.shape[-1] == 1:
                                     img = np.squeeze(img, axis=-1)
@@ -17986,6 +18189,8 @@ class StackingSuiteDialog(QDialog):
         *,
         algo_override: str | None = None
     ):
+        from setiastro.saspro.starless_engines.syqon_nafnet_engine import syqon_starless_from_array
+        from setiastro.saspro.starless_engines.syqon_nafnet_engine import nafnet_starless_rgb01
         collect_per_file = bool(self._get_drizzle_enabled())
         per_file_rejections = {f: [] for f in file_list} if collect_per_file else None
         debug_starrem = bool(self.settings.value("stacking/comet_starrem/debug_dump", False, type=bool))
@@ -18084,6 +18289,24 @@ class StackingSuiteDialog(QDialog):
             starless_temp_paths = []
             starless_map = {}  # ← add this
             tmp_root = tempfile.mkdtemp(prefix="sas_comet_starless_")
+            if csr_tool == "syqonnafnet":
+                ckpt = _resolve_syqon_ckpt_for_comet(self.settings)
+                if (not ckpt) or (not os.path.exists(ckpt)):
+                    raise RuntimeError(f"SyQon checkpoint path is not configured or missing: {ckpt!r}")
+
+                # Optional: persist the resolved good path so future runs don’t have to fall back
+                try:
+                    self.settings.setValue("stacking/comet_starrem/syqon_ckpt", ckpt)
+                except Exception:
+                    pass
+
+                syq_tile   = int(self.settings.value("stacking/comet_starrem/syqon_tile", 512, type=int))
+                syq_ov     = int(self.settings.value("stacking/comet_starrem/syqon_overlap", 64, type=int))
+                syq_amp    = bool(self.settings.value("stacking/comet_starrem/syqon_amp", False, type=bool))
+                syq_dtype  = str(self.settings.value("stacking/comet_starrem/syqon_amp_dtype", "fp16", type=str))
+                prefer_dml = bool(self.settings.value("stacking/comet_starrem/syqon_prefer_dml", True, type=bool))
+                use_gpu    = bool(self.settings.value("stacking/comet_starrem/syqon_use_gpu", True, type=bool))
+
             try:
                 for i, p in enumerate(file_list, 1):
                     try:
@@ -18102,7 +18325,30 @@ class StackingSuiteDialog(QDialog):
                         ).astype(np.float32, copy=False)
 
                         # Run chosen remover in comet space
-                        if csr_tool == "CosmicClarityDarkStar":
+                        print(f"CSR_Tool chosen: {csr_tool}")
+                        if csr_tool == "syqonnafnet":
+                            def _syq_prog(done, total, stage):
+                                if done == 1 or done == total or (done % 10 == 0):
+                                    log(f"    · {stage} {done}/{total}")
+
+                            starless, _stars, info = nafnet_starless_rgb01(
+                                warped,
+                                ckpt,                        # <-- explicit headless ckpt path
+                                tile=syq_tile,
+                                overlap=syq_ov,
+                                residual_mode=True,
+                                use_amp=syq_amp,
+                                amp_dtype=syq_dtype,
+                                use_gpu=use_gpu,
+                                prefer_dml=prefer_dml,
+                                progress_cb=_syq_prog,
+                            )
+
+                            m3 = _expand_mask_for(warped, core_mask)
+                            protected = np.clip(starless * (1.0 - m3) + warped * m3, 0.0, 1.0).astype(np.float32)
+
+
+                        elif csr_tool == "CosmicClarityDarkStar":
                             log("  ◦ DarkStar comet star removal…")
                             starless = CS.darkstar_starless_from_array(warped, self.settings)
                             orig_for_blend = warped
@@ -18147,10 +18393,21 @@ class StackingSuiteDialog(QDialog):
                         log(f"    ✓ [{i}/{len(file_list)}] starless saved")
                     except Exception as e:
                         log(f"  ⚠️ star removal failed on {os.path.basename(p)}: {e}")
-                        # Fallback: use the warped original (still comet-aligned)
+
+                        fallback = warped
+                        if fallback is None:
+                            try:
+                                fallback = src
+                            except Exception:
+                                fallback = None
+
+                        if fallback is None:
+                            # absolute last resort: black frame
+                            fallback = np.zeros((H, W, 3), np.float32)
+
                         outp = os.path.join(tmp_root, f"starless_{i:04d}.fit")
                         save_image(
-                            img_array=warped.astype(np.float32, copy=False),
+                            img_array=fallback.astype(np.float32, copy=False),
                             filename=outp,
                             original_format="fit",
                             bit_depth="32-bit floating point",
@@ -18158,6 +18415,7 @@ class StackingSuiteDialog(QDialog):
                             is_mono=False
                         )
                         starless_temp_paths.append(outp)
+                        continue
 
                 # Swap readers to the comet-aligned starless temp files
                 for s in sources:
@@ -18165,7 +18423,7 @@ class StackingSuiteDialog(QDialog):
                     except Exception as e:
                         import logging
                         logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
-                sources = [_MMFits(p) for p in starless_temp_paths]
+                sources = [_MMImage(p) for p in starless_temp_paths]
                 starless_readers_paths = list(starless_temp_paths)  
 
                 # These temp frames are already comet-aligned ⇒ no further warp in tile loop

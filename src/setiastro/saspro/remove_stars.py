@@ -675,11 +675,8 @@ class _SyQonProcessThread(QThread):
 
         except Exception as e:
             # emit whatever info we collected + error
-            try:
-                info["error_type"] = type(e).__name__
-                info["error"] = str(e)
-            except Exception:
-                pass
+            import traceback
+            info["traceback"] = traceback.format_exc()
             self.finished.emit(None, None, info, str(e))
 
 class SyQonStarlessDialog(QDialog):
@@ -742,11 +739,11 @@ class SyQonStarlessDialog(QDialog):
 
         self.spin_tile = QSpinBox(self)
         self.spin_tile.setRange(128, 2048)
-        self.spin_tile.setSingleStep(512)
+        #self.spin_tile.setSingleStep(512)
 
         self.spin_overlap = QSpinBox(self)
         self.spin_overlap.setRange(16, 512)
-        self.spin_overlap.setSingleStep(128)
+        #self.spin_overlap.setSingleStep(128)
 
         self.spin_shadow = QDoubleSpinBox(self)
         self.spin_shadow.setRange(0.5, 5.0)

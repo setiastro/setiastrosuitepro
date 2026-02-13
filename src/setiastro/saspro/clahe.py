@@ -50,6 +50,7 @@ def apply_clahe_to_doc(doc, preset: dict | None):
     Backward compatible:
       - old presets: {"clip_limit": 2.0, "tile": 8}  # tile count across min dimension
       - new presets: {"clip_limit": 2.0, "tile_px": 128}  # tile size in pixels
+      - new: {"blend": 1.0}  # 0..1
     """
     if doc is None or getattr(doc, "image", None) is None:
         raise RuntimeError("Document has no image.")
@@ -59,6 +60,13 @@ def apply_clahe_to_doc(doc, preset: dict | None):
     # --- preset decode (supports old + new) ---
     p = preset or {}
     clip = float(p.get("clip_limit", 2.0))
+
+    # NEW: blend amount (0..1)
+    blend = float(p.get("blend", 1.0))
+    # allow percent-style presets too (e.g. 75)
+    if blend > 1.0:
+        blend = blend / 100.0
+    blend = float(np.clip(blend, 0.0, 1.0))
 
     # Resolve tile_grid_size for OpenCV
     if "tile_px" in p:
@@ -70,7 +78,6 @@ def apply_clahe_to_doc(doc, preset: dict | None):
         n = max(2, min(n, 128))
         tile_grid = (n, n)
     else:
-        # legacy: treat "tile" as OpenCV tileGridSize count (tiles across)
         tile = int(p.get("tile", 8))
         tile = max(2, min(tile, 128))
         tile_grid = (tile, tile)
@@ -78,36 +85,45 @@ def apply_clahe_to_doc(doc, preset: dict | None):
     out = apply_clahe(img, clip_limit=clip, tile_grid_size=tile_grid)
     out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
 
+    # Normalize base into [0..1] for blending/masking
+    base = np.asarray(doc.image, dtype=np.float32)
+    if base.dtype.kind in "ui":
+        maxv = float(np.iinfo(base.dtype).max)
+        base = base / max(1.0, maxv)
+    else:
+        base = np.clip(base, 0.0, 1.0)
+
+    # NEW: global blend (before mask)
+    if out.ndim == 3:
+        if base.ndim == 2:
+            base = base[:, :, None].repeat(out.shape[2], axis=2)
+        elif base.ndim == 3 and base.shape[2] == 1:
+            base = base.repeat(out.shape[2], axis=2)
+        out = np.clip(base * (1.0 - blend) + out * blend, 0.0, 1.0)
+    else:
+        if base.ndim == 3 and base.shape[2] == 1:
+            base = base.squeeze(axis=2)
+        out = np.clip(base * (1.0 - blend) + out * blend, 0.0, 1.0)
+
     # Blend with active mask if present
     H, W = out.shape[:2]
     m = _get_active_mask_resized(doc, H, W)
     if m is not None:
-        base = np.asarray(doc.image, dtype=np.float32)
-        if base.dtype.kind in "ui":
-            maxv = float(np.iinfo(base.dtype).max)
-            base = base / max(1.0, maxv)
-        else:
-            base = np.clip(base, 0.0, 1.0)
-
         if out.ndim == 3:
-            if base.ndim == 2:
-                base = base[:, :, None].repeat(out.shape[2], axis=2)
-            elif base.ndim == 3 and base.shape[2] == 1:
-                base = base.repeat(out.shape[2], axis=2)
             M = np.repeat(m[:, :, None], out.shape[2], axis=2).astype(np.float32)
             out = np.clip(base * (1.0 - M) + out * M, 0.0, 1.0)
         else:
-            if base.ndim == 3 and base.shape[2] == 1:
-                base = base.squeeze(axis=2)
             out = np.clip(base * (1.0 - m) + out * m, 0.0, 1.0)
 
     # Commit
+    out = out.astype(np.float32, copy=False)
     if hasattr(doc, "set_image"):
         doc.set_image(out, step_name="CLAHE")
     elif hasattr(doc, "apply_numpy"):
         doc.apply_numpy(out, step_name="CLAHE")
     else:
         doc.image = out
+
 
 # ----------------------- Dialog -----------------------
 class CLAHEDialogPro(QDialog):
@@ -165,7 +181,17 @@ class CLAHEDialogPro(QDialog):
         grid.addWidget(QLabel(self.tr("Clip Limit:")), 0, 0); grid.addWidget(self.s_clip, 0, 1); grid.addWidget(self.lbl_clip, 0, 2)
 
         v.addWidget(grp)
+        # NEW: blend slider (0..100%)
+        self.s_blend = QSlider(Qt.Orientation.Horizontal)
+        self.s_blend.setRange(0, 100)
+        self.s_blend.setValue(100)
+        self.lbl_blend = QLabel("100%")
+        self.s_blend.valueChanged.connect(lambda v: self.lbl_blend.setText(f"{v}%"))
+        self.s_blend.valueChanged.connect(self._debounce_preview)
 
+        grid.addWidget(QLabel(self.tr("Blend Amount:")), 2, 0)
+        grid.addWidget(self.s_blend, 2, 1)
+        grid.addWidget(self.lbl_blend, 2, 2)
         # ---- Preview with zoom/pan ----
         self.scene = QGraphicsScene(self)
         self.view  = ZoomableGraphicsView(self.scene)
@@ -221,6 +247,7 @@ class CLAHEDialogPro(QDialog):
     def _update_preview(self):
         clip = self.s_clip.value() / 10.0
         tile_px = int(self.s_tile.value())
+        blend = self.s_blend.value() / 100.0
 
         try:
             tile_grid = self._tile_grid_from_px(tile_px, self._disp_base.shape[:2])
@@ -232,6 +259,10 @@ class CLAHEDialogPro(QDialog):
             )
 
             # Respect active mask (preview works on _disp_base size)
+            base = self._disp_base.astype(np.float32, copy=False)
+            out = np.clip(base * (1.0 - blend) + out * blend, 0.0, 1.0)
+
+            # Respect active mask (preview works on _disp_base size)
             H, W = out.shape[:2]
             m = _get_active_mask_resized(self.doc, H, W)
             if m is not None:
@@ -239,10 +270,7 @@ class CLAHEDialogPro(QDialog):
                     M = np.repeat(m[:, :, None], out.shape[2], axis=2).astype(np.float32)
                 else:
                     M = m.astype(np.float32)
-
-                base = self._disp_base.astype(np.float32, copy=False)
                 out = np.clip(base * (1.0 - M) + out * M, 0.0, 1.0)
-
             self._set_pix(out)
             self._preview = out
 
@@ -254,9 +282,12 @@ class CLAHEDialogPro(QDialog):
         try:
             clip = float(self.s_clip.value() / 10.0)
             tile_px = int(self.s_tile.value())
+            blend = float(self.s_blend.value() / 100.0)
 
+            # --- CLAHE params ---
             tile_grid = self._tile_grid_from_px(tile_px, self.orig.shape[:2])
 
+            # --- Run CLAHE on the original (normalized) image ---
             out = apply_clahe(
                 self.orig,
                 clip_limit=clip,
@@ -264,35 +295,40 @@ class CLAHEDialogPro(QDialog):
             )
             out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
 
-            # Mask-respectful commit
+            # --- Build base from CURRENT doc state (normalized to 0..1) ---
+            base = np.asarray(self.doc.image, dtype=np.float32)
+            if base.dtype.kind in "ui":
+                maxv = float(np.iinfo(base.dtype).max)
+                base = base / max(1.0, maxv)
+            else:
+                base = np.clip(base, 0.0, 1.0)
+
+            # --- Align base channels to out channels ---
+            if out.ndim == 3:
+                if base.ndim == 2:
+                    base = base[:, :, None].repeat(out.shape[2], axis=2)
+                elif base.ndim == 3 and base.shape[2] == 1:
+                    base = base.repeat(out.shape[2], axis=2)
+            else:
+                if base.ndim == 3 and base.shape[2] == 1:
+                    base = base.squeeze(axis=2)
+
+            # --- Global blend ALWAYS (even with no mask) ---
+            out = np.clip(base * (1.0 - blend) + out * blend, 0.0, 1.0)
+
+            # --- Apply active mask gating (if present) ---
             H, W = out.shape[:2]
             m = _get_active_mask_resized(self.doc, H, W)
             if m is not None:
-                base = np.asarray(self.doc.image, dtype=np.float32)
-
-                # Normalize base into [0..1] for blending
-                if base.dtype.kind in "ui":
-                    maxv = float(np.iinfo(base.dtype).max)
-                    base = base / max(1.0, maxv)
-                else:
-                    base = np.clip(base, 0.0, 1.0)
-
                 if out.ndim == 3:
-                    if base.ndim == 2:
-                        base = base[:, :, None].repeat(out.shape[2], axis=2)
-                    elif base.ndim == 3 and base.shape[2] == 1:
-                        base = base.repeat(out.shape[2], axis=2)
-
                     M = np.repeat(m[:, :, None], out.shape[2], axis=2).astype(np.float32)
                     out = np.clip(base * (1.0 - M) + out * M, 0.0, 1.0)
                 else:
-                    if base.ndim == 3 and base.shape[2] == 1:
-                        base = base.squeeze(axis=2)
                     out = np.clip(base * (1.0 - m) + out * m, 0.0, 1.0)
 
-                out = out.astype(np.float32, copy=False)
+            out = out.astype(np.float32, copy=False)
 
-            # Commit to document
+            # --- Commit to document ---
             if hasattr(self.doc, "set_image"):
                 self.doc.set_image(out, step_name="CLAHE")
             elif hasattr(self.doc, "apply_numpy"):
@@ -306,9 +342,8 @@ class CLAHEDialogPro(QDialog):
                 if main is not None:
                     preset = {
                         "clip_limit": float(clip),
-                        "tile_px": int(tile_px),   # NEW, intuitive
-                        # (optional debug)
-                        # "tile": int(tile_grid[0]),
+                        "tile_px": int(tile_px),
+                        "blend": float(blend),   # 0..1
                     }
                     payload = {"command_id": "clahe", "preset": dict(preset)}
                     setattr(main, "_last_headless_command", payload)
@@ -317,7 +352,8 @@ class CLAHEDialogPro(QDialog):
                         if hasattr(main, "_log"):
                             main._log(
                                 f"[Replay] Registered CLAHE as last action "
-                                f"(clip_limit={preset['clip_limit']}, tile_px={preset['tile_px']})"
+                                f"(clip_limit={preset['clip_limit']}, tile_px={preset['tile_px']}, "
+                                f"blend={preset['blend']:.2f})"
                             )
                     except Exception:
                         pass
@@ -326,7 +362,6 @@ class CLAHEDialogPro(QDialog):
             # ─────────────────────────────────────────────────────────────
 
             # Dialog stays open so user can apply to other images
-            # Refresh document reference for next operation
             self._refresh_document_from_active()
 
         except Exception as e:
@@ -366,6 +401,8 @@ class CLAHEDialogPro(QDialog):
         return (n, n)
 
     def _reset(self):
-        self.s_clip.setValue(20); self.s_tile.setValue(8)
+        self.s_clip.setValue(20)
+        self.s_tile.setValue(128)
+        self.s_blend.setValue(100)
         self._set_pix(self._disp_base)
         self.view.fit_to_item(self.pix)

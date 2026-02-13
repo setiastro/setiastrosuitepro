@@ -17,6 +17,9 @@ BLEND_MODES = [
     "Add",
     "Lighten",
     "Darken",
+    "Difference", 
+    "Difference (Squared)",
+    "Relativistic Addition", 
     "Sigmoid",
 ]
 
@@ -284,6 +287,19 @@ def _apply_mode(base: np.ndarray, src: np.ndarray, layer: ImageLayer) -> np.ndar
 
     if mode == "Darken":
         return np.minimum(base, src)
+    if mode == "Difference":
+        # Classic difference blend (Photoshop-style): absolute difference
+        return np.abs(base - src)
+    if mode == "Difference (Squared)":
+        d = base - src
+        return np.clip(d * d, 0.0, 1.0)
+    if mode == "Relativistic Addition":
+        # (a + b) / (1 + a*b)  — like relativistic velocity addition
+        # With a,b in [0..1], result stays in [0..1]; guard denom anyway.
+        eps = 1e-6
+        denom = np.maximum(1.0 + base * src, eps)
+        out = (base + src) / denom
+        return np.clip(out, 0.0, 1.0)
 
     if mode == "Sigmoid":
         # Per-layer sigmoid blend:
