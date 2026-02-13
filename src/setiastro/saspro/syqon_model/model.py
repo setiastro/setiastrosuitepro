@@ -1,7 +1,14 @@
-#src/setiastro/saspro/syqon_model/model.py
+# src/setiastro/saspro/syqon_model/model.py
+from __future__ import annotations
+
 import torch
 import torch.nn as nn
+from typing import Tuple, Union, Optional
 
+
+# =============================================================================
+# Core building blocks (shared)
+# =============================================================================
 
 class LayerNorm2d(nn.Module):
     def __init__(self, channels: int, eps: float = 1e-6):
@@ -73,8 +80,8 @@ class NAFNet(nn.Module):
         in_ch: int = 3,
         out_ch: int = 3,
         width: int = 32,
-        enc_blk_nums: list[int] | tuple[int, ...] = (2, 2, 4, 8),
-        dec_blk_nums: list[int] | tuple[int, ...] = (2, 2, 2, 2),
+        enc_blk_nums: Union[Tuple[int, ...], list[int]] = (2, 2, 4, 8),
+        dec_blk_nums: Union[Tuple[int, ...], list[int]] = (2, 2, 2, 2),
         middle_blk_num: int = 2,
         use_sigmoid: bool = True,
     ):
@@ -105,8 +112,8 @@ class NAFNet(nn.Module):
             ch //= 2
             self.decoders.append(nn.Sequential(*[NAFBlock(ch) for _ in range(num)]))
 
-        self.use_sigmoid = use_sigmoid
-        self.out_act = nn.Sigmoid() if use_sigmoid else nn.Identity()
+        self.use_sigmoid = bool(use_sigmoid)
+        self.out_act = nn.Sigmoid() if self.use_sigmoid else nn.Identity()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.intro(x)
@@ -123,6 +130,10 @@ class NAFNet(nn.Module):
         x = self.ending(x)
         return self.out_act(x)
 
+
+# =============================================================================
+# Legacy / extra models (kept for compatibility; not required by NAFNet inference)
+# =============================================================================
 
 class ResBlock(nn.Module):
     def __init__(self, in_ch: int, out_ch: int, groups: int = 8):
@@ -253,16 +264,15 @@ class UNetStar(nn.Module):
         return self.out(x)
 
 
-def create_model(
-    base_ch: int = 48,
-    depth: int = 4,
-    groups: int = 8,
-    use_sigmoid: bool = True,
-    use_attention: bool = False,
-) -> nn.Module:
-    _ = groups
-    _ = use_attention
-    depth = max(1, min(100, depth))
+# =============================================================================
+# Model factories: Nadir vs axiomv2
+# =============================================================================
+
+def _cfg_nadir(depth: int) -> Tuple[Tuple[int, ...], Tuple[int, ...], int]:
+    """
+    Your existing 'create_model' behavior.
+    """
+    depth = max(1, min(100, int(depth)))
     if depth >= 4:
         base = (2, 4, 6, 8)
         enc = base + tuple([8] * (depth - 4))
@@ -280,10 +290,85 @@ def create_model(
         enc = (2,)
         dec = (2,)
         middle = 2
+    return enc, dec, middle
+
+
+def _cfg_axiomv2(depth: int) -> Tuple[Tuple[int, ...], Tuple[int, ...], int]:
+    """
+    Matches the SyQon axiomv2 snippet you pasted:
+      - depth>=4: enc = (2,4,6,8) + [8]*(depth-4)
+      - dec = (2,)*depth
+      - middle = 4
+      - depth==3/2/1 cases match snippet
+    (This ends up very similar to Nadir, but we keep it separate in case SyQon
+     changes defaults later.)
+    """
+    depth = max(1, min(100, int(depth)))
+    if depth >= 4:
+        base = (2, 4, 6, 8)
+        enc = base + tuple([8] * (depth - 4))
+        dec = tuple([2] * depth)
+        middle = 4
+    elif depth == 3:
+        enc = (2, 4, 6)
+        dec = (2, 2, 2)
+        middle = 3
+    elif depth == 2:
+        enc = (2, 4)
+        dec = (2, 2)
+        middle = 2
+    else:
+        enc = (2,)
+        dec = (2,)
+        middle = 2
+    return enc, dec, middle
+
+
+def infer_variant_from_state_dict(sd: dict) -> str:
+    """
+    Best-effort inference. If you don't want any heuristics, ignore this.
+    For now, we return 'nadir' by default.
+    """
+    # You *can* get fancier later (eg presence of keys unique to UNetStar, etc.)
+    _ = sd
+    return "nadir"
+
+
+def create_model(
+    base_ch: int = 48,
+    depth: int = 4,
+    groups: int = 8,
+    use_sigmoid: bool = True,
+    use_attention: bool = False,
+    *,
+    variant: str = "nadir",
+) -> nn.Module:
+    """
+    Unified factory.
+
+    Parameters used for NAFNet inference:
+      - base_ch (width)
+      - depth (number of encoder/decoder stages; maps to enc/dec block counts)
+      - variant: 'nadir' or 'axiomv2'
+
+    Other args (groups/use_attention/use_sigmoid) are retained for compatibility
+    with any legacy callers. For NAFNet inference we force use_sigmoid=False
+    because SyQon starless models are trained in linear space (no clamping).
+    """
+    _ = groups
+    _ = use_attention
+    _ = use_sigmoid  # ignored for NAFNet outputs in our usage
+
+    v = (variant or "nadir").lower().strip()
+    if v in ("axiomv2", "axiom", "ax2"):
+        enc, dec, middle = _cfg_axiomv2(depth)
+    else:
+        enc, dec, middle = _cfg_nadir(depth)
+
     return NAFNet(
-        width=base_ch,
+        width=int(base_ch),
         enc_blk_nums=enc,
         dec_blk_nums=dec,
-        middle_blk_num=middle,
-        use_sigmoid=False,
+        middle_blk_num=int(middle),
+        use_sigmoid=False,  # IMPORTANT: keep linear output; engine clips/sanitizes later
     )

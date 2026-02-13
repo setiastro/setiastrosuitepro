@@ -523,13 +523,24 @@ def _syqon_data_dir() -> Path:
 # Model file is named: "nadir" (no extension)
 
 _SYQON_BUY_URL = "https://donate.stripe.com/14AdR9fZFbw85Rb4Wq2B204"
+_SYQON_BUY_URL_NADIR = "https://donate.stripe.com/14AdR9fZFbw85Rb4Wq2B204"
+_SYQON_BUY_URL_AXIOMV2 = "https://syqon.it/starless/"
 
-def _syqon_model_path(d: Path) -> Path:
-    return d / "nadir"
+def _syqon_buy_url_for(model_kind: str) -> str:
+    mk = (model_kind or "nadir").lower().strip()
+    return _SYQON_BUY_URL_AXIOMV2 if mk == "axiomv2" else _SYQON_BUY_URL_NADIR
 
-def _syqon_have_deps(d: Path) -> tuple[bool, bool]:
-    # engine_ok, model_ok  (you’re not shipping engine anyway; just track model here)
-    return True, _syqon_model_path(d).exists()
+
+def _syqon_model_path(d: Path, model_kind: str) -> Path:
+    mk = (model_kind or "nadir").lower().strip()
+    if mk not in ("nadir", "axiomv2"):
+        mk = "nadir"
+    return d / ("axiomv2.pt" if mk == "axiomv2" else "nadir")
+
+
+def _syqon_have_deps(d: Path, model_kind: str) -> tuple[bool, bool]:
+    return True, _syqon_model_path(d, model_kind).exists()
+
 
 
 def _syqon_download_file(url: str, dst: Path, progress_cb=None) -> bool:
@@ -580,6 +591,19 @@ def _syqon_compute_target_bg_from_doc(doc) -> float:
     # keep within engine UI constraints
     return float(np.clip(med, 0.01, 0.50))
 
+_SYQON_MODEL_LABELS = {
+    "nadir": "Nadir",
+    "axiomv2": "AxiomV2",
+}
+
+def _syqon_norm_kind(v: str) -> str:
+    v = (v or "").strip().lower()
+    # allow user-facing labels too, just in case
+    if v in ("nadir", "nadir model"):
+        return "nadir"
+    if v in ("axiomv2", "axiom2", "axiom v2", "axiom-v2"):
+        return "axiomv2"
+    return "nadir"
 
 
 class _SyQonProcessThread(QThread):
@@ -594,6 +618,7 @@ class _SyQonProcessThread(QThread):
         overlap: int,
         target_bg: float,
         shadow_clip: float,
+        model_kind: str = "nadir",
         use_amp: bool = False,
         amp_dtype: str = "fp16",
         parent=None,
@@ -602,6 +627,7 @@ class _SyQonProcessThread(QThread):
 
         self.x_for_net = x_for_net
         self.ckpt_path = str(ckpt_path)
+        self.model_kind = (model_kind or "nadir").lower().strip()
 
         self.tile = int(tile)
         self.overlap = int(overlap)
@@ -655,6 +681,7 @@ class _SyQonProcessThread(QThread):
                 overlap=self.overlap,
                 use_gpu=True,          # or your checkbox state
                 prefer_dml=True,       # on Windows when GPU requested
+                model_kind=self.model_kind,
                 residual_mode=True,
                 use_amp=self.use_amp,
                 amp_dtype=self.amp_dtype,
@@ -715,6 +742,14 @@ class SyQonStarlessDialog(QDialog):
         self.lbl_model_path = QLabel("", self)
         self.lbl_model_path.setWordWrap(True)
         model_lay.addWidget(self.lbl_model_path)
+        self.cmb_model = QComboBox(self)
+        self.cmb_model.clear()
+        for key in ("nadir", "axiomv2"):
+            self.cmb_model.addItem(_SYQON_MODEL_LABELS[key], userData=key)
+        self.cmb_model.setCurrentIndex(0)  # Nadir
+
+        model_lay.addWidget(QLabel("Model variant:", self))
+        model_lay.addWidget(self.cmb_model)
 
         row = QHBoxLayout()
         self.btn_buy = QPushButton("Get Starless Model Here…", self)
@@ -791,6 +826,10 @@ class SyQonStarlessDialog(QDialog):
             self.cmb_stars_extract.setCurrentText(str(s.value("syqon/stars_extract", "unscreen")))
             self.chk_mtf.setChecked(bool(s.value("syqon/use_mtf", True, type=bool)))
             self.chk_amp.setChecked(bool(s.value("syqon/use_amp", False, type=bool)))
+            saved = _syqon_norm_kind(str(s.value("syqon/model_kind", "nadir")))
+            idx = self.cmb_model.findData(saved)
+            if idx >= 0:
+                self.cmb_model.setCurrentIndex(idx)
             
         else:
             self.spin_tile.setValue(512)
@@ -832,7 +871,17 @@ class SyQonStarlessDialog(QDialog):
         lay.addLayout(btns)
 
         self._toggle_bg(self.chk_show_bg.isChecked())
+        self.cmb_model.currentTextChanged.connect(self._on_model_changed)
 
+        self._refresh_state()
+
+    def _model_kind(self) -> str:
+        return _syqon_norm_kind(self.cmb_model.currentData() or "nadir")
+
+    def _on_model_changed(self, *_):
+        s = getattr(self.main, "settings", None)
+        if s:
+            s.setValue("syqon/model_kind", self._model_kind())
         self._refresh_state()
 
 
@@ -1000,7 +1049,8 @@ class SyQonStarlessDialog(QDialog):
 
 
     def _model_dst_path(self) -> Path:
-        return _syqon_model_path(self.data_dir)  # .../syqon_starless/nadir
+        return _syqon_model_path(self.data_dir, self._model_kind())
+
 
     def _have_model(self) -> bool:
         try:
@@ -1016,8 +1066,15 @@ class SyQonStarlessDialog(QDialog):
         self.spin_bg.setVisible(on)
 
     def _refresh_state(self):
+        mk = self._model_kind()
         dst = self._model_dst_path()
+        url = _syqon_buy_url_for(mk)
         self.lbl_model_path.setText(f"Installed model path:\n{str(dst)}")
+
+        if mk == "axiomv2":
+            expected = "axiomv2.pt"
+        else:
+            expected = "nadir (no extension)"
 
         if self._have_model():
             self.lbl.setText("Ready (SyQon model installed).")
@@ -1028,19 +1085,17 @@ class SyQonStarlessDialog(QDialog):
                 "SyQon model is not installed.\n\n"
                 "1) Click “Get Starless Model Here…” to purchase/download it.\n"
                 "2) Then click “Install Downloaded Model…” and select the downloaded file named:\n"
-                "   nadir   (no file extension)\n"
+                f"   {expected}\n"
             )
             self.btn_process.setEnabled(False)
             self.btn_remove.setEnabled(False)
 
-        # Buy button UX: enable always, but show message if URL unset
         self.btn_buy.setEnabled(True)
-        if not _SYQON_BUY_URL:
-            self.btn_buy.setToolTip("Purchase URL not configured yet.")
-        else:
-            self.btn_buy.setToolTip("Open SyQon website to purchase/download the model.")
-
+        self.btn_buy.setToolTip(
+            "Open SyQon page for this model variant." if url else "Purchase URL not configured yet."
+        )
         self.btn_install.setEnabled(True)
+
 
     # ------------------------------------------------------------------
     # buy / install / remove
@@ -1048,25 +1103,41 @@ class SyQonStarlessDialog(QDialog):
     def _open_buy_page(self):
         from PyQt6.QtWidgets import QMessageBox
 
-        if not _SYQON_BUY_URL:
+        mk = (self.cmb_model.currentText() or "nadir").lower().strip()
+        url = _syqon_buy_url_for(mk)
+
+        if not url:
             QMessageBox.information(
                 self,
                 "SyQon",
                 "SyQon purchase URL is not configured yet.\n\n"
                 "For now, please obtain the model from SyQon directly, then use:\n"
-                "“Install Downloaded Model…” and select the file named “nadir”."
+                "“Install Downloaded Model…” and select the appropriate model file."
             )
             return
 
-        QDesktopServices.openUrl(QUrl(_SYQON_BUY_URL))
+        QDesktopServices.openUrl(QUrl(url))
+
 
     def _install_model(self):
         from PyQt6.QtWidgets import QFileDialog, QMessageBox
+        import shutil
 
-        # Let user pick any file; we validate name afterward
+        mk = self._model_kind()
+
+        # Expected naming rules per model
+        if mk == "axiomv2":
+            expected_desc = "axiomv2.pt"
+            def _name_ok(p: Path) -> bool:
+                return p.name.lower() == "axiomv2.pt"
+        else:
+            expected_desc = "nadir (no extension)"
+            def _name_ok(p: Path) -> bool:
+                return p.name.lower() == "nadir" and p.suffix == ""
+
         src_path, _ = QFileDialog.getOpenFileName(
             self,
-            "Select SyQon Model File (nadir)",
+            f"Select SyQon Model File ({expected_desc})",
             "",
             "All Files (*)"
         )
@@ -1078,35 +1149,16 @@ class SyQonStarlessDialog(QDialog):
             QMessageBox.warning(self, "SyQon", "Selected file does not exist.")
             return
 
-        # Validate required name
-        # SyQon says: file is literally "nadir" (no extension)
-        name_ok = (src.name.lower() == "nadir")
-        ext_ok = (src.suffix == "")  # preferred
-        if not name_ok:
+        if not _name_ok(src):
             QMessageBox.warning(
                 self,
                 "SyQon",
-                "That doesn’t look like the SyQon model file.\n\n"
-                "Expected a file named:\n"
-                "  nadir   (no extension)\n\n"
+                "That doesn’t look like the selected SyQon model file.\n\n"
+                f"Selected variant: {mk}\n"
+                f"Expected: {expected_desc}\n\n"
                 f"You selected:\n  {src.name}"
             )
             return
-
-        if not ext_ok:
-            # Allow it if they somehow got "nadir.something", but warn strongly.
-            reply = QMessageBox.question(
-                self,
-                "SyQon",
-                "The file name is “nadir”, but it has an extension.\n\n"
-                f"Selected: {src.name}\n\n"
-                "SyQon indicates the model should have no extension.\n"
-                "Install anyway?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No
-            )
-            if reply != QMessageBox.StandardButton.Yes:
-                return
 
         dst = self._model_dst_path()
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -1128,10 +1180,12 @@ class SyQonStarlessDialog(QDialog):
 
         s = getattr(self.main, "settings", None)
         if s:
-            s.setValue("syqon/model_src_path", str(src))
-            s.setValue("syqon/model_installed_path", str(dst))
+            s.setValue("syqon/model_kind", mk)
+            s.setValue(f"syqon/model_src_path/{mk}", str(src))
+            s.setValue(f"syqon/model_installed_path/{mk}", str(dst))
 
         self._refresh_state()
+
 
     def _remove_model(self):
         from PyQt6.QtWidgets import QMessageBox
@@ -1185,6 +1239,7 @@ class SyQonStarlessDialog(QDialog):
             s.setValue("syqon/stars_extract", str(self.cmb_stars_extract.currentText()))
             s.setValue("syqon/use_mtf", bool(self.chk_mtf.isChecked()))
             s.setValue("syqon/use_amp", bool(self.chk_amp.isChecked()))
+            s.setValue("syqon/model_kind", str(self.cmb_model.currentText()))
 
         pad_edges = bool(self.chk_pad.isChecked())
         pad_pixels = int(self.spin_pad.value())
@@ -1233,6 +1288,7 @@ class SyQonStarlessDialog(QDialog):
         self._target_bg = target_bg
         self._do_mtf = do_mtf
         self._mtf_params = mtf_params
+        model_kind = self._model_kind()
 
         # Start worker thread
         self._set_busy(True)
@@ -1253,6 +1309,7 @@ class SyQonStarlessDialog(QDialog):
             overlap=int(self.spin_overlap.value()),
             target_bg=float(target_bg),
             shadow_clip=float(self.spin_shadow.value()),
+            model_kind=model_kind,
             use_amp=bool(self.chk_amp.isChecked()),
             amp_dtype="fp16",
             parent=self
