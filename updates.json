@@ -1,9 +1,9 @@
 {
-  "version": "1.10.0",
+  "version": "1.10.1",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.10.0/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.10.0/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.10.0/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.10.1/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.10.1/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.10.1/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.10.0 Major update to Cosmic Clarity Sharpen and Denoise. Completely different neural net architecture. New AI4 models will need to be downloaded. There is a Lite Denoise model which may run faster for those with slower computers. Overall massive leap in Cosmic Clarity. Crop Dialog now has center crosshair. Numerous other updates and improvements throughout."
+  "notes": "Seti Astro Suite Pro V1.10.1 Added Franks Settings in Stacking Suite setting profiles, CLAHE blend option, Syqon addition to comet stacking, New blend options in layers, debayer offsets addition, utf-8 fixes. V1.10.0 Major update to Cosmic Clarity Sharpen and Denoise. Completely different neural net architecture. New AI4 models will need to be downloaded. There is a Lite Denoise model which may run faster for those with slower computers. Overall massive leap in Cosmic Clarity. Crop Dialog now has center crosshair. Numerous other updates and improvements throughout."
 }
