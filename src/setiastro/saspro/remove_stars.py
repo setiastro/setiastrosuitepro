@@ -591,6 +591,19 @@ def _syqon_compute_target_bg_from_doc(doc) -> float:
     # keep within engine UI constraints
     return float(np.clip(med, 0.01, 0.50))
 
+_SYQON_MODEL_LABELS = {
+    "nadir": "Nadir",
+    "axiomv2": "AxiomV2",
+}
+
+def _syqon_norm_kind(v: str) -> str:
+    v = (v or "").strip().lower()
+    # allow user-facing labels too, just in case
+    if v in ("nadir", "nadir model"):
+        return "nadir"
+    if v in ("axiomv2", "axiom2", "axiom v2", "axiom-v2"):
+        return "axiomv2"
+    return "nadir"
 
 
 class _SyQonProcessThread(QThread):
@@ -730,8 +743,10 @@ class SyQonStarlessDialog(QDialog):
         self.lbl_model_path.setWordWrap(True)
         model_lay.addWidget(self.lbl_model_path)
         self.cmb_model = QComboBox(self)
-        self.cmb_model.addItems(["nadir", "axiomv2"])
-        self.cmb_model.setCurrentText("nadir")
+        self.cmb_model.clear()
+        for key in ("nadir", "axiomv2"):
+            self.cmb_model.addItem(_SYQON_MODEL_LABELS[key], userData=key)
+        self.cmb_model.setCurrentIndex(0)  # Nadir
 
         model_lay.addWidget(QLabel("Model variant:", self))
         model_lay.addWidget(self.cmb_model)
@@ -811,7 +826,10 @@ class SyQonStarlessDialog(QDialog):
             self.cmb_stars_extract.setCurrentText(str(s.value("syqon/stars_extract", "unscreen")))
             self.chk_mtf.setChecked(bool(s.value("syqon/use_mtf", True, type=bool)))
             self.chk_amp.setChecked(bool(s.value("syqon/use_amp", False, type=bool)))
-            self.cmb_model.setCurrentText(str(s.value("syqon/model_kind", "nadir")))
+            saved = _syqon_norm_kind(str(s.value("syqon/model_kind", "nadir")))
+            idx = self.cmb_model.findData(saved)
+            if idx >= 0:
+                self.cmb_model.setCurrentIndex(idx)
             
         else:
             self.spin_tile.setValue(512)
@@ -857,11 +875,15 @@ class SyQonStarlessDialog(QDialog):
 
         self._refresh_state()
 
+    def _model_kind(self) -> str:
+        return _syqon_norm_kind(self.cmb_model.currentData() or "nadir")
+
     def _on_model_changed(self, *_):
         s = getattr(self.main, "settings", None)
         if s:
-            s.setValue("syqon/model_kind", str(self.cmb_model.currentText()))
+            s.setValue("syqon/model_kind", self._model_kind())
         self._refresh_state()
+
 
     # ------------------------------------------------------------------
     # helpers
@@ -1027,7 +1049,8 @@ class SyQonStarlessDialog(QDialog):
 
 
     def _model_dst_path(self) -> Path:
-        return _syqon_model_path(self.data_dir, self.cmb_model.currentText())
+        return _syqon_model_path(self.data_dir, self._model_kind())
+
 
     def _have_model(self) -> bool:
         try:
@@ -1043,10 +1066,10 @@ class SyQonStarlessDialog(QDialog):
         self.spin_bg.setVisible(on)
 
     def _refresh_state(self):
-        mk = (self.cmb_model.currentText() or "nadir").lower().strip()
+        mk = self._model_kind()
         dst = self._model_dst_path()
-        self.lbl_model_path.setText(f"Installed model path:\n{str(dst)}")
         url = _syqon_buy_url_for(mk)
+        self.lbl_model_path.setText(f"Installed model path:\n{str(dst)}")
 
         if mk == "axiomv2":
             expected = "axiomv2.pt"
@@ -1100,7 +1123,7 @@ class SyQonStarlessDialog(QDialog):
         from PyQt6.QtWidgets import QFileDialog, QMessageBox
         import shutil
 
-        mk = (self.cmb_model.currentText() or "nadir").lower().strip()
+        mk = self._model_kind()
 
         # Expected naming rules per model
         if mk == "axiomv2":
@@ -1265,7 +1288,7 @@ class SyQonStarlessDialog(QDialog):
         self._target_bg = target_bg
         self._do_mtf = do_mtf
         self._mtf_params = mtf_params
-        model_kind = str(self.cmb_model.currentText())
+        model_kind = self._model_kind()
 
         # Start worker thread
         self._set_busy(True)
