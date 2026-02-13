@@ -30,6 +30,7 @@ from setiastro.saspro.memory_utils import (
     should_use_memmap, cleanup_memmap, get_thumbnail_cache,
     LRUDict,  # LRU-bounded dict for caches
 )
+from setiastro.saspro.cfa_utils import effective_bayer_from_header, roworder_is_bottom_up
 
 from PyQt6.QtCore import Qt, QTimer, QSettings, pyqtSignal, QObject, pyqtSlot, QThread, QEvent, QPoint, QSize, QEventLoop, QCoreApplication, QRectF, QPointF, QMetaObject
 from PyQt6.QtGui import QIcon, QImage, QPixmap, QAction, QIntValidator, QDoubleValidator, QFontMetrics, QTextCursor, QPalette, QPainter, QPen, QTransform, QColor, QBrush, QCursor
@@ -5376,23 +5377,43 @@ class StackingSuiteDialog(QDialog):
 
         # --- FITS (already mosaic) ---
         if ext.endswith(('.fits','.fit','.fz')):
-            bp = (str(header.get('BAYERPAT') or header.get('BAYERPATN') or header.get('CFA_PATTERN') or "")).upper()
-            if bp in {"RGGB","BGGR","GRBG","GBRG"}:
+            if image is None:
+                return image
+
+            img = np.asarray(image)
+
+            # Only demosaic mosaics
+            if not (img.ndim == 2 or (img.ndim == 3 and img.shape[-1] == 1)):
+                return image
+
+            if img.ndim == 3 and img.shape[-1] == 1:
+                img = np.squeeze(img, axis=-1)
+
+            H = int(img.shape[0]) if img.ndim >= 2 else 0
+            eff_bp, xoff, yoff, roworder = effective_bayer_from_header(header, height=H)
+
+            if eff_bp in {"RGGB","BGGR","GRBG","GBRG"}:
+                # If bottom-up, flip pixels so the image is upright before demosaic
+                if roworder_is_bottom_up(roworder):
+                    img = np.ascontiguousarray(np.flipud(img))
+
+                # Stamp what we actually used (leave BAYERPAT as-is)
+                try:
+                    header["BAYER_EFF"] = eff_bp
+                    header["XBAYROFF"]  = int(xoff)
+                    header["YBAYROFF"]  = int(yoff)
+                    header["ROWORDER"]  = str(roworder)
+                    header["DEBAYERED"] = True
+                except Exception:
+                    pass
+
                 try:
                     from setiastro.saspro.legacy.numba_utils import debayer_raw_fast
-                    return debayer_raw_fast(image, bayer_pattern=bp, cfa_drizzle=cfa, method="edge")
+                    return debayer_raw_fast(img, bayer_pattern=eff_bp, cfa_drizzle=cfa, method="edge")
                 except Exception:
-                    return debayer_fits_fast(image, bp, cfa_drizzle=cfa)
+                    return debayer_fits_fast(img, eff_bp, cfa_drizzle=cfa)
 
-            # If FITS came from Fuji RAW (RAF) and no BAYERPAT, it was likely X-Trans;
-            # without the RAW we cannot demosaic now, so keep mosaic but mark it.
-            if _probably_fuji_xtrans(file_path, header):
-                try: header['XTRANS'] = True
-                except Exception as e:
-                    import logging
-                    logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
-                print("[INFO] FITS likely from X-Trans; cannot demosaic without RAW. Keeping mosaic.")
-                return image
+            return image
 
         return image
 
@@ -15700,11 +15721,17 @@ class StackingSuiteDialog(QDialog):
 
                             img = _to_writable_f32(img)
 
-                            bayer = self._hdr_get(hdr, 'BAYERPAT')
+                            bayerish = (
+                                self._hdr_get(hdr, 'BAYERPAT')
+                                or self._hdr_get(hdr, 'CFA_PATTERN')
+                                or self._hdr_get(hdr, 'BAYERPATN')
+                                or self._hdr_get(hdr, 'BAYER_PATTERN')
+                            )
                             splitdb = bool(self._hdr_get(hdr, 'SPLITDB', False))
-                            if bayer and not splitdb and (img.ndim == 2 or (img.ndim == 3 and img.shape[-1] == 1)):
+
+                            if bayerish and not splitdb and (img.ndim == 2 or (img.ndim == 3 and img.shape[-1] == 1)):
                                 self.update_status(self.tr(f"📦 Debayering {os.path.basename(fp)}…"))
-                                img = self.debayer_image(img, fp, hdr)  # HxWx3
+                                img = self.debayer_image(img, fp, hdr)
                             else:
                                 if img.ndim == 3 and img.shape[-1] == 1:
                                     img = np.squeeze(img, axis=-1)

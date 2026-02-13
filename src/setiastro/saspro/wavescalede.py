@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QMessageBox, QProgressBar, QMainWindow
 )
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
+from setiastro.saspro.widgets.graphics_views import ZoomableGraphicsView
 
 # Import shared wavelet utilities
 from setiastro.saspro.widgets.wavelet_utils import (
@@ -236,17 +237,11 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
 
         # scene/view
         self.scene = QGraphicsScene(self)
-        self.view  = QGraphicsView(self.scene)
+        self.view  = ZoomableGraphicsView(self.scene, self)
         self.view.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.pix   = QGraphicsPixmapItem()
         self.scene.addItem(self.pix)
         self.scroll = QScrollArea(self); self.scroll.setWidgetResizable(True); self.scroll.setWidget(self.view)
-
-        # zoom state
-        self.zoom_factor = 1.0
-        self.zoom_step   = 1.25
-        self.zoom_min    = 0.1
-        self.zoom_max    = 5.0
 
         # controls
         self.grp = QGroupBox(self.tr("Dark Enhancer Controls"))
@@ -313,9 +308,9 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
         self.btn_reset.clicked.connect(self._reset)
         self.btn_toggle.clicked.connect(self._toggle)
 
-        self.btn_zin.clicked.connect(self._zoom_in)
-        self.btn_zout.clicked.connect(self._zoom_out)
-        self.btn_fit.clicked.connect(self._fit_to_preview)
+        self.btn_zin.clicked.connect(self.view.zoom_in)
+        self.btn_zout.clicked.connect(self.view.zoom_out)
+        self.btn_fit.clicked.connect(lambda: self.view.fit_item(self.pix))
 
         # gamma debounce → live mask updates (250ms)
         self._gamma_timer = QTimer(self)
@@ -432,35 +427,6 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
         self.btn_apply.setEnabled(False)
         self.btn_toggle.setChecked(False); self.btn_toggle.setText(self.tr("Show Original"))
         self._update_mask_only()
-
-    # --- zoom + Ctrl+Wheel ---
-    def wheelEvent(self, e: QWheelEvent):
-        if e.modifiers() & Qt.KeyboardModifier.ControlModifier:
-            if e.angleDelta().y() > 0: self._zoom_in()
-            else: self._zoom_out()
-            e.accept(); return
-        super().wheelEvent(e)
-
-    def _zoom_in(self):
-        z = self.zoom_factor * self.zoom_step
-        if z <= self.zoom_max:
-            self.zoom_factor = z
-            self._apply_zoom()
-
-    def _zoom_out(self):
-        z = self.zoom_factor / self.zoom_step
-        if z >= self.zoom_min:
-            self.zoom_factor = z
-            self._apply_zoom()
-
-    def _fit_to_preview(self):
-        if not self.pix.pixmap().isNull():
-            self.view.fitInView(self.pix, Qt.AspectRatioMode.KeepAspectRatio)
-        self.zoom_factor = 1.0
-
-    def _apply_zoom(self):
-        self.view.resetTransform()
-        self.view.scale(self.zoom_factor, self.zoom_factor)
 
     # --- live mask (no full recompute) ---
     def _update_mask_only(self):
