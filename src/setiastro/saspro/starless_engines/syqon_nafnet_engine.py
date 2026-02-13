@@ -32,10 +32,34 @@ def _infer_device(torch, *, prefer_cuda: bool = True, prefer_dml: bool = True):
     return torch.device("cpu")
 
 def _torch_load_fallback(torch, ckpt_path: str):
+    """
+    More robust torch.load() with encoding fallbacks for python2-pickled checkpoints.
+    """
+    # 1) First try: normal load (fast path)
     try:
-        return torch.load(ckpt_path, map_location="cpu"), {"torch_load_encoding": "utf-8/default"}
-    except UnicodeDecodeError:
-        return torch.load(ckpt_path, map_location="cpu", encoding="latin1"), {"torch_load_encoding": "latin1"}
+        with open(ckpt_path, "rb") as f:
+            return torch.load(f, map_location="cpu"), {"torch_load_encoding": "default"}
+    except UnicodeDecodeError as e0:
+        last = e0
+    except Exception:
+        # if it fails for non-unicode reasons, let caller handle it
+        raise
+
+    # 2) Encoding fallbacks (common for old pickles / non-utf8 metadata)
+    for enc in ("latin1", "cp1252", "iso-8859-1"):
+        try:
+            with open(ckpt_path, "rb") as f:
+                return torch.load(f, map_location="cpu", encoding=enc), {"torch_load_encoding": enc}
+        except UnicodeDecodeError as e:
+            last = e
+            continue
+        except TypeError:
+            # Some torch builds may not accept encoding=...; if so, break out and re-raise last
+            break
+
+    # 3) If we got here, we still couldn’t decode the pickle stream
+    raise last
+
 
 def _load_state_dict(torch, ckpt_path: str):
     ckpt, load_meta = _torch_load_fallback(torch, ckpt_path)

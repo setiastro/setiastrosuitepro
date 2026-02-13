@@ -675,11 +675,8 @@ class _SyQonProcessThread(QThread):
 
         except Exception as e:
             # emit whatever info we collected + error
-            try:
-                info["error_type"] = type(e).__name__
-                info["error"] = str(e)
-            except Exception:
-                pass
+            import traceback
+            info["traceback"] = traceback.format_exc()
             self.finished.emit(None, None, info, str(e))
 
 class SyQonStarlessDialog(QDialog):
