@@ -489,6 +489,15 @@ class RemoveStarsPresetDialog(QDialog):
         self.syq_overlap = QSpinBox(); self.syq_overlap.setRange(16, 512); self.syq_overlap.setSingleStep(16)
         self.syq_make_stars = QCheckBox("Also create stars-only document (_stars)")
         self.syq_make_stars.setChecked(True)
+        self.syq_model = QComboBox()
+        self.syq_model.addItem("Nadir", "nadir")
+        self.syq_model.addItem("AxiomV2", "axiomv2")
+        self.syq_model.setCurrentIndex(0)
+
+        mk = str(p.get("model_kind", "nadir")).strip().lower()
+        j = self.syq_model.findData("axiomv2" if "axiom" in mk else "nadir")
+        if j >= 0:
+            self.syq_model.setCurrentIndex(j)
 
         self.syq_pad = QCheckBox("Pad edges (reflect)")
         self.syq_pad.setChecked(True)
@@ -514,6 +523,7 @@ class RemoveStarsPresetDialog(QDialog):
         form.addRow("", self.chk_disable_gpu)
         form.addRow("", self.chk_show)
         form.addRow(QLabel("— SyQon —"))
+        form.addRow("Model:", self.syq_model)
         form.addRow("Tile size:", self.syq_tile)
         form.addRow("Overlap:", self.syq_overlap)
         form.addRow("", self.syq_make_stars)
@@ -558,6 +568,7 @@ class RemoveStarsPresetDialog(QDialog):
         # SyQon
         return {
             "tool": "syqon",
+            "model_kind": str(self.syq_model.currentData() or "nadir"),
             "tile_size": int(self.syq_tile.value()),
             "overlap": int(self.syq_overlap.value()),
             "make_stars": bool(self.syq_make_stars.isChecked()),
@@ -565,6 +576,7 @@ class RemoveStarsPresetDialog(QDialog):
             "pad_pixels": int(self.syq_pad_px.value()),
             "stars_extract": str(self.syq_extract.currentText()),
         }
+
 
 
 class _DarkStarEngineThread(QThread):
@@ -596,12 +608,13 @@ class _SyQonEngineThread(QThread):
     finished_signal = pyqtSignal(object, dict, dict, str)  # starless_s, info, aux, err
 
     def __init__(self, x_for_net_rgb01: np.ndarray, ckpt_path: str,
-                 tile: int, overlap: int, parent=None):
+                 tile: int, overlap: int, model_kind: str = "nadir", parent=None):
         super().__init__(parent)
         self._x = x_for_net_rgb01
         self._ckpt = ckpt_path
         self._tile = int(tile)
         self._overlap = int(overlap)
+        self._kind = (model_kind or "nadir").lower().strip()
 
     def run(self):
         try:
@@ -613,8 +626,9 @@ class _SyQonEngineThread(QThread):
                 ckpt_path=self._ckpt,
                 tile=self._tile,
                 overlap=self._overlap,
-                use_gpu=True,          # or your checkbox state
-                prefer_dml=True,       # on Windows when GPU requested
+                use_gpu=True,
+                prefer_dml=True,
+                model_kind=self._kind,          # <<<<<< IMPORTANT
                 residual_mode=True,
                 progress_cb=prog,
             )
@@ -623,19 +637,37 @@ class _SyQonEngineThread(QThread):
             self.finished_signal.emit(None, None, {}, str(e))
 
 def _run_syqon_headless(main, doc, p):
-    # ---- model path (same location as your dialog installs) ----
-    # IMPORTANT: point this at exactly the same syqon_starless/nadir that the dialog uses.
-    # If you already have a helper like _syqon_data_dir/_syqon_model_path in remove_stars.py,
-    # import and call it instead of reimplementing.
+    # ---- model kind ----
+    model_kind = str(p.get("model_kind", "nadir")).strip().lower()
+    if model_kind in ("axiom2", "axiom v2", "axiom-v2"):
+        model_kind = "axiomv2"
+    if model_kind not in ("nadir", "axiomv2"):
+        model_kind = "nadir"
+
+    # ---- resolve ckpt path (prefer QSettings installed path, then default location) ----
+    ckpt_path = ""
     try:
-        from .remove_stars import _syqon_data_dir, _syqon_model_path
-        ckpt_path = str(_syqon_model_path(_syqon_data_dir()))
+        s = getattr(main, "settings", None)
+        if s:
+            ckpt_path = str(s.value(f"syqon/model_installed_path/{model_kind}", "", type=str)).strip()
     except Exception:
-        ckpt_path = str(p.get("model_path", ""))
+        pass
+
+    if not ckpt_path:
+        try:
+            from .remove_stars import _syqon_data_dir, _syqon_model_path
+            ckpt_path = str(_syqon_model_path(_syqon_data_dir(), model_kind))
+        except Exception:
+            ckpt_path = str(p.get("model_path", "")).strip()
 
     if not ckpt_path or not os.path.exists(ckpt_path):
-        QMessageBox.warning(main, "SyQon", "SyQon model not installed. Run the interactive SyQon tool once to install it.")
+        QMessageBox.warning(
+            main, "SyQon",
+            f"SyQon model not installed for '{model_kind}'.\n"
+            "Run the interactive SyQon tool once to install it."
+        )
         return
+
 
     # ---- params ----
     tile = int(p.get("tile_size", 512))
@@ -679,7 +711,10 @@ def _run_syqon_headless(main, doc, p):
     dlg = _ProcDialog(main, title="SyQon Progress")
     dlg.append_text("Starting SyQon…\n")
 
-    thr = _SyQonEngineThread(x_for_net, ckpt_path=ckpt_path, tile=tile, overlap=overlap, parent=dlg)
+    thr = _SyQonEngineThread(
+        x_for_net, ckpt_path=ckpt_path, tile=tile, overlap=overlap,
+        model_kind=model_kind, parent=dlg
+    )
 
     def _on_prog(done, total, stage):
         dlg.set_progress(done, total, stage)
