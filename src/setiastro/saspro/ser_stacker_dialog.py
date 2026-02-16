@@ -1661,6 +1661,24 @@ class BlinkKeepersDialog(QDialog):
         btns.addWidget(self.btn_ok)
         btns.addWidget(self.btn_cancel)
         outer.addLayout(btns)
+        # --- Display controls (preview only) ---
+        disp_row = QHBoxLayout()
+
+        self.sld_bright = QSlider(Qt.Orientation.Horizontal, self)
+        self.sld_bright.setRange(-100, 100)   # percent-ish shift
+        self.sld_bright.setValue(0)
+        self.sld_bright.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.sld_bright.setToolTip("Brightness (preview only)")
+
+        self.lbl_bright = QLabel("Bright: 0", self)
+        self.lbl_bright.setStyleSheet("color:#aaa; min-width:90px;")
+
+        disp_row.addWidget(QLabel("Preview", self))
+        disp_row.addSpacing(6)
+        disp_row.addWidget(self.sld_bright, 1)
+        disp_row.addWidget(self.lbl_bright, 0)
+
+        outer.addLayout(disp_row)
 
         # ---- signals ----
         self.btn_cancel.clicked.connect(self.reject)
@@ -1669,6 +1687,8 @@ class BlinkKeepersDialog(QDialog):
         self.btn_next.clicked.connect(lambda: self._step(+1))
         self.sld.valueChanged.connect(self._show_index)
         self.btn_toggle.clicked.connect(lambda: self._toggle_reject_and_advance(+1))
+        self.sld_bright.valueChanged.connect(self._on_brightness_changed)
+
 
         # ---- load source ----
         from setiastro.saspro.imageops.serloader import open_planetary_source
@@ -1684,7 +1704,16 @@ class BlinkKeepersDialog(QDialog):
         self.btn_prev.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_next.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_toggle.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._preview_brightness = 0.0  # -1..+1
+
         self._show_index(0)
+
+    def _on_brightness_changed(self, v: int):
+        # map [-100..100] -> [-1..1]
+        self._preview_brightness = float(int(v)) / 100.0
+        self.lbl_bright.setText(f"Bright: {int(v)}")
+        self._show_index(self.sld.value())
+
 
     def _toggle_reject_at(self, idx: int):
         if 0 <= idx < self.rejected.size:
@@ -1796,16 +1825,39 @@ class BlinkKeepersDialog(QDialog):
 
 
     @staticmethod
-    def _disp_u8(mono01: np.ndarray) -> np.ndarray:
+    def _disp_u8(mono01: np.ndarray, *, brightness: float = 0.0) -> np.ndarray:
+        """
+        Preview stretch for blink:
+        - percentile stretch (1..99.5)
+        - brightness shifts the window up/down (preview only)
+          brightness in [-1..1] => shifts by ~10% of window size
+        """
         mono = np.asarray(mono01, dtype=np.float32)
         mono = np.clip(mono, 0.0, 1.0)
+
         lo = float(np.percentile(mono, 1.0))
         hi = float(np.percentile(mono, 99.5))
         if hi <= lo + 1e-8:
             hi = lo + 1e-3
-        v = (mono - lo) / (hi - lo)
+
+        # --- brightness: shift the stretch window ---
+        b = float(np.clip(brightness, -1.0, 1.0))
+        span = (hi - lo)
+
+        # shift by up to 10% of span (tweakable)
+        shift = -b * 0.50 * span
+        lo2 = lo + shift
+        hi2 = hi + shift
+
+        # keep sane bounds
+        lo2 = float(np.clip(lo2, 0.0, 1.0))
+        hi2 = float(np.clip(hi2, lo2 + 1e-6, 1.0))
+
+        v = (mono - lo2) / (hi2 - lo2)
         v = np.clip(v, 0.0, 1.0)
+
         return (v * 255.0 + 0.5).astype(np.uint8)
+
     
     def _show_index(self, i: int):
         if self.keepers.size == 0:
@@ -1832,7 +1884,8 @@ class BlinkKeepersDialog(QDialog):
         if img.ndim == 3:
             img = img[..., 0]
 
-        u8 = self._disp_u8(img)
+        u8 = self._disp_u8(img, brightness=getattr(self, "_preview_brightness", 0.0))
+
 
         # ✅ memmap/FITS-safe: guarantee tight row stride for bytesPerLine=w
         if not u8.flags["C_CONTIGUOUS"]:
