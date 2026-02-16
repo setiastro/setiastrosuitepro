@@ -786,6 +786,15 @@ class SyQonStarlessDialog(QDialog):
         self.spin_shadow.setDecimals(1)
         self.chk_mtf = QCheckBox("Apply temporary stretch for model (recommended)", self)
         self.chk_mtf.setChecked(True)
+        # Temp-stretch strength (target median) for the model input
+        self.spin_mtf_median = QDoubleSpinBox(self)
+        self.spin_mtf_median.setRange(0.01, 0.50)
+        self.spin_mtf_median.setSingleStep(0.01)
+        self.spin_mtf_median.setDecimals(3)
+        self.spin_mtf_median.setValue(0.10)
+
+        self.lbl_mtf_median = QLabel("Temp stretch target median:", self)
+
         # target bg (auto, optional)
         self._auto_bg = _syqon_compute_target_bg_from_doc(doc)
         self.lbl_target_bg = QLabel("Target background:", self)
@@ -825,6 +834,7 @@ class SyQonStarlessDialog(QDialog):
             self.spin_pad.setValue(int(s.value("syqon/pad_pixels", 256)))
             self.cmb_stars_extract.setCurrentText(str(s.value("syqon/stars_extract", "unscreen")))
             self.chk_mtf.setChecked(bool(s.value("syqon/use_mtf", True, type=bool)))
+            self.spin_mtf_median.setValue(float(s.value("syqon/mtf_target_median", 0.10)))
             self.chk_amp.setChecked(bool(s.value("syqon/use_amp", False, type=bool)))
             saved = _syqon_norm_kind(str(s.value("syqon/model_kind", "nadir")))
             idx = self.cmb_model.findData(saved)
@@ -848,7 +858,10 @@ class SyQonStarlessDialog(QDialog):
 
         form.addRow(self.lbl_target_bg, self.spin_bg)
         form.addRow("", self.chk_show_bg)
-        form.addRow("", self.chk_mtf)        
+
+        form.addRow("", self.chk_mtf)
+        form.addRow(self.lbl_mtf_median, self.spin_mtf_median)
+
         form.addRow("", self.chk_make_stars)
 
         form.addRow("", self.chk_pad)
@@ -872,6 +885,8 @@ class SyQonStarlessDialog(QDialog):
 
         self._toggle_bg(self.chk_show_bg.isChecked())
         self.cmb_model.currentTextChanged.connect(self._on_model_changed)
+        self.chk_mtf.toggled.connect(lambda on: self.spin_mtf_median.setEnabled(bool(on)))
+        self.spin_mtf_median.setEnabled(self.chk_mtf.isChecked())
 
         self._refresh_state()
 
@@ -1238,6 +1253,7 @@ class SyQonStarlessDialog(QDialog):
             s.setValue("syqon/pad_pixels", int(self.spin_pad.value()))
             s.setValue("syqon/stars_extract", str(self.cmb_stars_extract.currentText()))
             s.setValue("syqon/use_mtf", bool(self.chk_mtf.isChecked()))
+            s.setValue("syqon/mtf_target_median", float(self.spin_mtf_median.value()))
             s.setValue("syqon/use_amp", bool(self.chk_amp.isChecked()))
             s.setValue("syqon/model_kind", str(self.cmb_model.currentText()))
 
@@ -1274,7 +1290,9 @@ class SyQonStarlessDialog(QDialog):
         do_mtf = bool(self.chk_mtf.isChecked())
         # MTF only if requested
         if do_mtf:
-            mtf_params = _mtf_params_unlinked(xrgb, shadows_clipping=-2.8, targetbg=0.25)
+            mtf_target = float(self.spin_mtf_median.value())
+            mtf_params = _mtf_params_unlinked(xrgb, shadows_clipping=-2.8, targetbg=mtf_target)
+
             x_for_net = _apply_mtf_unlinked_rgb(xrgb, mtf_params)
         else:
             mtf_params = None
