@@ -778,6 +778,67 @@ def _ring_to_polar_texture(roi01, cx0, cy0, rpx, pa_deg, tilt, k_in, k_out,
     )
     return polar  # (n_r, n_theta, 3) float01
 
+def pick_planet_disk_params(
+    parent,
+    img_rgb: np.ndarray,
+    *,
+    cx: float | None = None,
+    cy: float | None = None,
+    r: float | None = None,
+    overlay_mode: str = "none",   # "none" | "planet" | "saturn" | "galaxy"
+
+    ring_pa: float = 0.0,
+    ring_tilt: float = 0.35,
+    ring_outer: float = 2.2,
+    ring_inner: float = 1.25,
+):
+    """
+    UI helper for other modules (SER stacker, etc).
+    Returns dict or None if canceled.
+    """
+    H, W = img_rgb.shape[:2]
+    if cx is None: cx = 0.5 * (W - 1)
+    if cy is None: cy = 0.5 * (H - 1)
+    if r  is None: r  = 0.45 * min(H, W)
+
+    dlg = PlanetDiskAdjustDialog(
+        parent,
+        img_rgb=img_rgb,
+        cx=float(cx), cy=float(cy), r=float(r),
+        overlay_mode=str(overlay_mode),
+        ring_pa=float(ring_pa),
+        ring_tilt=float(ring_tilt),
+        ring_outer=float(ring_outer),
+        ring_inner=float(ring_inner),
+    )
+    if dlg.exec() != QDialog.DialogCode.Accepted:
+        return None
+
+    cx2, cy2, r2 = dlg.get_result()
+    pa, tilt, kout, kin = dlg.get_ring_result()
+
+    return {
+        "cx": float(cx2),
+        "cy": float(cy2),
+        "r": float(r2),
+
+        # keep old field for existing callers
+        "overlay_mode": str(overlay_mode),
+
+        # NEW: derotation-ready names
+        "axis_pa_deg": float(pa),
+        "axis_tilt": float(tilt),
+
+        # BACKCOMPAT: keep old names too
+        "ring_pa": float(pa),
+        "ring_tilt": float(tilt),
+
+        # saturn-only stuff (still returned so old Saturn pipeline stays intact)
+        "ring_outer": float(kout),
+        "ring_inner": float(kin),
+    }
+
+
 
 def export_planet_sphere_html(
     roi_rgb: np.ndarray,
@@ -3030,7 +3091,7 @@ class PlanetDiskAdjustDialog(QDialog):
         self.setModal(True)
         self._preview_zoom = 1.0   # 1.0 = Fit
         self.overlay_mode = str(overlay_mode)
-        self.show_rings = (self.overlay_mode in ("saturn", "galaxy"))
+        self.show_rings = (self.overlay_mode in ("saturn", "galaxy", "planet"))
         self.img = np.asarray(img_rgb)
         self.H, self.W = self.img.shape[:2]
 
@@ -3066,8 +3127,13 @@ class PlanetDiskAdjustDialog(QDialog):
             "Ctrl+Click+Drag to move the circle.\n"
             "Use Radius controls and arrow nudges for precision."
         )
-        if self.show_rings:
+        if self.overlay_mode == "saturn":
             help_txt += "\nAdjust ring PA / tilt / inner / outer to match Saturn's rings."
+        elif self.overlay_mode == "galaxy":
+            help_txt += "\nAdjust disk PA / tilt to match the galaxy's projected ellipse."
+        elif self.overlay_mode == "planet":
+            help_txt += "\nSet Axis PA / tilt so derotation matches the planet's rotation axis."
+
 
         self.lbl_help = QLabel(help_txt)
         self.lbl_help.setWordWrap(True)
@@ -3102,8 +3168,14 @@ class PlanetDiskAdjustDialog(QDialog):
         outer.addWidget(self.preview)
 
         # --- rings controls (optional) ---
-        if self.overlay_mode in ("saturn", "galaxy"):
-            title = "Galaxy disk alignment" if self.overlay_mode == "galaxy" else "Saturn ring alignment"
+        if self.overlay_mode in ("saturn", "galaxy", "planet"):
+            if self.overlay_mode == "saturn":
+                title = "Saturn ring alignment"
+            elif self.overlay_mode == "galaxy":
+                title = "Galaxy disk alignment"
+            else:
+                title = "Planet axis alignment (derotation)"
+
             rings_box = QGroupBox(title)
             rings_form = QFormLayout(rings_box)
 
@@ -3113,7 +3185,14 @@ class PlanetDiskAdjustDialog(QDialog):
                 value=self.ring_pa, decimals=0,
                 on_change=self._on_ring_widgets_changed
             )
-            rings_form.addRow("Disk PA (deg):" if self.overlay_mode=="galaxy" else "Ring PA (deg):", row)
+            if self.overlay_mode == "saturn":
+                pa_label = "Ring PA (deg):"
+            elif self.overlay_mode == "galaxy":
+                pa_label = "Disk PA (deg):"
+            else:
+                pa_label = "Axis PA (deg):"  # <-- derotation
+            rings_form.addRow(pa_label, row)
+
 
             # tilt
             row, self.sld_ring_tilt, self.spin_ring_tilt = self._make_slider_spin_row(
@@ -3121,7 +3200,14 @@ class PlanetDiskAdjustDialog(QDialog):
                 value=self.ring_tilt, decimals=2,
                 on_change=self._on_ring_widgets_changed
             )
-            rings_form.addRow("Disk tilt (b/a):" if self.overlay_mode=="galaxy" else "Ring tilt (b/a):", row)
+            if self.overlay_mode == "saturn":
+                tilt_label = "Ring tilt (b/a):"
+            elif self.overlay_mode == "galaxy":
+                tilt_label = "Disk tilt (b/a):"
+            else:
+                tilt_label = "Axis tilt (b/a):"  # <-- derotation
+            rings_form.addRow(tilt_label, row)
+
 
             # ONLY Saturn gets inner/outer
             if self.overlay_mode == "saturn":
@@ -3410,14 +3496,14 @@ class PlanetDiskAdjustDialog(QDialog):
         # -----------------------------
         # Ellipse overlays
         # -----------------------------
-        if overlay_mode in ("saturn", "galaxy"):
+        if overlay_mode in ("saturn", "galaxy", "planet"):
             try:
                 pa = float(getattr(self, "ring_pa", 0.0))
                 tilt = float(getattr(self, "ring_tilt", 0.35))
                 tilt = max(0.01, min(1.0, tilt))
 
                 # ellipse semi-axes in SOURCE pixels
-                if overlay_mode == "galaxy":
+                if overlay_mode in ("galaxy", "planet"):
                     # ONE ellipse: major axis = r, minor = r * tilt
                     a = float(self.r)
                     b = max(1.0, a * tilt)
@@ -3440,10 +3526,17 @@ class PlanetDiskAdjustDialog(QDialog):
                     )
 
                     # minor-axis guide
+                    # Axis guide line (in ellipse frame)
+                    # If user is aligning the north pole direction, PA should correspond
+                    # to the pole axis direction on the disk in IMAGE coordinates.
                     pena = QPen(QColor(0, 200, 0))
                     pena.setWidth(2)
                     painter.setPen(pena)
-                    painter.drawLine(0, int(round(-b_p)), 0, int(round(b_p)))
+
+                    # Draw both major and minor axes for clarity
+                    painter.drawLine(int(round(-a_p)), 0, int(round(a_p)), 0)  # major
+                    painter.drawLine(0, int(round(-b_p)), 0, int(round(b_p)))  # minor
+
 
                     painter.restore()
 
@@ -3496,13 +3589,20 @@ class PlanetDiskAdjustDialog(QDialog):
         self.preview.setPixmap(pix)
 
         # status label
-        if overlay_mode == "galaxy":
+        if overlay_mode in ("galaxy", "planet"):
             pa = float(getattr(self, "ring_pa", 0.0))
             tilt = float(getattr(self, "ring_tilt", 0.35))
-            self.lbl_status.setText(
-                f"Center: ({self.cx:.1f}, {self.cy:.1f})   Radius: {self.r:.1f}px   "
-                f"PA: {pa:.1f}°   Tilt(b/a): {tilt:.2f}"
-            )
+            if overlay_mode == "planet":
+                self.lbl_status.setText(
+                    f"Center: ({self.cx:.1f}, {self.cy:.1f})   Radius: {self.r:.1f}px   "
+                    f"Axis PA: {pa:.1f}°   Tilt(b/a): {tilt:.2f}"
+                )
+            else:
+                self.lbl_status.setText(
+                    f"Center: ({self.cx:.1f}, {self.cy:.1f})   Radius: {self.r:.1f}px   "
+                    f"PA: {pa:.1f}°   Tilt(b/a): {tilt:.2f}"
+                )
+
         elif overlay_mode == "saturn":
             pa = float(getattr(self, "ring_pa", 0.0))
             tilt = float(getattr(self, "ring_tilt", 0.35))

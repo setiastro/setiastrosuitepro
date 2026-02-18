@@ -17,6 +17,8 @@ from setiastro.saspro.imageops.serloader import SERReader
 from setiastro.saspro.ser_stack_config import SERStackConfig
 from setiastro.saspro.ser_tracking import PlanetaryTracker, SurfaceTracker, _to_mono01
 from setiastro.saspro.imageops.serloader import open_planetary_source, PlanetaryFrameSource
+from setiastro.saspro.derotate import derotate_stack_lonshift, _build_lonlat_grids
+
 
 _BAYER_TO_CV2 = {
     "RGGB": cv2.COLOR_BayerRG2RGB,
@@ -28,6 +30,25 @@ _BAYER_TO_CV2 = {
 def _cfg_bayer_pattern(cfg) -> str | None:
     # cfg.bayer_pattern might be missing in older saved projects; be defensive
     return getattr(cfg, "bayer_pattern", None)
+
+def _rotate_about(img: np.ndarray, cx: float, cy: float, ang_deg: float) -> np.ndarray:
+    if abs(float(ang_deg)) < 1e-8:
+        return img
+    H, W = img.shape[:2]
+    M = cv2.getRotationMatrix2D((float(cx), float(cy)), float(ang_deg), 1.0)
+    interp = cv2.INTER_LINEAR
+    return cv2.warpAffine(
+        img, M, (W, H),
+        flags=interp,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0
+    )
+
+def _rotate_about_rgb(img: np.ndarray, cx: float, cy: float, ang_deg: float) -> np.ndarray:
+    if img.ndim == 2:
+        return _rotate_about(img, cx, cy, ang_deg)
+    # warpAffine works per-channel if you pass 3-ch, OpenCV is fine with that
+    return _rotate_about(img, cx, cy, ang_deg)
 
 
 def _get_frame(src, idx: int, *, roi, debayer: bool, to_float01: bool, force_rgb: bool, bayer_pattern: str | None):
@@ -55,26 +76,32 @@ def _get_frame(src, idx: int, *, roi, debayer: bool, to_float01: bool, force_rgb
             force_rgb=force_rgb,
         )
 
-
 @dataclass
 class AnalyzeResult:
     frames_total: int
     roi_used: Optional[Tuple[int, int, int, int]]
     track_mode: str
-    quality: np.ndarray        # (N,) float32 higher=better
-    dx: np.ndarray             # (N,) float32
-    dy: np.ndarray             # (N,) float32
-    conf: np.ndarray           # (N,) float32 0..1  (final conf used by stacking)
-    order: np.ndarray          # (N,) int indices sorted by quality desc
-    ref_mode: str              # "best_frame" | "best_stack"
+    quality: np.ndarray
+    dx: np.ndarray
+    dy: np.ndarray
+    conf: np.ndarray
+    order: np.ndarray
+    ref_mode: str
     ref_count: int
-    ref_image: np.ndarray      # float32 [0..1], ROI-sized
-    ap_centers: Optional[np.ndarray] = None  # (M,2) int32 in ROI coords
+    ref_image: np.ndarray
+    ap_centers: Optional[np.ndarray] = None
     ap_size: int = 64
     ap_multiscale: bool = False
 
-    # ✅ NEW: surface anchor confidence (coarse tracker)
-    coarse_conf: Optional[np.ndarray] = None  # (N,) float32 0..1
+    coarse_conf: Optional[np.ndarray] = None
+
+    # 🔵 NEW — planetary derotation support
+    ang: Optional[np.ndarray] = None
+    ang_conf: Optional[np.ndarray] = None
+    ref_cx: float = 0.0
+    ref_cy: float = 0.0
+    planet_derotate: bool = False
+
  
 
 @dataclass
@@ -869,6 +896,110 @@ def _phase_corr_shift(ref_m: np.ndarray, cur_m: np.ndarray) -> tuple[float, floa
     (dx, dy), resp = cv2.phaseCorrelate(ref, cur)  # shift cur -> ref
     return float(dx), float(dy), float(resp)
 
+def _estimate_rotation_fm(ref_m: np.ndarray, cur_m: np.ndarray, *, max_dim: int = 512) -> tuple[float, float]:
+    """
+    Estimate rotation (degrees) between ref and cur using a Fourier–Mellin style approach:
+      - take FFT magnitude spectra
+      - log-polar transform
+      - phaseCorrelate to get x-shift => rotation
+
+    Returns: (angle_deg, conf) where conf in [0..1].
+    Positive angle means: rotate cur by +angle to better match ref (best-effort).
+    """
+    if cv2 is None:
+        return 0.0, 0.0
+
+    ref = _downsample_mono01(ref_m, max_dim=max_dim).astype(np.float32, copy=False)
+    cur = _downsample_mono01(cur_m, max_dim=max_dim).astype(np.float32, copy=False)
+
+    # windowing helps stability
+    H, W = ref.shape[:2]
+    wy = np.hanning(H).astype(np.float32)
+    wx = np.hanning(W).astype(np.float32)
+    win = (wy[:, None] * wx[None, :]).astype(np.float32, copy=False)
+    refw = ref * win
+    curw = cur * win
+
+    # FFT magnitude spectra
+    Fr = np.fft.fft2(refw)
+    Fc = np.fft.fft2(curw)
+    Mr = np.log1p(np.abs(np.fft.fftshift(Fr))).astype(np.float32, copy=False)
+    Mc = np.log1p(np.abs(np.fft.fftshift(Fc))).astype(np.float32, copy=False)
+
+    # highpass a bit (optional) to reduce DC dominance
+    Mr -= float(np.median(Mr))
+    Mc -= float(np.median(Mc))
+
+    # log-polar transform
+    cy = (H - 1) * 0.5
+    cx = (W - 1) * 0.5
+    rmax = min(cx, cy)
+    if rmax <= 8:
+        return 0.0, 0.0
+
+    # width of log-polar image controls angular resolution
+    lp_w = max(128, int(round(W)))
+    lp_h = max(128, int(round(H)))
+
+    Mr_lp = cv2.warpPolar(
+        Mr, (lp_w, lp_h), (cx, cy), rmax,
+        flags=cv2.WARP_POLAR_LOG | cv2.INTER_LINEAR
+    )
+    Mc_lp = cv2.warpPolar(
+        Mc, (lp_w, lp_h), (cx, cy), rmax,
+        flags=cv2.WARP_POLAR_LOG | cv2.INTER_LINEAR
+    )
+
+    # phase correlate in log-polar:
+    # x shift corresponds to rotation
+    (dx, dy), resp = cv2.phaseCorrelate(Mr_lp.astype(np.float32), Mc_lp.astype(np.float32))
+
+    # dx pixels over lp_w corresponds to degrees
+    ang = -360.0 * (float(dx) / float(lp_w))  # sign chosen so "rotate cur by ang" tends to align
+    conf = float(np.clip(resp, 0.0, 1.0))
+    # keep angle in a reasonable range
+    if ang > 180.0:
+        ang -= 360.0
+    elif ang < -180.0:
+        ang += 360.0
+
+    return float(ang), float(conf)
+
+
+def _pick_surface_anchor_xy(
+    *,
+    roi_used: Optional[Tuple[int, int, int, int]],
+    surface_anchor,
+    ref_img01: np.ndarray
+) -> tuple[float, float]:
+    """
+    Return anchor (cx,cy) in ROI coords.
+    surface_anchor may be:
+      - None => ROI center
+      - tuple/list (x,y) already in ROI coords
+      - dict-like with keys x/y or cx/cy
+    """
+    H, W = ref_img01.shape[:2]
+    cx = float(W * 0.5)
+    cy = float(H * 0.5)
+
+    if surface_anchor is None:
+        return cx, cy
+
+    try:
+        if isinstance(surface_anchor, (tuple, list)) and len(surface_anchor) >= 2:
+            return float(surface_anchor[0]), float(surface_anchor[1])
+        if isinstance(surface_anchor, dict):
+            if "cx" in surface_anchor and "cy" in surface_anchor:
+                return float(surface_anchor["cx"]), float(surface_anchor["cy"])
+            if "x" in surface_anchor and "y" in surface_anchor:
+                return float(surface_anchor["x"]), float(surface_anchor["y"])
+    except Exception:
+        pass
+
+    return cx, cy
+
+
 def _ensure_source(source, cache_items: int = 10) -> tuple[PlanetaryFrameSource, bool]:
     """
     Returns (src, owns_src)
@@ -897,8 +1028,8 @@ def stack_ser(
     keep_percent: float = 20.0,
     track_mode: str = "planetary",
     surface_anchor=None,
-    to_rgb: bool = False,                 # ✅ add this
-    bayer_pattern: Optional[str] = None,  # ✅ strongly recommended since dialog passes it    
+    to_rgb: bool = False,
+    bayer_pattern: Optional[str] = None,
     analysis: AnalyzeResult | None = None,
     local_warp: bool = True,
     max_dim: int = 512,
@@ -906,12 +1037,19 @@ def stack_ser(
     cache_items: int = 10,
     workers: int | None = None,
     chunk_size: int | None = None,
-    # ✅ NEW drizzle knobs
     drizzle_scale: float = 1.0,
     drizzle_pixfrac: float = 0.80,
     drizzle_kernel: str = "gaussian",
     drizzle_sigma: float = 0.0,
-    keep_mask=None, 
+    keep_mask=None,
+
+    # ✅ NEW: explicit planetary derotation params (UI can pass these)
+    planet_pole_pa_deg: float | None = None,      # axis PA in image
+    planet_axis_tilt_ba: float | None = None,     # b/a ~ cos(subobs_lat)
+    planet_rot_deg_per_frame: float | None = None,
+    planet_cx: float | None = None,              # ROI coords
+    planet_cy: float | None = None,
+    planet_r: float | None = None,
 ) -> tuple[np.ndarray, dict]:
     source_obj = source
 
@@ -925,6 +1063,45 @@ def stack_ser(
             cv2.setNumThreads(1)
         except Exception:
             pass
+
+    # ---- Validate analysis BEFORE touching it ----
+    if analysis is None or analysis.ref_image is None or analysis.ap_centers is None:
+        raise ValueError("stack_ser expects analysis with ref_image + ap_centers (run Analyze first).")
+
+    # Ensure analysis.ang exists (rotation per-frame from analyze_ser)
+    if getattr(analysis, "ang", None) is None:
+        analysis.ang = np.zeros((int(analysis.frames_total),), dtype=np.float32)
+
+    # Pull reference image early (needed for defaults)
+    ref_img = analysis.ref_image.astype(np.float32, copy=False)
+
+    planet_derotate = bool(getattr(analysis, "planet_derotate", False))
+
+    # ---- Planetary derotation params (sphere lon-shift) ----
+    # Prefer explicit args -> analysis fields -> safe defaults
+    if planet_pole_pa_deg is None:
+        planet_pole_pa_deg = float(getattr(analysis, "planet_pole_pa_deg", 0.0))
+    if planet_axis_tilt_ba is None:
+        planet_axis_tilt_ba = float(getattr(analysis, "planet_axis_tilt_ba", 1.0))
+    if planet_rot_deg_per_frame is None:
+        planet_rot_deg_per_frame = float(getattr(analysis, "planet_rot_deg_per_frame", 0.0))
+
+    if planet_cx is None:
+        planet_cx = float(getattr(analysis, "ref_cx", ref_img.shape[1] * 0.5))
+    if planet_cy is None:
+        planet_cy = float(getattr(analysis, "ref_cy", ref_img.shape[0] * 0.5))
+    if planet_r is None:
+        planet_r = float(min(ref_img.shape[0], ref_img.shape[1]) * 0.45)
+
+    # Convert (b/a) -> subobserver latitude.
+    ba = float(np.clip(float(planet_axis_tilt_ba), 0.0, 1.0))
+    subobs_lat_rad = float(np.arccos(ba)) if ba > 1e-8 else float(np.pi * 0.5)
+    pole_angle_rad = float(np.deg2rad(float(planet_pole_pa_deg)))
+
+    # NOTE: keep_idx and derot_ref_i are computed later (after keep_idx exists)
+    # so DO NOT reference keep_idx here.
+
+    # Precompute lon/lat grids ONCE per output shape (each worker will reuse its own precomp)
 
     drizzle_scale = float(drizzle_scale)
     drizzle_on = drizzle_scale > 1.0001
@@ -941,31 +1118,29 @@ def stack_ser(
         keep_percent = max(0.1, min(100.0, float(keep_percent)))
         k = max(1, int(round(n * (keep_percent / 100.0))))
 
-        if analysis is None or analysis.ref_image is None or analysis.ap_centers is None:
-            raise ValueError("stack_ser expects analysis with ref_image + ap_centers (run Analyze first).")
-
         order = np.asarray(analysis.order, np.int32)
         keep_idx = order[:k].astype(np.int32, copy=False)
 
-        # ✅ NEW: apply keep_mask (global mask in original frame index space)
         if keep_mask is not None:
             km = np.asarray(keep_mask, dtype=bool)
             if km.ndim != 1 or km.shape[0] != n:
                 raise ValueError(f"keep_mask must be 1D bool of length {n}, got shape {km.shape}")
             keep_idx = keep_idx[km[keep_idx]]
-
-            # Ensure at least one frame survives (or decide to error)
             if keep_idx.size == 0:
                 raise ValueError("keep_mask rejected all frames in the Keep% set.")
-        # reference / APs
+
         ref_img = analysis.ref_image.astype(np.float32, copy=False)
         ref_m = _to_mono01(ref_img).astype(np.float32, copy=False)
         ap_centers_all = np.asarray(analysis.ap_centers, np.int32)
         ap_size = int(getattr(analysis, "ap_size", 64) or 64)
-
-        # frame shape for accumulator
-        first = _get_frame(src0, int(keep_idx[0]), roi=roi, debayer=debayer, to_float01=True, force_rgb=False, bayer_pattern=bayer_pattern)
-        acc_shape = first.shape  # (H,W) or (H,W,3)
+        derot_ref_i = int(keep_idx[0])  # now safe (keep_idx non-empty by construction)
+        first = _get_frame(
+            src0, int(keep_idx[0]),
+            roi=roi, debayer=debayer, to_float01=True,
+            force_rgb=bool(to_rgb),
+            bayer_pattern=bayer_pattern
+        )
+        acc_shape = first.shape
     finally:
         if owns0:
             try:
@@ -1048,8 +1223,41 @@ def stack_ser(
                 gdx = float(analysis.dx[int(i)]) if (analysis.dx is not None) else 0.0
                 gdy = float(analysis.dy[int(i)]) if (analysis.dy is not None) else 0.0
 
-                # Global prior always first
+                # --- rotation only for planetary derotation (never for surface/moon) ---
+                # ---- translate first (global centroid/SSD alignment) ----
                 warped_g = _shift_image(img, gdx, gdy)
+
+                # ---- TRUE planetary derotation (sphere lon shift) ----
+                if track_mode == "planetary" and planet_derotate and abs(planet_rot_deg_per_frame) > 1e-12:
+                    # longitude shift relative to reference kept frame
+                    dframes = float(int(i) - int(derot_ref_i))
+                    dlon_rad = float(np.deg2rad(planet_rot_deg_per_frame * dframes))
+
+                    # Build per-worker precomp lazily (depends on H/W)
+                    if not hasattr(_stack_chunk, "_derot_precomp"):
+                        _stack_chunk._derot_precomp = None
+
+                    if _stack_chunk._derot_precomp is None:
+                        Hh, Ww = warped_g.shape[:2]
+                        _stack_chunk._derot_precomp = _build_lonlat_grids(
+                            Hh, Ww,
+                            planet_cx, planet_cy, planet_r,
+                            pole_angle_rad,
+                            subobs_lat_rad,
+                        )
+
+                    warped_g = derotate_stack_lonshift(
+                        warped_g,
+                        cx=planet_cx,
+                        cy=planet_cy,
+                        r=planet_r,
+                        dlon_rad=dlon_rad,
+                        pole_angle_rad=pole_angle_rad,
+                        subobs_lat_rad=subobs_lat_rad,
+                        border_value=0.0,
+                        precomp=_stack_chunk._derot_precomp,
+                    )
+
 
                 if cv2 is None or (not local_warp):
                     warped = warped_g
@@ -1416,6 +1624,10 @@ def analyze_ser(
     conf = np.ones((n,), dtype=np.float32)
     coarse_conf: Optional[np.ndarray] = None
 
+    ang = np.zeros((n,), dtype=np.float32)
+    ang_conf = np.zeros((n,), dtype=np.float32)
+
+
     if cfg.track_mode == "off" or cv2 is None:
         return AnalyzeResult(
             frames_total=n,
@@ -1502,152 +1714,20 @@ def analyze_ser(
                         force_rgb=bool(to_rgb),
                         bayer_pattern=bpat,
                     )
-                    cur_m = _to_mono01(img).astype(np.float32, copy=False)
-
-                    coarse_dx = float(dx[int(i)])
-                    coarse_dy = float(dy[int(i)])
-
-                    # Apply coarse shift FIRST (so APs line up without any searching)
-                    cur_m_g = _shift_image(cur_m, coarse_dx, coarse_dy)
-
-                    if use_multiscale:
-                        s2, s1, s05 = _scaled_ap_sizes(ap_size)
-
-                        def _one_scale(s_ap: int):
-                            rdx, rdy, resp = _ap_phase_shifts_per_ap(
-                                ref_m_full, cur_m_g,
-                                ap_centers=ap_centers,
-                                ap_size=s_ap,
-                                max_dim=max_dim,
-                            )
-                            cf = np.clip(resp.astype(np.float32, copy=False), 0.0, 1.0)
-                            keep = _reject_ap_outliers(rdx, rdy, cf, z=3.5)
-                            if not np.any(keep):
-                                return 0.0, 0.0, 0.25
-                            dx_r = float(np.median(rdx[keep]))
-                            dy_r = float(np.median(rdy[keep]))
-                            cf_r = float(np.median(cf[keep]))
-                            return dx_r, dy_r, cf_r
-
-                        dx2, dy2, cf2 = _one_scale(s2)
-                        dx1, dy1, cf1 = _one_scale(s1)
-                        dx0, dy0, cf0 = _one_scale(s05)
-
-                        w2 = max(1e-3, float(cf2)) * 1.25
-                        w1 = max(1e-3, float(cf1)) * 1.00
-                        w0 = max(1e-3, float(cf0)) * 0.85
-                        wsum = (w2 + w1 + w0)
-
-                        dx_res = (w2 * dx2 + w1 * dx1 + w0 * dx0) / wsum
-                        dy_res = (w2 * dy2 + w1 * dy1 + w0 * dy0) / wsum
-                        cf_ap = float(np.clip((w2 * cf2 + w1 * cf1 + w0 * cf0) / wsum, 0.0, 1.0))
-                    else:
-                        rdx, rdy, resp = _ap_phase_shifts_per_ap(
-                            ref_m_full, cur_m_g,
-                            ap_centers=ap_centers,
-                            ap_size=ap_size,
-                            max_dim=max_dim,
-                        )
-                        cf = np.clip(resp.astype(np.float32, copy=False), 0.0, 1.0)
-                        keep = _reject_ap_outliers(rdx, rdy, cf, z=3.5)
-                        if np.any(keep):
-                            dx_res = float(np.median(rdx[keep]))
-                            dy_res = float(np.median(rdy[keep]))
-                            cf_ap = float(np.median(cf[keep]))
-                        else:
-                            dx_res, dy_res, cf_ap = 0.0, 0.0, 0.25
-
-                    # Final = coarse + residual (residual is relative to coarse-shifted frame)
-                    # Final = coarse + residual (residual is relative to coarse-shifted frame)
-                    dx_i = float(coarse_dx + dx_res)
-                    dy_i = float(coarse_dy + dy_res)
-
-                    # Final lock-in refinement: minimize (ref-cur)^2 on gradients in a tiny window
-                    # NOTE: pass *unshifted* cur_m with the current dx_i/dy_i estimate
-                    dxr, dyr, c_ssd = _refine_shift_ssd(
-                        ref_m_full, cur_m, dx_i, dy_i,
-                        radius=5, crop=0.80,
-                        bruteforce=bool(getattr(cfg, "ssd_refine_bruteforce", False)),
-                    )
-                    dx_i += float(dxr)
-                    dy_i += float(dyr)
-
-                    # Confidence: combine coarse + AP, then optionally nudge with SSD
-                    cc = float(coarse_conf[int(i)]) if coarse_conf is not None else 0.5
-                    cf_i = float(np.clip(0.60 * cc + 0.40 * float(cf_ap), 0.0, 1.0))
-                    cf_i = float(np.clip(0.85 * cf_i + 0.15 * float(c_ssd), 0.05, 1.0))
-
-                    out_i.append(int(i))
-                    out_dx.append(dx_i)
-                    out_dy.append(dy_i)
-                    out_cf.append(cf_i)
-            finally:
-                if owns:
-                    try:
-                        src.close()
-                    except Exception:
-                        pass
-
-            return (
-                np.asarray(out_i, np.int32),
-                np.asarray(out_dx, np.float32),
-                np.asarray(out_dy, np.float32),
-                np.asarray(out_cf, np.float32),
-            )
-
-    else:
-        # planetary: centroid tracking (same as viewer) for GLOBAL dx/dy/conf
-        # APs are still computed and used later by stack_ser for local_warp residuals.
-        tracker = PlanetaryTracker(
-            smooth_sigma=float(getattr(cfg, "planet_smooth_sigma", smooth_sigma)),
-            thresh_pct=float(getattr(cfg, "planet_thresh_pct", thresh_pct)),
-            min_val=float(getattr(cfg, "planet_min_val", 0.02)),
-            use_norm=bool(getattr(cfg, "planet_use_norm", False)),
-            norm_hi_pct=float(getattr(cfg, "planet_norm_hi_pct", 99.5)),
-        )
-
-        # IMPORTANT: reference center is computed from the SAME reference image that Analyze chose
-        ref_cx, ref_cy, ref_cc = tracker.compute_center(ref_img)
-        if ref_cc <= 0.0:
-            # fallback: center of ROI
-            mref = _to_mono01(ref_img)
-            ref_cx = float(mref.shape[1] * 0.5)
-            ref_cy = float(mref.shape[0] * 0.5)
-
-        ref_center = (float(ref_cx), float(ref_cy))
-        ref_m_full = _to_mono01(ref_img).astype(np.float32, copy=False)
-
-        def _shift_chunk(chunk: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-            out_i: list[int] = []
-            out_dx: list[float] = []
-            out_dy: list[float] = []
-            out_cf: list[float] = []
-
-            src, owns = _ensure_source(source_obj, cache_items=0)
-            try:
-                for i in chunk.tolist():
-                    img = _get_frame(
-                        src, int(i),
-                        roi=roi_used,
-                        debayer=debayer,
-                        to_float01=True,
-                        force_rgb=bool(to_rgb),
-                        bayer_pattern=bpat,
-                    )
 
                     dx_i, dy_i, cf_i = tracker.shift_to_ref(img, ref_center)
 
                     if float(cf_i) >= 0.25:
                         cur_m = _to_mono01(img).astype(np.float32, copy=False)
                         dxr, dyr, c_ssd = _refine_shift_ssd(
-                            ref_m_full, cur_m, dx_i, dy_i,
+                            ref_m_full, cur_m, float(dx_i), float(dy_i),
                             radius=5, crop=0.80,
                             bruteforce=bool(getattr(cfg, "ssd_refine_bruteforce", False)),
                         )
+                        dx_i = float(dx_i) + float(dxr)
+                        dy_i = float(dy_i) + float(dyr)
+                        cf_i = float(np.clip(0.85 * float(cf_i) + 0.15 * float(c_ssd), 0.05, 1.0))
 
-                        dx_i = float(dx_i) + dxr
-                        dy_i = float(dy_i) + dyr
-                        cf_i = float(np.clip(0.85 * float(cf_i) + 0.15 * c_ssd, 0.05, 1.0))
                     out_i.append(int(i))
                     out_dx.append(float(dx_i))
                     out_dy.append(float(dy_i))
@@ -1666,15 +1746,112 @@ def analyze_ser(
                 np.asarray(out_cf, np.float32),
             )
 
+    else:
+        # planetary tracking
+        tracker = PlanetaryTracker(
+            smooth_sigma=float(getattr(cfg, "planet_smooth_sigma", smooth_sigma)),
+            thresh_pct=float(getattr(cfg, "planet_thresh_pct", thresh_pct)),
+            min_val=float(getattr(cfg, "planet_min_val", 0.02)),
+            use_norm=bool(getattr(cfg, "planet_use_norm", False)),
+            norm_hi_pct=float(getattr(cfg, "planet_norm_hi_pct", 99.5)),
+        )
+
+        # reference center
+        ref_cx, ref_cy, ref_cc = tracker.compute_center(ref_img)
+        if ref_cc <= 0.0:
+            mref = _to_mono01(ref_img)
+            ref_cx = float(mref.shape[1] * 0.5)
+            ref_cy = float(mref.shape[0] * 0.5)
+
+        ref_center = (float(ref_cx), float(ref_cy))
+        ref_m_full = _to_mono01(ref_img).astype(np.float32, copy=False)
+
+        # 🔵 enable derotation toggle
+        planet_derotate = bool(getattr(cfg, "planet_derotate", False))
+
+        def _shift_chunk(chunk: np.ndarray):
+            out_i = []
+            out_dx = []
+            out_dy = []
+            out_cf = []
+            out_ang = []
+            out_acf = []
+
+            src, owns = _ensure_source(source_obj, cache_items=0)
+            try:
+                for i in chunk.tolist():
+                    img = _get_frame(
+                        src, int(i),
+                        roi=roi_used,
+                        debayer=debayer,
+                        to_float01=True,
+                        force_rgb=bool(to_rgb),
+                        bayer_pattern=bpat,
+                    )
+
+                    dx_i, dy_i, cf_i = tracker.shift_to_ref(img, ref_center)
+
+                    ang_i = 0.0
+                    ang_cf_i = 0.0
+
+                    if float(cf_i) >= 0.25:
+                        cur_m = _to_mono01(img).astype(np.float32, copy=False)
+
+                        # refine translation
+                        dxr, dyr, c_ssd = _refine_shift_ssd(
+                            ref_m_full, cur_m, dx_i, dy_i,
+                            radius=5, crop=0.80,
+                            bruteforce=bool(getattr(cfg, "ssd_refine_bruteforce", False)),
+                        )
+
+                        dx_i += dxr
+                        dy_i += dyr
+                        cf_i = float(np.clip(0.85 * float(cf_i) + 0.15 * c_ssd, 0.05, 1.0))
+
+                        # 🔵 planetary derotation
+                        if planet_derotate:
+                            a_i, a_cf = _estimate_rotation_fm(
+                                ref_m_full, cur_m, max_dim=max_dim
+                            )
+                            if float(a_cf) > 0.15:
+                                ang_i = float(a_i)
+                                ang_cf_i = float(a_cf)
+
+                    out_i.append(int(i))
+                    out_dx.append(float(dx_i))
+                    out_dy.append(float(dy_i))
+                    out_cf.append(float(cf_i))
+                    out_ang.append(float(ang_i))
+                    out_acf.append(float(ang_cf_i))
+
+            finally:
+                if owns:
+                    try:
+                        src.close()
+                    except Exception:
+                        pass
+
+            return (
+                np.asarray(out_i, np.int32),
+                np.asarray(out_dx, np.float32),
+                np.asarray(out_dy, np.float32),
+                np.asarray(out_cf, np.float32),
+                np.asarray(out_ang, np.float32),
+                np.asarray(out_acf, np.float32),
+            )
 
     done_ct = 0
     with ThreadPoolExecutor(max_workers=workers) as ex:
         futs = [ex.submit(_shift_chunk, c) for c in chunks2 if c.size > 0]
         for fut in as_completed(futs):
-            ii, ddx, ddy, ccf = fut.result()
+            ii, ddx, ddy, ccf, aang, acf = fut.result()
+
             dx[ii] = ddx
             dy[ii] = ddy
-            conf[ii] = np.clip(ccf, 0.05, 1.0).astype(np.float32, copy=False)
+            conf[ii] = np.clip(ccf, 0.05, 1.0)
+
+            ang[ii] = aang
+            ang_conf[ii] = acf
 
             done_ct += int(ii.size)
             if progress_cb:
@@ -1699,6 +1876,11 @@ def analyze_ser(
         ap_size=ap_size,
         ap_multiscale=use_multiscale,
         coarse_conf=coarse_conf,
+        ang=ang,
+        ang_conf=ang_conf,
+        ref_cx=float(ref_cx) if cfg.track_mode == "planetary" else 0.0,
+        ref_cy=float(ref_cy) if cfg.track_mode == "planetary" else 0.0,
+        planet_derotate=planet_derotate if cfg.track_mode == "planetary" else False,
     )
 
 
@@ -1957,8 +2139,8 @@ def realign_ser(
     else:
         # planetary: centroid tracking (same as viewer)
         tracker = PlanetaryTracker(
-            smooth_sigma=float(getattr(cfg, "planet_smooth_sigma", smooth_sigma)),
-            thresh_pct=float(getattr(cfg, "planet_thresh_pct", thresh_pct)),
+            smooth_sigma=float(getattr(cfg, "planet_smooth_sigma", 1.5)),
+            thresh_pct=float(getattr(cfg, "planet_thresh_pct", 95.0)),
             min_val=float(getattr(cfg, "planet_min_val", 0.02)),
             use_norm=bool(getattr(cfg, "planet_use_norm", False)),
             norm_hi_pct=float(getattr(cfg, "planet_norm_hi_pct", 99.5)),

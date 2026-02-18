@@ -938,9 +938,9 @@ class ToolbarMixin:
         self.act_white_balance.setStatusTip(self.tr("Apply white balance (Star-Based, Manual, or Auto)"))
         self.act_white_balance.triggered.connect(self._open_white_balance)
 
-        self.act_sfcc = QAction(QIcon(spcc_icon_path), self.tr("Spectral Flux Color Calibration..."), self)
+        self.act_sfcc = QAction(QIcon(spcc_icon_path), self.tr("Spectral Photometric Flux Color Calibration..."), self)
         self.act_sfcc.setObjectName("sfcc")
-        self.act_sfcc.setToolTip(self.tr("Open SFCC (Pickles + Filters + Sensor QE)"))
+        self.act_sfcc.setToolTip(self.tr("Open SPfCC (Pickles + GAIA + Filters + Sensor QE)"))
         self.act_sfcc.triggered.connect(self.SFCC_show)
 
         self.act_convo = QAction(QIcon(convoicon_path), self.tr("Convolution / Deconvolution..."), self)

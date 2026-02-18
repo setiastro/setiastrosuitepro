@@ -17,7 +17,7 @@ except Exception:
 from PyQt6.QtCore import Qt, QPointF, QRectF, QTimer, QEvent
 from PyQt6.QtGui import (
     QImage, QPixmap, QPainter, QColor, QPen, QBrush,
-    QPainterPath, QWheelEvent, QPolygonF, QMouseEvent
+    QPainterPath, QWheelEvent, QPolygonF, QMouseEvent,QShortcut, QKeySequence
 )
 from PyQt6.QtWidgets import (
     QInputDialog, QMessageBox, QFileDialog,   # QFileDialog only used if you later add “export”
@@ -380,8 +380,22 @@ class MaskCanvas(QGraphicsView):
 
     def clear_shapes(self):
         for it in list(self.shapes):
-            self.scene.removeItem(it)
+            try:
+                self.scene.removeItem(it)
+            except Exception:
+                pass
         self.shapes.clear()
+
+    def undo_last_shape(self) -> bool:
+        if not self.shapes:
+            return False
+        it = self.shapes.pop()
+        try:
+            self.scene.removeItem(it)
+        except Exception:
+            pass
+        return True
+
 
     def select_entire_image(self):
         self.clear_shapes()
@@ -805,20 +819,39 @@ class MaskCreationDialog(QDialog):
         self.type_dd.currentTextChanged.connect(self._on_type_changed)
 
         # Preview & Clear
+        # Preview & Clear
         rowb = QHBoxLayout()
         b_preview = QPushButton("Preview Mask"); b_preview.clicked.connect(self._preview_mask)
+
+        b_undo = QPushButton("Undo Shape"); b_undo.clicked.connect(self._undo_shape)
+
         b_clear = QPushButton("Clear Shapes");   b_clear.clicked.connect(self._clear_shapes)
-        rowb.addWidget(b_preview); rowb.addWidget(b_clear)
+
+        rowb.addWidget(b_preview)
+        rowb.addWidget(b_undo)
+        rowb.addWidget(b_clear)
         layout.addLayout(rowb)
+
 
         # OK / Cancel
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self)
         btns.accepted.connect(self._accept_apply); btns.rejected.connect(self.reject)
         layout.addWidget(btns)
+        
+        self._undo_shortcut = QShortcut(QKeySequence("Ctrl+Z"), self)
+        self._undo_shortcut.activated.connect(self._undo_shape)
+
 
         self.canvas.installEventFilter(self)
 
         self.resize(980, 640)
+
+    def _undo_shape(self):
+        if not self.canvas.undo_last_shape():
+            return
+        if hasattr(self, "range_box") and self.range_box.isVisible():
+            self._update_live_preview()
+
 
     # ---- callbacks
     def _set_mode(self, mode: str):
@@ -828,6 +861,8 @@ class MaskCreationDialog(QDialog):
 
     def _clear_shapes(self):
         self.canvas.clear_shapes()
+        if hasattr(self, "range_box") and self.range_box.isVisible():
+            self._update_live_preview()
 
     def _on_type_changed(self, txt: str):
         show = (txt == "Range Selection")
