@@ -23,6 +23,37 @@ from setiastro.saspro.ser_stack_config import SERStackConfig
 from setiastro.saspro.ser_stacker import stack_ser, analyze_ser, AnalyzeResult
 from setiastro.saspro.ser_stacker import _shift_image
 
+def _deg_per_min_from_period(*, days: float | None = None, hours: float | None = None) -> float:
+    if days is not None:
+        minutes = float(days) * 24.0 * 60.0
+    elif hours is not None:
+        minutes = float(hours) * 60.0
+    else:
+        raise ValueError("Provide days or hours.")
+    return 360.0 / max(1e-9, minutes)
+
+# Sidereal rotation periods (common reference values)
+# - Jupiter: ~9.925 h (System III ~9h55m29s)
+# - Saturn:  ~10.656 h
+# - Mars:    ~24.623 h
+# - Venus:   ~243.025 d (retrograde)
+# - Mercury: ~58.646 d
+# - Moon:    ~27.321661 d
+# - Uranus:  ~17.24 h (retrograde)
+# - Neptune: ~16.11 h
+_PLANET_ROT_PRESETS_DEG_PER_MIN: dict[str, float] = {
+    "Custom…": 0.0,
+    "Jupiter (System III)": _deg_per_min_from_period(hours=9.925),
+    "Saturn": _deg_per_min_from_period(hours=10.656),
+    "Mars": _deg_per_min_from_period(hours=24.623),
+    "Venus (retrograde)": -_deg_per_min_from_period(days=243.025),
+    "Mercury": _deg_per_min_from_period(days=58.646),
+    "Moon": _deg_per_min_from_period(days=27.321661),
+    "Uranus (retrograde)": -_deg_per_min_from_period(hours=17.24),
+    "Neptune": _deg_per_min_from_period(hours=16.11),
+}
+
+
 def _source_basename_from_source(source: SourceSpec | None) -> str:
     """
     Best-effort base name from the SER source:
@@ -856,6 +887,9 @@ class SERStackerDialog(QDialog):
         self._planet_thresh_pct = float(planet_thresh_pct)
         self._planet_smooth_sigma = float(planet_smooth_sigma)
 
+        self._derot = None  # dict from pick_planet_disk_params()
+
+
         # ---- Normalize inputs ------------------------------------------------
         # If caller provided only `source`, treat string-source as ser_path too.
         if source is None:
@@ -914,6 +948,8 @@ class SERStackerDialog(QDialog):
         self._append_log(f"ROI: {roi if roi is not None else '(full frame)'}")
         if track_mode == "surface":
             self._append_log(f"Surface anchor (ROI-space): {surface_anchor}")
+
+
 
     # ---------------- UI ----------------
     def _build_ui(self):
@@ -1059,6 +1095,44 @@ class SERStackerDialog(QDialog):
         self.btn_drizzle_info.clicked.connect(_show_drizzle_info)
 
         left.addWidget(gbD, 0)
+        gbR = QGroupBox("Derotation", self)
+        fR = QFormLayout(gbR)
+
+        self.chk_derotate = QCheckBox("Enable derotation", self)
+        self.chk_derotate.setChecked(False)
+        self.btn_set_disk = QPushButton("Set disk…", self)
+        self.btn_set_disk.setEnabled(False)
+
+        self.lbl_derot_disk = QLabel("(not set)", self)
+        self.lbl_derot_disk.setWordWrap(True)
+        self.lbl_derot_disk.setStyleSheet("color:#888;")
+
+        fR.addRow("", self.chk_derotate)
+        self.cmb_derot_planet = QComboBox(self)
+        self.cmb_derot_planet.addItems(list(_PLANET_ROT_PRESETS_DEG_PER_MIN.keys()))
+        self.cmb_derot_planet.setCurrentText("Custom…")
+
+        self.chk_derot_reverse = QCheckBox("Reverse sign", self)
+        self.chk_derot_reverse.setToolTip("Flip direction if your camera orientation makes smearing worse with the default sign.")
+        # --- Derotation rate (deg/min) ---
+        self.spin_derot_rate = QDoubleSpinBox(self)
+        self.spin_derot_rate.setRange(-10.0, 10.0)    # plenty for planets; moon is ~0.00915 deg/min
+        self.spin_derot_rate.setDecimals(6)
+        self.spin_derot_rate.setSingleStep(0.001)
+        self.spin_derot_rate.setValue(0.0)
+        self.spin_derot_rate.setToolTip(
+            "Rotation rate in degrees per minute.\n"
+            "Use a preset or enter a custom value.\n"
+            "Tip: if derotation makes smearing worse, try 'Reverse sign'."
+        )
+        fR.addRow("Preset", self.cmb_derot_planet)
+        fR.addRow("", self.chk_derot_reverse)
+        fR.addRow("Rate (deg/min)", self.spin_derot_rate)
+
+        fR.addRow("", self.btn_set_disk)
+        fR.addRow("Disk", self.lbl_derot_disk)
+
+        left.addWidget(gbR, 0)
 
         # --- Analyze settings (no graph in left column anymore) ---
         gbA = QGroupBox("Analyze", self)
@@ -1186,9 +1260,35 @@ class SERStackerDialog(QDialog):
         self.btn_analyze.clicked.connect(self._start_analyze)
         self.btn_edit_aps.clicked.connect(self._edit_aps)
         self.spin_keep.valueChanged.connect(self._on_keep_changed)
+        self.btn_set_disk.clicked.connect(self._set_derotation_disk)
+        self.chk_derotate.toggled.connect(lambda _: self._update_derot_ui())
+        self.spin_derot_rate.valueChanged.connect(lambda _: self._update_derot_ui())
 
         # Keep % edits update the cutoff line
         self.spin_keep.valueChanged.connect(self._update_graph_cutoff)
+        def _apply_derot_preset():
+            key = self.cmb_derot_planet.currentText().strip()
+            base = float(_PLANET_ROT_PRESETS_DEG_PER_MIN.get(key, 0.0))
+
+            # Custom => user edits
+            is_custom = (key.lower().startswith("custom"))
+            self.spin_derot_rate.setEnabled(bool(self.chk_derotate.isChecked()) and is_custom)
+
+            if not is_custom:
+                # apply preset value (respect reverse checkbox)
+                rate = -base if self.chk_derot_reverse.isChecked() else base
+
+                block = self.spin_derot_rate.blockSignals(True)
+                try:
+                    self.spin_derot_rate.setValue(float(rate))
+                finally:
+                    self.spin_derot_rate.blockSignals(block)
+
+            # keep your existing status text logic
+            self._update_derot_ui()
+
+        self.cmb_derot_planet.currentIndexChanged.connect(lambda _=None: _apply_derot_preset())
+        self.chk_derot_reverse.toggled.connect(lambda _=None: _apply_derot_preset())
 
         # Clicking on the graph updates Keep %
         def _on_graph_keep_changed(k: int, total: int):
@@ -1369,6 +1469,8 @@ class SERStackerDialog(QDialog):
 
         self.prog.setVisible(False)
         self.lbl_prog.setVisible(False)
+        self.btn_set_disk.setEnabled(True)
+
 
         self.btn_analyze.setEnabled(True)
         self.btn_stack.setEnabled(True)
@@ -1477,6 +1579,17 @@ class SERStackerDialog(QDialog):
             planet_min_val=self._planet_min_val,
             planet_use_norm=self._planet_use_norm,
             planet_norm_hi_pct=self._planet_norm_hi_pct,
+            derotate_enabled=bool(getattr(self, "chk_derotate", None) and self.chk_derotate.isChecked()),
+            derotate_deg_per_min=float(getattr(self, "spin_derot_rate", None).value()) if getattr(self, "spin_derot_rate", None) else 0.0,
+            derotate_center=(float(self._derot["cx"]), float(self._derot["cy"])) if self._derot else None,
+            derotate_radius=float(self._derot["r"]) if self._derot else None,
+            derotate_overlay_mode=str(self._derot.get("overlay_mode","none")) if self._derot else "none",
+            derotate_rings=(
+                float(self._derot.get("ring_pa",0.0)),
+                float(self._derot.get("ring_tilt",0.35)),
+                float(self._derot.get("ring_outer",2.2)),
+                float(self._derot.get("ring_inner",1.25)),
+            ) if self._derot else None,
 
             # drizzle
             drizzle_scale=float(drizzle_scale),
@@ -1488,6 +1601,61 @@ class SERStackerDialog(QDialog):
     def _on_keep_changed(self, _v):
         self._keep_mask = None
 
+    def _update_derot_ui(self):
+        en = bool(self.chk_derotate.isChecked())
+        self.spin_derot_rate.setEnabled(en)
+        self.btn_set_disk.setEnabled(en and (self._analysis is not None))
+        if not en:
+            self.lbl_derot_disk.setText("(disabled)")
+            self.lbl_derot_disk.setStyleSheet("color:#888;")
+        else:
+            if self._derot is None:
+                self.lbl_derot_disk.setText("⚠️ Set disk center/radius (uses Analyze ref image)")
+                self.lbl_derot_disk.setStyleSheet("color:#c66;")
+            else:
+                cx, cy, r = self._derot["cx"], self._derot["cy"], self._derot["r"]
+                self.lbl_derot_disk.setText(f"✅ cx={cx:.1f}, cy={cy:.1f}, r={r:.1f} (ROI-space)")
+                self.lbl_derot_disk.setStyleSheet("color:#4a4;")
+
+    def _set_derotation_disk(self):
+        if self._analysis is None:
+            return
+        try:
+            from setiastro.saspro.planetprojection import pick_planet_disk_params
+
+            ref = np.asarray(self._analysis.ref_image)
+            # ensure RGB for the dialog preview
+            if ref.ndim == 2:
+                ref_rgb = np.dstack([ref, ref, ref])
+            elif ref.ndim == 3 and ref.shape[2] == 1:
+                ref_rgb = np.dstack([ref[...,0]]*3)
+            else:
+                ref_rgb = ref[..., :3]
+
+            # (optional) seed with last values
+            seed = self._derot or {}
+            res = pick_planet_disk_params(
+                self,
+                ref_rgb,
+                cx=seed.get("cx"),
+                cy=seed.get("cy"),
+                r=seed.get("r"),
+                overlay_mode="planet",
+                ring_pa=seed.get("ring_pa", 0.0),
+                ring_tilt=seed.get("ring_tilt", 0.35),
+                ring_outer=seed.get("ring_outer", 2.2),
+                ring_inner=seed.get("ring_inner", 1.25),
+            )
+            if res is None:
+                return
+            self._derot = res
+            self._update_derot_ui()
+            self._append_log("Derotation disk set.")
+        except Exception as e:
+            tb = traceback.format_exc()
+            QMessageBox.critical(self, "Derotation Disk Error", f"{e}\n\n{tb}")
+
+
     def _start_stack(self):
         mode = self._track_mode_value()
         if mode == "surface" and self._surface_anchor is None:
@@ -1497,7 +1665,9 @@ class SERStackerDialog(QDialog):
         cfg = self._make_cfg()
         cfg.keep_mask = self._keep_mask
         debayer = bool(self.chk_debayer.isChecked())
-
+        if cfg.derotate_enabled and (cfg.derotate_center is None or cfg.derotate_radius is None):
+            self._append_log("Derotation enabled but disk is not set. Click 'Set disk…'")
+            return
         self.btn_stack.setEnabled(False)
         self.btn_close.setEnabled(False)
         self.btn_analyze.setEnabled(False)

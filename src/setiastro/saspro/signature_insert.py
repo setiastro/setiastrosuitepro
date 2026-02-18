@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import numpy as np
 
-from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF
+from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF, QSettings
 from PyQt6.QtGui import (
     QImage, QPixmap, QPainter, QColor, QPen, QTransform, QIcon, QFont, QPainterPath, QFontMetricsF, QFontDatabase, QTextCursor, QTextCharFormat, QBrush
 )
@@ -14,6 +14,17 @@ from PyQt6.QtWidgets import (
     QGraphicsPixmapItem, QGraphicsEllipseItem, QGraphicsRectItem, QSpinBox, QScrollArea
 )
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
+
+def _qcolor_to_rgba(c: QColor) -> str:
+    # store as "#AARRGGBB" so alpha is preserved if you ever want it
+    return c.name(QColor.NameFormat.HexArgb)
+
+def _rgba_to_qcolor(s: str, fallback: QColor) -> QColor:
+    try:
+        c = QColor(s)
+        return c if c.isValid() else QColor(fallback)
+    except Exception:
+        return QColor(fallback)
 
 
 def _np_to_qimage_rgb(a: np.ndarray) -> QImage:
@@ -588,6 +599,8 @@ class SignatureInsertDialogPro(QDialog):
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
+        self.settings = QSettings()  # match the rest of your app if you already use QSettings elsewhere
+        self._persist_prefix = "signature_insert"        # settings namespace for this dialog        
         try:
             self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         except Exception:
@@ -621,6 +634,8 @@ class SignatureInsertDialogPro(QDialog):
         self.tech_text_outline = QColor("black")
 
         self._build_ui()
+        self._load_persistent_ui()
+        self._wire_persistence_signals()
         
         self._update_base_image()
         self._tech_init_catalog()
@@ -859,6 +874,179 @@ class SignatureInsertDialogPro(QDialog):
         root.addWidget(scroll, 0)   # instead of root.addWidget(left, 0)
         root.addWidget(self.view, 1)
 
+    def _k(self, key: str) -> str:
+        return f"{self._persist_prefix}/{key}"
+
+    def _load_persistent_ui(self):
+        s = self.settings
+
+        # ---- Text controls ----
+        font_family = s.value(self._k("text/font_family"), "", type=str)
+        if font_family:
+            try:
+                self.font_box.setCurrentFont(QFont(font_family))
+            except Exception:
+                pass
+
+        self.font_size.setValue(int(s.value(self._k("text/font_size"), self.font_size.value(), type=int)))
+        self.chk_bold.setChecked(bool(s.value(self._k("text/bold"), self.chk_bold.isChecked(), type=bool)))
+        self.chk_italic.setChecked(bool(s.value(self._k("text/italic"), self.chk_italic.isChecked(), type=bool)))
+        self.outline_w.setValue(int(s.value(self._k("text/outline_w"), self.outline_w.value(), type=int)))
+
+        # Persist your last-picked colors (also used by tech card)
+        self._text_fill_color = _rgba_to_qcolor(
+            s.value(self._k("text/fill_rgba"), _qcolor_to_rgba(QColor("white")), type=str),
+            QColor("white")
+        )
+        self._text_outline_color = _rgba_to_qcolor(
+            s.value(self._k("text/outline_rgba"), _qcolor_to_rgba(QColor("black")), type=str),
+            QColor("black")
+        )
+
+        # ---- Transform controls ----
+        self.sl_scale.setValue(int(s.value(self._k("xform/scale"), self.sl_scale.value(), type=int)))
+        self.sl_opacity.setValue(int(s.value(self._k("xform/opacity"), self.sl_opacity.value(), type=int)))
+
+        # ---- Bounding box controls ----
+        self.cb_draw.setChecked(bool(s.value(self._k("bbox/enabled"), self.cb_draw.isChecked(), type=bool)))
+        self.sl_thick.setValue(int(s.value(self._k("bbox/thickness"), self.sl_thick.value(), type=int)))
+        self.cmb_style.setCurrentText(str(s.value(self._k("bbox/style"), self.cmb_style.currentText(), type=str)))
+
+        self.bounding_box_pen.setColor(
+            _rgba_to_qcolor(
+                s.value(self._k("bbox/color_rgba"), _qcolor_to_rgba(self.bounding_box_pen.color()), type=str),
+                self.bounding_box_pen.color()
+            )
+        )
+        # apply the pen based on restored thickness/style
+        self._update_box_pen()
+
+        # ---- Snap margins ----
+        self.sp_margin_x.setValue(int(s.value(self._k("snap/margin_x"), self.sp_margin_x.value(), type=int)))
+        self.sp_margin_y.setValue(int(s.value(self._k("snap/margin_y"), self.sp_margin_y.value(), type=int)))
+
+        # ---- Tech card controls/state ----
+        self.cb_tech.setChecked(bool(s.value(self._k("tech/enabled"), self.cb_tech.isChecked(), type=bool)))
+        self.cb_tech_hide_empty.setChecked(bool(s.value(self._k("tech/hide_empty"), self.cb_tech_hide_empty.isChecked(), type=bool)))
+        self.sp_tech_padding.setValue(int(s.value(self._k("tech/padding"), self.sp_tech_padding.value(), type=int)))
+        self.sl_tech_bg_opacity.setValue(int(s.value(self._k("tech/bg_opacity"), self.sl_tech_bg_opacity.value(), type=int)))
+        self.cb_tech_border.setChecked(bool(s.value(self._k("tech/border_enabled"), self.cb_tech_border.isChecked(), type=bool)))
+        self.sp_tech_border_w.setValue(int(s.value(self._k("tech/border_w"), self.sp_tech_border_w.value(), type=int)))
+        self.cmb_tech_border_style.setCurrentText(str(s.value(self._k("tech/border_style"), self.cmb_tech_border_style.currentText(), type=str)))
+
+        self.tech_bg_color = _rgba_to_qcolor(
+            s.value(self._k("tech/bg_rgba"), _qcolor_to_rgba(self.tech_bg_color), type=str),
+            self.tech_bg_color
+        )
+        self.tech_border_color = _rgba_to_qcolor(
+            s.value(self._k("tech/border_rgba"), _qcolor_to_rgba(self.tech_border_color), type=str),
+            self.tech_border_color
+        )
+        self.tech_text_fill = _rgba_to_qcolor(
+            s.value(self._k("tech/text_fill_rgba"), _qcolor_to_rgba(self.tech_text_fill), type=str),
+            self.tech_text_fill
+        )
+        self.tech_text_outline = _rgba_to_qcolor(
+            s.value(self._k("tech/text_outline_rgba"), _qcolor_to_rgba(self.tech_text_outline), type=str),
+            self.tech_text_outline
+        )
+
+        # Order/enabled lists
+        self.tech_fields_order = list(s.value(self._k("tech/fields_order"), [], type=list) or [])
+        self.tech_fields_enabled = set(s.value(self._k("tech/fields_enabled"), [], type=list) or [])
+
+        # If tech fields were never saved, your existing _tech_init_catalog() will set defaults.
+        # But if they WERE saved, we want to keep them.
+        # _tech_init_catalog() is called in _update_base_image(); we just ensure our saved lists exist before then.
+
+    def _save_persistent_ui(self):
+        s = self.settings
+
+        # ---- Text controls ----
+        try:
+            s.setValue(self._k("text/font_family"), self.font_box.currentFont().family())
+        except Exception:
+            pass
+        s.setValue(self._k("text/font_size"), int(self.font_size.value()))
+        s.setValue(self._k("text/bold"), bool(self.chk_bold.isChecked()))
+        s.setValue(self._k("text/italic"), bool(self.chk_italic.isChecked()))
+        s.setValue(self._k("text/outline_w"), int(self.outline_w.value()))
+
+        # Save last-picked colors (we keep them in attributes)
+        s.setValue(self._k("text/fill_rgba"), _qcolor_to_rgba(getattr(self, "_text_fill_color", QColor("white"))))
+        s.setValue(self._k("text/outline_rgba"), _qcolor_to_rgba(getattr(self, "_text_outline_color", QColor("black"))))
+
+        # ---- Transform controls ----
+        s.setValue(self._k("xform/scale"), int(self.sl_scale.value()))
+        s.setValue(self._k("xform/opacity"), int(self.sl_opacity.value()))
+
+        # ---- Bounding box ----
+        s.setValue(self._k("bbox/enabled"), bool(self.cb_draw.isChecked()))
+        s.setValue(self._k("bbox/thickness"), int(self.sl_thick.value()))
+        s.setValue(self._k("bbox/style"), str(self.cmb_style.currentText()))
+        s.setValue(self._k("bbox/color_rgba"), _qcolor_to_rgba(self.bounding_box_pen.color()))
+
+        # ---- Snap margins ----
+        s.setValue(self._k("snap/margin_x"), int(self.sp_margin_x.value()))
+        s.setValue(self._k("snap/margin_y"), int(self.sp_margin_y.value()))
+
+        # ---- Tech card ----
+        s.setValue(self._k("tech/enabled"), bool(self.cb_tech.isChecked()))
+        s.setValue(self._k("tech/hide_empty"), bool(self.cb_tech_hide_empty.isChecked()))
+        s.setValue(self._k("tech/padding"), int(self.sp_tech_padding.value()))
+        s.setValue(self._k("tech/bg_opacity"), int(self.sl_tech_bg_opacity.value()))
+        s.setValue(self._k("tech/border_enabled"), bool(self.cb_tech_border.isChecked()))
+        s.setValue(self._k("tech/border_w"), int(self.sp_tech_border_w.value()))
+        s.setValue(self._k("tech/border_style"), str(self.cmb_tech_border_style.currentText()))
+
+        s.setValue(self._k("tech/bg_rgba"), _qcolor_to_rgba(self.tech_bg_color))
+        s.setValue(self._k("tech/border_rgba"), _qcolor_to_rgba(self.tech_border_color))
+        s.setValue(self._k("tech/text_fill_rgba"), _qcolor_to_rgba(self.tech_text_fill))
+        s.setValue(self._k("tech/text_outline_rgba"), _qcolor_to_rgba(self.tech_text_outline))
+
+        s.setValue(self._k("tech/fields_order"), list(self.tech_fields_order))
+        s.setValue(self._k("tech/fields_enabled"), list(self.tech_fields_enabled))
+
+        try:
+            s.sync()
+        except Exception:
+            pass
+
+    def _wire_persistence_signals(self):
+        # Save often; QSettings writes are cheap.
+        def save():
+            self._save_persistent_ui()
+
+        # text controls
+        self.font_box.currentFontChanged.connect(lambda *_: save())
+        self.font_size.valueChanged.connect(lambda *_: save())
+        self.chk_bold.stateChanged.connect(lambda *_: save())
+        self.chk_italic.stateChanged.connect(lambda *_: save())
+        self.outline_w.valueChanged.connect(lambda *_: save())
+
+        # transform controls
+        self.sl_scale.valueChanged.connect(lambda *_: save())
+        self.sl_opacity.valueChanged.connect(lambda *_: save())
+
+        # bbox controls
+        self.cb_draw.stateChanged.connect(lambda *_: save())
+        self.sl_thick.valueChanged.connect(lambda *_: save())
+        self.cmb_style.currentIndexChanged.connect(lambda *_: save())
+
+        # margins
+        self.sp_margin_x.valueChanged.connect(lambda *_: save())
+        self.sp_margin_y.valueChanged.connect(lambda *_: save())
+
+        # tech controls
+        self.cb_tech.stateChanged.connect(lambda *_: save())
+        self.cb_tech_hide_empty.stateChanged.connect(lambda *_: save())
+        self.sp_tech_padding.valueChanged.connect(lambda *_: save())
+        self.sl_tech_bg_opacity.valueChanged.connect(lambda *_: save())
+        self.cb_tech_border.stateChanged.connect(lambda *_: save())
+        self.sp_tech_border_w.valueChanged.connect(lambda *_: save())
+        self.cmb_tech_border_style.currentIndexChanged.connect(lambda *_: save())
+
+
     def _tech_active_doc(self):
         dm = getattr(self, "doc_manager", None)
         if dm is not None:
@@ -984,7 +1172,7 @@ class SignatureInsertDialogPro(QDialog):
 
         # drop near bottom-right by default using your snap
         self.tech_card_item.setSelected(True)
-        self.send_insert_to_position(self.tech_card_item, "top left")
+        self.send_insert_to_position(self.tech_card_item, "top_left")
 
     def _tech_remove_item(self):
         if self.tech_card_item is None:
@@ -1008,12 +1196,15 @@ class SignatureInsertDialogPro(QDialog):
         if c.isValid():
             self.tech_bg_color = c
             self._tech_rebuild(live=True)
+            self._save_persistent_ui()
 
     def _tech_pick_border(self):
         c = QColorDialog.getColor(self.tech_border_color, self, "Tech Card Border")
         if c.isValid():
             self.tech_border_color = c
             self._tech_rebuild(live=True)
+            self._save_persistent_ui()
+
 
     def _tech_add_field(self):
         k = self.cmb_tech_field.currentText().strip()
@@ -1187,23 +1378,28 @@ class SignatureInsertDialogPro(QDialog):
                 ti.setFont(f)
 
     def _pick_text_fill(self):
-        c = QColorDialog.getColor()
+        c = QColorDialog.getColor(getattr(self, "_text_fill_color", QColor("white")), self, "Text Fill Color")
         if not c.isValid():
             return
+        self._text_fill_color = c
         for ti in self._selected_text_items():
             if isinstance(ti, OutlinedTextItem):
                 ti.set_fill(c)
             else:
                 ti.setDefaultTextColor(c)
+        self._save_persistent_ui()
 
     def _pick_text_outline(self):
-        c = QColorDialog.getColor()
+        c = QColorDialog.getColor(getattr(self, "_text_outline_color", QColor("black")), self, "Text Outline Color")
         if not c.isValid():
             return
+        self._text_outline_color = c
         w = self.outline_w.value()
         for ti in self._selected_text_items():
             if isinstance(ti, OutlinedTextItem):
                 ti.set_outline(c, float(w))
+        self._save_persistent_ui()
+
 
     def _clear_text_selection(self, ti: QGraphicsTextItem):
         cur = ti.textCursor()
@@ -1434,10 +1630,12 @@ class SignatureInsertDialogPro(QDialog):
             r.setVisible(self.bounding_boxes_enabled)
 
     def _pick_box_color(self):
-        c = QColorDialog.getColor()
+        c = QColorDialog.getColor(self.bounding_box_pen.color(), self, "Bounding Box Color")
         if c.isValid():
             self.bounding_box_pen.setColor(c)
             self._refresh_all_boxes()
+            self._save_persistent_ui()
+
 
     def _update_box_pen(self):
         style_map = {
@@ -1770,3 +1968,10 @@ class SignatureInsertDialogPro(QDialog):
         buf = np.frombuffer(ptr, dtype=np.uint8).reshape((h, q.bytesPerLine()))
         arr = buf[:, :w*4].reshape((h, w, 4)).astype(np.float32)/255.0
         return arr
+
+    def closeEvent(self, e):
+        try:
+            self._save_persistent_ui()
+        except Exception:
+            pass
+        super().closeEvent(e)

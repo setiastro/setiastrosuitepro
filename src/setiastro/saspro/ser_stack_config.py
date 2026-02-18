@@ -2,6 +2,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional, Tuple, Literal, Union, Sequence, TYPE_CHECKING
+import numpy as np
 
 if TYPE_CHECKING:
     import numpy as np
@@ -41,6 +42,12 @@ class SERStackConfig:
     drizzle_pixfrac: float = 0.80       # "drop shrink" in output pixels (roughly)
     drizzle_kernel: str = "gaussian"    # "square" | "circle" | "gaussian"
     drizzle_sigma: float = 0.0          # only used for gaussian; 0 => auto from pixfrac
+    derotate_enabled: bool = False
+    derotate_deg_per_min: float = 0.0   # user controlled
+    derotate_center: tuple[float, float] | None = None  # ROI-space center
+    derotate_radius: float | None = None
+    derotate_overlay_mode: str = "none"  # "none"|"saturn"|"galaxy"
+    derotate_rings: tuple[float, float, float, float] | None = None  # (pa, tilt, kout, kin)
 
     def __init__(self, source: PlanetarySource, **kwargs):
         # Allow deprecated/ignored kwargs without crashing
@@ -97,6 +104,33 @@ class SERStackConfig:
             self.drizzle_kernel = "gaussian"
         if self.drizzle_sigma < 0.0:
             self.drizzle_sigma = 0.0
+        # ✅ NEW: Derotation UI params (viewer/stacker)
+        self.derotate_enabled = bool(kwargs.pop("derotate_enabled", False))
+        self.derotate_deg_per_min = float(kwargs.pop("derotate_deg_per_min", 0.0))
+
+        dc = kwargs.pop("derotate_center", None)
+        if dc is None:
+            self.derotate_center = None
+        else:
+            try:
+                self.derotate_center = (float(dc[0]), float(dc[1]))
+            except Exception:
+                self.derotate_center = None
+
+        dr = kwargs.pop("derotate_radius", None)
+        self.derotate_radius = None if dr is None else float(dr)
+
+        self.derotate_overlay_mode = str(kwargs.pop("derotate_overlay_mode", "none")).strip().lower()
+
+        rings = kwargs.pop("derotate_rings", None)
+        if rings is None:
+            self.derotate_rings = None
+        else:
+            try:
+                # (pa, tilt, kout, kin)
+                self.derotate_rings = (float(rings[0]), float(rings[1]), float(rings[2]), float(rings[3]))
+            except Exception:
+                self.derotate_rings = None
 
         if kwargs:
             raise TypeError(f"Unexpected config keys: {sorted(kwargs.keys())}")
