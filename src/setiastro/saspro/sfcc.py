@@ -364,7 +364,7 @@ class SFCCDialog(QDialog):
     """
     def __init__(self, doc_manager, sasp_data_path, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(self.tr("Spectral Flux Color Calibration"))
+        self.setWindowTitle(self.tr("Spectral Photometric Flux Color Calibration"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
