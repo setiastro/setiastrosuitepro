@@ -52,6 +52,7 @@ reproject = "*"
 tzlocal = "*"
 skyfield = "*"
 jplephem = "*"
+GaiaXPy = "^2.1.4"
 
 # performance
 numba = "*"
