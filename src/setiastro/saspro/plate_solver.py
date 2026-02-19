@@ -463,7 +463,7 @@ def _as_header(hdr_like: Any) -> Header | None:
     # 1) flattened single string? try hard to parse
     if isinstance(hdr_like, str):
         h = _parse_header_blob_to_header(hdr_like)
-        return h if len(h.keys()) else None
+        return h if any(h.keys()) else None
 
     # 2) dict-ish
     try:
