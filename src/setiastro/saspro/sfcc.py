@@ -19,7 +19,7 @@ import cv2
 import math
 import time
 from datetime import datetime
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 
 import numpy as np
 
@@ -67,7 +67,11 @@ from setiastro.saspro.gaia_downloader import GaiaDownloader, HAS_GAIAXPY
 
 import warnings
 from typing import Callable, Dict, Any, Iterable
-
+warnings.filterwarnings(
+    "ignore",
+    category=ResourceWarning,
+    message=r"unclosed <ssl\.SSLSocket.*"
+)
 ProgressMsgCB = Callable[[str], None]  # status_cb("text...")
 
 try:
@@ -83,6 +87,169 @@ from gaiaxpy.generator.photometric_system import PhotometricSystem
 import io
 import re
 import contextlib
+
+from setiastro.saspro.gaia_downloader import GaiaSpectraDB, CalibratedSpectrum
+from setiastro.saspro.gaia_downloader import download_xp_spectra_only
+
+def _johnson_bvr_passbands_on_gaia_grid(wl_nm: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Returns (T_B, T_V, T_R) on the Gaia wavelength grid.
+    IMPORTANT:
+      - Replace these approximations with your preferred real Johnson/Bessell curves.
+      - These are smooth approximations meant to unblock caching integration now.
+    """
+    wl = np.asarray(wl_nm, dtype=np.float64)
+
+    # Simple smooth band approximations (Gaussian-ish)
+    # Johnson-ish effective centers (nm): B~440, V~550, R~700
+    # Widths are rough; adjust once you plug real curves.
+    def gauss(center, fwhm):
+        sigma = fwhm / (2.0 * np.sqrt(2.0 * np.log(2.0)))
+        return np.exp(-0.5 * ((wl - center) / sigma) ** 2)
+
+    T_B = gauss(440.0, 95.0)
+    T_V = gauss(550.0, 85.0)
+    T_R = gauss(700.0, 140.0)
+
+    # Clip outside reasonable ranges (keeps tails from polluting)
+    T_B *= (wl >= 360) & (wl <= 560)
+    T_V *= (wl >= 470) & (wl <= 700)
+    T_R *= (wl >= 560) & (wl <= 900)
+
+    # normalize peaks to 1
+    for T in (T_B, T_V, T_R):
+        m = float(np.max(T)) if T.size else 0.0
+        if m > 0:
+            T /= m
+
+    return T_B.astype(np.float64), T_V.astype(np.float64), T_R.astype(np.float64)
+
+
+def _integrate_flux_times_T(flux_w_per_nm: np.ndarray, wl_nm: np.ndarray, T: np.ndarray) -> float:
+    """
+    Integral of flux * throughput over wavelength.
+    Units don't matter for colors/ratios; we just need consistency.
+    """
+    f = np.asarray(flux_w_per_nm, dtype=np.float64).reshape(-1)
+    w = np.asarray(wl_nm, dtype=np.float64).reshape(-1)
+    t = np.asarray(T, dtype=np.float64).reshape(-1)
+    if f.size != w.size or t.size != w.size:
+        raise ValueError("Integration arrays must be same length")
+    return float(np.trapz(f * t, w))
+
+
+def _gaiaxp_synth_bvr_cached(
+    self,
+    source_ids: List[int],
+    *,
+    db_path: str,
+    status_cb=None,
+    username=None,
+    password=None,
+    cache_dir: Optional[str] = None,
+    tag: str = "johnson_bvr_v1",
+    batch_size: int = 100,
+) -> Dict[int, Dict[str, float]]:
+    """
+    Cached Gaia XP synthetic Johnson B/V/R using the SAME synth_phot table.
+
+    Returns:
+      {source_id: {"B": bmag, "V": vmag, "R": rmag}}
+    """
+    from pathlib import Path
+
+    if status_cb is None:
+        status_cb = lambda m: None
+
+    ids = [int(x) for x in source_ids if x is not None]
+    ids = sorted(set(ids))
+    if not ids:
+        return {}
+
+    db = GaiaSpectraDB(db_path)
+    try:
+        wl_nm = db.wavelengths.astype(np.float64)
+        wl_ang = wl_nm * 10.0
+
+        # 1) Define Johnson system key (stable across runs)
+        T_B, T_V, T_R = _johnson_bvr_passbands_on_gaia_grid(wl_nm)
+        # map into your R,G,B ordering for synth_phot
+        #   Sr <- R, Sg <- V, Sb <- B
+        system_key = GaiaSpectraDB.make_system_key(
+            wl_ang,
+            T_R,  # R
+            T_V,  # "G" slot used for V
+            T_B,  # B
+            tag=tag,
+        )
+
+        # 2) Pull cached integrals
+        cached = db.get_synth_phot(ids, system_key)
+        missing = [sid for sid in ids if sid not in cached]
+
+        if missing:
+            status_cb(f"[SPCC] Gaia XP: {len(cached)}/{len(ids)} cached, computing {len(missing)} missing…")
+
+            # 3) Ensure spectra exist in DB; download only those not present
+            missing_spectra_ids = []
+            for sid in missing:
+                if db.get_spectrum(sid) is None:
+                    missing_spectra_ids.append(sid)
+
+            if missing_spectra_ids:
+                status_cb(f"[SPCC] Gaia XP: downloading {len(missing_spectra_ids)} missing XP spectra…")
+
+                spectra = download_xp_spectra_only(
+                    db,
+                    missing_spectra_ids,
+                    batch_size=batch_size,
+                    status_cb=status_cb,
+                )
+                if spectra:
+                    db.add_spectra(spectra)
+
+            # 4) Compute integrals for missing ids, then upsert into synth_phot
+            rows_to_upsert: List[Tuple[int, float, float, float]] = []
+
+            for sid in missing:
+                spec = db.get_spectrum(sid)
+                if spec is None or spec.flux is None:
+                    continue
+
+                # integrate on the DB's standard grid (spec.flux is already resampled in add_spectrum)
+                Sr = _integrate_flux_times_T(spec.flux, wl_nm, T_R)  # R
+                Sg = _integrate_flux_times_T(spec.flux, wl_nm, T_V)  # V
+                Sb = _integrate_flux_times_T(spec.flux, wl_nm, T_B)  # B
+
+                # guard against zeros (would blow logs)
+                if Sr <= 0 or Sg <= 0 or Sb <= 0:
+                    continue
+
+                rows_to_upsert.append((sid, Sr, Sg, Sb))
+
+            if rows_to_upsert:
+                db.upsert_synth_phot(rows_to_upsert, system_key)
+                # update local cached dict too
+                for sid, Sr, Sg, Sb in rows_to_upsert:
+                    cached[int(sid)] = (float(Sr), float(Sg), float(Sb))
+
+        # 5) Convert integrals → relative magnitudes
+        # Absolute zeropoints would require calibration; for your use (colors/templates),
+        # relative mags are usually enough. We can set an arbitrary constant so numbers
+        # look like mags (shifts cancel in colors).
+        out: Dict[int, Dict[str, float]] = {}
+        for sid, (Sr, Sv, Sb) in cached.items():  # note: Sv stored in Sg slot
+            # "instrumental" mags
+            # m = -2.5 log10(S) + C; choose C=0 (colors unaffected)
+            Rm = -2.5 * np.log10(max(Sr, 1e-300))
+            Vm = -2.5 * np.log10(max(Sv, 1e-300))
+            Bm = -2.5 * np.log10(max(Sb, 1e-300))
+            out[int(sid)] = {"B": float(Bm), "V": float(Vm), "R": float(Rm)}
+
+        return out
+
+    finally:
+        db.close()
 
 _GAIA_PW_BANNER_RE = re.compile(
     r"passwords of all user accounts have been inactivated", re.IGNORECASE
@@ -865,7 +1032,10 @@ class SFCCDialog(QDialog):
         self.sep_thr_spin.setValue(5)            # our current hardcoded value
         self.sep_thr_spin.valueChanged.connect(self.save_sep_threshold_setting)
         row4.addWidget(self.sep_thr_spin)
-
+        self.gaia_fallback_chk = QCheckBox(self.tr("Gaia XP fallback (slower, fills missing data)"))
+        self.gaia_fallback_chk.setChecked(True)  # default ON
+        self.gaia_fallback_chk.toggled.connect(self.save_gaia_fallback_setting)
+        row4.addWidget(self.gaia_fallback_chk)
         row4.addStretch()
         self.add_curve_btn = QPushButton(self.tr("Add Custom Filter/Sensor Curve…"))
         self.add_curve_btn.clicked.connect(self.add_custom_curve); row4.addWidget(self.add_curve_btn)
@@ -917,7 +1087,9 @@ class SFCCDialog(QDialog):
             idx = self.star_combo.findText(saved_star)
             if idx != -1:
                 self.star_combo.setCurrentIndex(idx)
-
+        use_gaia = s.value("SFCC/UseGaiaFallback", True, type=bool)
+        if hasattr(self, "gaia_fallback_chk"):
+            self.gaia_fallback_chk.setChecked(bool(use_gaia))
         apply(self.r_filter_combo, "SFCC/RFilter")
         apply(self.g_filter_combo, "SFCC/GFilter")
         apply(self.b_filter_combo, "SFCC/BFilter")
@@ -929,6 +1101,7 @@ class SFCCDialog(QDialog):
         sep_thr = int(s.value("SFCC/SEPThreshold", 5))
         if hasattr(self, "sep_thr_spin"):
             self.sep_thr_spin.setValue(sep_thr)
+
     def save_sep_threshold_setting(self, v: int):
         QSettings().setValue("SFCC/SEPThreshold", int(v))
 
@@ -939,8 +1112,18 @@ class SFCCDialog(QDialog):
     def save_g_filter_setting(self, _): QSettings().setValue("SFCC/GFilter", self.g_filter_combo.currentText())
     def save_b_filter_setting(self, _): QSettings().setValue("SFCC/BFilter", self.b_filter_combo.currentText())
     def save_sensor_setting(self, _):   QSettings().setValue("SFCC/Sensor", self.sens_combo.currentText())
+    def save_gaia_fallback_setting(self, v: bool):
+        QSettings().setValue("SFCC/UseGaiaFallback", bool(v))
 
     # ── Curve utilities ─────────────────────────────────────────────────
+    def _use_gaia_fallback(self) -> bool:
+        try:
+            if hasattr(self, "gaia_fallback_chk") and not self.gaia_fallback_chk.isChecked():
+                return False
+        except Exception:
+            return False
+        return bool(self._gaia_enabled())
+
 
     def interpolate_bad_points(self, wl, tr):
         tr = tr.copy()
@@ -1457,15 +1640,22 @@ class SFCCDialog(QDialog):
                 st["gaia_gmag"] = best.get("gmag")
                 st["gaia_sep_arcsec"] = float(best_sep)
 
-    def _gaia_integrals_for_source_ids(self, source_ids: list[int],
-                                       wl_grid_ang: np.ndarray,
-                                       T_sys_R: np.ndarray,
-                                       T_sys_G: np.ndarray,
-                                       T_sys_B: np.ndarray,
-                                       *, batch_size: int = 128) -> dict[int, tuple[float, float, float]]:
+    def _gaia_integrals_for_source_ids(
+        self,
+        source_ids: list[int],
+        wl_grid_ang: np.ndarray,
+        T_sys_R: np.ndarray,
+        T_sys_G: np.ndarray,
+        T_sys_B: np.ndarray,
+        *,
+        batch_size: int = 128,
+    ) -> dict[int, tuple[float, float, float]]:
         """
-        Ensure spectra exist in cache (downloads missing ones),
+        Ensure Gaia XP spectra exist in the local cache (download missing ones),
         then integrate Gaia flux * throughput over wl_grid_ang (Å).
+
+        Also caches the synthetic photometry integrals (Sr,Sg,Sb) per (source_id, system_key)
+        so subsequent runs are fast.
 
         Returns dict: source_id -> (S_R, S_G, S_B)
         """
@@ -1473,27 +1663,76 @@ class SFCCDialog(QDialog):
             return {}
 
         dl = self._get_gaia_downloader()
+
+        # ---- sanity on arrays (avoid subtle shape bugs) ----
+        wl_grid_ang = np.asarray(wl_grid_ang, dtype=np.float64).reshape(-1)
+        T_sys_R = np.asarray(T_sys_R, dtype=np.float64).reshape(-1)
+        T_sys_G = np.asarray(T_sys_G, dtype=np.float64).reshape(-1)
+        T_sys_B = np.asarray(T_sys_B, dtype=np.float64).reshape(-1)
+
+        n = wl_grid_ang.size
+        if not (T_sys_R.size == T_sys_G.size == T_sys_B.size == n):
+            raise ValueError(
+                f"Throughput arrays must match wl_grid_ang length. "
+                f"len(wl)={n}, len(R)={T_sys_R.size}, len(G)={T_sys_G.size}, len(B)={T_sys_B.size}"
+            )
+
+        # Normalize + uniquify IDs
+        source_ids_i = [int(s) for s in source_ids if s is not None]
+        if not source_ids_i:
+            return {}
+
+        # Keep order stable but avoid redoing work for duplicates
+        seen = set()
+        ordered_unique: list[int] = []
+        for sid in source_ids_i:
+            if sid not in seen:
+                seen.add(sid)
+                ordered_unique.append(sid)
+
+        # ---- synthetic photometry cache key (depends on wl grid + throughputs) ----
+        system_key = dl.db.make_system_key(
+            wl_grid_ang, T_sys_R, T_sys_G, T_sys_B, tag="spcc_v1"
+        )
+
+        # ---- pull cached integrals first ----
         out: dict[int, tuple[float, float, float]] = {}
+        try:
+            cached = dl.db.get_synth_phot(ordered_unique, system_key)
+            out.update(cached)
+        except Exception as e:
+            print(f"[SPCC] Gaia synth cache read failed (continuing): {e}")
+            cached = {}
 
-        # First pull whatever is already cached
-        missing = []
-        for sid in source_ids:
-            spec = None
+        missing_integrals = [sid for sid in ordered_unique if sid not in out]
+        if not missing_integrals:
+            if getattr(self, "count_label", None) is not None:
+                self.count_label.setText(f"Gaia XP: synthetic photometry cache hit ({len(out)} sources).")
+            return out
+        else:
+            if getattr(self, "count_label", None) is not None:
+                self.count_label.setText(
+                    f"Gaia XP: cache miss for {len(missing_integrals)} sources — preparing spectra…"
+                )
+
+
+        # ---- ensure spectra exist for those missing integrals ----
+        missing_spectra: list[int] = []
+        for sid in missing_integrals:
             try:
-                spec = dl.db.get_spectrum(int(sid))
+                if dl.db.get_spectrum(int(sid)) is None:
+                    missing_spectra.append(int(sid))
             except Exception:
-                spec = None
-            if spec is None:
-                missing.append(int(sid))
+                missing_spectra.append(int(sid))
 
-        # Download missing in batches (GaiaXPy calibrate)
-        if missing:
+        # Download missing spectra in batches (GaiaXPy calibrate)
+        if missing_spectra:
             try:
-                total = len(missing)
-                for i in range(0, total, batch_size):
-                    batch = missing[i:i+batch_size]
+                total = len(missing_spectra)
+                for i in range(0, total, int(batch_size)):
+                    batch = missing_spectra[i:i + int(batch_size)]
 
-                    # 👇 progress to label
+                    # progress to label
                     if getattr(self, "count_label", None) is not None:
                         self.count_label.setText(
                             f"Gaia XP: downloading/calibrating spectra {i+1}-{min(i+len(batch), total)} of {total}…"
@@ -1505,23 +1744,51 @@ class SFCCDialog(QDialog):
                         pass
 
                     spectra = dl.download_xp_spectra(batch, batch_size=len(batch))
-                    dl.db.add_spectra(spectra)
+
+                    # Store into sqlite cache
+                    if hasattr(dl.db, "add_spectra"):
+                        dl.db.add_spectra(spectra)
+                    elif hasattr(dl.db, "upsert_spectra"):
+                        dl.db.upsert_spectra(spectra)
+                    elif hasattr(dl.db, "insert_spectra"):
+                        dl.db.insert_spectra(spectra)
+                    elif hasattr(dl.db, "save_spectra"):
+                        dl.db.save_spectra(spectra)
+                    else:
+                        raise AttributeError(
+                            "GaiaSpectraDB has no spectra insert method. "
+                            "Expected one of add_spectra/upsert_spectra/insert_spectra/save_spectra. "
+                            f"Available: {', '.join([m for m in dir(dl.db) if 'spect' in m.lower()])}"
+                        )
+
+                    # optional sanity print if calibrate returned nothing useful
+                    if not spectra:
+                        print(f"[SPCC] Gaia XP: calibrate returned 0 spectra for batch size {len(batch)}")
 
             except Exception as e:
                 print(f"[SPCC] Gaia XP download failed: {e}")
 
-
-        # Now integrate everything we can
+        # ---- integrate anything we can (and cache the results) ----
         eps = 1e-30
-        for sid in source_ids:
+        new_rows: list[tuple[int, float, float, float]] = []
+
+        for sid in missing_integrals:
             try:
                 spec = dl.db.get_spectrum(int(sid))
-                if spec is None:
+                if spec is None or spec.flux is None or spec.wavelengths is None:
                     continue
 
                 # spec.wavelengths are nm in gaia_downloader; convert to Å
-                wl_spec_ang = np.asarray(spec.wavelengths, dtype=np.float64) * 10.0
-                fl_spec = np.asarray(spec.flux, dtype=np.float64)
+                wl_spec_ang = np.asarray(spec.wavelengths, dtype=np.float64).reshape(-1) * 10.0
+                fl_spec = np.asarray(spec.flux, dtype=np.float64).reshape(-1)
+
+                if wl_spec_ang.size < 2 or fl_spec.size != wl_spec_ang.size:
+                    continue
+
+                # Ensure increasing wavelength for interp
+                if wl_spec_ang[0] > wl_spec_ang[-1]:
+                    wl_spec_ang = wl_spec_ang[::-1]
+                    fl_spec = fl_spec[::-1]
 
                 # Interpolate Gaia flux onto wl_grid_ang (your 3000–11000Å grid)
                 fl_i = np.interp(wl_grid_ang, wl_spec_ang, fl_spec, left=0.0, right=0.0)
@@ -1532,11 +1799,29 @@ class SFCCDialog(QDialog):
 
                 if abs(Sg) > eps and np.isfinite(Sr) and np.isfinite(Sg) and np.isfinite(Sb):
                     out[int(sid)] = (Sr, Sg, Sb)
+                    new_rows.append((int(sid), Sr, Sg, Sb))
+
             except Exception:
                 continue
 
+        # ---- write synthetic photometry cache for next time ----
+        if new_rows:
+            try:
+                dl.db.upsert_synth_phot(new_rows, system_key)
+            except Exception as e:
+                print(f"[SPCC] Gaia synth cache write failed (continuing): {e}")
+
         return out
 
+    def _gaia_db_path(self) -> str:
+        """
+        Persistent Gaia XP cache DB location (survives between runs).
+        """
+        base = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
+        # e.g. C:\Users\...\AppData\Roaming\SetiAstro\SASpro  (depends on your org/app naming)
+        d = os.path.join(base, "gaia")
+        os.makedirs(d, exist_ok=True)
+        return os.path.join(d, "gaia_spectra.db")
 
     def fetch_stars(self):
         import time
@@ -1799,7 +2084,7 @@ class SFCCDialog(QDialog):
         except Exception:
             radius_deg = None
 
-        if radius_deg is not None:
+        if radius_deg is not None and self._use_gaia_fallback():
             try:
                 _sfcc_busy(self, True, "[SPCC] Matching SIMBAD stars to Gaia source_ids…")
                 self._attach_gaia_ids_to_star_list(
@@ -1818,7 +2103,7 @@ class SFCCDialog(QDialog):
             gaia_ids = [s.get("gaia_source_id") for s in self.star_list if s.get("gaia_source_id") is not None]
             if gaia_ids:
                 try:
-                    _sfcc_busy(self, True, "[SPCC] Gaia XP: downloading/deriving synthetic photometry (this may take a minute)…")
+                    _sfcc_busy(self, True, "[SPCC] Gaia XP: downloading or using cached synthetic photometry (this may take a minute)…")
 
                     # If you have COSMOS creds stored somewhere, pass them; otherwise None.
                     user = getattr(self, "cosmos_username", None)
@@ -1829,49 +2114,64 @@ class SFCCDialog(QDialog):
                         "gaiaxpy_cache"
                     )
                     os.makedirs(cache_dir, exist_ok=True)
+                    gaia_ids = [s.get("gaia_source_id") for s in self.star_list if s.get("gaia_source_id") is not None]
 
-                    bvr_map = _gaiaxp_synth_bvr(
-                        self,
-                        gaia_ids,
-                        status_cb=lambda m: _sfcc_status(self, m),
-                        username=user,
-                        password=pw,
-                        cache_dir=cache_dir,
-                    )
-
-                    # Attach Gaia B/V/R to star_list
-                    got = 0
+                    # only compute for those missing cached gaia mags in star_list
+                    needs_bvr = []
                     for s in self.star_list:
                         sid = s.get("gaia_source_id")
-                        if sid in bvr_map:
-                            s["gaia_B"] = bvr_map[sid]["B"]
-                            s["gaia_V"] = bvr_map[sid]["V"]
-                            s["gaia_R"] = bvr_map[sid]["R"]
-                            got += 1
+                        if sid is None:
+                            continue
+                        if (s.get("gaia_B") is None) or (s.get("gaia_V") is None) or (s.get("gaia_R") is None):
+                            needs_bvr.append(int(sid))
 
-                            # If SIMBAD mags are missing, fill them from Gaia synthetic
-                            if s.get("Bmag") is None:
-                                s["Bmag"] = s["gaia_B"]
-                            if s.get("Vmag") is None:
-                                s["Vmag"] = s["gaia_V"]
-                            if s.get("Rmag") is None:
-                                s["Rmag"] = s["gaia_R"]
+                    needs_bvr = sorted(set(needs_bvr))
+                    if needs_bvr:
+                        bvr_map = _gaiaxp_synth_bvr_cached(
+                            self,
+                            needs_bvr,   # <-- only missing, not all gaia_ids
+                            db_path=self._gaia_db_path(),  # implement helper or hardcode
+                            status_cb=lambda m: _sfcc_status(self, m),
+                            username=user,
+                            password=pw,
+                            cache_dir=cache_dir,
+                        )
 
-                            # If SIMBAD sp_clean is missing/garbage, infer from Gaia B-V
-                            if not s.get("sp_clean"):
-                                bv = (s["gaia_B"] - s["gaia_V"]) if (s.get("gaia_B") is not None and s.get("gaia_V") is not None) else None
-                                letter = _infer_letter_from_bv(bv)
-                                if letter:
-                                    s["sp_clean"] = letter
+                        # Attach Gaia B/V/R to star_list
+                        got = 0
+                        for s in self.star_list:
+                            sid = s.get("gaia_source_id")
+                            sid_i = int(sid) if sid is not None else None
+                            if sid_i is not None and sid_i in bvr_map:
+                                s["gaia_B"] = bvr_map[sid]["B"]
+                                s["gaia_V"] = bvr_map[sid]["V"]
+                                s["gaia_R"] = bvr_map[sid]["R"]
+                                got += 1
 
-                    _sfcc_status(self, f"[SPCC] Gaia XP: attached synthetic B/V/R to {got} stars")
+                                # If SIMBAD mags are missing, fill them from Gaia synthetic
+                                if s.get("Bmag") is None:
+                                    s["Bmag"] = s["gaia_B"]
+                                if s.get("Vmag") is None:
+                                    s["Vmag"] = s["gaia_V"]
+                                if s.get("Rmag") is None:
+                                    s["Rmag"] = s["gaia_R"]
 
-                    # Recompute Pickles match if we upgraded sp_clean
-                    for s in self.star_list:
-                        if s.get("pickles_match") is None and s.get("sp_clean"):
-                            match_list = pickles_match_for_simbad(s["sp_clean"], self.pickles_templates)
-                            s["pickles_match"] = match_list[0] if match_list else None
+                                # If SIMBAD sp_clean is missing/garbage, infer from Gaia B-V
+                                if not s.get("sp_clean"):
+                                    bv = (s["gaia_B"] - s["gaia_V"]) if (s.get("gaia_B") is not None and s.get("gaia_V") is not None) else None
+                                    letter = _infer_letter_from_bv(bv)
+                                    if letter:
+                                        s["sp_clean"] = letter
 
+                        _sfcc_status(self, f"[SPCC] Gaia XP: attached synthetic B/V/R to {got} stars")
+
+                        # Recompute Pickles match if we upgraded sp_clean
+                        for s in self.star_list:
+                            if s.get("pickles_match") is None and s.get("sp_clean"):
+                                match_list = pickles_match_for_simbad(s["sp_clean"], self.pickles_templates)
+                                s["pickles_match"] = match_list[0] if match_list else None
+                    else:
+                        _sfcc_status(self, "[SPCC] Gaia XP: B/V/R already cached in star_list — skipping.")
                 except Exception as e:
                     _sfcc_status(self, f"[SPCC] Gaia XP fallback failed: {e}")
                 finally:
@@ -2102,7 +2402,7 @@ class SFCCDialog(QDialog):
 
         # ---- Gaia XP fallback: precompute integrals for stars lacking Pickles ----
         gaia_integrals = {}
-        if self._gaia_enabled():
+        if self._use_gaia_fallback():
             try:
                 # Collect Gaia IDs only for stars that will need fallback
                 gaia_ids_needed = []
@@ -2120,9 +2420,6 @@ class SFCCDialog(QDialog):
 
                 gaia_ids_needed = sorted(set(gaia_ids_needed))
                 if gaia_ids_needed:
-                    self.count_label.setText(f"Gaia XP fallback: downloading/calibrating {len(gaia_ids_needed)} spectra…")
-                    QApplication.processEvents()
-
                     gaia_integrals = self._gaia_integrals_for_source_ids(
                         gaia_ids_needed,
                         wl_grid_ang=wl_grid.astype(np.float64),
@@ -2131,11 +2428,13 @@ class SFCCDialog(QDialog):
                         T_sys_B=T_sys_B.astype(np.float64),
                         batch_size=128
                     )
+
                     print(f"[SPCC] Gaia integrals available for {len(gaia_integrals)} source_ids")
             except Exception as e:
                 print(f"[SPCC] Gaia XP fallback failed: {e}")
                 gaia_integrals = {}
-
+        else:
+            print("[SPCC] Gaia XP fallback skipped (disabled by user or unavailable).")
 
         def measure_star_rgb_aperture(img_rgb_f32: np.ndarray, x: float, y: float, r: float,
                                     rin: float, rout: float) -> tuple[float, float, float]:
