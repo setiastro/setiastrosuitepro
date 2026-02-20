@@ -21,9 +21,22 @@ from setiastro.saspro.widgets.image_utils import (
     extract_mask_from_document as _active_mask_array_from_doc
 )
 
-from matplotlib import pyplot as plt                # NEW
-from matplotlib.patches import Circle               # NEW
-from matplotlib.ticker import MaxNLocator           # NEW
+def _mpl_no_tex_guard():
+    # Prefer the centralized policy if available (frozen builds + single source of truth)
+    try:
+        from setiastro.saspro.gui_entry import _force_mpl_no_tex
+        _force_mpl_no_tex()
+        return
+    except Exception:
+        pass
+
+    # Fallback: force-disable TeX directly
+    try:
+        import matplotlib
+        matplotlib.rcParams["text.usetex"] = False
+    except Exception:
+        pass
+
 # ----------------------------
 # Core WB implementations
 # ----------------------------
@@ -33,6 +46,12 @@ def plot_star_color_ratios_comparison(raw_pixels: np.ndarray, after_pixels: np.n
     with an RGB background grid, best-fit line, and neutral markers.
     Expects Nx3 arrays of star RGB samples in [0,1] (or any common scale).
     """
+    _mpl_no_tex_guard()
+
+    from matplotlib import pyplot as plt
+    from matplotlib.patches import Circle
+    from matplotlib.ticker import MaxNLocator
+
     def compute_ratios(pixels: np.ndarray):
         eps = 1e-8
         rb = pixels[:, 0] / (pixels[:, 2] + eps)  # R/B
