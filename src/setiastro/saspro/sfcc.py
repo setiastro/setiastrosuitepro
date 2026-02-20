@@ -2202,12 +2202,32 @@ class SFCCDialog(QDialog):
                 ax.tick_params(axis='x', rotation=90)
                 ax.grid(axis="y", linestyle="--", alpha=0.3)
                 self.canvas.setVisible(True)
+                try:
+                    from setiastro.saspro.gui_entry import _force_mpl_no_tex
+                    _force_mpl_no_tex()
+                except Exception:
+                    try:
+                        import matplotlib
+                        matplotlib.rcParams["text.usetex"] = False
+                    except Exception:
+                        pass
+
                 self.canvas.draw()
         else:
             if getattr(self, "count_label", None) is not None:
                 self.count_label.setText(f"Found {len(self.star_list)} in-frame SIMBAD stars (0 with Pickles matches).")
             if getattr(self, "canvas", None) is not None:
                 self.canvas.setVisible(False)
+                try:
+                    from setiastro.saspro.gui_entry import _force_mpl_no_tex
+                    _force_mpl_no_tex()
+                except Exception:
+                    try:
+                        import matplotlib
+                        matplotlib.rcParams["text.usetex"] = False
+                    except Exception:
+                        pass
+
                 self.canvas.draw()
 
     # ── Core SFCC ───────────────────────────────────────────────────────

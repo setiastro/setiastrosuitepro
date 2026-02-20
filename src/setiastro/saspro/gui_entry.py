@@ -635,23 +635,41 @@ def _bootstrap_imports():
         category=DeprecationWarning,
     )
 
-    os.environ['LIGHTKURVE_STYLE'] = 'default'
+    # Prevent lightkurve from applying mpl styles automatically
+    os.environ["LIGHTKURVE_STYLE"] = "default"
 
     # ----------------------------------------
-    # Matplotlib configuration
+    # Matplotlib configuration (HARD NO-TeX)
     # ----------------------------------------
     import matplotlib
-    matplotlib.use("QtAgg")
-    # --- TeX fallback: only enable usetex if latex+dvipng exist ---
+
+    # Backend selection must happen before pyplot is imported anywhere.
     try:
-        import shutil
-        has_tex = (shutil.which("latex") is not None) and (shutil.which("dvipng") is not None)
-        matplotlib.rcParams["text.usetex"] = bool(has_tex)
+        matplotlib.use("QtAgg", force=True)
+    except TypeError:
+        # Older mpl may not have force=
+        matplotlib.use("QtAgg")
+
+    # Force MPL to NOT use LaTeX (prevents texmanager subprocess calls)
+    try:
+        matplotlib.rcParams["text.usetex"] = False
+        matplotlib.rcParams["mathtext.fontset"] = "dejavusans"
+        matplotlib.rcParams["font.family"] = "DejaVu Sans"
     except Exception:
+        pass
+
+    # If any style got applied earlier (rare), this reasserts our policy.
+    def _force_mpl_no_tex():
         try:
             matplotlib.rcParams["text.usetex"] = False
+            matplotlib.rcParams["mathtext.fontset"] = "dejavusans"
+            matplotlib.rcParams["font.family"] = "DejaVu Sans"
         except Exception:
             pass
+
+    # HARD disable TeX (do NOT auto-enable even if latex exists)
+    _force_mpl_no_tex()
+
     # Configure stdout encoding
     if (sys.stdout is not None) and (hasattr(sys.stdout, "reconfigure")):
         sys.stdout.reconfigure(encoding='utf-8')
@@ -691,11 +709,17 @@ def _bootstrap_imports():
         if _lightkurve_module is None:
             try:
                 import lightkurve as _lk
+                # prevent any implicit style behavior
                 _lk.MPLSTYLE = None
                 _lightkurve_module = _lk
             except Exception:
                 _lightkurve_module = False
+
+            # Re-assert no-TeX after any potential style meddling
+            _force_mpl_no_tex()
+
         return _lightkurve_module if _lightkurve_module else None
+
 
     _update_splash(QCoreApplication.translate("Splash", "Loading UI utilities..."), 30)
 
@@ -826,6 +850,7 @@ def _bootstrap_imports():
         "install_crash_handlers": install_crash_handlers,
         "AstroSuiteProMainWindow": AstroSuiteProMainWindow,
         "BUILD_TIMESTAMP": BUILD_TIMESTAMP,
+        "_force_mpl_no_tex": _force_mpl_no_tex,
     })
 
 
