@@ -32,6 +32,89 @@ try:
 except ImportError:
     HAS_GAIAXPY = False
 
+def download_xp_spectra_only(
+    db: "GaiaSpectraDB",
+    source_ids: list[int],
+    batch_size: int = 100,
+    *,
+    status_cb=None,
+) -> list["CalibratedSpectrum"]:
+    """
+    Download and calibrate Gaia XP spectra for given source IDs (NO DB creation here).
+    Uses GaiaXPy calibrate() and returns CalibratedSpectrum objects.
+    Caller can db.add_spectra(spectra).
+    """
+    if status_cb is None:
+        status_cb = lambda m: None
+
+    if not HAS_GAIAXPY:
+        raise ImportError("GaiaXPy is required for spectrum calibration (pip install gaiaxpy)")
+
+    ids = [int(x) for x in source_ids if x is not None]
+    ids = sorted(set(ids))
+    if not ids:
+        return []
+
+    all_spectra: list[CalibratedSpectrum] = []
+    fallback_wl = db.wavelengths  # 336..1020 step 2
+
+    def _sampling_to_wavelengths(sampling, fallback: np.ndarray) -> np.ndarray:
+        # same logic as your GaiaDownloader._sampling_to_wavelengths
+        if sampling is None:
+            return fallback
+        for attr in ("wavelength", "wavelengths", "values"):
+            if hasattr(sampling, attr):
+                try:
+                    w = np.asarray(getattr(sampling, attr), dtype=np.float32).reshape(-1)
+                    if w.size:
+                        return w
+                except Exception:
+                    pass
+        try:
+            w = np.asarray(list(sampling), dtype=np.float32).reshape(-1)
+            if w.size:
+                return w
+        except Exception:
+            pass
+        return fallback
+
+    for i in range(0, len(ids), int(batch_size)):
+        batch_ids = ids[i:i + int(batch_size)]
+        status_cb(f"[Gaia XP] Downloading spectra {i+1}-{min(i+len(batch_ids), len(ids))} of {len(ids)}…")
+
+        try:
+            calibrated, sampling = calibrate(batch_ids)
+            wavelengths = _sampling_to_wavelengths(sampling, fallback=fallback_wl)
+
+            # GaiaXPy returns a DataFrame with per-source 'flux' and (often) 'flux_error'
+            for _, row in calibrated.iterrows():
+                flux = np.asarray(row["flux"], dtype=np.float32).reshape(-1)
+
+                flux_error = None
+                # different gaiaxpy versions sometimes have flux_error column
+                if "flux_error" in calibrated.columns:
+                    try:
+                        fe = row.get("flux_error", None)
+                        if fe is not None:
+                            flux_error = np.asarray(fe, dtype=np.float32).reshape(-1)
+                    except Exception:
+                        flux_error = None
+
+                all_spectra.append(
+                    CalibratedSpectrum(
+                        source_id=int(row["source_id"]),
+                        wavelengths=wavelengths,
+                        flux=flux,
+                        flux_error=flux_error,
+                    )
+                )
+
+        except Exception as e:
+            status_cb(f"[Gaia XP] Warning: failed batch {i//batch_size+1}: {e}")
+            continue
+
+    return all_spectra
+
 
 @dataclass
 class GaiaSource:
