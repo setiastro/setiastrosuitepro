@@ -271,42 +271,6 @@ class _FitWorker(QObject):
             if Ellipse is None or EllipseGeometry is None or build_ellipse_model is None:
                 raise RuntimeError("photutils.isophote not available")
 
-            # ----------------------------
-            # small helpers (local, explicit)
-            # ----------------------------
-            def _safe_float(v, default=np.nan) -> float:
-                try:
-                    if v is None:
-                        return float(default)
-                    return float(v)
-                except Exception:
-                    return float(default)
-
-            def _normalize_for_fit(img: np.ndarray) -> np.ndarray:
-                """
-                Produce a stable [0,1] float32 image for isophote fitting, even for very dim linear data.
-                This normalization is ONLY for fitting stability, not for "scientific" calibration.
-                """
-                img = np.asarray(img, dtype=np.float32)
-                img = np.nan_to_num(img, nan=0.0, posinf=0.0, neginf=0.0)
-
-                # Robust normalization: percentile window.
-                p1 = float(np.percentile(img, 1.0))
-                p99 = float(np.percentile(img, 99.0))
-                rng = p99 - p1
-
-                if (not np.isfinite(rng)) or rng < 1e-6:
-                    # fallback to max-based
-                    mx = float(np.max(img))
-                    if (not np.isfinite(mx)) or mx <= 0.0:
-                        raise ValueError("Image has no usable signal for isophote fitting (flat/zero).")
-                    img = img / mx
-                else:
-                    img = (img - p1) / rng
-
-                img = np.clip(img, 0.0, 1.0).astype(np.float32, copy=False)
-                return img
-
             self.progress.emit(5, "Preparing…")
             ds = int(max(1, self.p.get("downsample", 1)))
 
@@ -327,41 +291,32 @@ class _FitWorker(QObject):
             # --- build (possibly) downsampled image & geometry ---
             img_for_fit = self.img
             geom_for_fit = geom_full
-
             minsma = float(self.p["minsma"])
             maxsma = float(self.p["maxsma"])
             step   = float(self.p["step"])
 
             if ds > 1:
-                small, _full_shape = self._downsample_mean(self.img, ds)
+                small, full_shape = self._downsample_mean(self.img, ds)
                 img_for_fit = small
 
-                # EllipseGeometry constructor signature differs by photutils versions;
-                # this one matches your earlier creation style (pa field exists on geom_full)
+                # scale geometry/ranges (OLD behavior)
                 geom_for_fit = EllipseGeometry(
                     x0=geom_full.x0 / ds,
                     y0=geom_full.y0 / ds,
                     sma=geom_full.sma / ds,
                     eps=geom_full.eps,
-                    pa=geom_full.pa
+                    pa=getattr(geom_full, "pa", getattr(geom_full, "position_angle", pa_rad))
                 )
-
                 minsma = minsma / ds
                 maxsma = maxsma / ds
-                step   = step / ds
-
-            # ---- clamp fit domain (IMPORTANT: must be BEFORE fit_image) ----
-            # photutils isophote behaves poorly when minsma ~ 0 or when step is tiny.
-            minsma = max(1.0, float(minsma))
-            maxsma = max(minsma + 1.0, float(maxsma))
-            step   = max(0.5, float(step))
-
-            # ---- normalize image for fitting stability ----
-            img_for_fit = _normalize_for_fit(img_for_fit)
+                step   = max(step / ds, 0.5)
+            else:
+                full_shape = (self.img.shape[0], self.img.shape[1])
 
             self.progress.emit(20, "Building mask…")
-            h, w = img_for_fit.shape
 
+            # --- wedge mask on the fit grid ---
+            h, w = img_for_fit.shape
             if bool(self.p.get("use_wedge", False)):
                 yy, xx = np.mgrid[0:h, 0:w]
                 cx_fit, cy_fit = float(geom_for_fit.x0), float(geom_for_fit.y0)
@@ -373,11 +328,6 @@ class _FitWorker(QObject):
             else:
                 wedge_mask = np.zeros((h, w), dtype=bool)
 
-            # Guard: if mask excludes almost everything, fit will fail / empty isolist.
-            masked_frac = float(np.mean(wedge_mask)) if wedge_mask.size else 0.0
-            if masked_frac > 0.95:
-                raise ValueError("Wedge mask excludes >95% of pixels; reduce wedge width or disable wedge.")
-
             img_ma = np.ma.masked_array(img_for_fit, mask=wedge_mask)
             ell = Ellipse(img_ma, geometry=geom_for_fit)
 
@@ -388,129 +338,45 @@ class _FitWorker(QObject):
                 maxsma=float(maxsma),
                 step=float(step),
                 sclip=float(self.p["sclip"]),
-                nclip=_safe_int(self.p.get("nclip", 0), default=0),
+                nclip=int(self.p["nclip"]),
                 fix_center=bool(self.p["fix_center"]),
                 fix_pa=bool(self.p["fix_pa"]),
                 fix_eps=bool(self.p["fix_eps"]),
             )
-
             sig = inspect.signature(ell.fit_image).parameters
             mode_key = "integrmode" if "integrmode" in sig else ("integr_mode" if "integr_mode" in sig else None)
             if mode_key:
                 fit_kwargs[mode_key] = "bilinear"
 
-            import warnings
-
             self.progress.emit(40, "Fitting isophotes…")
-
-            with warnings.catch_warnings(record=True) as wrec:
-                warnings.simplefilter("always")
-                # --- Enforce a sane starting sma0 AFTER downsample ---
-                # Quick preview (ds>1) makes sma0 tiny; photutils can warn then crash (IndexError).
-                min_sma_fit = 8.0  # pixels at *fit* resolution
-                fit_kwargs["minsma"] = max(float(fit_kwargs["minsma"]), min_sma_fit)
-                fit_kwargs["step"]   = max(float(fit_kwargs["step"]), 1.0)  # avoid ultra-dense rings in preview
-                fit_kwargs["sma0"]   = max(float(fit_kwargs["sma0"]),
-                                        float(fit_kwargs["minsma"]) + float(fit_kwargs["step"]),
-                                        min_sma_fit)
-                fit_kwargs["maxsma"] = max(float(fit_kwargs["maxsma"]), float(fit_kwargs["sma0"]) + float(fit_kwargs["step"]))
-                try:
-                    isolist = ell.fit_image(**fit_kwargs)
-                except IndexError as e:
-                    raise ValueError(
-                        "Isophote fit failed inside photutils (IndexError). This usually happens when the "
-                        "starting SMA is too small (especially in Quick preview/downsample mode) or the wedge mask "
-                        "leaves too few samples.\n\n"
-                        f"Details: {e}\n\n"
-                        "Try:\n"
-                        " • Increase sma0/minsma (or disable Quick preview)\n"
-                        " • Increase step (fewer rings)\n"
-                        " • Disable wedge mask or widen it\n"
-                    )
-
-                if isolist is None:
-                    raise ValueError("Isophote fit returned no result (isolist is None). Try different geometry/step.")
-
-                # If photutils warned about small sample / failure conditions, abort cleanly.
-                bad = []
-                for w in wrec:
-                    msg = str(w.message)
-                    if ("Too small sample to warrant a fit" in msg or
-                        "Mean of empty slice" in msg or
-                        "Degrees of freedom <= 0" in msg or
-                        "invalid value encountered" in msg):
-                        bad.append(msg)
-                if bad:
-                    raise ValueError(
-                        "Isophote fit failed (insufficient valid samples for one or more rings).\n\n"
-                        "Details:\n"
-                        + "\n".join(f" • {m}" for m in bad[:5]) +
-                        "\n\nTry:\n"
-                        " • Increase sma0 and minsma (start outside the core)\n"
-                        " • Increase step (fewer rings)\n"
-                        " • Disable wedge mask\n"
-                        " • Disable Quick preview (downsample)\n"
-                        " • Or use a different tool for face-on spirals (GLIMR is best on smooth ellipsoids)."
-                    )
-
-            if hasattr(isolist, "__len__") and len(isolist) < 3:
-                # build_ellipse_model can blow up on tiny isolists
-                raise ValueError(
-                    f"Isophote fit produced too few rings ({len(isolist)}). "
-                    "Increase minsma/sma0/step or choose a more elliptical target."
-                )
+            isolist = ell.fit_image(**fit_kwargs)
+            if hasattr(isolist, "__len__") and len(isolist) == 0:
+                raise ValueError("isolist must not be empty")
 
             self.progress.emit(60, "Building model…")
-
-            try:
-                model_fit = build_ellipse_model(
-                    img_for_fit.shape,
-                    isolist,
-                    high_harmonics=bool(self.p["high_harm"])
-                )
-            except IndexError as e:
-                # photutils internal index error → convert to user-level error
-                raise ValueError(
-                    "Model build failed inside photutils (likely due to invalid/empty ring samples).\n\n"
-                    "Try:\n"
-                    " • Increase minsma and sma0\n"
-                    " • Increase step\n"
-                    " • Turn off wedge / harmonics\n"
-                    " • Turn off Quick preview\n"
-                    " • Or use this tool on more elliptical galaxies.\n\n"
-                    f"Internal error: {e}"
-                )
+            model_fit = build_ellipse_model(
+                img_for_fit.shape,
+                isolist,
+                high_harmonics=bool(self.p["high_harm"])
+            )
             resid_fit = img_for_fit - model_fit
 
             self.progress.emit(95, "Upsampling / finalizing…")
 
+            # --- send full-size arrays to the UI ---
             if ds > 1:
-                # Upsample the model back to original size; resid computed against original input to worker (self.img)
-                model_full = self._upsample_nn(model_fit, ds, (self.img.shape[0], self.img.shape[1]))
+                model_full = self._upsample_nn(model_fit, ds, full_shape)
                 resid_full = np.asarray(self.img, dtype=np.float32) - np.asarray(model_full, dtype=np.float32)
 
-                # Scale isolist params to full-res, filtering invalid rings (prevents NaN→float crashes)
+                # scale isolist params to full-res so your preview boundary is correct
                 scaled = []
                 for iso in isolist:
-                    x0  = _safe_float(getattr(iso, "x0",  getattr(iso, "x0_center", np.nan)))
-                    y0  = _safe_float(getattr(iso, "y0",  getattr(iso, "y0_center", np.nan)))
-                    sma = _safe_float(getattr(iso, "sma", getattr(iso, "sma0", np.nan)))
-                    eps = _safe_float(getattr(iso, "eps", getattr(iso, "ellipticity", np.nan)))
-                    pa  = _safe_float(getattr(iso, "pa",  getattr(iso, "position_angle", np.nan)))
-
-                    if not (np.isfinite([x0, y0, sma, eps, pa]).all() and sma > 0.0 and 0.0 <= eps < 1.0):
-                        continue
-
-                    scaled.append(SimpleNamespace(
-                        x0=float(x0 * ds),
-                        y0=float(y0 * ds),
-                        sma=float(sma * ds),
-                        eps=float(np.clip(eps, 0.0, 0.95)),
-                        pa=float(pa),
-                    ))
-
-                if len(scaled) == 0:
-                    raise ValueError("Isophote fit produced no finite rings (all NaN/invalid).")
+                    x0  = float(getattr(iso, "x0",  getattr(iso, "x0_center", geom_for_fit.x0))) * ds
+                    y0  = float(getattr(iso, "y0",  getattr(iso, "y0_center", geom_for_fit.y0))) * ds
+                    sma = float(getattr(iso, "sma", getattr(iso, "sma0",  geom_for_fit.sma))) * ds
+                    eps = float(getattr(iso, "eps", getattr(iso, "ellipticity", geom_for_fit.eps)))
+                    pa  = float(getattr(iso, "pa",  getattr(iso, "position_angle", getattr(geom_for_fit, "pa", pa_rad))))
+                    scaled.append(SimpleNamespace(x0=x0, y0=y0, sma=sma, eps=eps, pa=pa))
 
                 self.finished.emit(
                     np.asarray(model_full, dtype=np.float32),
@@ -518,7 +384,6 @@ class _FitWorker(QObject):
                     scaled
                 )
             else:
-                # ds == 1: return model/resid and isolist as-is (but model/resid are based on normalized-for-fit image)
                 self.finished.emit(
                     np.asarray(model_fit, dtype=np.float32),
                     np.asarray(resid_fit, dtype=np.float32),
