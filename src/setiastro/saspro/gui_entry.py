@@ -642,7 +642,16 @@ def _bootstrap_imports():
     # ----------------------------------------
     import matplotlib
     matplotlib.use("QtAgg")
-
+    # --- TeX fallback: only enable usetex if latex+dvipng exist ---
+    try:
+        import shutil
+        has_tex = (shutil.which("latex") is not None) and (shutil.which("dvipng") is not None)
+        matplotlib.rcParams["text.usetex"] = bool(has_tex)
+    except Exception:
+        try:
+            matplotlib.rcParams["text.usetex"] = False
+        except Exception:
+            pass
     # Configure stdout encoding
     if (sys.stdout is not None) and (hasattr(sys.stdout, "reconfigure")):
         sys.stdout.reconfigure(encoding='utf-8')
