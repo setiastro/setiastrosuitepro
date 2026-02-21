@@ -322,8 +322,10 @@ class NarrowbandNormalization(QWidget):
         self.grp_sho_extras.setLayout(QVBoxLayout())
         self.grp_sho_extras.layout().addWidget(QLabel("Reserved for future SHO-family options.", self))
 
-        # Add preview toggle into norm group area (nice UX)
-        # (We’ll place it in _build_norm_group as well, but safe to keep here if you prefer)
+        for lab in (self.lbl_ha, self.lbl_oiii, self.lbl_sii, self.lbl_osc1, self.lbl_osc2):
+            lab.setWordWrap(False)
+            lab.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+
 
     def _build_norm_group(self) -> tuple[QGroupBox, QFormLayout]:
         grp = QGroupBox("Normalization", self)
@@ -789,15 +791,21 @@ class NarrowbandNormalization(QWidget):
             scnr=bool(self.chk_scnr.isChecked()),
         )
 
-
     def _set_status_label(self, which: str, text: str | None):
         lab = getattr(self, f"lbl_{which.lower()}")
+
         if text:
-            lab.setText(text)
+            full = str(text)
+            shown = self._elide_label_text(full, max_chars=52)
+
+            lab.setText(shown)
+            lab.setToolTip(full)  # full path/view name accessible on hover
             lab.setStyleSheet("color:#2a7; font-weight:600; margin-left:8px;")
         else:
             lab.setText(f"No {which} loaded.")
+            lab.setToolTip("")
             lab.setStyleSheet("color:#888; margin-left:8px;")
+
 
     def _load_channel(self, which: str):
         src, ok = QInputDialog.getItem(
@@ -1567,6 +1575,18 @@ class NarrowbandNormalization(QWidget):
             title = getattr(sw, "view_title", None) or sw.windowTitle() or getattr(sw.document, "display_name", lambda: "Untitled")()
             out.append((str(title), sw))
         return out
+
+    def _elide_label_text(self, s: str, *, max_chars: int = 48) -> str:
+        """
+        Cap how much we show in the green status labels so long paths/view names
+        don't resize the whole left panel and cut off sliders.
+        """
+        s = (s or "").strip()
+        if len(s) <= max_chars:
+            return s
+        # keep the important end of the string (usually filename)
+        head = max(0, max_chars - 1 - 18)
+        return f"{s[:head]}…{s[-18:]}"
 
     # ---------------- event filter (zoom/pan) ----------------
     def eventFilter(self, obj, ev):
