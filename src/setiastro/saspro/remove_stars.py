@@ -605,9 +605,19 @@ def _syqon_norm_kind(v: str) -> str:
         return "axiomv2"
     return "nadir"
 
+def _rgb01_to_qimage(rgb01: np.ndarray):
+    from PyQt6.QtGui import QImage
+    x = np.clip(rgb01, 0.0, 1.0)
+    u8 = (x * 255.0 + 0.5).astype(np.uint8)
+    u8 = np.ascontiguousarray(u8)
+    h, w = u8.shape[:2]
+    q = QImage(u8.data, w, h, 3 * w, QImage.Format.Format_RGB888)
+    return q.copy()  # important: detach from numpy memory
+
 
 class _SyQonProcessThread(QThread):
-    progress = pyqtSignal(int, str)                 # percent, stage
+    progress = pyqtSignal(int, str)                   # percent, stage
+    preview = pyqtSignal(object)                      # QImage (or None)
     finished = pyqtSignal(object, object, dict, str)  # starless_s, stars_s, info, err
 
     def __init__(
@@ -621,6 +631,11 @@ class _SyQonProcessThread(QThread):
         model_kind: str = "nadir",
         use_amp: bool = False,
         amp_dtype: str = "fp16",
+        *,
+        live_preview: bool = False,
+        preview_src_rgb01: np.ndarray | None = None,   # image to show "being erased"
+        preview_max_dim: int = 900,
+        preview_emit_ms: int = 120,
         parent=None,
     ):
         super().__init__(parent)
@@ -633,7 +648,10 @@ class _SyQonProcessThread(QThread):
         self.overlap = int(overlap)
         self.target_bg = float(target_bg)
         self.shadow_clip = float(shadow_clip)
-
+        self.live_preview = bool(live_preview)
+        self.preview_src = preview_src_rgb01
+        self.preview_max_dim = int(preview_max_dim)
+        self.preview_emit_ms = int(preview_emit_ms)
         self.use_amp = bool(use_amp)
         ad = (amp_dtype or "fp16").lower().strip()
         if ad not in ("fp16", "bf16"):
@@ -646,6 +664,7 @@ class _SyQonProcessThread(QThread):
         self._cancel = True
 
     def run(self):
+        import time
         info = {
             "engine": "syqon_nafnet",
             "use_amp_requested": bool(self.use_amp),
@@ -666,26 +685,98 @@ class _SyQonProcessThread(QThread):
 
             from setiastro.saspro.starless_engines.syqon_nafnet_engine import nafnet_starless_rgb01
 
+            # --- live preview init (downsampled buffer) ---
+            preview_buf = None
+            scale_x = scale_y = 1.0
+            last_emit = 0.0
+
+            if self.live_preview and (self.preview_src is not None):
+                src = np.asarray(self.preview_src, dtype=np.float32)
+                if src.ndim == 2:
+                    src = np.stack([src]*3, axis=-1)
+                elif src.ndim == 3 and src.shape[2] == 1:
+                    src = np.repeat(src, 3, axis=2)
+                else:
+                    src = src[..., :3]
+
+                H, W = src.shape[:2]
+                md = max(H, W)
+                if md > self.preview_max_dim:
+                    s = self.preview_max_dim / float(md)
+                    Hd = max(1, int(round(H * s)))
+                    Wd = max(1, int(round(W * s)))
+                else:
+                    Hd, Wd = H, W
+
+                # use cv2 if available for nicer scaling; else nearest-ish
+                if cv2 is not None and (Hd != H or Wd != W):
+                    preview_buf = cv2.resize(src, (Wd, Hd), interpolation=cv2.INTER_AREA).astype(np.float32, copy=False)
+                else:
+                    preview_buf = src.copy()
+
+                scale_x = float(preview_buf.shape[1]) / float(W)
+                scale_y = float(preview_buf.shape[0]) / float(H)
+
+                # emit initial frame once
+                self.preview.emit(_rgb01_to_qimage(preview_buf))
+                last_emit = time.time()
+
             def _prog(done, total, stage):
                 if self._cancel:
                     raise RuntimeError("Cancelled")
                 pct = int(100.0 * float(done) / max(float(total), 1.0))
                 self.progress.emit(pct, str(stage or ""))
 
-            # NOTE: target_bg / shadow_clip are used earlier in your pipeline (MTF etc).
-            # The engine call itself doesn't need them unless you add those behaviors there.
+            def _tile_cb(y0, x0, ph, pw, tile_rgb01):
+                nonlocal preview_buf, last_emit
+
+                if preview_buf is None:
+                    return
+                if self._cancel:
+                    raise RuntimeError("Cancelled")
+
+                # map coords into preview buffer
+                dx0 = int(round(x0 * scale_x))
+                dy0 = int(round(y0 * scale_y))
+                dx1 = int(round((x0 + pw) * scale_x))
+                dy1 = int(round((y0 + ph) * scale_y))
+
+                dx1 = max(dx0 + 1, dx1)
+                dy1 = max(dy0 + 1, dy1)
+
+                dh = min(preview_buf.shape[0], dy1) - dy0
+                dw = min(preview_buf.shape[1], dx1) - dx0
+                if dh <= 0 or dw <= 0:
+                    return
+
+                # resize the tile to display size and stitch
+                if cv2 is not None and (dw != pw or dh != ph):
+                    tile_disp = cv2.resize(tile_rgb01, (dw, dh), interpolation=cv2.INTER_AREA)
+                else:
+                    tile_disp = tile_rgb01
+                    tile_disp = tile_disp[:dh, :dw, :]
+
+                preview_buf[dy0:dy0+dh, dx0:dx0+dw, :] = tile_disp.astype(np.float32, copy=False)
+
+                # throttle QImage conversion + GUI signal
+                now = time.time()
+                if (now - last_emit) * 1000.0 >= float(self.preview_emit_ms):
+                    self.preview.emit(_rgb01_to_qimage(preview_buf))
+                    last_emit = now
+
             starless_s, stars_s, engine_info = nafnet_starless_rgb01(
                 self.x_for_net,
                 ckpt_path=self.ckpt_path,
                 tile=self.tile,
                 overlap=self.overlap,
-                use_gpu=True,          # or your checkbox state
-                prefer_dml=True,       # on Windows when GPU requested
+                use_gpu=True,
+                prefer_dml=True,
                 model_kind=self.model_kind,
                 residual_mode=True,
                 use_amp=self.use_amp,
                 amp_dtype=self.amp_dtype,
                 progress_cb=_prog,
+                tile_cb=_tile_cb if (self.live_preview and preview_buf is not None) else None,
             )
 
             if self._cancel:
@@ -705,6 +796,57 @@ class _SyQonProcessThread(QThread):
             import traceback
             info["traceback"] = traceback.format_exc()
             self.finished.emit(None, None, info, str(e))
+
+from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QPixmap, QIcon
+
+class SyQonLivePreviewWindow(QDialog):
+    def __init__(self, parent=None, *, title="SyQon Live Preview", icon: QIcon | None = None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setModal(False)                        # important: modeless
+        self.setMinimumSize(520, 420)
+        try:
+            self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
+        except Exception:
+            pass
+
+        if icon is not None:
+            try:
+                self.setWindowIcon(icon)
+            except Exception:
+                pass
+
+        lay = QVBoxLayout(self)
+        self.lbl = QLabel(self)
+        self.lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl.setStyleSheet("border: 1px solid rgba(255,255,255,0.15);")
+        self.lbl.setMinimumSize(480, 360)
+        lay.addWidget(self.lbl)
+
+        self._last_qimg = None
+
+    def set_frame(self, qimg):
+        # store last frame so we can rescale on resize
+        self._last_qimg = qimg
+        self._render()
+
+    def _render(self):
+        if self._last_qimg is None:
+            return
+        pm = QPixmap.fromImage(self._last_qimg)
+        pm = pm.scaled(
+            self.lbl.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
+        )
+        self.lbl.setPixmap(pm)
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        self._render()
+
 
 class SyQonStarlessDialog(QDialog):
     def __init__(self, main, doc, parent=None, icon: QIcon | None = None):
@@ -868,6 +1010,15 @@ class SyQonStarlessDialog(QDialog):
         form.addRow("Pad pixels:", self.spin_pad)
         form.addRow("", self.chk_amp)
         form.addRow("Stars-only extraction:", self.cmb_stars_extract)        
+
+        # --- live preview (optional) ---
+        self.chk_live_preview = QCheckBox("Live tile preview (slower)", self)
+        self.chk_live_preview.setChecked(False)
+
+        lay.addWidget(self.chk_live_preview)
+
+
+
         lay.addWidget(formw)
 
         # --- bottom buttons ---
@@ -887,8 +1038,35 @@ class SyQonStarlessDialog(QDialog):
         self.cmb_model.currentTextChanged.connect(self._on_model_changed)
         self.chk_mtf.toggled.connect(lambda on: self.spin_mtf_median.setEnabled(bool(on)))
         self.spin_mtf_median.setEnabled(self.chk_mtf.isChecked())
-
+        self.preview_win = None
+        self.chk_live_preview.toggled.connect(self._toggle_live_preview_window)
         self._refresh_state()
+
+    def _toggle_live_preview_window(self, on: bool):
+        on = bool(on)
+        if not on:
+            # user turned it off: close the window (but keep object around)
+            try:
+                if self.preview_win is not None:
+                    self.preview_win.hide()
+            except Exception:
+                pass
+            return
+
+        # user turned it on: ensure window exists and show/raise it
+        if self.preview_win is None:
+            self.preview_win = SyQonLivePreviewWindow(
+                parent=self,
+                title="SyQon Live Preview",
+                icon=self.windowIcon()  # reuse same icon
+            )
+            # if user closes the preview window manually, uncheck the box
+            self.preview_win.finished.connect(lambda *_: self.chk_live_preview.setChecked(False))
+
+        self.preview_win.show()
+        self.preview_win.raise_()
+        self.preview_win.activateWindow()
+
 
     def _model_kind(self) -> str:
         return _syqon_norm_kind(self.cmb_model.currentData() or "nadir")
@@ -899,6 +1077,33 @@ class SyQonStarlessDialog(QDialog):
             s.setValue("syqon/model_kind", self._model_kind())
         self._refresh_state()
 
+    def _on_worker_preview(self, qimg):
+        try:
+            if not self.chk_live_preview.isChecked():
+                return
+            if qimg is None:
+                return
+            if self.preview_win is None:
+                # if something emitted before window exists, create it
+                self._toggle_live_preview_window(True)
+            if self.preview_win is not None and self.preview_win.isVisible():
+                self.preview_win.set_frame(qimg)
+        except Exception:
+            pass
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        # re-scale existing pixmap if present
+        try:
+            pm = self.lbl_preview.pixmap()
+            if pm and not pm.isNull():
+                self.lbl_preview.setPixmap(pm.scaled(
+                    self.lbl_preview.size(),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation
+                ))
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # helpers
@@ -911,6 +1116,7 @@ class SyQonStarlessDialog(QDialog):
         self.btn_install.setEnabled(not busy)
         self.btn_remove.setEnabled((not busy) and self._have_model())
         self.pbar.setVisible(busy)
+        self.chk_live_preview.setEnabled(not busy)
         if busy:
             self.pbar.setRange(0, 100)
             self.pbar.setValue(0)
@@ -958,6 +1164,11 @@ class SyQonStarlessDialog(QDialog):
         # --- Continue with the code you currently run AFTER nafnet_starless_rgb01 ---
         # Everything below runs on GUI thread now, so safe to touch widgets and doc.
 
+        try:
+            if self.preview_win is not None:
+                self.preview_win.hide()
+        except Exception:
+            pass
         pad_edges = bool(self.chk_pad.isChecked())
         pad_pixels = int(self.spin_pad.value())
         stars_extract_mode = str(self.cmb_stars_extract.currentText())
@@ -1320,6 +1531,9 @@ class SyQonStarlessDialog(QDialog):
         except Exception:
             pass
 
+        live_preview = bool(self.chk_live_preview.isChecked())
+        preview_src = x_for_net if do_mtf else xrgb
+
         self.proc_thr = _SyQonProcessThread(
             x_for_net=x_for_net,
             ckpt_path=ckpt_path,
@@ -1330,9 +1544,15 @@ class SyQonStarlessDialog(QDialog):
             model_kind=model_kind,
             use_amp=bool(self.chk_amp.isChecked()),
             amp_dtype="fp16",
+            live_preview=live_preview,
+            preview_src_rgb01=(preview_src if live_preview else None),
+            preview_max_dim=900,
+            preview_emit_ms=120,
             parent=self
         )
+
         self.proc_thr.progress.connect(self._on_worker_progress)
+        self.proc_thr.preview.connect(self._on_worker_preview)
         self.proc_thr.finished.connect(self._on_worker_finished)
         self.proc_thr.start()
 
@@ -1343,7 +1563,15 @@ class SyQonStarlessDialog(QDialog):
                 self.proc_thr.wait(500)
         except Exception:
             pass
+
+        try:
+            if self.preview_win is not None:
+                self.preview_win.hide()
+        except Exception:
+            pass
+
         super().closeEvent(ev)
+
 
 
 def _run_syqon(main, doc, icon_path=starnet_path):
