@@ -262,6 +262,7 @@ def nafnet_starless_rgb01(
     model_kind: str = "nadir",
     use_gpu: bool = True, prefer_dml: bool = True,
     progress_cb: Optional[Callable[[int, int, str], None]] = None,
+    tile_cb=None,
 ):
     """
     Input: HWC float32 [0,1], RGB (or mono HxW)
@@ -361,7 +362,8 @@ def nafnet_starless_rgb01(
 
                 out_acc[y0:y1, x0:x1, :] += starless_patch * wlocal
                 w_acc[y0:y1, x0:x1, :] += wlocal
-
+                if callable(tile_cb):
+                    tile_cb(y0, x0, ph, pw, starless_patch)
                 done += 1
                 if callable(progress_cb):
                     progress_cb(done, total, "SyQon NAFNet tiles…")
