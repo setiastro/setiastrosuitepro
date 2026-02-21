@@ -18,7 +18,8 @@ warnings.filterwarnings("ignore")
 
 from typing import Callable
 
-ProgressCB = Callable[[int, int], None]  # (done, total)
+ProgressCB = Callable[[int, int], bool]  # True=continue, False=cancel
+
 
 
 def _get_torch(*, prefer_cuda: bool, prefer_dml: bool, status_cb=print):
@@ -756,11 +757,12 @@ def unstretch_image_unlinked(image: np.ndarray, orig_meds, orig_min: float, targ
 
 
 # Backwards-compatible names used by denoise_rgb01()
-def stretch_image(image: np.ndarray):
-    return stretch_image_unlinked(image)
+def stretch_image(image: np.ndarray, *, target_median: float = 0.25):
+    return stretch_image_unlinked(image, target_median=float(target_median))
 
-def unstretch_image(image: np.ndarray, original_medians, original_min: float):
-    return unstretch_image_unlinked(image, original_medians, original_min)
+def unstretch_image(image: np.ndarray, original_medians, original_min: float, *, target_median: float = 0.25):
+    return unstretch_image_unlinked(image, original_medians, original_min, target_median=float(target_median))
+
 
 def add_border(image, border_size=16):
     if image.ndim == 2:                                # mono
@@ -822,10 +824,15 @@ def denoise_rgb01(
     color_denoise_strength: Optional[float] = None,
     chunk_size: int = 256, overlap: int = 64,
     use_gpu: bool = True,
-    lite: bool = False,          # <--- NEW
+    lite: bool = False,
+    # ✅ NEW
+    temp_stretch: bool = False,
+    target_median: float = 0.25,
     progress_cb=None,
 ) -> np.ndarray:
+
     models = load_models(use_gpu=use_gpu, lite=lite)
+    tm = float(np.clip(target_median, 0.01, 0.50))
     # --- NEW: log what we actually loaded ---
     def _log(msg: str):
         if progress_cb is not None:
@@ -869,13 +876,18 @@ def denoise_rgb01(
             mono = img_rgb01[..., 0]
 
         # --- keep your stretch logic but in 2D ---
-        stretch_needed = (np.median(mono - np.min(mono)) < 0.05)
+        if bool(temp_stretch):
+            stretch_needed = True
+        else:
+            stretch_needed = (np.median(mono - np.min(mono)) < 0.05)
+
         if stretch_needed:
-            mono_s, original_min, original_meds = stretch_image(mono)
+            mono_s, original_min, original_meds = stretch_image(mono, target_median=tm)
         else:
             mono_s = mono.astype(np.float32, copy=False)
             original_min = float(np.min(mono))
             original_meds = [float(np.median(mono_s))]
+
 
         mono_s = add_border(mono_s, border_size=16)
 
@@ -884,7 +896,7 @@ def denoise_rgb01(
         mono_out = blend_images(mono_s, den_m, denoise_strength)
         mono_out = np.clip(mono_out, 0.0, 1.0)
         if stretch_needed:
-            mono_out = unstretch_image(mono_out, original_meds, original_min)
+            mono_out = unstretch_image(mono_out, original_meds, original_min, target_median=tm)
             mn = float(np.min(mono_out))
             mx = float(np.max(mono_out))
             if mn < -1e-3:
@@ -897,15 +909,18 @@ def denoise_rgb01(
         return np.stack([mono_out, mono_out, mono_out], axis=-1)
 
 
-
-    stretch_needed = (np.median(img_rgb01 - np.min(img_rgb01)) < 0.05)
+    if bool(temp_stretch):
+        stretch_needed = True
+    else:
+        stretch_needed = (np.median(img_rgb01 - np.min(img_rgb01)) < 0.05)
 
     if stretch_needed:
-        stretched_core, original_min, original_medians = stretch_image(img_rgb01)
+        stretched_core, original_min, original_medians = stretch_image(img_rgb01, target_median=tm)
     else:
         stretched_core = img_rgb01.astype(np.float32, copy=False)
         original_min = float(np.min(img_rgb01))
         original_medians = [float(np.median(img_rgb01[..., c])) for c in range(3)]
+
 
     stretched = add_border(stretched_core, border_size=16)
 
@@ -946,7 +961,7 @@ def denoise_rgb01(
 
     den = np.clip(den, 0.0, 1.0)
     if stretch_needed:
-        den = unstretch_image(den, original_medians, original_min)
+        den = unstretch_image(den, original_medians, original_min, target_median=tm)
 
     den = remove_border(den, border_size=16)
     return np.clip(den, 0.0, 1.0).astype(np.float32, copy=False)
