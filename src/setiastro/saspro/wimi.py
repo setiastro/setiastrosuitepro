@@ -7264,39 +7264,61 @@ class WIMIDialog(QDialog):
         """Open settings dialog to adjust max results and marker type."""
         dialog = QDialog(self)
         dialog.setWindowTitle("Settings")
-        
         layout = QFormLayout(dialog)
-        
 
-        # Max Results setting using CustomSpinBox
-        max_results_spinbox = CustomSpinBox(minimum=1, maximum=100000, initial=self.max_results, step=1)
+        # --- Max Results (use native QSpinBox) ---
+        max_results_spinbox = QSpinBox(dialog)
+        max_results_spinbox.setRange(1, 100000)
+        max_results_spinbox.setSingleStep(1)
+
+        # Safely resolve current value (handles int, str, numpy scalar, or accidental method)
+        cur = getattr(self, "max_results", 1000)
+        if callable(cur):
+            try:
+                cur = cur()
+            except Exception:
+                cur = 1000
+        try:
+            cur = int(cur)
+        except Exception:
+            cur = 1000
+        cur = max(1, min(100000, cur))
+        max_results_spinbox.setValue(cur)
+
         layout.addRow("Max Results:", max_results_spinbox)
 
-        
-        # Marker Style selection
-        marker_style_combo = QComboBox()
+        # --- Marker Style ---
+        marker_style_combo = QComboBox(dialog)
         marker_style_combo.addItems(["Circle", "Crosshair"])
-        marker_style_combo.setCurrentText(self.marker_style)
+        marker_style_combo.setCurrentText(getattr(self, "marker_style", "Circle"))
         layout.addRow("Marker Style:", marker_style_combo)
 
-        # Force Blind Solve button
-        force_blind_solve_button = QPushButton("Force Blind Solve")
+        # --- Force Blind Solve ---
+        force_blind_solve_button = QPushButton("Force Blind Solve", dialog)
         force_blind_solve_button.clicked.connect(self.force_blind_solve)
-        layout.addWidget(force_blind_solve_button)
-        
-        # OK and Cancel buttons
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(lambda: self.update_settings(max_results_spinbox.value, marker_style_combo.currentText(), dialog))
+        layout.addRow(force_blind_solve_button)
+
+        # --- OK / Cancel ---
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=dialog
+        )
+        buttons.accepted.connect(lambda: self.update_settings(
+            max_results_spinbox.value(),              # <-- IMPORTANT: call it
+            marker_style_combo.currentText(),
+            dialog
+        ))
         buttons.rejected.connect(dialog.reject)
-        layout.addWidget(buttons)
-        
+        layout.addRow(buttons)
+
         dialog.setLayout(layout)
         dialog.exec()
 
-    def update_settings(self, max_results, marker_style, dialog):
+
+    def update_settings(self, max_results: int, marker_style: str, dialog: QDialog):
         """Update settings based on dialog input."""
-        self.max_results = max_results
-        self.marker_style = marker_style  # Store the selected marker style
+        self.max_results = int(max_results)
+        self.marker_style = str(marker_style)
         self.main_preview.draw_query_results()
         dialog.accept()
 
