@@ -13,7 +13,7 @@ from PyQt6.QtGui import QIcon, QAction, QImage, QPixmap
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, QGridLayout, QLabel, QPushButton,
     QSlider, QCheckBox, QComboBox, QMessageBox, QWidget, QRadioButton, QProgressBar,
-    QTextEdit, QFileDialog, QTreeWidget, QTreeWidgetItem, QMenu, QInputDialog
+    QTextEdit, QFileDialog, QTreeWidget, QTreeWidgetItem, QMenu, QInputDialog, QDoubleSpinBox
 )
 from PyQt6.QtCore import QProcess
 
@@ -224,7 +224,9 @@ class CosmicClarityEngineWorker(QThread):
 
             use_gpu = bool(p.get("gpu", True))
             create_new_view = bool(p.get("create_new_view", False))  # not used here; dialog decides
-
+            temp_stretch = bool(p.get("temp_stretch", False))
+            target_median = float(p.get("target_median", 0.25))
+            target_median = max(0.01, min(0.50, target_median))
             img = np.clip(self._img, 0.0, 1.0).astype(np.float32, copy=False)
 
             # Decide stage plan
@@ -275,7 +277,8 @@ class CosmicClarityEngineWorker(QThread):
                         auto_detect_psf=bool(auto_psf),
                         separate_channels=bool(sharpen_sep),
                         use_gpu=bool(use_gpu),
-
+                        temp_stretch=temp_stretch,
+                        target_median=target_median,
                         chunk_size=int(p.get("chunk_size", 256)),
                         overlap=int(p.get("overlap", 64)),
 
@@ -299,6 +302,8 @@ class CosmicClarityEngineWorker(QThread):
                         separate_channels=sep,
                         color_denoise_strength=den_col,
                         use_gpu=use_gpu,
+                        temp_stretch=temp_stretch,
+                        target_median=target_median,                        
                         chunk_size=int(p.get("chunk_size", 256)),
                         overlap=int(p.get("overlap", 64)),
                         lite=lite,   
@@ -447,6 +452,35 @@ class CosmicClarityDialogPro(QDialog):
 
         self.sld_nst_amt.valueChanged.connect(self._on_nst_amt)
         grid.addWidget(self.lbl_nst_amt, 8, 0, 1, 2); grid.addWidget(self.sld_nst_amt, 9, 0, 1, 3)
+
+        # --- Temporary stretch controls (applied only for AI processing) ---
+        self.chk_temp_stretch = QCheckBox("Temporary Stretch for AI (linear assist)")
+        self.chk_temp_stretch.setChecked(True)
+        self.chk_temp_stretch.setToolTip(
+            "Optionally applies a temporary stretch before AI inference (then reverses it).\n"
+            "Useful for very linear / low-signal data. If off, engines use automatic behavior."
+        )
+
+        self.lbl_target_median = QLabel("Target Median (0.01–0.50): 0.25")
+        self.sld_target_median = QSlider(Qt.Orientation.Horizontal)
+        self.sld_target_median.setRange(1, 50)   # 0.01..0.50
+        self.sld_target_median.setValue(25)      # 0.25 default
+        self.sld_target_median.valueChanged.connect(self._on_target_median)
+
+        # ✅ inline: [label .............][stretch][checkbox]
+        row_tm = QWidget()
+        h = QHBoxLayout(row_tm)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(10)
+        h.addWidget(self.lbl_target_median)
+        h.addStretch(1)
+        h.addWidget(self.chk_temp_stretch)
+
+        # Put the combined row where the label was
+        grid.addWidget(row_tm, 20, 0, 1, 3)
+        grid.addWidget(self.sld_target_median, 21, 0, 1, 3)
+
+
         # Chunk size
         self.lbl_chunk = QLabel("Chunk Size:")
         self.cmb_chunk = QComboBox()
@@ -517,6 +551,8 @@ class CosmicClarityDialogPro(QDialog):
         self._mode_changed()  # set initial visibility
 
         self._wait = None
+        self.chk_temp_stretch.toggled.connect(self._temp_stretch_changed)
+        self._temp_stretch_changed(self.chk_temp_stretch.isChecked())
 
 
         self._headless = bool(headless)
@@ -528,13 +564,35 @@ class CosmicClarityDialogPro(QDialog):
                 logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
         self.resize(560, 540)
 
+    def _on_target_median(self, v: int):
+        tm = max(0.01, min(0.50, v / 100.0))
+        self.lbl_target_median.setText(f"Target Median (0.01–0.50): {tm:.2f}")
+        self._save_cc_ui_settings()
+
+    def _temp_stretch_changed(self, checked: bool):
+        self.lbl_target_median.setEnabled(bool(checked))
+        self.sld_target_median.setEnabled(bool(checked))
+        self._save_cc_ui_settings()
+
     def _load_cc_ui_settings(self):
         s = QSettings()
         self.chk_dn_lite.setChecked(s.value("cc/denoise_lite", False, type=bool))
 
+        # NEW:
+        self.chk_temp_stretch.setChecked(s.value("cc/temp_stretch", False, type=bool))
+        tm = float(s.value("cc/target_median", 0.25))
+        tm = max(0.01, min(0.50, tm))
+        self.sld_target_median.setValue(int(round(tm * 100)))
+        self._on_target_median(self.sld_target_median.value())
+
     def _save_cc_ui_settings(self):
         s = QSettings()
         s.setValue("cc/denoise_lite", self.chk_dn_lite.isChecked())
+
+        # NEW:
+        s.setValue("cc/temp_stretch", self.chk_temp_stretch.isChecked())
+        s.setValue("cc/target_median", self.sld_target_median.value() / 100.0)
+
 
     def _dn_sep_changed(self, checked: bool):
         """Separate-channels means mono model per RGB channel, so disable chroma controls."""
@@ -912,7 +970,15 @@ class CosmicClarityDialogPro(QDialog):
         self.cmb_dn_mode.setCurrentText(str(p.get("denoise_mode","full")))
         self.chk_dn_sep.setChecked(bool(p.get("separate_channels", False)))
         self.chk_dn_lite.setChecked(bool(p.get("denoise_lite", False)))
-
+        # NEW: temp stretch
+        self.chk_temp_stretch.setChecked(bool(p.get("temp_stretch", False)))
+        try:
+            tm = float(p.get("target_median", 0.25))
+        except Exception:
+            tm = 0.25
+        tm = max(0.01, min(0.50, tm))
+        self.sld_target_median.setValue(int(round(tm * 100)))
+        self._temp_stretch_changed(self.chk_temp_stretch.isChecked())
         self._update_denoise_dependent_ui()
         # Super-Res
         self.cmb_scale.setCurrentText(str(int(p.get("scale",2))))
@@ -940,6 +1006,8 @@ class CosmicClarityDialogPro(QDialog):
                 "sharpen_channels_separately": self.chk_sh_sep.isChecked(),
                 "chunk_size": int(self.cmb_chunk.currentText()),
                 "overlap": int(self.cmb_ov.currentText()),
+                "temp_stretch": self.chk_temp_stretch.isChecked(),
+                "target_median": self.sld_target_median.value() / 100.0,
             })
 
 
@@ -951,6 +1019,8 @@ class CosmicClarityDialogPro(QDialog):
                 "denoise_mode": self.cmb_dn_mode.currentText(),
                 "separate_channels": self.chk_dn_sep.isChecked(),
                 "denoise_lite": self.chk_dn_lite.isChecked(),
+                "temp_stretch": self.chk_temp_stretch.isChecked(),
+                "target_median": self.sld_target_median.value() / 100.0,               
             })
 
         # Super-res

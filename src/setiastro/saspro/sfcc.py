@@ -1507,16 +1507,6 @@ class SFCCDialog(QDialog):
             self.wcs = None
 
     # ── Gaia XP fallback helpers ─────────────────────────────────────────
-
-    def _gaia_db_path(self) -> str:
-        """
-        Local cache DB for Gaia XP spectra (sqlite).
-        Stored in AppDataLocation so it persists.
-        """
-        app_data = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
-        os.makedirs(app_data, exist_ok=True)
-        return os.path.join(app_data, "gaia_xp_cache.sqlite")
-
     def _gaia_enabled(self) -> bool:
         """
         Gaia fallback requires:
@@ -1818,10 +1808,10 @@ class SFCCDialog(QDialog):
         Persistent Gaia XP cache DB location (survives between runs).
         """
         base = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
-        # e.g. C:\Users\...\AppData\Roaming\SetiAstro\SASpro  (depends on your org/app naming)
         d = os.path.join(base, "gaia")
         os.makedirs(d, exist_ok=True)
-        return os.path.join(d, "gaia_spectra.db")
+        return os.path.join(d, "gaia_xp_cache.sqlite")
+
 
     def fetch_stars(self):
         import time
@@ -2898,7 +2888,18 @@ class SFCCDialog(QDialog):
                 self.canvas.draw_idle()
         except Exception:
             pass
-
+        try:
+            if getattr(self, "_gaia_dl", None) is not None:
+                try:
+                    self._gaia_dl.close()   # if you added it
+                except Exception:
+                    try:
+                        self._gaia_dl.db.close()
+                    except Exception:
+                        pass
+                self._gaia_dl = None
+        except Exception:
+            pass
 
     def _on_sasp_closed(self, _=None):
         # Called when the SaspViewer window is destroyed

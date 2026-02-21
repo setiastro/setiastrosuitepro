@@ -490,6 +490,51 @@ def stretch_mono_image(image: np.ndarray,
 
     return np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
 
+def _apply_luma_stretch_to_rgb_by_ratio(rgb: np.ndarray, L: np.ndarray, Ls: np.ndarray, eps: float = 1e-6) -> np.ndarray:
+    """
+    Apply a stretched luminance (Ls) back onto the original linear RGB via per-pixel scaling.
+    This preserves chroma and typically increases saturation (the "hyper-saturated luma stretch" look).
+    """
+    rgb = rgb.astype(np.float32, copy=False)
+    L  = L.astype(np.float32, copy=False)
+    Ls = Ls.astype(np.float32, copy=False)
+
+    # Per-pixel scale factor
+    s = (Ls + eps) / (L + eps)
+
+    out = rgb * s[..., None]
+    return np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
+
+def recombine_luminance_ratio_linear(
+    rgb: np.ndarray,
+    Ls: np.ndarray,
+    w: np.ndarray,
+    *,
+    eps: float = 1e-12,
+    mode: str = "scale_if_needed",  # "clip" | "scale_if_needed" | "none"
+) -> np.ndarray:
+    """
+    Recombine stretched luminance (Ls) into ORIGINAL linear rgb using ratio method.
+    weights w must match luminance extraction weights.
+    """
+    rgb = rgb.astype(np.float32, copy=False)
+    w = np.asarray(w, dtype=np.float32).reshape((1, 1, 3))
+    L = (rgb * w).sum(axis=2).astype(np.float32, copy=False)
+
+    s = (Ls.astype(np.float32, copy=False) / (L + eps)).astype(np.float32, copy=False)
+    out = rgb * s[..., None]
+
+    if mode == "clip":
+        return np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
+
+    if mode == "scale_if_needed":
+        mx = np.max(out, axis=2)
+        k = np.where(mx > 1.0, 1.0 / (mx + eps), 1.0).astype(np.float32)
+        out = out * k[..., None]
+        return np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
+
+    # mode == "none"
+    return out.astype(np.float32, copy=False)
 
 def stretch_color_image(image: np.ndarray,
                         target_median: float,
@@ -566,17 +611,17 @@ def stretch_color_image(image: np.ndarray,
                 luma_mode="rec709",
             )
 
-        if high_range:
-            linked_out = _high_range_rescale_and_softclip(
-                linked_out,
-                target_bg=float(target_median),
-                pedestal=float(highrange_pedestal),
-                soft_ceil_pct=float(highrange_soft_ceil_pct),
-                hard_ceil_pct=float(highrange_hard_ceil_pct),
-                floor_sigma=float(blackpoint_sigma),
-                softclip_threshold=float(highrange_softclip_threshold),
-                softclip_rolloff=float(highrange_softclip_rolloff),
-            )
+        #if high_range:
+        #    linked_out = _high_range_rescale_and_softclip(
+        #        linked_out,
+        #        target_bg=float(target_median),
+        #        pedestal=float(highrange_pedestal),
+        #        soft_ceil_pct=float(highrange_soft_ceil_pct),
+        #        hard_ceil_pct=float(highrange_hard_ceil_pct),
+        #        floor_sigma=float(blackpoint_sigma),
+        #        softclip_threshold=float(highrange_softclip_threshold),
+        #        softclip_rolloff=float(highrange_softclip_rolloff),
+        #    )
 
         if normalize:
             mx = float(linked_out.max())
@@ -590,13 +635,17 @@ def stretch_color_image(image: np.ndarray,
             return linked_out
 
         # --- B) Your existing luma-only recombine stretch ---
+        # --- B) Luma stretch applied back onto ORIGINAL linear RGB (ratio method) ---
         resolved_method, w, _profile_name = resolve_luma_profile_weights(luma_mode)
 
         ns = None
         if resolved_method == "snr":
             ns = _estimate_noise_sigma_per_channel(img)
+
+        # Luminance from ORIGINAL linear rgb
         L = compute_luminance(img, method=resolved_method, weights=w, noise_sigma=ns)
 
+        # Stretch luminance only
         Ls = stretch_mono_image(
             L,
             target_median,
@@ -605,7 +654,7 @@ def stretch_color_image(image: np.ndarray,
             curves_boost=curves_boost,
             blackpoint_sigma=sig,
             no_black_clip=no_black_clip,
-            hdr_compress=False,
+            hdr_compress=False,   # keep HDR separate step
             hdr_amount=0.0,
             hdr_knee=hdr_knee,
             high_range=False,
@@ -614,26 +663,16 @@ def stretch_color_image(image: np.ndarray,
         if hdr_compress and hdr_amount > 0.0:
             Ls = hdr_compress_highlights(Ls, float(hdr_amount), knee=float(hdr_knee))
 
-        if w is not None and np.asarray(w).size == 3:
-            rw = np.asarray(w, dtype=np.float32)
-            s = float(rw.sum())
-            if s > 0:
-                rw = rw / s
-        else:
-            if resolved_method == "rec601":
-                rw = np.array([0.2990, 0.5870, 0.1140], dtype=np.float32)
-            elif resolved_method == "rec2020":
-                rw = np.array([0.2627, 0.6780, 0.0593], dtype=np.float32)
-            else:
-                rw = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
-
-        luma_out = recombine_luminance_linear_scale(
-            img,
-            Ls,
-            weights=rw,
-            blend=1.0,
-            highlight_soft_knee=0.0,
+        rw = _resolve_rgb_weights_for_luma(resolved_method, w)  # normalized
+        luma_out = recombine_luminance_ratio_linear(
+            img,        # ORIGINAL linear rgb
+            Ls,         # stretched luminance
+            rw,         # same weights used to compute L
+            mode="scale_if_needed",
         )
+
+        if apply_curves:
+            luma_out = apply_curves_adjustment(luma_out, float(target_median), float(curves_boost))
 
         if high_range:
             luma_out = _high_range_rescale_and_softclip(
@@ -654,9 +693,10 @@ def stretch_color_image(image: np.ndarray,
 
         luma_out = np.clip(luma_out, 0.0, 1.0).astype(np.float32, copy=False)
 
-        # --- Final blend: exactly “blend two separate stretched images” ---
+        # --- Final blend: normal linked stretch vs luma-applied stretch ---
         out = (1.0 - b) * linked_out + b * luma_out
         return np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
+
 
     # ----- NORMAL RGB PATH -----
     if linked:

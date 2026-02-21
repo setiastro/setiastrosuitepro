@@ -883,6 +883,8 @@ class SharpenParams:
     use_gpu: bool
     chunk_size: int = 256
     overlap: int = 64
+    temp_stretch: bool = False
+    target_median: float = 0.25
 
 def sharpen_image_array(image: np.ndarray,
                         params: SharpenParams,
@@ -918,17 +920,19 @@ def sharpen_image_array(image: np.ndarray,
 
         # border & stretch
         bordered = add_border(img3, border_size=16)
-        med_metric = float(np.median(bordered - np.min(bordered)))
-        stretch_needed = (med_metric < 0.08)
-        _dbg(f"Bordered shape={bordered.shape}; stretch_metric={med_metric:.6f}; stretch_needed={stretch_needed}",
-             status_cb=status_cb)
+
+        # ✅ NEW: temp stretch override
+        if bool(getattr(params, "temp_stretch", False)):
+            stretch_needed = True
+        else:
+            med_metric = float(np.median(bordered - np.min(bordered)))
+            stretch_needed = (med_metric < 0.08)
 
         if stretch_needed:
-            _dbg("Stretching unlinked RGB ...", status_cb=status_cb)
-            stretched, orig_min, orig_meds = stretch_image_unlinked_rgb(bordered)
+            tm = float(np.clip(getattr(params, "target_median", 0.25), 0.01, 0.50))
+            stretched, orig_min, orig_meds = stretch_image_unlinked_rgb(bordered, target_median=tm)
         else:
             stretched, orig_min, orig_meds = bordered, None, None
-
         # per-channel sharpening option (color only)
         if params.sharpen_channels_separately and (not was_mono):
             _dbg("Sharpen per-channel path", status_cb=status_cb)
@@ -1096,7 +1100,10 @@ def sharpen_rgb01(
     separate_channels: bool = False,
     use_gpu: bool = True,
     chunk_size: int = 256,
-    overlap: int = 64,    
+    overlap: int = 64,
+    # ✅ NEW
+    temp_stretch: bool = False,
+    target_median: float = 0.25,
     progress_cb: Optional[Callable[[int, int], bool]] = None,
     status_cb=print,
 ) -> np.ndarray:
@@ -1125,7 +1132,11 @@ def sharpen_rgb01(
         auto_detect_psf=bool(auto_detect_psf),
         use_gpu=bool(use_gpu),
         chunk_size=int(chunk_size),
-        overlap=int(overlap),        
+        overlap=int(overlap),
+
+        # ✅ NEW
+        temp_stretch=bool(temp_stretch),
+        target_median=float(target_median),
     )
 
     out, _was_mono = sharpen_image_array(

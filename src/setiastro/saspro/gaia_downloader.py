@@ -3,7 +3,8 @@
 
 from __future__ import annotations
 
-import os
+import os, sys, tempfile
+import platform
 import sqlite3
 import zlib
 from pathlib import Path
@@ -12,6 +13,7 @@ from dataclasses import dataclass
 import numpy as np
 import hashlib
 import time
+
 try:
     from astroquery.gaia import Gaia
     HAS_ASTROQUERY = True
@@ -31,6 +33,107 @@ try:
     HAS_GAIAXPY = True
 except ImportError:
     HAS_GAIAXPY = False
+
+import contextlib
+import uuid
+
+@contextlib.contextmanager
+def saspro_tmp_context(tmp_dir: Path):
+    """
+    Force temp usage into tmp_dir and run with CWD=tmp_dir (or a unique subdir).
+    Restores previous env/cwd/tempfile.tempdir afterward.
+    """
+    tmp_dir = Path(tmp_dir)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    # unique work dir per invocation to avoid collisions
+    work = tmp_dir / f"work_{os.getpid()}_{uuid.uuid4().hex[:8]}"
+    work.mkdir(parents=True, exist_ok=True)
+
+    old_cwd = os.getcwd()
+    old_tempdir = tempfile.tempdir
+    old_env = {
+        "TMPDIR": os.environ.get("TMPDIR"),
+        "TEMP": os.environ.get("TEMP"),
+        "TMP": os.environ.get("TMP"),
+        # Optional: helps astropy/astroquery keep cache out of protected locations
+        "XDG_CACHE_HOME": os.environ.get("XDG_CACHE_HOME"),
+        "ASTROPY_CACHE_DIR": os.environ.get("ASTROPY_CACHE_DIR"),
+    }
+
+    try:
+        tempfile.tempdir = str(work)
+
+        os.environ["TMPDIR"] = str(work)  # mac/linux
+        os.environ["TEMP"]   = str(work)  # windows
+        os.environ["TMP"]    = str(work)  # windows
+
+        # If you want astroquery/astropy caches to be per-user too:
+        # (These are safe even if not used.)
+        cache_dir, _, _ = ensure_saspro_spcc_dirs()
+        os.environ["XDG_CACHE_HOME"] = str(cache_dir)
+        os.environ["ASTROPY_CACHE_DIR"] = str(cache_dir / "astropy")
+
+        os.chdir(str(work))
+        yield work
+    finally:
+        os.chdir(old_cwd)
+        tempfile.tempdir = old_tempdir
+
+        for k, v in old_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+        # best-effort cleanup (don’t crash if locked)
+        try:
+            for p in sorted(work.glob("*"), reverse=True):
+                try:
+                    if p.is_file():
+                        p.unlink()
+                    else:
+                        # only removes empty dirs; ok if not empty
+                        p.rmdir()
+                except Exception:
+                    pass
+            work.rmdir()
+        except Exception:
+            pass
+
+
+def saspro_user_dir(app_name: str = "SASpro") -> Path:
+    """
+    Per-user writable directory:
+      Windows: %LOCALAPPDATA%\\SASpro
+      macOS:   ~/Library/Application Support/SASpro
+      Linux:   ~/.local/share/SASpro (or $XDG_DATA_HOME)
+    """
+    system = platform.system()
+
+    if system == "Windows":
+        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+        return base / app_name
+
+    if system == "Darwin":
+        return Path.home() / "Library" / "Application Support" / app_name
+
+    # Linux / other
+    base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+    return base / app_name
+
+
+def ensure_saspro_spcc_dirs() -> tuple[Path, Path, Path]:
+    root = saspro_user_dir("SASpro")
+    spcc = root / "spcc"
+    cache_dir = spcc / "cache"
+    tmp_dir   = spcc / "tmp"
+    db_dir    = spcc / "db"
+
+    for d in (cache_dir, tmp_dir, db_dir):
+        d.mkdir(parents=True, exist_ok=True)
+
+    return cache_dir, tmp_dir, db_dir
 
 def download_xp_spectra_only(
     db: "GaiaSpectraDB",
@@ -83,7 +186,24 @@ def download_xp_spectra_only(
         status_cb(f"[Gaia XP] Downloading spectra {i+1}-{min(i+len(batch_ids), len(ids))} of {len(ids)}…")
 
         try:
-            calibrated, sampling = calibrate(batch_ids)
+
+            cache_dir, tmp_dir, db_dir = ensure_saspro_spcc_dirs()
+
+            # Make stdlib tempfile use our tmp
+            tempfile.tempdir = str(tmp_dir)
+
+            # Make many libs honor tmp dir too
+            os.environ["TMPDIR"] = str(tmp_dir)   # mac/linux
+            os.environ["TEMP"]   = str(tmp_dir)   # windows
+            os.environ["TMP"]    = str(tmp_dir)   # windows
+
+            # The BIG one: GaiaXPy/Astroquery creates temp_... relative to CWD
+            cwd0 = os.getcwd()
+            try:
+                os.chdir(str(tmp_dir))
+                calibrated, sampling = calibrate(batch_ids)
+            finally:
+                os.chdir(cwd0)
             wavelengths = _sampling_to_wavelengths(sampling, fallback=fallback_wl)
 
             # GaiaXPy returns a DataFrame with per-source 'flux' and (often) 'flux_error'
@@ -661,13 +781,26 @@ class GaiaDownloader:
 
         downloader.download_region_coords(ra=10.68, dec=41.27, radius_deg=0.5)
     """
-
-    def __init__(self, db_path: Union[str, Path] = "gaia_spectra.db"):
+    def __init__(self, db_path: Union[str, Path, None] = None):
         if not HAS_ASTROQUERY:
             raise ImportError("astroquery is required. Install with: pip install astroquery")
         if not HAS_ASTROPY:
             raise ImportError("astropy is required. Install with: pip install astropy")
 
+        cache_dir, tmp_dir, db_dir = ensure_saspro_spcc_dirs()
+
+        # Default DB in per-user writable db_dir
+        if db_path is None:
+            db_path = db_dir / "gaia_spectra.db"
+        else:
+            db_path = Path(db_path)
+            # If caller passed a relative path, anchor it into db_dir
+            if not db_path.is_absolute():
+                db_path = db_dir / db_path
+
+        self.cache_dir = cache_dir
+        self.tmp_dir = tmp_dir
+        self.db_dir = db_dir
         self.db = GaiaSpectraDB(db_path)
         self._check_gaiaxpy()
 
@@ -767,48 +900,55 @@ class GaiaDownloader:
             pass
         return fallback
 
-    def download_xp_spectra(self, source_ids: List[int],
-                            batch_size: int = 100) -> List[CalibratedSpectrum]:
-        """
-        Download and calibrate XP spectra for given source IDs.
-        """
+    def download_xp_spectra(self, source_ids: List[int], batch_size: int = 100) -> List[CalibratedSpectrum]:
         if not HAS_GAIAXPY:
             raise ImportError("GaiaXPy is required for spectrum calibration")
 
         all_spectra: List[CalibratedSpectrum] = []
         fallback_wl = self.db.wavelengths  # 336..1020 step 2
 
-        for i in range(0, len(source_ids), batch_size):
-            batch_ids = [int(x) for x in source_ids[i:i + batch_size]]
-            print(f"Downloading spectra {i+1}-{min(i+batch_size, len(source_ids))} of {len(source_ids)}...")
+        ids = [int(x) for x in source_ids if x is not None]
+        ids = sorted(set(ids))
+        if not ids:
+            return []
+
+        for i in range(0, len(ids), int(batch_size)):
+            batch_ids = ids[i:i + int(batch_size)]
+            print(f"Downloading spectra {i+1}-{min(i+len(batch_ids), len(ids))} of {len(ids)}...")
 
             try:
-                calibrated, sampling = calibrate(batch_ids)
+                with saspro_tmp_context(self.tmp_dir):
+                    calibrated, sampling = calibrate(batch_ids)
 
                 wavelengths = self._sampling_to_wavelengths(sampling, fallback=fallback_wl)
 
-                # GaiaXPy returns a DataFrame with per-source 'flux' and (often) 'flux_error'
                 for _, row in calibrated.iterrows():
-                    flux = np.asarray(row['flux'], dtype=np.float32).reshape(-1)
+                    flux = np.asarray(row["flux"], dtype=np.float32).reshape(-1)
+
                     flux_error = None
-                    if 'flux_error' in calibrated.columns and row.get('flux_error') is not None:
+                    if "flux_error" in calibrated.columns:
                         try:
-                            flux_error = np.asarray(row['flux_error'], dtype=np.float32).reshape(-1)
+                            fe = row.get("flux_error", None)
+                            if fe is not None:
+                                flux_error = np.asarray(fe, dtype=np.float32).reshape(-1)
                         except Exception:
                             flux_error = None
 
-                    all_spectra.append(CalibratedSpectrum(
-                        source_id=int(row['source_id']),
-                        wavelengths=wavelengths,
-                        flux=flux,
-                        flux_error=flux_error
-                    ))
+                    all_spectra.append(
+                        CalibratedSpectrum(
+                            source_id=int(row["source_id"]),
+                            wavelengths=wavelengths,
+                            flux=flux,
+                            flux_error=flux_error,
+                        )
+                    )
 
             except Exception as e:
                 print(f"Warning: Failed to download batch: {e}")
                 continue
 
         return all_spectra
+
 
     def download_region(self, target: str, radius_arcmin: float = 10,
                        mag_limit: float = 15, max_sources: int = 1000,
@@ -884,7 +1024,9 @@ def test_download(target: str = "Vega", radius_arcmin: float = 5,
     print(f"Radius: {radius_arcmin} arcmin, Mag limit: {mag_limit}")
     print(f"Output: {db_path}")
     print("-" * 50)
-
+    cache_dir, tmp_dir, db_dir = ensure_saspro_spcc_dirs()
+    if db_path is None:
+        db_path = str(db_dir / "test_gaia.db")
     deps = []
     if not HAS_ASTROQUERY:
         deps.append("astroquery")
