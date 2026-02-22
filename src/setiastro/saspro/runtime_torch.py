@@ -80,6 +80,38 @@ def _discover_existing_runtime_dir(status_cb=print) -> Path | None:
 
     return None
 
+def _detect_rocm_arch() -> str:
+    """
+    Return the AMD ROCm gfx architecture string (e.g. 'gfx1151') if detected.
+    Linux only. Uses `rocminfo` output. Returns '' if unavailable/not detected.
+    """
+    try:
+        if platform.system() != "Linux":
+            return ""
+
+        # Small timeout so we don't hang if rocminfo is broken/misconfigured
+        r = subprocess.run(
+            ["rocminfo"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=8,
+        )
+
+        out = r.stdout or ""
+        for line in out.splitlines():
+            s = line.strip()
+            # Common rocminfo line examples contain "Name: gfx1030", etc.
+            if s.startswith("Name:") and "gfx" in s:
+                parts = s.split()
+                for p in reversed(parts):
+                    if p.startswith("gfx"):
+                        return p
+    except Exception:
+        pass
+
+    return ""
+
 
 def _user_runtime_dir(status_cb=print) -> Path:
     global _RUNTIME_DIR_CACHED, _RUNTIME_USERDIR_LOGGED
@@ -421,6 +453,11 @@ def _install_lock(rt: Path, timeout_s: int = 600):
 _TORCH_VERSION_LADDER: dict[tuple[int, int], list[str]] = {
     (3, 12): ["2.4.*", "2.3.*", "2.2.*"],
 }
+_TORCH_COMPAT: dict[str, tuple[str, str]] = {
+    "2.4": ("0.19.*", "2.4.*"),
+    "2.3": ("0.18.*", "2.3.*"),
+    "2.2": ("0.17.*", "2.2.*"),
+}
 # module-level caches
 _TORCH_CACHED = None
 _RUNTIME_DIR_CACHED: Path | None = None
@@ -522,7 +559,14 @@ except Exception as e:
     return bool(data.get("has_xpu")), data.get("err")
 
 
-def _install_torch(venv_python: Path, prefer_cuda: bool, prefer_xpu: bool, prefer_dml: bool, status_cb=print):
+def _install_torch(
+    venv_python: Path,
+    prefer_cuda: bool,
+    prefer_xpu: bool,
+    prefer_dml: bool,
+    prefer_rocm: bool = False,
+    status_cb=print
+):
 
     """
     Install torch into the per-user venv with best-effort backend detection:
@@ -576,10 +620,21 @@ def _install_torch(venv_python: Path, prefer_cuda: bool, prefer_xpu: bool, prefe
         if _pip_ok(base + ["torch", "torchvision", "torchaudio"]):
             return True
 
-        # Walk the ladder: pin all three to the same version family
+        # Walk the ladder: pin TORCH only, let pip resolve compatible torchvision/torchaudio
         for v in versions:
-            if _pip_ok(base + [f"torch=={v}", f"torchvision=={v}", f"torchaudio=={v}"]):
+            # v looks like "2.4.*" -> family "2.4"
+            fam = v.replace(".*", "")
+            tv_v, ta_v = _TORCH_COMPAT.get(fam, (None, None))
+
+            # Fallback if mapping missing: pin torch only
+            if not tv_v or not ta_v:
+                if _pip_ok(base + [f"torch=={v}", "torchvision", "torchaudio"]):
+                    return True
+                continue
+
+            if _pip_ok(base + [f"torch=={v}", f"torchvision=={tv_v}", f"torchaudio=={ta_v}"]):
                 return True
+
 
         return False
 
@@ -589,6 +644,33 @@ def _install_torch(venv_python: Path, prefer_cuda: bool, prefer_xpu: bool, prefe
         if not _try_series(None, ladder):
             raise RuntimeError("Failed to find a matching PyTorch wheel for macOS arm64.")
         return
+    # AMD ROCm nightly (Linux only) — try before CUDA
+    rocm_arch = _detect_rocm_arch() if (prefer_rocm and sysname == "Linux") else ""
+    if rocm_arch:
+        rocm_index = f"https://rocm.nightlies.amd.com/v2/{rocm_arch}/"
+        status_cb(f"Trying PyTorch AMD ROCm nightly wheels ({rocm_arch})…")
+
+        r = _pip(
+            "install", "--pre", "--prefer-binary", "--no-cache-dir",
+            "--index-url", rocm_index,
+            "torch", "torchvision", "torchaudio"
+        )
+
+        if r.returncode == 0:
+            # ROCm is surfaced through torch.cuda in PyTorch, so CUDA probe is valid here
+            ok, cuda_tag, err = _check_cuda_in_venv(venv_python, status_cb=status_cb)
+            if ok:
+                status_cb(f"Installed PyTorch AMD ROCm nightly ({rocm_arch}).")
+                return
+
+            status_cb(
+                f"ROCm install succeeded but GPU runtime check failed "
+                f"(torch.version.cuda={cuda_tag!r}, err={err!r}). "
+                "Uninstalling and falling back…"
+            )
+            _pip_ok(["uninstall", "-y", "torch", "torchvision", "torchaudio"])
+        else:
+            status_cb("AMD ROCm nightly wheel install failed. Falling back…")
 
     # Windows/Linux – CUDA first if requested, then CPU
     try_cuda = prefer_cuda and sysname in ("Windows", "Linux")
@@ -883,20 +965,16 @@ def _fcache_clear(rt: Path) -> None:
     except Exception:
         pass
 
-
-# module-level cache (optional but recommended)
-# module-level cache (optional but recommended)
-_TORCH_CACHED = None
-
-
 def import_torch(
     prefer_cuda: bool = True,
     prefer_xpu: bool = False,
     prefer_dml: bool = False,
+    prefer_rocm: bool = False,
     status_cb=print,
     *,
     require_torchaudio: bool = True,
 ):
+
     """
     Ensure a per-user venv exists with torch installed; return the imported torch module.
 
@@ -921,6 +999,36 @@ def import_torch(
     global _TORCH_CACHED
     if _TORCH_CACHED is not None:
         return _TORCH_CACHED
+    
+    # Auto-redirect: only redirect CUDA->ROCm on Linux when ROCm is detected
+    # AND caller is not explicitly targeting NVIDIA through higher-level logic.
+    # (runtime_torch doesn't know full GPU inventory, so keep this conservative.)
+    if platform.system() == "Linux" and prefer_cuda and not prefer_rocm:
+        try:
+            rocm_arch = _detect_rocm_arch()
+            if rocm_arch:
+                # Only redirect if CUDA isn't already clearly available in-process.
+                # If torch isn't importable yet, this just falls through and ROCm is tried later by installer paths.
+                try:
+                    import importlib as _il
+                    _t = _il.import_module("torch")
+                    has_cuda_now = bool(getattr(_t, "cuda", None) and _t.cuda.is_available())
+                    hip_now = bool(getattr(getattr(_t, "version", None), "hip", None))
+                    # If torch is already imported and CUDA is active but not HIP, keep CUDA preference.
+                    if has_cuda_now and not hip_now:
+                        pass
+                    else:
+                        prefer_cuda = False
+                        prefer_rocm = True
+                        status_cb(f"[RT] AMD ROCm GPU detected ({rocm_arch}); redirecting CUDA preference to ROCm.")
+                except Exception:
+                    prefer_cuda = False
+                    prefer_rocm = True
+                    status_cb(f"[RT] AMD ROCm GPU detected ({rocm_arch}); redirecting CUDA preference to ROCm.")
+        except Exception:
+            pass
+
+
     if platform.system() == "Windows" and prefer_cuda:
         # If we are preferring CUDA, do NOT treat DirectML as a co-equal install target.
         # DirectML should only be a fallback after CUDA probe fails.
@@ -1089,6 +1197,7 @@ def import_torch(
                     prefer_cuda=prefer_cuda,
                     prefer_xpu=prefer_xpu,
                     prefer_dml=prefer_dml,
+                    prefer_rocm=prefer_rocm,
                     status_cb=status_cb,
                 )
                 _ensure_numpy(vp, status_cb=status_cb)
