@@ -599,8 +599,10 @@ class MetricsWindow(QWidget):
         vbox.addWidget(self.chk_guides)
         # → filter selector
         self.group_combo = QComboBox(self)
-        self.group_combo.addItem(self.tr("All"))
-        self.group_combo.currentTextChanged.connect(self._on_group_change)
+
+        # display text is translated, internal data is stable
+        self.group_combo.addItem(self.tr("All"), "__ALL__")
+        self.group_combo.currentIndexChanged.connect(self._on_group_change_index)
         vbox.addWidget(self.group_combo)
 
         # → the 2×2 metrics panel
@@ -623,6 +625,24 @@ class MetricsWindow(QWidget):
         if hasattr(self, "metrics_panel") and self.metrics_panel is not None:
             self.metrics_panel.set_guides_visible(on)
 
+    def _current_group_id(self) -> str:
+        gid = self.group_combo.currentData()
+        return gid if isinstance(gid, str) else "__ALL__"
+
+    def _on_group_change_index(self, _idx: int):
+        gid = self._current_group_id()
+
+        if gid == "__ALL__":
+            self._current_indices = self._order_all
+        else:
+            filt = gid  # this is the real FILTER string, not translated
+            self._current_indices = [
+                i for i in self._order_all
+                if (self._all_images[i].get('header', {}) or {}).get('FILTER', 'Unknown') == filt
+            ]
+
+        self._apply_thresholds(gid)
+        self.metrics_panel.plot(self._all_images, indices=self._current_indices)
 
     def _update_status(self, *args):
         """Recompute and show: Flagged Items X / Y (Z%).  Robust to stale indices."""
@@ -657,22 +677,23 @@ class MetricsWindow(QWidget):
         # ─── rebuild the combo-list of FILTER groups ─────────────
         self.group_combo.blockSignals(True)
         self.group_combo.clear()
-        self.group_combo.addItem(self.tr("All"))
+        self.group_combo.addItem(self.tr("All"), "__ALL__")
+
         seen = set()
         for entry in loaded_images:
-            filt = entry.get('header', {}).get('FILTER', 'Unknown')
+            filt = (entry.get('header', {}) or {}).get('FILTER', 'Unknown')
             if filt not in seen:
                 seen.add(filt)
-                self.group_combo.addItem(filt)
+                self.group_combo.addItem(filt, filt)  # display=filt, id=filt (stable)
         self.group_combo.blockSignals(False)
 
         # ─── reset & seed per-group thresholds ────────────────────
         self._thresholds_per_group.clear()
-        self._thresholds_per_group["All"] = [None]*4
+        self._thresholds_per_group["__ALL__"] = [None]*4
         for entry in loaded_images:
-            filt = entry.get('header', {}).get('FILTER', 'Unknown')
-            if filt not in self._thresholds_per_group:
-                self._thresholds_per_group[filt] = [None]*4
+            filt = (entry.get('header', {}) or {}).get('FILTER', 'Unknown')
+            self._thresholds_per_group.setdefault(filt, [None]*4)
+
 
         # ─── compute & cache all metrics once ────────────────────
         self.metrics_panel.compute_all_metrics(self._all_images)
@@ -815,14 +836,12 @@ class MetricsWindow(QWidget):
         self.metrics_panel.set_guides_visible(self.chk_guides.isChecked())
         # (if you also want immediate re-flagging in the tree, keep your BlinkTab logic hooked here)
 
-    def _apply_thresholds(self, group_name: str):
-        """Restore the four InfiniteLine positions for a given group."""
-        saved = self._thresholds_per_group.get(group_name, [None]*4)
+    def _apply_thresholds(self, group_id: str):
+        saved = self._thresholds_per_group.get(group_id, [None]*4)
         for idx, line in enumerate(self.metrics_panel.lines):
             if saved[idx] is not None:
                 line.setPos(saved[idx])
-            # if saved[idx] is None, we leave it so that
-            # the panel’s own auto-init can run on next plot()
+
 
     def update_metrics(self, loaded_images, order=None):
         if loaded_images is not self._all_images:
@@ -1690,10 +1709,20 @@ class BlinkTab(QWidget):
 
         order = self._tree_order_indices()
         self.metrics_window.set_images(self.loaded_images, order=order)
+
         panel = self.metrics_window.metrics_panel
-        self.thresholds_by_group[self.tr("All")] = [line.value() for line in panel.lines]
+
+        # --- restore thresholds into the UI instead of overwriting saved state ---
+        group = getattr(self, "current_group_name", None) or self.tr("All")
+        saved = self.thresholds_by_group.get(group) or self.thresholds_by_group.get(self.tr("All"))
+
+        if saved and len(saved) == len(panel.lines):
+            for line, v in zip(panel.lines, saved):
+                line.setValue(float(v))  # adjust name if your API is setPos/set_value/etc.
+
         self.metrics_window.show()
         self.metrics_window.raise_()
+
 
     def on_metrics_point(self, metric_idx, frame_idx):
         item = self.get_tree_item_for_index(frame_idx)
@@ -1730,27 +1759,25 @@ class BlinkTab(QWidget):
 
         return np.clip(out, 0.0, 1.0)
 
-
-
     def on_threshold_change(self, metric_idx, threshold):
         panel = self.metrics_window.metrics_panel
         if panel.metrics_data is None:
             return
 
-        # figure out which FILTER group we're in
-        group = self.metrics_window.group_combo.currentText()
-        # ensure we have a 4-slot list for this group
-        thr_list = self.thresholds_by_group.setdefault(group, [None]*4)
-        # store the new threshold for this metric
+        group_id = self.metrics_window.group_combo.currentData()
+        if not isinstance(group_id, str):
+            group_id = "__ALL__"
+
+        thr_list = self.thresholds_by_group.setdefault(group_id, [None]*4)
         thr_list[metric_idx] = threshold
 
-        # build the list of indices to re-evaluate
-        if group == self.tr("All"):
+        if group_id == "__ALL__":
             indices = range(len(self.loaded_images))
         else:
+            filt = group_id
             indices = [
                 i for i, e in enumerate(self.loaded_images)
-                if e.get('header', {}).get('FILTER','Unknown') == group
+                if (e.get('header', {}) or {}).get('FILTER','Unknown') == filt
             ]
 
         # re‐flag only those frames in this group, OR across all 4 metrics
