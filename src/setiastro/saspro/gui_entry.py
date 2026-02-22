@@ -24,7 +24,8 @@ called via the `main()` function when invoked as an entry point.
 # Show splash screen IMMEDIATELY before any heavy imports
 
 _STARTUP_PROFILE = os.environ.get("SASPRO_STARTUP_PROFILE", "").strip().lower() in ("1","true","yes","on")
-
+_app_icon_obj = None
+_app_icon_path = ""
 
 def _is_wayland_session() -> bool:
     # Best-effort detection that does NOT require a QApplication instance
@@ -85,6 +86,14 @@ _splash_initialized = False
 # Flag to ensure heavy imports/bootstrap happens only once
 _imports_bootstrapped = False
 
+def _set_windows_appusermodelid(app_id: str) -> None:
+    if not sys.platform.startswith("win"):
+        return
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
+    except Exception:
+        pass
 
 from setiastro.saspro.versioning import get_app_version
 _EARLY_VERSION = get_app_version("setiastrosuitepro")
@@ -114,20 +123,25 @@ def _collect_open_paths(argv: list[str] | None) -> list[str]:
 def _init_splash():
     """Initialize the splash screen. Safe to call multiple times."""
     global _splash, _app, _splash_initialized
-    
+
     if _splash_initialized:
         return
-    
+
+    # --- Windows: set AppUserModelID as early as possible ---
+    if sys.platform.startswith("win"):
+        _set_windows_appusermodelid("SetiAstro.SetiAstroSuitePro")
+
     # Minimal imports for splash screen
     from PyQt6.QtWidgets import QApplication, QWidget
     from PyQt6.QtCore import Qt, QCoreApplication, QRect, QPropertyAnimation, QEasingCurve
+    from PyQt6.QtGui import (
+        QGuiApplication, QIcon, QPixmap, QColor, QPainter, QFont, QLinearGradient
+    )
     import time
-    from PyQt6.QtGui import QGuiApplication, QIcon, QPixmap, QColor, QPainter, QFont, QLinearGradient
-    
 
     # If we're forcing software OpenGL, do it *before* QApplication is created.
     if sys.platform.startswith("linux"):
-        if os.environ.get("SASPRO_QT_SAFE", "").strip() in ("1", "true", "yes", "on"):
+        if os.environ.get("SASPRO_QT_SAFE", "").strip().lower() in ("1", "true", "yes", "on"):
             if os.environ.get("QT_OPENGL", "").lower() == "software":
                 try:
                     QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_UseSoftwareOpenGL, True)
@@ -142,41 +156,29 @@ def _init_splash():
     except Exception:
         pass
 
+    # Keep these exactly (QSettings/defaults depend on org/app names)
     QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_DontShowIconsInMenus, False)
     QCoreApplication.setOrganizationName("SetiAstro")
     QCoreApplication.setOrganizationDomain("setiastrosuite.pro")
     QCoreApplication.setApplicationName("Seti Astro Suite Pro")
 
-    # Create QApplication
-    _app = QApplication(sys.argv)
-    
-    try:
-        _app.setQuitOnLastWindowClosed(True)
-    except Exception:
-        pass
-
-    if sys.platform.startswith("linux"):
-        try:
-            print("Qt platform:", _app.platformName())
-            print("QuitOnLastWindowClosed:", _app.quitOnLastWindowClosed())
-            print("XDG_SESSION_TYPE:", os.environ.get("XDG_SESSION_TYPE"))
-            print("QT_QPA_PLATFORM:", os.environ.get("QT_QPA_PLATFORM"))
-            print("QT_OPENGL:", os.environ.get("QT_OPENGL"))
-        except Exception:
-            pass
-
-    # Determine icon paths early
-    # Determine icon paths early
-    def _find_icon_path():
-        """Legacy fallback if resources import fails."""
-        if hasattr(sys, '_MEIPASS'):
+    # ---------------------------------------------------------------------
+    # Path resolution helpers (NO QIcon/QPixmap usage before QApplication)
+    # ---------------------------------------------------------------------
+    def _find_resource_paths_legacy() -> tuple[str, str, str | None]:
+        """
+        Returns (app_icon_path, splash_logo_path, startup_bg_path) using filesystem only.
+        app_icon_path prefers ICO on Windows.
+        splash_logo_path prefers PNG for large splash rendering.
+        """
+        if hasattr(sys, "_MEIPASS"):
             base = sys._MEIPASS
         else:
             try:
                 import setiastro
                 package_dir = os.path.dirname(os.path.abspath(setiastro.__file__))
                 package_parent = os.path.dirname(package_dir)
-                images_dir_installed = os.path.join(package_parent, 'images')
+                images_dir_installed = os.path.join(package_parent, "images")
                 if os.path.exists(images_dir_installed):
                     base = package_parent
                 else:
@@ -187,7 +189,7 @@ def _init_splash():
                             )
                         )
                     )
-            except (ImportError, AttributeError):
+            except Exception:
                 base = os.path.dirname(
                     os.path.dirname(
                         os.path.dirname(
@@ -196,35 +198,164 @@ def _init_splash():
                     )
                 )
 
-        candidates = [
-            os.path.join(base, "images", "astrosuitepro.png"),
-            os.path.join(base, "images", "astrosuitepro.ico"),
-            os.path.join(base, "images", "astrosuite.png"),
-            os.path.join(base, "images", "astrosuite.ico"),
+        images_dir = os.path.join(base, "images")
+
+        # App icon (taskbar/tray/window icon): prefer ICO on Windows
+        if sys.platform.startswith("win"):
+            app_icon_candidates = [
+                os.path.join(images_dir, "astrosuitepro.ico"),
+                os.path.join(images_dir, "astrosuite.ico"),
+                os.path.join(images_dir, "astrosuitepro.png"),
+                os.path.join(images_dir, "astrosuite.png"),
+            ]
+        else:
+            app_icon_candidates = [
+                os.path.join(images_dir, "astrosuitepro.png"),
+                os.path.join(images_dir, "astrosuitepro.ico"),
+                os.path.join(images_dir, "astrosuite.png"),
+                os.path.join(images_dir, "astrosuite.ico"),
+            ]
+
+        # Splash logo (large display): prefer PNG always
+        splash_logo_candidates = [
+            os.path.join(images_dir, "astrosuitepro.png"),
+            os.path.join(images_dir, "astrosuite.png"),
+            os.path.join(images_dir, "astrosuitepro.ico"),
+            os.path.join(images_dir, "astrosuite.ico"),
         ]
-        for p in candidates:
+
+        # Startup background (optional)
+        startup_bg_candidates = [
+            os.path.join(images_dir, "startup_background.png"),
+            os.path.join(images_dir, "startup_bg.png"),
+            os.path.join(images_dir, "splash_background.png"),
+        ]
+
+        app_icon_path = ""
+        for p in app_icon_candidates:
             if os.path.exists(p):
-                return p
-        return ""  # nothing found
+                app_icon_path = p
+                break
 
-    # NEW: Prefer centralized resources resolver
+        splash_logo_path = ""
+        for p in splash_logo_candidates:
+            if os.path.exists(p):
+                splash_logo_path = p
+                break
+
+        startup_bg_path = None
+        for p in startup_bg_candidates:
+            if os.path.exists(p):
+                startup_bg_path = p
+                break
+
+        return app_icon_path, splash_logo_path, startup_bg_path
+
+    def _resolve_early_paths() -> tuple[str, str, str | None]:
+        """
+        Returns (app_icon_path, splash_logo_path, startup_bg_path)
+        using path existence only (NO Qt image/icon creation yet).
+        """
+        app_icon_path = ""
+        splash_logo_path = ""
+        startup_bg_path = None
+
+        # Prefer centralized resources resolver if available
+        try:
+            from setiastro.saspro.resources import icon_path as res_icon_path, background_startup_path
+
+            # app icon path from resources
+            if res_icon_path and os.path.exists(res_icon_path):
+                app_icon_path = res_icon_path
+
+            # splash logo should prefer PNG for rendering
+            # If resources.icon_path is ICO on Windows, try same stem .png first.
+            if app_icon_path:
+                root, ext = os.path.splitext(app_icon_path)
+                png_try = root + ".png"
+                if os.path.exists(png_try):
+                    splash_logo_path = png_try
+                else:
+                    splash_logo_path = app_icon_path
+
+            # startup background
+            if background_startup_path and os.path.exists(background_startup_path):
+                startup_bg_path = background_startup_path
+
+        except Exception:
+            pass
+
+        # Legacy fallbacks
+        legacy_app_icon, legacy_splash_logo, legacy_bg = _find_resource_paths_legacy()
+
+        if not app_icon_path:
+            app_icon_path = legacy_app_icon
+
+        if not splash_logo_path:
+            splash_logo_path = legacy_splash_logo or app_icon_path
+
+        if not startup_bg_path:
+            startup_bg_path = legacy_bg
+
+        # Windows: for app icon only, prefer .ico sibling if current app icon is .png
+        if sys.platform.startswith("win") and app_icon_path:
+            root, ext = os.path.splitext(app_icon_path)
+            if ext.lower() == ".png":
+                ico_try = root + ".ico"
+                if os.path.exists(ico_try):
+                    app_icon_path = ico_try
+
+        return app_icon_path, splash_logo_path, startup_bg_path
+
+    # Resolve paths BEFORE QApplication and BEFORE any widgets (filesystem only)
+    _early_app_icon_path, _early_splash_logo_path, _startup_bg_path = _resolve_early_paths()
+
+    # ---------------------------
+    # Create QApplication (Qt image/icon creation allowed after this)
+    # ---------------------------
+    _app = QApplication(sys.argv)
+
     try:
-        from setiastro.saspro.resources import icon_path, background_startup_path
-        _early_icon_path = icon_path
-        if not os.path.exists(_early_icon_path):
-            # fall back to legacy search if for some reason this is missing
-            _early_icon_path = _find_icon_path()
-        
-        # Load startup background path
-        _startup_bg_path = background_startup_path
-        if not os.path.exists(_startup_bg_path):
-             _startup_bg_path = None
-             
+        _app.setQuitOnLastWindowClosed(True)
     except Exception:
-        _early_icon_path = _find_icon_path()
-        _startup_bg_path = None
+        pass
 
-    
+    # Linux startup diagnostics (kept from your original working flow)
+    if sys.platform.startswith("linux"):
+        try:
+            print("Qt platform:", _app.platformName())
+            print("QuitOnLastWindowClosed:", _app.quitOnLastWindowClosed())
+            print("XDG_SESSION_TYPE:", os.environ.get("XDG_SESSION_TYPE"))
+            print("QT_QPA_PLATFORM:", os.environ.get("QT_QPA_PLATFORM"))
+            print("QT_OPENGL:", os.environ.get("QT_OPENGL"))
+        except Exception:
+            pass
+
+
+    # ------------------------------------------------------------------
+    # IMPORTANT: Use the SAME SIMPLE APP ICON INIT FLOW as the version
+    # that worked for the Windows taskbar icon.
+    # ------------------------------------------------------------------
+    global _app_icon_obj, _app_icon_path
+    _app_icon_path = _early_app_icon_path
+    _app_icon_obj = QIcon()
+    try:
+        if _early_app_icon_path and os.path.exists(_early_app_icon_path):
+            _app_icon_obj = QIcon(_early_app_icon_path)
+            if _app_icon_obj.isNull() and sys.platform.startswith("win"):
+                # fallback to png sibling if ico failed
+                root, _ext = os.path.splitext(_early_app_icon_path)
+                png_try = root + ".png"
+                if os.path.exists(png_try):
+                    _app_icon_obj = QIcon(png_try)
+
+            if not _app_icon_obj.isNull():
+                _app.setWindowIcon(_app_icon_obj)
+            else:
+                print(f"[startup] WARNING: Qt failed to load app icon '{_early_app_icon_path}'")
+    except Exception as e:
+        print(f"[startup] WARNING: setWindowIcon failed: {e!r}")
+
     # =========================================================================
     # PhotoshopStyleSplash - Custom splash screen widget
     # =========================================================================
@@ -238,8 +369,7 @@ def _init_splash():
             self._build = ""
             self.current_message = QCoreApplication.translate("Splash", "Starting...")
             self.progress_value = 0
-            
-            # Window setup
+
             self.setWindowFlags(
                 Qt.WindowType.SplashScreen |
                 Qt.WindowType.FramelessWindowHint |
@@ -247,226 +377,207 @@ def _init_splash():
             )
             self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
             self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-            
-            # Splash dimensions
+
             self.splash_width = 600
             self.splash_height = 400
             self.setFixedSize(self.splash_width, self.splash_height)
-            
-            # Center on screen
+
             screen = QGuiApplication.primaryScreen()
             if screen:
                 screen_geo = screen.availableGeometry()
                 x = (screen_geo.width() - self.splash_width) // 2 + screen_geo.x()
                 y = (screen_geo.height() - self.splash_height) // 2 + screen_geo.y()
                 self.move(x, y)
-            
-            # Load and scale logo
+
             self.logo_pixmap = self._load_logo(logo_path)
-            
-            # Load background image
+
             self.bg_image_pixmap = QPixmap()
             if _startup_bg_path:
-                self.bg_image_pixmap = QPixmap(_startup_bg_path)
+                bg_pm = QPixmap(_startup_bg_path)
+                if not bg_pm.isNull():
+                    self.bg_image_pixmap = bg_pm
+                else:
+                    print(f"[startup] WARNING: splash background failed to load: {_startup_bg_path}")
 
-            # Fonts
             self.title_font = QFont("Segoe UI", 28, QFont.Weight.Bold)
             self.subtitle_font = QFont("Segoe UI", 11)
             self.message_font = QFont("Segoe UI", 9)
             self.copyright_font = QFont("Segoe UI", 8)
-        
+
         def _load_logo(self, path: str) -> QPixmap:
-            """Load the logo and scale appropriately."""
+            """Load splash logo. Prefer PNG path passed in; fallback robustly."""
             if not path or not os.path.exists(path):
                 return QPixmap()
-            
+
             ext = os.path.splitext(path)[1].lower()
+
+            # For splash logo, PNG is preferred. ICO can work, but some ICOs look wrong when enlarged.
             if ext == ".ico":
                 ic = QIcon(path)
                 pm = ic.pixmap(256, 256)
+                if pm.isNull():
+                    pm = ic.pixmap(128, 128)
                 if pm.isNull():
                     pm = QPixmap(path)
             else:
                 pm = QPixmap(path)
                 if pm.isNull():
                     pm = QIcon(path).pixmap(256, 256)
-            
+
             if not pm.isNull():
                 pm = pm.scaled(
                     180, 180,
                     Qt.AspectRatioMode.KeepAspectRatio,
                     Qt.TransformationMode.SmoothTransformation
                 )
+            else:
+                print(f"[startup] WARNING: splash logo failed to load: {path}")
+
             return pm
-        
+
         def setMessage(self, message: str):
-            """Update the loading message."""
             self.current_message = message
             self.repaint()
             if _app:
                 _app.processEvents()
-        
+
         def setProgress(self, value: int):
-            """Update progress (0-100) with smooth animation."""
-            target = max(0, min(100, value))
-            start = self.progress_value
-            
-            # If jumping backwards or small change, just set it
+            target = max(0, min(100, int(value)))
+            start = float(self.progress_value)
+
             if target <= start or (target - start) < 1:
                 self.progress_value = target
                 self.repaint()
-                if _app: _app.processEvents()
+                if _app:
+                    _app.processEvents()
                 return
 
-            # Animate forward
-            steps = 15  # number of frames for the slide
-            # We want the total slide to take ~100-150ms max to feel responsive but smooth
-            dt = 0.005  # 5ms per frame
-            
+            steps = 15
+            dt = 0.005
             for i in range(1, steps + 1):
-                # Ease out interpolator
                 t = i / steps
-                # Quadratic ease out: f(t) = -t*(t-2)
-                factor = -t * (t - 2)
-                
+                factor = -t * (t - 2)  # quadratic ease-out
                 cur = start + (target - start) * factor
                 self.progress_value = cur
                 self.repaint()
-                if _app: _app.processEvents()
+                if _app:
+                    _app.processEvents()
                 time.sleep(dt)
 
             self.progress_value = target
             self.repaint()
             if _app:
                 _app.processEvents()
-        
+
         def setBuildInfo(self, version: str, build: str):
-            """Update version and build info once available."""
-            self._version = _EARLY_VERSION
+            self._version = version or _EARLY_VERSION
             self._build = build
             self.repaint()
-        
+
         def paintEvent(self, event):
-            """Custom paint for the splash screen."""
             painter = QPainter(self)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
             painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
-            
+
             w, h = self.splash_width, self.splash_height
-            
-            # --- Background gradient (deep space theme) ---
+
             gradient = QLinearGradient(0, 0, 0, h)
             gradient.setColorAt(0.0, QColor(15, 15, 25))
             gradient.setColorAt(0.5, QColor(25, 25, 45))
             gradient.setColorAt(1.0, QColor(10, 10, 20))
             painter.fillRect(0, 0, w, h, gradient)
-            
-            # --- Background Image (Centered with Fade Out) ---
+
             if not self.bg_image_pixmap.isNull():
-                # Create a temporary pixmap to handle the masking
                 temp = QPixmap(w, h)
                 temp.fill(Qt.GlobalColor.transparent)
-                
+
                 ptmp = QPainter(temp)
                 ptmp.setRenderHint(QPainter.RenderHint.Antialiasing)
                 ptmp.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-                
-                # Scale image to cover the entire splash screen
+
                 scaled = self.bg_image_pixmap.scaled(
-                    w, h, 
-                    Qt.AspectRatioMode.KeepAspectRatioByExpanding, 
+                    w, h,
+                    Qt.AspectRatioMode.KeepAspectRatioByExpanding,
                     Qt.TransformationMode.SmoothTransformation
                 )
-                
-                # Center the image
+
                 sx = (w - scaled.width()) // 2
                 sy = (h - scaled.height()) // 2
                 ptmp.drawPixmap(sx, sy, scaled)
-                
-                # Apply Fade Out Mask (Gradient Alpha)
+
                 ptmp.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
                 fade_gradient = QLinearGradient(0, 0, 0, h)
-                # Keep top half fully visible (subject to global opacity)
-                fade_gradient.setColorAt(0.0, QColor(0, 0, 0, 255)) 
-                fade_gradient.setColorAt(0.5, QColor(0, 0, 0, 255)) 
-                # Fade out completely at the bottom
-                fade_gradient.setColorAt(1.0, QColor(0, 0, 0, 0))   
+                fade_gradient.setColorAt(0.0, QColor(0, 0, 0, 255))
+                fade_gradient.setColorAt(0.5, QColor(0, 0, 0, 255))
+                fade_gradient.setColorAt(1.0, QColor(0, 0, 0, 0))
                 ptmp.fillRect(0, 0, w, h, fade_gradient)
                 ptmp.end()
-                
-                # Draw combined result with 50% opacity
+
                 painter.save()
                 painter.setOpacity(0.25)
                 painter.drawPixmap(0, 0, temp)
                 painter.restore()
 
-            # --- Subtle border ---
             painter.setPen(QColor(60, 60, 80))
             painter.drawRect(0, 0, w - 1, h - 1)
-            
-            # --- Logo (centered upper area) ---
+
             if not self.logo_pixmap.isNull():
                 logo_x = (w - self.logo_pixmap.width()) // 2
                 logo_y = 40
                 painter.drawPixmap(logo_x, logo_y, self.logo_pixmap)
-            
-            # --- Title ---
+
             painter.setFont(self.title_font)
             painter.setPen(QColor(255, 255, 255))
-            title_rect = QRect(0, 230, w, 40)
-            painter.drawText(title_rect, Qt.AlignmentFlag.AlignCenter, "Seti Astro Suite Pro")
-            
-            # --- Subtitle with version ---
+            painter.drawText(QRect(0, 230, w, 40), Qt.AlignmentFlag.AlignCenter, "Seti Astro Suite Pro")
+
             painter.setFont(self.subtitle_font)
             painter.setPen(QColor(180, 180, 200))
             subtitle_text = QCoreApplication.translate("Splash", "Version {0}").format(self._version)
-
             if self._build:
                 if self._build == "dev":
-                    # No build_info → running from source checkout
                     subtitle_text += QCoreApplication.translate("Splash", "  •  Running locally from source code")
                 else:
                     subtitle_text += QCoreApplication.translate("Splash", "  •  Build {0}").format(self._build)
+            painter.drawText(QRect(0, 270, w, 25), Qt.AlignmentFlag.AlignCenter, subtitle_text)
 
-            subtitle_rect = QRect(0, 270, w, 25)
-            painter.drawText(subtitle_rect, Qt.AlignmentFlag.AlignCenter, subtitle_text)
-            
-            # --- Progress bar ---
             bar_margin = 50
             bar_height = 4
             bar_y = h - 70
             bar_width = w - (bar_margin * 2)
-            
+
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QColor(40, 40, 60))
             painter.drawRoundedRect(bar_margin, bar_y, bar_width, bar_height, 2, 2)
-            
+
             if self.progress_value > 0:
-                fill_width = int(bar_width * self.progress_value / 100)
-                bar_gradient = QLinearGradient(bar_margin, 0, bar_margin + bar_width, 0)
-                bar_gradient.setColorAt(0.0, QColor(80, 140, 220))
-                bar_gradient.setColorAt(1.0, QColor(140, 180, 255))
-                painter.setBrush(bar_gradient)
-                painter.drawRoundedRect(bar_margin, bar_y, fill_width, bar_height, 2, 2)
-            
-            # --- Loading message ---
+                fill_width = int(bar_width * float(self.progress_value) / 100.0)
+                fill_width = max(0, min(bar_width, fill_width))
+                if fill_width > 0:
+                    bar_gradient = QLinearGradient(bar_margin, 0, bar_margin + bar_width, 0)
+                    bar_gradient.setColorAt(0.0, QColor(80, 140, 220))
+                    bar_gradient.setColorAt(1.0, QColor(140, 180, 255))
+                    painter.setBrush(bar_gradient)
+                    painter.drawRoundedRect(bar_margin, bar_y, fill_width, bar_height, 2, 2)
+
             painter.setFont(self.message_font)
             painter.setPen(QColor(150, 150, 180))
-            msg_rect = QRect(bar_margin, bar_y + 10, bar_width, 20)
-            painter.drawText(msg_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, 
-                           self.current_message)
-            
-            # --- Copyright ---
+            painter.drawText(
+                QRect(bar_margin, bar_y + 10, bar_width, 20),
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                self.current_message
+            )
+
             painter.setFont(self.copyright_font)
             painter.setPen(QColor(100, 100, 130))
-            copyright_text = "© 2024-2026 Franklin Marek (Seti Astro)  •  All Rights Reserved"
-            copyright_rect = QRect(0, h - 30, w, 20)
-            painter.drawText(copyright_rect, Qt.AlignmentFlag.AlignCenter, copyright_text)
-            
+            painter.drawText(
+                QRect(0, h - 30, w, 20),
+                Qt.AlignmentFlag.AlignCenter,
+                "© 2024-2026 Franklin Marek (Seti Astro)  •  All Rights Reserved"
+            )
+
             painter.end()
-        
+
         def finish(self):
-            """Hide and cleanup the splash."""
             self.hide()
             self.close()
             self.deleteLater()
@@ -491,7 +602,7 @@ def _init_splash():
 
             self._anim.finished.connect(_done)
             self._anim.start()
-    
+
         def start_fade_in(self):
             if not _allow_window_opacity_effects():
                 self.setWindowOpacity(1.0)
@@ -504,34 +615,43 @@ def _init_splash():
             self._anim.setEasingCurve(QEasingCurve.Type.InQuad)
             self._anim.start()
 
-    # --- Show splash IMMEDIATELY ---
-    _splash = _EarlySplash(_early_icon_path)
+    # Create splash AFTER app icon is set (and use splash-logo path, not app icon path)
+    _splash = _EarlySplash(_early_splash_logo_path)
+
+    # Set splash window icon too (shell/task switcher help)
+    try:
+        if not _app_icon_obj.isNull():
+            _splash.setWindowIcon(_app_icon_obj)
+    except Exception:
+        pass
+
     _splash.start_fade_in()
     _splash.show()
-    
-    # Block briefly to allow fade-in to progress smoothly before heavy imports start
-    # We use a busy loop with processEvents to keep the UI responsive during fade
+
+    # Allow fade-in to progress before heavy imports start
     t_start = time.time()
-    while time.time() - t_start < 0.85:  # slightly longer than animation
+    while time.time() - t_start < 0.85:
         _app.processEvents()
-        if _splash.windowOpacity() >= 0.99:
+        try:
+            if _allow_window_opacity_effects() and _splash.windowOpacity() >= 0.99:
+                break
+        except Exception:
             break
         time.sleep(0.01)
 
     _splash.setMessage(QCoreApplication.translate("Splash", "Initializing Python runtime..."))
     _splash.setProgress(2)
     _app.processEvents()
-    
+
     # Load translation BEFORE any other widgets are created
     try:
-        from setiastro.saspro.i18n import load_language, get_translations_dir
+        from setiastro.saspro.i18n import load_language, get_translations_dir  # keep same import shape as original
+        _ = get_translations_dir  # avoid lint complaints if unused
         ok = load_language(app=_app)
     except Exception as e:
         print("i18n load failed:", repr(e))
 
-    
     _splash_initialized = True
-
 
 # =============================================================================
 # Now proceed with all the heavy imports (splash is visible)
@@ -947,7 +1067,12 @@ def main(argv: list[str] | None = None) -> int:
         _splash.setMessage(QCoreApplication.translate("Splash", "Installing crash handlers..."))
         _splash.setProgress(75)
     install_crash_handlers(_app) 
-    _app.setWindowIcon(QIcon(windowslogo_path if os.path.exists(windowslogo_path) else icon_path))
+    try:
+        if _app_icon_obj is not None and not _app_icon_obj.isNull():
+            _app.setWindowIcon(_app_icon_obj)
+    except Exception:
+        pass
+
 
     # --- Windows exe / multiprocessing friendly ---
     if _splash:
@@ -988,7 +1113,11 @@ def main(argv: list[str] | None = None) -> int:
             version=VERSION,
             build_timestamp=BUILD_TIMESTAMP,
         )
-
+        try:
+            if _app_icon_obj is not None and not _app_icon_obj.isNull():
+                win.setWindowIcon(_app_icon_obj)
+        except Exception:
+            pass
         def _kick_updates_after_splash():
             try:
                 win.raise_()
@@ -1012,6 +1141,7 @@ def main(argv: list[str] | None = None) -> int:
             win.setWindowOpacity(0.0)
 
         win.show()
+        QTimer.singleShot(0, lambda: win.setWindowIcon(_app.windowIcon()))
         
         if open_paths:
             def _open_cli_paths():

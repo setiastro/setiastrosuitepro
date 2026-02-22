@@ -63,6 +63,8 @@ def _current_tag() -> str:
     return "py312"
 
 def _discover_existing_runtime_dir(status_cb=print) -> Path | None:
+    global _RUNTIME_DISCOVERY_LOGGED
+
     base = _runtime_base_dir()
     if not base.exists():
         return None
@@ -70,17 +72,29 @@ def _discover_existing_runtime_dir(status_cb=print) -> Path | None:
     cur_dir = base / _current_tag()  # always py312 now
     cur_vpy = cur_dir / "venv" / ("Scripts/python.exe" if platform.system() == "Windows" else "bin/python")
     if cur_vpy.exists():
-        _rt_dbg(f"Found runtime: {cur_dir}", status_cb)
+        # log once only (this is called a lot during startup)
+        if not _RUNTIME_DISCOVERY_LOGGED:
+            _rt_dbg(f"Found runtime: {cur_dir}", status_cb)
+            _RUNTIME_DISCOVERY_LOGGED = True
         return cur_dir
 
     return None
 
 
 def _user_runtime_dir(status_cb=print) -> Path:
-    existing = _discover_existing_runtime_dir(status_cb=status_cb)
-    chosen = existing or (_runtime_base_dir() / _current_tag())
-    _rt_dbg(f"_user_runtime_dir() -> {chosen}", status_cb)
-    return chosen
+    global _RUNTIME_DIR_CACHED, _RUNTIME_USERDIR_LOGGED
+
+    if _RUNTIME_DIR_CACHED is None:
+        existing = _discover_existing_runtime_dir(status_cb=status_cb)
+        _RUNTIME_DIR_CACHED = existing or (_runtime_base_dir() / _current_tag())
+
+    # log once only (avoid startup spam)
+    if not _RUNTIME_USERDIR_LOGGED:
+        _rt_dbg(f"_user_runtime_dir() -> {_RUNTIME_DIR_CACHED}", status_cb)
+        _RUNTIME_USERDIR_LOGGED = True
+
+    return _RUNTIME_DIR_CACHED
+
 
 def best_device(torch, *, prefer_cuda=True, prefer_dml=False, prefer_xpu=False):
     if prefer_cuda and getattr(torch, "cuda", None) and torch.cuda.is_available():
@@ -407,6 +421,11 @@ def _install_lock(rt: Path, timeout_s: int = 600):
 _TORCH_VERSION_LADDER: dict[tuple[int, int], list[str]] = {
     (3, 12): ["2.4.*", "2.3.*", "2.2.*"],
 }
+# module-level caches
+_TORCH_CACHED = None
+_RUNTIME_DIR_CACHED: Path | None = None
+_RUNTIME_DISCOVERY_LOGGED = False
+_RUNTIME_USERDIR_LOGGED = False
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Torch installation with robust fallbacks
