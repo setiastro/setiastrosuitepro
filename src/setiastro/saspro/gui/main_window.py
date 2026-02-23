@@ -506,7 +506,11 @@ class AstroSuiteProMainWindow(
         self.setWindowTitle(f"Seti Astro Suite Pro v{self._version}")
         self.resize(1400, 900)
         self._ensure_network_manager()
-        self.app_icon = QIcon(windowslogo_path if os.path.exists(windowslogo_path) else icon_path)
+        app = QApplication.instance()
+        if app is not None and not app.windowIcon().isNull():
+            self.app_icon = app.windowIcon()
+        else:
+            self.app_icon = QIcon(icon_path)  # fallback only
         self.setWindowIcon(self.app_icon)
         self._doc = None
         self._force_close_all = False
@@ -681,6 +685,9 @@ class AstroSuiteProMainWindow(
         self.shortcuts.load_shortcuts()
         self._ensure_persistent_names() 
         self._restore_window_placement()
+        app = QApplication.instance()
+        if app is not None:
+            self.setWindowIcon(app.windowIcon())        
         try:
             from setiastro.saspro.function_bundle import restore_function_bundle_chips
             restore_function_bundle_chips(self)

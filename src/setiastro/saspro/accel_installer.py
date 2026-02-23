@@ -13,6 +13,20 @@ LogCB = Callable[[str], None]
 def _run(cmd):
     return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 
+def _has_amd_rocm() -> tuple[bool, str]:
+    """
+    Return (True, gfx_arch) if an AMD ROCm-capable GPU is detected.
+    Linux only. Uses runtime_torch._detect_rocm_arch().
+    """
+    try:
+        if platform.system() != "Linux":
+            return False, ""
+        from setiastro.saspro.runtime_torch import _detect_rocm_arch
+        arch = _detect_rocm_arch()
+        return (True, arch) if arch else (False, "")
+    except Exception:
+        return False, ""
+
 
 def _has_intel_arc() -> bool:
     """
@@ -76,67 +90,101 @@ def _nvidia_driver_ok(log_cb: LogCB) -> bool:
         log_cb("Unable to query NVIDIA driver via nvidia-smi.")
         return False
 
-
 def ensure_torch_installed(prefer_gpu: bool, log_cb: LogCB, preferred_backend: str = "auto") -> tuple[bool, Optional[str]]:
 
     try:
         preferred_backend = (preferred_backend or "auto").lower()
         is_windows = platform.system() == "Windows"
+        is_linux = platform.system() == "Linux"
 
         has_nv = _has_nvidia() and platform.system() in ("Windows", "Linux")
         has_intel = (not has_nv) and _has_intel_arc() and platform.system() in ("Windows", "Linux")
+        has_amd, amd_arch = ((False, "") if not is_linux else _has_amd_rocm())
 
         prefer_cuda = prefer_gpu and (preferred_backend in ("auto", "cuda")) and has_nv
         prefer_xpu  = prefer_gpu and (preferred_backend in ("auto", "xpu")) and (not has_nv) and has_intel
+        prefer_rocm = (
+            prefer_gpu
+            and is_linux
+            and (preferred_backend in ("auto", "rocm"))
+            and (not has_nv)
+            and (not has_intel)
+            and has_amd
+        )
 
-        # NEW: DirectML preference is ONLY meaningful on Windows with no NVIDIA
+        # DirectML only matters on Windows with no NVIDIA/XPU
         prefer_dml = (
             is_windows
             and (not has_nv)
             and preferred_backend in ("directml", "auto")
             and prefer_gpu
-            and (not prefer_xpu)   # if Intel XPU actually works, prefer that over DML
+            and (not prefer_xpu)
         )
 
-        # If user forced CPU, disable everything
         if preferred_backend == "cpu":
-            prefer_cuda = prefer_xpu = prefer_dml = False
+            prefer_cuda = prefer_xpu = prefer_dml = prefer_rocm = False
 
-        # Install torch (tries CUDA → XPU → CPU)
-        torch = import_torch(prefer_cuda=prefer_cuda, prefer_xpu=prefer_xpu, prefer_dml=prefer_dml, status_cb=log_cb)
+        # Install/import torch (ROCm/CUDA/XPU/DML/CPU handled inside runtime_torch)
+        torch = import_torch(
+            prefer_cuda=prefer_cuda,
+            prefer_xpu=prefer_xpu,
+            prefer_dml=prefer_dml,
+            prefer_rocm=prefer_rocm,
+            status_cb=log_cb,
+        )
+
         from setiastro.saspro.runtime_torch import add_runtime_to_sys_path
         add_runtime_to_sys_path(status_cb=log_cb)
 
         cuda_ok = bool(getattr(torch, "cuda", None) and torch.cuda.is_available())
         xpu_ok  = bool(hasattr(torch, "xpu") and torch.xpu.is_available())
 
+        # ROCm check: in PyTorch ROCm still shows up through torch.cuda, but torch.version.hip is set
+        rocm_ok = False
+        rocm_ver = None
+        try:
+            rocm_ver = getattr(getattr(torch, "version", None), "hip", None)
+            rocm_ok = bool(cuda_ok and rocm_ver)
+        except Exception:
+            rocm_ok = False
+
         # HARD RULES about DirectML:
         # • If NVIDIA exists: never use DML.
-        # • If XPU is active: also avoid DML to prevent confusion.
+        # • If XPU is active: also avoid DML.
+        # • If ROCm is active: also avoid DML (Linux anyway, but harmless safety)
         if has_nv:
             _maybe_uninstall_dml = True
         else:
-            _maybe_uninstall_dml = xpu_ok
+            _maybe_uninstall_dml = xpu_ok or rocm_ok
 
         if _maybe_uninstall_dml:
             try:
                 from setiastro.saspro.runtime_torch import _user_runtime_dir, _venv_paths
-                rt = _user_runtime_dir(); vpy = _venv_paths(rt)["python"]
-                r = subprocess.run([str(vpy), "-m", "pip", "show", "torch-directml"],
-                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                rt = _user_runtime_dir()
+                vpy = _venv_paths(rt)["python"]
+                r = subprocess.run(
+                    [str(vpy), "-m", "pip", "show", "torch-directml"],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+                )
                 if r.returncode == 0 and r.stdout:
                     log_cb("Non-DML path selected → uninstalling torch-directml.")
-                    subprocess.run([str(vpy), "-m", "pip", "uninstall", "-y", "torch-directml"],
-                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                    subprocess.run(
+                        [str(vpy), "-m", "pip", "uninstall", "-y", "torch-directml"],
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+                    )
             except Exception:
                 pass
+
+        if rocm_ok:
+            arch_msg = f" ({amd_arch})" if amd_arch else ""
+            log_cb(f"AMD ROCm available{arch_msg}; using ROCm backend (HIP {rocm_ver}).")
+            return True, None
 
         if cuda_ok:
             log_cb("CUDA available; using NVIDIA backend.")
             return True, None
 
         if xpu_ok:
-            # optional: surface device name if available
             try:
                 name = None
                 if hasattr(torch.xpu, "get_device_name"):
@@ -146,23 +194,28 @@ def ensure_torch_installed(prefer_gpu: bool, log_cb: LogCB, preferred_backend: s
                 log_cb("Intel XPU available.")
             return True, None
 
-        # No CUDA/XPU ⇒ evaluate DML on Windows non-NVIDIA as before
+        # No CUDA/XPU/ROCm ⇒ evaluate DML on Windows non-NVIDIA
         dml_enabled = False
         if is_windows and (not has_nv):
             try:
-                import importlib; importlib.invalidate_caches()
+                import importlib
+                importlib.invalidate_caches()
                 import torch_directml  # noqa
                 dml_enabled = True
                 log_cb("DirectML detected (already installed).")
             except Exception:
                 from setiastro.saspro.runtime_torch import _user_runtime_dir, _venv_paths
-                rt = _user_runtime_dir(); vpy = _venv_paths(rt)["python"]
+                rt = _user_runtime_dir()
+                vpy = _venv_paths(rt)["python"]
                 log_cb("Installing torch-directml (Windows fallback)…")
-                r = subprocess.run([str(vpy), "-m", "pip", "install", "--prefer-binary", "torch-directml"],
-                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                r = subprocess.run(
+                    [str(vpy), "-m", "pip", "install", "--prefer-binary", "torch-directml"],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+                )
                 if r.returncode == 0:
                     try:
-                        import importlib; importlib.invalidate_caches()
+                        import importlib
+                        importlib.invalidate_caches()
                         import torch_directml  # noqa
                         dml_enabled = True
                         log_cb("DirectML backend available.")
@@ -174,11 +227,12 @@ def ensure_torch_installed(prefer_gpu: bool, log_cb: LogCB, preferred_backend: s
 
         try:
             import importlib
-            _t = importlib.import_module("torch")
+            _ = importlib.import_module("torch")
         except Exception as e:
             return False, f"PyTorch import failed after install: {e}"
 
         return True, None
+
     except Exception as e:
         msg = str(e)
         if "PyTorch C-extension check failed" in msg or "Failed to load PyTorch C extensions" in msg:
@@ -203,12 +257,25 @@ def current_backend() -> str:
         import platform as _plat
         torch = importlib.import_module("torch")
 
+        # ROCm appears via torch.cuda in PyTorch, but torch.version.hip is populated
+        try:
+            hip_ver = getattr(getattr(torch, "version", None), "hip", None)
+        except Exception:
+            hip_ver = None
+
         if getattr(torch, "cuda", None) and torch.cuda.is_available():
-            try: name = torch.cuda.get_device_name(0)
-            except Exception: name = "CUDA"
+            if hip_ver:
+                try:
+                    name = torch.cuda.get_device_name(0)
+                except Exception:
+                    name = "AMD GPU"
+                return f"ROCm ({name}, HIP {hip_ver})"
+            try:
+                name = torch.cuda.get_device_name(0)
+            except Exception:
+                name = "CUDA"
             return f"CUDA ({name})"
 
-        # Intel XPU (Arc / Xe)
         if hasattr(torch, "xpu") and torch.xpu.is_available():
             try:
                 name = None
@@ -219,7 +286,7 @@ def current_backend() -> str:
             return f"Intel XPU{f' ({name})' if name else ''}"
 
         cuda_tag = getattr(getattr(torch, "version", None), "cuda", None)
-        has_nv = _has_nvidia() and _plat.system() in ("Windows","Linux")
+        has_nv = _has_nvidia() and _plat.system() in ("Windows", "Linux")
         if cuda_tag and has_nv:
             return f"CPU (CUDA {cuda_tag} not available — check NVIDIA driver/CUDA runtime)"
 

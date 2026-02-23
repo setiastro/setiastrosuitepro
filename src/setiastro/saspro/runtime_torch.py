@@ -63,6 +63,8 @@ def _current_tag() -> str:
     return "py312"
 
 def _discover_existing_runtime_dir(status_cb=print) -> Path | None:
+    global _RUNTIME_DISCOVERY_LOGGED
+
     base = _runtime_base_dir()
     if not base.exists():
         return None
@@ -70,17 +72,61 @@ def _discover_existing_runtime_dir(status_cb=print) -> Path | None:
     cur_dir = base / _current_tag()  # always py312 now
     cur_vpy = cur_dir / "venv" / ("Scripts/python.exe" if platform.system() == "Windows" else "bin/python")
     if cur_vpy.exists():
-        _rt_dbg(f"Found runtime: {cur_dir}", status_cb)
+        # log once only (this is called a lot during startup)
+        if not _RUNTIME_DISCOVERY_LOGGED:
+            _rt_dbg(f"Found runtime: {cur_dir}", status_cb)
+            _RUNTIME_DISCOVERY_LOGGED = True
         return cur_dir
 
     return None
 
+def _detect_rocm_arch() -> str:
+    """
+    Return the AMD ROCm gfx architecture string (e.g. 'gfx1151') if detected.
+    Linux only. Uses `rocminfo` output. Returns '' if unavailable/not detected.
+    """
+    try:
+        if platform.system() != "Linux":
+            return ""
+
+        # Small timeout so we don't hang if rocminfo is broken/misconfigured
+        r = subprocess.run(
+            ["rocminfo"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=8,
+        )
+
+        out = r.stdout or ""
+        for line in out.splitlines():
+            s = line.strip()
+            # Common rocminfo line examples contain "Name: gfx1030", etc.
+            if s.startswith("Name:") and "gfx" in s:
+                parts = s.split()
+                for p in reversed(parts):
+                    if p.startswith("gfx"):
+                        return p
+    except Exception:
+        pass
+
+    return ""
+
 
 def _user_runtime_dir(status_cb=print) -> Path:
-    existing = _discover_existing_runtime_dir(status_cb=status_cb)
-    chosen = existing or (_runtime_base_dir() / _current_tag())
-    _rt_dbg(f"_user_runtime_dir() -> {chosen}", status_cb)
-    return chosen
+    global _RUNTIME_DIR_CACHED, _RUNTIME_USERDIR_LOGGED
+
+    if _RUNTIME_DIR_CACHED is None:
+        existing = _discover_existing_runtime_dir(status_cb=status_cb)
+        _RUNTIME_DIR_CACHED = existing or (_runtime_base_dir() / _current_tag())
+
+    # log once only (avoid startup spam)
+    if not _RUNTIME_USERDIR_LOGGED:
+        _rt_dbg(f"_user_runtime_dir() -> {_RUNTIME_DIR_CACHED}", status_cb)
+        _RUNTIME_USERDIR_LOGGED = True
+
+    return _RUNTIME_DIR_CACHED
+
 
 def best_device(torch, *, prefer_cuda=True, prefer_dml=False, prefer_xpu=False):
     if prefer_cuda and getattr(torch, "cuda", None) and torch.cuda.is_available():
@@ -230,33 +276,59 @@ def _ensure_numpy(venv_python: Path, status_cb=print) -> None:
     Ensure NumPy exists in the runtime venv AND is ABI-compatible with common
     torch/vision/audio wheels. In practice: enforce numpy<2.
 
+    Optimized behavior:
+      - Cheap probe on every startup (no pip calls if healthy)
+      - Run pip repair only when NumPy is missing or NumPy major >= 2
+      - Keep the same post-verification guarantees
+
     Safe to call repeatedly.
     """
-    def _numpy_present() -> bool:
-        code = "import importlib.util; print('OK' if importlib.util.find_spec('numpy') else 'MISS')"
-        try:
-            out = subprocess.check_output([str(venv_python), "-c", code], text=True).strip()
-            return out == "OK"
-        except Exception:
-            return False
 
-    def _numpy_major() -> int | None:
+    def _numpy_state() -> tuple[bool, int | None, str | None]:
+        """
+        Returns:
+          (present, major_version_or_None, full_version_or_None)
+
+        Uses a tiny subprocess probe only (cheap).
+        """
         code = (
-            "import numpy as np\n"
-            "v = np.__version__.split('+',1)[0]\n"
-            "print(int(v.split('.',1)[0]))\n"
+            "import json, importlib.util\n"
+            "spec = importlib.util.find_spec('numpy')\n"
+            "if spec is None:\n"
+            "    print(json.dumps({'present': False, 'major': None, 'version': None}))\n"
+            "else:\n"
+            "    import numpy as np\n"
+            "    v = str(np.__version__).split('+',1)[0]\n"
+            "    try:\n"
+            "        major = int(v.split('.',1)[0])\n"
+            "    except Exception:\n"
+            "        major = None\n"
+            "    print(json.dumps({'present': True, 'major': major, 'version': v}))\n"
         )
         try:
             out = subprocess.check_output([str(venv_python), "-c", code], text=True).strip()
-            return int(out)
+            data = json.loads(out) if out else {}
+            return bool(data.get("present")), data.get("major"), data.get("version")
         except Exception:
-            return None
+            # Treat probe failure as "bad" so we repair conservatively
+            return False, None, None
 
-    # Keep tools fresh
-    _pip_ok(venv_python, ["install", "--upgrade", "pip", "setuptools", "wheel"], status_cb=status_cb)
+    def _upgrade_pip_tools_once() -> None:
+        # Only called in repair path (Tier 2), not on healthy startup.
+        _pip_ok(venv_python, ["install", "--upgrade", "pip", "setuptools", "wheel"], status_cb=status_cb)
 
-    # 1) If NumPy missing → install safe pin
-    if not _numpy_present():
+    # -------- Tier 1: cheap probe (every startup) --------
+    present, major, version = _numpy_state()
+
+    # Healthy -> return immediately (no pip/network/index work)
+    if present and (major is None or major < 2):
+        return
+
+    # -------- Tier 2: repair only if bad --------
+    _upgrade_pip_tools_once()
+
+    # 1) Missing NumPy → install safe pin
+    if not present:
         status_cb("[RT] Installing NumPy (pinning to numpy<2 for torch wheel compatibility)…")
         if not _pip_ok(
             venv_python,
@@ -270,10 +342,9 @@ def _ensure_numpy(venv_python: Path, status_cb=print) -> None:
                 status_cb=status_cb,
             )
 
-    # 2) If NumPy present but major>=2 → downgrade to numpy<2
-    maj = _numpy_major()
-    if maj is not None and maj >= 2:
-        status_cb("[RT] NumPy 2.x detected in runtime venv; downgrading to numpy<2…")
+    # 2) NumPy 2.x present → downgrade to numpy<2
+    elif major is not None and major >= 2:
+        status_cb(f"[RT] NumPy {version or '2.x'} detected in runtime venv; downgrading to numpy<2…")
         if not _pip_ok(
             venv_python,
             ["install", "--prefer-binary", "--no-cache-dir", "--force-reinstall", "numpy<2"],
@@ -285,13 +356,15 @@ def _ensure_numpy(venv_python: Path, status_cb=print) -> None:
                 status_cb=status_cb,
             )
 
-    # Post verification
-    if not _numpy_present():
+    # -------- Post verification (same guarantees as before) --------
+    present2, major2, version2 = _numpy_state()
+    if not present2:
         raise RuntimeError("Failed to install NumPy into the SASpro runtime venv.")
-    maj2 = _numpy_major()
-    if maj2 is not None and maj2 >= 2:
-        raise RuntimeError("NumPy is still 2.x in the SASpro runtime venv after pinning; torch stack may not import.")
-
+    if major2 is not None and major2 >= 2:
+        raise RuntimeError(
+            f"NumPy is still {version2 or '2.x'} in the SASpro runtime venv after pinning; "
+            "torch stack may not import."
+        )
 
 
 def _is_access_denied(exc: BaseException) -> bool:
@@ -407,6 +480,33 @@ def _install_lock(rt: Path, timeout_s: int = 600):
 _TORCH_VERSION_LADDER: dict[tuple[int, int], list[str]] = {
     (3, 12): ["2.4.*", "2.3.*", "2.2.*"],
 }
+_TORCH_COMPAT: dict[str, tuple[str, str]] = {
+    "2.4": ("0.19.*", "2.4.*"),
+    "2.3": ("0.18.*", "2.3.*"),
+    "2.2": ("0.17.*", "2.2.*"),
+}
+# module-level caches
+_TORCH_CACHED = None
+_RUNTIME_DIR_CACHED: Path | None = None
+_RUNTIME_DISCOVERY_LOGGED = False
+_RUNTIME_USERDIR_LOGGED = False
+
+_ROCM_PYTORCH_NIGHTLY_INDICES: list[tuple[str, str]] = [
+    ("rocm7.2", "https://download.pytorch.org/whl/nightly/rocm7.2"),
+    ("rocm7.1", "https://download.pytorch.org/whl/nightly/rocm7.1"),
+    ("rocm7.0", "https://download.pytorch.org/whl/nightly/rocm7.0"),
+    ("rocm6.4", "https://download.pytorch.org/whl/nightly/rocm6.4"),
+    ("rocm6.3", "https://download.pytorch.org/whl/nightly/rocm6.3"),
+    ("rocm6.2", "https://download.pytorch.org/whl/nightly/rocm6.2"),
+]
+
+# Optional: per-arch hinting if you want to skip known-bad AMD gfx-v2 indices quickly
+_ROCM_AMD_GFX_BUCKETS_WITH_TORCH = {
+    "gfx1151",       # known working (your report)
+    "gfx1100", "gfx1101", "gfx1102",  # gfx110X-all family
+    "gfx1200", "gfx1201",             # gfx120X-all family
+}
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Torch installation with robust fallbacks
@@ -502,8 +602,102 @@ except Exception as e:
         return False, msg
     return bool(data.get("has_xpu")), data.get("err")
 
+def _detect_rocm_version(status_cb=print) -> str:
+    """
+    Return installed ROCm version as 'major.minor' (e.g. '7.2') if detected.
+    Linux only. Tries hipconfig first, then rocminfo output. Returns '' if unknown.
+    """
+    if platform.system() != "Linux":
+        return ""
 
-def _install_torch(venv_python: Path, prefer_cuda: bool, prefer_xpu: bool, prefer_dml: bool, status_cb=print):
+    patterns = [
+        # hipconfig often prints: HIP version: 7.2.0
+        re.compile(r"\bHIP(?:\s+runtime)?\s+version\s*:\s*([0-9]+)\.([0-9]+)", re.I),
+        # generic ROCm version lines
+        re.compile(r"\bROCm(?:\s+version)?\s*[:=]?\s*([0-9]+)\.([0-9]+)", re.I),
+        # package-ish strings like rocm-7.2.0
+        re.compile(r"\brocm[-\s]?([0-9]+)\.([0-9]+)(?:\.[0-9]+)?\b", re.I),
+    ]
+
+    def _extract_ver(text: str) -> str:
+        if not text:
+            return ""
+        for line in text.splitlines():
+            s = line.strip()
+            for pat in patterns:
+                m = pat.search(s)
+                if m:
+                    return f"{m.group(1)}.{m.group(2)}"
+        return ""
+
+    cmds = [
+        (["hipconfig", "--version"], 6),
+        (["rocminfo", "--support"], 8),
+        (["rocminfo"], 8),
+    ]
+
+    for cmd, timeout_s in cmds:
+        try:
+            r = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=timeout_s,
+            )
+            ver = _extract_ver(r.stdout or "")
+            if ver:
+                try:
+                    status_cb(f"[RT] Detected ROCm version: {ver} (via {' '.join(cmd)})")
+                except Exception:
+                    pass
+                return ver
+        except Exception:
+            continue
+
+    return ""
+
+def _ordered_rocm_nightly_indices(detected_rocm_ver: str, status_cb=print) -> list[tuple[str, str]]:
+    """
+    Reorder _ROCM_PYTORCH_NIGHTLY_INDICES so the detected ROCm version is tried first.
+    Example detected_rocm_ver='7.2' prioritizes label 'rocm7.2'.
+    """
+    base = list(_ROCM_PYTORCH_NIGHTLY_INDICES)
+    if not detected_rocm_ver:
+        return base
+
+    target_label = f"rocm{detected_rocm_ver}"
+    preferred = []
+    rest = []
+    for label, url in base:
+        if label == target_label:
+            preferred.append((label, url))
+        else:
+            rest.append((label, url))
+
+    ordered = preferred + rest
+    if preferred:
+        try:
+            status_cb(f"[RT] Prioritizing PyTorch ROCm nightly index for detected ROCm {detected_rocm_ver}: {target_label}")
+        except Exception:
+            pass
+    else:
+        try:
+            status_cb(f"[RT] No exact PyTorch ROCm nightly index label match for detected ROCm {detected_rocm_ver}; using default order.")
+        except Exception:
+            pass
+
+    return ordered
+
+
+def _install_torch(
+    venv_python: Path,
+    prefer_cuda: bool,
+    prefer_xpu: bool,
+    prefer_dml: bool,
+    prefer_rocm: bool = False,
+    status_cb=print
+):
 
     """
     Install torch into the per-user venv with best-effort backend detection:
@@ -548,8 +742,10 @@ def _install_torch(venv_python: Path, prefer_cuda: bool, prefer_xpu: bool, prefe
     # Keep venv tools fresh
     _pip_ok(["install", "--upgrade", "pip", "setuptools", "wheel"])
 
-    def _try_series(index_url: str | None, versions: list[str]) -> bool:
+    def _try_series(index_url: str | None, versions: list[str], *, pre: bool = False) -> bool:
         base = ["install", "--prefer-binary", "--no-cache-dir"]
+        if pre:
+            base.append("--pre")
         if index_url:
             base += ["--index-url", index_url]
 
@@ -557,10 +753,21 @@ def _install_torch(venv_python: Path, prefer_cuda: bool, prefer_xpu: bool, prefe
         if _pip_ok(base + ["torch", "torchvision", "torchaudio"]):
             return True
 
-        # Walk the ladder: pin all three to the same version family
+        # Walk the ladder: pin TORCH only, let pip resolve compatible torchvision/torchaudio
         for v in versions:
-            if _pip_ok(base + [f"torch=={v}", f"torchvision=={v}", f"torchaudio=={v}"]):
+            # v looks like "2.4.*" -> family "2.4"
+            fam = v.replace(".*", "")
+            tv_v, ta_v = _TORCH_COMPAT.get(fam, (None, None))
+
+            # Fallback if mapping missing: pin torch only
+            if not tv_v or not ta_v:
+                if _pip_ok(base + [f"torch=={v}", "torchvision", "torchaudio"]):
+                    return True
+                continue
+
+            if _pip_ok(base + [f"torch=={v}", f"torchvision=={tv_v}", f"torchaudio=={ta_v}"]):
                 return True
+
 
         return False
 
@@ -570,6 +777,60 @@ def _install_torch(venv_python: Path, prefer_cuda: bool, prefer_xpu: bool, prefe
         if not _try_series(None, ladder):
             raise RuntimeError("Failed to find a matching PyTorch wheel for macOS arm64.")
         return
+
+    # AMD ROCm (Linux only) — try before CUDA
+    rocm_arch = _detect_rocm_arch() if (prefer_rocm and sysname == "Linux") else ""
+    rocm_ver = _detect_rocm_version(status_cb=status_cb) if (prefer_rocm and sysname == "Linux") else ""
+
+    if rocm_arch:
+        status_cb(f"ROCm GPU detected: {rocm_arch}" + (f" (ROCm {rocm_ver})" if rocm_ver else ""))
+
+        # Build ROCm index candidates in priority order
+        rocm_candidates: list[tuple[str, str, bool]] = []  # (label, url, use_pre)
+
+        # 1) AMD gfx-specific nightly index first (only for known bucketed arches)
+        if rocm_arch in _ROCM_AMD_GFX_BUCKETS_WITH_TORCH:
+            rocm_candidates.append((
+                f"amd-gfx-nightly:{rocm_arch}",
+                f"https://rocm.nightlies.amd.com/v2/{rocm_arch}/",
+                True,
+            ))
+        else:
+            status_cb(
+                f"ROCm arch {rocm_arch} may not have torch wheels in AMD gfx nightly buckets; "
+                "trying PyTorch nightly ROCm indexes."
+            )
+
+        # 2) PyTorch nightly ROCm indexes (mainline), reordered by detected ROCm version
+        env_rocm_nightly = (os.getenv("SASPRO_ROCM_NIGHTLY_INDEX") or "").strip()
+        if env_rocm_nightly:
+            rocm_candidates.insert(0, ("env-rocm-nightly", env_rocm_nightly.rstrip("/"), True))
+
+        ordered_pytorch_rocm = _ordered_rocm_nightly_indices(rocm_ver, status_cb=status_cb)
+        for label, url in ordered_pytorch_rocm:
+            rocm_candidates.append((f"pytorch-nightly:{label}", url, True))
+
+        # Try each candidate
+        for label, url, use_pre in rocm_candidates:
+            status_cb(f"Trying PyTorch ROCm wheels from {label} …")
+            if _try_series(url, ladder, pre=use_pre):
+                # ROCm is surfaced through torch.cuda in PyTorch; CUDA probe works here
+                ok, cuda_tag, err = _check_cuda_in_venv(venv_python, status_cb=status_cb)
+                if ok:
+                    status_cb(f"Installed PyTorch ROCm from {label} (torch.version.cuda={cuda_tag}).")
+                    return
+
+                status_cb(
+                    f"Installed from {label} but ROCm runtime check failed "
+                    f"(torch.version.cuda={cuda_tag!r}, err={err!r}). "
+                    "Uninstalling and trying next ROCm index…"
+                )
+                _pip_ok(["uninstall", "-y", "torch", "torchvision", "torchaudio"])
+                continue
+
+            status_cb(f"No compatible PyTorch ROCm wheels from {label}. Trying next…")
+
+        status_cb("ROCm install attempts failed. Falling back to other backends…")
 
     # Windows/Linux – CUDA first if requested, then CPU
     try_cuda = prefer_cuda and sysname in ("Windows", "Linux")
@@ -864,20 +1125,16 @@ def _fcache_clear(rt: Path) -> None:
     except Exception:
         pass
 
-
-# module-level cache (optional but recommended)
-# module-level cache (optional but recommended)
-_TORCH_CACHED = None
-
-
 def import_torch(
     prefer_cuda: bool = True,
     prefer_xpu: bool = False,
     prefer_dml: bool = False,
+    prefer_rocm: bool = False,
     status_cb=print,
     *,
     require_torchaudio: bool = True,
 ):
+
     """
     Ensure a per-user venv exists with torch installed; return the imported torch module.
 
@@ -902,6 +1159,36 @@ def import_torch(
     global _TORCH_CACHED
     if _TORCH_CACHED is not None:
         return _TORCH_CACHED
+    
+    # Auto-redirect: only redirect CUDA->ROCm on Linux when ROCm is detected
+    # AND caller is not explicitly targeting NVIDIA through higher-level logic.
+    # (runtime_torch doesn't know full GPU inventory, so keep this conservative.)
+    if platform.system() == "Linux" and prefer_cuda and not prefer_rocm:
+        try:
+            rocm_arch = _detect_rocm_arch()
+            if rocm_arch:
+                # Only redirect if CUDA isn't already clearly available in-process.
+                # If torch isn't importable yet, this just falls through and ROCm is tried later by installer paths.
+                try:
+                    import importlib as _il
+                    _t = _il.import_module("torch")
+                    has_cuda_now = bool(getattr(_t, "cuda", None) and _t.cuda.is_available())
+                    hip_now = bool(getattr(getattr(_t, "version", None), "hip", None))
+                    # If torch is already imported and CUDA is active but not HIP, keep CUDA preference.
+                    if has_cuda_now and not hip_now:
+                        pass
+                    else:
+                        prefer_cuda = False
+                        prefer_rocm = True
+                        status_cb(f"[RT] AMD ROCm GPU detected ({rocm_arch}); redirecting CUDA preference to ROCm.")
+                except Exception:
+                    prefer_cuda = False
+                    prefer_rocm = True
+                    status_cb(f"[RT] AMD ROCm GPU detected ({rocm_arch}); redirecting CUDA preference to ROCm.")
+        except Exception:
+            pass
+
+
     if platform.system() == "Windows" and prefer_cuda:
         # If we are preferring CUDA, do NOT treat DirectML as a co-equal install target.
         # DirectML should only be a fallback after CUDA probe fails.
@@ -1070,6 +1357,7 @@ def import_torch(
                     prefer_cuda=prefer_cuda,
                     prefer_xpu=prefer_xpu,
                     prefer_dml=prefer_dml,
+                    prefer_rocm=prefer_rocm,
                     status_cb=status_cb,
                 )
                 _ensure_numpy(vp, status_cb=status_cb)
