@@ -1,9 +1,9 @@
 # ops.settings.py
 from PyQt6.QtWidgets import (
-    QLineEdit, QDialogButtonBox, QFileDialog, QDialog, QPushButton, QFormLayout,QApplication, QMenu,
+QLineEdit, QDialogButtonBox, QFileDialog, QDialog, QPushButton, QFormLayout,QApplication, QMenu, QScrollArea, QSizePolicy,
     QHBoxLayout, QVBoxLayout, QWidget, QCheckBox, QComboBox, QSpinBox, QDoubleSpinBox, QLabel, QColorDialog, QFontDialog, QSlider)
 from PyQt6.QtCore import QSettings, Qt
-from PyQt6.QtGui import QAction
+from PyQt6.QtGui import QAction, QGuiApplication
 import pytz  # for timezone list
 from setiastro.saspro.accel_installer import current_backend
 import sys, platform
@@ -27,7 +27,7 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Preferences"))
         self.settings = settings
-        
+
         # Ensure we don't delete on close, so we can cache it
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
 
@@ -41,6 +41,7 @@ class SettingsDialog(QDialog):
 
         self.le_updates_url = QLineEdit()
         self.le_updates_url.setPlaceholderText("Raw JSON URL (advanced)")
+        self.le_updates_url.setMinimumWidth(240)
 
         btn_reset_updates_url = QPushButton(self.tr("Reset"))
         btn_reset_updates_url.setToolTip(self.tr("Restore default updates URL"))
@@ -55,12 +56,6 @@ class SettingsDialog(QDialog):
         self.btn_check_now.setToolTip(self.tr("Run an update check immediately"))
         self.btn_check_now.setVisible(hasattr(parent, "_check_for_updates_async"))
         self.btn_check_now.clicked.connect(self._check_updates_now_clicked)
-
-        # Build the updates URL row ONCE (we'll insert it later on the right column)
-        row_updates_url = QHBoxLayout()
-        row_updates_url.addWidget(self.le_updates_url, 1)
-        row_updates_url.addWidget(btn_reset_updates_url)
-        row_updates_url.addWidget(self.btn_check_now)
 
         self.chk_save_shortcuts = QCheckBox(self.tr("Save desktop shortcuts on exit"))
 
@@ -78,20 +73,30 @@ class SettingsDialog(QDialog):
 
         # ---- Language selector ----
         self.cb_language = QComboBox()
-        self._lang_codes = list(get_available_languages().keys())  # ["en", "it", "fr", "es"]
-        self._lang_names = list(get_available_languages().values())  # ["English", "Italiano", ...]
+        self._lang_codes = list(get_available_languages().keys())   # ["en", "it", "fr", "es"]
+        self._lang_names = list(get_available_languages().values()) # ["English", "Italiano", ...]
         self.cb_language.addItems(self._lang_names)
-        self._initial_language = "en" # placeholder, set in refresh_ui
+        self._initial_language = "en"  # placeholder, set in refresh_ui
 
         btn_grax  = QPushButton(self.tr("Browse…")); btn_grax.clicked.connect(lambda: self._browse_into(self.le_graxpert))
-
         btn_star  = QPushButton(self.tr("Browse…")); btn_star.clicked.connect(lambda: self._browse_into(self.le_starnet))
         btn_astap = QPushButton(self.tr("Browse…")); btn_astap.clicked.connect(lambda: self._browse_into(self.le_astap))
 
-        row_grax  = QHBoxLayout(); row_grax.addWidget(self.le_graxpert); row_grax.addWidget(btn_grax)
+        # Path rows
+        row_grax = QHBoxLayout()
+        row_grax.setContentsMargins(0, 0, 0, 0)
+        row_grax.addWidget(self.le_graxpert, 1)
+        row_grax.addWidget(btn_grax)
 
-        row_star  = QHBoxLayout(); row_star.addWidget(self.le_starnet); row_star.addWidget(btn_star)
-        row_astap = QHBoxLayout(); row_astap.addWidget(self.le_astap);  row_astap.addWidget(btn_astap)
+        row_star = QHBoxLayout()
+        row_star.setContentsMargins(0, 0, 0, 0)
+        row_star.addWidget(self.le_starnet, 1)
+        row_star.addWidget(btn_star)
+
+        row_astap = QHBoxLayout()
+        row_astap.setContentsMargins(0, 0, 0, 0)
+        row_astap.addWidget(self.le_astap, 1)
+        row_astap.addWidget(btn_astap)
 
         self.le_astrometry = QLineEdit()
         self.le_astrometry.setEchoMode(QLineEdit.EchoMode.Password)
@@ -102,37 +107,41 @@ class SettingsDialog(QDialog):
         self.le_date = QLineEdit()   # YYYY-MM-DD
         self.le_time = QLineEdit()   # HH:MM
         self.cb_tz   = QComboBox();  self.cb_tz.addItems(pytz.all_timezones)
+        self.cb_tz.setEditable(True)
+        self.cb_tz.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)        
         self.sp_min_alt = QDoubleSpinBox(); self.sp_min_alt.setRange(0.0, 90.0);  self.sp_min_alt.setDecimals(1)
         self.sp_obj_limit = QSpinBox(); self.sp_obj_limit.setRange(1, 1000)
 
         self.chk_autostretch_24bit = QCheckBox(self.tr("High-quality autostretch (24-bit; better gradients)"))
         self.chk_autostretch_24bit.setToolTip(self.tr("Compute autostretch on a 24-bit histogram (smoother gradients)."))
+
         self.chk_smooth_zoom_settle = QCheckBox(self.tr("Smooth zoom final redraw (higher quality when zoom stops)"))
         self.chk_smooth_zoom_settle.setToolTip(self.tr(
             "When enabled, zooming is fast while scrolling, then a single high-quality redraw occurs after you stop zooming.\n"
             "Disable if you prefer maximum responsiveness or older GPUs/CPUs."
         ))
+
         self.slider_bg_opacity = QSlider(Qt.Orientation.Horizontal)
         self.slider_bg_opacity.setRange(0, 100)
         self._initial_bg_opacity = 50
 
         self.lbl_bg_opacity_val = QLabel("50%")
-        self.lbl_bg_opacity_val.setFixedWidth(40)
+        self.lbl_bg_opacity_val.setFixedWidth(48)
 
         def _on_opacity_changed(val):
             self.lbl_bg_opacity_val.setText(f"{val}%")
-            # Aggiorna in tempo reale il valore nei settings
+            # Update in real time
             self.settings.setValue("display/bg_opacity", val)
             self.settings.sync()
-            # Richiedi al parent (main window) di aggiornare il rendering della MDI
-            parent = self.parent()
-            if parent and hasattr(parent, "mdi") and hasattr(parent.mdi, "viewport"):
-                parent.mdi.viewport().update()
+            p = self.parent()
+            if p and hasattr(p, "mdi") and hasattr(p.mdi, "viewport"):
+                p.mdi.viewport().update()
 
         self.slider_bg_opacity.valueChanged.connect(_on_opacity_changed)
 
         row_bg_opacity = QHBoxLayout()
-        row_bg_opacity.addWidget(self.slider_bg_opacity)
+        row_bg_opacity.setContentsMargins(0, 0, 0, 0)
+        row_bg_opacity.addWidget(self.slider_bg_opacity, 1)
         row_bg_opacity.addWidget(self.lbl_bg_opacity_val)
         w_bg_opacity = QWidget()
         w_bg_opacity.setLayout(row_bg_opacity)
@@ -140,16 +149,19 @@ class SettingsDialog(QDialog):
         # ---- Custom background: choose/clear preview ----
         self.le_bg_path = QLineEdit()
         self.le_bg_path.setReadOnly(True)
+        self.le_bg_path.setMinimumWidth(240)
         self._initial_bg_path = ""
-        
+
         btn_choose_bg = QPushButton(self.tr("Choose Background…"))
         btn_choose_bg.setToolTip(self.tr("Pick a PNG or JPG to use as the application background"))
         btn_choose_bg.clicked.connect(self._choose_background_clicked)
+
         btn_clear_bg = QPushButton(self.tr("Clear"))
         btn_clear_bg.setToolTip(self.tr("Remove custom background and restore default"))
         btn_clear_bg.clicked.connect(self._clear_background_clicked)
 
         row_bg_image = QHBoxLayout()
+        row_bg_image.setContentsMargins(0, 0, 0, 0)
         row_bg_image.addWidget(self.le_bg_path, 1)
         row_bg_image.addWidget(btn_choose_bg)
         row_bg_image.addWidget(btn_clear_bg)
@@ -157,98 +169,150 @@ class SettingsDialog(QDialog):
         w_bg_image.setLayout(row_bg_image)
 
         # ─────────────────────────────────────────────────────────────────────
-        # LAYOUT MUST EXIST BEFORE ANY addRow(...) — build it here
+        # MAIN LAYOUT (SCROLLABLE + RESPONSIVE)
         # ─────────────────────────────────────────────────────────────────────
         root = QVBoxLayout(self)
-        cols = QHBoxLayout(); root.addLayout(cols)
 
-        left_col  = QFormLayout()
-        right_col = QFormLayout()
+        # Scroll area prevents clipping on smaller displays
+        self._scroll = QScrollArea(self)
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        root.addWidget(self._scroll, 1)
+
+        # Content widget inside scroll area
+        self._scroll_content = QWidget()
+        self._scroll.setWidget(self._scroll_content)
+
+        self._scroll_root = QVBoxLayout(self._scroll_content)
+        self._scroll_root.setContentsMargins(0, 0, 0, 0)
+        self._scroll_root.setSpacing(0)
+
+        # Row container that will hold either:
+        # - two widgets side-by-side
+        # - or a single stacked layout on narrow width
+        self._cols_layout = QHBoxLayout()
+        self._cols_layout.setContentsMargins(0, 0, 0, 0)
+        self._cols_layout.setSpacing(0)
+        self._scroll_root.addLayout(self._cols_layout)
+
+        # Column wrapper widgets (so we can reflow them responsively)
+        self._left_col_widget = QWidget()
+        self._right_col_widget = QWidget()
+
+        left_col = QFormLayout(self._left_col_widget)
+        right_col = QFormLayout(self._right_col_widget)
+
+        self.left_col = left_col
+        self.right_col = right_col
+
         for f in (left_col, right_col):
             f.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
-            f.setRowWrapPolicy(QFormLayout.RowWrapPolicy.DontWrapRows)
+            # Wrap long rows instead of clipping
+            f.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
             f.setFormAlignment(Qt.AlignmentFlag.AlignTop)
-
-        cols.addLayout(left_col, 1)
-        cols.addSpacing(16)
-        cols.addLayout(right_col, 1)
+            f.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            f.setHorizontalSpacing(10)
+            f.setVerticalSpacing(8)
 
         # ---- Left column: Paths & Integrations ----
         left_col.addRow(QLabel(self.tr("<b>Paths & Integrations</b>")))
-        w = QWidget(); w.setLayout(row_grax);  left_col.addRow(self.tr("GraXpert executable:"), w)
 
-        w = QWidget(); w.setLayout(row_star);  left_col.addRow(self.tr("StarNet executable:"), w)
-        w = QWidget(); w.setLayout(row_astap); left_col.addRow(self.tr("ASTAP executable:"), w)
+        w = QWidget(); w.setLayout(row_grax)
+        left_col.addRow(self.tr("GraXpert executable:"), w)
+
+        w = QWidget(); w.setLayout(row_star)
+        left_col.addRow(self.tr("StarNet executable:"), w)
+
+        w = QWidget(); w.setLayout(row_astap)
+        left_col.addRow(self.tr("ASTAP executable:"), w)
+
         left_col.addRow(self.tr("Astrometry.net API key:"), self.le_astrometry)
         left_col.addRow(self.chk_save_shortcuts)
+
         row_theme = QHBoxLayout()
+        row_theme.setContentsMargins(0, 0, 0, 0)
         row_theme.addWidget(self.cb_theme, 1)
         row_theme.addWidget(self.btn_theme_custom)
         w_theme = QWidget()
         w_theme.setLayout(row_theme)
         left_col.addRow(self.tr("Theme:"), w_theme)
+
         left_col.addRow(self.tr("Language:"), self.cb_language)
 
-        # ---- Display (moved under Theme) ----
+        # ---- Display ----
         left_col.addRow(QLabel(self.tr("<b>Display</b>")))
         left_col.addRow(self.chk_autostretch_24bit)
-        left_col.addRow(self.chk_smooth_zoom_settle) 
+        left_col.addRow(self.chk_smooth_zoom_settle)
         left_col.addRow(self.tr("Background Opacity:"), w_bg_opacity)
         left_col.addRow(self.tr("Background Image:"), w_bg_image)
 
+        # ---- Acceleration ----
         left_col.addRow(QLabel(self.tr("<b>Acceleration</b>")))
 
-        accel_row = QHBoxLayout()
+        # Backend/deps/pref/install split into multi-line compact box (much better on small widths)
         self.backend_label = QLabel(self.tr("Backend: {0}").format(current_backend()))
-        accel_row.addWidget(self.backend_label)
-        # NEW: dependency status label (rich text)
+
         self.accel_deps_label = QLabel()
         self.accel_deps_label.setTextFormat(Qt.TextFormat.RichText)
-        self.accel_deps_label.setStyleSheet("color:#888;")  # subtle
+        self.accel_deps_label.setStyleSheet("color:#888;")
         self.accel_deps_label.setToolTip(self.tr("Installed acceleration-related Python packages"))
-        accel_row.addSpacing(12)
-        accel_row.addWidget(self.accel_deps_label)
+        self.accel_deps_label.setWordWrap(True)
+        self.accel_deps_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
 
-        # NEW: preference combo
+        # preference combo
         self.cb_accel_pref = QComboBox()
-        self._accel_items = [("Auto (recommended)", "auto"),
-                            ("CUDA (NVIDIA)", "cuda"),
-                            ("Intel XPU (Arc/Xe)", "xpu")]
-
+        self._accel_items = [
+            ("Auto (recommended)", "auto"),
+            ("CUDA (NVIDIA)", "cuda"),
+            ("Intel XPU (Arc/Xe)", "xpu"),
+        ]
         if platform.system() == "Windows":
             self._accel_items.append(("DirectML (Windows AMD/Intel)", "directml"))
-
         self._accel_items.append(("CPU only", "cpu"))
 
         self.cb_accel_pref.clear()
         for label, _key in self._accel_items:
             self.cb_accel_pref.addItem(label)
-
         self.cb_accel_pref.currentIndexChanged.connect(self._accel_pref_changed)
 
-        accel_row.addSpacing(8)
-        accel_row.addWidget(QLabel(self.tr("Preference:")))
-        accel_row.addWidget(self.cb_accel_pref)
-
         self.install_accel_btn = QPushButton(self.tr("Install/Update GPU Acceleration…"))
-        accel_row.addWidget(self.install_accel_btn)
 
         gpu_help_btn = QToolButton()
         gpu_help_btn.setText("?")
         gpu_help_btn.setToolTip(self.tr("If GPU still not being used — click for fix steps"))
         gpu_help_btn.clicked.connect(self._show_gpu_accel_fix_help)
-        accel_row.addWidget(gpu_help_btn)
 
-        accel_row.addStretch(1)
+        accel_box = QVBoxLayout()
+        accel_box.setContentsMargins(0, 0, 0, 0)
+        accel_box.setSpacing(6)
+
+        accel_row_top = QHBoxLayout()
+        accel_row_top.setContentsMargins(0, 0, 0, 0)
+        accel_row_top.addWidget(self.backend_label)
+        accel_row_top.addStretch(1)
+        accel_row_top.addWidget(gpu_help_btn)
+
+        accel_row_pref = QHBoxLayout()
+        accel_row_pref.setContentsMargins(0, 0, 0, 0)
+        accel_row_pref.addWidget(QLabel(self.tr("Preference:")))
+        accel_row_pref.addWidget(self.cb_accel_pref, 1)
+        accel_row_pref.addWidget(self.install_accel_btn)
+
+        accel_box.addLayout(accel_row_top)
+        accel_box.addWidget(self.accel_deps_label)
+        accel_box.addLayout(accel_row_pref)
+
         w_accel = QWidget()
-        w_accel.setLayout(accel_row)
+        w_accel.setLayout(accel_box)
         left_col.addRow(w_accel)
 
-        # ---- Models ----
+        # ---- Right column: AI Models ----
         right_col.addRow(QLabel(self.tr("<b>AI Models</b>")))
 
         self.lbl_models_status = QLabel(self.tr("Status: (unknown)"))
         self.lbl_models_status.setStyleSheet("color:#888;")
+        self.lbl_models_status.setWordWrap(True)
+        self.lbl_models_status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         right_col.addRow(self.lbl_models_status)
 
         self.btn_models_update = QPushButton(self.tr("Download/Update Models…"))
@@ -260,19 +324,33 @@ class SettingsDialog(QDialog):
 
         self.btn_models_open_drive = QPushButton(self.tr("Open Drive…"))
         self.btn_models_open_drive.setToolTip(self.tr("Download models (Primary/Backup/GitHub mirror)"))
-
         self.btn_models_open_drive.clicked.connect(self._models_open_drive_clicked)
 
-        row_models = QHBoxLayout()
-        row_models.addWidget(self.btn_models_update, 1)
-        row_models.addWidget(self.btn_models_install_zip)
-        row_models.addWidget(self.btn_models_open_drive)
+        # Break wide model-buttons row into 2 rows
+        models_box = QVBoxLayout()
+        models_box.setContentsMargins(0, 0, 0, 0)
+        models_box.setSpacing(6)
+
+        # Top row: one big primary action
+        row_models_top = QHBoxLayout()
+        row_models_top.setContentsMargins(0, 0, 0, 0)
+        row_models_top.addWidget(self.btn_models_update, 1)
+
+        # Bottom row: secondary actions side-by-side
+        row_models_bottom = QHBoxLayout()
+        row_models_bottom.setContentsMargins(0, 0, 0, 0)
+        row_models_bottom.addWidget(self.btn_models_open_drive)
+        row_models_bottom.addWidget(self.btn_models_install_zip)
+        row_models_bottom.addStretch(1)
+
+        models_box.addLayout(row_models_top)
+        models_box.addLayout(row_models_bottom)
 
         w_models = QWidget()
-        w_models.setLayout(row_models)
+        w_models.setLayout(models_box)
         right_col.addRow(w_models)
 
-        # ---- Right column: WIMS + RA/Dec + Updates + Display ----
+        # ---- WIMS + RA/Dec + Updates ----
         right_col.addRow(QLabel(self.tr("<b>What's In My Sky — Defaults</b>")))
         right_col.addRow(self.tr("Latitude (°):"), self.sp_lat)
         right_col.addRow(self.tr("Longitude (°):"), self.sp_lon)
@@ -285,45 +363,135 @@ class SettingsDialog(QDialog):
         # ---- RA/Dec Overlay ----
         right_col.addRow(QLabel(self.tr("<b>RA/Dec Overlay</b>")))
         self.chk_wcs_enabled = QCheckBox(self.tr("Show RA/Dec grid"))
-        
         right_col.addRow(self.chk_wcs_enabled)
 
         self.cb_wcs_mode = QComboBox(); self.cb_wcs_mode.addItems(["Auto", "Fixed spacing"])
         self.cb_wcs_unit = QComboBox(); self.cb_wcs_unit.addItems(["deg", "arcmin"])
-        
+
         self.sp_wcs_step = QDoubleSpinBox()
-        self.sp_wcs_step.setDecimals(3); self.sp_wcs_step.setRange(0.001, 90.0)
-        
+        self.sp_wcs_step.setDecimals(3)
+        self.sp_wcs_step.setRange(0.001, 90.0)
+
         def _sync_suffix():
             self.sp_wcs_step.setSuffix(" °" if self.cb_wcs_unit.currentIndex() == 0 else " arcmin")
         _sync_suffix()
+
         self.cb_wcs_unit.currentIndexChanged.connect(_sync_suffix)
         self.cb_wcs_mode.currentIndexChanged.connect(lambda i: self.sp_wcs_step.setEnabled(i == 1))
 
         row_wcs = QHBoxLayout()
-        row_wcs.addWidget(QLabel(self.tr("Mode:"))); row_wcs.addWidget(self.cb_wcs_mode)
+        row_wcs.setContentsMargins(0, 0, 0, 0)
+        row_wcs.addWidget(QLabel(self.tr("Mode:")))
+        row_wcs.addWidget(self.cb_wcs_mode)
         row_wcs.addSpacing(8)
-        row_wcs.addWidget(QLabel(self.tr("Step:"))); row_wcs.addWidget(self.sp_wcs_step, 1); row_wcs.addWidget(self.cb_wcs_unit)
-        _w = QWidget(); _w.setLayout(row_wcs)
+        row_wcs.addWidget(QLabel(self.tr("Step:")))
+        row_wcs.addWidget(self.sp_wcs_step, 1)
+        row_wcs.addWidget(self.cb_wcs_unit)
+
+        _w = QWidget()
+        _w.setLayout(row_wcs)
         right_col.addRow(_w)
 
         # ---- Updates ----
         right_col.addRow(QLabel(self.tr("<b>Updates</b>")))
         right_col.addRow(self.chk_updates_startup)
-        w = QWidget(); w.setLayout(row_updates_url)
-        right_col.addRow(self.tr("Updates JSON URL:"), w)
 
-        # ---- Buttons ----
+        # Split updates URL row into field + buttons rows (avoids giant horizontal line)
+        updates_box = QVBoxLayout()
+        updates_box.setContentsMargins(0, 0, 0, 0)
+        updates_box.setSpacing(6)
+        updates_box.addWidget(self.le_updates_url)
+
+        row_updates_btns = QHBoxLayout()
+        row_updates_btns.setContentsMargins(0, 0, 0, 0)
+        row_updates_btns.addWidget(btn_reset_updates_url)
+        row_updates_btns.addWidget(self.btn_check_now)
+        row_updates_btns.addStretch(1)
+        updates_box.addLayout(row_updates_btns)
+
+        w_updates = QWidget()
+        w_updates.setLayout(updates_box)
+        right_col.addRow(self.tr("Updates JSON URL:"), w_updates)
+
+        # ---- Put columns into responsive container (initially)
+        self._cols_layout.addWidget(self._left_col_widget, 1)
+        self._cols_layout.addSpacing(16)
+        self._cols_layout.addWidget(self._right_col_widget, 1)
+
+        # ---- Buttons (fixed at bottom, not inside scroll) ----
         btns = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=self
         )
-
         btns.accepted.connect(self._save_and_accept)
         btns.rejected.connect(self.reject)
         root.addWidget(btns)
+
+        # Connect accel install button after widget exists
         self.install_accel_btn.clicked.connect(self._install_or_update_accel)
-        # Initial Load:
+
+        # Reasonable initial size, clamped to available screen
+        self.setSizeGripEnabled(True)
+        self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
+
+        screen = QGuiApplication.primaryScreen()
+        if screen:
+            avail = screen.availableGeometry()
+            w = min(1200, max(900, int(avail.width() * 0.92)))
+            h = min(680,  max(680, int(avail.height() * 0.88)))
+            self.resize(w, h)
+        else:
+            self.resize(1200, 680)
+
+        # Initial load
         self.refresh_ui()
+
+        # Apply responsive layout once after widgets are built
+        self._layout_mode = None
+        self._update_responsive_layout()
+
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._update_responsive_layout()
+
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_responsive_layout()
+
+
+    def _update_responsive_layout(self):
+        """
+        Reflow columns based on current dialog width:
+        - wide: left + right columns side-by-side
+        - narrow: stack right column under left column
+        """
+        # Tune threshold as needed; ~1180 works well for your control density
+        narrow = self.width() < 1180
+        mode = "stacked" if narrow else "two_col"
+
+        if getattr(self, "_layout_mode", None) == mode:
+            return
+        self._layout_mode = mode
+
+        # Clear current contents of _cols_layout without destroying widgets
+        while self._cols_layout.count():
+            item = self._cols_layout.takeAt(0)
+            # intentionally no deleteLater; widgets/layouts are reused
+
+        if narrow:
+            stack = QVBoxLayout()
+            stack.setContentsMargins(0, 0, 0, 0)
+            stack.setSpacing(12)
+            stack.addWidget(self._left_col_widget)
+            stack.addWidget(self._right_col_widget)
+            stack.addStretch(1)
+            self._cols_layout.addLayout(stack, 1)
+        else:
+            self._cols_layout.addWidget(self._left_col_widget, 1)
+            self._cols_layout.addSpacing(16)
+            self._cols_layout.addWidget(self._right_col_widget, 1)
 
     def _models_open_drive_clicked(self):
         PRIMARY_FOLDER = "https://drive.google.com/drive/folders/1-fktZb3I9l-mQimJX2fZAmJCBj_t0yAF?usp=drive_link"
@@ -411,19 +579,17 @@ class SettingsDialog(QDialog):
 
         self._models_thread.start()
 
-
     def _models_update_clicked(self):
         from PyQt6.QtWidgets import QMessageBox, QProgressDialog
         from PyQt6.QtCore import Qt, QThread
 
         # NOTE: these must be FILE links or file IDs, not folder links.
-        # Put your actual *zip file* share links here once you create them.
-        PRIMARY = "https://drive.google.com/file/d/1d0wQr8Oau9UH3IalMW5anC0_oddxBjh3/view?usp=drive_link"
-        BACKUP  = "https://drive.google.com/file/d/1XgqKNd8iBgV3LW8CfzGyS4jigxsxIf86/view?usp=drive_link"
+        PRIMARY  = "https://drive.google.com/file/d/1d0wQr8Oau9UH3IalMW5anC0_oddxBjh3/view?usp=drive_link"
+        BACKUP   = "https://drive.google.com/file/d/1XgqKNd8iBgV3LW8CfzGyS4jigxsxIf86/view?usp=drive_link"
         TERTIARY = "https://github.com/setiastro/setiastrosuitepro/releases/download/benchmarkFIT/SASPro_Models_AI4.zip"
 
-
         self.btn_models_update.setEnabled(False)
+        self.btn_models_install_zip.setEnabled(False)  # optional but nice consistency
 
         pd = QProgressDialog(self.tr("Preparing…"), self.tr("Cancel"), 0, 0, self)
         pd.setWindowTitle(self.tr("Updating Models"))
@@ -435,16 +601,24 @@ class SettingsDialog(QDialog):
         from setiastro.saspro.model_workers import ModelsDownloadWorker
 
         self._models_thread = QThread(self)
-        self._models_worker = ModelsDownloadWorker(PRIMARY, BACKUP, TERTIARY, expected_sha256=None)
+
+        # Define callbacks BEFORE passing them into the worker
+        def should_cancel():
+            return self._models_thread.isInterruptionRequested()
+
+        def _cancel():
+            if self._models_thread.isRunning():
+                self._models_thread.requestInterruption()
+
+        self._models_worker = ModelsDownloadWorker(
+            PRIMARY, BACKUP, TERTIARY,
+            expected_sha256=None,
+            should_cancel=should_cancel
+        )
         self._models_worker.moveToThread(self._models_thread)
 
         self._models_thread.started.connect(self._models_worker.run, Qt.ConnectionType.QueuedConnection)
         self._models_worker.progress.connect(pd.setLabelText, Qt.ConnectionType.QueuedConnection)
-        def should_cancel():
-            return self._models_thread.isInterruptionRequested()
-        def _cancel():
-            if self._models_thread.isRunning():
-                self._models_thread.requestInterruption()
         pd.canceled.connect(_cancel, Qt.ConnectionType.QueuedConnection)
 
         def _done(ok: bool, msg: str):
@@ -455,6 +629,7 @@ class SettingsDialog(QDialog):
             self._models_thread.wait()
 
             self.btn_models_update.setEnabled(True)
+            self.btn_models_install_zip.setEnabled(True)
             self._refresh_models_status()
 
             if ok:

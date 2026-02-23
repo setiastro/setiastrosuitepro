@@ -68,69 +68,116 @@ class ModelsDownloadWorker(QObject):
         try:
             tmp = os.path.join(tempfile.gettempdir(), "saspro_models_latest.zip")
 
-            # 1) Try Google Drive primary/backup (by file id)
+            # Build ordered source list: primary -> backup -> tertiary
+            sources = []
+
             fid_primary = extract_drive_file_id(self.primary)
-            fid_backup  = extract_drive_file_id(self.backup)
+            fid_backup = extract_drive_file_id(self.backup)
 
-            drive_ok = False
+            if fid_primary:
+                sources.append(("google_drive", fid_primary, "primary (Google Drive)"))
+            elif (self.primary or "").strip():
+                # Keep a note if user passed something invalid as "primary"
+                sources.append(("invalid_drive", self.primary, "primary (invalid Google Drive link/id)"))
+
+            if fid_backup and fid_backup != fid_primary:
+                sources.append(("google_drive", fid_backup, "backup (Google Drive)"))
+            elif (self.backup or "").strip() and fid_backup == fid_primary:
+                # Duplicate backup is harmless, but tell logs/support why we skipped it
+                self.progress.emit("Backup Google Drive link matches primary; skipping duplicate.")
+            elif (self.backup or "").strip() and not fid_backup:
+                sources.append(("invalid_drive", self.backup, "backup (invalid Google Drive link/id)"))
+
+            if self.tertiary:
+                sources.append(("http", self.tertiary, "tertiary (GitHub/HTTP mirror)"))
+
+            if not sources:
+                raise RuntimeError("No valid model download sources were provided.")
+
             used_source = None
+            errors: list[str] = []
 
-            if fid_primary or fid_backup:
+            for idx, (kind, value, label) in enumerate(sources, start=1):
                 try:
-                    if fid_primary:
-                        self.progress.emit("Downloading from primary (Google Drive)…")
+                    # Check cancellation before starting each source attempt
+                    if self.should_cancel and self.should_cancel():
+                        raise RuntimeError("Download canceled.")
+
+                    # Clean previous partial target before next attempt
+                    try:
+                        if os.path.exists(tmp):
+                            os.remove(tmp)
+                    except Exception:
+                        pass
+
+                    if kind == "invalid_drive":
+                        raise RuntimeError(f"{label}: not a valid Google Drive file link or file ID")
+
+                    if kind == "google_drive":
+                        self.progress.emit(f"Trying {label}…")
                         download_google_drive_file(
-                            fid_primary, tmp,
+                            value, tmp,
                             progress_cb=lambda s: self.progress.emit(s),
                             should_cancel=self.should_cancel
                         )
-                        drive_ok = True
-                        used_source = ("google_drive", fid_primary)
-                    else:
-                        raise RuntimeError("Primary is not a valid Drive file link/id.")
-                except Exception:
-                    # Try backup if different id
-                    if fid_backup and fid_backup != fid_primary:
-                        self.progress.emit("Primary failed. Trying backup (Google Drive)…")
-                        download_google_drive_file(
-                            fid_backup, tmp,
+                        used_source = ("google_drive", value)
+                        break
+
+                    if kind == "http":
+                        self.progress.emit(f"Trying {label}…")
+                        download_http_file(
+                            value, tmp,
                             progress_cb=lambda s: self.progress.emit(s),
                             should_cancel=self.should_cancel
                         )
-                        drive_ok = True
-                        used_source = ("google_drive", fid_backup)
+                        used_source = ("http", value)
+                        break
 
-            # 2) If Drive failed (or links weren’t Drive), try GitHub / HTTP tertiary
-            if not drive_ok:
-                if not self.tertiary:
-                    raise RuntimeError(
-                        "Google Drive download failed and no tertiary mirror URL was provided."
-                    )
-                self.progress.emit("Google Drive failed. Trying GitHub mirror…")
-                download_http_file(
-                    self.tertiary, tmp,
-                    progress_cb=lambda s: self.progress.emit(s),
-                    should_cancel=self.should_cancel
-                )
-                used_source = ("http", self.tertiary)
+                    raise RuntimeError(f"Unknown source type: {kind}")
 
-            # 3) Optional checksum
+                except Exception as e:
+                    errors.append(f"{label}: {e}")
+                    # If there are more sources left, continue to next one
+                    if idx < len(sources):
+                        self.progress.emit(f"{label} failed. Trying next mirror…")
+                        continue
+                    # otherwise loop ends and we fail below
+
+            if not used_source:
+                msg = "All model download sources failed."
+                if errors:
+                    msg += "\n\n" + "\n".join(f"• {e}" for e in errors)
+                raise RuntimeError(msg)
+
+            # Optional checksum verification
+            actual_sha256 = sha256_file(tmp)
             if self.expected_sha256:
                 self.progress.emit("Verifying checksum…")
-                got = sha256_file(tmp)
-                if got.lower() != self.expected_sha256.lower():
-                    raise RuntimeError(f"SHA256 mismatch.\nExpected: {self.expected_sha256}\nGot:      {got}")
+                if actual_sha256.lower() != self.expected_sha256.lower():
+                    raise RuntimeError(
+                        f"SHA256 mismatch.\nExpected: {self.expected_sha256}\nGot:      {actual_sha256}"
+                    )
 
-            # 4) Install + manifest
-            src_kind, src_val = used_source if used_source else ("unknown", "")
+            # Install + manifest
+            src_kind, src_val = used_source
             manifest = {
                 "source": src_kind,
                 "source_ref": src_val,
-                "sha256": self.expected_sha256 or "",
+                # Store actual hash when expected hash isn't provided (more useful for support)
+                "sha256": self.expected_sha256 or actual_sha256,
             }
 
-            install_models_zip(tmp, progress_cb=lambda s: self.progress.emit(s), manifest=manifest)
-            self.finished.emit(True, "Models updated successfully.")
+            install_models_zip(
+                tmp,
+                progress_cb=lambda s: self.progress.emit(s),
+                manifest=manifest
+            )
+
+            # Nice success message showing which mirror worked
+            if src_kind == "google_drive":
+                self.finished.emit(True, "Models updated successfully (Google Drive).")
+            else:
+                self.finished.emit(True, "Models updated successfully (GitHub mirror).")
+
         except Exception as e:
             self.finished.emit(False, str(e))
-
