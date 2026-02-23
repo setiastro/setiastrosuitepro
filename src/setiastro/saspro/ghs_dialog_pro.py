@@ -522,7 +522,6 @@ class GhsDialogPro(QDialog):
             self.sA.setValue(50); self.sB.setValue(50); self.sG.setValue(100)
             self.sLP.setValue(0); self.sHP.setValue(0)
             self._rebuild_from_params()
-            QTimer.singleShot(0, self._fit)
 
         except Exception as e:
             QMessageBox.critical(self, self.tr("Apply failed"), str(e))
