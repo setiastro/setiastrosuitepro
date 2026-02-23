@@ -206,4 +206,4 @@ def autostretch(
             out[..., 3:] = u[..., 3:] / float(maxv)
         return out
     
-    print(f"med={med} std_low={std_low:.2f} floor={floor_idx} σ={sigma} → bp={bp}")
+

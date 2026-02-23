@@ -112,7 +112,7 @@ class SettingsDialog(QDialog):
         self.sp_min_alt = QDoubleSpinBox(); self.sp_min_alt.setRange(0.0, 90.0);  self.sp_min_alt.setDecimals(1)
         self.sp_obj_limit = QSpinBox(); self.sp_obj_limit.setRange(1, 1000)
 
-        self.chk_autostretch_24bit = QCheckBox(self.tr("High-quality autostretch (24-bit; better gradients)"))
+        self.chk_autostretch_24bit = QCheckBox(self.tr("High-quality autostretch (24-bit; slower)"))
         self.chk_autostretch_24bit.setToolTip(self.tr("Compute autostretch on a 24-bit histogram (smoother gradients)."))
 
         self.chk_smooth_zoom_settle = QCheckBox(self.tr("Smooth zoom final redraw (higher quality when zoom stops)"))
@@ -242,6 +242,11 @@ class SettingsDialog(QDialog):
         # ---- Display ----
         left_col.addRow(QLabel(self.tr("<b>Display</b>")))
         left_col.addRow(self.chk_autostretch_24bit)
+        left_col.addRow(
+            "",
+            QLabel(self.tr("• ON  = 24-bit (best gradient smoothness, slower)\n"
+                        "• OFF = 12-bit (faster, still high quality)"))
+        )        
         left_col.addRow(self.chk_smooth_zoom_settle)
         left_col.addRow(self.tr("Background Opacity:"), w_bg_opacity)
         left_col.addRow(self.tr("Background Image:"), w_bg_image)

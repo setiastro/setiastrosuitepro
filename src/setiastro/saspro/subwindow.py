@@ -10,6 +10,7 @@ import math
 import weakref
 import os
 import re
+import time
 try:
     from PyQt6.QtCore import QSignalBlocker
 except Exception:
