@@ -4179,25 +4179,49 @@ class AstroSuiteProMainWindow(
             QMessageBox.critical(self, "Cosmic Clarity",
                                 f"Failed to open Cosmic Clarity UI:\n{e}")
 
-
     def _open_cosmic_clarity_satellite(self):
         from setiastro.saspro.cosmicclarity import CosmicClaritySatelliteDialogPro
+
         # It's OK if there is no active subwindow or no image.
         sw = self.mdi.activeSubWindow() if hasattr(self, "mdi") else None
         doc = None
         if sw is not None and hasattr(sw, "widget") and sw.widget() is not None:
-            # Only try to grab a document if it exists
             w = sw.widget()
             doc = getattr(w, "document", None)
 
         try:
-            # Use the Satellite dialog here (not the main CC dialog)
+            # Reuse existing window if it's already open
+            dlg = getattr(self, "_cc_satellite_dialog", None)
+            if dlg is not None and dlg.isVisible():
+                dlg.raise_()
+                dlg.activateWindow()
+                return
+
+            # Create non-modal dialog and keep a reference to prevent GC
             dlg = CosmicClaritySatelliteDialogPro(self, doc, icon=QIcon(satellite_path))
-            dlg.exec()
+            dlg.setModal(False)  # optional, show() is already non-modal
+            dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+
+            # Clear reference when closed
+            def _clear_ref(*args):
+                if getattr(self, "_cc_satellite_dialog", None) is dlg:
+                    self._cc_satellite_dialog = None
+
+            dlg.destroyed.connect(_clear_ref)
+
+            self._cc_satellite_dialog = dlg
+            dlg.show()
+            dlg.raise_()
+            dlg.activateWindow()
+
         except Exception as e:
             print(f"Failed to open Cosmic Clarity Satellite: {e}")
-            QMessageBox.critical(self, "Cosmic Clarity Satellite",
-                                f"Failed to open Cosmic Clarity Satellite:\n{e}")
+            QMessageBox.critical(
+                self,
+                "Cosmic Clarity Satellite",
+                f"Failed to open Cosmic Clarity Satellite:\n{e}"
+            )
+
 
     def _open_history_explorer(self):
         from setiastro.saspro.history_explorer import HistoryExplorerDialog

@@ -407,6 +407,89 @@ def _split_chunks(img: np.ndarray, chunk: int, overlap: int):
             x1 = min(x0 + chunk, W)
             yield img[y0:y1, x0:x1], y0, x0
 
+def stretch_image_unlinked(image: np.ndarray, target_median: float = 0.25):
+    x = np.asarray(image, np.float32).copy()
+    orig_min = float(np.min(x))
+    x -= orig_min
+
+    t = float(target_median)
+
+    if x.ndim == 2:
+        m0 = float(np.median(x))
+        orig_meds = [m0]
+        if m0 != 0.0:
+            denom = (m0 * (t + x - 1.0) - t * x)
+            # avoid divide-by-zero
+            x = np.where(np.abs(denom) > 1e-12, ((m0 - 1.0) * t * x) / denom, x)
+        return x, orig_min, orig_meds
+
+    orig_meds = [float(np.median(x[..., c])) for c in range(3)]
+    for c in range(3):
+        m0 = float(orig_meds[c])
+        if m0 != 0.0:
+            denom = (m0 * (t + x[..., c] - 1.0) - t * x[..., c])
+            x[..., c] = np.where(np.abs(denom) > 1e-12, ((m0 - 1.0) * t * x[..., c]) / denom, x[..., c])
+    return x, orig_min, orig_meds
+
+
+def unstretch_image_unlinked(image: np.ndarray, orig_meds, orig_min: float, target_median: float = 0.25):
+    y = np.asarray(image, np.float32).copy()
+    t = float(target_median)
+
+    def inv(yc: np.ndarray, m0: float) -> np.ndarray:
+        # x = y*m0*(t-1) / ( t*(m0 - 1 + y) - y*m0 )
+        denom = (t * (m0 - 1.0 + yc) - yc * m0)
+        num = (yc * m0 * (t - 1.0))
+        return np.where(np.abs(denom) > 1e-12, num / denom, yc)
+
+    if y.ndim == 2:
+        m0 = float(orig_meds[0])
+        if m0 != 0.0:
+            y = inv(y, m0)
+        y += float(orig_min)
+        return y
+
+    for c in range(3):
+        m0 = float(orig_meds[c])
+        if m0 != 0.0:
+            y[..., c] = inv(y[..., c], m0)
+
+    y += float(orig_min)
+    return y
+
+
+# Backwards-compatible names used by denoise_rgb01()
+def stretch_image(image: np.ndarray, *, target_median: float = 0.25):
+    return stretch_image_unlinked(image, target_median=float(target_median))
+
+def unstretch_image(image: np.ndarray, original_medians, original_min: float, *, target_median: float = 0.25):
+    return unstretch_image_unlinked(image, original_medians, original_min, target_median=float(target_median))
+
+
+def add_border(image, border_size=16):
+    if image.ndim == 2:                                # mono
+        med = np.median(image)
+        return np.pad(image,
+                      ((border_size, border_size), (border_size, border_size)),
+                      mode="constant",
+                      constant_values=med)
+
+    elif image.ndim == 3 and image.shape[2] == 3:       # RGB
+        meds = np.median(image, axis=(0, 1)).astype(image.dtype)  # (3,)
+        padded = [np.pad(image[..., c],
+                         ((border_size, border_size), (border_size, border_size)),
+                         mode="constant",
+                         constant_values=float(meds[c]))
+                  for c in range(3)]
+        return np.stack(padded, axis=-1)
+    else:
+        raise ValueError("add_border expects mono or RGB image.")
+
+def remove_border(image, border_size: int = 16):
+    if image.ndim == 2:
+        return image[border_size:-border_size, border_size:-border_size]
+    return image[border_size:-border_size, border_size:-border_size, :]
+
 
 def _stitch_ignore_border(chunks, shape_hw3, border: int = 16) -> np.ndarray:
     H, W, C = shape_hw3
@@ -509,6 +592,8 @@ def satellite_remove_image(
     chunk_size: int = 256,
     overlap: int = 64,
     border_size: int = 16,
+    temp_stretch: bool = True,    # NEW
+    target_median: float = 0.25,   # NEW
     progress_cb: Optional[Callable[[int, int], None]] = None,  # (done, total)
 ) -> Tuple[np.ndarray, bool]:
     """
@@ -516,27 +601,75 @@ def satellite_remove_image(
     Returns: (out_image_same_shape_style, trail_detected_any)
     """
     rgb01, was_mono = _ensure_rgb01(image)
+    tm = float(np.clip(target_median, 0.01, 0.50))
+
+    def _should_stretch(x: np.ndarray) -> bool:
+        # same idea as denoise engine
+        x = np.asarray(x, np.float32)
+        return bool(np.median(x - np.min(x)) < 0.05)
 
     # luminance mode -> process Y only, then merge back
     if mode.lower() == "luminance":
         y, cb, cr = _extract_luminance_bt601(rgb01)
-        # treat Y as "mono" but we still run the network as RGB by repeating
-        y3 = np.stack([y, y, y], axis=-1)
+
+        # --- NEW: temp stretch on luminance only ---
+        if bool(temp_stretch):
+            stretch_needed = True
+        else:
+            stretch_needed = _should_stretch(y)
+
+        if stretch_needed:
+            y_s, original_min, original_meds = stretch_image(y, target_median=tm)
+        else:
+            y_s = y.astype(np.float32, copy=False)
+            original_min = float(np.min(y))
+            original_meds = [float(np.median(y_s))]
+
+        # run network as RGB by repeating Y
+        y3 = np.stack([y_s, y_s, y_s], axis=-1)
+
         out3, detected = _satellite_remove_rgb(
             y3, models,
             clip_trail=clip_trail, sensitivity=sensitivity,
             chunk_size=chunk_size, overlap=overlap, border_size=border_size,
             progress_cb=progress_cb,
         )
+
         out_y = out3[..., 0]
+
+        # --- NEW: unstretch luminance back ---
+        if stretch_needed:
+            out_y = unstretch_image(out_y, original_meds, original_min, target_median=tm)
+
+        out_y = np.clip(out_y, 0.0, 1.0).astype(np.float32, copy=False)
         out_rgb = _merge_luminance_bt601(out_y, cb, cr)
+
     else:
+        # --- NEW: temp stretch on full RGB before detection/removal ---
+        if bool(temp_stretch):
+            stretch_needed = True
+        else:
+            stretch_needed = _should_stretch(rgb01)
+
+        if stretch_needed:
+            rgb_s, original_min, original_meds = stretch_image(rgb01, target_median=tm)
+        else:
+            rgb_s = rgb01.astype(np.float32, copy=False)
+            original_min = float(np.min(rgb01))
+            original_meds = [float(np.median(rgb01[..., c])) for c in range(3)]
+
         out_rgb, detected = _satellite_remove_rgb(
-            rgb01, models,
+            rgb_s, models,
             clip_trail=clip_trail, sensitivity=sensitivity,
             chunk_size=chunk_size, overlap=overlap, border_size=border_size,
             progress_cb=progress_cb,
         )
+
+        # --- NEW: unstretch back ---
+        if stretch_needed:
+            out_rgb = unstretch_image(out_rgb, original_meds, original_min, target_median=tm)
+
+        out_rgb = np.clip(out_rgb, 0.0, 1.0).astype(np.float32, copy=False)
 
     # If original was mono-like, return HxWx1 (matches your SASpro convention for mono docs)
     if (np.asarray(image).ndim == 2) or (np.asarray(image).ndim == 3 and np.asarray(image).shape[2] == 1):
@@ -544,6 +677,7 @@ def satellite_remove_image(
         return out_m, detected
 
     return out_rgb.astype(np.float32), detected
+
 
 # ---------- Satellite remove loop (FIX: use correct ONNX sessions, not det1/rem confusion) ----------
 
