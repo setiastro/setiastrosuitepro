@@ -267,13 +267,24 @@ class SettingsDialog(QDialog):
         # preference combo
         self.cb_accel_pref = QComboBox()
         self._accel_items = [
-            ("Auto (recommended)", "auto"),
-            ("CUDA (NVIDIA)", "cuda"),
-            ("Intel XPU (Arc/Xe)", "xpu"),
+            (self.tr("Auto (recommended)"), "auto"),
+            (self.tr("CUDA (NVIDIA)"), "cuda"),
         ]
+
+        # Linux AMD ROCm option (now supported)
+        if platform.system() == "Linux":
+            self._accel_items.append((self.tr("ROCm (AMD on Linux)"), "rocm"))
+
+        # Intel XPU is Windows/Linux
+        if platform.system() in ("Windows", "Linux"):
+            self._accel_items.append((self.tr("Intel XPU (Arc/Xe)"), "xpu"))
+
+        # DirectML is Windows-only fallback
         if platform.system() == "Windows":
-            self._accel_items.append(("DirectML (Windows AMD/Intel)", "directml"))
-        self._accel_items.append(("CPU only", "cpu"))
+            self._accel_items.append((self.tr("DirectML (Windows AMD/Intel)"), "directml"))
+
+        self._accel_items.append((self.tr("CPU only"), "cpu"))
+
 
         self.cb_accel_pref.clear()
         for label, _key in self._accel_items:
@@ -705,6 +716,8 @@ class SettingsDialog(QDialog):
                 " • Click Install/Update GPU Acceleration…\n"
                 " • Restart SAS Pro\n"
                 " • On NVIDIA systems, verify drivers and that 'nvidia-smi' works.\n"
+                " • On Linux AMD systems, select ROCm and ensure ROCm-compatible drivers/runtime are installed.\n"
+                " • On Intel Arc/Xe systems, select Intel XPU.\n"
                 " • On Windows non-NVIDIA, DirectML may be used.\n"
             )
         )

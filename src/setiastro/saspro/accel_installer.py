@@ -101,28 +101,45 @@ def ensure_torch_installed(prefer_gpu: bool, log_cb: LogCB, preferred_backend: s
         has_intel = (not has_nv) and _has_intel_arc() and platform.system() in ("Windows", "Linux")
         has_amd, amd_arch = ((False, "") if not is_linux else _has_amd_rocm())
 
-        prefer_cuda = prefer_gpu and (preferred_backend in ("auto", "cuda")) and has_nv
-        prefer_xpu  = prefer_gpu and (preferred_backend in ("auto", "xpu")) and (not has_nv) and has_intel
-        prefer_rocm = (
-            prefer_gpu
-            and is_linux
-            and (preferred_backend in ("auto", "rocm"))
-            and (not has_nv)
-            and (not has_intel)
-            and has_amd
-        )
-
-        # DirectML only matters on Windows with no NVIDIA/XPU
-        prefer_dml = (
-            is_windows
-            and (not has_nv)
-            and preferred_backend in ("directml", "auto")
-            and prefer_gpu
-            and (not prefer_xpu)
-        )
+        # Resolve requested backend into concrete preferences.
+        # Important: explicit user choices should be honored when possible.
+        prefer_cuda = False
+        prefer_xpu = False
+        prefer_rocm = False
+        prefer_dml = False
 
         if preferred_backend == "cpu":
-            prefer_cuda = prefer_xpu = prefer_dml = prefer_rocm = False
+            pass
+
+        elif preferred_backend == "cuda":
+            prefer_cuda = prefer_gpu and has_nv
+
+        elif preferred_backend == "xpu":
+            prefer_xpu = prefer_gpu and (is_windows or is_linux) and (not has_nv) and has_intel
+
+        elif preferred_backend == "rocm":
+            # Allow explicit ROCm even if Intel iGPU is also present (common on Linux systems)
+            prefer_rocm = prefer_gpu and is_linux and (not has_nv) and has_amd
+
+        elif preferred_backend == "directml":
+            prefer_dml = prefer_gpu and is_windows and (not has_nv)
+
+        else:  # auto
+            prefer_cuda = prefer_gpu and has_nv
+            prefer_xpu  = prefer_gpu and (is_windows or is_linux) and (not has_nv) and has_intel
+
+            # In auto mode, prefer Intel XPU over ROCm when both are detected.
+            # (Keeps your previous auto-priority behavior.)
+            prefer_rocm = prefer_gpu and is_linux and (not has_nv) and (not has_intel) and has_amd
+
+            # DirectML only matters on Windows with no NVIDIA/XPU
+            prefer_dml = prefer_gpu and is_windows and (not has_nv) and (not prefer_xpu)
+
+        log_cb(
+            f"Accel preference='{preferred_backend}' -> "
+            f"cuda={prefer_cuda}, xpu={prefer_xpu}, rocm={prefer_rocm}, dml={prefer_dml}"
+        )
+
 
         # Install/import torch (ROCm/CUDA/XPU/DML/CPU handled inside runtime_torch)
         torch = import_torch(
