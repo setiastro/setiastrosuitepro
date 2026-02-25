@@ -39,6 +39,25 @@ def _add_common_io(p: argparse.ArgumentParser):
     p.add_argument("--gpu", action=argparse.BooleanOptionalAction, default=True, help="Enable GPU if available")
 
 
+def _add_chunking_opts(p: argparse.ArgumentParser):
+    """
+    Chunking controls for tiled inference.
+    Defaults match current engines.
+    """
+    p.add_argument(
+        "--chunk-size",
+        type=int,
+        default=256,
+        help="Tile size for processing (e.g. 256, 384, 512). Larger = faster but more VRAM/RAM."
+    )
+    p.add_argument(
+        "--overlap",
+        type=int,
+        default=64,
+        help="Tile overlap in pixels to reduce seams (typically chunk_size/4)."
+    )
+
+
 def _progress_print(done: int, total: int) -> bool:
     pct = int(0 if total <= 0 else (100 * done / total))
     print(f"PROGRESS: {pct}%", flush=True)
@@ -54,6 +73,7 @@ def build_cc_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("sharpen", help="Sharpen only")
     _add_common_io(p)
+    _add_chunking_opts(p)
     p.add_argument("--sharpening-mode", default="Both", choices=["Both", "Stellar Only", "Non-Stellar Only"])
     p.add_argument("--stellar-amount", type=float, default=0.5)
     p.add_argument("--nonstellar-amount", type=float, default=0.5)
@@ -63,6 +83,7 @@ def build_cc_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("denoise", help="Denoise only")
     _add_common_io(p)
+    _add_chunking_opts(p)
     p.add_argument("--denoise-luma", type=float, default=0.5)
     p.add_argument("--denoise-color", type=float, default=0.5)
     p.add_argument("--denoise-mode", default="full", choices=["full", "luminance"])
@@ -70,6 +91,7 @@ def build_cc_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("both", help="Sharpen then denoise")
     _add_common_io(p)
+    _add_chunking_opts(p)
     p.add_argument("--sharpening-mode", default="Both", choices=["Both", "Stellar Only", "Non-Stellar Only"])
     p.add_argument("--stellar-amount", type=float, default=0.5)
     p.add_argument("--nonstellar-amount", type=float, default=0.5)
@@ -83,10 +105,12 @@ def build_cc_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("superres", help="Super resolution")
     _add_common_io(p)
+    _add_chunking_opts(p)
     p.add_argument("--scale", type=int, default=2, choices=[2, 3, 4])
 
     p = sub.add_parser("satellite", help="Satellite trail removal")
     _add_common_io(p)
+    _add_chunking_opts(p)
     p.add_argument("--mode", dest="sat_mode", default="full", choices=["full", "luminance"])
     p.add_argument("--clip-trail", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--sensitivity", type=float, default=0.10)
@@ -99,7 +123,13 @@ def _run_cc(argv: list[str]) -> int:
 
     inp = str(Path(args.input))
     out = str(Path(args.output))
-    preset = {"gpu": bool(args.gpu)}
+
+    # always available (we added chunking to every subcommand)
+    preset = {
+        "gpu": bool(args.gpu),
+        "chunk_size": int(getattr(args, "chunk_size", 256)),
+        "overlap": int(getattr(args, "overlap", 64)),
+    }
 
     if args.cmd == "sharpen":
         preset.update({
@@ -152,27 +182,20 @@ def _run_cc(argv: list[str]) -> int:
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
 
-    # 0) No args → GUI
     if not argv:
         return _launch_gui()
 
-    # 1) "cc ..." wrapper stays supported
     if argv and argv[0].lower() in ("cc", "cosmicclarity"):
         return _run_cc(argv[1:] or ["--help"])
 
-    # 2) If first token is a real path (file/dir), open GUI + those paths
-    #    (supports: setiastrosuitepro img.fit  img2.fit)
     if _looks_like_path_token(argv[0]):
         paths = [str(Path(a)) for a in argv if _looks_like_path_token(a)]
         return _launch_gui(open_paths=paths)
 
-    # 3) Otherwise treat as CC for backward compat OR show help
-    #    (optional: if you don't want this, just launch GUI here instead)
     known = {"sharpen", "denoise", "both", "superres", "satellite", "--help", "-h"}
     if argv[0].lower() in known:
         return _run_cc(argv)
 
-    # Default: GUI (more intuitive than trying to parse random tokens)
     return _launch_gui()
 
 
