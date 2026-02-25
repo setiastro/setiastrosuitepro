@@ -1692,16 +1692,21 @@ def analyze_ser(
         progress_cb(0, n, "SSD Refine")
 
     if cfg.track_mode == "surface":
-        # FAST surface refine:
-        #  - use coarse dx/dy from ref-locked tracker
-        #  - apply coarse shift to current mono frame
-        #  - compute residual per-AP phase shifts (NO SEARCH)
-        #  - final dx/dy = coarse + median(residual)
-        def _shift_chunk(chunk: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        # Surface refine:
+        #  - start from coarse ref-locked dx/dy
+        #  - apply coarse shift to current frame
+        #  - estimate AP residual shifts (optionally multiscale)
+        #  - final tiny SSD polish
+        #
+        # IMPORTANT: return same 6-tuple shape as planetary branch so the
+        # future-collection code can unpack uniformly.
+        def _shift_chunk(chunk: np.ndarray):
             out_i: list[int] = []
             out_dx: list[float] = []
             out_dy: list[float] = []
             out_cf: list[float] = []
+            out_ang: list[float] = []   # surface: always 0
+            out_acf: list[float] = []   # surface: always 0
 
             src, owns = _ensure_source(source_obj, cache_items=0)
             try:
@@ -1714,24 +1719,89 @@ def analyze_ser(
                         force_rgb=bool(to_rgb),
                         bayer_pattern=bpat,
                     )
+                    cur_m = _to_mono01(img).astype(np.float32, copy=False)
 
-                    dx_i, dy_i, cf_i = tracker.shift_to_ref(img, ref_center)
+                    # Start from coarse ref-locked solution
+                    coarse_dx = float(dx[int(i)])
+                    coarse_dy = float(dy[int(i)])
+                    cc_i = float(coarse_conf[int(i)]) if coarse_conf is not None else 0.5
 
-                    if float(cf_i) >= 0.25:
-                        cur_m = _to_mono01(img).astype(np.float32, copy=False)
-                        dxr, dyr, c_ssd = _refine_shift_ssd(
-                            ref_m_full, cur_m, float(dx_i), float(dy_i),
-                            radius=5, crop=0.80,
-                            bruteforce=bool(getattr(cfg, "ssd_refine_bruteforce", False)),
+                    # Apply coarse shift before AP residual estimate
+                    cur_m_g = _shift_image(cur_m, coarse_dx, coarse_dy)
+
+                    if use_multiscale:
+                        s2, s1, s05 = _scaled_ap_sizes(ap_size)
+
+                        def _one_scale(s_ap: int):
+                            rdx, rdy, resp = _ap_phase_shifts_per_ap(
+                                ref_m_full, cur_m_g,
+                                ap_centers=ap_centers,
+                                ap_size=s_ap,
+                                max_dim=max_dim,
+                            )
+                            cf = np.clip(resp.astype(np.float32, copy=False), 0.0, 1.0)
+                            keep = _reject_ap_outliers(rdx, rdy, cf, z=3.5)
+                            if not np.any(keep):
+                                return 0.0, 0.0, 0.25
+                            return (
+                                float(np.median(rdx[keep])),
+                                float(np.median(rdy[keep])),
+                                float(np.median(cf[keep])),
+                            )
+
+                        dx2, dy2, cf2 = _one_scale(s2)
+                        dx1, dy1, cf1 = _one_scale(s1)
+                        dx0, dy0, cf0 = _one_scale(s05)
+
+                        w2 = max(1e-3, float(cf2)) * 1.25
+                        w1 = max(1e-3, float(cf1)) * 1.00
+                        w0 = max(1e-3, float(cf0)) * 0.85
+                        wsum = (w2 + w1 + w0)
+
+                        dx_res = (w2 * dx2 + w1 * dx1 + w0 * dx0) / wsum
+                        dy_res = (w2 * dy2 + w1 * dy1 + w0 * dy0) / wsum
+                        cf_ap = float(np.clip((w2 * cf2 + w1 * cf1 + w0 * cf0) / wsum, 0.0, 1.0))
+                    else:
+                        rdx, rdy, resp = _ap_phase_shifts_per_ap(
+                            ref_m_full, cur_m_g,
+                            ap_centers=ap_centers,
+                            ap_size=ap_size,
+                            max_dim=max_dim,
                         )
-                        dx_i = float(dx_i) + float(dxr)
-                        dy_i = float(dy_i) + float(dyr)
-                        cf_i = float(np.clip(0.85 * float(cf_i) + 0.15 * float(c_ssd), 0.05, 1.0))
+                        cf = np.clip(resp.astype(np.float32, copy=False), 0.0, 1.0)
+                        keep = _reject_ap_outliers(rdx, rdy, cf, z=3.5)
+
+                        if np.any(keep):
+                            dx_res = float(np.median(rdx[keep]))
+                            dy_res = float(np.median(rdy[keep]))
+                            cf_ap = float(np.median(cf[keep]))
+                        else:
+                            dx_res, dy_res, cf_ap = 0.0, 0.0, 0.25
+
+                    # Final = coarse + residual
+                    dx_i = float(coarse_dx + dx_res)
+                    dy_i = float(coarse_dy + dy_res)
+
+                    # Tiny SSD polish around current estimate
+                    dxr, dyr, c_ssd = _refine_shift_ssd(
+                        ref_m_full, cur_m, dx_i, dy_i,
+                        radius=5, crop=0.80,
+                        bruteforce=bool(getattr(cfg, "ssd_refine_bruteforce", False)),
+                    )
+                    dx_i += float(dxr)
+                    dy_i += float(dyr)
+
+                    # Confidence blend
+                    cf_i = float(np.clip(0.60 * cc_i + 0.40 * float(cf_ap), 0.0, 1.0))
+                    cf_i = float(np.clip(0.85 * cf_i + 0.15 * float(c_ssd), 0.05, 1.0))
 
                     out_i.append(int(i))
-                    out_dx.append(float(dx_i))
-                    out_dy.append(float(dy_i))
-                    out_cf.append(float(cf_i))
+                    out_dx.append(dx_i)
+                    out_dy.append(dy_i)
+                    out_cf.append(cf_i)
+                    out_ang.append(0.0)   # no per-frame rotation in surface mode
+                    out_acf.append(0.0)
+
             finally:
                 if owns:
                     try:
@@ -1744,6 +1814,8 @@ def analyze_ser(
                 np.asarray(out_dx, np.float32),
                 np.asarray(out_dy, np.float32),
                 np.asarray(out_cf, np.float32),
+                np.asarray(out_ang, np.float32),
+                np.asarray(out_acf, np.float32),
             )
 
     else:
@@ -2200,7 +2272,6 @@ def realign_ser(
                 np.asarray(out_dy, np.float32),
                 np.asarray(out_cf, np.float32),
             )
-
 
     done_ct = 0
     with ThreadPoolExecutor(max_workers=workers) as ex:
