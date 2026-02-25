@@ -57,35 +57,22 @@ def run_cosmicclarity_on_array(
 ) -> np.ndarray:
     """
     In-process Cosmic Clarity runner using the SAME preset keys your dialog produces.
-
-    preset keys (examples):
-      mode: "sharpen" | "denoise" | "both" | "superres" | "satellite"
-      gpu: bool
-
-      sharpen:
-        sharpening_mode: "Both" | "Stellar Only" | "Non-Stellar Only"
-        auto_psf: bool
-        nonstellar_psf: float
-        stellar_amount: float
-        nonstellar_amount: float
-        sharpen_channels_separately: bool
-
-      denoise:
-        denoise_luma: float
-        denoise_color: float
-        denoise_mode: "full" | "luminance"
-        separate_channels: bool
-
-      superres:
-        scale: int
-
-      satellite:
-        sat_mode: "full" | "luminance"
-        sat_clip_trail: bool
-        sat_sensitivity: float
     """
     mode = str(preset.get("mode", "sharpen")).lower()
     use_gpu = bool(preset.get("gpu", True))
+
+    # ✅ NEW: chunking (shared across engines that support it)
+    chunk_size = int(preset.get("chunk_size", 256))
+    overlap    = int(preset.get("overlap", 64))
+
+    # basic safety clamps (avoid weird/negative values from old configs)
+    if chunk_size < 64:
+        chunk_size = 64
+    if overlap < 0:
+        overlap = 0
+    # keep overlap from exceeding chunk_size (seams/tiling math can break)
+    if overlap >= chunk_size:
+        overlap = max(0, chunk_size // 4)
 
     rgb01, was_mono = _to_rgb01(img)
     out = rgb01
@@ -112,6 +99,9 @@ def run_cosmicclarity_on_array(
             auto_detect_psf=bool(preset.get("auto_psf", True)),
             separate_channels=bool(preset.get("sharpen_channels_separately", False)),
             use_gpu=use_gpu,
+            # ✅ NEW
+            chunk_size=chunk_size,
+            overlap=overlap,
             progress_cb=prog,
         )
 
@@ -124,6 +114,9 @@ def run_cosmicclarity_on_array(
             separate_channels=bool(preset.get("separate_channels", False)),
             color_denoise_strength=float(preset.get("denoise_color", 0.5)),
             use_gpu=use_gpu,
+            # ✅ NEW
+            chunk_size=chunk_size,
+            overlap=overlap,
             progress_cb=prog,
         )
 
@@ -137,9 +130,8 @@ def run_cosmicclarity_on_array(
         )
 
     if mode == "satellite":
-        # satellite uses cached models; keep it simple for CLI
         models = get_satellite_models(use_gpu=use_gpu, status_cb=lambda _: None)
-        # satellite_engine progress_cb signature is (done,total)->continue
+
         def sat_prog(done: int, total: int):
             if progress_cb is None:
                 return True
@@ -161,7 +153,6 @@ def run_cosmicclarity_on_array(
 
     out = _back_to_mono_if_needed(out, was_mono)
     return out
-
 
 def _infer_format_from_path(p: str, fallback: str = "tif") -> str:
     ext = (Path(p).suffix or "").lower().lstrip(".")
