@@ -292,28 +292,24 @@ class ReferenceOverlayDialog(QDialog):
     def __init__(self, plane: np.ndarray, positions: List[Tuple], target_median: float, parent=None):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Reference Frame: Stars Overlay"))
-        self.plane = plane.astype(np.float32)
+        self.plane = np.asarray(plane, dtype=np.float32)
         self.positions = positions
         self.target_median = target_median
         self.autostretch = True
 
-        # pens for normal vs selected
-        self._normal_pen   = QPen(QColor('lightblue'), 3)  # for normal state
-        self._dip_pen      = QPen(QColor('yellow'),    3)  # flagged by threshold
-        self._selected_pen = QPen(QColor('red'),       4)  # when selected
+        self._normal_pen   = QPen(QColor('lightblue'), 3)
+        self._dip_pen      = QPen(QColor('yellow'), 3)
+        self._selected_pen = QPen(QColor('red'), 4)
 
-        # store ellipses here
         self.ellipse_items: dict[int, ClickableEllipseItem] = {}
-        self.flagged_stars: Set[int] = set()  # updated by apply_threshold
+        self.flagged_stars: Set[int] = set()
 
         self._build_ui()
         self._init_graphics()
 
-        # wire up list‐clicks in the parent to recolor
         if parent and hasattr(parent, 'star_list'):
             parent.star_list.itemSelectionChanged.connect(self._update_highlights)
 
-        # after show, reset zoom so 1px == 1screen-px
         QTimer.singleShot(0, self._fit_to_100pct)
 
     def _build_ui(self):
@@ -326,16 +322,28 @@ class ReferenceOverlayDialog(QDialog):
         self.view.setScene(self.scene)
 
         btns = QHBoxLayout()
-        for txt, slot in [
-            ("Zoom In",        lambda: self.view.scale(1.2, 1.2)),
-            ("Zoom Out",       lambda: self.view.scale(1/1.2, 1/1.2)),
-            ("Reset Zoom",     self._fit_to_100pct),
-            ("Fit to Window",  self._fit_to_window),
-            ("Toggle Stretch", self._toggle_autostretch),
-        ]:
-            b = QPushButton(txt)
-            b.clicked.connect(slot)
-            btns.addWidget(b)
+
+        self.zoom_in_btn = QPushButton("Zoom In")
+        self.zoom_in_btn.clicked.connect(lambda: self.view.scale(1.2, 1.2))
+        btns.addWidget(self.zoom_in_btn)
+
+        self.zoom_out_btn = QPushButton("Zoom Out")
+        self.zoom_out_btn.clicked.connect(lambda: self.view.scale(1/1.2, 1/1.2))
+        btns.addWidget(self.zoom_out_btn)
+
+        self.reset_btn = QPushButton("Reset Zoom")
+        self.reset_btn.clicked.connect(self._fit_to_100pct)
+        btns.addWidget(self.reset_btn)
+
+        self.fit_btn = QPushButton("Fit to Window")
+        self.fit_btn.clicked.connect(self._fit_to_window)
+        btns.addWidget(self.fit_btn)
+
+        self.stretch_btn = QPushButton()
+        self.stretch_btn.clicked.connect(self._toggle_autostretch)
+        btns.addWidget(self.stretch_btn)
+
+        self._update_stretch_button_text()
         btns.addStretch()
 
         lay = QVBoxLayout(self)
@@ -343,33 +351,115 @@ class ReferenceOverlayDialog(QDialog):
         lay.addLayout(btns)
         self.resize(800, 600)
 
+    def _update_stretch_button_text(self):
+        self.stretch_btn.setText(f"Stretch: {'ON' if self.autostretch else 'OFF'}")
+
+    def _normalize_to_u8_linear(self, img: np.ndarray) -> np.ndarray:
+        """
+        Linear preview:
+        - if already in [0,1], keep it linear
+        - otherwise percentile-compress to 8-bit
+        """
+        arr = np.asarray(img, dtype=np.float32)
+        arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+
+        finite = np.isfinite(arr)
+        if not np.any(finite):
+            return np.zeros(arr.shape, dtype=np.uint8)
+
+        amin = float(np.min(arr[finite]))
+        amax = float(np.max(arr[finite]))
+
+        # Common SASpro case: float image already normalized to [0,1]
+        if amin >= 0.0 and amax <= 1.0:
+            out = np.clip(arr, 0.0, 1.0)
+            return (out * 255.0).astype(np.uint8)
+
+        # Otherwise make a robust linear preview
+        lo, hi = np.percentile(arr[finite], [0.5, 99.5])
+        if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+            lo = amin
+            hi = amax if amax > amin else (amin + 1.0)
+
+        out = (arr - lo) / max(hi - lo, 1e-8)
+        out = np.clip(out, 0.0, 1.0)
+        return (out * 255.0).astype(np.uint8)
+
+    def _to_preview_u8(self, img: np.ndarray) -> np.ndarray:
+        arr = np.asarray(img, dtype=np.float32)
+        arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+        arr = np.clip(arr, 0.0, 1.0)
+        return (arr * 255.0).astype(np.uint8)
+
+
+    def _normalize_preview_source(self, img: np.ndarray) -> np.ndarray:
+        arr = np.asarray(img)
+
+        # keep original values, just move into a sane preview/stretch domain
+        if arr.dtype.kind in "iu":
+            arr = arr.astype(np.float32)
+
+        else:
+            arr = np.asarray(arr, dtype=np.float32)
+
+        arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+
+        finite = np.isfinite(arr)
+        if not np.any(finite):
+            return np.zeros(arr.shape, dtype=np.float32)
+
+        amin = float(np.min(arr[finite]))
+        amax = float(np.max(arr[finite]))
+
+        # already normalized
+        if amin >= 0.0 and amax <= 1.0:
+            return np.clip(arr, 0.0, 1.0)
+
+        # signed / weird-range data -> normalize to 0..1 first
+        if amax <= amin:
+            return np.zeros(arr.shape, dtype=np.float32)
+
+        arr01 = (arr - amin) / (amax - amin)
+        return np.clip(arr01, 0.0, 1.0).astype(np.float32)
+
     def _init_graphics(self):
-        # draw the image...
-        img = self.plane if not self.autostretch else stretch_mono_image(self.plane, target_median=0.3)
-        arr8 = (np.clip(img,0,1) * 255).astype(np.uint8)
-        h, w = img.shape
-        qimg = QImage(arr8.data, w, h, w, QImage.Format.Format_Grayscale8)
-        pix  = QPixmap.fromImage(qimg)
+        base = self._normalize_preview_source(self.plane)
+        img = base
+
+        if self.autostretch:
+            try:
+                stretched = stretch_mono_image(base, target_median=0.3)
+                stretched = np.asarray(stretched, dtype=np.float32)
+
+                if np.isfinite(stretched).any() and np.nanstd(stretched) > 1e-4:
+                    img = np.clip(stretched, 0.0, 1.0)
+            except Exception as e:
+                print(f"[Exoplanet preview] stretch_mono_image failed: {e}")
+                img = base
+
+        arr8 = (np.clip(img, 0.0, 1.0) * 255.0).astype(np.uint8)
+        h, w = arr8.shape
+        qimg = QImage(arr8.data, w, h, w, QImage.Format.Format_Grayscale8).copy()
+        pix = QPixmap.fromImage(qimg)
 
         self.scene.clear()
         self.ellipse_items.clear()
         self.scene.addItem(QGraphicsPixmapItem(pix))
 
-        # add one ellipse per star
-        radius = max(2, int(math.ceil(1.2*self.target_median)))
+        radius = max(2, int(math.ceil(1.2 * self.target_median)))
         for idx, (x, y) in enumerate(self.positions):
-            r = QRectF(x-radius, y-radius, 2*radius, 2*radius)
+            r = QRectF(x - radius, y - radius, 2 * radius, 2 * radius)
             ell = ClickableEllipseItem(r, idx, self._on_star_clicked)
             ell.setPen(self._normal_pen)
             ell.setBrush(QBrush(Qt.BrushStyle.NoBrush))
             self.scene.addItem(ell)
             self.ellipse_items[idx] = ell
 
+
     def _fit_to_100pct(self):
         self.view.resetTransform()
         rect = self.scene.itemsBoundingRect()
         self.view.setSceneRect(rect)
-        # scroll so that scene center ends up in the view’s center
         self.view.centerOn(rect.center())
 
     def _fit_to_window(self):
@@ -378,10 +468,10 @@ class ReferenceOverlayDialog(QDialog):
 
     def _toggle_autostretch(self):
         self.autostretch = not self.autostretch
+        self._update_stretch_button_text()
         self._init_graphics()
 
     def _on_star_clicked(self, index: int, shift: bool):
-        """Star‐circle was clicked; update list selection then recolor."""
         parent = self.parent()
         if not parent or not hasattr(parent, 'star_list'):
             return
@@ -401,14 +491,13 @@ class ReferenceOverlayDialog(QDialog):
         self._update_highlights()
 
     def _update_highlights(self):
-        """Recolor all ellipses according to star_list selection and dip flags."""
         parent = self.parent()
         if not parent or not hasattr(parent, 'star_list'):
             return
 
         sel = {item.data(Qt.ItemDataRole.UserRole)
-            for item in parent.star_list.selectedItems()}
-        
+               for item in parent.star_list.selectedItems()}
+
         for idx, ell in self.ellipse_items.items():
             if idx in sel:
                 ell.setPen(self._selected_pen)
@@ -418,14 +507,15 @@ class ReferenceOverlayDialog(QDialog):
                 ell.setPen(self._normal_pen)
 
     def update_dip_flags(self, flagged_indices: Set[int]):
-        """Update the visual color of stars flagged by threshold dips."""
         self.flagged_stars = flagged_indices
         self._update_highlights()
 
 
 class ExoPlanetWindow(QDialog):
-    def __init__(self, parent=None, wrench_path=None):
+    def __init__(self, parent=None, wrench_path=None, settings=None):
         super().__init__(parent)
+        self.settings = settings
+        self.main_win = parent
         self.setWindowTitle(self.tr("Exoplanet Transit Detector"))
 
         self.resize(900, 600)
@@ -1029,6 +1119,24 @@ class ExoPlanetWindow(QDialog):
             self.flat_status_label.setText("Flat: ✅")
             self.flat_status_label.setStyleSheet("color: #00cc66; font-weight: bold;")
 
+    def _try_wcs_from_header(self, hdr, plane):
+        H = self._get_best_header_for_wcs(hdr)
+        if H is None:
+            return None
+
+        try:
+            w = WCS(H, naxis=2, relax=True)
+            if not w.has_celestial:
+                return None
+
+            # sanity check by transforming image center
+            h, wimg = plane.shape[:2]
+            sky = w.pixel_to_world(wimg / 2, h / 2)
+            _ = float(sky.ra.deg), float(sky.dec.deg)
+            return w
+        except Exception:
+            return None
+
     def _shapes_compatible(self, master: np.ndarray, other: np.ndarray) -> bool:
         if master.shape == other.shape:
             return True
@@ -1247,6 +1355,49 @@ class ExoPlanetWindow(QDialog):
 
         return H
 
+    def _get_best_header_for_wcs(self, hdr):
+        if isinstance(hdr, fits.Header):
+            return hdr
+
+        if isinstance(hdr, dict):
+            # first try canonical SASpro metadata keys
+            for k in ("wcs_header", "original_header", "header", "fits_header"):
+                h = hdr.get(k)
+                if isinstance(h, fits.Header):
+                    return h
+
+            # XISF-style FITSKeywords fallback
+            kw = None
+            if "image_meta" in hdr and isinstance(hdr["image_meta"], dict):
+                kw = hdr["image_meta"].get("FITSKeywords")
+            if kw is None:
+                kw = hdr.get("FITSKeywords")
+
+            if isinstance(kw, dict):
+                H = fits.Header()
+                for k, v in kw.items():
+                    try:
+                        vv = v[0]["value"] if isinstance(v, list) else v
+                        if vv is not None:
+                            H[k] = vv
+                    except Exception:
+                        pass
+                return H if len(H) else None
+
+        return None
+
+    def _try_existing_wcs(self, hdr):
+        H = self._get_best_header_for_wcs(hdr)
+        if H is None:
+            return None
+        try:
+            w = WCS(H, naxis=2, relax=True)
+            if not w.has_celestial:
+                return None
+            return w
+        except Exception:
+            return None
+
 
     def detect_stars(self):
         self.status_label.setText("Measuring frames…")
@@ -1325,9 +1476,11 @@ class ExoPlanetWindow(QDialog):
 
         # --- Solve WCS on reference (unchanged) ---
         self.ref_idx = ref_idx
-        plane = self._cached_images[ref_idx]
-        hdr   = self._cached_headers[ref_idx]
+        ref_img = self._cached_images[ref_idx]
+        plane = ref_img.mean(axis=2) if ref_img.ndim == 3 else ref_img
+        hdr = self._cached_headers[ref_idx]
         self._solve_reference(plane, hdr)
+
 
         # --- SEP catalog on reference ---
         data_ref, objs_ref, rms_ref = frame_data[ref_idx]
@@ -1464,8 +1617,8 @@ class ExoPlanetWindow(QDialog):
             item.setData(Qt.ItemDataRole.UserRole, i)
             self.star_list.addItem(item)
 
-        # overlay & finish
-        self._show_reference_with_circles(data_ref, self.star_positions)
+        # overlay & finish: use the real reference plane, not SEP background-subtracted data
+        self._show_reference_with_circles(plane, self.star_positions)
         self.status_label.setText("Ready")
         self.progress_bar.setVisible(False)
         self.analyze_btn.setEnabled(True)
@@ -1474,23 +1627,52 @@ class ExoPlanetWindow(QDialog):
         self._on_threshold_changed(self.threshold_slider.value())
 
     def _solve_reference(self, plane, hdr):
-        """
-        Standalone plate-solve via pro.plate_solver.plate_solve_doc_inplace.
-        We pass a *seed FITS header* in doc.metadata["original_header"], because
-        plate_solve_doc_inplace -> _solve_numpy_with_astap() pulls the seed from there.
-        """
-        # 1) coerce header for seeding
-        seed_hdr = self._coerce_seed_header(hdr if hdr is not None else {}, plane)
+        # always solve on mono plane
+        plane2d = plane.mean(axis=2) if getattr(plane, "ndim", 2) == 3 else plane
 
-        # 2) create a minimal "doc" the solver expects
+        # 1) first trust existing WCS from header/metadata
+        existing_wcs = self._try_wcs_from_header(hdr, plane2d)
+        if existing_wcs is not None:
+            self._wcs = existing_wcs
+            H, W = plane2d.shape[:2]
+            try:
+                center = self._wcs.pixel_to_world(W / 2, H / 2)
+                self.wcs_ra = float(center.ra.deg)
+                self.wcs_dec = float(center.dec.deg)
+            except Exception:
+                self.wcs_ra = self.wcs_dec = None
+
+            ra_str  = "nan" if self.wcs_ra  is None else f"{self.wcs_ra:.5f}"
+            dec_str = "nan" if self.wcs_dec is None else f"{self.wcs_dec:.5f}"
+            self.status_label.setText(f"WCS from header: RA={ra_str}, Dec={dec_str}")
+            self.fetch_tesscut_btn.setEnabled(True)
+            return
+
+        # 2) otherwise plate-solve
+        seed_hdr = self._coerce_seed_header(hdr if hdr is not None else {}, plane2d)
+        meta = {}
+        if isinstance(hdr, fits.Header):
+            meta["original_header"] = hdr.copy()
+        elif isinstance(hdr, dict):
+            meta.update(hdr)
+            H = self._get_best_header_for_wcs(hdr)
+            if H is not None:
+                meta["original_header"] = H.copy()
+        else:
+            meta["original_header"] = seed_hdr
+
         doc = SimpleNamespace(
-            image=plane,
-            metadata={"original_header": seed_hdr},  # <-- THIS is what your solver reads
+            image=plane2d,
+            metadata=meta,
         )
 
-        # 3) call the in-place solver (no extra kwargs; it ignores them)
-        settings = getattr(self.parent(), "settings", None)
-        from setiastro.saspro.plate_solver import plate_solve_doc_inplace
+
+        settings = getattr(self, "settings", None)
+        if settings is None and hasattr(self, "main_win"):
+            settings = getattr(self.main_win, "settings", None)
+        if settings is None and self.parent() is not None:
+            settings = getattr(self.parent(), "settings", None)
+
         ok, res = plate_solve_doc_inplace(self, doc, settings)
         if not ok:
             QMessageBox.critical(self, "Plate Solve", f"Plate solving failed:\n{res}")
@@ -1953,7 +2135,9 @@ class ExoPlanetWindow(QDialog):
 
         xs = np.array([xy[0] for xy in self.star_positions])
         ys = np.array([xy[1] for xy in self.star_positions])
-        sky = wcs.pixel_to_world(xs, ys)
+        bin_factor = getattr(self, "_wcs_bin_factor", 1)
+        sky = wcs.pixel_to_world(xs * bin_factor, ys * bin_factor)
+
         ras = sky.ra.deg
         decs = sky.dec.deg
 
@@ -2067,7 +2251,9 @@ class ExoPlanetWindow(QDialog):
         kname = None; kmag  = None
         for m in members:
             x, y = self.star_positions[m]
-            sky = wcs.pixel_to_world(x, y)
+            bin_factor = getattr(self, "_wcs_bin_factor", 1)
+            sky = wcs.pixel_to_world(x * bin_factor, y * bin_factor)
+
             name, v = self._query_simbad_name_and_vmag(sky.ra.deg, sky.dec.deg)
             if name and (v is not None) and np.isfinite(v):
                 kname, kmag = name, v
@@ -2250,14 +2436,21 @@ class ExoPlanetWindow(QDialog):
                     non_blocking_sleep(2)
 
     # ---------------- Pixel → Sky helper ----------------
-
     def get_selected_star_radec(self):
         selected_items = self.star_list.selectedItems()
         if not selected_items:
             return None
+
         selected_index = selected_items[0].data(Qt.ItemDataRole.UserRole)
         x, y = self.star_positions[selected_index]
+
         if self._wcs is None:
             return None
-        sky = self._wcs.pixel_to_world(x, y)
+
+        bin_factor = getattr(self, "_wcs_bin_factor", 1)
+        xw = x * bin_factor
+        yw = y * bin_factor
+
+        sky = self._wcs.pixel_to_world(xw, yw)
         return sky.ra.degree, sky.dec.degree
+

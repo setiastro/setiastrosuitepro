@@ -57,12 +57,25 @@ def _add_chunking_opts(p: argparse.ArgumentParser):
         help="Tile overlap in pixels to reduce seams (typically chunk_size/4)."
     )
 
+def _add_temp_stretch_opts(p: argparse.ArgumentParser):
+    p.add_argument(
+        "--temp-stretch",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Temporarily stretch linear data before AI processing, then unstretch after."
+    )
+    p.add_argument(
+        "--target-median",
+        type=float,
+        default=0.25,
+        help="Target median used for temporary stretch (default: 0.25)."
+    )
+
 
 def _progress_print(done: int, total: int) -> bool:
     pct = int(0 if total <= 0 else (100 * done / total))
     print(f"PROGRESS: {pct}%", flush=True)
     return True
-
 
 def build_cc_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
@@ -74,6 +87,7 @@ def build_cc_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("sharpen", help="Sharpen only")
     _add_common_io(p)
     _add_chunking_opts(p)
+    _add_temp_stretch_opts(p)
     p.add_argument("--sharpening-mode", default="Both", choices=["Both", "Stellar Only", "Non-Stellar Only"])
     p.add_argument("--stellar-amount", type=float, default=0.5)
     p.add_argument("--nonstellar-amount", type=float, default=0.5)
@@ -84,6 +98,7 @@ def build_cc_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("denoise", help="Denoise only")
     _add_common_io(p)
     _add_chunking_opts(p)
+    _add_temp_stretch_opts(p)
     p.add_argument("--denoise-luma", type=float, default=0.5)
     p.add_argument("--denoise-color", type=float, default=0.5)
     p.add_argument("--denoise-mode", default="full", choices=["full", "luminance"])
@@ -92,6 +107,7 @@ def build_cc_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("both", help="Sharpen then denoise")
     _add_common_io(p)
     _add_chunking_opts(p)
+    _add_temp_stretch_opts(p)
     p.add_argument("--sharpening-mode", default="Both", choices=["Both", "Stellar Only", "Non-Stellar Only"])
     p.add_argument("--stellar-amount", type=float, default=0.5)
     p.add_argument("--nonstellar-amount", type=float, default=0.5)
@@ -129,6 +145,8 @@ def _run_cc(argv: list[str]) -> int:
         "gpu": bool(args.gpu),
         "chunk_size": int(getattr(args, "chunk_size", 256)),
         "overlap": int(getattr(args, "overlap", 64)),
+        "temp_stretch": bool(getattr(args, "temp_stretch", False)),
+        "target_median": float(getattr(args, "target_median", 0.25)),
     }
 
     if args.cmd == "sharpen":
