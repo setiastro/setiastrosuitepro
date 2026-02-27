@@ -338,6 +338,9 @@ class _CosmicClarityPresetDialog(QDialog):
 
         self.gpu = QCheckBox("Use GPU"); self.gpu.setChecked(bool(p.get("gpu", True)))
         f.addRow(self.gpu)
+        self.ab_first = QCheckBox("Run Aberration Remover first")
+        self.ab_first.setChecked(bool(p.get("aberration_first", False)))
+        f.addRow(self.ab_first)
 
         self.newview = QCheckBox("Create new view"); self.newview.setChecked(bool(p.get("create_new_view", False)))
         f.addRow(self.newview)
@@ -385,6 +388,7 @@ class _CosmicClarityPresetDialog(QDialog):
             "mode": m,
             "gpu": bool(self.gpu.isChecked()),
             "create_new_view": bool(self.newview.isChecked()),
+            "aberration_first": bool(self.ab_first.isChecked()),
         }
         if m in ("sharpen","both"):
             out.update({

@@ -22,6 +22,7 @@ from PyQt6.QtCore import QProcess
 from setiastro.saspro.legacy.image_manager import load_image, save_image  
 
 from setiastro.saspro.imageops.stretch import stretch_mono_image, stretch_color_image
+from setiastro.saspro.aberration_ai import run_aberration_ai_on_array
 
 
 from setiastro.saspro.cosmicclarity_engines.sharpen_engine import sharpen_rgb01
@@ -228,17 +229,25 @@ class CosmicClarityEngineWorker(QThread):
             target_median = float(p.get("target_median", 0.25))
             target_median = max(0.01, min(0.50, target_median))
             img = np.clip(self._img, 0.0, 1.0).astype(np.float32, copy=False)
+            apply_aberration = bool(p.get("aberration_first", False))
+            ab_patch = int(p.get("aberration_patch", 512))
+            ab_overlap = int(p.get("aberration_overlap", 64))
+            ab_border = int(p.get("aberration_border_px", 10))
+            ab_auto_gpu = bool(p.get("aberration_auto_gpu", True))
+            ab_provider = p.get("aberration_provider", None)
 
             # Decide stage plan
             stages = []
+            if apply_aberration:
+                stages.append("aberration")
             if mode == "sharpen":
-                stages = ["sharpen"]
+                stages.append("sharpen")
             elif mode == "denoise":
-                stages = ["denoise"]
+                stages.append("denoise")
             elif mode == "both":
-                stages = ["sharpen", "denoise"]
+                stages.extend(["sharpen", "denoise"])
             elif mode == "superres":
-                stages = ["superres"]
+                stages.append("superres")
             else:
                 stages = ["sharpen"]
 
@@ -309,6 +318,25 @@ class CosmicClarityEngineWorker(QThread):
                         lite=lite,   
                         progress_cb=prog,
                     )
+                elif st == "aberration":
+                    def _ab_prog(frac: float):
+                        if self._cancel or self.isInterruptionRequested():
+                            raise RuntimeError("Canceled")
+                        pct = base_pct + stage_weight * 100.0 * float(frac)
+                        self.progress.emit(int(max(0, min(100, round(pct)))))
+
+                    out, used_provider = run_aberration_ai_on_array(
+                        out,
+                        patch=ab_patch,
+                        overlap=ab_overlap,
+                        border_px=ab_border,
+                        auto_gpu=ab_auto_gpu if use_gpu else False,
+                        provider=ab_provider,
+                        progress_cb=_ab_prog,
+                        cancel_cb=lambda: self._cancel or self.isInterruptionRequested(),
+                        log_cb=lambda s: self.log.emit(str(s)),
+                    )
+                    self.log.emit(f"Aberration AI complete ({used_provider})")
 
                 elif st == "superres":
                     scale = int(p.get("scale", 2))
@@ -467,7 +495,6 @@ class CosmicClarityDialogPro(QDialog):
         self.sld_target_median.setValue(25)      # 0.25 default
         self.sld_target_median.valueChanged.connect(self._on_target_median)
 
-        # ✅ inline: [label .............][stretch][checkbox]
         row_tm = QWidget()
         h = QHBoxLayout(row_tm)
         h.setContentsMargins(0, 0, 0, 0)
@@ -476,33 +503,40 @@ class CosmicClarityDialogPro(QDialog):
         h.addStretch(1)
         h.addWidget(self.chk_temp_stretch)
 
-        # Put the combined row where the label was
-        grid.addWidget(row_tm, 20, 0, 1, 3)
-        grid.addWidget(self.sld_target_median, 21, 0, 1, 3)
+        grid.addWidget(row_tm, 18, 0, 1, 3)
+        grid.addWidget(self.sld_target_median, 19, 0, 1, 3)
 
+        self.chk_aberration_first = QCheckBox("Run Aberration Remover first")
+        self.chk_aberration_first.setToolTip(
+            "Runs R.A.'s Aberration Correction before Cosmic Clarity processing.\n"
+            "Useful for cleaning color/fringe aberrations before sharpen, denoise, or super-resolution."
+        )
+        grid.addWidget(self.chk_aberration_first, 20, 0, 1, 3)
 
         # Chunk size
         self.lbl_chunk = QLabel("Chunk Size:")
         self.cmb_chunk = QComboBox()
         self.cmb_chunk.addItems(["128", "192", "256", "320", "384", "512", "640", "768", "1024"])
         self.cmb_chunk.setCurrentText("256")
-        grid.addWidget(self.lbl_chunk, 18, 0)
-        grid.addWidget(self.cmb_chunk, 18, 1)
+        grid.addWidget(self.lbl_chunk, 21, 0)
+        grid.addWidget(self.cmb_chunk, 21, 1)
 
         # Overlap
         self.lbl_ov = QLabel("Overlap:")
         self.cmb_ov = QComboBox()
-        self.cmb_ov.addItems(["16", "32", "48", "64", "80", "96", "128","192", "256", "320", "384", "512"])
+        self.cmb_ov.addItems(["16", "32", "48", "64", "80", "96", "128", "192", "256", "320", "384", "512"])
         self.cmb_ov.setCurrentText("64")
-        grid.addWidget(self.lbl_ov, 19, 0)
-        grid.addWidget(self.cmb_ov, 19, 1)
+        grid.addWidget(self.lbl_ov, 22, 0)
+        grid.addWidget(self.cmb_ov, 22, 1)
+
         self._load_chunk_overlap_settings()
 
         # Save whenever user changes either dropdown
         self.cmb_chunk.currentTextChanged.connect(self._save_chunk_overlap_settings)
         self.cmb_ov.currentTextChanged.connect(self._save_chunk_overlap_settings)
         self.cmb_chunk.currentTextChanged.connect(self._enforce_overlap_vs_chunk)
-        self.cmb_ov.currentTextChanged.connect(self._enforce_overlap_vs_chunk)        
+        self.cmb_ov.currentTextChanged.connect(self._enforce_overlap_vs_chunk)
+  
         # Denoise block
         self.lbl_dn_lum = QLabel("Luminance Denoise (0–1): 0.50")
         self.sld_dn_lum = QSlider(Qt.Orientation.Horizontal); self.sld_dn_lum.setRange(0, 100); self.sld_dn_lum.setValue(50)
@@ -562,6 +596,11 @@ class CosmicClarityDialogPro(QDialog):
             except Exception as e:
                 import logging
                 logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
+
+        self.chk_dn_lite.toggled.connect(self._save_cc_ui_settings)
+        self.chk_aberration_first.toggled.connect(self._save_cc_ui_settings)
+
+
         self.resize(560, 540)
 
     def _on_target_median(self, v: int):
@@ -578,20 +617,21 @@ class CosmicClarityDialogPro(QDialog):
         s = QSettings()
         self.chk_dn_lite.setChecked(s.value("cc/denoise_lite", False, type=bool))
 
-        # NEW:
         self.chk_temp_stretch.setChecked(s.value("cc/temp_stretch", False, type=bool))
         tm = float(s.value("cc/target_median", 0.25))
         tm = max(0.01, min(0.50, tm))
         self.sld_target_median.setValue(int(round(tm * 100)))
         self._on_target_median(self.sld_target_median.value())
 
+        self.chk_aberration_first.setChecked(s.value("cc/aberration_first", False, type=bool))
+
     def _save_cc_ui_settings(self):
         s = QSettings()
         s.setValue("cc/denoise_lite", self.chk_dn_lite.isChecked())
-
-        # NEW:
         s.setValue("cc/temp_stretch", self.chk_temp_stretch.isChecked())
         s.setValue("cc/target_median", self.sld_target_median.value() / 100.0)
+        s.setValue("cc/aberration_first", self.chk_aberration_first.isChecked())
+
 
 
     def _dn_sep_changed(self, checked: bool):
@@ -972,6 +1012,7 @@ class CosmicClarityDialogPro(QDialog):
         self.chk_dn_lite.setChecked(bool(p.get("denoise_lite", False)))
         # NEW: temp stretch
         self.chk_temp_stretch.setChecked(bool(p.get("temp_stretch", False)))
+        self.chk_aberration_first.setChecked(bool(p.get("aberration_first", False)))
         try:
             tm = float(p.get("target_median", 0.25))
         except Exception:
@@ -992,7 +1033,9 @@ class CosmicClarityDialogPro(QDialog):
             "mode": mode,
             "gpu": (self.cmb_gpu.currentIndex() == 0),
             "create_new_view": (self.cmb_target.currentIndex() == 1),
+            "aberration_first": self.chk_aberration_first.isChecked(),
         }
+
 
         # Sharpen / Both block
         # Sharpen / Both block

@@ -249,6 +249,130 @@ def pick_providers(auto_gpu=True) -> list[str]:
 
     return order
 
+def resolve_aberration_model_path() -> str:
+    """
+    Resolve the active Aberration AI model path from QSettings.
+    Prefers custom model when enabled; otherwise uses downloaded model.
+    Returns "" if no valid model exists.
+    """
+    s = QSettings()
+    use_custom = s.value("AberrationAI/use_custom_model", False, type=bool)
+    downloaded = s.value("AberrationAI/model_path", type=str) or ""
+    custom = s.value("AberrationAI/custom_model_path", type=str) or ""
+
+    if use_custom and custom and os.path.isfile(custom):
+        return custom
+    if downloaded and os.path.isfile(downloaded):
+        return downloaded
+    return ""
+
+
+def run_aberration_ai_on_array(
+    image: np.ndarray,
+    *,
+    model_path: str | None = None,
+    patch: int = 512,
+    overlap: int = 64,
+    border_px: int = 10,
+    auto_gpu: bool = True,
+    provider: str | None = None,
+    progress_cb=None,   # callable(frac_0_to_1)
+    cancel_cb=None,     # callable() -> bool
+    log_cb=None,        # callable(str)
+) -> tuple[np.ndarray, str]:
+    """
+    Synchronous reusable Aberration AI runner.
+
+    Returns:
+        (output_image, used_provider)
+
+    Raises:
+        RuntimeError on failure/cancel
+    """
+    if ort is None:
+        raise RuntimeError("onnxruntime is not installed.")
+
+    if image is None:
+        raise RuntimeError("No image supplied.")
+
+    img = np.asarray(image)
+    orig = img.copy()
+
+    if cancel_cb and cancel_cb():
+        raise RuntimeError("Canceled")
+
+    # Resolve model
+    model_path = model_path or resolve_aberration_model_path()
+    if not model_path or not os.path.isfile(model_path):
+        raise RuntimeError("No valid Aberration AI model is configured.")
+
+    # Provider selection
+    if IS_APPLE_ARM:
+        providers = ["CPUExecutionProvider"]
+    else:
+        if auto_gpu:
+            providers = pick_providers(auto_gpu=True)
+        else:
+            providers = [provider or "CPUExecutionProvider"]
+
+    if not providers:
+        providers = ["CPUExecutionProvider"]
+
+    avail_providers = ort.get_available_providers()
+    if log_cb:
+        log_cb(f"🔍 Available ONNX providers: {', '.join(avail_providers)}")
+        log_cb(f"🔍 Attempting providers: {', '.join(providers)}")
+
+    # Match model-required patch if fixed
+    req = _model_required_patch(model_path)
+    if req and req > 0:
+        patch = req
+
+    # CoreML guard
+    if "CoreMLExecutionProvider" in providers and req and req > 128:
+        if log_cb:
+            log_cb(f"CoreML limited for this model size; forcing CPU because model requires {req}px tiles.")
+        providers = ["CPUExecutionProvider"]
+
+    # Init session, fallback to CPU if needed
+    try:
+        sess = ort.InferenceSession(model_path, providers=providers)
+        used_provider = (sess.get_providers()[0] if sess.get_providers() else "CPUExecutionProvider")
+        if log_cb:
+            log_cb(f"✅ Aberration AI using provider: {used_provider}")
+    except Exception as e:
+        if log_cb:
+            log_cb(f"⚠️ Aberration AI provider init failed: {e}")
+            log_cb("⚠️ Falling back to CPUExecutionProvider")
+        try:
+            sess = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+            used_provider = "CPUExecutionProvider"
+        except Exception as e2:
+            raise RuntimeError(f"Failed to init ONNX session:\nGPU error: {e}\nCPU error: {e2}")
+
+    def _cb(frac):
+        if cancel_cb and cancel_cb():
+            raise RuntimeError("Canceled")
+        if progress_cb is not None:
+            try:
+                progress_cb(float(frac))
+            except Exception:
+                pass
+
+    out = run_onnx_tiled(
+        sess,
+        img,
+        patch_size=int(patch),
+        overlap=int(overlap),
+        progress_cb=_cb,
+        cancel_cb=cancel_cb,
+    )
+
+    if cancel_cb and cancel_cb():
+        raise RuntimeError("Canceled")
+
+    out = _preserve_border(out, orig, int(border_px))
+    return out, used_provider
 
 def _preserve_border(dst: np.ndarray, src: np.ndarray, px: int = 10) -> np.ndarray:
     """
@@ -307,88 +431,28 @@ class _ONNXWorker(QThread):
             self.failed.emit("onnxruntime is not installed.")
             return
 
-        # If canceled before start, exit cleanly
         if self._is_canceled():
             self.canceled.emit()
             return
 
-        # Log available providers for debugging
-        avail_providers = ort.get_available_providers()
-        gpu_providers = [p for p in self.providers if p != "CPUExecutionProvider"]
-        has_nvidia = _has_nvidia_gpu()
-        
-        self.log_message.emit(f"🔍 Available ONNX providers: {', '.join(avail_providers)}")
-        self.log_message.emit(f"🔍 Attempting providers: {', '.join(self.providers)}")
-        print(f"🔍 Available ONNX providers: {', '.join(avail_providers)}")
-        print(f"🔍 Attempting providers: {', '.join(self.providers)}")
-        
-        # Check if NVIDIA GPU is present but CUDA provider is missing
-        if has_nvidia and "CUDAExecutionProvider" not in avail_providers:
-            msg = ("⚠️ GPU NVIDIA détecté mais CUDAExecutionProvider n'est pas disponible.\n"
-                   "   Vous devez installer 'onnxruntime-gpu' au lieu de 'onnxruntime'.\n"
-                   "   Commande: pip uninstall onnxruntime && pip install onnxruntime-gpu")
-            self.log_message.emit(msg)
-            print(msg)
-        
-        try:
-            sess = ort.InferenceSession(self.model_path, providers=self.providers)
-            self.used_provider = (sess.get_providers()[0] if sess.get_providers() else None)
-            # Log successful GPU usage
-            if self.used_provider != "CPUExecutionProvider" and gpu_providers:
-                msg = f"✅ Aberration AI: Using GPU provider {self.used_provider}"
-                self.log_message.emit(msg)
-                print(msg)
-            elif has_nvidia and self.used_provider == "CPUExecutionProvider":
-                msg = ("⚠️ GPU NVIDIA détecté mais utilisation du CPU.\n"
-                       "   Installez 'onnxruntime-gpu' pour utiliser le GPU.")
-                self.log_message.emit(msg)
-                print(msg)
-        except Exception as e:
-            # Log the actual error for debugging
-            error_msg = str(e)
-            msg = f"⚠️ Aberration AI: GPU provider failed: {error_msg}"
-            self.log_message.emit(msg)
-            print(msg)
-            self.log_message.emit(f"Available providers: {', '.join(avail_providers)}")
-            print(f"Available providers: {', '.join(avail_providers)}")
-            self.log_message.emit(f"Attempted providers: {', '.join(self.providers)}")
-            print(f"Attempted providers: {', '.join(self.providers)}")
-            
-            # Check if onnxruntime-gpu is installed (CUDA provider should be available if it is)
-            if "CUDAExecutionProvider" in self.providers and "CUDAExecutionProvider" not in avail_providers:
-                if has_nvidia:
-                    msg = ("❌ CUDAExecutionProvider non disponible alors qu'un GPU NVIDIA est présent.\n"
-                           "   Installez 'onnxruntime-gpu': pip uninstall onnxruntime && pip install onnxruntime-gpu")
-                else:
-                    msg = "⚠️ CUDAExecutionProvider not available. You may need to install onnxruntime-gpu instead of onnxruntime."
-                self.log_message.emit(msg)
-                print(msg)
-            
-            # fallback CPU if GPU fails
-            try:
-                sess = ort.InferenceSession(self.model_path, providers=["CPUExecutionProvider"])
-                self.used_provider = "CPUExecutionProvider"
-                msg = f"⚠️ Aberration AI: Falling back to CPU (GPU initialization failed: {error_msg})"
-                self.log_message.emit(msg)
-                print(msg)
-            except Exception as e2:
-                self.failed.emit(f"Failed to init ONNX session:\nGPU error: {error_msg}\nCPU error: {e2}")
-                return
-
-        def cb(frac):
+        def _prog(frac):
             self.progressed.emit(int(frac * 100))
 
         try:
-            out = run_onnx_tiled(
-                sess,
+            out, used_provider = run_aberration_ai_on_array(
                 self.image,
-                self.patch,
-                self.overlap,
-                progress_cb=cb,
+                model_path=self.model_path,
+                patch=self.patch,
+                overlap=self.overlap,
+                border_px=0,  # dialog/preset callers may preserve border outside if desired
+                auto_gpu=False,  # providers already decided before worker creation
+                provider=None,
+                progress_cb=_prog,
                 cancel_cb=self._is_canceled,
+                log_cb=lambda s: self.log_message.emit(str(s)),
             )
+            self.used_provider = used_provider
         except Exception as e:
-            # Normalize cancel
             msg = str(e) or "Error"
             if "Canceled" in msg:
                 self.canceled.emit()
@@ -401,6 +465,7 @@ class _ONNXWorker(QThread):
             return
 
         self.finished_ok.emit(out)
+
 
 # ---------- dialog ----------
 class AberrationAIDialog(QDialog):
