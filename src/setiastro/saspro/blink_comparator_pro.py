@@ -948,7 +948,7 @@ class BlinkTab(QWidget):
 
         left_layout.addLayout(button_layout)
 
-        self.metrics_button = QPushButton(self.tr("Show Metrics"), self)
+        self.metrics_button = QPushButton(self.tr("Interactive Metrics & Culling"), self)
         self.metrics_button.clicked.connect(self.show_metrics)
         left_layout.addWidget(self.metrics_button)
 
