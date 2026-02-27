@@ -88,6 +88,7 @@ def build_cc_parser() -> argparse.ArgumentParser:
     _add_common_io(p)
     _add_chunking_opts(p)
     _add_temp_stretch_opts(p)
+    _add_aberration_opts(p)
     p.add_argument("--sharpening-mode", default="Both", choices=["Both", "Stellar Only", "Non-Stellar Only"])
     p.add_argument("--stellar-amount", type=float, default=0.5)
     p.add_argument("--nonstellar-amount", type=float, default=0.5)
@@ -99,6 +100,7 @@ def build_cc_parser() -> argparse.ArgumentParser:
     _add_common_io(p)
     _add_chunking_opts(p)
     _add_temp_stretch_opts(p)
+    _add_aberration_opts(p)
     p.add_argument("--denoise-luma", type=float, default=0.5)
     p.add_argument("--denoise-color", type=float, default=0.5)
     p.add_argument("--denoise-mode", default="full", choices=["full", "luminance"])
@@ -108,6 +110,7 @@ def build_cc_parser() -> argparse.ArgumentParser:
     _add_common_io(p)
     _add_chunking_opts(p)
     _add_temp_stretch_opts(p)
+    _add_aberration_opts(p)
     p.add_argument("--sharpening-mode", default="Both", choices=["Both", "Stellar Only", "Non-Stellar Only"])
     p.add_argument("--stellar-amount", type=float, default=0.5)
     p.add_argument("--nonstellar-amount", type=float, default=0.5)
@@ -122,6 +125,7 @@ def build_cc_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("superres", help="Super resolution")
     _add_common_io(p)
     _add_chunking_opts(p)
+    _add_aberration_opts(p)
     p.add_argument("--scale", type=int, default=2, choices=[2, 3, 4])
 
     p = sub.add_parser("satellite", help="Satellite trail removal")
@@ -133,6 +137,13 @@ def build_cc_parser() -> argparse.ArgumentParser:
 
     return ap
 
+def _add_aberration_opts(p: argparse.ArgumentParser):
+    p.add_argument(
+        "--aberration-first",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Run Aberration Remover before Cosmic Clarity processing."
+    )
 
 def _run_cc(argv: list[str]) -> int:
     args = build_cc_parser().parse_args(argv)
@@ -140,13 +151,13 @@ def _run_cc(argv: list[str]) -> int:
     inp = str(Path(args.input))
     out = str(Path(args.output))
 
-    # always available (we added chunking to every subcommand)
     preset = {
         "gpu": bool(args.gpu),
         "chunk_size": int(getattr(args, "chunk_size", 256)),
         "overlap": int(getattr(args, "overlap", 64)),
         "temp_stretch": bool(getattr(args, "temp_stretch", False)),
         "target_median": float(getattr(args, "target_median", 0.25)),
+        "aberration_first": bool(getattr(args, "aberration_first", False)),
     }
 
     if args.cmd == "sharpen":
@@ -182,7 +193,10 @@ def _run_cc(argv: list[str]) -> int:
             "separate_channels": bool(args.separate_channels),
         })
     elif args.cmd == "superres":
-        preset.update({"mode": "superres", "scale": int(args.scale)})
+        preset.update({
+            "mode": "superres",
+            "scale": int(args.scale),
+        })
     elif args.cmd == "satellite":
         preset.update({
             "mode": "satellite",
@@ -195,7 +209,6 @@ def _run_cc(argv: list[str]) -> int:
 
     run_cosmicclarity_on_file(inp, out, preset, progress_cb=_progress_print)
     return 0
-
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)

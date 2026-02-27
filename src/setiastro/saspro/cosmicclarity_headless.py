@@ -13,6 +13,8 @@ from setiastro.saspro.cosmicclarity_engines.satellite_engine import (
     get_satellite_models,
     satellite_remove_image,
 )
+from setiastro.saspro.pro.aberration_ai import run_aberration_ai_on_array
+
 
 ProgressCB = Optional[Callable[[int, int], bool]]  # (done,total)->continue?
 
@@ -61,24 +63,46 @@ def run_cosmicclarity_on_array(
     mode = str(preset.get("mode", "sharpen")).lower()
     use_gpu = bool(preset.get("gpu", True))
 
-    # ✅ NEW: chunking (shared across engines that support it)
     chunk_size = int(preset.get("chunk_size", 256))
-    overlap    = int(preset.get("overlap", 64))
+    overlap = int(preset.get("overlap", 64))
 
-    # basic safety clamps (avoid weird/negative values from old configs)
     if chunk_size < 64:
         chunk_size = 64
     if overlap < 0:
         overlap = 0
-    # keep overlap from exceeding chunk_size (seams/tiling math can break)
     if overlap >= chunk_size:
         overlap = max(0, chunk_size // 4)
 
     rgb01, was_mono = _to_rgb01(img)
     out = rgb01
 
-    # small helper to wrap progress_cb into stage-aware progress
-    def stage_progress_adapter(stage_base: int, stage_span: int):
+    apply_aberration = bool(preset.get("aberration_first", False))
+
+    # Build stage list dynamically
+    stages: list[str] = []
+    if apply_aberration:
+        stages.append("aberration")
+
+    if mode == "sharpen":
+        stages.append("sharpen")
+    elif mode == "denoise":
+        stages.append("denoise")
+    elif mode == "both":
+        stages.extend(["sharpen", "denoise"])
+    elif mode == "superres":
+        stages.append("superres")
+    elif mode == "satellite":
+        stages.append("satellite")
+    else:
+        raise RuntimeError(f"Unknown mode: {mode}")
+
+    nstages = max(1, len(stages))
+
+    def stage_progress_adapter(stage_index: int):
+        stage_base = int(100 * stage_index / nstages)
+        stage_next = int(100 * (stage_index + 1) / nstages)
+        stage_span = max(1, stage_next - stage_base)
+
         def _cb(done: int, total: int):
             if progress_cb is None:
                 return True
@@ -88,75 +112,93 @@ def run_cosmicclarity_on_array(
             return progress_cb(pct, 100)
         return _cb
 
-    if mode in ("sharpen", "both"):
-        prog = stage_progress_adapter(0, 50 if mode == "both" else 100)
-        out = sharpen_rgb01(
-            out,
-            sharpening_mode=str(preset.get("sharpening_mode", "Both")),
-            stellar_amount=float(preset.get("stellar_amount", 0.5)),
-            nonstellar_amount=float(preset.get("nonstellar_amount", 0.5)),
-            nonstellar_strength=float(preset.get("nonstellar_psf", 3.0)),
-            auto_detect_psf=bool(preset.get("auto_psf", True)),
-            separate_channels=bool(preset.get("sharpen_channels_separately", False)),
-            use_gpu=use_gpu,
-            chunk_size=chunk_size,
-            overlap=overlap,
-            temp_stretch=bool(preset.get("temp_stretch", False)),
-            target_median=float(preset.get("target_median", 0.25)),
-            progress_cb=prog,
-        )
+    for i, stage in enumerate(stages):
+        prog = stage_progress_adapter(i)
 
+        if stage == "aberration":
+            def _ab_prog(frac: float):
+                if progress_cb is None:
+                    return
+                frac = max(0.0, min(1.0, float(frac)))
+                done = int(frac * 1000)
+                prog(done, 1000)
 
-    if mode in ("denoise", "both"):
-        prog = stage_progress_adapter(50 if mode == "both" else 0, 50 if mode == "both" else 100)
-        out = denoise_rgb01(
-            out,
-            denoise_strength=float(preset.get("denoise_luma", 0.5)),
-            denoise_mode=str(preset.get("denoise_mode", "full")),
-            separate_channels=bool(preset.get("separate_channels", False)),
-            color_denoise_strength=float(preset.get("denoise_color", 0.5)),
-            use_gpu=use_gpu,
-            chunk_size=chunk_size,
-            overlap=overlap,
-            temp_stretch=bool(preset.get("temp_stretch", False)),
-            target_median=float(preset.get("target_median", 0.25)),
-            progress_cb=prog,
-        )
+            out, _used_provider = run_aberration_ai_on_array(
+                out,
+                patch=int(preset.get("aberration_patch", 512)),
+                overlap=int(preset.get("aberration_overlap", 64)),
+                border_px=int(preset.get("aberration_border_px", 10)),
+                auto_gpu=bool(preset.get("aberration_auto_gpu", True)) and use_gpu,
+                provider=preset.get("aberration_provider", None),
+                progress_cb=_ab_prog,
+                cancel_cb=None,
+                log_cb=None,
+            )
 
+        elif stage == "sharpen":
+            out = sharpen_rgb01(
+                out,
+                sharpening_mode=str(preset.get("sharpening_mode", "Both")),
+                stellar_amount=float(preset.get("stellar_amount", 0.5)),
+                nonstellar_amount=float(preset.get("nonstellar_amount", 0.5)),
+                nonstellar_strength=float(preset.get("nonstellar_psf", 3.0)),
+                auto_detect_psf=bool(preset.get("auto_psf", True)),
+                separate_channels=bool(preset.get("sharpen_channels_separately", False)),
+                use_gpu=use_gpu,
+                chunk_size=chunk_size,
+                overlap=overlap,
+                temp_stretch=bool(preset.get("temp_stretch", False)),
+                target_median=float(preset.get("target_median", 0.25)),
+                progress_cb=prog,
+            )
 
-    if mode == "superres":
-        prog = stage_progress_adapter(0, 100)
-        out = superres_rgb01(
-            out,
-            scale=int(preset.get("scale", 2)),
-            use_gpu=True,  # matches your UI behavior
-            progress_cb=prog,
-        )
+        elif stage == "denoise":
+            out = denoise_rgb01(
+                out,
+                denoise_strength=float(preset.get("denoise_luma", 0.5)),
+                denoise_mode=str(preset.get("denoise_mode", "full")),
+                separate_channels=bool(preset.get("separate_channels", False)),
+                color_denoise_strength=float(preset.get("denoise_color", 0.5)),
+                use_gpu=use_gpu,
+                chunk_size=chunk_size,
+                overlap=overlap,
+                temp_stretch=bool(preset.get("temp_stretch", False)),
+                target_median=float(preset.get("target_median", 0.25)),
+                progress_cb=prog,
+            )
 
-    if mode == "satellite":
-        models = get_satellite_models(use_gpu=use_gpu, status_cb=lambda _: None)
+        elif stage == "superres":
+            out = superres_rgb01(
+                out,
+                scale=int(preset.get("scale", 2)),
+                use_gpu=True,
+                progress_cb=prog,
+            )
 
-        def sat_prog(done: int, total: int):
-            if progress_cb is None:
-                return True
-            if total <= 0:
-                return progress_cb(0, 100)
-            return progress_cb(int(100 * done / total), 100)
+        elif stage == "satellite":
+            models = get_satellite_models(use_gpu=use_gpu, status_cb=lambda _: None)
 
-        out, _detected = satellite_remove_image(
-            out,
-            models=models,
-            mode=str(preset.get("sat_mode", "full")).lower(),
-            clip_trail=bool(preset.get("sat_clip_trail", True)),
-            sensitivity=float(preset.get("sat_sensitivity", 0.10)),
-            progress_cb=sat_prog,
-        )
+            def sat_prog(done: int, total: int):
+                if progress_cb is None:
+                    return True
+                if total <= 0:
+                    return progress_cb(0, 100)
+                return prog(done, total)
+
+            out, _detected = satellite_remove_image(
+                out,
+                models=models,
+                mode=str(preset.get("sat_mode", "full")).lower(),
+                clip_trail=bool(preset.get("sat_clip_trail", True)),
+                sensitivity=float(preset.get("sat_sensitivity", 0.10)),
+                progress_cb=sat_prog,
+            )
 
     out = np.asarray(out, dtype=np.float32)
     out = np.clip(out, 0.0, 1.0)
-
     out = _back_to_mono_if_needed(out, was_mono)
     return out
+
 
 def _infer_format_from_path(p: str, fallback: str = "tif") -> str:
     ext = (Path(p).suffix or "").lower().lstrip(".")
