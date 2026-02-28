@@ -268,9 +268,14 @@ class SettingsDialog(QDialog):
         self.cb_accel_pref = QComboBox()
         self._accel_items = [
             (self.tr("Auto (recommended)"), "auto"),
-            (self.tr("CUDA (NVIDIA)"), "cuda"),
+            (
+                self.tr("Apple Silicon GPU (MPS path)"),
+                "cuda"
+            ) if platform.system() == "Darwin" else (
+                self.tr("CUDA (NVIDIA)"),
+                "cuda"
+            ),
         ]
-
         # Linux AMD ROCm option (now supported)
         if platform.system() == "Linux":
             self._accel_items.append((self.tr("ROCm (AMD on Linux)"), "rocm"))
@@ -291,11 +296,11 @@ class SettingsDialog(QDialog):
             self.cb_accel_pref.addItem(label)
         self.cb_accel_pref.currentIndexChanged.connect(self._accel_pref_changed)
 
-        self.install_accel_btn = QPushButton(self.tr("Install/Update GPU Acceleration…"))
+        self.install_accel_btn = QPushButton(self.tr("Install/Repair Hardware Acceleration…"))
 
         gpu_help_btn = QToolButton()
         gpu_help_btn.setText("?")
-        gpu_help_btn.setToolTip(self.tr("If GPU still not being used — click for fix steps"))
+        gpu_help_btn.setToolTip(self.tr("If hardware acceleration is still not being used — click for fix steps"))
         gpu_help_btn.clicked.connect(self._show_gpu_accel_fix_help)
 
         accel_box = QVBoxLayout()
@@ -710,12 +715,13 @@ class SettingsDialog(QDialog):
     def _show_gpu_accel_fix_help(self):
         from PyQt6.QtWidgets import QMessageBox
         QMessageBox.information(
-            self, self.tr("GPU Acceleration Help"),
+            self, self.tr("Hardware Acceleration Help"),
             self.tr(
-                "If GPU is not being used:\n"
-                " • Click Install/Update GPU Acceleration…\n"
+                "If hardware acceleration is not being used:\n"
+                " • Click Install/Repair Hardware Acceleration…\n"
                 " • Restart SAS Pro\n"
                 " • On NVIDIA systems, verify drivers and that 'nvidia-smi' works.\n"
+                " • On macOS Apple Silicon, use Auto or Apple Silicon GPU (MPS path).\n"
                 " • On Linux AMD systems, select ROCm and ensure ROCm-compatible drivers/runtime are installed.\n"
                 " • On Intel Arc/Xe systems, select Intel XPU.\n"
                 " • On Windows non-NVIDIA, DirectML may be used.\n"
@@ -859,7 +865,7 @@ class SettingsDialog(QDialog):
 
         if is_future:
             title = self.tr("Unsupported Python Version")
-            headline = self.tr("GPU acceleration cannot be installed with Python {0}.").format(running)
+            headline = self.tr("Hardware acceleration cannot be installed with Python {0}.").format(running)
             details = self.tr(
                 "SAS Pro hardware acceleration requires Python 3.12.\n\n"
                 "Please install Python 3.12 and re-launch SAS Pro.\n\n"
@@ -869,7 +875,7 @@ class SettingsDialog(QDialog):
             title = self.tr("Python 3.12 Required")
             headline = self.tr("Python 3.12 was not found on this system.")
             details = self.tr(
-                "GPU acceleration setup requires a runnable Python 3.12.\n\n"
+                "Hardware acceleration setup requires a runnable Python 3.12.\n\n"
                 "You are currently running Python {0}.\n\n"
                 "Install Python 3.12 and re-launch SAS Pro.\n\n"
                 "Probe details: {1}"
@@ -882,6 +888,29 @@ class SettingsDialog(QDialog):
         # Single hard-stop gate
         if not self._gate_python312_for_accel_install():
             self.backend_label.setText(self.tr("Backend: CPU (Python 3.12 required)"))
+            return
+
+        from PyQt6.QtWidgets import QMessageBox
+
+        warn = QMessageBox(self)
+        warn.setIcon(QMessageBox.Icon.Warning)
+        warn.setWindowTitle(self.tr("Install GPU Acceleration"))
+        warn.setText(self.tr("This process may appear stalled for several minutes."))
+        warn.setInformativeText(self.tr(
+            "SAS Pro is downloading and installing very large PyTorch runtime packages "
+            "(often around 2.5 GB total).\n\n"
+            "Do NOT close SAS Pro.\n"
+            "Do NOT cancel the install.\n"
+            "Do NOT force-stop the process, even if it looks hung.\n\n"
+            "Interrupting installation can corrupt the runtime environment and require "
+            "a full reinstall of Hardware Acceleration."
+        ))
+        btn_install = warn.addButton(self.tr("I Understand — Install/Repair"), QMessageBox.ButtonRole.AcceptRole)
+        warn.addButton(QMessageBox.StandardButton.Cancel)
+        warn.setDefaultButton(btn_install)
+        warn.exec()
+
+        if warn.clickedButton() is not btn_install:
             return
 
         from PyQt6.QtWidgets import QMessageBox, QProgressDialog
@@ -901,11 +930,29 @@ class SettingsDialog(QDialog):
         except Exception:
             pref_key = (self.settings.value("accel/preferred_backend", "auto", type=str) or "auto").lower()
 
-        self._accel_pd = QProgressDialog(self.tr("Preparing runtime…"), self.tr("Cancel"), 0, 0, self)
-        self._accel_pd.setWindowTitle(self.tr("Installing GPU Acceleration"))
+        self._accel_pd = QProgressDialog(self)
+        self._accel_pd.setWindowTitle(self.tr("Installing Hardware Acceleration — Do Not Interrupt"))
         self._accel_pd.setWindowModality(Qt.WindowModality.ApplicationModal)
-        self._accel_pd.setAutoClose(True)
+        self._accel_pd.setRange(0, 0)  # busy / indeterminate
+        self._accel_pd.setCancelButton(None)  # <- no cancel button
+        self._accel_pd.setAutoClose(False)
+        self._accel_pd.setAutoReset(False)
         self._accel_pd.setMinimumDuration(0)
+        self._accel_pd.setMinimumWidth(560)
+
+        # remove close button too
+        flags = self._accel_pd.windowFlags()
+        flags &= ~Qt.WindowType.WindowCloseButtonHint
+        self._accel_pd.setWindowFlags(flags)
+
+        self._accel_warning_text = self.tr(
+            "⚠️ IMPORTANT:\n"
+            "Do NOT close SAS Pro or interrupt this process.\n"
+            "GPU Acceleration installs very large PyTorch runtime packages and may appear hung.\n"
+            "This is normal.\n\n"
+        )
+
+        self._accel_pd.setLabelText(self._accel_warning_text + self.tr("Preparing runtime…"))
         self._accel_pd.show()
 
         self._accel_thread = QThread(self)
@@ -913,12 +960,11 @@ class SettingsDialog(QDialog):
         self._accel_worker.moveToThread(self._accel_thread)
 
         self._accel_thread.started.connect(self._accel_worker.run, Qt.ConnectionType.QueuedConnection)
-        self._accel_worker.progress.connect(self._accel_pd.setLabelText, Qt.ConnectionType.QueuedConnection)
+        def _set_accel_progress(msg: str):
+            if getattr(self, "_accel_pd", None):
+                self._accel_pd.setLabelText(self._accel_warning_text + str(msg))
 
-        def _cancel():
-            if self._accel_thread.isRunning():
-                self._accel_thread.requestInterruption()
-        self._accel_pd.canceled.connect(_cancel, Qt.ConnectionType.QueuedConnection)
+        self._accel_worker.progress.connect(_set_accel_progress, Qt.ConnectionType.QueuedConnection)
 
         def _done(ok: bool, msg: str):
             if getattr(self, "_accel_pd", None):

@@ -1348,35 +1348,22 @@ def import_torch(
         if require_torchaudio and (not info["torchaudio"][0]):
             missing.append("torchaudio")
 
-        status_cb(f"[RT] Missing in runtime venv: {missing}. Installing…")
+        if prefer_cuda or prefer_xpu or prefer_dml or prefer_rocm:
+            msg = (
+                "GPU acceleration runtime is not installed or is incomplete.\n\n"
+                f"Missing packages in runtime venv: {', '.join(missing)}\n\n"
+                "Please go to Settings -> Preferences and install GPU Acceleration "
+                "before running Cosmic Clarity, Syqon, or other hardware accelerated tools."
+            )
+            status_cb(f"[RT] {msg}")
+            raise RuntimeError(msg)
 
-        try:
-            with _install_lock(rt):
-                _install_torch(
-                    vp,
-                    prefer_cuda=prefer_cuda,
-                    prefer_xpu=prefer_xpu,
-                    prefer_dml=prefer_dml,
-                    prefer_rocm=prefer_rocm,
-                    status_cb=status_cb,
-                )
-                _ensure_numpy(vp, status_cb=status_cb)
-        except Exception as e:
-            if _is_access_denied(e):
-                raise OSError(_access_denied_msg(rt)) from e
-            raise
-
-        # Re-probe after install
-        ok_all, info = _venv_has_torch_stack(vp, status_cb=status_cb, require_torchaudio=require_torchaudio)
-        status_cb(
-            "[RT] venv re-probe: "
-            f"torch={info['torch'][0]} "
-            f"torchvision={info['torchvision'][0]} "
-            f"torchaudio={info['torchaudio'][0]}"
+        msg = (
+            "Hardware acceleration runtime is not installed or is incomplete.\n\n"
+            f"Missing packages in runtime venv: {', '.join(missing)}"
         )
-        if not ok_all:
-            msg = "\n".join([f"{k}: ok={ok} :: {out}" for k, (ok, out) in info.items()])
-            raise RuntimeError("Torch stack still not importable in runtime venv after install:\n" + msg)
+        status_cb(f"[RT] {msg}")
+        raise RuntimeError(msg)
 
     # Always write/update marker for convenience, but never trust it for decisions.
     try:
