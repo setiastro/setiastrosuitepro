@@ -23,8 +23,8 @@ from setiastro.saspro.remove_stars import (
     _invert_mtf_unlinked_rgb,
 )
 
-_SYQON_BUY_URL_PRISM_MINI = "https://syqon.it/"   # replace with exact URL when you have it
-_SYQON_BUY_URL_PRISM_DEEP = "https://syqon.it/"   # replace with exact URL when you have it
+_SYQON_BUY_URL_PRISM_MINI = "https://github.com/setiastro/setiastrosuitepro/releases/download/benchmarkFIT/prism_mini"   # replace with exact URL when you have it
+_SYQON_BUY_URL_PRISM_DEEP = "https://syqon.it/prism"   # replace with exact URL when you have it
 
 def _syqon_prism_buy_url_for(model_kind: str) -> str:
     mk = (model_kind or "prism_mini").lower().strip()
