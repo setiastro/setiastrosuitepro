@@ -13,7 +13,7 @@ from setiastro.saspro.cosmicclarity_engines.satellite_engine import (
     get_satellite_models,
     satellite_remove_image,
 )
-from setiastro.saspro.pro.aberration_ai import run_aberration_ai_on_array
+from setiastro.saspro.aberration_ai import run_aberration_ai_on_array
 
 
 ProgressCB = Optional[Callable[[int, int], bool]]  # (done,total)->continue?
