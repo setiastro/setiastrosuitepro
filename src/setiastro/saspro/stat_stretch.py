@@ -134,7 +134,7 @@ class StatisticalStretchDialog(QDialog):
         bp_lay.addWidget(QLabel(self.tr("Black point σ:")))
 
         self.sld_bp = QSlider(Qt.Orientation.Horizontal)
-        self.sld_bp.setRange(50, 600)   # 0.50 .. 6.00
+        self.sld_bp.setRange(50, 1000)   # 0.50 .. 10.00
         self.sld_bp.setValue(500)       # 5.00 default (matches your label)
         bp_lay.addWidget(self.sld_bp, 1)
 
