@@ -1298,9 +1298,9 @@ class SyQonStarlessDialog(QDialog):
         self.lbl_model_path.setText(f"Installed model path:\n{str(dst)}")
 
         if mk == "axiomv2":
-            expected = "axiomv2.pt"
+            expected = "the AxiomV2 model file"
         else:
-            expected = "nadir (no extension)"
+            expected = "the Nadir model file"
 
         if self._have_model():
             self.lbl.setText("Ready (SyQon model installed).")
@@ -1351,15 +1351,10 @@ class SyQonStarlessDialog(QDialog):
 
         mk = self._model_kind()
 
-        # Expected naming rules per model
         if mk == "axiomv2":
-            expected_desc = "axiomv2.pt"
-            def _name_ok(p: Path) -> bool:
-                return p.name.lower() == "axiomv2.pt"
+            expected_desc = "AxiomV2 model file"
         else:
-            expected_desc = "nadir (no extension)"
-            def _name_ok(p: Path) -> bool:
-                return p.name.lower() == "nadir" and p.suffix == ""
+            expected_desc = "Nadir model file"
 
         src_path, _ = QFileDialog.getOpenFileName(
             self,
@@ -1373,17 +1368,6 @@ class SyQonStarlessDialog(QDialog):
         src = Path(src_path)
         if not src.exists():
             QMessageBox.warning(self, "SyQon", "Selected file does not exist.")
-            return
-
-        if not _name_ok(src):
-            QMessageBox.warning(
-                self,
-                "SyQon",
-                "That doesn’t look like the selected SyQon model file.\n\n"
-                f"Selected variant: {mk}\n"
-                f"Expected: {expected_desc}\n\n"
-                f"You selected:\n  {src.name}"
-            )
             return
 
         dst = self._model_dst_path()

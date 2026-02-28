@@ -184,7 +184,7 @@ from setiastro.saspro.resources import (
     disk_icon_path, nuke_path, hubble_path, collage_path, annotated_path,
     colorwheel_path, font_path, csv_icon_path, spinner_path, wims_path, narrowbandnormalization_path,
     wimi_path, linearfit_path, debayer_path, aberration_path, acv_icon_path, snr_path,
-    functionbundles_path, viewbundles_path, selectivecolor_path, rgbalign_path, planetarystacker_path,
+    functionbundles_path, viewbundles_path, selectivecolor_path, rgbalign_path, planetarystacker_path,syqon_path,
     background_path, script_icon_path, planetprojection_path,clonestampicon_path, finderchart_path,magnitude_path,
 )
 
@@ -4128,6 +4128,57 @@ class AstroSuiteProMainWindow(
             dlg.exec()
         except Exception as e:
             print(f"Failed to open Aberration AI: {e}")
+
+    def _open_syqon_tools(self):
+        from setiastro.saspro.syqon_tools import SyQonToolsDialog
+
+        sw = self.mdi.activeSubWindow()
+        if not sw:
+            QMessageBox.information(self, "SyQon Tools", "No active image view.")
+            return
+
+        w = sw.widget() if hasattr(sw, "widget") else None
+        doc = getattr(w, "document", None)
+        if doc is None or getattr(doc, "image", None) is None:
+            QMessageBox.information(self, "SyQon Tools", "Active view has no image.")
+            return
+
+        try:
+            # keep one persistent reference so it does not get garbage-collected
+            if not hasattr(self, "_syqon_tools_dialog"):
+                self._syqon_tools_dialog = None
+
+            # if already open, just bring it forward
+            if self._syqon_tools_dialog is not None:
+                try:
+                    self._syqon_tools_dialog.show()
+                    self._syqon_tools_dialog.raise_()
+                    self._syqon_tools_dialog.activateWindow()
+                    return
+                except Exception:
+                    self._syqon_tools_dialog = None
+
+            dlg = SyQonToolsDialog(
+                self,
+                self.docman,
+                get_active_doc_callable=lambda: doc,
+                icon=QIcon(syqon_path),
+            )
+
+            # modeless behavior
+            dlg.setModal(False)
+            dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+
+            # clear reference when user closes it
+            dlg.destroyed.connect(lambda *_: setattr(self, "_syqon_tools_dialog", None))
+
+            self._syqon_tools_dialog = dlg
+            dlg.show()
+            dlg.raise_()
+            dlg.activateWindow()
+
+        except Exception as e:
+            print(f"Failed to open SyQon Tools: {e}")
 
     def _open_cosmic_clarity_ui(self):
         print("Opening Cosmic Clarity UI...")

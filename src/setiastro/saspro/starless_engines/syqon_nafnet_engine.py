@@ -31,57 +31,112 @@ def _infer_device(torch, *, prefer_cuda: bool = True, prefer_dml: bool = True):
 
     return torch.device("cpu")
 
+def _looks_like_decode_error(exc: Exception) -> bool:
+    msg = f"{type(exc).__name__}: {exc}".lower()
+    return (
+        "codec can't decode" in msg
+        or "can't decode byte" in msg
+        or "invalid continuation byte" in msg
+        or "unicode" in msg
+        or "decode" in msg
+    )
+
+def _torch_load_once(torch, ckpt_path: str, *, encoding=None):
+    """
+    Small helper so we can consistently try torch.load with/without encoding,
+    and prefer weights_only=False when supported for compatibility with full checkpoints.
+    """
+    kwargs = {
+        "map_location": "cpu",
+    }
+    if encoding is not None:
+        kwargs["encoding"] = encoding
+
+    with open(ckpt_path, "rb") as f:
+        try:
+            return torch.load(f, weights_only=False, **kwargs)
+        except TypeError as e:
+            if "weights_only" not in str(e):
+                raise
+            f.seek(0)
+            return torch.load(f, **kwargs)
+        
 def _torch_load_fallback(torch, ckpt_path: str):
     """
-    More robust torch.load() with encoding fallbacks for python2-pickled checkpoints.
+    Robust torch.load() with encoding fallbacks for older / odd pickle metadata.
+    Some torch builds bubble decode problems as non-UnicodeDecodeError exceptions,
+    so we inspect the message too.
     """
-    # 1) First try: normal load (fast path)
-    try:
-        with open(ckpt_path, "rb") as f:
-            return torch.load(f, map_location="cpu"), {"torch_load_encoding": "default"}
-    except UnicodeDecodeError as e0:
-        last = e0
-    except Exception:
-        # if it fails for non-unicode reasons, let caller handle it
-        raise
+    last_exc = None
 
-    # 2) Encoding fallbacks (common for old pickles / non-utf8 metadata)
+    # 1) fast path
+    try:
+        return _torch_load_once(torch, ckpt_path), {"torch_load_encoding": "default"}
+    except Exception as e:
+        last_exc = e
+        if not _looks_like_decode_error(e):
+            raise
+
+    # 2) encoding fallbacks
     for enc in ("latin1", "cp1252", "iso-8859-1"):
         try:
-            with open(ckpt_path, "rb") as f:
-                return torch.load(f, map_location="cpu", encoding=enc), {"torch_load_encoding": enc}
-        except UnicodeDecodeError as e:
-            last = e
-            continue
-        except TypeError:
-            # Some torch builds may not accept encoding=...; if so, break out and re-raise last
-            break
+            return _torch_load_once(torch, ckpt_path, encoding=enc), {"torch_load_encoding": enc}
+        except Exception as e:
+            last_exc = e
 
-    # 3) If we got here, we still couldn’t decode the pickle stream
-    raise last
+            # If this torch build doesn't accept encoding=..., keep trying logic simple
+            # but only bail out if this is clearly not a decode-related issue.
+            if "unexpected keyword argument" in str(e).lower() and "encoding" in str(e).lower():
+                break
+
+            if not _looks_like_decode_error(e):
+                raise
+
+    # 3) final failure
+    raise last_exc
 
 
 def _load_state_dict(torch, ckpt_path: str):
     ckpt, load_meta = _torch_load_fallback(torch, ckpt_path)
 
+    def _small_meta(src):
+        out = dict(load_meta)
+        if isinstance(src, dict):
+            out["checkpoint_keys"] = list(src.keys())[:20]
+            for k in ("epoch", "best_val", "residual_output"):
+                if k in src:
+                    out[k] = src[k]
+            if "args" in src and isinstance(src["args"], dict):
+                # only keep tiny safe bits if you want them
+                for ak in ("base_ch", "depth", "amp"):
+                    if ak in src["args"]:
+                        out[f"args_{ak}"] = src["args"][ak]
+        return out
+
     if isinstance(ckpt, dict):
         if "state_dict" in ckpt and isinstance(ckpt["state_dict"], dict):
-            meta = dict(ckpt)
-            meta.update(load_meta)
-            return ckpt["state_dict"], meta
+            return ckpt["state_dict"], _small_meta(ckpt)
 
         if "model" in ckpt and isinstance(ckpt["model"], dict):
-            meta = dict(ckpt)
-            meta.update(load_meta)
-            return ckpt["model"], meta
+            return ckpt["model"], _small_meta(ckpt)
 
         if any(
             k.startswith(("intro.", "ending.", "encoders.", "downs.", "middle.", "decoders.", "ups."))
             for k in ckpt.keys()
         ):
-            return ckpt, load_meta  # was raw state_dict, so meta is just load_meta
+            return ckpt, dict(load_meta)
 
-    raise RuntimeError("Unsupported checkpoint format (expected state_dict-like dict).")
+    if isinstance(ckpt, dict):
+        sample_keys = list(ckpt.keys())[:20]
+        raise RuntimeError(
+            f"Unsupported checkpoint format (expected state_dict-like dict). "
+            f"Top-level keys: {sample_keys}"
+        )
+
+    raise RuntimeError(
+        f"Unsupported checkpoint format: top-level object is {type(ckpt).__name__}, "
+        "expected a dict or a state_dict-like mapping."
+    )
 
 
 def _infer_nafnet_cfg_from_sd(sd: dict) -> Tuple[int, int]:
@@ -139,18 +194,15 @@ def load_nafnet_model(
 
     # OPTIONAL: fail fast if it's clearly the wrong architecture/width
     # (still keep strict=False for robustness if SyQon adds extra keys)
-    try:
-        iw = sd.get("intro.weight", None)
-        if iw is not None and hasattr(iw, "shape"):
-            sd_width = int(iw.shape[0])  # out_channels of intro conv
-            if int(base_ch) != sd_width:
-                raise RuntimeError(
-                    f"SyQon checkpoint width mismatch: state_dict intro.weight[0]={sd_width} "
-                    f"but inferred base_ch={base_ch} (variant={variant})."
-                )
-    except Exception:
-        # if anything about the check fails, just proceed with load_state_dict
-        pass
+    iw = sd.get("intro.weight", None)
+    if iw is not None and hasattr(iw, "shape"):
+        sd_width = int(iw.shape[0])
+        if int(base_ch) != sd_width:
+            raise RuntimeError(
+                f"SyQon checkpoint width mismatch: state_dict intro.weight[0]={sd_width} "
+                f"but inferred base_ch={base_ch} (variant={variant})."
+            )
+
 
     model.load_state_dict(sd, strict=False)
     model.eval()
@@ -162,7 +214,7 @@ def load_nafnet_model(
         "model_kind": variant,
         "base_ch": base_ch,
         "depth": depth,
-        #"meta": meta,
+        "meta": meta,
         "device": str(device),
         "torch_version": getattr(torch, "__version__", None),
         "torch_file": getattr(torch, "__file__", None),

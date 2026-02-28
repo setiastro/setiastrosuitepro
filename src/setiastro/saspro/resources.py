@@ -299,6 +299,7 @@ class Icons:
     CONT_SUB = property(lambda self: _resource_path('contsub.png'))
     HALO = property(lambda self: _resource_path('halo.png'))
     ABERRATION = property(lambda self: _resource_path('aberration.png'))
+    SYQON = property(lambda self: _resource_path('syqon.png'))
     
     # Color
     SPCC = property(lambda self: _resource_path('spcc.png'))
@@ -542,6 +543,7 @@ _LEGACY_ICON_MAP = {
     'finderchart_path': 'finderchart.png',
     'magnitude_path': 'magnitude.png',
     'snr_path': 'snr.png',
+    'syqon_path': 'syqon.png',
 }
 
 _LEGACY_DATA_MAP = {

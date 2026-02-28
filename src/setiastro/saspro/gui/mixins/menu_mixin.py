@@ -171,6 +171,7 @@ class MenuMixin:
         mCosmic.addAction(self.actCosmicUI)
         mCosmic.addAction(self.actCosmicSat)
         mCosmic.addAction(self.act_graxpert)
+        mCosmic.addAction(self.actSyQonTools) 
         mCosmic.addAction(self.act_remove_stars)
 
         m_tools = mb.addMenu(self.tr("&Tools"))
