@@ -9,6 +9,8 @@ import datetime
 from datetime import timezone
 import numpy as np
 from PIL import Image
+Image.init()
+
 import tifffile as tiff
 
 # add this near your other optional imports
