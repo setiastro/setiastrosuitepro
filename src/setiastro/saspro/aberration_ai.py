@@ -75,6 +75,81 @@ def _app_model_dir() -> str:
     os.makedirs(d, exist_ok=True)
     return d
 
+def _download_latest_model_sync(
+    dst_dir: str | None = None,
+    *,
+    progress_cb=None,   # callable(frac_0_to_1)
+    cancel_cb=None,     # callable() -> bool
+    log_cb=None,        # callable(str)
+) -> str:
+    """
+    Download the latest aberration ONNX model synchronously.
+    Returns the downloaded model path.
+    Raises RuntimeError on failure/cancel.
+    """
+    if cancel_cb and cancel_cb():
+        raise RuntimeError("Canceled")
+
+    dst_dir = dst_dir or _app_model_dir()
+    os.makedirs(dst_dir, exist_ok=True)
+
+    if log_cb:
+        log_cb("⬇️ Aberration AI: checking latest model release...")
+
+    try:
+        r = requests.get(LATEST_API, timeout=10)
+        if r.status_code != 200:
+            raise RuntimeError(f"GitHub API error: {r.status_code}")
+
+        js = r.json()
+        assets = js.get("assets", [])
+        onnx_assets = [a for a in assets if a.get("name", "").lower().endswith(".onnx")]
+        if not onnx_assets:
+            raise RuntimeError("No .onnx asset found in latest release.")
+
+        asset = onnx_assets[0]
+        url = asset["browser_download_url"]
+        name = asset["name"]
+        out_path = os.path.join(dst_dir, name)
+        tmp_path = out_path + ".part"
+
+        if log_cb:
+            log_cb(f"⬇️ Aberration AI: downloading model {name}...")
+
+        got = 0
+        with requests.get(url, stream=True, timeout=60) as rr:
+            rr.raise_for_status()
+            total = int(rr.headers.get("Content-Length", "0") or 0)
+            chunk = 1 << 20
+
+            with open(tmp_path, "wb") as f:
+                for blk in rr.iter_content(chunk):
+                    if cancel_cb and cancel_cb():
+                        raise RuntimeError("Canceled")
+                    if blk:
+                        f.write(blk)
+                        got += len(blk)
+                        if total > 0 and progress_cb is not None:
+                            try:
+                                progress_cb(min(1.0, got / total))
+                            except Exception:
+                                pass
+
+        os.replace(tmp_path, out_path)
+        QSettings().setValue("AberrationAI/model_path", out_path)
+
+        if log_cb:
+            log_cb(f"✅ Aberration AI: downloaded model to {out_path}")
+
+        return out_path
+
+    except Exception as e:
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
+        raise RuntimeError(str(e))
 
 class _DownloadWorker(QThread):
     progressed = pyqtSignal(int)      # 0..100 (downloaded)
@@ -266,6 +341,69 @@ def resolve_aberration_model_path() -> str:
         return downloaded
     return ""
 
+def resolve_or_download_aberration_model_path(
+    requested_model_path: str | None = None,
+    *,
+    auto_download: bool = True,
+    progress_cb=None,   # callable(frac_0_to_1)
+    cancel_cb=None,     # callable() -> bool
+    log_cb=None,        # callable(str)
+) -> tuple[str, bool]:
+    """
+    Resolve the best usable model path.
+
+    Order:
+      1) explicit requested_model_path if valid
+      2) custom model if enabled and valid
+      3) downloaded model if valid
+      4) auto-download latest model if allowed
+
+    Returns:
+        (model_path, did_download)
+
+    Raises:
+        RuntimeError if no model can be resolved/downloaded.
+    """
+    s = QSettings()
+    use_custom = s.value("AberrationAI/use_custom_model", False, type=bool)
+    downloaded = s.value("AberrationAI/model_path", type=str) or ""
+    custom = s.value("AberrationAI/custom_model_path", type=str) or ""
+
+    # Explicit path wins if valid
+    if requested_model_path and os.path.isfile(requested_model_path):
+        return requested_model_path, False
+
+    # If caller passed a bad explicit path, log it but continue to fallback
+    if requested_model_path and not os.path.isfile(requested_model_path):
+        if log_cb:
+            log_cb(f"⚠️ Aberration AI: requested model not found: {requested_model_path}")
+
+    # Valid custom model
+    if use_custom and custom and os.path.isfile(custom):
+        return custom, False
+
+    # Custom was enabled but missing: warn and continue
+    if use_custom and custom and not os.path.isfile(custom):
+        if log_cb:
+            log_cb("⚠️ Aberration AI: custom model is enabled but missing; falling back to downloaded/latest model.")
+
+    # Valid downloaded model
+    if downloaded and os.path.isfile(downloaded):
+        return downloaded, False
+
+    # Nothing valid: auto-download latest
+    if auto_download:
+        if log_cb:
+            log_cb("⬇️ Aberration AI: no local model found; downloading latest model automatically...")
+        path = _download_latest_model_sync(
+            _app_model_dir(),
+            progress_cb=progress_cb,
+            cancel_cb=cancel_cb,
+            log_cb=log_cb,
+        )
+        return path, True
+
+    raise RuntimeError("No valid Aberration AI model is configured.")
 
 def run_aberration_ai_on_array(
     image: np.ndarray,
@@ -276,6 +414,7 @@ def run_aberration_ai_on_array(
     border_px: int = 10,
     auto_gpu: bool = True,
     provider: str | None = None,
+    providers: list[str] | None = None,
     progress_cb=None,   # callable(frac_0_to_1)
     cancel_cb=None,     # callable() -> bool
     log_cb=None,        # callable(str)
@@ -301,27 +440,46 @@ def run_aberration_ai_on_array(
     if cancel_cb and cancel_cb():
         raise RuntimeError("Canceled")
 
-    # Resolve model
-    model_path = model_path or resolve_aberration_model_path()
+    # Resolve or auto-download model if needed
+    did_download = False
+    model_path, did_download = resolve_or_download_aberration_model_path(
+        model_path,
+        auto_download=True,
+        progress_cb=(lambda f: progress_cb(0.15 * float(f))) if progress_cb is not None else None,
+        cancel_cb=cancel_cb,
+        log_cb=log_cb,
+    )
+
     if not model_path or not os.path.isfile(model_path):
         raise RuntimeError("No valid Aberration AI model is configured.")
 
     # Provider selection
     if IS_APPLE_ARM:
-        providers = ["CPUExecutionProvider"]
+        resolved_providers = ["CPUExecutionProvider"]
+    elif providers:
+        resolved_providers = list(providers)
     else:
         if auto_gpu:
-            providers = pick_providers(auto_gpu=True)
+            resolved_providers = pick_providers(auto_gpu=True)
         else:
-            providers = [provider or "CPUExecutionProvider"]
+            resolved_providers = [provider or "CPUExecutionProvider"]
 
-    if not providers:
-        providers = ["CPUExecutionProvider"]
+    if not resolved_providers:
+        resolved_providers = ["CPUExecutionProvider"]
 
     avail_providers = ort.get_available_providers()
+    has_nvidia = _has_nvidia_gpu()
+
     if log_cb:
         log_cb(f"🔍 Available ONNX providers: {', '.join(avail_providers)}")
-        log_cb(f"🔍 Attempting providers: {', '.join(providers)}")
+        log_cb(f"🔍 Attempting providers: {', '.join(resolved_providers)}")
+
+    if has_nvidia and "CUDAExecutionProvider" not in avail_providers:
+        msg = ("⚠️ GPU NVIDIA détecté mais CUDAExecutionProvider n'est pas disponible.\n"
+               "   Vous devez installer 'onnxruntime-gpu' au lieu de 'onnxruntime'.\n"
+               "   Commande: pip uninstall onnxruntime && pip install onnxruntime-gpu")
+        if log_cb:
+            log_cb(msg)
 
     # Match model-required patch if fixed
     req = _model_required_patch(model_path)
@@ -329,33 +487,60 @@ def run_aberration_ai_on_array(
         patch = req
 
     # CoreML guard
-    if "CoreMLExecutionProvider" in providers and req and req > 128:
+    if "CoreMLExecutionProvider" in resolved_providers and req and req > 128:
         if log_cb:
-            log_cb(f"CoreML limited for this model size; forcing CPU because model requires {req}px tiles.")
-        providers = ["CPUExecutionProvider"]
+            log_cb(f"CoreML limited to small tiles; model requires {req}px → using CPU.")
+        resolved_providers = ["CPUExecutionProvider"]
+
+    gpu_providers = [p for p in resolved_providers if p != "CPUExecutionProvider"]
 
     # Init session, fallback to CPU if needed
     try:
-        sess = ort.InferenceSession(model_path, providers=providers)
+        sess = ort.InferenceSession(model_path, providers=resolved_providers)
         used_provider = (sess.get_providers()[0] if sess.get_providers() else "CPUExecutionProvider")
+
         if log_cb:
-            log_cb(f"✅ Aberration AI using provider: {used_provider}")
+            if used_provider != "CPUExecutionProvider" and gpu_providers:
+                log_cb(f"✅ Aberration AI: Using GPU provider {used_provider}")
+            elif has_nvidia and used_provider == "CPUExecutionProvider":
+                log_cb("⚠️ GPU NVIDIA détecté mais utilisation du CPU.\n"
+                       "   Installez 'onnxruntime-gpu' pour utiliser le GPU.")
+            else:
+                log_cb(f"✅ Aberration AI using provider: {used_provider}")
+
     except Exception as e:
+        error_msg = str(e)
+
         if log_cb:
-            log_cb(f"⚠️ Aberration AI provider init failed: {e}")
-            log_cb("⚠️ Falling back to CPUExecutionProvider")
+            log_cb(f"⚠️ Aberration AI: GPU provider failed: {error_msg}")
+            log_cb(f"Available providers: {', '.join(avail_providers)}")
+            log_cb(f"Attempted providers: {', '.join(resolved_providers)}")
+
+            if "CUDAExecutionProvider" in resolved_providers and "CUDAExecutionProvider" not in avail_providers:
+                if has_nvidia:
+                    log_cb("❌ CUDAExecutionProvider non disponible alors qu'un GPU NVIDIA est présent.\n"
+                           "   Installez 'onnxruntime-gpu': pip uninstall onnxruntime && pip install onnxruntime-gpu")
+                else:
+                    log_cb("⚠️ CUDAExecutionProvider not available. You may need to install onnxruntime-gpu instead of onnxruntime.")
+
         try:
             sess = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
             used_provider = "CPUExecutionProvider"
+            if log_cb:
+                log_cb(f"⚠️ Aberration AI: Falling back to CPU (GPU initialization failed: {error_msg})")
         except Exception as e2:
-            raise RuntimeError(f"Failed to init ONNX session:\nGPU error: {e}\nCPU error: {e2}")
+            raise RuntimeError(f"Failed to init ONNX session:\nGPU error: {error_msg}\nCPU error: {e2}")
 
     def _cb(frac):
         if cancel_cb and cancel_cb():
             raise RuntimeError("Canceled")
         if progress_cb is not None:
             try:
-                progress_cb(float(frac))
+                frac = float(frac)
+                if did_download:
+                    progress_cb(0.15 + 0.85 * frac)
+                else:
+                    progress_cb(frac)
             except Exception:
                 pass
 
@@ -444,9 +629,8 @@ class _ONNXWorker(QThread):
                 model_path=self.model_path,
                 patch=self.patch,
                 overlap=self.overlap,
-                border_px=0,  # dialog/preset callers may preserve border outside if desired
-                auto_gpu=False,  # providers already decided before worker creation
-                provider=None,
+                border_px=0,  # dialog preserves border afterward
+                providers=self.providers,   # <-- THIS is the key fix
                 progress_cb=_prog,
                 cancel_cb=self._is_canceled,
                 log_cb=lambda s: self.log_message.emit(str(s)),
@@ -867,17 +1051,23 @@ class AberrationAIDialog(QDialog):
         custom     = QSettings().value("AberrationAI/custom_model_path", type=str) or ""
 
         model_path = custom if use_custom else downloaded
+        # Choose model path (normal vs custom), but allow auto-download fallback later
+        use_custom = QSettings().value("AberrationAI/use_custom_model", False, type=bool)
+        downloaded = QSettings().value("AberrationAI/model_path", type=str) or ""
+        custom     = QSettings().value("AberrationAI/custom_model_path", type=str) or ""
+
+        model_path = custom if use_custom else downloaded
+
         if self.chk_use_custom.isChecked():
-            cp = QSettings().value("AberrationAI/custom_model_path", type=str)
+            cp = QSettings().value("AberrationAI/custom_model_path", type=str) or ""
             if cp and os.path.isfile(cp):
                 model_path = cp
             else:
-                QMessageBox.warning(self, "Model", "Custom model is enabled but the file is missing. Please browse to a valid .onnx.")
-                return
-
-        if not model_path or not os.path.isfile(model_path):
-            QMessageBox.warning(self, "Model", "Please select or download a valid .onnx model first.")
-            return
+                self._log("Aberration AI: custom model is enabled but missing; will download/use latest release model.")
+                model_path = ""
+        elif model_path and not os.path.isfile(model_path):
+            self._log("Aberration AI: configured model is missing; will download latest release model automatically.")
+            model_path = ""
 
         doc = self.get_active_doc()
         if doc is None or getattr(doc, "image", None) is None:
@@ -923,8 +1113,8 @@ class AberrationAIDialog(QDialog):
 
         self._t_start = time.perf_counter()
         prov_txt = ("auto" if self.chk_auto.isChecked() else self.cmb_provider.currentText() or "CPU")
-        self._log(f"🚀 Aberration AI: model={os.path.basename(model_path)}, "
-                  f"provider={prov_txt}, patch={patch}, overlap={overlap}")
+        model_txt = os.path.basename(model_path) if (model_path and os.path.isfile(model_path)) else "auto-download/latest"
+        self._log(f"🚀 Aberration AI: model={model_txt}, provider={prov_txt}, patch={patch}, overlap={overlap}")
         
         self._effective_model_path = model_path
 
@@ -951,6 +1141,8 @@ class AberrationAIDialog(QDialog):
         used = getattr(self._worker, "used_provider", None) or \
             (self.cmb_provider.currentText() if not self.chk_auto.isChecked() else "auto")        
         model_path = getattr(self, "_effective_model_path", self._model_path)
+        if not model_path or not os.path.isfile(model_path):
+            model_path = resolve_aberration_model_path()
         doc = self.get_active_doc()
         if doc is None or getattr(doc, "image", None) is None:
             QMessageBox.warning(self, "Image", "No active image.")
