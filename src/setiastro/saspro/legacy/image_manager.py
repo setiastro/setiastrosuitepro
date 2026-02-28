@@ -1177,6 +1177,14 @@ def attach_wcs_to_metadata(meta: dict, hdr: fits.Header | dict | None) -> dict:
 
     return meta
 
+def _is_fits_image_hdu(hdu) -> bool:
+    """
+    True only for actual image HDUs, not tables.
+    """
+    try:
+        return isinstance(hdu, (fits.PrimaryHDU, fits.ImageHDU, fits.CompImageHDU)) and hdu.data is not None
+    except Exception:
+        return False
 
 def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = False):
     """
@@ -1202,7 +1210,14 @@ def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = 
             # --- Unified FITS handling ---
             if filename.lower().endswith(('.fits', '.fit', '.fits.gz', '.fit.gz', '.fz', '.fz')):
                 # Use get_valid_header to retrieve the header and extension index.
-                original_header, ext_index = get_valid_header(filename)
+                try:
+                    original_header, ext_index = get_valid_header(filename)
+                except ValueError as e:
+                    if "No image HDU found" in str(e):
+                        # Not an image FITS; let DocManager enumerate tables instead
+                        print(f"FITS file contains no image HDU, deferring to table/extension handling: {filename}")
+                        return None, None, None, None
+                    raise
 
                 
                 # Open the file appropriately.
@@ -1900,46 +1915,39 @@ def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = 
 
 def get_valid_header(file_path):
     """
-    Opens the FITS file (handling compressed files as needed), finds the first HDU
-    with image data, and then searches through all HDUs for additional keywords (e.g. BAYERPAT).
-    Returns a composite header (a copy of the image HDU header updated with extra keywords)
-    and the extension index of the image data.
+    Opens the FITS file (handling compressed files as needed), finds the first IMAGE HDU
+    (not a table), and then searches through all HDUs for additional keywords (e.g. BAYERPAT).
+    Returns a composite header and the extension index of the image data.
+
+    Raises ValueError if no image HDU exists.
     """
-    # Open file appropriately for compressed files
     if file_path.lower().endswith(('.fits.gz', '.fit.gz')):
-        
         with gzip.open(file_path, 'rb') as f:
             file_content = f.read()
         hdul = fits.open(BytesIO(file_content))
     else:
-        
         hdul = fits.open(file_path)
 
     with hdul as hdul:
         image_hdu = None
         image_index = None
-        # First, find the HDU that contains image data
+
+        # Find first REAL image HDU only
         for i, hdu in enumerate(hdul):
-            
-            if hdu.data is not None:
+            if _is_fits_image_hdu(hdu):
                 image_hdu = hdu
                 image_index = i
-                
                 break
-        if image_hdu is None:
-            raise ValueError("No image data found in FITS file.")
 
-        # Start with a copy of the image HDU header
+        if image_hdu is None:
+            raise ValueError("No image HDU found in FITS file.")
+
         composite_header = image_hdu.header.copy()
-        # Drop any cards that will raise VerifyError later (e.g. broken TELESCOP)
         composite_header = _drop_invalid_cards(composite_header)
 
-
-        # Now search all HDUs for extra keywords (e.g. BAYERPAT)
-        for i, hdu in enumerate(hdul):
+        for hdu in hdul:
             if 'BAYERPAT' in hdu.header:
                 composite_header['BAYERPAT'] = hdu.header['BAYERPAT']
-
                 break
 
     return composite_header, image_index
