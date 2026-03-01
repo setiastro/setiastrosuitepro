@@ -735,7 +735,49 @@ def _load_torch_models(torch, device) -> SharpenModels:
     )
 
 # ---------------- Inference helpers ----------------
+def _chunk_coords_with_overlap(H: int, W: int, chunk_size: int, overlap: int):
+    """
+    Returns stable chunk coordinates so we can reuse them across stages
+    without rebuilding chunk lists from scratch.
+    Each entry: (i, j, ei, ej, is_edge)
+    """
+    step = chunk_size - overlap
+    out = []
+    for i in range(0, H, step):
+        for j in range(0, W, step):
+            ei = min(i + chunk_size, H)
+            ej = min(j + chunk_size, W)
+            if ei <= i or ej <= j:
+                continue
+            is_edge = (i == 0) or (j == 0) or (ei >= H) or (ej >= W)
+            out.append((i, j, ei, ej, is_edge))
+    return out
 
+
+def _recommended_batch_size(models: SharpenModels, chunk_size: int, *, psf: bool = False) -> int:
+    """
+    Conservative batching heuristic. Easy win without getting aggressive on VRAM.
+    """
+    if models.is_onnx:
+        return 1
+
+    dev = getattr(models.device, "type", str(models.device)).lower()
+
+    if dev == "cuda":
+        if chunk_size <= 256:
+            return 16 if not psf else 12
+        if chunk_size <= 384:
+            return 8 if not psf else 6
+        if chunk_size <= 512:
+            return 4 if not psf else 3
+        return 2
+
+    if dev == "mps":
+        if chunk_size <= 256:
+            return 4 if not psf else 3
+        return 2
+
+    return 1
 
 def _encode_psf_log2_0_1(psf: float, psf_min: float = 1.0, psf_max: float = 8.0) -> float:
     t = (math.log2(psf) - math.log2(psf_min)) / (math.log2(psf_max) - math.log2(psf_min))
@@ -745,16 +787,18 @@ def _infer_chunk_psf(models: SharpenModels, model: Any, chunk2d: np.ndarray, psf
     torch = models.torch
     dev = models.device
 
-    chunk_p, h0, w0 = _pad2d_to_multiple(np.asarray(chunk2d, np.float32), mult=16, mode="reflect")
-    hp, wp = chunk_p.shape
+    chunk2d = np.asarray(chunk2d, np.float32)
+    chunk_p, h0, w0 = _pad2d_to_multiple(chunk2d, mult=16, mode="reflect")
 
-    t_cpu = torch.tensor(chunk_p, dtype=torch.float32).unsqueeze(0).unsqueeze(0)  # (1,1,Hp,Wp)
-    t_rgb = t_cpu.repeat(1, 3, 1, 1).to(dev)                                      # (1,3,Hp,Wp)
-    psf_t = torch.tensor([[float(psf01)]], dtype=torch.float32, device=dev)        # (1,1)
+    t = torch.from_numpy(np.ascontiguousarray(chunk_p)).unsqueeze(0).unsqueeze(0)  # (1,1,Hp,Wp)
+    t = t.to(dev, dtype=torch.float32)
+    t_rgb = t.expand(-1, 3, -1, -1)  # (1,3,Hp,Wp)
+
+    psf_t = torch.tensor([[float(psf01)]], dtype=torch.float32, device=dev)
 
     with torch.no_grad(), _autocast_context(torch, dev):
-        y = model(t_rgb, psf_t)                 # (1,3,Hp,Wp)
-        y = y[0, 0].detach().cpu().numpy()      # (Hp,Wp)
+        y = model(t_rgb, psf_t)       # (1,3,Hp,Wp)
+        y = y[:, 0].detach().float().cpu().numpy()[0]
 
     return y[:h0, :w0].astype(np.float32, copy=False)
 
@@ -785,89 +829,136 @@ def _infer_chunk_psf_onnx(models: SharpenModels, session: Any, chunk2d: np.ndarr
 
     return y[:h0, :w0].astype(np.float32, copy=False)
 
+def _infer_chunks_batched(models: SharpenModels, model: Any, chunks2d: list[np.ndarray], batch_size: int) -> list[np.ndarray]:
+    """
+    Batch same-shaped chunks together for much better GPU utilization.
+    Falls back to per-chunk on ONNX or CPU-ish paths where batching may not help.
+    """
+    if not chunks2d:
+        return []
+
+    if models.is_onnx or batch_size <= 1:
+        return [_infer_chunk(models, model, ch) for ch in chunks2d]
+
+    torch = models.torch
+    dev = models.device
+
+    outputs: list[np.ndarray] = [None] * len(chunks2d)  # type: ignore
+
+    # Group by padded shape so np.stack works cleanly
+    groups: dict[tuple[int, int], list[tuple[int, np.ndarray, int, int]]] = {}
+    for idx, ch in enumerate(chunks2d):
+        ch = np.asarray(ch, np.float32)
+        ch_p, h0, w0 = _pad2d_to_multiple(ch, mult=16, mode="reflect")
+        groups.setdefault(ch_p.shape, []).append((idx, ch_p, h0, w0))
+
+    for _shape, items in groups.items():
+        for s in range(0, len(items), batch_size):
+            batch = items[s:s + batch_size]
+
+            arr = np.stack([np.ascontiguousarray(it[1]) for it in batch], axis=0)[:, None, :, :]  # (B,1,H,W)
+            t = torch.from_numpy(arr).to(dev, dtype=torch.float32)
+            t_rgb = t.expand(-1, 3, -1, -1)  # (B,3,H,W)
+
+            with torch.no_grad(), _autocast_context(torch, dev):
+                y = model(t_rgb)  # (B,3,H,W)
+                y = y[:, 0].detach().float().cpu().numpy()  # (B,H,W)
+
+            for bi, (orig_idx, _chp, h0, w0) in enumerate(batch):
+                outputs[orig_idx] = y[bi, :h0, :w0].astype(np.float32, copy=False)
+
+    return outputs
+
+def _infer_chunks_psf_batched(
+    models: SharpenModels,
+    model: Any,
+    chunks2d: list[np.ndarray],
+    psf01_list: list[float],
+    batch_size: int,
+) -> list[np.ndarray]:
+    """
+    Batch PSF-conditional chunks too. Keeps per-chunk PSF values but runs them together.
+    """
+    if not chunks2d:
+        return []
+
+    if models.is_onnx or batch_size <= 1:
+        return [
+            _infer_chunk_psf(models, model, ch, psf01)
+            for ch, psf01 in zip(chunks2d, psf01_list)
+        ]
+
+    torch = models.torch
+    dev = models.device
+
+    outputs: list[np.ndarray] = [None] * len(chunks2d)  # type: ignore
+
+    groups: dict[tuple[int, int], list[tuple[int, np.ndarray, int, int, float]]] = {}
+    for idx, (ch, psf01) in enumerate(zip(chunks2d, psf01_list)):
+        ch = np.asarray(ch, np.float32)
+        ch_p, h0, w0 = _pad2d_to_multiple(ch, mult=16, mode="reflect")
+        groups.setdefault(ch_p.shape, []).append((idx, ch_p, h0, w0, float(psf01)))
+
+    for _shape, items in groups.items():
+        for s in range(0, len(items), batch_size):
+            batch = items[s:s + batch_size]
+
+            arr = np.stack([np.ascontiguousarray(it[1]) for it in batch], axis=0)[:, None, :, :]  # (B,1,H,W)
+            psf_arr = np.array([[it[4]] for it in batch], dtype=np.float32)  # (B,1)
+
+            t = torch.from_numpy(arr).to(dev, dtype=torch.float32)
+            t_rgb = t.expand(-1, 3, -1, -1)
+            psf_t = torch.from_numpy(psf_arr).to(dev, dtype=torch.float32)
+
+            with torch.no_grad(), _autocast_context(torch, dev):
+                y = model(t_rgb, psf_t)  # (B,3,H,W)
+                y = y[:, 0].detach().float().cpu().numpy()
+
+            for bi, (orig_idx, _chp, h0, w0, _psf01) in enumerate(batch):
+                outputs[orig_idx] = y[bi, :h0, :w0].astype(np.float32, copy=False)
+
+    return outputs
 
 def _infer_chunk(models: SharpenModels, model: Any, chunk2d: np.ndarray) -> np.ndarray:
     """Returns 2D float32 (cropped to original chunk shape)."""
-    h0, w0 = chunk2d.shape
+    chunk2d = np.asarray(chunk2d, np.float32)
+    chunk_p, h0, w0 = _pad2d_to_multiple(chunk2d, mult=16, mode="reflect")
 
     if models.is_onnx:
-        t0 = time.time()
-
-        # ✅ match torch path: pad to mult-of-16 (NAFNet friendly)
-        chunk_p, h0, w0 = _pad2d_to_multiple(np.asarray(chunk2d, np.float32), mult=16, mode="reflect")
-        hp, wp = chunk_p.shape
-
         inp = chunk_p[np.newaxis, np.newaxis, :, :].astype(np.float32)  # (1,1,Hp,Wp)
-        inp = np.tile(inp, (1, 3, 1, 1))                                # (1,3,Hp,Wp)
+        inp = np.repeat(inp, 3, axis=1)                                  # (1,3,Hp,Wp)
 
         name_img, name_psf, name_out = _ort_pick_io_names(model)
         feeds = {name_img: inp}
-
-        # if someone accidentally passes a 2-input model here, feed a default psf
         if name_psf is not None:
-            feeds[name_psf] = np.array([[0.5]], dtype=np.float32)  # neutral-ish
+            feeds[name_psf] = np.array([[0.5]], dtype=np.float32)
 
-        out = model.run([name_out], feeds)[0]  # expect (1,3,Hp,Wp) or (1,1,Hp,Wp) depending exporter
+        out = model.run([name_out], feeds)[0]
 
-        # Normalize output handling:
         if out.ndim == 4:
-            y = out[0, 0]  # channel 0
+            y = out[0, 0]
         elif out.ndim == 3:
-            y = out[0]     # (C,H,W)?? rare
+            y = out[0]
             if y.shape[0] in (1, 3):
                 y = y[0]
         else:
             raise RuntimeError(f"Unexpected ONNX output shape: {out.shape}")
 
-        y = y[:h0, :w0].astype(np.float32, copy=False)
+        return y[:h0, :w0].astype(np.float32, copy=False)
 
-        if _DEBUG_SHARPEN:
-            _dbg(f"ORT infer OK {h0}x{w0} in {time.time()-t0:.3f}s", status_cb=lambda *_: None)
-        return y
-
-    # torch path (unchanged)
     torch = models.torch
     dev = models.device
 
-    chunk_p, h0, w0 = _pad2d_to_multiple(chunk2d, mult=16, mode="reflect")
+    # from_numpy avoids an extra copy vs torch.tensor(...)
+    t = torch.from_numpy(np.ascontiguousarray(chunk_p)).unsqueeze(0).unsqueeze(0)  # (1,1,Hp,Wp)
+    t = t.to(dev, dtype=torch.float32)
+    t_rgb = t.expand(-1, 3, -1, -1)  # cheap view, no real repeat copy
 
-    t0 = time.time()
-    if _DEBUG_SHARPEN:
-        _dbg(f"Torch infer start chunk={h0}x{w0} padded={chunk_p.shape[0]}x{chunk_p.shape[1]} dev={getattr(dev,'type',dev)}",
-             status_cb=lambda *_: None)
+    with torch.no_grad(), _autocast_context(torch, dev):
+        y = model(t_rgb)              # (1,3,Hp,Wp)
+        y = y[:, 0].detach().float().cpu().numpy()[0]
 
-    try:
-        t_cpu = torch.tensor(chunk_p, dtype=torch.float32).unsqueeze(0).unsqueeze(0)  # (1,1,Hp,Wp)
-        if _DEBUG_SHARPEN:
-            _dbg("  moving tensor to device ...", status_cb=lambda *_: None)
-        t = t_cpu.to(dev)
-
-        if _DEBUG_SHARPEN and hasattr(dev, "type") and dev.type == "cuda":
-            _dbg("  cuda.synchronize after .to(dev) ...", status_cb=lambda *_: None)
-            torch.cuda.synchronize()
-
-        with torch.no_grad(), _autocast_context(torch, dev):
-            if _DEBUG_SHARPEN:
-                _dbg("  running model forward ...", status_cb=lambda *_: None)
-
-            y = model(t.repeat(1, 3, 1, 1))        # (1,3,Hp,Wp)
-            if _DEBUG_SHARPEN and hasattr(dev, "type") and dev.type == "cuda":
-                _dbg("  cuda.synchronize after forward ...", status_cb=lambda *_: None)
-                torch.cuda.synchronize()
-
-            y = y[0, 0].detach().cpu().numpy()     # (Hp,Wp)
-
-        out = y[:h0, :w0].astype(np.float32, copy=False)
-
-        if _DEBUG_SHARPEN:
-            _dbg(f"Torch infer OK in {time.time()-t0:.3f}s", status_cb=lambda *_: None)
-        return out
-
-    except Exception as e:
-        if _DEBUG_SHARPEN:
-            _dbg("Torch infer ERROR:\n" + "".join(traceback.format_exception(type(e), e, e.__traceback__)),
-                 status_cb=lambda *_: None)
-        raise
+    return y[:h0, :w0].astype(np.float32, copy=False)
 
 
 # ---------------- Main API ----------------
@@ -973,121 +1064,92 @@ def _sharpen_plane(models: SharpenModels,
                    params: SharpenParams,
                    progress_cb: ProgressCB) -> np.ndarray:
     plane = np.asarray(plane, np.float32)
+
     chunk_size = int(getattr(params, "chunk_size", 256))
     overlap = int(getattr(params, "overlap", 64))
-    psf_ref_plane = plane  # default: measure PSF from current plane
 
-    # safety
     chunk_size = max(64, min(1024, chunk_size))
     overlap = max(0, min(chunk_size - 1, overlap))
 
-    chunks = split_image_into_chunks_with_overlap(plane, chunk_size=chunk_size, overlap=overlap)
+    H, W = plane.shape
+    coords = _chunk_coords_with_overlap(H, W, chunk_size, overlap)
+    total = len(coords)
 
-    total = len(chunks)
-
-    # prove we got here
     try:
         progress_cb(0, max(total, 1), f"Sharpen start ({total} chunks)")
     except Exception:
         pass
 
-    _dbg(f"_sharpen_plane: mode={params.mode} total_chunks={total} auto_psf={params.auto_detect_psf} dev={models.device!r}",
-         status_cb=lambda *_: None)
+    # If we're doing Both, measure PSF from pre-stellar plane
+    psf_ref_plane = plane.copy() if params.mode == "Both" else plane
 
-    def _every(n: int) -> bool:
-        return _DEBUG_SHARPEN and (n == 1 or n % 10 == 0 or n == total)
-
-    # If we're doing Both, lock PSF measurement to the pre-stellar plane
-    if params.mode == "Both":
-        psf_ref_plane = plane.copy()
-
+    # -------------------------
     # Stage 1: stellar
+    # -------------------------
     if params.mode in ("Stellar Only", "Both"):
-        _dbg("Stage 1: stellar BEGIN", status_cb=lambda *_: None)
-        out_chunks = []
-        t_stage = time.time()
+        stellar_chunks = [plane[i:ei, j:ej] for (i, j, ei, ej, _is_edge) in coords]
+        batch_size = _recommended_batch_size(models, chunk_size, psf=False)
+        stellar_out = _infer_chunks_batched(models, models.stellar, stellar_chunks, batch_size=batch_size)
 
-        for k, (chunk, i, j, is_edge) in enumerate(chunks, start=1):
-            t0 = time.time()
-            y = _infer_chunk(models, models.stellar, chunk)
+        out_chunks = []
+        for k, ((i, j, ei, ej, is_edge), y) in enumerate(zip(coords, stellar_out), start=1):
+            chunk = plane[i:ei, j:ej]
             blended = blend_images(chunk, y, params.stellar_amount)
             out_chunks.append((blended, i, j, is_edge))
 
-            if _every(k):
-                _dbg(f"  stellar chunk {k}/{total} ({time.time()-t0:.3f}s)", status_cb=lambda *_: None)
-
             if progress_cb(k, total, "Stellar sharpening") is False:
-                _dbg("Stage 1: stellar CANCELLED", status_cb=lambda *_: None)
                 return plane
 
         plane = stitch_chunks_ignore_border(out_chunks, plane.shape, border_size=16)
-        _dbg(f"Stage 1: stellar END ({time.time()-t_stage:.2f}s)", status_cb=lambda *_: None)
 
         if params.mode == "Stellar Only":
             return plane
 
-        # update chunks for stage 2
-        chunk_size = int(getattr(params, "chunk_size", 256))
-        overlap = int(getattr(params, "overlap", 64))
-
-        # safety
-        chunk_size = max(64, min(1024, chunk_size))
-        overlap = max(0, min(chunk_size - 1, overlap))
-
-        chunks = split_image_into_chunks_with_overlap(plane, chunk_size=chunk_size, overlap=overlap)
-
-        total = len(chunks)
-
-    # Stage 2: non-stellar (PSF-aware single model ONLY)
+    # -------------------------
+    # Stage 2: non-stellar
+    # -------------------------
     if params.mode in ("Non-Stellar Only", "Both"):
-        _dbg("Stage 2: non-stellar BEGIN", status_cb=lambda *_: None)
         if models.ns_cond is None:
             raise RuntimeError("Non-stellar sharpen: ns_cond model is required but not loaded.")
 
-        out_chunks = []
-        t_stage = time.time()
+        ns_chunks = [plane[i:ei, j:ej] for (i, j, ei, ej, _is_edge) in coords]
 
-        for k, (chunk, i, j, is_edge) in enumerate(chunks, start=1):
-            t0 = time.time()
-
-            # determine PSF radius (1..8) then encode to 0..1
+        # Compute per-chunk PSF values on CPU (SEP), but batch the actual GPU inference
+        psf01_list = []
+        for (i, j, ei, ej, _is_edge), chunk in zip(coords, ns_chunks):
             if params.auto_detect_psf:
-                # Measure PSF on the corresponding *pre-stellar* data
+                ref = psf_ref_plane[i:ei, j:ej]
                 h, w = chunk.shape
-                ref = psf_ref_plane[i:i+h, j:j+w]
                 if ref.shape != chunk.shape:
-                    # safety if at borders (should usually match)
                     ref = ref[:h, :w]
                 r = measure_psf_radius(ref, default_radius=3.0)
                 r = float(np.clip(r, 1.0, 8.0))
             else:
                 r = float(np.clip(params.nonstellar_strength, 1.0, 8.0))
 
-            psf01 = _encode_psf_log2_0_1(r, 1.0, 8.0)
+            psf01_list.append(_encode_psf_log2_0_1(r, 1.0, 8.0))
 
-            # infer via conditional model
-            if models.is_onnx:
-                y = _infer_chunk_psf_onnx(models, models.ns_cond, chunk, psf01)
-            else:
-                y = _infer_chunk_psf(models, models.ns_cond, chunk, psf01)
+        batch_size = _recommended_batch_size(models, chunk_size, psf=True)
+        ns_out = _infer_chunks_psf_batched(
+            models,
+            models.ns_cond,
+            ns_chunks,
+            psf01_list,
+            batch_size=batch_size,
+        )
 
+        out_chunks = []
+        for k, ((i, j, ei, ej, is_edge), y) in enumerate(zip(coords, ns_out), start=1):
+            chunk = plane[i:ei, j:ej]
             blended = blend_images(chunk, y, params.nonstellar_amount)
             out_chunks.append((blended, i, j, is_edge))
 
-            if _every(k):
-                _dbg(f"  nonstellar chunk {k}/{total} r={r:.2f} psf01={psf01:.3f} ({time.time()-t0:.3f}s)",
-                     status_cb=lambda *_: None)
-
             if progress_cb(k, total, "Non-stellar sharpening") is False:
-                _dbg("Stage 2: non-stellar CANCELLED", status_cb=lambda *_: None)
                 return plane
 
         plane = stitch_chunks_ignore_border(out_chunks, plane.shape, border_size=16)
-        _dbg(f"Stage 2: non-stellar END ({time.time()-t_stage:.2f}s)", status_cb=lambda *_: None)
-
 
     return plane
-
 
 def sharpen_rgb01(
     image_rgb01: np.ndarray,
