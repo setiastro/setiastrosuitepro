@@ -8,7 +8,7 @@ from PyQt6.QtCore import Qt, QSettings, QUrl, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox,
     QStackedWidget, QWidget, QFormLayout, QGroupBox, QMessageBox,
-    QCheckBox, QSpinBox, QDoubleSpinBox, QFileDialog, QProgressBar
+    QCheckBox, QSpinBox, QDoubleSpinBox, QFileDialog, QProgressBar, QSlider
 )
 from PyQt6.QtGui import QIcon, QDesktopServices
 
@@ -224,12 +224,48 @@ class _SyQonDenoiseHubPage(QWidget):
         self.spin_mtf_median.setDecimals(3)
         self.spin_mtf_median.setValue(float(self.settings.value("syqon/prism_mtf_target_median", 0.10)))
         form.addRow("Temp stretch target median:", self.spin_mtf_median)
+        saved_strength = float(self.settings.value("syqon/prism_strength", 0.85))
+
+        self.sld_strength = QSlider(Qt.Orientation.Horizontal, self)
+        self.sld_strength.setRange(0, 100)
+        self.sld_strength.setSingleStep(1)
+        self.sld_strength.setPageStep(5)
+        self.sld_strength.setValue(int(round(saved_strength * 100.0)))
+
         self.spin_strength = QDoubleSpinBox(self)
         self.spin_strength.setRange(0.0, 1.0)
-        self.spin_strength.setSingleStep(0.05)
+        self.spin_strength.setSingleStep(0.01)
         self.spin_strength.setDecimals(2)
-        self.spin_strength.setValue(float(self.settings.value("syqon/prism_strength", 0.85)))
-        form.addRow("Strength:", self.spin_strength)
+        self.spin_strength.setValue(saved_strength)
+
+        self._syncing_strength = False
+
+        def _slider_to_spin(v: int):
+            if self._syncing_strength:
+                return
+            self._syncing_strength = True
+            self.spin_strength.setValue(v / 100.0)
+            self._syncing_strength = False
+
+        def _spin_to_slider(v: float):
+            if self._syncing_strength:
+                return
+            self._syncing_strength = True
+            self.sld_strength.setValue(int(round(v * 100.0)))
+            self._syncing_strength = False
+
+        self.sld_strength.valueChanged.connect(_slider_to_spin)
+        self.spin_strength.valueChanged.connect(_spin_to_slider)
+
+        strength_row = QWidget(self)
+        strength_lay = QHBoxLayout(strength_row)
+        strength_lay.setContentsMargins(0, 0, 0, 0)
+        strength_lay.setSpacing(8)
+        strength_lay.addWidget(self.sld_strength, 1)
+        strength_lay.addWidget(self.spin_strength)
+
+        form.addRow("Strength:", strength_row)
+
         self.chk_mtf.toggled.connect(lambda on: self.spin_mtf_median.setEnabled(bool(on)))
         self.spin_mtf_median.setEnabled(self.chk_mtf.isChecked())
         self.chk_amp = QCheckBox("Use AMP (mixed precision)", self)
@@ -265,10 +301,10 @@ class _SyQonDenoiseHubPage(QWidget):
 
     def _have_model(self) -> bool:
         try:
-            p = self._model_dst_path()
-            return p.exists() and p.is_file()
+            return self._installed_model_path() is not None
         except Exception:
             return False
+
 
     def _on_model_changed(self, *_):
         self.settings.setValue("syqon/prism_model_kind", self.model_kind())
@@ -276,16 +312,26 @@ class _SyQonDenoiseHubPage(QWidget):
 
     def _refresh_state(self):
         mk = self.model_kind()
-        dst = self._model_dst_path()
-        self.lbl_model_path.setText(str(dst))
+        installed_path = self._installed_model_path()
+
+        src_path = str(self.settings.value(self._src_model_settings_key(), "", type=str) or "")
+
+        if installed_path is not None:
+            self.lbl_model_path.setText(str(installed_path))
+        else:
+            self.lbl_model_path.setText("Not installed")
+            self.settings.remove(self._installed_model_settings_key())
 
         if mk == "prism_deep":
-            expected = "the Prism Deep model file"
+            expected = "the Prism Deep model file named prism_sas395.pt"
         else:
             expected = "the Prism Mini model file"
 
-        if self._have_model():
-            self.lbl_status.setText("Ready (Prism model installed).")
+        if installed_path is not None:
+            msg = "Ready (Prism model installed)."
+            if src_path:
+                msg += f"\nLast installed from: {src_path}"
+            self.lbl_status.setText(msg)
             self.btn_remove.setEnabled(True)
         else:
             self.lbl_status.setText(
@@ -298,6 +344,32 @@ class _SyQonDenoiseHubPage(QWidget):
 
         self.btn_buy.setEnabled(True)
         self.btn_install.setEnabled(True)
+
+
+    def _model_base_dir(self) -> Path:
+        return syqon_prism_model_path(self.model_kind()).parent
+
+    def _installed_model_settings_key(self) -> str:
+        return f"syqon/prism_model_installed_path/{self.model_kind()}"
+
+    def _src_model_settings_key(self) -> str:
+        return f"syqon/prism_model_src_path/{self.model_kind()}"
+
+    def _installed_model_path(self) -> Path | None:
+        # 1) prefer remembered installed path
+        p = str(self.settings.value(self._installed_model_settings_key(), "", type=str) or "").strip()
+        if p:
+            pp = Path(p)
+            if pp.exists() and pp.is_file():
+                return pp
+
+        # 2) fallback for older installs that used canonical path
+        legacy = self._model_dst_path()
+        if legacy.exists() and legacy.is_file():
+            return legacy
+
+        return None
+
 
     def _open_buy_page(self):
         url = _syqon_prism_buy_url_for(self.model_kind())
@@ -315,14 +387,16 @@ class _SyQonDenoiseHubPage(QWidget):
 
         if mk == "prism_deep":
             expected_desc = "Prism Deep model file"
+            required_name = "prism_sas395.pt"
         else:
             expected_desc = "Prism Mini model file"
+            required_name = None
 
         src_path, _ = QFileDialog.getOpenFileName(
             self,
             f"Select {expected_desc}",
             "",
-            "All Files (*)"
+            "PyTorch model (*.pt);;All Files (*)"
         )
         if not src_path:
             return
@@ -332,8 +406,21 @@ class _SyQonDenoiseHubPage(QWidget):
             QMessageBox.warning(self, "SyQon Prism", "Selected file does not exist.")
             return
 
-        dst = self._model_dst_path()
-        dst.parent.mkdir(parents=True, exist_ok=True)
+        # Prism Deep: only accept the exact required filename
+        if required_name is not None and src.name != required_name:
+            QMessageBox.warning(
+                self,
+                "SyQon Prism",
+                f"Invalid Prism Deep model selected.\n\n"
+                f"Expected filename:\n{required_name}\n\n"
+                f"Selected filename:\n{src.name}"
+            )
+            return
+
+        base_dir = self._model_base_dir()
+        base_dir.mkdir(parents=True, exist_ok=True)
+        dst = base_dir / src.name
+
 
         try:
             import shutil
@@ -343,15 +430,20 @@ class _SyQonDenoiseHubPage(QWidget):
             self._refresh_state()
             return
 
-        self.settings.setValue(f"syqon/prism_model_src_path/{mk}", str(src))
-        self.settings.setValue(f"syqon/prism_model_installed_path/{mk}", str(dst))
+        self.settings.setValue(self._src_model_settings_key(), str(src))
+        self.settings.setValue(self._installed_model_settings_key(), str(dst))
+
         self._refresh_state()
 
     def _remove_model(self):
-        dst = self._model_dst_path()
-        if not dst.exists():
+        mk = self.model_kind()
+        dst = self._installed_model_path()
+        if dst is None:
+            self.settings.remove(self._src_model_settings_key())
+            self.settings.remove(self._installed_model_settings_key())
             self._refresh_state()
             return
+
 
         reply = QMessageBox.question(
             self,
@@ -372,7 +464,11 @@ class _SyQonDenoiseHubPage(QWidget):
             except Exception:
                 pass
 
-        self._refresh_state()            
+        self.settings.remove(self._src_model_settings_key())
+        self.settings.remove(self._installed_model_settings_key())
+
+        self._refresh_state()
+            
     
     def _set_busy(self, busy: bool):
         self.btn_buy.setEnabled(not busy)
@@ -554,7 +650,15 @@ class _SyQonDenoiseHubPage(QWidget):
         self._do_mtf = do_mtf
         self._mtf_params = mtf_params
 
-        ckpt_path = str(self._model_dst_path())
+        installed = self._installed_model_path()
+        if installed is None:
+            QMessageBox.warning(self, "SyQon Prism", "Model is not installed. Install it first.")
+            self._set_busy(False)
+            self._refresh_state()
+            return
+
+        ckpt_path = str(installed)
+
 
         self._set_busy(True)
         self.lbl_status.setText("Processing...")

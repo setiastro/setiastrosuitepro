@@ -151,8 +151,14 @@ def _predict_tile(model, t, *, device, use_amp: bool, amp_dtype: str, info: dict
 
     if use_amp and device.type == "cuda":
         dtype = torch.float16 if amp_dtype == "fp16" else torch.bfloat16
-        with torch.cuda.amp.autocast(dtype=dtype):
-            pred_t = model(t)
+        try:
+            with torch.amp.autocast("cuda", dtype=dtype):
+                pred_t = model(t)
+        except AttributeError:
+            # fallback for older torch builds
+            with torch.cuda.amp.autocast(dtype=dtype):
+                pred_t = model(t)
+
         pred = _to_numpy(pred_t)
         if not np.isfinite(pred).all():
             info["amp_fallback"] = True
@@ -163,7 +169,7 @@ def _predict_tile(model, t, *, device, use_amp: bool, amp_dtype: str, info: dict
 
     if use_amp and device.type == "mps":
         try:
-            with torch.autocast(device_type="mps"):
+            with torch.amp.autocast("mps"):
                 pred_t = model(t)
             pred = _to_numpy(pred_t)
             if not np.isfinite(pred).all():
