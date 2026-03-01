@@ -911,6 +911,17 @@ class CosmicClarityDialogPro(QDialog):
         if self._wait:
             self._wait.close()
             self._wait = None
+
+        if "GPU acceleration runtime" in str(msg):
+            QMessageBox.warning(
+                self,
+                "Cosmic Clarity",
+                "GPU acceleration is not installed.\n\n"
+                "Please go to Settings -> Preferences and install GPU Acceleration "
+                "before running Cosmic Clarity."
+            )
+            return
+
         QMessageBox.critical(self, "Cosmic Clarity", msg)
 
     def _on_engine_result(self, out_arr: np.ndarray, step_title: str):

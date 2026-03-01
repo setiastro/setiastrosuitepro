@@ -184,7 +184,7 @@ from setiastro.saspro.resources import (
     disk_icon_path, nuke_path, hubble_path, collage_path, annotated_path,
     colorwheel_path, font_path, csv_icon_path, spinner_path, wims_path, narrowbandnormalization_path,
     wimi_path, linearfit_path, debayer_path, aberration_path, acv_icon_path, snr_path,
-    functionbundles_path, viewbundles_path, selectivecolor_path, rgbalign_path, planetarystacker_path,
+    functionbundles_path, viewbundles_path, selectivecolor_path, rgbalign_path, planetarystacker_path,syqon_path,
     background_path, script_icon_path, planetprojection_path,clonestampicon_path, finderchart_path,magnitude_path,
 )
 
@@ -496,6 +496,7 @@ class AstroSuiteProMainWindow(
         self._stats_timer = QTimer(self)
         self._stats_timer.timeout.connect(self._update_usage_stats)
         self._stats_timer.start(60000)  # Update every minute
+        self._shutting_down = False
         
         from setiastro.saspro.doc_manager import DocManager
         from setiastro.saspro.window_shelf import WindowShelf, MinimizeInterceptor
@@ -4128,6 +4129,57 @@ class AstroSuiteProMainWindow(
             dlg.exec()
         except Exception as e:
             print(f"Failed to open Aberration AI: {e}")
+
+    def _open_syqon_tools(self):
+        from setiastro.saspro.syqon_tools import SyQonToolsDialog
+
+        sw = self.mdi.activeSubWindow()
+        if not sw:
+            QMessageBox.information(self, "SyQon Tools", "No active image view.")
+            return
+
+        w = sw.widget() if hasattr(sw, "widget") else None
+        doc = getattr(w, "document", None)
+        if doc is None or getattr(doc, "image", None) is None:
+            QMessageBox.information(self, "SyQon Tools", "Active view has no image.")
+            return
+
+        try:
+            # keep one persistent reference so it does not get garbage-collected
+            if not hasattr(self, "_syqon_tools_dialog"):
+                self._syqon_tools_dialog = None
+
+            # if already open, just bring it forward
+            if self._syqon_tools_dialog is not None:
+                try:
+                    self._syqon_tools_dialog.show()
+                    self._syqon_tools_dialog.raise_()
+                    self._syqon_tools_dialog.activateWindow()
+                    return
+                except Exception:
+                    self._syqon_tools_dialog = None
+
+            dlg = SyQonToolsDialog(
+                self,
+                self.docman,
+                get_active_doc_callable=lambda: doc,
+                icon=QIcon(syqon_path),
+            )
+
+            # modeless behavior
+            dlg.setModal(False)
+            dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+
+            # clear reference when user closes it
+            dlg.destroyed.connect(lambda *_: setattr(self, "_syqon_tools_dialog", None))
+
+            self._syqon_tools_dialog = dlg
+            dlg.show()
+            dlg.raise_()
+            dlg.activateWindow()
+
+        except Exception as e:
+            print(f"Failed to open SyQon Tools: {e}")
 
     def _open_cosmic_clarity_ui(self):
         print("Opening Cosmic Clarity UI...")
@@ -8768,13 +8820,21 @@ class AstroSuiteProMainWindow(
                 except Exception:
                     pass
                 # forward the *base* doc to the slot
-                view.aboutToClose.connect(lambda _=None, d=doc: self._on_view_about_to_close(d))
+                view.aboutToClose.connect(lambda _=None, d=doc, v=view: self._on_view_about_to_close(d, sender_view=v))
             except Exception:
                 pass
         else:
             # Worst-case fallback: if the view doesn't expose aboutToClose, use destroyed
             try:
-                sw.destroyed.connect(lambda _=None, d=doc: self._on_view_about_to_close(d))
+                import weakref
+                self_ref = weakref.ref(self)
+                sw.destroyed.connect(
+                    lambda _=None, d=doc, v=view, self_ref=self_ref: (
+                        self_ref() is not None and
+                        not getattr(self_ref(), "_shutting_down", False) and
+                        self_ref()._on_view_about_to_close(d, sender_view=v)
+                    )
+                )
             except Exception:
                 pass
 
@@ -8851,32 +8911,57 @@ class AstroSuiteProMainWindow(
         view.aboutToClose.connect(self._on_view_about_to_close)
         view.requestDuplicate.connect(self._duplicate_view_from_signal)
 
-    def _on_view_about_to_close(self, doc):
+    def _on_view_about_to_close(self, doc, sender_view=None):
         """
-        Invoked by ImageSubWindow.closeEvent() before teardown.
+        Invoked before teardown.
         Remove the *base* document from DocManager only if no other subwindow
         is still showing it.
         """
-        sender_view = self.sender()
-        base = self._normalize_base_doc(doc)
 
-        # IMPORTANT: compare by each view's base_document (not .document which is a proxy)
-        still_open = [
-            sw for sw in self.mdi.subWindowList()
-            if getattr(sw.widget(), "base_document", None) is base
-            and (sender_view is None or sw.widget() is not sender_view)
-        ]
+        # During full app shutdown, don't do document-close bookkeeping here.
+        try:
+            from PyQt6.QtWidgets import QApplication
+            app = QApplication.instance()
+            if app is None or app.closingDown():
+                return
+        except Exception:
+            return
+
+        if getattr(self, "_shutting_down", False):
+            return
+
+        base = self._normalize_base_doc(doc)
+        if base is None:
+            return
+
+        still_open = []
+        try:
+            for sw in self.mdi.subWindowList():
+                try:
+                    w = sw.widget()
+                except RuntimeError:
+                    continue
+
+                if getattr(w, "base_document", None) is base:
+                    if sender_view is not None and w is sender_view:
+                        continue
+                    still_open.append(sw)
+        except Exception:
+            return
 
         if not still_open:
             try:
-                self.docman.close_document(base)   # emits documentRemoved(base)
+                self.docman.close_document(base)
                 if hasattr(self, "_log"):
                     self._log(f"Closed: {base.display_name()}")
             except Exception:
                 pass
 
-        from PyQt6.QtCore import QTimer
-        QTimer.singleShot(0, self._maybe_clear_ui_after_close)
+        try:
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(0, self._maybe_clear_ui_after_close)
+        except Exception:
+            pass
 
 
     def _maybe_clear_ui_after_close(self):
@@ -9620,6 +9705,7 @@ class AstroSuiteProMainWindow(
 
     def closeEvent(self, e):
         self._update_usage_stats()
+        self._shutting_down = True
 
         try:
             self.save_main_window_state()

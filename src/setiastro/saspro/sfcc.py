@@ -91,6 +91,14 @@ import contextlib
 from setiastro.saspro.gaia_downloader import GaiaSpectraDB, CalibratedSpectrum
 from setiastro.saspro.gaia_downloader import download_xp_spectra_only
 
+def _force_mpl_no_tex():
+    try:
+        import matplotlib
+        matplotlib.rcParams["text.usetex"] = False
+        matplotlib.rcParams["axes.unicode_minus"] = False
+    except Exception:
+        pass
+
 def _johnson_bvr_passbands_on_gaia_grid(wl_nm: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Returns (T_B, T_V, T_R) on the Gaia wavelength grid.
@@ -533,6 +541,7 @@ def _pivot_scale_channel(ch: np.ndarray, gain: np.ndarray | float, pivot: float)
 class SaspViewer(QMainWindow):
     def __init__(self, sasp_data_path: str, user_custom_path: str):
         super().__init__()
+        _force_mpl_no_tex()
         self.setWindowTitle(self.tr("SASP Viewer (Pickles + RGB Responses)"))
 
         self.base_hdul   = fits.open(sasp_data_path,   mode="readonly", memmap=False)
@@ -591,6 +600,7 @@ class SaspViewer(QMainWindow):
         raise KeyError(f"Extension '{extname}' not found")
 
     def update_plot(self):
+        _force_mpl_no_tex()
         star_ext = self.star_combo.currentText()
         r_filt   = self.r_filter_combo.currentText()
         g_filt   = self.g_filter_combo.currentText()
@@ -851,6 +861,7 @@ class SFCCDialog(QDialog):
     """
     def __init__(self, doc_manager, sasp_data_path, parent=None):
         super().__init__(parent)
+        _force_mpl_no_tex()
         self.setWindowTitle(self.tr("Spectral Photometric Flux Color Calibration"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setWindowModality(Qt.WindowModality.NonModal)
@@ -2201,7 +2212,7 @@ class SFCCDialog(QDialog):
                         matplotlib.rcParams["text.usetex"] = False
                     except Exception:
                         pass
-
+                _force_mpl_no_tex()
                 self.canvas.draw()
         else:
             if getattr(self, "count_label", None) is not None:
@@ -2217,7 +2228,7 @@ class SFCCDialog(QDialog):
                         matplotlib.rcParams["text.usetex"] = False
                     except Exception:
                         pass
-
+                _force_mpl_no_tex()
                 self.canvas.draw()
 
     # ── Core SFCC ───────────────────────────────────────────────────────

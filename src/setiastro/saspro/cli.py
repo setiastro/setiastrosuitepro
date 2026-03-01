@@ -207,8 +207,13 @@ def _run_cc(argv: list[str]) -> int:
     else:
         raise RuntimeError(f"Unknown cmd: {args.cmd}")
 
-    run_cosmicclarity_on_file(inp, out, preset, progress_cb=_progress_print)
-    return 0
+    try:
+        run_cosmicclarity_on_file(inp, out, preset, progress_cb=_progress_print)
+        return 0
+    except RuntimeError as e:
+        msg = str(e)
+        print(f"ERROR: {msg}", file=sys.stderr, flush=True)
+        return 2
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)

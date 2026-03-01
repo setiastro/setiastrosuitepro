@@ -1840,16 +1840,20 @@ class DocManager(QObject):
 
     def _register_doc(self, doc):
         import weakref
-        # Only ImageDocument needs the backref; tables can ignore it.
+
+        # Only image-like docs need the backref
         if hasattr(doc, "image") or hasattr(doc, "apply_edit"):
             try:
-                doc._doc_manager = weakref.proxy(self)   # avoid cycles
+                doc._doc_manager = weakref.proxy(self)
             except Exception:
-                doc._doc_manager = self                  # fallback
-            self._docs.append(doc)
-            if hasattr(doc, "uid"):
-                self._by_uid[doc.uid] = doc
-            self.documentAdded.emit(doc)
+                doc._doc_manager = self
+
+        self._docs.append(doc)
+
+        if hasattr(doc, "uid"):
+            self._by_uid[doc.uid] = doc
+
+        self.documentAdded.emit(doc)
 
     def _build_roi_document(self, base_doc, roi):
         #print("[DocManager] Building ROI view document")
@@ -1993,12 +1997,12 @@ class DocManager(QObject):
                             #print(f"[DocManager] HDU {i}: {type(hdu).__name__} '{nice}' → Table")
 
                             # Optional CSV export
-                            csv_name = f"{os.path.splitext(path)[0]}_{key_str}.csv".replace(" ", "_")
-                            try:
-                                _ = _fits_table_to_csv(hdu, csv_name)
-                            except Exception as e_csv:
-                                print(f"[DocManager] Table CSV export failed ({nice}): {e_csv}")
-                                csv_name = None
+                            #csv_name = f"{os.path.splitext(path)[0]}_{key_str}.csv".replace(" ", "_")
+                            #try:
+                            #    _ = _fits_table_to_csv(hdu, csv_name)
+                            #except Exception as e_csv:
+                            #    print(f"[DocManager] Table CSV export failed ({nice}): {e_csv}")
+                            #    csv_name = None
 
                             # Build in-app table
                             try:
@@ -2009,7 +2013,7 @@ class DocManager(QObject):
                                     "original_format": "fits",
                                     "display_name": f"{base} {key_str} (Table)",
                                     "doc_type": "table",
-                                    "table_csv": csv_name if (csv_name and os.path.exists(csv_name)) else None,
+                                    #"table_csv": csv_name if (csv_name and os.path.exists(csv_name)) else None,
                                 }
                                 _snapshot_header_for_metadata(tmeta)
                                 tdoc = TableDocument(rows, headers, tmeta, parent=self.parent())
