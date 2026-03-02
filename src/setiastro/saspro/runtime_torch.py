@@ -1124,7 +1124,6 @@ def _fcache_clear(rt: Path) -> None:
             p.unlink()
     except Exception:
         pass
-
 def import_torch(
     prefer_cuda: bool = True,
     prefer_xpu: bool = False,
@@ -1133,51 +1132,36 @@ def import_torch(
     status_cb=print,
     *,
     require_torchaudio: bool = True,
+    allow_install: bool = False,
 ):
-
     """
-    Ensure a per-user venv exists with torch installed; return the imported torch module.
+    Return the runtime-venv torch module.
 
-    ULTRA FAST PATH:
-      - Use QSettings cached site-packages (no subprocess at all) and attempt in-process import.
-
-    FAST PATH:
-      - If marker looks valid, compute site-packages (1 subprocess) and try in-process imports.
-      - If that works, skip expensive subprocess probes.
-
-    SLOW PATH:
-      - Probe runtime venv via subprocess (torch/torchvision/torchaudio).
-      - Install only if missing, then re-probe.
-      - Finally import in-process from venv site-packages.
-
-    NEW RULES:
-      - Marker/QSettings are advisory only (fast path gates).
-      - If torch/torchvision(/torchaudio) exist in the runtime venv, USE THEM. Do nothing else.
-      - Only if missing in the runtime venv should we install.
-      - NEVER auto-uninstall user torch/torchvision/torchaudio. No automatic repair.
+    Behavior:
+      - Fast-path import from cached runtime site-packages when possible.
+      - Definitively probe the runtime venv for torch/torchvision(/torchaudio).
+      - If missing:
+          * allow_install=False  -> raise a clear "install from Preferences" error
+          * allow_install=True   -> explicitly install/repair runtime in-place, then re-probe
+      - Never performs silent/background installs unless allow_install=True.
     """
     global _TORCH_CACHED
     if _TORCH_CACHED is not None:
         return _TORCH_CACHED
-    
-    # Auto-redirect: only redirect CUDA->ROCm on Linux when ROCm is detected
-    # AND caller is not explicitly targeting NVIDIA through higher-level logic.
-    # (runtime_torch doesn't know full GPU inventory, so keep this conservative.)
+
+    # ------------------------------------------------------------------
+    # Conservative ROCm redirect on Linux only
+    # ------------------------------------------------------------------
     if platform.system() == "Linux" and prefer_cuda and not prefer_rocm:
         try:
             rocm_arch = _detect_rocm_arch()
             if rocm_arch:
-                # Only redirect if CUDA isn't already clearly available in-process.
-                # If torch isn't importable yet, this just falls through and ROCm is tried later by installer paths.
                 try:
                     import importlib as _il
                     _t = _il.import_module("torch")
                     has_cuda_now = bool(getattr(_t, "cuda", None) and _t.cuda.is_available())
                     hip_now = bool(getattr(getattr(_t, "version", None), "hip", None))
-                    # If torch is already imported and CUDA is active but not HIP, keep CUDA preference.
-                    if has_cuda_now and not hip_now:
-                        pass
-                    else:
+                    if not (has_cuda_now and not hip_now):
                         prefer_cuda = False
                         prefer_rocm = True
                         status_cb(f"[RT] AMD ROCm GPU detected ({rocm_arch}); redirecting CUDA preference to ROCm.")
@@ -1188,13 +1172,11 @@ def import_torch(
         except Exception:
             pass
 
-
+    # If explicitly preferring CUDA on Windows, don't also pursue DML here.
     if platform.system() == "Windows" and prefer_cuda:
-        # If we are preferring CUDA, do NOT treat DirectML as a co-equal install target.
-        # DirectML should only be a fallback after CUDA probe fails.
         prefer_dml = False
 
-    def _write_cache_best_effort(rt: Path, site: Path, venv_ver: tuple[int,int] | None):
+    def _write_cache_best_effort(rt: Path, site: Path, venv_ver: tuple[int, int] | None):
         try:
             import torch as _t  # noqa
             import torchvision as _tv  # noqa
@@ -1216,28 +1198,55 @@ def import_torch(
         except Exception:
             pass
 
-    _rt_dbg(f"sys.frozen={getattr(sys,'frozen',False)}", status_cb)
+    def _raise_missing_runtime(info: dict) -> None:
+        missing = []
+        if not info["torch"][0]:
+            missing.append("torch")
+        if not info["torchvision"][0]:
+            missing.append("torchvision")
+        if require_torchaudio and (not info["torchaudio"][0]):
+            missing.append("torchaudio")
+
+        if prefer_cuda or prefer_xpu or prefer_dml or prefer_rocm:
+            msg = (
+                "GPU acceleration runtime is not installed or is incomplete.\n\n"
+                f"Missing packages in runtime venv: {', '.join(missing)}\n\n"
+                "Please go to Settings -> Preferences and install GPU Acceleration "
+                "before running Cosmic Clarity, Syqon, or other hardware accelerated tools."
+            )
+        else:
+            msg = (
+                "Hardware acceleration runtime is not installed or is incomplete.\n\n"
+                f"Missing packages in runtime venv: {', '.join(missing)}"
+            )
+
+        status_cb(f"[RT] {msg}")
+        raise RuntimeError(msg)
+
+    _rt_dbg(f"sys.frozen={getattr(sys, 'frozen', False)}", status_cb)
     _rt_dbg(f"sys.executable={sys.executable}", status_cb)
     _rt_dbg(f"sys.version={sys.version}", status_cb)
     _rt_dbg(f"current_tag={_current_tag()}", status_cb)
     _rt_dbg(f"SASPRO_RUNTIME_DIR={os.getenv('SASPRO_RUNTIME_DIR')!r}", status_cb)
+    _rt_dbg(
+        f"prefs: cuda={prefer_cuda} xpu={prefer_xpu} dml={prefer_dml} rocm={prefer_rocm} "
+        f"allow_install={allow_install}",
+        status_cb,
+    )
 
-    # Remove obvious shadowing paths (repo folders / cwd torch trees)
+    # Prevent source-tree shadowing
     _ban_shadow_torch_paths(status_cb=status_cb)
     _purge_bad_torch_from_sysmodules(status_cb=status_cb)
 
-    # ------------------------------------------------------------
-    # Choose runtime + ensure venv exists
-    # ------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Runtime + venv
+    # ------------------------------------------------------------------
     rt = _user_runtime_dir(status_cb=status_cb)
     vp = _ensure_venv(rt, status_cb=status_cb)
 
-    # ------------------------------------------------------------
-    # ULTRA FAST PATH (runtime-aware): QSettings cache.
-    # Now we can compare the cache tag against the RUNTIME tag, not sys.version_info.
-    # This stays correct for "app python != runtime venv python" cases.
-    # ------------------------------------------------------------
-
+    # ------------------------------------------------------------------
+    # Ultra-fast cache path
+    # ------------------------------------------------------------------
     try:
         qc = _fcache_get(rt)
         if qc:
@@ -1272,7 +1281,9 @@ def import_torch(
         status_cb(f"[RT] File-cache fast-path failed: {type(e).__name__}: {e}. Continuing…")
         _fcache_clear(rt)
 
-    # site-packages path (subprocess but relatively cheap)
+    # ------------------------------------------------------------------
+    # Runtime metadata / marker
+    # ------------------------------------------------------------------
     site = _site_packages(vp)
     marker = rt / "torch_installed.json"
     venv_ver = _venv_pyver(vp)
@@ -1283,16 +1294,14 @@ def import_torch(
     _rt_dbg(f"marker={marker} exists={marker.exists()}", status_cb)
     _rt_dbg(f"site={site}", status_cb)
 
-    # Best-effort ensure numpy in venv (harmless if already there)
     try:
         _ensure_numpy(vp, status_cb=status_cb)
     except Exception:
         pass
 
-    # ------------------------------------------------------------
-    # FAST PATH: if marker looks valid, try in-process import NOW.
-    # This avoids the 3 subprocess probes on every launch.
-    # ------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Marker fast path
+    # ------------------------------------------------------------------
     try:
         if _marker_says_ready(marker, site, venv_ver, require_torchaudio=require_torchaudio):
             status_cb("[RT] Marker valid; attempting fast in-process import (skipping venv probe).")
@@ -1309,7 +1318,6 @@ def import_torch(
             if require_torchaudio:
                 import torchaudio  # noqa
 
-            # refresh marker (best-effort)
             try:
                 _write_torch_marker(marker, status_cb=status_cb)
             except Exception:
@@ -1321,17 +1329,19 @@ def import_torch(
 
     except Exception as e:
         status_cb(f"[RT] Marker fast-path failed: {type(e).__name__}: {e}. Falling back to full probe…")
-        # if marker fast path fails, your cached site-packages may also be stale
         try:
             _fcache_clear(rt)
         except Exception:
             pass
 
-    # ------------------------------------------------------------
-    # SLOW PATH: Probe the runtime venv definitively.
-    # If it has torch stack, we're DONE (no installs, no repair).
-    # ------------------------------------------------------------
-    ok_all, info = _venv_has_torch_stack(vp, status_cb=status_cb, require_torchaudio=require_torchaudio)
+    # ------------------------------------------------------------------
+    # Definitive runtime-venv probe
+    # ------------------------------------------------------------------
+    ok_all, info = _venv_has_torch_stack(
+        vp,
+        status_cb=status_cb,
+        require_torchaudio=require_torchaudio,
+    )
     status_cb(
         "[RT] venv probe: "
         f"torch={info['torch'][0]} "
@@ -1339,41 +1349,82 @@ def import_torch(
         f"torchaudio={info['torchaudio'][0]}"
     )
 
+    # ------------------------------------------------------------------
+    # Missing stack: either raise, or explicitly install/repair
+    # ------------------------------------------------------------------
     if not ok_all:
-        missing = []
-        if not info["torch"][0]:
-            missing.append("torch")
-        if not info["torchvision"][0]:
-            missing.append("torchvision")
-        if require_torchaudio and (not info["torchaudio"][0]):
-            missing.append("torchaudio")
+        if not allow_install:
+            _raise_missing_runtime(info)
 
-        if prefer_cuda or prefer_xpu or prefer_dml or prefer_rocm:
-            msg = (
-                "GPU acceleration runtime is not installed or is incomplete.\n\n"
-                f"Missing packages in runtime venv: {', '.join(missing)}\n\n"
-                "Please go to Settings -> Preferences and install GPU Acceleration "
-                "before running Cosmic Clarity, Syqon, or other hardware accelerated tools."
+        status_cb("[RT] Runtime torch stack missing/incomplete; explicit install is allowed. Starting install/repair…")
+
+        try:
+            _fcache_clear(rt)
+        except Exception:
+            pass
+
+        with _install_lock(rt):
+            # Another thread/process may have completed install while we waited.
+            ok_all_2, info_2 = _venv_has_torch_stack(
+                vp,
+                status_cb=status_cb,
+                require_torchaudio=require_torchaudio,
             )
-            status_cb(f"[RT] {msg}")
-            raise RuntimeError(msg)
+            if not ok_all_2:
+                status_cb("[RT] Installing torch stack into runtime venv…")
+                _install_torch(
+                    vp,
+                    prefer_cuda=prefer_cuda,
+                    prefer_xpu=prefer_xpu,
+                    prefer_dml=prefer_dml,
+                    prefer_rocm=prefer_rocm,
+                    status_cb=status_cb,
+                )
 
-        msg = (
-            "Hardware acceleration runtime is not installed or is incomplete.\n\n"
-            f"Missing packages in runtime venv: {', '.join(missing)}"
-        )
-        status_cb(f"[RT] {msg}")
-        raise RuntimeError(msg)
+            # Re-probe after explicit install
+            ok_all_3, info_3 = _venv_has_torch_stack(
+                vp,
+                status_cb=status_cb,
+                require_torchaudio=require_torchaudio,
+            )
+            status_cb(
+                "[RT] post-install probe: "
+                f"torch={info_3['torch'][0]} "
+                f"torchvision={info_3['torchvision'][0]} "
+                f"torchaudio={info_3['torchaudio'][0]}"
+            )
 
-    # Always write/update marker for convenience, but never trust it for decisions.
-    try:
-        _write_torch_marker(marker, status_cb=status_cb)
-    except Exception:
-        pass
+            if not ok_all_3:
+                missing = []
+                if not info_3["torch"][0]:
+                    missing.append("torch")
+                if not info_3["torchvision"][0]:
+                    missing.append("torchvision")
+                if require_torchaudio and (not info_3["torchaudio"][0]):
+                    missing.append("torchaudio")
 
-    # ------------------------------------------------------------
-    # Now import torch in-process, but ONLY after putting runtime site first.
-    # ------------------------------------------------------------
+                msg = (
+                    "Hardware acceleration install completed, but the runtime is still incomplete.\n\n"
+                    f"Missing packages in runtime venv: {', '.join(missing)}\n\n"
+                    "Please delete the SASpro runtime folder and try Install/Repair Hardware Acceleration again."
+                )
+                status_cb(f"[RT] {msg}")
+                raise RuntimeError(msg)
+
+            try:
+                _write_torch_marker(marker, status_cb=status_cb)
+            except Exception:
+                pass
+
+    else:
+        try:
+            _write_torch_marker(marker, status_cb=status_cb)
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # Final in-process import from runtime site-packages
+    # ------------------------------------------------------------------
     sp = str(site)
     if sp not in sys.path:
         sys.path.insert(0, sp)
@@ -1383,27 +1434,39 @@ def import_torch(
 
     try:
         import torch  # noqa
+        import torchvision  # noqa
+        if require_torchaudio:
+            import torchaudio  # noqa
+
+        # Strong sanity check helps catch shadowing / broken wheel issues immediately.
+        _torch_sanity_check(status_cb=status_cb)
 
         _TORCH_CACHED = torch
         _write_cache_best_effort(rt, site, venv_ver)
         return torch
 
     except Exception as e:
-        # prevent repeatedly hitting a bad cached site path on next launch
         try:
             _fcache_clear(rt)
         except Exception:
             pass
 
-        msg = "\n".join([f"{k}: ok={ok} :: {out}" for k, (ok, out) in info.items()])
+        ok_all_final, info_final = _venv_has_torch_stack(
+            vp,
+            status_cb=status_cb,
+            require_torchaudio=require_torchaudio,
+        )
+        msg = "\n".join([f"{k}: ok={ok} :: {out}" for k, (ok, out) in info_final.items()])
+
         raise RuntimeError(
             "Runtime venv probe says torch stack exists, but in-process import failed.\n"
-            "This typically indicates a frozen-stdlib / PyInstaller packaging issue, not a bad torch install.\n\n"
+            "This typically indicates a frozen-stdlib / PyInstaller packaging issue, shadowed torch import,\n"
+            "or broken wheel import rather than a missing torch install.\n\n"
             f"Original error: {type(e).__name__}: {e}\n\n"
+            f"Probe ok_all={ok_all_final}\n"
             "Runtime venv probe:\n" + msg
         ) from e
-
-
+    
 def _find_system_python_cmd() -> list[str]:
     """
     Find a SYSTEM Python command suitable for creating the SASpro runtime venv.
