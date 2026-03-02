@@ -1186,6 +1186,50 @@ def _is_fits_image_hdu(hdu) -> bool:
     except Exception:
         return False
 
+def load_fits_vector_extension(path: str, key: str | int):
+    """
+    Load a single FITS 1-D vector extension.
+
+    Returns:
+        values, header, meta
+    """
+    if path.lower().endswith(('.fits.gz', '.fit.gz')):
+        with gzip.open(path, 'rb') as f:
+            buf = BytesIO(f.read())
+        hdul = fits.open(buf, memmap=False)
+    else:
+        hdul = fits.open(path, memmap=False)
+
+    with hdul as hdul:
+        if isinstance(key, str):
+            idx = None
+            for i, hdu in enumerate(hdul):
+                if (hdu.name or '').upper() == key.upper():
+                    idx = i
+                    break
+            if idx is None:
+                raise KeyError(f"Extension '{key}' not found in {path}")
+        else:
+            idx = int(key)
+
+        hdu = hdul[idx]
+        kind = _classify_fits_hdu(hdu)
+        if kind != "vector":
+            raise ValueError(f"HDU {key} is not a 1-D vector extension (kind={kind})")
+
+        arr = np.asarray(hdu.data)
+        arr = np.squeeze(arr).astype(np.float64, copy=False)
+
+        meta = {
+            "file_path": path,
+            "ext_index": idx,
+            "extname": str(getattr(hdu, "name", "") or ""),
+            "kind": "vector",
+            "unit": hdu.header.get("BUNIT"),
+        }
+
+        return arr, _drop_invalid_cards(hdu.header), meta
+
 def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = False):
     """
     Loads an image from the specified filename with support for various formats.

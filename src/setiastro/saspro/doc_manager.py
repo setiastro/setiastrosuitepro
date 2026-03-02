@@ -1926,6 +1926,91 @@ class DocManager(QObject):
         primary_doc = None
         created_any = False
 
+        # ---------- local helper: build vector-style table from 1-D FITS image HDU ----------
+        def _make_vector_table_doc_from_hdu(hdu, base_path: str, base_name: str, key_str: str):
+            arr = np.asarray(hdu.data)
+            vec = np.squeeze(arr)
+
+            if vec.ndim != 1 or vec.size == 0:
+                raise ValueError(f"HDU is not a usable 1-D vector: shape={arr.shape}")
+
+            vec = vec.astype(np.float64, copy=False)
+            hdr = hdu.header
+
+            # ---- build X axis from 1-D WCS if available; otherwise pixel index ----
+            x = np.arange(vec.size, dtype=np.float64)
+            x_name = "PIXEL"
+            x_unit = None
+
+            try:
+                ctype1 = str(hdr.get("CTYPE1", "") or "").strip()
+                cunit1 = str(hdr.get("CUNIT1", "") or "").strip() or None
+
+                step = hdr.get("CDELT1", None)
+                if step is None:
+                    step = hdr.get("CD1_1", None)
+
+                crpix1 = float(hdr.get("CRPIX1", 1.0))
+                crval1 = float(hdr.get("CRVAL1", 0.0))
+
+                if step is not None:
+                    step = float(step)
+                    pix = np.arange(vec.size, dtype=np.float64) + 1.0  # FITS pixel coordinates are 1-based
+                    x = crval1 + (pix - crpix1) * step
+
+                    ctype1_up = ctype1.upper()
+                    if "WAVE" in ctype1_up or "AWAV" in ctype1_up:
+                        x_name = "WAVE"
+                    elif "FREQ" in ctype1_up:
+                        x_name = "FREQUENCY"
+                    elif "VELO" in ctype1_up or "VRAD" in ctype1_up:
+                        x_name = "VELOCITY"
+                    elif "TIME" in ctype1_up:
+                        x_name = "TIME"
+                    elif ctype1:
+                        x_name = ctype1.replace("-", " ").strip()
+                    else:
+                        x_name = "X"
+
+                    x_unit = cunit1
+            except Exception:
+                pass
+
+            # ---- build Y label/unit ----
+            y_name = (
+                str(hdr.get("BTYPE", "") or "").strip()
+                or ("FLUX" if x_name == "WAVE" else "VALUE")
+            )
+            y_unit = str(hdr.get("BUNIT", "") or "").strip() or None
+
+            # One row, two vector-in-cell columns -> your plotting code can use this
+            rows = [[x, vec]]
+            headers = [x_name, y_name]
+
+            tmeta = {
+                "file_path": f"{base_path}::{key_str}",
+                "original_header": hdr,
+                "original_format": "fits",
+                "display_name": f"{base_name} {key_str} (Vector)",
+                "doc_type": "table",
+                "doc_subtype": "vector",
+                "vector_length": int(vec.size),
+                "column_units": {
+                    x_name: x_unit,
+                    y_name: y_unit,
+                },
+            }
+
+            _snapshot_header_for_metadata(tmeta)
+            tdoc = TableDocument(rows, headers, tmeta, parent=self.parent())
+            self._register_doc(tdoc)
+            try:
+                tdoc.changed.emit()
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
+            return tdoc
+
         # ---------- 1) Try the universal loader first (ALL formats) ----------
         img = header = bit_depth = is_mono = None
         meta = None
@@ -1967,19 +2052,15 @@ class DocManager(QObject):
             self._register_doc(primary_doc)
             created_any = True
 
-
-
-        # ---------- 2) FITS: enumerate HDUs (tables + extra images + ICC) ----------
+        # ---------- 2) FITS: enumerate HDUs (tables + vector HDUs + extra images + ICC) ----------
         if is_fits:
             try:
                 with fits.open(path, memmap=True) as hdul:
                     base = os.path.basename(path)
 
-
                     for i, hdu in enumerate(hdul):
                         name_up = (getattr(hdu, "name", "PRIMARY") or "PRIMARY").upper()
                         if primary_doc is not None and (i == 0 or name_up == "PRIMARY"):
-
                             continue
 
                         ext_hdr = hdu.header
@@ -1990,21 +2071,11 @@ class DocManager(QObject):
                         except Exception:
                             extname = ""
 
+                        key_str = extname or f"HDU{i}"
+
                         # --- Tables → TableDocument ---
                         if isinstance(hdu, (fits.BinTableHDU, fits.TableHDU)):
-                            key_str = extname or f"HDU{i}"
                             nice = key_str
-                            #print(f"[DocManager] HDU {i}: {type(hdu).__name__} '{nice}' → Table")
-
-                            # Optional CSV export
-                            #csv_name = f"{os.path.splitext(path)[0]}_{key_str}.csv".replace(" ", "_")
-                            #try:
-                            #    _ = _fits_table_to_csv(hdu, csv_name)
-                            #except Exception as e_csv:
-                            #    print(f"[DocManager] Table CSV export failed ({nice}): {e_csv}")
-                            #    csv_name = None
-
-                            # Build in-app table
                             try:
                                 rows, headers = _fits_table_to_rows_headers(hdu, max_rows=500000)
                                 tmeta = {
@@ -2013,27 +2084,27 @@ class DocManager(QObject):
                                     "original_format": "fits",
                                     "display_name": f"{base} {key_str} (Table)",
                                     "doc_type": "table",
-                                    #"table_csv": csv_name if (csv_name and os.path.exists(csv_name)) else None,
                                 }
                                 _snapshot_header_for_metadata(tmeta)
                                 tdoc = TableDocument(rows, headers, tmeta, parent=self.parent())
                                 self._register_doc(tdoc)
-                                try: tdoc.changed.emit()
+                                try:
+                                    tdoc.changed.emit()
                                 except Exception as e:
                                     import logging
                                     logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
                                 created_any = True
-                                #print(f"[DocManager] Added TableDocument: rows={len(rows)} cols={len(headers)} title='{tdoc.display_name()}'")
                             except Exception as e_tab:
                                 print(f"[DocManager] Table HDU {nice} → in-app view failed: {e_tab}")
                             continue  # IMPORTANT: don’t treat a table as an image
 
-                        # --- Not a table: ICC or image ---
+                        # --- Not a table: ICC / vector / image ---
                         if hdu.data is None:
-                            #print(f"[DocManager] HDU {i} '{extname or f'HDU{i}'}' has no data — noted as aux")
                             continue
 
                         arr = np.asanyarray(hdu.data)
+                        arr_sq = np.squeeze(arr)
+
                         en_up = (extname or "").upper()
                         is_probable_icc = ("ICC" in en_up or "PROFILE" in en_up)
 
@@ -2043,24 +2114,30 @@ class DocManager(QObject):
                                 icc_path = f"{os.path.splitext(path)[0]}_{extname or f'HDU{i}'}_.icc".replace(" ", "_")
                                 with open(icc_path, "wb") as f:
                                     f.write(arr.tobytes())
-                                #print(f"[DocManager] Extracted ICC profile → {icc_path}")
                                 created_any = True
                                 continue
                             except Exception as e_icc:
                                 print(f"[DocManager] ICC export failed: {e_icc} — will try as image")
 
+                        # --- NEW: 1-D FITS image HDU → vector-style TableDocument ---
+                        if arr_sq.ndim == 1 and arr_sq.size > 0:
+                            try:
+                                _make_vector_table_doc_from_hdu(hdu, path, base, key_str)
+                                created_any = True
+                            except Exception as e_vec:
+                                print(f"[DocManager] FITS HDU {i} vector build failed: {e_vec}")
+                            continue
+
                         # Otherwise: treat as image doc
                         try:
                             if arr.dtype.kind in "ui":
                                 a = arr.astype(np.float32, copy=False)  # NO normalization
-                                # optional: if you want to record original scale:
                                 ext_depth = f"{arr.dtype.itemsize*8}-bit {'unsigned' if arr.dtype.kind=='u' else 'signed'}"
                             else:
                                 a = arr.astype(np.float32, copy=False)  # floats preserved
                                 ext_depth = "32-bit floating point" if arr.dtype == np.float32 else "64-bit floating point"
 
                             ext_mono = bool(a.ndim == 2 or (a.ndim == 3 and a.shape[2] == 1))
-                            key_str = extname or f"HDU {i}"
                             disp = f"{base} {key_str}"
 
                             aux_meta = {
@@ -2081,7 +2158,8 @@ class DocManager(QObject):
                             aux_doc = ImageDocument(a, aux_meta)
 
                             self._register_doc(aux_doc)
-                            try: aux_doc.changed.emit()
+                            try:
+                                aux_doc.changed.emit()
                             except Exception as e:
                                 import logging
                                 logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
@@ -2089,6 +2167,7 @@ class DocManager(QObject):
 
                         except Exception as e_img:
                             print(f"[DocManager] FITS HDU {i} image build failed: {e_img}")
+
             except Exception as _e:
                 print(f"[DocManager] FITS HDU enumeration failed: {_e}")
 
@@ -2149,7 +2228,8 @@ class DocManager(QObject):
                         _snapshot_header_for_metadata(md0)
                         primary_doc = ImageDocument(arr0_f32, md0)
                         self._register_doc(primary_doc)
-                        try: primary_doc.changed.emit()
+                        try:
+                            primary_doc.changed.emit()
                         except Exception as e:
                             import logging
                             logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
@@ -2199,7 +2279,8 @@ class DocManager(QObject):
                         _snapshot_header_for_metadata(md)
                         sib = ImageDocument(arr_f32, md)
                         self._register_doc(sib)
-                        try: sib.changed.emit()
+                        try:
+                            sib.changed.emit()
                         except Exception as e:
                             import logging
                             logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
@@ -2214,7 +2295,7 @@ class DocManager(QObject):
         if primary_doc is not None:
             return primary_doc
         if created_any:
-            return self._docs[-1]  # e.g., a table-only FITS or extra XISF image
+            return self._docs[-1]  # e.g., a table-only FITS, vector-only FITS, or extra XISF image
 
         raise IOError(f"Could not load: {path}")
     
