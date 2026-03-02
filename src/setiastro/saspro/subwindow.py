@@ -1,42 +1,90 @@
 # src/setiastro/saspro/subwindow.py
 from __future__ import annotations
-from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QSize, QEvent, QByteArray, QMimeData, QSettings, QTimer, QRect, QPoint, QMargins
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QScrollArea, QLabel, QToolButton, QHBoxLayout, QMessageBox, QMdiSubWindow, QMenu, QInputDialog, QApplication, QTabWidget, QRubberBand
-from PyQt6.QtGui import QPixmap, QImage, QWheelEvent, QShortcut, QKeySequence, QCursor, QDrag, QGuiApplication
-from PyQt6 import sip
-import numpy as np
+
+import csv
 import json
 import math
-import weakref
 import os
 import re
 import time
-try:
-    from PyQt6.QtCore import QSignalBlocker
-except Exception:
-    class QSignalBlocker:
-        def __init__(self, obj): self.obj = obj
-        def __enter__(self):
-            try: self.obj.blockSignals(True)
-            except Exception as e:
-                import logging
-                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
-        def __exit__(self, *exc):
-            try: self.obj.blockSignals(False)
-            except Exception as e:
-                import logging
-                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
+import weakref
+from dataclasses import dataclass
+from typing import Any, List, Optional, Tuple
 
-from .autostretch import autostretch   # ← uses pro/imageops/stretch.py
+import numpy as np
+from PyQt6 import sip
+from PyQt6.QtCore import (
+    QAbstractTableModel,
+    QByteArray,
+    QEvent,
+    QMargins,
+    QMimeData,
+    QModelIndex,
+    QPoint,
+    QRect,
+    QSettings,
+    QSize,
+    Qt,
+    QTimer,
+    pyqtSignal,
+    QSortFilterProxyModel,
+    QSignalBlocker,
+)
+from PyQt6.QtGui import (
+    QCursor,
+    QDrag,
+    QGuiApplication,
+    QImage,
+    QKeySequence,
+    QPixmap,
+    QShortcut,
+    QWheelEvent,
+)
+from PyQt6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QDoubleSpinBox,
+    QFileDialog,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QInputDialog,
+    QLabel,
+    QLineEdit,
+    QMenu,
+    QMessageBox,
+    QMdiSubWindow,
+    QPushButton,
+    QRubberBand,
+    QScrollArea,
+    QSpinBox,
+    QSplitter,
+    QTableView,
+    QToolButton,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
-from setiastro.saspro.dnd_mime import MIME_VIEWSTATE, MIME_MASK, MIME_ASTROMETRY, MIME_CMD, MIME_LINKVIEW 
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavToolbar
+from matplotlib.figure import Figure
+
+from .autostretch import autostretch
+from .layers import BLEND_MODES, ImageLayer, composite_stack
+from setiastro.saspro.dnd_mime import (
+    MIME_ASTROMETRY,
+    MIME_CMD,
+    MIME_LINKVIEW,
+    MIME_MASK,
+    MIME_VIEWSTATE,
+)
 from setiastro.saspro.shortcuts import _unpack_cmd_payload
 from setiastro.saspro.widgets.image_utils import ensure_contiguous
 
-from .layers import composite_stack, ImageLayer, BLEND_MODES
-
-# --- NEW: simple table model for TableDocument ---
-from PyQt6.QtCore import QAbstractTableModel, QModelIndex, Qt, QVariant
 
 __all__ = ["ImageSubWindow", "TableSubWindow"]
 
@@ -3730,58 +3778,964 @@ class ImageSubWindow(QWidget):
         except Exception:
             pass
 
+# --- NEW: Enhanced TableSubWindow + Plot/Stats --------------------------------
+# ----------------------------- helpers ---------------------------------
+def _norm_name(s: str) -> str:
+    s = (s or "").strip().lower()
+    s = s.replace("-", "_").replace(" ", "_")
+    s = re.sub(r"[^a-z0-9_]+", "", s)
+    return s
 
 
-# --- NEW: TableSubWindow -------------------------------------------------
-from PyQt6.QtWidgets import QTableView, QPushButton, QFileDialog
+def _find_column_candidates(model: TypedTableModel) -> dict[str, list[int]]:
+    """
+    Build a semantic map of likely science columns from FITS/MAST-style names.
+    """
+    out = {
+        "time": [],
+        "flux": [],
+        "flux_err": [],
+        "wavelength": [],
+        "frequency": [],
+        "intensity": [],
+        "quality": [],
+        "cadence": [],
+        "background": [],
+        "magnitude": [],
+    }
+
+    for i, ci in enumerate(model.column_infos()):
+        name = _norm_name(ci.name)
+
+        # time-like
+        if name in ("time", "bjd", "mjd", "jd", "hjd") or "time" in name:
+            out["time"].append(i)
+
+        # flux-like
+        if any(k in name for k in (
+            "pdcsap_flux", "sap_flux", "det_flux", "sys_rm_flux", "flux", "counts", "rate"
+        )):
+            out["flux"].append(i)
+
+        # error-like
+        if any(k in name for k in (
+            "flux_err", "error", "err", "unc", "uncert"
+        )):
+            out["flux_err"].append(i)
+
+        # wavelength / spectrum axis
+        if any(k in name for k in (
+            "wavelength", "lambda", "wave", "lam", "angstrom", "nm", "micron", "um"
+        )):
+            out["wavelength"].append(i)
+
+        # frequency axis
+        if any(k in name for k in (
+            "frequency", "freq", "hz", "ghz", "mhz"
+        )):
+            out["frequency"].append(i)
+
+        # intensity / spectral ordinate
+        if any(k in name for k in (
+            "intensity", "signal", "spectrum", "spec_flux", "flam", "fnu", "net", "value"
+        )):
+            out["intensity"].append(i)
+
+        if "quality" in name or "qual" in name:
+            out["quality"].append(i)
+
+        if "cadence" in name:
+            out["cadence"].append(i)
+
+        if "bkg" in name or "background" in name:
+            out["background"].append(i)
+
+        if "mag" in name:
+            out["magnitude"].append(i)
+
+    return out
+
+
+def _pick_first_existing(candidates: list[int], valid_numeric: set[int]) -> Optional[int]:
+    for c in candidates:
+        if c in valid_numeric:
+            return c
+    return None
+
+
+def _guess_plot_columns(model: TypedTableModel) -> dict[str, Optional[int]]:
+    """
+    Best-effort semantic guessing for common astronomy table patterns.
+    """
+    numeric_cols = {i for i, ci in enumerate(model.column_infos()) if ci.is_numeric}
+    sem = _find_column_candidates(model)
+
+    time_col = _pick_first_existing(sem["time"], numeric_cols)
+
+    # Prefer PDCSAP/SAP/DET style columns before generic flux
+    flux_ranked = []
+    for i in sem["flux"]:
+        nm = _norm_name(model.column_infos()[i].name)
+        rank = 100
+        if "pdcsap_flux" in nm:
+            rank = 0
+        elif "sap_flux" in nm:
+            rank = 1
+        elif "det_flux" in nm:
+            rank = 2
+        elif "sys_rm_flux" in nm:
+            rank = 3
+        elif "flux" in nm:
+            rank = 10
+        flux_ranked.append((rank, i))
+    flux_ranked.sort()
+    flux_col = flux_ranked[0][1] if flux_ranked else None
+
+    flux_err_col = _pick_first_existing(sem["flux_err"], numeric_cols)
+    wave_col = _pick_first_existing(sem["wavelength"], numeric_cols)
+    freq_col = _pick_first_existing(sem["frequency"], numeric_cols)
+    inten_col = _pick_first_existing(sem["intensity"], numeric_cols)
+    mag_col = _pick_first_existing(sem["magnitude"], numeric_cols)
+
+    # fallback generic numeric columns
+    numeric_list = sorted(numeric_cols)
+    if time_col is None and numeric_list:
+        time_col = numeric_list[0]
+    if flux_col is None and len(numeric_list) >= 2:
+        flux_col = numeric_list[1]
+    elif flux_col is None and numeric_list:
+        flux_col = numeric_list[0]
+
+    if inten_col is None:
+        # for spectra, if no explicit intensity, use best flux-like column
+        inten_col = flux_col
+
+    return {
+        "time": time_col,
+        "flux": flux_col,
+        "flux_err": flux_err_col,
+        "wavelength": wave_col,
+        "frequency": freq_col,
+        "intensity": inten_col,
+        "magnitude": mag_col,
+    }
+
+
+def _finite_mask(*arrays: np.ndarray) -> np.ndarray:
+    if not arrays:
+        return np.array([], dtype=bool)
+    m = np.ones_like(arrays[0], dtype=bool)
+    for a in arrays:
+        m &= np.isfinite(a)
+    return m
+
+
+def _sigma_clip_mask(y: np.ndarray, sigma: float) -> np.ndarray:
+    if y.size == 0 or sigma <= 0:
+        return np.ones_like(y, dtype=bool)
+    med = np.nanmedian(y)
+    mad = np.nanmedian(np.abs(y - med))
+    if not np.isfinite(mad) or mad <= 0:
+        std = np.nanstd(y)
+        if not np.isfinite(std) or std <= 0:
+            return np.ones_like(y, dtype=bool)
+        return np.abs(y - med) <= sigma * std
+    robust_sigma = 1.4826 * mad
+    return np.abs(y - med) <= sigma * robust_sigma
+
+
+def _phase_fold(x: np.ndarray, period: float, epoch: float = 0.0) -> np.ndarray:
+    if period <= 0:
+        return x.copy()
+    return ((x - epoch) / period) % 1.0
+
+
+def _bin_xy(x: np.ndarray, y: np.ndarray, nbins: int) -> tuple[np.ndarray, np.ndarray]:
+    if x.size == 0 or y.size == 0 or nbins <= 1:
+        return x, y
+    edges = np.linspace(np.nanmin(x), np.nanmax(x), nbins + 1)
+    which = np.digitize(x, edges) - 1
+    xb = []
+    yb = []
+    for b in range(nbins):
+        m = which == b
+        if not np.any(m):
+            continue
+        xb.append(float(np.nanmedian(x[m])))
+        yb.append(float(np.nanmedian(y[m])))
+    if not xb:
+        return x, y
+    return np.asarray(xb, dtype=np.float64), np.asarray(yb, dtype=np.float64)
+
+def _safe_str(x: Any) -> str:
+    if x is None:
+        return ""
+    # FITS tables often have bytes
+    if isinstance(x, (bytes, bytearray)):
+        try:
+            return x.decode("utf-8", errors="replace")
+        except Exception:
+            try:
+                return x.decode("latin1", errors="replace")
+            except Exception:
+                return repr(x)
+    # numpy scalars
+    try:
+        if isinstance(x, (np.generic,)):
+            x = x.item()
+    except Exception:
+        pass
+    return str(x)
+
+def _is_missing(x: Any) -> bool:
+    if x is None:
+        return True
+    try:
+        if isinstance(x, float) and (math.isnan(x) or math.isinf(x)):
+            return True
+    except Exception:
+        pass
+    try:
+        if isinstance(x, (np.floating, np.integer)):
+            xv = x.item()
+            if isinstance(xv, float) and (math.isnan(xv) or math.isinf(xv)):
+                return True
+    except Exception:
+        pass
+    return False
+
+def _try_float(x: Any) -> Optional[float]:
+    if _is_missing(x):
+        return None
+    # already numeric
+    if isinstance(x, (int, float, np.integer, np.floating)):
+        try:
+            v = float(x)
+            if math.isnan(v) or math.isinf(v):
+                return None
+            return v
+        except Exception:
+            return None
+
+    s = _safe_str(x).strip()
+    if not s:
+        return None
+    # handle FITS bytes shown like b'...'
+    # also allow scientific notation
+    try:
+        v = float(s)
+        if math.isnan(v) or math.isinf(v):
+            return None
+        return v
+    except Exception:
+        return None
+
+def _numeric_fraction(values: List[Any]) -> float:
+    if not values:
+        return 0.0
+    ok = 0
+    tot = 0
+    for v in values:
+        tot += 1
+        if _try_float(v) is not None:
+            ok += 1
+    return ok / max(1, tot)
+
+def _calc_stats_numeric(vals: np.ndarray) -> dict:
+    # vals is 1D float, may contain NaNs already removed
+    if vals.size == 0:
+        return dict(count=0)
+    return dict(
+        count=int(vals.size),
+        min=float(np.min(vals)),
+        max=float(np.max(vals)),
+        mean=float(np.mean(vals)),
+        median=float(np.median(vals)),
+        std=float(np.std(vals)),
+    )
+
+
+# ----------------------------- models ----------------------------------
+
+@dataclass
+class ColumnInfo:
+    name: str
+    is_numeric: bool
+    numeric_values: Optional[np.ndarray] = None  # aligned by row index with NaNs for missing
+
+
+class TypedTableModel(QAbstractTableModel):
+    """
+    Table model with lightweight type inference per column.
+    Keeps raw values for display, plus numeric vectors (NaN for missing) for plotting/stats.
+    """
+    def __init__(self, rows: list, headers: list, parent=None):
+        super().__init__(parent)
+        self._headers = [str(h) for h in (headers or [])]
+        self._rows = list(rows or [])
+        self._nrows = len(self._rows)
+        self._ncols = len(self._headers) if self._headers else (len(self._rows[0]) if self._rows else 0)
+
+        # normalize headers if missing
+        if not self._headers:
+            self._headers = [f"COL_{i}" for i in range(self._ncols)]
+
+        # column cache
+        self._colinfo: list[ColumnInfo] = []
+        self._build_column_info()
+
+    def _build_column_info(self):
+        self._colinfo.clear()
+        # gather values by col
+        for c in range(self._ncols):
+            col_vals = []
+            for r in range(self._nrows):
+                try:
+                    col_vals.append(self._rows[r][c])
+                except Exception:
+                    col_vals.append(None)
+
+            frac = _numeric_fraction(col_vals)
+            is_num = (frac >= 0.80) and (self._nrows >= 1)  # pretty permissive
+            if is_num:
+                nv = np.full((self._nrows,), np.nan, dtype=np.float64)
+                for i, v in enumerate(col_vals):
+                    f = _try_float(v)
+                    if f is not None:
+                        nv[i] = f
+                self._colinfo.append(ColumnInfo(name=self._headers[c], is_numeric=True, numeric_values=nv))
+            else:
+                self._colinfo.append(ColumnInfo(name=self._headers[c], is_numeric=False, numeric_values=None))
+
+    # Qt model API
+    def rowCount(self, parent=QModelIndex()) -> int:
+        return 0 if parent.isValid() else self._nrows
+
+    def columnCount(self, parent=QModelIndex()) -> int:
+        return 0 if parent.isValid() else self._ncols
+
+    def headerData(self, section: int, orientation: Qt.Orientation, role: int = Qt.ItemDataRole.DisplayRole):
+        if role != Qt.ItemDataRole.DisplayRole:
+            return None
+        if orientation == Qt.Orientation.Horizontal:
+            if 0 <= section < len(self._headers):
+                return self._headers[section]
+        else:
+            return str(section + 1)
+        return None
+
+    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole):
+        if not index.isValid():
+            return None
+        r = index.row()
+        c = index.column()
+
+        if role == Qt.ItemDataRole.DisplayRole:
+            try:
+                v = self._rows[r][c]
+            except Exception:
+                v = None
+            # show nicer for floats
+            f = _try_float(v)
+            if f is not None and self._colinfo[c].is_numeric:
+                # keep it readable; avoids "1.0000000002" spam
+                return f"{f:.10g}"
+            return _safe_str(v)
+
+        if role == Qt.ItemDataRole.TextAlignmentRole:
+            if self._colinfo[c].is_numeric:
+                return int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            return int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+
+        return None
+
+    # convenience
+    def column_infos(self) -> list[ColumnInfo]:
+        return self._colinfo
+
+    def raw_value(self, row: int, col: int) -> Any:
+        try:
+            return self._rows[row][col]
+        except Exception:
+            return None
+
+    def numeric_column(self, col: int) -> Optional[np.ndarray]:
+        if 0 <= col < len(self._colinfo) and self._colinfo[col].is_numeric:
+            return self._colinfo[col].numeric_values
+        return None
+
+
+class MultiColumnContainsFilterProxy(QSortFilterProxyModel):
+    """
+    Simple row filter: keep rows where ANY column contains the substring (case-insensitive).
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._needle = ""
+
+        # sorting is enabled by view; keep stable sort
+        self.setSortCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.setFilterCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+
+    def set_needle(self, text: str):
+        self._needle = (text or "").strip().lower()
+        self.invalidateFilter()
+
+    def filterAcceptsRow(self, source_row: int, source_parent: QModelIndex) -> bool:
+        n = self._needle
+        if not n:
+            return True
+
+        m = self.sourceModel()
+        if m is None:
+            return True
+
+        cols = m.columnCount()
+        for c in range(cols):
+            idx = m.index(source_row, c, source_parent)
+            s = m.data(idx, Qt.ItemDataRole.DisplayRole)
+            if s is None:
+                continue
+            if n in str(s).lower():
+                return True
+        return False
+
+
+# ----------------------------- stats panel ----------------------------------
+
+class TableStatsPanel(QGroupBox):
+    def __init__(self, parent=None):
+        super().__init__("Stats", parent)
+        self.setMinimumWidth(260)
+        lay = QFormLayout(self)
+
+        self.lbl_rows = QLabel("—")
+        self.lbl_cols = QLabel("—")
+        self.lbl_sel_col = QLabel("—")
+        self.lbl_type = QLabel("—")
+        self.lbl_count = QLabel("—")
+        self.lbl_min = QLabel("—")
+        self.lbl_max = QLabel("—")
+        self.lbl_mean = QLabel("—")
+        self.lbl_median = QLabel("—")
+        self.lbl_std = QLabel("—")
+        self.lbl_unique = QLabel("—")
+
+        lay.addRow("Rows (visible):", self.lbl_rows)
+        lay.addRow("Columns:", self.lbl_cols)
+        lay.addRow("Selected col:", self.lbl_sel_col)
+        lay.addRow("Type:", self.lbl_type)
+        lay.addRow("Count:", self.lbl_count)
+        lay.addRow("Min:", self.lbl_min)
+        lay.addRow("Max:", self.lbl_max)
+        lay.addRow("Mean:", self.lbl_mean)
+        lay.addRow("Median:", self.lbl_median)
+        lay.addRow("Std:", self.lbl_std)
+        lay.addRow("Unique (sample):", self.lbl_unique)
+
+    def set_table_shape(self, nrows_visible: int, ncols: int):
+        self.lbl_rows.setText(str(nrows_visible))
+        self.lbl_cols.setText(str(ncols))
+
+    def set_selection_info(
+        self,
+        col_name: str,
+        is_numeric: bool,
+        stats: Optional[dict] = None,
+        unique_sample: Optional[int] = None,
+    ):
+        self.lbl_sel_col.setText(col_name or "—")
+        self.lbl_type.setText("numeric" if is_numeric else "text/mixed")
+
+        if is_numeric and stats and stats.get("count", 0) > 0:
+            self.lbl_count.setText(str(stats.get("count", "—")))
+            self.lbl_min.setText(f"{stats.get('min'):.10g}")
+            self.lbl_max.setText(f"{stats.get('max'):.10g}")
+            self.lbl_mean.setText(f"{stats.get('mean'):.10g}")
+            self.lbl_median.setText(f"{stats.get('median'):.10g}")
+            self.lbl_std.setText(f"{stats.get('std'):.10g}")
+        else:
+            self.lbl_count.setText("—")
+            self.lbl_min.setText("—")
+            self.lbl_max.setText("—")
+            self.lbl_mean.setText("—")
+            self.lbl_median.setText("—")
+            self.lbl_std.setText("—")
+
+        self.lbl_unique.setText("—" if unique_sample is None else str(unique_sample))
+
+
+# ----------------------------- plot dialog ----------------------------------
+class PlotTableDialog(QDialog):
+    def __init__(self, parent, source_model: TypedTableModel, proxy_model: MultiColumnContainsFilterProxy):
+        super().__init__(parent)
+        self.setWindowTitle("Plot Table Columns")
+        self._src = source_model
+        self._proxy = proxy_model
+        self._semantic = _guess_plot_columns(self._src)
+
+        root = QVBoxLayout(self)
+
+        # ---------------- controls ----------------
+        ctrl = QGroupBox("Plot Settings", self)
+        form = QFormLayout(ctrl)
+
+        self.cmb_preset = QComboBox(self)
+        self.cmb_preset.addItem("Generic X-Y", userData="generic")
+        self.cmb_preset.addItem("TESS Light Curve", userData="tess_lc")
+        self.cmb_preset.addItem("Phase Folded Light Curve", userData="phase")
+        self.cmb_preset.addItem("Spectrum", userData="spectrum")
+        self.cmb_preset.addItem("Histogram", userData="hist")
+        form.addRow("Preset:", self.cmb_preset)
+
+        self.cmb_x = QComboBox(self)
+        self.cmb_y = QComboBox(self)
+        self.cmb_yerr = QComboBox(self)
+        self.cmb_yerr.addItem("(none)", userData=-1)
+
+        self._num_cols: list[int] = []
+        for i, ci in enumerate(self._src.column_infos()):
+            if ci.is_numeric:
+                self._num_cols.append(i)
+                label = ci.name
+                self.cmb_x.addItem(label, userData=i)
+                self.cmb_y.addItem(label, userData=i)
+                self.cmb_yerr.addItem(label, userData=i)
+
+        form.addRow("X:", self.cmb_x)
+        form.addRow("Y:", self.cmb_y)
+        form.addRow("Y error:", self.cmb_yerr)
+
+        self.chk_sort_x = QCheckBox("Sort by X", self)
+        self.chk_sort_x.setChecked(True)
+        form.addRow("", self.chk_sort_x)
+
+        self.chk_remove_nan = QCheckBox("Remove NaNs / missing", self)
+        self.chk_remove_nan.setChecked(True)
+        form.addRow("", self.chk_remove_nan)
+
+        self.chk_line = QCheckBox("Connect points (line)", self)
+        self.chk_line.setChecked(False)
+        form.addRow("", self.chk_line)
+
+        self.chk_normalize_y = QCheckBox("Normalize Y by median", self)
+        self.chk_normalize_y.setChecked(False)
+        form.addRow("", self.chk_normalize_y)
+
+        self.chk_invert_y = QCheckBox("Invert Y axis (magnitudes)", self)
+        self.chk_invert_y.setChecked(False)
+        form.addRow("", self.chk_invert_y)
+
+        self.chk_log_x = QCheckBox("Log X axis", self)
+        self.chk_log_y = QCheckBox("Log Y axis", self)
+        log_row = QWidget(self)
+        log_lay = QHBoxLayout(log_row)
+        log_lay.setContentsMargins(0, 0, 0, 0)
+        log_lay.addWidget(self.chk_log_x)
+        log_lay.addWidget(self.chk_log_y)
+        log_lay.addStretch(1)
+        form.addRow("", log_row)
+
+        self.chk_sigma_clip = QCheckBox("Sigma clip Y", self)
+        self.chk_sigma_clip.setChecked(False)
+        self.sp_sigma = QDoubleSpinBox(self)
+        self.sp_sigma.setRange(0.5, 20.0)
+        self.sp_sigma.setSingleStep(0.5)
+        self.sp_sigma.setValue(4.0)
+        sig_row = QWidget(self)
+        sig_lay = QHBoxLayout(sig_row)
+        sig_lay.setContentsMargins(0, 0, 0, 0)
+        sig_lay.addWidget(self.chk_sigma_clip)
+        sig_lay.addWidget(self.sp_sigma)
+        sig_lay.addStretch(1)
+        form.addRow("", sig_row)
+
+        self.sp_ms = QDoubleSpinBox(self)
+        self.sp_ms.setRange(0.5, 20.0)
+        self.sp_ms.setSingleStep(0.5)
+        self.sp_ms.setValue(3.0)
+        form.addRow("Marker size:", self.sp_ms)
+
+        # phase-fold controls
+        self.sp_period = QDoubleSpinBox(self)
+        self.sp_period.setRange(1e-9, 1e9)
+        self.sp_period.setDecimals(8)
+        self.sp_period.setValue(1.0)
+
+        self.sp_epoch = QDoubleSpinBox(self)
+        self.sp_epoch.setRange(-1e9, 1e9)
+        self.sp_epoch.setDecimals(8)
+        self.sp_epoch.setValue(0.0)
+
+        self.sp_phase_bins = QSpinBox(self)
+        self.sp_phase_bins.setRange(2, 1000)
+        self.sp_phase_bins.setValue(100)
+
+        form.addRow("Period:", self.sp_period)
+        form.addRow("Epoch:", self.sp_epoch)
+        form.addRow("Phase bins:", self.sp_phase_bins)
+
+        # histogram controls
+        self.sp_hist_bins = QSpinBox(self)
+        self.sp_hist_bins.setRange(5, 5000)
+        self.sp_hist_bins.setValue(50)
+        form.addRow("Histogram bins:", self.sp_hist_bins)
+
+        root.addWidget(ctrl)
+
+        # ---------------- plot area ----------------
+        self.fig = Figure(figsize=(6, 4), dpi=100)
+        self.canvas = FigureCanvas(self.fig)
+        self.toolbar = NavToolbar(self.canvas, self)
+        root.addWidget(self.toolbar)
+        root.addWidget(self.canvas, 1)
+
+        # ---------------- buttons ----------------
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, parent=self)
+        self.btn_plot = QPushButton("Plot", self)
+        self.btn_plot.clicked.connect(self._do_plot)
+        btns.addButton(self.btn_plot, QDialogButtonBox.ButtonRole.ActionRole)
+        btns.rejected.connect(self.reject)
+        root.addWidget(btns)
+
+        self.cmb_preset.currentIndexChanged.connect(self._preset_changed)
+
+        self.resize(960, 700)
+
+        self._preset_changed()
+        if self.cmb_x.count() > 0 and self.cmb_y.count() > 0:
+            self._do_plot()
+
+    def _gather_visible_numeric(self, col: int) -> np.ndarray:
+        nv = self._src.numeric_column(col)
+        if nv is None:
+            return np.array([], dtype=np.float64)
+
+        out = np.empty((self._proxy.rowCount(),), dtype=np.float64)
+        out[:] = np.nan
+
+        for pr in range(self._proxy.rowCount()):
+            src_idx = self._proxy.mapToSource(self._proxy.index(pr, col))
+            sr = src_idx.row()
+            if 0 <= sr < nv.shape[0]:
+                out[pr] = nv[sr]
+        return out
+
+    def _set_combo_to_col(self, combo: QComboBox, col: Optional[int]):
+        if col is None:
+            return
+        idx = combo.findData(col)
+        if idx >= 0:
+            combo.setCurrentIndex(idx)
+
+    def _preset_changed(self):
+        preset = self.cmb_preset.currentData()
+
+        # defaults
+        self.chk_line.setChecked(False)
+        self.chk_sort_x.setChecked(True)
+        self.chk_normalize_y.setChecked(False)
+        self.chk_invert_y.setChecked(False)
+        self.chk_log_x.setChecked(False)
+        self.chk_log_y.setChecked(False)
+
+        # enable/disable phase/hist controls
+        is_phase = (preset == "phase")
+        is_hist = (preset == "hist")
+        self.sp_period.setEnabled(is_phase)
+        self.sp_epoch.setEnabled(is_phase)
+        self.sp_phase_bins.setEnabled(is_phase)
+        self.sp_hist_bins.setEnabled(is_hist)
+
+        sem = self._semantic
+
+        if preset == "tess_lc":
+            self._set_combo_to_col(self.cmb_x, sem["time"])
+            self._set_combo_to_col(self.cmb_y, sem["flux"])
+            self._set_combo_to_col(self.cmb_yerr, sem["flux_err"])
+            self.chk_line.setChecked(False)
+            self.chk_normalize_y.setChecked(True)
+
+        elif preset == "phase":
+            self._set_combo_to_col(self.cmb_x, sem["time"])
+            self._set_combo_to_col(self.cmb_y, sem["flux"])
+            self._set_combo_to_col(self.cmb_yerr, sem["flux_err"])
+            self.chk_line.setChecked(False)
+            self.chk_normalize_y.setChecked(True)
+
+        elif preset == "spectrum":
+            xcol = sem["wavelength"] if sem["wavelength"] is not None else sem["frequency"]
+            ycol = sem["intensity"] if sem["intensity"] is not None else sem["flux"]
+            self._set_combo_to_col(self.cmb_x, xcol)
+            self._set_combo_to_col(self.cmb_y, ycol)
+            self.chk_line.setChecked(True)
+
+        elif preset == "hist":
+            # histogram uses Y column only
+            if sem["flux"] is not None:
+                self._set_combo_to_col(self.cmb_y, sem["flux"])
+
+        else:  # generic
+            if sem["time"] is not None:
+                self._set_combo_to_col(self.cmb_x, sem["time"])
+            if sem["flux"] is not None:
+                self._set_combo_to_col(self.cmb_y, sem["flux"])
+
+    def _apply_common_cleaning(self, x: np.ndarray, y: np.ndarray, yerr: Optional[np.ndarray]):
+        mask = np.ones_like(y, dtype=bool)
+
+        if self.chk_remove_nan.isChecked():
+            mask &= _finite_mask(x, y)
+            if yerr is not None:
+                mask &= np.isfinite(yerr)
+
+        x2 = x[mask]
+        y2 = y[mask]
+        yerr2 = yerr[mask] if yerr is not None else None
+
+        if self.chk_sigma_clip.isChecked() and x2.size > 0 and y2.size > 0:
+            cm = _sigma_clip_mask(y2, float(self.sp_sigma.value()))
+            x2 = x2[cm]
+            y2 = y2[cm]
+            if yerr2 is not None:
+                yerr2 = yerr2[cm]
+
+        if self.chk_normalize_y.isChecked() and y2.size > 0:
+            med = np.nanmedian(y2)
+            if np.isfinite(med) and med != 0:
+                y2 = y2 / med
+                if yerr2 is not None:
+                    yerr2 = yerr2 / abs(med)
+
+        return x2, y2, yerr2
+
+    def _do_plot(self):
+        if self.cmb_y.count() == 0:
+            QMessageBox.information(self, "Plot", "No numeric columns available to plot.")
+            return
+
+        preset = self.cmb_preset.currentData()
+        ycol = int(self.cmb_y.currentData())
+        xcol = int(self.cmb_x.currentData()) if self.cmb_x.count() > 0 else -1
+        yerr_col = int(self.cmb_yerr.currentData())
+
+        self.fig.clear()
+        ax = self.fig.add_subplot(111)
+        ms = float(self.sp_ms.value())
+
+        if preset == "hist":
+            y = self._gather_visible_numeric(ycol)
+            y = y[np.isfinite(y)]
+            if self.chk_sigma_clip.isChecked():
+                y = y[_sigma_clip_mask(y, float(self.sp_sigma.value()))]
+            if self.chk_normalize_y.isChecked() and y.size > 0:
+                med = np.nanmedian(y)
+                if np.isfinite(med) and med != 0:
+                    y = y / med
+
+            if y.size == 0:
+                QMessageBox.warning(self, "Plot", "No valid numeric data for histogram.")
+                return
+
+            ax.hist(y, bins=int(self.sp_hist_bins.value()))
+            ax.set_xlabel(self.cmb_y.currentText())
+            ax.set_ylabel("Count")
+            ax.set_title(f"Histogram: {self.cmb_y.currentText()}")
+
+        else:
+            if self.cmb_x.count() == 0:
+                QMessageBox.warning(self, "Plot", "No numeric X column available.")
+                return
+
+            x = self._gather_visible_numeric(xcol)
+            y = self._gather_visible_numeric(ycol)
+            yerr = self._gather_visible_numeric(yerr_col) if yerr_col >= 0 else None
+
+            if x.size == 0 or y.size == 0:
+                QMessageBox.warning(self, "Plot", "No data available.")
+                return
+
+            x2, y2, yerr2 = self._apply_common_cleaning(x, y, yerr)
+
+            if x2.size == 0:
+                QMessageBox.warning(self, "Plot", "All rows were filtered out.")
+                return
+
+            if preset == "phase":
+                period = float(self.sp_period.value())
+                epoch = float(self.sp_epoch.value())
+                x2 = _phase_fold(x2, period, epoch)
+
+                if self.chk_sort_x.isChecked():
+                    order = np.argsort(x2)
+                    x2 = x2[order]
+                    y2 = y2[order]
+                    if yerr2 is not None:
+                        yerr2 = yerr2[order]
+
+                xb, yb = _bin_xy(x2, y2, int(self.sp_phase_bins.value()))
+                ax.plot(x2, y2, "o", alpha=0.35, markersize=max(1.0, ms - 1.0))
+                if xb.size > 0:
+                    ax.plot(xb, yb, "-", linewidth=1.5)
+                ax.set_xlabel("Phase")
+                ax.set_ylabel(self.cmb_y.currentText())
+                ax.set_title("Phase-Folded Light Curve")
+
+            else:
+                if self.chk_sort_x.isChecked():
+                    order = np.argsort(x2)
+                    x2 = x2[order]
+                    y2 = y2[order]
+                    if yerr2 is not None:
+                        yerr2 = yerr2[order]
+
+                if preset == "spectrum":
+                    if yerr2 is not None:
+                        ax.errorbar(
+                            x2, y2, yerr=yerr2,
+                            fmt="-",
+                            linewidth=1.0,
+                            ecolor="orange"
+                        )
+                    else:
+                        ax.plot(x2, y2, "-", linewidth=1.0)
+                    ax.set_title("Spectrum")
+                else:
+                    if yerr2 is not None:
+                        ax.errorbar(
+                            x2, y2, yerr=yerr2,
+                            fmt="o" if not self.chk_line.isChecked() else "-o",
+                            markersize=ms,
+                            ecolor="orange"
+                        )
+                    else:
+                        if self.chk_line.isChecked():
+                            ax.plot(x2, y2, "-o", markersize=ms)
+                        else:
+                            ax.plot(x2, y2, "o", markersize=ms)
+
+                ax.set_xlabel(self.cmb_x.currentText())
+                ax.set_ylabel(self.cmb_y.currentText())
+
+        if self.chk_log_x.isChecked():
+            try:
+                ax.set_xscale("log")
+            except Exception:
+                pass
+        if self.chk_log_y.isChecked():
+            try:
+                ax.set_yscale("log")
+            except Exception:
+                pass
+        if self.chk_invert_y.isChecked():
+            ax.invert_yaxis()
+
+        ax.grid(True, which="both", alpha=0.3)
+        self.fig.tight_layout()
+        self.canvas.draw()
+
+# ----------------------------- TableSubWindow --------------------------------
 
 class TableSubWindow(QWidget):
     """
-    Lightweight subwindow to render TableDocument (rows/headers) in a QTableView.
-    Provides: copy, export CSV, row count display.
+    Enhanced table view for FITS/astropy tables:
+      - Export CSV
+      - Copy selected rows as CSV
+      - Search/filter rows
+      - Stats panel (selected column + visible rows)
+      - Plot dialog (numeric columns; optional error bars)
     """
-    viewTitleChanged = pyqtSignal(object, str)  # to mirror ImageSubWindow emissions (if needed)
+    viewTitleChanged = pyqtSignal(object, str)
 
     def __init__(self, table_document, parent=None):
         super().__init__(parent)
         self.document = table_document
         self._last_title_for_emit = None
 
-        lyt = QVBoxLayout(self)
-        title_row = QHBoxLayout()
-        self.title_lbl = QLabel(self.document.display_name())
-        title_row.addWidget(self.title_lbl)
-        title_row.addStretch(1)
+        root = QVBoxLayout(self)
 
-        self.export_btn = QPushButton(self.tr("Export CSV…"))
-        self.export_btn.clicked.connect(self._export_csv)
-        title_row.addWidget(self.export_btn)
-        lyt.addLayout(title_row)
+        # --- header row
+        header_row = QHBoxLayout()
+        self.title_lbl = QLabel(self.document.display_name())
+        header_row.addWidget(self.title_lbl)
+        header_row.addStretch(1)
+
+        self.search_edit = QLineEdit(self)
+        self.search_edit.setPlaceholderText("Search / filter rows…")
+        self.search_edit.setClearButtonEnabled(True)
+        self.search_edit.setMaximumWidth(360)
+        header_row.addWidget(self.search_edit)
+
+        self.btn_plot = QPushButton(self.tr("Plot…"), self)
+        self.btn_copy = QPushButton(self.tr("Copy Rows"), self)
+        self.export_btn = QPushButton(self.tr("Export CSV…"), self)
+
+        header_row.addWidget(self.btn_plot)
+        header_row.addWidget(self.btn_copy)
+        header_row.addWidget(self.export_btn)
+
+        root.addLayout(header_row)
+
+        # --- main splitter: table + stats
+        split = QSplitter(self)
+        split.setOrientation(Qt.Orientation.Horizontal)
+        root.addWidget(split, 1)
+
+        # table
+        table_wrap = QWidget(self)
+        table_lay = QVBoxLayout(table_wrap)
+        table_lay.setContentsMargins(0, 0, 0, 0)
 
         self.table = QTableView(self)
         self.table.setSortingEnabled(True)
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableView.SelectionMode.ExtendedSelection)
-        lyt.addWidget(self.table, 1)
+        table_lay.addWidget(self.table, 1)
 
+        split.addWidget(table_wrap)
+
+        # stats
+        self.stats = TableStatsPanel(self)
+        split.addWidget(self.stats)
+        split.setStretchFactor(0, 5)
+        split.setStretchFactor(1, 1)
+
+        # data/model
         rows = getattr(self.document, "rows", [])
         headers = getattr(self.document, "headers", [])
-        self._model = SimpleTableModel(rows, headers, self)
-        self.table.setModel(self._model)
+
+        self._src_model = TypedTableModel(rows, headers, self)
+        self._proxy = MultiColumnContainsFilterProxy(self)
+        self._proxy.setSourceModel(self._src_model)
+
+        self.table.setModel(self._proxy)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.resizeColumnsToContents()
 
+        # connect signals
+        self.export_btn.clicked.connect(self._export_csv)
+        self.btn_copy.clicked.connect(self._copy_selected_rows_csv)
+        self.btn_plot.clicked.connect(self._open_plot_dialog)
+        self.search_edit.textChanged.connect(self._on_search_changed)
+
+        # selection -> stats
+        sel = self.table.selectionModel()
+        if sel is not None:
+            sel.selectionChanged.connect(self._update_stats_from_selection)
+
         self._sync_host_title()
-        #print(f"[TableSubWindow] init rows={self._model.rowCount()} cols={self._model.columnCount()} title='{self.document.display_name()}'")
-        # react to doc rename if you add such behavior later
+
         try:
             self.document.changed.connect(self._on_doc_changed)
         except Exception:
             pass
 
+        # initial stats
+        self._update_stats_from_selection()
+
+    # ---- doc/title
     def _on_doc_changed(self):
-        # if title changes or content updates in future
         self.title_lbl.setText(self.document.display_name())
         self._sync_host_title()
 
@@ -3806,12 +4760,118 @@ class TableSubWindow(QWidget):
                 except Exception:
                     pass
 
+    # ---- search/filter
+    def _on_search_changed(self, text: str):
+        self._proxy.set_needle(text)
+        self._update_stats_from_selection()
+
+    # ---- stats
+    def _update_stats_from_selection(self, *_):
+        nrows_vis = self._proxy.rowCount()
+        ncols = self._src_model.columnCount()
+        self.stats.set_table_shape(nrows_vis, ncols)
+
+        # selected column (prefer currentIndex)
+        idx = self.table.currentIndex()
+        if not idx.isValid():
+            # no selection
+            self.stats.set_selection_info("—", False, None, None)
+            return
+
+        # currentIndex is in proxy coords
+        col = idx.column()
+        # col name/type from source model (same column index)
+        infos = self._src_model.column_infos()
+        if not (0 <= col < len(infos)):
+            self.stats.set_selection_info("—", False, None, None)
+            return
+
+        ci = infos[col]
+        if ci.is_numeric and ci.numeric_values is not None:
+            # stats over visible rows only
+            v = []
+            for pr in range(self._proxy.rowCount()):
+                sidx = self._proxy.mapToSource(self._proxy.index(pr, col))
+                sr = sidx.row()
+                if 0 <= sr < ci.numeric_values.shape[0]:
+                    v.append(ci.numeric_values[sr])
+            arr = np.asarray(v, dtype=np.float64)
+            arr = arr[np.isfinite(arr)]
+            st = _calc_stats_numeric(arr)
+            self.stats.set_selection_info(ci.name, True, st, None)
+        else:
+            # unique sample over visible rows only (capped)
+            uniq = set()
+            cap = 5000
+            for pr in range(min(self._proxy.rowCount(), cap)):
+                sidx = self._proxy.mapToSource(self._proxy.index(pr, col))
+                sr = sidx.row()
+                uniq.add(_safe_str(self._src_model.raw_value(sr, col)))
+            self.stats.set_selection_info(ci.name, False, None, len(uniq))
+
+    # ---- copy selected rows
+    def _copy_selected_rows_csv(self):
+        sel = self.table.selectionModel()
+        if sel is None:
+            return
+        rows = sel.selectedRows()
+        if not rows:
+            QMessageBox.information(self, "Copy", "No rows selected.")
+            return
+
+        # stable order
+        proxy_rows = sorted({r.row() for r in rows})
+        cols = self._src_model.columnCount()
+        headers = [self._src_model.headerData(c, Qt.Orientation.Horizontal) for c in range(cols)]
+        headers = [str(h) for h in headers]
+
+        # build CSV text
+        out_lines = []
+        out_lines.append(",".join([self._csv_escape(h) for h in headers]))
+
+        for pr in proxy_rows:
+            # map proxy row -> source row
+            sidx0 = self._proxy.mapToSource(self._proxy.index(pr, 0))
+            sr = sidx0.row()
+            row_vals = []
+            for c in range(cols):
+                row_vals.append(_safe_str(self._src_model.raw_value(sr, c)))
+            out_lines.append(",".join([self._csv_escape(v) for v in row_vals]))
+
+        txt = "\n".join(out_lines)
+        QGuiApplication.clipboard().setText(txt)
+        QMessageBox.information(self, "Copy", f"Copied {len(proxy_rows)} rows to clipboard as CSV.")
+
+    @staticmethod
+    def _csv_escape(s: str) -> str:
+        # minimal CSV quoting
+        if s is None:
+            return ""
+        s = str(s)
+        if any(ch in s for ch in [",", '"', "\n", "\r"]):
+            s = s.replace('"', '""')
+            return f'"{s}"'
+        return s
+
+    # ---- plot
+    def _open_plot_dialog(self):
+        dlg = PlotTableDialog(self, self._src_model, self._proxy)
+        dlg.setModal(False)
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
+    # ---- export csv (your original logic, but respects current filtered view)
     def _export_csv(self):
         # Prefer already-exported CSV from metadata when available, otherwise prompt
-        existing = self.document.metadata.get("table_csv")
+        existing = getattr(self.document, "metadata", {}).get("table_csv")
         if existing and os.path.exists(existing):
-            # Offer to open/save-as that CSV
-            dst, ok = QFileDialog.getSaveFileName(self, self.tr("Save CSV As…"), os.path.basename(existing), self.tr("CSV Files (*.csv)"))
+            dst, ok = QFileDialog.getSaveFileName(
+                self,
+                self.tr("Save CSV As…"),
+                os.path.basename(existing),
+                self.tr("CSV Files (*.csv)")
+            )
             if ok and dst:
                 try:
                     import shutil
@@ -3820,21 +4880,30 @@ class TableSubWindow(QWidget):
                     QMessageBox.warning(self, self.tr("Export CSV"), self.tr("Failed to copy CSV:\n{0}").format(e))
             return
 
-        # No pre-export → write one from the model
-        dst, ok = QFileDialog.getSaveFileName(self, self.tr("Export CSV…"), "table.csv", self.tr("CSV Files (*.csv)"))
+        dst, ok = QFileDialog.getSaveFileName(
+            self,
+            self.tr("Export CSV…"),
+            "table.csv",
+            self.tr("CSV Files (*.csv)")
+        )
         if not ok or not dst:
             return
+
         try:
-            import csv
+            cols = self._src_model.columnCount()
+            hdrs = [self._src_model.headerData(c, Qt.Orientation.Horizontal) for c in range(cols)]
+            hdrs = [str(h) for h in hdrs]
+
             with open(dst, "w", encoding="utf-8", newline="") as f:
                 w = csv.writer(f)
-                # headers
-                cols = self._model.columnCount()
-                hdrs = [self._model.headerData(c, Qt.Orientation.Horizontal) for c in range(cols)]
-                w.writerow([str(h) for h in hdrs])
-                # rows
-                rows = self._model.rowCount()
-                for r in range(rows):
-                    w.writerow([self._model.data(self._model.index(r, c), Qt.ItemDataRole.DisplayRole) for c in range(cols)])
+                w.writerow(hdrs)
+
+                # export visible rows ONLY (respects filter)
+                for pr in range(self._proxy.rowCount()):
+                    sidx0 = self._proxy.mapToSource(self._proxy.index(pr, 0))
+                    sr = sidx0.row()
+                    row = [_safe_str(self._src_model.raw_value(sr, c)) for c in range(cols)]
+                    w.writerow(row)
+
         except Exception as e:
             QMessageBox.warning(self, self.tr("Export CSV"), self.tr("Failed to export CSV:\n{0}").format(e))

@@ -948,7 +948,7 @@ class SettingsDialog(QDialog):
         self._accel_warning_text = self.tr(
             "⚠️ IMPORTANT:\n"
             "Do NOT close SAS Pro or interrupt this process.\n"
-            "GPU Acceleration installs very large PyTorch runtime packages and may appear hung.\n"
+            "Hardware Acceleration installs very large PyTorch runtime packages and may appear hung.\n"
             "This is normal.\n\n"
         )
 
