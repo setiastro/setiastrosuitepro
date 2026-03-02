@@ -4061,13 +4061,18 @@ def _calc_stats_numeric(vals: np.ndarray) -> dict:
 class ColumnInfo:
     name: str
     is_numeric: bool
-    numeric_values: Optional[np.ndarray] = None  # aligned by row index with NaNs for missing
+    numeric_values: Optional[np.ndarray] = None   # scalar numeric columns only
+    is_vector: bool = False
+    vector_lengths: Optional[List[int]] = None
 
 
 class TypedTableModel(QAbstractTableModel):
     """
     Table model with lightweight type inference per column.
-    Keeps raw values for display, plus numeric vectors (NaN for missing) for plotting/stats.
+
+    Supports:
+      - scalar numeric columns
+      - vector-in-cell numeric columns (common in spectra tables)
     """
     def __init__(self, rows: list, headers: list, parent=None):
         super().__init__(parent)
@@ -4076,17 +4081,15 @@ class TypedTableModel(QAbstractTableModel):
         self._nrows = len(self._rows)
         self._ncols = len(self._headers) if self._headers else (len(self._rows[0]) if self._rows else 0)
 
-        # normalize headers if missing
         if not self._headers:
             self._headers = [f"COL_{i}" for i in range(self._ncols)]
 
-        # column cache
         self._colinfo: list[ColumnInfo] = []
         self._build_column_info()
 
     def _build_column_info(self):
         self._colinfo.clear()
-        # gather values by col
+
         for c in range(self._ncols):
             col_vals = []
             for r in range(self._nrows):
@@ -4095,19 +4098,57 @@ class TypedTableModel(QAbstractTableModel):
                 except Exception:
                     col_vals.append(None)
 
-            frac = _numeric_fraction(col_vals)
-            is_num = (frac >= 0.80) and (self._nrows >= 1)  # pretty permissive
-            if is_num:
+            scalar_frac = _numeric_fraction(col_vals)
+            vector_frac = _sequence_numeric_fraction(col_vals)
+
+            # Prefer vector classification when clearly sequence-like
+            is_vector = (vector_frac >= 0.50)
+            is_scalar = (not is_vector) and (scalar_frac >= 0.80) and (self._nrows >= 1)
+
+            if is_vector:
+                lengths: List[int] = []
+                for v in col_vals:
+                    arr = _flatten_numeric_sequence(v)
+                    lengths.append(int(arr.size) if arr is not None else 0)
+
+                self._colinfo.append(
+                    ColumnInfo(
+                        name=self._headers[c],
+                        is_numeric=True,
+                        numeric_values=None,
+                        is_vector=True,
+                        vector_lengths=lengths,
+                    )
+                )
+
+            elif is_scalar:
                 nv = np.full((self._nrows,), np.nan, dtype=np.float64)
                 for i, v in enumerate(col_vals):
                     f = _try_float(v)
                     if f is not None:
                         nv[i] = f
-                self._colinfo.append(ColumnInfo(name=self._headers[c], is_numeric=True, numeric_values=nv))
-            else:
-                self._colinfo.append(ColumnInfo(name=self._headers[c], is_numeric=False, numeric_values=None))
 
-    # Qt model API
+                self._colinfo.append(
+                    ColumnInfo(
+                        name=self._headers[c],
+                        is_numeric=True,
+                        numeric_values=nv,
+                        is_vector=False,
+                        vector_lengths=None,
+                    )
+                )
+
+            else:
+                self._colinfo.append(
+                    ColumnInfo(
+                        name=self._headers[c],
+                        is_numeric=False,
+                        numeric_values=None,
+                        is_vector=False,
+                        vector_lengths=None,
+                    )
+                )
+
     def rowCount(self, parent=QModelIndex()) -> int:
         return 0 if parent.isValid() else self._nrows
 
@@ -4127,29 +4168,49 @@ class TypedTableModel(QAbstractTableModel):
     def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole):
         if not index.isValid():
             return None
+
         r = index.row()
         c = index.column()
 
+        try:
+            v = self._rows[r][c]
+        except Exception:
+            v = None
+
+        ci = self._colinfo[c]
+
         if role == Qt.ItemDataRole.DisplayRole:
-            try:
-                v = self._rows[r][c]
-            except Exception:
-                v = None
-            # show nicer for floats
+            if ci.is_vector:
+                return _display_compact_value(v)
+
             f = _try_float(v)
-            if f is not None and self._colinfo[c].is_numeric:
-                # keep it readable; avoids "1.0000000002" spam
+            if f is not None and ci.is_numeric:
                 return f"{f:.10g}"
+
             return _safe_str(v)
 
         if role == Qt.ItemDataRole.TextAlignmentRole:
-            if self._colinfo[c].is_numeric:
+            if ci.is_numeric and not ci.is_vector:
                 return int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             return int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
+        if role == Qt.ItemDataRole.ToolTipRole:
+            if ci.is_vector:
+                arr = _flatten_numeric_sequence(v)
+                if arr is not None:
+                    finite = arr[np.isfinite(arr)]
+                    if finite.size:
+                        return (
+                            f"{ci.name}\n"
+                            f"Vector length: {arr.size}\n"
+                            f"Min: {float(np.min(finite)):.6g}\n"
+                            f"Max: {float(np.max(finite)):.6g}"
+                        )
+                    return f"{ci.name}\nVector length: {arr.size}"
+            return _safe_str(v)
+
         return None
 
-    # convenience
     def column_infos(self) -> list[ColumnInfo]:
         return self._colinfo
 
@@ -4160,8 +4221,61 @@ class TypedTableModel(QAbstractTableModel):
             return None
 
     def numeric_column(self, col: int) -> Optional[np.ndarray]:
-        if 0 <= col < len(self._colinfo) and self._colinfo[col].is_numeric:
-            return self._colinfo[col].numeric_values
+        if 0 <= col < len(self._colinfo):
+            ci = self._colinfo[col]
+            if ci.is_numeric and not ci.is_vector:
+                return ci.numeric_values
+        return None
+
+    def vector_for_row(self, row: int, col: int) -> Optional[np.ndarray]:
+        """
+        Return one row's vector payload for a vector column as float64 1-D array.
+        Returns None if the cell is not a usable numeric vector.
+        """
+        if not (0 <= col < len(self._colinfo)):
+            return None
+        if not (0 <= row < self._nrows):
+            return None
+
+        ci = self._colinfo[col]
+        if not ci.is_vector:
+            return None
+
+        raw = self.raw_value(row, col)
+        arr = _flatten_numeric_sequence(raw)
+        if arr is None:
+            return None
+        return np.asarray(arr, dtype=np.float64)
+
+    def vector_column_for_rows(self, col: int, source_rows: List[int]) -> Optional[np.ndarray]:
+        """
+        Flatten a vector-in-cell column across the specified source rows.
+        If the column is scalar numeric, returns those scalar values.
+        """
+        if not (0 <= col < len(self._colinfo)):
+            return None
+
+        ci = self._colinfo[col]
+
+        if ci.is_vector:
+            parts = []
+            for sr in source_rows:
+                arr = self.vector_for_row(sr, col)
+                if arr is not None and arr.size > 0:
+                    parts.append(arr)
+
+            if not parts:
+                return np.array([], dtype=np.float64)
+
+            return np.concatenate(parts).astype(np.float64, copy=False)
+
+        if ci.is_numeric and ci.numeric_values is not None:
+            out = np.full((len(source_rows),), np.nan, dtype=np.float64)
+            for i, sr in enumerate(source_rows):
+                if 0 <= sr < ci.numeric_values.shape[0]:
+                    out[i] = ci.numeric_values[sr]
+            return out
+
         return None
 
 
@@ -4264,6 +4378,288 @@ class TableStatsPanel(QGroupBox):
 
         self.lbl_unique.setText("—" if unique_sample is None else str(unique_sample))
 
+def _is_array_like_1d(x: Any) -> bool:
+    if x is None:
+        return False
+
+    if isinstance(x, np.ndarray):
+        return x.ndim == 1 and x.size > 0
+
+    if isinstance(x, (list, tuple)) and len(x) > 0:
+        # exclude strings / bytes
+        if isinstance(x, (str, bytes, bytearray)):
+            return False
+        return True
+
+    return False
+
+
+def _to_1d_float_array(x: Any) -> Optional[np.ndarray]:
+    """
+    Convert array-like cell content to a 1D float64 vector.
+    Returns None if conversion fails or if result is not 1D numeric.
+    """
+    if x is None:
+        return None
+
+    # bytes that actually contain text are not treated as vectors
+    if isinstance(x, (bytes, bytearray, str)):
+        return None
+
+    try:
+        arr = np.asarray(x)
+    except Exception:
+        return None
+
+    if arr.ndim != 1 or arr.size == 0:
+        return None
+
+    # object arrays / mixed arrays -> elementwise float parse
+    try:
+        if arr.dtype == object:
+            out = np.full(arr.shape, np.nan, dtype=np.float64)
+            ok_any = False
+            for i, v in enumerate(arr.tolist()):
+                f = _try_float(v)
+                if f is not None:
+                    out[i] = f
+                    ok_any = True
+            return out if ok_any else None
+
+        arr = arr.astype(np.float64, copy=False)
+        arr[~np.isfinite(arr)] = np.nan
+        return arr
+    except Exception:
+        # final fallback: try elementwise parse
+        try:
+            vals = []
+            ok_any = False
+            for v in list(arr):
+                f = _try_float(v)
+                vals.append(np.nan if f is None else f)
+                ok_any = ok_any or (f is not None)
+            out = np.asarray(vals, dtype=np.float64)
+            return out if ok_any else None
+        except Exception:
+            return None
+
+
+def _preview_value(x: Any, max_items: int = 6) -> str:
+    """
+    User-facing display string for cells, with compact previews for vectors.
+    """
+    vec = _to_1d_float_array(x)
+    if vec is not None:
+        finite = vec[np.isfinite(vec)]
+        n = int(vec.size)
+        head = vec[:max_items]
+        head_txt = ", ".join(
+            ("nan" if not np.isfinite(v) else f"{float(v):.6g}")
+            for v in head
+        )
+        if n > max_items:
+            head_txt += ", …"
+        if finite.size:
+            return f"[{head_txt}]  (n={n})"
+        return f"[{head_txt}]"
+
+    return _safe_str(x)
+
+def _is_sequence_like(x: Any) -> bool:
+    if x is None:
+        return False
+    if isinstance(x, (str, bytes, bytearray)):
+        return False
+    if isinstance(x, np.ndarray):
+        return x.ndim >= 1
+    return isinstance(x, (list, tuple))
+
+def _flatten_numeric_sequence(x: Any) -> Optional[np.ndarray]:
+    """
+    Return a 1-D float64 array if x is a numeric vector/array-like.
+    Returns None if x is not usable as a numeric sequence.
+    """
+    if x is None:
+        return None
+
+    # numpy arrays
+    if isinstance(x, np.ndarray):
+        try:
+            arr = np.asarray(x)
+            if arr.ndim == 0:
+                f = _try_float(arr.item())
+                if f is None:
+                    return None
+                return np.array([f], dtype=np.float64)
+
+            flat = np.ravel(arr)
+            out = np.full(flat.shape, np.nan, dtype=np.float64)
+            any_ok = False
+            for i, v in enumerate(flat):
+                f = _try_float(v)
+                if f is not None:
+                    out[i] = f
+                    any_ok = True
+            return out if any_ok else None
+        except Exception:
+            return None
+
+    # list / tuple
+    if isinstance(x, (list, tuple)):
+        try:
+            out = np.full((len(x),), np.nan, dtype=np.float64)
+            any_ok = False
+            for i, v in enumerate(x):
+                f = _try_float(v)
+                if f is not None:
+                    out[i] = f
+                    any_ok = True
+            return out if any_ok else None
+        except Exception:
+            return None
+
+    # string that may contain a bracketed numeric vector
+    s = _safe_str(x).strip()
+    if not s:
+        return None
+
+    if len(s) >= 2 and s[0] == "[" and s[-1] == "]":
+        try:
+            body = s[1:-1].replace(",", " ")
+            parts = [p for p in body.split() if p]
+            if not parts:
+                return None
+            out = np.full((len(parts),), np.nan, dtype=np.float64)
+            any_ok = False
+            for i, p in enumerate(parts):
+                try:
+                    v = float(p)
+                    if np.isfinite(v):
+                        out[i] = v
+                        any_ok = True
+                except Exception:
+                    pass
+            return out if any_ok else None
+        except Exception:
+            return None
+
+    return None
+
+def _sequence_numeric_fraction(values: List[Any]) -> float:
+    if not values:
+        return 0.0
+    ok = 0
+    for v in values:
+        arr = _flatten_numeric_sequence(v)
+        if arr is not None and arr.size > 0 and np.isfinite(arr).any():
+            ok += 1
+    return ok / max(1, len(values))
+
+def _display_compact_value(x: Any, max_items: int = 4) -> str:
+    arr = _flatten_numeric_sequence(x)
+    if arr is not None and arr.size > 1:
+        finite = arr[np.isfinite(arr)]
+        preview = finite[:max_items] if finite.size > 0 else arr[:max_items]
+        preview_txt = ", ".join(f"{float(v):.6g}" for v in preview)
+        if arr.size > max_items:
+            preview_txt += ", ..."
+        return f"array[{arr.size}]: {preview_txt}"
+    return _safe_str(x)
+
+def _normalize_unit_text(unit: str) -> str:
+    s = (unit or "").strip()
+    if not s:
+        return ""
+
+    sl = s.lower().replace("angstroms", "angstrom").replace("microns", "micron")
+
+    # wavelength units
+    if sl in ("a", "å", "angstrom", "ang", "angs"):
+        return "Å"
+    if sl in ("nm", "nanometer", "nanometers"):
+        return "nm"
+    if sl in ("um", "µm", "micron", "micrometer", "micrometers"):
+        return "µm"
+
+    # common time units
+    if sl in ("d", "day", "days"):
+        return "days"
+    if sl in ("hour", "hours", "hr", "hrs"):
+        return "hours"
+    if sl in ("min", "minute", "minutes"):
+        return "min"
+    if sl in ("s", "sec", "secs", "second", "seconds"):
+        return "s"
+
+    return s
+
+
+def _guess_unit_from_name(name: str) -> Optional[str]:
+    n = (name or "").strip().lower()
+
+    # explicit wavelength unit hints
+    if "angstrom" in n or " ang " in f" {n} " or n.endswith("_aa") or n.endswith("_a"):
+        return "Å"
+    if "micron" in n or "um" in n or "µm" in n:
+        return "µm"
+    if "nanometer" in n or re.search(r"(^|[_\s])nm($|[_\s])", n):
+        return "nm"
+
+    # explicit time hints
+    if "btjd" in n:
+        return "days"
+    if n == "time" or " time" in n or n.startswith("time_"):
+        return "days"
+
+    # explicit magnitude / flux-ish hints
+    if "mag" in n:
+        return "mag"
+    if "count" in n:
+        return "counts"
+    if "adu" in n:
+        return "ADU"
+
+    return None
+
+
+def _guess_unit_from_values(col_name: str, vals: np.ndarray) -> Optional[str]:
+    """
+    Heuristic fallback only when metadata/unit strings are missing.
+    Mainly intended for wavelength/time columns.
+    """
+    try:
+        arr = np.asarray(vals, dtype=np.float64)
+        arr = arr[np.isfinite(arr)]
+        if arr.size == 0:
+            return None
+
+        name = (col_name or "").lower()
+        med = float(np.nanmedian(arr))
+        amin = float(np.nanmin(arr))
+        amax = float(np.nanmax(arr))
+
+        # time-like columns
+        if "time" in name or "btjd" in name or "bjd" in name or "mjd" in name or "jd" in name:
+            return "days"
+
+        # wavelength-like columns
+        if "wave" in name or "wavelength" in name or "lambda" in name:
+            # typical microns
+            if 0.05 <= med <= 30.0:
+                return "µm"
+            # typical nm
+            if 50.0 <= med <= 3000.0:
+                # far-UV / optical spectra in the 1000–3000 range are often Å, not nm
+                if 900.0 <= amin <= 30000.0 and amax <= 30000.0:
+                    return "Å"
+                return "nm"
+            # typical Å
+            if 900.0 <= med <= 30000.0:
+                return "Å"
+
+        return None
+    except Exception:
+        return None
 
 # ----------------------------- plot dialog ----------------------------------
 class PlotTableDialog(QDialog):
@@ -4273,12 +4669,40 @@ class PlotTableDialog(QDialog):
         self._src = source_model
         self._proxy = proxy_model
         self._semantic = _guess_plot_columns(self._src)
+        self._crop_syncing = False
 
+        self._auto_plot_timer = QTimer(self)
+        self._auto_plot_timer.setSingleShot(True)
+        self._auto_plot_timer.timeout.connect(self._do_plot)
+        # Debounce specifically for typed crop edits
+        self._crop_edit_timer = QTimer(self)
+        self._crop_edit_timer.setSingleShot(True)
+        self._crop_edit_timer.timeout.connect(self._queue_auto_plot)
         root = QVBoxLayout(self)
 
-        # ---------------- controls ----------------
+        # ---------------- main 2-column splitter ----------------
+        main_split = QSplitter(Qt.Orientation.Horizontal, self)
+        root.addWidget(main_split, 1)
+
+        # ================= LEFT: controls =================
+        left_wrap = QWidget(self)
+        left_root = QVBoxLayout(left_wrap)
+        left_root.setContentsMargins(0, 0, 0, 0)
+
+        left_scroll = QScrollArea(self)
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        left_root.addWidget(left_scroll, 1)
+
+        left_content = QWidget(self)
+        left_scroll.setWidget(left_content)
+        left_content_lay = QVBoxLayout(left_content)
+        left_content_lay.setContentsMargins(0, 0, 0, 0)
+
         ctrl = QGroupBox("Plot Settings", self)
         form = QFormLayout(ctrl)
+        left_content_lay.addWidget(ctrl)
+        left_content_lay.addStretch(1)
 
         self.cmb_preset = QComboBox(self)
         self.cmb_preset.addItem("Generic X-Y", userData="generic")
@@ -4295,9 +4719,11 @@ class PlotTableDialog(QDialog):
 
         self._num_cols: list[int] = []
         for i, ci in enumerate(self._src.column_infos()):
-            if ci.is_numeric:
+            if ci.is_numeric or ci.is_vector:
                 self._num_cols.append(i)
                 label = ci.name
+                if ci.is_vector:
+                    label = f"{label} [vector]"
                 self.cmb_x.addItem(label, userData=i)
                 self.cmb_y.addItem(label, userData=i)
                 self.cmb_yerr.addItem(label, userData=i)
@@ -4356,7 +4782,30 @@ class PlotTableDialog(QDialog):
         self.sp_ms.setValue(3.0)
         form.addRow("Marker size:", self.sp_ms)
 
-        # phase-fold controls
+        # -------- X crop controls --------
+        self.chk_crop_x = QCheckBox("Crop X range", self)
+        self.chk_crop_x.setChecked(False)
+
+        self.sp_xmin = QDoubleSpinBox(self)
+        self.sp_xmin.setDecimals(8)
+        self.sp_xmin.setRange(-1e18, 1e18)
+        self.sp_xmin.setSingleStep(0.1)
+
+        self.sp_xmax = QDoubleSpinBox(self)
+        self.sp_xmax.setDecimals(8)
+        self.sp_xmax.setRange(-1e18, 1e18)
+        self.sp_xmax.setSingleStep(0.1)
+
+        crop_row = QWidget(self)
+        crop_lay = QHBoxLayout(crop_row)
+        crop_lay.setContentsMargins(0, 0, 0, 0)
+        crop_lay.addWidget(self.chk_crop_x)
+        crop_lay.addWidget(QLabel("Min:"))
+        crop_lay.addWidget(self.sp_xmin, 1)
+        crop_lay.addWidget(QLabel("Max:"))
+        crop_lay.addWidget(self.sp_xmax, 1)
+        form.addRow("", crop_row)
+
         self.sp_period = QDoubleSpinBox(self)
         self.sp_period.setRange(1e-9, 1e9)
         self.sp_period.setDecimals(8)
@@ -4375,22 +4824,30 @@ class PlotTableDialog(QDialog):
         form.addRow("Epoch:", self.sp_epoch)
         form.addRow("Phase bins:", self.sp_phase_bins)
 
-        # histogram controls
         self.sp_hist_bins = QSpinBox(self)
         self.sp_hist_bins.setRange(5, 5000)
         self.sp_hist_bins.setValue(50)
         form.addRow("Histogram bins:", self.sp_hist_bins)
 
-        root.addWidget(ctrl)
+        # ================= RIGHT: plot =================
+        right_wrap = QWidget(self)
+        right_root = QVBoxLayout(right_wrap)
+        right_root.setContentsMargins(0, 0, 0, 0)
 
-        # ---------------- plot area ----------------
-        self.fig = Figure(figsize=(6, 4), dpi=100)
+        self.fig = Figure(figsize=(7, 5), dpi=100)
         self.canvas = FigureCanvas(self.fig)
         self.toolbar = NavToolbar(self.canvas, self)
-        root.addWidget(self.toolbar)
-        root.addWidget(self.canvas, 1)
 
-        # ---------------- buttons ----------------
+        right_root.addWidget(self.toolbar)
+        right_root.addWidget(self.canvas, 1)
+
+        main_split.addWidget(left_wrap)
+        main_split.addWidget(right_wrap)
+        main_split.setStretchFactor(0, 0)
+        main_split.setStretchFactor(1, 1)
+        main_split.setSizes([340, 860])
+
+        # ---------------- bottom buttons ----------------
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, parent=self)
         self.btn_plot = QPushButton("Plot", self)
         self.btn_plot.clicked.connect(self._do_plot)
@@ -4400,26 +4857,282 @@ class PlotTableDialog(QDialog):
 
         self.cmb_preset.currentIndexChanged.connect(self._preset_changed)
 
-        self.resize(960, 700)
+        self._connect_auto_refresh()
+
+        self.resize(1240, 780)
 
         self._preset_changed()
         if self.cmb_x.count() > 0 and self.cmb_y.count() > 0:
-            self._do_plot()
+            self._queue_auto_plot()
 
-    def _gather_visible_numeric(self, col: int) -> np.ndarray:
-        nv = self._src.numeric_column(col)
-        if nv is None:
+    def _queue_crop_edit_plot(self):
+        """
+        Slightly longer debounce for typed crop min/max edits so we do not
+        replot on every character while the user is typing.
+        """
+        self._crop_edit_timer.start(500)
+
+    def _commit_crop_edit_plot(self):
+        """
+        Fire quickly once editing is committed (enter/tab/focus-out).
+        """
+        self._crop_edit_timer.stop()
+        self._queue_auto_plot()
+
+    def _document_metadata(self) -> dict:
+        try:
+            p = self.parent()
+            if p is not None and hasattr(p, "document"):
+                md = getattr(p.document, "metadata", None)
+                if isinstance(md, dict):
+                    return md
+        except Exception:
+            pass
+        return {}
+
+
+    def _column_name(self, col: int) -> str:
+        try:
+            infos = self._src.column_infos()
+            if 0 <= col < len(infos):
+                return str(infos[col].name)
+        except Exception:
+            pass
+        return ""
+
+
+    def _guess_axis_unit(self, col: int, vals: Optional[np.ndarray] = None) -> Optional[str]:
+        """
+        Priority:
+        1) document.metadata unit maps if present
+        2) explicit hints in column name
+        3) value heuristics (mostly wavelength/time)
+        """
+        if col < 0:
+            return None
+
+        name = self._column_name(col)
+        md = self._document_metadata()
+
+        # common places you may later stash TUNITn / astropy units
+        for key in ("column_units", "table_units", "units", "tunits"):
+            try:
+                m = md.get(key)
+                if isinstance(m, dict):
+                    # exact header
+                    if name in m and m[name]:
+                        return _normalize_unit_text(str(m[name]))
+                    # lowercase fallback
+                    lowmap = {str(k).lower(): v for k, v in m.items()}
+                    if name.lower() in lowmap and lowmap[name.lower()]:
+                        return _normalize_unit_text(str(lowmap[name.lower()]))
+            except Exception:
+                pass
+
+        unit = _guess_unit_from_name(name)
+        if unit:
+            return unit
+
+        if vals is not None:
+            unit = _guess_unit_from_values(name, vals)
+            if unit:
+                return unit
+
+        return None
+
+
+    def _axis_label_for_col(self, col: int, vals: Optional[np.ndarray] = None) -> str:
+        name = self._column_name(col)
+        unit = self._guess_axis_unit(col, vals)
+        if unit:
+            return f"{name} [{unit}]"
+        return name or "Value"
+
+
+    def _sync_crop_to_series(self, x: np.ndarray, *, force: bool = False):
+        """
+        Sync crop spinboxes to the current X data range.
+
+        Rules:
+        - force=True:
+            always overwrite min/max with the current full data range
+        - force=False:
+            only overwrite when crop is OFF, or when the current min/max are invalid
+        """
+        try:
+            arr = np.asarray(x, dtype=np.float64)
+            arr = arr[np.isfinite(arr)]
+            if arr.size == 0:
+                return
+
+            xmin = float(np.min(arr))
+            xmax = float(np.max(arr))
+            if xmax < xmin:
+                xmin, xmax = xmax, xmin
+
+            # If user is actively cropping, preserve their values unless forced
+            if (not force) and self.chk_crop_x.isChecked():
+                cur_min = float(self.sp_xmin.value())
+                cur_max = float(self.sp_xmax.value())
+
+                # keep user's crop if it looks sane
+                if np.isfinite(cur_min) and np.isfinite(cur_max) and cur_max >= cur_min:
+                    return
+
+            self._crop_syncing = True
+            try:
+                self.sp_xmin.setValue(xmin)
+                self.sp_xmax.setValue(xmax)
+            finally:
+                self._crop_syncing = False
+
+        except Exception:
+            pass
+
+    def _refresh_crop_bounds_from_current_x(self, *, force: bool = False):
+        """
+        Refresh crop bounds from the currently selected X source.
+        Preserves user crop unless force=True.
+        """
+        try:
+            if self.cmb_x.count() <= 0:
+                return
+            xcol = int(self.cmb_x.currentData())
+            x = self._gather_visible_series(xcol)
+            self._sync_crop_to_series(x, force=force)
+        except Exception:
+            pass
+
+    def _apply_x_crop(self, x: np.ndarray, y: np.ndarray, yerr: Optional[np.ndarray]):
+        if not self.chk_crop_x.isChecked():
+            return x, y, yerr
+
+        xmin = float(self.sp_xmin.value())
+        xmax = float(self.sp_xmax.value())
+        if xmax < xmin:
+            xmin, xmax = xmax, xmin
+
+        mask = np.isfinite(x) & (x >= xmin) & (x <= xmax)
+        x2 = x[mask]
+        y2 = y[mask]
+        yerr2 = yerr[mask] if yerr is not None else None
+        return x2, y2, yerr2
+
+    def _connect_auto_refresh(self):
+        # combos
+        self.cmb_preset.currentIndexChanged.connect(self._queue_auto_plot)
+        self.cmb_x.currentIndexChanged.connect(self._queue_auto_plot)
+        self.cmb_y.currentIndexChanged.connect(self._queue_auto_plot)
+        self.cmb_yerr.currentIndexChanged.connect(self._queue_auto_plot)
+
+        # checkboxes
+        self.chk_sort_x.toggled.connect(self._queue_auto_plot)
+        self.chk_remove_nan.toggled.connect(self._queue_auto_plot)
+        self.chk_line.toggled.connect(self._queue_auto_plot)
+        self.chk_normalize_y.toggled.connect(self._queue_auto_plot)
+        self.chk_invert_y.toggled.connect(self._queue_auto_plot)
+        self.chk_log_x.toggled.connect(self._queue_auto_plot)
+        self.chk_log_y.toggled.connect(self._queue_auto_plot)
+        self.chk_sigma_clip.toggled.connect(self._queue_auto_plot)
+        self.chk_crop_x.toggled.connect(self._queue_auto_plot)
+
+        # general spinboxes
+        self.sp_sigma.valueChanged.connect(self._queue_auto_plot)
+        self.sp_ms.valueChanged.connect(self._queue_auto_plot)
+        self.sp_period.valueChanged.connect(self._queue_auto_plot)
+        self.sp_epoch.valueChanged.connect(self._queue_auto_plot)
+        self.sp_phase_bins.valueChanged.connect(self._queue_auto_plot)
+        self.sp_hist_bins.valueChanged.connect(self._queue_auto_plot)
+
+        # crop spinboxes:
+        #  - typing in the line edit gets debounced
+        #  - commit/focus-out replots immediately
+        #  - arrow-button / wheel / programmatic value changes still update
+        try:
+            if self.sp_xmin.lineEdit() is not None:
+                self.sp_xmin.lineEdit().textEdited.connect(lambda *_: self._queue_crop_edit_plot())
+            self.sp_xmin.editingFinished.connect(self._commit_crop_edit_plot)
+            self.sp_xmin.valueChanged.connect(lambda *_: (None if self._crop_syncing else self._queue_crop_edit_plot()))
+        except Exception:
+            self.sp_xmin.valueChanged.connect(self._queue_crop_edit_plot)
+
+        try:
+            if self.sp_xmax.lineEdit() is not None:
+                self.sp_xmax.lineEdit().textEdited.connect(lambda *_: self._queue_crop_edit_plot())
+            self.sp_xmax.editingFinished.connect(self._commit_crop_edit_plot)
+            self.sp_xmax.valueChanged.connect(lambda *_: (None if self._crop_syncing else self._queue_crop_edit_plot()))
+        except Exception:
+            self.sp_xmax.valueChanged.connect(self._queue_crop_edit_plot)
+
+        # also replot when selected table row changes
+        try:
+            parent_tbl = self.parent()
+            if parent_tbl is not None and hasattr(parent_tbl, "table"):
+                sel = parent_tbl.table.selectionModel()
+                if sel is not None:
+                    sel.currentRowChanged.connect(lambda *_: self._queue_auto_plot())
+                    sel.selectionChanged.connect(lambda *_: self._queue_auto_plot())
+        except Exception:
+            pass
+
+    def _queue_auto_plot(self):
+        self._auto_plot_timer.start(200)
+
+    def _current_source_row(self) -> Optional[int]:
+        try:
+            parent_tbl = self.parent()
+            if parent_tbl is not None and hasattr(parent_tbl, "table"):
+                idx = parent_tbl.table.currentIndex()
+                if idx.isValid():
+                    sidx = self._proxy.mapToSource(idx)
+                    if sidx.isValid():
+                        return int(sidx.row())
+        except Exception:
+            pass
+
+        if self._proxy.rowCount() > 0:
+            try:
+                sidx = self._proxy.mapToSource(self._proxy.index(0, 0))
+                if sidx.isValid():
+                    return int(sidx.row())
+            except Exception:
+                pass
+
+        return None
+
+    def _gather_visible_series(self, col: int) -> np.ndarray:
+        """
+        Returns a numeric series for plotting.
+
+        Behavior:
+        - scalar numeric column -> visible rows
+        - vector column -> current source row's vector (or first visible row)
+        """
+        if col < 0:
             return np.array([], dtype=np.float64)
 
-        out = np.empty((self._proxy.rowCount(),), dtype=np.float64)
-        out[:] = np.nan
+        # scalar numeric column
+        nv = self._src.numeric_column(col)
+        if nv is not None:
+            out = np.empty((self._proxy.rowCount(),), dtype=np.float64)
+            out[:] = np.nan
+            for pr in range(self._proxy.rowCount()):
+                src_idx = self._proxy.mapToSource(self._proxy.index(pr, col))
+                sr = src_idx.row()
+                if 0 <= sr < nv.shape[0]:
+                    out[pr] = nv[sr]
+            return out
 
-        for pr in range(self._proxy.rowCount()):
-            src_idx = self._proxy.mapToSource(self._proxy.index(pr, col))
-            sr = src_idx.row()
-            if 0 <= sr < nv.shape[0]:
-                out[pr] = nv[sr]
-        return out
+        # vector column
+        sr = self._current_source_row()
+        if sr is None:
+            return np.array([], dtype=np.float64)
+
+        vec = _flatten_numeric_sequence(self._src.raw_value(sr, col))
+        if vec is None:
+            return np.array([], dtype=np.float64)
+
+        return np.asarray(vec, dtype=np.float64)
 
     def _set_combo_to_col(self, combo: QComboBox, col: Optional[int]):
         if col is None:
@@ -4431,7 +5144,6 @@ class PlotTableDialog(QDialog):
     def _preset_changed(self):
         preset = self.cmb_preset.currentData()
 
-        # defaults
         self.chk_line.setChecked(False)
         self.chk_sort_x.setChecked(True)
         self.chk_normalize_y.setChecked(False)
@@ -4439,13 +5151,18 @@ class PlotTableDialog(QDialog):
         self.chk_log_x.setChecked(False)
         self.chk_log_y.setChecked(False)
 
-        # enable/disable phase/hist controls
         is_phase = (preset == "phase")
         is_hist = (preset == "hist")
         self.sp_period.setEnabled(is_phase)
         self.sp_epoch.setEnabled(is_phase)
         self.sp_phase_bins.setEnabled(is_phase)
         self.sp_hist_bins.setEnabled(is_hist)
+
+        # Crop is useful for all X-Y style plots
+        crop_ok = preset in ("generic", "tess_lc", "phase", "spectrum")
+        self.chk_crop_x.setEnabled(crop_ok)
+        self.sp_xmin.setEnabled(crop_ok and self.chk_crop_x.isChecked())
+        self.sp_xmax.setEnabled(crop_ok and self.chk_crop_x.isChecked())
 
         sem = self._semantic
 
@@ -4471,15 +5188,21 @@ class PlotTableDialog(QDialog):
             self.chk_line.setChecked(True)
 
         elif preset == "hist":
-            # histogram uses Y column only
             if sem["flux"] is not None:
                 self._set_combo_to_col(self.cmb_y, sem["flux"])
 
-        else:  # generic
+        else:
             if sem["time"] is not None:
                 self._set_combo_to_col(self.cmb_x, sem["time"])
             if sem["flux"] is not None:
                 self._set_combo_to_col(self.cmb_y, sem["flux"])
+
+        # IMPORTANT:
+        # Only refresh crop bounds if crop is not actively being used.
+        # This preserves the user's custom min/max when switching presets.
+        self._refresh_crop_bounds_from_current_x(force=False)
+
+        self._queue_auto_plot()
 
     def _apply_common_cleaning(self, x: np.ndarray, y: np.ndarray, yerr: Optional[np.ndarray]):
         mask = np.ones_like(y, dtype=bool)
@@ -4511,7 +5234,8 @@ class PlotTableDialog(QDialog):
 
     def _do_plot(self):
         if self.cmb_y.count() == 0:
-            QMessageBox.information(self, "Plot", "No numeric columns available to plot.")
+            self.fig.clear()
+            self.canvas.draw()
             return
 
         preset = self.cmb_preset.currentData()
@@ -4519,121 +5243,150 @@ class PlotTableDialog(QDialog):
         xcol = int(self.cmb_x.currentData()) if self.cmb_x.count() > 0 else -1
         yerr_col = int(self.cmb_yerr.currentData())
 
+        self.sp_xmin.setEnabled(self.chk_crop_x.isEnabled() and self.chk_crop_x.isChecked())
+        self.sp_xmax.setEnabled(self.chk_crop_x.isEnabled() and self.chk_crop_x.isChecked())
+
         self.fig.clear()
         ax = self.fig.add_subplot(111)
         ms = float(self.sp_ms.value())
 
-        if preset == "hist":
-            y = self._gather_visible_numeric(ycol)
-            y = y[np.isfinite(y)]
-            if self.chk_sigma_clip.isChecked():
-                y = y[_sigma_clip_mask(y, float(self.sp_sigma.value()))]
-            if self.chk_normalize_y.isChecked() and y.size > 0:
-                med = np.nanmedian(y)
-                if np.isfinite(med) and med != 0:
-                    y = y / med
+        try:
+            if preset == "hist":
+                y = self._gather_visible_series(ycol)
+                y = y[np.isfinite(y)]
 
-            if y.size == 0:
-                QMessageBox.warning(self, "Plot", "No valid numeric data for histogram.")
-                return
+                if self.chk_sigma_clip.isChecked():
+                    y = y[_sigma_clip_mask(y, float(self.sp_sigma.value()))]
 
-            ax.hist(y, bins=int(self.sp_hist_bins.value()))
-            ax.set_xlabel(self.cmb_y.currentText())
-            ax.set_ylabel("Count")
-            ax.set_title(f"Histogram: {self.cmb_y.currentText()}")
+                if self.chk_normalize_y.isChecked() and y.size > 0:
+                    med = np.nanmedian(y)
+                    if np.isfinite(med) and med != 0:
+                        y = y / med
 
-        else:
-            if self.cmb_x.count() == 0:
-                QMessageBox.warning(self, "Plot", "No numeric X column available.")
-                return
-
-            x = self._gather_visible_numeric(xcol)
-            y = self._gather_visible_numeric(ycol)
-            yerr = self._gather_visible_numeric(yerr_col) if yerr_col >= 0 else None
-
-            if x.size == 0 or y.size == 0:
-                QMessageBox.warning(self, "Plot", "No data available.")
-                return
-
-            x2, y2, yerr2 = self._apply_common_cleaning(x, y, yerr)
-
-            if x2.size == 0:
-                QMessageBox.warning(self, "Plot", "All rows were filtered out.")
-                return
-
-            if preset == "phase":
-                period = float(self.sp_period.value())
-                epoch = float(self.sp_epoch.value())
-                x2 = _phase_fold(x2, period, epoch)
-
-                if self.chk_sort_x.isChecked():
-                    order = np.argsort(x2)
-                    x2 = x2[order]
-                    y2 = y2[order]
-                    if yerr2 is not None:
-                        yerr2 = yerr2[order]
-
-                xb, yb = _bin_xy(x2, y2, int(self.sp_phase_bins.value()))
-                ax.plot(x2, y2, "o", alpha=0.35, markersize=max(1.0, ms - 1.0))
-                if xb.size > 0:
-                    ax.plot(xb, yb, "-", linewidth=1.5)
-                ax.set_xlabel("Phase")
-                ax.set_ylabel(self.cmb_y.currentText())
-                ax.set_title("Phase-Folded Light Curve")
+                if y.size == 0:
+                    ax.text(0.5, 0.5, "No valid numeric data for histogram.",
+                            ha="center", va="center", transform=ax.transAxes)
+                else:
+                    ax.hist(y, bins=int(self.sp_hist_bins.value()))
+                    ax.set_xlabel(self._axis_label_for_col(ycol, y))
+                    ax.set_ylabel("Count")
+                    ax.set_title(f"Histogram: {self._column_name(ycol)}")
 
             else:
-                if self.chk_sort_x.isChecked():
-                    order = np.argsort(x2)
-                    x2 = x2[order]
-                    y2 = y2[order]
-                    if yerr2 is not None:
-                        yerr2 = yerr2[order]
-
-                if preset == "spectrum":
-                    if yerr2 is not None:
-                        ax.errorbar(
-                            x2, y2, yerr=yerr2,
-                            fmt="-",
-                            linewidth=1.0,
-                            ecolor="orange"
-                        )
-                    else:
-                        ax.plot(x2, y2, "-", linewidth=1.0)
-                    ax.set_title("Spectrum")
+                if self.cmb_x.count() == 0:
+                    ax.text(0.5, 0.5, "No numeric/vector X column available.",
+                            ha="center", va="center", transform=ax.transAxes)
                 else:
-                    if yerr2 is not None:
-                        ax.errorbar(
-                            x2, y2, yerr=yerr2,
-                            fmt="o" if not self.chk_line.isChecked() else "-o",
-                            markersize=ms,
-                            ecolor="orange"
-                        )
+                    x = self._gather_visible_series(xcol)
+                    y = self._gather_visible_series(ycol)
+                    yerr = self._gather_visible_series(yerr_col) if yerr_col >= 0 else None
+
+                    # keep crop bounds synced to current data unless user is actively using crop
+                    if not self._crop_syncing:
+                        self._sync_crop_to_series(x, force=False)
+
+                    if x.size == 0 or y.size == 0:
+                        ax.text(0.5, 0.5, "No data available.",
+                                ha="center", va="center", transform=ax.transAxes)
                     else:
-                        if self.chk_line.isChecked():
-                            ax.plot(x2, y2, "-o", markersize=ms)
+                        if x.ndim == 1 and y.ndim == 1 and x.size != y.size:
+                            ax.text(0.5, 0.5, f"X and Y lengths do not match ({x.size} vs {y.size}).",
+                                    ha="center", va="center", transform=ax.transAxes)
                         else:
-                            ax.plot(x2, y2, "o", markersize=ms)
+                            if yerr is not None and yerr.size not in (0, y.size):
+                                yerr = None
 
-                ax.set_xlabel(self.cmb_x.currentText())
-                ax.set_ylabel(self.cmb_y.currentText())
+                            x2, y2, yerr2 = self._apply_common_cleaning(x, y, yerr)
 
-        if self.chk_log_x.isChecked():
-            try:
-                ax.set_xscale("log")
-            except Exception:
-                pass
-        if self.chk_log_y.isChecked():
-            try:
-                ax.set_yscale("log")
-            except Exception:
-                pass
-        if self.chk_invert_y.isChecked():
-            ax.invert_yaxis()
+                            # crop BEFORE phase folding
+                            x2, y2, yerr2 = self._apply_x_crop(x2, y2, yerr2)
 
-        ax.grid(True, which="both", alpha=0.3)
-        self.fig.tight_layout()
-        self.canvas.draw()
+                            if x2.size == 0:
+                                ax.text(0.5, 0.5, "All rows were filtered out.",
+                                        ha="center", va="center", transform=ax.transAxes)
+                            elif preset == "phase":
+                                period = float(self.sp_period.value())
+                                epoch = float(self.sp_epoch.value())
+                                x2 = _phase_fold(x2, period, epoch)
 
+                                if self.chk_sort_x.isChecked():
+                                    order = np.argsort(x2)
+                                    x2 = x2[order]
+                                    y2 = y2[order]
+                                    if yerr2 is not None:
+                                        yerr2 = yerr2[order]
+
+                                xb, yb = _bin_xy(x2, y2, int(self.sp_phase_bins.value()))
+                                ax.plot(x2, y2, "o", alpha=0.35, markersize=max(1.0, ms - 1.0))
+                                if xb.size > 0:
+                                    ax.plot(xb, yb, "-", linewidth=1.5)
+                                ax.set_xlabel("Phase")
+                                ax.set_ylabel(self._axis_label_for_col(ycol, y2))
+                                ax.set_title("Phase-Folded Light Curve")
+
+                            else:
+                                if self.chk_sort_x.isChecked():
+                                    order = np.argsort(x2)
+                                    x2 = x2[order]
+                                    y2 = y2[order]
+                                    if yerr2 is not None:
+                                        yerr2 = yerr2[order]
+
+                                if preset == "spectrum":
+                                    if yerr2 is not None:
+                                        ax.errorbar(
+                                            x2, y2, yerr=yerr2,
+                                            fmt="-",
+                                            linewidth=1.0,
+                                            ecolor="orange"
+                                        )
+                                    else:
+                                        ax.plot(x2, y2, "-", linewidth=1.0)
+                                    ax.set_title("Spectrum")
+                                else:
+                                    if yerr2 is not None:
+                                        ax.errorbar(
+                                            x2, y2, yerr=yerr2,
+                                            fmt="o" if not self.chk_line.isChecked() else "-o",
+                                            markersize=ms,
+                                            ecolor="orange"
+                                        )
+                                    else:
+                                        if self.chk_line.isChecked():
+                                            ax.plot(x2, y2, "-o", markersize=ms)
+                                        else:
+                                            ax.plot(x2, y2, "o", markersize=ms)
+
+                                ax.set_xlabel(self._axis_label_for_col(xcol, x2))
+                                ax.set_ylabel(self._axis_label_for_col(ycol, y2))
+
+            if self.chk_log_x.isChecked():
+                try:
+                    ax.set_xscale("log")
+                except Exception:
+                    pass
+
+            if self.chk_log_y.isChecked():
+                try:
+                    ax.set_yscale("log")
+                except Exception:
+                    pass
+
+            if self.chk_invert_y.isChecked():
+                ax.invert_yaxis()
+
+            ax.grid(True, which="both", alpha=0.3)
+            self.fig.tight_layout()
+            self.canvas.draw()
+
+        except Exception as e:
+            self.fig.clear()
+            ax = self.fig.add_subplot(111)
+            ax.text(0.5, 0.5, f"Plot failed:\n{type(e).__name__}: {e}",
+                    ha="center", va="center", transform=ax.transAxes)
+            ax.set_axis_off()
+            self.fig.tight_layout()
+            self.canvas.draw()
 # ----------------------------- TableSubWindow --------------------------------
 
 class TableSubWindow(QWidget):
@@ -4771,43 +5524,50 @@ class TableSubWindow(QWidget):
         ncols = self._src_model.columnCount()
         self.stats.set_table_shape(nrows_vis, ncols)
 
-        # selected column (prefer currentIndex)
         idx = self.table.currentIndex()
         if not idx.isValid():
-            # no selection
             self.stats.set_selection_info("—", False, None, None)
             return
 
-        # currentIndex is in proxy coords
         col = idx.column()
-        # col name/type from source model (same column index)
         infos = self._src_model.column_infos()
         if not (0 <= col < len(infos)):
             self.stats.set_selection_info("—", False, None, None)
             return
 
         ci = infos[col]
-        if ci.is_numeric and ci.numeric_values is not None:
-            # stats over visible rows only
-            v = []
-            for pr in range(self._proxy.rowCount()):
-                sidx = self._proxy.mapToSource(self._proxy.index(pr, col))
-                sr = sidx.row()
-                if 0 <= sr < ci.numeric_values.shape[0]:
-                    v.append(ci.numeric_values[sr])
-            arr = np.asarray(v, dtype=np.float64)
-            arr = arr[np.isfinite(arr)]
+
+        # visible source rows
+        source_rows: List[int] = []
+        for pr in range(self._proxy.rowCount()):
+            sidx = self._proxy.mapToSource(self._proxy.index(pr, 0))
+            sr = sidx.row()
+            if sr >= 0:
+                source_rows.append(sr)
+
+        # numeric scalar OR numeric vector
+        if ci.is_numeric:
+            arr = self._src_model.vector_column_for_rows(col, source_rows)
+            if arr is not None:
+                arr = np.asarray(arr, dtype=np.float64)
+                arr = arr[np.isfinite(arr)]
+            else:
+                arr = np.array([], dtype=np.float64)
+
             st = _calc_stats_numeric(arr)
-            self.stats.set_selection_info(ci.name, True, st, None)
-        else:
-            # unique sample over visible rows only (capped)
-            uniq = set()
-            cap = 5000
-            for pr in range(min(self._proxy.rowCount(), cap)):
-                sidx = self._proxy.mapToSource(self._proxy.index(pr, col))
-                sr = sidx.row()
-                uniq.add(_safe_str(self._src_model.raw_value(sr, col)))
-            self.stats.set_selection_info(ci.name, False, None, len(uniq))
+            label = f"{ci.name} [vector]" if ci.is_vector else ci.name
+            self.stats.set_selection_info(label, True, st, None)
+            return
+
+        # text / mixed
+        uniq = set()
+        cap = 5000
+        for pr in range(min(self._proxy.rowCount(), cap)):
+            sidx = self._proxy.mapToSource(self._proxy.index(pr, col))
+            sr = sidx.row()
+            uniq.add(_safe_str(self._src_model.raw_value(sr, col)))
+
+        self.stats.set_selection_info(ci.name, False, None, len(uniq))
 
     # ---- copy selected rows
     def _copy_selected_rows_csv(self):
