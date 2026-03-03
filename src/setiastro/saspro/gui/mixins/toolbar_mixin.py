@@ -887,8 +887,8 @@ class ToolbarMixin:
         self.act_ghs.setIconVisibleInMenu(True)
         self.act_ghs.triggered.connect(self._open_hyperbolic)
 
-        self.act_abe = QAction(QIcon(abeicon_path), self.tr("ABE..."), self)
-        self.act_abe.setStatusTip(self.tr("Automatic Background Extraction"))
+        self.act_abe = QAction(QIcon(abeicon_path), self.tr("ADBE..."), self)
+        self.act_abe.setStatusTip(self.tr("Automatic (Dynamic) Background Extraction"))
         self.act_abe.setIconVisibleInMenu(True)
         self.act_abe.triggered.connect(self._open_abe_tool)
 

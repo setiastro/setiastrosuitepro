@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QImage, QPixmap, QMouseEvent, QCursor
 import numpy as np
 from PyQt6 import sip
-from PyQt6.QtCore import QObject, QThread, pyqtSignal, pyqtSlot, Qt, QSize, QEvent, QTimer
+from PyQt6.QtCore import QObject, QThread, pyqtSignal, pyqtSlot, Qt, QSize, QEvent, QTimer, QSettings
 from PyQt6.QtWidgets import QProgressDialog, QApplication
 from .doc_manager import ImageDocument
 # use your existing stretch code
@@ -473,12 +473,81 @@ class StatisticalStretchDialog(QDialog):
         self.chk_luma_only.toggled.connect(_on_luma_only_toggled)
         _on_luma_only_toggled(self.chk_luma_only.isChecked())
 
+        self.spin_target.valueChanged.connect(self._save_settings)
+        self.chk_linked.toggled.connect(self._save_settings)
+        self.chk_normalize.toggled.connect(self._save_settings)
+
+        self.sld_bp.valueChanged.connect(self._save_settings)
+        self.chk_no_black_clip.toggled.connect(self._save_settings)
+
+        self.chk_hdr.toggled.connect(self._save_settings)
+        self.sld_hdr_amt.valueChanged.connect(self._save_settings)
+        self.sld_hdr_knee.valueChanged.connect(self._save_settings)
+
+        self.chk_luma_only.toggled.connect(self._save_settings)
+        self.cmb_luma.currentTextChanged.connect(self._save_settings)
+        self.sld_luma_blend.valueChanged.connect(self._save_settings)
+
+        self.chk_curves.toggled.connect(self._save_settings)
+        self.sld_curves.valueChanged.connect(self._save_settings)
+
+        self._load_settings()
 
         # Initial preview + clip stats
         self._populate_initial_preview()
 
 
     # ----- helpers -----
+    def _load_settings(self):
+        s = QSettings()
+
+        # Core stretch controls
+        self.spin_target.setValue(float(s.value("stat_stretch/target_median", 0.25)))
+        self.chk_linked.setChecked(bool(s.value("stat_stretch/linked", False, type=bool)))
+        self.chk_normalize.setChecked(bool(s.value("stat_stretch/normalize", False, type=bool)))
+
+        # Black point controls
+        self.sld_bp.setValue(int(s.value("stat_stretch/blackpoint_sigma_x100", 500)))
+        self.chk_no_black_clip.setChecked(bool(s.value("stat_stretch/no_black_clip", False, type=bool)))
+
+        # HDR
+        self.chk_hdr.setChecked(bool(s.value("stat_stretch/hdr_enabled", False, type=bool)))
+        self.sld_hdr_amt.setValue(int(s.value("stat_stretch/hdr_amount_x100", 15)))
+        self.sld_hdr_knee.setValue(int(s.value("stat_stretch/hdr_knee_x100", 75)))
+
+        # Luma-only
+        self.chk_luma_only.setChecked(bool(s.value("stat_stretch/luma_only", False, type=bool)))
+        luma_mode = str(s.value("stat_stretch/luma_mode", "rec709"))
+        if self.cmb_luma.findText(luma_mode) >= 0:
+            self.cmb_luma.setCurrentText(luma_mode)
+        self.sld_luma_blend.setValue(int(s.value("stat_stretch/luma_blend_x100", 60)))
+
+        # Curves
+        self.chk_curves.setChecked(bool(s.value("stat_stretch/curves_enabled", False, type=bool)))
+        self.sld_curves.setValue(int(s.value("stat_stretch/curves_strength_x100", 20)))
+
+
+    def _save_settings(self):
+        s = QSettings()
+
+        s.setValue("stat_stretch/target_median", float(self.spin_target.value()))
+        s.setValue("stat_stretch/linked", self.chk_linked.isChecked())
+        s.setValue("stat_stretch/normalize", self.chk_normalize.isChecked())
+
+        s.setValue("stat_stretch/blackpoint_sigma_x100", self.sld_bp.value())
+        s.setValue("stat_stretch/no_black_clip", self.chk_no_black_clip.isChecked())
+
+        s.setValue("stat_stretch/hdr_enabled", self.chk_hdr.isChecked())
+        s.setValue("stat_stretch/hdr_amount_x100", self.sld_hdr_amt.value())
+        s.setValue("stat_stretch/hdr_knee_x100", self.sld_hdr_knee.value())
+
+        s.setValue("stat_stretch/luma_only", self.chk_luma_only.isChecked())
+        s.setValue("stat_stretch/luma_mode", self.cmb_luma.currentText())
+        s.setValue("stat_stretch/luma_blend_x100", self.sld_luma_blend.value())
+
+        s.setValue("stat_stretch/curves_enabled", self.chk_curves.isChecked())
+        s.setValue("stat_stretch/curves_strength_x100", self.sld_curves.value())
+
     def _show_busy(self, title: str, text: str):
         # title kept for signature compatibility; not shown
         try:
@@ -630,6 +699,11 @@ class StatisticalStretchDialog(QDialog):
             knee = float(np.clip(t + 0.10, 0.10, 0.95))
             self.sld_hdr_knee.setValue(int(round(knee * 100)))
             self.lbl_hdr_knee.setText(f"{knee:.2f}")
+        except Exception:
+            pass
+
+        try:
+            self._save_settings()
         except Exception:
             pass
 
