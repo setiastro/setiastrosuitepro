@@ -616,17 +616,60 @@ def _make_blend_weight_2d(chunk_size: int, border_size: int = 16) -> np.ndarray:
 
     return w
 
+def _iter_batch_sizes(initial: int):
+    bs = max(1, int(initial))
+    yielded = set()
+    while bs >= 1:
+        if bs not in yielded:
+            yielded.add(bs)
+            yield bs
+        if bs == 1:
+            break
+        bs = max(1, bs // 2)
 
-def _auto_batch_size(models: DenoiseModels, chunk_size: int, *, rgb: bool) -> int:
+def _is_recoverable_batch_error(err: Exception) -> bool:
     """
-    Conservative batch sizing.
-    Biggest win is batching at all; this keeps it fairly safe across CUDA/MPS/DML/CPU.
+    Heuristic: errors likely caused by batching / backend / allocation pressure.
+    These are worth retrying with a smaller batch size.
     """
+    msg = f"{type(err).__name__}: {err}".lower()
+
+    needles = [
+        "out of memory",
+        "cuda",
+        "cudnn",
+        "cublas",
+        "directml",
+        "dml",
+        "mps",
+        "allocation",
+        "alloc",
+        "resource",
+        "execution provider",
+        "insufficient memory",
+        "bad allocation",
+        "memory",
+    ]
+    return any(n in msg for n in needles)
+
+def _auto_batch_size(
+    models: DenoiseModels,
+    chunk_size: int,
+    *,
+    rgb: bool,
+    execution_mode: str = "auto",
+    batch_size_override: int = 0,
+) -> int:
+    if batch_size_override and batch_size_override > 0:
+        return int(batch_size_override)
+
+    if execution_mode == "compatibility":
+        return 1
+
     dev = getattr(models.device, "type", None) or str(models.device)
     cs = int(chunk_size)
 
     if models.is_onnx:
-        # ORT/DML benefits from batching too, but keep it modest
         if cs <= 256:
             return 8 if rgb else 12
         if cs <= 384:
@@ -636,6 +679,19 @@ def _auto_batch_size(models: DenoiseModels, chunk_size: int, *, rgb: bool) -> in
         return 1
 
     if dev == "cuda":
+        # Optional: be more conservative on older CUDA GPUs
+        try:
+            torch = models.torch
+            major, minor = torch.cuda.get_device_capability()
+            if major < 8:
+                if cs <= 256:
+                    return 4 if rgb else 6
+                if cs <= 384:
+                    return 2 if rgb else 4
+                return 1
+        except Exception:
+            pass
+
         if cs <= 256:
             return 16 if rgb else 24
         if cs <= 384:
@@ -646,24 +702,91 @@ def _auto_batch_size(models: DenoiseModels, chunk_size: int, *, rgb: bool) -> in
 
     if dev in ("mps", "dml"):
         if cs <= 256:
-            return 8 if rgb else 12
+            return 4 if rgb else 6
         if cs <= 384:
-            return 4 if rgb else 8
-        if cs <= 512:
             return 2 if rgb else 4
         return 1
 
-    # CPU
     if cs <= 256:
         return 4 if rgb else 6
     if cs <= 384:
         return 2 if rgb else 4
     return 1
 
-def denoise_rgb_with_color_model(img_rgb, models, *, chunk_size=256, overlap=64, progress_cb=None):
+def _legacy_denoise_rgb_with_color_model(
+    img_rgb,
+    models,
+    *,
+    chunk_size=256,
+    overlap=64,
+    progress_cb=None,
+):
     """
-    Batched RGB denoise with the color model.
-    Much lower CPU overhead than one tile per inference call.
+    Old slow-but-stable RGB single-tile path for the color model.
+    """
+    img_rgb = np.asarray(img_rgb, np.float32)
+    chunks = split_image_into_chunks_with_overlap(img_rgb, chunk_size=chunk_size, overlap=overlap)
+
+    out = np.zeros_like(img_rgb, dtype=np.float32)
+    wts = np.zeros(img_rgb.shape[:2], dtype=np.float32)
+
+    total = len(chunks)
+    for idx, (chunk, i, j) in enumerate(chunks):
+        den = _infer_chunk_rgb(models, models.color, chunk)  # HxWx3
+
+        h, w = den.shape[:2]
+        bh = min(16, h // 2)
+        bw = min(16, w // 2)
+
+        y0 = i + bh
+        y1 = i + h - bh
+        x0 = j + bw
+        x1 = j + w - bw
+        if y1 <= y0 or x1 <= x0:
+            continue
+
+        inner = den[bh:h-bh, bw:w-bw, :]  # (hi, wi, 3)
+
+        yy0 = max(0, y0)
+        yy1 = min(img_rgb.shape[0], y1)
+        xx0 = max(0, x0)
+        xx1 = min(img_rgb.shape[1], x1)
+        if yy1 <= yy0 or xx1 <= xx0:
+            continue
+
+        sy0 = yy0 - y0
+        sy1 = sy0 + (yy1 - yy0)
+        sx0 = xx0 - x0
+        sx1 = sx0 + (xx1 - xx0)
+        src = inner[sy0:sy1, sx0:sx1, :]
+
+        out[yy0:yy1, xx0:xx1, :] += src
+        wts[yy0:yy1, xx0:xx1] += 1.0
+
+        if progress_cb is not None:
+            try:
+                cont = progress_cb(idx + 1, total)
+                if cont is False:
+                    raise RuntimeError("Cancelled.")
+            except Exception:
+                pass
+
+    out /= np.maximum(wts[..., None], 1.0)
+    return out.astype(np.float32, copy=False)
+
+def denoise_rgb_with_color_model(
+    img_rgb,
+    models,
+    *,
+    chunk_size=256,
+    overlap=64,
+    progress_cb=None,
+    execution_mode: str = "auto",
+    batch_size_override: int = 0,
+):
+    """
+    Batched RGB denoise with automatic batch-size fallback.
+    Falls back to legacy single-tile path if batching still fails.
     """
     img_rgb = np.asarray(img_rgb, np.float32)
     H, W = img_rgb.shape[:2]
@@ -674,79 +797,104 @@ def denoise_rgb_with_color_model(img_rgb, models, *, chunk_size=256, overlap=64,
 
     weight = _make_blend_weight_2d(int(chunk_size), border_size=16)
     weight3 = weight[..., None]
-
-    acc = np.zeros((Hp, Wp, 3), dtype=np.float32)
-    wts = np.zeros((Hp, Wp), dtype=np.float32)
-
     total = len(coords)
-    batch_size = _auto_batch_size(models, int(chunk_size), rgb=True)
 
-    if models.is_onnx:
-        name_img, name_out = _ort_pick_io_names_single_input(models.color)
+    initial_bs = _auto_batch_size(
+        models,
+        int(chunk_size),
+        rgb=True,
+        execution_mode=execution_mode,
+        batch_size_override=batch_size_override,
+    )
 
-        for start in range(0, total, batch_size):
-            batch_coords = coords[start:start + batch_size]
+    last_err = None
 
-            batch_np = np.stack(
-                [padded[y:y + chunk_size, x:x + chunk_size, :] for (y, x) in batch_coords],
-                axis=0
-            ).astype(np.float32, copy=False)  # (B,H,W,3)
+    for batch_size in _iter_batch_sizes(initial_bs):
+        try:
+            acc = np.zeros((Hp, Wp, 3), dtype=np.float32)
+            wts = np.zeros((Hp, Wp), dtype=np.float32)
 
-            inp = np.ascontiguousarray(np.transpose(batch_np, (0, 3, 1, 2)))  # (B,3,H,W)
-            out = models.color.run([name_out], {name_img: inp})[0]
+            if models.is_onnx:
+                name_img, name_out = _ort_pick_io_names_single_input(models.color)
 
-            if out.ndim != 4:
-                raise RuntimeError(f"Unexpected ONNX output shape: {out.shape}")
+                for start in range(0, total, batch_size):
+                    batch_coords = coords[start:start + batch_size]
 
-            pred = np.transpose(out, (0, 2, 3, 1)).astype(np.float32, copy=False)  # (B,H,W,3)
+                    batch_np = np.stack(
+                        [padded[y:y + chunk_size, x:x + chunk_size, :] for (y, x) in batch_coords],
+                        axis=0
+                    ).astype(np.float32, copy=False)  # (B,H,W,3)
 
-            for k, (y, x) in enumerate(batch_coords):
-                acc[y:y + chunk_size, x:x + chunk_size, :] += pred[k] * weight3
-                wts[y:y + chunk_size, x:x + chunk_size] += weight
+                    inp = np.ascontiguousarray(np.transpose(batch_np, (0, 3, 1, 2)))  # (B,3,H,W)
+                    out = models.color.run([name_out], {name_img: inp})[0]
 
-            if progress_cb is not None:
-                try:
-                    cont = progress_cb(min(start + len(batch_coords), total), total)
-                    if cont is False:
-                        raise RuntimeError("Cancelled.")
-                except Exception:
-                    pass
+                    if out.ndim != 4:
+                        raise RuntimeError(f"Unexpected ONNX output shape: {out.shape}")
 
-    else:
-        torch = models.torch
-        dev = models.device
+                    pred = np.transpose(out, (0, 2, 3, 1)).astype(np.float32, copy=False)  # (B,H,W,3)
 
-        for start in range(0, total, batch_size):
-            batch_coords = coords[start:start + batch_size]
+                    for k, (y, x) in enumerate(batch_coords):
+                        acc[y:y + chunk_size, x:x + chunk_size, :] += pred[k] * weight3
+                        wts[y:y + chunk_size, x:x + chunk_size] += weight
 
-            batch_np = np.stack(
-                [padded[y:y + chunk_size, x:x + chunk_size, :] for (y, x) in batch_coords],
-                axis=0
-            ).astype(np.float32, copy=False)  # (B,H,W,3)
+                    if progress_cb is not None:
+                        try:
+                            cont = progress_cb(min(start + len(batch_coords), total), total)
+                            if cont is False:
+                                raise RuntimeError("Cancelled.")
+                        except Exception:
+                            pass
 
-            inp = np.ascontiguousarray(np.transpose(batch_np, (0, 3, 1, 2)))  # (B,3,H,W)
-            t = torch.from_numpy(inp).to(dev, non_blocking=True)
+            else:
+                torch = models.torch
+                dev = models.device
 
-            with torch.no_grad(), _autocast_context(torch, dev):
-                out = models.color(t)  # (B,3,H,W)
-                pred = out.detach().float().cpu().numpy()
+                for start in range(0, total, batch_size):
+                    batch_coords = coords[start:start + batch_size]
 
-            pred = np.transpose(pred, (0, 2, 3, 1)).astype(np.float32, copy=False)  # (B,H,W,3)
+                    batch_np = np.stack(
+                        [padded[y:y + chunk_size, x:x + chunk_size, :] for (y, x) in batch_coords],
+                        axis=0
+                    ).astype(np.float32, copy=False)  # (B,H,W,3)
 
-            for k, (y, x) in enumerate(batch_coords):
-                acc[y:y + chunk_size, x:x + chunk_size, :] += pred[k] * weight3
-                wts[y:y + chunk_size, x:x + chunk_size] += weight
+                    inp = np.ascontiguousarray(np.transpose(batch_np, (0, 3, 1, 2)))  # (B,3,H,W)
+                    t = torch.from_numpy(inp).to(dev, non_blocking=True)
 
-            if progress_cb is not None:
-                try:
-                    cont = progress_cb(min(start + len(batch_coords), total), total)
-                    if cont is False:
-                        raise RuntimeError("Cancelled.")
-                except Exception:
-                    pass
+                    with torch.no_grad(), _autocast_context(torch, dev):
+                        out = models.color(t)  # (B,3,H,W)
+                        pred = out.detach().float().cpu().numpy()
 
-    out = acc / np.maximum(wts[..., None], 1e-8)
-    return out[:H, :W, :].astype(np.float32, copy=False)
+                    pred = np.transpose(pred, (0, 2, 3, 1)).astype(np.float32, copy=False)
+
+                    for k, (y, x) in enumerate(batch_coords):
+                        acc[y:y + chunk_size, x:x + chunk_size, :] += pred[k] * weight3
+                        wts[y:y + chunk_size, x:x + chunk_size] += weight
+
+                    if progress_cb is not None:
+                        try:
+                            cont = progress_cb(min(start + len(batch_coords), total), total)
+                            if cont is False:
+                                raise RuntimeError("Cancelled.")
+                        except Exception:
+                            pass
+
+            out = acc / np.maximum(wts[..., None], 1e-8)
+            return out[:H, :W, :].astype(np.float32, copy=False)
+
+        except Exception as e:
+            last_err = e
+            if batch_size == 1 or not _is_recoverable_batch_error(e):
+                break
+            print(f"[CC Denoise] RGB batched path failed at batch_size={batch_size}, retrying smaller batch. {type(e).__name__}: {e}")
+
+    print(f"[CC Denoise] RGB batched path failed, falling back to legacy single-tile path. {type(last_err).__name__}: {last_err}")
+    return _legacy_denoise_rgb_with_color_model(
+        img_rgb,
+        models,
+        chunk_size=chunk_size,
+        overlap=overlap,
+        progress_cb=progress_cb,
+    )
 
 # Function to split an image into chunks with overlap
 def split_image_into_chunks_with_overlap(image, chunk_size, overlap):
@@ -928,12 +1076,53 @@ def remove_border(image, border_size: int = 16):
         return image[border_size:-border_size, border_size:-border_size]
     return image[border_size:-border_size, border_size:-border_size, :]
 
-
-def denoise_channel(channel, models: DenoiseModels, *, which="mono",
-                    chunk_size=256, overlap=64, progress_cb=None):
+def _legacy_denoise_channel(
+    channel,
+    models: DenoiseModels,
+    *,
+    which="mono",
+    chunk_size=256,
+    overlap=64,
+    progress_cb=None,
+):
     """
-    Batched mono-channel denoise.
-    Big win: many tiles per model call instead of one tile per call.
+    Old slow-but-stable single-tile path.
+    Uses _infer_chunk_2d() one tile at a time, then stitches.
+    """
+    model = models.mono if which == "mono" else models.color
+    chunks = split_image_into_chunks_with_overlap(channel, chunk_size=chunk_size, overlap=overlap)
+
+    out_chunks = []
+    total = len(chunks)
+
+    for idx, (chunk, i, j) in enumerate(chunks):
+        den2d = _infer_chunk_2d(models, model, chunk)
+        out_chunks.append((den2d, i, j))
+
+        if progress_cb is not None:
+            try:
+                cont = progress_cb(idx + 1, total)
+                if cont is False:
+                    raise RuntimeError("Cancelled.")
+            except Exception:
+                pass
+
+    return stitch_chunks_ignore_border(out_chunks, channel.shape, border_size=16)
+
+def denoise_channel(
+    channel,
+    models: DenoiseModels,
+    *,
+    which="mono",
+    chunk_size=256,
+    overlap=64,
+    progress_cb=None,
+    execution_mode: str = "auto",
+    batch_size_override: int = 0,
+):
+    """
+    Batched mono-channel denoise with automatic batch-size fallback.
+    Falls back to old single-tile path if batching still fails.
     """
     model = models.mono if which == "mono" else models.color
 
@@ -945,89 +1134,113 @@ def denoise_channel(channel, models: DenoiseModels, *, which="mono",
     padded = np.pad(channel, ((0, Hp - H), (0, Wp - W)), mode=pad_mode)
 
     weight = _make_blend_weight_2d(int(chunk_size), border_size=16)
-    acc = np.zeros((Hp, Wp), dtype=np.float32)
-    wts = np.zeros((Hp, Wp), dtype=np.float32)
-
     total = len(coords)
-    batch_size = _auto_batch_size(models, int(chunk_size), rgb=False)
 
-    if models.is_onnx:
-        name_img, name_out = _ort_pick_io_names_single_input(model)
+    initial_bs = _auto_batch_size(
+        models,
+        int(chunk_size),
+        rgb=False,
+        execution_mode=execution_mode,
+        batch_size_override=batch_size_override,
+    )
 
-        for start in range(0, total, batch_size):
-            batch_coords = coords[start:start + batch_size]
+    last_err = None
 
-            batch_np = np.stack(
-                [padded[y:y + chunk_size, x:x + chunk_size] for (y, x) in batch_coords],
-                axis=0
-            ).astype(np.float32, copy=False)  # (B,H,W)
+    for batch_size in _iter_batch_sizes(initial_bs):
+        try:
+            acc = np.zeros((Hp, Wp), dtype=np.float32)
+            wts = np.zeros((Hp, Wp), dtype=np.float32)
 
-            inp = np.repeat(batch_np[:, None, :, :], 3, axis=1)  # (B,3,H,W)
-            out = model.run([name_out], {name_img: inp})[0]
+            if models.is_onnx:
+                name_img, name_out = _ort_pick_io_names_single_input(model)
 
-            if out.ndim == 4:
-                pred = out[:, 0, :, :]
-            elif out.ndim == 3:
-                pred = out
-                if pred.shape[1] == chunk_size and pred.shape[2] == chunk_size:
-                    pass
-                elif pred.shape[0] in (1, 3):
-                    pred = pred[0:1, ...]
-                else:
-                    raise RuntimeError(f"Unexpected ONNX output shape: {out.shape}")
+                for start in range(0, total, batch_size):
+                    batch_coords = coords[start:start + batch_size]
+
+                    batch_np = np.stack(
+                        [padded[y:y + chunk_size, x:x + chunk_size] for (y, x) in batch_coords],
+                        axis=0
+                    ).astype(np.float32, copy=False)  # (B,H,W)
+
+                    inp = np.repeat(batch_np[:, None, :, :], 3, axis=1)  # (B,3,H,W)
+                    out = model.run([name_out], {name_img: inp})[0]
+
+                    if out.ndim == 4:
+                        pred = out[:, 0, :, :]
+                    elif out.ndim == 3:
+                        pred = out
+                        if pred.shape[1] == chunk_size and pred.shape[2] == chunk_size:
+                            pass
+                        elif pred.shape[0] in (1, 3):
+                            pred = pred[0:1, ...]
+                        else:
+                            raise RuntimeError(f"Unexpected ONNX output shape: {out.shape}")
+                    else:
+                        raise RuntimeError(f"Unexpected ONNX output shape: {out.shape}")
+
+                    pred = np.asarray(pred, dtype=np.float32)
+
+                    for k, (y, x) in enumerate(batch_coords):
+                        acc[y:y + chunk_size, x:x + chunk_size] += pred[k] * weight
+                        wts[y:y + chunk_size, x:x + chunk_size] += weight
+
+                    if progress_cb is not None:
+                        try:
+                            cont = progress_cb(min(start + len(batch_coords), total), total)
+                            if cont is False:
+                                raise RuntimeError("Cancelled.")
+                        except Exception:
+                            pass
+
             else:
-                raise RuntimeError(f"Unexpected ONNX output shape: {out.shape}")
+                torch = models.torch
+                dev = models.device
 
-            pred = np.asarray(pred, dtype=np.float32)
+                for start in range(0, total, batch_size):
+                    batch_coords = coords[start:start + batch_size]
 
-            for k, (y, x) in enumerate(batch_coords):
-                acc[y:y + chunk_size, x:x + chunk_size] += pred[k] * weight
-                wts[y:y + chunk_size, x:x + chunk_size] += weight
+                    batch_np = np.stack(
+                        [padded[y:y + chunk_size, x:x + chunk_size] for (y, x) in batch_coords],
+                        axis=0
+                    ).astype(np.float32, copy=False)  # (B,H,W)
 
-            if progress_cb is not None:
-                try:
-                    cont = progress_cb(min(start + len(batch_coords), total), total)
-                    if cont is False:
-                        raise RuntimeError("Cancelled.")
-                except Exception:
-                    pass
+                    t = torch.from_numpy(batch_np).unsqueeze(1).to(dev, non_blocking=True)
+                    t3 = t.expand(-1, 3, -1, -1).contiguous()
 
-    else:
-        torch = models.torch
-        dev = models.device
+                    with torch.no_grad(), _autocast_context(torch, dev):
+                        out = model(t3)  # (B,3,H,W)
+                        pred = out[:, 0, :, :].detach().float().cpu().numpy()
 
-        for start in range(0, total, batch_size):
-            batch_coords = coords[start:start + batch_size]
+                    for k, (y, x) in enumerate(batch_coords):
+                        acc[y:y + chunk_size, x:x + chunk_size] += pred[k] * weight
+                        wts[y:y + chunk_size, x:x + chunk_size] += weight
 
-            batch_np = np.stack(
-                [padded[y:y + chunk_size, x:x + chunk_size] for (y, x) in batch_coords],
-                axis=0
-            ).astype(np.float32, copy=False)  # (B,H,W)
+                    if progress_cb is not None:
+                        try:
+                            cont = progress_cb(min(start + len(batch_coords), total), total)
+                            if cont is False:
+                                raise RuntimeError("Cancelled.")
+                        except Exception:
+                            pass
 
-            # (B,1,H,W)
-            t = torch.from_numpy(batch_np).unsqueeze(1).to(dev, non_blocking=True)
+            out = acc / np.maximum(wts, 1e-8)
+            return out[:H, :W].astype(np.float32, copy=False)
 
-            # Avoid CPU-side channel repetition. Expand on device.
-            t3 = t.expand(-1, 3, -1, -1).contiguous()
+        except Exception as e:
+            last_err = e
+            if batch_size == 1 or not _is_recoverable_batch_error(e):
+                break
+            print(f"[CC Denoise] mono batched path failed at batch_size={batch_size}, retrying smaller batch. {type(e).__name__}: {e}")
 
-            with torch.no_grad(), _autocast_context(torch, dev):
-                out = model(t3)  # (B,3,H,W)
-                pred = out[:, 0, :, :].detach().float().cpu().numpy()
-
-            for k, (y, x) in enumerate(batch_coords):
-                acc[y:y + chunk_size, x:x + chunk_size] += pred[k] * weight
-                wts[y:y + chunk_size, x:x + chunk_size] += weight
-
-            if progress_cb is not None:
-                try:
-                    cont = progress_cb(min(start + len(batch_coords), total), total)
-                    if cont is False:
-                        raise RuntimeError("Cancelled.")
-                except Exception:
-                    pass
-
-    out = acc / np.maximum(wts, 1e-8)
-    return out[:H, :W].astype(np.float32, copy=False)
+    print(f"[CC Denoise] mono batched path failed, falling back to legacy single-tile path. {type(last_err).__name__}: {last_err}")
+    return _legacy_denoise_channel(
+        channel,
+        models,
+        which=which,
+        chunk_size=chunk_size,
+        overlap=overlap,
+        progress_cb=progress_cb,
+    )
 
 def denoise_rgb01(
     img_rgb01: np.ndarray,
@@ -1036,13 +1249,15 @@ def denoise_rgb01(
     denoise_mode: str = "luminance",
     separate_channels: bool = False,
     color_denoise_strength: Optional[float] = None,
-    chunk_size: int = 256, overlap: int = 64,
+    chunk_size: int = 256,
+    overlap: int = 64,
     use_gpu: bool = True,
     lite: bool = False,
-    # ✅ NEW
     temp_stretch: bool = False,
     target_median: float = 0.25,
     progress_cb=None,
+    execution_mode: str = "auto",      # NEW
+    batch_size_override: int = 0,      # NEW
 ) -> np.ndarray:
 
     models = load_models(use_gpu=use_gpu, lite=lite)
@@ -1105,8 +1320,16 @@ def denoise_rgb01(
 
         mono_s = add_border(mono_s, border_size=16)
 
-        den_m = denoise_channel(mono_s, models, which="mono",
-                                chunk_size=chunk_size, overlap=overlap, progress_cb=progress_cb)
+        den_m = denoise_channel(
+            mono_s,
+            models,
+            which="mono",
+            chunk_size=chunk_size,
+            overlap=overlap,
+            progress_cb=progress_cb,
+            execution_mode=execution_mode,
+            batch_size_override=batch_size_override,
+        )
         mono_out = blend_images(mono_s, den_m, denoise_strength)
         mono_out = np.clip(mono_out, 0.0, 1.0)
         if stretch_needed:
@@ -1142,13 +1365,31 @@ def denoise_rgb01(
     if separate_channels or denoise_mode == "separate":
         out_ch = []
         for c in range(3):
-            dch = denoise_channel(stretched[..., c], models, which="mono", chunk_size=chunk_size, overlap=overlap, progress_cb=progress_cb)
+            dch = denoise_channel(
+                stretched[..., c],
+                models,
+                which="mono",
+                chunk_size=chunk_size,
+                overlap=overlap,
+                progress_cb=progress_cb,
+                execution_mode=execution_mode,
+                batch_size_override=batch_size_override,
+            )
             out_ch.append(blend_images(stretched[..., c], dch, denoise_strength))
         den = np.stack(out_ch, axis=-1)
 
     elif denoise_mode == "luminance":
         y, cb, cr = extract_luminance(stretched)
-        den_y = denoise_channel(y, models, which="mono", chunk_size=chunk_size, overlap=overlap, progress_cb=progress_cb)
+        den_y = denoise_channel(
+            y,
+            models,
+            which="mono",
+            chunk_size=chunk_size,
+            overlap=overlap,
+            progress_cb=progress_cb,
+            execution_mode=execution_mode,
+            batch_size_override=batch_size_override,
+        )
         y2 = blend_images(y, den_y, denoise_strength)
         den = merge_luminance(y2, cb, cr)
 
@@ -1157,11 +1398,28 @@ def denoise_rgb01(
         y, cb, cr = extract_luminance(stretched)
 
         # 1) denoise luminance with mono model
-        den_y = denoise_channel(y, models, which="mono", chunk_size=chunk_size, overlap=overlap, progress_cb=progress_cb)
+        den_y = denoise_channel(
+            y,
+            models,
+            which="mono",
+            chunk_size=chunk_size,
+            overlap=overlap,
+            progress_cb=progress_cb,
+            execution_mode=execution_mode,
+            batch_size_override=batch_size_override,
+        )
         y2 = blend_images(y, den_y, denoise_strength)
 
         # 2) denoise RGB with color model, then use it only for chroma (Cb/Cr)
-        den_rgb = denoise_rgb_with_color_model(stretched, models, chunk_size=chunk_size, overlap=overlap, progress_cb=progress_cb)
+        den_rgb = denoise_rgb_with_color_model(
+            stretched,
+            models,
+            chunk_size=chunk_size,
+            overlap=overlap,
+            progress_cb=progress_cb,
+            execution_mode=execution_mode,
+            batch_size_override=batch_size_override,
+        )
 
         # Color slider controls how much we take chroma from den_rgb vs original
         cs = denoise_strength if color_denoise_strength is None else float(color_denoise_strength)

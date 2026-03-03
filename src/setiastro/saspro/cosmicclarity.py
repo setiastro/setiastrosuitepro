@@ -295,28 +295,27 @@ class CosmicClarityEngineWorker(QThread):
                     )
 
                 elif st == "denoise":
-                    den_luma = float(p.get("denoise_luma", 0.5))
-                    den_col = float(p.get("denoise_color", 0.5))
-                    den_mode = str(p.get("denoise_mode", "full"))
-                    sep = bool(p.get("separate_channels", False))
-
                     prog = self._mk_progress_cb("denoise", stage_weight, base_pct, n)
 
-                    lite = bool(p.get("denoise_lite", False))
+                    self.log.emit(
+                        f"Denoise execution mode: {self._preset.get('denoise_execution_mode', 'auto')}"
+                    )
 
                     out = denoise_rgb01(
                         out,
-                        denoise_strength=den_luma,
-                        denoise_mode=den_mode,
-                        separate_channels=sep,
-                        color_denoise_strength=den_col,
-                        use_gpu=use_gpu,
-                        temp_stretch=temp_stretch,
-                        target_median=target_median,                        
-                        chunk_size=int(p.get("chunk_size", 256)),
-                        overlap=int(p.get("overlap", 64)),
-                        lite=lite,   
+                        denoise_strength=float(self._preset.get("denoise_luma", 0.5)),
+                        denoise_mode=str(self._preset.get("denoise_mode", "luminance")),
+                        separate_channels=bool(self._preset.get("separate_channels", False)),
+                        color_denoise_strength=float(self._preset.get("denoise_color", 0.5)),
+                        chunk_size=int(self._preset.get("chunk_size", 256)),
+                        overlap=int(self._preset.get("overlap", 64)),
+                        use_gpu=bool(self._preset.get("gpu", True)),
+                        lite=bool(self._preset.get("denoise_lite", False)),
+                        temp_stretch=bool(self._preset.get("temp_stretch", False)),
+                        target_median=float(self._preset.get("target_median", 0.25)),
                         progress_cb=prog,
+                        execution_mode=str(self._preset.get("denoise_execution_mode", "auto")),
+                        batch_size_override=int(self._preset.get("denoise_batch_size_override", 0)),
                     )
                 elif st == "aberration":
                     def _ab_prog(frac: float):
@@ -387,6 +386,7 @@ class CosmicClarityDialogPro(QDialog):
         self._engine_thread = None
         self._closing_after_cancel = False
         self._wait = None
+      
         # Hard guard unless explicitly bypassed (used by preset runner)
         if not bypass_guard and self._headless_guard_active():
             # avoid any flash; never show
@@ -557,21 +557,34 @@ class CosmicClarityDialogPro(QDialog):
         #self.chk_dn_sep.setChecked(True)
         grid.addWidget(self.chk_dn_sep, 15, 1)
 
+        self.chk_dn_sep = QCheckBox("Denoise RGB channels separately (May Achieve Better Results but Slower)")
+        self.chk_dn_sep.toggled.connect(self._dn_sep_changed)
+        grid.addWidget(self.chk_dn_sep, 15, 1)
+
         self.chk_dn_lite = QCheckBox("Use Lite denoise model (faster)")
         self.chk_dn_lite.setToolTip("Loads width=32 denoise models (AI4_lite). Faster, slightly less detail.")
-        grid.addWidget(self.chk_dn_lite, 15, 0)  # adjust row/col as needed
+        grid.addWidget(self.chk_dn_lite, 15, 0)
+
+        self.chk_dn_compat = QCheckBox("GPU Compatibility Mode (slower, safer for older GPUs)")
+        self.chk_dn_compat.setToolTip(
+            "Uses smaller denoise inference batches for better stability on older or fragile GPUs.\n"
+            "Recommended if denoise fails, hangs, or produces errors on older hardware."
+        )
+        grid.addWidget(self.chk_dn_compat, 15, 2)
+
         self._load_cc_ui_settings()
         self.chk_dn_lite.toggled.connect(self._save_cc_ui_settings)
-
+        self.chk_dn_compat.toggled.connect(self._save_cc_ui_settings)
         # Super-res
         self.lbl_scale = QLabel("Scale Factor:")
         self.cmb_scale = QComboBox(); self.cmb_scale.addItems(["2x", "3x", "4x"])
-        grid.addWidget(self.lbl_scale, 16, 0); grid.addWidget(self.cmb_scale, 16, 1)
+        grid.addWidget(self.lbl_scale, 17, 0)
+        grid.addWidget(self.cmb_scale, 17, 1)
 
         # Apply target
-        grid.addWidget(QLabel("Apply to:"), 17, 0)
+        grid.addWidget(QLabel("Apply to:"), 23, 0)
         self.cmb_target = QComboBox(); self.cmb_target.addItems(["Overwrite active view", "Create new view"])
-        grid.addWidget(self.cmb_target, 17, 1, 1, 2)
+        grid.addWidget(self.cmb_target, 23, 1, 1, 2)
 
         v.addWidget(grp)
 
@@ -600,6 +613,7 @@ class CosmicClarityDialogPro(QDialog):
         self.chk_dn_lite.toggled.connect(self._save_cc_ui_settings)
         self.chk_aberration_first.toggled.connect(self._save_cc_ui_settings)
 
+        self.chk_dn_compat.toggled.connect(self._save_cc_ui_settings)
 
         self.resize(560, 540)
 
@@ -616,6 +630,7 @@ class CosmicClarityDialogPro(QDialog):
     def _load_cc_ui_settings(self):
         s = QSettings()
         self.chk_dn_lite.setChecked(s.value("cc/denoise_lite", False, type=bool))
+        self.chk_dn_compat.setChecked(s.value("cc/denoise_compat_mode", False, type=bool))
 
         self.chk_temp_stretch.setChecked(s.value("cc/temp_stretch", False, type=bool))
         tm = float(s.value("cc/target_median", 0.25))
@@ -628,6 +643,7 @@ class CosmicClarityDialogPro(QDialog):
     def _save_cc_ui_settings(self):
         s = QSettings()
         s.setValue("cc/denoise_lite", self.chk_dn_lite.isChecked())
+        s.setValue("cc/denoise_compat_mode", self.chk_dn_compat.isChecked())
         s.setValue("cc/temp_stretch", self.chk_temp_stretch.isChecked())
         s.setValue("cc/target_median", self.sld_target_median.value() / 100.0)
         s.setValue("cc/aberration_first", self.chk_aberration_first.isChecked())
@@ -791,8 +807,12 @@ class CosmicClarityDialogPro(QDialog):
 
         # Denoise controls visible if Denoise or Both
         show_dn = idx in (1, 2)
-        for w in (self.lbl_dn_lum, self.sld_dn_lum, self.lbl_dn_col, self.sld_dn_col,
-                self.lbl_dn_mode, self.cmb_dn_mode, self.chk_dn_sep, self.chk_dn_lite):
+        for w in (
+            self.lbl_dn_lum, self.sld_dn_lum,
+            self.lbl_dn_col, self.sld_dn_col,
+            self.lbl_dn_mode, self.cmb_dn_mode,
+            self.chk_dn_sep, self.chk_dn_lite, self.chk_dn_compat
+        ):
             w.setVisible(show_dn)
 
         # Super-res controls visible if Super-Res
@@ -1021,6 +1041,7 @@ class CosmicClarityDialogPro(QDialog):
         self.cmb_dn_mode.setCurrentText(str(p.get("denoise_mode","full")))
         self.chk_dn_sep.setChecked(bool(p.get("separate_channels", False)))
         self.chk_dn_lite.setChecked(bool(p.get("denoise_lite", False)))
+        self.chk_dn_compat.setChecked(bool(p.get("denoise_compat_mode", False)))
         # NEW: temp stretch
         self.chk_temp_stretch.setChecked(bool(p.get("temp_stretch", False)))
         self.chk_aberration_first.setChecked(bool(p.get("aberration_first", False)))
@@ -1073,10 +1094,12 @@ class CosmicClarityDialogPro(QDialog):
                 "denoise_mode": self.cmb_dn_mode.currentText(),
                 "separate_channels": self.chk_dn_sep.isChecked(),
                 "denoise_lite": self.chk_dn_lite.isChecked(),
+                "denoise_compat_mode": self.chk_dn_compat.isChecked(),
+                "denoise_execution_mode": "compatibility" if self.chk_dn_compat.isChecked() else "auto",
+                "denoise_batch_size_override": 0,
                 "temp_stretch": self.chk_temp_stretch.isChecked(),
-                "target_median": self.sld_target_median.value() / 100.0,               
+                "target_median": self.sld_target_median.value() / 100.0,
             })
-
         # Super-res
         if mode == "superres":
             try:
