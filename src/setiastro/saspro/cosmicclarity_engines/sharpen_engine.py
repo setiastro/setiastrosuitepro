@@ -301,7 +301,55 @@ def measure_psf_radius(chunk2d: np.ndarray, default_radius: float = 3.0) -> floa
     except Exception:
         return default_radius
 
+def _is_device_lost_error(err: Exception) -> bool:
+    s = f"{type(err).__name__}: {err}".lower()
+    needles = [
+        "887a0005",
+        "getdeviceremovedreason",
+        "device removed",
+        "device lost",
+        "gpu-apparaat",
+        "onderbroken",
+        "dmlexecutionprovider",
+        "executionprovider.cpp",
+    ]
+    return any(n in s for n in needles)
 
+
+def _iter_batch_sizes(initial: int):
+    bs = max(1, int(initial))
+    yielded = set()
+    while bs >= 1:
+        if bs not in yielded:
+            yielded.add(bs)
+            yield bs
+        if bs == 1:
+            break
+        bs = max(1, bs // 2)
+
+
+def _is_recoverable_batch_error(err: Exception) -> bool:
+    msg = f"{type(err).__name__}: {err}".lower()
+    needles = [
+        "out of memory",
+        "cuda",
+        "cudnn",
+        "cublas",
+        "directml",
+        "dml",
+        "mps",
+        "allocation",
+        "alloc",
+        "resource",
+        "execution provider",
+        "insufficient memory",
+        "bad allocation",
+        "memory",
+        "887a0005",
+        "device removed",
+        "device lost",
+    ]
+    return any(n in msg for n in needles)
 # ---------------- Model bundle + loading ----------------
 
 @dataclass
@@ -754,10 +802,20 @@ def _chunk_coords_with_overlap(H: int, W: int, chunk_size: int, overlap: int):
     return out
 
 
-def _recommended_batch_size(models: SharpenModels, chunk_size: int, *, psf: bool = False) -> int:
-    """
-    Conservative batching heuristic. Easy win without getting aggressive on VRAM.
-    """
+def _recommended_batch_size(
+    models: SharpenModels,
+    chunk_size: int,
+    *,
+    psf: bool = False,
+    execution_mode: str = "auto",
+    batch_size_override: int = 0,
+) -> int:
+    if batch_size_override and batch_size_override > 0:
+        return int(batch_size_override)
+
+    if execution_mode == "compatibility":
+        return 1
+
     if models.is_onnx:
         return 1
 
@@ -829,45 +887,74 @@ def _infer_chunk_psf_onnx(models: SharpenModels, session: Any, chunk2d: np.ndarr
 
     return y[:h0, :w0].astype(np.float32, copy=False)
 
-def _infer_chunks_batched(models: SharpenModels, model: Any, chunks2d: list[np.ndarray], batch_size: int) -> list[np.ndarray]:
-    """
-    Batch same-shaped chunks together for much better GPU utilization.
-    Falls back to per-chunk on ONNX or CPU-ish paths where batching may not help.
-    """
+def _infer_chunks_batched(
+    models: SharpenModels,
+    model: Any,
+    chunks2d: list[np.ndarray],
+    batch_size: int,
+    *,
+    progress_cb: Optional[Callable[[int, int], bool]] = None,
+    progress_done_start: int = 0,
+    progress_total: int = 0,
+) -> list[np.ndarray]:
     if not chunks2d:
         return []
 
-    if models.is_onnx or batch_size <= 1:
-        return [_infer_chunk(models, model, ch) for ch in chunks2d]
+    if progress_total <= 0:
+        progress_total = len(chunks2d)
+
+    if models.is_onnx:
+        outputs = []
+        for idx, ch in enumerate(chunks2d, start=1):
+            outputs.append(_infer_chunk(models, model, ch))
+            if progress_cb is not None:
+                if progress_cb(progress_done_start + idx, progress_total) is False:
+                    raise RuntimeError("Cancelled.")
+        return outputs
 
     torch = models.torch
     dev = models.device
+    last_err = None
 
-    outputs: list[np.ndarray] = [None] * len(chunks2d)  # type: ignore
+    for bs in _iter_batch_sizes(batch_size):
+        try:
+            outputs: list[np.ndarray] = [None] * len(chunks2d)  # type: ignore
+            groups: dict[tuple[int, int], list[tuple[int, np.ndarray, int, int]]] = {}
 
-    # Group by padded shape so np.stack works cleanly
-    groups: dict[tuple[int, int], list[tuple[int, np.ndarray, int, int]]] = {}
-    for idx, ch in enumerate(chunks2d):
-        ch = np.asarray(ch, np.float32)
-        ch_p, h0, w0 = _pad2d_to_multiple(ch, mult=16, mode="reflect")
-        groups.setdefault(ch_p.shape, []).append((idx, ch_p, h0, w0))
+            for idx, ch in enumerate(chunks2d):
+                ch = np.asarray(ch, np.float32)
+                ch_p, h0, w0 = _pad2d_to_multiple(ch, mult=16, mode="reflect")
+                groups.setdefault(ch_p.shape, []).append((idx, ch_p, h0, w0))
 
-    for _shape, items in groups.items():
-        for s in range(0, len(items), batch_size):
-            batch = items[s:s + batch_size]
+            done = 0
+            for _shape, items in groups.items():
+                for s in range(0, len(items), bs):
+                    batch = items[s:s + bs]
 
-            arr = np.stack([np.ascontiguousarray(it[1]) for it in batch], axis=0)[:, None, :, :]  # (B,1,H,W)
-            t = torch.from_numpy(arr).to(dev, dtype=torch.float32)
-            t_rgb = t.expand(-1, 3, -1, -1)  # (B,3,H,W)
+                    arr = np.stack([np.ascontiguousarray(it[1]) for it in batch], axis=0)[:, None, :, :]
+                    t = torch.from_numpy(arr).to(dev, dtype=torch.float32)
+                    t_rgb = t.expand(-1, 3, -1, -1)
 
-            with torch.no_grad(), _autocast_context(torch, dev):
-                y = model(t_rgb)  # (B,3,H,W)
-                y = y[:, 0].detach().float().cpu().numpy()  # (B,H,W)
+                    with torch.no_grad(), _autocast_context(torch, dev):
+                        y = model(t_rgb)
+                        y = y[:, 0].detach().float().cpu().numpy()
 
-            for bi, (orig_idx, _chp, h0, w0) in enumerate(batch):
-                outputs[orig_idx] = y[bi, :h0, :w0].astype(np.float32, copy=False)
+                    for bi, (orig_idx, _chp, h0, w0) in enumerate(batch):
+                        outputs[orig_idx] = y[bi, :h0, :w0].astype(np.float32, copy=False)
 
-    return outputs
+                    done += len(batch)
+                    if progress_cb is not None:
+                        if progress_cb(progress_done_start + done, progress_total) is False:
+                            raise RuntimeError("Cancelled.")
+
+            return outputs
+
+        except Exception as e:
+            last_err = e
+            if bs == 1 or not _is_recoverable_batch_error(e):
+                break
+
+    raise last_err
 
 def _infer_chunks_psf_batched(
     models: SharpenModels,
@@ -875,50 +962,72 @@ def _infer_chunks_psf_batched(
     chunks2d: list[np.ndarray],
     psf01_list: list[float],
     batch_size: int,
+    *,
+    progress_cb: Optional[Callable[[int, int], bool]] = None,
+    progress_done_start: int = 0,
+    progress_total: int = 0,
 ) -> list[np.ndarray]:
-    """
-    Batch PSF-conditional chunks too. Keeps per-chunk PSF values but runs them together.
-    """
     if not chunks2d:
         return []
 
-    if models.is_onnx or batch_size <= 1:
-        return [
-            _infer_chunk_psf(models, model, ch, psf01)
-            for ch, psf01 in zip(chunks2d, psf01_list)
-        ]
+    if progress_total <= 0:
+        progress_total = len(chunks2d)
+
+    if models.is_onnx:
+        outputs = []
+        for idx, (ch, psf01) in enumerate(zip(chunks2d, psf01_list), start=1):
+            outputs.append(_infer_chunk_psf_onnx(models, model, ch, psf01))
+            if progress_cb is not None:
+                if progress_cb(progress_done_start + idx, progress_total) is False:
+                    raise RuntimeError("Cancelled.")
+        return outputs
 
     torch = models.torch
     dev = models.device
+    last_err = None
 
-    outputs: list[np.ndarray] = [None] * len(chunks2d)  # type: ignore
+    for bs in _iter_batch_sizes(batch_size):
+        try:
+            outputs: list[np.ndarray] = [None] * len(chunks2d)  # type: ignore
+            groups: dict[tuple[int, int], list[tuple[int, np.ndarray, int, int, float]]] = {}
 
-    groups: dict[tuple[int, int], list[tuple[int, np.ndarray, int, int, float]]] = {}
-    for idx, (ch, psf01) in enumerate(zip(chunks2d, psf01_list)):
-        ch = np.asarray(ch, np.float32)
-        ch_p, h0, w0 = _pad2d_to_multiple(ch, mult=16, mode="reflect")
-        groups.setdefault(ch_p.shape, []).append((idx, ch_p, h0, w0, float(psf01)))
+            for idx, (ch, psf01) in enumerate(zip(chunks2d, psf01_list)):
+                ch = np.asarray(ch, np.float32)
+                ch_p, h0, w0 = _pad2d_to_multiple(ch, mult=16, mode="reflect")
+                groups.setdefault(ch_p.shape, []).append((idx, ch_p, h0, w0, float(psf01)))
 
-    for _shape, items in groups.items():
-        for s in range(0, len(items), batch_size):
-            batch = items[s:s + batch_size]
+            done = 0
+            for _shape, items in groups.items():
+                for s in range(0, len(items), bs):
+                    batch = items[s:s + bs]
 
-            arr = np.stack([np.ascontiguousarray(it[1]) for it in batch], axis=0)[:, None, :, :]  # (B,1,H,W)
-            psf_arr = np.array([[it[4]] for it in batch], dtype=np.float32)  # (B,1)
+                    arr = np.stack([np.ascontiguousarray(it[1]) for it in batch], axis=0)[:, None, :, :]
+                    psf_arr = np.array([[it[4]] for it in batch], dtype=np.float32)
 
-            t = torch.from_numpy(arr).to(dev, dtype=torch.float32)
-            t_rgb = t.expand(-1, 3, -1, -1)
-            psf_t = torch.from_numpy(psf_arr).to(dev, dtype=torch.float32)
+                    t = torch.from_numpy(arr).to(dev, dtype=torch.float32)
+                    t_rgb = t.expand(-1, 3, -1, -1)
+                    psf_t = torch.from_numpy(psf_arr).to(dev, dtype=torch.float32)
 
-            with torch.no_grad(), _autocast_context(torch, dev):
-                y = model(t_rgb, psf_t)  # (B,3,H,W)
-                y = y[:, 0].detach().float().cpu().numpy()
+                    with torch.no_grad(), _autocast_context(torch, dev):
+                        y = model(t_rgb, psf_t)
+                        y = y[:, 0].detach().float().cpu().numpy()
 
-            for bi, (orig_idx, _chp, h0, w0, _psf01) in enumerate(batch):
-                outputs[orig_idx] = y[bi, :h0, :w0].astype(np.float32, copy=False)
+                    for bi, (orig_idx, _chp, h0, w0, _psf01) in enumerate(batch):
+                        outputs[orig_idx] = y[bi, :h0, :w0].astype(np.float32, copy=False)
 
-    return outputs
+                    done += len(batch)
+                    if progress_cb is not None:
+                        if progress_cb(progress_done_start + done, progress_total) is False:
+                            raise RuntimeError("Cancelled.")
 
+            return outputs
+
+        except Exception as e:
+            last_err = e
+            if bs == 1 or not _is_recoverable_batch_error(e):
+                break
+
+    raise last_err
 def _infer_chunk(models: SharpenModels, model: Any, chunk2d: np.ndarray) -> np.ndarray:
     """Returns 2D float32 (cropped to original chunk shape)."""
     chunk2d = np.asarray(chunk2d, np.float32)
@@ -965,10 +1074,10 @@ def _infer_chunk(models: SharpenModels, model: Any, chunk2d: np.ndarray) -> np.n
 
 @dataclass
 class SharpenParams:
-    mode: str                         # "Both" | "Stellar Only" | "Non-Stellar Only"
-    stellar_amount: float             # 0..1
-    nonstellar_amount: float          # 0..1
-    nonstellar_strength: float        # 1..8 (ignored if auto_detect_psf True)
+    mode: str
+    stellar_amount: float
+    nonstellar_amount: float
+    nonstellar_strength: float
     sharpen_channels_separately: bool
     auto_detect_psf: bool
     use_gpu: bool
@@ -976,43 +1085,54 @@ class SharpenParams:
     overlap: int = 64
     temp_stretch: bool = False
     target_median: float = 0.25
+    execution_mode: str = "auto"
+    batch_size_override: int = 0
 
 def sharpen_image_array(image: np.ndarray,
                         params: SharpenParams,
                         progress_cb: Optional[ProgressCB] = None,
                         status_cb=print) -> tuple[np.ndarray, bool]:
+    # progress_cb may be either:
+    #   - (done, total) -> bool   (UI-friendly)
+    #   - (done, total, stage) -> bool (engine-native)
+    def _call_progress(cb, done: int, total: int, stage: str) -> bool:
+        try:
+            # try 3-arg first
+            return bool(cb(int(done), int(total), str(stage)))
+        except TypeError:
+            # fallback to 2-arg
+            try:
+                return bool(cb(int(done), int(total)))
+            except Exception:
+                return True
+        except Exception:
+            return True
+
     if progress_cb is None:
-        progress_cb = lambda done, total, stage: True
+        def progress_cb(done, total, stage):  # type: ignore
+            return True
+    else:
+        _user_cb = progress_cb
+        def progress_cb(done, total, stage):  # type: ignore
+            return _call_progress(_user_cb, done, total, stage)
 
     _dbg("ENTER sharpen_image_array()", status_cb=status_cb)
     t_all = time.time()
 
-    try:
-        img = np.asarray(image)
-        _dbg(f"Input shape={img.shape} dtype={img.dtype} min={float(np.nanmin(img)):.6f} max={float(np.nanmax(img)):.6f}",
-             status_cb=status_cb)
+    img = np.asarray(image)
+    if img.dtype != np.float32:
+        img = img.astype(np.float32, copy=False)
 
-        if img.dtype != np.float32:
-            img = img.astype(np.float32, copy=False)
-            _dbg("Converted input to float32", status_cb=status_cb)
+    img3, was_mono = _to_3ch(img)
+    img3 = np.clip(img3, 0.0, 1.0)
 
-        img3, was_mono = _to_3ch(img)
-        img3 = np.clip(img3, 0.0, 1.0)
-        _dbg(f"After _to_3ch: shape={img3.shape} was_mono={was_mono}", status_cb=status_cb)
+    if getattr(params, "execution_mode", "auto") == "compatibility":
+        params.batch_size_override = 1
+        params.chunk_size = min(int(params.chunk_size), 256)
 
-        # prove progress_cb works
-        try:
-            progress_cb(0, 1, "Loading models")
-        except Exception:
-            pass
-
-        models = load_sharpen_models(use_gpu=params.use_gpu, status_cb=status_cb)
-        _dbg(f"Models loaded: is_onnx={models.is_onnx} device={models.device!r}", status_cb=status_cb)
-
-        # border & stretch
+    def _run_with(models: SharpenModels) -> tuple[np.ndarray, bool]:
         bordered = add_border(img3, border_size=16)
 
-        # ✅ NEW: temp stretch override
         if bool(getattr(params, "temp_stretch", False)):
             stretch_needed = True
         else:
@@ -1024,23 +1144,19 @@ def sharpen_image_array(image: np.ndarray,
             stretched, orig_min, orig_meds = stretch_image_unlinked_rgb(bordered, target_median=tm)
         else:
             stretched, orig_min, orig_meds = bordered, None, None
-        # per-channel sharpening option (color only)
+
         if params.sharpen_channels_separately and (not was_mono):
-            _dbg("Sharpen per-channel path", status_cb=status_cb)
             out = np.empty_like(stretched)
             for c, label in enumerate(("R", "G", "B")):
                 progress_cb(0, 1, f"Sharpening {label} channel")
                 out[..., c] = _sharpen_plane(models, stretched[..., c], params, progress_cb)
             sharpened = out
         else:
-            _dbg("Sharpen luminance path", status_cb=status_cb)
             y, cb, cr = extract_luminance_rgb(stretched)
             y2 = _sharpen_plane(models, y, params, progress_cb)
             sharpened = merge_luminance(y2, cb, cr)
 
-        # unstretch / deborder
         if stretch_needed:
-            _dbg("Unstretching ...", status_cb=status_cb)
             sharpened = unstretch_image_unlinked_rgb(sharpened, orig_meds, orig_min, was_mono)
 
         sharpened = remove_border(sharpened, border_size=16)
@@ -1050,14 +1166,34 @@ def sharpen_image_array(image: np.ndarray,
                 sharpened = np.mean(sharpened, axis=2, keepdims=True).astype(np.float32, copy=False)
 
         out = np.clip(sharpened, 0.0, 1.0)
+        return out, was_mono
+
+    try:
+        progress_cb(0, 1, "Loading models")
+        models = load_sharpen_models(use_gpu=params.use_gpu, status_cb=status_cb)
+        out, was_mono = _run_with(models)
         _dbg(f"EXIT sharpen_image_array total_time={time.time()-t_all:.2f}s out_shape={out.shape}", status_cb=status_cb)
         return out, was_mono
 
     except Exception as e:
+        try:
+            dev = getattr(models.device, "type", None) or str(models.device)  # type: ignore[name-defined]
+        except Exception:
+            dev = "unknown"
+
+        if params.use_gpu and str(dev).lower() != "cpu" and _is_device_lost_error(e):
+            try:
+                status_cb(f"CosmicClarity Sharpen: GPU device lost on backend={dev}; retrying on CPU.")
+            except Exception:
+                pass
+
+            cpu_models = load_sharpen_models(use_gpu=False, status_cb=status_cb)
+            out, was_mono = _run_with(cpu_models)
+            return out, was_mono
+
         _dbg("sharpen_image_array ERROR:\n" + "".join(traceback.format_exception(type(e), e, e.__traceback__)),
              status_cb=status_cb)
         raise
-
 
 def _sharpen_plane(models: SharpenModels,
                    plane: np.ndarray,
@@ -1075,12 +1211,17 @@ def _sharpen_plane(models: SharpenModels,
     coords = _chunk_coords_with_overlap(H, W, chunk_size, overlap)
     total = len(coords)
 
+    # progress space for this plane
+    if params.mode == "Both":
+        total_progress_units = max(1, total * 2)
+    else:
+        total_progress_units = max(1, total)
+
     try:
-        progress_cb(0, max(total, 1), f"Sharpen start ({total} chunks)")
+        progress_cb(0, total_progress_units, f"Sharpen start ({total} chunks)")
     except Exception:
         pass
 
-    # If we're doing Both, measure PSF from pre-stellar plane
     psf_ref_plane = plane.copy() if params.mode == "Both" else plane
 
     # -------------------------
@@ -1088,21 +1229,37 @@ def _sharpen_plane(models: SharpenModels,
     # -------------------------
     if params.mode in ("Stellar Only", "Both"):
         stellar_chunks = [plane[i:ei, j:ej] for (i, j, ei, ej, _is_edge) in coords]
-        batch_size = _recommended_batch_size(models, chunk_size, psf=False)
-        stellar_out = _infer_chunks_batched(models, models.stellar, stellar_chunks, batch_size=batch_size)
+        batch_size = _recommended_batch_size(
+            models,
+            chunk_size,
+            psf=False,
+            execution_mode=getattr(params, "execution_mode", "auto"),
+            batch_size_override=getattr(params, "batch_size_override", 0),
+        )
+
+        stellar_out = _infer_chunks_batched(
+            models,
+            models.stellar,
+            stellar_chunks,
+            batch_size=batch_size,
+            progress_cb=lambda done, tot: progress_cb(done, total_progress_units, "Stellar sharpening"),
+            progress_done_start=0,
+            progress_total=total,
+        )
 
         out_chunks = []
-        for k, ((i, j, ei, ej, is_edge), y) in enumerate(zip(coords, stellar_out), start=1):
+        for (i, j, ei, ej, is_edge), y in zip(coords, stellar_out):
             chunk = plane[i:ei, j:ej]
             blended = blend_images(chunk, y, params.stellar_amount)
             out_chunks.append((blended, i, j, is_edge))
 
-            if progress_cb(k, total, "Stellar sharpening") is False:
-                return plane
-
         plane = stitch_chunks_ignore_border(out_chunks, plane.shape, border_size=16)
 
         if params.mode == "Stellar Only":
+            try:
+                progress_cb(total_progress_units, total_progress_units, "Stellar sharpening")
+            except Exception:
+                pass
             return plane
 
     # -------------------------
@@ -1114,7 +1271,6 @@ def _sharpen_plane(models: SharpenModels,
 
         ns_chunks = [plane[i:ei, j:ej] for (i, j, ei, ej, _is_edge) in coords]
 
-        # Compute per-chunk PSF values on CPU (SEP), but batch the actual GPU inference
         psf01_list = []
         for (i, j, ei, ej, _is_edge), chunk in zip(coords, ns_chunks):
             if params.auto_detect_psf:
@@ -1126,31 +1282,43 @@ def _sharpen_plane(models: SharpenModels,
                 r = float(np.clip(r, 1.0, 8.0))
             else:
                 r = float(np.clip(params.nonstellar_strength, 1.0, 8.0))
-
             psf01_list.append(_encode_psf_log2_0_1(r, 1.0, 8.0))
 
-        batch_size = _recommended_batch_size(models, chunk_size, psf=True)
+        batch_size = _recommended_batch_size(
+            models,
+            chunk_size,
+            psf=True,
+            execution_mode=getattr(params, "execution_mode", "auto"),
+            batch_size_override=getattr(params, "batch_size_override", 0),
+        )
+
+        start_offset = total if params.mode == "Both" else 0
+
         ns_out = _infer_chunks_psf_batched(
             models,
             models.ns_cond,
             ns_chunks,
             psf01_list,
             batch_size=batch_size,
+            progress_cb=lambda done, tot: progress_cb(done, total_progress_units, "Non-stellar sharpening"),
+            progress_done_start=start_offset,
+            progress_total=total,
         )
 
         out_chunks = []
-        for k, ((i, j, ei, ej, is_edge), y) in enumerate(zip(coords, ns_out), start=1):
+        for (i, j, ei, ej, is_edge), y in zip(coords, ns_out):
             chunk = plane[i:ei, j:ej]
             blended = blend_images(chunk, y, params.nonstellar_amount)
             out_chunks.append((blended, i, j, is_edge))
 
-            if progress_cb(k, total, "Non-stellar sharpening") is False:
-                return plane
-
         plane = stitch_chunks_ignore_border(out_chunks, plane.shape, border_size=16)
 
-    return plane
+    try:
+        progress_cb(total_progress_units, total_progress_units, "Sharpen complete")
+    except Exception:
+        pass
 
+    return plane
 def sharpen_rgb01(
     image_rgb01: np.ndarray,
     *,
@@ -1163,20 +1331,15 @@ def sharpen_rgb01(
     use_gpu: bool = True,
     chunk_size: int = 256,
     overlap: int = 64,
-    # ✅ NEW
     temp_stretch: bool = False,
     target_median: float = 0.25,
+    execution_mode: str = "auto",
+    batch_size_override: int = 0,
     progress_cb: Optional[Callable[[int, int], bool]] = None,
     status_cb=print,
 ) -> np.ndarray:
-    """
-    Backward-compatible API for SASpro CosmicClarityDialogPro.
-    Expects/returns float32 RGB in [0,1]. If input is mono, returns HxWx1.
-    progress_cb signature: (done, total)  -> UI-friendly.
-    """
-    # Adapt UI progress_cb(done,total) -> engine progress_cb(done,total,stage)
     if progress_cb is None:
-        def _prog(done, total, stage):  # noqa
+        def _prog(done, total, stage):
             return True
     else:
         def _prog(done, total, stage):
@@ -1195,10 +1358,10 @@ def sharpen_rgb01(
         use_gpu=bool(use_gpu),
         chunk_size=int(chunk_size),
         overlap=int(overlap),
-
-        # ✅ NEW
         temp_stretch=bool(temp_stretch),
         target_median=float(target_median),
+        execution_mode=str(execution_mode),
+        batch_size_override=int(batch_size_override),
     )
 
     out, _was_mono = sharpen_image_array(
