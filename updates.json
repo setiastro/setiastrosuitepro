@@ -1,9 +1,9 @@
 {
   "version": "1.11.3",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.11.3/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.11.3/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.11.3/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/v1.11.3/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/v1.11.3/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/v1.11.3/setiastrosuitepro_linux.tar.xz"
   },
   "notes": "Seti Astro Suite Pro V1.11.3 Updated FITS table plot functions V1.11.2 Torch runtime installation error fix.  Additional fits tables options. V1.11.1 Massive speed improvements in Cosmic Clarity sharpen and denoise engines V1.11.0 New Syqon tools, under Smart Tools, for all current and future Syqon tools. FITS table update, now all science data and tables will be displayed in SASpro. Updated Hardware Acceleration installation with improved hardening, clearer instructions, etc."
 }
