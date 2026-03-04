@@ -14,6 +14,7 @@ from PyQt6.QtCore import QElapsedTimer
 
 import sys
 import os
+import re
 
 if TYPE_CHECKING:
     pass
@@ -706,6 +707,12 @@ class ToolbarMixin:
         self.act_save.setShortcut(QKeySequence.StandardKey.SaveAs)
         self.act_save.setStatusTip(self.tr("Save the active image"))
         self.act_save.triggered.connect(self.save_active)
+
+        self.act_export_fits_bundle = QAction(self.tr("Export FITS Bundle..."), self)
+        self.act_export_fits_bundle.setStatusTip(
+            self.tr("Export multiple open image views into a single multi-HDU FITS file")
+        )
+        self.act_export_fits_bundle.triggered.connect(self.export_fits_bundle)
 
         self.act_exit = QAction(self.tr("&Exit"), self)
         self.act_exit.setShortcut(QKeySequence.StandardKey.Quit)  # Cmd+Q / Ctrl+Q

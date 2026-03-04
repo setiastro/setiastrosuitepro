@@ -4065,6 +4065,38 @@ class ColumnInfo:
     is_vector: bool = False
     vector_lengths: Optional[List[int]] = None
 
+def _describe_array_value(x: Any) -> Optional[str]:
+    """
+    Human-friendly summary for ndarray / array-like cell values that are
+    not appropriate to display inline as a long flattened vector.
+    """
+    if x is None:
+        return None
+
+    try:
+        arr = np.asarray(x)
+    except Exception:
+        return None
+
+    if arr.ndim == 0:
+        return None
+
+    shape_txt = "×".join(str(int(s)) for s in arr.shape)
+    dtype_txt = str(arr.dtype)
+
+    try:
+        arrf = np.asarray(arr, dtype=np.float64)
+        finite = arrf[np.isfinite(arrf)]
+        if finite.size > 0:
+            return (
+                f"array[{shape_txt}] {dtype_txt}  "
+                f"min={float(np.min(finite)):.6g}  "
+                f"max={float(np.max(finite)):.6g}"
+            )
+    except Exception:
+        pass
+
+    return f"array[{shape_txt}] {dtype_txt}"
 
 class TypedTableModel(QAbstractTableModel):
     """
@@ -4183,6 +4215,12 @@ class TypedTableModel(QAbstractTableModel):
             if ci.is_vector:
                 return _display_compact_value(v)
 
+            # even if the column is not classified as vector, array-like payloads
+            # should display as a readable summary instead of raw garbage
+            desc = _describe_array_value(v)
+            if desc is not None:
+                return desc
+
             f = _try_float(v)
             if f is not None and ci.is_numeric:
                 return f"{f:.10g}"
@@ -4207,6 +4245,12 @@ class TypedTableModel(QAbstractTableModel):
                             f"Max: {float(np.max(finite)):.6g}"
                         )
                     return f"{ci.name}\nVector length: {arr.size}"
+
+            # For multi-dimensional array payloads, show shape summary instead
+            desc = _describe_array_value(v)
+            if desc is not None:
+                return f"{ci.name}\n{desc}"
+
             return _safe_str(v)
 
         return None
@@ -4446,9 +4490,11 @@ def _to_1d_float_array(x: Any) -> Optional[np.ndarray]:
 
 def _preview_value(x: Any, max_items: int = 6) -> str:
     """
-    User-facing display string for cells, with compact previews for vectors.
+    User-facing display string for cells.
+    - true 1-D numeric vectors get a compact preview
+    - multi-dimensional arrays get a shape/dtype summary
     """
-    vec = _to_1d_float_array(x)
+    vec = _flatten_numeric_sequence(x)
     if vec is not None:
         finite = vec[np.isfinite(vec)]
         n = int(vec.size)
@@ -4463,6 +4509,10 @@ def _preview_value(x: Any, max_items: int = 6) -> str:
             return f"[{head_txt}]  (n={n})"
         return f"[{head_txt}]"
 
+    desc = _describe_array_value(x)
+    if desc is not None:
+        return desc
+
     return _safe_str(x)
 
 def _is_sequence_like(x: Any) -> bool:
@@ -4476,13 +4526,21 @@ def _is_sequence_like(x: Any) -> bool:
 
 def _flatten_numeric_sequence(x: Any) -> Optional[np.ndarray]:
     """
-    Return a 1-D float64 array if x is a numeric vector/array-like.
-    Returns None if x is not usable as a numeric sequence.
+    Return a 1-D float64 array only for TRUE 1-D numeric vector content.
+
+    Important:
+    - 2-D / 3-D ndarray payloads are NOT flattened anymore.
+    - This prevents calibration-array table cells (e.g. HDRLET/WCS correction
+      payloads) from being misclassified as plottable vectors.
     """
     if x is None:
         return None
 
-    # numpy arrays
+    # strings are never vectors
+    if isinstance(x, (str, bytes, bytearray)):
+        return None
+
+    # numpy arrays: only accept genuine 1-D
     if isinstance(x, np.ndarray):
         try:
             arr = np.asarray(x)
@@ -4492,10 +4550,12 @@ def _flatten_numeric_sequence(x: Any) -> Optional[np.ndarray]:
                     return None
                 return np.array([f], dtype=np.float64)
 
-            flat = np.ravel(arr)
-            out = np.full(flat.shape, np.nan, dtype=np.float64)
+            if arr.ndim != 1:
+                return None
+
+            out = np.full(arr.shape, np.nan, dtype=np.float64)
             any_ok = False
-            for i, v in enumerate(flat):
+            for i, v in enumerate(arr):
                 f = _try_float(v)
                 if f is not None:
                     out[i] = f
@@ -4504,9 +4564,20 @@ def _flatten_numeric_sequence(x: Any) -> Optional[np.ndarray]:
         except Exception:
             return None
 
-    # list / tuple
+    # list / tuple: only accept if elements themselves are not nested sequences
     if isinstance(x, (list, tuple)):
         try:
+            if len(x) == 0:
+                return None
+
+            # reject nested lists/tuples/arrays -> not a simple 1-D vector cell
+            for v in x:
+                if isinstance(v, np.ndarray):
+                    if np.asarray(v).ndim != 0:
+                        return None
+                elif isinstance(v, (list, tuple)) and not isinstance(v, (str, bytes, bytearray)):
+                    return None
+
             out = np.full((len(x),), np.nan, dtype=np.float64)
             any_ok = False
             for i, v in enumerate(x):
@@ -4518,7 +4589,7 @@ def _flatten_numeric_sequence(x: Any) -> Optional[np.ndarray]:
         except Exception:
             return None
 
-    # string that may contain a bracketed numeric vector
+    # stringified bracket vector: only simple 1-D numeric lists
     s = _safe_str(x).strip()
     if not s:
         return None
@@ -4529,6 +4600,7 @@ def _flatten_numeric_sequence(x: Any) -> Optional[np.ndarray]:
             parts = [p for p in body.split() if p]
             if not parts:
                 return None
+
             out = np.full((len(parts),), np.nan, dtype=np.float64)
             any_ok = False
             for i, p in enumerate(parts):
@@ -4546,16 +4618,23 @@ def _flatten_numeric_sequence(x: Any) -> Optional[np.ndarray]:
     return None
 
 def _sequence_numeric_fraction(values: List[Any]) -> float:
+    """
+    Fraction of cells that contain TRUE 1-D numeric vectors.
+    Multi-dimensional arrays no longer count as vector cells.
+    """
     if not values:
         return 0.0
+
     ok = 0
     for v in values:
         arr = _flatten_numeric_sequence(v)
         if arr is not None and arr.size > 0 and np.isfinite(arr).any():
             ok += 1
+
     return ok / max(1, len(values))
 
 def _display_compact_value(x: Any, max_items: int = 4) -> str:
+    # First: true 1-D numeric vectors
     arr = _flatten_numeric_sequence(x)
     if arr is not None and arr.size > 1:
         finite = arr[np.isfinite(arr)]
@@ -4564,6 +4643,12 @@ def _display_compact_value(x: Any, max_items: int = 4) -> str:
         if arr.size > max_items:
             preview_txt += ", ..."
         return f"array[{arr.size}]: {preview_txt}"
+
+    # Second: non-1D arrays / nested payloads -> summarize, do NOT flatten
+    desc = _describe_array_value(x)
+    if desc is not None:
+        return desc
+
     return _safe_str(x)
 
 def _normalize_unit_text(unit: str) -> str:
@@ -5428,7 +5513,19 @@ class TableSubWindow(QWidget):
         header_row.addWidget(self.export_btn)
 
         root.addLayout(header_row)
-
+        # optional table info / warning banner
+        self.info_lbl = QLabel(self)
+        self.info_lbl.setWordWrap(True)
+        self.info_lbl.setVisible(False)
+        self.info_lbl.setStyleSheet("""
+            QLabel {
+                background: rgba(255, 215, 0, 32);
+                border: 1px solid rgba(255, 215, 0, 96);
+                border-radius: 4px;
+                padding: 6px;
+            }
+        """)
+        root.addWidget(self.info_lbl)
         # --- main splitter: table + stats
         split = QSplitter(self)
         split.setOrientation(Qt.Orientation.Horizontal)
@@ -5483,7 +5580,7 @@ class TableSubWindow(QWidget):
             self.document.changed.connect(self._on_doc_changed)
         except Exception:
             pass
-
+        self._update_info_banner()
         # initial stats
         self._update_stats_from_selection()
 
@@ -5513,6 +5610,21 @@ class TableSubWindow(QWidget):
                 except Exception:
                     pass
 
+    def _update_info_banner(self):
+        md = getattr(self.document, "metadata", {}) or {}
+
+        notice = str(md.get("table_notice", "") or "").strip()
+        is_hdrlet = bool(md.get("is_hdrlet_table", False))
+
+        if not notice and is_hdrlet:
+            notice = (
+                "This table appears to be an HDRLET / WCS-correction reference table. "
+                "It is shown here so all FITS data remains accessible, but it is not a normal "
+                "spectrum-style vector table."
+            )
+
+        self.info_lbl.setVisible(bool(notice))
+        self.info_lbl.setText(notice if notice else "")
     # ---- search/filter
     def _on_search_changed(self, text: str):
         self._proxy.set_needle(text)
