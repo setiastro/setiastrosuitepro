@@ -29,7 +29,7 @@ from setiastro.saspro.resources import (
     flipvertical_path, rotateclockwise_path, rotatecounterclockwise_path,rotatearbitrary_path,
     rotate180_path, maskcreate_path, maskapply_path, maskremove_path,
     pixelmath_path, histogram_path, mosaic_path, rescale_path, staralign_path,
-    platesolve_path, psf_path, supernova_path, starregistration_path,
+    platesolve_path, psf_path, supernova_path, starregistration_path, csv_icon_path, collage_path,
     stacking_path, pedestal_icon_path, starspike_path, astrospike_path,
     signature_icon_path, livestacking_path, convoicon_path, spcc_icon_path,
     exoicon_path, peeker_icon, dse_icon_path, isophote_path, statstretch_path,
@@ -678,6 +678,10 @@ class ToolbarMixin:
         self.act_open.setStatusTip(self.tr("Open image(s)"))
         self.act_open.triggered.connect(self.open_files)
 
+        self.act_create_table = QAction(QIcon(collage_path), self.tr("Create Table..."), self)
+        self.act_create_table.setIconVisibleInMenu(True)
+        self.act_create_table.setStatusTip(self.tr("Create a new editable table document"))
+        self.act_create_table.triggered.connect(self.create_table)
 
         self.act_project_new  = QAction(self.tr("New Project"), self)
         self.act_project_save = QAction(self.tr("Save Project..."), self)

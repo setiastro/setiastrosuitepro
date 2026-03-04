@@ -422,7 +422,73 @@ class FileMixin:
 
         return entries, active_doc
 
+    def create_table(self):
+        from setiastro.saspro.subwindow import CreateTableDialog
+        import traceback
 
+        dlg = CreateTableDialog(self)
+        if dlg.exec() != dlg.DialogCode.Accepted:
+            return
+
+        specs = dlg.column_specs()
+        headers = [c.name for c in specs]
+        kinds = [c.kind for c in specs]
+        nrows = dlg.row_count()
+
+        rows = []
+        for _ in range(nrows):
+            row = []
+            for kind in kinds:
+                if kind == "bool":
+                    row.append(False)
+                else:
+                    row.append("")
+            rows.append(row)
+
+        meta = {
+            "doc_type": "table",
+            "editable": True,
+            "column_kinds": kinds,
+            "display_name": dlg.table_name(),
+            "original_format": "internal",
+        }
+
+        try:
+            doc = self.docman.create_table_document(
+                headers=headers,
+                rows=rows,
+                metadata=meta,
+                title=dlg.table_name(),
+            )
+        except Exception as e:
+            traceback.print_exc()
+            QMessageBox.critical(
+                self,
+                self.tr("Create Table"),
+                f"Failed to create table document:\n\n{type(e).__name__}: {e}",
+            )
+            return
+
+        self._log(
+            f"Created table: {dlg.table_name()} "
+            f"(rows={len(rows)}, cols={len(headers)}, editable=True)"
+        )
+
+        # Only spawn manually if your app really needs it.
+        # But DO NOT swallow errors.
+        try:
+            if hasattr(self, "_spawn_subwindow_for"):
+                self._spawn_subwindow_for(doc)
+        except Exception as e:
+            traceback.print_exc()
+            QMessageBox.critical(
+                self,
+                self.tr("Create Table"),
+                f"Table document was created, but the table view failed to open:\n\n"
+                f"{type(e).__name__}: {e}",
+            )
+            return
+    
     def export_fits_bundle(self):
         from setiastro.saspro.main_helpers import (
             best_doc_name as _best_doc_name,

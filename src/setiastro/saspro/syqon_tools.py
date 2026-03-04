@@ -673,6 +673,7 @@ class _SyQonDenoiseHubPage(QWidget):
         self.proc_thr = _SyQonPrismProcessThread(
             x_for_net=x_for_net,
             ckpt_path=ckpt_path,
+            model_kind=self.model_kind(),
             tile=int(self.spin_tile.value()),
             overlap=int(self.spin_overlap.value()),
             use_amp=bool(self.chk_amp.isChecked()),
@@ -714,6 +715,7 @@ class _SyQonPrismProcessThread(QThread):
         self,
         x_for_net: np.ndarray,
         ckpt_path: str,
+        model_kind: str,
         tile: int,
         overlap: int,
         use_amp: bool = False,
@@ -729,6 +731,7 @@ class _SyQonPrismProcessThread(QThread):
         ad = (amp_dtype or "fp16").lower().strip()
         self.amp_dtype = ad if ad in ("fp16", "bf16") else "fp16"
         self._cancel = False
+        self.model_kind = str(model_kind or "prism_mini")
 
     def cancel(self):
         self._cancel = True
@@ -750,6 +753,10 @@ class _SyQonPrismProcessThread(QThread):
                 pct = int(100.0 * float(done) / max(float(total), 1.0))
                 self.progress.emit(pct, str(stage or ""))
 
+            model_variant = "deep" if self.model_kind == "prism_deep" else "free"
+            info["model_kind"] = self.model_kind
+            info["model_variant_requested"] = model_variant
+
             denoised, engine_info = prism_denoise_rgb01(
                 self.x_for_net,
                 ckpt_path=self.ckpt_path,
@@ -759,6 +766,7 @@ class _SyQonPrismProcessThread(QThread):
                 prefer_dml=True,
                 use_amp=self.use_amp,
                 amp_dtype=self.amp_dtype,
+                model_variant=model_variant,
                 progress_cb=_prog,
             )
 

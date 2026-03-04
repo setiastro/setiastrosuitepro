@@ -10,6 +10,7 @@ import time
 import weakref
 from dataclasses import dataclass
 from typing import Any, List, Optional, Tuple
+import csv
 
 import numpy as np
 from PyQt6 import sip
@@ -42,6 +43,7 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import (
     QApplication,
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -62,6 +64,7 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QSpinBox,
     QSplitter,
+    QStyledItemDelegate,
     QTableView,
     QToolButton,
     QTabWidget,
@@ -4361,67 +4364,6 @@ class MultiColumnContainsFilterProxy(QSortFilterProxyModel):
 
 # ----------------------------- stats panel ----------------------------------
 
-class TableStatsPanel(QGroupBox):
-    def __init__(self, parent=None):
-        super().__init__("Stats", parent)
-        self.setMinimumWidth(260)
-        lay = QFormLayout(self)
-
-        self.lbl_rows = QLabel("—")
-        self.lbl_cols = QLabel("—")
-        self.lbl_sel_col = QLabel("—")
-        self.lbl_type = QLabel("—")
-        self.lbl_count = QLabel("—")
-        self.lbl_min = QLabel("—")
-        self.lbl_max = QLabel("—")
-        self.lbl_mean = QLabel("—")
-        self.lbl_median = QLabel("—")
-        self.lbl_std = QLabel("—")
-        self.lbl_unique = QLabel("—")
-
-        lay.addRow("Rows (visible):", self.lbl_rows)
-        lay.addRow("Columns:", self.lbl_cols)
-        lay.addRow("Selected col:", self.lbl_sel_col)
-        lay.addRow("Type:", self.lbl_type)
-        lay.addRow("Count:", self.lbl_count)
-        lay.addRow("Min:", self.lbl_min)
-        lay.addRow("Max:", self.lbl_max)
-        lay.addRow("Mean:", self.lbl_mean)
-        lay.addRow("Median:", self.lbl_median)
-        lay.addRow("Std:", self.lbl_std)
-        lay.addRow("Unique (sample):", self.lbl_unique)
-
-    def set_table_shape(self, nrows_visible: int, ncols: int):
-        self.lbl_rows.setText(str(nrows_visible))
-        self.lbl_cols.setText(str(ncols))
-
-    def set_selection_info(
-        self,
-        col_name: str,
-        is_numeric: bool,
-        stats: Optional[dict] = None,
-        unique_sample: Optional[int] = None,
-    ):
-        self.lbl_sel_col.setText(col_name or "—")
-        self.lbl_type.setText("numeric" if is_numeric else "text/mixed")
-
-        if is_numeric and stats and stats.get("count", 0) > 0:
-            self.lbl_count.setText(str(stats.get("count", "—")))
-            self.lbl_min.setText(f"{stats.get('min'):.10g}")
-            self.lbl_max.setText(f"{stats.get('max'):.10g}")
-            self.lbl_mean.setText(f"{stats.get('mean'):.10g}")
-            self.lbl_median.setText(f"{stats.get('median'):.10g}")
-            self.lbl_std.setText(f"{stats.get('std'):.10g}")
-        else:
-            self.lbl_count.setText("—")
-            self.lbl_min.setText("—")
-            self.lbl_max.setText("—")
-            self.lbl_mean.setText("—")
-            self.lbl_median.setText("—")
-            self.lbl_std.setText("—")
-
-        self.lbl_unique.setText("—" if unique_sample is None else str(unique_sample))
-
 def _is_array_like_1d(x: Any) -> bool:
     if x is None:
         return False
@@ -5473,15 +5415,421 @@ class PlotTableDialog(QDialog):
             self.fig.tight_layout()
             self.canvas.draw()
 # ----------------------------- TableSubWindow --------------------------------
+@dataclass
+class NewTableColumnSpec:
+    name: str
+    kind: str   # "text", "float", "int", "bool", "ra", "dec", "note"
+
+
+class _TypeComboDelegate(QStyledItemDelegate):
+    OPTIONS = ["text", "float", "int", "bool", "ra", "dec", "note"]
+
+    _TOOLTIPS = {
+        "text": "General text",
+        "float": "Decimal numbers",
+        "int": "Whole numbers",
+        "bool": "True / False values",
+        "ra": "Right Ascension",
+        "dec": "Declination",
+        "note": "Longer notes or comments",
+    }
+
+    def createEditor(self, parent, option, index):
+        combo = QComboBox(parent)
+        for opt in self.OPTIONS:
+            combo.addItem(opt)
+            i = combo.count() - 1
+            combo.setItemData(i, self._TOOLTIPS.get(opt, ""), Qt.ItemDataRole.ToolTipRole)
+        return combo
+
+    def setEditorData(self, editor, index):
+        val = str(index.model().data(index, Qt.ItemDataRole.EditRole) or "text")
+        i = editor.findText(val)
+        editor.setCurrentIndex(max(0, i))
+
+    def setModelData(self, editor, model, index):
+        model.setData(index, editor.currentText(), Qt.ItemDataRole.EditRole)
+
+
+class _NewTableColumnsModel(QAbstractTableModel):
+    HEADERS = ["Column Name", "Type"]
+    TYPE_OPTIONS = ["text", "float", "int", "bool", "ra", "dec", "note"]
+
+    def __init__(self, specs: list[NewTableColumnSpec], parent=None):
+        super().__init__(parent)
+        self._specs = list(specs)
+
+    def specs(self) -> list[NewTableColumnSpec]:
+        return [NewTableColumnSpec(s.name, s.kind) for s in self._specs]
+
+    def set_specs(self, specs: list[NewTableColumnSpec]):
+        self.beginResetModel()
+        self._specs = list(specs)
+        self.endResetModel()
+
+    def rowCount(self, parent=QModelIndex()):
+        return 0 if parent.isValid() else len(self._specs)
+
+    def columnCount(self, parent=QModelIndex()):
+        return 0 if parent.isValid() else 2
+
+    def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
+        if role != Qt.ItemDataRole.DisplayRole:
+            return None
+        if orientation == Qt.Orientation.Horizontal:
+            if 0 <= section < len(self.HEADERS):
+                return self.HEADERS[section]
+        return str(section + 1)
+
+    def flags(self, index):
+        if not index.isValid():
+            return Qt.ItemFlag.NoItemFlags
+        return (
+            Qt.ItemFlag.ItemIsEnabled
+            | Qt.ItemFlag.ItemIsSelectable
+            | Qt.ItemFlag.ItemIsEditable
+        )
+
+    def data(self, index, role=Qt.ItemDataRole.DisplayRole):
+        if not index.isValid():
+            return None
+
+        spec = self._specs[index.row()]
+
+        if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole):
+            if index.column() == 0:
+                return spec.name
+            elif index.column() == 1:
+                return spec.kind
+
+        return None
+
+    def setData(self, index, value, role=Qt.ItemDataRole.EditRole):
+        if not index.isValid() or role != Qt.ItemDataRole.EditRole:
+            return False
+
+        spec = self._specs[index.row()]
+        txt = str(value).strip()
+
+        if index.column() == 0:
+            spec.name = txt or spec.name
+        elif index.column() == 1:
+            if txt not in self.TYPE_OPTIONS:
+                return False
+            spec.kind = txt
+        else:
+            return False
+
+        self.dataChanged.emit(index, index, [Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole])
+        return True
+
+
+class CreateTableDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Create Table")
+        self.resize(560, 420)
+
+        root = QVBoxLayout(self)
+
+        form = QFormLayout()
+        self.edit_name = QLineEdit(self)
+        self.edit_name.setText("New Table")
+
+        self.sp_rows = QSpinBox(self)
+        self.sp_rows.setRange(0, 100000)
+        self.sp_rows.setValue(10)
+
+        self.sp_cols = QSpinBox(self)
+        self.sp_cols.setRange(1, 256)
+        self.sp_cols.setValue(3)
+
+        form.addRow("Table name:", self.edit_name)
+        form.addRow("Initial rows:", self.sp_rows)
+        form.addRow("Columns:", self.sp_cols)
+        root.addLayout(form)
+
+        root.addWidget(QLabel("Define columns:"))
+
+        self.col_table = QTableView(self)
+        root.addWidget(self.col_table, 1)
+
+        self._col_model = _NewTableColumnsModel(self._default_specs(self.sp_cols.value()), self)
+        self.col_table.setModel(self._col_model)
+        self.col_table.setItemDelegateForColumn(1, _TypeComboDelegate(self.col_table))
+        self.col_table.horizontalHeader().setStretchLastSection(True)
+        self.col_table.verticalHeader().setVisible(False)
+        self.col_table.resizeColumnsToContents()
+        help_lbl = QLabel(
+            "Column type guide:\n"
+            "• text  — general text\n"
+            "• note  — longer comments / notes\n"
+            "• int   — whole numbers\n"
+            "• float — decimal numbers\n"
+            "• bool  — true/false values\n"
+            "• ra    — Right Ascension\n"
+            "• dec   — Declination"
+        )
+        help_lbl.setWordWrap(True)
+        help_lbl.setStyleSheet("""
+            QLabel {
+                background: rgba(255, 255, 255, 18);
+                border: 1px solid rgba(255, 255, 255, 40);
+                border-radius: 4px;
+                padding: 6px;
+            }
+        """)
+        root.addWidget(help_lbl)
+        self.sp_cols.valueChanged.connect(self._resize_specs)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=self,
+        )
+        btns.accepted.connect(self._accept_if_valid)
+        btns.rejected.connect(self.reject)
+        root.addWidget(btns)
+
+    def _default_specs(self, n: int) -> list[NewTableColumnSpec]:
+        defaults = []
+        useful_names = [
+            ("Name", "text"),
+            ("RA", "ra"),
+            ("DEC", "dec"),
+            ("Pixel X", "float"),
+            ("Pixel Y", "float"),
+            ("Type", "text"),
+            ("Notes", "note"),
+        ]
+        for i in range(n):
+            if i < len(useful_names):
+                nm, kd = useful_names[i]
+            else:
+                nm, kd = (f"Column {i+1}", "text")
+            defaults.append(NewTableColumnSpec(nm, kd))
+        return defaults
+
+    def _resize_specs(self, n: int):
+        old = self._col_model.specs()
+        new_specs = []
+        for i in range(n):
+            if i < len(old):
+                new_specs.append(old[i])
+            else:
+                new_specs.append(NewTableColumnSpec(f"Column {i+1}", "text"))
+        self._col_model.set_specs(new_specs)
+        self.col_table.resizeColumnsToContents()
+
+    def _accept_if_valid(self):
+        name = self.table_name().strip()
+        if not name:
+            QMessageBox.information(self, "Create Table", "Please enter a table name.")
+            return
+
+        specs = self.column_specs()
+        if not specs:
+            QMessageBox.information(self, "Create Table", "Please define at least one column.")
+            return
+
+        bad = [c.name for c in specs if not str(c.name).strip()]
+        if bad:
+            QMessageBox.information(self, "Create Table", "All columns must have names.")
+            return
+
+        self.accept()
+
+    def table_name(self) -> str:
+        return self.edit_name.text().strip()
+
+    def row_count(self) -> int:
+        return int(self.sp_rows.value())
+
+    def column_specs(self) -> list[NewTableColumnSpec]:
+        return self._col_model.specs()
+
+
+class TableStatsPanel(QGroupBox):
+    def __init__(self, parent=None):
+        super().__init__("Stats", parent)
+        self.setMinimumWidth(260)
+
+        lay = QFormLayout(self)
+
+        self.lbl_rows = QLabel("—")
+        self.lbl_cols = QLabel("—")
+        self.lbl_sel_col = QLabel("—")
+        self.lbl_type = QLabel("—")
+        self.lbl_count = QLabel("—")
+        self.lbl_min = QLabel("—")
+        self.lbl_max = QLabel("—")
+        self.lbl_mean = QLabel("—")
+        self.lbl_median = QLabel("—")
+        self.lbl_std = QLabel("—")
+        self.lbl_unique = QLabel("—")
+
+        lay.addRow("Rows (visible):", self.lbl_rows)
+        lay.addRow("Columns:", self.lbl_cols)
+        lay.addRow("Selected col:", self.lbl_sel_col)
+        lay.addRow("Type:", self.lbl_type)
+        lay.addRow("Count:", self.lbl_count)
+        lay.addRow("Min:", self.lbl_min)
+        lay.addRow("Max:", self.lbl_max)
+        lay.addRow("Mean:", self.lbl_mean)
+        lay.addRow("Median:", self.lbl_median)
+        lay.addRow("Std:", self.lbl_std)
+        lay.addRow("Unique (sample):", self.lbl_unique)
+
+    def set_table_shape(self, nrows_visible: int, ncols: int):
+        self.lbl_rows.setText(str(nrows_visible))
+        self.lbl_cols.setText(str(ncols))
+
+    def set_selection_info(
+        self,
+        col_name: str,
+        is_numeric: bool,
+        stats: Optional[dict] = None,
+        unique_sample: Optional[int] = None,
+    ):
+        self.lbl_sel_col.setText(col_name or "—")
+        self.lbl_type.setText("numeric" if is_numeric else "text/mixed")
+
+        if is_numeric and stats and stats.get("count", 0) > 0:
+            self.lbl_count.setText(str(stats.get("count", "—")))
+            self.lbl_min.setText(f"{stats.get('min'):.10g}")
+            self.lbl_max.setText(f"{stats.get('max'):.10g}")
+            self.lbl_mean.setText(f"{stats.get('mean'):.10g}")
+            self.lbl_median.setText(f"{stats.get('median'):.10g}")
+            self.lbl_std.setText(f"{stats.get('std'):.10g}")
+        else:
+            self.lbl_count.setText("—")
+            self.lbl_min.setText("—")
+            self.lbl_max.setText("—")
+            self.lbl_mean.setText("—")
+            self.lbl_median.setText("—")
+            self.lbl_std.setText("—")
+
+        self.lbl_unique.setText("—" if unique_sample is None else str(unique_sample))
+
+
+class EditableTypedTableModel(TypedTableModel):
+    def __init__(self, rows: list, headers: list, column_kinds: Optional[list[str]] = None, parent=None):
+        self._column_kinds = list(column_kinds or [])
+        super().__init__(rows, headers, parent)
+
+        if len(self._column_kinds) < self._ncols:
+            self._column_kinds.extend(["text"] * (self._ncols - len(self._column_kinds)))
+
+    def flags(self, index: QModelIndex):
+        if not index.isValid():
+            return Qt.ItemFlag.NoItemFlags
+        return (
+            Qt.ItemFlag.ItemIsEnabled
+            | Qt.ItemFlag.ItemIsSelectable
+            | Qt.ItemFlag.ItemIsEditable
+        )
+
+    def setData(self, index: QModelIndex, value: Any, role: int = Qt.ItemDataRole.EditRole):
+        if not index.isValid() or role != Qt.ItemDataRole.EditRole:
+            return False
+
+        r = index.row()
+        c = index.column()
+
+        if not (0 <= r < self._nrows and 0 <= c < self._ncols):
+            return False
+
+        kind = self._column_kinds[c] if c < len(self._column_kinds) else "text"
+        parsed = self._coerce_value_for_kind(value, kind)
+        self._rows[r][c] = parsed
+
+        self._build_column_info()
+        self.dataChanged.emit(index, index, [Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole])
+        return True
+
+    def _coerce_value_for_kind(self, value: Any, kind: str):
+        txt = "" if value is None else str(value).strip()
+
+        if kind in ("text", "note", "ra", "dec"):
+            return txt
+
+        if kind == "float":
+            if txt == "":
+                return ""
+            try:
+                return float(txt)
+            except Exception:
+                return txt
+
+        if kind == "int":
+            if txt == "":
+                return ""
+            try:
+                return int(float(txt))
+            except Exception:
+                return txt
+
+        if kind == "bool":
+            t = txt.lower()
+            if t in ("1", "true", "yes", "y", "checked"):
+                return True
+            if t in ("0", "false", "no", "n", "unchecked"):
+                return False
+            return False if txt == "" else txt
+
+        return txt
+
+    def _default_value_for_kind(self, kind: str):
+        if kind == "bool":
+            return False
+        return ""
+
+    def insert_rows_at_end(self, count: int = 1):
+        count = max(1, int(count))
+        start = self._nrows
+        end = self._nrows + count - 1
+        self.beginInsertRows(QModelIndex(), start, end)
+        for _ in range(count):
+            self._rows.append([self._default_value_for_kind(k) for k in self._column_kinds[:self._ncols]])
+        self._nrows = len(self._rows)
+        self.endInsertRows()
+        self._build_column_info()
+
+    def remove_source_rows(self, rows_to_remove: list[int]):
+        if not rows_to_remove:
+            return
+        rows_sorted = sorted(set(r for r in rows_to_remove if 0 <= r < self._nrows), reverse=True)
+        for r in rows_sorted:
+            self.beginRemoveRows(QModelIndex(), r, r)
+            del self._rows[r]
+            self._nrows -= 1
+            self.endRemoveRows()
+        self._build_column_info()
+
+    def insert_column_at_end(self, name: str, kind: str = "text"):
+        pos = self._ncols
+        self.beginInsertColumns(QModelIndex(), pos, pos)
+        self._headers.append(str(name or f"Column {pos+1}"))
+        self._column_kinds.append(str(kind or "text"))
+        default_val = self._default_value_for_kind(kind)
+        for r in range(self._nrows):
+            self._rows[r].append(default_val)
+        self._ncols += 1
+        self.endInsertColumns()
+        self._build_column_info()
+
+    def column_kinds(self) -> list[str]:
+        return list(self._column_kinds)
+
 
 class TableSubWindow(QWidget):
     """
-    Enhanced table view for FITS/astropy tables:
+    Enhanced table view for FITS/astropy tables and editable internal tables:
       - Export CSV
       - Copy selected rows as CSV
       - Search/filter rows
-      - Stats panel (selected column + visible rows)
-      - Plot dialog (numeric columns; optional error bars)
+      - Stats panel
+      - Plot dialog
+      - Optional editing for internal tables
     """
     viewTitleChanged = pyqtSignal(object, str)
 
@@ -5489,6 +5837,13 @@ class TableSubWindow(QWidget):
         super().__init__(parent)
         self.document = table_document
         self._last_title_for_emit = None
+
+        md = getattr(self.document, "metadata", {}) or {}
+        self._editable = bool(md.get("editable", False))
+
+        self.btn_add_row = None
+        self.btn_del_row = None
+        self.btn_add_col = None
 
         root = QVBoxLayout(self)
 
@@ -5504,6 +5859,14 @@ class TableSubWindow(QWidget):
         self.search_edit.setMaximumWidth(360)
         header_row.addWidget(self.search_edit)
 
+        if self._editable:
+            self.btn_add_row = QPushButton(self.tr("Add Row"), self)
+            self.btn_del_row = QPushButton(self.tr("Delete Row(s)"), self)
+            self.btn_add_col = QPushButton(self.tr("Add Column"), self)
+            header_row.addWidget(self.btn_add_row)
+            header_row.addWidget(self.btn_del_row)
+            header_row.addWidget(self.btn_add_col)
+
         self.btn_plot = QPushButton(self.tr("Plot…"), self)
         self.btn_copy = QPushButton(self.tr("Copy Rows"), self)
         self.export_btn = QPushButton(self.tr("Export CSV…"), self)
@@ -5513,6 +5876,7 @@ class TableSubWindow(QWidget):
         header_row.addWidget(self.export_btn)
 
         root.addLayout(header_row)
+
         # optional table info / warning banner
         self.info_lbl = QLabel(self)
         self.info_lbl.setWordWrap(True)
@@ -5526,6 +5890,7 @@ class TableSubWindow(QWidget):
             }
         """)
         root.addWidget(self.info_lbl)
+
         # --- main splitter: table + stats
         split = QSplitter(self)
         split.setOrientation(Qt.Orientation.Horizontal)
@@ -5554,8 +5919,13 @@ class TableSubWindow(QWidget):
         # data/model
         rows = getattr(self.document, "rows", [])
         headers = getattr(self.document, "headers", [])
+        column_kinds = list(md.get("column_kinds", []))
 
-        self._src_model = TypedTableModel(rows, headers, self)
+        if self._editable:
+            self._src_model = EditableTypedTableModel(rows, headers, column_kinds=column_kinds, parent=self)
+        else:
+            self._src_model = TypedTableModel(rows, headers, self)
+
         self._proxy = MultiColumnContainsFilterProxy(self)
         self._proxy.setSourceModel(self._src_model)
 
@@ -5563,13 +5933,27 @@ class TableSubWindow(QWidget):
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.resizeColumnsToContents()
 
+        if self._editable:
+            self.table.setEditTriggers(
+                QAbstractItemView.EditTrigger.DoubleClicked
+                | QAbstractItemView.EditTrigger.EditKeyPressed
+                | QAbstractItemView.EditTrigger.SelectedClicked
+            )
+
         # connect signals
         self.export_btn.clicked.connect(self._export_csv)
         self.btn_copy.clicked.connect(self._copy_selected_rows_csv)
         self.btn_plot.clicked.connect(self._open_plot_dialog)
         self.search_edit.textChanged.connect(self._on_search_changed)
 
-        # selection -> stats
+        if self._editable:
+            if self.btn_add_row is not None:
+                self.btn_add_row.clicked.connect(self._add_row)
+            if self.btn_del_row is not None:
+                self.btn_del_row.clicked.connect(self._delete_selected_rows)
+            if self.btn_add_col is not None:
+                self.btn_add_col.clicked.connect(self._add_column)
+
         sel = self.table.selectionModel()
         if sel is not None:
             sel.selectionChanged.connect(self._update_stats_from_selection)
@@ -5580,14 +5964,15 @@ class TableSubWindow(QWidget):
             self.document.changed.connect(self._on_doc_changed)
         except Exception:
             pass
+
         self._update_info_banner()
-        # initial stats
         self._update_stats_from_selection()
 
     # ---- doc/title
     def _on_doc_changed(self):
         self.title_lbl.setText(self.document.display_name())
         self._sync_host_title()
+        self._update_info_banner()
 
     def _mdi_subwindow(self) -> QMdiSubWindow | None:
         w = self.parent()
@@ -5619,12 +6004,13 @@ class TableSubWindow(QWidget):
         if not notice and is_hdrlet:
             notice = (
                 "This table appears to be an HDRLET / WCS-correction reference table. "
-                "It is shown here so all FITS data remains accessible, but it is not a normal "
+                "It is shown so all FITS data remains accessible, but it is not a normal "
                 "spectrum-style vector table."
             )
 
         self.info_lbl.setVisible(bool(notice))
         self.info_lbl.setText(notice if notice else "")
+
     # ---- search/filter
     def _on_search_changed(self, text: str):
         self._proxy.set_needle(text)
@@ -5649,7 +6035,6 @@ class TableSubWindow(QWidget):
 
         ci = infos[col]
 
-        # visible source rows
         source_rows: List[int] = []
         for pr in range(self._proxy.rowCount()):
             sidx = self._proxy.mapToSource(self._proxy.index(pr, 0))
@@ -5657,7 +6042,6 @@ class TableSubWindow(QWidget):
             if sr >= 0:
                 source_rows.append(sr)
 
-        # numeric scalar OR numeric vector
         if ci.is_numeric:
             arr = self._src_model.vector_column_for_rows(col, source_rows)
             if arr is not None:
@@ -5671,7 +6055,6 @@ class TableSubWindow(QWidget):
             self.stats.set_selection_info(label, True, st, None)
             return
 
-        # text / mixed
         uniq = set()
         cap = 5000
         for pr in range(min(self._proxy.rowCount(), cap)):
@@ -5691,18 +6074,15 @@ class TableSubWindow(QWidget):
             QMessageBox.information(self, "Copy", "No rows selected.")
             return
 
-        # stable order
         proxy_rows = sorted({r.row() for r in rows})
         cols = self._src_model.columnCount()
         headers = [self._src_model.headerData(c, Qt.Orientation.Horizontal) for c in range(cols)]
         headers = [str(h) for h in headers]
 
-        # build CSV text
         out_lines = []
         out_lines.append(",".join([self._csv_escape(h) for h in headers]))
 
         for pr in proxy_rows:
-            # map proxy row -> source row
             sidx0 = self._proxy.mapToSource(self._proxy.index(pr, 0))
             sr = sidx0.row()
             row_vals = []
@@ -5714,9 +6094,83 @@ class TableSubWindow(QWidget):
         QGuiApplication.clipboard().setText(txt)
         QMessageBox.information(self, "Copy", f"Copied {len(proxy_rows)} rows to clipboard as CSV.")
 
+    def _persist_editable_table_back_to_document(self):
+        if not self._editable:
+            return
+
+        try:
+            self.document.rows = [list(r) for r in self._src_model._rows]
+            self.document.headers = list(self._src_model._headers)
+
+            md = dict(getattr(self.document, "metadata", {}) or {})
+            md["editable"] = True
+            if hasattr(self._src_model, "column_kinds"):
+                md["column_kinds"] = self._src_model.column_kinds()
+            self.document.metadata = md
+
+            try:
+                self.document.changed.emit()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _add_row(self):
+        if not self._editable:
+            return
+        self._src_model.insert_rows_at_end(1)
+        self._persist_editable_table_back_to_document()
+        self._update_stats_from_selection()
+
+    def _delete_selected_rows(self):
+        if not self._editable:
+            return
+
+        sel = self.table.selectionModel()
+        if sel is None:
+            return
+
+        proxy_rows = sorted({idx.row() for idx in sel.selectedRows()}, reverse=True)
+        if not proxy_rows:
+            QMessageBox.information(self, "Delete Rows", "No rows selected.")
+            return
+
+        source_rows = []
+        for pr in proxy_rows:
+            sidx = self._proxy.mapToSource(self._proxy.index(pr, 0))
+            if sidx.isValid():
+                source_rows.append(int(sidx.row()))
+
+        self._src_model.remove_source_rows(source_rows)
+        self._persist_editable_table_back_to_document()
+        self._update_stats_from_selection()
+
+    def _add_column(self):
+        if not self._editable:
+            return
+
+        name, ok = QInputDialog.getText(self, "Add Column", "Column name:")
+        if not ok or not str(name).strip():
+            return
+
+        kind, ok = QInputDialog.getItem(
+            self,
+            "Add Column",
+            "Column type:",
+            ["text", "float", "int", "bool", "ra", "dec", "note"],
+            0,
+            False,
+        )
+        if not ok:
+            return
+
+        self._src_model.insert_column_at_end(str(name).strip(), str(kind))
+        self._persist_editable_table_back_to_document()
+        self.table.resizeColumnsToContents()
+        self._update_stats_from_selection()
+
     @staticmethod
     def _csv_escape(s: str) -> str:
-        # minimal CSV quoting
         if s is None:
             return ""
         s = str(s)
@@ -5733,9 +6187,8 @@ class TableSubWindow(QWidget):
         dlg.raise_()
         dlg.activateWindow()
 
-    # ---- export csv (your original logic, but respects current filtered view)
+    # ---- export csv
     def _export_csv(self):
-        # Prefer already-exported CSV from metadata when available, otherwise prompt
         existing = getattr(self.document, "metadata", {}).get("table_csv")
         if existing and os.path.exists(existing):
             dst, ok = QFileDialog.getSaveFileName(
@@ -5762,6 +6215,8 @@ class TableSubWindow(QWidget):
             return
 
         try:
+            import csv
+
             cols = self._src_model.columnCount()
             hdrs = [self._src_model.headerData(c, Qt.Orientation.Horizontal) for c in range(cols)]
             hdrs = [str(h) for h in hdrs]
@@ -5770,7 +6225,6 @@ class TableSubWindow(QWidget):
                 w = csv.writer(f)
                 w.writerow(hdrs)
 
-                # export visible rows ONLY (respects filter)
                 for pr in range(self._proxy.rowCount()):
                     sidx0 = self._proxy.mapToSource(self._proxy.index(pr, 0))
                     sr = sidx0.row()

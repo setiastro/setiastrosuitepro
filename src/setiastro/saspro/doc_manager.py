@@ -2563,6 +2563,29 @@ class DocManager(QObject):
 
         raise ValueError(f"Cannot determine channel layout for FITS bundle export: {a.shape}")
 
+    def create_table_document(self, headers, rows, metadata=None, title="New Table"):
+        meta = dict(metadata or {})
+        meta.setdefault("doc_type", "table")
+        meta.setdefault("editable", True)
+        meta.setdefault("display_name", title)
+        meta.setdefault("original_format", "internal")
+
+        doc = TableDocument(
+            rows=[list(r) for r in (rows or [])],
+            headers=list(headers or []),
+            metadata=meta,
+            parent=self.parent(),
+        )
+
+        self._register_doc(doc)
+
+        try:
+            doc.changed.emit()
+        except Exception:
+            pass
+
+        return doc
+
     def save_fits_bundle(
         self,
         entries: list[dict],
