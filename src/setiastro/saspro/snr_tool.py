@@ -28,6 +28,8 @@ from astroquery.simbad import Simbad
 from astropy.wcs.wcs import NoConvergence
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
+import matplotlib as mpl
+from matplotlib.text import Text
 # IMPORTANT: use the centralized one (adjust import path to where you moved it)
 from setiastro.saspro.sfcc import pickles_match_for_simbad
 
@@ -45,6 +47,41 @@ import traceback
 
 _EPS = 1e-12
 
+def _force_matplotlib_no_tex():
+    """
+    Hard-disable TeX usage for this module/dialog even if some other part of the
+    app enabled it globally.
+    """
+    try:
+        mpl.rcParams["text.usetex"] = False
+    except Exception:
+        pass
+
+    # These are optional, but help avoid weird text parsing edge cases.
+    try:
+        mpl.rcParams["axes.unicode_minus"] = False
+    except Exception:
+        pass
+
+    try:
+        mpl.rcParams["mathtext.default"] = "regular"
+    except Exception:
+        pass
+
+
+def _force_no_tex_on_figure(fig: Figure):
+    """
+    Force every text object in a figure to avoid LaTeX rendering.
+    Useful if a global style/theme changed rcParams after figure creation.
+    """
+    try:
+        for obj in fig.findobj(match=lambda x: isinstance(x, Text)):
+            try:
+                obj.set_usetex(False)
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 def _to_float01_native(img: np.ndarray) -> np.ndarray:
     """
@@ -212,6 +249,7 @@ class SNRToolDialog(QDialog):
         self.tabs_plots = QTabWidget()
 
         # --- Tab 1: Distributions ---
+        _force_matplotlib_no_tex()
         self.fig_dist = Figure(figsize=(4.0, 3.0))
         self.canvas_dist = FigureCanvas(self.fig_dist)
         dist_tab = QWidget()
@@ -386,6 +424,7 @@ class SNRToolDialog(QDialog):
 
 
     def _plot_snr_bars(self, ch_names: list[str], snr_vals: list[float], snr_db_vals: list[float]):
+        _force_matplotlib_no_tex()
         self.fig_snr.clear()
         ax = self.fig_snr.add_subplot(111)
 
@@ -428,6 +467,8 @@ class SNRToolDialog(QDialog):
 
         # Legend across both axes
         ax.legend([b1, b2], ["SNR", "dB"], loc="best")
+
+        _force_no_tex_on_figure(self.fig_snr)
 
         self.canvas_snr.draw_idle()
 
@@ -544,6 +585,7 @@ class SNRToolDialog(QDialog):
 
 
     def _refresh_distribution_plot(self):
+        _force_matplotlib_no_tex()
         """Redraw distribution plot from cached last calculation."""
         if not self._last_calc:
             # show empty
@@ -552,6 +594,7 @@ class SNRToolDialog(QDialog):
             ax.set_title("Object vs Background (run Calculate)")
             ax.set_xticks([])
             ax.set_yticks([])
+            _force_no_tex_on_figure(self.fig_dist)
             self.canvas_dist.draw_idle()
             return
 
@@ -595,7 +638,7 @@ class SNRToolDialog(QDialog):
         ax.set_ylabel("Density")
         ax.grid(True, axis="y", alpha=0.25)
         ax.legend(loc="best")
-
+        _force_no_tex_on_figure(self.fig_dist)
         self.canvas_dist.draw_idle()
 
     def resizeEvent(self, e):
