@@ -113,6 +113,55 @@ class DenoiseModels:
 _MODELS_CACHE: dict[tuple[str, str], DenoiseModels] = {}
 _BACKEND_TAG = "cc_denoise_ai4_nafnet"
 
+def _is_device_lost_error(err: Exception) -> bool:
+    s = f"{type(err).__name__}: {err}".lower()
+    needles = [
+        "887a0005",
+        "getdeviceremovedreason",
+        "device removed",
+        "device lost",
+        "gpu-apparaat",
+        "onderbroken",
+        "dmlexecutionprovider",
+        "executionprovider.cpp",
+    ]
+    return any(n in s for n in needles)
+
+
+def _iter_batch_sizes(initial: int):
+    bs = max(1, int(initial))
+    yielded = set()
+    while bs >= 1:
+        if bs not in yielded:
+            yielded.add(bs)
+            yield bs
+        if bs == 1:
+            break
+        bs = max(1, bs // 2)
+
+
+def _is_recoverable_batch_error(err: Exception) -> bool:
+    msg = f"{type(err).__name__}: {err}".lower()
+    needles = [
+        "out of memory",
+        "cuda",
+        "cudnn",
+        "cublas",
+        "directml",
+        "dml",
+        "mps",
+        "allocation",
+        "alloc",
+        "resource",
+        "execution provider",
+        "insufficient memory",
+        "bad allocation",
+        "memory",
+        "887a0005",
+        "device removed",
+        "device lost",
+    ]
+    return any(n in msg for n in needles)
 
 def _pad2d_to_multiple(x: np.ndarray, mult: int = 16, mode: str = "reflect") -> tuple[np.ndarray, int, int]:
     """Pad 2D array on bottom/right so H,W are multiples of `mult`."""
@@ -1256,20 +1305,19 @@ def denoise_rgb01(
     temp_stretch: bool = False,
     target_median: float = 0.25,
     progress_cb=None,
-    execution_mode: str = "auto",      # NEW
-    batch_size_override: int = 0,      # NEW
+    execution_mode: str = "auto",
+    batch_size_override: int = 0,
 ) -> np.ndarray:
+
+    # Compatibility mode = safest possible run
+    if execution_mode == "compatibility":
+        batch_size_override = 1
+        chunk_size = min(int(chunk_size), 256)
 
     models = load_models(use_gpu=use_gpu, lite=lite)
     tm = float(np.clip(target_median, 0.01, 0.50))
-    # --- NEW: log what we actually loaded ---
+
     def _log(msg: str):
-        if progress_cb is not None:
-            try:
-                # progress_cb is (done,total)->bool; many callers ignore the numbers
-                progress_cb(0, 0)  # harmless "ping" if someone uses it
-            except Exception:
-                pass
         try:
             print(msg)
         except Exception:
@@ -1286,154 +1334,199 @@ def denoise_rgb01(
         )
     except Exception:
         pass
-    img_rgb01 = np.asarray(img_rgb01, np.float32)
 
-    def _is_triplicated_mono(rgb: np.ndarray, eps: float = 1e-7) -> bool:
-        if rgb.ndim != 3 or rgb.shape[2] != 3:
-            return False
-        r = rgb[..., 0]; g = rgb[..., 1]; b = rgb[..., 2]
-        return (np.max(np.abs(r - g)) <= eps) and (np.max(np.abs(r - b)) <= eps)
+    def _run_with(active_models) -> np.ndarray:
+        arr = np.asarray(img_rgb01, np.float32)
 
-    # Detect "real mono" even if caller triplicated it
-    mono_input = (img_rgb01.ndim == 2) or (img_rgb01.ndim == 3 and img_rgb01.shape[2] == 1) or _is_triplicated_mono(img_rgb01)
+        def _is_triplicated_mono(rgb: np.ndarray, eps: float = 1e-7) -> bool:
+            if rgb.ndim != 3 or rgb.shape[2] != 3:
+                return False
+            r = rgb[..., 0]; g = rgb[..., 1]; b = rgb[..., 2]
+            return (np.max(np.abs(r - g)) <= eps) and (np.max(np.abs(r - b)) <= eps)
 
-    if mono_input:
-        # collapse to 2D
-        if img_rgb01.ndim == 2:
-            mono = img_rgb01
-        else:
-            mono = img_rgb01[..., 0]
+        def _tile_count_2d(h: int, w: int) -> int:
+            return max(1, len(_tile_grid_and_pad((h, w), chunk_size, overlap)[2]))
 
-        # --- keep your stretch logic but in 2D ---
-        if bool(temp_stretch):
-            stretch_needed = True
-        else:
-            stretch_needed = (np.median(mono - np.min(mono)) < 0.05)
+        def _make_subprogress(offset_units: int, span_units: int, total_units: int):
+            if progress_cb is None:
+                return None
 
-        if stretch_needed:
-            mono_s, original_min, original_meds = stretch_image(mono, target_median=tm)
-        else:
-            mono_s = mono.astype(np.float32, copy=False)
-            original_min = float(np.min(mono))
-            original_meds = [float(np.median(mono_s))]
+            def _cb(done: int, total: int):
+                try:
+                    total_local = max(1, int(total) if total else int(span_units))
+                    done_local = max(0, min(int(done), total_local))
 
+                    mapped = int(round(offset_units + (span_units * (done_local / total_local))))
+                    mapped = max(0, min(int(total_units), mapped))
+                    return progress_cb(mapped, total_units)
+                except Exception:
+                    return True
 
-        mono_s = add_border(mono_s, border_size=16)
+            return _cb
 
-        den_m = denoise_channel(
-            mono_s,
-            models,
-            which="mono",
-            chunk_size=chunk_size,
-            overlap=overlap,
-            progress_cb=progress_cb,
-            execution_mode=execution_mode,
-            batch_size_override=batch_size_override,
+        mono_input = (
+            (arr.ndim == 2)
+            or (arr.ndim == 3 and arr.shape[2] == 1)
+            or _is_triplicated_mono(arr)
         )
-        mono_out = blend_images(mono_s, den_m, denoise_strength)
-        mono_out = np.clip(mono_out, 0.0, 1.0)
-        if stretch_needed:
-            mono_out = unstretch_image(mono_out, original_meds, original_min, target_median=tm)
-            mn = float(np.min(mono_out))
-            mx = float(np.max(mono_out))
-            if mn < -1e-3:
-                print("UNSTRETCH produced negatives:", mn, mx)            
 
-        mono_out = remove_border(mono_out, border_size=16)
-        mono_out = np.clip(mono_out, 0.0, 1.0).astype(np.float32, copy=False)
+        if mono_input:
+            mono = arr if arr.ndim == 2 else arr[..., 0]
 
-        # replicate back to RGB for downstream pipeline consistency
-        return np.stack([mono_out, mono_out, mono_out], axis=-1)
+            if bool(temp_stretch):
+                stretch_needed = True
+            else:
+                stretch_needed = (np.median(mono - np.min(mono)) < 0.05)
 
+            if stretch_needed:
+                mono_s, original_min, original_meds = stretch_image(mono, target_median=tm)
+            else:
+                mono_s = mono.astype(np.float32, copy=False)
+                original_min = float(np.min(mono))
+                original_meds = [float(np.median(mono_s))]
 
-    if bool(temp_stretch):
-        stretch_needed = True
-    else:
-        stretch_needed = (np.median(img_rgb01 - np.min(img_rgb01)) < 0.05)
+            mono_s = add_border(mono_s, border_size=16)
 
-    if stretch_needed:
-        stretched_core, original_min, original_medians = stretch_image(img_rgb01, target_median=tm)
-    else:
-        stretched_core = img_rgb01.astype(np.float32, copy=False)
-        original_min = float(np.min(img_rgb01))
-        original_medians = [float(np.median(img_rgb01[..., c])) for c in range(3)]
+            total_units = _tile_count_2d(*mono_s.shape[:2])
+            if progress_cb is not None:
+                progress_cb(0, total_units)
 
-
-    stretched = add_border(stretched_core, border_size=16)
-
-    # Process
-    if separate_channels or denoise_mode == "separate":
-        out_ch = []
-        for c in range(3):
-            dch = denoise_channel(
-                stretched[..., c],
-                models,
+            den_m = denoise_channel(
+                mono_s,
+                active_models,
                 which="mono",
                 chunk_size=chunk_size,
                 overlap=overlap,
-                progress_cb=progress_cb,
+                progress_cb=_make_subprogress(0, total_units, total_units),
                 execution_mode=execution_mode,
                 batch_size_override=batch_size_override,
             )
-            out_ch.append(blend_images(stretched[..., c], dch, denoise_strength))
-        den = np.stack(out_ch, axis=-1)
+            mono_out = blend_images(mono_s, den_m, denoise_strength)
+            mono_out = np.clip(mono_out, 0.0, 1.0)
 
-    elif denoise_mode == "luminance":
-        y, cb, cr = extract_luminance(stretched)
-        den_y = denoise_channel(
-            y,
-            models,
-            which="mono",
-            chunk_size=chunk_size,
-            overlap=overlap,
-            progress_cb=progress_cb,
-            execution_mode=execution_mode,
-            batch_size_override=batch_size_override,
-        )
-        y2 = blend_images(y, den_y, denoise_strength)
-        den = merge_luminance(y2, cb, cr)
+            if stretch_needed:
+                mono_out = unstretch_image(mono_out, original_meds, original_min, target_median=tm)
 
-    else:
-        # full: L via MONO NN, color via COLOR NN (no guided chroma)
-        y, cb, cr = extract_luminance(stretched)
+            mono_out = remove_border(mono_out, border_size=16)
+            mono_out = np.clip(mono_out, 0.0, 1.0).astype(np.float32, copy=False)
 
-        # 1) denoise luminance with mono model
-        den_y = denoise_channel(
-            y,
-            models,
-            which="mono",
-            chunk_size=chunk_size,
-            overlap=overlap,
-            progress_cb=progress_cb,
-            execution_mode=execution_mode,
-            batch_size_override=batch_size_override,
-        )
-        y2 = blend_images(y, den_y, denoise_strength)
+            if progress_cb is not None:
+                progress_cb(total_units, total_units)
 
-        # 2) denoise RGB with color model, then use it only for chroma (Cb/Cr)
-        den_rgb = denoise_rgb_with_color_model(
-            stretched,
-            models,
-            chunk_size=chunk_size,
-            overlap=overlap,
-            progress_cb=progress_cb,
-            execution_mode=execution_mode,
-            batch_size_override=batch_size_override,
-        )
+            return np.stack([mono_out, mono_out, mono_out], axis=-1)
 
-        # Color slider controls how much we take chroma from den_rgb vs original
-        cs = denoise_strength if color_denoise_strength is None else float(color_denoise_strength)
-        cs = float(np.clip(cs, 0.0, 1.0))
+        if bool(temp_stretch):
+            stretch_needed = True
+        else:
+            stretch_needed = (np.median(arr - np.min(arr)) < 0.05)
 
-        _y_d, cb_d, cr_d = extract_luminance(den_rgb)  # ignore _y_d; we already did luminance via mono NN
-        cb2 = (1.0 - cs) * cb + cs * cb_d
-        cr2 = (1.0 - cs) * cr + cs * cr_d
+        if stretch_needed:
+            stretched_core, original_min, original_medians = stretch_image(arr, target_median=tm)
+        else:
+            stretched_core = arr.astype(np.float32, copy=False)
+            original_min = float(np.min(arr))
+            original_medians = [float(np.median(arr[..., c])) for c in range(3)]
 
-        den = merge_luminance(y2, cb2, cr2)
+        stretched = add_border(stretched_core, border_size=16)
+        tile_units = _tile_count_2d(stretched.shape[0], stretched.shape[1])
 
-    den = np.clip(den, 0.0, 1.0)
-    if stretch_needed:
-        den = unstretch_image(den, original_medians, original_min, target_median=tm)
+        if separate_channels or denoise_mode == "separate":
+            total_units = tile_units * 3
+            if progress_cb is not None:
+                progress_cb(0, total_units)
 
-    den = remove_border(den, border_size=16)
-    return np.clip(den, 0.0, 1.0).astype(np.float32, copy=False)
+            out_ch = []
+            for c in range(3):
+                dch = denoise_channel(
+                    stretched[..., c],
+                    active_models,
+                    which="mono",
+                    chunk_size=chunk_size,
+                    overlap=overlap,
+                    progress_cb=_make_subprogress(c * tile_units, tile_units, total_units),
+                    execution_mode=execution_mode,
+                    batch_size_override=batch_size_override,
+                )
+                out_ch.append(blend_images(stretched[..., c], dch, denoise_strength))
+
+            den = np.stack(out_ch, axis=-1)
+
+        elif denoise_mode == "luminance":
+            total_units = tile_units
+            if progress_cb is not None:
+                progress_cb(0, total_units)
+
+            y, cb, cr = extract_luminance(stretched)
+            den_y = denoise_channel(
+                y,
+                active_models,
+                which="mono",
+                chunk_size=chunk_size,
+                overlap=overlap,
+                progress_cb=_make_subprogress(0, tile_units, total_units),
+                execution_mode=execution_mode,
+                batch_size_override=batch_size_override,
+            )
+            y2 = blend_images(y, den_y, denoise_strength)
+            den = merge_luminance(y2, cb, cr)
+
+        else:
+            # full mode = luminance pass + color pass
+            total_units = tile_units * 2
+            if progress_cb is not None:
+                progress_cb(0, total_units)
+
+            y, cb, cr = extract_luminance(stretched)
+
+            den_y = denoise_channel(
+                y,
+                active_models,
+                which="mono",
+                chunk_size=chunk_size,
+                overlap=overlap,
+                progress_cb=_make_subprogress(0, tile_units, total_units),
+                execution_mode=execution_mode,
+                batch_size_override=batch_size_override,
+            )
+            y2 = blend_images(y, den_y, denoise_strength)
+
+            den_rgb = denoise_rgb_with_color_model(
+                stretched,
+                active_models,
+                chunk_size=chunk_size,
+                overlap=overlap,
+                progress_cb=_make_subprogress(tile_units, tile_units, total_units),
+                execution_mode=execution_mode,
+                batch_size_override=batch_size_override,
+            )
+
+            cs = denoise_strength if color_denoise_strength is None else float(color_denoise_strength)
+            cs = float(np.clip(cs, 0.0, 1.0))
+
+            _y_d, cb_d, cr_d = extract_luminance(den_rgb)
+            cb2 = (1.0 - cs) * cb + cs * cb_d
+            cr2 = (1.0 - cs) * cr + cs * cr_d
+
+            den = merge_luminance(y2, cb2, cr2)
+
+        den = np.clip(den, 0.0, 1.0)
+        if stretch_needed:
+            den = unstretch_image(den, original_medians, original_min, target_median=tm)
+
+        den = remove_border(den, border_size=16)
+        den = np.clip(den, 0.0, 1.0).astype(np.float32, copy=False)
+
+        if progress_cb is not None:
+            progress_cb(total_units, total_units)
+
+        return den
+
+    try:
+        return _run_with(models)
+    except Exception as e:
+        dev = getattr(models.device, "type", None) or str(models.device)
+        if use_gpu and str(dev).lower() != "cpu" and _is_device_lost_error(e):
+            _log(f"[CC Denoise] GPU device lost on backend={dev}; retrying on CPU. {type(e).__name__}: {e}")
+            cpu_models = load_models(use_gpu=False, lite=lite)
+            return _run_with(cpu_models)
+        raise
