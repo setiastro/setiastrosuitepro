@@ -14,6 +14,7 @@ from PyQt6.QtCore import QElapsedTimer
 
 import sys
 import os
+import re
 
 if TYPE_CHECKING:
     pass
@@ -28,7 +29,7 @@ from setiastro.saspro.resources import (
     flipvertical_path, rotateclockwise_path, rotatecounterclockwise_path,rotatearbitrary_path,
     rotate180_path, maskcreate_path, maskapply_path, maskremove_path,
     pixelmath_path, histogram_path, mosaic_path, rescale_path, staralign_path,
-    platesolve_path, psf_path, supernova_path, starregistration_path,
+    platesolve_path, psf_path, supernova_path, starregistration_path, csv_icon_path, collage_path,
     stacking_path, pedestal_icon_path, starspike_path, astrospike_path,
     signature_icon_path, livestacking_path, convoicon_path, spcc_icon_path,
     exoicon_path, peeker_icon, dse_icon_path, isophote_path, statstretch_path,
@@ -677,6 +678,10 @@ class ToolbarMixin:
         self.act_open.setStatusTip(self.tr("Open image(s)"))
         self.act_open.triggered.connect(self.open_files)
 
+        self.act_create_table = QAction(QIcon(collage_path), self.tr("Create Table..."), self)
+        self.act_create_table.setIconVisibleInMenu(True)
+        self.act_create_table.setStatusTip(self.tr("Create a new editable table document"))
+        self.act_create_table.triggered.connect(self.create_table)
 
         self.act_project_new  = QAction(self.tr("New Project"), self)
         self.act_project_save = QAction(self.tr("Save Project..."), self)
@@ -706,6 +711,12 @@ class ToolbarMixin:
         self.act_save.setShortcut(QKeySequence.StandardKey.SaveAs)
         self.act_save.setStatusTip(self.tr("Save the active image"))
         self.act_save.triggered.connect(self.save_active)
+
+        self.act_export_fits_bundle = QAction(self.tr("Export FITS Bundle..."), self)
+        self.act_export_fits_bundle.setStatusTip(
+            self.tr("Export multiple open image views into a single multi-HDU FITS file")
+        )
+        self.act_export_fits_bundle.triggered.connect(self.export_fits_bundle)
 
         self.act_exit = QAction(self.tr("&Exit"), self)
         self.act_exit.setShortcut(QKeySequence.StandardKey.Quit)  # Cmd+Q / Ctrl+Q
@@ -887,8 +898,8 @@ class ToolbarMixin:
         self.act_ghs.setIconVisibleInMenu(True)
         self.act_ghs.triggered.connect(self._open_hyperbolic)
 
-        self.act_abe = QAction(QIcon(abeicon_path), self.tr("ABE..."), self)
-        self.act_abe.setStatusTip(self.tr("Automatic Background Extraction"))
+        self.act_abe = QAction(QIcon(abeicon_path), self.tr("ADBE..."), self)
+        self.act_abe.setStatusTip(self.tr("Automatic (Dynamic) Background Extraction"))
         self.act_abe.setIconVisibleInMenu(True)
         self.act_abe.triggered.connect(self._open_abe_tool)
 

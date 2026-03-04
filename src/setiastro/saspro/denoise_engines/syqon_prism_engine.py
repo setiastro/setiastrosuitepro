@@ -11,6 +11,21 @@ ProgressCB = Callable[[int, int, str], None]
 _SYQON_PRISM_SESSION = None
 _SYQON_PRISM_CKPT = None
 
+def _infer_nafnet_variant_from_sd(sd: dict) -> str:
+    keys = set(sd.keys())
+
+    # Prism Deep markers
+    if any(k.startswith("skip_convs.") for k in keys):
+        return "deep"
+    if any(".ca.fc." in k for k in keys):
+        return "deep"
+
+    # Prism Free markers
+    if any(".sca." in k for k in keys):
+        return "free"
+
+    # Safe default for older/current behavior
+    return "free"
 
 def _infer_device(torch, *, prefer_cuda: bool = True, prefer_dml: bool = True):
     if prefer_cuda and getattr(torch, "cuda", None) and torch.cuda.is_available():
@@ -66,7 +81,10 @@ def _load_state_dict(torch, ckpt_path: str):
             return ckpt["model"], meta
 
         if any(
-            k.startswith(("intro.", "ending.", "encoders.", "downs.", "middle.", "decoders.", "ups."))
+            k.startswith((
+                "intro.", "ending.", "encoders.", "downs.", "middle.",
+                "decoders.", "ups.", "skip_convs."
+            ))
             for k in ckpt.keys()
         ):
             return ckpt, load_meta
@@ -104,6 +122,7 @@ def load_prism_model(
     *,
     use_gpu: bool,
     prefer_dml: bool,
+    model_variant: str | None = None,
 ):
     from setiastro.saspro.runtime_torch import import_torch
     from setiastro.saspro.syqon_prism_model.model import create_model
@@ -118,7 +137,15 @@ def load_prism_model(
     sd, meta = _load_state_dict(torch, ckpt_path)
     base_ch, depth = _infer_nafnet_cfg_from_sd(sd)
 
-    model = create_model(base_ch=base_ch, depth=depth, use_sigmoid=False)
+    inferred_variant = _infer_nafnet_variant_from_sd(sd)
+    variant = str(model_variant or inferred_variant).strip().lower()
+
+    model = create_model(
+        base_ch=base_ch,
+        depth=depth,
+        use_sigmoid=False,
+        variant=variant,
+    )
     model.load_state_dict(sd, strict=False)
     model.eval()
 
@@ -128,6 +155,8 @@ def load_prism_model(
     info = {
         "base_ch": base_ch,
         "depth": depth,
+        "variant": variant,
+        "variant_inferred": inferred_variant,
         "device": str(device),
         "torch_version": getattr(torch, "__version__", None),
         "torch_file": getattr(torch, "__file__", None),
@@ -201,6 +230,7 @@ def prism_denoise_rgb01(
     prefer_dml: bool = True,
     use_amp: bool = False,
     amp_dtype: str = "fp16",
+    model_variant: str | None = None,
     progress_cb: Optional[Callable[[int, int, str], None]] = None,
     tile_cb=None,
 ):
@@ -223,6 +253,7 @@ def prism_denoise_rgb01(
         ckpt_path,
         use_gpu=use_gpu,
         prefer_dml=prefer_dml,
+        model_variant=model_variant,
     )
 
     info = dict(info or {})

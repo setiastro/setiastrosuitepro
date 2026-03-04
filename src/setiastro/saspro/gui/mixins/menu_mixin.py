@@ -98,8 +98,10 @@ class MenuMixin:
         # File
         m_file = mb.addMenu(self.tr("&File"))
         m_file.addAction(self.act_open)
+        m_file.addAction(self.act_create_table)
         m_file.addSeparator()
         m_file.addAction(self.act_save)
+        m_file.addAction(self.act_export_fits_bundle)
         m_file.addAction(self.act_checkpoint_save) 
         m_file.addSeparator()
         m_file.addAction(self.act_clear_views) 

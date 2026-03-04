@@ -9,11 +9,120 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional, List, Tuple
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QFileDialog, QMessageBox, QProgressDialog, QApplication
+from PyQt6.QtWidgets import (
+    QFileDialog, QMessageBox, QProgressDialog, QApplication,
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
+    QPushButton, QDialogButtonBox
+)
 
 if TYPE_CHECKING:
     pass
 
+from typing import Sequence
+
+
+
+class FitsBundleExportDialog(QDialog):
+    """
+    Lets the user choose which open image/table views to include in a bundled FITS export.
+    Each row is checkable. Checked items will be written as HDUs.
+    """
+
+    def __init__(self, parent, entries: Sequence[dict], active_doc=None):
+        super().__init__(parent)
+        self.setWindowTitle("Export Bundled FITS")
+        self.resize(620, 460)
+
+        self._entries = list(entries)
+        self._active_doc = active_doc
+
+        lay = QVBoxLayout(self)
+
+        info = QLabel(
+            "Choose which open views to include in the FITS bundle.\n"
+            "Checked items will be written as HDUs.\n"
+            "Image views become image HDUs. Table views become FITS table HDUs."
+        )
+        info.setWordWrap(True)
+        lay.addWidget(info)
+
+        self.list_docs = QListWidget(self)
+        lay.addWidget(self.list_docs, 1)
+
+        for ent in self._entries:
+            doc = ent.get("doc")
+            title = str(ent.get("title") or "Untitled")
+            tag = str(ent.get("tag") or "View")
+
+            label = f"[{tag}] {title}"
+            if doc is active_doc:
+                label += "  [Active]"
+
+            item = QListWidgetItem(label, self.list_docs)
+            item.setFlags(
+                item.flags()
+                | Qt.ItemFlag.ItemIsUserCheckable
+                | Qt.ItemFlag.ItemIsEnabled
+                | Qt.ItemFlag.ItemIsSelectable
+            )
+            item.setCheckState(Qt.CheckState.Checked)
+            item.setData(Qt.ItemDataRole.UserRole, ent)
+
+        row = QHBoxLayout()
+
+        self.btn_all = QPushButton("Select All", self)
+        self.btn_none = QPushButton("Select None", self)
+        self.btn_active = QPushButton("Active Only", self)
+
+        self.btn_all.clicked.connect(self._select_all)
+        self.btn_none.clicked.connect(self._select_none)
+        self.btn_active.clicked.connect(self._select_active_only)
+
+        row.addWidget(self.btn_all)
+        row.addWidget(self.btn_none)
+        row.addWidget(self.btn_active)
+        row.addStretch(1)
+        lay.addLayout(row)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=self,
+        )
+        buttons.accepted.connect(self._accept_if_valid)
+        buttons.rejected.connect(self.reject)
+        lay.addWidget(buttons)
+
+    def _select_all(self):
+        for i in range(self.list_docs.count()):
+            self.list_docs.item(i).setCheckState(Qt.CheckState.Checked)
+
+    def _select_none(self):
+        for i in range(self.list_docs.count()):
+            self.list_docs.item(i).setCheckState(Qt.CheckState.Unchecked)
+
+    def _select_active_only(self):
+        for i in range(self.list_docs.count()):
+            item = self.list_docs.item(i)
+            ent = item.data(Qt.ItemDataRole.UserRole) or {}
+            doc = ent.get("doc")
+            item.setCheckState(
+                Qt.CheckState.Checked if doc is self._active_doc else Qt.CheckState.Unchecked
+            )
+
+    def _accept_if_valid(self):
+        if not self.selected_entries():
+            return
+        self.accept()
+
+    def selected_entries(self):
+        out = []
+        for i in range(self.list_docs.count()):
+            item = self.list_docs.item(i)
+            if item.checkState() == Qt.CheckState.Checked:
+                ent = item.data(Qt.ItemDataRole.UserRole)
+                if ent is not None:
+                    out.append(dict(ent))
+        return out
 
 _PROC_SCAN_RE = re.compile(r"^(?P<prefix>.+)_proc(?P<n>\d+)(?P<tag>_[^.]*)?$", re.IGNORECASE)
 
@@ -64,6 +173,96 @@ def _next_proc_index_for(prefix: str, workdir: str, stars: bool, tag: str, ext: 
         pass
 
     return max_n + 1
+
+class _FitsBundleDialog(QDialog):
+    def __init__(self, parent, entries: list[dict], active_index: int = -1):
+        super().__init__(parent)
+        self.setWindowTitle("Export FITS Bundle")
+
+        self._entries = list(entries)
+
+        lay = QVBoxLayout(self)
+
+        lbl = QLabel(
+            "Choose which open image views to bundle into the FITS file.\n"
+            "The first checked item becomes the Primary HDU."
+        )
+        lbl.setWordWrap(True)
+        lay.addWidget(lbl)
+
+        self.listw = QListWidget(self)
+        lay.addWidget(self.listw, 1)
+
+        for i, ent in enumerate(self._entries):
+            title = ent.get("title") or f"Image {i+1}"
+            item = QListWidgetItem(title)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
+
+            # default: check all, but put active item first in selection focus
+            item.setCheckState(Qt.CheckState.Checked)
+            self.listw.addItem(item)
+
+        if 0 <= active_index < self.listw.count():
+            self.listw.setCurrentRow(active_index)
+
+        row = QHBoxLayout()
+        btn_all = QPushButton("Select All", self)
+        btn_none = QPushButton("Select None", self)
+        btn_up = QPushButton("Move Up", self)
+        btn_down = QPushButton("Move Down", self)
+
+        btn_all.clicked.connect(self._select_all)
+        btn_none.clicked.connect(self._select_none)
+        btn_up.clicked.connect(self._move_up)
+        btn_down.clicked.connect(self._move_down)
+
+        row.addWidget(btn_all)
+        row.addWidget(btn_none)
+        row.addStretch(1)
+        row.addWidget(btn_up)
+        row.addWidget(btn_down)
+        lay.addLayout(row)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, self)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        lay.addWidget(buttons)
+
+        self.resize(520, 420)
+
+    def _select_all(self):
+        for i in range(self.listw.count()):
+            self.listw.item(i).setCheckState(Qt.CheckState.Checked)
+
+    def _select_none(self):
+        for i in range(self.listw.count()):
+            self.listw.item(i).setCheckState(Qt.CheckState.Unchecked)
+
+    def _move_up(self):
+        row = self.listw.currentRow()
+        if row <= 0:
+            return
+        item = self.listw.takeItem(row)
+        self.listw.insertItem(row - 1, item)
+        self.listw.setCurrentRow(row - 1)
+
+    def _move_down(self):
+        row = self.listw.currentRow()
+        if row < 0 or row >= self.listw.count() - 1:
+            return
+        item = self.listw.takeItem(row)
+        self.listw.insertItem(row + 1, item)
+        self.listw.setCurrentRow(row + 1)
+
+    def selected_entries(self) -> list[dict]:
+        out = []
+        for i in range(self.listw.count()):
+            item = self.listw.item(i)
+            if item.checkState() == Qt.CheckState.Checked:
+                ent = dict(item.data(Qt.ItemDataRole.UserRole) or {})
+                ent["title"] = item.text()
+                out.append(ent)
+        return out
 
 @dataclass
 class _CheckpointSpec:
@@ -131,6 +330,275 @@ class FileMixin:
         if hasattr(self, "_rebuild_recent_menus"):
             self._rebuild_recent_menus()
     
+    def _collect_open_bundle_entries(self) -> tuple[list[dict], object | None]:
+        """
+        Return (entries, active_doc) for currently open bundle-capable views.
+        Supports:
+        - image docs
+        - table docs
+
+        Each entry:
+            {
+                "title": str,
+                "doc": object,
+                "subwindow": QMdiSubWindow | None,
+                "kind": "image" | "table",
+                "tag": "Image" | "Table" | "Vector Table",
+            }
+        """
+        entries: list[dict] = []
+        active_doc = None
+
+        mdi = getattr(self, "mdi", None)
+        if mdi is None:
+            return entries, active_doc
+
+        active_sw = None
+        try:
+            active_sw = mdi.activeSubWindow()
+        except Exception:
+            active_sw = None
+
+        for sw in mdi.subWindowList():
+            try:
+                w = sw.widget()
+            except Exception:
+                w = None
+
+            doc = None
+            try:
+                doc = getattr(w, "document", None) or getattr(sw, "document", None)
+            except Exception:
+                doc = None
+
+            if doc is None:
+                continue
+
+            meta = getattr(doc, "metadata", {}) or {}
+            img = getattr(doc, "image", None)
+            rows = getattr(doc, "rows", None)
+            headers = getattr(doc, "headers", None)
+
+            kind = None
+            tag = None
+
+            if img is not None:
+                kind = "image"
+                tag = "Image"
+            elif rows is not None and headers is not None:
+                kind = "table"
+                if str(meta.get("doc_subtype", "")).lower() == "vector":
+                    tag = "Vector Table"
+                else:
+                    tag = "Table"
+            else:
+                continue
+
+            try:
+                title = (sw.windowTitle() or "").strip()
+            except Exception:
+                title = ""
+
+            if not title:
+                try:
+                    if hasattr(doc, "display_name") and callable(doc.display_name):
+                        title = str(doc.display_name())
+                    else:
+                        title = str(meta.get("display_name", "Untitled"))
+                except Exception:
+                    title = "Untitled"
+
+            ent = {
+                "title": title,
+                "doc": doc,
+                "subwindow": sw,
+                "kind": kind,
+                "tag": tag,
+            }
+            entries.append(ent)
+
+            if sw is active_sw:
+                active_doc = doc
+
+        return entries, active_doc
+
+    def create_table(self):
+        from setiastro.saspro.subwindow import CreateTableDialog
+        import traceback
+
+        dlg = CreateTableDialog(self)
+        if dlg.exec() != dlg.DialogCode.Accepted:
+            return
+
+        specs = dlg.column_specs()
+        headers = [c.name for c in specs]
+        kinds = [c.kind for c in specs]
+        nrows = dlg.row_count()
+
+        rows = []
+        for _ in range(nrows):
+            row = []
+            for kind in kinds:
+                if kind == "bool":
+                    row.append(False)
+                else:
+                    row.append("")
+            rows.append(row)
+
+        meta = {
+            "doc_type": "table",
+            "editable": True,
+            "column_kinds": kinds,
+            "display_name": dlg.table_name(),
+            "original_format": "internal",
+        }
+
+        try:
+            doc = self.docman.create_table_document(
+                headers=headers,
+                rows=rows,
+                metadata=meta,
+                title=dlg.table_name(),
+            )
+        except Exception as e:
+            traceback.print_exc()
+            QMessageBox.critical(
+                self,
+                self.tr("Create Table"),
+                f"Failed to create table document:\n\n{type(e).__name__}: {e}",
+            )
+            return
+
+        self._log(
+            f"Created table: {dlg.table_name()} "
+            f"(rows={len(rows)}, cols={len(headers)}, editable=True)"
+        )
+
+        # Only spawn manually if your app really needs it.
+        # But DO NOT swallow errors.
+        try:
+            if hasattr(self, "_spawn_subwindow_for"):
+                self._spawn_subwindow_for(doc)
+        except Exception as e:
+            traceback.print_exc()
+            QMessageBox.critical(
+                self,
+                self.tr("Create Table"),
+                f"Table document was created, but the table view failed to open:\n\n"
+                f"{type(e).__name__}: {e}",
+            )
+            return
+    
+    def export_fits_bundle(self):
+        from setiastro.saspro.main_helpers import (
+            best_doc_name as _best_doc_name,
+            normalize_save_path_chosen_filter as _normalize_save_path_chosen_filter,
+        )
+        from setiastro.saspro.file_utils import _sanitize_filename
+        from setiastro.saspro.save_options import ExportDialog
+
+        entries, active_doc = self._collect_open_bundle_entries()
+        if not entries:
+            QMessageBox.information(
+                self,
+                self.tr("Export FITS Bundle"),
+                self.tr("There are no open image or table views to export.")
+            )
+            return
+
+        chooser = FitsBundleExportDialog(
+            self,
+            entries,
+            active_doc=active_doc,
+        )
+        if chooser.exec() != chooser.DialogCode.Accepted:
+            return
+
+        selected_entries = chooser.selected_entries()
+        if not selected_entries:
+            QMessageBox.information(
+                self,
+                self.tr("Export FITS Bundle"),
+                self.tr("No views were selected.")
+            )
+            return
+
+        candidate_dir = self.settings.value("paths/last_save_dir", "", type=str) or ""
+        if not candidate_dir or not os.path.isdir(candidate_dir):
+            try:
+                doc = active_doc or (selected_entries[0].get("doc") if selected_entries else None)
+                if doc is not None:
+                    orig_path = (getattr(doc, "metadata", {}) or {}).get("file_path", "") or ""
+                    if "::" in orig_path:
+                        orig_path = orig_path.split("::", 1)[0]
+                    if orig_path:
+                        pdir = os.path.dirname(orig_path)
+                        if pdir and os.path.isdir(pdir):
+                            candidate_dir = pdir
+            except Exception:
+                pass
+
+        if not candidate_dir or not os.path.isdir(candidate_dir):
+            from pathlib import Path
+            candidate_dir = str(Path.home())
+
+        try:
+            base_doc = active_doc or selected_entries[0].get("doc")
+            suggested = _best_doc_name(base_doc) if base_doc else "fits_bundle"
+        except Exception:
+            suggested = "fits_bundle"
+
+        suggested = os.path.splitext(suggested)[0] + "_bundle"
+        suggested = _sanitize_filename(suggested)
+        suggested_path = os.path.join(candidate_dir, suggested)
+
+        path, selected_filter = QFileDialog.getSaveFileName(
+            self,
+            self.tr("Export FITS Bundle"),
+            suggested_path,
+            "FITS (*.fits *.fit)"
+        )
+        if not path:
+            return
+
+        before = path
+        path, ext_norm = _normalize_save_path_chosen_filter(path, selected_filter)
+
+        if before != path:
+            self._log(f"Adjusted filename for safety:\n  {before}\n-> {path}")
+
+        dlg = ExportDialog(
+            self,
+            ext_norm,
+            "32-bit floating point",
+            current_jpeg_quality=None,
+            settings=self.settings,
+        )
+        if dlg.exec() != dlg.DialogCode.Accepted:
+            return
+
+        chosen_bd = dlg.selected_bit_depth()
+        export_opts = dlg.export_options()
+
+        try:
+            self.docman.save_fits_bundle(
+                selected_entries,
+                path,
+                bit_depth_override=chosen_bd,
+                export_opts=export_opts,
+            )
+            self._log(
+                f"Exported FITS bundle: {path} "
+                f"({chosen_bd}, {len(selected_entries)} view(s))"
+            )
+            self.settings.setValue("paths/last_save_dir", os.path.dirname(path))
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                self.tr("Export FITS Bundle failed"),
+                str(e),
+            )
+
     def _add_to_recent_projects(self, path: str):
         """
         Add a path to recent projects list.

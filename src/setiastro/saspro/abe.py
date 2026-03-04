@@ -1,4 +1,4 @@
-# pro/abe.py — SASpro Automatic Background Extraction (ABE)
+# pro/abe.py — SASpro Automatic (Dynamic) Background Extraction (ADBE)
 # -----------------------------------------------------------------------------
 # This module migrates the SASv2 ABE functionality into SASpro with:
 #   • Polynomial background model (degree 1–6)
@@ -19,7 +19,7 @@ try:
 except Exception:  # pragma: no cover
     cv2 = None
 
-from PyQt6.QtCore import Qt, QSize, QEvent, QPointF, QTimer
+from PyQt6.QtCore import Qt, QSize, QEvent, QPointF, QTimer, QSettings
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QSpinBox,
     QCheckBox, QPushButton, QScrollArea, QWidget, QMessageBox, QComboBox,
@@ -330,16 +330,17 @@ def _legacy_unstretch_unlinked(image: np.ndarray, state: dict):
 
 def abe_run(
     image: np.ndarray,
-    degree: int = 2,             # 0..6 (0 = skip polynomial)
+    degree: int = 2,
     num_samples: int = 100,
     downsample: int = 4,
     patch_size: int = 15,
     use_rbf: bool = True,
-    rbf_smooth: float = 0.1,      # numeric; UI can map 10 -> 0.10, 100 -> 1.0, etc.
+    rbf_smooth: float = 0.1,
     exclusion_mask: np.ndarray | None = None,
     return_background: bool = True,
     progress_cb=None,
-    legacy_prestretch: bool = True,   # <-- SASv2 parity switch
+    legacy_prestretch: bool = True,
+    manual_points: np.ndarray | None = None,   # NEW: Nx2 full-image coords
 ) -> tuple[np.ndarray, np.ndarray] | np.ndarray:
     """Two-stage ABE (poly + optional RBF) with SASv2-compatible pre/post stretch."""
     if image is None:
@@ -368,7 +369,22 @@ def abe_run(
     if exclusion_mask is not None:
         if progress_cb: progress_cb("Downsampling exclusion mask…")
         mask_small = _downsample_area(exclusion_mask.astype(np.float32), downsample) >= 0.5
+    manual_small = None
+    if manual_points is not None:
+        mp = np.asarray(manual_points, dtype=np.int32)
+        if mp.ndim == 2 and mp.shape[1] == 2 and len(mp) > 0:
+            manual_small = _scale_points_to_small(mp, img_rgb.shape[:2], small.shape[:2])
 
+            # honor exclusion mask if present
+            if mask_small is not None and len(manual_small) > 0:
+                keep = []
+                Hs, Ws = mask_small.shape[:2]
+                for x, y in manual_small:
+                    xx = int(np.clip(x, 0, Ws - 1))
+                    yy = int(np.clip(y, 0, Hs - 1))
+                    if bool(mask_small[yy, xx]):
+                        keep.append((xx, yy))
+                manual_small = np.asarray(keep, dtype=np.int32) if keep else np.zeros((0, 2), dtype=np.int32)
     # ---------- Polynomial stage (skip when degree == 0) ----------
     if degree <= 0:
         if progress_cb: progress_cb("Degree 0: skipping polynomial stage…")
@@ -376,8 +392,15 @@ def abe_run(
         total_bg   = np.zeros_like(img_rgb, dtype=np.float32)
     else:
         if progress_cb: progress_cb("Sampling points (poly stage)…")
-        pts = _generate_sample_points(small, num_points=num_samples,
-                                      exclusion_mask=mask_small, patch_size=patch_size)
+        if manual_small is not None and len(manual_small) > 0:
+            pts = manual_small
+        else:
+            pts = _generate_sample_points(
+                small,
+                num_points=num_samples,
+                exclusion_mask=mask_small,
+                patch_size=patch_size
+            )
 
         if progress_cb: progress_cb(f"Fitting polynomial (degree {degree})…")
         bg_poly_small = _fit_poly_on_small(small, pts, degree=degree, patch_size=patch_size)
@@ -398,8 +421,35 @@ def abe_run(
         small_rbf = _downsample_area(after_poly, downsample)
 
         if progress_cb: progress_cb("Sampling points (RBF stage)…")
-        pts_rbf = _generate_sample_points(small_rbf, num_points=num_samples,
-                                          exclusion_mask=mask_small, patch_size=patch_size)
+        if manual_points is not None and len(manual_points) > 0:
+            pts_rbf = _scale_points_to_small(
+                np.asarray(manual_points, dtype=np.int32),
+                img_rgb.shape[:2],
+                small_rbf.shape[:2],
+            )
+
+            if mask_small is not None and len(pts_rbf) > 0:
+                keep = []
+                Hs, Ws = small_rbf.shape[:2]
+                # if mask_small shape differs slightly from small_rbf, rebuild a matching one
+                if mask_small.shape[:2] != small_rbf.shape[:2]:
+                    mask_rbf = _downsample_area(exclusion_mask.astype(np.float32), downsample) >= 0.5
+                else:
+                    mask_rbf = mask_small
+
+                for x, y in pts_rbf:
+                    xx = int(np.clip(x, 0, Ws - 1))
+                    yy = int(np.clip(y, 0, Hs - 1))
+                    if bool(mask_rbf[yy, xx]):
+                        keep.append((xx, yy))
+                pts_rbf = np.asarray(keep, dtype=np.int32) if keep else np.zeros((0, 2), dtype=np.int32)
+        else:
+            pts_rbf = _generate_sample_points(
+                small_rbf,
+                num_points=num_samples,
+                exclusion_mask=mask_small,
+                patch_size=patch_size
+            )
 
         if progress_cb: progress_cb(f"Fitting RBF (smooth={rbf_smooth:.3f})…")
         bg_rbf_small = _fit_rbf_on_small(small_rbf, pts_rbf, smooth=rbf_smooth, patch_size=patch_size)
@@ -445,7 +495,7 @@ def abe_run(
 
 
 
-def siril_style_autostretch(image: np.ndarray, sigma: float = 3.0) -> np.ndarray:
+def mtf_style_autostretch(image: np.ndarray, sigma: float = 3.0) -> np.ndarray:
     def stretch_channel(c):
         med = np.median(c); mad = np.median(np.abs(c - med))
         mad_std = mad * 1.4826
@@ -464,7 +514,25 @@ def siril_style_autostretch(image: np.ndarray, sigma: float = 3.0) -> np.ndarray
                          for i in range(3)], axis=-1)
     raise ValueError("Unsupported image format for autostretch.")
 
+def _scale_points_to_small(points: np.ndarray, src_hw: tuple[int, int], small_hw: tuple[int, int]) -> np.ndarray:
+    """
+    Scale image-space points from source resolution into downsampled 'small' resolution.
+    points: Nx2 in full-image pixel coords
+    """
+    pts = np.asarray(points, dtype=np.float32)
+    if pts.size == 0:
+        return np.zeros((0, 2), dtype=np.int32)
 
+    src_h, src_w = int(src_hw[0]), int(src_hw[1])
+    sm_h, sm_w = int(small_hw[0]), int(small_hw[1])
+
+    sx = float(sm_w) / float(max(1, src_w))
+    sy = float(sm_h) / float(max(1, src_h))
+
+    out = np.empty_like(pts, dtype=np.int32)
+    out[:, 0] = np.clip(np.round(pts[:, 0] * sx), 0, sm_w - 1).astype(np.int32)
+    out[:, 1] = np.clip(np.round(pts[:, 1] * sy), 0, sm_h - 1).astype(np.int32)
+    return out
 
 
 
@@ -484,7 +552,7 @@ class ABEDialog(QDialog):
     """
     def __init__(self, parent, document: ImageDocument):
         super().__init__(parent)
-        self.setWindowTitle(self.tr("Automatic Background Extraction (ABE)"))
+        self.setWindowTitle(self.tr("Automatic (Dynamic) Background Extraction (ADBE)"))
 
         # IMPORTANT: avoid “attached modal sheet” behavior on some Linux WMs
         self.setWindowFlag(Qt.WindowType.Window, True)
@@ -498,6 +566,7 @@ class ABEDialog(QDialog):
 
         self._main = parent
         self.doc = document
+        self._manual_points: list[QPointF] = []
 
         self._connected_current_doc_changed = False
         if hasattr(self._main, "currentDocumentChanged"):
@@ -529,7 +598,11 @@ class ABEDialog(QDialog):
         self.sp_rbf = QSpinBox(); self.sp_rbf.setRange(0, 1000); self.sp_rbf.setValue(100)  # shown as ×0.01 below
         self.chk_make_bg_doc = QCheckBox(self.tr("Create background document")); self.chk_make_bg_doc.setChecked(False)
         self.chk_preview_bg   = QCheckBox(self.tr("Preview background instead of corrected")); self.chk_preview_bg.setChecked(False)
+        self.cmb_sample_mode = QComboBox()
+        self.cmb_sample_mode.addItems(["Auto", "Manual"])
 
+        self.btn_clear_samples = QPushButton(self.tr("Clear Sample Points"))
+        self.btn_clear_samples.clicked.connect(self._clear_manual_samples)
         # Preview area
         self.preview_label = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
         self.preview_label.setMinimumSize(QSize(480, 360))
@@ -556,6 +629,7 @@ class ABEDialog(QDialog):
         params.addRow(self.tr("# sample points:"),   self.sp_samples)
         params.addRow(self.tr("Downsample factor:"), self.sp_down)
         params.addRow(self.tr("Patch size (px):"),   self.sp_patch)
+        params.addRow(self.tr("Sample mode:"), self.cmb_sample_mode)
 
         rbf_box = QGroupBox(self.tr("RBF Refinement"))
         rbf_form = QFormLayout()
@@ -571,6 +645,7 @@ class ABEDialog(QDialog):
         row = QHBoxLayout(); row.addWidget(self.btn_preview); row.addWidget(self.btn_apply); row.addStretch(1)
         opts.addLayout(row)
         opts.addWidget(self.btn_clear)
+        opts.addWidget(self.btn_clear_samples)
         opts.addStretch(1)
 
         # ▼ New status label
@@ -589,14 +664,125 @@ class ABEDialog(QDialog):
         main.addLayout(opts, 0)                     # Left controls
         main.addLayout(right, 1)                    # Right: buttons above preview
 
+        self._load_settings()
+
         self._base_pixmap = None  # clean, scaled image with no overlays
         self.preview_scroll.viewport().installEventFilter(self)
         self.preview_label.installEventFilter(self)
         self._install_zoom_filters()
         self._populate_initial_preview()
         self.sp_degree.valueChanged.connect(self._degree_changed) 
+        self.sp_degree.valueChanged.connect(self._save_settings)
+        self.sp_samples.valueChanged.connect(self._save_settings)
+        self.sp_down.valueChanged.connect(self._save_settings)
+        self.sp_patch.valueChanged.connect(self._save_settings)
+
+        self.chk_use_rbf.toggled.connect(self._save_settings)
+        self.sp_rbf.valueChanged.connect(self._save_settings)
+
+        self.chk_make_bg_doc.toggled.connect(self._save_settings)
+        self.chk_preview_bg.toggled.connect(self._save_settings)
+
+        self._sample_mode_changed(self.cmb_sample_mode.currentText())
+
+        self.cmb_sample_mode.currentTextChanged.connect(self._sample_mode_changed)
+        self.cmb_sample_mode.currentTextChanged.connect(self._save_settings)
 
         QTimer.singleShot(0, self._post_init_fit_and_stretch)
+
+    def _load_settings(self):
+        s = QSettings()
+
+        # Core ABE params
+        self.sp_degree.setValue(int(s.value("abe/degree", 2)))
+        self.sp_samples.setValue(int(s.value("abe/samples", 120)))
+        self.sp_down.setValue(int(s.value("abe/downsample", 4)))
+        self.sp_patch.setValue(int(s.value("abe/patch_size", 15)))
+        sample_mode = str(s.value("abe/sample_mode", "Auto"))
+        if self.cmb_sample_mode.findText(sample_mode) >= 0:
+            self.cmb_sample_mode.setCurrentText(sample_mode)
+        # RBF
+        self.chk_use_rbf.setChecked(bool(s.value("abe/use_rbf", True, type=bool)))
+        self.sp_rbf.setValue(int(s.value("abe/rbf_smooth_x100", 100)))
+
+        # Options
+        self.chk_make_bg_doc.setChecked(bool(s.value("abe/make_bg_doc", False, type=bool)))
+        self.chk_preview_bg.setChecked(bool(s.value("abe/preview_bg", False, type=bool)))
+
+        # Optional preview prefs
+        self._autostretch_on = bool(s.value("abe/preview_autostretch", True, type=bool))
+
+
+    def _save_settings(self):
+        s = QSettings()
+
+        s.setValue("abe/degree", self.sp_degree.value())
+        s.setValue("abe/samples", self.sp_samples.value())
+        s.setValue("abe/downsample", self.sp_down.value())
+        s.setValue("abe/patch_size", self.sp_patch.value())
+        s.setValue("abe/sample_mode", self.cmb_sample_mode.currentText())
+
+        s.setValue("abe/use_rbf", self.chk_use_rbf.isChecked())
+        s.setValue("abe/rbf_smooth_x100", self.sp_rbf.value())
+
+        s.setValue("abe/make_bg_doc", self.chk_make_bg_doc.isChecked())
+        s.setValue("abe/preview_bg", self.chk_preview_bg.isChecked())
+
+        s.setValue("abe/preview_autostretch", bool(getattr(self, "_autostretch_on", False)))
+
+    def _manual_mode(self) -> bool:
+        return self.cmb_sample_mode.currentText().lower() == "manual"
+
+
+    def _sample_mode_changed(self, _text: str):
+        manual = self._manual_mode()
+
+        # In manual mode, # sample points is not used for fitting
+        self.sp_samples.setEnabled(not manual)
+
+        tip = (
+            "Auto: ADBE picks sample points automatically.\n"
+            "Manual: left-click to add sample squares, right-click to remove nearest one."
+        )
+        self.cmb_sample_mode.setToolTip(tip)
+        self.btn_clear_samples.setEnabled(manual and len(self._manual_points) > 0)
+
+        self._redraw_overlay()
+
+
+    def _clear_manual_samples(self):
+        self._manual_points.clear()
+        self.btn_clear_samples.setEnabled(False)
+        self._redraw_overlay()
+
+
+    def _manual_points_array(self) -> np.ndarray | None:
+        if not self._manual_points:
+            return None
+        pts = np.array([[int(round(p.x())), int(round(p.y()))] for p in self._manual_points], dtype=np.int32)
+        return pts
+
+
+    def _find_nearest_manual_point_index(self, img_pt: QPointF, max_dist_px: float = 20.0) -> int:
+        if not self._manual_points:
+            return -1
+
+        best_idx = -1
+        best_d2 = float("inf")
+        x0, y0 = float(img_pt.x()), float(img_pt.y())
+
+        for i, p in enumerate(self._manual_points):
+            dx = float(p.x()) - x0
+            dy = float(p.y()) - y0
+            d2 = dx * dx + dy * dy
+            if d2 < best_d2:
+                best_d2 = d2
+                best_idx = i
+
+        if best_idx < 0:
+            return -1
+
+        return best_idx if best_d2 <= (max_dist_px * max_dist_px) else -1
 
     def _post_init_fit_and_stretch(self) -> None:
         # Only run if we have an image preview
@@ -639,12 +825,12 @@ class ABEDialog(QDialog):
 
     # ----- active document change -----
     def _on_active_doc_changed(self, doc):
-        """Called when user clicks a different image window."""
         if doc is None or getattr(doc, "image", None) is None:
             return
         self.doc = doc
         self._polygons.clear()
         self._drawing_poly = None
+        self._manual_points.clear()
         self._preview_source_f01 = None
         self._populate_initial_preview()
 
@@ -664,6 +850,7 @@ class ABEDialog(QDialog):
         imgf = self._get_source_float()
         if imgf is None:
             return None, None
+
         deg   = int(self.sp_degree.value())
         npts  = int(self.sp_samples.value())
         dwn   = int(self.sp_down.value())
@@ -671,12 +858,20 @@ class ABEDialog(QDialog):
         use_rbf = bool(self.chk_use_rbf.isChecked())
         rbf_smooth = float(self.sp_rbf.value()) * 0.01
 
+        manual_pts = self._manual_points_array() if self._manual_mode() else None
+
         return abe_run(
             imgf,
-            degree=deg, num_samples=npts, downsample=dwn, patch_size=patch,
-            use_rbf=use_rbf, rbf_smooth=rbf_smooth,
-            exclusion_mask=excl_mask, return_background=True,
-            progress_cb=progress  # ◀️ forward progress
+            degree=deg,
+            num_samples=npts,
+            downsample=dwn,
+            patch_size=patch,
+            use_rbf=use_rbf,
+            rbf_smooth=rbf_smooth,
+            exclusion_mask=excl_mask,
+            return_background=True,
+            progress_cb=progress,
+            manual_points=manual_pts,   # NEW
         )
 
     def _degree_changed(self, v: int):
@@ -766,6 +961,8 @@ class ABEDialog(QDialog):
                 "rbf_smooth": rbf_smooth,
                 "make_background_doc": make_bg_doc,
             }
+            params["sample_mode"] = self.cmb_sample_mode.currentText().lower()
+            params["manual_sample_count"] = len(self._manual_points)
 
             # 🔁 Remember this as the last headless-style command for Replay
             mw = self.parent()
@@ -791,6 +988,7 @@ class ABEDialog(QDialog):
             _marr, mid, mname = self._active_mask_layer()
             abe_meta = dict(params)
             abe_meta["exclusion"] = "polygons" if excl is not None else "none"
+            abe_meta["manual_sample_count"] = len(self._manual_points)
 
             meta = {
                 "step_name": "ABE",
@@ -900,6 +1098,7 @@ class ABEDialog(QDialog):
                     self._preview_qimg = None
                     # Clear polygons since they were for old image
                     self._clear_polys()
+                    self._manual_points.clear()
         except Exception:
             pass
 
@@ -949,7 +1148,7 @@ class ABEDialog(QDialog):
         a = _asfloat32(arr)
         self._preview_source_f01 = a  # ← no np.clip here
 
-        # show autostretched or raw; siril_style_autostretch() already clips its result
+        # show autostretched or raw; mtf_style_autostretch() already clips its result
         src_to_show = (hard_autostretch(self._preview_source_f01, target_median=0.5, sigma=2,
                                         linked=False, use_24bit=True)
                     if getattr(self, "_autostretch_on", False) else self._preview_source_f01)
@@ -1036,6 +1235,26 @@ class ABEDialog(QDialog):
             mapped = [QPointF(p.x() * sx, p.y() * sy) for p in self._drawing_poly]
             painter.drawPolyline(*mapped)
 
+        # manual sample squares (yellow outlines)
+        if self._manual_points:
+            patch = int(max(1, self.sp_patch.value()))
+            hx = 0.5 * patch * sx
+            hy = 0.5 * patch * sy
+
+            pen3 = QPen(QColor(255, 220, 0), 2)
+            painter.setPen(pen3)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+
+            for p in self._manual_points:
+                cx = p.x() * sx
+                cy = p.y() * sy
+                painter.drawRect(
+                    int(round(cx - hx)),
+                    int(round(cy - hy)),
+                    int(round(2 * hx)),
+                    int(round(2 * hy)),
+                )
+
         painter.end()
 
         p = QPainter(composed)
@@ -1077,17 +1296,45 @@ class ABEDialog(QDialog):
         # ---- Existing polygon drawing on the label ----
         if obj is self.preview_label:
             if ev.type() == QEvent.Type.MouseButtonPress:
+                # panning still works the same in either mode
+                if ev.buttons() & Qt.MouseButton.MiddleButton or (
+                    ev.buttons() & Qt.MouseButton.LeftButton and (ev.modifiers() & Qt.KeyboardModifier.ControlModifier)
+                ):
+                    self._panning = True
+                    self._pan_last = ev.position().toPoint()
+                    self.preview_label.setCursor(Qt.CursorShape.ClosedHandCursor)
+                    return True
+
+                # manual sample-point mode
+                if self._manual_mode():
+                    if ev.button() == Qt.MouseButton.LeftButton:
+                        img_pt = self._label_to_image_coords(ev.position())
+                        if img_pt is not None:
+                            self._manual_points.append(img_pt)
+                            self.btn_clear_samples.setEnabled(True)
+                            self._redraw_overlay()
+                            return True
+
+                    if ev.button() == Qt.MouseButton.RightButton:
+                        img_pt = self._label_to_image_coords(ev.position())
+                        if img_pt is not None:
+                            idx = self._find_nearest_manual_point_index(img_pt)
+                            if idx >= 0:
+                                self._manual_points.pop(idx)
+                                self.btn_clear_samples.setEnabled(
+                                    self._manual_mode() and len(self._manual_points) > 0
+                                )
+                                self._redraw_overlay()
+                            return True
+
+                # existing polygon mode
                 if ev.buttons() & Qt.MouseButton.RightButton:
                     if self._drawing_poly and len(self._drawing_poly) >= 3:
                         self._polygons.append(self._drawing_poly)
                     self._drawing_poly = None
                     self._redraw_overlay()
                     return True
-                if ev.buttons() & Qt.MouseButton.MiddleButton or (ev.buttons() & Qt.MouseButton.LeftButton and (ev.modifiers() & Qt.KeyboardModifier.ControlModifier)):
-                    self._panning = True
-                    self._pan_last = ev.position().toPoint()
-                    self.preview_label.setCursor(Qt.CursorShape.ClosedHandCursor)
-                    return True
+
                 if ev.buttons() & Qt.MouseButton.LeftButton:
                     img_pt = self._label_to_image_coords(ev.position())
                     if img_pt is not None:
@@ -1108,7 +1355,7 @@ class ABEDialog(QDialog):
                     hsb.setValue(hsb.value() - delta.x())
                     vsb.setValue(vsb.value() - delta.y())
                     return True
-                if self._drawing_poly is not None and (ev.buttons() & Qt.MouseButton.LeftButton):
+                if (not self._manual_mode()) and self._drawing_poly is not None and (ev.buttons() & Qt.MouseButton.LeftButton):
                     img_pt = self._label_to_image_coords(ev.position())
                     if img_pt is not None:
                         self._drawing_poly.append(img_pt)
@@ -1124,7 +1371,7 @@ class ABEDialog(QDialog):
                     return True
 
                 # Close polygon on LEFT mouse release
-                if ev.button() == Qt.MouseButton.LeftButton and self._drawing_poly is not None:
+                if (not self._manual_mode()) and ev.button() == Qt.MouseButton.LeftButton and self._drawing_poly is not None:
                     if len(self._drawing_poly) >= 3:
                         self._polygons.append(self._drawing_poly)
                     self._drawing_poly = None
@@ -1132,9 +1379,6 @@ class ABEDialog(QDialog):
                     return True
 
         return super().eventFilter(obj, ev)
-
-
-
 
     def _ensure_scale_state(self):
         # internal guard so _zoom_at can be called even if _scale hasn't been set
@@ -1312,7 +1556,7 @@ class ABEDialog(QDialog):
 
     def autostretch_preview(self, sigma: float = 3.0) -> None:
         """
-        Toggle Siril-style MAD autostretch on the *preview only* (non-destructive).
+        Toggle mtf-style MAD autostretch on the *preview only* (non-destructive).
         First press applies; second press restores the original preview.
         Works from the float [0..1] preview source to avoid double-clipping.
         """

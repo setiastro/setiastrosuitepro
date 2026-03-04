@@ -3,6 +3,7 @@ from __future__ import annotations
 from PyQt6.QtCore import QObject, pyqtSignal, Qt, QTimer
 from PyQt6.QtWidgets import QApplication, QMessageBox
 import os
+import re
 import numpy as np
 from setiastro.saspro.xisf import XISF as XISFReader
 from astropy.io import fits  # local import; optional dep
@@ -1987,6 +1988,14 @@ class DocManager(QObject):
             rows = [[x, vec]]
             headers = [x_name, y_name]
 
+            hdrlet_hint = False
+            try:
+                ext_up = str(key_str or "").upper()
+                name_up = str(getattr(hdu, "name", "") or "").upper()
+                hdrlet_hint = ("HDRLET" in ext_up) or ("HDRLET" in name_up)
+            except Exception:
+                hdrlet_hint = False
+
             tmeta = {
                 "file_path": f"{base_path}::{key_str}",
                 "original_header": hdr,
@@ -1999,8 +2008,17 @@ class DocManager(QObject):
                     x_name: x_unit,
                     y_name: y_unit,
                 },
-            }
 
+                # NEW
+                "is_hdrlet_table": bool(hdrlet_hint),
+                "table_notice": (
+                    "This FITS extension appears to be an HDRLET/WCS-correction reference table. "
+                    "It is preserved for inspection because it is valid data, but it is not a normal "
+                    "science spectrum or image-profile table. Plotting it may look garbled unless you "
+                    "already know the instrument-specific meaning of the columns."
+                    if hdrlet_hint else ""
+                ),
+            }
             _snapshot_header_for_metadata(tmeta)
             tdoc = TableDocument(rows, headers, tmeta, parent=self.parent())
             self._register_doc(tdoc)
@@ -2010,6 +2028,129 @@ class DocManager(QObject):
                 import logging
                 logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             return tdoc
+
+        # ---------- local helper: decode FITS image HDU into normal display layout ----------
+        def _decode_fits_hdu_image(hdu):
+            arr = np.asanyarray(hdu.data)
+            hdr = hdu.header
+
+            if arr is None:
+                raise ValueError("HDU has no image data")
+
+            # Ensure native byte order
+            try:
+                if arr.dtype.byteorder not in ('=', '|'):
+                    arr = arr.astype(arr.dtype.newbyteorder('='))
+            except Exception:
+                pass
+
+            src_dtype = arr.dtype
+            bit_depth = None
+
+            # ---- dtype -> float32 conversion ----
+            if src_dtype == np.uint8:
+                bit_depth = "8-bit"
+                a = arr.astype(np.float32) / 255.0
+
+            elif src_dtype == np.uint16:
+                bit_depth = "16-bit"
+                a = arr.astype(np.float32) / 65535.0
+
+            elif src_dtype == np.int16:
+                bit_depth = "16-bit signed"
+                bzero = float(hdr.get('BZERO', 0))
+                bscale = float(hdr.get('BSCALE', 1))
+                data = arr.astype(np.float32) * bscale + bzero
+                if bzero != 0.0 or bscale != 1.0:
+                    a = np.clip(data / 65535.0, 0.0, 1.0)
+                else:
+                    dmin = float(data.min())
+                    dmax = float(data.max())
+                    a = (data - dmin) / (dmax - dmin) if dmax > dmin else np.zeros_like(data, dtype=np.float32)
+
+            elif src_dtype == np.int8:
+                bit_depth = "8-bit signed"
+                bzero = float(hdr.get('BZERO', 0))
+                bscale = float(hdr.get('BSCALE', 1))
+                data = arr.astype(np.float32) * bscale + bzero
+                dmin = float(data.min())
+                dmax = float(data.max())
+                a = (data - dmin) / (dmax - dmin) if dmax > dmin else np.zeros_like(data, dtype=np.float32)
+
+            elif src_dtype == np.int32:
+                bit_depth = "32-bit signed"
+                bzero = float(hdr.get('BZERO', 0))
+                bscale = float(hdr.get('BSCALE', 1))
+                data = arr.astype(np.float32) * bscale + bzero
+                dmin = float(data.min())
+                dmax = float(data.max())
+                a = (data - dmin) / (dmax - dmin) if dmax > dmin else np.zeros_like(data, dtype=np.float32)
+
+            elif src_dtype == np.uint32:
+                bit_depth = "32-bit unsigned"
+                bzero = float(hdr.get('BZERO', 0))
+                bscale = float(hdr.get('BSCALE', 1))
+                if bzero == 0.0 and bscale == 1.0:
+                    a = arr.astype(np.float32) / 4294967295.0
+                else:
+                    data = arr.astype(np.float32) * bscale + bzero
+                    dmin = float(data.min())
+                    dmax = float(data.max())
+                    a = (data - dmin) / (dmax - dmin) if dmax > dmin else np.zeros_like(data, dtype=np.float32)
+
+            elif src_dtype == np.float32:
+                bit_depth = "32-bit floating point"
+                a = np.array(arr, dtype=np.float32, copy=True, order="C")
+
+            elif src_dtype == np.float64:
+                bit_depth = "64-bit floating point"
+                a = arr.astype(np.float32, copy=True)
+
+            else:
+                # Fallback
+                bit_depth = str(src_dtype)
+                a = arr.astype(np.float32, copy=False)
+
+            # ---- squeeze singleton axes ----
+            a = np.squeeze(a)
+
+            # ---- interpret final shape ----
+            # mono
+            if a.ndim == 2:
+                is_mono = True
+
+            elif a.ndim == 3:
+                # CHW color from FITS bundle / normal FITS RGB
+                if a.shape[0] in (3, 4) and a.shape[1] > 1 and a.shape[2] > 1:
+                    a = np.transpose(a[:3, :, :], (1, 2, 0))
+                    is_mono = False
+
+                # HWC color
+                elif a.shape[2] in (3, 4) and a.shape[0] > 1 and a.shape[1] > 1:
+                    a = a[:, :, :3]
+                    is_mono = False
+
+                # singleton channel last
+                elif a.shape[2] == 1:
+                    a = a[:, :, 0]
+                    is_mono = True
+
+                # singleton channel first
+                elif a.shape[0] == 1:
+                    a = a[0, :, :]
+                    is_mono = True
+
+                else:
+                    raise ValueError(f"Unsupported FITS HDU image dimensions after squeeze: {a.shape}")
+
+            else:
+                raise ValueError(f"Unsupported FITS HDU image dimensions after squeeze: {a.shape}")
+
+            # finalize
+            a = np.nan_to_num(a, nan=0.0, posinf=1.0, neginf=0.0)
+            a = np.asarray(a, dtype=np.float32, order="C")
+
+            return a, bit_depth, is_mono
 
         # ---------- 1) Try the universal loader first (ALL formats) ----------
         img = header = bit_depth = is_mono = None
@@ -2119,7 +2260,7 @@ class DocManager(QObject):
                             except Exception as e_icc:
                                 print(f"[DocManager] ICC export failed: {e_icc} — will try as image")
 
-                        # --- NEW: 1-D FITS image HDU → vector-style TableDocument ---
+                        # --- 1-D FITS image HDU → vector-style TableDocument ---
                         if arr_sq.ndim == 1 and arr_sq.size > 0:
                             try:
                                 _make_vector_table_doc_from_hdu(hdu, path, base, key_str)
@@ -2128,16 +2269,9 @@ class DocManager(QObject):
                                 print(f"[DocManager] FITS HDU {i} vector build failed: {e_vec}")
                             continue
 
-                        # Otherwise: treat as image doc
+                        # --- Otherwise: treat as image doc ---
                         try:
-                            if arr.dtype.kind in "ui":
-                                a = arr.astype(np.float32, copy=False)  # NO normalization
-                                ext_depth = f"{arr.dtype.itemsize*8}-bit {'unsigned' if arr.dtype.kind=='u' else 'signed'}"
-                            else:
-                                a = arr.astype(np.float32, copy=False)  # floats preserved
-                                ext_depth = "32-bit floating point" if arr.dtype == np.float32 else "64-bit floating point"
-
-                            ext_mono = bool(a.ndim == 2 or (a.ndim == 3 and a.shape[2] == 1))
+                            a, ext_depth, ext_mono = _decode_fits_hdu_image(hdu)
                             disp = f"{base} {key_str}"
 
                             aux_meta = {
@@ -2150,7 +2284,7 @@ class DocManager(QObject):
                                 "display_name": disp,
                             }
 
-                            # NEW: attach WCS from this HDU header
+                            # attach WCS from this HDU header
                             aux_meta = attach_wcs_to_metadata(aux_meta, ext_hdr)
 
                             _snapshot_header_for_metadata(aux_meta)
@@ -2298,7 +2432,6 @@ class DocManager(QObject):
             return self._docs[-1]  # e.g., a table-only FITS, vector-only FITS, or extra XISF image
 
         raise IOError(f"Could not load: {path}")
-    
     # --- Subwindow / ROI awareness -------------------------------------
     def _active_subwindow(self):
         """Return the active QMdiSubWindow (if any)."""
@@ -2393,6 +2526,173 @@ class DocManager(QObject):
         if ext == "xisf":
             return current_bit_depth if current_bit_depth in _ALLOWED_DEPTHS["xisf"] else "32-bit floating point"
         return "32-bit floating point"
+
+    def _normalize_bundle_export_image(self, img: np.ndarray) -> np.ndarray:
+        """
+        Normalize an image for bundled FITS export so every entry arrives in a
+        consistent internal layout:
+
+        mono  -> (H, W)
+        color -> (H, W, 3)
+
+        Also forces float32 so bundle export cannot drift to float64.
+        """
+        a = np.asarray(img)
+
+        if a.ndim == 2:
+            return np.asarray(a, dtype=np.float32, order="C")
+
+        if a.ndim != 3:
+            raise ValueError(f"Unsupported image shape for FITS bundle export: {a.shape}")
+
+        # HWC mono
+        if a.shape[2] == 1:
+            return np.asarray(a[:, :, 0], dtype=np.float32, order="C")
+
+        # CHW mono
+        if a.shape[0] == 1:
+            return np.asarray(a[0, :, :], dtype=np.float32, order="C")
+
+        # HWC color
+        if a.shape[2] in (3, 4):
+            return np.asarray(a[:, :, :3], dtype=np.float32, order="C")
+
+        # CHW color
+        if a.shape[0] in (3, 4):
+            return np.asarray(np.transpose(a[:3, :, :], (1, 2, 0)), dtype=np.float32, order="C")
+
+        raise ValueError(f"Cannot determine channel layout for FITS bundle export: {a.shape}")
+
+    def create_table_document(self, headers, rows, metadata=None, title="New Table"):
+        meta = dict(metadata or {})
+        meta.setdefault("doc_type", "table")
+        meta.setdefault("editable", True)
+        meta.setdefault("display_name", title)
+        meta.setdefault("original_format", "internal")
+
+        doc = TableDocument(
+            rows=[list(r) for r in (rows or [])],
+            headers=list(headers or []),
+            metadata=meta,
+            parent=self.parent(),
+        )
+
+        self._register_doc(doc)
+
+        try:
+            doc.changed.emit()
+        except Exception:
+            pass
+
+        return doc
+
+    def save_fits_bundle(
+        self,
+        entries: list[dict],
+        path: str,
+        *,
+        bit_depth_override: str | None = None,
+        export_opts: dict | None = None,
+    ):
+        """
+        Save multiple open views/docs into one multi-HDU FITS.
+        Supports both image docs and table docs.
+
+        `entries` should contain dicts with at least:
+            { "title": str, "doc": document-like, "kind": "image" | "table" }
+        """
+        from astropy.io import fits
+        from setiastro.saspro.legacy.image_manager import save_fits_bundle as legacy_save_fits_bundle
+
+        def _to_fits_header(v):
+            if isinstance(v, fits.Header):
+                return v
+            if isinstance(v, dict):
+                try:
+                    return fits.Header(v)
+                except Exception:
+                    return None
+            return None
+
+        bundle_items = []
+
+        for ent in entries:
+            doc = ent.get("doc")
+            if doc is None:
+                continue
+
+            meta = getattr(doc, "metadata", {}) or {}
+            kind = str(ent.get("kind") or "").lower()
+
+            if kind == "image" or getattr(doc, "image", None) is not None:
+                img = getattr(doc, "image", None)
+                if img is None:
+                    continue
+
+                effective_header = None
+                for key in ("fits_header", "original_header", "header"):
+                    val = _to_fits_header(meta.get(key))
+                    if val is not None:
+                        effective_header = val
+                        break
+
+                wcs_hdr = _to_fits_header(meta.get("wcs_header"))
+
+                bundle_items.append({
+                    "kind": "image",
+                    "title": ent.get("title") or meta.get("display_name") or "IMAGE",
+                    "img_array": np.asarray(img),
+                    "original_header": effective_header,
+                    "wcs_header": wcs_hdr,
+                    "is_mono": bool(meta.get("is_mono", getattr(img, "ndim", 2) == 2)),
+                    "image_meta": meta.get("image_meta"),
+                    "file_meta": meta.get("file_meta"),
+                    "doc_type": meta.get("doc_type"),
+                    "doc_subtype": meta.get("doc_subtype"),
+                })
+                continue
+
+            if kind == "table" or (
+                getattr(doc, "rows", None) is not None and getattr(doc, "headers", None) is not None
+            ):
+                rows = getattr(doc, "rows", None)
+                headers = getattr(doc, "headers", None)
+                if rows is None or headers is None:
+                    continue
+
+                effective_header = None
+                for key in ("fits_header", "original_header", "header"):
+                    val = _to_fits_header(meta.get(key))
+                    if val is not None:
+                        effective_header = val
+                        break
+
+                bundle_items.append({
+                    "kind": "table",
+                    "title": ent.get("title") or meta.get("display_name") or "TABLE",
+                    "rows": list(rows),
+                    "headers": list(headers),
+                    "original_header": effective_header,
+                    "wcs_header": None,
+                    "doc_type": meta.get("doc_type"),
+                    "doc_subtype": meta.get("doc_subtype"),
+                    "column_units": meta.get("column_units"),
+                    "vector_length": meta.get("vector_length"),
+                    "metadata": meta,
+                })
+                continue
+
+        if not bundle_items:
+            raise RuntimeError("No views were available for FITS bundle export.")
+
+        final_bit_depth = bit_depth_override or "32-bit floating point"
+
+        legacy_save_fits_bundle(
+            bundle_items,
+            path,
+            bit_depth=final_bit_depth,
+            export_opts=export_opts,
+        )
 
     def save_document(
         self,

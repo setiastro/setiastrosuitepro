@@ -3,6 +3,7 @@
 import os
 import time
 import gzip
+import re
 from io import BytesIO
 from typing import Optional, Dict
 import datetime
@@ -2178,7 +2179,530 @@ def _scale_wcs_in_header(hdr: fits.Header | None, scale: float) -> fits.Header |
 
     return h2
 
+def _sanitize_fits_extname(name: str, fallback: str = "IMAGE") -> str:
+    txt = str(name or fallback).strip()
+    if not txt:
+        txt = fallback
+    txt = re.sub(r"\s+", "_", txt)
+    txt = re.sub(r"[^A-Za-z0-9_\-\.\(\)\[\]]", "_", txt)
+    txt = txt[:60]
+    return txt or fallback
 
+
+def _unique_extname(name: str, used: set[str]) -> str:
+    base = _sanitize_fits_extname(name)
+    cand = base
+    n = 2
+    while cand.upper() in used:
+        suffix = f"_{n}"
+        cand = base[: max(1, 60 - len(suffix))] + suffix
+        n += 1
+    used.add(cand.upper())
+    return cand
+
+
+def _prepare_fits_image_data(img_array: np.ndarray) -> tuple[np.ndarray, bool]:
+    """
+    Convert common image layouts into FITS-ready layout.
+
+    Returns:
+        (data_for_fits, is_rgb)
+
+    FITS-ready output:
+      - mono  -> (H, W)
+      - color -> (C, H, W)
+
+    Accepted inputs:
+      - HxW
+      - HxWx1
+      - 1xHxW
+      - HxWx3 / HxWx4
+      - 3xHxW / 4xHxW
+    """
+    arr = np.asarray(img_array)
+
+    if arr.ndim == 2:
+        return np.ascontiguousarray(arr), False
+
+    if arr.ndim != 3:
+        raise ValueError(f"Unsupported FITS image shape: {arr.shape}")
+
+    # Mono HWC
+    if arr.shape[2] == 1:
+        return np.ascontiguousarray(arr[:, :, 0]), False
+
+    # Mono CHW
+    if arr.shape[0] == 1:
+        return np.ascontiguousarray(arr[0, :, :]), False
+
+    # Strong preference: if trailing dimension is 3/4, treat as HWC
+    if arr.shape[2] in (3, 4):
+        rgb = arr[:, :, :3]
+        return np.ascontiguousarray(np.transpose(rgb, (2, 0, 1))), True
+
+    # Otherwise if leading dimension is 3/4, treat as CHW
+    if arr.shape[0] in (3, 4):
+        rgb = arr[:3, :, :]
+        return np.ascontiguousarray(rgb), True
+
+    raise ValueError(f"Cannot determine mono/color layout for FITS export: {arr.shape}")
+
+
+def _apply_fits_shape_keywords(hdr: fits.Header, data_for_fits: np.ndarray) -> fits.Header:
+    """
+    Force NAXIS keywords to match the exact ndarray that will be written.
+    """
+    # Clear stale axis keywords first
+    for k in ("NAXIS", "NAXIS1", "NAXIS2", "NAXIS3", "NAXIS4", "NAXIS5"):
+        if k in hdr:
+            del hdr[k]
+
+    if data_for_fits.ndim == 2:
+        h, w = data_for_fits.shape
+        hdr["NAXIS"] = 2
+        hdr["NAXIS1"] = int(w)
+        hdr["NAXIS2"] = int(h)
+
+    elif data_for_fits.ndim == 3:
+        c, h, w = data_for_fits.shape
+        hdr["NAXIS"] = 3
+        hdr["NAXIS1"] = int(w)
+        hdr["NAXIS2"] = int(h)
+        hdr["NAXIS3"] = int(c)
+
+    else:
+        raise ValueError(f"Unsupported FITS ndarray shape: {data_for_fits.shape}")
+
+    hdr["BSCALE"] = 1.0
+    hdr["BZERO"] = 0.0
+    return hdr
+
+
+def _minimal_fits_header_for_array(data_for_fits: np.ndarray) -> fits.Header:
+    hdr = fits.Header()
+    hdr["SIMPLE"] = True
+    hdr["BITPIX"] = -32
+    hdr["CREATOR"] = "Seti Astro Suite Pro"
+    hdr.add_history("Written by Seti Astro Suite Pro")
+    return _apply_fits_shape_keywords(hdr, data_for_fits)
+
+
+def _build_fits_header_for_export(data_for_fits, original_header=None, wcs_header=None):
+    """
+    Build a FITS header whose dimensional keywords match data_for_fits exactly.
+    data_for_fits must already be FITS-ready:
+      - mono  -> (H, W)
+      - color -> (C, H, W)
+    """
+    if _is_header_obj(original_header):
+        if isinstance(original_header, fits.Header):
+            safe_header = _drop_invalid_cards(original_header)
+            src_items = safe_header.items()
+        else:
+            safe_header = original_header
+            src_items = safe_header.items()
+
+        fits_header = fits.Header()
+        for key, value in src_items:
+            if isinstance(key, str) and key.startswith("XISF:"):
+                continue
+            if key in (
+                "SIMPLE", "BITPIX",
+                "NAXIS", "NAXIS1", "NAXIS2", "NAXIS3", "NAXIS4", "NAXIS5",
+                "EXTEND", "PCOUNT", "GCOUNT",
+                "BSCALE", "BZERO",
+                "RANGE_LOW", "RANGE_HIGH"
+            ):
+                continue
+            if isinstance(value, dict) and "value" in value:
+                value = value["value"]
+            try:
+                fits_header[key] = value
+            except Exception:
+                pass
+    else:
+        fits_header = _minimal_fits_header_for_array(data_for_fits)
+
+    if isinstance(wcs_header, fits.Header):
+        for key, value in wcs_header.items():
+            if key in (
+                "SIMPLE", "BITPIX",
+                "NAXIS", "NAXIS1", "NAXIS2", "NAXIS3", "NAXIS4", "NAXIS5",
+                "EXTEND", "PCOUNT", "GCOUNT",
+                "BSCALE", "BZERO", "END"
+            ):
+                continue
+            try:
+                fits_header[key] = value
+            except Exception:
+                pass
+
+    return _apply_fits_shape_keywords(fits_header, data_for_fits)
+
+
+def _quantize_fits_data(data_for_fits: np.ndarray, bit_depth: str) -> tuple[np.ndarray, int]:
+    bd = (bit_depth or "32-bit floating point").lower()
+
+    if bd == "8-bit":
+        out = (np.clip(data_for_fits, 0, 1) * 255.0).astype(np.uint8)
+        return np.ascontiguousarray(out), 8
+
+    if bd == "16-bit":
+        out = (np.clip(data_for_fits, 0, 1) * 65535.0).astype(np.uint16)
+        return np.ascontiguousarray(out), 16
+
+    if bd == "32-bit unsigned":
+        out = (np.clip(data_for_fits, 0, 1) * 4294967295.0).astype(np.uint32)
+        return np.ascontiguousarray(out), 32
+
+    out = np.asarray(data_for_fits, dtype=np.float32, order="C")
+    return out, -32
+
+def _sanitize_fits_colname(name: str, fallback: str = "COL") -> str:
+    txt = str(name or fallback).strip()
+    if not txt:
+        txt = fallback
+    txt = re.sub(r"\s+", "_", txt)
+    txt = re.sub(r"[^A-Za-z0-9_\-]", "_", txt)
+    txt = txt[:32]
+    return txt or fallback
+
+
+def _try_float_scalar(v):
+    if v is None:
+        return None
+    if isinstance(v, (bool, np.bool_)):
+        return float(v)
+    if isinstance(v, (int, float, np.integer, np.floating)):
+        try:
+            f = float(v)
+            return f if np.isfinite(f) else None
+        except Exception:
+            return None
+    try:
+        s = str(v).strip()
+        if not s:
+            return None
+        f = float(s)
+        return f if np.isfinite(f) else None
+    except Exception:
+        return None
+
+
+def _flatten_numeric_sequence_for_fits(x):
+    if x is None:
+        return None
+
+    if isinstance(x, (str, bytes, bytearray)):
+        return None
+
+    try:
+        arr = np.asarray(x)
+    except Exception:
+        return None
+
+    if arr.ndim == 0:
+        f = _try_float_scalar(arr.item())
+        if f is None:
+            return None
+        return np.array([f], dtype=np.float64)
+
+    flat = np.ravel(arr)
+    out = np.full((flat.size,), np.nan, dtype=np.float64)
+    ok_any = False
+    for i, v in enumerate(flat):
+        f = _try_float_scalar(v)
+        if f is not None:
+            out[i] = f
+            ok_any = True
+
+    return out if ok_any else None
+
+
+def _numeric_fraction_for_fits(values):
+    if not values:
+        return 0.0
+    ok = 0
+    for v in values:
+        if _try_float_scalar(v) is not None:
+            ok += 1
+    return ok / max(1, len(values))
+
+
+def _sequence_numeric_fraction_for_fits(values):
+    if not values:
+        return 0.0
+    ok = 0
+    for v in values:
+        arr = _flatten_numeric_sequence_for_fits(v)
+        if arr is not None and arr.size > 0 and np.isfinite(arr).any():
+            ok += 1
+    return ok / max(1, len(values))
+
+
+def _build_fits_table_hdu(item: dict, used_extnames: set[str]) -> fits.BinTableHDU:
+    title = str(item.get("title") or "TABLE")
+    rows = list(item.get("rows") or [])
+    headers = list(item.get("headers") or [])
+
+    nrows = len(rows)
+    ncols = len(headers) if headers else (len(rows[0]) if rows else 0)
+    if not headers:
+        headers = [f"COL_{i}" for i in range(ncols)]
+
+    col_units = item.get("column_units") or {}
+    if not isinstance(col_units, dict):
+        col_units = {}
+
+    cols = []
+
+    for c in range(ncols):
+        name = _sanitize_fits_colname(headers[c], fallback=f"COL_{c}")
+        values = []
+        for r in range(nrows):
+            try:
+                values.append(rows[r][c])
+            except Exception:
+                values.append(None)
+
+        scalar_frac = _numeric_fraction_for_fits(values)
+        vector_frac = _sequence_numeric_fraction_for_fits(values)
+
+        # Prefer vector when it's clearly vector-like
+        if vector_frac >= 0.5:
+            vecs = []
+            lengths = []
+            for v in values:
+                arr = _flatten_numeric_sequence_for_fits(v)
+                if arr is None:
+                    arr = np.array([], dtype=np.float64)
+                else:
+                    arr = np.asarray(arr, dtype=np.float64)
+                vecs.append(arr)
+                lengths.append(int(arr.size))
+
+            nonzero_lengths = [n for n in lengths if n > 0]
+            fixed_len = (len(set(nonzero_lengths)) == 1) and len(nonzero_lengths) > 0
+
+            if fixed_len:
+                n = nonzero_lengths[0]
+                arr2d = np.full((nrows, n), np.nan, dtype=np.float64)
+                for i, arr in enumerate(vecs):
+                    m = min(n, arr.size)
+                    if m > 0:
+                        arr2d[i, :m] = arr[:m]
+                col = fits.Column(name=name, format=f"{n}D", array=arr2d)
+            else:
+                obj = np.empty((nrows,), dtype=object)
+                for i, arr in enumerate(vecs):
+                    obj[i] = np.asarray(arr, dtype=np.float64)
+                col = fits.Column(name=name, format="PD()", array=obj)
+
+            unit = col_units.get(headers[c]) or col_units.get(name)
+            if unit:
+                try:
+                    col.unit = str(unit)
+                except Exception:
+                    pass
+
+            cols.append(col)
+            continue
+
+        if scalar_frac >= 0.8:
+            arr = np.full((nrows,), np.nan, dtype=np.float64)
+            for i, v in enumerate(values):
+                f = _try_float_scalar(v)
+                if f is not None:
+                    arr[i] = f
+
+            col = fits.Column(name=name, format="D", array=arr)
+            unit = col_units.get(headers[c]) or col_units.get(name)
+            if unit:
+                try:
+                    col.unit = str(unit)
+                except Exception:
+                    pass
+            cols.append(col)
+            continue
+
+        # fallback: text column
+        txt_vals = ["" if v is None else str(v) for v in values]
+        maxlen = max(1, min(512, max((len(s) for s in txt_vals), default=1)))
+        arr = np.asarray(txt_vals, dtype=f"<U{maxlen}")
+        cols.append(fits.Column(name=name, format=f"{maxlen}A", array=arr))
+
+    extname = _unique_extname(title, used_extnames)
+    hdu = fits.BinTableHDU.from_columns(cols, name=extname)
+
+    try:
+        hdu.header["EXTNAME"] = extname
+        hdu.header["BUNDTYPE"] = "TABLE"
+        if str(item.get("doc_subtype", "")).lower() == "vector":
+            hdu.header["TABTYPE"] = "VECTOR"
+        elif str(item.get("doc_type", "")).lower() == "table":
+            hdu.header["TABTYPE"] = "TABLE"
+    except Exception:
+        pass
+
+    return hdu
+
+def save_fits_bundle(
+    items: list[dict],
+    filename: str,
+    bit_depth: str = "32-bit floating point",
+    export_opts: dict | None = None,
+):
+    """
+    Save multiple views into one multi-HDU FITS.
+
+    Supported item kinds:
+      - image:
+          {
+            "kind": "image",
+            "title": str,
+            "img_array": np.ndarray,
+            "original_header": fits.Header | dict | None,
+            "wcs_header": fits.Header | dict | None,
+          }
+
+      - table:
+          {
+            "kind": "table",
+            "title": str,
+            "rows": list,
+            "headers": list,
+            "doc_type": ...,
+            "doc_subtype": ...,
+            "column_units": dict | None,
+          }
+    """
+    if not items:
+        raise ValueError("save_fits_bundle: no items supplied")
+
+    base, ext = os.path.splitext(filename)
+    if ext.lower() not in (".fits", ".fit"):
+        filename = base + ".fits"
+
+    export_opts = dict(export_opts or {})
+    hdus = []
+    used_extnames: set[str] = set()
+
+    for idx, item in enumerate(items):
+        kind = str(item.get("kind") or "image").lower()
+
+        # -------------------- TABLE HDU --------------------
+        if kind == "table":
+            hdu = _build_fits_table_hdu(item, used_extnames)
+            hdus.append(hdu)
+            print(f"[save_fits_bundle] TABLE HDU {idx}: title={item.get('title')!r}")
+            continue
+
+        # -------------------- IMAGE HDU --------------------
+        title = str(item.get("title") or f"IMAGE_{idx+1}")
+        img_array = ensure_native_byte_order(np.asarray(item["img_array"]))
+        original_header = item.get("original_header")
+        wcs_header = item.get("wcs_header")
+
+        h0, w0 = img_array.shape[:2]
+        new_h, new_w, scale = _compute_resize_target(h0, w0, export_opts)
+        if scale != 1.0 and (new_h != h0 or new_w != w0):
+            img_array = _resize_float01_image(img_array, new_h, new_w)
+            img_array = np.asarray(img_array, dtype=np.float32, order="C")
+
+            if isinstance(original_header, fits.Header):
+                original_header = _scale_wcs_in_header(original_header, scale)
+            if isinstance(wcs_header, fits.Header):
+                wcs_header = _scale_wcs_in_header(wcs_header, scale)
+
+        data_for_fits, _is_rgb = _prepare_fits_image_data(img_array)
+        data_to_write, bitpix = _quantize_fits_data(data_for_fits, bit_depth)
+
+        fits_header = _build_fits_header_for_export(
+            data_to_write,
+            original_header=original_header,
+            wcs_header=wcs_header,
+        )
+        fits_header["BITPIX"] = int(bitpix)
+        fits_header["BSCALE"] = 1.0
+        fits_header["BZERO"] = 0.0
+
+        try:
+            fits_header["BUNDTYPE"] = "IMAGE"
+        except Exception:
+            pass
+
+        if len(hdus) == 0:
+            try:
+                fits_header["OBJECT"] = title[:68]
+            except Exception:
+                pass
+
+            hdu = fits.PrimaryHDU(data=data_to_write, header=fits_header)
+            try:
+                hdu.header["BUNDLE"] = True
+                hdu.header["NITEMS"] = len(items)
+            except Exception:
+                pass
+        else:
+            for k in ("SIMPLE", "EXTEND"):
+                if k in fits_header:
+                    del fits_header[k]
+
+            extname = _unique_extname(title, used_extnames)
+            try:
+                fits_header["EXTNAME"] = extname
+            except Exception:
+                pass
+
+            hdu = fits.ImageHDU(data=data_to_write, header=fits_header, name=extname)
+
+        hdus.append(hdu)
+
+        print(
+            f"[save_fits_bundle] IMAGE HDU {idx}: title={title!r}, "
+            f"shape_in={tuple(np.asarray(item['img_array']).shape)}, "
+            f"shape_out={tuple(data_to_write.shape)}, "
+            f"dtype={data_to_write.dtype}, BITPIX={bitpix}"
+        )
+
+    if not hdus:
+        raise ValueError("save_fits_bundle: nothing to write")
+
+    # FITS requires primary HDU first. If the first chosen item was a table,
+    # create an empty primary and append everything else after it.
+    if not isinstance(hdus[0], fits.PrimaryHDU):
+        phdr = fits.Header()
+        phdr["SIMPLE"] = True
+        phdr["BITPIX"] = 8
+        phdr["NAXIS"] = 0
+        phdr["EXTEND"] = True
+        phdr["BUNDLE"] = True
+        phdr["NITEMS"] = len(items)
+        phdr["CREATOR"] = "Seti Astro Suite Pro"
+        hdus = [fits.PrimaryHDU(header=phdr)] + hdus
+
+    hdul = fits.HDUList(hdus)
+
+    try:
+        hdul.writeto(filename, overwrite=True, output_verify="fix")
+    except VerifyError as ve:
+        print(f"FITS bundle verify error while saving {filename}: {ve}")
+        for hdu in hdul:
+            bad_keys = []
+            for card in list(hdu.header.cards):
+                try:
+                    _ = str(card)
+                except Exception:
+                    bad_keys.append(card.keyword)
+            for key in bad_keys:
+                try:
+                    del hdu.header[key]
+                except Exception:
+                    pass
+        hdul.writeto(filename, overwrite=True, output_verify="fix")
+
+    print(f"Saved FITS bundle to: {filename} ({len(items)} item(s))")
+    
 def save_image(img_array,
                filename,
                original_format,
