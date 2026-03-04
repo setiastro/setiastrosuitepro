@@ -2572,9 +2572,11 @@ class DocManager(QObject):
         export_opts: dict | None = None,
     ):
         """
-        Save multiple open image views/docs into one multi-HDU FITS.
+        Save multiple open views/docs into one multi-HDU FITS.
+        Supports both image docs and table docs.
+
         `entries` should contain dicts with at least:
-            { "title": str, "doc": ImageDocument-like }
+            { "title": str, "doc": document-like, "kind": "image" | "table" }
         """
         from astropy.io import fits
         from setiastro.saspro.legacy.image_manager import save_fits_bundle as legacy_save_fits_bundle
@@ -2596,42 +2598,69 @@ class DocManager(QObject):
             if doc is None:
                 continue
 
-            img = getattr(doc, "image", None)
-            if img is None:
+            meta = getattr(doc, "metadata", {}) or {}
+            kind = str(ent.get("kind") or "").lower()
+
+            if kind == "image" or getattr(doc, "image", None) is not None:
+                img = getattr(doc, "image", None)
+                if img is None:
+                    continue
+
+                effective_header = None
+                for key in ("fits_header", "original_header", "header"):
+                    val = _to_fits_header(meta.get(key))
+                    if val is not None:
+                        effective_header = val
+                        break
+
+                wcs_hdr = _to_fits_header(meta.get("wcs_header"))
+
+                bundle_items.append({
+                    "kind": "image",
+                    "title": ent.get("title") or meta.get("display_name") or "IMAGE",
+                    "img_array": np.asarray(img),
+                    "original_header": effective_header,
+                    "wcs_header": wcs_hdr,
+                    "is_mono": bool(meta.get("is_mono", getattr(img, "ndim", 2) == 2)),
+                    "image_meta": meta.get("image_meta"),
+                    "file_meta": meta.get("file_meta"),
+                    "doc_type": meta.get("doc_type"),
+                    "doc_subtype": meta.get("doc_subtype"),
+                })
                 continue
 
-            meta = getattr(doc, "metadata", {}) or {}
+            if kind == "table" or (
+                getattr(doc, "rows", None) is not None and getattr(doc, "headers", None) is not None
+            ):
+                rows = getattr(doc, "rows", None)
+                headers = getattr(doc, "headers", None)
+                if rows is None or headers is None:
+                    continue
 
-            effective_header = None
-            for key in ("fits_header", "original_header", "header"):
-                val = _to_fits_header(meta.get(key))
-                if val is not None:
-                    effective_header = val
-                    break
+                effective_header = None
+                for key in ("fits_header", "original_header", "header"):
+                    val = _to_fits_header(meta.get(key))
+                    if val is not None:
+                        effective_header = val
+                        break
 
-            wcs_hdr = _to_fits_header(meta.get("wcs_header"))
-
-            # IMPORTANT: canonicalize every image before bundling
-            img_norm = self._normalize_bundle_export_image(img)
-            print(
-                "[DocManager.save_fits_bundle]",
-                f"title={ent.get('title')!r}",
-                f"orig_shape={np.asarray(img).shape}",
-                f"norm_shape={img_norm.shape}",
-                f"dtype={img_norm.dtype}"
-            )
-            bundle_items.append({
-                "title": ent.get("title") or meta.get("display_name") or "IMAGE",
-                "img_array": img_norm,
-                "original_header": effective_header,
-                "wcs_header": wcs_hdr,
-                "is_mono": bool(img_norm.ndim == 2),
-                "image_meta": meta.get("image_meta"),
-                "file_meta": meta.get("file_meta"),
-            })
+                bundle_items.append({
+                    "kind": "table",
+                    "title": ent.get("title") or meta.get("display_name") or "TABLE",
+                    "rows": list(rows),
+                    "headers": list(headers),
+                    "original_header": effective_header,
+                    "wcs_header": None,
+                    "doc_type": meta.get("doc_type"),
+                    "doc_subtype": meta.get("doc_subtype"),
+                    "column_units": meta.get("column_units"),
+                    "vector_length": meta.get("vector_length"),
+                    "metadata": meta,
+                })
+                continue
 
         if not bundle_items:
-            raise RuntimeError("No image views were available for FITS bundle export.")
+            raise RuntimeError("No views were available for FITS bundle export.")
 
         final_bit_depth = bit_depth_override or "32-bit floating point"
 
@@ -2640,7 +2669,7 @@ class DocManager(QObject):
             path,
             bit_depth=final_bit_depth,
             export_opts=export_opts,
-    )
+        )
 
     def save_document(
         self,

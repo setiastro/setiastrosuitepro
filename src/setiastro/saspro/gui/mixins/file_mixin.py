@@ -24,23 +24,24 @@ from typing import Sequence
 
 class FitsBundleExportDialog(QDialog):
     """
-    Lets the user choose which open image views/docs to include in a bundled FITS export.
-    Each row is checkable. Checked rows will be written as HDUs.
+    Lets the user choose which open image/table views to include in a bundled FITS export.
+    Each row is checkable. Checked items will be written as HDUs.
     """
 
-    def __init__(self, parent, docs: Sequence, active_doc=None):
+    def __init__(self, parent, entries: Sequence[dict], active_doc=None):
         super().__init__(parent)
         self.setWindowTitle("Export Bundled FITS")
-        self.resize(520, 420)
+        self.resize(620, 460)
 
-        self._docs = list(docs)
+        self._entries = list(entries)
         self._active_doc = active_doc
 
         lay = QVBoxLayout(self)
 
         info = QLabel(
-            "Choose which open image views to include in the FITS bundle.\n"
-            "Checked items will be written as image HDUs."
+            "Choose which open views to include in the FITS bundle.\n"
+            "Checked items will be written as HDUs.\n"
+            "Image views become image HDUs. Table views become FITS table HDUs."
         )
         info.setWordWrap(True)
         lay.addWidget(info)
@@ -48,20 +49,24 @@ class FitsBundleExportDialog(QDialog):
         self.list_docs = QListWidget(self)
         lay.addWidget(self.list_docs, 1)
 
-        for doc in self._docs:
-            title = self._doc_title(doc)
-            item = QListWidgetItem(title, self.list_docs)
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+        for ent in self._entries:
+            doc = ent.get("doc")
+            title = str(ent.get("title") or "Untitled")
+            tag = str(ent.get("tag") or "View")
 
-            # default checked
-            item.setCheckState(Qt.CheckState.Checked)
-
-            # stash doc ref on the item
-            item.setData(Qt.ItemDataRole.UserRole, doc)
-
-            # optionally highlight active doc
+            label = f"[{tag}] {title}"
             if doc is active_doc:
-                item.setText(f"{title}  [Active]")
+                label += "  [Active]"
+
+            item = QListWidgetItem(label, self.list_docs)
+            item.setFlags(
+                item.flags()
+                | Qt.ItemFlag.ItemIsUserCheckable
+                | Qt.ItemFlag.ItemIsEnabled
+                | Qt.ItemFlag.ItemIsSelectable
+            )
+            item.setCheckState(Qt.CheckState.Checked)
+            item.setData(Qt.ItemDataRole.UserRole, ent)
 
         row = QHBoxLayout()
 
@@ -87,18 +92,6 @@ class FitsBundleExportDialog(QDialog):
         buttons.rejected.connect(self.reject)
         lay.addWidget(buttons)
 
-    def _doc_title(self, doc) -> str:
-        try:
-            if hasattr(doc, "display_name") and callable(doc.display_name):
-                return str(doc.display_name())
-        except Exception:
-            pass
-
-        try:
-            return str((getattr(doc, "metadata", {}) or {}).get("display_name", "Untitled"))
-        except Exception:
-            return "Untitled"
-
     def _select_all(self):
         for i in range(self.list_docs.count()):
             self.list_docs.item(i).setCheckState(Qt.CheckState.Checked)
@@ -110,24 +103,25 @@ class FitsBundleExportDialog(QDialog):
     def _select_active_only(self):
         for i in range(self.list_docs.count()):
             item = self.list_docs.item(i)
-            doc = item.data(Qt.ItemDataRole.UserRole)
+            ent = item.data(Qt.ItemDataRole.UserRole) or {}
+            doc = ent.get("doc")
             item.setCheckState(
                 Qt.CheckState.Checked if doc is self._active_doc else Qt.CheckState.Unchecked
             )
 
     def _accept_if_valid(self):
-        if not self.selected_docs():
+        if not self.selected_entries():
             return
         self.accept()
 
-    def selected_docs(self):
+    def selected_entries(self):
         out = []
         for i in range(self.list_docs.count()):
             item = self.list_docs.item(i)
             if item.checkState() == Qt.CheckState.Checked:
-                doc = item.data(Qt.ItemDataRole.UserRole)
-                if doc is not None:
-                    out.append(doc)
+                ent = item.data(Qt.ItemDataRole.UserRole)
+                if ent is not None:
+                    out.append(dict(ent))
         return out
 
 _PROC_SCAN_RE = re.compile(r"^(?P<prefix>.+)_proc(?P<n>\d+)(?P<tag>_[^.]*)?$", re.IGNORECASE)
@@ -336,14 +330,20 @@ class FileMixin:
         if hasattr(self, "_rebuild_recent_menus"):
             self._rebuild_recent_menus()
     
-    def _collect_open_image_views_for_bundle(self) -> tuple[list[dict], object | None]:
+    def _collect_open_bundle_entries(self) -> tuple[list[dict], object | None]:
         """
-        Return (entries, active_doc) for currently open IMAGE views only.
-        Each entry is:
+        Return (entries, active_doc) for currently open bundle-capable views.
+        Supports:
+        - image docs
+        - table docs
+
+        Each entry:
             {
                 "title": str,
-                "doc": ImageDocument,
+                "doc": object,
                 "subwindow": QMdiSubWindow | None,
+                "kind": "image" | "table",
+                "tag": "Image" | "Table" | "Vector Table",
             }
         """
         entries: list[dict] = []
@@ -374,8 +374,24 @@ class FileMixin:
             if doc is None:
                 continue
 
+            meta = getattr(doc, "metadata", {}) or {}
             img = getattr(doc, "image", None)
-            if img is None:
+            rows = getattr(doc, "rows", None)
+            headers = getattr(doc, "headers", None)
+
+            kind = None
+            tag = None
+
+            if img is not None:
+                kind = "image"
+                tag = "Image"
+            elif rows is not None and headers is not None:
+                kind = "table"
+                if str(meta.get("doc_subtype", "")).lower() == "vector":
+                    tag = "Vector Table"
+                else:
+                    tag = "Table"
+            else:
                 continue
 
             try:
@@ -388,7 +404,7 @@ class FileMixin:
                     if hasattr(doc, "display_name") and callable(doc.display_name):
                         title = str(doc.display_name())
                     else:
-                        title = str((getattr(doc, "metadata", {}) or {}).get("display_name", "Untitled"))
+                        title = str(meta.get("display_name", "Untitled"))
                 except Exception:
                     title = "Untitled"
 
@@ -396,6 +412,8 @@ class FileMixin:
                 "title": title,
                 "doc": doc,
                 "subwindow": sw,
+                "kind": kind,
+                "tag": tag,
             }
             entries.append(ent)
 
@@ -413,26 +431,25 @@ class FileMixin:
         from setiastro.saspro.file_utils import _sanitize_filename
         from setiastro.saspro.save_options import ExportDialog
 
-        entries, active_doc = self._collect_open_image_views_for_bundle()
+        entries, active_doc = self._collect_open_bundle_entries()
         if not entries:
             QMessageBox.information(
                 self,
                 self.tr("Export FITS Bundle"),
-                self.tr("There are no open image views to export.")
+                self.tr("There are no open image or table views to export.")
             )
             return
 
-        # Use your simple checkable dialog for selection
         chooser = FitsBundleExportDialog(
             self,
-            [ent["doc"] for ent in entries],
+            entries,
             active_doc=active_doc,
         )
         if chooser.exec() != chooser.DialogCode.Accepted:
             return
 
-        selected_docs = chooser.selected_docs()
-        if not selected_docs:
+        selected_entries = chooser.selected_entries()
+        if not selected_entries:
             QMessageBox.information(
                 self,
                 self.tr("Export FITS Bundle"),
@@ -440,23 +457,10 @@ class FileMixin:
             )
             return
 
-        # Rebuild selected entries in the same visible/open-view order
-        selected_doc_ids = {id(doc) for doc in selected_docs}
-        selected_entries = [ent for ent in entries if id(ent["doc"]) in selected_doc_ids]
-
-        if not selected_entries:
-            QMessageBox.information(
-                self,
-                self.tr("Export FITS Bundle"),
-                self.tr("No valid image views were selected.")
-            )
-            return
-
-        # Initial save dir
         candidate_dir = self.settings.value("paths/last_save_dir", "", type=str) or ""
         if not candidate_dir or not os.path.isdir(candidate_dir):
             try:
-                doc = active_doc or (selected_entries[0]["doc"] if selected_entries else None)
+                doc = active_doc or (selected_entries[0].get("doc") if selected_entries else None)
                 if doc is not None:
                     orig_path = (getattr(doc, "metadata", {}) or {}).get("file_path", "") or ""
                     if "::" in orig_path:
@@ -472,9 +476,8 @@ class FileMixin:
             from pathlib import Path
             candidate_dir = str(Path.home())
 
-        # Suggested filename
         try:
-            base_doc = active_doc or selected_entries[0]["doc"]
+            base_doc = active_doc or selected_entries[0].get("doc")
             suggested = _best_doc_name(base_doc) if base_doc else "fits_bundle"
         except Exception:
             suggested = "fits_bundle"
@@ -498,7 +501,6 @@ class FileMixin:
         if before != path:
             self._log(f"Adjusted filename for safety:\n  {before}\n-> {path}")
 
-        # FITS-only export options
         dlg = ExportDialog(
             self,
             ext_norm,
