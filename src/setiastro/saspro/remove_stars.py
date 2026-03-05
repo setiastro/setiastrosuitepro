@@ -797,7 +797,296 @@ class _SyQonProcessThread(QThread):
             info["traceback"] = traceback.format_exc()
             self.finished.emit(None, None, info, str(e))
 
-from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel
+import os, time, tempfile, subprocess
+from pathlib import Path
+import numpy as np
+from astropy.io import fits
+
+class _SyQonStandaloneCLIThread(QThread):
+    progress = pyqtSignal(int, str)
+    finished = pyqtSignal(object, object, dict, str)
+
+    def __init__(
+        self,
+        input_rgb01: np.ndarray,
+        exe_path: str,
+        tile: int,
+        overlap: int,
+        use_temp_stretch: bool,
+        backend: str,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.input_rgb01 = np.asarray(input_rgb01, dtype=np.float32)
+        self.exe_path = str(exe_path)
+        self.tile = int(tile)
+        self.overlap = int(overlap)
+        self.use_temp_stretch = bool(use_temp_stretch)
+        self.backend = "Auto"
+        self._cancel = False
+
+        self._tmp_in = None
+        self._tmp_out = None
+        self._p = None
+
+    def cancel(self):
+        self._cancel = True
+        try:
+            if self._p is not None and self._p.poll() is None:
+                self._p.terminate()
+        except Exception:
+            pass
+
+    def _emit(self, pct: int, stage: str):
+        self.progress.emit(int(np.clip(pct, 0, 100)), str(stage or ""))
+
+    def run(self):
+        import threading
+        import re
+
+        info = {
+            "engine": "syqon_standalone_cli",
+            "exe_path": self.exe_path,
+            "tile": int(self.tile),
+            "overlap": int(self.overlap),
+            "temp_stretch": bool(self.use_temp_stretch),
+            "backend_requested": str(self.backend),
+        }
+
+        stdout_lines = []
+        stderr_lines = []
+
+        # real progress patterns from Starless CLI output
+        re_tile = re.compile(r"tile\s+(\d+)\s*/\s*(\d+)", re.IGNORECASE)
+        re_pct_tiles = re.compile(r"\[(\d+)%\]\s*(\d+)\s*/\s*(\d+)", re.IGNORECASE)
+
+        progress_state = {
+            "done": 0,
+            "total": 0,
+            "pct": 0,
+        }
+
+        def _update_progress_from_line(line: str):
+            line_s = line.strip()
+
+            m = re_pct_tiles.search(line_s)
+            if m:
+                pct = int(m.group(1))
+                done = int(m.group(2))
+                total = int(m.group(3))
+                progress_state["pct"] = pct
+                progress_state["done"] = done
+                progress_state["total"] = total
+
+                if total > 0 and done >= max(1, total - 2):
+                    self._emit(
+                        min(pct, 99),
+                        "Waiting on Starless CLI to stitch, finalize processing, and write the output file…"
+                    )
+                else:
+                    self._emit(pct, f"Standalone CLI: {done}/{total} tiles")
+                return
+
+            m = re_tile.search(line_s)
+            if m:
+                done = int(m.group(1))
+                total = int(m.group(2))
+                pct = int(round(100.0 * done / max(total, 1)))
+                progress_state["pct"] = pct
+                progress_state["done"] = done
+                progress_state["total"] = total
+
+                if total > 0 and done >= max(1, total - 2):
+                    self._emit(
+                        min(pct, 99),
+                        "Waiting on Starless CLI to stitch, finalize processing, and write the output file…"
+                    )
+                else:
+                    self._emit(pct, f"Standalone CLI: {done}/{total} tiles")
+                return
+
+        def _reader(pipe, label, sink):
+            try:
+                while True:
+                    line = pipe.readline()
+                    if not line:
+                        break
+                    line = line.rstrip("\r\n")
+                    sink.append(line)
+                    print(f"[Starless {label}] {line}", flush=True)
+
+                    if label == "stdout":
+                        try:
+                            _update_progress_from_line(line)
+                        except Exception as e:
+                            print(f"[Starless progress parse error] {type(e).__name__}: {e}", flush=True)
+
+            except Exception as e:
+                print(f"[Starless {label} reader error] {type(e).__name__}: {e}", flush=True)
+
+        try:
+            if self._cancel:
+                raise RuntimeError("Cancelled")
+
+            exe = Path(self.exe_path)
+            if not exe.exists():
+                raise RuntimeError(f"Standalone Starless executable not found:\n{self.exe_path}")
+
+            # temp files
+            tag = f"syqon_starless_{os.getpid()}_{int(time.time()*1000)}"
+            tmpdir = Path(tempfile.gettempdir()) / "SASpro_SyQon_StarlessCLI"
+            tmpdir.mkdir(parents=True, exist_ok=True)
+            self._tmp_in = str(tmpdir / f"{tag}_in.fits")
+            self._tmp_out = str(tmpdir / f"{tag}_out.fits")
+
+            self._emit(2, "Standalone CLI: writing temp FITS…")
+            save_image(
+                self.input_rgb01,
+                self._tmp_in,
+                original_format="fits",
+                bit_depth="32-bit floating point",
+                original_header=None,
+                is_mono=False,
+                image_meta=None,
+                file_meta=None,
+                wcs_header=None,
+            )
+
+            if self._cancel:
+                raise RuntimeError("Cancelled")
+
+            args = [
+                "--input", self._tmp_in,
+                "--output", self._tmp_out,
+                "--tile", str(int(self.tile)),
+                "--overlap", str(int(self.overlap)),
+            ]
+            if self.use_temp_stretch:
+                args.append("--temp-stretch")
+            if self.backend:
+                args += ["--backend", str(self.backend)]
+
+            cmd = [str(exe)] + args
+            info["command"] = cmd
+            info["cwd"] = str(exe.parent)
+
+            print("\n[Starless CLI launch]", flush=True)
+            print("CMD:", cmd, flush=True)
+            print("CWD:", str(exe.parent), flush=True)
+
+            self._emit(5, "Standalone CLI: starting…")
+
+            startupinfo = None
+            creationflags = 0
+            if os.name == "nt":
+                creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+
+            self._p = subprocess.Popen(
+                cmd,
+                cwd=str(exe.parent),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                stdin=subprocess.DEVNULL,
+                text=True,
+                bufsize=1,
+                universal_newlines=True,
+                startupinfo=startupinfo,
+                creationflags=creationflags,
+            )
+
+            t_out = threading.Thread(
+                target=_reader,
+                args=(self._p.stdout, "stdout", stdout_lines),
+                daemon=True,
+            )
+            t_err = threading.Thread(
+                target=_reader,
+                args=(self._p.stderr, "stderr", stderr_lines),
+                daemon=True,
+            )
+            t_out.start()
+            t_err.start()
+
+            t0 = time.time()
+            timeout_s = 20 * 60
+
+            while True:
+                if self._cancel:
+                    raise RuntimeError("Cancelled")
+
+                # TRUE success test, same concept as PI
+                if self._tmp_out and os.path.exists(self._tmp_out):
+                    print(f"[Starless watcher] Output file found: {self._tmp_out}", flush=True)
+                    self._emit(95, "Standalone CLI: output detected, loading…")
+                    time.sleep(0.5)
+                    break
+
+                # If process exited and no output yet, keep waiting briefly until timeout.
+                if self._p.poll() is not None:
+                    print(f"[Starless watcher] Process exited rc={self._p.returncode}", flush=True)
+
+                if (time.time() - t0) > timeout_s:
+                    raise RuntimeError("Standalone CLI timed out (no output file produced).")
+
+                time.sleep(0.25)
+
+            # let readers flush remaining text
+            try:
+                self._p.wait(timeout=2.0)
+            except Exception:
+                pass
+
+            t_out.join(timeout=1.0)
+            t_err.join(timeout=1.0)
+
+            info["stdout_tail"] = "\n".join(stdout_lines[-200:])
+            info["stderr_tail"] = "\n".join(stderr_lines[-200:])
+            info["returncode"] = self._p.returncode
+
+            self._emit(97, "Standalone CLI: loading output…")
+            starless_rgb01, _, _, _ = load_image(self._tmp_out)
+
+            if starless_rgb01 is None:
+                raise RuntimeError("Standalone CLI output could not be loaded.")
+
+            starless_rgb01 = np.asarray(starless_rgb01, dtype=np.float32)
+
+            if starless_rgb01.ndim == 2:
+                starless_rgb01 = np.stack([starless_rgb01] * 3, axis=-1)
+            elif starless_rgb01.ndim == 3 and starless_rgb01.shape[2] == 1:
+                starless_rgb01 = np.repeat(starless_rgb01, 3, axis=2)
+            else:
+                starless_rgb01 = starless_rgb01[..., :3]
+
+            starless_rgb01 = np.clip(starless_rgb01, 0.0, 1.0).astype(np.float32, copy=False)
+
+            self._emit(100, "Standalone CLI: complete")
+            self.finished.emit(starless_rgb01, None, info, "")
+
+        except Exception as e:
+            import traceback
+            info["stdout_tail"] = "\n".join(stdout_lines[-200:])
+            info["stderr_tail"] = "\n".join(stderr_lines[-200:])
+            info["traceback"] = traceback.format_exc()
+            self.finished.emit(None, None, info, str(e))
+
+        finally:
+            try:
+                if self._p is not None and self._p.poll() is None:
+                    self._p.terminate()
+            except Exception:
+                pass
+
+            for p in (self._tmp_in, self._tmp_out):
+                try:
+                    if p and os.path.exists(p):
+                        os.remove(p)
+                except Exception:
+                    pass
+
+from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QLineEdit
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPixmap, QIcon
 
@@ -877,9 +1166,30 @@ class SyQonStarlessDialog(QDialog):
         self.pbar.setVisible(False)
         lay.addWidget(self.pbar)
 
+        self.cmb_engine = QComboBox(self)
+        self.cmb_engine.addItem("SyQon Model (Integrated)", userData="integrated")
+        self.cmb_engine.addItem("Starless Standalone CLI", userData="standalone_cli")
+        self.lbl_cli_path = QLabel("Standalone executable:", self)
+        self.edt_cli_path = QLineEdit(self)
+        self.btn_cli_browse = QPushButton("Browse…", self)
+        self.btn_cli_browse.clicked.connect(self._browse_cli_exe)
+
+        # --- engine row ---
+        eng_box = QGroupBox("Engine", self)
+        eng_lay = QFormLayout(eng_box)
+        eng_lay.addRow("Processing engine:", self.cmb_engine)
+
+        # standalone exe row
+        cli_row = QHBoxLayout()
+        cli_row.addWidget(self.edt_cli_path, 1)
+        cli_row.addWidget(self.btn_cli_browse)
+        eng_lay.addRow(self.lbl_cli_path, cli_row)
+
+        lay.addWidget(eng_box)
+
         # --- model box ---
-        model_box = QGroupBox("Model", self)
-        model_lay = QVBoxLayout(model_box)
+        self.model_box = QGroupBox("Model", self)
+        model_lay = QVBoxLayout(self.model_box)
 
         self.lbl_model_path = QLabel("", self)
         self.lbl_model_path.setWordWrap(True)
@@ -908,7 +1218,7 @@ class SyQonStarlessDialog(QDialog):
         row.addStretch(1)
         model_lay.addLayout(row)
 
-        lay.addWidget(model_box)
+        lay.addWidget(self.model_box)
 
         # --- params (your existing ones) ---
         formw = QWidget(self)
@@ -978,11 +1288,15 @@ class SyQonStarlessDialog(QDialog):
             self.chk_mtf.setChecked(bool(s.value("syqon/use_mtf", True, type=bool)))
             self.spin_mtf_median.setValue(float(s.value("syqon/mtf_target_median", 0.10)))
             self.chk_amp.setChecked(bool(s.value("syqon/use_amp", False, type=bool)))
+            self.edt_cli_path.setText(str(s.value("syqon/standalone_cli_path", "")))
             saved = _syqon_norm_kind(str(s.value("syqon/model_kind", "nadir")))
             idx = self.cmb_model.findData(saved)
             if idx >= 0:
                 self.cmb_model.setCurrentIndex(idx)
-            
+            saved_engine = str(s.value("syqon/engine_mode", "integrated")) if s else "integrated"
+            idx = self.cmb_engine.findData(saved_engine)
+            if idx >= 0:
+                self.cmb_engine.setCurrentIndex(idx)            
         else:
             self.spin_tile.setValue(512)
             self.spin_overlap.setValue(128)
@@ -1034,12 +1348,77 @@ class SyQonStarlessDialog(QDialog):
         btns.addWidget(self.btn_close)
         lay.addLayout(btns)
 
+        self.cmb_engine.currentIndexChanged.connect(self._on_engine_changed)
         self._toggle_bg(self.chk_show_bg.isChecked())
         self.cmb_model.currentTextChanged.connect(self._on_model_changed)
         self.chk_mtf.toggled.connect(lambda on: self.spin_mtf_median.setEnabled(bool(on)))
         self.spin_mtf_median.setEnabled(self.chk_mtf.isChecked())
         self.preview_win = None
         self.chk_live_preview.toggled.connect(self._toggle_live_preview_window)
+        self._refresh_engine_ui()
+        self._refresh_state()
+
+    def _engine_mode(self) -> str:
+        return str(self.cmb_engine.currentData() or "integrated")
+
+    def _browse_cli_exe(self):
+        from PyQt6.QtWidgets import QFileDialog
+        import os
+
+        s = getattr(self.main, "settings", None)
+        start = ""
+        if s:
+            start = str(s.value("syqon/standalone_cli_path", "")) or ""
+        if not start:
+            start = self.edt_cli_path.text().strip()
+
+        filt = "Executable (*.exe)" if os.name == "nt" else "All Files (*)"
+        path, _ = QFileDialog.getOpenFileName(self, "Select Starless Standalone Executable", start, filt)
+        if path:
+            self.edt_cli_path.setText(path)
+            if s:
+                s.setValue("syqon/standalone_cli_path", path)
+
+    def _refresh_engine_ui(self):
+        standalone = (self._engine_mode() == "standalone_cli")
+
+        # Standalone CLI widgets
+        self.lbl_cli_path.setVisible(standalone)
+        self.edt_cli_path.setVisible(standalone)
+        self.btn_cli_browse.setVisible(standalone)
+
+        # Hide the whole integrated-model area in CLI mode
+        self.model_box.setVisible(not standalone)
+
+        # Integrated-model-only controls
+        self.cmb_model.setEnabled(not standalone)
+        self.btn_buy.setEnabled(not standalone)
+        self.btn_install.setEnabled(not standalone)
+        self.btn_remove.setEnabled((not standalone) and self._have_model())
+
+        # CLI mode does not support live preview or AMP
+        if standalone:
+            self.chk_live_preview.setChecked(False)
+            self.chk_amp.setChecked(False)
+
+        self.chk_live_preview.setEnabled(not standalone)
+        self.chk_amp.setEnabled(not standalone)
+
+        # Optional: temp stretch still works in both modes
+        # In integrated mode it means local MTF temp stretch.
+        # In CLI mode it maps to --temp-stretch.
+
+        # Re-pack dialog height nicely after show/hide
+        try:
+            self.adjustSize()
+        except Exception:
+            pass
+
+    def _on_engine_changed(self, *_):
+        s = getattr(self.main, "settings", None)
+        if s:
+            s.setValue("syqon/engine_mode", self._engine_mode())
+        self._refresh_engine_ui()
         self._refresh_state()
 
     def _toggle_live_preview_window(self, on: bool):
@@ -1115,8 +1494,13 @@ class SyQonStarlessDialog(QDialog):
         self.btn_buy.setEnabled(not busy)
         self.btn_install.setEnabled(not busy)
         self.btn_remove.setEnabled((not busy) and self._have_model())
+
+        self.cmb_engine.setEnabled(not busy)
+        self.btn_cli_browse.setEnabled(not busy)
+
         self.pbar.setVisible(busy)
-        self.chk_live_preview.setEnabled(not busy)
+        self.chk_live_preview.setEnabled((not busy) and self._engine_mode() != "standalone_cli")
+
         if busy:
             self.pbar.setRange(0, 100)
             self.pbar.setValue(0)
@@ -1292,6 +1676,21 @@ class SyQonStarlessDialog(QDialog):
         self.spin_bg.setVisible(on)
 
     def _refresh_state(self):
+        standalone = (self._engine_mode() == "standalone_cli")
+
+        if standalone:
+            exe_path = self.edt_cli_path.text().strip()
+            if exe_path and os.path.isfile(exe_path):
+                self.lbl.setText("Ready (Starless Standalone CLI selected).")
+                self.btn_process.setEnabled(True)
+            else:
+                self.lbl.setText(
+                    "Starless Standalone CLI mode is selected.\n\n"
+                    "Please choose the standalone Starless executable with the Browse button."
+                )
+                self.btn_process.setEnabled(False)
+            return
+
         mk = self._model_kind()
         dst = self._model_dst_path()
         url = _syqon_buy_url_for(mk)
@@ -1321,7 +1720,6 @@ class SyQonStarlessDialog(QDialog):
             "Open SyQon page for this model variant." if url else "Purchase URL not configured yet."
         )
         self.btn_install.setEnabled(True)
-
 
     # ------------------------------------------------------------------
     # buy / install / remove
@@ -1432,14 +1830,14 @@ class SyQonStarlessDialog(QDialog):
     def _process(self):
         from PyQt6.QtWidgets import QMessageBox
         import numpy as np
+        import os
 
-        if not self._have_model():
-            QMessageBox.warning(self, "SyQon", "Model is not installed. Install it first.")
-            return
+        engine_mode = self._engine_mode()
 
-        # persist settings (unchanged)
+        # Persist settings first
         s = getattr(self.main, "settings", None)
         if s:
+            s.setValue("syqon/engine_mode", engine_mode)
             s.setValue("syqon/tile_size", int(self.spin_tile.value()))
             s.setValue("syqon/overlap", int(self.spin_overlap.value()))
             s.setValue("syqon/shadow_clip", float(self.spin_shadow.value()))
@@ -1451,6 +1849,14 @@ class SyQonStarlessDialog(QDialog):
             s.setValue("syqon/mtf_target_median", float(self.spin_mtf_median.value()))
             s.setValue("syqon/use_amp", bool(self.chk_amp.isChecked()))
             s.setValue("syqon/model_kind", str(self.cmb_model.currentText()))
+            s.setValue("syqon/standalone_cli_path", self.edt_cli_path.text().strip())
+
+        # Validate tile/overlap
+        tile = int(self.spin_tile.value())
+        overlap = int(self.spin_overlap.value())
+        if overlap >= tile:
+            QMessageBox.warning(self, "SyQon", "Overlap must be smaller than tile size.")
+            return
 
         pad_edges = bool(self.chk_pad.isChecked())
         pad_pixels = int(self.spin_pad.value())
@@ -1459,9 +1865,7 @@ class SyQonStarlessDialog(QDialog):
         if self.chk_show_bg.isChecked():
             target_bg = float(self.spin_bg.value())
 
-        ckpt_path = str(self._model_dst_path())
-
-        # --- Build input (same as you have) ---
+        # --- Build base RGB input from doc (shared) ---
         src = np.asarray(self.doc.image).astype(np.float32, copy=False)
         orig_was_mono = (src.ndim == 2) or (src.ndim == 3 and src.shape[2] == 1)
         x = np.nan_to_num(src, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
@@ -1473,7 +1877,7 @@ class SyQonStarlessDialog(QDialog):
             x01 = np.clip(x, 0.0, 1.0)
 
         if x01.ndim == 2:
-            xrgb = np.stack([x01]*3, axis=-1)
+            xrgb = np.stack([x01] * 3, axis=-1)
         elif x01.ndim == 3 and x01.shape[2] == 1:
             xrgb = np.repeat(x01, 3, axis=2)
         else:
@@ -1482,38 +1886,77 @@ class SyQonStarlessDialog(QDialog):
         H0, W0 = xrgb.shape[:2]
         if pad_edges and pad_pixels > 0:
             xrgb = _pad_reflect(xrgb, pad_pixels)
+
+        # Cache values needed by finish handler (common)
+        self._scale_factor = scale_factor
+        self._H0, self._W0 = H0, W0
+        self._orig_was_mono = orig_was_mono
+        self._target_bg = target_bg
+
+        # Stop any prior thread
+        try:
+            if self.proc_thr is not None and self.proc_thr.isRunning():
+                self.proc_thr.cancel()
+                self.proc_thr.wait(250)
+        except Exception:
+            pass
+
+        self._set_busy(True)
+        self.lbl.setText("Processing…")
+
+        # -------------------------------
+        # Engine: Standalone CLI
+        # -------------------------------
+        if engine_mode == "standalone_cli":
+            exe_path = self.edt_cli_path.text().strip()
+            if not exe_path or not os.path.isfile(exe_path):
+                self._set_busy(False)
+                QMessageBox.warning(self, "SyQon", "Please select a valid Starless Standalone executable.")
+                return
+
+            # IMPORTANT: do NOT apply local MTF here; let CLI handle --temp-stretch.
+            # We'll treat chk_mtf as "use temp stretch" for the CLI.
+            use_temp_stretch = bool(self.chk_mtf.isChecked())
+            self._do_mtf = False
+            self._mtf_params = None
+
+            self.proc_thr = _SyQonStandaloneCLIThread(
+                input_rgb01=xrgb,
+                exe_path=exe_path,
+                tile=tile,
+                overlap=overlap,
+                use_temp_stretch=use_temp_stretch,
+                backend="auto",
+                parent=self
+            )
+            self.proc_thr.progress.connect(self._on_worker_progress)
+            # no preview for CLI
+            self.proc_thr.finished.connect(self._on_worker_finished)
+            self.proc_thr.start()
+            return
+
+        # -------------------------------
+        # Engine: Integrated model
+        # -------------------------------
+        if not self._have_model():
+            self._set_busy(False)
+            QMessageBox.warning(self, "SyQon", "SyQon model is not installed. Install it first.")
+            return
+
+        ckpt_path = str(self._model_dst_path())
         do_mtf = bool(self.chk_mtf.isChecked())
-        # MTF only if requested
+        self._do_mtf = do_mtf
+
         if do_mtf:
             mtf_target = float(self.spin_mtf_median.value())
             mtf_params = _mtf_params_unlinked(xrgb, shadows_clipping=-2.8, targetbg=mtf_target)
-
             x_for_net = _apply_mtf_unlinked_rgb(xrgb, mtf_params)
         else:
             mtf_params = None
             x_for_net = xrgb
 
-        # Cache values needed by finish handler
-        self._mtf_params = mtf_params
-        self._scale_factor = scale_factor
-        self._H0, self._W0 = H0, W0
-        self._orig_was_mono = orig_was_mono
-        self._target_bg = target_bg
-        self._do_mtf = do_mtf
         self._mtf_params = mtf_params
         model_kind = self._model_kind()
-
-        # Start worker thread
-        self._set_busy(True)
-        self.lbl.setText("Processing…")
-
-        # Stop any prior thread (safety)
-        try:
-            if self.proc_thr is not None and self.proc_thr.isRunning():
-                self.proc_thr.cancel()
-                self.proc_thr.wait(200)
-        except Exception:
-            pass
 
         live_preview = bool(self.chk_live_preview.isChecked())
         preview_src = x_for_net if do_mtf else xrgb
@@ -1521,8 +1964,8 @@ class SyQonStarlessDialog(QDialog):
         self.proc_thr = _SyQonProcessThread(
             x_for_net=x_for_net,
             ckpt_path=ckpt_path,
-            tile=int(self.spin_tile.value()),
-            overlap=int(self.spin_overlap.value()),
+            tile=tile,
+            overlap=overlap,
             target_bg=float(target_bg),
             shadow_clip=float(self.spin_shadow.value()),
             model_kind=model_kind,
@@ -1534,7 +1977,6 @@ class SyQonStarlessDialog(QDialog):
             preview_emit_ms=120,
             parent=self
         )
-
         self.proc_thr.progress.connect(self._on_worker_progress)
         self.proc_thr.preview.connect(self._on_worker_preview)
         self.proc_thr.finished.connect(self._on_worker_finished)
