@@ -1035,8 +1035,25 @@ class BlinkTab(QWidget):
 
         # Tree view for file names
         self.fileTree = QTreeWidget(self)
-        self.fileTree.setColumnCount(1)
-        self.fileTree.setHeaderLabels([self.tr("Image Files")])
+        self.fileTree.setColumnCount(5)
+        self.fileTree.setHeaderLabels([
+            self.tr("Image Files"),
+            self.tr("Stars"),
+            self.tr("FWHM"),
+            self.tr("Ecc"),
+            self.tr("BG"),
+        ])
+
+        # Optional: nicer alignment
+        for c in (1, 2, 3, 4):
+            self.fileTree.headerItem().setTextAlignment(c, Qt.AlignmentFlag.AlignRight)
+
+        # Optional: column widths
+        self.fileTree.setColumnWidth(0, 520)
+        self.fileTree.setColumnWidth(1, 70)
+        self.fileTree.setColumnWidth(2, 70)
+        self.fileTree.setColumnWidth(3, 70)
+        self.fileTree.setColumnWidth(4, 70)
         self.fileTree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)  # Allow multiple selections
         #self.fileTree.itemClicked.connect(self.on_item_clicked)
         self.fileTree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -1625,6 +1642,49 @@ class BlinkTab(QWidget):
             # update the "Flagged Items X/Y" label
             self.metrics_window._update_status()
 
+    #    ----    metrics to leaves    ----
+    def _update_tree_metrics_columns(self):
+        """
+        Write (Stars, FWHM, Ecc, BG) into columns 1..4 for each leaf item.
+        Uses MetricsWindow -> MetricsPanel cached arrays once they exist.
+        """
+        if not self.metrics_window:
+            return
+        panel = getattr(self.metrics_window, "metrics_panel", None)
+        if not panel or panel.metrics_data is None:
+            return
+
+        m0, m1, m2, m3 = panel.metrics_data  # FWHM, Ecc, BG, Stars
+        n = min(len(self.loaded_images), len(m0), len(m1), len(m2), len(m3))
+
+        def fmt_f(x):
+            return "" if (x is None or not np.isfinite(x)) else f"{float(x):.2f}"
+
+        def fmt_i(x):
+            try:
+                xi = int(round(float(x)))
+                return "" if xi < 0 else str(xi)
+            except Exception:
+                return ""
+
+        for item in self.get_all_leaf_items():
+            idx = self._leaf_index(item)
+            if idx is None or idx < 0 or idx >= n:
+                continue
+
+            # Stars
+            item.setText(1, fmt_i(m3[idx]))
+            # FWHM px
+            item.setText(2, fmt_f(m0[idx]))
+            # Ecc
+            item.setText(3, fmt_f(m1[idx]))
+            # BG
+            item.setText(4, fmt_f(m2[idx]))
+
+            # Right-align numeric cells
+            for c in (1, 2, 3, 4):
+                item.setTextAlignment(c, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)   
+
     # inside BlinkTab
     def _sync_metrics_flags(self):
         if self.metrics_window:
@@ -1697,7 +1757,7 @@ class BlinkTab(QWidget):
         self.loading_label.setText(self.tr("Loaded {0} images.").format(len(self.loaded_images)))
         if self.metrics_window and self.metrics_window.isVisible():
             self.metrics_window.update_metrics(self.loaded_images, order=self._tree_order_indices())
-
+        self._update_tree_metrics_columns()
         self.imagesChanged.emit(len(self.loaded_images)) 
 
     def show_metrics(self):
@@ -1722,6 +1782,7 @@ class BlinkTab(QWidget):
 
         self.metrics_window.show()
         self.metrics_window.raise_()
+        self._update_tree_metrics_columns()
 
 
     def on_metrics_point(self, metric_idx, frame_idx):
@@ -1850,10 +1911,9 @@ class BlinkTab(QWidget):
                     exp_item.setExpanded(True)
 
                     for p in by_object[obj][fil][exp]:
-                        leaf = QTreeWidgetItem([os.path.basename(p)])
+                        leaf = QTreeWidgetItem([os.path.basename(p), "", "", "", ""])
                         leaf.setData(0, Qt.ItemDataRole.UserRole, p)
                         exp_item.addChild(leaf)
-
         # 🔹 Re-apply flagged styling
         RED = Qt.GlobalColor.red
         normal = self.fileTree.palette().color(QPalette.ColorRole.WindowText)
@@ -1870,6 +1930,7 @@ class BlinkTab(QWidget):
                 item.setText(0, base)
                 item.setForeground(0, QBrush(normal))
 
+        self._update_tree_metrics_columns()
 
 
     def _after_list_changed(self, removed_indices: List[int] | None = None):
@@ -2180,8 +2241,8 @@ class BlinkTab(QWidget):
                     exp_item.setExpanded(True)
 
                     for p in by_object[obj][filt][exp]:
-                        leaf = QTreeWidgetItem([os.path.basename(p)])
-                        leaf.setData(0, Qt.ItemDataRole.UserRole, p)  
+                        leaf = QTreeWidgetItem([os.path.basename(p), "", "", "", ""])
+                        leaf.setData(0, Qt.ItemDataRole.UserRole, p)
                         exp_item.addChild(leaf)
 
         self.loading_label.setText(self.tr("Loaded {0} images.").format(len(self.loaded_images)))
@@ -2453,7 +2514,7 @@ class BlinkTab(QWidget):
 
         # Add the file item
         file_name = os.path.basename(file_path)
-        item = QTreeWidgetItem([file_name])
+        item = QTreeWidgetItem([file_name, "", "", "", ""])
         item.setData(0, Qt.ItemDataRole.UserRole, file_path)
         exposure_item.addChild(item)
 

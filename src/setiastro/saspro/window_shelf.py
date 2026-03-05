@@ -3,6 +3,8 @@ from __future__ import annotations
 from PyQt6.QtCore import Qt, QEvent, QTimer, QSize, QObject, QRect
 from PyQt6.QtWidgets import QDockWidget, QListWidget, QListWidgetItem, QMdiSubWindow, QWidget
 from PyQt6.QtGui import QIcon, QPixmap
+import uuid
+from PyQt6 import sip # ✅ PyQt6 ships sip; this is what we use
 
 WINDOW_SHELF_DEBUG = False  # flip to True to log capture/restore details
 
@@ -27,100 +29,119 @@ class WindowShelf(QDockWidget):
         self.list.setIconSize(QSize(32, 32))
         self.setWidget(self.list)
 
-        # map: QListWidgetItem -> subwindow
-        # use item id() as key because QListWidgetItem is unhashable
-        self._item2sub: dict[int, QMdiSubWindow] = {}
-        # map: subwindow -> {"geom": QRect, "max": bool}
-        self._saved_state: dict[QMdiSubWindow, dict] = {}
+        # map: token(str) -> QPointer(QMdiSubWindow)
+        # map: token(str) -> {"geom": QRect, "max": bool}
+        self._tok2sub: dict[str, QMdiSubWindow] = {}
+        self._saved_state: dict[str, dict] = {}
 
         self.list.itemClicked.connect(self._restore)
 
     # ---- public API used by the interceptor ----
     def pre_capture_state(self, sub: QMdiSubWindow):
-        """Capture normal geometry/max state BEFORE we hide/minimize."""
-        if not sub:
+        if self._is_dead(sub):
             return
+
+        tok = getattr(sub, "_shelf_token", None)
+        if not tok:
+            tok = uuid.uuid4().hex
+            sub._shelf_token = tok
+
         was_max = sub.isMaximized()
-        # If was maximized, normalGeometry() holds the pre-max rect; otherwise use geometry()
         g = sub.normalGeometry() if was_max else sub.geometry()
         if not g.isValid():
             g = sub.geometry()
-        self._saved_state[sub] = {"geom": QRect(g), "max": bool(was_max)}
-        _dbg(self, f"CAPTURE for '{sub.windowTitle()}': max={was_max}, geom={g}")
+
+        self._saved_state[tok] = {"geom": QRect(g), "max": bool(was_max)}
 
     def add_entry(self, sub: QMdiSubWindow):
-        """Add a button to the shelf for `sub` (state must be pre-captured)."""
-        if sub is None or sub.widget() is None:
+        if self._is_dead(sub) or sub.widget() is None:
             return
 
-        title = sub.windowTitle() or self.tr("Untitled")
-        # strip leading dot and Active prefix for the shelf display text only
+        tok = getattr(sub, "_shelf_token", None)
+        if not tok:
+            tok = uuid.uuid4().hex
+            sub._shelf_token = tok
 
-        # Remove any number of leading glyphs like ■ ● ◆ ▲ etc.
+        # store mapping
+        self._tok2sub[tok] = sub
+
+        # auto-remove when Qt deletes the subwindow (Explorer close, etc.)
+        try:
+            sub.destroyed.connect(lambda *_ , t=tok: self._on_sub_destroyed(t))
+        except Exception:
+            pass
+
+        title = sub.windowTitle() or self.tr("Untitled")
         while len(title) >= 2 and title[1] == " " and title[0] in "■●◆▲▪▫•◼◻◾◽":
             title = title[2:]
-
-        # Remove leading 'Active View: ' if present
         if title.startswith("Active View: "):
             title = title[len("Active View: "):]
 
-        # Best-effort thumbnail from the view's QLabel (if present)
         icon = QIcon()
         w = sub.widget()
         pm = getattr(getattr(w, "label", None), "pixmap", lambda: None)()
         if isinstance(pm, QPixmap) and not pm.isNull():
-            icon = QIcon(pm.scaled(
-                64, 64,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
-            ))
+            icon = QIcon(pm.scaled(64, 64, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
         else:
             icon = QIcon.fromTheme("image-x-generic")
 
         item = QListWidgetItem(icon, title)
-        # store the subwindow via item data (so QListWidgetItem doesn't have to be a dict key)
-        item.setData(Qt.ItemDataRole.UserRole, sub)
-        self._item2sub[id(item)] = sub
+        item.setData(Qt.ItemDataRole.UserRole, tok)  # ✅ store token, not sub
         self.list.addItem(item)
         self.show()
-        _dbg(self, f"ADD entry for '{title}' (items={self.list.count()})")
+
+    def _on_sub_destroyed(self, tok: str):
+        # Called when the subwindow is deleted by Qt
+        self._remove_item_for_token(tok)
+        self._tok2sub.pop(tok, None)
+        self._saved_state.pop(tok, None)
+        if self.list.count() == 0:
+            self.hide()
+
+    def _remove_item_for_token(self, tok: str):
+        for i in range(self.list.count()):
+            it = self.list.item(i)
+            if it.data(Qt.ItemDataRole.UserRole) == tok:
+                self.list.takeItem(i)
+                break
 
     # ---- restore flow ----
     def _restore(self, item: QListWidgetItem):
-        sub = item.data(Qt.ItemDataRole.UserRole)
-        if not sub:
+        tok = item.data(Qt.ItemDataRole.UserRole)
+        if not tok:
             return
 
-        # Remove the shelf button first
+        # remove shelf item first
         row = self.list.row(item)
         self.list.takeItem(row)
-        self._item2sub.pop(id(item), None)
 
-        st = self._saved_state.get(sub, None)
-        title = sub.windowTitle()
-        _dbg(self, f"RESTORE '{title}': have_state={bool(st)}")
+        sub = self._tok2sub.get(tok)
+
+        # if deleted/closed, just cleanup
+        if self._is_dead(sub):
+            self._tok2sub.pop(tok, None)
+            self._saved_state.pop(tok, None)
+            if self.list.count() == 0:
+                self.hide()
+            return
+
+        st = self._saved_state.get(tok, None)
 
         try:
             if st and st.get("max", False):
-                _dbg(self, f" → showMaximized()")
                 sub.showMaximized()
             else:
-                # normal window → restore the exact rectangle
-                r = QRect()
-                if st and isinstance(st.get("geom"), QRect):
-                    r = QRect(st["geom"])
-                _dbg(self, f" → target rect={r} (valid={r.isValid()})")
+                r = QRect(st["geom"]) if (st and isinstance(st.get("geom"), QRect)) else QRect()
 
                 def apply_rect():
+                    if self._is_dead(sub):
+                        return
                     if r.isValid() and not sub.isMaximized():
-                        # Apply both ways; some styles ignore one or the other during layout churn
                         sub.setWindowState(Qt.WindowState.WindowNoState)
                         sub.resize(r.size())
                         sub.move(r.topLeft())
                         sub.setGeometry(r)
-                        _dbg(self, f"   reapplied rect now={sub.geometry()}")
 
-                # Pre-apply (helps avoid the tiny default)
                 if r.isValid():
                     sub.setWindowState(Qt.WindowState.WindowNoState)
                     sub.setGeometry(r)
@@ -128,31 +149,33 @@ class WindowShelf(QDockWidget):
                     sub.move(r.topLeft())
 
                 sub.showNormal()
-                # Once MDI has activated and re-laid out, re-apply a couple of times
                 QTimer.singleShot(0, apply_rect)
                 QTimer.singleShot(30, apply_rect)
                 QTimer.singleShot(120, apply_rect)
 
             mdi = sub.mdiArea()
-            if mdi is not None:
+            if mdi is not None and not self._is_dead(mdi):
                 mdi.setActiveSubWindow(sub)
 
             sub.raise_()
             sub.activateWindow()
         finally:
+            # cleanup saved state for that token once restored
+            self._tok2sub.pop(tok, None)
+            self._saved_state.pop(tok, None)
+
             if self.list.count() == 0:
                 self.hide()
 
     def remove_for_subwindow(self, sub):
-        if not sub:
+        if self._is_dead(sub):
             return
-        for i in range(self.list.count()):
-            item = self.list.item(i)
-            if item.data(Qt.ItemDataRole.UserRole) is sub:
-                self._item2sub.pop(id(item), None)
-                self.list.takeItem(i)
-                break
-        self._saved_state.pop(sub, None)   # ← also forget geometry for that sub
+        tok = getattr(sub, "_shelf_token", None)
+        if not tok:
+            return
+        self._remove_item_for_token(tok)
+        self._tok2sub.pop(tok, None)
+        self._saved_state.pop(tok, None)
         if self.list.count() == 0:
             self.hide()
 
@@ -166,6 +189,13 @@ class WindowShelf(QDockWidget):
         self._item2sub.clear()
         self._saved_state.clear()
         self.hide()
+
+    def _is_dead(self, obj) -> bool:
+        try:
+            return obj is None or sip.isdeleted(obj)
+        except Exception:
+            # if sip can’t inspect it, be conservative
+            return obj is None
 
 from PyQt6.QtWidgets import QMdiArea
 

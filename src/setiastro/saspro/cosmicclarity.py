@@ -594,9 +594,22 @@ class CosmicClarityDialogPro(QDialog):
 
         # Buttons
         row = QHBoxLayout()
+
+        self.btn_clear_cache = QPushButton(self.tr("Clear AI Cache"))
+        self.btn_clear_cache.setToolTip(
+            "Clears cached AI models from RAM/VRAM.\n"
+            "This makes the next run slower (models must reload).\n\n"
+            "Use if you are low on memory or troubleshooting."
+        )
+        self.btn_clear_cache.clicked.connect(self._clear_ai_cache_clicked)
+
         b_run   = QPushButton(self.tr("Execute")); b_run.clicked.connect(self._run_main)
         b_close = QPushButton(self.tr("Close"));   b_close.clicked.connect(self.reject)
-        row.addStretch(1); row.addWidget(b_run); row.addWidget(b_close)
+
+        row.addWidget(self.btn_clear_cache)
+        row.addStretch(1)
+        row.addWidget(b_run)
+        row.addWidget(b_close)
         v.addLayout(row)
 
         self._mode_changed()  # set initial visibility
@@ -620,6 +633,46 @@ class CosmicClarityDialogPro(QDialog):
         self.chk_dn_compat.toggled.connect(self._save_cc_ui_settings)
 
         self.resize(560, 540)
+
+    def _clear_ai_cache_clicked(self):
+        # Don’t allow cache clearing mid-run (can invalidate active model refs)
+        if self._engine_thread is not None and self._engine_thread.isRunning():
+            QMessageBox.information(self, "Cosmic Clarity", "Please wait for the current run to finish before clearing cache.")
+            return
+
+        # Optional: “aggressive” flush
+        aggressive = True  # set False if you want gentler behavior
+
+        try:
+            # Denoise cache
+            try:
+                from setiastro.saspro.cosmicclarity_engines.denoise_engine import clear_denoise_models_cache
+                clear_denoise_models_cache(aggressive=aggressive, status_cb=print)
+            except Exception as e:
+                print(f"[CC] clear_denoise_models_cache failed: {type(e).__name__}: {e}")
+
+            # Sharpen cache (if exists)
+            try:
+                from setiastro.saspro.cosmicclarity_engines.sharpen_engine import clear_sharpen_models_cache
+                clear_sharpen_models_cache(aggressive=aggressive, status_cb=print)
+            except Exception:
+                pass
+
+            # Superres cache (if you have one)
+            # try:
+            #     from setiastro.saspro.cosmicclarity_engines.superres_engine import clear_superres_models_cache
+            #     clear_superres_models_cache(aggressive=aggressive, status_cb=print)
+            # except Exception:
+            #     pass
+
+            QMessageBox.information(
+                self,
+                "Cosmic Clarity",
+                "AI cache cleared.\n\nNext AI run will take longer because models must reload."
+            )
+
+        except Exception as e:
+            QMessageBox.warning(self, "Cosmic Clarity", f"Failed to clear AI cache:\n{e}")
 
     def _on_target_median(self, v: int):
         tm = max(0.01, min(0.50, v / 100.0))
@@ -922,7 +975,11 @@ class CosmicClarityDialogPro(QDialog):
 
         # IMPORTANT: cleanup when the thread actually finishes
         self._engine_thread.finished.connect(self._engine_cleanup_and_maybe_close)
-
+        # disable cache clearing during an active run
+        try:
+            self.btn_clear_cache.setEnabled(False)
+        except Exception:
+            pass
         self._engine_thread.start()
 
 
@@ -1168,6 +1225,13 @@ class CosmicClarityDialogPro(QDialog):
         except Exception:
             pass
         self._engine_thread = None
+
+        # ✅ re-enable cache button
+        try:
+            if hasattr(self, "btn_clear_cache") and self.btn_clear_cache is not None:
+                self.btn_clear_cache.setEnabled(True)
+        except Exception:
+            pass
 
         if self._closing_after_cancel:
             self._closing_after_cancel = False

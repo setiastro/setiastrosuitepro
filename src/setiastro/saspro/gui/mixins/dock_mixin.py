@@ -563,15 +563,21 @@ class DockMixin:
             w = sw.widget()
             if getattr(w, "base_document", None) is base:
                 try:
+                    # NEW: make sure the shelf cannot keep a stale reference
+                    if hasattr(self, "window_shelf") and self.window_shelf:
+                        self.window_shelf.remove_for_subwindow(sw)
+                except Exception:
+                    pass
+
+                try:
                     sw.close()
                 except Exception:
                     pass
-        # If none left (or even if close failed), try docman close defensively
+
         try:
             self.docman.close_document(base)
         except Exception:
             pass
-
 
     def _reveal_in_file_manager(self, path: str):
         import sys, os, subprocess
