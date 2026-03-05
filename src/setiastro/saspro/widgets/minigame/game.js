@@ -23,7 +23,6 @@ const COLORS = {
     PARTICLE_EXPLOSION: '#fa0',
     PARTICLE_THRUST: '#0ff',
     POWERUP_HP: '#f00',
-    POWERUP_HP: '#f00',
     POWERUP_FIRE: '#0ff',
     POWERUP_SHIELD: '#00ffff' // Cyan
 };
@@ -53,10 +52,126 @@ const Input = {
 };
 Input.init();
 
+// --- SECRET INPUT SEQUENCES ---
+const Secrets = {
+    buf: [],
+    max: 10,
+    lastAt: 0,
+
+    feed(ch) {
+        const now = performance.now();
+        // reset if user pauses too long between keys
+        if (now - this.lastAt > 1200) this.buf = [];
+        this.lastAt = now;
+
+        this.buf.push(String(ch).toUpperCase());
+        if (this.buf.length > this.max) this.buf.shift();
+
+        const s = this.buf.join("");
+
+        // "SOLVE" cheat
+        if (s.endsWith("SOLVE")) {
+            this.buf = [];
+            this.onSolve();
+        }
+    },
+
+    onSolve() {
+        // Only meaningful during play
+        if (gameState !== "PLAYING" || !Game.player || Game.player.dead) return;
+
+        // cute plate-solve message + reward
+        Toasts.push("ASTAP SOLVED ✅  0.92\"/px", 160, "#00ffff");
+        Toasts.push("WCS LOCKED • +1 SHIELD", 140, "#00ff00");
+
+        Game.player.shield = Math.min(1, (Game.player.shield || 0) + 1);
+        score += 500;
+        updateHUD();
+    }
+};
+
+// Hook keypress -> secrets (letters only)
+window.addEventListener("keydown", (e) => {
+    if (e.key && e.key.length === 1 && /[a-zA-Z]/.test(e.key)) {
+        Secrets.feed(e.key);
+    }
+});
+
 // --- UTILS ---
 const dist = (x1, y1, x2, y2) => Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
 const rectIntersect = (r1, r2) => !(r2.left > r1.right || r2.right < r1.left || r2.top > r1.bottom || r2.bottom < r1.top);
 const rand = (min, max) => Math.random() * (max - min) + min;
+
+// --- Canvas compat helpers (QtWebEngine safe) ---
+function roundRectCompat(ctx, x, y, w, h, r) {
+    r = Math.max(0, Math.min(r, Math.min(w, h) / 2));
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+}
+
+// --- TOASTS / ANNOUNCEMENTS ---
+const Toasts = {
+    items: [], // {text, life, maxLife, color}
+
+    push(text, frames = 150, color = '#00ffff') {
+        this.items.push({ text: String(text), life: frames, maxLife: frames, color });
+    },
+
+    update() {
+        this.items = this.items.filter(t => (t.life-- > 0));
+    },
+
+    draw(ctx) {
+        if (!this.items.length) return;
+
+        const baseY = 80;
+        const pad = 10;
+
+        ctx.save();
+        ctx.font = "bold 18px Orbitron, sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+
+        // show up to 3 toasts max
+        const shown = this.items.slice(-3);
+        for (let i = 0; i < shown.length; i++) {
+            const t = shown[i];
+            const a = Math.max(0, Math.min(1, t.life / Math.min(t.maxLife, 45))); // fade last ~45 frames
+
+            ctx.globalAlpha = 0.9 * a;
+            ctx.fillStyle = "rgba(0,0,0,0.55)";
+            ctx.strokeStyle = t.color;
+            ctx.shadowColor = t.color;
+            ctx.shadowBlur = 15;
+
+            const y = baseY + i * 34;
+            const w = Math.min(GAME_WIDTH - 80, ctx.measureText(t.text).width + 60);
+            const x = GAME_WIDTH / 2;
+
+            ctx.beginPath();
+            if (typeof ctx.roundRect === "function") {
+                ctx.beginPath();
+                ctx.roundRect(x - w / 2, y - 16, w, 32, 10);
+            } else {
+                roundRectCompat(ctx, x - w / 2, y - 16, w, 32, 10);
+            }
+            ctx.fill();
+            ctx.stroke();
+
+            ctx.shadowBlur = 0;
+            ctx.fillStyle = t.color;
+            ctx.globalAlpha = 1.0 * a;
+            ctx.fillText(t.text, x, y);
+        }
+
+        ctx.restore();
+    }
+};
 
 // --- AUDIO (Placeholder for synth) ---
 const AudioSys = {
@@ -80,6 +195,150 @@ const AudioSys = {
 };
 
 // --- CLASSES ---
+class NebulaField {
+    constructor() {
+        this.w = GAME_WIDTH;
+        this.h = GAME_HEIGHT;
+
+        this.canvas = document.createElement("canvas");
+        this.canvas.width = this.w;
+        this.canvas.height = this.h;
+        this.nctx = this.canvas.getContext("2d");
+
+        // motion
+        this.t = 0;
+        this.dx = rand(-0.25, 0.25);
+        this.dy = rand(0.08, 0.35);
+
+        this._build();
+    }
+
+    // fast value-noise-ish function (deterministic, no libs)
+    _hash(ix, iy) {
+        // integer hash -> [0,1)
+        let n = ix * 374761393 + iy * 668265263;
+        n = (n ^ (n >> 13)) * 1274126177;
+        n = (n ^ (n >> 16)) >>> 0;
+        return (n & 0xfffffff) / 0x10000000;
+    }
+
+    _smoothstep(t) { return t * t * (3 - 2 * t); }
+
+    _noise(x, y) {
+        const x0 = Math.floor(x), y0 = Math.floor(y);
+        const x1 = x0 + 1, y1 = y0 + 1;
+
+        const sx = this._smoothstep(x - x0);
+        const sy = this._smoothstep(y - y0);
+
+        const n00 = this._hash(x0, y0);
+        const n10 = this._hash(x1, y0);
+        const n01 = this._hash(x0, y1);
+        const n11 = this._hash(x1, y1);
+
+        const ix0 = n00 + (n10 - n00) * sx;
+        const ix1 = n01 + (n11 - n01) * sx;
+        return ix0 + (ix1 - ix0) * sy;
+    }
+
+    _fbm(x, y) {
+        // fractal brownian motion: 4 octaves is enough
+        let v = 0;
+        let a = 0.55;
+        let f = 0.010;
+        for (let i = 0; i < 4; i++) {
+            v += a * this._noise(x * f, y * f);
+            f *= 2.0;
+            a *= 0.55;
+        }
+        return v; // ~0..1
+    }
+
+    _build() {
+        const img = this.nctx.createImageData(this.w, this.h);
+        const d = img.data;
+
+        // Build a monochrome “nebula density” map with some filament shaping
+        for (let y = 0; y < this.h; y++) {
+            for (let x = 0; x < this.w; x++) {
+                const n = this._fbm(x, y);
+
+                // shape into wisps: push mid values up, keep lows low
+                let v = Math.pow(Math.max(0, n - 0.35) / 0.65, 1.6); // 0..1
+                v = Math.min(1, v * 1.25);
+
+                const i = (y * this.w + x) * 4;
+                // store as white in RGB, alpha is density
+                d[i + 0] = 255;
+                d[i + 1] = 255;
+                d[i + 2] = 255;
+                d[i + 3] = Math.floor(v * 220); // density -> alpha
+            }
+        }
+
+        this.nctx.putImageData(img, 0, 0);
+
+        // soften a bit to look like real gas clouds
+        this.nctx.globalCompositeOperation = "source-over";
+        this.nctx.globalAlpha = 0.35;
+        for (let k = 0; k < 3; k++) {
+            this.nctx.drawImage(this.canvas, -2, 0);
+            this.nctx.drawImage(this.canvas,  2, 0);
+            this.nctx.drawImage(this.canvas, 0, -2);
+            this.nctx.drawImage(this.canvas, 0,  2);
+        }
+        this.nctx.globalAlpha = 1.0;
+    }
+
+    _tintForLevel(lvl) {
+        // subtle astrophotography-ish palettes per level
+        const tints = [
+            [ 60, 120, 255], // blue
+            [ 80, 255, 140], // green-cyan
+            [255, 220,  90], // gold
+            [220,  90, 255], // magenta
+            [255,  80,  80], // red
+        ];
+        return tints[(lvl - 1) % tints.length];
+    }
+
+    update() {
+        this.t += 1;
+    }
+
+    draw(ctx) {
+        const [tr, tg, tb] = this._tintForLevel(level);
+
+        // parallax drift
+        const ox = (this.t * this.dx) % this.w;
+        const oy = (this.t * this.dy) % this.h;
+
+        ctx.save();
+
+        // 1) base: very faint
+        ctx.globalAlpha = 0.22;
+        ctx.drawImage(this.canvas, -ox, -oy);
+        ctx.drawImage(this.canvas, -ox + this.w, -oy);
+        ctx.drawImage(this.canvas, -ox, -oy + this.h);
+        ctx.drawImage(this.canvas, -ox + this.w, -oy + this.h);
+
+        // 2) tint pass using "source-atop" so only nebula pixels colorize
+        ctx.globalCompositeOperation = "source-atop";
+        ctx.globalAlpha = 0.20;
+        ctx.fillStyle = `rgb(${tr},${tg},${tb})`;
+        ctx.fillRect(0, 0, this.w, this.h);
+
+        // 3) add a tiny contrast glow
+        ctx.globalCompositeOperation = "screen";
+        ctx.globalAlpha = 0.08;
+        ctx.fillStyle = `rgb(${tr},${tg},${tb})`;
+        ctx.fillRect(0, 0, this.w, this.h);
+
+        ctx.restore();
+        ctx.globalCompositeOperation = "source-over";
+        ctx.globalAlpha = 1;
+    }
+}
 
 class Starfield {
     constructor() {
@@ -161,8 +420,6 @@ class Powerup {
         this.height = 30;
         this.speed = 2;
         this.active = true;
-        this.speed = 2;
-        this.active = true;
         this.color = type === 'hp' ? COLORS.POWERUP_HP : (type === 'fire' ? COLORS.POWERUP_FIRE : COLORS.POWERUP_SHIELD);
     }
 
@@ -201,9 +458,10 @@ class Powerup {
 }
 
 class Bullet {
-    constructor(x, y, vy, isPlayer) {
+    constructor(x, y, vy, isPlayer, vx = 0) {
         this.x = x;
         this.y = y;
+        this.vx = vx;            // ✅ NEW
         this.vy = vy;
         this.isPlayer = isPlayer;
         this.width = 4;
@@ -212,8 +470,13 @@ class Bullet {
     }
 
     update() {
+        this.x += this.vx;       // ✅ NEW
         this.y += this.vy;
-        if (this.y < -50 || this.y > GAME_HEIGHT + 50) this.active = false;
+
+        if (this.y < -50 || this.y > GAME_HEIGHT + 50 ||
+            this.x < -50 || this.x > GAME_WIDTH + 50) {
+            this.active = false;
+        }
     }
 
     draw(ctx) {
@@ -239,7 +502,6 @@ class Player {
         this.hp = 100;
         this.maxHp = 100;
         this.cooldown = 0;
-        this.fireRate = 10;
         this.fireRate = 10;
         this.fireRateTimer = null; // Track timeout ID
         this.dead = false;
@@ -457,23 +719,39 @@ class Boss {
             if (this.x > GAME_WIDTH - 80 || this.x < 80) this.dir *= -1;
         }
 
-        // Attacks
-        // 1. Triple Shot (Front)
+        // ---- Attacks ----
+
+        // 1) Triple Shot (Front)
         if (this.timer % 60 === 0) {
-            Game.bullets.push(new Bullet(this.x, this.y + 40, 5, false));
-            Game.bullets.push(new Bullet(this.x - 30, this.y + 30, 5, false));
-            Game.bullets.push(new Bullet(this.x + 30, this.y + 30, 5, false));
+            Game.bullets.push(new Bullet(this.x,      this.y + 40, 5, false,  0));
+            Game.bullets.push(new Bullet(this.x - 30, this.y + 30, 5, false, -1.5));
+            Game.bullets.push(new Bullet(this.x + 30, this.y + 30, 5, false,  1.5));
         }
 
-        // 2. Spread Shot (every 3s)
+        // 2) Spread Shot (every 3s) - REAL spread now
         if (this.timer % 180 === 0) {
-            for (let i = -2; i <= 2; i++) {
-                // Fake angle by setting vx
-                let b = new Bullet(this.x, this.y + 40, 4, false);
-                b.x += i * 15; // Offset start
-                b.width = 8;
+            const spread = 5;
+            const speedY = 4.2;
+            const speedX = 1.4;
+            for (let i = -spread; i <= spread; i++) {
+                const vx = i * speedX;
+                const b = new Bullet(this.x, this.y + 40, speedY, false, vx);
+                b.width = 7;
                 Game.bullets.push(b);
             }
+        }
+
+        // 3) Spiral (every ~2 frames once boss is on screen)
+        // (lightweight “bullet-hell” that looks sick)
+        if (this.y >= 100 && (this.timer % 2 === 0)) {
+            // phase it in more later if you want
+            const ang = this.timer * 0.12;
+            const speed = 2.2;
+            const vx = Math.cos(ang) * speed;
+            const vy = Math.sin(ang) * speed + 2.2; // bias downward so it plays fair
+            const b = new Bullet(this.x, this.y + 30, vy, false, vx);
+            b.width = 6;
+            Game.bullets.push(b);
         }
     }
 
@@ -531,20 +809,18 @@ const Game = {
     enemies: [],
     particles: [],
     powerups: [],
-    starfield: null,
-    waveTimer: 0,
-    enemiesToSpawn: 0,
-    spawnTimer: 0,
     powerupQueue: [],
     starfield: null,
     waveTimer: 0,
     enemiesToSpawn: 0,
     spawnTimer: 0,
+    nebula: null,
 
     init() {
         canvas.width = GAME_WIDTH;
         canvas.height = GAME_HEIGHT;
         this.starfield = new Starfield();
+        this.nebula = new NebulaField();
         this.setupUI();
         requestAnimationFrame(loop);
     },
@@ -833,6 +1109,7 @@ const Game = {
 
         this.starfield.update();
         this.player.update();
+        Toasts.update();
 
         // Spawning
         this.spawnTimer++;
@@ -945,6 +1222,7 @@ const Game = {
             this.shake *= 0.9;
             if (this.shake < 0.5) this.shake = 0;
         }
+        if (this.nebula) this.nebula.draw(ctx);
 
         // Stars
         this.starfield.draw(ctx);
@@ -956,6 +1234,7 @@ const Game = {
             this.bullets.forEach(b => b.draw(ctx));
             this.particles.forEach(p => p.draw(ctx));
         }
+        Toasts.draw(ctx);
         ctx.restore();
     }
 };
