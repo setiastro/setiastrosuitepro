@@ -1371,3 +1371,45 @@ def sharpen_rgb01(
         status_cb=status_cb,
     )
     return np.asarray(out, dtype=np.float32)
+
+def clear_sharpen_models_cache(*, aggressive: bool = False, status_cb=print) -> None:
+    global _MODELS_CACHE
+    try:
+        n = len(_MODELS_CACHE)
+        _MODELS_CACHE.clear()
+        status_cb(f"[CC Sharpen] Cleared model cache entries: {n}")
+    except Exception as e:
+        try:
+            status_cb(f"[CC Sharpen] Cache clear failed: {type(e).__name__}: {e}")
+        except Exception:
+            pass
+
+    if not aggressive:
+        return
+
+    try:
+        import gc
+        gc.collect()
+    except Exception:
+        pass
+
+    try:
+        from setiastro.saspro.runtime_torch import import_torch
+        torch = import_torch(prefer_cuda=True, prefer_xpu=False, prefer_dml=True, status_cb=lambda s: None)
+        try:
+            if getattr(torch, "cuda", None) and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                if hasattr(torch.cuda, "ipc_collect"):
+                    torch.cuda.ipc_collect()
+                status_cb("[CC Sharpen] torch.cuda.empty_cache() called")
+        except Exception:
+            pass
+        try:
+            if hasattr(torch, "backends") and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                if hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
+                    torch.mps.empty_cache()
+                    status_cb("[CC Sharpen] torch.mps.empty_cache() called")
+        except Exception:
+            pass
+    except Exception:
+        pass
