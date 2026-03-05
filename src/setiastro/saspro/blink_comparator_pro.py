@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
     QWidget, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QToolButton,
     QTreeWidget, QTreeWidgetItem, QFileDialog, QMessageBox, QProgressBar,
     QAbstractItemView, QMenu, QSplitter, QStyle, QScrollArea, QSlider, QDoubleSpinBox, QProgressDialog, QComboBox, QLineEdit, QApplication, QGridLayout, QCheckBox, QInputDialog,
-    QMdiArea, QDialogButtonBox
+    QMdiArea, QDialogButtonBox, QHeaderView
 )
 from bisect import bisect_right
 # 3rd-party (your code already expects these)
@@ -869,6 +869,13 @@ class BlinkComparatorPro(QDialog):
         # bridge tab → dialog
         self.tab.sendToStacking.connect(self.sendToStacking)
 
+    def closeEvent(self, e):
+        try:
+            if self.tab:
+                self.tab._save_tree_header_state()
+        except Exception:
+            pass
+        super().closeEvent(e)
 
 class BlinkTab(QWidget):
     imagesChanged = pyqtSignal(int)
@@ -1065,6 +1072,16 @@ class BlinkTab(QWidget):
                     color: #ffffff;  /* White text color */
                 }
             """)
+        hdr = self.fileTree.header()
+        hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        hdr.setStretchLastSection(False)
+
+        # restore last saved widths/order
+        self._restore_tree_header_state()
+
+        # save whenever user resizes/moves columns
+        hdr.sectionResized.connect(lambda *_: self._save_tree_header_state())
+        hdr.sectionMoved.connect(lambda *_: self._save_tree_header_state())        
         left_layout.addWidget(self.fileTree)
 
         # "Clear Flags" Button
@@ -1164,6 +1181,8 @@ class BlinkTab(QWidget):
         self.scroll_area.verticalScrollBar().valueChanged.connect(lambda _: self._capture_view_center_norm())
         self.imagesChanged.connect(self._update_loaded_count_label)
 
+
+
     @staticmethod
     def _ensure_float01(img):
         """
@@ -1191,6 +1210,23 @@ class BlinkTab(QWidget):
 
         return np.clip(arr, 0.0, 1.0)
 
+    def _restore_tree_header_state(self):
+        try:
+            s = QSettings()
+            hdr = self.fileTree.header()
+            state = s.value("blink/tree_header_state", None)
+            if state is not None:
+                hdr.restoreState(state)
+        except Exception:
+            pass
+
+    def _save_tree_header_state(self):
+        try:
+            s = QSettings()
+            hdr = self.fileTree.header()
+            s.setValue("blink/tree_header_state", hdr.saveState())
+        except Exception:
+            pass
 
     def _aggressive_display_boost(self, x01: np.ndarray, strength: float = 3.7) -> np.ndarray:
         """
@@ -3464,6 +3500,9 @@ class BlinkTab(QWidget):
                 return tlw
         return None
 
+    def closeEvent(self, e):
+        self._save_tree_header_state()
+        super().closeEvent(e)
 # Import centralized widgets
 from setiastro.saspro.widgets.spinboxes import CustomSpinBox, CustomDoubleSpinBox
 from setiastro.saspro.widgets.preview_dialogs import ImagePreviewDialog
