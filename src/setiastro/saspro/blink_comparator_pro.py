@@ -187,109 +187,123 @@ class MetricsPanel(QWidget):
     @staticmethod
     def _compute_one(i_entry):
         """
-        Compute (FWHM, eccentricity, star_count) using SEP on a *2x downsampled*
+        Compute (FWHM, eccentricity, background, star_count) using SEP on a fixed 2× downsampled
         mono float32 frame.
 
-        - Downsample is fixed at 2x (linear), using AREA.
-        - FWHM is converted back to full-res pixel units by multiplying by 2.
-        Optionally multiply by sqrt(2) if you want to compensate for the
-        AREA downsample's effective smoothing (see fwhm_factor below).
+        - Downsample is fixed at 2× via cv2.INTER_AREA.
+        - FWHM is computed on downsampled image and converted back to full-res pixels by *2.
         - Eccentricity is scale-invariant.
-        - Star count should be closer to full-res if we also scale minarea
-        from 16 -> 4 (area scales by 1/4).
-        """
+        - minarea is scaled down (16 -> 4) and a small ladder is used for hard frames.
 
+        Failure / no-stars behavior:
+        return "bad" metrics (fwhm=30.0, ecc=1.0, stars=0) so threshold culling catches them.
+        """
         import cv2
         import sep
+        import numpy as np
 
         idx, entry = i_entry
-        img = entry["image_data"]
+        img = entry.get("image_data", None)
 
-        data = np.asarray(img)
-        h0, w0 = data.shape[:2]
+        # default "bad" return (cull-friendly)
+        BAD_FWHM = 30.0
+        BAD_ECC  = 1.0
 
-        # ----------------------------
-        # 1) Normalize to float32 mono [0..1]
-        # ----------------------------
-        if data.ndim == 3:
-            data = data.mean(axis=2)
-
-        if data.dtype == np.uint8:
-            data = data.astype(np.float32) / 255.0
-        elif data.dtype == np.uint16:
-            data = data.astype(np.float32) / 65535.0
-        else:
-            data = data.astype(np.float32, copy=False)
-
-        # Guard: SEP expects finite values
-        if not np.isfinite(data).all():
-            data = np.nan_to_num(data, nan=0.0, posinf=1.0, neginf=0.0).astype(np.float32, copy=False)
-
-        # ----------------------------
-        # 2) Fixed 2x downsample (linear /2)
-        # ----------------------------
-        # Use integer decimation by resize to preserve speed and consistency.
-        new_w = max(16, w0 // 2)
-        new_h = max(16, h0 // 2)
-        ds = cv2.resize(data, (new_w, new_h), interpolation=cv2.INTER_AREA)
-
-        # ----------------------------
-        # 3) SEP pipeline (same as before, but minarea scaled)
-        # ----------------------------
         try:
+            if img is None:
+                orig_back = entry.get("orig_background", np.nan)
+                return idx, BAD_FWHM, BAD_ECC, orig_back, 0
+
+            data = np.asarray(img)
+            h0, w0 = data.shape[:2]
+
+            # 1) mono float32
+            if data.ndim == 3:
+                # handles RGB and HWC "fake mono"
+                data = data.mean(axis=2)
+
+            if data.dtype == np.uint8:
+                data = data.astype(np.float32) / 255.0
+            elif data.dtype == np.uint16:
+                data = data.astype(np.float32) / 65535.0
+            else:
+                data = data.astype(np.float32, copy=False)
+
+            # finite guard
+            if not np.isfinite(data).all():
+                data = np.nan_to_num(data, nan=0.0, posinf=1.0, neginf=0.0).astype(np.float32, copy=False)
+
+            # 2) fixed 2× downsample
+            new_w = max(16, int(w0 // 2))
+            new_h = max(16, int(h0 // 2))
+            ds = cv2.resize(data, (new_w, new_h), interpolation=cv2.INTER_AREA).astype(np.float32, copy=False)
+
+            # 3) SEP background + rms
             bkg = sep.Background(ds)
             back = bkg.back()
+
             try:
                 gr = float(bkg.globalrms)
             except Exception:
-                gr = float(np.median(np.asarray(bkg.rms(), dtype=np.float32)))
+                # median of rms map if globalrms missing
+                try:
+                    gr = float(np.nanmedian(np.asarray(bkg.rms(), dtype=np.float32)))
+                except Exception:
+                    gr = np.nan
 
-            # minarea: 16 at full-res ~= 4 at 2x downsample (area /4)
-            minarea = 4
+            # ensure usable err
+            if not np.isfinite(gr) or gr <= 0:
+                gr = None  # sep.extract accepts err=None
 
-            cat = sep.extract(
-                ds - back,
-                thresh=7.0,
-                err=gr,
-                minarea=minarea,
-                clean=True,
-                deblend_nthresh=32,
-            )
+            # 4) extraction ladder
+            candidates = [
+                (7.0, 4),
+                (5.0, 4),
+                (4.0, 3),
+                (3.5, 2),
+            ]
 
-            if len(cat) > 0:
-                # FWHM via geometric-mean sigma (old Blink)
-                sig = np.sqrt(cat["a"] * cat["b"]).astype(np.float32, copy=False)
-                fwhm_ds = float(np.nanmedian(2.3548 * sig))
+            cat = None
+            for thr, minarea in candidates:
+                try:
+                    cat = sep.extract(
+                        ds - back,
+                        thresh=float(thr),
+                        err=gr,
+                        minarea=int(minarea),
+                        clean=True,
+                        deblend_nthresh=32,
+                    )
+                except Exception:
+                    cat = None
 
-                # ----------------------------
-                # 4) Convert FWHM back to full-res
-                # ----------------------------
-                # Pure geometric reconversion: *2
-                # If you want the "noise reduction" compensation you mentioned:
-                #   multiply by sqrt(2) instead of 2, or 2*sqrt(2) depending on intent.
-                #
-                # Most consistent with "true full-res pixels" is factor = 2.
-                # If you insist on smoothing-compensation, set factor = 2*np.sqrt(2)
-                # (because you still have to undo scale, and then add smoothing term).
-                fwhm_factor = 2.0  # change to (2.0 * np.sqrt(2.0)) if you really want it
-                fwhm = fwhm_ds * fwhm_factor
+                if cat is not None and len(cat) > 0:
+                    break
 
-                # TRUE eccentricity
-                a = np.maximum(cat["a"].astype(np.float32, copy=False), 1e-12)
-                b = np.clip(cat["b"].astype(np.float32, copy=False), 0.0, None)
-                q = np.clip(b / a, 0.0, 1.0)
-                e_true = np.sqrt(np.maximum(0.0, 1.0 - q * q))
-                ecc = float(np.nanmedian(e_true))
+            # 5) if no stars, return "bad" metrics for culling
+            if cat is None or len(cat) == 0:
+                orig_back = entry.get("orig_background", np.nan)
+                return idx, BAD_FWHM, BAD_ECC, orig_back, 0
 
-                star_cnt = int(len(cat))
-            else:
-                fwhm, ecc, star_cnt = np.nan, np.nan, 0
+            # 6) compute FWHM + ecc
+            a = np.maximum(cat["a"].astype(np.float32, copy=False), 1e-12)
+            b = np.maximum(cat["b"].astype(np.float32, copy=False), 0.0)
+
+            sig = np.sqrt(a * b).astype(np.float32, copy=False)
+            fwhm_ds = float(np.nanmedian(2.3548 * sig))
+            fwhm = fwhm_ds * 2.0  # convert to full-res px
+
+            q = np.clip(b / a, 0.0, 1.0)
+            e_true = np.sqrt(np.maximum(0.0, 1.0 - q * q))
+            ecc = float(np.nanmedian(e_true))
+
+            star_cnt = int(len(cat))
+            orig_back = entry.get("orig_background", np.nan)
+            return idx, fwhm, ecc, orig_back, star_cnt
 
         except Exception:
-            fwhm, ecc, star_cnt = 10.0, 1.0, 0
-
-        orig_back = entry.get("orig_background", np.nan)
-        return idx, fwhm, ecc, orig_back, star_cnt
+            orig_back = entry.get("orig_background", np.nan)
+            return idx, BAD_FWHM, BAD_ECC, orig_back, 0
 
 
 
