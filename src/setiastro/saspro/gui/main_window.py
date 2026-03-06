@@ -174,7 +174,7 @@ from setiastro.saspro.resources import (
     slot5_path, slot6_path, slot7_path, slot8_path, slot9_path, pixelmath_path,
     histogram_path, mosaic_path, rescale_path, staralign_path, mask_path,
     platesolve_path, psf_path, supernova_path, starregistration_path,
-    stacking_path, pedestal_icon_path, starspike_path, aperture_path,
+    stacking_path, pedestal_icon_path, starspike_path, aperture_path, histogram_transform_path,
     jwstpupil_path, signature_icon_path, livestacking_path, hrdiagram_path,
     convoicon_path, spcc_icon_path, sasp_data_path, exoicon_path, peeker_icon,rotatearbitrary_path,
     dse_icon_path, astrobin_filters_csv_path, isophote_path, statstretch_path,
@@ -3044,6 +3044,24 @@ class AstroSuiteProMainWindow(
         dlg.show()
         self._log("Functions: opened Star Stretch.")
 
+    def _open_histogram_transform(self):
+        from setiastro.saspro.histogram_transform_pro import HistogramTransformDialogPro
+
+        sw = self.mdi.activeSubWindow()
+        if not sw:
+            QMessageBox.information(self, "No image", "Open an image first.")
+            return
+
+        doc = sw.widget().document
+        dlg = HistogramTransformDialogPro(self, doc)
+        try:
+            dlg.setWindowIcon(QIcon(histogram_path))
+        except Exception:
+            pass
+        dlg.resize(1100, 720)
+        dlg.show()
+        self._log("Functions: opened Histogram Transform.")
+
     def _open_curves_editor(self):
         from setiastro.saspro.curve_editor_pro import CurvesDialogPro
         sw = self.mdi.activeSubWindow()
@@ -5602,6 +5620,32 @@ class AstroSuiteProMainWindow(
                     pass
             return
 
+        if cid == "levels":
+            try:
+                from setiastro.saspro.levels_preset import apply_levels_via_preset
+
+                preset_dict = preset if isinstance(preset, dict) else {}
+                apply_levels_via_preset(self, base_doc, preset_dict)
+
+                try:
+                    ch = str(preset_dict.get("channel", "L"))
+                    b = float(preset_dict.get("black", 0.0))
+                    m = float(preset_dict.get("mid", 0.5))
+                    w = float(preset_dict.get("white", 1.0))
+                    self._log(
+                        f"[Replay] Applied Levels to base of '{target_sw.windowTitle()}' "
+                        f"(ch={ch}, black={b:.5f}, mid={m:.5f}, white={w:.5f})"
+                    )
+                except Exception:
+                    pass
+
+            except Exception as e:
+                try:
+                    QMessageBox.warning(self, "Levels", f"Replay-on-base failed:\n{e}")
+                except Exception:
+                    print("Levels replay-on-base failed:", e)
+            return
+
         if cid == "curves":
             try:
                 # preset = payload.get("preset") from above
@@ -6365,6 +6409,10 @@ class AstroSuiteProMainWindow(
                 "rescale": "geom_rescale",
                 "geom_rescale": "geom_rescale",
 
+                "levels": "levels",
+                "histogram_transform": "levels",
+                "histogram": "levels",
+
                 "ghs": "ghs",
                 "hyperbolic_stretch": "ghs",
                 "universal_hyperbolic_stretch": "ghs",
@@ -6759,6 +6807,28 @@ class AstroSuiteProMainWindow(
                 self._log(f"Applied Star Stretch preset to '{target_sw.windowTitle()}'")
             except Exception as e:
                 QMessageBox.warning(self, "Preset apply failed", str(e))
+            return
+
+        if cid == "levels":
+            try:
+                from setiastro.saspro.levels_preset import apply_levels_via_preset
+                apply_levels_via_preset(self, doc, preset or {})
+                try:
+                    self._log(f"Applied Levels preset to '{target_sw.windowTitle()}'")
+                except Exception:
+                    pass
+
+                # remember last headless command for replay
+                try:
+                    self._last_headless_command = {"command_id": "levels", "preset": dict(preset or {})}
+                except Exception:
+                    pass
+
+            except Exception as e:
+                try:
+                    QMessageBox.warning(self, "Levels", f"Apply failed:\n{e}")
+                except Exception:
+                    pass
             return
 
         if cid == "curves":

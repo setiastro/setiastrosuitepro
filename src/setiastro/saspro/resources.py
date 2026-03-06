@@ -238,6 +238,7 @@ class Icons:
     # Analysis
     PIXEL_MATH = property(lambda self: _resource_path('pixelmath.png'))
     HISTOGRAM = property(lambda self: _resource_path('histogram.png'))
+    HISTOGRAM_TRANSFORM = property(lambda self: _resource_path('histogram_transform.png'))
     MOSAIC = property(lambda self: _resource_path('mosaic.png'))
     PLATE_SOLVE = property(lambda self: _resource_path('platesolve.png'))
     PSF = property(lambda self: _resource_path('psf.png'))
@@ -477,6 +478,7 @@ _LEGACY_ICON_MAP = {
     'maskremove_path': 'maskremove.png',
     'pixelmath_path': 'pixelmath.png',
     'histogram_path': 'histogram.png',
+    'histogram_transform_path': 'histogram_transform.png',
     'mosaic_path': 'mosaic.png',
     'rescale_path': 'rescale.png',
     'staralign_path': 'staralign.png',

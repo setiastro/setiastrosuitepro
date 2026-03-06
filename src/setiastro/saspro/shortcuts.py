@@ -5,6 +5,7 @@ import time
 from dataclasses import dataclass
 from typing import Dict, Optional
 import uuid
+import numpy as np
 
 from PyQt6.QtCore import (Qt, QPoint, QRect, QMimeData, QSettings, QByteArray,
                           QDataStream, QIODevice, QEvent, QSize)
@@ -565,7 +566,7 @@ class DraggableToolBar(QToolBar):
 
 _PRESET_UI_IDS = {
     "stat_stretch","star_stretch","crop","curves","ghs","abe","graxpert",
-    "remove_stars","cosmic_clarity","cosmic","cosmicclarity",
+    "remove_stars","cosmic_clarity","cosmic","cosmicclarity","histogram_transform",
     "convo","convolution","deconvolution","convo_deconvo",
     "linear_fit","wavescale_hdr","wavescale_dark_enhance","wavescale_dark_enhancer",
     "remove_green","star_align","background_neutral","white_balance","clahe",
@@ -612,6 +613,18 @@ def _open_preset_editor_for_command(parent, command_id: str, initial: dict | Non
 
     if command_id == "curves":
         dlg = _CurvesPresetDialog(parent, initial=cur or {"shape":"linear","amount":0.5,"mode":"K (Brightness)"})
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
+
+    if command_id in ("levels", "histogram_transform"):
+        dlg = _LevelsPresetDialog(parent, initial=cur or {
+            "black": 0.0,
+            "mid": 0.5,
+            "white": 1.0,
+            "channel": "L",              # "L","R","G","B"
+            "live_preview": True,        # optional; UI-only but harmless
+            "apply_mode": "inplace",     # "inplace" or "new_view"
+            "new_view_title": "Levels",
+        })
         return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
 
     if command_id == "ghs":
@@ -1924,6 +1937,99 @@ class ShortcutManager:
     def remove(self, sid: str):
         # legacy single-remove (kept for callers)
         self.delete_by_id(sid, persist=True)
+
+class _LevelsPresetDialog(QDialog):
+    """
+    Preset editor for Levels (Histogram Transform).
+    Keys:
+      black: float [0..1]
+      mid:   float [0..1]
+      white: float [0..1]
+      channel: "L"|"R"|"G"|"B"
+      apply_mode: "inplace"|"new_view"
+      new_view_title: str
+    """
+    def __init__(self, parent=None, initial: dict | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Levels — Preset")
+        init = dict(initial or {})
+
+        self.sp_black = QDoubleSpinBox(self)
+        self.sp_black.setRange(0.0, 1.0)
+        self.sp_black.setDecimals(6)
+        self.sp_black.setSingleStep(0.001)
+        self.sp_black.setValue(float(init.get("black", 0.0)))
+
+        self.sp_mid = QDoubleSpinBox(self)
+        self.sp_mid.setRange(0.0, 1.0)
+        self.sp_mid.setDecimals(6)
+        self.sp_mid.setSingleStep(0.001)
+        self.sp_mid.setValue(float(init.get("mid", 0.5)))
+
+        self.sp_white = QDoubleSpinBox(self)
+        self.sp_white.setRange(0.0, 1.0)
+        self.sp_white.setDecimals(6)
+        self.sp_white.setSingleStep(0.001)
+        self.sp_white.setValue(float(init.get("white", 1.0)))
+
+        self.cmb_channel = QComboBox(self)
+        self.cmb_channel.addItem("L (Luminance)", "L")
+        self.cmb_channel.addItem("R", "R")
+        self.cmb_channel.addItem("G", "G")
+        self.cmb_channel.addItem("B", "B")
+        ch0 = str(init.get("channel", "L") or "L").upper().strip()
+        idx = self.cmb_channel.findData(ch0)
+        if idx >= 0:
+            self.cmb_channel.setCurrentIndex(idx)
+
+        self.cmb_apply = QComboBox(self)
+        self.cmb_apply.addItem("Apply in place (overwrite target)", "inplace")
+        self.cmb_apply.addItem("Apply as new view", "new_view")
+        am0 = str(init.get("apply_mode", "inplace") or "inplace")
+        j = self.cmb_apply.findData(am0)
+        if j >= 0:
+            self.cmb_apply.setCurrentIndex(j)
+
+        self.ed_title = QLineEdit(self)
+        self.ed_title.setText(str(init.get("new_view_title", "Levels") or "Levels"))
+        self.ed_title.setEnabled(self.cmb_apply.currentData() == "new_view")
+        self.cmb_apply.currentIndexChanged.connect(
+            lambda *_: self.ed_title.setEnabled(self.cmb_apply.currentData() == "new_view")
+        )
+
+        form = QFormLayout(self)
+        form.addRow("Black point:", self.sp_black)
+        form.addRow("Midtones:", self.sp_mid)
+        form.addRow("White point:", self.sp_white)
+        form.addRow("Channel:", self.cmb_channel)
+        form.addRow("Apply mode:", self.cmb_apply)
+        form.addRow("New view title:", self.ed_title)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=self
+        )
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        form.addRow(btns)
+
+    def result_dict(self) -> dict:
+        black = float(self.sp_black.value())
+        mid   = float(self.sp_mid.value())
+        white = float(self.sp_white.value())
+
+        # sanitize a bit (avoid user saving nonsense)
+        if white <= black + 1e-6:
+            white = min(1.0, black + 1e-6)
+
+        return {
+            "black": black,
+            "mid": float(np.clip(mid, 0.0, 1.0)),
+            "white": white,
+            "channel": str(self.cmb_channel.currentData() or "L"),
+            "apply_mode": str(self.cmb_apply.currentData() or "inplace"),
+            "new_view_title": self.ed_title.text().strip() or "Levels",
+        }
 
 class _StatStretchPresetDialog(QDialog):
     """

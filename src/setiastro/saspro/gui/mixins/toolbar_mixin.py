@@ -27,7 +27,7 @@ from setiastro.saspro.resources import (
     cropicon_path, openfile_path, abeicon_path, undoicon_path, redoicon_path,
     blastericon_path, hdr_path, invert_path, fliphorizontal_path,
     flipvertical_path, rotateclockwise_path, rotatecounterclockwise_path,rotatearbitrary_path,
-    rotate180_path, maskcreate_path, maskapply_path, maskremove_path,
+    rotate180_path, maskcreate_path, maskapply_path, maskremove_path, histogram_transform_path,
     pixelmath_path, histogram_path, mosaic_path, rescale_path, staralign_path,
     platesolve_path, psf_path, supernova_path, starregistration_path, csv_icon_path, collage_path,
     stacking_path, pedestal_icon_path, starspike_path, astrospike_path,
@@ -194,6 +194,7 @@ class ToolbarMixin:
         tb_fn.addAction(self.act_linear_fit)
         tb_fn.addAction(self.act_stat_stretch)
         tb_fn.addAction(self.act_star_stretch)
+        tb_fn.addAction(self.act_hist_transform)
         tb_fn.addAction(self.act_curves)
         tb_fn.addAction(self.act_ghs)
         tb_fn.addAction(self.act_abe)
@@ -893,6 +894,11 @@ class ToolbarMixin:
         self.act_curves.setIconVisibleInMenu(True)
         self.act_curves.triggered.connect(self._open_curves_editor)
 
+        self.act_hist_transform = QAction(QIcon(histogram_transform_path), self.tr("Levels..."), self)
+        self.act_hist_transform.setStatusTip(self.tr("Old-school levels (histogram transform): black point, midtones, white point"))
+        self.act_hist_transform.setIconVisibleInMenu(True)
+        self.act_hist_transform.triggered.connect(self._open_histogram_transform)
+
         self.act_ghs = QAction(QIcon(uhs_path), self.tr("Hyperbolic Stretch..."), self)
         self.act_ghs.setStatusTip(self.tr("Generalized hyperbolic stretch (α/beta/gamma, LP/HP, pivot)"))
         self.act_ghs.setIconVisibleInMenu(True)
@@ -1453,7 +1459,8 @@ class ToolbarMixin:
         reg("contsub",      self.act_contsub)
         reg("abe",          self.act_abe)
         reg("create_mask", self.act_create_mask)
-        reg("graxpert", self.act_graxpert)
+        reg("graxpert", self.act_graxpert)        
+        reg("histogram_transform", self.act_hist_transform)
         reg("remove_stars", self.act_remove_stars)
         reg("add_stars", self.act_add_stars)
         reg("pedestal",       self.act_pedestal)
