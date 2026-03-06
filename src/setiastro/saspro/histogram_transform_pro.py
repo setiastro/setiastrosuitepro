@@ -30,6 +30,31 @@ def _luma01(rgb01: np.ndarray) -> np.ndarray:
     r, g, b = rgb01[..., 0], rgb01[..., 1], rgb01[..., 2]
     return (0.2126*r + 0.7152*g + 0.0722*b).astype(np.float32)
 
+def _is_mono(img: np.ndarray) -> bool:
+    a = np.asarray(img)
+    return (a.ndim == 2) or (a.ndim == 3 and a.shape[2] == 1)
+
+def _ensure_mono01(img: np.ndarray) -> np.ndarray:
+    a = np.asarray(img).astype(np.float32, copy=False)
+    if a.ndim == 3 and a.shape[2] == 1:
+        a = a[..., 0]
+    return np.clip(a, 0.0, 1.0)
+
+def _ensure_rgb01_keep(img: np.ndarray) -> np.ndarray:
+    """
+    Like _ensure_rgb01 but DOES NOT expand mono -> 3ch.
+    Returns either HxW (mono) or HxWx3 (RGB).
+    """
+    a = np.asarray(img).astype(np.float32, copy=False)
+    if a.ndim == 3 and a.shape[2] == 1:
+        a = a[..., 0]
+    if a.ndim == 2:
+        return np.clip(a, 0.0, 1.0)
+    if a.ndim == 3 and a.shape[2] >= 3:
+        return np.clip(a[..., :3], 0.0, 1.0)
+    # fallback
+    return np.clip(a, 0.0, 1.0)
+
 def _mtf_vect(x: np.ndarray, m: float) -> np.ndarray:
     """
     Midtones transfer function M(x;m), vectorized.
@@ -128,27 +153,42 @@ def clipping_stats_channel(img01: np.ndarray, black: float, white: float, channe
 
 def apply_histogram_transform_channel(img01: np.ndarray, black: float, mid: float, white: float, channel: str) -> np.ndarray:
     """
+    Shape-preserving histogram transform.
+    - If input is mono (HxW or HxWx1): output stays mono (HxW).
+    - If input is RGB (HxWx3): output stays RGB (HxWx3).
+
     channel: 'L','R','G','B'
-    - L: apply to luma and recombine into RGB (preserve chroma)
-    - R/G/B: apply only that channel, leave others untouched
+      - mono input:
+          * L/R/G/B all behave the same (operate on the mono plane)
+      - RGB input:
+          * L: apply to luma then recombine (preserve chroma)
+          * R/G/B: apply only that channel
     """
-    a = _ensure_rgb01(img01)
     b = float(black); w = float(white); m = float(mid)
     if w <= b + 1e-8:
         w = b + 1e-8
-
     ch = str(channel).upper().strip()
+
+    # --- MONO PATH (preserve mono) ---
+    if _is_mono(img01):
+        x = _ensure_mono01(img01)
+        t = np.clip((x - b) / (w - b), 0.0, 1.0)
+        y = _mtf_vect(t, m)
+        return np.clip(y, 0.0, 1.0).astype(np.float32, copy=False)
+
+    # --- RGB PATH ---
+    a = _ensure_rgb01(img01)  # OK here: already RGB, keeps as RGB
     if ch == "L":
         Y = _rgb_to_luma(a)
         t = np.clip((Y - b) / (w - b), 0.0, 1.0)
         Y2 = _mtf_vect(t, m)
         return _recombine_luma_into_rgb(Y2, a)
 
-    idx = {"R":0, "G":1, "B":2}.get(ch, 0)
+    idx = {"R": 0, "G": 1, "B": 2}.get(ch, 0)
     out = a.copy()
-    t = np.clip((out[...,idx] - b) / (w - b), 0.0, 1.0)
-    out[...,idx] = _mtf_vect(t, m)
-    return np.clip(out, 0.0, 1.0)
+    t = np.clip((out[..., idx] - b) / (w - b), 0.0, 1.0)
+    out[..., idx] = _mtf_vect(t, m)
+    return np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
 
 def _rgb_to_luma(rgb01: np.ndarray) -> np.ndarray:
     a = _ensure_rgb01(rgb01)
@@ -357,7 +397,7 @@ class HistogramTransformDialogPro(QDialog):
         self._debounce.timeout.connect(self._recompute)
 
         self._build_ui()
-
+        self._update_channel_ui_for_image()
         # IMPORTANT: do not restore black/mid/white. Always start defaults.
         # But we do restore geometry + live checkbox.
         self._recompute()
@@ -495,6 +535,37 @@ class HistogramTransformDialogPro(QDialog):
         # initial
         self.resize(1100, 720)
 
+    def _update_channel_ui_for_image(self):
+        """
+        Disable channel selection for mono sources (HxW or HxWx1).
+        Forces channel to L and prevents choosing R/G/B.
+        """
+        try:
+            # NOTE: use the ORIGINAL doc image to decide mono vs RGB
+            src = getattr(self.document, "image", None)
+            is_mono = _is_mono(src) if src is not None else False
+        except Exception:
+            is_mono = False
+
+        try:
+            # If mono: force L and disable dropdown
+            if is_mono:
+                self.cb_channel.blockSignals(True)
+                try:
+                    idx = self.cb_channel.findData("L")
+                    if idx >= 0:
+                        self.cb_channel.setCurrentIndex(idx)
+                finally:
+                    self.cb_channel.blockSignals(False)
+
+                self.cb_channel.setEnabled(False)
+                self.cb_channel.setToolTip("Mono image: channel selection disabled (L only).")
+            else:
+                self.cb_channel.setEnabled(True)
+                self.cb_channel.setToolTip("")
+        except Exception:
+            pass
+
     # ---------- persistence ----------
     def showEvent(self, e):
         super().showEvent(e)
@@ -544,6 +615,7 @@ class HistogramTransformDialogPro(QDialog):
                     ww.blockSignals(False)
         finally:
             self._restoring_ui = False
+            self._update_channel_ui_for_image()
             self._schedule()
 
     def _make_preview_base(self, rgb01: np.ndarray) -> np.ndarray:
@@ -804,6 +876,7 @@ class HistogramTransformDialogPro(QDialog):
             for w in (self.sp_black, self.sp_mid, self.sp_white):
                 w.blockSignals(False)
         self.cb_live.setChecked(True)
+        self._update_channel_ui_for_image()
         self._schedule()
 
 #   ---   headless operations ----
@@ -816,9 +889,10 @@ def levels_array(
     channel: str = "L",
 ) -> np.ndarray:
     """
-    Headless levels on a numpy array. Returns float32 in [0,1].
+    Headless levels on a numpy array. Preserves mono vs RGB shape.
+    Returns float32 in [0,1].
     """
-    a = np.clip(np.asarray(img, dtype=np.float32), 0.0, 1.0)
+    a = _ensure_rgb01_keep(img)  # keeps mono as mono
     out = apply_histogram_transform_channel(a, float(black), float(mid), float(white), str(channel))
     return np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
 
@@ -833,29 +907,26 @@ def levels_doc(
     step_name: str = "Levels",
     apply: bool = True,
 ):
-    """
-    Headless levels on a SASpro document.
-    If apply=True, writes back via apply_edit/set_image and returns the result array.
-    If apply=False, returns the result array only.
-    """
     if doc is None or getattr(doc, "image", None) is None:
         raise ValueError("levels_doc: doc has no image")
 
-    result = levels_array(doc.image, black=black, mid=mid, white=white, channel=channel)
+    src = np.asarray(doc.image)
+    was_mono = _is_mono(src)
+
+    result = levels_array(src, black=black, mid=mid, white=white, channel=channel)
 
     if not apply:
         return result
 
-    # apply back to doc
+    meta = {"step_name": step_name, "levels": {"black": black, "mid": mid, "white": white, "channel": channel}}
+    if was_mono:
+        meta["is_mono"] = True
+
     if hasattr(doc, "apply_edit"):
-        doc.apply_edit(
-            result.astype(np.float32, copy=False),
-            metadata={"step_name": step_name, "levels": {"black": black, "mid": mid, "white": white, "channel": channel}},
-            step_name=step_name,
-        )
+        doc.apply_edit(result.astype(np.float32, copy=False), metadata=meta, step_name=step_name)
     elif hasattr(doc, "set_image"):
         doc.set_image(result, step_name=step_name)
     else:
         doc.image = result
 
-    return result        
+    return result
