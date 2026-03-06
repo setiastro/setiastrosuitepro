@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import numpy as np
 
-from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF, QSettings
+from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF, QSettings, QByteArray
 from PyQt6.QtGui import (
     QImage, QPixmap, QPainter, QColor, QPen, QTransform, QIcon, QFont, QPainterPath, QFontMetricsF, QFontDatabase, QTextCursor, QTextCharFormat, QBrush
 )
@@ -1742,6 +1742,10 @@ class SignatureInsertDialogPro(QDialog):
 
     # bake overlays into the doc
     def _affix_inserts(self):
+        try:
+            self._save_window_geometry()
+        except Exception:
+            pass        
         if not (self.inserts or self._selected_text_items() or any(isinstance(i, QGraphicsTextItem) for i in self.scene.items())):
             QMessageBox.information(self, "Signature / Insert", "Nothing to affix.")
             return
@@ -1969,7 +1973,33 @@ class SignatureInsertDialogPro(QDialog):
         arr = buf[:, :w*4].reshape((h, w, 4)).astype(np.float32)/255.0
         return arr
 
+    def _restore_window_geometry(self):
+        try:
+            s = QSettings()
+            g = s.value("signature_insert/window_geometry", None)
+            if g is not None:
+                self.restoreGeometry(g)
+        except Exception:
+            pass
+
+    def _save_window_geometry(self):
+        try:
+            s = QSettings()
+            s.setValue("signature_insert/window_geometry", self.saveGeometry())
+        except Exception:
+            pass
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        if not getattr(self, "_geom_restored", False):
+            self._geom_restored = True
+            QTimer.singleShot(0, self._restore_window_geometry)
+
     def closeEvent(self, e):
+        try:
+            self._save_window_geometry()
+        except Exception:
+            pass
         try:
             self._save_persistent_ui()
         except Exception:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import numpy as np
 from typing import Optional
-from PyQt6.QtCore import Qt, QEvent, QPointF, QRunnable, QThreadPool, pyqtSlot, QObject, pyqtSignal
+from PyQt6.QtCore import Qt, QEvent, QPointF, QRunnable, QThreadPool, pyqtSlot, QObject, pyqtSignal, QSettings, QTimer, QByteArray
 from PyQt6.QtGui import QImage, QPixmap, QPen, QBrush, QAction, QKeySequence, QColor, QWheelEvent, QIcon
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox, QLabel, QPushButton, QSlider, QSizePolicy,
@@ -162,6 +162,7 @@ class BlemishBlasterDialogPro(QDialog):
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         self.setMinimumSize(900, 650)
+        self._did_initial_fit = False
 
         self._doc = doc
         base = getattr(doc, "image", None)
@@ -344,7 +345,7 @@ class BlemishBlasterDialogPro(QDialog):
         self._update_undo_redo_buttons()
 
         self._update_display_autostretch()
-        self._fit_view()
+        #self._fit_view()
 
         # shortcuts
         a_undo = QAction(self); a_undo.setShortcut(QKeySequence.StandardKey.Undo); a_undo.triggered.connect(self._undo_step)
@@ -514,6 +515,10 @@ class BlemishBlasterDialogPro(QDialog):
                 import logging
                 logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
+        try:
+            self._save_window_geometry()
+        except Exception:
+            pass
         self.accept()
 
     # ── display helpers
@@ -530,5 +535,48 @@ class BlemishBlasterDialogPro(QDialog):
 
     def _refresh_pix(self):
         self.pix.setPixmap(self._np_to_qpix(self._display))
-        # auto-fit only on first paint; here just ensure the circle hides until move
         self.circle.setVisible(False)
+
+        if not getattr(self, "_did_initial_fit", False):
+            self._did_initial_fit = True
+            QTimer.singleShot(0, self._fit_view)
+
+    def _restore_window_geometry(self):
+        try:
+            s = QSettings()
+            g = s.value("blemish_blaster/window_geometry", None)
+            if g is not None:
+                self.restoreGeometry(g)
+        except Exception:
+            pass
+
+    def _save_window_geometry(self):
+        try:
+            s = QSettings()
+            s.setValue("blemish_blaster/window_geometry", self.saveGeometry())
+        except Exception:
+            pass
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+
+        if not getattr(self, "_geom_restored", False):
+            self._geom_restored = True
+
+            def _after_restore_refit():
+                self._restore_window_geometry()
+                # after geometry restore, viewport changes → refit
+                self._fit_view()
+
+            QTimer.singleShot(0, _after_restore_refit)
+            return
+
+        # Normal shows: optional safety refit if you want
+        QTimer.singleShot(0, self._fit_view)        
+
+    def closeEvent(self, ev):
+        try:
+            self._save_window_geometry()
+        except Exception:
+            pass
+        super().closeEvent(ev)        

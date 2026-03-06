@@ -5,7 +5,7 @@ import cv2
 import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from PyQt6.QtCore import Qt, QTimer, QRect, QRectF
+from PyQt6.QtCore import Qt, QTimer, QRect, QRectF, QSettings, QByteArray
 from PyQt6.QtGui import QImage, QPixmap, QPen, QColor, QIcon, QMovie
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, QFormLayout,
@@ -302,8 +302,8 @@ class MultiscaleDecompDialog(QDialog):
     def _build_ui(self):
         root = QHBoxLayout(self)
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        root.addWidget(splitter)
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        root.addWidget(self.splitter)
 
         # ----- LEFT: preview -----
         left_widget = QWidget(self)
@@ -548,10 +548,10 @@ class MultiscaleDecompDialog(QDialog):
         btn_row.addWidget(self.btn_close)
         right.addLayout(btn_row)
 
-        splitter.addWidget(left_widget)
-        splitter.addWidget(right_widget)
-        splitter.setStretchFactor(0, 2)
-        splitter.setStretchFactor(1, 1)
+        self.splitter.addWidget(left_widget)
+        self.splitter.addWidget(right_widget)
+        self.splitter.setStretchFactor(0, 2)
+        self.splitter.setStretchFactor(1, 1)
 
         # ----- Signals -----
         self.spin_layers.valueChanged.connect(self._on_layers_changed)
@@ -575,7 +575,7 @@ class MultiscaleDecompDialog(QDialog):
         self.btn_apply.clicked.connect(self._commit_to_doc)
         self.btn_detail_new.clicked.connect(self._send_detail_to_new_doc)
         self.btn_split_layers.clicked.connect(self._split_layers_to_docs)
-        self.btn_close.clicked.connect(self.reject)
+        self.btn_close.clicked.connect(self._on_close_clicked)
 
         # Connect viewport scroll changes
         self._connect_viewport_signals()
@@ -1386,6 +1386,8 @@ class MultiscaleDecompDialog(QDialog):
 
     # ---------- Apply to doc ----------
     def _commit_to_doc(self):
+        try: self._save_window_state()
+        except Exception: pass        
         with self._busy_popup("Applying multiscale result to document…"):        
             tuned, residual = self._build_tuned_layers()
             if tuned is None or residual is None:
@@ -1662,7 +1664,80 @@ class MultiscaleDecompDialog(QDialog):
         # ensure bit_depth etc. are sane.
         return meta
 
+    def _restore_window_state(self):
+        try:
+            s = QSettings()
+            g = s.value("msdecomp/window_geometry", None)
+            if g is not None:
+                self.restoreGeometry(g)
 
+            # splitter
+            sp = s.value("msdecomp/splitter_state", None)
+            if sp is not None and hasattr(self, "splitter"):
+                self.splitter.restoreState(sp)
+
+            # table header (column widths/order)
+            hdr = self.table.horizontalHeader() if hasattr(self, "table") else None
+            hs = s.value("msdecomp/table_header_state", None)
+            if hs is not None and hdr is not None:
+                hdr.restoreState(hs)
+
+        except Exception:
+            pass
+
+
+    def _save_window_state(self):
+        try:
+            s = QSettings()
+            s.setValue("msdecomp/window_geometry", self.saveGeometry())
+
+            if hasattr(self, "splitter"):
+                s.setValue("msdecomp/splitter_state", self.splitter.saveState())
+
+            hdr = self.table.horizontalHeader() if hasattr(self, "table") else None
+            if hdr is not None:
+                s.setValue("msdecomp/table_header_state", hdr.saveState())
+        except Exception:
+            pass
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        if getattr(self, "_geom_restored", False):
+            return
+        self._geom_restored = True
+
+        def _after():
+            self._restore_window_state()
+            # keep your existing behavior:
+            self._fit_view()
+        QTimer.singleShot(0, _after)
+
+    def closeEvent(self, ev):
+        self._closing = True
+        try:
+            self._save_window_state()
+        except Exception:
+            pass
+
+        try:
+            if hasattr(self, "_preview_timer"):
+                self._preview_timer.stop()
+            if hasattr(self, "_busy_show_timer"):
+                self._busy_show_timer.stop()
+            try:
+                self.view.horizontalScrollBar().valueChanged.disconnect(self._schedule_roi_preview)
+                self.view.verticalScrollBar().valueChanged.disconnect(self._schedule_roi_preview)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+        super().closeEvent(ev)
+
+    def _on_close_clicked(self):
+        try: self._save_window_state()
+        except Exception: pass
+        self.reject()
 
 class _MultiScaleDecompPresetDialog(QDialog):
     """

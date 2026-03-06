@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QImage, QPixmap, QMouseEvent, QCursor
 import numpy as np
 from PyQt6 import sip
-from PyQt6.QtCore import QObject, QThread, pyqtSignal, pyqtSlot, Qt, QSize, QEvent, QTimer, QSettings
+from PyQt6.QtCore import QObject, QThread, pyqtSignal, pyqtSlot, Qt, QSize, QEvent, QTimer, QSettings, QByteArray
 from PyQt6.QtWidgets import QProgressDialog, QApplication
 from .doc_manager import ImageDocument
 # use your existing stretch code
@@ -492,7 +492,7 @@ class StatisticalStretchDialog(QDialog):
         self.sld_curves.valueChanged.connect(self._save_settings)
 
         self._load_settings()
-
+        #self._restore_window_geometry()
         # Initial preview + clip stats
         self._populate_initial_preview()
 
@@ -547,6 +547,32 @@ class StatisticalStretchDialog(QDialog):
 
         s.setValue("stat_stretch/curves_enabled", self.chk_curves.isChecked())
         s.setValue("stat_stretch/curves_strength_x100", self.sld_curves.value())
+
+    def _restore_window_geometry(self):
+        try:
+            s = QSettings()
+            g = s.value("stat_stretch/window_geometry", None, type=QByteArray)
+            if g and isinstance(g, QByteArray) and not g.isEmpty():
+                self.restoreGeometry(g)
+        except Exception:
+            pass
+
+    def _save_window_geometry(self):
+        try:
+            s = QSettings()
+            s.setValue("stat_stretch/window_geometry", self.saveGeometry())
+        except Exception:
+            pass
+
+    def showEvent(self, e):
+        super().showEvent(e)
+
+        # Restore geometry once, AFTER the WM has created the real window
+        if getattr(self, "_geom_restored", False):
+            return
+        self._geom_restored = True
+
+        QTimer.singleShot(0, self._restore_window_geometry)
 
     def _show_busy(self, title: str, text: str):
         # title kept for signature compatibility; not shown
@@ -1241,7 +1267,7 @@ class StatisticalStretchDialog(QDialog):
             else:
                 # optional debug
                 print("Statistical Stretch: replay recording suppressed for this apply()")
-
+        self._save_window_geometry()
         self.close()
 
 
@@ -1312,7 +1338,7 @@ class StatisticalStretchDialog(QDialog):
                 self._main.currentDocumentChanged.disconnect(self._on_active_doc_changed)
         except Exception:
             pass
-
+        self._save_window_geometry()
         super().closeEvent(ev)
 
 

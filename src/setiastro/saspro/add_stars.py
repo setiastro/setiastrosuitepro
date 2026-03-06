@@ -4,7 +4,7 @@ import os
 import numpy as np
 
 # Qt
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QSettings, QByteArray
 from PyQt6.QtGui import QImage, QPixmap, QWheelEvent
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout,
@@ -241,9 +241,15 @@ class AddStarsDialog(QDialog):
         self.blended_image = None
         self.scale_factor = 1.0
         self._fit_once = False
-
+        self._settings = QSettings()
+        self._persist_prefix = "add_stars"
+        self._geom_restored = False
+        self._restoring_ui = True   # guards saves while we build/restore/populate        
         self._build_ui()
         self._populate_doc_combos()
+
+    def _k(self, key: str) -> str:
+        return f"{self._persist_prefix}/{key}"
 
     # UI -----------------------------------------------------------------------
     def _build_ui(self):
@@ -330,6 +336,14 @@ class AddStarsDialog(QDialog):
         self.cmb_starless.currentIndexChanged.connect(self._pick_starless_from_combo)
         self.cmb_stars.currentIndexChanged.connect(self._pick_stars_from_combo)
 
+        def _save():
+            self._save_ui_state()
+
+        self.cmb_blend.currentIndexChanged.connect(lambda *_: _save())
+        self.slider_ratio.valueChanged.connect(lambda *_: _save())
+        self.cmb_starless.currentIndexChanged.connect(lambda *_: _save())
+        self.cmb_stars.currentIndexChanged.connect(lambda *_: _save())
+
     # Populate combos with open docs (+ sentinel for file)
     def _populate_doc_combos(self):
         items = [("Select View", None)]
@@ -337,11 +351,18 @@ class AddStarsDialog(QDialog):
             items.append((name, d))
         items.append(("Load from File", "file"))
 
-        self.cmb_starless.clear()
-        self.cmb_stars.clear()
-        for label, data in items:
-            self.cmb_starless.addItem(label, data)
-            self.cmb_stars.addItem(label, data)
+        # prevent currentIndexChanged from firing while we rebuild lists
+        self.cmb_starless.blockSignals(True)
+        self.cmb_stars.blockSignals(True)
+        try:
+            self.cmb_starless.clear()
+            self.cmb_stars.clear()
+            for label, data in items:
+                self.cmb_starless.addItem(label, data)
+                self.cmb_stars.addItem(label, data)
+        finally:
+            self.cmb_starless.blockSignals(False)
+            self.cmb_stars.blockSignals(False)
 
     # File load ----------------------------------------------------------------
     def _load_from_file(self, which: str):
@@ -585,12 +606,91 @@ class AddStarsDialog(QDialog):
     # Ensure initial fit once shown
     def showEvent(self, ev):
         super().showEvent(ev)
-        # repopulate in case windows opened after dialog construction
+
         self._populate_doc_combos()
+
+        if not self._geom_restored:
+            self._geom_restored = True
+            def _after():
+                self._restore_ui_state()
+                self._save_ui_state()  # optional: commit what we restored
+            QTimer.singleShot(0, _after)
+
         if not self._fit_once:
             self._fit_once = True
             QTimer.singleShot(0, self.fit_to_preview)
 
+    def _save_ui_state(self):
+        # Don’t save while we’re initializing/restoring or before the first show
+        if getattr(self, "_restoring_ui", False) or not getattr(self, "_geom_restored", False):
+            return        
+        try:
+            s = self._settings
+            s.setValue(self._k("window_geometry"), self.saveGeometry())
+
+            s.setValue(self._k("blend_type"), str(self.cmb_blend.currentText()))
+            s.setValue(self._k("ratio"), int(self.slider_ratio.value()))
+
+            # Save selections as LABELS (stable), not doc pointers
+            s.setValue(self._k("starless_label"), str(self.cmb_starless.currentText()))
+            s.setValue(self._k("stars_label"),   str(self.cmb_stars.currentText()))
+
+            try:
+                s.sync()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+
+    def _restore_ui_state(self):
+        self._restoring_ui = True
+        try:
+            s = self._settings
+
+            g = s.value(self._k("window_geometry"), None)
+            if g is not None:
+                self.restoreGeometry(g)
+
+            # blend type
+            bt = str(s.value(self._k("blend_type"), "Screen"))
+            i = self.cmb_blend.findText(bt)
+            if i >= 0:
+                self.cmb_blend.blockSignals(True)
+                self.cmb_blend.setCurrentIndex(i)
+                self.cmb_blend.blockSignals(False)
+
+            # ratio
+            r = int(s.value(self._k("ratio"), 100))
+            self.slider_ratio.blockSignals(True)
+            self.slider_ratio.setValue(max(0, min(100, r)))
+            self.slider_ratio.blockSignals(False)
+
+            # selections by label
+            sl_lab = str(s.value(self._k("starless_label"), "Select View"))
+            st_lab = str(s.value(self._k("stars_label"), "Select View"))
+
+            j = self.cmb_starless.findText(sl_lab)
+            if j >= 0:
+                self.cmb_starless.blockSignals(True)
+                self.cmb_starless.setCurrentIndex(j)
+                self.cmb_starless.blockSignals(False)
+
+            k = self.cmb_stars.findText(st_lab)
+            if k >= 0:
+                self.cmb_stars.blockSignals(True)
+                self.cmb_stars.setCurrentIndex(k)
+                self.cmb_stars.blockSignals(False)
+
+        finally:
+            self._restoring_ui = False
+
+    def closeEvent(self, ev):
+        try:
+            self._save_ui_state()
+        except Exception:
+            pass
+        super().closeEvent(ev)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Public entry point: open dialog, then apply to active doc

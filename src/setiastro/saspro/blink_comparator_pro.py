@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional, List
 from collections import defaultdict
 # Qt
-from PyQt6.QtCore import Qt, QTimer, QEvent, QPointF, QRectF, pyqtSignal, QSettings, QPoint, QCoreApplication
+from PyQt6.QtCore import Qt, QTimer, QEvent, QPointF, QRectF, pyqtSignal, QSettings, QPoint, QCoreApplication, QByteArray
 from PyQt6.QtGui import (QAction, QIcon, QImage, QPixmap, QBrush, QColor, QPalette,
                          QKeySequence, QWheelEvent, QShortcut, QDoubleValidator, QIntValidator)
 from PyQt6.QtWidgets import (
@@ -866,15 +866,51 @@ class BlinkComparatorPro(QDialog):
         layout.addWidget(self.tab)
         self.setLayout(layout)
 
-        # bridge tab → dialog
         self.tab.sendToStacking.connect(self.sendToStacking)
 
+        self._geom_restored = False  # <- NEW
+
+    # --- NEW ---
+    def _restore_window_geometry(self):
+        try:
+            s = QSettings()
+            g = s.value("blink/window_geometry", None)   # unique key
+            if g is not None:
+                self.restoreGeometry(g)
+        except Exception:
+            pass
+
+    def _save_window_geometry(self):
+        try:
+            s = QSettings()
+            s.setValue("blink/window_geometry", self.saveGeometry())
+        except Exception:
+            pass
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+
+        if not self._geom_restored:
+            self._geom_restored = True
+
+            def _after_restore():
+                self._restore_window_geometry()
+                # If you also persist splitter (below), it restores itself in BlinkTab
+
+            QTimer.singleShot(0, _after_restore)
+
     def closeEvent(self, e):
+        try:
+            self._save_window_geometry()
+        except Exception:
+            pass
+
         try:
             if self.tab:
                 self.tab._save_tree_header_state()
         except Exception:
             pass
+
         super().closeEvent(e)
 
 class BlinkTab(QWidget):
@@ -906,6 +942,43 @@ class BlinkTab(QWidget):
         self._view_center_norm = None
         self.initUI()
         self.init_shortcuts()
+
+        self._geom_restored = False  # <- NEW
+
+    # --- NEW ---
+    def _restore_window_geometry(self):
+        try:
+            s = QSettings()
+            g = s.value("blink/window_geometry", None)   # unique key
+            if g is not None:
+                self.restoreGeometry(g)
+        except Exception:
+            pass
+
+    def _save_window_geometry(self):
+        try:
+            s = QSettings()
+            s.setValue("blink/window_geometry", self.saveGeometry())
+        except Exception:
+            pass
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+
+        if not self._geom_restored:
+            self._geom_restored = True
+
+            def _after_restore():
+                self._restore_window_geometry()
+                # If you also persist splitter (below), it restores itself in BlinkTab
+
+            QTimer.singleShot(0, _after_restore)
+
+    def closeEvent(self, e):
+        self._save_window_geometry()
+        self._save_tree_header_state()
+
+        super().closeEvent(e)
 
     def initUI(self):
         main_layout = QHBoxLayout(self)
@@ -3500,9 +3573,6 @@ class BlinkTab(QWidget):
                 return tlw
         return None
 
-    def closeEvent(self, e):
-        self._save_tree_header_state()
-        super().closeEvent(e)
 # Import centralized widgets
 from setiastro.saspro.widgets.spinboxes import CustomSpinBox, CustomDoubleSpinBox
 from setiastro.saspro.widgets.preview_dialogs import ImagePreviewDialog

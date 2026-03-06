@@ -6,7 +6,7 @@ try:
 except Exception:
     cv2 = None
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, QSettings, QByteArray
 from PyQt6.QtGui import QImage, QPixmap, QIcon, QGuiApplication
 from PyQt6.QtWidgets import (
     QDialog, QWidget, QLabel, QPushButton, QComboBox, QCheckBox, QSlider, QGroupBox,
@@ -501,10 +501,10 @@ class SelectiveColorCorrection(QDialog):
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(10)
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.setChildrenCollapsible(False)
-        splitter.setHandleWidth(6)
-        root.addWidget(splitter)
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.setHandleWidth(6)
+        root.addWidget(self.splitter)
 
         # ======================================================================
         # LEFT PANE  (header → "small preview" toggle → scroller → live toggle → buttons)
@@ -512,7 +512,7 @@ class SelectiveColorCorrection(QDialog):
         left_widget = QWidget()
         left_widget.setMinimumWidth(360)
         left_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
-        splitter.addWidget(left_widget)
+        self.splitter.addWidget(left_widget)
 
         left_outer = QVBoxLayout(left_widget)
         left_outer.setContentsMargins(0, 0, 0, 0)
@@ -753,7 +753,7 @@ class SelectiveColorCorrection(QDialog):
         right_widget = QWidget()
         right_widget.setMinimumWidth(420)
         right_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        splitter.addWidget(right_widget)
+        self.splitter.addWidget(right_widget)
 
         right = QVBoxLayout(right_widget)
         right.setContentsMargins(0, 0, 0, 0)
@@ -813,9 +813,9 @@ class SelectiveColorCorrection(QDialog):
         right.addWidget(self.lbl_hue_readout)
 
         # Splitter stretch: make preview greedy
-        splitter.setStretchFactor(0, 0)  # left
-        splitter.setStretchFactor(1, 1)  # right
-        splitter.setSizes([420, 900])
+        self.splitter.setStretchFactor(0, 0)  # left
+        self.splitter.setStretchFactor(1, 1)  # right
+        self.splitter.setSizes([420, 900])
 
         # Clamp dialog height and add size grip
         self.setSizeGripEnabled(True)
@@ -874,7 +874,10 @@ class SelectiveColorCorrection(QDialog):
         # Preview interactions
         self.lbl_preview.setMouseTracking(True)
         self.lbl_preview.installEventFilter(self)
-
+        try:
+            self.splitter.splitterMoved.connect(lambda *_: self._save_window_state())
+        except Exception:
+            pass
         # First paint
         self._update_preview_pixmap()
 
@@ -1569,7 +1572,10 @@ class SelectiveColorCorrection(QDialog):
             result = self._apply_fullres()
         except Exception as e:
             QMessageBox.warning(self, "Error", str(e)); return
-
+        try:
+            self._save_window_state()
+        except Exception:
+            pass
         # write back to the same document (preferred)
         try:
             if hasattr(self.document, "set_image"):
@@ -1591,7 +1597,10 @@ class SelectiveColorCorrection(QDialog):
             result = self._apply_fullres()
         except Exception as e:
             QMessageBox.warning(self, "Error", str(e)); return
-
+        try:
+            self._save_window_state()
+        except Exception:
+            pass
         name = getattr(self.document, "display_name", lambda: "Image")()
         new_doc = None
         if hasattr(self.docman, "open_array"):
@@ -1612,3 +1621,66 @@ class SelectiveColorCorrection(QDialog):
         self._last_base = None
         self._reset_controls()
 
+    def _restore_window_state(self):
+        try:
+            s = QSettings()
+            g = s.value("selcolor/window_geometry", None)
+            if g is not None:
+                self.restoreGeometry(g)
+
+            sp = s.value("selcolor/splitter_state", None)
+            if sp is not None and hasattr(self, "splitter"):
+                self.splitter.restoreState(sp)
+
+            # Optional UX state
+            self.cb_small_preview.setChecked(bool(s.value("selcolor/small_preview", True, type=bool)))
+            self.cb_live.setChecked(bool(s.value("selcolor/live_preview", True, type=bool)))
+            self.cb_show_mask.setChecked(bool(s.value("selcolor/show_mask", False, type=bool)))
+
+            z = float(s.value("selcolor/zoom", 1.0))
+            self._zoom = max(0.05, min(16.0, z))
+
+        except Exception:
+            pass
+
+
+    def _save_window_state(self):
+        try:
+            s = QSettings()
+            s.setValue("selcolor/window_geometry", self.saveGeometry())
+            if hasattr(self, "splitter"):
+                s.setValue("selcolor/splitter_state", self.splitter.saveState())
+
+            # Optional UX state
+            s.setValue("selcolor/small_preview", bool(self.cb_small_preview.isChecked()))
+            s.setValue("selcolor/live_preview", bool(self.cb_live.isChecked()))
+            s.setValue("selcolor/show_mask", bool(self.cb_show_mask.isChecked()))
+            s.setValue("selcolor/zoom", float(getattr(self, "_zoom", 1.0)))
+
+            try:
+                s.sync()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        if getattr(self, "_geom_restored", False):
+            return
+        self._geom_restored = True
+
+        def _after():
+            self._restore_window_state()
+            # If user had previously chosen a zoom other than 1, re-render with it
+            self._last_base = None
+            self._recompute_mask_and_preview()
+            # If you want a default fit when first-ever run, do it only when no saved geometry existed.
+        QTimer.singleShot(0, _after)
+
+    def closeEvent(self, ev):
+        try:
+            self._save_window_state()
+        except Exception:
+            pass
+        super().closeEvent(ev)

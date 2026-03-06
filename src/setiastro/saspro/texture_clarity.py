@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import os
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QPointF, QEvent
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QPointF, QEvent, QSettings, QByteArray
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QLabel, QSlider, QHBoxLayout,
     QPushButton, QMessageBox, QCheckBox, QScrollArea, QWidget
@@ -322,6 +322,7 @@ class TextureClarityDialog(QDialog):
         self._zoom = 0.25
         self._panning = False
         self._pan_start = QPointF()
+        self._did_initial_fit = False
 
         # Watch for active document changes
         self._connected_doc_change = False
@@ -471,10 +472,13 @@ class TextureClarityDialog(QDialog):
 
         # Preview Toggle: If unchecked, show Original Image (Before)
         if not self.chk_realtime.isChecked():
-            # Show original
             qimg = _as_qimage_rgb8(_to_float01(np.asarray(self.doc.image)))
             self._pix = QPixmap.fromImage(qimg)
             self._apply_zoom()
+
+            if not getattr(self, "_did_initial_fit", False):
+                self._did_initial_fit = True
+                QTimer.singleShot(0, self._fit)
             return
 
         params = {
@@ -502,6 +506,10 @@ class TextureClarityDialog(QDialog):
         self._pix = QPixmap.fromImage(qimg)
         self._apply_zoom()
 
+        if not self._did_initial_fit:
+            self._did_initial_fit = True
+            QTimer.singleShot(0, self._fit)
+
     def _apply(self):
         if self.doc is None: return
         t_amt = self.sl_tex_amt.value() / 100.0
@@ -516,7 +524,12 @@ class TextureClarityDialog(QDialog):
             clarity_amount=c_amt,
             clarity_radius=c_rad
         )
-        self.close()
+        try:
+            self._save_window_geometry()
+        except Exception:
+            pass
+        self.close()        
+
 
     def _on_active_doc_changed(self, doc):
         if doc is None or getattr(doc, "image", None) is None:
@@ -570,12 +583,52 @@ class TextureClarityDialog(QDialog):
                 ev.accept(); return True
         return super().eventFilter(obj, ev)
 
+    # ---- window geometry persistence ----
+    def _restore_window_geometry(self):
+        try:
+            s = QSettings()
+            g = s.value("texture_clarity/window_geometry", None)
+            if g is not None:
+                self.restoreGeometry(g)
+        except Exception:
+            pass
+
+    def _save_window_geometry(self):
+        try:
+            s = QSettings()
+            s.setValue("texture_clarity/window_geometry", self.saveGeometry())
+        except Exception:
+            pass
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+
+        if not getattr(self, "_geom_restored", False):
+            self._geom_restored = True
+
+            def _after_restore_refit():
+                self._restore_window_geometry()
+
+                # If we already have an image, fit it now; otherwise when preview arrives we'll fit then.
+                if self._pix is not None:
+                    self._fit()
+
+            QTimer.singleShot(0, _after_restore_refit)
+            return
+
+        # normal show path: if preview already exists, keep it looking right
+        QTimer.singleShot(0, lambda: (self._fit() if self._pix is not None else None))
+
     def closeEvent(self, ev):
         if self._connected_doc_change and hasattr(self.main, "currentDocumentChanged"):
             try:
                 self.main.currentDocumentChanged.disconnect(self._on_active_doc_changed)
             except Exception:
                 pass
+        try:
+            self._save_window_geometry()
+        except Exception:
+            pass            
         super().closeEvent(ev)
 
 def open_texture_clarity_dialog(main, doc=None, preset: dict | None = None):

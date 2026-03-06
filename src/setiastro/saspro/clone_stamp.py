@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 from typing import Optional, Tuple
 
-from PyQt6.QtCore import Qt, QEvent, QPointF,QTimer
+from PyQt6.QtCore import Qt, QEvent, QPointF, QTimer, QSettings
 from PyQt6.QtGui import QImage, QPixmap, QPen, QBrush, QAction, QKeySequence, QColor, QWheelEvent, QPainter
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox, QLabel, QPushButton, QSlider,
@@ -134,6 +134,7 @@ class CloneStampDialogPro(QDialog):
         self.setMinimumSize(900, 650)
         self._mask_cache_key = None
         self._mask_cache = None
+        self._did_initial_fit = False
 
         self._doc = doc
         base = getattr(doc, "image", None)
@@ -734,6 +735,10 @@ class CloneStampDialogPro(QDialog):
             except Exception:
                 pass
 
+        try:
+            self._save_window_geometry()
+        except Exception:
+            pass
         self.accept()
 
     # ── display helpers
@@ -751,3 +756,46 @@ class CloneStampDialogPro(QDialog):
     def _refresh_pix(self):
         self.pix.setPixmap(self._np_to_qpix(self._display))
         self.circle.setVisible(False)
+
+        if not getattr(self, "_did_initial_fit", False):
+            self._did_initial_fit = True
+            QTimer.singleShot(0, self._fit_view)
+
+    def _restore_window_geometry(self):
+        try:
+            s = QSettings()
+            g = s.value("clone_stamp/window_geometry", None)
+            if g is not None:
+                self.restoreGeometry(g)
+        except Exception:
+            pass
+
+    def _save_window_geometry(self):
+        try:
+            s = QSettings()
+            s.setValue("clone_stamp/window_geometry", self.saveGeometry())
+        except Exception:
+            pass
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+
+        if not getattr(self, "_geom_restored", False):
+            self._geom_restored = True
+
+            def _after_restore_refit():
+                self._restore_window_geometry()
+                self._fit_view()
+
+            QTimer.singleShot(0, _after_restore_refit)
+            return
+
+        # normal path: if window is shown again, keep fit sane
+        QTimer.singleShot(0, self._fit_view)
+
+    def closeEvent(self, ev):
+        try:
+            self._save_window_geometry()
+        except Exception:
+            pass
+        super().closeEvent(ev)

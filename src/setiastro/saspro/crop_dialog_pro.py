@@ -6,7 +6,7 @@ import numpy as np
 import cv2
 from typing import Optional
 
-from PyQt6.QtCore import Qt, QEvent, QPointF, QRectF, pyqtSignal, QPoint, QTimer
+from PyQt6.QtCore import Qt, QEvent, QPointF, QRectF, pyqtSignal, QPoint, QTimer, QSettings, QByteArray
 from PyQt6.QtGui import QPixmap, QImage, QPen, QBrush, QColor, QPainterPath
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox, QToolButton,
@@ -537,7 +537,18 @@ class CropDialogPro(QDialog):
 
     def showEvent(self, ev):
         super().showEvent(ev)
-        self._deferred_fit()  # ensure fit after the first real layout
+
+        if not getattr(self, "_geom_restored", False):
+            self._geom_restored = True
+
+            def _after_restore():
+                self._restore_window_geometry()
+                self._deferred_fit()  # your existing behavior
+
+            QTimer.singleShot(0, _after_restore)
+            return
+
+        self._deferred_fit()
 
     # ---------- image plumbing ----------
     def _quad_is_axis_aligned(self, pts: np.ndarray, tol: float = 1e-2) -> bool:
@@ -966,6 +977,10 @@ class CropDialogPro(QDialog):
 
 
     def _apply_one(self):
+        try:
+            self._save_window_geometry()
+        except Exception:
+            pass        
         if not self._rect_item:
             QMessageBox.warning(self, self.tr("No Selection"), self.tr("Draw & finalize a crop first."))
             return
@@ -1032,6 +1047,10 @@ class CropDialogPro(QDialog):
             QMessageBox.critical(self, self.tr("Apply failed"), str(e))
 
     def _apply_batch(self):
+        try:
+            self._save_window_geometry()
+        except Exception:
+            pass        
         if not self._rect_item:
             QMessageBox.warning(self, self.tr("No Selection"), self.tr("Draw & finalize a crop first."))
             return
@@ -1152,7 +1171,26 @@ class CropDialogPro(QDialog):
             pass
         self._follow_conn = False
 
+    def _restore_window_geometry(self):
+        try:
+            s = QSettings()
+            g = s.value("crop/window_geometry", None)
+            if g is not None:
+                self.restoreGeometry(g)
+        except Exception:
+            pass
+
+    def _save_window_geometry(self):
+        try:
+            s = QSettings()
+            s.setValue("crop/window_geometry", self.saveGeometry())
+        except Exception:
+            pass
 
     def closeEvent(self, ev):
+        try:
+            self._save_window_geometry()
+        except Exception:
+            pass
         self._cleanup_connections()
         super().closeEvent(ev)
