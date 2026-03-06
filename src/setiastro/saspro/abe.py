@@ -19,7 +19,7 @@ try:
 except Exception:  # pragma: no cover
     cv2 = None
 
-from PyQt6.QtCore import Qt, QSize, QEvent, QPointF, QTimer, QSettings
+from PyQt6.QtCore import Qt, QSize, QEvent, QPointF, QTimer, QSettings, QByteArray
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QSpinBox,
     QCheckBox, QPushButton, QScrollArea, QWidget, QMessageBox, QComboBox,
@@ -1064,7 +1064,10 @@ class ABEDialog(QDialog):
         except Exception:
             pass
         self._connected_current_doc_changed = False
-
+        try:
+            self._save_window_geometry()
+        except Exception:
+            pass
         # 2) Stop any background preview worker/thread if you have one
         # (names may differ in your file; keep what matches your implementation)
         try:
@@ -1621,3 +1624,47 @@ class ABEDialog(QDialog):
         self._preview_qimg = qimg
         self._update_preview_scaled()
         self._redraw_overlay()
+
+    def _restore_window_geometry(self):
+        try:
+            s = QSettings()
+            g = s.value("abe_ui/window_geometry", None)   # ✅ unique, NOT stat_stretch
+            if g is not None:
+                self.restoreGeometry(g)
+        except Exception:
+            pass
+
+    def _save_window_geometry(self):
+        try:
+            s = QSettings()
+            s.setValue("abe_ui/window_geometry", self.saveGeometry())
+        except Exception:
+            pass        
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+
+        if not getattr(self, "_geom_restored", False):
+            self._geom_restored = True
+
+            def _after_restore_refit():
+                # restore window geometry first
+                self._restore_window_geometry()
+
+                # now that the viewport has changed, refit preview
+                # (your overlays + base pixmap pipeline is fine)
+                self.fit_to_preview()
+
+                # honor user's stored autostretch preference on open
+                if bool(getattr(self, "_autostretch_on", False)):
+                    # ensure preview is rendered in autostretch mode (non-toggle)
+                    try:
+                        self._apply_autostretch_inplace()
+                    except Exception:
+                        pass
+
+            QTimer.singleShot(0, _after_restore_refit)
+            return
+
+        # normal path: when already restored, keep things responsive
+        QTimer.singleShot(0, self.fit_to_preview)        

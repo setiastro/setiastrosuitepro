@@ -2,7 +2,7 @@
 from __future__ import annotations
 import numpy as np
 
-from PyQt6.QtCore import Qt, QPoint, QRect, QEvent
+from PyQt6.QtCore import Qt, QPoint, QRect, QEvent, QTimer, QSettings, QByteArray
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QComboBox, QSlider,
@@ -104,7 +104,11 @@ class ImageCombineDialog(QDialog):
         self._pan_origin = None
         self._hstart = 0; self._vstart = 0
         self._pix = None  # last preview QPixmap
-
+        # --- persistence ---
+        self._settings = QSettings()
+        self._persist_prefix = "image_combine"
+        self._geom_restored = False
+        self._restoring_ui = True  # guard saves while building/restoring
         # --- UI ---
         root = QVBoxLayout(self)
 
@@ -178,9 +182,117 @@ class ImageCombineDialog(QDialog):
         self.chkInvert.toggled.connect(self._update_preview)
         self.slOverlay.valueChanged.connect(self._update_preview)
         self.scroll.viewport().installEventFilter(self)
+        def _save():
+            self._save_ui_state()
 
+        for w in (self.cbA, self.cbB, self.cbMode):
+            w.currentIndexChanged.connect(lambda *_: _save())
+        self.slAlpha.sliderReleased.connect(_save)  # nicer than valueChanged spam
+        self.chkLuma.toggled.connect(lambda *_: _save())
+        self.chkOverlay.toggled.connect(lambda *_: _save())
+        self.chkInvert.toggled.connect(lambda *_: _save())
+        self.slOverlay.sliderReleased.connect(_save)
         self._populate_docs()
         self._update_preview()
+
+    def _k(self, key: str) -> str:
+        return f"{self._persist_prefix}/{key}"
+
+    def _save_ui_state(self):
+        # Don't save while we are initializing/restoring or before first show
+        if getattr(self, "_restoring_ui", False) or not getattr(self, "_geom_restored", False):
+            return
+        try:
+            s = self._settings
+            s.setValue(self._k("window_geometry"), self.saveGeometry())
+
+            # store selections as labels (stable across sessions)
+            s.setValue(self._k("A_label"), str(self.cbA.currentText()))
+            s.setValue(self._k("B_label"), str(self.cbB.currentText()))
+
+            s.setValue(self._k("mode"), str(self.cbMode.currentText()))
+            s.setValue(self._k("alpha"), int(self.slAlpha.value()))
+
+            s.setValue(self._k("luma"), bool(self.chkLuma.isChecked()))
+            s.setValue(self._k("overlay"), bool(self.chkOverlay.isChecked()))
+            s.setValue(self._k("invert"), bool(self.chkInvert.isChecked()))
+            s.setValue(self._k("overlay_opacity"), int(self.slOverlay.value()))
+
+            # optional: keep zoom
+            s.setValue(self._k("zoom"), float(getattr(self, "zoom", 1.0)))
+
+            try:
+                s.sync()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+
+    def _restore_ui_state(self):
+        self._restoring_ui = True
+        try:
+            s = self._settings
+
+            g = s.value(self._k("window_geometry"), None)
+            if g is not None:
+                self.restoreGeometry(g)
+
+            # restore non-combo widgets first
+            mode = str(s.value(self._k("mode"), "Average"))
+            alpha = int(s.value(self._k("alpha"), 100))
+            luma = bool(s.value(self._k("luma"), False, type=bool))
+            overlay = bool(s.value(self._k("overlay"), False, type=bool))
+            invert = bool(s.value(self._k("invert"), False, type=bool))
+            ovop = int(s.value(self._k("overlay_opacity"), 40))
+            z = float(s.value(self._k("zoom"), 1.0))
+
+            # block signals to avoid calling _update_preview mid-restore
+            self.cbMode.blockSignals(True)
+            self.slAlpha.blockSignals(True)
+            self.chkLuma.blockSignals(True)
+            self.chkOverlay.blockSignals(True)
+            self.chkInvert.blockSignals(True)
+            self.slOverlay.blockSignals(True)
+            try:
+                i = self.cbMode.findText(mode)
+                if i >= 0:
+                    self.cbMode.setCurrentIndex(i)
+                self.slAlpha.setValue(max(0, min(100, alpha)))
+
+                self.chkLuma.setChecked(bool(luma))
+                self.chkOverlay.setChecked(bool(overlay))
+                self.chkInvert.setChecked(bool(invert))
+                self.slOverlay.setValue(max(5, min(95, ovop)))
+
+                self.zoom = max(0.05, min(16.0, float(z)))
+            finally:
+                self.cbMode.blockSignals(False)
+                self.slAlpha.blockSignals(False)
+                self.chkLuma.blockSignals(False)
+                self.chkOverlay.blockSignals(False)
+                self.chkInvert.blockSignals(False)
+                self.slOverlay.blockSignals(False)
+
+            # restore A/B by label AFTER combos exist
+            a_lab = str(s.value(self._k("A_label"), ""))
+            b_lab = str(s.value(self._k("B_label"), ""))
+
+            self.cbA.blockSignals(True)
+            self.cbB.blockSignals(True)
+            try:
+                ia = self.cbA.findText(a_lab) if a_lab else -1
+                ib = self.cbB.findText(b_lab) if b_lab else -1
+                if ia >= 0:
+                    self.cbA.setCurrentIndex(ia)
+                if ib >= 0:
+                    self.cbB.setCurrentIndex(ib)
+            finally:
+                self.cbA.blockSignals(False)
+                self.cbB.blockSignals(False)
+
+        finally:
+            self._restoring_ui = False
 
     # ---------- doc utilities ----------
     def _open_docs(self) -> list:
@@ -196,16 +308,18 @@ class ImageCombineDialog(QDialog):
     def _populate_docs(self):
         docs = self._open_docs()
         self.cbA.blockSignals(True); self.cbB.blockSignals(True)
-        self.cbA.clear(); self.cbB.clear()
-        for d in docs:
-            self.cbA.addItem(_doc_name(d), userData=d)
-            self.cbB.addItem(_doc_name(d), userData=d)
-        self.cbA.blockSignals(False); self.cbB.blockSignals(False)
+        try:
+            self.cbA.clear(); self.cbB.clear()
+            for d in docs:
+                self.cbA.addItem(_doc_name(d), userData=d)
+                self.cbB.addItem(_doc_name(d), userData=d)
+        finally:
+            self.cbA.blockSignals(False); self.cbB.blockSignals(False)
+
         if docs:
             act = self._active_doc()
             if act in docs:
                 self.cbA.setCurrentIndex(docs.index(act))
-                # B defaults to “other”
                 j = 0 if len(docs) < 2 else (1 if docs[0] is act else 0)
                 self.cbB.setCurrentIndex(j)
 
@@ -419,3 +533,25 @@ class ImageCombineDialog(QDialog):
             return False
         return super().eventFilter(src, ev)
 
+    def showEvent(self, ev):
+        super().showEvent(ev)
+
+        # repopulate each time in case views changed
+        self._populate_docs()
+
+        if not self._geom_restored:
+            self._geom_restored = True
+
+            def _after():
+                self._restore_ui_state()
+                self._update_preview()
+                self._apply_zoom()
+            QTimer.singleShot(0, _after)
+
+
+    def closeEvent(self, ev):
+        try:
+            self._save_ui_state()
+        except Exception:
+            pass
+        super().closeEvent(ev)

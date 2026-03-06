@@ -4,7 +4,7 @@ import os
 import numpy as np
 from PIL import Image
 import cv2
-from PyQt6.QtCore import Qt, QSize, QEvent, QTimer, QPoint, pyqtSignal
+from PyQt6.QtCore import Qt, QSize, QEvent, QTimer, QPoint, pyqtSignal, QSettings, QByteArray
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea,
     QFileDialog, QInputDialog, QMessageBox, QGridLayout, QCheckBox, QSizePolicy, QDialog
@@ -220,7 +220,9 @@ class PerfectPalettePicker(QWidget):
         super().__init__(parent)
         self.doc_manager = doc_manager
         self.setWindowTitle("Perfect Palette Picker")
-
+        self._settings = QSettings()
+        self._persist_prefix = "perfect_palette_picker"
+        self._geom_restored = False
         # raw channels (float32 ~[0..1])
         self.ha   = None
         self.oiii = None
@@ -248,6 +250,9 @@ class PerfectPalettePicker(QWidget):
         self._pan_last: QPoint | None = None
 
         self._build_ui()
+
+    def _k(self, key: str) -> str:
+        return f"{self._persist_prefix}/{key}"
 
     # ---------------- UI ----------------
     def _build_ui(self):
@@ -375,7 +380,7 @@ class PerfectPalettePicker(QWidget):
 
         right_host = QWidget(self); right_host.setLayout(right)
         root.addWidget(right_host, 1)
-
+        self.chk_linear.stateChanged.connect(lambda *_: self._save_ui_state())
         self.setLayout(root)
         self.setMinimumSize(left_host.width() + grid_w + 48, max(560, grid_h + 200))
 
@@ -399,6 +404,35 @@ class PerfectPalettePicker(QWidget):
         if arr.ndim == 2:
             return cv2.resize(arr, (w, h), interpolation=interp)
         return cv2.resize(arr, (w, h), interpolation=interp)
+
+    def _save_ui_state(self):
+        try:
+            s = self._settings
+            s.setValue(self._k("window_geometry"), self.saveGeometry())
+            s.setValue(self._k("linear"), bool(self.chk_linear.isChecked()))
+            try:
+                s.sync()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+
+    def _restore_ui_state(self):
+        try:
+            s = self._settings
+
+            g = s.value(self._k("window_geometry"), None)
+            if g is not None:
+                self.restoreGeometry(g)
+
+            linear = bool(s.value(self._k("linear"), True, type=bool))
+            self.chk_linear.blockSignals(True)
+            self.chk_linear.setChecked(linear)
+            self.chk_linear.blockSignals(False)
+
+        except Exception:
+            pass
 
     def _capture_view_state(self):
         """Capture current view center in base-image coordinates + zoom."""
@@ -542,7 +576,23 @@ class PerfectPalettePicker(QWidget):
 
     def showEvent(self, e):
         super().showEvent(e)
-        QTimer.singleShot(0, self._center_scrollbars)
+        if self._geom_restored:
+            return
+        self._geom_restored = True
+
+        def _after():
+            self._restore_ui_state()
+            # center scrollbars if nothing loaded yet
+            if self._base_pm is None:
+                self._center_scrollbars()
+        QTimer.singleShot(0, _after)
+
+    def closeEvent(self, e):
+        try:
+            self._save_ui_state()
+        except Exception:
+            pass
+        super().closeEvent(e)
 
     # ------------- build/caches -------------
     def _cache_stretch(self, which: str):

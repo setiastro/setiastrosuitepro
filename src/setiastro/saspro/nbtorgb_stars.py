@@ -4,7 +4,7 @@ import os
 import numpy as np
 
 from PyQt6.QtCore import (
-    Qt, QSize, QEvent, QTimer, QPoint, QThread, pyqtSignal
+    Qt, QSize, QEvent, QTimer, QPoint, QThread, pyqtSignal, QSettings, QByteArray
 )
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea,
@@ -71,8 +71,84 @@ class NBtoRGBStars(QWidget):
         self._max_zoom = 20.0
         self._panning = False
         self._pan_last: QPoint | None = None
-
+        self._settings = QSettings()
+        self._persist_prefix = "nbtorgb_stars"
+        self._geom_restored = False
+        self._restoring_ui = True  # blocks saves during restore
         self._build_ui()
+
+    def _k(self, key: str) -> str:
+        return f"{self._persist_prefix}/{key}"
+
+    def _save_ui_state(self):
+        # Don’t save until we have restored once (prevents default geometry overwriting saved one)
+        if getattr(self, "_restoring_ui", False) or not getattr(self, "_geom_restored", False):
+            return
+        try:
+            s = self._settings
+            s.setValue(self._k("window_geometry"), self.saveGeometry())
+
+            s.setValue(self._k("ratio"), int(self.sld_ratio.value()))
+            s.setValue(self._k("star_stretch"), bool(self.chk_star_stretch.isChecked()))
+            s.setValue(self._k("stretch"), int(self.sld_stretch.value()))
+            s.setValue(self._k("sat"), int(self.sld_sat.value()))
+
+            try:
+                s.sync()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _restore_ui_state(self):
+        self._restoring_ui = True
+        try:
+            s = self._settings
+
+            g = s.value(self._k("window_geometry"), None)
+            if g is not None:
+                self.restoreGeometry(g)
+
+            # restore knobs (block signals so we don’t spam preview)
+            r = int(s.value(self._k("ratio"), 30))
+            st_on = bool(s.value(self._k("star_stretch"), True, type=bool))
+            st = int(s.value(self._k("stretch"), 500))
+            sat = int(s.value(self._k("sat"), 100))
+
+            for w in (self.sld_ratio, self.sld_stretch, self.sld_sat, self.chk_star_stretch):
+                w.blockSignals(True)
+            try:
+                self.sld_ratio.setValue(max(0, min(100, r)))
+                self.chk_star_stretch.setChecked(bool(st_on))
+                self.sld_stretch.setValue(max(0, min(800, st)))
+                self.sld_sat.setValue(max(0, min(300, sat)))
+            finally:
+                for w in (self.sld_ratio, self.sld_stretch, self.sld_sat, self.chk_star_stretch):
+                    w.blockSignals(False)
+
+            # refresh labels
+            self.lbl_ratio.setText(f"Ha:OIII ratio = {self.sld_ratio.value()/100:.2f}")
+            self.lbl_stretch.setText(f"Stretch factor = {self.sld_stretch.value()/100:.2f}")
+            self.lbl_sat.setText(f"Saturation = {self.sld_sat.value()/100:.2f}×")
+
+        finally:
+            self._restoring_ui = False
+
+    def showEvent(self, e):
+        super().showEvent(e)
+
+        if not getattr(self, "_geom_restored", False):
+            self._geom_restored = True
+            QTimer.singleShot(0, self._restore_ui_state)
+
+        QTimer.singleShot(0, self._center_scrollbars)
+
+    def closeEvent(self, e):
+        try:
+            self._save_ui_state()
+        except Exception:
+            pass
+        super().closeEvent(e)
 
     # ---------------- UI ----------------
     def _build_ui(self):
@@ -144,13 +220,22 @@ class NBtoRGBStars(QWidget):
         act.addWidget(self.btn_preview); act.addWidget(self.btn_push)
         left.addLayout(act)
 
-        self.btn_clear = QPushButton("Clear Inputs"); self.btn_clear.clicked.connect(self._clear_inputs)
+        from setiastro.saspro.resources import get_resources
+
+        self.btn_clear = QPushButton("Clear Inputs")
+        self.btn_clear.clicked.connect(self._clear_inputs)
         left.addWidget(self.btn_clear)
 
-        # Spinner (optional)
-        self.spinner = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
-        self.spinner_movie = QMovie(os.path.join(os.path.dirname(__file__), "spinner.gif"))
-        self.spinner.setMovie(self.spinner_movie); self.spinner.hide()
+        # Spinner (resource-based)
+        self.spinner = QLabel(self)
+        self.spinner.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.spinner.hide()
+
+        gif_path = os.path.normpath(get_resources().SPINNER_GIF)
+        self.spinner_movie = QMovie(gif_path, parent=self)   # keep ref on self
+        self.spinner_movie.setCacheMode(QMovie.CacheMode.CacheAll)
+        self.spinner.setMovie(self.spinner_movie)
+
         left.addWidget(self.spinner)
 
         left.addStretch(1)
@@ -191,13 +276,64 @@ class NBtoRGBStars(QWidget):
 
         right_host = QWidget(self); right_host.setLayout(right)
         root.addWidget(right_host, 1)
+        # --- persist changes (don’t spam writes while dragging) ---
+        self.chk_star_stretch.toggled.connect(lambda *_: self._save_ui_state())
+        self.sld_ratio.sliderReleased.connect(lambda: self._save_ui_state())
+        self.sld_stretch.sliderReleased.connect(lambda: self._save_ui_state())
+        self.sld_sat.sliderReleased.connect(lambda: self._save_ui_state())
 
+        # also save if user types / keyboard nudges (no sliderReleased in that case)
+        self.sld_ratio.valueChanged.connect(lambda *_: None)  # already used for label
+        self.sld_stretch.valueChanged.connect(lambda *_: None)
+        self.sld_sat.valueChanged.connect(lambda *_: None)
         self.setLayout(root)
         self.setMinimumSize(980, 640)
 
-    def showEvent(self, e):
-        super().showEvent(e)
-        QTimer.singleShot(0, self._center_scrollbars)
+    def _spinner_on(self, text: str = "Working…"):
+        # optional: disable button to prevent re-entry
+        try:
+            self.btn_preview.setEnabled(False)
+            self.btn_push.setEnabled(False)
+            self.btn_clear.setEnabled(False)
+        except Exception:
+            pass
+
+        try:
+            self.status.setText(text)
+        except Exception:
+            pass
+
+        if getattr(self, "spinner", None) is None or getattr(self, "spinner_movie", None) is None:
+            return
+
+        self.spinner.show()
+
+        # Only start if not already running
+        if self.spinner_movie.state() != QMovie.MovieState.Running:
+            self.spinner_movie.start()
+
+        # Force a paint so the spinner actually appears before heavy work
+        QTimer.singleShot(0, lambda: None)
+
+
+    def _spinner_off(self):
+        try:
+            self.btn_preview.setEnabled(True)
+            self.btn_push.setEnabled(True)
+            self.btn_clear.setEnabled(True)
+        except Exception:
+            pass
+
+        if getattr(self, "spinner", None) is None or getattr(self, "spinner_movie", None) is None:
+            return
+
+        # Stop first, then hide
+        try:
+            self.spinner_movie.stop()
+        except Exception:
+            pass
+        self.spinner.hide()
+
 
     # ---------- file/view loading ----------
     def _set_status_label(self, which: str, text: str | None):
@@ -272,14 +408,13 @@ class NBtoRGBStars(QWidget):
             QMessageBox.warning(self, "Missing Images", "Load OSC, or Ha+OIII (SII optional).")
             return
 
-        self.spinner.show(); self.spinner_movie.start()
-
-        ratio = self.sld_ratio.value() / 100.0
-        stretch_enabled = self.chk_star_stretch.isChecked()
-        stretch_factor = self.sld_stretch.value() / 100.0
-        sat_factor = self.sld_sat.value() / 100.0
-
+        self._spinner_on("Combining…")
         try:
+            ratio = self.sld_ratio.value() / 100.0
+            stretch_enabled = self.chk_star_stretch.isChecked()
+            stretch_factor = self.sld_stretch.value() / 100.0
+            sat_factor = self.sld_sat.value() / 100.0
+
             # 1) combine (no SCNR here)
             rgb = self._combine_nb_rgb(ratio, stretch_enabled, stretch_factor)
 
@@ -295,14 +430,12 @@ class NBtoRGBStars(QWidget):
 
             self.final = np.clip(rgb, 0.0, 1.0)
 
+            self._set_preview_image(self._to_qimage(self.final))
+            self.status.setText("Preview updated.")
         except Exception as e:
-            self.spinner.hide(); self.spinner_movie.stop()
             QMessageBox.critical(self, "Combine Error", str(e))
-            return
-
-        self._set_preview_image(self._to_qimage(self.final))
-        self.status.setText("Preview updated.")
-        self.spinner.hide(); self.spinner_movie.stop()
+        finally:
+            self._spinner_off()
 
 
     def _combine_nb_rgb(self, ratio: float, star_stretch: bool, stretch_k: float) -> np.ndarray:

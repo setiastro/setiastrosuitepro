@@ -149,6 +149,7 @@ class MenuMixin:
         m_fn.addAction(self.act_ghs)
         m_fn.addAction(self.act_halobgon)
         m_fn.addAction(self.act_histogram)
+        m_fn.addAction(self.act_hist_transform)
         m_fn.addAction(self.act_linear_fit)
         m_fn.addAction(self.act_morphology)
         m_fn.addAction(self.act_pedestal)

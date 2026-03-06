@@ -1,5 +1,5 @@
 # pro/ghs_dialog_pro.py
-from PyQt6.QtCore import Qt, QEvent, QPointF, QTimer
+from PyQt6.QtCore import Qt, QEvent, QPointF, QTimer, QSettings, QByteArray
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
                              QScrollArea, QComboBox, QSlider, QToolButton, QWidget, QMessageBox)
 from PyQt6.QtGui import QPixmap, QImage, QPen, QColor
@@ -711,6 +711,37 @@ class GhsDialogPro(QDialog):
 
         return (m * out + (1.0 - m) * src).astype(np.float32, copy=False)
 
+    def _restore_window_geometry(self):
+        try:
+            s = QSettings()
+            g = s.value("ghs/window_geometry", None)
+            if g is not None:
+                self.restoreGeometry(g)
+        except Exception:
+            pass
+
+    def _save_window_geometry(self):
+        try:
+            s = QSettings()
+            s.setValue("ghs/window_geometry", self.saveGeometry())
+        except Exception:
+            pass
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+
+        if not getattr(self, "_geom_restored", False):
+            self._geom_restored = True
+
+            def _after_restore_refit():
+                self._restore_window_geometry()
+                self._fit()
+
+            QTimer.singleShot(0, _after_restore_refit)
+            return
+
+        QTimer.singleShot(0, self._fit)
+
     def _reset(self):
         for s in (self.sA, self.sB, self.sG, self.sLP, self.sHP):
             s.blockSignals(True)
@@ -725,3 +756,6 @@ class GhsDialogPro(QDialog):
         self.editor.clearSymmetryLine()
         self._rebuild_from_params()   # immediate
 
+    def closeEvent(self, ev):
+        self._save_window_geometry()
+        super().closeEvent(ev)

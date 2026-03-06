@@ -11,7 +11,7 @@ from typing import Optional, Tuple, List
 from PyQt6.QtGui import (
     QIcon, QColor, QPixmap, QPainter, QPen, QImage, QPainterPath, QFont, QGuiApplication
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPoint, QEvent, QPointF, QCoreApplication
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPoint, QEvent, QPointF, QCoreApplication, QSettings, QByteArray
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox, QLabel, QSlider,
     QPushButton, QComboBox, QSizePolicy, QMessageBox, QColorDialog, QWidget,
@@ -1323,6 +1323,9 @@ class ImagePeekerDialogPro(QDialog):
             pass  # older PyQt6 versions        
         self.document = self._coerce_doc(document)   # <- ensure we hold a real doc
         self.settings = settings
+        self._persist_prefix = "image_peeker"
+        self._geom_restored = False
+        self._restoring_ui = True  # block saves during restore        
         # status / progress line
         self.status_lbl = QLabel("")
         self.status_lbl.setStyleSheet("color:#bbb;")
@@ -1388,8 +1391,110 @@ class ImagePeekerDialogPro(QDialog):
         self.sep_slider.valueChanged.connect(lambda v: (self.sep_value_label.setText(str(v)), self._refresh_mosaic()))
         self.analysis_combo.currentTextChanged.connect(self._run_analysis)
         ok_btn.clicked.connect(self.accept); cancel_btn.clicked.connect(self.reject)
+        def _save_after_change(*_):
+            self._save_ui_state()
 
+        self.grid_spin.valueChanged.connect(_save_after_change)
+        self.panel_slider.sliderReleased.connect(_save_after_change)
+        self.sep_slider.sliderReleased.connect(_save_after_change)
+        self.analysis_combo.currentIndexChanged.connect(_save_after_change)
+
+        self.pixel_size_input.editingFinished.connect(_save_after_change)
+        self.focal_length_input.editingFinished.connect(_save_after_change)
+        self.aperture_input.editingFinished.connect(_save_after_change)
         QTimer.singleShot(0, self._refresh_mosaic)
+
+    def _k(self, key: str) -> str:
+        return f"{self._persist_prefix}/{key}"
+
+    def _save_ui_state(self):
+        # Don't save until we've actually shown/restored once
+        if getattr(self, "_restoring_ui", False) or not getattr(self, "_geom_restored", False):
+            return
+        try:
+            s = self.settings  # <-- use your passed-in QSettings
+            s.setValue(self._k("window_geometry"), self.saveGeometry())
+
+            s.setValue(self._k("grid_n"), int(self.grid_spin.value()))
+            s.setValue(self._k("panel_sz"), int(self.panel_slider.value()))
+            s.setValue(self._k("sep_px"), int(self.sep_slider.value()))
+
+            # analysis selection by data key (stable)
+            s.setValue(self._k("analysis_key"), str(self.analysis_combo.currentData()))
+
+            # your optics values are already saved in accept(), but saving here helps if user closes w/out accept
+            s.setValue("pixel_size_um",   float(self.pixel_size_input.value()))
+            s.setValue("focal_length_mm", float(self.focal_length_input.value()))
+            s.setValue("aperture_mm",     float(self.aperture_input.value()))
+
+            try:
+                s.sync()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _restore_ui_state(self):
+        self._restoring_ui = True
+        try:
+            s = self.settings
+
+            g = s.value(self._k("window_geometry"), None)
+            if g is not None:
+                self.restoreGeometry(g)
+
+            # grid controls
+            n = int(s.value(self._k("grid_n"), 3))
+            ps = int(s.value(self._k("panel_sz"), 256))
+            sep = int(s.value(self._k("sep_px"), 4))
+
+            self.grid_spin.blockSignals(True)
+            self.panel_slider.blockSignals(True)
+            self.sep_slider.blockSignals(True)
+            try:
+                self.grid_spin.setValue(max(2, min(10, n)))
+                self.panel_slider.setValue(max(32, min(512, ps)))
+                self.sep_slider.setValue(max(0, min(50, sep)))
+            finally:
+                self.grid_spin.blockSignals(False)
+                self.panel_slider.blockSignals(False)
+                self.sep_slider.blockSignals(False)
+
+            # reflect labels
+            try:
+                self.panel_value_label.setText(str(self.panel_slider.value()))
+                self.sep_value_label.setText(str(self.sep_slider.value()))
+            except Exception:
+                pass
+
+            # analysis selection
+            key = str(s.value(self._k("analysis_key"), "None"))
+            # find by userData
+            idx = -1
+            for i in range(self.analysis_combo.count()):
+                if str(self.analysis_combo.itemData(i)) == key:
+                    idx = i
+                    break
+            if idx >= 0:
+                self.analysis_combo.blockSignals(True)
+                self.analysis_combo.setCurrentIndex(idx)
+                self.analysis_combo.blockSignals(False)
+
+        finally:
+            self._restoring_ui = False
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        if not self._geom_restored:
+            self._geom_restored = True
+            QTimer.singleShot(0, lambda: (self._restore_ui_state(), self._refresh_mosaic()))
+
+    def closeEvent(self, ev):
+        try:
+            self._save_ui_state()
+        except Exception:
+            pass
+        super().closeEvent(ev)
 
     def _set_busy(self, on: bool, text: str = ""):
         if not text: text = self.tr("Processing…")
@@ -1558,7 +1663,7 @@ class ImagePeekerDialogPro(QDialog):
 
     def _on_ok(self):
         # user clicked OK → generate & display the mosaic
-        n        = self.grid_spin.value
+        n        = self.grid_spin.value()
         panel_sz = self.panel_slider.value()
         sep      = self.sep_slider.value()
         sep_col  = self._sep_color

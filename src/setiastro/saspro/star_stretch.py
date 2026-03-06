@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import numpy as np
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QEvent, QPointF
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QEvent, QPointF, QSettings, QByteArray, QTimer
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QCheckBox,
     QPushButton, QScrollArea, QWidget, QMessageBox
@@ -295,6 +295,10 @@ class StarStretchDialog(QDialog):
             self._finish_apply()
 
     def _apply_to_doc(self):
+        try:
+            self._save_window_geometry()
+        except Exception:
+            pass        
         # If we don't have a preview yet, compute it and auto-apply when ready.
         if self._preview is None:
             if getattr(self, "_thr", None) and self._thr.isRunning():
@@ -354,6 +358,11 @@ class StarStretchDialog(QDialog):
         
         # Dialog stays open so user can apply to other images
         # Refresh document reference for next operation
+        try:
+            self._save_window_geometry()
+        except Exception:
+            pass
+
         self.close()
         return
 
@@ -504,6 +513,10 @@ class StarStretchDialog(QDialog):
         return (m * out + (1.0 - m) * src).astype(np.float32, copy=False)
 
     def closeEvent(self, ev):
+        try:
+            self._save_window_geometry()
+        except Exception:
+            pass        
         # 1) Disconnect active-doc tracking (Fabio hook)
         try:
             if self._connected_current_doc_changed and hasattr(self._main, "currentDocumentChanged"):
@@ -528,6 +541,38 @@ class StarStretchDialog(QDialog):
 
         super().closeEvent(ev)
 
+    def _restore_window_geometry(self):
+        try:
+            s = QSettings()
+            g = s.value("star_stretch_ui/window_geometry", None)  # ✅ unique key
+            if g is not None:
+                self.restoreGeometry(g)
+        except Exception:
+            pass
+
+    def _save_window_geometry(self):
+        try:
+            s = QSettings()
+            s.setValue("star_stretch_ui/window_geometry", self.saveGeometry())
+        except Exception:
+            pass
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+
+        if not getattr(self, "_geom_restored", False):
+            self._geom_restored = True
+
+            def _after_restore_refit():
+                self._restore_window_geometry()
+                # viewport changed -> refit the preview so it fills correctly
+                self._fit()
+
+            QTimer.singleShot(0, _after_restore_refit)
+            return
+
+        # normal path: keep your UI consistent when re-shown
+        QTimer.singleShot(0, self._fit)
 
 def _guess_spinner_path() -> str | None:
     here = os.path.dirname(__file__)

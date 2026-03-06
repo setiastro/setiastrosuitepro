@@ -2,7 +2,7 @@
 from __future__ import annotations
 import numpy as np
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QEvent, QPointF, QPoint, QTimer
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QEvent, QPointF, QPoint, QTimer, QSettings, QByteArray
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QGraphicsView, QLineEdit, QGraphicsScene, 
     QWidget, QMessageBox, QRadioButton, QButtonGroup, QToolButton, QGraphicsEllipseItem, QGraphicsItem, QGraphicsTextItem, QInputDialog, QMenu
@@ -1278,6 +1278,24 @@ class CurvesDialogPro(QDialog):
             overlays[key] = pts_scene
         self.editor.setOverlayCurves(overlays, self._current_mode_key)
 
+    _GEOM_KEY = "ui/curves_dialog/geometry"
+
+    def _restore_window_geometry(self):
+        try:
+            s = QSettings()
+            g = s.value(self._GEOM_KEY, None, type=QByteArray)
+            if g and isinstance(g, QByteArray) and not g.isEmpty():
+                self.restoreGeometry(g)
+        except Exception:
+            pass
+
+    def _save_window_geometry(self):
+        try:
+            s = QSettings()
+            s.setValue(self._GEOM_KEY, self.saveGeometry())
+        except Exception:
+            pass
+
     def _lut01_from_points_norm(self, ptsN: list[tuple[float,float]], size: int = 65536) -> np.ndarray:
         # ptsN are (x,y) in 0..1 (up). Convert to scene space and build a smooth monotone interpolator.
         pts_scene = _points_norm_to_scene(ptsN)  # [(x:[0..360], y:[0..360 down])]
@@ -1624,7 +1642,21 @@ class CurvesDialogPro(QDialog):
 
     def showEvent(self, ev):
         super().showEvent(ev)
-        # kick the fit after this show/layout pass
+
+        if not getattr(self, "_geom_restored", False):
+            self._geom_restored = True
+
+            def _after_restore_refit():
+                # restore window geometry first
+                self._restore_window_geometry()
+
+                self._fit()
+
+
+            QTimer.singleShot(0, _after_restore_refit)
+            return
+
+        # normal path: keep your existing delayed fit logic (for first pixmap/viewport sizing)
         QTimer.singleShot(0, self._fit_after_load)
 
     def _on_preview_mouse_moved(self, x: float, y: float):
@@ -2232,6 +2264,10 @@ class CurvesDialogPro(QDialog):
         return (m * out + (1.0 - m) * src).astype(np.float32, copy=False)
 
     def closeEvent(self, ev):
+        try:
+            self._save_window_geometry()
+        except Exception:
+            pass
         self._cleanup_connections()
         super().closeEvent(ev)
 
