@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
     QComboBox, QGroupBox, QFormLayout, QDoubleSpinBox, QSlider
 )
 from PyQt6.QtGui import QPixmap, QImage, QCursor, QIcon
-
+from PyQt6 import sip
 # legacy loader (same one DocManager uses)
 from setiastro.saspro.legacy.image_manager import load_image as legacy_load_image
 
@@ -326,6 +326,21 @@ class NarrowbandNormalization(QWidget):
             lab.setWordWrap(False)
             lab.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
 
+    def _ui_alive(self) -> bool:
+        if sip is None:
+            return True
+        try:
+            return (not sip.isdeleted(self)) and (not sip.isdeleted(self.status))
+        except Exception:
+            return False
+
+    def _safe_set_status(self, txt: str):
+        try:
+            if self._ui_alive():
+                self.status.setText(str(txt))
+        except RuntimeError:
+            # QLabel already deleted
+            pass
 
     def _build_norm_group(self) -> tuple[QGroupBox, QFormLayout]:
         grp = QGroupBox("Normalization", self)
@@ -1259,6 +1274,9 @@ class NarrowbandNormalization(QWidget):
         rgb = np.clip(rgb / mx, 0.0, 1.0)
         return rgb
 
+    def _on_worker_progress(self, p: int, m: str):
+        self._safe_set_status(f"{m} ({p}%)" if m else f"{p}%")
+
     def _start_nbn_worker(self, ha, oo, si, *, step_name: str, on_done, on_fail=None):
         """
         Start a background normalization job.
@@ -1267,23 +1285,75 @@ class NarrowbandNormalization(QWidget):
         params = self._gather_params()
         job = _NBNJob(ha=ha, oiii=oo, sii=si, params=params, step_name=step_name)
 
-        # If an old worker is still running, we don't try to kill it (QThread termination is unsafe).
-        # Instead, we rely on seq checks to ignore stale results.
-        self._worker = _NBNWorker(job)
+        # Keep strong ref, and parent it so Qt owns lifetime correctly
+        w = _NBNWorker(job)
+        try:
+            w.setParent(self)
+        except Exception:
+            pass
+        self._worker = w
 
-        self._worker.progress.connect(
-            lambda p, m: self.status.setText(f"{m} ({p}%)" if m else f"{p}%")
-        )
+        # progress → safe UI update
+        w.progress.connect(self._on_worker_progress)
 
-        self._worker.done.connect(on_done)
+        # done/fail wrappers → always safe + always cleanup
+        def _done_wrapper(out, _step):
+            try:
+                if self._ui_alive():
+                    on_done(out, _step)
+            finally:
+                # stop late emissions touching us
+                try:
+                    w.progress.disconnect(self._on_worker_progress)
+                except Exception:
+                    pass
+                try:
+                    w.done.disconnect(_done_wrapper)
+                except Exception:
+                    pass
+                try:
+                    w.failed.disconnect(_fail_wrapper)
+                except Exception:
+                    pass
+                try:
+                    w.deleteLater()
+                except Exception:
+                    pass
+                if self._worker is w:
+                    self._worker = None
 
-        if on_fail is None:
-            self._worker.failed.connect(lambda err: QMessageBox.critical(self, "Narrowband Normalization", err))
-        else:
-            self._worker.failed.connect(on_fail)
+        def _fail_wrapper(err: str):
+            try:
+                if on_fail is not None:
+                    if self._ui_alive():
+                        on_fail(err)
+                else:
+                    if self._ui_alive():
+                        QMessageBox.critical(self, "Narrowband Normalization", err)
+            finally:
+                try:
+                    w.progress.disconnect()
+                except Exception:
+                    pass
+                try:
+                    w.done.disconnect()
+                except Exception:
+                    pass
+                try:
+                    w.failed.disconnect()
+                except Exception:
+                    pass
+                try:
+                    w.deleteLater()
+                except Exception:
+                    pass
+                if self._worker is w:
+                    self._worker = None
 
-        self._worker.start()
+        w.done.connect(_done_wrapper)
+        w.failed.connect(_fail_wrapper)
 
+        w.start()
 
 
     # ---------------- preview ----------------
@@ -1636,3 +1706,11 @@ class NarrowbandNormalization(QWidget):
                 return True
 
         return super().eventFilter(obj, ev)
+
+    def closeEvent(self, e):
+        # bump seq so any in-flight callbacks are ignored
+        try:
+            self._calc_seq += 1
+        except Exception:
+            pass
+        super().closeEvent(e)
