@@ -1040,9 +1040,11 @@ class FunctionBundleDialog(QDialog):
         settings = QSettings()
         settings.sync()  # see latest saved bundles
 
+        # ✅ View Bundles live here now
+        raw_v3 = settings.value("viewbundles/v3", "", type=str)
         raw_v2 = settings.value("viewbundles/v2", "", type=str)
         raw_v1 = settings.value("viewbundles/v1", "", type=str)
-        raw = raw_v2 or raw_v1 or "[]"
+        raw = raw_v3 or raw_v2 or raw_v1 or "[]"
 
         try:
             vb_raw = json.loads(raw)
@@ -1054,49 +1056,59 @@ class FunctionBundleDialog(QDialog):
         for b in vb_raw:
             if not isinstance(b, dict):
                 continue
+
             name = (b.get("name") or "Bundle").strip()
-            ptrs = []
+
+            ptrs: list[int] = []
             for x in (b.get("doc_ptrs") or []):
                 try:
                     ptrs.append(int(x))
                 except Exception:
                     pass
+
+            # (optional) you can show how many files are in the bundle too
+            # files = b.get("file_paths") or []
             choices.append((name, ptrs))
 
         if not choices:
             QMessageBox.information(self, "Apply", "No View Bundles found.")
             return
 
-        # ✅ create the dialog BEFORE using it
+        # dialog
         dlg = QDialog(self)
         dlg.setWindowTitle("Apply to View Bundle…")
         v = QVBoxLayout(dlg)
         v.addWidget(QLabel("Select a View Bundle:"))
-        lb = QListWidget(); v.addWidget(lb, 1)
+        lb = QListWidget()
+        v.addWidget(lb, 1)
+
         for name, ptrs in choices:
             it = QListWidgetItem(f"{name}  ({len(ptrs)} views)")
             it.setData(Qt.ItemDataRole.UserRole, ptrs)
             lb.addItem(it)
+
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         v.addWidget(buttons)
-        buttons.accepted.connect(dlg.accept); buttons.rejected.connect(dlg.reject)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
 
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
+
         cur = lb.currentItem()
         if not cur:
             return
+
         ptrs = cur.data(Qt.ItemDataRole.UserRole) or []
         steps = self.current_steps()
         if not steps:
             QMessageBox.information(self, "Apply", "This Function Bundle is empty.")
             return
 
-        # show busy cursor during batch apply
-        try: QApplication.setOverrideCursor(Qt.CursorShape.BusyCursor)
-        except Exception as e:
-            import logging
-            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
+        try:
+            QApplication.setOverrideCursor(Qt.CursorShape.BusyCursor)
+        except Exception:
+            pass
 
         applied = 0
         for p in ptrs:
@@ -1104,16 +1116,16 @@ class FunctionBundleDialog(QDialog):
             if sw is None:
                 self._pump_events(0)
                 continue
-            _activate_target_sw(mw, sw)   
+            _activate_target_sw(mw, sw)
             self._apply_steps_to_target_sw(mw, sw, steps)
             applied += 1
             self._wait_for_cosmicclarity(mw)
             self._pump_events(0)
 
-        try: QApplication.restoreOverrideCursor()
-        except Exception as e:
-            import logging
-            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
+        try:
+            QApplication.restoreOverrideCursor()
+        except Exception:
+            pass
 
         if applied == 0:
             QMessageBox.information(self, "Apply", "No valid targets in the selected bundle.")

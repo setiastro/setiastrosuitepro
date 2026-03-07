@@ -214,6 +214,23 @@ class _SyQonDenoiseHubPage(QWidget):
         self.spin_overlap.setRange(16, 512)
         self.spin_overlap.setValue(int(self.settings.value("syqon/prism_overlap", 64)))
         form.addRow("Overlap:", self.spin_overlap)
+
+        # --- NEW: edge padding (for tile context) ---
+        self.spin_pad = QSpinBox(self)
+        self.spin_pad.setRange(0, 2048)
+        # default: at least overlap, with a little cushion (old behavior)
+        default_pad = max(int(self.settings.value("syqon/prism_overlap", 64)), 32)
+        self.spin_pad.setValue(int(self.settings.value("syqon/prism_pad", default_pad)))
+        form.addRow("Edge pad (px):", self.spin_pad)
+
+        pad_help = QLabel(
+            "Pads edges before tiling (reflect) to prevent border artifacts.\n"
+            "Typical: overlap or overlap+32. 0 disables padding."
+        )
+        pad_help.setWordWrap(True)
+        pad_help.setStyleSheet("color:#888;")
+        form.addRow("", pad_help)
+
         self.chk_mtf = QCheckBox("Apply temporary stretch for model (recommended)", self)
         self.chk_mtf.setChecked(bool(self.settings.value("syqon/prism_use_mtf", True, type=bool)))
         form.addRow("", self.chk_mtf)
@@ -478,6 +495,7 @@ class _SyQonDenoiseHubPage(QWidget):
         self.cmb_model.setEnabled(not busy)
         self.spin_tile.setEnabled(not busy)
         self.spin_overlap.setEnabled(not busy)
+        self.spin_pad.setEnabled(not busy)
         self.chk_mtf.setEnabled(not busy)
         self.spin_strength.setEnabled(not busy)
         self.spin_mtf_median.setEnabled((not busy) and self.chk_mtf.isChecked())
@@ -564,6 +582,7 @@ class _SyQonDenoiseHubPage(QWidget):
                     "model_kind": self.model_kind(),
                     "tile_size": int(self.spin_tile.value()),
                     "overlap": int(self.spin_overlap.value()),
+                    "pad": int(self.spin_pad.value()),
                     "strength": float(self.spin_strength.value()),
                     "model_path": str(self._model_dst_path()),
                     "use_mtf": bool(do_mtf),
@@ -583,6 +602,7 @@ class _SyQonDenoiseHubPage(QWidget):
                     "model_kind": self.model_kind(),
                     "tile_size": int(self.spin_tile.value()),
                     "overlap": int(self.spin_overlap.value()),
+                    "pad": int(self.spin_pad.value()),
                     "strength": float(self.spin_strength.value()),
                     "model_path": str(self._model_dst_path()),
                     "use_mtf": bool(do_mtf),
@@ -614,6 +634,7 @@ class _SyQonDenoiseHubPage(QWidget):
         self.settings.setValue("syqon/prism_overlap", int(self.spin_overlap.value()))
         self.settings.setValue("syqon/prism_use_amp", bool(self.chk_amp.isChecked()))
         self.settings.setValue("syqon/prism_use_mtf", bool(self.chk_mtf.isChecked()))
+        self.settings.setValue("syqon/prism_pad", int(self.spin_pad.value()))
         self.settings.setValue("syqon/prism_strength", float(self.spin_strength.value()))
         self.settings.setValue("syqon/prism_mtf_target_median", float(self.spin_mtf_median.value()))
         self.settings.setValue("syqon/prism_model_kind", self.model_kind())
@@ -676,6 +697,7 @@ class _SyQonDenoiseHubPage(QWidget):
             model_kind=self.model_kind(),
             tile=int(self.spin_tile.value()),
             overlap=int(self.spin_overlap.value()),
+            pad=int(self.spin_pad.value()),      
             use_amp=bool(self.chk_amp.isChecked()),
             amp_dtype="fp16",
             parent=self,
@@ -718,6 +740,7 @@ class _SyQonPrismProcessThread(QThread):
         model_kind: str,
         tile: int,
         overlap: int,
+        pad: int = 0, 
         use_amp: bool = False,
         amp_dtype: str = "fp16",
         parent=None,
@@ -732,9 +755,40 @@ class _SyQonPrismProcessThread(QThread):
         self.amp_dtype = ad if ad in ("fp16", "bf16") else "fp16"
         self._cancel = False
         self.model_kind = str(model_kind or "prism_mini")
+        self.pad = int(pad)
 
     def cancel(self):
         self._cancel = True
+
+    def _pad_rgb_reflect(self, img_rgb01: np.ndarray, pad: int) -> tuple[np.ndarray, tuple[int, int]]:
+        """
+        Reflect-pad an RGB float image (H,W,3). Returns (padded, (h,w)).
+        """
+        x = np.asarray(img_rgb01, dtype=np.float32)
+        if x.ndim != 3 or x.shape[2] != 3:
+            raise ValueError(f"_pad_rgb_reflect expects (H,W,3), got {x.shape}")
+
+        h, w = x.shape[:2]
+        p = int(max(0, pad))
+        if p == 0:
+            return x, (h, w)
+
+        # Reflect is usually best for astro edges; symmetric also works.
+        padded = np.pad(x, ((p, p), (p, p), (0, 0)), mode="reflect")
+        return padded.astype(np.float32, copy=False), (h, w)
+
+
+    def _unpad_rgb(self, img_rgb01: np.ndarray, orig_hw: tuple[int, int], pad: int) -> np.ndarray:
+        """
+        Crop padded RGB back to original size.
+        """
+        x = np.asarray(img_rgb01, dtype=np.float32)
+        h, w = (int(orig_hw[0]), int(orig_hw[1]))
+        p = int(max(0, pad))
+        if p == 0:
+            return x[:h, :w, :]
+
+        return x[p:p + h, p:p + w, :].astype(np.float32, copy=False)
 
     def run(self):
         info = {
@@ -757,8 +811,14 @@ class _SyQonPrismProcessThread(QThread):
             info["model_kind"] = self.model_kind
             info["model_variant_requested"] = model_variant
 
-            denoised, engine_info = prism_denoise_rgb01(
-                self.x_for_net,
+            # --- Pad size comes from UI (0 disables) ---
+            pad = int(max(0, getattr(self, "pad", 0)))
+            info["pad_px"] = pad
+
+            x_in, orig_hw = self._pad_rgb_reflect(self.x_for_net, pad)
+
+            denoised_p, engine_info = prism_denoise_rgb01(
+                x_in,
                 ckpt_path=self.ckpt_path,
                 tile=self.tile,
                 overlap=self.overlap,
@@ -769,6 +829,8 @@ class _SyQonPrismProcessThread(QThread):
                 model_variant=model_variant,
                 progress_cb=_prog,
             )
+
+            denoised = self._unpad_rgb(denoised_p, orig_hw, pad)
 
             if engine_info:
                 try:
