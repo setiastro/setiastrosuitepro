@@ -299,6 +299,12 @@ class MenuMixin:
 
         m_view.addSeparator()
 
+        m_view.addSeparator()
+        m_view.addAction(self.act_open_panel_host)
+        m_view.addAction(self.act_send_panels_to_host)
+        m_view.addAction(self.act_return_panels_to_main)
+        m_view.addSeparator()
+
         # a button that shows current group & opens a drop-down
         self._link_btn = QToolButton(self)
         self._link_btn.setDefaultAction(self.act_link_group)  # text/checked state mirrors the action

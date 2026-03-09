@@ -1,11 +1,10 @@
-# src/setiastro/saspro/clone_stamp.py
 from __future__ import annotations
 
 import numpy as np
 from typing import Optional, Tuple
 
 from PyQt6.QtCore import Qt, QEvent, QPointF, QTimer, QSettings
-from PyQt6.QtGui import QImage, QPixmap, QPen, QBrush, QAction, QKeySequence, QColor, QWheelEvent, QPainter
+from PyQt6.QtGui import QImage, QPixmap, QPen, QBrush, QAction, QKeySequence, QColor, QWheelEvent
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox, QLabel, QPushButton, QSlider,
     QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGraphicsEllipseItem, QMessageBox,
@@ -23,27 +22,25 @@ def _circle_mask(radius: int, feather: float) -> np.ndarray:
     """
     r = int(max(1, radius))
     y, x = np.ogrid[-r:r+1, -r:r+1]
-    d = np.sqrt(x*x + y*y).astype(np.float32)
+    d = np.sqrt(x * x + y * y).astype(np.float32)
     m = (d <= r).astype(np.float32)
 
     if feather <= 0:
         return m
 
-    # Soft edge: inner radius where mask=1 then falls to 0 at r
-    # feather=1 => inner radius 0, feather small => thin falloff band
     inner = float(r) * (1.0 - float(np.clip(feather, 0.0, 1.0)))
     if inner < 0.5:
         inner = 0.5
 
-    # Linear falloff in [inner..r]
     fall = np.clip((float(r) - d) / max(1e-6, float(r) - inner), 0.0, 1.0)
     return np.where(d <= inner, 1.0, np.where(d <= r, fall, 0.0)).astype(np.float32)
+
 
 def _blend_clone_inplace(
     img: np.ndarray,
     tx: int, ty: int,
     sx: int, sy: int,
-    mask_full: np.ndarray,   # (2r+1,2r+1)
+    mask_full: np.ndarray,
     r: int,
     opacity: float,
 ) -> None:
@@ -53,30 +50,30 @@ def _blend_clone_inplace(
     """
     h, w = img.shape[:2]
 
-    # target bounds
-    x0 = tx - r; x1 = tx + r + 1
-    y0 = ty - r; y1 = ty + r + 1
+    x0 = tx - r
+    x1 = tx + r + 1
+    y0 = ty - r
+    y1 = ty + r + 1
 
-    # clip target
-    cx0 = max(0, x0); cx1 = min(w, x1)
-    cy0 = max(0, y0); cy1 = min(h, y1)
+    cx0 = max(0, x0)
+    cx1 = min(w, x1)
+    cy0 = max(0, y0)
+    cy1 = min(h, y1)
     if cx0 >= cx1 or cy0 >= cy1:
         return
 
-    # map to mask coords
     mx0 = cx0 - x0
     my0 = cy0 - y0
     tw = cx1 - cx0
     th = cy1 - cy0
 
-    # source aligned bounds for same shape
     sx0 = (sx - r) + mx0
     sy0 = (sy - r) + my0
     sx1 = sx0 + tw
     sy1 = sy0 + th
 
-    # clip both if source out of bounds
     adj_cx0, adj_cy0, adj_cx1, adj_cy1 = cx0, cy0, cx1, cy1
+
     if sx0 < 0:
         d = -sx0
         sx0 = 0
@@ -102,19 +99,17 @@ def _blend_clone_inplace(
     if tw <= 0 or th <= 0:
         return
 
-    # recompute mask slice indices after clipping shift
     mx0 = adj_cx0 - x0
     my0 = adj_cy0 - y0
 
     tgt = img[adj_cy0:adj_cy1, adj_cx0:adj_cx1, :]
-    src = img[sy0:sy0+th, sx0:sx0+tw, :]
+    src = img[sy0:sy0 + th, sx0:sx0 + tw, :]
 
-    a = (mask_full[my0:my0+th, mx0:mx0+tw] * float(opacity)).astype(np.float32)
+    a = (mask_full[my0:my0 + th, mx0:mx0 + tw] * float(opacity)).astype(np.float32)
     if a.max() <= 0:
         return
 
     a3 = a[:, :, None]
-    # in-place blend
     tgt[:] = (1.0 - a3) * tgt + a3 * src
 
 
@@ -125,6 +120,7 @@ class CloneStampDialogPro(QDialog):
     - Left-drag paints source onto target with classic offset-follow behavior.
     Writes back to the provided document when 'Apply' is pressed.
     """
+
     def __init__(self, parent, doc):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Clone Stamp"))
@@ -132,6 +128,7 @@ class CloneStampDialogPro(QDialog):
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         self.setMinimumSize(900, 650)
+
         self._mask_cache_key = None
         self._mask_cache = None
         self._did_initial_fit = False
@@ -141,7 +138,6 @@ class CloneStampDialogPro(QDialog):
         if base is None:
             raise RuntimeError("Document has no image.")
 
-        # normalize to float32 [0..1]
         self._orig_shape = base.shape
         self._orig_mono = (base.ndim == 2) or (base.ndim == 3 and base.shape[2] == 1)
 
@@ -151,7 +147,6 @@ class CloneStampDialogPro(QDialog):
             img = img / max(1.0, maxv)
         img = np.clip(img, 0.0, 1.0).astype(np.float32, copy=False)
 
-        # display/working is 3-channel
         if img.ndim == 2:
             img3 = np.repeat(img[:, :, None], 3, axis=2)
         elif img.ndim == 3 and img.shape[2] == 1:
@@ -161,31 +156,29 @@ class CloneStampDialogPro(QDialog):
         else:
             raise ValueError(f"Unsupported image shape: {img.shape}")
 
-        self._image   = img3.copy()      # linear working
+        self._image = img3.copy()
         self._display = self._image.copy()
 
-        # --- stroke state ---
         self._has_source = False
-        self._src_point: Tuple[int, int] = (0, 0)     # absolute source point (current anchor)
-        self._offset: Tuple[int, int] = (0, 0)        # src - tgt at stroke start
+        self._src_point: Tuple[int, int] = (0, 0)
+        self._offset: Tuple[int, int] = (0, 0)
         self._painting = False
-        self._last_tgt: Optional[Tuple[int, int]] = None
+        self._stroke_last_pos: Optional[Tuple[float, float]] = None
+        self._stroke_spacing_frac = 0.25
 
-        # ── Scene/View
         self.scene = QGraphicsScene(self)
-        self.view  = QGraphicsView(self.scene)
+        self.view = QGraphicsView(self.scene)
         self.view.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.pix   = QGraphicsPixmapItem()
+
+        self.pix = QGraphicsPixmapItem()
         self.scene.addItem(self.pix)
 
-        # Brush circle (green, always visible on move)
         self.circle = QGraphicsEllipseItem()
         self.circle.setPen(QPen(QColor(0, 255, 0), 2, Qt.PenStyle.SolidLine))
         self.circle.setBrush(QBrush(Qt.BrushStyle.NoBrush))
         self.circle.setVisible(False)
         self.scene.addItem(self.circle)
 
-        # Source X (two line items)
         self.src_x1 = QGraphicsLineItem()
         self.src_x2 = QGraphicsLineItem()
         pen_src = QPen(QColor(0, 255, 0), 2, Qt.PenStyle.SolidLine)
@@ -196,32 +189,37 @@ class CloneStampDialogPro(QDialog):
         self.scene.addItem(self.src_x1)
         self.scene.addItem(self.src_x2)
 
-        # Optional line from target to source
         self.link = QGraphicsLineItem()
         self.link.setPen(QPen(QColor(0, 255, 0), 1, Qt.PenStyle.DotLine))
         self.link.setVisible(False)
         self.scene.addItem(self.link)
 
-        # scroll container
         self.scroll = QScrollArea(self)
         self.scroll.setWidgetResizable(True)
         self.scroll.setWidget(self.view)
         self.scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        # Zoom controls
+
         self._zoom = 1.0
         self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
-        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
+        self.btn_zoom_in = themed_toolbtn("zoom-in", "Zoom In")
         self.btn_zoom_fit = themed_toolbtn("zoom-fit-best", "Fit to Preview")
 
-        # ── Controls
         ctrls = QGroupBox(self.tr("Controls"))
-        form  = QFormLayout(ctrls)
+        form = QFormLayout(ctrls)
 
-        self.s_radius  = QSlider(Qt.Orientation.Horizontal); self.s_radius.setRange(1, 900); self.s_radius.setValue(24)
-        self.s_feather = QSlider(Qt.Orientation.Horizontal); self.s_feather.setRange(0, 100); self.s_feather.setValue(50)
-        self.s_opacity = QSlider(Qt.Orientation.Horizontal); self.s_opacity.setRange(0, 100); self.s_opacity.setValue(100)
+        self.s_radius = QSlider(Qt.Orientation.Horizontal)
+        self.s_radius.setRange(1, 900)
+        self.s_radius.setValue(24)
 
-        form.addRow(self.tr("Radius:"),  self.s_radius)
+        self.s_feather = QSlider(Qt.Orientation.Horizontal)
+        self.s_feather.setRange(0, 100)
+        self.s_feather.setValue(50)
+
+        self.s_opacity = QSlider(Qt.Orientation.Horizontal)
+        self.s_opacity.setRange(0, 100)
+        self.s_opacity.setValue(100)
+
+        form.addRow(self.tr("Radius:"), self.s_radius)
         form.addRow(self.tr("Feather:"), self.s_feather)
         form.addRow(self.tr("Opacity:"), self.s_opacity)
 
@@ -242,7 +240,6 @@ class CloneStampDialogPro(QDialog):
         self.btn_clear_src.clicked.connect(self._clear_source)
         form.addRow(self.btn_clear_src)
 
-        # Preview autostretch (display only)
         self.cb_autostretch = QCheckBox(self.tr("Auto-stretch preview"))
         self.cb_autostretch.setChecked(False)
         form.addRow(self.cb_autostretch)
@@ -261,13 +258,16 @@ class CloneStampDialogPro(QDialog):
         self.cb_autostretch.toggled.connect(self._update_display_autostretch)
         self.s_target_median.valueChanged.connect(self._update_display_autostretch)
         self.cb_linked.toggled.connect(self._update_display_autostretch)
-        self.cb_autostretch.toggled.connect(lambda on: (self.s_target_median.setEnabled(on),
-                                                        self.cb_linked.setEnabled(on)))
+        self.cb_autostretch.toggled.connect(
+            lambda on: (
+                self.s_target_median.setEnabled(on),
+                self.cb_linked.setEnabled(on),
+            )
+        )
 
-        # buttons
         bb = QHBoxLayout()
-        self.btn_undo  = QPushButton(self.tr("Undo"))
-        self.btn_redo  = QPushButton(self.tr("Redo"))
+        self.btn_undo = QPushButton(self.tr("Undo"))
+        self.btn_redo = QPushButton(self.tr("Redo"))
         self.btn_apply = QPushButton(self.tr("Apply to Document"))
         self.btn_close = QPushButton(self.tr("Close"))
 
@@ -281,30 +281,21 @@ class CloneStampDialogPro(QDialog):
         bb.addWidget(self.btn_apply)
         bb.addWidget(self.btn_close)
 
-        # ─────────────────────────────────────────────────────────────
-        # Layout: Left = Preview, Right = Zoom + Controls + Buttons
-        # ─────────────────────────────────────────────────────────────
         root = QHBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(10)
 
-        # ---- LEFT: Preview ----
         left = QVBoxLayout()
         left.setSpacing(8)
+        left.addWidget(self.scroll, 1)
 
-        left.addWidget(self.scroll, 1)  # preview expands
-
-
-        # optional vertical separator (nice on wide screens)
         sep = QFrame(self)
         sep.setFrameShape(QFrame.Shape.VLine)
         sep.setFrameShadow(QFrame.Shadow.Sunken)
 
-        # ---- RIGHT: Zoom + Controls + Buttons ----
         right = QVBoxLayout()
         right.setSpacing(10)
 
-        # Zoom group (top of right column)
         zoom_box = QGroupBox(self.tr("Zoom"))
         zoom_lay = QHBoxLayout(zoom_box)
         zoom_lay.addStretch(1)
@@ -314,31 +305,26 @@ class CloneStampDialogPro(QDialog):
         zoom_lay.addStretch(1)
 
         right.addWidget(zoom_box)
-
-        # Controls group (already built as `ctrls`)
         right.addWidget(ctrls, 0)
 
-        # Bottom buttons row (already built as `bb`)
         btn_row = QWidget(self)
         btn_row.setLayout(bb)
         right.addWidget(btn_row, 0)
 
         right.addStretch(1)
 
-        # Wrap right column in a scroll area so small monitors don't get cramped
         right_widget = QWidget(self)
         right_widget.setLayout(right)
 
         right_scroll = QScrollArea(self)
         right_scroll.setWidgetResizable(True)
-        right_scroll.setMinimumWidth(320)   # adjust if you want (300–360 is good)
+        right_scroll.setMinimumWidth(320)
         right_scroll.setWidget(right_widget)
 
-        root.addWidget(right_scroll, 0)  # RIGHT column becomes LEFT side now
+        root.addWidget(right_scroll, 0)
         root.addWidget(sep)
-        root.addLayout(left, 1)          # preview becomes RIGHT side now
+        root.addLayout(left, 1)
 
-        # behavior
         self.view.setMouseTracking(True)
         self.view.viewport().installEventFilter(self)
 
@@ -350,48 +336,51 @@ class CloneStampDialogPro(QDialog):
         self.btn_close.clicked.connect(self.reject)
         self.btn_undo.clicked.connect(self._undo_step)
         self.btn_redo.clicked.connect(self._redo_step)
+
         self.s_radius.valueChanged.connect(self._update_brush_preview)
         self.s_feather.valueChanged.connect(self._update_brush_preview)
         self.s_opacity.valueChanged.connect(self._update_brush_preview)
+
         self._undo, self._redo = [], []
         self._update_undo_redo_buttons()
-
-        self._update_display_autostretch()
-        self._fit_view()
-        self._stroke_last_pos: Optional[Tuple[float, float]] = None
-        self._stroke_spacing_frac = 0.25  # dab spacing = radius * this
 
         self._paint_refresh_pending = False
         self._paint_refresh_timer = QTimer(self)
         self._paint_refresh_timer.setSingleShot(True)
         self._paint_refresh_timer.timeout.connect(self._do_paint_refresh)
 
-        # shortcuts
-        a_undo = QAction(self); a_undo.setShortcut(QKeySequence.StandardKey.Undo); a_undo.triggered.connect(self._undo_step)
-        a_redo = QAction(self); a_redo.setShortcut(QKeySequence.StandardKey.Redo); a_redo.triggered.connect(self._redo_step)
-        self.addAction(a_undo); self.addAction(a_redo)
+        a_undo = QAction(self)
+        a_undo.setShortcut(QKeySequence.StandardKey.Undo)
+        a_undo.triggered.connect(self._undo_step)
+
+        a_redo = QAction(self)
+        a_redo.setShortcut(QKeySequence.StandardKey.Redo)
+        a_redo.triggered.connect(self._redo_step)
+
+        self.addAction(a_undo)
+        self.addAction(a_redo)
+
         self._update_brush_preview()
+        self._update_display_autostretch()
+        self._fit_view()
 
     def _schedule_paint_refresh(self):
         if self._paint_refresh_pending:
             return
         self._paint_refresh_pending = True
-        self._paint_refresh_timer.start(33)  # ~30 FPS
+        self._paint_refresh_timer.start(33)
 
     def _do_paint_refresh(self):
         self._paint_refresh_pending = False
         self._display = self._image
         self._refresh_pix()
 
-
-    # ──────────────────────────────────────────────────────────────────────────
     def _get_mask(self, r: int, feather: float) -> np.ndarray:
         key = (int(r), float(feather))
         if self._mask_cache_key != key or self._mask_cache is None:
             self._mask_cache_key = key
             self._mask_cache = _circle_mask(r, feather)
         return self._mask_cache
-
 
     def _clear_source(self):
         self._has_source = False
@@ -413,12 +402,22 @@ class CloneStampDialogPro(QDialog):
 
         tm = float(self.s_target_median.value())
         if not self._orig_mono:
-            disp = stretch_color_image(src, target_median=tm, linked=self.cb_linked.isChecked(),
-                                      normalize=False, apply_curves=False)
+            disp = stretch_color_image(
+                src,
+                target_median=tm,
+                linked=self.cb_linked.isChecked(),
+                normalize=False,
+                apply_curves=False,
+            )
         else:
             mono = src[..., 0]
-            mono_st = stretch_mono_image(mono, target_median=tm, normalize=False, apply_curves=False)
-            disp = np.stack([mono_st]*3, axis=-1)
+            mono_st = stretch_mono_image(
+                mono,
+                target_median=tm,
+                normalize=False,
+                apply_curves=False,
+            )
+            disp = np.stack([mono_st] * 3, axis=-1)
 
         self._display = disp.astype(np.float32, copy=False)
         self._refresh_pix()
@@ -427,44 +426,37 @@ class CloneStampDialogPro(QDialog):
         w = self.brush_preview.width()
         h = self.brush_preview.height()
 
-        # Use a fixed "preview radius" so the graphic always fills nicely.
-        # Feather/opacity are the main teaching tools here.
         r = min(w, h) * 0.42
-
         feather = float(self.s_feather.value()) / 100.0
         opacity = float(self.s_opacity.value()) / 100.0
 
-        # Build a tiny mask using the same logic as the real stamp.
-        # Convert radius -> int pixel radius for the preview buffer.
         pr = int(max(1, round(r)))
-        mask = _circle_mask(pr, feather)  # (2pr+1, 2pr+1) float32
+        mask = _circle_mask(pr, feather)
 
-        # Make preview canvas
         canvas = np.zeros((h, w), dtype=np.float32)
 
-        # Center the mask
         cy, cx = h // 2, w // 2
         y0 = cy - pr
         x0 = cx - pr
         y1 = y0 + mask.shape[0]
         x1 = x0 + mask.shape[1]
 
-        # Clip just in case
-        yy0 = max(0, y0); xx0 = max(0, x0)
-        yy1 = min(h, y1); xx1 = min(w, x1)
+        yy0 = max(0, y0)
+        xx0 = max(0, x0)
+        yy1 = min(h, y1)
+        xx1 = min(w, x1)
 
-        my0 = yy0 - y0; mx0 = xx0 - x0
-        my1 = my0 + (yy1 - yy0); mx1 = mx0 + (xx1 - xx0)
+        my0 = yy0 - y0
+        mx0 = xx0 - x0
+        my1 = my0 + (yy1 - yy0)
+        mx1 = mx0 + (xx1 - xx0)
 
         canvas[yy0:yy1, xx0:xx1] = mask[my0:my1, mx0:mx1] * opacity
 
-        # Convert to QPixmap (grayscale)
         arr8 = np.ascontiguousarray(np.clip(canvas * 255.0, 0, 255).astype(np.uint8))
         qimg = QImage(arr8.data, w, h, w, QImage.Format.Format_Grayscale8)
         self.brush_preview.setPixmap(QPixmap.fromImage(qimg))
 
-
-    # ── Event filter
     def eventFilter(self, src, ev):
         if src is self.view.viewport():
             if ev.type() == QEvent.Type.MouseMove:
@@ -496,25 +488,24 @@ class CloneStampDialogPro(QDialog):
     def _on_mouse_move(self, scene_pos: QPointF, ev):
         x, y = float(scene_pos.x()), float(scene_pos.y())
         r = int(self.s_radius.value())
-        self.circle.setRect(x - r, y - r, 2*r, 2*r)
+        self.circle.setRect(x - r, y - r, 2 * r, 2 * r)
         self.circle.setVisible(True)
 
         if self._painting and self._has_source:
             self._paint_segment(scene_pos)
 
-        # Update source overlay while hovering (and while painting)
         self._update_source_overlay(scene_pos)
 
     def _set_source_at(self, scene_pos: QPointF):
         x, y = int(round(scene_pos.x())), int(round(scene_pos.y()))
         if not (0 <= x < self._image.shape[1] and 0 <= y < self._image.shape[0]):
             return
+
         self._has_source = True
         self._src_point = (x, y)
-        self._last_tgt = None  # reset stroke history
         self._painting = False
+        self._stroke_last_pos = None
 
-        # show X at the chosen source (no offset yet)
         self._draw_source_x(x, y, size=8)
         self.src_x1.setVisible(True)
         self.src_x2.setVisible(True)
@@ -529,24 +520,20 @@ class CloneStampDialogPro(QDialog):
         if not (0 <= tx < self._image.shape[1] and 0 <= ty < self._image.shape[0]):
             return
 
-        # Start of stroke: lock offset = src - tgt
         sx, sy = self._src_point
         self._offset = (sx - tx, sy - ty)
 
-        # Push undo snapshot once per stroke
         self._undo.append(self._image.copy())
         self._redo.clear()
         self._update_undo_redo_buttons()
 
         self._painting = True
         self._stroke_last_pos = (scene_pos.x(), scene_pos.y())
-        self._paint_segment(scene_pos)  # do first dab
+        self._paint_segment(scene_pos)
 
     def _end_paint(self):
         self._painting = False
-        self._last_tgt = None
         self._stroke_last_pos = None
-        # Now do the expensive autostretch once:
         self._update_display_autostretch()
 
     def _paint_segment(self, scene_pos: QPointF):
@@ -560,13 +547,12 @@ class CloneStampDialogPro(QDialog):
         x0, y0 = self._stroke_last_pos
         dx = x1 - x0
         dy = y1 - y0
-        dist = float((dx*dx + dy*dy) ** 0.5)
+        dist = float((dx * dx + dy * dy) ** 0.5)
 
-        radius  = int(self.s_radius.value())
+        radius = int(self.s_radius.value())
         feather = float(self.s_feather.value()) / 100.0
         opacity = float(self.s_opacity.value()) / 100.0
 
-        # spacing: smaller = smoother (but more compute)
         spacing = max(1.0, radius * self._stroke_spacing_frac)
         steps = max(1, int(dist / spacing))
 
@@ -575,7 +561,6 @@ class CloneStampDialogPro(QDialog):
 
         h, w = self._image.shape[:2]
 
-        # stamp along the line
         for i in range(1, steps + 1):
             t = i / steps
             xt = x0 + dx * t
@@ -583,48 +568,12 @@ class CloneStampDialogPro(QDialog):
             tx, ty = int(round(xt)), int(round(yt))
             if not (0 <= tx < w and 0 <= ty < h):
                 continue
+
             sx, sy = tx + ox, ty + oy
             _blend_clone_inplace(self._image, tx, ty, sx, sy, mask, radius, opacity)
 
         self._stroke_last_pos = (x1, y1)
-
-        # During painting: do NOT autostretch every dab.
-        # Just show linear buffer quickly.
         self._schedule_paint_refresh()
-
-
-    def _paint_at(self, scene_pos: QPointF):
-        tx, ty = int(round(scene_pos.x())), int(round(scene_pos.y()))
-        h, w = self._image.shape[:2]
-        if not (0 <= tx < w and 0 <= ty < h):
-            return
-
-        # spacing: don’t spam dabs if mouse barely moved
-        if self._last_tgt is not None:
-            lx, ly = self._last_tgt
-            if (tx - lx)*(tx - lx) + (ty - ly)*(ty - ly) < 2:  # ~1px
-                return
-        self._last_tgt = (tx, ty)
-
-        ox, oy = self._offset
-        sx, sy = tx + ox, ty + oy
-
-        radius  = int(self.s_radius.value())
-        feather = float(self.s_feather.value()) / 100.0
-        opacity = float(self.s_opacity.value()) / 100.0
-
-        self._image = _blend_clone(
-            self._image, (tx, ty), (sx, sy),
-            radius=radius, feather=feather, opacity=opacity
-        ).astype(np.float32, copy=False)
-
-        # update display quickly without recomputing expensive stuff every dab:
-        # - if autostretch is ON, we still need a rebuild (can be heavy),
-        #   but in practice it’s fine; if it’s too slow, we can add a 60–120ms debounce.
-        self._update_display_autostretch()
-
-        # update overlays immediately
-        self._update_source_overlay(scene_pos)
 
     def _update_source_overlay(self, tgt_scene_pos: QPointF):
         if not self._has_source:
@@ -636,7 +585,6 @@ class CloneStampDialogPro(QDialog):
         tx, ty = float(tgt_scene_pos.x()), float(tgt_scene_pos.y())
 
         if self._painting:
-            # live source follows the cursor via offset
             sx = tx + float(self._offset[0])
             sy = ty + float(self._offset[1])
 
@@ -647,7 +595,6 @@ class CloneStampDialogPro(QDialog):
             self.link.setLine(tx, ty, sx, sy)
             self.link.setVisible(True)
         else:
-            # not painting: show X at the anchored source point
             sx, sy = self._src_point
             self._draw_source_x(float(sx), float(sy), size=8)
             self.src_x1.setVisible(True)
@@ -659,9 +606,8 @@ class CloneStampDialogPro(QDialog):
         self.src_x1.setLine(x - s, y - s, x + s, y + s)
         self.src_x2.setLine(x - s, y + s, x + s, y - s)
 
-    # ── Zoom
     def _wheel_zoom(self, ev: QWheelEvent):
-        step = 1.25 if ev.angleDelta().y() > 0 else 1/1.25
+        step = 1.25 if ev.angleDelta().y() > 0 else 1 / 1.25
         self._set_zoom(self._zoom * step)
 
     def _set_zoom(self, z: float):
@@ -684,7 +630,6 @@ class CloneStampDialogPro(QDialog):
         t = self.view.transform()
         self._zoom = t.m11()
 
-    # ── Undo/Redo
     def _undo_step(self):
         if not self._undo:
             return
@@ -701,7 +646,6 @@ class CloneStampDialogPro(QDialog):
         self._update_display_autostretch()
         self._update_undo_redo_buttons()
 
-    # ── Commit
     def _commit_to_doc(self):
         out = self._image
         if self._orig_mono:
@@ -720,11 +664,14 @@ class CloneStampDialogPro(QDialog):
         applied = False
         try:
             if hasattr(self._doc, "set_image"):
-                self._doc.set_image(out, step_name="Clone Stamp"); applied = True
+                self._doc.set_image(out, step_name="Clone Stamp")
+                applied = True
             elif hasattr(self._doc, "apply_numpy"):
-                self._doc.apply_numpy(out, step_name="Clone Stamp"); applied = True
+                self._doc.apply_numpy(out, step_name="Clone Stamp")
+                applied = True
             elif hasattr(self._doc, "image"):
-                self._doc.image = out; applied = True
+                self._doc.image = out
+                applied = True
         except Exception as e:
             QMessageBox.critical(self, "Clone Stamp", f"Failed to write to document:\n{e}")
             return
@@ -741,16 +688,15 @@ class CloneStampDialogPro(QDialog):
             pass
         self.accept()
 
-    # ── display helpers
     def _np_to_qpix(self, img: np.ndarray) -> QPixmap:
         arr = np.ascontiguousarray(np.clip(img * 255.0, 0, 255).astype(np.uint8))
         if arr.ndim == 2:
             h, w = arr.shape
             arr = np.repeat(arr[:, :, None], 3, axis=2)
-            qimg = QImage(arr.data, w, h, 3*w, QImage.Format.Format_RGB888)
+            qimg = QImage(arr.data, w, h, 3 * w, QImage.Format.Format_RGB888)
         else:
             h, w, _ = arr.shape
-            qimg = QImage(arr.data, w, h, 3*w, QImage.Format.Format_RGB888)
+            qimg = QImage(arr.data, w, h, 3 * w, QImage.Format.Format_RGB888)
         return QPixmap.fromImage(qimg)
 
     def _refresh_pix(self):
@@ -790,7 +736,6 @@ class CloneStampDialogPro(QDialog):
             QTimer.singleShot(0, _after_restore_refit)
             return
 
-        # normal path: if window is shown again, keep fit sane
         QTimer.singleShot(0, self._fit_view)
 
     def closeEvent(self, ev):

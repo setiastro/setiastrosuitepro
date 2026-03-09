@@ -725,6 +725,18 @@ class ToolbarMixin:
         self.act_exit.setMenuRole(QAction.MenuRole.QuitRole)
         self.act_exit.triggered.connect(self._on_exit)
 
+        self.act_open_panel_host = QAction(self.tr("Open Secondary Panel Window"), self)
+        self.act_open_panel_host.setStatusTip(self.tr("Open the secondary dock host window"))
+        self.act_open_panel_host.triggered.connect(self._show_dock_host)
+
+        self.act_send_panels_to_host = QAction(self.tr("Send Utility Panels to Secondary Window"), self)
+        self.act_send_panels_to_host.setStatusTip(self.tr("Move common utility docks to the secondary panel window"))
+        self.act_send_panels_to_host.triggered.connect(self._send_default_docks_to_host)
+
+        self.act_return_panels_to_main = QAction(self.tr("Return Panels to Main Window"), self)
+        self.act_return_panels_to_main.setStatusTip(self.tr("Move all hosted docks back to the main window"))
+        self.act_return_panels_to_main.triggered.connect(self._return_all_host_docks_to_main)
+
         self.act_cascade = QAction(self.tr("Cascade Views"), self)
         self.act_cascade.setStatusTip(self.tr("Cascade all subwindows"))
         self.act_cascade.setShortcut(QKeySequence("Ctrl+Shift+C"))

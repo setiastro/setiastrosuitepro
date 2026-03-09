@@ -146,6 +146,47 @@ def _invert_mtf_linked_rgb(img_rgb01: np.ndarray, p: dict) -> np.ndarray:
         y[..., c] = _mtf_inverse(img_rgb01[..., c], p["s"], p["m"], p["h"])
     return y
 
+def _mtf_params_unlinked_noclip(img_rgb01: np.ndarray, targetbg: float = 0.25) -> dict:
+    """
+    Unlinked MTF params with NO shadow clipping.
+    Assumes any desired pedestal/blackpoint has already been removed.
+    Returns dict with arrays: {'s': (3,), 'm': (3,), 'h': (3,)}.
+    """
+    x = np.asarray(img_rgb01, dtype=np.float32)
+
+    if x.ndim == 2:
+        x_in = x[..., None]
+        C_in = 1
+    elif x.ndim == 3 and x.shape[2] == 1:
+        x_in = x
+        C_in = 1
+    else:
+        x_in = x[..., :3]
+        C_in = x_in.shape[2]
+
+    med = np.median(x_in, axis=(0, 1)).astype(np.float32)
+
+    s_in = np.zeros(C_in, dtype=np.float32)
+    m_in = np.zeros(C_in, dtype=np.float32)
+    h_in = np.ones(C_in, dtype=np.float32)
+
+    tb = float(np.clip(targetbg, 1e-6, 1.0 - 1e-6))
+
+    for c in range(C_in):
+        md = float(np.clip(med[c], 1e-6, 1.0 - 1e-6))
+        # Solve MTF so current median maps to target background, with s=0 h=1
+        m_in[c] = float(_mtf_scalar(md, tb, 0.0, 1.0))
+
+    if C_in == 1:
+        s = np.repeat(s_in, 3)
+        m = np.repeat(m_in, 3)
+        h = np.repeat(h_in, 3)
+    else:
+        s = s_in
+        m = m_in
+        h = h_in
+
+    return {"s": s, "m": m, "h": h}
 
 def _mtf_params_unlinked(img_rgb01: np.ndarray,
                          shadows_clipping: float = -2.8,
@@ -316,24 +357,54 @@ def _get_setting_any(settings, keys: tuple[str, ...], default: str = "") -> str:
             return v.strip()
     return default
 
+def _bp_min_per_channel(img_rgb01: np.ndarray) -> np.ndarray:
+    x = np.asarray(img_rgb01, dtype=np.float32)
+    if x.ndim == 2:
+        x = np.stack([x] * 3, axis=-1)
+    elif x.ndim == 3 and x.shape[2] == 1:
+        x = np.repeat(x, 3, axis=2)
+    else:
+        x = x[..., :3]
+    return np.min(x, axis=(0, 1)).astype(np.float32)
 
+
+def _subtract_bp_per_channel(img_rgb01: np.ndarray, bp3: np.ndarray) -> np.ndarray:
+    x = np.asarray(img_rgb01, dtype=np.float32)
+    if x.ndim == 2:
+        x = np.stack([x] * 3, axis=-1)
+    elif x.ndim == 3 and x.shape[2] == 1:
+        x = np.repeat(x, 3, axis=2)
+    else:
+        x = x[..., :3]
+    return np.clip(x - bp3.reshape((1, 1, 3)), 0.0, 1.0).astype(np.float32, copy=False)
+
+
+def _add_bp_per_channel(img_rgb01: np.ndarray, bp3: np.ndarray) -> np.ndarray:
+    x = np.asarray(img_rgb01, dtype=np.float32)
+    if x.ndim == 2:
+        x = np.stack([x] * 3, axis=-1)
+    elif x.ndim == 3 and x.shape[2] == 1:
+        x = np.repeat(x, 3, axis=2)
+    else:
+        x = x[..., :3]
+    return np.clip(x + bp3.reshape((1, 1, 3)), 0.0, 1.0).astype(np.float32, copy=False)
 # ================== HEADLESS, ARRAY-IN → STARLESS-ARRAY-OUT ==================
-
 def starnet_starless_from_array(arr_rgb01: np.ndarray, settings, *, tmp_prefix="comet") -> np.ndarray:
     """
       1) Normalize to [0,1] (preserving overall scale separately)
-      2) Compute unlinked MTF params per channel (auto-stretch)
-      3) Apply unlinked MTF -> 16-bit TIFF for StarNet
-      4) StarNet -> read starless 16-bit TIFF
-      5) Apply per-channel MTF pseudoinverse with SAME params
-      6) Restore original scale if >1.0
+      2) Find per-channel black point and subtract it
+      3) Compute NO-CLIP unlinked MTF params per channel
+      4) Apply unlinked MTF -> 16-bit TIFF for StarNet
+      5) StarNet -> read starless 16-bit TIFF
+      6) Apply per-channel MTF pseudoinverse with SAME params
+      7) Add black point back
+      8) Restore original scale if >1.0
     """
     import os
     import platform
     import subprocess
     import numpy as np
 
-    # save_image / load_image / _get_setting_any assumed available
     arr = np.asarray(arr_rgb01, dtype=np.float32)
     was_single = (arr.ndim == 2) or (arr.ndim == 3 and arr.shape[2] == 1)
 
@@ -342,39 +413,43 @@ def starnet_starless_from_array(arr_rgb01: np.ndarray, settings, *, tmp_prefix="
         raise RuntimeError("StarNet executable not configured (settings 'paths/starnet').")
 
     workdir = os.path.dirname(exe) or os.getcwd()
-    in_path  = os.path.join(workdir, f"{tmp_prefix}_in.tif")
+    in_path = os.path.join(workdir, f"{tmp_prefix}_in.tif")
     out_path = os.path.join(workdir, f"{tmp_prefix}_out.tif")
 
-    # --- Normalize input shape (virtual) and safe values ---
     x_in = np.asarray(arr, dtype=np.float32)
-
-    # If (H,W,1), collapse to (H,W) so mono flows cleanly
     if x_in.ndim == 3 and x_in.shape[2] == 1:
         x_in = x_in[..., 0]
 
-    # sanitize
     x_in = np.nan_to_num(x_in, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
 
-    # Preserve original numeric scale if users pass >1.0
     xmax = float(np.max(x_in)) if x_in.size else 1.0
     scale_factor = xmax if xmax > 1.01 else 1.0
 
     xin = (x_in / scale_factor) if scale_factor > 1.0 else x_in
     xin = np.clip(xin, 0.0, 1.0)
 
-    # --- stretch-style unlinked MTF params + pre-stretch ---
-    mtf_params = _mtf_params_unlinked(xin, shadows_clipping=-2.8, targetbg=0.25)
-    x_for_starnet = _apply_mtf_unlinked_rgb(xin, mtf_params).astype(np.float32, copy=False)
+    # ensure RGB
+    if xin.ndim == 2:
+        xin_rgb = np.stack([xin] * 3, axis=-1)
+    elif xin.ndim == 3 and xin.shape[2] == 1:
+        xin_rgb = np.repeat(xin, 3, axis=2)
+    else:
+        xin_rgb = xin[..., :3]
 
+    # subtract per-channel black point first
+    bp3 = _bp_min_per_channel(xin_rgb)
+    xin_bp = _subtract_bp_per_channel(xin_rgb, bp3)
 
-    # --- Write 16-bit TIFF for StarNet ---
+    # NO-CLIP MTF params on BP-subtracted data
+    mtf_params = _mtf_params_unlinked_noclip(xin_bp, targetbg=0.25)
+    x_for_starnet = _apply_mtf_unlinked_rgb(xin_bp, mtf_params).astype(np.float32, copy=False)
+
     save_image(
         x_for_starnet, in_path,
         original_format="tif", bit_depth="16-bit",
         original_header=None, is_mono=False, image_meta=None, file_meta=None
     )
 
-    # --- Run StarNet ---
     exe_name = os.path.basename(exe).lower()
     if platform.system() in ("Windows", "Linux"):
         cmd = [exe, in_path, out_path, "256"]
@@ -383,11 +458,13 @@ def starnet_starless_from_array(arr_rgb01: np.ndarray, settings, *, tmp_prefix="
 
     rc = subprocess.call(cmd, cwd=workdir)
     if rc != 0 or not os.path.exists(out_path):
-        _safe_rm(in_path); _safe_rm(out_path)
+        _safe_rm(in_path)
+        _safe_rm(out_path)
         raise RuntimeError(f"StarNet failed rc={rc}")
 
     starless_s, _, _, _ = load_image(out_path)
-    _safe_rm(in_path); _safe_rm(out_path)
+    _safe_rm(in_path)
+    _safe_rm(out_path)
 
     if starless_s.ndim == 2:
         starless_s = np.stack([starless_s] * 3, axis=-1)
@@ -395,21 +472,19 @@ def starnet_starless_from_array(arr_rgb01: np.ndarray, settings, *, tmp_prefix="
         starless_s = np.repeat(starless_s, 3, axis=2)
     starless_s = np.clip(starless_s.astype(np.float32, copy=False), 0.0, 1.0)
 
-    # --- Apply stretch-style pseudoinverse MTF with SAME params ---
-    starless_lin01 = _invert_mtf_unlinked_rgb(starless_s, mtf_params)
+    # invert MTF in BP-subtracted domain, then add BP back
+    starless_bp = _invert_mtf_unlinked_rgb(starless_s, mtf_params)
+    starless_lin01 = _add_bp_per_channel(starless_bp, bp3)
 
-    # Restore original scale if we normalized earlier
     if scale_factor > 1.0:
-        starless_lin01 *= scale_factor
+        starless_lin01 = starless_lin01 * scale_factor
 
-    result = np.clip(starless_lin01, 0.0, 1.0).astype(np.float32, copy=False)
+    result = starless_lin01.astype(np.float32, copy=False)
 
-    # If the source was mono, return mono
     if was_single and result.ndim == 3:
         result = result.mean(axis=2)
 
     return result
-
 # ------------------------------------------------------------
 # Public entry
 # ------------------------------------------------------------
@@ -1307,7 +1382,9 @@ class SyQonStarlessDialog(QDialog):
 
         form.addRow("Tile size:", self.spin_tile)
         form.addRow("Overlap:", self.spin_overlap)
-        form.addRow("Shadow clip (k):", self.spin_shadow)
+
+        # keep for settings compatibility, but do not show it
+        self.spin_shadow.hide()
 
         self.lbl_bginfo = QLabel(f"Target background (auto): {self._auto_bg:.3f}", self)
         form.addRow(self.lbl_bginfo)
@@ -1566,16 +1643,20 @@ class SyQonStarlessDialog(QDialog):
         if starless_s.ndim == 2:
             starless_s = np.stack([starless_s]*3, axis=-1)
 
-        mtf_params = self._mtf_params
+        mtf_wrap = self._mtf_params
         do_mtf = bool(getattr(self, "_do_mtf", True))
 
-        if do_mtf and mtf_params is not None:
-            starless_lin = _invert_mtf_unlinked_rgb(starless_s, mtf_params)
+        if do_mtf and mtf_wrap is not None:
+            bp3 = np.asarray(mtf_wrap["bp3"], dtype=np.float32)
+            mtf_params = mtf_wrap["mtf"]
+
+            starless_bp = _invert_mtf_unlinked_rgb(starless_s, mtf_params)
+            starless_lin = _add_bp_per_channel(starless_bp, bp3)
         else:
             starless_lin = starless_s
 
         if scale_factor > 1.01:
-            starless_lin = np.clip(starless_lin * scale_factor, 0.0, 1.0).astype(np.float32, copy=False)
+            starless_lin = (starless_lin * scale_factor).astype(np.float32, copy=False)
 
         if pad_edges and pad_pixels > 0:
             starless_lin = _crop_unpad(starless_lin, pad_pixels, H0, W0)
@@ -1949,13 +2030,23 @@ class SyQonStarlessDialog(QDialog):
 
         if do_mtf:
             mtf_target = float(self.spin_mtf_median.value())
-            mtf_params = _mtf_params_unlinked(xrgb, shadows_clipping=-2.8, targetbg=mtf_target)
-            x_for_net = _apply_mtf_unlinked_rgb(xrgb, mtf_params)
-        else:
-            mtf_params = None
-            x_for_net = xrgb
 
-        self._mtf_params = mtf_params
+            bp3 = _bp_min_per_channel(xrgb)
+            xrgb_bp = _subtract_bp_per_channel(xrgb, bp3)
+
+            mtf_params = _mtf_params_unlinked_noclip(
+                xrgb_bp,
+                targetbg=mtf_target,
+            )
+            x_for_net = _apply_mtf_unlinked_rgb(xrgb_bp, mtf_params)
+
+            self._mtf_params = {
+                "bp3": bp3,
+                "mtf": mtf_params,
+            }
+        else:
+            x_for_net = xrgb
+            self._mtf_params = None
         model_kind = self._model_kind()
 
         live_preview = bool(self.chk_live_preview.isChecked())

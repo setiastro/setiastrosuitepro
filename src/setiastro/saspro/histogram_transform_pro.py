@@ -141,6 +141,9 @@ def clipping_stats_channel(img01: np.ndarray, black: float, white: float, channe
 
     if ch == "L":
         v = _rgb_to_luma(a)
+    elif ch == "K":
+        # linked RGB brightness mode: use luminance proxy for stats display
+        v = _rgb_to_luma(a)
     else:
         idx = {"R": 0, "G": 1, "B": 2}.get(ch, 0)
         v = a[..., idx]
@@ -177,12 +180,17 @@ def apply_histogram_transform_channel(img01: np.ndarray, black: float, mid: floa
         return np.clip(y, 0.0, 1.0).astype(np.float32, copy=False)
 
     # --- RGB PATH ---
-    a = _ensure_rgb01(img01)  # OK here: already RGB, keeps as RGB
+    a = _ensure_rgb01(img01)
+
     if ch == "L":
         Y = _rgb_to_luma(a)
         t = np.clip((Y - b) / (w - b), 0.0, 1.0)
         Y2 = _mtf_vect(t, m)
         return _recombine_luma_into_rgb(Y2, a)
+
+    if ch == "K":
+        # linked RGB brightness mode: apply same levels curve to each channel directly
+        return apply_histogram_transform(a, b, m, w).astype(np.float32, copy=False)
 
     idx = {"R": 0, "G": 1, "B": 2}.get(ch, 0)
     out = a.copy()
@@ -427,9 +435,14 @@ class HistogramTransformDialogPro(QDialog):
         gl.addWidget(QLabel("Channel:"), 1, 0)
         self.cb_channel = QComboBox(self)
         self.cb_channel.addItem("L (Luminance)", "L")
+        self.cb_channel.addItem("K (Brightness / RGB linked)", "K")
         self.cb_channel.addItem("R", "R")
         self.cb_channel.addItem("G", "G")
         self.cb_channel.addItem("B", "B")
+        idx_k = self.cb_channel.findData("K")
+        if idx_k >= 0:
+            self.cb_channel.setCurrentIndex(idx_k)
+
         gl.addWidget(self.cb_channel, 1, 1, 1, 2)
 
         self.cb_channel.currentIndexChanged.connect(self._schedule)
@@ -603,15 +616,28 @@ class HistogramTransformDialogPro(QDialog):
             live = bool(s.value(self._k("live"), True, type=bool))
 
             # reset points ALWAYS (no persistence)
-            for ww in (self.sp_black, self.sp_mid, self.sp_white, self.cb_live):
+            for ww in (self.sp_black, self.sp_mid, self.sp_white, self.cb_live, self.cb_channel):
                 ww.blockSignals(True)
             try:
                 self.sp_black.setValue(0.0)
                 self.sp_mid.setValue(0.5)
                 self.sp_white.setValue(1.0)
+
+                self.sl_black.setValue(0)
+                self.sl_mid.setValue(50000)
+                self.sl_white.setValue(100000)
+
                 self.cb_live.setChecked(bool(live))
+
+                if _is_mono(getattr(self.document, "image", None)):
+                    idx = self.cb_channel.findData("L")
+                else:
+                    idx = self.cb_channel.findData("K")
+                if idx >= 0:
+                    self.cb_channel.setCurrentIndex(idx)
+
             finally:
-                for ww in (self.sp_black, self.sp_mid, self.sp_white, self.cb_live):
+                for ww in (self.sp_black, self.sp_mid, self.sp_white, self.cb_live, self.cb_channel):
                     ww.blockSignals(False)
         finally:
             self._restoring_ui = False
@@ -812,8 +838,23 @@ class HistogramTransformDialogPro(QDialog):
 
     def _apply_inplace(self):
         try:
+            self.lbl_status.setText("Processing full image…")
+            self.btn_apply.setEnabled(False)
+            self.btn_new.setEnabled(False)
+            self.btn_reset.setEnabled(False)
+            self.repaint()
+            try:
+                from PyQt6.QtWidgets import QApplication
+                QApplication.processEvents()
+            except Exception:
+                pass
+
             result = self._apply_result_fullres()
         except Exception as e:
+            self.btn_apply.setEnabled(True)
+            self.btn_new.setEnabled(True)
+            self.btn_reset.setEnabled(True)
+            self.lbl_status.setText("")
             QMessageBox.critical(self, "Levels", str(e))
             return
 
@@ -829,14 +870,24 @@ class HistogramTransformDialogPro(QDialog):
             else:
                 self.document.image = result
         except Exception as e:
+            self.btn_apply.setEnabled(True)
+            self.btn_new.setEnabled(True)
+            self.btn_reset.setEnabled(True)
+            self.lbl_status.setText("")
             QMessageBox.critical(self, "Levels", f"Failed to apply:\n{e}")
             return
 
         # Reload base image + cached hist0, KEEP UI OPEN and KEEP slider values
         self._reload_base_from_document()
 
-        # immediate refresh (no waiting)
+        # immediate refresh
         self._recompute()
+
+        self.btn_apply.setEnabled(True)
+        self.btn_new.setEnabled(True)
+        self.btn_reset.setEnabled(True)
+        self.lbl_status.setText("Finished and applied to the active document.")
+        QTimer.singleShot(2000, self._recompute)
 
     def _apply_new(self):
         mw = self.parent()
@@ -866,16 +917,41 @@ class HistogramTransformDialogPro(QDialog):
             QMessageBox.critical(self, "Histogram Transform", f"Failed to open new view:\n{e}")
 
     def _reset(self):
-        for w in (self.sp_black, self.sp_mid, self.sp_white):
-            w.blockSignals(True)
+        # reset numeric controls
+        self.sp_black.blockSignals(True)
+        self.sp_mid.blockSignals(True)
+        self.sp_white.blockSignals(True)
+        self.cb_channel.blockSignals(True)
+        self.cb_live.blockSignals(True)
+
         try:
             self.sp_black.setValue(0.0)
             self.sp_mid.setValue(0.5)
             self.sp_white.setValue(1.0)
+
+            # keep sliders in sync explicitly
+            self.sl_black.setValue(0)
+            self.sl_mid.setValue(50000)
+            self.sl_white.setValue(100000)
+
+            self.cb_live.setChecked(True)
+
+            # mono stays L, color defaults to K
+            if _is_mono(getattr(self.document, "image", None)):
+                idx = self.cb_channel.findData("L")
+            else:
+                idx = self.cb_channel.findData("K")
+
+            if idx >= 0:
+                self.cb_channel.setCurrentIndex(idx)
+
         finally:
-            for w in (self.sp_black, self.sp_mid, self.sp_white):
-                w.blockSignals(False)
-        self.cb_live.setChecked(True)
+            self.sp_black.blockSignals(False)
+            self.sp_mid.blockSignals(False)
+            self.sp_white.blockSignals(False)
+            self.cb_channel.blockSignals(False)
+            self.cb_live.blockSignals(False)
+
         self._update_channel_ui_for_image()
         self._schedule()
 

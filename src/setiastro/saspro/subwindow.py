@@ -29,7 +29,7 @@ from PyQt6.QtCore import (
     QTimer,
     pyqtSignal,
     QSortFilterProxyModel,
-    QSignalBlocker,
+    QSignalBlocker, QVariant,
 )
 from PyQt6.QtGui import (
     QCursor,

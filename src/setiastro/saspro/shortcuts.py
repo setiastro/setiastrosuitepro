@@ -1945,7 +1945,7 @@ class _LevelsPresetDialog(QDialog):
       black: float [0..1]
       mid:   float [0..1]
       white: float [0..1]
-      channel: "L"|"R"|"G"|"B"
+      channel: "L"|"K"|"R"|"G"|"B"
       apply_mode: "inplace"|"new_view"
       new_view_title: str
     """
@@ -1974,11 +1974,15 @@ class _LevelsPresetDialog(QDialog):
 
         self.cmb_channel = QComboBox(self)
         self.cmb_channel.addItem("L (Luminance)", "L")
+        self.cmb_channel.addItem("K (Brightness / RGB linked)", "K")
         self.cmb_channel.addItem("R", "R")
         self.cmb_channel.addItem("G", "G")
         self.cmb_channel.addItem("B", "B")
-        ch0 = str(init.get("channel", "L") or "L").upper().strip()
+
+        ch0 = str(init.get("channel", "K") or "K").upper().strip()
         idx = self.cmb_channel.findData(ch0)
+        if idx < 0:
+            idx = self.cmb_channel.findData("K")
         if idx >= 0:
             self.cmb_channel.setCurrentIndex(idx)
 
@@ -2018,7 +2022,6 @@ class _LevelsPresetDialog(QDialog):
         mid   = float(self.sp_mid.value())
         white = float(self.sp_white.value())
 
-        # sanitize a bit (avoid user saving nonsense)
         if white <= black + 1e-6:
             white = min(1.0, black + 1e-6)
 
@@ -2026,7 +2029,7 @@ class _LevelsPresetDialog(QDialog):
             "black": black,
             "mid": float(np.clip(mid, 0.0, 1.0)),
             "white": white,
-            "channel": str(self.cmb_channel.currentData() or "L"),
+            "channel": str(self.cmb_channel.currentData() or "K"),
             "apply_mode": str(self.cmb_apply.currentData() or "inplace"),
             "new_view_title": self.ed_title.text().strip() or "Levels",
         }
