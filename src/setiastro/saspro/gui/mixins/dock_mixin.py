@@ -12,8 +12,10 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QDockWidget, QPlainTextEdit, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout, QWidget, QTextEdit, QListWidget, QListWidgetItem,
-    QAbstractItemView, QApplication, QLineEdit, QMenu
+    QAbstractItemView, QApplication, QLineEdit, QMenu, QMainWindow
 )
+
+from setiastro.saspro.dock_host_window import DockHostWindow
 from PyQt6.QtGui import QTextCursor, QAction, QGuiApplication
 
 if TYPE_CHECKING:
@@ -50,6 +52,7 @@ def _strip_ui_decorations(text: str) -> str:
     return s
 
 
+
 class DockMixin:
     """
     Mixin for dock widget management.
@@ -77,6 +80,31 @@ class DockMixin:
         self.act_toggle_log = self.log_dock.toggleViewAction()
         self.act_toggle_log.setText(self.tr("Show System Log Panel"))
     
+    def _ensure_dock_host(self):
+        if getattr(self, "dock_host", None) is None:
+            self.dock_host = DockHostWindow(self)
+            try:
+                self.dock_host.setWindowIcon(self.app_icon)
+            except Exception:
+                pass
+        return self.dock_host
+
+    def _secondary_host_candidate_docks(self) -> list[QDockWidget]:
+        docks = []
+        for name in (
+            "explorer_dock",
+            "console_dock",
+            "status_log_dock",
+            "layers_dock",
+            "header_dock",
+            "log_dock",
+            "window_shelf",
+        ):
+            d = getattr(self, name, None)
+            if isinstance(d, QDockWidget):
+                docks.append(d)
+        return docks
+
     def _append_log_text(self, text: str):
         """Append text to the system log dock."""
         if not text:
@@ -171,10 +199,10 @@ class DockMixin:
 
         lay.addWidget(self.explorer)
 
-        dock = QDockWidget(self.tr("Explorer"), self)
-        dock.setWidget(host)
-        dock.setObjectName("ExplorerDock")
-        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
+        self.explorer_dock = QDockWidget(self.tr("Explorer"), self)
+        self.explorer_dock.setWidget(host)
+        self.explorer_dock.setObjectName("ExplorerDock")
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.explorer_dock)
 
     def _init_console_dock(self):
         self.console = QListWidget()
@@ -186,10 +214,10 @@ class DockMixin:
         self.console.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.console.customContextMenuRequested.connect(self._on_console_context_menu)
 
-        dock = QDockWidget(self.tr("Console / Status"), self)
-        dock.setWidget(self.console)
-        dock.setObjectName("ConsoleDock")
-        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, dock)
+        self.console_dock = QDockWidget(self.tr("Console / Status"), self)
+        self.console_dock.setWidget(self.console)
+        self.console_dock.setObjectName("ConsoleDock")
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.console_dock)
 
     def _init_status_log_dock(self):
         from setiastro.saspro.status_log_dock import StatusLogDock
@@ -238,19 +266,14 @@ class DockMixin:
     def _init_header_viewer_dock(self):
         from setiastro.saspro.header_viewer import HeaderViewerDock
         
-        self.header_viewer = HeaderViewerDock(self)
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.header_viewer)
+        self.header_dock = HeaderViewerDock(self)
+        self.header_dock.setObjectName("HeaderViewerDock")
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.header_dock)
 
-        # Bind the dock to DocManager so it tracks the ACTIVE subwindow only.
-        # Make sure self.doc_manager.set_mdi_area(mdi) was already called.
-        self.header_viewer.attach_doc_manager(self.doc_manager)
+        self.header_dock.attach_doc_manager(self.doc_manager)
 
-        # Optional: keep it strictly active-only (default). Flip to True to restore hover-follow behavior.
-        # self.header_viewer.set_follow_hover(False)
-
-        # Seed once with whatever is currently active.
         try:
-            self.header_viewer.set_document(self.doc_manager.get_active_document())
+            self.header_dock.set_document(self.doc_manager.get_active_document())
         except Exception:
             pass
 
@@ -352,6 +375,31 @@ class DockMixin:
         # (If you prefer to keep the signal for explicit tab switches, it's fine to leave
         #  it connected--the dock's new guard will ignore non-active/hover docs.)
 
+    def _all_known_docks(self) -> list[QDockWidget]:
+        docks = []
+
+        for name in (
+            "explorer_dock",
+            "console_dock",
+            "status_log_dock",
+            "layers_dock",
+            "header_dock",
+            "log_dock",
+            "window_shelf",
+        ):
+            d = getattr(self, name, None)
+            if isinstance(d, QDockWidget):
+                docks.append(d)
+
+        # de-dupe while preserving order
+        out = []
+        seen = set()
+        for d in docks:
+            if id(d) not in seen:
+                seen.add(id(d))
+                out.append(d)
+        return out
+
     def _populate_view_panels_menu(self):
         """Rebuild 'View Panels' with all current dock widgets (ordered nicely)."""
         menu = self._ensure_view_panels_menu()
@@ -359,7 +407,7 @@ class DockMixin:
         self._view_panels_actions = {}
 
         # Collect every QDockWidget that exists right now
-        docks: list[QDockWidget] = self.findChildren(QDockWidget)
+        docks = self._all_known_docks()
 
         # Friendly ordering for common ones; others follow alphabetically.
         order_hint = {
@@ -600,3 +648,103 @@ class DockMixin:
             fp = (it.toolTip(0) or "").lower()
             hide = bool(t) and (t not in name) and (t not in fp)
             it.setHidden(hide)
+
+    def _move_dock_to_host(self, dock: QDockWidget, area=Qt.DockWidgetArea.LeftDockWidgetArea):
+        if dock is None:
+            return
+
+        host = self._ensure_dock_host()
+
+        try:
+            self.removeDockWidget(dock)
+        except Exception:
+            pass
+
+        try:
+            old_win = dock.window()
+            if isinstance(old_win, QMainWindow) and old_win is not self and old_win is not host:
+                old_win.removeDockWidget(dock)
+            elif isinstance(old_win, QMainWindow) and old_win is host:
+                old_win.removeDockWidget(dock)
+        except Exception:
+            pass
+
+        host.addDockWidget(area, dock)
+        dock.show()
+        host.show()
+        host.raise_()
+        host.activateWindow()
+
+    def _move_dock_to_main(self, dock: QDockWidget, area=Qt.DockWidgetArea.LeftDockWidgetArea):
+        if dock is None:
+            return
+
+        try:
+            old_win = dock.window()
+            if isinstance(old_win, QMainWindow) and old_win is not self:
+                old_win.removeDockWidget(dock)
+        except Exception:
+            pass
+
+        self.addDockWidget(area, dock)
+        dock.show()
+        self.raise_()
+        self.activateWindow()
+
+    def _dock_is_in_host(self, dock: QDockWidget) -> bool:
+        host = getattr(self, "dock_host", None)
+        if dock is None or host is None:
+            return False
+        try:
+            return dock.window() is host
+        except Exception:
+            return False
+
+    def _send_default_docks_to_host(self):
+        host = self._ensure_dock_host()
+
+        mapping = [
+            (getattr(self, "explorer_dock", None), Qt.DockWidgetArea.LeftDockWidgetArea),
+            (getattr(self, "layers_dock", None), Qt.DockWidgetArea.RightDockWidgetArea),
+            (getattr(self, "header_dock", None), Qt.DockWidgetArea.RightDockWidgetArea),
+            (getattr(self, "console_dock", None), Qt.DockWidgetArea.BottomDockWidgetArea),
+            (getattr(self, "status_log_dock", None), Qt.DockWidgetArea.BottomDockWidgetArea),
+            (getattr(self, "log_dock", None), Qt.DockWidgetArea.BottomDockWidgetArea),
+        ]
+
+        for dock, area in mapping:
+            if isinstance(dock, QDockWidget):
+                self._move_dock_to_host(dock, area)
+
+        try:
+            if getattr(self, "header_dock", None) and getattr(self, "layers_dock", None):
+                host.splitDockWidget(self.header_viewer, self.layers_dock, Qt.Orientation.Vertical)
+        except Exception:
+            pass
+
+    def _show_dock_host(self):
+        host = self._ensure_dock_host()
+        host.show()
+        host.raise_()
+        host.activateWindow()
+
+    def _return_all_host_docks_to_main(self):
+        default_areas = {
+            "ExplorerDock": Qt.DockWidgetArea.LeftDockWidgetArea,
+            "ConsoleDock": Qt.DockWidgetArea.BottomDockWidgetArea,
+            "StatusLogDock": Qt.DockWidgetArea.RightDockWidgetArea,
+            "LayersDock": Qt.DockWidgetArea.RightDockWidgetArea,
+            "HeaderViewerDock": Qt.DockWidgetArea.RightDockWidgetArea,
+            "LogDock": Qt.DockWidgetArea.BottomDockWidgetArea,
+        }
+
+        for dock in self._all_known_docks():
+            if self._dock_is_in_host(dock):
+                area = default_areas.get(dock.objectName(), Qt.DockWidgetArea.LeftDockWidgetArea)
+                self._move_dock_to_main(dock, area)
+
+        try:
+            if getattr(self, "header_dock", None) and getattr(self, "layers_dock", None):
+                self.splitDockWidget(self.header_dock, self.layers_dock, Qt.Orientation.Vertical)
+        except Exception:
+            pass        

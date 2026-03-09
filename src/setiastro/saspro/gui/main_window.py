@@ -497,6 +497,7 @@ class AstroSuiteProMainWindow(
         self._stats_timer.timeout.connect(self._update_usage_stats)
         self._stats_timer.start(60000)  # Update every minute
         self._shutting_down = False
+        self.dock_host = None
         
         from setiastro.saspro.doc_manager import DocManager
         from setiastro.saspro.window_shelf import WindowShelf, MinimizeInterceptor
@@ -3055,7 +3056,7 @@ class AstroSuiteProMainWindow(
         doc = sw.widget().document
         dlg = HistogramTransformDialogPro(self, doc)
         try:
-            dlg.setWindowIcon(QIcon(histogram_path))
+            dlg.setWindowIcon(QIcon(histogram_transform_path))
         except Exception:
             pass
         dlg.resize(1100, 720)
