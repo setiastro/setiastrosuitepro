@@ -2563,7 +2563,6 @@ class WIMIDialog(QDialog):
         if wimi_path:
             self.setWindowIcon(QIcon(wimi_path))
 
-        self.settings = settings or QSettings()
         self._doc_manager = doc_manager  # <— we’ll use this to list “views”
 
         # Track the theme status
@@ -3141,6 +3140,7 @@ class WIMIDialog(QDialog):
         delete_shortcut.activated.connect(self.main_preview.delete_selected_objects)
 
         self.setLayout(main_layout)
+        self._restore_ui_state()
 
         self.image_path = None
         self.zoom_level = 1.0
@@ -7356,6 +7356,35 @@ class WIMIDialog(QDialog):
             QMessageBox.critical(self, "Blind Solve Failed", str(res))
             self.status_label.setText(f"Status: Blind solve failed — {res}")
 
+    def _restore_ui_state(self):
+        """
+        Restore persisted dialog geometry/state for WIMI.
+        """
+        try:
+            g = self.settings.value("wimi/window_geometry", None)
+            if g is not None:
+                self.restoreGeometry(g)
+        except Exception:
+            pass
+
+
+    def _save_ui_state(self):
+        """
+        Save persisted dialog geometry/state for WIMI.
+        """
+        try:
+            self.settings.setValue("wimi/window_geometry", self.saveGeometry())
+            self.settings.sync()
+        except Exception:
+            pass
+
+
+    def closeEvent(self, event):
+        try:
+            self._save_ui_state()
+        except Exception:
+            pass
+        super().closeEvent(event)
 
 # Function to calculate comoving radial distance (in Gly)
 def calculate_comoving_distance(z):
