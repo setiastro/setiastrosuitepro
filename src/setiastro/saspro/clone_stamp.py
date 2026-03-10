@@ -607,8 +607,53 @@ class CloneStampDialogPro(QDialog):
         self.src_x2.setLine(x - s, y + s, x + s, y - s)
 
     def _wheel_zoom(self, ev: QWheelEvent):
-        step = 1.25 if ev.angleDelta().y() > 0 else 1 / 1.25
-        self._set_zoom(self._zoom * step)
+        """
+        Mouse wheel / trackpad zoom anchored at the cursor position.
+        Supports both plain wheel and Ctrl+wheel.
+        """
+        old_scene_pos = self.view.mapToScene(ev.position().toPoint())
+
+        # Prefer smooth trackpad deltas
+        dy = ev.pixelDelta().y()
+        if dy != 0:
+            abs_dy = abs(dy)
+            ctrl_down = bool(ev.modifiers() & Qt.KeyboardModifier.ControlModifier)
+
+            if abs_dy <= 3:
+                base_factor = 1.012 if ctrl_down else 1.010
+            elif abs_dy <= 10:
+                base_factor = 1.025 if ctrl_down else 1.020
+            else:
+                base_factor = 1.040 if ctrl_down else 1.030
+
+            factor = base_factor if dy > 0 else 1.0 / base_factor
+        else:
+            dy = ev.angleDelta().y()
+            if dy == 0:
+                ev.accept()
+                return
+
+            ctrl_down = bool(ev.modifiers() & Qt.KeyboardModifier.ControlModifier)
+            step = 1.25 if ctrl_down else 1.15
+            factor = step if dy > 0 else 1.0 / step
+
+        new_zoom = max(0.05, min(4.0, self._zoom * factor))
+        if abs(new_zoom - self._zoom) < 1e-6:
+            ev.accept()
+            return
+
+        self._set_zoom(new_zoom)
+
+        # Keep point under cursor stable after zoom
+        new_scene_pos = self.view.mapToScene(ev.position().toPoint())
+        delta = new_scene_pos - old_scene_pos
+
+        hsb = self.view.horizontalScrollBar()
+        vsb = self.view.verticalScrollBar()
+        hsb.setValue(int(round(hsb.value() + delta.x() * self._zoom)))
+        vsb.setValue(int(round(vsb.value() + delta.y() * self._zoom)))
+
+        ev.accept()
 
     def _set_zoom(self, z: float):
         z = float(max(0.05, min(4.0, z)))

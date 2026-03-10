@@ -708,9 +708,33 @@ class CropDialogPro(QDialog):
     # ---------- drawing / interaction ----------
     def eventFilter(self, src, e):
         if src is self.view.viewport():
-            if e.type() == QEvent.Type.Wheel and (e.modifiers() & Qt.KeyboardModifier.ControlModifier):
-                delta = e.angleDelta().y()
-                self._zoom_by(1.25 if delta > 0 else 1/1.25)
+            if e.type() == QEvent.Type.Wheel:
+                # Plain wheel zooms; Ctrl+wheel still works too.
+                dy = e.pixelDelta().y()
+
+                if dy != 0:
+                    abs_dy = abs(dy)
+                    ctrl_down = bool(e.modifiers() & Qt.KeyboardModifier.ControlModifier)
+
+                    if abs_dy <= 3:
+                        base_factor = 1.012 if ctrl_down else 1.010
+                    elif abs_dy <= 10:
+                        base_factor = 1.025 if ctrl_down else 1.020
+                    else:
+                        base_factor = 1.040 if ctrl_down else 1.030
+
+                    factor = base_factor if dy > 0 else 1.0 / base_factor
+                else:
+                    dy = e.angleDelta().y()
+                    if dy == 0:
+                        return True
+
+                    ctrl_down = bool(e.modifiers() & Qt.KeyboardModifier.ControlModifier)
+                    step = 1.25 if ctrl_down else 1.15
+                    factor = step if dy > 0 else 1.0 / step
+
+                self._zoom_by(factor)
+                e.accept()
                 return True
             if e.type() in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseMove, QEvent.Type.MouseButtonRelease):
                 scene_pt = self.view.mapToScene(e.pos())

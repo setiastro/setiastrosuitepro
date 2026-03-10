@@ -1362,13 +1362,35 @@ class StatisticalStretchDialog(QDialog):
             self._fit_preview()
 
     def eventFilter(self, obj, ev):
-        # Ctrl+wheel zoom
+        # Wheel zoom
         if ev.type() == QEvent.Type.Wheel and obj is self.preview_scroll.viewport():
-            if ev.modifiers() & Qt.KeyboardModifier.ControlModifier:
-                factor = 1.25 if ev.angleDelta().y() > 0 else (1/1.25)
-                self._zoom_at(factor, ev.position())
-                return True
-            return False
+            dy = ev.pixelDelta().y()
+
+            if dy != 0:
+                abs_dy = abs(dy)
+                ctrl_down = bool(ev.modifiers() & Qt.KeyboardModifier.ControlModifier)
+
+                if abs_dy <= 3:
+                    base_factor = 1.012 if ctrl_down else 1.010
+                elif abs_dy <= 10:
+                    base_factor = 1.025 if ctrl_down else 1.020
+                else:
+                    base_factor = 1.040 if ctrl_down else 1.030
+
+                factor = base_factor if dy > 0 else (1.0 / base_factor)
+            else:
+                dy = ev.angleDelta().y()
+                if dy == 0:
+                    ev.accept()
+                    return True
+
+                ctrl_down = bool(ev.modifiers() & Qt.KeyboardModifier.ControlModifier)
+                step = 1.25 if ctrl_down else 1.15
+                factor = step if dy > 0 else (1.0 / step)
+
+            self._zoom_at(factor, ev.position())
+            ev.accept()
+            return True
 
         # Click+drag pan (left or middle mouse)
         if obj is self.preview_scroll.viewport():

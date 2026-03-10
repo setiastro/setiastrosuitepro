@@ -3492,15 +3492,58 @@ class BlinkTab(QWidget):
         else:
             QMessageBox.information(self, self.tr("Delete Selected Items"), self.tr("Deleted {0} item(s).").format(len(removed_indices)))
 
+    def _wheel_zoom(self, event: QWheelEvent):
+        """Zoom from wheel/trackpad and keep the view centered consistently."""
+        # Smooth trackpad support first
+        dy = event.pixelDelta().y()
+
+        if dy != 0:
+            abs_dy = abs(dy)
+            ctrl_down = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+
+            if abs_dy <= 3:
+                base_factor = 1.012 if ctrl_down else 1.010
+            elif abs_dy <= 10:
+                base_factor = 1.025 if ctrl_down else 1.020
+            else:
+                base_factor = 1.040 if ctrl_down else 1.030
+
+            factor = base_factor if dy > 0 else 1.0 / base_factor
+        else:
+            dy = event.angleDelta().y()
+            if dy == 0:
+                event.accept()
+                return
+
+            ctrl_down = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+            step = 1.20 if ctrl_down else 1.15
+            factor = step if dy > 0 else 1.0 / step
+
+        old_zoom = float(self.zoom_level)
+        new_zoom = max(0.05, min(old_zoom * factor, 3.0))
+
+        if abs(new_zoom - old_zoom) < 1e-6:
+            event.accept()
+            return
+
+        self.zoom_level = new_zoom
+        self.apply_zoom()
+        event.accept()
 
     def eventFilter(self, source, event):
-        """Handle mouse events for dragging."""
+        """Handle mouse events for dragging and wheel zoom on the viewport."""
         if source == self.scroll_area.viewport():
+            if event.type() == QEvent.Type.Wheel:
+                # Always use wheel for zoom here; do not let QScrollArea consume it for scrolling.
+                self._wheel_zoom(event)
+                return True
+
             if event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
                 # Start dragging
                 self.dragging = True
                 self.last_mouse_pos = event.pos()
                 return True
+
             elif event.type() == QEvent.Type.MouseMove and self.dragging:
                 # Handle dragging
                 delta = event.pos() - self.last_mouse_pos
@@ -3512,10 +3555,12 @@ class BlinkTab(QWidget):
                 )
                 self.last_mouse_pos = event.pos()
                 return True
+
             elif event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
                 self.dragging = False
                 self._capture_view_center_norm()  # remember where the user panned to
                 return True
+
         return super().eventFilter(source, event)
 
     def on_selection_changed(self, selected, deselected):

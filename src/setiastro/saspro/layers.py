@@ -37,8 +37,8 @@ class LayerTransform:
 @dataclass
 class ImageLayer:
     name: str
-    src_doc: Optional[object] = None          # ImageDocument (can be None for baked raster)
-    pixels: Optional[np.ndarray] = None       # NEW: baked raster pixels in float32 or any dtype
+    src_doc: Optional[object] = None
+    pixels: Optional[np.ndarray] = None
 
     visible: bool = True
     opacity: float = 1.0
@@ -48,9 +48,16 @@ class ImageLayer:
     mask_feather: float = 0.0
     mask_use_luma: bool = False
     transform: LayerTransform = field(default_factory=LayerTransform)
-    selected: bool = False  # optional, or store selected layer elsewhere
+    selected: bool = False
     sigmoid_center: float = 0.5
     sigmoid_strength: float = 10.0
+
+    # NEW: per-layer levels
+    black_point: float = 0.0
+    white_point: float = 1.0
+    midtones: float = 0.5
+    levels_enabled: bool = False
+    
 
 def _float01(arr: np.ndarray) -> np.ndarray:
     a = np.asarray(arr)
@@ -67,6 +74,67 @@ def _ensure_3c(a: np.ndarray) -> np.ndarray:
     if a.ndim == 3 and a.shape[2] == 1:
         return np.repeat(a, 3, axis=2)
     return a
+
+def _mtf_vect(x: np.ndarray, m: float) -> np.ndarray:
+    """
+    Vectorized PixInsight midtones transfer function.
+
+    Special cases:
+        M(0) = 0
+        M(m) = 0.5
+        M(1) = 1
+    """
+    x = np.clip(x, 0.0, 1.0).astype(np.float32)
+    m = float(np.clip(m, 1e-6, 1.0 - 1e-6))
+
+    out = np.zeros_like(x, dtype=np.float32)
+
+    mask0 = x <= 0.0
+    mask1 = x >= 1.0
+    mask_mid = ~(mask0 | mask1)
+
+    xm = x[mask_mid]
+
+    out[mask_mid] = ((m - 1.0) * xm) / (((2.0 * m - 1.0) * xm) - m)
+
+    out[mask0] = 0.0
+    out[mask1] = 1.0
+
+    return np.clip(out, 0.0, 1.0)
+
+def _apply_levels(img: np.ndarray, black_point: float, white_point: float, midtones: float) -> np.ndarray:
+    """
+    Histogram transform identical to PI behavior.
+
+    1 normalize by black/white
+    2 apply MTF(mid)
+
+    midtones:
+        0.5 = neutral
+        <0.5 = brighten
+        >0.5 = darken
+    """
+
+    a = np.clip(np.asarray(img, dtype=np.float32), 0.0, 1.0)
+
+    bp = float(np.clip(black_point, 0.0, 1.0))
+    wp = float(np.clip(white_point, 0.0, 1.0))
+    m  = float(np.clip(midtones, 1e-6, 1.0 - 1e-6))
+
+    if wp <= bp + 1e-8:
+        wp = bp + 1e-8
+
+    # normalize
+    t = (a - bp) / (wp - bp)
+    t = np.clip(t, 0.0, 1.0)
+
+    # apply midtones transfer function
+    out = np.empty_like(t, dtype=np.float32)
+    out[..., 0] = _mtf_vect(t[..., 0], m)
+    out[..., 1] = _mtf_vect(t[..., 1], m)
+    out[..., 2] = _mtf_vect(t[..., 2], m)
+
+    return np.clip(out, 0.0, 1.0)
 
 def _resize_like(src: np.ndarray, tgt_shape_hw: tuple[int, int]) -> np.ndarray:
     """Nearest resize without dependencies. src: (H,W[,C]), target: (H,W)."""
@@ -353,6 +421,15 @@ def composite_stack(base_img: np.ndarray, layers: List[ImageLayer]) -> np.ndarra
         # ----- normalize to float01 + 3 channels + canvas size -----
         s = _ensure_3c(_float01(src))
         s = _resize_like(s, (H, W))
+
+        # ----- per-layer levels -----
+        if bool(getattr(L, "levels_enabled", False)):
+            s = _apply_levels(
+                s,
+                getattr(L, "black_point", 0.0),
+                getattr(L, "white_point", 1.0),
+                getattr(L, "midtones", 0.5),
+            )
 
         # ----- apply layer transform in canvas space -----
         t = getattr(L, "transform", None)

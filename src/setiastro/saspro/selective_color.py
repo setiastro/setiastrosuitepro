@@ -778,7 +778,7 @@ class SelectiveColorCorrection(QDialog):
             "🖱️ <b>Click</b>: show hue  &nbsp;•&nbsp; "
             "<b>Shift + Click</b>: select that color  &nbsp;•&nbsp; "
             "<b>Ctrl + Click & Drag</b>: pan  &nbsp;•&nbsp; "
-            "<b>Ctrl + Wheel</b>: zoom"
+            "<b>Wheel</b>: zoom"
         )
 
         self.lbl_help.setWordWrap(True)
@@ -802,7 +802,7 @@ class SelectiveColorCorrection(QDialog):
         self.lbl_preview.setToolTip(
             "Click to sample hue.\n"
             "Ctrl + Click & Drag to pan.\n"
-            "Ctrl + Mouse Wheel to zoom."
+            "Mouse Wheel to zoom."
         )
         self.btn_zoom_in.setToolTip("Zoom in (centers view)")
         self.btn_zoom_out.setToolTip("Zoom out (centers view)")
@@ -859,17 +859,6 @@ class SelectiveColorCorrection(QDialog):
         self.btn_zoom_in.clicked.connect(lambda: self._apply_zoom(self._zoom * 1.25, None))
         self.btn_zoom_out.clicked.connect(lambda: self._apply_zoom(self._zoom / 1.25, None))
         self.btn_zoom_1.clicked.connect(lambda: self._apply_zoom(1.0, None))
-
-        # Ctrl+wheel: zoom around mouse position (label coords)
-        def _wheel_event(ev):
-            if ev.modifiers() & Qt.KeyboardModifier.ControlModifier:
-                factor = 1.25 if ev.angleDelta().y() > 0 else 1/1.25
-                self._apply_zoom(self._zoom * factor, anchor_label_pos=ev.position())
-                ev.accept()
-                return
-            QLabel.wheelEvent(self.lbl_preview, ev)
-
-        self.lbl_preview.wheelEvent = _wheel_event
 
         # Preview interactions
         self.lbl_preview.setMouseTracking(True)
@@ -1123,6 +1112,44 @@ class SelectiveColorCorrection(QDialog):
                 return e.position()  # already viewport coords (QPointF)
             # map label-local → viewport
             return self.lbl_preview.mapTo(self.scroll.viewport(), e.position().toPoint())
+
+        # --- Wheel zoom on viewport or label (plain wheel + Ctrl+wheel) ---
+        if obj in (self.scroll.viewport(), self.lbl_preview) and ev.type() == QEvent.Type.Wheel:
+            # Anchor in label/content coords, because _apply_zoom expects label-space coords.
+            if obj is self.lbl_preview:
+                anchor_label_pos = ev.position()
+            else:
+                anchor_label_pos = self.lbl_preview.mapFrom(
+                    self.scroll.viewport(), ev.position().toPoint()
+                )
+
+            dy = ev.pixelDelta().y()
+
+            if dy != 0:
+                abs_dy = abs(dy)
+                ctrl_down = bool(ev.modifiers() & Qt.KeyboardModifier.ControlModifier)
+
+                if abs_dy <= 3:
+                    base_factor = 1.012 if ctrl_down else 1.010
+                elif abs_dy <= 10:
+                    base_factor = 1.025 if ctrl_down else 1.020
+                else:
+                    base_factor = 1.040 if ctrl_down else 1.030
+
+                factor = base_factor if dy > 0 else 1.0 / base_factor
+            else:
+                dy = ev.angleDelta().y()
+                if dy == 0:
+                    ev.accept()
+                    return True
+
+                ctrl_down = bool(ev.modifiers() & Qt.KeyboardModifier.ControlModifier)
+                step = 1.25 if ctrl_down else 1.15
+                factor = step if dy > 0 else 1.0 / step
+
+            self._apply_zoom(self._zoom * factor, anchor_label_pos=anchor_label_pos)
+            ev.accept()
+            return True
 
         # --- PANNING (Ctrl + LMB) on viewport *or* label ---
         if obj in (self.scroll.viewport(), self.lbl_preview):

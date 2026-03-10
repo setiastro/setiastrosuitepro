@@ -616,10 +616,36 @@ class GhsDialogPro(QDialog):
                     ev.accept(); return True
 
         # --- existing zoom/pan handling (unchanged) ---
+        # --- zoom/pan handling ---
         if obj is self.scroll.viewport():
-            if ev.type() == QEvent.Type.Wheel and (ev.modifiers() & Qt.KeyboardModifier.ControlModifier):
-                self._set_zoom(self._zoom * (1.25 if ev.angleDelta().y() > 0 else 0.8))
-                ev.accept(); return True
+            if ev.type() == QEvent.Type.Wheel:
+                dy = ev.pixelDelta().y()
+
+                if dy != 0:
+                    abs_dy = abs(dy)
+                    ctrl_down = bool(ev.modifiers() & Qt.KeyboardModifier.ControlModifier)
+
+                    if abs_dy <= 3:
+                        base_factor = 1.012 if ctrl_down else 1.010
+                    elif abs_dy <= 10:
+                        base_factor = 1.025 if ctrl_down else 1.020
+                    else:
+                        base_factor = 1.040 if ctrl_down else 1.030
+
+                    factor = base_factor if dy > 0 else 1.0 / base_factor
+                else:
+                    dy = ev.angleDelta().y()
+                    if dy == 0:
+                        ev.accept()
+                        return True
+
+                    ctrl_down = bool(ev.modifiers() & Qt.KeyboardModifier.ControlModifier)
+                    step = 1.25 if ctrl_down else 1.15
+                    factor = step if dy > 0 else 1.0 / step
+
+                self._set_zoom(self._zoom * factor)
+                ev.accept()
+                return True
             if ev.type() == QEvent.Type.MouseButtonPress and ev.button() == Qt.MouseButton.LeftButton:
                 self._panning = True; self._pan_start = ev.position()
                 self.scroll.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)

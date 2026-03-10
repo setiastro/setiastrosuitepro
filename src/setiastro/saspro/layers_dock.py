@@ -178,19 +178,66 @@ class _LayerRow(QWidget):
         self.btn_clear_mask.setFixedWidth(52)
         r2.addWidget(QLabel("Mask")); r2.addWidget(self.mask_combo, 1)
         r2.addWidget(self.mask_invert); r2.addWidget(self.btn_clear_mask)
-
-        # Extra controls for some blend modes (e.g. Sigmoid)
+        # Extra controls
+        self.levels_bp_label = None
+        self.levels_bp = None
+        self.levels_wp_label = None
+        self.levels_wp = None
+        self.levels_mt_label = None
+        self.levels_mt = None
+        self.levels_enable = None
         self.sig_center_label = None
         self.sig_center = None
         self.sig_strength_label = None
         self.sig_strength = None
 
+        self.sig_strength_label = None
+        self.sig_strength = None
+
         if not self._is_base:
-            # row 3: Sigmoid parameters
+            from PyQt6.QtWidgets import QDoubleSpinBox
+
+            # row 3: Levels
             r3 = QHBoxLayout(); v.addLayout(r3)
 
+            self.levels_enable = QCheckBox()
+            self.levels_enable.setToolTip("Enable per-layer levels adjustment")
+            self.levels_enable.setChecked(False)
+
+            self.levels_bp_label = QLabel("Black")
+            self.levels_bp = QDoubleSpinBox()
+            self.levels_bp.setRange(0.0, 1.0)
+            self.levels_bp.setSingleStep(0.01)
+            self.levels_bp.setDecimals(3)
+            self.levels_bp.setValue(0.0)
+
+            self.levels_wp_label = QLabel("White")
+            self.levels_wp = QDoubleSpinBox()
+            self.levels_wp.setRange(0.0, 1.0)
+            self.levels_wp.setSingleStep(0.01)
+            self.levels_wp.setDecimals(3)
+            self.levels_wp.setValue(1.0)
+
+            self.levels_mt_label = QLabel("Midtones")
+            self.levels_mt = QDoubleSpinBox()
+            self.levels_mt.setRange(0.01, 1.0)
+            self.levels_mt.setSingleStep(0.01)
+            self.levels_mt.setDecimals(3)
+            self.levels_mt.setValue(0.5)
+
+            r3.addWidget(self.levels_enable)
+            r3.addWidget(self.levels_bp_label)
+            r3.addWidget(self.levels_bp)
+            r3.addWidget(self.levels_mt_label)
+            r3.addWidget(self.levels_mt)
+            r3.addWidget(self.levels_wp_label)
+            r3.addWidget(self.levels_wp)
+            r3.addStretch(1)
+
+            # row 4: Sigmoid parameters
+            r4 = QHBoxLayout(); v.addLayout(r4)
+
             self.sig_center_label = QLabel("Sigmoid center")
-            from PyQt6.QtWidgets import QDoubleSpinBox
             self.sig_center = QDoubleSpinBox()
             self.sig_center.setRange(0.0, 1.0)
             self.sig_center.setSingleStep(0.01)
@@ -204,17 +251,22 @@ class _LayerRow(QWidget):
             self.sig_strength.setDecimals(2)
             self.sig_strength.setValue(10.0)
 
-            r3.addWidget(self.sig_center_label)
-            r3.addWidget(self.sig_center)
-            r3.addWidget(self.sig_strength_label)
-            r3.addWidget(self.sig_strength)
-            r3.addStretch(1)
+            r4.addWidget(self.sig_center_label)
+            r4.addWidget(self.sig_center)
+            r4.addWidget(self.sig_strength_label)
+            r4.addWidget(self.sig_strength)
+            r4.addStretch(1)
 
         if self._is_base:
             # Base row is informational only
-            for w in (self.chk, self.mode, self.sld, self.btn_up, self.btn_tf, self.btn_dn, self.btn_x,
-                      self.mask_combo, self.mask_invert, self.btn_clear_mask):
-                w.setEnabled(False)
+            for w in (
+                self.chk, self.mode, self.sld, self.btn_up, self.btn_tf, self.btn_dn, self.btn_x,
+                self.mask_combo, self.mask_invert, self.btn_clear_mask,
+                self.levels_enable, self.levels_bp, self.levels_wp, self.levels_mt,
+                self.sig_center, self.sig_strength
+            ):
+                if w is not None:
+                    w.setEnabled(False)
             self.lbl.setStyleSheet("color: palette(mid);")
         else:
             self.chk.stateChanged.connect(self._emit)
@@ -229,6 +281,18 @@ class _LayerRow(QWidget):
 
             self.btn_tf.clicked.connect(self.requestTransform.emit)
 
+            # Levels controls
+            if self.levels_enable is not None:
+                self.levels_enable.toggled.connect(self._update_levels_enabled_ui)
+                self.levels_enable.toggled.connect(self._emit)
+
+            if self.levels_bp is not None:
+                self.levels_bp.valueChanged.connect(self._clamp_levels_ui)
+            if self.levels_wp is not None:
+                self.levels_wp.valueChanged.connect(self._clamp_levels_ui)
+            if self.levels_mt is not None:
+                self.levels_mt.valueChanged.connect(self._emit)
+
             # Sigmoid controls emit change + only show for Sigmoid mode
             if self.sig_center is not None:
                 self.sig_center.valueChanged.connect(self._emit)
@@ -240,11 +304,43 @@ class _LayerRow(QWidget):
             )
             # Initial visibility
             self._update_extra_controls(self.mode.currentText())
+            self._update_levels_enabled_ui()
+
+    def set_levels_enabled(self, enabled: bool):
+        if self.levels_enable is None:
+            return
+        self.levels_enable.blockSignals(True)
+        self.levels_enable.setChecked(bool(enabled))
+        self.levels_enable.blockSignals(False)
+        self._update_levels_enabled_ui()
+
+    def _update_levels_enabled_ui(self):
+        enabled = bool(self.levels_enable.isChecked()) if self.levels_enable is not None else False
+
+        for w in (
+            self.levels_bp_label, self.levels_bp,
+            self.levels_mt_label, self.levels_mt,
+            self.levels_wp_label, self.levels_wp,
+        ):
+            if w is not None:
+                w.setEnabled(enabled)
+
+    def set_levels_params(self, black_point: float, white_point: float, midtones: float):
+        if self.levels_bp is None or self.levels_wp is None or self.levels_mt is None:
+            return
+        self.levels_bp.blockSignals(True)
+        self.levels_wp.blockSignals(True)
+        self.levels_mt.blockSignals(True)
+        self.levels_bp.setValue(float(black_point))
+        self.levels_wp.setValue(float(white_point))
+        self.levels_mt.setValue(float(midtones))
+        self.levels_bp.blockSignals(False)
+        self.levels_wp.blockSignals(False)
+        self.levels_mt.blockSignals(False)
 
     def setTransformDirty(self, dirty: bool):
         if hasattr(self, "btn_tf") and self.btn_tf is not None:
             self.btn_tf.setText("Transform… *" if dirty else "Transform…")
-
 
     def _on_transform_clicked(self):
         # Let the dock handle it; row doesn't own the layer object
@@ -265,13 +361,6 @@ class _LayerRow(QWidget):
         self.updateGeometry()
         # Tell the dock “something changed”
         self._emit()
-
-    def _update_extra_controls(self, mode_text: str):
-        is_sig = (mode_text == "Sigmoid")
-        for w in (self.sig_center_label, self.sig_center,
-                  self.sig_strength_label, self.sig_strength):
-            if w is not None:
-                w.setVisible(is_sig)
 
 
     def _update_extra_controls(self, mode_text: str):
@@ -296,6 +385,25 @@ class _LayerRow(QWidget):
         self.sig_strength.blockSignals(False)
         self._update_extra_controls(self.mode.currentText())
 
+    def _clamp_levels_ui(self, *_):
+        if self.levels_bp is None or self.levels_wp is None:
+            return
+
+        bp = float(self.levels_bp.value())
+        wp = float(self.levels_wp.value())
+
+        if wp <= bp:
+            sender = self.sender()
+            if sender is self.levels_bp:
+                self.levels_wp.blockSignals(True)
+                self.levels_wp.setValue(min(1.0, bp + 0.001))
+                self.levels_wp.blockSignals(False)
+            else:
+                self.levels_bp.blockSignals(True)
+                self.levels_bp.setValue(max(0.0, wp - 0.001))
+                self.levels_bp.blockSignals(False)
+
+        self._emit()
 
     def _on_clear_mask(self):
         # select the explicit "(none)" entry
@@ -311,16 +419,22 @@ class _LayerRow(QWidget):
             "mode": self.mode.currentText(),
             "opacity": self.sld.value() / 100.0,
             "name": self._name,
-            # mask UI state
             "mask_index": self.mask_combo.currentIndex(),
             "mask_src": "Luminance",
             "mask_invert": self.mask_invert.isChecked(),
         }
+
+        if self.levels_enable is not None:
+            out["levels_enabled"] = self.levels_enable.isChecked()
+
+        if self.levels_bp is not None and self.levels_wp is not None and self.levels_mt is not None:
+            out["black_point"] = self.levels_bp.value()
+            out["white_point"] = self.levels_wp.value()
+            out["midtones"] = self.levels_mt.value()
         if self.sig_center is not None and self.sig_strength is not None:
             out["sigmoid_center"] = self.sig_center.value()
             out["sigmoid_strength"] = self.sig_strength.value()
         return out
-
     def setName(self, name: str):
         self._name = name
         self.lbl.setText(name)
@@ -548,9 +662,19 @@ class LayersDock(QDockWidget):
             
             roww.mask_invert.setChecked(bool(getattr(lyr, "mask_invert", False)))
             roww.mask_combo.blockSignals(False)
+            levels_enabled = getattr(lyr, "levels_enabled", False)
+            black_point = getattr(lyr, "black_point", 0.0)
+            white_point = getattr(lyr, "white_point", 1.0)
+            midtones = getattr(lyr, "midtones", 0.5)
+
+            roww.set_levels_enabled(levels_enabled)
+            roww.set_levels_params(black_point, white_point, midtones)
+
             center = getattr(lyr, "sigmoid_center", 0.5)
             strength = getattr(lyr, "sigmoid_strength", 10.0)
-            roww.set_sigmoid_params(center, strength)            
+            roww.set_sigmoid_params(center, strength) 
+
+
             self._bind_row(roww)
             it = QListWidgetItem(self.list)
             it.setSizeHint(roww.sizeHint())
@@ -809,6 +933,11 @@ class LayersDock(QDockWidget):
             lyr.visible = p["visible"]
             lyr.mode = p["mode"]
             lyr.opacity = float(p["opacity"])
+            lyr.levels_enabled = bool(p.get("levels_enabled", False))
+            lyr.black_point = float(p.get("black_point", 0.0))
+            lyr.midtones = float(p.get("midtones", 0.5))
+            lyr.white_point = float(p.get("white_point", 1.0))
+
             # Sigmoid parameters (if present)
             if "sigmoid_center" in p:
                 lyr.sigmoid_center = float(p["sigmoid_center"])
