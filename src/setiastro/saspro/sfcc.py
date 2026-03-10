@@ -528,6 +528,140 @@ def compute_gradient_map(sources, delta_flux, shape, method="poly2"):
     else:
         raise ValueError("method must be one of 'poly2','poly3','rbf'")
 
+def compute_smooth_rbf_map(
+    pts: np.ndarray,
+    values: np.ndarray,
+    shape: tuple[int, int],
+    *,
+    smoothing: float = 2.0,
+    neighbors: int | None = None,
+    kernel: str = "thin_plate_spline",
+):
+    H, W = shape
+    pts = np.asarray(pts, dtype=np.float64)
+    values = np.asarray(values, dtype=np.float64)
+
+    rbfi = RBFInterpolator(
+        pts,
+        values,
+        kernel=kernel,
+        smoothing=float(smoothing),
+        neighbors=neighbors,
+    )
+
+    YY, XX = np.mgrid[0:H, 0:W]
+    grid_pts = np.column_stack([XX.ravel(), YY.ravel()])
+    surf = rbfi(grid_pts).reshape(H, W)
+    return surf.astype(np.float32)
+
+def measure_star_rgb_photometry(
+    img_rgb_f32: np.ndarray,
+    x: float,
+    y: float,
+    r: float,
+    rin: float,
+    rout: float,
+) -> dict | None:
+    R = np.ascontiguousarray(img_rgb_f32[..., 0], dtype=np.float32)
+    G = np.ascontiguousarray(img_rgb_f32[..., 1], dtype=np.float32)
+    B = np.ascontiguousarray(img_rgb_f32[..., 2], dtype=np.float32)
+
+    xarr = np.array([x], dtype=np.float64)
+    yarr = np.array([y], dtype=np.float64)
+
+    ap_area = np.pi * r * r
+    ann_area = np.pi * (rout * rout - rin * rin)
+
+    def _measure(ch):
+        raw = sep.sum_circle(ch, xarr, yarr, r, subpix=5)
+        ann = sep.sum_circann(ch, xarr, yarr, rin, rout, subpix=5)
+
+        if len(raw) == 3:
+            raw_sum, _raw_err, raw_flag = raw
+        else:
+            raw_sum, raw_flag = raw
+
+        if len(ann) == 3:
+            ann_sum, _ann_err, ann_flag = ann
+        else:
+            ann_sum, ann_flag = ann
+
+        raw_sum = float(raw_sum[0])
+        ann_sum = float(ann_sum[0])
+        flag = int(raw_flag[0]) | int(ann_flag[0])
+
+        if flag != 0:
+            return None
+
+        mu_bg = ann_sum / max(ann_area, 1e-12)   # background per pixel
+        star_sum = raw_sum - mu_bg * ap_area     # star-only flux
+
+        return {
+            "raw_sum": raw_sum,
+            "ann_sum": ann_sum,
+            "mu_bg": mu_bg,
+            "star_sum": star_sum,
+        }
+
+    mr = _measure(R)
+    mg = _measure(G)
+    mb = _measure(B)
+
+    if mr is None or mg is None or mb is None:
+        return None
+
+    return {
+        "area_ap": float(ap_area),
+        "area_ann": float(ann_area),
+        "R": mr,
+        "G": mg,
+        "B": mb,
+    }
+
+def measure_star_rgb_raw_aperture(
+    img_rgb_f32: np.ndarray,
+    x: float,
+    y: float,
+    r: float,
+) -> dict | None:
+    R = np.ascontiguousarray(img_rgb_f32[..., 0], dtype=np.float32)
+    G = np.ascontiguousarray(img_rgb_f32[..., 1], dtype=np.float32)
+    B = np.ascontiguousarray(img_rgb_f32[..., 2], dtype=np.float32)
+
+    xarr = np.array([x], dtype=np.float64)
+    yarr = np.array([y], dtype=np.float64)
+
+    ap_area = np.pi * r * r
+
+    def _measure(ch):
+        out = sep.sum_circle(ch, xarr, yarr, r, subpix=5)
+        if len(out) == 3:
+            raw_sum, _raw_err, raw_flag = out
+        else:
+            raw_sum, raw_flag = out
+
+        raw_sum = float(raw_sum[0])
+        flag = int(raw_flag[0])
+
+        if flag != 0:
+            return None
+
+        return raw_sum
+
+    rsum = _measure(R)
+    gsum = _measure(G)
+    bsum = _measure(B)
+
+    if rsum is None or gsum is None or bsum is None:
+        return None
+
+    return {
+        "area_ap": float(ap_area),
+        "R_raw": float(rsum),
+        "G_raw": float(gsum),
+        "B_raw": float(bsum),
+    }
+
 def _pivot_scale_channel(ch: np.ndarray, gain: np.ndarray | float, pivot: float) -> np.ndarray:
     """
     Apply gain around a pivot: pivot + (x - pivot)*gain.
@@ -877,7 +1011,6 @@ class SFCCDialog(QDialog):
         self.user_custom_path = self._ensure_user_custom_fits()
         self.current_image = None
         self.current_header = None
-        self.orientation_label = QLabel(self.tr("Orientation: N/A"))
         self.sasp_viewer_window = None
         self.main_win = parent
 
@@ -1062,7 +1195,7 @@ class SFCCDialog(QDialog):
 
         # hide gradient controls by default (enable if you like)
         self.run_grad_btn.hide(); self.grad_method_combo.hide()
-        layout.addWidget(self.orientation_label)
+
 
     # ── Settings helpers ────────────────────────────────────────────────
 
@@ -1507,11 +1640,6 @@ class SFCCDialog(QDialog):
             else:
                 self.orientation = self.calculate_orientation(hdr)
 
-            if getattr(self, "orientation_label", None) is not None:
-                if self.orientation is not None:
-                    self.orientation_label.setText(f"Orientation: {self.orientation:.2f}°")
-                else:
-                    self.orientation_label.setText("Orientation: N/A")
 
         except Exception as e:
             print("[SPCC] WCS initialization error:\n", e)
@@ -1535,15 +1663,33 @@ class SFCCDialog(QDialog):
             self._gaia_dl = GaiaDownloader(self._gaia_db_path())
         return self._gaia_dl
 
-    def _query_gaia_sources_in_field(self, center_ra_deg: float, center_dec_deg: float, radius_deg: float,
-                                     mag_limit: float = 15.5, max_rows: int = 200000) -> list[dict]:
+    def _query_gaia_sources_in_field(
+        self,
+        center_ra_deg: float,
+        center_dec_deg: float,
+        radius_deg: float,
+        mag_limit: float = 15.5,
+        max_rows: int = 200000,
+        retries: int = 5,
+        base_delay: float = 1.5,
+    ) -> list[dict]:
         """
         Query Gaia DR3 sources in field that have XP continuous spectra.
         Returns dicts with: source_id, ra, dec, gmag, bp_rp
+
+        Also stores query status on self:
+            self._last_gaia_query_ok
+            self._last_gaia_query_error
+            self._last_gaia_query_attempts
         """
+        self._last_gaia_query_ok = False
+        self._last_gaia_query_error = None
+        self._last_gaia_query_attempts = 0
+
         if Gaia is None:
+            self._last_gaia_query_error = "Gaia astroquery module unavailable"
             return []
-        # Keep this safe: astroquery Gaia can be finicky if ROW_LIMIT not set
+
         Gaia.ROW_LIMIT = max_rows
 
         adql = f"""
@@ -1557,11 +1703,46 @@ class SFCCDialog(QDialog):
         AND has_xp_continuous = 'True'
         AND phot_g_mean_mag <= {float(mag_limit)}
         """
-        try:
-            job = Gaia.launch_job_async(adql, dump_to_file=False)
-            tab = job.get_results()
-        except Exception as e:
-            print(f"[SPCC] Gaia query failed: {e}")
+
+        tab = None
+        last_err = None
+
+        for attempt in range(1, int(retries) + 1):
+            self._last_gaia_query_attempts = attempt
+            try:
+                msg = f"[SPCC] Gaia query attempt {attempt}/{retries}..."
+                print(msg)
+                if getattr(self, "count_label", None) is not None:
+                    self.count_label.setText(msg)
+                QApplication.processEvents()
+
+                job = Gaia.launch_job_async(adql, dump_to_file=False)
+                tab = job.get_results()
+
+                self._last_gaia_query_ok = True
+                self._last_gaia_query_error = None
+                print(f"[SPCC] Gaia query succeeded on attempt {attempt}/{retries}")
+                break
+
+            except Exception as e:
+                last_err = e
+                self._last_gaia_query_error = str(e)
+                print(f"[SPCC] Gaia query failed on attempt {attempt}/{retries}: {e}")
+
+                if attempt >= retries:
+                    break
+
+                delay = float(base_delay) * attempt
+                retry_msg = f"[SPCC] Gaia query retrying in {delay:.1f}s..."
+                print(retry_msg)
+                if getattr(self, "count_label", None) is not None:
+                    self.count_label.setText(retry_msg)
+                QApplication.processEvents()
+                non_blocking_sleep(delay)
+
+        if tab is None:
+            self._last_gaia_query_ok = False
+            print(f"[SPCC] Gaia query failed after {retries} attempts: {last_err}")
             return []
 
         out = []
@@ -1576,6 +1757,8 @@ class SFCCDialog(QDialog):
                 })
             except Exception:
                 continue
+
+        print(f"[SPCC] Gaia query returned {len(out)} sources")
         return out
 
     @staticmethod
@@ -1587,45 +1770,87 @@ class SFCCDialog(QDialog):
         ddec = (dec1 - dec2)
         return 3600.0 * math.hypot(dra, ddec)
 
-    def _attach_gaia_ids_to_star_list(self, *, radius_deg: float, mag_limit: float = 15.5,
-                                      max_match_arcsec: float = 1.0):
+    def _attach_gaia_ids_to_star_list(
+        self,
+        *,
+        radius_deg: float,
+        mag_limit: float = 15.5,
+        max_match_arcsec: float = 1.0
+    ):
         """
         Enrich self.star_list entries with Gaia XP source_id when:
-          - SIMBAD spectral type is missing OR
-          - pickles_match is None (no Pickles template)
+        - SIMBAD spectral type is missing OR
+        - pickles_match is None (no Pickles template)
+
+        Returns a status dict:
+        {
+            "query_ok": bool,
+            "query_error": str | None,
+            "gaia_source_count": int,
+            "matched_star_count": int,
+            "needed_star_count": int,
+        }
         """
         if not self._gaia_enabled():
             print("[SPCC] Gaia fallback disabled (missing astroquery.gaia and/or gaiaxpy and/or gaia_downloader).")
-            return
+            return {
+                "query_ok": False,
+                "query_error": "Gaia fallback unavailable",
+                "gaia_source_count": 0,
+                "matched_star_count": 0,
+                "needed_star_count": 0,
+            }
 
         if not getattr(self, "center_ra", None) or not getattr(self, "center_dec", None):
-            # initialize_wcs_from_header sets these; but be defensive
-            return
+            return {
+                "query_ok": False,
+                "query_error": "Missing field center RA/Dec",
+                "gaia_source_count": 0,
+                "matched_star_count": 0,
+                "needed_star_count": 0,
+            }
+
+        needed_star_count = sum(
+            1 for st in self.star_list
+            if (not st.get("sp_clean")) or (st.get("pickles_match") is None)
+        )
 
         gaia_sources = self._query_gaia_sources_in_field(
-            self.center_ra, self.center_dec, radius_deg, mag_limit=mag_limit
+            self.center_ra,
+            self.center_dec,
+            radius_deg,
+            mag_limit=mag_limit
         )
-        if not gaia_sources:
-            return
 
-        # Optional: store in the cache DB so spectra downloads can be linked to source metadata
+        query_ok = bool(getattr(self, "_last_gaia_query_ok", False))
+        query_error = getattr(self, "_last_gaia_query_error", None)
+
+        if not gaia_sources:
+            return {
+                "query_ok": query_ok,
+                "query_error": query_error,
+                "gaia_source_count": 0,
+                "matched_star_count": 0,
+                "needed_star_count": needed_star_count,
+            }
+
         try:
             dl = self._get_gaia_downloader()
             dl.db.add_sources([dl.GaiaSource(
                 s["source_id"], s["ra"], s["dec"], s["gmag"], s["bp_rp"], None, None, None
             ) for s in gaia_sources])
         except Exception:
-            # ok if this fails; spectra caching still works
             pass
 
-        # For matching: brute-force is fine at these sizes if SIMBAD stars small,
-        # but we’ll still keep it simple and safe.
+        matched_star_count = 0
+
         for st in self.star_list:
             needs_gaia = (not st.get("sp_clean")) or (st.get("pickles_match") is None)
             if not needs_gaia:
                 continue
 
-            ra = float(st["ra"]); dec = float(st["dec"])
+            ra = float(st["ra"])
+            dec = float(st["dec"])
             best = None
             best_sep = 1e9
 
@@ -1640,6 +1865,15 @@ class SFCCDialog(QDialog):
                 st["gaia_bp_rp"] = best.get("bp_rp")
                 st["gaia_gmag"] = best.get("gmag")
                 st["gaia_sep_arcsec"] = float(best_sep)
+                matched_star_count += 1
+
+        return {
+            "query_ok": query_ok,
+            "query_error": query_error,
+            "gaia_source_count": len(gaia_sources),
+            "matched_star_count": matched_star_count,
+            "needed_star_count": needed_star_count,
+        }
 
     def _gaia_integrals_for_source_ids(
         self,
@@ -2088,13 +2322,38 @@ class SFCCDialog(QDialog):
         if radius_deg is not None and self._use_gaia_fallback():
             try:
                 _sfcc_busy(self, True, "[SPCC] Matching SIMBAD stars to Gaia source_ids…")
-                self._attach_gaia_ids_to_star_list(
+
+                gaia_info = self._attach_gaia_ids_to_star_list(
                     radius_deg=radius_deg,
                     mag_limit=15.5,
                     max_match_arcsec=1.0
                 )
-                n_gaia = sum(1 for s in self.star_list if s.get("gaia_source_id") is not None)
-                _sfcc_status(self, f"[SPCC] Gaia ID match: {n_gaia} of {len(self.star_list)} stars")
+
+                n_gaia_total = sum(1 for s in self.star_list if s.get("gaia_source_id") is not None)
+
+                if not gaia_info.get("query_ok", False):
+                    err = gaia_info.get("query_error") or "unknown network/query error"
+                    _sfcc_status(
+                        self,
+                        f"[SPCC] Gaia query failed after retries; no Gaia IDs attached ({err})"
+                    )
+                else:
+                    needed = int(gaia_info.get("needed_star_count", 0))
+                    matched = int(gaia_info.get("matched_star_count", 0))
+                    source_count = int(gaia_info.get("gaia_source_count", 0))
+
+                    if source_count == 0:
+                        _sfcc_status(
+                            self,
+                            f"[SPCC] Gaia query succeeded but returned 0 XP sources in field"
+                        )
+                    else:
+                        _sfcc_status(
+                            self,
+                            f"[SPCC] Gaia ID match: {matched} of {needed} fallback stars "
+                            f"({n_gaia_total} total attached; {source_count} Gaia sources queried)"
+                        )
+
             except Exception as e:
                 _sfcc_status(self, f"[SPCC] Gaia ID match failed: {e}")
             finally:
@@ -2457,66 +2716,35 @@ class SFCCDialog(QDialog):
         else:
             print("[SPCC] Gaia XP fallback skipped (disabled by user or unavailable).")
 
-        def measure_star_rgb_aperture(img_rgb_f32: np.ndarray, x: float, y: float, r: float,
-                                    rin: float, rout: float) -> tuple[float, float, float]:
-            # SEP expects float32, C-contiguous, and (x,y) in pixel coords
-            R = np.ascontiguousarray(img_rgb_f32[..., 0], dtype=np.float32)
-            G = np.ascontiguousarray(img_rgb_f32[..., 1], dtype=np.float32)
-            B = np.ascontiguousarray(img_rgb_f32[..., 2], dtype=np.float32)
-
-            # sum_circle returns (flux, fluxerr, flag) when err not provided; handle either form
-            def _sum(ch):
-                out = sep.sum_circle(ch, np.array([x]), np.array([y]), r,
-                                    subpix=5, bkgann=(rin, rout))
-                # Depending on sep version, out can be (flux, fluxerr, flag) or (flux, flag)
-                if len(out) == 3:
-                    flux, _fluxerr, flag = out
-                else:
-                    flux, flag = out
-                return float(flux[0]), int(flag[0])
-
-            fR, flR = _sum(R)
-            fG, flG = _sum(G)
-            fB, flB = _sum(B)
-
-            # If any flags set, you can reject (edge, etc.)
-            if (flR | flG | flB) != 0:
-                return None, None, None
-
-            return fR, fG, fB
-
-
+        # ---- Main match loop (measure from 'base' only) ----
         # ---- Main match loop (measure from 'base' only) ----
         for m in raw_matches:
-            xi = float(m.get("x_pix", m["x"]))
-            yi = float(m.get("y_pix", m["y"]))
             sp = m["template"]
 
             # measure on the SEP working copy (already BN’d, only one pedestal handling)
             x = float(m["x"])
             y = float(m["y"])
 
-            # Aperture radius choice (simple + robust)
-            # sources["a"] is roughly semi-major sigma-ish from SEP; a common quick rule:
-            # r ~ 2.5 * a, with sane clamps.
+            # Aperture radius choice
             a = float(m.get("a", 1.5))
             r = float(np.clip(2.5 * a, 2.0, 12.0))
 
-            # Annulus (your “kicker”): inner/outer in pixels
+            # Annulus
             rin  = float(np.clip(3.0 * r, 6.0, 40.0))
             rout = float(np.clip(5.0 * r, rin + 2.0, 60.0))
 
-            meas = measure_star_rgb_aperture(base, x, y, r, rin, rout)
-            if meas[0] is None:
+            phot = measure_star_rgb_photometry(base, x, y, r, rin, rout)
+            if phot is None:
                 continue
-            Rm, Gm, Bm = meas
 
-            if Gm <= 0:
+            Rm = float(phot["R"]["star_sum"])
+            Gm = float(phot["G"]["star_sum"])
+            Bm = float(phot["B"]["star_sum"])
+
+            # reject non-physical or unusable star-only fluxes
+            if (not np.isfinite(Rm)) or (not np.isfinite(Gm)) or (not np.isfinite(Bm)):
                 continue
-            meas_RG = Rm / Gm
-            meas_BG = Bm / Gm
-
-            if Gm <= 0:
+            if Gm <= 0 or Rm <= 0 or Bm <= 0:
                 continue
 
             pname = simbad_to_pickles.get(sp)
@@ -2539,7 +2767,9 @@ class SFCCDialog(QDialog):
 
             S_sr, S_sg, S_sb = integrals
 
-            if S_sg <= 0:
+            if (not np.isfinite(S_sr)) or (not np.isfinite(S_sg)) or (not np.isfinite(S_sb)):
+                continue
+            if S_sg <= 0 or S_sr <= 0 or S_sb <= 0:
                 continue
 
             exp_RG = S_sr / S_sg
@@ -2547,14 +2777,56 @@ class SFCCDialog(QDialog):
             meas_RG = Rm / Gm
             meas_BG = Bm / Gm
 
-            diag_meas_RG.append(meas_RG); diag_exp_RG.append(exp_RG)
-            diag_meas_BG.append(meas_BG); diag_exp_BG.append(exp_BG)
+            if (not np.isfinite(exp_RG)) or (not np.isfinite(exp_BG)):
+                continue
+            if (not np.isfinite(meas_RG)) or (not np.isfinite(meas_BG)):
+                continue
+
+            diag_meas_RG.append(meas_RG)
+            diag_exp_RG.append(exp_RG)
+            diag_meas_BG.append(meas_BG)
+            diag_exp_BG.append(exp_BG)
 
             enriched.append({
                 **m,
-                "R_meas": Rm, "G_meas": Gm, "B_meas": Bm,
-                "S_star_R": S_sr, "S_star_G": S_sg, "S_star_B": S_sb,
-                "exp_RG": exp_RG, "exp_BG": exp_BG
+
+                # aperture geometry
+                "r_ap": float(r),
+                "r_in": float(rin),
+                "r_out": float(rout),
+                "ap_area": float(phot["area_ap"]),
+                "ann_area": float(phot["area_ann"]),
+
+                # raw aperture sums
+                "R_raw": float(phot["R"]["raw_sum"]),
+                "G_raw": float(phot["G"]["raw_sum"]),
+                "B_raw": float(phot["B"]["raw_sum"]),
+
+                # annulus sums
+                "R_ann_sum": float(phot["R"]["ann_sum"]),
+                "G_ann_sum": float(phot["G"]["ann_sum"]),
+                "B_ann_sum": float(phot["B"]["ann_sum"]),
+
+                # local background estimate (per pixel)
+                "R_bg_pp": float(phot["R"]["mu_bg"]),
+                "G_bg_pp": float(phot["G"]["mu_bg"]),
+                "B_bg_pp": float(phot["B"]["mu_bg"]),
+
+                # star-only measured flux
+                "R_meas": float(Rm),
+                "G_meas": float(Gm),
+                "B_meas": float(Bm),
+
+                # expected synthetic channel integrals
+                "S_star_R": float(S_sr),
+                "S_star_G": float(S_sg),
+                "S_star_B": float(S_sb),
+
+                # ratios for current SPCC solve
+                "exp_RG": float(exp_RG),
+                "exp_BG": float(exp_BG),
+                "meas_RG": float(meas_RG),
+                "meas_BG": float(meas_BG),
             })
 
         self._last_matched = enriched
@@ -2590,9 +2862,22 @@ class SFCCDialog(QDialog):
         )[0]
         rms_a = rms_frac(affine(diag_meas_RG, mR_a, bR_a), diag_exp_RG) + rms_frac(affine(diag_meas_BG, mB_a, bB_a), diag_exp_BG)
 
-        aR_q, bR_q, cR_q = np.polyfit(diag_meas_RG, diag_exp_RG, 2)
-        aB_q, bB_q, cB_q = np.polyfit(diag_meas_BG, diag_exp_BG, 2)
-        rms_q = rms_frac(quad(diag_meas_RG, aR_q, bR_q, cR_q), diag_exp_RG) + rms_frac(quad(diag_meas_BG, aB_q, bB_q, cB_q), diag_exp_BG)
+        quad_ok = (diag_meas_RG.size >= 6 and diag_meas_BG.size >= 6)
+
+        if quad_ok:
+            try:
+                aR_q, bR_q, cR_q = np.polyfit(diag_meas_RG, diag_exp_RG, 2)
+                aB_q, bB_q, cB_q = np.polyfit(diag_meas_BG, diag_exp_BG, 2)
+                rms_q = rms_frac(quad(diag_meas_RG, aR_q, bR_q, cR_q), diag_exp_RG) + \
+                        rms_frac(quad(diag_meas_BG, aB_q, bB_q, cB_q), diag_exp_BG)
+            except Exception:
+                aR_q, bR_q, cR_q = 0.0, 1.0, 0.0
+                aB_q, bB_q, cB_q = 0.0, 1.0, 0.0
+                rms_q = np.inf
+        else:
+            aR_q, bR_q, cR_q = 0.0, 1.0, 0.0
+            aB_q, bB_q, cB_q = 0.0, 1.0, 0.0
+            rms_q = np.inf
 
         idx = int(np.argmin([rms_s, rms_a, rms_q]))
         if idx == 0:
@@ -2705,6 +2990,8 @@ class SFCCDialog(QDialog):
             "SFCC_model": model_choice,
             "SFCC_coeff_R": [float(v) for v in coeff_R],
             "SFCC_coeff_B": [float(v) for v in coeff_B],
+            "SFCC_num_stars": int(n_stars),
+            "SFCC_num_enriched_stars": int(len(enriched)),
         })
 
         self.doc_manager.update_active_document(
@@ -2735,10 +3022,11 @@ class SFCCDialog(QDialog):
 
 
     # ── Chromatic gradient (optional) ──────────────────────────────────
-
     def run_gradient_extraction(self):
-        if not getattr(self, "_last_matched", None):
-            QMessageBox.warning(self, "No Star Matches", "Run colour calibration first.")
+        print("[SPCC-GRAD] start")
+
+        if not getattr(self, "star_list", None):
+            QMessageBox.warning(self, "No Stars", "Fetch Stars first, then run SPCC.")
             return
 
         doc = self.doc_manager.get_active_document()
@@ -2752,86 +3040,410 @@ class SFCCDialog(QDialog):
             return
 
         is_u8 = (img.dtype == np.uint8)
-        img_f = img.astype(np.float32) / (255.0 if is_u8 else 1.0)
-        H, W = img_f.shape[:2]
+        img_float = img.astype(np.float32) / (255.0 if is_u8 else 1.0)
+        H, W = img_float.shape[:2]
 
-        # Need star diagnostics from SPCC
-        if not hasattr(self, "_last_matched") or not self._last_matched:
-            QMessageBox.warning(self, "No Star Matches", "Run color calibration first."); return
+        mode = getattr(self, "grad_method", "poly3")
+        print(f"[SPCC-GRAD] mode={mode}, image_shape=({H},{W})")
 
-        down_fact = 4
-        Hs, Ws = H // down_fact, W // down_fact
-        small  = cv2.resize(img_f, (Ws, Hs), interpolation=cv2.INTER_AREA)
+        # ------------------------------------------------------------------
+        # Fresh SEP detection on CURRENT image (post-SPCC image)
+        # ------------------------------------------------------------------
+        base = self._make_working_base_for_sep(img_float)
 
-        pts, dRG, dBG = [], [], []
-        eps, box = 1e-8, 3
-        for st in self._last_matched:
-            xs_full, ys_full = st["x_pix"], st["y_pix"]
-            xs, ys = xs_full / down_fact, ys_full / down_fact
-            xs_c, ys_c = int(round(xs)), int(round(ys))
-            if not (0 <= xs_c < Ws and 0 <= ys_c < Hs): continue
-            xsl = slice(max(0, xs_c-box), min(Ws, xs_c+box+1))
-            ysl = slice(max(0, ys_c-box), min(Hs, ys_c+box+1))
-            Rm = np.median(small[ysl, xsl, 0]); Gm = np.median(small[ysl, xsl, 1]); Bm = np.median(small[ysl, xsl, 2])
-            if Gm <= 0: continue
-            meas_RG = Rm / Gm; meas_BG = Bm / Gm
-            exp_RG, exp_BG = st["exp_RG"], st["exp_BG"]
-            if exp_RG is None or exp_BG is None: continue
-            dm_RG = -2.5 * np.log10((meas_RG+eps)/(exp_RG+eps))
-            dm_BG = -2.5 * np.log10((meas_BG+eps)/(exp_BG+eps))
-            pts.append([xs, ys]); dRG.append(dm_RG); dBG.append(dm_BG)
+        gray = np.mean(base, axis=2).astype(np.float32)
+        bkg = sep.Background(gray)
+        data_sub = gray - bkg.back()
+        err = float(bkg.globalrms)
 
-        pts  = np.asarray(pts); dRG = np.asarray(dRG); dBG = np.asarray(dBG)
-        if pts.shape[0] < 5:
-            QMessageBox.warning(self, "Too Few Stars", "Need ≥5 stars after clipping."); return
+        sep_sigma = float(self.sep_thr_spin.value()) if hasattr(self, "sep_thr_spin") else 5.0
+        self.count_label.setText(f"Gradient: detecting stars (SEP σ={sep_sigma:.1f})…")
+        QApplication.processEvents()
 
-        def sclip(arr, p, s=2.5):
-            m, sd = np.median(arr), np.std(arr); keep = np.abs(arr-m) < s*sd
-            return p[keep], arr[keep]
+        sources = sep.extract(data_sub, sep_sigma, err=err)
+        print(f"[SPCC-GRAD] SEP detections before filtering: {sources.size}")
 
-        ptsRG, dRG = sclip(dRG, pts); ptsBG, dBG = sclip(dBG, pts)
+        if sources.size == 0:
+            QMessageBox.critical(self, "SEP Error", "SEP found no sources for gradient extraction.")
+            return
 
-        mode = getattr(self, "grad_method", "poly2")
-        bgRG_s = compute_gradient_map(ptsRG, dRG, (Hs, Ws), method=mode)
-        bgBG_s = compute_gradient_map(ptsBG, dBG, (Hs, Ws), method=mode)
+        r_fluxrad, _ = sep.flux_radius(
+            gray, sources["x"], sources["y"],
+            2.0 * sources["a"], 0.5,
+            normflux=sources["flux"], subpix=5
+        )
+        mask = (r_fluxrad > 0.2) & (r_fluxrad <= 10)
+        sources = sources[mask]
 
-        for bg in (bgRG_s, bgBG_s):
-            bg -= np.median(bg)
-            peak = np.max(np.abs(bg))
-            if peak > 0.2: bg *= 0.2/peak
+        print(f"[SPCC-GRAD] SEP detections after radius filter: {sources.size}")
 
-        bgRG = cv2.resize(bgRG_s, (W, H), interpolation=cv2.INTER_CUBIC)
-        bgBG = cv2.resize(bgBG_s, (W, H), interpolation=cv2.INTER_CUBIC)
+        if sources.size == 0:
+            QMessageBox.critical(self, "SEP Error", "All SEP detections rejected by radius filter.")
+            return
 
-        scale_R = 10**(-0.4*bgRG); scale_B = 10**(-0.4*bgBG)
+        # ------------------------------------------------------------------
+        # Rebuild system response curves
+        # ------------------------------------------------------------------
+        ref_sed_name = self.star_combo.currentData()
+        r_filt = self.r_filter_combo.currentText()
+        g_filt = self.g_filter_combo.currentText()
+        b_filt = self.b_filter_combo.currentText()
+        sens_name = self.sens_combo.currentText()
+        lp_filt  = self.lp_filter_combo.currentText()
+        lp_filt2 = self.lp_filter_combo2.currentText()
 
+        if not ref_sed_name:
+            QMessageBox.warning(self, "Error", "Select a reference spectral type.")
+            return
+        if sens_name == "(None)":
+            QMessageBox.warning(self, "Error", "Select a sensor QE curve.")
+            return
+
+        wl_min, wl_max = 3000, 11000
+        wl_grid = np.arange(wl_min, wl_max + 1)
+
+        def load_curve(ext):
+            for p in (self.user_custom_path, self.sasp_data_path):
+                with fits.open(p, memmap=False) as hd:
+                    if ext in hd:
+                        d = hd[ext].data
+                        wl = _ensure_angstrom(d["WAVELENGTH"].astype(float))
+                        tp = d["THROUGHPUT"].astype(float)
+                        return wl, tp
+            raise KeyError(f"Curve '{ext}' not found")
+
+        def load_sed(ext):
+            for p in (self.user_custom_path, self.sasp_data_path):
+                with fits.open(p, memmap=False) as hd:
+                    if ext in hd:
+                        d = hd[ext].data
+                        wl = _ensure_angstrom(d["WAVELENGTH"].astype(float))
+                        fl = d["FLUX"].astype(float)
+                        return wl, fl
+            raise KeyError(f"SED '{ext}' not found")
+
+        interp = lambda wl_o, tp_o: np.interp(wl_grid, wl_o, tp_o, left=0.0, right=0.0)
+
+        T_R = interp(*load_curve(r_filt)) if r_filt != "(None)" else np.ones_like(wl_grid)
+        T_G = interp(*load_curve(g_filt)) if g_filt != "(None)" else np.ones_like(wl_grid)
+        T_B = interp(*load_curve(b_filt)) if b_filt != "(None)" else np.ones_like(wl_grid)
+        QE  = interp(*load_curve(sens_name)) if sens_name != "(None)" else np.ones_like(wl_grid)
+        LP1 = interp(*load_curve(lp_filt))   if lp_filt  != "(None)" else np.ones_like(wl_grid)
+        LP2 = interp(*load_curve(lp_filt2))  if lp_filt2 != "(None)" else np.ones_like(wl_grid)
+        LP  = LP1 * LP2
+
+        T_sys_R = T_R * QE * LP
+        T_sys_G = T_G * QE * LP
+        T_sys_B = T_B * QE * LP
+
+        # ------------------------------------------------------------------
+        # Match current SEP detections to star_list
+        # ------------------------------------------------------------------
+        raw_matches = []
+        for i, star in enumerate(self.star_list):
+            dx = sources["x"] - star["x"]
+            dy = sources["y"] - star["y"]
+            if dx.size == 0:
+                continue
+
+            j = int(np.argmin(dx * dx + dy * dy))
+            d2 = float(dx[j] * dx[j] + dy[j] * dy[j])
+
+            if d2 < (3.0 ** 2):
+                raw_matches.append({
+                    "sim_index": i,
+                    "x": float(sources["x"][j]),
+                    "y": float(sources["y"][j]),
+                    "x_pix": float(sources["x"][j]),
+                    "y_pix": float(sources["y"][j]),
+                    "a": float(sources["a"][j]),
+                    "template": star.get("pickles_match") or star.get("sp_clean") or "",
+                })
+
+        print(f"[SPCC-GRAD] matched stars to current detections: {len(raw_matches)}")
+
+        if not raw_matches:
+            QMessageBox.warning(self, "No Matches", "No SIMBAD stars matched current SEP detections.")
+            return
+
+        # ------------------------------------------------------------------
+        # Build expected flux integrals from Pickles / Gaia
+        # ------------------------------------------------------------------
+        unique_simbad_types = set(m["template"] for m in raw_matches)
+
+        simbad_to_pickles = {}
+        pickles_templates_needed = set()
+        for sp in unique_simbad_types:
+            cands = pickles_match_for_simbad(sp, getattr(self, "pickles_templates", []))
+            if cands:
+                pname = cands[0]
+                simbad_to_pickles[sp] = pname
+                pickles_templates_needed.add(pname)
+
+        template_integrals = {}
+        for pname in pickles_templates_needed:
+            try:
+                wl_s, fl_s = load_sed(pname)
+                fs_i = np.interp(wl_grid, wl_s, fl_s, left=0.0, right=0.0)
+                S_sr = _trapz(fs_i * T_sys_R, x=wl_grid)
+                S_sg = _trapz(fs_i * T_sys_G, x=wl_grid)
+                S_sb = _trapz(fs_i * T_sys_B, x=wl_grid)
+                template_integrals[pname] = (float(S_sr), float(S_sg), float(S_sb))
+            except Exception as e:
+                print(f"[SPCC-GRAD] Warning: failed template {pname}: {e}")
+
+        gaia_integrals = {}
+        if self._use_gaia_fallback():
+            try:
+                gaia_ids_needed = []
+                for m in raw_matches:
+                    sp = m["template"]
+                    pname = simbad_to_pickles.get(sp)
+                    if pname:
+                        continue
+                    si = int(m["sim_index"])
+                    if 0 <= si < len(self.star_list):
+                        sid = self.star_list[si].get("gaia_source_id")
+                        if sid is not None:
+                            gaia_ids_needed.append(int(sid))
+
+                gaia_ids_needed = sorted(set(gaia_ids_needed))
+                if gaia_ids_needed:
+                    gaia_integrals = self._gaia_integrals_for_source_ids(
+                        gaia_ids_needed,
+                        wl_grid_ang=wl_grid.astype(np.float64),
+                        T_sys_R=T_sys_R.astype(np.float64),
+                        T_sys_G=T_sys_G.astype(np.float64),
+                        T_sys_B=T_sys_B.astype(np.float64),
+                        batch_size=128
+                    )
+                    print(f"[SPCC-GRAD] Gaia integrals available for {len(gaia_integrals)} source_ids")
+            except Exception as e:
+                print(f"[SPCC-GRAD] Gaia XP fallback failed: {e}")
+                gaia_integrals = {}
+
+        # ------------------------------------------------------------------
+        # Fresh raw-aperture photometry and differential magnitude residuals
+        # ------------------------------------------------------------------
+        self.count_label.setText("Gradient: remeasuring stars without annulus subtraction…")
+        QApplication.processEvents()
+
+        meas_rows = []
+
+        for m in raw_matches:
+            sp = m["template"]
+            x = float(m["x"])
+            y = float(m["y"])
+            a = float(m.get("a", 1.5))
+            r = float(np.clip(2.5 * a, 2.0, 12.0))
+
+            rawphot = measure_star_rgb_raw_aperture(base, x, y, r)
+            if rawphot is None:
+                continue
+
+            R_raw = float(rawphot["R_raw"])
+            G_raw = float(rawphot["G_raw"])
+            B_raw = float(rawphot["B_raw"])
+
+            if not np.isfinite(R_raw) or not np.isfinite(G_raw) or not np.isfinite(B_raw):
+                continue
+            if R_raw <= 0 or G_raw <= 0 or B_raw <= 0:
+                continue
+
+            pname = simbad_to_pickles.get(sp)
+            integrals = template_integrals.get(pname) if pname else None
+
+            if integrals is None:
+                si = int(m["sim_index"])
+                sid = None
+                if 0 <= si < len(self.star_list):
+                    sid = self.star_list[si].get("gaia_source_id")
+                if sid is not None:
+                    integrals = gaia_integrals.get(int(sid))
+
+            if integrals is None:
+                continue
+
+            S_sr, S_sg, S_sb = integrals
+            if not np.isfinite(S_sr) or not np.isfinite(S_sg) or not np.isfinite(S_sb):
+                continue
+            if S_sr <= 0 or S_sg <= 0 or S_sb <= 0:
+                continue
+
+            meas_rows.append({
+                "x": x,
+                "y": y,
+                "R_raw": R_raw,
+                "G_raw": G_raw,
+                "B_raw": B_raw,
+                "S_star_R": float(S_sr),
+                "S_star_G": float(S_sg),
+                "S_star_B": float(S_sb),
+            })
+
+        print(f"[SPCC-GRAD] stars with valid raw+expected photometry: {len(meas_rows)}")
+
+        if len(meas_rows) < 10:
+            QMessageBox.warning(self, "Too Few Stars", "Need at least 10 valid stars for gradient extraction.")
+            return
+
+        eps = 1e-12
+
+        # Build raw differential magnitudes
+        dmR = []
+        dmG = []
+        dmB = []
+        pts = []
+
+        for st in meas_rows:
+            pts.append([st["x"], st["y"]])
+            dmR.append(-2.5 * np.log10(st["R_raw"] / max(st["S_star_R"], eps)))
+            dmG.append(-2.5 * np.log10(st["G_raw"] / max(st["S_star_G"], eps)))
+            dmB.append(-2.5 * np.log10(st["B_raw"] / max(st["S_star_B"], eps)))
+
+        pts = np.asarray(pts, dtype=np.float64)
+        dmR = np.asarray(dmR, dtype=np.float64)
+        dmG = np.asarray(dmG, dtype=np.float64)
+        dmB = np.asarray(dmB, dtype=np.float64)
+
+        # Remove global zero point by subtracting channel medians
+        dmR -= np.median(dmR)
+        dmG -= np.median(dmG)
+        dmB -= np.median(dmB)
+
+        print(f"[SPCC-GRAD] dmR median={np.median(dmR):.6g}, min={np.min(dmR):.6g}, max={np.max(dmR):.6g}")
+        print(f"[SPCC-GRAD] dmG median={np.median(dmG):.6g}, min={np.min(dmG):.6g}, max={np.max(dmG):.6g}")
+        print(f"[SPCC-GRAD] dmB median={np.median(dmB):.6g}, min={np.min(dmB):.6g}, max={np.max(dmB):.6g}")
+
+        def sigma_clip_points(pts_in, vals_in, sigma=2.5):
+            vals_in = np.asarray(vals_in, dtype=np.float64)
+            med = np.median(vals_in)
+            mad = np.median(np.abs(vals_in - med)) * 1.4826
+            if mad <= 0:
+                return pts_in, vals_in
+            keep = np.abs(vals_in - med) < sigma * mad
+            return pts_in[keep], vals_in[keep]
+
+        ptsR, dmR = sigma_clip_points(pts, dmR)
+        ptsG, dmG = sigma_clip_points(pts, dmG)
+        ptsB, dmB = sigma_clip_points(pts, dmB)
+
+        print(f"[SPCC-GRAD] after clip: R={len(ptsR)}, G={len(ptsG)}, B={len(ptsB)}")
+
+        if len(ptsR) < 5 or len(ptsG) < 5 or len(ptsB) < 5:
+            QMessageBox.warning(self, "Too Few Stars", "Too few stars remain after clipping.")
+            return
+
+        # ------------------------------------------------------------------
+        # Fit chosen surface model in differential magnitude space
+        # ------------------------------------------------------------------
+        self.count_label.setText(f"Gradient: fitting {mode} differential surfaces…")
+        QApplication.processEvents()
+
+        def fit_surface(pts_in, vals_in, shape, method):
+            vals_in = np.asarray(vals_in, dtype=np.float64)
+            print(
+                f"[SPCC-GRAD] fitting {method}: "
+                f"n={len(vals_in)}, med={np.median(vals_in):.6g}, "
+                f"min={np.min(vals_in):.6g}, max={np.max(vals_in):.6g}"
+            )
+
+            if method == "rbf":
+                return compute_smooth_rbf_map(
+                    pts_in,
+                    vals_in,
+                    shape,
+                    smoothing=2.0,
+                    neighbors=None,
+                    kernel="thin_plate_spline",
+                )
+            elif method in ("poly2", "poly3"):
+                return compute_gradient_map(pts_in, vals_in, shape, method=method).astype(np.float32)
+            else:
+                print(f"[SPCC-GRAD] unknown method '{method}', falling back to poly3")
+                return compute_gradient_map(pts_in, vals_in, shape, method="poly3").astype(np.float32)
+
+        surfR = fit_surface(ptsR, dmR, (H, W), mode)
+        surfG = fit_surface(ptsG, dmG, (H, W), mode)
+        surfB = fit_surface(ptsB, dmB, (H, W), mode)
+
+        # Center fitted surfaces again just to be safe
+        surfR = surfR - np.median(surfR)
+        surfG = surfG - np.median(surfG)
+        surfB = surfB - np.median(surfB)
+
+        print(f"[SPCC-GRAD] fitted dm peaks: "
+            f"R={np.max(np.abs(surfR)):.6g} mag, "
+            f"G={np.max(np.abs(surfG)):.6g} mag, "
+            f"B={np.max(np.abs(surfB)):.6g} mag")
+
+        # Clamp to sane magnitude residual amplitude
+        def clamp_surface_mag(surf, name, max_allowed_mag=0.05):
+            peak = float(np.max(np.abs(surf)))
+            if peak > max_allowed_mag:
+                surf = surf * (max_allowed_mag / peak)
+                print(f"[SPCC-GRAD] {name} clamped to ±{max_allowed_mag:.6g} mag")
+            return surf
+
+        surfR = clamp_surface_mag(surfR, "R", max_allowed_mag=0.05)
+        surfG = clamp_surface_mag(surfG, "G", max_allowed_mag=0.05)
+        surfB = clamp_surface_mag(surfB, "B", max_allowed_mag=0.05)
+
+        # ------------------------------------------------------------------
+        # Convert fitted differential magnitude field to multiplicative scale
+        # measured_mag - expected_mag = dm
+        # To remove that residual, divide by 10^(-0.4 * dm)
+        # ------------------------------------------------------------------
+        self.count_label.setText("Gradient: applying differential correction…")
+        QApplication.processEvents()
+
+        scaleR = np.power(10.0, -0.4 * surfR).astype(np.float32)
+        scaleG = np.power(10.0, -0.4 * surfG).astype(np.float32)
+        scaleB = np.power(10.0, -0.4 * surfB).astype(np.float32)
+
+        corrected = img_float.copy()
+        corrected[..., 0] = corrected[..., 0] / np.maximum(scaleR, 1e-8)
+        corrected[..., 1] = corrected[..., 1] / np.maximum(scaleG, 1e-8)
+        corrected[..., 2] = corrected[..., 2] / np.maximum(scaleB, 1e-8)
+        corrected = np.clip(corrected, 0.0, 1.0)
+
+        # ------------------------------------------------------------------
+        # Diagnostics
+        # ------------------------------------------------------------------
         self.figure.clf()
-        for i,(surf,lbl) in enumerate(((bgRG,"Δm R/G"),(bgBG,"Δm B/G"))):
-            ax  = self.figure.add_subplot(1,2,i+1)
-            im  = ax.imshow(surf, origin="lower", cmap="RdBu")
-            ax.set_title(lbl); self.figure.colorbar(im, ax=ax)
-        self.canvas.setVisible(True); self.figure.tight_layout(); self.canvas.draw()
+        for i, (surf, lbl) in enumerate(((surfR, f"{mode} Δmag R"),
+                                        (surfG, f"{mode} Δmag G"),
+                                        (surfB, f"{mode} Δmag B")), start=1):
+            ax = self.figure.add_subplot(1, 3, i)
+            im = ax.imshow(surf, origin="lower", cmap="RdBu")
+            ax.set_title(lbl)
+            self.figure.colorbar(im, ax=ax)
 
-        corrected = img_f.copy()
-        corrected[...,0] = np.clip(corrected[...,0] / scale_R, 0, 1.0)
-        corrected[...,2] = np.clip(corrected[...,2] / scale_B, 0, 1.0)
-        corrected = np.clip(corrected, 0, 1)
+        self.canvas.setVisible(True)
+        self.figure.tight_layout()
+        self.canvas.draw()
+
         if is_u8:
-            corrected = (corrected * 255.0).astype(np.uint8)
+            out = (corrected * 255.0).astype(np.uint8)
         else:
-            corrected = corrected.astype(np.float32)
+            out = corrected.astype(np.float32)
 
-        new_meta = dict(doc.metadata or {})
-        new_meta["ColourGradRemoved"] = True
+        meta = dict(doc.metadata or {})
+        meta["SPCC_DifferentialGradientRemoved"] = True
+        meta["SPCC_GradientMethod"] = str(mode)
+        meta["SPCC_Gradient_NumStars"] = int(len(meas_rows))
+        meta["SPCC_Gradient_Mode"] = "differential_magnitude"
 
         self.doc_manager.update_active_document(
-            corrected,
-            metadata=new_meta,
-            step_name="Colour-Gradient (star spectra, ¼-res fit)",
-            doc=doc,   # 👈 same idea
+            out,
+            metadata=meta,
+            step_name=f"SPCC Differential Gradient Removed ({mode})",
+            doc=doc,
         )
-        self.count_label.setText("Chromatic gradient removed ✓")
+
+        self.count_label.setText(f"Differential spectro-photometric gradient removed ✓ ({mode})")
         QApplication.processEvents()
+        print("[SPCC-GRAD] done")
 
     # ── Viewer, close ──────────────────────────────────────────────────
 
