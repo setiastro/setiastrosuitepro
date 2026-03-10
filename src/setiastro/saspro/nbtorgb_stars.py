@@ -751,6 +751,7 @@ class NBtoRGBStars(QWidget):
     # ---------- event filter (zoom/pan like PPP) ----------
     def eventFilter(self, obj, ev):
         # Ctrl+wheel zoom at mouse (prevent scrolling); wheel without Ctrl: eat it (no scroll)
+        # Wheel zoom at mouse (plain wheel + Ctrl+wheel); prevent scrolling.
         if ev.type() == QEvent.Type.Wheel and (
             obj is self.preview
             or obj is self.scroll
@@ -758,16 +759,39 @@ class NBtoRGBStars(QWidget):
             or obj is self.scroll.horizontalScrollBar()
             or obj is self.scroll.verticalScrollBar()
         ):
-            if ev.modifiers() & Qt.KeyboardModifier.ControlModifier:
-                factor = 1.25 if ev.angleDelta().y() > 0 else 0.8
-                # safer: compute anchor in viewport coords via global position
-                try:
-                    anchor_vp = self.scroll.viewport().mapFromGlobal(ev.globalPosition().toPoint())
-                except Exception:
-                    vp = self.scroll.viewport()
-                    anchor_vp = QPoint(vp.width()//2, vp.height()//2)
-                self._zoom_at(factor, anchor_vp)
             ev.accept()
+
+            # safer: compute anchor in viewport coords via global position
+            try:
+                anchor_vp = self.scroll.viewport().mapFromGlobal(ev.globalPosition().toPoint())
+            except Exception:
+                vp = self.scroll.viewport()
+                anchor_vp = QPoint(vp.width() // 2, vp.height() // 2)
+
+            dy = ev.pixelDelta().y()
+
+            if dy != 0:
+                abs_dy = abs(dy)
+                ctrl_down = bool(ev.modifiers() & Qt.KeyboardModifier.ControlModifier)
+
+                if abs_dy <= 3:
+                    base_factor = 1.012 if ctrl_down else 1.010
+                elif abs_dy <= 10:
+                    base_factor = 1.025 if ctrl_down else 1.020
+                else:
+                    base_factor = 1.040 if ctrl_down else 1.030
+
+                factor = base_factor if dy > 0 else 1.0 / base_factor
+            else:
+                dy = ev.angleDelta().y()
+                if dy == 0:
+                    return True
+
+                ctrl_down = bool(ev.modifiers() & Qt.KeyboardModifier.ControlModifier)
+                step = 1.25 if ctrl_down else 1.15
+                factor = step if dy > 0 else 1.0 / step
+
+            self._zoom_at(factor, anchor_vp)
             return True
 
         # click-drag pan on viewport

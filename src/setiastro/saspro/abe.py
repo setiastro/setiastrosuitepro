@@ -1268,7 +1268,7 @@ class ABEDialog(QDialog):
 
     # ----- zoom/pan + polygon drawing -----
     def eventFilter(self, obj, ev):
-        # ---- Robust Ctrl+Wheel zoom handling (Qt6-friendly) ----
+        # ---- Mouse wheel zoom handling (Qt6-friendly) ----
         if ev.type() == QEvent.Type.Wheel and (
             obj is self.preview_label
             or obj is self.preview_scroll
@@ -1276,24 +1276,44 @@ class ABEDialog(QDialog):
             or obj is self.preview_scroll.horizontalScrollBar()
             or obj is self.preview_scroll.verticalScrollBar()
         ):
-            # always stop the wheel from scrolling
+            # Always stop the wheel from scrolling the scrollbars/scroll area.
             ev.accept()
 
-            # Zoom only when Ctrl is held
-            if ev.modifiers() & Qt.KeyboardModifier.ControlModifier:
-                factor = 1.25 if ev.angleDelta().y() > 0 else 0.8
+            # Anchor at the mouse position in the viewport
+            # (even if the event came from a scrollbar)
+            vp = self.preview_scroll.viewport()
+            anchor_vp = vp.mapFromGlobal(ev.globalPosition().toPoint())
 
-                # Anchor at the mouse position in the viewport (even if event came from a scrollbar)
-                vp = self.preview_scroll.viewport()
-                anchor_vp = vp.mapFromGlobal(ev.globalPosition().toPoint())
+            # Clamp to viewport rect (robust if the event originated on scrollbars)
+            r = vp.rect()
+            if not r.contains(anchor_vp):
+                anchor_vp.setX(max(r.left(),  min(r.right(),  anchor_vp.x())))
+                anchor_vp.setY(max(r.top(),   min(r.bottom(), anchor_vp.y())))
 
-                # Clamp to viewport rect (robust if the event originated on scrollbars)
-                r = vp.rect()
-                if not r.contains(anchor_vp):
-                    anchor_vp.setX(max(r.left(),  min(r.right(),  anchor_vp.x())))
-                    anchor_vp.setY(max(r.top(),   min(r.bottom(), anchor_vp.y())))
+            # Smooth trackpad support first, then mouse wheel fallback
+            dy = ev.pixelDelta().y()
+            if dy != 0:
+                abs_dy = abs(dy)
+                ctrl_down = bool(ev.modifiers() & Qt.KeyboardModifier.ControlModifier)
 
-                self._zoom_at(factor, anchor_vp)
+                if abs_dy <= 3:
+                    base_factor = 1.012 if ctrl_down else 1.010
+                elif abs_dy <= 10:
+                    base_factor = 1.025 if ctrl_down else 1.020
+                else:
+                    base_factor = 1.040 if ctrl_down else 1.030
+
+                factor = base_factor if dy > 0 else 1.0 / base_factor
+            else:
+                dy = ev.angleDelta().y()
+                if dy == 0:
+                    return True
+
+                ctrl_down = bool(ev.modifiers() & Qt.KeyboardModifier.ControlModifier)
+                step = 1.25 if ctrl_down else 1.15
+                factor = step if dy > 0 else 1.0 / step
+
+            self._zoom_at(factor, anchor_vp)
             return True
 
         # ---- Existing polygon drawing on the label ----

@@ -3121,35 +3121,46 @@ class ImageSubWindow(QWidget):
             # don’t swallow unrelated events
 
         # 1) Ctrl + wheel → zoom
+        # 1) Mouse wheel → zoom
+        #    Keep Ctrl+wheel working, but also allow plain wheel zoom.
         if ev.type() == QEvent.Type.Wheel:
-            if ev.modifiers() & Qt.KeyboardModifier.ControlModifier:
-                # Try pixelDelta first (macOS trackpad gives smooth values)
-                dy = ev.pixelDelta().y()
+            # Try pixelDelta first (macOS trackpad gives smooth values)
+            dy = ev.pixelDelta().y()
 
-                if dy != 0:
-                    # Smooth trackpad scrolling: use smaller base factor
-                    # Scale proportionally to delta magnitude for natural feel
-                    # Typical trackpad deltas are 1-10 pixels per event
-                    abs_dy = abs(dy)
-                    if abs_dy <= 3:
-                        base_factor = 1.01  # Very gentle for tiny movements
-                    elif abs_dy <= 10:
-                        base_factor = 1.02  # Gentle for small movements
-                    else:
-                        base_factor = 1.03  # Moderate for larger gestures
+            if dy != 0:
+                # Smooth trackpad scrolling: use smaller base factor
+                # Scale proportionally to delta magnitude for natural feel
+                abs_dy = abs(dy)
 
-                    factor = base_factor if dy > 0 else 1/base_factor
+                # Keep Ctrl as a slightly stronger zoom gesture if user uses it,
+                # while plain wheel still zooms naturally.
+                ctrl_down = bool(ev.modifiers() & Qt.KeyboardModifier.ControlModifier)
+
+                if abs_dy <= 3:
+                    base_factor = 1.012 if ctrl_down else 1.010
+                elif abs_dy <= 10:
+                    base_factor = 1.025 if ctrl_down else 1.020
                 else:
-                    # Traditional mouse wheel: use angleDelta with moderate factor
-                    dy = ev.angleDelta().y()
-                    if dy == 0:
-                        return True
-                    # Use 1.15 for mouse wheel (gentler than original 1.25)
-                    factor = 1.15 if dy > 0 else 1/1.15
-                self._zoom_at_anchor(factor)
-                return True
-            return False
+                    base_factor = 1.040 if ctrl_down else 1.030
 
+                factor = base_factor if dy > 0 else 1 / base_factor
+
+            else:
+                # Traditional mouse wheel: use angleDelta
+                dy = ev.angleDelta().y()
+                if dy == 0:
+                    return True
+
+                ctrl_down = bool(ev.modifiers() & Qt.KeyboardModifier.ControlModifier)
+
+                # Keep old-ish Ctrl behavior, but let normal wheel zoom too
+                step = 1.15 if ctrl_down else 1.12
+                factor = step if dy > 0 else 1 / step
+
+            self._zoom_at_anchor(factor)
+            ev.accept()
+            return True
+        
         # 2) Space+click → start readout
         if ev.type() == QEvent.Type.MouseButtonPress:
             if self._space_down and ev.button() == Qt.MouseButton.LeftButton:

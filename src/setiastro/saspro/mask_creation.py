@@ -1077,13 +1077,38 @@ class MaskCreationDialog(QDialog):
     # --- NEW: Ctrl+Wheel zoom passthrough -----------------------------------
     def eventFilter(self, obj, ev):
         # Let the canvas keep its own interactions;
-        # only intercept Ctrl+Wheel to trigger our zoom.
+        # only intercept wheel to trigger our zoom.
         if obj is self.canvas and ev.type() == QEvent.Type.Wheel:
-            if isinstance(ev, QWheelEvent) and (ev.modifiers() & Qt.KeyboardModifier.ControlModifier):
-                self._zoom_canvas(1.25 if ev.angleDelta().y() > 0 else 1/1.25)
-                return True
-        return super().eventFilter(obj, ev)
+            if isinstance(ev, QWheelEvent):
+                dy = ev.pixelDelta().y()
 
+                if dy != 0:
+                    abs_dy = abs(dy)
+                    ctrl_down = bool(ev.modifiers() & Qt.KeyboardModifier.ControlModifier)
+
+                    if abs_dy <= 3:
+                        base_factor = 1.012 if ctrl_down else 1.010
+                    elif abs_dy <= 10:
+                        base_factor = 1.025 if ctrl_down else 1.020
+                    else:
+                        base_factor = 1.040 if ctrl_down else 1.030
+
+                    factor = base_factor if dy > 0 else 1.0 / base_factor
+                else:
+                    dy = ev.angleDelta().y()
+                    if dy == 0:
+                        ev.accept()
+                        return True
+
+                    ctrl_down = bool(ev.modifiers() & Qt.KeyboardModifier.ControlModifier)
+                    step = 1.25 if ctrl_down else 1.15
+                    factor = step if dy > 0 else 1.0 / step
+
+                self._zoom_canvas(factor)
+                ev.accept()
+                return True
+
+        return super().eventFilter(obj, ev)
 
 # ---------- Integration helper ----------
 
