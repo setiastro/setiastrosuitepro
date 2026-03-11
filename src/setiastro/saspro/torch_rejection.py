@@ -290,20 +290,21 @@ def _force_fp32_policy(torch):
 # Public GPU reducer – lazy-loads Torch, never decorates at import time
 # ---------------------------------------------------------------------------
 def torch_reduce_tile(
-    ts_np: np.ndarray,            # (F, th, tw, C) or (F, th, tw) -> treated as C=1
-    weights_np: np.ndarray,       # (F,) or (F, th, tw, C)
+    ts_np: np.ndarray,
+    weights_np: np.ndarray,
     *,
     algo_name: str,
     kappa: float = 2.5,
     iterations: int = 3,
-    sigma_low: float = 2.5,       # for winsorized
-    sigma_high: float = 2.5,      # for winsorized
-    trim_fraction: float = 0.1,   # for trimmed mean
-    esd_threshold: float = 3.0,   # for ESD
-    biweight_constant: float = 6.0,  # for biweight
-    modz_threshold: float = 3.5,  # for modified z
-    comet_hclip_k: float = 1.30,  # for comet high-clip percentile
-    comet_hclip_p: float = 25.0,  # for comet high-clip percentile
+    sigma_low: float = 2.5,
+    sigma_high: float = 2.5,
+    trim_fraction: float = 0.1,
+    esd_threshold: float = 3.0,
+    biweight_constant: float = 6.0,
+    modz_threshold: float = 3.5,
+    comet_hclip_k: float = 1.30,
+    comet_hclip_p: float = 25.0,
+    ignore_zero_pixels: bool = True,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Returns: (tile_result, tile_rej_map)
@@ -383,26 +384,30 @@ def torch_reduce_tile(
 
 
     algo = algo_name
+    # Treat exact black as invalid/rejected for integration purposes
     valid = torch.isfinite(ts)
+    if ignore_zero_pixels:
+        valid = valid & (ts != 0.0)
 
     # Use inference_mode if present; else nullcontext.
     with _safe_inference_ctx(torch), _no_amp_ctx(torch, dev):
         # ---------------- simple, no-rejection reducers ----------------
         if algo in ("Comet Median", "Simple Median (No Rejection)"):
-            out = _nanmedian(torch, ts, dim=0)
-            rej = torch.zeros((F, H, W, C), dtype=torch.bool, device=dev)
+            x = ts.masked_fill(~valid, float("nan"))
+            out = _nanmedian(torch, x, dim=0)
+            rej = ~valid
             return out.to(dtype=torch.float32).contiguous().cpu().numpy(), rej.cpu().numpy()
 
         if algo == "Comet Percentile (40th)":
-            out = _nanquantile(torch, ts, 0.40, dim=0)
-            rej = torch.zeros((F, H, W, C), dtype=torch.bool, device=dev)
+            x = ts.masked_fill(~valid, float("nan"))
+            out = _nanquantile(torch, x, 0.40, dim=0)
+            rej = ~valid
             return out.to(dtype=torch.float32).contiguous().cpu().numpy(), rej.cpu().numpy()
 
         if algo_name == "Windsorized Sigma Clipping":
             # Unweighted: mask by k*sigma around median, then plain mean of survivors
             low = float(sigma_low)
             high = float(sigma_high)
-            valid = torch.isfinite(ts)
 
             keep = valid.clone()
             for _ in range(int(iterations)):
@@ -427,43 +432,58 @@ def torch_reduce_tile(
             assert out.dtype == torch.float32, f"reducer produced {out.dtype}, expected float32"
             return out.to(dtype=torch.float32).contiguous().cpu().numpy(), rej.cpu().numpy()
 
-
-
         if algo == "Comet Lower-Trim (30%)":
-            n = torch.isfinite(ts).sum(dim=0).clamp_min(1)
-            k_keep = torch.floor(n * (1.0 - 0.30)).to(torch.long).clamp(min=1)
-            vals, idx = ts.sort(dim=0, stable=True)
+            x = ts.masked_fill(~valid, float("inf"))
+            vals, idx = x.sort(dim=0, stable=True)
+
+            n = valid.sum(dim=0)
+            k_keep = torch.floor(n.to(torch.float32) * (1.0 - 0.30)).to(torch.long)
+            k_keep = k_keep.clamp(min=1)
+
             arangeF = torch.arange(F, device=dev).view(F, 1, 1, 1).expand_as(vals)
-            keep = arangeF < k_keep.unsqueeze(0).expand_as(vals)
-            den = keep.sum(dim=0).clamp_min(1).to(vals.dtype)
-            out = (vals * keep).sum(dim=0) / den
-            keep_orig = torch.zeros_like(keep)
-            keep_orig.scatter_(0, idx, keep)
+            keep_sorted = arangeF < k_keep.unsqueeze(0).expand_as(vals)
+            keep_sorted = keep_sorted & torch.isfinite(vals)
+
+            den = keep_sorted.sum(dim=0)
+            num = torch.where(keep_sorted, vals, torch.zeros_like(vals)).sum(dim=0)
+
+            fallback = _nanmedian(torch, ts.masked_fill(~valid, float("nan")), dim=0)
+            out = torch.where(den > 0, num / den.clamp_min(1).to(vals.dtype), fallback)
+
+            keep_orig = torch.zeros_like(keep_sorted)
+            keep_orig.scatter_(0, idx, keep_sorted)
             rej = ~keep_orig
-            assert out.dtype == torch.float32, f"reducer produced {out.dtype}, expected float32"
+
             return out.to(dtype=torch.float32).contiguous().cpu().numpy(), rej.cpu().numpy()
 
         if algo == "Comet High-Clip Percentile":
-            med = _nanmedian(torch, ts, dim=0)
-            mad = _nanmedian(torch, (ts - med.unsqueeze(0)).abs(), dim=0) + 1e-6
+            x = ts.masked_fill(~valid, float("nan"))
+            med = _nanmedian(torch, x, dim=0)
+            mad = _nanmedian(torch, (x - med.unsqueeze(0)).abs(), dim=0) + 1e-6
             hi = med + (float(comet_hclip_k) * 1.4826 * mad)
-            clipped = torch.minimum(ts, hi.unsqueeze(0))
+            clipped = torch.where(valid, torch.minimum(ts, hi.unsqueeze(0)), torch.full_like(ts, float("nan")))
             out = _nanquantile(torch, clipped, float(comet_hclip_p) / 100.0, dim=0)
-            rej = torch.zeros((F, H, W, C), dtype=torch.bool, device=dev)
-            assert out.dtype == torch.float32, f"reducer produced {out.dtype}, expected float32"
+            rej = ~valid
             return out.to(dtype=torch.float32).contiguous().cpu().numpy(), rej.cpu().numpy()
 
         if algo == "Simple Average (No Rejection)":
-            num = (ts * w).sum(dim=0)
-            den = w.sum(dim=0).clamp_min(1e-20)
-            out = (num / den)
-            rej = torch.zeros((F, H, W, C), dtype=torch.bool, device=dev)
-            assert out.dtype == torch.float32, f"reducer produced {out.dtype}, expected float32"
+            w_eff = torch.where(valid, w, torch.zeros_like(w))
+            ts_eff = torch.where(valid, ts, torch.zeros_like(ts))
+            den = w_eff.sum(dim=0)
+            num = (ts_eff * w_eff).sum(dim=0)
+
+            x = ts.masked_fill(~valid, float("nan"))
+            fallback = _nanmedian(torch, x, dim=0)
+            out = torch.where(den > 0, num / den.clamp_min(1e-20), fallback)
+
+            rej = ~valid
             return out.to(dtype=torch.float32).contiguous().cpu().numpy(), rej.cpu().numpy()
 
         if algo == "Max Value":
-            out = ts.max(dim=0).values
-            rej = torch.zeros((F, H, W, C), dtype=torch.bool, device=dev)
+            x = ts.masked_fill(~valid, float("-inf"))
+            out = x.max(dim=0).values
+            out = torch.where(torch.isfinite(out), out, torch.zeros_like(out))
+            rej = ~valid
             return out.to(dtype=torch.float32).contiguous().cpu().numpy(), rej.cpu().numpy()
 
         # ---------------- rejection-based reducers ----------------
@@ -522,7 +542,7 @@ def torch_reduce_tile(
 
         if algo == "Extreme Studentized Deviate (ESD)":
             x = ts.masked_fill(~valid, float("nan"))
-            mean = torch.where(torch.isfinite(x), x, torch.zeros_like(x)).nanmean(dim=0)
+            mean = torch.nanmean(x, dim=0)
             std = _nanstd(torch, x, dim=0).clamp_min(1e-12)
             z = (ts - mean.unsqueeze(0)).abs() / std.unsqueeze(0)
             keep = valid & (z < float(esd_threshold))

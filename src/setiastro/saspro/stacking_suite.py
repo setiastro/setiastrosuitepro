@@ -20150,70 +20150,137 @@ class StackingSuiteDialog(QDialog):
             """
             CPU rejection/integration for a single tile.
             Returns (tile_result, tile_rej_map).
+
+            Zero-valued pixels are ignored per channel by masking them to NaN.
+            tile_rej_map is returned as (N, th, tw), collapsing channel rejects.
             """
+            ts = np.asarray(ts, dtype=np.float32)
+
+            # Valid per-channel samples: finite and non-zero
+            valid = np.isfinite(ts) & (ts != 0.0)
+
+            # Mask invalid/zero samples to NaN for nan-aware reducers
+            ts_masked = np.where(valid, ts, np.nan)
+
+            # Base rejection map collapsed across channels -> (N, th, tw)
+            base_rej = np.any(~valid, axis=-1)
+
             if algo in ("Comet Median", "Simple Median (No Rejection)"):
-                tile_result  = np.median(ts, axis=0)
-                tile_rej_map = np.zeros((N, th, tw), dtype=bool)
+                tile_result = np.nanmedian(ts_masked, axis=0)
+                tile_rej_map = base_rej
 
             elif algo == "Comet High-Clip Percentile":
                 k = self.settings.value("stacking/comet_hclip_k", 1.30, type=float)
                 p = self.settings.value("stacking/comet_hclip_p", 25.0, type=float)
-                tile_result  = _high_clip_percentile(ts, k=float(k), p=float(p))
-                tile_rej_map = np.zeros((N, th, tw), dtype=bool)
+
+                # Assumes _high_clip_percentile is NaN-aware
+                tile_result = _high_clip_percentile(ts_masked, k=float(k), p=float(p))
+                tile_rej_map = base_rej
 
             elif algo == "Comet Lower-Trim (30%)":
-                tile_result  = _lower_trimmed_mean(ts, trim_hi_frac=0.30)
-                tile_rej_map = np.zeros((N, th, tw), dtype=bool)
+                # Assumes _lower_trimmed_mean is NaN-aware
+                tile_result = _lower_trimmed_mean(ts_masked, trim_hi_frac=0.30)
+                tile_rej_map = base_rej
 
             elif algo == "Comet Percentile (40th)":
-                tile_result  = _percentile40(ts)
-                tile_rej_map = np.zeros((N, th, tw), dtype=bool)
+                # If _percentile40 is not NaN-aware, replace this with np.nanpercentile(..., 40.0, axis=0)
+                tile_result = np.nanpercentile(ts_masked, 40.0, axis=0)
+                tile_rej_map = base_rej
 
             elif algo == "Simple Average (No Rejection)":
-                tile_result  = np.average(ts, axis=0, weights=weights_array)
-                tile_rej_map = np.zeros((N, th, tw), dtype=bool)
+                w = weights_array[:, None, None, None].astype(np.float32)
+
+                w_eff = np.where(valid, w, 0.0)
+                ts_eff = np.where(valid, ts, 0.0)
+
+                num = np.sum(ts_eff * w_eff, axis=0)
+                den = np.sum(w_eff, axis=0)
+
+                fallback = np.nanmedian(ts_masked, axis=0)
+                tile_result = np.where(den > 0, num / np.maximum(den, 1e-20), fallback)
+                tile_rej_map = base_rej
 
             elif algo == "Weighted Windsorized Sigma Clipping":
+                # Assumes helper is NaN-aware
                 tile_result, tile_rej_map = windsorized_sigma_clip_weighted(
-                    ts, weights_array, lower=self.sigma_low, upper=self.sigma_high
+                    ts_masked, weights_array, lower=self.sigma_low, upper=self.sigma_high
                 )
+                tile_rej_map = np.asarray(tile_rej_map, dtype=bool)
+                if tile_rej_map.ndim == 4:
+                    tile_rej_map = np.any(tile_rej_map, axis=-1)
+                tile_rej_map |= base_rej
 
             elif algo == "Kappa-Sigma Clipping":
+                # Assumes helper is NaN-aware
                 tile_result, tile_rej_map = kappa_sigma_clip_weighted(
-                    ts, weights_array, kappa=self.kappa, iterations=self.iterations
+                    ts_masked, weights_array, kappa=self.kappa, iterations=self.iterations
                 )
+                tile_rej_map = np.asarray(tile_rej_map, dtype=bool)
+                if tile_rej_map.ndim == 4:
+                    tile_rej_map = np.any(tile_rej_map, axis=-1)
+                tile_rej_map |= base_rej
 
             elif algo == "Trimmed Mean":
+                # Assumes helper is NaN-aware
                 tile_result, tile_rej_map = trimmed_mean_weighted(
-                    ts, weights_array, trim_fraction=self.trim_fraction
+                    ts_masked, weights_array, trim_fraction=self.trim_fraction
                 )
+                tile_rej_map = np.asarray(tile_rej_map, dtype=bool)
+                if tile_rej_map.ndim == 4:
+                    tile_rej_map = np.any(tile_rej_map, axis=-1)
+                tile_rej_map |= base_rej
 
             elif algo == "Extreme Studentized Deviate (ESD)":
+                # Assumes helper is NaN-aware
                 tile_result, tile_rej_map = esd_clip_weighted(
-                    ts, weights_array, threshold=self.esd_threshold
+                    ts_masked, weights_array, threshold=self.esd_threshold
                 )
+                tile_rej_map = np.asarray(tile_rej_map, dtype=bool)
+                if tile_rej_map.ndim == 4:
+                    tile_rej_map = np.any(tile_rej_map, axis=-1)
+                tile_rej_map |= base_rej
 
             elif algo == "Biweight Estimator":
+                # Assumes helper is NaN-aware
                 tile_result, tile_rej_map = biweight_location_weighted(
-                    ts, weights_array, tuning_constant=self.biweight_constant
+                    ts_masked, weights_array, tuning_constant=self.biweight_constant
                 )
+                tile_rej_map = np.asarray(tile_rej_map, dtype=bool)
+                if tile_rej_map.ndim == 4:
+                    tile_rej_map = np.any(tile_rej_map, axis=-1)
+                tile_rej_map |= base_rej
 
             elif algo == "Modified Z-Score Clipping":
+                # Assumes helper is NaN-aware
                 tile_result, tile_rej_map = modified_zscore_clip_weighted(
-                    ts, weights_array, threshold=self.modz_threshold
+                    ts_masked, weights_array, threshold=self.modz_threshold
                 )
+                tile_rej_map = np.asarray(tile_rej_map, dtype=bool)
+                if tile_rej_map.ndim == 4:
+                    tile_rej_map = np.any(tile_rej_map, axis=-1)
+                tile_rej_map |= base_rej
 
             elif algo == "Max Value":
-                tile_result, tile_rej_map = max_value_stack(ts, weights_array)
+                x = np.where(valid, ts, -np.inf)
+                tile_result = np.max(x, axis=0)
+                tile_result = np.where(np.isfinite(tile_result), tile_result, 0.0).astype(np.float32)
+                tile_rej_map = base_rej
 
             else:
                 # sensible default if algo name somehow out-of-sync
                 tile_result, tile_rej_map = windsorized_sigma_clip_weighted(
-                    ts, weights_array, lower=self.sigma_low, upper=self.sigma_high
+                    ts_masked, weights_array, lower=self.sigma_low, upper=self.sigma_high
                 )
+                tile_rej_map = np.asarray(tile_rej_map, dtype=bool)
+                if tile_rej_map.ndim == 4:
+                    tile_rej_map = np.any(tile_rej_map, axis=-1)
+                tile_rej_map |= base_rej
+
+            tile_result = np.asarray(tile_result, dtype=np.float32)
+            tile_rej_map = np.asarray(tile_rej_map, dtype=bool)
 
             return tile_result, tile_rej_map
-
+        
         # Prime first read
         tile_idx = 0
         y0, y1, x0, x1 = tiles[0]
