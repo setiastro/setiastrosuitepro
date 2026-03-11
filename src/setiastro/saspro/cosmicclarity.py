@@ -84,12 +84,15 @@ def _save_image_no_auto_legacy(img, dst_path: str, hdr, mono, *, image_meta=None
     return dst_path
 
 
-def _cc_models_installed() -> tuple[bool, str]:
+def _cc_models_installed(kind: str = "core") -> tuple[bool, str]:
     """
-    Returns (ok, detail). Since your model download is all-or-nothing (zip),
-    we use a single sentinel check to avoid maintaining long required lists.
+    Returns (ok, detail)
+
+    kind:
+        "core"      -> normal Cosmic Clarity (sharpen / denoise / superres)
+        "satellite" -> satellite removal only
+        "all"       -> require both core + satellite
     """
-    # Prefer whatever your app uses as the canonical models directory.
     models_dir = ""
     try:
         from setiastro.saspro.resources import get_models_dir
@@ -100,12 +103,26 @@ def _cc_models_installed() -> tuple[bool, str]:
     if not models_dir or not os.path.isdir(models_dir):
         return False, "Models directory is missing."
 
-    # Sentinel approach: pick ONE file that is guaranteed in the zip.
+    # Pick one stable sentinel per feature set.
+    sentinels = {
+        "core": [
+            "deep_sharp_stellar_AI4.pth",  
 
-    sentinel = os.path.join(models_dir, "deep_sharp_stellar_AI4.pth")
+        ],
+        "satellite": [
+            "satelliteRemovalAI4.pth",
+        ],
+        "all": [
+            "deep_sharp_stellar_AI4.pth",
+            "satelliteRemovalAI4.pth",
+        ],
+    }
 
-    if not os.path.exists(sentinel):
-        return False, f"Missing sentinel: {os.path.basename(sentinel)}"
+    required = sentinels.get(kind, sentinels["core"])
+
+    missing = [name for name in required if not os.path.exists(os.path.join(models_dir, name))]
+    if missing:
+        return False, "Missing model(s): " + ", ".join(missing)
 
     return True, ""
 
@@ -449,7 +466,7 @@ class CosmicClarityDialogPro(QDialog):
             QTimer.singleShot(0, self.reject)
             return     
 
-        ok, detail = _cc_models_installed()
+        ok, detail = _cc_models_installed("core")
         if not ok:
             _warn_models_missing_and_close(self, detail)
             try:
@@ -851,7 +868,7 @@ class CosmicClarityDialogPro(QDialog):
 
 
     def _ensure_models_installed_or_bail(self) -> bool:
-        ok, detail = _cc_models_installed()
+        ok, detail = _cc_models_installed("core")
         if ok:
             return True
 
@@ -1299,7 +1316,7 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         self._engine_thread = None
         self._closing_after_cancel = False
         self._wait = None
-        ok, detail = _cc_models_installed()
+        ok, detail = _cc_models_installed("satellite")
         if not ok:
             _warn_models_missing_and_close(self, detail)
             try:
