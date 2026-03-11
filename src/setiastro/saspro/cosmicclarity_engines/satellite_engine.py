@@ -76,71 +76,126 @@ def _build_torch_models(torch):
     except Exception as e:
         raise RuntimeError(f"torchvision is required for Satellite engine torch backend: {e}")
 
-    class ResidualBlock(nn.Module):
+    class LayerNorm2d(nn.Module):
+        def __init__(self, channels: int, eps: float = 1e-6):
+            super().__init__()
+            self.weight = nn.Parameter(torch.ones(1, channels, 1, 1))
+            self.bias   = nn.Parameter(torch.zeros(1, channels, 1, 1))
+            self.eps = eps
+
+        def forward(self, x):
+            mean = x.mean(dim=1, keepdim=True)
+            var  = (x - mean).pow(2).mean(dim=1, keepdim=True)
+            x = (x - mean) / torch.sqrt(var + self.eps)
+            return x * self.weight + self.bias
+
+    class SimpleGate(nn.Module):
+        def forward(self, x):
+            x1, x2 = x.chunk(2, dim=1)
+            return x1 * x2
+
+    class NAFBlock(nn.Module):
         def __init__(self, channels: int):
             super().__init__()
-            self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
-            self.relu = nn.ReLU()
-            self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+            self.norm1 = LayerNorm2d(channels)
+            self.conv1 = nn.Conv2d(channels, channels * 2, 1, bias=True)
+            self.dwconv = nn.Conv2d(
+                channels * 2, channels * 2, 3, padding=1,
+                groups=channels * 2, bias=True
+            )
+            self.sg = SimpleGate()
+            self.sca = nn.Sequential(
+                nn.AdaptiveAvgPool2d(1),
+                nn.Conv2d(channels, channels, 1, bias=True),
+            )
+            self.conv2 = nn.Conv2d(channels, channels, 1, bias=True)
+
+            self.norm2 = LayerNorm2d(channels)
+            self.ffn1 = nn.Conv2d(channels, channels * 2, 1, bias=True)
+            self.ffn2 = nn.Conv2d(channels, channels, 1, bias=True)
+
+            self.beta  = nn.Parameter(torch.zeros(1, channels, 1, 1))
+            self.gamma = nn.Parameter(torch.zeros(1, channels, 1, 1))
+
         def forward(self, x):
-            r = x
-            x = self.relu(self.conv1(x))
-            x = self.conv2(x)
-            x = self.relu(x + r)
+            y = self.norm1(x)
+            y = self.conv1(y)
+            y = self.dwconv(y)
+            y = self.sg(y)
+            y = y * self.sca(y)
+            y = self.conv2(y)
+            x = x + y * self.beta
+
+            y = self.norm2(x)
+            y = self.ffn1(y)
+            y = self.sg(y)
+            y = self.ffn2(y)
+            x = x + y * self.gamma
             return x
 
-    class SatelliteRemoverCNN(nn.Module):
-        def __init__(self):
+    class NAFNetSatelliteRemover(nn.Module):
+        """
+        Satellite removal AI4 NAFNet.
+        Residual output: returns x + delta, no clamp.
+        """
+        def __init__(
+            self,
+            in_ch: int = 3,
+            out_ch: int = 3,
+            width: int = 32,
+            enc_blk_nums=(2, 4, 6, 8),
+            dec_blk_nums=(2, 2, 2, 2),
+            middle_blk_num: int = 4,
+            residual_out: bool = True,
+        ):
             super().__init__()
-            self.encoder1 = nn.Sequential(
-                nn.Conv2d(3, 16, 3, padding=1), nn.ReLU(),
-                ResidualBlock(16), ResidualBlock(16),
-            )
-            self.encoder2 = nn.Sequential(
-                nn.Conv2d(16, 32, 3, padding=1), nn.ReLU(),
-                ResidualBlock(32), ResidualBlock(32),
-            )
-            self.encoder3 = nn.Sequential(
-                nn.Conv2d(32, 64, 3, padding=2, dilation=2), nn.ReLU(),
-                ResidualBlock(64), ResidualBlock(64),
-            )
-            self.encoder4 = nn.Sequential(
-                nn.Conv2d(64, 128, 3, padding=1), nn.ReLU(),
-                ResidualBlock(128), ResidualBlock(128),
-            )
-            self.encoder5 = nn.Sequential(
-                nn.Conv2d(128, 256, 3, padding=2, dilation=2), nn.ReLU(),
-                ResidualBlock(256), ResidualBlock(256),
-            )
-            self.decoder5 = nn.Sequential(
-                nn.Conv2d(256 + 128, 128, 3, padding=1), nn.ReLU(),
-                ResidualBlock(128), ResidualBlock(128),
-            )
-            self.decoder4 = nn.Sequential(
-                nn.Conv2d(128 + 64, 64, 3, padding=1), nn.ReLU(),
-                ResidualBlock(64), ResidualBlock(64),
-            )
-            self.decoder3 = nn.Sequential(
-                nn.Conv2d(64 + 32, 32, 3, padding=1), nn.ReLU(),
-                ResidualBlock(32), ResidualBlock(32),
-            )
-            self.decoder2 = nn.Sequential(
-                nn.Conv2d(32 + 16, 16, 3, padding=1), nn.ReLU(),
-                ResidualBlock(16), ResidualBlock(16),
-            )
-            self.decoder1 = nn.Sequential(nn.Conv2d(16, 3, 3, padding=1), nn.Sigmoid())
+            self.intro = nn.Conv2d(in_ch, width, 3, padding=1, bias=True)
+
+            self.encoders = nn.ModuleList()
+            self.downs    = nn.ModuleList()
+            self.decoders = nn.ModuleList()
+            self.ups      = nn.ModuleList()
+
+            ch = width
+            for n in enc_blk_nums:
+                self.encoders.append(nn.Sequential(*[NAFBlock(ch) for _ in range(n)]))
+                self.downs.append(nn.Conv2d(ch, ch * 2, 2, stride=2, bias=True))
+                ch *= 2
+
+            self.middle = nn.Sequential(*[NAFBlock(ch) for _ in range(middle_blk_num)])
+
+            for n in dec_blk_nums:
+                self.ups.append(
+                    nn.Sequential(
+                        nn.Conv2d(ch, ch * 2, 1, bias=True),
+                        nn.PixelShuffle(2),
+                    )
+                )
+                ch //= 2
+                self.decoders.append(nn.Sequential(*[NAFBlock(ch) for _ in range(n)]))
+
+            self.ending = nn.Conv2d(width, out_ch, 3, padding=1, bias=True)
+            self.residual_out = bool(residual_out)
 
         def forward(self, x):
-            e1 = self.encoder1(x)
-            e2 = self.encoder2(e1)
-            e3 = self.encoder3(e2)
-            e4 = self.encoder4(e3)
-            e5 = self.encoder5(e4)
-            d5 = self.decoder5(torch.cat([e5, e4], dim=1))
-            d4 = self.decoder4(torch.cat([d5, e3], dim=1))
-            d3 = self.decoder3(torch.cat([d4, e2], dim=1))
-            d2 = self.decoder2(torch.cat([d3, e1], dim=1))
-            return self.decoder1(d2)
+            x0 = x
+            y = self.intro(x)
+
+            skips = []
+            for enc, down in zip(self.encoders, self.downs):
+                y = enc(y)
+                skips.append(y)
+                y = down(y)
+
+            y = self.middle(y)
+
+            for up, dec in zip(self.ups, self.decoders):
+                y = up(y)
+                y = y + skips.pop()
+                y = dec(y)
+
+            delta = self.ending(y)
+            return (x0 + delta) if self.residual_out else delta
 
     class BinaryClassificationCNN(nn.Module):
         def __init__(self, input_channels: int = 3):
@@ -192,20 +247,47 @@ def _build_torch_models(torch):
     # Also return the torchvision transforms helper you used
     tfm = transforms.Compose([transforms.ToTensor(), transforms.Resize((256, 256))])
 
-    return nn, SatelliteRemoverCNN, BinaryClassificationCNN, BinaryClassificationCNN2, tfm
+    return nn, NAFNetSatelliteRemover, BinaryClassificationCNN, BinaryClassificationCNN2, tfm
 
 
 # ----------------------------
 #   Loading helpers
 # ----------------------------
+def _extract_state_dict_from_checkpoint(ckpt):
+    if not isinstance(ckpt, dict):
+        return ckpt
+
+    for key in ("model_state_dict", "state_dict", "net", "model", "ema_state_dict"):
+        if key in ckpt and isinstance(ckpt[key], dict):
+            sd = ckpt[key]
+            break
+    else:
+        sd = ckpt
+
+    cleaned = {}
+    for k, v in sd.items():
+        nk = k[7:] if k.startswith("module.") else k
+        cleaned[nk] = v
+    return cleaned
+
+
 def _load_model_weights_lenient(torch, nn, model, checkpoint_path: str, device):
-    ckpt = torch.load(checkpoint_path, map_location=device)
-    state_dict = ckpt["state_dict"] if isinstance(ckpt, dict) and "state_dict" in ckpt else ckpt
-    state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
+    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    state_dict = _extract_state_dict_from_checkpoint(ckpt)
 
     msd = model.state_dict()
     filtered = {k: v for k, v in state_dict.items() if k in msd and msd[k].shape == v.shape}
+
+    missing = [k for k in msd.keys() if k not in filtered]
+    unexpected = [k for k in state_dict.keys() if k not in msd]
+
     model.load_state_dict(filtered, strict=False)
+
+    if missing:
+        print(f"[Satellite] {checkpoint_path}: missing {len(missing)} keys after filtering")
+    if unexpected:
+        print(f"[Satellite] {checkpoint_path}: unexpected {len(unexpected)} keys ignored")
+
     return model
 
 # ---------- Satellite model cache + loader (updated for torch-directml + ORT DML) ----------
@@ -243,12 +325,12 @@ def get_satellite_models(resources: Any = None, use_gpu: bool = True, status_cb=
 
     # Torch: ask runtime_torch to prefer what we want (CUDA first, DML on Windows)
     torch = None
-    if use_gpu or True:
-        torch = _get_torch(
-            prefer_cuda=bool(use_gpu),
-            prefer_dml=bool(use_gpu and is_windows),
-            status_cb=status_cb,
-        )
+
+    torch = _get_torch(
+        prefer_cuda=bool(use_gpu),
+        prefer_dml=bool(use_gpu and is_windows),
+        status_cb=status_cb,
+    )
 
     # Decide backend
     backend = "cpu"
@@ -316,7 +398,7 @@ def get_satellite_models(resources: Any = None, use_gpu: bool = True, status_cb=
         device = torch.device("cpu")
         status_cb("CosmicClarity Satellite: using CPU")
 
-    nn, SatelliteRemoverCNN, BinaryClassificationCNN, BinaryClassificationCNN2, tfm = _build_torch_models(torch)
+    nn, NAFNetSatelliteRemover, BinaryClassificationCNN, BinaryClassificationCNN2, tfm = _build_torch_models(torch)
 
     det1 = BinaryClassificationCNN(3).to(device)
     det1 = _load_model_weights_lenient(torch, nn, det1, p_det1, device).eval()
@@ -324,7 +406,13 @@ def get_satellite_models(resources: Any = None, use_gpu: bool = True, status_cb=
     det2 = BinaryClassificationCNN2(3).to(device)
     det2 = _load_model_weights_lenient(torch, nn, det2, p_det2, device).eval()
 
-    rem = SatelliteRemoverCNN().to(device)
+    rem = NAFNetSatelliteRemover(
+        width=32,
+        enc_blk_nums=(2, 4, 6, 8),
+        dec_blk_nums=(2, 2, 2, 2),
+        middle_blk_num=4,
+        residual_out=True,
+    ).to(device)
     rem = _load_model_weights_lenient(torch, nn, rem, p_rem, device).eval()
 
     out = {
@@ -516,6 +604,103 @@ def _apply_clip_trail_logic(processed: np.ndarray, original: np.ndarray, sensiti
     mask = np.where(clipped < sensitivity, 0.0, 1.0).astype(np.float32)
     return np.clip(original - mask, 0.0, 1.0)
 
+def _resize_tile_for_detect(tile_rgb01: np.ndarray) -> np.ndarray:
+    if _sk_resize is None:
+        raise RuntimeError("skimage.transform.resize is required for satellite detection.")
+    r = _sk_resize(tile_rgb01, (256, 256, 3), mode="reflect", anti_aliasing=True).astype(np.float32)
+    return r
+
+def _pad_tile_to_shape_rgb(tile: np.ndarray, out_h: int, out_w: int) -> tuple[np.ndarray, int, int]:
+    tile = np.asarray(tile, np.float32)
+    h, w = tile.shape[:2]
+    pad_h = max(0, out_h - h)
+    pad_w = max(0, out_w - w)
+
+    if pad_h or pad_w:
+        tile = np.pad(tile, ((0, pad_h), (0, pad_w), (0, 0)), mode="reflect")
+
+    return tile, h, w
+
+def _torch_detect_batch(tiles_rgb01: list[np.ndarray], models: Dict[str, Any], batch_size: int = 32) -> list[bool]:
+    torch = models["torch"]
+    device = models["device"]
+    det1 = models["detection_model1"]
+    det2 = models["detection_model2"]
+
+    resized = [_resize_tile_for_detect(t) for t in tiles_rgb01]
+    flags = [False] * len(resized)
+
+    for i in range(0, len(resized), batch_size):
+        batch_np = np.stack(resized[i:i+batch_size], axis=0)  # NHWC
+        batch_np = np.transpose(batch_np, (0, 3, 1, 2)).astype(np.float32)  # NCHW
+
+        x = torch.from_numpy(batch_np)
+        if hasattr(device, "type") and device.type == "cuda":
+            x = x.pin_memory().to(device, dtype=torch.float32, non_blocking=True)
+        else:
+            x = x.to(device=device, dtype=torch.float32)
+
+        with torch.no_grad():
+            o1 = det1(x).flatten()
+        keep1 = (o1 > 0.5)
+
+        if keep1.any():
+            idxs = keep1.nonzero(as_tuple=False).flatten()
+            with torch.no_grad():
+                o2 = det2(x[idxs]).flatten()
+            keep2 = (o2 > 0.25).detach().cpu().numpy()
+
+            idxs_cpu = idxs.detach().cpu().numpy()
+            for local_j, passed in zip(idxs_cpu, keep2):
+                if passed:
+                    flags[i + int(local_j)] = True
+
+    return flags
+
+def _torch_remove_batch(
+    tiles_rgb01: list[np.ndarray],
+    models: Dict[str, Any],
+    *,
+    padded_h: int,
+    padded_w: int,
+    batch_size: int = 8,
+) -> list[np.ndarray]:
+    torch = models["torch"]
+    device = models["device"]
+    rem = models["removal_model"]
+
+    padded_tiles = []
+    orig_shapes = []
+
+    for tile in tiles_rgb01:
+        padded, h, w = _pad_tile_to_shape_rgb(tile, padded_h, padded_w)
+        padded_tiles.append(padded)
+        orig_shapes.append((h, w))
+
+    outs: list[np.ndarray] = []
+
+    for i in range(0, len(padded_tiles), batch_size):
+        batch_tiles = padded_tiles[i:i+batch_size]
+        batch_np = np.stack(batch_tiles, axis=0)  # NHWC
+        batch_np = np.transpose(batch_np, (0, 3, 1, 2)).astype(np.float32)  # NCHW
+
+        x = torch.from_numpy(batch_np)
+        if hasattr(device, "type") and device.type == "cuda":
+            x = x.pin_memory().to(device, dtype=torch.float32, non_blocking=True)
+        else:
+            x = x.to(device=device, dtype=torch.float32)
+
+        with torch.no_grad(), _autocast_context(torch, device):
+            y = rem(x).detach().cpu().numpy()  # NCHW
+
+        y = np.transpose(y, (0, 2, 3, 1))  # NHWC
+
+        for j, out in enumerate(y):
+            h, w = orig_shapes[i + j]
+            outs.append(np.clip(out[:h, :w, :], 0.0, 1.0).astype(np.float32))
+
+    return outs
+
 # ---------- Torch detection (FIX: tfm expects PIL/ndarray, not Tensor; avoid double ToTensor) ----------
 
 def _torch_detect(tile_rgb01: np.ndarray, models: Dict[str, Any]) -> bool:
@@ -552,11 +737,27 @@ def _torch_remove(tile_rgb01: np.ndarray, models: Dict[str, Any]) -> np.ndarray:
     device = models["device"]
     rem = models["removal_model"]
 
-    x = torch.from_numpy(tile_rgb01).permute(2, 0, 1).unsqueeze(0).to(device=device, dtype=torch.float32)
+    tile = np.asarray(tile_rgb01, np.float32)
+    h, w = tile.shape[:2]
+
+    # NAFNet downsamples 4 times -> require multiple of 16
+    pad_h = (16 - (h % 16)) % 16
+    pad_w = (16 - (w % 16)) % 16
+
+    if pad_h or pad_w:
+        tile = np.pad(
+            tile,
+            ((0, pad_h), (0, pad_w), (0, 0)),
+            mode="reflect",
+        )
+
+    x = torch.from_numpy(tile).permute(2, 0, 1).unsqueeze(0).to(device=device, dtype=torch.float32)
 
     with torch.no_grad(), _autocast_context(torch, device):
         out = rem(x).squeeze(0).detach().cpu().numpy().transpose(1, 2, 0)
 
+    # crop back to original tile size
+    out = out[:h, :w, :]
     return np.clip(out, 0.0, 1.0).astype(np.float32)
 
 
@@ -571,30 +772,40 @@ def _onnx_detect(tile_rgb01: np.ndarray, sess) -> bool:
 
 
 def _onnx_remove(tile_rgb01: np.ndarray, sess) -> np.ndarray:
-    if _sk_resize is None:
-        raise RuntimeError("skimage.transform.resize is required for ONNX satellite removal path.")
-    r = _sk_resize(tile_rgb01, (256, 256, 3), mode="reflect", anti_aliasing=True).astype(np.float32)
-    inp = np.transpose(r, (2, 0, 1))[None, ...]
+    tile = np.asarray(tile_rgb01, np.float32)
+    h, w = tile.shape[:2]
+
+    pad_h = (16 - (h % 16)) % 16
+    pad_w = (16 - (w % 16)) % 16
+
+    if pad_h or pad_w:
+        tile = np.pad(
+            tile,
+            ((0, pad_h), (0, pad_w), (0, 0)),
+            mode="reflect",
+        )
+
+    inp = np.transpose(tile, (2, 0, 1))[None, ...]
     out = sess.run(None, {sess.get_inputs()[0].name: inp})[0]
     pred = np.transpose(out.squeeze(0), (1, 2, 0)).astype(np.float32)
-    # resize back to original tile size
-    pred2 = _sk_resize(pred, tile_rgb01.shape, mode="reflect", anti_aliasing=True).astype(np.float32)
-    return np.clip(pred2, 0.0, 1.0)
 
+    pred = pred[:h, :w, :]
+    return np.clip(pred, 0.0, 1.0)
 
 def satellite_remove_image(
     image: np.ndarray,
     models: Dict[str, Any],
     *,
-    mode: str = "full",            # "full" or "luminance"
+    mode: str = "full",
     clip_trail: bool = True,
     sensitivity: float = 0.1,
     chunk_size: int = 256,
     overlap: int = 64,
     border_size: int = 16,
-    temp_stretch: bool = True,    # NEW
-    target_median: float = 0.25,   # NEW
-    progress_cb: Optional[Callable[[int, int], None]] = None,  # (done, total)
+    temp_stretch: bool = True,
+    target_median: float = 0.25,
+    compatibility_mode: bool = False,
+    progress_cb: Optional[Callable[[int, int], None]] = None,
 ) -> Tuple[np.ndarray, bool]:
     """
     image: input image (any dtype/shape). Expected to be linear-ish in [0..1] for best behavior.
@@ -632,6 +843,7 @@ def satellite_remove_image(
             y3, models,
             clip_trail=clip_trail, sensitivity=sensitivity,
             chunk_size=chunk_size, overlap=overlap, border_size=border_size,
+            compatibility_mode=compatibility_mode,
             progress_cb=progress_cb,
         )
 
@@ -662,6 +874,7 @@ def satellite_remove_image(
             rgb_s, models,
             clip_trail=clip_trail, sensitivity=sensitivity,
             chunk_size=chunk_size, overlap=overlap, border_size=border_size,
+            compatibility_mode=compatibility_mode,
             progress_cb=progress_cb,
         )
 
@@ -690,12 +903,9 @@ def _satellite_remove_rgb(
     chunk_size: int,
     overlap: int,
     border_size: int,
+    compatibility_mode: bool,
     progress_cb: Optional[Callable[[int, int], None]],
 ) -> Tuple[np.ndarray, bool]:
-    """
-    Uses BOTH detectors like your torch path.
-    ONNX path now calls det1+det2+rem sessions correctly.
-    """
     is_onnx = bool(models.get("is_onnx", False))
 
     H, W = rgb01.shape[:2]
@@ -703,21 +913,19 @@ def _satellite_remove_rgb(
 
     all_tiles = list(_split_chunks(rgb01, chunk_size, overlap))
     total = len(all_tiles)
-    out_tiles = []
+    out_tiles = [None] * total
 
-    for idx, (tile, y0, x0) in enumerate(all_tiles, start=1):
-        orig = tile.astype(np.float32, copy=False)
+    # ---------------- ONNX path (leave mostly serial for now) ----------------
+    if is_onnx:
+        for idx, (tile, y0, x0) in enumerate(all_tiles, start=1):
+            orig = tile.astype(np.float32, copy=False)
 
-        if is_onnx:
             det1_sess = models["detection_model1"]
             det2_sess = models["detection_model2"]
             rem_sess  = models["removal_model"]
 
             d1 = _onnx_detect(orig, det1_sess)
-            if d1:
-                d2 = _onnx_detect(orig, det2_sess)
-            else:
-                d2 = False
+            d2 = _onnx_detect(orig, det2_sess) if d1 else False
 
             detected = bool(d1 and d2)
             if detected:
@@ -727,23 +935,121 @@ def _satellite_remove_rgb(
             else:
                 final = orig
 
+            out_tiles[idx - 1] = (final, y0, x0)
+
+            if progress_cb is not None:
+                progress_cb(idx, total)
+
+    # ---------------- Torch path (batched) ----------------
+    else:
+        tiles_only = [tile.astype(np.float32, copy=False) for (tile, _, _) in all_tiles]
+
+        if compatibility_mode:
+            detect_bs = 8
+            remove_bs = 2
         else:
-            detected = _torch_detect(orig, models)
-            if detected:
-                trail_any = True
-                pred = _torch_remove(orig, models)
-                final = _apply_clip_trail_logic(pred, orig, sensitivity) if clip_trail else pred
+            detect_bs = 32
+            remove_bs = 8
+
+        detected_flags = [False] * total
+        done_flags = [False] * total
+
+        # -------- Batched detection with progress --------
+        torch = models["torch"]
+        device = models["device"]
+        det1 = models["detection_model1"]
+        det2 = models["detection_model2"]
+
+        resized = [_resize_tile_for_detect(t) for t in tiles_only]
+
+        for i in range(0, len(resized), detect_bs):
+            batch_np = np.stack(resized[i:i + detect_bs], axis=0)
+            batch_np = np.transpose(batch_np, (0, 3, 1, 2)).astype(np.float32)
+
+            x = torch.from_numpy(batch_np)
+            if hasattr(device, "type") and device.type == "cuda":
+                x = x.pin_memory().to(device, dtype=torch.float32, non_blocking=True)
             else:
-                final = orig
+                x = x.to(device=device, dtype=torch.float32)
 
-        out_tiles.append((final, y0, x0))
+            with torch.inference_mode():
+                o1 = det1(x).flatten()
+            keep1 = (o1 > 0.5)
 
-        if progress_cb is not None:
-            progress_cb(idx, total)
+            local_detected = np.zeros(len(batch_np), dtype=bool)
+
+            if keep1.any():
+                idxs = keep1.nonzero(as_tuple=False).flatten()
+                with torch.inference_mode():
+                    o2 = det2(x[idxs]).flatten()
+                keep2 = (o2 > 0.25).detach().cpu().numpy()
+                idxs_cpu = idxs.detach().cpu().numpy()
+
+                for local_j, passed in zip(idxs_cpu, keep2):
+                    if passed:
+                        local_detected[int(local_j)] = True
+
+            # store detection results
+            for local_j in range(len(batch_np)):
+                global_j = i + local_j
+                detected_flags[global_j] = bool(local_detected[local_j])
+
+            # non-detected tiles are fully done now
+            for local_j in range(len(batch_np)):
+                global_j = i + local_j
+                if not detected_flags[global_j]:
+                    tile, y0, x0 = all_tiles[global_j]
+                    out_tiles[global_j] = (tile.astype(np.float32, copy=False), y0, x0)
+                    done_flags[global_j] = True
+
+            if progress_cb is not None:
+                progress_cb(sum(done_flags), total)
+
+        detected_indices = [i for i, flag in enumerate(detected_flags) if flag]
+        trail_any = bool(detected_indices)
+
+        # -------- Batched removal with progress --------
+        if detected_indices:
+            padded_tiles = []
+            orig_shapes = []
+
+            for idx in detected_indices:
+                padded, h, w = _pad_tile_to_shape_rgb(tiles_only[idx], chunk_size, chunk_size)
+                padded_tiles.append(padded)
+                orig_shapes.append((h, w))
+
+            for batch_start in range(0, len(padded_tiles), remove_bs):
+                batch_tiles = padded_tiles[batch_start:batch_start + remove_bs]
+                batch_np = np.stack(batch_tiles, axis=0)
+                batch_np = np.transpose(batch_np, (0, 3, 1, 2)).astype(np.float32)
+
+                x = torch.from_numpy(batch_np)
+                if hasattr(device, "type") and device.type == "cuda":
+                    x = x.pin_memory().to(device, dtype=torch.float32, non_blocking=True)
+                else:
+                    x = x.to(device=device, dtype=torch.float32)
+
+                rem = models["removal_model"]
+                with torch.inference_mode(), _autocast_context(torch, device):
+                    y = rem(x).detach().cpu().numpy()
+
+                y = np.transpose(y, (0, 2, 3, 1))
+
+                for local_j, pred in enumerate(y):
+                    src_idx = detected_indices[batch_start + local_j]
+                    h, w = orig_shapes[batch_start + local_j]
+                    pred = np.clip(pred[:h, :w, :], 0.0, 1.0).astype(np.float32)
+
+                    orig, y0, x0 = all_tiles[src_idx]
+                    final = _apply_clip_trail_logic(pred, orig.astype(np.float32, copy=False), sensitivity) if clip_trail else pred
+                    out_tiles[src_idx] = (final, y0, x0)
+                    done_flags[src_idx] = True
+
+                if progress_cb is not None:
+                    progress_cb(sum(done_flags), total)
 
     out = _stitch_ignore_border(out_tiles, (H, W, 3), border=border_size)
 
-    # keep edges unchanged
     if border_size > 0:
         out[:border_size, :, :] = rgb01[:border_size, :, :]
         out[-border_size:, :, :] = rgb01[-border_size:, :, :]

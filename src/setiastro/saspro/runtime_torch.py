@@ -13,6 +13,19 @@ import re
 from pathlib import Path
 from contextlib import contextmanager
 
+def _safe_text_kwargs() -> dict:
+    import locale
+
+    if platform.system() == "Windows":
+        enc = locale.getpreferredencoding(False) or "cp1252"
+    else:
+        enc = locale.getpreferredencoding(False) or "utf-8"
+
+    return {
+        "text": True,
+        "encoding": enc,
+        "errors": "replace",
+    }
 
 def _rt_dbg(msg: str, status_cb=print):
     try:
@@ -29,7 +42,7 @@ def _venv_pyver(venv_python: Path) -> tuple[int, int] | None:
     try:
         out = subprocess.check_output(
             [str(venv_python), "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
-            text=True,
+            **_safe_text_kwargs(),
         ).strip()
         maj, min_ = out.split(".")
         return int(maj), int(min_)
@@ -94,8 +107,8 @@ def _detect_rocm_arch() -> str:
             ["rocminfo"],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            text=True,
             timeout=8,
+            **_safe_text_kwargs(),
         )
 
         out = r.stdout or ""
@@ -258,8 +271,13 @@ def _pip_run(venv_python: Path, args: list[str], status_cb=print) -> subprocess.
     env = os.environ.copy()
     env.pop("PYTHONPATH", None)
     env.pop("PYTHONHOME", None)
-    return subprocess.run([str(venv_python), "-m", "pip", *args],
-                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
+    return subprocess.run(
+        [str(venv_python), "-m", "pip", *args],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        env=env,
+        **_safe_text_kwargs(),
+    )
 
 def _pip_ok(venv_python: Path, args: list[str], status_cb=print) -> bool:
     r = _pip_run(venv_python, args, status_cb=status_cb)
@@ -306,7 +324,10 @@ def _ensure_numpy(venv_python: Path, status_cb=print) -> None:
             "    print(json.dumps({'present': True, 'major': major, 'version': v}))\n"
         )
         try:
-            out = subprocess.check_output([str(venv_python), "-c", code], text=True).strip()
+            out = subprocess.check_output(
+                [str(venv_python), "-c", code],
+                **_safe_text_kwargs(),
+            ).strip()
             data = json.loads(out) if out else {}
             return bool(data.get("present")), data.get("major"), data.get("version")
         except Exception:
@@ -400,7 +421,10 @@ def _venv_paths(rt: Path):
 
 def _site_packages(venv_python: Path) -> Path:
     code = "import site, sys; print([p for p in site.getsitepackages() if 'site-packages' in p][-1])"
-    out = subprocess.check_output([str(venv_python), "-c", code], text=True).strip()
+    out = subprocess.check_output(
+        [str(venv_python), "-c", code],
+        **_safe_text_kwargs(),
+    ).strip()
     return Path(out)
 
 def _ensure_venv(rt: Path, status_cb=print) -> Path:
@@ -413,7 +437,10 @@ def _ensure_venv(rt: Path, status_cb=print) -> Path:
             # choose the system python that will back this venv
             py_cmd = _find_system_python_cmd() if getattr(sys, "frozen", False) else [sys.executable]
             # detect its version to ensure the folder tag matches
-            out = subprocess.check_output(py_cmd + ["-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"], text=True).strip()
+            out = subprocess.check_output(
+                py_cmd + ["-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
+                **_safe_text_kwargs(),
+            ).strip()
             maj, min_ = map(int, out.split("."))
 
             if (maj, min_) != (3, 12):
@@ -546,7 +573,7 @@ except Exception as e:
         [str(venv_python), "-c", code],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True,
+        **_safe_text_kwargs(),
     )
 
     out = (r.stdout or "").strip()
@@ -587,7 +614,7 @@ except Exception as e:
         [str(venv_python), "-c", code],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True,
+        **_safe_text_kwargs(),
     )
     out = (r.stdout or "").strip()
     last = out.splitlines()[-1] if out else ""
@@ -642,8 +669,8 @@ def _detect_rocm_version(status_cb=print) -> str:
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                text=True,
                 timeout=timeout_s,
+                **_safe_text_kwargs(),
             )
             ver = _extract_ver(r.stdout or "")
             if ver:
@@ -712,12 +739,20 @@ def _install_torch(
     def _pip(*args, env=None) -> subprocess.CompletedProcess:
         e = (os.environ.copy() if env is None else env)
         e.pop("PYTHONPATH", None); e.pop("PYTHONHOME", None)
-        return subprocess.run([str(venv_python), "-m", "pip", *args],
-                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=e)
+        return subprocess.run(
+            [str(venv_python), "-m", "pip", *args],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env=e,
+            **_safe_text_kwargs(),
+        )
 
     def _pyver() -> tuple[int, int]:
         code = "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
-        out = subprocess.check_output([str(venv_python), "-c", code], text=True).strip()
+        out = subprocess.check_output(
+            [str(venv_python), "-c", code],
+            **_safe_text_kwargs(),
+        ).strip()
         major, minor = out.split(".")
         return int(major), int(minor)
 
@@ -892,7 +927,12 @@ def _install_torch(
 
         # Verify import + device creation
         code = "import torch, torch_directml; d=torch_directml.device(); x=torch.tensor([1]).to(d); y=torch.tensor([2]).to(d); print(int((x+y).item()))"
-        r = subprocess.run([str(venv_python), "-c", code], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        r = subprocess.run(
+            [str(venv_python), "-c", code],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            **_safe_text_kwargs(),
+        )
         if r.returncode != 0 or "3" not in (r.stdout or ""):
             status_cb((r.stdout or "")[-2000:])
             raise RuntimeError("torch-directml installed, but DirectML verification failed.")
@@ -924,8 +964,12 @@ def _venv_import_probe(venv_python: Path, modname: str) -> tuple[bool, str]:
         f"m=importlib.import_module('{modname}')\n"
         "print('OK', getattr(m,'__version__',None), getattr(m,'__file__',None))\n"
     )
-    r = subprocess.run([str(venv_python), "-c", code],
-                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    r = subprocess.run(
+        [str(venv_python), "-c", code],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        **_safe_text_kwargs(),
+    )
     out = (r.stdout or "").strip()
     if r.returncode == 0 and out.startswith("OK"):
         return True, out
@@ -963,8 +1007,12 @@ def _write_torch_marker(marker: Path, status_cb=print) -> None:
 
     # get venv python version
     try:
-        r = subprocess.run([str(vp), "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
-                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        r = subprocess.run(
+            [str(vp), "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            **_safe_text_kwargs(),
+        )
         if r.returncode == 0:
             payload["python"] = (r.stdout or "").strip()
     except Exception:
@@ -1486,7 +1534,7 @@ def _find_system_python_cmd() -> list[str]:
                 cmd + ["-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
-                text=True,
+                **_safe_text_kwargs(),
             )
             return r.returncode == 0 and (r.stdout or "").strip() == "3.12"
         except Exception:

@@ -76,7 +76,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavToolbar
 from matplotlib.figure import Figure
 
-from .autostretch import autostretch
+from setiastro.saspro.autostretch import autostretch, autostretch_with_lut, apply_autostretch_lut
 from .layers import BLEND_MODES, ImageLayer, composite_stack
 from setiastro.saspro.dnd_mime import (
     MIME_ASTROMETRY,
@@ -443,6 +443,9 @@ class ImageSubWindow(QWidget):
         self.autostretch_target = 0.25
         self.autostretch_sigma = 3.0
         self.autostretch_profile = "normal"
+        self._autostretch_continuous = QSettings().value("display/autostretch_continuous", True, type=bool)
+        self._autostretch_lut_cache = None
+        self._autostretch_cache_key = None    
         self.show_mask_overlay = False
         self._mask_overlay_alpha = 0.5   # 0..1
         self._mask_overlay_invert = True
@@ -686,7 +689,8 @@ class ImageSubWindow(QWidget):
         # re-read any settings that are cached in the view
         self._smooth_zoom = s.value("display/smooth_zoom_settle", True, type=bool)
         self._autostretch_linked = s.value("display/stretch_linked", False, type=bool)
-
+        self._autostretch_linked = s.value("display/stretch_linked", False, type=bool)
+        self._autostretch_continuous = s.value("display/autostretch_continuous", True, type=bool)
         # if you cache bg opacity or other display keys here, re-read them too
         # self._bg_opacity = s.value("display/bg_opacity", 50, type=int) / 100.0
 
@@ -1689,19 +1693,41 @@ class ImageSubWindow(QWidget):
             # overlay was on but mask went away → just redraw to clear
             self._render(rebuild=True)
 
+    def set_autostretch_continuous(self, on: bool):
+        on = bool(on)
+        if self._autostretch_continuous == on:
+            return
+        self._autostretch_continuous = on
+        # do not force recompute immediately unless autostretch is on and
+        # user wants continuous mode back
+        if self.autostretch_enabled and on:
+            self._invalidate_autostretch_cache()
+            self._recompute_autostretch_and_update()
 
+    def _invalidate_autostretch_cache(self):
+        self._autostretch_lut_cache = None
+        self._autostretch_cache_key = None
     # ---------- public API ----------
     def set_autostretch(self, on: bool):
         on = bool(on)
-        if on == getattr(self, "autostretch_enabled", False):
-            # still rebuild so linked profile changes can reflect immediately if desired
-            pass
-        self.autostretch_enabled = on
+
+        if not on:
+            self.autostretch_enabled = False
+            self._invalidate_autostretch_cache()
+            try:
+                self.autostretchChanged.emit(False)
+            except Exception:
+                pass
+            self._recompute_autostretch_and_update()
+            return
+
+        # turning ON -> always compute a fresh stretch once
+        self.autostretch_enabled = True
+        self._invalidate_autostretch_cache()
         try:
-            self.autostretchChanged.emit(on)
+            self.autostretchChanged.emit(True)
         except Exception:
             pass
-        # keep your newer fast-path behavior
         self._recompute_autostretch_and_update()
 
     def toggle_autostretch(self):
@@ -1709,16 +1735,17 @@ class ImageSubWindow(QWidget):
 
     def set_autostretch_target(self, target: float):
         self.autostretch_target = float(target)
+        self._invalidate_autostretch_cache()
         if self.autostretch_enabled:
             self._render(rebuild=True)
 
     def set_autostretch_sigma(self, sigma: float):
         self.autostretch_sigma = float(sigma)
+        self._invalidate_autostretch_cache()
         if self.autostretch_enabled:
             self._render(rebuild=True)
 
     def set_autostretch_profile(self, profile: str):
-        """'normal' => target=0.25, sigma=3 ; 'hard' => target=0.5, sigma=1"""
         p = (profile or "").lower()
         if p not in ("normal", "hard"):
             p = "normal"
@@ -1731,8 +1758,21 @@ class ImageSubWindow(QWidget):
             self.autostretch_target = 0.3
             self.autostretch_sigma  = 5
         self.autostretch_profile = p
+        self._invalidate_autostretch_cache()
         if self.autostretch_enabled:
             self._render(rebuild=True)
+
+    def is_autostretch_linked(self) -> bool:
+        return bool(self._autostretch_linked)
+
+    def set_autostretch_linked(self, linked: bool):
+        linked = bool(linked)
+        if self._autostretch_linked == linked:
+            return
+        self._autostretch_linked = linked
+        self._invalidate_autostretch_cache()
+        if self.autostretch_enabled:
+            self._recompute_autostretch_and_update()
 
     def is_hard_autostretch(self) -> bool:
         return self.autostretch_profile == "hard"
@@ -2331,16 +2371,8 @@ class ImageSubWindow(QWidget):
         if hasattr(self, "_view_tab"):
             self._view_tab.raise_()
 
-    def is_autostretch_linked(self) -> bool:
-        return bool(self._autostretch_linked)
 
-    def set_autostretch_linked(self, linked: bool):
-        linked = bool(linked)
-        if self._autostretch_linked == linked:
-            return
-        self._autostretch_linked = linked
-        if self.autostretch_enabled:
-            self._recompute_autostretch_and_update()
+
 
     def _on_docman_nudge(self, *args):
         # Guard against late signals hitting after destruction/minimize
@@ -2360,7 +2392,8 @@ class ImageSubWindow(QWidget):
 
 
     def _recompute_autostretch_and_update(self):
-        self._qimg_src = None   # force source rebuild
+        self._invalidate_autostretch_cache()
+        self._qimg_src = None
         self._render(True)
 
     def set_doc_manager(self, docman):
@@ -2548,6 +2581,7 @@ class ImageSubWindow(QWidget):
         - Never reslice from the parent/full image here.
         - Keep a strong reference to the numpy buffer that backs the QImage.
         """
+
         # ---- GUARD: widget/label may be deleted but document.changed still fires ----
         try:
             from PyQt6 import sip as _sip
@@ -2629,13 +2663,36 @@ class ImageSubWindow(QWidget):
                 if mx > 5.0:
                     arr_f = arr_f / mx
 
-            vis = autostretch(
-                arr_f,
-                target_median=self.autostretch_target,
-                sigma=self.autostretch_sigma,
-                linked=(not is_mono and self._autostretch_linked),
-                use_24bit=None,
+            cache_key = (
+                bool(is_mono),
+                bool(self._autostretch_linked),
+                float(self.autostretch_target),
+                float(self.autostretch_sigma),
+                tuple(arr_f.shape),
             )
+
+            use_cached = (
+                (not self._autostretch_continuous)
+                and (self._autostretch_lut_cache is not None)
+                and (self._autostretch_cache_key == cache_key)
+            )
+
+            if use_cached:
+                vis = apply_autostretch_lut(
+                    arr_f,
+                    self._autostretch_lut_cache,
+                    linked=(not is_mono and self._autostretch_linked),
+                )
+            else:
+                vis, lut_cache = autostretch_with_lut(
+                    arr_f,
+                    target_median=self.autostretch_target,
+                    sigma=self.autostretch_sigma,
+                    linked=(not is_mono and self._autostretch_linked),
+                    use_24bit=None,
+                )
+                self._autostretch_lut_cache = lut_cache
+                self._autostretch_cache_key = cache_key
         else:
             vis = arr
 

@@ -632,17 +632,14 @@ def windsorized_sigma_clip_weighted_3d_iter(stack, weights, lower=2.5, upper=2.5
     Iterative Weighted Windsorized Sigma Clipping for a 3D mono stack.
       stack.shape == (F,H,W)
       weights.shape can be (F,) or (F,H,W).
-    Returns a tuple:
-      (clipped, rejection_mask)
-    where:
-      clipped is a 2D image (H,W),
-      rejection_mask is a boolean array of shape (F,H,W) with True indicating rejection.
+    Returns:
+      clipped: (H,W)
+      rej_mask: (F,H,W) True = rejected/ignored
     """
     num_frames, height, width = stack.shape
     clipped = np.zeros((height, width), dtype=np.float32)
     rej_mask = np.zeros((num_frames, height, width), dtype=np.bool_)
 
-    # Check weights shape
     if weights.ndim == 1 and weights.shape[0] == num_frames:
         pass
     elif weights.ndim == 3 and weights.shape == stack.shape:
@@ -652,13 +649,14 @@ def windsorized_sigma_clip_weighted_3d_iter(stack, weights, lower=2.5, upper=2.5
 
     for i in prange(height):
         for j in range(width):
-            pixel_values = stack[:, i, j]  # shape=(F,)
+            pixel_values = stack[:, i, j]
             if weights.ndim == 1:
-                pixel_weights = weights[:]  # shape (F,)
+                pixel_weights = weights[:]
             else:
                 pixel_weights = weights[:, i, j]
-            # Start with nonzero pixels as valid
-            valid_mask = pixel_values != 0
+
+            valid_mask = pixel_values != 0.0
+
             for _ in range(iterations):
                 if np.sum(valid_mask) == 0:
                     break
@@ -668,20 +666,22 @@ def windsorized_sigma_clip_weighted_3d_iter(stack, weights, lower=2.5, upper=2.5
                 lower_bound = median_val - lower * std_dev
                 upper_bound = median_val + upper * std_dev
                 valid_mask = valid_mask & (pixel_values >= lower_bound) & (pixel_values <= upper_bound)
-            # Record rejections: a pixel is rejected if not valid.
+
             for f in range(num_frames):
                 rej_mask[f, i, j] = not valid_mask[f]
+
             valid_vals = pixel_values[valid_mask]
             valid_w = pixel_weights[valid_mask]
             wsum = np.sum(valid_w)
             if wsum > 0:
                 clipped[i, j] = np.sum(valid_vals * valid_w) / wsum
             else:
-                nonzero = pixel_values[pixel_values != 0]
+                nonzero = pixel_values[pixel_values != 0.0]
                 if nonzero.size > 0:
                     clipped[i, j] = np.median(nonzero)
                 else:
                     clipped[i, j] = 0.0
+
     return clipped, rej_mask
 
 
@@ -691,17 +691,14 @@ def windsorized_sigma_clip_weighted_4d_iter(stack, weights, lower=2.5, upper=2.5
     Iterative Weighted Windsorized Sigma Clipping for a 4D color stack.
       stack.shape == (F,H,W,C)
       weights.shape can be (F,) or (F,H,W,C).
-    Returns a tuple:
-      (clipped, rejection_mask)
-    where:
-      clipped is a 3D image (H,W,C),
-      rejection_mask is a boolean array of shape (F,H,W,C).
+    Returns:
+      clipped: (H,W,C)
+      rej_mask: (F,H,W,C) True = rejected/ignored
     """
     num_frames, height, width, channels = stack.shape
     clipped = np.zeros((height, width, channels), dtype=np.float32)
     rej_mask = np.zeros((num_frames, height, width, channels), dtype=np.bool_)
 
-    # Check weights shape
     if weights.ndim == 1 and weights.shape[0] == num_frames:
         pass
     elif weights.ndim == 4 and weights.shape == stack.shape:
@@ -712,12 +709,14 @@ def windsorized_sigma_clip_weighted_4d_iter(stack, weights, lower=2.5, upper=2.5
     for i in prange(height):
         for j in range(width):
             for c in range(channels):
-                pixel_values = stack[:, i, j, c]  # shape=(F,)
+                pixel_values = stack[:, i, j, c]
                 if weights.ndim == 1:
                     pixel_weights = weights[:]
                 else:
                     pixel_weights = weights[:, i, j, c]
-                valid_mask = pixel_values != 0
+
+                valid_mask = pixel_values != 0.0
+
                 for _ in range(iterations):
                     if np.sum(valid_mask) == 0:
                         break
@@ -727,27 +726,26 @@ def windsorized_sigma_clip_weighted_4d_iter(stack, weights, lower=2.5, upper=2.5
                     lower_bound = median_val - lower * std_dev
                     upper_bound = median_val + upper * std_dev
                     valid_mask = valid_mask & (pixel_values >= lower_bound) & (pixel_values <= upper_bound)
+
                 for f in range(num_frames):
                     rej_mask[f, i, j, c] = not valid_mask[f]
+
                 valid_vals = pixel_values[valid_mask]
                 valid_w = pixel_weights[valid_mask]
                 wsum = np.sum(valid_w)
                 if wsum > 0:
                     clipped[i, j, c] = np.sum(valid_vals * valid_w) / wsum
                 else:
-                    nonzero = pixel_values[pixel_values != 0]
+                    nonzero = pixel_values[pixel_values != 0.0]
                     if nonzero.size > 0:
                         clipped[i, j, c] = np.median(nonzero)
                     else:
                         clipped[i, j, c] = 0.0
+
     return clipped, rej_mask
 
 
 def windsorized_sigma_clip_weighted(stack, weights, lower=2.5, upper=2.5, iterations=2):
-    """
-    Dispatcher that calls the appropriate iterative Numba function.
-    Now returns (clipped, rejection_mask).
-    """
     if stack.ndim == 3:
         return windsorized_sigma_clip_weighted_3d_iter(stack, weights, lower, upper, iterations)
     elif stack.ndim == 4:
@@ -762,16 +760,10 @@ def windsorized_sigma_clip_weighted(stack, weights, lower=2.5, upper=2.5, iterat
 
 @njit(parallel=True, fastmath=True, cache=True)
 def kappa_sigma_clip_weighted_3d(stack, weights, kappa=2.5, iterations=3):
-    """
-    Kappa-Sigma Clipping for a 3D mono stack.
-      stack.shape == (F,H,W)
-    Returns a tuple: (clipped, rejection_mask)
-    where rejection_mask is of shape (F,H,W) indicating per-frame rejections.
-    """
     num_frames, height, width = stack.shape
     clipped = np.empty((height, width), dtype=np.float32)
     rej_mask = np.zeros((num_frames, height, width), dtype=np.bool_)
-    
+
     for i in prange(height):
         for j in range(width):
             pixel_values = stack[:, i, j].copy()
@@ -779,26 +771,24 @@ def kappa_sigma_clip_weighted_3d(stack, weights, kappa=2.5, iterations=3):
                 pixel_weights = weights[:]
             else:
                 pixel_weights = weights[:, i, j].copy()
-                
-            valid_mask = pixel_values != 0
-            
+
+            valid_mask = pixel_values != 0.0
             med = 0.0
+
             for _ in range(iterations):
                 count = 0
                 for k in range(num_frames):
                     if valid_mask[k]:
                         count += 1
-                
                 if count == 0:
                     break
-                    
+
                 current_vals = pixel_values[valid_mask]
-                
                 med = np.median(current_vals)
                 std = np.std(current_vals)
                 lower_bound = med - kappa * std
                 upper_bound = med + kappa * std
-                
+
                 for k in range(num_frames):
                     if valid_mask[k]:
                         val = pixel_values[k]
@@ -807,7 +797,7 @@ def kappa_sigma_clip_weighted_3d(stack, weights, kappa=2.5, iterations=3):
 
             for f in range(num_frames):
                 rej_mask[f, i, j] = not valid_mask[f]
-                
+
             wsum = 0.0
             vsum = 0.0
             for k in range(num_frames):
@@ -816,25 +806,25 @@ def kappa_sigma_clip_weighted_3d(stack, weights, kappa=2.5, iterations=3):
                     v = pixel_values[k]
                     wsum += w
                     vsum += v * w
-            
+
             if wsum > 0:
                 clipped[i, j] = vsum / wsum
             else:
-                clipped[i, j] = med
+                nonzero = pixel_values[pixel_values != 0.0]
+                if nonzero.size > 0:
+                    clipped[i, j] = np.median(nonzero)
+                else:
+                    clipped[i, j] = 0.0
+
     return clipped, rej_mask
 
 
 @njit(parallel=True, fastmath=True, cache=True)
 def kappa_sigma_clip_weighted_4d(stack, weights, kappa=2.5, iterations=3):
-    """
-    Kappa-Sigma Clipping for a 4D color stack.
-      stack.shape == (F,H,W,C)
-    Returns (clipped, rejection_mask) where rejection_mask has shape (F,H,W,C).
-    """
     num_frames, height, width, channels = stack.shape
     clipped = np.empty((height, width, channels), dtype=np.float32)
     rej_mask = np.zeros((num_frames, height, width, channels), dtype=np.bool_)
-    
+
     for i in prange(height):
         for j in range(width):
             for c in range(channels):
@@ -843,26 +833,24 @@ def kappa_sigma_clip_weighted_4d(stack, weights, kappa=2.5, iterations=3):
                     pixel_weights = weights[:]
                 else:
                     pixel_weights = weights[:, i, j, c].copy()
-                
-                valid_mask = pixel_values != 0
-                
+
+                valid_mask = pixel_values != 0.0
                 med = 0.0
+
                 for _ in range(iterations):
                     count = 0
                     for k in range(num_frames):
                         if valid_mask[k]:
                             count += 1
-                            
                     if count == 0:
                         break
-                        
+
                     current_vals = pixel_values[valid_mask]
-                    
                     med = np.median(current_vals)
                     std = np.std(current_vals)
                     lower_bound = med - kappa * std
                     upper_bound = med + kappa * std
-                    
+
                     for k in range(num_frames):
                         if valid_mask[k]:
                             val = pixel_values[k]
@@ -871,7 +859,7 @@ def kappa_sigma_clip_weighted_4d(stack, weights, kappa=2.5, iterations=3):
 
                 for f in range(num_frames):
                     rej_mask[f, i, j, c] = not valid_mask[f]
-                
+
                 wsum = 0.0
                 vsum = 0.0
                 for k in range(num_frames):
@@ -880,18 +868,20 @@ def kappa_sigma_clip_weighted_4d(stack, weights, kappa=2.5, iterations=3):
                         v = pixel_values[k]
                         wsum += w
                         vsum += v * w
-                
+
                 if wsum > 0:
                     clipped[i, j, c] = vsum / wsum
                 else:
-                    clipped[i, j, c] = med
+                    nonzero = pixel_values[pixel_values != 0.0]
+                    if nonzero.size > 0:
+                        clipped[i, j, c] = np.median(nonzero)
+                    else:
+                        clipped[i, j, c] = 0.0
+
     return clipped, rej_mask
 
 
 def kappa_sigma_clip_weighted(stack, weights, kappa=2.5, iterations=3):
-    """
-    Dispatcher that returns (clipped, rejection_mask) for kappa-sigma clipping.
-    """
     if stack.ndim == 3:
         return kappa_sigma_clip_weighted_3d(stack, weights, kappa, iterations)
     elif stack.ndim == 4:
@@ -906,15 +896,10 @@ def kappa_sigma_clip_weighted(stack, weights, kappa=2.5, iterations=3):
 
 @njit(parallel=True, fastmath=True, cache=True)
 def trimmed_mean_weighted_3d(stack, weights, trim_fraction=0.1):
-    """
-    Trimmed Mean for a 3D mono stack.
-      stack.shape == (F,H,W)
-    Returns (clipped, rejection_mask) where rejection_mask (F,H,W) flags frames that were trimmed.
-    """
     num_frames, height, width = stack.shape
     clipped = np.empty((height, width), dtype=np.float32)
     rej_mask = np.zeros((num_frames, height, width), dtype=np.bool_)
-    
+
     for i in prange(height):
         for j in range(width):
             pix_all = stack[:, i, j]
@@ -922,43 +907,43 @@ def trimmed_mean_weighted_3d(stack, weights, trim_fraction=0.1):
                 w_all = weights[:]
             else:
                 w_all = weights[:, i, j]
-            # Exclude zeros and record original indices.
-            valid = pix_all != 0
+
+            valid = pix_all != 0.0
             pix = pix_all[valid]
             w = w_all[valid]
+
             orig_idx = np.empty(pix_all.shape[0], dtype=np.int64)
             count = 0
             for f in range(num_frames):
                 if valid[f]:
                     orig_idx[count] = f
                     count += 1
+
             n = pix.size
             if n == 0:
                 clipped[i, j] = 0.0
-                # Mark all as rejected.
                 for f in range(num_frames):
-                    if not valid[f]:
-                        rej_mask[f, i, j] = True
+                    rej_mask[f, i, j] = True
                 continue
+
             trim = int(trim_fraction * n)
             order = np.argsort(pix)
-            # Determine which indices (in the valid list) are kept.
+
             if n > 2 * trim:
                 keep_order = order[trim:n - trim]
             else:
                 keep_order = order
-            # Build a mask for the valid pixels (length n) that are kept.
+
             keep_mask = np.zeros(n, dtype=np.bool_)
             for k in range(keep_order.size):
                 keep_mask[keep_order[k]] = True
-            # Map back to original frame indices.
+
+            for f in range(num_frames):
+                rej_mask[f, i, j] = True
             for idx in range(n):
                 frame = orig_idx[idx]
-                if not keep_mask[idx]:
-                    rej_mask[frame, i, j] = True
-                else:
-                    rej_mask[frame, i, j] = False
-            # Compute weighted average of kept values.
+                rej_mask[frame, i, j] = not keep_mask[idx]
+
             sorted_pix = pix[order]
             sorted_w = w[order]
             if n > 2 * trim:
@@ -967,25 +952,22 @@ def trimmed_mean_weighted_3d(stack, weights, trim_fraction=0.1):
             else:
                 trimmed_values = sorted_pix
                 trimmed_weights = sorted_w
+
             wsum = trimmed_weights.sum()
             if wsum > 0:
                 clipped[i, j] = np.sum(trimmed_values * trimmed_weights) / wsum
             else:
                 clipped[i, j] = np.median(trimmed_values)
+
     return clipped, rej_mask
 
 
 @njit(parallel=True, fastmath=True, cache=True)
 def trimmed_mean_weighted_4d(stack, weights, trim_fraction=0.1):
-    """
-    Trimmed Mean for a 4D color stack.
-      stack.shape == (F,H,W,C)
-    Returns (clipped, rejection_mask) where rejection_mask has shape (F,H,W,C).
-    """
     num_frames, height, width, channels = stack.shape
     clipped = np.empty((height, width, channels), dtype=np.float32)
     rej_mask = np.zeros((num_frames, height, width, channels), dtype=np.bool_)
-    
+
     for i in prange(height):
         for j in range(width):
             for c in range(channels):
@@ -994,37 +976,43 @@ def trimmed_mean_weighted_4d(stack, weights, trim_fraction=0.1):
                     w_all = weights[:]
                 else:
                     w_all = weights[:, i, j, c]
-                valid = pix_all != 0
+
+                valid = pix_all != 0.0
                 pix = pix_all[valid]
                 w = w_all[valid]
+
                 orig_idx = np.empty(pix_all.shape[0], dtype=np.int64)
                 count = 0
                 for f in range(num_frames):
                     if valid[f]:
                         orig_idx[count] = f
                         count += 1
+
                 n = pix.size
                 if n == 0:
                     clipped[i, j, c] = 0.0
                     for f in range(num_frames):
-                        if not valid[f]:
-                            rej_mask[f, i, j, c] = True
+                        rej_mask[f, i, j, c] = True
                     continue
+
                 trim = int(trim_fraction * n)
                 order = np.argsort(pix)
+
                 if n > 2 * trim:
                     keep_order = order[trim:n - trim]
                 else:
                     keep_order = order
+
                 keep_mask = np.zeros(n, dtype=np.bool_)
                 for k in range(keep_order.size):
                     keep_mask[keep_order[k]] = True
+
+                for f in range(num_frames):
+                    rej_mask[f, i, j, c] = True
                 for idx in range(n):
                     frame = orig_idx[idx]
-                    if not keep_mask[idx]:
-                        rej_mask[frame, i, j, c] = True
-                    else:
-                        rej_mask[frame, i, j, c] = False
+                    rej_mask[frame, i, j, c] = not keep_mask[idx]
+
                 sorted_pix = pix[order]
                 sorted_w = w[order]
                 if n > 2 * trim:
@@ -1033,18 +1021,17 @@ def trimmed_mean_weighted_4d(stack, weights, trim_fraction=0.1):
                 else:
                     trimmed_values = sorted_pix
                     trimmed_weights = sorted_w
+
                 wsum = trimmed_weights.sum()
                 if wsum > 0:
                     clipped[i, j, c] = np.sum(trimmed_values * trimmed_weights) / wsum
                 else:
                     clipped[i, j, c] = np.median(trimmed_values)
+
     return clipped, rej_mask
 
 
 def trimmed_mean_weighted(stack, weights, trim_fraction=0.1):
-    """
-    Dispatcher that returns (clipped, rejection_mask) for trimmed mean.
-    """
     if stack.ndim == 3:
         return trimmed_mean_weighted_3d(stack, weights, trim_fraction)
     elif stack.ndim == 4:
@@ -1059,15 +1046,10 @@ def trimmed_mean_weighted(stack, weights, trim_fraction=0.1):
 
 @njit(parallel=True, fastmath=True, cache=True)
 def esd_clip_weighted_3d(stack, weights, threshold=3.0):
-    """
-    ESD Clipping for a 3D mono stack.
-      stack.shape == (F,H,W)
-    Returns (clipped, rejection_mask) where rejection_mask has shape (F,H,W).
-    """
     num_frames, height, width = stack.shape
     clipped = np.empty((height, width), dtype=np.float32)
     rej_mask = np.zeros((num_frames, height, width), dtype=np.bool_)
-    
+
     if weights.ndim == 1 and weights.shape[0] == num_frames:
         pass
     elif weights.ndim == 3 and weights.shape == stack.shape:
@@ -1082,56 +1064,58 @@ def esd_clip_weighted_3d(stack, weights, threshold=3.0):
                 w = weights[:]
             else:
                 w = weights[:, i, j]
-            valid = pix != 0
+
+            valid = pix != 0.0
             values = pix[valid]
             wvals = w[valid]
+
             if values.size == 0:
                 clipped[i, j] = 0.0
                 for f in range(num_frames):
-                    if not valid[f]:
-                        rej_mask[f, i, j] = True
+                    rej_mask[f, i, j] = True
                 continue
+
             mean_val = np.mean(values)
             std_val = np.std(values)
+
             if std_val == 0:
                 clipped[i, j] = mean_val
                 for f in range(num_frames):
-                    rej_mask[f, i, j] = False
+                    rej_mask[f, i, j] = not valid[f]
                 continue
+
             z_scores = np.abs((values - mean_val) / std_val)
             valid2 = z_scores < threshold
-            # Mark rejected: for the valid entries, use valid2.
+
             idx = 0
             for f in range(num_frames):
                 if valid[f]:
-                    if not valid2[idx]:
-                        rej_mask[f, i, j] = True
-                    else:
-                        rej_mask[f, i, j] = False
+                    rej_mask[f, i, j] = not valid2[idx]
                     idx += 1
                 else:
                     rej_mask[f, i, j] = True
+
             values = values[valid2]
             wvals = wvals[valid2]
             wsum = wvals.sum()
             if wsum > 0:
                 clipped[i, j] = np.sum(values * wvals) / wsum
             else:
-                clipped[i, j] = mean_val
+                nonzero = pix[pix != 0.0]
+                if nonzero.size > 0:
+                    clipped[i, j] = np.mean(nonzero)
+                else:
+                    clipped[i, j] = 0.0
+
     return clipped, rej_mask
 
 
 @njit(parallel=True, fastmath=True, cache=True)
 def esd_clip_weighted_4d(stack, weights, threshold=3.0):
-    """
-    ESD Clipping for a 4D color stack.
-      stack.shape == (F,H,W,C)
-    Returns (clipped, rejection_mask) where rejection_mask has shape (F,H,W,C).
-    """
     num_frames, height, width, channels = stack.shape
     clipped = np.empty((height, width, channels), dtype=np.float32)
     rej_mask = np.zeros((num_frames, height, width, channels), dtype=np.bool_)
-    
+
     if weights.ndim == 1 and weights.shape[0] == num_frames:
         pass
     elif weights.ndim == 4 and weights.shape == stack.shape:
@@ -1147,48 +1131,53 @@ def esd_clip_weighted_4d(stack, weights, threshold=3.0):
                     w = weights[:]
                 else:
                     w = weights[:, i, j, c]
-                valid = pix != 0
+
+                valid = pix != 0.0
                 values = pix[valid]
                 wvals = w[valid]
+
                 if values.size == 0:
                     clipped[i, j, c] = 0.0
                     for f in range(num_frames):
-                        if not valid[f]:
-                            rej_mask[f, i, j, c] = True
+                        rej_mask[f, i, j, c] = True
                     continue
+
                 mean_val = np.mean(values)
                 std_val = np.std(values)
+
                 if std_val == 0:
                     clipped[i, j, c] = mean_val
                     for f in range(num_frames):
-                        rej_mask[f, i, j, c] = False
+                        rej_mask[f, i, j, c] = not valid[f]
                     continue
+
                 z_scores = np.abs((values - mean_val) / std_val)
                 valid2 = z_scores < threshold
+
                 idx = 0
                 for f in range(num_frames):
                     if valid[f]:
-                        if not valid2[idx]:
-                            rej_mask[f, i, j, c] = True
-                        else:
-                            rej_mask[f, i, j, c] = False
+                        rej_mask[f, i, j, c] = not valid2[idx]
                         idx += 1
                     else:
                         rej_mask[f, i, j, c] = True
+
                 values = values[valid2]
                 wvals = wvals[valid2]
                 wsum = wvals.sum()
                 if wsum > 0:
                     clipped[i, j, c] = np.sum(values * wvals) / wsum
                 else:
-                    clipped[i, j, c] = mean_val
+                    nonzero = pix[pix != 0.0]
+                    if nonzero.size > 0:
+                        clipped[i, j, c] = np.mean(nonzero)
+                    else:
+                        clipped[i, j, c] = 0.0
+
     return clipped, rej_mask
 
 
 def esd_clip_weighted(stack, weights, threshold=3.0):
-    """
-    Dispatcher that returns (clipped, rejection_mask) for ESD clipping.
-    """
     if stack.ndim == 3:
         return esd_clip_weighted_3d(stack, weights, threshold)
     elif stack.ndim == 4:
@@ -1203,22 +1192,17 @@ def esd_clip_weighted(stack, weights, threshold=3.0):
 
 @njit(parallel=True, fastmath=True, cache=True)
 def biweight_location_weighted_3d(stack, weights, tuning_constant=6.0):
-    """
-    Biweight Location for a 3D mono stack.
-      stack.shape == (F,H,W)
-    Returns (clipped, rejection_mask) where rejection_mask has shape (F,H,W).
-    """
     num_frames, height, width = stack.shape
     clipped = np.empty((height, width), dtype=np.float32)
     rej_mask = np.zeros((num_frames, height, width), dtype=np.bool_)
-    
+
     if weights.ndim == 1 and weights.shape[0] == num_frames:
         pass
     elif weights.ndim == 3 and weights.shape == stack.shape:
         pass
     else:
         raise ValueError("biweight_location_weighted_3d: mismatch in shapes for 3D stack & weights")
-    
+
     for i in prange(height):
         for j in range(width):
             x = stack[:, i, j]
@@ -1226,63 +1210,62 @@ def biweight_location_weighted_3d(stack, weights, tuning_constant=6.0):
                 w = weights[:]
             else:
                 w = weights[:, i, j]
-            valid = x != 0
+
+            valid = x != 0.0
             x_valid = x[valid]
             w_valid = w[valid]
-            # Record rejections for zeros:
+
             for f in range(num_frames):
-                if not valid[f]:
-                    rej_mask[f, i, j] = True
-                else:
-                    rej_mask[f, i, j] = False  # initialize as accepted; may update below
+                rej_mask[f, i, j] = not valid[f]
+
             n = x_valid.size
             if n == 0:
                 clipped[i, j] = 0.0
                 continue
+
             M = np.median(x_valid)
             mad = np.median(np.abs(x_valid - M))
             if mad == 0:
                 clipped[i, j] = M
                 continue
+
             u = (x_valid - M) / (tuning_constant * mad)
-            mask = np.abs(u) < 1
-            # Mark frames that were excluded by the biweight rejection:
+            mask = np.abs(u) < 1.0
+
             idx = 0
             for f in range(num_frames):
                 if valid[f]:
                     if not mask[idx]:
                         rej_mask[f, i, j] = True
                     idx += 1
+
             x_masked = x_valid[mask]
             w_masked = w_valid[mask]
-            numerator = ((x_masked - M) * (1 - u[mask]**2)**2 * w_masked).sum()
-            denominator = ((1 - u[mask]**2)**2 * w_masked).sum()
+
+            numerator = ((x_masked - M) * (1.0 - u[mask]**2)**2 * w_masked).sum()
+            denominator = ((1.0 - u[mask]**2)**2 * w_masked).sum()
+
             if denominator != 0:
-                biweight = M + numerator / denominator
+                clipped[i, j] = M + numerator / denominator
             else:
-                biweight = M
-            clipped[i, j] = biweight
+                clipped[i, j] = M
+
     return clipped, rej_mask
 
 
 @njit(parallel=True, fastmath=True, cache=True)
 def biweight_location_weighted_4d(stack, weights, tuning_constant=6.0):
-    """
-    Biweight Location for a 4D color stack.
-      stack.shape == (F,H,W,C)
-    Returns (clipped, rejection_mask) where rejection_mask has shape (F,H,W,C).
-    """
     num_frames, height, width, channels = stack.shape
     clipped = np.empty((height, width, channels), dtype=np.float32)
     rej_mask = np.zeros((num_frames, height, width, channels), dtype=np.bool_)
-    
+
     if weights.ndim == 1 and weights.shape[0] == num_frames:
         pass
     elif weights.ndim == 4 and weights.shape == stack.shape:
         pass
     else:
         raise ValueError("biweight_location_weighted_4d: mismatch in shapes for 4D stack & weights")
-    
+
     for i in prange(height):
         for j in range(width):
             for c in range(channels):
@@ -1291,47 +1274,50 @@ def biweight_location_weighted_4d(stack, weights, tuning_constant=6.0):
                     w = weights[:]
                 else:
                     w = weights[:, i, j, c]
-                valid = x != 0
+
+                valid = x != 0.0
                 x_valid = x[valid]
                 w_valid = w[valid]
+
                 for f in range(num_frames):
-                    if not valid[f]:
-                        rej_mask[f, i, j, c] = True
-                    else:
-                        rej_mask[f, i, j, c] = False
+                    rej_mask[f, i, j, c] = not valid[f]
+
                 n = x_valid.size
                 if n == 0:
                     clipped[i, j, c] = 0.0
                     continue
+
                 M = np.median(x_valid)
                 mad = np.median(np.abs(x_valid - M))
                 if mad == 0:
                     clipped[i, j, c] = M
                     continue
+
                 u = (x_valid - M) / (tuning_constant * mad)
-                mask = np.abs(u) < 1
+                mask = np.abs(u) < 1.0
+
                 idx = 0
                 for f in range(num_frames):
                     if valid[f]:
                         if not mask[idx]:
                             rej_mask[f, i, j, c] = True
                         idx += 1
+
                 x_masked = x_valid[mask]
                 w_masked = w_valid[mask]
-                numerator = ((x_masked - M) * (1 - u[mask]**2)**2 * w_masked).sum()
-                denominator = ((1 - u[mask]**2)**2 * w_masked).sum()
+
+                numerator = ((x_masked - M) * (1.0 - u[mask]**2)**2 * w_masked).sum()
+                denominator = ((1.0 - u[mask]**2)**2 * w_masked).sum()
+
                 if denominator != 0:
-                    biweight = M + numerator / denominator
+                    clipped[i, j, c] = M + numerator / denominator
                 else:
-                    biweight = M
-                clipped[i, j, c] = biweight
+                    clipped[i, j, c] = M
+
     return clipped, rej_mask
 
 
 def biweight_location_weighted(stack, weights, tuning_constant=6.0):
-    """
-    Dispatcher that returns (clipped, rejection_mask) for biweight location.
-    """
     if stack.ndim == 3:
         return biweight_location_weighted_3d(stack, weights, tuning_constant)
     elif stack.ndim == 4:
@@ -1346,22 +1332,17 @@ def biweight_location_weighted(stack, weights, tuning_constant=6.0):
 
 @njit(parallel=True, fastmath=True, cache=True)
 def modified_zscore_clip_weighted_3d(stack, weights, threshold=3.5):
-    """
-    Modified Z-Score Clipping for a 3D mono stack.
-      stack.shape == (F,H,W)
-    Returns (clipped, rejection_mask) with rejection_mask shape (F,H,W).
-    """
     num_frames, height, width = stack.shape
     clipped = np.empty((height, width), dtype=np.float32)
     rej_mask = np.zeros((num_frames, height, width), dtype=np.bool_)
-    
+
     if weights.ndim == 1 and weights.shape[0] == num_frames:
         pass
     elif weights.ndim == 3 and weights.shape == stack.shape:
         pass
     else:
         raise ValueError("modified_zscore_clip_weighted_3d: mismatch in shapes for 3D stack & weights")
-    
+
     for i in prange(height):
         for j in range(width):
             x = stack[:, i, j]
@@ -1369,34 +1350,36 @@ def modified_zscore_clip_weighted_3d(stack, weights, threshold=3.5):
                 w = weights[:]
             else:
                 w = weights[:, i, j]
-            valid = x != 0
+
+            valid = x != 0.0
             x_valid = x[valid]
             w_valid = w[valid]
+
             if x_valid.size == 0:
                 clipped[i, j] = 0.0
                 for f in range(num_frames):
-                    if not valid[f]:
-                        rej_mask[f, i, j] = True
+                    rej_mask[f, i, j] = True
                 continue
+
             median_val = np.median(x_valid)
             mad = np.median(np.abs(x_valid - median_val))
             if mad == 0:
                 clipped[i, j] = median_val
                 for f in range(num_frames):
-                    rej_mask[f, i, j] = False
+                    rej_mask[f, i, j] = not valid[f]
                 continue
+
             modified_z = 0.6745 * (x_valid - median_val) / mad
             valid2 = np.abs(modified_z) < threshold
+
             idx = 0
             for f in range(num_frames):
                 if valid[f]:
-                    if not valid2[idx]:
-                        rej_mask[f, i, j] = True
-                    else:
-                        rej_mask[f, i, j] = False
+                    rej_mask[f, i, j] = not valid2[idx]
                     idx += 1
                 else:
                     rej_mask[f, i, j] = True
+
             x_final = x_valid[valid2]
             w_final = w_valid[valid2]
             wsum = w_final.sum()
@@ -1404,27 +1387,23 @@ def modified_zscore_clip_weighted_3d(stack, weights, threshold=3.5):
                 clipped[i, j] = np.sum(x_final * w_final) / wsum
             else:
                 clipped[i, j] = median_val
+
     return clipped, rej_mask
 
 
 @njit(parallel=True, fastmath=True, cache=True)
 def modified_zscore_clip_weighted_4d(stack, weights, threshold=3.5):
-    """
-    Modified Z-Score Clipping for a 4D color stack.
-      stack.shape == (F,H,W,C)
-    Returns (clipped, rejection_mask) with rejection_mask shape (F,H,W,C).
-    """
     num_frames, height, width, channels = stack.shape
     clipped = np.empty((height, width, channels), dtype=np.float32)
     rej_mask = np.zeros((num_frames, height, width, channels), dtype=np.bool_)
-    
+
     if weights.ndim == 1 and weights.shape[0] == num_frames:
         pass
     elif weights.ndim == 4 and weights.shape == stack.shape:
         pass
     else:
         raise ValueError("modified_zscore_clip_weighted_4d: mismatch in shapes for 4D stack & weights")
-    
+
     for i in prange(height):
         for j in range(width):
             for c in range(channels):
@@ -1433,34 +1412,36 @@ def modified_zscore_clip_weighted_4d(stack, weights, threshold=3.5):
                     w = weights[:]
                 else:
                     w = weights[:, i, j, c]
-                valid = x != 0
+
+                valid = x != 0.0
                 x_valid = x[valid]
                 w_valid = w[valid]
+
                 if x_valid.size == 0:
                     clipped[i, j, c] = 0.0
                     for f in range(num_frames):
-                        if not valid[f]:
-                            rej_mask[f, i, j, c] = True
+                        rej_mask[f, i, j, c] = True
                     continue
+
                 median_val = np.median(x_valid)
                 mad = np.median(np.abs(x_valid - median_val))
                 if mad == 0:
                     clipped[i, j, c] = median_val
                     for f in range(num_frames):
-                        rej_mask[f, i, j, c] = False
+                        rej_mask[f, i, j, c] = not valid[f]
                     continue
+
                 modified_z = 0.6745 * (x_valid - median_val) / mad
                 valid2 = np.abs(modified_z) < threshold
+
                 idx = 0
                 for f in range(num_frames):
                     if valid[f]:
-                        if not valid2[idx]:
-                            rej_mask[f, i, j, c] = True
-                        else:
-                            rej_mask[f, i, j, c] = False
+                        rej_mask[f, i, j, c] = not valid2[idx]
                         idx += 1
                     else:
                         rej_mask[f, i, j, c] = True
+
                 x_final = x_valid[valid2]
                 w_final = w_valid[valid2]
                 wsum = w_final.sum()
@@ -1468,13 +1449,11 @@ def modified_zscore_clip_weighted_4d(stack, weights, threshold=3.5):
                     clipped[i, j, c] = np.sum(x_final * w_final) / wsum
                 else:
                     clipped[i, j, c] = median_val
+
     return clipped, rej_mask
 
 
 def modified_zscore_clip_weighted(stack, weights, threshold=3.5):
-    """
-    Dispatcher that returns (clipped, rejection_mask) for modified z-score clipping.
-    """
     if stack.ndim == 3:
         return modified_zscore_clip_weighted_3d(stack, weights, threshold)
     elif stack.ndim == 4:
@@ -1489,68 +1468,80 @@ def modified_zscore_clip_weighted(stack, weights, threshold=3.5):
 
 @njit(parallel=True, fastmath=True, cache=True)
 def windsorized_sigma_clip_3d(stack, lower=2.5, upper=2.5):
-    """
-    Windsorized Sigma Clipping for a 3D mono stack (non-weighted).
-      stack.shape == (F,H,W)
-    Returns (clipped, rejection_mask) where rejection_mask is (F,H,W).
-    """
     num_frames, height, width = stack.shape
     clipped = np.zeros((height, width), dtype=np.float32)
     rej_mask = np.zeros((num_frames, height, width), dtype=np.bool_)
-    
+
     for i in prange(height):
         for j in range(width):
             pixel_values = stack[:, i, j]
-            median_val = np.median(pixel_values)
-            std_dev = np.std(pixel_values)
+            valid0 = pixel_values != 0.0
+            valid_vals0 = pixel_values[valid0]
+
+            if valid_vals0.size == 0:
+                clipped[i, j] = 0.0
+                for f in range(num_frames):
+                    rej_mask[f, i, j] = True
+                continue
+
+            median_val = np.median(valid_vals0)
+            std_dev = np.std(valid_vals0)
             lower_bound = median_val - lower * std_dev
             upper_bound = median_val + upper * std_dev
-            valid = (pixel_values >= lower_bound) & (pixel_values <= upper_bound)
+
+            valid = valid0 & (pixel_values >= lower_bound) & (pixel_values <= upper_bound)
+
             for f in range(num_frames):
                 rej_mask[f, i, j] = not valid[f]
+
             valid_vals = pixel_values[valid]
             if valid_vals.size > 0:
                 clipped[i, j] = np.mean(valid_vals)
             else:
                 clipped[i, j] = median_val
+
     return clipped, rej_mask
 
 
 @njit(parallel=True, fastmath=True, cache=True)
 def windsorized_sigma_clip_4d(stack, lower=2.5, upper=2.5):
-    """
-    Windsorized Sigma Clipping for a 4D color stack (non-weighted).
-      stack.shape == (F,H,W,C)
-    Returns (clipped, rejection_mask) where rejection_mask is (F,H,W,C).
-    """
     num_frames, height, width, channels = stack.shape
     clipped = np.zeros((height, width, channels), dtype=np.float32)
     rej_mask = np.zeros((num_frames, height, width, channels), dtype=np.bool_)
-    
+
     for i in prange(height):
         for j in range(width):
             for c in range(channels):
                 pixel_values = stack[:, i, j, c]
-                median_val = np.median(pixel_values)
-                std_dev = np.std(pixel_values)
+                valid0 = pixel_values != 0.0
+                valid_vals0 = pixel_values[valid0]
+
+                if valid_vals0.size == 0:
+                    clipped[i, j, c] = 0.0
+                    for f in range(num_frames):
+                        rej_mask[f, i, j, c] = True
+                    continue
+
+                median_val = np.median(valid_vals0)
+                std_dev = np.std(valid_vals0)
                 lower_bound = median_val - lower * std_dev
                 upper_bound = median_val + upper * std_dev
-                valid = (pixel_values >= lower_bound) & (pixel_values <= upper_bound)
+
+                valid = valid0 & (pixel_values >= lower_bound) & (pixel_values <= upper_bound)
+
                 for f in range(num_frames):
                     rej_mask[f, i, j, c] = not valid[f]
+
                 valid_vals = pixel_values[valid]
                 if valid_vals.size > 0:
                     clipped[i, j, c] = np.mean(valid_vals)
                 else:
                     clipped[i, j, c] = median_val
+
     return clipped, rej_mask
 
 
 def windsorized_sigma_clip(stack, lower=2.5, upper=2.5):
-    """
-    Dispatcher function that calls either the 3D or 4D specialized Numba function,
-    depending on 'stack.ndim'.
-    """
     if stack.ndim == 3:
         return windsorized_sigma_clip_3d(stack, lower, upper)
     elif stack.ndim == 4:
@@ -1558,15 +1549,19 @@ def windsorized_sigma_clip(stack, lower=2.5, upper=2.5):
     else:
         raise ValueError(f"windsorized_sigma_clip: stack must be 3D or 4D, got {stack.shape}")
 
+
 def max_value_stack(stack, weights=None):
     """
-    Stacking by taking the maximum value along the frame axis.
-    Returns (clipped, rejection_mask) for compatibility:
-      - clipped: H×W (or H×W×C)
-      - rejection_mask: same shape as stack, all False
+    Stacking by taking the maximum non-zero value along the frame axis.
+    Returns:
+      clipped: H×W (or H×W×C)
+      rejection_mask: same shape as stack, True where ignored/rejected
     """
-    clipped = np.max(stack, axis=0)
-    rej_mask = np.zeros(stack.shape, dtype=bool)
+    valid = stack != 0.0
+    masked = np.where(valid, stack, -np.inf)
+    clipped = np.max(masked, axis=0)
+    clipped = np.where(np.isfinite(clipped), clipped, 0.0).astype(np.float32)
+    rej_mask = ~valid
     return clipped, rej_mask
 
 @njit(parallel=True, cache=True)

@@ -646,8 +646,8 @@ class Resources:
     CC_SAT_DETECT2_PTH  = property(lambda self: model_path('satellite_trail_detector_mobilenetv2.5.pth'))
     CC_SAT_DETECT2_ONNX = property(lambda self: model_path('satellite_trail_detector_mobilenetv2.5.onnx'))
 
-    CC_SAT_REMOVE_PTH   = property(lambda self: model_path('satelliteremovalAI3.5.pth'))
-    CC_SAT_REMOVE_ONNX  = property(lambda self: model_path('satelliteremovalAI3.5.onnx'))
+    CC_SAT_REMOVE_PTH   = property(lambda self: model_path('satelliteRemovalAI4.pth'))
+    CC_SAT_REMOVE_ONNX  = property(lambda self: model_path('satelliteRemovalAI4.onnx'))
 
 @lru_cache(maxsize=8)
 def get_models_dir() -> str:

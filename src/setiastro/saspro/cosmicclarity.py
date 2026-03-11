@@ -84,12 +84,15 @@ def _save_image_no_auto_legacy(img, dst_path: str, hdr, mono, *, image_meta=None
     return dst_path
 
 
-def _cc_models_installed() -> tuple[bool, str]:
+def _cc_models_installed(kind: str = "core") -> tuple[bool, str]:
     """
-    Returns (ok, detail). Since your model download is all-or-nothing (zip),
-    we use a single sentinel check to avoid maintaining long required lists.
+    Returns (ok, detail)
+
+    kind:
+        "core"      -> normal Cosmic Clarity (sharpen / denoise / superres)
+        "satellite" -> satellite removal only
+        "all"       -> require both core + satellite
     """
-    # Prefer whatever your app uses as the canonical models directory.
     models_dir = ""
     try:
         from setiastro.saspro.resources import get_models_dir
@@ -100,12 +103,26 @@ def _cc_models_installed() -> tuple[bool, str]:
     if not models_dir or not os.path.isdir(models_dir):
         return False, "Models directory is missing."
 
-    # Sentinel approach: pick ONE file that is guaranteed in the zip.
+    # Pick one stable sentinel per feature set.
+    sentinels = {
+        "core": [
+            "deep_sharp_stellar_AI4.pth",  
 
-    sentinel = os.path.join(models_dir, "deep_sharp_stellar_AI4.pth")
+        ],
+        "satellite": [
+            "satelliteRemovalAI4.pth",
+        ],
+        "all": [
+            "deep_sharp_stellar_AI4.pth",
+            "satelliteRemovalAI4.pth",
+        ],
+    }
 
-    if not os.path.exists(sentinel):
-        return False, f"Missing sentinel: {os.path.basename(sentinel)}"
+    required = sentinels.get(kind, sentinels["core"])
+
+    missing = [name for name in required if not os.path.exists(os.path.join(models_dir, name))]
+    if missing:
+        return False, "Missing model(s): " + ", ".join(missing)
 
     return True, ""
 
@@ -173,17 +190,61 @@ def _satellite_exe_name() -> str:
 
 class WaitDialog(QDialog):
     cancelled = pyqtSignal()
+
     def __init__(self, title="Processing…", parent=None):
         super().__init__(parent)
         self.setWindowTitle(title)
+
         v = QVBoxLayout(self)
         self.lbl = QLabel("Processing, please wait…")
-        self.txt = QTextEdit(); self.txt.setReadOnly(True)
-        self.pb  = QProgressBar(); self.pb.setRange(0, 100)
-        btn = QPushButton("Cancel"); btn.clicked.connect(self.cancelled.emit)
-        v.addWidget(self.lbl); v.addWidget(self.txt); v.addWidget(self.pb); v.addWidget(btn)
-    def append_output(self, line: str): self.txt.append(line)
-    def set_progress(self, p: int):      self.pb.setValue(int(max(0, min(100, p))))
+        self.txt = QTextEdit()
+        self.txt.setReadOnly(True)
+
+        self.pb = QProgressBar()
+        self.pb.setRange(0, 100)
+        self.pb.setValue(0)
+        self.pb.setFormat("%p%")
+
+        btn = QPushButton("Cancel")
+        btn.clicked.connect(self.cancelled.emit)
+
+        v.addWidget(self.lbl)
+        v.addWidget(self.txt)
+        v.addWidget(self.pb)
+        v.addWidget(btn)
+
+    def append_output(self, line: str):
+        self.txt.append(line)
+
+    def set_progress(self, done: int, total: int | None = None):
+        """
+        Supports both:
+            set_progress(percent)
+        and:
+            set_progress(done, total)
+        """
+
+        # Percent mode (legacy CC dialog usage)
+        if total is None:
+            pct = max(0, min(100, int(done)))
+            self.lbl.setText("Processing…")
+            self.pb.setRange(0, 100)
+            self.pb.setValue(pct)
+            self.pb.setFormat("%p%")
+            return
+
+        # Indeterminate mode
+        if total <= 0:
+            self.lbl.setText("Waiting for files…")
+            self.pb.setRange(0, 0)
+            return
+
+        # done / total mode
+        done = max(0, min(int(done), int(total)))
+        self.lbl.setText("Batch processing files…")
+        self.pb.setRange(0, int(total))
+        self.pb.setValue(done)
+        self.pb.setFormat(f"{done} / {total} files")
 
 class CosmicClarityEngineWorker(QThread):
     progress = pyqtSignal(int)      # 0..100
@@ -405,7 +466,7 @@ class CosmicClarityDialogPro(QDialog):
             QTimer.singleShot(0, self.reject)
             return     
 
-        ok, detail = _cc_models_installed()
+        ok, detail = _cc_models_installed("core")
         if not ok:
             _warn_models_missing_and_close(self, detail)
             try:
@@ -807,7 +868,7 @@ class CosmicClarityDialogPro(QDialog):
 
 
     def _ensure_models_installed_or_bail(self) -> bool:
-        ok, detail = _cc_models_installed()
+        ok, detail = _cc_models_installed("core")
         if ok:
             return True
 
@@ -1255,7 +1316,7 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         self._engine_thread = None
         self._closing_after_cancel = False
         self._wait = None
-        ok, detail = _cc_models_installed()
+        ok, detail = _cc_models_installed("satellite")
         if not ok:
             _warn_models_missing_and_close(self, detail)
             try:
@@ -1308,7 +1369,9 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         left.addWidget(QLabel("Use GPU Acceleration:"))
         self.cmb_gpu = QComboBox(); self.cmb_gpu.addItems(["Yes", "No"])
         left.addWidget(self.cmb_gpu)
-
+        self.chk_gpu_compat = QCheckBox("GPU Compatibility Mode (slower, safer for low-VRAM GPUs)")
+        self.chk_gpu_compat.setChecked(False)
+        left.addWidget(self.chk_gpu_compat)
         # Mode
         left.addWidget(QLabel("Satellite Removal Mode:"))
         self.cmb_mode = QComboBox(); self.cmb_mode.addItems(["Full", "Luminance"])
@@ -1488,6 +1551,7 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         # ----------------------------
         views = self._collect_open_views()
         use_view = False
+        compatibility_mode = bool(self.chk_gpu_compat.isChecked())
 
         if views:
             mb = QMessageBox(self)
@@ -1613,6 +1677,7 @@ class CosmicClaritySatelliteDialogPro(QDialog):
                 mode=mode,
                 clip_trail=clip_trail,
                 sensitivity=sensitivity,
+                compatibility_mode=compatibility_mode,
                 progress_cb=_progress,
             )
 
@@ -1727,7 +1792,7 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         clip_trail = bool(self.chk_clip.isChecked())
         sensitivity = float(self.sensitivity)
         skip_save = bool(self.chk_skip.isChecked())
-
+        compatibility_mode = bool(self.chk_gpu_compat.isChecked())
         self._wait = WaitDialog(title, self)
         self._wait.show()
 
@@ -1740,12 +1805,18 @@ class CosmicClaritySatelliteDialogPro(QDialog):
             sensitivity=sensitivity,
             skip_save=skip_save,
             monitor=monitor,
+            compatibility_mode=compatibility_mode,
         )
         self._sat_thread.log_signal.connect(self._wait.append_output)
+        self._sat_thread.progress_signal.connect(self._on_sat_progress)
         self._sat_thread.finished_signal.connect(lambda: self._on_thread_finished(on_finish))
         self._wait.cancelled.connect(self._cancel_sat_thread)
         self._sat_thread.start()
 
+    def _on_sat_progress(self, done: int, total: int):
+        if not self._wait:
+            return
+        self._wait.set_progress(done, total)
 
     # ---------- Command / run ----------
 
@@ -1782,6 +1853,7 @@ class SatelliteEngineThread(QThread):
     def __init__(self, *, input_dir: str, output_dir: str,
                  use_gpu: bool, mode: str, clip_trail: bool,
                  sensitivity: float, skip_save: bool, monitor: bool,
+                 compatibility_mode: bool,
                  poll_seconds: float = 1.0):
         super().__init__()
         self.input_dir = input_dir
@@ -1793,6 +1865,7 @@ class SatelliteEngineThread(QThread):
         self.skip_save = skip_save
         self.monitor = monitor
         self.poll_seconds = poll_seconds
+        self.compatibility_mode = compatibility_mode        
 
         self._cancel = False
         self._seen = set()
@@ -1838,7 +1911,8 @@ class SatelliteEngineThread(QThread):
                     mode=self.mode,
                     clip_trail=self.clip_trail,
                     sensitivity=float(self.sensitivity),
-                    progress_cb=None,  # keep this simple; we emit per-file progress instead
+                    compatibility_mode=self.compatibility_mode,
+                    progress_cb=None,
                 )
 
                 if self.skip_save and (not detected):
@@ -1861,6 +1935,7 @@ class SatelliteEngineThread(QThread):
                 todo = [fn for fn in files if fn not in self._seen]
                 total = len(todo)
                 done = 0
+                self.progress_signal.emit(done, total)
 
                 for fn in todo:
                     if self._cancel:
