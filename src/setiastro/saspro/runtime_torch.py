@@ -1331,8 +1331,6 @@ def import_torch(
                 if require_torchaudio:
                     import torchaudio  # noqa
 
-                _torch_sanity_check(status_cb=status_cb)
-
                 _TORCH_CACHED = torch
                 return torch
 
@@ -1376,7 +1374,7 @@ def import_torch(
             import torchvision  # noqa
             if require_torchaudio:
                 import torchaudio  # noqa
-            _torch_sanity_check(status_cb=status_cb)
+
             try:
                 _write_torch_marker(marker, status_cb=status_cb)
             except Exception:
