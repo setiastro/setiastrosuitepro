@@ -199,14 +199,33 @@ class WaitDialog(QDialog):
     def append_output(self, line: str):
         self.txt.append(line)
 
-    def set_progress(self, done: int, total: int):
+    def set_progress(self, done: int, total: int | None = None):
+        """
+        Supports both:
+            set_progress(percent)
+        and:
+            set_progress(done, total)
+        """
+
+        # Percent mode (legacy CC dialog usage)
+        if total is None:
+            pct = max(0, min(100, int(done)))
+            self.lbl.setText("Processing…")
+            self.pb.setRange(0, 100)
+            self.pb.setValue(pct)
+            self.pb.setFormat("%p%")
+            return
+
+        # Indeterminate mode
         if total <= 0:
             self.lbl.setText("Waiting for files…")
             self.pb.setRange(0, 0)
             return
 
+        # done / total mode
+        done = max(0, min(int(done), int(total)))
         self.lbl.setText("Batch processing files…")
-        self.pb.setRange(0, total)
+        self.pb.setRange(0, int(total))
         self.pb.setValue(done)
         self.pb.setFormat(f"{done} / {total} files")
 

@@ -342,6 +342,18 @@ class ViewMixin:
             return
         self._zoom_active_fit()
 
+    def _set_autostretch_continuous_from_action(self, checked: bool):
+        self.settings.setValue("display/autostretch_continuous", bool(checked))
+        sw = self.mdi.activeSubWindow()
+        if not sw:
+            return
+        view = sw.widget()
+        if hasattr(view, "set_autostretch_continuous"):
+            view.set_autostretch_continuous(bool(checked))
+        self._log(
+            f"Display-Stretch update mode -> {'Continuous' if checked else 'Static'} ({sw.windowTitle()})"
+        )
+
     def _toggle_autostretch(self, on: bool):
         """Toggle autostretch for the active view."""
         sw = self.mdi.activeSubWindow()

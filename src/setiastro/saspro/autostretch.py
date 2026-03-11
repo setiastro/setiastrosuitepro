@@ -133,6 +133,108 @@ def _fast_channel_autostretch_uN(ch_uN: np.ndarray, target: float, sigma: float,
     lut = _build_lut_generic(bp, target, med, maxv)
     return lut[ch_uN]
 
+def apply_autostretch_lut(
+    img: np.ndarray,
+    lut_cache,
+    *,
+    linked: bool = False,
+    use_24bit: bool | None = None,
+) -> np.ndarray:
+    if img is None:
+        return None
+
+    if use_24bit is None:
+        try:
+            from PyQt6.QtCore import QSettings
+            use_24bit = QSettings().value("display/autostretch_24bit", True, type=bool)
+        except Exception:
+            use_24bit = True
+
+    maxv = _U24_MAX if use_24bit else _U8_MAX
+    a = np.asarray(img)
+
+    if a.ndim == 2 or (a.ndim == 3 and a.shape[2] == 1):
+        u = _to_uN(a.squeeze(), maxv)
+        lut = lut_cache
+        return lut[u].astype(np.float32, copy=False)
+
+    u = _to_uN(a, maxv)
+    C = u.shape[2]
+    out = np.empty_like(u, dtype=np.float32)
+
+    if linked:
+        lut = lut_cache
+        out[..., :3] = lut[u[..., :3]]
+    else:
+        luts = lut_cache
+        for c in range(min(3, C)):
+            out[..., c] = luts[c][u[..., c]]
+
+    if C > 3:
+        out[..., 3:] = u[..., 3:] / float(maxv)
+
+    return out
+
+def autostretch_with_lut(
+    img: np.ndarray,
+    target_median: float = 0.25,
+    linked: bool = False,
+    sigma: float = _DEFAULT_SIGMA,
+    *,
+    use_24bit: bool | None = None,
+    use_16bit: bool | None = None,
+    **_ignored_kwargs,
+):
+    if img is None:
+        return None, None
+
+    if use_16bit is not None and use_24bit is None:
+        use_24bit = True
+
+    if use_24bit is None:
+        try:
+            from PyQt6.QtCore import QSettings
+            use_24bit = QSettings().value("display/autostretch_24bit", True, type=bool)
+        except Exception:
+            use_24bit = True
+
+    maxv = _U24_MAX if use_24bit else _U8_MAX
+    a = np.asarray(img)
+
+    if a.ndim == 2 or (a.ndim == 3 and a.shape[2] == 1):
+        u = _to_uN(a.squeeze(), maxv)
+        lut = _compute_lut_from_sample(u, target_median, sigma, maxv)
+        out = lut[u].astype(np.float32, copy=False)
+        return out, lut
+
+    u = _to_uN(a, maxv)
+    C = u.shape[2]
+
+    if linked:
+        h, w, _ = u.shape
+        sy, sx = _choose_stride(h, w, max(1, _MAX_STATS_PIXELS // 3))
+        sample = u[::sy, ::sx]
+        lum = (0.2126 * sample[..., 0] + 0.7152 * sample[..., 1] + 0.0722 * sample[..., 2]).astype(u.dtype)
+        lut = _compute_lut_from_sample(lum, target_median, sigma, maxv)
+
+        out = np.empty_like(u, dtype=np.float32)
+        out[..., :3] = lut[u[..., :3]]
+        if C > 3:
+            out[..., 3:] = u[..., 3:] / float(maxv)
+        return out, lut
+
+    out = np.empty_like(u, dtype=np.float32)
+    luts = []
+    for c in range(min(3, C)):
+        lut = _compute_lut_from_sample(u[..., c], target_median, sigma, maxv)
+        luts.append(lut)
+        out[..., c] = lut[u[..., c]]
+
+    if C > 3:
+        out[..., 3:] = u[..., 3:] / float(maxv)
+
+    return out, tuple(luts)
+
 # ---------- public API ----------
 def autostretch(
     img: np.ndarray,
@@ -144,66 +246,15 @@ def autostretch(
     use_16bit: bool | None = None,   # <-- legacy compat (ignored / mapped)
     **_ignored_kwargs,               # <-- swallow any other legacy flags safely
 ) -> np.ndarray:
-
-    if img is None:
-        return None
-
-    # ---- legacy compat -------------------------------------------------
-    # Old callers may pass use_16bit. We no longer support 16-bit preview output.
-    # If they pass it, we just treat it as "use higher precision display", i.e. 24-bit.
-    if use_16bit is not None:
-        # If caller explicitly asked for 16-bit, we interpret that as "high precision".
-        # Only override if caller didn't explicitly pass use_24bit.
-        if use_24bit is None:
-            use_24bit = True
-
-    # Optional auto-read from QSettings if caller didn’t pass a flag.
-    if use_24bit is None:
-        try:
-            from PyQt6.QtCore import QSettings
-            use_24bit = QSettings().value("display/autostretch_24bit", True, type=bool)
-        except Exception:
-            use_24bit = True
-
-    maxv = _U24_MAX if use_24bit else _U8_MAX
-    a = np.asarray(img)
-
-    # MONO (or pseudo-mono)
-    if a.ndim == 2 or (a.ndim == 3 and a.shape[2] == 1):
-        u = _to_uN(a.squeeze(), maxv)
-        out = _fast_channel_autostretch_uN(u, target_median, sigma, maxv)
-        return out.astype(np.float32, copy=False)
-
-    # color
-    u = _to_uN(a, maxv)
-    C = u.shape[2]
-
-    if linked:
-        # sample fewer pixels for stats
-        h, w, _ = u.shape
-        sy, sx = _choose_stride(h, w, max(1, _MAX_STATS_PIXELS // 3))
-        sample = u[::sy, ::sx]
-
-        # Rec.709-ish luminance, integer dtype preserved
-        # (weights sum to 1; cast back to u.dtype for the LUT builder)
-        lum = (0.2126 * sample[..., 0] + 0.7152 * sample[..., 1] + 0.0722 * sample[..., 2]).astype(u.dtype)
-
-        lut = _compute_lut_from_sample(lum, target_median, sigma, maxv)
-
-        out = np.empty_like(u, dtype=np.float32)
-        # Vectorized LUT application: apply to all RGB channels at once
-        # lut is 1D array of float32; u[..., :3] selects RGB indices
-        out[..., :3] = lut[u[..., :3]]       
-        
-        if C > 3:  # pass-through non-RGB channels
-            out[..., 3:] = u[..., 3:] / float(maxv)
-        return out
-    else:
-        out = np.empty_like(u, dtype=np.float32)
-        for c in range(min(3, C)):
-            out[..., c] = _fast_channel_autostretch_uN(u[..., c], target_median, sigma, maxv)
-        if C > 3:
-            out[..., 3:] = u[..., 3:] / float(maxv)
-        return out
+    out, _lut = autostretch_with_lut(
+        img,
+        target_median=target_median,
+        linked=linked,
+        sigma=sigma,
+        use_24bit=use_24bit,
+        use_16bit=use_16bit,
+        **_ignored_kwargs,
+    )
+    return out
     
 

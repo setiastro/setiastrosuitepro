@@ -103,6 +103,7 @@ class ToolbarMixin:
         btn = tb.widgetForAction(self.act_autostretch)
         if isinstance(btn, QToolButton):
             menu = QMenu(btn)
+            menu.addAction(self.act_autostretch_continuous)
             menu.addAction(self.act_stretch_linked)
             menu.addAction(self.act_hardstretch)
 
@@ -112,9 +113,9 @@ class ToolbarMixin:
             menu.addAction(self.act_display_sigma)
 
             presets = QMenu("Presets", menu)
-            a_norm = presets.addAction("Normal (target 0.30, Ïƒ 5)")
-            a_midy = presets.addAction("Mid (target 0.40, Ïƒ 3)")
-            a_hard = presets.addAction("Hard (target 0.50, Ïƒ 2)")
+            a_norm = presets.addAction("Normal (target 0.30, σ 5)")
+            a_midy = presets.addAction("Mid (target 0.40, σ 3)")
+            a_hard = presets.addAction("Hard (target 0.50, σ 2)")
             menu.addMenu(presets)
             menu.addSeparator()
             menu.addAction(self.act_bake_display_stretch)
@@ -551,6 +552,7 @@ class ToolbarMixin:
             btn = tb.widgetForAction(self.act_autostretch)
             if isinstance(btn, QToolButton):
                 menu = QMenu(btn)
+                menu.addAction(self.act_autostretch_continuous)
                 menu.addAction(self.act_stretch_linked)
                 menu.addAction(self.act_hardstretch)
 
@@ -615,6 +617,7 @@ class ToolbarMixin:
         btn = tb.widgetForAction(self.act_autostretch)
         if isinstance(btn, QToolButton):
             menu = QMenu(btn)
+            menu.addAction(self.act_autostretch_continuous)
             menu.addAction(self.act_stretch_linked)
             menu.addAction(self.act_hardstretch)
 
@@ -785,6 +788,15 @@ class ToolbarMixin:
 
         # use toggled(bool), not triggered()
         self.act_hardstretch.toggled.connect(self._set_hard_autostretch_from_action)
+
+        self.act_autostretch_continuous = QAction(self.tr("Continuous Display-Stretch Updates"), self, checkable=True)
+        self.act_autostretch_continuous.setStatusTip(
+            self.tr("If enabled, Display-Stretch recalculates continuously. If disabled, it is frozen until toggled off/on.")
+        )
+        self.act_autostretch_continuous.setChecked(
+            self.settings.value("display/autostretch_continuous", True, type=bool)
+        )
+        self.act_autostretch_continuous.toggled.connect(self._set_autostretch_continuous_from_action)
 
         # NEW: Linked/Unlinked toggle (global default via QSettings, per-view runtime)
         self.act_stretch_linked = QAction(self.tr("Link RGB channels"), self, checkable=True)
