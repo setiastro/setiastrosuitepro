@@ -31,6 +31,25 @@ def _get_torch(*, prefer_cuda: bool, prefer_dml: bool, status_cb=print):
         status_cb=status_cb,
     )
 
+def _inference_context(torch):
+    """
+    Prefer torch.inference_mode() when the runtime fully supports it.
+    Fall back to torch.no_grad() for broken/mismatched torch builds
+    (for example when torch._C lacks _InferenceMode).
+    """
+    try:
+        if hasattr(torch, "inference_mode"):
+            # Some broken torch installs expose the Python symbol but the
+            # underlying C extension is missing _InferenceMode.
+            ctx = torch.inference_mode()
+            return ctx
+    except Exception:
+        pass
+
+    try:
+        return torch.no_grad()
+    except Exception:
+        return _nullcontext()
 
 def _nullcontext():
     from contextlib import nullcontext
@@ -972,7 +991,7 @@ def _satellite_remove_rgb(
             else:
                 x = x.to(device=device, dtype=torch.float32)
 
-            with torch.inference_mode():
+            with _inference_context(torch):
                 o1 = det1(x).flatten()
             keep1 = (o1 > 0.5)
 
@@ -980,7 +999,7 @@ def _satellite_remove_rgb(
 
             if keep1.any():
                 idxs = keep1.nonzero(as_tuple=False).flatten()
-                with torch.inference_mode():
+                with _inference_context(torch):
                     o2 = det2(x[idxs]).flatten()
                 keep2 = (o2 > 0.25).detach().cpu().numpy()
                 idxs_cpu = idxs.detach().cpu().numpy()
@@ -1030,7 +1049,7 @@ def _satellite_remove_rgb(
                     x = x.to(device=device, dtype=torch.float32)
 
                 rem = models["removal_model"]
-                with torch.inference_mode(), _autocast_context(torch, device):
+                with _inference_context(torch), _autocast_context(torch, device):
                     y = rem(x).detach().cpu().numpy()
 
                 y = np.transpose(y, (0, 2, 3, 1))

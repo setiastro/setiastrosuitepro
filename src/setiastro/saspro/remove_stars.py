@@ -20,10 +20,16 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QDesktopServices, QIcon
 
-from setiastro.saspro.cosmicclarity_engines.darkstar_engine import (
-    darkstar_starremoval_rgb01,
-    DarkStarParams,
-)
+try:
+    from setiastro.saspro.cosmicclarity_engines.darkstar_engine_devtest import (
+        darkstar_starremoval_rgb01,
+        DarkStarParams,
+    )
+except ModuleNotFoundError:
+    from setiastro.saspro.cosmicclarity_engines.darkstar_engine import (
+        darkstar_starremoval_rgb01,
+        DarkStarParams,
+    )
 
 # use your legacy I/O functions (as requested)
 from setiastro.saspro.legacy.image_manager import save_image, load_image
