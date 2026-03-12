@@ -330,9 +330,20 @@ class UpdateMixin:
 
         self.statusBar().showMessage(f"Update downloaded to {target_path}", 5000)
 
+        # Remove Zone.Identifier from downloaded zip (Windows "blocked" flag)
+        if sys.platform.startswith("win"):
+            try:
+                ads_path = str(target_path) + ":Zone.Identifier"
+                if os.path.exists(ads_path):
+                    os.remove(ads_path)
+            except Exception:
+                pass
+
         # Extract zip if needed
         if target_path.suffix.lower() == ".zip":
-            extract_dir = Path(tempfile.mkdtemp(prefix="saspro-update-"))
+            # Extract alongside the zip in Downloads (not temp, which has stricter ACLs)
+            extract_dir = target_path.parent / f"saspro-update-{target_path.stem}"
+            os.makedirs(extract_dir, exist_ok=True)
             try:
                 with zipfile.ZipFile(target_path, "r") as zf:
                     zf.extractall(extract_dir)
@@ -367,9 +378,26 @@ class UpdateMixin:
         if ok != QMessageBox.StandardButton.Yes:
             return
 
-        # Launch installer
+        # Launch installer with elevation (fixes WinError 5 on Windows)
         try:
-            subprocess.Popen([str(installer_path)], shell=False)
+            if sys.platform.startswith("win"):
+                # Remove Zone.Identifier ADS so Windows doesn't block the exe
+                try:
+                    ads_path = str(installer_path) + ":Zone.Identifier"
+                    if os.path.exists(ads_path):
+                        os.remove(ads_path)
+                except Exception:
+                    pass  # Not fatal if ADS removal fails
+
+                # Use ShellExecuteW with "runas" to request UAC elevation
+                import ctypes
+                ret = ctypes.windll.shell32.ShellExecuteW(
+                    None, "runas", str(installer_path), None, None, 1
+                )
+                if ret <= 32:
+                    raise OSError(f"ShellExecuteW failed with code {ret}")
+            else:
+                subprocess.Popen([str(installer_path)], shell=False)
         except Exception as e:
             QMessageBox.warning(self, self.tr("Update Failed"),
                                 self.tr("Could not start installer:\n{0}").format(e))
