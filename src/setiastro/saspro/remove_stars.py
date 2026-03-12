@@ -496,12 +496,33 @@ def remove_stars(main, target_doc=None):
         return
 
     labels = [t["label"] for t in _STAR_REMOVAL_TOOLS]
+
+    # Persist last-selected tool
+    settings = QSettings()
+    settings_key = "remove_stars/last_tool_label"
+    last_label = str(settings.value(settings_key, labels[0] if labels else "", type=str))
+
+    if last_label in labels:
+        current_index = labels.index(last_label)
+    else:
+        current_index = 0
+
     label, ok = QInputDialog.getItem(
-        main, "Select Star Removal Tool", "Choose a tool:",
-        labels, 0, False
+        main,
+        "Select Star Removal Tool",
+        "Choose a tool:",
+        labels,
+        current_index,
+        False
     )
     if not ok:
         return
+
+    # Save selection for next time
+    try:
+        settings.setValue(settings_key, label)
+    except Exception:
+        pass
 
     tool = next((t for t in _STAR_REMOVAL_TOOLS if t["label"] == label), None)
     if not tool:
@@ -2588,6 +2609,7 @@ def _run_darkstar(main, doc, icon_path=None):
     show_extracted_stars = bool(v["show_extracted_stars"])
 
     chunk_size = int(v["stride"])                 # reuse stride as chunk size
+    edge_padding = int(v.get("edge_padding", 64))    
     overlap_frac = 0.125                          # keep your current default
     output_stars_only = bool(show_extracted_stars)
 
@@ -2602,6 +2624,7 @@ def _run_darkstar(main, doc, icon_path=None):
                 "processing_path": processing_path,
                 "show_extracted_stars": bool(show_extracted_stars),
                 "stride": int(chunk_size),
+                "edge_padding": int(edge_padding),
             },
         }
     except Exception:
@@ -2617,6 +2640,7 @@ def _run_darkstar(main, doc, icon_path=None):
                 "mode": mode,
                 "show_extracted_stars": bool(show_extracted_stars),
                 "stride": int(stride),
+                "edge_padding": int(edge_padding),                
             },
         }
         if hasattr(main, "_log"):
@@ -2635,12 +2659,16 @@ def _run_darkstar(main, doc, icon_path=None):
 
     x = np.nan_to_num(src.astype(np.float32, copy=False), nan=0.0, posinf=0.0, neginf=0.0)
 
-    # If your doc domain can exceed 1.0, normalize to [0..1] for the engine.
-    # (Matches what you were already doing for external DarkStar.)
+    orig_h, orig_w = x.shape[:2]
+
     scale_factor = float(np.max(x)) if x.size else 1.0
     if scale_factor > 1.0:
         x = x / scale_factor
     x = np.clip(x, 0.0, 1.0).astype(np.float32, copy=False)
+
+    # Reflect-pad whole image before sending to Dark Star to reduce edge artifacts
+    if edge_padding > 0:
+        x = _pad_reflect(x, edge_padding)
 
     params = DarkStarParams(
         use_gpu=bool(use_gpu),
@@ -2649,6 +2677,7 @@ def _run_darkstar(main, doc, icon_path=None):
         mode=str(mode),
         output_stars_only=bool(output_stars_only),
         processing_path=str(processing_path),
+        edge_padding=int(edge_padding),
     )
 
     dlg = _ProcDialog(main, title="Dark Star Progress")
@@ -2664,7 +2693,16 @@ def _run_darkstar(main, doc, icon_path=None):
             QMessageBox.critical(main, "Dark Star Error", f"Dark Star failed:\n{err}")
             dlg.close()
             return
-
+        # Remove UI-level reflect padding
+        if edge_padding > 0:
+            try:
+                starless = _crop_unpad(starless, edge_padding, orig_h, orig_w)
+                if stars_only is not None:
+                    stars_only = _crop_unpad(stars_only, edge_padding, orig_h, orig_w)
+            except Exception as e:
+                QMessageBox.critical(main, "Dark Star Error", f"Failed to crop padded result:\n{e}")
+                dlg.close()
+                return
         # Engine returns float32 [0..1]; if we normalized >1, restore scale if you want.
         # BUT you later clip to [0..1] for doc anyway, so this is mostly for consistency.
         if scale_factor > 1.0:
@@ -3130,6 +3168,7 @@ class DarkStarConfigDialog(QDialog):
             color_only
       - Show Extracted Stars: Yes/No (default Yes)
       - Stride (powers of 2): 64,128,256,512,1024 (default 512)
+      - Edge Padding: reflected full-image border to reduce edge artifacts
     """
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -3146,7 +3185,7 @@ class DarkStarConfigDialog(QDialog):
         self.cmb_processing.addItem("Mono AI per channel", "mono_per_channel")
         self.cmb_processing.addItem("Hybrid Luma + Color (best balance)", "hybrid_luma_color")
         self.cmb_processing.addItem("Color AI only", "color_only")
-        self.cmb_processing.setCurrentIndex(1)  # default hybrid
+        self.cmb_processing.setCurrentIndex(1)
 
         self.chk_show_stars = QCheckBox("Show Extracted Stars")
         self.chk_show_stars.setChecked(True)
@@ -3156,10 +3195,16 @@ class DarkStarConfigDialog(QDialog):
             self.cmb_stride.addItem(str(v), v)
         self.cmb_stride.setCurrentText("512")
 
+        self.cmb_padding = QComboBox()
+        for v in (0, 16, 32, 64, 128, 256, 512):
+            self.cmb_padding.addItem(str(v), v)
+        self.cmb_padding.setCurrentText("128")
+
         form = QFormLayout()
         form.addRow("Star Removal Mode:", self.cmb_mode)
         form.addRow("Processing Path:", self.cmb_processing)
         form.addRow("Stride (power of two):", self.cmb_stride)
+        form.addRow("Edge Padding:", self.cmb_padding)
         form.addRow("", self.chk_disable_gpu)
         form.addRow("", self.chk_show_stars)
 
@@ -3181,6 +3226,7 @@ class DarkStarConfigDialog(QDialog):
             "processing_path": str(self.cmb_processing.currentData()),
             "show_extracted_stars": self.chk_show_stars.isChecked(),
             "stride": int(self.cmb_stride.currentData()),
+            "edge_padding": int(self.cmb_padding.currentData()),
         }
 
 def _ensure_darkstar_model_available(parent=None) -> bool:
@@ -3224,6 +3270,7 @@ def darkstar_starless_from_array(
     mode: str = "unscreen",
     processing_path: str = "hybrid_luma_color",
     output_stars_only: bool = False,
+    edge_padding: int = 64,
     progress_cb=None,
     status_cb=None
 ) -> tuple[np.ndarray, np.ndarray | None, bool]:
@@ -3233,15 +3280,18 @@ def darkstar_starless_from_array(
       output: (starless, stars_only_or_None, was_mono)
     """
     x = np.asarray(arr_rgb01, dtype=np.float32)
-
     was_mono = (x.ndim == 2) or (x.ndim == 3 and x.shape[2] == 1)
 
-    # Normalize shape to what engine expects (it can accept mono or rgb, but keep it consistent)
     if x.ndim == 3 and x.shape[2] == 1:
-        x = x[..., 0]  # collapse to (H,W) for mono
+        x = x[..., 0]
 
     x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
     x = np.clip(x, 0.0, 1.0)
+
+    orig_h, orig_w = x.shape[:2]
+
+    if edge_padding > 0:
+        x = _pad_reflect(x, edge_padding)
 
     params = DarkStarParams(
         use_gpu=bool(use_gpu),
@@ -3249,6 +3299,8 @@ def darkstar_starless_from_array(
         overlap_frac=float(overlap_frac),
         mode=str(mode),
         output_stars_only=bool(output_stars_only),
+        processing_path=str(processing_path),
+        edge_padding=int(edge_padding),
     )
 
     def _prog(done, total, stage):
@@ -3272,14 +3324,18 @@ def darkstar_starless_from_array(
         status_cb=_status if callable(status_cb) else None,
     )
 
-    # Engine should return [0..1] float32, but enforce it anyway
+    if edge_padding > 0:
+        if starless is not None:
+            starless = _crop_unpad(starless, edge_padding, orig_h, orig_w)
+        if stars_only is not None:
+            stars_only = _crop_unpad(stars_only, edge_padding, orig_h, orig_w)
+
     if starless is not None:
         starless = np.clip(np.asarray(starless, dtype=np.float32), 0.0, 1.0)
 
     if stars_only is not None:
         stars_only = np.clip(np.asarray(stars_only, dtype=np.float32), 0.0, 1.0)
 
-    # If input was mono, guarantee mono out (some paths may hand back rgb)
     if was_mono and starless is not None and starless.ndim == 3:
         starless = starless.mean(axis=2).astype(np.float32, copy=False)
 

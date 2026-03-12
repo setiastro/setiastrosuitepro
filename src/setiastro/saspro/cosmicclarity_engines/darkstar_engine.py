@@ -724,6 +724,7 @@ class DarkStarParams:
     mode: str = "unscreen"              # "unscreen" or "additive"
     output_stars_only: bool = False
     processing_path: str = "hybrid_luma_color"  # "mono_per_channel" | "hybrid_luma_color" | "color_only"
+    edge_padding: int = 64              # reflect-pad full image before processing
 
 def darkstar_starremoval_rgb01(
     img_rgb01: np.ndarray,
