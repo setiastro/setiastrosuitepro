@@ -979,7 +979,7 @@ def _satellite_remove_rgb(
             else:
                 x = x.to(device=device, dtype=torch.float32)
 
-            with _inference_context(torch):
+            with torch.no_grad():
                 o1 = det1(x).flatten()
             keep1 = (o1 > 0.5)
 
@@ -987,7 +987,7 @@ def _satellite_remove_rgb(
 
             if keep1.any():
                 idxs = keep1.nonzero(as_tuple=False).flatten()
-                with _inference_context(torch):
+                with torch.no_grad():
                     o2 = det2(x[idxs]).flatten()
                 keep2 = (o2 > 0.25).detach().cpu().numpy()
                 idxs_cpu = idxs.detach().cpu().numpy()
@@ -1037,7 +1037,7 @@ def _satellite_remove_rgb(
                     x = x.to(device=device, dtype=torch.float32)
 
                 rem = models["removal_model"]
-                with _inference_context(torch), _autocast_context(torch, device):
+                with torch.no_grad(), _autocast_context(torch, device):
                     y = rem(x).detach().cpu().numpy()
 
                 y = np.transpose(y, (0, 2, 3, 1))
