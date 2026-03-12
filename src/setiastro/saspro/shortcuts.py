@@ -1559,6 +1559,8 @@ class ShortcutManager:
             w.setText(new_label.strip())  # in case caller didn't already
         self.save_shortcuts()
 
+    def get_action(self, command_id: str):
+        return self._actions.get(command_id)
 
     # ---- persistence (QSettings JSON blob) ----
     def save_shortcuts(self):

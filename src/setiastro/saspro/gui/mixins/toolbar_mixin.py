@@ -1449,6 +1449,10 @@ class ToolbarMixin:
         self.act_function_bundles.setStatusTip(self.tr("Create and run bundles of functions/shortcuts"))
         self.act_function_bundles.triggered.connect(self._open_function_bundles)
 
+        self.act_workflows = QAction(self.tr("Workflow Assistant..."), self)
+        self.act_workflows.setStatusTip(self.tr("Create and run guided workflows"))
+        self.act_workflows.triggered.connect(self._open_workflows)
+
         # give each action a stable id and register
         def reg(cid, act):
             act.setProperty("command_id", cid)

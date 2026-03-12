@@ -2584,19 +2584,28 @@ def _run_darkstar(main, doc, icon_path=None):
     v = cfg.get_values()
 
     disable_gpu = bool(v["disable_gpu"])
+    use_gpu = not disable_gpu
+
     mode = str(v["mode"])                         # "unscreen" | "additive"
+    processing_path = str(v["processing_path"])   # "mono_per_channel" | "hybrid_luma_color" | "color_only"
     show_extracted_stars = bool(v["show_extracted_stars"])
-    stride = int(v["stride"])                     # chunk size
+
+    chunk_size = int(v["stride"])                 # reuse stride as chunk size
+    overlap_frac = 0.125                          # keep your current default
+    output_stars_only = bool(show_extracted_stars)
 
     # 🔹 Stash parameters for replay-last (same structure as you had)
     try:
-        main._last_remove_stars_params = {
-            "engine": "DarkStar",
-            "disable_gpu": bool(disable_gpu),
-            "mode": mode,
-            "show_extracted_stars": bool(show_extracted_stars),
-            "stride": int(stride),
-            "label": "Remove Stars (DarkStar)",
+        main._last_headless_command = {
+            "command_id": "remove_stars",
+            "preset": {
+                "tool": "darkstar",
+                "disable_gpu": bool(disable_gpu),
+                "mode": mode,
+                "processing_path": processing_path,
+                "show_extracted_stars": bool(show_extracted_stars),
+                "stride": int(chunk_size),
+            },
         }
     except Exception:
         pass
@@ -2616,7 +2625,7 @@ def _run_darkstar(main, doc, icon_path=None):
         if hasattr(main, "_log"):
             main._log(
                 "[Replay] Recorded remove_stars (DarkStar, "
-                f"mode={mode}, chunk={int(stride)}, "
+                f"mode={mode}, path={processing_path}, chunk={int(chunk_size)}, "
                 f"gpu={'off' if disable_gpu else 'on'}, "
                 f"stars={'on' if show_extracted_stars else 'off'})"
             )
@@ -2637,11 +2646,12 @@ def _run_darkstar(main, doc, icon_path=None):
     x = np.clip(x, 0.0, 1.0).astype(np.float32, copy=False)
 
     params = DarkStarParams(
-        use_gpu=(not disable_gpu),
-        chunk_size=int(stride),
-        overlap_frac=0.125,
-        mode=mode,
-        output_stars_only=show_extracted_stars,
+        use_gpu=bool(use_gpu),
+        chunk_size=int(chunk_size),
+        overlap_frac=float(overlap_frac),
+        mode=str(mode),
+        output_stars_only=bool(output_stars_only),
+        processing_path=str(processing_path),
     )
 
     dlg = _ProcDialog(main, title="Dark Star Progress")
@@ -3117,6 +3127,10 @@ class DarkStarConfigDialog(QDialog):
     SASv2-style config UI:
       - Disable GPU: Yes/No (default No)
       - Star Removal Mode: unscreen | additive (default unscreen)
+      - Processing Path:
+            mono_per_channel
+            hybrid_luma_color
+            color_only
       - Show Extracted Stars: Yes/No (default Yes)
       - Stride (powers of 2): 64,128,256,512,1024 (default 512)
     """
@@ -3125,11 +3139,17 @@ class DarkStarConfigDialog(QDialog):
         self.setWindowTitle("CosmicClarity Dark Star Settings")
 
         self.chk_disable_gpu = QCheckBox("Disable GPU")
-        self.chk_disable_gpu.setChecked(False)  # default No (unchecked)
+        self.chk_disable_gpu.setChecked(False)
 
         self.cmb_mode = QComboBox()
         self.cmb_mode.addItems(["unscreen", "additive"])
         self.cmb_mode.setCurrentText("unscreen")
+
+        self.cmb_processing = QComboBox()
+        self.cmb_processing.addItem("Mono AI per channel", "mono_per_channel")
+        self.cmb_processing.addItem("Hybrid Luma + Color (best balance)", "hybrid_luma_color")
+        self.cmb_processing.addItem("Color AI only", "color_only")
+        self.cmb_processing.setCurrentIndex(1)  # default hybrid
 
         self.chk_show_stars = QCheckBox("Show Extracted Stars")
         self.chk_show_stars.setChecked(True)
@@ -3137,15 +3157,19 @@ class DarkStarConfigDialog(QDialog):
         self.cmb_stride = QComboBox()
         for v in (64, 128, 256, 512, 1024):
             self.cmb_stride.addItem(str(v), v)
-        self.cmb_stride.setCurrentText("512")  # default 512
+        self.cmb_stride.setCurrentText("512")
 
         form = QFormLayout()
         form.addRow("Star Removal Mode:", self.cmb_mode)
+        form.addRow("Processing Path:", self.cmb_processing)
         form.addRow("Stride (power of two):", self.cmb_stride)
         form.addRow("", self.chk_disable_gpu)
         form.addRow("", self.chk_show_stars)
 
-        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self)
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=self
+        )
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
 
@@ -3157,6 +3181,7 @@ class DarkStarConfigDialog(QDialog):
         return {
             "disable_gpu": self.chk_disable_gpu.isChecked(),
             "mode": self.cmb_mode.currentText(),
+            "processing_path": str(self.cmb_processing.currentData()),
             "show_extracted_stars": self.chk_show_stars.isChecked(),
             "stride": int(self.cmb_stride.currentData()),
         }
@@ -3168,10 +3193,11 @@ def darkstar_starless_from_array(
     use_gpu: bool = True,
     chunk_size: int = 512,
     overlap_frac: float = 0.125,
-    mode: str = "unscreen",              # "unscreen" | "additive"
+    mode: str = "unscreen",
+    processing_path: str = "hybrid_luma_color",
     output_stars_only: bool = False,
-    progress_cb=None,                    # (done:int, total:int, stage:str) -> None
-    status_cb=None                       # (msg:str) -> None
+    progress_cb=None,
+    status_cb=None
 ) -> tuple[np.ndarray, np.ndarray | None, bool]:
     """
     Headless DarkStar:

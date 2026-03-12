@@ -349,6 +349,9 @@ class MenuMixin:
         # first-time sync of label/checked state
         self._sync_link_action_state()
 
+        m_workflow = mb.addMenu(self.tr("&Workflows"))
+        m_workflow.addAction(self.act_workflows)
+
         m_settings = mb.addMenu(self.tr("&Settings"))
         m_settings.addAction(self.tr("Preferences..."), self._open_settings)
         m_settings.addSeparator()
