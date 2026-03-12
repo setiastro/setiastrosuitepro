@@ -31,20 +31,13 @@ def _get_torch(*, prefer_cuda: bool, prefer_dml: bool, status_cb=print):
         status_cb=status_cb,
     )
 
-def _inference_context(torch, status_cb=print):
-    try:
-        status_cb("[Satellite] trying torch.inference_mode()")
-        ctx = torch.inference_mode()
-        status_cb("[Satellite] torch.inference_mode() constructed OK")
-        return ctx
-    except Exception as e:
-        status_cb(f"[Satellite] torch.inference_mode() failed: {e!r}")
+def _inference_context(torch, status_cb=None):
+    if status_cb:
         try:
-            status_cb("[Satellite] falling back to torch.no_grad()")
-            return torch.no_grad()
-        except Exception as e2:
-            status_cb(f"[Satellite] torch.no_grad() also failed: {e2!r}")
-            return _nullcontext()
+            status_cb("[Satellite] using torch.no_grad()")
+        except Exception:
+            pass
+    return torch.no_grad()
 
 def _nullcontext():
     from contextlib import nullcontext
