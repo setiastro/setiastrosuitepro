@@ -31,25 +31,20 @@ def _get_torch(*, prefer_cuda: bool, prefer_dml: bool, status_cb=print):
         status_cb=status_cb,
     )
 
-def _inference_context(torch):
-    """
-    Prefer torch.inference_mode() when the runtime fully supports it.
-    Fall back to torch.no_grad() for broken/mismatched torch builds
-    (for example when torch._C lacks _InferenceMode).
-    """
+def _inference_context(torch, status_cb=print):
     try:
-        if hasattr(torch, "inference_mode"):
-            # Some broken torch installs expose the Python symbol but the
-            # underlying C extension is missing _InferenceMode.
-            ctx = torch.inference_mode()
-            return ctx
-    except Exception:
-        pass
-
-    try:
-        return torch.no_grad()
-    except Exception:
-        return _nullcontext()
+        status_cb("[Satellite] trying torch.inference_mode()")
+        ctx = torch.inference_mode()
+        status_cb("[Satellite] torch.inference_mode() constructed OK")
+        return ctx
+    except Exception as e:
+        status_cb(f"[Satellite] torch.inference_mode() failed: {e!r}")
+        try:
+            status_cb("[Satellite] falling back to torch.no_grad()")
+            return torch.no_grad()
+        except Exception as e2:
+            status_cb(f"[Satellite] torch.no_grad() also failed: {e2!r}")
+            return _nullcontext()
 
 def _nullcontext():
     from contextlib import nullcontext
