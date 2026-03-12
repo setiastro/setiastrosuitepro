@@ -1,24 +1,40 @@
-# src/setiastro/saspro/cosmicclarity_engines/darkstar_engine.py
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
+import os
 import numpy as np
 
-from setiastro.saspro.resources import get_resources
+# Keep these imports because your runtime torch loader is still the right way
+# to get CUDA / DirectML / MPS / CPU fallback behavior.
 from setiastro.saspro.runtime_torch import _user_runtime_dir, _venv_paths, _check_cuda_in_venv
-
-# Optional deps
-try:
-    import onnxruntime as ort
-except Exception:
-    ort = None
+from setiastro.saspro.resources import get_resources
 
 ProgressCB = Callable[[int, int, str], None]  # (done, total, stage)
 
 
-# ---------------- Torch import (your existing runtime_torch helper) ----------------
+# -----------------------------------------------------------------------------
+# Resolve model path
+# -----------------------------------------------------------------------------
+
+def _resolve_darkstar_model_paths() -> tuple[str, str, str, str]:
+    """
+    Resolve packaged Dark Star model paths from SAS resources.
+    Returns:
+        (mono_pth, mono_onnx, color_pth, color_onnx)
+    """
+    res = get_resources()
+    mono_pth   = str(res.CC_DARKSTAR_MONO_PTH)
+    mono_onnx  = str(res.CC_DARKSTAR_MONO_ONNX)
+    color_pth  = str(res.CC_DARKSTAR_COLOR_PTH)
+    color_onnx = str(res.CC_DARKSTAR_COLOR_ONNX)
+    return mono_pth, mono_onnx, color_pth, color_onnx
+
+
+# -----------------------------------------------------------------------------
+# Torch import helper
+# -----------------------------------------------------------------------------
 
 def _get_torch(*, prefer_cuda: bool, prefer_dml: bool, status_cb=print):
     from setiastro.saspro.runtime_torch import import_torch
@@ -37,8 +53,8 @@ def _nullcontext():
 
 def _autocast_context(torch, device) -> Any:
     """
-    Use new torch.amp.autocast('cuda') when available.
-    Keep your cap >= 8.0 rule.
+    Use autocast only where it is reasonably safe/useful.
+    Keep your existing CUDA >= 8.0 behavior.
     """
     try:
         if hasattr(device, "type") and device.type == "cuda":
@@ -50,7 +66,6 @@ def _autocast_context(torch, device) -> Any:
                 return torch.cuda.amp.autocast()
 
         elif hasattr(device, "type") and device.type == "mps":
-            # MPS often benefits from autocast in newer torch versions
             if hasattr(torch, "amp") and hasattr(torch.amp, "autocast"):
                 return torch.amp.autocast(device_type="mps")
 
@@ -60,155 +75,239 @@ def _autocast_context(torch, device) -> Any:
     return _nullcontext()
 
 
-# ---------------- Models (same topology as your script) ----------------
+# -----------------------------------------------------------------------------
+# NAFNet model
+# -----------------------------------------------------------------------------
 
-def _build_darkstar_torch_models(torch):
+def _build_darkstar_nafnet_model(torch):
     import torch.nn as nn
+    import torch.nn.functional as F
 
-    class RefinementCNN(nn.Module):
-        def __init__(self, channels: int = 96):
+    class LayerNorm2d(nn.Module):
+        def __init__(self, channels: int, eps: float = 1e-6):
             super().__init__()
-            self.net = nn.Sequential(
-                nn.Conv2d(3, channels, 3, padding=1, dilation=1), nn.ReLU(),
-                nn.Conv2d(channels, channels, 3, padding=2, dilation=2), nn.ReLU(),
-                nn.Conv2d(channels, channels, 3, padding=4, dilation=4), nn.ReLU(),
-                nn.Conv2d(channels, channels, 3, padding=8, dilation=8), nn.ReLU(),
-                nn.Conv2d(channels, channels, 3, padding=8, dilation=8), nn.ReLU(),
-                nn.Conv2d(channels, channels, 3, padding=4, dilation=4), nn.ReLU(),
-                nn.Conv2d(channels, channels, 3, padding=2, dilation=2), nn.ReLU(),
-                nn.Conv2d(channels, 3,      3, padding=1, dilation=1), nn.Sigmoid()
-            )
-        def forward(self, x): return self.net(x)
+            self.weight = nn.Parameter(torch.ones(1, channels, 1, 1))
+            self.bias = nn.Parameter(torch.zeros(1, channels, 1, 1))
+            self.eps = eps
 
-    class ResidualBlock(nn.Module):
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            mean = x.mean(dim=1, keepdim=True)
+            var = (x - mean).pow(2).mean(dim=1, keepdim=True)
+            x = (x - mean) / torch.sqrt(var + self.eps)
+            return x * self.weight + self.bias
+
+    class SimpleGate(nn.Module):
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            x1, x2 = x.chunk(2, dim=1)
+            return x1 * x2
+
+    class NAFBlock(nn.Module):
         def __init__(self, channels: int):
             super().__init__()
-            self.conv1 = nn.Conv2d(channels, channels, 3, padding=1)
-            self.relu  = nn.ReLU(inplace=True)
-            self.conv2 = nn.Conv2d(channels, channels, 3, padding=1)
-        def forward(self, x):
-            out = self.relu(self.conv1(x))
-            out = self.conv2(out)
-            return self.relu(out + x)
+            self.norm1 = LayerNorm2d(channels)
 
-    class DarkStarCNN(nn.Module):
-        def __init__(self):
+            self.conv1 = nn.Conv2d(channels, channels * 2, kernel_size=1, bias=True)
+            self.dwconv = nn.Conv2d(
+                channels * 2,
+                channels * 2,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+                groups=channels * 2,
+                bias=True,
+            )
+            self.sg = SimpleGate()
+            self.sca = nn.Sequential(
+                nn.AdaptiveAvgPool2d(1),
+                nn.Conv2d(channels, channels, kernel_size=1, bias=True),
+            )
+            self.conv2 = nn.Conv2d(channels, channels, kernel_size=1, bias=True)
+
+            self.norm2 = LayerNorm2d(channels)
+            self.ffn1 = nn.Conv2d(channels, channels * 2, kernel_size=1, bias=True)
+            self.ffn2 = nn.Conv2d(channels, channels, kernel_size=1, bias=True)
+
+            self.beta = nn.Parameter(torch.zeros(1, channels, 1, 1))
+            self.gamma = nn.Parameter(torch.zeros(1, channels, 1, 1))
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            y = self.norm1(x)
+            y = self.conv1(y)
+            y = self.dwconv(y)
+            y = self.sg(y)
+            y = y * self.sca(y)
+            y = self.conv2(y)
+            x = x + y * self.beta
+
+            y = self.norm2(x)
+            y = self.ffn1(y)
+            y = self.sg(y)
+            y = self.ffn2(y)
+            x = x + y * self.gamma
+            return x
+
+    class DarkStarNAFNet(nn.Module):
+        def __init__(
+            self,
+            in_ch: int = 3,
+            out_ch: int = 3,
+            width: int = 32,
+            enc_blk_nums=(2, 4, 6, 8),
+            dec_blk_nums=(2, 2, 2, 2),
+            middle_blk_num: int = 4,
+        ):
             super().__init__()
-            self.encoder1 = nn.Sequential(
-                nn.Conv2d(3, 16, 3, padding=1),
-                nn.ReLU(inplace=True),
-                ResidualBlock(16), ResidualBlock(16), ResidualBlock(16),
-            )
-            self.encoder2 = nn.Sequential(
-                nn.Conv2d(16, 32, 3, padding=1),
-                nn.ReLU(inplace=True),
-                ResidualBlock(32), ResidualBlock(32), ResidualBlock(32),
-            )
-            self.encoder3 = nn.Sequential(
-                nn.Conv2d(32, 64, 3, padding=2, dilation=2),
-                nn.ReLU(inplace=True),
-                ResidualBlock(64), ResidualBlock(64),
-            )
-            self.encoder4 = nn.Sequential(
-                nn.Conv2d(64, 128, 3, padding=1),
-                nn.ReLU(inplace=True),
-                ResidualBlock(128), ResidualBlock(128),
-            )
-            self.encoder5 = nn.Sequential(
-                nn.Conv2d(128, 256, 3, padding=2, dilation=2),
-                nn.ReLU(inplace=True),
-                ResidualBlock(256),
-            )
 
-            self.decoder5 = nn.Sequential(
-                nn.Conv2d(256 + 128, 128, 3, padding=1),
-                nn.ReLU(inplace=True),
-                ResidualBlock(128), ResidualBlock(128),
-            )
-            self.decoder4 = nn.Sequential(
-                nn.Conv2d(128 + 64, 64, 3, padding=1),
-                nn.ReLU(inplace=True),
-                ResidualBlock(64), ResidualBlock(64),
-            )
-            self.decoder3 = nn.Sequential(
-                nn.Conv2d(64 + 32, 32, 3, padding=1),
-                nn.ReLU(inplace=True),
-                ResidualBlock(32), ResidualBlock(32), ResidualBlock(32),
-            )
-            self.decoder2 = nn.Sequential(
-                nn.Conv2d(32 + 16, 16, 3, padding=1),
-                nn.ReLU(inplace=True),
-                ResidualBlock(16), ResidualBlock(16), ResidualBlock(16),
-            )
-            self.decoder1 = nn.Sequential(
-                nn.Conv2d(16, 16, 3, padding=1),
-                nn.ReLU(inplace=True),
-                ResidualBlock(16), ResidualBlock(16),
-                nn.Conv2d(16, 3, 3, padding=1),
-                nn.Sigmoid(),
-            )
+            self.in_ch = in_ch
+            self.out_ch = out_ch
+            self.width = width
+            self.enc_blk_nums = tuple(enc_blk_nums)
+            self.dec_blk_nums = tuple(dec_blk_nums)
+            self.middle_blk_num = int(middle_blk_num)
 
-        def forward(self, x):
-            e1 = self.encoder1(x)
-            e2 = self.encoder2(e1)
-            e3 = self.encoder3(e2)
-            e4 = self.encoder4(e3)
-            e5 = self.encoder5(e4)
+            self.intro = nn.Conv2d(in_ch, width, kernel_size=3, padding=1, bias=True)
+            self.ending = nn.Conv2d(width, out_ch, kernel_size=3, padding=1, bias=True)
 
-            d5 = self.decoder5(torch.cat([e5, e4], dim=1))
-            d4 = self.decoder4(torch.cat([d5, e3], dim=1))
-            d3 = self.decoder3(torch.cat([d4, e2], dim=1))
-            d2 = self.decoder2(torch.cat([d3, e1], dim=1))
-            return self.decoder1(d2)
+            self.encoders = nn.ModuleList()
+            self.downs = nn.ModuleList()
+            self.decoders = nn.ModuleList()
+            self.ups = nn.ModuleList()
 
-    class CascadedStarRemovalNetCombined(nn.Module):
-        def __init__(self, stage1_path: str, stage2_path: str | None = None):
-            super().__init__()
-            self.stage1 = DarkStarCNN()
-            ckpt1 = torch.load(stage1_path, map_location="cpu")
+            ch = width
+            for num in enc_blk_nums:
+                self.encoders.append(nn.Sequential(*[NAFBlock(ch) for _ in range(num)]))
+                self.downs.append(nn.Conv2d(ch, ch * 2, kernel_size=2, stride=2, bias=True))
+                ch *= 2
 
-            # strip "stage1." prefix if present
-            if isinstance(ckpt1, dict):
-                sd1 = {k[len("stage1."):] : v for k, v in ckpt1.items() if k.startswith("stage1.")}
-                if sd1:
-                    ckpt1 = sd1
-            self.stage1.load_state_dict(ckpt1)
+            self.middle = nn.Sequential(*[NAFBlock(ch) for _ in range(middle_blk_num)])
 
-            # refinement exists in your code but currently not used (forward returns coarse)
-            self.stage2 = RefinementCNN()
-            if stage2_path:
-                try:
-                    ckpt2 = torch.load(stage2_path, map_location="cpu")
-                    if isinstance(ckpt2, dict) and "model_state" in ckpt2:
-                        ckpt2 = ckpt2["model_state"]
-                    self.stage2.load_state_dict(ckpt2)
-                except Exception:
-                    pass
+            for num in dec_blk_nums:
+                self.ups.append(
+                    nn.Sequential(
+                        nn.Conv2d(ch, ch * 2, kernel_size=1, bias=True),
+                        nn.PixelShuffle(2),
+                    )
+                )
+                ch //= 2
+                self.decoders.append(nn.Sequential(*[NAFBlock(ch) for _ in range(num)]))
 
-            for p in self.stage1.parameters():
-                p.requires_grad = False
+            self.padder_size = 2 ** len(enc_blk_nums)
 
-        def forward(self, x):
-            with torch.no_grad():
-                coarse = self.stage1(x)
-            return coarse
+        def check_image_size(self, x: torch.Tensor):
+            _, _, h, w = x.size()
+            mod_pad_h = (self.padder_size - h % self.padder_size) % self.padder_size
+            mod_pad_w = (self.padder_size - w % self.padder_size) % self.padder_size
+            if mod_pad_h != 0 or mod_pad_w != 0:
+                x = F.pad(x, (0, mod_pad_w, 0, mod_pad_h))
+            return x, mod_pad_h, mod_pad_w
 
-    return CascadedStarRemovalNetCombined
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            inp = x
+            x, mod_pad_h, mod_pad_w = self.check_image_size(x)
+
+            x = self.intro(x)
+
+            encs = []
+            for encoder, down in zip(self.encoders, self.downs):
+                x = encoder(x)
+                encs.append(x)
+                x = down(x)
+
+            x = self.middle(x)
+
+            for decoder, up, enc_skip in zip(self.decoders, self.ups, encs[::-1]):
+                x = up(x)
+                x = x + enc_skip
+                x = decoder(x)
+
+            x = self.ending(x)
+
+            if mod_pad_h != 0 or mod_pad_w != 0:
+                x = x[:, :, :x.shape[2] - mod_pad_h if mod_pad_h > 0 else x.shape[2],
+                          :x.shape[3] - mod_pad_w if mod_pad_w > 0 else x.shape[3]]
+
+            if inp.shape[2:] == x.shape[2:]:
+                x = x + inp
+
+            return torch.clamp(x, 0.0, 1.0)
+
+    return DarkStarNAFNet
+
+def _extract_state_dict(ckpt):
+    """
+    Robustly find the actual state dict in a checkpoint.
+    """
+    if not isinstance(ckpt, dict):
+        return ckpt
+
+    preferred_keys = [
+        "state_dict",
+        "model_state_dict",
+        "model_state",
+        "model",
+        "net",
+        "network",
+        "params",
+        "params_ema",
+    ]
+    for k in preferred_keys:
+        if k in ckpt and isinstance(ckpt[k], dict):
+            return ckpt[k]
+
+    # If it already looks like a raw state dict, use it.
+    if ckpt and all(isinstance(k, str) for k in ckpt.keys()):
+        return ckpt
+
+    return ckpt
 
 
-# ---------------- Stretch/unstretch + borders (match your other engines) ----------------
+def _strip_common_prefixes(state_dict: dict):
+    """
+    Remove wrappers such as 'module.' or '_orig_mod.' if present.
+    """
+    if not isinstance(state_dict, dict):
+        return state_dict
+
+    prefixes = ("module.", "_orig_mod.")
+    out = {}
+    for k, v in state_dict.items():
+        nk = k
+        changed = True
+        while changed:
+            changed = False
+            for p in prefixes:
+                if nk.startswith(p):
+                    nk = nk[len(p):]
+                    changed = True
+        out[nk] = v
+    return out
+
+
+# -----------------------------------------------------------------------------
+# Stretch / unstretch / borders
+# -----------------------------------------------------------------------------
 
 def add_border(image: np.ndarray, border_size: int = 5) -> np.ndarray:
     if image.ndim == 2:
         med = float(np.median(image))
-        return np.pad(image, ((border_size, border_size), (border_size, border_size)),
-                      mode="constant", constant_values=med)
+        return np.pad(
+            image,
+            ((border_size, border_size), (border_size, border_size)),
+            mode="constant",
+            constant_values=med,
+        )
     if image.ndim == 3 and image.shape[2] == 3:
         meds = np.median(image, axis=(0, 1)).astype(np.float32)
         chans = []
         for c in range(3):
-            chans.append(np.pad(image[..., c], ((border_size, border_size), (border_size, border_size)),
-                                mode="constant", constant_values=float(meds[c])))
+            chans.append(
+                np.pad(
+                    image[..., c],
+                    ((border_size, border_size), (border_size, border_size)),
+                    mode="constant",
+                    constant_values=float(meds[c]),
+                )
+            )
         return np.stack(chans, axis=-1)
     raise ValueError("add_border expects 2D or HxWx3")
 
@@ -219,10 +318,37 @@ def remove_border(image: np.ndarray, border_size: int = 5) -> np.ndarray:
     return image[border_size:-border_size, border_size:-border_size, :]
 
 
+def stretch_image_mono(img: np.ndarray, target_median: float = 0.25):
+    x = img.astype(np.float32, copy=True)
+    orig_min = float(np.min(x))
+    x = x - orig_min
+    orig_med = float(np.median(x))
+
+    if orig_med != 0:
+        x = ((orig_med - 1.0) * target_median * x) / (
+            orig_med * (target_median + x - 1.0) - target_median * x
+        )
+
+    x = np.clip(x, 0, 1)
+    return x.astype(np.float32, copy=False), np.float32(orig_min), np.float32(orig_med)
+
+
+def unstretch_image_mono(img: np.ndarray, orig_med, orig_min):
+    x = img.astype(np.float32, copy=True)
+    m_now = float(np.median(x))
+    m0 = float(orig_med)
+
+    if m_now != 0 and m0 != 0:
+        x = ((m_now - 1.0) * m0 * x) / (m_now * (m0 + x - 1.0) - m0 * x)
+
+    x = x + float(orig_min)
+    return np.clip(x, 0, 1).astype(np.float32, copy=False)
+
+
 def stretch_image_unlinked_rgb(img_rgb: np.ndarray, target_median: float = 0.25):
     x = img_rgb.astype(np.float32, copy=True)
-    orig_min = x.reshape(-1, 3).min(axis=0)  # (3,)
-    x = (x - orig_min.reshape(1, 1, 3))
+    orig_min = x.reshape(-1, 3).min(axis=0)
+    x = x - orig_min.reshape(1, 1, 3)
     orig_meds = np.median(x, axis=(0, 1)).astype(np.float32)
 
     for c in range(3):
@@ -231,8 +357,9 @@ def stretch_image_unlinked_rgb(img_rgb: np.ndarray, target_median: float = 0.25)
             x[..., c] = ((m - 1) * target_median * x[..., c]) / (
                 m * (target_median + x[..., c] - 1) - target_median * x[..., c]
             )
+
     x = np.clip(x, 0, 1)
-    return x, orig_min.astype(np.float32), orig_meds.astype(np.float32)
+    return x.astype(np.float32, copy=False), orig_min.astype(np.float32), orig_meds.astype(np.float32)
 
 
 def unstretch_image_unlinked_rgb(img_rgb: np.ndarray, orig_meds, orig_min):
@@ -244,15 +371,46 @@ def unstretch_image_unlinked_rgb(img_rgb: np.ndarray, orig_meds, orig_min):
             x[..., c] = ((m_now - 1) * m0 * x[..., c]) / (
                 m_now * (m0 + x[..., c] - 1) - m0 * x[..., c]
             )
+
     x = x + orig_min.reshape(1, 1, 3)
     return np.clip(x, 0, 1).astype(np.float32, copy=False)
 
+# -----------------------------------------------------------------------------
+# Luma helpers
+# -----------------------------------------------------------------------------
 
-# ---------------- Chunking & stitch (soft blend like your script) ----------------
+_LUMA_REC709 = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+
+def _compute_luminance_rec709(img_rgb: np.ndarray) -> np.ndarray:
+    img_rgb = np.asarray(img_rgb, np.float32)
+    return np.clip(
+        img_rgb[..., 0] * _LUMA_REC709[0]
+        + img_rgb[..., 1] * _LUMA_REC709[1]
+        + img_rgb[..., 2] * _LUMA_REC709[2],
+        0.0,
+        1.0,
+    ).astype(np.float32, copy=False)
+
+def _recombine_luminance_linear_scale(
+    target_rgb: np.ndarray,
+    new_luma: np.ndarray,
+    eps: float = 1e-6,
+) -> np.ndarray:
+    target_rgb = np.asarray(target_rgb, np.float32)
+    new_luma = np.asarray(new_luma, np.float32)
+
+    Y = _compute_luminance_rec709(target_rgb)
+    scale = new_luma / np.maximum(Y, eps)
+    out = target_rgb * scale[..., None]
+    return np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
+
+# -----------------------------------------------------------------------------
+# Chunking / stitching
+# -----------------------------------------------------------------------------
 
 def split_image_into_chunks_with_overlap(image: np.ndarray, chunk_size: int, overlap: int):
     H, W = image.shape[:2]
-    step = chunk_size - overlap
+    step = max(1, chunk_size - overlap)
     out = []
     for i in range(0, H, step):
         for j in range(0, W, step):
@@ -265,6 +423,7 @@ def split_image_into_chunks_with_overlap(image: np.ndarray, chunk_size: int, ove
 def _blend_weights(chunk_size: int, overlap: int):
     if overlap <= 0:
         return np.ones((chunk_size, chunk_size), dtype=np.float32)
+
     ramp = np.linspace(0, 1, overlap, dtype=np.float32)
     flat = np.ones(max(chunk_size - 2 * overlap, 1), dtype=np.float32)
     v = np.concatenate([ramp, flat, ramp[::-1]])
@@ -273,28 +432,39 @@ def _blend_weights(chunk_size: int, overlap: int):
 
 
 def stitch_chunks_soft_blend(
-    chunks: list[tuple[np.ndarray, int, int]],
-    out_shape: tuple[int, int, int],
+    chunks,
+    out_shape,
     *,
     chunk_size: int,
     overlap: int,
     border_size: int = 5,
-) -> np.ndarray:
-    H, W, C = out_shape
+):
+    if len(out_shape) == 2:
+        H, W = out_shape
+        C = 1
+        is_mono = True
+    else:
+        H, W, C = out_shape
+        is_mono = False
+
     out = np.zeros((H, W, C), np.float32)
     wsum = np.zeros((H, W, 1), np.float32)
     bw_full = _blend_weights(chunk_size, overlap)
 
     for tile, i, j in chunks:
-        th, tw = tile.shape[:2]
+        if tile.ndim == 2:
+            tile3 = tile[..., None]
+        else:
+            tile3 = tile
 
-        # adaptive inner crop like your script
-        top    = 0 if i == 0 else min(border_size, th // 2)
-        left   = 0 if j == 0 else min(border_size, tw // 2)
+        th, tw = tile3.shape[:2]
+
+        top = 0 if i == 0 else min(border_size, th // 2)
+        left = 0 if j == 0 else min(border_size, tw // 2)
         bottom = 0 if (i + th) >= H else min(border_size, th // 2)
-        right  = 0 if (j + tw) >= W else min(border_size, tw // 2)
+        right = 0 if (j + tw) >= W else min(border_size, tw // 2)
 
-        inner = tile[top:th-bottom, left:tw-right, :]
+        inner = tile3[top:th - bottom, left:tw - right, :]
         ih, iw = inner.shape[:2]
 
         rr0 = i + top
@@ -307,264 +477,169 @@ def stitch_chunks_soft_blend(
         wsum[rr0:rr1, cc0:cc1, :] += bw
 
     out = out / np.maximum(wsum, 1e-8)
+
+    if is_mono:
+        return out[..., 0]
     return out
 
 
-# ---------------- Model loading (cached) ----------------
+# -----------------------------------------------------------------------------
+# Model loading
+# -----------------------------------------------------------------------------
 
 @dataclass
 class DarkStarModels:
     device: Any
     is_onnx: bool
-    model: Any
+    mono_model: Any | None = None
+    color_model: Any | None = None
     torch: Any | None = None
-    chunk_size: int = 512  # used for ONNX fixed shapes
+    chunk_size: int = 512
 
 
-# ---------------- Model loading (cached) ----------------
+_MODELS_CACHE: dict[tuple[str, str], DarkStarModels] = {}
 
-_MODELS_CACHE: dict[tuple[str, str], DarkStarModels] = {}  # (tag, backend_id)
 
-def load_darkstar_models(*, use_gpu: bool, color: bool, status_cb=print) -> DarkStarModels:
+def load_darkstar_models(*, use_gpu: bool, status_cb=print) -> DarkStarModels:
     """
-    Backend order:
-      1) CUDA (PyTorch)
-      2) DirectML (torch-directml)  [Windows]
-      3) DirectML (ONNX Runtime)    [Windows]
-      4) MPS (PyTorch)              [macOS]
-      5) CPU (PyTorch)
-    Cache key includes backend_id so we never "stick" on CPU when GPU is later enabled.
+    Runtime version:
+      - mono_model: robust mono-trained-triplicated RGB NAFNet
+      - color_model: RGB-trained color NAFNet (optional fallback if file missing)
+      - torch backends only:
+            CUDA
+            MPS
+            DirectML (torch-directml)
+            CPU
+      - no ONNX / ORT fallback
     """
-    R = get_resources()
+    mono_path, mono_onnx_path, color_path, color_onnx_path = _resolve_darkstar_model_paths()
 
-    if color:
-        pth = R.CC_DARKSTAR_COLOR_PTH
-        onnx = R.CC_DARKSTAR_COLOR_ONNX
-        tag = "cc_darkstar_color"
-    else:
-        pth = R.CC_DARKSTAR_MONO_PTH
-        onnx = R.CC_DARKSTAR_MONO_ONNX
-        tag = "cc_darkstar_mono"
+    if not os.path.exists(mono_path):
+        raise FileNotFoundError(f"Dark Star mono model not found:\n{mono_path}")
 
-    import os
     is_windows = os.name == "nt"
 
-    # Request torch with the right preferences (runtime_torch decides what it can do)
     torch = _get_torch(
         prefer_cuda=bool(use_gpu),
         prefer_dml=bool(use_gpu and is_windows),
         status_cb=status_cb,
     )
 
-    # ---------------- CUDA (torch) ----------------
+    def _load_one_model(dev, path: str, label: str):
+        Net = _build_darkstar_nafnet_model(torch)
+        net = Net(
+            in_ch=3,
+            out_ch=3,
+            width=32,
+            enc_blk_nums=(2, 4, 6, 8),
+            dec_blk_nums=(2, 2, 2, 2),
+            middle_blk_num=4,
+        )
+
+        ckpt = torch.load(path, map_location="cpu")
+        sd = _extract_state_dict(ckpt)
+        sd = _strip_common_prefixes(sd)
+        net.load_state_dict(sd, strict=True)
+        net = net.eval().to(dev)
+
+        status_cb(f"Dark Star: loaded {label} model from {os.path.basename(path)}")
+        return net
+
+    def _build_and_load(dev, backend_id: str, backend_msg: str):
+        key = ("darkstar_dual", backend_id)
+        if key in _MODELS_CACHE:
+            return _MODELS_CACHE[key]
+
+        status_cb(backend_msg)
+
+        mono_model = _load_one_model(dev, mono_path, "mono-triplicated")
+
+        color_model = None
+        if os.path.exists(color_path):
+            try:
+                color_model = _load_one_model(dev, color_path, "color")
+            except Exception as e:
+                status_cb(f"Dark Star: failed to load color model, will fall back to mono-per-channel. {e}")
+                color_model = None
+        else:
+            status_cb("Dark Star: color model not found, color/hybrid modes will fall back to mono-per-channel.")
+
+        m = DarkStarModels(
+            device=dev,
+            is_onnx=False,
+            mono_model=mono_model,
+            color_model=color_model,
+            torch=torch,
+            chunk_size=512,
+        )
+        _MODELS_CACHE[key] = m
+        return m
+
+    # CUDA
     if use_gpu and hasattr(torch, "cuda") and torch.cuda.is_available():
-        backend_id = "cuda"
-        key = (tag, backend_id)
-        if key in _MODELS_CACHE:
-            return _MODELS_CACHE[key]
-
         dev = torch.device("cuda")
-        status_cb(f"Dark Star: using CUDA ({torch.cuda.get_device_name(0)})")
-        Net = _build_darkstar_torch_models(torch)
-        net = Net(pth, None).eval().to(dev)
+        return _build_and_load(dev, "cuda", f"Dark Star: using CUDA ({torch.cuda.get_device_name(0)})")
 
-        m = DarkStarModels(device=dev, is_onnx=False, model=net, torch=torch, chunk_size=512)
-        _MODELS_CACHE[key] = m
-        return m
-    # ---------------- MPS (torch) ----------------
+    # MPS
     if use_gpu and hasattr(torch, "backends") and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        backend_id = "mps"
-        key = (tag, backend_id)
-        if key in _MODELS_CACHE:
-            return _MODELS_CACHE[key]
-
         dev = torch.device("mps")
-        status_cb("Dark Star: using MPS")
-        Net = _build_darkstar_torch_models(torch)
-        net = Net(pth, None).eval().to(dev)
+        return _build_and_load(dev, "mps", "Dark Star: using MPS")
 
-        m = DarkStarModels(device=dev, is_onnx=False, model=net, torch=torch, chunk_size=512)
-        _MODELS_CACHE[key] = m
-        return m
-    # ---------------- DirectML (torch-directml) ----------------
+    # DirectML torch
     if use_gpu and is_windows:
         try:
-            import torch_directml  # optional
-            backend_id = "torch_dml"
-            key = (tag, backend_id)
-            if key in _MODELS_CACHE:
-                return _MODELS_CACHE[key]
-
+            import torch_directml
             dev = torch_directml.device()
-            status_cb("Dark Star: using DirectML (torch-directml)")
-            Net = _build_darkstar_torch_models(torch)
-            net = Net(pth, None).eval().to(dev)
-
-            m = DarkStarModels(device=dev, is_onnx=False, model=net, torch=torch, chunk_size=512)
-            _MODELS_CACHE[key] = m
-            return m
+            return _build_and_load(dev, "torch_dml", "Dark Star: using DirectML (torch-directml)")
         except Exception:
             pass
 
-    # ---------------- DirectML (ONNX Runtime) ----------------
-    if use_gpu and ort is not None and ("DmlExecutionProvider" in ort.get_available_providers()):
-        if onnx and onnx.strip():
-            backend_id = "ort_dml"
-            key = (tag, backend_id)
-            if key in _MODELS_CACHE:
-                return _MODELS_CACHE[key]
-
-            status_cb("Dark Star: using DirectML (ONNX Runtime)")
-            sess = ort.InferenceSession(onnx, providers=["DmlExecutionProvider"])
-
-            # fixed-ish input: [1,3,H,W]; some exports have static shapes
-            inp = sess.get_inputs()[0]
-            cs = 512
-            try:
-                if getattr(inp, "shape", None) and len(inp.shape) >= 4:
-                    if inp.shape[2] not in (None, "None"):
-                        cs = int(inp.shape[2])
-            except Exception:
-                pass
-
-            m = DarkStarModels(device="DirectML", is_onnx=True, model=sess, torch=None, chunk_size=cs)
-            _MODELS_CACHE[key] = m
-            return m
-
-    # ---------------- MPS (torch) ----------------
-    if use_gpu and hasattr(torch, "backends") and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        backend_id = "mps"
-        key = (tag, backend_id)
-        if key in _MODELS_CACHE:
-            return _MODELS_CACHE[key]
-
-        dev = torch.device("mps")
-        status_cb("Dark Star: using MPS")
-        Net = _build_darkstar_torch_models(torch)
-        net = Net(pth, None).eval().to(dev)
-
-        m = DarkStarModels(device=dev, is_onnx=False, model=net, torch=torch, chunk_size=512)
-        _MODELS_CACHE[key] = m
-        return m
-
-    # ---------------- CPU (torch) ----------------
-    backend_id = "cpu"
-    key = (tag, backend_id)
-    if key in _MODELS_CACHE:
-        return _MODELS_CACHE[key]
-
+    # CPU
     dev = torch.device("cpu")
-    status_cb("Dark Star: using CPU")
-    Net = _build_darkstar_torch_models(torch)
-    net = Net(pth, None).eval().to(dev)
+    return _build_and_load(dev, "cpu", "Dark Star: using CPU")
 
-    m = DarkStarModels(device=dev, is_onnx=False, model=net, torch=torch, chunk_size=512)
-    _MODELS_CACHE[key] = m
-    return m
-
-# ---------------- Core inference on one HxWx3 image ----------------
-
-def _infer_tile(models: DarkStarModels, tile_rgb: np.ndarray) -> np.ndarray:
+# -----------------------------------------------------------------------------
+# Inference helpers
+# -----------------------------------------------------------------------------
+def _infer_tile_rgb_with_model(models: DarkStarModels, tile_rgb: np.ndarray, model) -> np.ndarray:
     tile_rgb = np.asarray(tile_rgb, np.float32)
     h0, w0 = tile_rgb.shape[:2]
 
-    if models.is_onnx:
-        cs = int(models.chunk_size)
-
-        # pad/crop robustly to (cs,cs,3)
-        if (h0 != cs) or (w0 != cs):
-            pad = np.zeros((cs, cs, 3), np.float32)
-            hh = min(h0, cs)
-            ww = min(w0, cs)
-            pad[:hh, :ww, :] = tile_rgb[:hh, :ww, :]
-            tile_rgb = pad
-
-        inp = tile_rgb.transpose(2, 0, 1)[None, ...]  # 1,3,H,W
-        sess = models.model
-        out = sess.run(None, {sess.get_inputs()[0].name: inp})[0][0]  # 3,H,W
-        out = out.transpose(1, 2, 0)
-
-        hh = min(h0, cs)
-        ww = min(w0, cs)
-        return out[:hh, :ww, :].astype(np.float32, copy=False)
-
-    # torch (CUDA / MPS / CPU / torch-directml)
     torch = models.torch
     dev = models.device
-    t = torch.from_numpy(tile_rgb.transpose(2, 0, 1)).unsqueeze(0).to(dev)
+
+    t = torch.from_numpy(tile_rgb.transpose(2, 0, 1)[None, ...]).to(dev)
 
     with torch.no_grad(), _autocast_context(torch, dev):
-        y = models.model(t)[0].detach().cpu().numpy().transpose(1, 2, 0)
+        y = model(t)[0].detach().float().cpu().numpy()
 
+    y = np.transpose(y, (1, 2, 0))
     return y[:h0, :w0, :].astype(np.float32, copy=False)
 
-# ---------------- Public API ----------------
-
-@dataclass
-class DarkStarParams:
-    use_gpu: bool = True
-    chunk_size: int = 512
-    overlap_frac: float = 0.125
-    mode: str = "unscreen"        # "unscreen" or "additive"
-    output_stars_only: bool = False
-
-
-def darkstar_starremoval_rgb01(
-    img_rgb01: np.ndarray,
+def _run_rgb_chunked_with_model(
+    img_rgb: np.ndarray,
     *,
-    params: DarkStarParams,
-    progress_cb: Optional[ProgressCB] = None,
-    status_cb=print,
-) -> tuple[np.ndarray, Optional[np.ndarray], bool]:
-    """
-    Input : float32 image in [0..1], shape HxWx3 or HxWx1 or HxW
-    Output: (starless_rgb01, stars_only_rgb01 or None, was_mono)
-    """
-    if progress_cb is None:
-        progress_cb = lambda done, total, stage: None
+    model,
+    models: DarkStarModels,
+    params,
+    progress_cb: ProgressCB,
+    progress_start: int,
+    progress_total: int,
+    stage_name: str,
+) -> tuple[np.ndarray, int]:
+    bordered = add_border(img_rgb, border_size=5)
 
-    img = np.asarray(img_rgb01, np.float32)
-    was_mono = (img.ndim == 2) or (img.ndim == 3 and img.shape[2] == 1)
-
-    # normalize shape to HxWx3
-    if img.ndim == 2:
-        img3 = np.stack([img, img, img], axis=-1)
-    elif img.ndim == 3 and img.shape[2] == 1:
-        ch = img[..., 0]
-        img3 = np.stack([ch, ch, ch], axis=-1)
-    else:
-        img3 = img
-
-    img3 = np.clip(img3, 0.0, 1.0)
-
-    # decide "true RGB" vs "3-channel mono"
-    same_rg = np.allclose(img3[..., 0], img3[..., 1], rtol=0, atol=1e-6)
-    same_rb = np.allclose(img3[..., 0], img3[..., 2], rtol=0, atol=1e-6)
-    is_true_rgb = not (same_rg and same_rb)
-
-    models = load_darkstar_models(use_gpu=params.use_gpu, color=is_true_rgb, status_cb=status_cb)
-
-    # stretch decision: pedestal-aware (matches other engines more closely)
-    stretch_needed = float(np.median(img3 - float(np.min(img3)))) < 0.125
-    if stretch_needed:
-        stretched, orig_min, orig_meds = stretch_image_unlinked_rgb(img3)
-    else:
-        stretched, orig_min, orig_meds = img3, None, None
-
-    bordered = add_border(stretched, border_size=5)
-
-    # ONNX may force chunk_size
-    chunk_size = int(models.chunk_size) if models.is_onnx else int(params.chunk_size)
+    chunk_size = int(params.chunk_size)
     overlap = int(round(float(params.overlap_frac) * chunk_size))
-
     chunks = split_image_into_chunks_with_overlap(bordered, chunk_size=chunk_size, overlap=overlap)
-    total = len(chunks)
 
-    out_tiles: list[tuple[np.ndarray, int, int]] = []
-    for k, (tile, i, j) in enumerate(chunks, start=1):
-        out = _infer_tile(models, tile)
+    out_tiles = []
+    done = progress_start
+    for tile, i, j in chunks:
+        out = _infer_tile_rgb_with_model(models, tile, model)
         out_tiles.append((out, i, j))
-        progress_cb(k, total, "Dark Star removal")
+        done += 1
+        progress_cb(done, progress_total, stage_name)
 
     starless_b = stitch_chunks_soft_blend(
         out_tiles,
@@ -574,23 +649,338 @@ def darkstar_starremoval_rgb01(
         border_size=5,
     )
 
-    if stretch_needed:
-        starless_b = unstretch_image_unlinked_rgb(starless_b, orig_meds, orig_min)
+    starless = remove_border(starless_b, border_size=5)
+    starless = np.clip(starless, 0.0, 1.0).astype(np.float32, copy=False)
+    return starless, done
+
+def _compute_stars_only(original: np.ndarray, starless: np.ndarray, mode: str) -> np.ndarray:
+    if mode == "additive":
+        return np.clip(original - starless, 0.0, 1.0).astype(np.float32, copy=False)
+
+    denom = np.maximum(1.0 - starless, 1e-6)
+    return np.clip((original - starless) / denom, 0.0, 1.0).astype(np.float32, copy=False)
+
+def _run_channel_chunked(
+    ch: np.ndarray,
+    *,
+    models: DarkStarModels,
+    params,
+    progress_cb: ProgressCB,
+    progress_start: int,
+    progress_total: int,
+    stage_name: str,
+) -> tuple[np.ndarray, int]:
+    """
+    Run a single mono channel through the mono-trained-triplicated Dark Star model:
+      mono tile -> triplicate to RGB -> infer with mono_model -> collapse back to mono
+    """
+    ch = np.asarray(ch, np.float32)
+    bordered = add_border(ch, border_size=5)
+
+    chunk_size = int(models.chunk_size) if models.is_onnx else int(params.chunk_size)
+    overlap = int(round(float(params.overlap_frac) * chunk_size))
+
+    chunks = split_image_into_chunks_with_overlap(
+        bordered,
+        chunk_size=chunk_size,
+        overlap=overlap,
+    )
+
+    out_tiles = []
+    done = progress_start
+
+    for tile, i, j in chunks:
+        tile = np.asarray(tile, np.float32)
+
+        tile_rgb = np.stack([tile, tile, tile], axis=-1)
+        out_rgb = _infer_tile_rgb_with_model(models, tile_rgb, models.mono_model)
+        out_mono = out_rgb[..., 0].astype(np.float32, copy=False)
+
+        out_tiles.append((out_mono, i, j))
+        done += 1
+        progress_cb(done, progress_total, stage_name)
+
+    starless_b = stitch_chunks_soft_blend(
+        out_tiles,
+        bordered.shape,
+        chunk_size=chunk_size,
+        overlap=overlap,
+        border_size=5,
+    )
 
     starless = remove_border(starless_b, border_size=5)
+    starless = np.clip(starless, 0.0, 1.0).astype(np.float32, copy=False)
+    return starless, done
+
+# -----------------------------------------------------------------------------
+# Public API
+# -----------------------------------------------------------------------------
+
+@dataclass
+class DarkStarParams:
+    use_gpu: bool = True
+    chunk_size: int = 512
+    overlap_frac: float = 0.125
+    mode: str = "unscreen"              # "unscreen" or "additive"
+    output_stars_only: bool = False
+    processing_path: str = "hybrid_luma_color"  # "mono_per_channel" | "hybrid_luma_color" | "color_only"
+
+def darkstar_starremoval_rgb01(
+    img_rgb01: np.ndarray,
+    *,
+    params: DarkStarParams,
+    progress_cb: Optional[ProgressCB] = None,
+    status_cb=print,
+) -> tuple[np.ndarray, Optional[np.ndarray], bool]:
+    """
+    Input : float32 image in [0..1], shape HxW, HxWx1, or HxWx3
+    Output: (starless_rgb01, stars_only_rgb01 or None, was_mono)
+
+    Correct testing behavior for the current Dark Star checkpoint:
+      - the checkpoint is a 3-channel NAFNet
+      - mono data was trained by triplicating the same mono plane into RGB
+      - mono images: run once by triplicating mono -> RGB -> infer -> collapse back to mono
+      - color images: split R/G/B, and for each channel:
+            mono channel -> triplicate to RGB -> infer -> collapse back to mono
+    """
+    if progress_cb is None:
+        progress_cb = lambda done, total, stage: None
+
+    img = np.asarray(img_rgb01, np.float32)
+    was_mono = (img.ndim == 2) or (img.ndim == 3 and img.shape[2] == 1)
+
+    models = load_darkstar_models(use_gpu=params.use_gpu, status_cb=status_cb)
+
+    # -------------------------------------------------------------------------
+    # Case 1: pure 2D mono
+    # -------------------------------------------------------------------------
+    if img.ndim == 2:
+        mono = np.clip(img, 0.0, 1.0).astype(np.float32, copy=False)
+
+        stretch_needed = float(np.median(mono - float(np.min(mono)))) < 0.125
+        if stretch_needed:
+            stretched, orig_min, orig_med = stretch_image_mono(mono)
+        else:
+            stretched, orig_min, orig_med = mono, None, None
+
+        # total chunk count for one mono pass
+        chunk_size = int(params.chunk_size)
+        overlap = int(round(float(params.overlap_frac) * chunk_size))
+        total = len(
+            split_image_into_chunks_with_overlap(
+                add_border(stretched, border_size=5),
+                chunk_size=chunk_size,
+                overlap=overlap,
+            )
+        )
+
+        # _run_channel_chunked is expected to take a 2D channel, triplicate it
+        # to RGB internally for the RGB-trained NAFNet, then collapse back to mono.
+        starless, _done = _run_channel_chunked(
+            stretched,
+            models=models,
+            params=params,
+            progress_cb=progress_cb,
+            progress_start=0,
+            progress_total=total,
+            stage_name="Dark Star removal",
+        )
+
+        if stretch_needed:
+            starless = unstretch_image_mono(starless, orig_med, orig_min)
+
+        starless = np.clip(starless, 0.0, 1.0).astype(np.float32, copy=False)
+
+        stars_only = None
+        if params.output_stars_only:
+            if params.mode == "additive":
+                stars_only = np.clip(mono - starless, 0.0, 1.0).astype(np.float32, copy=False)
+            else:
+                denom = np.maximum(1.0 - starless, 1e-6)
+                stars_only = np.clip((mono - starless) / denom, 0.0, 1.0).astype(np.float32, copy=False)
+
+            stars_only = stars_only[..., None]
+
+        return starless[..., None], stars_only, True
+
+    # -------------------------------------------------------------------------
+    # Case 2: HxWx1 mono
+    # -------------------------------------------------------------------------
+    if img.ndim == 3 and img.shape[2] == 1:
+        mono = np.clip(img[..., 0], 0.0, 1.0).astype(np.float32, copy=False)
+
+        stretch_needed = float(np.median(mono - float(np.min(mono)))) < 0.125
+        if stretch_needed:
+            stretched, orig_min, orig_med = stretch_image_mono(mono)
+        else:
+            stretched, orig_min, orig_med = mono, None, None
+
+        chunk_size = int(params.chunk_size)
+        overlap = int(round(float(params.overlap_frac) * chunk_size))
+        total = len(
+            split_image_into_chunks_with_overlap(
+                add_border(stretched, border_size=5),
+                chunk_size=chunk_size,
+                overlap=overlap,
+            )
+        )
+
+        starless, _done = _run_channel_chunked(
+            stretched,
+            models=models,
+            params=params,
+            progress_cb=progress_cb,
+            progress_start=0,
+            progress_total=total,
+            stage_name="Dark Star removal",
+        )
+
+        if stretch_needed:
+            starless = unstretch_image_mono(starless, orig_med, orig_min)
+
+        starless = np.clip(starless, 0.0, 1.0).astype(np.float32, copy=False)
+
+        stars_only = None
+        if params.output_stars_only:
+            if params.mode == "additive":
+                stars_only = np.clip(mono - starless, 0.0, 1.0).astype(np.float32, copy=False)
+            else:
+                denom = np.maximum(1.0 - starless, 1e-6)
+                stars_only = np.clip((mono - starless) / denom, 0.0, 1.0).astype(np.float32, copy=False)
+
+            stars_only = stars_only[..., None]
+
+        return starless[..., None], stars_only, True
+
+    # -------------------------------------------------------------------------
+    # Case 3: HxWx3 color
+    # -------------------------------------------------------------------------
+    img3 = np.clip(img, 0.0, 1.0).astype(np.float32, copy=False)
+
+    stretch_needed = float(np.median(img3 - float(np.min(img3)))) < 0.125
+    if stretch_needed:
+        stretched, orig_min, orig_meds = stretch_image_unlinked_rgb(img3)
+    else:
+        stretched, orig_min, orig_meds = img3, None, None
+
+    chunk_size = int(params.chunk_size)
+    overlap = int(round(float(params.overlap_frac) * chunk_size))
+
+    path = str(getattr(params, "processing_path", "hybrid_luma_color")).strip().lower()
+    if path not in ("mono_per_channel", "hybrid_luma_color", "color_only"):
+        path = "hybrid_luma_color"
+
+    if path in ("color_only", "hybrid_luma_color") and models.color_model is None:
+        status_cb("Dark Star: color model unavailable, falling back to mono_per_channel")
+        path = "mono_per_channel"
+
+    # ------------------------------------------------------------------
+    # mono_per_channel
+    # ------------------------------------------------------------------
+    if path == "mono_per_channel":
+        n_chunks = len(
+            split_image_into_chunks_with_overlap(
+                add_border(stretched[..., 0], border_size=5),
+                chunk_size=chunk_size,
+                overlap=overlap,
+            )
+        )
+        total = n_chunks * 3
+
+        out = np.zeros_like(stretched, dtype=np.float32)
+        done = 0
+        channel_names = ["R", "G", "B"]
+
+        for c in range(3):
+            out[..., c], done = _run_channel_chunked(
+                stretched[..., c],
+                models=models,
+                params=params,
+                progress_cb=progress_cb,
+                progress_start=done,
+                progress_total=total,
+                stage_name=f"Dark Star removal ({channel_names[c]})",
+            )
+
+        starless = out
+
+    # ------------------------------------------------------------------
+    # color_only
+    # ------------------------------------------------------------------
+    elif path == "color_only":
+        total = len(
+            split_image_into_chunks_with_overlap(
+                add_border(stretched, border_size=5),
+                chunk_size=chunk_size,
+                overlap=overlap,
+            )
+        )
+
+        starless, _done = _run_rgb_chunked_with_model(
+            stretched,
+            model=models.color_model,
+            models=models,
+            params=params,
+            progress_cb=progress_cb,
+            progress_start=0,
+            progress_total=total,
+            stage_name="Dark Star color model",
+        )
+
+    # ------------------------------------------------------------------
+    # hybrid_luma_color
+    # ------------------------------------------------------------------
+    else:
+        n_chunks_rgb = len(
+            split_image_into_chunks_with_overlap(
+                add_border(stretched, border_size=5),
+                chunk_size=chunk_size,
+                overlap=overlap,
+            )
+        )
+        n_chunks_l = len(
+            split_image_into_chunks_with_overlap(
+                add_border(_compute_luminance_rec709(stretched), border_size=5),
+                chunk_size=chunk_size,
+                overlap=overlap,
+            )
+        )
+        total = n_chunks_l + n_chunks_rgb
+
+        # robust mono luminance
+        lum = _compute_luminance_rec709(stretched)
+        starless_lum, done = _run_channel_chunked(
+            lum,
+            models=models,
+            params=params,
+            progress_cb=progress_cb,
+            progress_start=0,
+            progress_total=total,
+            stage_name="Dark Star luminance",
+        )
+
+        # color model RGB
+        starless_color, done = _run_rgb_chunked_with_model(
+            stretched,
+            model=models.color_model,
+            models=models,
+            params=params,
+            progress_cb=progress_cb,
+            progress_start=done,
+            progress_total=total,
+            stage_name="Dark Star color model",
+        )
+
+        # recombine robust mono luminance into color-model chroma
+        starless = _recombine_luminance_linear_scale(starless_color, starless_lum)
+
+    if stretch_needed:
+        starless = unstretch_image_unlinked_rgb(starless, orig_meds, orig_min)
+
     starless = np.clip(starless, 0.0, 1.0).astype(np.float32, copy=False)
 
     stars_only = None
     if params.output_stars_only:
-        if params.mode == "additive":
-            stars_only = np.clip(img3 - starless, 0.0, 1.0).astype(np.float32, copy=False)
-        else:  # unscreen
-            denom = np.maximum(1.0 - starless, 1e-6)
-            stars_only = np.clip((img3 - starless) / denom, 0.0, 1.0).astype(np.float32, copy=False)
+        stars_only = _compute_stars_only(img3, starless, params.mode)
 
-    if was_mono:
-        starless = np.mean(starless, axis=2, keepdims=True).astype(np.float32, copy=False)
-        if stars_only is not None:
-            stars_only = np.mean(stars_only, axis=2, keepdims=True).astype(np.float32, copy=False)
-
-    return starless, stars_only, was_mono
+    return starless, stars_only, False

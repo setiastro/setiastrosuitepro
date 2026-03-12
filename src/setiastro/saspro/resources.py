@@ -635,10 +635,10 @@ class Resources:
     CC_SUPERRES_4X_ONNX = property(lambda self: model_path('superres_4x.onnx'))
 
     # --- Dark Star (Star Removal) ---
-    CC_DARKSTAR_MONO_PTH   = property(lambda self: model_path('darkstar_v2.1.pth'))
-    CC_DARKSTAR_MONO_ONNX  = property(lambda self: model_path('darkstar_v2.1.onnx'))
-    CC_DARKSTAR_COLOR_PTH  = property(lambda self: model_path('darkstar_v2.1c.pth'))
-    CC_DARKSTAR_COLOR_ONNX = property(lambda self: model_path('darkstar_v2.1c.onnx'))
+    CC_DARKSTAR_MONO_PTH   = property(lambda self: model_path('darkstar_mono_AI4.pt'))
+    CC_DARKSTAR_MONO_ONNX  = property(lambda self: model_path('darkstar_mono_AI4.onnx'))
+    CC_DARKSTAR_COLOR_PTH  = property(lambda self: model_path('darkstar_color_AI4.pt'))
+    CC_DARKSTAR_COLOR_ONNX = property(lambda self: model_path('darkstar_color_AI4.onnx'))
 
     # --- Cosmic Clarity Satellite Removal ---
     CC_SAT_DETECT1_PTH  = property(lambda self: model_path('satellite_trail_detector_AI3.5.pth'))

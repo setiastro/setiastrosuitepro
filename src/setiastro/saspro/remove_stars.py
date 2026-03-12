@@ -20,16 +20,11 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QDesktopServices, QIcon
 
-try:
-    from setiastro.saspro.cosmicclarity_engines.darkstar_engine_devtest import (
-        darkstar_starremoval_rgb01,
-        DarkStarParams,
-    )
-except ModuleNotFoundError:
-    from setiastro.saspro.cosmicclarity_engines.darkstar_engine import (
-        darkstar_starremoval_rgb01,
-        DarkStarParams,
-    )
+
+from setiastro.saspro.cosmicclarity_engines.darkstar_engine import (
+    darkstar_starremoval_rgb01,
+    DarkStarParams,
+)
 
 # use your legacy I/O functions (as requested)
 from setiastro.saspro.legacy.image_manager import save_image, load_image
@@ -2574,6 +2569,8 @@ def _run_darkstar(main, doc, icon_path=None):
     import numpy as np
     from PyQt6.QtWidgets import QMessageBox
 
+    if not _ensure_darkstar_model_available(main):
+        return
     # --- Config dialog (keep as-is) ---
     cfg = DarkStarConfigDialog(main)
     if icon_path:
@@ -3115,7 +3112,7 @@ class _DarkStarThread(QThread):
                 self._img,
                 params=self._params,
                 progress_cb=prog,
-                status_cb=lambda s: None,
+                status_cb=print,
             )
             self.finished_signal.emit(starless, stars_only, bool(was_mono), "")
         except Exception as e:
@@ -3186,6 +3183,37 @@ class DarkStarConfigDialog(QDialog):
             "stride": int(self.cmb_stride.currentData()),
         }
 
+def _ensure_darkstar_model_available(parent=None) -> bool:
+    """
+    Dark Star always requires the mono AI4 model.
+    Return True if present, otherwise show a warning and return False.
+    """
+    from PyQt6.QtWidgets import QMessageBox
+    from setiastro.saspro.resources import get_resources
+    import os
+
+    try:
+        R = get_resources()
+        mono_pth = str(R.CC_DARKSTAR_MONO_PTH)
+    except Exception as e:
+        QMessageBox.warning(
+            parent,
+            "Dark Star Model Missing",
+            f"Could not resolve Dark Star model paths.\n\n{e}",
+        )
+        return False
+
+    if not mono_pth or not os.path.exists(mono_pth):
+        QMessageBox.warning(
+            parent,
+            "Dark Star Model Missing",
+            "The required Dark Star mono model is not installed yet:\n\n"
+            f"{mono_pth}\n\n"
+            "Please install or download the Dark Star models, then try again.",
+        )
+        return False
+
+    return True
 
 def darkstar_starless_from_array(
     arr_rgb01: np.ndarray,

@@ -252,9 +252,26 @@ def _default_canned_workflows() -> List[WorkflowDefinition]:
             ],
         ),
         WorkflowDefinition(
+            name="Beginner Mono RGB Workflow",
+            description="Simple starter workflow for mono RGB channel processing.",
+            steps=[
+                WorkflowStep("crop", "Crop away stacking edges first."),
+                WorkflowStep("linear_fit", "Match the RGB channels before combining."),
+                WorkflowStep("rgb_combine", "Combine the mono R, G, and B channels into a color image."),
+                WorkflowStep("background_neutral", "Neutralize the background before color balancing."),
+                WorkflowStep("white_balance", "Apply white balance to set the color balance."),
+                WorkflowStep("cosmicclarity", "Apply denoise and/or sharpening with Cosmic Clarity."),
+                WorkflowStep("stat_stretch", "Stretch the image to non-linear."),
+                WorkflowStep("curves", "Refine contrast and color."),
+                WorkflowStep("clahe", "Enhance local contrast if needed."),
+                WorkflowStep("save_as", "Save your result."),
+            ],
+        ),        
+        WorkflowDefinition(
             name="Beginner Mono Narrowband Workflow",
             description="Simple starter workflow for mono narrowband processing.",
             steps=[
+                WorkflowStep("crop", "Crop away stacking edges first."),
                 WorkflowStep("linear_fit", "Match channels before combining if needed."),
                 WorkflowStep("remove_stars", "Remove your stars for each master"),
                 WorkflowStep("ppp", "Build the palette and color image with Perfect Palette Picker."),
