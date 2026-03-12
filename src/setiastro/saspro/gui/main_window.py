@@ -5392,6 +5392,9 @@ class AstroSuiteProMainWindow(
         dlg.resize(700, 420)
         dlg.show()
 
+    def _open_workflows(self):
+        from setiastro.saspro.workflows import show_workflow_dialog
+        show_workflow_dialog(self)
 
     def _about(self):
         dlg = AboutDialog(

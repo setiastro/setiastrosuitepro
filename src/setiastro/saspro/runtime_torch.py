@@ -245,21 +245,30 @@ def _torch_sanity_check(status_cb=print):
         tf = getattr(torch, "__file__", "") or ""
         pkg_dir = Path(tf).parent if tf else None
 
-        # must come from site/dist packages
         if ("site-packages" not in tf) and ("dist-packages" not in tf):
             raise RuntimeError(f"Shadow import: torch.__file__ = {tf}")
 
-        # compiled extension must exist, and 'torch/_C/__init__.py' must NOT
         if not _is_compiled_torch_dir(pkg_dir):
             raise RuntimeError(f"Wheel missing torch._C in {pkg_dir}")
         if (pkg_dir / "_C" / "__init__.py").exists():
             raise RuntimeError(f"Found package folder torch/_C at {pkg_dir/'_C'}, this indicates a source tree.")
 
-        importlib.import_module("torch._C")  # force extension load
+        importlib.import_module("torch._C")
 
-        x = torch.ones(1); y = x + 1
+        x = torch.ones(1)
+        y = x + 1
         if int(y.item()) != 2:
             raise RuntimeError("Unexpected tensor arithmetic result from torch sanity op.")
+
+        # NEW: verify inference_mode really works with this torch._C
+        if hasattr(torch, "inference_mode"):
+            try:
+                with torch.inference_mode():
+                    z = torch.ones(1)
+                    _ = (z + 1).item()
+            except Exception as e:
+                raise RuntimeError(f"torch.inference_mode unusable: {e}")
+
     except Exception as e:
         raise RuntimeError(f"PyTorch C-extension check failed: {e}") from e
 
