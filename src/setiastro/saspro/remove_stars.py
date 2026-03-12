@@ -2608,9 +2608,9 @@ def _run_darkstar(main, doc, icon_path=None):
     processing_path = str(v["processing_path"])   # "mono_per_channel" | "hybrid_luma_color" | "color_only"
     show_extracted_stars = bool(v["show_extracted_stars"])
 
-    chunk_size = int(v["stride"])                 # reuse stride as chunk size
-    edge_padding = int(v.get("edge_padding", 64))    
-    overlap_frac = 0.125                          # keep your current default
+    chunk_size = int(v["stride"])
+    overlap_frac = float(v.get("overlap_frac", 0.125))
+    edge_padding = int(v.get("edge_padding", 64))
     output_stars_only = bool(show_extracted_stars)
 
     # 🔹 Stash parameters for replay-last (same structure as you had)
@@ -2625,6 +2625,7 @@ def _run_darkstar(main, doc, icon_path=None):
                 "show_extracted_stars": bool(show_extracted_stars),
                 "stride": int(chunk_size),
                 "edge_padding": int(edge_padding),
+                "overlap_frac": float(overlap_frac),                
             },
         }
     except Exception:
@@ -2640,7 +2641,8 @@ def _run_darkstar(main, doc, icon_path=None):
                 "mode": mode,
                 "show_extracted_stars": bool(show_extracted_stars),
                 "stride": int(stride),
-                "edge_padding": int(edge_padding),                
+                "edge_padding": int(edge_padding),      
+                "overlap_frac": float(overlap_frac),                          
             },
         }
         if hasattr(main, "_log"):
@@ -3156,7 +3158,6 @@ class _DarkStarThread(QThread):
         except Exception as e:
             self.finished_signal.emit(None, None, False, str(e))
 
-
 class DarkStarConfigDialog(QDialog):
     """
     SASv2-style config UI:
@@ -3168,42 +3169,68 @@ class DarkStarConfigDialog(QDialog):
             color_only
       - Show Extracted Stars: Yes/No (default Yes)
       - Stride (powers of 2): 64,128,256,512,1024 (default 512)
+      - Overlap (%): overlap between chunks
       - Edge Padding: reflected full-image border to reduce edge artifacts
     """
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("CosmicClarity Dark Star Settings")
 
+        settings = QSettings()
+
         self.chk_disable_gpu = QCheckBox("Disable GPU")
         self.chk_disable_gpu.setChecked(False)
 
         self.cmb_mode = QComboBox()
         self.cmb_mode.addItems(["unscreen", "additive"])
-        self.cmb_mode.setCurrentText("unscreen")
+        self.cmb_mode.setCurrentText(str(settings.value("darkstar/mode", "unscreen")))
 
         self.cmb_processing = QComboBox()
         self.cmb_processing.addItem("Mono AI per channel", "mono_per_channel")
         self.cmb_processing.addItem("Hybrid Luma + Color (best balance)", "hybrid_luma_color")
         self.cmb_processing.addItem("Color AI only", "color_only")
-        self.cmb_processing.setCurrentIndex(1)
+        saved_processing = str(settings.value("darkstar/processing_path", "hybrid_luma_color"))
+        idx = max(0, self.cmb_processing.findData(saved_processing))
+        self.cmb_processing.setCurrentIndex(idx)
 
         self.chk_show_stars = QCheckBox("Show Extracted Stars")
-        self.chk_show_stars.setChecked(True)
+        self.chk_show_stars.setChecked(bool(settings.value("darkstar/show_extracted_stars", True, type=bool)))
 
         self.cmb_stride = QComboBox()
         for v in (64, 128, 256, 512, 1024):
             self.cmb_stride.addItem(str(v), v)
-        self.cmb_stride.setCurrentText("512")
+        saved_stride = int(settings.value("darkstar/stride", 512, type=int))
+        idx = max(0, self.cmb_stride.findData(saved_stride))
+        self.cmb_stride.setCurrentIndex(idx)
+
+        self.cmb_overlap = QComboBox()
+        for pct in (0.05, 0.075, 0.10, 0.125, 0.15, 0.20, 0.25):
+            label = f"{pct * 100:.1f}%"
+            self.cmb_overlap.addItem(label, pct)
+        saved_overlap = float(settings.value("darkstar/overlap_frac", 0.125, type=float))
+        # match by closest value
+        best_idx = 0
+        best_err = 1e9
+        for i in range(self.cmb_overlap.count()):
+            v = float(self.cmb_overlap.itemData(i))
+            err = abs(v - saved_overlap)
+            if err < best_err:
+                best_err = err
+                best_idx = i
+        self.cmb_overlap.setCurrentIndex(best_idx)
 
         self.cmb_padding = QComboBox()
-        for v in (0, 16, 32, 64, 128, 256, 512):
+        for v in (0, 16, 32, 64, 128, 256):
             self.cmb_padding.addItem(str(v), v)
-        self.cmb_padding.setCurrentText("128")
+        saved_padding = int(settings.value("darkstar/edge_padding", 64, type=int))
+        idx = max(0, self.cmb_padding.findData(saved_padding))
+        self.cmb_padding.setCurrentIndex(idx)
 
         form = QFormLayout()
         form.addRow("Star Removal Mode:", self.cmb_mode)
         form.addRow("Processing Path:", self.cmb_processing)
         form.addRow("Stride (power of two):", self.cmb_stride)
+        form.addRow("Overlap (%):", self.cmb_overlap)
         form.addRow("Edge Padding:", self.cmb_padding)
         form.addRow("", self.chk_disable_gpu)
         form.addRow("", self.chk_show_stars)
@@ -3220,14 +3247,28 @@ class DarkStarConfigDialog(QDialog):
         layout.addWidget(btns)
 
     def get_values(self):
-        return {
+        vals = {
             "disable_gpu": self.chk_disable_gpu.isChecked(),
             "mode": self.cmb_mode.currentText(),
             "processing_path": str(self.cmb_processing.currentData()),
             "show_extracted_stars": self.chk_show_stars.isChecked(),
             "stride": int(self.cmb_stride.currentData()),
+            "overlap_frac": float(self.cmb_overlap.currentData()),
             "edge_padding": int(self.cmb_padding.currentData()),
         }
+
+        try:
+            settings = QSettings()
+            settings.setValue("darkstar/mode", vals["mode"])
+            settings.setValue("darkstar/processing_path", vals["processing_path"])
+            settings.setValue("darkstar/show_extracted_stars", vals["show_extracted_stars"])
+            settings.setValue("darkstar/stride", vals["stride"])
+            settings.setValue("darkstar/overlap_frac", vals["overlap_frac"])
+            settings.setValue("darkstar/edge_padding", vals["edge_padding"])
+        except Exception:
+            pass
+
+        return vals
 
 def _ensure_darkstar_model_available(parent=None) -> bool:
     """
