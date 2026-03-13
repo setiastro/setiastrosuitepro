@@ -17312,16 +17312,29 @@ class StackingSuiteDialog(QDialog):
 
     def save_rejection_map_sasr(self, rejection_map: dict, out_path: str):
         """
-        Save per-file rejection information to .sasr (JSON).
+        Save rejection information to .sasr (JSON).
 
-        Supports BOTH formats:
-        Old: rejection_map[file] = [(x, y), ...]
-        New: rejection_map[file] = [(x0, y0, mask_bool_thx_tw), ...]
-            where mask_bool is a 2D boolean ndarray for that tile in REF space.
+        Supports ALL formats:
 
-        For the new format we bit-pack masks to keep files small.
+        1) Old per-file XY:
+        rejection_map[file] = [(x, y), ...]
+
+        2) Per-file tile masks:
+        rejection_map[file] = [(x0, y0, mask_bool_thx_tw), ...]
+
+        3) Group-accumulated maps:
+        rejection_map = {
+            "any":   bool[H,W],
+            "frac":  float32[H,W],
+            "count": uint16/int[H,W],
+            "n":     int
+        }
+
+        For masks/maps we bit-pack booleans where appropriate to keep files smaller.
         """
-        import os, json, base64
+        import os
+        import json
+        import base64
         import numpy as np
 
         def _is_tile_item(it) -> bool:
@@ -17330,18 +17343,89 @@ class StackingSuiteDialog(QDialog):
         def _is_xy_item(it) -> bool:
             return isinstance(it, (tuple, list)) and len(it) == 2
 
+        def _pack_bool_2d(mm: np.ndarray) -> dict:
+            mm = np.asarray(mm, dtype=np.bool_)
+            if mm.ndim != 2:
+                mm = np.squeeze(mm)
+                if mm.ndim != 2:
+                    raise ValueError(f"Expected 2D boolean array, got shape {mm.shape}")
+            h, w = mm.shape
+            packed = np.packbits(mm.reshape(-1).astype(np.uint8))
+            b64 = base64.b64encode(packed.tobytes()).decode("ascii")
+            return {
+                "h": int(h),
+                "w": int(w),
+                "bits": b64
+            }
+
+        def _encode_numeric_2d(arr: np.ndarray) -> dict:
+            """
+            Store numeric 2D arrays compactly as base64 raw bytes + dtype + shape.
+            """
+            aa = np.asarray(arr)
+            if aa.ndim != 2:
+                aa = np.squeeze(aa)
+                if aa.ndim != 2:
+                    raise ValueError(f"Expected 2D numeric array, got shape {aa.shape}")
+            aa = np.ascontiguousarray(aa)
+            b64 = base64.b64encode(aa.tobytes()).decode("ascii")
+            return {
+                "h": int(aa.shape[0]),
+                "w": int(aa.shape[1]),
+                "dtype": str(aa.dtype),
+                "bytes": b64
+            }
+
         payload = {
-            "version": 2,   # bump because we now support tile masks
-            "kind": "mixed",  # per-file can be xy or tiles
-            "files": {}
+            "version": 3,
+            "kind": None
         }
 
-        for fpath, items in (rejection_map or {}).items():
+        rm = rejection_map or {}
+
+        # ------------------------------------------------------------------
+        # Case 1: group-level accumulated maps
+        # ------------------------------------------------------------------
+        if isinstance(rm, dict) and ("any" in rm or "frac" in rm or "count" in rm):
+            rej_any = rm.get("any", None)
+            rej_frac = rm.get("frac", None)
+            rej_count = rm.get("count", None)
+            n = int(rm.get("n", 0) or 0)
+
+            payload["kind"] = "group_maps"
+            payload["n"] = n
+            payload["maps"] = {}
+
+            if rej_any is not None:
+                payload["maps"]["any"] = _pack_bool_2d(rej_any)
+
+            if rej_frac is not None:
+                payload["maps"]["frac"] = _encode_numeric_2d(np.asarray(rej_frac, dtype=np.float32))
+
+            if rej_count is not None:
+                # preserve integer map
+                rc = np.asarray(rej_count)
+                if rc.dtype.kind not in ("u", "i"):
+                    rc = rc.astype(np.uint16, copy=False)
+                payload["maps"]["count"] = _encode_numeric_2d(rc)
+
+            os.makedirs(os.path.dirname(out_path), exist_ok=True)
+            with open(out_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2)
+            return
+
+        # ------------------------------------------------------------------
+        # Case 2: per-file formats (old + tilemask)
+        # ------------------------------------------------------------------
+        payload["kind"] = "per_file"
+        payload["files"] = {}
+
+        for fpath, items in rm.items():
             if not items:
                 continue
 
-            # detect which format this file uses
             first = items[0]
+
             if _is_tile_item(first):
                 out_items = []
                 for it in items:
@@ -17379,7 +17463,6 @@ class StackingSuiteDialog(QDialog):
                 }
 
             elif _is_xy_item(first):
-                # old (x,y) list
                 xy = []
                 for it in items:
                     try:
@@ -17394,7 +17477,7 @@ class StackingSuiteDialog(QDialog):
                 }
 
             else:
-                # Unknown / mixed junk — try to salvage
+                # salvage mixed junk
                 xy = []
                 tiles = []
                 for it in items:
@@ -17409,14 +17492,28 @@ class StackingSuiteDialog(QDialog):
                             if mm.ndim != 2:
                                 continue
                         th, tw = mm.shape
+                        if th <= 0 or tw <= 0:
+                            continue
                         packed = np.packbits(mm.reshape(-1).astype(np.uint8))
                         b64 = base64.b64encode(packed.tobytes()).decode("ascii")
-                        tiles.append({"x0": int(x0), "y0": int(y0), "h": int(th), "w": int(tw), "bits": b64})
+                        tiles.append({
+                            "x0": int(x0),
+                            "y0": int(y0),
+                            "h": int(th),
+                            "w": int(tw),
+                            "bits": b64
+                        })
 
                 if tiles:
-                    payload["files"][os.path.normpath(fpath)] = {"format": "tilemask", "tiles": tiles}
+                    payload["files"][os.path.normpath(fpath)] = {
+                        "format": "tilemask",
+                        "tiles": tiles
+                    }
                 elif xy:
-                    payload["files"][os.path.normpath(fpath)] = {"format": "xy", "coords": xy}
+                    payload["files"][os.path.normpath(fpath)] = {
+                        "format": "xy",
+                        "coords": xy
+                    }
 
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
         with open(out_path, "w", encoding="utf-8") as f:
@@ -17711,18 +17808,11 @@ class StackingSuiteDialog(QDialog):
             maps = getattr(self, "_rej_maps", {}).get(group_key)
             save_layers = self.settings.value("stacking/save_rejection_layers", True, type=bool)
 
-            save_layers = self.settings.value("stacking/save_rejection_layers", True, type=bool)
-
-            if rejection_map and save_layers:
+            if maps is not None and save_layers:
                 try:
-                    # integrated_image is already normalized above; rejection coords are assumed in this (H,W) space
-                    rej_cnt, rej_frac, rej_any = build_rejection_layers(
-                        rejection_map=rejection_map,
-                        ref_H=H,
-                        ref_W=W,
-                        n_frames=n_frames_group,
-                        comb_threshold_frac=0.02,  # tweakable
-                    )
+                    rej_any  = np.asarray(maps["any"], dtype=bool)
+                    rej_frac = np.asarray(maps["frac"], dtype=np.float32)
+                    rej_cnt  = np.asarray(maps["count"], dtype=np.uint16)
 
                     _save_master_with_rejection_layers(
                         img_array=integrated_image,
@@ -17745,7 +17835,6 @@ class StackingSuiteDialog(QDialog):
                         is_mono=is_mono_orig
                     )
                     log(f"✅ Saved integrated image (single-HDU) for '{group_key}': {out_path_orig}")
-
             else:
                 save_image(
                     img_array=integrated_image,
@@ -18072,7 +18161,8 @@ class StackingSuiteDialog(QDialog):
                     pass
 
                 sasr_path = os.path.join(self.stacking_directory, f"{group_key}_rejections.sasr")
-                self.save_rejection_map_sasr(rejection_map, sasr_path)
+                maps = getattr(self, "_rej_maps", {}).get(group_key)
+                self.save_rejection_map_sasr(maps, sasr_path)
                 log(f"✅ Saved rejection map to {sasr_path}")
 
             group_integration_data[group_key] = {
