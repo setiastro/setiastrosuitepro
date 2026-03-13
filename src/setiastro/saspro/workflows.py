@@ -1,9 +1,8 @@
-# src/setiastro/saspro/workflows.py
 from __future__ import annotations
 
 import json
-import os
-from dataclasses import dataclass, field, asdict
+import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -23,6 +22,7 @@ from PyQt6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSplitter,
     QTextEdit,
     QToolButton,
@@ -34,48 +34,123 @@ from PyQt6.QtWidgets import (
 )
 
 WORKFLOW_MIME = "application/x-saspro-workflow-command"
+WORKFLOW_SCHEMA_VERSION = 2
 
 
 # -----------------------------------------------------------------------------
 # Data models
 # -----------------------------------------------------------------------------
 
+def _new_step_id() -> str:
+    return uuid.uuid4().hex[:12]
+
+
 @dataclass
 class WorkflowStep:
-    command_id: str
+    id: str = field(default_factory=_new_step_id)
+    command_id: str = ""
     note: str = ""
     enabled: bool = True
+    kind: str = "action"   # action, note, split, merge
+    lane: str = "main"
+    inputs: List[str] = field(default_factory=list)
+    outputs: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "command_id": self.command_id,
+            "note": self.note,
+            "enabled": self.enabled,
+            "kind": self.kind,
+            "lane": self.lane,
+            "inputs": list(self.inputs),
+            "outputs": list(self.outputs),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "WorkflowStep":
+        return cls(
+            id=str(data.get("id") or _new_step_id()),
+            command_id=str(data.get("command_id", "")),
+            note=str(data.get("note", "")),
+            enabled=bool(data.get("enabled", True)),
+            kind=str(data.get("kind", "action")),
+            lane=str(data.get("lane", "main")),
+            inputs=[str(x) for x in data.get("inputs", []) if str(x).strip()],
+            outputs=[str(x) for x in data.get("outputs", []) if str(x).strip()],
+        )
 
 
 @dataclass
 class WorkflowDefinition:
     name: str
     description: str = ""
+    lanes: List[str] = field(default_factory=lambda: ["main"])
     steps: List[WorkflowStep] = field(default_factory=list)
+    schema_version: int = WORKFLOW_SCHEMA_VERSION
 
     def to_dict(self) -> dict:
         return {
+            "schema_version": WORKFLOW_SCHEMA_VERSION,
             "name": self.name,
             "description": self.description,
-            "steps": [asdict(s) for s in self.steps],
+            "lanes": list(self.lanes),
+            "steps": [s.to_dict() for s in self.steps],
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "WorkflowDefinition":
+        # ------------------------------
+        # New schema (v2+)
+        # ------------------------------
+        if isinstance(data, dict) and "lanes" in data:
+            lanes = [str(x) for x in data.get("lanes", ["main"]) if str(x).strip()]
+            if not lanes:
+                lanes = ["main"]
+
+            steps = []
+            for s in data.get("steps", []):
+                if isinstance(s, dict):
+                    step = WorkflowStep.from_dict(s)
+                    if not step.lane:
+                        step.lane = "main"
+                    steps.append(step)
+
+            return cls(
+                name=str(data.get("name", "Untitled Workflow")),
+                description=str(data.get("description", "")),
+                lanes=lanes,
+                steps=steps,
+                schema_version=int(data.get("schema_version", WORKFLOW_SCHEMA_VERSION)),
+            )
+
+        # ------------------------------
+        # Legacy schema (phase 1)
+        # Convert old flat step list into lane "main"
+        # ------------------------------
         steps = []
         for s in data.get("steps", []):
             if isinstance(s, dict) and s.get("command_id"):
                 steps.append(
                     WorkflowStep(
+                        id=_new_step_id(),
                         command_id=str(s.get("command_id", "")),
                         note=str(s.get("note", "")),
                         enabled=bool(s.get("enabled", True)),
+                        kind="action",
+                        lane="main",
+                        inputs=[],
+                        outputs=[],
                     )
                 )
+
         return cls(
             name=str(data.get("name", "Untitled Workflow")),
             description=str(data.get("description", "")),
+            lanes=["main"],
             steps=steps,
+            schema_version=1,
         )
 
 
@@ -96,8 +171,7 @@ class WorkflowActionInfo:
 def _clean_action_text(text: str) -> str:
     if not text:
         return ""
-    text = text.replace("&", "").strip()
-    return text
+    return text.replace("&", "").strip()
 
 
 def _main_settings(main) -> object | None:
@@ -105,16 +179,7 @@ def _main_settings(main) -> object | None:
 
 
 def _workflows_dir(main) -> Path:
-    """
-    Prefer a user data path if main provides one.
-    Otherwise fall back to a sensible local folder under the home directory.
-    """
-    # Optional future hook if you already have a resource/appdata helper
-    getter_names = (
-        "get_user_data_dir",
-        "_user_data_dir",
-        "user_data_dir",
-    )
+    getter_names = ("get_user_data_dir", "_user_data_dir", "user_data_dir")
     for name in getter_names:
         fn = getattr(main, name, None)
         try:
@@ -133,11 +198,6 @@ def _workflows_dir(main) -> Path:
 
 
 def _find_action_by_command_id(main, command_id: str) -> Optional[QAction]:
-    """
-    Looks up a QAction using the ShortcutManager first, then falls back to
-    scanning actions on the main window.
-    """
-    # Preferred: ShortcutManager API if present
     shortcuts = getattr(main, "shortcuts", None)
     if shortcuts is not None:
         for name in ("get_action", "action", "lookup_action"):
@@ -150,7 +210,6 @@ def _find_action_by_command_id(main, command_id: str) -> Optional[QAction]:
                 except Exception:
                     pass
 
-        # common private patterns
         for attr in ("_actions", "actions_by_id", "registry", "_registry"):
             mapping = getattr(shortcuts, attr, None)
             if isinstance(mapping, dict):
@@ -158,7 +217,6 @@ def _find_action_by_command_id(main, command_id: str) -> Optional[QAction]:
                 if isinstance(act, QAction):
                     return act
 
-    # Fallback: scan all actions attached to main
     try:
         for act in main.findChildren(QAction):
             cid = act.property("command_id")
@@ -173,12 +231,6 @@ def _find_action_by_command_id(main, command_id: str) -> Optional[QAction]:
 
 
 def _discover_toolbar_categories(main) -> Dict[str, List[WorkflowActionInfo]]:
-    """
-    Discover actions grouped by toolbar membership so the workflow catalog feels
-    familiar to users.
-
-    We intentionally ignore separators and actions without a command_id.
-    """
     categories: Dict[str, List[WorkflowActionInfo]] = {}
 
     try:
@@ -186,7 +238,6 @@ def _discover_toolbar_categories(main) -> Dict[str, List[WorkflowActionInfo]]:
     except Exception:
         toolbars = []
 
-    # We only care about objects that behave like QToolBar / your DraggableToolBar
     for tb in toolbars:
         if not hasattr(tb, "actions"):
             continue
@@ -239,59 +290,72 @@ def _default_canned_workflows() -> List[WorkflowDefinition]:
         WorkflowDefinition(
             name="Beginner OSC Workflow",
             description="A beginner-friendly basic deep sky OSC workflow.",
+            lanes=["main"],
             steps=[
-                WorkflowStep("crop", "Crop away stacking edges first."),
-                WorkflowStep("abe", "Remove gradients while the image is still linear."),
-                WorkflowStep("background_neutral", "Neutralize the background."),
-                WorkflowStep("white_balance", "Balance color before stretching."),
-                WorkflowStep("cosmicclarity", "Apply Sharpening then noise reduction"),
-                WorkflowStep("stat_stretch", "Stretch to non-linear."),
-                WorkflowStep("curves", "Adjust the contrast."),
-                WorkflowStep("clahe", "Boost the image depth slightly."),
-                WorkflowStep("save_as", "Save your result."),
+                WorkflowStep(command_id="crop", note="Crop away stacking edges first.", lane="main"),
+                WorkflowStep(command_id="pedestal", note="Remove the blank pedestal space below the minimum value in your image.", lane="main"),
+                WorkflowStep(command_id="abe", note="Remove gradients while the image is still linear.", lane="main"),
+                WorkflowStep(command_id="background_neutral", note="Neutralize the background.", lane="main"),
+                WorkflowStep(command_id="white_balance", note="Balance color before stretching.", lane="main"),
+                WorkflowStep(command_id="cosmicclarity", note="Apply sharpening then noise reduction.", lane="main"),
+                WorkflowStep(command_id="stat_stretch", note="Stretch to non-linear.", lane="main"),
+                WorkflowStep(command_id="curves", note="Adjust the contrast.", lane="main"),
+                WorkflowStep(command_id="clahe", note="Boost the image depth slightly.", lane="main"),
+                WorkflowStep(command_id="save_as", note="Save your result.", lane="main"),
             ],
         ),
         WorkflowDefinition(
             name="Beginner Mono RGB Workflow",
             description="Simple starter workflow for mono RGB channel processing.",
+            lanes=["main"],
             steps=[
-                WorkflowStep("crop", "Crop away stacking edges first."),
-                WorkflowStep("linear_fit", "Match the RGB channels before combining."),
-                WorkflowStep("rgb_combine", "Combine the mono R, G, and B channels into a color image."),
-                WorkflowStep("background_neutral", "Neutralize the background before color balancing."),
-                WorkflowStep("white_balance", "Apply white balance to set the color balance."),
-                WorkflowStep("cosmicclarity", "Apply denoise and/or sharpening with Cosmic Clarity."),
-                WorkflowStep("stat_stretch", "Stretch the image to non-linear."),
-                WorkflowStep("curves", "Refine contrast and color."),
-                WorkflowStep("clahe", "Enhance local contrast if needed."),
-                WorkflowStep("save_as", "Save your result."),
+                WorkflowStep(command_id="crop", note="Crop away stacking edges first.", lane="main"),
+                WorkflowStep(command_id="pedestal", note="Remove the blank pedestal space below the minimum value in your image.", lane="main"),
+                WorkflowStep(command_id="linear_fit", note="Match the RGB channels before combining.", lane="main"),
+                WorkflowStep(command_id="rgb_combine", note="Combine the mono R, G, and B channels into a color image.", lane="main"),
+                WorkflowStep(command_id="background_neutral", note="Neutralize the background before color balancing.", lane="main"),
+                WorkflowStep(command_id="white_balance", note="Apply white balance to set the color balance.", lane="main"),
+                WorkflowStep(command_id="cosmicclarity", note="Apply denoise and/or sharpening with Cosmic Clarity.", lane="main"),
+                WorkflowStep(command_id="stat_stretch", note="Stretch the image to non-linear.", lane="main"),
+                WorkflowStep(command_id="curves", note="Refine contrast and color.", lane="main"),
+                WorkflowStep(command_id="clahe", note="Enhance local contrast if needed.", lane="main"),
+                WorkflowStep(command_id="save_as", note="Save your result.", lane="main"),
             ],
-        ),        
+        ),
         WorkflowDefinition(
             name="Beginner Mono Narrowband Workflow",
-            description="Simple starter workflow for mono narrowband processing.",
+            description="Simple starter workflow for mono narrowband processing with separate starless / stars lanes.",
+            lanes=["main", "starless", "stars", "merge"],
             steps=[
-                WorkflowStep("crop", "Crop away stacking edges first."),
-                WorkflowStep("linear_fit", "Match channels before combining if needed."),
-                WorkflowStep("remove_stars", "Remove your stars for each master"),
-                WorkflowStep("ppp", "Build the palette and color image with Perfect Palette Picker."),
-                WorkflowStep("nbtorgb", "Combine your stars only images into an RGB stars master"),
-                WorkflowStep("cosmicclarity", "Apply denoise and/or sharpening with Cosmic Clarity."),
-                WorkflowStep("curves", "Refine contrast and color."),
-                WorkflowStep("clahe", "Enhance local contrast if needed."),
-                WorkflowStep("add_stars", "Combine your stars and your starless image"),
-                WorkflowStep("save_as", "Save your result."),
+                WorkflowStep(command_id="crop", note="Crop away stacking edges first.", lane="main", outputs=["cropped"]),
+                WorkflowStep(command_id="pedestal", note="Remove the blank pedestal space below the minimum value in your image.", lane="main", inputs=["cropped"], outputs=["pedestal_fixed"]),
+                WorkflowStep(command_id="linear_fit", note="Match channels before combining if needed.", lane="main", inputs=["pedestal_fixed"], outputs=["aligned_channels"]),
+                WorkflowStep(command_id="cosmicclarity", note="Optional: light denoise and/or sharpening before star removal. Less is more.", lane="main", inputs=["aligned_channels"], outputs=["prepped_channels"]),
+                WorkflowStep(kind="split", note="Split processing into starless and stars-only paths after Remove Stars.", lane="main", outputs=["starless", "stars_only"]),
+                WorkflowStep(command_id="remove_stars", note="Remove stars for each master and keep both outputs.", lane="main", inputs=["prepped_channels"], outputs=["starless", "stars_only"]),
+                WorkflowStep(kind="note", note="Use your starless masters in this lane.", lane="starless"),
+                WorkflowStep(command_id="ppp", note="Build the palette and color image with Perfect Palette Picker.", lane="starless", inputs=["starless"], outputs=["palette_starless"]),
+                WorkflowStep(command_id="cosmicclarity", note="Optional cleanup on the starless color image.", lane="starless", inputs=["palette_starless"], outputs=["starless_cc"]),
+                WorkflowStep(command_id="curves", note="Refine contrast and color.", lane="starless", inputs=["starless_cc"], outputs=["starless_curved"]),
+                WorkflowStep(command_id="clahe", note="Enhance local contrast if needed.", lane="starless", inputs=["starless_curved"], outputs=["starless_final"]),
+                WorkflowStep(kind="note", note="Use your stars-only masters in this lane.", lane="stars"),
+                WorkflowStep(command_id="nbtorgb", note="Combine your stars-only images into an RGB stars master.", lane="stars", inputs=["stars_only"], outputs=["rgb_stars"]),
+                WorkflowStep(command_id="cosmicclarity", note="Optional cleanup on the stars image.", lane="stars", inputs=["rgb_stars"], outputs=["stars_final"]),
+                WorkflowStep(kind="merge", note="Merge the starless and stars-only results back together.", lane="merge", inputs=["starless_final", "stars_final"], outputs=["merged"]),
+                WorkflowStep(command_id="add_stars", note="Combine your stars and your starless image.", lane="merge", inputs=["starless_final", "stars_final"], outputs=["final"]),
+                WorkflowStep(command_id="save_as", note="Save your result.", lane="merge", inputs=["final"]),
             ],
         ),
         WorkflowDefinition(
             name="Cosmic Clarity Cleanup",
             description="Basic sharpening / denoise workflow.",
+            lanes=["main"],
             steps=[
-                WorkflowStep("crop", "Optional crop first."),
-                WorkflowStep("abe", "Optional gradient cleanup."),
-                WorkflowStep("cosmicclarity", "Run Cosmic Clarity."),
-                WorkflowStep("curves", "Refine the result."),
-                WorkflowStep("save_as", "Save your result."),
+                WorkflowStep(command_id="crop", note="Optional crop first.", lane="main"),
+                WorkflowStep(command_id="abe", note="Optional gradient cleanup.", lane="main"),
+                WorkflowStep(command_id="cosmicclarity", note="Run Cosmic Clarity.", lane="main"),
+                WorkflowStep(command_id="curves", note="Refine the result.", lane="main"),
+                WorkflowStep(command_id="save_as", note="Save your result.", lane="main"),
             ],
         ),
     ]
@@ -343,18 +407,30 @@ class WorkflowToolTree(QTreeWidget):
 
 
 # -----------------------------------------------------------------------------
-# Drag/drop workflow step list
+# Lane list
 # -----------------------------------------------------------------------------
 
-class WorkflowStepList(QListWidget):
-    def __init__(self, dialog: "WorkflowDialog", parent=None):
+class WorkflowLaneList(QListWidget):
+    def __init__(self, dialog: "WorkflowDialog", lane_name: str, parent=None):
         super().__init__(parent)
         self._dialog = dialog
+        self.lane_name = lane_name
+
         self.setAcceptDrops(True)
         self.setDragEnabled(True)
         self.setDefaultDropAction(Qt.DropAction.MoveAction)
-        self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+
+        self.currentRowChanged.connect(self._notify_selection)
+        self.itemSelectionChanged.connect(self._notify_selection_changed)
+        self.itemDoubleClicked.connect(self._dialog._run_selected_step)
+
+    def _notify_selection_changed(self):
+        self._dialog._on_any_step_selected(self)
+
+    def _notify_selection(self, _row: int):
+        self._dialog._on_any_step_selected(self)
 
     def dragEnterEvent(self, event):
         md = event.mimeData()
@@ -372,17 +448,56 @@ class WorkflowStepList(QListWidget):
 
     def dropEvent(self, event):
         md = event.mimeData()
+
+        # external tool catalog drop
         if md.hasFormat(WORKFLOW_MIME):
             try:
                 cid = bytes(md.data(WORKFLOW_MIME)).decode("utf-8")
             except Exception:
                 cid = ""
             if cid:
-                self._dialog.add_step_by_command_id(cid)
+                self._dialog.add_step_by_command_id(cid, lane_name=self.lane_name)
                 event.acceptProposedAction()
                 return
+
+        # internal move between lanes / within lane
         super().dropEvent(event)
-        self._dialog.sync_steps_from_list()
+        self._dialog.sync_steps_from_ui()
+
+    def contextMenuEvent(self, event):
+        item = self.itemAt(event.pos())
+        menu = QMenu(self)
+
+        act_note = menu.addAction("Add Note Step")
+        act_split = menu.addAction("Add Split Marker")
+        act_merge = menu.addAction("Add Merge Marker")
+
+        if item is not None:
+            menu.addSeparator()
+            act_edit_note = menu.addAction("Edit Note")
+            act_edit_ios = menu.addAction("Edit Inputs / Outputs")
+            act_remove = menu.addAction("Remove Step")
+        else:
+            act_edit_note = None
+            act_edit_ios = None
+            act_remove = None
+
+        chosen = menu.exec(event.globalPos())
+        if chosen is None:
+            return
+
+        if chosen == act_note:
+            self._dialog.add_special_step(kind="note", lane_name=self.lane_name)
+        elif chosen == act_split:
+            self._dialog.add_special_step(kind="split", lane_name=self.lane_name)
+        elif chosen == act_merge:
+            self._dialog.add_special_step(kind="merge", lane_name=self.lane_name)
+        elif item is not None and chosen == act_edit_note:
+            self._dialog._edit_selected_step_note()
+        elif item is not None and chosen == act_edit_ios:
+            self._dialog._edit_selected_step_io()
+        elif item is not None and chosen == act_remove:
+            self._dialog._remove_selected_step()
 
 
 # -----------------------------------------------------------------------------
@@ -397,13 +512,14 @@ class WorkflowDialog(QDialog):
         self.workflows_dir = _workflows_dir(main)
 
         self.setWindowTitle("Workflow Assistant")
-        self.resize(1200, 700)
+        self.resize(1450, 820)
 
         self.current_workflow = WorkflowDefinition(name="Untitled Workflow")
-        self.current_step_index = -1
-
         self.catalog: Dict[str, WorkflowActionInfo] = {}
         self.canned_workflows = _default_canned_workflows()
+
+        self.lane_lists: Dict[str, WorkflowLaneList] = {}
+        self.current_lane_name: Optional[str] = None
 
         self._build_ui()
         self._populate_action_catalog()
@@ -436,7 +552,7 @@ class WorkflowDialog(QDialog):
 
         splitter.addWidget(left)
 
-        # ---------------- Right: workflow editor/runner ----------------
+        # ---------------- Right: lane editor ----------------
         right = QWidget(self)
         right_lay = QVBoxLayout(right)
 
@@ -454,37 +570,73 @@ class WorkflowDialog(QDialog):
         form.addRow("Description:", self.edt_description)
         right_lay.addLayout(form)
 
-        self.step_list = WorkflowStepList(self, self)
-        self.step_list.currentRowChanged.connect(self._on_step_selected)
-        self.step_list.itemDoubleClicked.connect(self._run_selected_step)
-        right_lay.addWidget(self.step_list, 1)
+        # lane controls
+        lane_row = QHBoxLayout()
+        self.btn_add_lane = QPushButton("Add Lane", self)
+        self.btn_rename_lane = QPushButton("Rename Lane", self)
+        self.btn_remove_lane = QPushButton("Remove Lane", self)
+
+        self.btn_add_lane.clicked.connect(self._add_lane)
+        self.btn_rename_lane.clicked.connect(self._rename_current_lane)
+        self.btn_remove_lane.clicked.connect(self._remove_current_lane)
+
+        lane_row.addWidget(self.btn_add_lane)
+        lane_row.addWidget(self.btn_rename_lane)
+        lane_row.addWidget(self.btn_remove_lane)
+        lane_row.addStretch(1)
+        right_lay.addLayout(lane_row)
+
+        # scrollable lanes
+        self.lanes_scroll = QScrollArea(self)
+        self.lanes_scroll.setWidgetResizable(True)
+        self.lanes_host = QWidget(self)
+        self.lanes_layout = QHBoxLayout(self.lanes_host)
+        self.lanes_layout.setContentsMargins(4, 4, 4, 4)
+        self.lanes_layout.setSpacing(10)
+        self.lanes_scroll.setWidget(self.lanes_host)
+        right_lay.addWidget(self.lanes_scroll, 1)
 
         self.lbl_step_info = QLabel("Select a step to view details.", self)
         self.lbl_step_info.setWordWrap(True)
         self.lbl_step_info.setFrameShape(QFrame.Shape.StyledPanel)
-        self.lbl_step_info.setMinimumHeight(64)
+        self.lbl_step_info.setMinimumHeight(96)
         right_lay.addWidget(self.lbl_step_info)
 
-        # Buttons row 1: edit workflow
+        # edit buttons
         row1 = QHBoxLayout()
         self.btn_add_selected = QPushButton("Add Selected Tool", self)
+        self.btn_add_note = QPushButton("Add Note", self)
+        self.btn_add_split = QPushButton("Add Split", self)
+        self.btn_add_merge = QPushButton("Add Merge", self)
         self.btn_remove = QPushButton("Remove Step", self)
         self.btn_note = QPushButton("Edit Note", self)
+        self.btn_io = QPushButton("Edit Inputs / Outputs", self)
         self.btn_clear = QPushButton("Clear Workflow", self)
 
         self.btn_add_selected.clicked.connect(self._add_selected_tool)
+        self.btn_add_note.clicked.connect(lambda: self.add_special_step("note"))
+        self.btn_add_split.clicked.connect(lambda: self.add_special_step("split"))
+        self.btn_add_merge.clicked.connect(lambda: self.add_special_step("merge"))
         self.btn_remove.clicked.connect(self._remove_selected_step)
         self.btn_note.clicked.connect(self._edit_selected_step_note)
+        self.btn_io.clicked.connect(self._edit_selected_step_io)
         self.btn_clear.clicked.connect(self._clear_workflow)
 
-        row1.addWidget(self.btn_add_selected)
-        row1.addWidget(self.btn_remove)
-        row1.addWidget(self.btn_note)
-        row1.addWidget(self.btn_clear)
+        for w in (
+            self.btn_add_selected,
+            self.btn_add_note,
+            self.btn_add_split,
+            self.btn_add_merge,
+            self.btn_remove,
+            self.btn_note,
+            self.btn_io,
+            self.btn_clear,
+        ):
+            row1.addWidget(w)
         row1.addStretch(1)
         right_lay.addLayout(row1)
 
-        # Buttons row 2: runner
+        # run buttons
         row2 = QHBoxLayout()
         self.btn_prev = QPushButton("Previous Step", self)
         self.btn_run = QPushButton("Open Step", self)
@@ -507,9 +659,9 @@ class WorkflowDialog(QDialog):
         right_lay.addLayout(row2)
 
         splitter.addWidget(right)
-        splitter.setSizes([420, 760])
+        splitter.setSizes([370, 1080])
 
-        # Bottom file/canned actions
+        # bottom file/canned actions
         bottom = QHBoxLayout()
 
         self.btn_new = QPushButton("New", self)
@@ -542,7 +694,7 @@ class WorkflowDialog(QDialog):
         root.addLayout(bottom)
 
     # ------------------------------------------------------------------
-    # Catalog population
+    # Catalog
     # ------------------------------------------------------------------
 
     def _populate_action_catalog(self):
@@ -550,8 +702,6 @@ class WorkflowDialog(QDialog):
         self.catalog.clear()
 
         categories = _discover_toolbar_categories(self.main)
-
-        # Order roughly like your toolbar layout
         preferred_order = [
             "Functions",
             "Cosmic Clarity",
@@ -563,11 +713,8 @@ class WorkflowDialog(QDialog):
             "Bundles",
             "View",
         ]
-
         category_names = list(categories.keys())
-        ordered = [c for c in preferred_order if c in categories] + [
-            c for c in category_names if c not in preferred_order
-        ]
+        ordered = [c for c in preferred_order if c in categories] + [c for c in category_names if c not in preferred_order]
 
         for category in ordered:
             parent = QTreeWidgetItem([category])
@@ -577,7 +724,6 @@ class WorkflowDialog(QDialog):
 
             for info in categories[category]:
                 self.catalog[info.command_id] = info
-
                 item = QTreeWidgetItem(parent, [info.text])
                 item.setData(0, Qt.ItemDataRole.UserRole, info.command_id)
                 item.setToolTip(0, info.status_tip or info.text)
@@ -589,8 +735,7 @@ class WorkflowDialog(QDialog):
     def _refilter_catalog(self):
         needle = self.edt_search.text().strip().lower()
 
-        top_count = self.tool_tree.topLevelItemCount()
-        for i in range(top_count):
+        for i in range(self.tool_tree.topLevelItemCount()):
             parent = self.tool_tree.topLevelItem(i)
             visible_children = 0
 
@@ -606,6 +751,41 @@ class WorkflowDialog(QDialog):
             parent.setHidden(visible_children == 0)
 
     # ------------------------------------------------------------------
+    # Lane UI
+    # ------------------------------------------------------------------
+
+    def _clear_lane_widgets(self):
+        while self.lanes_layout.count():
+            item = self.lanes_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        self.lane_lists.clear()
+
+    def _build_lane_widgets(self):
+        self._clear_lane_widgets()
+
+        for lane_name in self.current_workflow.lanes:
+            card = QWidget(self.lanes_host)
+            card.setMinimumWidth(260)
+            card_lay = QVBoxLayout(card)
+            card_lay.setContentsMargins(4, 4, 4, 4)
+
+            header = QLabel(lane_name, card)
+            header.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            header.setFrameShape(QFrame.Shape.StyledPanel)
+            header.setStyleSheet("font-weight: 600; padding: 6px;")
+            card_lay.addWidget(header)
+
+            lst = WorkflowLaneList(self, lane_name=lane_name, parent=card)
+            card_lay.addWidget(lst, 1)
+
+            self.lane_lists[lane_name] = lst
+            self.lanes_layout.addWidget(card)
+
+        self.lanes_layout.addStretch(1)
+
+    # ------------------------------------------------------------------
     # Workflow model/view sync
     # ------------------------------------------------------------------
 
@@ -619,77 +799,160 @@ class WorkflowDialog(QDialog):
             self.edt_name.blockSignals(False)
             self.edt_description.blockSignals(False)
 
-        self.step_list.clear()
+        if not self.current_workflow.lanes:
+            self.current_workflow.lanes = ["main"]
 
-        for idx, step in enumerate(self.current_workflow.steps):
+        self._build_lane_widgets()
+
+        # populate steps into the correct lane list
+        by_lane: Dict[str, List[WorkflowStep]] = {lane: [] for lane in self.current_workflow.lanes}
+        for step in self.current_workflow.steps:
+            lane = step.lane if step.lane in by_lane else "main"
+            by_lane.setdefault(lane, []).append(step)
+
+        for lane_name, steps in by_lane.items():
+            lst = self.lane_lists.get(lane_name)
+            if lst is None:
+                continue
+
+            lst.clear()
+            for step in steps:
+                lst.addItem(self._make_step_item(step))
+
+        # select first available step if any
+        self.current_lane_name = None
+        for lane_name in self.current_workflow.lanes:
+            lst = self.lane_lists.get(lane_name)
+            if lst and lst.count() > 0:
+                self.current_lane_name = lane_name
+                lst.setCurrentRow(0)
+                break
+
+        if self.current_lane_name is None:
+            self.lbl_step_info.setText("Select a step to view details.")
+
+        self._refresh_step_visuals()
+
+    def sync_steps_from_ui(self):
+        steps: List[WorkflowStep] = []
+
+        for lane_name in self.current_workflow.lanes:
+            lst = self.lane_lists.get(lane_name)
+            if lst is None:
+                continue
+
+            for i in range(lst.count()):
+                item = lst.item(i)
+                step = WorkflowStep(
+                    id=str(item.data(Qt.ItemDataRole.UserRole) or _new_step_id()),
+                    command_id=str(item.data(Qt.ItemDataRole.UserRole + 1) or ""),
+                    note=str(item.data(Qt.ItemDataRole.UserRole + 2) or ""),
+                    enabled=bool(item.data(Qt.ItemDataRole.UserRole + 3)),
+                    kind=str(item.data(Qt.ItemDataRole.UserRole + 4) or "action"),
+                    lane=lane_name,
+                    inputs=list(item.data(Qt.ItemDataRole.UserRole + 5) or []),
+                    outputs=list(item.data(Qt.ItemDataRole.UserRole + 6) or []),
+                )
+                steps.append(step)
+
+        self.current_workflow.steps = steps
+
+    def _make_step_item(self, step: WorkflowStep) -> QListWidgetItem:
+        label = self._step_display_text(step)
+        item = QListWidgetItem(label)
+
+        if step.kind == "action":
             info = self.catalog.get(step.command_id)
-            label = info.text if info else step.command_id
-
-            item = QListWidgetItem(label)
-            item.setData(Qt.ItemDataRole.UserRole, step.command_id)
-            item.setData(Qt.ItemDataRole.UserRole + 1, step.note)
-            item.setData(Qt.ItemDataRole.UserRole + 2, bool(step.enabled))
-            item.setData(Qt.ItemDataRole.UserRole + 3, False)  # completed flag
-
             if info and not info.icon.isNull():
                 item.setIcon(info.icon)
 
-            self._style_step_item(item, idx == self.current_step_index, completed=False)
-            self.step_list.addItem(item)
+        item.setData(Qt.ItemDataRole.UserRole, step.id)
+        item.setData(Qt.ItemDataRole.UserRole + 1, step.command_id)
+        item.setData(Qt.ItemDataRole.UserRole + 2, step.note)
+        item.setData(Qt.ItemDataRole.UserRole + 3, bool(step.enabled))
+        item.setData(Qt.ItemDataRole.UserRole + 4, step.kind)
+        item.setData(Qt.ItemDataRole.UserRole + 5, list(step.inputs))
+        item.setData(Qt.ItemDataRole.UserRole + 6, list(step.outputs))
+        item.setData(Qt.ItemDataRole.UserRole + 7, False)  # completed
 
-        if self.step_list.count() > 0:
-            row = self.current_step_index if 0 <= self.current_step_index < self.step_list.count() else 0
-            self.step_list.setCurrentRow(row)
-        else:
-            self.current_step_index = -1
-            self.lbl_step_info.setText("Select a step to view details.")
+        return item
 
-    def sync_steps_from_list(self):
-        steps: List[WorkflowStep] = []
-        for i in range(self.step_list.count()):
-            item = self.step_list.item(i)
-            steps.append(
-                WorkflowStep(
-                    command_id=str(item.data(Qt.ItemDataRole.UserRole) or ""),
-                    note=str(item.data(Qt.ItemDataRole.UserRole + 1) or ""),
-                    enabled=bool(item.data(Qt.ItemDataRole.UserRole + 2)),
-                )
-            )
-        self.current_workflow.steps = steps
+    def _step_display_text(self, step: WorkflowStep) -> str:
+        if step.kind == "note":
+            return "📝 Note"
+        if step.kind == "split":
+            return "⇢ Split"
+        if step.kind == "merge":
+            return "⇠ Merge"
 
-    def add_step_by_command_id(self, command_id: str):
-        info = self.catalog.get(command_id)
-        label = info.text if info else command_id
-
-        item = QListWidgetItem(label)
-        item.setData(Qt.ItemDataRole.UserRole, command_id)
-        item.setData(Qt.ItemDataRole.UserRole + 1, "")
-        item.setData(Qt.ItemDataRole.UserRole + 2, True)
-        item.setData(Qt.ItemDataRole.UserRole + 3, False)
-
-        if info and not info.icon.isNull():
-            item.setIcon(info.icon)
-
-        self.step_list.addItem(item)
-        self.sync_steps_from_list()
-
-        if self.current_step_index < 0:
-            self.current_step_index = 0
-
-        self.step_list.setCurrentItem(item)
+        info = self.catalog.get(step.command_id)
+        return info.text if info else (step.command_id or "Action")
 
     def load_workflow_definition(self, wf: WorkflowDefinition):
         self.current_workflow = WorkflowDefinition(
             name=wf.name,
             description=wf.description,
-            steps=[WorkflowStep(s.command_id, s.note, s.enabled) for s in wf.steps],
+            lanes=list(wf.lanes) if wf.lanes else ["main"],
+            steps=[
+                WorkflowStep(
+                    id=s.id,
+                    command_id=s.command_id,
+                    note=s.note,
+                    enabled=s.enabled,
+                    kind=s.kind,
+                    lane=s.lane,
+                    inputs=list(s.inputs),
+                    outputs=list(s.outputs),
+                )
+                for s in wf.steps
+            ],
+            schema_version=wf.schema_version,
         )
-        self.current_step_index = 0 if self.current_workflow.steps else -1
         self.refresh_workflow_view()
 
     # ------------------------------------------------------------------
-    # Styling
+    # Selection / visuals
     # ------------------------------------------------------------------
+
+    def _current_list(self) -> Optional[WorkflowLaneList]:
+        if self.current_lane_name:
+            return self.lane_lists.get(self.current_lane_name)
+
+        for lane_name, lst in self.lane_lists.items():
+            if lst.currentRow() >= 0:
+                self.current_lane_name = lane_name
+                return lst
+        return None
+
+    def _current_item(self) -> Optional[QListWidgetItem]:
+        lst = self._current_list()
+        return lst.currentItem() if lst else None
+
+    def _on_any_step_selected(self, lane_list: WorkflowLaneList):
+        # If this lane no longer has a valid selection/current item, ignore it.
+        if lane_list.currentItem() is None and not lane_list.selectedItems():
+            return
+
+        # Clear BOTH selection and current item in all other lane lists.
+        for other_name, other_list in self.lane_lists.items():
+            if other_list is lane_list:
+                continue
+
+            other_list.blockSignals(True)
+            try:
+                other_list.clearSelection()
+                other_list.setCurrentRow(-1)
+                other_list.setCurrentItem(None)
+                sm = other_list.selectionModel()
+                if sm is not None:
+                    sm.clearSelection()
+                    sm.clearCurrentIndex()
+            finally:
+                other_list.blockSignals(False)
+
+        self.current_lane_name = lane_list.lane_name
+        self._update_selected_step_info()
+        self._refresh_step_visuals()
 
     def _style_step_item(self, item: QListWidgetItem, is_current: bool, completed: bool):
         text = str(item.text())
@@ -703,14 +966,100 @@ class WorkflowDialog(QDialog):
         item.setFont(font)
 
     def _refresh_step_visuals(self):
-        for i in range(self.step_list.count()):
-            item = self.step_list.item(i)
-            completed = bool(item.data(Qt.ItemDataRole.UserRole + 3))
-            self._style_step_item(item, i == self.current_step_index, completed)
+        current_item = self._current_item()
+        for lst in self.lane_lists.values():
+            for i in range(lst.count()):
+                item = lst.item(i)
+                completed = bool(item.data(Qt.ItemDataRole.UserRole + 7))
+                self._style_step_item(item, item is current_item, completed)
+
+    def _update_selected_step_info(self):
+        item = self._current_item()
+        if item is None:
+            self.lbl_step_info.setText("Select a step to view details.")
+            return
+
+        kind = str(item.data(Qt.ItemDataRole.UserRole + 4) or "action")
+        cid = str(item.data(Qt.ItemDataRole.UserRole + 1) or "")
+        note = str(item.data(Qt.ItemDataRole.UserRole + 2) or "")
+        completed = bool(item.data(Qt.ItemDataRole.UserRole + 7))
+        inputs = list(item.data(Qt.ItemDataRole.UserRole + 5) or [])
+        outputs = list(item.data(Qt.ItemDataRole.UserRole + 6) or [])
+
+        if kind == "action":
+            info = self.catalog.get(cid)
+            title = info.text if info else cid
+            tip = info.status_tip if info else ""
+        elif kind == "note":
+            title = "Note Step"
+            tip = "Instruction-only step; no tool is launched."
+        elif kind == "split":
+            title = "Split Marker"
+            tip = "Use this to indicate a branch point into multiple lanes."
+        else:
+            title = "Merge Marker"
+            tip = "Use this to indicate a merge point where lanes come back together."
+
+        parts = [f"<b>{title}</b>"]
+        if self.current_lane_name:
+            parts.append(f"<b>Lane:</b> {self.current_lane_name}")
+        if tip:
+            parts.append(tip)
+        if note:
+            parts.append(f"<br><b>Note:</b> {note}")
+        if inputs:
+            parts.append(f"<br><b>Inputs:</b> {', '.join(inputs)}")
+        if outputs:
+            parts.append(f"<br><b>Outputs:</b> {', '.join(outputs)}")
+        parts.append(f"<br><b>Status:</b> {'Completed' if completed else 'Not completed'}")
+
+        self.lbl_step_info.setText("<br>".join(parts))
 
     # ------------------------------------------------------------------
-    # Actions
+    # Add/edit/remove steps
     # ------------------------------------------------------------------
+
+    def add_step_by_command_id(self, command_id: str, lane_name: Optional[str] = None):
+        lane_name = lane_name or self.current_lane_name or (self.current_workflow.lanes[0] if self.current_workflow.lanes else "main")
+        if lane_name not in self.current_workflow.lanes:
+            self.current_workflow.lanes.append(lane_name)
+            self.refresh_workflow_view()
+
+        step = WorkflowStep(command_id=command_id, kind="action", lane=lane_name)
+        lst = self.lane_lists.get(lane_name)
+        if lst is None:
+            return
+
+        item = self._make_step_item(step)
+        lst.addItem(item)
+        lst.setCurrentItem(item)
+        self.current_lane_name = lane_name
+        self.sync_steps_from_ui()
+        self._refresh_step_visuals()
+
+    def add_special_step(self, kind: str, lane_name: Optional[str] = None):
+        lane_name = lane_name or self.current_lane_name or (self.current_workflow.lanes[0] if self.current_workflow.lanes else "main")
+        if lane_name not in self.current_workflow.lanes:
+            self.current_workflow.lanes.append(lane_name)
+            self.refresh_workflow_view()
+
+        default_note = {
+            "note": "Add guidance here.",
+            "split": "Branch starts here.",
+            "merge": "Branches merge here.",
+        }.get(kind, "")
+
+        step = WorkflowStep(kind=kind, note=default_note, lane=lane_name)
+        lst = self.lane_lists.get(lane_name)
+        if lst is None:
+            return
+
+        item = self._make_step_item(step)
+        lst.addItem(item)
+        lst.setCurrentItem(item)
+        self.current_lane_name = lane_name
+        self.sync_steps_from_ui()
+        self._refresh_step_visuals()
 
     def _on_tool_double_clicked(self, item: QTreeWidgetItem):
         cid = item.data(0, Qt.ItemDataRole.UserRole)
@@ -726,50 +1075,148 @@ class WorkflowDialog(QDialog):
             self.add_step_by_command_id(str(cid))
 
     def _remove_selected_step(self):
-        row = self.step_list.currentRow()
+        lst = self._current_list()
+        if lst is None:
+            return
+        row = lst.currentRow()
         if row < 0:
             return
-        self.step_list.takeItem(row)
-        self.sync_steps_from_list()
-
-        if self.step_list.count() == 0:
-            self.current_step_index = -1
-        elif self.current_step_index >= self.step_list.count():
-            self.current_step_index = self.step_list.count() - 1
-
+        lst.takeItem(row)
+        self.sync_steps_from_ui()
+        self._update_selected_step_info()
         self._refresh_step_visuals()
 
     def _edit_selected_step_note(self):
-        row = self.step_list.currentRow()
-        if row < 0:
+        item = self._current_item()
+        if item is None:
             return
-        item = self.step_list.item(row)
-        current = str(item.data(Qt.ItemDataRole.UserRole + 1) or "")
+        current = str(item.data(Qt.ItemDataRole.UserRole + 2) or "")
         text, ok = QInputDialog.getMultiLineText(self, "Edit Step Note", "Note:", current)
         if not ok:
             return
-        item.setData(Qt.ItemDataRole.UserRole + 1, text)
-        self.sync_steps_from_list()
-        self._update_step_info(row)
+        item.setData(Qt.ItemDataRole.UserRole + 2, text)
+        self.sync_steps_from_ui()
+        self._update_selected_step_info()
+
+    def _edit_selected_step_io(self):
+        item = self._current_item()
+        if item is None:
+            return
+
+        current_inputs = ", ".join(item.data(Qt.ItemDataRole.UserRole + 5) or [])
+        current_outputs = ", ".join(item.data(Qt.ItemDataRole.UserRole + 6) or [])
+
+        inputs_text, ok1 = QInputDialog.getText(
+            self,
+            "Edit Inputs",
+            "Inputs (comma-separated):",
+            text=current_inputs,
+        )
+        if not ok1:
+            return
+
+        outputs_text, ok2 = QInputDialog.getText(
+            self,
+            "Edit Outputs",
+            "Outputs (comma-separated):",
+            text=current_outputs,
+        )
+        if not ok2:
+            return
+
+        inputs = [x.strip() for x in inputs_text.split(",") if x.strip()]
+        outputs = [x.strip() for x in outputs_text.split(",") if x.strip()]
+
+        item.setData(Qt.ItemDataRole.UserRole + 5, inputs)
+        item.setData(Qt.ItemDataRole.UserRole + 6, outputs)
+        self.sync_steps_from_ui()
+        self._update_selected_step_info()
 
     def _clear_workflow(self):
-        if self.step_list.count() == 0:
+        any_steps = any(lst.count() > 0 for lst in self.lane_lists.values())
+        if not any_steps:
             return
-        if QMessageBox.question(
-            self,
-            "Clear Workflow",
-            "Remove all steps from the current workflow?",
-        ) != QMessageBox.StandardButton.Yes:
+        if QMessageBox.question(self, "Clear Workflow", "Remove all steps from the current workflow?") != QMessageBox.StandardButton.Yes:
             return
 
         self.current_workflow.steps.clear()
-        self.current_step_index = -1
+        self.current_workflow.lanes = ["main"]
+        self.current_lane_name = None
         self.refresh_workflow_view()
 
     def _new_workflow(self):
-        self.current_workflow = WorkflowDefinition(name="Untitled Workflow")
-        self.current_step_index = -1
+        self.current_workflow = WorkflowDefinition(name="Untitled Workflow", lanes=["main"])
+        self.current_lane_name = None
         self.refresh_workflow_view()
+
+    # ------------------------------------------------------------------
+    # Lanes
+    # ------------------------------------------------------------------
+
+    def _add_lane(self):
+        name, ok = QInputDialog.getText(self, "Add Lane", "Lane name:", text="new_lane")
+        if not ok:
+            return
+        name = name.strip()
+        if not name:
+            return
+        if name in self.current_workflow.lanes:
+            QMessageBox.warning(self, "Lane Exists", f"A lane named '{name}' already exists.")
+            return
+
+        self.current_workflow.lanes.append(name)
+        self.refresh_workflow_view()
+        self.current_lane_name = name
+
+    def _rename_current_lane(self):
+        lane_name = self.current_lane_name or (self.current_workflow.lanes[0] if self.current_workflow.lanes else None)
+        if not lane_name:
+            return
+
+        name, ok = QInputDialog.getText(self, "Rename Lane", "New lane name:", text=lane_name)
+        if not ok:
+            return
+        name = name.strip()
+        if not name or name == lane_name:
+            return
+        if name in self.current_workflow.lanes:
+            QMessageBox.warning(self, "Lane Exists", f"A lane named '{name}' already exists.")
+            return
+
+        self.sync_steps_from_ui()
+
+        self.current_workflow.lanes = [name if x == lane_name else x for x in self.current_workflow.lanes]
+        for step in self.current_workflow.steps:
+            if step.lane == lane_name:
+                step.lane = name
+
+        self.current_lane_name = name
+        self.refresh_workflow_view()
+
+    def _remove_current_lane(self):
+        lane_name = self.current_lane_name
+        if not lane_name:
+            return
+        if len(self.current_workflow.lanes) <= 1:
+            QMessageBox.warning(self, "Cannot Remove", "A workflow must have at least one lane.")
+            return
+
+        if QMessageBox.question(
+            self,
+            "Remove Lane",
+            f"Remove lane '{lane_name}' and all of its steps?",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+
+        self.sync_steps_from_ui()
+        self.current_workflow.lanes = [x for x in self.current_workflow.lanes if x != lane_name]
+        self.current_workflow.steps = [s for s in self.current_workflow.steps if s.lane != lane_name]
+        self.current_lane_name = self.current_workflow.lanes[0] if self.current_workflow.lanes else None
+        self.refresh_workflow_view()
+
+    # ------------------------------------------------------------------
+    # Load/save
+    # ------------------------------------------------------------------
 
     def _load_workflow(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -796,17 +1243,13 @@ class WorkflowDialog(QDialog):
             QMessageBox.warning(self, "Missing Name", "Please give the workflow a name first.")
             return
 
-        safe = "".join(c if c.isalnum() or c in (" ", "-", "_") else "_" for c in name).strip()
-        if not safe:
-            safe = "workflow"
+        safe = "".join(c if c.isalnum() or c in (" ", "-", "_") else "_" for c in name).strip() or "workflow"
         path = self.workflows_dir / f"{safe}.json"
         self._write_workflow_file(path)
 
     def _save_workflow_as(self):
         name = self.edt_name.text().strip() or "workflow"
-        safe = "".join(c if c.isalnum() or c in (" ", "-", "_") else "_" for c in name).strip()
-        if not safe:
-            safe = "workflow"
+        safe = "".join(c if c.isalnum() or c in (" ", "-", "_") else "_" for c in name).strip() or "workflow"
 
         path, _ = QFileDialog.getSaveFileName(
             self,
@@ -816,14 +1259,13 @@ class WorkflowDialog(QDialog):
         )
         if not path:
             return
-
         if not path.lower().endswith(".json"):
             path += ".json"
 
         self._write_workflow_file(Path(path))
 
     def _write_workflow_file(self, path: Path):
-        self.sync_steps_from_list()
+        self.sync_steps_from_ui()
         self.current_workflow.name = self.edt_name.text().strip() or "Untitled Workflow"
         self.current_workflow.description = self.edt_description.toPlainText().strip()
 
@@ -839,112 +1281,100 @@ class WorkflowDialog(QDialog):
 
         QMessageBox.information(self, "Workflow Saved", f"Saved workflow to:\n{path}")
 
+    # ------------------------------------------------------------------
+    # Running / progress
+    # ------------------------------------------------------------------
+
     def _run_selected_step(self):
-        row = self.step_list.currentRow()
-        if row < 0:
+        item = self._current_item()
+        if item is None:
             return
 
-        item = self.step_list.item(row)
-        command_id = str(item.data(Qt.ItemDataRole.UserRole) or "")
+        kind = str(item.data(Qt.ItemDataRole.UserRole + 4) or "action")
+        if kind != "action":
+            QMessageBox.information(
+                self,
+                "Instruction Step",
+                "This step is a note/split/merge marker and does not launch a tool.",
+            )
+            return
+
+        command_id = str(item.data(Qt.ItemDataRole.UserRole + 1) or "")
         if not command_id:
             QMessageBox.warning(self, "No Command", "This step has no command ID.")
             return
 
         action = _find_action_by_command_id(self.main, command_id)
         if action is None:
-            QMessageBox.warning(
-                self,
-                "Action Not Found",
-                f"Could not find QAction for command_id:\n{command_id}",
-            )
+            QMessageBox.warning(self, "Action Not Found", f"Could not find QAction for command_id:\n{command_id}")
             return
 
         try:
             action.trigger()
-            self.current_step_index = row
             self._refresh_step_visuals()
         except Exception as e:
-            QMessageBox.critical(
-                self,
-                "Step Failed",
-                f"Error while opening workflow step:\n\n{command_id}\n\n{e}",
-            )
+            QMessageBox.critical(self, "Step Failed", f"Error while opening workflow step:\n\n{command_id}\n\n{e}")
 
     def _mark_selected_complete(self):
-        row = self.step_list.currentRow()
-        if row < 0:
+        item = self._current_item()
+        if item is None:
             return
-        item = self.step_list.item(row)
-        item.setData(Qt.ItemDataRole.UserRole + 3, True)
-        self.current_step_index = row
+        item.setData(Qt.ItemDataRole.UserRole + 7, True)
         self._refresh_step_visuals()
+        self._update_selected_step_info()
 
     def _reset_progress(self):
-        for i in range(self.step_list.count()):
-            item = self.step_list.item(i)
-            item.setData(Qt.ItemDataRole.UserRole + 3, False)
-        self.current_step_index = 0 if self.step_list.count() else -1
+        for lst in self.lane_lists.values():
+            for i in range(lst.count()):
+                lst.item(i).setData(Qt.ItemDataRole.UserRole + 7, False)
         self._refresh_step_visuals()
-        if self.current_step_index >= 0:
-            self.step_list.setCurrentRow(self.current_step_index)
+        self._update_selected_step_info()
+
+    def _ordered_items(self) -> List[tuple[str, WorkflowLaneList, int, QListWidgetItem]]:
+        out = []
+        for lane_name in self.current_workflow.lanes:
+            lst = self.lane_lists.get(lane_name)
+            if lst is None:
+                continue
+            for i in range(lst.count()):
+                out.append((lane_name, lst, i, lst.item(i)))
+        return out
 
     def _prev_step(self):
-        if self.step_list.count() == 0:
+        flat = self._ordered_items()
+        cur = self._current_item()
+        if not flat or cur is None:
             return
-        row = self.step_list.currentRow()
-        if row < 0:
-            row = 0
-        row = max(0, row - 1)
-        self.current_step_index = row
-        self.step_list.setCurrentRow(row)
-        self._refresh_step_visuals()
+        idx = next((i for i, (_, _, _, item) in enumerate(flat) if item is cur), None)
+        if idx is None:
+            return
+        idx = max(0, idx - 1)
+        lane_name, lst, row, _ = flat[idx]
+        self.current_lane_name = lane_name
+        lst.setCurrentRow(row)
 
     def _next_step(self):
-        if self.step_list.count() == 0:
+        flat = self._ordered_items()
+        cur = self._current_item()
+        if not flat:
             return
-        row = self.step_list.currentRow()
-        if row < 0:
-            row = 0
-        row = min(self.step_list.count() - 1, row + 1)
-        self.current_step_index = row
-        self.step_list.setCurrentRow(row)
-        self._refresh_step_visuals()
-
-    # ------------------------------------------------------------------
-    # Selection / metadata
-    # ------------------------------------------------------------------
-
-    def _on_step_selected(self, row: int):
-        self._update_step_info(row)
-        if row >= 0:
-            self.current_step_index = row
-        self._refresh_step_visuals()
-
-    def _update_step_info(self, row: int):
-        if row < 0 or row >= self.step_list.count():
-            self.lbl_step_info.setText("Select a step to view details.")
+        if cur is None:
+            lane_name, lst, row, _ = flat[0]
+            self.current_lane_name = lane_name
+            lst.setCurrentRow(row)
             return
 
-        item = self.step_list.item(row)
-        cid = str(item.data(Qt.ItemDataRole.UserRole) or "")
-        note = str(item.data(Qt.ItemDataRole.UserRole + 1) or "")
-        completed = bool(item.data(Qt.ItemDataRole.UserRole + 3))
+        idx = next((i for i, (_, _, _, item) in enumerate(flat) if item is cur), None)
+        if idx is None:
+            return
+        idx = min(len(flat) - 1, idx + 1)
+        lane_name, lst, row, _ = flat[idx]
+        self.current_lane_name = lane_name
+        lst.setCurrentRow(row)
 
-        info = self.catalog.get(cid)
-        title = info.text if info else cid
-        tip = info.status_tip if info else ""
-
-        parts = [f"<b>{title}</b>"]
-        if tip:
-            parts.append(tip)
-        if note:
-            parts.append(f"<br><b>Note:</b> {note}")
-        if completed:
-            parts.append("<br><b>Status:</b> Completed")
-        else:
-            parts.append("<br><b>Status:</b> Not completed")
-
-        self.lbl_step_info.setText("<br>".join(parts))
+    # ------------------------------------------------------------------
+    # Metadata
+    # ------------------------------------------------------------------
 
     def _on_name_changed(self, text: str):
         self.current_workflow.name = text.strip() or "Untitled Workflow"
