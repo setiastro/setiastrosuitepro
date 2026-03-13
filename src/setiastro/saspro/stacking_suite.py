@@ -7848,7 +7848,44 @@ class StackingSuiteDialog(QDialog):
         correction_layout.addWidget(self.bias_checkbox)
 
         layout.addLayout(correction_layout)        
+        # ---------- Satellite Trail Removal (post-calibration) ----------
+        sat_layout = QHBoxLayout()
 
+        self.cal_satellite_checkbox = QCheckBox(self.tr("Remove Satellite Trails After Calibration"))
+        self.cal_satellite_checkbox.setToolTip(
+            self.tr("Runs the SASpro satellite trail remover as the final calibration step, "
+                    "after bias/dark/flat/cosmetic correction and before saving.")
+        )
+        self.cal_satellite_checkbox.setChecked(
+            self.settings.value("stacking/calibration_satellite_enabled", False, type=bool)
+        )
+        self.cal_satellite_checkbox.toggled.connect(
+            lambda v: self.settings.setValue("stacking/calibration_satellite_enabled", bool(v))
+        )
+
+        self.cal_satellite_clip_checkbox = QCheckBox(self.tr("Clip Trails to 0.000"))
+        self.cal_satellite_clip_checkbox.setToolTip(
+            self.tr("If enabled, pixels the satellite remover clips to black will be forced to 0.000 "
+                    "in the calibrated output.")
+        )
+        self.cal_satellite_clip_checkbox.setChecked(
+            self.settings.value("stacking/calibration_satellite_clip", True, type=bool)
+        )
+        self.cal_satellite_clip_checkbox.toggled.connect(
+            lambda v: self.settings.setValue("stacking/calibration_satellite_clip", bool(v))
+        )
+
+        def _sync_cal_satellite_controls(checked: bool):
+            self.cal_satellite_clip_checkbox.setEnabled(bool(checked))
+
+        _sync_cal_satellite_controls(self.cal_satellite_checkbox.isChecked())
+        self.cal_satellite_checkbox.toggled.connect(_sync_cal_satellite_controls)
+
+        sat_layout.addWidget(self.cal_satellite_checkbox)
+        sat_layout.addWidget(self.cal_satellite_clip_checkbox)
+        sat_layout.addStretch(1)
+
+        layout.addLayout(sat_layout)
         # --- RIGHT SIDE CONTROLS: Override Dark & Flat ---
         override_layout = QHBoxLayout()
 
@@ -13717,6 +13754,84 @@ class StackingSuiteDialog(QDialog):
         # unique, preserves order
         return list(dict.fromkeys(paths))
 
+    def _apply_satellite_removal_to_calibrated_light(self, light_data, *, is_mono: bool):
+        """
+        Run SASpro satellite trail removal on an already-calibrated light frame.
+
+        Input layout:
+        - mono: H,W
+        - color: CHW or HWC
+
+        Output layout matches input layout.
+
+        Notes:
+        - We normalize to [0,1] for the AI stage, then map back to the original range.
+        - If 'clip trail' is enabled, pixels that the AI clipped near-black are forced to 0.000
+            in the returned calibrated frame.
+        """
+        import numpy as np
+        from setiastro.saspro.cosmicclarity_headless import run_cosmicclarity_on_array
+
+        arr = np.asarray(light_data, dtype=np.float32, copy=False)
+        orig_shape = arr.shape
+
+        # Convert CHW -> HWC for color if needed
+        was_chw = (arr.ndim == 3 and arr.shape[0] == 3 and arr.shape[-1] != 3)
+        if was_chw:
+            arr_in = arr.transpose(1, 2, 0)  # CHW -> HWC
+        else:
+            arr_in = arr
+
+        arr_in = np.nan_to_num(arr_in.astype(np.float32, copy=False), nan=0.0, posinf=0.0, neginf=0.0)
+
+        amin = float(np.min(arr_in)) if arr_in.size else 0.0
+        amax = float(np.max(arr_in)) if arr_in.size else 1.0
+
+        if not np.isfinite(amin):
+            amin = 0.0
+        if not np.isfinite(amax):
+            amax = 1.0
+
+        if amax > amin:
+            arr01 = (arr_in - amin) / (amax - amin)
+        else:
+            arr01 = np.zeros_like(arr_in, dtype=np.float32)
+
+        arr01 = np.clip(arr01, 0.0, 1.0).astype(np.float32, copy=False)
+
+        clip_trail = self.settings.value("stacking/calibration_satellite_clip", True, type=bool)
+
+        preset = {
+            "mode": "satellite",
+            "gpu": True,
+            "chunk_size": 256,
+            "overlap": 64,
+            "sat_mode": "luminance" if is_mono else "full",
+            "sat_clip_trail": bool(clip_trail),
+            "sat_sensitivity": 0.10,
+        }
+
+        out01 = run_cosmicclarity_on_array(arr01, preset)
+
+        out01 = np.asarray(out01, dtype=np.float32, copy=False)
+        out = out01 * (amax - amin) + amin if amax > amin else np.full_like(out01, amin, dtype=np.float32)
+
+        # If clip-to-zero is requested, preserve that behavior in calibrated space too
+        if clip_trail:
+            zero_mask = (out01 <= 1e-6)
+            out = np.where(zero_mask, 0.0, out).astype(np.float32, copy=False)
+
+        # Convert HWC -> CHW back if needed
+        if was_chw and out.ndim == 3 and out.shape[-1] == 3:
+            out = out.transpose(2, 0, 1)
+
+        # Final sanity
+        out = np.nan_to_num(out.astype(np.float32, copy=False), nan=0.0, posinf=0.0, neginf=0.0)
+
+        if out.shape != orig_shape:
+            raise RuntimeError(f"Satellite removal changed frame shape from {orig_shape} to {out.shape}")
+
+        return out
 
     def calibrate_lights(self):
         """Performs calibration on selected light frames using Master Darks and Flats, considering overrides."""
@@ -14009,11 +14124,28 @@ class StackingSuiteDialog(QDialog):
 
                         QApplication.processEvents()
 
-                    # Back to HWC for saving if color
+                    # ---------- SATELLITE TRAIL REMOVAL (optional; final calibration step) ----------
+                    if self.settings.value("stacking/calibration_satellite_enabled", False, type=bool):
+                        try:
+                            self.update_status(self.tr("Running Satellite Trail Removal..."))
+                            QApplication.processEvents()
+
+                            light_data = self._apply_satellite_removal_to_calibrated_light(
+                                light_data,
+                                is_mono=is_mono
+                            )
+
+                            self.update_status(self.tr("Satellite Trail Removal Applied"))
+                            QApplication.processEvents()
+
+                        except Exception as e:
+                            self.update_status(self.tr(f"⚠️ Satellite Trail Removal skipped: {e}"))
+                            QApplication.processEvents()
+
                     # Back to HWC for saving if color
                     if not is_mono and light_data.ndim == 3 and light_data.shape[0] == 3:
                         light_data = light_data.transpose(1, 2, 0)  # CHW -> HWC
-
+                        
                     # Sanitize numerics but DO NOT rescale
                     light_data = np.nan_to_num(light_data.astype(np.float32, copy=False), nan=0.0, posinf=0.0, neginf=0.0)
 
