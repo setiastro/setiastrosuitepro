@@ -17,7 +17,7 @@ def _launch_gui(open_paths: list[str] | None = None) -> int:
     Implement this using your existing __main__.py entrypoint / main_window logic.
     """
     from setiastro.saspro.gui_entry import main as gui_main
-    return int(gui_main(open_paths) or 0)   # open_paths is argv-style list
+    return int(gui_main(open_paths) or 0)
 
 
 def _looks_like_path_token(tok: str) -> bool:
@@ -57,6 +57,7 @@ def _add_chunking_opts(p: argparse.ArgumentParser):
         help="Tile overlap in pixels to reduce seams (typically chunk_size/4)."
     )
 
+
 def _add_temp_stretch_opts(p: argparse.ArgumentParser):
     p.add_argument(
         "--temp-stretch",
@@ -72,10 +73,55 @@ def _add_temp_stretch_opts(p: argparse.ArgumentParser):
     )
 
 
+def _add_aberration_opts(p: argparse.ArgumentParser):
+    p.add_argument(
+        "--aberration-first",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Run Aberration Remover before Cosmic Clarity processing."
+    )
+
+
+def _add_darkstar_opts(p: argparse.ArgumentParser):
+    p.add_argument(
+        "--star-removal-mode",
+        dest="darkstar_mode",
+        default="unscreen",
+        choices=["unscreen", "additive"],
+        help="DarkStar extraction mode."
+    )
+    p.add_argument(
+        "--processing-path",
+        dest="darkstar_processing_path",
+        default="hybrid_luma_color",
+        choices=["mono_per_channel", "hybrid_luma_color", "color_only"],
+        help="DarkStar processing path."
+    )
+    p.add_argument(
+        "--show-extracted-stars",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Also produce/preserve the extracted-stars result when supported."
+    )
+    p.add_argument(
+        "--edge-padding",
+        type=int,
+        default=64,
+        help="Reflect-padding applied before DarkStar to reduce edge artifacts."
+    )
+    p.add_argument(
+        "--compatibility-mode",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable DarkStar GPU compatibility mode."
+    )
+
+
 def _progress_print(done: int, total: int) -> bool:
     pct = int(0 if total <= 0 else (100 * done / total))
     print(f"PROGRESS: {pct}%", flush=True)
     return True
+
 
 def build_cc_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
@@ -135,15 +181,25 @@ def build_cc_parser() -> argparse.ArgumentParser:
     p.add_argument("--clip-trail", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--sensitivity", type=float, default=0.10)
 
+    p = sub.add_parser("darkstar", help="DarkStar star removal")
+    _add_common_io(p)
+    _add_aberration_opts(p)
+    p.add_argument(
+        "--chunk-size",
+        type=int,
+        default=512,
+        help="DarkStar chunk size."
+    )
+    p.add_argument(
+        "--overlap-frac",
+        type=float,
+        default=0.125,
+        help="DarkStar chunk overlap fraction."
+    )
+    _add_darkstar_opts(p)
+
     return ap
 
-def _add_aberration_opts(p: argparse.ArgumentParser):
-    p.add_argument(
-        "--aberration-first",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Run Aberration Remover before Cosmic Clarity processing."
-    )
 
 def _run_cc(argv: list[str]) -> int:
     args = build_cc_parser().parse_args(argv)
@@ -204,6 +260,18 @@ def _run_cc(argv: list[str]) -> int:
             "sat_clip_trail": bool(args.clip_trail),
             "sat_sensitivity": float(args.sensitivity),
         })
+    elif args.cmd == "darkstar":
+        preset.update({
+            "mode": "darkstar",
+            "darkstar_mode": str(args.darkstar_mode),
+            "processing_path": str(args.darkstar_processing_path),
+            "show_extracted_stars": bool(args.show_extracted_stars),
+            "chunk_size": int(args.chunk_size),
+            "stride": int(args.chunk_size),  # legacy compatibility with replay/UI
+            "overlap_frac": float(args.overlap_frac),
+            "edge_padding": int(args.edge_padding),
+            "compatibility_mode": bool(args.compatibility_mode),
+        })
     else:
         raise RuntimeError(f"Unknown cmd: {args.cmd}")
 
@@ -214,6 +282,7 @@ def _run_cc(argv: list[str]) -> int:
         msg = str(e)
         print(f"ERROR: {msg}", file=sys.stderr, flush=True)
         return 2
+
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
@@ -228,7 +297,7 @@ def main(argv: list[str] | None = None) -> int:
         paths = [str(Path(a)) for a in argv if _looks_like_path_token(a)]
         return _launch_gui(open_paths=paths)
 
-    known = {"sharpen", "denoise", "both", "superres", "satellite", "--help", "-h"}
+    known = {"sharpen", "denoise", "both", "superres", "satellite", "darkstar", "--help", "-h"}
     if argv[0].lower() in known:
         return _run_cc(argv)
 
