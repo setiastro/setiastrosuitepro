@@ -464,7 +464,7 @@ def stitch_chunks_soft_blend(
         bottom = 0 if (i + th) >= H else min(border_size, th // 2)
         right = 0 if (j + tw) >= W else min(border_size, tw // 2)
 
-        inner = tile3[top:th - bottom, left:tw - right, :]
+        inner = tile3[top:th-bottom, left:tw-right, :]
         ih, iw = inner.shape[:2]
 
         rr0 = i + top
@@ -472,7 +472,9 @@ def stitch_chunks_soft_blend(
         rr1 = rr0 + ih
         cc1 = cc0 + iw
 
-        bw = bw_full[:ih, :iw].reshape(ih, iw, 1)
+        # IMPORTANT: crop weights to match the same inner region
+        bw = bw_full[top:th-bottom, left:tw-right].reshape(ih, iw, 1)
+
         out[rr0:rr1, cc0:cc1, :] += inner * bw
         wsum[rr0:rr1, cc0:cc1, :] += bw
 
@@ -598,6 +600,78 @@ def load_darkstar_models(*, use_gpu: bool, status_cb=print) -> DarkStarModels:
     dev = torch.device("cpu")
     return _build_and_load(dev, "cpu", "Dark Star: using CPU")
 
+
+# -----------------------------------------------------------------------------
+# Batch Helpers
+# -----------------------------------------------------------------------------
+def _pad_tile_to_shape_rgb(tile: np.ndarray, out_h: int, out_w: int) -> tuple[np.ndarray, int, int]:
+    tile = np.asarray(tile, np.float32)
+    h, w = tile.shape[:2]
+    pad_h = max(0, out_h - h)
+    pad_w = max(0, out_w - w)
+
+    if pad_h or pad_w:
+        tile = np.pad(tile, ((0, pad_h), (0, pad_w), (0, 0)), mode="reflect")
+
+    return tile, h, w
+
+def _infer_tiles_rgb_batched(
+    tiles_rgb: list[np.ndarray],
+    *,
+    model,
+    models: DarkStarModels,
+    padded_h: int,
+    padded_w: int,
+    batch_size: int,
+    progress_cb: Optional[ProgressCB] = None,
+    progress_start: int = 0,
+    progress_total: int = 0,
+    stage_name: str = "",
+) -> tuple[list[np.ndarray], int]:
+    torch = models.torch
+    device = models.device
+
+    padded_tiles = []
+    orig_shapes = []
+
+    for tile in tiles_rgb:
+        padded, h, w = _pad_tile_to_shape_rgb(tile, padded_h, padded_w)
+        padded_tiles.append(padded)
+        orig_shapes.append((h, w))
+
+    outs: list[np.ndarray] = []
+    done = int(progress_start)
+
+    for i in range(0, len(padded_tiles), batch_size):
+        batch_tiles = padded_tiles[i:i + batch_size]
+        batch_np = np.stack(batch_tiles, axis=0)                # NHWC
+        batch_np = np.transpose(batch_np, (0, 3, 1, 2))         # NCHW
+        batch_np = batch_np.astype(np.float32, copy=False)
+
+        x = torch.from_numpy(batch_np)
+        if hasattr(device, "type") and device.type == "cuda":
+            x = x.pin_memory().to(device=device, dtype=torch.float32, non_blocking=True)
+        else:
+            x = x.to(device=device, dtype=torch.float32)
+
+        with torch.no_grad(), _autocast_context(torch, device):
+            y = model(x).detach().float().cpu().numpy()         # NCHW
+
+        y = np.transpose(y, (0, 2, 3, 1))                       # NHWC
+
+        for j, out in enumerate(y):
+            h, w = orig_shapes[i + j]
+            outs.append(out[:h, :w, :].astype(np.float32, copy=False))
+
+        done += len(batch_tiles)
+        if callable(progress_cb):
+            try:
+                progress_cb(done, progress_total, stage_name)
+            except Exception:
+                pass
+
+    return outs, done
+
 # -----------------------------------------------------------------------------
 # Inference helpers
 # -----------------------------------------------------------------------------
@@ -633,13 +707,35 @@ def _run_rgb_chunked_with_model(
     overlap = int(round(float(params.overlap_frac) * chunk_size))
     chunks = split_image_into_chunks_with_overlap(bordered, chunk_size=chunk_size, overlap=overlap)
 
+    tiles_only = [np.asarray(tile, np.float32) for (tile, _, _) in chunks]
+
+    if bool(getattr(params, "compatibility_mode", False)):
+        infer_bs = 2
+    else:
+        infer_bs = 8
+
+    pred_tiles, done = _infer_tiles_rgb_batched(
+        tiles_rgb=tiles_only,
+        model=model,
+        models=models,
+        padded_h=chunk_size,
+        padded_w=chunk_size,
+        batch_size=infer_bs,
+        progress_cb=progress_cb,
+        progress_start=progress_start,
+        progress_total=progress_total,
+        stage_name=stage_name,
+    )
+
     out_tiles = []
-    done = progress_start
-    for tile, i, j in chunks:
-        out = _infer_tile_rgb_with_model(models, tile, model)
-        out_tiles.append((out, i, j))
-        done += 1
-        progress_cb(done, progress_total, stage_name)
+    for pred, (_, i, j) in zip(pred_tiles, chunks):
+        out_tiles.append((pred, i, j))
+
+    if callable(progress_cb):
+        try:
+            progress_cb(done, progress_total, f"{stage_name} — stitching")
+        except Exception:
+            pass
 
     starless_b = stitch_chunks_soft_blend(
         out_tiles,
@@ -672,12 +768,12 @@ def _run_channel_chunked(
 ) -> tuple[np.ndarray, int]:
     """
     Run a single mono channel through the mono-trained-triplicated Dark Star model:
-      mono tile -> triplicate to RGB -> infer with mono_model -> collapse back to mono
+      mono tile -> triplicate to RGB -> infer in batches -> collapse back to mono
     """
     ch = np.asarray(ch, np.float32)
     bordered = add_border(ch, border_size=5)
 
-    chunk_size = int(models.chunk_size) if models.is_onnx else int(params.chunk_size)
+    chunk_size = int(params.chunk_size)
     overlap = int(round(float(params.overlap_frac) * chunk_size))
 
     chunks = split_image_into_chunks_with_overlap(
@@ -686,19 +782,40 @@ def _run_channel_chunked(
         overlap=overlap,
     )
 
-    out_tiles = []
-    done = progress_start
-
-    for tile, i, j in chunks:
+    tiles_rgb = []
+    for tile, _, _ in chunks:
         tile = np.asarray(tile, np.float32)
-
         tile_rgb = np.stack([tile, tile, tile], axis=-1)
-        out_rgb = _infer_tile_rgb_with_model(models, tile_rgb, models.mono_model)
-        out_mono = out_rgb[..., 0].astype(np.float32, copy=False)
+        tiles_rgb.append(tile_rgb)
 
-        out_tiles.append((out_mono, i, j))
-        done += 1
-        progress_cb(done, progress_total, stage_name)
+    if bool(getattr(params, "compatibility_mode", False)):
+        infer_bs = 2
+    else:
+        infer_bs = 8
+
+    pred_tiles_rgb, done = _infer_tiles_rgb_batched(
+        tiles_rgb=tiles_rgb,
+        model=models.mono_model,
+        models=models,
+        padded_h=chunk_size,
+        padded_w=chunk_size,
+        batch_size=infer_bs,
+        progress_cb=progress_cb,
+        progress_start=progress_start,
+        progress_total=progress_total,
+        stage_name=stage_name,
+    )
+
+    out_tiles = []
+    for pred_rgb, (_, i, j) in zip(pred_tiles_rgb, chunks):
+        pred_mono = pred_rgb[..., 0].astype(np.float32, copy=False)
+        out_tiles.append((pred_mono, i, j))
+
+    if callable(progress_cb):
+        try:
+            progress_cb(done, progress_total, f"{stage_name} — stitching")
+        except Exception:
+            pass
 
     starless_b = stitch_chunks_soft_blend(
         out_tiles,
@@ -725,6 +842,7 @@ class DarkStarParams:
     output_stars_only: bool = False
     processing_path: str = "hybrid_luma_color"  # "mono_per_channel" | "hybrid_luma_color" | "color_only"
     edge_padding: int = 64              # reflect-pad full image before processing
+    compatibility_mode: bool = False    # smaller inference batches for weaker GPUs
 
 def darkstar_starremoval_rgb01(
     img_rgb01: np.ndarray,

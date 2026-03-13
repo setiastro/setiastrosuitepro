@@ -423,7 +423,11 @@ class WorkflowLaneList(QListWidget):
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
 
         self.currentRowChanged.connect(self._notify_selection)
+        self.itemSelectionChanged.connect(self._notify_selection_changed)
         self.itemDoubleClicked.connect(self._dialog._run_selected_step)
+
+    def _notify_selection_changed(self):
+        self._dialog._on_any_step_selected(self)
 
     def _notify_selection(self, _row: int):
         self._dialog._on_any_step_selected(self)
