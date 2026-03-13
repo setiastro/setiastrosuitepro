@@ -2961,7 +2961,7 @@ def multiframe_deconv(
         try:
             # keep cuDNN autotune on
             if getattr(torch.backends, "cudnn", None) is not None:
-                torch.backends.cudnn.benchmark = True
+                torch.backends.cudnn.benchmark = False
                 torch.backends.cudnn.allow_tf32 = False
         except Exception:
             pass
@@ -3152,11 +3152,12 @@ def multiframe_deconv(
     # ---- choose default batch size ----
     if batch_frames is None:
         px = Hs * Ws
-        if px >= 16_000_000:     auto_B = 2
-        elif px >= 8_000_000:    auto_B = 4
-        else:                    auto_B = 8
-    else:
-        auto_B = int(max(1, batch_frames))
+        if px >= 16_000_000:
+            auto_B = 1
+        elif px >= 8_000_000:
+            auto_B = 2
+        else:
+            auto_B = 4
 
     # --- LOW-MEM PATCH: clamp batch size hard ---
     if low_mem:
@@ -3232,6 +3233,8 @@ def multiframe_deconv(
             use_channels_last = bool(cuda_ok)   # <- never enable on MPS
         if mps_ok:
             use_channels_last = False           # <- force NCHW on MPS
+
+        use_channels_last = False    
 
         # PSF tensors strictly FP32
         psf_t  = [_to_t(_contig(k))[None, None]  for k  in psfs]     # (1,1,kh,kw)

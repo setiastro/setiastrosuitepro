@@ -1,3 +1,4 @@
+#saspro/cosmicclarity_headless.py
 from __future__ import annotations
 
 import sys
@@ -14,7 +15,7 @@ from setiastro.saspro.cosmicclarity_engines.satellite_engine import (
     satellite_remove_image,
 )
 from setiastro.saspro.aberration_ai import run_aberration_ai_on_array
-
+from setiastro.saspro.remove_stars import darkstar_starless_from_array
 
 ProgressCB = Optional[Callable[[int, int], bool]]  # (done,total)->continue?
 
@@ -93,6 +94,8 @@ def run_cosmicclarity_on_array(
         stages.append("superres")
     elif mode == "satellite":
         stages.append("satellite")
+    elif mode == "darkstar":
+        stages.append("darkstar")
     else:
         raise RuntimeError(f"Unknown mode: {mode}")
 
@@ -193,6 +196,30 @@ def run_cosmicclarity_on_array(
                 sensitivity=float(preset.get("sat_sensitivity", 0.10)),
                 progress_cb=sat_prog,
             )
+
+        elif stage == "darkstar":
+            def ds_prog(done: int, total: int, _stage: str):
+                if progress_cb is None:
+                    return
+                if total <= 0:
+                    progress_cb(0, 100)
+                    return
+                prog(done, total)
+
+            starless, _stars_only, _was_mono_engine = darkstar_starless_from_array(
+                out,
+                use_gpu=use_gpu,
+                chunk_size=int(preset.get("chunk_size", preset.get("stride", 512))),
+                overlap_frac=float(preset.get("overlap_frac", 0.125)),
+                mode=str(preset.get("darkstar_mode", "unscreen")),
+                processing_path=str(preset.get("processing_path", "hybrid_luma_color")),
+                output_stars_only=bool(preset.get("show_extracted_stars", False)),
+                edge_padding=int(preset.get("edge_padding", 64)),
+                compatibility_mode=bool(preset.get("compatibility_mode", False)),
+                progress_cb=ds_prog,
+                status_cb=lambda _msg: None,
+            )
+            out = starless
 
     out = np.asarray(out, dtype=np.float32)
     out = np.clip(out, 0.0, 1.0)

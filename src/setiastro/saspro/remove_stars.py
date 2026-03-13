@@ -2620,30 +2620,14 @@ def _run_darkstar(main, doc, icon_path=None):
             "preset": {
                 "tool": "darkstar",
                 "disable_gpu": bool(disable_gpu),
-                "mode": mode,
-                "processing_path": processing_path,
+                "compatibility_mode": bool(compatibility_mode),
+                "mode": str(mode),
+                "processing_path": str(processing_path),
                 "show_extracted_stars": bool(show_extracted_stars),
                 "chunk_size": int(chunk_size),
                 "stride": int(chunk_size),  # legacy compatibility
                 "edge_padding": int(edge_padding),
-                "overlap_frac": float(overlap_frac),                
-            },
-        }
-    except Exception:
-        pass
-
-    # 🔁 Record headless command for Replay Last
-    try:
-        main._last_headless_command = {
-            "command_id": "remove_stars",
-            "preset": {
-                "tool": "darkstar",
-                "disable_gpu": bool(disable_gpu),
-                "mode": mode,
-                "show_extracted_stars": bool(show_extracted_stars),
-                "stride": int(chunk_size),
-                "edge_padding": int(edge_padding),      
-                "overlap_frac": float(overlap_frac),                          
+                "overlap_frac": float(overlap_frac),
             },
         }
         if hasattr(main, "_log"):
@@ -2651,10 +2635,12 @@ def _run_darkstar(main, doc, icon_path=None):
                 "[Replay] Recorded remove_stars (DarkStar, "
                 f"mode={mode}, path={processing_path}, chunk_size={int(chunk_size)}, "
                 f"gpu={'off' if disable_gpu else 'on'}, "
+                f"compat={'on' if compatibility_mode else 'off'}, "
                 f"stars={'on' if show_extracted_stars else 'off'})"
             )
     except Exception:
         pass
+
 
     # --- Build input image for engine: float32 [0..1], HxWx3/1/mono ok ---
     src = np.asarray(doc.image)
@@ -3327,6 +3313,7 @@ def darkstar_starless_from_array(
     processing_path: str = "hybrid_luma_color",
     output_stars_only: bool = False,
     edge_padding: int = 64,
+    compatibility_mode: bool = False,
     progress_cb=None,
     status_cb=None
 ) -> tuple[np.ndarray, np.ndarray | None, bool]:
@@ -3357,6 +3344,7 @@ def darkstar_starless_from_array(
         output_stars_only=bool(output_stars_only),
         processing_path=str(processing_path),
         edge_padding=int(edge_padding),
+        compatibility_mode=bool(compatibility_mode),
     )
 
     def _prog(done, total, stage):
