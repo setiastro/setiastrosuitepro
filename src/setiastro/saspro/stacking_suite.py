@@ -8810,6 +8810,25 @@ class StackingSuiteDialog(QDialog):
         for i in range(tree.topLevelItemCount()):
             _summarize_item(tree.topLevelItem(i))
 
+    def _find_or_make_exposure_group_key(self, grouped: dict, filt: str, exp: float, size: str) -> str:
+        """
+        Reuse the same exposure-tolerance grouping logic used by the registration tab.
+
+        grouped: dict[str, list]
+        returns: existing or new group key
+        """
+        tol = float(self.exposure_tolerance_spin.value())
+
+        for key in grouped:
+            try:
+                f2, e2, s2 = self.parse_group_key(key)
+            except Exception:
+                continue
+
+            if filt == f2 and s2 == size and abs(float(exp) - float(e2)) <= tol:
+                return key
+
+        return f"{filt} - {float(exp):.1f}s ({size})"
 
     def create_image_registration_tab(self):
         """
@@ -10051,7 +10070,7 @@ class StackingSuiteDialog(QDialog):
         into filter_name, exposure (float), and image_size (str).
         """
         try:
-            parts = group_key.split(' - ')
+            parts = group_key.split(' - ', 1)
             filter_name = parts[0]
             exp_size_part = parts[1] if len(parts) > 1 else ""
 
@@ -10228,14 +10247,7 @@ class StackingSuiteDialog(QDialog):
                     continue
 
             # find existing group with same filter+size and exposure within tolerance
-            match_key = None
-            for key in grouped:
-                f2, e2, s2 = self.parse_group_key(key)
-                if filt == f2 and s2 == size and abs(exp - e2) <= tol:
-                    match_key = key
-                    break
-
-            key = match_key or f"{filt} - {exp:.1f}s ({size})"
+            key = self._find_or_make_exposure_group_key(grouped, filt, exp, size)
             grouped.setdefault(key, []).append({"path": fp, "exp": exp, "size": size})
 
         # populate tree & self.light_files
@@ -16634,20 +16646,25 @@ class StackingSuiteDialog(QDialog):
                     # UNKNOWN dual → ignore
                     continue
 
-        # --- Pass 2: group the new files (band + exposure + size), same as before ---
-
-        def _group_key(band: str, path: str) -> str:
-            try:
-                h = fits.getheader(path, ext=0)
-                exp = h.get("EXPTIME") or h.get("EXPOSURE") or ""
-                w   = h.get("NAXIS1", "?"); hgt = h.get("NAXIS2", "?")
-                exp_str = f"{float(exp):.1f}s" if isinstance(exp, (int, float)) else str(exp)
-                return f"{band} - {exp_str} - {w}x{hgt}"
-            except Exception:
-                return f"{band} - ? - ?x?"
-
+        # --- Pass 2: group the new files using the SAME exposure-tolerance helper
+        #              used by populate_calibrated_lights() ---
         new_groups: dict[str, list[str]] = {}
         inherit_map: dict[str, set[str]] = {}
+
+        def _read_split_meta(path: str):
+            try:
+                h = fits.getheader(path, ext=0)
+            except Exception:
+                h = {}
+            exp = h.get("EXPTIME") or h.get("EXPOSURE") or 0.0
+            try:
+                exp = float(exp)
+            except Exception:
+                exp = 0.0
+            w = int(h.get("NAXIS1", 0) or 0)
+            hgt = int(h.get("NAXIS2", 0) or 0)
+            size = f"{w}x{hgt}"
+            return exp, size
 
         for band, flist in (
             ("Ha",   ha_files),
@@ -16656,8 +16673,10 @@ class StackingSuiteDialog(QDialog):
             ("Hb",   hb_files),
         ):
             for p in flist:
-                gk = _group_key(band, p)
+                exp, size = _read_split_meta(p)
+                gk = self._find_or_make_exposure_group_key(new_groups, band, exp, size)
                 new_groups.setdefault(gk, []).append(p)
+
                 parent = parent_of.get(p)
                 if parent:
                     inherit_map.setdefault(gk, set()).add(parent)
