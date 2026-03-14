@@ -23,7 +23,7 @@ from setiastro.saspro.legacy.image_manager import load_image, save_image
 
 from setiastro.saspro.imageops.stretch import stretch_mono_image, stretch_color_image
 from setiastro.saspro.aberration_ai import run_aberration_ai_on_array
-
+from setiastro.saspro.resources import get_icons
 
 from setiastro.saspro.cosmicclarity_engines.sharpen_engine import sharpen_rgb01
 
@@ -455,6 +455,7 @@ class CosmicClarityDialogPro(QDialog):
         self._engine_thread = None
         self._closing_after_cancel = False
         self._wait = None
+        self.icons = get_icons()
       
         # Hard guard unless explicitly bypassed (used by preset runner)
         if not bypass_guard and self._headless_guard_active():
@@ -498,7 +499,17 @@ class CosmicClarityDialogPro(QDialog):
         self.cosmic_root = ""   # no longer used by in-process engines
 
         v = QVBoxLayout(self)
-
+        self.lbl_logo = QLabel(self)
+        self.lbl_logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        try:
+            pm = QPixmap(self.icons.COSMICCLARITY)
+            if not pm.isNull():
+                self.lbl_logo.setPixmap(
+                    pm.scaledToWidth(320, Qt.TransformationMode.SmoothTransformation)
+                )
+                v.addWidget(self.lbl_logo)
+        except Exception:
+            pass
         # ---------------- Controls ----------------
         grp = QGroupBox(self.tr("Parameters"))
         grid = QGridLayout(grp)
@@ -1337,6 +1348,7 @@ class CosmicClaritySatelliteDialogPro(QDialog):
                 logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
         self.settings = QSettings()
+        self.icons = get_icons()
 
         self.input_folder  = ""
         self.output_folder = ""
@@ -1353,39 +1365,56 @@ class CosmicClaritySatelliteDialogPro(QDialog):
 
     # ---------- UI ----------
     def _build_ui(self):
-        main = QHBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(8, 8, 8, 8)
+        outer.setSpacing(8)
+
+        self.lbl_logo = QLabel(self)
+        self.lbl_logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        try:
+            pm = QPixmap(self.icons.COSMICCLARITYSAT)
+            if not pm.isNull():
+                self.lbl_logo.setPixmap(
+                    pm.scaledToWidth(280, Qt.TransformationMode.SmoothTransformation)
+                )
+                outer.addWidget(self.lbl_logo, 0, Qt.AlignmentFlag.AlignHCenter)
+        except Exception:
+            pass
+
+        content = QHBoxLayout()
 
         # Left controls
         left = QVBoxLayout()
 
-        # Input/Output folder chooser row
         row_io = QHBoxLayout()
         self.btn_in  = QPushButton("Select Input Folder");  self.btn_in.clicked.connect(self._choose_input)
         self.btn_out = QPushButton("Select Output Folder"); self.btn_out.clicked.connect(self._choose_output)
-        row_io.addWidget(self.btn_in); row_io.addWidget(self.btn_out)
+        row_io.addWidget(self.btn_in)
+        row_io.addWidget(self.btn_out)
         left.addLayout(row_io)
 
-        # GPU
         left.addWidget(QLabel("Use GPU Acceleration:"))
-        self.cmb_gpu = QComboBox(); self.cmb_gpu.addItems(["Yes", "No"])
+        self.cmb_gpu = QComboBox()
+        self.cmb_gpu.addItems(["Yes", "No"])
         left.addWidget(self.cmb_gpu)
+
         self.chk_gpu_compat = QCheckBox("GPU Compatibility Mode (slower, safer for low-VRAM GPUs)")
         self.chk_gpu_compat.setChecked(False)
         left.addWidget(self.chk_gpu_compat)
-        # Mode
+
         left.addWidget(QLabel("Satellite Removal Mode:"))
-        self.cmb_mode = QComboBox(); self.cmb_mode.addItems(["Full", "Luminance"])
+        self.cmb_mode = QComboBox()
+        self.cmb_mode.addItems(["Full", "Luminance"])
         left.addWidget(self.cmb_mode)
 
-        # Clip trail
-        self.chk_clip = QCheckBox("Clip Satellite Trail to 0.000"); self.chk_clip.setChecked(True)
+        self.chk_clip = QCheckBox("Clip Satellite Trail to 0.000")
+        self.chk_clip.setChecked(True)
         left.addWidget(self.chk_clip)
 
-        # Sensitivity slider
         row_sens = QHBoxLayout()
         row_sens.addWidget(QLabel("Clipping Sensitivity (Lower = more aggressive):"))
         self.sld_sens = QSlider(Qt.Orientation.Horizontal)
-        self.sld_sens.setRange(1, 50)           # 0.01–0.50
+        self.sld_sens.setRange(1, 50)
         self.sld_sens.setValue(int(self.sensitivity * 100))
         self.sld_sens.setTickInterval(1)
         self.sld_sens.setTickPosition(QSlider.TickPosition.TicksBelow)
@@ -1395,47 +1424,49 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         row_sens.addWidget(self.lbl_sens_val)
         left.addLayout(row_sens)
 
-        # Skip save if no trail
         self.chk_skip = QCheckBox("Skip Save if No Satellite Trail Detected")
         self.chk_skip.setChecked(False)
         left.addWidget(self.chk_skip)
 
-        # Process row: single image / batch
         row_proc = QHBoxLayout()
-        self.btn_single = QPushButton("Process Single Image"); self.btn_single.clicked.connect(self._process_single_image)
-        self.btn_batch  = QPushButton("Batch Process Input Folder"); self.btn_batch.clicked.connect(self._batch_process)
-        row_proc.addWidget(self.btn_single); row_proc.addWidget(self.btn_batch)
+        self.btn_single = QPushButton("Process Single Image")
+        self.btn_single.clicked.connect(self._process_single_image)
+        self.btn_batch = QPushButton("Batch Process Input Folder")
+        self.btn_batch.clicked.connect(self._batch_process)
+        row_proc.addWidget(self.btn_single)
+        row_proc.addWidget(self.btn_batch)
         left.addLayout(row_proc)
 
-        # Live monitor
-        self.btn_monitor = QPushButton("Live Monitor Input Folder"); self.btn_monitor.clicked.connect(self._live_monitor)
+        self.btn_monitor = QPushButton("Live Monitor Input Folder")
+        self.btn_monitor.clicked.connect(self._live_monitor)
         left.addWidget(self.btn_monitor)
-
 
         left.addStretch(1)
 
-        # Right: trees
+        # Right side
         right = QVBoxLayout()
         right.addWidget(QLabel("Input Folder Files:"))
-        self.tree_in = QTreeWidget(); self.tree_in.setHeaderLabels(["Filename"])
+        self.tree_in = QTreeWidget()
+        self.tree_in.setHeaderLabels(["Filename"])
         self.tree_in.itemDoubleClicked.connect(lambda *_: self._preview_from_tree(self.tree_in, is_input=True))
         self.tree_in.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree_in.customContextMenuRequested.connect(lambda pos: self._context_menu(self.tree_in, pos, is_input=True))
         right.addWidget(self.tree_in)
 
         right.addWidget(QLabel("Output Folder Files:"))
-        self.tree_out = QTreeWidget(); self.tree_out.setHeaderLabels(["Filename"])
+        self.tree_out = QTreeWidget()
+        self.tree_out.setHeaderLabels(["Filename"])
         self.tree_out.itemDoubleClicked.connect(lambda *_: self._preview_from_tree(self.tree_out, is_input=False))
         self.tree_out.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree_out.customContextMenuRequested.connect(lambda pos: self._context_menu(self.tree_out, pos, is_input=False))
         right.addWidget(self.tree_out)
 
-        main.addLayout(left, 2)
-        main.addLayout(right, 1)
+        content.addLayout(left, 2)
+        content.addLayout(right, 1)
+
+        outer.addLayout(content, 1)
 
         self.resize(900, 600)
-
-
 
     # ---------- IO folders ----------
     def _choose_input(self):

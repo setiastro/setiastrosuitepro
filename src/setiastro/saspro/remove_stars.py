@@ -3181,6 +3181,7 @@ class DarkStarConfigDialog(QDialog):
         self.setWindowTitle("CosmicClarity Dark Star Settings")
 
         settings = QSettings()
+        self.icons = get_icons()
 
         self.chk_disable_gpu = QCheckBox("Disable GPU")
         self.chk_disable_gpu.setChecked(False)
@@ -3257,6 +3258,18 @@ class DarkStarConfigDialog(QDialog):
         btns.rejected.connect(self.reject)
 
         layout = QVBoxLayout(self)
+        self.lbl_logo = QLabel(self)
+        self.lbl_logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        try:
+            pm = QPixmap(self.icons.COSMICCLARITYDARK)
+            if not pm.isNull():
+                self.lbl_logo.setPixmap(
+                    pm.scaledToWidth(280, Qt.TransformationMode.SmoothTransformation)
+                )
+                layout.addWidget(self.lbl_logo)
+        except Exception:
+            pass
+
         layout.addLayout(form)
         layout.addWidget(btns)
 

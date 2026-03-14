@@ -209,6 +209,9 @@ class Icons:
     GRAXPERT = property(lambda self: _resource_path('graxpert.png'))
     COSMIC = property(lambda self: _resource_path('cosmic.png'))
     COSMIC_SAT = property(lambda self: _resource_path('cosmicsat.png'))
+    COSMICCLARITY = property(lambda self: _resource_path('cosmicclarity.png'))
+    COSMICCLARITYSAT = property(lambda self: _resource_path('cosmicclaritysat.png'))
+    COSMICCLARITYDARK = property(lambda self: _resource_path('cosmicclaritydark.png'))
     
     # Image operations
     CROP = property(lambda self: _resource_path('cropicon.png'))
