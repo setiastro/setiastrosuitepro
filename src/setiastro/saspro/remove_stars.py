@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QTextEdit, QPushButton, QProgressBar, QDoubleSpinBox,
     QLabel, QComboBox, QCheckBox, QSpinBox, QFormLayout, QDialogButtonBox, QWidget, QHBoxLayout
 )
-from PyQt6.QtGui import QDesktopServices, QIcon
+from PyQt6.QtGui import QDesktopServices, QIcon, QPixmap
 
 
 from setiastro.saspro.cosmicclarity_engines.darkstar_engine import (
@@ -36,7 +36,7 @@ except Exception:
 
 # Shared utilities
 from setiastro.saspro.widgets.image_utils import extract_mask_from_document as _active_mask_array_from_doc
-from setiastro.saspro.resources import get_resources, starnet_path
+from setiastro.saspro.resources import get_resources, starnet_path, get_icons
 
 _ENABLE_SYQON = True  # flip to True only after you get permission
 
@@ -1239,10 +1239,11 @@ class SyQonStarlessDialog(QDialog):
         super().__init__(parent)  # <-- NOT (parent or main)
         self.main = main
         self.doc = doc
-        self.data_dir = _syqon_data_dir() 
+        self.data_dir = _syqon_data_dir()
         self.proc_thr = None
         self.setWindowTitle("SyQon Starless")
         self.setMinimumSize(560, 520)
+        self.icons = get_icons()
 
         if icon is not None:
             try:
@@ -1252,8 +1253,23 @@ class SyQonStarlessDialog(QDialog):
 
         lay = QVBoxLayout(self)
 
+        # --- static Starless logo ---
+        self.lbl_logo = QLabel(self)
+        self.lbl_logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        try:
+            pm = QPixmap(self.icons.SYQON_AXIOM)
+            if not pm.isNull():
+                self.lbl_logo.setPixmap(
+                    pm.scaledToWidth(260, Qt.TransformationMode.SmoothTransformation)
+                )
+                lay.addWidget(self.lbl_logo)
+        except Exception:
+            pass
+
         # --- status ---
         self.lbl = QLabel("Checking SyQon model…", self)
+        self.lbl.setWordWrap(True)
+        lay.addWidget(self.lbl)
         self.lbl.setWordWrap(True)
         lay.addWidget(self.lbl)
 
@@ -3165,6 +3181,7 @@ class DarkStarConfigDialog(QDialog):
         self.setWindowTitle("CosmicClarity Dark Star Settings")
 
         settings = QSettings()
+        self.icons = get_icons()
 
         self.chk_disable_gpu = QCheckBox("Disable GPU")
         self.chk_disable_gpu.setChecked(False)
@@ -3241,6 +3258,18 @@ class DarkStarConfigDialog(QDialog):
         btns.rejected.connect(self.reject)
 
         layout = QVBoxLayout(self)
+        self.lbl_logo = QLabel(self)
+        self.lbl_logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        try:
+            pm = QPixmap(self.icons.COSMICCLARITYDARK)
+            if not pm.isNull():
+                self.lbl_logo.setPixmap(
+                    pm.scaledToWidth(280, Qt.TransformationMode.SmoothTransformation)
+                )
+                layout.addWidget(self.lbl_logo)
+        except Exception:
+            pass
+
         layout.addLayout(form)
         layout.addWidget(btns)
 
