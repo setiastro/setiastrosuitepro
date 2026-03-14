@@ -345,6 +345,8 @@ class Icons:
     FUNCTION_BUNDLES = property(lambda self: _resource_path('functionbundle.png'))
     VIEW_BUNDLES = property(lambda self: _resource_path('viewbundle.png'))
     FINDER_CHART = property(lambda self: _resource_path('finderchart.png'))
+    SYQON_PRISM = property(lambda self: _resource_path('prism.png'))
+    SYQON_AXIOM = property(lambda self: _resource_path('axiom.png'))
 
 # Singleton instances for easy access
 _icons_instance = None

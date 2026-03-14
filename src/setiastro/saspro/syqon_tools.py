@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QStackedWidget, QWidget, QFormLayout, QGroupBox, QMessageBox,
     QCheckBox, QSpinBox, QDoubleSpinBox, QFileDialog, QProgressBar, QSlider
 )
-from PyQt6.QtGui import QIcon, QDesktopServices
+from PyQt6.QtGui import QIcon, QDesktopServices, QPixmap
 
 from setiastro.saspro.resources import starnet_path
 
@@ -22,7 +22,7 @@ from setiastro.saspro.remove_stars import (
     _apply_mtf_unlinked_rgb,
     _invert_mtf_unlinked_rgb,
 )
-
+from setiastro.saspro.resources import starnet_path, get_icons
 _SYQON_BUY_URL_PRISM_MINI = "https://github.com/setiastro/setiastrosuitepro/releases/download/benchmarkFIT/prism_mini"   # replace with exact URL when you have it
 _SYQON_BUY_URL_PRISM_DEEP = "https://syqon.it/prism"   # replace with exact URL when you have it
 
@@ -168,8 +168,22 @@ class _SyQonDenoiseHubPage(QWidget):
         self._mtf_params = None
 
         self.settings = QSettings()
+        self.icons = get_icons()
 
         lay = QVBoxLayout(self)
+
+        # --- Prism logo ---
+        self.lbl_logo = QLabel(self)
+        self.lbl_logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        try:
+            pm = QPixmap(self.icons.SYQON_PRISM)
+            if not pm.isNull():
+                self.lbl_logo.setPixmap(
+                    pm.scaledToWidth(260, Qt.TransformationMode.SmoothTransformation)
+                )
+                lay.addWidget(self.lbl_logo)
+        except Exception:
+            pass
 
         box = QGroupBox("SyQon Prism Denoise", self)
         form = QFormLayout(box)
