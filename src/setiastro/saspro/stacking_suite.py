@@ -16390,7 +16390,7 @@ class StackingSuiteDialog(QDialog):
             enabled = self.settings.value("stacking/autocrop_enabled", False, type=bool)
             pct = float(self.settings.value("stacking/autocrop_pct", 95.0, type=float))
 
-        if not enabled or not file_list:
+        if not enabled or (not file_list and rect_override is None):
             return arr, header
 
         rect = rect_override
