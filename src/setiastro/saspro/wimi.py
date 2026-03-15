@@ -2194,7 +2194,31 @@ class HRSettingsDialog(QDialog):
         self.bg_mode_cb.addItems(["HR Diagram Image", "Solid Black"])
         layout.addWidget(self.bg_mode_cb)
 
-        # 3) Axis Range Mode
+        # 3) Marker Size Mode
+        layout.addWidget(QLabel("Marker Size:"))
+        self.marker_size_mode_cb = QComboBox()
+        self.marker_size_mode_cb.addItems(["Auto (recommended)", "Manual"])
+        layout.addWidget(self.marker_size_mode_cb)
+
+        self.marker_size_widget = QWidget()
+        ms_layout = QHBoxLayout(self.marker_size_widget)
+        ms_layout.setContentsMargins(0, 0, 0, 0)
+        ms_layout.addWidget(QLabel("Marker Size:"))
+        self.marker_size_spin = QSpinBox()
+        self.marker_size_spin.setRange(2, 40)
+        self.marker_size_spin.setValue(8)
+        ms_layout.addWidget(self.marker_size_spin)
+        ms_layout.addStretch(1)
+        layout.addWidget(self.marker_size_widget)
+
+        self.marker_size_widget.setVisible(False)
+        self.marker_size_mode_cb.currentIndexChanged.connect(
+            lambda idx: self.marker_size_widget.setVisible(
+                self.marker_size_mode_cb.currentText().startswith("Manual")
+            )
+        )
+
+        # 4) Axis Range Mode
         layout.addWidget(QLabel("Axis Range:"))
         self.range_mode_cb = QComboBox()
         self.range_mode_cb.addItems(["Default (–0.3→2.25, –9→19)", "Custom"])
@@ -2238,12 +2262,13 @@ class HRSettingsDialog(QDialog):
             )
         )
 
+        # 5) Show Sun
         layout.addWidget(QLabel("Show Sun:"))
         self.show_sun_cb = QCheckBox("Include Sun on diagram")
-        self.show_sun_cb.setChecked(True)       # default ON
+        self.show_sun_cb.setChecked(True)
         layout.addWidget(self.show_sun_cb)
 
-        # 4) OK / Cancel Buttons
+        # 6) OK / Cancel Buttons
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
@@ -2258,33 +2283,24 @@ class HRSettingsDialog(QDialog):
 
     def getSettings(self):
         """
-        Pops up the dialog. Returns a dict:
-        {
-            "color_mode":    "Realistic (blackbody)" or "Solid (Custom)",
-            "custom_color":  QColor,
-            "bg_mode":       "HR Diagram Image" or "Solid Black",
-            "range_mode":    "Default" or "Custom",
-            "x_min":         float,
-            "x_max":         float,
-            "y_min":         float,
-            "y_max":         float
-        }
-        or None if the user canceled.
+        Pops up the dialog. Returns a dict or None if canceled.
         """
         if self.exec() == QDialog.DialogCode.Accepted:
             return {
                 "color_mode": self.color_mode_cb.currentText(),
                 "custom_color": self.custom_color,
                 "bg_mode": self.bg_mode_cb.currentText(),
+                "marker_size_mode": self.marker_size_mode_cb.currentText(),
+                "marker_size": self.marker_size_spin.value(),
                 "range_mode": self.range_mode_cb.currentText(),
                 "x_min": self.xmin_spin.value(),
                 "x_max": self.xmax_spin.value(),
                 "y_min": self.ymin_spin.value(),
                 "y_max": self.ymax_spin.value(),
-                "show_sun":      self.show_sun_cb.isChecked(),
+                "show_sun": self.show_sun_cb.isChecked(),
             }
         return None
-
+    
 class LegendDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -4384,11 +4400,26 @@ class WIMIDialog(QDialog):
             )
 
         # Create scatter
+        # Marker size can be auto or user-controlled
+        if settings["marker_size_mode"].startswith("Auto"):
+            n_pts = max(1, len(bv))
+            marker_size = max(4, min(12, int(round(120 / np.sqrt(n_pts)))))
+        else:
+            marker_size = int(settings["marker_size"])
+
         scatter = go.Scatter(
-            x=bv, y=Mv, mode='markers',
-            marker_color=colors, marker_size=20,
-            hovertext=hover_texts, customdata=urls,
-            name="Stars"
+            x=bv,
+            y=Mv,
+            mode='markers',
+            marker=dict(
+                color=colors,
+                size=marker_size,
+                opacity=0.80,
+                line=dict(width=0)
+            ),
+            hovertext=hover_texts,
+            customdata=urls,
+            name=f"Stars (size {marker_size})"
         )
         fig = go.Figure(scatter)
 
@@ -4481,15 +4512,19 @@ class WIMIDialog(QDialog):
 
         # Add a special marker for the Sun (B−V=0.66, Mv=4.8)
         if show_sun:
+            sun_size = max(18, marker_size + 10)
+
             sun_scatter = go.Scatter(
-                x=[0.66], y=[4.8],
+                x=[0.66],
+                y=[4.8],
                 mode='markers+text',
                 marker=dict(
                     color='gold',
-                    size=30,
+                    size=sun_size,
                     symbol='star'
                 ),
-                name="Sun"
+                name="Sun",
+                hoverinfo='skip'
             )
             fig.add_trace(sun_scatter)
 

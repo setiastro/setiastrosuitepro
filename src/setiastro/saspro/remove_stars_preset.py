@@ -301,11 +301,7 @@ def _run_darkstar_headless(main, doc, p):
     mode = str(p.get("mode", "unscreen"))
     show = bool(p.get("show_extracted_stars", True))
     stride = int(p.get("stride", 512))
-    i = self.cmb_stride.findData(stride)
-    if i >= 0:
-        self.cmb_stride.setCurrentIndex(i)
-    else:
-        self.cmb_stride.setCurrentText(str(stride))
+
 
     params = DarkStarParams(
         use_gpu=(not disable_gpu),

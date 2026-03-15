@@ -18,6 +18,7 @@ from setiastro.saspro.syqon_paths import syqon_prism_model_path
 from setiastro.saspro.denoise_engines.syqon_prism_engine import prism_denoise_rgb01
 from setiastro.saspro.remove_stars import (
     SyQonStarlessDialog,
+    _ProcDialog,
     _mtf_params_unlinked,
     _apply_mtf_unlinked_rgb,
     _invert_mtf_unlinked_rgb,
@@ -75,7 +76,20 @@ class SyQonToolsDialog(QDialog):
         btns.addWidget(self.btn_close)
         lay.addLayout(btns)
 
-        self.cmb_family.currentIndexChanged.connect(self._sync_page)
+        self.cmb_family.currentIndexChanged.connect(self._on_family_changed)
+
+        # restore last-used family
+        saved_family = str(self.settings.value("syqon/tools/last_family", "starless", type=str) or "starless")
+        idx = self.cmb_family.findData(saved_family)
+        if idx < 0:
+            idx = self.cmb_family.findData("starless")
+        if idx >= 0:
+            self.cmb_family.setCurrentIndex(idx)
+
+        self._sync_page()
+
+    def _on_family_changed(self, *_):
+        self.settings.setValue("syqon/tools/last_family", str(self.cmb_family.currentData() or "starless"))
         self._sync_page()
 
     def _sync_page(self):
@@ -132,8 +146,20 @@ class SyQonToolsDialog(QDialog):
 class _SyQonStarlessHubPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.icons = get_icons()
         lay = QVBoxLayout(self)
-
+        # --- Axiom logo ---
+        self.lbl_logo = QLabel(self)
+        self.lbl_logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        try:
+            pm = QPixmap(self.icons.SYQON_AXIOM)
+            if not pm.isNull():
+                self.lbl_logo.setPixmap(
+                    pm.scaledToWidth(260, Qt.TransformationMode.SmoothTransformation)
+                )
+                lay.addWidget(self.lbl_logo)
+        except Exception:
+            pass
         box = QGroupBox("SyQon Starless", self)
         form = QFormLayout(box)
 
@@ -859,3 +885,179 @@ class _SyQonPrismProcessThread(QThread):
             import traceback
             info["traceback"] = traceback.format_exc()
             self.finished.emit(None, info, str(e))
+
+
+def run_syqon_tools_via_preset(main, doc, preset: dict | None = None):
+    """
+    Public headless entrypoint for SyQon tools.
+    Used by command-drop / shortcuts / bundles.
+    """
+    preset = dict(preset or {})
+    family = str(preset.get("family", "denoise") or "denoise").strip().lower()
+
+    if doc is None or getattr(doc, "image", None) is None:
+        QMessageBox.information(main, "SyQon Tools", "No active image.")
+        return
+
+    if family == "denoise":
+        _run_syqon_prism_headless(main, doc, preset)
+        return
+
+    if family == "starless":
+        # starless is owned by remove_stars_preset.py, not here
+        from setiastro.saspro.remove_stars_preset import run_remove_stars_via_preset
+
+        run_remove_stars_via_preset(main, doc, {
+            "tool": "syqon",
+            "model_kind": str(preset.get("starless_model_kind", "nadir") or "nadir"),
+            "tile_size": int(preset.get("starless_tile_size", 512)),
+            "overlap": int(preset.get("starless_overlap", 64)),
+            "make_stars": bool(preset.get("starless_make_stars", True)),
+            "pad_edges": bool(preset.get("starless_pad_edges", True)),
+            "pad_pixels": int(preset.get("starless_pad_pixels", 128)),
+            "stars_extract": str(preset.get("starless_stars_extract", "subtract")),
+        })
+        return
+
+    QMessageBox.information(main, "SyQon Sharpening", "Parallax / sharpening models are not available yet.")            
+
+def _run_syqon_prism_headless(main, doc, preset: dict | None = None):
+    preset = dict(preset or {})
+
+    model_kind = str(preset.get("prism_model_kind", "prism_mini") or "prism_mini").strip().lower()
+    tile = int(preset.get("prism_tile_size", 512))
+    overlap = int(preset.get("prism_overlap", 64))
+    pad = int(preset.get("prism_pad", 64))
+    strength = float(preset.get("prism_strength", 0.85))
+    use_mtf = bool(preset.get("prism_use_mtf", True))
+    mtf_target = float(preset.get("prism_mtf_target_median", 0.10))
+    use_amp = bool(preset.get("prism_use_amp", False))
+
+    model_path = syqon_prism_model_path(model_kind)
+    if not model_path.exists():
+        QMessageBox.warning(main, "SyQon Prism", "Model is not installed. Install it first from the SyQon Tools hub.")
+        return
+
+    src = np.asarray(doc.image).astype(np.float32, copy=False)
+    orig_was_mono = (src.ndim == 2) or (src.ndim == 3 and src.shape[2] == 1)
+
+    x = np.nan_to_num(src, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
+
+    scale_factor = float(np.max(x)) if x.size else 1.0
+    if scale_factor > 1.01:
+        x01 = np.clip(x / scale_factor, 0.0, 1.0)
+    else:
+        x01 = np.clip(x, 0.0, 1.0)
+
+    if x01.ndim == 2:
+        xrgb = np.stack([x01] * 3, axis=-1)
+    elif x01.ndim == 3 and x01.shape[2] == 1:
+        xrgb = np.repeat(x01, 3, axis=2)
+    else:
+        xrgb = x01[..., :3]
+
+    if use_mtf:
+        mtf_params = _mtf_params_unlinked(xrgb, shadows_clipping=-2.8, targetbg=mtf_target)
+        x_for_net = _apply_mtf_unlinked_rgb(xrgb, mtf_params)
+    else:
+        mtf_params = None
+        x_for_net = xrgb
+
+    dlg = _ProcDialog(main, title="SyQon Prism Progress")
+    dlg.append_text("Starting SyQon Prism…\n")
+
+    thr = _SyQonPrismProcessThread(
+        x_for_net=x_for_net,
+        ckpt_path=str(model_path),
+        model_kind=model_kind,
+        tile=tile,
+        overlap=overlap,
+        pad=pad,
+        use_amp=use_amp,
+        amp_dtype="fp16",
+        parent=dlg,
+    )
+
+    def _on_prog(pct: int, stage: str):
+        dlg.set_progress(pct, 100, stage)
+
+    def _on_done(denoised_s, info: dict, err: str):
+        if err:
+            QMessageBox.critical(main, "SyQon Prism", err)
+            dlg.close()
+            return
+
+        denoised_s = np.asarray(denoised_s, dtype=np.float32)
+        if denoised_s.ndim == 2:
+            denoised_s = np.stack([denoised_s] * 3, axis=-1)
+
+        denoised_lin = denoised_s
+        if use_mtf and mtf_params is not None:
+            denoised_lin = _invert_mtf_unlinked_rgb(denoised_s, mtf_params)
+
+        if scale_factor > 1.01:
+            denoised_lin = np.clip(denoised_lin * scale_factor, 0.0, 1.0).astype(np.float32, copy=False)
+
+        orig = np.asarray(doc.image).astype(np.float32, copy=False)
+        orig = np.nan_to_num(orig, nan=0.0, posinf=0.0, neginf=0.0)
+
+        if orig_was_mono:
+            if orig.ndim == 3:
+                if orig.shape[2] == 1:
+                    orig_base = orig[..., 0]
+                else:
+                    orig_base = orig.mean(axis=2)
+            else:
+                orig_base = orig
+
+            den_base = denoised_lin.mean(axis=2).astype(np.float32, copy=False)
+            final_to_apply = ((1.0 - strength) * orig_base + strength * den_base).astype(np.float32, copy=False)
+        else:
+            if orig.ndim == 2:
+                orig_rgb = np.stack([orig] * 3, axis=-1)
+            elif orig.ndim == 3 and orig.shape[2] == 1:
+                orig_rgb = np.repeat(orig, 3, axis=2)
+            else:
+                orig_rgb = orig[..., :3]
+
+            final_to_apply = ((1.0 - strength) * orig_rgb + strength * denoised_lin).astype(np.float32, copy=False)
+
+        final_to_apply = np.clip(final_to_apply, 0.0, 1.0).astype(np.float32, copy=False)
+
+        meta = {
+            "step_name": "Denoised",
+            "bit_depth": "32-bit floating point",
+            "is_mono": bool(orig_was_mono),
+            "replay_last": {
+                "op": "syqon_prism",
+                "params": {
+                    "model_kind": model_kind,
+                    "tile_size": tile,
+                    "overlap": overlap,
+                    "pad": pad,
+                    "strength": strength,
+                    "model_path": str(model_path),
+                    "use_mtf": use_mtf,
+                    "mtf_target_median": mtf_target,
+                    "use_amp": use_amp,
+                    "label": "Denoise (SyQon Prism)",
+                }
+            }
+        }
+
+        doc.apply_edit(final_to_apply, metadata=meta, step_name="Denoised")
+
+        try:
+            if hasattr(main, "_log"):
+                main._log("SyQon Prism Denoise (headless)")
+        except Exception:
+            pass
+
+        dlg.close()
+
+    thr.progress.connect(_on_prog)
+    thr.finished.connect(_on_done)
+    dlg.cancel_button.clicked.connect(lambda: dlg.append_text("Cancel not supported yet.\n"))
+    dlg.show()
+    thr.start()
+    dlg.exec()    

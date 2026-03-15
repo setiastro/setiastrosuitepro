@@ -4149,6 +4149,58 @@ class AstroSuiteProMainWindow(
         except Exception as e:
             print(f"Failed to open Aberration AI: {e}")
 
+    def _execute_syqon_tools_command(self, preset: dict | None = None, target_sw=None):
+        from setiastro.saspro.remove_stars_preset import run_remove_stars_via_preset
+        from setiastro.saspro.syqon_tools import run_syqon_tools_via_preset
+
+        preset = dict(preset or {})
+        family = str(preset.get("family", "starless") or "starless").strip().lower()
+        auto_run = bool(preset.get("auto_run", False))
+
+        doc = None
+        if target_sw is not None:
+            try:
+                w = target_sw.widget() if callable(getattr(target_sw, "widget", None)) else getattr(target_sw, "widget", None)
+                if hasattr(w, "doc") and w.doc is not None:
+                    doc = w.doc
+                elif hasattr(w, "document") and w.document is not None:
+                    doc = w.document
+            except Exception:
+                doc = None
+
+        if doc is None:
+            try:
+                doc = self.get_active_doc()
+            except Exception:
+                doc = None
+
+        # UI path
+        if not auto_run:
+            self._open_syqon_tools()
+            return
+
+        # Headless route
+        if family == "starless":
+            remove_stars_preset = {
+                "tool": "syqon",
+                "model_kind": str(preset.get("starless_model_kind", "nadir") or "nadir"),
+                "tile_size": int(preset.get("starless_tile_size", 512)),
+                "overlap": int(preset.get("starless_overlap", 64)),
+                "make_stars": bool(preset.get("starless_make_stars", True)),
+                "pad_edges": bool(preset.get("starless_pad_edges", True)),
+                "pad_pixels": int(preset.get("starless_pad_pixels", 128)),
+                "stars_extract": str(preset.get("starless_stars_extract", "subtract")),
+            }
+            run_remove_stars_via_preset(self, doc, remove_stars_preset)
+            return
+
+        if family == "denoise":
+            run_syqon_tools_via_preset(self, doc, preset)
+            return
+
+        # sharpening not implemented yet
+        self._open_syqon_tools(preset)
+
     def _open_syqon_tools(self):
         from setiastro.saspro.syqon_tools import SyQonToolsDialog
 
@@ -6457,6 +6509,8 @@ class AstroSuiteProMainWindow(
                 "align_stars": "star_align",
                 "align": "star_align",
 
+                "syqontools": "syqontools",
+
                 "convo": "convo",
                 "convolution": "convo",
                 "deconvolution": "convo",
@@ -6843,6 +6897,10 @@ class AstroSuiteProMainWindow(
             except Exception as e:
                 
                 QMessageBox.warning(self, "Curves", f"Apply failed:\n{e}")
+            return
+
+        if cid == "syqontools":
+            self._execute_syqon_tools_command(preset, target_sw=target_sw)
             return
 
         if cid == "ghs":
