@@ -1155,13 +1155,29 @@ class SignatureInsertDialogPro(QDialog):
             self._tech_remove_item()
 
     def _tech_ensure_item(self):
-        if self.tech_card_item is not None:
+        # If references exist but underlying C++ objects were deleted, discard them
+        try:
+            if self.tech_card_item is not None:
+                _ = self.tech_card_item.scene()
+            if self.tech_card_text is not None:
+                _ = self.tech_card_text.toPlainText()
+        except RuntimeError:
+            self.tech_card_item = None
+            self.tech_card_text = None
+
+        if self.tech_card_item is not None and self.tech_card_text is not None:
             return
 
         # Create a text item for the card (outlined)
         f = self._current_qfont()
-        self.tech_card_text = OutlinedTextItem("", f, self.tech_text_fill, self.tech_text_outline, outline_w=float(self.outline_w.value()))
-        self.tech_card_text.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)  # card text is not editable directly
+        self.tech_card_text = OutlinedTextItem(
+            "",
+            f,
+            self.tech_text_fill,
+            self.tech_text_outline,
+            outline_w=float(self.outline_w.value())
+        )
+        self.tech_card_text.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
         self.tech_card_text.setZValue(1)
 
         self.tech_card_item = TechCardItem(self.tech_card_text)
@@ -1170,7 +1186,6 @@ class SignatureInsertDialogPro(QDialog):
 
         TransformHandle(self.tech_card_item, self.scene)
 
-        # drop near bottom-right by default using your snap
         self.tech_card_item.setSelected(True)
         self.send_insert_to_position(self.tech_card_item, "top_left")
 
@@ -1522,17 +1537,29 @@ class SignatureInsertDialogPro(QDialog):
                 it.update_position()
 
     def _update_base_image(self):
+        # scene.clear() deletes the underlying C++ objects for all scene items
         self.scene.clear()
+
+        # IMPORTANT: clear all Python references to scene-owned items so we do not
+        # touch wrapped objects that Qt has already deleted.
+        self.inserts = []
+        self.bounding_boxes = []
+        self.text_inserts = []
+        self.tech_card_item = None
+        self.tech_card_text = None
+
         arr = np.asarray(self.doc.image, dtype=np.float32)
-        if arr is None: return
+        if arr is None:
+            return
+
         qimg = self._numpy_to_qimage(arr)
         bg = QGraphicsPixmapItem(QPixmap.fromImage(qimg))
         bg.setZValue(0)
         self.scene.addItem(bg)
+
         self._tech_init_catalog()
         if self.cb_tech.isChecked():
             self._tech_rebuild(live=True)
-
 
     def _load_from_file(self):
         fp, _ = QFileDialog.getOpenFileName(self, "Select Insert Image", "", "Images (*.png *.jpg *.jpeg *.tif *.tiff)")

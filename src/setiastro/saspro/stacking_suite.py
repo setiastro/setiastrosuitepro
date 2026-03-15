@@ -18234,7 +18234,6 @@ class StackingSuiteDialog(QDialog):
                             scale=1.0,
                             rect_override=group_rect if group_rect is not None else global_rect
                         )
-                        comet_only_crop, hdr_c_crop = self._apply_autocrop(...)
                         hdr_c_crop["NCOMBINE"] = (n_usable, "Number of frames combined (comet)")
                         hdr_c_crop["NSTACK"]   = (n_usable, "Alias of NCOMBINE (SetiAstro)")
                         hdr_c_crop["COMETFR"]  = (n_usable, "Frames used for comet-aligned stack")                        
