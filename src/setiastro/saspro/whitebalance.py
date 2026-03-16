@@ -172,10 +172,12 @@ def apply_white_balance_to_doc(doc, preset: Optional[Dict] = None):
 
         else:  # "star"
             thr = float(p.get("threshold", 50.0))
-            reuse = bool(p.get("reuse_cached_sources", True))
             out, _count, _overlay = apply_star_based_white_balance(
-                base_n, threshold=thr, autostretch=False,
-                reuse_cached_sources=reuse, return_star_colors=False
+                base_n,
+                threshold=thr,
+                autostretch=False,
+                reuse_cached_sources=False,
+                return_star_colors=False
             )
     except Exception as e:
         # Fallback: if SEP missing or star detection fails, try Auto WB
@@ -303,8 +305,9 @@ class WhiteBalanceDialog(QDialog):
         thr_row.addWidget(self.thr_slider); thr_row.addWidget(self.thr_label)
         sg.addLayout(thr_row)
 
-        self.chk_reuse = QCheckBox(self.tr("Reuse cached star detections")); self.chk_reuse.setChecked(True)
-        sg.addWidget(self.chk_reuse)
+        # Reusing cached detections is intentionally disabled for White Balance.
+        # The threshold slider must always trigger a fresh star detection pass.
+        self.chk_reuse = None
 
         self.chk_autostretch_overlay = QCheckBox(self.tr("Autostretch overlay preview")); self.chk_autostretch_overlay.setChecked(True)
         sg.addWidget(self.chk_autostretch_overlay)
@@ -344,7 +347,6 @@ class WhiteBalanceDialog(QDialog):
 
         self.thr_slider.valueChanged.connect(lambda v: (self.thr_label.setText(str(v)), self._debounce.start()))
         self.chk_autostretch_overlay.toggled.connect(lambda _=None: self._debounce.start())
-        self.chk_reuse.toggled.connect(lambda _=None: self._debounce.start())
 
     def _update_mode_widgets(self):
         t = self.type_combo.currentText()
@@ -357,11 +359,7 @@ class WhiteBalanceDialog(QDialog):
         if doc is None or getattr(doc, "image", None) is None:
             return
         self.doc = doc
-        # Force fresh star detection by temporarily disabling cache
-        old_reuse = self.chk_reuse.isChecked()
-        self.chk_reuse.setChecked(False)
         self._update_star_preview()
-        self.chk_reuse.setChecked(old_reuse)
 
     # ---- preview --------------------------------------------------------
     def _update_star_preview(self):
@@ -370,12 +368,14 @@ class WhiteBalanceDialog(QDialog):
         try:
             img = _to_float01(np.asarray(self.doc.image))
             thr = float(self.thr_slider.value())
-            reuse = bool(self.chk_reuse.isChecked())
             auto = bool(self.chk_autostretch_overlay.isChecked())
 
             _, count, overlay = apply_star_based_white_balance(
-                img, threshold=thr, autostretch=auto,
-                reuse_cached_sources=reuse, return_star_colors=False
+                img,
+                threshold=thr,
+                autostretch=auto,
+                reuse_cached_sources=False,
+                return_star_colors=False
             )
             self.star_count.setText(self.tr("Detected {0} stars.").format(count))
             # to pixmap
@@ -426,11 +426,9 @@ class WhiteBalanceDialog(QDialog):
                         main._log("[Replay] Recorded White Balance preset (mode=auto)")
                     else:
                         thr = float(preset.get("threshold", 50.0))
-                        reuse = bool(preset.get("reuse_cached_sources", True))
                         main._log(
                             f"[Replay] Recorded White Balance preset "
-                            f"(mode=star, threshold={thr:.1f}, "
-                            f"reuse={'yes' if reuse else 'no'})"
+                            f"(mode=star, threshold={thr:.1f})"
                         )
             except Exception:
                 # Logging/recording must never break the dialog
@@ -466,13 +464,11 @@ class WhiteBalanceDialog(QDialog):
                 return
 
             else:  # --- Star-Based: compute here so we can plot like SASv2 ---
-                thr   = float(self.thr_slider.value())
-                reuse = bool(self.chk_reuse.isChecked())
+                thr = float(self.thr_slider.value())
 
                 preset = {
                     "mode": "star",
                     "threshold": thr,
-                    "reuse_cached_sources": reuse,
                 }
 
                 base = _to_float01(
@@ -484,7 +480,7 @@ class WhiteBalanceDialog(QDialog):
                     base,
                     threshold=thr,
                     autostretch=False,
-                    reuse_cached_sources=reuse,
+                    reuse_cached_sources=False,
                     return_star_colors=True,
                 )
 
