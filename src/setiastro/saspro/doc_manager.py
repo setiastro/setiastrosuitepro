@@ -538,12 +538,12 @@ class ImageDocument(QObject):
                 parent.dirty = True
                 parent.changed.emit()
 
-                dm = getattr(self, "_doc_manager", None) or getattr(parent, "_doc_manager", None)
-                try:
-                    if dm is not None and hasattr(dm, "imageRegionUpdated"):
-                        dm.imageRegionUpdated.emit(parent, (x, y, w, h))
-                except Exception:
-                    print(f"[DocManager] Failed to emit imageRegionUpdated for ROI.")
+                #dm = getattr(self, "_doc_manager", None) or getattr(parent, "_doc_manager", None)
+                #try:
+                #    if dm is not None and hasattr(dm, "imageRegionUpdated"):
+                #        dm.imageRegionUpdated.emit(parent, (x, y, w, h))
+                #except Exception:
+                #    print(f"[DocManager] Failed to emit imageRegionUpdated for ROI.")
                 return  # done
 
         # ------ Normal (full-image) branch ------
@@ -613,12 +613,12 @@ class ImageDocument(QObject):
         self.dirty = True
         self.changed.emit()
 
-        dm = getattr(self, "_doc_manager", None)
-        try:
-            if dm is not None and hasattr(dm, "imageRegionUpdated"):
-                dm.imageRegionUpdated.emit(self, None)
-        except Exception:
-            pass
+        #dm = getattr(self, "_doc_manager", None)
+        #try:
+        #    if dm is not None and hasattr(dm, "imageRegionUpdated"):
+        #        dm.imageRegionUpdated.emit(self, None)
+        #except Exception:
+        #    pass
 
 
     def undo(self) -> str | None:
