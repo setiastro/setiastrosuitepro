@@ -456,16 +456,16 @@ class CosmicClarityDialogPro(QDialog):
         self._closing_after_cancel = False
         self._wait = None
         self.icons = get_icons()
-      
+
         # Hard guard unless explicitly bypassed (used by preset runner)
         if not bypass_guard and self._headless_guard_active():
-            # avoid any flash; never show
-            try: self.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+            try:
+                self.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
             except Exception as e:
                 import logging
                 logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             QTimer.singleShot(0, self.reject)
-            return     
+            return
 
         ok, detail = _cc_models_installed("core")
         if not ok:
@@ -484,9 +484,11 @@ class CosmicClarityDialogPro(QDialog):
         try:
             self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         except Exception:
-            pass  # older PyQt6 versions        
-        if icon: 
-            try: self.setWindowIcon(icon)
+            pass  # older PyQt6 versions
+
+        if icon:
+            try:
+                self.setWindowIcon(icon)
             except Exception as e:
                 import logging
                 logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
@@ -494,177 +496,274 @@ class CosmicClarityDialogPro(QDialog):
         self.parent_ref = parent
         self.doc = doc
         self._engine_thread = None
-        self._closing_after_cancel = False        
+        self._closing_after_cancel = False
         self.orig = np.clip(np.asarray(doc.image, dtype=np.float32), 0.0, 1.0)
         self.cosmic_root = ""   # no longer used by in-process engines
 
-        v = QVBoxLayout(self)
+        # ------------------------------------------------------------------
+        # Helpers
+        # ------------------------------------------------------------------
+        def _add_inline_slider(layout: QGridLayout, row: int, label: QLabel, slider: QSlider, col_span: int = 1):
+            layout.addWidget(label, row, 0)
+            layout.addWidget(slider, row, 1, 1, col_span)
+
+        # ------------------------------------------------------------------
+        # Main layout
+        # ------------------------------------------------------------------
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(10, 10, 10, 10)
+        outer.setSpacing(8)
+
+        # ---------------- Header ----------------
+        header = QHBoxLayout()
+        header.setSpacing(10)
+
         self.lbl_logo = QLabel(self)
-        self.lbl_logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_logo.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         try:
             pm = QPixmap(self.icons.COSMICCLARITY)
             if not pm.isNull():
                 self.lbl_logo.setPixmap(
-                    pm.scaledToWidth(320, Qt.TransformationMode.SmoothTransformation)
+                    pm.scaledToWidth(220, Qt.TransformationMode.SmoothTransformation)
                 )
-                v.addWidget(self.lbl_logo)
+                header.addWidget(self.lbl_logo, 0)
         except Exception:
             pass
-        # ---------------- Controls ----------------
-        grp = QGroupBox(self.tr("Parameters"))
-        grid = QGridLayout(grp)
+
+        hdr_text = QVBoxLayout()
+        hdr_text.setContentsMargins(0, 0, 0, 0)
+
+        text_wrap = QWidget()
+        text_lay = QVBoxLayout(text_wrap)
+        text_lay.setContentsMargins(0, 0, 0, 0)
+        text_lay.setSpacing(2)
+
+        lbl_title = QLabel(self.tr("Cosmic Clarity"))
+        try:
+            f = lbl_title.font()
+            f.setBold(True)
+            f.setPointSize(max(f.pointSize(), 12))
+            lbl_title.setFont(f)
+        except Exception:
+            pass
+
+        lbl_sub = QLabel(self.tr("Sharpen, denoise, and super-resolution for the active image."))
+        lbl_sub.setWordWrap(True)
+
+        text_lay.addWidget(lbl_title)
+        text_lay.addWidget(lbl_sub)
+
+        hdr_text.addStretch(1)
+        hdr_text.addWidget(text_wrap, 0, Qt.AlignmentFlag.AlignVCenter)
+        hdr_text.addStretch(1)
+
+        header.addLayout(hdr_text, 1)
+        outer.addLayout(header)
+
+        # ---------------- General group ----------------
+        grp_general = QGroupBox(self.tr("General"))
+        gen = QGridLayout(grp_general)
+        gen.setContentsMargins(8, 8, 8, 8)
+        gen.setHorizontalSpacing(8)
+        gen.setVerticalSpacing(6)
 
         # Mode
-        grid.addWidget(QLabel(self.tr("Mode:")), 0, 0)
+        gen.addWidget(QLabel(self.tr("Mode:")), 0, 0)
         self.cmb_mode = QComboBox()
         self.cmb_mode.addItems(["Sharpen", "Denoise", "Both", "Super Resolution"])
         self.cmb_mode.currentIndexChanged.connect(self._mode_changed)
-        grid.addWidget(self.cmb_mode, 0, 1, 1, 2)
+        gen.addWidget(self.cmb_mode, 0, 1)
 
         # GPU
         self.lbl_gpu = QLabel(self.tr("Use GPU:"))
-        grid.addWidget(self.lbl_gpu, 1, 0)
+        gen.addWidget(self.lbl_gpu, 0, 2)
 
         self.cmb_gpu = QComboBox()
         self.cmb_gpu.addItems([self.tr("Yes"), self.tr("No")])
-        grid.addWidget(self.cmb_gpu, 1, 1)
+        gen.addWidget(self.cmb_gpu, 0, 3)
 
-        # Sharpen block
+        # Apply target
+        gen.addWidget(QLabel(self.tr("Apply to:")), 1, 0)
+        self.cmb_target = QComboBox()
+        self.cmb_target.addItems(["Overwrite active view", "Create new view"])
+        gen.addWidget(self.cmb_target, 1, 1, 1, 3)
+
+        gen.setColumnStretch(1, 1)
+        gen.setColumnStretch(3, 1)
+        outer.addWidget(grp_general)
+
+        # ---------------- Two-column body ----------------
+        body = QHBoxLayout()
+        body.setSpacing(10)
+
+        left_col = QVBoxLayout()
+        left_col.setSpacing(8)
+
+        right_col = QVBoxLayout()
+        right_col.setSpacing(8)
+
+        # ---------------- Sharpen group ----------------
+        grp_sh = QGroupBox(self.tr("Sharpen"))
+        sh = QGridLayout(grp_sh)
+        sh.setContentsMargins(8, 8, 8, 8)
+        sh.setHorizontalSpacing(8)
+        sh.setVerticalSpacing(6)
+
         self.lbl_sh_mode = QLabel("Sharpening Mode:")
-        self.cmb_sh_mode = QComboBox(); self.cmb_sh_mode.addItems(["Both", "Stellar Only", "Non-Stellar Only"])
-        grid.addWidget(self.lbl_sh_mode, 2, 0); grid.addWidget(self.cmb_sh_mode, 2, 1)
+        self.cmb_sh_mode = QComboBox()
+        self.cmb_sh_mode.addItems(["Both", "Stellar Only", "Non-Stellar Only"])
+        sh.addWidget(self.lbl_sh_mode, 0, 0)
+        sh.addWidget(self.cmb_sh_mode, 0, 1)
 
         self.chk_sh_sep = QCheckBox("Sharpen RGB channels separately")
         self.chk_sh_sep.setToolTip(
             "Run the mono sharpening model independently on R, G, and B instead of a shared color model.\n"
             "Use for difficult color data where channels need slightly different sharpening."
         )
-        grid.addWidget(self.chk_sh_sep, 3, 0)
+        sh.addWidget(self.chk_sh_sep, 1, 0, 1, 2)
 
-        self.chk_auto_psf = QCheckBox("Auto Detect PSF"); self.chk_auto_psf.setChecked(True)
-        grid.addWidget(self.chk_auto_psf, 3, 1)
+        self.chk_auto_psf = QCheckBox("Auto Detect PSF")
+        self.chk_auto_psf.setChecked(True)
+        sh.addWidget(self.chk_auto_psf, 2, 0, 1, 2)
 
         self.lbl_psf = QLabel("Non-Stellar PSF (1.0–8.0): 3.0")
-        self.sld_psf = QSlider(Qt.Orientation.Horizontal); self.sld_psf.setRange(10, 80); self.sld_psf.setValue(30)
+        self.sld_psf = QSlider(Qt.Orientation.Horizontal)
+        self.sld_psf.setRange(10, 80)
+        self.sld_psf.setValue(30)
         self.sld_psf.valueChanged.connect(self._psf_label)
-        grid.addWidget(self.lbl_psf, 4, 0, 1, 2); grid.addWidget(self.sld_psf, 5, 0, 1, 3)
+        _add_inline_slider(sh, 3, self.lbl_psf, self.sld_psf)
 
         self.lbl_st_amt = QLabel("Stellar Amount (0–1): 0.50")
-        self.sld_st_amt = QSlider(Qt.Orientation.Horizontal); self.sld_st_amt.setRange(0, 100); self.sld_st_amt.setValue(50)
-
+        self.sld_st_amt = QSlider(Qt.Orientation.Horizontal)
+        self.sld_st_amt.setRange(0, 100)
+        self.sld_st_amt.setValue(50)
         self.sld_st_amt.valueChanged.connect(self._on_st_amt)
-        grid.addWidget(self.lbl_st_amt, 6, 0, 1, 2); grid.addWidget(self.sld_st_amt, 7, 0, 1, 3)
+        _add_inline_slider(sh, 4, self.lbl_st_amt, self.sld_st_amt)
 
         self.lbl_nst_amt = QLabel("Non-Stellar Amount (0–1): 0.50")
-        self.sld_nst_amt = QSlider(Qt.Orientation.Horizontal); self.sld_nst_amt.setRange(0, 100); self.sld_nst_amt.setValue(50)
-
+        self.sld_nst_amt = QSlider(Qt.Orientation.Horizontal)
+        self.sld_nst_amt.setRange(0, 100)
+        self.sld_nst_amt.setValue(50)
         self.sld_nst_amt.valueChanged.connect(self._on_nst_amt)
-        grid.addWidget(self.lbl_nst_amt, 8, 0, 1, 2); grid.addWidget(self.sld_nst_amt, 9, 0, 1, 3)
+        _add_inline_slider(sh, 5, self.lbl_nst_amt, self.sld_nst_amt)
 
-        # --- Temporary stretch controls (applied only for AI processing) ---
+        sh.setColumnStretch(1, 1)
+        left_col.addWidget(grp_sh)
+
+        # ---------------- Denoise group ----------------
+        grp_dn = QGroupBox(self.tr("Denoise"))
+        dn = QGridLayout(grp_dn)
+        dn.setContentsMargins(8, 8, 8, 8)
+        dn.setHorizontalSpacing(8)
+        dn.setVerticalSpacing(6)
+
+        self.lbl_dn_lum = QLabel("Luminance Denoise (0–1): 0.50")
+        self.sld_dn_lum = QSlider(Qt.Orientation.Horizontal)
+        self.sld_dn_lum.setRange(0, 100)
+        self.sld_dn_lum.setValue(50)
+        self.sld_dn_lum.valueChanged.connect(lambda v: self.lbl_dn_lum.setText(f"Luminance Denoise (0–1): {v/100:.2f}"))
+        _add_inline_slider(dn, 0, self.lbl_dn_lum, self.sld_dn_lum)
+
+        self.lbl_dn_col = QLabel("Color Denoise (0–1): 0.50")
+        self.sld_dn_col = QSlider(Qt.Orientation.Horizontal)
+        self.sld_dn_col.setRange(0, 100)
+        self.sld_dn_col.setValue(50)
+        self.sld_dn_col.valueChanged.connect(lambda v: self.lbl_dn_col.setText(f"Color Denoise (0–1): {v/100:.2f}"))
+        _add_inline_slider(dn, 1, self.lbl_dn_col, self.sld_dn_col)
+
+        self.lbl_dn_mode = QLabel("Denoise Mode:")
+        self.cmb_dn_mode = QComboBox()
+        self.cmb_dn_mode.addItems(["full", "luminance"])
+        dn.addWidget(self.lbl_dn_mode, 2, 0)
+        dn.addWidget(self.cmb_dn_mode, 2, 1)
+
+        self.chk_dn_sep = QCheckBox("Denoise RGB channels separately")
+        self.chk_dn_sep.toggled.connect(self._dn_sep_changed)
+        dn.addWidget(self.chk_dn_sep, 3, 0, 1, 2)
+
+        self.chk_dn_lite = QCheckBox("Use Lite denoise model (faster)")
+        self.chk_dn_lite.setToolTip("Loads width=32 denoise models (AI4_lite). Faster, slightly less detail.")
+        dn.addWidget(self.chk_dn_lite, 4, 0, 1, 2)
+
+        self.chk_dn_compat = QCheckBox("GPU Compatibility Mode (slower, safer)")
+        self.chk_dn_compat.setToolTip(
+            "Uses safer inference settings for Cosmic Clarity processing.\n"
+            "Recommended if sharpen or denoise fails, hangs, or produces GPU errors on older or fragile hardware."
+        )
+        dn.addWidget(self.chk_dn_compat, 5, 0, 1, 2)
+
+        dn.setColumnStretch(1, 1)
+        left_col.addWidget(grp_dn)
+        left_col.addStretch(1)
+
+        # ---------------- Super Resolution group ----------------
+        grp_sr = QGroupBox(self.tr("Super Resolution"))
+        sr = QGridLayout(grp_sr)
+        sr.setContentsMargins(8, 8, 8, 8)
+        sr.setHorizontalSpacing(8)
+        sr.setVerticalSpacing(6)
+
+        self.lbl_scale = QLabel("Scale Factor:")
+        self.cmb_scale = QComboBox()
+        self.cmb_scale.addItems(["2x", "3x", "4x"])
+        sr.addWidget(self.lbl_scale, 0, 0)
+        sr.addWidget(self.cmb_scale, 0, 1)
+        sr.setColumnStretch(1, 1)
+
+        right_col.addWidget(grp_sr)
+
+        # ---------------- Advanced / Preprocessing group ----------------
+        grp_adv = QGroupBox(self.tr("Advanced"))
+        adv = QGridLayout(grp_adv)
+        adv.setContentsMargins(8, 8, 8, 8)
+        adv.setHorizontalSpacing(8)
+        adv.setVerticalSpacing(6)
+
         self.chk_temp_stretch = QCheckBox("Temporary Stretch for AI (linear assist)")
         self.chk_temp_stretch.setChecked(True)
         self.chk_temp_stretch.setToolTip(
             "Optionally applies a temporary stretch before AI inference (then reverses it).\n"
             "Useful for very linear / low-signal data. If off, engines use automatic behavior."
         )
+        adv.addWidget(self.chk_temp_stretch, 0, 0, 1, 2)
 
         self.lbl_target_median = QLabel("Target Median (0.01–0.50): 0.25")
         self.sld_target_median = QSlider(Qt.Orientation.Horizontal)
         self.sld_target_median.setRange(1, 50)   # 0.01..0.50
         self.sld_target_median.setValue(25)      # 0.25 default
         self.sld_target_median.valueChanged.connect(self._on_target_median)
-
-        row_tm = QWidget()
-        h = QHBoxLayout(row_tm)
-        h.setContentsMargins(0, 0, 0, 0)
-        h.setSpacing(10)
-        h.addWidget(self.lbl_target_median)
-        h.addStretch(1)
-        h.addWidget(self.chk_temp_stretch)
-
-        grid.addWidget(row_tm, 18, 0, 1, 3)
-        grid.addWidget(self.sld_target_median, 19, 0, 1, 3)
+        _add_inline_slider(adv, 1, self.lbl_target_median, self.sld_target_median)
 
         self.chk_aberration_first = QCheckBox("Run Aberration Remover first")
         self.chk_aberration_first.setToolTip(
             "Runs R.A.'s Aberration Correction before Cosmic Clarity processing.\n"
             "Useful for cleaning color/fringe aberrations before sharpen, denoise, or super-resolution."
         )
-        grid.addWidget(self.chk_aberration_first, 20, 0, 1, 3)
+        adv.addWidget(self.chk_aberration_first, 2, 0, 1, 2)
 
-        # Chunk size
         self.lbl_chunk = QLabel("Chunk Size:")
         self.cmb_chunk = QComboBox()
         self.cmb_chunk.addItems(["128", "192", "256", "320", "384", "512", "640", "768", "1024"])
         self.cmb_chunk.setCurrentText("256")
-        grid.addWidget(self.lbl_chunk, 21, 0)
-        grid.addWidget(self.cmb_chunk, 21, 1)
+        adv.addWidget(self.lbl_chunk, 3, 0)
+        adv.addWidget(self.cmb_chunk, 3, 1)
 
-        # Overlap
         self.lbl_ov = QLabel("Overlap:")
         self.cmb_ov = QComboBox()
         self.cmb_ov.addItems(["16", "32", "48", "64", "80", "96", "128", "192", "256", "320", "384", "512"])
         self.cmb_ov.setCurrentText("64")
-        grid.addWidget(self.lbl_ov, 22, 0)
-        grid.addWidget(self.cmb_ov, 22, 1)
+        adv.addWidget(self.lbl_ov, 4, 0)
+        adv.addWidget(self.cmb_ov, 4, 1)
 
-        self._load_chunk_overlap_settings()
+        adv.setColumnStretch(1, 1)
+        right_col.addWidget(grp_adv)
+        right_col.addStretch(1)
 
-        # Save whenever user changes either dropdown
-        self.cmb_chunk.currentTextChanged.connect(self._save_chunk_overlap_settings)
-        self.cmb_ov.currentTextChanged.connect(self._save_chunk_overlap_settings)
-        self.cmb_chunk.currentTextChanged.connect(self._enforce_overlap_vs_chunk)
-        self.cmb_ov.currentTextChanged.connect(self._enforce_overlap_vs_chunk)
-  
-        # Denoise block
-        self.lbl_dn_lum = QLabel("Luminance Denoise (0–1): 0.50")
-        self.sld_dn_lum = QSlider(Qt.Orientation.Horizontal); self.sld_dn_lum.setRange(0, 100); self.sld_dn_lum.setValue(50)
-        self.sld_dn_lum.valueChanged.connect(lambda v: self.lbl_dn_lum.setText(f"Luminance Denoise (0–1): {v/100:.2f}"))
-        grid.addWidget(self.lbl_dn_lum, 10, 0, 1, 2); grid.addWidget(self.sld_dn_lum, 11, 0, 1, 3)
+        body.addLayout(left_col, 1)
+        body.addLayout(right_col, 1)
+        outer.addLayout(body, 1)
 
-        self.lbl_dn_col = QLabel("Color Denoise (0–1): 0.50")
-        self.sld_dn_col = QSlider(Qt.Orientation.Horizontal); self.sld_dn_col.setRange(0, 100); self.sld_dn_col.setValue(50)
-        self.sld_dn_col.valueChanged.connect(lambda v: self.lbl_dn_col.setText(f"Color Denoise (0–1): {v/100:.2f}"))
-        grid.addWidget(self.lbl_dn_col, 12, 0, 1, 2); grid.addWidget(self.sld_dn_col, 13, 0, 1, 3)
-
-        self.lbl_dn_mode = QLabel("Denoise Mode:")
-        self.cmb_dn_mode = QComboBox(); self.cmb_dn_mode.addItems(["full", "luminance"])
-        grid.addWidget(self.lbl_dn_mode, 14, 0); grid.addWidget(self.cmb_dn_mode, 14, 1)
-
-        self.chk_dn_sep = QCheckBox("Denoise RGB channels separately (May Achieve Better Results but Slower)")
-        self.chk_dn_sep.toggled.connect(self._dn_sep_changed)
-        #self.chk_dn_sep.setChecked(True)
-        grid.addWidget(self.chk_dn_sep, 15, 1)
-
-        self.chk_dn_lite = QCheckBox("Use Lite denoise model (faster)")
-        self.chk_dn_lite.setToolTip("Loads width=32 denoise models (AI4_lite). Faster, slightly less detail.")
-        grid.addWidget(self.chk_dn_lite, 15, 0)
-
-        self.chk_dn_compat = QCheckBox("GPU Compatibility Mode (slower, safer for older GPUs)")
-        self.chk_dn_compat.setToolTip(
-            "Uses safer inference settings for Cosmic Clarity processing.\n"
-            "Recommended if sharpen or denoise fails, hangs, or produces GPU errors on older or fragile hardware."
-        )
-        grid.addWidget(self.chk_dn_compat, 15, 2)
-
-        self._load_cc_ui_settings()
-        self.chk_dn_lite.toggled.connect(self._save_cc_ui_settings)
-        self.chk_dn_compat.toggled.connect(self._save_cc_ui_settings)
-        # Super-res
-        self.lbl_scale = QLabel("Scale Factor:")
-        self.cmb_scale = QComboBox(); self.cmb_scale.addItems(["2x", "3x", "4x"])
-        grid.addWidget(self.lbl_scale, 17, 0)
-        grid.addWidget(self.cmb_scale, 17, 1)
-
-        # Apply target
-        grid.addWidget(QLabel("Apply to:"), 23, 0)
-        self.cmb_target = QComboBox(); self.cmb_target.addItems(["Overwrite active view", "Create new view"])
-        grid.addWidget(self.cmb_target, 23, 1, 1, 2)
-
-        v.addWidget(grp)
-
-        # Buttons
+        # ---------------- Buttons ----------------
         row = QHBoxLayout()
 
         self.btn_clear_cache = QPushButton(self.tr("Clear AI Cache"))
@@ -675,14 +774,30 @@ class CosmicClarityDialogPro(QDialog):
         )
         self.btn_clear_cache.clicked.connect(self._clear_ai_cache_clicked)
 
-        b_run   = QPushButton(self.tr("Execute")); b_run.clicked.connect(self._run_main)
-        b_close = QPushButton(self.tr("Close"));   b_close.clicked.connect(self.reject)
+        b_run = QPushButton(self.tr("Execute"))
+        b_run.clicked.connect(self._run_main)
+
+        b_close = QPushButton(self.tr("Close"))
+        b_close.clicked.connect(self.reject)
 
         row.addWidget(self.btn_clear_cache)
         row.addStretch(1)
         row.addWidget(b_run)
         row.addWidget(b_close)
-        v.addLayout(row)
+        outer.addLayout(row)
+
+        # ---------------- Settings / signals ----------------
+        self._load_chunk_overlap_settings()
+
+        # Save whenever user changes either dropdown
+        self.cmb_chunk.currentTextChanged.connect(self._save_chunk_overlap_settings)
+        self.cmb_ov.currentTextChanged.connect(self._save_chunk_overlap_settings)
+        self.cmb_chunk.currentTextChanged.connect(self._enforce_overlap_vs_chunk)
+        self.cmb_ov.currentTextChanged.connect(self._enforce_overlap_vs_chunk)
+
+        self._load_cc_ui_settings()
+        self.chk_dn_lite.toggled.connect(self._save_cc_ui_settings)
+        self.chk_dn_compat.toggled.connect(self._save_cc_ui_settings)
 
         self._mode_changed()  # set initial visibility
 
@@ -690,21 +805,20 @@ class CosmicClarityDialogPro(QDialog):
         self.chk_temp_stretch.toggled.connect(self._temp_stretch_changed)
         self._temp_stretch_changed(self.chk_temp_stretch.isChecked())
 
-
         self._headless = bool(headless)
         if self._headless:
-            # Don’t show the control panel; we’ll still exec() to run the event loop.
-            try: self.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+            try:
+                self.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
             except Exception as e:
                 import logging
                 logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
         self.chk_dn_lite.toggled.connect(self._save_cc_ui_settings)
         self.chk_aberration_first.toggled.connect(self._save_cc_ui_settings)
-
         self.chk_dn_compat.toggled.connect(self._save_cc_ui_settings)
 
-        self.resize(560, 540)
+        self.setMinimumSize(760, 520)
+        self.resize(860, 560)
 
     def _clear_ai_cache_clicked(self):
         # Don’t allow cache clearing mid-run (can invalidate active model refs)
