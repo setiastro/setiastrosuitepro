@@ -1428,24 +1428,56 @@ def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = 
                         return image, original_header, bit_depth, is_mono, meta
                     return image, original_header, bit_depth, is_mono
 
-
             elif filename.lower().endswith(('.tiff', '.tif')):
                 print(f"Loading TIFF file: {filename}")
                 image_data = tiff.imread(filename)
                 print(f"Loaded TIFF image with dtype: {image_data.dtype}")
 
-                if image_data.dtype == np.uint8:
-                    bit_depth = "8-bit"
-                    image = image_data.astype(np.float32) / 255.0
+                # Ensure native byte order so >u2 / >i2 / <u2 etc. are handled consistently
+                if image_data.dtype.byteorder not in ('=', '|'):
+                    image_data = image_data.astype(image_data.dtype.newbyteorder('='))
+                    print(f"Converted TIFF to native byte order: {image_data.dtype}")
 
-                elif image_data.dtype == np.uint16:
-                    bit_depth = "16-bit"
-                    image = image_data.astype(np.float32) / 65535.0
+                dt = image_data.dtype
+                kind = dt.kind      # 'u' unsigned int, 'i' signed int, 'f' float
+                bits = dt.itemsize * 8
 
-                elif image_data.dtype == np.int16:
-                    bit_depth = "16-bit signed"
-                    print("Detected 16-bit signed TIFF image.")
+                if kind == 'u':
+                    if bits == 8:
+                        bit_depth = "8-bit"
+                        image = image_data.astype(np.float32) / 255.0
+
+                    elif bits == 16:
+                        bit_depth = "16-bit"
+                        print("Detected 16-bit unsigned TIFF image.")
+                        image = image_data.astype(np.float32) / 65535.0
+
+                    elif bits == 32:
+                        bit_depth = "32-bit unsigned"
+                        print("Detected 32-bit unsigned TIFF image.")
+                        image = image_data.astype(np.float32) / 4294967295.0
+
+                    else:
+                        raise ValueError(f"Unsupported unsigned TIFF bit depth: {bits}")
+
+                elif kind == 'i':
                     data = image_data.astype(np.float32)
+
+                    if bits == 8:
+                        bit_depth = "8-bit signed"
+                        print("Detected 8-bit signed TIFF image.")
+
+                    elif bits == 16:
+                        bit_depth = "16-bit signed"
+                        print("Detected 16-bit signed TIFF image.")
+
+                    elif bits == 32:
+                        bit_depth = "32-bit signed"
+                        print("Detected 32-bit signed TIFF image.")
+
+                    else:
+                        raise ValueError(f"Unsupported signed TIFF bit depth: {bits}")
+
                     dmin = float(data.min())
                     dmax = float(data.max())
                     if dmax > dmin:
@@ -1453,56 +1485,73 @@ def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = 
                     else:
                         image = np.zeros_like(data, dtype=np.float32)
 
-                elif image_data.dtype == np.uint32:
-                    bit_depth = "32-bit unsigned"
-                    image = image_data.astype(np.float32) / 4294967295.0
-
-                elif image_data.dtype == np.int32:
-                    bit_depth = "32-bit signed"
-                    print("Detected 32-bit signed TIFF image.")
-                    data = image_data.astype(np.float32)
-                    dmin = float(data.min())
-                    dmax = float(data.max())
-                    if dmax > dmin:
-                        image = (data - dmin) / (dmax - dmin)
+                elif kind == 'f':
+                    if bits == 16:
+                        bit_depth = "16-bit floating point"
+                        print("Detected 16-bit float TIFF image.")
+                    elif bits == 32:
+                        bit_depth = "32-bit floating point"
+                        print("Detected 32-bit floating point TIFF image.")
+                    elif bits == 64:
+                        bit_depth = "64-bit floating point"
+                        print("Detected 64-bit floating point TIFF image.")
                     else:
-                        image = np.zeros_like(data, dtype=np.float32)
+                        bit_depth = f"{bits}-bit floating point"
+                        print(f"Detected {bits}-bit float TIFF image.")
 
-                elif image_data.dtype == np.float32:
-                    bit_depth = "32-bit floating point"
                     image = image_data.astype(np.float32)
-
-                elif image_data.dtype == np.float64:
-                    bit_depth = "64-bit floating point"
-                    image = image_data.astype(np.float32)
-
-                elif np.issubdtype(image_data.dtype, np.integer):
-                    # Generic integer fallback (int8, etc.)
-                    info = np.iinfo(image_data.dtype)
-                    bit_depth = f"{info.bits}-bit signed"
-                    print(f"Generic int TIFF; normalizing by [{info.min}, {info.max}]")
-                    data = image_data.astype(np.float32)
-                    # shift to [0, max-min] then normalize
-                    data -= info.min
-                    image = data / float(info.max - info.min)
 
                 else:
-                    raise ValueError("Unsupported TIFF format!")
+                    raise ValueError(f"Unsupported TIFF dtype: {image_data.dtype}")
 
-
-                #if image.dtype == np.float32:
-                #    max_val = image.max()
-                #    if max_val > 1.0:
-                #        print(f"Detected float image with max value {max_val:.3f} > 1.0; rescales to [0,1]")
-                #        image = image / max_val
-
-                # Handle mono or RGB TIFFs
-                if image_data.ndim == 2:  # Mono
+                # Handle mono / RGB / RGBA TIFFs
+                if image.ndim == 2:
                     is_mono = True
-                elif image_data.ndim == 3 and image_data.shape[2] == 3:  # RGB
-                    is_mono = False
+
+                elif image.ndim == 3:
+                    # Standard interleaved
+                    if image.shape[2] == 1:
+                        image = np.squeeze(image, axis=2)
+                        is_mono = True
+
+                    elif image.shape[2] == 3:
+                        is_mono = False
+
+                    elif image.shape[2] == 4:
+                        print("Detected RGBA TIFF image. Dropping alpha channel.")
+                        image = image[:, :, :3]
+                        is_mono = False
+
+                    # Planar TIFFs
+                    elif image.shape[0] == 1 and image.shape[1] > 1 and image.shape[2] > 1:
+                        image = np.squeeze(image, axis=0)
+                        is_mono = True
+
+                    elif image.shape[0] == 3 and image.shape[1] > 1 and image.shape[2] > 1:
+                        image = np.transpose(image, (1, 2, 0))
+                        is_mono = False
+
+                    elif image.shape[0] == 4 and image.shape[1] > 1 and image.shape[2] > 1:
+                        print("Detected planar RGBA TIFF image. Dropping alpha channel.")
+                        image = np.transpose(image, (1, 2, 0))
+                        image = image[:, :, :3]
+                        is_mono = False
+
+                    else:
+                        raise ValueError(f"Unsupported TIFF image dimensions: {image.shape}")
+
                 else:
-                    raise ValueError("Unsupported TIFF image dimensions!")
+                    raise ValueError(f"Unsupported TIFF image dimensions: {image.shape}")
+
+                meta = {
+                    "file_path": filename,
+                    "fits_header": original_header,
+                    "bit_depth": bit_depth,
+                    "mono": is_mono,
+                }
+
+                if return_metadata:
+                    return image, original_header, bit_depth, is_mono, meta
 
             elif filename.lower().endswith('.xisf'):
                 print(f"Loading XISF file: {filename}")
