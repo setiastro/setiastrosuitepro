@@ -858,13 +858,35 @@ class MetricsWindow(QWidget):
 
 
     def update_metrics(self, loaded_images, order=None):
-        if loaded_images is not self._all_images:
+        """
+        Refresh the metrics UI.
+
+        - If this is a genuinely new image set, recompute from scratch.
+        - If the same logical set is still in use and only ordering changed,
+        just replot using cached metrics.
+        """
+        if self.metrics_panel.metrics_data is None or len(getattr(self, "_all_images", [])) != len(loaded_images):
             self.set_images(loaded_images, order=order)
+            return
+
+        self._all_images = loaded_images
+        if order is not None:
+            self._order_all = list(order)
+
+        # Rebuild the current subset from the currently selected group id
+        gid = self._current_group_id()
+        if gid == "__ALL__":
+            self._current_indices = self._order_all
         else:
-            if order is not None:
-                self._order_all = list(order)
-    # re-plot the current group with the new ordering
-            self._on_group_change(self.group_combo.currentText())
+            self._current_indices = [
+                i for i in self._order_all
+                if (self._all_images[i].get('header', {}) or {}).get('FILTER', 'Unknown') == gid
+            ]
+
+        self._apply_thresholds(gid)
+        self.metrics_panel.plot(self._all_images, indices=self._current_indices)
+        self.metrics_panel.set_guides_visible(self.chk_guides.isChecked())
+        self._update_status()
 
 class BlinkComparatorPro(QDialog):
     sendToStacking = pyqtSignal(list, str)
@@ -2061,8 +2083,23 @@ class BlinkTab(QWidget):
         self.imagesChanged.emit(len(self.loaded_images))
 
         if self.metrics_window and self.metrics_window.isVisible():
-            # ✅ safest: rebind images + rebuild plot order from tree
-            self.metrics_window.set_images(self.loaded_images, order=self._tree_order_indices())
+            order = self._tree_order_indices()
+
+            # If we know exactly which frames were removed, trim metrics in-place
+            # without recomputing.
+            if removed_indices:
+                self.metrics_window._all_images = self.loaded_images
+                self.metrics_window.remove_indices(list(removed_indices))
+
+                # keep order aligned to the rebuilt tree
+                self.metrics_window._order_all = list(order)
+
+                # refresh the current group using the new ordering only
+                self.metrics_window.update_metrics(self.loaded_images, order=order)
+            else:
+                # fallback path for non-removal mutations
+                self.metrics_window.update_metrics(self.loaded_images, order=order)
+
             self._sync_metrics_flags()
 
     def get_tree_item_for_index(self, idx):
