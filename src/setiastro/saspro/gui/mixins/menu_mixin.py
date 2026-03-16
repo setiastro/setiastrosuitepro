@@ -366,7 +366,8 @@ class MenuMixin:
 
         m_about.addSeparator()
         m_about.addAction(self.tr("Statistics..."), self._show_statistics)
-
+        m_about.addSeparator()
+        m_about.addAction(self.act_bored)
         # Connect tool stats
         self._hook_tool_stats([m_fn, m_tools, mCosmic, m_geom, m_star, m_masks, m_header, m_scripts])
 
