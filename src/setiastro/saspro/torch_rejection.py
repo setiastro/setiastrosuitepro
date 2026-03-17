@@ -286,6 +286,30 @@ def _force_fp32_policy(torch):
     except Exception:
         pass
 
+def _soft_outlier_weight(torch, z, threshold: float, mode: str = "quartic"):
+    """
+    Convert absolute z-score into a soft weight in [0,1].
+
+    z:
+      absolute standardized residuals
+    threshold:
+      values >= threshold get weight 0
+    mode:
+      "linear"  -> 1 - z/t
+      "quartic" -> (1 - (z/t)^2)^2
+    """
+    t = max(float(threshold), 1e-12)
+    u = (z / t).clamp_min(0.0)
+
+    if mode == "linear":
+        w = 1.0 - u
+    else:
+        # smoother falloff, less harsh near center
+        w = (1.0 - u * u).clamp_min(0.0)
+        w = w * w
+
+    return torch.where(u < 1.0, w, torch.zeros_like(u))
+
 # ---------------------------------------------------------------------------
 # Public GPU reducer – lazy-loads Torch, never decorates at import time
 # ---------------------------------------------------------------------------
@@ -544,11 +568,25 @@ def torch_reduce_tile(
             x = ts.masked_fill(~valid, float("nan"))
             mean = torch.nanmean(x, dim=0)
             std = _nanstd(torch, x, dim=0).clamp_min(1e-12)
+
             z = (ts - mean.unsqueeze(0)).abs() / std.unsqueeze(0)
+
+            # Hard rejection mask for bookkeeping / rejection map
             keep = valid & (z < float(esd_threshold))
-            w_eff = torch.where(keep, w, torch.zeros_like(w))
-            den = w_eff.sum(dim=0).clamp_min(1e-20)
-            out = (ts.mul(w_eff)).sum(dim=0).div(den)
+
+            # Soft ESD confidence weight inside the threshold
+            esd_w = _soft_outlier_weight(torch, z, float(esd_threshold), mode="quartic")
+
+            # Combine frame measurement weights with ESD-derived weights
+            w_eff = torch.where(valid, w * esd_w, torch.zeros_like(w))
+
+            den = w_eff.sum(dim=0)
+            num = (ts * w_eff).sum(dim=0)
+
+            # fallback where everything got zeroed
+            fallback = _nanmedian(torch, x, dim=0)
+            out = torch.where(den > 1e-20, num / den.clamp_min(1e-20), fallback)
+
             rej = ~keep
             assert out.dtype == torch.float32, f"reducer produced {out.dtype}, expected float32"
             return out.to(dtype=torch.float32).contiguous().cpu().numpy(), rej.cpu().numpy()

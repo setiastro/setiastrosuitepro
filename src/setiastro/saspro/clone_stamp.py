@@ -230,7 +230,8 @@ class CloneStampDialogPro(QDialog):
 
         self.lbl_help = QLabel(self.tr(
             "Ctrl+Click to set source. Then Left-drag to paint.\n"
-            "Source follows the cursor (classic clone stamp)."
+            "Source follows the cursor (classic clone stamp).\n"
+            "Use [ and ] to decrease/increase brush size."
         ))
         self.lbl_help.setStyleSheet("color:#888;")
         self.lbl_help.setWordWrap(True)
@@ -357,8 +358,18 @@ class CloneStampDialogPro(QDialog):
         a_redo.setShortcut(QKeySequence.StandardKey.Redo)
         a_redo.triggered.connect(self._redo_step)
 
+        a_radius_down = QAction(self)
+        a_radius_down.setShortcut(QKeySequence(Qt.Key.Key_BracketLeft))
+        a_radius_down.triggered.connect(lambda: self._adjust_brush_radius(-2))
+
+        a_radius_up = QAction(self)
+        a_radius_up.setShortcut(QKeySequence(Qt.Key.Key_BracketRight))
+        a_radius_up.triggered.connect(lambda: self._adjust_brush_radius(+2))
+
         self.addAction(a_undo)
         self.addAction(a_redo)
+        self.addAction(a_radius_down)
+        self.addAction(a_radius_up)
 
         self._update_brush_preview()
         self._update_display_autostretch()
@@ -456,6 +467,36 @@ class CloneStampDialogPro(QDialog):
         arr8 = np.ascontiguousarray(np.clip(canvas * 255.0, 0, 255).astype(np.uint8))
         qimg = QImage(arr8.data, w, h, w, QImage.Format.Format_Grayscale8)
         self.brush_preview.setPixmap(QPixmap.fromImage(qimg))
+
+    def _adjust_brush_radius(self, delta: int):
+        """Increase/decrease clone stamp radius from keyboard shortcuts."""
+        try:
+            cur = int(self.s_radius.value())
+            new_val = max(self.s_radius.minimum(), min(self.s_radius.maximum(), cur + int(delta)))
+            if new_val != cur:
+                self.s_radius.setValue(new_val)
+                self._update_brush_circle_from_cursor()
+        except Exception:
+            pass
+
+
+    def _update_brush_circle_from_cursor(self):
+        """Refresh the on-image brush circle at the current mouse position."""
+        try:
+            vp = self.view.viewport()
+            local_pos = vp.mapFromGlobal(self.cursor().pos())
+            if not vp.rect().contains(local_pos):
+                return
+
+            pos = self.view.mapToScene(local_pos)
+            r = int(self.s_radius.value())
+            self.circle.setRect(pos.x() - r, pos.y() - r, 2 * r, 2 * r)
+            self.circle.setVisible(True)
+
+            # keep source overlay feeling responsive too
+            self._update_source_overlay(pos)
+        except Exception:
+            pass
 
     def eventFilter(self, src, ev):
         if src is self.view.viewport():
