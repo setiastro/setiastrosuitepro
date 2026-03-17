@@ -231,7 +231,10 @@ class BlemishBlasterDialogPro(QDialog):
         form.addRow(self.tr("Radius:"),  self.s_radius)
         form.addRow(self.tr("Feather:"), self.s_feather)
         form.addRow(self.tr("Opacity:"), self.s_opacity)
-
+        self.lbl_bracket_help = QLabel(self.tr("Tip: Use [ and ] to decrease/increase brush size."))
+        self.lbl_bracket_help.setStyleSheet("color:#888;")
+        self.lbl_bracket_help.setWordWrap(True)
+        form.addRow(self.lbl_bracket_help)
         # --- PREVIEW AUTOSTRETCH (display only) ---
         self.cb_autostretch = QCheckBox(self.tr("Auto-stretch preview"))
         self.cb_autostretch.setChecked(True)
@@ -348,9 +351,26 @@ class BlemishBlasterDialogPro(QDialog):
         #self._fit_view()
 
         # shortcuts
-        a_undo = QAction(self); a_undo.setShortcut(QKeySequence.StandardKey.Undo); a_undo.triggered.connect(self._undo_step)
-        a_redo = QAction(self); a_redo.setShortcut(QKeySequence.StandardKey.Redo); a_redo.triggered.connect(self._redo_step)
-        self.addAction(a_undo); self.addAction(a_redo)
+        a_undo = QAction(self)
+        a_undo.setShortcut(QKeySequence.StandardKey.Undo)
+        a_undo.triggered.connect(self._undo_step)
+
+        a_redo = QAction(self)
+        a_redo.setShortcut(QKeySequence.StandardKey.Redo)
+        a_redo.triggered.connect(self._redo_step)
+
+        a_radius_down = QAction(self)
+        a_radius_down.setShortcut(QKeySequence(Qt.Key.Key_BracketLeft))
+        a_radius_down.triggered.connect(lambda: self._adjust_brush_radius(-2))
+
+        a_radius_up = QAction(self)
+        a_radius_up.setShortcut(QKeySequence(Qt.Key.Key_BracketRight))
+        a_radius_up.triggered.connect(lambda: self._adjust_brush_radius(+2))
+
+        self.addAction(a_undo)
+        self.addAction(a_redo)
+        self.addAction(a_radius_down)
+        self.addAction(a_radius_up)
 
     def _update_undo_redo_buttons(self):
         try:
@@ -522,6 +542,31 @@ class BlemishBlasterDialogPro(QDialog):
         self._display = self._image.copy()
         self._update_display_autostretch()
         self._update_undo_redo_buttons()
+
+    def _adjust_brush_radius(self, delta: int):
+        """Increase/decrease blemish radius from keyboard shortcuts."""
+        try:
+            cur = int(self.s_radius.value())
+            new_val = max(self.s_radius.minimum(), min(self.s_radius.maximum(), cur + int(delta)))
+            if new_val != cur:
+                self.s_radius.setValue(new_val)
+                self._update_brush_circle_from_cursor()
+        except Exception:
+            pass
+
+    def _update_brush_circle_from_cursor(self):
+        """Refresh the preview circle at the current mouse position."""
+        try:
+            vp = self.view.viewport()
+            global_pos = vp.mapFromGlobal(self.cursor().pos())
+            if not vp.rect().contains(global_pos):
+                return
+            pos = self.view.mapToScene(global_pos)
+            r = int(self.s_radius.value())
+            self.circle.setRect(pos.x() - r, pos.y() - r, 2 * r, 2 * r)
+            self.circle.setVisible(True)
+        except Exception:
+            pass
 
     # ── Commit back to the document
     def _commit_to_doc(self):

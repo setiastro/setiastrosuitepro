@@ -40,74 +40,320 @@ def _mpl_no_tex_guard():
 # ----------------------------
 # Core WB implementations
 # ----------------------------
-def plot_star_color_ratios_comparison(raw_pixels: np.ndarray, after_pixels: np.ndarray):
+def build_star_color_ratios_figure(raw_pixels: np.ndarray, after_pixels: np.ndarray):
     """
-    Replicates the SASv2 diagnostic plot: star color ratios before/after WB,
-    with an RGB background grid, best-fit line, and neutral markers.
-    Expects Nx3 arrays of star RGB samples in [0,1] (or any common scale).
+    Build the SAS-style diagnostic plot and return a matplotlib Figure.
+
+    Axes:
+        x = R / B
+        y = G / B
+
+    Adds:
+      - RGB ratio background
+      - star scatter before/after WB
+      - best-fit line
+      - blackbody locus in the same ratio space
+      - labeled temperature tick marks
+
+    Notes:
+      - The blackbody locus is plotted in *ratio space* (R/B, G/B), not CIE x,y.
+      - This is intentionally matched to the background/plot semantics used here.
     """
     _mpl_no_tex_guard()
 
-    from matplotlib import pyplot as plt
-    from matplotlib.patches import Circle
+    from matplotlib.figure import Figure
     from matplotlib.ticker import MaxNLocator
 
+    # ------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------
     def compute_ratios(pixels: np.ndarray):
         eps = 1e-8
         rb = pixels[:, 0] / (pixels[:, 2] + eps)  # R/B
         gb = pixels[:, 1] / (pixels[:, 2] + eps)  # G/B
         return rb, gb
 
-    rb_before, gb_before = compute_ratios(raw_pixels)
-    rb_after,  gb_after  = compute_ratios(after_pixels)
-
-    # Optional: keep only finite points
     def _finite(x, y):
         m = np.isfinite(x) & np.isfinite(y)
         return x[m], y[m]
+
+    def _blackbody_rgb_approx(temp_k: float) -> np.ndarray:
+        """
+        Smooth blackbody RGB approximation via Planck spectrum -> approximate CIE XYZ
+        -> linear sRGB.
+
+        Returns linear RGB in [0,1], normalized by max channel.
+        This is much smoother than the common piecewise Kelvin->RGB approximation
+        and avoids the visible kink near ~6500K.
+        """
+        T = float(max(1000.0, min(40000.0, temp_k)))
+
+        # Wavelengths in nm
+        wl = np.arange(380.0, 781.0, 5.0, dtype=np.float64)
+
+        # --- Planck spectral radiance (relative only) ---
+        # Constants
+        h = 6.62607015e-34
+        c = 2.99792458e8
+        k = 1.380649e-23
+
+        lam = wl * 1e-9  # nm -> m
+
+        # Relative spectral power; absolute scale does not matter here
+        c1 = 2.0 * h * c * c
+        c2 = (h * c) / k
+        spd = c1 / ((lam ** 5) * (np.exp(c2 / (lam * T)) - 1.0))
+
+        # Normalize for numerical stability
+        spd /= np.max(spd)
+
+        # --- Approximate CIE 1931 2° color matching functions ---
+        # Wyman, Sloan, Shirley-style analytic fits
+        def x_bar(l):
+            t1 = (l - 442.0) * (0.0624 if l < 442.0 else 0.0374)
+            t2 = (l - 599.8) * (0.0264 if l < 599.8 else 0.0323)
+            t3 = (l - 501.1) * (0.0490 if l < 501.1 else 0.0382)
+            return (
+                0.362 * np.exp(-0.5 * t1 * t1)
+                + 1.056 * np.exp(-0.5 * t2 * t2)
+                - 0.065 * np.exp(-0.5 * t3 * t3)
+            )
+
+        def y_bar(l):
+            t1 = (l - 568.8) * (0.0213 if l < 568.8 else 0.0247)
+            t2 = (l - 530.9) * (0.0613 if l < 530.9 else 0.0322)
+            return (
+                0.821 * np.exp(-0.5 * t1 * t1)
+                + 0.286 * np.exp(-0.5 * t2 * t2)
+            )
+
+        def z_bar(l):
+            t1 = (l - 437.0) * (0.0845 if l < 437.0 else 0.0278)
+            t2 = (l - 459.0) * (0.0385 if l < 459.0 else 0.0725)
+            return (
+                1.217 * np.exp(-0.5 * t1 * t1)
+                + 0.681 * np.exp(-0.5 * t2 * t2)
+            )
+
+        x = np.array([x_bar(v) for v in wl], dtype=np.float64)
+        y = np.array([y_bar(v) for v in wl], dtype=np.float64)
+        z = np.array([z_bar(v) for v in wl], dtype=np.float64)
+
+        # Integrate SPD * CMFs
+        X = np.trapezoid(spd * x, wl)
+        Y = np.trapezoid(spd * y, wl)
+        Z = np.trapezoid(spd * z, wl)
+
+        XYZ = np.array([X, Y, Z], dtype=np.float64)
+        if not np.all(np.isfinite(XYZ)) or np.max(XYZ) <= 0:
+            return np.array([1.0, 1.0, 1.0], dtype=np.float32)
+
+        # Normalize XYZ
+        XYZ /= np.max(XYZ)
+
+        # --- XYZ -> linear sRGB ---
+        M = np.array([
+            [ 3.2406, -1.5372, -0.4986],
+            [-0.9689,  1.8758,  0.0415],
+            [ 0.0557, -0.2040,  1.0570],
+        ], dtype=np.float64)
+
+        rgb = M @ XYZ
+
+        # Clamp negatives (out-of-gamut for sRGB)
+        rgb = np.clip(rgb, 0.0, None)
+
+        # Normalize by max channel for ratio-space plotting
+        mx = float(np.max(rgb))
+        if mx <= 1e-12 or not np.isfinite(mx):
+            return np.array([1.0, 1.0, 1.0], dtype=np.float32)
+
+        rgb /= mx
+        return rgb.astype(np.float32)
+
+    def _blackbody_ratio_point(temp_k: float):
+        rgb = _blackbody_rgb_approx(temp_k).astype(np.float32)
+        eps = 1e-8
+        rb = float(rgb[0] / max(rgb[2], eps))
+        gb = float(rgb[1] / max(rgb[2], eps))
+        return rb, gb
+
+    def _add_blackbody_locus(ax):
+        """
+        Plot blackbody locus and labeled temperature tick marks in ratio space.
+        """
+        # Smooth curve temperatures
+        temps_curve = np.concatenate([
+            np.linspace(1500, 4000, 120),
+            np.linspace(4100, 12000, 120),
+        ])
+
+        pts = np.array([_blackbody_ratio_point(t) for t in temps_curve], dtype=np.float32)
+        x = pts[:, 0]
+        y = pts[:, 1]
+
+        # Keep only finite/in-range-ish points
+        m = np.isfinite(x) & np.isfinite(y)
+        x = x[m]
+        y = y[m]
+
+        if len(x) < 2:
+            return
+
+        ax.plot(x, y, color="black", linewidth=2.0, label="Blackbody locus")
+
+        # Labeled temperature ticks
+        tick_temps = [1500, 2000, 2500, 3000, 4000, 6000, 10000]
+
+        tick_pts = []
+        for t in tick_temps:
+            px, py = _blackbody_ratio_point(t)
+            if np.isfinite(px) and np.isfinite(py):
+                tick_pts.append((t, px, py))
+
+        if len(tick_pts) < 2:
+            return
+
+        # For local tangent estimation, use neighboring curve samples
+        curve_pts = np.column_stack([x, y])
+
+        for t, px, py in tick_pts:
+            # Find nearest point on curve
+            d2 = (curve_pts[:, 0] - px) ** 2 + (curve_pts[:, 1] - py) ** 2
+            i = int(np.argmin(d2))
+
+            i0 = max(0, i - 2)
+            i1 = min(len(curve_pts) - 1, i + 2)
+
+            if i1 == i0:
+                continue
+
+            dx = curve_pts[i1, 0] - curve_pts[i0, 0]
+            dy = curve_pts[i1, 1] - curve_pts[i0, 1]
+
+            norm = float(np.hypot(dx, dy))
+            if norm < 1e-8:
+                continue
+
+            # Unit normal to the curve
+            nx = -dy / norm
+            ny =  dx / norm
+
+            # Tick size in ratio-space units
+            tick_len = 0.035
+            x0 = px - nx * tick_len
+            y0 = py - ny * tick_len
+            x1 = px + nx * tick_len
+            y1 = py + ny * tick_len
+
+            ax.plot([x0, x1], [y0, y1], color="black", linewidth=1.5)
+
+            # Label offset a little farther along the normal
+            lx = px + nx * 0.065
+            ly = py + ny * 0.065
+            ax.text(lx, ly, f"{t}", fontsize=9, color="black", ha="center", va="center")
+
+    # ------------------------------------------------------------
+    # Compute ratios
+    # ------------------------------------------------------------
+    rb_before, gb_before = compute_ratios(raw_pixels)
+    rb_after,  gb_after  = compute_ratios(after_pixels)
+
     rb_before, gb_before = _finite(rb_before, gb_before)
     rb_after,  gb_after  = _finite(rb_after,  gb_after)
 
-    # Plot bounds + background grid
-    rmin, rmax = 0.5, 2.0
-    gmin, gmax = 0.5, 2.0
-    res = 200
+    # Limit plotted stars
+    max_plot_stars = 2000
+    total_available = min(len(rb_before), len(rb_after))
+    n = min(total_available, max_plot_stars)
+
+    if n > 0:
+        rb_before = rb_before[:n]
+        gb_before = gb_before[:n]
+        rb_after  = rb_after[:n]
+        gb_after  = gb_after[:n]
+
+    # ------------------------------------------------------------
+    # Plot bounds / ratio background
+    # ------------------------------------------------------------
+    rmin, rmax = 0.0, 2.0
+    gmin, gmax = 0.0, 2.0
+    res = 250
 
     rb_vals = np.linspace(rmin, rmax, res)
     gb_vals = np.linspace(gmin, gmax, res)
     rb_grid, gb_grid = np.meshgrid(rb_vals, gb_vals)
+
+    # Blue normalized to 1.0 in this background
     rgb_image = np.stack([rb_grid, gb_grid, np.ones_like(rb_grid)], axis=-1)
     rgb_image /= np.maximum(rgb_image.max(axis=2, keepdims=True), 1e-8)
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6), sharex=True, sharey=True)
+    # ------------------------------------------------------------
+    # Figure
+    # ------------------------------------------------------------
+    fig = Figure(figsize=(12, 6))
+    ax1 = fig.add_subplot(1, 2, 1)
+    ax2 = fig.add_subplot(1, 2, 2, sharex=ax1, sharey=ax1)
 
     def plot_panel(ax, rb_data, gb_data, title):
-        ax.imshow(rgb_image, extent=(rmin, rmax, gmin, gmax), origin='lower', aspect='auto')
-        ax.scatter(rb_data, gb_data, alpha=0.6, edgecolors='k', label="Stars")
+        ax.imshow(
+            rgb_image,
+            extent=(rmin, rmax, gmin, gmax),
+            origin="lower",
+            aspect="auto",
+            alpha=0.9,
+        )
+
+        ax.scatter(
+            rb_data,
+            gb_data,
+            alpha=0.45,
+            edgecolors="k",
+            linewidths=0.25,
+            s=12,
+            label="Stars",
+        )
 
         if rb_data.size >= 2:
             m, b = np.polyfit(rb_data, gb_data, 1)
-            xs = np.linspace(rmin, rmax, 100)
-            ax.plot(xs, m * xs + b, 'r--', label=f"Best Fit\ny = {m:.2f}x + {b:.2f}")
+            xs = np.linspace(rmin, rmax, 200)
+            ax.plot(xs, m * xs + b, "r--", linewidth=1.5, label=f"Best Fit\ny = {m:.2f}x + {b:.2f}")
 
-        ax.axhline(1.0, color='gray', linestyle=':', linewidth=1)
-        ax.axvline(1.0, color='gray', linestyle=':', linewidth=1)
-        ax.add_patch(Circle((1.0, 1.0), 0.2, fill=False, edgecolor='blue', linestyle='--', linewidth=1.5))
-        ax.text(1.03, 1.17, "Neutral Region", color='blue', fontsize=9)
+        # Neutral marker only
+        ax.plot([1.0], [1.0], marker="+", markersize=10, markeredgewidth=2.0,
+                color="blue", label="Neutral (1,1)")
 
-        ax.set_xlim(rmin, rmax); ax.set_ylim(gmin, gmax)
+        # Blackbody locus
+        _add_blackbody_locus(ax)
+
+        ax.set_xlim(rmin, rmax)
+        ax.set_ylim(gmin, gmax)
         ax.set_title(f"{title} White Balance")
-        ax.set_xlabel("Red / Blue Ratio"); ax.set_ylabel("Green / Blue Ratio")
-        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
-        ax.yaxis.set_major_locator(MaxNLocator(integer=True))
-        ax.grid(True); ax.legend()
+        ax.set_xlabel("Red / Blue Ratio")
+        ax.set_ylabel("Green / Blue Ratio")
+        ax.xaxis.set_major_locator(MaxNLocator(nbins=9))
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=9))
+        ax.grid(True, alpha=0.6)
+        ax.legend(loc="upper right", fontsize=8)
 
     plot_panel(ax1, rb_before, gb_before, "Before")
     plot_panel(ax2, rb_after,  gb_after,  "After")
 
-    plt.suptitle("Star Color Ratios with RGB Mapping", fontsize=14)
-    plt.tight_layout()
-    plt.show(block=False)
+    if total_available > max_plot_stars:
+        fig.suptitle(
+            f"Star Color Ratios with RGB Mapping (showing first {max_plot_stars} of {total_available} stars)",
+            fontsize=14
+        )
+    else:
+        fig.suptitle("Star Color Ratios with RGB Mapping", fontsize=14)
+    fig.subplots_adjust(
+        left=0.08,
+        right=0.98,
+        bottom=0.10,
+        top=0.84,
+        wspace=0.18,
+    )
+    return fig
 
 def apply_manual_white_balance(img: np.ndarray, r_gain: float, g_gain: float, b_gain: float) -> np.ndarray:
     """Simple per-channel gain, clipped to [0,1]."""
@@ -172,10 +418,12 @@ def apply_white_balance_to_doc(doc, preset: Optional[Dict] = None):
 
         else:  # "star"
             thr = float(p.get("threshold", 50.0))
-            reuse = bool(p.get("reuse_cached_sources", True))
             out, _count, _overlay = apply_star_based_white_balance(
-                base_n, threshold=thr, autostretch=False,
-                reuse_cached_sources=reuse, return_star_colors=False
+                base_n,
+                threshold=thr,
+                autostretch=False,
+                reuse_cached_sources=False,
+                return_star_colors=False
             )
     except Exception as e:
         # Fallback: if SEP missing or star detection fails, try Auto WB
@@ -227,6 +475,35 @@ def apply_soft_protect(img: np.ndarray, out_pivot: np.ndarray, k: float = 0.02) 
     out = img * (1.0 - w3) + out_pivot * w3
     return np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
 
+class WhiteBalanceResultDialog(QDialog):
+    def __init__(self, parent, figure, star_count: int):
+        super().__init__(parent)
+        self.setWindowTitle(self.tr("White Balance Result"))
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setModal(False)
+        self.resize(1100, 700)
+
+        layout = QVBoxLayout(self)
+
+        info = QLabel(self.tr("Star-Based WB applied successfully.\nDetected {0} stars.").format(int(star_count)))
+        info.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(info)
+
+        from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+        from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavToolbar
+
+        self.canvas = FigureCanvas(figure)
+        self.toolbar = NavToolbar(self.canvas, self)
+
+        layout.addWidget(self.toolbar)
+        layout.addWidget(self.canvas)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_ok = QPushButton(self.tr("Close"))
+        btn_ok.clicked.connect(self.accept)
+        btn_row.addWidget(btn_ok)
+        layout.addLayout(btn_row)
 
 # -------------------------
 # Interactive dialog (UI)
@@ -303,8 +580,9 @@ class WhiteBalanceDialog(QDialog):
         thr_row.addWidget(self.thr_slider); thr_row.addWidget(self.thr_label)
         sg.addLayout(thr_row)
 
-        self.chk_reuse = QCheckBox(self.tr("Reuse cached star detections")); self.chk_reuse.setChecked(True)
-        sg.addWidget(self.chk_reuse)
+        # Reusing cached detections is intentionally disabled for White Balance.
+        # The threshold slider must always trigger a fresh star detection pass.
+        self.chk_reuse = None
 
         self.chk_autostretch_overlay = QCheckBox(self.tr("Autostretch overlay preview")); self.chk_autostretch_overlay.setChecked(True)
         sg.addWidget(self.chk_autostretch_overlay)
@@ -344,7 +622,6 @@ class WhiteBalanceDialog(QDialog):
 
         self.thr_slider.valueChanged.connect(lambda v: (self.thr_label.setText(str(v)), self._debounce.start()))
         self.chk_autostretch_overlay.toggled.connect(lambda _=None: self._debounce.start())
-        self.chk_reuse.toggled.connect(lambda _=None: self._debounce.start())
 
     def _update_mode_widgets(self):
         t = self.type_combo.currentText()
@@ -357,11 +634,7 @@ class WhiteBalanceDialog(QDialog):
         if doc is None or getattr(doc, "image", None) is None:
             return
         self.doc = doc
-        # Force fresh star detection by temporarily disabling cache
-        old_reuse = self.chk_reuse.isChecked()
-        self.chk_reuse.setChecked(False)
         self._update_star_preview()
-        self.chk_reuse.setChecked(old_reuse)
 
     # ---- preview --------------------------------------------------------
     def _update_star_preview(self):
@@ -370,12 +643,14 @@ class WhiteBalanceDialog(QDialog):
         try:
             img = _to_float01(np.asarray(self.doc.image))
             thr = float(self.thr_slider.value())
-            reuse = bool(self.chk_reuse.isChecked())
             auto = bool(self.chk_autostretch_overlay.isChecked())
 
             _, count, overlay = apply_star_based_white_balance(
-                img, threshold=thr, autostretch=auto,
-                reuse_cached_sources=reuse, return_star_colors=False
+                img,
+                threshold=thr,
+                autostretch=auto,
+                reuse_cached_sources=False,
+                return_star_colors=False
             )
             self.star_count.setText(self.tr("Detected {0} stars.").format(count))
             # to pixmap
@@ -426,11 +701,9 @@ class WhiteBalanceDialog(QDialog):
                         main._log("[Replay] Recorded White Balance preset (mode=auto)")
                     else:
                         thr = float(preset.get("threshold", 50.0))
-                        reuse = bool(preset.get("reuse_cached_sources", True))
                         main._log(
                             f"[Replay] Recorded White Balance preset "
-                            f"(mode=star, threshold={thr:.1f}, "
-                            f"reuse={'yes' if reuse else 'no'})"
+                            f"(mode=star, threshold={thr:.1f})"
                         )
             except Exception:
                 # Logging/recording must never break the dialog
@@ -466,13 +739,11 @@ class WhiteBalanceDialog(QDialog):
                 return
 
             else:  # --- Star-Based: compute here so we can plot like SASv2 ---
-                thr   = float(self.thr_slider.value())
-                reuse = bool(self.chk_reuse.isChecked())
+                thr = float(self.thr_slider.value())
 
                 preset = {
                     "mode": "star",
                     "threshold": thr,
-                    "reuse_cached_sources": reuse,
                 }
 
                 base = _to_float01(
@@ -484,7 +755,7 @@ class WhiteBalanceDialog(QDialog):
                     base,
                     threshold=thr,
                     autostretch=False,
-                    reuse_cached_sources=reuse,
+                    reuse_cached_sources=False,
                     return_star_colors=True,
                 )
 
@@ -523,14 +794,28 @@ class WhiteBalanceDialog(QDialog):
                     and raw_colors.size
                     and after_colors.size
                 ):
-                    plot_star_color_ratios_comparison(raw_colors, after_colors)
+                    fig = build_star_color_ratios_figure(raw_colors, after_colors)
+                    dlg = WhiteBalanceResultDialog(self._main or self.parent(), fig, int(star_count))
+                    dlg.show()
+                    dlg.raise_()
+                    dlg.activateWindow()
 
-                QMessageBox.information(
-                    self,
-                    self.tr("White Balance"),
-                    self.tr("Star-Based WB applied.\nDetected {0} stars.").format(int(star_count)),
-                )
-                # Dialog stays open - refresh document for next operation
+                    # Keep alive so Python doesn't garbage collect it immediately
+                    if not hasattr(self, "_result_dialogs"):
+                        self._result_dialogs = []
+                    self._result_dialogs.append(dlg)
+
+                    try:
+                        dlg.finished.connect(lambda *_: self._result_dialogs.remove(dlg) if dlg in self._result_dialogs else None)
+                    except Exception:
+                        pass
+                else:
+                    QMessageBox.information(
+                        self,
+                        self.tr("White Balance"),
+                        self.tr("Star-Based WB applied.\nDetected {0} stars.").format(int(star_count)),
+                    )
+
                 self._finish_and_close()
                 return
 

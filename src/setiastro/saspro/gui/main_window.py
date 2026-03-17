@@ -9024,15 +9024,15 @@ class AstroSuiteProMainWindow(
             pass
 
         # -- 11) If this is the first window and it's an image, mimic "Cascade Views"
-        try:
-            if first_window and not is_table:
-                # Prefer our helper (does cascade + auto-fit), else raw Qt cascade
-                if hasattr(self, "_cascade_views") and callable(self._cascade_views):
-                    self._cascade_views()
-                else:
-                    self.mdi.cascadeSubWindows()
-        except Exception:
-            pass
+        #try:
+        #    if first_window and not is_table:
+        #        # Prefer our helper (does cascade + auto-fit), else raw Qt cascade
+        #        if hasattr(self, "_cascade_views") and callable(self._cascade_views):
+        #            self._cascade_views()
+        #        else:
+        #            self.mdi.cascadeSubWindows()
+        #except Exception:
+        #    pass
 
         return sw
 

@@ -513,6 +513,45 @@ class BackgroundNeutralizationDialog(QDialog):
                     self.selection_item = self.scene.addRect(self.current_rect_scene, pen)
         return super().eventFilter(source, event)
 
+    def _make_screen_stable_crosshair_group(self, cx: float, cy: float, color: QColor | None = None):
+        """
+        Create a crosshair marker centered at scene/image coords (cx, cy),
+        with approximately constant on-screen size regardless of zoom.
+        Returns a QGraphicsItemGroup already added to the scene.
+        """
+        color = color or QColor(255, 215, 0)  # gold
+
+        # Current zoom scale from the view transform
+        t = self.graphics_view.transform()
+        sx = abs(t.m11()) if abs(t.m11()) > 1e-12 else 1.0
+        sy = abs(t.m22()) if abs(t.m22()) > 1e-12 else 1.0
+
+        # Desired on-screen size in pixels
+        arm_px = 16.0
+        gap_px = 4.0
+        box_px = 8.0
+
+        # Convert screen px -> scene units
+        arm_x = arm_px / sx
+        arm_y = arm_px / sy
+        gap_x = gap_px / sx
+        gap_y = gap_px / sy
+        box_w = box_px / sx
+        box_h = box_px / sy
+
+        pen = QPen(color, 2)
+        pen.setCosmetic(True)
+
+        h1 = self.scene.addLine(cx - arm_x, cy, cx - gap_x, cy, pen)
+        h2 = self.scene.addLine(cx + gap_x, cy, cx + arm_x, cy, pen)
+        v1 = self.scene.addLine(cx, cy - arm_y, cx, cy - gap_y, pen)
+        v2 = self.scene.addLine(cx, cy + gap_y, cx, cy + arm_y, pen)
+        box = self.scene.addRect(QRectF(cx - box_w/2, cy - box_h/2, box_w, box_h), pen)
+
+        group = self.scene.createItemGroup([h1, h2, v1, v2, box])
+        group.setZValue(1e6)
+        return group
+
     def _on_find_background(self):
         img = self._doc_image_normalized()
         if img.ndim != 3 or img.shape[2] != 3:
@@ -521,13 +560,25 @@ class BackgroundNeutralizationDialog(QDialog):
 
         x, y, w, h = auto_rect_50x50(img)
 
+        # Keep the REAL sample rect for the actual math
+        rect_scene = QRectF(float(x), float(y), float(w), float(h))
+        self.current_rect_scene = rect_scene
+
+        # Remove previous marker
         if self.selection_item:
             self.scene.removeItem(self.selection_item)
+            self.selection_item = None
 
-        pen = QPen(QColor(255, 215, 0), 2)  # gold
-        rect_scene = QRectF(float(x), float(y), float(w), float(h))  # scene == image pixels now
-        self.selection_item = self.scene.addRect(rect_scene, pen)
-        self.current_rect_scene = rect_scene
+        # Draw a visible crosshair at the center of the true rect
+        cx = rect_scene.center().x()
+        cy = rect_scene.center().y()
+
+        self.selection_item = self._make_screen_stable_crosshair_group(
+            cx, cy, QColor(255, 215, 0)
+        )
+
+        self.scene.update()
+        self.graphics_view.viewport().update()
 
     def _scene_rect_to_image_rect(self) -> tuple[int, int, int, int]:
         if not self.current_rect_scene or self.current_rect_scene.isNull():

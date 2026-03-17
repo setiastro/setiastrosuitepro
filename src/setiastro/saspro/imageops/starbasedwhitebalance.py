@@ -25,7 +25,8 @@ from setiastro.saspro.widgets.image_utils import to_float01 as _to_float01
 
 __all__ = ["apply_star_based_white_balance"]
 
-# simple cache (reused when reuse_cached_sources=True)
+# White Balance star detection should always be recomputed for the current threshold.
+# Keep these names only for backward compatibility / old imports.
 cached_star_sources: Optional[np.ndarray] = None
 cached_flux_radii: Optional[np.ndarray] = None
 
@@ -97,24 +98,21 @@ def apply_star_based_white_balance(
     data_sub = gray - bkg.back()
     err_val = float(bkg.globalrms)
 
-    global cached_star_sources, cached_flux_radii
+    # IMPORTANT:
+    # Always recompute detections for White Balance.
+    # The threshold slider changes which stars are selected, so reusing old
+    # detections produces stale/incorrect overlays and star counts.
+    sources = sep.extract(data_sub, threshold, err=err_val)
+    if sources is None or len(sources) == 0:
+        raise ValueError("No sources detected for Star-Based White Balance.")
 
-    if reuse_cached_sources and cached_star_sources is not None:
-        sources = cached_star_sources
-        r = cached_flux_radii
-    else:
-        sources = sep.extract(data_sub, threshold, err=err_val)
-        if sources is None or len(sources) == 0:
-            raise ValueError("No sources detected for Star-Based White Balance.")
-        r, _ = sep.flux_radius(
-            gray,
-            sources["x"], sources["y"],
-            2.0 * sources["a"], 0.2,
-            normflux=sources["flux"],
-            subpix=5
-        )
-        cached_star_sources = sources
-        cached_flux_radii = r
+    r, _ = sep.flux_radius(
+        gray,
+        sources["x"], sources["y"],
+        2.0 * sources["a"], 0.2,
+        normflux=sources["flux"],
+        subpix=5
+    )
 
     mask = (r > 0) & (r <= 10)
     sources = sources[mask]

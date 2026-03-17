@@ -429,7 +429,8 @@ class ImageSubWindow(QWidget):
         self._base_document = None
         self.document = document
         self._last_title_for_emit = None
-
+        self._docman = None
+        self._docman_base_for_signal = None
         # ─────────────────────────────────────────────────────────
         # View / render state
         # ─────────────────────────────────────────────────────────
@@ -655,7 +656,7 @@ class ImageSubWindow(QWidget):
         QShortcut(QKeySequence("Ctrl+K"), self, activated=self.toggle_mask_overlay)
 
         # Re-render when the document changes
-        self.document.changed.connect(lambda: self._render(rebuild=True))
+        self.document.changed.connect(self._on_document_changed)
         self._render(rebuild=True)
         QTimer.singleShot(0, self._maybe_announce_readout_help)
         self._refresh_local_undo_buttons()
@@ -681,6 +682,14 @@ class ImageSubWindow(QWidget):
 
         QTimer.singleShot(0, self._install_mdi_state_watch)
         QTimer.singleShot(0, self._update_inline_title_and_buttons)
+
+    def _on_document_changed(self):
+        """
+        Primary document-changed handler for this view.
+
+        This should be the main place that triggers a redraw for normal edits.
+        """
+        self._render(rebuild=True)
 
     def reload_display_settings(self):
         s = getattr(self, "_settings", None) or QSettings()
@@ -1101,13 +1110,11 @@ class ImageSubWindow(QWidget):
             return
         try:
             doc.undo()
-            # most ImageDocument implementations emit changed; belt-and-suspenders:
-            if hasattr(doc, "changed"): doc.changed.emit()
+            # Do NOT manually emit changed or call _render() here.
+            # ImageDocument.undo() already emits changed, and our existing
+            # changed connections handle redraw + button refresh.
         except Exception:
             pass
-        # repaint and refresh our buttons
-        self._render(rebuild=True)
-        self._refresh_local_undo_buttons()
 
     def _on_local_redo(self):
         doc = self._resolve_history_doc()
@@ -1115,11 +1122,11 @@ class ImageSubWindow(QWidget):
             return
         try:
             doc.redo()
-            if hasattr(doc, "changed"): doc.changed.emit()
+            # Do NOT manually emit changed or call _render() here.
+            # ImageDocument.redo() already emits changed, and our existing
+            # changed connections handle redraw + button refresh.
         except Exception:
             pass
-        self._render(rebuild=True)
-        self._refresh_local_undo_buttons()
 
 
     def refresh_preview_roi(self, roi_tuple=None):
@@ -1455,35 +1462,28 @@ class ImageSubWindow(QWidget):
         sample = {"r": r, "g": g, "b": b}
         return (xi, yi, sample)
 
-
-
     def sizeHint(self) -> QSize:
         lbl = getattr(self, "image_label", None) or getattr(self, "label", None)
         sa  = getattr(self, "scroll_area", None) or self.findChild(QScrollArea)
         if lbl and hasattr(lbl, "pixmap") and lbl.pixmap() and not lbl.pixmap().isNull():
             pm = lbl.pixmap()
-            # logical pixels (HiDPI-safe)
             dpr  = pm.devicePixelRatioF() if hasattr(pm, "devicePixelRatioF") else 1.0
             pm_w = int(math.ceil(pm.width()  / dpr))
             pm_h = int(math.ceil(pm.height() / dpr))
 
-            # label margins
             lm = lbl.contentsMargins()
             w = pm_w + lm.left() + lm.right()
             h = pm_h + lm.top()  + lm.bottom()
 
-            # scrollarea chrome (frame + reserve bar thickness)
             if sa:
                 fw = sa.frameWidth()
-                w += fw * 2 + sa.verticalScrollBar().sizeHint().width()
-                h += fw * 2 + sa.horizontalScrollBar().sizeHint().height()
+                w += fw * 2
+                h += fw * 2
 
-            # this widget’s margins
             m = self.contentsMargins()
             w += m.left() + m.right() + 2
             h += m.top()  + m.bottom() + 20
 
-            # tiny safety pad so bars never appear from rounding
             return QSize(w + 2, h + 8)
 
         return super().sizeHint()
@@ -1684,14 +1684,16 @@ class ImageSubWindow(QWidget):
         pass
 
     def _on_doc_mask_changed(self):
-        """Doc changed → refresh highlight and overlay if needed."""
+        """
+        Doc changed → refresh mask title/badge state only.
+
+        IMPORTANT:
+        We do NOT call _render() here, because document.changed is already
+        connected to a full redraw elsewhere. Calling _render() here can
+        duplicate rebuild work on every document change.
+        """
         has_mask = self._active_mask_array() is not None
         self._set_mask_highlight(has_mask)
-        if self.show_mask_overlay and has_mask:
-            self._render(rebuild=True)
-        elif self.show_mask_overlay and not has_mask:
-            # overlay was on but mask went away → just redraw to clear
-            self._render(rebuild=True)
 
     def set_autostretch_continuous(self, on: bool):
         on = bool(on)
@@ -2397,35 +2399,77 @@ class ImageSubWindow(QWidget):
         self._render(True)
 
     def set_doc_manager(self, docman):
+        # Disconnect old docman hooks first
+        old = getattr(self, "_docman", None)
+        if old is not None:
+            try:
+                old.imageRegionUpdated.disconnect(self._on_doc_region_updated)
+            except Exception:
+                pass
+            try:
+                old.imageRegionUpdated.disconnect(self._on_docman_nudge)
+            except Exception:
+                pass
+            try:
+                if hasattr(old, "previewRepaintRequested"):
+                    old.previewRepaintRequested.disconnect(self._on_docman_nudge)
+            except Exception:
+                pass
+
+        # Disconnect old base.changed hook first
+        old_base = getattr(self, "_docman_base_for_signal", None)
+        if old_base is not None:
+            try:
+                old_base.changed.disconnect(self._on_base_doc_changed)
+            except Exception:
+                pass
+
         self._docman = docman
+
         try:
             docman.imageRegionUpdated.connect(self._on_doc_region_updated)
+        except Exception:
+            pass
+
+        try:
             docman.imageRegionUpdated.connect(self._on_docman_nudge)
+        except Exception:
+            pass
+
+        try:
             if hasattr(docman, "previewRepaintRequested"):
                 docman.previewRepaintRequested.connect(self._on_docman_nudge)
         except Exception:
             pass
 
         base = getattr(self, "base_document", None) or getattr(self, "document", None)
+        self._docman_base_for_signal = base
+
         if base is not None:
             try:
                 base.changed.connect(self._on_base_doc_changed)
             except Exception:
                 pass
+
         self._install_history_watchers()
 
     def _on_base_doc_changed(self):
-        # Full-image changes (or unknown) → rebuild our pixmap
-        QTimer.singleShot(0, lambda: (self._render(rebuild=True), self._refresh_local_undo_buttons()))
+        """
+        Base/full document changed.
+
+        Avoid forcing another redraw here because document.changed already
+        drives rendering in this view. Keep this lightweight.
+        """
+        QTimer.singleShot(0, self._refresh_local_undo_buttons)
 
     def _on_history_doc_changed(self):
         """
-        Called when the current history document (full or ROI) changes.
-        Ensures the pixmap is rebuilt immediately, including when a
-        tool operates on a Preview/ROI doc.
+        Current history doc (full or ROI) changed.
+
+        Keep this lightweight. Rendering is already driven by the document's
+        changed signal connections, so only refresh local buttons here.
         """
-        QTimer.singleShot(0, lambda: (self._render(rebuild=True),
-                                      self._refresh_local_undo_buttons()))
+        QTimer.singleShot(0, self._refresh_local_undo_buttons)
 
     def _on_doc_region_updated(self, doc, roi_tuple_or_none):
         # Only react if it’s our base doc
@@ -2433,19 +2477,24 @@ class ImageSubWindow(QWidget):
         if doc is None or base is None or doc is not base:
             return
 
-        # If not on a Preview tab, just refresh.
+        # Full-image / unknown update -> redraw
+        if roi_tuple_or_none is None:
+            QTimer.singleShot(0, lambda: self._render(rebuild=True))
+            return
+
+        # If not on a preview tab, just redraw
         if not (getattr(self, "_active_source_kind", None) == "preview"
                 and getattr(self, "_active_preview_id", None) is not None):
             QTimer.singleShot(0, lambda: self._render(rebuild=True))
             return
 
-        # We’re on a Preview tab: refresh only if the changed region overlaps our ROI.
+        # Preview active: redraw only if changed region overlaps our ROI
         try:
-            my_roi = self.current_preview_roi()  # (x,y,w,h) in full-image coords
+            my_roi = self.current_preview_roi()
         except Exception:
             my_roi = None
 
-        if my_roi is None or roi_tuple_or_none is None:
+        if my_roi is None:
             QTimer.singleShot(0, lambda: self._render(rebuild=True))
             return
 
