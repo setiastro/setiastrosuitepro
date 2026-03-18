@@ -327,6 +327,30 @@ def _legacy_unstretch_unlinked(image: np.ndarray, state: dict):
         return img[..., 0]
     return img
 
+def _anchor_median_linear_rescale(img: np.ndarray, pivot: float, eps: float = 1e-8) -> np.ndarray:
+    """
+    Linear rescale anchored at pivot:
+      pivot -> pivot
+      max(img) -> 1.0
+
+    This applies one straight-line mapping to the whole image, so values
+    below the pivot are lifted slightly when bright values need compression.
+    """
+    out = np.asarray(img, dtype=np.float32).copy()
+
+    mx = float(np.nanmax(out))
+    if not np.isfinite(mx) or mx <= 1.0:
+        return out
+
+    p = float(pivot)
+    if not np.isfinite(p):
+        p = 0.0
+
+    denom = max(mx - p, eps)
+    a = (1.0 - p) / denom
+
+    out = p + (out - p) * a
+    return out.astype(np.float32, copy=False)
 
 def abe_run(
     image: np.ndarray,
@@ -348,10 +372,17 @@ def abe_run(
 
     img_src = np.asarray(image).astype(np.float32, copy=False)
     mono = (img_src.ndim == 2) or (img_src.ndim == 3 and img_src.shape[2] == 1)
+    # Preserve dynamic range: normalize only for internal modeling if needed,
+    # then restore the original scale before returning.
+    finite_mask = np.isfinite(img_src)
+    work_scale = float(np.max(img_src[finite_mask])) if np.any(finite_mask) else 1.0
+    if not np.isfinite(work_scale) or work_scale <= 0.0:
+        work_scale = 1.0
 
+    img_src_work = img_src / work_scale if work_scale > 1.0 else img_src
     # Work in RGB internally (even for mono) so pre/post stretch matches SASv2 behavior
-    img_rgb = img_src if (img_src.ndim == 3 and img_src.shape[2] == 3) else np.stack(
-        [img_src.squeeze()] * 3, axis=-1
+    img_rgb = img_src_work if (img_src_work.ndim == 3 and img_src_work.shape[2] == 3) else np.stack(
+        [img_src_work.squeeze()] * 3, axis=-1
     )
 
     # --- SASv2 modeling domain (optional) ---------------------------------
@@ -411,7 +442,8 @@ def abe_run(
         if progress_cb: progress_cb("Subtracting polynomial background & re-centering…")
         after_poly = img_rgb - bg_poly
         med_after  = float(np.median(after_poly))
-        after_poly = np.clip(after_poly + (orig_med - med_after), 0.0, 1.0)
+        after_poly = after_poly + (orig_med - med_after)
+        after_poly = _anchor_median_linear_rescale(after_poly, orig_med)
 
         total_bg = bg_poly.astype(np.float32, copy=False)
 
@@ -461,7 +493,8 @@ def abe_run(
         total_bg = (total_bg + bg_rbf).astype(np.float32)
         corrected = img_rgb - total_bg
         med2 = float(np.median(corrected))
-        corrected = np.clip(corrected + (orig_med - med2), 0.0, 1.0)
+        corrected = corrected + (orig_med - med2)
+        corrected = _anchor_median_linear_rescale(corrected, orig_med)
     else:
         if progress_cb: progress_cb("Finalizing…")
         corrected = after_poly
@@ -487,6 +520,10 @@ def abe_run(
         if mono:
             corrected = corrected[..., 0]
             total_bg  = total_bg[..., 0]
+    # Restore original input scale if we normalized for internal processing
+    if work_scale > 1.0:
+        corrected = corrected * work_scale
+        total_bg = total_bg * work_scale
 
     if progress_cb: progress_cb("Ready")
     if return_background:
@@ -839,11 +876,13 @@ class ABEDialog(QDialog):
         src = np.asarray(self.doc.image)
         if src is None or src.size == 0:
             return None
+
         if np.issubdtype(src.dtype, np.integer):
             scale = float(np.iinfo(src.dtype).max)
-            return (src.astype(np.float32) / scale).clip(0.0, 1.0)
-        # float path: do NOT normalize; just clip to [0,1] like Crop does upstream
-        return np.clip(src.astype(np.float32, copy=False), 0.0, 1.0)
+            return src.astype(np.float32) / scale
+
+        # float path: preserve full range; abe_run() will normalize internally if needed
+        return src.astype(np.float32, copy=False)
 
     # ----- preview/applier -----
     def _run_abe(self, excl_mask: np.ndarray | None, progress=None):
