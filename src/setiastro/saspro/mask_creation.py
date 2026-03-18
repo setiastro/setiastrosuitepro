@@ -531,9 +531,11 @@ class LivePreviewDialog(QDialog):
         overlay = QPixmap.fromImage(overlay_qimg)
         canvas = QPixmap(self.base_pixmap)
         p = QPainter(canvas); p.drawPixmap(0, 0, overlay); p.end()
-        self.label.setPixmap(canvas.scaled(self.label.size(),
-                                           Qt.AspectRatioMode.KeepAspectRatio,
-                                           Qt.TransformationMode.SmoothTransformation))
+        self.label.setPixmap(canvas.scaled(
+            self.label.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.FastTransformation
+        ))
 
     def set_base_image(self, image01: np.ndarray):
         self.base_pixmap = _to_qpixmap01(image01)
@@ -704,7 +706,12 @@ class MaskCreationDialog(QDialog):
         self.image = np.asarray(image01, dtype=np.float32).copy()
         self.mask: np.ndarray | None = None
         self.live_preview = LivePreviewDialog(self.image, parent=self)
-
+        self._preview_timer = QTimer(self)
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.setInterval(120)   # 80-150 ms usually feels good
+        self._preview_timer.timeout.connect(self._update_live_preview)
+        self._cached_base_mask = None
+        self._cached_base_mask_dirty = True        
         self.mask_type = "Binary"
         self.blur_amount = 0
 
@@ -789,7 +796,7 @@ class MaskCreationDialog(QDialog):
             s.setValue(maxv if name == "Upper" else 0)
             lbl = QLabel(f"{(s.value()/maxv):.2f}")
             s.valueChanged.connect(lambda v, l=lbl, s=s: l.setText(f"{v/s.maximum():.2f}"))
-            s.valueChanged.connect(self._update_live_preview)
+            s.valueChanged.connect(self._schedule_live_preview)
             g.addWidget(s, row, 1); g.addWidget(lbl, row, 2)
             return s, lbl
         self.lower_sl, _ = add_slider(0, "Lower", 100)
@@ -807,7 +814,7 @@ class MaskCreationDialog(QDialog):
         # live label + live preview
         def _upd_smooth(v):
             self.smooth_lbl.setText(f"σ = {int(v)} px")
-            self._update_live_preview()
+            self._schedule_live_preview()
         self.smooth_sl.valueChanged.connect(_upd_smooth)
         self.link_cb   = QCheckBox("Link limits"); g.addWidget(self.link_cb, 0, 3, 2, 1)
         self.screen_cb = QCheckBox("Screening");   g.addWidget(self.screen_cb, 4, 0, 1, 4)
@@ -846,11 +853,29 @@ class MaskCreationDialog(QDialog):
 
         self.resize(980, 640)
 
+    def _invalidate_base_mask(self):
+        self._cached_base_mask_dirty = True
+
+    def _get_base_mask(self) -> np.ndarray | None:
+        if self._cached_base_mask is None or self._cached_base_mask_dirty:
+            try:
+                self._cached_base_mask = self.canvas.create_mask()
+                self._cached_base_mask_dirty = False
+            except RuntimeError as e:
+                QMessageBox.warning(self, "Mask creation failed", str(e))
+                return None
+        return self._cached_base_mask
+
+    def _schedule_live_preview(self, *_):
+        if self.range_box.isVisible():
+            self._preview_timer.start()
+
     def _undo_shape(self):
         if not self.canvas.undo_last_shape():
             return
+        self._invalidate_base_mask()
         if hasattr(self, "range_box") and self.range_box.isVisible():
-            self._update_live_preview()
+            self._schedule_live_preview()
 
 
     # ---- callbacks
@@ -858,11 +883,14 @@ class MaskCreationDialog(QDialog):
         self.canvas.set_mode(mode)
         if mode == 'select':
             self.canvas.select_entire_image()
+            self._invalidate_base_mask()
+            self._schedule_live_preview()
 
     def _clear_shapes(self):
         self.canvas.clear_shapes()
+        self._invalidate_base_mask()
         if hasattr(self, "range_box") and self.range_box.isVisible():
-            self._update_live_preview()
+            self._schedule_live_preview()
 
     def _on_type_changed(self, txt: str):
         show = (txt == "Range Selection")
@@ -870,7 +898,7 @@ class MaskCreationDialog(QDialog):
         if show:
             if not self.live_preview.isVisible():
                 self.live_preview.show()
-            self._update_live_preview()
+            self._schedule_live_preview()
         else:
             if self.live_preview.isVisible():
                 self.live_preview.close()
@@ -970,7 +998,9 @@ class MaskCreationDialog(QDialog):
 
     def generate_mask(self) -> np.ndarray | None:
         try:
-            base = self.canvas.create_mask()
+            base = self._get_base_mask()
+            if base is None:
+                return None
         except RuntimeError as e:
             QMessageBox.warning(self, "Mask creation failed", str(e)); return None
 
