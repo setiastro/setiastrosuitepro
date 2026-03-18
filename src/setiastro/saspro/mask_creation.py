@@ -20,7 +20,8 @@ from PyQt6.QtGui import (
     QPainterPath, QWheelEvent, QPolygonF, QMouseEvent,QShortcut, QKeySequence
 )
 from PyQt6.QtWidgets import (
-    QInputDialog, QMessageBox, QFileDialog,   # QFileDialog only used if you later add “export”
+    QApplication,
+    QInputDialog, QMessageBox, QFileDialog,
     QDialog, QDialogButtonBox,
     QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QComboBox, QSlider, QCheckBox, QButtonGroup, QGroupBox,
@@ -111,6 +112,42 @@ def _push_numpy_as_new_document(owner_widget, arr01: np.ndarray, default_name: s
         mw._log(f"Created new document from mask: {doc.display_name()}")
     return True
 
+def _downsample_for_preview(img: np.ndarray, max_dim: int = 1000) -> tuple[np.ndarray, float]:
+    """
+    Returns (preview_img, scale_to_preview)
+
+    scale_to_preview = preview_size / original_size
+    so full-res coordinates can be mapped to preview with:
+        preview_x = full_x * scale
+        preview_y = full_y * scale
+    """
+    a = np.asarray(img, dtype=np.float32)
+    h, w = a.shape[:2]
+    longest = max(h, w)
+
+    if longest <= max_dim:
+        return a, 1.0
+
+    scale = float(max_dim) / float(longest)
+    new_w = max(1, int(round(w * scale)))
+    new_h = max(1, int(round(h * scale)))
+
+    if cv2 is not None:
+        interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
+        if a.ndim == 2:
+            out = cv2.resize(a, (new_w, new_h), interpolation=interp)
+        else:
+            out = cv2.resize(a, (new_w, new_h), interpolation=interp)
+        return out.astype(np.float32, copy=False), scale
+
+    # fallback
+    ys = np.linspace(0, h - 1, new_h).astype(np.int32)
+    xs = np.linspace(0, w - 1, new_w).astype(np.int32)
+    if a.ndim == 2:
+        out = a[ys][:, xs]
+    else:
+        out = a[ys][:, xs, :]
+    return out.astype(np.float32, copy=False), scale
 
 # ---------- Interactive ellipse handles ----------
 class HandleItem(QGraphicsRectItem):
@@ -704,14 +741,19 @@ class MaskCreationDialog(QDialog):
         except Exception:
             pass  # older PyQt6 versions        
         self.image = np.asarray(image01, dtype=np.float32).copy()
+        self.preview_image, self._preview_scale_factor = _downsample_for_preview(self.image, max_dim=1000)
+
         self.mask: np.ndarray | None = None
-        self.live_preview = LivePreviewDialog(self.image, parent=self)
+        self.live_preview = LivePreviewDialog(self.preview_image, parent=self)
         self._preview_timer = QTimer(self)
         self._preview_timer.setSingleShot(True)
         self._preview_timer.setInterval(120)   # 80-150 ms usually feels good
         self._preview_timer.timeout.connect(self._update_live_preview)
-        self._cached_base_mask = None
-        self._cached_base_mask_dirty = True        
+        self._cached_base_mask_full = None
+        self._cached_base_mask_full_dirty = True
+
+        self._cached_base_mask_preview = None
+        self._cached_base_mask_preview_dirty = True       
         self.mask_type = "Binary"
         self.blur_amount = 0
 
@@ -839,6 +881,9 @@ class MaskCreationDialog(QDialog):
         rowb.addWidget(b_clear)
         layout.addLayout(rowb)
 
+        self.status_label = QLabel("")
+        self.status_label.setStyleSheet("color: #cfcfcf;")
+        layout.addWidget(self.status_label)
 
         # OK / Cancel
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self)
@@ -853,18 +898,70 @@ class MaskCreationDialog(QDialog):
 
         self.resize(980, 640)
 
-    def _invalidate_base_mask(self):
-        self._cached_base_mask_dirty = True
+    def _set_status(self, text: str):
+        self.status_label.setText(text)
+        QApplication.processEvents()
 
-    def _get_base_mask(self) -> np.ndarray | None:
-        if self._cached_base_mask is None or self._cached_base_mask_dirty:
+    def _invalidate_base_mask(self):
+        self._cached_base_mask_full_dirty = True
+        self._cached_base_mask_preview_dirty = True
+
+    def _get_base_mask_full(self) -> np.ndarray | None:
+        if self._cached_base_mask_full is None or self._cached_base_mask_full_dirty:
             try:
-                self._cached_base_mask = self.canvas.create_mask()
-                self._cached_base_mask_dirty = False
+                h, w = self.image.shape[:2]
+                self._cached_base_mask_full = self._create_mask_from_shapes_at_size(h, w)
+                self._cached_base_mask_full_dirty = False
             except RuntimeError as e:
                 QMessageBox.warning(self, "Mask creation failed", str(e))
                 return None
-        return self._cached_base_mask
+        return self._cached_base_mask_full
+
+
+    def _get_base_mask_preview(self) -> np.ndarray | None:
+        if self._cached_base_mask_preview is None or self._cached_base_mask_preview_dirty:
+            try:
+                h, w = self.preview_image.shape[:2]
+                self._cached_base_mask_preview = self._create_mask_from_shapes_at_size(h, w)
+                self._cached_base_mask_preview_dirty = False
+            except RuntimeError as e:
+                QMessageBox.warning(self, "Mask creation failed", str(e))
+                return None
+        return self._cached_base_mask_preview
+
+    def _create_mask_from_shapes_at_size(self, out_h: int, out_w: int) -> np.ndarray:
+        if cv2 is None:
+            raise RuntimeError("OpenCV (cv2) is required for mask creation.")
+
+        full_h, full_w = self.image.shape[:2]
+        sx = float(out_w) / float(full_w)
+        sy = float(out_h) / float(full_h)
+
+        mask = np.zeros((out_h, out_w), dtype=np.uint8)
+
+        for s in self.canvas.shapes:
+            if isinstance(s, QGraphicsPolygonItem):
+                pts = s.polygon()
+                arr = np.array(
+                    [[int(round(p.x() * sx)), int(round(p.y() * sy))] for p in pts],
+                    dtype=np.int32
+                )
+                if len(arr) >= 3:
+                    cv2.fillPoly(mask, [arr], 1)
+
+            elif isinstance(s, InteractiveEllipseItem):
+                r = s.rect()
+                scenep = s.mapToScene(r.center())
+
+                cx = int(round(scenep.x() * sx))
+                cy = int(round(scenep.y() * sy))
+                rx = max(1, int(round((r.width() * 0.5) * sx)))
+                ry = max(1, int(round((r.height() * 0.5) * sy)))
+                angle = float(s.rotation())
+
+                cv2.ellipse(mask, (cx, cy), (rx, ry), angle, 0, 360, 1, -1)
+
+        return (mask > 0).astype(np.float32)
 
     def _schedule_live_preview(self, *_):
         if self.range_box.isVisible():
@@ -996,9 +1093,54 @@ class MaskCreationDialog(QDialog):
                 cv2.circle(out, (x, y), max(1, r), 1.0, -1)
         return np.clip(out, 0, 1)
 
+    def generate_preview_mask(self) -> np.ndarray | None:
+        base = self._get_base_mask_preview()
+        if base is None:
+            return None
+
+        t = self.mask_type
+        img = self.preview_image
+
+        if t == "Binary":
+            m = base
+
+        elif t == "Range Selection":
+            comp = (
+                (img[..., 0]*0.2989 + img[..., 1]*0.5870 + img[..., 2]*0.1140).astype(np.float32)
+                if img.ndim == 3 else img.astype(np.float32)
+            )
+            L = self.lower_sl.value() / self.lower_sl.maximum()
+            U = self.upper_sl.value() / self.upper_sl.maximum()
+            fuzz = self.fuzz_sl.value() / self.fuzz_sl.maximum()
+            preview_smooth = max(0.5, float(self.smooth_sl.value()) * self._preview_scale_factor)
+
+            rs = self._range_selection_mask(
+                comp, L, U, fuzz, preview_smooth,
+                self.screen_cb.isChecked(), self.invert_cb.isChecked()
+            )
+            m = base * rs
+
+        elif t == "Lightness":
+            comp = (
+                (img[..., 0]*0.2989 + img[..., 1]*0.5870 + img[..., 2]*0.1140).astype(np.float32)
+                if img.ndim == 3 else img.astype(np.float32)
+            )
+            m = np.where(base > 0, comp, 0.0)
+
+        else:
+            # For now, preview path can still use full logic later if needed,
+            # but Range Selection is the main win.
+            return self.generate_mask()
+
+        if self.blur_amount > 0 and cv2 is not None:
+            k = max(1, int(self.blur_amount) * 2 + 1)
+            m = cv2.GaussianBlur(m, (k, k), 0.0)
+
+        return np.clip(m, 0.0, 1.0)
+
     def generate_mask(self) -> np.ndarray | None:
         try:
-            base = self._get_base_mask()
+            base = self._get_base_mask_full()
             if base is None:
                 return None
         except RuntimeError as e:
@@ -1034,29 +1176,41 @@ class MaskCreationDialog(QDialog):
         return np.clip(m, 0.0, 1.0)
 
     def _update_live_preview(self, *_):
-        m = self.generate_mask()
-        if m is None: return
-        if not self.live_preview.isVisible(): self.live_preview.show()
+        m = self.generate_preview_mask()
+        if m is None:
+            return
+        if not self.live_preview.isVisible():
+            self.live_preview.show()
         self.live_preview.update_mask(m)
 
     def _preview_mask(self):
-        m = self.generate_mask()
-        if m is None: return
-        MaskPreviewDialog(m, self).exec()
+        self._set_status("Building full-resolution mask preview...")
+        try:
+            m = self.generate_mask()
+            if m is None:
+                return
+            MaskPreviewDialog(m, self).exec()
+        finally:
+            self._set_status("")
 
     def _accept_apply(self):
-        m = self.generate_mask()
-        if m is None:
-            return
+        self._set_status("Creating full-resolution mask document...")
+        try:
+            m = self.generate_mask()
+            if m is None:
+                return
 
-        # always store it on the dialog for callers
-        self.mask = m
+            # always store it on the dialog for callers
+            self.mask = m
 
-        # if this dialog was opened in "tool" mode, push it as a new doc
-        if self.auto_push_on_ok:
-            _push_numpy_as_new_document(self, m, default_name="Mask")
+            # if this dialog was opened in "tool" mode, push it as a new doc
+            if self.auto_push_on_ok:
+                self._set_status("Calculating full mask and creating document...")
+                _push_numpy_as_new_document(self, m, default_name="Mask")
 
-        self.accept()
+            self.accept()
+        finally:
+            self._set_status("")
 
     def closeEvent(self, ev):
         if self.live_preview and self.live_preview.isVisible():
