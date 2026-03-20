@@ -37,7 +37,7 @@ from PyQt6.QtGui import QIcon, QImage, QPixmap, QAction, QIntValidator, QDoubleV
 from PyQt6.QtWidgets import (QDialog, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QLineEdit, QTreeWidget, QHeaderView, QTreeWidgetItem, QProgressBar, QProgressDialog,
                              QFormLayout, QDialogButtonBox, QToolBar, QToolButton, QFileDialog, QTabWidget, QAbstractItemView, QSpinBox, QDoubleSpinBox, QGroupBox,QRadioButton,
                              QSizePolicy, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QApplication, QScrollArea, QTextEdit, QMenu, QPlainTextEdit, QGraphicsEllipseItem,
-                             QMessageBox, QSlider, QCheckBox, QInputDialog, QComboBox)
+                             QMessageBox, QSlider, QCheckBox, QInputDialog, QComboBox, QFrame)
 
 
 
@@ -4623,6 +4623,180 @@ def _resolve_syqon_ckpt_for_comet(settings) -> str:
         except Exception:
             return str(Path.home() / ".saspro" / "models" / "syqon_starless" / "nadir")
 
+class QuickStackCard(QFrame):
+    advancedRequested = pyqtSignal()
+    primaryRequested = pyqtSignal()
+    secondaryRequested = pyqtSignal()
+    tertiaryRequested = pyqtSignal()
+
+    def __init__(
+        self,
+        title: str,
+        subtitle: str = "",
+        primary_text: str = "",
+        secondary_text: str = "",
+        tertiary_text: str = "",
+        advanced_text: str = "Advanced…",
+        parent=None,
+    ):
+        super().__init__(parent)
+
+        self.setFrameShape(QFrame.Shape.StyledPanel)
+        self.setObjectName("QuickStackCard")
+        self.setStyleSheet("""
+            QFrame#QuickStackCard {
+                background-color: #2b2b2b;
+                border: 1px solid #555;
+                border-radius: 10px;
+            }
+            QLabel[role="title"] {
+                font-size: 15px;
+                font-weight: bold;
+                color: white;
+            }
+            QLabel[role="subtitle"] {
+                color: #bbbbbb;
+                font-size: 11px;
+            }
+            QLabel[role="summary"] {
+                color: #e6e6e6;
+                font-size: 12px;
+                background-color: #232323;
+                border-radius: 6px;
+                padding: 8px;
+            }
+            QLabel[role="statusdot"] {
+                font-size: 18px;
+                font-weight: bold;
+            }
+            QPushButton[role="primary"] {
+                background-color: #FF4500;
+                color: white;
+                font-weight: bold;
+                padding: 6px 10px;
+                border-radius: 6px;
+            }
+            QPushButton[role="primary"]:hover {
+                background-color: #FF6347;
+            }
+            QPushButton[role="secondary"] {
+                background-color: #3a3a3a;
+                color: white;
+                padding: 6px 10px;
+                border-radius: 6px;
+            }
+            QPushButton[role="secondary"]:hover {
+                background-color: #4a4a4a;
+            }
+            QPushButton[role="tertiary"] {
+                background-color: #444444;
+                color: white;
+                padding: 6px 10px;
+                border-radius: 6px;
+            }
+            QPushButton[role="tertiary"]:hover {
+                background-color: #555555;
+            }
+            QPushButton[role="advanced"] {
+                background-color: #2f2f2f;
+                color: #dddddd;
+                padding: 6px 10px;
+                border-radius: 6px;
+                border: 1px solid #666;
+            }
+            QPushButton[role="advanced"]:hover {
+                border: 1px solid #999;
+            }
+        """)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(12, 12, 12, 12)
+        lay.setSpacing(8)
+
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(6)
+
+        self.status_dot = QLabel("●")
+        self.status_dot.setProperty("role", "statusdot")
+        self.status_dot.setFixedWidth(18)
+        title_row.addWidget(self.status_dot, 0, Qt.AlignmentFlag.AlignTop)
+
+        self.title_label = QLabel(title)
+        self.title_label.setProperty("role", "title")
+        title_row.addWidget(self.title_label, 1)
+
+        lay.addLayout(title_row)
+
+        self.subtitle_label = QLabel(subtitle)
+        self.subtitle_label.setProperty("role", "subtitle")
+        self.subtitle_label.setWordWrap(True)
+        self.subtitle_label.setVisible(bool(subtitle))
+        lay.addWidget(self.subtitle_label)
+
+        self.summary_label = QLabel("Nothing loaded yet.")
+        self.summary_label.setProperty("role", "summary")
+        self.summary_label.setWordWrap(True)
+        self.summary_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        lay.addWidget(self.summary_label, 1)
+
+        btn_row = QHBoxLayout()
+        btn_row.setContentsMargins(0, 0, 0, 0)
+        btn_row.setSpacing(6)
+
+        self.primary_btn = QPushButton(primary_text) if primary_text else QPushButton()
+        self.primary_btn.setProperty("role", "primary")
+        self.primary_btn.setVisible(bool(primary_text))
+        self.primary_btn.clicked.connect(self.primaryRequested.emit)
+        btn_row.addWidget(self.primary_btn)
+
+        self.secondary_btn = QPushButton(secondary_text) if secondary_text else QPushButton()
+        self.secondary_btn.setProperty("role", "secondary")
+        self.secondary_btn.setVisible(bool(secondary_text))
+        self.secondary_btn.clicked.connect(self.secondaryRequested.emit)
+        btn_row.addWidget(self.secondary_btn)
+
+        self.tertiary_btn = QPushButton(tertiary_text) if tertiary_text else QPushButton()
+        self.tertiary_btn.setProperty("role", "tertiary")
+        self.tertiary_btn.setVisible(bool(tertiary_text))
+        self.tertiary_btn.clicked.connect(self.tertiaryRequested.emit)
+        btn_row.addWidget(self.tertiary_btn)
+
+        btn_row.addStretch(1)
+
+        self.advanced_btn = QPushButton(advanced_text)
+        self.advanced_btn.setProperty("role", "advanced")
+        self.advanced_btn.clicked.connect(self.advancedRequested.emit)
+        btn_row.addWidget(self.advanced_btn)
+
+        lay.addLayout(btn_row)
+
+        self.set_state("red")
+
+    def set_summary(self, text: str):
+        self.summary_label.setText(text or "Nothing loaded yet.")
+
+    def set_primary_text(self, text: str):
+        self.primary_btn.setText(text)
+        self.primary_btn.setVisible(bool(text))
+
+    def set_secondary_text(self, text: str):
+        self.secondary_btn.setText(text)
+        self.secondary_btn.setVisible(bool(text))
+
+    def set_tertiary_text(self, text: str):
+        self.tertiary_btn.setText(text)
+        self.tertiary_btn.setVisible(bool(text))
+
+    def set_state(self, state: str):
+        state = (state or "").lower()
+        colors = {
+            "red": "#ff4d4f",
+            "yellow": "#f0c040",
+            "green": "#52c41a",
+        }
+        color = colors.get(state, "#888888")
+        self.status_dot.setStyleSheet(f"color: {color};")
 
 class StackingSuiteDialog(QDialog):
     requestRelaunch = pyqtSignal(str, str)  # old_dir, new_dir
@@ -4738,11 +4912,16 @@ class StackingSuiteDialog(QDialog):
 
         self.dir_path_edit = QLineEdit(self.stacking_directory)
 
+        # Add tabs
         # Create tabs
         self.conversion_tab = self.create_conversion_tab()
         self.dark_tab = self.create_dark_tab()
         self.flat_tab = self.create_flat_tab()
         self.light_tab = self.create_light_tab()
+        add_runtime_to_sys_path(status_cb=lambda *_: None)
+        self.image_integration_tab = self.create_image_registration_tab()
+        self.quick_stack_tab = self.create_quick_stack_tab()
+
         def _sync_auto_session_checkboxes(src_cb, dst_cb, auto_checked: bool):
             if dst_cb.isChecked() != auto_checked:
                 dst_cb.blockSignals(True)
@@ -4759,15 +4938,17 @@ class StackingSuiteDialog(QDialog):
             lambda v: _sync_auto_session_checkboxes(self.flat_auto_session_cb, self.light_auto_session_cb, v)
         )        
         add_runtime_to_sys_path(status_cb=lambda *_: None)
-        self.image_integration_tab = self.create_image_registration_tab()
+
+
 
         # Add tabs
+        self.tabs.addTab(self.quick_stack_tab, self.tr("Quick Stack"))
         self.tabs.addTab(self.conversion_tab, self.tr("Convert Camera RAW/TIFF Formats"))
         self.tabs.addTab(self.dark_tab, self.tr("Darks"))
         self.tabs.addTab(self.flat_tab, self.tr("Flats"))
         self.tabs.addTab(self.light_tab, self.tr("Lights"))
         self.tabs.addTab(self.image_integration_tab, self.tr("Image Integration"))
-        self.tabs.setCurrentIndex(1)
+        self.tabs.setCurrentWidget(self.quick_stack_tab)
 
         # Header row
         self.wrench_button = QPushButton()
@@ -4791,6 +4972,10 @@ class StackingSuiteDialog(QDialog):
         header_row = QHBoxLayout()
         header_row.addWidget(self.wrench_button)
 
+        self.stacking_path_label = QLabel(self.tr("Current Stacking Folder:"))
+        self.stacking_path_label.setStyleSheet("font-weight: bold;")
+        header_row.addWidget(self.stacking_path_label)
+
         self.stacking_path_display = QLineEdit(self.stacking_directory or "")
         self.stacking_path_display.setReadOnly(True)
         self.stacking_path_display.setPlaceholderText(self.tr("No stacking folder selected"))
@@ -4807,6 +4992,7 @@ class StackingSuiteDialog(QDialog):
         header_row.addWidget(self.log_btn)
 
         self.tabs.currentChanged.connect(self.on_tab_changed)
+        self.tabs.currentChanged.connect(lambda *_: self._refresh_quick_stack_summary_later())
         self.restore_saved_master_calibrations()
         self.update_override_dark_combo()  
         self._update_stacking_path_display()
@@ -4848,6 +5034,9 @@ class StackingSuiteDialog(QDialog):
                 break
 
         self.use_gpu_integration = self.settings.value("stacking/use_hardware_accel", True, type=bool)
+
+        self._refresh_quick_stack_summary_later()
+
         self._migrate_drizzle_keys_once()
 
     def ingest_paths_from_blink(self, paths: list[str], target: str):
@@ -5070,6 +5259,134 @@ class StackingSuiteDialog(QDialog):
         if saved_flats:
             self.add_master_files(self.master_flat_tree, "FLAT", saved_flats)
 
+    def _quick_build_master_dark(self):
+        self.create_master_dark()
+        self._refresh_quick_stack_summary_later()
+
+    def _quick_build_master_flat(self):
+        self.create_master_flat()
+        self._refresh_quick_stack_summary_later()
+
+    def create_quick_stack_tab(self):
+        tab = QWidget()
+        root = QVBoxLayout(tab)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(10)
+
+        header = QLabel(self.tr("Quick Stack Workflow"))
+        header.setStyleSheet("font-size: 18px; font-weight: bold;")
+        root.addWidget(header)
+
+        sub = QLabel(self.tr(
+            "Use this guided view for a simple stack. "
+            "For advanced controls like overrides, drizzle, comet stacking, MFDeconv, and special modes, "
+            "use the full tabs."
+        ))
+        sub.setWordWrap(True)
+        sub.setStyleSheet("color: #bbbbbb;")
+        root.addWidget(sub)
+
+        # Top row: Darks / Flats / Lights
+        top_row = QHBoxLayout()
+        top_row.setSpacing(10)
+
+        self.qs_darks_card = QuickStackCard(
+            title=self.tr("1) Darks (including flat darks and bias frames)"),
+            subtitle=self.tr("Load raw darks, flat darks, bias frames, or an existing master dark."),
+            primary_text=self.tr("Load Raw Darks"),
+            secondary_text=self.tr("Load Master Dark"),
+            tertiary_text=self.tr("Build Master"),
+            advanced_text=self.tr("Darks Tab")
+        )
+        top_row.addWidget(self.qs_darks_card, 1)
+
+        self.qs_flats_card = QuickStackCard(
+            title=self.tr("2) Flats"),
+            subtitle=self.tr("Load raw flats or an existing master flat."),
+            primary_text=self.tr("Load Raw Flats"),
+            secondary_text=self.tr("Load Master Flat"),
+            tertiary_text=self.tr("Build Master"),
+            advanced_text=self.tr("Flats Tab")
+        )
+        top_row.addWidget(self.qs_flats_card, 1)
+
+        self.qs_lights_card = QuickStackCard(
+            title=self.tr("3) Lights"),
+            subtitle=self.tr("Load the light frames you want to calibrate and stack."),
+            primary_text=self.tr("Load Lights"),
+            secondary_text=self.tr("Load Light Folder"),
+            advanced_text=self.tr("Lights Tab")
+        )
+        top_row.addWidget(self.qs_lights_card, 1)
+
+        root.addLayout(top_row)
+
+        flow_hint = QLabel(self.tr(
+            "Build or load your master dark first, then your master flat, then load lights. "
+            "The lights are calibrated using those masters and then move on to registration and integration."
+        ))
+        flow_hint.setWordWrap(True)
+        flow_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        flow_hint.setStyleSheet("""
+            QLabel {
+                color: #cccccc;
+                background-color: #1f1f1f;
+                border: 1px solid #444;
+                border-radius: 8px;
+                padding: 8px;
+            }
+        """)
+        root.addWidget(flow_hint)
+
+        bottom_row = QHBoxLayout()
+        bottom_row.setSpacing(10)
+
+        self.qs_cal_card = QuickStackCard(
+            title=self.tr("4) Calibration"),
+            subtitle=self.tr("Apply dark/flat calibration and save calibrated light frames."),
+            primary_text=self.tr("Calibrate Lights"),
+            secondary_text=self.tr("Refresh Status"),
+            advanced_text=self.tr("Lights Tab")
+        )
+        bottom_row.addWidget(self.qs_cal_card, 1)
+
+        self.qs_reg_card = QuickStackCard(
+            title=self.tr("5) Register + Integrate"),
+            subtitle=self.tr("Align calibrated lights and integrate them into the final stack."),
+            primary_text=self.tr("Register + Integrate"),
+            secondary_text=self.tr("Integrate Only"),
+            advanced_text=self.tr("Image Integration Tab")
+        )
+        bottom_row.addWidget(self.qs_reg_card, 1)
+
+        root.addLayout(bottom_row)
+        root.addStretch(1)
+
+        # Wiring: actions
+        self.qs_darks_card.primaryRequested.connect(self.add_dark_files)
+        self.qs_darks_card.secondaryRequested.connect(self.load_master_dark)
+        self.qs_darks_card.tertiaryRequested.connect(self._quick_build_master_dark)
+        self.qs_darks_card.advancedRequested.connect(lambda: self.tabs.setCurrentWidget(self.dark_tab))
+
+        self.qs_flats_card.primaryRequested.connect(self.add_flat_files)
+        self.qs_flats_card.secondaryRequested.connect(self.load_master_flat)
+        self.qs_flats_card.tertiaryRequested.connect(self._quick_build_master_flat)
+        self.qs_flats_card.advancedRequested.connect(lambda: self.tabs.setCurrentWidget(self.flat_tab))
+
+        self.qs_lights_card.primaryRequested.connect(self.add_light_files)
+        self.qs_lights_card.secondaryRequested.connect(self.add_light_directory)
+        self.qs_lights_card.advancedRequested.connect(lambda: self.tabs.setCurrentWidget(self.light_tab))
+
+        self.qs_cal_card.primaryRequested.connect(self.calibrate_lights)
+        self.qs_cal_card.secondaryRequested.connect(self.refresh_quick_stack_summary)
+        self.qs_cal_card.advancedRequested.connect(lambda: self.tabs.setCurrentWidget(self.light_tab))
+
+        self.qs_reg_card.primaryRequested.connect(self.register_images)
+        self.qs_reg_card.secondaryRequested.connect(self.integrate_registered_images)
+        self.qs_reg_card.advancedRequested.connect(lambda: self.tabs.setCurrentWidget(self.image_integration_tab))
+
+        return tab
+
     def create_conversion_tab(self):
         tab = QWidget()
         layout = QVBoxLayout(tab)
@@ -5113,6 +5430,171 @@ class StackingSuiteDialog(QDialog):
         layout.addWidget(self.convert_btn)
 
         return tab
+
+    def _qs_count_leaf_files(self, tree: QTreeWidget) -> int:
+        def _walk(item):
+            count = 0
+            for i in range(item.childCount()):
+                ch = item.child(i)
+                if ch.childCount() == 0:
+                    count += 1
+                else:
+                    count += _walk(ch)
+            return count
+
+        total = 0
+        root = tree.invisibleRootItem()
+        for i in range(root.childCount()):
+            item = root.child(i)
+            if item.childCount() == 0:
+                total += 1
+            else:
+                total += _walk(item)
+        return total
+
+
+    def _qs_master_dark_count(self) -> int:
+        try:
+            return self.master_dark_tree.topLevelItemCount()
+        except Exception:
+            return 0
+
+
+    def _qs_master_flat_count(self) -> int:
+        try:
+            return self.master_flat_tree.topLevelItemCount()
+        except Exception:
+            return 0
+
+
+    def _qs_registered_count(self) -> int:
+        try:
+            return self._qs_count_leaf_files(self.reg_tree)
+        except Exception:
+            return 0
+
+
+    def refresh_quick_stack_summary(self):
+        needed = (
+            "qs_darks_card",
+            "qs_flats_card",
+            "qs_lights_card",
+            "qs_cal_card",
+            "qs_reg_card",
+        )
+        if not all(hasattr(self, name) for name in needed):
+            return
+
+        # Darks
+        try:
+            raw_dark_count = self._qs_count_leaf_files(self.dark_tree)
+        except Exception:
+            raw_dark_count = 0
+
+        master_dark_count = self._qs_master_dark_count()
+
+        self.qs_darks_card.set_summary(
+            self.tr(
+                "Raw dark/bias/flat-dark files: {0}\n"
+                "Master darks: {1}\n"
+                "You can build a master from raw calibration frames, or load an existing master directly."
+            ).format(raw_dark_count, master_dark_count)
+        )
+
+        if master_dark_count > 0:
+            self.qs_darks_card.set_state("green")
+        elif raw_dark_count > 0:
+            self.qs_darks_card.set_state("yellow")
+        else:
+            self.qs_darks_card.set_state("red")
+
+        # Flats
+        try:
+            raw_flat_count = self._qs_count_leaf_files(self.flat_tree)
+        except Exception:
+            raw_flat_count = 0
+
+        master_flat_count = self._qs_master_flat_count()
+
+        self.qs_flats_card.set_summary(
+            self.tr(
+                "Raw flats: {0}\n"
+                "Master flats: {1}\n"
+                "Flats correct dust/vignetting and are matched to your lights."
+            ).format(raw_flat_count, master_flat_count)
+        )
+
+        if master_flat_count > 0:
+            self.qs_flats_card.set_state("green")
+        elif raw_flat_count > 0:
+            self.qs_flats_card.set_state("yellow")
+        else:
+            self.qs_flats_card.set_state("red")
+
+        # Lights
+        try:
+            light_count = self._qs_count_leaf_files(self.light_tree)
+        except Exception:
+            light_count = 0
+
+        self.qs_lights_card.set_summary(
+            self.tr(
+                "Loaded lights: {0}\n"
+                "These are the frames that will be calibrated and stacked."
+            ).format(light_count)
+        )
+
+        self.qs_lights_card.set_state("green" if light_count > 0 else "red")
+
+        # Calibration
+        cosmetic_on = getattr(self, "cosmetic_checkbox", None)
+        pedestal_on = getattr(self, "pedestal_checkbox", None)
+        bias_on = getattr(self, "bias_checkbox", None)
+
+        cosmetic_txt = self.tr("On") if cosmetic_on and cosmetic_on.isChecked() else self.tr("Off")
+        pedestal_txt = self.tr("On") if pedestal_on and pedestal_on.isChecked() else self.tr("Off")
+        bias_txt = self.tr("On") if bias_on and bias_on.isChecked() else self.tr("Off")
+
+        self.qs_cal_card.set_summary(
+            self.tr(
+                "Lights ready: {0}\n"
+                "Cosmetic correction: {1}\n"
+                "Pedestal: {2}\n"
+                "Bias subtraction: {3}"
+            ).format(light_count, cosmetic_txt, pedestal_txt, bias_txt)
+        )
+
+        if light_count <= 0:
+            self.qs_cal_card.set_state("red")
+        elif master_dark_count > 0 or master_flat_count > 0:
+            self.qs_cal_card.set_state("yellow")
+        else:
+            self.qs_cal_card.set_state("red")
+
+        # Registration / Integration
+        reg_count = self._qs_registered_count()
+        ref_txt = self.reference_frame if getattr(self, "reference_frame", None) else self.tr("Auto / not selected")
+
+        self.qs_reg_card.set_summary(
+            self.tr(
+                "Calibrated lights available: {0}\n"
+                "Reference frame: {1}\n"
+                "Use this step to align and combine the final stack."
+            ).format(reg_count, ref_txt)
+        )
+
+        if reg_count > 0:
+            self.qs_reg_card.set_state("green")
+        elif light_count > 0:
+            self.qs_reg_card.set_state("yellow")
+        else:
+            self.qs_reg_card.set_state("red")
+
+    def _refresh_quick_stack_summary_later(self):
+        try:
+            QTimer.singleShot(0, self.refresh_quick_stack_summary)
+        except Exception:
+            pass
 
     def add_conversion_files(self):
         last_dir = self.settings.value("last_opened_folder", "", type=str)
@@ -7169,17 +7651,23 @@ class StackingSuiteDialog(QDialog):
                 pass
 
         # Recreate against the new base path
+        # Create tabs
         self.conversion_tab = self.create_conversion_tab()
-        self.dark_tab       = self.create_dark_tab()
-        self.flat_tab       = self.create_flat_tab()
-        self.light_tab      = self.create_light_tab()
+        self.dark_tab = self.create_dark_tab()
+        self.flat_tab = self.create_flat_tab()
+        self.light_tab = self.create_light_tab()
+        add_runtime_to_sys_path(status_cb=lambda *_: None)
         self.image_integration_tab = self.create_image_registration_tab()
+        self.quick_stack_tab = self.create_quick_stack_tab()
 
-        self.tabs.addTab(self.conversion_tab, self.tr("Convert Non-FITS Formats"))
-        self.tabs.addTab(self.dark_tab,       self.tr("Darks"))
-        self.tabs.addTab(self.flat_tab,       self.tr("Flats"))
-        self.tabs.addTab(self.light_tab,      self.tr("Lights"))
+        # Add tabs
+        self.tabs.addTab(self.quick_stack_tab, self.tr("Quick Stack"))
+        self.tabs.addTab(self.conversion_tab, self.tr("Convert Camera RAW/TIFF Formats"))
+        self.tabs.addTab(self.dark_tab, self.tr("Darks"))
+        self.tabs.addTab(self.flat_tab, self.tr("Flats"))
+        self.tabs.addTab(self.light_tab, self.tr("Lights"))
         self.tabs.addTab(self.image_integration_tab, self.tr("Image Integration"))
+        self.tabs.setCurrentWidget(self.quick_stack_tab)
 
         # Restore previously active tab if possible
         if 0 <= current < self.tabs.count():
@@ -9624,6 +10112,7 @@ class StackingSuiteDialog(QDialog):
                     if not file_dict[key]:
                         del file_dict[key]
                 parent.removeChild(item)
+            self._refresh_quick_stack_summary_later()    
 
     def clear_tree_selection_dark(self, tree, file_dict):
         selected_items = tree.selectedItems()
@@ -9693,6 +10182,7 @@ class StackingSuiteDialog(QDialog):
 
         # normalize if sessioned (or if legacy)
         self._normalize_sessioned_files_map(file_dict)
+        self._refresh_quick_stack_summary_later()
 
     def clear_tree_selection_light(self, tree):
         selected_items = tree.selectedItems()
@@ -9760,6 +10250,7 @@ class StackingSuiteDialog(QDialog):
 
         self._purge_removed_paths(removed_paths)
         self._normalize_sessioned_files_map(self.light_files)
+        self._refresh_quick_stack_summary_later()
 
         try:
             self.rebuild_light_tree()
@@ -9856,6 +10347,7 @@ class StackingSuiteDialog(QDialog):
         # purge caches + normalize
         self._purge_removed_paths(removed_paths)
         self._normalize_sessioned_files_map(file_dict)
+        self._refresh_quick_stack_summary_later()
 
         # Rebuild from dict (this ensures UI reflects the dict truth)
         try:
@@ -9967,6 +10459,7 @@ class StackingSuiteDialog(QDialog):
         # refresh UI
         # IMPORTANT: do NOT call populate_calibrated_lights() here, it can resurrect removed items
         self._refresh_reg_tree_summaries()
+        self._refresh_quick_stack_summary_later()
 
 
     def rebuild_flat_tree(self):
@@ -10296,6 +10789,7 @@ class StackingSuiteDialog(QDialog):
 
             top.setExpanded(True)
             self.light_files[key] = paths
+            self._refresh_quick_stack_summary_later()
 
 
     def _iter_group_items(self):
@@ -10462,12 +10956,15 @@ class StackingSuiteDialog(QDialog):
 
     def add_dark_files(self):
         self.add_files(self.dark_tree, "Select Dark Files", "DARK")
+        self._refresh_quick_stack_summary_later()
     
     def add_dark_directory(self):
         self.add_directory(self.dark_tree, "Select Dark Directory", "DARK")
+        self._refresh_quick_stack_summary_later()
 
     def add_flat_files(self):
         self.prompt_session_before_adding("FLAT")
+        self._refresh_quick_stack_summary_later()
 
 
     def add_flat_directory(self):
@@ -10475,6 +10972,7 @@ class StackingSuiteDialog(QDialog):
         self.add_directory(self.flat_tree, "Select Flat Directory", "FLAT")
         self.assign_best_master_dark()
         self.rebuild_flat_tree()
+        self._refresh_quick_stack_summary_later()
 
     
     def add_light_files(self):
@@ -10482,14 +10980,17 @@ class StackingSuiteDialog(QDialog):
         if auto:
             self.add_files(self.light_tree, "Select Light Files", "LIGHT")
             self.assign_best_master_files()
+            self._refresh_quick_stack_summary_later()
         else:
             self.prompt_session_before_adding("LIGHT", directory_mode=False)
+            self._refresh_quick_stack_summary_later()
 
     
     def add_light_directory(self):
         auto = bool(self.light_auto_session_cb.isChecked())  # ✅ use UI state
         self.add_directory(self.light_tree, "Select Light Directory", "LIGHT")
         self.assign_best_master_files()
+        self._refresh_quick_stack_summary_later()
 
     def _normalize_sessioned_files_map(self, files_map: dict):
         """
@@ -10602,6 +11103,7 @@ class StackingSuiteDialog(QDialog):
         self.update_override_dark_combo()
         self.assign_best_master_dark()
         self.assign_best_master_files()
+        self._refresh_quick_stack_summary_later()
         print("DEBUG: Loaded Master Darks and updated assignments.")
 
 
@@ -10616,6 +11118,7 @@ class StackingSuiteDialog(QDialog):
             self.settings.setValue("last_opened_folder", os.path.dirname(files[0]))
             self.add_master_files(self.master_flat_tree, "FLAT", files)
             self.save_master_paths_to_settings() 
+            self._refresh_quick_stack_summary_later()
 
 
     def add_files(self, tree, title, expected_type):
@@ -11975,6 +12478,7 @@ class StackingSuiteDialog(QDialog):
             self.assign_best_master_dark()
             self.update_override_dark_combo()
             self.assign_best_master_files()
+            self._refresh_quick_stack_summary_later()
 
         finally:
             try:
@@ -13049,6 +13553,7 @@ class StackingSuiteDialog(QDialog):
             # Final wrap-up
             self.assign_best_master_dark()
             self.assign_best_master_files()
+            self._refresh_quick_stack_summary_later()
 
         finally:
             try:
@@ -13280,45 +13785,82 @@ class StackingSuiteDialog(QDialog):
                                 if not mp:
                                     continue
 
-                                bn = os.path.basename(mp)
-                                # Only consider MasterDark_* files (cheap gate)
-                                if not bn.startswith("MasterDark_"):
+                                mk_str = str(mk or "").strip()
+                                bn = os.path.basename(mp).lower()
+
+                                # Skip obvious flats in the mixed master_files dict.
+                                # Dark keys are like: "120s (8288x5644)"
+                                # Flat keys are like: "L (8288x5644) [2026-03-19]"
+                                is_dark_key = bool(re.match(r"^\s*[\d.]+s\s*\(\d+x\d+\)\s*$", mk_str, re.IGNORECASE))
+                                if (not is_dark_key) and ("masterflat" in bn):
+                                    continue
+                                if not is_dark_key and ("exposure-" not in bn):
                                     continue
 
-                                md = self._get_master_dark_meta(mp)
-                                md_size = md.get("size") or "Unknown"
-                                if md_size != image_size:
+                                md = {}
+                                try:
+                                    md = self._get_master_dark_meta(mp) or {}
+                                except Exception:
+                                    md = {}
+
+                                # ---- size fallback ----
+                                md_size = md.get("size")
+                                if not md_size:
+                                    msize_key = re.search(r"\((\d+x\d+)\)", mk_str)
+                                    if msize_key:
+                                        md_size = msize_key.group(1)
+
+                                if not md_size:
+                                    msize_name = re.search(r"_(\d+x\d+)_EXPOSURE-", os.path.basename(mp), re.IGNORECASE)
+                                    if msize_name:
+                                        md_size = msize_name.group(1)
+
+                                if (md_size or "Unknown") != image_size:
                                     continue
 
+                                # ---- exposure fallback ----
                                 md_exp = md.get("exp")
+                                if md_exp is None:
+                                    mexp_key = re.match(r"^\s*([\d.]+)s\s*\(", mk_str, re.IGNORECASE)
+                                    if mexp_key:
+                                        md_exp = float(mexp_key.group(1))
+
+                                if md_exp is None:
+                                    mexp_name = re.search(r"EXPOSURE-([\d.]+)s", os.path.basename(mp), re.IGNORECASE)
+                                    if mexp_name:
+                                        md_exp = float(mexp_name.group(1))
+
                                 if md_exp is None:
                                     continue
 
                                 # exposure closeness
                                 exp_diff = abs(float(md_exp) - float(exposure_time))
 
-                                # session preference: exact match beats mismatch
+                                # ---- session fallback ----
                                 md_sess = (md.get("session") or "Default").strip()
                                 sess_mismatch = 0 if md_sess == session_name else 1
 
-                                # temperature closeness (if both known)
+                                # ---- temperature fallback ----
                                 md_temp = md.get("temp")
                                 if (l_temp is not None) and (md_temp is not None):
                                     temp_diff = abs(float(md_temp) - float(l_temp))
                                     temp_unknown = 0
                                 else:
-                                    # if light has temp but dark doesn't (or vice versa), penalize
                                     temp_diff = 9999.0
                                     temp_unknown = 1
 
-                                # Score tuple: lower is better
-                                # Priority: session match -> exposure diff -> temp availability -> temp diff
+                                # Priority:
+                                # 1) exact session if available
+                                # 2) exposure closeness
+                                # 3) temperature availability
+                                # 4) temperature closeness
                                 score = (sess_mismatch, exp_diff, temp_unknown, temp_diff)
 
                                 if best_score is None or score < best_score:
                                     best_score = score
                                     best_path = mp
 
+                            print(f"🔎 Light {leaf_item.text(0)} size={image_size} exp={exposure_time}s -> best dark: {best_path} score={best_score}")
                             dark_choice = os.path.basename(best_path) if best_path else ("None" if not curr_dark else curr_dark)
 
                     # ---------- FLAT RESOLUTION ----------
@@ -14208,6 +14750,7 @@ class StackingSuiteDialog(QDialog):
         self.update_status(self.tr("✅ Calibration Complete!"))
         QApplication.processEvents()
         self.populate_calibrated_lights()
+        self._refresh_quick_stack_summary_later()
 
 
         # ── NEW: optionally roll straight into registration+integration ──
