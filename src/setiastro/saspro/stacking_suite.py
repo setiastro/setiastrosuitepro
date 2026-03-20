@@ -5555,18 +5555,31 @@ class StackingSuiteDialog(QDialog):
         pedestal_txt = self.tr("On") if pedestal_on and pedestal_on.isChecked() else self.tr("Off")
         bias_txt = self.tr("On") if bias_on and bias_on.isChecked() else self.tr("Off")
 
+        cal_ready = (light_count > 0 and master_dark_count > 0 and master_flat_count > 0)
+
         self.qs_cal_card.set_summary(
             self.tr(
-                "Lights ready: {0}\n"
-                "Cosmetic correction: {1}\n"
-                "Pedestal: {2}\n"
-                "Bias subtraction: {3}"
-            ).format(light_count, cosmetic_txt, pedestal_txt, bias_txt)
+                "Lights loaded: {0}\n"
+                "Master darks loaded: {1}\n"
+                "Master flats loaded: {2}\n"
+                "Cosmetic correction: {3}\n"
+                "Pedestal: {4}\n"
+                "Bias subtraction: {5}\n"
+                "Ready to calibrate: {6}"
+            ).format(
+                light_count,
+                self.tr("Yes") if master_dark_count > 0 else self.tr("No"),
+                self.tr("Yes") if master_flat_count > 0 else self.tr("No"),
+                cosmetic_txt,
+                pedestal_txt,
+                bias_txt,
+                self.tr("Yes") if cal_ready else self.tr("Not yet"),
+            )
         )
 
-        if light_count <= 0:
-            self.qs_cal_card.set_state("red")
-        elif master_dark_count > 0 or master_flat_count > 0:
+        if light_count > 0 and master_dark_count > 0 and master_flat_count > 0:
+            self.qs_cal_card.set_state("green")
+        elif light_count > 0 or master_dark_count > 0 or master_flat_count > 0:
             self.qs_cal_card.set_state("yellow")
         else:
             self.qs_cal_card.set_state("red")
@@ -15168,35 +15181,28 @@ class StackingSuiteDialog(QDialog):
 
     def _extract_pa_deg(self, hdr):
         """
-        Try common FITS/PI keys for camera/sky position angle (degrees).
-        Works with both astropy FITS Header and XISF image-metadata dicts.
+        Extract a practical position angle in degrees for meridian-flip detection.
 
-        Heuristics:
-        1) Direct keywords (first match wins): POSANGLE, ANGLE, ROTANGLE, ROTSKYPA,
-            ROTATOR, PA, ORIENTAT, CROTA2, CROTA1.
-            • Values may be numbers or strings like '123.4 deg' — we parse the first float.
-        2) WCS fallback:
-            • CD matrix:  pa = atan2(-CD1_2, CD2_2)
-            • PC matrix (+ optional CDELT scaling): pa = atan2(-PC1_2, PC2_2)
-        Returns float in degrees, or None if unknown.
+        Priority is NOT simple first-hit-wins:
+        - Prefer solved/image angle keys like ANGLE first
+        - Then sky/WCS-ish angle keys
+        - Then hardware/rotator keys like POSANGLE as weaker fallbacks
+        - Finally derive from WCS CD/PC matrix if available
+
+        Returns float degrees or None.
         """
-
-
         if hdr is None:
             return None
 
-        # helper: unified header getter (FITS Header or XISF dict)
         def _get(k, default=None):
             try:
                 return self._hdr_get(hdr, k, default)
             except Exception:
-                # fall back to direct mapping-like access if needed
                 try:
                     return hdr.get(k, default)
                 except Exception:
                     return default
 
-        # parse possibly-string value → float
         def _as_float_deg(v):
             if v is None:
                 return None
@@ -15205,50 +15211,73 @@ class StackingSuiteDialog(QDialog):
                     return float(v)
                 except Exception:
                     return None
-            # strings like "123.4", "123.4 deg", "123,4", etc.
             try:
                 s = str(v)
                 m = re.search(r"[-+]?\d+(?:[.,]\d+)?", s)
                 if not m:
                     return None
-                val = float(m.group(0).replace(",", "."))
-                return val
+                return float(m.group(0).replace(",", "."))
             except Exception:
                 return None
 
-        # 1) direct keyword attempts (first hit wins)
-        direct_keys = (
-            "POSANGLE", "ANGLE", "ROTANGLE", "ROTSKYPA", "ROTATOR",
-            "PA", "ORIENTAT", "CROTA2", "CROTA1"
-        )
-        for k in direct_keys:
-            v = _get(k, None)
-            ang = _as_float_deg(v)
-            if ang is not None:
-                return float(ang)
+        def _norm180(a):
+            """Normalize angle difference domain to [-180, 180)."""
+            if a is None:
+                return None
+            a = float(a)
+            return ((a + 180.0) % 360.0) - 180.0
 
-        # 2) WCS fallback using CD or PC matrices
-        # CD first
-        cd11 = _get('CD1_1'); cd12 = _get('CD1_2'); cd22 = _get('CD2_2')
+        # ---------------------------------------------------------
+        # 1) Strong-preference direct keys
+        # ---------------------------------------------------------
+        # ANGLE first because in your data this reflects the actual image angle
+        # after meridian flip, while POSANGLE may remain the fixed hardware angle.
+        strong_keys = (
+            "ANGLE",
+            "ORIENTAT",
+            "ROTSKYPA",
+            "ROTANGLE",
+            "PA",
+        )
+        for k in strong_keys:
+            ang = _as_float_deg(_get(k, None))
+            if ang is not None:
+                return _norm180(ang)
+
+        # ---------------------------------------------------------
+        # 2) WCS fallback (often more trustworthy than hardware angle)
+        # ---------------------------------------------------------
+        cd11 = _get("CD1_1"); cd12 = _get("CD1_2"); cd22 = _get("CD2_2")
         if cd11 is not None and cd12 is not None and cd22 is not None:
             try:
                 pa = np.degrees(np.arctan2(-float(cd12), float(cd22)))
-                return float(pa)
+                return _norm180(pa)
             except Exception:
                 pass
 
-        # PC (optionally combined with CDELT)
-        pc11 = _get('PC1_1'); pc12 = _get('PC1_2'); pc22 = _get('PC2_2')
+        pc11 = _get("PC1_1"); pc12 = _get("PC1_2"); pc22 = _get("PC2_2")
         if pc11 is not None and pc12 is not None and pc22 is not None:
             try:
-                # If CDELT present, rotation is still given by PC (scale cancels out for angle)
                 pa = np.degrees(np.arctan2(-float(pc12), float(pc22)))
-                return float(pa)
+                return _norm180(pa)
             except Exception:
                 pass
 
-        return None
+        # ---------------------------------------------------------
+        # 3) Weaker hardware/rotator keys
+        # ---------------------------------------------------------
+        weak_keys = (
+            "POSANGLE",
+            "ROTATOR",
+            "CROTA2",
+            "CROTA1",
+        )
+        for k in weak_keys:
+            ang = _as_float_deg(_get(k, None))
+            if ang is not None:
+                return _norm180(ang)
 
+        return None
 
     def _maybe_rot180(self, img, pa_cur, pa_ref, tol_deg):
         """
