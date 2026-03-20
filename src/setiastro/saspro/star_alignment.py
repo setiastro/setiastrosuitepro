@@ -1730,6 +1730,49 @@ def _poly_eval_grid(cx, cy, W, H, order=3):
     map_y = np.tensordot(cy, A, axes=(0,0)).astype(np.float32)
     return map_x, map_y
 
+def _subsample_points_spatially(src_xy: np.ndarray,
+                                tgt_xy: np.ndarray,
+                                max_points: int) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Deterministic farthest-point subsampling.
+    Keeps spatial coverage much better than random choice.
+    """
+    import numpy as np
+
+    src_xy = np.asarray(src_xy, np.float32)
+    tgt_xy = np.asarray(tgt_xy, np.float32)
+
+    n = len(src_xy)
+    if n <= max_points or max_points <= 0:
+        return src_xy, tgt_xy
+
+    # Start from point farthest from centroid for stability
+    centroid = src_xy.mean(axis=0)
+    d0 = np.sum((src_xy - centroid) ** 2, axis=1)
+    first = int(np.argmax(d0))
+
+    selected = [first]
+    selected_mask = np.zeros(n, dtype=bool)
+    selected_mask[first] = True
+
+    # Distance to nearest selected point
+    min_dist2 = np.sum((src_xy - src_xy[first]) ** 2, axis=1)
+
+    while len(selected) < max_points:
+        # Never re-pick selected points
+        min_dist2[selected_mask] = -1.0
+        nxt = int(np.argmax(min_dist2))
+        if nxt < 0 or selected_mask[nxt]:
+            break
+
+        selected.append(nxt)
+        selected_mask[nxt] = True
+
+        d2 = np.sum((src_xy - src_xy[nxt]) ** 2, axis=1)
+        min_dist2 = np.minimum(min_dist2, d2)
+
+    sel = np.array(selected, dtype=int)
+    return src_xy[sel], tgt_xy[sel]
 
 
 def _aa_find_pairs_multitile(src_gray: np.ndarray,
@@ -1871,9 +1914,7 @@ def _aa_find_pairs_multitile(src_gray: np.ndarray,
 
         # ---- per-tile balancing cap ----
         if len(positions) > 1 and mcp is not None and len(src_xy) > mcp:
-            idx = np.random.choice(len(src_xy), mcp, replace=False)
-            src_xy = src_xy[idx]
-            tgt_xy = tgt_xy[idx]
+            src_xy, tgt_xy = _subsample_points_spatially(src_xy, tgt_xy, mcp)
 
         all_src.append(src_xy)
         all_tgt.append(tgt_xy)
@@ -2578,8 +2619,16 @@ class StarRegistrationWorker(QRunnable):
                                             limit_stars: int | None = None,
                                             det_sigma: float = 12.0,
                                             minarea: int = 10):
-        global _AA_LOCK
+        """
+        Solve affine on a ~1.2x center crop of reference and lift into full-ref coords.
+        Uses bright, spatially distributed control points first; falls back to
+        image-based Astroalign only if needed.
+        """
+        import numpy as np
         import astroalign
+
+        global _AA_LOCK
+
         Hs, Ws = source_img.shape[:2]
         Hr, Wr = reference_img.shape[:2]
 
@@ -2593,31 +2642,65 @@ class StarRegistrationWorker(QRunnable):
         if limit_stars is not None:
             kwargs["max_control_points"] = int(limit_stars)
 
-        try:
-            with _AA_LOCK:
-                tform, _ = astroalign.find_transform(
-                    np.ascontiguousarray(source_img.astype(np.float32)),
-                    np.ascontiguousarray(ref_crop.astype(np.float32)),
-                    **kwargs
+        with _AA_LOCK:
+            try:
+                # Use bright + spatially distributed stars first
+                src_pts = _detect_stars_uniform(
+                    source_img,
+                    det_sigma=float(det_sigma),
+                    minarea=int(minarea),
+                    grid=(4, 4),
+                    max_per_cell=25,
+                    max_total=(int(limit_stars) if limit_stars is not None else 500)
                 )
-        except TypeError:
-            with _AA_LOCK:
-                legacy_kwargs = {}
-                if "max_control_points" in kwargs:
-                    legacy_kwargs["max_control_points"] = kwargs["max_control_points"]
-                tform, _ = astroalign.find_transform(
-                    np.ascontiguousarray(source_img.astype(np.float32)),
-                    np.ascontiguousarray(ref_crop.astype(np.float32)),
-                    **legacy_kwargs
+                ref_pts = _detect_stars_uniform(
+                    ref_crop,
+                    det_sigma=float(det_sigma),
+                    minarea=int(minarea),
+                    grid=(4, 4),
+                    max_per_cell=25,
+                    max_total=(int(limit_stars) if limit_stars is not None else 500)
                 )
 
+                cov_src = _coverage_fraction(src_pts, Hs, Ws, grid=(4, 4))
+                cov_ref = _coverage_fraction(ref_pts, h,  w,  grid=(4, 4))
+                if cov_src < 0.5 or cov_ref < 0.5:
+                    print(f"[AA] low coverage src={cov_src:.2f}, ref={cov_ref:.2f} for static affine crop solve")
+
+                if src_pts.shape[0] >= 8 and ref_pts.shape[0] >= 8:
+                    pt_kwargs = {}
+                    if limit_stars is not None:
+                        pt_kwargs["max_control_points"] = int(limit_stars)
+
+                    tform, _ = astroalign.find_transform(src_pts, ref_pts, **pt_kwargs)
+                else:
+                    raise RuntimeError("Too few uniform points, falling back to image-based AA.")
+
+            except Exception:
+                # fallback to original image-based Astroalign
+                try:
+                    tform, _ = astroalign.find_transform(
+                        np.ascontiguousarray(source_img.astype(np.float32)),
+                        np.ascontiguousarray(ref_crop.astype(np.float32)),
+                        **kwargs
+                    )
+                except TypeError:
+                    legacy_kwargs = {}
+                    if "max_control_points" in kwargs:
+                        legacy_kwargs["max_control_points"] = kwargs["max_control_points"]
+                    tform, _ = astroalign.find_transform(
+                        np.ascontiguousarray(source_img.astype(np.float32)),
+                        np.ascontiguousarray(ref_crop.astype(np.float32)),
+                        **legacy_kwargs
+                    )
+
         P = np.asarray(tform.params, dtype=np.float64)
-        if P.shape == (3,3):
-            T = np.array([[1,0,x0],[0,1,y0],[0,0,1]], dtype=np.float64)
+        if P.shape == (3, 3):
+            T = np.array([[1, 0, x0], [0, 1, y0], [0, 0, 1]], dtype=np.float64)
             return (T @ P)[0:2, :]
-        elif P.shape == (2,3):
-            A3 = np.vstack([P, [0,0,1]])
-            T  = np.array([[1,0,x0],[0,1,y0],[0,0,1]], dtype=np.float64)
+        elif P.shape == (2, 3):
+            A3 = np.vstack([P, [0, 0, 1]])
+            T  = np.array([[1, 0, x0], [0, 1, y0], [0, 0, 1]], dtype=np.float64)
             return (T @ A3)[0:2, :]
         return None
 
