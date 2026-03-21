@@ -146,11 +146,14 @@ def ycbcr_to_rgb(y: np.ndarray, cb: np.ndarray, cr: np.ndarray) -> np.ndarray:
                   [1.0, -0.344136, -0.714136],
                   [1.0, 1.772, 0.0]], dtype=np.float32)
     rgb = ycbcr @ M.T
-    return np.clip(rgb, 0.0, 1.0)
+    return np.maximum(rgb, 0.0).astype(np.float32, copy=False)
 
 
 def merge_luminance(y: np.ndarray, cb: np.ndarray, cr: np.ndarray) -> np.ndarray:
-    return ycbcr_to_rgb(np.clip(y, 0, 1), np.clip(cb, 0, 1), np.clip(cr, 0, 1))
+    y  = np.maximum(np.asarray(y,  np.float32), 0.0)
+    cb = np.asarray(cb, np.float32)
+    cr = np.asarray(cr, np.float32)
+    return ycbcr_to_rgb(y, cb, cr)
 
 
 # ---------------- Chunking & stitching (your exact behavior) ----------------
@@ -1124,7 +1127,7 @@ def sharpen_image_array(image: np.ndarray,
         img = img.astype(np.float32, copy=False)
 
     img3, was_mono = _to_3ch(img)
-    img3 = np.clip(img3, 0.0, 1.0)
+    img3 = np.maximum(img3, 0.0).astype(np.float32, copy=False)
 
     if getattr(params, "execution_mode", "auto") == "compatibility":
         params.batch_size_override = 1
@@ -1165,7 +1168,7 @@ def sharpen_image_array(image: np.ndarray,
             if sharpened.ndim == 3 and sharpened.shape[2] == 3:
                 sharpened = np.mean(sharpened, axis=2, keepdims=True).astype(np.float32, copy=False)
 
-        out = np.clip(sharpened, 0.0, 1.0)
+        out = np.maximum(sharpened, 0.0).astype(np.float32, copy=False)
         return out, was_mono
 
     try:
