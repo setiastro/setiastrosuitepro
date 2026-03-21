@@ -10722,11 +10722,21 @@ class StackingSuiteDialog(QDialog):
         files += self.manual_light_files
 
         # filter exclusions + dedupe
-        if self._reg_excluded_files:
-            files = [f for f in files if f not in self._reg_excluded_files]
+        dead = set()
+        if hasattr(self, "deleted_calibrated_files") and self.deleted_calibrated_files:
+            if isinstance(self.deleted_calibrated_files, list):
+                dead = {os.path.normcase(os.path.abspath(f)) for f in self.deleted_calibrated_files}
+            else:
+                dead = set(self.deleted_calibrated_files)
+
+        if dead:
+            files = [
+                f for f in files
+                if os.path.normcase(os.path.abspath(f)) not in dead
+            ]
+
         files = list(dict.fromkeys(files))
         if not files:
-            self.light_files = {}
             return
 
         # group by (filter, ~exposure, size) within tolerance
@@ -10755,9 +10765,6 @@ class StackingSuiteDialog(QDialog):
             # find existing group with same filter+size and exposure within tolerance
             key = self._find_or_make_exposure_group_key(grouped, filt, exp, size)
             grouped.setdefault(key, []).append({"path": fp, "exp": exp, "size": size})
-
-        # populate tree & self.light_files
-        self.light_files = {}
 
         # current global drizzle defaults
         global_enabled = self.drizzle_checkbox.isChecked()
@@ -10801,7 +10808,6 @@ class StackingSuiteDialog(QDialog):
                 top.addChild(leaf)
 
             top.setExpanded(True)
-            self.light_files[key] = paths
             self._refresh_quick_stack_summary_later()
 
 
@@ -10947,8 +10953,18 @@ class StackingSuiteDialog(QDialog):
 
         self.settings.setValue("last_opened_folder", os.path.dirname(files[0]))
 
-        # Exclude files the user has removed previously
-        new_files = [f for f in files if f not in self._reg_excluded_files]
+        dead = set()
+        if hasattr(self, "deleted_calibrated_files") and self.deleted_calibrated_files:
+            if isinstance(self.deleted_calibrated_files, list):
+                dead = {os.path.normcase(os.path.abspath(f)) for f in self.deleted_calibrated_files}
+            else:
+                dead = set(self.deleted_calibrated_files)
+
+        # Exclude files the user has removed previously in this session
+        new_files = [
+            f for f in files
+            if os.path.normcase(os.path.abspath(f)) not in dead
+        ]
 
         # Deduplicate while preserving order
         merged = list(dict.fromkeys(self.manual_light_files + new_files))
@@ -15754,17 +15770,22 @@ class StackingSuiteDialog(QDialog):
         # 🚫 Do NOT remove persisted user ref here; that defeats locking.
         # (No settings.remove() and no reference_frame = None if locked)
 
-        self._set_registration_busy(True)
+        #self._set_registration_busy(True)
 
         try:
             if self.star_trail_mode:
+                self._set_registration_busy(True)
                 self.update_status(self.tr("🌠 Star-Trail Mode enabled: skipping registration & using max-value stack"))
                 QApplication.processEvents()
                 return self._make_star_trail()
 
             self.update_status(self.tr("🔄 Image Registration Started..."))
             self.extract_light_files_from_tree(debug=True)
-
+            all_files = [f for lst in self.light_files.values() for f in lst]
+            if not all_files:
+                self.update_status(self.tr("⚠️ No light files to register!"))
+                self._set_registration_busy(False)
+                return
             # --- Apply "removed from Registration tab" exclusions (session-level) ---
             dead = set()
             if hasattr(self, "deleted_calibrated_files") and self.deleted_calibrated_files:
@@ -15800,6 +15821,7 @@ class StackingSuiteDialog(QDialog):
 
             if not self.light_files:
                 self.update_status(self.tr("⚠️ No light files to register!"))
+                self._set_registration_busy(False)
                 return
 
             # dual-band split unchanged...
@@ -16685,6 +16707,8 @@ class StackingSuiteDialog(QDialog):
             if not path.exists(ref_path):
                 self.update_status(self.tr(f"🚨 Reference file does not exist: {ref_path}"))
                 return
+            
+            self._set_registration_busy(True)
 
             self.alignment_thread = StarRegistrationThread(
                 ref_path,  
@@ -20355,14 +20379,12 @@ class StackingSuiteDialog(QDialog):
                 h, w, c = first_img.shape
 
         # --- choose depositor ONCE (and log it) ---
-        use_kernelized = not (_kcode == 0 and drop_shrink >= 0.99)
+        # Always use footprint/kernel drizzle for drizzle output.
+        # Point deposit is not valid for 2x/3x drizzle.
+        deposit_func = drizzle_deposit_numba_kernel_mono if is_mono else drizzle_deposit_color_kernel
+        kinf = ["square", "circular", "gaussian"][_kcode]
 
-        if not use_kernelized:
-            deposit_func = drizzle_deposit_numba_naive if is_mono else drizzle_deposit_color_naive
-            kinf = "naive (square, pixfrac≈1)"
-        else:
-            deposit_func = drizzle_deposit_numba_kernel_mono if is_mono else drizzle_deposit_color_kernel
-            kinf = ["square", "circular", "gaussian"][_kcode]
+        log(f"Using {kinf} drizzle ({'mono' if is_mono else 'color'}).")
 
         log(f"Using {kinf} drizzle ({'mono' if is_mono else 'color'}).")
 

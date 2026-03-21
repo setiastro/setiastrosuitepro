@@ -2801,76 +2801,6 @@ def numba_mono_final_formula(rescaled, median_rescaled, target_median):
     return out
 
 @njit(parallel=True, fastmath=True)
-def drizzle_deposit_numba_naive(image_data, affine_2x3, drizzle_buffer, coverage_buffer, scale, weight):
-    """
-    Naive drizzle deposit (point-to-point-ish) for Mono images.
-    Maps input (x,y) -> output (u,v) via affine, deposits 'weight' at nearest integer pixel.
-    
-    image_data: (H, W)
-    affine_2x3: (2, 3) matrix mapping source->canvas
-    drizzle_buffer: (Ho, Wo)
-    coverage_buffer: (Ho, Wo)
-    """
-    H, W = image_data.shape
-    Ho, Wo = drizzle_buffer.shape
-    
-    # We iterate over source pixels
-    for y in prange(H):
-        for x in range(W):
-            val = image_data[y, x]
-            if val == 0:
-                continue
-
-            # Project center of pixel (x, y)
-            # u = a*x + b*y + tx
-            # v = c*x + d*y + ty
-            
-            u = affine_2x3[0, 0] * x + affine_2x3[0, 1] * y + affine_2x3[0, 2]
-            v = affine_2x3[1, 0] * x + affine_2x3[1, 1] * y + affine_2x3[1, 2]
-            
-            # Nearest neighbor deposit
-            ui = int(round(u))
-            vi = int(round(v))
-            
-            if 0 <= ui < Wo and 0 <= vi < Ho:
-                # Accumulate
-                drizzle_buffer[vi, ui] += val * weight
-                coverage_buffer[vi, ui] += weight
-                
-    return drizzle_buffer, coverage_buffer
-
-
-@njit(parallel=True, fastmath=True)
-def drizzle_deposit_color_naive(image_data, affine_2x3, drizzle_buffer, coverage_buffer, scale, drop_shrink, weight):
-    """
-    Naive drizzle deposit for Color images (H,W,C).
-    image_data: (H, W, C)
-    affine_2x3: (2, 3)
-    drizzle_buffer: (Ho, Wo, C)
-    coverage_buffer: (Ho, Wo, C)
-    """
-    H, W, C = image_data.shape
-    Ho, Wo, _ = drizzle_buffer.shape
-    
-    for y in prange(H):
-        for x in range(W):
-            # Check if pixel has any data (simple check: if sum > 0 or checks per channel)
-            # usually we just project.
-            
-            u = affine_2x3[0, 0] * x + affine_2x3[0, 1] * y + affine_2x3[0, 2]
-            v = affine_2x3[1, 0] * x + affine_2x3[1, 1] * y + affine_2x3[1, 2]
-            
-            ui = int(round(u))
-            vi = int(round(v))
-            
-            if 0 <= ui < Wo and 0 <= vi < Ho:
-                for c in range(C):
-                    val = image_data[y, x, c]
-                    drizzle_buffer[vi, ui, c] += val * weight
-                    coverage_buffer[vi, ui, c] += weight
-
-    return drizzle_buffer, coverage_buffer
-@njit(parallel=True, fastmath=True)
 def numba_mono_from_img(img, bp, denom, median_rescaled, target_median):
     H, W = img.shape
     out = np.empty_like(img)
@@ -3298,10 +3228,15 @@ def drizzle_deposit_numba_kernel_mono(
     # interpret width parameter:
     # - square/circle: radius = drop_shrink * 0.5   (pixfrac-like)
     # - gaussian: sigma_out = max(gaussian_sigma_or_radius, drop_shrink * 0.5)
-    radius = drop_shrink * 0.5
-    sigma_out = gaussian_sigma_or_radius if kernel_code == 2 else radius
-    if sigma_out < 1e-6:
-        sigma_out = 1e-6
+    # Footprint width must live in OUTPUT (drizzle) pixels, not input pixels
+    radius = 0.5 * drop_shrink * drizzle_factor
+
+    if kernel_code == 2:
+        # Gaussian sigma should also be interpreted in output-pixel space.
+        # If user gave a custom sigma, scale it too.
+        sigma_out = max(gaussian_sigma_or_radius * drizzle_factor, 1e-6)
+    else:
+        sigma_out = max(radius, 1e-6)
 
     # temp weights tile (safely sized later per pixel)
     for y in range(H):
@@ -3388,10 +3323,15 @@ def drizzle_deposit_color_kernel(
 
     v = np.zeros(3, dtype=np.float32); v[2] = 1.0
 
-    radius = drop_shrink * 0.5
-    sigma_out = gaussian_sigma_or_radius if kernel_code == 2 else radius
-    if sigma_out < 1e-6:
-        sigma_out = 1e-6
+    # Footprint width must live in OUTPUT (drizzle) pixels, not input pixels
+    radius = 0.5 * drop_shrink * drizzle_factor
+
+    if kernel_code == 2:
+        # Gaussian sigma should also be interpreted in output-pixel space.
+        # If user gave a custom sigma, scale it too.
+        sigma_out = max(gaussian_sigma_or_radius * drizzle_factor, 1e-6)
+    else:
+        sigma_out = max(radius, 1e-6)
 
     for y in range(H):
         for x in range(W):
