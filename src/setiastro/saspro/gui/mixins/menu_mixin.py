@@ -207,6 +207,7 @@ class MenuMixin:
         m_geom.addAction(self.act_geom_rot_any) 
         m_geom.addSeparator()
         m_geom.addAction(self.act_geom_rescale)
+        m_geom.addAction(self.act_geom_resize_canvas)
         m_geom.addSeparator()
         m_geom.addAction(self.act_debayer)
 

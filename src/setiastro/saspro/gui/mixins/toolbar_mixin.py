@@ -32,7 +32,7 @@ from setiastro.saspro.resources import (
     platesolve_path, psf_path, supernova_path, starregistration_path, csv_icon_path, collage_path,
     stacking_path, pedestal_icon_path, starspike_path, astrospike_path,
     signature_icon_path, livestacking_path, convoicon_path, spcc_icon_path,
-    exoicon_path, peeker_icon, dse_icon_path, isophote_path, statstretch_path,
+    exoicon_path, peeker_icon, dse_icon_path, isophote_path, statstretch_path,resizecanvas_path,
     starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path, narrowbandnormalization_path,
     nbtorgb_path, freqsep_path, multiscale_decomp_path, contsub_path, halo_path, cosmic_path,
     satellite_path, imagecombine_path, wims_path, wimi_path, linearfit_path, snr_path,
@@ -284,6 +284,7 @@ class ToolbarMixin:
         tb_geom.addAction(self.act_geom_rot_any)
         tb_geom.addSeparator()
         tb_geom.addAction(self.act_geom_rescale)
+        tb_geom.addAction(self.act_geom_resize_canvas)
         tb_geom.addSeparator()
         tb_geom.addAction(self.act_debayer)
 
@@ -1140,6 +1141,10 @@ class ToolbarMixin:
         self.act_geom_rot_any.setStatusTip(self.tr("Rotate image by an arbitrary angle (degrees)"))
         self.act_geom_rot_any.triggered.connect(self._exec_geom_rot_any)
 
+        self.act_geom_resize_canvas = QAction(QIcon(resizecanvas_path), self.tr("Resize Canvas..."), self)
+        self.act_geom_resize_canvas.setIconVisibleInMenu(True)
+        self.act_geom_resize_canvas.setStatusTip(self.tr("Resize the image canvas without resampling pixels"))
+        self.act_geom_resize_canvas.triggered.connect(self._exec_geom_resize_canvas)
 
         self.act_geom_rescale = QAction(QIcon(rescale_path), self.tr("Rescale..."), self)
         self.act_geom_rescale.setIconVisibleInMenu(True)
@@ -1525,7 +1530,8 @@ class ToolbarMixin:
         reg("geom_rotate_counterclockwise",self.act_geom_rot_ccw)
         reg("geom_rotate_180",             self.act_geom_rot_180) 
         reg("geom_rotate_any", self.act_geom_rot_any)
-        reg("geom_rescale",                self.act_geom_rescale)        
+        reg("geom_rescale",                self.act_geom_rescale)   
+        reg("geom_resize_canvas", self.act_geom_resize_canvas)     
         reg("project_new",  self.act_project_new)
         reg("project_save", self.act_project_save)
         reg("project_load", self.act_project_load)     

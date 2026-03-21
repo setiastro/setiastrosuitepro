@@ -571,7 +571,7 @@ _PRESET_UI_IDS = {
     "linear_fit","wavescale_hdr","wavescale_dark_enhance","wavescale_dark_enhancer",
     "remove_green","star_align","background_neutral","white_balance","clahe",
     "morphology","pixel_math","rgb_align","signature_insert","signature_adder",
-    "signature","halo_b_gon","geom_rescale","rescale","debayer","image_combine",
+    "signature","halo_b_gon","geom_rescale","rescale","debayer","image_combine","geom_resize_canvas",
     "star_spikes","diffraction_spikes", "multiscale_decomp","geom_rotate_any","syqontools",
 }
 
@@ -740,7 +740,18 @@ def _open_preset_editor_for_command(parent, command_id: str, initial: dict | Non
     if command_id in ("geom_rescale","rescale"):
         dlg = _RescalePresetDialog(parent, initial=cur or {"factor":1.0})
         return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
-
+    
+    if command_id in ("geom_resize_canvas", "resize_canvas", "canvas_resize"):
+        from setiastro.saspro.shortcuts import _ResizeCanvasPresetDialog
+        dlg = _ResizeCanvasPresetDialog(parent, initial=cur or {
+            "width": 0,
+            "height": 0,
+            "anchor": "center",
+            "fill_value": 0.0,
+            "update_wcs": True,
+        })
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
+    
     if command_id == "debayer":
         dlg = _DebayerPresetDialog(parent, initial=cur or {"pattern":"auto"})
         return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None

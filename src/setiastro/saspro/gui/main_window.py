@@ -171,7 +171,7 @@ from setiastro.saspro.resources import (
     blastericon_path, hdr_path, invert_path, fliphorizontal_path,
     flipvertical_path, rotateclockwise_path, rotatecounterclockwise_path,
     rotate180_path, maskcreate_path, maskapply_path, maskremove_path,
-    slot5_path, slot6_path, slot7_path, slot8_path, slot9_path, pixelmath_path,
+    slot5_path, slot6_path, slot7_path, slot8_path, slot9_path, pixelmath_path,resizecanvas_path,
     histogram_path, mosaic_path, rescale_path, staralign_path, mask_path,
     platesolve_path, psf_path, supernova_path, starregistration_path,
     stacking_path, pedestal_icon_path, starspike_path, aperture_path, histogram_transform_path,
@@ -6465,6 +6465,9 @@ class AstroSuiteProMainWindow(
                 "rescale": "geom_rescale",
                 "geom_rescale": "geom_rescale",
 
+                "geom_resize_canvas": "geom_resize_canvas",
+                "resize_canvas": "geom_resize_canvas",
+
                 "levels": "levels",
                 "histogram_transform": "levels",
                 "histogram": "levels",
@@ -7517,6 +7520,53 @@ class AstroSuiteProMainWindow(
             except Exception as e:
                 QMessageBox.warning(self, "Rescale", str(e))
             return
+        if cid == "geom_resize_canvas":
+            try:
+                width = int(preset.get("width", preset.get("new_w", 0)))
+                height = int(preset.get("height", preset.get("new_h", 0)))
+                anchor = str(preset.get("anchor", "center"))
+                fill_value = float(preset.get("fill_value", 0.0))
+                update_wcs = bool(preset.get("update_wcs", True))
+
+                payload = {
+                    "width": width,
+                    "height": height,
+                    "new_w": width,
+                    "new_h": height,
+                    "anchor": anchor,
+                    "fill_value": fill_value,
+                    "update_wcs": update_wcs,
+                }
+
+                called = False
+
+                if hasattr(self, "_apply_geom_resize_canvas_preset_to_doc"):
+                    called = _call_any(
+                        ["_apply_geom_resize_canvas_preset_to_doc"],
+                        doc, payload
+                    )
+
+                if not called and hasattr(self, "_apply_geom_resize_canvas_to_doc"):
+                    called = _call_any(
+                        ["_apply_geom_resize_canvas_to_doc"],
+                        doc,
+                        new_w=width,
+                        new_h=height,
+                        anchor=anchor,
+                        fill_value=fill_value,
+                        update_wcs=update_wcs,
+                    )
+
+                if not called:
+                    raise RuntimeError("No resize canvas handler found")
+
+                self._log(
+                    f"Resize Canvas applied to '{target_sw.windowTitle()}' "
+                    f"({width}x{height}, anchor={anchor})"
+                )
+            except Exception as e:
+                QMessageBox.warning(self, "Resize Canvas", str(e))
+            return        
         if cid == "debayer":
             try:
                 # Resolve a document from (a) the provided 'view' (DnD) or (b) the active subwindow.
