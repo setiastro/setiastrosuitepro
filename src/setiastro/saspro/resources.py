@@ -232,6 +232,7 @@ class Icons:
     ROTATE_180 = property(lambda self: _resource_path('rotate180.png'))
     ROTATE_ANY      = property(lambda self: _resource_path('rotatearbitrary.png'))
     RESCALE = property(lambda self: _resource_path('rescale.png'))
+    RESIZECANVAS = property(lambda self: _resource_path('resizecanvas.png'))
     
     # Masks
     MASK_CREATE = property(lambda self: _resource_path('maskcreate.png'))
@@ -477,6 +478,7 @@ _LEGACY_ICON_MAP = {
     'rotateclockwise_path': 'rotateclockwise.png',
     'rotatecounterclockwise_path': 'rotatecounterclockwise.png',
     'rotate180_path': 'rotate180.png',
+    'resizecanvas_path': 'resizecanvas.png',
     'rotatearbitrary_path': 'rotatearbitrary.png',
     'maskcreate_path': 'maskcreate.png',
     'maskapply_path': 'maskapply.png',
