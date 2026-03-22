@@ -3175,16 +3175,49 @@ def multiframe_deconv(
     status_cb(f"MFDeconv: color_mode={color_mode}, huber_delta={huber_delta} (bg RMS~{bg_est:.3g})")
 
     # ---- mask/variance accessors ----
-    def _mask_for(i, like_img):
-        src = (masks if masks is not None else masks_auto)
-        if src is None:  # no masks at all
-            return np.ones((like_img.shape[-2], like_img.shape[-1]), dtype=np.float32)
-        m = src[i]
+    # Rejection masks and auto star masks are combined multiplicatively:
+    #   final_mask = rejection_validity * star_keep
+    # where 1.0 = fully valid/kept, 0.0 = rejected.
+    rej_masks_src  = masks if masks is not None else None
+    star_masks_src = masks_auto if use_star_masks else None
+
+    def _crop_mask_to_like(m, like_img):
         if m is None:
             return np.ones((like_img.shape[-2], like_img.shape[-1]), dtype=np.float32)
-        m = np.asarray(m, dtype=np.float32)
-        if m.ndim == 3: m = m[0]
-        return _center_crop(m, like_img.shape[-2], like_img.shape[-1]).astype(np.float32, copy=False)
+        mm = np.asarray(m, dtype=np.float32)
+        if mm.ndim == 3:
+            mm = mm[0]
+        mm = _center_crop(mm, like_img.shape[-2], like_img.shape[-1]).astype(np.float32, copy=False)
+        return np.clip(mm, 0.0, 1.0)
+
+    def _mask_for(i, like_img):
+        rej = None
+        star = None
+
+        if rej_masks_src is not None:
+            try:
+                rej = rej_masks_src[i]
+            except Exception:
+                rej = None
+
+        if star_masks_src is not None:
+            try:
+                star = star_masks_src[i]
+            except Exception:
+                star = None
+
+        if rej is None and star is None:
+            return np.ones((like_img.shape[-2], like_img.shape[-1]), dtype=np.float32)
+
+        if rej is None:
+            return _crop_mask_to_like(star, like_img)
+
+        if star is None:
+            return _crop_mask_to_like(rej, like_img)
+
+        rm = _crop_mask_to_like(rej, like_img)
+        sm = _crop_mask_to_like(star, like_img)
+        return np.clip(rm * sm, 0.0, 1.0).astype(np.float32, copy=False)
 
     def _var_for(i, like_img):
         src = (variances if variances is not None else vars_auto)
@@ -3816,7 +3849,6 @@ def multiframe_deconv(
 # -----------------------------
 # Worker
 # -----------------------------
-
 class MultiFrameDeconvWorker(QObject):
     progress = pyqtSignal(str)
     finished = pyqtSignal(bool, str, str)  # success, message, out_path
@@ -3826,6 +3858,10 @@ class MultiFrameDeconvWorker(QObject):
                  star_mask_cfg: dict | None = None, varmap_cfg: dict | None = None,
                  save_intermediate: bool = False,
                  seed_mode: str = "robust",
+                 rejection_map=None,
+                 rejection_group_maps=None,
+                 prepass_payload=None,
+                 reference_header=None,
                  # NEW SR params
                  super_res_factor: int = 1,
                  sr_sigma: float = 1.1,
@@ -3840,25 +3876,199 @@ class MultiFrameDeconvWorker(QObject):
         self.kappa = kappa
         self.color_mode = color_mode
         self.huber_delta = huber_delta
-        self.min_iters = min_iters  # NEW
+        self.min_iters = min_iters
         self.star_mask_cfg = star_mask_cfg or {}
-        self.varmap_cfg    = varmap_cfg or {}
+        self.varmap_cfg = varmap_cfg or {}
         self.use_star_masks = use_star_masks
         self.use_variance_maps = use_variance_maps
         self.rho = rho
-        self.save_intermediate = save_intermediate   
+        self.save_intermediate = save_intermediate
         self.super_res_factor = int(super_res_factor)
         self.sr_sigma = float(sr_sigma)
         self.sr_psf_opt_iters = int(sr_psf_opt_iters)
         self.sr_psf_opt_lr = float(sr_psf_opt_lr)
-        self.star_mask_ref_path = star_mask_ref_path 
+        self.star_mask_ref_path = star_mask_ref_path
         self.seed_mode = seed_mode
 
+        # NEW: rejection-aware payload
+        self.rejection_map = rejection_map
+        self.rejection_group_maps = rejection_group_maps or {}
+        self.prepass_payload = prepass_payload or {}
+        self.reference_header = reference_header
 
-    def _log(self, s): self.progress.emit(s)
+    def _log(self, s):
+        self.progress.emit(s)
+
+    def _get_rejection_payload(self):
+        return {
+            "rejection_map": self.rejection_map,
+            "rejection_group_maps": self.rejection_group_maps,
+            "prepass_payload": self.prepass_payload,
+            "reference_header": self.reference_header,
+        }
+
+    def _frame_key_candidates(self, path: str):
+        import os
+        p = str(path)
+        base = os.path.basename(p)
+        stem, _ = os.path.splitext(base)
+        return [p, os.path.normpath(p), base, stem]
+
+    def _rejection_entry_for_path(self, path: str):
+        """
+        Find the per-file rejection entry for a given aligned frame path.
+
+        Expected structure from stacking suite:
+          rejection_map[path] = [(x, y), ...]
+          rejection_map[path] = [(x0, y0, mask_bool_2d), ...]
+        """
+        import os
+
+        rej = self.rejection_map
+        if rej is None or not isinstance(rej, dict):
+            return None
+
+        cands = self._frame_key_candidates(path)
+
+        for k in cands:
+            if k in rej:
+                return rej[k]
+
+        try:
+            norm_map = {os.path.normpath(str(k)): v for k, v in rej.items()}
+            for k in cands:
+                nk = os.path.normpath(str(k))
+                if nk in norm_map:
+                    return norm_map[nk]
+        except Exception:
+            pass
+
+        try:
+            for ck in cands:
+                sck = str(ck)
+                for rk, rv in rej.items():
+                    srk = str(rk)
+                    if srk == sck or srk.endswith(sck):
+                        return rv
+        except Exception:
+            pass
+
+        return None
+
+    def _entry_to_valid_mask(self, entry, path: str):
+        """
+        Convert one per-file rejection entry into a full-frame VALIDITY mask:
+          1.0 = valid
+          0.0 = rejected
+
+        Supported entry formats:
+          - [(x, y), ...]
+          - [(x0, y0, mask_bool_2d), ...]
+        """
+        import numpy as np
+
+        if entry is None:
+            return None
+
+        try:
+            C, H, W = _read_shape_fast(path)
+        except Exception:
+            return None
+
+        valid = np.ones((H, W), dtype=np.float32)
+
+        if not isinstance(entry, (list, tuple)) or len(entry) == 0:
+            return valid
+
+        first = entry[0]
+
+        # XY format
+        if isinstance(first, (list, tuple)) and len(first) == 2:
+            for it in entry:
+                try:
+                    x, y = it
+                    x = int(x)
+                    y = int(y)
+                except Exception:
+                    continue
+                if 0 <= y < H and 0 <= x < W:
+                    valid[y, x] = 0.0
+            return valid
+
+        # Tilemask format
+        if isinstance(first, (list, tuple)) and len(first) == 3:
+            for it in entry:
+                try:
+                    x0, y0, m = it
+                    x0 = int(x0)
+                    y0 = int(y0)
+                    mm = np.asarray(m, dtype=np.bool_)
+                except Exception:
+                    continue
+
+                if mm.ndim != 2:
+                    mm = np.squeeze(mm)
+                    if mm.ndim != 2:
+                        continue
+
+                th, tw = mm.shape
+                if th <= 0 or tw <= 0:
+                    continue
+
+                xs0 = max(0, x0)
+                ys0 = max(0, y0)
+                xs1 = min(W, x0 + tw)
+                ys1 = min(H, y0 + th)
+
+                if xs1 <= xs0 or ys1 <= ys0:
+                    continue
+
+                mx0 = xs0 - x0
+                my0 = ys0 - y0
+                mx1 = mx0 + (xs1 - xs0)
+                my1 = my0 + (ys1 - ys0)
+
+                tile_rej = mm[my0:my1, mx0:mx1]
+                valid[ys0:ys1, xs0:xs1][tile_rej] = 0.0
+
+            return valid
+
+        return None
+
+    def _build_rejection_masks_for_paths(self):
+        """
+        Build a list of per-frame 2D validity masks aligned to self.aligned_paths.
+        Returns None if no usable rejection maps are available.
+        """
+        if self.rejection_map is None:
+            return None
+
+        masks = []
+        found_any = False
+
+        for p in self.aligned_paths:
+            entry = self._rejection_entry_for_path(p)
+            m = self._entry_to_valid_mask(entry, p)
+            if m is not None:
+                found_any = True
+            masks.append(m)
+
+        return masks if found_any else None
 
     def run(self):
         try:
+            rej_masks = self._build_rejection_masks_for_paths()
+
+            try:
+                self.progress.emit(
+                    "MFDeconv prepass payload: "
+                    f"rejection_map={'yes' if self.rejection_map is not None else 'no'}, "
+                    f"group_maps={'yes' if bool(self.rejection_group_maps) else 'no'}, "
+                    f"usable_masks={'yes' if rej_masks is not None else 'no'}"
+                )
+            except Exception:
+                pass
+
             out = multiframe_deconv(
                 self.aligned_paths,
                 self.output_path,
@@ -3867,6 +4077,7 @@ class MultiFrameDeconvWorker(QObject):
                 color_mode=self.color_mode,
                 seed_mode=self.seed_mode,
                 huber_delta=self.huber_delta,
+                masks=rej_masks,  # NEW: rejection-aware validity masks
                 use_star_masks=self.use_star_masks,
                 use_variance_maps=self.use_variance_maps,
                 rho=self.rho,
@@ -3886,16 +4097,14 @@ class MultiFrameDeconvWorker(QObject):
         except Exception as e:
             self.finished.emit(False, f"MF deconvolution failed: {e}", "")
         finally:
-            # Hard cleanup: drop references + free GPU memory
             try:
-                # Drop big Python refs that might keep tensors alive indirectly
                 self.aligned_paths = []
                 self.star_mask_cfg = {}
                 self.varmap_cfg = {}
             except Exception:
                 pass
             try:
-                _free_torch_memory()  # your helper: del tensors, gc.collect(), etc.
+                _free_torch_memory()
             except Exception:
                 pass
             try:
@@ -3904,9 +4113,7 @@ class MultiFrameDeconvWorker(QObject):
                     _t.cuda.synchronize()
                     _t.cuda.empty_cache()
                 if hasattr(_t, "mps") and getattr(_t.backends, "mps", None) and _t.backends.mps.is_available():
-                    # PyTorch 2.x has this
                     if hasattr(_t.mps, "empty_cache"):
                         _t.mps.empty_cache()
-                # DirectML usually frees on GC; nothing special to call.
             except Exception:
                 pass

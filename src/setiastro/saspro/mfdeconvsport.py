@@ -2063,8 +2063,35 @@ def multiframe_deconv(
     # masks/vars aligned to native grid (2D each)
     auto_masks = masks_auto if use_star_masks else None
     auto_vars  = vars_auto  if use_variance_maps else None
-    mask_list = _ensure_mask_list(masks if masks is not None else auto_masks, data)
-    var_list  = _ensure_var_list(variances if variances is not None else auto_vars, data)
+
+    # Build both sources independently, then combine multiplicatively
+    rej_mask_list  = _ensure_mask_list(masks, data) if masks is not None else None
+    star_mask_list = _ensure_mask_list(auto_masks, data) if auto_masks is not None else None
+
+    if rej_mask_list is None and star_mask_list is None:
+        mask_list = _ensure_mask_list(None, data)
+    elif rej_mask_list is None:
+        mask_list = star_mask_list
+    elif star_mask_list is None:
+        mask_list = rej_mask_list
+    else:
+        mask_list = []
+        for rm, sm in zip(rej_mask_list, star_mask_list):
+            if rm is None and sm is None:
+                mask_list.append(None)
+            elif rm is None:
+                mask_list.append(np.asarray(sm, dtype=np.float32))
+            elif sm is None:
+                mask_list.append(np.asarray(rm, dtype=np.float32))
+            else:
+                mask_list.append(
+                    np.clip(
+                        np.asarray(rm, dtype=np.float32) * np.asarray(sm, dtype=np.float32),
+                        0.0, 1.0
+                    ).astype(np.float32, copy=False)
+                )
+
+    var_list = _ensure_var_list(variances if variances is not None else auto_vars, data)
 
     iter_dir = None
     hdr0_seed = None
@@ -2398,7 +2425,10 @@ class MultiFrameDeconvWorkerSport(QObject):
                  star_mask_cfg: dict | None = None, varmap_cfg: dict | None = None,
                  save_intermediate: bool = False,
                  seed_mode: str = "robust",
-                 # NEW SR params
+                rejection_map=None,
+                rejection_group_maps=None,
+                prepass_payload=None,
+                reference_header=None,
                  super_res_factor: int = 1,
                  sr_sigma: float = 1.1,
                  sr_psf_opt_iters: int = 250,
@@ -2424,12 +2454,196 @@ class MultiFrameDeconvWorkerSport(QObject):
         self.sr_psf_opt_lr = float(sr_psf_opt_lr)
         self.star_mask_ref_path = star_mask_ref_path 
         self.seed_mode = seed_mode
-
+        self.rejection_map = rejection_map
+        self.rejection_group_maps = rejection_group_maps or {}
+        self.prepass_payload = prepass_payload or {}
+        self.reference_header = reference_header
 
     def _log(self, s): self.progress.emit(s)
 
+    def _get_rejection_payload(self):
+        return {
+            "rejection_map": self.rejection_map,
+            "rejection_group_maps": self.rejection_group_maps,
+            "prepass_payload": self.prepass_payload,
+            "reference_header": self.reference_header,
+        }
+
+    def _frame_key_candidates(self, path: str):
+        import os
+        p = str(path)
+        base = os.path.basename(p)
+        stem, _ = os.path.splitext(base)
+        return [p, os.path.normpath(p), base, stem]
+
+    def _rejection_entry_for_path(self, path: str):
+        """
+        Find the per-file rejection entry for a given aligned frame path.
+
+        Expected structure from stacking suite:
+        rejection_map[path] = [(x, y), ...]
+        rejection_map[path] = [(x0, y0, mask_bool_2d), ...]
+
+        Returns the raw per-file list, or None.
+        """
+        import os
+
+        rej = self.rejection_map
+        if rej is None or not isinstance(rej, dict):
+            return None
+
+        cands = self._frame_key_candidates(path)
+
+        # exact key hits first
+        for k in cands:
+            if k in rej:
+                return rej[k]
+
+        # normalized-string fallback
+        try:
+            norm_map = {os.path.normpath(str(k)): v for k, v in rej.items()}
+            for k in cands:
+                nk = os.path.normpath(str(k))
+                if nk in norm_map:
+                    return norm_map[nk]
+        except Exception:
+            pass
+
+        # basename/stem suffix fallback
+        try:
+            for ck in cands:
+                sck = str(ck)
+                for rk, rv in rej.items():
+                    srk = str(rk)
+                    if srk == sck or srk.endswith(sck):
+                        return rv
+        except Exception:
+            pass
+
+        return None
+
+    def _entry_to_valid_mask(self, entry, path: str):
+        """
+        Convert one per-file rejection entry into a full-frame VALIDITY mask:
+        1.0 = valid
+        0.0 = rejected
+
+        Supported entry formats:
+        - [(x, y), ...]
+        - [(x0, y0, mask_bool_2d), ...]
+        """
+        import numpy as np
+
+        if entry is None:
+            return None
+
+        try:
+            C, H, W = _read_shape_fast(path)
+        except Exception:
+            return None
+
+        valid = np.ones((H, W), dtype=np.float32)
+
+        if not isinstance(entry, (list, tuple)) or len(entry) == 0:
+            return valid
+
+        first = entry[0]
+
+        # ----------------------------------------------------------
+        # Old XY format: [(x, y), ...]
+        # ----------------------------------------------------------
+        if isinstance(first, (list, tuple)) and len(first) == 2:
+            for it in entry:
+                try:
+                    x, y = it
+                    x = int(x)
+                    y = int(y)
+                except Exception:
+                    continue
+                if 0 <= y < H and 0 <= x < W:
+                    valid[y, x] = 0.0
+            return valid
+
+        # ----------------------------------------------------------
+        # Tilemask format: [(x0, y0, mask_bool_2d), ...]
+        # mask True = rejected
+        # ----------------------------------------------------------
+        if isinstance(first, (list, tuple)) and len(first) == 3:
+            for it in entry:
+                try:
+                    x0, y0, m = it
+                    x0 = int(x0)
+                    y0 = int(y0)
+                    mm = np.asarray(m, dtype=np.bool_)
+                except Exception:
+                    continue
+
+                if mm.ndim != 2:
+                    mm = np.squeeze(mm)
+                    if mm.ndim != 2:
+                        continue
+
+                th, tw = mm.shape
+                if th <= 0 or tw <= 0:
+                    continue
+
+                # clip tile placement to image bounds
+                xs0 = max(0, x0)
+                ys0 = max(0, y0)
+                xs1 = min(W, x0 + tw)
+                ys1 = min(H, y0 + th)
+
+                if xs1 <= xs0 or ys1 <= ys0:
+                    continue
+
+                mx0 = xs0 - x0
+                my0 = ys0 - y0
+                mx1 = mx0 + (xs1 - xs0)
+                my1 = my0 + (ys1 - ys0)
+
+                tile_rej = mm[my0:my1, mx0:mx1]
+                # True means rejected -> valid = 0 there
+                valid[ys0:ys1, xs0:xs1][tile_rej] = 0.0
+
+            return valid
+
+        # Unknown format
+        return None
+
+    def _build_rejection_masks_for_paths(self):
+        """
+        Build a list of per-frame 2D validity masks aligned to self.aligned_paths.
+        Returns None if no usable rejection maps are available.
+        """
+        masks = []
+        found_any = False
+
+        if self.rejection_map is None:
+            return None
+
+        for p in self.aligned_paths:
+            entry = self._rejection_entry_for_path(p)
+            m = self._entry_to_valid_mask(entry, p)
+            if m is not None:
+                found_any = True
+            masks.append(m)
+
+        return masks if found_any else None
+
     def run(self):
         try:
+            rej_masks = self._build_rejection_masks_for_paths()
+
+            try:
+                self.progress.emit(
+                    "MFDeconv prepass payload: "
+                    f"rejection_map={'yes' if self.rejection_map is not None else 'no'}, "
+                    f"group_maps={'yes' if bool(self.rejection_group_maps) else 'no'}, "
+                    f"usable_masks={'yes' if rej_masks is not None else 'no'}"
+                )
+            except Exception:
+                pass
+
             out = multiframe_deconv(
                 self.aligned_paths,
                 self.output_path,
@@ -2438,6 +2652,7 @@ class MultiFrameDeconvWorkerSport(QObject):
                 color_mode=self.color_mode,
                 seed_mode=self.seed_mode,
                 huber_delta=self.huber_delta,
+                masks=rej_masks,  # NEW: rejection-aware validity masks
                 use_star_masks=self.use_star_masks,
                 use_variance_maps=self.use_variance_maps,
                 rho=self.rho,
@@ -2446,7 +2661,6 @@ class MultiFrameDeconvWorkerSport(QObject):
                 star_mask_cfg=self.star_mask_cfg,
                 varmap_cfg=self.varmap_cfg,
                 save_intermediate=self.save_intermediate,
-                # NEW SR forwards
                 super_res_factor=self.super_res_factor,
                 sr_sigma=self.sr_sigma,
                 sr_psf_opt_iters=self.sr_psf_opt_iters,

@@ -2710,12 +2710,34 @@ def multiframe_deconv(
     base_template = np.empty((Ht, Wt), dtype=np.float32)
     data_like = [base_template] * len(paths)
 
-    # replace the bad call with:
-    mask_list = _ensure_mask_list(
-        masks if masks is not None else masks_auto,
-        data_like
-    )
-    # ...
+    # Build both sources independently, then combine multiplicatively:
+    #   rejection validity mask  *  star keep mask
+    rej_mask_list  = _ensure_mask_list(masks, data_like) if masks is not None else None
+    star_mask_list = _ensure_mask_list(auto_masks, data_like) if auto_masks is not None else None
+
+    if rej_mask_list is None and star_mask_list is None:
+        mask_list = _ensure_mask_list(None, data_like)
+    elif rej_mask_list is None:
+        mask_list = star_mask_list
+    elif star_mask_list is None:
+        mask_list = rej_mask_list
+    else:
+        mask_list = []
+        for rm, sm in zip(rej_mask_list, star_mask_list):
+            if rm is None and sm is None:
+                mask_list.append(None)
+            elif rm is None:
+                mask_list.append(np.asarray(sm, dtype=np.float32))
+            elif sm is None:
+                mask_list.append(np.asarray(rm, dtype=np.float32))
+            else:
+                mask_list.append(
+                    np.clip(
+                        np.asarray(rm, dtype=np.float32) * np.asarray(sm, dtype=np.float32),
+                        0.0, 1.0
+                    ).astype(np.float32, copy=False)
+                )
+
     if use_variance_maps and var_paths is not None:
         def _open_var_mm(p):
             return None if p is None else np.memmap(p, mode="r", dtype=_VAR_DTYPE, shape=(Ht, Wt))
@@ -3241,7 +3263,6 @@ def multiframe_deconv(
 # -----------------------------
 # Worker
 # -----------------------------
-
 class MultiFrameDeconvWorkercuDNN(QObject):
     progress = pyqtSignal(str)
     finished = pyqtSignal(bool, str, str)  # success, message, out_path
@@ -3251,6 +3272,10 @@ class MultiFrameDeconvWorkercuDNN(QObject):
                  star_mask_cfg: dict | None = None, varmap_cfg: dict | None = None,
                  save_intermediate: bool = False,
                  seed_mode: str = "robust",
+                 rejection_map=None,
+                 rejection_group_maps=None,
+                 prepass_payload=None,
+                 reference_header=None,
                  # NEW SR params
                  super_res_factor: int = 1,
                  sr_sigma: float = 1.1,
@@ -3264,25 +3289,199 @@ class MultiFrameDeconvWorkercuDNN(QObject):
         self.kappa = kappa
         self.color_mode = color_mode
         self.huber_delta = huber_delta
-        self.min_iters = min_iters  # NEW
+        self.min_iters = min_iters
         self.star_mask_cfg = star_mask_cfg or {}
-        self.varmap_cfg    = varmap_cfg or {}
+        self.varmap_cfg = varmap_cfg or {}
         self.use_star_masks = use_star_masks
         self.use_variance_maps = use_variance_maps
         self.rho = rho
-        self.save_intermediate = save_intermediate   
+        self.save_intermediate = save_intermediate
         self.super_res_factor = int(super_res_factor)
         self.sr_sigma = float(sr_sigma)
         self.sr_psf_opt_iters = int(sr_psf_opt_iters)
         self.sr_psf_opt_lr = float(sr_psf_opt_lr)
-        self.star_mask_ref_path = star_mask_ref_path 
+        self.star_mask_ref_path = star_mask_ref_path
         self.seed_mode = seed_mode
 
+        # NEW: rejection-aware payload
+        self.rejection_map = rejection_map
+        self.rejection_group_maps = rejection_group_maps or {}
+        self.prepass_payload = prepass_payload or {}
+        self.reference_header = reference_header
 
-    def _log(self, s): self.progress.emit(s)
+    def _log(self, s):
+        self.progress.emit(s)
+
+    def _get_rejection_payload(self):
+        return {
+            "rejection_map": self.rejection_map,
+            "rejection_group_maps": self.rejection_group_maps,
+            "prepass_payload": self.prepass_payload,
+            "reference_header": self.reference_header,
+        }
+
+    def _frame_key_candidates(self, path: str):
+        import os
+        p = str(path)
+        base = os.path.basename(p)
+        stem, _ = os.path.splitext(base)
+        return [p, os.path.normpath(p), base, stem]
+
+    def _rejection_entry_for_path(self, path: str):
+        """
+        Find the per-file rejection entry for a given aligned frame path.
+
+        Expected structure from stacking suite:
+          rejection_map[path] = [(x, y), ...]
+          rejection_map[path] = [(x0, y0, mask_bool_2d), ...]
+        """
+        import os
+
+        rej = self.rejection_map
+        if rej is None or not isinstance(rej, dict):
+            return None
+
+        cands = self._frame_key_candidates(path)
+
+        for k in cands:
+            if k in rej:
+                return rej[k]
+
+        try:
+            norm_map = {os.path.normpath(str(k)): v for k, v in rej.items()}
+            for k in cands:
+                nk = os.path.normpath(str(k))
+                if nk in norm_map:
+                    return norm_map[nk]
+        except Exception:
+            pass
+
+        try:
+            for ck in cands:
+                sck = str(ck)
+                for rk, rv in rej.items():
+                    srk = str(rk)
+                    if srk == sck or srk.endswith(sck):
+                        return rv
+        except Exception:
+            pass
+
+        return None
+
+    def _entry_to_valid_mask(self, entry, path: str):
+        """
+        Convert one per-file rejection entry into a full-frame VALIDITY mask:
+          1.0 = valid
+          0.0 = rejected
+
+        Supported entry formats:
+          - [(x, y), ...]
+          - [(x0, y0, mask_bool_2d), ...]
+        """
+        import numpy as np
+
+        if entry is None:
+            return None
+
+        try:
+            C, H, W = _read_shape_fast(path)
+        except Exception:
+            return None
+
+        valid = np.ones((H, W), dtype=np.float32)
+
+        if not isinstance(entry, (list, tuple)) or len(entry) == 0:
+            return valid
+
+        first = entry[0]
+
+        # XY format
+        if isinstance(first, (list, tuple)) and len(first) == 2:
+            for it in entry:
+                try:
+                    x, y = it
+                    x = int(x)
+                    y = int(y)
+                except Exception:
+                    continue
+                if 0 <= y < H and 0 <= x < W:
+                    valid[y, x] = 0.0
+            return valid
+
+        # Tilemask format
+        if isinstance(first, (list, tuple)) and len(first) == 3:
+            for it in entry:
+                try:
+                    x0, y0, m = it
+                    x0 = int(x0)
+                    y0 = int(y0)
+                    mm = np.asarray(m, dtype=np.bool_)
+                except Exception:
+                    continue
+
+                if mm.ndim != 2:
+                    mm = np.squeeze(mm)
+                    if mm.ndim != 2:
+                        continue
+
+                th, tw = mm.shape
+                if th <= 0 or tw <= 0:
+                    continue
+
+                xs0 = max(0, x0)
+                ys0 = max(0, y0)
+                xs1 = min(W, x0 + tw)
+                ys1 = min(H, y0 + th)
+
+                if xs1 <= xs0 or ys1 <= ys0:
+                    continue
+
+                mx0 = xs0 - x0
+                my0 = ys0 - y0
+                mx1 = mx0 + (xs1 - xs0)
+                my1 = my0 + (ys1 - ys0)
+
+                tile_rej = mm[my0:my1, mx0:mx1]
+                valid[ys0:ys1, xs0:xs1][tile_rej] = 0.0
+
+            return valid
+
+        return None
+
+    def _build_rejection_masks_for_paths(self):
+        """
+        Build a list of per-frame 2D validity masks aligned to self.aligned_paths.
+        Returns None if no usable rejection maps are available.
+        """
+        if self.rejection_map is None:
+            return None
+
+        masks = []
+        found_any = False
+
+        for p in self.aligned_paths:
+            entry = self._rejection_entry_for_path(p)
+            m = self._entry_to_valid_mask(entry, p)
+            if m is not None:
+                found_any = True
+            masks.append(m)
+
+        return masks if found_any else None
 
     def run(self):
         try:
+            rej_masks = self._build_rejection_masks_for_paths()
+
+            try:
+                self.progress.emit(
+                    "MFDeconv prepass payload: "
+                    f"rejection_map={'yes' if self.rejection_map is not None else 'no'}, "
+                    f"group_maps={'yes' if bool(self.rejection_group_maps) else 'no'}, "
+                    f"usable_masks={'yes' if rej_masks is not None else 'no'}"
+                )
+            except Exception:
+                pass
+
             out = multiframe_deconv(
                 self.aligned_paths,
                 self.output_path,
@@ -3291,6 +3490,7 @@ class MultiFrameDeconvWorkercuDNN(QObject):
                 color_mode=self.color_mode,
                 seed_mode=self.seed_mode,
                 huber_delta=self.huber_delta,
+                masks=rej_masks,  # NEW: rejection-aware validity masks
                 use_star_masks=self.use_star_masks,
                 use_variance_maps=self.use_variance_maps,
                 rho=self.rho,
@@ -3299,7 +3499,6 @@ class MultiFrameDeconvWorkercuDNN(QObject):
                 star_mask_cfg=self.star_mask_cfg,
                 varmap_cfg=self.varmap_cfg,
                 save_intermediate=self.save_intermediate,
-                # NEW SR forwards
                 super_res_factor=self.super_res_factor,
                 sr_sigma=self.sr_sigma,
                 sr_psf_opt_iters=self.sr_psf_opt_iters,

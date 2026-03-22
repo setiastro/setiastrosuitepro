@@ -2386,8 +2386,8 @@ class _Responder(QObject):
     finished = pyqtSignal(object)   # emits the edited dict or None
 
 class AfterAlignWorker(QObject):
-    progress = pyqtSignal(str)                 # emits status lines
-    finished = pyqtSignal(bool, str)           # (success, message)
+    progress = pyqtSignal(str)                        # emits status lines
+    finished = pyqtSignal(bool, str, object)         # (success, message, payload)
     need_comet_review = pyqtSignal(list, dict, object)  # (files, initial_xy, responder)
 
     def __init__(self, dialog, *,
@@ -2398,33 +2398,48 @@ class AfterAlignWorker(QObject):
                  autocrop_enabled,
                  autocrop_pct, ui_owner=None):
         super().__init__()
-        self.dialog = dialog                    # we will call pure methods on it
+        self.dialog = dialog
         self.light_files = light_files
         self.frame_weights = frame_weights
         self.transforms_dict = transforms_dict
         self.drizzle_dict = drizzle_dict
         self.autocrop_enabled = autocrop_enabled
         self.autocrop_pct = autocrop_pct
-        self.ui_owner         = ui_owner  
+        self.ui_owner = ui_owner
 
     @pyqtSlot()
     def run(self):
-        dlg = self.dialog  # the StackingSuiteDialog you passed in
+        dlg = self.dialog
 
         try:
-            result = dlg.stack_images_mixed_drizzle(
+            result = dlg.process_post_alignment(
                 grouped_files=self.light_files,
                 frame_weights=self.frame_weights,
                 transforms_dict=self.transforms_dict,
                 drizzle_dict=self.drizzle_dict,
                 autocrop_enabled=self.autocrop_enabled,
                 autocrop_pct=self.autocrop_pct,
-                status_cb=self.progress.emit,   # stream status back to UI
+                status_cb=self.progress.emit,
             )
-            summary = "\n".join(result["summary_lines"])
-            self.finished.emit(True, self.tr("Post-alignment complete.\n\n{0}").format(summary))
+
+            payload = result if isinstance(result, dict) else None
+            summary_lines = []
+            if isinstance(result, dict):
+                summary_lines = result.get("summary_lines", []) or []
+
+            summary = "\n".join(summary_lines) if summary_lines else "Post-alignment complete."
+            self.finished.emit(
+                True,
+                self.tr("Post-alignment complete.\n\n{0}").format(summary),
+                payload
+            )
+
         except Exception as e:
-            self.finished.emit(False, self.tr("Post-alignment failed: {0}").format(e))
+            self.finished.emit(
+                False,
+                self.tr("Post-alignment failed: {0}").format(e),
+                None
+            )
 
 class StatusLogWindow(QDialog):
     MAX_BLOCKS = 2000
@@ -17333,6 +17348,73 @@ class StackingSuiteDialog(QDialog):
         os.makedirs(out_dir, exist_ok=True)
         return out_dir
 
+    def process_post_alignment(
+        self,
+        grouped_files,
+        frame_weights,
+        transforms_dict,
+        drizzle_dict,
+        autocrop_enabled,
+        autocrop_pct,
+        status_cb=None,
+    ):
+        log = status_cb or (lambda *_: None)
+
+        prepass = self.run_rejection_prepass_for_groups(
+            grouped_files=grouped_files,
+            frame_weights=frame_weights,
+            transforms_dict=transforms_dict,
+            autocrop_enabled=autocrop_enabled,
+            autocrop_pct=autocrop_pct,
+            status_cb=log,
+        )
+
+        # IMPORTANT:
+        # Always finalize/save the normal integration path first.
+        # That ensures the standard integrated master (and drizzle outputs, if enabled)
+        # are written to disk even when MFDeconv is enabled.
+        finalize_result = self.finalize_normal_or_drizzle_from_prepass(
+            grouped_files=grouped_files,
+            drizzle_dict=drizzle_dict,
+            prepass=prepass,
+            status_cb=log,
+        )
+
+        finalize_summary = []
+        finalize_payload = {}
+        if isinstance(finalize_result, dict):
+            finalize_summary = list(finalize_result.get("summary_lines", []) or [])
+            finalize_payload = dict(finalize_result)
+        else:
+            finalize_payload = {}
+
+        combined_summary = list(prepass.get("summary_lines", [])) + finalize_summary
+
+        # IMPORTANT:
+        # Do NOT launch MF from here. This method is called from AfterAlignWorker.run(),
+        # which is executing in the post-align worker thread.
+        # Return a payload so the GUI thread can launch MF safely *after* normal/drizzle saves.
+        if self._mf_enabled():
+            out = dict(finalize_payload)
+            out.update({
+                "action": "launch_mf",
+                "summary_lines": combined_summary,
+                "prepass": prepass,
+                "grouped_files": grouped_files,
+                "transforms_dict": transforms_dict,
+                "drizzle_dict": drizzle_dict,
+            })
+            return out
+
+        if isinstance(finalize_result, dict):
+            finalize_result = dict(finalize_result)
+            finalize_result["summary_lines"] = combined_summary
+            return finalize_result
+
+        return {
+            "summary_lines": combined_summary,
+        }
+
     def on_registration_complete(self, success, msg):
        
         self.update_status(self.tr(msg))
@@ -17684,288 +17766,483 @@ class StackingSuiteDialog(QDialog):
 
         mf_enabled = self.settings.value("stacking/mfdeconv/enabled", False, type=bool)
 
+        # ----------------------------
+        # Do NOT short-circuit for MF anymore.
+        # Normal integration / rejection prepass now runs for all paths
+        # through process_post_alignment().
+        # ----------------------------
+        mf_enabled = self.settings.value("stacking/mfdeconv/enabled", False, type=bool)
         if mf_enabled:
-            self.update_status(self.tr("🧪 Multi-frame PSF-aware deconvolution path enabled."))
-
-            mf_groups = [(g, lst) for g, lst in aligned_light_files.items() if lst]
-            if not mf_groups:
-                self.update_status(self.tr("⚠️ No aligned frames available for MF deconvolution."))
-            else:
-                self._mf_pd = QProgressDialog("Multi-frame deconvolving…", "Cancel", 0, len(mf_groups), self)
-                # self._mf_pd.setWindowModality(Qt.WindowModality.ApplicationModal)
-                self._mf_pd.setMinimumDuration(0)
-                self._mf_pd.setWindowTitle("MF Deconvolution")
-                self._mf_pd.setValue(0)
-                self._mf_pd.show()
-
-                if getattr(self, "_mf_pd", None):
-                    self._mf_pd.setLabelText("Preparing MF deconvolution…")
-                    self._mf_pd.setMinimumWidth(520)
-
-                self._mf_total_groups = len(mf_groups)
-                self._mf_groups_done = 0
-                # progress range = groups * 1000 (each group gets 0..1000)
-                self._mf_pd.setRange(0, self._mf_total_groups * 1000)
-                self._mf_pd.setValue(0)
-                self._mf_queue = list(mf_groups)
-                self._mf_results = {}
-                self._mf_cancelled = False
-                self._mf_thread = None
-                self._mf_worker = None
-
-                def _cancel_all():
-                    self._mf_cancelled = True
-                self._mf_pd.canceled.connect(_cancel_all, Qt.ConnectionType.QueuedConnection)
-
-                def _finish_mf_phase_and_exit():
-                    """Tear down MF UI/threads and either continue or exit."""
-                    if getattr(self, "_mf_pd", None):
-                        try:
-                            self._mf_pd.reset()
-                            self._mf_pd.deleteLater()
-                        except Exception:
-                            pass
-                        self._mf_pd = None
-                    try:
-                        if self._mf_thread:
-                            self._mf_thread.quit()
-                            self._mf_thread.wait()
-                    except Exception:
-                        pass
-                    self._mf_thread = None
-                    self._mf_worker = None
-
-                    run_after = self.settings.value("stacking/mfdeconv/after_mf_run_integration", False, type=bool)
-                    if run_after:
-                        _start_after_align_worker(aligned_light_files)
-                    else:
-                        self.update_status(self.tr("✅ MFDeconv complete for all groups. Skipping normal integration as requested."))
-                        self._set_registration_busy(False)
-
-                def _start_next_mf_job():
-                    # end of queue or canceled → finish
-                    if self._mf_cancelled or not self._mf_queue:
-                        _finish_mf_phase_and_exit()
-                        return
-
-                    group_key, frames = self._mf_queue.pop(0)
-
-                    out_dir = self._master_light_dir()
-                    os.makedirs(out_dir, exist_ok=True)
-                    out_path = os.path.join(out_dir, f"MasterLight_{group_key}_MFDeconv.fit")
-
-                    # ── read config ─────────────────────────────────────────
-                    iters = self.settings.value("stacking/mfdeconv/iters", 20, type=int)
-                    min_iters = self.settings.value("stacking/mfdeconv/min_iters", 3, type=int)
-                    kappa = self.settings.value("stacking/mfdeconv/kappa", 2.0, type=float)
-                    mode  = self.mf_color_combo.currentText()
-                    Huber = self.settings.value("stacking/mfdeconv/Huber_delta", 0.0, type=float)
-                    seed_mode_cfg = str(self.settings.value("stacking/mfdeconv/seed_mode", "robust"))
-                    use_star_masks    = self.mf_use_star_mask_cb.isChecked()
-                    use_variance_maps = self.mf_use_noise_map_cb.isChecked()
-                    rho               = self.mf_rho_combo.currentText()
-                    save_intermediate = self.mf_save_intermediate_cb.isChecked()
-
-                    sr_enabled_ui = self.mf_sr_cb.isChecked()
-                    sr_factor_ui  = getattr(self, "mf_sr_factor_spin", None)
-                    sr_factor_val = sr_factor_ui.value() if sr_factor_ui is not None else self.settings.value("stacking/mfdeconv/sr_factor", 2, type=int)
-                    super_res_factor = int(sr_factor_val) if sr_enabled_ui else 1
-
-                    star_mask_cfg = {
-                        "thresh_sigma":  self.settings.value("stacking/mfdeconv/star_mask/thresh_sigma",  _SM_DEF_THRESH, type=float),
-                        "grow_px":       self.settings.value("stacking/mfdeconv/star_mask/grow_px",       _SM_DEF_GROW, type=int),
-                        "soft_sigma":    self.settings.value("stacking/mfdeconv/star_mask/soft_sigma",    _SM_DEF_SOFT, type=float),
-                        "max_radius_px": self.settings.value("stacking/mfdeconv/star_mask/max_radius_px", _SM_DEF_RMAX, type=int),
-                        "max_objs":      self.settings.value("stacking/mfdeconv/star_mask/max_objs",      _SM_DEF_MAXOBJS, type=int),
-                        "keep_floor":    self.settings.value("stacking/mfdeconv/star_mask/keep_floor",    _SM_DEF_KEEPF, type=float),
-                        "ellipse_scale": self.settings.value("stacking/mfdeconv/star_mask/ellipse_scale", _SM_DEF_ES, type=float),
-                    }
-                    varmap_cfg = {
-                        "sample_stride": self.settings.value("stacking/mfdeconv/varmap/sample_stride", _VM_DEF_STRIDE, type=int),
-                        "smooth_sigma":  self.settings.value("stacking/mfdeconv/varmap/smooth_sigma", 1.0, type=float),
-                        "floor":         self.settings.value("stacking/mfdeconv/varmap/floor",        1e-8, type=float),
-                    }
-
-                    self._mf_thread = QThread(self)
-                    star_mask_ref = _mf_ref_path_for_masks() if use_star_masks else None
-                    if use_star_masks:
-                        self.update_status(self.tr(f"🌟 MFDeconv star-mask reference → {star_mask_ref or '(none)'}"))                    
-
-                    # ── choose engine plainly (Normal / cuDNN-free / High Octane) ─────────────
-                    # Expect a setting saved by your radio buttons: "normal" | "cudnn" | "sport"
-                    engine = str(self.settings.value("stacking/mfdeconv/engine", "normal")).lower()
-
-                    try:
-                        if engine == "cudnn":
-                            from setiastro.saspro.mfdeconvcudnn import MultiFrameDeconvWorkercuDNN as MFCls
-                            eng_name = "Normal (cuDNN-free)"
-                        elif engine == "sport":  # High Octane let 'er rip
-                            from setiastro.saspro.mfdeconvsport import MultiFrameDeconvWorkerSport as MFCls
-                            eng_name = "High Octane"
-                        else:
-                            from setiastro.saspro.mfdeconv import MultiFrameDeconvWorker as MFCls
-                            eng_name = "Normal"
-                    except Exception as e:
-                        # if an import fails, fall back to the safe Normal path
-                        self.update_status(self.tr(f"⚠️ MFDeconv engine import failed ({e}); falling back to Normal."))
-                        from setiastro.saspro.mfdeconv import MultiFrameDeconvWorker as MFCls
-                        eng_name = "Normal (fallback)"
-
-                    self.update_status(self.tr(f"⚙️ MFDeconv engine: {eng_name}"))
-
-                    # ── build worker exactly the same in all modes ────────────────────────────
-                    self._mf_worker = MFCls(
-                        parent=None,
-                        aligned_paths=frames,
-                        output_path=out_path,
-                        iters=iters,
-                        kappa=kappa,
-                        color_mode=mode,
-                        huber_delta=Huber,
-                        min_iters=min_iters,
-                        use_star_masks=use_star_masks,
-                        use_variance_maps=use_variance_maps,
-                        rho=rho,
-                        star_mask_cfg=star_mask_cfg,
-                        varmap_cfg=varmap_cfg,
-                        save_intermediate=save_intermediate,
-                        super_res_factor=super_res_factor,
-                        star_mask_ref_path=star_mask_ref,
-                        seed_mode=seed_mode_cfg,
-                    )
-
-                    # ── standard Qt wiring (no gymnastics) ───────────────────────────────────
-                    self._mf_worker.moveToThread(self._mf_thread)
-                    self._mf_worker.progress.connect(self._on_mf_progress, Qt.ConnectionType.QueuedConnection)
-
-                    # when the worker says finished, log & cleanup; the *thread* quitting will trigger starting the next job
-                    def _job_finished(ok: bool, message: str, out: str):
-                        if getattr(self, "_mf_pd", None):
-                            self._mf_pd.setLabelText(f"{'✅' if ok else '❌'} {group_key}: {message}")
-                        if ok and out:
-                            self._mf_results[group_key] = out
-                            if getattr(self, "_mf_autocrop_enabled", False) and getattr(self, "_mf_autocrop_rect", None):
-                                try:
-                                    from astropy.io import fits
-                                    with fits.open(out, memmap=False) as hdul:
-                                        img = hdul[0].data; hdr = hdul[0].header
-                                    rect = tuple(map(int, self._mf_autocrop_rect))
-                                    sr_enabled_ui = self.mf_sr_cb.isChecked()
-                                    sr_factor_ui  = getattr(self, "mf_sr_factor_spin", None)
-                                    sr_factor_val = sr_factor_ui.value() if sr_factor_ui is not None else self.settings.value("stacking/mfdeconv/sr_factor", 2, type=int)
-                                    sr_factor = int(sr_factor_val) if sr_enabled_ui else 1
-                                    if sr_factor > 1:
-                                        x1,y1,x2,y2 = rect
-                                        rect = (x1*sr_factor, y1*sr_factor, x2*sr_factor, y2*sr_factor)
-                                    x1,y1,x2,y2 = rect
-                                    if img.ndim == 2:
-                                        crop = img[y1:y2, x1:x2]
-                                    elif img.ndim == 3:
-                                        crop = (img[:, y1:y2, x1:x2] if img.shape[0] in (1,3)
-                                                else img[y1:y2, x1:x2, :])
-                                    out_crop = out.replace(".fit", "_autocrop.fit").replace(".fits", "_autocrop.fits")
-                                    fits.PrimaryHDU(data=crop.astype(np.float32, copy=False), header=hdr).writeto(out_crop, overwrite=True)
-                                    self.update_status(self.tr(f"✂️ (MF) Saved auto-cropped copy → {out_crop}"))
-                                except Exception as e:
-                                    self.update_status(self.tr(f"⚠️ (MF) Auto-crop of output failed: {e}"))
-
-                        # advance progress segment
-                        if getattr(self, "_mf_pd", None):
-                            self._mf_groups_done = min(self._mf_groups_done + 1, self._mf_total_groups)
-                            self._mf_pd.setValue(self._mf_groups_done * 1000)
-
-                    self._mf_worker.finished.connect(_job_finished, Qt.ConnectionType.QueuedConnection)
-
-                    # thread start/stop
-                    self._mf_thread.started.connect(self._mf_worker.run, Qt.ConnectionType.QueuedConnection)
-                    self._mf_worker.finished.connect(self._mf_thread.quit, Qt.ConnectionType.QueuedConnection)
-                    self._mf_thread.finished.connect(self._mf_worker.deleteLater, Qt.ConnectionType.QueuedConnection)
-                    self._mf_thread.finished.connect(self._mf_thread.deleteLater, Qt.ConnectionType.QueuedConnection)
-
-                    # when the thread is fully down, kick the next job
-                    def _next_after_thread():
-                        try:
-                            self._mf_thread.finished.disconnect(_next_after_thread)
-                        except Exception:
-                            pass
-                        QTimer.singleShot(0, _start_next_mf_job)
-
-                    self._mf_thread.finished.connect(_next_after_thread, Qt.ConnectionType.QueuedConnection)
-
-                    # go
-                    self._mf_thread.start()
-                    if getattr(self, "_mf_pd", None):
-                        self._mf_pd.setLabelText(f"Deconvolving '{group_key}' ({len(frames)} frames)…")
-
-
-                # Kick off the first job (queue-driven)
-                QTimer.singleShot(0, _start_next_mf_job)
-
-                # Defer rest of pipeline; MF block will decide at MF completion.
-                self._set_registration_busy(False)
-                return
-
-
+            self.update_status(self.tr(
+                "🧪 Multi-frame PSF-aware deconvolution enabled. "
+                "Running normal integration / rejection prepass first."
+            ))
+            QApplication.processEvents()
 
         # ----------------------------
-        # Snapshot UI-dependent settings
+        # Kick off unified post-alignment worker
+        # This now handles:
+        #   - normal integration / rejection prepass
+        #   - drizzle finalize
+        #   - MFDeconv launch from prepass
         # ----------------------------
-        drizzle_dict = self.gather_drizzle_settings_from_tree()
+        _start_after_align_worker(aligned_light_files)
+        return
+
+    def _mf_enabled(self) -> bool:
+        return self.settings.value("stacking/mfdeconv/enabled", False, type=bool)
+
+    def _filter_kwargs_for_callable(self, fn, kwargs: dict) -> dict:
+        import inspect
         try:
-            autocrop_enabled = self.autocrop_cb.isChecked()
-            autocrop_pct = float(self.autocrop_pct.value())
+            sig = inspect.signature(fn)
+            params = sig.parameters
+            if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
+                return dict(kwargs)
+            return {k: v for k, v in kwargs.items() if k in params}
         except Exception:
-            autocrop_enabled = self.settings.value("stacking/autocrop_enabled", False, type=bool)
-            autocrop_pct = float(self.settings.value("stacking/autocrop_pct", 95.0, type=float))
+            return {}
 
-        # Only report fill % if CFA mapping is actually in use for this run
-        cfa_effective = bool(
-            self._cfa_for_this_run
-            if getattr(self, "_cfa_for_this_run", None) is not None
-            else (getattr(self, "cfa_drizzle_cb", None) and self.cfa_drizzle_cb.isChecked())
-        )
-        print("CFA effective for this run:", cfa_effective)
+    def run_rejection_prepass_for_groups(
+        self,
+        grouped_files,
+        frame_weights,
+        transforms_dict,
+        autocrop_enabled,
+        autocrop_pct,
+        status_cb=None,
+    ):
+        """
+        Shared prepass for:
+        - normal integration
+        - drizzle
+        - MFDeconv
 
-        if cfa_effective and getattr(self, "valid_matrices", None):
-            fill = self._dither_phase_fill(self.valid_matrices, bins=8)
-            self.update_status(self.tr(f"🔎 CFA drizzle sub-pixel phase fill (8×8): {fill*100:.1f}%"))
-            if fill < 0.65:
-                self.update_status(self.tr("💡 For best results with CFA drizzle, aim for >65% fill."))
-                self.update_status(self.tr("   With <~40–55% fill, expect visible patching even with many frames."))
+        Generates the same rejection products normal integration already produces,
+        but stores them in a reusable per-group payload.
+        """
+        from time import perf_counter
+        from PyQt6.QtWidgets import QApplication
+
+        log = status_cb or (lambda *_: None)
+
+        n_groups = len(grouped_files)
+        n_frames = sum(len(v) for v in grouped_files.values())
+        log(f"🧪 Rejection prepass: {n_groups} group(s), {n_frames} aligned frame(s).")
         QApplication.processEvents()
 
-        # ----------------------------
-        # Kick off post-align worker (unchanged)
-        # ----------------------------
-        self.post_thread = QThread(self)
-        self.post_worker = AfterAlignWorker(
-            self,                                   # parent QObject
-            light_files=aligned_light_files,
-            frame_weights=dict(self.frame_weights),
-            transforms_dict=dict(self.valid_transforms),
+        prepass = {
+            "grouped_files": grouped_files,
+            "frame_weights": frame_weights,
+            "transforms_dict": transforms_dict,
+            "autocrop_enabled": bool(autocrop_enabled),
+            "autocrop_pct": float(autocrop_pct),
+            "groups": {},
+            "summary_lines": [],
+        }
+
+        # Preserve the same storage drizzle currently relies on.
+        if not hasattr(self, "_rej_maps") or not isinstance(getattr(self, "_rej_maps"), dict):
+            self._rej_maps = {}
+
+        for gi, (group_key, file_list) in enumerate(grouped_files.items(), 1):
+            t0 = perf_counter()
+            if not file_list:
+                continue
+
+            log(f"🔹 [{gi}/{n_groups}] Rejection prepass for '{group_key}' with {len(file_list)} file(s)…")
+            QApplication.processEvents()
+
+            integrated_image, rejection_map, ref_header = self.normal_integration_with_rejection(
+                group_key,
+                file_list,
+                frame_weights,
+                status_cb=log,
+            )
+
+            if integrated_image is None:
+                raise RuntimeError(f"normal_integration_with_rejection returned no image for group '{group_key}'")
+
+            group_rej_maps = {}
+            try:
+                group_rej_maps = dict(getattr(self, "_rej_maps", {}).get(group_key, {}) or {})
+            except Exception:
+                group_rej_maps = {}
+
+            prepass["groups"][group_key] = {
+                "group_key": group_key,
+                "file_list": list(file_list),
+                "integrated_image": integrated_image,
+                "rejection_map": rejection_map,
+                "ref_header": ref_header,
+                "rej_maps": group_rej_maps,
+                "n_frames": len(file_list),
+            }
+
+            dt = perf_counter() - t0
+            line = (
+                f"Prepass '{group_key}': "
+                f"{integrated_image.shape[1]}×{integrated_image.shape[0]}, "
+                f"{len(file_list)} frame(s), {dt:.1f}s"
+            )
+            prepass["summary_lines"].append(line)
+            log(f"✅ {line}")
+            QApplication.processEvents()
+
+        return prepass
+
+    def finalize_normal_or_drizzle_from_prepass(
+        self,
+        grouped_files,
+        drizzle_dict,
+        prepass,
+        status_cb=None,
+    ):
+        """
+        Finalize the normal/drizzle path from prepass.
+
+        Current conservative implementation:
+        - if a dedicated finalize hook exists, use it
+        - otherwise fall back to the existing stack_images_mixed_drizzle path
+
+        This keeps normal stacking + drizzle working while MFDeconv starts receiving
+        real rejection products from the prepass.
+        """
+        from PyQt6.QtWidgets import QApplication
+
+        log = status_cb or (lambda *_: None)
+        log("🧱 Finalizing normal integration / drizzle from prepass…")
+        QApplication.processEvents()
+
+        # Optional hook for future refactor
+        if hasattr(self, "_finalize_normal_or_drizzle_from_prepass_impl"):
+            return self._finalize_normal_or_drizzle_from_prepass_impl(
+                grouped_files=grouped_files,
+                drizzle_dict=drizzle_dict,
+                prepass=prepass,
+                status_cb=log,
+            )
+
+        # Conservative fallback for now: preserve existing behavior
+        # (yes, this recomputes today, but keeps the app stable while the workflow is restructured)
+        return self.stack_images_mixed_drizzle(
+            grouped_files=grouped_files,
+            frame_weights=prepass["frame_weights"],
+            transforms_dict=prepass["transforms_dict"],
             drizzle_dict=drizzle_dict,
-            autocrop_enabled=autocrop_enabled,
-            autocrop_pct=autocrop_pct,
-            ui_owner=self                           # 👈 PASS THE OWNER HERE
+            autocrop_enabled=prepass["autocrop_enabled"],
+            autocrop_pct=prepass["autocrop_pct"],
+            status_cb=log,
         )
-        self.post_worker.ui_owner = self
-        self.post_worker.need_comet_review.connect(self.on_need_comet_review) 
 
-        self.post_worker.progress.connect(self._on_post_status)
-        self.post_worker.finished.connect(self._on_post_pipeline_finished)
+    def launch_mfdeconv_from_prepass(
+        self,
+        grouped_files,
+        transforms_dict,
+        prepass,
+        status_cb=None,
+    ):
+        """
+        Launch MFDeconv from the post-alignment orchestrator using the already-computed
+        normal-integration prepass.
 
-        self.post_worker.moveToThread(self.post_thread)
-        self.post_thread.started.connect(self.post_worker.run)
-        self.post_thread.start()
+        At this point:
+        - the normal integrated master has already been finalized/saved
+        - drizzle outputs (if enabled) have already been finalized/saved
+        - MFDeconv receives the rejection products from the prepass so its
+        multiplicative updates can ignore rejected pixels
+        """
+        import os
+        from PyQt6.QtCore import QThread, QTimer, Qt
+        from PyQt6.QtWidgets import QProgressDialog, QApplication
 
-        self.post_progress = QProgressDialog("Stacking & drizzle (if enabled)…", None, 0, 0, self)
-        self.post_progress.setWindowModality(Qt.WindowModality.WindowModal)
-        self.post_progress.setCancelButton(None)
-        self.post_progress.setMinimumDuration(0)
-        self.post_progress.setWindowTitle("Post-Alignment")
-        self.post_progress.show()
+        log = status_cb or (lambda *_: None)
 
-        self._set_registration_busy(False)
+        mf_groups = [(g, lst) for g, lst in grouped_files.items() if lst]
+        if not mf_groups:
+            log("⚠️ No aligned frames available for MF deconvolution.")
+            return {
+                "summary_lines": ["No aligned frames available for MF deconvolution."]
+            }
+
+        self._mf_prepass = prepass
+        self._mf_grouped_files = grouped_files
+        self._mf_transforms_dict = transforms_dict
+
+        self._mf_pd = QProgressDialog("Multi-frame deconvolving…", "Cancel", 0, len(mf_groups), self)
+        self._mf_pd.setMinimumDuration(0)
+        self._mf_pd.setWindowTitle("MF Deconvolution")
+        self._mf_pd.setValue(0)
+        self._mf_pd.show()
+
+        if getattr(self, "_mf_pd", None):
+            self._mf_pd.setLabelText("Preparing MF deconvolution…")
+            self._mf_pd.setMinimumWidth(520)
+
+        self._mf_total_groups = len(mf_groups)
+        self._mf_groups_done = 0
+        self._mf_pd.setRange(0, self._mf_total_groups * 1000)
+        self._mf_pd.setValue(0)
+        self._mf_queue = list(mf_groups)
+        self._mf_results = {}
+        self._mf_cancelled = False
+        self._mf_thread = None
+        self._mf_worker = None
+
+        def _cancel_all():
+            self._mf_cancelled = True
+
+        self._mf_pd.canceled.connect(_cancel_all, Qt.ConnectionType.QueuedConnection)
+
+        def _finish_mf_phase_and_exit():
+            if getattr(self, "_mf_pd", None):
+                try:
+                    self._mf_pd.reset()
+                    self._mf_pd.deleteLater()
+                except Exception:
+                    pass
+                self._mf_pd = None
+
+            try:
+                if self._mf_thread:
+                    self._mf_thread.quit()
+                    self._mf_thread.wait()
+            except Exception:
+                pass
+
+            self._mf_thread = None
+            self._mf_worker = None
+
+            run_after = self.settings.value("stacking/mfdeconv/after_mf_run_integration", False, type=bool)
+            if run_after:
+                # For step one, reuse existing finalize path.
+                try:
+                    drizzle_dict = self.gather_drizzle_settings_from_tree()
+                except Exception:
+                    drizzle_dict = {}
+
+                try:
+                    result = self.finalize_normal_or_drizzle_from_prepass(
+                        grouped_files=grouped_files,
+                        drizzle_dict=drizzle_dict,
+                        prepass=prepass,
+                        status_cb=log,
+                    )
+                    return result
+                except Exception as e:
+                    log(f"⚠️ Post-MF finalize failed: {e}")
+                    self._set_registration_busy(False)
+                    return
+
+            if getattr(self, "_mf_failures", None):
+                lines = [f"{g}: {m}" for g, m in self._mf_failures]
+                log("⚠️ MFDeconv finished with failures:\n" + "\n".join(lines))
+            else:
+                log("✅ MFDeconv complete for all groups.")
+            self._set_registration_busy(False)
+
+        def _start_next_mf_job():
+            if self._mf_cancelled or not self._mf_queue:
+                _finish_mf_phase_and_exit()
+                return
+
+            group_key, frames = self._mf_queue.pop(0)
+
+            out_dir = self._master_light_dir()
+            os.makedirs(out_dir, exist_ok=True)
+            out_path = os.path.join(out_dir, f"MasterLight_{group_key}_MFDeconv.fit")
+
+            iters = self.settings.value("stacking/mfdeconv/iters", 20, type=int)
+            min_iters = self.settings.value("stacking/mfdeconv/min_iters", 3, type=int)
+            kappa = self.settings.value("stacking/mfdeconv/kappa", 2.0, type=float)
+            mode = self.mf_color_combo.currentText()
+            Huber = self.settings.value("stacking/mfdeconv/Huber_delta", 0.0, type=float)
+            seed_mode_cfg = str(self.settings.value("stacking/mfdeconv/seed_mode", "robust"))
+            use_star_masks = self.mf_use_star_mask_cb.isChecked()
+            use_variance_maps = self.mf_use_noise_map_cb.isChecked()
+            rho = self.mf_rho_combo.currentText()
+            save_intermediate = self.mf_save_intermediate_cb.isChecked()
+
+            sr_enabled_ui = self.mf_sr_cb.isChecked()
+            sr_factor_ui = getattr(self, "mf_sr_factor_spin", None)
+            sr_factor_val = sr_factor_ui.value() if sr_factor_ui is not None else self.settings.value("stacking/mfdeconv/sr_factor", 2, type=int)
+            super_res_factor = int(sr_factor_val) if sr_enabled_ui else 1
+
+            star_mask_cfg = {
+                "thresh_sigma": self.settings.value("stacking/mfdeconv/star_mask/thresh_sigma", _SM_DEF_THRESH, type=float),
+                "grow_px": self.settings.value("stacking/mfdeconv/star_mask/grow_px", _SM_DEF_GROW, type=int),
+                "soft_sigma": self.settings.value("stacking/mfdeconv/star_mask/soft_sigma", _SM_DEF_SOFT, type=float),
+                "max_radius_px": self.settings.value("stacking/mfdeconv/star_mask/max_radius_px", _SM_DEF_RMAX, type=int),
+                "max_objs": self.settings.value("stacking/mfdeconv/star_mask/max_objs", _SM_DEF_MAXOBJS, type=int),
+                "keep_floor": self.settings.value("stacking/mfdeconv/star_mask/keep_floor", _SM_DEF_KEEPF, type=float),
+                "ellipse_scale": self.settings.value("stacking/mfdeconv/star_mask/ellipse_scale", _SM_DEF_ES, type=float),
+            }
+            varmap_cfg = {
+                "sample_stride": self.settings.value("stacking/mfdeconv/varmap/sample_stride", _VM_DEF_STRIDE, type=int),
+                "smooth_sigma": self.settings.value("stacking/mfdeconv/varmap/smooth_sigma", 1.0, type=float),
+                "floor": self.settings.value("stacking/mfdeconv/varmap/floor", 1e-8, type=float),
+            }
+
+            self._mf_thread = QThread(self)
+            star_mask_ref = None
+            try:
+                if use_star_masks and hasattr(self, "_mf_ref_path_for_masks"):
+                    star_mask_ref = self._mf_ref_path_for_masks()
+            except Exception:
+                star_mask_ref = None
+
+            if use_star_masks:
+                log(f"🌟 MFDeconv star-mask reference → {star_mask_ref or '(none)'}")
+
+            engine = str(self.settings.value("stacking/mfdeconv/engine", "normal")).lower()
+
+            try:
+                if engine == "cudnn":
+                    from setiastro.saspro.mfdeconvcudnn import MultiFrameDeconvWorkercuDNN as MFCls
+                    eng_name = "Normal (cuDNN-free)"
+                elif engine == "sport":
+                    from setiastro.saspro.mfdeconvsport import MultiFrameDeconvWorkerSport as MFCls
+                    eng_name = "High Octane"
+                else:
+                    from setiastro.saspro.mfdeconv import MultiFrameDeconvWorker as MFCls
+                    eng_name = "Normal"
+            except Exception as e:
+                log(f"⚠️ MFDeconv engine import failed ({e}); falling back to Normal.")
+                from setiastro.saspro.mfdeconv import MultiFrameDeconvWorker as MFCls
+                eng_name = "Normal (fallback)"
+
+            log(f"⚙️ MFDeconv engine: {eng_name}")
+
+            group_prepass = {}
+            try:
+                group_prepass = dict(prepass.get("groups", {}).get(group_key, {}) or {})
+            except Exception:
+                group_prepass = {}
+
+            mf_kwargs = dict(
+                parent=None,
+                aligned_paths=frames,
+                output_path=out_path,
+                iters=iters,
+                kappa=kappa,
+                color_mode=mode,
+                huber_delta=Huber,
+                min_iters=min_iters,
+                use_star_masks=use_star_masks,
+                use_variance_maps=use_variance_maps,
+                rho=rho,
+                star_mask_cfg=star_mask_cfg,
+                varmap_cfg=varmap_cfg,
+                save_intermediate=save_intermediate,
+                super_res_factor=super_res_factor,
+                star_mask_ref_path=star_mask_ref,
+                seed_mode=seed_mode_cfg,
+            )
+
+            # New payloads for rejection-aware MF path.
+            # These are only passed if the worker constructor supports them.
+            mf_optional = self._filter_kwargs_for_callable(MFCls, {
+                "rejection_map": group_prepass.get("rejection_map"),
+                "rejection_group_maps": group_prepass.get("rej_maps"),
+                "prepass_payload": group_prepass,
+                "reference_header": group_prepass.get("ref_header"),
+            })
+            mf_kwargs.update(mf_optional)
+
+            if group_prepass:
+                try:
+                    rej_maps = group_prepass.get("rej_maps") or {}
+                    any_shape = getattr(rej_maps.get("any"), "shape", None)
+                    log(
+                        f"🧪 MF prepass payload for '{group_key}': "
+                        f"rejection_map={'yes' if group_prepass.get('rejection_map') is not None else 'no'}, "
+                        f"group_maps={'yes' if rej_maps else 'no'}"
+                        + (f", any_shape={any_shape}" if any_shape is not None else "")
+                    )
+                except Exception:
+                    pass
+
+            self._mf_worker = MFCls(**mf_kwargs)
+
+            self._mf_worker.moveToThread(self._mf_thread)
+            self._mf_worker.progress.connect(self._on_mf_progress, Qt.ConnectionType.QueuedConnection)
+
+            def _job_finished(ok: bool, message: str, out: str):
+                if getattr(self, "_mf_pd", None):
+                    self._mf_pd.setLabelText(f"{'✅' if ok else '❌'} {group_key}: {message}")
+
+                if not hasattr(self, "_mf_failures"):
+                    self._mf_failures = []
+
+                if ok and out:
+                    self._mf_results[group_key] = out
+
+                    if getattr(self, "_mf_autocrop_enabled", False) and getattr(self, "_mf_autocrop_rect", None):
+                        try:
+                            from astropy.io import fits
+                            with fits.open(out, memmap=False) as hdul:
+                                img = hdul[0].data
+                                hdr = hdul[0].header
+
+                            rect = tuple(map(int, self._mf_autocrop_rect))
+                            sr_enabled_ui2 = self.mf_sr_cb.isChecked()
+                            sr_factor_ui2 = getattr(self, "mf_sr_factor_spin", None)
+                            sr_factor_val2 = sr_factor_ui2.value() if sr_factor_ui2 is not None else self.settings.value("stacking/mfdeconv/sr_factor", 2, type=int)
+                            sr_factor = int(sr_factor_val2) if sr_enabled_ui2 else 1
+
+                            if sr_factor > 1:
+                                x1, y1, x2, y2 = rect
+                                rect = (x1 * sr_factor, y1 * sr_factor, x2 * sr_factor, y2 * sr_factor)
+
+                            x1, y1, x2, y2 = rect
+                            if img.ndim == 2:
+                                crop = img[y1:y2, x1:x2]
+                            elif img.ndim == 3:
+                                crop = (img[:, y1:y2, x1:x2] if img.shape[0] in (1, 3) else img[y1:y2, x1:x2, :])
+                            else:
+                                crop = img
+
+                            out_crop = out.replace(".fit", "_autocrop.fit").replace(".fits", "_autocrop.fits")
+                            fits.PrimaryHDU(data=crop.astype(np.float32, copy=False), header=hdr).writeto(out_crop, overwrite=True)
+                            log(f"✂️ (MF) Saved auto-cropped copy → {out_crop}")
+                        except Exception as e:
+                            log(f"⚠️ (MF) Auto-crop of output failed: {e}")
+                else:
+                    self._mf_failures.append((group_key, message))
+                    log(f"❌ MFDeconv failed for '{group_key}': {message}")
+
+                if getattr(self, "_mf_pd", None):
+                    self._mf_groups_done = min(self._mf_groups_done + 1, self._mf_total_groups)
+                    self._mf_pd.setValue(self._mf_groups_done * 1000)
+
+
+            self._mf_worker.finished.connect(_job_finished, Qt.ConnectionType.QueuedConnection)
+            self._mf_thread.started.connect(self._mf_worker.run, Qt.ConnectionType.QueuedConnection)
+            self._mf_worker.finished.connect(self._mf_thread.quit, Qt.ConnectionType.QueuedConnection)
+            self._mf_thread.finished.connect(self._mf_worker.deleteLater, Qt.ConnectionType.QueuedConnection)
+            self._mf_thread.finished.connect(self._mf_thread.deleteLater, Qt.ConnectionType.QueuedConnection)
+
+            def _next_after_thread():
+                try:
+                    self._mf_thread.finished.disconnect(_next_after_thread)
+                except Exception:
+                    pass
+                QTimer.singleShot(0, _start_next_mf_job)
+
+            self._mf_thread.finished.connect(_next_after_thread, Qt.ConnectionType.QueuedConnection)
+
+            self._mf_thread.start()
+            if getattr(self, "_mf_pd", None):
+                self._mf_pd.setLabelText(f"Deconvolving '{group_key}' ({len(frames)} frames)…")
+
+        QTimer.singleShot(0, _start_next_mf_job)
+
+        # Returning a dict keeps AfterAlignWorker happy.
+        return {
+            "summary_lines": [
+                f"MFDeconv launched for {len(mf_groups)} group(s)."
+            ]
+        }
 
     def _on_after_align_finished(self, success: bool, message: str):
         # Stop thread/progress UI first (whatever you already do)
@@ -18009,8 +18286,8 @@ class StackingSuiteDialog(QDialog):
             self._mf_pd.setRange(0, total_groups * 1000)
             self._mf_pd.setValue(min(val, total_groups * 1000))
 
-    @pyqtSlot(bool, str)
-    def _on_post_pipeline_finished(self, ok: bool, message: str):
+    @pyqtSlot(bool, str, object)
+    def _on_post_pipeline_finished(self, ok: bool, message: str, payload):
         # ---- close progress dialog ----
         try:
             if getattr(self, "post_progress", None) is not None:
@@ -18039,15 +18316,47 @@ class StackingSuiteDialog(QDialog):
         except Exception:
             pass
 
-        # ---- update status (keep this behavior) ----
+        # ---- update status ----
         try:
-            # message already includes "Post-alignment complete..." text
             self.update_status(self.tr(message))
         except Exception:
             pass
 
-        # ---- popup summary ----
-        # (Do this after progress dialog is gone so it doesn't hide behind it)
+        # ---- MF launch request from GUI thread ----
+        if ok and isinstance(payload, dict) and payload.get("action") == "launch_mf":
+            try:
+                grouped_files = payload["grouped_files"]
+                transforms_dict = payload["transforms_dict"]
+                prepass = payload["prepass"]
+
+                summary_lines = payload.get("summary_lines", []) or []
+                if summary_lines:
+                    try:
+                        self.update_status("\n".join(summary_lines))
+                    except Exception:
+                        pass
+
+                # IMPORTANT: no popup here; continue automatically
+                self.update_status(self.tr("Post-alignment complete. Launching MFDeconv from prepass..."))
+
+                # IMPORTANT: this is now on the GUI thread
+                self.launch_mfdeconv_from_prepass(
+                    grouped_files=grouped_files,
+                    transforms_dict=transforms_dict,
+                    prepass=prepass,
+                    status_cb=self.update_status,
+                )
+            except Exception as e:
+                QMessageBox.critical(
+                    self,
+                    self.tr("MFDeconv Launch Failed"),
+                    self.tr("Post-alignment completed, but MFDeconv failed to launch:\n{0}").format(e)
+                )
+                self._cfa_for_this_run = None
+                QApplication.processEvents()
+            return
+
+        # ---- normal popup summary ----
         if ok:
             QMessageBox.information(self, self.tr("Post-Alignment Complete"), message)
         else:
@@ -19565,7 +19874,7 @@ class StackingSuiteDialog(QDialog):
         self.post_thread.started.connect(self.post_worker.run)
         self.post_thread.start()
 
-        self.post_progress = QProgressDialog("Stacking & drizzle (if enabled)…", None, 0, 0, self)
+        self.post_progress = QProgressDialog("Stacking & drizzle/mfdeconv (if enabled)…", None, 0, 0, self)
         self.post_progress.setWindowModality(Qt.WindowModality.WindowModal)
         self.post_progress.setCancelButton(None)
         self.post_progress.setMinimumDuration(0)
@@ -19585,231 +19894,38 @@ class StackingSuiteDialog(QDialog):
             return None
         return pd
 
-
-
     def _run_mfdeconv_then_continue(self, aligned_light_files: dict[str, list[str]]):
-        """Queue MFDeconv per group if enabled, then continue into AfterAlignWorker for all groups."""
-        mf_enabled = self.settings.value("stacking/mfdeconv/enabled", False, type=bool)
-        if not mf_enabled:
-            self._start_after_align_worker(aligned_light_files)
-            return
+        """
+        Unified post-registration / already-registered pipeline entry.
 
-        # Build list of non-empty groups
-        mf_groups = [(g, lst) for g, lst in aligned_light_files.items() if lst]
-        if not mf_groups:
-            self.update_status(self.tr("⚠️ No aligned frames available for MF deconvolution."))
-            self._start_after_align_worker(aligned_light_files)
-            return
+        Old behavior:
+        MFDeconv ran first, then normal integration/drizzle later.
 
-        # Progress UI for the entire MF phase
-        self._mf_total_groups = len(mf_groups)
-        self._mf_groups_done = 0
-        self._mf_pd = QProgressDialog("Multi-frame deconvolving…", "Cancel", 0, self._mf_total_groups * 1000, self)
-        self._mf_pd.setValue(0)
-        # self._mf_pd.setWindowModality(Qt.WindowModality.ApplicationModal)
-        self._mf_pd.setMinimumDuration(0)
-        self._mf_pd.setWindowTitle("MF Deconvolution")
-        self._mf_pd.setRange(0, self._mf_total_groups * 1000)
-        self._mf_pd.setValue(0)
-        self._mf_pd.show()
+        New behavior:
+        Always go through process_post_alignment(), which performs:
+            1) normal integration prepass
+            2) rejection map generation
+            3) MFDeconv from prepass (if enabled)
+            OR finalize normal/drizzle from prepass
 
-        self._mf_queue = list(mf_groups)
-        self._mf_results = {}
-        self._mf_cancelled = False
-        self._mf_thread = None
-        self._mf_worker = None
+        This keeps the registered-image path consistent with the normal
+        registration workflow and ensures MFDeconv receives rejection maps.
+        """
+        if getattr(self, "_registration_busy", False) is False:
+            self._set_registration_busy(True)
 
-        def _cancel_all():
-            self._mf_cancelled = True
-        self._mf_pd.canceled.connect(_cancel_all, Qt.ConnectionType.QueuedConnection)
+        try:
+            # Clear any stale one-shot suppress flag from the legacy path
+            self._suppress_normal_integration_once = False
+        except Exception:
+            pass
 
-        def _start_next():
-            # End of queue or canceled → finish gracefully
-            if self._mf_cancelled or not self._mf_queue:
-                if getattr(self, "_mf_pd", None):
-                    pd = self._pd_alive()
-                    if pd:
-                        pd.reset()
-                        pd.deleteLater()
-                    self._mf_pd = None
-                try:
-                    if self._mf_thread:
-                        self._mf_thread.quit()
-                        self._mf_thread.wait()
-                except Exception:
-                    pass
-                self._mf_thread = None
-                self._mf_worker = None
-
-                # Continue the normal pipeline for ALL groups
-                self._suppress_normal_integration_once = True
-                self.update_status(self.tr("✅ MFDeconv complete for all groups. Skipping normal integration."))
-                self._set_registration_busy(False)
-                return
-
-            group_key, frames = self._mf_queue.pop(0)
-            out_dir = self._master_light_dir()
-            os.makedirs(out_dir, exist_ok=True)
-
-            # Settings snapshot
-            iters = self.settings.value("stacking/mfdeconv/iters", 20, type=int)
-            min_iters = self.settings.value("stacking/mfdeconv/min_iters", 3, type=int)
-            kappa = self.settings.value("stacking/mfdeconv/kappa", 2.0, type=float)
-            mode = self.mf_color_combo.currentText()
-            Huber = self.settings.value("stacking/mfdeconv/Huber_delta", 0.0, type=float)
-            save_intermediate = self.mf_save_intermediate_cb.isChecked()
-            seed_mode_cfg = str(self.settings.value("stacking/mfdeconv/seed_mode", "robust"))
-            use_star_masks = self.mf_use_star_mask_cb.isChecked()
-            use_variance_maps = self.mf_use_noise_map_cb.isChecked()
-            rho = self.mf_rho_combo.currentText()
-
-            star_mask_cfg = {
-                "thresh_sigma":  self.settings.value("stacking/mfdeconv/star_mask/thresh_sigma",  _SM_DEF_THRESH, type=float),
-                "grow_px":       self.settings.value("stacking/mfdeconv/star_mask/grow_px",       _SM_DEF_GROW, type=int),
-                "soft_sigma":    self.settings.value("stacking/mfdeconv/star_mask/soft_sigma",    _SM_DEF_SOFT, type=float),
-                "max_radius_px": self.settings.value("stacking/mfdeconv/star_mask/max_radius_px", _SM_DEF_RMAX, type=int),
-                "max_objs":      self.settings.value("stacking/mfdeconv/star_mask/max_objs",      _SM_DEF_MAXOBJS, type=int),
-                "keep_floor":    self.settings.value("stacking/mfdeconv/star_mask/keep_floor",    _SM_DEF_KEEPF, type=float),
-                "ellipse_scale": self.settings.value("stacking/mfdeconv/star_mask/ellipse_scale", _SM_DEF_ES, type=float),
-            }
-            varmap_cfg = {
-                "sample_stride": self.settings.value("stacking/mfdeconv/varmap/sample_stride", _VM_DEF_STRIDE, type=int),
-                "smooth_sigma":  self.settings.value("stacking/mfdeconv/varmap/smooth_sigma", 1.0, type=float),
-                "floor":         self.settings.value("stacking/mfdeconv/varmap/floor",        1e-8, type=float),
-            }
-
-            sr_enabled_ui = self.mf_sr_cb.isChecked()
-            sr_factor_ui = getattr(self, "mf_sr_factor_spin", None)
-            sr_factor_val = sr_factor_ui.value() if sr_factor_ui is not None else self.settings.value("stacking/mfdeconv/sr_factor", 2, type=int)
-            super_res_factor = int(sr_factor_val) if sr_enabled_ui else 1
-
-            # Unique, safe filename
-            safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", str(group_key)) or "Group"
-            out_path = os.path.join(out_dir, f"MasterLight_{safe_name}_{len(frames)}f_MFDeconv_{mode}_{iters}it_k{int(round(kappa*100))}.fit")
-
-            # Thread + worker
-            self._mf_thread = QThread(self)
-
-            def _pick_mf_ref_from_frames(frames: list[str]) -> str | None:
-                """Pick a reference path for MFDeconv masks from the aligned frames list."""
-                from os import path
-                if not frames:
-                    return None
-
-                # Prefer the weighted-best frame if weights exist
-                w = getattr(self, "frame_weights", None) or {}
-                best = None
-                bestw = -1.0
-                for p in frames:
-                    pn = path.normpath(p)
-                    if not path.exists(pn):
-                        continue
-                    ww = float(w.get(pn, w.get(p, 0.0)) or 0.0)
-                    if ww > bestw:
-                        bestw, best = ww, pn
-
-                # Otherwise fall back to first existing frame
-                if best:
-                    return best
-                for p in frames:
-                    pn = path.normpath(p)
-                    if path.exists(pn):
-                        return pn
-                return None
-
-            star_mask_ref = _pick_mf_ref_from_frames(frames) if use_star_masks else None
-            if use_star_masks:
-                self.update_status(self.tr(f"🌟 MFDeconv star-mask reference → {star_mask_ref or '(none)'}"))
-
-            # ── choose engine plainly (Normal / cuDNN-free / High Octane) ─────────────
-            # Expect a setting saved by your radio buttons: "normal" | "cudnn" | "sport"
-            engine = str(self.settings.value("stacking/mfdeconv/engine", "normal")).lower()
-
-            try:
-                if engine == "cudnn":
-                    from setiastro.saspro.mfdeconvcudnn import MultiFrameDeconvWorkercuDNN as MFCls
-                    eng_name = "Normal (cuDNN-free)"
-                elif engine == "sport":  # High Octane let 'er rip
-                    from setiastro.saspro.mfdeconvsport import MultiFrameDeconvWorkerSport as MFCls
-                    eng_name = "High Octane"
-                else:
-                    from setiastro.saspro.mfdeconv import MultiFrameDeconvWorker as MFCls
-                    eng_name = "Normal"
-            except Exception as e:
-                # if an import fails, fall back to the safe Normal path
-                self.update_status(self.tr(f"⚠️ MFDeconv engine import failed ({e}); falling back to Normal."))
-                from setiastro.saspro.mfdeconv import MultiFrameDeconvWorker as MFCls
-                eng_name = "Normal (fallback)"
-
-            self.update_status(self.tr(f"⚙️ MFDeconv engine: {eng_name}"))
-
-            # ── build worker exactly the same in all modes ────────────────────────────
-            self._mf_worker = MFCls(
-                parent=None,
-                aligned_paths=frames,
-                output_path=out_path,
-                iters=iters,
-                kappa=kappa,
-                color_mode=mode,
-                huber_delta=Huber,
-                min_iters=min_iters,
-                use_star_masks=use_star_masks,
-                use_variance_maps=use_variance_maps,
-                rho=rho,
-                star_mask_cfg=star_mask_cfg,
-                varmap_cfg=varmap_cfg,
-                save_intermediate=save_intermediate,
-                super_res_factor=super_res_factor,
-                star_mask_ref_path=star_mask_ref,
-                seed_mode=seed_mode_cfg,
-            )
-
-            # Wiring
-            self._mf_worker.moveToThread(self._mf_thread)
-            self._mf_worker.progress.connect(self._on_mf_progress, Qt.ConnectionType.QueuedConnection)
-            self._mf_thread.started.connect(self._mf_worker.run, Qt.ConnectionType.QueuedConnection)
-            self._mf_worker.finished.connect(self._mf_thread.quit, Qt.ConnectionType.QueuedConnection)
-            self._mf_thread.finished.connect(self._mf_worker.deleteLater)    # free worker on thread end
-            self._mf_thread.finished.connect(self._mf_thread.deleteLater)    # free thread object
-
-            def _done(ok: bool, message: str, out: str):
-                pd = self._pd_alive()
-                if pd:
-                    try:
-                        # if you keep the 0..groups*1000 range, snap to segment boundary:
-                        val = min(pd.value() + 1000, pd.maximum())
-                        pd.setValue(val)
-                        pd.setLabelText(f"{'✅' if ok else '❌'} {group_key}: {message}")
-                    except Exception:
-                        pass
-
-                if ok and out:
-                    self._mf_results[group_key] = out
-                else:
-                    self.update_status(self.tr(f"❌ MFDeconv failed for '{group_key}': {message}"))
-
-                try:
-                    self._mf_thread.quit()
-                    self._mf_thread.wait()
-                except Exception:
-                    pass
-                self._mf_thread = None
-                self._mf_worker = None
-
-                QTimer.singleShot(0, _start_next)
-
-            self._mf_worker.finished.connect(_done, Qt.ConnectionType.QueuedConnection)
-
-            self._mf_thread.start()
-
-            if getattr(self, "_mf_pd", None):
-                pd = self._pd_alive()
-                if pd:
-                    pd.setLabelText(f"Deconvolving '{group_key}' ({len(frames)} frames)…")
-
-        QTimer.singleShot(0, _start_next)
-
-
+        # We already have "aligned" groups here. Hand them straight into the same
+        # after-align worker pipeline used by the regular registration flow.
+        self.update_status(
+            self.tr("🔄 Starting unified post-alignment pipeline (prepass → rejection maps → MFDeconv/Finalize)…")
+        )
+        self._start_after_align_worker(aligned_light_files)
 
     def integrate_registered_images(self):
         """
