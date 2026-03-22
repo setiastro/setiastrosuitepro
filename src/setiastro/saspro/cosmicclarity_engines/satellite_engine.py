@@ -279,7 +279,8 @@ def _extract_state_dict_from_checkpoint(ckpt):
 
 
 def _load_model_weights_lenient(torch, nn, model, checkpoint_path: str, device):
-    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    # Load on CPU first for maximum backend compatibility (mirrors denoise_engine)
+    ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     state_dict = _extract_state_dict_from_checkpoint(ckpt)
 
     msd = model.state_dict()
@@ -289,6 +290,7 @@ def _load_model_weights_lenient(torch, nn, model, checkpoint_path: str, device):
     unexpected = [k for k in state_dict.keys() if k not in msd]
 
     model.load_state_dict(filtered, strict=False)
+    model = model.to(device)
 
     if missing:
         print(f"[Satellite] {checkpoint_path}: missing {len(missing)} keys after filtering")
@@ -349,8 +351,9 @@ def get_satellite_models(resources: Any = None, use_gpu: bool = True, status_cb=
         # 2) torch-directml (Windows)
         if use_gpu and is_windows:
             try:
-                import torch_directml  # optional
-                _ = torch_directml.device()
+                import torch_directml
+                dml = torch_directml.device()
+                _ = (torch.ones(1, device=dml) + 1).to("cpu").item()
                 backend = "torch_dml"
             except Exception:
                 backend = "ort_dml" if ort_dml_ok else "cpu"
@@ -407,10 +410,10 @@ def get_satellite_models(resources: Any = None, use_gpu: bool = True, status_cb=
 
     nn, NAFNetSatelliteRemover, BinaryClassificationCNN, BinaryClassificationCNN2, tfm = _build_torch_models(torch)
 
-    det1 = BinaryClassificationCNN(3).to(device)
+    det1 = BinaryClassificationCNN(3)
     det1 = _load_model_weights_lenient(torch, nn, det1, p_det1, device).eval()
 
-    det2 = BinaryClassificationCNN2(3).to(device)
+    det2 = BinaryClassificationCNN2(3)
     det2 = _load_model_weights_lenient(torch, nn, det2, p_det2, device).eval()
 
     rem = NAFNetSatelliteRemover(
@@ -419,8 +422,18 @@ def get_satellite_models(resources: Any = None, use_gpu: bool = True, status_cb=
         dec_blk_nums=(2, 2, 2, 2),
         middle_blk_num=4,
         residual_out=True,
-    ).to(device)
+    )
     rem = _load_model_weights_lenient(torch, nn, rem, p_rem, device).eval()
+
+    if backend == "torch_dml":
+        try:
+            x = torch.zeros((1, 3, 256, 256), dtype=torch.float32, device=device)
+            with torch.no_grad():
+                _ = rem(x)
+            status_cb("CosmicClarity Satellite: DirectML model smoke test passed")
+        except Exception as e:
+            status_cb(f"CosmicClarity Satellite: DirectML smoke test failed ({type(e).__name__}: {e})")
+            raise
 
     out = {
         "backend": backend,

@@ -3,15 +3,15 @@ from __future__ import annotations
 import math
 import numpy as np
 
-from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF, QSettings, QByteArray
+from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF, QSettings, QByteArray, pyqtSignal, QEvent, QRect
 from PyQt6.QtGui import (
     QImage, QPixmap, QPainter, QColor, QPen, QTransform, QIcon, QFont, QPainterPath, QFontMetricsF, QFontDatabase, QTextCursor, QTextCharFormat, QBrush
 )
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox, QLabel, QPushButton,
-    QSlider, QCheckBox, QColorDialog, QComboBox, QFileDialog, QInputDialog, QMenu,
+    QSlider, QCheckBox, QColorDialog, QComboBox, QFileDialog, QInputDialog, QMenu, QFormLayout, QGraphicsLineItem,
     QMessageBox, QWidget, QGraphicsView, QGraphicsScene, QGraphicsItem,QFontComboBox, QGraphicsTextItem,
-    QGraphicsPixmapItem, QGraphicsEllipseItem, QGraphicsRectItem, QSpinBox, QScrollArea
+    QGraphicsPixmapItem, QGraphicsEllipseItem, QGraphicsRectItem, QSpinBox, QScrollArea, QToolButton, QSizePolicy
 )
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 
@@ -584,7 +584,41 @@ class TechCardItem(QGraphicsItem):
         self.setTransformOriginPoint(rect.center())
         self.update()
 
+class CollapsibleSection(QWidget):
+    toggled = pyqtSignal(bool)
 
+    def __init__(self, title: str, content: QWidget, parent=None, expanded: bool = True):
+        super().__init__(parent)
+        self._content = content
+
+        self.btn = QToolButton(self)
+        self.btn.setText(title)
+        self.btn.setCheckable(True)
+        self.btn.setChecked(expanded)
+        self.btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.btn.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
+        self.btn.clicked.connect(self._on_toggled)
+
+        self._content.setVisible(expanded)
+        self._content.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(4)
+        lay.addWidget(self.btn)
+        lay.addWidget(self._content)
+
+    def _on_toggled(self, checked: bool):
+        self.btn.setArrowType(Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow)
+        self._content.setVisible(checked)
+        self.toggled.emit(checked)
+
+    def setExpanded(self, expanded: bool):
+        self.btn.setChecked(expanded)
+        self._on_toggled(expanded)
+
+    def isExpanded(self) -> bool:
+        return self.btn.isChecked()
 
 # --------------------------- Main dialog ---------------------------
 
@@ -645,45 +679,81 @@ class SignatureInsertDialogPro(QDialog):
     def _build_ui(self):
         root = QHBoxLayout(self)
 
-        # ---- LEFT COLUMN ------------------------------------------------------
-        col = QVBoxLayout()
+        # ------------------------------------------------------------------
+        # Callout state
+        # ------------------------------------------------------------------
+        self._callout_color = QColor("white")
+        self._callout_draw_mode = False
+        self._callout_drag_start_scene = None
+        self._callout_preview_rect_item = None
+        self._callout_items_by_insert = {}   # {insert_item: {"source_rect", "rect_item", "line1", "line2"}}
 
-        # Alpha hint (always visible – simple, clear)
-        alpha_hint = QLabel("Tip: Transparent signatures — use “Load from File” to preserve PNG alpha. "
-                            "Loading from View uses RGB (no alpha).")
+        # ------------------------------------------------------------------
+        # Left panel layout (will hold collapsible sections)
+        # ------------------------------------------------------------------
+        col = QVBoxLayout()
+        self.left_panel_layout = col
+        self._collapsible_sections = {}
+
+        # ---- Load / Add ----------------------------------------------------
+        self.grp_load = QWidget(self)
+        load_lay = QVBoxLayout(self.grp_load)
+        load_lay.setContentsMargins(0, 0, 0, 0)
+        load_lay.setSpacing(6)
+
+        alpha_hint = QLabel(
+            "Tip: Transparent signatures — use “Load from File” to preserve PNG alpha. "
+            "Loading from View uses RGB (no alpha)."
+        )
         alpha_hint.setStyleSheet("color:#e0b000;")
         alpha_hint.setWordWrap(True)
-        col.addWidget(alpha_hint)
+        load_lay.addWidget(alpha_hint)
 
-        # Load controls
-        row_load = QHBoxLayout()
-        b_from_view = QPushButton("Load Insert from View…"); b_from_view.clicked.connect(self._load_from_view)
-        b_from_file = QPushButton("Load Insert from File…"); b_from_file.clicked.connect(self._load_from_file)
-        row_load.addWidget(b_from_view); row_load.addWidget(b_from_file)
-        col.addLayout(row_load)
+        row_load = QGridLayout()
 
-        # --- Text controls ----------------------------------------------------
+        b_from_view = QPushButton("Load Insert from View…")
+        b_from_view.clicked.connect(self._load_from_view)
+
+        b_from_file = QPushButton("Load Insert from File…")
+        b_from_file.clicked.connect(self._load_from_file)
+
+        self.btn_create_from_current = QPushButton("Create Insert from Current…")
+        self.btn_create_from_current.clicked.connect(self._begin_create_insert_from_current)
+
+        row_load.addWidget(b_from_view, 0, 0)
+        row_load.addWidget(b_from_file, 0, 1)
+        row_load.addWidget(self.btn_create_from_current, 1, 0, 1, 2)
+
+        load_lay.addLayout(row_load)
+
+        # ---- Text ----------------------------------------------------------
         txt_grp = QGroupBox("Text")
+        self.grp_text = txt_grp
         tg = QGridLayout(txt_grp)
 
         self.btn_add_text = QPushButton("Add Text…")
-        self.btn_edit_text = QPushButton("Edit Selected…"); self.btn_edit_text.setEnabled(False)
+        self.btn_edit_text = QPushButton("Edit Selected…")
+        self.btn_edit_text.setEnabled(False)
         self.btn_add_text.clicked.connect(self._add_text_dialog)
         self.btn_edit_text.clicked.connect(self._edit_selected_text)
 
         tg.addWidget(self.btn_add_text, 0, 0)
         tg.addWidget(self.btn_edit_text, 0, 1)
 
-        self.font_box = QFontComboBox(); self.font_box.setCurrentFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.GeneralFont))
-        self.font_size = QSpinBox(); self.font_size.setRange(4, 512); self.font_size.setValue(36)
+        self.font_box = QFontComboBox()
+        self.font_box.setCurrentFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.GeneralFont))
+        self.font_size = QSpinBox()
+        self.font_size.setRange(4, 512)
+        self.font_size.setValue(36)
         self.chk_bold = QCheckBox("Bold")
         self.chk_italic = QCheckBox("Italic")
 
         self.btn_fill = QPushButton("Fill Color…")
         self.btn_outline = QPushButton("Outline Color…")
-        self.outline_w = QSpinBox(); self.outline_w.setRange(0, 30); self.outline_w.setValue(0)
+        self.outline_w = QSpinBox()
+        self.outline_w.setRange(0, 30)
+        self.outline_w.setValue(0)
 
-        # wire style changes
         self.font_box.currentFontChanged.connect(lambda _: self._apply_text_controls_to_selected())
         self.font_size.valueChanged.connect(lambda _: self._apply_text_controls_to_selected())
         self.chk_bold.stateChanged.connect(lambda _: self._apply_text_controls_to_selected())
@@ -692,16 +762,20 @@ class SignatureInsertDialogPro(QDialog):
         self.btn_outline.clicked.connect(self._pick_text_outline)
         self.outline_w.valueChanged.connect(lambda _: self._apply_text_controls_to_selected())
 
-        tg.addWidget(QLabel("Font"), 1, 0); tg.addWidget(self.font_box, 1, 1)
-        tg.addWidget(QLabel("Size"), 2, 0); tg.addWidget(self.font_size, 2, 1)
-        tg.addWidget(self.chk_bold, 3, 0);  tg.addWidget(self.chk_italic, 3, 1)
-        tg.addWidget(self.btn_fill, 4, 0);  tg.addWidget(self.btn_outline, 4, 1)
-        tg.addWidget(QLabel("Outline (px)"), 5, 0); tg.addWidget(self.outline_w, 5, 1)
+        tg.addWidget(QLabel("Font"), 1, 0)
+        tg.addWidget(self.font_box, 1, 1)
+        tg.addWidget(QLabel("Size"), 2, 0)
+        tg.addWidget(self.font_size, 2, 1)
+        tg.addWidget(self.chk_bold, 3, 0)
+        tg.addWidget(self.chk_italic, 3, 1)
+        tg.addWidget(self.btn_fill, 4, 0)
+        tg.addWidget(self.btn_outline, 4, 1)
+        tg.addWidget(QLabel("Outline (px)"), 5, 0)
+        tg.addWidget(self.outline_w, 5, 1)
 
-        col.addWidget(txt_grp)
-
-        # --- Tech Card ---------------------------------------------------------
+        # ---- Tech Card -----------------------------------------------------
         tech_grp = QGroupBox("Technical Card")
+        self.grp_tech_card = tech_grp
         tc = QGridLayout(tech_grp)
 
         self.cb_tech = QCheckBox("Enable Tech Card")
@@ -717,7 +791,6 @@ class SignatureInsertDialogPro(QDialog):
         tc.addWidget(self.btn_tech_build, 0, 2)
         tc.addWidget(self.btn_tech_reset, 0, 3)
 
-        # field list (simple: checklist combo)
         self.cmb_tech_field = QComboBox()
         self.btn_tech_add_field = QPushButton("Add Field")
         self.btn_tech_remove_field = QPushButton("Remove Field")
@@ -733,14 +806,16 @@ class SignatureInsertDialogPro(QDialog):
         tc.addWidget(self.cmb_tech_field, 1, 1, 1, 2)
         tc.addWidget(self.btn_tech_add_field, 1, 3)
 
-        self.cmb_tech_order = QComboBox()  # shows current ordered selection
+        self.cmb_tech_order = QComboBox()
         tc.addWidget(QLabel("Order"), 2, 0)
         tc.addWidget(self.cmb_tech_order, 2, 1, 1, 2)
+
         btns = QHBoxLayout()
         btns.addWidget(self.btn_tech_remove_field)
         btns.addWidget(self.btn_tech_up)
         btns.addWidget(self.btn_tech_down)
-        w_btns = QWidget(); w_btns.setLayout(btns)
+        w_btns = QWidget()
+        w_btns.setLayout(btns)
         tc.addWidget(w_btns, 2, 3)
 
         self.cb_tech_hide_empty = QCheckBox("Hide empty fields")
@@ -748,116 +823,186 @@ class SignatureInsertDialogPro(QDialog):
         self.cb_tech_hide_empty.stateChanged.connect(lambda: self._tech_rebuild(live=True))
         tc.addWidget(self.cb_tech_hide_empty, 3, 0, 1, 2)
 
-        # style controls
-        self.sp_tech_padding = QSpinBox(); self.sp_tech_padding.setRange(0, 200); self.sp_tech_padding.setValue(16)
+        self.sp_tech_padding = QSpinBox()
+        self.sp_tech_padding.setRange(0, 200)
+        self.sp_tech_padding.setValue(16)
         self.sp_tech_padding.valueChanged.connect(lambda: self._tech_rebuild(live=True))
 
-        self.sl_tech_bg_opacity = QSlider(Qt.Orientation.Horizontal); self.sl_tech_bg_opacity.setRange(0, 100); self.sl_tech_bg_opacity.setValue(55)
+        self.sl_tech_bg_opacity = QSlider(Qt.Orientation.Horizontal)
+        self.sl_tech_bg_opacity.setRange(0, 100)
+        self.sl_tech_bg_opacity.setValue(55)
         self.sl_tech_bg_opacity.valueChanged.connect(lambda: self._tech_rebuild(live=True))
 
-        self.cb_tech_border = QCheckBox("Border"); self.cb_tech_border.setChecked(True)
+        self.cb_tech_border = QCheckBox("Border")
+        self.cb_tech_border.setChecked(True)
         self.cb_tech_border.stateChanged.connect(lambda: self._tech_rebuild(live=True))
 
-        self.sp_tech_border_w = QSpinBox(); self.sp_tech_border_w.setRange(0, 30); self.sp_tech_border_w.setValue(2)
+        self.sp_tech_border_w = QSpinBox()
+        self.sp_tech_border_w.setRange(0, 30)
+        self.sp_tech_border_w.setValue(2)
         self.sp_tech_border_w.valueChanged.connect(lambda: self._tech_rebuild(live=True))
 
         self.cmb_tech_border_style = QComboBox()
-        self.cmb_tech_border_style.addItems(["Solid","Dash","Dot","DashDot","DashDotDot"])
+        self.cmb_tech_border_style.addItems(["Solid", "Dash", "Dot", "DashDot", "DashDotDot"])
         self.cmb_tech_border_style.currentIndexChanged.connect(lambda: self._tech_rebuild(live=True))
 
-        self.btn_tech_bg = QPushButton("BG Color…"); self.btn_tech_bg.clicked.connect(self._tech_pick_bg)
-        self.btn_tech_border_color = QPushButton("Border Color…"); self.btn_tech_border_color.clicked.connect(self._tech_pick_border)
+        self.btn_tech_bg = QPushButton("BG Color…")
+        self.btn_tech_bg.clicked.connect(self._tech_pick_bg)
+        self.btn_tech_border_color = QPushButton("Border Color…")
+        self.btn_tech_border_color.clicked.connect(self._tech_pick_border)
 
-        tc.addWidget(QLabel("Padding"), 4, 0); tc.addWidget(self.sp_tech_padding, 4, 1)
-        tc.addWidget(QLabel("BG Opacity"), 5, 0); tc.addWidget(self.sl_tech_bg_opacity, 5, 1, 1, 3)
-        tc.addWidget(self.btn_tech_bg, 4, 2); tc.addWidget(self.btn_tech_border_color, 4, 3)
-        tc.addWidget(self.cb_tech_border, 6, 0); tc.addWidget(QLabel("Width"), 6, 1); tc.addWidget(self.sp_tech_border_w, 6, 2); tc.addWidget(self.cmb_tech_border_style, 6, 3)
+        tc.addWidget(QLabel("Padding"), 4, 0)
+        tc.addWidget(self.sp_tech_padding, 4, 1)
+        tc.addWidget(QLabel("BG Opacity"), 5, 0)
+        tc.addWidget(self.sl_tech_bg_opacity, 5, 1, 1, 3)
+        tc.addWidget(self.btn_tech_bg, 4, 2)
+        tc.addWidget(self.btn_tech_border_color, 4, 3)
+        tc.addWidget(self.cb_tech_border, 6, 0)
+        tc.addWidget(QLabel("Width"), 6, 1)
+        tc.addWidget(self.sp_tech_border_w, 6, 2)
+        tc.addWidget(self.cmb_tech_border_style, 6, 3)
 
-        col.addWidget(tech_grp)
-
-
-        # Transform group
+        # ---- Transform -----------------------------------------------------
         grp = QGroupBox("Transform")
+        self.grp_transform = grp
         g = QGridLayout(grp)
-        b_rot = QPushButton("Rotate +90°"); b_rot.clicked.connect(self._rotate_selected)
+
+        b_rot = QPushButton("Rotate +90°")
+        b_rot.clicked.connect(self._rotate_selected)
         g.addWidget(b_rot, 0, 0, 1, 2)
 
         g.addWidget(QLabel("Scale (%)"), 1, 0)
-        self.sl_scale = QSlider(Qt.Orientation.Horizontal); self.sl_scale.setRange(10, 400); self.sl_scale.setValue(100)
+        self.sl_scale = QSlider(Qt.Orientation.Horizontal)
+        self.sl_scale.setRange(10, 400)
+        self.sl_scale.setValue(100)
         self.sl_scale.valueChanged.connect(self._scale_selected)
         g.addWidget(self.sl_scale, 1, 1)
 
         g.addWidget(QLabel("Opacity (%)"), 2, 0)
-        self.sl_opacity = QSlider(Qt.Orientation.Horizontal); self.sl_opacity.setRange(0, 100); self.sl_opacity.setValue(100)
+        self.sl_opacity = QSlider(Qt.Orientation.Horizontal)
+        self.sl_opacity.setRange(0, 100)
+        self.sl_opacity.setValue(100)
         self.sl_opacity.valueChanged.connect(self._opacity_selected)
         g.addWidget(self.sl_opacity, 2, 1)
-        col.addWidget(grp)
 
-        # Bounding boxes
-        self.cb_draw = QCheckBox("Draw Bounding Box"); self.cb_draw.setChecked(True); self.cb_draw.stateChanged.connect(self._toggle_boxes)
-        col.addWidget(self.cb_draw)
-
+        # ---- Bounding boxes ------------------------------------------------
         grp_box = QGroupBox("Bounding Box Style")
+        self.grp_bbox = grp_box
         gb = QGridLayout(grp_box)
-        self.b_color = QPushButton("Color…"); self.b_color.clicked.connect(self._pick_box_color)
-        self.sl_thick = QSlider(Qt.Orientation.Horizontal); self.sl_thick.setRange(1, 10); self.sl_thick.setValue(2); self.sl_thick.valueChanged.connect(self._update_box_pen)
-        self.cmb_style = QComboBox(); self.cmb_style.addItems(["Solid","Dash","Dot","DashDot","DashDotDot"]); self.cmb_style.currentIndexChanged.connect(self._update_box_pen)
-        gb.addWidget(self.b_color, 0, 0, 1, 2)
-        gb.addWidget(QLabel("Thickness"), 1, 0); gb.addWidget(self.sl_thick, 1, 1)
-        gb.addWidget(QLabel("Style"), 2, 0); gb.addWidget(self.cmb_style, 2, 1)
-        col.addWidget(grp_box)
 
-        # --- Snap with margins -------------------------------------------------
-        snap_grp = QGroupBox("Send to position")
+        self.cb_draw = QCheckBox("Draw Bounding Box")
+        self.cb_draw.setChecked(True)
+        self.cb_draw.stateChanged.connect(self._toggle_boxes)
+        gb.addWidget(self.cb_draw, 0, 0, 1, 2)
+
+        self.b_color = QPushButton("Color…")
+        self.b_color.clicked.connect(self._pick_box_color)
+        self.sl_thick = QSlider(Qt.Orientation.Horizontal)
+        self.sl_thick.setRange(1, 10)
+        self.sl_thick.setValue(2)
+        self.sl_thick.valueChanged.connect(self._update_box_pen)
+        self.cmb_style = QComboBox()
+        self.cmb_style.addItems(["Solid", "Dash", "Dot", "DashDot", "DashDotDot"])
+        self.cmb_style.currentIndexChanged.connect(self._update_box_pen)
+
+        gb.addWidget(self.b_color, 1, 0, 1, 2)
+        gb.addWidget(QLabel("Thickness"), 2, 0)
+        gb.addWidget(self.sl_thick, 2, 1)
+        gb.addWidget(QLabel("Style"), 3, 0)
+        gb.addWidget(self.cmb_style, 3, 1)
+
+        # ---- Callout inset -------------------------------------------------
+        self._build_callout_group()
+
+        self._create_insert_draw_mode = False
+        self._create_insert_drag_start_scene = None
+        self._create_insert_preview_rect_item = None
+        self._create_insert_make_callout = False
+        # ---- Snap with margins --------------------------------------------
+        snap_grp = QGroupBox("Send to Position")
+        self.grp_position = snap_grp
         sg = QGridLayout(snap_grp)
 
-        # margins
         sg.addWidget(QLabel("Margin X (px)"), 0, 0)
-        self.sp_margin_x = QSpinBox(); self.sp_margin_x.setRange(0, 5000); self.sp_margin_x.setValue(20)
+        self.sp_margin_x = QSpinBox()
+        self.sp_margin_x.setRange(0, 5000)
+        self.sp_margin_x.setValue(20)
         sg.addWidget(self.sp_margin_x, 0, 1)
 
         sg.addWidget(QLabel("Margin Y (px)"), 0, 2)
-        self.sp_margin_y = QSpinBox(); self.sp_margin_y.setRange(0, 5000); self.sp_margin_y.setValue(20)
+        self.sp_margin_y = QSpinBox()
+        self.sp_margin_y.setRange(0, 5000)
+        self.sp_margin_y.setValue(20)
         sg.addWidget(self.sp_margin_y, 0, 3)
 
-        # 3x3 snap buttons
-        def s(key):  # helper to create buttons
-            btn = QPushButton(key.replace('_', ' ').title())
+        def s(key):
+            btn = QPushButton(key.replace("_", " ").title())
             btn.setMinimumWidth(105)
             btn.clicked.connect(lambda _, k=key: self._send_selected(k))
             return btn
 
-        sg.addWidget(s("top_left"),      1, 0)
-        sg.addWidget(s("top_center"),    1, 1)
-        sg.addWidget(s("top_right"),     1, 2)
-        sg.addWidget(s("middle_left"),   2, 0)
-        sg.addWidget(s("center"),        2, 1)
-        sg.addWidget(s("middle_right"),  2, 2)
-        sg.addWidget(s("bottom_left"),   3, 0)
+        sg.addWidget(s("top_left"), 1, 0)
+        sg.addWidget(s("top_center"), 1, 1)
+        sg.addWidget(s("top_right"), 1, 2)
+        sg.addWidget(s("middle_left"), 2, 0)
+        sg.addWidget(s("center"), 2, 1)
+        sg.addWidget(s("middle_right"), 2, 2)
+        sg.addWidget(s("bottom_left"), 3, 0)
         sg.addWidget(s("bottom_center"), 3, 1)
-        sg.addWidget(s("bottom_right"),  3, 2)
-        col.addWidget(snap_grp)
+        sg.addWidget(s("bottom_right"), 3, 2)
 
-        # Zoom
-        row_zoom = QHBoxLayout()
-        b_zo  = QPushButton("–"); b_zo.clicked.connect(self.view.zoom_out)
-        b_zi  = QPushButton("+"); b_zi.clicked.connect(self.view.zoom_in)
-        b_fit = QPushButton("Fit"); b_fit.clicked.connect(self.view.fit_to_view)
-        row_zoom.addWidget(QLabel("Zoom (Ctrl+Wheel):")); row_zoom.addWidget(b_zo); row_zoom.addWidget(b_zi); row_zoom.addWidget(b_fit); row_zoom.addStretch(1)
-        col.addLayout(row_zoom)
+        # ---- Zoom ----------------------------------------------------------
+        zoom_grp = QGroupBox("Zoom")
+        self.grp_zoom = zoom_grp
+        zg = QHBoxLayout(zoom_grp)
+
+        b_zo = QPushButton("–")
+        b_zo.clicked.connect(self.view.zoom_out)
+        b_zi = QPushButton("+")
+        b_zi.clicked.connect(self.view.zoom_in)
+        b_fit = QPushButton("Fit")
+        b_fit.clicked.connect(self.view.fit_to_view)
+
+        zg.addWidget(QLabel("Zoom (Ctrl+Wheel):"))
+        zg.addWidget(b_zo)
+        zg.addWidget(b_zi)
+        zg.addWidget(b_fit)
+        zg.addStretch(1)
+
+        # ---- Apply / Clear -------------------------------------------------
+        apply_grp = QGroupBox("Apply / Clear")
+        self.grp_apply = apply_grp
+        ag = QHBoxLayout(apply_grp)
+
+        b_affix = QPushButton("Affix Inserts")
+        b_affix.clicked.connect(self._affix_inserts)
+        b_clear_sel = QPushButton("Clear Selected")
+        b_clear_sel.clicked.connect(self._clear_selected)
+        b_clear = QPushButton("Clear All")
+        b_clear.clicked.connect(self._clear_inserts)
+
+        ag.addWidget(b_affix)
+        ag.addWidget(b_clear_sel)
+        ag.addWidget(b_clear)
+        ag.addStretch(1)
+
+        # ---- Collapsible section wrapper ----------------------------------
+        def add_sec(key: str, title: str, widget: QWidget, expanded: bool = True):
+            sec = CollapsibleSection(title, widget, self, expanded=expanded)
+            self._collapsible_sections[key] = sec
+            col.addWidget(sec)
+
+        add_sec("load", "Load / Add", self.grp_load, True)
+        add_sec("text", "Text", self.grp_text, False)
+        add_sec("tech", "Technical Card", self.grp_tech_card, False)
+        add_sec("transform", "Transform", self.grp_transform, True)
+        add_sec("bbox", "Bounding Box Style", self.grp_bbox, False)
+        add_sec("callout", "Inset Callout", self.grp_callout, True)
+        add_sec("position", "Send to Position", self.grp_position, False)
+        add_sec("zoom", "Zoom", self.grp_zoom, False)
+        add_sec("apply", "Apply / Clear", self.grp_apply, True)
 
         col.addStretch(1)
-
-        # Commit/Clear
-        row_commit = QHBoxLayout()
-        b_affix = QPushButton("Affix Inserts");   b_affix.clicked.connect(self._affix_inserts)
-        b_clear_sel = QPushButton("Clear Selected"); b_clear_sel.clicked.connect(self._clear_selected)
-        b_clear = QPushButton("Clear All");       b_clear.clicked.connect(self._clear_inserts)
-        row_commit.addWidget(b_affix)
-        row_commit.addWidget(b_clear_sel)   # ← NEW
-        row_commit.addWidget(b_clear)
-        row_commit.addStretch(1)
-        col.addLayout(row_commit)
 
         left = QWidget()
         left.setLayout(col)
@@ -866,13 +1011,457 @@ class SignatureInsertDialogPro(QDialog):
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setMinimumWidth(280)
         scroll.setWidget(left)
 
-        # Optional: make it feel less “webby”
-        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        # ------------------------------------------------------------------
+        # Splitter
+        # ------------------------------------------------------------------
+        from PyQt6.QtWidgets import QSplitter
+        self.main_splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        self.main_splitter.setChildrenCollapsible(False)
+        self.main_splitter.addWidget(scroll)
+        self.main_splitter.addWidget(self.view)
+        self.main_splitter.setStretchFactor(0, 0)
+        self.main_splitter.setStretchFactor(1, 1)
+        self.main_splitter.setSizes([360, 900])
 
-        root.addWidget(scroll, 0)   # instead of root.addWidget(left, 0)
-        root.addWidget(self.view, 1)
+        # Persist splitter position
+        try:
+            state = self.settings.value(self._k("layout/main_splitter"), None, type=QByteArray)
+            if state:
+                self.main_splitter.restoreState(state)
+        except Exception:
+            pass
+
+        self.main_splitter.splitterMoved.connect(lambda *_: self._save_persistent_ui())
+
+        root.addWidget(self.main_splitter, 1)
+
+        # Callout drag capture
+        self.view.viewport().installEventFilter(self)
+
+    def _begin_create_insert_from_current(self):
+        mb = QMessageBox(self)
+        mb.setWindowTitle("Create Insert from Current")
+        mb.setText("Also create this as a callout inset?")
+        mb.setInformativeText(
+            "If yes, the drawn source region will also become the callout source box "
+            "and connector lines will use the current callout settings."
+        )
+        yes_btn = mb.addButton("Yes, make callout", QMessageBox.ButtonRole.YesRole)
+        no_btn = mb.addButton("No, just create insert", QMessageBox.ButtonRole.NoRole)
+        cancel_btn = mb.addButton(QMessageBox.StandardButton.Cancel)
+        mb.setDefaultButton(no_btn)
+        mb.exec()
+
+        clicked = mb.clickedButton()
+        if clicked is cancel_btn:
+            return
+
+        self._create_insert_make_callout = (clicked is yes_btn)
+
+        # Deselect existing items so the new insert becomes the selected target
+        for it in self.scene.selectedItems():
+            it.setSelected(False)
+
+        self._create_insert_draw_mode = True
+        self._create_insert_drag_start_scene = None
+
+        # Make sure callout source-draw mode is not also active
+        self._callout_draw_mode = False
+
+        if self._create_insert_make_callout:
+            self.lbl_callout_status.setText(
+                "Drag on the image to define the source region for a new 3× callout insert."
+            )
+        else:
+            self.lbl_callout_status.setText(
+                "Drag on the image to define a source region for a new 3× insert."
+            )
+
+        self.view.setCursor(Qt.CursorShape.CrossCursor)
+
+    def _start_create_insert_preview_rect(self, scene_pos: QPointF):
+        if self._create_insert_preview_rect_item is None:
+            pen = QPen(QColor("cyan"), 2, Qt.PenStyle.DashLine)
+            pen.setCosmetic(True)
+            self._create_insert_preview_rect_item = QGraphicsRectItem()
+            self._create_insert_preview_rect_item.setPen(pen)
+            self._create_insert_preview_rect_item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+            self._create_insert_preview_rect_item.setZValue(10001)
+            self._create_insert_preview_rect_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+            self.scene.addItem(self._create_insert_preview_rect_item)
+
+        self._create_insert_preview_rect_item.setRect(QRectF(scene_pos, scene_pos))
+
+    def _update_create_insert_preview_rect(self, p1: QPointF, p2: QPointF):
+        if self._create_insert_preview_rect_item is not None:
+            self._create_insert_preview_rect_item.setRect(QRectF(p1, p2).normalized())
+
+    def _finish_create_insert_from_current(self, rect: QRectF):
+        self._create_insert_draw_mode = False
+        self._create_insert_drag_start_scene = None
+        self.view.unsetCursor()
+
+        if self._create_insert_preview_rect_item is not None:
+            try:
+                self.scene.removeItem(self._create_insert_preview_rect_item)
+            except Exception:
+                pass
+            self._create_insert_preview_rect_item = None
+
+        if rect.width() < 4 or rect.height() < 4:
+            self.lbl_callout_status.setText("Create-from-current region too small.")
+            self._create_insert_make_callout = False
+            return
+
+        try:
+            pm = self._create_insert_pixmap_from_scene_rect(rect, upscale=3)
+        except Exception as e:
+            self._create_insert_make_callout = False
+            QMessageBox.warning(self, "Create Insert from Current", str(e))
+            return
+
+        if pm is None or pm.isNull():
+            self._create_insert_make_callout = False
+            QMessageBox.warning(self, "Create Insert from Current", "Could not create insert from selected region.")
+            return
+
+        self._add_insert(pm)
+
+        # _add_insert() selects the new insert, so grab it now
+        insert_item = self._selected_insert_for_callout()
+
+        if self._create_insert_make_callout and insert_item is not None:
+            try:
+                self._set_insert_callout_source_rect(insert_item, QRectF(rect))
+                self.lbl_callout_status.setText(
+                    "Created 3× insert and attached the source region as a callout inset."
+                )
+            except Exception as e:
+                self.lbl_callout_status.setText(
+                    "Created 3× insert, but failed to attach callout source region."
+                )
+                QMessageBox.warning(self, "Create Insert from Current", f"Insert created, but callout setup failed:\n{e}")
+        else:
+            self.lbl_callout_status.setText("Created insert from current image region at 3×.")
+
+        self._create_insert_make_callout = False
+
+    def _create_insert_pixmap_from_scene_rect(self, scene_rect: QRectF, upscale: int = 3) -> QPixmap:
+        """
+        Extract a region from the current base image using scene coordinates,
+        upscale it by 3x, and return it as a QPixmap.
+        """
+        base = next(
+            (i for i in self.scene.items() if isinstance(i, QGraphicsPixmapItem) and i.zValue() == 0),
+            None
+        )
+        if base is None:
+            raise RuntimeError("No base image found.")
+
+        local_poly = base.mapFromScene(scene_rect)
+        local_rect = local_poly.boundingRect().normalized()
+
+        src_pm = base.pixmap()
+        if src_pm.isNull():
+            raise RuntimeError("Base pixmap is invalid.")
+
+        pm_rect = src_pm.rect()
+
+        x0 = max(0, int(math.floor(local_rect.left())))
+        y0 = max(0, int(math.floor(local_rect.top())))
+        x1 = min(pm_rect.width(), int(math.ceil(local_rect.right())))
+        y1 = min(pm_rect.height(), int(math.ceil(local_rect.bottom())))
+
+        w = max(0, x1 - x0)
+        h = max(0, y1 - y0)
+        if w < 2 or h < 2:
+            raise RuntimeError("Selected region is outside the image or too small.")
+
+        cropped = src_pm.copy(QRect(x0, y0, w, h))
+        if cropped.isNull():
+            raise RuntimeError("Could not crop selected region.")
+
+        up_w = max(1, w * 3)
+        up_h = max(1, h * 3)
+
+        upscaled = cropped.scaled(
+            up_w,
+            up_h,
+            Qt.AspectRatioMode.IgnoreAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
+        )
+        return upscaled
+
+    def _build_callout_group(self):
+        self.grp_callout = QGroupBox("Inset Callout")
+        lay = QVBoxLayout(self.grp_callout)
+
+        form = QFormLayout()
+        self.chk_callout_enable = QCheckBox("Enable source callout")
+        self.chk_callout_enable.setChecked(True)
+
+        self.chk_callout_show_box = QCheckBox("Show source box")
+        self.chk_callout_show_box.setChecked(True)
+
+        self.chk_callout_show_lines = QCheckBox("Show connector lines")
+        self.chk_callout_show_lines.setChecked(True)
+
+        self.cmb_callout_mode = QComboBox()
+        self.cmb_callout_mode.addItem("Auto", userData="auto")
+        self.cmb_callout_mode.addItem("Left → Right", userData="lr")
+        self.cmb_callout_mode.addItem("Right → Left", userData="rl")
+        self.cmb_callout_mode.addItem("Top → Bottom", userData="tb")
+        self.cmb_callout_mode.addItem("Bottom → Top", userData="bt")
+
+        self.sp_callout_width = QSpinBox()
+        self.sp_callout_width.setRange(1, 20)
+        self.sp_callout_width.setValue(2)
+
+        form.addRow(self.chk_callout_enable)
+        form.addRow(self.chk_callout_show_box)
+        form.addRow(self.chk_callout_show_lines)
+        form.addRow("Connector mode:", self.cmb_callout_mode)
+        form.addRow("Line width:", self.sp_callout_width)
+        lay.addLayout(form)
+
+        row = QHBoxLayout()
+        self.btn_callout_color = QPushButton("Line / Box Color…")
+        self.btn_set_source_region = QPushButton("Set Source Region")
+        self.btn_clear_source_region = QPushButton("Clear Source Region")
+        row.addWidget(self.btn_callout_color)
+        row.addWidget(self.btn_set_source_region)
+        row.addWidget(self.btn_clear_source_region)
+        lay.addLayout(row)
+
+        self.lbl_callout_status = QLabel("Select an insert, then click “Set Source Region”.")
+        self.lbl_callout_status.setWordWrap(True)
+        lay.addWidget(self.lbl_callout_status)
+
+        self.btn_callout_color.clicked.connect(self._choose_callout_color)
+        self.btn_set_source_region.clicked.connect(self._begin_set_source_region_mode)
+        self.btn_clear_source_region.clicked.connect(self._clear_selected_insert_callout)
+
+        self.chk_callout_enable.toggled.connect(self._refresh_selected_insert_callout)
+        self.chk_callout_show_box.toggled.connect(self._refresh_selected_insert_callout)
+        self.chk_callout_show_lines.toggled.connect(self._refresh_selected_insert_callout)
+        self.cmb_callout_mode.currentIndexChanged.connect(self._refresh_selected_insert_callout)
+        self.sp_callout_width.valueChanged.connect(self._refresh_selected_insert_callout)
+
+    def _choose_callout_color(self):
+        c = QColorDialog.getColor(self._callout_color, self, "Choose Callout Color")
+        if not c.isValid():
+            return
+        self._callout_color = c
+        self._refresh_all_callouts()
+
+    def _selected_insert_for_callout(self):
+        for it in self.scene.selectedItems():
+            if isinstance(it, QGraphicsPixmapItem) and it in self.inserts:
+                return it
+        return None
+
+    def _begin_set_source_region_mode(self):
+        insert_item = self._selected_insert_for_callout()
+        if insert_item is None:
+            self.lbl_callout_status.setText("Select a pixmap insert first, then click Set Source Region.")
+            return
+
+        self._callout_draw_mode = True
+        self._callout_drag_start_scene = None
+        self.lbl_callout_status.setText("Drag on the image to define the source region.")
+        self.view.setCursor(Qt.CursorShape.CrossCursor)
+
+    def _start_callout_preview_rect(self, scene_pos: QPointF):
+        if self._callout_preview_rect_item is None:
+            pen = QPen(self._callout_color, max(1, self.sp_callout_width.value()))
+            pen.setCosmetic(True)
+            self._callout_preview_rect_item = QGraphicsRectItem()
+            self._callout_preview_rect_item.setPen(pen)
+            self._callout_preview_rect_item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+            self._callout_preview_rect_item.setZValue(10000)
+            self._callout_preview_rect_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+            self.scene.addItem(self._callout_preview_rect_item)
+
+        self._callout_preview_rect_item.setRect(QRectF(scene_pos, scene_pos))
+
+    def _update_callout_preview_rect(self, p1: QPointF, p2: QPointF):
+        if self._callout_preview_rect_item is not None:
+            self._callout_preview_rect_item.setRect(QRectF(p1, p2).normalized())
+
+    def _finish_set_source_region(self, rect: QRectF):
+        self._callout_draw_mode = False
+        self._callout_drag_start_scene = None
+        self.view.unsetCursor()
+
+        if self._callout_preview_rect_item is not None:
+            try:
+                self.scene.removeItem(self._callout_preview_rect_item)
+            except Exception:
+                pass
+            self._callout_preview_rect_item = None
+
+        if rect.width() < 4 or rect.height() < 4:
+            self.lbl_callout_status.setText("Source region too small.")
+            return
+
+        insert_item = self._selected_insert_for_callout()
+        if insert_item is None:
+            self.lbl_callout_status.setText("No insert selected.")
+            return
+
+        self._set_insert_callout_source_rect(insert_item, rect)
+        self.lbl_callout_status.setText(
+            f"Source region set: {int(rect.x())}, {int(rect.y())}, "
+            f"{int(rect.width())} × {int(rect.height())}"
+        )
+
+    def _set_insert_callout_source_rect(self, insert_item, source_rect: QRectF):
+        entry = self._callout_items_by_insert.get(insert_item)
+        if entry is None:
+            entry = {
+                "source_rect": QRectF(source_rect),
+                "rect_item": None,
+                "line1": None,
+                "line2": None,
+            }
+            self._callout_items_by_insert[insert_item] = entry
+        else:
+            entry["source_rect"] = QRectF(source_rect)
+
+        self._ensure_insert_callout_scene_items(insert_item)
+        self._update_insert_callout_graphics(insert_item)
+
+    def _ensure_insert_callout_scene_items(self, insert_item):
+        entry = self._callout_items_by_insert[insert_item]
+
+        if entry["rect_item"] is None:
+            entry["rect_item"] = QGraphicsRectItem()
+            entry["rect_item"].setZValue(8999)
+            entry["rect_item"].setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+            entry["rect_item"]._is_callout_item = True
+            self.scene.addItem(entry["rect_item"])
+
+        if entry["line1"] is None:
+            entry["line1"] = QGraphicsLineItem()
+            entry["line1"].setZValue(8998)
+            entry["line1"].setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+            entry["line1"]._is_callout_item = True
+            self.scene.addItem(entry["line1"])
+
+        if entry["line2"] is None:
+            entry["line2"] = QGraphicsLineItem()
+            entry["line2"].setZValue(8998)
+            entry["line2"].setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+            entry["line2"]._is_callout_item = True
+            self.scene.addItem(entry["line2"])
+
+    def _connector_pair_points(self, source_rect: QRectF, insert_rect: QRectF, mode: str):
+        s_tl = source_rect.topLeft()
+        s_tr = source_rect.topRight()
+        s_bl = source_rect.bottomLeft()
+        s_br = source_rect.bottomRight()
+
+        i_tl = insert_rect.topLeft()
+        i_tr = insert_rect.topRight()
+        i_bl = insert_rect.bottomLeft()
+        i_br = insert_rect.bottomRight()
+
+        if mode == "lr":
+            return (s_tr, i_tl), (s_br, i_bl)
+        if mode == "rl":
+            return (s_tl, i_tr), (s_bl, i_br)
+        if mode == "tb":
+            return (s_bl, i_tl), (s_br, i_tr)
+        if mode == "bt":
+            return (s_tl, i_bl), (s_tr, i_br)
+
+        sc = source_rect.center()
+        ic = insert_rect.center()
+        dx = ic.x() - sc.x()
+        dy = ic.y() - sc.y()
+
+        if abs(dx) >= abs(dy):
+            if dx >= 0:
+                return (s_tr, i_tl), (s_br, i_bl)
+            else:
+                return (s_tl, i_tr), (s_bl, i_br)
+        else:
+            if dy >= 0:
+                return (s_bl, i_tl), (s_br, i_tr)
+            else:
+                return (s_tl, i_bl), (s_tr, i_br)
+
+    def _update_insert_callout_graphics(self, insert_item):
+        entry = self._callout_items_by_insert.get(insert_item)
+        if not entry:
+            return
+
+        enabled = self.chk_callout_enable.isChecked()
+        show_box = self.chk_callout_show_box.isChecked()
+        show_lines = self.chk_callout_show_lines.isChecked()
+        mode = self.cmb_callout_mode.currentData() or "auto"
+
+        pen = QPen(self._callout_color, max(1, self.sp_callout_width.value()))
+        pen.setCosmetic(True)
+
+        source_rect = QRectF(entry["source_rect"])
+        insert_rect = insert_item.sceneBoundingRect()
+
+        rect_item = entry["rect_item"]
+        line1 = entry["line1"]
+        line2 = entry["line2"]
+
+        rect_item.setPen(pen)
+        rect_item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+        rect_item.setRect(source_rect)
+
+        (p1a, p1b), (p2a, p2b) = self._connector_pair_points(source_rect, insert_rect, mode)
+        line1.setPen(pen)
+        line2.setPen(pen)
+        line1.setLine(p1a.x(), p1a.y(), p1b.x(), p1b.y())
+        line2.setLine(p2a.x(), p2a.y(), p2b.x(), p2b.y())
+
+        rect_item.setVisible(enabled and show_box)
+        line1.setVisible(enabled and show_lines)
+        line2.setVisible(enabled and show_lines)
+
+    def _refresh_selected_insert_callout(self):
+        insert_item = self._selected_insert_for_callout()
+        if insert_item is not None:
+            self._update_insert_callout_graphics(insert_item)
+
+    def _refresh_all_callouts(self):
+        for insert_item in list(self._callout_items_by_insert.keys()):
+            try:
+                self._update_insert_callout_graphics(insert_item)
+            except RuntimeError:
+                pass
+
+    def _clear_callout_for_item(self, insert_item):
+        entry = self._callout_items_by_insert.pop(insert_item, None)
+        if not entry:
+            return
+
+        for key in ("rect_item", "line1", "line2"):
+            it = entry.get(key)
+            if it is not None:
+                try:
+                    self.scene.removeItem(it)
+                except Exception:
+                    pass
+
+    def _clear_selected_insert_callout(self):
+        insert_item = self._selected_insert_for_callout()
+        if insert_item is None:
+            self.lbl_callout_status.setText("No insert selected.")
+            return
+
+        self._clear_callout_for_item(insert_item)
+        self.lbl_callout_status.setText("Source region cleared.")
 
     def _k(self, key: str) -> str:
         return f"{self._persist_prefix}/{key}"
@@ -1006,6 +1595,13 @@ class SignatureInsertDialogPro(QDialog):
 
         s.setValue(self._k("tech/fields_order"), list(self.tech_fields_order))
         s.setValue(self._k("tech/fields_enabled"), list(self.tech_fields_enabled))
+
+        # ---- Splitter ----
+        try:
+            if hasattr(self, "main_splitter"):
+                s.setValue(self._k("layout/main_splitter"), self.main_splitter.saveState())
+        except Exception:
+            pass
 
         try:
             s.sync()
@@ -1364,10 +1960,6 @@ class SignatureInsertDialogPro(QDialog):
         # wrapper to match your signal connect
         self._on_add_text()
 
-    def _add_text_dialog(self):
-        # wrapper to match your signal connect
-        self._on_add_text()
-
     def _edit_selected_text(self):
         items = self._selected_text_items()
         if not items:
@@ -1423,9 +2015,12 @@ class SignatureInsertDialogPro(QDialog):
             ti.setTextCursor(cur)
 
     def _remove_item_and_accessories(self, item: QGraphicsItem):
+        # Remove callout linked to this insert
+        if isinstance(item, QGraphicsPixmapItem) and item in self.inserts:
+            self._clear_callout_for_item(item)
+
         # Remove child bounding box if present & tracked
         if isinstance(item, QGraphicsPixmapItem):
-            # child rect we added lives as parentItem(item)
             for r in list(self.bounding_boxes):
                 if r.parentItem() is item:
                     try:
@@ -1442,13 +2037,11 @@ class SignatureInsertDialogPro(QDialog):
                 except Exception:
                     pass
 
-        # Remove from our tracking lists
         if isinstance(item, QGraphicsPixmapItem) and item in self.inserts:
             self.inserts.remove(item)
         if isinstance(item, QGraphicsTextItem) and item in self.text_inserts:
             self.text_inserts.remove(item)
 
-        # Finally remove the item itself
         try:
             self.scene.removeItem(item)
         except Exception:
@@ -1456,7 +2049,6 @@ class SignatureInsertDialogPro(QDialog):
 
     def _clear_selected(self):
         for it in list(self.scene.selectedItems()):
-            # only user inserts (pixmaps) and text inserts are removable
             if (isinstance(it, QGraphicsPixmapItem) and it in self.inserts) or isinstance(it, QGraphicsTextItem):
                 self._remove_item_and_accessories(it)
 
@@ -1475,11 +2067,17 @@ class SignatureInsertDialogPro(QDialog):
             if isinstance(ti, OutlinedTextItem):
                 self.outline_w.setValue(int(round(ti._outline_w)))
 
-        # ── NEW: when a text item becomes unselected, clear any in-text highlight
         selected_set = set(texts)
         for it in self.text_inserts:
             if it not in selected_set:
                 self._clear_text_selection(it)
+
+        ins = self._selected_insert_for_callout()
+        if ins is not None:
+            if ins in self._callout_items_by_insert:
+                self.lbl_callout_status.setText("Selected insert has a source region.")
+            else:
+                self.lbl_callout_status.setText("Selected insert has no source region yet.")
 
 
     def _current_qfont(self) -> QFont:
@@ -1536,17 +2134,27 @@ class SignatureInsertDialogPro(QDialog):
             if isinstance(it, TransformHandle):
                 it.update_position()
 
+        # Keep callout connector lines live as inserts move/scale/rotate
+        self._refresh_all_callouts()
+
     def _update_base_image(self):
-        # scene.clear() deletes the underlying C++ objects for all scene items
         self.scene.clear()
 
-        # IMPORTANT: clear all Python references to scene-owned items so we do not
-        # touch wrapped objects that Qt has already deleted.
         self.inserts = []
         self.bounding_boxes = []
         self.text_inserts = []
         self.tech_card_item = None
         self.tech_card_text = None
+
+        self._callout_draw_mode = False
+        self._callout_drag_start_scene = None
+        self._callout_preview_rect_item = None
+        self._callout_items_by_insert = {}
+
+        self._create_insert_draw_mode = False
+        self._create_insert_drag_start_scene = None
+        self._create_insert_preview_rect_item = None
+        self._create_insert_make_callout = False
 
         arr = np.asarray(self.doc.image, dtype=np.float32)
         if arr is None:
@@ -1602,8 +2210,10 @@ class SignatureInsertDialogPro(QDialog):
         it.setTransformOriginPoint(it.boundingRect().center())
         it.setZValue(1)
         it.setOpacity(1.0)
+        it._is_insert_item = True
         self.scene.addItem(it)
         self.inserts.append(it)
+
         TransformHandle(it, self.scene)
 
         if self.bounding_boxes_enabled:
@@ -1615,6 +2225,8 @@ class SignatureInsertDialogPro(QDialog):
             rect.setZValue(it.zValue() + 0.1)
             self.scene.addItem(rect)
             self.bounding_boxes.append(rect)
+
+        it.setSelected(True)
 
 
     def _send_selected(self, key: str):
@@ -1772,46 +2384,47 @@ class SignatureInsertDialogPro(QDialog):
         try:
             self._save_window_geometry()
         except Exception:
-            pass        
-        if not (self.inserts or self._selected_text_items() or any(isinstance(i, QGraphicsTextItem) for i in self.scene.items())):
+            pass
+
+        has_any_overlay = bool(self.inserts) or bool(self.text_inserts) or (self.tech_card_item is not None)
+        if not has_any_overlay:
             QMessageBox.information(self, "Signature / Insert", "Nothing to affix.")
             return
 
-        # Deselect everything to avoid selection outlines in the render
         for it in self.scene.selectedItems():
             it.setSelected(False)
 
-        # honor box visibility
         hidden_boxes = []
         if not self.bounding_boxes_enabled:
             for r in self.bounding_boxes:
-                r.setVisible(False); hidden_boxes.append(r)
+                r.setVisible(False)
+                hidden_boxes.append(r)
 
-        # gather background + pixmap inserts + text + (maybe) boxes
         items = []
         for it in self.scene.items():
             if isinstance(it, QGraphicsPixmapItem) and it.zValue() == 0:
-                items.append(it)  # background
+                items.append(it)
             elif isinstance(it, QGraphicsPixmapItem) and it in self.inserts:
                 items.append(it)
             elif isinstance(it, QGraphicsTextItem):
                 items.append(it)
-            elif self.bounding_boxes_enabled and isinstance(it, QGraphicsRectItem):
-                items.append(it)
             elif isinstance(it, TechCardItem):
                 items.append(it)
+            elif getattr(it, "_is_callout_item", False) and it.isVisible():
+                items.append(it)
+            elif self.bounding_boxes_enabled and isinstance(it, QGraphicsRectItem) and it in self.bounding_boxes:
+                items.append(it)
 
-        # compute scene bbox
         bbox = QRectF()
         for it in items:
             bbox = bbox.united(it.sceneBoundingRect())
         bbox = bbox.normalized()
+
         x, y = int(bbox.left()), int(bbox.top())
         w, h = int(bbox.right()) - x, int(bbox.bottom()) - y
         if w <= 0 or h <= 0:
             return
 
-        # Temporarily suppress in-text selection highlights for text items
         text_states = []
         for it in self.scene.items():
             if isinstance(it, QGraphicsTextItem):
@@ -1821,7 +2434,6 @@ class SignatureInsertDialogPro(QDialog):
                     it.textCursor(),
                     it.hasFocus()
                 ))
-                # clear any selection highlight and disable editing visuals
                 cur = it.textCursor()
                 if cur.hasSelection():
                     cur.clearSelection()
@@ -1829,15 +2441,14 @@ class SignatureInsertDialogPro(QDialog):
                 it.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
                 it.clearFocus()
 
-        # temporarily hide non-items
         hidden = []
         for it in self.scene.items():
             if it not in items:
-                it.setVisible(False); hidden.append(it)
+                it.setVisible(False)
+                hidden.append(it)
 
-        self._scrub_text_highlights_for_render()        
+        self._scrub_text_highlights_for_render()
 
-        # --- render ---
         out = QImage(w, h, QImage.Format.Format_ARGB32)
         out.fill(Qt.GlobalColor.transparent)
         p = QPainter(out)
@@ -1846,18 +2457,17 @@ class SignatureInsertDialogPro(QDialog):
 
         self._restore_text_state_after_render()
 
-        # restore hidden things
-        for it in hidden: it.setVisible(True)
-        for r in hidden_boxes: r.setVisible(True)
+        for it in hidden:
+            it.setVisible(True)
+        for r in hidden_boxes:
+            r.setVisible(True)
 
-        # restore text editability / state
         for it, flags, cursor, had_focus in text_states:
             it.setTextInteractionFlags(flags)
             it.setTextCursor(cursor)
             if had_focus:
                 it.setFocus()
 
-        # drop alpha → RGB, write back to doc
         arr = self._qimage_to_numpy(out)
         if arr.shape[2] == 4:
             arr = arr[:, :, :3]
@@ -1870,29 +2480,46 @@ class SignatureInsertDialogPro(QDialog):
         else:
             self.doc.image = arr
 
-        # cleanup
         self._clear_inserts()
         self._update_base_image()
 
-
     def _clear_inserts(self):
-        # remove all user pixmap inserts
         for it in list(self.inserts):
             self._remove_item_and_accessories(it)
         self.inserts.clear()
 
-        # remove all text inserts
         for ti in list(self.text_inserts):
             self._remove_item_and_accessories(ti)
         self.text_inserts.clear()
 
-        # any stray boxes that weren't parented/cleaned
         for r in list(self.bounding_boxes):
             try:
                 self.scene.removeItem(r)
             except Exception:
                 pass
         self.bounding_boxes.clear()
+
+        for insert_item in list(self._callout_items_by_insert.keys()):
+            self._clear_callout_for_item(insert_item)
+        self._callout_items_by_insert.clear()
+
+        if self._callout_preview_rect_item is not None:
+            try:
+                self.scene.removeItem(self._callout_preview_rect_item)
+            except Exception:
+                pass
+            self._callout_preview_rect_item = None
+
+        if self._create_insert_preview_rect_item is not None:
+            try:
+                self.scene.removeItem(self._create_insert_preview_rect_item)
+            except Exception:
+                pass
+            self._create_insert_preview_rect_item = None
+
+        self._create_insert_draw_mode = False
+        self._create_insert_drag_start_scene = None
+        self._create_insert_make_callout = False
 
     def _build_tech_field_catalog(self) -> dict[str, str]:
         """
@@ -1999,6 +2626,96 @@ class SignatureInsertDialogPro(QDialog):
         buf = np.frombuffer(ptr, dtype=np.uint8).reshape((h, q.bytesPerLine()))
         arr = buf[:, :w*4].reshape((h, w, 4)).astype(np.float32)/255.0
         return arr
+
+    def _cancel_create_insert_mode(self):
+        self._create_insert_draw_mode = False
+        self._create_insert_drag_start_scene = None
+        self._create_insert_make_callout = False
+        self.view.unsetCursor()
+
+        if self._create_insert_preview_rect_item is not None:
+            try:
+                self.scene.removeItem(self._create_insert_preview_rect_item)
+            except Exception:
+                pass
+            self._create_insert_preview_rect_item = None
+
+        self.lbl_callout_status.setText("Create insert from current cancelled.")
+
+    def _cancel_callout_draw_mode(self):
+        self._callout_draw_mode = False
+        self._callout_drag_start_scene = None
+        self.view.unsetCursor()
+
+        if self._callout_preview_rect_item is not None:
+            try:
+                self.scene.removeItem(self._callout_preview_rect_item)
+            except Exception:
+                pass
+            self._callout_preview_rect_item = None
+
+        self.lbl_callout_status.setText("Set source region cancelled.")
+
+    def eventFilter(self, obj, event):
+        try:
+            if obj is self.view.viewport():
+
+                # ----------------------------------------------------------
+                # Create insert from current mode
+                # ----------------------------------------------------------
+                if self._create_insert_draw_mode:
+                    if event.type() == QEvent.Type.MouseButtonPress:
+                        if event.button() == Qt.MouseButton.LeftButton:
+                            pos = self.view.mapToScene(event.pos())
+                            self._create_insert_drag_start_scene = pos
+                            self._start_create_insert_preview_rect(pos)
+                            return True
+                        elif event.button() == Qt.MouseButton.RightButton:
+                            self._cancel_create_insert_mode()
+                            return True
+
+                    if event.type() == QEvent.Type.MouseMove and self._create_insert_drag_start_scene is not None:
+                        pos = self.view.mapToScene(event.pos())
+                        self._update_create_insert_preview_rect(self._create_insert_drag_start_scene, pos)
+                        return True
+
+                    if event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
+                        if self._create_insert_drag_start_scene is not None:
+                            pos = self.view.mapToScene(event.pos())
+                            rect = QRectF(self._create_insert_drag_start_scene, pos).normalized()
+                            self._finish_create_insert_from_current(rect)
+                            return True
+
+                # ----------------------------------------------------------
+                # Callout source region mode
+                # ----------------------------------------------------------
+                if self._callout_draw_mode:
+                    if event.type() == QEvent.Type.MouseButtonPress:
+                        if event.button() == Qt.MouseButton.LeftButton:
+                            pos = self.view.mapToScene(event.pos())
+                            self._callout_drag_start_scene = pos
+                            self._start_callout_preview_rect(pos)
+                            return True
+                        elif event.button() == Qt.MouseButton.RightButton:
+                            self._cancel_callout_draw_mode()
+                            return True
+
+                    if event.type() == QEvent.Type.MouseMove and self._callout_drag_start_scene is not None:
+                        pos = self.view.mapToScene(event.pos())
+                        self._update_callout_preview_rect(self._callout_drag_start_scene, pos)
+                        return True
+
+                    if event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
+                        if self._callout_drag_start_scene is not None:
+                            pos = self.view.mapToScene(event.pos())
+                            rect = QRectF(self._callout_drag_start_scene, pos).normalized()
+                            self._finish_set_source_region(rect)
+                            return True
+
+        except Exception:
+            pass
+
+        return super().eventFilter(obj, event)
 
     def _restore_window_geometry(self):
         try:
