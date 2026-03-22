@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import numpy as np
 
-from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF, QSettings, QByteArray, pyqtSignal, QEvent
+from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF, QSettings, QByteArray, pyqtSignal, QEvent, QRect
 from PyQt6.QtGui import (
     QImage, QPixmap, QPainter, QColor, QPen, QTransform, QIcon, QFont, QPainterPath, QFontMetricsF, QFontDatabase, QTextCursor, QTextCharFormat, QBrush
 )
@@ -709,13 +709,21 @@ class SignatureInsertDialogPro(QDialog):
         alpha_hint.setWordWrap(True)
         load_lay.addWidget(alpha_hint)
 
-        row_load = QHBoxLayout()
+        row_load = QGridLayout()
+
         b_from_view = QPushButton("Load Insert from View…")
         b_from_view.clicked.connect(self._load_from_view)
+
         b_from_file = QPushButton("Load Insert from File…")
         b_from_file.clicked.connect(self._load_from_file)
-        row_load.addWidget(b_from_view)
-        row_load.addWidget(b_from_file)
+
+        self.btn_create_from_current = QPushButton("Create Insert from Current…")
+        self.btn_create_from_current.clicked.connect(self._begin_create_insert_from_current)
+
+        row_load.addWidget(b_from_view, 0, 0)
+        row_load.addWidget(b_from_file, 0, 1)
+        row_load.addWidget(self.btn_create_from_current, 1, 0, 1, 2)
+
         load_lay.addLayout(row_load)
 
         # ---- Text ----------------------------------------------------------
@@ -906,6 +914,10 @@ class SignatureInsertDialogPro(QDialog):
         # ---- Callout inset -------------------------------------------------
         self._build_callout_group()
 
+        self._create_insert_draw_mode = False
+        self._create_insert_drag_start_scene = None
+        self._create_insert_preview_rect_item = None
+        self._create_insert_make_callout = False
         # ---- Snap with margins --------------------------------------------
         snap_grp = QGroupBox("Send to Position")
         self.grp_position = snap_grp
@@ -1029,6 +1041,160 @@ class SignatureInsertDialogPro(QDialog):
 
         # Callout drag capture
         self.view.viewport().installEventFilter(self)
+
+    def _begin_create_insert_from_current(self):
+        mb = QMessageBox(self)
+        mb.setWindowTitle("Create Insert from Current")
+        mb.setText("Also create this as a callout inset?")
+        mb.setInformativeText(
+            "If yes, the drawn source region will also become the callout source box "
+            "and connector lines will use the current callout settings."
+        )
+        yes_btn = mb.addButton("Yes, make callout", QMessageBox.ButtonRole.YesRole)
+        no_btn = mb.addButton("No, just create insert", QMessageBox.ButtonRole.NoRole)
+        cancel_btn = mb.addButton(QMessageBox.StandardButton.Cancel)
+        mb.setDefaultButton(no_btn)
+        mb.exec()
+
+        clicked = mb.clickedButton()
+        if clicked is cancel_btn:
+            return
+
+        self._create_insert_make_callout = (clicked is yes_btn)
+
+        # Deselect existing items so the new insert becomes the selected target
+        for it in self.scene.selectedItems():
+            it.setSelected(False)
+
+        self._create_insert_draw_mode = True
+        self._create_insert_drag_start_scene = None
+
+        # Make sure callout source-draw mode is not also active
+        self._callout_draw_mode = False
+
+        if self._create_insert_make_callout:
+            self.lbl_callout_status.setText(
+                "Drag on the image to define the source region for a new 3× callout insert."
+            )
+        else:
+            self.lbl_callout_status.setText(
+                "Drag on the image to define a source region for a new 3× insert."
+            )
+
+        self.view.setCursor(Qt.CursorShape.CrossCursor)
+
+    def _start_create_insert_preview_rect(self, scene_pos: QPointF):
+        if self._create_insert_preview_rect_item is None:
+            pen = QPen(QColor("cyan"), 2, Qt.PenStyle.DashLine)
+            pen.setCosmetic(True)
+            self._create_insert_preview_rect_item = QGraphicsRectItem()
+            self._create_insert_preview_rect_item.setPen(pen)
+            self._create_insert_preview_rect_item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+            self._create_insert_preview_rect_item.setZValue(10001)
+            self._create_insert_preview_rect_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+            self.scene.addItem(self._create_insert_preview_rect_item)
+
+        self._create_insert_preview_rect_item.setRect(QRectF(scene_pos, scene_pos))
+
+    def _update_create_insert_preview_rect(self, p1: QPointF, p2: QPointF):
+        if self._create_insert_preview_rect_item is not None:
+            self._create_insert_preview_rect_item.setRect(QRectF(p1, p2).normalized())
+
+    def _finish_create_insert_from_current(self, rect: QRectF):
+        self._create_insert_draw_mode = False
+        self._create_insert_drag_start_scene = None
+        self.view.unsetCursor()
+
+        if self._create_insert_preview_rect_item is not None:
+            try:
+                self.scene.removeItem(self._create_insert_preview_rect_item)
+            except Exception:
+                pass
+            self._create_insert_preview_rect_item = None
+
+        if rect.width() < 4 or rect.height() < 4:
+            self.lbl_callout_status.setText("Create-from-current region too small.")
+            self._create_insert_make_callout = False
+            return
+
+        try:
+            pm = self._create_insert_pixmap_from_scene_rect(rect, upscale=3)
+        except Exception as e:
+            self._create_insert_make_callout = False
+            QMessageBox.warning(self, "Create Insert from Current", str(e))
+            return
+
+        if pm is None or pm.isNull():
+            self._create_insert_make_callout = False
+            QMessageBox.warning(self, "Create Insert from Current", "Could not create insert from selected region.")
+            return
+
+        self._add_insert(pm)
+
+        # _add_insert() selects the new insert, so grab it now
+        insert_item = self._selected_insert_for_callout()
+
+        if self._create_insert_make_callout and insert_item is not None:
+            try:
+                self._set_insert_callout_source_rect(insert_item, QRectF(rect))
+                self.lbl_callout_status.setText(
+                    "Created 3× insert and attached the source region as a callout inset."
+                )
+            except Exception as e:
+                self.lbl_callout_status.setText(
+                    "Created 3× insert, but failed to attach callout source region."
+                )
+                QMessageBox.warning(self, "Create Insert from Current", f"Insert created, but callout setup failed:\n{e}")
+        else:
+            self.lbl_callout_status.setText("Created insert from current image region at 3×.")
+
+        self._create_insert_make_callout = False
+
+    def _create_insert_pixmap_from_scene_rect(self, scene_rect: QRectF, upscale: int = 3) -> QPixmap:
+        """
+        Extract a region from the current base image using scene coordinates,
+        upscale it by 3x, and return it as a QPixmap.
+        """
+        base = next(
+            (i for i in self.scene.items() if isinstance(i, QGraphicsPixmapItem) and i.zValue() == 0),
+            None
+        )
+        if base is None:
+            raise RuntimeError("No base image found.")
+
+        local_poly = base.mapFromScene(scene_rect)
+        local_rect = local_poly.boundingRect().normalized()
+
+        src_pm = base.pixmap()
+        if src_pm.isNull():
+            raise RuntimeError("Base pixmap is invalid.")
+
+        pm_rect = src_pm.rect()
+
+        x0 = max(0, int(math.floor(local_rect.left())))
+        y0 = max(0, int(math.floor(local_rect.top())))
+        x1 = min(pm_rect.width(), int(math.ceil(local_rect.right())))
+        y1 = min(pm_rect.height(), int(math.ceil(local_rect.bottom())))
+
+        w = max(0, x1 - x0)
+        h = max(0, y1 - y0)
+        if w < 2 or h < 2:
+            raise RuntimeError("Selected region is outside the image or too small.")
+
+        cropped = src_pm.copy(QRect(x0, y0, w, h))
+        if cropped.isNull():
+            raise RuntimeError("Could not crop selected region.")
+
+        up_w = max(1, w * 3)
+        up_h = max(1, h * 3)
+
+        upscaled = cropped.scaled(
+            up_w,
+            up_h,
+            Qt.AspectRatioMode.IgnoreAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
+        )
+        return upscaled
 
     def _build_callout_group(self):
         self.grp_callout = QGroupBox("Inset Callout")
@@ -1985,6 +2151,11 @@ class SignatureInsertDialogPro(QDialog):
         self._callout_preview_rect_item = None
         self._callout_items_by_insert = {}
 
+        self._create_insert_draw_mode = False
+        self._create_insert_drag_start_scene = None
+        self._create_insert_preview_rect_item = None
+        self._create_insert_make_callout = False
+
         arr = np.asarray(self.doc.image, dtype=np.float32)
         if arr is None:
             return
@@ -2312,7 +2483,6 @@ class SignatureInsertDialogPro(QDialog):
         self._clear_inserts()
         self._update_base_image()
 
-
     def _clear_inserts(self):
         for it in list(self.inserts):
             self._remove_item_and_accessories(it)
@@ -2339,6 +2509,17 @@ class SignatureInsertDialogPro(QDialog):
             except Exception:
                 pass
             self._callout_preview_rect_item = None
+
+        if self._create_insert_preview_rect_item is not None:
+            try:
+                self.scene.removeItem(self._create_insert_preview_rect_item)
+            except Exception:
+                pass
+            self._create_insert_preview_rect_item = None
+
+        self._create_insert_draw_mode = False
+        self._create_insert_drag_start_scene = None
+        self._create_insert_make_callout = False
 
     def _build_tech_field_catalog(self) -> dict[str, str]:
         """
@@ -2446,26 +2627,91 @@ class SignatureInsertDialogPro(QDialog):
         arr = buf[:, :w*4].reshape((h, w, 4)).astype(np.float32)/255.0
         return arr
 
+    def _cancel_create_insert_mode(self):
+        self._create_insert_draw_mode = False
+        self._create_insert_drag_start_scene = None
+        self._create_insert_make_callout = False
+        self.view.unsetCursor()
+
+        if self._create_insert_preview_rect_item is not None:
+            try:
+                self.scene.removeItem(self._create_insert_preview_rect_item)
+            except Exception:
+                pass
+            self._create_insert_preview_rect_item = None
+
+        self.lbl_callout_status.setText("Create insert from current cancelled.")
+
+    def _cancel_callout_draw_mode(self):
+        self._callout_draw_mode = False
+        self._callout_drag_start_scene = None
+        self.view.unsetCursor()
+
+        if self._callout_preview_rect_item is not None:
+            try:
+                self.scene.removeItem(self._callout_preview_rect_item)
+            except Exception:
+                pass
+            self._callout_preview_rect_item = None
+
+        self.lbl_callout_status.setText("Set source region cancelled.")
+
     def eventFilter(self, obj, event):
         try:
-            if obj is self.view.viewport() and self._callout_draw_mode:
-                if event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
-                    pos = self.view.mapToScene(event.pos())
-                    self._callout_drag_start_scene = pos
-                    self._start_callout_preview_rect(pos)
-                    return True
+            if obj is self.view.viewport():
 
-                if event.type() == QEvent.Type.MouseMove and self._callout_drag_start_scene is not None:
-                    pos = self.view.mapToScene(event.pos())
-                    self._update_callout_preview_rect(self._callout_drag_start_scene, pos)
-                    return True
+                # ----------------------------------------------------------
+                # Create insert from current mode
+                # ----------------------------------------------------------
+                if self._create_insert_draw_mode:
+                    if event.type() == QEvent.Type.MouseButtonPress:
+                        if event.button() == Qt.MouseButton.LeftButton:
+                            pos = self.view.mapToScene(event.pos())
+                            self._create_insert_drag_start_scene = pos
+                            self._start_create_insert_preview_rect(pos)
+                            return True
+                        elif event.button() == Qt.MouseButton.RightButton:
+                            self._cancel_create_insert_mode()
+                            return True
 
-                if event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
-                    if self._callout_drag_start_scene is not None:
+                    if event.type() == QEvent.Type.MouseMove and self._create_insert_drag_start_scene is not None:
                         pos = self.view.mapToScene(event.pos())
-                        rect = QRectF(self._callout_drag_start_scene, pos).normalized()
-                        self._finish_set_source_region(rect)
+                        self._update_create_insert_preview_rect(self._create_insert_drag_start_scene, pos)
                         return True
+
+                    if event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
+                        if self._create_insert_drag_start_scene is not None:
+                            pos = self.view.mapToScene(event.pos())
+                            rect = QRectF(self._create_insert_drag_start_scene, pos).normalized()
+                            self._finish_create_insert_from_current(rect)
+                            return True
+
+                # ----------------------------------------------------------
+                # Callout source region mode
+                # ----------------------------------------------------------
+                if self._callout_draw_mode:
+                    if event.type() == QEvent.Type.MouseButtonPress:
+                        if event.button() == Qt.MouseButton.LeftButton:
+                            pos = self.view.mapToScene(event.pos())
+                            self._callout_drag_start_scene = pos
+                            self._start_callout_preview_rect(pos)
+                            return True
+                        elif event.button() == Qt.MouseButton.RightButton:
+                            self._cancel_callout_draw_mode()
+                            return True
+
+                    if event.type() == QEvent.Type.MouseMove and self._callout_drag_start_scene is not None:
+                        pos = self.view.mapToScene(event.pos())
+                        self._update_callout_preview_rect(self._callout_drag_start_scene, pos)
+                        return True
+
+                    if event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
+                        if self._callout_drag_start_scene is not None:
+                            pos = self.view.mapToScene(event.pos())
+                            rect = QRectF(self._callout_drag_start_scene, pos).normalized()
+                            self._finish_set_source_region(rect)
+                            return True
+
         except Exception:
             pass
 
