@@ -45,7 +45,7 @@ git pull --ff-only origin "$BRANCH"
 
 echo ""
 echo "Installing/updating package..."
-$PIP_CMD install --force-reinstall .
+$PIP_CMD install -e .
 
 echo ""
 echo "✅ Updated to latest on '$BRANCH' and reinstalled."
