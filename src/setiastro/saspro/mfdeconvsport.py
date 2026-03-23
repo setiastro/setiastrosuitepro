@@ -2092,7 +2092,29 @@ def multiframe_deconv(
                 )
 
     var_list = _ensure_var_list(variances if variances is not None else auto_vars, data)
-
+    # Final safety: force masks to strict validity masks in [0,1]
+    # 0 = rejected, 1 = valid
+    if mask_list is not None:
+        cleaned = []
+        for i, m in enumerate(mask_list):
+            if m is None:
+                cleaned.append(None)
+                continue
+            mm = np.asarray(m, dtype=np.float32)
+            if mm.ndim == 3:
+                mm = mm[0]
+            # Anything > 0 counts as valid here because worker already inverted
+            mm = np.where(mm > 0.0, 1.0, 0.0).astype(np.float32, copy=False)
+            cleaned.append(mm)
+            try:
+                status_cb(
+                    f"MFDeconv mask[{i+1}/{len(mask_list)}]: "
+                    f"valid_px={int(np.count_nonzero(mm > 0.5))} "
+                    f"rejected_px={int(np.count_nonzero(mm <= 0.5))}"
+                )
+            except Exception:
+                pass
+        mask_list = cleaned
     iter_dir = None
     hdr0_seed = None
     if save_intermediate:
@@ -2530,54 +2552,80 @@ class MultiFrameDeconvWorkerSport(QObject):
 
         Supported entry formats:
         - [(x, y), ...]
-        - [(x0, y0, mask_bool_2d), ...]
+        - [(x0, y0, mask_2d), ...]   where any nonzero in mask_2d = rejected
         """
         import numpy as np
+        import os
 
         if entry is None:
+            self._log(f"MFDeconv mask build: no entry for {os.path.basename(path)}")
             return None
 
+        # Robust shape handling: mono may be (H,W), color may be (C,H,W) or (H,W,C)
         try:
-            C, H, W = _read_shape_fast(path)
-        except Exception:
+            shp = tuple(_read_shape_fast(path))
+        except Exception as e:
+            self._log(f"MFDeconv mask build: shape read failed for {os.path.basename(path)}: {e}")
+            return None
+
+        if len(shp) == 2:
+            H, W = int(shp[0]), int(shp[1])
+        elif len(shp) == 3:
+            # assume CHW if first dim is small, else HWC
+            if shp[0] in (1, 3, 4):
+                _, H, W = int(shp[0]), int(shp[1]), int(shp[2])
+            else:
+                H, W, _ = int(shp[0]), int(shp[1]), int(shp[2])
+        else:
+            self._log(f"MFDeconv mask build: unsupported shape {shp} for {os.path.basename(path)}")
             return None
 
         valid = np.ones((H, W), dtype=np.float32)
 
         if not isinstance(entry, (list, tuple)) or len(entry) == 0:
+            self._log(f"MFDeconv mask build: empty entry for {os.path.basename(path)}")
             return valid
 
         first = entry[0]
 
-        # ----------------------------------------------------------
+        # -----------------------------------------
         # Old XY format: [(x, y), ...]
-        # ----------------------------------------------------------
+        # -----------------------------------------
         if isinstance(first, (list, tuple)) and len(first) == 2:
+            rej_count = 0
             for it in entry:
                 try:
-                    x, y = it
-                    x = int(x)
-                    y = int(y)
+                    x, y = int(it[0]), int(it[1])
                 except Exception:
                     continue
                 if 0 <= y < H and 0 <= x < W:
-                    valid[y, x] = 0.0
+                    if valid[y, x] != 0.0:
+                        valid[y, x] = 0.0
+                        rej_count += 1
+
+            self._log(
+                f"MFDeconv XY mask: {os.path.basename(path)} "
+                f"points={len(entry)} rejected_px={rej_count}"
+            )
             return valid
 
-        # ----------------------------------------------------------
-        # Tilemask format: [(x0, y0, mask_bool_2d), ...]
-        # mask True = rejected
-        # ----------------------------------------------------------
+        # -----------------------------------------
+        # Tilemask format: [(x0, y0, mask_2d), ...]
+        # Any nonzero value in mask = rejected
+        # -----------------------------------------
         if isinstance(first, (list, tuple)) and len(first) == 3:
+            total_rej = 0
+
             for it in entry:
                 try:
-                    x0, y0, m = it
-                    x0 = int(x0)
-                    y0 = int(y0)
-                    mm = np.asarray(m, dtype=np.bool_)
+                    x0, y0, m = int(it[0]), int(it[1]), it[2]
                 except Exception:
                     continue
 
+                if m is None:
+                    continue
+
+                mm = np.asarray(m)
                 if mm.ndim != 2:
                     mm = np.squeeze(mm)
                     if mm.ndim != 2:
@@ -2586,6 +2634,9 @@ class MultiFrameDeconvWorkerSport(QObject):
                 th, tw = mm.shape
                 if th <= 0 or tw <= 0:
                     continue
+
+                # any nonzero means rejected
+                mm_rej = (mm != 0)
 
                 # clip tile placement to image bounds
                 xs0 = max(0, x0)
@@ -2601,13 +2652,21 @@ class MultiFrameDeconvWorkerSport(QObject):
                 mx1 = mx0 + (xs1 - xs0)
                 my1 = my0 + (ys1 - ys0)
 
-                tile_rej = mm[my0:my1, mx0:mx1]
-                # True means rejected -> valid = 0 there
-                valid[ys0:ys1, xs0:xs1][tile_rej] = 0.0
+                tile_rej = mm_rej[my0:my1, mx0:mx1]
+                if tile_rej.size == 0:
+                    continue
 
+                region = valid[ys0:ys1, xs0:xs1]
+                total_rej += int(np.count_nonzero(tile_rej & (region > 0.0)))
+                region[tile_rej] = 0.0
+
+            self._log(
+                f"MFDeconv tile mask: {os.path.basename(path)} "
+                f"tiles={len(entry)} rejected_px={total_rej}"
+            )
             return valid
 
-        # Unknown format
+        self._log(f"MFDeconv mask build: unknown entry format for {os.path.basename(path)}")
         return None
 
     def _build_rejection_masks_for_paths(self):
@@ -2615,20 +2674,43 @@ class MultiFrameDeconvWorkerSport(QObject):
         Build a list of per-frame 2D validity masks aligned to self.aligned_paths.
         Returns None if no usable rejection maps are available.
         """
+        import numpy as np
+        import os
+
         masks = []
         found_any = False
+        total_rejected = 0
 
         if self.rejection_map is None:
+            self._log("MFDeconv rejection masks: no rejection_map payload")
             return None
 
         for p in self.aligned_paths:
             entry = self._rejection_entry_for_path(p)
             m = self._entry_to_valid_mask(entry, p)
+
             if m is not None:
                 found_any = True
+                rej_px = int(np.count_nonzero(m == 0.0))
+                total_rejected += rej_px
+                self._log(
+                    f"MFDeconv rejection mask: {os.path.basename(p)} "
+                    f"rejected_px={rej_px} shape={m.shape}"
+                )
+            else:
+                self._log(
+                    f"MFDeconv rejection mask: {os.path.basename(p)} "
+                    f"no usable per-frame rejection entry"
+                )
+
             masks.append(m)
 
-        return masks if found_any else None
+        if not found_any:
+            self._log("MFDeconv rejection masks: none built")
+            return None
+
+        self._log(f"MFDeconv rejection masks: built {len(masks)} mask(s), total_rejected_px={total_rejected}")
+        return masks
 
     def run(self):
         try:

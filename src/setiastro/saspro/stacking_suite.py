@@ -17844,7 +17844,7 @@ class StackingSuiteDialog(QDialog):
         # Preserve the same storage drizzle currently relies on.
         if not hasattr(self, "_rej_maps") or not isinstance(getattr(self, "_rej_maps"), dict):
             self._rej_maps = {}
-
+        need_per_file_rejections = bool(self._mf_enabled() or self._get_drizzle_enabled())
         for gi, (group_key, file_list) in enumerate(grouped_files.items(), 1):
             t0 = perf_counter()
             if not file_list:
@@ -17858,6 +17858,7 @@ class StackingSuiteDialog(QDialog):
                 file_list,
                 frame_weights,
                 status_cb=log,
+                collect_per_file_rejections=need_per_file_rejections,
             )
 
             if integrated_image is None:
@@ -17899,14 +17900,9 @@ class StackingSuiteDialog(QDialog):
         status_cb=None,
     ):
         """
-        Finalize the normal/drizzle path from prepass.
-
-        Current conservative implementation:
-        - if a dedicated finalize hook exists, use it
-        - otherwise fall back to the existing stack_images_mixed_drizzle path
-
-        This keeps normal stacking + drizzle working while MFDeconv starts receiving
-        real rejection products from the prepass.
+        Finalize normal integration / drizzle using the already-computed prepass.
+        This must NOT call stack_images_mixed_drizzle(), because that would
+        recompute normal integration a second time.
         """
         from PyQt6.QtWidgets import QApplication
 
@@ -17914,26 +17910,353 @@ class StackingSuiteDialog(QDialog):
         log("🧱 Finalizing normal integration / drizzle from prepass…")
         QApplication.processEvents()
 
-        # Optional hook for future refactor
-        if hasattr(self, "_finalize_normal_or_drizzle_from_prepass_impl"):
-            return self._finalize_normal_or_drizzle_from_prepass_impl(
-                grouped_files=grouped_files,
-                drizzle_dict=drizzle_dict,
-                prepass=prepass,
-                status_cb=log,
-            )
-
-        # Conservative fallback for now: preserve existing behavior
-        # (yes, this recomputes today, but keeps the app stable while the workflow is restructured)
-        return self.stack_images_mixed_drizzle(
+        return self._finalize_normal_or_drizzle_from_prepass_impl(
             grouped_files=grouped_files,
-            frame_weights=prepass["frame_weights"],
-            transforms_dict=prepass["transforms_dict"],
             drizzle_dict=drizzle_dict,
-            autocrop_enabled=prepass["autocrop_enabled"],
-            autocrop_pct=prepass["autocrop_pct"],
+            prepass=prepass,
             status_cb=log,
         )
+
+    def _finalize_normal_or_drizzle_from_prepass_impl(
+        self,
+        grouped_files,
+        drizzle_dict,
+        prepass,
+        status_cb=None,
+    ):
+        import os
+        from time import perf_counter
+        from datetime import datetime
+        import numpy as np
+        from astropy.io import fits
+        from PyQt6.QtWidgets import QApplication, QMessageBox
+        from PyQt6.QtCore import QEventLoop
+
+        log = status_cb or (lambda *_: None)
+        comet_mode = bool(getattr(self, "comet_cb", None) and self.comet_cb.isChecked())
+
+        if not hasattr(self, "orig_by_aligned") or not isinstance(getattr(self, "orig_by_aligned"), dict):
+            self.orig_by_aligned = {}
+
+        COMET_ALGO = "Comet High-Clip Percentile"
+        STARS_ALGO = "Comet High-Clip Percentile"
+
+        n_groups = len(grouped_files)
+        n_frames = sum(len(v) for v in grouped_files.values())
+        log(f"📁 Post-align finalize from prepass: {n_groups} group(s), {n_frames} aligned frame(s).")
+        QApplication.processEvents()
+
+        drizzle_enabled_global = self._get_drizzle_enabled()
+
+        global_rect = None
+        if prepass.get("autocrop_enabled", False):
+            autocrop_pct = float(prepass.get("autocrop_pct", 95.0))
+            log("✂️ Auto Crop Enabled. Calculating bounding box…")
+            try:
+                xforms = dict(getattr(self, "drizzle_xforms", {}) or {})
+                if not xforms:
+                    xforms = dict(getattr(self, "valid_matrices", {}) or {})
+
+                ref_hw = tuple(getattr(self, "ref_shape_for_drizzle", ()))
+                if xforms and len(ref_hw) == 2:
+                    global_rect = self._rect_from_transforms_fast(
+                        xforms,
+                        src_hw=ref_hw,
+                        coverage_pct=float(autocrop_pct),
+                        allow_homography=True,
+                        min_side=16
+                    )
+                    if global_rect:
+                        x0, y0, x1, y1 = map(int, global_rect)
+                        log(f"✂️ Transform crop (global) → [{x0}:{x1}]×[{y0}:{y1}] ({x1-x0}×{y1-y0})")
+            except Exception as e:
+                log(f"⚠️ Transform-based global crop failed ({e}); falling back to mask-based.")
+                global_rect = None
+
+            if global_rect is None:
+                try:
+                    global_rect = self._compute_common_autocrop_rect(
+                        grouped_files, autocrop_pct, status_cb=log
+                    )
+                    if global_rect:
+                        x0, y0, x1, y1 = map(int, global_rect)
+                        log(f"✂️ Mask-based crop (global) → [{x0}:{x1}]×[{y0}:{y1}] ({x1-x0}×{y1-y0})")
+                except Exception as e:
+                    log(f"⚠️ Global crop (mask-based) failed: {e}")
+                    global_rect = None
+
+        group_integration_data = {}
+        summary_lines = []
+        autocrop_outputs = []
+
+        for gi, (group_key, file_list) in enumerate(grouped_files.items(), 1):
+            t_g = perf_counter()
+            log(f"🔹 [{gi}/{n_groups}] Finalizing '{group_key}' from prepass with {len(file_list)} file(s)…")
+            QApplication.processEvents()
+
+            group_prepass = dict(prepass.get("groups", {}).get(group_key, {}) or {})
+            integrated_image = group_prepass.get("integrated_image")
+            rejection_map = group_prepass.get("rejection_map")
+            ref_header = group_prepass.get("ref_header")
+
+            if integrated_image is None:
+                log(f"⚠️ Missing prepass integrated image for '{group_key}'")
+                continue
+
+            integrated_image = self._normalize_stack_01(integrated_image)
+
+            if ref_header is None:
+                ref_header = fits.Header()
+
+            hdr_orig = ref_header.copy()
+            hdr_orig["IMAGETYP"] = "MASTER STACK"
+            hdr_orig["BITPIX"] = -32
+            hdr_orig["STACKED"] = (True, "Stacked from rejection prepass")
+            hdr_orig["CREATOR"] = "SetiAstroSuite"
+            hdr_orig["DATE-OBS"] = datetime.utcnow().isoformat()
+
+            n_frames_group = len(file_list)
+            hdr_orig["NCOMBINE"] = (int(n_frames_group), "Number of frames combined")
+            hdr_orig["NSTACK"] = (int(n_frames_group), "Alias of NCOMBINE (SetiAstro)")
+
+            is_mono_orig = (integrated_image.ndim == 2)
+            if is_mono_orig:
+                hdr_orig["NAXIS"] = 2
+                hdr_orig["NAXIS1"] = integrated_image.shape[1]
+                hdr_orig["NAXIS2"] = integrated_image.shape[0]
+                if "NAXIS3" in hdr_orig:
+                    del hdr_orig["NAXIS3"]
+            else:
+                hdr_orig["NAXIS"] = 3
+                hdr_orig["NAXIS1"] = integrated_image.shape[1]
+                hdr_orig["NAXIS2"] = integrated_image.shape[0]
+                hdr_orig["NAXIS3"] = integrated_image.shape[2]
+
+            H, W = integrated_image.shape[:2]
+            display_group = self._label_with_dims(group_key, W, H)
+            base = f"MasterLight_{display_group}_{n_frames_group}stacked"
+            base = self._normalize_master_stem(base)
+            out_path_orig = self._build_out(self._master_light_dir(), base, "fit")
+
+            maps = group_prepass.get("rej_maps") or getattr(self, "_rej_maps", {}).get(group_key)
+            save_layers = self.settings.value("stacking/save_rejection_layers", True, type=bool)
+
+            if maps is not None and save_layers:
+                try:
+                    rej_any = np.asarray(maps["any"], dtype=bool)
+                    rej_frac = np.asarray(maps["frac"], dtype=np.float32)
+                    rej_cnt = np.asarray(maps["count"], dtype=np.uint16)
+
+                    _save_master_with_rejection_layers(
+                        img_array=integrated_image,
+                        hdr=hdr_orig,
+                        out_path=out_path_orig,
+                        rej_any=rej_any,
+                        rej_frac=rej_frac,
+                        rej_cnt=rej_cnt,
+                    )
+                    log(f"✅ Saved integrated image (with rejection layers) for '{group_key}': {out_path_orig}")
+                except Exception as e:
+                    log(f"⚠️ MEF save failed ({e}); falling back to single-HDU save.")
+                    save_image(
+                        img_array=integrated_image,
+                        filename=out_path_orig,
+                        original_format="fit",
+                        bit_depth="32-bit floating point",
+                        original_header=hdr_orig,
+                        is_mono=is_mono_orig
+                    )
+                    log(f"✅ Saved integrated image (single-HDU) for '{group_key}': {out_path_orig}")
+            else:
+                save_image(
+                    img_array=integrated_image,
+                    filename=out_path_orig,
+                    original_format="fit",
+                    bit_depth="32-bit floating point",
+                    original_header=hdr_orig,
+                    is_mono=is_mono_orig
+                )
+                log(f"✅ Saved integrated image (original) for '{group_key}': {out_path_orig}")
+
+            group_rect = None
+            if prepass.get("autocrop_enabled", False):
+                autocrop_pct = float(prepass.get("autocrop_pct", 95.0))
+                if global_rect is not None:
+                    group_rect = tuple(global_rect)
+                else:
+                    try:
+                        xforms_g = {}
+                        oba = getattr(self, "orig_by_aligned", {}) or {}
+                        has_model_xforms = bool(getattr(self, "drizzle_xforms", None))
+
+                        for ap in file_list:
+                            apn = os.path.normpath(ap)
+                            M = None
+                            if has_model_xforms:
+                                op = oba.get(apn)
+                                if op:
+                                    M = getattr(self, "drizzle_xforms", {}).get(os.path.normpath(op))
+                            if M is None:
+                                M = getattr(self, "matrix_by_aligned", {}).get(apn)
+                            if M is not None:
+                                xforms_g[apn] = np.asarray(M)
+
+                        ref_hw = tuple(getattr(self, "ref_shape_for_drizzle", ()))
+                        if xforms_g and len(ref_hw) == 2:
+                            group_rect = self._rect_from_transforms_fast(
+                                xforms_g,
+                                src_hw=ref_hw,
+                                coverage_pct=float(autocrop_pct),
+                                allow_homography=True,
+                                min_side=16
+                            )
+
+                        if group_rect is None:
+                            group_rect = self._compute_common_autocrop_rect(
+                                {group_key: file_list}, autocrop_pct, status_cb=log
+                            )
+                    except Exception as e:
+                        log(f"⚠️ Per-group transform crop failed for '{group_key}': {e}")
+                        group_rect = None
+
+                if group_rect:
+                    x1, y1, x2, y2 = map(int, group_rect)
+                    log(f"✂️ Using fixed crop rect for '{group_key}': ({x1},{y1})–({x2},{y2})")
+
+            if prepass.get("autocrop_enabled", False):
+                cropped_img, hdr_crop = self._apply_autocrop(
+                    integrated_image,
+                    file_list,
+                    ref_header.copy(),
+                    scale=1.0,
+                    rect_override=group_rect if group_rect is not None else global_rect
+                )
+                hdr_crop["NCOMBINE"] = (int(n_frames_group), "Number of frames combined")
+                hdr_crop["NSTACK"] = (int(n_frames_group), "Alias of NCOMBINE (SetiAstro)")
+                is_mono_crop = (cropped_img.ndim == 2)
+                Hc, Wc = (cropped_img.shape[:2] if cropped_img.ndim >= 2 else (H, W))
+                display_group_crop = self._label_with_dims(group_key, Wc, Hc)
+                base_crop = f"MasterLight_{display_group_crop}_{n_frames_group}stacked_autocrop"
+                base_crop = self._normalize_master_stem(base_crop)
+                out_path_crop = self._build_out(self._master_light_dir(), base_crop, "fit")
+
+                save_image(
+                    img_array=cropped_img,
+                    filename=out_path_crop,
+                    original_format="fit",
+                    bit_depth="32-bit floating point",
+                    original_header=hdr_crop,
+                    is_mono=is_mono_crop
+                )
+                log(f"✂️ Saved auto-cropped image for '{group_key}': {out_path_crop}")
+                autocrop_outputs.append((group_key, out_path_crop))
+
+            if drizzle_enabled_global:
+                try:
+                    sasr_path = os.path.join(self.stacking_directory, f"{group_key}_rejections.sasr")
+                    maps = group_prepass.get("rej_maps") or getattr(self, "_rej_maps", {}).get(group_key)
+                    self.save_rejection_map_sasr(maps, sasr_path)
+                    log(f"✅ Saved rejection map to {sasr_path}")
+                except Exception as e:
+                    log(f"⚠️ Failed saving rejection map for '{group_key}': {e}")
+
+            group_integration_data[group_key] = {
+                "integrated_image": integrated_image,
+                "rejection_map": rejection_map if drizzle_enabled_global else None,
+                "n_frames": n_frames_group,
+                "drizzled": False,
+            }
+
+            log(f"   ↳ Finalize from prepass done in {perf_counter() - t_g:.1f}s.")
+
+        QApplication.processEvents()
+
+        originals_by_group = {}
+        oba = getattr(self, "orig_by_aligned", {}) or {}
+        for group, reg_list in grouped_files.items():
+            orig_list = []
+            for rp in reg_list:
+                op = oba.get(os.path.normpath(rp))
+                if op:
+                    orig_list.append(op)
+            originals_by_group[group] = orig_list
+
+        for group_key, file_list in grouped_files.items():
+            if not drizzle_enabled_global:
+                log(f"✅ Drizzle disabled (checkbox off). Group '{group_key}' integrated image already saved.")
+                continue
+
+            scale_factor = self._get_drizzle_scale()
+            drop_shrink = self._get_drizzle_pixfrac()
+
+            kernel = (self.settings.value("stacking/drizzle_kernel", "square", type=str) or "square").lower()
+            log(f"Drizzle cfg → scale={scale_factor}×, pixfrac={drop_shrink:.3f}, kernel={kernel}")
+
+            rejections_for_group = group_integration_data[group_key]["rejection_map"]
+            n_frames_group = group_integration_data[group_key]["n_frames"]
+
+            split_info = getattr(self, "_split_drizzle_info", {}) or {}
+            oba = getattr(self, "orig_by_aligned", {}) or {}
+
+            entries_by_group = {}
+            for gk, aligned_list in grouped_files.items():
+                entries = []
+                for ap in aligned_list:
+                    apn = os.path.normpath(ap)
+                    info = split_info.get(apn)
+
+                    if info and info.get("orig"):
+                        entries.append({
+                            "orig": os.path.normpath(info["orig"]),
+                            "aligned": apn,
+                            "chan": info.get("chan", None),
+                        })
+                    else:
+                        op = oba.get(apn)
+                        if op:
+                            entries.append({"orig": os.path.normpath(op), "aligned": apn, "chan": None})
+
+                entries_by_group[gk] = entries
+
+            log(f"📐 Drizzle for '{group_key}' at {scale_factor}× (drop={drop_shrink}) using {n_frames_group} frame(s).")
+
+            ok = False
+            try:
+                ok = bool(self.drizzle_stack_one_group(
+                    group_key=group_key,
+                    file_list=file_list,
+                    entries=entries_by_group.get(group_key, []),
+                    transforms_dict=prepass["transforms_dict"],
+                    frame_weights=prepass["frame_weights"],
+                    scale_factor=scale_factor,
+                    drop_shrink=drop_shrink,
+                    rejection_map=rejections_for_group,
+                    autocrop_enabled=prepass["autocrop_enabled"],
+                    rect_override=global_rect,
+                    status_cb=log
+                ))
+            except Exception as e:
+                log(f"⚠️ Drizzle failed for '{group_key}': {e!r}")
+                ok = False
+
+            if ok:
+                group_integration_data[group_key]["drizzled"] = True
+
+        for group_key, info in group_integration_data.items():
+            n_frames_group = info["n_frames"]
+            drizzled = info["drizzled"]
+            summary_lines.append(f"• {group_key}: {n_frames_group} stacked{' + drizzle' if drizzled else ''}")
+
+        if autocrop_outputs:
+            summary_lines.append("")
+            summary_lines.append("Auto-cropped files saved:")
+            for g, p in autocrop_outputs:
+                summary_lines.append(f"  • {g} → {p}")
+
+        return {
+            "summary_lines": summary_lines,
+            "autocrop_outputs": autocrop_outputs
+        }
 
     def launch_mfdeconv_from_prepass(
         self,
@@ -20937,10 +21260,11 @@ class StackingSuiteDialog(QDialog):
         frame_weights,
         status_cb=None,
         *,
-        algo_override: str | None = None
+        algo_override: str | None = None,
+        collect_per_file_rejections: bool = False,
     ):
         import errno
-        collect_per_file = bool(self._get_drizzle_enabled())
+        collect_per_file = bool(collect_per_file_rejections)
         per_file_rejections = {f: [] for f in file_list} if collect_per_file else None
         log = status_cb or (lambda *_: None)
         log(f"Starting integration for group '{group_key}' with {len(file_list)} files.")
