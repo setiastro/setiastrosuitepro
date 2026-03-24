@@ -8374,13 +8374,15 @@ class StackingSuiteDialog(QDialog):
         correction_layout.addWidget(self.bias_checkbox)
 
         layout.addLayout(correction_layout)        
-        # ---------- Satellite Trail Removal (post-calibration) ----------
+        # ---------- Satellite Trail Masking (post-calibration, for integration) ----------
         sat_layout = QHBoxLayout()
 
-        self.cal_satellite_checkbox = QCheckBox(self.tr("Remove Satellite Trails After Calibration"))
+        self.cal_satellite_checkbox = QCheckBox(self.tr("Generate Satellite Trail Masks for Integration"))
         self.cal_satellite_checkbox.setToolTip(
-            self.tr("Runs the SASpro satellite trail remover as the final calibration step, "
-                    "after bias/dark/flat/cosmetic correction and before saving.")
+            self.tr(
+                "Detects satellite trails after calibration and creates binary rejection masks "
+                "so those pixels are ignored during integration. The calibrated light itself is not modified."
+            )
         )
         self.cal_satellite_checkbox.setChecked(
             self.settings.value("stacking/calibration_satellite_enabled", False, type=bool)
@@ -8389,20 +8391,26 @@ class StackingSuiteDialog(QDialog):
             lambda v: self.settings.setValue("stacking/calibration_satellite_enabled", bool(v))
         )
 
+        # Keep clip-trail behavior forced ON internally, since mask generation depends on it.
         self.cal_satellite_clip_checkbox = QCheckBox(self.tr("Clip Trails to 0.000"))
         self.cal_satellite_clip_checkbox.setToolTip(
-            self.tr("If enabled, pixels the satellite remover clips to black will be forced to 0.000 "
-                    "in the calibrated output.")
+            self.tr(
+                "Internal setting used to generate the satellite rejection mask. "
+                "This is always enabled for calibration-based satellite masking."
+            )
         )
-        self.cal_satellite_clip_checkbox.setChecked(
-            self.settings.value("stacking/calibration_satellite_clip", True, type=bool)
-        )
-        self.cal_satellite_clip_checkbox.toggled.connect(
-            lambda v: self.settings.setValue("stacking/calibration_satellite_clip", bool(v))
-        )
+        self.cal_satellite_clip_checkbox.setChecked(True)
+        self.cal_satellite_clip_checkbox.hide()
+        self.cal_satellite_clip_checkbox.setEnabled(False)
+
+        # Force the backing setting ON so the engine always produces the mask logic we need.
+        self.settings.setValue("stacking/calibration_satellite_clip", True)
 
         def _sync_cal_satellite_controls(checked: bool):
-            self.cal_satellite_clip_checkbox.setEnabled(bool(checked))
+            # keep hidden control logically locked on
+            self.cal_satellite_clip_checkbox.setChecked(True)
+            self.cal_satellite_clip_checkbox.setEnabled(False)
+            self.settings.setValue("stacking/calibration_satellite_clip", True)
 
         _sync_cal_satellite_controls(self.cal_satellite_checkbox.isChecked())
         self.cal_satellite_checkbox.toggled.connect(_sync_cal_satellite_controls)
@@ -10754,15 +10762,29 @@ class StackingSuiteDialog(QDialog):
         for col in (0, 1, 2):
             hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
 
+        # only allow real image/light formats
+        allowed_exts = {".fit", ".fits", ".ftz", ".fz", ".tiff", ".tif", ".xisf"}
+
         # gather files
         calibrated_folder = os.path.join(self.stacking_directory or "", "Calibrated")
         files = []
         if os.path.isdir(calibrated_folder):
             for fn in os.listdir(calibrated_folder):
-                files.append(os.path.join(calibrated_folder, fn))
+                fp = os.path.join(calibrated_folder, fn)
+                if not os.path.isfile(fp):
+                    continue
+                ext = os.path.splitext(fn)[1].lower()
+                if ext in allowed_exts:
+                    files.append(fp)
 
-        # include manual files
-        files += self.manual_light_files
+        # include manual files, but only if valid extension
+        for fp in self.manual_light_files:
+            try:
+                ext = os.path.splitext(fp)[1].lower()
+                if ext in allowed_exts:
+                    files.append(fp)
+            except Exception:
+                pass
 
         # filter exclusions + dedupe
         dead = set()
@@ -10792,18 +10814,20 @@ class StackingSuiteDialog(QDialog):
             exp = 0.0
             size = "Unknown"
 
-            if ext in (".fits", ".fit", ".fz"):
+            if ext in (".fits", ".fit", ".ftz", ".fz"):
                 filt, exp, size = self._probe_fits_meta(fp)
             elif ext == ".xisf":
                 filt, exp, size = self._probe_xisf_meta(fp)
-            else:
-                # generic image (TIFF/PNG/JPEG, etc.)
+            elif ext in (".tiff", ".tif"):
                 try:
                     w, h = self._get_image_size(fp)
                     size = f"{w}x{h}"
                 except Exception as e:
                     print(f"⚠️ Cannot read image size for {fp}: {e}")
                     continue
+            else:
+                # extra safety: ignore anything unexpected
+                continue
 
             # find existing group with same filter+size and exposure within tolerance
             key = self._find_or_make_exposure_group_key(grouped, filt, exp, size)
@@ -10851,8 +10875,8 @@ class StackingSuiteDialog(QDialog):
                 top.addChild(leaf)
 
             top.setExpanded(True)
-            self._refresh_quick_stack_summary_later()
 
+        self._refresh_quick_stack_summary_later()
 
     def _iter_group_items(self):
         for i in range(self.reg_tree.topLevelItemCount()):
@@ -14388,15 +14412,24 @@ class StackingSuiteDialog(QDialog):
         - mono: H,W
         - color: CHW or HWC
 
-        Output layout matches input layout.
+        Output:
+        - cleaned frame in same layout as input
+        - binary 2D satellite rejection mask in image coordinates
+
+        Returns:
+            (out_image, sat_mask_2d)
 
         Notes:
-        - We normalize to [0,1] for the AI stage, then map back to the original range.
-        - If 'clip trail' is enabled, pixels that the AI clipped near-black are forced to 0.000
-            in the returned calibrated frame.
+        - The satellite engine now handles normalization/denormalization internally.
+        - The returned sat_mask_2d is authoritative and should be saved/propagated
+        instead of inferring rejection from pixel values.
         """
         import numpy as np
-        from setiastro.saspro.cosmicclarity_headless import run_cosmicclarity_on_array
+        from setiastro.saspro.resources import get_resources
+        from setiastro.saspro.cosmicclarity_engines.satellite_engine import (
+            get_satellite_models,
+            satellite_remove_image,
+        )
 
         arr = np.asarray(light_data, dtype=np.float32, copy=False)
         orig_shape = arr.shape
@@ -14408,48 +14441,58 @@ class StackingSuiteDialog(QDialog):
         else:
             arr_in = arr
 
-        arr_in = np.nan_to_num(arr_in.astype(np.float32, copy=False), nan=0.0, posinf=0.0, neginf=0.0)
-
-        amin = float(np.min(arr_in)) if arr_in.size else 0.0
-        amax = float(np.max(arr_in)) if arr_in.size else 1.0
-
-        if not np.isfinite(amin):
-            amin = 0.0
-        if not np.isfinite(amax):
-            amax = 1.0
-
-        if amax > amin:
-            arr01 = (arr_in - amin) / (amax - amin)
-        else:
-            arr01 = np.zeros_like(arr_in, dtype=np.float32)
-
-        arr01 = np.clip(arr01, 0.0, 1.0).astype(np.float32, copy=False)
+        arr_in = np.nan_to_num(
+            arr_in.astype(np.float32, copy=False),
+            nan=0.0, posinf=0.0, neginf=0.0
+        )
 
         clip_trail = self.settings.value("stacking/calibration_satellite_clip", True, type=bool)
+        sensitivity = self.settings.value("stacking/calibration_satellite_sensitivity", 0.10, type=float)
+        use_gpu = self.settings.value("stacking/calibration_satellite_gpu", True, type=bool)
+        compatibility_mode = self.settings.value("stacking/calibration_satellite_compatibility", False, type=bool)
 
-        preset = {
-            "mode": "satellite",
-            "gpu": True,
-            "chunk_size": 256,
-            "overlap": 64,
-            "sat_mode": "luminance" if is_mono else "full",
-            "sat_clip_trail": bool(clip_trail),
-            "sat_sensitivity": 0.10,
-        }
+        chunk_size = self.settings.value("stacking/calibration_satellite_chunk_size", 256, type=int)
+        overlap = self.settings.value("stacking/calibration_satellite_overlap", 64, type=int)
+        border_size = self.settings.value("stacking/calibration_satellite_border", 16, type=int)
 
-        out01 = run_cosmicclarity_on_array(arr01, preset)
+        temp_stretch = self.settings.value("stacking/calibration_satellite_temp_stretch", True, type=bool)
+        target_median = self.settings.value("stacking/calibration_satellite_target_median", 0.25, type=float)
 
-        out01 = np.asarray(out01, dtype=np.float32, copy=False)
-        out = out01 * (amax - amin) + amin if amax > amin else np.full_like(out01, amin, dtype=np.float32)
+        def _status(msg):
+            try:
+                self.update_status(self.tr(str(msg)))
+            except Exception:
+                pass
 
-        # If clip-to-zero is requested, preserve that behavior in calibrated space too
-        if clip_trail:
-            zero_mask = (out01 <= 1e-6)
-            out = np.where(zero_mask, 0.0, out).astype(np.float32, copy=False)
+        resources = get_resources()
+        models = get_satellite_models(resources=resources, use_gpu=bool(use_gpu), status_cb=_status)
+
+        out_img, detected, sat_mask_2d = satellite_remove_image(
+            image=arr_in,
+            models=models,
+            mode="luminance" if is_mono else "full",
+            clip_trail=bool(clip_trail),
+            sensitivity=float(sensitivity),
+            chunk_size=int(chunk_size),
+            overlap=int(overlap),
+            border_size=int(border_size),
+            temp_stretch=bool(temp_stretch),
+            target_median=float(target_median),
+            compatibility_mode=bool(compatibility_mode),
+            progress_cb=None,
+            return_mask=True,
+        )
+
+        out = np.asarray(out_img, dtype=np.float32, copy=False)
+        sat_mask_2d = np.asarray(sat_mask_2d, dtype=bool)
 
         # Convert HWC -> CHW back if needed
         if was_chw and out.ndim == 3 and out.shape[-1] == 3:
             out = out.transpose(2, 0, 1)
+
+        # If original input was true 2D mono, squeeze HxWx1 back to HxW
+        if arr.ndim == 2 and out.ndim == 3 and out.shape[-1] == 1:
+            out = out[..., 0]
 
         # Final sanity
         out = np.nan_to_num(out.astype(np.float32, copy=False), nan=0.0, posinf=0.0, neginf=0.0)
@@ -14457,7 +14500,22 @@ class StackingSuiteDialog(QDialog):
         if out.shape != orig_shape:
             raise RuntimeError(f"Satellite removal changed frame shape from {orig_shape} to {out.shape}")
 
-        return out
+        # Ensure mask matches image XY shape
+        if out.ndim == 2:
+            expected_hw = out.shape
+        elif out.ndim == 3 and out.shape[0] == 3:   # CHW
+            expected_hw = out.shape[1:]
+        elif out.ndim == 3 and out.shape[-1] == 3:  # HWC
+            expected_hw = out.shape[:2]
+        else:
+            raise RuntimeError(f"Unsupported output shape after satellite removal: {out.shape}")
+
+        if sat_mask_2d.shape != expected_hw:
+            raise RuntimeError(
+                f"Satellite mask shape mismatch: got {sat_mask_2d.shape}, expected {expected_hw}"
+            )
+
+        return out, sat_mask_2d
 
     def calibrate_lights(self):
         """Performs calibration on selected light frames using Master Darks and Flats, considering overrides."""
@@ -14481,6 +14539,41 @@ class StackingSuiteDialog(QDialog):
             if not self.light_files[key]:
                 del self.light_files[key]
         processed_files = 0
+
+        # ---------- local helpers for satellite rejection mask ----------
+        def _mask2d_from_image_zero_pixels(arr):
+            """
+            Returns a 2D boolean mask of pixels that are exactly zero in the source image.
+            For color data, if ANY channel is zero, the pixel is marked rejected.
+            Accepts HxW, CHW, or HWC.
+            """
+            a = np.asarray(arr)
+            if a.ndim == 2:
+                return (a == 0.0)
+            if a.ndim == 3:
+                if a.shape[0] == 3:   # CHW
+                    return np.any(a == 0.0, axis=0)
+                if a.shape[-1] == 3:  # HWC
+                    return np.any(a == 0.0, axis=-1)
+            raise ValueError(f"Unsupported image shape for mask extraction: {a.shape}")
+
+        def _merge_masks(mask_a, mask_b):
+            if mask_a is None:
+                return np.asarray(mask_b, dtype=bool)
+            if mask_b is None:
+                return np.asarray(mask_a, dtype=bool)
+            return np.asarray(mask_a, dtype=bool) | np.asarray(mask_b, dtype=bool)
+
+        def _save_rejection_mask(mask2d, calibrated_filename):
+            try:
+                base_no_ext, _ = os.path.splitext(calibrated_filename)
+                mask_path = base_no_ext + "_satmask.npy"
+                np.save(mask_path, np.asarray(mask2d, dtype=np.uint8), allow_pickle=False)
+                return mask_path
+            except Exception as e:
+                self.update_status(self.tr(f"⚠️ Could not save rejection mask: {e}"))
+                QApplication.processEvents()
+                return None
 
         # ---------- LOAD MASTER BIAS ONCE (optional) ----------
         master_bias = None
@@ -14538,6 +14631,7 @@ class StackingSuiteDialog(QDialog):
                         continue
                     if light_file not in leaf_paths:
                         continue
+
                     # Determine size from header
                     header, _ = get_valid_header(light_file)
                     width = int(header.get("NAXIS1", 0))
@@ -14598,7 +14692,6 @@ class StackingSuiteDialog(QDialog):
 
                     print(f"master_flat_path is {master_flat_path}")
 
-
                     # ---------- LOAD LIGHT ----------
                     light_data, hdr, bit_depth, is_mono = load_image(light_file)
                     #_print_stats("LIGHT raw", light_data, bit_depth=bit_depth, hdr=hdr)
@@ -14609,6 +14702,14 @@ class StackingSuiteDialog(QDialog):
                     # Work in CHW for color; leave mono as H,W
                     if not is_mono and light_data.ndim == 3 and light_data.shape[-1] == 3:
                         light_data = light_data.transpose(2, 0, 1)  # HWC -> CHW
+
+                    # ---------- capture pre-existing zero-clipped pixels BEFORE calibration ----------
+                    try:
+                        rejection_mask_2d = _mask2d_from_image_zero_pixels(light_data)
+                    except Exception as e:
+                        rejection_mask_2d = None
+                        self.update_status(self.tr(f"⚠️ Could not initialize zero-pixel rejection mask: {e}"))
+                        QApplication.processEvents()
 
                     # ---------- APPLY BIAS (optional) ----------
                     if master_bias is not None:
@@ -14625,6 +14726,7 @@ class StackingSuiteDialog(QDialog):
                         QApplication.processEvents()
 
                     # ---------- APPLY DARK (if resolved) ----------
+                    dark_data = None
                     if master_dark_path:
                         dark_data, _, dark_bit_depth, dark_is_mono = load_image(master_dark_path)
                         #_print_stats("DARK raw", dark_data, bit_depth=dark_bit_depth)
@@ -14644,6 +14746,7 @@ class StackingSuiteDialog(QDialog):
                             QApplication.processEvents()
 
                     # ---------- APPLY FLAT (if resolved) ----------
+                    flat_data = None
                     if master_flat_path:
                         flat_data, _, flat_bit_depth, flat_is_mono = load_image(master_flat_path)
                         #_print_stats("FLAT raw", flat_data, bit_depth=flat_bit_depth)
@@ -14676,13 +14779,9 @@ class StackingSuiteDialog(QDialog):
                             )
 
                             if is_bayer_mosaic:
-                                # ✅ Bayer-aware division (this replaces normalize_flat_cfa_inplace + generic division)
-                                # Requires the helper I gave you: apply_flat_division_bayer(image2d, flat2d, bayerpat)
                                 light_data = apply_flat_division_bayer(light_data, flat_data, bayerpat)
 
                             else:
-                                # Non-bayer path (mono 2D or CHW color): normalize flat to median=1 then divide
-
                                 if flat_data.ndim == 2:
                                     v = flat_data[np.isfinite(flat_data) & (flat_data > 0)]
                                     denom = float(np.median(v)) if v.size else 1.0
@@ -14692,7 +14791,6 @@ class StackingSuiteDialog(QDialog):
                                     flat_data[flat_data == 0] = 1.0
 
                                 else:
-                                    # CHW
                                     for c in range(flat_data.shape[0]):
                                         band = flat_data[c]
                                         v = band[np.isfinite(band) & (band > 0)]
@@ -14709,15 +14807,12 @@ class StackingSuiteDialog(QDialog):
 
                     # ---------- COSMETIC (optional) ----------
                     if apply_cosmetic:
-                        # Pull configured values (fallbacks preserve current behavior)
                         hot_sigma      = self.settings.value("stacking/cosmetic/hot_sigma", 5.0, type=float)
                         cold_sigma     = self.settings.value("stacking/cosmetic/cold_sigma", 5.0, type=float)
                         star_mean_ratio= self.settings.value("stacking/cosmetic/star_mean_ratio", 0.22, type=float)
                         star_max_ratio = self.settings.value("stacking/cosmetic/star_max_ratio", 0.55, type=float)
                         sat_quantile   = self.settings.value("stacking/cosmetic/sat_quantile", 0.9995, type=float)
 
-                        # --- Decide Bayer vs debayered from DATA, not header ---
-                        # After your HWC->CHW transpose, debayered color lights will be (3,H,W).
                         array_is_color = (
                             light_data.ndim == 3 and (
                                 light_data.shape[0] == 3 or light_data.shape[-1] == 3
@@ -14733,7 +14828,6 @@ class StackingSuiteDialog(QDialog):
                             if pattern not in ("RGGB","BGGR","GRBG","GBRG"):
                                 pattern = "RGGB"
 
-                            # light_data is guaranteed 2D here
                             light_data = bulk_cosmetic_correction_bayer(
                                 light_data,
                                 hot_sigma=hot_sigma,
@@ -14756,18 +14850,31 @@ class StackingSuiteDialog(QDialog):
                             self.update_status(self.tr("Running Satellite Trail Removal..."))
                             QApplication.processEvents()
 
-                            light_data = self._apply_satellite_removal_to_calibrated_light(
+                            # Keep the original calibrated frame for stacking.
+                            # We only want the binary rejection mask here.
+                            original_light_data = np.asarray(light_data, dtype=np.float32, copy=True)
+
+                            sat_out_img, sat_mask_2d = self._apply_satellite_removal_to_calibrated_light(
                                 light_data,
                                 is_mono=is_mono
                             )
 
-                            self.update_status(self.tr("Satellite Trail Removal Applied"))
+                            sat_mask_2d = np.asarray(sat_mask_2d, dtype=bool)
+                            rejection_mask_2d = _merge_masks(rejection_mask_2d, sat_mask_2d)
+
+                            # IMPORTANT:
+                            # For stacking, do NOT replace the calibrated light with the cleaned/clipped
+                            # satellite-removed image. Keep the original calibrated data and use only the mask.
+                            light_data = original_light_data
+
+                            self.update_status(
+                                self.tr(f"Satellite Trail Removal Applied (mask only: {int(np.count_nonzero(sat_mask_2d))} rejected px)")
+                            )
                             QApplication.processEvents()
 
                         except Exception as e:
                             self.update_status(self.tr(f"⚠️ Satellite Trail Removal skipped: {e}"))
                             QApplication.processEvents()
-
                     # Back to HWC for saving if color
                     if not is_mono and light_data.ndim == 3 and light_data.shape[0] == 3:
                         light_data = light_data.transpose(1, 2, 0)  # CHW -> HWC
@@ -14783,15 +14890,20 @@ class StackingSuiteDialog(QDialog):
                     _warn_if_units_mismatch(light_data, dark_data if master_dark_path else None, flat_data if master_flat_path else None)
                     _print_stats("LIGHT final", light_data)
                     QApplication.processEvents()
+
                     # Annotate header
                     try:
                         if hasattr(hdr, "add_history"):
                             hdr.add_history("Calibrated: bias/dark sub, flat division")
+                            if rejection_mask_2d is not None and np.any(rejection_mask_2d):
+                                hdr.add_history("Satellite rejection mask saved as sidecar")
                         else:
                             hdr["HISTORY"] = "Calibrated: bias/dark sub, flat division"
 
                         hdr["CALMIN"] = (min_val, "Min pixel before save (float)")
                         hdr["CALMAX"] = (max_val, "Max pixel before save (float)")
+                        if rejection_mask_2d is not None:
+                            hdr["SATMASK"] = (1, "Binary satellite reject mask written as sidecar")
                     except Exception:
                         pass
 
@@ -14810,10 +14922,20 @@ class StackingSuiteDialog(QDialog):
                         img_array=light_data,
                         filename=calibrated_filename,
                         original_format="fit",
-                        bit_depth="32-bit floating point",          # << force float32 to avoid clipping negatives
+                        bit_depth="32-bit floating point",
                         original_header=hdr,
                         is_mono=is_mono
                     )
+
+                    # Save merged binary rejection mask beside calibrated FITS
+                    if rejection_mask_2d is not None:
+                        mask_path = _save_rejection_mask(rejection_mask_2d, calibrated_filename)
+                        if mask_path:
+                            masked_px = int(np.count_nonzero(rejection_mask_2d))
+                            self.update_status(self.tr(
+                                f"Saved mask: {os.path.basename(mask_path)} ({masked_px} rejected px)"
+                            ))
+                            QApplication.processEvents()
 
                     processed_files += 1
                     self.update_status(self.tr(f"Saved: {os.path.basename(calibrated_filename)} ({processed_files}/{total_files})"))
@@ -14824,32 +14946,26 @@ class StackingSuiteDialog(QDialog):
         self.populate_calibrated_lights()
         self._refresh_quick_stack_summary_later()
 
-
         # ── NEW: optionally roll straight into registration+integration ──
         try:
             if self.settings.value("stacking/auto_register_after_cal", False, type=bool):
-                # Switch UI to the Image Registration tab, if we can find it
                 if hasattr(self, "tabs") and self.tabs is not None:
                     try:
                         for i in range(self.tabs.count()):
-                            # match by tab label if available
                             if self.tabs.tabText(i).lower().startswith("image registration"):
                                 self.tabs.setCurrentIndex(i)
                                 break
                     except Exception:
-                        pass  # harmless if tab text lookup fails
+                        pass
 
                 self.update_status(self.tr("⚙️ Auto: starting registration & integration…"))
                 QApplication.processEvents()
 
-                # Prefer button .click() (preserves any guard/flags)
                 if hasattr(self, "register_images_btn") and self.register_images_btn is not None:
-                    # Guard against re-entrancy if a run is already in progress
                     if not getattr(self, "_registration_busy", False):
                         self.register_images_btn.click()
                     else:
                         self.update_status(self.tr("ℹ️ Registration already in progress; auto-run skipped."))
-                # Fallback: call the method directly
                 elif hasattr(self, "register_images"):
                     if not getattr(self, "_registration_busy", False):
                         self.register_images()
@@ -21303,6 +21419,13 @@ class StackingSuiteDialog(QDialog):
         collect_per_file_rejections: bool = False,
     ):
         import errno
+        import os
+        import math
+        import time
+        import contextlib
+        import numpy as np
+        from astropy.io import fits
+
         collect_per_file = bool(collect_per_file_rejections)
         per_file_rejections = {f: [] for f in file_list} if collect_per_file else None
         log = status_cb or (lambda *_: None)
@@ -21310,7 +21433,6 @@ class StackingSuiteDialog(QDialog):
         if not file_list:
             return None, {}, None
 
-        # --- reference frame (unchanged) ---
         ref_file = file_list[0]
         ref_data, ref_header, _, _ = load_image(ref_file)
         if ref_data is None:
@@ -21329,18 +21451,46 @@ class StackingSuiteDialog(QDialog):
 
         log(f"📊 Stacking group '{group_key}' with {algo}{' [GPU]' if use_gpu else ''}")
 
-        # --- keep all FITSes open (memmap) once for the whole group (fast path) ---
-        # If the OS complains about too many open files, we fall back to a lazy path
-        # that opens/closes each file per tile.
+        # ---------- satellite sidecar helpers ----------
+        def _satmask_sidecar_path(image_path: str) -> str:
+            root, _ = os.path.splitext(image_path)
+            return root + "_satmask.npy"
+
+        def _load_full_satmask(image_path: str):
+            p = _satmask_sidecar_path(image_path)
+            if not os.path.exists(p):
+                return None
+            try:
+                m = np.load(p, allow_pickle=False)
+                m = np.asarray(m, dtype=bool)
+                if m.ndim != 2:
+                    log(f"⚠️ Ignoring malformed satellite mask for {os.path.basename(image_path)}: shape={m.shape}")
+                    return None
+                if m.shape != (height, width):
+                    log(
+                        f"⚠️ Ignoring satellite mask with wrong shape for {os.path.basename(image_path)}: "
+                        f"{m.shape} != {(height, width)}"
+                    )
+                    return None
+                return m
+            except Exception as e:
+                log(f"⚠️ Could not load satellite mask for {os.path.basename(image_path)}: {e}")
+                return None
+
+        satmask_full_list = [_load_full_satmask(p) for p in file_list]
+        satmask_present = sum(m is not None for m in satmask_full_list)
+        if satmask_present:
+            log(f"🛰️ Found aligned satellite masks for {satmask_present}/{N} frame(s).")
+
+        # --- keep all FITSes open (memmap) once for the whole group ---
         use_memmap_sources = True
         sources: list[_MMImage] = []
         source_paths = list(file_list)
 
         try:
             for p in file_list:
-                sources.append(_MMImage(p))   # may use memmap internally
+                sources.append(_MMImage(p))
         except OSError as e:
-            # Too many open files / file table overflow → switch to lazy mode
             if e.errno in (errno.EMFILE, errno.ENFILE):
                 log(f"⚠️ Too many open files ({e}); falling back to lazy per-tile reads.")
                 for s in sources:
@@ -21368,11 +21518,8 @@ class StackingSuiteDialog(QDialog):
             return None, {}, None
 
         DTYPE = self._dtype()
-        # Use smart_zeros for large arrays - will use memmap if > 500MB
         integrated_image, integrated_memmap_path = smart_zeros((height, width, channels), dtype=DTYPE)
-        per_file_rejections = {f: [] for f in file_list}
 
-        # --- chunk size ---
         pref_h = self.chunk_height
         pref_w = self.chunk_width
         try:
@@ -21384,50 +21531,51 @@ class StackingSuiteDialog(QDialog):
             log(f"⚠️ {e}")
             return None, {}, None
 
-        # --- reusable C-order tile buffers (avoid copies before GPU) ---
         def _mk_buf():
-            buf = np.empty((N, chunk_h, chunk_w, channels), dtype=np.float32, order='C')
+            return np.empty((N, chunk_h, chunk_w, channels), dtype=np.float32, order='C')
 
-            return buf
+        def _mk_mask_buf():
+            return np.zeros((N, chunk_h, chunk_w), dtype=np.bool_, order='C')
 
         buf0 = _mk_buf()
         buf1 = _mk_buf()
+        maskbuf0 = _mk_mask_buf()
+        maskbuf1 = _mk_mask_buf()
 
-        # --- weights once per group ---
         weights_array = np.array([frame_weights.get(p, 1.0) for p in file_list], dtype=np.float32)
 
-        n_rows  = math.ceil(height / chunk_h)
-        n_cols  = math.ceil(width  / chunk_w)
+        n_rows = math.ceil(height / chunk_h)
+        n_cols = math.ceil(width / chunk_w)
         total_tiles = n_rows * n_cols
 
-        # --- group-level rejection maps (RAM-light) ---
-        rej_any   = np.zeros((height, width), dtype=np.bool_)
+        rej_any = np.zeros((height, width), dtype=np.bool_)
         rej_count = np.zeros((height, width), dtype=np.uint16)
 
-        # --------- helper: read a tile into a provided buffer (blocking) ----------
-        def _read_tile_into(buf, y0, y1, x0, x1):
+        def _read_tile_into(buf, maskbuf, y0, y1, x0, x1):
             """
-            Fill buf[:N, :th, :tw, :channels] with the (y0:y1, x0:x1) tile
-            from all frames. In fast mode, reuse open _MMImage memmaps.
-            In fallback mode, open/close a fresh _MMImage per file.
+            Fill image tile buffer and matching forced-reject tile buffer.
+            maskbuf is (N, th, tw) boolean, one 2D mask per frame.
             """
             th = y1 - y0
             tw = x1 - x0
             ts = buf[:N, :th, :tw, :channels]
+            ms = maskbuf[:N, :th, :tw]
+            ms.fill(False)
 
             if use_memmap_sources:
-                # Fast path: re-use open memmaps / XISF mappings
                 for i, src in enumerate(sources):
-                    sub = src.read_tile(y0, y1, x0, x1)  # float32, (th,tw) or (th,tw,3)
+                    sub = src.read_tile(y0, y1, x0, x1)
                     if sub.ndim == 2:
                         if channels == 3:
                             sub = sub[:, :, None].repeat(3, axis=2)
                         else:
                             sub = sub[:, :, None]
                     ts[i, :, :, :] = sub
+
+                    mfull = satmask_full_list[i]
+                    if mfull is not None:
+                        ms[i, :, :] = mfull[y0:y1, x0:x1]
             else:
-                # Fallback path: open/close per file (no persistent FDs).
-                # Still uses _MMImage so scaling/normalization stays consistent.
                 for i, path in enumerate(source_paths):
                     src = _MMImage(path)
                     try:
@@ -21444,13 +21592,15 @@ class StackingSuiteDialog(QDialog):
                             sub = sub[:, :, None]
                     ts[i, :, :, :] = sub
 
-            return th, tw  # actual extents for edge tiles
+                    mfull = satmask_full_list[i]
+                    if mfull is not None:
+                        ms[i, :, :] = mfull[y0:y1, x0:x1]
 
-        # Prefetcher (single background worker is enough; IO is the bottleneck)
+            return th, tw
+
         from concurrent.futures import ThreadPoolExecutor
         tp = ThreadPoolExecutor(max_workers=1)
 
-        # Precompute tile grid
         tiles = []
         for y0 in range(0, height, chunk_h):
             y1 = min(y0 + chunk_h, height)
@@ -21458,25 +21608,23 @@ class StackingSuiteDialog(QDialog):
                 x1 = min(x0 + chunk_w, width)
                 tiles.append((y0, y1, x0, x1))
 
-        # --- CPU reducer helper so we can reuse it everywhere ---
-        def _cpu_reduce_tile(ts, th, tw):
+        def _cpu_reduce_tile(ts, forced_reject_2d, th, tw):
             """
             CPU rejection/integration for a single tile.
-            Returns (tile_result, tile_rej_map).
-
-            Zero-valued pixels are ignored per channel by masking them to NaN.
-            tile_rej_map is returned as (N, th, tw), collapsing channel rejects.
+            forced_reject_2d: (N, th, tw) boolean sidecar mask for this tile
+            Returns (tile_result, tile_rej_map)
             """
             ts = np.asarray(ts, dtype=np.float32)
+            forced_reject_2d = np.asarray(forced_reject_2d, dtype=bool)
 
-            # Valid per-channel samples: finite and non-zero
-            valid = np.isfinite(ts) & (ts != 0.0)
+            # Expand forced reject mask across channels
+            forced_reject = forced_reject_2d[..., None]  # (N, th, tw, 1)
 
-            # Mask invalid/zero samples to NaN for nan-aware reducers
+            valid = np.isfinite(ts) & (ts != 0.0) & (~forced_reject)
+
             ts_masked = np.where(valid, ts, np.nan)
 
-            # Base rejection map collapsed across channels -> (N, th, tw)
-            base_rej = np.any(~valid, axis=-1)
+            base_rej = np.any(~valid, axis=-1)  # (N, th, tw)
 
             if algo in ("Comet Median", "Simple Median (No Rejection)"):
                 tile_result = np.nanmedian(ts_masked, axis=0)
@@ -21485,36 +21633,28 @@ class StackingSuiteDialog(QDialog):
             elif algo == "Comet High-Clip Percentile":
                 k = self.settings.value("stacking/comet_hclip_k", 1.30, type=float)
                 p = self.settings.value("stacking/comet_hclip_p", 25.0, type=float)
-
-                # Assumes _high_clip_percentile is NaN-aware
                 tile_result = _high_clip_percentile(ts_masked, k=float(k), p=float(p))
                 tile_rej_map = base_rej
 
             elif algo == "Comet Lower-Trim (30%)":
-                # Assumes _lower_trimmed_mean is NaN-aware
                 tile_result = _lower_trimmed_mean(ts_masked, trim_hi_frac=0.30)
                 tile_rej_map = base_rej
 
             elif algo == "Comet Percentile (40th)":
-                # If _percentile40 is not NaN-aware, replace this with np.nanpercentile(..., 40.0, axis=0)
                 tile_result = np.nanpercentile(ts_masked, 40.0, axis=0)
                 tile_rej_map = base_rej
 
             elif algo == "Simple Average (No Rejection)":
                 w = weights_array[:, None, None, None].astype(np.float32)
-
                 w_eff = np.where(valid, w, 0.0)
                 ts_eff = np.where(valid, ts, 0.0)
-
                 num = np.sum(ts_eff * w_eff, axis=0)
                 den = np.sum(w_eff, axis=0)
-
                 fallback = np.nanmedian(ts_masked, axis=0)
                 tile_result = np.where(den > 0, num / np.maximum(den, 1e-20), fallback)
                 tile_rej_map = base_rej
 
             elif algo == "Weighted Windsorized Sigma Clipping":
-                # Assumes helper is NaN-aware
                 tile_result, tile_rej_map = windsorized_sigma_clip_weighted(
                     ts_masked, weights_array, lower=self.sigma_low, upper=self.sigma_high
                 )
@@ -21524,7 +21664,6 @@ class StackingSuiteDialog(QDialog):
                 tile_rej_map |= base_rej
 
             elif algo == "Kappa-Sigma Clipping":
-                # Assumes helper is NaN-aware
                 tile_result, tile_rej_map = kappa_sigma_clip_weighted(
                     ts_masked, weights_array, kappa=self.kappa, iterations=self.iterations
                 )
@@ -21534,7 +21673,6 @@ class StackingSuiteDialog(QDialog):
                 tile_rej_map |= base_rej
 
             elif algo == "Trimmed Mean":
-                # Assumes helper is NaN-aware
                 tile_result, tile_rej_map = trimmed_mean_weighted(
                     ts_masked, weights_array, trim_fraction=self.trim_fraction
                 )
@@ -21544,7 +21682,6 @@ class StackingSuiteDialog(QDialog):
                 tile_rej_map |= base_rej
 
             elif algo == "Extreme Studentized Deviate (ESD)":
-                # Assumes helper is NaN-aware
                 tile_result, tile_rej_map = esd_clip_weighted(
                     ts_masked, weights_array, threshold=self.esd_threshold
                 )
@@ -21554,7 +21691,6 @@ class StackingSuiteDialog(QDialog):
                 tile_rej_map |= base_rej
 
             elif algo == "Biweight Estimator":
-                # Assumes helper is NaN-aware
                 tile_result, tile_rej_map = biweight_location_weighted(
                     ts_masked, weights_array, tuning_constant=self.biweight_constant
                 )
@@ -21564,7 +21700,6 @@ class StackingSuiteDialog(QDialog):
                 tile_rej_map |= base_rej
 
             elif algo == "Modified Z-Score Clipping":
-                # Assumes helper is NaN-aware
                 tile_result, tile_rej_map = modified_zscore_clip_weighted(
                     ts_masked, weights_array, threshold=self.modz_threshold
                 )
@@ -21580,7 +21715,6 @@ class StackingSuiteDialog(QDialog):
                 tile_rej_map = base_rej
 
             else:
-                # sensible default if algo name somehow out-of-sync
                 tile_result, tile_rej_map = windsorized_sigma_clip_weighted(
                     ts_masked, weights_array, lower=self.sigma_low, upper=self.sigma_high
                 )
@@ -21591,46 +21725,42 @@ class StackingSuiteDialog(QDialog):
 
             tile_result = np.asarray(tile_result, dtype=np.float32)
             tile_rej_map = np.asarray(tile_rej_map, dtype=bool)
-
             return tile_result, tile_rej_map
-        
+
         # Prime first read
-        tile_idx = 0
         y0, y1, x0, x1 = tiles[0]
-        fut = tp.submit(_read_tile_into, buf0, y0, y1, x0, x1)
+        fut = tp.submit(_read_tile_into, buf0, maskbuf0, y0, y1, x0, x1)
         use_buf0 = True
 
-        # Torch inference guard (if available)
         _ctx = _safe_torch_inference_ctx() if use_gpu else contextlib.nullcontext
         with _ctx():
             for tile_idx, (y0, y1, x0, x1) in enumerate(tiles, start=1):
                 t0 = time.perf_counter()
 
-                # Wait for current tile to be ready
                 th, tw = fut.result()
-                ts = (buf0 if use_buf0 else buf1)[:N, :th, :tw, :channels]
+                if use_buf0:
+                    ts = buf0[:N, :th, :tw, :channels]
+                    forced_mask_tile = maskbuf0[:N, :th, :tw]
+                else:
+                    ts = buf1[:N, :th, :tw, :channels]
+                    forced_mask_tile = maskbuf1[:N, :th, :tw]
 
-                # Optional debug – feel free to comment out later
-                log(f"[Stacking] tile {tile_idx}/{total_tiles} ts.shape={ts.shape}, N={N}, C={channels}")
-
-                # --- defensive guard for degenerate tiles ---
                 if ts.size == 0 or ts.shape[1] == 0 or ts.shape[2] == 0 or ts.shape[3] == 0:
                     log(
                         f"⚠️ Degenerate tile shape {ts.shape} at tile {tile_idx} "
                         f"[y:{y0}:{y1} x:{x0}:{x1}] – using CPU for this tile."
                     )
-                    tile_result, tile_rej_map = _cpu_reduce_tile(ts, th, tw)
+                    tile_result, tile_rej_map = _cpu_reduce_tile(ts, forced_mask_tile, th, tw)
                 else:
-                    # Kick off prefetch for the NEXT tile (if any) into the other buffer
                     if tile_idx < total_tiles:
                         ny0, ny1, nx0, nx1 = tiles[tile_idx]
                         fut = tp.submit(
                             _read_tile_into,
                             (buf1 if use_buf0 else buf0),
+                            (maskbuf1 if use_buf0 else maskbuf0),
                             ny0, ny1, nx0, nx1
                         )
 
-                    # --- rejection/integration for this tile ---
                     log(
                         f"Integrating tile {tile_idx}/{total_tiles} "
                         f"[y:{y0}:{y1} x:{x0}:{x1} size={th}×{tw}] "
@@ -21638,11 +21768,10 @@ class StackingSuiteDialog(QDialog):
                     )
 
                     if use_gpu:
-                        print(f"Using GPU for tile {tile_idx} with algo {algo}")
                         try:
                             tile_result, tile_rej_map = _torch_reduce_tile(
-                                ts,                         # NumPy view, C-contiguous
-                                weights_array,              # (N,)
+                                ts,
+                                weights_array,
                                 algo_name=algo,
                                 kappa=float(self.kappa),
                                 iterations=int(self.iterations),
@@ -21654,8 +21783,8 @@ class StackingSuiteDialog(QDialog):
                                 modz_threshold=float(self.modz_threshold),
                                 comet_hclip_k=float(self.settings.value("stacking/comet_hclip_k", 1.30, type=float)),
                                 comet_hclip_p=float(self.settings.value("stacking/comet_hclip_p", 25.0, type=float)),
+                                forced_reject_mask_np=forced_mask_tile,
                             )
-                            # In case GPU path ever returns tensors instead of NumPy:
                             if hasattr(tile_result, "detach"):
                                 tile_result = tile_result.detach().cpu().numpy()
                             if hasattr(tile_rej_map, "detach"):
@@ -21665,61 +21794,55 @@ class StackingSuiteDialog(QDialog):
                                 f"⚠️ GPU rejection failed on tile {tile_idx}/{total_tiles} "
                                 f"shape={ts.shape}: {e} – falling back to CPU for this and remaining tiles."
                             )
-                            use_gpu = False  # disable GPU for subsequent tiles too
-                            tile_result, tile_rej_map = _cpu_reduce_tile(ts, th, tw)
+                            use_gpu = False
+                            tile_result, tile_rej_map = _cpu_reduce_tile(ts, forced_mask_tile, th, tw)
                     else:
-                        # Normal CPU path
-                        tile_result, tile_rej_map = _cpu_reduce_tile(ts, th, tw)
+                        tile_result, tile_rej_map = _cpu_reduce_tile(ts, forced_mask_tile, th, tw)
 
-                # --- write back integrated tile ---
                 integrated_image[y0:y1, x0:x1, :] = tile_result
 
-                # --- rejection bookkeeping ---
-                trm = tile_rej_map
+                trm = np.asarray(tile_rej_map, dtype=bool)
                 if trm.ndim == 4:
-                    trm = np.any(trm, axis=-1)  # collapse color → (N, th, tw)
+                    trm = np.any(trm, axis=-1)
 
-                rej_any[y0:y1, x0:x1]  |= np.any(trm, axis=0)
+                rej_any[y0:y1, x0:x1] |= np.any(trm, axis=0)
                 rej_count[y0:y1, x0:x1] += trm.sum(axis=0).astype(np.uint16)
 
-                # per-file coords (existing behavior)
                 if collect_per_file:
                     for i, fpath in enumerate(file_list):
                         m = trm[i]
                         if np.any(m):
-                            # store as a tile mask, not coord list
                             per_file_rejections[fpath].append((x0, y0, m.copy()))
 
-                # perf log
                 dt = time.perf_counter() - t0
                 work_px = th * tw * N * channels
                 mpx_s = (work_px / 1e6) / dt if dt > 0 else float("inf")
                 log(f"  ↳ tile {tile_idx} done in {dt:.3f}s  (~{mpx_s:.1f} MPx/s)")
 
-                # flip buffer
                 use_buf0 = not use_buf0
 
-        # close mmapped FITSes and prefetch pool
         tp.shutdown(wait=True)
         if use_memmap_sources:
             for s in sources:
                 s.close()
 
-
         if channels == 1:
             integrated_image = integrated_image[..., 0]
 
-        # stash group-level maps
         if not hasattr(self, "_rej_maps"):
             self._rej_maps = {}
-        rej_frac = (rej_count.astype(np.float32) / float(max(1, N)))  # [0..1]
-        self._rej_maps[group_key] = {"any": rej_any, "frac": rej_frac, "count": rej_count, "n": N}
+        rej_frac = (rej_count.astype(np.float32) / float(max(1, N)))
+        self._rej_maps[group_key] = {
+            "any": rej_any,
+            "frac": rej_frac,
+            "count": rej_count,
+            "n": N
+        }
 
         log(f"Integration complete for group '{group_key}'.")
 
-        # If we used memmap, convert to regular array and cleanup
         if integrated_memmap_path is not None:
-            integrated_image = np.array(integrated_image)  # Copy to regular array
+            integrated_image = np.array(integrated_image)
             try:
                 cleanup_memmap(None, integrated_memmap_path)
             except Exception:
@@ -21728,11 +21851,9 @@ class StackingSuiteDialog(QDialog):
         try:
             _free_torch_memory()
         except Exception:
-            pass  # Ignore torch cleanup errors
+            pass
 
         return integrated_image, per_file_rejections, ref_header
-
-
 
     def _safe_component(self, s: str, *, replacement:str="_", maxlen:int=180) -> str:
         """

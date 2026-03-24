@@ -2226,9 +2226,131 @@ def _suppress_tiny_islands(img32: np.ndarray, det_sigma: float, minarea: int) ->
 # ─────────────────────────────────────────────────────────────
 # Final warp+save worker (process-safe)
 # ─────────────────────────────────────────────────────────────
+def _satmask_sidecar_path_for_image(image_path: str) -> str:
+    import os
+    root, _ = os.path.splitext(image_path)
+    return root + "_satmask.npy"
+
+
+def _candidate_satmask_paths_for_image(image_path: str):
+    """
+    Return possible sidecar paths for an image path.
+
+    Examples:
+      Aligned/abc_c_n_r.fit -> Aligned/abc_c_n_r_satmask.npy
+      Normalized/abc_c_n.fit -> Normalized/abc_c_n_satmask.npy, then
+                                ../Calibrated/abc_c_satmask.npy
+    """
+    import os
+
+    image_path = os.path.normpath(image_path)
+    out = []
+
+    # 1) exact sidecar next to the image path
+    out.append(_satmask_sidecar_path_for_image(image_path))
+
+    base = os.path.basename(image_path)
+    dirname = os.path.dirname(image_path)
+    parent = os.path.dirname(dirname)
+
+    # 2) normalized -> calibrated fallback
+    #    e.g. foo_c_n.fit -> Calibrated/foo_c_satmask.npy
+    if base.lower().endswith("_n.fit"):
+        denorm_base = base[:-6] + ".fit"   # strip "_n.fit", restore ".fit"
+        cal_dir = os.path.join(parent, "Calibrated")
+        out.append(_satmask_sidecar_path_for_image(os.path.join(cal_dir, denorm_base)))
+
+    # de-duplicate while preserving order
+    seen = set()
+    uniq = []
+    for p in out:
+        pn = os.path.normcase(os.path.normpath(p))
+        if pn not in seen:
+            seen.add(pn)
+            uniq.append(p)
+    return uniq
+
+
+def _load_satmask_sidecar(image_path: str):
+    import os
+    import numpy as np
+
+    for p in _candidate_satmask_paths_for_image(image_path):
+        if not os.path.exists(p):
+            continue
+        try:
+            m = np.load(p, allow_pickle=False)
+            m = np.asarray(m, dtype=bool)
+            if m.ndim != 2:
+                continue
+            return m
+        except Exception:
+            continue
+    return None
+
+
+def _save_satmask_sidecar(image_path: str, mask2d):
+    import numpy as np
+    p = _satmask_sidecar_path_for_image(image_path)
+    np.save(p, np.asarray(mask2d, dtype=np.uint8), allow_pickle=False)
+    return p
+
+def _warp_satmask_with_kind(mask2d, kind: str, X: object, out_hw: tuple[int, int]):
+    """
+    Warp a 2D boolean rejection mask with the same final registration model.
+    Uses nearest-neighbor everywhere to preserve binary mask semantics.
+    out_hw = (H, W) in reference/aligned space.
+    """
+    import numpy as np
+    import cv2
+
+    Hh, Ww = int(out_hw[0]), int(out_hw[1])
+    src = np.asarray(mask2d, dtype=np.uint8)
+
+    if kind in ("affine", "similarity"):
+        A = np.asarray(X, np.float32).reshape(2, 3)
+        out = cv2.warpAffine(
+            src, A, (Ww, Hh),
+            flags=cv2.INTER_NEAREST,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=0
+        )
+        return out.astype(bool)
+
+    if kind == "homography":
+        Hm = np.asarray(X, np.float32).reshape(3, 3)
+        out = cv2.warpPerspective(
+            src, Hm, (Ww, Hh),
+            flags=cv2.INTER_NEAREST,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=0
+        )
+        return out.astype(bool)
+
+    if kind in ("poly3", "poly4"):
+        map_x, map_y = X
+        out = cv2.remap(
+            src,
+            map_x.astype(np.float32),
+            map_y.astype(np.float32),
+            interpolation=cv2.INTER_NEAREST,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=0
+        )
+        return out.astype(bool)
+
+    # Fallback: no warp
+    hh = min(Hh, src.shape[0])
+    ww = min(Ww, src.shape[1])
+    out = np.zeros((Hh, Ww), dtype=bool)
+    out[:hh, :ww] = src[:hh, :ww].astype(bool)
+    return out
+
 def _finalize_write_job(args):
     """
     Process-safe worker: read full-res, choose model, warp, save.
+    Also propagates satellite rejection sidecar mask if present.
+
     Returns (orig_path, out_path or "", msg, success, drizzle_tuple or None)
     drizzle_tuple = (kind, matrix_or_None)
     """
@@ -2248,7 +2370,8 @@ def _finalize_write_job(args):
 
     try:
         cv2.setNumThreads(1)
-        try: cv2.ocl.setUseOpenCL(False)
+        try:
+            cv2.ocl.setUseOpenCL(False)
         except Exception:
             pass
     except Exception:
@@ -2282,6 +2405,12 @@ def _finalize_write_job(args):
         img = np.nan_to_num(img, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
         img = np.ascontiguousarray(img)
 
+        # ---- NEW: load original satellite mask sidecar if present ----
+        satmask_src = _load_satmask_sidecar(orig_path)
+        if satmask_src is None:
+            dbg(f"[satmask] no source sidecar found for {os.path.basename(orig_path)}")
+        else:
+            dbg(f"[satmask] loaded source sidecar for {os.path.basename(orig_path)} ({int(np.count_nonzero(satmask_src))} px)")
         Href, Wref = ref_shape
 
         # 2) load reference (full-res) via memmap
@@ -2307,10 +2436,9 @@ def _finalize_write_job(args):
         if model != "affine":
             dbg(f"[finalize] base={base} model={model} det_sigma={det_sigma} minarea={minarea} limit_stars={limit_stars}")
 
-            ds = 2  # ✅ keep simple/safe; only DS+lift change requested
+            ds = 2
             ds = max(1, int(ds))
 
-            # DS reference
             if ds > 1:
                 ref_ds = cv2.resize(ref2d, (max(1, Wref // ds), max(1, Href // ds)), interpolation=cv2.INTER_AREA)
             else:
@@ -2319,7 +2447,6 @@ def _finalize_write_job(args):
             ref_ds = np.ascontiguousarray(ref_ds.astype(np.float32, copy=False))
             Hds, Wds = ref_ds.shape[:2]
 
-            # DS source
             if ds > 1:
                 src_ds0 = cv2.resize(src_gray_full, (Wds, Hds), interpolation=cv2.INTER_AREA)
             else:
@@ -2327,18 +2454,15 @@ def _finalize_write_job(args):
 
             src_ds0 = np.ascontiguousarray(src_ds0.astype(np.float32, copy=False))
 
-            # Pre-warp source in DS space using downscaled accumulated affine
             A_prev_ds = downscale_affine_2x3_to_ds(A_prev, ds).astype(np.float32)
             src_pre_ds = cv2.warpAffine(
                 src_ds0, A_prev_ds, (Wds, Hds),
                 flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT_101
             )
 
-            # Optional suppress tiny islands (your existing helper)
             src_pre_ds = _suppress_tiny_islands(src_pre_ds, det_sigma=float(det_sigma), minarea=int(minarea))
             ref_ds     = _suppress_tiny_islands(ref_ds,     det_sigma=float(det_sigma), minarea=int(minarea))
 
-            # AA correspondences in DS space: prewarped src vs ref
             max_cp = None
             try:
                 if limit_stars is not None and int(limit_stars) > 0:
@@ -2360,17 +2484,14 @@ def _finalize_write_job(args):
             if src_xy is None or len(src_xy) < 8:
                 raise RuntimeError("astroalign produced too few matches (finalize)")
 
-            # RANSAC threshold in DS pixels
             hth = float(h_reproj)
 
             if model == "homography":
-                # Delta homography maps prewarped -> ref  (both in DS coords)
                 H_delta_ds, inl = cv2.findHomography(src_xy, tgt_xy, cv2.RANSAC, ransacReprojThreshold=hth)
                 ninl = int(inl.sum()) if inl is not None else 0
                 dbg(f"[RANSAC] homography delta(DS) inliers={ninl}/{len(src_xy)} thr={hth}")
 
                 if H_delta_ds is None:
-                    # fallback to just affine refinement
                     kind, X = "affine", A_prev.copy()
                 else:
                     H_delta_full = lift_homography_from_ds(H_delta_ds, ds)
@@ -2378,7 +2499,6 @@ def _finalize_write_job(args):
                     kind, X = "homography", H_final
 
             elif model == "similarity":
-                # Delta similarity (affine partial) maps prewarped -> ref in DS coords
                 A_delta_ds, inl = cv2.estimateAffinePartial2D(
                     src_xy, tgt_xy, cv2.RANSAC, ransacReprojThreshold=hth
                 )
@@ -2389,16 +2509,11 @@ def _finalize_write_job(args):
                     kind, X = "similarity", _project_to_similarity(A_prev)
                 else:
                     A_delta_full = lift_affine_2x3_from_ds(A_delta_ds, ds)
-                    # Compose delta ∘ prev in affine space
                     A_final3 = _A3(A_delta_full) @ A_prev3
                     A_final = A_final3[:2, :]
                     kind, X = "similarity", _project_to_similarity(A_final)
 
             elif model in ("poly3", "poly4"):
-                # Keep behavior simple: poly fit in FULL coords using pairs from prewarped DS,
-                # then apply as remap on the ORIGINAL image (same as your current poly path).
-                # (If you later want true "poly residual after affine", we can do that safely,
-                # but that is a pattern change beyond DS+lift.)
                 order = 3 if model == "poly3" else 4
                 src_full = (np.asarray(src_xy, np.float32) * float(ds)).astype(np.float32)
                 tgt_full = (np.asarray(tgt_xy, np.float32) * float(ds)).astype(np.float32)
@@ -2408,10 +2523,9 @@ def _finalize_write_job(args):
                 kind, X = model, (map_x, map_y)
 
             else:
-                # Unknown model -> just write affine refinement
                 kind, X = "affine", A_prev.copy()
 
-        # 4) warp full-res
+        # 4) warp full-res image
         Hh, Ww = Href, Wref
 
         if kind in ("affine", "similarity"):
@@ -2462,7 +2576,19 @@ def _finalize_write_job(args):
         if np.isnan(aligned).any() or np.isinf(aligned).any():
             aligned = np.nan_to_num(aligned, nan=0.0, posinf=0.0, neginf=0.0)
 
-        # 5) save
+        # ---- NEW: warp satellite mask with the SAME final transform ----
+        satmask_aligned = None
+        if satmask_src is not None:
+            try:
+                satmask_aligned = _warp_satmask_with_kind(
+                    satmask_src, kind, X, (Hh, Ww)
+                )
+                dbg(f"[satmask] propagated {int(np.count_nonzero(satmask_src))} -> {int(np.count_nonzero(satmask_aligned))} px")
+            except Exception as e:
+                dbg(f"[satmask] warp failed: {e}")
+                satmask_aligned = None
+
+        # 5) save aligned image
         name, _ = os.path.splitext(base)
         if name.endswith("_n"):
             name = name[:-2]
@@ -2472,8 +2598,22 @@ def _finalize_write_job(args):
         out_path = os.path.join(output_directory, f"{name}.fit")
 
         from setiastro.saspro.legacy.image_manager import save_image as _legacy_save
-        _legacy_save(img_array=aligned, filename=out_path, original_format="fit",
-                     bit_depth=None, original_header=hdr, is_mono=is_mono)
+        _legacy_save(
+            img_array=aligned,
+            filename=out_path,
+            original_format="fit",
+            bit_depth=None,
+            original_header=hdr,
+            is_mono=is_mono
+        )
+
+        # ---- NEW: save aligned satellite sidecar mask if present ----
+        if satmask_aligned is not None:
+            try:
+                saved_p = _save_satmask_sidecar(out_path, satmask_aligned)
+                dbg(f"[satmask] saved aligned sidecar: {os.path.basename(saved_p)} ({int(np.count_nonzero(satmask_aligned))} px)")
+            except Exception as e:
+                dbg(f"[satmask] save failed: {e}")
 
         msg = (
             f"🌀 Distortion Correction on {base}: warp={warp_label}\n"
@@ -2488,7 +2628,6 @@ def _finalize_write_job(args):
             pre = "\n".join(debug_lines)
             return (orig_path, "", f"{pre}\n⚠️ Finalize error {os.path.basename(orig_path)}: {e}", False, None)
         return (orig_path, "", f"⚠️ Finalize error {os.path.basename(orig_path)}: {e}", False, None)
-
 
 class StarRegistrationWorker(QRunnable):
     def __init__(self, file_path, original_file, current_transform,

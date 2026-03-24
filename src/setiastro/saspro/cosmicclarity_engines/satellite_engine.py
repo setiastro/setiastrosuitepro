@@ -451,33 +451,47 @@ def get_satellite_models(resources: Any = None, use_gpu: bool = True, status_cb=
 # ----------------------------
 #   Core processing
 # ----------------------------
-
-def _ensure_rgb01(img: np.ndarray) -> Tuple[np.ndarray, bool]:
+def _normalize_for_satellite(img: np.ndarray) -> Tuple[np.ndarray, bool, float, float]:
     """
-    Input: HxW, HxWx1, or HxWx3; float/uint.
-    Output: HxWx3 float32 [0..1], plus is_mono flag (originally mono-like).
+    Input: HxW, HxWx1, or HxWx3; float/uint with arbitrary calibrated range.
+    Output:
+      rgb01     : HxWx3 float32 in [0,1]
+      is_mono   : whether original input was mono-like
+      orig_min  : original minimum value before normalization
+      scale     : max(image - orig_min); output can be denormalized with out*scale + orig_min
     """
     a = np.asarray(img)
     is_mono = (a.ndim == 2) or (a.ndim == 3 and a.shape[2] == 1)
 
     a = np.nan_to_num(a.astype(np.float32, copy=False), nan=0.0, posinf=0.0, neginf=0.0)
 
-    # normalize if >1
-    mx = float(np.max(a)) if a.size else 1.0
-    if mx > 1.0:
-        a = a / mx
+    orig_min = float(np.min(a)) if a.size else 0.0
+    shifted = a - orig_min
+    scale = float(np.max(shifted)) if shifted.size else 0.0
+    if not np.isfinite(scale) or scale <= 1e-12:
+        scale = 1.0
 
-    if a.ndim == 2:
-        a = np.stack([a, a, a], axis=-1)
-    elif a.ndim == 3 and a.shape[2] == 1:
-        a = np.repeat(a, 3, axis=2)
-    elif a.ndim == 3 and a.shape[2] >= 3:
-        a = a[..., :3]
+    a01 = shifted / scale
+
+    if a01.ndim == 2:
+        a01 = np.stack([a01, a01, a01], axis=-1)
+    elif a01.ndim == 3 and a01.shape[2] == 1:
+        a01 = np.repeat(a01, 3, axis=2)
+    elif a01.ndim == 3 and a01.shape[2] >= 3:
+        a01 = a01[..., :3]
     else:
         raise ValueError(f"Unsupported image shape: {a.shape}")
 
-    a = np.clip(a, 0.0, 1.0)
-    return a, is_mono
+    a01 = np.clip(a01, 0.0, 1.0).astype(np.float32, copy=False)
+    return a01, is_mono, orig_min, scale
+
+
+def _denormalize_from_satellite(rgb01: np.ndarray, orig_min: float, scale: float) -> np.ndarray:
+    """
+    Undo _normalize_for_satellite() for an RGB image in [0,1].
+    """
+    out = np.asarray(rgb01, np.float32) * float(scale) + float(orig_min)
+    return out.astype(np.float32, copy=False)
 
 
 def _extract_luminance_bt601(rgb01: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -615,14 +629,51 @@ def _stitch_ignore_border(chunks, shape_hw3, border: int = 16) -> np.ndarray:
 
     return acc / np.maximum(wgt, 1.0)
 
+def _stitch_mask_ignore_border(mask_chunks, shape_hw, border: int = 16) -> np.ndarray:
+    """
+    mask_chunks: list of (mask2d_bool, y0, x0)
+    OR-stitches masks while ignoring tile borders, matching _stitch_ignore_border().
+    """
+    H, W = shape_hw
+    out = np.zeros((H, W), dtype=bool)
 
-def _apply_clip_trail_logic(processed: np.ndarray, original: np.ndarray, sensitivity: float) -> np.ndarray:
-    # exactly your standalone math
+    for tile_mask, y0, x0 in mask_chunks:
+        th, tw = tile_mask.shape[:2]
+        bh = min(border, th // 2)
+        bw = min(border, tw // 2)
+
+        inner = tile_mask[bh:th-bh, bw:tw-bw]
+        out[y0+bh:y0+th-bh, x0+bw:x0+tw-bw] |= inner
+
+    return out
+
+def _apply_clip_trail_logic(
+    processed: np.ndarray,
+    original: np.ndarray,
+    sensitivity: float,
+    *,
+    return_mask: bool = False,
+):
+    """
+    Original standalone clip logic, but now can also return the authoritative binary trail mask.
+
+    processed, original: HxWx3 float32 in [0,1]
+    return:
+      if return_mask=False -> final_rgb01
+      if return_mask=True  -> (final_rgb01, trail_mask_2d_bool)
+    """
     sattrail_only = original - processed
     mean_val = float(np.mean(sattrail_only))
     clipped = np.clip((sattrail_only - mean_val) * 10.0, 0.0, 1.0)
-    mask = np.where(clipped < sensitivity, 0.0, 1.0).astype(np.float32)
-    return np.clip(original - mask, 0.0, 1.0)
+
+    mask3 = np.where(clipped < sensitivity, 0.0, 1.0).astype(np.float32)
+    final = np.clip(original - mask3, 0.0, 1.0).astype(np.float32, copy=False)
+
+    if not return_mask:
+        return final
+
+    trail_mask_2d = np.any(mask3 > 0.5, axis=-1)
+    return final, trail_mask_2d
 
 def _resize_tile_for_detect(tile_rgb01: np.ndarray) -> np.ndarray:
     if _sk_resize is None:
@@ -826,40 +877,39 @@ def satellite_remove_image(
     target_median: float = 0.25,
     compatibility_mode: bool = False,
     progress_cb: Optional[Callable[[int, int], None]] = None,
-) -> Tuple[np.ndarray, bool]:
+    return_mask: bool = False,
+):
     """
-    image: input image (any dtype/shape). Expected to be linear-ish in [0..1] for best behavior.
-    Returns: (out_image_same_shape_style, trail_detected_any)
+    image: input image with arbitrary calibrated range
+    Returns:
+      default: (out_image_same_shape_style, trail_detected_any)
+      if return_mask=True: (out_image_same_shape_style, trail_detected_any, trail_mask_2d_bool)
     """
-    rgb01, was_mono = _ensure_rgb01(image)
+    rgb01, was_mono, orig_min, scale = _normalize_for_satellite(image)
     tm = float(np.clip(target_median, 0.01, 0.50))
 
     def _should_stretch(x: np.ndarray) -> bool:
-        # same idea as denoise engine
         x = np.asarray(x, np.float32)
         return bool(np.median(x - np.min(x)) < 0.05)
 
-    # luminance mode -> process Y only, then merge back
     if mode.lower() == "luminance":
         y, cb, cr = _extract_luminance_bt601(rgb01)
 
-        # --- NEW: temp stretch on luminance only ---
         if bool(temp_stretch):
             stretch_needed = True
         else:
             stretch_needed = _should_stretch(y)
 
         if stretch_needed:
-            y_s, original_min, original_meds = stretch_image(y, target_median=tm)
+            y_s, stretch_min, stretch_meds = stretch_image(y, target_median=tm)
         else:
             y_s = y.astype(np.float32, copy=False)
-            original_min = float(np.min(y))
-            original_meds = [float(np.median(y_s))]
+            stretch_min = float(np.min(y))
+            stretch_meds = [float(np.median(y_s))]
 
-        # run network as RGB by repeating Y
         y3 = np.stack([y_s, y_s, y_s], axis=-1)
 
-        out3, detected = _satellite_remove_rgb(
+        out3, detected, trail_mask = _satellite_remove_rgb(
             y3, models,
             clip_trail=clip_trail, sensitivity=sensitivity,
             chunk_size=chunk_size, overlap=overlap, border_size=border_size,
@@ -869,28 +919,26 @@ def satellite_remove_image(
 
         out_y = out3[..., 0]
 
-        # --- NEW: unstretch luminance back ---
         if stretch_needed:
-            out_y = unstretch_image(out_y, original_meds, original_min, target_median=tm)
+            out_y = unstretch_image(out_y, stretch_meds, stretch_min, target_median=tm)
 
         out_y = np.clip(out_y, 0.0, 1.0).astype(np.float32, copy=False)
-        out_rgb = _merge_luminance_bt601(out_y, cb, cr)
+        out_rgb01 = _merge_luminance_bt601(out_y, cb, cr)
 
     else:
-        # --- NEW: temp stretch on full RGB before detection/removal ---
         if bool(temp_stretch):
             stretch_needed = True
         else:
             stretch_needed = _should_stretch(rgb01)
 
         if stretch_needed:
-            rgb_s, original_min, original_meds = stretch_image(rgb01, target_median=tm)
+            rgb_s, stretch_min, stretch_meds = stretch_image(rgb01, target_median=tm)
         else:
             rgb_s = rgb01.astype(np.float32, copy=False)
-            original_min = float(np.min(rgb01))
-            original_meds = [float(np.median(rgb01[..., c])) for c in range(3)]
+            stretch_min = float(np.min(rgb01))
+            stretch_meds = [float(np.median(rgb01[..., c])) for c in range(3)]
 
-        out_rgb, detected = _satellite_remove_rgb(
+        out_rgb01, detected, trail_mask = _satellite_remove_rgb(
             rgb_s, models,
             clip_trail=clip_trail, sensitivity=sensitivity,
             chunk_size=chunk_size, overlap=overlap, border_size=border_size,
@@ -898,22 +946,29 @@ def satellite_remove_image(
             progress_cb=progress_cb,
         )
 
-        # --- NEW: unstretch back ---
         if stretch_needed:
-            out_rgb = unstretch_image(out_rgb, original_meds, original_min, target_median=tm)
+            out_rgb01 = unstretch_image(out_rgb01, stretch_meds, stretch_min, target_median=tm)
 
-        out_rgb = np.clip(out_rgb, 0.0, 1.0).astype(np.float32, copy=False)
+        out_rgb01 = np.clip(out_rgb01, 0.0, 1.0).astype(np.float32, copy=False)
 
-    # If original was mono-like, return HxWx1 (matches your SASpro convention for mono docs)
-    if (np.asarray(image).ndim == 2) or (np.asarray(image).ndim == 3 and np.asarray(image).shape[2] == 1):
+    # Undo calibrated-image normalization back to original range
+    out_rgb = _denormalize_from_satellite(out_rgb01, orig_min, scale)
+
+    # Preserve original mono-style convention
+    src = np.asarray(image)
+    if (src.ndim == 2) or (src.ndim == 3 and src.shape[2] == 1):
         out_m = out_rgb[..., 0:1].astype(np.float32)
+        if return_mask:
+            return out_m, detected, np.asarray(trail_mask, dtype=bool)
         return out_m, detected
 
-    return out_rgb.astype(np.float32), detected
+    out_rgb = out_rgb.astype(np.float32, copy=False)
+    if return_mask:
+        return out_rgb, detected, np.asarray(trail_mask, dtype=bool)
+    return out_rgb, detected
 
 
 # ---------- Satellite remove loop (FIX: use correct ONNX sessions, not det1/rem confusion) ----------
-
 def _satellite_remove_rgb(
     rgb01: np.ndarray,
     models: Dict[str, Any],
@@ -925,7 +980,7 @@ def _satellite_remove_rgb(
     border_size: int,
     compatibility_mode: bool,
     progress_cb: Optional[Callable[[int, int], None]],
-) -> Tuple[np.ndarray, bool]:
+) -> Tuple[np.ndarray, bool, np.ndarray]:
     is_onnx = bool(models.get("is_onnx", False))
 
     H, W = rgb01.shape[:2]
@@ -934,8 +989,9 @@ def _satellite_remove_rgb(
     all_tiles = list(_split_chunks(rgb01, chunk_size, overlap))
     total = len(all_tiles)
     out_tiles = [None] * total
+    mask_tiles = [None] * total
 
-    # ---------------- ONNX path (leave mostly serial for now) ----------------
+    # ---------------- ONNX path ----------------
     if is_onnx:
         for idx, (tile, y0, x0) in enumerate(all_tiles, start=1):
             orig = tile.astype(np.float32, copy=False)
@@ -951,16 +1007,24 @@ def _satellite_remove_rgb(
             if detected:
                 trail_any = True
                 pred = _onnx_remove(orig, rem_sess)
-                final = _apply_clip_trail_logic(pred, orig, sensitivity) if clip_trail else pred
+                if clip_trail:
+                    final, trail_mask = _apply_clip_trail_logic(
+                        pred, orig, sensitivity, return_mask=True
+                    )
+                else:
+                    final = pred
+                    trail_mask = np.zeros(orig.shape[:2], dtype=bool)
             else:
                 final = orig
+                trail_mask = np.zeros(orig.shape[:2], dtype=bool)
 
             out_tiles[idx - 1] = (final, y0, x0)
+            mask_tiles[idx - 1] = (trail_mask, y0, x0)
 
             if progress_cb is not None:
                 progress_cb(idx, total)
 
-    # ---------------- Torch path (batched) ----------------
+    # ---------------- Torch path ----------------
     else:
         tiles_only = [tile.astype(np.float32, copy=False) for (tile, _, _) in all_tiles]
 
@@ -974,7 +1038,6 @@ def _satellite_remove_rgb(
         detected_flags = [False] * total
         done_flags = [False] * total
 
-        # -------- Batched detection with progress --------
         torch = models["torch"]
         device = models["device"]
         det1 = models["detection_model1"]
@@ -1009,17 +1072,16 @@ def _satellite_remove_rgb(
                     if passed:
                         local_detected[int(local_j)] = True
 
-            # store detection results
             for local_j in range(len(batch_np)):
                 global_j = i + local_j
                 detected_flags[global_j] = bool(local_detected[local_j])
 
-            # non-detected tiles are fully done now
             for local_j in range(len(batch_np)):
                 global_j = i + local_j
                 if not detected_flags[global_j]:
                     tile, y0, x0 = all_tiles[global_j]
                     out_tiles[global_j] = (tile.astype(np.float32, copy=False), y0, x0)
+                    mask_tiles[global_j] = (np.zeros(tile.shape[:2], dtype=bool), y0, x0)
                     done_flags[global_j] = True
 
             if progress_cb is not None:
@@ -1028,7 +1090,6 @@ def _satellite_remove_rgb(
         detected_indices = [i for i, flag in enumerate(detected_flags) if flag]
         trail_any = bool(detected_indices)
 
-        # -------- Batched removal with progress --------
         if detected_indices:
             padded_tiles = []
             orig_shapes = []
@@ -1061,14 +1122,25 @@ def _satellite_remove_rgb(
                     pred = np.clip(pred[:h, :w, :], 0.0, 1.0).astype(np.float32)
 
                     orig, y0, x0 = all_tiles[src_idx]
-                    final = _apply_clip_trail_logic(pred, orig.astype(np.float32, copy=False), sensitivity) if clip_trail else pred
+                    orig = orig.astype(np.float32, copy=False)
+
+                    if clip_trail:
+                        final, trail_mask = _apply_clip_trail_logic(
+                            pred, orig, sensitivity, return_mask=True
+                        )
+                    else:
+                        final = pred
+                        trail_mask = np.zeros(orig.shape[:2], dtype=bool)
+
                     out_tiles[src_idx] = (final, y0, x0)
+                    mask_tiles[src_idx] = (trail_mask, y0, x0)
                     done_flags[src_idx] = True
 
                 if progress_cb is not None:
                     progress_cb(sum(done_flags), total)
 
     out = _stitch_ignore_border(out_tiles, (H, W, 3), border=border_size)
+    trail_mask_full = _stitch_mask_ignore_border(mask_tiles, (H, W), border=border_size)
 
     if border_size > 0:
         out[:border_size, :, :] = rgb01[:border_size, :, :]
@@ -1076,9 +1148,14 @@ def _satellite_remove_rgb(
         out[:, :border_size, :] = rgb01[:, :border_size, :]
         out[:, -border_size:, :] = rgb01[:, -border_size:, :]
 
+        trail_mask_full[:border_size, :] = False
+        trail_mask_full[-border_size:, :] = False
+        trail_mask_full[:, :border_size] = False
+        trail_mask_full[:, -border_size:] = False
+
     out = np.clip(out, 0.0, 1.0).astype(np.float32)
 
     if not trail_any:
-        return rgb01.astype(np.float32, copy=False), False
+        return rgb01.astype(np.float32, copy=False), False, np.zeros((H, W), dtype=bool)
 
-    return out, True
+    return out, True, trail_mask_full
