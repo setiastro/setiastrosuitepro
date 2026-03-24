@@ -4830,7 +4830,7 @@ class StackingSuiteDialog(QDialog):
         self._light_exp_item = {}    # (filter_name, want_label) -> QTreeWidgetItem
 
         self.setWindowTitle(self.tr("Stacking Suite"))
-        self.setGeometry(300, 200, 800, 600)
+        self.setGeometry(300, 200, 800, 720)
 
         self.per_group_drizzle = {}
         self.manual_dark_overrides = {}
@@ -6630,8 +6630,6 @@ class StackingSuiteDialog(QDialog):
         _saved_eng = (self.settings.value("stacking/mfdeconv/engine", "normal", type=str) or "normal").lower()
         if   _saved_eng == "cudnn":
             self.mf_eng_cudnn_rb.setChecked(True)
-            # If user previously chose cuDNN-free, force HW accel off
-            self.hw_accel_cb.setChecked(False)
         elif _saved_eng == "sport":
             self.mf_eng_sport_rb.setChecked(True)
         else:
@@ -6645,7 +6643,7 @@ class StackingSuiteDialog(QDialog):
         # When user selects "Normal (cuDNN-free)", automatically turn off HW accel
         def _on_mfdeconv_engine_changed(checked: bool):
             if checked and self.mf_eng_cudnn_rb.isChecked():
-                self.hw_accel_cb.setChecked(False)
+                pass
 
         self.mf_eng_cudnn_rb.toggled.connect(_on_mfdeconv_engine_changed)
 
@@ -6778,17 +6776,24 @@ class StackingSuiteDialog(QDialog):
         
         self.mf_seed_combo = QComboBox()
         self.mf_seed_combo.addItems([
+            self.tr("Integrated prepass image"),
             self.tr("Robust μ–σ (live stack)"),
             self.tr("Median (Sukhdeep et al.)")
         ])
         # Persisted value → UI
-        seed_mode_saved = str(self.settings.value("stacking/mfdeconv/seed_mode", "robust"))
-        seed_idx = 0 if seed_mode_saved.lower() != "median" else 1
+        seed_mode_saved = str(self.settings.value("stacking/mfdeconv/seed_mode", "integrated")).lower()
+        if seed_mode_saved == "median":
+            seed_idx = 2
+        elif seed_mode_saved == "robust":
+            seed_idx = 1
+        else:
+            seed_idx = 0
         self.mf_seed_combo.setCurrentIndex(seed_idx)
         self.mf_seed_combo.setToolTip(
             self.tr("Choose the initial seed image for MFDeconv:\n"
-            "• Robust μ–σ: running mean with sigma clipping (RAM-friendly, default)\n"
-            "• Median: tiled median stack (more outlier-resistant; heavier I/O, esp. for XISF)")
+                    "• Integrated prepass image: uses the already rejection-cleaned integrated master\n"
+                    "• Robust μ–σ: running mean with sigma clipping\n"
+                    "• Median: tiled/in-memory median stack")
         )
         fl_mf.addRow(*_row(self.tr("Seed image:"), self.mf_seed_combo))
 
@@ -6881,7 +6886,7 @@ class StackingSuiteDialog(QDialog):
             # (Optional) preload QSettings so Cancel still reverts if user wants.
             # If you prefer to save only on OK, you can omit this block.
             s = self.settings
-            s.setValue("stacking/mfdeconv/seed_mode", "robust")
+            s.setValue("stacking/mfdeconv/seed_mode", "integrated")
             s.setValue("stacking/mfdeconv/star_mask/thresh_sigma", 4.5)
             s.setValue("stacking/mfdeconv/star_mask/grow_px", 6)
             s.setValue("stacking/mfdeconv/star_mask/soft_sigma", 3.0)
@@ -7276,7 +7281,12 @@ class StackingSuiteDialog(QDialog):
 
         # Seed mode (persist as stable tokens: 'robust' | 'median')
         seed_idx = int(self.mf_seed_combo.currentIndex())
-        seed_mode_val = "median" if seed_idx == 1 else "robust"
+        if seed_idx == 2:
+            seed_mode_val = "median"
+        elif seed_idx == 1:
+            seed_mode_val = "robust"
+        else:
+            seed_mode_val = "integrated"
         self.settings.setValue("stacking/mfdeconv/seed_mode", seed_mode_val)
 
         # Star mask params
@@ -9608,7 +9618,23 @@ class StackingSuiteDialog(QDialog):
         self.mf_Huber_hint = QLabel(self.tr("(<0 = scale×RMS, >0 = absolute Δ)"))
         self.mf_Huber_hint.setStyleSheet("color:#888;")
         mf_row3.addWidget(self.mf_Huber_hint)
-
+        mf_row3.addSpacing(16)
+        mf_row3.addWidget(QLabel(self.tr("Rejection Strength:")))
+        self.mf_rejection_strength_spin = QDoubleSpinBox()
+        self.mf_rejection_strength_spin.setRange(0.0, 1.0)
+        self.mf_rejection_strength_spin.setDecimals(2)
+        self.mf_rejection_strength_spin.setSingleStep(0.05)
+        self.mf_rejection_strength_spin.setValue(_get("stacking/mfdeconv/rejection_strength", 0.85, float))
+        self.mf_rejection_strength_spin.setToolTip(
+            self.tr(
+                "Controls how strongly stacking-suite rejection maps affect MFDeconv.\n"
+                "0.0 = ignore rejection maps\n"
+                "1.0 = full rejection-map behavior\n"
+                "Values in between blend the no-rejection and full-rejection results.\n"
+                "Note: intermediate values are slower because they run both endpoint solves."
+            )
+        )
+        mf_row3.addWidget(self.mf_rejection_strength_spin)
         mf_row3.addSpacing(16)
 
         self.mf_use_star_mask_cb = QCheckBox(self.tr("Auto Star Mask"))
@@ -9635,7 +9661,9 @@ class StackingSuiteDialog(QDialog):
         self.mf_use_noise_map_cb.toggled.connect(lambda v: self.settings.setValue("stacking/mfdeconv/use_noise_maps", bool(v)))
         self.mf_sr_cb.toggled.connect(lambda v: self.settings.setValue("stacking/mfdeconv/sr_enabled", bool(v)))
         self.mf_save_intermediate_cb.toggled.connect(lambda v: self.settings.setValue("stacking/mfdeconv/save_intermediate", bool(v)))
-
+        self.mf_rejection_strength_spin.valueChanged.connect(
+            lambda v: self.settings.setValue("stacking/mfdeconv/rejection_strength", float(v))
+        )
         layout.addWidget(mf_box)
 
         # ─────────────────────────────────────────
@@ -17995,6 +18023,7 @@ class StackingSuiteDialog(QDialog):
             QApplication.processEvents()
 
             group_prepass = dict(prepass.get("groups", {}).get(group_key, {}) or {})
+            seed_image_prepass = group_prepass.get("integrated_image")
             integrated_image = group_prepass.get("integrated_image")
             rejection_map = group_prepass.get("rejection_map")
             ref_header = group_prepass.get("ref_header")
@@ -18439,9 +18468,14 @@ class StackingSuiteDialog(QDialog):
             group_prepass = {}
             try:
                 group_prepass = dict(prepass.get("groups", {}).get(group_key, {}) or {})
+                seed_image_prepass = group_prepass.get("integrated_image")
             except Exception:
                 group_prepass = {}
 
+            rejection_strength = self.settings.value(
+                "stacking/mfdeconv/rejection_strength", 0.85, type=float
+            )
+            
             mf_kwargs = dict(
                 parent=None,
                 aligned_paths=frames,
@@ -18460,6 +18494,7 @@ class StackingSuiteDialog(QDialog):
                 super_res_factor=super_res_factor,
                 star_mask_ref_path=star_mask_ref,
                 seed_mode=seed_mode_cfg,
+                rejection_strength=rejection_strength,                
             )
 
             # New payloads for rejection-aware MF path.
@@ -18469,6 +18504,7 @@ class StackingSuiteDialog(QDialog):
                 "rejection_group_maps": group_prepass.get("rej_maps"),
                 "prepass_payload": group_prepass,
                 "reference_header": group_prepass.get("ref_header"),
+                "seed_image": seed_image_prepass,
             })
             mf_kwargs.update(mf_optional)
 
@@ -18476,11 +18512,14 @@ class StackingSuiteDialog(QDialog):
                 try:
                     rej_maps = group_prepass.get("rej_maps") or {}
                     any_shape = getattr(rej_maps.get("any"), "shape", None)
+                    seed_shape = getattr(seed_image_prepass, "shape", None)
                     log(
                         f"🧪 MF prepass payload for '{group_key}': "
                         f"rejection_map={'yes' if group_prepass.get('rejection_map') is not None else 'no'}, "
-                        f"group_maps={'yes' if rej_maps else 'no'}"
+                        f"group_maps={'yes' if rej_maps else 'no'}, "
+                        f"seed_image={'yes' if seed_image_prepass is not None else 'no'}"
                         + (f", any_shape={any_shape}" if any_shape is not None else "")
+                        + (f", seed_shape={seed_shape}" if seed_shape is not None else "")
                     )
                 except Exception:
                     pass
