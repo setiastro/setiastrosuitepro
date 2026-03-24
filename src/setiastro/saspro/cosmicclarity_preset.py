@@ -354,14 +354,14 @@ class _CosmicClarityPresetDialog(QDialog):
         ui_st = engine_st * 2.0
 
         self.st_amt = QDoubleSpinBox()
-        self.st_amt.setRange(0.0, 2.0)
+        self.st_amt.setRange(0.0, 1.0)
         self.st_amt.setSingleStep(0.05)
         self.st_amt.setValue(float(ui_st))
         self.nst_amt= QDoubleSpinBox(); self.nst_amt.setRange(0.0, 1.0); self.nst_amt.setSingleStep(0.05); self.nst_amt.setValue(float(p.get("nonstellar_amount", 0.50)))
         f.addRow("Sharpening Mode:", self.sh_mode)
         f.addRow(self.auto_psf)
         f.addRow("Non-stellar PSF:", self.psf)
-        f.addRow("Stellar Amount (0-2):", self.st_amt)
+        f.addRow("Stellar Amount (0-1):", self.st_amt)
         f.addRow("Non-stellar Amount (0-1):", self.nst_amt)
 
         # NEW: Sharpen RGB channels separately
@@ -401,7 +401,7 @@ class _CosmicClarityPresetDialog(QDialog):
                 "sharpening_mode": self.sh_mode.currentText(),
                 "auto_psf": bool(self.auto_psf.isChecked()),
                 "nonstellar_psf": float(self.psf.value()),
-                "stellar_amount": float(self.st_amt.value()) / 2.0,
+                "stellar_amount": float(self.st_amt.value()),
                 "nonstellar_amount": float(self.nst_amt.value()),
                 # NEW: propagate sharpen-separate into preset dict
                 "sharpen_channels_separately": bool(self.sh_sep.isChecked()),

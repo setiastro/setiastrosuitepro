@@ -633,10 +633,10 @@ class CosmicClarityDialogPro(QDialog):
         self.sld_psf.valueChanged.connect(self._psf_label)
         _add_inline_slider(sh, 3, self.lbl_psf, self.sld_psf)
 
-        self.lbl_st_amt = QLabel("Stellar Amount (0–2): 0.80")
+        self.lbl_st_amt = QLabel("Stellar Amount (0–1): 0.50")
         self.sld_st_amt = QSlider(Qt.Orientation.Horizontal)
-        self.sld_st_amt.setRange(0, 200)
-        self.sld_st_amt.setValue(80)   # UI default 0.80 => engine 0.40
+        self.sld_st_amt.setRange(0, 100)
+        self.sld_st_amt.setValue(50)   # UI default 0.50 => engine 0.50
         self.sld_st_amt.valueChanged.connect(self._on_st_amt)
         _add_inline_slider(sh, 4, self.lbl_st_amt, self.sld_st_amt)
 
@@ -1047,7 +1047,7 @@ class CosmicClarityDialogPro(QDialog):
         return super().exec()
 
 
-    def _on_st_amt(self, v: int): self.lbl_st_amt.setText(f"Stellar Amount (0–2): {v/100:.2f}")
+    def _on_st_amt(self, v: int): self.lbl_st_amt.setText(f"Stellar Amount (0–1): {v/100:.2f}")
     def _on_nst_amt(self, v: int): self.lbl_nst_amt.setText(f"Non-Stellar Amount (0–1): {v/100:.2f}")
 
     def _psf_label(self):
@@ -1289,7 +1289,7 @@ class CosmicClarityDialogPro(QDialog):
         self.cmb_sh_mode.setCurrentText(p.get("sharpening_mode","Both"))
         self.chk_auto_psf.setChecked(bool(p.get("auto_psf", True)))
         self.sld_psf.setValue(int(max(10, min(80, round(float(p.get("nonstellar_psf",3.0))*10)))))
-        self.sld_st_amt.setValue(int(max(0, min(200, round(float(p.get("stellar_amount", 0.5)) * 200)))))
+        self.sld_st_amt.setValue(int(max(0, min(100, round(float(p.get("stellar_amount", 0.5)) * 100)))))
         self.sld_nst_amt.setValue(int(max(0, min(100, round(float(p.get("nonstellar_amount",0.5))*100)))))
         # NEW: allow presets to opt into per-channel sharpen (still defaults off without a preset)
         self.chk_sh_sep.setChecked(bool(p.get("sharpen_channels_separately", False)))
@@ -1347,7 +1347,7 @@ class CosmicClarityDialogPro(QDialog):
                 "sharpening_mode": self.cmb_sh_mode.currentText(),
                 "auto_psf": self.chk_auto_psf.isChecked(),
                 "nonstellar_psf": self.sld_psf.value() / 10.0,
-                "stellar_amount": (self.sld_st_amt.value() / 100.0) / 2.0,
+                "stellar_amount": (self.sld_st_amt.value() / 100.0),
                 "nonstellar_amount": self.sld_nst_amt.value() / 100.0,
                 "sharpen_channels_separately": self.chk_sh_sep.isChecked(),
                 "chunk_size": int(self.cmb_chunk.currentText()),
