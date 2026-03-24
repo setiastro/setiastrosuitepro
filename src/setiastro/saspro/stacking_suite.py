@@ -2386,8 +2386,8 @@ class _Responder(QObject):
     finished = pyqtSignal(object)   # emits the edited dict or None
 
 class AfterAlignWorker(QObject):
-    progress = pyqtSignal(str)                 # emits status lines
-    finished = pyqtSignal(bool, str)           # (success, message)
+    progress = pyqtSignal(str)                        # emits status lines
+    finished = pyqtSignal(bool, str, object)         # (success, message, payload)
     need_comet_review = pyqtSignal(list, dict, object)  # (files, initial_xy, responder)
 
     def __init__(self, dialog, *,
@@ -2398,33 +2398,48 @@ class AfterAlignWorker(QObject):
                  autocrop_enabled,
                  autocrop_pct, ui_owner=None):
         super().__init__()
-        self.dialog = dialog                    # we will call pure methods on it
+        self.dialog = dialog
         self.light_files = light_files
         self.frame_weights = frame_weights
         self.transforms_dict = transforms_dict
         self.drizzle_dict = drizzle_dict
         self.autocrop_enabled = autocrop_enabled
         self.autocrop_pct = autocrop_pct
-        self.ui_owner         = ui_owner  
+        self.ui_owner = ui_owner
 
     @pyqtSlot()
     def run(self):
-        dlg = self.dialog  # the StackingSuiteDialog you passed in
+        dlg = self.dialog
 
         try:
-            result = dlg.stack_images_mixed_drizzle(
+            result = dlg.process_post_alignment(
                 grouped_files=self.light_files,
                 frame_weights=self.frame_weights,
                 transforms_dict=self.transforms_dict,
                 drizzle_dict=self.drizzle_dict,
                 autocrop_enabled=self.autocrop_enabled,
                 autocrop_pct=self.autocrop_pct,
-                status_cb=self.progress.emit,   # stream status back to UI
+                status_cb=self.progress.emit,
             )
-            summary = "\n".join(result["summary_lines"])
-            self.finished.emit(True, self.tr("Post-alignment complete.\n\n{0}").format(summary))
+
+            payload = result if isinstance(result, dict) else None
+            summary_lines = []
+            if isinstance(result, dict):
+                summary_lines = result.get("summary_lines", []) or []
+
+            summary = "\n".join(summary_lines) if summary_lines else "Post-alignment complete."
+            self.finished.emit(
+                True,
+                self.tr("Post-alignment complete.\n\n{0}").format(summary),
+                payload
+            )
+
         except Exception as e:
-            self.finished.emit(False, self.tr("Post-alignment failed: {0}").format(e))
+            self.finished.emit(
+                False,
+                self.tr("Post-alignment failed: {0}").format(e),
+                None
+            )
 
 class StatusLogWindow(QDialog):
     MAX_BLOCKS = 2000
@@ -4815,7 +4830,7 @@ class StackingSuiteDialog(QDialog):
         self._light_exp_item = {}    # (filter_name, want_label) -> QTreeWidgetItem
 
         self.setWindowTitle(self.tr("Stacking Suite"))
-        self.setGeometry(300, 200, 800, 600)
+        self.setGeometry(300, 200, 800, 720)
 
         self.per_group_drizzle = {}
         self.manual_dark_overrides = {}
@@ -6615,8 +6630,6 @@ class StackingSuiteDialog(QDialog):
         _saved_eng = (self.settings.value("stacking/mfdeconv/engine", "normal", type=str) or "normal").lower()
         if   _saved_eng == "cudnn":
             self.mf_eng_cudnn_rb.setChecked(True)
-            # If user previously chose cuDNN-free, force HW accel off
-            self.hw_accel_cb.setChecked(False)
         elif _saved_eng == "sport":
             self.mf_eng_sport_rb.setChecked(True)
         else:
@@ -6630,7 +6643,7 @@ class StackingSuiteDialog(QDialog):
         # When user selects "Normal (cuDNN-free)", automatically turn off HW accel
         def _on_mfdeconv_engine_changed(checked: bool):
             if checked and self.mf_eng_cudnn_rb.isChecked():
-                self.hw_accel_cb.setChecked(False)
+                pass
 
         self.mf_eng_cudnn_rb.toggled.connect(_on_mfdeconv_engine_changed)
 
@@ -6763,17 +6776,24 @@ class StackingSuiteDialog(QDialog):
         
         self.mf_seed_combo = QComboBox()
         self.mf_seed_combo.addItems([
+            self.tr("Integrated prepass image"),
             self.tr("Robust μ–σ (live stack)"),
             self.tr("Median (Sukhdeep et al.)")
         ])
         # Persisted value → UI
-        seed_mode_saved = str(self.settings.value("stacking/mfdeconv/seed_mode", "robust"))
-        seed_idx = 0 if seed_mode_saved.lower() != "median" else 1
+        seed_mode_saved = str(self.settings.value("stacking/mfdeconv/seed_mode", "integrated")).lower()
+        if seed_mode_saved == "median":
+            seed_idx = 2
+        elif seed_mode_saved == "robust":
+            seed_idx = 1
+        else:
+            seed_idx = 0
         self.mf_seed_combo.setCurrentIndex(seed_idx)
         self.mf_seed_combo.setToolTip(
             self.tr("Choose the initial seed image for MFDeconv:\n"
-            "• Robust μ–σ: running mean with sigma clipping (RAM-friendly, default)\n"
-            "• Median: tiled median stack (more outlier-resistant; heavier I/O, esp. for XISF)")
+                    "• Integrated prepass image: uses the already rejection-cleaned integrated master\n"
+                    "• Robust μ–σ: running mean with sigma clipping\n"
+                    "• Median: tiled/in-memory median stack")
         )
         fl_mf.addRow(*_row(self.tr("Seed image:"), self.mf_seed_combo))
 
@@ -6866,7 +6886,7 @@ class StackingSuiteDialog(QDialog):
             # (Optional) preload QSettings so Cancel still reverts if user wants.
             # If you prefer to save only on OK, you can omit this block.
             s = self.settings
-            s.setValue("stacking/mfdeconv/seed_mode", "robust")
+            s.setValue("stacking/mfdeconv/seed_mode", "integrated")
             s.setValue("stacking/mfdeconv/star_mask/thresh_sigma", 4.5)
             s.setValue("stacking/mfdeconv/star_mask/grow_px", 6)
             s.setValue("stacking/mfdeconv/star_mask/soft_sigma", 3.0)
@@ -7261,7 +7281,12 @@ class StackingSuiteDialog(QDialog):
 
         # Seed mode (persist as stable tokens: 'robust' | 'median')
         seed_idx = int(self.mf_seed_combo.currentIndex())
-        seed_mode_val = "median" if seed_idx == 1 else "robust"
+        if seed_idx == 2:
+            seed_mode_val = "median"
+        elif seed_idx == 1:
+            seed_mode_val = "robust"
+        else:
+            seed_mode_val = "integrated"
         self.settings.setValue("stacking/mfdeconv/seed_mode", seed_mode_val)
 
         # Star mask params
@@ -8349,13 +8374,15 @@ class StackingSuiteDialog(QDialog):
         correction_layout.addWidget(self.bias_checkbox)
 
         layout.addLayout(correction_layout)        
-        # ---------- Satellite Trail Removal (post-calibration) ----------
+        # ---------- Satellite Trail Masking (post-calibration, for integration) ----------
         sat_layout = QHBoxLayout()
 
-        self.cal_satellite_checkbox = QCheckBox(self.tr("Remove Satellite Trails After Calibration"))
+        self.cal_satellite_checkbox = QCheckBox(self.tr("Generate Satellite Trail Masks for Integration"))
         self.cal_satellite_checkbox.setToolTip(
-            self.tr("Runs the SASpro satellite trail remover as the final calibration step, "
-                    "after bias/dark/flat/cosmetic correction and before saving.")
+            self.tr(
+                "Detects satellite trails after calibration and creates binary rejection masks "
+                "so those pixels are ignored during integration. The calibrated light itself is not modified."
+            )
         )
         self.cal_satellite_checkbox.setChecked(
             self.settings.value("stacking/calibration_satellite_enabled", False, type=bool)
@@ -8364,20 +8391,26 @@ class StackingSuiteDialog(QDialog):
             lambda v: self.settings.setValue("stacking/calibration_satellite_enabled", bool(v))
         )
 
+        # Keep clip-trail behavior forced ON internally, since mask generation depends on it.
         self.cal_satellite_clip_checkbox = QCheckBox(self.tr("Clip Trails to 0.000"))
         self.cal_satellite_clip_checkbox.setToolTip(
-            self.tr("If enabled, pixels the satellite remover clips to black will be forced to 0.000 "
-                    "in the calibrated output.")
+            self.tr(
+                "Internal setting used to generate the satellite rejection mask. "
+                "This is always enabled for calibration-based satellite masking."
+            )
         )
-        self.cal_satellite_clip_checkbox.setChecked(
-            self.settings.value("stacking/calibration_satellite_clip", True, type=bool)
-        )
-        self.cal_satellite_clip_checkbox.toggled.connect(
-            lambda v: self.settings.setValue("stacking/calibration_satellite_clip", bool(v))
-        )
+        self.cal_satellite_clip_checkbox.setChecked(True)
+        self.cal_satellite_clip_checkbox.hide()
+        self.cal_satellite_clip_checkbox.setEnabled(False)
+
+        # Force the backing setting ON so the engine always produces the mask logic we need.
+        self.settings.setValue("stacking/calibration_satellite_clip", True)
 
         def _sync_cal_satellite_controls(checked: bool):
-            self.cal_satellite_clip_checkbox.setEnabled(bool(checked))
+            # keep hidden control logically locked on
+            self.cal_satellite_clip_checkbox.setChecked(True)
+            self.cal_satellite_clip_checkbox.setEnabled(False)
+            self.settings.setValue("stacking/calibration_satellite_clip", True)
 
         _sync_cal_satellite_controls(self.cal_satellite_checkbox.isChecked())
         self.cal_satellite_checkbox.toggled.connect(_sync_cal_satellite_controls)
@@ -9593,7 +9626,23 @@ class StackingSuiteDialog(QDialog):
         self.mf_Huber_hint = QLabel(self.tr("(<0 = scale×RMS, >0 = absolute Δ)"))
         self.mf_Huber_hint.setStyleSheet("color:#888;")
         mf_row3.addWidget(self.mf_Huber_hint)
-
+        mf_row3.addSpacing(16)
+        mf_row3.addWidget(QLabel(self.tr("Rejection Strength:")))
+        self.mf_rejection_strength_spin = QDoubleSpinBox()
+        self.mf_rejection_strength_spin.setRange(0.0, 1.0)
+        self.mf_rejection_strength_spin.setDecimals(2)
+        self.mf_rejection_strength_spin.setSingleStep(0.05)
+        self.mf_rejection_strength_spin.setValue(_get("stacking/mfdeconv/rejection_strength", 0.85, float))
+        self.mf_rejection_strength_spin.setToolTip(
+            self.tr(
+                "Controls how strongly stacking-suite rejection maps affect MFDeconv.\n"
+                "0.0 = ignore rejection maps\n"
+                "1.0 = full rejection-map behavior\n"
+                "Values in between blend the no-rejection and full-rejection results.\n"
+                "Note: intermediate values are slower because they run both endpoint solves."
+            )
+        )
+        mf_row3.addWidget(self.mf_rejection_strength_spin)
         mf_row3.addSpacing(16)
 
         self.mf_use_star_mask_cb = QCheckBox(self.tr("Auto Star Mask"))
@@ -9620,7 +9669,9 @@ class StackingSuiteDialog(QDialog):
         self.mf_use_noise_map_cb.toggled.connect(lambda v: self.settings.setValue("stacking/mfdeconv/use_noise_maps", bool(v)))
         self.mf_sr_cb.toggled.connect(lambda v: self.settings.setValue("stacking/mfdeconv/sr_enabled", bool(v)))
         self.mf_save_intermediate_cb.toggled.connect(lambda v: self.settings.setValue("stacking/mfdeconv/save_intermediate", bool(v)))
-
+        self.mf_rejection_strength_spin.valueChanged.connect(
+            lambda v: self.settings.setValue("stacking/mfdeconv/rejection_strength", float(v))
+        )
         layout.addWidget(mf_box)
 
         # ─────────────────────────────────────────
@@ -10711,15 +10762,29 @@ class StackingSuiteDialog(QDialog):
         for col in (0, 1, 2):
             hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
 
+        # only allow real image/light formats
+        allowed_exts = {".fit", ".fits", ".ftz", ".fz", ".tiff", ".tif", ".xisf"}
+
         # gather files
         calibrated_folder = os.path.join(self.stacking_directory or "", "Calibrated")
         files = []
         if os.path.isdir(calibrated_folder):
             for fn in os.listdir(calibrated_folder):
-                files.append(os.path.join(calibrated_folder, fn))
+                fp = os.path.join(calibrated_folder, fn)
+                if not os.path.isfile(fp):
+                    continue
+                ext = os.path.splitext(fn)[1].lower()
+                if ext in allowed_exts:
+                    files.append(fp)
 
-        # include manual files
-        files += self.manual_light_files
+        # include manual files, but only if valid extension
+        for fp in self.manual_light_files:
+            try:
+                ext = os.path.splitext(fp)[1].lower()
+                if ext in allowed_exts:
+                    files.append(fp)
+            except Exception:
+                pass
 
         # filter exclusions + dedupe
         dead = set()
@@ -10749,18 +10814,20 @@ class StackingSuiteDialog(QDialog):
             exp = 0.0
             size = "Unknown"
 
-            if ext in (".fits", ".fit", ".fz"):
+            if ext in (".fits", ".fit", ".ftz", ".fz"):
                 filt, exp, size = self._probe_fits_meta(fp)
             elif ext == ".xisf":
                 filt, exp, size = self._probe_xisf_meta(fp)
-            else:
-                # generic image (TIFF/PNG/JPEG, etc.)
+            elif ext in (".tiff", ".tif"):
                 try:
                     w, h = self._get_image_size(fp)
                     size = f"{w}x{h}"
                 except Exception as e:
                     print(f"⚠️ Cannot read image size for {fp}: {e}")
                     continue
+            else:
+                # extra safety: ignore anything unexpected
+                continue
 
             # find existing group with same filter+size and exposure within tolerance
             key = self._find_or_make_exposure_group_key(grouped, filt, exp, size)
@@ -10808,8 +10875,8 @@ class StackingSuiteDialog(QDialog):
                 top.addChild(leaf)
 
             top.setExpanded(True)
-            self._refresh_quick_stack_summary_later()
 
+        self._refresh_quick_stack_summary_later()
 
     def _iter_group_items(self):
         for i in range(self.reg_tree.topLevelItemCount()):
@@ -14345,15 +14412,24 @@ class StackingSuiteDialog(QDialog):
         - mono: H,W
         - color: CHW or HWC
 
-        Output layout matches input layout.
+        Output:
+        - cleaned frame in same layout as input
+        - binary 2D satellite rejection mask in image coordinates
+
+        Returns:
+            (out_image, sat_mask_2d)
 
         Notes:
-        - We normalize to [0,1] for the AI stage, then map back to the original range.
-        - If 'clip trail' is enabled, pixels that the AI clipped near-black are forced to 0.000
-            in the returned calibrated frame.
+        - The satellite engine now handles normalization/denormalization internally.
+        - The returned sat_mask_2d is authoritative and should be saved/propagated
+        instead of inferring rejection from pixel values.
         """
         import numpy as np
-        from setiastro.saspro.cosmicclarity_headless import run_cosmicclarity_on_array
+        from setiastro.saspro.resources import get_resources
+        from setiastro.saspro.cosmicclarity_engines.satellite_engine import (
+            get_satellite_models,
+            satellite_remove_image,
+        )
 
         arr = np.asarray(light_data, dtype=np.float32, copy=False)
         orig_shape = arr.shape
@@ -14365,48 +14441,58 @@ class StackingSuiteDialog(QDialog):
         else:
             arr_in = arr
 
-        arr_in = np.nan_to_num(arr_in.astype(np.float32, copy=False), nan=0.0, posinf=0.0, neginf=0.0)
-
-        amin = float(np.min(arr_in)) if arr_in.size else 0.0
-        amax = float(np.max(arr_in)) if arr_in.size else 1.0
-
-        if not np.isfinite(amin):
-            amin = 0.0
-        if not np.isfinite(amax):
-            amax = 1.0
-
-        if amax > amin:
-            arr01 = (arr_in - amin) / (amax - amin)
-        else:
-            arr01 = np.zeros_like(arr_in, dtype=np.float32)
-
-        arr01 = np.clip(arr01, 0.0, 1.0).astype(np.float32, copy=False)
+        arr_in = np.nan_to_num(
+            arr_in.astype(np.float32, copy=False),
+            nan=0.0, posinf=0.0, neginf=0.0
+        )
 
         clip_trail = self.settings.value("stacking/calibration_satellite_clip", True, type=bool)
+        sensitivity = self.settings.value("stacking/calibration_satellite_sensitivity", 0.10, type=float)
+        use_gpu = self.settings.value("stacking/calibration_satellite_gpu", True, type=bool)
+        compatibility_mode = self.settings.value("stacking/calibration_satellite_compatibility", False, type=bool)
 
-        preset = {
-            "mode": "satellite",
-            "gpu": True,
-            "chunk_size": 256,
-            "overlap": 64,
-            "sat_mode": "luminance" if is_mono else "full",
-            "sat_clip_trail": bool(clip_trail),
-            "sat_sensitivity": 0.10,
-        }
+        chunk_size = self.settings.value("stacking/calibration_satellite_chunk_size", 256, type=int)
+        overlap = self.settings.value("stacking/calibration_satellite_overlap", 64, type=int)
+        border_size = self.settings.value("stacking/calibration_satellite_border", 16, type=int)
 
-        out01 = run_cosmicclarity_on_array(arr01, preset)
+        temp_stretch = self.settings.value("stacking/calibration_satellite_temp_stretch", True, type=bool)
+        target_median = self.settings.value("stacking/calibration_satellite_target_median", 0.25, type=float)
 
-        out01 = np.asarray(out01, dtype=np.float32, copy=False)
-        out = out01 * (amax - amin) + amin if amax > amin else np.full_like(out01, amin, dtype=np.float32)
+        def _status(msg):
+            try:
+                self.update_status(self.tr(str(msg)))
+            except Exception:
+                pass
 
-        # If clip-to-zero is requested, preserve that behavior in calibrated space too
-        if clip_trail:
-            zero_mask = (out01 <= 1e-6)
-            out = np.where(zero_mask, 0.0, out).astype(np.float32, copy=False)
+        resources = get_resources()
+        models = get_satellite_models(resources=resources, use_gpu=bool(use_gpu), status_cb=_status)
+
+        out_img, detected, sat_mask_2d = satellite_remove_image(
+            image=arr_in,
+            models=models,
+            mode="luminance" if is_mono else "full",
+            clip_trail=bool(clip_trail),
+            sensitivity=float(sensitivity),
+            chunk_size=int(chunk_size),
+            overlap=int(overlap),
+            border_size=int(border_size),
+            temp_stretch=bool(temp_stretch),
+            target_median=float(target_median),
+            compatibility_mode=bool(compatibility_mode),
+            progress_cb=None,
+            return_mask=True,
+        )
+
+        out = np.asarray(out_img, dtype=np.float32, copy=False)
+        sat_mask_2d = np.asarray(sat_mask_2d, dtype=bool)
 
         # Convert HWC -> CHW back if needed
         if was_chw and out.ndim == 3 and out.shape[-1] == 3:
             out = out.transpose(2, 0, 1)
+
+        # If original input was true 2D mono, squeeze HxWx1 back to HxW
+        if arr.ndim == 2 and out.ndim == 3 and out.shape[-1] == 1:
+            out = out[..., 0]
 
         # Final sanity
         out = np.nan_to_num(out.astype(np.float32, copy=False), nan=0.0, posinf=0.0, neginf=0.0)
@@ -14414,7 +14500,22 @@ class StackingSuiteDialog(QDialog):
         if out.shape != orig_shape:
             raise RuntimeError(f"Satellite removal changed frame shape from {orig_shape} to {out.shape}")
 
-        return out
+        # Ensure mask matches image XY shape
+        if out.ndim == 2:
+            expected_hw = out.shape
+        elif out.ndim == 3 and out.shape[0] == 3:   # CHW
+            expected_hw = out.shape[1:]
+        elif out.ndim == 3 and out.shape[-1] == 3:  # HWC
+            expected_hw = out.shape[:2]
+        else:
+            raise RuntimeError(f"Unsupported output shape after satellite removal: {out.shape}")
+
+        if sat_mask_2d.shape != expected_hw:
+            raise RuntimeError(
+                f"Satellite mask shape mismatch: got {sat_mask_2d.shape}, expected {expected_hw}"
+            )
+
+        return out, sat_mask_2d
 
     def calibrate_lights(self):
         """Performs calibration on selected light frames using Master Darks and Flats, considering overrides."""
@@ -14438,6 +14539,41 @@ class StackingSuiteDialog(QDialog):
             if not self.light_files[key]:
                 del self.light_files[key]
         processed_files = 0
+
+        # ---------- local helpers for satellite rejection mask ----------
+        def _mask2d_from_image_zero_pixels(arr):
+            """
+            Returns a 2D boolean mask of pixels that are exactly zero in the source image.
+            For color data, if ANY channel is zero, the pixel is marked rejected.
+            Accepts HxW, CHW, or HWC.
+            """
+            a = np.asarray(arr)
+            if a.ndim == 2:
+                return (a == 0.0)
+            if a.ndim == 3:
+                if a.shape[0] == 3:   # CHW
+                    return np.any(a == 0.0, axis=0)
+                if a.shape[-1] == 3:  # HWC
+                    return np.any(a == 0.0, axis=-1)
+            raise ValueError(f"Unsupported image shape for mask extraction: {a.shape}")
+
+        def _merge_masks(mask_a, mask_b):
+            if mask_a is None:
+                return np.asarray(mask_b, dtype=bool)
+            if mask_b is None:
+                return np.asarray(mask_a, dtype=bool)
+            return np.asarray(mask_a, dtype=bool) | np.asarray(mask_b, dtype=bool)
+
+        def _save_rejection_mask(mask2d, calibrated_filename):
+            try:
+                base_no_ext, _ = os.path.splitext(calibrated_filename)
+                mask_path = base_no_ext + "_satmask.npy"
+                np.save(mask_path, np.asarray(mask2d, dtype=np.uint8), allow_pickle=False)
+                return mask_path
+            except Exception as e:
+                self.update_status(self.tr(f"⚠️ Could not save rejection mask: {e}"))
+                QApplication.processEvents()
+                return None
 
         # ---------- LOAD MASTER BIAS ONCE (optional) ----------
         master_bias = None
@@ -14495,6 +14631,7 @@ class StackingSuiteDialog(QDialog):
                         continue
                     if light_file not in leaf_paths:
                         continue
+
                     # Determine size from header
                     header, _ = get_valid_header(light_file)
                     width = int(header.get("NAXIS1", 0))
@@ -14555,7 +14692,6 @@ class StackingSuiteDialog(QDialog):
 
                     print(f"master_flat_path is {master_flat_path}")
 
-
                     # ---------- LOAD LIGHT ----------
                     light_data, hdr, bit_depth, is_mono = load_image(light_file)
                     #_print_stats("LIGHT raw", light_data, bit_depth=bit_depth, hdr=hdr)
@@ -14566,6 +14702,14 @@ class StackingSuiteDialog(QDialog):
                     # Work in CHW for color; leave mono as H,W
                     if not is_mono and light_data.ndim == 3 and light_data.shape[-1] == 3:
                         light_data = light_data.transpose(2, 0, 1)  # HWC -> CHW
+
+                    # ---------- capture pre-existing zero-clipped pixels BEFORE calibration ----------
+                    try:
+                        rejection_mask_2d = _mask2d_from_image_zero_pixels(light_data)
+                    except Exception as e:
+                        rejection_mask_2d = None
+                        self.update_status(self.tr(f"⚠️ Could not initialize zero-pixel rejection mask: {e}"))
+                        QApplication.processEvents()
 
                     # ---------- APPLY BIAS (optional) ----------
                     if master_bias is not None:
@@ -14582,6 +14726,7 @@ class StackingSuiteDialog(QDialog):
                         QApplication.processEvents()
 
                     # ---------- APPLY DARK (if resolved) ----------
+                    dark_data = None
                     if master_dark_path:
                         dark_data, _, dark_bit_depth, dark_is_mono = load_image(master_dark_path)
                         #_print_stats("DARK raw", dark_data, bit_depth=dark_bit_depth)
@@ -14601,6 +14746,7 @@ class StackingSuiteDialog(QDialog):
                             QApplication.processEvents()
 
                     # ---------- APPLY FLAT (if resolved) ----------
+                    flat_data = None
                     if master_flat_path:
                         flat_data, _, flat_bit_depth, flat_is_mono = load_image(master_flat_path)
                         #_print_stats("FLAT raw", flat_data, bit_depth=flat_bit_depth)
@@ -14633,13 +14779,9 @@ class StackingSuiteDialog(QDialog):
                             )
 
                             if is_bayer_mosaic:
-                                # ✅ Bayer-aware division (this replaces normalize_flat_cfa_inplace + generic division)
-                                # Requires the helper I gave you: apply_flat_division_bayer(image2d, flat2d, bayerpat)
                                 light_data = apply_flat_division_bayer(light_data, flat_data, bayerpat)
 
                             else:
-                                # Non-bayer path (mono 2D or CHW color): normalize flat to median=1 then divide
-
                                 if flat_data.ndim == 2:
                                     v = flat_data[np.isfinite(flat_data) & (flat_data > 0)]
                                     denom = float(np.median(v)) if v.size else 1.0
@@ -14649,7 +14791,6 @@ class StackingSuiteDialog(QDialog):
                                     flat_data[flat_data == 0] = 1.0
 
                                 else:
-                                    # CHW
                                     for c in range(flat_data.shape[0]):
                                         band = flat_data[c]
                                         v = band[np.isfinite(band) & (band > 0)]
@@ -14666,15 +14807,12 @@ class StackingSuiteDialog(QDialog):
 
                     # ---------- COSMETIC (optional) ----------
                     if apply_cosmetic:
-                        # Pull configured values (fallbacks preserve current behavior)
                         hot_sigma      = self.settings.value("stacking/cosmetic/hot_sigma", 5.0, type=float)
                         cold_sigma     = self.settings.value("stacking/cosmetic/cold_sigma", 5.0, type=float)
                         star_mean_ratio= self.settings.value("stacking/cosmetic/star_mean_ratio", 0.22, type=float)
                         star_max_ratio = self.settings.value("stacking/cosmetic/star_max_ratio", 0.55, type=float)
                         sat_quantile   = self.settings.value("stacking/cosmetic/sat_quantile", 0.9995, type=float)
 
-                        # --- Decide Bayer vs debayered from DATA, not header ---
-                        # After your HWC->CHW transpose, debayered color lights will be (3,H,W).
                         array_is_color = (
                             light_data.ndim == 3 and (
                                 light_data.shape[0] == 3 or light_data.shape[-1] == 3
@@ -14690,7 +14828,6 @@ class StackingSuiteDialog(QDialog):
                             if pattern not in ("RGGB","BGGR","GRBG","GBRG"):
                                 pattern = "RGGB"
 
-                            # light_data is guaranteed 2D here
                             light_data = bulk_cosmetic_correction_bayer(
                                 light_data,
                                 hot_sigma=hot_sigma,
@@ -14713,18 +14850,31 @@ class StackingSuiteDialog(QDialog):
                             self.update_status(self.tr("Running Satellite Trail Removal..."))
                             QApplication.processEvents()
 
-                            light_data = self._apply_satellite_removal_to_calibrated_light(
+                            # Keep the original calibrated frame for stacking.
+                            # We only want the binary rejection mask here.
+                            original_light_data = np.asarray(light_data, dtype=np.float32, copy=True)
+
+                            sat_out_img, sat_mask_2d = self._apply_satellite_removal_to_calibrated_light(
                                 light_data,
                                 is_mono=is_mono
                             )
 
-                            self.update_status(self.tr("Satellite Trail Removal Applied"))
+                            sat_mask_2d = np.asarray(sat_mask_2d, dtype=bool)
+                            rejection_mask_2d = _merge_masks(rejection_mask_2d, sat_mask_2d)
+
+                            # IMPORTANT:
+                            # For stacking, do NOT replace the calibrated light with the cleaned/clipped
+                            # satellite-removed image. Keep the original calibrated data and use only the mask.
+                            light_data = original_light_data
+
+                            self.update_status(
+                                self.tr(f"Satellite Trail Removal Applied (mask only: {int(np.count_nonzero(sat_mask_2d))} rejected px)")
+                            )
                             QApplication.processEvents()
 
                         except Exception as e:
                             self.update_status(self.tr(f"⚠️ Satellite Trail Removal skipped: {e}"))
                             QApplication.processEvents()
-
                     # Back to HWC for saving if color
                     if not is_mono and light_data.ndim == 3 and light_data.shape[0] == 3:
                         light_data = light_data.transpose(1, 2, 0)  # CHW -> HWC
@@ -14740,15 +14890,20 @@ class StackingSuiteDialog(QDialog):
                     _warn_if_units_mismatch(light_data, dark_data if master_dark_path else None, flat_data if master_flat_path else None)
                     _print_stats("LIGHT final", light_data)
                     QApplication.processEvents()
+
                     # Annotate header
                     try:
                         if hasattr(hdr, "add_history"):
                             hdr.add_history("Calibrated: bias/dark sub, flat division")
+                            if rejection_mask_2d is not None and np.any(rejection_mask_2d):
+                                hdr.add_history("Satellite rejection mask saved as sidecar")
                         else:
                             hdr["HISTORY"] = "Calibrated: bias/dark sub, flat division"
 
                         hdr["CALMIN"] = (min_val, "Min pixel before save (float)")
                         hdr["CALMAX"] = (max_val, "Max pixel before save (float)")
+                        if rejection_mask_2d is not None:
+                            hdr["SATMASK"] = (1, "Binary satellite reject mask written as sidecar")
                     except Exception:
                         pass
 
@@ -14767,10 +14922,20 @@ class StackingSuiteDialog(QDialog):
                         img_array=light_data,
                         filename=calibrated_filename,
                         original_format="fit",
-                        bit_depth="32-bit floating point",          # << force float32 to avoid clipping negatives
+                        bit_depth="32-bit floating point",
                         original_header=hdr,
                         is_mono=is_mono
                     )
+
+                    # Save merged binary rejection mask beside calibrated FITS
+                    if rejection_mask_2d is not None:
+                        mask_path = _save_rejection_mask(rejection_mask_2d, calibrated_filename)
+                        if mask_path:
+                            masked_px = int(np.count_nonzero(rejection_mask_2d))
+                            self.update_status(self.tr(
+                                f"Saved mask: {os.path.basename(mask_path)} ({masked_px} rejected px)"
+                            ))
+                            QApplication.processEvents()
 
                     processed_files += 1
                     self.update_status(self.tr(f"Saved: {os.path.basename(calibrated_filename)} ({processed_files}/{total_files})"))
@@ -14781,32 +14946,26 @@ class StackingSuiteDialog(QDialog):
         self.populate_calibrated_lights()
         self._refresh_quick_stack_summary_later()
 
-
         # ── NEW: optionally roll straight into registration+integration ──
         try:
             if self.settings.value("stacking/auto_register_after_cal", False, type=bool):
-                # Switch UI to the Image Registration tab, if we can find it
                 if hasattr(self, "tabs") and self.tabs is not None:
                     try:
                         for i in range(self.tabs.count()):
-                            # match by tab label if available
                             if self.tabs.tabText(i).lower().startswith("image registration"):
                                 self.tabs.setCurrentIndex(i)
                                 break
                     except Exception:
-                        pass  # harmless if tab text lookup fails
+                        pass
 
                 self.update_status(self.tr("⚙️ Auto: starting registration & integration…"))
                 QApplication.processEvents()
 
-                # Prefer button .click() (preserves any guard/flags)
                 if hasattr(self, "register_images_btn") and self.register_images_btn is not None:
-                    # Guard against re-entrancy if a run is already in progress
                     if not getattr(self, "_registration_busy", False):
                         self.register_images_btn.click()
                     else:
                         self.update_status(self.tr("ℹ️ Registration already in progress; auto-run skipped."))
-                # Fallback: call the method directly
                 elif hasattr(self, "register_images"):
                     if not getattr(self, "_registration_busy", False):
                         self.register_images()
@@ -17333,6 +17492,73 @@ class StackingSuiteDialog(QDialog):
         os.makedirs(out_dir, exist_ok=True)
         return out_dir
 
+    def process_post_alignment(
+        self,
+        grouped_files,
+        frame_weights,
+        transforms_dict,
+        drizzle_dict,
+        autocrop_enabled,
+        autocrop_pct,
+        status_cb=None,
+    ):
+        log = status_cb or (lambda *_: None)
+
+        prepass = self.run_rejection_prepass_for_groups(
+            grouped_files=grouped_files,
+            frame_weights=frame_weights,
+            transforms_dict=transforms_dict,
+            autocrop_enabled=autocrop_enabled,
+            autocrop_pct=autocrop_pct,
+            status_cb=log,
+        )
+
+        # IMPORTANT:
+        # Always finalize/save the normal integration path first.
+        # That ensures the standard integrated master (and drizzle outputs, if enabled)
+        # are written to disk even when MFDeconv is enabled.
+        finalize_result = self.finalize_normal_or_drizzle_from_prepass(
+            grouped_files=grouped_files,
+            drizzle_dict=drizzle_dict,
+            prepass=prepass,
+            status_cb=log,
+        )
+
+        finalize_summary = []
+        finalize_payload = {}
+        if isinstance(finalize_result, dict):
+            finalize_summary = list(finalize_result.get("summary_lines", []) or [])
+            finalize_payload = dict(finalize_result)
+        else:
+            finalize_payload = {}
+
+        combined_summary = list(prepass.get("summary_lines", [])) + finalize_summary
+
+        # IMPORTANT:
+        # Do NOT launch MF from here. This method is called from AfterAlignWorker.run(),
+        # which is executing in the post-align worker thread.
+        # Return a payload so the GUI thread can launch MF safely *after* normal/drizzle saves.
+        if self._mf_enabled():
+            out = dict(finalize_payload)
+            out.update({
+                "action": "launch_mf",
+                "summary_lines": combined_summary,
+                "prepass": prepass,
+                "grouped_files": grouped_files,
+                "transforms_dict": transforms_dict,
+                "drizzle_dict": drizzle_dict,
+            })
+            return out
+
+        if isinstance(finalize_result, dict):
+            finalize_result = dict(finalize_result)
+            finalize_result["summary_lines"] = combined_summary
+            return finalize_result
+
+        return {
+            "summary_lines": combined_summary,
+        }
+
     def on_registration_complete(self, success, msg):
        
         self.update_status(self.tr(msg))
@@ -17684,288 +17910,817 @@ class StackingSuiteDialog(QDialog):
 
         mf_enabled = self.settings.value("stacking/mfdeconv/enabled", False, type=bool)
 
+        # ----------------------------
+        # Do NOT short-circuit for MF anymore.
+        # Normal integration / rejection prepass now runs for all paths
+        # through process_post_alignment().
+        # ----------------------------
+        mf_enabled = self.settings.value("stacking/mfdeconv/enabled", False, type=bool)
         if mf_enabled:
-            self.update_status(self.tr("🧪 Multi-frame PSF-aware deconvolution path enabled."))
-
-            mf_groups = [(g, lst) for g, lst in aligned_light_files.items() if lst]
-            if not mf_groups:
-                self.update_status(self.tr("⚠️ No aligned frames available for MF deconvolution."))
-            else:
-                self._mf_pd = QProgressDialog("Multi-frame deconvolving…", "Cancel", 0, len(mf_groups), self)
-                # self._mf_pd.setWindowModality(Qt.WindowModality.ApplicationModal)
-                self._mf_pd.setMinimumDuration(0)
-                self._mf_pd.setWindowTitle("MF Deconvolution")
-                self._mf_pd.setValue(0)
-                self._mf_pd.show()
-
-                if getattr(self, "_mf_pd", None):
-                    self._mf_pd.setLabelText("Preparing MF deconvolution…")
-                    self._mf_pd.setMinimumWidth(520)
-
-                self._mf_total_groups = len(mf_groups)
-                self._mf_groups_done = 0
-                # progress range = groups * 1000 (each group gets 0..1000)
-                self._mf_pd.setRange(0, self._mf_total_groups * 1000)
-                self._mf_pd.setValue(0)
-                self._mf_queue = list(mf_groups)
-                self._mf_results = {}
-                self._mf_cancelled = False
-                self._mf_thread = None
-                self._mf_worker = None
-
-                def _cancel_all():
-                    self._mf_cancelled = True
-                self._mf_pd.canceled.connect(_cancel_all, Qt.ConnectionType.QueuedConnection)
-
-                def _finish_mf_phase_and_exit():
-                    """Tear down MF UI/threads and either continue or exit."""
-                    if getattr(self, "_mf_pd", None):
-                        try:
-                            self._mf_pd.reset()
-                            self._mf_pd.deleteLater()
-                        except Exception:
-                            pass
-                        self._mf_pd = None
-                    try:
-                        if self._mf_thread:
-                            self._mf_thread.quit()
-                            self._mf_thread.wait()
-                    except Exception:
-                        pass
-                    self._mf_thread = None
-                    self._mf_worker = None
-
-                    run_after = self.settings.value("stacking/mfdeconv/after_mf_run_integration", False, type=bool)
-                    if run_after:
-                        _start_after_align_worker(aligned_light_files)
-                    else:
-                        self.update_status(self.tr("✅ MFDeconv complete for all groups. Skipping normal integration as requested."))
-                        self._set_registration_busy(False)
-
-                def _start_next_mf_job():
-                    # end of queue or canceled → finish
-                    if self._mf_cancelled or not self._mf_queue:
-                        _finish_mf_phase_and_exit()
-                        return
-
-                    group_key, frames = self._mf_queue.pop(0)
-
-                    out_dir = self._master_light_dir()
-                    os.makedirs(out_dir, exist_ok=True)
-                    out_path = os.path.join(out_dir, f"MasterLight_{group_key}_MFDeconv.fit")
-
-                    # ── read config ─────────────────────────────────────────
-                    iters = self.settings.value("stacking/mfdeconv/iters", 20, type=int)
-                    min_iters = self.settings.value("stacking/mfdeconv/min_iters", 3, type=int)
-                    kappa = self.settings.value("stacking/mfdeconv/kappa", 2.0, type=float)
-                    mode  = self.mf_color_combo.currentText()
-                    Huber = self.settings.value("stacking/mfdeconv/Huber_delta", 0.0, type=float)
-                    seed_mode_cfg = str(self.settings.value("stacking/mfdeconv/seed_mode", "robust"))
-                    use_star_masks    = self.mf_use_star_mask_cb.isChecked()
-                    use_variance_maps = self.mf_use_noise_map_cb.isChecked()
-                    rho               = self.mf_rho_combo.currentText()
-                    save_intermediate = self.mf_save_intermediate_cb.isChecked()
-
-                    sr_enabled_ui = self.mf_sr_cb.isChecked()
-                    sr_factor_ui  = getattr(self, "mf_sr_factor_spin", None)
-                    sr_factor_val = sr_factor_ui.value() if sr_factor_ui is not None else self.settings.value("stacking/mfdeconv/sr_factor", 2, type=int)
-                    super_res_factor = int(sr_factor_val) if sr_enabled_ui else 1
-
-                    star_mask_cfg = {
-                        "thresh_sigma":  self.settings.value("stacking/mfdeconv/star_mask/thresh_sigma",  _SM_DEF_THRESH, type=float),
-                        "grow_px":       self.settings.value("stacking/mfdeconv/star_mask/grow_px",       _SM_DEF_GROW, type=int),
-                        "soft_sigma":    self.settings.value("stacking/mfdeconv/star_mask/soft_sigma",    _SM_DEF_SOFT, type=float),
-                        "max_radius_px": self.settings.value("stacking/mfdeconv/star_mask/max_radius_px", _SM_DEF_RMAX, type=int),
-                        "max_objs":      self.settings.value("stacking/mfdeconv/star_mask/max_objs",      _SM_DEF_MAXOBJS, type=int),
-                        "keep_floor":    self.settings.value("stacking/mfdeconv/star_mask/keep_floor",    _SM_DEF_KEEPF, type=float),
-                        "ellipse_scale": self.settings.value("stacking/mfdeconv/star_mask/ellipse_scale", _SM_DEF_ES, type=float),
-                    }
-                    varmap_cfg = {
-                        "sample_stride": self.settings.value("stacking/mfdeconv/varmap/sample_stride", _VM_DEF_STRIDE, type=int),
-                        "smooth_sigma":  self.settings.value("stacking/mfdeconv/varmap/smooth_sigma", 1.0, type=float),
-                        "floor":         self.settings.value("stacking/mfdeconv/varmap/floor",        1e-8, type=float),
-                    }
-
-                    self._mf_thread = QThread(self)
-                    star_mask_ref = _mf_ref_path_for_masks() if use_star_masks else None
-                    if use_star_masks:
-                        self.update_status(self.tr(f"🌟 MFDeconv star-mask reference → {star_mask_ref or '(none)'}"))                    
-
-                    # ── choose engine plainly (Normal / cuDNN-free / High Octane) ─────────────
-                    # Expect a setting saved by your radio buttons: "normal" | "cudnn" | "sport"
-                    engine = str(self.settings.value("stacking/mfdeconv/engine", "normal")).lower()
-
-                    try:
-                        if engine == "cudnn":
-                            from setiastro.saspro.mfdeconvcudnn import MultiFrameDeconvWorkercuDNN as MFCls
-                            eng_name = "Normal (cuDNN-free)"
-                        elif engine == "sport":  # High Octane let 'er rip
-                            from setiastro.saspro.mfdeconvsport import MultiFrameDeconvWorkerSport as MFCls
-                            eng_name = "High Octane"
-                        else:
-                            from setiastro.saspro.mfdeconv import MultiFrameDeconvWorker as MFCls
-                            eng_name = "Normal"
-                    except Exception as e:
-                        # if an import fails, fall back to the safe Normal path
-                        self.update_status(self.tr(f"⚠️ MFDeconv engine import failed ({e}); falling back to Normal."))
-                        from setiastro.saspro.mfdeconv import MultiFrameDeconvWorker as MFCls
-                        eng_name = "Normal (fallback)"
-
-                    self.update_status(self.tr(f"⚙️ MFDeconv engine: {eng_name}"))
-
-                    # ── build worker exactly the same in all modes ────────────────────────────
-                    self._mf_worker = MFCls(
-                        parent=None,
-                        aligned_paths=frames,
-                        output_path=out_path,
-                        iters=iters,
-                        kappa=kappa,
-                        color_mode=mode,
-                        huber_delta=Huber,
-                        min_iters=min_iters,
-                        use_star_masks=use_star_masks,
-                        use_variance_maps=use_variance_maps,
-                        rho=rho,
-                        star_mask_cfg=star_mask_cfg,
-                        varmap_cfg=varmap_cfg,
-                        save_intermediate=save_intermediate,
-                        super_res_factor=super_res_factor,
-                        star_mask_ref_path=star_mask_ref,
-                        seed_mode=seed_mode_cfg,
-                    )
-
-                    # ── standard Qt wiring (no gymnastics) ───────────────────────────────────
-                    self._mf_worker.moveToThread(self._mf_thread)
-                    self._mf_worker.progress.connect(self._on_mf_progress, Qt.ConnectionType.QueuedConnection)
-
-                    # when the worker says finished, log & cleanup; the *thread* quitting will trigger starting the next job
-                    def _job_finished(ok: bool, message: str, out: str):
-                        if getattr(self, "_mf_pd", None):
-                            self._mf_pd.setLabelText(f"{'✅' if ok else '❌'} {group_key}: {message}")
-                        if ok and out:
-                            self._mf_results[group_key] = out
-                            if getattr(self, "_mf_autocrop_enabled", False) and getattr(self, "_mf_autocrop_rect", None):
-                                try:
-                                    from astropy.io import fits
-                                    with fits.open(out, memmap=False) as hdul:
-                                        img = hdul[0].data; hdr = hdul[0].header
-                                    rect = tuple(map(int, self._mf_autocrop_rect))
-                                    sr_enabled_ui = self.mf_sr_cb.isChecked()
-                                    sr_factor_ui  = getattr(self, "mf_sr_factor_spin", None)
-                                    sr_factor_val = sr_factor_ui.value() if sr_factor_ui is not None else self.settings.value("stacking/mfdeconv/sr_factor", 2, type=int)
-                                    sr_factor = int(sr_factor_val) if sr_enabled_ui else 1
-                                    if sr_factor > 1:
-                                        x1,y1,x2,y2 = rect
-                                        rect = (x1*sr_factor, y1*sr_factor, x2*sr_factor, y2*sr_factor)
-                                    x1,y1,x2,y2 = rect
-                                    if img.ndim == 2:
-                                        crop = img[y1:y2, x1:x2]
-                                    elif img.ndim == 3:
-                                        crop = (img[:, y1:y2, x1:x2] if img.shape[0] in (1,3)
-                                                else img[y1:y2, x1:x2, :])
-                                    out_crop = out.replace(".fit", "_autocrop.fit").replace(".fits", "_autocrop.fits")
-                                    fits.PrimaryHDU(data=crop.astype(np.float32, copy=False), header=hdr).writeto(out_crop, overwrite=True)
-                                    self.update_status(self.tr(f"✂️ (MF) Saved auto-cropped copy → {out_crop}"))
-                                except Exception as e:
-                                    self.update_status(self.tr(f"⚠️ (MF) Auto-crop of output failed: {e}"))
-
-                        # advance progress segment
-                        if getattr(self, "_mf_pd", None):
-                            self._mf_groups_done = min(self._mf_groups_done + 1, self._mf_total_groups)
-                            self._mf_pd.setValue(self._mf_groups_done * 1000)
-
-                    self._mf_worker.finished.connect(_job_finished, Qt.ConnectionType.QueuedConnection)
-
-                    # thread start/stop
-                    self._mf_thread.started.connect(self._mf_worker.run, Qt.ConnectionType.QueuedConnection)
-                    self._mf_worker.finished.connect(self._mf_thread.quit, Qt.ConnectionType.QueuedConnection)
-                    self._mf_thread.finished.connect(self._mf_worker.deleteLater, Qt.ConnectionType.QueuedConnection)
-                    self._mf_thread.finished.connect(self._mf_thread.deleteLater, Qt.ConnectionType.QueuedConnection)
-
-                    # when the thread is fully down, kick the next job
-                    def _next_after_thread():
-                        try:
-                            self._mf_thread.finished.disconnect(_next_after_thread)
-                        except Exception:
-                            pass
-                        QTimer.singleShot(0, _start_next_mf_job)
-
-                    self._mf_thread.finished.connect(_next_after_thread, Qt.ConnectionType.QueuedConnection)
-
-                    # go
-                    self._mf_thread.start()
-                    if getattr(self, "_mf_pd", None):
-                        self._mf_pd.setLabelText(f"Deconvolving '{group_key}' ({len(frames)} frames)…")
-
-
-                # Kick off the first job (queue-driven)
-                QTimer.singleShot(0, _start_next_mf_job)
-
-                # Defer rest of pipeline; MF block will decide at MF completion.
-                self._set_registration_busy(False)
-                return
-
-
+            self.update_status(self.tr(
+                "🧪 Multi-frame PSF-aware deconvolution enabled. "
+                "Running normal integration / rejection prepass first."
+            ))
+            QApplication.processEvents()
 
         # ----------------------------
-        # Snapshot UI-dependent settings
+        # Kick off unified post-alignment worker
+        # This now handles:
+        #   - normal integration / rejection prepass
+        #   - drizzle finalize
+        #   - MFDeconv launch from prepass
         # ----------------------------
-        drizzle_dict = self.gather_drizzle_settings_from_tree()
+        _start_after_align_worker(aligned_light_files)
+        return
+
+    def _mf_enabled(self) -> bool:
+        return self.settings.value("stacking/mfdeconv/enabled", False, type=bool)
+
+    def _filter_kwargs_for_callable(self, fn, kwargs: dict) -> dict:
+        import inspect
         try:
-            autocrop_enabled = self.autocrop_cb.isChecked()
-            autocrop_pct = float(self.autocrop_pct.value())
+            sig = inspect.signature(fn)
+            params = sig.parameters
+            if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
+                return dict(kwargs)
+            return {k: v for k, v in kwargs.items() if k in params}
         except Exception:
-            autocrop_enabled = self.settings.value("stacking/autocrop_enabled", False, type=bool)
-            autocrop_pct = float(self.settings.value("stacking/autocrop_pct", 95.0, type=float))
+            return {}
 
-        # Only report fill % if CFA mapping is actually in use for this run
-        cfa_effective = bool(
-            self._cfa_for_this_run
-            if getattr(self, "_cfa_for_this_run", None) is not None
-            else (getattr(self, "cfa_drizzle_cb", None) and self.cfa_drizzle_cb.isChecked())
-        )
-        print("CFA effective for this run:", cfa_effective)
+    def run_rejection_prepass_for_groups(
+        self,
+        grouped_files,
+        frame_weights,
+        transforms_dict,
+        autocrop_enabled,
+        autocrop_pct,
+        status_cb=None,
+    ):
+        """
+        Shared prepass for:
+        - normal integration
+        - drizzle
+        - MFDeconv
 
-        if cfa_effective and getattr(self, "valid_matrices", None):
-            fill = self._dither_phase_fill(self.valid_matrices, bins=8)
-            self.update_status(self.tr(f"🔎 CFA drizzle sub-pixel phase fill (8×8): {fill*100:.1f}%"))
-            if fill < 0.65:
-                self.update_status(self.tr("💡 For best results with CFA drizzle, aim for >65% fill."))
-                self.update_status(self.tr("   With <~40–55% fill, expect visible patching even with many frames."))
+        Generates the same rejection products normal integration already produces,
+        but stores them in a reusable per-group payload.
+        """
+        from time import perf_counter
+        from PyQt6.QtWidgets import QApplication
+
+        log = status_cb or (lambda *_: None)
+
+        n_groups = len(grouped_files)
+        n_frames = sum(len(v) for v in grouped_files.values())
+        log(f"🧪 Rejection prepass: {n_groups} group(s), {n_frames} aligned frame(s).")
         QApplication.processEvents()
 
-        # ----------------------------
-        # Kick off post-align worker (unchanged)
-        # ----------------------------
-        self.post_thread = QThread(self)
-        self.post_worker = AfterAlignWorker(
-            self,                                   # parent QObject
-            light_files=aligned_light_files,
-            frame_weights=dict(self.frame_weights),
-            transforms_dict=dict(self.valid_transforms),
+        prepass = {
+            "grouped_files": grouped_files,
+            "frame_weights": frame_weights,
+            "transforms_dict": transforms_dict,
+            "autocrop_enabled": bool(autocrop_enabled),
+            "autocrop_pct": float(autocrop_pct),
+            "groups": {},
+            "summary_lines": [],
+        }
+
+        # Preserve the same storage drizzle currently relies on.
+        if not hasattr(self, "_rej_maps") or not isinstance(getattr(self, "_rej_maps"), dict):
+            self._rej_maps = {}
+        need_per_file_rejections = bool(self._mf_enabled() or self._get_drizzle_enabled())
+        for gi, (group_key, file_list) in enumerate(grouped_files.items(), 1):
+            t0 = perf_counter()
+            if not file_list:
+                continue
+
+            log(f"🔹 [{gi}/{n_groups}] Rejection prepass for '{group_key}' with {len(file_list)} file(s)…")
+            QApplication.processEvents()
+
+            integrated_image, rejection_map, ref_header = self.normal_integration_with_rejection(
+                group_key,
+                file_list,
+                frame_weights,
+                status_cb=log,
+                collect_per_file_rejections=need_per_file_rejections,
+            )
+
+            if integrated_image is None:
+                raise RuntimeError(f"normal_integration_with_rejection returned no image for group '{group_key}'")
+
+            group_rej_maps = {}
+            try:
+                group_rej_maps = dict(getattr(self, "_rej_maps", {}).get(group_key, {}) or {})
+            except Exception:
+                group_rej_maps = {}
+
+            prepass["groups"][group_key] = {
+                "group_key": group_key,
+                "file_list": list(file_list),
+                "integrated_image": integrated_image,
+                "rejection_map": rejection_map,
+                "ref_header": ref_header,
+                "rej_maps": group_rej_maps,
+                "n_frames": len(file_list),
+            }
+
+            dt = perf_counter() - t0
+            line = (
+                f"Prepass '{group_key}': "
+                f"{integrated_image.shape[1]}×{integrated_image.shape[0]}, "
+                f"{len(file_list)} frame(s), {dt:.1f}s"
+            )
+            prepass["summary_lines"].append(line)
+            log(f"✅ {line}")
+            QApplication.processEvents()
+
+        return prepass
+
+    def finalize_normal_or_drizzle_from_prepass(
+        self,
+        grouped_files,
+        drizzle_dict,
+        prepass,
+        status_cb=None,
+    ):
+        """
+        Finalize normal integration / drizzle using the already-computed prepass.
+        This must NOT call stack_images_mixed_drizzle(), because that would
+        recompute normal integration a second time.
+        """
+        from PyQt6.QtWidgets import QApplication
+
+        log = status_cb or (lambda *_: None)
+        log("🧱 Finalizing normal integration / drizzle from prepass…")
+        QApplication.processEvents()
+
+        return self._finalize_normal_or_drizzle_from_prepass_impl(
+            grouped_files=grouped_files,
             drizzle_dict=drizzle_dict,
-            autocrop_enabled=autocrop_enabled,
-            autocrop_pct=autocrop_pct,
-            ui_owner=self                           # 👈 PASS THE OWNER HERE
+            prepass=prepass,
+            status_cb=log,
         )
-        self.post_worker.ui_owner = self
-        self.post_worker.need_comet_review.connect(self.on_need_comet_review) 
 
-        self.post_worker.progress.connect(self._on_post_status)
-        self.post_worker.finished.connect(self._on_post_pipeline_finished)
+    def _finalize_normal_or_drizzle_from_prepass_impl(
+        self,
+        grouped_files,
+        drizzle_dict,
+        prepass,
+        status_cb=None,
+    ):
+        import os
+        from time import perf_counter
+        from datetime import datetime
+        import numpy as np
+        from astropy.io import fits
+        from PyQt6.QtWidgets import QApplication, QMessageBox
+        from PyQt6.QtCore import QEventLoop
 
-        self.post_worker.moveToThread(self.post_thread)
-        self.post_thread.started.connect(self.post_worker.run)
-        self.post_thread.start()
+        log = status_cb or (lambda *_: None)
+        comet_mode = bool(getattr(self, "comet_cb", None) and self.comet_cb.isChecked())
 
-        self.post_progress = QProgressDialog("Stacking & drizzle (if enabled)…", None, 0, 0, self)
-        self.post_progress.setWindowModality(Qt.WindowModality.WindowModal)
-        self.post_progress.setCancelButton(None)
-        self.post_progress.setMinimumDuration(0)
-        self.post_progress.setWindowTitle("Post-Alignment")
-        self.post_progress.show()
+        if not hasattr(self, "orig_by_aligned") or not isinstance(getattr(self, "orig_by_aligned"), dict):
+            self.orig_by_aligned = {}
 
-        self._set_registration_busy(False)
+        COMET_ALGO = "Comet High-Clip Percentile"
+        STARS_ALGO = "Comet High-Clip Percentile"
+
+        n_groups = len(grouped_files)
+        n_frames = sum(len(v) for v in grouped_files.values())
+        log(f"📁 Post-align finalize from prepass: {n_groups} group(s), {n_frames} aligned frame(s).")
+        QApplication.processEvents()
+
+        drizzle_enabled_global = self._get_drizzle_enabled()
+
+        global_rect = None
+        if prepass.get("autocrop_enabled", False):
+            autocrop_pct = float(prepass.get("autocrop_pct", 95.0))
+            log("✂️ Auto Crop Enabled. Calculating bounding box…")
+            try:
+                xforms = dict(getattr(self, "drizzle_xforms", {}) or {})
+                if not xforms:
+                    xforms = dict(getattr(self, "valid_matrices", {}) or {})
+
+                ref_hw = tuple(getattr(self, "ref_shape_for_drizzle", ()))
+                if xforms and len(ref_hw) == 2:
+                    global_rect = self._rect_from_transforms_fast(
+                        xforms,
+                        src_hw=ref_hw,
+                        coverage_pct=float(autocrop_pct),
+                        allow_homography=True,
+                        min_side=16
+                    )
+                    if global_rect:
+                        x0, y0, x1, y1 = map(int, global_rect)
+                        log(f"✂️ Transform crop (global) → [{x0}:{x1}]×[{y0}:{y1}] ({x1-x0}×{y1-y0})")
+            except Exception as e:
+                log(f"⚠️ Transform-based global crop failed ({e}); falling back to mask-based.")
+                global_rect = None
+
+            if global_rect is None:
+                try:
+                    global_rect = self._compute_common_autocrop_rect(
+                        grouped_files, autocrop_pct, status_cb=log
+                    )
+                    if global_rect:
+                        x0, y0, x1, y1 = map(int, global_rect)
+                        log(f"✂️ Mask-based crop (global) → [{x0}:{x1}]×[{y0}:{y1}] ({x1-x0}×{y1-y0})")
+                except Exception as e:
+                    log(f"⚠️ Global crop (mask-based) failed: {e}")
+                    global_rect = None
+
+        group_integration_data = {}
+        summary_lines = []
+        autocrop_outputs = []
+
+        for gi, (group_key, file_list) in enumerate(grouped_files.items(), 1):
+            t_g = perf_counter()
+            log(f"🔹 [{gi}/{n_groups}] Finalizing '{group_key}' from prepass with {len(file_list)} file(s)…")
+            QApplication.processEvents()
+
+            group_prepass = dict(prepass.get("groups", {}).get(group_key, {}) or {})
+            seed_image_prepass = group_prepass.get("integrated_image")
+            integrated_image = group_prepass.get("integrated_image")
+            rejection_map = group_prepass.get("rejection_map")
+            ref_header = group_prepass.get("ref_header")
+
+            if integrated_image is None:
+                log(f"⚠️ Missing prepass integrated image for '{group_key}'")
+                continue
+
+            integrated_image = self._normalize_stack_01(integrated_image)
+
+            if ref_header is None:
+                ref_header = fits.Header()
+
+            hdr_orig = ref_header.copy()
+            hdr_orig["IMAGETYP"] = "MASTER STACK"
+            hdr_orig["BITPIX"] = -32
+            hdr_orig["STACKED"] = (True, "Stacked from rejection prepass")
+            hdr_orig["CREATOR"] = "SetiAstroSuite"
+            hdr_orig["DATE-OBS"] = datetime.utcnow().isoformat()
+
+            n_frames_group = len(file_list)
+            hdr_orig["NCOMBINE"] = (int(n_frames_group), "Number of frames combined")
+            hdr_orig["NSTACK"] = (int(n_frames_group), "Alias of NCOMBINE (SetiAstro)")
+
+            is_mono_orig = (integrated_image.ndim == 2)
+            if is_mono_orig:
+                hdr_orig["NAXIS"] = 2
+                hdr_orig["NAXIS1"] = integrated_image.shape[1]
+                hdr_orig["NAXIS2"] = integrated_image.shape[0]
+                if "NAXIS3" in hdr_orig:
+                    del hdr_orig["NAXIS3"]
+            else:
+                hdr_orig["NAXIS"] = 3
+                hdr_orig["NAXIS1"] = integrated_image.shape[1]
+                hdr_orig["NAXIS2"] = integrated_image.shape[0]
+                hdr_orig["NAXIS3"] = integrated_image.shape[2]
+
+            H, W = integrated_image.shape[:2]
+            display_group = self._label_with_dims(group_key, W, H)
+            base = f"MasterLight_{display_group}_{n_frames_group}stacked"
+            base = self._normalize_master_stem(base)
+            out_path_orig = self._build_out(self._master_light_dir(), base, "fit")
+
+            maps = group_prepass.get("rej_maps") or getattr(self, "_rej_maps", {}).get(group_key)
+            save_layers = self.settings.value("stacking/save_rejection_layers", True, type=bool)
+
+            if maps is not None and save_layers:
+                try:
+                    rej_any = np.asarray(maps["any"], dtype=bool)
+                    rej_frac = np.asarray(maps["frac"], dtype=np.float32)
+                    rej_cnt = np.asarray(maps["count"], dtype=np.uint16)
+
+                    _save_master_with_rejection_layers(
+                        img_array=integrated_image,
+                        hdr=hdr_orig,
+                        out_path=out_path_orig,
+                        rej_any=rej_any,
+                        rej_frac=rej_frac,
+                        rej_cnt=rej_cnt,
+                    )
+                    log(f"✅ Saved integrated image (with rejection layers) for '{group_key}': {out_path_orig}")
+                except Exception as e:
+                    log(f"⚠️ MEF save failed ({e}); falling back to single-HDU save.")
+                    save_image(
+                        img_array=integrated_image,
+                        filename=out_path_orig,
+                        original_format="fit",
+                        bit_depth="32-bit floating point",
+                        original_header=hdr_orig,
+                        is_mono=is_mono_orig
+                    )
+                    log(f"✅ Saved integrated image (single-HDU) for '{group_key}': {out_path_orig}")
+            else:
+                save_image(
+                    img_array=integrated_image,
+                    filename=out_path_orig,
+                    original_format="fit",
+                    bit_depth="32-bit floating point",
+                    original_header=hdr_orig,
+                    is_mono=is_mono_orig
+                )
+                log(f"✅ Saved integrated image (original) for '{group_key}': {out_path_orig}")
+
+            group_rect = None
+            if prepass.get("autocrop_enabled", False):
+                autocrop_pct = float(prepass.get("autocrop_pct", 95.0))
+                if global_rect is not None:
+                    group_rect = tuple(global_rect)
+                else:
+                    try:
+                        xforms_g = {}
+                        oba = getattr(self, "orig_by_aligned", {}) or {}
+                        has_model_xforms = bool(getattr(self, "drizzle_xforms", None))
+
+                        for ap in file_list:
+                            apn = os.path.normpath(ap)
+                            M = None
+                            if has_model_xforms:
+                                op = oba.get(apn)
+                                if op:
+                                    M = getattr(self, "drizzle_xforms", {}).get(os.path.normpath(op))
+                            if M is None:
+                                M = getattr(self, "matrix_by_aligned", {}).get(apn)
+                            if M is not None:
+                                xforms_g[apn] = np.asarray(M)
+
+                        ref_hw = tuple(getattr(self, "ref_shape_for_drizzle", ()))
+                        if xforms_g and len(ref_hw) == 2:
+                            group_rect = self._rect_from_transforms_fast(
+                                xforms_g,
+                                src_hw=ref_hw,
+                                coverage_pct=float(autocrop_pct),
+                                allow_homography=True,
+                                min_side=16
+                            )
+
+                        if group_rect is None:
+                            group_rect = self._compute_common_autocrop_rect(
+                                {group_key: file_list}, autocrop_pct, status_cb=log
+                            )
+                    except Exception as e:
+                        log(f"⚠️ Per-group transform crop failed for '{group_key}': {e}")
+                        group_rect = None
+
+                if group_rect:
+                    x1, y1, x2, y2 = map(int, group_rect)
+                    log(f"✂️ Using fixed crop rect for '{group_key}': ({x1},{y1})–({x2},{y2})")
+
+            if prepass.get("autocrop_enabled", False):
+                cropped_img, hdr_crop = self._apply_autocrop(
+                    integrated_image,
+                    file_list,
+                    ref_header.copy(),
+                    scale=1.0,
+                    rect_override=group_rect if group_rect is not None else global_rect
+                )
+                hdr_crop["NCOMBINE"] = (int(n_frames_group), "Number of frames combined")
+                hdr_crop["NSTACK"] = (int(n_frames_group), "Alias of NCOMBINE (SetiAstro)")
+                is_mono_crop = (cropped_img.ndim == 2)
+                Hc, Wc = (cropped_img.shape[:2] if cropped_img.ndim >= 2 else (H, W))
+                display_group_crop = self._label_with_dims(group_key, Wc, Hc)
+                base_crop = f"MasterLight_{display_group_crop}_{n_frames_group}stacked_autocrop"
+                base_crop = self._normalize_master_stem(base_crop)
+                out_path_crop = self._build_out(self._master_light_dir(), base_crop, "fit")
+
+                save_image(
+                    img_array=cropped_img,
+                    filename=out_path_crop,
+                    original_format="fit",
+                    bit_depth="32-bit floating point",
+                    original_header=hdr_crop,
+                    is_mono=is_mono_crop
+                )
+                log(f"✂️ Saved auto-cropped image for '{group_key}': {out_path_crop}")
+                autocrop_outputs.append((group_key, out_path_crop))
+
+            if drizzle_enabled_global:
+                try:
+                    sasr_path = os.path.join(self.stacking_directory, f"{group_key}_rejections.sasr")
+                    maps = group_prepass.get("rej_maps") or getattr(self, "_rej_maps", {}).get(group_key)
+                    self.save_rejection_map_sasr(maps, sasr_path)
+                    log(f"✅ Saved rejection map to {sasr_path}")
+                except Exception as e:
+                    log(f"⚠️ Failed saving rejection map for '{group_key}': {e}")
+
+            group_integration_data[group_key] = {
+                "integrated_image": integrated_image,
+                "rejection_map": rejection_map if drizzle_enabled_global else None,
+                "n_frames": n_frames_group,
+                "drizzled": False,
+            }
+
+            log(f"   ↳ Finalize from prepass done in {perf_counter() - t_g:.1f}s.")
+
+        QApplication.processEvents()
+
+        originals_by_group = {}
+        oba = getattr(self, "orig_by_aligned", {}) or {}
+        for group, reg_list in grouped_files.items():
+            orig_list = []
+            for rp in reg_list:
+                op = oba.get(os.path.normpath(rp))
+                if op:
+                    orig_list.append(op)
+            originals_by_group[group] = orig_list
+
+        for group_key, file_list in grouped_files.items():
+            if not drizzle_enabled_global:
+                log(f"✅ Drizzle disabled (checkbox off). Group '{group_key}' integrated image already saved.")
+                continue
+
+            scale_factor = self._get_drizzle_scale()
+            drop_shrink = self._get_drizzle_pixfrac()
+
+            kernel = (self.settings.value("stacking/drizzle_kernel", "square", type=str) or "square").lower()
+            log(f"Drizzle cfg → scale={scale_factor}×, pixfrac={drop_shrink:.3f}, kernel={kernel}")
+
+            rejections_for_group = group_integration_data[group_key]["rejection_map"]
+            n_frames_group = group_integration_data[group_key]["n_frames"]
+
+            split_info = getattr(self, "_split_drizzle_info", {}) or {}
+            oba = getattr(self, "orig_by_aligned", {}) or {}
+
+            entries_by_group = {}
+            for gk, aligned_list in grouped_files.items():
+                entries = []
+                for ap in aligned_list:
+                    apn = os.path.normpath(ap)
+                    info = split_info.get(apn)
+
+                    if info and info.get("orig"):
+                        entries.append({
+                            "orig": os.path.normpath(info["orig"]),
+                            "aligned": apn,
+                            "chan": info.get("chan", None),
+                        })
+                    else:
+                        op = oba.get(apn)
+                        if op:
+                            entries.append({"orig": os.path.normpath(op), "aligned": apn, "chan": None})
+
+                entries_by_group[gk] = entries
+
+            log(f"📐 Drizzle for '{group_key}' at {scale_factor}× (drop={drop_shrink}) using {n_frames_group} frame(s).")
+
+            ok = False
+            try:
+                ok = bool(self.drizzle_stack_one_group(
+                    group_key=group_key,
+                    file_list=file_list,
+                    entries=entries_by_group.get(group_key, []),
+                    transforms_dict=prepass["transforms_dict"],
+                    frame_weights=prepass["frame_weights"],
+                    scale_factor=scale_factor,
+                    drop_shrink=drop_shrink,
+                    rejection_map=rejections_for_group,
+                    autocrop_enabled=prepass["autocrop_enabled"],
+                    rect_override=global_rect,
+                    status_cb=log
+                ))
+            except Exception as e:
+                log(f"⚠️ Drizzle failed for '{group_key}': {e!r}")
+                ok = False
+
+            if ok:
+                group_integration_data[group_key]["drizzled"] = True
+
+        for group_key, info in group_integration_data.items():
+            n_frames_group = info["n_frames"]
+            drizzled = info["drizzled"]
+            summary_lines.append(f"• {group_key}: {n_frames_group} stacked{' + drizzle' if drizzled else ''}")
+
+        if autocrop_outputs:
+            summary_lines.append("")
+            summary_lines.append("Auto-cropped files saved:")
+            for g, p in autocrop_outputs:
+                summary_lines.append(f"  • {g} → {p}")
+
+        return {
+            "summary_lines": summary_lines,
+            "autocrop_outputs": autocrop_outputs
+        }
+
+    def launch_mfdeconv_from_prepass(
+        self,
+        grouped_files,
+        transforms_dict,
+        prepass,
+        status_cb=None,
+    ):
+        """
+        Launch MFDeconv from the post-alignment orchestrator using the already-computed
+        normal-integration prepass.
+
+        At this point:
+        - the normal integrated master has already been finalized/saved
+        - drizzle outputs (if enabled) have already been finalized/saved
+        - MFDeconv receives the rejection products from the prepass so its
+        multiplicative updates can ignore rejected pixels
+        """
+        import os
+        from PyQt6.QtCore import QThread, QTimer, Qt
+        from PyQt6.QtWidgets import QProgressDialog, QApplication
+
+        log = status_cb or (lambda *_: None)
+
+        mf_groups = [(g, lst) for g, lst in grouped_files.items() if lst]
+        if not mf_groups:
+            log("⚠️ No aligned frames available for MF deconvolution.")
+            return {
+                "summary_lines": ["No aligned frames available for MF deconvolution."]
+            }
+
+        self._mf_prepass = prepass
+        self._mf_grouped_files = grouped_files
+        self._mf_transforms_dict = transforms_dict
+
+        self._mf_pd = QProgressDialog("Multi-frame deconvolving…", "Cancel", 0, len(mf_groups), self)
+        self._mf_pd.setMinimumDuration(0)
+        self._mf_pd.setWindowTitle("MF Deconvolution")
+        self._mf_pd.setValue(0)
+        self._mf_pd.show()
+
+        if getattr(self, "_mf_pd", None):
+            self._mf_pd.setLabelText("Preparing MF deconvolution…")
+            self._mf_pd.setMinimumWidth(520)
+
+        self._mf_total_groups = len(mf_groups)
+        self._mf_groups_done = 0
+        self._mf_pd.setRange(0, self._mf_total_groups * 1000)
+        self._mf_pd.setValue(0)
+        self._mf_queue = list(mf_groups)
+        self._mf_results = {}
+        self._mf_cancelled = False
+        self._mf_thread = None
+        self._mf_worker = None
+
+        def _cancel_all():
+            self._mf_cancelled = True
+
+        self._mf_pd.canceled.connect(_cancel_all, Qt.ConnectionType.QueuedConnection)
+
+        def _finish_mf_phase_and_exit():
+            if getattr(self, "_mf_pd", None):
+                try:
+                    self._mf_pd.reset()
+                    self._mf_pd.deleteLater()
+                except Exception:
+                    pass
+                self._mf_pd = None
+
+            try:
+                if self._mf_thread:
+                    self._mf_thread.quit()
+                    self._mf_thread.wait()
+            except Exception:
+                pass
+
+            self._mf_thread = None
+            self._mf_worker = None
+
+            run_after = self.settings.value("stacking/mfdeconv/after_mf_run_integration", False, type=bool)
+            if run_after:
+                # For step one, reuse existing finalize path.
+                try:
+                    drizzle_dict = self.gather_drizzle_settings_from_tree()
+                except Exception:
+                    drizzle_dict = {}
+
+                try:
+                    result = self.finalize_normal_or_drizzle_from_prepass(
+                        grouped_files=grouped_files,
+                        drizzle_dict=drizzle_dict,
+                        prepass=prepass,
+                        status_cb=log,
+                    )
+                    return result
+                except Exception as e:
+                    log(f"⚠️ Post-MF finalize failed: {e}")
+                    self._set_registration_busy(False)
+                    return
+
+            if getattr(self, "_mf_failures", None):
+                lines = [f"{g}: {m}" for g, m in self._mf_failures]
+                log("⚠️ MFDeconv finished with failures:\n" + "\n".join(lines))
+            else:
+                log("✅ MFDeconv complete for all groups.")
+            self._set_registration_busy(False)
+
+        def _start_next_mf_job():
+            if self._mf_cancelled or not self._mf_queue:
+                _finish_mf_phase_and_exit()
+                return
+
+            group_key, frames = self._mf_queue.pop(0)
+
+            out_dir = self._master_light_dir()
+            os.makedirs(out_dir, exist_ok=True)
+            out_path = os.path.join(out_dir, f"MasterLight_{group_key}_MFDeconv.fit")
+
+            iters = self.settings.value("stacking/mfdeconv/iters", 20, type=int)
+            min_iters = self.settings.value("stacking/mfdeconv/min_iters", 3, type=int)
+            kappa = self.settings.value("stacking/mfdeconv/kappa", 2.0, type=float)
+            mode = self.mf_color_combo.currentText()
+            Huber = self.settings.value("stacking/mfdeconv/Huber_delta", 0.0, type=float)
+            seed_mode_cfg = str(self.settings.value("stacking/mfdeconv/seed_mode", "robust"))
+            use_star_masks = self.mf_use_star_mask_cb.isChecked()
+            use_variance_maps = self.mf_use_noise_map_cb.isChecked()
+            rho = self.mf_rho_combo.currentText()
+            save_intermediate = self.mf_save_intermediate_cb.isChecked()
+
+            sr_enabled_ui = self.mf_sr_cb.isChecked()
+            sr_factor_ui = getattr(self, "mf_sr_factor_spin", None)
+            sr_factor_val = sr_factor_ui.value() if sr_factor_ui is not None else self.settings.value("stacking/mfdeconv/sr_factor", 2, type=int)
+            super_res_factor = int(sr_factor_val) if sr_enabled_ui else 1
+
+            star_mask_cfg = {
+                "thresh_sigma": self.settings.value("stacking/mfdeconv/star_mask/thresh_sigma", _SM_DEF_THRESH, type=float),
+                "grow_px": self.settings.value("stacking/mfdeconv/star_mask/grow_px", _SM_DEF_GROW, type=int),
+                "soft_sigma": self.settings.value("stacking/mfdeconv/star_mask/soft_sigma", _SM_DEF_SOFT, type=float),
+                "max_radius_px": self.settings.value("stacking/mfdeconv/star_mask/max_radius_px", _SM_DEF_RMAX, type=int),
+                "max_objs": self.settings.value("stacking/mfdeconv/star_mask/max_objs", _SM_DEF_MAXOBJS, type=int),
+                "keep_floor": self.settings.value("stacking/mfdeconv/star_mask/keep_floor", _SM_DEF_KEEPF, type=float),
+                "ellipse_scale": self.settings.value("stacking/mfdeconv/star_mask/ellipse_scale", _SM_DEF_ES, type=float),
+            }
+            varmap_cfg = {
+                "sample_stride": self.settings.value("stacking/mfdeconv/varmap/sample_stride", _VM_DEF_STRIDE, type=int),
+                "smooth_sigma": self.settings.value("stacking/mfdeconv/varmap/smooth_sigma", 1.0, type=float),
+                "floor": self.settings.value("stacking/mfdeconv/varmap/floor", 1e-8, type=float),
+            }
+
+            self._mf_thread = QThread(self)
+            star_mask_ref = None
+            try:
+                if use_star_masks and hasattr(self, "_mf_ref_path_for_masks"):
+                    star_mask_ref = self._mf_ref_path_for_masks()
+            except Exception:
+                star_mask_ref = None
+
+            if use_star_masks:
+                log(f"🌟 MFDeconv star-mask reference → {star_mask_ref or '(none)'}")
+
+            engine = str(self.settings.value("stacking/mfdeconv/engine", "normal")).lower()
+
+            try:
+                if engine == "cudnn":
+                    from setiastro.saspro.mfdeconvcudnn import MultiFrameDeconvWorkercuDNN as MFCls
+                    eng_name = "Normal (cuDNN-free)"
+                elif engine == "sport":
+                    from setiastro.saspro.mfdeconvsport import MultiFrameDeconvWorkerSport as MFCls
+                    eng_name = "High Octane"
+                else:
+                    from setiastro.saspro.mfdeconv import MultiFrameDeconvWorker as MFCls
+                    eng_name = "Normal"
+            except Exception as e:
+                log(f"⚠️ MFDeconv engine import failed ({e}); falling back to Normal.")
+                from setiastro.saspro.mfdeconv import MultiFrameDeconvWorker as MFCls
+                eng_name = "Normal (fallback)"
+
+            log(f"⚙️ MFDeconv engine: {eng_name}")
+
+            group_prepass = {}
+            try:
+                group_prepass = dict(prepass.get("groups", {}).get(group_key, {}) or {})
+                seed_image_prepass = group_prepass.get("integrated_image")
+            except Exception:
+                group_prepass = {}
+
+            rejection_strength = self.settings.value(
+                "stacking/mfdeconv/rejection_strength", 0.85, type=float
+            )
+            
+            mf_kwargs = dict(
+                parent=None,
+                aligned_paths=frames,
+                output_path=out_path,
+                iters=iters,
+                kappa=kappa,
+                color_mode=mode,
+                huber_delta=Huber,
+                min_iters=min_iters,
+                use_star_masks=use_star_masks,
+                use_variance_maps=use_variance_maps,
+                rho=rho,
+                star_mask_cfg=star_mask_cfg,
+                varmap_cfg=varmap_cfg,
+                save_intermediate=save_intermediate,
+                super_res_factor=super_res_factor,
+                star_mask_ref_path=star_mask_ref,
+                seed_mode=seed_mode_cfg,
+                rejection_strength=rejection_strength,                
+            )
+
+            # New payloads for rejection-aware MF path.
+            # These are only passed if the worker constructor supports them.
+            mf_optional = self._filter_kwargs_for_callable(MFCls, {
+                "rejection_map": group_prepass.get("rejection_map"),
+                "rejection_group_maps": group_prepass.get("rej_maps"),
+                "prepass_payload": group_prepass,
+                "reference_header": group_prepass.get("ref_header"),
+                "seed_image": seed_image_prepass,
+            })
+            mf_kwargs.update(mf_optional)
+
+            if group_prepass:
+                try:
+                    rej_maps = group_prepass.get("rej_maps") or {}
+                    any_shape = getattr(rej_maps.get("any"), "shape", None)
+                    seed_shape = getattr(seed_image_prepass, "shape", None)
+                    log(
+                        f"🧪 MF prepass payload for '{group_key}': "
+                        f"rejection_map={'yes' if group_prepass.get('rejection_map') is not None else 'no'}, "
+                        f"group_maps={'yes' if rej_maps else 'no'}, "
+                        f"seed_image={'yes' if seed_image_prepass is not None else 'no'}"
+                        + (f", any_shape={any_shape}" if any_shape is not None else "")
+                        + (f", seed_shape={seed_shape}" if seed_shape is not None else "")
+                    )
+                except Exception:
+                    pass
+
+            self._mf_worker = MFCls(**mf_kwargs)
+
+            self._mf_worker.moveToThread(self._mf_thread)
+            self._mf_worker.progress.connect(self._on_mf_progress, Qt.ConnectionType.QueuedConnection)
+
+            def _job_finished(ok: bool, message: str, out: str):
+                if getattr(self, "_mf_pd", None):
+                    self._mf_pd.setLabelText(f"{'✅' if ok else '❌'} {group_key}: {message}")
+
+                if not hasattr(self, "_mf_failures"):
+                    self._mf_failures = []
+
+                if ok and out:
+                    self._mf_results[group_key] = out
+
+                    if getattr(self, "_mf_autocrop_enabled", False) and getattr(self, "_mf_autocrop_rect", None):
+                        try:
+                            from astropy.io import fits
+                            with fits.open(out, memmap=False) as hdul:
+                                img = hdul[0].data
+                                hdr = hdul[0].header
+
+                            rect = tuple(map(int, self._mf_autocrop_rect))
+                            sr_enabled_ui2 = self.mf_sr_cb.isChecked()
+                            sr_factor_ui2 = getattr(self, "mf_sr_factor_spin", None)
+                            sr_factor_val2 = sr_factor_ui2.value() if sr_factor_ui2 is not None else self.settings.value("stacking/mfdeconv/sr_factor", 2, type=int)
+                            sr_factor = int(sr_factor_val2) if sr_enabled_ui2 else 1
+
+                            if sr_factor > 1:
+                                x1, y1, x2, y2 = rect
+                                rect = (x1 * sr_factor, y1 * sr_factor, x2 * sr_factor, y2 * sr_factor)
+
+                            x1, y1, x2, y2 = rect
+                            if img.ndim == 2:
+                                crop = img[y1:y2, x1:x2]
+                            elif img.ndim == 3:
+                                crop = (img[:, y1:y2, x1:x2] if img.shape[0] in (1, 3) else img[y1:y2, x1:x2, :])
+                            else:
+                                crop = img
+
+                            out_crop = out.replace(".fit", "_autocrop.fit").replace(".fits", "_autocrop.fits")
+                            fits.PrimaryHDU(data=crop.astype(np.float32, copy=False), header=hdr).writeto(out_crop, overwrite=True)
+                            log(f"✂️ (MF) Saved auto-cropped copy → {out_crop}")
+                        except Exception as e:
+                            log(f"⚠️ (MF) Auto-crop of output failed: {e}")
+                else:
+                    self._mf_failures.append((group_key, message))
+                    log(f"❌ MFDeconv failed for '{group_key}': {message}")
+
+                if getattr(self, "_mf_pd", None):
+                    self._mf_groups_done = min(self._mf_groups_done + 1, self._mf_total_groups)
+                    self._mf_pd.setValue(self._mf_groups_done * 1000)
+
+
+            self._mf_worker.finished.connect(_job_finished, Qt.ConnectionType.QueuedConnection)
+            self._mf_thread.started.connect(self._mf_worker.run, Qt.ConnectionType.QueuedConnection)
+            self._mf_worker.finished.connect(self._mf_thread.quit, Qt.ConnectionType.QueuedConnection)
+            self._mf_thread.finished.connect(self._mf_worker.deleteLater, Qt.ConnectionType.QueuedConnection)
+            self._mf_thread.finished.connect(self._mf_thread.deleteLater, Qt.ConnectionType.QueuedConnection)
+
+            def _next_after_thread():
+                try:
+                    self._mf_thread.finished.disconnect(_next_after_thread)
+                except Exception:
+                    pass
+                QTimer.singleShot(0, _start_next_mf_job)
+
+            self._mf_thread.finished.connect(_next_after_thread, Qt.ConnectionType.QueuedConnection)
+
+            self._mf_thread.start()
+            if getattr(self, "_mf_pd", None):
+                self._mf_pd.setLabelText(f"Deconvolving '{group_key}' ({len(frames)} frames)…")
+
+        QTimer.singleShot(0, _start_next_mf_job)
+
+        # Returning a dict keeps AfterAlignWorker happy.
+        return {
+            "summary_lines": [
+                f"MFDeconv launched for {len(mf_groups)} group(s)."
+            ]
+        }
 
     def _on_after_align_finished(self, success: bool, message: str):
         # Stop thread/progress UI first (whatever you already do)
@@ -18009,8 +18764,8 @@ class StackingSuiteDialog(QDialog):
             self._mf_pd.setRange(0, total_groups * 1000)
             self._mf_pd.setValue(min(val, total_groups * 1000))
 
-    @pyqtSlot(bool, str)
-    def _on_post_pipeline_finished(self, ok: bool, message: str):
+    @pyqtSlot(bool, str, object)
+    def _on_post_pipeline_finished(self, ok: bool, message: str, payload):
         # ---- close progress dialog ----
         try:
             if getattr(self, "post_progress", None) is not None:
@@ -18039,15 +18794,47 @@ class StackingSuiteDialog(QDialog):
         except Exception:
             pass
 
-        # ---- update status (keep this behavior) ----
+        # ---- update status ----
         try:
-            # message already includes "Post-alignment complete..." text
             self.update_status(self.tr(message))
         except Exception:
             pass
 
-        # ---- popup summary ----
-        # (Do this after progress dialog is gone so it doesn't hide behind it)
+        # ---- MF launch request from GUI thread ----
+        if ok and isinstance(payload, dict) and payload.get("action") == "launch_mf":
+            try:
+                grouped_files = payload["grouped_files"]
+                transforms_dict = payload["transforms_dict"]
+                prepass = payload["prepass"]
+
+                summary_lines = payload.get("summary_lines", []) or []
+                if summary_lines:
+                    try:
+                        self.update_status("\n".join(summary_lines))
+                    except Exception:
+                        pass
+
+                # IMPORTANT: no popup here; continue automatically
+                self.update_status(self.tr("Post-alignment complete. Launching MFDeconv from prepass..."))
+
+                # IMPORTANT: this is now on the GUI thread
+                self.launch_mfdeconv_from_prepass(
+                    grouped_files=grouped_files,
+                    transforms_dict=transforms_dict,
+                    prepass=prepass,
+                    status_cb=self.update_status,
+                )
+            except Exception as e:
+                QMessageBox.critical(
+                    self,
+                    self.tr("MFDeconv Launch Failed"),
+                    self.tr("Post-alignment completed, but MFDeconv failed to launch:\n{0}").format(e)
+                )
+                self._cfa_for_this_run = None
+                QApplication.processEvents()
+            return
+
+        # ---- normal popup summary ----
         if ok:
             QMessageBox.information(self, self.tr("Post-Alignment Complete"), message)
         else:
@@ -19565,7 +20352,7 @@ class StackingSuiteDialog(QDialog):
         self.post_thread.started.connect(self.post_worker.run)
         self.post_thread.start()
 
-        self.post_progress = QProgressDialog("Stacking & drizzle (if enabled)…", None, 0, 0, self)
+        self.post_progress = QProgressDialog("Stacking & drizzle/mfdeconv (if enabled)…", None, 0, 0, self)
         self.post_progress.setWindowModality(Qt.WindowModality.WindowModal)
         self.post_progress.setCancelButton(None)
         self.post_progress.setMinimumDuration(0)
@@ -19585,231 +20372,38 @@ class StackingSuiteDialog(QDialog):
             return None
         return pd
 
-
-
     def _run_mfdeconv_then_continue(self, aligned_light_files: dict[str, list[str]]):
-        """Queue MFDeconv per group if enabled, then continue into AfterAlignWorker for all groups."""
-        mf_enabled = self.settings.value("stacking/mfdeconv/enabled", False, type=bool)
-        if not mf_enabled:
-            self._start_after_align_worker(aligned_light_files)
-            return
+        """
+        Unified post-registration / already-registered pipeline entry.
 
-        # Build list of non-empty groups
-        mf_groups = [(g, lst) for g, lst in aligned_light_files.items() if lst]
-        if not mf_groups:
-            self.update_status(self.tr("⚠️ No aligned frames available for MF deconvolution."))
-            self._start_after_align_worker(aligned_light_files)
-            return
+        Old behavior:
+        MFDeconv ran first, then normal integration/drizzle later.
 
-        # Progress UI for the entire MF phase
-        self._mf_total_groups = len(mf_groups)
-        self._mf_groups_done = 0
-        self._mf_pd = QProgressDialog("Multi-frame deconvolving…", "Cancel", 0, self._mf_total_groups * 1000, self)
-        self._mf_pd.setValue(0)
-        # self._mf_pd.setWindowModality(Qt.WindowModality.ApplicationModal)
-        self._mf_pd.setMinimumDuration(0)
-        self._mf_pd.setWindowTitle("MF Deconvolution")
-        self._mf_pd.setRange(0, self._mf_total_groups * 1000)
-        self._mf_pd.setValue(0)
-        self._mf_pd.show()
+        New behavior:
+        Always go through process_post_alignment(), which performs:
+            1) normal integration prepass
+            2) rejection map generation
+            3) MFDeconv from prepass (if enabled)
+            OR finalize normal/drizzle from prepass
 
-        self._mf_queue = list(mf_groups)
-        self._mf_results = {}
-        self._mf_cancelled = False
-        self._mf_thread = None
-        self._mf_worker = None
+        This keeps the registered-image path consistent with the normal
+        registration workflow and ensures MFDeconv receives rejection maps.
+        """
+        if getattr(self, "_registration_busy", False) is False:
+            self._set_registration_busy(True)
 
-        def _cancel_all():
-            self._mf_cancelled = True
-        self._mf_pd.canceled.connect(_cancel_all, Qt.ConnectionType.QueuedConnection)
+        try:
+            # Clear any stale one-shot suppress flag from the legacy path
+            self._suppress_normal_integration_once = False
+        except Exception:
+            pass
 
-        def _start_next():
-            # End of queue or canceled → finish gracefully
-            if self._mf_cancelled or not self._mf_queue:
-                if getattr(self, "_mf_pd", None):
-                    pd = self._pd_alive()
-                    if pd:
-                        pd.reset()
-                        pd.deleteLater()
-                    self._mf_pd = None
-                try:
-                    if self._mf_thread:
-                        self._mf_thread.quit()
-                        self._mf_thread.wait()
-                except Exception:
-                    pass
-                self._mf_thread = None
-                self._mf_worker = None
-
-                # Continue the normal pipeline for ALL groups
-                self._suppress_normal_integration_once = True
-                self.update_status(self.tr("✅ MFDeconv complete for all groups. Skipping normal integration."))
-                self._set_registration_busy(False)
-                return
-
-            group_key, frames = self._mf_queue.pop(0)
-            out_dir = self._master_light_dir()
-            os.makedirs(out_dir, exist_ok=True)
-
-            # Settings snapshot
-            iters = self.settings.value("stacking/mfdeconv/iters", 20, type=int)
-            min_iters = self.settings.value("stacking/mfdeconv/min_iters", 3, type=int)
-            kappa = self.settings.value("stacking/mfdeconv/kappa", 2.0, type=float)
-            mode = self.mf_color_combo.currentText()
-            Huber = self.settings.value("stacking/mfdeconv/Huber_delta", 0.0, type=float)
-            save_intermediate = self.mf_save_intermediate_cb.isChecked()
-            seed_mode_cfg = str(self.settings.value("stacking/mfdeconv/seed_mode", "robust"))
-            use_star_masks = self.mf_use_star_mask_cb.isChecked()
-            use_variance_maps = self.mf_use_noise_map_cb.isChecked()
-            rho = self.mf_rho_combo.currentText()
-
-            star_mask_cfg = {
-                "thresh_sigma":  self.settings.value("stacking/mfdeconv/star_mask/thresh_sigma",  _SM_DEF_THRESH, type=float),
-                "grow_px":       self.settings.value("stacking/mfdeconv/star_mask/grow_px",       _SM_DEF_GROW, type=int),
-                "soft_sigma":    self.settings.value("stacking/mfdeconv/star_mask/soft_sigma",    _SM_DEF_SOFT, type=float),
-                "max_radius_px": self.settings.value("stacking/mfdeconv/star_mask/max_radius_px", _SM_DEF_RMAX, type=int),
-                "max_objs":      self.settings.value("stacking/mfdeconv/star_mask/max_objs",      _SM_DEF_MAXOBJS, type=int),
-                "keep_floor":    self.settings.value("stacking/mfdeconv/star_mask/keep_floor",    _SM_DEF_KEEPF, type=float),
-                "ellipse_scale": self.settings.value("stacking/mfdeconv/star_mask/ellipse_scale", _SM_DEF_ES, type=float),
-            }
-            varmap_cfg = {
-                "sample_stride": self.settings.value("stacking/mfdeconv/varmap/sample_stride", _VM_DEF_STRIDE, type=int),
-                "smooth_sigma":  self.settings.value("stacking/mfdeconv/varmap/smooth_sigma", 1.0, type=float),
-                "floor":         self.settings.value("stacking/mfdeconv/varmap/floor",        1e-8, type=float),
-            }
-
-            sr_enabled_ui = self.mf_sr_cb.isChecked()
-            sr_factor_ui = getattr(self, "mf_sr_factor_spin", None)
-            sr_factor_val = sr_factor_ui.value() if sr_factor_ui is not None else self.settings.value("stacking/mfdeconv/sr_factor", 2, type=int)
-            super_res_factor = int(sr_factor_val) if sr_enabled_ui else 1
-
-            # Unique, safe filename
-            safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", str(group_key)) or "Group"
-            out_path = os.path.join(out_dir, f"MasterLight_{safe_name}_{len(frames)}f_MFDeconv_{mode}_{iters}it_k{int(round(kappa*100))}.fit")
-
-            # Thread + worker
-            self._mf_thread = QThread(self)
-
-            def _pick_mf_ref_from_frames(frames: list[str]) -> str | None:
-                """Pick a reference path for MFDeconv masks from the aligned frames list."""
-                from os import path
-                if not frames:
-                    return None
-
-                # Prefer the weighted-best frame if weights exist
-                w = getattr(self, "frame_weights", None) or {}
-                best = None
-                bestw = -1.0
-                for p in frames:
-                    pn = path.normpath(p)
-                    if not path.exists(pn):
-                        continue
-                    ww = float(w.get(pn, w.get(p, 0.0)) or 0.0)
-                    if ww > bestw:
-                        bestw, best = ww, pn
-
-                # Otherwise fall back to first existing frame
-                if best:
-                    return best
-                for p in frames:
-                    pn = path.normpath(p)
-                    if path.exists(pn):
-                        return pn
-                return None
-
-            star_mask_ref = _pick_mf_ref_from_frames(frames) if use_star_masks else None
-            if use_star_masks:
-                self.update_status(self.tr(f"🌟 MFDeconv star-mask reference → {star_mask_ref or '(none)'}"))
-
-            # ── choose engine plainly (Normal / cuDNN-free / High Octane) ─────────────
-            # Expect a setting saved by your radio buttons: "normal" | "cudnn" | "sport"
-            engine = str(self.settings.value("stacking/mfdeconv/engine", "normal")).lower()
-
-            try:
-                if engine == "cudnn":
-                    from setiastro.saspro.mfdeconvcudnn import MultiFrameDeconvWorkercuDNN as MFCls
-                    eng_name = "Normal (cuDNN-free)"
-                elif engine == "sport":  # High Octane let 'er rip
-                    from setiastro.saspro.mfdeconvsport import MultiFrameDeconvWorkerSport as MFCls
-                    eng_name = "High Octane"
-                else:
-                    from setiastro.saspro.mfdeconv import MultiFrameDeconvWorker as MFCls
-                    eng_name = "Normal"
-            except Exception as e:
-                # if an import fails, fall back to the safe Normal path
-                self.update_status(self.tr(f"⚠️ MFDeconv engine import failed ({e}); falling back to Normal."))
-                from setiastro.saspro.mfdeconv import MultiFrameDeconvWorker as MFCls
-                eng_name = "Normal (fallback)"
-
-            self.update_status(self.tr(f"⚙️ MFDeconv engine: {eng_name}"))
-
-            # ── build worker exactly the same in all modes ────────────────────────────
-            self._mf_worker = MFCls(
-                parent=None,
-                aligned_paths=frames,
-                output_path=out_path,
-                iters=iters,
-                kappa=kappa,
-                color_mode=mode,
-                huber_delta=Huber,
-                min_iters=min_iters,
-                use_star_masks=use_star_masks,
-                use_variance_maps=use_variance_maps,
-                rho=rho,
-                star_mask_cfg=star_mask_cfg,
-                varmap_cfg=varmap_cfg,
-                save_intermediate=save_intermediate,
-                super_res_factor=super_res_factor,
-                star_mask_ref_path=star_mask_ref,
-                seed_mode=seed_mode_cfg,
-            )
-
-            # Wiring
-            self._mf_worker.moveToThread(self._mf_thread)
-            self._mf_worker.progress.connect(self._on_mf_progress, Qt.ConnectionType.QueuedConnection)
-            self._mf_thread.started.connect(self._mf_worker.run, Qt.ConnectionType.QueuedConnection)
-            self._mf_worker.finished.connect(self._mf_thread.quit, Qt.ConnectionType.QueuedConnection)
-            self._mf_thread.finished.connect(self._mf_worker.deleteLater)    # free worker on thread end
-            self._mf_thread.finished.connect(self._mf_thread.deleteLater)    # free thread object
-
-            def _done(ok: bool, message: str, out: str):
-                pd = self._pd_alive()
-                if pd:
-                    try:
-                        # if you keep the 0..groups*1000 range, snap to segment boundary:
-                        val = min(pd.value() + 1000, pd.maximum())
-                        pd.setValue(val)
-                        pd.setLabelText(f"{'✅' if ok else '❌'} {group_key}: {message}")
-                    except Exception:
-                        pass
-
-                if ok and out:
-                    self._mf_results[group_key] = out
-                else:
-                    self.update_status(self.tr(f"❌ MFDeconv failed for '{group_key}': {message}"))
-
-                try:
-                    self._mf_thread.quit()
-                    self._mf_thread.wait()
-                except Exception:
-                    pass
-                self._mf_thread = None
-                self._mf_worker = None
-
-                QTimer.singleShot(0, _start_next)
-
-            self._mf_worker.finished.connect(_done, Qt.ConnectionType.QueuedConnection)
-
-            self._mf_thread.start()
-
-            if getattr(self, "_mf_pd", None):
-                pd = self._pd_alive()
-                if pd:
-                    pd.setLabelText(f"Deconvolving '{group_key}' ({len(frames)} frames)…")
-
-        QTimer.singleShot(0, _start_next)
-
-
+        # We already have "aligned" groups here. Hand them straight into the same
+        # after-align worker pipeline used by the regular registration flow.
+        self.update_status(
+            self.tr("🔄 Starting unified post-alignment pipeline (prepass → rejection maps → MFDeconv/Finalize)…")
+        )
+        self._start_after_align_worker(aligned_light_files)
 
     def integrate_registered_images(self):
         """
@@ -20821,17 +21415,24 @@ class StackingSuiteDialog(QDialog):
         frame_weights,
         status_cb=None,
         *,
-        algo_override: str | None = None
+        algo_override: str | None = None,
+        collect_per_file_rejections: bool = False,
     ):
         import errno
-        collect_per_file = bool(self._get_drizzle_enabled())
+        import os
+        import math
+        import time
+        import contextlib
+        import numpy as np
+        from astropy.io import fits
+
+        collect_per_file = bool(collect_per_file_rejections)
         per_file_rejections = {f: [] for f in file_list} if collect_per_file else None
         log = status_cb or (lambda *_: None)
         log(f"Starting integration for group '{group_key}' with {len(file_list)} files.")
         if not file_list:
             return None, {}, None
 
-        # --- reference frame (unchanged) ---
         ref_file = file_list[0]
         ref_data, ref_header, _, _ = load_image(ref_file)
         if ref_data is None:
@@ -20850,18 +21451,46 @@ class StackingSuiteDialog(QDialog):
 
         log(f"📊 Stacking group '{group_key}' with {algo}{' [GPU]' if use_gpu else ''}")
 
-        # --- keep all FITSes open (memmap) once for the whole group (fast path) ---
-        # If the OS complains about too many open files, we fall back to a lazy path
-        # that opens/closes each file per tile.
+        # ---------- satellite sidecar helpers ----------
+        def _satmask_sidecar_path(image_path: str) -> str:
+            root, _ = os.path.splitext(image_path)
+            return root + "_satmask.npy"
+
+        def _load_full_satmask(image_path: str):
+            p = _satmask_sidecar_path(image_path)
+            if not os.path.exists(p):
+                return None
+            try:
+                m = np.load(p, allow_pickle=False)
+                m = np.asarray(m, dtype=bool)
+                if m.ndim != 2:
+                    log(f"⚠️ Ignoring malformed satellite mask for {os.path.basename(image_path)}: shape={m.shape}")
+                    return None
+                if m.shape != (height, width):
+                    log(
+                        f"⚠️ Ignoring satellite mask with wrong shape for {os.path.basename(image_path)}: "
+                        f"{m.shape} != {(height, width)}"
+                    )
+                    return None
+                return m
+            except Exception as e:
+                log(f"⚠️ Could not load satellite mask for {os.path.basename(image_path)}: {e}")
+                return None
+
+        satmask_full_list = [_load_full_satmask(p) for p in file_list]
+        satmask_present = sum(m is not None for m in satmask_full_list)
+        if satmask_present:
+            log(f"🛰️ Found aligned satellite masks for {satmask_present}/{N} frame(s).")
+
+        # --- keep all FITSes open (memmap) once for the whole group ---
         use_memmap_sources = True
         sources: list[_MMImage] = []
         source_paths = list(file_list)
 
         try:
             for p in file_list:
-                sources.append(_MMImage(p))   # may use memmap internally
+                sources.append(_MMImage(p))
         except OSError as e:
-            # Too many open files / file table overflow → switch to lazy mode
             if e.errno in (errno.EMFILE, errno.ENFILE):
                 log(f"⚠️ Too many open files ({e}); falling back to lazy per-tile reads.")
                 for s in sources:
@@ -20889,11 +21518,8 @@ class StackingSuiteDialog(QDialog):
             return None, {}, None
 
         DTYPE = self._dtype()
-        # Use smart_zeros for large arrays - will use memmap if > 500MB
         integrated_image, integrated_memmap_path = smart_zeros((height, width, channels), dtype=DTYPE)
-        per_file_rejections = {f: [] for f in file_list}
 
-        # --- chunk size ---
         pref_h = self.chunk_height
         pref_w = self.chunk_width
         try:
@@ -20905,50 +21531,51 @@ class StackingSuiteDialog(QDialog):
             log(f"⚠️ {e}")
             return None, {}, None
 
-        # --- reusable C-order tile buffers (avoid copies before GPU) ---
         def _mk_buf():
-            buf = np.empty((N, chunk_h, chunk_w, channels), dtype=np.float32, order='C')
+            return np.empty((N, chunk_h, chunk_w, channels), dtype=np.float32, order='C')
 
-            return buf
+        def _mk_mask_buf():
+            return np.zeros((N, chunk_h, chunk_w), dtype=np.bool_, order='C')
 
         buf0 = _mk_buf()
         buf1 = _mk_buf()
+        maskbuf0 = _mk_mask_buf()
+        maskbuf1 = _mk_mask_buf()
 
-        # --- weights once per group ---
         weights_array = np.array([frame_weights.get(p, 1.0) for p in file_list], dtype=np.float32)
 
-        n_rows  = math.ceil(height / chunk_h)
-        n_cols  = math.ceil(width  / chunk_w)
+        n_rows = math.ceil(height / chunk_h)
+        n_cols = math.ceil(width / chunk_w)
         total_tiles = n_rows * n_cols
 
-        # --- group-level rejection maps (RAM-light) ---
-        rej_any   = np.zeros((height, width), dtype=np.bool_)
+        rej_any = np.zeros((height, width), dtype=np.bool_)
         rej_count = np.zeros((height, width), dtype=np.uint16)
 
-        # --------- helper: read a tile into a provided buffer (blocking) ----------
-        def _read_tile_into(buf, y0, y1, x0, x1):
+        def _read_tile_into(buf, maskbuf, y0, y1, x0, x1):
             """
-            Fill buf[:N, :th, :tw, :channels] with the (y0:y1, x0:x1) tile
-            from all frames. In fast mode, reuse open _MMImage memmaps.
-            In fallback mode, open/close a fresh _MMImage per file.
+            Fill image tile buffer and matching forced-reject tile buffer.
+            maskbuf is (N, th, tw) boolean, one 2D mask per frame.
             """
             th = y1 - y0
             tw = x1 - x0
             ts = buf[:N, :th, :tw, :channels]
+            ms = maskbuf[:N, :th, :tw]
+            ms.fill(False)
 
             if use_memmap_sources:
-                # Fast path: re-use open memmaps / XISF mappings
                 for i, src in enumerate(sources):
-                    sub = src.read_tile(y0, y1, x0, x1)  # float32, (th,tw) or (th,tw,3)
+                    sub = src.read_tile(y0, y1, x0, x1)
                     if sub.ndim == 2:
                         if channels == 3:
                             sub = sub[:, :, None].repeat(3, axis=2)
                         else:
                             sub = sub[:, :, None]
                     ts[i, :, :, :] = sub
+
+                    mfull = satmask_full_list[i]
+                    if mfull is not None:
+                        ms[i, :, :] = mfull[y0:y1, x0:x1]
             else:
-                # Fallback path: open/close per file (no persistent FDs).
-                # Still uses _MMImage so scaling/normalization stays consistent.
                 for i, path in enumerate(source_paths):
                     src = _MMImage(path)
                     try:
@@ -20965,13 +21592,15 @@ class StackingSuiteDialog(QDialog):
                             sub = sub[:, :, None]
                     ts[i, :, :, :] = sub
 
-            return th, tw  # actual extents for edge tiles
+                    mfull = satmask_full_list[i]
+                    if mfull is not None:
+                        ms[i, :, :] = mfull[y0:y1, x0:x1]
 
-        # Prefetcher (single background worker is enough; IO is the bottleneck)
+            return th, tw
+
         from concurrent.futures import ThreadPoolExecutor
         tp = ThreadPoolExecutor(max_workers=1)
 
-        # Precompute tile grid
         tiles = []
         for y0 in range(0, height, chunk_h):
             y1 = min(y0 + chunk_h, height)
@@ -20979,25 +21608,23 @@ class StackingSuiteDialog(QDialog):
                 x1 = min(x0 + chunk_w, width)
                 tiles.append((y0, y1, x0, x1))
 
-        # --- CPU reducer helper so we can reuse it everywhere ---
-        def _cpu_reduce_tile(ts, th, tw):
+        def _cpu_reduce_tile(ts, forced_reject_2d, th, tw):
             """
             CPU rejection/integration for a single tile.
-            Returns (tile_result, tile_rej_map).
-
-            Zero-valued pixels are ignored per channel by masking them to NaN.
-            tile_rej_map is returned as (N, th, tw), collapsing channel rejects.
+            forced_reject_2d: (N, th, tw) boolean sidecar mask for this tile
+            Returns (tile_result, tile_rej_map)
             """
             ts = np.asarray(ts, dtype=np.float32)
+            forced_reject_2d = np.asarray(forced_reject_2d, dtype=bool)
 
-            # Valid per-channel samples: finite and non-zero
-            valid = np.isfinite(ts) & (ts != 0.0)
+            # Expand forced reject mask across channels
+            forced_reject = forced_reject_2d[..., None]  # (N, th, tw, 1)
 
-            # Mask invalid/zero samples to NaN for nan-aware reducers
+            valid = np.isfinite(ts) & (ts != 0.0) & (~forced_reject)
+
             ts_masked = np.where(valid, ts, np.nan)
 
-            # Base rejection map collapsed across channels -> (N, th, tw)
-            base_rej = np.any(~valid, axis=-1)
+            base_rej = np.any(~valid, axis=-1)  # (N, th, tw)
 
             if algo in ("Comet Median", "Simple Median (No Rejection)"):
                 tile_result = np.nanmedian(ts_masked, axis=0)
@@ -21006,36 +21633,28 @@ class StackingSuiteDialog(QDialog):
             elif algo == "Comet High-Clip Percentile":
                 k = self.settings.value("stacking/comet_hclip_k", 1.30, type=float)
                 p = self.settings.value("stacking/comet_hclip_p", 25.0, type=float)
-
-                # Assumes _high_clip_percentile is NaN-aware
                 tile_result = _high_clip_percentile(ts_masked, k=float(k), p=float(p))
                 tile_rej_map = base_rej
 
             elif algo == "Comet Lower-Trim (30%)":
-                # Assumes _lower_trimmed_mean is NaN-aware
                 tile_result = _lower_trimmed_mean(ts_masked, trim_hi_frac=0.30)
                 tile_rej_map = base_rej
 
             elif algo == "Comet Percentile (40th)":
-                # If _percentile40 is not NaN-aware, replace this with np.nanpercentile(..., 40.0, axis=0)
                 tile_result = np.nanpercentile(ts_masked, 40.0, axis=0)
                 tile_rej_map = base_rej
 
             elif algo == "Simple Average (No Rejection)":
                 w = weights_array[:, None, None, None].astype(np.float32)
-
                 w_eff = np.where(valid, w, 0.0)
                 ts_eff = np.where(valid, ts, 0.0)
-
                 num = np.sum(ts_eff * w_eff, axis=0)
                 den = np.sum(w_eff, axis=0)
-
                 fallback = np.nanmedian(ts_masked, axis=0)
                 tile_result = np.where(den > 0, num / np.maximum(den, 1e-20), fallback)
                 tile_rej_map = base_rej
 
             elif algo == "Weighted Windsorized Sigma Clipping":
-                # Assumes helper is NaN-aware
                 tile_result, tile_rej_map = windsorized_sigma_clip_weighted(
                     ts_masked, weights_array, lower=self.sigma_low, upper=self.sigma_high
                 )
@@ -21045,7 +21664,6 @@ class StackingSuiteDialog(QDialog):
                 tile_rej_map |= base_rej
 
             elif algo == "Kappa-Sigma Clipping":
-                # Assumes helper is NaN-aware
                 tile_result, tile_rej_map = kappa_sigma_clip_weighted(
                     ts_masked, weights_array, kappa=self.kappa, iterations=self.iterations
                 )
@@ -21055,7 +21673,6 @@ class StackingSuiteDialog(QDialog):
                 tile_rej_map |= base_rej
 
             elif algo == "Trimmed Mean":
-                # Assumes helper is NaN-aware
                 tile_result, tile_rej_map = trimmed_mean_weighted(
                     ts_masked, weights_array, trim_fraction=self.trim_fraction
                 )
@@ -21065,7 +21682,6 @@ class StackingSuiteDialog(QDialog):
                 tile_rej_map |= base_rej
 
             elif algo == "Extreme Studentized Deviate (ESD)":
-                # Assumes helper is NaN-aware
                 tile_result, tile_rej_map = esd_clip_weighted(
                     ts_masked, weights_array, threshold=self.esd_threshold
                 )
@@ -21075,7 +21691,6 @@ class StackingSuiteDialog(QDialog):
                 tile_rej_map |= base_rej
 
             elif algo == "Biweight Estimator":
-                # Assumes helper is NaN-aware
                 tile_result, tile_rej_map = biweight_location_weighted(
                     ts_masked, weights_array, tuning_constant=self.biweight_constant
                 )
@@ -21085,7 +21700,6 @@ class StackingSuiteDialog(QDialog):
                 tile_rej_map |= base_rej
 
             elif algo == "Modified Z-Score Clipping":
-                # Assumes helper is NaN-aware
                 tile_result, tile_rej_map = modified_zscore_clip_weighted(
                     ts_masked, weights_array, threshold=self.modz_threshold
                 )
@@ -21101,7 +21715,6 @@ class StackingSuiteDialog(QDialog):
                 tile_rej_map = base_rej
 
             else:
-                # sensible default if algo name somehow out-of-sync
                 tile_result, tile_rej_map = windsorized_sigma_clip_weighted(
                     ts_masked, weights_array, lower=self.sigma_low, upper=self.sigma_high
                 )
@@ -21112,46 +21725,42 @@ class StackingSuiteDialog(QDialog):
 
             tile_result = np.asarray(tile_result, dtype=np.float32)
             tile_rej_map = np.asarray(tile_rej_map, dtype=bool)
-
             return tile_result, tile_rej_map
-        
+
         # Prime first read
-        tile_idx = 0
         y0, y1, x0, x1 = tiles[0]
-        fut = tp.submit(_read_tile_into, buf0, y0, y1, x0, x1)
+        fut = tp.submit(_read_tile_into, buf0, maskbuf0, y0, y1, x0, x1)
         use_buf0 = True
 
-        # Torch inference guard (if available)
         _ctx = _safe_torch_inference_ctx() if use_gpu else contextlib.nullcontext
         with _ctx():
             for tile_idx, (y0, y1, x0, x1) in enumerate(tiles, start=1):
                 t0 = time.perf_counter()
 
-                # Wait for current tile to be ready
                 th, tw = fut.result()
-                ts = (buf0 if use_buf0 else buf1)[:N, :th, :tw, :channels]
+                if use_buf0:
+                    ts = buf0[:N, :th, :tw, :channels]
+                    forced_mask_tile = maskbuf0[:N, :th, :tw]
+                else:
+                    ts = buf1[:N, :th, :tw, :channels]
+                    forced_mask_tile = maskbuf1[:N, :th, :tw]
 
-                # Optional debug – feel free to comment out later
-                log(f"[Stacking] tile {tile_idx}/{total_tiles} ts.shape={ts.shape}, N={N}, C={channels}")
-
-                # --- defensive guard for degenerate tiles ---
                 if ts.size == 0 or ts.shape[1] == 0 or ts.shape[2] == 0 or ts.shape[3] == 0:
                     log(
                         f"⚠️ Degenerate tile shape {ts.shape} at tile {tile_idx} "
                         f"[y:{y0}:{y1} x:{x0}:{x1}] – using CPU for this tile."
                     )
-                    tile_result, tile_rej_map = _cpu_reduce_tile(ts, th, tw)
+                    tile_result, tile_rej_map = _cpu_reduce_tile(ts, forced_mask_tile, th, tw)
                 else:
-                    # Kick off prefetch for the NEXT tile (if any) into the other buffer
                     if tile_idx < total_tiles:
                         ny0, ny1, nx0, nx1 = tiles[tile_idx]
                         fut = tp.submit(
                             _read_tile_into,
                             (buf1 if use_buf0 else buf0),
+                            (maskbuf1 if use_buf0 else maskbuf0),
                             ny0, ny1, nx0, nx1
                         )
 
-                    # --- rejection/integration for this tile ---
                     log(
                         f"Integrating tile {tile_idx}/{total_tiles} "
                         f"[y:{y0}:{y1} x:{x0}:{x1} size={th}×{tw}] "
@@ -21159,11 +21768,10 @@ class StackingSuiteDialog(QDialog):
                     )
 
                     if use_gpu:
-                        print(f"Using GPU for tile {tile_idx} with algo {algo}")
                         try:
                             tile_result, tile_rej_map = _torch_reduce_tile(
-                                ts,                         # NumPy view, C-contiguous
-                                weights_array,              # (N,)
+                                ts,
+                                weights_array,
                                 algo_name=algo,
                                 kappa=float(self.kappa),
                                 iterations=int(self.iterations),
@@ -21175,8 +21783,8 @@ class StackingSuiteDialog(QDialog):
                                 modz_threshold=float(self.modz_threshold),
                                 comet_hclip_k=float(self.settings.value("stacking/comet_hclip_k", 1.30, type=float)),
                                 comet_hclip_p=float(self.settings.value("stacking/comet_hclip_p", 25.0, type=float)),
+                                forced_reject_mask_np=forced_mask_tile,
                             )
-                            # In case GPU path ever returns tensors instead of NumPy:
                             if hasattr(tile_result, "detach"):
                                 tile_result = tile_result.detach().cpu().numpy()
                             if hasattr(tile_rej_map, "detach"):
@@ -21186,61 +21794,55 @@ class StackingSuiteDialog(QDialog):
                                 f"⚠️ GPU rejection failed on tile {tile_idx}/{total_tiles} "
                                 f"shape={ts.shape}: {e} – falling back to CPU for this and remaining tiles."
                             )
-                            use_gpu = False  # disable GPU for subsequent tiles too
-                            tile_result, tile_rej_map = _cpu_reduce_tile(ts, th, tw)
+                            use_gpu = False
+                            tile_result, tile_rej_map = _cpu_reduce_tile(ts, forced_mask_tile, th, tw)
                     else:
-                        # Normal CPU path
-                        tile_result, tile_rej_map = _cpu_reduce_tile(ts, th, tw)
+                        tile_result, tile_rej_map = _cpu_reduce_tile(ts, forced_mask_tile, th, tw)
 
-                # --- write back integrated tile ---
                 integrated_image[y0:y1, x0:x1, :] = tile_result
 
-                # --- rejection bookkeeping ---
-                trm = tile_rej_map
+                trm = np.asarray(tile_rej_map, dtype=bool)
                 if trm.ndim == 4:
-                    trm = np.any(trm, axis=-1)  # collapse color → (N, th, tw)
+                    trm = np.any(trm, axis=-1)
 
-                rej_any[y0:y1, x0:x1]  |= np.any(trm, axis=0)
+                rej_any[y0:y1, x0:x1] |= np.any(trm, axis=0)
                 rej_count[y0:y1, x0:x1] += trm.sum(axis=0).astype(np.uint16)
 
-                # per-file coords (existing behavior)
                 if collect_per_file:
                     for i, fpath in enumerate(file_list):
                         m = trm[i]
                         if np.any(m):
-                            # store as a tile mask, not coord list
                             per_file_rejections[fpath].append((x0, y0, m.copy()))
 
-                # perf log
                 dt = time.perf_counter() - t0
                 work_px = th * tw * N * channels
                 mpx_s = (work_px / 1e6) / dt if dt > 0 else float("inf")
                 log(f"  ↳ tile {tile_idx} done in {dt:.3f}s  (~{mpx_s:.1f} MPx/s)")
 
-                # flip buffer
                 use_buf0 = not use_buf0
 
-        # close mmapped FITSes and prefetch pool
         tp.shutdown(wait=True)
         if use_memmap_sources:
             for s in sources:
                 s.close()
 
-
         if channels == 1:
             integrated_image = integrated_image[..., 0]
 
-        # stash group-level maps
         if not hasattr(self, "_rej_maps"):
             self._rej_maps = {}
-        rej_frac = (rej_count.astype(np.float32) / float(max(1, N)))  # [0..1]
-        self._rej_maps[group_key] = {"any": rej_any, "frac": rej_frac, "count": rej_count, "n": N}
+        rej_frac = (rej_count.astype(np.float32) / float(max(1, N)))
+        self._rej_maps[group_key] = {
+            "any": rej_any,
+            "frac": rej_frac,
+            "count": rej_count,
+            "n": N
+        }
 
         log(f"Integration complete for group '{group_key}'.")
 
-        # If we used memmap, convert to regular array and cleanup
         if integrated_memmap_path is not None:
-            integrated_image = np.array(integrated_image)  # Copy to regular array
+            integrated_image = np.array(integrated_image)
             try:
                 cleanup_memmap(None, integrated_memmap_path)
             except Exception:
@@ -21249,11 +21851,9 @@ class StackingSuiteDialog(QDialog):
         try:
             _free_torch_memory()
         except Exception:
-            pass  # Ignore torch cleanup errors
+            pass
 
         return integrated_image, per_file_rejections, ref_header
-
-
 
     def _safe_component(self, s: str, *, replacement:str="_", maxlen:int=180) -> str:
         """

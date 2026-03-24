@@ -770,7 +770,7 @@ class ToolbarMixin:
         self.act_undo = QAction(QIcon(undoicon_path), self.tr("Undo"), self)
         self.act_redo = QAction(QIcon(redoicon_path), self.tr("Redo"), self)
         self.act_undo.setShortcut(QKeySequence.StandardKey.Undo)               # Ctrl+Z
-        self.act_redo.setShortcuts([QKeySequence.StandardKey.Redo, "Ctrl+Y"])  # Shift+Ctrl+Z / Ctrl+Y
+        self.act_redo.setShortcuts([QKeySequence.StandardKey.Redo])  # Shift+Ctrl+Z / Ctrl+Y
         self.act_undo.setIconVisibleInMenu(True)
         self.act_redo.setIconVisibleInMenu(True)
         self.act_undo.triggered.connect(self._undo_active)

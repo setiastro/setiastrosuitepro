@@ -1,3 +1,4 @@
+#src/setiastro/saspro/workflows.py
 from __future__ import annotations
 
 import json
@@ -229,6 +230,83 @@ def _find_action_by_command_id(main, command_id: str) -> Optional[QAction]:
 
     return None
 
+def _discover_script_categories(main) -> Dict[str, List[WorkflowActionInfo]]:
+    """
+    Build workflow catalog entries from ScriptManager registry.
+
+    Scripts are discovered recursively by ScriptManager.load_registry()
+    under SASpro/scripts, including nested folders.
+    """
+    categories: Dict[str, List[WorkflowActionInfo]] = {}
+
+    sm = _get_script_manager(main)
+    if sm is None:
+        try:
+            print("[WorkflowAssistant] No ScriptManager found on main window")
+        except Exception:
+            pass
+        return categories
+
+    # Ensure registry exists
+    try:
+        if not getattr(sm, "registry", None):
+            sm.load_registry()
+    except Exception as e:
+        try:
+            print(f"[WorkflowAssistant] ScriptManager load_registry failed: {e}")
+        except Exception:
+            pass
+        return categories
+
+    try:
+        entries = list(getattr(sm, "registry", []) or [])
+    except Exception:
+        entries = []
+
+    try:
+        print(f"[WorkflowAssistant] Found {len(entries)} script registry entries")
+    except Exception:
+        pass
+
+    for entry in entries:
+        try:
+            script_id = str(getattr(entry, "script_id", "") or "").strip()
+            name = str(getattr(entry, "name", "") or "").strip()
+            group = str(getattr(entry, "group", "") or "").strip()
+        except Exception:
+            continue
+
+        if not script_id or not name:
+            continue
+
+        command_id = f"script:{script_id}"
+        category = f"Scripts/{group}" if group else "Scripts"
+
+        act = _find_action_by_command_id(main, command_id)
+
+        if isinstance(act, QAction):
+            icon = act.icon()
+            status_tip = act.statusTip() or act.toolTip() or f"Run script: {name}"
+            bound_action = act
+        else:
+            icon = QIcon()
+            status_tip = f"Run script: {name}"
+            bound_action = QAction(name, main)
+            bound_action.setProperty("command_id", command_id)
+            bound_action.setToolTip(status_tip)
+
+        info = WorkflowActionInfo(
+            command_id=command_id,
+            text=name,
+            status_tip=status_tip,
+            icon=icon,
+            category=category,
+            action=bound_action,
+        )
+
+        categories.setdefault(category, []).append(info)
+
+    return categories
 
 def _discover_toolbar_categories(main) -> Dict[str, List[WorkflowActionInfo]]:
     categories: Dict[str, List[WorkflowActionInfo]] = {}
@@ -360,6 +438,34 @@ def _default_canned_workflows() -> List[WorkflowDefinition]:
         ),
     ]
 
+def _get_script_manager(main):
+    """
+    Best-effort lookup for the ScriptManager instance.
+    The Scripts menu may work even if the attribute name is not exactly
+    'script_manager', so check a few likely locations.
+    """
+    candidates = [
+        getattr(main, "script_manager", None),
+        getattr(main, "scripts", None),
+        getattr(main, "_script_manager", None),
+    ]
+
+    for obj in candidates:
+        if obj is not None and hasattr(obj, "registry") and hasattr(obj, "load_registry"):
+            return obj
+
+    # Last resort: scan attributes for something that looks like ScriptManager
+    try:
+        for name in dir(main):
+            if name.startswith("_"):
+                continue
+            obj = getattr(main, name, None)
+            if obj is not None and hasattr(obj, "registry") and hasattr(obj, "load_registry"):
+                return obj
+    except Exception:
+        pass
+
+    return None
 
 # -----------------------------------------------------------------------------
 # Drag source tree
@@ -702,6 +808,12 @@ class WorkflowDialog(QDialog):
         self.catalog.clear()
 
         categories = _discover_toolbar_categories(self.main)
+
+        # Merge in user scripts discovered recursively from SASpro/scripts
+        script_categories = _discover_script_categories(self.main)
+        for cat_name, items in script_categories.items():
+            categories.setdefault(cat_name, []).extend(items)
+
         preferred_order = [
             "Functions",
             "Cosmic Clarity",
@@ -712,9 +824,19 @@ class WorkflowDialog(QDialog):
             "What's In My...",
             "Bundles",
             "View",
+            "Scripts",
         ]
+
         category_names = list(categories.keys())
-        ordered = [c for c in preferred_order if c in categories] + [c for c in category_names if c not in preferred_order]
+
+        def _sort_key(cat: str):
+            if cat in preferred_order:
+                return (0, preferred_order.index(cat), cat.lower())
+            if cat.startswith("Scripts/"):
+                return (1, 999, cat.lower())
+            return (2, 999, cat.lower())
+
+        ordered = sorted(category_names, key=_sort_key)
 
         for category in ordered:
             parent = QTreeWidgetItem([category])
@@ -722,7 +844,13 @@ class WorkflowDialog(QDialog):
             parent.setFirstColumnSpanned(True)
             self.tool_tree.addTopLevelItem(parent)
 
-            for info in categories[category]:
+            # sort items nicely inside each category
+            items = sorted(
+                categories[category],
+                key=lambda info: (info.text or "").lower()
+            )
+
+            for info in items:
                 self.catalog[info.command_id] = info
                 item = QTreeWidgetItem(parent, [info.text])
                 item.setData(0, Qt.ItemDataRole.UserRole, info.command_id)

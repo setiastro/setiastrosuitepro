@@ -4261,8 +4261,11 @@ class AstroSuiteProMainWindow(
             import traceback
             print("Failed to import setiastro.saspro.cosmicclarity:", e)
             traceback.print_exc()
-            QMessageBox.critical(self, "Cosmic Clarity",
-                                f"Failed to import Cosmic Clarity module:\n{e}")
+            QMessageBox.critical(
+                self,
+                "Cosmic Clarity",
+                f"Failed to import Cosmic Clarity module:\n{e}"
+            )
             return
 
         sw = self.mdi.activeSubWindow()
@@ -4276,7 +4279,7 @@ class AstroSuiteProMainWindow(
             QMessageBox.information(self, "Cosmic Clarity", "Active view has no image.")
             return
 
-        # 🔸 Clear any stale headless flag when user explicitly opens the UI
+        # Clear any stale headless flag when user explicitly opens the UI
         try:
             s = QSettings()
             s.remove("cc/headless_in_progress")
@@ -4284,23 +4287,56 @@ class AstroSuiteProMainWindow(
             pass
 
         try:
-            print("Creating CosmicClarityDialogPro (interactive)...")
+            print("Creating CosmicClarityDialogPro (interactive, non-blocking)...")
             dlg = CosmicClarityDialogPro(
                 self,
                 doc,
                 icon=QIcon(cosmic_path),
                 headless=False,
-                bypass_guard=True,          # <-- key change
+                bypass_guard=True,
             )
-            print("Dialog created, calling exec()...")
-            result = dlg.exec()
-            print(f"Cosmic Clarity dialog returned code {result}")
+
+            # Keep a strong reference so the dialog is not garbage collected.
+            if not hasattr(self, "_cosmic_clarity_dialogs"):
+                self._cosmic_clarity_dialogs = []
+            self._cosmic_clarity_dialogs.append(dlg)
+
+            def _cleanup_dialog(*_):
+                try:
+                    if hasattr(self, "_cosmic_clarity_dialogs") and dlg in self._cosmic_clarity_dialogs:
+                        self._cosmic_clarity_dialogs.remove(dlg)
+                except Exception:
+                    pass
+                try:
+                    dlg.deleteLater()
+                except Exception:
+                    pass
+
+            # Clean up whether the dialog is accepted, rejected, or just closed.
+            try:
+                dlg.finished.connect(_cleanup_dialog)
+            except Exception:
+                pass
+            try:
+                dlg.destroyed.connect(lambda *_: _cleanup_dialog())
+            except Exception:
+                pass
+
+            dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+            dlg.show()
+            dlg.raise_()
+            dlg.activateWindow()
+
+            print("Cosmic Clarity dialog shown non-blocking.")
         except Exception as e:
             import traceback
             print("Failed to open Cosmic Clarity UI:", e)
             traceback.print_exc()
-            QMessageBox.critical(self, "Cosmic Clarity",
-                                f"Failed to open Cosmic Clarity UI:\n{e}")
+            QMessageBox.critical(
+                self,
+                "Cosmic Clarity",
+                f"Failed to open Cosmic Clarity UI:\n{e}"
+            )
 
     def _open_cosmic_clarity_satellite(self):
         from setiastro.saspro.cosmicclarity import CosmicClaritySatelliteDialogPro
