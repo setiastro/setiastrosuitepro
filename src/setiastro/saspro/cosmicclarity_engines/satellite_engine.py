@@ -448,6 +448,65 @@ def get_satellite_models(resources: Any = None, use_gpu: bool = True, status_cb=
     _SAT_CACHE[key] = out
     return out
 
+def _safe_reflect_mode_for_hw(h: int, w: int) -> str:
+    # np.pad(..., mode="reflect") requires dimensions > 1
+    if h <= 1 or w <= 1:
+        return "edge"
+    return "reflect"
+
+
+def _reflect_pad_full_rgb(image_rgb: np.ndarray, pad: int = 512) -> tuple[np.ndarray, tuple[int, int, int, int]]:
+    """
+    Reflect-pad an HxWx3 image on all sides.
+    Returns:
+        padded_rgb, (top, bottom, left, right)
+    """
+    x = np.asarray(image_rgb, dtype=np.float32)
+    if pad <= 0:
+        return x, (0, 0, 0, 0)
+
+    h, w = x.shape[:2]
+    mode = _safe_reflect_mode_for_hw(h, w)
+
+    xp = np.pad(
+        x,
+        ((pad, pad), (pad, pad), (0, 0)),
+        mode=mode,
+    )
+    return xp.astype(np.float32, copy=False), (pad, pad, pad, pad)
+
+
+def _crop_full_rgb_pad(image_rgb: np.ndarray, pads: tuple[int, int, int, int]) -> np.ndarray:
+    """
+    Crop back an HxWx3 image using (top, bottom, left, right).
+    """
+    top, bottom, left, right = pads
+    if top == bottom == left == right == 0:
+        return np.asarray(image_rgb, dtype=np.float32, copy=False)
+
+    h, w = image_rgb.shape[:2]
+    y0 = top
+    y1 = h - bottom if bottom > 0 else h
+    x0 = left
+    x1 = w - right if right > 0 else w
+    return np.asarray(image_rgb[y0:y1, x0:x1, :], dtype=np.float32, copy=False)
+
+
+def _crop_full_mask_pad(mask2d: np.ndarray, pads: tuple[int, int, int, int]) -> np.ndarray:
+    """
+    Crop back a 2D trail mask using (top, bottom, left, right).
+    """
+    top, bottom, left, right = pads
+    if top == bottom == left == right == 0:
+        return np.asarray(mask2d, dtype=bool)
+
+    h, w = mask2d.shape[:2]
+    y0 = top
+    y1 = h - bottom if bottom > 0 else h
+    x0 = left
+    x1 = w - right if right > 0 else w
+    return np.asarray(mask2d[y0:y1, x0:x1], dtype=bool)
+
 # ----------------------------
 #   Core processing
 # ----------------------------
@@ -888,12 +947,16 @@ def satellite_remove_image(
     rgb01, was_mono, orig_min, scale = _normalize_for_satellite(image)
     tm = float(np.clip(target_median, 0.01, 0.50))
 
+    # Whole-image reflect padding for better edge behavior, like denoise
+    full_pad = 512
+    rgb01_work, full_pads = _reflect_pad_full_rgb(rgb01, pad=full_pad)
+
     def _should_stretch(x: np.ndarray) -> bool:
         x = np.asarray(x, np.float32)
         return bool(np.median(x - np.min(x)) < 0.05)
 
     if mode.lower() == "luminance":
-        y, cb, cr = _extract_luminance_bt601(rgb01)
+        y, cb, cr = _extract_luminance_bt601(rgb01_work)
 
         if bool(temp_stretch):
             stretch_needed = True
@@ -910,9 +973,13 @@ def satellite_remove_image(
         y3 = np.stack([y_s, y_s, y_s], axis=-1)
 
         out3, detected, trail_mask = _satellite_remove_rgb(
-            y3, models,
-            clip_trail=clip_trail, sensitivity=sensitivity,
-            chunk_size=chunk_size, overlap=overlap, border_size=border_size,
+            y3,
+            models,
+            clip_trail=clip_trail,
+            sensitivity=sensitivity,
+            chunk_size=chunk_size,
+            overlap=overlap,
+            border_size=border_size,
             compatibility_mode=compatibility_mode,
             progress_cb=progress_cb,
         )
@@ -925,23 +992,32 @@ def satellite_remove_image(
         out_y = np.clip(out_y, 0.0, 1.0).astype(np.float32, copy=False)
         out_rgb01 = _merge_luminance_bt601(out_y, cb, cr)
 
+        # Crop padded result back to original image extent
+        out_rgb01 = _crop_full_rgb_pad(out_rgb01, full_pads)
+        trail_mask = _crop_full_mask_pad(trail_mask, full_pads)
+
     else:
+        # FULL-COLOR path must use the padded image too
         if bool(temp_stretch):
             stretch_needed = True
         else:
-            stretch_needed = _should_stretch(rgb01)
+            stretch_needed = _should_stretch(rgb01_work)
 
         if stretch_needed:
-            rgb_s, stretch_min, stretch_meds = stretch_image(rgb01, target_median=tm)
+            rgb_s, stretch_min, stretch_meds = stretch_image(rgb01_work, target_median=tm)
         else:
-            rgb_s = rgb01.astype(np.float32, copy=False)
-            stretch_min = float(np.min(rgb01))
-            stretch_meds = [float(np.median(rgb01[..., c])) for c in range(3)]
+            rgb_s = rgb01_work.astype(np.float32, copy=False)
+            stretch_min = float(np.min(rgb01_work))
+            stretch_meds = [float(np.median(rgb01_work[..., c])) for c in range(3)]
 
         out_rgb01, detected, trail_mask = _satellite_remove_rgb(
-            rgb_s, models,
-            clip_trail=clip_trail, sensitivity=sensitivity,
-            chunk_size=chunk_size, overlap=overlap, border_size=border_size,
+            rgb_s,
+            models,
+            clip_trail=clip_trail,
+            sensitivity=sensitivity,
+            chunk_size=chunk_size,
+            overlap=overlap,
+            border_size=border_size,
             compatibility_mode=compatibility_mode,
             progress_cb=progress_cb,
         )
@@ -950,6 +1026,10 @@ def satellite_remove_image(
             out_rgb01 = unstretch_image(out_rgb01, stretch_meds, stretch_min, target_median=tm)
 
         out_rgb01 = np.clip(out_rgb01, 0.0, 1.0).astype(np.float32, copy=False)
+
+        # Crop padded result back to original image extent
+        out_rgb01 = _crop_full_rgb_pad(out_rgb01, full_pads)
+        trail_mask = _crop_full_mask_pad(trail_mask, full_pads)
 
     # Undo calibrated-image normalization back to original range
     out_rgb = _denormalize_from_satellite(out_rgb01, orig_min, scale)
@@ -966,7 +1046,6 @@ def satellite_remove_image(
     if return_mask:
         return out_rgb, detected, np.asarray(trail_mask, dtype=bool)
     return out_rgb, detected
-
 
 # ---------- Satellite remove loop (FIX: use correct ONNX sessions, not det1/rem confusion) ----------
 def _satellite_remove_rgb(
