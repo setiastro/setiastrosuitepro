@@ -23,7 +23,7 @@ from PyQt6.QtCore import Qt, QSize, QEvent, QPointF, QTimer, QSettings, QByteArr
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QSpinBox,
     QCheckBox, QPushButton, QScrollArea, QWidget, QMessageBox, QComboBox,
-    QGroupBox, QApplication
+    QGroupBox, QApplication, QToolBar, QToolButton
 )
 from PyQt6.QtGui import QImage, QPixmap, QPainter, QColor, QPen
 from PyQt6 import sip
@@ -822,14 +822,13 @@ class ABEDialog(QDialog):
         return best_idx if best_d2 <= (max_dist_px * max_dist_px) else -1
 
     def _post_init_fit_and_stretch(self) -> None:
-        # Only run if we have an image preview
         if self._preview_qimg is None:
             return
-        # Fit to the viewport
+
         self.fit_to_preview()
-        # Turn autostretch ON if it's not already
-        if not getattr(self, "_autostretch_on", False):
-            self.autostretch_preview()
+
+        # Re-render preview to match stored autostretch state
+        self.autostretch_preview(bool(getattr(self, "_autostretch_on", False)))
 
     def _set_status(self, text: str) -> None:
         self.status_label.setText(text)
@@ -837,27 +836,37 @@ class ABEDialog(QDialog):
 
     def _build_toolbar(self):
         """
-        Returns a QHBoxLayout with: Zoom In, Zoom Out, Fit, Autostretch.
-        Call: opts.addLayout(self._build_toolbar()) in __init__.
+        Toolbar row: Zoom In, Zoom Out, Fit, Autostretch.
         """
         bar = QHBoxLayout()
+        bar.setContentsMargins(0, 0, 0, 0)
+        bar.setSpacing(6)
 
-        # QToolButtons with theme icons
-        self.btn_zoom_in  = themed_toolbtn("zoom-in",        "Zoom In")
-        self.btn_zoom_out = themed_toolbtn("zoom-out",       "Zoom Out")
-        self.btn_fit      = themed_toolbtn("zoom-fit-best",  "Fit to Preview")
-        self.btn_autostr  = themed_toolbtn("color-picker",   "Autostretch")  # pick your preferred icon
+        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
+        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
+        self.btn_fit      = themed_toolbtn("zoom-fit-best", "Fit to Preview")
+
+        # Use a plain QToolButton so it is always visible even if the theme icon is missing.
+        self.btn_autostr = QToolButton(self)
+        self.btn_autostr.setText("AutoStretch")
+        self.btn_autostr.setCheckable(True)
+        self.btn_autostr.setChecked(bool(getattr(self, "_autostretch_on", False)))
+        self.btn_autostr.setToolTip("Autostretch preview")
+        self.btn_autostr.setMinimumHeight(24)
+        self.btn_autostr.setMinimumWidth(44)
 
         self.btn_zoom_in.clicked.connect(self.zoom_in)
         self.btn_zoom_out.clicked.connect(self.zoom_out)
         self.btn_fit.clicked.connect(self.fit_to_preview)
         self.btn_autostr.clicked.connect(self.autostretch_preview)
 
+        # Keep all toolbar buttons together on the left
         bar.addWidget(self.btn_zoom_in)
         bar.addWidget(self.btn_zoom_out)
         bar.addWidget(self.btn_fit)
-        bar.addStretch(1)
         bar.addWidget(self.btn_autostr)
+        bar.addStretch(1)
+
         return bar
 
     # ----- active document change -----
@@ -1615,74 +1624,74 @@ class ABEDialog(QDialog):
             blended = blended[..., 0]
         return np.clip(blended, 0.0, 1.0)
 
-
-    def autostretch_preview(self, sigma: float = 3.0) -> None:
+    def autostretch_preview(self, checked: bool | None = None) -> None:
         """
-        Toggle mtf-style MAD autostretch on the *preview only* (non-destructive).
-        First press applies; second press restores the original preview.
-        Works from the float [0..1] preview source to avoid double-clipping.
+        Toggle preview autostretch on/off and rebuild the viewport from the
+        underlying float preview source every time.
         """
-        if self._preview_source_f01 is None and self._last_preview is None:
-            return
-
-        # Lazy init toggle state
-        if not hasattr(self, "_autostretch_on"):
-            self._autostretch_on = False
-        if not hasattr(self, "_orig_preview8"):
-            self._orig_preview8 = None
-
-        def _rebuild_from_last():
-            h, w = self._last_preview.shape[:2]
-            ptr = sip.voidptr(self._last_preview.ctypes.data)
-            qimg = QImage(ptr, w, h, self._last_preview.strides[0], QImage.Format.Format_RGB888)
-            self._preview_qimg = qimg
-            self._update_preview_scaled()
-            self._redraw_overlay()
-
-        # Toggle OFF → restore original preview bytes
-        if self._autostretch_on and self._orig_preview8 is not None:
-            self._last_preview = np.ascontiguousarray(self._orig_preview8)
-            _rebuild_from_last()
-            self._autostretch_on = False
-            if hasattr(self, "btn_autostr"):
-                self.btn_autostr.setText("Autostretch")
-            return
-
-        # Toggle ON → cache original and apply stretch from float source
-        if self._last_preview is not None:
-            self._orig_preview8 = np.ascontiguousarray(self._last_preview)
-
-        # Prefer float source (avoids 8-bit clipping); fall back to decoding _last_preview if needed
-        arr = self._preview_source_f01 if self._preview_source_f01 is not None else (self._last_preview.astype(np.float32)/255.0)
-
-        stretched = hard_autostretch(arr, target_median=0.5, sigma=2, linked=False, use_24bit=True)
-
-        buf8 = (np.clip(stretched, 0.0, 1.0) * 255.0).astype(np.uint8)
-        if buf8.ndim == 2:
-            buf8 = np.stack([buf8] * 3, axis=-1)
-        self._last_preview = np.ascontiguousarray(buf8)
-
-        _rebuild_from_last()
-        self._autostretch_on = True
-        if hasattr(self, "btn_autostr"):
-            self.btn_autostr.setText("Autostretch (On)")
-
-
-    def _apply_autostretch_inplace(self, sigma: float = 3.0):
-        # Apply autostretch directly from current float preview source without toggling state.
         if self._preview_source_f01 is None:
             return
-        stretched = hard_autostretch(self._preview_source_f01, target_median=0.5, sigma=2,
-                             linked=False, use_24bit=True)
-        buf8 = (np.clip(stretched, 0.0, 1.0) * 255.0).astype(np.uint8)
-        if buf8.ndim == 2:
-            buf8 = np.stack([buf8] * 3, axis=-1)
-        self._last_preview = np.ascontiguousarray(buf8)
-        h, w = buf8.shape[:2]
-        qimg = QImage(buf8.data, w, h, buf8.strides[0], QImage.Format.Format_RGB888)
-        self._preview_qimg = qimg
+
+        current = bool(getattr(self, "_autostretch_on", False))
+        new_state = (not current) if checked is None else bool(checked)
+        self._autostretch_on = new_state
+
+        src = self._preview_source_f01
+
+        if new_state:
+            disp = hard_autostretch(
+                src,
+                target_median=0.5,
+                sigma=2,
+                linked=False,
+                use_24bit=True
+            )
+        else:
+            disp = src
+
+        disp = np.asarray(disp, dtype=np.float32)
+
+        if disp.ndim == 2 or (disp.ndim == 3 and disp.shape[2] == 1):
+            mono = disp if disp.ndim == 2 else disp[..., 0]
+            buf8_mono = (np.clip(mono, 0.0, 1.0) * 255.0).astype(np.uint8)
+            buf8_mono = np.ascontiguousarray(buf8_mono)
+
+            # keep 3-channel backing array for consistency with other preview code
+            self._last_preview = np.ascontiguousarray(np.stack([buf8_mono] * 3, axis=-1))
+
+            h, w = buf8_mono.shape
+            self._preview_qimg = QImage(
+                buf8_mono.data,
+                w, h,
+                w,
+                QImage.Format.Format_Grayscale8
+            )
+        else:
+            buf8 = (np.clip(disp, 0.0, 1.0) * 255.0).astype(np.uint8)
+            buf8 = np.ascontiguousarray(buf8)
+            self._last_preview = buf8
+
+            h, w, _ = buf8.shape
+            self._preview_qimg = QImage(
+                buf8.data,
+                w, h,
+                buf8.strides[0],
+                QImage.Format.Format_RGB888
+            )
+
         self._update_preview_scaled()
         self._redraw_overlay()
+
+        if hasattr(self, "btn_autostr"):
+            self.btn_autostr.setChecked(new_state)
+            self.btn_autostr.setToolTip(
+                "Autostretch preview (On)" if new_state else "Autostretch preview"
+            )
+
+        self._save_settings()
+
+    def _apply_autostretch_inplace(self, sigma: float = 3.0):
+        self.autostretch_preview(True)
 
     def _restore_window_geometry(self):
         try:
