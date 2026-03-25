@@ -2938,7 +2938,7 @@ def multiframe_deconv_normal_rebuild(
                     mm = mm[0]
 
                 if rejection_mode == "none":
-                    mm = np.zeros_like(mm, dtype=np.float32)
+                    mm = np.ones_like(mm, dtype=np.float32)
                 else:
                     # incoming 1=valid, 0=rejected
                     # convert to 0=valid, 1=rejected

@@ -2140,7 +2140,7 @@ def multiframe_deconv(
 
                 if rejection_mode == "none":
                     # No rejection contribution from stacking-suite maps
-                    mm = np.zeros_like(mm, dtype=np.float32)
+                    mm = np.ones_like(mm, dtype=np.float32)
                 else:
                     # Known-good working behavior:
                     # incoming 1=valid, 0=rejected
