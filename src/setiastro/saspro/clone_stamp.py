@@ -1,3 +1,4 @@
+#src/setiastro/saspro/clone_stamp.py
 from __future__ import annotations
 
 import numpy as np
@@ -156,8 +157,10 @@ class CloneStampDialogPro(QDialog):
         else:
             raise ValueError(f"Unsupported image shape: {img.shape}")
 
-        self._image = img3.copy()
-        self._display = self._image.copy()
+        self._image = img3.copy()                 # authoritative linear image for commit
+        self._display_raw = self._image.copy()   # raw preview/edit buffer
+        self._display_stretched = self._image.copy()  # stretched preview/edit buffer
+        self._display = self._display_raw
 
         self._has_source = False
         self._src_point: Tuple[int, int] = (0, 0)
@@ -375,6 +378,30 @@ class CloneStampDialogPro(QDialog):
         self._update_display_autostretch()
         self._fit_view()
 
+    def _make_stretched_buffer(self, src: np.ndarray) -> np.ndarray:
+        src = np.asarray(src, dtype=np.float32)
+
+        tm = float(self.s_target_median.value())
+        if not self._orig_mono:
+            disp = stretch_color_image(
+                src,
+                target_median=tm,
+                linked=self.cb_linked.isChecked(),
+                normalize=False,
+                apply_curves=False,
+            )
+        else:
+            mono = src[..., 0]
+            mono_st = stretch_mono_image(
+                mono,
+                target_median=tm,
+                normalize=False,
+                apply_curves=False,
+            )
+            disp = np.stack([mono_st] * 3, axis=-1)
+
+        return np.clip(disp, 0.0, 1.0).astype(np.float32, copy=False)
+
     def _schedule_paint_refresh(self):
         if self._paint_refresh_pending:
             return
@@ -383,7 +410,7 @@ class CloneStampDialogPro(QDialog):
 
     def _do_paint_refresh(self):
         self._paint_refresh_pending = False
-        self._display = self._image
+        self._display = self._display_stretched if self.cb_autostretch.isChecked() else self._display_raw
         self._refresh_pix()
 
     def _get_mask(self, r: int, feather: float) -> np.ndarray:
@@ -405,32 +432,22 @@ class CloneStampDialogPro(QDialog):
         self.btn_redo.setEnabled(len(self._redo) > 0)
 
     def _update_display_autostretch(self):
-        src = self._image
-        if not self.cb_autostretch.isChecked():
-            self._display = src.astype(np.float32, copy=False)
-            self._refresh_pix()
-            return
+        """
+        Keep both live display buffers in sync:
+        - _display_raw is always the current non-stretched preview
+        - _display_stretched is always the current stretched preview
+        - _display is whichever one is currently selected
+        """
+        self._display_raw = self._image.astype(np.float32, copy=False)
 
-        tm = float(self.s_target_median.value())
-        if not self._orig_mono:
-            disp = stretch_color_image(
-                src,
-                target_median=tm,
-                linked=self.cb_linked.isChecked(),
-                normalize=False,
-                apply_curves=False,
-            )
+        if self.cb_autostretch.isChecked():
+            self._display_stretched = self._make_stretched_buffer(self._image)
+            self._display = self._display_stretched
         else:
-            mono = src[..., 0]
-            mono_st = stretch_mono_image(
-                mono,
-                target_median=tm,
-                normalize=False,
-                apply_curves=False,
-            )
-            disp = np.stack([mono_st] * 3, axis=-1)
+            # Keep stretched buffer valid anyway so the first toggle back on is instant
+            self._display_stretched = self._make_stretched_buffer(self._image)
+            self._display = self._display_raw
 
-        self._display = disp.astype(np.float32, copy=False)
         self._refresh_pix()
 
     def _update_brush_preview(self):
@@ -564,7 +581,11 @@ class CloneStampDialogPro(QDialog):
         sx, sy = self._src_point
         self._offset = (sx - tx, sy - ty)
 
-        self._undo.append(self._image.copy())
+        self._undo.append((
+            self._image.copy(),
+            self._display_raw.copy(),
+            self._display_stretched.copy(),
+        ))
         self._redo.clear()
         self._update_undo_redo_buttons()
 
@@ -575,7 +596,8 @@ class CloneStampDialogPro(QDialog):
     def _end_paint(self):
         self._painting = False
         self._stroke_last_pos = None
-        self._update_display_autostretch()
+        self._display = self._display_stretched if self.cb_autostretch.isChecked() else self._display_raw
+        self._refresh_pix()
 
     def _paint_segment(self, scene_pos: QPointF):
         if not (self._painting and self._has_source):
@@ -611,7 +633,15 @@ class CloneStampDialogPro(QDialog):
                 continue
 
             sx, sy = tx + ox, ty + oy
+
+            # Authoritative non-stretched image for final Apply
             _blend_clone_inplace(self._image, tx, ty, sx, sy, mask, radius, opacity)
+
+            # Raw preview buffer
+            _blend_clone_inplace(self._display_raw, tx, ty, sx, sy, mask, radius, opacity)
+
+            # Stretched preview buffer
+            _blend_clone_inplace(self._display_stretched, tx, ty, sx, sy, mask, radius, opacity)
 
         self._stroke_last_pos = (x1, y1)
         self._schedule_paint_refresh()
@@ -719,17 +749,31 @@ class CloneStampDialogPro(QDialog):
     def _undo_step(self):
         if not self._undo:
             return
-        self._redo.append(self._image.copy())
-        self._image = self._undo.pop()
-        self._update_display_autostretch()
+
+        self._redo.append((
+            self._image.copy(),
+            self._display_raw.copy(),
+            self._display_stretched.copy(),
+        ))
+
+        self._image, self._display_raw, self._display_stretched = self._undo.pop()
+        self._display = self._display_stretched if self.cb_autostretch.isChecked() else self._display_raw
+        self._refresh_pix()
         self._update_undo_redo_buttons()
 
     def _redo_step(self):
         if not self._redo:
             return
-        self._undo.append(self._image.copy())
-        self._image = self._redo.pop()
-        self._update_display_autostretch()
+
+        self._undo.append((
+            self._image.copy(),
+            self._display_raw.copy(),
+            self._display_stretched.copy(),
+        ))
+
+        self._image, self._display_raw, self._display_stretched = self._redo.pop()
+        self._display = self._display_stretched if self.cb_autostretch.isChecked() else self._display_raw
+        self._refresh_pix()
         self._update_undo_redo_buttons()
 
     def _commit_to_doc(self):
