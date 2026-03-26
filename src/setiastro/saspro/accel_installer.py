@@ -149,6 +149,7 @@ def ensure_torch_installed(prefer_gpu: bool, log_cb: LogCB, preferred_backend: s
             prefer_rocm=prefer_rocm,
             status_cb=log_cb,
             allow_install=True,
+            require_torchaudio=False,
         )
 
         from setiastro.saspro.runtime_torch import add_runtime_to_sys_path

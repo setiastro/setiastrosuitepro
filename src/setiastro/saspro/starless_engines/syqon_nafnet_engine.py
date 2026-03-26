@@ -633,3 +633,69 @@ class syqonnafnetSession:
                 info,
             )
         return starless, stars_only, info
+
+def clear_axiom_models_cache(*, aggressive: bool = False, status_cb=print) -> None:
+    """
+    Clears in-process SyQon Axiom/NAFNet cached session state so RAM/VRAM
+    can be reclaimed between runs.
+
+    - aggressive=False: clears Python references only
+    - aggressive=True : also runs gc.collect() and torch cache cleanup
+    """
+    global _SYQON_SESSION, _SYQON_CKPT
+
+    try:
+        had_session = _SYQON_SESSION is not None
+        had_ckpt = _SYQON_CKPT is not None
+
+        _SYQON_SESSION = None
+        _SYQON_CKPT = None
+
+        status_cb(
+            f"[SyQon Axiom] Cleared cache "
+            f"(session={'yes' if had_session else 'no'}, ckpt={'yes' if had_ckpt else 'no'})"
+        )
+    except Exception as e:
+        try:
+            status_cb(f"[SyQon Axiom] Cache clear failed: {type(e).__name__}: {e}")
+        except Exception:
+            pass
+
+    if not aggressive:
+        return
+
+    try:
+        import gc
+        gc.collect()
+        status_cb("[SyQon Axiom] gc.collect() called")
+    except Exception:
+        pass
+
+    try:
+        from setiastro.saspro.runtime_torch import import_torch
+        torch = import_torch(
+            prefer_cuda=True,
+            prefer_xpu=False,
+            prefer_dml=True,
+            status_cb=lambda *_: None,
+        )
+
+        try:
+            if getattr(torch, "cuda", None) and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                if hasattr(torch.cuda, "ipc_collect"):
+                    torch.cuda.ipc_collect()
+                status_cb("[SyQon Axiom] torch.cuda.empty_cache() called")
+        except Exception:
+            pass
+
+        try:
+            if hasattr(torch, "backends") and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                if hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
+                    torch.mps.empty_cache()
+                    status_cb("[SyQon Axiom] torch.mps.empty_cache() called")
+        except Exception:
+            pass
+
+    except Exception:
+        pass

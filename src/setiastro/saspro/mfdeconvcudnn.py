@@ -1739,14 +1739,16 @@ def _conv_same_torch(img_t, psf_t):
     if img_t.ndim == 2:
         x = img_t[None, None]
         x = torch.nn.functional.pad(x, pad, mode="reflect")
-        y = torch.nn.functional.conv2d(x, psf_t, padding=0)
+        with torch.backends.cudnn.flags(enabled=True, benchmark=False, deterministic=True):
+            y = torch.nn.functional.conv2d(x, psf_t, padding=0)
         return y[0, 0]
     else:
         C = img_t.shape[0]
         x = img_t[None]
         x = torch.nn.functional.pad(x, pad, mode="reflect")
         w = psf_t.repeat(C, 1, 1, 1)
-        y = torch.nn.functional.conv2d(x, w, padding=0, groups=C)
+        with torch.backends.cudnn.flags(enabled=True, benchmark=False, deterministic=True):
+            y = torch.nn.functional.conv2d(x, w, padding=0, groups=C)
         return y[0]
 
 def _safe_inference_context():
@@ -2711,7 +2713,7 @@ def multiframe_deconv_normal_rebuild(
 
     if use_torch:
         try:
-            torch.backends.cudnn.benchmark = True
+            torch.backends.cudnn.benchmark = False
             if hasattr(torch.backends, "cudnn"):
                 torch.backends.cudnn.allow_tf32 = False
             if hasattr(torch.backends, "cuda") and hasattr(torch.backends.cuda, "matmul"):
