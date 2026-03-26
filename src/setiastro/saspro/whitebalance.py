@@ -37,6 +37,16 @@ def _mpl_no_tex_guard():
     except Exception:
         pass
 
+def _np_trapezoid_compat(y, x):
+    """
+    NumPy compatibility helper:
+    - prefer np.trapezoid when available
+    - fall back to np.trapz on older NumPy builds
+    """
+    fn = getattr(np, "trapezoid", None)
+    if callable(fn):
+        return fn(y, x)
+    return np.trapz(y, x)
 # ----------------------------
 # Core WB implementations
 # ----------------------------
@@ -140,9 +150,9 @@ def build_star_color_ratios_figure(raw_pixels: np.ndarray, after_pixels: np.ndar
         z = np.array([z_bar(v) for v in wl], dtype=np.float64)
 
         # Integrate SPD * CMFs
-        X = np.trapezoid(spd * x, wl)
-        Y = np.trapezoid(spd * y, wl)
-        Z = np.trapezoid(spd * z, wl)
+        X = _np_trapezoid_compat(spd * x, wl)
+        Y = _np_trapezoid_compat(spd * y, wl)
+        Z = _np_trapezoid_compat(spd * z, wl)
 
         XYZ = np.array([X, Y, Z], dtype=np.float64)
         if not np.all(np.isfinite(XYZ)) or np.max(XYZ) <= 0:
@@ -718,23 +728,16 @@ class WhiteBalanceDialog(QDialog):
                     "b_gain": float(self.b_spin.value()),
                 }
 
-                # Record for Replay Last Action
                 _record_preset_for_replay(preset)
-
-                # Use the headless helper so doc metadata is consistent
                 apply_white_balance_to_doc(self.doc, preset)
-                # Dialog stays open - refresh document for next operation
                 self._finish_and_close()
                 return
 
             elif mode == "Auto":
                 preset = {"mode": "auto"}
 
-                # Record for Replay Last Action
                 _record_preset_for_replay(preset)
-
                 apply_white_balance_to_doc(self.doc, preset)
-                # Dialog stays open - refresh document for next operation
                 self._finish_and_close()
                 return
 
@@ -787,40 +790,68 @@ class WhiteBalanceDialog(QDialog):
                 # Record for Replay Last Action (using the same preset we just stored in metadata)
                 _record_preset_for_replay(preset)
 
-                # 🔬 Show the same diagnostic plot SASv2 shows
-                if (
-                    raw_colors is not None
-                    and after_colors is not None
-                    and raw_colors.size
-                    and after_colors.size
-                ):
-                    fig = build_star_color_ratios_figure(raw_colors, after_colors)
-                    dlg = WhiteBalanceResultDialog(self._main or self.parent(), fig, int(star_count))
-                    dlg.show()
-                    dlg.raise_()
-                    dlg.activateWindow()
+                # Plot is OPTIONAL and must never make the whole WB look like it failed
+                plot_error = None
+                try:
+                    if (
+                        raw_colors is not None
+                        and after_colors is not None
+                        and raw_colors.size
+                        and after_colors.size
+                    ):
+                        fig = build_star_color_ratios_figure(raw_colors, after_colors)
+                        dlg = WhiteBalanceResultDialog(self._main or self.parent(), fig, int(star_count))
+                        dlg.show()
+                        dlg.raise_()
+                        dlg.activateWindow()
 
-                    # Keep alive so Python doesn't garbage collect it immediately
-                    if not hasattr(self, "_result_dialogs"):
-                        self._result_dialogs = []
-                    self._result_dialogs.append(dlg)
+                        # Keep alive so Python doesn't garbage collect it immediately
+                        if not hasattr(self, "_result_dialogs"):
+                            self._result_dialogs = []
+                        self._result_dialogs.append(dlg)
 
+                        try:
+                            dlg.finished.connect(
+                                lambda *_: self._result_dialogs.remove(dlg)
+                                if dlg in self._result_dialogs else None
+                            )
+                        except Exception:
+                            pass
+                    else:
+                        QMessageBox.information(
+                            self,
+                            self.tr("White Balance"),
+                            self.tr("Star-Based WB applied.\nDetected {0} stars.").format(int(star_count)),
+                        )
+                except Exception as e_plot:
+                    plot_error = e_plot
+
+                if plot_error is not None:
                     try:
-                        dlg.finished.connect(lambda *_: self._result_dialogs.remove(dlg) if dlg in self._result_dialogs else None)
+                        if main is not None and hasattr(main, "_log"):
+                            main._log(f"[White Balance] Summary plot failed after successful apply: {type(plot_error).__name__}: {plot_error}")
                     except Exception:
                         pass
-                else:
-                    QMessageBox.information(
+
+                    QMessageBox.warning(
                         self,
                         self.tr("White Balance"),
-                        self.tr("Star-Based WB applied.\nDetected {0} stars.").format(int(star_count)),
+                        self.tr(
+                            "White Balance was applied successfully.\n"
+                            "Detected {0} stars.\n\n"
+                            "The summary plot could not be shown:\n{1}"
+                        ).format(int(star_count), str(plot_error)),
                     )
 
                 self._finish_and_close()
                 return
 
         except Exception as e:
-            QMessageBox.critical(self, self.tr("White Balance"), self.tr("Failed to apply White Balance:\n{0}").format(e))
+            QMessageBox.critical(
+                self,
+                self.tr("White Balance"),
+                self.tr("Failed to apply White Balance:\n{0}").format(e)
+            )
 
     def _refresh_document_from_active(self):
         """
