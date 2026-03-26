@@ -2206,280 +2206,322 @@ def multiframe_deconv(
         return mask_list
 
     def _run_solver_core(mask_list, run_label: str, save_intermediate_this_run: bool):
-        iter_dir = None
-        hdr0_seed = None
+            iter_dir = None
+            hdr0_seed = None
 
-        x = np.array(x_seed, dtype=np.float32, copy=True)
+            x = np.array(x_seed, dtype=np.float32, copy=True)
 
-        if save_intermediate_this_run:
-            iter_dir = _iter_folder(out_path)
-            if rejection_strength not in (0.0, 1.0):
-                iter_dir = iter_dir + f"_{run_label}"
-            status_cb(f"MFDeconv: Intermediate outputs ({run_label}) → {iter_dir}")
-            try:
-                hdr0_seed = _safe_primary_header(paths[0])
-            except Exception:
-                hdr0_seed = fits.Header()
-            _save_iter_image(x, hdr0_seed, iter_dir, "seed", color_mode)
+            if save_intermediate_this_run:
+                iter_dir = _iter_folder(out_path)
+                if rejection_strength not in (0.0, 1.0):
+                    iter_dir = iter_dir + f"_{run_label}"
+                status_cb(f"MFDeconv: Intermediate outputs ({run_label}) → {iter_dir}")
+                try:
+                    hdr0_seed = _safe_primary_header(paths[0])
+                except Exception:
+                    hdr0_seed = fits.Header()
+                _save_iter_image(x, hdr0_seed, iter_dir, "seed", color_mode)
 
-        status_cb(f"MFDeconv: Calculating Backgrounds and MADs… ({run_label})")
-        _process_gui_events_safely()
-        bg_est = _sep_bg_rms(data) or (
-            np.median([np.median(np.abs(y - np.median(y))) for y in (data if isinstance(data, list) else [data])]) * 1.4826
-        )
-        status_cb(f"MFDeconv: color_mode={color_mode}, huber_delta={huber_delta} (bg RMS~{bg_est:.3g}) [{run_label}]")
-        _process_gui_events_safely()
+            status_cb(f"MFDeconv: Calculating Backgrounds and MADs… ({run_label})")
+            _process_gui_events_safely()
+            bg_est = _sep_bg_rms(data) or (
+                np.median([np.median(np.abs(y - np.median(y))) for y in (data if isinstance(data, list) else [data])]) * 1.4826
+            )
+            status_cb(f"MFDeconv: color_mode={color_mode}, huber_delta={huber_delta} (bg RMS~{bg_est:.3g}) [{run_label}]")
+            _process_gui_events_safely()
 
-        status_cb(f"Computing FFTs and Allocating Scratch… ({run_label})")
-        _process_gui_events_safely()
+            status_cb(f"Computing FFTs and Allocating Scratch… ({run_label})")
+            _process_gui_events_safely()
 
-        per_frame_logging = (r > 1)
-        if use_torch:
-            x_t = _to_t(_contig(x))
-            num = torch.zeros_like(x_t)
-            den = torch.zeros_like(x_t)
+            import numpy.fft as _fft
 
-            if r > 1:
-                psf_t = [_to_t(_contig(k))[None, None] for k in psfs]
-                psfT_t = [_to_t(_contig(kT))[None, None] for kT in flip_psf]
-            else:
-                psf_t = [_to_t(_contig(k))[None, None] for k in psfs]
-                psfT_t = [_to_t(_contig(kT))[None, None] for kT in flip_psf]
-        else:
-            x_t = x
-            if r > 1:
-                if x_t.ndim == 2:
-                    Hs, Ws = x_t.shape
-                else:
-                    _, Hs, Ws = x_t.shape
-                Kfs, KTfs, meta = _precompute_np_psf_ffts(psfs, flip_psf, Hs, Ws)
-                pred_super = np.empty_like(x_t)
-                tmp_out = np.empty_like(x_t)
-            else:
-                Kfs, KTfs, meta = _precompute_np_psf_ffts(psfs, flip_psf, x_t.shape[-2], x_t.shape[-1])
-                pred_super = np.empty_like(x_t)
-                tmp_out = np.empty_like(x_t)
-            num = np.zeros_like(x_t)
-            den = np.zeros_like(x_t)
+            per_frame_logging = (r > 1)
 
-        status_cb(f"Starting First Multiplicative Iteration… ({run_label})")
-        _process_gui_events_safely()
-
-        cm = _safe_inference_context() if use_torch else NO_GRAD
-        rho_is_l2 = (str(rho).lower() == "l2")
-        local_delta = 0.0 if rho_is_l2 else huber_delta
-        used_iters_local = 0
-        early_stopped_local = False
-
-        auto_delta_cache = None
-        if use_torch and (huber_delta < 0) and (not rho_is_l2):
-            auto_delta_cache = [None] * len(paths)
-
-        early = EarlyStopper(
-            tol_upd_floor=2e-4,
-            tol_rel_floor=5e-4,
-            early_frac=0.40,
-            ema_alpha=0.5,
-            patience=2,
-            min_iters=min_iters,
-            status_cb=status_cb
-        )
-
-        x_ndim = 2 if (np.ndim(x) == 2) else 3
-        for i, a in enumerate(data):
-            if a.ndim != x_ndim:
-                if x_ndim == 2 and a.ndim == 3 and a.shape[0] == 1:
-                    data[i] = a[0]
-                elif x_ndim == 2 and a.ndim == 3 and a.shape[-1] == 1:
-                    data[i] = a[..., 0]
-
-        with cm():
-            for it in range(1, max_iters + 1):
-                if use_torch:
-                    num.zero_()
-                    den.zero_()
-
-                    if r > 1:
-                        for fidx, (wk, wkT) in enumerate(zip(psf_t, psfT_t)):
-                            yt_np = data[fidx]
-                            mt_np = mask_list[fidx]
-                            vt_np = var_list_base[fidx]
-
-                            yt = torch.as_tensor(yt_np, dtype=x_t.dtype, device=x_t.device)
-                            mt = None if mt_np is None else torch.as_tensor(mt_np, dtype=x_t.dtype, device=x_t.device)
-                            vt = None if vt_np is None else torch.as_tensor(vt_np, dtype=x_t.dtype, device=x_t.device)
-
-                            pred_super = _conv_same_torch(x_t, wk)
-                            pred_low = _downsample_avg_t(pred_super, r)
-
-                            if auto_delta_cache is not None:
-                                if (auto_delta_cache[fidx] is None) or (it % 5 == 1):
-                                    rnat = yt - pred_low
-                                    med = torch.median(rnat)
-                                    mad = torch.median(torch.abs(rnat - med)) + 1e-6
-                                    rms = 1.4826 * mad
-                                    auto_delta_cache[fidx] = float((-huber_delta) * torch.clamp(rms, min=1e-6).item())
-                                wmap_low = _weight_map(yt, pred_low, auto_delta_cache[fidx], var_map=vt, mask=mt)
-                            else:
-                                wmap_low = _weight_map(yt, pred_low, local_delta, var_map=vt, mask=mt)
-
-                            up_y = _upsample_sum_t(wmap_low * yt, r)
-                            up_pred = _upsample_sum_t(wmap_low * pred_low, r)
-
-                            num += _conv_same_torch(up_y, wkT)
-                            den += _conv_same_torch(up_pred, wkT)
-
-                            del yt, mt, vt, pred_super, pred_low, wmap_low, up_y, up_pred
-                            if cuda_ok:
-                                try:
-                                    torch.cuda.empty_cache()
-                                except Exception:
-                                    pass
-
-                            if per_frame_logging and ((fidx & 7) == 0):
-                                status_cb(f"Iter {it}/{max_iters} — frame {fidx+1}/{len(paths)} ({run_label}, SR spatial)")
-
-                    else:
-                        for fidx, (wk, wkT) in enumerate(zip(psf_t, psfT_t)):
-                            yt_np = data[fidx]
-                            mt_np = mask_list[fidx]
-                            vt_np = var_list_base[fidx]
-
-                            yt = torch.as_tensor(yt_np, dtype=x_t.dtype, device=x_t.device)
-                            mt = None if mt_np is None else torch.as_tensor(mt_np, dtype=x_t.dtype, device=x_t.device)
-                            vt = None if vt_np is None else torch.as_tensor(vt_np, dtype=x_t.dtype, device=x_t.device)
-
-                            pred = _conv_same_torch(x_t, wk)
-                            wmap = _weight_map(yt, pred, local_delta, var_map=vt, mask=mt)
-                            up_y = wmap * yt
-                            up_pred = wmap * pred
-                            num += _conv_same_torch(up_y, wkT)
-                            den += _conv_same_torch(up_pred, wkT)
-
-                            del yt, mt, vt, pred, wmap, up_y, up_pred
-                            if cuda_ok:
-                                try:
-                                    torch.cuda.empty_cache()
-                                except Exception:
-                                    pass
-
-                    ratio = num / (den + EPS)
-                    neutral = (den.abs() < 1e-12) & (num.abs() < 1e-12)
-                    ratio = torch.where(neutral, torch.ones_like(ratio), ratio)
-                    upd = torch.clamp(ratio, 1.0 / kappa, kappa)
-                    x_next = torch.clamp(x_t * upd, min=0.0)
-
-                    upd_med = torch.median(torch.abs(upd - 1))
-                    rel_change = (torch.median(torch.abs(x_next - x_t)) /
-                                  (torch.median(torch.abs(x_t)) + 1e-8))
-
-                    try:
-                        um = float(upd_med.detach().cpu().item())
-                    except Exception:
-                        um = float(upd_med)
-
-                    try:
-                        rc = float(rel_change.detach().cpu().item())
-                    except Exception:
-                        rc = float(rel_change)
-
-                    if early.step(it, max_iters, um, rc):
-                        x_t = x_next
-                        used_iters_local = it
-                        early_stopped_local = True
-                        _process_gui_events_safely()
-                        break
-
-                    x_t = (1.0 - relax) * x_t + relax * x_next
-
-                else:
-                    num.fill(0.0)
-                    den.fill(0.0)
-
-                    if r > 1:
-                        for (Kf, KTf, (kh, kw, fftH, fftW)), m2d, v2d, y_nat in zip(
-                            zip(Kfs, KTfs, meta), mask_list, var_list_base, data
-                        ):
-                            _fft_conv_same_np(x_t, Kf, kh, kw, fftH, fftW, pred_super)
-                            pred_low = _downsample_avg(pred_super, r)
-                            wmap_low = _weight_map(y_nat, pred_low, local_delta, var_map=v2d, mask=m2d)
-                            up_y = _upsample_sum(wmap_low * y_nat, r, target_hw=pred_super.shape[-2:])
-                            up_pred = _upsample_sum(wmap_low * pred_low, r, target_hw=pred_super.shape[-2:])
-                            _fft_conv_same_np(up_y, KTf, kh, kw, fftH, fftW, tmp_out)
-                            num += tmp_out
-                            _fft_conv_same_np(up_pred, KTf, kh, kw, fftH, fftW, tmp_out)
-                            den += tmp_out
-                    else:
-                        for (Kf, KTf, (kh, kw, fftH, fftW)), m2d, v2d, y_nat in zip(
-                            zip(Kfs, KTfs, meta), mask_list, var_list_base, data
-                        ):
-                            _fft_conv_same_np(x_t, Kf, kh, kw, fftH, fftW, pred_super)
-                            pred = pred_super
-                            wmap = _weight_map(y_nat, pred, local_delta, var_map=v2d, mask=m2d)
-                            up_y, up_pred = (wmap * y_nat), (wmap * pred)
-                            _fft_conv_same_np(up_y, KTf, kh, kw, fftH, fftW, tmp_out)
-                            num += tmp_out
-                            _fft_conv_same_np(up_pred, KTf, kh, kw, fftH, fftW, tmp_out)
-                            den += tmp_out
-
-                    ratio = num / (den + EPS)
-                    neutral = (np.abs(den) < 1e-12) & (np.abs(num) < 1e-12)
-                    ratio[neutral] = 1.0
-                    upd = np.clip(ratio, 1.0 / kappa, kappa)
-                    x_next = np.clip(x_t * upd, 0.0, None)
-
-                    upd_med = np.median(np.abs(upd - 1.0))
-                    rel_change = (np.median(np.abs(x_next - x_t)) /
-                                  (np.median(np.abs(x_t)) + 1e-8))
-                    um = float(upd_med)
-                    rc = float(rel_change)
-
-                    if early.step(it, max_iters, um, rc):
-                        x_t = x_next
-                        used_iters_local = it
-                        early_stopped_local = True
-                        _process_gui_events_safely()
-                        break
-
-                    x_t = (1.0 - relax) * x_t + relax * x_next
-
-                if save_intermediate_this_run and (it % int(max(1, save_every)) == 0):
-                    try:
-                        x_np = x_t.detach().cpu().numpy().astype(np.float32) if use_torch else x_t.astype(np.float32)
-                        _save_iter_image(x_np, hdr0_seed, iter_dir, f"iter_{it:03d}", color_mode)
-                    except Exception as _e:
-                        status_cb(f"Intermediate save failed at iter {it}: {_e}")
-
-                frac = 0.25 + 0.70 * (it / float(max_iters))
-                _emit_pct(frac, f"Iteration {it}/{max_iters} [{run_label}]")
-                _process_gui_events_safely()
-
-        if not early_stopped_local:
-            used_iters_local = max_iters
-
-        x_final_local = x_t.detach().cpu().numpy().astype(np.float32) if use_torch else x_t.astype(np.float32)
-
-        if x_final_local.ndim == 3:
-            if x_final_local.shape[0] not in (1, 3) and x_final_local.shape[-1] in (1, 3):
-                x_final_local = np.moveaxis(x_final_local, -1, 0)
-            if x_final_local.shape[0] == 1:
-                x_final_local = x_final_local[0]
-
-        try:
             if use_torch:
-                try:
-                    del num, den
-                except Exception:
-                    pass
-                try:
-                    del psf_t, psfT_t
-                except Exception:
-                    pass
-                _free_torch_memory()
-        except Exception:
-            pass
+                x_t   = _to_t(_contig(x))
+                # ── FIX 2 (Torch): allocate num/den once, reuse as scratch.
+                num   = torch.zeros_like(x_t)
+                den   = torch.zeros_like(x_t)
+                psf_t  = [_to_t(_contig(k))[None, None]  for k in psfs]
+                psfT_t = [_to_t(_contig(kT))[None, None] for kT in flip_psf]
+            else:
+                x_t = x
+                # ── FIX 1 (NumPy): store ONLY metadata — no rfftn yet.
+                # For 11600×8700 each Kf/KTf pair is ~1.6 GB complex128.
+                # Holding all N simultaneously would be catastrophic even in
+                # High Octane mode where frame data is already in RAM.
+                # We compute each pair on demand inside the frame loop.
+                np_meta = []
+                for k in psfs:
+                    kh, kw = k.shape
+                    fftH, fftW = _fftshape_same(x_t.shape[-2], x_t.shape[-1], kh, kw)
+                    np_meta.append((kh, kw, fftH, fftW))
+                # ── FIX 2 (NumPy): allocate accumulators + scratch once.
+                num      = np.zeros_like(x_t)
+                den      = np.zeros_like(x_t)
+                pred_buf = np.empty_like(x_t)   # reused as pred / pred_super
+                tmp_out  = np.empty_like(x_t)   # reused as conv scratch AND x_next
 
-        return x_final_local, used_iters_local, early_stopped_local
+            status_cb(f"Starting First Multiplicative Iteration… ({run_label})")
+            _process_gui_events_safely()
+
+            cm = _safe_inference_context() if use_torch else NO_GRAD
+            rho_is_l2 = (str(rho).lower() == "l2")
+            local_delta = 0.0 if rho_is_l2 else huber_delta
+            used_iters_local = 0
+            early_stopped_local = False
+
+            auto_delta_cache = None
+            if use_torch and (huber_delta < 0) and (not rho_is_l2):
+                auto_delta_cache = [None] * len(paths)
+
+            early = EarlyStopper(
+                tol_upd_floor=2e-4,
+                tol_rel_floor=5e-4,
+                early_frac=0.40,
+                ema_alpha=0.5,
+                patience=2,
+                min_iters=min_iters,
+                status_cb=status_cb
+            )
+
+            # Ensure data ndim matches x_t ndim (sport loads all frames upfront)
+            x_ndim = 2 if (np.ndim(x) == 2) else 3
+            for i, a in enumerate(data):
+                if a.ndim != x_ndim:
+                    if x_ndim == 2 and a.ndim == 3 and a.shape[0] == 1:
+                        data[i] = a[0]
+                    elif x_ndim == 2 and a.ndim == 3 and a.shape[-1] == 1:
+                        data[i] = a[..., 0]
+
+            with cm():
+                for it in range(1, max_iters + 1):
+
+                    # ── TORCH ITERATION ───────────────────────────────────────────
+                    if use_torch:
+                        num.zero_()
+                        den.zero_()
+
+                        if r > 1:
+                            for fidx, (wk, wkT) in enumerate(zip(psf_t, psfT_t)):
+                                yt_np = data[fidx]
+                                mt_np = mask_list[fidx]
+                                vt_np = var_list_base[fidx]
+
+                                yt = torch.as_tensor(yt_np, dtype=x_t.dtype, device=x_t.device)
+                                mt = None if mt_np is None else torch.as_tensor(mt_np, dtype=x_t.dtype, device=x_t.device)
+                                vt = None if vt_np is None else torch.as_tensor(vt_np, dtype=x_t.dtype, device=x_t.device)
+
+                                pred_super = _conv_same_torch(x_t, wk)
+                                pred_low   = _downsample_avg_t(pred_super, r)
+
+                                if auto_delta_cache is not None:
+                                    if (auto_delta_cache[fidx] is None) or (it % 5 == 1):
+                                        rnat = yt - pred_low
+                                        med  = torch.median(rnat)
+                                        mad  = torch.median(torch.abs(rnat - med)) + 1e-6
+                                        rms  = 1.4826 * mad
+                                        auto_delta_cache[fidx] = float(
+                                            (-huber_delta) * torch.clamp(rms, min=1e-6).item()
+                                        )
+                                    wmap_low = _weight_map(yt, pred_low, auto_delta_cache[fidx], var_map=vt, mask=mt)
+                                else:
+                                    wmap_low = _weight_map(yt, pred_low, local_delta, var_map=vt, mask=mt)
+
+                                up_y    = _upsample_sum_t(wmap_low * yt,       r)
+                                up_pred = _upsample_sum_t(wmap_low * pred_low, r)
+                                num += _conv_same_torch(up_y,    wkT)
+                                den += _conv_same_torch(up_pred, wkT)
+
+                                del yt, mt, vt, pred_super, pred_low, wmap_low, up_y, up_pred
+                                if cuda_ok:
+                                    try:
+                                        torch.cuda.empty_cache()
+                                    except Exception:
+                                        pass
+
+                                if per_frame_logging and ((fidx & 7) == 0):
+                                    status_cb(f"Iter {it}/{max_iters} — frame {fidx+1}/{len(paths)} ({run_label}, SR spatial)")
+
+                        else:
+                            for fidx, (wk, wkT) in enumerate(zip(psf_t, psfT_t)):
+                                yt_np = data[fidx]
+                                mt_np = mask_list[fidx]
+                                vt_np = var_list_base[fidx]
+
+                                yt = torch.as_tensor(yt_np, dtype=x_t.dtype, device=x_t.device)
+                                mt = None if mt_np is None else torch.as_tensor(mt_np, dtype=x_t.dtype, device=x_t.device)
+                                vt = None if vt_np is None else torch.as_tensor(vt_np, dtype=x_t.dtype, device=x_t.device)
+
+                                pred = _conv_same_torch(x_t, wk)
+                                wmap = _weight_map(yt, pred, local_delta, var_map=vt, mask=mt)
+                                num += _conv_same_torch(wmap * yt,   wkT)
+                                den += _conv_same_torch(wmap * pred, wkT)
+
+                                del yt, mt, vt, pred, wmap
+                                if cuda_ok:
+                                    try:
+                                        torch.cuda.empty_cache()
+                                    except Exception:
+                                        pass
+
+                        # ── FIX 2 (Torch): in-place update — avoids 3 extra full tensors.
+                        # neutral check MUST happen before den.add_(EPS) or it's always False
+                        neutral = (den.abs() < 1e-12) & (num.abs() < 1e-12)
+                        den.add_(EPS)
+                        num.div_(den)                       # num  = ratio  (in-place)
+                        num[neutral] = 1.0                  # neutral pixels → no update
+                        num.clamp_(1.0 / kappa, kappa)      # num  = upd    (in-place)
+
+                        # measure convergence BEFORE x_t changes
+                        upd_med    = torch.median(torch.abs(num - 1.0))
+                        um         = float(upd_med.detach().cpu().item())
+
+                        x_next     = x_t.mul(num).clamp_(min=0.0)   # one new tensor (unavoidable)
+                        rel_change = (
+                            torch.median(torch.abs(x_next - x_t)) /
+                            (torch.median(torch.abs(x_t)) + 1e-8)
+                        )
+                        rc = float(rel_change.detach().cpu().item())
+
+                        if early.step(it, max_iters, um, rc):
+                            x_t = x_next
+                            used_iters_local  = it
+                            early_stopped_local = True
+                            _process_gui_events_safely()
+                            break
+
+                        # relax fully in-place — no extra allocation
+                        x_t.mul_(1.0 - relax)
+                        x_t.add_(relax * x_next)
+                        del x_next
+
+                    # ── NUMPY ITERATION ───────────────────────────────────────────
+                    else:
+                        num.fill(0.0)
+                        den.fill(0.0)
+
+                        if r > 1:
+                            for fidx, (psf_k, psf_kT, (kh, kw, fftH, fftW)) in enumerate(
+                                zip(psfs, flip_psf, np_meta)
+                            ):
+                                # ── FIX 1 (NumPy): on-demand FFT; free immediately after.
+                                Kf  = _fft.rfftn(np.fft.ifftshift(psf_k),  s=(fftH, fftW))
+                                KTf = _fft.rfftn(np.fft.ifftshift(psf_kT), s=(fftH, fftW))
+
+                                y_nat = data[fidx]
+                                m2d   = mask_list[fidx]
+                                v2d   = var_list_base[fidx]
+
+                                _fft_conv_same_np(x_t, Kf, kh, kw, fftH, fftW, pred_buf)
+                                pred_low = _downsample_avg(pred_buf, r)
+                                wmap_low = _weight_map(y_nat, pred_low, local_delta,
+                                                    var_map=v2d, mask=m2d)
+                                up_y    = _upsample_sum(wmap_low * y_nat,     r,
+                                                        target_hw=pred_buf.shape[-2:])
+                                up_pred = _upsample_sum(wmap_low * pred_low,  r,
+                                                        target_hw=pred_buf.shape[-2:])
+                                _fft_conv_same_np(up_y,    KTf, kh, kw, fftH, fftW, tmp_out)
+                                num += tmp_out
+                                _fft_conv_same_np(up_pred, KTf, kh, kw, fftH, fftW, tmp_out)
+                                den += tmp_out
+                                del Kf, KTf, pred_low, wmap_low, up_y, up_pred
+
+                        else:
+                            for fidx, (psf_k, psf_kT, (kh, kw, fftH, fftW)) in enumerate(
+                                zip(psfs, flip_psf, np_meta)
+                            ):
+                                # ── FIX 1 (NumPy): on-demand FFT; free immediately after.
+                                Kf  = _fft.rfftn(np.fft.ifftshift(psf_k),  s=(fftH, fftW))
+                                KTf = _fft.rfftn(np.fft.ifftshift(psf_kT), s=(fftH, fftW))
+
+                                y_nat = data[fidx]
+                                m2d   = mask_list[fidx]
+                                v2d   = var_list_base[fidx]
+
+                                _fft_conv_same_np(x_t, Kf, kh, kw, fftH, fftW, pred_buf)
+                                wmap    = _weight_map(y_nat, pred_buf, local_delta,
+                                                    var_map=v2d, mask=m2d)
+                                up_y    = wmap * y_nat
+                                up_pred = wmap * pred_buf
+                                _fft_conv_same_np(up_y,    KTf, kh, kw, fftH, fftW, tmp_out)
+                                num += tmp_out
+                                _fft_conv_same_np(up_pred, KTf, kh, kw, fftH, fftW, tmp_out)
+                                den += tmp_out
+                                del Kf, KTf, wmap, up_y, up_pred
+
+                        # ── FIX 2 (NumPy): fully in-place update chain.
+                        # Before: ratio(new) + neutral(new) + upd(new) + x_next(new) = ~1.6 GB
+                        # After:  reuse num as ratio→upd scratch; tmp_out as x_next scratch.
+                        den      += EPS
+                        neutral   = (np.abs(den) < 1e-12 + EPS) & (np.abs(num) < 1e-12)
+                        np.divide(num, den, out=num)               # num  = ratio
+                        num[neutral] = 1.0                         # fix neutral pixels
+                        np.clip(num, 1.0 / kappa, kappa, out=num)  # num  = upd
+
+                        # convergence (before x_t changes)
+                        um = float(np.median(np.abs(num - 1.0)))
+
+                        # x_next into tmp_out (already allocated — saves ~400 MB)
+                        np.multiply(x_t, num, out=tmp_out)
+                        np.clip(tmp_out, 0.0, None, out=tmp_out)
+
+                        rc = float(
+                            np.median(np.abs(tmp_out - x_t)) /
+                            (np.median(np.abs(x_t)) + 1e-8)
+                        )
+
+                        if early.step(it, max_iters, um, rc):
+                            np.copyto(x_t, tmp_out)
+                            used_iters_local  = it
+                            early_stopped_local = True
+                            _process_gui_events_safely()
+                            break
+
+                        # relax fully in-place
+                        x_t  *= (1.0 - relax)
+                        x_t  += relax * tmp_out
+
+                    # ── shared post-iteration bookkeeping ────────────────────────
+                    if save_intermediate_this_run and (it % int(max(1, save_every)) == 0):
+                        try:
+                            x_np = (x_t.detach().cpu().numpy().astype(np.float32)
+                                    if use_torch else x_t.astype(np.float32))
+                            _save_iter_image(x_np, hdr0_seed, iter_dir, f"iter_{it:03d}", color_mode)
+                        except Exception as _e:
+                            status_cb(f"Intermediate save failed at iter {it}: {_e}")
+
+                    frac = 0.25 + 0.70 * (it / float(max_iters))
+                    _emit_pct(frac, f"Iteration {it}/{max_iters} [{run_label}]")
+                    _process_gui_events_safely()
+
+            if not early_stopped_local:
+                used_iters_local = max_iters
+
+            x_final_local = (x_t.detach().cpu().numpy().astype(np.float32)
+                            if use_torch else x_t.astype(np.float32))
+
+            if x_final_local.ndim == 3:
+                if x_final_local.shape[0] not in (1, 3) and x_final_local.shape[-1] in (1, 3):
+                    x_final_local = np.moveaxis(x_final_local, -1, 0)
+                if x_final_local.shape[0] == 1:
+                    x_final_local = x_final_local[0]
+
+            try:
+                if use_torch:
+                    try:
+                        del num, den
+                    except Exception:
+                        pass
+                    try:
+                        del psf_t, psfT_t
+                    except Exception:
+                        pass
+                    _free_torch_memory()
+            except Exception:
+                pass
+
+            return x_final_local, used_iters_local, early_stopped_local
 
     # Run strategy:
     #   strength <= 0   -> no rejection-map solve only
