@@ -326,3 +326,70 @@ def prism_denoise_rgb01(
     if was_mono:
         return denoised.mean(axis=2).astype(np.float32, copy=False), info
     return denoised, info
+
+def clear_prism_models_cache(*, aggressive: bool = False, status_cb=print) -> None:
+    """
+    Clears in-process SyQon Prism model/session caches so RAM/VRAM can be reclaimed.
+
+    - aggressive=False: clears Python references only.
+    - aggressive=True : also tries gc.collect() plus torch CUDA/MPS cache flush.
+    """
+    global _SYQON_PRISM_SESSION, _SYQON_PRISM_CKPT
+
+    try:
+        had_session = _SYQON_PRISM_SESSION is not None
+        had_ckpt = _SYQON_PRISM_CKPT is not None
+
+        _SYQON_PRISM_SESSION = None
+        _SYQON_PRISM_CKPT = None
+
+        status_cb(
+            f"[SyQon Prism] Cleared cache "
+            f"(session={'yes' if had_session else 'no'}, ckpt={'yes' if had_ckpt else 'no'})"
+        )
+    except Exception as e:
+        try:
+            status_cb(f"[SyQon Prism] Cache clear failed: {type(e).__name__}: {e}")
+        except Exception:
+            pass
+
+    if not aggressive:
+        return
+
+    try:
+        import gc
+        gc.collect()
+        status_cb("[SyQon Prism] gc.collect() called")
+    except Exception:
+        pass
+
+    try:
+        from setiastro.saspro.runtime_torch import import_torch
+        torch = import_torch(
+            prefer_cuda=True,
+            prefer_xpu=False,
+            prefer_dml=True,
+            status_cb=lambda *_: None,
+        )
+
+        # CUDA
+        try:
+            if getattr(torch, "cuda", None) and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                if hasattr(torch.cuda, "ipc_collect"):
+                    torch.cuda.ipc_collect()
+                status_cb("[SyQon Prism] torch.cuda.empty_cache() called")
+        except Exception:
+            pass
+
+        # MPS
+        try:
+            if hasattr(torch, "backends") and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                if hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
+                    torch.mps.empty_cache()
+                    status_cb("[SyQon Prism] torch.mps.empty_cache() called")
+        except Exception:
+            pass
+
+    except Exception:
+        pass

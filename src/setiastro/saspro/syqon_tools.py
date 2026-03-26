@@ -15,7 +15,13 @@ from PyQt6.QtGui import QIcon, QDesktopServices, QPixmap
 from setiastro.saspro.resources import starnet_path
 
 from setiastro.saspro.syqon_paths import syqon_prism_model_path
-from setiastro.saspro.denoise_engines.syqon_prism_engine import prism_denoise_rgb01
+from setiastro.saspro.denoise_engines.syqon_prism_engine import (
+    prism_denoise_rgb01,
+    clear_prism_models_cache,
+)
+from setiastro.saspro.starless_engines.syqon_nafnet_engine import (
+    clear_axiom_models_cache,
+)
 from setiastro.saspro.remove_stars import (
     SyQonStarlessDialog,
     _ProcDialog,
@@ -228,14 +234,17 @@ class _SyQonDenoiseHubPage(QWidget):
         self.btn_buy = QPushButton("Get Model Here...", self)
         self.btn_install = QPushButton("Install Downloaded Model...", self)
         self.btn_remove = QPushButton("Remove Model", self)
+        self.btn_clear_cache = QPushButton("Clear AI Cache", self)
 
         self.btn_buy.clicked.connect(self._open_buy_page)
         self.btn_install.clicked.connect(self._install_model)
         self.btn_remove.clicked.connect(self._remove_model)
+        self.btn_clear_cache.clicked.connect(self._clear_ai_cache)
 
         btn_row.addWidget(self.btn_buy)
         btn_row.addWidget(self.btn_install)
         btn_row.addWidget(self.btn_remove)
+        btn_row.addWidget(self.btn_clear_cache)
 
         btn_wrap = QWidget(self)
         btn_wrap.setLayout(btn_row)
@@ -531,6 +540,7 @@ class _SyQonDenoiseHubPage(QWidget):
         self.btn_buy.setEnabled(not busy)
         self.btn_install.setEnabled(not busy)
         self.btn_remove.setEnabled((not busy) and self._have_model())
+        self.btn_clear_cache.setEnabled(not busy)
 
         self.cmb_model.setEnabled(not busy)
         self.spin_tile.setEnabled(not busy)
@@ -745,6 +755,33 @@ class _SyQonDenoiseHubPage(QWidget):
         self.proc_thr.progress.connect(self._on_worker_progress)
         self.proc_thr.finished.connect(self._on_worker_finished)
         self.proc_thr.start()
+
+    def _clear_ai_cache(self):
+        errors = []
+
+        try:
+            clear_prism_models_cache(aggressive=True, status_cb=print)
+        except Exception as e:
+            errors.append(f"Prism: {type(e).__name__}: {e}")
+
+        try:
+            clear_axiom_models_cache(aggressive=True, status_cb=print)
+        except Exception as e:
+            errors.append(f"Axiom: {type(e).__name__}: {e}")
+
+        if errors:
+            QMessageBox.warning(
+                self,
+                "SyQon Tools",
+                "AI cache clear completed with some issues:\n\n" + "\n".join(errors)
+            )
+            return
+
+        QMessageBox.information(
+            self,
+            "SyQon Tools",
+            "AI cache cleared.\n\nNext Prism or Axiom run will take longer because models must reload."
+        )
 
     def closeEvent(self, ev):
         try:
@@ -1061,3 +1098,15 @@ def _run_syqon_prism_headless(main, doc, preset: dict | None = None):
     dlg.show()
     thr.start()
     dlg.exec()    
+
+
+def run_syqon_prism_via_preset(main, doc, preset: dict | None = None):
+    preset = dict(preset or {})
+    preset["family"] = "denoise"
+    return run_syqon_tools_via_preset(main, doc, preset)
+
+
+def run_syqon_starless_via_preset(main, doc, preset: dict | None = None):
+    preset = dict(preset or {})
+    preset["family"] = "starless"
+    return run_syqon_tools_via_preset(main, doc, preset)    

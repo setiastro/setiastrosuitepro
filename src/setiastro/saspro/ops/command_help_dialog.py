@@ -195,7 +195,6 @@ def render_spec_markdown(cid: str, spec: CommandSpec) -> str:
 # ---------------------------------------------------------------------
 # Script Context (ctx) Help
 # ---------------------------------------------------------------------
-
 def render_scripting_quickstart_markdown() -> str:
     return "\n".join([
         "## Scripting Quickstart",
@@ -254,6 +253,34 @@ def render_scripting_quickstart_markdown() -> str:
         "    ctx.run_command('stat_stretch', {'target_median': 0.25})",
         "    ctx.run_command('remove_green', {'amount': 0.7})",
         "```",
+        "",
+        "### SyQon examples",
+        "Prism and SyQon Starless are scriptable just like the other built-in tools:",
+        "```python",
+        "def run(ctx):",
+        "    ctx.run_command('syqon_prism', {",
+        "        'model_kind': 'prism_mini',",
+        "        'tile_size': 512,",
+        "        'overlap': 64,",
+        "        'pad': 96,",
+        "        'strength': 0.85,",
+        "        'use_mtf': False,",
+        "        'use_amp': False,",
+        "    })",
+        "",
+        "    ctx.run_command('syqon_starless', {",
+        "        'starless_model_kind': 'nadir',",
+        "        'starless_tile_size': 512,",
+        "        'starless_overlap': 64,",
+        "        'starless_make_stars': True,",
+        "        'starless_pad_edges': True,",
+        "        'starless_pad_pixels': 128,",
+        "        'starless_stars_extract': 'subtract',",
+        "    })",
+        "```",
+        "",
+        "Common aliases also work if they are registered, for example `ctx.run_command('prism', {...})`",
+        "or `ctx.run_command('axiom', {...})`.",
         "",
         "### Running Function Bundles from scripts",
         "Function Bundles are saved sequences of commands you manage in the **Function Bundles** dialog.",
@@ -371,6 +398,30 @@ def render_ctx_api_markdown() -> str:
         "ctx.run_command('abe', {'degree':2, 'samples':150})",
         "```",
         "",
+        "SyQon examples:",
+        "```python",
+        "ctx.run_command('syqon_prism', {",
+        "    'model_kind': 'prism_deep',",
+        "    'tile_size': 768,",
+        "    'overlap': 96,",
+        "    'pad': 96,",
+        "    'strength': 0.90,",
+        "    'use_mtf': True,",
+        "    'mtf_target_median': 0.10,",
+        "    'use_amp': True,",
+        "})",
+        "",
+        "ctx.run_command('syqon_starless', {",
+        "    'starless_model_kind': 'nadir',",
+        "    'starless_tile_size': 768,",
+        "    'starless_overlap': 96,",
+        "    'starless_make_stars': True,",
+        "    'starless_pad_edges': True,",
+        "    'starless_pad_pixels': 128,",
+        "    'starless_stars_extract': 'subtract',",
+        "})",
+        "```",
+        "",
         "You can also run **Function Bundles**:",
         "```python",
         "cfg = {",
@@ -422,8 +473,6 @@ def render_ctx_api_markdown() -> str:
         "# ctx.open_new_document(out, name=\"a_dim\")",
         "```",
     ])
-
-
 
 class CommandHelpDialog(QDialog):
     """

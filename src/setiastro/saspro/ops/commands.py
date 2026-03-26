@@ -166,6 +166,18 @@ ALIASES: Dict[str, str] = {
     "align_stars": "star_align",
     "align": "star_align",
 
+    # SyQon
+    "prism": "syqon_prism",
+    "syqon_prism": "syqon_prism",
+    "syqon_denoise": "syqon_prism",
+    "prism_denoise": "syqon_prism",
+
+    "syqon_starless": "syqon_starless",
+    "axiom": "syqon_starless",
+    "syqon_axiom": "syqon_starless",
+    "nadir": "syqon_starless",
+    "starless_syqon": "syqon_starless",
+
     "convo": "convo",
     "convolution": "convo",
     "deconvolution": "convo",
@@ -1427,6 +1439,117 @@ register(CommandSpec(
     ],
     supports_mono=True,
     supports_rgb=True,
+))
+
+register(CommandSpec(
+    id="syqon_prism",
+    title="SyQon Prism",
+    group="AI",
+    import_path="setiastro.saspro.syqon_tools",
+    callable_name="run_syqon_prism_via_preset",
+    summary=(
+        "SyQon Prism denoise. Uses the installed Prism model and the same "
+        "headless path as the SyQon Tools panel. Supports optional temporary "
+        "MTF stretch, AMP, tiling, overlap, reflect edge padding, and strength."
+    ),
+    presets=[
+        PresetSpec(
+            "model_kind", "enum", default="prism_mini",
+            enum=["prism_mini", "prism_deep"],
+            desc="Which installed Prism model to use."
+        ),
+        PresetSpec(
+            "tile_size", "int", default=512, min=128, max=2048,
+            desc="Tile size for Prism inference."
+        ),
+        PresetSpec(
+            "overlap", "int", default=64, min=0, max=1024,
+            desc="Tile overlap in pixels."
+        ),
+        PresetSpec(
+            "pad", "int", default=96, min=0, max=2048,
+            desc="Whole-image reflect padding in pixels before inference."
+        ),
+        PresetSpec(
+            "strength", "float", default=0.85, min=0.0, max=1.0,
+            desc="Blend amount between original and denoised result."
+        ),
+        PresetSpec(
+            "use_mtf", "bool", default=False,
+            desc="Apply temporary MTF stretch before Prism."
+        ),
+        PresetSpec(
+            "mtf_target_median", "float", default=0.10, min=0.01, max=0.50,
+            desc="Temporary MTF stretch target median."
+        ),
+        PresetSpec(
+            "use_amp", "bool", default=False,
+            desc="Use mixed precision when supported."
+        ),
+    ],
+    examples=[
+        "ctx.run_command('syqon_prism', {'model_kind': 'prism_mini'})",
+        "ctx.run_command('syqon_prism', {'model_kind': 'prism_deep', 'tile_size': 768, 'overlap': 96, 'strength': 0.9})",
+        "ctx.run_command('prism', {'use_mtf': True, 'mtf_target_median': 0.10, 'use_amp': True})",
+    ],
+    supports_mono=True,
+    supports_rgb=True,
+    supports_linear=True,
+    supports_nonlinear=True,
+))
+
+register(CommandSpec(
+    id="syqon_starless",
+    title="SyQon Starless",
+    group="Star Tools",
+    import_path="setiastro.saspro.syqon_tools",
+    callable_name="run_syqon_starless_via_preset",
+    summary=(
+        "SyQon starless / Axiom-style star removal through the SyQon Tools "
+        "headless path. Internally routes to the SyQon starless engine via the "
+        "remove-stars preset pipeline."
+    ),
+    presets=[
+        PresetSpec(
+            "starless_model_kind", "enum", default="nadir",
+            enum=["nadir"],
+            desc="SyQon starless model variant. Current default is nadir."
+        ),
+        PresetSpec(
+            "starless_tile_size", "int", default=512, min=128, max=2048,
+            desc="Tile size for starless inference."
+        ),
+        PresetSpec(
+            "starless_overlap", "int", default=64, min=0, max=1024,
+            desc="Tile overlap in pixels."
+        ),
+        PresetSpec(
+            "starless_make_stars", "bool", default=True,
+            desc="Also create a stars-only companion result if supported."
+        ),
+        PresetSpec(
+            "starless_pad_edges", "bool", default=True,
+            desc="Reflect-pad edges before inference."
+        ),
+        PresetSpec(
+            "starless_pad_pixels", "int", default=128, min=0, max=2048,
+            desc="Edge padding size in pixels."
+        ),
+        PresetSpec(
+            "starless_stars_extract", "enum", default="subtract",
+            enum=["subtract", "unscreen", "additive"],
+            desc="Stars-only extraction/blend mode."
+        ),
+    ],
+    examples=[
+        "ctx.run_command('syqon_starless', {})",
+        "ctx.run_command('axiom', {'starless_tile_size': 768, 'starless_overlap': 96})",
+        "ctx.run_command('syqon_starless', {'starless_make_stars': True, 'starless_pad_edges': True, 'starless_pad_pixels': 128, 'starless_stars_extract': 'subtract'})",
+    ],
+    supports_mono=True,
+    supports_rgb=True,
+    supports_linear=True,
+    supports_nonlinear=True,
 ))
 
 register(CommandSpec(
