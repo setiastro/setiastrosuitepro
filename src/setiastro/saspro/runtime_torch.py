@@ -793,25 +793,23 @@ def _install_torch(
         if index_url:
             base += ["--index-url", index_url]
 
-        # First try "latest trio" from that index
-        if _pip_ok(base + ["torch", "torchvision", "torchaudio"]):
+        # First try "latest pair" from that index
+        if _pip_ok(base + ["torch", "torchvision"]):
             return True
 
-        # Walk the ladder: pin TORCH only, let pip resolve compatible torchvision/torchaudio
+        # Walk the ladder: pin TORCH only, let pip resolve compatible torchvision
         for v in versions:
-            # v looks like "2.4.*" -> family "2.4"
             fam = v.replace(".*", "")
-            tv_v, ta_v = _TORCH_COMPAT.get(fam, (None, None))
+            tv_v, _ta_v = _TORCH_COMPAT.get(fam, (None, None))
 
             # Fallback if mapping missing: pin torch only
-            if not tv_v or not ta_v:
-                if _pip_ok(base + [f"torch=={v}", "torchvision", "torchaudio"]):
+            if not tv_v:
+                if _pip_ok(base + [f"torch=={v}", "torchvision"]):
                     return True
                 continue
 
-            if _pip_ok(base + [f"torch=={v}", f"torchvision=={tv_v}", f"torchaudio=={ta_v}"]):
+            if _pip_ok(base + [f"torch=={v}", f"torchvision=={tv_v}"]):
                 return True
-
 
         return False
 
@@ -926,13 +924,13 @@ def _install_torch(
         status_cb("Installing PyTorch with DirectML (torch-directml)…")
 
         # Clean slate helps resolver if something already got partially installed
-        _pip_ok(["uninstall", "-y", "torch", "torchvision", "torchaudio", "torch-directml"])
+        _pip_ok(["uninstall", "-y", "torch", "torchvision", "torch-directml"])
 
         if not _pip_ok(["install", "--prefer-binary", "--no-cache-dir", "torch-directml"]):
             raise RuntimeError("Failed to install torch-directml.")
 
-        # You still need torchvision/torchaudio for your app; let pip resolve compatible versions.
-        _pip_ok(["install", "--prefer-binary", "--no-cache-dir", "torchvision", "torchaudio"])
+        # torchvision is still useful for some models/utilities; torchaudio is optional.
+        _pip_ok(["install", "--prefer-binary", "--no-cache-dir", "torchvision"])
 
         # Verify import + device creation
         code = "import torch, torch_directml; d=torch_directml.device(); x=torch.tensor([1]).to(d); y=torch.tensor([2]).to(d); print(int((x+y).item()))"
@@ -985,7 +983,7 @@ def _venv_import_probe(venv_python: Path, modname: str) -> tuple[bool, str]:
     return False, out[-4000:] if out else "no output"
 
 
-def _write_torch_marker(marker: Path, status_cb=print) -> None:
+def _write_torch_marker(marker: Path, status_cb=print, *, require_torchaudio: bool = False) -> None:
     """
     Create torch_installed.json based on runtime venv imports.
     Safe to call repeatedly.
@@ -1007,6 +1005,7 @@ def _write_torch_marker(marker: Path, status_cb=print) -> None:
         "torch_file": None,
         "torchvision_file": None,
         "torchaudio_file": None,
+        "require_torchaudio": bool(require_torchaudio),
         "probe": {
             "torch": out_t,
             "torchvision": out_v,
@@ -1014,7 +1013,6 @@ def _write_torch_marker(marker: Path, status_cb=print) -> None:
         }
     }
 
-    # get venv python version
     try:
         r = subprocess.run(
             [str(vp), "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
@@ -1027,9 +1025,7 @@ def _write_torch_marker(marker: Path, status_cb=print) -> None:
     except Exception:
         pass
 
-    # parse "OK ver file" lines
     def _parse_ok(s: str):
-        # format: "OK <ver> <file>"
         try:
             parts = s.split(" ", 2)
             ver = parts[1] if len(parts) > 1 else None
@@ -1055,10 +1051,10 @@ def _venv_has_torch_stack(
     vp: Path,
     status_cb=print,
     *,
-    require_torchaudio: bool = True
+    require_torchaudio: bool = False
 ) -> tuple[bool, dict]:
     """
-    Definitive check: can the RUNTIME VENV import torch/torchvision/(torchaudio)?
+    Definitive check: can the RUNTIME VENV import torch/torchvision(/torchaudio)?
     This does NOT use the frozen app interpreter to decide installation state.
     """
     ok_t, out_t = _venv_import_probe(vp, "torch")
@@ -1079,7 +1075,7 @@ def _marker_says_ready(
     site: Path,
     venv_ver: tuple[int, int] | None,
     *,
-    require_torchaudio: bool = True,
+    require_torchaudio: bool = False,
     max_age_days: int = 180,
 ) -> bool:
     """
@@ -1087,11 +1083,6 @@ def _marker_says_ready(
 
     Returns True if the marker looks sane enough that an in-process import attempt
     is worth trying *without* doing the expensive subprocess venv probes.
-
-    IMPORTANT:
-      - This must NOT be used to decide whether to install/uninstall anything.
-      - If this returns True and the in-process import fails, we fall back to the
-        definitive venv probe (_venv_has_torch_stack).
     """
     try:
         if not marker.exists():
@@ -1105,14 +1096,12 @@ def _marker_says_ready(
         if not data.get("installed", False):
             return False
 
-        # Age gate (advisory only).
         when = data.get("when")
         if isinstance(when, (int, float)):
             age_s = max(0.0, time.time() - float(when))
             if age_s > (max_age_days * 86400):
                 return False
 
-        # Marker python version should match the RUNTIME VENV python (not the app interpreter).
         py = data.get("python")
         if not (isinstance(py, str) and py.strip()):
             return False
@@ -1123,14 +1112,12 @@ def _marker_says_ready(
         except Exception:
             return False
 
-        # If we can't determine venv version, treat marker as unreliable for fast-path.
         if venv_ver is None:
             return False
 
         if marker_ver != venv_ver:
             return False
 
-        # Check that recorded files (if present) live under the computed site-packages path.
         site_s = str(site)
         tf = data.get("torch_file")
         tvf = data.get("torchvision_file")
@@ -1188,7 +1175,7 @@ def import_torch(
     prefer_rocm: bool = False,
     status_cb=print,
     *,
-    require_torchaudio: bool = True,
+    require_torchaudio: bool = False,
     allow_install: bool = False,
 ):
     """
@@ -1631,7 +1618,7 @@ def add_runtime_to_sys_path(status_cb=print) -> None:
 def prewarm_torch_cache(
     status_cb=print,
     *,
-    require_torchaudio: bool = True,
+    require_torchaudio: bool = False,
     ensure_venv: bool = True,
     ensure_numpy: bool = False,
     validate_marker: bool = True,
