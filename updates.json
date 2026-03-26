@@ -1,9 +1,9 @@
 {
-  "version": "1.13.1.post1",
+  "version": "1.13.2",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.13.1/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.13.1/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.13.1/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.13.2/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.13.2/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.13.2/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.13.1 MFD ram usage improvements for Normal mode. Satellite Remover now goes all the way to the edge of images. MFD bug fix during 0 rejection map phase. ADBE autostretch bug fix.  V1.13.0 MFDeconv now utilizes rejection maps. When running MFDeconv it will now do normal integration first, create rejection maps from that, then utilize those rejection maps in MFD. Updated white paper for those interested: https://zenodo.org/records/19168050  Satellite Trail Remover when called from Stacking Suite will now provide binary rejection masks to stacking suite. Stacking suite updated to utilize pre satellite trail removed images in the Light tab, or use the check box to run it during calibration. Bug fix so even removed trails before integration pass their rejection maps correctly including all the way to drizzling or MFD. CC Sharpen - Stellar fix to stop some images producing black points inside stars."
+  "notes": "Seti Astro Suite Pro V1.13.2 Updated Install HW Acceleration for DirectML users to avoid torchaudio. Updated Scripts for ctx callable Syqon Tools. Bug fix in Clone Stamp with AutoStretch V1.13.1 MFD ram usage improvements for Normal mode. Satellite Remover now goes all the way to the edge of images. MFD bug fix during 0 rejection map phase. ADBE autostretch bug fix.  V1.13.0 MFDeconv now utilizes rejection maps. When running MFDeconv it will now do normal integration first, create rejection maps from that, then utilize those rejection maps in MFD. Updated white paper for those interested: https://zenodo.org/records/19168050  Satellite Trail Remover when called from Stacking Suite will now provide binary rejection masks to stacking suite. Stacking suite updated to utilize pre satellite trail removed images in the Light tab, or use the check box to run it during calibration. Bug fix so even removed trails before integration pass their rejection maps correctly including all the way to drizzling or MFD. CC Sharpen - Stellar fix to stop some images producing black points inside stars."
 }
