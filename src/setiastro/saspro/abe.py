@@ -637,9 +637,46 @@ class ABEDialog(QDialog):
         self.chk_preview_bg   = QCheckBox(self.tr("Preview background instead of corrected")); self.chk_preview_bg.setChecked(False)
         self.cmb_sample_mode = QComboBox()
         self.cmb_sample_mode.addItems(["Auto", "Manual"])
+        # ── Place Points group ──────────────────────────────────────────
+        gb_place = QGroupBox(self.tr("Place Sample Points"))
+        place_layout = QVBoxLayout(gb_place)
+
+        # Grid row
+        grid_row = QHBoxLayout()
+        self.btn_place_grid = QPushButton(self.tr("Place Grid"))
+        self.btn_place_grid.setToolTip(
+            "Fill the image with a regular N×N grid of sample points.\n"
+            "Switches to Manual mode so you can add/remove points before running."
+        )
+        self.sp_grid_size = QSpinBox()
+        self.sp_grid_size.setRange(2, 50)
+        self.sp_grid_size.setValue(10)
+        self.sp_grid_size.setPrefix("Grid: ")
+        self.sp_grid_size.setSuffix("×" + str(self.sp_grid_size.value()))
+        self.sp_grid_size.setToolTip("Number of grid points along each axis (N×N total)")
+        self.sp_grid_size.valueChanged.connect(
+            lambda v: self.sp_grid_size.setSuffix(f"×{v}")
+        )
+        grid_row.addWidget(self.btn_place_grid)
+        grid_row.addWidget(self.sp_grid_size)
+        grid_row.addStretch(1)
+
+        # Auto points row
+        self.btn_place_auto = QPushButton(self.tr("Show Auto Points"))
+        self.btn_place_auto.setToolTip(
+            "Run the automatic gradient-descent sampler and show all chosen points.\n"
+            "Switches to Manual mode so you can tweak before running."
+        )
+
+        place_layout.addLayout(grid_row)
+        place_layout.addWidget(self.btn_place_auto)
 
         self.btn_clear_samples = QPushButton(self.tr("Clear Sample Points"))
         self.btn_clear_samples.clicked.connect(self._clear_manual_samples)
+
+        self.btn_place_grid.clicked.connect(self._place_grid_points)
+        self.btn_place_auto.clicked.connect(self._place_auto_points)
+
         # Preview area
         self.preview_label = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
         self.preview_label.setMinimumSize(QSize(480, 360))
@@ -675,14 +712,18 @@ class ABEDialog(QDialog):
         rbf_box.setLayout(rbf_form)
 
         opts = QVBoxLayout()
-        opts.addLayout(params)
-        opts.addWidget(rbf_box)
+        opts.addLayout(params)          # degree, samples, downsample, patch, sample mode
+        opts.addWidget(gb_place)        # Place Grid / Show Auto Points — part of sampling setup
+        opts.addWidget(self.btn_clear_samples)
+        opts.addWidget(rbf_box)         # RBF refinement
         opts.addWidget(self.chk_make_bg_doc)
         opts.addWidget(self.chk_preview_bg)
-        row = QHBoxLayout(); row.addWidget(self.btn_preview); row.addWidget(self.btn_apply); row.addStretch(1)
+        row = QHBoxLayout()
+        row.addWidget(self.btn_preview)
+        row.addWidget(self.btn_apply)
+        row.addStretch(1)
         opts.addLayout(row)
-        opts.addWidget(self.btn_clear)
-        opts.addWidget(self.btn_clear_samples)
+        opts.addWidget(self.btn_clear)  # Clear Exclusions (polygon drawing tool)
         opts.addStretch(1)
 
         # ▼ New status label
@@ -820,6 +861,93 @@ class ABEDialog(QDialog):
             return -1
 
         return best_idx if best_d2 <= (max_dist_px * max_dist_px) else -1
+
+    def _place_grid_points(self):
+        """Generate a regular grid of sample points and switch to manual mode."""
+        src = self._get_source_float()
+        if src is None:
+            return
+
+        H, W = src.shape[:2]
+        n = int(self.sp_grid_size.value())
+        border = int(self.sp_patch.value()) // 2 + 2
+
+        excl = self._build_exclusion_mask()
+
+        xs = np.linspace(border, W - border - 1, n, dtype=int)
+        ys = np.linspace(border, H - border - 1, n, dtype=int)
+
+        new_pts = []
+        for y in ys:
+            for x in xs:
+                # Skip points inside exclusion polygons
+                if excl is not None and not excl[int(y), int(x)]:
+                    continue
+                new_pts.append(QPointF(float(x), float(y)))
+
+        self._manual_points.clear()
+        self._manual_points.extend(new_pts)
+
+        # Switch to manual so user can edit
+        self.cmb_sample_mode.setCurrentText("Manual")
+        self.btn_clear_samples.setEnabled(len(self._manual_points) > 0)
+        self._redraw_overlay()
+        self._set_status(f"Placed {len(new_pts)} grid points ({n}×{n}). Edit as needed.")
+
+
+    def _place_auto_points(self):
+        """Run auto gradient-descent sampling and push results into manual points."""
+        src = self._get_source_float()
+        if src is None:
+            return
+
+        self._set_status("Running auto sampling with gradient descent…")
+        QApplication.processEvents()
+
+        dwn   = int(self.sp_down.value())
+        npts  = int(self.sp_samples.value())
+        patch = int(self.sp_patch.value())
+
+        excl = self._build_exclusion_mask()
+
+        # Downsample for speed (same as abe_run does)
+        small = _downsample_area(src, dwn)
+        mask_small = None
+        if excl is not None:
+            mask_small = _downsample_area(excl.astype(np.float32), dwn) >= 0.5
+
+        # Run the same auto sampler used internally
+        pts_small = _generate_sample_points(
+            small,
+            num_points=npts,
+            exclusion_mask=mask_small,
+            patch_size=patch,
+        )
+
+        if pts_small is None or len(pts_small) == 0:
+            self._set_status("Auto sampling found no valid points.")
+            return
+
+        # Scale back up to full image coords
+        H, W = src.shape[:2]
+        sh, sw = small.shape[:2]
+        sx = W / max(1, sw)
+        sy = H / max(1, sh)
+
+        self._manual_points.clear()
+        for x, y in pts_small:
+            fx = float(np.clip(x * sx, 0, W - 1))
+            fy = float(np.clip(y * sy, 0, H - 1))
+            self._manual_points.append(QPointF(fx, fy))
+
+        # Switch to manual so user can edit
+        self.cmb_sample_mode.setCurrentText("Manual")
+        self.btn_clear_samples.setEnabled(len(self._manual_points) > 0)
+        self._redraw_overlay()
+        self._set_status(
+            f"Placed {len(self._manual_points)} auto-sampled points. "
+            "Right-click to remove, left-click to add."
+        )
 
     def _post_init_fit_and_stretch(self) -> None:
         if self._preview_qimg is None:
