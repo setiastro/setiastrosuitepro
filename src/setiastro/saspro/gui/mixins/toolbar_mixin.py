@@ -86,6 +86,16 @@ class ToolbarMixin:
 
         tb.addAction(self.act_open)
         tb.addAction(self.act_save)
+        btn_save = tb.widgetForAction(self.act_save)
+        if isinstance(btn_save, QToolButton):
+            save_menu = QMenu(btn_save)
+            save_menu.addAction(self.act_save_fits)
+            save_menu.addAction(self.act_save_xisf)
+            save_menu.addAction(self.act_save_tiff)
+            save_menu.addAction(self.act_save_png)
+            save_menu.addAction(self.act_save_jpeg)
+            btn_save.setMenu(save_menu)
+            btn_save.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)        
         tb.addAction(self.act_checkpoint_save) 
         tb.addSeparator()
         tb.addAction(self.act_undo)
@@ -612,7 +622,19 @@ class ToolbarMixin:
 
                 # IMPORTANT: re-apply style after action moves / rebind
                 self._style_toggle_toolbutton(btn)
-
+        tb_save = self._toolbar_containing_action(self.act_save)
+        if tb_save:
+            btn_save = tb_save.widgetForAction(self.act_save)
+            if isinstance(btn_save, QToolButton):
+                save_menu = QMenu(btn_save)
+                save_menu.addAction(self.act_save_fits)
+                save_menu.addAction(self.act_save_xisf)
+                save_menu.addAction(self.act_save_tiff)
+                save_menu.addAction(self.act_save_png)
+                save_menu.addAction(self.act_save_jpeg)
+                btn_save.setMenu(save_menu)
+                btn_save.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+                
     def _bind_view_toolbar_menus(self, tb: DraggableToolBar):
         # --- Display-Stretch menu ---
         btn = tb.widgetForAction(self.act_autostretch)
@@ -716,6 +738,18 @@ class ToolbarMixin:
         self.act_save.setShortcut(QKeySequence.StandardKey.SaveAs)
         self.act_save.setStatusTip(self.tr("Save the active image"))
         self.act_save.triggered.connect(self.save_active)
+        # Save As format submenu actions
+        self.act_save_fits  = QAction(self.tr("FITS (.fits)"),  self)
+        self.act_save_xisf  = QAction(self.tr("XISF (.xisf)"),  self)
+        self.act_save_tiff  = QAction(self.tr("TIFF (.tiff)"),  self)
+        self.act_save_png   = QAction(self.tr("PNG (.png)"),    self)
+        self.act_save_jpeg  = QAction(self.tr("JPEG (.jpg)"),   self)
+
+        self.act_save_fits.triggered.connect(lambda: self.save_active_as_format("fits"))
+        self.act_save_xisf.triggered.connect(lambda: self.save_active_as_format("xisf"))
+        self.act_save_tiff.triggered.connect(lambda: self.save_active_as_format("tiff"))
+        self.act_save_png.triggered.connect(lambda:  self.save_active_as_format("png"))
+        self.act_save_jpeg.triggered.connect(lambda: self.save_active_as_format("jpeg"))
 
         self.act_export_fits_bundle = QAction(self.tr("Export FITS Bundle..."), self)
         self.act_export_fits_bundle.setStatusTip(

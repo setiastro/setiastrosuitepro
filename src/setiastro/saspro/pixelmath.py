@@ -26,6 +26,7 @@ try:
 except Exception:
     _fast_mad = None
 
+_pixel_math_warnings: list[str] = []
 # _float_to_qimage_rgb8 imported from setiastro.saspro.widgets.image_utils
 
 
@@ -58,8 +59,35 @@ class PixelImage:
     def _coerce(a, b):
         a = np.asarray(a, dtype=np.float32)
         b = np.asarray(b, dtype=np.float32)
+
+        # Handle spatial dimension mismatch (e.g. downsample/upsample rounding by 1px)
+        if a.ndim >= 2 and b.ndim >= 2:
+            ah, aw = a.shape[:2]
+            bh, bw = b.shape[:2]
+            if (ah, aw) != (bh, bw):
+                diff_h = abs(ah - bh)
+                diff_w = abs(aw - bw)
+                # Only auto-crop for small mismatches (≤4px) — larger mismatches
+                # are probably genuinely different images and should still error
+                if diff_h <= 4 and diff_w <= 4:
+                    msg = (
+                        f"Image dimensions mismatched by {diff_h}px (height) and "
+                        f"{diff_w}px (width) — cropped to common size "
+                        f"({min(ah,bh)}×{min(aw,bw)}) and proceeding."
+                    )
+                    _pixel_math_warnings.append(msg)
+                    th, tw = min(ah, bh), min(aw, bw)
+                    if a.ndim == 2:
+                        a = a[:th, :tw]
+                    else:
+                        a = a[:th, :tw, :]
+                    if b.ndim == 2:
+                        b = b[:th, :tw]
+                    else:
+                        b = b[:th, :tw, :]
+                # If mismatch > 4px, let numpy raise naturally with a clear shape error
+
         if a.ndim == 3 and b.ndim == 2:
-            # Broadcast b to (H,W,1) virtual view; numpy ufuncs handle (H,W,3) vs (H,W,1) automatically
             b = b[..., None]
         elif a.ndim == 2 and b.ndim == 3:
             a = a[..., None]
@@ -269,6 +297,7 @@ class _Evaluator:
             # existing:
             "med": self._med, "mean": self._mean, "min": self._min, "max": self._max,
             "std": self._std, "mad": self._mad, "log": self._log, "iff": self._iff, "mtf": self._mtf,
+            "avg": self._avg,
             # new math helpers:
             "clamp": self._clamp,
             "rescale": self._rescale,
@@ -303,7 +332,9 @@ class _Evaluator:
 
         cur = np.asarray(self.doc.image, dtype=np.float32)
         self._img_shape = cur.shape
-        self.ns["img"] = PixelImage(_as_rgb(cur))
+        self._src_is_mono = (cur.ndim == 2) or (cur.ndim == 3 and cur.shape[2] == 1)
+        # Keep native shape in namespace — mono stays 2D, RGB stays 3D
+        self.ns["img"] = PixelImage(cur.squeeze() if (cur.ndim == 3 and cur.shape[2] == 1) else cur)
 
         H, W = cur.shape[:2]
         C = 1 if cur.ndim == 2 else cur.shape[2]
@@ -412,6 +443,27 @@ class _Evaluator:
                     m = np.median(ch); v = np.median(np.abs(ch - m))
                 out[..., c] = v
         return PixelImage(out) if isinstance(x, PixelImage) else out
+
+    def _avg(self, *args):
+        """avg(a, b, ...) — element-wise mean of any number of images or scalars."""
+        if not args:
+            raise ValueError("avg() requires at least one argument")
+        arrays = []
+        is_pix = any(isinstance(a, PixelImage) for a in args)
+        for a in args:
+            arr = a.array if isinstance(a, PixelImage) else np.asarray(a, dtype=np.float32)
+            arrays.append(arr.astype(np.float32, copy=False))
+        # Use numpy mean across a new leading axis for proper broadcasting
+        try:
+            stacked = np.stack(arrays, axis=0)
+            result = stacked.mean(axis=0)
+        except ValueError:
+            # shapes differ — fall back to pairwise addition with broadcasting
+            result = arrays[0].copy()
+            for a in arrays[1:]:
+                result = result + a
+            result = result / len(arrays)
+        return PixelImage(result) if is_pix else result
 
     def _log(self, x):
         a = x.array if isinstance(x, PixelImage) else np.asarray(x)
@@ -652,22 +704,62 @@ class _Evaluator:
         return eval(lines[-1], {"__builtins__": None}, scope)
 
     def eval_single(self, expr: str) -> np.ndarray:
+        global _pixel_math_warnings
+        _pixel_math_warnings.clear()
         expr = self._rewrite_names(expr)
         r = self._eval_multiline(expr)
         if isinstance(r, PixelImage):
             r = r.array
 
-        ref = _as_rgb(np.asarray(self.doc.image, dtype=np.float32))
+        src = np.asarray(self.doc.image, dtype=np.float32)
+        is_mono = getattr(self, '_src_is_mono', False)
+        H, W = src.shape[:2]
+
         if np.isscalar(r):
-            r = np.full(ref.shape, float(r), dtype=np.float32)
-        r = _as_rgb(r.astype(np.float32, copy=False))
+            if is_mono:
+                r = np.full((H, W), float(r), dtype=np.float32)
+            else:
+                r = np.full((H, W, 3), float(r), dtype=np.float32)
+        else:
+            r = np.asarray(r, dtype=np.float32)
 
-        m = _mask_for_ref(self.doc, ref)
-        if m is not None:
-            r = _blend_masked(ref, r, m)
-        return r
+        if is_mono:
+            # Collapse to 2D if result came back as 3ch with identical channels
+            if r.ndim == 3 and r.shape[2] == 3:
+                # Check if all channels are identical (mono result in RGB clothing)
+                if np.allclose(r[..., 0], r[..., 1], atol=1e-6) and \
+                np.allclose(r[..., 0], r[..., 2], atol=1e-6):
+                    r = r[..., 0]
+                # else: user explicitly composed RGB from mono — respect that, return RGB
+            elif r.ndim == 3 and r.shape[2] == 1:
+                r = r[..., 0]
+            # r is now 2D for pure mono result
 
-    def eval_rgb(self, er: str, eg: str, eb: str, default_channels=(0, 1, 2)) -> np.ndarray:
+            # Apply mask if present
+            m = _get_doc_active_mask_2d(self.doc, H, W)
+            if m is not None:
+                src2d = src.squeeze() if src.ndim == 3 else src
+                if r.ndim == 2:
+                    r = src2d * (1.0 - m) + r * m
+                else:
+                    # User returned RGB from mono source — blend per channel
+                    src_rgb = _as_rgb(src)
+                    r_rgb = _as_rgb(r)
+                    r = _blend_masked(src_rgb, r_rgb, m[..., None])
+            return r.astype(np.float32, copy=False)
+
+        else:
+            # RGB source — original behavior
+            r = _as_rgb(r.astype(np.float32, copy=False))
+            ref = _as_rgb(src)
+            m = _mask_for_ref(self.doc, ref)
+            if m is not None:
+                r = _blend_masked(ref, r, m)
+            return r
+
+    def eval_rgb(self, er, eg, eb, default_channels=(0,1,2)) -> np.ndarray:
+        global _pixel_math_warnings
+        _pixel_math_warnings.clear()
         er, eg, eb = self._rewrite_names(er), self._rewrite_names(eg), self._rewrite_names(eb)
         ref = _as_rgb(np.asarray(self.doc.image, dtype=np.float32))
         H, W, _ = ref.shape
@@ -1172,7 +1264,6 @@ class PixelMathDialogPro(QDialog):
                 )
             out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
 
-            # NEW: optional auto-stretch (preview only)
             if getattr(self, "_as_enabled", False):
                 out = autostretch(
                     out,
@@ -1185,10 +1276,20 @@ class PixelMathDialogPro(QDialog):
             self._set_preview_image(out)
             if self._preview_item is not None and abs(self._preview_zoom - 1.0) < 1e-6:
                 self._fit_to_view()
+
+            # Surface any dimension-mismatch warnings non-intrusively
+            from pixelmath import _pixel_math_warnings
+            if _pixel_math_warnings:
+                QMessageBox.warning(
+                    self,
+                    self.tr("Pixel Math — Notice"),
+                    "\n".join(_pixel_math_warnings)
+                )
+
         except Exception as e:
             msg = str(e)
             if "name '" in msg and "' is not defined" in msg:
-                msg += self.tr("\n\nTip: use the identifier listed in Variables (or the raw title; it’s auto-mapped).")
+                msg += self.tr("\n\nTip: use the identifier listed in Variables.")
             QMessageBox.critical(self, self.tr("Pixel Math Preview"), self.tr("Failed:\n{0}").format(msg))
         finally:
             QApplication.restoreOverrideCursor()
@@ -1551,7 +1652,14 @@ class PixelMathDialogPro(QDialog):
                 )
 
             out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
-
+            # Surface any dimension-mismatch warnings before committing
+            from setiastro.saspro.pixelmath import _pixel_math_warnings
+            if _pixel_math_warnings:
+                QMessageBox.warning(
+                    self,
+                    self.tr("Pixel Math — Notice"),
+                    "\n".join(_pixel_math_warnings)
+                )
             # Output route
             if self.rb_out_new.isChecked():
                 self._deliver_new_view(self.parent(), self.doc, out, "Pixel Math")

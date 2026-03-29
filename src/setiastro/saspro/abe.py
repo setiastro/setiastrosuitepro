@@ -28,7 +28,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QImage, QPixmap, QPainter, QColor, QPen
 from PyQt6 import sip
 
-from scipy.interpolate import Rbf
+from scipy.interpolate import RBFInterpolator
 
 from .doc_manager import ImageDocument
 from setiastro.saspro.legacy.numba_utils import build_poly_terms, evaluate_polynomial
@@ -229,39 +229,81 @@ def _generate_sample_points(image: np.ndarray, num_points: int = 100, exclusion_
         pts = [(x, y) for y in ys for x in xs if allowed(x, y)]
     return np.array(pts, dtype=np.int32)
 
-
 def _fit_rbf_on_small(small: np.ndarray, points: np.ndarray, smooth: float = 0.1, patch_size: int = 15) -> np.ndarray:
-    """Match SASv2 exactly: float64 for RBF inputs, multiquadric, epsilon=1.0."""
+    """
+    RBF background fit using scipy.interpolate.RBFInterpolator (scipy 1.7+).
+    Replaces the deprecated scipy.interpolate.Rbf.
+    Runs in float32 throughout — sufficient precision for smooth gradient fitting.
+    Hard-capped at 1MP to prevent OOM regardless of downsample factor.
+    """
     H, W = small.shape[:2]
     half = patch_size // 2
-    pts = np.asarray(points, dtype=np.int32)
-    xs = np.clip(pts[:, 0], 0, W - 1).astype(np.int64)
-    ys = np.clip(pts[:, 1], 0, H - 1).astype(np.int64)
 
-    # Evaluate on a float64 meshgrid (same as SASv2)
-    grid_x, grid_y = np.meshgrid(
-        np.arange(W, dtype=np.float64),
-        np.arange(H, dtype=np.float64),
-    )
-
-    def _median_patch(arr, x, y):
-        x0, x1 = max(0, x - half), min(W, x + half + 1)
-        y0, y1 = max(0, y - half), min(H, y + half + 1)
-        return float(np.median(arr[y0:y1, x0:x1]))
-
-    if small.ndim == 3 and small.shape[2] == 3:
-        bg_small = np.zeros((H, W, 3), dtype=np.float32)
-        for c in range(3):
-            z = np.array([_median_patch(small[..., c], int(x), int(y)) for x, y in zip(xs, ys)], dtype=np.float64)
-            rbf = Rbf(xs.astype(np.float64), ys.astype(np.float64), z,
-                      function='multiquadric', smooth=float(smooth), epsilon=1.0)
-            bg_small[..., c] = rbf(grid_x, grid_y).astype(np.float32)
-        return bg_small
+    # Hard cap: reduce further for RBF only if still too large
+    MAX_RBF_PIXELS = 1_000_000
+    rbf_scale = 1
+    if H * W > MAX_RBF_PIXELS:
+        rbf_scale = int(np.ceil(np.sqrt(H * W / MAX_RBF_PIXELS)))
+        if cv2 is not None:
+            small_rbf = cv2.resize(
+                small,
+                (max(1, W // rbf_scale), max(1, H // rbf_scale)),
+                interpolation=cv2.INTER_AREA
+            ).astype(np.float32, copy=False)
+        else:
+            small_rbf = small[::rbf_scale, ::rbf_scale].astype(np.float32, copy=False)
     else:
-        z = np.array([_median_patch(small, int(x), int(y)) for x, y in zip(xs, ys)], dtype=np.float64)
-        rbf = Rbf(xs.astype(np.float64), ys.astype(np.float64), z,
-                  function='multiquadric', smooth=float(smooth), epsilon=1.0)
-        return rbf(grid_x, grid_y).astype(np.float32)
+        small_rbf = small.astype(np.float32, copy=False)
+
+    H_r, W_r = small_rbf.shape[:2]
+
+    pts = np.asarray(points, dtype=np.int32)
+    xs = np.clip(np.round(pts[:, 0] / rbf_scale), 0, W_r - 1).astype(np.float32)
+    ys = np.clip(np.round(pts[:, 1] / rbf_scale), 0, H_r - 1).astype(np.float32)
+
+    # RBFInterpolator expects (N, 2) array of (y, x) coordinates
+    sample_coords = np.column_stack([ys, xs])  # (N, 2) float32
+
+    # Query grid: (H_r * W_r, 2)
+    grid_y, grid_x = np.mgrid[0:H_r, 0:W_r]
+    query_coords = np.column_stack([
+        grid_y.ravel().astype(np.float32),
+        grid_x.ravel().astype(np.float32)
+    ])
+
+    def _median_patch(arr2d, x, y):
+        x0, x1 = max(0, int(x) - half), min(W_r, int(x) + half + 1)
+        y0, y1 = max(0, int(y) - half), min(H_r, int(y) + half + 1)
+        return float(np.median(arr2d[y0:y1, x0:x1]))
+
+    if small_rbf.ndim == 3 and small_rbf.shape[2] == 3:
+        bg_r = np.zeros((H_r, W_r, 3), dtype=np.float32)
+        for c in range(3):
+            z = np.array(
+                [_median_patch(small_rbf[..., c], x, y) for x, y in zip(xs, ys)],
+                dtype=np.float32
+            )
+            interp = RBFInterpolator(
+                sample_coords, z,
+                kernel='multiquadric',
+                smoothing=float(smooth) * len(z),  # RBFInterpolator smoothing scales with N
+                epsilon=1.0
+            )
+            bg_r[..., c] = interp(query_coords).reshape(H_r, W_r).astype(np.float32)
+        return _upscale_bg(bg_r, (H, W)) if rbf_scale > 1 else bg_r
+    else:
+        z = np.array(
+            [_median_patch(small_rbf, x, y) for x, y in zip(xs, ys)],
+            dtype=np.float32
+        )
+        interp = RBFInterpolator(
+            sample_coords, z,
+            kernel='multiquadric',
+            smoothing=float(smooth) * len(z),
+            epsilon=1.0
+        )
+        bg_r = interp(query_coords).reshape(H_r, W_r).astype(np.float32)
+        return _upscale_bg(bg_r, (H, W)) if rbf_scale > 1 else bg_r
 
 def _legacy_stretch_unlinked(image: np.ndarray):
     """
@@ -629,7 +671,14 @@ class ABEDialog(QDialog):
         # ---------------- Controls ----------------
         self.sp_degree = QSpinBox(); self.sp_degree.setRange(0, 6); self.sp_degree.setValue(2)
         self.sp_samples = QSpinBox(); self.sp_samples.setRange(20, 10000); self.sp_samples.setSingleStep(20); self.sp_samples.setValue(120)
-        self.sp_down = QSpinBox(); self.sp_down.setRange(1, 32); self.sp_down.setValue(4)
+        self.sp_down = QSpinBox()
+        self.sp_down.setRange(4, 32)  # minimum 2, not 1
+        self.sp_down.setValue(8)
+        self.sp_down.setToolTip(
+            "Downsample factor for background fitting.\n"
+            "Minimum 4 recommended — factor 1 (full resolution) will\n"
+            "cause extreme memory use with RBF refinement enabled."
+        )
         self.sp_patch = QSpinBox(); self.sp_patch.setRange(5, 151); self.sp_patch.setSingleStep(2); self.sp_patch.setValue(15)
         self.chk_use_rbf = QCheckBox(self.tr("Enable RBF refinement (after polynomial)")); self.chk_use_rbf.setChecked(True)
         self.sp_rbf = QSpinBox(); self.sp_rbf.setRange(0, 1000); self.sp_rbf.setValue(100)  # shown as ×0.01 below
@@ -766,8 +815,6 @@ class ABEDialog(QDialog):
         self.cmb_sample_mode.currentTextChanged.connect(self._sample_mode_changed)
         self.cmb_sample_mode.currentTextChanged.connect(self._save_settings)
 
-        QTimer.singleShot(0, self._post_init_fit_and_stretch)
-
     def _load_settings(self):
         s = QSettings()
 
@@ -814,6 +861,19 @@ class ABEDialog(QDialog):
 
     def _sample_mode_changed(self, _text: str):
         manual = self._manual_mode()
+
+        if manual:
+            # Switching to Manual — clear exclusion polygons
+            # (they were drawn in Auto context and don't make sense to carry over)
+            if self._polygons or self._drawing_poly:
+                self._polygons.clear()
+                self._drawing_poly = None
+
+        else:
+            # Switching to Auto — clear manual sample points
+            # (they were placed manually and Auto will generate its own)
+            if self._manual_points:
+                self._manual_points.clear()
 
         # In manual mode, # sample points is not used for fitting
         self.sp_samples.setEnabled(not manual)
@@ -950,17 +1010,22 @@ class ABEDialog(QDialog):
         )
 
     def _post_init_fit_and_stretch(self) -> None:
-        if self._preview_qimg is None:
-            return
-
-        self.fit_to_preview()
-
-        # Re-render preview to match stored autostretch state
-        self.autostretch_preview(bool(getattr(self, "_autostretch_on", False)))
+        # No longer used — sequence moved entirely into showEvent
+        pass
 
     def _set_status(self, text: str) -> None:
-        self.status_label.setText(text)
-        QApplication.processEvents()
+        try:
+            lbl = getattr(self, "status_label", None)
+            if lbl is None:
+                return
+            # Guard against wrapped C++ object deleted (dialog partially destroyed)
+            from PyQt6 import sip
+            if sip.isdeleted(lbl):
+                return
+            lbl.setText(text)
+            QApplication.processEvents()
+        except RuntimeError:
+            pass
 
     def _build_toolbar(self):
         """
@@ -1061,12 +1126,79 @@ class ABEDialog(QDialog):
                 self._set_status("Ready")
 
     def _populate_initial_preview(self):
+        """Don't render anything yet — just store the source. showEvent handles the rest."""
         src = self._get_source_float()
-        if src is not None:
-            self._set_preview_pixmap(np.clip(src, 0, 1))
+        if src is None:
+            return
+        self._preview_source_f01 = np.clip(_asfloat32(src), 0.0, 1.0)
+        # Leave _preview_qimg as None — placeholder shown in showEvent
+
+
+    def _show_placeholder(self):
+        if getattr(self, "_closing", False):
+            return
+        """Show a 'Computing preview…' message in the preview area while we work."""
+        vp = self.preview_scroll.viewport()
+        w, h = max(480, vp.width()), max(360, vp.height())
+
+        # Dark background with centered text — matches the typical dark theme
+        pm = QPixmap(w, h)
+        pm.fill(QColor(30, 30, 30))
+
+        painter = QPainter(pm)
+        painter.setPen(QColor(180, 180, 180))
+        font = painter.font()
+        font.setPointSize(12)
+        painter.setFont(font)
+        painter.drawText(
+            pm.rect(),
+            Qt.AlignmentFlag.AlignCenter,
+            "Computing preview…"
+        )
+        painter.end()
+
+        self.preview_label.setPixmap(pm)
+        self.preview_label.resize(pm.size())
+        QApplication.processEvents()
+
+    def _render_preview_from_source(self, stretch: bool = True):
+        """
+        Render self._preview_source_f01 into QImage/pixmap.
+        stretch=True applies autostretch. Called after geometry is known.
+        """
+        src = getattr(self, "_preview_source_f01", None)
+        if src is None:
+            return
+
+        if stretch and getattr(self, "_autostretch_on", False):
+            disp = hard_autostretch(src, target_median=0.5, sigma=2,
+                                    linked=False, use_24bit=True)
+            disp = np.asarray(disp, dtype=np.float32)
+        else:
+            disp = np.clip(src, 0.0, 1.0).astype(np.float32)
+
+        if disp.ndim == 2 or (disp.ndim == 3 and disp.shape[2] == 1):
+            mono = disp if disp.ndim == 2 else disp[..., 0]
+            buf8 = np.ascontiguousarray((mono * 255.0).astype(np.uint8))
+            self._last_preview = np.ascontiguousarray(np.stack([buf8] * 3, axis=-1))
+            h, w = buf8.shape
+            self._preview_qimg = QImage(buf8.data, w, h, w,
+                                        QImage.Format.Format_Grayscale8)
+        else:
+            buf8 = np.ascontiguousarray((disp * 255.0).astype(np.uint8))
+            self._last_preview = buf8
+            h, w, _ = buf8.shape
+            self._preview_qimg = QImage(buf8.data, w, h, buf8.strides[0],
+                                        QImage.Format.Format_RGB888)
+
+        self._update_preview_scaled()
+        self._redraw_overlay()
 
     def _do_preview(self):
         try:
+            from PyQt6 import sip
+            if sip.isdeleted(self):
+                return
             self._set_status("Building exclusion mask…")
             excl = self._build_exclusion_mask()
 
@@ -1233,7 +1365,7 @@ class ABEDialog(QDialog):
             QMessageBox.critical(self, "Apply failed", str(e))
 
     def closeEvent(self, ev):
-        # 1) Disconnect active-doc tracking (Fabio hook)
+        self._closing = True
         try:
             if self._connected_current_doc_changed and hasattr(self._main, "currentDocumentChanged"):
                 self._main.currentDocumentChanged.disconnect(self._on_active_doc_changed)
@@ -1244,8 +1376,6 @@ class ABEDialog(QDialog):
             self._save_window_geometry()
         except Exception:
             pass
-        # 2) Stop any background preview worker/thread if you have one
-        # (names may differ in your file; keep what matches your implementation)
         try:
             if getattr(self, "_worker", None) is not None:
                 try:
@@ -1257,7 +1387,6 @@ class ABEDialog(QDialog):
                 self._thread.wait(500)
         except Exception:
             pass
-
         super().closeEvent(ev)
 
     def _refresh_document_from_active(self):
@@ -1356,7 +1485,14 @@ class ABEDialog(QDialog):
         self._redraw_overlay()
 
 
+
     def _update_preview_scaled(self):
+        try:
+            if sip.isdeleted(self) or sip.isdeleted(self.preview_label):
+                return
+        except Exception:
+            return
+
         if self._preview_qimg is None:
             self.preview_label.clear()
             return
@@ -1370,22 +1506,46 @@ class ABEDialog(QDialog):
             Qt.TransformationMode.SmoothTransformation
         )
 
-        # ✅ store a clean base without overlays
+        if scaled.isNull():
+            return
+
         self._base_pixmap = QPixmap.fromImage(scaled)
-        self.preview_label.setPixmap(self._base_pixmap)
-        self.preview_label.resize(self._base_pixmap.size())
+        if self._base_pixmap.isNull():
+            return
+
+        try:
+            if not sip.isdeleted(self.preview_label):
+                self.preview_label.setPixmap(self._base_pixmap)
+                self.preview_label.resize(self._base_pixmap.size())
+        except Exception:
+            pass
 
     def _redraw_overlay(self):
+        # Guard against being called during/after close
+        try:
+            if sip.isdeleted(self) or sip.isdeleted(self.preview_label):
+                return
+        except Exception:
+            return
+
         pm_base = self._base_pixmap or self.preview_label.pixmap()
-        if pm_base is None:
+        if pm_base is None or pm_base.isNull():
             return
 
         # start from a fresh copy of the clean base
         composed = QPixmap(pm_base)
+        if composed.isNull():
+            return
+
         overlay = QPixmap(pm_base.size())
+        if overlay.isNull():
+            return
         overlay.fill(Qt.GlobalColor.transparent)
 
         painter = QPainter(overlay)
+        if not painter.isActive():
+            return  # paint device invalid — widget being destroyed
+
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         # map image-space polys to label-space
@@ -1434,13 +1594,20 @@ class ABEDialog(QDialog):
                     int(round(2 * hy)),
                 )
 
+
         painter.end()
 
         p = QPainter(composed)
+        if not p.isActive():
+            return
         p.drawPixmap(0, 0, overlay)
         p.end()
 
-        self.preview_label.setPixmap(composed)
+        try:
+            if not sip.isdeleted(self.preview_label):
+                self.preview_label.setPixmap(composed)
+        except Exception:
+            pass
 
     # ----- zoom/pan + polygon drawing -----
     def eventFilter(self, obj, ev):
@@ -1843,24 +2010,25 @@ class ABEDialog(QDialog):
         if not getattr(self, "_geom_restored", False):
             self._geom_restored = True
 
-            def _after_restore_refit():
-                # restore window geometry first
+            def _after_show():
+                # 1) Restore geometry first so viewport size is correct
                 self._restore_window_geometry()
+                QApplication.processEvents()
 
-                # now that the viewport has changed, refit preview
-                # (your overlays + base pixmap pipeline is fine)
+                # 2) Show placeholder so user sees something while we compute
+                self._show_placeholder()
+
+                # 3) Render with stretch if enabled — this is the expensive step
+                #    but now it happens with correct viewport size and after show
+                self._render_preview_from_source(
+                    stretch=bool(getattr(self, "_autostretch_on", False))
+                )
+
+                # 4) Fit to the now-correct viewport
                 self.fit_to_preview()
 
-                # honor user's stored autostretch preference on open
-                if bool(getattr(self, "_autostretch_on", False)):
-                    # ensure preview is rendered in autostretch mode (non-toggle)
-                    try:
-                        self._apply_autostretch_inplace()
-                    except Exception:
-                        pass
-
-            QTimer.singleShot(0, _after_restore_refit)
+            QTimer.singleShot(0, _after_show)
             return
 
-        # normal path: when already restored, keep things responsive
-        QTimer.singleShot(0, self.fit_to_preview)        
+        # Already restored — just refit if shown again
+        QTimer.singleShot(0, self.fit_to_preview)

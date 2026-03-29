@@ -149,6 +149,32 @@ class SyQonToolsDialog(QDialog):
             "Parallax / sharpening models are not available yet."
         )
 
+    def closeEvent(self, ev):
+        try:
+            page = getattr(self, "page_denoise", None)
+            if page is not None:
+                thr = getattr(page, "proc_thr", None)
+                if thr is not None and thr.isRunning():
+                    reply = QMessageBox.question(
+                        self,
+                        "SyQon Prism Running",
+                        "Denoise is still processing.\n\n"
+                        "Cancel it and close? (May take a moment to finish the current tile.)",
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                        QMessageBox.StandardButton.No,
+                    )
+                    if reply != QMessageBox.StandardButton.Yes:
+                        ev.ignore()
+                        return
+                    thr.cancel()
+                    if not thr.wait(10000):
+                        thr.terminate()
+                        thr.wait(2000)
+                    page.proc_thr = None
+        except Exception:
+            pass
+        super().closeEvent(ev)
+
 class _SyQonStarlessHubPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -351,13 +377,23 @@ class _SyQonDenoiseHubPage(QWidget):
         info.setWordWrap(True)
         lay.addWidget(info)
         lay.addStretch(1)
-
+        self.btn_cancel = QPushButton("Cancel", self)
+        self.btn_cancel.setVisible(False)
+        self.btn_cancel.clicked.connect(self._cancel_processing)
+        lay.addWidget(self.btn_cancel)
         saved_kind = str(self.settings.value("syqon/prism_model_kind", "prism_mini"))
         idx = self.cmb_model.findData(saved_kind)
         if idx >= 0:
             self.cmb_model.setCurrentIndex(idx)
 
         self._refresh_state()
+
+    def _cancel_processing(self):
+        thr = getattr(self, "proc_thr", None)
+        if thr is not None and thr.isRunning():
+            thr.cancel()
+            self.btn_cancel.setEnabled(False)
+            self.lbl_status.setText("Cancelling… finishing current tile.")
 
     def model_kind(self) -> str:
         return str(self.cmb_model.currentData() or "prism_mini")
@@ -552,6 +588,8 @@ class _SyQonDenoiseHubPage(QWidget):
         self.chk_amp.setEnabled(not busy)
 
         self.pbar.setVisible(busy)
+        self.btn_cancel.setVisible(busy)
+        self.btn_cancel.setEnabled(busy)
         if busy:
             self.pbar.setRange(0, 100)
             self.pbar.setValue(0)
@@ -564,8 +602,20 @@ class _SyQonDenoiseHubPage(QWidget):
 
 
     def _on_worker_finished(self, denoised_s, info: dict, err: str):
+        # If proc_thr was cleared by closeEvent, we're already shutting down
+        if getattr(self, "proc_thr", None) is None and err == "__cancelled__":
+            return
+
+        if err == "__cancelled__":
+            self._set_busy(False)
+            self.lbl_status.setText("Cancelled.")
+            self.proc_thr = None
+            self._refresh_state()
+            return
+
         if err:
             self._set_busy(False)
+            self.proc_thr = None
             QMessageBox.critical(self, "SyQon Prism", err)
             self._refresh_state()
             return
@@ -663,6 +713,7 @@ class _SyQonDenoiseHubPage(QWidget):
         except Exception:
             pass
 
+        self.proc_thr = None
         self._set_busy(False)
         self.lbl_status.setText("Complete!")
         self._refresh_state()
@@ -785,9 +836,13 @@ class _SyQonDenoiseHubPage(QWidget):
 
     def closeEvent(self, ev):
         try:
-            if self.proc_thr is not None and self.proc_thr.isRunning():
-                self.proc_thr.cancel()
-                self.proc_thr.wait(500)
+            thr = getattr(self, "proc_thr", None)
+            if thr is not None and thr.isRunning():
+                thr.cancel()
+                if not thr.wait(10000):
+                    thr.terminate()
+                    thr.wait(2000)
+                self.proc_thr = None
         except Exception:
             pass
         super().closeEvent(ev)
@@ -834,9 +889,6 @@ class _SyQonPrismProcessThread(QThread):
         self.model_kind = str(model_kind or "prism_mini")
         self.pad = int(pad)
 
-    def cancel(self):
-        self._cancel = True
-
     def _pad_rgb_reflect(self, img_rgb01: np.ndarray, pad: int) -> tuple[np.ndarray, tuple[int, int]]:
         """
         Reflect-pad an RGB float image (H,W,3). Returns (padded, (h,w)).
@@ -867,20 +919,19 @@ class _SyQonPrismProcessThread(QThread):
 
         return x[p:p + h, p:p + w, :].astype(np.float32, copy=False)
 
+    def cancel(self):
+        self._cancel = True
+
     def run(self):
         info = {
             "engine": "syqon_prism",
             "use_amp_requested": bool(self.use_amp),
             "amp_dtype_requested": str(self.amp_dtype),
         }
-
         try:
-            if self._cancel:
-                raise RuntimeError("Cancelled")
-
             def _prog(done, total, stage):
                 if self._cancel:
-                    raise RuntimeError("Cancelled")
+                    raise InterruptedError("Cancelled")
                 pct = int(100.0 * float(done) / max(float(total), 1.0))
                 self.progress.emit(pct, str(stage or ""))
 
@@ -888,7 +939,6 @@ class _SyQonPrismProcessThread(QThread):
             info["model_kind"] = self.model_kind
             info["model_variant_requested"] = model_variant
 
-            # --- Pad size comes from UI (0 disables) ---
             pad = int(max(0, getattr(self, "pad", 0)))
             info["pad_px"] = pad
 
@@ -916,8 +966,9 @@ class _SyQonPrismProcessThread(QThread):
                     info["engine_info"] = engine_info
 
             self.finished.emit(denoised, info, "")
-            return
 
+        except InterruptedError:
+            self.finished.emit(None, info, "__cancelled__")
         except Exception as e:
             import traceback
             info["traceback"] = traceback.format_exc()
@@ -1094,7 +1145,7 @@ def _run_syqon_prism_headless(main, doc, preset: dict | None = None):
 
     thr.progress.connect(_on_prog)
     thr.finished.connect(_on_done)
-    dlg.cancel_button.clicked.connect(lambda: dlg.append_text("Cancel not supported yet.\n"))
+    dlg.cancel_button.clicked.connect(lambda: thr.cancel())
     dlg.show()
     thr.start()
     dlg.exec()    

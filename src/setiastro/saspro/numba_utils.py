@@ -566,54 +566,57 @@ def apply_flat_division_bayer(image2d: np.ndarray, flat2d: np.ndarray, bayerpat:
     pid = _bayerpat_to_id(bayerpat)
     return apply_flat_division_numba_bayer_2d(image2d, flat2d, med4, pid)
 
-@njit(parallel=True)
-def subtract_dark_3d(frames, dark_frame):
+@njit(parallel=True, cache=True)
+def subtract_dark_3d(frames, dark_frame, dark_median):
     """
-    For mono stack:
-      frames.shape == (F,H,W)
-      dark_frame.shape == (H,W)
-    Returns the same shape (F,H,W).
+    frames: (F,H,W), dark_frame: (H,W)
+    Subtracts only the dark's spatial deviation from its median,
+    preserving the image DC pedestal. Equivalent to flat normalization
+    philosophy: remove spatial non-uniformity, not absolute level.
     """
     num_frames, height, width = frames.shape
     result = np.empty_like(frames, dtype=np.float32)
-
     for i in prange(num_frames):
-        # Subtract the dark frame from each 2D slice
-        result[i] = frames[i] - dark_frame
-
+        result[i] = frames[i] - dark_frame + dark_median
     return result
 
 
 @njit(parallel=True, cache=True)
-def subtract_dark_4d(frames, dark_frame):
+def subtract_dark_4d(frames, dark_frame, dark_median):
     """
-    For color stack:
-      frames.shape == (F,H,W,C)
-      dark_frame.shape == (H,W,C)
-    Returns the same shape (F,H,W,C).
+    frames: (F,H,W,C), dark_frame: (H,W,C)
+    dark_median: scalar — median of the full dark frame across all pixels/channels.
     """
     num_frames, height, width, channels = frames.shape
     result = np.empty_like(frames, dtype=np.float32)
-
     for i in prange(num_frames):
         for y in range(height):
             for x in range(width):
                 for c in range(channels):
-                    result[i, y, x, c] = frames[i, y, x, c] - dark_frame[y, x, c]
-
+                    result[i, y, x, c] = frames[i, y, x, c] - dark_frame[y, x, c] + dark_median
     return result
+
 
 def subtract_dark(frames, dark_frame):
     """
-    Dispatcher function that calls the correct Numba function
-    depending on whether 'frames' is 3D or 4D.
+    Subtract only the dark's spatial deviation from its median.
+    
+    Equivalent to: img - (dark - med(dark))
+    
+    Matches the philosophy of flat normalization (img / (flat/med(flat))):
+    removes spatial non-uniformity while preserving the image DC pedestal.
+    Plain img-dark would cause negative clipping when the dark has a
+    significant pedestal (amp glow, thermal gradient, etc).
+    Note: CMOS sensors hardware-subtract bias on every read — no bias
+    frame needed or meaningful for any modern CMOS sensor.
     """
+    # Compute dark median once as a scalar — passed into Numba kernels
+    dark_median = float(np.median(dark_frame))
+
     if frames.ndim == 3:
-        # frames: (F,H,W), dark_frame: (H,W)
-        return subtract_dark_3d(frames, dark_frame)
+        return subtract_dark_3d(frames, dark_frame, dark_median)
     elif frames.ndim == 4:
-        # frames: (F,H,W,C), dark_frame: (H,W,C)
-        return subtract_dark_4d(frames, dark_frame)
+        return subtract_dark_4d(frames, dark_frame, dark_median)
     else:
         raise ValueError(f"subtract_dark: frames must be 3D or 4D, got {frames.shape}")
 
@@ -1564,65 +1567,64 @@ def max_value_stack(stack, weights=None):
     return clipped, rej_mask
 
 @njit(parallel=True, cache=True)
-def subtract_dark_with_pedestal_3d(frames, dark_frame, pedestal):
+def subtract_dark_with_pedestal_3d(frames, dark_frame, pedestal, dark_median):
     """
-    For mono stack:
-      frames.shape == (F,H,W)
-      dark_frame.shape == (H,W)
-    Adds 'pedestal' after subtracting dark_frame from each frame.
-    Returns the same shape (F,H,W).
+    frames: (F,H,W), dark_frame: (H,W)
+    Subtracts only the dark's spatial deviation from its median,
+    preserving the image DC pedestal. Pedestal is a PI-era holdover
+    for integer pipelines that clip to zero — use 0.0 in SASpro float32.
     """
     num_frames, height, width = frames.shape
     result = np.empty_like(frames, dtype=np.float32)
-
-    # Validate dark_frame shape
-    if dark_frame.ndim != 2 or dark_frame.shape != (height, width):
-        raise ValueError(
-            "subtract_dark_with_pedestal_3d: for 3D frames, dark_frame must be 2D (H,W)"
-        )
-
     for i in prange(num_frames):
         for y in range(height):
             for x in range(width):
-                result[i, y, x] = frames[i, y, x] - dark_frame[y, x] + pedestal
-
+                result[i, y, x] = frames[i, y, x] - dark_frame[y, x] + dark_median + pedestal
     return result
 
+
 @njit(parallel=True, cache=True)
-def subtract_dark_with_pedestal_4d(frames, dark_frame, pedestal):
+def subtract_dark_with_pedestal_4d(frames, dark_frame, pedestal, dark_median):
     """
-    For color stack:
-      frames.shape == (F,H,W,C)
-      dark_frame.shape == (H,W,C)
-    Adds 'pedestal' after subtracting dark_frame from each frame.
-    Returns the same shape (F,H,W,C).
+    frames: (F,H,W,C), dark_frame: (H,W,C)
+    Subtracts only the dark's spatial deviation from its median,
+    preserving the image DC pedestal. Pedestal is a PI-era holdover
+    for integer pipelines that clip to zero — use 0.0 in SASpro float32.
     """
     num_frames, height, width, channels = frames.shape
     result = np.empty_like(frames, dtype=np.float32)
-
-    # Validate dark_frame shape
-    if dark_frame.ndim != 3 or dark_frame.shape != (height, width, channels):
-        raise ValueError(
-            "subtract_dark_with_pedestal_4d: for 4D frames, dark_frame must be 3D (H,W,C)"
-        )
-
     for i in prange(num_frames):
         for y in range(height):
             for x in range(width):
                 for c in range(channels):
-                    result[i, y, x, c] = frames[i, y, x, c] - dark_frame[y, x, c] + pedestal
-
+                    result[i, y, x, c] = (frames[i, y, x, c] - dark_frame[y, x, c]
+                                          + dark_median + pedestal)
     return result
+
 
 def subtract_dark_with_pedestal(frames, dark_frame, pedestal):
     """
-    Dispatcher function that calls either the 3D or 4D specialized Numba function
-    depending on 'frames.ndim'.
+    Subtract only the dark's spatial deviation from its median.
+
+    Equivalent to: img - (dark - med(dark)) + pedestal
+
+    Matches flat normalization philosophy (img / (flat/med(flat))):
+    removes spatial non-uniformity while preserving the image DC pedestal.
+    Prevents negative clipping when the dark has significant amp glow or
+    thermal gradient.
+
+    Note: pedestal is a PI-era holdover for integer pipelines that clip to
+    zero. SASpro works in full float32 so pedestal should be 0.0 in normal use.
+    Note: CMOS sensors hardware-subtract bias on every read — no separate
+    bias frame is needed or meaningful for any modern CMOS sensor.
     """
+    # Compute dark median once as a scalar before entering Numba
+    dark_median = float(np.median(dark_frame))
+
     if frames.ndim == 3:
-        return subtract_dark_with_pedestal_3d(frames, dark_frame, pedestal)
+        return subtract_dark_with_pedestal_3d(frames, dark_frame, pedestal, dark_median)
     elif frames.ndim == 4:
-        return subtract_dark_with_pedestal_4d(frames, dark_frame, pedestal)
+        return subtract_dark_with_pedestal_4d(frames, dark_frame, pedestal, dark_median)
     else:
         raise ValueError(
             f"subtract_dark_with_pedestal: frames must be 3D or 4D, got {frames.shape}"

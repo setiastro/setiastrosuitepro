@@ -837,18 +837,37 @@ def _subtract_dark_stack_inplace_hwc(stack_FHWC: np.ndarray, dark_HWC_or_HW: np.
     Shapes:
       - stack_FHWC: (F, H, W, C) float32 contiguous
       - dark_HWC_or_HW: (H, W, C) or (H, W) float32
-    Subtracts in-place: stack -= dark + pedestal.
+
+    Subtracts only the dark's spatial deviation from its median:
+      stack -= (dark - median(dark))
+    This matches flat normalization philosophy (img / (flat/med(flat))):
+    removes spatial non-uniformity while preserving the image DC pedestal.
+    Prevents negative clipping when the dark has a significant pedestal
+    (amp glow, thermal gradient, etc).
+
+    Note: pedestal is a PI-era holdover for integer pipelines that clipped
+    to zero. SASpro works in full float32 and happily carries negative values,
+    so pedestal should be 0.0 in normal use.
     """
     D = dark_HWC_or_HW
     if D.ndim == 2:
-        D = D[..., None]                      # (H,W) -> (H,W,1)
+        D = D[..., None]
         if stack_FHWC.shape[-1] == 3:
-            D = np.repeat(D, 3, axis=2)       # (H,W,3)
-    # ensure contig
+            D = np.repeat(D, 3, axis=2)
+
     D = _as_C(D)
+
+    # Compute dark median once as a scalar
+    dark_median = float(np.median(D))
+
+    # stack -= (dark - dark_median)  ≡  remove spatial structure, preserve pedestal
     np.subtract(stack_FHWC, D[None, ...], out=stack_FHWC)
+    stack_FHWC += dark_median
+
+    # Pedestal: raises the floor — only meaningful for integer pipelines
+    # that clip to zero (e.g. PixInsight). In SASpro float32 this is 0.0.
     if pedestal:
-        stack_FHWC -= float(pedestal)
+        stack_FHWC += float(pedestal)
 
 
 

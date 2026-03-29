@@ -662,6 +662,43 @@ def _is_narrowband_like(header) -> bool:
     ]
     return any(tok in s for tok in nb_tokens)
 
+class _ResultsDialog(QDialog):
+    """
+    Non-blocking results window. Stays open alongside ZP graphs or other dialogs.
+    """
+    def __init__(self, parent, title: str, text: str):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self.setMinimumWidth(520)
+
+        lay = QVBoxLayout(self)
+
+        self.lbl = QLabel(text, self)
+        self.lbl.setWordWrap(True)
+        self.lbl.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        from PyQt6.QtGui import QFontDatabase
+        mono = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+        self.lbl.setFont(mono)
+        lay.addWidget(self.lbl)
+
+        # Copy to clipboard button — useful for observatory logs
+        btn_row = QHBoxLayout()
+        btn_copy = QPushButton("Copy to Clipboard", self)
+        btn_close = QPushButton("Close", self)
+        btn_copy.clicked.connect(lambda: QApplication.clipboard().setText(text))
+        btn_close.clicked.connect(self.close)
+        btn_row.addWidget(btn_copy)
+        btn_row.addStretch(1)
+        btn_row.addWidget(btn_close)
+        lay.addLayout(btn_row)
+
+        self.adjustSize()
 
 class ZeroPointPlotsDialog(QDialog):
     """
@@ -708,6 +745,14 @@ class ZeroPointPlotsDialog(QDialog):
             lay.addWidget(canvas)
             tabs.addTab(w, name)
 
+        btn_close = QPushButton("Close", self)
+        btn_close.clicked.connect(self.close)
+        root.addWidget(btn_close)
+        
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
 # ---------------------------- UI dialog (initial) ----------------------------
 class MagnitudeRegionDialog(QDialog):
     """
@@ -1558,12 +1603,17 @@ class MagnitudeToolDialog(QDialog):
 
 
     def show_zp_graphs(self):
-        p = self.last_zp.get("plot") if isinstance(self.last_zp, dict) else None
-        if not p:
-            QMessageBox.information(self, "ZP Graphs", "Compute zero points first.")
-            return
-        dlg = ZeroPointPlotsDialog(self, p)
-        dlg.exec()
+            p = self.last_zp.get("plot") if isinstance(self.last_zp, dict) else None
+            if not p:
+                QMessageBox.information(self, "ZP Graphs", "Compute zero points first.")
+                return
+            dlg = ZeroPointPlotsDialog(self, p)
+            dlg.setWindowFlag(Qt.WindowType.Window, True)
+            dlg.setWindowModality(Qt.WindowModality.NonModal)
+            dlg.setModal(False)
+            dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+            dlg.show()
+            dlg.raise_()
 
     def set_object_mask(self, mask: np.ndarray):
         self.object_mask = mask
@@ -2093,8 +2143,7 @@ class MagnitudeToolDialog(QDialog):
                 f"Integrated magnitude ({band}, catalog {magkey}):\n"
                 f"  m = {fmt(m)} ± {fmt(m_3)}  (total 3σ)\n\n"
             )
-            if pix_area_asec2 is not None:
-                msg += f"  Background μ (mag/arcsec²): {fmt(mu_bg)}\n"
+
             if pix_area_asec2 is not None:
                 msg += f"  Background μ (mag/arcsec²): {fmt(mu_bg)}\n"
                 if _is_narrowband_like(hdr):
@@ -2113,7 +2162,9 @@ class MagnitudeToolDialog(QDialog):
             else:
                 msg += "Surface brightness: N/A (no pixscale from WCS)\n"
 
-            QMessageBox.information(self, "Magnitude Results", msg)
+            dlg = _ResultsDialog(self, "Magnitude Results", msg)
+            dlg.show()
+            dlg.raise_()
             return
 
         # -------- RGB --------
@@ -2207,7 +2258,9 @@ class MagnitudeToolDialog(QDialog):
         else:
             msg += "Surface brightness: N/A (no pixscale from WCS)\n"
 
-        QMessageBox.information(self, "Magnitude Results", msg)
+        dlg = _ResultsDialog(self, "Magnitude Results", msg)
+        dlg.show()
+        dlg.raise_()
 
     def _fetch_apass_stars_and_cache(self, img, hdr, doc) -> List[dict]:
         wcs, _ = _build_wcs_and_pixscale(hdr)
