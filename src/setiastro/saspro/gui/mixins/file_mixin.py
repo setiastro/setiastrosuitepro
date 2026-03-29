@@ -1137,3 +1137,103 @@ class FileMixin:
                 self._log(f"Checkpoint saved (paired stars): {out_path2}")
 
         return True
+    
+    def save_active_as_format(self, fmt: str):
+        """
+        Save active document directly in a specific format,
+        pre-populating the file dialog with the right extension.
+        fmt: 'fits', 'xisf', 'tiff', 'png', 'jpeg'
+        """
+        from setiastro.saspro.main_helpers import (
+            best_doc_name as _best_doc_name,
+            normalize_save_path_chosen_filter as _normalize_save_path_chosen_filter,
+        )
+        from setiastro.saspro.file_utils import _sanitize_filename
+
+        doc = self._active_doc()
+        if not doc:
+            return
+
+        fmt_map = {
+            "fits":  ("FITS (*.fits *.fit)",  ".fits"),
+            "xisf":  ("XISF (*.xisf)",        ".xisf"),
+            "tiff":  ("TIFF (*.tif *.tiff)",  ".tiff"),
+            "png":   ("PNG (*.png)",           ".png"),
+            "jpeg":  ("JPEG (*.jpg *.jpeg)",   ".jpg"),
+        }
+        if fmt not in fmt_map:
+            self.save_active()
+            return
+
+        selected_filter, ext = fmt_map[fmt]
+
+        # Build all filters with the chosen one first
+        all_filters = [
+            "FITS (*.fits *.fit)",
+            "XISF (*.xisf)",
+            "TIFF (*.tif *.tiff)",
+            "PNG (*.png)",
+            "JPEG (*.jpg *.jpeg)",
+        ]
+        # Move chosen filter to top
+        ordered = [selected_filter] + [f for f in all_filters if f != selected_filter]
+        filters = ";;".join(ordered)
+
+        # Directory
+        meta = getattr(doc, "metadata", {}) or {}
+        orig_path = meta.get("file_path", "") or ""
+        if "::" in orig_path:
+            orig_path = orig_path.split("::", 1)[0]
+
+        candidate_dir = ""
+        try:
+            if orig_path:
+                pdir = os.path.dirname(orig_path)
+                if pdir and os.path.isdir(pdir):
+                    candidate_dir = pdir
+        except Exception:
+            pass
+
+        if not candidate_dir:
+            candidate_dir = self.settings.value("paths/last_save_dir", "", type=str) or ""
+        if not candidate_dir or not os.path.isdir(candidate_dir):
+            from pathlib import Path
+            candidate_dir = str(Path.home())
+
+        # Suggested filename with pre-applied extension
+        suggested = _best_doc_name(doc)
+        suggested = os.path.splitext(suggested)[0]
+        suggested = _sanitize_filename(suggested) + ext
+        suggested_path = os.path.join(candidate_dir, suggested)
+
+        path, chosen_filter = QFileDialog.getSaveFileName(
+            self, self.tr("Save As"), suggested_path, filters
+        )
+        if not path:
+            return
+
+        path, ext_norm = _normalize_save_path_chosen_filter(path, chosen_filter)
+
+        from setiastro.saspro.save_options import ExportDialog
+        current_bd = meta.get("bit_depth")
+        current_jq = meta.get("jpeg_quality", None)
+
+        dlg = ExportDialog(
+            self, ext_norm, current_bd,
+            current_jpeg_quality=current_jq,
+            settings=self.settings,
+        )
+        if dlg.exec() != dlg.DialogCode.Accepted:
+            return
+
+        try:
+            self.docman.save_document(
+                doc, path,
+                bit_depth_override=dlg.selected_bit_depth(),
+                jpeg_quality=dlg.selected_jpeg_quality(),
+                export_opts=dlg.export_options(),
+            )
+            self._log(f"Saved: {path} ({dlg.selected_bit_depth()})")
+            self.settings.setValue("paths/last_save_dir", os.path.dirname(path))
+        except Exception as e:
+            QMessageBox.critical(self, self.tr("Save failed"), str(e))    
