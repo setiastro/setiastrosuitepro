@@ -313,6 +313,7 @@ class Icons:
     DSE = property(lambda self: _resource_path('dse.png'))
     COLOR_WHEEL = property(lambda self: _resource_path('colorwheel.png'))
     SELECTIVE_COLOR = property(lambda self: _resource_path('selectivecolor.png'))
+    SELECTIVE_LUM = property(lambda self: _resource_path('selectiveluma.png'))
     NB_TO_RGB = property(lambda self: _resource_path('nbtorgb.png'))
     NARROWBANDNORMALIZATION = property(lambda self: _resource_path('narrowbandnormalization.png'))
     
@@ -545,6 +546,7 @@ _LEGACY_ICON_MAP = {
     'planetarystacker_path': 'planetarystacker.png',
     'viewbundles_path': 'viewbundle.png',
     'selectivecolor_path': 'selectivecolor.png',
+    'selectivelum_path': 'selectiveluma.png',
     'rgbalign_path': 'rgbalign.png',
     'background_path': 'background.png',
     'script_icon_path': 'script.png',

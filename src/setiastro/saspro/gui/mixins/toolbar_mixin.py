@@ -37,7 +37,7 @@ from setiastro.saspro.resources import (
     nbtorgb_path, freqsep_path, multiscale_decomp_path, contsub_path, halo_path, cosmic_path,
     satellite_path, imagecombine_path, wims_path, wimi_path, linearfit_path, snr_path,
     debayer_path, aberration_path, functionbundles_path, viewbundles_path, planetarystacker_path,syqon_path,
-    selectivecolor_path, rgbalign_path, planetprojection_path, clonestampicon_path, finderchart_path,magnitude_path,
+    selectivecolor_path, selectivelum_path, rgbalign_path, planetprojection_path, clonestampicon_path, finderchart_path,magnitude_path,
 )
 
 # Import shortcuts module
@@ -265,6 +265,7 @@ class ToolbarMixin:
         tb_tl.addAction(self.act_narrowband_normalization)
         
         tb_tl.addAction(self.act_selective_color)
+        tb_tl.addAction(self.act_selective_lum) 
         tb_tl.addAction(self.act_freqsep)
         tb_tl.addAction(self.act_multiscale_decomp)
         tb_tl.addAction(self.act_contsub)
@@ -1258,6 +1259,10 @@ class ToolbarMixin:
         self.act_selective_color.setStatusTip(self.tr("Adjust specific hue ranges with CMY/RGB controls"))
         self.act_selective_color.triggered.connect(self._open_selective_color_tool)
 
+        self.act_selective_lum = QAction(QIcon(selectivelum_path), self.tr("Selective Luminance Correction..."), self)
+        self.act_selective_lum.setStatusTip(self.tr("Adjust specific luminance bands with CMY/RGB/L/S/C controls"))
+        self.act_selective_lum.triggered.connect(self._open_selective_lum_tool)
+
         self.act_magnitude = QAction(QIcon(magnitude_path), self.tr("Magnitude / Surface Brightness..."), self)
         self.act_magnitude.setStatusTip(self.tr("Measure magnitude and mag/arcsec² from the active linear view"))
         self.act_magnitude.setIconVisibleInMenu(True)
@@ -1527,6 +1532,7 @@ class ToolbarMixin:
         reg("nbtorgb",       self.act_nbtorgb)
         reg("freqsep",       self.act_freqsep)
         reg("selective_color", self.act_selective_color)
+        reg("selective_lum", self.act_selective_lum)
         reg("narrowband_normalization", self.act_narrowband_normalization)
         reg("contsub",      self.act_contsub)
         reg("abe",          self.act_abe)
