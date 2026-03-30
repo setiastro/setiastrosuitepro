@@ -1879,12 +1879,8 @@ class DocManager(QObject):
                 vw = dm._active_view_widget()
                 if vw is not None:
                     try:
-                        # IMPORTANT: use the *parent* doc here, not the ROI wrapper
-                        base = getattr(doc, "_parent_doc", None) or doc
-                        if hasattr(vw, "refresh_from_docman") and callable(vw.refresh_from_docman):
-                            vw.refresh_from_docman(doc=base, roi=roi_tuple)
-                        else:
-                            vw._render()
+                        # MUST be rebuild=True so _render re-pulls from the ROI doc
+                        vw._render(rebuild=True)
                     except Exception:
                         pass
 

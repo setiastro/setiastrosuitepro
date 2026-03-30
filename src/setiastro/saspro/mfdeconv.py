@@ -1150,20 +1150,34 @@ def _estimate_fwhm_from_header(hdr) -> float:
     return float("nan")
 
 def _estimate_fwhm_from_image(arr) -> float:
-    """Fast FWHM estimate from SEP 'a','b' parameters (≈ sigma in px)."""
     if sep is None:
         return float("nan")
     try:
-        img = _contig(_to_luma_local(arr))             # ← ensure C-contig float32
+        img = _contig(_to_luma_local(arr))
         bkg = sep.Background(img)
-        data = _contig(img - bkg.back())               # ← ensure data is C-contig
+        data = _contig(img - bkg.back())
         try:
             err = bkg.globalrms
         except Exception:
             err = float(np.median(bkg.rms()))
-        sources = sep.extract(data, 6.0, err=err)
+
+        sep.set_extract_pixstack(5_000_000)
+        sep.set_sub_object_limit(4096)
+
+        sources = None
+        for thresh in [6.0, 15.0, 30.0, 50.0]:
+            try:
+                sources = sep.extract(data, thresh, err=err)
+                break
+            except Exception as e:
+                msg = str(e).lower()
+                if "pixel buffer" in msg or "deblending" in msg or "sub-object" in msg:
+                    continue
+                return float("nan")  # unexpected error
+
         if sources is None or len(sources) == 0:
             return float("nan")
+
         a = np.asarray(sources["a"], dtype=np.float32)
         b = np.asarray(sources["b"], dtype=np.float32)
         ab = (a + b) * 0.5
@@ -1384,12 +1398,22 @@ def _star_mask_from_precomputed(
             det = det[:(H // s) * s, :(W // s) * s].reshape(H // s, s, W // s, s).mean(axis=(1, 3))
             scale = float(s)
 
-    # Threshold ladder
+    # Set generous limits before any extraction — adaptive threshold does the rest
+    sep.set_extract_pixstack(5_000_000)
+    sep.set_sub_object_limit(4096)
+
     thresholds = [thresh_sigma, thresh_sigma*2, thresh_sigma*4,
                   thresh_sigma*8, thresh_sigma*16]
     objs = None; used = float("nan"); raw = 0
     for t in thresholds:
-        cand = sep.extract(det, thresh=float(t), err=float(err_scalar))
+        try:
+            cand = sep.extract(det, thresh=float(t), err=float(err_scalar))
+        except Exception as e:
+            msg = str(e).lower()
+            if "pixel buffer" in msg or "deblending" in msg or "sub-object" in msg:
+                status_cb(f"Star mask: dense field, stepping threshold to next level (was {t:.1f}σ)")
+                continue
+            raise  # unexpected — don't swallow it
         n = 0 if cand is None else len(cand)
         if n == 0:          continue
         if n > max_objs*12: continue
