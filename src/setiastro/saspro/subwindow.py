@@ -2659,17 +2659,26 @@ class ImageSubWindow(QWidget):
         if self._active_source_kind == "preview" and self._active_preview_id is not None:
             src = next((p for p in self._previews if p["id"] == self._active_preview_id), None)
             if src is not None:
-                # Pull the *edited* ROI image from DocManager, if available
-                if hasattr(self, "_docman") and self._docman is not None:
-                    try:
-                        roi_doc = self._docman.get_document_for_view(self)
-                        roi_img = getattr(roi_doc, "image", None)
-                        # IMPORTANT: only copy on rebuild; zoom should not trigger a copy
-                        if roi_img is not None:
-                            if rebuild or ("arr" not in src) or (src.get("arr") is None):
-                                src["arr"] = np.asarray(roi_img).copy()
-                    except Exception:
-                        print("[ImageSubWindow] _render: failed to pull edited ROI from DocManager")
+                if rebuild:
+                    # Always re-pull from DocManager on rebuild — this is where edits land
+                    roi_img = None
+                    if hasattr(self, "_docman") and self._docman is not None:
+                        try:
+                            roi_doc = self._docman.get_document_for_view(self)
+                            roi_img = getattr(roi_doc, "image", None)
+                        except Exception:
+                            pass
+
+                    if roi_img is not None:
+                        src["arr"] = np.asarray(roi_img).copy()
+                    else:
+                        # Fallback: slice directly from parent document
+                        roi = src["roi"]
+                        x, y, w, h = roi
+                        parent_img = getattr(self.document, "image", None)
+                        if parent_img is not None:
+                            src["arr"] = np.asarray(parent_img)[y:y+h, x:x+w].copy()
+
                 base_img = src.get("arr", None)
         else:
             base_img = self._display_override if (self._display_override is not None) else (
