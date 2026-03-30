@@ -110,6 +110,75 @@ def _build_lum_mask(img01: np.ndarray,
 # ---------------------------------------------------------------------
 # Color / luminance adjustments  (same as SelectiveColor, unchanged)
 # ---------------------------------------------------------------------
+def _band_contrast(out: np.ndarray, m: np.ndarray,
+                   con: float, band_lo: float, band_hi: float) -> np.ndarray:
+    """
+    Anchored sigmoid S-curve contrast within [band_lo, band_hi].
+
+      - con = 0  → perfect identity.
+      - con > 0  → expanding S-curve (more contrast).
+      - con < 0  → compressing curve (less contrast, bows toward midpoint).
+      - band_lo and band_hi are fixed anchors, never moved.
+      - Pixels outside [band_lo, band_hi] are never touched.
+
+    For con > 0: anchored = expand(t, k)
+    For con < 0: anchored = 2*t - expand(t, k)
+      = t - (expand(t,k) - t)
+      = identity minus the deviation that expand adds
+      This flips the deviation to the other side of the diagonal.
+    """
+    import math
+
+    span = float(band_hi) - float(band_lo)
+    if span < 1e-6 or abs(con) < 1e-4:
+        return out
+
+    k = abs(float(con)) * 6.0
+
+    s_neg = 1.0 / (1.0 + math.exp( k))   # sig(-k)
+    s_pos = 1.0 / (1.0 + math.exp(-k))   # sig(+k)
+    s_rng = s_pos - s_neg
+
+    out_f = out.astype(np.float32)
+
+    if out_f.ndim == 3:
+        lum_px = (0.2989 * out_f[..., 0] +
+                  0.5870 * out_f[..., 1] +
+                  0.1140 * out_f[..., 2])
+    else:
+        lum_px = out_f
+
+    in_band = (lum_px >= band_lo) & (lum_px <= band_hi)
+    if not np.any(in_band):
+        return out_f
+
+    result = out_f.copy()
+
+    for c in range(out_f.shape[2] if out_f.ndim == 3 else 1):
+        ch = out_f[..., c] if out_f.ndim == 3 else out_f
+
+        t   = (ch[in_band] - band_lo) / span          # [0, 1]
+        u   = 2.0 * t - 1.0                            # [-1, 1]
+        raw = 1.0 / (1.0 + np.exp(-k * u))
+        e   = (raw - s_neg) / s_rng                    # expand(t,k) in [0,1]
+
+        if con > 0:
+            anchored = e                               # bow above diagonal
+        else:
+            anchored = 2.0 * t - e                    # flip deviation below diagonal
+
+        anchored = np.clip(anchored, 0.0, 1.0)
+        v_new    = anchored * span + band_lo
+
+        if out_f.ndim == 3:
+            result[in_band, c] = v_new
+        else:
+            result[in_band] = v_new
+
+    m3      = m[..., None] if out_f.ndim == 3 else m
+    blended = out_f * (1.0 - m3) + result * m3
+
+    return np.clip(blended, 0.0, 1.0).astype(np.float32)
 
 def _apply_selective_adjustments(img01: np.ndarray,
                                   mask01: np.ndarray,
@@ -117,7 +186,9 @@ def _apply_selective_adjustments(img01: np.ndarray,
                                   r: float, g: float, b: float,
                                   lum: float, chroma: float, sat: float, con: float,
                                   intensity: float,
-                                  use_chroma_mode: bool) -> np.ndarray:
+                                  use_chroma_mode: bool,
+                                  band_lo: float = 0.0,
+                                  band_hi: float = 1.0) -> np.ndarray:
     a = img01.astype(np.float32, copy=True)
     m = np.clip(mask01.astype(np.float32) * float(intensity), 0.0, 1.0)
 
@@ -141,7 +212,7 @@ def _apply_selective_adjustments(img01: np.ndarray,
             out = np.clip(out + lum * m[..., None], 0.0, 1.0)
 
         if abs(con) > 0:
-            out = np.clip((out - 0.5) * (1.0 + con * m[..., None]) + 0.5, 0.0, 1.0)
+            out = _band_contrast(out, m, con, band_lo, band_hi)
 
         if use_chroma_mode:
             if abs(chroma) > 0:
@@ -381,6 +452,7 @@ class SelectiveLuminanceCorrection(QDialog):
     only to that band.  Ideal for taming galaxy cores, lifting faint nebulosity,
     desaturating noise in dark regions, etc.
     """
+    _CONTRAST_MONOTONIC_LIMIT = -2.0 / 3.0   # ≈ −0.6667
 
     def __init__(self, doc_manager=None, document=None, parent=None,
                  window_icon: QIcon | None = None):
@@ -570,7 +642,7 @@ class SelectiveLuminanceCorrection(QDialog):
 
         gl.addWidget(QLabel("Edge blur (px):"), 4, 4)
         self.sb_blur = QSpinBox()
-        self.sb_blur.setRange(0, 150); self.sb_blur.setValue(0)
+        self.sb_blur.setRange(0, 150); self.sb_blur.setValue(5)
         self.sb_blur.valueChanged.connect(self._schedule_mask)
         gl.addWidget(self.sb_blur, 4, 5)
 
@@ -630,7 +702,17 @@ class SelectiveLuminanceCorrection(QDialog):
         self.dd_color_mode.currentIndexChanged.connect(self._update_color_mode_enabled)
         gll.addWidget(self.dd_color_mode, 4, 1, 1, 2)
         left.addWidget(gb_lsc)
-
+ 
+        self.lbl_contrast_warning = QLabel(
+            "⚠️  Contrast below −0.67: curve is no longer monotonically increasing"
+        )
+        self.lbl_contrast_warning.setStyleSheet(
+            "color: #e07020; font-size: 10px; padding: 2px 4px;"
+        )
+        self.lbl_contrast_warning.setWordWrap(True)
+        self.lbl_contrast_warning.setVisible(False)
+        left.addWidget(self.lbl_contrast_warning)
+ 
         # wrap in scroll area
         left_scroll = QScrollArea()
         left_scroll.setWidget(controls_container)
@@ -763,7 +845,10 @@ class SelectiveLuminanceCorrection(QDialog):
         self.ds_hi.valueChanged.connect(_controls_to_wheel)
         self.sl_lo.valueChanged.connect(_controls_to_wheel)
         self.sl_hi.valueChanged.connect(_controls_to_wheel)
-
+        self.ds_c2.valueChanged.connect(self._update_contrast_warning)
+        self.sl_c2.valueChanged.connect(
+            lambda v: self._update_contrast_warning(v / 100.0)
+        )
         # Zoom buttons
         self.btn_zoom_in.clicked.connect(lambda: self._apply_zoom(self._zoom * 1.25, None))
         self.btn_zoom_out.clicked.connect(lambda: self._apply_zoom(self._zoom / 1.25, None))
@@ -780,6 +865,33 @@ class SelectiveLuminanceCorrection(QDialog):
     # =================================================================
     # Helpers
     # =================================================================
+    def _update_contrast_warning(self, value: float):
+        """Show warning and recolour slider when contrast is non-monotonic."""
+        non_mono = value < self._CONTRAST_MONOTONIC_LIMIT
+        self.lbl_contrast_warning.setVisible(non_mono)
+ 
+        if non_mono:
+            self.sl_c2.setStyleSheet("""
+                QSlider::groove:horizontal {
+                    height: 4px;
+                    background: #5a1a1a;
+                    border-radius: 2px;
+                }
+                QSlider::sub-page:horizontal {
+                    background: #c0392b;
+                    border-radius: 2px;
+                }
+                QSlider::handle:horizontal {
+                    background: #e74c3c;
+                    border: 1px solid #922b21;
+                    width: 12px; height: 12px;
+                    margin: -4px 0;
+                    border-radius: 6px;
+                }
+            """)
+        else:
+            self.sl_c2.setStyleSheet("")   # restore default theme styling
+
     def _slider_pair(self, grid, name, row, minv=-1.0, maxv=1.0, step=0.05):
         import math
 
@@ -1073,6 +1185,8 @@ class SelectiveLuminanceCorrection(QDialog):
                 con=float(self.ds_c2.value()),
                 intensity=float(self.ds_int.value()),
                 use_chroma_mode=(self.dd_color_mode.currentIndex() == 0),
+                band_lo=float(self.ds_lo.value()), 
+                band_hi=float(self.ds_hi.value()),           
             )
             out = _ensure_rgb01(out)
         else:
@@ -1143,6 +1257,8 @@ class SelectiveLuminanceCorrection(QDialog):
             con=float(self.ds_c2.value()),
             intensity=float(self.ds_int.value()),
             use_chroma_mode=(self.dd_color_mode.currentIndex() == 0),
+            band_lo=float(self.ds_lo.value()),
+            band_hi=float(self.ds_hi.value()),       
         )
 
     # =================================================================
@@ -1164,7 +1280,7 @@ class SelectiveLuminanceCorrection(QDialog):
                 self.docman.open_array(result, title=f"{name} [SelLum]")
         self.img = np.clip(result.astype(np.float32), 0.0, 1.0)
         self._last_base = None
-        self._reset_controls()
+        self._reset_adjustments_only()
 
     def _apply_as_new_doc(self):
         try:
@@ -1186,7 +1302,7 @@ class SelectiveLuminanceCorrection(QDialog):
             self.lbl_target.setText(f"Target View:  <b>{disp}</b>")
         self.img = np.clip(result.astype(np.float32), 0.0, 1.0)
         self._last_base = None
-        self._reset_controls()
+        self._reset_adjustments_only()
 
     def _export_mask_doc(self):
         if self.docman is None:
@@ -1250,7 +1366,49 @@ class SelectiveLuminanceCorrection(QDialog):
     # =================================================================
     # Reset
     # =================================================================
+
+    def _reset_adjustments_only(self):
+        """
+        Called after Apply / Apply as New Document.
+        Zeroes only the CMY/RGB/L/Chroma/Sat/Contrast/Intensity sliders.
+        Leaves the luminance range, preset, smoothness, blur, and invert
+        exactly as the user left them so they can keep tweaking the same band.
+        """
+        self._mask_timer.stop()
+        self._adj_timer.stop()
+
+        for sld, box in (
+            (self.sl_c,      self.ds_c),
+            (self.sl_m,      self.ds_m),
+            (self.sl_y,      self.ds_y),
+            (self.sl_r,      self.ds_r),
+            (self.sl_g,      self.ds_g),
+            (self.sl_b,      self.ds_b),
+            (self.sl_l,      self.ds_l),
+            (self.sl_s,      self.ds_s),
+            (self.sl_c2,     self.ds_c2),
+            (self.sl_chroma, self.ds_chroma),
+        ):
+            self._set_pair(sld, box, 0.0)
+
+        self.ds_int.blockSignals(True)
+        self.ds_int.setValue(1.0)
+        self.ds_int.blockSignals(False)
+
+        self.dd_color_mode.blockSignals(True)
+        self.dd_color_mode.setCurrentIndex(0)
+        self.dd_color_mode.blockSignals(False)
+        self._update_color_mode_enabled()
+
+        # Rebuild preview with the freshly-applied image but same mask range
+        self._last_base = None
+        self._recompute_mask_and_preview()
+
     def _reset_controls(self):
+        """
+        Full reset — called by the ↺ Reset button.
+        Resets everything including the luminance range back to Shadows.
+        """
         self._mask_timer.stop()
         self._adj_timer.stop()
 
@@ -1288,9 +1446,15 @@ class SelectiveLuminanceCorrection(QDialog):
         setv(self.cb_show_mask, False)
 
         for sld, box in (
-            (self.sl_c,  self.ds_c),  (self.sl_m,  self.ds_m),  (self.sl_y,  self.ds_y),
-            (self.sl_r,  self.ds_r),  (self.sl_g,  self.ds_g),  (self.sl_b,  self.ds_b),
-            (self.sl_l,  self.ds_l),  (self.sl_s,  self.ds_s),  (self.sl_c2, self.ds_c2),
+            (self.sl_c,      self.ds_c),
+            (self.sl_m,      self.ds_m),
+            (self.sl_y,      self.ds_y),
+            (self.sl_r,      self.ds_r),
+            (self.sl_g,      self.ds_g),
+            (self.sl_b,      self.ds_b),
+            (self.sl_l,      self.ds_l),
+            (self.sl_s,      self.ds_s),
+            (self.sl_c2,     self.ds_c2),
             (self.sl_chroma, self.ds_chroma),
         ):
             self._set_pair(sld, box, 0.0)
