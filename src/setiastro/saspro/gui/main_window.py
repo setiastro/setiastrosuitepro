@@ -9841,10 +9841,16 @@ class AstroSuiteProMainWindow(
         super().keyPressEvent(event)
 
     def _launch_bored_minigame(self):
-        """Launch the hidden minigame."""
-        base_pkg = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        minigame_path = os.path.join(base_pkg, "widgets", "minigame", "index.html")
-
+        # Handle both frozen (PyInstaller) and normal execution
+        if getattr(sys, 'frozen', False):
+            # PyInstaller extracts to sys._MEIPASS
+            base_pkg = sys._MEIPASS
+            minigame_path = os.path.join(base_pkg, "setiastro", "saspro", 
+                                        "widgets", "minigame", "index.html")
+        else:
+            base_pkg = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            minigame_path = os.path.join(base_pkg, "widgets", "minigame", "index.html")
+        
         if os.path.exists(minigame_path):
             QDesktopServices.openUrl(QUrl.fromLocalFile(minigame_path))
         else:
@@ -9853,7 +9859,7 @@ class AstroSuiteProMainWindow(
                 self.tr("Bored?"),
                 self.tr("The minigame could not be found.")
             )
-
+            
     def _open_texture_clarity(self):
         try:
             from setiastro.saspro.texture_clarity import open_texture_clarity_dialog
