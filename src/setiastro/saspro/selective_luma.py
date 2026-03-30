@@ -115,17 +115,16 @@ def _band_contrast(out: np.ndarray, m: np.ndarray,
     """
     Anchored sigmoid S-curve contrast within [band_lo, band_hi].
 
-      - con = 0  → perfect identity.
+      - con = 0  → perfect identity (returns out unchanged).
       - con > 0  → expanding S-curve (more contrast).
       - con < 0  → compressing curve (less contrast, bows toward midpoint).
-      - band_lo and band_hi are fixed anchors, never moved.
-      - Pixels outside [band_lo, band_hi] are never touched.
+      - band_lo and band_hi are the sigmoid anchors (always map to themselves).
+      - Spatial blending is handled entirely by the luminance mask m —
+        no hard in_band boolean gate, which would create a seam at the edges.
 
-    For con > 0: anchored = expand(t, k)
-    For con < 0: anchored = 2*t - expand(t, k)
-      = t - (expand(t,k) - t)
-      = identity minus the deviation that expand adds
-      This flips the deviation to the other side of the diagonal.
+    The sigmoid is computed for every pixel relative to the band, but pixels
+    outside the band have m≈0 so the blend leaves them untouched. Pixels
+    near the band edges are already feathered by m from _build_lum_mask.
     """
     import math
 
@@ -133,48 +132,34 @@ def _band_contrast(out: np.ndarray, m: np.ndarray,
     if span < 1e-6 or abs(con) < 1e-4:
         return out
 
-    k = abs(float(con)) * 6.0
+    k = abs(float(con)) * 6.0   # steepness, always positive
 
+    # Sigmoid normalisation anchors so expand(0,k)=0 and expand(1,k)=1
     s_neg = 1.0 / (1.0 + math.exp( k))   # sig(-k)
     s_pos = 1.0 / (1.0 + math.exp(-k))   # sig(+k)
-    s_rng = s_pos - s_neg
+    s_rng = s_pos - s_neg                  # always > 0
 
     out_f = out.astype(np.float32)
 
-    if out_f.ndim == 3:
-        lum_px = (0.2989 * out_f[..., 0] +
-                  0.5870 * out_f[..., 1] +
-                  0.1140 * out_f[..., 2])
+    # Compute t for ALL pixels relative to the band.
+    # Out-of-band pixels will have t outside [0,1] but they are masked out
+    # by m≈0 so they contribute nothing to the blend.
+    t = (out_f - band_lo) / span          # HxWx3 (or HxW), may be outside [0,1]
+    u = 2.0 * t - 1.0                     # centred on [-1, 1]
+
+    raw = 1.0 / (1.0 + np.exp(-k * u))   # sigmoid(k*u), shape matches out_f
+    e   = (raw - s_neg) / s_rng           # expand(t,k), anchored to [0,1] within band
+
+    if con > 0:
+        anchored = e                       # bow above diagonal
     else:
-        lum_px = out_f
+        anchored = 2.0 * t - e            # flip deviation: bow below diagonal
 
-    in_band = (lum_px >= band_lo) & (lum_px <= band_hi)
-    if not np.any(in_band):
-        return out_f
+    # Remap back to pixel values — no clamp here so OOB pixels remap cleanly
+    # (they'll be zeroed out by m anyway)
+    result = anchored * span + band_lo
 
-    result = out_f.copy()
-
-    for c in range(out_f.shape[2] if out_f.ndim == 3 else 1):
-        ch = out_f[..., c] if out_f.ndim == 3 else out_f
-
-        t   = (ch[in_band] - band_lo) / span          # [0, 1]
-        u   = 2.0 * t - 1.0                            # [-1, 1]
-        raw = 1.0 / (1.0 + np.exp(-k * u))
-        e   = (raw - s_neg) / s_rng                    # expand(t,k) in [0,1]
-
-        if con > 0:
-            anchored = e                               # bow above diagonal
-        else:
-            anchored = 2.0 * t - e                    # flip deviation below diagonal
-
-        anchored = np.clip(anchored, 0.0, 1.0)
-        v_new    = anchored * span + band_lo
-
-        if out_f.ndim == 3:
-            result[in_band, c] = v_new
-        else:
-            result[in_band] = v_new
-
+    # Blend using the luminance mask which already carries all the feathering
     m3      = m[..., None] if out_f.ndim == 3 else m
     blended = out_f * (1.0 - m3) + result * m3
 
