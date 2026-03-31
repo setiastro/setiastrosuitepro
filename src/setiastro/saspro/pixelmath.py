@@ -1277,8 +1277,6 @@ class PixelMathDialogPro(QDialog):
             if self._preview_item is not None and abs(self._preview_zoom - 1.0) < 1e-6:
                 self._fit_to_view()
 
-            # Surface any dimension-mismatch warnings non-intrusively
-            from pixelmath import _pixel_math_warnings
             if _pixel_math_warnings:
                 QMessageBox.warning(
                     self,
@@ -1652,8 +1650,7 @@ class PixelMathDialogPro(QDialog):
                 )
 
             out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
-            # Surface any dimension-mismatch warnings before committing
-            from setiastro.saspro.pixelmath import _pixel_math_warnings
+
             if _pixel_math_warnings:
                 QMessageBox.warning(
                     self,
