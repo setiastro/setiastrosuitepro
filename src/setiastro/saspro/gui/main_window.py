@@ -184,7 +184,7 @@ from setiastro.saspro.resources import (
     disk_icon_path, nuke_path, hubble_path, collage_path, annotated_path,
     colorwheel_path, font_path, csv_icon_path, spinner_path, wims_path, narrowbandnormalization_path,
     wimi_path, linearfit_path, debayer_path, aberration_path, acv_icon_path, snr_path,
-    functionbundles_path, viewbundles_path, selectivecolor_path, rgbalign_path, planetarystacker_path,syqon_path,
+    functionbundles_path, viewbundles_path, selectivecolor_path, selectivelum_path, rgbalign_path, planetarystacker_path,syqon_path,
     background_path, script_icon_path, planetprojection_path,clonestampicon_path, finderchart_path,magnitude_path,
 )
 
@@ -4462,6 +4462,27 @@ class AstroSuiteProMainWindow(
         from setiastro.saspro.selective_color import SelectiveColorCorrection
         w = SelectiveColorCorrection(doc_manager=self.docman, document=doc, parent=self,
                                     window_icon=QIcon(selectivecolor_path))
+        w.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        w.show()
+
+    def _open_selective_lum_tool(self):
+        """Open the Selective Luminance Correction dialog on the active document."""
+        doc = None
+        if hasattr(self, "mdi") and self.mdi.activeSubWindow():
+            sw = self.mdi.activeSubWindow().widget()
+            doc = getattr(sw, "document", None)
+        if doc is None and getattr(self, "docman", None) and self.docman._docs:
+            doc = self.docman._docs[-1]
+        if doc is None or getattr(doc, "image", None) is None:
+            QMessageBox.information(self, "No image", "Open an image first.")
+            return
+        from setiastro.saspro.selective_luma import SelectiveLuminanceCorrection
+        w = SelectiveLuminanceCorrection(
+            doc_manager=self.docman,
+            document=doc,
+            parent=self,
+            window_icon=QIcon(selectivelum_path),
+        )
         w.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         w.show()
 
@@ -9820,10 +9841,16 @@ class AstroSuiteProMainWindow(
         super().keyPressEvent(event)
 
     def _launch_bored_minigame(self):
-        """Launch the hidden minigame."""
-        base_pkg = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        minigame_path = os.path.join(base_pkg, "widgets", "minigame", "index.html")
-
+        # Handle both frozen (PyInstaller) and normal execution
+        if getattr(sys, 'frozen', False):
+            # PyInstaller extracts to sys._MEIPASS
+            base_pkg = sys._MEIPASS
+            minigame_path = os.path.join(base_pkg, "setiastro", "saspro", 
+                                        "widgets", "minigame", "index.html")
+        else:
+            base_pkg = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            minigame_path = os.path.join(base_pkg, "widgets", "minigame", "index.html")
+        
         if os.path.exists(minigame_path):
             QDesktopServices.openUrl(QUrl.fromLocalFile(minigame_path))
         else:
@@ -9832,7 +9859,7 @@ class AstroSuiteProMainWindow(
                 self.tr("Bored?"),
                 self.tr("The minigame could not be found.")
             )
-
+            
     def _open_texture_clarity(self):
         try:
             from setiastro.saspro.texture_clarity import open_texture_clarity_dialog

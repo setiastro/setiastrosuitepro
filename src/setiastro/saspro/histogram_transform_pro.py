@@ -738,40 +738,113 @@ class HistogramTransformDialogPro(QDialog):
         m = np.clip(m, 0.0, 1.0)
         return b, m, w
 
+    def _active_mask_array(self) -> np.ndarray | None:
+        """Return active mask as float32 [H,W] in 0..1, resized to doc image."""
+        try:
+            mid = getattr(self.document, "active_mask_id", None)
+            if not mid:
+                return None
+            layer = getattr(self.document, "masks", {}).get(mid)
+            if layer is None:
+                return None
+ 
+            m = np.asarray(getattr(layer, "data", None))
+            if m is None or m.size == 0:
+                return None
+ 
+            # squeeze to 2D
+            if m.ndim == 3 and m.shape[2] == 1:
+                m = m[..., 0]
+            elif m.ndim == 3:
+                m = (0.2126 * m[..., 0] + 0.7152 * m[..., 1] + 0.0722 * m[..., 2])
+ 
+            if m.dtype.kind in "ui":
+                m = m.astype(np.float32) / float(np.iinfo(m.dtype).max)
+            else:
+                m = m.astype(np.float32, copy=False)
+ 
+            m = np.clip(m, 0.0, 1.0)
+ 
+            th, tw = self.document.image.shape[:2]
+            sh, sw = m.shape[:2]
+            if (sh, sw) != (th, tw):
+                yi = np.linspace(0, sh - 1, th).astype(np.int32)
+                xi = np.linspace(0, sw - 1, tw).astype(np.int32)
+                m = m[yi][:, xi]
+ 
+            opacity = float(getattr(layer, "opacity", 1.0) or 1.0)
+            if opacity < 1.0:
+                m = m * opacity
+ 
+            return m
+        except Exception:
+            return None
+ 
+    def _blend_with_mask(self, base: np.ndarray, out: np.ndarray,
+                         mask: np.ndarray) -> np.ndarray:
+        """Blend base and out using mask [H,W] in 0..1."""
+        if out.ndim == 3:
+            m = mask[..., None]
+        else:
+            m = mask
+        return (base * (1.0 - m) + out * m).astype(np.float32, copy=False)
+ 
+    def _resize_mask_to(self, mask: np.ndarray, h: int, w: int) -> np.ndarray:
+        """Nearest-neighbour resize of a 2-D mask to (h, w) — no cv2 needed."""
+        mh, mw = mask.shape[:2]
+        if (mh, mw) == (h, w):
+            return mask
+        yi = np.linspace(0, mh - 1, h).astype(np.int32)
+        xi = np.linspace(0, mw - 1, w).astype(np.int32)
+        return mask[yi][:, xi]
+
     def _recompute(self):
         b, m, w = self._sanitize_points()
-
-        # curve is still correct: it represents the transfer function for the selected channel
+ 
         self.curve.set_params(b, m, w)
-
+ 
         chan = "L"
         try:
             chan = str(self.cb_channel.currentData() or "L")
         except Exception:
             chan = "L"
-
+ 
         if self.cb_live.isChecked():
             out = apply_histogram_transform_channel(self._preview_base, b, m, w, chan)
+ 
+            # --- mask blend (preview) ---
+            mask_full = self._active_mask_array()
+            if mask_full is not None:
+                ph, pw = self._preview_base.shape[:2]
+                mask_prev = self._resize_mask_to(mask_full, ph, pw)
+                out = self._blend_with_mask(self._preview_base, out, mask_prev)
         else:
             out = self._preview_base
-
+ 
         self._out = out
-        # clipping stats (preview-sized, fast)
+ 
+        # clipping stats
         try:
             lo, hi, tot = clipping_stats_channel(self._preview_base, b, w, chan)
             plo = 100.0 * lo / max(1, tot)
             phi = 100.0 * hi / max(1, tot)
-            self.lbl_clip.setText(f"Clipped: low {lo} ({plo:.2f}%) | high {hi} ({phi:.2f}%)")
+            clip_txt = f"Clipped: low {lo} ({plo:.2f}%) | high {hi} ({phi:.2f}%)"
+            if self._active_mask_array() is not None:
+                clip_txt += "  [mask active]"
+            self.lbl_clip.setText(clip_txt)
         except Exception:
             pass
-        # preview hist RGB
+ 
         h1_rgb = self._hist_rgb_256(self._out)
         self.hist.set_histograms(self._h0_rgb, h1_rgb)
-
+ 
         self._base_pm = _to_pixmap(self._out)
         self._apply_zoom()
-
-        self.lbl_status.setText(f"Ch={chan}  Black={b:.5f}  Mid={m:.5f}  White={w:.5f}")
+ 
+        mask_note = "  [masked]" if self._active_mask_array() is not None else ""
+        self.lbl_status.setText(
+            f"Ch={chan}  Black={b:.5f}  Mid={m:.5f}  White={w:.5f}{mask_note}"
+        )
 
     # ---------- preview zoom/pan ----------
     def _apply_zoom(self):
@@ -826,15 +899,22 @@ class HistogramTransformDialogPro(QDialog):
     def _apply_result_fullres(self) -> np.ndarray:
         b, m, w = self._sanitize_points()
         img = np.clip(np.asarray(self.document.image, dtype=np.float32), 0.0, 1.0)
-
+ 
         chan = "L"
         try:
             chan = str(self.cb_channel.currentData() or "L")
         except Exception:
             chan = "L"
-
+ 
         out = apply_histogram_transform_channel(img, b, m, w, chan)
-        return np.clip(out, 0.0, 1.0)
+        out = np.clip(out, 0.0, 1.0)
+ 
+        # --- mask blend (full res) ---
+        mask_full = self._active_mask_array()
+        if mask_full is not None:
+            out = self._blend_with_mask(img, out, mask_full)
+ 
+        return np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
 
     def _apply_inplace(self):
         try:

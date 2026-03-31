@@ -86,6 +86,46 @@ def _sample_star_circle_medians(
         raise ValueError("No valid stellar samples available for white balance.")
 
     return np.asarray(samples, dtype=np.float32), np.asarray(keep_idx, dtype=np.int32)
+def _spatially_sample_sources(sources: np.ndarray, r: np.ndarray,
+                               img_shape: tuple, grid: int = 3,
+                               per_cell: int = 500) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Divide the image into a grid x grid spatial grid and keep at most
+    per_cell stars per cell, preferring the brightest (highest flux).
+    Returns filtered (sources, r).
+    """
+    H, W = img_shape[:2]
+    cell_h = H / grid
+    cell_w = W / grid
+
+    keep = []
+    for row in range(grid):
+        for col in range(grid):
+            y0 = row * cell_h
+            y1 = (row + 1) * cell_h
+            x0 = col * cell_w
+            x1 = (col + 1) * cell_w
+
+            in_cell = np.where(
+                (sources["x"] >= x0) & (sources["x"] < x1) &
+                (sources["y"] >= y0) & (sources["y"] < y1)
+            )[0]
+
+            if len(in_cell) == 0:
+                continue
+
+            if len(in_cell) <= per_cell:
+                keep.append(in_cell)
+            else:
+                cell_flux = sources["flux"][in_cell]
+                top = np.argpartition(cell_flux, -per_cell)[-per_cell:]
+                keep.append(in_cell[top])
+
+    if not keep:
+        return sources, r
+
+    idx = np.concatenate(keep)
+    return sources[idx], r[idx]
 
 
 def apply_star_based_white_balance(
@@ -141,9 +181,8 @@ def apply_star_based_white_balance(
     rect = auto_rect_50x50(img_rgb)
     bg_neutral = background_neutralize_rgb(img_rgb, rect).astype(np.float32, copy=False)
 
-    # Use the post-BN sample-region medians as the anchor pivot.
-    x, y, rw, rh = rect
-    pivot = np.median(bg_neutral[y:y + rh, x:x + rw, :], axis=(0, 1)).astype(np.float32)
+    pivot = np.median(bg_neutral[rect[1]:rect[1]+rect[3], rect[0]:rect[0]+rect[2], :],
+                      axis=(0, 1)).astype(np.float32)
 
     # ------------------------------------------------------------------
     # 2) Detect stars on BN luminance
@@ -180,18 +219,22 @@ def apply_star_based_white_balance(
             subpix=5
         )
 
+        # Keep only star-like detections
+        mask = (r > 0) & (r <= 10)
+        sources = sources[mask]
+        r = r[mask]
+
+        if len(sources) == 0:
+            raise ValueError("All detected sources were rejected as non-stellar (too large).")
+
+        # Spatially uniform sampling — caps total stars on dense fields
+        sources, r = _spatially_sample_sources(sources, r, img_rgb.shape, grid=3, per_cell=500)
+
+        # Cache the already-filtered result
         cached_star_sources = sources
         cached_flux_radii = r
         _cached_shape = tuple(img_rgb.shape)
         _cached_threshold = float(threshold)
-
-    # Keep only small-ish star-like detections
-    mask = (r > 0) & (r <= 10)
-    sources = sources[mask]
-    r = r[mask]
-
-    if len(sources) == 0:
-        raise ValueError("All detected sources were rejected as non-stellar (too large).")
 
     # ------------------------------------------------------------------
     # 3) Sample stars as circular medians, not center pixels
@@ -240,7 +283,6 @@ def apply_star_based_white_balance(
     # ------------------------------------------------------------------
     # 5) WB math: anchor the BN background medians, adjust star white points
     # ------------------------------------------------------------------
-    # Use the median stellar color across sampled stars for robustness.
     ref_color = np.median(bn_star_pixels, axis=0).astype(np.float32)
     ref_color = np.where(ref_color <= 1e-8, 1e-8, ref_color)
 
@@ -274,3 +316,41 @@ def apply_star_based_white_balance(
         star_count,
         overlay_rgb.astype(np.float32, copy=False),
     )
+
+from PyQt6.QtCore import QThread, pyqtSignal as _pyqtSignal
+
+class StarDetectionWorker(QThread):
+    """
+    Runs star detection + overlay build off the main thread.
+    Emits finished(overlay_rgb, star_count) or failed(error_str).
+    Cancel by calling cancel() — checked between major steps.
+    """
+    finished = _pyqtSignal(object, int)   # overlay ndarray, count
+    failed   = _pyqtSignal(str)
+
+    def __init__(self, image: np.ndarray, threshold: float, autostretch: bool, parent=None):
+        super().__init__(parent)
+        self._image = np.asarray(image, dtype=np.float32)
+        self._threshold = float(threshold)
+        self._autostretch = bool(autostretch)
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        try:
+            result = apply_star_based_white_balance(
+                self._image,
+                threshold=self._threshold,
+                autostretch=self._autostretch,
+                reuse_cached_sources=False,
+                return_star_colors=False,
+            )
+            if self._cancelled:
+                return
+            _, count, overlay = result
+            self.finished.emit(overlay, int(count))
+        except Exception as e:
+            if not self._cancelled:
+                self.failed.emit(str(e))

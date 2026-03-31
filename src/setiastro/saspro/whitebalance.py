@@ -21,6 +21,8 @@ from setiastro.saspro.widgets.image_utils import (
     extract_mask_from_document as _active_mask_array_from_doc
 )
 
+_orphaned_workers: list = []  # keeps threads alive after dialog close
+
 def _mpl_no_tex_guard():
     # Prefer the centralized policy if available (frozen builds + single source of truth)
     try:
@@ -550,7 +552,7 @@ class WhiteBalanceDialog(QDialog):
         self._update_mode_widgets()
         # kick off a first detection preview
         QTimer.singleShot(200, self._update_star_preview)
-        self.finished.connect(lambda *_: self._cleanup())
+
 
 
     # ---- UI construction ------------------------------------------------
@@ -579,7 +581,7 @@ class WhiteBalanceDialog(QDialog):
         # Star-based controls + preview
         self.star_group = QGroupBox(self.tr("Star-Based Settings"))
         sg = QVBoxLayout(self.star_group)
-        # threshold slider
+
         thr_row = QHBoxLayout()
         thr_row.addWidget(QLabel(self.tr("Detection threshold (σ):")))
         self.thr_slider = QSlider(Qt.Orientation.Horizontal)
@@ -590,18 +592,17 @@ class WhiteBalanceDialog(QDialog):
         thr_row.addWidget(self.thr_slider); thr_row.addWidget(self.thr_label)
         sg.addLayout(thr_row)
 
-        # Reusing cached detections is intentionally disabled for White Balance.
-        # The threshold slider must always trigger a fresh star detection pass.
         self.chk_reuse = None
 
-        self.chk_autostretch_overlay = QCheckBox(self.tr("Autostretch overlay preview")); self.chk_autostretch_overlay.setChecked(True)
+        self.chk_autostretch_overlay = QCheckBox(self.tr("Autostretch overlay preview"))
+        self.chk_autostretch_overlay.setChecked(True)
         sg.addWidget(self.chk_autostretch_overlay)
 
-        # star count + image preview
         self.star_count = QLabel(self.tr("Detecting stars..."))
         sg.addWidget(self.star_count)
 
-        self.preview = QLabel(); self.preview.setMinimumSize(640, 360)
+        self.preview = QLabel()
+        self.preview.setMinimumSize(640, 360)
         self.preview.setStyleSheet("border: 1px solid #333;")
         sg.addWidget(self.preview)
         self.main_layout.addWidget(self.star_group)
@@ -617,9 +618,16 @@ class WhiteBalanceDialog(QDialog):
 
         self.setLayout(self.main_layout)
 
-        # debounce timer for star preview
-        self._debounce = QTimer(self); self._debounce.setSingleShot(True); self._debounce.setInterval(600)
+        # Debounce: wait for slider to settle before firing detection
+        self._debounce = QTimer(self)
+        self._debounce.setSingleShot(True)
+        self._debounce.setInterval(500)
         self._debounce.timeout.connect(self._update_star_preview)
+
+        # Worker state
+        self._detection_worker = None
+        self._pending_threshold = None
+        self._pending_autostretch = None
 
     def _cfg_gain(self, box: QDoubleSpinBox, val: float):
         box.setRange(0.5, 1.5); box.setDecimals(3); box.setSingleStep(0.01); box.setValue(val)
@@ -629,9 +637,13 @@ class WhiteBalanceDialog(QDialog):
         self.type_combo.currentTextChanged.connect(self._update_mode_widgets)
         self.btn_cancel.clicked.connect(self.reject)
         self.btn_apply.clicked.connect(self._on_apply)
-
-        self.thr_slider.valueChanged.connect(lambda v: (self.thr_label.setText(str(v)), self._debounce.start()))
+        self.thr_slider.valueChanged.connect(self._on_threshold_changed)
         self.chk_autostretch_overlay.toggled.connect(lambda _=None: self._debounce.start())
+
+
+    def _on_threshold_changed(self, v: int):
+        self.thr_label.setText(str(v))
+        self._debounce.start()  # restart debounce — slider still moving
 
     def _update_mode_widgets(self):
         t = self.type_combo.currentText()
@@ -647,38 +659,64 @@ class WhiteBalanceDialog(QDialog):
         self._update_star_preview()
 
     # ---- preview --------------------------------------------------------
+
     def _update_star_preview(self):
         if self.type_combo.currentText() != "Star-Based":
             return
-        try:
-            img = _to_float01(np.asarray(self.doc.image))
-            thr = float(self.thr_slider.value())
-            auto = bool(self.chk_autostretch_overlay.isChecked())
 
-            _, count, overlay = apply_star_based_white_balance(
-                img,
-                threshold=thr,
-                autostretch=auto,
-                reuse_cached_sources=False,
-                return_star_colors=False
-            )
-            self.star_count.setText(self.tr("Detected {0} stars.").format(count))
-            # to pixmap
+        thr = float(self.thr_slider.value())
+        auto = bool(self.chk_autostretch_overlay.isChecked())
+
+        # If a worker is already running, cancel it and remember what we want next.
+        # The _on_worker_done slot will re-fire with the pending values.
+        if self._detection_worker is not None and self._detection_worker.isRunning():
+            self._pending_threshold = thr
+            self._pending_autostretch = auto
+            self._detection_worker.cancel()
+            # Don't wait — let it finish naturally and _on_worker_done will restart
+            return
+
+        self._pending_threshold = None
+        self._pending_autostretch = None
+        self.star_count.setText(self.tr("Detecting…"))
+
+        from setiastro.saspro.imageops.starbasedwhitebalance import StarDetectionWorker
+        img = _to_float01(np.asarray(self.doc.image))
+        worker = StarDetectionWorker(img, thr, auto, parent=None)
+        worker.finished.connect(self._on_worker_done)
+        worker.failed.connect(self._on_worker_failed)
+        self._detection_worker = worker
+        worker.start()
+
+    def _on_worker_done(self, overlay: np.ndarray, count: int):
+        self._detection_worker = None
+
+        # If a new request came in while we were running, service it now
+        if self._pending_threshold is not None:
+            QTimer.singleShot(0, self._update_star_preview)
+            return
+
+        self.star_count.setText(self.tr("Detected {0} stars.").format(count))
+        try:
             overlay8 = np.ascontiguousarray(np.clip(overlay * 255.0, 0, 255).astype(np.uint8))
             h, w, _ = overlay8.shape
             qimg = QImage(overlay8.data, w, h, 3 * w, QImage.Format.Format_RGB888)
-
-            # Make sure the numpy buffer stays alive until QPixmap is created
             pm = QPixmap.fromImage(qimg.copy()).scaled(
                 self.preview.width(), self.preview.height(),
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation
             )
             self.preview.setPixmap(pm)
-        except Exception as e:
-            self.star_count.setText(self.tr("Detection failed."))
+        except Exception:
             self.preview.clear()
 
+    def _on_worker_failed(self, error: str):
+        self._detection_worker = None
+        if self._pending_threshold is not None:
+            QTimer.singleShot(0, self._update_star_preview)
+            return
+        self.star_count.setText(self.tr("Detection failed."))
+        self.preview.clear()
     # ---- apply ----------------------------------------------------------
     def _on_apply(self):
         mode = self.type_combo.currentText()
@@ -877,23 +915,49 @@ class WhiteBalanceDialog(QDialog):
         except Exception:
             self.close()
 
-    def _cleanup(self):
-        # Disconnect active-doc signal so the main window doesn't keep us alive
-        try:
-            if self._active_doc_conn and hasattr(self._main, "currentDocumentChanged"):
-                self._main.currentDocumentChanged.disconnect(self._on_active_doc_changed)
-        except Exception:
-            pass
-        self._active_doc_conn = False
-
-        # Stop debounce timer
-        try:
-            if getattr(self, "_debounce", None) is not None:
-                self._debounce.stop()
-        except Exception:
-            pass
-
-
     def closeEvent(self, ev):
-        self._cleanup()
-        super().closeEvent(ev)
+            # Stop debounce so no new workers can start
+            try:
+                self._debounce.stop()
+            except Exception:
+                pass
+
+            # Detach active-doc signal
+            try:
+                if self._active_doc_conn and hasattr(self._main, "currentDocumentChanged"):
+                    self._main.currentDocumentChanged.disconnect(self._on_active_doc_changed)
+            except Exception:
+                pass
+            self._active_doc_conn = False
+
+            # Orphan the worker — disconnect its signals, cancel, keep alive in module list
+            try:
+                worker = getattr(self, "_detection_worker", None)
+                if worker is not None:
+                    try:
+                        worker.finished.disconnect()
+                    except Exception:
+                        pass
+                    try:
+                        worker.failed.disconnect()
+                    except Exception:
+                        pass
+                    worker.cancel()
+                    _orphaned_workers.append(worker)
+                    worker.finished.connect(
+                        lambda *_: _orphaned_workers.remove(worker)
+                        if worker in _orphaned_workers else None
+                    )
+                    worker.failed.connect(
+                        lambda *_: _orphaned_workers.remove(worker)
+                        if worker in _orphaned_workers else None
+                    )
+                    self._detection_worker = None
+            except Exception:
+                pass
+
+            super().closeEvent(ev)
+
+    def _cleanup(self):
+        # Now a no-op — closeEvent owns all teardown
+        pass
