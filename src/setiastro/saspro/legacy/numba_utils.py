@@ -599,20 +599,11 @@ def subtract_dark_4d(frames, dark_frame, dark_median):
 
 def subtract_dark(frames, dark_frame):
     """
-    Subtract only the dark's spatial deviation from its median.
-    
-    Equivalent to: img - (dark - med(dark))
-    
-    Matches the philosophy of flat normalization (img / (flat/med(flat))):
-    removes spatial non-uniformity while preserving the image DC pedestal.
-    Plain img-dark would cause negative clipping when the dark has a
-    significant pedestal (amp glow, thermal gradient, etc).
-    Note: CMOS sensors hardware-subtract bias on every read — no bias
-    frame needed or meaningful for any modern CMOS sensor.
+    Standard dark subtraction: img - dark.
+    dark_median addback has been removed — it was causing overcorrection
+    during flat division.
     """
-    # Compute dark median once as a scalar — passed into Numba kernels
-    dark_median = float(np.median(dark_frame))
-
+    dark_median = 0.0  # was: float(np.median(dark_frame)) — removed
     if frames.ndim == 3:
         return subtract_dark_3d(frames, dark_frame, dark_median)
     elif frames.ndim == 4:
@@ -1603,23 +1594,11 @@ def subtract_dark_with_pedestal_4d(frames, dark_frame, pedestal, dark_median):
 
 def subtract_dark_with_pedestal(frames, dark_frame, pedestal):
     """
-    Subtract only the dark's spatial deviation from its median.
-
-    Equivalent to: img - (dark - med(dark)) + pedestal
-
-    Matches flat normalization philosophy (img / (flat/med(flat))):
-    removes spatial non-uniformity while preserving the image DC pedestal.
-    Prevents negative clipping when the dark has significant amp glow or
-    thermal gradient.
-
-    Note: pedestal is a PI-era holdover for integer pipelines that clip to
-    zero. SASpro works in full float32 so pedestal should be 0.0 in normal use.
-    Note: CMOS sensors hardware-subtract bias on every read — no separate
-    bias frame is needed or meaningful for any modern CMOS sensor.
+    Standard dark subtraction: img - dark + pedestal.
+    dark_median addback has been removed — it was causing overcorrection
+    during flat division. pedestal is a PI-era holdover; use 0.0 in SASpro.
     """
-    # Compute dark median once as a scalar before entering Numba
-    dark_median = float(np.median(dark_frame))
-
+    dark_median = 0.0  # was: float(np.median(dark_frame)) — removed
     if frames.ndim == 3:
         return subtract_dark_with_pedestal_3d(frames, dark_frame, pedestal, dark_median)
     elif frames.ndim == 4:

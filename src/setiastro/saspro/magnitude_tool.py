@@ -300,6 +300,29 @@ def _sigma_clip(vals: np.ndarray, sigma: float = 2.5, iters: int = 3) -> np.ndar
             break
     return v
 
+def _estimate_fwhm_from_sources(sources: np.ndarray, clip_sigma: float = 2.5) -> Optional[float]:
+    """
+    Estimate scene FWHM in pixels from SEP source second-moment semi-axes.
+    SEP 'a' is the RMS radius along the major axis (Gaussian sigma equivalent).
+    FWHM ≈ 2.35 * 2 * a  (factor of 2: SEP a is semi-axis, not full-width half).
+    Returns None if sources is empty or result is implausible.
+    """
+    if sources is None or len(sources) == 0:
+        return None
+    try:
+        a = np.asarray(sources["a"], dtype=np.float64)
+        a = a[np.isfinite(a) & (a > 0.3) & (a < 50.0)]
+        if a.size < 3:
+            return None
+        # sigma-clip to reject saturated/cosmic-ray outliers
+        a = _sigma_clip(a, sigma=clip_sigma, iters=3)
+        if a.size == 0:
+            return None
+        fwhm = float(2.35 * 2.0 * np.median(a))
+        # sanity clamp: 1.5–30 px is a reasonable range for astrophotos
+        return float(np.clip(fwhm, 1.5, 30.0))
+    except Exception:
+        return None
 
 def _detect_sources(gray: np.ndarray, sigma: float = 5.0) -> np.ndarray:
     gray = np.asarray(gray, dtype=np.float32)
@@ -356,62 +379,121 @@ def _match_starlist_to_sources(star_list: List[dict], sources: np.ndarray, max_d
     return out
 
 def _aperture_photometry_mono(img_f, xs, ys, r_ap, r_in, r_out):
+    """
+    Per-star aperture photometry for mono images.
+    r_ap, r_in, r_out may be scalars OR arrays (one value per star).
+    """
     x = np.ascontiguousarray(np.asarray(xs, dtype=np.float64))
     y = np.ascontiguousarray(np.asarray(ys, dtype=np.float64))
     plane = np.ascontiguousarray(np.asarray(img_f, dtype=np.float32))
+    N = len(x)
 
-    f_ap, _, _ = sep.sum_circle(plane, x, y, r=float(r_ap), subpix=5)
-    bkg, _, _ = sep.sum_circann(plane, x, y, float(r_in), float(r_out), subpix=5)
+    r_ap_arr  = np.broadcast_to(np.asarray(r_ap,  dtype=np.float64), (N,)).copy()
+    r_in_arr  = np.broadcast_to(np.asarray(r_in,  dtype=np.float64), (N,)).copy()
+    r_out_arr = np.broadcast_to(np.asarray(r_out, dtype=np.float64), (N,)).copy()
 
-    ap_area = np.pi * float(r_ap) * float(r_ap)
-    ann_area = np.pi * (float(r_out) * float(r_out) - float(r_in) * float(r_in))
-    bkg_per_pix = bkg / max(ann_area, 1e-8)
+    flux_net = np.zeros(N, dtype=np.float32)
+    for i in range(N):
+        ap_area  = math.pi * float(r_ap_arr[i]) ** 2
+        ann_area = math.pi * (float(r_out_arr[i]) ** 2 - float(r_in_arr[i]) ** 2)
 
-    flux_net = (f_ap - bkg_per_pix * ap_area).astype(np.float32)
+        f_ap, _, _ = sep.sum_circle(plane, x[i:i+1], y[i:i+1],
+                                    r=float(r_ap_arr[i]), subpix=5)
+        bkg, _, _  = sep.sum_circann(plane, x[i:i+1], y[i:i+1],
+                                     float(r_in_arr[i]), float(r_out_arr[i]), subpix=5)
+
+        bkg_per_pix = float(bkg[0]) / max(ann_area, 1e-8)
+        flux_net[i] = float(f_ap[0]) - bkg_per_pix * ap_area
+
     return flux_net
 
 
 def _aperture_photometry_rgb(img_f, xs, ys, r_ap, r_in, r_out):
-    import numpy as np
-    import sep
-
-    # SEP wants float arrays; also make sure x/y are contiguous float64
+    """
+    Per-star aperture photometry for RGB images.
+    r_ap, r_in, r_out may be scalars OR arrays (one value per star).
+    """
     x = np.ascontiguousarray(np.asarray(xs, dtype=np.float64))
     y = np.ascontiguousarray(np.asarray(ys, dtype=np.float64))
-
-    # ensure the image itself is contiguous float32
     img_f = np.ascontiguousarray(np.asarray(img_f, dtype=np.float32))
+    N = len(x)
 
-    # split planes and make each plane contiguous too
+    r_ap_arr  = np.broadcast_to(np.asarray(r_ap,  dtype=np.float64), (N,)).copy()
+    r_in_arr  = np.broadcast_to(np.asarray(r_in,  dtype=np.float64), (N,)).copy()
+    r_out_arr = np.broadcast_to(np.asarray(r_out, dtype=np.float64), (N,)).copy()
+
     planes = [
         np.ascontiguousarray(img_f[..., 0]),
         np.ascontiguousarray(img_f[..., 1]),
         np.ascontiguousarray(img_f[..., 2]),
     ]
 
-    flux_net = np.zeros((len(x), 3), dtype=np.float32)
+    flux_net = np.zeros((N, 3), dtype=np.float32)
+    for i in range(N):
+        ap_area  = math.pi * float(r_ap_arr[i]) ** 2
+        ann_area = math.pi * (float(r_out_arr[i]) ** 2 - float(r_in_arr[i]) ** 2)
 
-    for c, plane in enumerate(planes):
-        # aperture sum
-        f_ap, f_aperr, _ = sep.sum_circle(plane, x, y, r=float(r_ap), subpix=5)
+        for c, plane in enumerate(planes):
+            f_ap, _, _ = sep.sum_circle(plane, x[i:i+1], y[i:i+1],
+                                        r=float(r_ap_arr[i]), subpix=5)
+            bkg, _, _  = sep.sum_circann(plane, x[i:i+1], y[i:i+1],
+                                         float(r_in_arr[i]), float(r_out_arr[i]), subpix=5)
 
-        # annulus background (per-star)
-        bkg, bkgerr, _ = sep.sum_circann(plane, x, y, float(r_in), float(r_out), subpix=5)
-
-        # convert annulus sum to per-pixel background then to aperture background
-        ap_area = np.pi * float(r_ap) * float(r_ap)
-        ann_area = np.pi * (float(r_out) * float(r_out) - float(r_in) * float(r_in))
-        bkg_per_pix = bkg / max(ann_area, 1e-8)
-
-        flux_net[:, c] = (f_ap - bkg_per_pix * ap_area).astype(np.float32)
+            bkg_per_pix = float(bkg[0]) / max(ann_area, 1e-8)
+            flux_net[i, c] = float(f_ap[0]) - bkg_per_pix * ap_area
 
     return flux_net, None
+
+def _per_star_radii(
+    matches: List[dict],
+    r_ap_min: float = 2.0,
+    r_ap_max: float = 15.0,
+    ap_factor: float = 1.5,
+    in_factor: float = 3.0,
+    out_factor: float = 4.5,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Compute per-star aperture/annulus radii from SEP second-moment axes.
+    fwhm_i = 2.35 * 2 * sqrt(a_i * b_i)  (geometric mean handles elliptical PSFs)
+    r_ap  = ap_factor  * fwhm_i   (clamped to [r_ap_min, r_ap_max])
+    r_in  = in_factor  * fwhm_i   (always > r_ap)
+    r_out = out_factor * fwhm_i   (always > r_in)
+    """
+    N = len(matches)
+    r_ap_arr  = np.empty(N, dtype=np.float64)
+    r_in_arr  = np.empty(N, dtype=np.float64)
+    r_out_arr = np.empty(N, dtype=np.float64)
+
+    for i, m in enumerate(matches):
+        src = m["src"]
+        a = float(src["a"]) if np.isfinite(src["a"]) and src["a"] > 0 else None
+        b = float(src["b"]) if np.isfinite(src["b"]) and src["b"] > 0 else None
+
+        if a is not None and b is not None:
+            fwhm = 2.35 * 2.0 * math.sqrt(a * b)
+        elif a is not None:
+            fwhm = 2.35 * 2.0 * a
+        else:
+            # fallback: use scene median from whatever the spinbox says
+            fwhm = r_ap_max / ap_factor
+
+        r_ap  = float(np.clip(ap_factor  * fwhm, r_ap_min, r_ap_max))
+        r_in  = max(r_ap  + 1.0, in_factor  * fwhm)
+        r_out = max(r_in  + 2.0, out_factor * fwhm)
+
+        r_ap_arr[i]  = r_ap
+        r_in_arr[i]  = r_in
+        r_out_arr[i] = r_out
+
+    return r_ap_arr, r_in_arr, r_out_arr
 
 def _compute_zero_points_mono(matches, img_f, r_ap, r_in, r_out, band="L", clip_sigma=2.5):
     xs = np.array([m["x"] for m in matches], dtype=np.float64)
     ys = np.array([m["y"] for m in matches], dtype=np.float64)
 
-    flux_net = _aperture_photometry_mono(img_f, xs, ys, r_ap, r_in, r_out)
+    # per-star radii (r_ap/r_in/r_out args kept as fallback scale reference only)
+    r_ap_arr, r_in_arr, r_out_arr = _per_star_radii(matches)
+    flux_net = _aperture_photometry_mono(img_f, xs, ys, r_ap_arr, r_in_arr, r_out_arr)
 
     magkey = _magkey_for_band(band)
 
@@ -452,25 +534,13 @@ def _compute_zero_points_mono(matches, img_f, r_ap, r_in, r_out, band="L", clip_
     }
     return out
 
-def _compute_zero_points(
-    matches: List[dict],
-    img_f: np.ndarray,
-    r_ap: float,
-    r_in: float,
-    r_out: float,
-    clip_sigma: float = 2.5,
-) -> Dict[str, Any]:
-    """
-    Build per-channel ZP from catalog mags:
-      Blue  -> Bmag
-      Green -> Vmag
-      Red   -> Rmag
-    """
-
+def _compute_zero_points(matches, img_f, r_ap, r_in, r_out, clip_sigma=2.5):
     xs = np.array([m["x"] for m in matches], dtype=np.float64)
     ys = np.array([m["y"] for m in matches], dtype=np.float64)
 
-    flux_net, _flux_ap = _aperture_photometry_rgb(img_f, xs, ys, r_ap, r_in, r_out)
+    # per-star radii
+    r_ap_arr, r_in_arr, r_out_arr = _per_star_radii(matches)
+    flux_net, _flux_ap = _aperture_photometry_rgb(img_f, xs, ys, r_ap_arr, r_in_arr, r_out_arr)
 
     # Collect ZP candidates
     zp_R, zp_G, zp_B = [], [], []
@@ -1869,6 +1939,16 @@ class MagnitudeToolDialog(QDialog):
         if sources.size == 0:
             QMessageBox.warning(self, "SEP", "SEP found no sources.")
             return
+
+        # --- Auto-size aperture/annulus from scene FWHM ---
+        fwhm = _estimate_fwhm_from_sources(sources)
+        if fwhm is not None:
+            self.lbl_info.setText(
+                f"Scene FWHM ≈ {fwhm:.2f} px (median) — per-star apertures will be used for ZP."
+            )
+        else:
+            self.lbl_info.setText("FWHM estimation failed; per-star radii from SEP axes will still be used.")
+        QApplication.processEvents()
 
         for r in (3.0, 6.0, 12.0, 24.0):
             matches = _match_starlist_to_sources(self.star_list, sources, max_dist_px=r)
