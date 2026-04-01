@@ -23,7 +23,7 @@ from setiastro.saspro.starless_engines.syqon_nafnet_engine import (
     clear_axiom_models_cache,
 )
 from setiastro.saspro.remove_stars import (
-    SyQonStarlessDialog,
+    SyQonStarlessDialog,SyQonLivePreviewWindow, 
     _ProcDialog,
     _mtf_params_unlinked,
     _apply_mtf_unlinked_rgb,
@@ -271,7 +271,12 @@ class _SyQonDenoiseHubPage(QWidget):
         btn_row.addWidget(self.btn_install)
         btn_row.addWidget(self.btn_remove)
         btn_row.addWidget(self.btn_clear_cache)
+        self.chk_live_preview = QCheckBox("Live tile preview (slower)", self)
+        self.chk_live_preview.setChecked(False)
+        lay.addWidget(self.chk_live_preview)
 
+        self.preview_win = None
+        self.chk_live_preview.toggled.connect(self._toggle_live_preview_window)
         btn_wrap = QWidget(self)
         btn_wrap.setLayout(btn_row)
         form.addRow("", btn_wrap)
@@ -387,6 +392,43 @@ class _SyQonDenoiseHubPage(QWidget):
             self.cmb_model.setCurrentIndex(idx)
 
         self._refresh_state()
+
+    def _toggle_live_preview_window(self, on: bool):
+            on = bool(on)
+            if not on:
+                try:
+                    if self.preview_win is not None:
+                        self.preview_win.hide()
+                except Exception:
+                    pass
+                return
+
+            if self.preview_win is None:
+                self.preview_win = SyQonLivePreviewWindow(
+                    parent=self,
+                    title="SyQon Prism Live Preview",
+                    icon=self.window().windowIcon(),
+                )
+                self.preview_win.finished.connect(
+                    lambda *_: self.chk_live_preview.setChecked(False)
+                )
+
+            self.preview_win.show()
+            self.preview_win.raise_()
+            self.preview_win.activateWindow()
+
+    def _on_worker_preview(self, qimg):
+        try:
+            if not self.chk_live_preview.isChecked():
+                return
+            if qimg is None:
+                return
+            if self.preview_win is None:
+                self._toggle_live_preview_window(True)
+            if self.preview_win is not None and self.preview_win.isVisible():
+                self.preview_win.set_frame(qimg)
+        except Exception:
+            pass
 
     def _cancel_processing(self):
         thr = getattr(self, "proc_thr", None)
@@ -586,7 +628,7 @@ class _SyQonDenoiseHubPage(QWidget):
         self.spin_strength.setEnabled(not busy)
         self.spin_mtf_median.setEnabled((not busy) and self.chk_mtf.isChecked())
         self.chk_amp.setEnabled(not busy)
-
+        self.chk_live_preview.setEnabled((not busy))
         self.pbar.setVisible(busy)
         self.btn_cancel.setVisible(busy)
         self.btn_cancel.setEnabled(busy)
@@ -612,7 +654,11 @@ class _SyQonDenoiseHubPage(QWidget):
             self.proc_thr = None
             self._refresh_state()
             return
-
+        try:
+            if self.preview_win is not None:
+                self.preview_win.hide()
+        except Exception:
+            pass
         if err:
             self._set_busy(False)
             self.proc_thr = None
@@ -798,12 +844,17 @@ class _SyQonDenoiseHubPage(QWidget):
             model_kind=self.model_kind(),
             tile=int(self.spin_tile.value()),
             overlap=int(self.spin_overlap.value()),
-            pad=int(self.spin_pad.value()),      
+            pad=int(self.spin_pad.value()),
             use_amp=bool(self.chk_amp.isChecked()),
             amp_dtype="fp16",
+            live_preview=bool(self.chk_live_preview.isChecked()),           # ← ADD
+            preview_src_rgb01=(x_for_net if self.chk_live_preview.isChecked() else None),  # ← ADD
+            preview_max_dim=900,                                             # ← ADD
+            preview_emit_ms=120,                                             # ← ADD
             parent=self,
         )
         self.proc_thr.progress.connect(self._on_worker_progress)
+        self.proc_thr.preview.connect(self._on_worker_preview)              # ← ADD
         self.proc_thr.finished.connect(self._on_worker_finished)
         self.proc_thr.start()
 
@@ -863,6 +914,7 @@ class _SyQonSharpenHubPage(QWidget):
 
 class _SyQonPrismProcessThread(QThread):
     progress = pyqtSignal(int, str)          # percent, stage
+    preview  = pyqtSignal(object)            # QImage or None  ← ADD
     finished = pyqtSignal(object, dict, str) # denoised, info, err
 
     def __init__(
@@ -872,9 +924,14 @@ class _SyQonPrismProcessThread(QThread):
         model_kind: str,
         tile: int,
         overlap: int,
-        pad: int = 0, 
+        pad: int = 0,
         use_amp: bool = False,
         amp_dtype: str = "fp16",
+        *,                                   # ← ADD everything below
+        live_preview: bool = False,
+        preview_src_rgb01: np.ndarray | None = None,
+        preview_max_dim: int = 900,
+        preview_emit_ms: int = 120,
         parent=None,
     ):
         super().__init__(parent)
@@ -888,6 +945,10 @@ class _SyQonPrismProcessThread(QThread):
         self._cancel = False
         self.model_kind = str(model_kind or "prism_mini")
         self.pad = int(pad)
+        self.live_preview = bool(live_preview)           # ← ADD
+        self.preview_src = preview_src_rgb01             # ← ADD
+        self.preview_max_dim = int(preview_max_dim)      # ← ADD
+        self.preview_emit_ms = int(preview_emit_ms)      # ← ADD
 
     def _pad_rgb_reflect(self, img_rgb01: np.ndarray, pad: int) -> tuple[np.ndarray, tuple[int, int]]:
         """
@@ -923,6 +984,7 @@ class _SyQonPrismProcessThread(QThread):
         self._cancel = True
 
     def run(self):
+        import time
         info = {
             "engine": "syqon_prism",
             "use_amp_requested": bool(self.use_amp),
@@ -944,6 +1006,85 @@ class _SyQonPrismProcessThread(QThread):
 
             x_in, orig_hw = self._pad_rgb_reflect(self.x_for_net, pad)
 
+            # --- live preview setup ---
+            preview_buf = None
+            scale_x = scale_y = 1.0
+            last_emit = 0.0
+
+            if self.live_preview and self.preview_src is not None:
+                try:
+                    import cv2 as _cv2
+                except ImportError:
+                    _cv2 = None
+
+                # Use x_in (padded) so tile coords match the preview buffer exactly
+                src = np.asarray(x_in, dtype=np.float32)
+                if src.ndim == 2:
+                    src = np.stack([src] * 3, axis=-1)
+                elif src.ndim == 3 and src.shape[2] == 1:
+                    src = np.repeat(src, 3, axis=2)
+                else:
+                    src = src[..., :3]
+
+                H, W = src.shape[:2]
+                md = max(H, W)
+                if md > self.preview_max_dim:
+                    s = self.preview_max_dim / float(md)
+                    Hd = max(1, int(round(H * s)))
+                    Wd = max(1, int(round(W * s)))
+                else:
+                    Hd, Wd = H, W
+
+                if _cv2 is not None and (Hd != H or Wd != W):
+                    preview_buf = _cv2.resize(src, (Wd, Hd), interpolation=_cv2.INTER_AREA).astype(np.float32, copy=False)
+                else:
+                    preview_buf = src[:Hd, :Wd, :].copy()
+
+                scale_x = float(preview_buf.shape[1]) / float(W)
+                scale_y = float(preview_buf.shape[0]) / float(H)
+
+                from setiastro.saspro.remove_stars import _rgb01_to_qimage
+                self.preview.emit(_rgb01_to_qimage(preview_buf))
+                last_emit = time.time()
+
+            def _tile_cb(y0, x0, ph, pw, tile_rgb01):
+                nonlocal preview_buf, last_emit
+                if preview_buf is None:
+                    return
+                if self._cancel:
+                    raise InterruptedError("Cancelled")
+
+                try:
+                    import cv2 as _cv2
+                except ImportError:
+                    _cv2 = None
+
+                from setiastro.saspro.remove_stars import _rgb01_to_qimage
+
+                dx0 = int(round(x0 * scale_x))
+                dy0 = int(round(y0 * scale_y))
+                dx1 = int(round((x0 + pw) * scale_x))
+                dy1 = int(round((y0 + ph) * scale_y))
+                dx1 = max(dx0 + 1, dx1)
+                dy1 = max(dy0 + 1, dy1)
+
+                dh = min(preview_buf.shape[0], dy1) - dy0
+                dw = min(preview_buf.shape[1], dx1) - dx0
+                if dh <= 0 or dw <= 0:
+                    return
+
+                if _cv2 is not None and (dw != pw or dh != ph):
+                    tile_disp = _cv2.resize(tile_rgb01, (dw, dh), interpolation=_cv2.INTER_AREA)
+                else:
+                    tile_disp = tile_rgb01[:dh, :dw, :]
+
+                preview_buf[dy0:dy0 + dh, dx0:dx0 + dw, :] = tile_disp.astype(np.float32, copy=False)
+
+                now = time.time()
+                if (now - last_emit) * 1000.0 >= float(self.preview_emit_ms):
+                    self.preview.emit(_rgb01_to_qimage(preview_buf))
+                    last_emit = now
+
             denoised_p, engine_info = prism_denoise_rgb01(
                 x_in,
                 ckpt_path=self.ckpt_path,
@@ -955,6 +1096,7 @@ class _SyQonPrismProcessThread(QThread):
                 amp_dtype=self.amp_dtype,
                 model_variant=model_variant,
                 progress_cb=_prog,
+                tile_cb=(_tile_cb if preview_buf is not None else None),
             )
 
             denoised = self._unpad_rgb(denoised_p, orig_hw, pad)
@@ -973,7 +1115,6 @@ class _SyQonPrismProcessThread(QThread):
             import traceback
             info["traceback"] = traceback.format_exc()
             self.finished.emit(None, info, str(e))
-
 
 def run_syqon_tools_via_preset(main, doc, preset: dict | None = None):
     """
