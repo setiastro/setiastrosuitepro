@@ -5,5 +5,5 @@
     "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.14.1/setiastrosuitepro_mac.tar.gz",
     "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.14.1/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.14.0 Introducing Selective Luma Correction. This is the sister tool to Selective Color Correction, where you can define or select ranges of brightness and manipulate that band. Various bug fixes and UX improvements. Mini Game launch bug fix."
+  "notes": "Seti Astro Suite Pro V1.14.1 Added Interactive Flat Strength optimization tool in stacking suite. Adjusted calibration pipeline math. Syqon Prism Live Tile Preview. Surface Magnitude Tool now uses per star FWHM measurement. V1.14.0 Introducing Selective Luma Correction. This is the sister tool to Selective Color Correction, where you can define or select ranges of brightness and manipulate that band. Various bug fixes and UX improvements. Mini Game launch bug fix."
 }
