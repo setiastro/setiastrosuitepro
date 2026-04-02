@@ -4904,6 +4904,101 @@ class AstroSuiteProMainWindow(
             except Exception:
                 pass
 
+    def _convert_rgb_to_mono_active(self):
+        """
+        Convert active RGB document to mono in-place (undoable) using the
+        currently selected luminance method — same math as Extract Luminance
+        but overwrites the current view instead of spawning a new one.
+        """
+        from setiastro.saspro.luminancerecombine import (
+            compute_luminance,
+            resolve_luma_profile_weights,
+        )
+        import numpy as np
+
+        dm = getattr(self, "docman", None)
+        if dm is None:
+            return
+        try:
+            doc = dm.get_active_document()
+        except Exception:
+            doc = None
+        if doc is None:
+            return
+
+        img = getattr(doc, "image", None)
+        if img is None:
+            return
+
+        x = np.asarray(img)
+
+        # Already mono?
+        if x.ndim == 2 or (x.ndim == 3 and x.shape[-1] == 1):
+            try:
+                name = getattr(doc, "display_name", lambda: None)() or getattr(doc, "name", "") or "Active"
+            except Exception:
+                name = "Active"
+            if hasattr(self, "_log"):
+                self._log(f"RGB → Mono: '{name}' is already mono (shape={x.shape}).")
+            return
+
+        # Must be RGB
+        if not (x.ndim == 3 and x.shape[-1] >= 3):
+            if hasattr(self, "_log"):
+                self._log(f"RGB → Mono: unsupported shape {x.shape}.")
+            return
+
+        method = getattr(self, "luma_method", "rec709")
+        resolved_method, w, profile_name = resolve_luma_profile_weights(method)
+        L = compute_luminance(x, method=resolved_method, weights=w).astype(np.float32)
+
+        try:
+            md = dict(getattr(doc, "metadata", None) or {})
+        except Exception:
+            md = {}
+
+        md["is_mono"] = True
+        md["color_model"] = "Mono"
+        md["channels"] = 1
+        md["luma_method"] = resolved_method
+        if w is not None:
+            md["luma_weights"] = np.asarray(w, dtype=np.float32).tolist()
+        if profile_name:
+            md["luma_profile"] = str(profile_name)
+        md["__op_params__"] = {
+            "op": "rgb_to_mono",
+            "luma_method": resolved_method,
+            "from_shape": tuple(x.shape),
+            "to_shape": tuple(L.shape),
+        }
+
+        try:
+            name = getattr(doc, "display_name", lambda: None)() or getattr(doc, "name", "") or "Active"
+        except Exception:
+            name = "Active"
+
+        suffix = profile_name or resolved_method
+
+        try:
+            dm.update_active_document(
+                L,
+                metadata=md,
+                step_name=f"RGB → Mono ({suffix})",
+                doc=doc,
+            )
+            if hasattr(self, "_log"):
+                self._log(
+                    f"RGB → Mono: '{name}' converted using {suffix} "
+                    f"(shape {x.shape} → {L.shape})."
+                )
+        except Exception:
+            import traceback
+            try:
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.critical(self, "RGB → Mono", traceback.format_exc())
+            except Exception:
+                pass
+
     def _convert_mono_to_rgb_active(self):
         """
         Convert active mono document to RGB by duplicating the channel.

@@ -1823,17 +1823,19 @@ class ImageSubWindow(QWidget):
 
     def _show_ctx_menu(self, pos):
         menu = QMenu(self)
-        #a_view = menu.addAction(self.tr("Rename View… (F2)"))
         a_doc  = menu.addAction(self.tr("Rename Document…  (F2)"))
         menu.addSeparator()
         a_min  = menu.addAction(self.tr("Send to Shelf"))
         a_clear = menu.addAction(self.tr("Clear View Name (use doc name)"))
         menu.addSeparator()
-        a_unlink = menu.addAction(self.tr("Unlink from Linked Views"))   # ← NEW
+        a_unlink = menu.addAction(self.tr("Unlink from Linked Views"))
         menu.addSeparator()
         a_help = menu.addAction(self.tr("Show pixel/WCS readout hint"))
         menu.addSeparator()
         a_prev = menu.addAction(self.tr("Create Preview (drag rectangle)"))
+        menu.addSeparator()
+        a_layers = menu.addAction(self.tr("Open Layers Panel for This View"))  # ← ADD
+        menu.addSeparator()
         # --- Mask actions (requested in zoom/context menu) ---
         mw = self._find_main_window()
         vw = self  # this ImageSubWindow is the view
@@ -1874,6 +1876,8 @@ class ImageSubWindow(QWidget):
         elif act == a_prev:
             self._preview_btn.setChecked(True)
             self._toggle_preview_select_mode(True)
+        elif act == a_layers:
+            self._open_layers_for_this_view()            
         # --- Mask dispatch ---
         elif act == a_mask_overlay:
             if mw:
@@ -1888,6 +1892,35 @@ class ImageSubWindow(QWidget):
             if mw:
                 mw._remove_mask_menu()
 
+    def _open_layers_for_this_view(self):
+        mw = self._find_main_window()
+        if mw is None:
+            return
+
+        # Show and raise the dock
+        layers_dock = getattr(mw, "layers_dock", None)
+        if layers_dock is None:
+            return
+
+        try:
+            layers_dock.show()
+            layers_dock.raise_()
+        except Exception:
+            pass
+
+        # Switch its view combo to point at this subwindow
+        try:
+            dock_widget = layers_dock.widget() if hasattr(layers_dock, "widget") else None
+            combo = getattr(layers_dock, "view_combo", None)
+            if combo is None:
+                return
+
+            for i in range(combo.count()):
+                if combo.itemData(i) is self:
+                    combo.setCurrentIndex(i)
+                    break
+        except Exception:
+            pass
 
     def _send_to_shelf(self):
         sub = self._mdi_subwindow()

@@ -925,6 +925,11 @@ class ToolbarMixin:
         self.act_mono_to_rgb = QAction(self.tr("Convert Mono to RGB"), self)
         self.act_mono_to_rgb.setStatusTip(self.tr("Convert a mono image to RGB by duplicating the channel"))
         self.act_mono_to_rgb.triggered.connect(self._convert_mono_to_rgb_active)
+
+        self.act_rgb_to_mono = QAction(self.tr("Convert RGB to Mono"), self)
+        self.act_rgb_to_mono.setStatusTip(self.tr("Convert the active RGB image to mono using the current luminance method"))
+        self.act_rgb_to_mono.triggered.connect(self._convert_rgb_to_mono_active)
+
         self.act_swap_rb = QAction(self.tr("Swap R and B Channels"), self)
         self.act_swap_rb.setStatusTip(self.tr("Swap red and blue channels on the active RGB image"))
         self.act_swap_rb.triggered.connect(self._swap_rb_active)
