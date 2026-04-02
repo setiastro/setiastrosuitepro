@@ -3606,28 +3606,35 @@ class BlinkTab(QWidget):
             return
         item = items[0]
 
-        # if a group got selected, ignore (or auto-drill to first leaf if you prefer)
-        if item.childCount() > 0:
+        try:
+            if item.childCount() > 0:
+                return
+            name = item.text(0).lstrip("⚠️ ").strip()
+        except RuntimeError:
             return
 
-        name = item.text(0).lstrip("⚠️ ").strip()
         if self._last_preview_name == name:
-            return  # no-op, same item
+            return
 
-        # debounce: only preview the last selection after brief idle
         self._pending_preview_item = item
         self._pending_preview_timer.start()
 
     def _do_preview_update(self):
         item = self._pending_preview_item
-        if not item or item.treeWidget() is None:   # ← item got deleted
+        if item is None:
             return
-        cur = self.fileTree.currentItem()
-        if cur is not item:
-            return
-        name = item.text(0).lstrip("⚠️ ").strip()
-        self._last_preview_name = name
-        self.on_item_clicked(item, 0)
+        try:
+            if item.treeWidget() is None:
+                return
+            cur = self.fileTree.currentItem()
+            if cur is not item:
+                return
+            name = item.text(0).lstrip("⚠️ ").strip()
+            self._last_preview_name = name
+            self.on_item_clicked(item, 0)
+        except RuntimeError:
+            # C++ object already deleted — nothing to do
+            self._pending_preview_item = None
 
     def toggle_aggressive(self):
         self.aggressive_stretch_enabled = self.aggressive_button.isChecked()
