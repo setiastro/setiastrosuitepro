@@ -10492,36 +10492,48 @@ class StackingSuiteDialog(QDialog):
         Let the user click a point on ANY light frame. We store (file_path, x, y)
         and defer mapping into the reference frame until after alignment.
         """
-        # choose a source file
         src_path = None
 
-        # 1) try current selection in reg_tree
-        it = self._first_selected_leaf(self.reg_tree) if hasattr(self, "_first_selected_leaf") else None
-        if it and it.parent() is not None:
-            group = it.parent().text(0)
-            fname = it.text(0)
-            # reconstruct full path from our dicts
-            lst = self.light_files.get(group) or []
-            for p in lst:
-                if os.path.basename(p) == fname or os.path.splitext(os.path.basename(p))[0] in fname:
-                    src_path = p; break
+        # 1) Try current selection in reg_tree — walk selected items for a leaf
+        try:
+            for it in self.reg_tree.selectedItems():
+                # leaves have a parent (the group node)
+                if it.parent() is not None:
+                    group = it.parent().text(0)
+                    fname = it.text(0)
+                    lst = self.light_files.get(group) or []
+                    for p in lst:
+                        bn = os.path.basename(p)
+                        if bn == fname or os.path.splitext(bn)[0] in fname:
+                            src_path = p
+                            break
+                if src_path:
+                    break
+        except Exception:
+            pass
 
-        # 2) else, fall back to “first light”, or prompt
+        # 2) Fall back to first file in the tree (populate light_files from tree first)
         if not src_path:
+            try:
+                self.extract_light_files_from_tree()
+            except Exception:
+                pass
             all_files = [f for lst in self.light_files.values() for f in lst]
             if all_files:
                 src_path = all_files[0]
-            else:
-                fp, _ = QFileDialog.getOpenFileName(
-                    self, "Pick a frame to mark the comet center", self.stacking_directory or "",
-                    "Images (*.fit *.fits *.tif *.tiff *.png *.jpg *.jpeg)"
-                )
-                if not fp:
-                    QMessageBox.information(self, "Comet Center", "No file chosen.")
-                    return
-                src_path = fp
 
-        # load and show a simple click-to-pick dialog
+        # 3) Last resort: file dialog
+        if not src_path:
+            fp, _ = QFileDialog.getOpenFileName(
+                self, "Pick a frame to mark the comet center", self.stacking_directory or "",
+                "Images (*.fit *.fits *.tif *.tiff *.png *.jpg *.jpeg)"
+            )
+            if not fp:
+                QMessageBox.information(self, "Comet Center", "No file chosen.")
+                return
+            src_path = fp
+
+        # Load and show click-to-pick dialog
         try:
             img, hdr, _, _ = load_image(src_path)
             if img is None:
@@ -10530,15 +10542,16 @@ class StackingSuiteDialog(QDialog):
             QMessageBox.critical(self, "Comet Center", f"Could not load:\n{src_path}\n\n{e}")
             return
 
-        dlg = _SimplePickDialog(img, parent=self)  # small helper below
+        dlg = _SimplePickDialog(img, parent=self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        x, y = dlg.point()
 
-        # store the seed in ORIGINAL file space (or the path we used)
+        x, y = dlg.point()
         self._comet_seed = {"path": os.path.normpath(src_path), "xy": (float(x), float(y))}
         self._comet_ref_xy = None  # will be resolved post-align
-        self.update_status(self.tr(f"🌠 Comet seed set on {os.path.basename(src_path)} at ({x:.1f}, {y:.1f})."))
+        self.update_status(self.tr(
+            f"🌠 Comet seed set on {os.path.basename(src_path)} at ({x:.1f}, {y:.1f})."
+        ))
 
 
     def _on_cfa_drizzle_toggled(self, checked: bool):
@@ -18253,6 +18266,21 @@ class StackingSuiteDialog(QDialog):
     ):
         log = status_cb or (lambda *_: None)
 
+        # ── COMET MODE: bypass prepass and use the dedicated comet pipeline ──
+        comet_mode = bool(getattr(self, "comet_cb", None) and self.comet_cb.isChecked())
+        if comet_mode:
+            log("🌠 Comet mode detected — routing to comet-aware stack pipeline.")
+            return self.stack_images_mixed_drizzle(
+                grouped_files=grouped_files,
+                frame_weights=frame_weights,
+                transforms_dict=transforms_dict,
+                drizzle_dict=drizzle_dict,
+                autocrop_enabled=autocrop_enabled,
+                autocrop_pct=autocrop_pct,
+                status_cb=log,
+            )
+        # ── NORMAL PATH ───────────────────────────────────────────────────────
+
         prepass = self.run_rejection_prepass_for_groups(
             grouped_files=grouped_files,
             frame_weights=frame_weights,
@@ -18262,10 +18290,6 @@ class StackingSuiteDialog(QDialog):
             status_cb=log,
         )
 
-        # IMPORTANT:
-        # Always finalize/save the normal integration path first.
-        # That ensures the standard integrated master (and drizzle outputs, if enabled)
-        # are written to disk even when MFDeconv is enabled.
         finalize_result = self.finalize_normal_or_drizzle_from_prepass(
             grouped_files=grouped_files,
             drizzle_dict=drizzle_dict,
@@ -18283,10 +18307,6 @@ class StackingSuiteDialog(QDialog):
 
         combined_summary = list(prepass.get("summary_lines", [])) + finalize_summary
 
-        # IMPORTANT:
-        # Do NOT launch MF from here. This method is called from AfterAlignWorker.run(),
-        # which is executing in the post-align worker thread.
-        # Return a payload so the GUI thread can launch MF safely *after* normal/drizzle saves.
         if self._mf_enabled():
             out = dict(finalize_payload)
             out.update({
