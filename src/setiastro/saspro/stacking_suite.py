@@ -5847,6 +5847,40 @@ class StackingSuiteDialog(QDialog):
         bottom_row.addWidget(self.qs_reg_card, 1)
 
         root.addLayout(bottom_row)
+
+        cleanup_btn = QPushButton(self.tr("🗑️ Clean Up Temp Files"))
+        cleanup_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #3a3a3a;
+                color: #dddddd;
+                font-size: 12px;
+                padding: 7px;
+                border-radius: 6px;
+                border: 1px solid #666;
+            }
+            QPushButton:hover { border: 1px solid #999; }
+        """)
+        cleanup_btn.clicked.connect(self._cleanup_temp_files)
+        root.addWidget(cleanup_btn)
+
+        # ── Full Pipeline button ─────────────────────────────────────────────
+        pipeline_btn = QPushButton(self.tr("🚀 Run Full Pipeline (Darks → Flats → Calibrate → Register & Integrate)"))
+        pipeline_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #FF4500;
+                color: white;
+                font-size: 15px;
+                font-weight: bold;
+                padding: 10px;
+                border-radius: 8px;
+            }
+            QPushButton:hover {
+                background-color: #FF6347;
+            }
+        """)
+        pipeline_btn.clicked.connect(self._run_full_pipeline)
+        root.addWidget(pipeline_btn)
+
         root.addStretch(1)
 
         # Wiring: actions
@@ -5873,6 +5907,273 @@ class StackingSuiteDialog(QDialog):
         self.qs_reg_card.advancedRequested.connect(lambda: self.tabs.setCurrentWidget(self.image_integration_tab))
 
         return tab
+
+    def _run_full_pipeline(self):
+        from PyQt6.QtWidgets import QMessageBox
+
+        has_lights = bool(
+            getattr(self, "light_files", None)
+            or (hasattr(self, "light_tree") and self.light_tree.topLevelItemCount() > 0)
+        )
+        if not has_lights:
+            QMessageBox.warning(
+                self,
+                self.tr("Full Pipeline"),
+                self.tr("No light frames are loaded.\n\nPlease load your light frames first.")
+            )
+            return
+
+        # Enable auto-register so calibration hands off automatically
+        try:
+            self.auto_register_after_calibration_cb.setChecked(True)
+        except Exception:
+            self.settings.setValue("stacking/auto_register_after_cal", True)
+
+        # Step 1: build master dark if raw darks exist
+        has_raw_darks = bool(getattr(self, "dark_files", None)) or (
+            hasattr(self, "dark_tree") and self.dark_tree.topLevelItemCount() > 0
+        )
+
+        if has_raw_darks:
+            self.update_status(self.tr("🔧 Full Pipeline: building master dark…"))
+            try:
+                self._quick_build_master_dark()
+            except Exception as e:
+                QMessageBox.critical(self, self.tr("Full Pipeline"),
+                    self.tr("Master dark build failed:\n{0}").format(e))
+                return
+
+        # Step 2: build master flat if raw flats exist
+        has_raw_flats = bool(getattr(self, "flat_files", None)) or (
+            hasattr(self, "flat_tree") and self.flat_tree.topLevelItemCount() > 0
+        )
+
+        if has_raw_flats:
+            self.update_status(self.tr("🔧 Full Pipeline: building master flat…"))
+            try:
+                self._quick_build_master_flat()
+            except Exception as e:
+                QMessageBox.critical(self, self.tr("Full Pipeline"),
+                    self.tr("Master flat build failed:\n{0}").format(e))
+                return
+
+        # Step 3: calibrate lights — auto_register_after_calibration_cb
+        # will fire registration automatically when calibration finishes
+        self.update_status(self.tr(
+            "🚀 Full Pipeline: calibrating lights "
+            "→ will auto-register & integrate on completion…"
+        ))
+        self.calibrate_lights()
+
+    def _cleanup_temp_files(self):
+        from PyQt6.QtWidgets import QMessageBox
+        import shutil
+
+        stacking_dir = getattr(self, "stacking_directory", None)
+        if not stacking_dir or not os.path.isdir(stacking_dir):
+            QMessageBox.warning(self, self.tr("Clean Up"),
+                self.tr("No stacking directory is set. Please run a stack first."))
+            return
+
+        # Inventory what will be deleted before asking
+        to_delete_files = []
+        to_delete_dirs = []
+
+        # Specific folders to wipe entirely
+        nuke_dirs = ["Normalized_Images", "debug_comet_starrem"]
+        for dirname in nuke_dirs:
+            d = os.path.join(stacking_dir, dirname)
+            if os.path.isdir(d):
+                try:
+                    size = sum(
+                        os.path.getsize(os.path.join(root, f))
+                        for root, _, files in os.walk(d)
+                        for f in files
+                    )
+                    to_delete_dirs.append((d, size))
+                except Exception:
+                    to_delete_dirs.append((d, 0))
+
+        # Loose temp file extensions anywhere in stacking_dir
+        temp_exts = {".dat", ".npy", ".tmp"}
+        for root, dirs, files in os.walk(stacking_dir):
+            # Don't double-count files inside folders we're already nuking
+            skip = any(
+                os.path.normpath(root).startswith(os.path.normpath(d))
+                for d, _ in to_delete_dirs
+            )
+            if skip:
+                continue
+            for fname in files:
+                if os.path.splitext(fname)[1].lower() in temp_exts:
+                    fp = os.path.join(root, fname)
+                    try:
+                        to_delete_files.append((fp, os.path.getsize(fp)))
+                    except Exception:
+                        to_delete_files.append((fp, 0))
+
+        if not to_delete_files and not to_delete_dirs:
+            QMessageBox.information(self, self.tr("Clean Up"),
+                self.tr("Nothing to clean up — no temp files found."))
+            return
+
+        # Build a summary for the confirmation dialog
+        total_bytes = (
+            sum(s for _, s in to_delete_files)
+            + sum(s for _, s in to_delete_dirs)
+        )
+
+        def _fmt(b):
+            if b >= 1_073_741_824:
+                return f"{b / 1_073_741_824:.1f} GB"
+            if b >= 1_048_576:
+                return f"{b / 1_048_576:.1f} MB"
+            if b >= 1024:
+                return f"{b / 1024:.1f} KB"
+            return f"{b} B"
+
+        lines = []
+        if to_delete_dirs:
+            lines.append(self.tr("Folders (entire contents):"))
+            for d, s in to_delete_dirs:
+                lines.append(f"  • {os.path.relpath(d, stacking_dir)}  ({_fmt(s)})")
+        if to_delete_files:
+            lines.append(self.tr("\nLoose temp files (.dat, .npy, .tmp):"))
+            for fp, s in to_delete_files[:20]:   # cap preview at 20
+                lines.append(f"  • {os.path.relpath(fp, stacking_dir)}  ({_fmt(s)})")
+            if len(to_delete_files) > 20:
+                lines.append(f"  … and {len(to_delete_files) - 20} more")
+
+        lines.append(f"\n{self.tr('Total to free')}: {_fmt(total_bytes)}")
+
+        # Build confirmation dialog with scrollable list
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QTextEdit, QDialogButtonBox
+
+        confirm_dlg = QDialog(self)
+        confirm_dlg.setWindowTitle(self.tr("Clean Up Temp Files"))
+        confirm_dlg.setMinimumWidth(520)
+        confirm_dlg.setMaximumHeight(480)
+        dlg_lay = QVBoxLayout(confirm_dlg)
+
+        dlg_lay.addWidget(QLabel(self.tr("The following will be permanently deleted:")))
+
+        txt = QTextEdit()
+        txt.setReadOnly(True)
+        txt.setPlainText("\n".join(lines))
+        txt.setMinimumHeight(260)
+        dlg_lay.addWidget(txt)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Yes | QDialogButtonBox.StandardButton.No
+        )
+        btns.accepted.connect(confirm_dlg.accept)
+        btns.rejected.connect(confirm_dlg.reject)
+        btns.button(QDialogButtonBox.StandardButton.No).setDefault(True)
+        dlg_lay.addWidget(btns)
+
+        if confirm_dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        errors = []
+
+        for d, _ in to_delete_dirs:
+            try:
+                shutil.rmtree(d)
+                self.update_status(self.tr(f"🗑️ Deleted folder: {os.path.basename(d)}"))
+            except Exception as e:
+                errors.append(f"{d}: {e}")
+
+        for fp, _ in to_delete_files:
+            try:
+                os.remove(fp)
+                self.update_status(self.tr(f"🗑️ Deleted: {os.path.basename(fp)}"))
+            except Exception as e:
+                errors.append(f"{fp}: {e}")
+
+        if errors:
+            QMessageBox.warning(self, self.tr("Clean Up"),
+                self.tr("Some files could not be deleted:\n\n") + "\n".join(errors))
+        else:
+            QMessageBox.information(self, self.tr("Clean Up"),
+                self.tr(f"✅ Clean up complete. Freed {_fmt(total_bytes)}."))
+
+        try:
+            self.refresh_quick_stack_summary()
+        except Exception:
+            pass
+
+    def _advance_pipeline(self):
+        """Pop the next stage off the queue and run it."""
+        if not getattr(self, "_pipeline_stages", None):
+            self.update_status(self.tr("✅ Full Pipeline: all stages complete."))
+            return
+
+        stage = self._pipeline_stages.pop(0)
+
+        if stage == "build_dark":
+            self.update_status(self.tr("🔧 Full Pipeline: building master dark…"))
+            # Connect a one-shot slot so we advance when the dark build finishes
+            self._pipeline_connect_dark_done()
+            self._quick_build_master_dark()
+
+        elif stage == "build_flat":
+            self.update_status(self.tr("🔧 Full Pipeline: building master flat…"))
+            self._pipeline_connect_flat_done()
+            self._quick_build_master_flat()
+
+        elif stage == "calibrate":
+            self.update_status(self.tr(
+                "🚀 Full Pipeline: calibrating lights "
+                "→ will auto-register & integrate on completion…"
+            ))
+            self.calibrate_lights()
+            # calibrate_lights → auto_register_after_calibration_cb handles the rest
+
+    def _pipeline_connect_dark_done(self):
+        """
+        Connect a one-shot listener to whatever signal your dark builder emits
+        when it finishes, then advance the pipeline.
+        Adjust the signal name to match your actual dark-build worker.
+        """
+        # Try the most common signal names used in your codebase:
+        sig = (
+            getattr(self, "master_dark_ready", None)        # e.g. pyqtSignal()
+            or getattr(self, "dark_build_finished", None)
+            or getattr(self, "masterDarkReady", None)
+        )
+        if sig is not None:
+            def _on_dark_done(*_args):
+                try:
+                    sig.disconnect(_on_dark_done)
+                except Exception:
+                    pass
+                self._advance_pipeline()
+            sig.connect(_on_dark_done)
+        else:
+            # No signal found — _quick_build_master_dark must be synchronous,
+            # so just advance immediately after it returns.
+            self._advance_pipeline()
+
+    def _pipeline_connect_flat_done(self):
+        """
+        Same pattern for the flat builder.
+        """
+        sig = (
+            getattr(self, "master_flat_ready", None)
+            or getattr(self, "flat_build_finished", None)
+            or getattr(self, "masterFlatReady", None)
+        )
+        if sig is not None:
+            def _on_flat_done(*_args):
+                try:
+                    sig.disconnect(_on_flat_done)
+                except Exception:
+                    pass
+                self._advance_pipeline()
+            sig.connect(_on_flat_done)
+        else:
+            # Synchronous — advance immediately
+            self._advance_pipeline()
 
     def create_conversion_tab(self):
         tab = QWidget()
@@ -10330,7 +10631,13 @@ class StackingSuiteDialog(QDialog):
             QPushButton:pressed{ background-color: #222; border: 2px solid #FFA500; }
         """)
         layout.addWidget(self.integrate_registered_btn)
-
+        cleanup_btn = QPushButton(self.tr("🗑️ Clean Up Temp Files"))
+        cleanup_btn.setToolTip(self.tr(
+            "Delete Normalized_Images, Aligned_Images folders and loose .dat/.npy/.tmp files "
+            "from the stacking directory to free disk space."
+        ))
+        cleanup_btn.clicked.connect(self._cleanup_temp_files)
+        layout.addWidget(cleanup_btn)
         # ─────────────────────────────────────────
         # 10) Init + persist bits
         # ─────────────────────────────────────────

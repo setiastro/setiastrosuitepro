@@ -1152,12 +1152,52 @@ class ShortcutCanvas(QWidget):
 
     def contextMenuEvent(self, e):
         menu = QMenu(self)
-        has_sel = bool(self._mgr.selected)
-        a_del = menu.addAction(self.tr("Delete Selected"), self._mgr.delete_selected); a_del.setEnabled(has_sel)
-        a_clr = menu.addAction(self.tr("Clear Selection"), self._mgr.clear_selection); a_clr.setEnabled(has_sel)
+        sel_count = len(self._mgr.selected)
+        has_sel = sel_count > 0
+        has_multi = sel_count > 1
+        has_three = sel_count > 2
+
+        a_del = menu.addAction(self.tr("Delete Selected"), self._mgr.delete_selected)
+        a_del.setEnabled(has_sel)
+
+        a_clr = menu.addAction(self.tr("Clear Selection"), self._mgr.clear_selection)
+        a_clr.setEnabled(has_sel)
+
+        if has_multi:
+            menu.addSeparator()
+
+            layout_menu = menu.addMenu(self.tr("Organize Selected"))
+            layout_menu.addAction(self.tr("Make Neat Row"), lambda: self._mgr.make_neat_row(16))
+            layout_menu.addAction(self.tr("Make Neat Column"), lambda: self._mgr.make_neat_column(16))
+
+            menu.addSeparator()
+
+            align_menu = menu.addMenu(self.tr("Align Selected"))
+            align_menu.addAction(self.tr("Align Left"), self._mgr.align_selected_left)
+            align_menu.addAction(self.tr("Align Right"), self._mgr.align_selected_right)
+            align_menu.addAction(self.tr("Align Top"), self._mgr.align_selected_top)
+            align_menu.addAction(self.tr("Align Bottom"), self._mgr.align_selected_bottom)
+
+            # Keep these if you still want them, but they're less useful
+            align_menu.addSeparator()
+            align_menu.addAction(self.tr("Align Centers Vertically"), self._mgr.align_selected_vcenter)
+            align_menu.addAction(self.tr("Align Centers Horizontally"), self._mgr.align_selected_hcenter)
+
+            distribute_menu = menu.addMenu(self.tr("Distribute Selected"))
+            a_dist_h = distribute_menu.addAction(
+                self.tr("Distribute Horizontally"),
+                self._mgr.distribute_selected_horizontally
+            )
+            a_dist_v = distribute_menu.addAction(
+                self.tr("Distribute Vertically"),
+                self._mgr.distribute_selected_vertically
+            )
+            a_dist_h.setEnabled(has_three)
+            a_dist_v.setEnabled(has_three)
+
         menu.addSeparator()
-        a_vb = menu.addAction(self.tr("View Bundles…"), lambda: _open_view_bundles_from_canvas(self))
-        a_fb = menu.addAction(self.tr("Function Bundles…"), lambda: _open_function_bundles_from_canvas(self))
+        menu.addAction(self.tr("View Bundles…"), lambda: _open_view_bundles_from_canvas(self))
+        menu.addAction(self.tr("Function Bundles…"), lambda: _open_function_bundles_from_canvas(self))
         menu.exec(e.globalPos())
 
 
@@ -1850,6 +1890,164 @@ class ShortcutManager:
                 if sid not in self.selected:
                     self.selected.add(sid)
                     self._apply_sel_visual(sid, True)
+
+    def _viewport_rect(self) -> QRect:
+        try:
+            return self.canvas.rect()
+        except Exception:
+            return QRect()
+
+    def _clamp_point_for_widget(self, w: QWidget, x: int, y: int) -> QPoint:
+        rect = self._viewport_rect()
+        max_x = max(0, rect.width() - w.width())
+        max_y = max(0, rect.height() - w.height())
+        return QPoint(max(0, min(int(x), max_x)), max(0, min(int(y), max_y)))
+
+    def _move_widget_clamped(self, w: QWidget, x: int, y: int):
+        if _is_dead(w):
+            return
+        try:
+            w.move(self._clamp_point_for_widget(w, x, y))
+        except RuntimeError:
+            pass
+
+    def make_neat_row(self, spacing: int = 16):
+        ws = self.selected_widgets()
+        if len(ws) < 2:
+            return
+
+        # Keep visual left-to-right order
+        ws = sorted(ws, key=lambda w: (w.x(), w.y()))
+
+        # Use the top-most item as the row baseline
+        top = min(w.y() for w in ws)
+        x = min(w.x() for w in ws)
+
+        for w in ws:
+            self._move_widget_clamped(w, x, top)
+            x += w.width() + int(spacing)
+
+        self.save_shortcuts()
+        self.canvas.update()
+
+    def make_neat_column(self, spacing: int = 16):
+        ws = self.selected_widgets()
+        if len(ws) < 2:
+            return
+
+        # Keep visual top-to-bottom order
+        ws = sorted(ws, key=lambda w: (w.y(), w.x()))
+
+        # Use the left-most item as the column baseline
+        left = min(w.x() for w in ws)
+        y = min(w.y() for w in ws)
+
+        for w in ws:
+            self._move_widget_clamped(w, left, y)
+            y += w.height() + int(spacing)
+
+        self.save_shortcuts()
+        self.canvas.update()
+
+    def align_selected_left(self):
+        ws = self.selected_widgets()
+        if len(ws) < 2:
+            return
+        target = min(w.x() for w in ws)
+        for w in ws:
+            self._move_widget_clamped(w, target, w.y())
+        self.save_shortcuts()
+        self.canvas.update()
+
+    def align_selected_right(self):
+        ws = self.selected_widgets()
+        if len(ws) < 2:
+            return
+        target = max(w.x() + w.width() for w in ws)
+        for w in ws:
+            self._move_widget_clamped(w, target - w.width(), w.y())
+        self.save_shortcuts()
+        self.canvas.update()
+
+    def align_selected_top(self):
+        ws = self.selected_widgets()
+        if len(ws) < 2:
+            return
+        target = min(w.y() for w in ws)
+        for w in ws:
+            self._move_widget_clamped(w, w.x(), target)
+        self.save_shortcuts()
+        self.canvas.update()
+
+    def align_selected_bottom(self):
+        ws = self.selected_widgets()
+        if len(ws) < 2:
+            return
+        target = max(w.y() + w.height() for w in ws)
+        for w in ws:
+            self._move_widget_clamped(w, w.x(), target - w.height())
+        self.save_shortcuts()
+        self.canvas.update()
+
+    def align_selected_hcenter(self):
+        ws = self.selected_widgets()
+        if len(ws) < 2:
+            return
+        centers = [w.x() + (w.width() // 2) for w in ws]
+        target = int(round(sum(centers) / len(centers)))
+        for w in ws:
+            self._move_widget_clamped(w, target - (w.width() // 2), w.y())
+        self.save_shortcuts()
+        self.canvas.update()
+
+    def align_selected_vcenter(self):
+        ws = self.selected_widgets()
+        if len(ws) < 2:
+            return
+        centers = [w.y() + (w.height() // 2) for w in ws]
+        target = int(round(sum(centers) / len(centers)))
+        for w in ws:
+            self._move_widget_clamped(w, w.x(), target - (w.height() // 2))
+        self.save_shortcuts()
+        self.canvas.update()
+
+    def distribute_selected_horizontally(self):
+        ws = self.selected_widgets()
+        if len(ws) < 3:
+            return
+
+        ws = sorted(ws, key=lambda w: w.x())
+        left = ws[0].x()
+        right = ws[-1].x()
+        span = right - left
+        if span <= 0:
+            return
+
+        step = span / (len(ws) - 1)
+        for i, w in enumerate(ws):
+            self._move_widget_clamped(w, int(round(left + i * step)), w.y())
+
+        self.save_shortcuts()
+        self.canvas.update()
+
+    def distribute_selected_vertically(self):
+        ws = self.selected_widgets()
+        if len(ws) < 3:
+            return
+
+        ws = sorted(ws, key=lambda w: w.y())
+        top = ws[0].y()
+        bottom = ws[-1].y()
+        span = bottom - top
+        if span <= 0:
+            return
+
+        step = span / (len(ws) - 1)
+        for i, w in enumerate(ws):
+            self._move_widget_clamped(w, w.x(), int(round(top + i * step)))
+
+        self.save_shortcuts()
+        self.canvas.update()
 
     def selected_widgets(self):
         out = []
