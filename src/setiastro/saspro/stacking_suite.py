@@ -17855,44 +17855,27 @@ class StackingSuiteDialog(QDialog):
             stack = np.stack([fits.getdata(p).astype(np.float32) for p in normalized_paths], axis=0)
             trail_img, _ = max_value_stack(stack)
 
-            # 5) stretch final image and prompt user for save location & format
+            # 5) Save automatically like all other masters
             trail_img = trail_img.astype(np.float32)
-            # normalize to [0–1] for our save helper
             trail_norm = trail_img / (trail_img.max() + 1e-12)
 
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            default_name = self._safe_component(f"StarTrail_{n_frames:03d}frames_{ts}")
-            filters = "TIFF (*.tif);;PNG (*.png);;JPEG (*.jpg *.jpeg);;FITS (*.fits);;XISF (*.xisf)"
-            path, chosen_filter = QFileDialog.getSaveFileName(
-                self, "Save Star-Trail Image",
-                os.path.join(self._master_light_dir(), default_name),
-                "TIFF (*.tif);;PNG (*.png);;JPEG (*.jpg *.jpeg);;FITS (*.fits);;XISF (*.xisf)"
-            )
-            if not path:
-                self.update_status(self.tr("✖ Star-trail save cancelled."))
-                return
+            n_frames_str = f"{n_frames:03d}frames"
+            base_stem = self._safe_component(f"StarTrail_{n_frames_str}_{ts}")
+            base_stem = self._normalize_master_stem(base_stem)
+            out_path = self._build_out(self._master_light_dir(), base_stem, "fit")
 
-            # figure out extension
-            ext = os.path.splitext(path)[1].lower().lstrip('.')
-            if not ext:
-                ext = chosen_filter.split('(')[1].split(')')[0].lstrip('*.').lower()
-                path += f".{ext}"
-
-            # if user picked FITS, supply the first frame’s header; else None
-            use_hdr = hdr_to_use if ext in ('fits', 'fit') else None
-
-            # 16-bit everywhere
             save_image(
                 img_array=trail_norm,
-                filename=path,
-                original_format=ext,
-                bit_depth="16-bit",
-                original_header=use_hdr,
-                is_mono=False
+                filename=out_path,
+                original_format="fit",
+                bit_depth="32-bit floating point",
+                original_header=hdr_to_use,
+                is_mono=(trail_norm.ndim == 2)
             )
 
         # once we exit the with-block, all the _st.fit files are deleted
-        self.update_status(self.tr(f"✅ Star‐Trail image written to {path}"))
+        self.update_status(self.tr(f"✅ Star-Trail image saved to: {out_path}"))
         return
 
 
