@@ -1187,6 +1187,34 @@ def _is_fits_image_hdu(hdu) -> bool:
     except Exception:
         return False
 
+def _classify_fits_hdu(hdu) -> str:
+    """
+    Classify a FITS HDU as one of:
+      "image"   — primary or image HDU with 2D/3D data
+      "vector"  — image HDU with 1D data (spectrum, light curve, etc.)
+      "table"   — binary or ASCII table
+      "empty"   — no data
+    """
+    try:
+        if isinstance(hdu, (fits.BinTableHDU, fits.TableHDU)):
+            return "table"
+
+        data = getattr(hdu, "data", None)
+        if data is None:
+            return "empty"
+
+        arr = np.asarray(data)
+        if arr.ndim == 0:
+            return "empty"
+        if arr.ndim == 1:
+            return "vector"
+        if arr.ndim >= 2:
+            return "image"
+    except Exception:
+        pass
+
+    return "empty"
+
 def load_fits_vector_extension(path: str, key: str | int):
     """
     Load a single FITS 1-D vector extension.

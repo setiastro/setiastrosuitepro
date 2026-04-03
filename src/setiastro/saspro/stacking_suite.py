@@ -5847,6 +5847,40 @@ class StackingSuiteDialog(QDialog):
         bottom_row.addWidget(self.qs_reg_card, 1)
 
         root.addLayout(bottom_row)
+
+        cleanup_btn = QPushButton(self.tr("🗑️ Clean Up Temp Files"))
+        cleanup_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #3a3a3a;
+                color: #dddddd;
+                font-size: 12px;
+                padding: 7px;
+                border-radius: 6px;
+                border: 1px solid #666;
+            }
+            QPushButton:hover { border: 1px solid #999; }
+        """)
+        cleanup_btn.clicked.connect(self._cleanup_temp_files)
+        root.addWidget(cleanup_btn)
+
+        # ── Full Pipeline button ─────────────────────────────────────────────
+        pipeline_btn = QPushButton(self.tr("🚀 Run Full Pipeline (Darks → Flats → Calibrate → Register & Integrate)"))
+        pipeline_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #FF4500;
+                color: white;
+                font-size: 15px;
+                font-weight: bold;
+                padding: 10px;
+                border-radius: 8px;
+            }
+            QPushButton:hover {
+                background-color: #FF6347;
+            }
+        """)
+        pipeline_btn.clicked.connect(self._run_full_pipeline)
+        root.addWidget(pipeline_btn)
+
         root.addStretch(1)
 
         # Wiring: actions
@@ -5873,6 +5907,273 @@ class StackingSuiteDialog(QDialog):
         self.qs_reg_card.advancedRequested.connect(lambda: self.tabs.setCurrentWidget(self.image_integration_tab))
 
         return tab
+
+    def _run_full_pipeline(self):
+        from PyQt6.QtWidgets import QMessageBox
+
+        has_lights = bool(
+            getattr(self, "light_files", None)
+            or (hasattr(self, "light_tree") and self.light_tree.topLevelItemCount() > 0)
+        )
+        if not has_lights:
+            QMessageBox.warning(
+                self,
+                self.tr("Full Pipeline"),
+                self.tr("No light frames are loaded.\n\nPlease load your light frames first.")
+            )
+            return
+
+        # Enable auto-register so calibration hands off automatically
+        try:
+            self.auto_register_after_calibration_cb.setChecked(True)
+        except Exception:
+            self.settings.setValue("stacking/auto_register_after_cal", True)
+
+        # Step 1: build master dark if raw darks exist
+        has_raw_darks = bool(getattr(self, "dark_files", None)) or (
+            hasattr(self, "dark_tree") and self.dark_tree.topLevelItemCount() > 0
+        )
+
+        if has_raw_darks:
+            self.update_status(self.tr("🔧 Full Pipeline: building master dark…"))
+            try:
+                self._quick_build_master_dark()
+            except Exception as e:
+                QMessageBox.critical(self, self.tr("Full Pipeline"),
+                    self.tr("Master dark build failed:\n{0}").format(e))
+                return
+
+        # Step 2: build master flat if raw flats exist
+        has_raw_flats = bool(getattr(self, "flat_files", None)) or (
+            hasattr(self, "flat_tree") and self.flat_tree.topLevelItemCount() > 0
+        )
+
+        if has_raw_flats:
+            self.update_status(self.tr("🔧 Full Pipeline: building master flat…"))
+            try:
+                self._quick_build_master_flat()
+            except Exception as e:
+                QMessageBox.critical(self, self.tr("Full Pipeline"),
+                    self.tr("Master flat build failed:\n{0}").format(e))
+                return
+
+        # Step 3: calibrate lights — auto_register_after_calibration_cb
+        # will fire registration automatically when calibration finishes
+        self.update_status(self.tr(
+            "🚀 Full Pipeline: calibrating lights "
+            "→ will auto-register & integrate on completion…"
+        ))
+        self.calibrate_lights()
+
+    def _cleanup_temp_files(self):
+        from PyQt6.QtWidgets import QMessageBox
+        import shutil
+
+        stacking_dir = getattr(self, "stacking_directory", None)
+        if not stacking_dir or not os.path.isdir(stacking_dir):
+            QMessageBox.warning(self, self.tr("Clean Up"),
+                self.tr("No stacking directory is set. Please run a stack first."))
+            return
+
+        # Inventory what will be deleted before asking
+        to_delete_files = []
+        to_delete_dirs = []
+
+        # Specific folders to wipe entirely
+        nuke_dirs = ["Normalized_Images", "debug_comet_starrem"]
+        for dirname in nuke_dirs:
+            d = os.path.join(stacking_dir, dirname)
+            if os.path.isdir(d):
+                try:
+                    size = sum(
+                        os.path.getsize(os.path.join(root, f))
+                        for root, _, files in os.walk(d)
+                        for f in files
+                    )
+                    to_delete_dirs.append((d, size))
+                except Exception:
+                    to_delete_dirs.append((d, 0))
+
+        # Loose temp file extensions anywhere in stacking_dir
+        temp_exts = {".dat", ".npy", ".tmp"}
+        for root, dirs, files in os.walk(stacking_dir):
+            # Don't double-count files inside folders we're already nuking
+            skip = any(
+                os.path.normpath(root).startswith(os.path.normpath(d))
+                for d, _ in to_delete_dirs
+            )
+            if skip:
+                continue
+            for fname in files:
+                if os.path.splitext(fname)[1].lower() in temp_exts:
+                    fp = os.path.join(root, fname)
+                    try:
+                        to_delete_files.append((fp, os.path.getsize(fp)))
+                    except Exception:
+                        to_delete_files.append((fp, 0))
+
+        if not to_delete_files and not to_delete_dirs:
+            QMessageBox.information(self, self.tr("Clean Up"),
+                self.tr("Nothing to clean up — no temp files found."))
+            return
+
+        # Build a summary for the confirmation dialog
+        total_bytes = (
+            sum(s for _, s in to_delete_files)
+            + sum(s for _, s in to_delete_dirs)
+        )
+
+        def _fmt(b):
+            if b >= 1_073_741_824:
+                return f"{b / 1_073_741_824:.1f} GB"
+            if b >= 1_048_576:
+                return f"{b / 1_048_576:.1f} MB"
+            if b >= 1024:
+                return f"{b / 1024:.1f} KB"
+            return f"{b} B"
+
+        lines = []
+        if to_delete_dirs:
+            lines.append(self.tr("Folders (entire contents):"))
+            for d, s in to_delete_dirs:
+                lines.append(f"  • {os.path.relpath(d, stacking_dir)}  ({_fmt(s)})")
+        if to_delete_files:
+            lines.append(self.tr("\nLoose temp files (.dat, .npy, .tmp):"))
+            for fp, s in to_delete_files[:20]:   # cap preview at 20
+                lines.append(f"  • {os.path.relpath(fp, stacking_dir)}  ({_fmt(s)})")
+            if len(to_delete_files) > 20:
+                lines.append(f"  … and {len(to_delete_files) - 20} more")
+
+        lines.append(f"\n{self.tr('Total to free')}: {_fmt(total_bytes)}")
+
+        # Build confirmation dialog with scrollable list
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QTextEdit, QDialogButtonBox
+
+        confirm_dlg = QDialog(self)
+        confirm_dlg.setWindowTitle(self.tr("Clean Up Temp Files"))
+        confirm_dlg.setMinimumWidth(520)
+        confirm_dlg.setMaximumHeight(480)
+        dlg_lay = QVBoxLayout(confirm_dlg)
+
+        dlg_lay.addWidget(QLabel(self.tr("The following will be permanently deleted:")))
+
+        txt = QTextEdit()
+        txt.setReadOnly(True)
+        txt.setPlainText("\n".join(lines))
+        txt.setMinimumHeight(260)
+        dlg_lay.addWidget(txt)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Yes | QDialogButtonBox.StandardButton.No
+        )
+        btns.accepted.connect(confirm_dlg.accept)
+        btns.rejected.connect(confirm_dlg.reject)
+        btns.button(QDialogButtonBox.StandardButton.No).setDefault(True)
+        dlg_lay.addWidget(btns)
+
+        if confirm_dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        errors = []
+
+        for d, _ in to_delete_dirs:
+            try:
+                shutil.rmtree(d)
+                self.update_status(self.tr(f"🗑️ Deleted folder: {os.path.basename(d)}"))
+            except Exception as e:
+                errors.append(f"{d}: {e}")
+
+        for fp, _ in to_delete_files:
+            try:
+                os.remove(fp)
+                self.update_status(self.tr(f"🗑️ Deleted: {os.path.basename(fp)}"))
+            except Exception as e:
+                errors.append(f"{fp}: {e}")
+
+        if errors:
+            QMessageBox.warning(self, self.tr("Clean Up"),
+                self.tr("Some files could not be deleted:\n\n") + "\n".join(errors))
+        else:
+            QMessageBox.information(self, self.tr("Clean Up"),
+                self.tr(f"✅ Clean up complete. Freed {_fmt(total_bytes)}."))
+
+        try:
+            self.refresh_quick_stack_summary()
+        except Exception:
+            pass
+
+    def _advance_pipeline(self):
+        """Pop the next stage off the queue and run it."""
+        if not getattr(self, "_pipeline_stages", None):
+            self.update_status(self.tr("✅ Full Pipeline: all stages complete."))
+            return
+
+        stage = self._pipeline_stages.pop(0)
+
+        if stage == "build_dark":
+            self.update_status(self.tr("🔧 Full Pipeline: building master dark…"))
+            # Connect a one-shot slot so we advance when the dark build finishes
+            self._pipeline_connect_dark_done()
+            self._quick_build_master_dark()
+
+        elif stage == "build_flat":
+            self.update_status(self.tr("🔧 Full Pipeline: building master flat…"))
+            self._pipeline_connect_flat_done()
+            self._quick_build_master_flat()
+
+        elif stage == "calibrate":
+            self.update_status(self.tr(
+                "🚀 Full Pipeline: calibrating lights "
+                "→ will auto-register & integrate on completion…"
+            ))
+            self.calibrate_lights()
+            # calibrate_lights → auto_register_after_calibration_cb handles the rest
+
+    def _pipeline_connect_dark_done(self):
+        """
+        Connect a one-shot listener to whatever signal your dark builder emits
+        when it finishes, then advance the pipeline.
+        Adjust the signal name to match your actual dark-build worker.
+        """
+        # Try the most common signal names used in your codebase:
+        sig = (
+            getattr(self, "master_dark_ready", None)        # e.g. pyqtSignal()
+            or getattr(self, "dark_build_finished", None)
+            or getattr(self, "masterDarkReady", None)
+        )
+        if sig is not None:
+            def _on_dark_done(*_args):
+                try:
+                    sig.disconnect(_on_dark_done)
+                except Exception:
+                    pass
+                self._advance_pipeline()
+            sig.connect(_on_dark_done)
+        else:
+            # No signal found — _quick_build_master_dark must be synchronous,
+            # so just advance immediately after it returns.
+            self._advance_pipeline()
+
+    def _pipeline_connect_flat_done(self):
+        """
+        Same pattern for the flat builder.
+        """
+        sig = (
+            getattr(self, "master_flat_ready", None)
+            or getattr(self, "flat_build_finished", None)
+            or getattr(self, "masterFlatReady", None)
+        )
+        if sig is not None:
+            def _on_flat_done(*_args):
+                try:
+                    sig.disconnect(_on_flat_done)
+                except Exception:
+                    pass
+                self._advance_pipeline()
+            sig.connect(_on_flat_done)
+        else:
+            # Synchronous — advance immediately
+            self._advance_pipeline()
 
     def create_conversion_tab(self):
         tab = QWidget()
@@ -10330,7 +10631,13 @@ class StackingSuiteDialog(QDialog):
             QPushButton:pressed{ background-color: #222; border: 2px solid #FFA500; }
         """)
         layout.addWidget(self.integrate_registered_btn)
-
+        cleanup_btn = QPushButton(self.tr("🗑️ Clean Up Temp Files"))
+        cleanup_btn.setToolTip(self.tr(
+            "Delete Normalized_Images, Aligned_Images folders and loose .dat/.npy/.tmp files "
+            "from the stacking directory to free disk space."
+        ))
+        cleanup_btn.clicked.connect(self._cleanup_temp_files)
+        layout.addWidget(cleanup_btn)
         # ─────────────────────────────────────────
         # 10) Init + persist bits
         # ─────────────────────────────────────────
@@ -10492,36 +10799,48 @@ class StackingSuiteDialog(QDialog):
         Let the user click a point on ANY light frame. We store (file_path, x, y)
         and defer mapping into the reference frame until after alignment.
         """
-        # choose a source file
         src_path = None
 
-        # 1) try current selection in reg_tree
-        it = self._first_selected_leaf(self.reg_tree) if hasattr(self, "_first_selected_leaf") else None
-        if it and it.parent() is not None:
-            group = it.parent().text(0)
-            fname = it.text(0)
-            # reconstruct full path from our dicts
-            lst = self.light_files.get(group) or []
-            for p in lst:
-                if os.path.basename(p) == fname or os.path.splitext(os.path.basename(p))[0] in fname:
-                    src_path = p; break
+        # 1) Try current selection in reg_tree — walk selected items for a leaf
+        try:
+            for it in self.reg_tree.selectedItems():
+                # leaves have a parent (the group node)
+                if it.parent() is not None:
+                    group = it.parent().text(0)
+                    fname = it.text(0)
+                    lst = self.light_files.get(group) or []
+                    for p in lst:
+                        bn = os.path.basename(p)
+                        if bn == fname or os.path.splitext(bn)[0] in fname:
+                            src_path = p
+                            break
+                if src_path:
+                    break
+        except Exception:
+            pass
 
-        # 2) else, fall back to “first light”, or prompt
+        # 2) Fall back to first file in the tree (populate light_files from tree first)
         if not src_path:
+            try:
+                self.extract_light_files_from_tree()
+            except Exception:
+                pass
             all_files = [f for lst in self.light_files.values() for f in lst]
             if all_files:
                 src_path = all_files[0]
-            else:
-                fp, _ = QFileDialog.getOpenFileName(
-                    self, "Pick a frame to mark the comet center", self.stacking_directory or "",
-                    "Images (*.fit *.fits *.tif *.tiff *.png *.jpg *.jpeg)"
-                )
-                if not fp:
-                    QMessageBox.information(self, "Comet Center", "No file chosen.")
-                    return
-                src_path = fp
 
-        # load and show a simple click-to-pick dialog
+        # 3) Last resort: file dialog
+        if not src_path:
+            fp, _ = QFileDialog.getOpenFileName(
+                self, "Pick a frame to mark the comet center", self.stacking_directory or "",
+                "Images (*.fit *.fits *.tif *.tiff *.png *.jpg *.jpeg)"
+            )
+            if not fp:
+                QMessageBox.information(self, "Comet Center", "No file chosen.")
+                return
+            src_path = fp
+
+        # Load and show click-to-pick dialog
         try:
             img, hdr, _, _ = load_image(src_path)
             if img is None:
@@ -10530,15 +10849,16 @@ class StackingSuiteDialog(QDialog):
             QMessageBox.critical(self, "Comet Center", f"Could not load:\n{src_path}\n\n{e}")
             return
 
-        dlg = _SimplePickDialog(img, parent=self)  # small helper below
+        dlg = _SimplePickDialog(img, parent=self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        x, y = dlg.point()
 
-        # store the seed in ORIGINAL file space (or the path we used)
+        x, y = dlg.point()
         self._comet_seed = {"path": os.path.normpath(src_path), "xy": (float(x), float(y))}
         self._comet_ref_xy = None  # will be resolved post-align
-        self.update_status(self.tr(f"🌠 Comet seed set on {os.path.basename(src_path)} at ({x:.1f}, {y:.1f})."))
+        self.update_status(self.tr(
+            f"🌠 Comet seed set on {os.path.basename(src_path)} at ({x:.1f}, {y:.1f})."
+        ))
 
 
     def _on_cfa_drizzle_toggled(self, checked: bool):
@@ -17842,44 +18162,27 @@ class StackingSuiteDialog(QDialog):
             stack = np.stack([fits.getdata(p).astype(np.float32) for p in normalized_paths], axis=0)
             trail_img, _ = max_value_stack(stack)
 
-            # 5) stretch final image and prompt user for save location & format
+            # 5) Save automatically like all other masters
             trail_img = trail_img.astype(np.float32)
-            # normalize to [0–1] for our save helper
             trail_norm = trail_img / (trail_img.max() + 1e-12)
 
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            default_name = self._safe_component(f"StarTrail_{n_frames:03d}frames_{ts}")
-            filters = "TIFF (*.tif);;PNG (*.png);;JPEG (*.jpg *.jpeg);;FITS (*.fits);;XISF (*.xisf)"
-            path, chosen_filter = QFileDialog.getSaveFileName(
-                self, "Save Star-Trail Image",
-                os.path.join(self._master_light_dir(), default_name),
-                "TIFF (*.tif);;PNG (*.png);;JPEG (*.jpg *.jpeg);;FITS (*.fits);;XISF (*.xisf)"
-            )
-            if not path:
-                self.update_status(self.tr("✖ Star-trail save cancelled."))
-                return
+            n_frames_str = f"{n_frames:03d}frames"
+            base_stem = self._safe_component(f"StarTrail_{n_frames_str}_{ts}")
+            base_stem = self._normalize_master_stem(base_stem)
+            out_path = self._build_out(self._master_light_dir(), base_stem, "fit")
 
-            # figure out extension
-            ext = os.path.splitext(path)[1].lower().lstrip('.')
-            if not ext:
-                ext = chosen_filter.split('(')[1].split(')')[0].lstrip('*.').lower()
-                path += f".{ext}"
-
-            # if user picked FITS, supply the first frame’s header; else None
-            use_hdr = hdr_to_use if ext in ('fits', 'fit') else None
-
-            # 16-bit everywhere
             save_image(
                 img_array=trail_norm,
-                filename=path,
-                original_format=ext,
-                bit_depth="16-bit",
-                original_header=use_hdr,
-                is_mono=False
+                filename=out_path,
+                original_format="fit",
+                bit_depth="32-bit floating point",
+                original_header=hdr_to_use,
+                is_mono=(trail_norm.ndim == 2)
             )
 
         # once we exit the with-block, all the _st.fit files are deleted
-        self.update_status(self.tr(f"✅ Star‐Trail image written to {path}"))
+        self.update_status(self.tr(f"✅ Star-Trail image saved to: {out_path}"))
         return
 
 
@@ -18253,6 +18556,21 @@ class StackingSuiteDialog(QDialog):
     ):
         log = status_cb or (lambda *_: None)
 
+        # ── COMET MODE: bypass prepass and use the dedicated comet pipeline ──
+        comet_mode = bool(getattr(self, "comet_cb", None) and self.comet_cb.isChecked())
+        if comet_mode:
+            log("🌠 Comet mode detected — routing to comet-aware stack pipeline.")
+            return self.stack_images_mixed_drizzle(
+                grouped_files=grouped_files,
+                frame_weights=frame_weights,
+                transforms_dict=transforms_dict,
+                drizzle_dict=drizzle_dict,
+                autocrop_enabled=autocrop_enabled,
+                autocrop_pct=autocrop_pct,
+                status_cb=log,
+            )
+        # ── NORMAL PATH ───────────────────────────────────────────────────────
+
         prepass = self.run_rejection_prepass_for_groups(
             grouped_files=grouped_files,
             frame_weights=frame_weights,
@@ -18262,10 +18580,6 @@ class StackingSuiteDialog(QDialog):
             status_cb=log,
         )
 
-        # IMPORTANT:
-        # Always finalize/save the normal integration path first.
-        # That ensures the standard integrated master (and drizzle outputs, if enabled)
-        # are written to disk even when MFDeconv is enabled.
         finalize_result = self.finalize_normal_or_drizzle_from_prepass(
             grouped_files=grouped_files,
             drizzle_dict=drizzle_dict,
@@ -18283,10 +18597,6 @@ class StackingSuiteDialog(QDialog):
 
         combined_summary = list(prepass.get("summary_lines", [])) + finalize_summary
 
-        # IMPORTANT:
-        # Do NOT launch MF from here. This method is called from AfterAlignWorker.run(),
-        # which is executing in the post-align worker thread.
-        # Return a payload so the GUI thread can launch MF safely *after* normal/drizzle saves.
         if self._mf_enabled():
             out = dict(finalize_payload)
             out.update({

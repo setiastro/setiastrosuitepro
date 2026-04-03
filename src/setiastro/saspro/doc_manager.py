@@ -1100,33 +1100,145 @@ def _fits_table_to_csv(hdu, out_csv_path: str, max_rows: int = 250000):
 def _fits_table_to_rows_headers(hdu, max_rows: int = 500000) -> tuple[list[list], list[str]]:
     """
     Convert a FITS (Bin)Table/Table HDU to (rows, headers).
-    Truncates to max_rows for safety.
+    Handles vector-per-cell columns by unpacking them into one row per element.
     """
+    import re as _re
+
     data = hdu.data
     if data is None:
         return [], []
+
     rec = np.asarray(data)
-    # Column names
     names = list(getattr(data, "names", [])) or (
-        list(rec.dtype.names) if rec.dtype.names else [f"C{i+1}" for i in range(rec.shape[1] if rec.ndim == 2 else 1)]
+        list(rec.dtype.names) if rec.dtype.names else
+        [f"C{i+1}" for i in range(rec.shape[1] if rec.ndim == 2 else 1)]
     )
-    rows = []
+
+    # ── Helper: try to parse a cell value into a 1-D float array ──────────
+    def _try_parse_vector(val) -> np.ndarray | None:
+        """
+        Returns a float64 1-D ndarray if val is a vector/array-like, else None.
+        Handles:
+          - np.ndarray with ndim >= 1 and size > 1
+          - stringified numpy arrays like "[1.0 2.0 3.0]"
+          - lists/tuples of numbers
+        """
+        # Already an array
+        if isinstance(val, np.ndarray):
+            flat = val.ravel()
+            if flat.size > 1:
+                try:
+                    return flat.astype(np.float64)
+                except Exception:
+                    return None
+            return None
+
+        # String that looks like a numpy array repr
+        if isinstance(val, str):
+            s = val.strip()
+            if s.startswith('[') and s.endswith(']'):
+                # Strip brackets, replace newlines/extra whitespace, split on whitespace
+                inner = s[1:-1].replace('\n', ' ')
+                parts = _re.split(r'\s+', inner.strip())
+                try:
+                    arr = np.array([float(p) for p in parts if p], dtype=np.float64)
+                    if arr.size > 1:
+                        return arr
+                except Exception:
+                    pass
+            return None
+
+        # List or tuple
+        if isinstance(val, (list, tuple)):
+            try:
+                arr = np.array(val, dtype=np.float64).ravel()
+                if arr.size > 1:
+                    return arr
+            except Exception:
+                pass
+
+        return None
+
+    # ── Pull raw rows from the record array ───────────────────────────────
     nrows = int(rec.shape[0]) if rec.ndim >= 1 else 0
     nrows = min(nrows, max_rows)
-    if rec.dtype.names:  # structured array
+
+    raw_rows = []
+    if rec.dtype.names:
         for ri in range(nrows):
             row = rec[ri]
-            rows.append([_safe_str(row[name]) for name in rec.dtype.names])
+            raw_rows.append([row[name] for name in rec.dtype.names])
     else:
-        # numeric 2D/1D table
         if rec.ndim == 1:
             for ri in range(nrows):
-                rows.append([_safe_str(rec[ri])])
+                raw_rows.append([rec[ri]])
         else:
             for ri in range(nrows):
-                rows.append([_safe_str(x) for x in rec[ri]])
-    return rows, [str(n) for n in names]
+                raw_rows.append(list(rec[ri]))
 
+    if not raw_rows:
+        return [], [str(n) for n in names]
+
+    # ── Detect vector-in-cell columns using the first row ─────────────────
+    n_cols = len(raw_rows[0])
+    col_vectors = {}  # col_index -> np.ndarray (the parsed vector for row 0)
+
+    for ci in range(n_cols):
+        vec = _try_parse_vector(raw_rows[0][ci])
+        if vec is not None:
+            col_vectors[ci] = vec
+
+    # ── If ANY column is a vector, unpack the whole table ─────────────────
+    if col_vectors:
+        # Use the length of the first vector column as the reference length
+        ref_ci = next(iter(col_vectors))
+        ref_len = col_vectors[ref_ci].size
+
+        # Build per-column arrays (parse all rows for vector cols, broadcast scalars)
+        col_arrays = []
+        for ci in range(n_cols):
+            if ci in col_vectors:
+                # Parse every row for this vector column
+                parsed_rows = []
+                for ri, raw_row in enumerate(raw_rows):
+                    v = _try_parse_vector(raw_row[ci])
+                    if v is not None and v.size == ref_len:
+                        parsed_rows.append(v)
+                    else:
+                        parsed_rows.append(np.full(ref_len, np.nan, dtype=np.float64))
+                # Stack: shape (nrows_original, ref_len) → flatten to (nrows_original * ref_len,)
+                col_arrays.append(np.concatenate(parsed_rows))
+            else:
+                # Scalar column: repeat each value ref_len times
+                scalars = []
+                for raw_row in raw_rows:
+                    cell = raw_row[ci]
+                    try:
+                        val = float(cell)
+                    except Exception:
+                        val = _safe_str(cell)
+                    scalars.extend([val] * ref_len)
+                col_arrays.append(scalars)
+
+        # Transpose from column-major to row-major
+        total_rows = len(col_arrays[0])
+        total_rows = min(total_rows, max_rows)
+        out_rows = []
+        for ri in range(total_rows):
+            out_rows.append([
+                (float(col_arrays[ci][ri]) if isinstance(col_arrays[ci][ri], (int, float, np.floating, np.integer))
+                 else _safe_str(col_arrays[ci][ri]))
+                for ci in range(n_cols)
+            ])
+
+        return out_rows, [str(n) for n in names]
+
+    # ── Scalar table: original path ───────────────────────────────────────
+    out_rows = []
+    for raw_row in raw_rows:
+        out_rows.append([_safe_str(v) for v in raw_row])
+
+    return out_rows, [str(n) for n in names]
 
 _shown_raw_preview_paths: set[str] = set()
 _raw_preview_boxes: list[QMessageBox] = []  # prevent GC while shown

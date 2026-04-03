@@ -456,7 +456,8 @@ class CosmicClarityDialogPro(QDialog):
         self._closing_after_cancel = False
         self._wait = None
         self.icons = get_icons()
-
+        self._orig_was_mono = False
+        
         # Hard guard unless explicitly bypassed (used by preset runner)
         if not bypass_guard and self._headless_guard_active():
             try:
@@ -1124,9 +1125,11 @@ class CosmicClarityDialogPro(QDialog):
         preset = self.build_preset_from_ui()
         mode = str(preset.get("mode", "sharpen")).lower()
 
-        # --- Normalize to float32 RGB01 for the engines ---
-        # Your engines expect RGB01; keep mono as 3-ch internally.
         arr = np.asarray(self.doc.image, dtype=np.float32)
+
+        # Track mono BEFORE expanding to 3-channel for the engine
+        orig_was_mono = (arr.ndim == 2) or (arr.ndim == 3 and arr.shape[2] == 1)
+
         if arr.ndim == 2:
             arr = np.repeat(arr[..., None], 3, axis=2)
         elif arr.ndim == 3 and arr.shape[2] == 1:
@@ -1138,6 +1141,9 @@ class CosmicClarityDialogPro(QDialog):
             return
 
         arr = np.clip(arr, 0.0, 1.0).astype(np.float32, copy=False)
+
+        # Stash for use in result handler
+        self._orig_was_mono = orig_was_mono
 
         # --- Show wait/progress UI ---
         title = "Cosmic Clarity – " + (
@@ -1210,6 +1216,11 @@ class CosmicClarityDialogPro(QDialog):
         if self._wait:
             self._wait.close()
             self._wait = None
+
+        # Collapse back to mono if the input was mono
+        if getattr(self, "_orig_was_mono", False):
+            if out_arr.ndim == 3:
+                out_arr = out_arr.mean(axis=2).astype(np.float32, copy=False)
 
         create_new = (self.cmb_target.currentIndex() == 1)
         if create_new:

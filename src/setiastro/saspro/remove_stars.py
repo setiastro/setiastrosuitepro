@@ -1566,9 +1566,8 @@ class SyQonStarlessDialog(QDialog):
         return _syqon_norm_kind(self.cmb_model.currentData() or "nadir")
 
     def _on_model_changed(self, *_):
-        s = getattr(self.main, "settings", None)
-        if s:
-            s.setValue("syqon/model_kind", self._model_kind())
+        s = getattr(self.main, "settings", None) or QSettings()
+        s.setValue("syqon/model_kind", self._model_kind())
         self._refresh_state()
 
     def _on_worker_preview(self, qimg):
@@ -1953,22 +1952,21 @@ class SyQonStarlessDialog(QDialog):
 
         engine_mode = self._engine_mode()
 
-        # Persist settings first
-        s = getattr(self.main, "settings", None)
-        if s:
-            s.setValue("syqon/engine_mode", engine_mode)
-            s.setValue("syqon/tile_size", int(self.spin_tile.value()))
-            s.setValue("syqon/overlap", int(self.spin_overlap.value()))
-            s.setValue("syqon/shadow_clip", float(self.spin_shadow.value()))
-            s.setValue("syqon/make_stars", bool(self.chk_make_stars.isChecked()))
-            s.setValue("syqon/pad_edges", bool(self.chk_pad.isChecked()))
-            s.setValue("syqon/pad_pixels", int(self.spin_pad.value()))
-            s.setValue("syqon/stars_extract", str(self.cmb_stars_extract.currentText()))
-            s.setValue("syqon/use_mtf", bool(self.chk_mtf.isChecked()))
-            s.setValue("syqon/mtf_target_median", float(self.spin_mtf_median.value()))
-            s.setValue("syqon/use_amp", bool(self.chk_amp.isChecked()))
-            s.setValue("syqon/model_kind", str(self.cmb_model.currentText()))
-            s.setValue("syqon/standalone_cli_path", self.edt_cli_path.text().strip())
+        # Persist settings — always use a valid QSettings instance
+        s = getattr(self.main, "settings", None) or QSettings()
+        s.setValue("syqon/engine_mode", engine_mode)
+        s.setValue("syqon/tile_size", int(self.spin_tile.value()))
+        s.setValue("syqon/overlap", int(self.spin_overlap.value()))
+        s.setValue("syqon/shadow_clip", float(self.spin_shadow.value()))
+        s.setValue("syqon/make_stars", bool(self.chk_make_stars.isChecked()))
+        s.setValue("syqon/pad_edges", bool(self.chk_pad.isChecked()))
+        s.setValue("syqon/pad_pixels", int(self.spin_pad.value()))
+        s.setValue("syqon/stars_extract", str(self.cmb_stars_extract.currentText()))
+        s.setValue("syqon/use_mtf", bool(self.chk_mtf.isChecked()))
+        s.setValue("syqon/mtf_target_median", float(self.spin_mtf_median.value()))
+        s.setValue("syqon/use_amp", bool(self.chk_amp.isChecked()))
+        s.setValue("syqon/model_kind", self._model_kind())   # ← data string, not display text
+        s.setValue("syqon/standalone_cli_path", self.edt_cli_path.text().strip())
 
         # Validate tile/overlap
         tile = int(self.spin_tile.value())
@@ -2006,7 +2004,7 @@ class SyQonStarlessDialog(QDialog):
         if pad_edges and pad_pixels > 0:
             xrgb = _pad_reflect(xrgb, pad_pixels)
 
-        # Cache values needed by finish handler (common)
+        # Cache values needed by finish handler
         self._scale_factor = scale_factor
         self._H0, self._W0 = H0, W0
         self._orig_was_mono = orig_was_mono
@@ -2033,8 +2031,6 @@ class SyQonStarlessDialog(QDialog):
                 QMessageBox.warning(self, "SyQon", "Please select a valid Starless Standalone executable.")
                 return
 
-            # IMPORTANT: do NOT apply local MTF here; let CLI handle --temp-stretch.
-            # We'll treat chk_mtf as "use temp stretch" for the CLI.
             use_temp_stretch = bool(self.chk_mtf.isChecked())
             self._do_mtf = False
             self._mtf_params = None
@@ -2046,10 +2042,9 @@ class SyQonStarlessDialog(QDialog):
                 overlap=overlap,
                 use_temp_stretch=use_temp_stretch,
                 backend="auto",
-                parent=self
+                parent=self,
             )
             self.proc_thr.progress.connect(self._on_worker_progress)
-            # no preview for CLI
             self.proc_thr.finished.connect(self._on_worker_finished)
             self.proc_thr.start()
             return
@@ -2068,25 +2063,16 @@ class SyQonStarlessDialog(QDialog):
 
         if do_mtf:
             mtf_target = float(self.spin_mtf_median.value())
-
             bp3 = _bp_min_per_channel(xrgb)
             xrgb_bp = _subtract_bp_per_channel(xrgb, bp3)
-
-            mtf_params = _mtf_params_unlinked_noclip(
-                xrgb_bp,
-                targetbg=mtf_target,
-            )
+            mtf_params = _mtf_params_unlinked_noclip(xrgb_bp, targetbg=mtf_target)
             x_for_net = _apply_mtf_unlinked_rgb(xrgb_bp, mtf_params)
-
-            self._mtf_params = {
-                "bp3": bp3,
-                "mtf": mtf_params,
-            }
+            self._mtf_params = {"bp3": bp3, "mtf": mtf_params}
         else:
             x_for_net = xrgb
             self._mtf_params = None
-        model_kind = self._model_kind()
 
+        model_kind = self._model_kind()
         live_preview = bool(self.chk_live_preview.isChecked())
         preview_src = x_for_net if do_mtf else xrgb
 
@@ -2104,13 +2090,13 @@ class SyQonStarlessDialog(QDialog):
             preview_src_rgb01=(preview_src if live_preview else None),
             preview_max_dim=900,
             preview_emit_ms=120,
-            parent=self
+            parent=self,
         )
         self.proc_thr.progress.connect(self._on_worker_progress)
         self.proc_thr.preview.connect(self._on_worker_preview)
         self.proc_thr.finished.connect(self._on_worker_finished)
         self.proc_thr.start()
-
+        
     def closeEvent(self, ev):
         try:
             if self.proc_thr is not None and self.proc_thr.isRunning():
