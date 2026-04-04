@@ -1,14 +1,9 @@
 # src/setiastro/saspro/ser_stack_config.py
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Optional, Tuple, Literal, Union, Sequence, TYPE_CHECKING
+from typing import Optional, Tuple, Literal, Union, Sequence
 import numpy as np
 
-if TYPE_CHECKING:
-    import numpy as np
-    KeepMask = "np.ndarray"
-else:
-    KeepMask = object
 
 from setiastro.saspro.imageops.serloader import PlanetaryFrameSource
 
@@ -30,7 +25,7 @@ class SERStackConfig:
     ap_min_mean: float = 0.03
     ap_multiscale: bool = False
     ssd_refine_bruteforce: bool = False
-    keep_mask: Optional[KeepMask] = None
+    keep_mask: Optional[np.ndarray] = None
     planet_smooth_sigma: float = 1.5
     planet_thresh_pct: float = 92.0
     planet_use_norm: bool = True
