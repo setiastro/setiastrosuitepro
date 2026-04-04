@@ -323,6 +323,14 @@ class SERViewer(QDialog):
 
         self.btn_stack = QPushButton("Open Stacker…", self)
         self.btn_stack.setEnabled(False)   # enabled once SER loaded
+        self.btn_batch = QPushButton("Batch Stack…", self)
+        self.btn_batch.setEnabled(True) 
+        self.btn_batch.setToolTip(
+            "Batch stack multiple SER/AVI files using the current viewer settings.\n"
+            "If a file is already loaded in the viewer, it will be pre-added to the list.\n"
+            "If a surface anchor is already set in the viewer (Ctrl+Shift+drag), it will\n"
+            "be inherited — otherwise you will be prompted to set one from the first file."
+        )       
         self.chk_planet_norm = QCheckBox("Normalize for planetary centroid detect")
         self.chk_planet_norm.setChecked(True)
         self.chk_planet_norm.setToolTip("Detection-only normalization (does not change stacking pixels). Helps dim planets.")
@@ -399,6 +407,7 @@ class SERViewer(QDialog):
 
         sform.addRow("", self.lbl_anchor)
         sform.addRow("", self.btn_stack)
+        sform.addRow("", self.btn_batch)
 
         right.addWidget(stack, 0)
 
@@ -429,6 +438,7 @@ class SERViewer(QDialog):
             s.valueChanged.connect(self._sanitize_roi_controls)
         self.cmb_track.currentIndexChanged.connect(self._on_track_mode_changed)
         self.btn_stack.clicked.connect(self._open_stacker_clicked)
+        self.btn_batch.clicked.connect(self._open_batch_clicked)
         self.cmb_bayer.currentIndexChanged.connect(self._refresh)
         self.chk_debayer.toggled.connect(lambda v: self.cmb_bayer.setEnabled(bool(v)))
         self.cmb_bayer.setEnabled(self.chk_debayer.isChecked())
@@ -1274,6 +1284,65 @@ class SERViewer(QDialog):
 
         self._refresh()
 
+    def _open_batch_clicked(self):
+        from setiastro.saspro.ser_batch_dialog import SERBatchDialog
+
+        main = self.parent() or self
+        debayer = bool(self.chk_debayer.isChecked())
+        bp = self.cmb_bayer.currentText().strip().upper()
+        if not debayer or bp == "AUTO":
+            bp = None
+
+        # Snapshot all current stacker settings into a plain dict
+        # (same fields _make_cfg() would produce, minus source/roi/anchor/track)
+        keep_pct = float(self.spin_keep.value())
+        scale_text = "Off (1x)"   # viewer doesn't have drizzle controls; batch uses defaults
+        base_cfg_kw = dict(
+            keep_percent     = keep_pct,
+            ap_size          = 64,
+            ap_spacing       = 48,
+            ap_min_mean      = 0.03,
+            ap_multiscale    = False,
+            ssd_refine_bruteforce = False,
+            planet_smooth_sigma = float(self.spin_planet_smooth.value()),
+            planet_thresh_pct   = float(self.spin_planet_thresh.value()),
+            planet_min_val      = float(self.spin_planet_min.value()),
+            planet_use_norm     = bool(self.chk_planet_norm.isChecked()),
+            planet_norm_hi_pct  = float(self.spin_norm_hi.value()),
+            drizzle_scale    = 1.0,
+            drizzle_pixfrac  = 0.80,
+            drizzle_kernel   = "gaussian",
+            drizzle_sigma    = 0.0,
+            derotate_enabled = False,
+            derotate_deg_per_min = 0.0,
+            derotate_center  = None,
+            derotate_radius  = None,
+            derotate_overlay_mode = "none",
+            derotate_rings   = None,
+        )
+
+        # Pre-populate with the currently loaded file if it's a video
+        initial_files = []
+        source = self.get_source_spec()
+        if isinstance(source, str) and source and source.lower().endswith(
+            tuple([".ser", ".avi", ".mp4", ".mov", ".mkv"])
+        ):
+            initial_files = [source]
+
+        dlg = SERBatchDialog(
+            parent=self,
+            main=main,
+            initial_files=initial_files,
+            base_cfg_kwargs=base_cfg_kw,
+            debayer=debayer,
+            track_mode=self._track_mode_value(),
+            roi=self.get_roi(),
+            surface_anchor=self.get_surface_anchor(),
+            bayer_pattern=bp,
+        )
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
 
     def _toggle_play(self):
         if self.reader is None:
