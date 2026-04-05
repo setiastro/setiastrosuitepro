@@ -231,6 +231,242 @@ def _build_astrometry_hints(hdr: fits.Header, plane: np.ndarray):
 
     return hints
 
+# ============================================================
+# Transit search helpers — ported from exoplanet_ground_telescope_script - Kyle Lynch
+# ============================================================
+
+def _robust_sigma(x: np.ndarray) -> float:
+    """Median-absolute-deviation based sigma (1.4826 * MAD)."""
+    x = np.asarray(x, float)
+    x = x[np.isfinite(x)]
+    if x.size < 3:
+        return np.nan
+    med = np.nanmedian(x)
+    mad = np.nanmedian(np.abs(x - med))
+    return float(1.4826 * mad) if np.isfinite(mad) else np.nan
+
+
+def _sort_lightcurve(time_jd: np.ndarray, flux: np.ndarray,
+                     positive_only: bool = True):
+    t = np.asarray(time_jd, float)
+    y = np.asarray(flux, float)
+    good = np.isfinite(t) & np.isfinite(y)
+    if positive_only:
+        good &= (y > 0)
+    if not np.any(good):
+        return np.array([], float), np.array([], float)
+    s = np.argsort(t[good])
+    return t[good][s], y[good][s]
+
+
+def _segment_slices(time: np.ndarray, gap_days: float):
+    t = np.asarray(time, float)
+    if t.size == 0:
+        return []
+    cuts = np.where(np.diff(t) > gap_days)[0]
+    starts = np.r_[0, cuts + 1]
+    ends   = np.r_[cuts + 1, t.size]
+    return [slice(int(a), int(b)) for a, b in zip(starts, ends)]
+
+
+def _upper_outlier_mask(y: np.ndarray, sigma_mult: float = 6.0) -> np.ndarray:
+    arr = np.asarray(y, float)
+    mask = np.zeros(arr.shape, dtype=bool)
+    good = np.isfinite(arr) & (arr > 0)
+    if np.sum(good) < 6:
+        return mask
+    med = float(np.nanmedian(arr[good]))
+    sig = _robust_sigma(arr[good] - med)
+    if not (np.isfinite(sig) and sig > 0):
+        return mask
+    return np.isfinite(arr) & (arr > med + sigma_mult * sig)
+
+
+def _prepare_search_lightcurve(time_jd: np.ndarray, flux: np.ndarray):
+    """Clean, sort, median-normalise, and clip upper outliers."""
+    t, y = _sort_lightcurve(time_jd, flux, positive_only=True)
+    if t.size == 0:
+        return t, y
+    med = np.nanmedian(y[np.isfinite(y) & (y > 0)])
+    if np.isfinite(med) and med != 0:
+        y = y / med
+    bad = _upper_outlier_mask(y, sigma_mult=6.0)
+    if np.any(bad):
+        keep = np.isfinite(y) & (~bad)
+        t, y = t[keep], y[keep]
+        if y.size > 0:
+            med2 = np.nanmedian(y)
+            if np.isfinite(med2) and med2 != 0:
+                y = y / med2
+    return t, y
+
+
+def _phase_centered(time: np.ndarray, period: float, t0: float) -> np.ndarray:
+    """Fold to [-0.5, 0.5]."""
+    ph = ((np.asarray(time, float) - t0) / period) % 1.0
+    return ((ph + 0.5) % 1.0) - 0.5
+
+
+def _whiten_periodogram(power: np.ndarray):
+    """Subtract running-median background from BLS power spectrum."""
+    from scipy.ndimage import median_filter as _mf
+    power = np.asarray(power, float)
+    if power.size == 0:
+        return np.array([], float), np.array([], float)
+    finite = np.isfinite(power)
+    fill = float(np.nanmedian(power[finite])) if np.any(finite) else 0.0
+    arr = np.where(finite, power, fill)
+    max_window = power.size if power.size % 2 == 1 else power.size - 1
+    if max_window < 3:
+        bg = np.full_like(arr, fill, dtype=float)
+    else:
+        window = max(31, int(power.size // 150))
+        if window % 2 == 0:
+            window += 1
+        window = max(3, min(window, max_window))
+        bg = _mf(arr, size=window, mode="nearest")
+    whitened = arr - bg
+    whitened -= np.nanmedian(whitened[finite])
+    whitened[~finite] = np.nan
+    bg[~finite] = np.nan
+    return bg, whitened
+
+
+def _top_peak_indices(periods: np.ndarray, power: np.ndarray,
+                      max_peaks: int = 12, merge_frac: float = 0.01):
+    periods = np.asarray(periods, float)
+    power   = np.asarray(power, float)
+    if periods.size == 0:
+        return []
+    cand = []
+    for i in range(power.size):
+        if not np.isfinite(power[i]):
+            continue
+        left  = power[i-1] if i > 0 else -np.inf
+        right = power[i+1] if i+1 < power.size else -np.inf
+        if power[i] >= left and power[i] >= right:
+            cand.append(i)
+    if not cand:
+        cand = list(np.where(np.isfinite(power))[0])
+    cand = np.asarray(cand, int)
+    order = cand[np.argsort(power[cand])[::-1]]
+    keep = []
+    for idx in order:
+        p = periods[idx]
+        if not (np.isfinite(p) and p > 0):
+            continue
+        if any(abs(p / periods[j] - 1.0) <= merge_frac for j in keep
+               if np.isfinite(periods[j]) and periods[j] > 0):
+            continue
+        keep.append(int(idx))
+        if len(keep) >= max_peaks:
+            break
+    return keep
+
+
+def _make_binned_curve(x: np.ndarray, y: np.ndarray, bin_width: float):
+    """Robust-sigma-clipped binning; returns (bx, by, be)."""
+    x = np.asarray(x, float); y = np.asarray(y, float)
+    good = np.isfinite(x) & np.isfinite(y)
+    x, y = x[good], y[good]
+    if x.size < 10:
+        return np.array([], float), np.array([], float), np.array([], float)
+    edges = np.arange(np.nanmin(x), np.nanmax(x) + bin_width, bin_width)
+    bx, by, be = [], [], []
+    for i in range(len(edges) - 1):
+        m = (x >= edges[i]) & (x < edges[i+1])
+        if np.sum(m) < 4:
+            continue
+        yy = y[m]; xx = x[m]
+        med = np.nanmedian(yy)
+        sig = _robust_sigma(yy)
+        if np.isfinite(sig) and sig > 0:
+            keep = np.abs(yy - med) < 4.0 * sig
+            xx, yy = xx[keep], yy[keep]
+        if yy.size < 4:
+            continue
+        sig2 = _robust_sigma(yy)
+        bx.append(float(np.nanmedian(xx)))
+        by.append(float(np.nanmedian(yy)))
+        be.append(float(sig2 / np.sqrt(yy.size)) if np.isfinite(sig2) and sig2 > 0
+                  else float(np.nanstd(yy) / np.sqrt(max(1, yy.size))))
+    return np.asarray(bx, float), np.asarray(by, float), np.asarray(be, float)
+
+
+def _estimate_night_dip_events(time_jd: np.ndarray, flux: np.ndarray,
+                                gap_days: float = 0.20):
+    """
+    Per-night dip detection: returns list of dicts with
+    t_center, depth_frac, snr, duration_d.
+    """
+    from scipy.ndimage import median_filter as _mf
+    t, y = _sort_lightcurve(time_jd, flux, positive_only=True)
+    if t.size < 12:
+        return []
+    events = []
+    for sl in _segment_slices(t, gap_days):
+        tn, yn = t[sl], y[sl]
+        good = np.isfinite(tn) & np.isfinite(yn) & (yn > 0)
+        tn, yn = tn[good], yn[good]
+        if tn.size < 8:
+            continue
+        med = float(np.nanmedian(yn))
+        if med <= 0 or not np.isfinite(med):
+            continue
+        seg = yn / med
+        scatter = _robust_sigma(seg)
+        if not np.isfinite(scatter) or scatter <= 0:
+            scatter = float(np.nanstd(seg))
+        scatter = max(scatter, 1e-5)
+
+        filled = seg.copy()
+        filled[~np.isfinite(filled)] = 1.0
+        w = min(11, max(5, (tn.size // 12) * 2 + 1))
+        if w % 2 == 0:
+            w += 1
+        if w >= tn.size:
+            w = tn.size if tn.size % 2 == 1 else max(5, tn.size - 1)
+        smooth = _mf(filled, size=max(5, w), mode="nearest").astype(float)
+
+        oot = float(np.nanmedian(smooth))
+        min_idx = int(np.nanargmin(smooth))
+        depth = max(0.0, oot - float(smooth[min_idx]))
+        if not np.isfinite(depth) or depth < max(2.0 * scatter, 8e-4):
+            continue
+
+        thresh = oot - max(1.2 * scatter, 0.45 * depth)
+        low = smooth <= thresh
+        left = right = min_idx
+        while left > 0 and low[left-1]:
+            left -= 1
+        while right + 1 < low.size and low[right+1]:
+            right += 1
+
+        # cadence estimate
+        dts = np.diff(np.sort(tn))
+        dts = dts[dts > 1e-6]
+        cad = float(np.nanmedian(dts)) if dts.size > 0 else 5.0/1440.0
+        dur = float((tn[right] - tn[left]) + max(cad, 5.0/1440.0))
+        events.append({
+            "t_center": float(np.nanmedian(tn[left:right+1])),
+            "depth_frac": float(depth),
+            "snr": float(depth / scatter),
+            "duration_d": dur,
+        })
+    return events
+
+
+def _alias_penalty(period_d: float, tol: float = 0.02) -> float:
+    if not (np.isfinite(period_d) and period_d > 0):
+        return 0.0
+    penalty = 0.0
+    for alias in (0.5, 1.0, 2.0, 3.0):
+        frac = abs(period_d / alias - 1.0)
+        if frac <= tol:
+            penalty = max(penalty, 1.0 - frac / tol)
+    return float(penalty)
+
+
 class OverlayView(QGraphicsView):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -653,6 +889,28 @@ class ExoPlanetWindow(QDialog):
         row1.addWidget(self.threshold_slider)
         self.threshold_value_label = QLabel(f"{self.threshold_slider.value()} ppt")
         row1.addWidget(self.threshold_value_label)
+
+        row1.addSpacing(16)
+        row1.addWidget(QLabel("Temporal SNR min:"))
+        self.temporal_snr_spin = QDoubleSpinBox()
+        self.temporal_snr_spin.setRange(0.0, 10.0)
+        self.temporal_snr_spin.setSingleStep(0.1)
+        self.temporal_snr_spin.setValue(2.0)
+        self.temporal_snr_spin.setDecimals(1)
+        self.temporal_snr_spin.setToolTip(
+            "Minimum ratio of the MA's peak deviation from 1.0\n"
+            "to the MAD of residuals (raw points minus MA).\n\n"
+            "This is the temporal signal-to-noise of the light curve\n"
+            "variation — NOT the photometric SNR of the star itself.\n\n"
+            "Higher values reject more noisy/scattered stars.\n"
+            "1.5 = MA must move 1.5× further than the typical scatter.\n"
+            "Set to 0.0 to disable the coherence check entirely."
+        )
+        self.temporal_snr_spin.valueChanged.connect(
+            lambda _: self.apply_threshold(self.threshold_slider.value())
+        )
+        row1.addWidget(self.temporal_snr_spin)
+
         row1.addStretch()
         self.identify_btn = QPushButton("Identify Star…")
         self.identify_btn.clicked.connect(self.on_identify_star)
@@ -1499,23 +1757,98 @@ class ExoPlanetWindow(QDialog):
         self.median_fwhm = ref_stats["fwhm"]
         aper_r = float(max(2.5, 1.5 * self.median_fwhm))
 
-        # --- PASS 2: aperture sums on all frames (parallel, reusing PASS-1 background) ---
+        # --- PASS 2: aperture + annulus sky subtraction on all frames --------
         n_stars  = len(xs)
         n_frames = len(self._cached_images)
         raw_flux     = np.empty((n_stars, n_frames), dtype=np.float32)
         raw_flux_err = np.empty((n_stars, n_frames), dtype=np.float32)
         flags        = np.zeros((n_stars, n_frames), dtype=np.int16)
 
-        self.status_label.setText("Computing aperture sums…")
+        # Per-star FWHM from reference frame for adaptive aperture
+        # Fall back to median_fwhm if per-star values aren't available
+        if objs_ref is not None and len(objs_ref) > 0:
+            a_ref = np.clip(objs_ref['a'][keep_border], 1e-3, None)
+            b_ref = np.clip(objs_ref['b'][keep_border], 1e-3, None)
+            per_star_fwhm = 2.3548 * np.sqrt(a_ref * b_ref)
+        else:
+            per_star_fwhm = np.full(n_stars, self.median_fwhm, dtype=np.float32)
+
+        # Clamp per-star FWHM to a sane range around the median
+        fwhm_med = float(np.nanmedian(per_star_fwhm))
+        fwhm_med = max(fwhm_med, 1.5)
+        per_star_fwhm = np.clip(per_star_fwhm, 0.5 * fwhm_med, 3.0 * fwhm_med)
+
+        # Aperture and annulus radii based on per-star FWHM
+        # aperture  : 1.5 × FWHM  (captures ~95% of flux for Gaussian PSF)
+        # annulus in: 3.0 × FWHM  (clear of any PSF wings)
+        # annulus out: 5.0 × FWHM (enough sky pixels for good median estimate)
+        aper_r   = np.maximum(2.5, 1.5 * per_star_fwhm).astype(np.float64)
+        ann_r_in  = np.maximum(aper_r + 1.0, 3.0 * per_star_fwhm).astype(np.float64)
+        ann_r_out = np.maximum(ann_r_in + 2.0, 5.0 * per_star_fwhm).astype(np.float64)
+
+        self.status_label.setText("Computing aperture photometry with annulus sky subtraction…")
         self.progress_bar.setMaximum(n_frames)
         self.progress_bar.setValue(0)
 
         def _sum_frame(t: int):
             data_sub, _objs, rmsmap = frame_data[t]
-            # soft floor: clamp extreme negatives from over-subtraction
             ds = np.maximum(data_sub, -1.0 * rmsmap)
-            fl, ferr, flg = sep.sum_circle(ds, xs, ys, aper_r, err=rmsmap)
-            return t, fl.astype(np.float32, copy=False), ferr.astype(np.float32, copy=False), flg
+
+            fl   = np.zeros(n_stars, dtype=np.float64)
+            ferr = np.zeros(n_stars, dtype=np.float64)
+            flg  = np.zeros(n_stars, dtype=np.int16)
+
+            for si in range(n_stars):
+                xsi = float(xs[si])
+                ysi = float(ys[si])
+                r   = float(aper_r[si])
+                rin  = float(ann_r_in[si])
+                rout = float(ann_r_out[si])
+
+                # --- aperture sum ---
+                try:
+                    f_ap, f_err, f_flag = sep.sum_circle(
+                        ds, [xsi], [ysi], r, err=rmsmap,
+                        gain=1.0,
+                    )
+                    f_ap   = float(f_ap[0])
+                    f_err  = float(f_err[0])
+                    f_flag = int(f_flag[0])
+                except Exception:
+                    fl[si] = np.nan; ferr[si] = np.nan; flg[si] = 1
+                    continue
+
+                # --- annulus sky estimate (robust median × aperture area) ---
+                try:
+                    ann_flux, ann_err, ann_flag = sep.sum_circann(
+                        ds, [xsi], [ysi], rin, rout, err=rmsmap,
+                    )
+                    ann_area = sep.circann_area(rin, rout)
+                    ap_area  = np.pi * r * r
+
+                    # sky per pixel from annulus (median is more robust than mean)
+                    sky_per_pix = float(ann_flux[0]) / max(ann_area, 1.0)
+
+                    # subtract local sky from aperture
+                    sky_total = sky_per_pix * ap_area
+                    f_sky_sub = f_ap - sky_total
+
+                    # propagate sky subtraction error
+                    # var(sky_total) = (ap_area/ann_area)^2 * var(ann)
+                    sky_err_contrib = float(ann_err[0]) * (ap_area / max(ann_area, 1.0))
+                    f_err_total = float(np.sqrt(max(f_err**2 + sky_err_contrib**2, 0.0)))
+
+                    fl[si]   = f_sky_sub
+                    ferr[si] = f_err_total
+                    flg[si]  = f_flag | int(ann_flag[0])
+
+                except Exception:
+                    # annulus failed — fall back to global-background-subtracted value
+                    fl[si]   = f_ap
+                    ferr[si] = f_err
+                    flg[si]  = f_flag
+
+            return t, fl.astype(np.float32), ferr.astype(np.float32), flg.astype(np.int16)
 
         done = 0
         with ThreadPoolExecutor(max_workers=n_workers) as exe:
@@ -1627,28 +1960,69 @@ class ExoPlanetWindow(QDialog):
         self._on_threshold_changed(self.threshold_slider.value())
 
     def _solve_reference(self, plane, hdr):
-        # always solve on mono plane
         plane2d = plane.mean(axis=2) if getattr(plane, "ndim", 2) == 3 else plane
 
-        # 1) first trust existing WCS from header/metadata
-        existing_wcs = self._try_wcs_from_header(hdr, plane2d)
-        if existing_wcs is not None:
-            self._wcs = existing_wcs
-            H, W = plane2d.shape[:2]
-            try:
-                center = self._wcs.pixel_to_world(W / 2, H / 2)
-                self.wcs_ra = float(center.ra.deg)
-                self.wcs_dec = float(center.dec.deg)
-            except Exception:
-                self.wcs_ra = self.wcs_dec = None
+        # ── Detect XISF origin ────────────────────────────────────────────
+        # XISF headers carry an approximated SIP polynomial fit to PI's TPS
+        # astrometric solution. The approximation can be off by 10-30 arcsec
+        # in the corners, which is enough to blow our 5 arcsec star-matching
+        # radius. Always plate-solve when the source is XISF.
+        def _is_xisf_source(h) -> bool:
+            if h is None:
+                return False
+            # XISF loaded via legacy loader stores format in metadata dict
+            if isinstance(h, dict):
+                fmt = str(h.get("original_format", "")).lower()
+                if fmt == "xisf":
+                    return True
+                # Any key starting with XISF: is a tell-tale from xisf_fits_header_from_meta
+                for k in h.keys():
+                    if isinstance(k, str) and k.upper().startswith("XISF:"):
+                        return True
+                # Check nested fits_header / original_header
+                for sub_key in ("fits_header", "original_header", "header"):
+                    sub = h.get(sub_key)
+                    if isinstance(sub, fits.Header):
+                        for k in sub.keys():
+                            if isinstance(k, str) and k.upper().startswith("XISF:"):
+                                return True
+            if isinstance(h, fits.Header):
+                for k in h.keys():
+                    if isinstance(k, str) and k.upper().startswith("XISF:"):
+                        return True
+            return False
 
-            ra_str  = "nan" if self.wcs_ra  is None else f"{self.wcs_ra:.5f}"
-            dec_str = "nan" if self.wcs_dec is None else f"{self.wcs_dec:.5f}"
-            self.status_label.setText(f"WCS from header: RA={ra_str}, Dec={dec_str}")
-            self.fetch_tesscut_btn.setEnabled(True)
-            return
+        source_is_xisf = _is_xisf_source(hdr)
 
-        # 2) otherwise plate-solve
+        # Also check the file extension of the first loaded path as a fallback
+        if not source_is_xisf and self.image_paths:
+            ref_path = self.image_paths[self.ref_idx] if hasattr(self, "ref_idx") else self.image_paths[0]
+            if str(ref_path).lower().endswith(".xisf"):
+                source_is_xisf = True
+
+        # ── Step 1: trust existing WCS only if NOT from XISF ─────────────
+        if not source_is_xisf:
+            existing_wcs = self._try_wcs_from_header(hdr, plane2d)
+            if existing_wcs is not None:
+                self._wcs = existing_wcs
+                H, W = plane2d.shape[:2]
+                try:
+                    center = self._wcs.pixel_to_world(W / 2, H / 2)
+                    self.wcs_ra  = float(center.ra.deg)
+                    self.wcs_dec = float(center.dec.deg)
+                except Exception:
+                    self.wcs_ra = self.wcs_dec = None
+
+                ra_str  = "nan" if self.wcs_ra  is None else f"{self.wcs_ra:.5f}"
+                dec_str = "nan" if self.wcs_dec is None else f"{self.wcs_dec:.5f}"
+                self.status_label.setText(f"WCS from header: RA={ra_str}, Dec={dec_str}")
+                self.fetch_tesscut_btn.setEnabled(True)
+                return
+        else:
+            self.status_label.setText("XISF source detected — skipping approximate WCS, running plate solve…")
+            QApplication.processEvents()
+
+        # ── Step 2: plate-solve ───────────────────────────────────────────
         seed_hdr = self._coerce_seed_header(hdr if hdr is not None else {}, plane2d)
         meta = {}
         if isinstance(hdr, fits.Header):
@@ -1661,11 +2035,29 @@ class ExoPlanetWindow(QDialog):
         else:
             meta["original_header"] = seed_hdr
 
+        # For XISF, the seed header still has useful RA/Dec/scale hints
+        # even though we don't trust its distortion model — keep them.
+        if source_is_xisf and "original_header" in meta:
+            existing_h = meta["original_header"]
+            if isinstance(existing_h, fits.Header):
+                # Strip SIP and CD/CDELT so the solver starts clean,
+                # but keep CRVAL*/OBJCTRA/OBJCTDEC/FOCALLEN/XPIXSZ for hints
+                strip_keys = [k for k in existing_h.keys()
+                              if k.startswith(("A_", "B_", "AP_", "BP_",
+                                               "CD1_", "CD2_", "CDELT",
+                                               "CTYPE", "CRPIX", "NAXIS"))]
+                clean_hdr = existing_h.copy()
+                for k in strip_keys:
+                    try:
+                        del clean_hdr[k]
+                    except Exception:
+                        pass
+                meta["original_header"] = clean_hdr
+
         doc = SimpleNamespace(
             image=plane2d,
             metadata=meta,
         )
-
 
         settings = getattr(self, "settings", None)
         if settings is None and hasattr(self, "main_win"):
@@ -1675,12 +2067,43 @@ class ExoPlanetWindow(QDialog):
 
         ok, res = plate_solve_doc_inplace(self, doc, settings)
         if not ok:
+            if source_is_xisf:
+                # For XISF, offer to fall back to the approximate WCS rather
+                # than leaving the user with nothing at all
+                ans = QMessageBox.question(
+                    self,
+                    "Plate Solve Failed",
+                    f"Plate solving failed:\n{res}\n\n"
+                    "The loaded files are XISF — the embedded WCS is an approximation "
+                    "of PixInsight's TPS solution and may be off by 10–30 arcsec in the "
+                    "frame corners.\n\n"
+                    "Use the approximate XISF WCS anyway? Star matching may fail for "
+                    "some targets near the edges.",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if ans == QMessageBox.StandardButton.Yes:
+                    fallback_wcs = self._try_wcs_from_header(hdr, plane2d)
+                    if fallback_wcs is not None:
+                        self._wcs = fallback_wcs
+                        H2, W2 = plane2d.shape[:2]
+                        try:
+                            center = self._wcs.pixel_to_world(W2 / 2, H2 / 2)
+                            self.wcs_ra  = float(center.ra.deg)
+                            self.wcs_dec = float(center.dec.deg)
+                        except Exception:
+                            self.wcs_ra = self.wcs_dec = None
+                        self.status_label.setText(
+                            "⚠️ Using approximate XISF WCS (star matching may be imprecise)"
+                        )
+                        self.fetch_tesscut_btn.setEnabled(True)
+                        return
             QMessageBox.critical(self, "Plate Solve", f"Plate solving failed:\n{res}")
             self._wcs = None
             self.fetch_tesscut_btn.setEnabled(False)
             return
 
-        # 4) grab solved WCS from metadata (plate_solve_doc_inplace stores it)
+        # ── Step 3: grab solved WCS ───────────────────────────────────────
         self._wcs = doc.metadata.get("wcs", None)
         if self._wcs is None or not getattr(self._wcs, "has_celestial", False):
             QMessageBox.warning(self, "Plate Solve", "Solver finished but no usable WCS was found.")
@@ -1688,10 +2111,9 @@ class ExoPlanetWindow(QDialog):
             self._wcs = None
             return
 
-        # 5) expose center RA/Dec for UI
-        H, W = plane.shape[:2]
+        H, W = plane2d.shape[:2]
         try:
-            center = self._wcs.pixel_to_world(W/2, H/2)
+            center = self._wcs.pixel_to_world(W / 2, H / 2)
             self.wcs_ra  = float(center.ra.deg)
             self.wcs_dec = float(center.dec.deg)
         except Exception:
@@ -1701,7 +2123,6 @@ class ExoPlanetWindow(QDialog):
         dec_str = "nan" if self.wcs_dec is None else f"{self.wcs_dec:.5f}"
         self.status_label.setText(f"WCS solved: RA={ra_str}, Dec={dec_str}")
         self.fetch_tesscut_btn.setEnabled(True)
-
 
     # ---------------- Plotting & helpers ----------------
 
@@ -1821,65 +2242,65 @@ class ExoPlanetWindow(QDialog):
                 # moving average
                 self.plot_widget.plot(xs, mas, pen=dash_pen, name="MA (w=5)")
 
-
     def apply_threshold(self, ppt_threshold: int, sigma_upper: float = 3.0):
-        """
-        Flag stars whose light curve shows dips >= ppt_threshold (parts-per-thousand)
-        BELOW a centered moving average. Upward spikes > sigma_upper are marked as
-        flagged points (not used for dip logic). Uses window=5 MA.
-        """
         if not hasattr(self, 'fluxes') or self.fluxes is None:
             return
 
-        rel = self.fluxes  # stars × frames (already unit-median)
+        rel = self.fluxes
         n_stars, n_frames = rel.shape
-
-        # moving averages per star (centered)
-        ma = np.array([self.moving_average(rel[i], window=5) for i in range(n_stars)])
-
-        # robust σ for the UPPER side only, per star
-        diffs = rel - ma
-        pos = diffs.copy()
-        pos[pos < 0] = np.nan
-        sigma_up = 1.4826 * np.nanmedian(
-            np.abs(pos - np.nanmedian(pos, axis=1)[:, None]),
-            axis=1
-        )
-
-        # dips relative to MA (ppt)
-        dips = np.maximum((ma - rel) * 1000.0, 0.0)
 
         flagged = set()
         for i in range(n_stars):
-            # (a) dips ≥ threshold (based on MA, not single-point baseline)
-            dip_mask = dips[i] >= ppt_threshold
+            f = rel[i]
+            flags_star = self.flags[i] if self.flags is not None else np.zeros(n_frames, dtype=np.int16)
 
-            # hysteresis: require at least 2 consecutive dip points
-            consec = np.convolve(dip_mask.astype(int), [1, 1], mode='valid') == 2
-            dip_hyst = np.concatenate([[False], consec, [False]])
-            if np.any(dip_hyst):
-                flagged.add(i)
+            mask = np.isfinite(f) & (f > 0) & (flags_star == 0)
+            if mask.sum() < 5:
+                continue
 
-            # (b) mark upward spikes as flagged (so they don't pollute plots/exports)
-            if np.isfinite(sigma_up[i]) and sigma_up[i] > 0:
-                spike_mask = rel[i] > (ma[i] + sigma_upper * sigma_up[i])
-                if np.any(spike_mask):
-                    self.flags[i, spike_mask] = 1
+            med_i = float(np.nanmedian(f[mask]))
+            if not (np.isfinite(med_i) and med_i > 0):
+                continue
 
-        # update overlay(s)
+            f_norm = f[mask] / med_i
+            ma = self.moving_average(f_norm, window=5)
+
+            # Peak deviation of the MA from 1.0
+            ma_dev_ppt = np.abs(1.0 - ma) * 1000.0
+            finite = np.isfinite(ma_dev_ppt)
+            if not finite.any():
+                continue
+            peak_ppt = float(np.nanmax(ma_dev_ppt[finite]))
+
+            if peak_ppt < ppt_threshold:
+                continue
+
+            # ── Coherence check ───────────────────────────────────────────
+            # Compute scatter of raw points around the MA (residuals).
+            # If scatter is large relative to the MA excursion, the MA is
+            # being driven by noise rather than a coherent signal.
+            residuals = f_norm - ma
+            mad_residuals = float(1.4826 * np.nanmedian(
+                np.abs(residuals - np.nanmedian(residuals))
+            )) * 1000.0  # in ppt
+
+            if np.isfinite(mad_residuals) and mad_residuals > 0:
+                min_snr = self.temporal_snr_spin.value()
+                if min_snr > 0.0 and (peak_ppt / mad_residuals) < min_snr:
+                    continue
+            flagged.add(i)
+
         for dlg in self.findChildren(ReferenceOverlayDialog):
             dlg.update_dip_flags(flagged)
 
-        # highlight in the star list (yellow for dips)
         for row in range(self.star_list.count()):
-            item = self.star_list.item(row)
-            item.setBackground(QBrush())
+            self.star_list.item(row).setBackground(QBrush())
         for idx in flagged:
             item = self.star_list.item(idx)
             if item:
                 item.setBackground(QBrush(QColor('yellow')))
 
-        self.status_label.setText(f"{len(flagged)} star(s) dip ≥ {ppt_threshold} ppt")
+        self.status_label.setText(f"{len(flagged)} star(s) deviate ≥ {ppt_threshold} ppt")
 
     def moving_average(self, curve, window=5):
         pad = window//2
@@ -1897,80 +2318,334 @@ class ExoPlanetWindow(QDialog):
             return
         idx = sels[0].data(Qt.ItemDataRole.UserRole)
 
-        t_all = self.times.mjd
-        t_rel = t_all - t_all[0]
+        # ── 1. Build raw time/flux arrays ────────────────────────────────────
+        t_jd  = self.times.utc.jd                  # full JD
         f_all = self.fluxes[idx]
-        good  = np.isfinite(f_all) & (self.flags[idx]==0)
-        t0, f0 = t_rel[good], f_all[good]
-        if len(t0) < 10:
+        good  = np.isfinite(f_all) & (self.flags[idx] == 0)
+        t_jd_good = t_jd[good]
+        f_good    = f_all[good]
+
+        if len(t_jd_good) < 10:
             QMessageBox.warning(self, "Analyze", "Not enough good points to analyze.")
             return
 
-        ls = LombScargle(t0, f0)
-        Tspan = np.ptp(t0)
-        dt    = np.median(np.diff(np.sort(t0)))
-        min_f = 1.0 / Tspan
-        max_f = 0.5  / dt
-        freq, power_ls = ls.autopower(minimum_frequency=min_f, maximum_frequency=max_f, samples_per_peak=self.ls_samples_per_peak)
-        mask = (freq>0) & np.isfinite(power_ls)
+        # ── 2. Lomb-Scargle on relative MJD (unit-median flux) ───────────────
+        t_rel = t_jd_good - t_jd_good[0]          # days from first obs
+        f_norm = f_good / np.nanmedian(f_good[np.isfinite(f_good) & (f_good > 0)])
+
+        ls = LombScargle(t_rel, f_norm)
+        Tspan = float(np.ptp(t_rel))
+        dt    = float(np.nanmedian(np.diff(np.sort(t_rel))))
+        min_f = max(1.0 / Tspan, 1e-6)
+        max_f = 0.5 / max(dt, 1e-9)
+        freq, power_ls = ls.autopower(
+            minimum_frequency=min_f,
+            maximum_frequency=max_f,
+            samples_per_peak=getattr(self, "ls_samples_per_peak", 10),
+        )
+        mask = (freq > 0) & np.isfinite(power_ls)
         freq, power_ls = freq[mask], power_ls[mask]
-        periods = 1.0/freq
-        order   = np.argsort(periods)
-        periods, power_ls = periods[order], power_ls[order]
-        best_period = periods[np.argmax(power_ls)]
+        periods_ls = 1.0 / freq
+        order = np.argsort(periods_ls)
+        periods_ls, power_ls = periods_ls[order], power_ls[order]
+        best_ls_period = float(periods_ls[np.argmax(power_ls)])
 
-        bls = BoxLeastSquares(t0 * u.day, f0)
-        per_grid = np.linspace(self.bls_min_period, self.bls_max_period, self.bls_n_periods) * u.day
-        min_p = per_grid.min().value
-        durations = np.linspace(self.bls_duration_min_frac * min_p, self.bls_duration_max_frac * min_p, self.bls_n_durations) * u.day
-        res      = bls.power(per_grid, durations)
-        power    = res.power
-        flat_idx = np.nanargmax(power)
-        if power.ndim == 2:
-            pi, di = np.unravel_index(flat_idx, power.shape)
-            P_bls  = res.period[pi]
-            D_bls  = durations[di]
-            T0_bls = res.transit_time[pi, di]
-        else:
-            pi, di = flat_idx, 0
-            P_bls  = res.period[pi]
-            D_bls  = durations[0]
-            T0_bls = res.transit_time[pi]
-        dur_idx = di
+        # ── 3. Prepare cleaned light curve for BLS ───────────────────────────
+        t_clean, y_clean = _prepare_search_lightcurve(t_jd_good, f_good)
+        if t_clean.size < 20:
+            QMessageBox.warning(self, "Analyze", "Too few clean points for BLS.")
+            return
 
-        phase = (((t0*u.day) - T0_bls)/P_bls) % 1
-        phase = phase.value
-        model = bls.model(t0*u.day, P_bls, D_bls, T0_bls)
+        baseline_days = float(np.ptp(t_clean))
+        bls_min_p = float(getattr(self, "bls_min_period", 0.5))
+        bls_max_p = min(
+            float(getattr(self, "bls_max_period", 30.0)),
+            0.95 * baseline_days,
+        )
+        if bls_max_p <= bls_min_p:
+            bls_max_p = max(bls_min_p * 2.0, 0.95 * baseline_days)
 
+        # Duration grid
+        min_p_for_dur = bls_min_p
+        dur_min_frac  = float(getattr(self, "bls_duration_min_frac", 0.01))
+        dur_max_frac  = float(getattr(self, "bls_duration_max_frac", 0.10))
+        n_durations   = int(getattr(self, "bls_n_durations", 8))
+        dur_grid = np.linspace(
+            dur_min_frac * min_p_for_dur,
+            dur_max_frac * min_p_for_dur,
+            n_durations,
+        )  # days
+
+        # ── 4. BLS with whitened power + multi-peak scanning ─────────────────
+        dy_scalar = _robust_sigma(y_clean)
+        if not (np.isfinite(dy_scalar) and dy_scalar > 0):
+            dy_scalar = float(np.nanstd(y_clean - np.nanmedian(y_clean)))
+        if not (np.isfinite(dy_scalar) and dy_scalar > 0):
+            dy_scalar = 1e-4
+
+        bls_model = BoxLeastSquares(
+            t_clean * u.day,
+            y_clean,
+            dy=np.full_like(y_clean, dy_scalar),
+        )
+        result = bls_model.autopower(
+            dur_grid * u.day,
+            objective="snr",
+            oversample=10,
+            minimum_n_transit=2,
+            minimum_period=bls_min_p * u.day,
+            maximum_period=bls_max_p * u.day,
+        )
+
+        power_raw = np.asarray(result.power, float).ravel()
+        periods_bls = np.asarray(result.period.value
+                                if hasattr(result.period, "value")
+                                else result.period, float).ravel()
+
+        if power_raw.size == 0 or not np.any(np.isfinite(power_raw)):
+            QMessageBox.warning(self, "Analyze", "BLS returned no usable power spectrum.")
+            return
+
+        _, power_white = _whiten_periodogram(power_raw)
+        power_metric = power_white if np.any(np.isfinite(power_white)) else power_raw
+
+        # Compute SDE from whitened power
+        fin_m = np.isfinite(power_metric)
+        power_med = float(np.nanmedian(power_metric[fin_m]))
+        power_std = float(max(
+            _robust_sigma(power_metric[fin_m]),
+            float(np.nanstd(power_metric[fin_m])),
+            1e-12,
+        ))
+
+        # Scan top peaks, pick best by SNR after local refinement
+        peak_idxs = _top_peak_indices(periods_bls, power_metric, max_peaks=12, merge_frac=0.01)
+        if not peak_idxs:
+            peak_idxs = [int(np.nanargmax(power_metric))]
+
+        best_period_d  = np.nan
+        best_duration_d = np.nan
+        best_t0_jd     = np.nan
+        best_depth_frac = np.nan
+        best_sde       = -np.inf
+        best_metric    = -np.inf
+
+        for pi in peak_idxs:
+            cand_period = float(periods_bls[pi])
+            if not (np.isfinite(cand_period) and bls_min_p <= cand_period <= bls_max_p):
+                continue
+
+            # Local refinement around this peak
+            half_w  = max(0.01, 0.20 * cand_period)
+            p_lo    = max(bls_min_p, cand_period - half_w)
+            p_hi    = min(bls_max_p, cand_period + half_w)
+            n_steps = 101
+            p_grid  = np.linspace(p_lo, p_hi, n_steps) * u.day
+
+            try:
+                ref = bls_model.power(
+                    p_grid, dur_grid * u.day,
+                    objective="snr", oversample=5,
+                )
+                ref_power = np.asarray(ref.power, float).ravel()
+                ref_periods = np.asarray(ref.period.value
+                                        if hasattr(ref.period, "value")
+                                        else ref.period, float).ravel()
+                _, ref_white = _whiten_periodogram(ref_power)
+                ref_metric = ref_white if np.any(np.isfinite(ref_white)) else ref_power
+                k = int(np.nanargmax(ref_metric))
+
+                cand_p  = float(ref_periods[k])
+                cand_d  = float(ref.duration[k].value
+                                if hasattr(ref.duration[k], "value")
+                                else ref.duration[k])
+                cand_t0 = float(ref.transit_time[k].value
+                                if hasattr(ref.transit_time[k], "value")
+                                else ref.transit_time[k])
+                cand_depth = abs(float(ref.depth[k].value
+                                    if hasattr(ref.depth[k], "value")
+                                    else ref.depth[k])) if hasattr(ref, "depth") else np.nan
+                cand_metric = float(ref_metric[k]) if np.isfinite(ref_metric[k]) else float(ref_power[k])
+            except Exception:
+                cand_p  = cand_period
+                cand_d  = float(result.duration[pi].value
+                                if hasattr(result.duration[pi], "value")
+                                else result.duration[pi])
+                cand_t0 = float(result.transit_time[pi].value
+                                if hasattr(result.transit_time[pi], "value")
+                                else result.transit_time[pi])
+                cand_depth = abs(float(result.depth[pi].value
+                                    if hasattr(result.depth[pi], "value")
+                                    else result.depth[pi])) if hasattr(result, "depth") else np.nan
+                cand_metric = float(power_metric[pi]) if np.isfinite(power_metric[pi]) else 0.0
+
+            sde = (cand_metric - power_med) / power_std if power_std > 0 else 0.0
+
+            # Apply alias penalty
+            alias_pen = _alias_penalty(cand_p)
+            sde_adj = sde - 1.5 * alias_pen
+
+            if sde_adj > best_sde:
+                best_sde        = sde_adj
+                best_period_d   = cand_p
+                best_duration_d = cand_d
+                best_t0_jd      = cand_t0
+                best_depth_frac = cand_depth
+                best_metric     = cand_metric
+
+        if not np.isfinite(best_period_d):
+            # Fall back to raw argmax
+            k = int(np.nanargmax(power_metric))
+            best_period_d   = float(periods_bls[k])
+            best_duration_d = float(result.duration[k].value
+                                    if hasattr(result.duration[k], "value")
+                                    else result.duration[k])
+            best_t0_jd      = float(result.transit_time[k].value
+                                    if hasattr(result.transit_time[k], "value")
+                                    else result.transit_time[k])
+            best_depth_frac = abs(float(result.depth[k].value
+                                        if hasattr(result.depth[k], "value")
+                                        else result.depth[k])) if hasattr(result, "depth") else np.nan
+            best_sde        = (float(power_metric[k]) - power_med) / power_std if power_std > 0 else 0.0
+
+        # ── 5. Phase fold [-0.5, 0.5] ────────────────────────────────────────
+        phase = _phase_centered(t_clean, best_period_d, best_t0_jd)
+
+        # BLS box model on sorted phase
+        ord_ph = np.argsort(phase)
+        phase_s = phase[ord_ph]
+        flux_s  = y_clean[ord_ph]
+
+        transit_half = min(0.45, max(0.01, 0.5 * best_duration_d / best_period_d))
+        depth_plot   = float(best_depth_frac) if np.isfinite(best_depth_frac) else 0.0
+        model_phase = np.linspace(-0.5, 0.5, 500)
+        model_flux  = np.where(np.abs(model_phase) <= transit_half,
+                            1.0 - depth_plot, 1.0)
+
+        # Binned phase curve
+        bin_width = max(0.005, transit_half / 3.0)
+        bx, by, be = _make_binned_curve(phase, y_clean, bin_width)
+
+        # Dip event detection for the summary
+        dip_events = _estimate_night_dip_events(t_jd_good, f_good)
+
+        # ── 6. Build dialog ───────────────────────────────────────────────────
         dlg = QDialog(self)
-        dlg.setWindowTitle(f"Analysis: Star #{idx}")
+        dlg.setWindowTitle(f"Analysis: Star #{idx}  |  P = {best_period_d:.4f} d  |  SDE = {best_sde:.1f}")
         layout = QVBoxLayout(dlg)
 
-        pg_ls = pg.PlotWidget(title="Lomb–Scargle")
-        pg_ls.plot(1/freq, power_ls, pen='w')
-        pg_ls.addLine(x=best_period, pen=pg.mkPen('y', style=Qt.PenStyle.DashLine))
-        pg_ls.setLabel('bottom','Period [d]')
-        pg_ls.showGrid(True,True)
-        layout.addWidget(pg_ls)
+        # Summary label
+        dur_hr   = best_duration_d * 24.0
+        depth_ppt = depth_plot * 1000.0
+        n_dips   = len(dip_events)
+        alias_pen = _alias_penalty(best_period_d)
+        summary = (
+            f"Period: {best_period_d:.5f} d   "
+            f"Duration: {dur_hr:.2f} h   "
+            f"Depth: {depth_ppt:.2f} ppt   "
+            f"SDE: {best_sde:.1f}   "
+            f"Alias penalty: {alias_pen:.2f}   "
+            f"Night dips detected: {n_dips}"
+        )
+        lbl = QLabel(summary)
+        lbl.setStyleSheet("font-size: 11px; color: #aaddff; padding: 4px;")
+        layout.addWidget(lbl)
 
-        pg_bls = pg.PlotWidget(title="BLS Periodogram")
-        bls_power = res.power
-        y = bls_power[:, dur_idx] if bls_power.ndim == 2 else bls_power
-        pg_bls.plot(res.period.value, y, pen='w')
-        pg_bls.addLine(x=P_bls.value, pen=pg.mkPen('r', style=Qt.PenStyle.DashLine))
-        pg_bls.setLabel('bottom','Period [d]')
-        pg_bls.showGrid(True,True)
-        layout.addWidget(pg_bls)
+        tabs = __import__("PyQt6.QtWidgets", fromlist=["QTabWidget"]).QTabWidget()
+        layout.addWidget(tabs)
 
-        pg_fold = pg.PlotWidget(title=f"Phase‐Folded (P={P_bls.value:.4f} d)")
-        pg_fold.plot(phase, f0, pen=None, symbol='o', symbolBrush='c')
-        ord_idx = np.argsort(phase)
-        pg_fold.plot(phase[ord_idx], model[ord_idx], pen=pg.mkPen('y',width=2))
-        pg_fold.setLabel('bottom','Phase')
-        pg_fold.showGrid(True,True)
-        layout.addWidget(pg_fold)
+        # ── Tab 1: Lomb-Scargle ───────────────────────────────────────────────
+        pg_ls = pg.PlotWidget(title="Lomb–Scargle Periodogram")
+        pg_ls.plot(periods_ls, power_ls, pen=pg.mkPen("w", width=1))
+        pg_ls.addLine(x=best_ls_period,
+                    pen=pg.mkPen("y", style=Qt.PenStyle.DashLine, width=2))
+        pg_ls.setLabel("bottom", "Period [d]")
+        pg_ls.setLabel("left", "LS Power")
+        pg_ls.showGrid(True, True, alpha=0.3)
+        tabs.addTab(pg_ls, "Lomb-Scargle")
 
-        dlg.resize(900,600)
+        # ── Tab 2: BLS Periodogram (whitened) ────────────────────────────────
+        pg_bls = pg.PlotWidget(title="BLS Periodogram (whitened SNR)")
+        pg_bls.plot(periods_bls, power_metric, pen=pg.mkPen("c", width=1))
+        pg_bls.addLine(x=best_period_d,
+                    pen=pg.mkPen("r", style=Qt.PenStyle.DashLine, width=2))
+        pg_bls.setLabel("bottom", "Period [d]")
+        pg_bls.setLabel("left", "Whitened Power")
+        pg_bls.showGrid(True, True, alpha=0.3)
+        tabs.addTab(pg_bls, "BLS Periodogram")
+
+        # ── Tab 3: Phase fold ─────────────────────────────────────────────────
+        pg_fold = pg.PlotWidget(title=f"Phase-Folded  P = {best_period_d:.4f} d")
+
+        # Raw points (grey, small)
+        pg_fold.plot(
+            phase, y_clean,
+            pen=None, symbol="o",
+            symbolBrush=pg.mkBrush(180, 180, 180, 80),
+            symbolSize=4,
+            name="Raw",
+        )
+
+        # Binned points with error bars (blue)
+        if bx.size > 0:
+            err = pg.ErrorBarItem(
+                x=bx, y=by, height=2 * be,
+                pen=pg.mkPen("b", width=1.5),
+            )
+            pg_fold.addItem(err)
+            pg_fold.plot(
+                bx, by,
+                pen=None, symbol="o",
+                symbolBrush=pg.mkBrush(80, 160, 255, 220),
+                symbolSize=7,
+                name="Binned",
+            )
+
+        # Box model (red)
+        pg_fold.plot(
+            model_phase, model_flux,
+            pen=pg.mkPen("r", width=2),
+            name="Box model",
+        )
+        pg_fold.addLine(y=1.0, pen=pg.mkPen("w", style=Qt.PenStyle.DashLine, width=1))
+        pg_fold.setLabel("bottom", "Phase")
+        pg_fold.setLabel("left", "Relative Flux")
+        pg_fold.showGrid(True, True, alpha=0.3)
+        tabs.addTab(pg_fold, "Phase Fold")
+
+        # ── Tab 4: Raw light curve ────────────────────────────────────────────
+        pg_lc = pg.PlotWidget(title="Raw Light Curve")
+        # t_jd_good and f_good are already filtered (finite + flag==0)
+        # so t_plot and f_norm are the same size — no secondary mask needed
+        t_plot = t_jd_good - t_jd_good[0]
+        f_norm_plot = f_good / np.nanmedian(f_good[np.isfinite(f_good) & (f_good > 0)])
+        pg_lc.plot(
+            t_plot, f_norm_plot,
+            pen=None, symbol="o",
+            symbolBrush=pg.mkBrush(180, 200, 255, 160),
+            symbolSize=4,
+        )
+        # Mark predicted transit centres
+        if np.isfinite(best_t0_jd) and np.isfinite(best_period_d):
+            t0_rel = best_t0_jd - t_jd_good[0]
+            span   = float(np.ptp(t_plot))
+            epoch  = math.floor((0.0 - t0_rel) / best_period_d)
+            while True:
+                tc = t0_rel + epoch * best_period_d
+                if tc > span + best_period_d:
+                    break
+                if tc >= -best_period_d:
+                    pg_lc.addLine(
+                        x=tc,
+                        pen=pg.mkPen("r", style=Qt.PenStyle.DashLine, width=1),
+                    )
+                epoch += 1
+        pg_lc.setLabel("bottom", "Days from first obs")
+        pg_lc.setLabel("left", "Relative Flux")
+        pg_lc.showGrid(True, True, alpha=0.3)
+        tabs.addTab(pg_lc, "Light Curve")
+
+        dlg.resize(1000, 640)
         dlg.exec()
 
     def on_identify_star(self):
