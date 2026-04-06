@@ -49,6 +49,157 @@ from setiastro.saspro.resources import get_icon_path
 getcontext().prec = 24
 warnings.filterwarnings("ignore")
 
+class WeeklyScoreThread(QThread):
+    result_ready = pyqtSignal(list)   # list of (date_str, score, phase_pct)
+
+    def __init__(self, ra_deg, dec_deg, lat, lon, center_date_str, tz_name,
+                 days_before=7, days_after=7):
+        super().__init__()
+        self.ra_deg          = ra_deg
+        self.dec_deg         = dec_deg
+        self.lat             = lat
+        self.lon             = lon
+        self.center_date_str = center_date_str
+        self.tz_name         = tz_name
+        self.days_before     = days_before
+        self.days_after      = days_after
+
+    def run(self):
+        from datetime import timedelta
+        results = []
+        try:
+            center = datetime.strptime(self.center_date_str, "%Y-%m-%d")
+            for offset in range(-self.days_before, self.days_after + 1):
+                d     = center + timedelta(days=offset)
+                d_str = d.strftime("%Y-%m-%d")
+                score, phase = _score_target_for_date(
+                    self.ra_deg, self.dec_deg,
+                    self.lat, self.lon, d_str, self.tz_name)
+                results.append((d_str, score, phase))
+        except Exception:
+            pass
+        self.result_ready.emit(results)
+
+class ScoreChartDialog(QDialog):
+    """Shows a bar/line chart of observability score across ±7 days."""
+
+    def __init__(self, item_data: dict, observer: dict, parent=None):
+        super().__init__(parent)
+        self.item_data = item_data
+        self.observer  = observer
+        name = item_data.get("name", "Object")
+        self.setWindowTitle(f"Weekly Score — {name}")
+        self.resize(820, 420)
+        self._thread = None
+        self._build_ui()
+        self._start_compute()
+
+    def _build_ui(self):
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(10, 10, 10, 10)
+
+        self.status_lbl = QLabel("Computing scores…")
+        self.status_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        outer.addWidget(self.status_lbl)
+
+        if _HAS_PG:
+            self.plot = pg.PlotWidget()
+            self.plot.setLabel("bottom", "Date")
+            self.plot.setLabel("left", "Score (0–100)")
+            self.plot.showGrid(x=True, y=True, alpha=0.3)
+            self.plot.setYRange(0, 100, padding=0.05)
+            outer.addWidget(self.plot, 1)
+        else:
+            self.text = QTextEdit()
+            self.text.setReadOnly(True)
+            outer.addWidget(self.text, 1)
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.close)
+        row = QHBoxLayout()
+        row.addStretch()
+        row.addWidget(close_btn)
+        outer.addLayout(row)
+
+    def _start_compute(self):
+        self._thread = WeeklyScoreThread(
+            self.item_data["ra"], self.item_data["dec"],
+            self.observer["lat"], self.observer["lon"],
+            self.observer["date"], self.observer["tz"],
+        )
+        self._thread.result_ready.connect(self._on_results)
+        self._thread.start()
+
+    def _on_results(self, results):
+        self.status_lbl.setText(
+            f"{self.item_data.get('name','')} — observability score over ±7 days  "
+            f"(40% altitude quality · 35% moon avoidance · 25% imaging window)")
+
+        if not results:
+            if not _HAS_PG:
+                self.text.setPlainText("No results.")
+            return
+
+        dates  = [r[0] for r in results]
+        scores = [r[1] for r in results]
+        phases = [r[2] for r in results]
+        center = self.observer["date"]
+
+        if _HAS_PG:
+            pw = self.plot
+            pw.clear()
+
+            # X axis: integer indices, label with dates
+            xs = list(range(len(dates)))
+            ticks = [(i, d[5:]) for i, d in enumerate(dates)]   # MM-DD
+            pw.getAxis("bottom").setTicks([ticks])
+
+            # Moon phase backdrop — light grey fill proportional to phase
+            for i, phase in enumerate(phases):
+                alpha = int(phase * 0.6)   # 0 = new moon (transparent), 60 = full
+                pw.addItem(pg.LinearRegionItem(
+                    values=(i - 0.4, i + 0.4),
+                    orientation='vertical',
+                    brush=pg.mkBrush(200, 200, 220, alpha),
+                    pen=pg.mkPen(None),
+                    movable=False,
+                ))
+
+            # Score bars
+            bg = pg.BarGraphItem(
+                x=xs, height=scores, width=0.6,
+                brush=pg.mkBrush(80, 180, 255, 180),
+                pen=pg.mkPen("w", width=0.5),
+            )
+            pw.addItem(bg)
+
+            # Score line
+            pw.plot(xs, scores,
+                    pen=pg.mkPen("y", width=2),
+                    symbol="o", symbolSize=6,
+                    symbolBrush=pg.mkBrush("y"))
+
+            # Highlight the target date
+            try:
+                ci = dates.index(center)
+                pw.addLine(x=ci, pen=pg.mkPen("r", width=2,
+                           style=Qt.PenStyle.DashLine))
+            except ValueError:
+                pass
+
+            # Score labels above bars
+            for i, (s, p) in enumerate(zip(scores, phases)):
+                text = pg.TextItem(f"{s:.0f}\n🌙{p}%", anchor=(0.5, 1.0),
+                                   color="w")
+                text.setPos(i, s + 2)
+                pw.addItem(text)
+
+        else:
+            lines = ["Date         Score  Moon%"]
+            for d, s, p in results:
+                marker = " ◀" if d == center else ""
+                lines.append(f"{d}   {s:5.1f}  {p:3d}%{marker}")
+            self.text.setPlainText("\n".join(lines))
 
 # ---------------------------------------------------
 #  Worker thread
@@ -133,6 +284,22 @@ class CalculationThread(QThread):
                                                    df["Minutes to Transit"])
 
             df = df.nsmallest(self.object_limit, "Minutes to Transit")
+            # ── Score each target ──────────────────────────────────────────
+            moon  = get_body("moon", t, loc)
+            sun   = get_sun(t)
+            elong = moon.separation(sun).deg
+            phase_pct = int(round((1 - np.cos(np.radians(elong))) / 2 * 100))
+
+            scores = []
+            for _, row in df.iterrows():
+                s = _score_target(
+                    float(row["RA"]), float(row["Dec"]),
+                    self.latitude, self.longitude,
+                    self.date, self.timezone,
+                    float(row["Degrees from Moon"]), phase_pct,
+                )
+                scores.append(s)
+            df["Score"] = scores            
             self.calculation_complete.emit(df, "Calculation complete.")
         except Exception as e:
             self.calculation_complete.emit(pd.DataFrame(), f"Error: {e!s}")
@@ -327,6 +494,69 @@ def _compute_alt_curve(ra_deg, dec_deg, lat, lon, date_str, tz_name):
     local_hours = 12.0 + np.linspace(0, 24, n)
 
     return times, local_hours, obj_alts, sun_alts, moon_alts, loc
+
+def _score_target(ra_deg, dec_deg, lat, lon, date_str, tz_name,
+                  moon_sep_deg, phase_pct):
+    """Returns a 0-100 observability score for the target on the given night."""
+    try:
+        local_tz = pytz.timezone(tz_name)
+        naive    = datetime.strptime(date_str, "%Y-%m-%d")
+        t_start  = Time(local_tz.localize(
+            datetime(naive.year, naive.month, naive.day, 12, 0)))
+        loc      = EarthLocation(lat=lat * u.deg, lon=lon * u.deg, height=0 * u.m)
+
+        n     = 144  # 10-min resolution — fast enough for scoring
+        times = t_start + np.linspace(0, 24, n) * u.hour
+        frame = AltAz(obstime=times, location=loc)
+
+        obj_alts = SkyCoord(ra=ra_deg * u.deg, dec=dec_deg * u.deg)\
+                   .transform_to(frame).alt.deg
+        sun_alts = get_sun(times).transform_to(frame).alt.deg
+
+        astro_night = sun_alts < -18
+        total_astro = float(np.sum(astro_night))
+        if total_astro == 0:
+            return 0.0
+
+        alt_score    = float(np.sum(astro_night & (obj_alts >= 30))) / total_astro
+        window_score = float(np.sum(astro_night & (obj_alts >= 20))) / total_astro
+
+        sep_norm   = min(1.0, moon_sep_deg / 90.0)
+        phase_norm = 1.0 - (phase_pct / 100.0)
+        moon_score = sep_norm * (0.5 + 0.5 * phase_norm)
+
+        return round((alt_score * 0.40 + moon_score * 0.35 + window_score * 0.25) * 100, 1)
+    except Exception:
+        return 0.0
+
+
+def _score_target_for_date(ra_deg, dec_deg, lat, lon, date_str, tz_name) -> tuple[float, int]:
+    """
+    Compute score + lunar phase% for a specific date (self-contained — computes
+    moon position internally so it can be called for arbitrary dates).
+    Returns (score, phase_pct).
+    """
+    try:
+        local_tz = pytz.timezone(tz_name)
+        naive    = datetime.strptime(date_str, "%Y-%m-%d")
+        t_mid    = Time(local_tz.localize(
+            datetime(naive.year, naive.month, naive.day, 0, 0)))
+        loc      = EarthLocation(lat=lat * u.deg, lon=lon * u.deg, height=0 * u.m)
+
+        moon  = get_body("moon", t_mid, loc)
+        sun   = get_sun(t_mid)
+        elong = moon.separation(sun).deg
+        phase_pct = int(round((1 - np.cos(np.radians(elong))) / 2 * 100))
+
+        obj_coord  = SkyCoord(ra=ra_deg * u.deg, dec=dec_deg * u.deg)
+        moon_coord = SkyCoord(ra=moon.ra.deg * u.deg, dec=moon.dec.deg * u.deg)
+        sep        = float(obj_coord.separation(moon_coord).deg)
+
+        score = _score_target(ra_deg, dec_deg, lat, lon, date_str, tz_name,
+                              sep, phase_pct)
+        return score, phase_pct
+    except Exception:
+        return 0.0, 0
 
 class ObjectVisibilityDialog(QDialog):
     def __init__(self, item_data: dict, observer: dict, parent=None):
@@ -671,7 +901,7 @@ class ObjectVisibilityDialog(QDialog):
 class SortableTreeWidgetItem(QTreeWidgetItem):
     def __lt__(self, other):
         col = self.treeWidget().sortColumn()
-        if col in [3, 4, 5, 7, 10]:
+        if col in [3, 4, 5, 7, 10, 12]:
             try:
                 return float(self.text(col)) < float(other.text(col))
             except ValueError:
@@ -919,7 +1149,7 @@ class WhatsInMySkyDialog(QDialog):
         self.tree.setHeaderLabels([
             "Name","RA","Dec","Altitude","Azimuth",
             "Min→Transit","B/A Transit","°from Moon",
-            "Alt Name","Type","Magnitude","Size (arcmin)"])
+            "Alt Name","Type","Magnitude","Size (arcmin)","Score"])
         self.tree.setSortingEnabled(True)
         hdr = self.tree.header()
         hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
@@ -929,7 +1159,7 @@ class WhatsInMySkyDialog(QDialog):
         self.tree.setAlternatingRowColors(True)
         self.tree.setUniformRowHeights(True)
         self.tree.setFrameShape(QFrame.Shape.NoFrame)
-        for col, w in enumerate([90,65,65,55,55,70,65,70,90,100,50,80]):
+        for col, w in enumerate([90,65,65,55,55,70,65,70,90,100,50,80,50]):
             self.tree.setColumnWidth(col, w)
 
         # Double-click → AstroBin, Right-click → context menu
@@ -958,12 +1188,14 @@ class WhatsInMySkyDialog(QDialog):
         menu = QMenu(self)
 
         act_visibility = QAction("📈  Altitude / Visibility Plot…", self)
+        act_score      = QAction("⭐  Weekly Observability Score…", self)
         act_simbad     = QAction("🔭  SIMBAD Details…", self)
         act_planets    = QAction("🪐  Planet Separations…", self)
         act_aladin     = QAction("🗺   Open in Aladin…", self)
         act_astrobin   = QAction("🖼   Search AstroBin…", self)
 
         menu.addAction(act_visibility)
+        menu.addAction(act_score)
         menu.addAction(act_simbad)
         menu.addAction(act_planets)
         menu.addSeparator()
@@ -971,12 +1203,25 @@ class WhatsInMySkyDialog(QDialog):
         menu.addAction(act_astrobin)
 
         act_visibility.triggered.connect(lambda: self._open_visibility_dialog(item))
+        act_score.triggered.connect(lambda: self._open_score_dialog(item))
         act_simbad.triggered.connect(lambda: self._open_visibility_dialog(item, tab=2))
         act_planets.triggered.connect(lambda: self._open_visibility_dialog(item, tab=3))
         act_aladin.triggered.connect(lambda: self._open_aladin_for(item))
         act_astrobin.triggered.connect(lambda: self.on_row_double_click(item, 0))
 
         menu.exec(self.tree.viewport().mapToGlobal(pos))
+
+    def _open_score_dialog(self, item):
+        if not self._observer:
+            QMessageBox.information(self, "WIMS",
+                "Run Calculate first so the observer location is known.")
+            return
+        data = self._item_data(item)
+        if data is None:
+            QMessageBox.warning(self, "WIMS", "Could not parse RA/Dec for this object.")
+            return
+        dlg = ScoreChartDialog(data, self._observer, parent=self)
+        dlg.show()
 
     def _item_data(self, item):
         """Extract name, ra, dec from a tree item."""
@@ -1121,6 +1366,7 @@ class WhatsInMySkyDialog(QDialog):
                 row.get("Type","")     if pd.notna(row.get("Type",""))     else "",
                 str(row.get("Magnitude","")) if pd.notna(row.get("Magnitude","")) else "",
                 size_arcmin,
+                str(row.get("Score", 0.0)),
             ]
             self.tree.addTopLevelItem(SortableTreeWidgetItem(vals))
 
