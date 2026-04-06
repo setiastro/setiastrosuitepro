@@ -1620,7 +1620,7 @@ class CosmicClaritySatelliteDialogPro(QDialog):
     def _on_folder_changed(self, path):
         if path == self.input_folder:
             self._refresh_tree(self.tree_in, self.input_folder)
-        elif path == self.output_folder:
+        if path == self.output_folder:
             self._refresh_tree(self.tree_out, self.output_folder)
 
     def _refresh_tree(self, tree: QTreeWidget, folder: str):
@@ -2099,9 +2099,10 @@ class SatelliteEngineThread(QThread):
 
                     self._seen.add(fn)
                     fp_in = os.path.join(self.input_dir, fn)
-                    fp_out = os.path.join(self.output_dir, fn)
+                    stem, ext = os.path.splitext(fn)
+                    fp_out = os.path.join(self.output_dir, f"{stem}_satellited{ext}")
 
-                    # if output already exists, treat as seen
+                    # if output already exists, treat as done
                     if os.path.exists(fp_out):
                         self.log_signal.emit(f"Exists, skipping: {fn}")
                         done += 1
