@@ -3137,9 +3137,6 @@ def save_image(img_array,
         # XISF — use XISF.write; manage metadata shapes
         # ---------------------------------------------------------------------
         if fmt == "xisf":
-            print(f"Original image shape: {img_array.shape}, dtype: {img_array.dtype}")
-            print(f"Bit depth: {bit_depth}")
-
             bd = bit_depth or "32-bit floating point"
             if bd == "16-bit":
                 processed_image = (np.clip(img_array, 0, 1) * 65535).astype(np.uint16)
@@ -3148,36 +3145,108 @@ def save_image(img_array,
             else:
                 processed_image = img_array.astype(np.float32)
 
-            # Normalize metadata shape hints
+            # Squeeze mono to (H,W,1)
             if is_mono:
                 if processed_image.ndim == 3 and processed_image.shape[2] > 1:
                     processed_image = processed_image[:, :, 0]
                 if processed_image.ndim == 2:
-                    processed_image = processed_image[:, :, np.newaxis]  # H, W, 1
+                    processed_image = processed_image[:, :, np.newaxis]
 
-                if not isinstance(image_meta, list):
-                    image_meta = [{}]
-                image_meta[0].setdefault("geometry", (processed_image.shape[1], processed_image.shape[0], 1))
-                image_meta[0]["colorSpace"] = "Gray"
-            else:
-                if not isinstance(image_meta, list):
-                    image_meta = [{}]
-                ch = processed_image.shape[2] if processed_image.ndim == 3 else 1
-                image_meta[0].setdefault("geometry", (processed_image.shape[1], processed_image.shape[0], ch))
-                image_meta[0]["colorSpace"] = "RGB" if ch >= 3 else "Gray"
+            h_px = processed_image.shape[0]
+            w_px = processed_image.shape[1]
+            ch   = processed_image.shape[2] if processed_image.ndim == 3 else 1
 
-            if file_meta is None:
-                file_meta = {}
+            # Extract the source image_meta dict (may be list or dict)
+            source_meta = None
+            if isinstance(image_meta, list) and image_meta:
+                source_meta = image_meta[0]
+            elif isinstance(image_meta, dict):
+                source_meta = image_meta
 
+            # Build clean image metadata for XISF.write.
+            # XISF.write derives geometry/colorSpace/sampleFormat from im_data itself,
+            # so we only need to pass FITSKeywords and XISFProperties.
+            clean_meta = {}
+
+            # Carry forward FITSKeywords — these are plain dicts of {str: [{value, comment}]}
+            # and are directly serializable by _insert_fitskeyword
+            if isinstance(source_meta, dict):
+                fk = source_meta.get("FITSKeywords")
+                if isinstance(fk, dict) and fk:
+                    # Ensure all entries are in the correct list-of-dicts format
+                    clean_fk = {}
+                    for kw_name, kw_vals in fk.items():
+                        if isinstance(kw_vals, list):
+                            clean_entries = []
+                            for entry in kw_vals:
+                                if isinstance(entry, dict):
+                                    clean_entries.append({
+                                        "value": str(entry.get("value", "")),
+                                        "comment": str(entry.get("comment", "")),
+                                    })
+                            if clean_entries:
+                                clean_fk[kw_name] = clean_entries
+                        elif isinstance(kw_vals, dict):
+                            clean_fk[kw_name] = [{
+                                "value": str(kw_vals.get("value", "")),
+                                "comment": str(kw_vals.get("comment", "")),
+                            }]
+                    clean_meta["FITSKeywords"] = clean_fk
+
+            # Carry forward XISFProperties — but only scalar/string types that are
+            # already resolved (not lazy numpy blobs), to avoid the tobytes error
+            if isinstance(source_meta, dict):
+                xp = source_meta.get("XISFProperties")
+                if isinstance(xp, dict) and xp:
+                    clean_xp = {}
+                    safe_scalar_types = {"String", "Boolean", "TimePoint",
+                                         "Int8", "Int16", "Int32", "Int64",
+                                         "UInt8", "UInt16", "UInt32", "UInt64",
+                                         "Float32", "Float64"}
+                    for prop_id, prop_dict in xp.items():
+                        if not isinstance(prop_dict, dict):
+                            continue
+                        if prop_dict.get("_lazy"):
+                            continue  # skip unresolved lazy blobs
+                        ptype = prop_dict.get("type", "")
+                        # Only pass scalar/string types — skip Vector/Matrix (numpy arrays)
+                        # as they require special handling in _insert_property
+                        if ptype in safe_scalar_types:
+                            val = prop_dict.get("value")
+                            if val is not None and not isinstance(val, np.ndarray):
+                                clean_xp[prop_id] = {
+                                    "id": prop_id,
+                                    "type": ptype,
+                                    "value": val,
+                                }
+                    if clean_xp:
+                        clean_meta["XISFProperties"] = clean_xp
+
+            # Build clean file metadata — only XISF: prefixed scalar/string properties
+            clean_file_meta = {}
+            if isinstance(file_meta, dict):
+                for k, v in file_meta.items():
+                    if not isinstance(v, dict):
+                        continue
+                    if v.get("_lazy"):
+                        continue
+                    ptype = v.get("type", "")
+                    val = v.get("value")
+                    if val is not None and not isinstance(val, np.ndarray):
+                        clean_file_meta[k] = v
+
+            print(f"Original image shape: {img_array.shape}, dtype: {img_array.dtype}")
+            print(f"Bit depth: {bd}")
             print(f"Processed image shape for XISF: {processed_image.shape}, dtype: {processed_image.dtype}")
+            print(f"XISF FITSKeywords to write: {len(clean_meta.get('FITSKeywords', {}))}")
 
             XISF.write(
                 filename,
                 processed_image,
-                creator_app="Seti Astro Cosmic Clarity",
-                image_metadata=image_meta[0],
-                xisf_metadata=file_meta,
-                shuffle=True
+                creator_app="Seti Astro Suite Pro",
+                image_metadata=clean_meta,
+                xisf_metadata=clean_file_meta,
+                shuffle=True,
             )
             print(f"Saved {bd} XISF image to: {filename}")
             return
