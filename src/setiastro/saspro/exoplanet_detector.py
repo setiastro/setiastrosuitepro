@@ -61,7 +61,7 @@ from PyQt6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QComboBox, QDialog, QDialogButtonBox, QApplication, QGraphicsView, QGraphicsPixmapItem,
     QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QListWidget, QGraphicsView, QGraphicsScene, QGraphicsEllipseItem,
     QListWidgetItem, QMessageBox, QPushButton, QProgressBar, QRadioButton, QSpinBox, QDoubleSpinBox,
-    QSlider, QToolButton, QVBoxLayout, QInputDialog, QLineEdit
+    QSlider, QToolButton, QVBoxLayout, QInputDialog, QLineEdit, QCheckBox
 )
 import pyqtgraph as pg
 
@@ -804,6 +804,14 @@ class ExoPlanetWindow(QDialog):
         mode_layout.addWidget(self.aligned_mode_rb)
         mode_layout.addWidget(self.raw_mode_rb)
         mode_layout.addStretch()
+        self.force_solve_cb = QCheckBox(self.tr("Force blind plate solve"))
+        self.force_solve_cb.setChecked(False)
+        self.force_solve_cb.setToolTip(
+            "Always run the plate solver, even if a valid WCS already exists in the file header.\n"
+            "Use this when the embedded WCS is inaccurate or from an unreliable source."
+        )
+        mode_layout.addWidget(self.force_solve_cb)
+        mode_layout.addStretch()   # move this addStretch() to after the checkbox        
         self.wrench_button = QToolButton()
         self.wrench_button.setIcon(QIcon(self.wrench_path))
         self.wrench_button.setToolTip("Settings…")
@@ -2000,8 +2008,10 @@ class ExoPlanetWindow(QDialog):
             if str(ref_path).lower().endswith(".xisf"):
                 source_is_xisf = True
 
-        # ── Step 1: trust existing WCS only if NOT from XISF ─────────────
-        if not source_is_xisf:
+        # ── Step 1: trust existing WCS only if NOT from XISF and not forcing ─
+        force_solve = self.force_solve_cb.isChecked()
+
+        if not source_is_xisf and not force_solve:
             existing_wcs = self._try_wcs_from_header(hdr, plane2d)
             if existing_wcs is not None:
                 self._wcs = existing_wcs
@@ -2019,7 +2029,10 @@ class ExoPlanetWindow(QDialog):
                 self.fetch_tesscut_btn.setEnabled(True)
                 return
         else:
-            self.status_label.setText("XISF source detected — skipping approximate WCS, running plate solve…")
+            if force_solve:
+                self.status_label.setText("Force blind solve enabled — ignoring any existing WCS…")
+            else:
+                self.status_label.setText("XISF source detected — skipping approximate WCS, running plate solve…")
             QApplication.processEvents()
 
         # ── Step 2: plate-solve ───────────────────────────────────────────
