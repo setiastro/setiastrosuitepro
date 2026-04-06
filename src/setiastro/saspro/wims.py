@@ -226,10 +226,8 @@ class ObjectDetailThread(QThread):
             s.add_votable_fields("otype", "flux(V)", "flux(B)", "rvz_redshift",
                                  "rvz_radvel", "sptype", "dim")
 
-            # Normalize name
             clean_name = " ".join(self.name.split())
 
-            # Build variants
             name_variants = [clean_name, clean_name.replace(" ", "")]
             name_lower = clean_name.lower()
             if name_lower.startswith("abell"):
@@ -242,29 +240,20 @@ class ObjectDetailThread(QThread):
             name_variants = [v for v in name_variants if not (v in seen or seen.add(v))]
 
             tbl = None
-            tried = []
             for variant in name_variants:
-                tried.append(variant)
                 try:
                     tbl = s.query_object(variant)
                     if tbl is not None and len(tbl) > 0:
-                        print(f"[SIMBAD] Matched: '{variant}' cols={tbl.colnames}")
-                        print(f"[SIMBAD] Row: {dict(zip(tbl.colnames, tbl[0]))}")
                         break
-                    else:
-                        print(f"[SIMBAD] No result: '{variant}'")
                     tbl = None
-                except Exception as e:
-                    print(f"[SIMBAD] Exception '{variant}': {e}")
+                except Exception:
                     tbl = None
 
-            # TAP name fallback — direct ADQL query by identifier
+            # TAP ADQL fallback — handles ACO/Abell and other catalogs query_object misses
             if tbl is None or len(tbl) == 0:
-                print(f"[SIMBAD] Trying direct TAP ADQL name search")
                 try:
                     from astroquery.utils.tap.core import TapPlus
                     tap = TapPlus(url="https://simbad.cds.unistra.fr/simbad/sim-tap")
-
                     for variant in name_variants:
                         adql = f"""
                             SELECT b.main_id, b.ra, b.dec, b.otype, b.rvz_radvel,
@@ -276,21 +265,12 @@ class ObjectDetailThread(QThread):
                             JOIN ident i ON i.oidref = b.oid
                             WHERE i.id = '{variant}'
                         """
-                        job = tap.launch_job(adql)
-                        result = job.get_results()
+                        result = tap.launch_job(adql).get_results()
                         if result is not None and len(result) > 0:
-                            print(f"[SIMBAD] TAP ADQL matched: '{variant}'")
-                            print(f"[SIMBAD] cols={result.colnames}")
-                            print(f"[SIMBAD] row={dict(zip(result.colnames, result[0]))}")
                             tbl = result
                             break
-                        else:
-                            print(f"[SIMBAD] TAP ADQL no match: '{variant}'")
-                except Exception as e:
-                    print(f"[SIMBAD] TAP ADQL exception: {e}")
-
-            info["_debug_tried"] = tried
-            info["_debug_clean"] = clean_name
+                except Exception:
+                    pass
 
             if tbl is not None and len(tbl) > 0:
                 row = tbl[0]
@@ -320,8 +300,8 @@ class ObjectDetailThread(QThread):
                 info["simbad"] = {}
         except Exception as e:
             info["error"] = str(e)
-            print(f"[SIMBAD] Top-level exception: {e}")
         self.result_ready.emit(info)
+
 # ---------------------------------------------------
 #  Altitude / visibility dialog
 # ---------------------------------------------------
