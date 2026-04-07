@@ -768,8 +768,6 @@ class AstroSuiteProMainWindow(
 
         self.status_log_dock.hide()
         self.restore_main_window_state()
-    # _init_log_dock, _hook_stdout_stderr, and _append_log_text are now in DockMixin
-
 
     def _mw_key(self) -> str:
         return "main_window"
