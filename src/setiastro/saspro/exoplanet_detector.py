@@ -1970,11 +1970,12 @@ class ExoPlanetWindow(QDialog):
     def _solve_reference(self, plane, hdr):
         plane2d = plane.mean(axis=2) if getattr(plane, "ndim", 2) == 3 else plane
 
-        # ── Detect XISF origin ────────────────────────────────────────────
-        # XISF headers carry an approximated SIP polynomial fit to PI's TPS
-        # astrometric solution. The approximation can be off by 10-30 arcsec
-        # in the corners, which is enough to blow our 5 arcsec star-matching
-        # radius. Always plate-solve when the source is XISF.
+        # Images were 2x2 binned during load — track this so pixel→sky
+        # conversions apply the correct scale factor.
+        self._wcs_bin_factor = 2  # always set; plate solver works on binned plane
+                                   # so solved WCS is already in binned coords.
+                                   # Header WCS from original file is NOT — see below.
+
         def _is_xisf_source(h) -> bool:
             if h is None:
                 return False
@@ -2015,9 +2016,11 @@ class ExoPlanetWindow(QDialog):
             existing_wcs = self._try_wcs_from_header(hdr, plane2d)
             if existing_wcs is not None:
                 self._wcs = existing_wcs
+                self._wcs_bin_factor = 2  # header WCS is full-res; star coords are binned
                 H, W = plane2d.shape[:2]
                 try:
-                    center = self._wcs.pixel_to_world(W / 2, H / 2)
+                    # Use center of the BINNED plane, scaled to full-res coords
+                    center = self._wcs.pixel_to_world(W, H)  # W,H = half full-res
                     self.wcs_ra  = float(center.ra.deg)
                     self.wcs_dec = float(center.dec.deg)
                 except Exception:
@@ -2118,6 +2121,7 @@ class ExoPlanetWindow(QDialog):
 
         # ── Step 3: grab solved WCS ───────────────────────────────────────
         self._wcs = doc.metadata.get("wcs", None)
+        self._wcs_bin_factor = 1  # solver worked on binned plane → WCS is in binned coords        
         if self._wcs is None or not getattr(self._wcs, "has_celestial", False):
             QMessageBox.warning(self, "Plate Solve", "Solver finished but no usable WCS was found.")
             self.fetch_tesscut_btn.setEnabled(False)
