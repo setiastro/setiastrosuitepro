@@ -1351,40 +1351,119 @@ class HorizonEditorDialog(QDialog):
     def _load_file(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "Load Horizon File", "",
-            "CSV files (*.csv);;All Files (*)")
+            "CSV files (*.csv);;Text/Horizon files (*.txt *.hrz);;All Files (*)")
         if not path:
             return
         try:
-            pts = []
-            with open(path, "r") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith("#"):
-                        continue
-                    parts = line.split(",")
-                    if len(parts) >= 2:
-                        az  = float(parts[0].strip())
-                        alt = float(parts[1].strip())
-                        pts.append([az, alt])
-            self._pts = pts
+            pts = self._parse_horizon_file(path)
+            if not pts:
+                QMessageBox.warning(self, "Load Horizon",
+                                    "No valid horizon points found in file.")
+                return
+            self._pts = [[az, alt] for az, alt in pts]
             self._sync_north()
             self._refresh()
             self.horizon_changed.emit(self.get_points())
+            self.update_status_hint(f"Loaded {len(self._pts)} points from {os.path.basename(path)}")
         except Exception as e:
             QMessageBox.warning(self, "Load Horizon", f"Could not load file:\n{e}")
+
+    @staticmethod
+    def _parse_horizon_file(path: str) -> list:
+        """
+        Parse horizon points from either:
+          1) Stellarium format:  azimuth altitude  (space-separated, # comments)
+          2) WIMS CSV format:    azimuth_deg, altitude_deg  (comma-separated)
+
+        Handles duplicate azimuths (vertical chimney/wall edges) by keeping
+        the maximum altitude at any given azimuth — we want the blocking height.
+
+        Returns sorted list of (az, alt) tuples.
+        """
+        raw_pts = []
+        is_csv  = path.lower().endswith(".csv")
+
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                # Strip inline comments (Stellarium uses # for both full-line
+                # and annotation comments like "#roof peak")
+                stripped = line.split("#")[0].strip()
+                if not stripped:
+                    continue
+
+                # Try comma-separated (WIMS CSV) first
+                if "," in stripped:
+                    parts = stripped.split(",")
+                    if len(parts) >= 2:
+                        try:
+                            az  = float(parts[0].strip())
+                            alt = float(parts[1].strip())
+                            raw_pts.append((az, alt))
+                        except ValueError:
+                            pass
+                    continue
+
+                # Try space/tab-separated (Stellarium format)
+                parts = stripped.split()
+                if len(parts) >= 2:
+                    try:
+                        az  = float(parts[0])
+                        alt = float(parts[1])
+                        raw_pts.append((az, alt))
+                    except ValueError:
+                        pass
+
+        if not raw_pts:
+            return []
+
+        # Resolve duplicate azimuths — keep the maximum altitude
+        # (a chimney edge at az=30 with alt=30 and alt=33 → keep 33,
+        #  because that's the blocking height the observer must clear)
+        az_to_alt: dict[float, float] = {}
+        for az, alt in raw_pts:
+            az = float(az) % 360.0   # normalise any 360→0 wrap
+            az_to_alt[az] = max(az_to_alt.get(az, -999.0), float(alt))
+
+        # Sort by azimuth
+        return sorted(az_to_alt.items(), key=lambda p: p[0])
+
+    def update_status_hint(self, msg: str):
+        """Update the info label if present, otherwise no-op."""
+        # Find the QLabel info widget (first child label in outer layout)
+        try:
+            layout = self.layout()
+            for i in range(layout.count()):
+                w = layout.itemAt(i).widget()
+                if isinstance(w, QLabel):
+                    w.setText(msg)
+                    return
+        except Exception:
+            pass
 
     def _save_file(self):
         path, _ = QFileDialog.getSaveFileName(
             self, "Save Horizon File", "",
-            "CSV files (*.csv);;All Files (*)")
+            "CSV files (*.csv);;Stellarium horizon (*.txt);;All Files (*)")
         if not path:
             return
         try:
             pts = self._sorted_pts()
-            with open(path, "w") as f:
-                f.write("# azimuth_deg, altitude_deg\n")
-                for az, alt in pts:
-                    f.write(f"{az:.2f},{alt:.2f}\n")
+            ext = os.path.splitext(path)[1].lower()
+
+            with open(path, "w", encoding="utf-8") as f:
+                if ext in (".txt", ".hrz"):
+                    # Write Stellarium-compatible format
+                    f.write("# Horizon description file\n")
+                    f.write("# Exported by SASpro What's In My Sky\n")
+                    f.write("# Azimuth(degrees) Altitude(degrees)\n")
+                    f.write("#\n")
+                    for az, alt in pts:
+                        f.write(f"{az:.1f} {alt:.1f}\n")
+                else:
+                    # Default: WIMS CSV format
+                    f.write("# azimuth_deg, altitude_deg\n")
+                    for az, alt in pts:
+                        f.write(f"{az:.2f},{alt:.2f}\n")
         except Exception as e:
             QMessageBox.warning(self, "Save Horizon", f"Could not save file:\n{e}")
 
