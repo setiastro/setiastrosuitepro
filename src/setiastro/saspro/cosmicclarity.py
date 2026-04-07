@@ -1620,7 +1620,7 @@ class CosmicClaritySatelliteDialogPro(QDialog):
     def _on_folder_changed(self, path):
         if path == self.input_folder:
             self._refresh_tree(self.tree_in, self.input_folder)
-        elif path == self.output_folder:
+        if path == self.output_folder:
             self._refresh_tree(self.tree_out, self.output_folder)
 
     def _refresh_tree(self, tree: QTreeWidget, folder: str):
@@ -1773,9 +1773,10 @@ class CosmicClaritySatelliteDialogPro(QDialog):
                 return  # user cancelled file dialog
 
             try:
-                img, hdr, bd, mono = load_image(file_path)
-                if img is None:
+                result = load_image(file_path, return_metadata=True)
+                if result is None or result[0] is None:
                     raise RuntimeError("load_image returned None.")
+                img, hdr, bd, mono, meta = result
                 img = np.asarray(img, dtype=np.float32)
                 img = np.clip(img, 0.0, 1.0)
             except Exception as e:
@@ -1874,9 +1875,19 @@ class CosmicClaritySatelliteDialogPro(QDialog):
             base, ext = os.path.splitext(file_path)
             dst = base + "_satellited" + ext
 
-            dst_final = _save_image_no_auto_legacy(out, dst, hdr, mono)
-            QMessageBox.information(self, "Success", f"Processed image saved to:\n{dst_final}")
+            image_meta = meta.get("xisf_meta") if meta else None
+            if image_meta is not None and not isinstance(image_meta, list):
+                image_meta = [image_meta]
 
+            fmt, _ = _save_fmt_and_bitdepth_from_path_for_legacy(dst)
+            save_image(
+                out, dst, fmt or "fits",
+                "32-bit floating point",
+                hdr, mono,
+                image_meta=image_meta,
+                file_meta=None,
+            )
+            QMessageBox.information(self, "Success", f"Processed image saved to:\n{dst}")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to save result:\n{e}")
 
@@ -2034,6 +2045,10 @@ class SatelliteEngineThread(QThread):
                 '.cr2', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2', '.pef', '.jpg', '.jpeg')
         try:
             for fn in sorted(os.listdir(self.input_dir)):
+                stem = os.path.splitext(fn)[0]
+                # Skip files we already processed
+                if stem.endswith('_satellited'):
+                    continue
                 if fn.lower().endswith(exts):
                     yield fn
         except Exception:
@@ -2052,11 +2067,11 @@ class SatelliteEngineThread(QThread):
             os.makedirs(self.output_dir, exist_ok=True)
 
             def process_one(fp_in: str, fp_out: str):
-                # NOTE: assumes load_image/save_image exist in your module scope
-                img, hdr, bd, mono = load_image(fp_in)
-                if img is None:
+                result = load_image(fp_in, return_metadata=True)
+                if result is None or result[0] is None:
                     self.log_signal.emit(f"Failed to load: {os.path.basename(fp_in)}")
                     return
+                img, hdr, bd, mono, meta = result
 
                 img = np.asarray(img, dtype=np.float32)
                 img = np.clip(img, 0.0, 1.0)
@@ -2078,10 +2093,20 @@ class SatelliteEngineThread(QThread):
                 out = np.asarray(out, dtype=np.float32, order="C")
                 out = np.clip(out, 0.0, 1.0)
 
-                # Choose save behavior: keep original extension/name
-                # (You can change naming here if you want.)
-                fp_out_final = _save_image_no_auto_legacy(out, fp_out, hdr, mono)
-                self.log_signal.emit(f"Saved: {os.path.basename(fp_out_final)}")
+                # Extract image_meta and file_meta for XISF round-trip
+                image_meta = meta.get("xisf_meta") if meta else None
+                if image_meta is not None and not isinstance(image_meta, list):
+                    image_meta = [image_meta]
+
+                fmt, _ = _save_fmt_and_bitdepth_from_path_for_legacy(fp_out)
+                save_image(
+                    out, fp_out, fmt or "fits",
+                    "32-bit floating point",
+                    hdr, mono,
+                    image_meta=image_meta,
+                    file_meta=None,
+                )
+                self.log_signal.emit(f"Saved: {os.path.basename(fp_out)}")
 
             # -------- batch (single pass) OR monitor (loop) --------
             while not self._cancel:
@@ -2099,9 +2124,10 @@ class SatelliteEngineThread(QThread):
 
                     self._seen.add(fn)
                     fp_in = os.path.join(self.input_dir, fn)
-                    fp_out = os.path.join(self.output_dir, fn)
+                    stem, ext = os.path.splitext(fn)
+                    fp_out = os.path.join(self.output_dir, f"{stem}_satellited{ext}")
 
-                    # if output already exists, treat as seen
+                    # if output already exists, treat as done
                     if os.path.exists(fp_out):
                         self.log_signal.emit(f"Exists, skipping: {fn}")
                         done += 1

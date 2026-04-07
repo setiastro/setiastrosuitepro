@@ -61,7 +61,7 @@ from PyQt6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QComboBox, QDialog, QDialogButtonBox, QApplication, QGraphicsView, QGraphicsPixmapItem,
     QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QListWidget, QGraphicsView, QGraphicsScene, QGraphicsEllipseItem,
     QListWidgetItem, QMessageBox, QPushButton, QProgressBar, QRadioButton, QSpinBox, QDoubleSpinBox,
-    QSlider, QToolButton, QVBoxLayout, QInputDialog, QLineEdit
+    QSlider, QToolButton, QVBoxLayout, QInputDialog, QLineEdit, QCheckBox
 )
 import pyqtgraph as pg
 
@@ -804,6 +804,14 @@ class ExoPlanetWindow(QDialog):
         mode_layout.addWidget(self.aligned_mode_rb)
         mode_layout.addWidget(self.raw_mode_rb)
         mode_layout.addStretch()
+        self.force_solve_cb = QCheckBox(self.tr("Force blind plate solve"))
+        self.force_solve_cb.setChecked(False)
+        self.force_solve_cb.setToolTip(
+            "Always run the plate solver, even if a valid WCS already exists in the file header.\n"
+            "Use this when the embedded WCS is inaccurate or from an unreliable source."
+        )
+        mode_layout.addWidget(self.force_solve_cb)
+        mode_layout.addStretch()   # move this addStretch() to after the checkbox        
         self.wrench_button = QToolButton()
         self.wrench_button.setIcon(QIcon(self.wrench_path))
         self.wrench_button.setToolTip("Settings…")
@@ -1962,11 +1970,12 @@ class ExoPlanetWindow(QDialog):
     def _solve_reference(self, plane, hdr):
         plane2d = plane.mean(axis=2) if getattr(plane, "ndim", 2) == 3 else plane
 
-        # ── Detect XISF origin ────────────────────────────────────────────
-        # XISF headers carry an approximated SIP polynomial fit to PI's TPS
-        # astrometric solution. The approximation can be off by 10-30 arcsec
-        # in the corners, which is enough to blow our 5 arcsec star-matching
-        # radius. Always plate-solve when the source is XISF.
+        # Images were 2x2 binned during load — track this so pixel→sky
+        # conversions apply the correct scale factor.
+        self._wcs_bin_factor = 2  # always set; plate solver works on binned plane
+                                   # so solved WCS is already in binned coords.
+                                   # Header WCS from original file is NOT — see below.
+
         def _is_xisf_source(h) -> bool:
             if h is None:
                 return False
@@ -2000,14 +2009,18 @@ class ExoPlanetWindow(QDialog):
             if str(ref_path).lower().endswith(".xisf"):
                 source_is_xisf = True
 
-        # ── Step 1: trust existing WCS only if NOT from XISF ─────────────
-        if not source_is_xisf:
+        # ── Step 1: trust existing WCS only if NOT from XISF and not forcing ─
+        force_solve = self.force_solve_cb.isChecked()
+
+        if not source_is_xisf and not force_solve:
             existing_wcs = self._try_wcs_from_header(hdr, plane2d)
             if existing_wcs is not None:
                 self._wcs = existing_wcs
+                self._wcs_bin_factor = 2  # header WCS is full-res; star coords are binned
                 H, W = plane2d.shape[:2]
                 try:
-                    center = self._wcs.pixel_to_world(W / 2, H / 2)
+                    # Use center of the BINNED plane, scaled to full-res coords
+                    center = self._wcs.pixel_to_world(W, H)  # W,H = half full-res
                     self.wcs_ra  = float(center.ra.deg)
                     self.wcs_dec = float(center.dec.deg)
                 except Exception:
@@ -2019,7 +2032,10 @@ class ExoPlanetWindow(QDialog):
                 self.fetch_tesscut_btn.setEnabled(True)
                 return
         else:
-            self.status_label.setText("XISF source detected — skipping approximate WCS, running plate solve…")
+            if force_solve:
+                self.status_label.setText("Force blind solve enabled — ignoring any existing WCS…")
+            else:
+                self.status_label.setText("XISF source detected — skipping approximate WCS, running plate solve…")
             QApplication.processEvents()
 
         # ── Step 2: plate-solve ───────────────────────────────────────────
@@ -2105,6 +2121,7 @@ class ExoPlanetWindow(QDialog):
 
         # ── Step 3: grab solved WCS ───────────────────────────────────────
         self._wcs = doc.metadata.get("wcs", None)
+        self._wcs_bin_factor = 1  # solver worked on binned plane → WCS is in binned coords        
         if self._wcs is None or not getattr(self._wcs, "has_celestial", False):
             QMessageBox.warning(self, "Plate Solve", "Solver finished but no usable WCS was found.")
             self.fetch_tesscut_btn.setEnabled(False)
