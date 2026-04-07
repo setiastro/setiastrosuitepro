@@ -150,6 +150,19 @@ def _resource_path(filename: str) -> str:
 
     return os.path.join(base, fn)
 
+def _dev_model_path(preferred: str, fallback: str) -> str:
+    """
+    Silently prefer a dev/experimental model if it exists in the models dir,
+    otherwise fall back to the standard production model.
+    Dev models are never distributed — this is a local-only override.
+    """
+    preferred_path = model_path(preferred)
+    try:
+        if os.path.exists(preferred_path):
+            return preferred_path
+    except Exception:
+        pass
+    return model_path(fallback)
 
 class Icons:
     """
@@ -619,11 +632,18 @@ class Resources:
     CC_NS_COND_NAF_ONNX = property(lambda self: model_path('deep_nonstellar_sharp_conditional_psf_AI4.onnx'))
 
     # --- Cosmic Clarity Denoise (NAFNet AI4) ---
-    CC_DENOISE_MONO_PTH  = property(lambda self: model_path('deep_denoise_mono_AI4.pth'))
-    CC_DENOISE_MONO_ONNX = property(lambda self: model_path('deep_denoise_mono_AI4.onnx'))
-
-    CC_DENOISE_COLOR_PTH  = property(lambda self: model_path('deep_denoise_color_AI4.pth'))
-    CC_DENOISE_COLOR_ONNX = property(lambda self: model_path('deep_denoise_color_AI4.onnx'))
+    CC_DENOISE_MONO_PTH = property(
+        lambda self: _dev_model_path('deep_denoise_mono_AI4_1w.pth', 'deep_denoise_mono_AI4.pth')
+    )
+    CC_DENOISE_MONO_ONNX = property(
+        lambda self: _dev_model_path('deep_denoise_mono_AI4_1w.onnx', 'deep_denoise_mono_AI4.onnx')
+    )
+    CC_DENOISE_COLOR_PTH = property(
+        lambda self: _dev_model_path('deep_denoise_color_AI4_1w.pth', 'deep_denoise_color_AI4.pth')
+    )
+    CC_DENOISE_COLOR_ONNX = property(
+        lambda self: _dev_model_path('deep_denoise_color_AI4_1w.onnx', 'deep_denoise_color_AI4.onnx')
+    )
 
     CC_DENOISE_MONO_PTH_LITE  = property(lambda self: model_path('deep_denoise_mono_AI4_lite.pth'))
     CC_DENOISE_MONO_ONNX_LITE = property(lambda self: model_path('deep_denoise_mono_AI4_lite.onnx'))
