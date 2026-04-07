@@ -1126,6 +1126,12 @@ def main(argv: list[str] | None = None) -> int:
                     QTimer.singleShot(1000, win.check_for_updates_startup)
             except Exception:
                 pass
+            # First-run dialog fires after splash is fully gone
+            try:
+                from setiastro.saspro.first_run_dialog import maybe_show_first_run_dialog
+                QTimer.singleShot(200, lambda: maybe_show_first_run_dialog(win))
+            except Exception:
+                pass
 
         if _splash:
             _splash.setMessage(QCoreApplication.translate("Splash", "Showing main window..."))
