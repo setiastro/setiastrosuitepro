@@ -1136,8 +1136,35 @@ class CosmicClarityDialogPro(QDialog):
             pass  # never block processing
 
         # --- Snapshot UI preset ---
+        # --- Snapshot UI preset ---
         preset = self.build_preset_from_ui()
         mode = str(preset.get("mode", "sharpen")).lower()
+
+        # --- Walking noise model availability check ---
+        if preset.get("denoise_walking", False) and mode in ("denoise", "both"):
+            try:
+                from setiastro.saspro.resources import get_resources
+                R = get_resources()
+                mono_path  = getattr(R, "CC_DENOISE_MONO_WALKING_PTH", None)
+                color_path = getattr(R, "CC_DENOISE_COLOR_WALKING_PTH", None)
+                import os as _os
+                missing = []
+                if not mono_path or not _os.path.exists(mono_path):
+                    missing.append("deep_denoise_mono_AI4.1w_weights.pth")
+                if not color_path or not _os.path.exists(color_path):
+                    missing.append("deep_denoise_color_AI4.1w_weights.pth")
+                if missing:
+                    QMessageBox.warning(
+                        self,
+                        "Walking Noise Model Not Installed",
+                        "The Walking Noise denoise model is not installed:\n\n"
+                        + "\n".join(f"  • {m}" for m in missing)
+                        + "\n\nPlease go to Settings → Preferences → AI Models "
+                        "to download and install the latest models."
+                    )
+                    return
+            except Exception:
+                pass
 
         arr = np.asarray(self.doc.image, dtype=np.float32)
 
