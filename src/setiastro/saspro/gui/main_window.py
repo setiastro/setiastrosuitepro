@@ -2241,8 +2241,8 @@ class AstroSuiteProMainWindow(
         msg = QMessageBox(self)
         msg.setWindowTitle("Save Project")
         msg.setText("Compress project file for smaller size?\n\n"
-                    "â€¢ Yes = smaller file, slower save\n"
-                    "â€¢ No  = larger file, faster save")
+                    "Yes = smaller file, slower save\n"
+                    "No  = larger file, faster save")
         msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         msg.setDefaultButton(QMessageBox.StandardButton.Yes)
 
@@ -4001,9 +4001,9 @@ class AstroSuiteProMainWindow(
         """
         Headless Morphology apply on a document using a preset dict.
         Expected keys:
-          â€¢ operation: "erosion" | "dilation" | "opening" | "closing"
-          â€¢ kernel: odd int (3,5,7,...)
-          â€¢ iterations: int
+           operation: "erosion" | "dilation" | "opening" | "closing"
+           kernel: odd int (3,5,7,...)
+           iterations: int
         """
         try:
             from setiastro.saspro.morphology import apply_morphology_to_doc
@@ -4047,9 +4047,9 @@ class AstroSuiteProMainWindow(
         Headless Pixel Math apply on a document using a preset dict.
 
         Preset fields:
-          â€¢ mode: 'single' or 'rgb' (optional, informational)
-          â€¢ expr:   single-expression mode (string)
-          â€¢ expr_r / expr_g / expr_b: per-channel expressions (strings)
+           mode: 'single' or 'rgb' (optional, informational)
+           expr:   single-expression mode (string)
+           expr_r / expr_g / expr_b: per-channel expressions (strings)
         """
         from setiastro.saspro.pixelmath import apply_pixel_math_to_doc
 
@@ -4108,8 +4108,8 @@ class AstroSuiteProMainWindow(
         Headless Halo-B-Gon apply on a document using a preset dict.
 
         Preset keys:
-          â€¢ reduction: int 0..3
-          â€¢ linear: bool
+           reduction: int 0..3
+           linear: bool
         """
         from setiastro.saspro.halobgon import apply_halo_b_gon_to_doc
 
