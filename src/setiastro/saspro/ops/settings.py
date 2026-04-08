@@ -631,11 +631,19 @@ class SettingsDialog(QDialog):
             if self._models_thread.isRunning():
                 self._models_thread.requestInterruption()
 
+        WALKING_PRIMARY  = "https://drive.google.com/file/d/1yAn5gc6KVmkADvhKn-QKNNuDXSgAz1pY/view?usp=sharing"
+        WALKING_BACKUP   = "https://drive.google.com/file/d/1IEB9xosEA0JPGc-L5gDfueJoFYYXN_67/view?usp=sharing"
+        WALKING_TERTIARY = "https://github.com/setiastro/setiastrosuitepro/releases/download/benchmarkFIT/SASPro_Models_Walking.zip"
+
         self._models_worker = ModelsDownloadWorker(
             PRIMARY, BACKUP, TERTIARY,
             expected_sha256=None,
-            should_cancel=should_cancel
+            should_cancel=should_cancel,
+            walking_zip_url=WALKING_PRIMARY,
+            walking_zip_backup=WALKING_BACKUP,
+            walking_zip_tertiary=WALKING_TERTIARY,
         )
+
         self._models_worker.moveToThread(self._models_thread)
 
         self._models_thread.started.connect(self._models_worker.run, Qt.ConnectionType.QueuedConnection)
@@ -666,40 +674,54 @@ class SettingsDialog(QDialog):
 
     def _refresh_models_status(self):
         from setiastro.saspro.model_manager import read_installed_manifest, models_root
+        import os
+
         m = read_installed_manifest()
+        models_dir = models_root()
+
         if not m:
             self.lbl_models_status.setText(self.tr("Status: not installed"))
             return
 
-        # New fields (preferred)
         src = (m.get("source") or "").strip()
         ref = (m.get("source_ref") or "").strip()
         sha = (m.get("sha256") or "").strip()
 
-        # Back-compat with older manifests
         if not src:
-            # old versions used google_drive + file_id
             src = "google_drive" if m.get("file_id") else (m.get("source") or "unknown")
         if not ref:
             ref = (m.get("file_id") or m.get("file") or "").strip()
 
-        # Keep it short + readable
         src_label = {
             "google_drive": "Google Drive",
             "http": "GitHub/HTTP",
             "manual_zip": "Manual ZIP",
         }.get(src, src or "Unknown")
 
-        lines = [self.tr("Status: installed"),
-                self.tr("Location: {0}").format(models_root())]
+        lines = [
+            self.tr("Status: installed"),
+            self.tr("Location: {0}").format(models_dir),
+        ]
 
         if ref:
-            # show just a compact hint (id or url or filename)
             lines.append(self.tr("Source: {0}").format(src_label))
             lines.append(self.tr("Ref: {0}").format(ref))
 
         if sha:
             lines.append(self.tr("SHA256: {0}").format(sha[:12] + "…"))
+
+        # Check walking noise supplement separately (files on disk, not in manifest)
+        walking_files = [
+            "deep_denoise_mono_AI4_1w.pth",
+            "deep_denoise_color_AI4_1w.pth",
+        ]
+        walking_present = all(
+            os.path.exists(os.path.join(models_dir, f)) for f in walking_files
+        )
+        if walking_present:
+            lines.append(self.tr("Walking Noise models: ✅ installed"))
+        else:
+            lines.append(self.tr("Walking Noise models: — not installed"))
 
         self.lbl_models_status.setText("\n".join(lines))
         self.lbl_models_status.setStyleSheet("color:#888;")

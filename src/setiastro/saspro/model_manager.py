@@ -298,6 +298,59 @@ def download_google_drive_file(
     log(f"Download complete: {dst}")
     return dst
 
+def install_models_zip_supplement(
+    zip_path: str | os.PathLike,
+    *,
+    progress_cb: ProgressCB = None,
+) -> None:
+    """
+    Extracts a models zip and OVERLAYS it into models_root() without clearing existing files.
+    Used for supplement packs (e.g. walking noise models) that add files alongside existing ones.
+    """
+    dst = Path(models_root())
+
+    tmp_extract = Path(tempfile.gettempdir()) / f"saspro_models_extract_{os.getpid()}_{int(time.time())}"
+
+    def log(msg: str):
+        if progress_cb:
+            progress_cb(msg)
+
+    try:
+        shutil.rmtree(tmp_extract, ignore_errors=True)
+    except Exception:
+        pass
+
+    try:
+        log("Extracting supplement zip…")
+        tmp_extract.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(str(zip_path), "r") as z:
+            z.extractall(tmp_extract)
+
+        # Normalize top-level folder if present
+        root = tmp_extract
+        kids = list(root.iterdir())
+        if len(kids) == 1 and kids[0].is_dir():
+            root = kids[0]
+
+        any_model = any(p.suffix.lower() in (".pth", ".onnx") for p in root.rglob("*"))
+        if not any_model:
+            raise RuntimeError("Supplement zip did not contain any .pth/.onnx files.")
+
+        log(f"Overlaying supplement into: {dst}")
+        dst.mkdir(parents=True, exist_ok=True)
+
+        # Copy only — never delete existing files
+        for item in root.iterdir():
+            target = dst / item.name
+            if item.is_dir():
+                shutil.copytree(item, target, dirs_exist_ok=True)
+            else:
+                shutil.copy2(item, target)
+                log(f"Installed: {item.name}")
+
+        log("Supplement models installed.")
+    finally:
+        shutil.rmtree(tmp_extract, ignore_errors=True)
 
 def install_models_zip(
     zip_path: str | os.PathLike,
