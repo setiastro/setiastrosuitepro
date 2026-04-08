@@ -15056,27 +15056,84 @@ class StackingSuiteDialog(QDialog):
     def override_selected_master_flat(self):
         """
         Override Master Flat for ONLY the selected leaf (file) rows.
-        Does not touch siblings, exposure groups, or filters unless those leaves are selected.
+        Mirrors override_selected_master_dark in behaviour:
+        - remembers last directory via QSettings
+        - populates manual_flat_overrides under both
+            'Filter - exposure' and bare 'exposure' keys
+        - writes basename to column 3 and full path to UserRole on col 3
+            so both _leaf_assigned_flat_path and calibrate_lights find it
+        - accepts .fits / .fit / .xisf
         """
         leaves = list(self._iter_selected_light_leaves())
         if not leaves:
             print("⚠️ Select individual Light files (leaf rows) to override their flat.")
             return
 
+        # ── remember last directory ──────────────────────────────────────────
+        last_dir = (
+            self.settings.value("stacking/last_master_flat_dir", "", type=str)
+            if hasattr(self, "settings") else ""
+        )
+        if not last_dir:
+            last_dir = getattr(self, "stacking_directory", "") or ""
+
+        # best guess: use the folder of the first selected leaf
+        try:
+            p0 = leaves[0].data(0, Qt.ItemDataRole.UserRole)
+            if isinstance(p0, str) and os.path.exists(p0):
+                last_dir = os.path.dirname(p0)
+        except Exception:
+            pass
+
+        if not last_dir:
+            last_dir = os.path.expanduser("~")
+
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Select Master Flat", "", "FITS Files (*.fits *.fit)"
+            self,
+            "Select Master Flat",
+            last_dir,
+            "Master Calibration (*.fits *.fit *.xisf);;All Files (*)"
         )
         if not file_path:
             return
 
+        # ── persist last directory ───────────────────────────────────────────
+        try:
+            if hasattr(self, "settings"):
+                self.settings.setValue(
+                    "stacking/last_master_flat_dir", os.path.dirname(file_path)
+                )
+        except Exception:
+            pass
+
+        # ── ensure dict exists ───────────────────────────────────────────────
+        if not hasattr(self, "manual_flat_overrides") or self.manual_flat_overrides is None:
+            self.manual_flat_overrides = {}
+
         base = os.path.basename(file_path)
+
         for leaf in leaves:
-            # Column 3 = "Master Flat" per your header
+            # Walk up to get filter_name and exposure_text for dict keys,
+            # mirroring the same hierarchy the dark override uses.
+            exposure_item = leaf.parent()          # e.g. "300.0s (4144x2822)"
+            filter_item   = exposure_item.parent() if exposure_item else None
+
+            if exposure_item and filter_item:
+                filter_name   = filter_item.text(0)
+                exposure_text = exposure_item.text(0)
+
+                # Populate both key forms so _lookup_flat_override and
+                # calibrate_lights (which only checks the full key directly)
+                # both find the override reliably.
+                self.manual_flat_overrides[f"{filter_name} - {exposure_text}"] = file_path
+                self.manual_flat_overrides[exposure_text] = file_path
+
+            # Column 3 = Master Flat display name
             leaf.setText(3, base)
-            # stash the full path so calibration can use it directly
+            # Full path in UserRole so _leaf_assigned_flat_path returns it directly
             leaf.setData(3, Qt.ItemDataRole.UserRole, file_path)
 
-        print(f"✅ Flat override applied to {len(leaves)} selected file(s).")
+        print(f"✅ Flat override applied to {len(leaves)} selected file(s): {base}")
 
 
 

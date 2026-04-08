@@ -51,6 +51,9 @@ def _back_to_mono_if_needed(rgb01: np.ndarray, was_mono: bool) -> np.ndarray:
     # preserve “mono stays mono”: any channel is fine since they’re identical for true mono workflows
     return np.asarray(rgb01[..., 0], dtype=np.float32)
 
+class _SkipSaveSignal(Exception):
+    """Raised internally when sat_skip_save=True and no trail was detected."""
+    pass
 
 def run_cosmicclarity_on_array(
     img: np.ndarray,
@@ -163,13 +166,14 @@ def run_cosmicclarity_on_array(
                 separate_channels=bool(preset.get("separate_channels", False)),
                 color_denoise_strength=float(preset.get("denoise_color", 0.5)),
                 use_gpu=use_gpu,
+                lite=bool(preset.get("denoise_lite", False)),
+                walking=bool(preset.get("denoise_walking", False)),
                 chunk_size=chunk_size,
                 overlap=overlap,
                 temp_stretch=bool(preset.get("temp_stretch", False)),
                 target_median=float(preset.get("target_median", 0.25)),
                 progress_cb=prog,
             )
-
         elif stage == "superres":
             out = superres_rgb01(
                 out,
@@ -188,7 +192,7 @@ def run_cosmicclarity_on_array(
                     return progress_cb(0, 100)
                 return prog(done, total)
 
-            out, _detected = satellite_remove_image(
+            out, detected = satellite_remove_image(
                 out,
                 models=models,
                 mode=str(preset.get("sat_mode", "full")).lower(),
@@ -196,6 +200,10 @@ def run_cosmicclarity_on_array(
                 sensitivity=float(preset.get("sat_sensitivity", 0.10)),
                 progress_cb=sat_prog,
             )
+
+            if bool(preset.get("sat_skip_save", False)) and not detected:
+                # Signal to the file-level runner that we should skip writing output
+                raise _SkipSaveSignal("No satellite trail detected — skip save requested.")
 
         elif stage == "darkstar":
             def ds_prog(done: int, total: int, _stage: str):
@@ -250,6 +258,12 @@ def run_cosmicclarity_on_file(
     img, hdr, bd, mono = load_image(input_path)
     if img is None:
         raise RuntimeError(f"Failed to load: {input_path}")
+
+    try:
+        out = run_cosmicclarity_on_array(img, preset, progress_cb=progress_cb)
+    except _SkipSaveSignal as e:
+        print(f"[Satellite] {e} Output not written.", flush=True)
+        return
 
     out = run_cosmicclarity_on_array(img, preset, progress_cb=progress_cb)
 

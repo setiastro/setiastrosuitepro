@@ -151,7 +151,11 @@ def build_cc_parser() -> argparse.ArgumentParser:
     p.add_argument("--denoise-color", type=float, default=0.5)
     p.add_argument("--denoise-mode", default="full", choices=["full", "luminance"])
     p.add_argument("--separate-channels", action="store_true", default=False)
-
+    p.add_argument("--denoise-walking", action="store_true", default=False,
+                   help="Use Walking Noise specialist model instead of standard.")
+    p.add_argument("--denoise-lite", action="store_true", default=False,
+                   help="Use Lite (smaller/faster) denoise model.")
+    
     p = sub.add_parser("both", help="Sharpen then denoise")
     _add_common_io(p)
     _add_chunking_opts(p)
@@ -167,7 +171,11 @@ def build_cc_parser() -> argparse.ArgumentParser:
     p.add_argument("--denoise-color", type=float, default=0.5)
     p.add_argument("--denoise-mode", default="full", choices=["full", "luminance"])
     p.add_argument("--separate-channels", action="store_true", default=False)
-
+    p.add_argument("--denoise-walking", action="store_true", default=False,
+                   help="Use Walking Noise specialist model instead of standard.")
+    p.add_argument("--denoise-lite", action="store_true", default=False,
+                   help="Use Lite (smaller/faster) denoise model.")
+    
     p = sub.add_parser("superres", help="Super resolution")
     _add_common_io(p)
     _add_chunking_opts(p)
@@ -180,6 +188,8 @@ def build_cc_parser() -> argparse.ArgumentParser:
     p.add_argument("--mode", dest="sat_mode", default="full", choices=["full", "luminance"])
     p.add_argument("--clip-trail", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--sensitivity", type=float, default=0.10)
+    p.add_argument("--skip-save", action="store_true", default=False,
+                   help="Skip saving output if no satellite trail is detected.")
 
     p = sub.add_parser("darkstar", help="DarkStar star removal")
     _add_common_io(p)
@@ -233,7 +243,10 @@ def _run_cc(argv: list[str]) -> int:
             "denoise_color": args.denoise_color,
             "denoise_mode": args.denoise_mode,
             "separate_channels": bool(args.separate_channels),
+            "denoise_walking": bool(args.denoise_walking),
+            "denoise_lite":    bool(args.denoise_lite),
         })
+
     elif args.cmd == "both":
         preset.update({
             "mode": "both",
@@ -247,7 +260,10 @@ def _run_cc(argv: list[str]) -> int:
             "denoise_color": args.denoise_color,
             "denoise_mode": args.denoise_mode,
             "separate_channels": bool(args.separate_channels),
+            "denoise_walking": bool(args.denoise_walking),
+            "denoise_lite":    bool(args.denoise_lite),
         })
+
     elif args.cmd == "superres":
         preset.update({
             "mode": "superres",
@@ -259,6 +275,7 @@ def _run_cc(argv: list[str]) -> int:
             "sat_mode": args.sat_mode,
             "sat_clip_trail": bool(args.clip_trail),
             "sat_sensitivity": float(args.sensitivity),
+            "sat_skip_save": bool(args.skip_save),
         })
     elif args.cmd == "darkstar":
         preset.update({

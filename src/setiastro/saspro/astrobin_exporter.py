@@ -359,6 +359,191 @@ class FilterIdDialog(QDialog):
                 self.table.setCurrentCell(cur, 1)
                 self.table.editItem(item)
 
+class FilterProfileDialog(QDialog):
+    """
+    Save / load / delete named filter map profiles.
+    Profiles are stored in QSettings under astrobin_exporter/filter_profiles/<name>.
+
+    On accept: selected_map is set to the loaded profile's mapping (or None if
+    the user just saved/deleted without loading).
+    """
+
+    def __init__(self, parent, current_map: Dict[str, str],
+                 get_profiles_fn, save_profile_fn, delete_profile_fn):
+        super().__init__(parent)
+        self.setWindowTitle("Filter Profiles")
+        self.setMinimumWidth(500)
+
+        self.current_map      = current_map
+        self._get_profiles    = get_profiles_fn
+        self._save_profile_fn = save_profile_fn
+        self._del_profile_fn  = delete_profile_fn
+        self.selected_map: Optional[Dict[str, str]] = None
+
+        self._build_ui()
+        self._refresh_list()
+
+    def _build_ui(self):
+        outer = QVBoxLayout(self)
+        outer.setSpacing(8)
+
+        # ── Save current mapping as a new profile ─────────────────────────
+        save_box = QGroupBox("Save current filter map as a profile")
+        save_lay = QHBoxLayout(save_box)
+        save_lay.addWidget(QLabel("Profile name:"))
+        self._name_edit = QLineEdit()
+        self._name_edit.setPlaceholderText("e.g. Takahashi FSQ + ASI2600")
+        self._name_edit.setMinimumWidth(220)
+        save_lay.addWidget(self._name_edit, 1)
+        save_btn = QPushButton("Save")
+        save_btn.clicked.connect(self._on_save)
+        save_lay.addWidget(save_btn)
+        outer.addWidget(save_box)
+
+        # ── Saved profiles list ───────────────────────────────────────────
+        list_box = QGroupBox("Saved profiles")
+        list_lay = QVBoxLayout(list_box)
+
+        self._list = QListWidget()
+        self._list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._list.itemDoubleClicked.connect(self._on_load)
+        list_lay.addWidget(self._list, 1)
+
+        # Preview of selected profile's mappings
+        self._preview = QTextEdit()
+        self._preview.setReadOnly(True)
+        self._preview.setFixedHeight(90)
+        self._preview.setPlaceholderText("Select a profile to preview its filter mappings…")
+        list_lay.addWidget(self._preview)
+        self._list.currentItemChanged.connect(self._on_selection_changed)
+
+        btn_row = QHBoxLayout()
+        load_btn   = QPushButton("Load selected")
+        load_btn.clicked.connect(self._on_load)
+        delete_btn = QPushButton("Delete selected")
+        delete_btn.clicked.connect(self._on_delete)
+        btn_row.addWidget(load_btn)
+        btn_row.addWidget(delete_btn)
+        btn_row.addStretch()
+        list_lay.addLayout(btn_row)
+
+        outer.addWidget(list_box, 1)
+
+        # ── Current active mapping preview ────────────────────────────────
+        cur_box = QGroupBox("Current active filter map")
+        cur_lay = QVBoxLayout(cur_box)
+        self._current_preview = QTextEdit()
+        self._current_preview.setReadOnly(True)
+        self._current_preview.setFixedHeight(70)
+        cur_lay.addWidget(self._current_preview)
+        self._current_preview.setPlainText(self._map_to_text(self.current_map))
+        outer.addWidget(cur_box)
+
+        # ── Buttons ───────────────────────────────────────────────────────
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        btns.rejected.connect(self.reject)
+        outer.addWidget(btns)
+
+    # ── Helpers ───────────────────────────────────────────────────────────
+    @staticmethod
+    def _map_to_text(mapping: Dict[str, str]) -> str:
+        if not mapping:
+            return "(empty)"
+        return "  " + "\n  ".join(
+            f"{k}  →  {v}"
+            for k, v in sorted(mapping.items(), key=lambda kv: kv[0].lower())
+        )
+
+    def _refresh_list(self):
+        self._list.clear()
+        profiles = self._get_profiles()
+        for name in sorted(profiles.keys(), key=str.lower):
+            self._list.addItem(QListWidgetItem(name))
+        if self._list.count() == 0:
+            self._preview.setPlainText("No saved profiles yet.")
+
+    def _on_selection_changed(self, current, _previous):
+        if current is None:
+            self._preview.clear()
+            return
+        profiles = self._get_profiles()
+        mp = profiles.get(current.text(), {})
+        self._preview.setPlainText(self._map_to_text(mp))
+
+    # ── Actions ───────────────────────────────────────────────────────────
+    def _on_save(self):
+        name = self._name_edit.text().strip()
+        if not name:
+            QMessageBox.warning(self, "Profile name required",
+                                "Please enter a name for this profile.")
+            return
+
+        profiles = self._get_profiles()
+        if name in profiles:
+            ans = QMessageBox.question(
+                self, "Overwrite profile?",
+                f"A profile named '{name}' already exists.\nOverwrite it?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if ans != QMessageBox.StandardButton.Yes:
+                return
+
+        if not self.current_map:
+            QMessageBox.warning(self, "Nothing to save",
+                                "The current filter map is empty — nothing was saved.")
+            return
+
+        self._save_profile_fn(name, self.current_map)
+        self._name_edit.clear()
+        self._refresh_list()
+
+        # Select the newly saved item
+        for i in range(self._list.count()):
+            if self._list.item(i).text() == name:
+                self._list.setCurrentRow(i)
+                break
+
+        QMessageBox.information(self, "Saved",
+                                f"Profile '{name}' saved with "
+                                f"{len(self.current_map)} filter mapping(s).")
+
+    def _on_load(self):
+        item = self._list.currentItem()
+        if item is None:
+            QMessageBox.information(self, "No selection",
+                                    "Please select a profile to load.")
+            return
+        profiles = self._get_profiles()
+        mp = profiles.get(item.text(), {})
+        if not mp:
+            QMessageBox.warning(self, "Empty profile",
+                                f"Profile '{item.text()}' has no filter mappings.")
+            return
+
+        self.selected_map = mp
+        self._current_preview.setPlainText(self._map_to_text(mp))
+        self.accept()
+
+    def _on_delete(self):
+        item = self._list.currentItem()
+        if item is None:
+            QMessageBox.information(self, "No selection",
+                                    "Please select a profile to delete.")
+            return
+        name = item.text()
+        ans = QMessageBox.question(
+            self, "Delete profile?",
+            f"Delete profile '{name}'? This cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        self._del_profile_fn(name)
+        self._refresh_list()
+        self._preview.clear()
+
 # ---- Main Exporter ---------------------------------------------------------
 
 class AstrobinExportTab(QWidget):
@@ -470,6 +655,9 @@ class AstrobinExportTab(QWidget):
         self.filter_summary = QLabel(self._filters_summary_text()); map_row.addWidget(self.filter_summary)
         self.btn_edit_filters = QPushButton(self.tr("Manage Filter IDs…")); self.btn_edit_filters.clicked.connect(self._edit_filters)
         map_row.addWidget(self.btn_edit_filters)
+        self.btn_profiles = QPushButton(self.tr("Filter Profiles…"))
+        self.btn_profiles.clicked.connect(self._manage_profiles)
+        map_row.addWidget(self.btn_profiles)        
         qmark = QToolButton(self); qmark.setText("?")
         qmark.setToolTip(self.tr("Open AstroBin Equipment Explorer (Filters)"))
         qmark.clicked.connect(lambda: webbrowser.open(ASTROBIN_FILTER_URL))
@@ -988,6 +1176,54 @@ class AstrobinExportTab(QWidget):
         if dlg.exec() == QDialog.DialogCode.Accepted:
             dlg.save_to_settings()
             self._filter_map = self._load_filter_map()
+            self.filter_summary.setText(self._filters_summary_text())
+            self._recompute()
+
+    def _get_all_profiles(self) -> Dict[str, Dict[str, str]]:
+        """Load all saved filter profiles from QSettings."""
+        import json
+        self.settings.beginGroup("astrobin_exporter/filter_profiles")
+        keys = self.settings.childKeys()
+        profiles = {}
+        for k in keys:
+            raw = self.settings.value(k, "")
+            try:
+                profiles[k] = json.loads(raw)
+            except Exception:
+                pass
+        self.settings.endGroup()
+        return profiles
+
+    def _save_profile(self, name: str, mapping: Dict[str, str]):
+        """Save a named filter profile to QSettings."""
+        import json
+        self.settings.beginGroup("astrobin_exporter/filter_profiles")
+        self.settings.setValue(name, json.dumps(mapping))
+        self.settings.endGroup()
+
+    def _delete_profile(self, name: str):
+        """Delete a named filter profile from QSettings."""
+        self.settings.beginGroup("astrobin_exporter/filter_profiles")
+        self.settings.remove(name)
+        self.settings.endGroup()
+
+    def _manage_profiles(self):
+        """Open the Save/Load filter profile manager dialog."""
+        dlg = FilterProfileDialog(
+            parent=self,
+            current_map=self._filter_map,
+            get_profiles_fn=self._get_all_profiles,
+            save_profile_fn=self._save_profile,
+            delete_profile_fn=self._delete_profile,
+        )
+        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.selected_map is not None:
+            # User loaded a profile — apply it
+            self._filter_map = dlg.selected_map
+            # Persist as the active filter map
+            blob = ";".join(f"{k}={v}" for k, v in self._filter_map.items())
+            self.settings.beginGroup("astrobin_exporter")
+            self.settings.setValue("filter_map", blob)
+            self.settings.endGroup()
             self.filter_summary.setText(self._filters_summary_text())
             self._recompute()
 

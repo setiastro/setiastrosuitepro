@@ -211,7 +211,8 @@ class CalculationThread(QThread):
     status_update          = pyqtSignal(str)
 
     def __init__(self, latitude, longitude, date, time, timezone,
-                 min_altitude, catalog_filters, object_limit):
+                 min_altitude, catalog_filters, object_limit,
+                 horizon_points=None):
         super().__init__()
         self.latitude        = float(latitude)
         self.longitude       = float(longitude)
@@ -221,6 +222,7 @@ class CalculationThread(QThread):
         self.min_altitude    = float(min_altitude)
         self.catalog_filters = list(catalog_filters or [])
         self.object_limit    = int(object_limit)
+        self.horizon_points  = list(horizon_points or [])
         self.catalog_file    = self.get_catalog_file_path()
 
     def get_catalog_file_path(self) -> str:
@@ -271,7 +273,14 @@ class CalculationThread(QThread):
             moon_altaz = get_body("moon", t, loc).transform_to(altaz_frame)
             df["Degrees from Moon"] = np.round(altaz.separation(moon_altaz).deg, 2)
 
-            df = df[df["Altitude"] >= self.min_altitude]
+            # ── Custom horizon filter ──────────────────────────────────────
+            if self.horizon_points:
+                horizon_mins = _horizon_min_alts_vectorized(
+                    df["Azimuth"].to_numpy(), self.horizon_points)
+                effective_min = np.maximum(horizon_mins, self.min_altitude)
+                df = df[df["Altitude"].to_numpy() >= effective_min]
+            else:
+                df = df[df["Altitude"] >= self.min_altitude]
 
             ra_hours = df["RA"].to_numpy() * (24.0 / 360.0)
             minutes  = ((ra_hours - lst.hour) * u.hour) % (24 * u.hour)
@@ -741,6 +750,43 @@ class ObjectVisibilityDialog(QDialog):
             pw.addLine(x=obs_hr, pen=pg.mkPen("r", width=1.5,
                                                style=Qt.PenStyle.DashLine))
 
+
+            # ── Custom horizon overlay on altitude plot ────────────────────
+            horizon_pts = self.item_data.get("horizon_points", [])
+            if horizon_pts and _HAS_PG:
+                # Build horizon altitude curve over the same hrs axis
+                # hrs = noon-to-noon cumulative hours, times = matching astropy Time array
+                # We need azimuth at each time step to look up horizon limit
+                try:
+                    obj_coord_h = SkyCoord(ra=ra * u.deg, dec=dec * u.deg)
+                    frame_h     = AltAz(obstime=times, location=loc)
+                    altaz_h     = obj_coord_h.transform_to(frame_h)
+                    obj_az      = altaz_h.az.deg
+
+                    # Horizon limit at each time step
+                    h_lim = np.array([
+                        _horizon_min_alt(float(az), horizon_pts)
+                        for az in obj_az
+                    ], dtype=float)
+
+                    # Draw as a filled region from 0 up to the horizon limit
+                    # Use a FillBetweenItem for the blocked zone
+                    h_top  = pg.PlotDataItem(hrs, h_lim)
+                    h_bot  = pg.PlotDataItem(hrs, np.zeros_like(h_lim))
+                    h_fill = pg.FillBetweenItem(
+                        h_bot, h_top,
+                        brush=pg.mkBrush(220, 60, 60, 70),
+                    )
+                    pw.addItem(h_fill)
+
+                    # Draw the horizon limit line itself
+                    pw.plot(hrs, h_lim,
+                            pen=pg.mkPen((220, 80, 80), width=1.5,
+                                         style=Qt.PenStyle.DashLine),
+                            name="Horizon limit")
+                except Exception:
+                    pass   # horizon overlay is best-effort
+
             pw.addLegend()
 
         # ── Rise / Transit / Set tab ──────────────────────────────────────
@@ -963,6 +1009,472 @@ def _tz_vs_longitude_hint(tz_name, date_str, time_str, lon_deg):
         return (True, msg, utc_str, central)
     return (False, "", utc_str, central)
 
+def _horizon_min_alt(az_deg: float, horizon_points: list) -> float:
+    """
+    Linear interpolation of custom horizon altitude at a given azimuth.
+    horizon_points: list of (az, alt) tuples, az in [0, 360].
+    Returns 0.0 if no points defined.
+    """
+    if not horizon_points:
+        return 0.0
+    pts = sorted(horizon_points, key=lambda p: p[0])
+    azs  = np.array([p[0] for p in pts], dtype=float)
+    alts = np.array([p[1] for p in pts], dtype=float)
+
+    # Ensure wrap-around coverage from 0 to 360
+    if azs[0] > 0:
+        azs  = np.r_[0.0, azs]
+        alts = np.r_[alts[0], alts]
+    if azs[-1] < 360:
+        azs  = np.r_[azs,  360.0]
+        alts = np.r_[alts, alts[0]]   # snap north=0 to north=360
+
+    return float(np.clip(np.interp(az_deg % 360, azs, alts), 0.0, 90.0))
+
+
+def _horizon_min_alts_vectorized(az_array: np.ndarray, horizon_points: list) -> np.ndarray:
+    """Vectorized version for filtering a whole DataFrame column."""
+    if not horizon_points:
+        return np.zeros(len(az_array), dtype=float)
+    return np.array([_horizon_min_alt(float(az), horizon_points) for az in az_array])
+
+class HorizonEditorDialog(QDialog):
+    """
+    Interactive custom horizon editor.
+    - Click on empty space to add a point
+    - Drag existing points to move them
+    - Right-click a point to delete it
+    - The 0° and 360° (north) endpoints are always kept in sync
+    """
+    horizon_changed = pyqtSignal(list)   # emits sorted [(az, alt), ...]
+
+    _POINT_RADIUS = 8      # px, hit-test radius
+    _SNAP_AZ_TOL  = 5.0    # degrees: snap to north if within this
+
+    def __init__(self, horizon_points: list, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Custom Horizon Editor")
+        self.resize(900, 500)
+
+        # Work on a copy; each point is [az, alt] (mutable)
+        self._pts = [[float(az), float(alt)] for az, alt in horizon_points]
+        self._drag_idx   = None   # index of point being dragged
+        self._hover_idx  = None
+
+        self._build_ui()
+        self._refresh()
+
+    # ── UI ────────────────────────────────────────────────────────────────
+    def _build_ui(self):
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(8, 8, 8, 8)
+        outer.setSpacing(6)
+
+        info = QLabel(
+            "Left-click empty area to add a point  •  "
+            "Drag a point to move it  •  "
+            "Right-click a point to delete it  •  "
+            "North (0° / 360°) endpoints stay in sync"
+        )
+        info.setStyleSheet("font-size: 10px; color: palette(window-text);")
+        info.setWordWrap(True)
+        outer.addWidget(info)
+
+        if not _HAS_PG:
+            outer.addWidget(QLabel("pyqtgraph not installed — horizon editor unavailable."))
+            self._plot = None
+        else:
+            self._plot = pg.PlotWidget()
+            self._plot.setLabel("bottom", "Azimuth (°)  [0=N  90=E  180=S  270=W]")
+            self._plot.setLabel("left",   "Altitude (°)")
+            self._plot.setXRange(0, 360, padding=0.01)
+            self._plot.setYRange(0, 90,  padding=0.02)
+            self._plot.showGrid(x=True, y=True, alpha=0.3)
+
+            # Disable default mouse drag (panning) on the ViewBox —
+            # we handle all mouse interaction ourselves
+            self._plot.getViewBox().setMouseEnabled(x=False, y=False)
+            self._plot.getViewBox().setMouseMode(pg.ViewBox.RectMode)
+
+            # Compass tick labels
+            az_ticks = [(0,"N"),(45,"NE"),(90,"E"),(135,"SE"),
+                        (180,"S"),(225,"SW"),(270,"W"),(315,"NW"),(360,"N")]
+            self._plot.getAxis("bottom").setTicks([az_ticks])
+
+            # Horizon fill
+            self._fill_curve_top = pg.PlotDataItem([0, 360], [0, 0])
+            self._fill_curve_bot = pg.PlotDataItem([0, 360], [0, 0])
+            self._fill_item = pg.FillBetweenItem(
+                self._fill_curve_bot,
+                self._fill_curve_top,
+                brush=pg.mkBrush(255, 80, 80, 60),
+            )
+            self._plot.addItem(self._fill_item)
+
+            # Polyline
+            self._line_item = self._plot.plot([], [], pen=pg.mkPen("r", width=2))
+
+            # Scatter for control points
+            self._scatter = pg.ScatterPlotItem(
+                size=14, pen=pg.mkPen("w", width=1.5),
+                brush=pg.mkBrush(255, 100, 100, 220),
+            )
+            self._plot.addItem(self._scatter)
+
+            # Install event filter on the viewport for raw mouse events
+            self._plot.viewport().installEventFilter(self)
+
+            outer.addWidget(self._plot, 1)
+
+        # Buttons row
+        btn_row = QHBoxLayout()
+
+        flat_btn = QPushButton("Reset to Flat")
+        flat_btn.clicked.connect(self._reset_flat)
+        btn_row.addWidget(flat_btn)
+
+        load_btn = QPushButton("Load from File…")
+        load_btn.clicked.connect(self._load_file)
+        btn_row.addWidget(load_btn)
+
+        save_btn = QPushButton("Save to File…")
+        save_btn.clicked.connect(self._save_file)
+        btn_row.addWidget(save_btn)
+
+        btn_row.addStretch()
+
+        clear_btn = QPushButton("Clear All")
+        clear_btn.clicked.connect(self._clear_all)
+        btn_row.addWidget(clear_btn)
+
+        ok_btn = QPushButton("Apply && Close")
+        ok_btn.setDefault(True)
+        ok_btn.clicked.connect(self._apply)
+        btn_row.addWidget(ok_btn)
+
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+
+        outer.addLayout(btn_row)
+
+    # ── Internal helpers ──────────────────────────────────────────────────
+    def _sorted_pts(self):
+        return sorted(self._pts, key=lambda p: p[0])
+
+    def _plot_xy(self):
+        """Build the closed polyline for display (wraps N→N)."""
+        pts = self._sorted_pts()
+        if not pts:
+            return np.array([0, 360], float), np.array([0, 0], float)
+
+        azs  = np.array([p[0] for p in pts], dtype=float)
+        alts = np.array([p[1] for p in pts], dtype=float)
+
+        # Prepend az=0 and append az=360, synced to north altitude
+        north_alt = alts[0] if azs[0] <= 1e-3 else float(np.interp(0, azs, alts))
+        if azs[0] > 1e-3:
+            azs  = np.r_[0.0, azs]
+            alts = np.r_[north_alt, alts]
+        if azs[-1] < 359.999:
+            azs  = np.r_[azs,  360.0]
+            alts = np.r_[alts, north_alt]
+
+        return azs, alts
+
+    def _refresh(self):
+        if self._plot is None:
+            return
+
+        xs, ys = self._plot_xy()
+        self._line_item.setData(xs, ys)
+
+        # Rebuild fill curves in place
+        self._fill_curve_top.setData(xs, ys)
+        self._fill_curve_bot.setData(xs, np.zeros_like(ys))
+
+        # Scatter control points
+        pts = self._sorted_pts()
+        if pts:
+            self._scatter.setData(
+                x=[p[0] for p in pts],
+                y=[p[1] for p in pts],
+            )
+        else:
+            self._scatter.setData(x=[], y=[])
+
+    def _view_to_data(self, scene_pos):
+        """Convert a scene QPointF to (az, alt) data coordinates."""
+        vb = self._plot.getViewBox()
+        dp = vb.mapSceneToView(scene_pos)
+        return float(dp.x()), float(dp.y())
+
+    def _nearest_point_idx(self, az, alt):
+        """
+        Return index of the nearest control point in screen-space,
+        or None if none is within _POINT_RADIUS pixels.
+        """
+        if not self._pts:
+            return None
+        vb   = self._plot.getViewBox()
+        rect = vb.viewRect()
+        w    = self._plot.width()
+        h    = self._plot.height()
+        if rect.width() == 0 or rect.height() == 0:
+            return None
+
+        px_per_az  = w / rect.width()
+        px_per_alt = h / rect.height()
+        daz  = (az  - rect.x()) * px_per_az
+        dalt = (alt - rect.y()) * px_per_alt
+
+        best_d, best_i = self._POINT_RADIUS + 1, None
+        for i, (paz, palt) in enumerate(self._pts):
+            dx = (paz  - rect.x()) * px_per_az  - daz
+            dy = (palt - rect.y()) * px_per_alt - dalt
+            d  = (dx*dx + dy*dy) ** 0.5
+            if d < best_d:
+                best_d, best_i = d, i
+        return best_i if best_d <= self._POINT_RADIUS else None
+
+    def _snap_north(self, az):
+        """If az is within tolerance of 0 or 360, snap to 0."""
+        if az < self._SNAP_AZ_TOL or az > 360 - self._SNAP_AZ_TOL:
+            return 0.0
+        return az
+
+    def _sync_north(self):
+        """
+        Ensure the 0° and 360° points have the same altitude.
+        We keep only the az=0 point internally; az=360 is added
+        dynamically in _plot_xy for display only.
+        """
+        # Remove any stray az=360 entries (we add them in _plot_xy only)
+        self._pts = [p for p in self._pts if p[0] < 359.999]
+
+    # ── Mouse events ──────────────────────────────────────────────────────
+    def eventFilter(self, source, event):
+        """
+        Intercept raw mouse events on the plot viewport so we get
+        accurate positions without pyqtgraph's pan/zoom consuming them.
+        """
+        if self._plot is None:
+            return super().eventFilter(source, event)
+
+        if source is not self._plot.viewport():
+            return super().eventFilter(source, event)
+
+        from PyQt6.QtCore import QEvent
+        from PyQt6.QtGui import QMouseEvent
+
+        if event.type() == QEvent.Type.MouseButtonPress:
+            az, alt = self._viewport_to_data(event.pos())
+            if az is None:
+                return False
+
+            az  = float(np.clip(az,  0, 360))
+            alt = float(np.clip(alt, 0, 90))
+            az  = self._snap_north(az)
+
+            idx = self._nearest_point_idx(az, alt)
+
+            if event.button() == Qt.MouseButton.RightButton:
+                if idx is not None:
+                    del self._pts[idx]
+                    self._sync_north()
+                    self._refresh()
+                    self.horizon_changed.emit(self.get_points())
+                return True  # consume event
+
+            if event.button() == Qt.MouseButton.LeftButton:
+                if idx is not None:
+                    self._drag_idx = idx   # start drag
+                else:
+                    self._pts.append([az, alt])
+                    self._sync_north()
+                    self._refresh()
+                    self.horizon_changed.emit(self.get_points())
+                return True  # consume event
+
+        elif event.type() == QEvent.Type.MouseMove:
+            if self._drag_idx is not None:
+                az, alt = self._viewport_to_data(event.pos())
+                if az is not None:
+                    az  = float(np.clip(az,  0, 360))
+                    alt = float(np.clip(alt, 0, 90))
+                    az  = self._snap_north(az)
+                    self._pts[self._drag_idx][0] = az
+                    self._pts[self._drag_idx][1] = alt
+                    self._sync_north()
+                    self._refresh()
+                return True  # consume event so plot doesn't pan
+
+        elif event.type() == QEvent.Type.MouseButtonRelease:
+            if self._drag_idx is not None:
+                self._drag_idx = None
+                self.horizon_changed.emit(self.get_points())
+                return True
+
+        return super().eventFilter(source, event)
+
+    def _viewport_to_data(self, viewport_pos):
+        """
+        Convert a QPoint in viewport coordinates to (az, alt) data coordinates.
+        Returns (None, None) if the position is outside the ViewBox.
+        """
+        vb = self._plot.getViewBox()
+
+        # Map viewport pos → scene pos → view (data) pos
+        scene_pos = self._plot.viewport().mapToGlobal(viewport_pos)
+        scene_pos = self._plot.mapFromGlobal(scene_pos)
+        scene_pos_f = self._plot.mapToScene(
+            int(viewport_pos.x()), int(viewport_pos.y())
+        )
+
+        if not vb.sceneBoundingRect().contains(scene_pos_f):
+            return None, None
+
+        data_pt = vb.mapSceneToView(scene_pos_f)
+        return float(data_pt.x()), float(data_pt.y())
+
+    # ── Button handlers ───────────────────────────────────────────────────
+    def _reset_flat(self):
+        self._pts = []
+        self._refresh()
+        self.horizon_changed.emit(self.get_points())
+
+    def _clear_all(self):
+        self._pts = []
+        self._refresh()
+        self.horizon_changed.emit(self.get_points())
+
+    def _load_file(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load Horizon File", "",
+            "CSV files (*.csv);;Text/Horizon files (*.txt *.hrz);;All Files (*)")
+        if not path:
+            return
+        try:
+            pts = self._parse_horizon_file(path)
+            if not pts:
+                QMessageBox.warning(self, "Load Horizon",
+                                    "No valid horizon points found in file.")
+                return
+            self._pts = [[az, alt] for az, alt in pts]
+            self._sync_north()
+            self._refresh()
+            self.horizon_changed.emit(self.get_points())
+            self.update_status_hint(f"Loaded {len(self._pts)} points from {os.path.basename(path)}")
+        except Exception as e:
+            QMessageBox.warning(self, "Load Horizon", f"Could not load file:\n{e}")
+
+    @staticmethod
+    def _parse_horizon_file(path: str) -> list:
+        """
+        Parse horizon points from either:
+          1) Stellarium format:  azimuth altitude  (space-separated, # comments)
+          2) WIMS CSV format:    azimuth_deg, altitude_deg  (comma-separated)
+
+        Handles duplicate azimuths (vertical chimney/wall edges) by keeping
+        the maximum altitude at any given azimuth — we want the blocking height.
+
+        Returns sorted list of (az, alt) tuples.
+        """
+        raw_pts = []
+        is_csv  = path.lower().endswith(".csv")
+
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                # Strip inline comments (Stellarium uses # for both full-line
+                # and annotation comments like "#roof peak")
+                stripped = line.split("#")[0].strip()
+                if not stripped:
+                    continue
+
+                # Try comma-separated (WIMS CSV) first
+                if "," in stripped:
+                    parts = stripped.split(",")
+                    if len(parts) >= 2:
+                        try:
+                            az  = float(parts[0].strip())
+                            alt = float(parts[1].strip())
+                            raw_pts.append((az, alt))
+                        except ValueError:
+                            pass
+                    continue
+
+                # Try space/tab-separated (Stellarium format)
+                parts = stripped.split()
+                if len(parts) >= 2:
+                    try:
+                        az  = float(parts[0])
+                        alt = float(parts[1])
+                        raw_pts.append((az, alt))
+                    except ValueError:
+                        pass
+
+        if not raw_pts:
+            return []
+
+        # Resolve duplicate azimuths — keep the maximum altitude
+        # (a chimney edge at az=30 with alt=30 and alt=33 → keep 33,
+        #  because that's the blocking height the observer must clear)
+        az_to_alt: dict[float, float] = {}
+        for az, alt in raw_pts:
+            az = float(az) % 360.0   # normalise any 360→0 wrap
+            az_to_alt[az] = max(az_to_alt.get(az, -999.0), float(alt))
+
+        # Sort by azimuth
+        return sorted(az_to_alt.items(), key=lambda p: p[0])
+
+    def update_status_hint(self, msg: str):
+        """Update the info label if present, otherwise no-op."""
+        # Find the QLabel info widget (first child label in outer layout)
+        try:
+            layout = self.layout()
+            for i in range(layout.count()):
+                w = layout.itemAt(i).widget()
+                if isinstance(w, QLabel):
+                    w.setText(msg)
+                    return
+        except Exception:
+            pass
+
+    def _save_file(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Horizon File", "",
+            "CSV files (*.csv);;Stellarium horizon (*.txt);;All Files (*)")
+        if not path:
+            return
+        try:
+            pts = self._sorted_pts()
+            ext = os.path.splitext(path)[1].lower()
+
+            with open(path, "w", encoding="utf-8") as f:
+                if ext in (".txt", ".hrz"):
+                    # Write Stellarium-compatible format
+                    f.write("# Horizon description file\n")
+                    f.write("# Exported by SASpro What's In My Sky\n")
+                    f.write("# Azimuth(degrees) Altitude(degrees)\n")
+                    f.write("#\n")
+                    for az, alt in pts:
+                        f.write(f"{az:.1f} {alt:.1f}\n")
+                else:
+                    # Default: WIMS CSV format
+                    f.write("# azimuth_deg, altitude_deg\n")
+                    for az, alt in pts:
+                        f.write(f"{az:.2f},{alt:.2f}\n")
+        except Exception as e:
+            QMessageBox.warning(self, "Save Horizon", f"Could not save file:\n{e}")
+
+    def _apply(self):
+        self.horizon_changed.emit(self.get_points())
+        self.accept()
+
+    # ── Public API ────────────────────────────────────────────────────────
+    def get_points(self) -> list:
+        """Return sorted list of (az, alt) tuples."""
+        return [(p[0], p[1]) for p in self._sorted_pts()]
 
 # ---------------------------------------------------
 #  Main dialog
@@ -976,7 +1488,8 @@ class WhatsInMySkyDialog(QDialog):
 
         self.settings     = QSettings()
         self.object_limit = int(self.settings.value("object_limit", 100, int))
-        self._observer    = {}   # populated in start_calculation
+        self._observer    = {}
+        self._horizon_points: list = self._load_horizon_from_settings()
 
         self._build_ui(wrench_path)
         self._load_settings_into_ui()
@@ -1135,6 +1648,12 @@ class WhatsInMySkyDialog(QDialog):
         settings_btn.clicked.connect(self.open_settings)
         for b in (add_btn, save_btn, settings_btn):
             b.setFixedHeight(28); toolbar.addWidget(b)
+
+        horizon_btn = QPushButton("🏔 Horizon…")
+        horizon_btn.clicked.connect(self.open_horizon_editor)
+        horizon_btn.setFixedHeight(28)
+        toolbar.addWidget(horizon_btn)
+
         toolbar_frame = QFrame()
         toolbar_frame.setFrameShape(QFrame.Shape.NoFrame)
         toolbar_frame.setStyleSheet("border-bottom: 1px solid palette(shadow);")
@@ -1178,6 +1697,39 @@ class WhatsInMySkyDialog(QDialog):
         splitter.setHandleWidth(1)
         root.addWidget(splitter)
         self.resize(1100, 620)
+
+    # ─ Custom horizon handling ─────────────────────────────────────────────
+    def _load_horizon_from_settings(self) -> list:
+        """Load horizon points from QSettings (stored as JSON string)."""
+        import json
+        raw = self.settings.value("wims_horizon", "[]", str)
+        try:
+            pts = json.loads(raw)
+            return [(float(p[0]), float(p[1])) for p in pts
+                    if len(p) >= 2]
+        except Exception:
+            return []
+
+    def _save_horizon_to_settings(self):
+        import json
+        self.settings.setValue(
+            "wims_horizon",
+            json.dumps([[az, alt] for az, alt in self._horizon_points])
+        )
+
+    def _on_horizon_changed(self, pts: list):
+        self._horizon_points = pts
+        self._save_horizon_to_settings()
+        n = len(pts)
+        self.update_status(
+            f"Custom horizon updated ({n} point{'s' if n != 1 else ''}) — "
+            f"recalculate to apply."
+        )
+
+    def open_horizon_editor(self):
+        dlg = HorizonEditorDialog(self._horizon_points, parent=self)
+        dlg.horizon_changed.connect(self._on_horizon_changed)
+        dlg.exec()
 
     # ── Context menu ──────────────────────────────────────────────────────
     def _show_context_menu(self, pos):
@@ -1246,6 +1798,7 @@ class WhatsInMySkyDialog(QDialog):
         if data is None:
             QMessageBox.warning(self, "WIMS", "Could not parse RA/Dec for this object.")
             return
+        data["horizon_points"] = self._horizon_points   # ← inject
         dlg = ObjectVisibilityDialog(data, self._observer, parent=self)
         dlg.tabs.setCurrentIndex(tab)
         dlg.show()
@@ -1319,7 +1872,8 @@ class WhatsInMySkyDialog(QDialog):
         catalogs = [n for n, cb in self.catalog_vars.items() if cb.isChecked()]
         self.calc_thread = CalculationThread(
             latitude, longitude, date_str, time_str, tz_str,
-            min_alt, catalogs, self.object_limit)
+            min_alt, catalogs, self.object_limit,
+            horizon_points=self._horizon_points)
         self.catalog_file = self.calc_thread.catalog_file
         self.calc_thread.calculation_complete.connect(self.on_calculation_complete)
         self.calc_thread.lunar_phase_calculated.connect(self.update_lunar_phase)

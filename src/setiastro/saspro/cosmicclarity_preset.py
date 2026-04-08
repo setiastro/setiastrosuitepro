@@ -377,7 +377,22 @@ class _CosmicClarityPresetDialog(QDialog):
         f.addRow("Denoise Color:", self.dn_col)
         f.addRow("Denoise Mode:", self.dn_mode)
         f.addRow(self.dn_sep)
-
+        # Denoise model variant
+        self.dn_model = QComboBox()
+        self.dn_model.addItems(["Standard", "Walking Noise", "Lite (faster)"])
+        self.dn_model.setToolTip(
+            "Standard: general-purpose AI4 denoise model.\n"
+            "Walking Noise: specialist model for fixed-pattern drift streaks.\n"
+            "Lite: smaller faster model, slightly less detail."
+        )
+        # restore from preset
+        if p.get("denoise_walking", False):
+            self.dn_model.setCurrentText("Walking Noise")
+        elif p.get("denoise_lite", False):
+            self.dn_model.setCurrentText("Lite (faster)")
+        else:
+            self.dn_model.setCurrentText("Standard")
+        f.addRow("Denoise Model:", self.dn_model)
         # Super-res
         self.scale = QComboBox(); self.scale.addItems(["2","3","4"]); self.scale.setCurrentText(str(int(p.get("scale", 2))))
         f.addRow("Super-Res Scale:", self.scale)
@@ -407,11 +422,14 @@ class _CosmicClarityPresetDialog(QDialog):
                 "sharpen_channels_separately": bool(self.sh_sep.isChecked()),
             })
         if m in ("denoise","both"):
+            dn_model = self.dn_model.currentText()
             out.update({
                 "denoise_luma": float(self.dn_lum.value()),
                 "denoise_color": float(self.dn_col.value()),
                 "denoise_mode": self.dn_mode.currentText(),
                 "separate_channels": bool(self.dn_sep.isChecked()),
+                "denoise_lite":    (dn_model == "Lite (faster)"),
+                "denoise_walking": (dn_model == "Walking Noise"),
             })
         if m == "superres":
             out["scale"] = int(self.scale.currentText())

@@ -150,6 +150,19 @@ def _resource_path(filename: str) -> str:
 
     return os.path.join(base, fn)
 
+def _dev_model_path(preferred: str, fallback: str) -> str:
+    """
+    Silently prefer a dev/experimental model if it exists in the models dir,
+    otherwise fall back to the standard production model.
+    Dev models are never distributed — this is a local-only override.
+    """
+    preferred_path = model_path(preferred)
+    try:
+        if os.path.exists(preferred_path):
+            return preferred_path
+    except Exception:
+        pass
+    return model_path(fallback)
 
 class Icons:
     """
@@ -630,6 +643,12 @@ class Resources:
 
     CC_DENOISE_COLOR_PTH_LITE  = property(lambda self: model_path('deep_denoise_color_AI4_lite.pth'))
     CC_DENOISE_COLOR_ONNX_LITE = property(lambda self: model_path('deep_denoise_color_AI4_lite.onnx'))
+
+    # --- Cosmic Clarity Denoise — Walking Noise specialist (AI4.1w, full arch only) ---
+    CC_DENOISE_MONO_WALKING_PTH   = property(lambda self: model_path('deep_denoise_mono_AI4_1w.pth'))
+    CC_DENOISE_MONO_WALKING_ONNX  = property(lambda self: model_path('deep_denoise_mono_AI4_1w.onnx'))
+    CC_DENOISE_COLOR_WALKING_PTH  = property(lambda self: model_path('deep_denoise_color_AI4_1w.pth'))
+    CC_DENOISE_COLOR_WALKING_ONNX = property(lambda self: model_path('deep_denoise_color_AI4_1w.onnx'))
 
     CC_DENOISE_PTH  = property(lambda self: model_path('deep_denoise_cnn_AI3_6.pth'))
     CC_DENOISE_ONNX = property(lambda self: model_path('deep_denoise_cnn_AI3_6.onnx'))

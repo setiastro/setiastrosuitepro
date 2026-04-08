@@ -105,7 +105,7 @@ class DenoiseModels:
     mono: Any
     color: Any
     torch: Any | None = None
-    variant: str = "full"         # "full" or "lite"
+    variant: str = "full"   # "full", "lite", or "walking"
     mono_path: str = ""
     color_path: str = ""
 
@@ -196,7 +196,7 @@ def _ort_pick_io_names_single_input(session) -> tuple[str, str]:
     return img_name, out
 
 
-def _load_onnx_models(ort, *, lite: bool) -> DenoiseModels:
+def _load_onnx_models(ort, *, lite: bool, walking: bool = False) -> DenoiseModels:
     prov = ["DmlExecutionProvider", "CPUExecutionProvider"]
     R = get_resources()
 
@@ -206,7 +206,10 @@ def _load_onnx_models(ort, *, lite: bool) -> DenoiseModels:
         so.inter_op_num_threads = 1
         return ort.InferenceSession(path, sess_options=so, providers=prov)
 
-    if lite:
+    if walking:
+        mono_path  = R.CC_DENOISE_MONO_WALKING_ONNX
+        color_path = R.CC_DENOISE_COLOR_WALKING_ONNX
+    elif lite:
         mono_path  = R.CC_DENOISE_MONO_ONNX_LITE
         color_path = R.CC_DENOISE_COLOR_ONNX_LITE
     else:
@@ -222,15 +225,12 @@ def _load_onnx_models(ort, *, lite: bool) -> DenoiseModels:
         mono=mono_sess,
         color=color_sess,
         torch=None,
-        variant=("lite" if lite else "full"),
+        variant=("walking" if walking else "lite" if lite else "full"),
         mono_path=str(mono_path),
         color_path=str(color_path),
     )
 
-
-
-
-def _load_torch_models(torch, device, *, lite: bool) -> DenoiseModels:
+def _load_torch_models(torch, device, *, lite: bool, walking: bool = False) -> DenoiseModels:
     import torch.nn as nn
 
     # ---- NAFNet blocks (same style as sharpen_engine) ----
@@ -361,7 +361,10 @@ def _load_torch_models(torch, device, *, lite: bool) -> DenoiseModels:
         net.eval()
         return net.to(device)
 
-    if lite:
+    if walking:
+        mono_path  = getattr(R, "CC_DENOISE_MONO_WALKING_PTH", None)
+        color_path = getattr(R, "CC_DENOISE_COLOR_WALKING_PTH", None)
+    elif lite:
         mono_path  = getattr(R, "CC_DENOISE_MONO_PTH_LITE", None)
         color_path = getattr(R, "CC_DENOISE_COLOR_PTH_LITE", None)
     else:
@@ -382,14 +385,17 @@ def _load_torch_models(torch, device, *, lite: bool) -> DenoiseModels:
         mono=mono,
         color=color,
         torch=torch,
-        variant=("lite" if lite else "full"),
+        variant=("walking" if walking else "lite" if lite else "full"),
         mono_path=str(mono_path),
         color_path=str(color_path),
     )
 
 
-def load_models(use_gpu: bool = True, *, lite: bool = False, status_cb=print) -> DenoiseModels:
-    backend_tag = _BACKEND_TAG + ("_lite" if lite else "_full")
+def load_models(use_gpu: bool = True, *, lite: bool = False, walking: bool = False, status_cb=print) -> DenoiseModels:
+    # walking overrides lite — no lite walking model
+    if walking:
+        lite = False
+    backend_tag = _BACKEND_TAG + ("_walking" if walking else "_lite" if lite else "_full")
     is_windows = (os.name == "nt")
 
     torch = _get_torch(
@@ -398,8 +404,6 @@ def load_models(use_gpu: bool = True, *, lite: bool = False, status_cb=print) ->
         status_cb=status_cb,
     )
     ort = _get_ort(status_cb=status_cb)
-
-    # (CUDA probe unchanged)
 
     # 1) CUDA
     if use_gpu:
@@ -414,7 +418,7 @@ def load_models(use_gpu: bool = True, *, lite: bool = False, status_cb=print) ->
                 return _MODELS_CACHE[cache_key]
 
             device = torch.device("cuda")
-            models = _load_torch_models(torch, device, lite=lite)
+            models = _load_torch_models(torch, device, lite=lite, walking=walking)
             _MODELS_CACHE[cache_key] = models
             return models
 
@@ -431,7 +435,7 @@ def load_models(use_gpu: bool = True, *, lite: bool = False, status_cb=print) ->
                 return _MODELS_CACHE[cache_key]
 
             device = torch.device("mps")
-            models = _load_torch_models(torch, device, lite=lite)
+            models = _load_torch_models(torch, device, lite=lite, walking=walking)
             _MODELS_CACHE[cache_key] = models
             return models
 
@@ -446,9 +450,7 @@ def load_models(use_gpu: bool = True, *, lite: bool = False, status_cb=print) ->
             dml = torch_directml.device()
             _ = (torch.ones(1, device=dml) + 1).to("cpu").item()
 
-            models = _load_torch_models(torch, dml, lite=lite)
-
-            # smoke test (unchanged)
+            models = _load_torch_models(torch, dml, lite=lite, walking=walking)
             _MODELS_CACHE[cache_key] = models
             return models
 
@@ -467,7 +469,7 @@ def load_models(use_gpu: bool = True, *, lite: bool = False, status_cb=print) ->
             if cache_key in _MODELS_CACHE:
                 return _MODELS_CACHE[cache_key]
 
-            models = _load_onnx_models(ort, lite=lite)
+            models = _load_onnx_models(ort, lite=lite, walking=walking)
             _MODELS_CACHE[cache_key] = models
             return models
 
@@ -477,7 +479,7 @@ def load_models(use_gpu: bool = True, *, lite: bool = False, status_cb=print) ->
         return _MODELS_CACHE[cache_key]
 
     device = torch.device("cpu")
-    models = _load_torch_models(torch, device, lite=lite)
+    models = _load_torch_models(torch, device, lite=lite, walking=walking)
     _MODELS_CACHE[cache_key] = models
     return models
 
@@ -1302,6 +1304,7 @@ def denoise_rgb01(
     overlap: int = 64,
     use_gpu: bool = True,
     lite: bool = False,
+    walking: bool = False,        # ← new
     temp_stretch: bool = False,
     target_median: float = 0.25,
     progress_cb=None,
@@ -1309,12 +1312,11 @@ def denoise_rgb01(
     batch_size_override: int = 0,
 ) -> np.ndarray:
 
-    # Compatibility mode = safest possible run
     if execution_mode == "compatibility":
         batch_size_override = 1
         chunk_size = min(int(chunk_size), 256)
 
-    models = load_models(use_gpu=use_gpu, lite=lite)
+    models = load_models(use_gpu=use_gpu, lite=lite, walking=walking)
     tm = float(np.clip(target_median, 0.01, 0.50))
 
     def _log(msg: str):
@@ -1527,7 +1529,7 @@ def denoise_rgb01(
         dev = getattr(models.device, "type", None) or str(models.device)
         if use_gpu and str(dev).lower() != "cpu" and _is_device_lost_error(e):
             _log(f"[CC Denoise] GPU device lost on backend={dev}; retrying on CPU. {type(e).__name__}: {e}")
-            cpu_models = load_models(use_gpu=False, lite=lite)
+            cpu_models = load_models(use_gpu=False, lite=lite, walking=walking)
             return _run_with(cpu_models)
         raise
 
