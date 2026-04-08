@@ -226,15 +226,56 @@ class CalculationThread(QThread):
         self.catalog_file    = self.get_catalog_file_path()
 
     def get_catalog_file_path(self) -> str:
+        """
+        Locate the celestial catalog, trying multiple locations in priority order.
+        Returns the path of the first catalog found, or the user home path as
+        a last resort (so the caller can report exactly what was missing).
+        """
         user_catalog_path = os.path.join(os.path.expanduser("~"), "celestial_catalog.csv")
-        if not os.path.exists(user_catalog_path):
-            bundled = os.path.join(_app_root(), "data", "catalogs", "celestial_catalog.csv")
+
+        # Already exists in user home — use it
+        if os.path.exists(user_catalog_path):
+            return user_catalog_path
+
+        # Build a list of candidate bundled locations to search
+        app_root = _app_root()
+        candidates = [
+            # Standard SASpro package layout
+            os.path.join(app_root, "data", "catalogs", "celestial_catalog.csv"),
+            # One level up (running from src/setiastro/saspro/)
+            os.path.join(app_root, "..", "data", "catalogs", "celestial_catalog.csv"),
+            # Two levels up (alternate layouts)
+            os.path.join(app_root, "..", "..", "data", "catalogs", "celestial_catalog.csv"),
+            # Alongside the package root
+            os.path.join(app_root, "celestial_catalog.csv"),
+            # Common GitHub clone root layouts
+            os.path.join(app_root, "..", "..", "..", "data", "catalogs", "celestial_catalog.csv"),
+        ]
+
+        # Normalise and deduplicate
+        seen = set()
+        unique_candidates = []
+        for c in candidates:
+            n = os.path.normpath(c)
+            if n not in seen:
+                seen.add(n)
+                unique_candidates.append(n)
+
+        # Try each candidate — copy to user home on first hit
+        for bundled in unique_candidates:
             if os.path.exists(bundled):
                 try:
                     shutil.copyfile(bundled, user_catalog_path)
-                except Exception:
-                    pass
-        return user_catalog_path
+                    print(f"[WIMS] Catalog copied from {bundled} → {user_catalog_path}")
+                    return user_catalog_path
+                except Exception as e:
+                    print(f"[WIMS] Could not copy catalog from {bundled}: {e}")
+                    # Use the bundled path directly if copy failed
+                    return bundled
+
+        # Nothing found — store the search paths for the error message
+        self._catalog_search_paths = unique_candidates
+        return user_catalog_path   # caller will detect missing and report paths
 
     def run(self):
         try:
@@ -254,7 +295,25 @@ class CalculationThread(QThread):
 
             catalog_file = self.catalog_file
             if not os.path.exists(catalog_file):
-                self.calculation_complete.emit(pd.DataFrame(), "Catalog file not found.")
+                searched = getattr(self, "_catalog_search_paths", [])
+                user_home = os.path.join(os.path.expanduser("~"), "celestial_catalog.csv")
+                lines = [
+                    f"Catalog file not found.",
+                    f"",
+                    f"Expected at: {user_home}",
+                ]
+                if searched:
+                    lines.append(f"Also searched bundled locations:")
+                    for p in searched:
+                        lines.append(f"  {p}")
+                lines += [
+                    f"",
+                    f"app root: {_app_root()}",
+                    f"Please ensure celestial_catalog.csv is present in one of the above locations.",
+                ]
+                msg = "\n".join(lines)
+                print(f"[WIMS] {msg}")
+                self.calculation_complete.emit(pd.DataFrame(), "Catalog file not found — check console for details.")
                 return
             df = pd.read_csv(catalog_file, encoding="ISO-8859-1")
 
