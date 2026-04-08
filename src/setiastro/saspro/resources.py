@@ -632,24 +632,23 @@ class Resources:
     CC_NS_COND_NAF_ONNX = property(lambda self: model_path('deep_nonstellar_sharp_conditional_psf_AI4.onnx'))
 
     # --- Cosmic Clarity Denoise (NAFNet AI4) ---
-    CC_DENOISE_MONO_PTH = property(
-        lambda self: _dev_model_path('deep_denoise_mono_AI4_1w.pth', 'deep_denoise_mono_AI4.pth')
-    )
-    CC_DENOISE_MONO_ONNX = property(
-        lambda self: _dev_model_path('deep_denoise_mono_AI4_1w.onnx', 'deep_denoise_mono_AI4.onnx')
-    )
-    CC_DENOISE_COLOR_PTH = property(
-        lambda self: _dev_model_path('deep_denoise_color_AI4_1w.pth', 'deep_denoise_color_AI4.pth')
-    )
-    CC_DENOISE_COLOR_ONNX = property(
-        lambda self: _dev_model_path('deep_denoise_color_AI4_1w.onnx', 'deep_denoise_color_AI4.onnx')
-    )
+    CC_DENOISE_MONO_PTH  = property(lambda self: model_path('deep_denoise_mono_AI4.pth'))
+    CC_DENOISE_MONO_ONNX = property(lambda self: model_path('deep_denoise_mono_AI4.onnx'))
+
+    CC_DENOISE_COLOR_PTH  = property(lambda self: model_path('deep_denoise_color_AI4.pth'))
+    CC_DENOISE_COLOR_ONNX = property(lambda self: model_path('deep_denoise_color_AI4.onnx'))
 
     CC_DENOISE_MONO_PTH_LITE  = property(lambda self: model_path('deep_denoise_mono_AI4_lite.pth'))
     CC_DENOISE_MONO_ONNX_LITE = property(lambda self: model_path('deep_denoise_mono_AI4_lite.onnx'))
 
     CC_DENOISE_COLOR_PTH_LITE  = property(lambda self: model_path('deep_denoise_color_AI4_lite.pth'))
     CC_DENOISE_COLOR_ONNX_LITE = property(lambda self: model_path('deep_denoise_color_AI4_lite.onnx'))
+
+    # --- Cosmic Clarity Denoise — Walking Noise specialist (AI4.1w, full arch only) ---
+    CC_DENOISE_MONO_WALKING_PTH   = property(lambda self: model_path('deep_denoise_mono_AI4_1w.pth'))
+    CC_DENOISE_MONO_WALKING_ONNX  = property(lambda self: model_path('deep_denoise_mono_AI4_1w.onnx'))
+    CC_DENOISE_COLOR_WALKING_PTH  = property(lambda self: model_path('deep_denoise_color_AI4_1w.pth'))
+    CC_DENOISE_COLOR_WALKING_ONNX = property(lambda self: model_path('deep_denoise_color_AI4_1w.onnx'))
 
     CC_DENOISE_PTH  = property(lambda self: model_path('deep_denoise_cnn_AI3_6.pth'))
     CC_DENOISE_ONNX = property(lambda self: model_path('deep_denoise_cnn_AI3_6.onnx'))

@@ -380,6 +380,7 @@ class CosmicClarityEngineWorker(QThread):
                         overlap=int(self._preset.get("overlap", 64)),
                         use_gpu=bool(self._preset.get("gpu", True)),
                         lite=bool(self._preset.get("denoise_lite", False)),
+                        walking=bool(self._preset.get("denoise_walking", False)),  # ← new
                         temp_stretch=bool(self._preset.get("temp_stretch", False)),
                         target_median=float(self._preset.get("target_median", 0.25)),
                         progress_cb=prog,
@@ -682,9 +683,19 @@ class CosmicClarityDialogPro(QDialog):
         self.chk_dn_sep.toggled.connect(self._dn_sep_changed)
         dn.addWidget(self.chk_dn_sep, 3, 0, 1, 2)
 
-        self.chk_dn_lite = QCheckBox("Use Lite denoise model (faster)")
-        self.chk_dn_lite.setToolTip("Loads width=32 denoise models (AI4_lite). Faster, slightly less detail.")
-        dn.addWidget(self.chk_dn_lite, 4, 0, 1, 2)
+        # Denoise model variant
+        self.lbl_dn_model = QLabel("Denoise Model:")
+        self.cmb_dn_model = QComboBox()
+        self.cmb_dn_model.addItems(["Standard", "Walking Noise", "Lite (faster)"])
+        self.cmb_dn_model.setToolTip(
+            "Standard: general-purpose AI4 denoise model.\n"
+            "Walking Noise: specialist model for fixed-pattern drift streaks\n"
+            "  (polar misalignment, no guiding). Also handles normal noise.\n"
+            "Lite: smaller faster model, slightly less detail."
+        )
+        self.cmb_dn_model.currentIndexChanged.connect(self._dn_model_changed)
+        dn.addWidget(self.lbl_dn_model, 4, 0)
+        dn.addWidget(self.cmb_dn_model, 4, 1)
 
         self.chk_dn_compat = QCheckBox("GPU Compatibility Mode (slower, safer)")
         self.chk_dn_compat.setToolTip(
@@ -797,7 +808,7 @@ class CosmicClarityDialogPro(QDialog):
         self.cmb_ov.currentTextChanged.connect(self._enforce_overlap_vs_chunk)
 
         self._load_cc_ui_settings()
-        self.chk_dn_lite.toggled.connect(self._save_cc_ui_settings)
+
         self.chk_dn_compat.toggled.connect(self._save_cc_ui_settings)
 
         self._mode_changed()  # set initial visibility
@@ -814,12 +825,15 @@ class CosmicClarityDialogPro(QDialog):
                 import logging
                 logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
-        self.chk_dn_lite.toggled.connect(self._save_cc_ui_settings)
+
         self.chk_aberration_first.toggled.connect(self._save_cc_ui_settings)
         self.chk_dn_compat.toggled.connect(self._save_cc_ui_settings)
 
         self.setMinimumSize(760, 520)
         self.resize(860, 560)
+
+    def _dn_model_changed(self, idx: int):
+            self._save_cc_ui_settings()
 
     def _clear_ai_cache_clicked(self):
         # Don’t allow cache clearing mid-run (can invalidate active model refs)
@@ -873,9 +887,9 @@ class CosmicClarityDialogPro(QDialog):
 
     def _load_cc_ui_settings(self):
         s = QSettings()
-
-        self.chk_dn_lite.setChecked(s.value("cc/denoise_lite", False, type=bool))
-
+        dn_model = s.value("cc/denoise_model", "Standard")
+        idx = self.cmb_dn_model.findText(dn_model)
+        self.cmb_dn_model.setCurrentIndex(max(0, idx))
         # Prefer new key; fall back to old key
         compat = s.value("cc/gpu_compat_mode", None)
         if compat is None:
@@ -897,7 +911,7 @@ class CosmicClarityDialogPro(QDialog):
 
     def _save_cc_ui_settings(self):
         s = QSettings()
-        s.setValue("cc/denoise_lite", self.chk_dn_lite.isChecked())
+        s.setValue("cc/denoise_model", self.cmb_dn_model.currentText())
         s.setValue("cc/gpu_compat_mode", self.chk_dn_compat.isChecked())
         s.setValue("cc/denoise_compat_mode", self.chk_dn_compat.isChecked())  # backward compatibility
         s.setValue("cc/temp_stretch", self.chk_temp_stretch.isChecked())
@@ -1067,7 +1081,7 @@ class CosmicClarityDialogPro(QDialog):
             self.lbl_dn_lum, self.sld_dn_lum,
             self.lbl_dn_col, self.sld_dn_col,
             self.lbl_dn_mode, self.cmb_dn_mode,
-            self.chk_dn_sep, self.chk_dn_lite
+            self.chk_dn_sep, self.cmb_dn_model, self.lbl_dn_model
         ):
             w.setVisible(show_dn)
 
@@ -1311,9 +1325,15 @@ class CosmicClarityDialogPro(QDialog):
         # Denoise
         self.sld_dn_lum.setValue(int(max(0, min(100, round(float(p.get("denoise_luma",0.5))*100)))))
         self.sld_dn_col.setValue(int(max(0, min(100, round(float(p.get("denoise_color",0.5))*100)))))
-        self.cmb_dn_mode.setCurrentText(str(p.get("denoise_mode","full")))
+        # Denoise model variant
+        if p.get("denoise_walking", False):
+            self.cmb_dn_model.setCurrentText("Walking Noise")
+        elif p.get("denoise_lite", False):
+            self.cmb_dn_model.setCurrentText("Lite (faster)")
+        else:
+            self.cmb_dn_model.setCurrentText("Standard")
         self.chk_dn_sep.setChecked(bool(p.get("separate_channels", False)))
-        self.chk_dn_lite.setChecked(bool(p.get("denoise_lite", False)))
+
         self.chk_dn_compat.setChecked(bool(
             p.get("compat_mode", p.get("denoise_compat_mode", False))
         ))
@@ -1373,12 +1393,14 @@ class CosmicClarityDialogPro(QDialog):
 
         # Denoise / Both block
         if mode in ("denoise", "both"):
+            dn_model = self.cmb_dn_model.currentText()
             preset.update({
                 "denoise_luma": self.sld_dn_lum.value() / 100.0,
                 "denoise_color": self.sld_dn_col.value() / 100.0,
                 "denoise_mode": self.cmb_dn_mode.currentText(),
                 "separate_channels": self.chk_dn_sep.isChecked(),
-                "denoise_lite": self.chk_dn_lite.isChecked(),
+                "denoise_lite":    (dn_model == "Lite (faster)"),
+                "denoise_walking": (dn_model == "Walking Noise"),
                 "denoise_compat_mode": compat,
                 "denoise_execution_mode": "compatibility" if compat else "auto",
                 "denoise_batch_size_override": 1 if compat else 0,

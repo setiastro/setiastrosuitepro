@@ -163,13 +163,14 @@ def run_cosmicclarity_on_array(
                 separate_channels=bool(preset.get("separate_channels", False)),
                 color_denoise_strength=float(preset.get("denoise_color", 0.5)),
                 use_gpu=use_gpu,
+                lite=bool(preset.get("denoise_lite", False)),
+                walking=bool(preset.get("denoise_walking", False)),
                 chunk_size=chunk_size,
                 overlap=overlap,
                 temp_stretch=bool(preset.get("temp_stretch", False)),
                 target_median=float(preset.get("target_median", 0.25)),
                 progress_cb=prog,
             )
-
         elif stage == "superres":
             out = superres_rgb01(
                 out,
