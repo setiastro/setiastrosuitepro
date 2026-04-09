@@ -1125,6 +1125,7 @@ class BlinkTab(QWidget):
         self._pending_preview_timer.timeout.connect(self._do_preview_update)
         self.play_fps = 1  # default fps (200 ms/frame)
         self._view_center_norm = None
+        self._zoom_pinned_norm = None  # (norm_cx, norm_cy) set by right-click        
         self.initUI()
         self.init_shortcuts()
 
@@ -1179,7 +1180,7 @@ class BlinkTab(QWidget):
         # --------------------
         # Instruction Label
         # --------------------
-        instruction_text = self.tr("Press 'F' to flag/unflag an image.\nRight-click on an image for more options.")
+        instruction_text = self.tr("Press 'F' to flag/unflag an image.\nRight-click on an image in the list for more options.")
         self.instruction_label = QLabel(instruction_text, self)
         self.instruction_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.instruction_label.setWordWrap(True)
@@ -1388,6 +1389,14 @@ class BlinkTab(QWidget):
         zoom_controls_layout.addWidget(self.zoom_out_btn)
         zoom_controls_layout.addWidget(self.fit_btn)
         zoom_controls_layout.addStretch(1)
+
+        zoom_hint = QLabel(self.tr("  ⓘ Right-click image to pin zoom box"), self)
+        zoom_hint.setStyleSheet("font-size: 10px; color: #888;")
+        zoom_controls_layout.addWidget(zoom_hint)
+
+        right_layout.addLayout(zoom_controls_layout)
+        zoom_controls_layout.addStretch(1)
+
         self.aggressive_button = QPushButton(self.tr("Aggressive Stretch"), self)
         self.aggressive_button.setCheckable(True)
         self.aggressive_button.clicked.connect(self.toggle_aggressive)
@@ -1448,7 +1457,7 @@ class BlinkTab(QWidget):
 
         self.fileTree.selectionModel().selectionChanged.connect(self.on_selection_changed)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-
+        self._zoom_panel.lock_btn.toggled.connect(self._on_zoom_lock_toggled)
         self.scroll_area.horizontalScrollBar().valueChanged.connect(
             lambda _: (self._capture_view_center_norm(), 
                        self._update_zoom_panel_to_viewport_center())
@@ -1473,6 +1482,11 @@ class BlinkTab(QWidget):
         if hasattr(self, "_zoom_rect_overlay") and hasattr(self, "scroll_area"):
             self._zoom_rect_overlay.setGeometry(self.scroll_area.viewport().rect())
 
+    def _on_zoom_lock_toggled(self, checked: bool):
+        if not checked:
+            # Unlocking — clear pin, resume viewport-center tracking
+            self._zoom_pinned_norm = None
+            self._update_zoom_panel_to_viewport_center()
 
     @staticmethod
     def _ensure_float01(img):
@@ -3757,68 +3771,112 @@ class BlinkTab(QWidget):
         self.apply_zoom()
         event.accept()
 
-    def _update_zoom_panel_to_viewport_center(self):
-        """Update zoom panel to show the center of the current viewport, draw overlay rect."""
+    def _apply_zoom_at_norm(self, norm_cx, norm_cy):
+        """Push normalized coords to zoom panel and update overlay rect."""
+        if not self.current_pixmap or self.current_pixmap.isNull():
+            return
+
+        src_x = int(norm_cx * self.current_pixmap.width())
+        src_y = int(norm_cy * self.current_pixmap.height())
+
+        # Bypass the lock by writing directly to zoom panel internals
+        # instead of toggling lock_btn (which would fire _on_zoom_lock_toggled)
+        zp = self._zoom_panel
+        zp._source_pixmap = self.current_pixmap
+        zp._norm_cx = float(norm_cx)
+        zp._norm_cy = float(norm_cy)
+        zp.coords_label.setText(f"({src_x}, {src_y})")
+        zp._redraw()
+
+        # Update overlay rect
+        if not hasattr(self, "_zoom_rect_overlay"):
+            return
+
+        label_w = max(1, self.preview_label.width())
+        label_h = max(1, self.preview_label.height())
+        hbar = self.scroll_area.horizontalScrollBar()
+        vbar = self.scroll_area.verticalScrollBar()
+
+        factor = zp._factor
+        panel_w = max(1, zp.zoom_label.width())
+        panel_h = max(1, zp.zoom_label.height())
+
+        crop_w_src = max(16, int(panel_w / factor))
+        crop_h_src = max(16, int(panel_h / factor))
+
+        scale_x = label_w / max(1, self.current_pixmap.width())
+        scale_y = label_h / max(1, self.current_pixmap.height())
+
+        crop_w_label = crop_w_src * scale_x
+        crop_h_label = crop_h_src * scale_y
+
+        cx_label = norm_cx * label_w
+        cy_label = norm_cy * label_h
+
+        x0_label = cx_label - crop_w_label / 2.0
+        y0_label = cy_label - crop_h_label / 2.0
+        x0_label = max(0.0, min(x0_label, label_w - crop_w_label))
+        y0_label = max(0.0, min(y0_label, label_h - crop_h_label))
+
+        vp_x = x0_label - hbar.value()
+        vp_y = y0_label - vbar.value()
+
+        self._zoom_rect_overlay.set_rect(
+            QRectF(vp_x, vp_y, crop_w_label, crop_h_label)
+        )
+
+    def _center_zoom_to_viewport_pos(self, viewport_pos):
+        """Right-click: pin the zoom box to this position and lock it there."""
         if not self.current_pixmap or self.current_pixmap.isNull():
             return
         if not hasattr(self, "_zoom_panel"):
             return
 
-        sa = self.scroll_area
-        vp = sa.viewport()
-        hbar = sa.horizontalScrollBar()
-        vbar = sa.verticalScrollBar()
+        label = self.preview_label
+        label_w = max(1, label.width())
+        label_h = max(1, label.height())
 
-        cx_label = hbar.value() + vp.width() / 2.0
-        cy_label = vbar.value() + vp.height() / 2.0
+        hbar = self.scroll_area.horizontalScrollBar()
+        vbar = self.scroll_area.verticalScrollBar()
 
-        label_w = max(1, self.preview_label.width())
-        label_h = max(1, self.preview_label.height())
+        lx = viewport_pos.x() + hbar.value()
+        ly = viewport_pos.y() + vbar.value()
 
-        norm_cx = max(0.0, min(1.0, cx_label / label_w))
-        norm_cy = max(0.0, min(1.0, cy_label / label_h))
+        norm_cx = max(0.0, min(1.0, lx / label_w))
+        norm_cy = max(0.0, min(1.0, ly / label_h))
 
-        src_x = int(norm_cx * self.current_pixmap.width())
-        src_y = int(norm_cy * self.current_pixmap.height())
+        # Store the pin in normalized image coords
+        self._zoom_pinned_norm = (norm_cx, norm_cy)
 
-        self._zoom_panel.set_source(self.current_pixmap, norm_cx, norm_cy, src_x, src_y)
+        # Lock the zoom panel so set_source respects the pin
+        self._zoom_panel.lock_btn.setChecked(True)
 
-        # --- Draw overlay rect on main preview ---
-        if hasattr(self, "_zoom_rect_overlay"):
-            zp = self._zoom_panel
-            factor = zp._factor
-            panel_w = max(1, zp.zoom_label.width())
-            panel_h = max(1, zp.zoom_label.height())
+        self._apply_zoom_at_norm(norm_cx, norm_cy)
 
-            # crop size in source pixmap pixels
-            crop_w_src = max(16, int(panel_w / factor))
-            crop_h_src = max(16, int(panel_h / factor))
+    def _update_zoom_panel_to_viewport_center(self):
+        """Update zoom panel — use pinned position if set, otherwise viewport center."""
+        if not self.current_pixmap or self.current_pixmap.isNull():
+            return
+        if not hasattr(self, "_zoom_panel"):
+            return
 
-            # scale factor: label pixels per source pixel
-            scale_x = label_w / max(1, self.current_pixmap.width())
-            scale_y = label_h / max(1, self.current_pixmap.height())
+        if self._zoom_pinned_norm is not None:
+            # Use pinned position — same spot across image switches
+            norm_cx, norm_cy = self._zoom_pinned_norm
+        else:
+            # Default: center of current viewport
+            sa = self.scroll_area
+            vp = sa.viewport()
+            hbar = sa.horizontalScrollBar()
+            vbar = sa.verticalScrollBar()
+            cx_label = hbar.value() + vp.width() / 2.0
+            cy_label = vbar.value() + vp.height() / 2.0
+            label_w = max(1, self.preview_label.width())
+            label_h = max(1, self.preview_label.height())
+            norm_cx = max(0.0, min(1.0, cx_label / label_w))
+            norm_cy = max(0.0, min(1.0, cy_label / label_h))
 
-            # crop rect in label coords
-            crop_w_label = crop_w_src * scale_x
-            crop_h_label = crop_h_src * scale_y
-
-            # top-left of crop in label coords
-            x0_label = cx_label - crop_w_label / 2.0
-            y0_label = cy_label - crop_h_label / 2.0
-
-            # clamp
-            x0_label = max(0.0, min(x0_label, label_w - crop_w_label))
-            y0_label = max(0.0, min(y0_label, label_h - crop_h_label))
-
-            # convert label coords → viewport coords (subtract scroll position)
-            # label origin in viewport = -hbar.value(), -vbar.value()
-            vp_x = x0_label - hbar.value()
-            vp_y = y0_label - vbar.value()
-
-            from PyQt6.QtCore import QRectF
-            self._zoom_rect_overlay.set_rect(
-                QRectF(vp_x, vp_y, crop_w_label, crop_h_label)
-            )
+        self._apply_zoom_at_norm(norm_cx, norm_cy)
 
     def eventFilter(self, source, event):
         if source == self.scroll_area.viewport():
@@ -3841,7 +3899,10 @@ class BlinkTab(QWidget):
                 )
                 self.last_mouse_pos = event.pos()
                 return True
-
+            elif event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.RightButton:
+                # Right-click: center zoom box on this position
+                self._center_zoom_to_viewport_pos(event.pos())
+                return True
             elif event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
                 self.dragging = False
                 self._capture_view_center_norm()
