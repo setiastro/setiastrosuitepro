@@ -19,7 +19,7 @@ from PyQt6.QtGui import (QAction, QIcon, QImage, QPixmap, QBrush, QColor, QPalet
                          QKeySequence, QWheelEvent, QShortcut, QDoubleValidator, QIntValidator)
 from PyQt6.QtWidgets import (
     QWidget, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QToolButton,
-    QTreeWidget, QTreeWidgetItem, QFileDialog, QMessageBox, QProgressBar,
+    QTreeWidget, QTreeWidgetItem, QFileDialog, QMessageBox, QProgressBar, QSizePolicy,
     QAbstractItemView, QMenu, QSplitter, QStyle, QScrollArea, QSlider, QDoubleSpinBox, QProgressDialog, QComboBox, QLineEdit, QApplication, QGridLayout, QCheckBox, QInputDialog,
     QMdiArea, QDialogButtonBox, QHeaderView
 )
@@ -949,6 +949,155 @@ class BlinkComparatorPro(QDialog):
 
         super().closeEvent(e)
 
+class _ZoomRectOverlay(QWidget):
+    """Transparent overlay that draws a rectangle showing the zoom panel's crop region."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self._rect = None  # QRectF in widget coords
+
+    def set_rect(self, rect):
+        """rect is a QRectF in this widget's coordinate space."""
+        self._rect = rect
+        self.update()
+
+    def paintEvent(self, e):
+        if not self._rect:
+            return
+        from PyQt6.QtGui import QPainter, QPen
+        p = QPainter(self)
+        pen = QPen(QColor(255, 200, 0, 220))   # yellow-ish
+        pen.setWidth(2)
+        pen.setStyle(Qt.PenStyle.SolidLine)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRect(self._rect.toRect())
+        p.end()
+
+class _BlinkZoomPanel(QWidget):
+    """
+    A compact panel showing a zoomed crop of the current blink image.
+    Updated by BlinkTab._update_zoom_panel(pixmap, norm_cx, norm_cy).
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumWidth(250)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
+
+        # Toolbar row
+        ctrl = QHBoxLayout()
+        lbl = QLabel("Zoom:")
+        lbl.setStyleSheet("font-size: 11px;")
+        ctrl.addWidget(lbl)
+
+        self.factor_combo = QComboBox()
+        self.factor_combo.addItems(["2×", "4×", "8×", "16×"])
+        self.factor_combo.setCurrentIndex(1)   # default 4×
+        self.factor_combo.setFixedWidth(56)
+        self.factor_combo.currentIndexChanged.connect(self._on_factor_changed)
+        ctrl.addWidget(self.factor_combo)
+        ctrl.addStretch(1)
+
+        self.lock_btn = QPushButton("🔒 Lock")
+        self.lock_btn.setCheckable(True)
+        self.lock_btn.setFixedWidth(64)
+        self.lock_btn.setToolTip("Lock zoom position (stop following mouse)")
+        self.lock_btn.setStyleSheet("font-size: 10px; padding: 2px 4px;")
+        ctrl.addWidget(self.lock_btn)
+        layout.addLayout(ctrl)
+
+        # Zoom image label
+        self.zoom_label = QLabel()
+        self.zoom_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.zoom_label.setStyleSheet(
+            "border: 1px solid #555; border-radius: 4px; background: #1a1a1a;"
+        )
+        self.zoom_label.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred
+        )
+        self.zoom_label.setMinimumSize(100, 100)
+        layout.addWidget(self.zoom_label, stretch=1) 
+
+        # Coords label
+        self.coords_label = QLabel("")
+        self.coords_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.coords_label.setStyleSheet("font-size: 10px; color: #888;")
+        layout.addWidget(self.coords_label)
+
+        self._source_pixmap: QPixmap | None = None
+        self._norm_cx = 0.5
+        self._norm_cy = 0.5
+        self._factors = [2, 4, 8, 16]
+        self._factor = 4
+
+    def _on_factor_changed(self, idx):
+        self._factor = self._factors[idx]
+        self._redraw()
+
+    def set_source(self, pixmap: QPixmap | None,
+                   norm_cx: float, norm_cy: float,
+                   px_x: int | None = None, px_y: int | None = None):
+        """Called by BlinkTab with the full-res pixmap and normalized center."""
+        if self.lock_btn.isChecked():
+            return
+        self._source_pixmap = pixmap
+        self._norm_cx = float(norm_cx)
+        self._norm_cy = float(norm_cy)
+        if px_x is not None and px_y is not None:
+            self.coords_label.setText(f"({px_x}, {px_y})")
+        self._redraw()
+
+    def _redraw(self):
+        pix = self._source_pixmap
+        if pix is None or pix.isNull():
+            self.zoom_label.clear()
+            return
+
+        pw = pix.width()
+        ph = pix.height()
+        if pw == 0 or ph == 0:
+            return
+
+        panel_w = max(1, self.zoom_label.width())
+        panel_h = max(1, self.zoom_label.height())
+
+        if panel_w < 32 or panel_h < 32:   # ← guard: not usably sized yet
+            return
+
+        crop_w = max(16, int(panel_w / self._factor))
+        crop_h = max(16, int(panel_h / self._factor))
+
+        cx = int(self._norm_cx * pw)
+        cy = int(self._norm_cy * ph)
+
+        x0 = max(0, min(cx - crop_w // 2, pw - crop_w))
+        y0 = max(0, min(cy - crop_h // 2, ph - crop_h))
+
+        actual_w = min(crop_w, pw - x0)
+        actual_h = min(crop_h, ph - y0)
+        if actual_w <= 0 or actual_h <= 0:
+            return
+
+        crop = pix.copy(x0, y0, actual_w, actual_h)
+        if crop.isNull():
+            return
+
+        scaled = crop.scaled(
+            panel_w, panel_h,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        if not scaled.isNull():
+            self.zoom_label.setPixmap(scaled)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        QTimer.singleShot(0, self._redraw)
+
 class BlinkTab(QWidget):
     imagesChanged = pyqtSignal(int)
     sendToStacking = pyqtSignal(list, str)
@@ -1220,56 +1369,71 @@ class BlinkTab(QWidget):
         splitter.addWidget(left_widget)
 
         # Right Column for Image Preview
-        right_widget = QWidget(self)
-        right_layout = QVBoxLayout(right_widget)
+        # Right side: splitter between full preview and zoom panel
+        right_splitter = QSplitter(Qt.Orientation.Horizontal, self)
 
-        # Zoom / preview toolbar (standardized)
+        # --- Full preview pane (existing) ---
+        preview_widget = QWidget(self)
+        right_layout = QVBoxLayout(preview_widget)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+
         zoom_controls_layout = QHBoxLayout()
-
         self.zoom_in_btn  = themed_toolbtn("zoom-in", self.tr("Zoom In"))
         self.zoom_out_btn = themed_toolbtn("zoom-out", self.tr("Zoom Out"))
         self.fit_btn      = themed_toolbtn("zoom-fit-best", self.tr("Fit to Preview"))
-
         self.zoom_in_btn.clicked.connect(self.zoom_in)
         self.zoom_out_btn.clicked.connect(self.zoom_out)
         self.fit_btn.clicked.connect(self.fit_to_preview)
-
         zoom_controls_layout.addWidget(self.zoom_in_btn)
         zoom_controls_layout.addWidget(self.zoom_out_btn)
         zoom_controls_layout.addWidget(self.fit_btn)
-
         zoom_controls_layout.addStretch(1)
-
-        # Keep Aggressive Stretch as a text toggle (it’s not really a zoom action)
         self.aggressive_button = QPushButton(self.tr("Aggressive Stretch"), self)
         self.aggressive_button.setCheckable(True)
         self.aggressive_button.clicked.connect(self.toggle_aggressive)
         zoom_controls_layout.addWidget(self.aggressive_button)
-
         right_layout.addLayout(zoom_controls_layout)
 
-        # Scroll area for the preview
         self.scroll_area = QScrollArea(self)
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.scroll_area.viewport().installEventFilter(self)
-
-        # QLabel for the image preview
         self.preview_label = QLabel(self)
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.scroll_area.setWidget(self.preview_label)
-
         right_layout.addWidget(self.scroll_area)
+        # Zoom rect overlay sits on top of the scroll area viewport
+        self._zoom_rect_overlay = _ZoomRectOverlay(self.scroll_area.viewport())
+        self._zoom_rect_overlay.setGeometry(self.scroll_area.viewport().rect())
+        self._zoom_rect_overlay.show()
+        right_splitter.addWidget(preview_widget)
 
-        # Set the layout for the right widget
-        right_widget.setLayout(right_layout)
+        # --- Zoom panel (new) ---
+        self._zoom_panel = _BlinkZoomPanel(self)
+        right_splitter.addWidget(self._zoom_panel)
 
-        # Add the right widget to the splitter
-        splitter.addWidget(right_widget)
+        # Restore splitter state; default: zoom panel ~300px
+        right_splitter.setSizes([700, 300])
+        self._right_splitter = right_splitter
 
-        # Set initial splitter sizes
-        splitter.setSizes([300, 700])  # Adjust proportions as needed
+        try:
+            s = QSettings()
+            state = s.value("blink/zoom_splitter_state", None)
+            if state is not None:
+                right_splitter.restoreState(state)
+                # Sanity check: if zoom panel collapsed too small, reset to default
+                sizes = right_splitter.sizes()
+                if len(sizes) >= 2 and sizes[1] < 200:
+                    right_splitter.setSizes([700, 300])
+        except Exception:
+            pass
+
+        right_splitter.splitterMoved.connect(self._save_zoom_splitter_state)
+
+        splitter.addWidget(left_widget)
+        splitter.addWidget(right_splitter)
+        splitter.setSizes([300, 900])
 
         # Add the splitter to the main layout
         main_layout.addWidget(splitter)
@@ -1279,17 +1443,35 @@ class BlinkTab(QWidget):
 
         # Initialize playback timer
         self.playback_timer = QTimer(self)
-        self._apply_playback_interval()  # sets interval based on self.play_fps
+        self._apply_playback_interval()
         self.playback_timer.timeout.connect(self.next_item)
 
-        # Connect the selection change signal to update the preview when arrow keys are used
         self.fileTree.selectionModel().selectionChanged.connect(self.on_selection_changed)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
-        self.scroll_area.horizontalScrollBar().valueChanged.connect(lambda _: self._capture_view_center_norm())
-        self.scroll_area.verticalScrollBar().valueChanged.connect(lambda _: self._capture_view_center_norm())
+        self.scroll_area.horizontalScrollBar().valueChanged.connect(
+            lambda _: (self._capture_view_center_norm(), 
+                       self._update_zoom_panel_to_viewport_center())
+        )
+        self.scroll_area.verticalScrollBar().valueChanged.connect(
+            lambda _: (self._capture_view_center_norm(),
+                       self._update_zoom_panel_to_viewport_center())
+        )
         self.imagesChanged.connect(self._update_loaded_count_label)
 
+    def resizeEvent(self, e):
+            super().resizeEvent(e)
+            if hasattr(self, "_zoom_rect_overlay") and hasattr(self, "scroll_area"):
+                self._zoom_rect_overlay.setGeometry(self.scroll_area.viewport().rect())
+
+    def _save_zoom_splitter_state(self, *_):
+        try:
+            s = QSettings()
+            s.setValue("blink/zoom_splitter_state", self._right_splitter.saveState())
+        except Exception:
+            pass
+        if hasattr(self, "_zoom_rect_overlay") and hasattr(self, "scroll_area"):
+            self._zoom_rect_overlay.setGeometry(self.scroll_area.viewport().rect())
 
 
     @staticmethod
@@ -2226,8 +2408,6 @@ class BlinkTab(QWidget):
         if self.metrics_window is not None:
             self.metrics_window.update_metrics([])
    
-
-
     @staticmethod
     def _load_one_image(file_path: str, target_dtype):
         """Load + pre-process one image & return all metadata."""
@@ -2242,19 +2422,24 @@ class BlinkTab(QWidget):
         if is_mono:
             image = BlinkTab.debayer_image(image, file_path, header)
 
-        image = BlinkTab._ensure_float01(image)
+        # Re-derive is_color from actual shape AFTER debayering
+        is_color_after_debayer = (image.ndim == 3 and image.shape[2] >= 3)
 
-        data = np.asarray(image, dtype=np.float32, order='C')
+        # 3) measure pre-stretch background on mono plane
+        data = np.asarray(image, dtype=np.float32)
         if data.ndim == 3:
             data = data.mean(axis=2)
         bkg = sep.Background(data)
         global_back = bkg.globalback
 
+        # 4) stretch
         target_med = 0.25
-        if image.ndim == 2:
-            stretched = stretch_mono_image(image, target_med)
+        if is_color_after_debayer:
+            stretched = stretch_color_image(image, target_med, linked=False,
+                                            no_black_clip=True)
         else:
-            stretched = stretch_color_image(image, target_med, linked=False)
+            stretched = stretch_mono_image(image, target_med,
+                                           no_black_clip=True)
 
         clipped = np.clip(stretched, 0.0, 1.0)
         if target_dtype is np.uint8:
@@ -2264,7 +2449,16 @@ class BlinkTab(QWidget):
         else:
             stored = clipped.astype(np.float32)
 
-        return file_path, header, bit_depth, is_mono, stored, global_back
+        if stored.ndim == 3:
+            for c, name in enumerate(['R','G','B']):
+                ch = stored[:,:,c].astype(np.float32)
+                if stored.dtype == np.uint8:
+                    ch /= 255.0
+                elif stored.dtype == np.uint16:
+                    ch /= 65535.0
+
+        is_mono_final = not is_color_after_debayer
+        return file_path, header, bit_depth, is_mono_final, stored, global_back
 
     @staticmethod
     def debayer_image(image, file_path, header):
@@ -2798,20 +2992,15 @@ class BlinkTab(QWidget):
         QTimer.singleShot(0, lambda: (hbar.setValue(h_target), vbar.setValue(v_target)))
 
     def apply_zoom(self):
-        """Apply current zoom to pixmap without losing scroll position."""
         if not self.current_pixmap:
             return
 
-        # keep current center if we already showed something
         had_content = (self.preview_label.pixmap() is not None) and (self.preview_label.width() > 0)
-
         if had_content:
             self._capture_view_center_norm()
         else:
-            # first time: default center
             self._view_center_norm = (0.5, 0.5)
 
-        # scale and show
         base_w = self.current_pixmap.width()
         base_h = self.current_pixmap.height()
         scaled_w = max(1, int(round(base_w * self.zoom_level)))
@@ -2824,9 +3013,10 @@ class BlinkTab(QWidget):
         )
         self.preview_label.setPixmap(scaled)
         self.preview_label.resize(scaled.size())
-
-        # restore the center we captured (or 0.5,0.5 for first time)
         self._restore_view_center_norm()
+
+        # Update zoom panel to viewport center after layout settles
+        QTimer.singleShot(0, self._update_zoom_panel_to_viewport_center)
 
     def wheelEvent(self, event: QWheelEvent):
         # Check the vertical delta to determine zoom direction.
@@ -3567,22 +3757,81 @@ class BlinkTab(QWidget):
         self.apply_zoom()
         event.accept()
 
+    def _update_zoom_panel_to_viewport_center(self):
+        """Update zoom panel to show the center of the current viewport, draw overlay rect."""
+        if not self.current_pixmap or self.current_pixmap.isNull():
+            return
+        if not hasattr(self, "_zoom_panel"):
+            return
+
+        sa = self.scroll_area
+        vp = sa.viewport()
+        hbar = sa.horizontalScrollBar()
+        vbar = sa.verticalScrollBar()
+
+        cx_label = hbar.value() + vp.width() / 2.0
+        cy_label = vbar.value() + vp.height() / 2.0
+
+        label_w = max(1, self.preview_label.width())
+        label_h = max(1, self.preview_label.height())
+
+        norm_cx = max(0.0, min(1.0, cx_label / label_w))
+        norm_cy = max(0.0, min(1.0, cy_label / label_h))
+
+        src_x = int(norm_cx * self.current_pixmap.width())
+        src_y = int(norm_cy * self.current_pixmap.height())
+
+        self._zoom_panel.set_source(self.current_pixmap, norm_cx, norm_cy, src_x, src_y)
+
+        # --- Draw overlay rect on main preview ---
+        if hasattr(self, "_zoom_rect_overlay"):
+            zp = self._zoom_panel
+            factor = zp._factor
+            panel_w = max(1, zp.zoom_label.width())
+            panel_h = max(1, zp.zoom_label.height())
+
+            # crop size in source pixmap pixels
+            crop_w_src = max(16, int(panel_w / factor))
+            crop_h_src = max(16, int(panel_h / factor))
+
+            # scale factor: label pixels per source pixel
+            scale_x = label_w / max(1, self.current_pixmap.width())
+            scale_y = label_h / max(1, self.current_pixmap.height())
+
+            # crop rect in label coords
+            crop_w_label = crop_w_src * scale_x
+            crop_h_label = crop_h_src * scale_y
+
+            # top-left of crop in label coords
+            x0_label = cx_label - crop_w_label / 2.0
+            y0_label = cy_label - crop_h_label / 2.0
+
+            # clamp
+            x0_label = max(0.0, min(x0_label, label_w - crop_w_label))
+            y0_label = max(0.0, min(y0_label, label_h - crop_h_label))
+
+            # convert label coords → viewport coords (subtract scroll position)
+            # label origin in viewport = -hbar.value(), -vbar.value()
+            vp_x = x0_label - hbar.value()
+            vp_y = y0_label - vbar.value()
+
+            from PyQt6.QtCore import QRectF
+            self._zoom_rect_overlay.set_rect(
+                QRectF(vp_x, vp_y, crop_w_label, crop_h_label)
+            )
+
     def eventFilter(self, source, event):
-        """Handle mouse events for dragging and wheel zoom on the viewport."""
         if source == self.scroll_area.viewport():
             if event.type() == QEvent.Type.Wheel:
-                # Always use wheel for zoom here; do not let QScrollArea consume it for scrolling.
                 self._wheel_zoom(event)
                 return True
 
             if event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
-                # Start dragging
                 self.dragging = True
                 self.last_mouse_pos = event.pos()
                 return True
 
             elif event.type() == QEvent.Type.MouseMove and self.dragging:
-                # Handle dragging
                 delta = event.pos() - self.last_mouse_pos
                 self.scroll_area.horizontalScrollBar().setValue(
                     self.scroll_area.horizontalScrollBar().value() - delta.x()
@@ -3595,11 +3844,11 @@ class BlinkTab(QWidget):
 
             elif event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
                 self.dragging = False
-                self._capture_view_center_norm()  # remember where the user panned to
+                self._capture_view_center_norm()
                 return True
 
         return super().eventFilter(source, event)
-
+    
     def on_selection_changed(self, selected, deselected):
         items = self.fileTree.selectedItems()
         if not items:
