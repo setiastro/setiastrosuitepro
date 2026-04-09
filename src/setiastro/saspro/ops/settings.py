@@ -517,13 +517,13 @@ class SettingsDialog(QDialog):
     def _models_open_drive_clicked(self):
         PRIMARY_FOLDER = "https://drive.google.com/drive/folders/1-fktZb3I9l-mQimJX2fZAmJCBj_t0yAF?usp=drive_link"
         BACKUP_FOLDER  = "https://drive.google.com/drive/folders/1j46RV6touQtOmtxkhdFWGm_LQKwEpTl9?usp=drive_link"
-        GITHUB_ZIP     = "https://github.com/setiastro/setiastrosuitepro/releases/download/benchmarkFIT/SASPro_Models_AI4.zip"
+        GITHUB_RELEASE = "https://github.com/setiastro/setiastrosuitepro/releases/tag/benchmarkFIT"
 
         menu = QMenu(self)
         act_primary = menu.addAction(self.tr("Primary (Google Drive)"))
         act_backup  = menu.addAction(self.tr("Backup (Google Drive)"))
         menu.addSeparator()
-        act_gh      = menu.addAction(self.tr("GitHub (no quota limit)"))
+        act_gh      = menu.addAction(self.tr("GitHub Release Page (no quota limit)"))
 
         chosen = menu.exec(self.btn_models_open_drive.mapToGlobal(self.btn_models_open_drive.rect().bottomLeft()))
         if chosen == act_primary:
@@ -531,7 +531,7 @@ class SettingsDialog(QDialog):
         elif chosen == act_backup:
             webbrowser.open(BACKUP_FOLDER)
         elif chosen == act_gh:
-            webbrowser.open(GITHUB_ZIP)
+            webbrowser.open(GITHUB_RELEASE)
 
     def start_models_update(self):
         self._models_update_clicked()
