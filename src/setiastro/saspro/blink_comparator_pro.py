@@ -63,13 +63,35 @@ class MetricsPanel(QWidget):
         self._orig_images = None       # last list passed
         self.metrics_data = None       # list of 4 numpy arrays
         self.flags = None              # list of bools
-        self._threshold_initialized = [False]*4
+        self._threshold_initialized = [False]*5
         self._open_previews = []
         self._show_guides = True  # default on (or False if you prefer)
 
         self.plots, self.scats, self.lines = [], [], []
-        titles = [self.tr("FWHM (px)"), self.tr("Eccentricity"), self.tr("Background"), self.tr("Star Count")]
-        for idx, title in enumerate(titles):
+        self.median_lines = []
+        self.sigma_lines = []
+
+        titles = [
+            self.tr("FWHM (px)"),
+            self.tr("Eccentricity"),
+            self.tr("Background"),
+            self.tr("Star Count"),
+            self.tr("Weighted Score"),
+        ]
+
+        # Layout: 3 cols × 2 rows
+        # Col 0: FWHM (row 0), Background (row 1)
+        # Col 1: Eccentricity (row 0), Star Count (row 1)
+        # Col 2: Weighted Score (rows 0-1, rowspan 2)
+        grid_positions = [
+            (0, 0),   # FWHM
+            (0, 1),   # Eccentricity
+            (1, 0),   # Background
+            (1, 1),   # Star Count
+            (0, 2),   # Weighted Score — will use rowspan=2
+        ]
+
+        for idx, (title, (grow, gcol)) in enumerate(zip(titles, grid_positions)):
             pw = pg.PlotWidget()
             pw.setTitle(title)
             pw.showGrid(x=True, y=True, alpha=0.3)
@@ -78,7 +100,7 @@ class MetricsPanel(QWidget):
             )
 
             scat = pg.ScatterPlotItem(pen=pg.mkPen(None),
-                                      brush=pg.mkBrush(100,100,255,200),
+                                      brush=pg.mkBrush(100, 100, 255, 200),
                                       size=8)
             scat.sigClicked.connect(lambda plot, pts, m=idx: self._on_point_click(m, pts))
             pw.addItem(scat)
@@ -89,31 +111,31 @@ class MetricsPanel(QWidget):
                 lambda ln, m=idx: self._on_line_move(m, ln))
             pw.addItem(line)
 
-            # --- dashed reference lines: median + ±3σ (robust) ---
             median_ln = pg.InfiniteLine(pos=0, angle=0, movable=False,
-                                        pen=pg.mkPen((220, 220, 220, 170), width=1, style=Qt.PenStyle.DashLine))
-            sigma_lo  = pg.InfiniteLine(pos=0, angle=0, movable=False,
-                                        pen=pg.mkPen((220, 220, 220, 120), width=1, style=Qt.PenStyle.DashLine))
-            sigma_hi  = pg.InfiniteLine(pos=0, angle=0, movable=False,
-                                        pen=pg.mkPen((220, 220, 220, 120), width=1, style=Qt.PenStyle.DashLine))
-
-            # keep them behind points/threshold visually
+                                        pen=pg.mkPen((220, 220, 220, 170), width=1,
+                                                     style=Qt.PenStyle.DashLine))
+            sigma_lo = pg.InfiniteLine(pos=0, angle=0, movable=False,
+                                       pen=pg.mkPen((220, 220, 220, 120), width=1,
+                                                    style=Qt.PenStyle.DashLine))
+            sigma_hi = pg.InfiniteLine(pos=0, angle=0, movable=False,
+                                       pen=pg.mkPen((220, 220, 220, 120), width=1,
+                                                    style=Qt.PenStyle.DashLine))
             median_ln.setZValue(-10)
             sigma_lo.setZValue(-10)
             sigma_hi.setZValue(-10)
-
             pw.addItem(median_ln)
             pw.addItem(sigma_lo)
             pw.addItem(sigma_hi)
 
-            # create the lists once
-            if not hasattr(self, "median_lines"):
-                self.median_lines = []
-                self.sigma_lines = []   # list of (lo, hi)
-
             self.median_lines.append(median_ln)
             self.sigma_lines.append((sigma_lo, sigma_hi))
-            grid.addWidget(pw, idx//2, idx%2)
+
+            # Weighted Score spans both rows in col 2
+            if idx == 4:
+                grid.addWidget(pw, grow, gcol, 2, 1)
+            else:
+                grid.addWidget(pw, grow, gcol)
+
             self.plots.append(pw)
             self.scats.append(scat)
             self.lines.append(line)
@@ -212,7 +234,7 @@ class MetricsPanel(QWidget):
         try:
             if img is None:
                 orig_back = entry.get("orig_background", np.nan)
-                return idx, BAD_FWHM, BAD_ECC, orig_back, 0
+                return idx, BAD_FWHM, BAD_ECC, orig_back, 0, 0.0
 
             data = np.asarray(img)
             h0, w0 = data.shape[:2]
@@ -283,7 +305,7 @@ class MetricsPanel(QWidget):
             # 5) if no stars, return "bad" metrics for culling
             if cat is None or len(cat) == 0:
                 orig_back = entry.get("orig_background", np.nan)
-                return idx, BAD_FWHM, BAD_ECC, orig_back, 0
+                return idx, BAD_FWHM, BAD_ECC, orig_back, 0, 0.0
 
             # 6) compute FWHM + ecc
             a = np.maximum(cat["a"].astype(np.float32, copy=False), 1e-12)
@@ -299,11 +321,18 @@ class MetricsPanel(QWidget):
 
             star_cnt = int(len(cat))
             orig_back = entry.get("orig_background", np.nan)
-            return idx, fwhm, ecc, orig_back, star_cnt
+
+            # Weighted score: stars / (background * eccentricity)
+            # Higher is better — more stars, less background, rounder stars
+            bg = float(orig_back) if np.isfinite(orig_back) and orig_back > 0 else 1e-6
+            ecc_safe = max(ecc, 0.01)  # avoid div/0 for perfect circles
+            weighted_score = float(star_cnt) / (bg * ecc_safe) if star_cnt > 0 else 0.0
+
+            return idx, fwhm, ecc, orig_back, star_cnt, weighted_score
 
         except Exception:
             orig_back = entry.get("orig_background", np.nan)
-            return idx, BAD_FWHM, BAD_ECC, orig_back, 0
+            return idx, BAD_FWHM, BAD_ECC, orig_back, 0, 0.0
 
 
 
@@ -323,9 +352,9 @@ class MetricsPanel(QWidget):
         n = len(loaded_images)
         if n == 0:
             self._orig_images = []
-            self.metrics_data = [np.array([])] * 4
+            self.metrics_data = [np.array([])] * 5
             self.flags = []
-            self._threshold_initialized = [False] * 4
+            self._threshold_initialized = [False] * 5
             return True
 
         # ----------------------------
@@ -335,6 +364,7 @@ class MetricsPanel(QWidget):
         m1 = np.full(n, np.nan, dtype=np.float32)  # Eccentricity
         m2 = np.full(n, np.nan, dtype=np.float32)  # Background (cached)
         m3 = np.full(n, np.nan, dtype=np.float32)  # Star count
+        m4 = np.full(n, np.nan, dtype=np.float32)  # Weighted score        
         flags = [e.get("flagged", False) for e in loaded_images]
 
         # ----------------------------
@@ -388,16 +418,17 @@ class MetricsPanel(QWidget):
                         break
 
                     try:
-                        idx, fwhm, ecc, orig_back, star_cnt = fut.result()
+                        idx, fwhm, ecc, orig_back, star_cnt, weighted_score = fut.result()
                     except Exception:
                         idx = futures.get(fut, 0)
-                        fwhm, ecc, orig_back, star_cnt = np.nan, np.nan, np.nan, 0
+                        fwhm, ecc, orig_back, star_cnt, weighted_score = np.nan, np.nan, np.nan, 0, 0.0
 
                     if 0 <= idx < n:
                         m0[idx] = fwhm
                         m1[idx] = ecc
                         m2[idx] = orig_back
                         m3[idx] = float(star_cnt)
+                        m4[idx] = float(weighted_score)
 
                     done += 1
                     prog.setValue(done)
@@ -413,9 +444,9 @@ class MetricsPanel(QWidget):
         # 4) Stash results
         # ----------------------------
         self._orig_images = loaded_images
-        self.metrics_data = [m0, m1, m2, m3]
+        self.metrics_data = [m0, m1, m2, m3, m4]
         self.flags = flags
-        self._threshold_initialized = [False] * 4
+        self._threshold_initialized = [False] * 5
         return True
 
     def plot(self, loaded_images, indices=None):
@@ -513,7 +544,7 @@ class MetricsPanel(QWidget):
             if not self._threshold_initialized[m]:
                 mx, mn = np.nanmax(y), np.nanmin(y)
                 span   = mx-mn if mx!=mn else 1.0
-                line.setPos((mx+0.05*span) if m<3 else 0)
+                line.setPos((mx+0.05*span) if m in (0, 1, 2) else 0)
                 self._threshold_initialized[m] = True
 
     def _refresh_scatter_colors(self):
@@ -703,10 +734,10 @@ class MetricsWindow(QWidget):
 
         # ─── reset & seed per-group thresholds ────────────────────
         self._thresholds_per_group.clear()
-        self._thresholds_per_group["__ALL__"] = [None]*4
+        self._thresholds_per_group["__ALL__"] = [None]*5
         for entry in loaded_images:
             filt = (entry.get('header', {}) or {}).get('FILTER', 'Unknown')
-            self._thresholds_per_group.setdefault(filt, [None]*4)
+            self._thresholds_per_group.setdefault(filt, [None]*5)
 
 
         # ─── compute & cache all metrics once ────────────────────
@@ -714,7 +745,7 @@ class MetricsWindow(QWidget):
 
         # ─── show “All” by default and plot ───────────────────────
         self._current_indices = self._order_all
-        self._apply_thresholds("All")
+        self._apply_thresholds("__All__")
         self.metrics_panel.plot(self._all_images, indices=self._current_indices)
         self.metrics_panel.set_guides_visible(self.chk_guides.isChecked())
         self._update_status()
@@ -829,7 +860,7 @@ class MetricsWindow(QWidget):
         self._update_status()
 
     def _on_group_change(self, name: str):
-        if name == self.tr("All"):
+        if name == self.tr("__All__"):
             self._current_indices = self._order_all
         else:
             # preserve Tree order inside the chosen FILTER
@@ -851,9 +882,9 @@ class MetricsWindow(QWidget):
         # (if you also want immediate re-flagging in the tree, keep your BlinkTab logic hooked here)
 
     def _apply_thresholds(self, group_id: str):
-        saved = self._thresholds_per_group.get(group_id, [None]*4)
+        saved = self._thresholds_per_group.get(group_id, [None] * 5)
         for idx, line in enumerate(self.metrics_panel.lines):
-            if saved[idx] is not None:
+            if idx < len(saved) and saved[idx] is not None:
                 line.setPos(saved[idx])
 
 
@@ -1214,7 +1245,7 @@ class BlinkTab(QWidget):
 
         left_layout.addLayout(button_layout)
 
-        self.metrics_button = QPushButton(self.tr("Interactive Metrics & Culling"), self)
+        self.metrics_button = QPushButton(self.tr("Interactive Metrics && Culling"), self)
         self.metrics_button.clicked.connect(self.show_metrics)
         left_layout.addWidget(self.metrics_button)
 
@@ -1401,7 +1432,6 @@ class BlinkTab(QWidget):
         self.aggressive_button.setCheckable(True)
         self.aggressive_button.clicked.connect(self.toggle_aggressive)
         zoom_controls_layout.addWidget(self.aggressive_button)
-        right_layout.addLayout(zoom_controls_layout)
 
         self.scroll_area = QScrollArea(self)
         self.scroll_area.setWidgetResizable(True)
@@ -1995,7 +2025,8 @@ class BlinkTab(QWidget):
         if not panel or panel.metrics_data is None:
             return
 
-        m0, m1, m2, m3 = panel.metrics_data  # FWHM, Ecc, BG, Stars
+        metrics = panel.metrics_data
+        m0, m1, m2, m3 = metrics[0], metrics[1], metrics[2], metrics[3]
         n = min(len(self.loaded_images), len(m0), len(m1), len(m2), len(m3))
 
         def fmt_f(x):
@@ -2170,7 +2201,10 @@ class BlinkTab(QWidget):
         if not isinstance(group_id, str):
             group_id = "__ALL__"
 
-        thr_list = self.thresholds_by_group.setdefault(group_id, [None]*4)
+        thr_list = self.thresholds_by_group.setdefault(group_id, [None] * 5)
+        # Expand any stale 4-element list from earlier in the session
+        while len(thr_list) < 5:
+            thr_list.append(None)
         thr_list[metric_idx] = threshold
 
         if group_id == "__ALL__":
@@ -2179,25 +2213,25 @@ class BlinkTab(QWidget):
             filt = group_id
             indices = [
                 i for i, e in enumerate(self.loaded_images)
-                if (e.get('header', {}) or {}).get('FILTER','Unknown') == filt
+                if (e.get('header', {}) or {}).get('FILTER', 'Unknown') == filt
             ]
 
-        # re‐flag only those frames in this group, OR across all 4 metrics
         for i in indices:
             entry = self.loaded_images[i]
             flagged = False
             for m, thr in enumerate(thr_list):
                 if thr is None:
                     continue
+                if m >= len(panel.metrics_data):
+                    continue
                 val = panel.metrics_data[m][i]
                 if np.isnan(val):
                     continue
-                if (m < 3 and val > thr) or (m == 3 and val < thr):
+                if (m in (0, 1, 2) and val > thr) or (m in (3, 4) and val < thr):
                     flagged = True
                     break
             entry['flagged'] = flagged
 
-            # update the tree icon
             item = self.get_tree_item_for_index(i)
             if item:
                 RED = Qt.GlobalColor.red
@@ -2210,7 +2244,6 @@ class BlinkTab(QWidget):
                     item.setText(0, name)
                     item.setForeground(0, QBrush(normal))
 
-        # now push the *entire* up-to-date flagged list into the panel
         panel.flags = [e['flagged'] for e in self.loaded_images]
         panel._refresh_scatter_colors()
         self.metrics_window._update_status()
