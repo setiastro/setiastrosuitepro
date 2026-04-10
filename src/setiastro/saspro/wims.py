@@ -446,10 +446,33 @@ class ObjectSearchResultDialog(QDialog):
             f"?target={ra:.5f}+{dec:+.5f}&fov=0.5&survey=P/DSS2/color"))
         btn_row.addWidget(btn_aladin)
 
+        # In the bottom btn_row, before btn_close:
+        btn_finder = QPushButton("Finder Chart…")
+        btn_finder.clicked.connect(self._open_finder_chart)
+        btn_row.addWidget(btn_finder)
+
         btn_close = QPushButton("Close")
         btn_close.clicked.connect(self.accept)
         btn_row.addWidget(btn_close)
         outer.addLayout(btn_row)
+
+    def _open_finder_chart(self):
+        try:
+            from setiastro.saspro.finder_chart import FinderChartFromCoordDialog
+            from PyQt6.QtCore import QSettings
+        except ImportError as e:
+            QMessageBox.warning(self, "Finder Chart",
+                f"Finder chart module not available:\n{e}")
+            return
+
+        dlg = FinderChartFromCoordDialog(
+            name=self.obj_data.get("name", "Object"),
+            ra_deg=self.obj_data.get("ra", 0.0),
+            dec_deg=self.obj_data.get("dec", 0.0),
+            settings=QSettings(),
+            parent=self,
+        )
+        dlg.show()
 
     def _add_alt_plot(self, layout, ra, dec, observer, title):
         times, hrs, obj_alts, sun_alts, moon_alts, loc = _compute_alt_curve(
@@ -1289,15 +1312,35 @@ class ObjectVisibilityDialog(QDialog):
         # Bottom buttons
         btn_row = QHBoxLayout()
         btn_row.addStretch()
+        open_finder = QPushButton("Finder Chart…")
+        open_finder.clicked.connect(self._open_finder_chart)
         open_aladin = QPushButton("Open in Aladin")
         open_aladin.clicked.connect(self._open_aladin)
         open_astrobin = QPushButton("Search AstroBin")
         open_astrobin.clicked.connect(self._open_astrobin)
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(self.close)
-        for b in (open_aladin, open_astrobin, close_btn):
+        for b in (open_finder, open_aladin, open_astrobin, close_btn):
             btn_row.addWidget(b)
         outer.addLayout(btn_row, 0)
+
+    def _open_finder_chart(self):
+        try:
+            from setiastro.saspro.finder_chart import FinderChartFromCoordDialog
+            from PyQt6.QtCore import QSettings
+        except ImportError as e:
+            QMessageBox.warning(self, "Finder Chart",
+                f"Finder chart module not available:\n{e}")
+            return
+
+        dlg = FinderChartFromCoordDialog(
+            name=self.item_data.get("name", "Object"),
+            ra_deg=self.item_data.get("ra", 0.0),
+            dec_deg=self.item_data.get("dec", 0.0),
+            settings=QSettings(),
+            parent=self,
+        )
+        dlg.show()
 
     def _compute_and_plot(self):
         ra  = self.item_data["ra"]
