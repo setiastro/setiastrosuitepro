@@ -1331,14 +1331,19 @@ def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = 
 
                     elif image_data.dtype == np.int16:
                         bit_depth = "16-bit signed"
-                        print("Identified 16-bit signed FITS image.")
-                        bzero  = original_header.get('BZERO', 0)
-                        bscale = original_header.get('BSCALE', 1)
-                        data = image_data.astype(np.float32) * float(bscale) + float(bzero)
+                        bzero  = float(original_header.get('BZERO',  0))
+                        bscale = float(original_header.get('BSCALE', 1))
+                        print(f"[load_image] int16 branch: BZERO={bzero}, BSCALE={bscale}, dtype={image_data.dtype}")
 
-                        if bzero != 0 or bscale != 1:
+                        if bzero == 32768.0 and bscale == 1.0:
+                            print("[load_image] uint16-as-int16 detected → view(np.uint16)")
+                            bit_depth = "16-bit"
+                            image = image_data.view(np.uint16).astype(np.float32) / 65535.0
+                        elif bzero != 0 or bscale != 1:
+                            data  = image_data.astype(np.float32) * bscale + bzero
                             image = np.clip(data / 65535.0, 0.0, 1.0)
                         else:
+                            data = image_data.astype(np.float32)
                             dmin = float(data.min())
                             dmax = float(data.max())
                             if dmax > dmin:

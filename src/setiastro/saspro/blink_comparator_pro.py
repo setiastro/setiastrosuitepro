@@ -19,7 +19,7 @@ from PyQt6.QtGui import (QAction, QIcon, QImage, QPixmap, QBrush, QColor, QPalet
                          QKeySequence, QWheelEvent, QShortcut, QDoubleValidator, QIntValidator)
 from PyQt6.QtWidgets import (
     QWidget, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QToolButton,
-    QTreeWidget, QTreeWidgetItem, QFileDialog, QMessageBox, QProgressBar,
+    QTreeWidget, QTreeWidgetItem, QFileDialog, QMessageBox, QProgressBar, QSizePolicy,
     QAbstractItemView, QMenu, QSplitter, QStyle, QScrollArea, QSlider, QDoubleSpinBox, QProgressDialog, QComboBox, QLineEdit, QApplication, QGridLayout, QCheckBox, QInputDialog,
     QMdiArea, QDialogButtonBox, QHeaderView
 )
@@ -63,13 +63,35 @@ class MetricsPanel(QWidget):
         self._orig_images = None       # last list passed
         self.metrics_data = None       # list of 4 numpy arrays
         self.flags = None              # list of bools
-        self._threshold_initialized = [False]*4
+        self._threshold_initialized = [False]*5
         self._open_previews = []
         self._show_guides = True  # default on (or False if you prefer)
 
         self.plots, self.scats, self.lines = [], [], []
-        titles = [self.tr("FWHM (px)"), self.tr("Eccentricity"), self.tr("Background"), self.tr("Star Count")]
-        for idx, title in enumerate(titles):
+        self.median_lines = []
+        self.sigma_lines = []
+
+        titles = [
+            self.tr("FWHM (px)"),
+            self.tr("Eccentricity"),
+            self.tr("Background"),
+            self.tr("Star Count"),
+            self.tr("Weighted Score"),
+        ]
+
+        # Layout: 3 cols × 2 rows
+        # Col 0: FWHM (row 0), Background (row 1)
+        # Col 1: Eccentricity (row 0), Star Count (row 1)
+        # Col 2: Weighted Score (rows 0-1, rowspan 2)
+        grid_positions = [
+            (0, 0),   # FWHM
+            (0, 1),   # Eccentricity
+            (1, 0),   # Background
+            (1, 1),   # Star Count
+            (0, 2),   # Weighted Score — will use rowspan=2
+        ]
+
+        for idx, (title, (grow, gcol)) in enumerate(zip(titles, grid_positions)):
             pw = pg.PlotWidget()
             pw.setTitle(title)
             pw.showGrid(x=True, y=True, alpha=0.3)
@@ -78,7 +100,7 @@ class MetricsPanel(QWidget):
             )
 
             scat = pg.ScatterPlotItem(pen=pg.mkPen(None),
-                                      brush=pg.mkBrush(100,100,255,200),
+                                      brush=pg.mkBrush(100, 100, 255, 200),
                                       size=8)
             scat.sigClicked.connect(lambda plot, pts, m=idx: self._on_point_click(m, pts))
             pw.addItem(scat)
@@ -89,31 +111,31 @@ class MetricsPanel(QWidget):
                 lambda ln, m=idx: self._on_line_move(m, ln))
             pw.addItem(line)
 
-            # --- dashed reference lines: median + ±3σ (robust) ---
             median_ln = pg.InfiniteLine(pos=0, angle=0, movable=False,
-                                        pen=pg.mkPen((220, 220, 220, 170), width=1, style=Qt.PenStyle.DashLine))
-            sigma_lo  = pg.InfiniteLine(pos=0, angle=0, movable=False,
-                                        pen=pg.mkPen((220, 220, 220, 120), width=1, style=Qt.PenStyle.DashLine))
-            sigma_hi  = pg.InfiniteLine(pos=0, angle=0, movable=False,
-                                        pen=pg.mkPen((220, 220, 220, 120), width=1, style=Qt.PenStyle.DashLine))
-
-            # keep them behind points/threshold visually
+                                        pen=pg.mkPen((220, 220, 220, 170), width=1,
+                                                     style=Qt.PenStyle.DashLine))
+            sigma_lo = pg.InfiniteLine(pos=0, angle=0, movable=False,
+                                       pen=pg.mkPen((220, 220, 220, 120), width=1,
+                                                    style=Qt.PenStyle.DashLine))
+            sigma_hi = pg.InfiniteLine(pos=0, angle=0, movable=False,
+                                       pen=pg.mkPen((220, 220, 220, 120), width=1,
+                                                    style=Qt.PenStyle.DashLine))
             median_ln.setZValue(-10)
             sigma_lo.setZValue(-10)
             sigma_hi.setZValue(-10)
-
             pw.addItem(median_ln)
             pw.addItem(sigma_lo)
             pw.addItem(sigma_hi)
 
-            # create the lists once
-            if not hasattr(self, "median_lines"):
-                self.median_lines = []
-                self.sigma_lines = []   # list of (lo, hi)
-
             self.median_lines.append(median_ln)
             self.sigma_lines.append((sigma_lo, sigma_hi))
-            grid.addWidget(pw, idx//2, idx%2)
+
+            # Weighted Score spans both rows in col 2
+            if idx == 4:
+                grid.addWidget(pw, grow, gcol, 2, 1)
+            else:
+                grid.addWidget(pw, grow, gcol)
+
             self.plots.append(pw)
             self.scats.append(scat)
             self.lines.append(line)
@@ -212,7 +234,7 @@ class MetricsPanel(QWidget):
         try:
             if img is None:
                 orig_back = entry.get("orig_background", np.nan)
-                return idx, BAD_FWHM, BAD_ECC, orig_back, 0
+                return idx, BAD_FWHM, BAD_ECC, orig_back, 0, 0.0
 
             data = np.asarray(img)
             h0, w0 = data.shape[:2]
@@ -283,7 +305,7 @@ class MetricsPanel(QWidget):
             # 5) if no stars, return "bad" metrics for culling
             if cat is None or len(cat) == 0:
                 orig_back = entry.get("orig_background", np.nan)
-                return idx, BAD_FWHM, BAD_ECC, orig_back, 0
+                return idx, BAD_FWHM, BAD_ECC, orig_back, 0, 0.0
 
             # 6) compute FWHM + ecc
             a = np.maximum(cat["a"].astype(np.float32, copy=False), 1e-12)
@@ -299,11 +321,18 @@ class MetricsPanel(QWidget):
 
             star_cnt = int(len(cat))
             orig_back = entry.get("orig_background", np.nan)
-            return idx, fwhm, ecc, orig_back, star_cnt
+
+            # Weighted score: stars / (background * eccentricity)
+            # Higher is better — more stars, less background, rounder stars
+            bg = float(orig_back) if np.isfinite(orig_back) and orig_back > 0 else 1e-6
+            ecc_safe = max(ecc, 0.01)  # avoid div/0 for perfect circles
+            weighted_score = float(star_cnt) / (bg * ecc_safe) if star_cnt > 0 else 0.0
+
+            return idx, fwhm, ecc, orig_back, star_cnt, weighted_score
 
         except Exception:
             orig_back = entry.get("orig_background", np.nan)
-            return idx, BAD_FWHM, BAD_ECC, orig_back, 0
+            return idx, BAD_FWHM, BAD_ECC, orig_back, 0, 0.0
 
 
 
@@ -323,9 +352,9 @@ class MetricsPanel(QWidget):
         n = len(loaded_images)
         if n == 0:
             self._orig_images = []
-            self.metrics_data = [np.array([])] * 4
+            self.metrics_data = [np.array([])] * 5
             self.flags = []
-            self._threshold_initialized = [False] * 4
+            self._threshold_initialized = [False] * 5
             return True
 
         # ----------------------------
@@ -335,6 +364,7 @@ class MetricsPanel(QWidget):
         m1 = np.full(n, np.nan, dtype=np.float32)  # Eccentricity
         m2 = np.full(n, np.nan, dtype=np.float32)  # Background (cached)
         m3 = np.full(n, np.nan, dtype=np.float32)  # Star count
+        m4 = np.full(n, np.nan, dtype=np.float32)  # Weighted score        
         flags = [e.get("flagged", False) for e in loaded_images]
 
         # ----------------------------
@@ -388,16 +418,17 @@ class MetricsPanel(QWidget):
                         break
 
                     try:
-                        idx, fwhm, ecc, orig_back, star_cnt = fut.result()
+                        idx, fwhm, ecc, orig_back, star_cnt, weighted_score = fut.result()
                     except Exception:
                         idx = futures.get(fut, 0)
-                        fwhm, ecc, orig_back, star_cnt = np.nan, np.nan, np.nan, 0
+                        fwhm, ecc, orig_back, star_cnt, weighted_score = np.nan, np.nan, np.nan, 0, 0.0
 
                     if 0 <= idx < n:
                         m0[idx] = fwhm
                         m1[idx] = ecc
                         m2[idx] = orig_back
                         m3[idx] = float(star_cnt)
+                        m4[idx] = float(weighted_score)
 
                     done += 1
                     prog.setValue(done)
@@ -413,9 +444,9 @@ class MetricsPanel(QWidget):
         # 4) Stash results
         # ----------------------------
         self._orig_images = loaded_images
-        self.metrics_data = [m0, m1, m2, m3]
+        self.metrics_data = [m0, m1, m2, m3, m4]
         self.flags = flags
-        self._threshold_initialized = [False] * 4
+        self._threshold_initialized = [False] * 5
         return True
 
     def plot(self, loaded_images, indices=None):
@@ -513,7 +544,7 @@ class MetricsPanel(QWidget):
             if not self._threshold_initialized[m]:
                 mx, mn = np.nanmax(y), np.nanmin(y)
                 span   = mx-mn if mx!=mn else 1.0
-                line.setPos((mx+0.05*span) if m<3 else 0)
+                line.setPos((mx+0.05*span) if m in (0, 1, 2) else 0)
                 self._threshold_initialized[m] = True
 
     def _refresh_scatter_colors(self):
@@ -703,10 +734,10 @@ class MetricsWindow(QWidget):
 
         # ─── reset & seed per-group thresholds ────────────────────
         self._thresholds_per_group.clear()
-        self._thresholds_per_group["__ALL__"] = [None]*4
+        self._thresholds_per_group["__ALL__"] = [None]*5
         for entry in loaded_images:
             filt = (entry.get('header', {}) or {}).get('FILTER', 'Unknown')
-            self._thresholds_per_group.setdefault(filt, [None]*4)
+            self._thresholds_per_group.setdefault(filt, [None]*5)
 
 
         # ─── compute & cache all metrics once ────────────────────
@@ -714,7 +745,7 @@ class MetricsWindow(QWidget):
 
         # ─── show “All” by default and plot ───────────────────────
         self._current_indices = self._order_all
-        self._apply_thresholds("All")
+        self._apply_thresholds("__All__")
         self.metrics_panel.plot(self._all_images, indices=self._current_indices)
         self.metrics_panel.set_guides_visible(self.chk_guides.isChecked())
         self._update_status()
@@ -829,7 +860,7 @@ class MetricsWindow(QWidget):
         self._update_status()
 
     def _on_group_change(self, name: str):
-        if name == self.tr("All"):
+        if name == self.tr("__All__"):
             self._current_indices = self._order_all
         else:
             # preserve Tree order inside the chosen FILTER
@@ -851,9 +882,9 @@ class MetricsWindow(QWidget):
         # (if you also want immediate re-flagging in the tree, keep your BlinkTab logic hooked here)
 
     def _apply_thresholds(self, group_id: str):
-        saved = self._thresholds_per_group.get(group_id, [None]*4)
+        saved = self._thresholds_per_group.get(group_id, [None] * 5)
         for idx, line in enumerate(self.metrics_panel.lines):
-            if saved[idx] is not None:
+            if idx < len(saved) and saved[idx] is not None:
                 line.setPos(saved[idx])
 
 
@@ -949,6 +980,155 @@ class BlinkComparatorPro(QDialog):
 
         super().closeEvent(e)
 
+class _ZoomRectOverlay(QWidget):
+    """Transparent overlay that draws a rectangle showing the zoom panel's crop region."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self._rect = None  # QRectF in widget coords
+
+    def set_rect(self, rect):
+        """rect is a QRectF in this widget's coordinate space."""
+        self._rect = rect
+        self.update()
+
+    def paintEvent(self, e):
+        if not self._rect:
+            return
+        from PyQt6.QtGui import QPainter, QPen
+        p = QPainter(self)
+        pen = QPen(QColor(255, 200, 0, 220))   # yellow-ish
+        pen.setWidth(2)
+        pen.setStyle(Qt.PenStyle.SolidLine)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRect(self._rect.toRect())
+        p.end()
+
+class _BlinkZoomPanel(QWidget):
+    """
+    A compact panel showing a zoomed crop of the current blink image.
+    Updated by BlinkTab._update_zoom_panel(pixmap, norm_cx, norm_cy).
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumWidth(250)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
+
+        # Toolbar row
+        ctrl = QHBoxLayout()
+        lbl = QLabel("Zoom:")
+        lbl.setStyleSheet("font-size: 11px;")
+        ctrl.addWidget(lbl)
+
+        self.factor_combo = QComboBox()
+        self.factor_combo.addItems(["2×", "4×", "8×", "16×"])
+        self.factor_combo.setCurrentIndex(1)   # default 4×
+        self.factor_combo.setFixedWidth(56)
+        self.factor_combo.currentIndexChanged.connect(self._on_factor_changed)
+        ctrl.addWidget(self.factor_combo)
+        ctrl.addStretch(1)
+
+        self.lock_btn = QPushButton("🔒 Lock")
+        self.lock_btn.setCheckable(True)
+        self.lock_btn.setFixedWidth(64)
+        self.lock_btn.setToolTip("Lock zoom position (stop following mouse)")
+        self.lock_btn.setStyleSheet("font-size: 10px; padding: 2px 4px;")
+        ctrl.addWidget(self.lock_btn)
+        layout.addLayout(ctrl)
+
+        # Zoom image label
+        self.zoom_label = QLabel()
+        self.zoom_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.zoom_label.setStyleSheet(
+            "border: 1px solid #555; border-radius: 4px; background: #1a1a1a;"
+        )
+        self.zoom_label.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred
+        )
+        self.zoom_label.setMinimumSize(100, 100)
+        layout.addWidget(self.zoom_label, stretch=1) 
+
+        # Coords label
+        self.coords_label = QLabel("")
+        self.coords_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.coords_label.setStyleSheet("font-size: 10px; color: #888;")
+        layout.addWidget(self.coords_label)
+
+        self._source_pixmap: QPixmap | None = None
+        self._norm_cx = 0.5
+        self._norm_cy = 0.5
+        self._factors = [2, 4, 8, 16]
+        self._factor = 4
+
+    def _on_factor_changed(self, idx):
+        self._factor = self._factors[idx]
+        self._redraw()
+
+    def set_source(self, pixmap: QPixmap | None,
+                   norm_cx: float, norm_cy: float,
+                   px_x: int | None = None, px_y: int | None = None):
+        """Called by BlinkTab with the full-res pixmap and normalized center."""
+        if self.lock_btn.isChecked():
+            return
+        self._source_pixmap = pixmap
+        self._norm_cx = float(norm_cx)
+        self._norm_cy = float(norm_cy)
+        if px_x is not None and px_y is not None:
+            self.coords_label.setText(f"({px_x}, {px_y})")
+        self._redraw()
+
+    def _redraw(self):
+        pix = self._source_pixmap
+        if pix is None or pix.isNull():
+            self.zoom_label.clear()
+            return
+
+        pw = pix.width()
+        ph = pix.height()
+        if pw == 0 or ph == 0:
+            return
+
+        panel_w = max(1, self.zoom_label.width())
+        panel_h = max(1, self.zoom_label.height())
+
+        if panel_w < 32 or panel_h < 32:   # ← guard: not usably sized yet
+            return
+
+        crop_w = max(16, int(panel_w / self._factor))
+        crop_h = max(16, int(panel_h / self._factor))
+
+        cx = int(self._norm_cx * pw)
+        cy = int(self._norm_cy * ph)
+
+        x0 = max(0, min(cx - crop_w // 2, pw - crop_w))
+        y0 = max(0, min(cy - crop_h // 2, ph - crop_h))
+
+        actual_w = min(crop_w, pw - x0)
+        actual_h = min(crop_h, ph - y0)
+        if actual_w <= 0 or actual_h <= 0:
+            return
+
+        crop = pix.copy(x0, y0, actual_w, actual_h)
+        if crop.isNull():
+            return
+
+        scaled = crop.scaled(
+            panel_w, panel_h,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        if not scaled.isNull():
+            self.zoom_label.setPixmap(scaled)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        QTimer.singleShot(0, self._redraw)
+
 class BlinkTab(QWidget):
     imagesChanged = pyqtSignal(int)
     sendToStacking = pyqtSignal(list, str)
@@ -976,6 +1156,7 @@ class BlinkTab(QWidget):
         self._pending_preview_timer.timeout.connect(self._do_preview_update)
         self.play_fps = 1  # default fps (200 ms/frame)
         self._view_center_norm = None
+        self._zoom_pinned_norm = None  # (norm_cx, norm_cy) set by right-click        
         self.initUI()
         self.init_shortcuts()
 
@@ -1030,7 +1211,7 @@ class BlinkTab(QWidget):
         # --------------------
         # Instruction Label
         # --------------------
-        instruction_text = self.tr("Press 'F' to flag/unflag an image.\nRight-click on an image for more options.")
+        instruction_text = self.tr("Press 'F' to flag/unflag an image.\nRight-click on an image in the list for more options.")
         self.instruction_label = QLabel(instruction_text, self)
         self.instruction_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.instruction_label.setWordWrap(True)
@@ -1064,7 +1245,7 @@ class BlinkTab(QWidget):
 
         left_layout.addLayout(button_layout)
 
-        self.metrics_button = QPushButton(self.tr("Interactive Metrics & Culling"), self)
+        self.metrics_button = QPushButton(self.tr("Interactive Metrics && Culling"), self)
         self.metrics_button.clicked.connect(self.show_metrics)
         left_layout.addWidget(self.metrics_button)
 
@@ -1220,56 +1401,78 @@ class BlinkTab(QWidget):
         splitter.addWidget(left_widget)
 
         # Right Column for Image Preview
-        right_widget = QWidget(self)
-        right_layout = QVBoxLayout(right_widget)
+        # Right side: splitter between full preview and zoom panel
+        right_splitter = QSplitter(Qt.Orientation.Horizontal, self)
 
-        # Zoom / preview toolbar (standardized)
+        # --- Full preview pane (existing) ---
+        preview_widget = QWidget(self)
+        right_layout = QVBoxLayout(preview_widget)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+
         zoom_controls_layout = QHBoxLayout()
-
         self.zoom_in_btn  = themed_toolbtn("zoom-in", self.tr("Zoom In"))
         self.zoom_out_btn = themed_toolbtn("zoom-out", self.tr("Zoom Out"))
         self.fit_btn      = themed_toolbtn("zoom-fit-best", self.tr("Fit to Preview"))
-
         self.zoom_in_btn.clicked.connect(self.zoom_in)
         self.zoom_out_btn.clicked.connect(self.zoom_out)
         self.fit_btn.clicked.connect(self.fit_to_preview)
-
         zoom_controls_layout.addWidget(self.zoom_in_btn)
         zoom_controls_layout.addWidget(self.zoom_out_btn)
         zoom_controls_layout.addWidget(self.fit_btn)
-
         zoom_controls_layout.addStretch(1)
 
-        # Keep Aggressive Stretch as a text toggle (it’s not really a zoom action)
+        zoom_hint = QLabel(self.tr("  ⓘ Right-click image to pin zoom box"), self)
+        zoom_hint.setStyleSheet("font-size: 10px; color: #888;")
+        zoom_controls_layout.addWidget(zoom_hint)
+
+        right_layout.addLayout(zoom_controls_layout)
+        zoom_controls_layout.addStretch(1)
+
         self.aggressive_button = QPushButton(self.tr("Aggressive Stretch"), self)
         self.aggressive_button.setCheckable(True)
         self.aggressive_button.clicked.connect(self.toggle_aggressive)
         zoom_controls_layout.addWidget(self.aggressive_button)
 
-        right_layout.addLayout(zoom_controls_layout)
-
-        # Scroll area for the preview
         self.scroll_area = QScrollArea(self)
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.scroll_area.viewport().installEventFilter(self)
-
-        # QLabel for the image preview
         self.preview_label = QLabel(self)
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.scroll_area.setWidget(self.preview_label)
-
         right_layout.addWidget(self.scroll_area)
+        # Zoom rect overlay sits on top of the scroll area viewport
+        self._zoom_rect_overlay = _ZoomRectOverlay(self.scroll_area.viewport())
+        self._zoom_rect_overlay.setGeometry(self.scroll_area.viewport().rect())
+        self._zoom_rect_overlay.show()
+        right_splitter.addWidget(preview_widget)
 
-        # Set the layout for the right widget
-        right_widget.setLayout(right_layout)
+        # --- Zoom panel (new) ---
+        self._zoom_panel = _BlinkZoomPanel(self)
+        right_splitter.addWidget(self._zoom_panel)
 
-        # Add the right widget to the splitter
-        splitter.addWidget(right_widget)
+        # Restore splitter state; default: zoom panel ~300px
+        right_splitter.setSizes([700, 300])
+        self._right_splitter = right_splitter
 
-        # Set initial splitter sizes
-        splitter.setSizes([300, 700])  # Adjust proportions as needed
+        try:
+            s = QSettings()
+            state = s.value("blink/zoom_splitter_state", None)
+            if state is not None:
+                right_splitter.restoreState(state)
+                # Sanity check: if zoom panel collapsed too small, reset to default
+                sizes = right_splitter.sizes()
+                if len(sizes) >= 2 and sizes[1] < 200:
+                    right_splitter.setSizes([700, 300])
+        except Exception:
+            pass
+
+        right_splitter.splitterMoved.connect(self._save_zoom_splitter_state)
+
+        splitter.addWidget(left_widget)
+        splitter.addWidget(right_splitter)
+        splitter.setSizes([300, 900])
 
         # Add the splitter to the main layout
         main_layout.addWidget(splitter)
@@ -1279,18 +1482,41 @@ class BlinkTab(QWidget):
 
         # Initialize playback timer
         self.playback_timer = QTimer(self)
-        self._apply_playback_interval()  # sets interval based on self.play_fps
+        self._apply_playback_interval()
         self.playback_timer.timeout.connect(self.next_item)
 
-        # Connect the selection change signal to update the preview when arrow keys are used
         self.fileTree.selectionModel().selectionChanged.connect(self.on_selection_changed)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-
-        self.scroll_area.horizontalScrollBar().valueChanged.connect(lambda _: self._capture_view_center_norm())
-        self.scroll_area.verticalScrollBar().valueChanged.connect(lambda _: self._capture_view_center_norm())
+        self._zoom_panel.lock_btn.toggled.connect(self._on_zoom_lock_toggled)
+        self.scroll_area.horizontalScrollBar().valueChanged.connect(
+            lambda _: (self._capture_view_center_norm(), 
+                       self._update_zoom_panel_to_viewport_center())
+        )
+        self.scroll_area.verticalScrollBar().valueChanged.connect(
+            lambda _: (self._capture_view_center_norm(),
+                       self._update_zoom_panel_to_viewport_center())
+        )
         self.imagesChanged.connect(self._update_loaded_count_label)
 
+    def resizeEvent(self, e):
+            super().resizeEvent(e)
+            if hasattr(self, "_zoom_rect_overlay") and hasattr(self, "scroll_area"):
+                self._zoom_rect_overlay.setGeometry(self.scroll_area.viewport().rect())
 
+    def _save_zoom_splitter_state(self, *_):
+        try:
+            s = QSettings()
+            s.setValue("blink/zoom_splitter_state", self._right_splitter.saveState())
+        except Exception:
+            pass
+        if hasattr(self, "_zoom_rect_overlay") and hasattr(self, "scroll_area"):
+            self._zoom_rect_overlay.setGeometry(self.scroll_area.viewport().rect())
+
+    def _on_zoom_lock_toggled(self, checked: bool):
+        if not checked:
+            # Unlocking — clear pin, resume viewport-center tracking
+            self._zoom_pinned_norm = None
+            self._update_zoom_panel_to_viewport_center()
 
     @staticmethod
     def _ensure_float01(img):
@@ -1799,7 +2025,8 @@ class BlinkTab(QWidget):
         if not panel or panel.metrics_data is None:
             return
 
-        m0, m1, m2, m3 = panel.metrics_data  # FWHM, Ecc, BG, Stars
+        metrics = panel.metrics_data
+        m0, m1, m2, m3 = metrics[0], metrics[1], metrics[2], metrics[3]
         n = min(len(self.loaded_images), len(m0), len(m1), len(m2), len(m3))
 
         def fmt_f(x):
@@ -1974,7 +2201,10 @@ class BlinkTab(QWidget):
         if not isinstance(group_id, str):
             group_id = "__ALL__"
 
-        thr_list = self.thresholds_by_group.setdefault(group_id, [None]*4)
+        thr_list = self.thresholds_by_group.setdefault(group_id, [None] * 5)
+        # Expand any stale 4-element list from earlier in the session
+        while len(thr_list) < 5:
+            thr_list.append(None)
         thr_list[metric_idx] = threshold
 
         if group_id == "__ALL__":
@@ -1983,25 +2213,25 @@ class BlinkTab(QWidget):
             filt = group_id
             indices = [
                 i for i, e in enumerate(self.loaded_images)
-                if (e.get('header', {}) or {}).get('FILTER','Unknown') == filt
+                if (e.get('header', {}) or {}).get('FILTER', 'Unknown') == filt
             ]
 
-        # re‐flag only those frames in this group, OR across all 4 metrics
         for i in indices:
             entry = self.loaded_images[i]
             flagged = False
             for m, thr in enumerate(thr_list):
                 if thr is None:
                     continue
+                if m >= len(panel.metrics_data):
+                    continue
                 val = panel.metrics_data[m][i]
                 if np.isnan(val):
                     continue
-                if (m < 3 and val > thr) or (m == 3 and val < thr):
+                if (m in (0, 1, 2) and val > thr) or (m in (3, 4) and val < thr):
                     flagged = True
                     break
             entry['flagged'] = flagged
 
-            # update the tree icon
             item = self.get_tree_item_for_index(i)
             if item:
                 RED = Qt.GlobalColor.red
@@ -2014,7 +2244,6 @@ class BlinkTab(QWidget):
                     item.setText(0, name)
                     item.setForeground(0, QBrush(normal))
 
-        # now push the *entire* up-to-date flagged list into the panel
         panel.flags = [e['flagged'] for e in self.loaded_images]
         panel._refresh_scatter_colors()
         self.metrics_window._update_status()
@@ -2226,8 +2455,6 @@ class BlinkTab(QWidget):
         if self.metrics_window is not None:
             self.metrics_window.update_metrics([])
    
-
-
     @staticmethod
     def _load_one_image(file_path: str, target_dtype):
         """Load + pre-process one image & return all metadata."""
@@ -2242,19 +2469,24 @@ class BlinkTab(QWidget):
         if is_mono:
             image = BlinkTab.debayer_image(image, file_path, header)
 
-        image = BlinkTab._ensure_float01(image)
+        # Re-derive is_color from actual shape AFTER debayering
+        is_color_after_debayer = (image.ndim == 3 and image.shape[2] >= 3)
 
-        data = np.asarray(image, dtype=np.float32, order='C')
+        # 3) measure pre-stretch background on mono plane
+        data = np.asarray(image, dtype=np.float32)
         if data.ndim == 3:
             data = data.mean(axis=2)
         bkg = sep.Background(data)
         global_back = bkg.globalback
 
+        # 4) stretch
         target_med = 0.25
-        if image.ndim == 2:
-            stretched = stretch_mono_image(image, target_med)
+        if is_color_after_debayer:
+            stretched = stretch_color_image(image, target_med, linked=False,
+                                            no_black_clip=True)
         else:
-            stretched = stretch_color_image(image, target_med, linked=False)
+            stretched = stretch_mono_image(image, target_med,
+                                           no_black_clip=True)
 
         clipped = np.clip(stretched, 0.0, 1.0)
         if target_dtype is np.uint8:
@@ -2264,7 +2496,16 @@ class BlinkTab(QWidget):
         else:
             stored = clipped.astype(np.float32)
 
-        return file_path, header, bit_depth, is_mono, stored, global_back
+        if stored.ndim == 3:
+            for c, name in enumerate(['R','G','B']):
+                ch = stored[:,:,c].astype(np.float32)
+                if stored.dtype == np.uint8:
+                    ch /= 255.0
+                elif stored.dtype == np.uint16:
+                    ch /= 65535.0
+
+        is_mono_final = not is_color_after_debayer
+        return file_path, header, bit_depth, is_mono_final, stored, global_back
 
     @staticmethod
     def debayer_image(image, file_path, header):
@@ -2798,20 +3039,15 @@ class BlinkTab(QWidget):
         QTimer.singleShot(0, lambda: (hbar.setValue(h_target), vbar.setValue(v_target)))
 
     def apply_zoom(self):
-        """Apply current zoom to pixmap without losing scroll position."""
         if not self.current_pixmap:
             return
 
-        # keep current center if we already showed something
         had_content = (self.preview_label.pixmap() is not None) and (self.preview_label.width() > 0)
-
         if had_content:
             self._capture_view_center_norm()
         else:
-            # first time: default center
             self._view_center_norm = (0.5, 0.5)
 
-        # scale and show
         base_w = self.current_pixmap.width()
         base_h = self.current_pixmap.height()
         scaled_w = max(1, int(round(base_w * self.zoom_level)))
@@ -2824,9 +3060,10 @@ class BlinkTab(QWidget):
         )
         self.preview_label.setPixmap(scaled)
         self.preview_label.resize(scaled.size())
-
-        # restore the center we captured (or 0.5,0.5 for first time)
         self._restore_view_center_norm()
+
+        # Update zoom panel to viewport center after layout settles
+        QTimer.singleShot(0, self._update_zoom_panel_to_viewport_center)
 
     def wheelEvent(self, event: QWheelEvent):
         # Check the vertical delta to determine zoom direction.
@@ -3567,22 +3804,125 @@ class BlinkTab(QWidget):
         self.apply_zoom()
         event.accept()
 
+    def _apply_zoom_at_norm(self, norm_cx, norm_cy):
+        """Push normalized coords to zoom panel and update overlay rect."""
+        if not self.current_pixmap or self.current_pixmap.isNull():
+            return
+
+        src_x = int(norm_cx * self.current_pixmap.width())
+        src_y = int(norm_cy * self.current_pixmap.height())
+
+        # Bypass the lock by writing directly to zoom panel internals
+        # instead of toggling lock_btn (which would fire _on_zoom_lock_toggled)
+        zp = self._zoom_panel
+        zp._source_pixmap = self.current_pixmap
+        zp._norm_cx = float(norm_cx)
+        zp._norm_cy = float(norm_cy)
+        zp.coords_label.setText(f"({src_x}, {src_y})")
+        zp._redraw()
+
+        # Update overlay rect
+        if not hasattr(self, "_zoom_rect_overlay"):
+            return
+
+        label_w = max(1, self.preview_label.width())
+        label_h = max(1, self.preview_label.height())
+        hbar = self.scroll_area.horizontalScrollBar()
+        vbar = self.scroll_area.verticalScrollBar()
+
+        factor = zp._factor
+        panel_w = max(1, zp.zoom_label.width())
+        panel_h = max(1, zp.zoom_label.height())
+
+        crop_w_src = max(16, int(panel_w / factor))
+        crop_h_src = max(16, int(panel_h / factor))
+
+        scale_x = label_w / max(1, self.current_pixmap.width())
+        scale_y = label_h / max(1, self.current_pixmap.height())
+
+        crop_w_label = crop_w_src * scale_x
+        crop_h_label = crop_h_src * scale_y
+
+        cx_label = norm_cx * label_w
+        cy_label = norm_cy * label_h
+
+        x0_label = cx_label - crop_w_label / 2.0
+        y0_label = cy_label - crop_h_label / 2.0
+        x0_label = max(0.0, min(x0_label, label_w - crop_w_label))
+        y0_label = max(0.0, min(y0_label, label_h - crop_h_label))
+
+        vp_x = x0_label - hbar.value()
+        vp_y = y0_label - vbar.value()
+
+        self._zoom_rect_overlay.set_rect(
+            QRectF(vp_x, vp_y, crop_w_label, crop_h_label)
+        )
+
+    def _center_zoom_to_viewport_pos(self, viewport_pos):
+        """Right-click: pin the zoom box to this position and lock it there."""
+        if not self.current_pixmap or self.current_pixmap.isNull():
+            return
+        if not hasattr(self, "_zoom_panel"):
+            return
+
+        label = self.preview_label
+        label_w = max(1, label.width())
+        label_h = max(1, label.height())
+
+        hbar = self.scroll_area.horizontalScrollBar()
+        vbar = self.scroll_area.verticalScrollBar()
+
+        lx = viewport_pos.x() + hbar.value()
+        ly = viewport_pos.y() + vbar.value()
+
+        norm_cx = max(0.0, min(1.0, lx / label_w))
+        norm_cy = max(0.0, min(1.0, ly / label_h))
+
+        # Store the pin in normalized image coords
+        self._zoom_pinned_norm = (norm_cx, norm_cy)
+
+        # Lock the zoom panel so set_source respects the pin
+        self._zoom_panel.lock_btn.setChecked(True)
+
+        self._apply_zoom_at_norm(norm_cx, norm_cy)
+
+    def _update_zoom_panel_to_viewport_center(self):
+        """Update zoom panel — use pinned position if set, otherwise viewport center."""
+        if not self.current_pixmap or self.current_pixmap.isNull():
+            return
+        if not hasattr(self, "_zoom_panel"):
+            return
+
+        if self._zoom_pinned_norm is not None:
+            # Use pinned position — same spot across image switches
+            norm_cx, norm_cy = self._zoom_pinned_norm
+        else:
+            # Default: center of current viewport
+            sa = self.scroll_area
+            vp = sa.viewport()
+            hbar = sa.horizontalScrollBar()
+            vbar = sa.verticalScrollBar()
+            cx_label = hbar.value() + vp.width() / 2.0
+            cy_label = vbar.value() + vp.height() / 2.0
+            label_w = max(1, self.preview_label.width())
+            label_h = max(1, self.preview_label.height())
+            norm_cx = max(0.0, min(1.0, cx_label / label_w))
+            norm_cy = max(0.0, min(1.0, cy_label / label_h))
+
+        self._apply_zoom_at_norm(norm_cx, norm_cy)
+
     def eventFilter(self, source, event):
-        """Handle mouse events for dragging and wheel zoom on the viewport."""
         if source == self.scroll_area.viewport():
             if event.type() == QEvent.Type.Wheel:
-                # Always use wheel for zoom here; do not let QScrollArea consume it for scrolling.
                 self._wheel_zoom(event)
                 return True
 
             if event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
-                # Start dragging
                 self.dragging = True
                 self.last_mouse_pos = event.pos()
                 return True
 
             elif event.type() == QEvent.Type.MouseMove and self.dragging:
-                # Handle dragging
                 delta = event.pos() - self.last_mouse_pos
                 self.scroll_area.horizontalScrollBar().setValue(
                     self.scroll_area.horizontalScrollBar().value() - delta.x()
@@ -3592,14 +3932,17 @@ class BlinkTab(QWidget):
                 )
                 self.last_mouse_pos = event.pos()
                 return True
-
+            elif event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.RightButton:
+                # Right-click: center zoom box on this position
+                self._center_zoom_to_viewport_pos(event.pos())
+                return True
             elif event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
                 self.dragging = False
-                self._capture_view_center_norm()  # remember where the user panned to
+                self._capture_view_center_norm()
                 return True
 
         return super().eventFilter(source, event)
-
+    
     def on_selection_changed(self, selected, deselected):
         items = self.fileTree.selectedItems()
         if not items:

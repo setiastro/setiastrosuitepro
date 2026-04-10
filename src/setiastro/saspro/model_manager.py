@@ -359,23 +359,20 @@ def install_models_zip(
     manifest: dict | None = None,
 ) -> None:
     """
-    Extracts a models zip and installs it into models_root(), replacing previous contents.
+    Extracts a models zip and overlays it into models_root(), replacing matching files
+    but never deleting existing files or folders (preserves SyQon and other third-party models).
     Writes manifest.json if provided.
     """
     dst = Path(models_root())
 
-    # Use unique temp dirs per install to avoid collisions
     tmp_extract = Path(tempfile.gettempdir()) / f"saspro_models_extract_{os.getpid()}_{int(time.time())}"
-    tmp_stage = Path(tempfile.gettempdir()) / f"saspro_models_stage_{os.getpid()}_{int(time.time())}"
 
     def log(msg: str):
         if progress_cb:
             progress_cb(msg)
 
-    # clean temp (best-effort)
     try:
         shutil.rmtree(tmp_extract, ignore_errors=True)
-        shutil.rmtree(tmp_stage, ignore_errors=True)
     except Exception:
         pass
 
@@ -385,41 +382,28 @@ def install_models_zip(
         with zipfile.ZipFile(str(zip_path), "r") as z:
             z.extractall(tmp_extract)
 
-        # Some zips contain a top-level folder; normalize:
+        # Normalize top-level folder if present
         root = tmp_extract
         kids = list(root.iterdir())
         if len(kids) == 1 and kids[0].is_dir():
             root = kids[0]
 
-        # sanity: must contain at least one model file
+        # Sanity: must contain at least one model file
         any_model = any(p.suffix.lower() in (".pth", ".onnx") for p in root.rglob("*"))
         if not any_model:
             raise RuntimeError("Models zip did not contain any .pth/.onnx files.")
 
-        log(f"Installing to: {dst}")
-
-        # Stage copy
-        shutil.copytree(root, tmp_stage)
-
-        # Clear destination contents (keep dst folder stable)
+        log(f"Installing to: {dst} (overlay — existing files preserved)")
         dst.mkdir(parents=True, exist_ok=True)
-        for item in dst.iterdir():
-            try:
-                if item.is_dir():
-                    shutil.rmtree(item, ignore_errors=True)
-                else:
-                    item.unlink(missing_ok=True)
-            except Exception:
-                pass
 
-        # Copy staged contents into dst
-        for item in tmp_stage.iterdir():
+        # Overlay only — copy/overwrite files from zip, never delete anything
+        for item in root.iterdir():
             target = dst / item.name
             if item.is_dir():
-                # dirs_exist_ok requires Python 3.8+, you're on 3.12 so OK
                 shutil.copytree(item, target, dirs_exist_ok=True)
             else:
                 shutil.copy2(item, target)
+                log(f"Installed: {item.name}")
 
         if manifest:
             log("Writing manifest…")
@@ -428,8 +412,6 @@ def install_models_zip(
         log("Models installed.")
     finally:
         shutil.rmtree(tmp_extract, ignore_errors=True)
-        shutil.rmtree(tmp_stage, ignore_errors=True)
-
 
 def sha256_file(path: str | os.PathLike, *, chunk_size: int = 1024 * 1024) -> str:
     h = hashlib.sha256()
