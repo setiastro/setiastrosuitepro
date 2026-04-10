@@ -201,6 +201,529 @@ class ScoreChartDialog(QDialog):
                 lines.append(f"{d}   {s:5.1f}  {p:3d}%{marker}")
             self.text.setPlainText("\n".join(lines))
 
+class ObjectSearchThread(QThread):
+    progress     = pyqtSignal(int)
+    result_ready = pyqtSignal(list)
+
+    def __init__(self, ra_deg, dec_deg, lat, lon, tz_name, start_date_str):
+        super().__init__()
+        self.ra_deg         = ra_deg
+        self.dec_deg        = dec_deg
+        self.lat            = lat
+        self.lon            = lon
+        self.tz_name        = tz_name
+        self.start_date_str = start_date_str
+
+    def run(self):
+        from datetime import timedelta
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        try:
+            start = datetime.strptime(self.start_date_str, "%Y-%m-%d")
+            all_dates = [
+                (start + timedelta(days=i)).strftime("%Y-%m-%d")
+                for i in range(365)
+            ]
+
+            # Group into 12 chunks (~30 days each) — one thread per month
+            chunk_size = 31
+            chunks = [all_dates[i:i+chunk_size]
+                      for i in range(0, len(all_dates), chunk_size)]
+
+            results = {}
+            completed = 0
+
+            def _score_chunk(date_list):
+                out = []
+                for d_str in date_list:
+                    score, phase = _score_target_for_date(
+                        self.ra_deg, self.dec_deg,
+                        self.lat, self.lon, d_str, self.tz_name)
+                    out.append((d_str, score, phase))
+                return out
+
+            with ThreadPoolExecutor(max_workers=min(12, len(chunks))) as pool:
+                futures = {pool.submit(_score_chunk, chunk): i
+                           for i, chunk in enumerate(chunks)}
+                for future in as_completed(futures):
+                    chunk_results = future.result()
+                    for item in chunk_results:
+                        results[item[0]] = item
+                    completed += 1
+                    self.progress.emit(int(completed / len(chunks) * 100))
+
+            # Return in chronological order
+            ordered = [results[d] for d in all_dates if d in results]
+            self.progress.emit(100)
+            self.result_ready.emit(ordered)
+
+        except Exception:
+            self.progress.emit(100)
+            self.result_ready.emit([])
+
+
+class ObjectSearchResultDialog(QDialog):
+    def __init__(self, obj_data: dict, observer: dict, yearly_results: list, parent=None):
+        super().__init__(parent)
+        self.obj_data       = obj_data
+        self.observer       = observer
+        self.yearly_results = yearly_results  # [(date_str, score, phase_pct), ...]
+        name = obj_data.get("name", "Object")
+        self.setWindowTitle(f"Object Search — {name}")
+        self.resize(1000, 700)
+        self._build_ui()
+
+    def _build_ui(self):
+        from collections import defaultdict
+        import calendar
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(10, 10, 10, 10)
+        outer.setSpacing(8)
+
+        name = self.obj_data.get("name", "")
+        ra   = self.obj_data.get("ra", 0.0)
+        dec  = self.obj_data.get("dec", 0.0)
+
+        # ── Summary header ────────────────────────────────────────────────
+        if self.yearly_results:
+            best       = max(self.yearly_results, key=lambda r: r[1])
+            best_date  = best[0]
+            best_score = best[1]
+            best_dt    = datetime.strptime(best_date, "%Y-%m-%d")
+            best_month = best_dt.strftime("%B %Y")
+
+            # Monthly averages
+            month_scores = defaultdict(list)
+            for d_str, score, _ in self.yearly_results:
+                month_key = d_str[:7]  # YYYY-MM
+                month_scores[month_key].append(score)
+            best_month_key = max(month_scores, key=lambda k: sum(month_scores[k]) / len(month_scores[k]))
+            best_month_avg  = sum(month_scores[best_month_key]) / len(month_scores[best_month_key])
+            bm_dt = datetime.strptime(best_month_key + "-01", "%Y-%m-%d")
+            best_month_name = bm_dt.strftime("%B %Y")
+        else:
+            best_date = best_score = best_month_name = best_month_avg = "—"
+
+        summary = QLabel(
+            f"<b>{name}</b>   RA {ra:.3f}°  Dec {dec:+.3f}°  |  "
+            f"Best night: <b>{best_date}</b> (score {best_score:.0f}/100)  |  "
+            f"Best month: <b>{best_month_name}</b> (avg {best_month_avg:.0f}/100)"
+        )
+        summary.setWordWrap(True)
+        summary.setStyleSheet("font-size: 12px; padding: 4px;")
+        outer.addWidget(summary)
+
+        # ── Tabs ──────────────────────────────────────────────────────────
+        tabs = QTabWidget()
+        outer.addWidget(tabs, 1)
+
+        # Tab 1: 12-month score chart
+        if _HAS_PG and self.yearly_results:
+            month_tab = QWidget()
+            mt_lay = QVBoxLayout(month_tab)
+            mt_lay.setContentsMargins(4, 4, 4, 4)
+
+            pw = pg.PlotWidget()
+            pw.setLabel("bottom", "Month")
+            pw.setLabel("left", "Avg Score (0–100)")
+            pw.showGrid(x=False, y=True, alpha=0.3)
+            pw.setYRange(0, 100, padding=0.05)
+
+            # Build monthly averages in order
+            month_scores_ordered = defaultdict(list)
+            for d_str, score, phase in self.yearly_results:
+                month_scores_ordered[d_str[:7]].append(score)
+
+            sorted_months = sorted(month_scores_ordered.keys())
+            xs     = list(range(len(sorted_months)))
+            avgs   = [sum(month_scores_ordered[m]) / len(month_scores_ordered[m])
+                      for m in sorted_months]
+            labels = [(i, datetime.strptime(m + "-01", "%Y-%m-%d").strftime("%b '%y"))
+                      for i, m in enumerate(sorted_months)]
+
+            pw.getAxis("bottom").setTicks([labels])
+
+            # Color bars by score
+            for i, (avg, month) in enumerate(zip(avgs, sorted_months)):
+                r = int(255 * (1 - avg / 100))
+                g = int(200 * avg / 100)
+                bar = pg.BarGraphItem(
+                    x=[i], height=[avg], width=0.7,
+                    brush=pg.mkBrush(r, g, 80, 200),
+                    pen=pg.mkPen("w", width=0.3),
+                )
+                pw.addItem(bar)
+
+                # Score label above bar
+                txt = pg.TextItem(f"{avg:.0f}", anchor=(0.5, 1.0), color="w")
+                txt.setPos(i, avg + 1)
+                pw.addItem(txt)
+
+            # Highlight best month
+            try:
+                bi = sorted_months.index(best_month_key)
+                pw.addLine(x=bi, pen=pg.mkPen("y", width=2,
+                           style=Qt.PenStyle.DashLine))
+            except Exception:
+                pass
+
+            # Daily score line overlay
+            # Aggregate into per-day xs mapped to fractional month position
+            day_xs, day_ys = [], []
+            for d_str, score, _ in self.yearly_results:
+                m_key = d_str[:7]
+                if m_key in sorted_months:
+                    mi  = sorted_months.index(m_key)
+                    dom = int(d_str[8:10])
+                    _, mdays = calendar.monthrange(
+                        int(d_str[:4]), int(d_str[5:7]))
+                    frac = mi + (dom - 1) / mdays
+                    day_xs.append(frac)
+                    day_ys.append(score)
+
+            pw.plot(day_xs, day_ys,
+                    pen=pg.mkPen((255, 255, 100, 80), width=1),
+                    name="Daily score")
+
+            mt_lay.addWidget(pw)
+            tabs.addTab(month_tab, "Monthly Overview")
+
+        # Tab 2: Best night altitude curve
+        alt_best_tab = QWidget()
+        ab_lay = QVBoxLayout(alt_best_tab)
+        ab_lay.setContentsMargins(4, 4, 4, 4)
+        if _HAS_PG and best_date and best_date != "—":
+            try:
+                obs_best = dict(self.observer)
+                obs_best["date"] = best_date
+                obs_best["time"] = "22:00"
+                self._add_alt_plot(ab_lay, ra, dec, obs_best,
+                                   f"Altitude on best night ({best_date})")
+            except Exception as e:
+                ab_lay.addWidget(QLabel(f"Could not plot: {e}"))
+        else:
+            ab_lay.addWidget(QLabel("pyqtgraph not installed." if not _HAS_PG
+                                    else "No results available."))
+        tabs.addTab(alt_best_tab, f"Best Night ({best_date})")
+
+        # Tab 3: Tonight altitude curve
+        alt_now_tab = QWidget()
+        an_lay = QVBoxLayout(alt_now_tab)
+        an_lay.setContentsMargins(4, 4, 4, 4)
+        tonight = self.observer.get("date", datetime.now().strftime("%Y-%m-%d"))
+        if _HAS_PG:
+            try:
+                self._add_alt_plot(an_lay, ra, dec, self.observer,
+                                   f"Altitude tonight ({tonight})")
+            except Exception as e:
+                an_lay.addWidget(QLabel(f"Could not plot: {e}"))
+        else:
+            an_lay.addWidget(QLabel("pyqtgraph not installed."))
+        tabs.addTab(alt_now_tab, f"Tonight ({tonight})")
+
+        # Tab 4: SIMBAD (reuse existing thread)
+        simbad_tab = QWidget()
+        sb_lay = QVBoxLayout(simbad_tab)
+        self._simbad_text = QTextEdit()
+        self._simbad_text.setReadOnly(True)
+        self._simbad_text.setPlainText("Querying SIMBAD…")
+        sb_lay.addWidget(self._simbad_text)
+        tabs.addTab(simbad_tab, "SIMBAD Details")
+        self._start_simbad(name, ra, dec)
+
+        # Bottom row
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+
+        btn_vis = QPushButton("Full Visibility Dialog…")
+        btn_vis.clicked.connect(self._open_full_visibility)
+        btn_row.addWidget(btn_vis)
+
+        btn_aladin = QPushButton("Open in Aladin")
+        btn_aladin.clicked.connect(lambda: webbrowser.open(
+            f"https://aladin.cds.unistra.fr/AladinLite/"
+            f"?target={ra:.5f}+{dec:+.5f}&fov=0.5&survey=P/DSS2/color"))
+        btn_row.addWidget(btn_aladin)
+
+        btn_close = QPushButton("Close")
+        btn_close.clicked.connect(self.accept)
+        btn_row.addWidget(btn_close)
+        outer.addLayout(btn_row)
+
+    def _add_alt_plot(self, layout, ra, dec, observer, title):
+        """Add a self-contained altitude plot widget to layout."""
+        times, hrs, obj_alts, sun_alts, moon_alts, loc = _compute_alt_curve(
+            ra, dec,
+            observer["lat"], observer["lon"],
+            observer["date"], observer["tz"]
+        )
+        pw = pg.PlotWidget(title=title)
+        pw.setLabel("bottom", "Local Time (h)")
+        pw.setLabel("left", "Altitude (°)")
+        pw.showGrid(x=True, y=True, alpha=0.3)
+        pw.setYRange(-10, 90)
+        pw.setXRange(12, 36, padding=0)
+
+        ticks = [(h, str(h if h <= 23 else h - 24)) for h in range(12, 37, 2)]
+        pw.getAxis("bottom").setTicks([ticks])
+        pw.setBackground(pg.mkColor(40, 55, 120, 255))
+
+        # Night shading (simplified — just astro night)
+        astro_mask = sun_alts < -18
+        changes = np.where(np.diff(astro_mask.astype(int)))[0]
+        if len(changes) >= 2:
+            night_start = float(hrs[changes[0]])
+            night_end   = float(hrs[changes[-1]])
+            region = pg.LinearRegionItem(
+                values=(night_start, night_end),
+                orientation='vertical',
+                brush=pg.mkBrush(0, 0, 20, 180),
+                pen=pg.mkPen(None),
+                movable=False,
+            )
+            pw.addItem(region)
+
+        pw.plot(hrs, obj_alts,
+                pen=pg.mkPen("y", width=2.5),
+                name=self.obj_data.get("name", "Object"))
+        pw.plot(hrs, moon_alts,
+                pen=pg.mkPen((180, 180, 180), width=1.2,
+                             style=Qt.PenStyle.DashLine),
+                name="Moon")
+        pw.addLine(y=0,  pen=pg.mkPen("w", width=1, style=Qt.PenStyle.DashLine))
+        pw.addLine(y=30, pen=pg.mkPen("g", width=1, style=Qt.PenStyle.DotLine))
+        pw.addLegend()
+
+        # Mark peak altitude
+        peak_idx = int(np.argmax(obj_alts))
+        peak_alt = float(obj_alts[peak_idx])
+        peak_hr  = float(hrs[peak_idx])
+        pw.addLine(x=peak_hr, pen=pg.mkPen("r", width=1,
+                   style=Qt.PenStyle.DashLine))
+        txt = pg.TextItem(f"Peak {peak_alt:.0f}°", color="r", anchor=(0, 1))
+        txt.setPos(peak_hr, peak_alt)
+        pw.addItem(txt)
+
+        layout.addWidget(pw)
+
+        # Quick stats below the plot
+        local_tz   = pytz.timezone(observer["tz"])
+        imaging_hrs = float(np.sum((obj_alts >= 20) & (sun_alts < -18))) * (24.0 / len(times))
+        stats = QLabel(
+            f"Peak altitude: {peak_alt:.1f}°  |  "
+            f"Imaging window (>20°, astro night): {imaging_hrs:.1f} h"
+        )
+        stats.setStyleSheet("font-size: 11px; padding: 2px 4px;")
+        layout.addWidget(stats)
+
+    def _start_simbad(self, name, ra, dec):
+        alt_name = self.obj_data.get("alt_name", "")
+        self._simbad_thread = ObjectDetailThread(name, ra, dec, alt_name=alt_name)
+        self._simbad_thread.result_ready.connect(self._on_simbad_ready)
+        self._simbad_thread.start()
+
+    def _on_simbad_ready(self, info: dict):
+        s = info.get("simbad", {})
+        if not s:
+            self._simbad_text.setPlainText(
+                f"No SIMBAD match found for '{info.get('name', '')}'.")
+            return
+        maj = s.get("maj_axis", "—")
+        mn  = s.get("min_axis", "—")
+        size_str = f"{maj}′ × {mn}′" if maj != "—" else "—"
+        lines = [
+            f"Main ID:       {s.get('main_id','—')}",
+            f"Object type:   {s.get('otype','—')}",
+            f"",
+            f"V magnitude:   {s.get('vmag','—')}",
+            f"B magnitude:   {s.get('bmag','—')}",
+            f"Spectral type: {s.get('sp_type','—')}",
+            f"Angular size:  {size_str}",
+            f"",
+            f"Radial vel.:   {s.get('rv','—')} km/s",
+            f"Redshift z:    {s.get('redshift','—')}",
+            f"",
+            f"RA:            {info.get('ra', 0):.5f}°",
+            f"Dec:           {info.get('dec', 0):.5f}°",
+        ]
+        self._simbad_text.setPlainText("\n".join(lines))
+
+    def _open_full_visibility(self):
+        data = dict(self.obj_data)
+        data["horizon_points"] = []
+        dlg = ObjectVisibilityDialog(data, self.observer, parent=self)
+        dlg.show()
+
+
+class ObjectSearchDialog(QDialog):
+    """
+    Search the celestial catalog by name, then show a full analysis
+    of the best viewing period for the selected object.
+    """
+
+    def __init__(self, catalog_file: str, observer: dict, parent=None):
+        super().__init__(parent)
+        self.catalog_file = catalog_file
+        self.observer     = observer
+        self._df          = None
+        self._search_thread = None
+        self.setWindowTitle("Object Search")
+        self.resize(560, 420)
+        self._build_ui()
+        self._load_catalog()
+
+    def _load_catalog(self):
+        try:
+            self._df = pd.read_csv(self.catalog_file, encoding="ISO-8859-1")
+        except Exception as e:
+            self._status.setText(f"Could not load catalog: {e}")
+
+    def _build_ui(self):
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(12, 12, 12, 12)
+        outer.setSpacing(8)
+
+        # Search row
+        search_row = QHBoxLayout()
+        self._search_box = QLineEdit()
+        self._search_box.setPlaceholderText("Type object name, e.g. M42, NGC 891, Abell 2029…")
+        self._search_box.returnPressed.connect(self._do_search)
+        search_row.addWidget(self._search_box, 1)
+        btn_search = QPushButton("Search")
+        btn_search.clicked.connect(self._do_search)
+        search_row.addWidget(btn_search)
+        outer.addLayout(search_row)
+
+        self._status = QLabel("Enter an object name to search the catalog.")
+        self._status.setStyleSheet("font-size:11px; color: palette(placeholderText);")
+        outer.addWidget(self._status)
+
+        # Results list
+        from PyQt6.QtWidgets import QListWidget
+        self._results_list = QListWidget()
+        self._results_list.itemDoubleClicked.connect(self._on_item_selected)
+        outer.addWidget(self._results_list, 1)
+
+        # Progress bar (hidden until needed)
+        from PyQt6.QtWidgets import QProgressBar
+        self._progress = QProgressBar()
+        self._progress.setRange(0, 100)
+        self._progress.hide()
+        outer.addWidget(self._progress)
+
+        # Bottom buttons
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        self._btn_analyse = QPushButton("Analyse Selected Object…")
+        self._btn_analyse.setEnabled(False)
+        self._btn_analyse.clicked.connect(self._on_analyse)
+        btn_row.addWidget(self._btn_analyse)
+        btn_close = QPushButton("Close")
+        btn_close.clicked.connect(self.reject)
+        btn_row.addWidget(btn_close)
+        outer.addLayout(btn_row)
+
+        self._results_list.currentRowChanged.connect(
+            lambda row: self._btn_analyse.setEnabled(row >= 0))
+
+        # Store matched rows for lookup
+        self._matched_rows = []
+
+    def _do_search(self):
+        query = self._search_box.text().strip()
+        if not query:
+            return
+        if self._df is None:
+            self._status.setText("Catalog not loaded.")
+            return
+
+        import re as _re
+        q = query.lower().strip()
+        # Normalize compact catalog names for search: "m42" → "m 42", "ngc891" → "ngc 891"
+        q_spaced = _re.sub(r'^(ngc|ic|m|ugc|pgc|aco|lbn|ldn|sh2|png)\s*(\d)', r'\1 \2', q)
+        q_compact = _re.sub(r'\s+', '', q)  # also try with all spaces removed
+
+        mask = (
+            self._df["Name"].astype(str).str.lower().str.contains(q, na=False) |
+            self._df["Name"].astype(str).str.lower().str.contains(q_spaced, na=False) |
+            self._df["Name"].astype(str).str.lower().str.contains(q_compact, na=False) |
+            self._df.get("Alt Name", pd.Series(dtype=str))
+                .astype(str).str.lower().str.contains(q, na=False) |
+            self._df.get("Alt Name", pd.Series(dtype=str))
+                .astype(str).str.lower().str.contains(q_spaced, na=False)
+        )
+        matches = self._df[mask].head(50)
+
+        self._results_list.clear()
+        self._matched_rows = []
+
+        if matches.empty:
+            self._status.setText(f"No matches found for '{query}'.")
+            return
+
+        self._status.setText(f"{len(matches)} match{'es' if len(matches)!=1 else ''} found.")
+        for _, row in matches.iterrows():
+            alt  = str(row.get("Alt Name", "")) if pd.notna(row.get("Alt Name", "")) else ""
+            typ  = str(row.get("Type", ""))     if pd.notna(row.get("Type", ""))     else ""
+            mag  = str(row.get("Magnitude","")) if pd.notna(row.get("Magnitude","")) else ""
+            disp = row["Name"]
+            if alt and alt != row["Name"]:
+                disp += f"  /  {alt}"
+            if typ:
+                disp += f"  [{typ}]"
+            if mag:
+                disp += f"  mag {mag}"
+            self._results_list.addItem(disp)
+            self._matched_rows.append(row)
+
+    def _on_item_selected(self, item):
+        self._on_analyse()
+
+    def _on_analyse(self):
+        idx = self._results_list.currentRow()
+        if idx < 0 or idx >= len(self._matched_rows):
+            return
+
+        row = self._matched_rows[idx]
+        obj = {
+            "name":     str(row["Name"]),
+            "alt_name": str(row.get("Alt Name", "") or ""),
+            "ra":       float(row["RA"]),
+            "dec":      float(row["Dec"]),
+        }
+
+        if not self.observer:
+            QMessageBox.information(self, "Object Search",
+                "Run Calculate in WIMS first so the observer location is known.")
+            return
+
+        # Show a loading state and kick off the year-long score sweep
+        self._btn_analyse.setEnabled(False)
+        self._progress.setValue(0)
+        self._progress.show()
+        self._status.setText(f"Computing yearly visibility for {obj['name']}…")
+
+        start = self.observer.get("date", datetime.now().strftime("%Y-%m-%d"))
+        self._search_thread = ObjectSearchThread(
+            obj["ra"], obj["dec"],
+            self.observer["lat"], self.observer["lon"],
+            self.observer["tz"],
+            start
+        )
+        self._search_thread.progress.connect(self._progress.setValue)
+        self._search_thread.result_ready.connect(
+            lambda results, o=obj: self._on_results_ready(o, results))
+        self._current_obj = obj
+        self._search_thread.start()
+
+    def _on_results_ready(self, obj, results):
+        self._progress.hide()
+        self._btn_analyse.setEnabled(True)
+        self._status.setText(f"Done. Showing results for {obj['name']}.")
+        dlg = ObjectSearchResultDialog(obj, self.observer, results, parent=self)
+        dlg.show()
+
 # ---------------------------------------------------
 #  Worker thread
 # ---------------------------------------------------
@@ -442,11 +965,12 @@ class CalculationThread(QThread):
 class ObjectDetailThread(QThread):
     result_ready = pyqtSignal(dict)
 
-    def __init__(self, name, ra_deg, dec_deg):
+    def __init__(self, name, ra_deg, dec_deg, alt_name: str = ""):
         super().__init__()
-        self.name   = name
-        self.ra_deg = float(ra_deg)
-        self.dec_deg= float(dec_deg)
+        self.name     = name
+        self.alt_name = alt_name.strip() if alt_name else ""
+        self.ra_deg   = float(ra_deg)
+        self.dec_deg  = float(dec_deg)
 
     def run(self):
         info = {"name": self.name, "ra": self.ra_deg, "dec": self.dec_deg,
@@ -461,15 +985,52 @@ class ObjectDetailThread(QThread):
             s.add_votable_fields("otype", "flux(V)", "flux(B)", "rvz_redshift",
                                  "rvz_radvel", "sptype", "dim")
 
-            clean_name = " ".join(self.name.split())
+            def _variants_for(n: str) -> list:
+                n = " ".join(n.split())
+                variants = [n, n.replace(" ", "")]
+                
+                # For names like "NGC891" → also try "NGC 891"
+                # For names like "NGC 891" → also try "NGC891" (already covered above)
+                import re
+                spaced = re.sub(r'^(NGC|IC|M|UGC|PGC|ACO|LBN|LDN|SH2|PNG)\s*(\d)', 
+                                r'\1 \2', n, flags=re.IGNORECASE)
+                if spaced not in variants:
+                    variants.append(spaced)
+                
+                return variants
 
-            name_variants = [clean_name, clean_name.replace(" ", "")]
+            # Collect all names we have
+            all_names = [self.name]
+            if self.alt_name and self.alt_name not in ("—", "nan", "None", ""):
+                all_names.append(self.alt_name)
+
+            # Sort: NGC/IC/M names first, then everything else
+            def _priority(n):
+                nu = n.upper().strip()
+                if nu.startswith(("NGC", "IC", "M ")):
+                    return 0
+                return 1
+
+            all_names.sort(key=_priority)
+
+            name_variants = []
+            seen = set()
+            for n in all_names:
+                for v in _variants_for(n):
+                    if v not in seen:
+                        seen.add(v)
+                        name_variants.append(v)
+
+            # Keep the existing Abell expansion logic
+            clean_name = " ".join(self.name.split())
             name_lower = clean_name.lower()
             if name_lower.startswith("abell"):
                 num = clean_name.split(None, 1)[1].strip() if " " in clean_name else clean_name[5:].strip()
                 for prefix in ("ACO", "aco", "Abell"):
-                    name_variants.append(f"{prefix} {num}")
-                    name_variants.append(f"{prefix}{num}")
+                    for v in (f"{prefix} {num}", f"{prefix}{num}"):
+                        if v not in seen:
+                            seen.add(v)
+                            name_variants.append(v)
 
             seen = set()
             name_variants = [v for v in name_variants if not (v in seen or seen.add(v))]
@@ -1708,6 +2269,11 @@ class WhatsInMySkyDialog(QDialog):
         for b in (add_btn, save_btn, settings_btn):
             b.setFixedHeight(28); toolbar.addWidget(b)
 
+        search_btn = QPushButton("Search Object…")
+        search_btn.clicked.connect(self._open_object_search)
+        search_btn.setFixedHeight(28)
+        toolbar.addWidget(search_btn)
+
         horizon_btn = QPushButton("🏔 Horizon…")
         horizon_btn.clicked.connect(self.open_horizon_editor)
         horizon_btn.setFixedHeight(28)
@@ -1756,6 +2322,49 @@ class WhatsInMySkyDialog(QDialog):
         splitter.setHandleWidth(1)
         root.addWidget(splitter)
         self.resize(1100, 620)
+
+    def _open_object_search(self):
+        catalog = getattr(self, "catalog_file", None) or \
+                os.path.join(os.path.expanduser("~"), "celestial_catalog.csv")
+        if not catalog or not os.path.exists(catalog):
+            # Try to get the path from a fresh thread lookup
+            from setiastro.saspro.whatsinmysky import CalculationThread
+            t = CalculationThread.__new__(CalculationThread)
+            catalog = t.get_catalog_file_path()
+
+        if not catalog or not os.path.exists(catalog):
+            QMessageBox.warning(self, "Object Search",
+                "Catalog not found. Please run Calculate once first.")
+            return
+
+        # Read observer fields directly from the UI — no Calculate needed
+        try:
+            lat = _parse_deg_with_suffix(self.latitude_entry.text(), "lat")
+            lon = _parse_deg_with_suffix(self.longitude_entry.text(), "lon")
+        except ValueError as e:
+            QMessageBox.warning(self, "Object Search",
+                f"Invalid location — please fill in Latitude and Longitude first.\n{e}")
+            return
+
+        date_str = self.date_entry.text().strip()
+        time_str = self.time_entry.text().strip()
+        tz_str   = self.timezone_combo.currentText()
+
+        if not date_str:
+            date_str = datetime.now().strftime("%Y-%m-%d")
+        if not time_str:
+            time_str = "22:00"
+
+        observer = {
+            "lat":  lat,
+            "lon":  lon,
+            "date": date_str,
+            "time": time_str,
+            "tz":   tz_str,
+        }
+
+        dlg = ObjectSearchDialog(catalog, observer, parent=self)
+        dlg.show()
 
     # ─ Custom horizon handling ─────────────────────────────────────────────
     def _load_horizon_from_settings(self) -> list:
