@@ -452,7 +452,6 @@ class ObjectSearchResultDialog(QDialog):
         outer.addLayout(btn_row)
 
     def _add_alt_plot(self, layout, ra, dec, observer, title):
-        """Add a self-contained altitude plot widget to layout."""
         times, hrs, obj_alts, sun_alts, moon_alts, loc = _compute_alt_curve(
             ra, dec,
             observer["lat"], observer["lon"],
@@ -469,7 +468,7 @@ class ObjectSearchResultDialog(QDialog):
         pw.getAxis("bottom").setTicks([ticks])
         pw.setBackground(pg.mkColor(40, 55, 120, 255))
 
-        # Night shading (simplified — just astro night)
+        # Night shading
         astro_mask = sun_alts < -18
         changes = np.where(np.diff(astro_mask.astype(int)))[0]
         if len(changes) >= 2:
@@ -489,10 +488,39 @@ class ObjectSearchResultDialog(QDialog):
                 name=self.obj_data.get("name", "Object"))
         pw.plot(hrs, moon_alts,
                 pen=pg.mkPen((180, 180, 180), width=1.2,
-                             style=Qt.PenStyle.DashLine),
+                            style=Qt.PenStyle.DashLine),
                 name="Moon")
         pw.addLine(y=0,  pen=pg.mkPen("w", width=1, style=Qt.PenStyle.DashLine))
         pw.addLine(y=30, pen=pg.mkPen("g", width=1, style=Qt.PenStyle.DotLine))
+
+        # ── Custom horizon overlay ────────────────────────────────────────────
+        horizon_pts = observer.get("horizon_points", [])
+        if horizon_pts:
+            try:
+                obj_coord_h = SkyCoord(ra=ra * u.deg, dec=dec * u.deg)
+                frame_h     = AltAz(obstime=times, location=loc)
+                altaz_h     = obj_coord_h.transform_to(frame_h)
+                obj_az      = altaz_h.az.deg
+
+                h_lim = np.array([
+                    _horizon_min_alt(float(az), horizon_pts)
+                    for az in obj_az
+                ], dtype=float)
+
+                h_top  = pg.PlotDataItem(hrs, h_lim)
+                h_bot  = pg.PlotDataItem(hrs, np.zeros_like(h_lim))
+                h_fill = pg.FillBetweenItem(
+                    h_bot, h_top,
+                    brush=pg.mkBrush(220, 60, 60, 70),
+                )
+                pw.addItem(h_fill)
+                pw.plot(hrs, h_lim,
+                        pen=pg.mkPen((220, 80, 80), width=1.5,
+                                    style=Qt.PenStyle.DashLine),
+                        name="Horizon limit")
+            except Exception:
+                pass
+
         pw.addLegend()
 
         # Mark peak altitude
@@ -500,15 +528,13 @@ class ObjectSearchResultDialog(QDialog):
         peak_alt = float(obj_alts[peak_idx])
         peak_hr  = float(hrs[peak_idx])
         pw.addLine(x=peak_hr, pen=pg.mkPen("r", width=1,
-                   style=Qt.PenStyle.DashLine))
+                style=Qt.PenStyle.DashLine))
         txt = pg.TextItem(f"Peak {peak_alt:.0f}°", color="r", anchor=(0, 1))
         txt.setPos(peak_hr, peak_alt)
         pw.addItem(txt)
 
         layout.addWidget(pw)
 
-        # Quick stats below the plot
-        local_tz   = pytz.timezone(observer["tz"])
         imaging_hrs = float(np.sum((obj_alts >= 20) & (sun_alts < -18))) * (24.0 / len(times))
         stats = QLabel(
             f"Peak altitude: {peak_alt:.1f}°  |  "
@@ -551,7 +577,7 @@ class ObjectSearchResultDialog(QDialog):
 
     def _open_full_visibility(self):
         data = dict(self.obj_data)
-        data["horizon_points"] = []
+        data["horizon_points"] = self.observer.get("horizon_points", [])
         dlg = ObjectVisibilityDialog(data, self.observer, parent=self)
         dlg.show()
 
@@ -2356,11 +2382,12 @@ class WhatsInMySkyDialog(QDialog):
             time_str = "22:00"
 
         observer = {
-            "lat":  lat,
-            "lon":  lon,
-            "date": date_str,
-            "time": time_str,
-            "tz":   tz_str,
+            "lat":             lat,
+            "lon":             lon,
+            "date":            date_str,
+            "time":            time_str,
+            "tz":              tz_str,
+            "horizon_points":  self._horizon_points,  # ← add this
         }
 
         dlg = ObjectSearchDialog(catalog, observer, parent=self)
