@@ -689,18 +689,25 @@ class ObjectSearchDialog(QDialog):
 
         import re as _re
         q = query.lower().strip()
-        # Normalize compact catalog names for search: "m42" → "m 42", "ngc891" → "ngc 891"
-        q_spaced = _re.sub(r'^(ngc|ic|m|ugc|pgc|aco|lbn|ldn|sh2|png)\s*(\d)', r'\1 \2', q)
-        q_compact = _re.sub(r'\s+', '', q)  # also try with all spaces removed
+        q_spaced  = _re.sub(r'^(ngc|ic|m|ugc|pgc|aco|lbn|ldn|sh2|png)\s*(\d)', r'\1 \2', q)
+        q_compact = _re.sub(r'\s+', '', q)
+
+        # Also build a version where we space-normalize the catalog column itself
+        def _normalize(s):
+            s = str(s).lower().strip()
+            return _re.sub(r'^(ngc|ic|m|ugc|pgc|aco|lbn|ldn|sh2|png)\s*(\d)', r'\1 \2', s)
+
+        name_col    = self._df["Name"].astype(str).apply(_normalize)
+        altname_col = self._df.get("Alt Name", pd.Series(dtype=str)).astype(str).apply(_normalize)
 
         mask = (
-            self._df["Name"].astype(str).str.lower().str.contains(q, na=False) |
-            self._df["Name"].astype(str).str.lower().str.contains(q_spaced, na=False) |
-            self._df["Name"].astype(str).str.lower().str.contains(q_compact, na=False) |
-            self._df.get("Alt Name", pd.Series(dtype=str))
-                .astype(str).str.lower().str.contains(q, na=False) |
-            self._df.get("Alt Name", pd.Series(dtype=str))
-                .astype(str).str.lower().str.contains(q_spaced, na=False)
+            name_col.str.contains(q,         na=False) |
+            name_col.str.contains(q_spaced,  na=False) |
+            name_col.str.contains(q_compact, na=False) |
+            altname_col.str.contains(q,        na=False) |
+            altname_col.str.contains(q_spaced, na=False) |
+            # Also search raw (original) columns for partial matches
+            self._df["Name"].astype(str).str.lower().str.contains(q_compact, na=False)
         )
         matches = self._df[mask].head(50)
 
