@@ -7199,10 +7199,10 @@ class StackingSuiteDialog(QDialog):
 
         # Chunk sizes
         self.chunkHeightSpinBox = QSpinBox()
-        self.chunkHeightSpinBox.setRange(128, 8192)
+        self.chunkHeightSpinBox.setRange(32, 8192)
         self.chunkHeightSpinBox.setValue(self.settings.value("stacking/chunk_height", 512, type=int))
         self.chunkWidthSpinBox = QSpinBox()
-        self.chunkWidthSpinBox.setRange(128, 8192)
+        self.chunkWidthSpinBox.setRange(32, 8192)
         self.chunkWidthSpinBox.setValue(self.settings.value("stacking/chunk_width", 512, type=int))
         hw_row = QHBoxLayout()
         hw_row.addWidget(QLabel(self.tr("H:"))); hw_row.addWidget(self.chunkHeightSpinBox)
