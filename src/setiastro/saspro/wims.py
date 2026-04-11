@@ -650,7 +650,102 @@ class ObjectSearchResultDialog(QDialog):
         dlg = ObjectVisibilityDialog(data, self.observer, parent=self)
         dlg.show()
 
+def _parse_ra_dec(ra_str: str, dec_str: str):
+    """
+    Parse RA and Dec from flexible string formats.
+    RA accepts:  81.629  |  5h26m31.2s  |  5:26:31.2  |  5h 26m 31.2s
+    Dec accepts: 60.05   |  60d03m00s   |  60:03:00   |  -60d03m00s
+    Returns (ra_deg, dec_deg) on success, or (None, error_message) on failure.
+    """
+    import re
+    from astropy.coordinates import Angle
+    import astropy.units as u
 
+    def _parse_ra(s: str):
+        s = s.strip()
+        if not s:
+            raise ValueError("RA is empty")
+
+        # Normalize separators: 5:26:31.2 → 5h26m31.2s
+        # but only if it looks like hms (has colons and no h/d markers)
+        if re.match(r'^[\d]+:[\d]+', s) and 'h' not in s and 'd' not in s:
+            parts = s.split(':')
+            if len(parts) == 3:
+                s = f"{parts[0]}h{parts[1]}m{parts[2]}s"
+            elif len(parts) == 2:
+                s = f"{parts[0]}h{parts[1]}m"
+
+        # Add missing unit markers: "5h26m31.2" → "5h26m31.2s"
+        s = re.sub(r'(\d+\.?\d*)\s*h\s*(\d+\.?\d*)\s*m\s*(\d+\.?\d*)$',
+                   r'\1h\2m\3s', s)
+        s = re.sub(r'(\d+\.?\d*)\s*h\s*(\d+\.?\d*)$',
+                   r'\1h\2m', s)
+
+        # Try as plain degrees first if no letters
+        if re.match(r'^-?\d+\.?\d*$', s):
+            val = float(s)
+            if not (0 <= val <= 360):
+                raise ValueError(f"RA degrees must be 0–360, got {val}")
+            return val
+
+        # Try hourangle
+        try:
+            return float(Angle(s, unit=u.hourangle).deg) % 360
+        except Exception:
+            pass
+
+        # Try degrees with letter markers
+        try:
+            return float(Angle(s, unit=u.deg).deg) % 360
+        except Exception:
+            pass
+
+        raise ValueError(f"Could not parse RA: '{s}'")
+
+    def _parse_dec(s: str):
+        s = s.strip()
+        if not s:
+            raise ValueError("Dec is empty")
+
+        negative = s.startswith('-')
+
+        # Normalize colon-separated: 60:03:00 → 60d03m00s
+        if re.match(r'^-?[\d]+:[\d]+', s) and 'h' not in s and 'd' not in s:
+            sign = '-' if negative else ''
+            parts = s.lstrip('-').split(':')
+            if len(parts) == 3:
+                s = f"{sign}{parts[0]}d{parts[1]}m{parts[2]}s"
+            elif len(parts) == 2:
+                s = f"{sign}{parts[0]}d{parts[1]}m"
+
+        # Add missing trailing unit: "60d03m00" → "60d03m00s"
+        s = re.sub(r'(\d+\.?\d*)\s*d\s*(\d+\.?\d*)\s*m\s*(\d+\.?\d*)$',
+                   r'\1d\2m\3s', s)
+
+        # Plain degrees
+        if re.match(r'^-?\d+\.?\d*$', s):
+            val = float(s)
+            if not (-90 <= val <= 90):
+                raise ValueError(f"Dec degrees must be -90–90, got {val}")
+            return val
+
+        try:
+            val = float(Angle(s, unit=u.deg).deg)
+            if not (-90 <= val <= 90):
+                raise ValueError(f"Dec out of range: {val}")
+            return val
+        except Exception:
+            pass
+
+        raise ValueError(f"Could not parse Dec: '{s}'")
+
+    try:
+        ra_deg  = _parse_ra(ra_str)
+        dec_deg = _parse_dec(dec_str)
+        return ra_deg, dec_deg
+    except ValueError as e:
+        return None, str(e)
+    
 class ObjectSearchDialog(QDialog):
     """
     Search the celestial catalog by name, then show a full analysis
@@ -682,12 +777,17 @@ class ObjectSearchDialog(QDialog):
         # Search row
         search_row = QHBoxLayout()
         self._search_box = QLineEdit()
-        self._search_box.setPlaceholderText("Type object name, e.g. M42, NGC 891, Abell 2029…")
+        self._search_box.setPlaceholderText("Type object name, e.g. M42, NGC 891, Abell 1242…")
         self._search_box.returnPressed.connect(self._do_search)
         search_row.addWidget(self._search_box, 1)
         btn_search = QPushButton("Search")
         btn_search.clicked.connect(self._do_search)
         search_row.addWidget(btn_search)
+        search_row.addSpacing(20)
+        btn_manual = QPushButton("Manual RA/Dec…")
+        btn_manual.clicked.connect(self._on_manual_radec)
+        search_row.addWidget(btn_manual)
+
         outer.addLayout(search_row)
 
         self._status = QLabel("Enter an object name to search the catalog.")
@@ -725,6 +825,84 @@ class ObjectSearchDialog(QDialog):
         # Store matched rows for lookup
         self._matched_rows = []
 
+    def _on_manual_radec(self):
+        from PyQt6.QtWidgets import QDialog, QFormLayout, QDialogButtonBox
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Manual RA / Dec Entry")
+        dlg.setMinimumWidth(380)
+        form = QFormLayout(dlg)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+
+        name_edit = QLineEdit()
+        name_edit.setPlaceholderText("e.g. OU4, Squid Nebula…")
+
+        ra_edit = QLineEdit()
+        ra_edit.setPlaceholderText("81.629  or  5h26m31.2s  or  5:26:31.2")
+
+        dec_edit = QLineEdit()
+        dec_edit.setPlaceholderText("60.05  or  60d03m00s  or  60:03:00")
+
+        hint = QLabel(
+            "<small>RA accepts degrees, h m s, or hh:mm:ss.s<br>"
+            "Dec accepts degrees, d m s, or dd:mm:ss.s  (prefix − for south)</small>"
+        )
+        hint.setWordWrap(True)
+
+        form.addRow("Name / label:", name_edit)
+        form.addRow("RA:", ra_edit)
+        form.addRow("Dec:", dec_edit)
+        form.addRow(hint)
+
+        err_lbl = QLabel("")
+        err_lbl.setStyleSheet("color: red; font-size: 11px;")
+        err_lbl.setWordWrap(True)
+        form.addRow(err_lbl)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel
+        )
+        form.addRow(buttons)
+        buttons.rejected.connect(dlg.reject)
+
+        def _try_accept():
+            ra_deg, dec_deg = _parse_ra_dec(ra_edit.text(), dec_edit.text())
+            if ra_deg is None:
+                err_lbl.setText(dec_deg)  # dec_deg holds error message on failure
+                return
+            dlg._ra  = ra_deg
+            dlg._dec = dec_deg
+            dlg.accept()
+
+        buttons.accepted.connect(_try_accept)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        ra  = dlg._ra
+        dec = dlg._dec
+        name = name_edit.text().strip() or f"RA {ra:.4f}° Dec {dec:+.4f}°"
+
+        obj = {"name": name, "alt_name": "", "ra": ra, "dec": dec}
+
+        self._btn_analyse.setEnabled(False)
+        self._progress.setValue(0)
+        self._progress.show()
+        self._status.setText(f"Computing yearly visibility for {name}…")
+
+        start = self.observer.get("date", datetime.now().strftime("%Y-%m-%d"))
+        self._search_thread = ObjectSearchThread(
+            ra, dec,
+            self.observer["lat"], self.observer["lon"],
+            self.observer["tz"], start
+        )
+        self._search_thread.progress.connect(self._progress.setValue)
+        self._search_thread.result_ready.connect(
+            lambda results, o=obj: self._on_results_ready(o, results))
+        self._current_obj = obj
+        self._search_thread.start()
+
     def _do_search(self):
         query = self._search_box.text().strip()
         if not query:
@@ -735,13 +913,19 @@ class ObjectSearchDialog(QDialog):
 
         import re as _re
         q = query.lower().strip()
-        q_spaced  = _re.sub(r'^(ngc|ic|m|ugc|pgc|aco|lbn|ldn|sh2|png)\s*(\d)', r'\1 \2', q)
+        q_spaced = _re.sub(
+            r'^(ngc|ic|m|ugc|pgc|aco|lbn|ldn|sh2|png|abell|sh2-?)\s*(\d)',
+            r'\1 \2', q
+        )
         q_compact = _re.sub(r'\s+', '', q)
 
         # Also build a version where we space-normalize the catalog column itself
         def _normalize(s):
             s = str(s).lower().strip()
-            return _re.sub(r'^(ngc|ic|m|ugc|pgc|aco|lbn|ldn|sh2|png)\s*(\d)', r'\1 \2', s)
+            return _re.sub(
+                r'^(ngc|ic|m|ugc|pgc|aco|lbn|ldn|sh2|png|abell|sh2-?)\s*(\d)',
+                r'\1 \2', s
+            )
 
         name_col    = self._df["Name"].astype(str).apply(_normalize)
         altname_col = self._df.get("Alt Name", pd.Series(dtype=str)).astype(str).apply(_normalize)
