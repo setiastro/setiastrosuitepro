@@ -815,33 +815,129 @@ def _place_label_inside(ax, x, y, text, *, dx=6, dy=4, fontsize=9,
 
 SURVEY_HIPS = {
     # Optical
-    "DSS2 (Color)": "CDS/P/DSS2/color",
-    "DSS2 (Red)":   "CDS/P/DSS2/red",
-    "DSS2 (Blue)":  "CDS/P/DSS2/blue",
-    "DSS2 (IR)":    "CDS/P/DSS2/IR",
-    "Pan-STARRS DR1 (Color)": "CDS/P/PanSTARRS/DR1/color",
-    "SDSS9 (Color Alt)":      "CDS/P/SDSS9/color-alt",
-    "DESI Legacy DR10 (Color)": "CDS/P/DESI-Legacy-Surveys/DR10/color",
+    "DSS2 (Color)":               "CDS/P/DSS2/color",
+    "DSS2 (Red)":                 "CDS/P/DSS2/red",
+    "DSS2 (Blue)":                "CDS/P/DSS2/blue",
+    "DSS2 (IR)":                  "CDS/P/DSS2/IR",
+    "Pan-STARRS DR1 (Color)":     "CDS/P/PanSTARRS/DR1/color",
+    "SDSS9 (Color Alt)":          "CDS/P/SDSS9/color-alt",
+    "DESI Legacy DR10 (Color)":   "CDS/P/DESI-Legacy-Surveys/DR10/color",
 
     # Infrared
-    "2MASS (J)": "CDS/P/2MASS/J",
-    "2MASS (H)": "CDS/P/2MASS/H",
+    "2MASS (J)":                  "CDS/P/2MASS/J",
+    "2MASS (H)":                  "CDS/P/2MASS/H",
 
     # Gaia
-    "Gaia DR3 (Flux Color)": "CDS/P/Gaia/DR3/flux-color",
+    "Gaia DR3 (Flux Color)":      "CDS/P/Gaia/DR3/flux-color",
+
+    # Northern Sky Narrowband Survey (simg.de — fetched directly, not via hips2fits)
+    "NSNS DR0.1 (True Color)":    "SIMG/simg.de/P/NSNS/DR0_1/tc8",
+    "NSNS DR0.1 (Hα)":            "SIMG/simg.de/P/NSNS/DR0_1/halpha8",
+    "NSNS DR0.2 (Hα)":            "SIMG/simg.de/P/NSNS/DR0_2/halpha8",
+    "NSNS DR0.2 ([OIII])":        "SIMG/simg.de/P/NSNS/DR0_2/oiii8",
+    "NSNS DR0.2 ([SII])":         "SIMG/simg.de/P/NSNS/DR0_2/sii8",
 }
 
 def _survey_to_hips_id(label: str) -> str:
     return SURVEY_HIPS.get(label, "CDS/P/DSS2/color")
 
+_SIMG_SURVEY_URLS = {
+    "simg.de/P/NSNS/DR0_1/tc8":      ("http://www.simg.de/nebulae3/dr0_1/tc8",      5),
+    "simg.de/P/NSNS/DR0_1/halpha8":  ("http://www.simg.de/nebulae3/dr0_1/halpha8",  6),
+    "simg.de/P/NSNS/DR0_2/halpha8":  ("http://www.simg.de/nebulae3/dr0_2/halpha8",  6),
+    "simg.de/P/NSNS/DR0_2/oiii8":    ("http://www.simg.de/nebulae3/dr0_2/oiii8",    6),
+    "simg.de/P/NSNS/DR0_2/sii8":     ("http://www.simg.de/nebulae3/dr0_2/sii8",     6),
+}
+
+
+
+def _fetch_via_hips2fits_url(hips_url: str, center: "SkyCoord", fov_deg: float, out_px: int):
+    """Fetch any HiPS via its base URL using the CDS hips2fits HTTP API directly."""
+    import urllib.request
+    import io as _io
+    import numpy as np
+    from astropy.io import fits as _fits
+    from astropy.wcs import WCS as _WCS
+    import astropy.units as u
+    from astropy.coordinates import Angle
+
+    try:
+        ra  = float(center.ra.deg)
+        dec = float(center.dec.deg)
+        fov = float(fov_deg)
+        px  = int(out_px)
+
+        # hips2fits accepts a hips parameter that can be a full URL
+        url = (
+            f"https://alasky.cds.unistra.fr/hips-image-services/hips2fits?"
+            f"hips={urllib.parse.quote(hips_url, safe='')}"
+            f"&width={px}&height={px}"
+            f"&fov={fov}"
+            f"&projection=TAN"
+            f"&coordsys=icrs"
+            f"&ra={ra}&dec={dec}"
+            f"&format=fits"
+        )
+
+        import urllib.parse
+        url = (
+            f"https://alasky.cds.unistra.fr/hips-image-services/hips2fits?"
+            f"hips={urllib.parse.quote(hips_url, safe='')}"
+            f"&width={px}&height={px}"
+            f"&fov={fov}"
+            f"&projection=TAN"
+            f"&coordsys=icrs"
+            f"&ra={ra}&dec={dec}"
+            f"&format=fits"
+        )
+
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "SASpro/FinderChart"}
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = resp.read()
+
+        hdul = _fits.open(_io.BytesIO(data))
+        arr  = np.array(hdul[0].data, dtype=np.float32)
+
+        bg_wcs = None
+        try:
+            bg_wcs = _WCS(hdul[0].header, relax=True)
+            if hasattr(bg_wcs, "celestial") and bg_wcs.celestial is not None:
+                bg_wcs = bg_wcs.celestial
+        except Exception:
+            pass
+
+        # Normalise to RGB float01
+        if arr.ndim == 2:
+            arr = np.repeat(arr[..., None], 3, axis=2)
+        elif arr.ndim == 3 and arr.shape[0] in (3, 4):
+            arr = np.transpose(arr[:3], (1, 2, 0))
+        elif arr.ndim == 3 and arr.shape[2] >= 3:
+            arr = arr[..., :3]
+
+        arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+        lo, hi = np.percentile(arr, [1.0, 99.5])
+        if hi > lo:
+            arr = (arr - lo) / (hi - lo)
+
+        return np.clip(arr, 0.0, 1.0), bg_wcs, None
+
+    except Exception as e:
+        return None, None, f"{type(e).__name__}: {e}"      
+
 def try_fetch_hips_cutout(center: "SkyCoord", fov_deg: float, out_px: int, survey_label: str):
-    """
-    Returns (rgb_float01, bg_wcs_celestial, err)
-      - rgb_float01: (H,W,3) float32 [0..1] or None
-      - bg_wcs_celestial: WCS(2D) or None
-      - err: str or None
-    """
     hips_id = _survey_to_hips_id(survey_label)
+
+    # In try_fetch_hips_cutout, replace the SIMG routing with this:
+    if hips_id.startswith("SIMG/"):
+        hips_path = hips_id[len("SIMG/"):]
+        survey_info = _SIMG_SURVEY_URLS.get(hips_path)
+        if survey_info is None:
+            return None, None, f"Unknown NSNS survey: {hips_path}"
+        base_url, _ = survey_info
+        # Pass the full service URL directly to hips2fits instead of a CDS ID
+        return _fetch_via_hips2fits_url(base_url, center, fov_deg, out_px)
 
     try:
         from astroquery.hips2fits import hips2fits
@@ -1271,6 +1367,303 @@ def render_finder_chart_cached(
     plt.close(fig)
     return rgb
 
+class FinderChartFromCoordDialog(QDialog):
+    """
+    Finder chart driven directly from RA/Dec + user-chosen FOV.
+    No document WCS needed — used by WIMS object search.
+    """
+    def __init__(self, name: str, ra_deg: float, dec_deg: float, settings, parent=None):
+        super().__init__(parent)
+        self._name    = name
+        self._ra_deg  = float(ra_deg)
+        self._dec_deg = float(dec_deg)
+        self._settings = settings
+        self._last_rgb_u8 = None
+        self._hips_cache_key = None
+        self._hips_bg  = None
+        self._hips_wcs = None
+        self._hips_err = None
+        self._base_cache_key = None
+        self._base_u8  = None
+        self._render_timer = QTimer(self)
+        self._render_timer.setSingleShot(True)
+        self._render_timer.timeout.connect(self._render_debounced_fire)
+        self._pending_force_refetch = False
+
+        self.setWindowTitle(f"Finder Chart — {name}")
+        self.setModal(False)
+        self.resize(920, 980)
+
+        root = QVBoxLayout(self)
+
+        # Row 1: survey + FOV radius + grid
+        row1 = QHBoxLayout()
+        row1.addWidget(QLabel("Survey:"))
+        self.cmb_survey = QComboBox()
+        self.cmb_survey.addItems(list(SURVEY_HIPS.keys()))
+        row1.addWidget(self.cmb_survey)
+
+        row1.addSpacing(12)
+        row1.addWidget(QLabel("FOV:"))
+        self.cmb_fov = QComboBox()
+        self.cmb_fov.addItems([
+            "0.25°", "0.5°", "1°", "1.5°", "2°", "3°", "4°"
+        ])
+        self.cmb_fov.setCurrentIndex(2)  # default 1°
+        row1.addWidget(self.cmb_fov)
+
+        row1.addSpacing(12)
+        self.chk_grid = QCheckBox("Show grid")
+        row1.addWidget(self.chk_grid)
+
+        row1.addSpacing(12)
+        row1.addWidget(QLabel("Output px:"))
+        self.sb_px = QSpinBox()
+        self.sb_px.setRange(300, 2400)
+        self.sb_px.setSingleStep(100)
+        self.sb_px.setValue(900)
+        row1.addWidget(self.sb_px)
+
+        row1.addStretch(1)
+        self.btn_render = QPushButton("Render")
+        row1.addWidget(self.btn_render)
+        root.addLayout(row1)
+
+        # Row 2: overlays
+        row2 = QHBoxLayout()
+        self.chk_stars = QCheckBox("Star names")
+        row2.addWidget(self.chk_stars)
+        row2.addWidget(QLabel("Mag ≤"))
+        self.sb_star_mag = QDoubleSpinBox()
+        self.sb_star_mag.setRange(-2.0, 8.0)
+        self.sb_star_mag.setSingleStep(0.5)
+        self.sb_star_mag.setValue(5.0)
+        self.sb_star_mag.setFixedWidth(70)
+        row2.addWidget(self.sb_star_mag)
+
+        row2.addSpacing(12)
+        self.chk_dso = QCheckBox("Deep-sky")
+        row2.addWidget(self.chk_dso)
+        self.cmb_dso = QComboBox()
+        self.cmb_dso.addItems(["All (DSO)", "M", "NGC", "IC", "Abell", "SH2", "LBN", "LDN", "PN-G"])
+        self.cmb_dso.setFixedWidth(140)
+        row2.addWidget(self.cmb_dso)
+        row2.addWidget(QLabel("Mag ≤"))
+        self.sb_dso_mag = QDoubleSpinBox()
+        self.sb_dso_mag.setRange(-2.0, 30.0)
+        self.sb_dso_mag.setSingleStep(0.5)
+        self.sb_dso_mag.setValue(12.0)
+        self.sb_dso_mag.setFixedWidth(70)
+        row2.addWidget(self.sb_dso_mag)
+
+        row2.addSpacing(12)
+        self.chk_compass = QCheckBox("Compass")
+        self.chk_compass.setChecked(True)
+        row2.addWidget(self.chk_compass)
+        self.chk_scale = QCheckBox("Scale bar")
+        self.chk_scale.setChecked(True)
+        row2.addWidget(self.chk_scale)
+        row2.addStretch(1)
+        root.addLayout(row2)
+
+        # Preview
+        self.lbl = QLabel()
+        self.lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl.setMinimumHeight(700)
+        self.lbl.setStyleSheet("QLabel { background:#111; border:1px solid #333; }")
+        root.addWidget(self.lbl, 1)
+
+        # Bottom
+        brow = QHBoxLayout()
+        self.lbl_status = QLabel("")
+        self.lbl_status.setStyleSheet("color:#bbb;")
+        brow.addWidget(self.lbl_status)
+        brow.addStretch(1)
+        self.btn_save  = QPushButton("Save PNG…")
+        self.btn_close = QPushButton("Close")
+        brow.addWidget(self.btn_save)
+        brow.addWidget(self.btn_close)
+        root.addLayout(brow)
+
+        # Wiring
+        self.btn_render.clicked.connect(lambda: self._render_now(force_refetch=True))
+        self.btn_save.clicked.connect(self._save_png)
+        self.btn_close.clicked.connect(self.close)
+        self.cmb_survey.currentIndexChanged.connect(lambda _=0: self._render_now(force_refetch=True))
+        self.cmb_fov.currentIndexChanged.connect(lambda _=0: self._render_now(force_refetch=True))
+        self.sb_px.valueChanged.connect(lambda _=0: self._render_now(force_refetch=True))
+        self.chk_grid.toggled.connect(lambda _=False: self._schedule_render(force_refetch=False, delay_ms=150))
+        self.chk_stars.toggled.connect(lambda _=False: self._schedule_render(force_refetch=False, delay_ms=150))
+        self.chk_dso.toggled.connect(lambda _=False: self._schedule_render(force_refetch=False, delay_ms=150))
+        self.cmb_dso.currentIndexChanged.connect(lambda _=0: self._schedule_render(force_refetch=False, delay_ms=150))
+        self.sb_star_mag.valueChanged.connect(lambda _=0: self._schedule_render(force_refetch=False, delay_ms=150))
+        self.sb_dso_mag.valueChanged.connect(lambda _=0: self._schedule_render(force_refetch=False, delay_ms=150))
+        self.chk_compass.toggled.connect(lambda _=False: self._schedule_render(force_refetch=False, delay_ms=150))
+        self.chk_scale.toggled.connect(lambda _=False: self._schedule_render(force_refetch=False, delay_ms=150))
+
+        self.lbl.setText("Fetching survey background…")
+        self.lbl.setStyleSheet("QLabel { background:#111; border:1px solid #333; color:#ccc; }")
+        QTimer.singleShot(0, lambda: self._render_now(force_refetch=True))
+
+    def _fov_deg(self) -> float:
+        txt = self.cmb_fov.currentText().replace("°", "").strip()
+        try:
+            return float(txt)
+        except Exception:
+            return 1.0
+
+    def _req(self) -> FinderChartRequest:
+        return FinderChartRequest(
+            survey=str(self.cmb_survey.currentText()),
+            scale_mult=1,          # not used — we drive fov directly
+            show_grid=bool(self.chk_grid.isChecked()),
+            show_star_names=bool(self.chk_stars.isChecked()),
+            star_mag_limit=float(self.sb_star_mag.value()),
+            star_max_labels=50,
+            show_dso=bool(self.chk_dso.isChecked()),
+            dso_catalog=str(self.cmb_dso.currentText()),
+            dso_mag_limit=float(self.sb_dso_mag.value()),
+            dso_max_labels=50,
+            show_compass=bool(self.chk_compass.isChecked()),
+            show_scale_bar=bool(self.chk_scale.isChecked()),
+            out_px=int(self.sb_px.value()),
+            overlay_opacity=0.0,   # no doc image to overlay
+        )
+
+    def _schedule_render(self, *, force_refetch=False, delay_ms=200):
+        if hasattr(self, "lbl_status"):
+            self.lbl_status.setText("Rendering…")
+            QApplication.processEvents()
+        self._pending_force_refetch = self._pending_force_refetch or bool(force_refetch)
+        self._render_timer.stop()
+        self._render_timer.start(int(delay_ms))
+
+    def _render_debounced_fire(self):
+        force = bool(self._pending_force_refetch)
+        self._pending_force_refetch = False
+        self._render(force_refetch=force)
+
+    def _render_now(self, *, force_refetch=False):
+        self._render_timer.stop()
+        self._pending_force_refetch = False
+        self._render(force_refetch=force_refetch)
+
+    def _set_busy(self, busy: bool, msg: str = "Rendering…"):
+        self.btn_render.setEnabled(not busy)
+        self.btn_save.setEnabled((not busy) and (self._last_rgb_u8 is not None))
+        if hasattr(self, "lbl_status"):
+            self.lbl_status.setText(msg if busy else "")
+        QApplication.processEvents()
+
+    def _render(self, *, force_refetch=False):
+        import math as _math
+        from astropy.coordinates import SkyCoord as _SkyCoord
+        import astropy.units as _u
+
+        self._set_busy(True, "Fetching survey background…")
+        try:
+            req    = self._req()
+            fov    = self._fov_deg()
+            out_px = int(req.out_px)
+            center = _SkyCoord(self._ra_deg * _u.deg, self._dec_deg * _u.deg, frame="icrs")
+
+            # Fetch with overscan so crop doesn't cut the edges
+            s          = float(_math.sqrt(2.0) * 1.02)
+            fetch_px   = int(_math.ceil(out_px * s))
+            fetch_fov  = fov * s
+
+            cache_key = (
+                str(req.survey), fetch_px,
+                round(self._ra_deg, 8), round(self._dec_deg, 8),
+                round(fetch_fov, 8),
+            )
+
+            if force_refetch or self._hips_cache_key != cache_key or self._hips_bg is None:
+                bg_big, wcs_big, err = try_fetch_hips_cutout(
+                    center, fov_deg=fetch_fov,
+                    out_px=fetch_px, survey_label=req.survey
+                )
+                if bg_big is not None:
+                    bg, wcs_c, _ = _crop_center(bg_big, wcs_big, out_px)
+                else:
+                    bg, wcs_c = None, None
+                self._hips_cache_key = cache_key
+                self._hips_bg  = bg
+                self._hips_wcs = wcs_c
+                self._hips_err = err
+                # invalidate base raster
+                self._base_cache_key = None
+                self._base_u8 = None
+
+            # Build base raster (no doc overlay — just the background)
+            base_key = (self._hips_cache_key,)
+            if self._base_cache_key != base_key:
+                if self._hips_bg is not None:
+                    self._base_u8 = (
+                        np.clip(self._hips_bg, 0, 1) * 255.0 + 0.5
+                    ).astype(np.uint8)
+                else:
+                    self._base_u8 = None
+                self._base_cache_key = base_key
+
+            # Synthesize corners from center + fov for render_finder_chart_cached
+            # (footprint polygon won't draw but everything else works)
+            half = fov / 2.0
+            import astropy.units as au
+            from astropy.coordinates import SkyCoord as SC
+            corners = SC(
+                ra =[self._ra_deg - half, self._ra_deg + half,
+                     self._ra_deg + half, self._ra_deg - half] * au.deg,
+                dec=[self._dec_deg - half, self._dec_deg - half,
+                     self._dec_deg + half, self._dec_deg + half] * au.deg,
+                frame="icrs"
+            )
+            center_arr = SC(self._ra_deg * au.deg, self._dec_deg * au.deg, frame="icrs")
+
+            # Dummy doc_image / doc_wcs (not used when overlay_opacity=0)
+            dummy_img = np.zeros((3, 3, 3), dtype=np.float32)
+
+            rgb = render_finder_chart_cached(
+                doc_image=dummy_img,
+                doc_wcs=None,
+                corners=corners,
+                center=[center_arr],
+                fov_deg=fov,
+                req=req,
+                bg=self._hips_bg,
+                bg_wcs=self._hips_wcs,
+                err=self._hips_err,
+                base_u8=self._base_u8,
+            )
+
+            self._last_rgb_u8 = rgb
+            qimg = _rgb_u8_to_qimage(rgb).copy()
+            self.lbl.setPixmap(QPixmap.fromImage(qimg))
+
+        except Exception as e:
+            QMessageBox.critical(self, "Finder Chart", str(e))
+        finally:
+            self._set_busy(False)
+
+    def _save_png(self):
+        if self._last_rgb_u8 is None:
+            return
+        start = ""
+        try:
+            start = self._settings.value("finder_chart/last_dir", "", type=str) or ""
+        except Exception:
+            pass
+        fn, _ = QFileDialog.getSaveFileName(self, "Save Finder Chart", start, "PNG Image (*.png)")
+        if not fn:
+            return
+        if not fn.lower().endswith(".png"):
+            fn += ".png"
+        qimg = _rgb_u8_to_qimage(self._last_rgb_u8).copy()
+        if qimg.save(fn, "PNG"):
+            try:
+                self._settings.setValue("finder_chart/last_dir", fn)
+            except Exception:
+                pass
 
 class FinderChartDialog(QDialog):
     """

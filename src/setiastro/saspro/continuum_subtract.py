@@ -3,9 +3,7 @@ from __future__ import annotations
 from setiastro.saspro.main_helpers import non_blocking_sleep
 import os
 import numpy as np
-import time          # NEW
-import glob          # NEW
-import subprocess    # NEW
+
 # Optional deps used by the processing threads
 try:
     import cv2
@@ -38,9 +36,13 @@ from setiastro.saspro.legacy.image_manager import load_image as legacy_load_imag
 from setiastro.saspro.imageops.stretch import stretch_mono_image, stretch_color_image
 from setiastro.saspro.imageops.starbasedwhitebalance import apply_star_based_white_balance
 from setiastro.saspro.legacy.numba_utils import apply_curves_numba
-from setiastro.saspro.cosmicclarity_preset import _cosmic_root, _platform_exe_names 
-from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 
+from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
+# At the top of continuum_subtract.py, with the other imports:
+try:
+    from setiastro.saspro.cosmicclarity_headless import run_cosmicclarity_on_array as _cc_denoise
+except Exception:
+    _cc_denoise = None
 
 def apply_curves_adjustment(image, target_median, curves_boost):
     """
@@ -106,18 +108,19 @@ class ContinuumSubtractTab(QWidget):
         self.processing_thread = None
         self.original_header = None
         self._clickable_images = {}
+        self._wb_diag_entries = []   # list of dicts built in _onOneResult
         try:
             self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        except Exception:
-            pass  # older PyQt6 versions
+        except Exception as e:
+            print(f"ContinuumSubtractTab init error: {e}")
 
     def initUI(self):
-        self.spinnerLabel = QLabel("")                # starts empty
+        self.spinnerLabel = QLabel("")
         self.spinnerLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.spinnerLabel.setStyleSheet("color:#999; font-style:italic;")
         self.spinnerLabel.hide()
 
-        # images (starless)
+        # starless image slots
         self.ha_starless_image    = None
         self.sii_starless_image   = None
         self.oiii_starless_image  = None
@@ -125,169 +128,429 @@ class ContinuumSubtractTab(QWidget):
         self.green_starless_image = None
         self.osc_starless_image   = None
 
-        # status
         self.statusLabel = QLabel("")
         self.statusLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        main_layout = QVBoxLayout()           # overall vertical: columns + bottom row
-        columns_layout = QHBoxLayout()        # holds the three groups
+        from PyQt6.QtWidgets import QGridLayout, QSizePolicy
 
-        # — NB group —
-        nb_group = QGroupBox(self.tr("Narrowband Filters"))
+        main_layout = QVBoxLayout()
+        top_cols = QHBoxLayout()
+        top_cols.setSpacing(8)
+
+        # ── helper: build one filter block (starry + starless rows) ──────────
+        def _filter_block(tag, attr, parent_layout, is_composite=False):
+            """
+            Adds two rows to parent_layout (a QVBoxLayout):
+            row 1: [tag lbl] [filename lbl] [View btn] [File btn]   ← starry
+            row 2: [+sl lbl] [filename lbl] [View btn] [File btn]   ← starless
+            Wires View/File buttons to loadImage().
+            Stores refs as self.<attr>Label, self.<attr>StarlessLabel etc.
+            """
+            for starless in (False, True):
+                row = QHBoxLayout()
+                row.setSpacing(4)
+                row.setContentsMargins(0, 0, 0, 0)
+
+                tag_lbl = QLabel("+starless" if starless else tag)
+                tag_lbl.setFixedWidth(56)
+                tag_lbl.setStyleSheet(
+                    "font-size:10px; color: palette(placeholderText);" if starless
+                    else "font-size:11px; font-weight:500;"
+                )
+                row.addWidget(tag_lbl)
+
+                fname_lbl = QLabel("no file")
+                fname_lbl.setStyleSheet("font-size:11px; font-style:italic; color: palette(placeholderText);")
+                fname_lbl.setSizePolicy(
+                    QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+                )
+                fname_lbl.setMinimumWidth(0)
+                row.addWidget(fname_lbl, 1)
+
+                suffix = " (Starless)" if starless else ""
+                channel = f"{tag}{suffix}"
+
+                btn_view = QPushButton("View")
+                btn_file = QPushButton("File")
+                for b in (btn_view, btn_file):
+                    b.setFixedWidth(36)
+                    b.setStyleSheet("font-size:10px; padding: 1px 4px;")
+                btn_view.clicked.connect(lambda _, c=channel: self._load_from_view(c))
+                btn_file.clicked.connect(lambda _, c=channel: self._load_from_file(c))
+                row.addWidget(btn_view)
+                row.addWidget(btn_file)
+
+                parent_layout.addLayout(row)
+
+                # store refs
+                attr_name = f"{attr}{'Starless' if starless else ''}Label"
+                setattr(self, attr_name, fname_lbl)
+
+            # thin divider after each block (caller adds it)
+
+        # ── Narrowband group ─────────────────────────────────────────────────
+        nb_group = QGroupBox("Narrowband Filters")
         nb_l = QVBoxLayout()
-        for name, attr in [("Ha","ha"), ("SII","sii"), ("OIII","oiii")]:
-            # starry
-            btn = QPushButton(f"Load {name}")
-            lbl = QLabel(f"No {name}")
-            setattr(self, f"{attr}Button", btn)
-            setattr(self, f"{attr}Label", lbl)
-            btn.clicked.connect(lambda _, n=name: self.loadImage(n))
-            nb_l.addWidget(btn); nb_l.addWidget(lbl)
+        nb_l.setSpacing(3)
+        nb_l.setContentsMargins(8, 8, 8, 8)
 
-            # starless
-            btn_sl = QPushButton(f"Load {name} (Starless)")
-            lbl_sl = QLabel(f"No {name} (starless)")
-            setattr(self, f"{attr}StarlessButton", btn_sl)
-            setattr(self, f"{attr}StarlessLabel", lbl_sl)
-            btn_sl.clicked.connect(lambda _, n=f"{name} (Starless)": self.loadImage(n))
-            nb_l.addWidget(btn_sl); nb_l.addWidget(lbl_sl)
+        for tag, attr in [("Ha","ha"),("SII","sii"),("OIII","oiii"),("HaO3","hao3"),("S2O3","s2o3")]:
+            _filter_block(tag, attr, nb_l)
+            sep = QWidget(); sep.setFixedHeight(1)
+            sep.setStyleSheet("background: palette(dark);")
+            nb_l.addWidget(sep)
 
-        for name, attr in [("HaO3", "hao3"), ("S2O3", "s2o3")]:
-            # starry
-            btn = QPushButton(f"Load {name}")
-            lbl = QLabel(f"No {name}")
-            setattr(self, f"{attr}Button", btn)
-            setattr(self, f"{attr}Label", lbl)
-            btn.clicked.connect(lambda _, n=name: self.loadImage(n))
-            nb_l.addWidget(btn); nb_l.addWidget(lbl)
+        nb_l.addStretch(1)
+        nb_group.setLayout(nb_l)
 
-            # starless
-            btn_sl = QPushButton(f"Load {name} (Starless)")
-            lbl_sl = QLabel(f"No {name} (starless)")
-            setattr(self, f"{attr}StarlessButton", btn_sl)
-            setattr(self, f"{attr}StarlessLabel", lbl_sl)
-            btn_sl.clicked.connect(lambda _, n=f"{name} (Starless)": self.loadImage(n))
-            nb_l.addWidget(btn_sl); nb_l.addWidget(lbl_sl)
+        # ── Middle column: Continuum + Processing Options ─────────────────────
+        mid_col = QVBoxLayout()
+        mid_col.setSpacing(8)
 
-        # user controls
-        self.linear_output_checkbox = QCheckBox(self.tr("Output Linear Image Only"))
-        nb_l.addWidget(self.linear_output_checkbox)
-        self.denoise_checkbox = QCheckBox(self.tr("Denoise continuum result with Cosmic Clarity (0.9)"))  # NEW
+        cont_group = QGroupBox("Continuum Sources")
+        cont_l = QVBoxLayout()
+        cont_l.setSpacing(3)
+        cont_l.setContentsMargins(8, 8, 8, 8)
+
+        for tag, attr in [("Red","red"),("Green","green"),("OSC","osc")]:
+            _filter_block(tag, attr, cont_l)
+            sep = QWidget(); sep.setFixedHeight(1)
+            sep.setStyleSheet("background: palette(mid);")
+            cont_l.addWidget(sep)
+
+        cont_l.addStretch(1)
+        cont_group.setLayout(cont_l)
+        mid_col.addWidget(cont_group)
+
+        # ── Processing Options ────────────────────────────────────────────────
+        opts_group = QGroupBox("Processing Options")
+        opts_l = QVBoxLayout()
+        opts_l.setSpacing(2)
+        opts_l.setContentsMargins(8, 8, 8, 8)
+
+        self.linear_output_checkbox = QCheckBox("Output linear only")
+        opts_l.addWidget(self.linear_output_checkbox)
+
+        self.denoise_checkbox = QCheckBox("Denoise with Cosmic Clarity")
+        self.denoise_checkbox.setChecked(True)
         self.denoise_checkbox.setToolTip(
             "Runs Cosmic Clarity denoise on the linear continuum-subtracted image "
             "before any non-linear stretch."
-        )  # NEW
-        self.denoise_checkbox.setChecked(True)
-        nb_l.addWidget(self.denoise_checkbox) 
-        # ---- Advanced (collapsed) ----
-        # defaults used elsewhere
+        )
+        opts_l.addWidget(self.denoise_checkbox)
+
+        # strength row (indented)
+        str_row = QHBoxLayout()
+        str_row.setContentsMargins(19, 0, 0, 0)
+        str_row.setSpacing(6)
+        self.denoise_strength_label = QLabel("Strength")
+        self.denoise_strength_label.setStyleSheet("font-size:11px;")
+        self.denoise_strength_btn = QPushButton("0.90")
+        self.denoise_strength_btn.setFixedWidth(46)
+        self.denoise_strength_btn.setStyleSheet("font-size:11px; padding:1px 4px;")
+        self.denoise_strength_btn.clicked.connect(self._change_denoise_strength)
+        self.denoise_strength = 0.90
+        str_row.addWidget(self.denoise_strength_label)
+        str_row.addWidget(self.denoise_strength_btn)
+        str_row.addStretch(1)
+        opts_l.addLayout(str_row)
+
+        # wire enable/disable
+        def _sync_denoise(checked):
+            self.denoise_strength_btn.setEnabled(checked)
+            self.denoise_strength_label.setEnabled(checked)
+        self.denoise_checkbox.toggled.connect(_sync_denoise)
+        _sync_denoise(True)
+
+        # separator
+        sep2 = QWidget(); sep2.setFixedHeight(1)
+        sep2.setStyleSheet("background: palette(mid);")
+        opts_l.addWidget(sep2)
+        opts_l.addSpacing(2)
+
+        self.stretch_checkbox = QCheckBox("Auto-stretch")
+        self.stretch_checkbox.setChecked(True)
+        self.stretch_checkbox.setToolTip(
+            "Stretch the linear result to non-linear. "
+            "When unchecked, always outputs linear regardless of the output linear checkbox."
+        )
+        opts_l.addWidget(self.stretch_checkbox)
+
+        # stretch sub-options widget (indented, disabled when stretch off)
+        self.stretch_subopts = QWidget()
+        sub_l = QVBoxLayout(self.stretch_subopts)
+        sub_l.setContentsMargins(19, 0, 0, 0)
+        sub_l.setSpacing(2)
+
+        self.median_sub_checkbox = QCheckBox("Median background subtract")
+        self.median_sub_checkbox.setChecked(True)
+        self.median_sub_checkbox.setToolTip(
+            "Subtracts 0.7× median after stretch. "
+            "Uncheck to keep a cleaner background."
+        )
+        sub_l.addWidget(self.median_sub_checkbox)
+
+        self.curves_checkbox = QCheckBox("Curves boost")
+        self.curves_checkbox.setChecked(False)
+        self.curves_checkbox.setToolTip("Applies a gentle S-curve boost after stretching.")
+        sub_l.addWidget(self.curves_checkbox)
+
+        self.no_black_clip_checkbox = QCheckBox("No black clip")
+        self.no_black_clip_checkbox.setChecked(True)
+        self.no_black_clip_checkbox.setToolTip(
+            "Uses image minimum as black point instead of median − σ. "
+            "Preserves faint background signal."
+        )
+        sub_l.addWidget(self.no_black_clip_checkbox)
+
+        opts_l.addWidget(self.stretch_subopts)
+
+        def _sync_stretch(checked):
+            self.stretch_subopts.setEnabled(checked)
+        self.stretch_checkbox.toggled.connect(_sync_stretch)
+        _sync_stretch(True)
+
+        # separator + Advanced collapsed row
+        sep3 = QWidget(); sep3.setFixedHeight(1)
+        sep3.setStyleSheet("background: palette(mid);")
+        opts_l.addWidget(sep3)
+        opts_l.addSpacing(2)
+
+        # defaults
         self.threshold_value = 5.0
-        self.q_factor = 0.80
-        self.summary_gamma = 0.6  # gamma < 1.0 brightens summary previews
+        self.q_factor        = 0.80
+        self.summary_gamma   = 0.6
 
-        # header row with toggle button
         adv_hdr = QHBoxLayout()
+        adv_hdr.setContentsMargins(0, 0, 0, 0)
         self.advanced_btn = QPushButton("Advanced ▸")
-        self.advanced_btn.setCheckable(False)
         self.advanced_btn.setFlat(True)
+        self.advanced_btn.setStyleSheet("font-size:11px; text-align:left;")
         self.advanced_btn.clicked.connect(self._toggle_advanced)
-        adv_hdr.addWidget(self.advanced_btn, stretch=0)
-        adv_hdr.addStretch(1)
-        nb_l.addLayout(adv_hdr)
 
-        # panel that will be shown/hidden
+        self.adv_summary_label = QLabel(
+            f"Q {self.q_factor:.2f}   WB σ {self.threshold_value:.1f}"
+        )
+        self.adv_summary_label.setStyleSheet("font-size:10px; color: palette(placeholderText);")
+        adv_hdr.addWidget(self.advanced_btn)
+        adv_hdr.addStretch(1)
+        adv_hdr.addWidget(self.adv_summary_label)
+        opts_l.addLayout(adv_hdr)
+
         self.advanced_panel = QWidget()
         adv_l = QVBoxLayout(self.advanced_panel)
-        adv_l.setContentsMargins(12, 0, 0, 0)  # small indent
+        adv_l.setContentsMargins(4, 0, 0, 0)
+        adv_l.setSpacing(4)
 
-        # WB threshold control (UI)
         thr_row = QHBoxLayout()
         self.threshold_label = QLabel(f"WB star detect threshold: {self.threshold_value:.1f}")
+        self.threshold_label.setStyleSheet("font-size:11px;")
         self.threshold_btn = QPushButton("Change…")
+        self.threshold_btn.setStyleSheet("font-size:11px;")
         self.threshold_btn.clicked.connect(self._change_threshold)
         thr_row.addWidget(self.threshold_label)
         thr_row.addWidget(self.threshold_btn)
         adv_l.addLayout(thr_row)
 
-        # Q factor control (UI)
         q_row = QHBoxLayout()
         self.q_label = QLabel(f"Continuum Q factor: {self.q_factor:.2f}")
+        self.q_label.setStyleSheet("font-size:11px;")
         self.q_btn = QPushButton("Change…")
+        self.q_btn.setStyleSheet("font-size:11px;")
         self.q_btn.clicked.connect(self._change_q)
         q_row.addWidget(self.q_label)
         q_row.addWidget(self.q_btn)
         adv_l.addLayout(q_row)
 
+        self.advanced_panel.setVisible(False)
+        opts_l.addWidget(self.advanced_panel)
+
+        opts_group.setLayout(opts_l)
+        mid_col.addWidget(opts_group, 1)
+
+        # ── WB Diagnostics (right column) ────────────────────────────────────
 
 
-        self.advanced_panel.setVisible(False)  # start hidden
-        nb_l.addWidget(self.advanced_panel)
+        # ── Assemble top columns ──────────────────────────────────────────────
+        top_cols.addWidget(nb_group, 2)
 
-        nb_l.addStretch(1)
+        mid_widget = QWidget()
+        mid_widget.setLayout(mid_col)
+        top_cols.addWidget(mid_widget, 2)
 
-        self.clear_button = QPushButton(self.tr("Clear Loaded Images"))
-        self.clear_button.clicked.connect(self.clear_loaded_images)
-        nb_l.addWidget(self.clear_button)
-        nb_group.setLayout(nb_l)
-
-        # — Continuum group —
-        cont_group = QGroupBox(self.tr("Continuum Sources"))
-        cont_l = QVBoxLayout()
-        for name, attr in [("Red","red"), ("Green","green"), ("OSC","osc")]:
-            btn = QPushButton(f"Load {name}")
-            lbl = QLabel(f"No {name}")
-            setattr(self, f"{attr}Button", btn)
-            setattr(self, f"{attr}Label", lbl)
-            btn.clicked.connect(lambda _, n=name: self.loadImage(n))
-            cont_l.addWidget(btn); cont_l.addWidget(lbl)
-
-            btn_sl = QPushButton(f"Load {name} (Starless)")
-            lbl_sl = QLabel(f"No {name} (starless)")
-            setattr(self, f"{attr}StarlessButton", btn_sl)
-            setattr(self, f"{attr}StarlessLabel", lbl_sl)
-            btn_sl.clicked.connect(lambda _, n=f"{name} (Starless)": self.loadImage(n))
-            cont_l.addWidget(btn_sl); cont_l.addWidget(lbl_sl)
-
-        cont_l.addStretch(1)
-        cont_group.setLayout(cont_l)
-
-        # — White balance diagnostics —
-        wb_group   = QGroupBox(self.tr("Star-Based WB"))
-        self.wb_l  = QVBoxLayout()
-        self.wb_l.setAlignment(Qt.AlignmentFlag.AlignTop)
-        wb_group.setLayout(self.wb_l)
-
-        # put it in a scroll area so many entries won't overflow
-        wb_scroll = QScrollArea()
-        wb_scroll.setWidgetResizable(True)
-        wb_container = QWidget()
-        wb_container.setLayout(self.wb_l)
-        wb_scroll.setWidget(wb_container)
-
-        # assemble columns
-        columns_layout.addWidget(nb_group,    1)
-        columns_layout.addWidget(cont_group,  1)
-        columns_layout.addWidget(wb_scroll,   2)
-
-        # — Bottom row: Execute & status —
-        bottom_layout = QHBoxLayout()
-        self.execute_button = QPushButton(self.tr("Execute"))
+        # ── Bottom row ────────────────────────────────────────────────────────
+        bottom_row = QHBoxLayout()
+        self.execute_button = QPushButton("Execute")
         self.execute_button.clicked.connect(self.startContinuumSubtraction)
-        bottom_layout.addWidget(self.execute_button, stretch=1)
-        bottom_layout.addWidget(self.spinnerLabel,   stretch=1)
-        bottom_layout.addWidget(self.statusLabel,    stretch=3)
+        self.clear_button = QPushButton("Clear Images")
+        self.clear_button.clicked.connect(self.clear_loaded_images)
 
-        # put it all together
-        main_layout.addLayout(columns_layout)
-        main_layout.addLayout(bottom_layout)
-
+        bottom_row.addWidget(self.execute_button)
+        bottom_row.addWidget(self.clear_button)
+        bottom_row.addWidget(self.spinnerLabel)
+        bottom_row.addWidget(self.statusLabel, 1)
+        # In bottom_row, after clear_button:
+        self.wb_diag_button = QPushButton("WB Diagnostics…")
+        self.wb_diag_button.clicked.connect(self._show_wb_diagnostics)
+        self.wb_diag_button.setEnabled(False)  # enabled after first result
+        bottom_row.addWidget(self.wb_diag_button)
+        main_layout.addLayout(top_cols)
+        main_layout.addLayout(bottom_row)
         self.setLayout(main_layout)
         self.installEventFilter(self)
+
+    def _apply_loaded_image(self, channel: str, image, header, bit_depth, is_mono, name_or_path):
+        """Common handler after loading from either View or File."""
+        label_text = str(name_or_path) if name_or_path else "From View"
+        try:
+            if isinstance(name_or_path, str) and os.path.isabs(name_or_path):
+                label_text = os.path.basename(name_or_path)
+        except Exception:
+            pass
+
+        is_starless = "(Starless)" in channel
+        base = channel.replace(" (Starless)", "")
+
+        if base == "Ha":
+            if is_starless:
+                self.ha_starless_image = image
+                self.haStarlessLabel.setText(label_text)
+            else:
+                self.ha_image = image
+                self.haLabel.setText(label_text)
+
+        elif base == "SII":
+            if is_starless:
+                self.sii_starless_image = image
+                self.siiStarlessLabel.setText(label_text)
+            else:
+                self.sii_image = image
+                self.siiLabel.setText(label_text)
+
+        elif base == "OIII":
+            if is_starless:
+                self.oiii_starless_image = image
+                self.oiiiStarlessLabel.setText(label_text)
+            else:
+                self.oiii_image = image
+                self.oiiiLabel.setText(label_text)
+
+        elif base == "Red":
+            if is_starless:
+                self.red_starless_image = image
+                self.redStarlessLabel.setText(label_text)
+            else:
+                self.red_image = image
+                self.redLabel.setText(label_text)
+
+        elif base == "Green":
+            if is_starless:
+                self.green_starless_image = image
+                self.greenStarlessLabel.setText(label_text)
+            else:
+                self.green_image = image
+                self.greenLabel.setText(label_text)
+
+        elif base == "OSC":
+            if is_starless:
+                self.osc_starless_image = image
+                self.oscStarlessLabel.setText(label_text)
+            else:
+                self.osc_image = image
+                self.oscLabel.setText(label_text)
+
+        elif base == "HaO3":
+            if is_starless:
+                self.hao3_starless_image = image
+                self.hao3StarlessLabel.setText(label_text)
+            else:
+                self.hao3_image = image
+                self.hao3Label.setText(label_text)
+
+            if not (isinstance(image, np.ndarray) and image.ndim == 3 and image.shape[2] >= 2):
+                QMessageBox.warning(self, "HaO3 Load",
+                    "HaO3 expects a 3-channel color image (R=Ha, G=OIII). "
+                    "Loaded image is not 3-channel; cannot extract Ha/OIII.")
+                return
+
+            img32 = image.astype(np.float32, copy=False)
+            ha_from_r = img32[..., 0]
+            o3_from_g = img32[..., 1]
+
+            if is_starless:
+                self.ha_starless_image = ha_from_r
+                self.haStarlessLabel.setText(label_text + " [R → Ha (starless)]")
+                self._o3_from_hao3_starless = o3_from_g
+                self._update_oiii_from_composites(starless=True)
+            else:
+                self.ha_image = ha_from_r
+                self.haLabel.setText(label_text + " [R → Ha]")
+                self._o3_from_hao3 = o3_from_g
+                self._update_oiii_from_composites(starless=False)
+
+        elif base == "S2O3":
+            if is_starless:
+                self.s2o3_starless_image = image
+                self.s2o3StarlessLabel.setText(label_text)
+            else:
+                self.s2o3_image = image
+                self.s2o3Label.setText(label_text)
+
+            if not (isinstance(image, np.ndarray) and image.ndim == 3 and image.shape[2] >= 2):
+                QMessageBox.warning(self, "S2O3 Load",
+                    "S2O3 expects a 3-channel color image (R=SII, G=OIII). "
+                    "Loaded image is not 3-channel; cannot extract SII/OIII.")
+                return
+
+            img32 = image.astype(np.float32, copy=False)
+            s2_from_r = img32[..., 0]
+            o3_from_g = img32[..., 1]
+
+            if is_starless:
+                self.sii_starless_image = s2_from_r
+                self.siiStarlessLabel.setText(label_text + " [R → SII (starless)]")
+                self._o3_from_s2o3_starless = o3_from_g
+                self._update_oiii_from_composites(starless=True)
+            else:
+                self.sii_image = s2_from_r
+                self.siiLabel.setText(label_text + " [R → SII]")
+                self._o3_from_s2o3 = o3_from_g
+                self._update_oiii_from_composites(starless=False)
+
+        else:
+            QMessageBox.critical(self, "Error", f"Unknown channel '{channel}'.")
+            return
+
+        self.original_header = header
+        self.is_mono         = is_mono
+
+    def _load_from_view(self, channel: str):
+        result = self.loadImageFromView(channel)
+        if result:
+            self._apply_loaded_image(channel, *result)
+
+    def _load_from_file(self, channel: str):
+        result = self.loadImageFromFile(channel)
+        if result:
+            self._apply_loaded_image(channel, *result)
+
+    def _change_denoise_strength(self):
+        val, ok = QInputDialog.getDouble(
+            self,
+            "Denoise Strength",
+            "Cosmic Clarity denoise strength (0.0–1.0):",
+            self.denoise_strength,
+            0.0, 1.0, 2
+        )
+        if ok:
+            self.denoise_strength = float(val)
+            self.denoise_strength_btn.setText(f"{self.denoise_strength:.2f}")
 
     def _toggle_advanced(self):
         show = not self.advanced_panel.isVisible()
         self.advanced_panel.setVisible(show)
         self.advanced_btn.setText("Advanced ▾" if show else "Advanced ▸")
+        self.adv_summary_label.setVisible(not show)
 
     def _change_q(self):
         val, ok = QInputDialog.getDouble(
@@ -299,7 +562,8 @@ class ContinuumSubtractTab(QWidget):
         )
         if ok:
             self.q_factor = float(val)
-            self.q_label.setText(f"Continuum Q factor: {self.q_factor:.2f}")
+
+        self.adv_summary_label.setText(f"Q {self.q_factor:.2f}   WB σ {self.threshold_value:.1f}")
 
     def _change_threshold(self):
         val, ok = QInputDialog.getDouble(
@@ -311,7 +575,8 @@ class ContinuumSubtractTab(QWidget):
         )
         if ok:
             self.threshold_value = float(val)
-            self.threshold_label.setText(f"WB star detect threshold: {self.threshold_value:.1f}")
+
+        self.adv_summary_label.setText(f"Q {self.q_factor:.2f}   WB σ {self.threshold_value:.1f}")
 
     def _main_window(self) -> QMainWindow | None:
         # 1) explicit parent the tool may have been created with
@@ -371,7 +636,9 @@ class ContinuumSubtractTab(QWidget):
         # NEW composite labels
         self.hao3Label.setText("No HaO3")
         self.s2o3Label.setText("No S2O3")
-
+        self._wb_diag_entries = []
+        if hasattr(self, "wb_diag_button"):
+            self.wb_diag_button.setEnabled(False)
         # Reset continuum labels
         self.redLabel.setText("No Red")
         self.greenLabel.setText("No Green")
@@ -393,166 +660,6 @@ class ContinuumSubtractTab(QWidget):
         self.combined_image = None
         self.statusLabel.setText("All loaded images cleared.")
 
-
-    def loadImage(self, channel: str):
-        """
-        Prompt the user to load either from file or from ImageManager slots,
-        for the given channel ("Ha", "SII", "OIII", "Red", "Green", "OSC").
-        """
-        source, ok = QInputDialog.getItem(
-            self, f"Select {channel} Image Source", "Load image from:",
-            ["From View", "From File"], editable=False
-        )
-        if not ok:
-            return
-
-        if source == "From File":
-            result = self.loadImageFromFile(channel)
-        else:
-            result = self.loadImageFromView(channel)  
-
-        if not result:
-            return
-
-        image, header, bit_depth, is_mono, name_or_path = result
-
-        # Use view title if we got one; if it's a real path, show just the basename
-        label_text = str(name_or_path) if name_or_path else "From View"
-
-
-        try:
-            if isinstance(name_or_path, str) and os.path.isabs(name_or_path):
-                label_text = os.path.basename(name_or_path)
-        except Exception:
-            pass
-
-        is_starless = "(Starless)" in channel
-        base = channel.replace(" (Starless)", "")
-
-        if base == "Ha":
-            if is_starless:
-                self.ha_starless_image = image
-                self.haStarlessLabel.setText(label_text)
-            else:
-                self.ha_image = image
-                self.haLabel.setText(label_text)
-
-        elif base == "SII":
-            if is_starless:
-                self.sii_starless_image = image
-                self.siiStarlessLabel.setText(label_text)
-            else:
-                self.sii_image = image
-                self.siiLabel.setText(label_text)
-
-        elif base == "OIII":
-            if is_starless:
-                self.oiii_starless_image = image
-                self.oiiiStarlessLabel.setText(label_text)
-            else:
-                self.oiii_image = image
-                self.oiiiLabel.setText(label_text)
-
-        elif base == "Red":
-            if is_starless:
-                self.red_starless_image = image
-                self.redStarlessLabel.setText(label_text)
-            else:
-                self.red_image = image
-                self.redLabel.setText(label_text)
-
-        elif base == "Green":
-            if is_starless:
-                self.green_starless_image = image
-                self.greenStarlessLabel.setText(label_text)
-            else:
-                self.green_image = image
-                self.greenLabel.setText(label_text)
-
-        elif base == "OSC":
-            if is_starless:
-                self.osc_starless_image = image
-                self.oscStarlessLabel.setText(label_text)
-            else:
-                self.osc_image = image
-                self.oscLabel.setText(label_text)
-
-        # NEW: HaO3 composite → Ha (R), OIII (G)
-        elif base == "HaO3":
-            # keep the full composite for reference
-            if is_starless:
-                self.hao3_starless_image = image
-                self.hao3StarlessLabel.setText(label_text)
-            else:
-                self.hao3_image = image
-                self.hao3Label.setText(label_text)
-
-            if not (isinstance(image, np.ndarray) and image.ndim == 3 and image.shape[2] >= 2):
-                QMessageBox.warning(
-                    self,
-                    "HaO3 Load",
-                    "HaO3 expects a 3-channel color image (R=Ha, G=OIII). "
-                    "Loaded image is not 3-channel; cannot extract Ha/OIII."
-                )
-                return
-
-            img32 = image.astype(np.float32, copy=False)
-            ha_from_r = img32[..., 0]
-            o3_from_g = img32[..., 1]
-
-            if is_starless:
-                self.ha_starless_image = ha_from_r
-                self.haStarlessLabel.setText(label_text + " [R → Ha (starless)]")
-                self._o3_from_hao3_starless = o3_from_g
-                self._update_oiii_from_composites(starless=True)
-            else:
-                self.ha_image = ha_from_r
-                self.haLabel.setText(label_text + " [R → Ha]")
-                self._o3_from_hao3 = o3_from_g
-                self._update_oiii_from_composites(starless=False)
-
-        # NEW: S2O3 composite → SII (R), OIII (G)
-        elif base == "S2O3":
-            # keep the full composite for reference
-            if is_starless:
-                self.s2o3_starless_image = image
-                self.s2o3StarlessLabel.setText(label_text)
-            else:
-                self.s2o3_image = image
-                self.s2o3Label.setText(label_text)
-
-            if not (isinstance(image, np.ndarray) and image.ndim == 3 and image.shape[2] >= 2):
-                QMessageBox.warning(
-                    self,
-                    "S2O3 Load",
-                    "S2O3 expects a 3-channel color image (R=SII, G=OIII). "
-                    "Loaded image is not 3-channel; cannot extract SII/OIII."
-                )
-                return
-
-            img32 = image.astype(np.float32, copy=False)
-            s2_from_r = img32[..., 0]
-            o3_from_g = img32[..., 1]
-
-            if is_starless:
-                self.sii_starless_image = s2_from_r
-                self.siiStarlessLabel.setText(label_text + " [R → SII (starless)]")
-                self._o3_from_s2o3_starless = o3_from_g
-                self._update_oiii_from_composites(starless=True)
-            else:
-                self.sii_image = s2_from_r
-                self.siiLabel.setText(label_text + " [R → SII]")
-                self._o3_from_s2o3 = o3_from_g
-                self._update_oiii_from_composites(starless=False)
-
-        else:
-            QMessageBox.critical(self, "Error", f"Unknown channel '{channel}'.")
-            return
-
-
-        # Store header and mono-flag for later saving
-        self.original_header = header
-        self.is_mono         = is_mono
 
     # --- NEW: helper to combine OIII from HaO3 and S2O3 ---
     def _update_oiii_from_composites(self, starless: bool):
@@ -678,56 +785,6 @@ class ContinuumSubtractTab(QWidget):
             return None
         return image, header, bit_depth, is_mono, path
 
-    def loadImageFromSlot(self, channel: str):
-        """
-        Prompt the user to pick one of the ImageManager’s slots (using custom names if defined)
-        and load that image.
-        """
-        if not self.image_manager:
-            QMessageBox.critical(self, "Error", "ImageManager is not initialized. Cannot load image from slot.")
-            return None
-
-        # Look up the main window’s custom slot names
-        main_win = getattr(self, "parent_window", None) or self.window()
-        slot_names = getattr(main_win, "slot_names", {})
-
-        # Build the list of display names (zero-based)
-        display_names = [
-            slot_names.get(i, f"Slot {i}") 
-            for i in range(self.image_manager.max_slots)
-        ]
-
-        # Ask the user to choose one
-        choice, ok = QInputDialog.getItem(
-            self,
-            f"Select Slot for {channel}",
-            "Choose a slot:",
-            display_names,
-            0,
-            False
-        )
-        if not ok or not choice:
-            return None
-
-        # Map back to the numeric index
-        idx = display_names.index(choice)
-
-        # Retrieve the image and metadata
-        img = self.image_manager._images.get(idx)
-        if img is None:
-            QMessageBox.warning(self, "Empty Slot", f"{choice} is empty.")
-            return None
-
-        meta = self.image_manager._metadata.get(idx, {})
-        return (
-            img,
-            meta.get("original_header"),
-            meta.get("bit_depth", "Unknown"),
-            meta.get("is_mono", False),
-            meta.get("file_path", None)
-        )
-
-
     def startContinuumSubtraction(self):
         # STARRED (with stars) continuum channels
         cont_red_starry   = self.red_image   if self.red_image   is not None else (self.osc_image[..., 0] if self.osc_image is not None else None)
@@ -760,8 +817,13 @@ class ContinuumSubtractTab(QWidget):
             self.statusLabel.setText("Load at least one NB + matching continuum channel (or OSC).")
             return
         mw = self._main_window()
-        cosmic_root = _cosmic_root(mw) if mw is not None else ""      # NEW
-        denoise_linear = self.denoise_checkbox.isChecked()             # NEW
+
+        denoise_linear    = self.denoise_checkbox.isChecked()
+        denoise_strength  = self.denoise_strength
+        do_stretch        = self.stretch_checkbox.isChecked()
+        do_median_sub     = self.median_sub_checkbox.isChecked()
+        do_curves         = self.curves_checkbox.isChecked()
+        no_black_clip     = self.no_black_clip_checkbox.isChecked()
         self.showSpinner()
         self._threads = []
         self._results = []
@@ -780,7 +842,9 @@ class ContinuumSubtractTab(QWidget):
                 p["nb"], p["cont"], self.linear_output_checkbox.isChecked(),
                 starless_nb=p["nb_sl"], starless_cont=p["cont_sl"], starless_only=p["starless_only"],
                 threshold=self.threshold_value, summary_gamma=self.summary_gamma, q_factor=self.q_factor,
-                cosmic_root=cosmic_root, denoise_linear=denoise_linear  # NEW
+                denoise_linear=denoise_linear, denoise_strength=denoise_strength,
+                do_stretch=do_stretch, do_median_sub=do_median_sub,
+                do_curves=do_curves, no_black_clip=no_black_clip,
             )
             name = p["name"]  # avoid late binding in lambdas
 
@@ -804,103 +868,188 @@ class ContinuumSubtractTab(QWidget):
 
 
     def _onOneResult(self, filt, img, star_count, overlay_qimg, raw_pixels, after_pixels):
-        # stash for later slot‐pushing
         self._results.append({
-            "filter":  filt,
-            "image":   img,
-            "stars":   star_count,
-            "overlay": overlay_qimg,
-            "raw":     raw_pixels,
-            "after":   after_pixels
+            "filter": filt, "image": img, "stars": star_count,
+            "overlay": overlay_qimg, "raw": raw_pixels, "after": after_pixels
         })
 
-        # ---------- thumbnails / diagnostics ----------
+        # store full-res pixmaps for the diagnostics dialog
         make_scatter = (
             isinstance(raw_pixels, np.ndarray) and
             raw_pixels.ndim == 2 and raw_pixels.shape[1] >= 2 and
-            raw_pixels.shape[0] >= 3 and
-            (cv2 is not None)
+            raw_pixels.shape[0] >= 3 and cv2 is not None
         )
 
+        scatter_pix = None
         if make_scatter:
             nb_flux   = raw_pixels[:, 0].astype(np.float32, copy=False)
             cont_flux = raw_pixels[:, 1].astype(np.float32, copy=False)
-
-            h, w = 200, 200
+            h, w = 256, 256
             scatter_img = np.ones((h, w, 3), np.uint8) * 255
-
-            # 1) best-fit NB ≈ m·BB + c
             try:
                 m, c = np.polyfit(cont_flux, nb_flux, 1)
-                x0f, y0f = 0.0, c
-                x1f, y1f = 1.0, m + c
-                y0f = float(np.clip(y0f, 0.0, 1.0))
-                y1f = float(np.clip(y1f, 0.0, 1.0))
-                x0 = int(x0f * (w - 1)); y0 = int((1 - y0f) * (h - 1))
-                x1 = int(x1f * (w - 1)); y1 = int((1 - y1f) * (h - 1))
-                cv2.line(scatter_img, (x0, y0), (x1, y1), (0, 0, 255), 2)   # red line (BGR)
+                x0 = int(0.0 * (w-1)); y0 = int((1 - float(np.clip(c, 0, 1))) * (h-1))
+                x1 = int(1.0 * (w-1)); y1 = int((1 - float(np.clip(m+c, 0, 1))) * (h-1))
+                cv2.line(scatter_img, (x0, y0), (x1, y1), (0, 0, 255), 2)
             except Exception:
                 pass
-
-            # 2) points
-            xs = (np.clip(cont_flux, 0, 1) * (w - 1)).astype(int)
-            ys = ((1 - np.clip(nb_flux, 0, 1)) * (h - 1)).astype(int)
+            xs = (np.clip(cont_flux, 0, 1) * (w-1)).astype(int)
+            ys = ((1 - np.clip(nb_flux, 0, 1)) * (h-1)).astype(int)
             for x, y in zip(xs, ys):
                 if 0 <= x < w and 0 <= y < h:
-                    cv2.circle(scatter_img, (x, y), 2, (255, 0, 0), -1)     # blue points (BGR)
-
-            # axes
-            cv2.line(scatter_img, (0, h - 1), (w - 1, h - 1), (0, 0, 0), 1)
-            cv2.line(scatter_img, (0, 0), (0, h - 1), (0, 0, 0), 1)
-
-            # labels
+                    cv2.circle(scatter_img, (x, y), 2, (255, 0, 0), -1)
+            cv2.line(scatter_img, (0, h-1), (w-1, h-1), (0,0,0), 1)
+            cv2.line(scatter_img, (0, 0), (0, h-1), (0,0,0), 1)
             font = cv2.FONT_HERSHEY_SIMPLEX
-            ((tw, _), _) = cv2.getTextSize("BB Flux", font, 0.5, 1)
-            cv2.putText(scatter_img, "BB Flux", ((w - tw) // 2, h - 5), font, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
+            ((tw,_),_) = cv2.getTextSize("BB Flux", font, 0.5, 1)
+            cv2.putText(scatter_img, "BB Flux", ((w-tw)//2, h-5), font, 0.5, (0,0,0), 1, cv2.LINE_AA)
             for i, ch in enumerate("NB Flux"):
-                cv2.putText(scatter_img, ch, (2, 15 + i*15), font, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
-
+                cv2.putText(scatter_img, ch, (2, 15+i*15), font, 0.5, (0,0,0), 1, cv2.LINE_AA)
             qscatter = QImage(scatter_img.data, w, h, 3*w, QImage.Format.Format_RGB888).copy()
             scatter_pix = QPixmap.fromImage(qscatter)
 
-        # overlay thumbnail (always)
-        thumb_pix = QPixmap.fromImage(overlay_qimg).scaled(
-            200, 200,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation
-        )
+        overlay_pix = QPixmap.fromImage(overlay_qimg)
 
-        # assemble entry row
-        entry = QWidget()
-        elay  = QHBoxLayout(entry)
-        elay.addWidget(QLabel(f"{filt}: {star_count} stars"))
+        sub = "recipe applied from starry" if "(starless)" in filt else f"{star_count} stars detected"
+        self._wb_diag_entries.append({
+            "filter":      filt,
+            "subtitle":    sub,
+            "scatter_pix": scatter_pix,   # full 256×256, or None
+            "overlay_pix": overlay_pix,   # full res
+        })
 
-        if make_scatter:
-            scatter_label = QLabel()
-            scatter_label.setPixmap(scatter_pix)
-            scatter_label.setCursor(Qt.CursorShape.PointingHandCursor)
-            elay.addWidget(scatter_label)
-            self._clickable_images[scatter_label] = scatter_pix
-            scatter_label.installEventFilter(self)
+        if hasattr(self, "wb_diag_button"):
+            self.wb_diag_button.setEnabled(True)
 
-        overlay_label = QLabel()
-        overlay_label.setPixmap(thumb_pix)
-        overlay_label.setCursor(Qt.CursorShape.PointingHandCursor)
-        elay.addWidget(overlay_label)
-        self._clickable_images[overlay_label] = QPixmap.fromImage(overlay_qimg)
-        overlay_label.installEventFilter(self)
-
-        elay.addStretch(1)
-        entry.setLayout(elay)
-        self.wb_l.addWidget(entry)
-
-        # ---------- call _pushResultsToDocs exactly once ----------
         if (not getattr(self, "_pushed_results", False)
-            and len(self._results) == getattr(self, "_expected_results", 0)):
+                and len(self._results) == getattr(self, "_expected_results", 0)):
             self._pushed_results = True
             self.hideSpinner()
             self._pushResultsToDocs(self._results)
 
+    def _show_wb_diagnostics(self):
+        from PyQt6.QtWidgets import (
+            QDialog, QVBoxLayout, QHBoxLayout, QGridLayout,
+            QScrollArea, QLabel, QPushButton, QSizePolicy
+        )
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("WB Diagnostics")
+        dlg.resize(100, 100)
+
+        outer = QVBoxLayout(dlg)
+        outer.setContentsMargins(8, 8, 8, 8)
+        outer.setSpacing(8)
+
+        # scrollable grid area
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        container = QWidget()
+        grid = QGridLayout(container)
+        grid.setSpacing(10)
+        grid.setContentsMargins(4, 4, 4, 4)
+        grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+
+        THUMB = 256
+        CARD_W = THUMB * 2 + 30  # two thumbs + padding
+        COLS = 3
+
+        for idx, entry in enumerate(self._wb_diag_entries):
+            row, col = divmod(idx, COLS)
+
+            card = QGroupBox()
+            card.setTitle(entry["filter"])
+            card.setFixedWidth(CARD_W)
+            card_l = QVBoxLayout(card)
+            card_l.setSpacing(4)
+            card_l.setContentsMargins(6, 14, 6, 6)
+
+            sub_lbl = QLabel(entry["subtitle"])
+            sub_lbl.setStyleSheet("font-size:10px; color: palette(placeholderText);")
+            card_l.addWidget(sub_lbl)
+
+            thumbs = QHBoxLayout()
+            thumbs.setSpacing(6)
+
+            for pix, label_text in [
+                (entry["scatter_pix"], "scatter"),
+                (entry["overlay_pix"], "overlay"),
+            ]:
+                cell = QVBoxLayout()
+                cell.setSpacing(2)
+                img_lbl = QLabel()
+                img_lbl.setFixedSize(THUMB, THUMB)
+                img_lbl.setStyleSheet(
+                    "background: palette(base); border: 0.5px solid palette(mid);"
+                )
+                img_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                if pix is not None:
+                    img_lbl.setPixmap(
+                        pix.scaled(THUMB, THUMB,
+                                Qt.AspectRatioMode.KeepAspectRatio,
+                                Qt.TransformationMode.SmoothTransformation)
+                    )
+                    img_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
+                    # clicking enlarges via existing _showEnlarged
+                    _p = pix  # capture
+                    img_lbl.mousePressEvent = lambda e, p=_p: self._showEnlarged(p)
+                else:
+                    img_lbl.setText("n/a")
+                cell.addWidget(img_lbl)
+                cap = QLabel(label_text)
+                cap.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                cap.setStyleSheet("font-size:10px; color: palette(placeholderText);")
+                cell.addWidget(cap)
+                thumbs.addLayout(cell)
+
+            card_l.addLayout(thumbs)
+            grid.addWidget(card, row, col)
+
+        # pad remaining cells so grid doesn't stretch last card
+        total = len(self._wb_diag_entries)
+        remainder = total % COLS
+        if remainder:
+            for c in range(remainder, COLS):
+                spacer = QWidget()
+                grid.addWidget(spacer, total // COLS, c)
+
+        wrapper = QWidget()
+        wrapper_l = QHBoxLayout(wrapper)
+        wrapper_l.setContentsMargins(0, 0, 0, 0)
+        wrapper_l.addWidget(container)
+        wrapper_l.addStretch(1)
+        scroll.setWidget(wrapper)
+
+        def _resize_to_content():
+            n = len(self._wb_diag_entries)
+            if n == 0:
+                return
+            cols = min(n, COLS)
+            rows = (n + COLS - 1) // COLS
+            # card width + spacing between cards + margins
+            w = cols * CARD_W + (cols - 1) * 10 + 24
+            # card height: groupbox title + subtitle + thumbs + captions + padding
+            card_h = 30 + 16 + THUMB + 20 + 20
+            h = rows * card_h + (rows - 1) * 10 + 24 + 40  # +40 for close button row
+            # clamp to screen
+            screen = QApplication.primaryScreen().availableGeometry()
+            w = min(w, screen.width() - 80)
+            h = min(h, screen.height() - 80)
+            dlg.resize(w, h)
+
+        _resize_to_content()
+
+        outer.addWidget(scroll, 1)
+
+        close_row = QHBoxLayout()
+        close_row.addStretch(1)
+        btn_close = QPushButton("Close")
+        btn_close.clicked.connect(dlg.accept)
+        close_row.addWidget(btn_close)
+        outer.addLayout(close_row)
+
+        dlg.exec()
 
     def eventFilter(self, source, event):
         # catch mouse releases on any of our clickable labels
@@ -1192,9 +1341,11 @@ class ContinuumProcessingThread(QThread):
     status_update = pyqtSignal(str)
 
     def __init__(self, nb_image, continuum_image, output_linear, *,
-                 starless_nb=None, starless_cont=None, starless_only=False,
-                 threshold: float = 5.0, summary_gamma: float = 0.6, q_factor: float = 0.8,
-                 cosmic_root: str = "", denoise_linear: bool = False):  # NEW params
+                starless_nb=None, starless_cont=None, starless_only=False,
+                threshold: float = 5.0, summary_gamma: float = 0.6, q_factor: float = 0.8,
+                denoise_linear: bool = False, denoise_strength: float = 0.90,
+                do_stretch: bool = True, do_median_sub: bool = True,
+                do_curves: bool = True, no_black_clip: bool = False):
         super().__init__()
         self.nb_image = nb_image
         self.continuum_image = continuum_image
@@ -1211,8 +1362,12 @@ class ContinuumProcessingThread(QThread):
         self.q_factor = float(q_factor)
 
         # NEW: Cosmic Clarity integration
-        self.cosmic_root = (cosmic_root or "").strip()
-        self.denoise_linear = bool(denoise_linear)
+        self.denoise_linear   = bool(denoise_linear)
+        self.denoise_strength = float(denoise_strength)
+        self.do_stretch       = bool(do_stretch)
+        self.do_median_sub    = bool(do_median_sub)
+        self.do_curves        = bool(do_curves)
+        self.no_black_clip    = bool(no_black_clip)
 
     # ---------- small helpers ----------
     @staticmethod
@@ -1338,6 +1493,26 @@ class ContinuumProcessingThread(QThread):
         r = rgb[...,0]; g = rgb[...,1]
         return np.clip(r - Q * (g - green_median), 0.0, 1.0)
 
+    def _nonlinear_finalize_with_opts(self, lin_img: np.ndarray) -> np.ndarray:
+        """Stretch → optional median sub → optional curves, honouring user checkboxes."""
+        if not self.do_stretch:
+            return np.clip(lin_img, 0.0, 1.0).astype(np.float32, copy=False)
+
+        target_median = 0.25
+        stretched = stretch_color_image(
+            lin_img, target_median, True, False,
+            no_black_clip=self.no_black_clip
+        )
+
+        if self.do_median_sub:
+            stretched = stretched - 0.7 * np.median(stretched)
+            stretched = np.clip(stretched, 0.0, 1.0)
+
+        if self.do_curves:
+            stretched = apply_curves_adjustment(stretched, np.median(stretched), 0.5)
+
+        return np.clip(stretched, 0.0, 1.0).astype(np.float32, copy=False)
+
     # ---------- main ----------
     def run(self):
         try:
@@ -1376,7 +1551,7 @@ class ContinuumProcessingThread(QThread):
                 green_med = float(np.median(balanced_rgb[..., 1]))
                 Q = self.q_factor
                 linear_image = self._linear_subtract(balanced_rgb, Q, green_med)
-                if self.denoise_linear and self.cosmic_root:
+                if self.denoise_linear:
                     self.status_update.emit("Denoising continuum-subtracted image (Cosmic Clarity)…")
                     linear_image = self._denoise_linear_image(linear_image)
                 # --- NEW: gamma brighten overlay for the summary ---
@@ -1392,14 +1567,9 @@ class ContinuumProcessingThread(QThread):
                     )
                 else:
                     self.status_update.emit("Linear → Non-linear stretch…")
-                    target_median = 0.25
-                    stretched = stretch_color_image(linear_image, target_median, True, False)
-                    final = stretched - 0.7 * np.median(stretched)
-                    final = np.clip(final, 0, 1)
-                    final = apply_curves_adjustment(final, np.median(final), 0.5)
+                    final = self._nonlinear_finalize_with_opts(linear_image)
                     self.processing_complete.emit(
-                        final.astype(np.float32, copy=False),
-                        int(star_count), qimg,
+                        final, int(star_count), qimg,
                         np.array(raw_star_pixels), np.array(after_star_pixels)
                     )
 
@@ -1432,7 +1602,7 @@ class ContinuumProcessingThread(QThread):
                         rgb[..., c] = np.clip(rgb[..., c] * recipe["wb_a"][c] + recipe["wb_b"][c], 0.0, 1.0)
 
                     lin = self._linear_subtract(rgb, recipe["Q"], recipe["green_median"])
-                    if self.denoise_linear and self.cosmic_root:
+                    if self.denoise_linear:
                         self.status_update.emit("Denoising starless continuum-subtracted image (Cosmic Clarity)…")
                         lin = self._denoise_linear_image(lin)
                     # reuse gamma-bright overlay & fit info from the starry pass
@@ -1449,14 +1619,9 @@ class ContinuumProcessingThread(QThread):
                         )
                     else:
                         self.status_update.emit("Linear → Non-linear stretch (starless)…")
-                        target_median = 0.25
-                        stretched = stretch_color_image(lin, target_median, True, False)
-                        final = stretched - 0.7 * np.median(stretched)
-                        final = np.clip(final, 0, 1)
-                        final = apply_curves_adjustment(final, np.median(final), 0.5)
+                        final = self._nonlinear_finalize_with_opts(lin)
                         self.processing_complete_starless.emit(
-                            final.astype(np.float32, copy=False),
-                            fit_count, fit_qimg, fit_raw, fit_after
+                            final, fit_count, fit_qimg, fit_raw, fit_after
                         )
 
                 elif self.starless_only:
@@ -1480,7 +1645,7 @@ class ContinuumProcessingThread(QThread):
 
         green_med = float(np.median(rgb[..., 1]))
         lin = self._linear_subtract(rgb, 0.9, green_med)
-        if self.denoise_linear and self.cosmic_root:
+        if self.denoise_linear:
             self.status_update.emit("Denoising starless continuum-subtracted image (Cosmic Clarity)…")
             lin = self._denoise_linear_image(lin)
         # Blank overlay & empty star lists (no star detection in starless-only path)
@@ -1494,102 +1659,36 @@ class ContinuumProcessingThread(QThread):
             return
 
         self.status_update.emit("Linear → Non-linear stretch…")
-        final = self._nonlinear_finalize(lin)
+        final = self._nonlinear_finalize_with_opts(lin)
         self.processing_complete_starless.emit(final, 0, qimg, empty, empty)
 
     def _denoise_linear_image(self, img: np.ndarray) -> np.ndarray:
-        """
-        Run Cosmic Clarity denoise on a [0,1] float image and return the result.
-        If anything fails (no path, no exe, timeout, etc.), returns the input.
-        """
         try:
             if img is None:
                 return img
 
-            root = self.cosmic_root
-            if not root:
-                # No configured CC path; silently skip
+            if _cc_denoise is None:
+                self.status_update.emit("Cosmic Clarity denoise unavailable (import failed).")
                 return img
 
-            exe_name = _platform_exe_names("denoise")
-            if not exe_name:
-                return img
+            preset = {
+                "mode": "denoise",
+                "denoise_luma": self.denoise_strength,
+                "denoise_color": self.denoise_strength,
+                "denoise_mode": "full",
+                "separate_channels": False,
+                "denoise_lite": False,
+                "denoise_walking": False,
+                "gpu": True,
+                "chunk_size": 256,
+                "overlap": 64,
+                "temp_stretch": False,
+                "target_median": 0.25,
+            }
 
-            exe = os.path.join(root, exe_name)
-            if not os.path.exists(exe):
-                # Executable missing; skip denoise
-                return img
-
-            in_dir = os.path.join(root, "input")
-            out_dir = os.path.join(root, "output")
-            os.makedirs(in_dir, exist_ok=True)
-            os.makedirs(out_dir, exist_ok=True)
-
-            # Unique base name to avoid collisions with other threads
-            base = f"contsub_{os.getpid()}_{id(self)}_{int(time.time() * 1000)}"
-            in_path = os.path.join(in_dir, f"{base}.tif")
-
-            # Stage image as 32-bit float TIFF in [0,1]
             arr = np.clip(np.asarray(img, dtype=np.float32), 0.0, 1.0)
-            is_mono = not (arr.ndim == 3 and arr.shape[2] == 3)
-            legacy_save_image(
-                arr,
-                in_path,
-                "tiff",
-                "32-bit floating point",
-                None,      # no header needed
-                is_mono
-            )
-
-            # Build denoise args (fixed strength 0.9 for both luma + color, full mode)
-            args = [
-                "--denoise_strength", "0.90",
-                "--color_denoise_strength", "0.90",
-                "--denoise_mode", "full",
-            ]
-
-            proc = subprocess.Popen(
-                [exe] + args,
-                cwd=root,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                universal_newlines=True,
-            )
-
-            # Consume output (optional: could parse progress)
-            if proc.stdout is not None:
-                for line in proc.stdout:
-                    line = (line or "").strip()
-                    if not line:
-                        continue
-                    # We could parse "Progress:" here if desired.
-
-            rc = proc.wait()
-            if rc != 0:
-                return img
-
-            # Cosmic Clarity will create something like base_* in the output folder
-            pattern = os.path.join(out_dir, f"{base}_*.*")
-            out_path = self._wait_for_cc_output(pattern)
-            if not out_path:
-                return img
-
-            out_img, _, _, _ = legacy_load_image(out_path)
-            if out_img is None:
-                return img
-
-            result = np.clip(np.asarray(out_img, dtype=np.float32), 0.0, 1.0)
-
-            # Cleanup temp files
-            for path in (in_path, out_path):
-                try:
-                    if path and os.path.exists(path):
-                        os.remove(path)
-                except Exception:
-                    pass
-
-            return result
+            result = _cc_denoise(arr, preset)
+            return np.clip(np.asarray(result, dtype=np.float32), 0.0, 1.0)
 
         except Exception as e:
             try:
@@ -1597,25 +1696,3 @@ class ContinuumProcessingThread(QThread):
             except Exception:
                 pass
             return img
-
-    def _wait_for_cc_output(self, pattern: str, timeout: float = 1800.0, poll: float = 0.25) -> str:
-        """
-        Wait for a CC output file matching glob `pattern`. Returns most recent path or "" on timeout.
-        """
-        t0 = time.time()
-        last = ""
-        while time.time() - t0 < timeout:
-            matches = glob.glob(pattern)
-            if matches:
-                try:
-                    matches.sort(key=lambda p: os.path.getmtime(p), reverse=True)
-                except Exception:
-                    matches.sort()
-                last = matches[0]
-                try:
-                    if os.path.getsize(last) > 0:
-                        return last
-                except Exception:
-                    return last
-            non_blocking_sleep(poll)
-        return ""
