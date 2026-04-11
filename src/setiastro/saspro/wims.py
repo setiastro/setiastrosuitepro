@@ -480,6 +480,11 @@ class ObjectSearchResultDialog(QDialog):
             observer["lat"], observer["lon"],
             observer["date"], observer["tz"]
         )
+
+        obj_coord_az = SkyCoord(ra=ra * u.deg, dec=dec * u.deg)
+        frame_az     = AltAz(obstime=times, location=loc)
+        obj_az       = obj_coord_az.transform_to(frame_az).az.deg
+
         pw = pg.PlotWidget(title=title)
         pw.setLabel("bottom", "Local Time (h)")
         pw.setLabel("left", "Altitude (°)")
@@ -543,6 +548,47 @@ class ObjectSearchResultDialog(QDialog):
                         name="Horizon limit")
             except Exception:
                 pass
+
+        # ── Azimuth compass labels along the object track ────────────────────
+        try:
+            if 'obj_az' not in dir():
+                # compute azimuth if horizon overlay didn't already
+                obj_coord_az = SkyCoord(ra=ra * u.deg, dec=dec * u.deg)
+                frame_az     = AltAz(obstime=times, location=loc)
+                altaz_az     = obj_coord_az.transform_to(frame_az)
+                obj_az       = altaz_az.az.deg
+
+            def _az_to_compass(az: float) -> str:
+                dirs = ["N","NNE","NE","ENE","E","ESE","SE","SSE",
+                        "S","SSW","SW","WSW","W","WNW","NW","NNW"]
+                idx = int((az + 11.25) / 22.5) % 16
+                return dirs[idx]
+
+            # Sample every ~2 hours along the track, only where object is above -5°
+            step = max(1, len(hrs) // 12)
+            labeled_xs = set()
+            for i in range(0, len(hrs), step):
+                alt_val = float(obj_alts[i])
+                if alt_val < -5:
+                    continue
+                x = float(hrs[i])
+                y = float(alt_val)
+                # Avoid label crowding — skip if another label is within 1.5h
+                too_close = any(abs(x - lx) < 1.5 for lx in labeled_xs)
+                if too_close:
+                    continue
+                labeled_xs.add(x)
+                compass = _az_to_compass(float(obj_az[i]))
+                lbl = pg.TextItem(
+                    compass,
+                    anchor=(0.5, 1.2),
+                    color=(220, 180, 80),   # warm gold, distinct from the yellow track
+                )
+                lbl.setFont(__import__('PyQt6.QtGui', fromlist=['QFont']).QFont("", 7))
+                lbl.setPos(x, y)
+                pw.addItem(lbl)
+        except Exception:
+            pass  # compass labels are best-effort
 
         pw.addLegend()
 
@@ -1482,6 +1528,47 @@ class ObjectVisibilityDialog(QDialog):
                             name="Horizon limit")
                 except Exception:
                     pass   # horizon overlay is best-effort
+
+            # ── Azimuth compass labels along the object track ────────────────────
+            try:
+                if 'obj_az' not in dir():
+                    # compute azimuth if horizon overlay didn't already
+                    obj_coord_az = SkyCoord(ra=ra * u.deg, dec=dec * u.deg)
+                    frame_az     = AltAz(obstime=times, location=loc)
+                    altaz_az     = obj_coord_az.transform_to(frame_az)
+                    obj_az       = altaz_az.az.deg
+
+                def _az_to_compass(az: float) -> str:
+                    dirs = ["N","NNE","NE","ENE","E","ESE","SE","SSE",
+                            "S","SSW","SW","WSW","W","WNW","NW","NNW"]
+                    idx = int((az + 11.25) / 22.5) % 16
+                    return dirs[idx]
+
+                # Sample every ~2 hours along the track, only where object is above -5°
+                step = max(1, len(hrs) // 12)
+                labeled_xs = set()
+                for i in range(0, len(hrs), step):
+                    alt_val = float(obj_alts[i])
+                    if alt_val < -5:
+                        continue
+                    x = float(hrs[i])
+                    y = float(alt_val)
+                    # Avoid label crowding — skip if another label is within 1.5h
+                    too_close = any(abs(x - lx) < 1.5 for lx in labeled_xs)
+                    if too_close:
+                        continue
+                    labeled_xs.add(x)
+                    compass = _az_to_compass(float(obj_az[i]))
+                    lbl = pg.TextItem(
+                        compass,
+                        anchor=(0.5, 1.2),
+                        color=(220, 180, 80),   # warm gold, distinct from the yellow track
+                    )
+                    lbl.setFont(__import__('PyQt6.QtGui', fromlist=['QFont']).QFont("", 7))
+                    lbl.setPos(x, y)
+                    pw.addItem(lbl)
+            except Exception:
+                pass  # compass labels are best-effort
 
             pw.addLegend()
 
