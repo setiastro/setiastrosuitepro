@@ -320,12 +320,7 @@ def apply_star_based_white_balance(
 from PyQt6.QtCore import QThread, pyqtSignal as _pyqtSignal
 
 class StarDetectionWorker(QThread):
-    """
-    Runs star detection + overlay build off the main thread.
-    Emits finished(overlay_rgb, star_count) or failed(error_str).
-    Cancel by calling cancel() — checked between major steps.
-    """
-    finished = _pyqtSignal(object, int)   # overlay ndarray, count
+    finished = _pyqtSignal(object, int)
     failed   = _pyqtSignal(str)
 
     def __init__(self, image: np.ndarray, threshold: float, autostretch: bool, parent=None):

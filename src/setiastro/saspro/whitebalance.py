@@ -682,17 +682,20 @@ class WhiteBalanceDialog(QDialog):
 
         from setiastro.saspro.imageops.starbasedwhitebalance import StarDetectionWorker
         img = _to_float01(np.asarray(self.doc.image))
-        worker = StarDetectionWorker(img, thr, auto, parent=None)
+        worker = StarDetectionWorker(img, thr, auto, parent=self)
         worker.finished.connect(self._on_worker_done)
         worker.failed.connect(self._on_worker_failed)
         self._detection_worker = worker
         worker.start()
 
     def _on_worker_done(self, overlay: np.ndarray, count: int):
+        worker = self._detection_worker
         self._detection_worker = None
 
-        # If a new request came in while we were running, service it now
         if self._pending_threshold is not None:
+            # Let the old worker finish before starting a new one
+            if worker is not None:
+                worker.wait(2000)  # wait up to 2s — already done since signal fired
             QTimer.singleShot(0, self._update_star_preview)
             return
 
@@ -711,8 +714,11 @@ class WhiteBalanceDialog(QDialog):
             self.preview.clear()
 
     def _on_worker_failed(self, error: str):
+        worker = self._detection_worker
         self._detection_worker = None
         if self._pending_threshold is not None:
+            if worker is not None:
+                worker.wait(2000)
             QTimer.singleShot(0, self._update_star_preview)
             return
         self.star_count.setText(self.tr("Detection failed."))
@@ -959,5 +965,25 @@ class WhiteBalanceDialog(QDialog):
             super().closeEvent(ev)
 
     def _cleanup(self):
-        # Now a no-op — closeEvent owns all teardown
-        pass
+        try:
+            if self._main and hasattr(self._main, "currentDocumentChanged") and self._active_doc_conn:
+                self._main.currentDocumentChanged.disconnect(self._on_active_doc_changed)
+        except Exception:
+            pass
+        self._active_doc_conn = False
+
+        try:
+            if getattr(self, "_debounce", None) is not None:
+                self._debounce.stop()
+        except Exception:
+            pass
+
+        # macOS: must cancel + wait before the thread object is destroyed
+        try:
+            worker = getattr(self, "_detection_worker", None)
+            if worker is not None and worker.isRunning():
+                worker.cancel()
+                worker.wait(3000)   # give it up to 3s to finish
+            self._detection_worker = None
+        except Exception:
+            pass
