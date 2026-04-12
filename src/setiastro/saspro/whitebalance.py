@@ -430,12 +430,14 @@ def apply_white_balance_to_doc(doc, preset: Optional[Dict] = None):
 
         else:  # "star"
             thr = float(p.get("threshold", 50.0))
+            use_cm = bool(p.get("use_color_matrix", False))
             out, _count, _overlay = apply_star_based_white_balance(
                 base_n,
                 threshold=thr,
                 autostretch=False,
                 reuse_cached_sources=False,
-                return_star_colors=False
+                return_star_colors=False,
+                use_color_matrix=use_cm,
             )
     except Exception as e:
         # Fallback: if SEP missing or star detection fails, try Auto WB
@@ -591,7 +593,13 @@ class WhiteBalanceDialog(QDialog):
         self.thr_label = QLabel("50")
         thr_row.addWidget(self.thr_slider); thr_row.addWidget(self.thr_label)
         sg.addLayout(thr_row)
-
+        self.chk_color_matrix = QCheckBox(self.tr(
+            "Advanced Color Matrix WB  "
+            "(aligns stellar scatter to blackbody locus — non-linear, not for photometry)"
+        ))
+        self.chk_color_matrix.setChecked(False)
+        self.chk_color_matrix.setStyleSheet("color: #f0a000;")  # amber — warns it's non-linear
+        sg.addWidget(self.chk_color_matrix)
         self.chk_reuse = None
 
         self.chk_autostretch_overlay = QCheckBox(self.tr("Autostretch overlay preview"))
@@ -785,25 +793,27 @@ class WhiteBalanceDialog(QDialog):
                 self._finish_and_close()
                 return
 
-            else:  # --- Star-Based: compute here so we can plot like SASv2 ---
+            else:  # Star-Based
                 thr = float(self.thr_slider.value())
+                use_cm = bool(self.chk_color_matrix.isChecked())
 
                 preset = {
                     "mode": "star",
                     "threshold": thr,
+                    "use_color_matrix": use_cm,
                 }
 
                 base = _to_float01(
                     np.asarray(self.doc.image).astype(np.float32, copy=False)
                 )
 
-                # Ask for star colors so we can plot
                 result = apply_star_based_white_balance(
                     base,
                     threshold=thr,
                     autostretch=False,
                     reuse_cached_sources=False,
                     return_star_colors=True,
+                    use_color_matrix=use_cm,     # ← pass through
                 )
 
                 # Expected: (out, count, overlay, raw_colors, after_colors)

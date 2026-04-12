@@ -2749,9 +2749,7 @@ class _WhiteBalancePresetDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("White Balance — Preset")
         init = dict(initial or {})
-
         v = QVBoxLayout(self)
-
         # Mode
         row = QHBoxLayout()
         row.addWidget(QLabel("Mode:"))
@@ -2763,17 +2761,31 @@ class _WhiteBalancePresetDialog(QDialog):
         else: self.mode.setCurrentText("Star-Based")
         row.addWidget(self.mode); row.addStretch()
         v.addLayout(row)
-
         # Star options
         self.grp_star = QGroupBox("Star-Based")
         sv = QGridLayout(self.grp_star)
         self.spin_thr = QDoubleSpinBox(); self.spin_thr.setRange(0.5, 200.0); self.spin_thr.setDecimals(1)
         self.spin_thr.setSingleStep(0.5); self.spin_thr.setValue(float(init.get("threshold", 50.0)))
-        self.chk_reuse = QCheckBox("Reuse cached detections"); self.chk_reuse.setChecked(bool(init.get("reuse_cached_sources", True)))
+        self.chk_reuse = QCheckBox("Reuse cached detections")
+        self.chk_reuse.setChecked(bool(init.get("reuse_cached_sources", True)))
+        self.chk_color_matrix = QCheckBox(
+            "Advanced Color Matrix WB  "
+            "(aligns stellar scatter to blackbody locus — non-linear, not for photometry)"
+        )
+
+        self.chk_color_matrix.setToolTip(
+            "Applies a 3×3 color matrix solved from stellar colors to align stars with the\n"
+            "blackbody locus. Produces more accurate star colors in broadband RGB data.\n\n"
+            "NOT recommended for narrowband or Hα-included data — emission line colors\n"
+            "will be shifted away from their physically accurate values."
+        )
+
+        self.chk_color_matrix.setChecked(bool(init.get("use_color_matrix", False)))
+        self.chk_color_matrix.setStyleSheet("color: #f0a000;")
         sv.addWidget(QLabel("Threshold (σ):"), 0, 0); sv.addWidget(self.spin_thr, 0, 1)
         sv.addWidget(self.chk_reuse, 1, 0, 1, 2)
+        sv.addWidget(self.chk_color_matrix, 2, 0, 1, 2)
         v.addWidget(self.grp_star)
-
         # Manual options
         self.grp_manual = QGroupBox("Manual")
         gv = QGridLayout(self.grp_manual)
@@ -2784,11 +2796,9 @@ class _WhiteBalancePresetDialog(QDialog):
         gv.addWidget(QLabel("Green gain:"), 1, 0); gv.addWidget(self.g, 1, 1)
         gv.addWidget(QLabel("Blue gain:"), 2, 0); gv.addWidget(self.b, 2, 1)
         v.addWidget(self.grp_manual)
-
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self)
         btns.accepted.connect(self.accept); btns.rejected.connect(self.reject)
         v.addWidget(btns)
-
         self.mode.currentTextChanged.connect(self._refresh)
         self._refresh()
 
@@ -2806,7 +2816,12 @@ class _WhiteBalancePresetDialog(QDialog):
             return {"mode": "manual", "r_gain": float(self.r.value()), "g_gain": float(self.g.value()), "b_gain": float(self.b.value())}
         if t == "Auto":
             return {"mode": "auto"}
-        return {"mode": "star", "threshold": float(self.spin_thr.value()), "reuse_cached_sources": bool(self.chk_reuse.isChecked())}
+        return {
+            "mode": "star",
+            "threshold": float(self.spin_thr.value()),
+            "reuse_cached_sources": bool(self.chk_reuse.isChecked()),
+            "use_color_matrix": bool(self.chk_color_matrix.isChecked()),
+        }
 
 
 class _WaveScaleHDRPresetDialog(QDialog):

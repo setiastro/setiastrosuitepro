@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import numpy as np
-
+import math
 # Optional deps
 try:
     import cv2  # for ellipse overlay
@@ -127,13 +127,106 @@ def _spatially_sample_sources(sources: np.ndarray, r: np.ndarray,
     idx = np.concatenate(keep)
     return sources[idx], r[idx]
 
+def _apply_color_matrix_wb(
+    bg_neutral: np.ndarray,
+    bn_star_pixels: np.ndarray,
+    pivot: np.ndarray,
+    *,
+    target_slope: float = 0.4,
+    tilt_strength: float = 0.7,
+) -> np.ndarray:
+    """
+    Non-linear (color matrix) white balance.
+    Solves for a 3x3 matrix that rotates the stellar scatter toward the
+    blackbody locus slope while preserving the neutral point.
+
+    The matrix is constrained so that (1,1,1) maps to (1,1,1) — neutrals stay neutral.
+    """
+    eps = 1e-8
+
+    # ── 1) Build target star colors from blackbody locus ──────────────────
+    # For each star, find its R/B ratio, then compute what G/B *should* be
+    # if it sat on the blackbody locus (gb = target_slope * rb + intercept).
+    # We anchor the locus through neutral: at rb=1, gb=1 → intercept = 1 - target_slope
+    intercept = 1.0 - target_slope   # locus passes through (1,1)
+
+    rb_actual = bn_star_pixels[:, 0] / (bn_star_pixels[:, 2] + eps)
+    gb_actual = bn_star_pixels[:, 1] / (bn_star_pixels[:, 2] + eps)
+
+    # Filter to reasonable range
+    mask = (
+        np.isfinite(rb_actual) & np.isfinite(gb_actual) &
+        (rb_actual > 0.2) & (rb_actual < 3.0) &
+        (gb_actual > 0.2) & (gb_actual < 3.0) &
+        (bn_star_pixels[:, 2] > eps)
+    )
+    if np.sum(mask) < 10:
+        return None  # not enough stars, caller falls back to linear
+
+    src = bn_star_pixels[mask].astype(np.float64)   # (N, 3) — measured star colors
+    rb_m = rb_actual[mask]
+    gb_m = gb_actual[mask]
+
+    # Target: keep R/B where it is, rotate G/B onto the locus
+    # gb_target = slope * rb + intercept, blended with actual
+    gb_target = target_slope * rb_m + intercept
+    gb_target_blended = (1.0 - tilt_strength) * gb_m + tilt_strength * gb_target
+
+    # Reconstruct target RGB (keep B=actual, R=actual, G adjusted)
+    b_actual = src[:, 2]
+    r_actual = src[:, 0]
+    g_target  = gb_target_blended * b_actual
+
+    dst = np.stack([r_actual, g_target, b_actual], axis=1)  # (N, 3)
+
+    # ── 2) Solve for 3×3 color matrix via least squares ───────────────────
+    # dst = src @ M.T  →  solve for M (3×3)
+    # Constraint: neutral maps to neutral, i.e. M @ [1,1,1] = [1,1,1]
+    # We enforce this by adding neutral as a high-weight sample
+    NEUTRAL_WEIGHT = float(np.sum(mask)) * 2.0   # counts as 2× all stars
+    neutral_src = np.ones((1, 3), dtype=np.float64)
+    neutral_dst = np.ones((1, 3), dtype=np.float64)
+
+    src_aug = np.vstack([src, neutral_src * NEUTRAL_WEIGHT])
+    dst_aug = np.vstack([dst, neutral_dst * NEUTRAL_WEIGHT])
+
+    # Solve row-by-row: each output channel = linear combo of input channels
+    M = np.zeros((3, 3), dtype=np.float64)
+    for ch in range(3):
+        coeffs, _, _, _ = np.linalg.lstsq(src_aug, dst_aug[:, ch], rcond=None)
+        M[ch] = coeffs
+
+    # ── 3) Sanity check — matrix should be close to identity ──────────────
+    # Reject if it's doing something crazy
+    diag = np.diag(M)
+    off  = M - np.diag(diag)
+    if np.any(np.abs(diag) > 3.0) or np.any(np.abs(off) > 1.5):
+        print(f"[CC WB] Color matrix rejected (out of bounds): diag={diag} off-diag max={np.abs(off).max():.3f}")
+        return None
+
+    print(f"[CC WB] Color matrix:\n{np.round(M, 4)}")
+    print(f"[CC WB] Neutral check: {np.round(M @ np.array([1,1,1]), 4)}")
+
+    # ── 4) Apply matrix to image ───────────────────────────────────────────
+    img = bg_neutral.astype(np.float64)
+    H, W = img.shape[:2]
+
+    # Subtract pivot, apply matrix, re-add pivot
+    p = pivot.astype(np.float64).reshape(1, 1, 3)
+    shifted = img - p                              # (H, W, 3)
+    flat = shifted.reshape(-1, 3)                  # (H*W, 3)
+    out_flat = flat @ M.T                          # (H*W, 3)
+    out = out_flat.reshape(H, W, 3) + p
+
+    return np.clip(out, 0.0, 1.0).astype(np.float32)
 
 def apply_star_based_white_balance(
     image: np.ndarray,
     threshold: float = 1.5,
     autostretch: bool = True,
     reuse_cached_sources: bool = False,
-    return_star_colors: bool = False
+    return_star_colors: bool = False,
+    use_color_matrix: bool = False,       # ← new
 ) -> Tuple[np.ndarray, int, np.ndarray, np.ndarray, np.ndarray] | Tuple[np.ndarray, int, np.ndarray]:
     """
     Star-based white balance using:
@@ -281,19 +374,74 @@ def apply_star_based_white_balance(
         overlay_rgb = disp.astype(np.float32, copy=False)
 
     # ------------------------------------------------------------------
-    # 5) WB math: anchor the BN background medians, adjust star white points
+    # 5) WB math: shift center to neutral + tilt toward blackbody slope
     # ------------------------------------------------------------------
+    # ---- Step 1: measure current star color ratios ----
+    eps = 1e-8
     ref_color = np.median(bn_star_pixels, axis=0).astype(np.float32)
-    ref_color = np.where(ref_color <= 1e-8, 1e-8, ref_color)
+    ref_color = np.where(ref_color <= eps, eps, ref_color)
 
-    target = float(np.max(ref_color))
-    scaling = (target / ref_color).astype(np.float32)
+    rb_stars = bn_star_pixels[:, 0] / (bn_star_pixels[:, 2] + eps)
+    gb_stars = bn_star_pixels[:, 1] / (bn_star_pixels[:, 2] + eps)
+
+    finite_mask = (
+        np.isfinite(rb_stars) & np.isfinite(gb_stars) &
+        (rb_stars > 0.1) & (gb_stars > 0.1) &
+        (rb_stars < 4.0) & (gb_stars < 4.0)
+    )
+
+    TARGET_SLOPE = 0.55
+    TILT_STRENGTH = 0.7
+
+    if np.sum(finite_mask) >= 10:
+        rb_f = rb_stars[finite_mask]
+        gb_f = gb_stars[finite_mask]
+        A = np.stack([rb_f, np.ones_like(rb_f)], axis=1)
+        result = np.linalg.lstsq(A, gb_f, rcond=None)
+        current_slope = float(np.clip(result[0][0], 0.05, 3.0))
+    else:
+        current_slope = TARGET_SLOPE
+
+    # ---- Step 2: compute slope correction gain ratio ----
+    # new_slope = (kg/kr) * current_slope = TARGET_SLOPE
+    # So kg/kr = TARGET_SLOPE / current_slope
+    # Split symmetrically: kr = 1/sqrt(ratio), kg = sqrt(ratio)
+    slope_ratio = float(np.clip(TARGET_SLOPE / current_slope, 0.3, 3.0))
+    blended_ratio = 1.0 + TILT_STRENGTH * (slope_ratio - 1.0)
+
+    kr_tilt = 1.0 / math.sqrt(blended_ratio)
+    kg_tilt = math.sqrt(blended_ratio)
+    kb_tilt = 1.0
+
+    # ---- Step 3: apply tilt to star samples, then find neutral shift ----
+    # We want the TILTED median to land at neutral (equal RGB)
+    # So compute where the median ends up after tilt, then correct
+    tilt = np.array([kr_tilt, kg_tilt, kb_tilt], dtype=np.float32)
+    tilted_median = ref_color * tilt
+    tilted_median = np.where(tilted_median <= eps, eps, tilted_median)
+
+    # Neutral shift: scale so max channel = all channels (gray)
+    neutral_target = float(np.max(tilted_median))
+    neutral_scale = neutral_target / tilted_median  # per-channel
+
+    # ---- Final combined scaling: tilt * neutral (computed together, not sequentially) ----
+    final_scaling = (tilt * neutral_scale).astype(np.float32)
 
     m = pivot.reshape((1, 1, 3)).astype(np.float32)
-    g = scaling.reshape((1, 1, 3)).astype(np.float32)
+    g = final_scaling.reshape((1, 1, 3)).astype(np.float32)
 
     balanced = (bg_neutral.astype(np.float32) - m) * g + m
     balanced = np.clip(balanced, 0.0, 1.0).astype(np.float32, copy=False)
+    # ── 5b) Color matrix WB (advanced, non-linear) ────────────────────────
+    if use_color_matrix:
+        matrix_result = _apply_color_matrix_wb(
+            bg_neutral,
+            bn_star_pixels,
+            pivot,
+            target_slope=0.55,
+            tilt_strength=0.7,
+        )
+        balanced = matrix_result if matrix_result is not None else balanced
 
     # ------------------------------------------------------------------
     # 6) After-WB diagnostic samples, same circular-median method
