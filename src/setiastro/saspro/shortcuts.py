@@ -2770,14 +2770,12 @@ class _WhiteBalancePresetDialog(QDialog):
         self.chk_reuse.setChecked(bool(init.get("reuse_cached_sources", True)))
         self.chk_color_matrix = QCheckBox(
             "Advanced Color Matrix WB  "
-            "(aligns stellar scatter to blackbody locus — non-linear, not for photometry)"
+            "(cross-channel matrix aligned to blackbody locus)"
         )
 
         self.chk_color_matrix.setToolTip(
-            "Applies a 3×3 color matrix solved from stellar colors to align stars with the\n"
-            "blackbody locus. Produces more accurate star colors in broadband RGB data.\n\n"
-            "NOT recommended for narrowband or Hα-included data — emission line colors\n"
-            "will be shifted away from their physically accurate values."
+            "Applies a 3×3 color matrix solved from the detected stellar population.\n"
+            "NOT recommended for narrowband or duoband data."
         )
 
         self.chk_color_matrix.setChecked(bool(init.get("use_color_matrix", False)))

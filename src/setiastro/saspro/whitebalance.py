@@ -595,11 +595,22 @@ class WhiteBalanceDialog(QDialog):
         sg.addLayout(thr_row)
         self.chk_color_matrix = QCheckBox(self.tr(
             "Advanced Color Matrix WB  "
-            "(aligns stellar scatter to blackbody locus — non-linear, not for photometry)"
+            "(cross-channel matrix aligned to blackbody locus)"
         ))
         self.chk_color_matrix.setChecked(False)
-        self.chk_color_matrix.setStyleSheet("color: #f0a000;")  # amber — warns it's non-linear
+        self.chk_color_matrix.setStyleSheet("color: #f0a000;")
+        self.chk_color_matrix.setToolTip(self.tr(
+            "Applies a 3×3 color matrix solved from the detected stellar population.\n"
+            "Unlike standard per-channel scaling, the matrix mixes channels to rotate\n"
+            "the stellar color scatter onto the blackbody locus — producing physically\n"
+            "accurate star and galaxy colors in broadband RGB data.\n\n"
+            "NOT recommended for narrowband or duoband data (Hα, OIII, SII etc.) —\n"
+            "emission line colors will be shifted away from their physically accurate values.\n\n"
+            "The amber color is a reminder that this changes color relationships differently\n"
+            "than standard diagonal white balance scaling."
+        ))
         sg.addWidget(self.chk_color_matrix)
+    
         self.chk_reuse = None
 
         self.chk_autostretch_overlay = QCheckBox(self.tr("Autostretch overlay preview"))
