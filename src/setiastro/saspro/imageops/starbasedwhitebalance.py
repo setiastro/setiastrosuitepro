@@ -132,23 +132,30 @@ def _apply_color_matrix_wb(
     bn_star_pixels: np.ndarray,
     pivot: np.ndarray,
     *,
-    target_slope: float = 0.4,
+    target_slope: float = 0.55,
     tilt_strength: float = 0.7,
 ) -> np.ndarray:
     """
     Non-linear (color matrix) white balance.
     Solves for a 3x3 matrix that rotates the stellar scatter toward the
-    blackbody locus slope while preserving the neutral point.
+    blackbody locus slope while preserving the locus-neutral point.
 
-    The matrix is constrained so that (1,1,1) maps to (1,1,1) — neutrals stay neutral.
+    Projects each star's (R/B, G/B) point orthogonally onto the target
+    blackbody locus line, then solves for the 3x3 matrix that maps
+    measured star colors to their locus-projected targets.
+
+    The neutral point is anchored at the physically correct locus intercept
+    (R/B=1, G/B≈0.96) rather than the mathematically convenient (1,1).
     """
     eps = 1e-8
 
-    # ── 1) Build target star colors from blackbody locus ──────────────────
-    # For each star, find its R/B ratio, then compute what G/B *should* be
-    # if it sat on the blackbody locus (gb = target_slope * rb + intercept).
-    # We anchor the locus through neutral: at rb=1, gb=1 → intercept = 1 - target_slope
-    intercept = 1.0 - target_slope   # locus passes through (1,1)
+    # At R/B=1 the blackbody locus sits at G/B≈0.96, not 1.0
+    # This is physically correct — a truly neutral gray star is slightly
+    # green-deficient relative to equal RGB
+    LOCUS_NEUTRAL_GB = 0.96
+
+    # Locus: gb = target_slope * rb + intercept, anchored through (1, LOCUS_NEUTRAL_GB)
+    intercept = LOCUS_NEUTRAL_GB - target_slope
 
     rb_actual = bn_star_pixels[:, 0] / (bn_star_pixels[:, 2] + eps)
     gb_actual = bn_star_pixels[:, 1] / (bn_star_pixels[:, 2] + eps)
@@ -161,34 +168,54 @@ def _apply_color_matrix_wb(
         (bn_star_pixels[:, 2] > eps)
     )
     if np.sum(mask) < 10:
-        return None  # not enough stars, caller falls back to linear
+        return None
 
-    src = bn_star_pixels[mask].astype(np.float64)   # (N, 3) — measured star colors
+    src  = bn_star_pixels[mask].astype(np.float64)
     rb_m = rb_actual[mask]
     gb_m = gb_actual[mask]
 
-    # Target: keep R/B where it is, rotate G/B onto the locus
-    # gb_target = slope * rb + intercept, blended with actual
-    gb_target = target_slope * rb_m + intercept
-    gb_target_blended = (1.0 - tilt_strength) * gb_m + tilt_strength * gb_target
+    # Orthogonal projection of each (rb, gb) onto the locus line:
+    #   rb_t = (rb + slope*(gb - intercept)) / (1 + slope^2)
+    #   gb_t = slope * rb_t + intercept
+    slope = float(target_slope)
+    rb_t  = (rb_m + slope * (gb_m - intercept)) / (1.0 + slope ** 2)
+    gb_t  = slope * rb_t + intercept
 
-    # Reconstruct target RGB (keep B=actual, R=actual, G adjusted)
-    b_actual = src[:, 2]
-    r_actual = src[:, 0]
-    g_target  = gb_target_blended * b_actual
+    # Blend toward projected target
+    rb_target = (1.0 - tilt_strength) * rb_m + tilt_strength * rb_t
+    gb_target = (1.0 - tilt_strength) * gb_m + tilt_strength * gb_t
 
-    dst = np.stack([r_actual, g_target, b_actual], axis=1)  # (N, 3)
+    # Normalize each star by its own luminance so B isn't a fixed anchor
+    lum_src = 0.2126 * src[:, 0] + 0.7152 * src[:, 1] + 0.0722 * src[:, 2]
+    lum_src = np.where(lum_src <= eps, eps, lum_src)
 
-    # ── 2) Solve for 3×3 color matrix via least squares ───────────────────
-    # dst = src @ M.T  →  solve for M (3×3)
-    # Constraint: neutral maps to neutral, i.e. M @ [1,1,1] = [1,1,1]
-    # We enforce this by adding neutral as a high-weight sample
-    NEUTRAL_WEIGHT = float(np.sum(mask)) * 2.0   # counts as 2× all stars
-    neutral_src = np.ones((1, 3), dtype=np.float64)
-    neutral_dst = np.ones((1, 3), dtype=np.float64)
+    src_norm = src / lum_src[:, None]
 
-    src_aug = np.vstack([src, neutral_src * NEUTRAL_WEIGHT])
-    dst_aug = np.vstack([dst, neutral_dst * NEUTRAL_WEIGHT])
+    # Reconstruct target RGB preserving luminance:
+    # R_t/B_t = rb_target, G_t/B_t = gb_target
+    # 0.2126*R_t + 0.7152*G_t + 0.0722*B_t = lum_src
+    # → B_t = lum_src / (0.2126*rb_target + 0.7152*gb_target + 0.0722)
+    denom = 0.2126 * rb_target + 0.7152 * gb_target + 0.0722
+    denom = np.where(denom <= eps, eps, denom)
+    b_t = lum_src / denom
+    r_t = rb_target * b_t
+    g_t = gb_target * b_t
+
+    dst = np.stack([r_t, g_t, b_t], axis=1)
+    dst_norm = dst / lum_src[:, None]
+
+    # Neutral constraint: (1,1,1) → (1, LOCUS_NEUTRAL_GB, 1) in RGB space
+    # i.e. a truly gray star should land on the locus at R/B=1
+    NEUTRAL_WEIGHT = float(np.sum(mask)) * 2.0
+
+    lum_n_src = 0.2126 + 0.7152 + 0.0722              # = 1.0
+    lum_n_dst = 0.2126 + 0.7152 * LOCUS_NEUTRAL_GB + 0.0722
+
+    neutral_src = np.ones((1, 3), dtype=np.float64) / lum_n_src
+    neutral_dst = np.array([[1.0, LOCUS_NEUTRAL_GB, 1.0]], dtype=np.float64) / lum_n_dst
+
+    src_aug = np.vstack([src_norm, neutral_src * NEUTRAL_WEIGHT])
+    dst_aug = np.vstack([dst_norm, neutral_dst * NEUTRAL_WEIGHT])
 
     # Solve row-by-row: each output channel = linear combo of input channels
     M = np.zeros((3, 3), dtype=np.float64)
@@ -196,27 +223,32 @@ def _apply_color_matrix_wb(
         coeffs, _, _, _ = np.linalg.lstsq(src_aug, dst_aug[:, ch], rcond=None)
         M[ch] = coeffs
 
-    # ── 3) Sanity check — matrix should be close to identity ──────────────
-    # Reject if it's doing something crazy
+    # Re-anchor: ensure (1,1,1) maps exactly to (1, LOCUS_NEUTRAL_GB, 1)
+    neutral_raw = np.array([1.0, 1.0, 1.0])
+    neutral_out = M @ neutral_raw
+    target_neutral = np.array([1.0, LOCUS_NEUTRAL_GB, 1.0])
+    for ch in range(3):
+        if abs(neutral_out[ch]) > eps:
+            M[ch] *= target_neutral[ch] / neutral_out[ch]
+
+    # Sanity check
     diag = np.diag(M)
     off  = M - np.diag(diag)
     if np.any(np.abs(diag) > 3.0) or np.any(np.abs(off) > 1.5):
-        print(f"[CC WB] Color matrix rejected (out of bounds): diag={diag} off-diag max={np.abs(off).max():.3f}")
+        print(f"[CC WB] Color matrix rejected (out of bounds): "
+              f"diag={np.round(diag,4)} off-diag max={np.abs(off).max():.3f}")
         return None
 
     print(f"[CC WB] Color matrix:\n{np.round(M, 4)}")
     print(f"[CC WB] Neutral check: {np.round(M @ np.array([1,1,1]), 4)}")
 
-    # ── 4) Apply matrix to image ───────────────────────────────────────────
-    img = bg_neutral.astype(np.float64)
-    H, W = img.shape[:2]
-
-    # Subtract pivot, apply matrix, re-add pivot
-    p = pivot.astype(np.float64).reshape(1, 1, 3)
-    shifted = img - p                              # (H, W, 3)
-    flat = shifted.reshape(-1, 3)                  # (H*W, 3)
-    out_flat = flat @ M.T                          # (H*W, 3)
-    out = out_flat.reshape(H, W, 3) + p
+    # Apply matrix — subtract pivot, transform, re-add pivot
+    p        = pivot.astype(np.float64).reshape(1, 1, 3)
+    img      = bg_neutral.astype(np.float64)
+    shifted  = img - p
+    flat     = shifted.reshape(-1, 3)
+    out_flat = flat @ M.T
+    out      = out_flat.reshape(img.shape) + p
 
     return np.clip(out, 0.0, 1.0).astype(np.float32)
 
@@ -434,11 +466,20 @@ def apply_star_based_white_balance(
     balanced = np.clip(balanced, 0.0, 1.0).astype(np.float32, copy=False)
     # ── 5b) Color matrix WB (advanced, non-linear) ────────────────────────
     if use_color_matrix:
+        # Re-sample star pixels from the already linearly-balanced image
+        # so the matrix corrects residual color rotation, not the raw cast
+        balanced_star_pixels, _ = _sample_star_circle_medians(balanced, sources, radius=3)
+        # Re-compute pivot from balanced image background region
+        balanced_pivot = np.median(
+            balanced[rect[1]:rect[1]+rect[3], rect[0]:rect[0]+rect[2], :],
+            axis=(0, 1)
+        ).astype(np.float32)
+
         matrix_result = _apply_color_matrix_wb(
-            bg_neutral,
-            bn_star_pixels,
-            pivot,
-            target_slope=0.55,
+            balanced,               # ← work on already-balanced image
+            balanced_star_pixels,   # ← star samples from balanced image
+            balanced_pivot,         # ← pivot from balanced image
+            target_slope=0.4,
             tilt_strength=0.7,
         )
         balanced = matrix_result if matrix_result is not None else balanced
