@@ -2738,8 +2738,8 @@ class WIMIDialog(QDialog):
         button_layout.addWidget(self.copy_button)
 
         # Settings button (wrench icon)
-        self.settings_button = QPushButton()
-        self.settings_button.setIcon(QIcon(wrench_path))  # Adjust icon path as needed
+        self.settings_button = QPushButton("⚙ Settings")
+        self.settings_button.setToolTip("Settings")
         self.settings_button.clicked.connect(self.open_settings_dialog)
         button_layout.addWidget(self.settings_button)
 
