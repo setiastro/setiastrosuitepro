@@ -53,7 +53,7 @@ class WeeklyScoreThread(QThread):
     result_ready = pyqtSignal(list)   # list of (date_str, score, phase_pct)
 
     def __init__(self, ra_deg, dec_deg, lat, lon, center_date_str, tz_name,
-                 days_before=7, days_after=7):
+                 days_before=7, days_after=7, horizon_points=None):
         super().__init__()
         self.ra_deg          = ra_deg
         self.dec_deg         = dec_deg
@@ -63,6 +63,7 @@ class WeeklyScoreThread(QThread):
         self.tz_name         = tz_name
         self.days_before     = days_before
         self.days_after      = days_after
+        self.horizon_points = horizon_points or []
 
     def run(self):
         from datetime import timedelta
@@ -74,7 +75,8 @@ class WeeklyScoreThread(QThread):
                 d_str = d.strftime("%Y-%m-%d")
                 score, phase = _score_target_for_date(
                     self.ra_deg, self.dec_deg,
-                    self.lat, self.lon, d_str, self.tz_name)
+                    self.lat, self.lon, d_str, self.tz_name,
+                    horizon_points=self.horizon_points)
                 results.append((d_str, score, phase))
         except Exception:
             pass
@@ -126,6 +128,7 @@ class ScoreChartDialog(QDialog):
             self.item_data["ra"], self.item_data["dec"],
             self.observer["lat"], self.observer["lon"],
             self.observer["date"], self.observer["tz"],
+            horizon_points=self.observer.get("horizon_points", []),
         )
         self._thread.result_ready.connect(self._on_results)
         self._thread.start()
@@ -205,7 +208,8 @@ class ObjectSearchThread(QThread):
     progress     = pyqtSignal(int)
     result_ready = pyqtSignal(list)
 
-    def __init__(self, ra_deg, dec_deg, lat, lon, tz_name, start_date_str):
+    def __init__(self, ra_deg, dec_deg, lat, lon, tz_name, start_date_str,
+                 horizon_points=None):
         super().__init__()
         self.ra_deg         = ra_deg
         self.dec_deg        = dec_deg
@@ -213,6 +217,7 @@ class ObjectSearchThread(QThread):
         self.lon            = lon
         self.tz_name        = tz_name
         self.start_date_str = start_date_str
+        self.horizon_points = horizon_points or []
 
     def run(self):
         from datetime import timedelta
@@ -238,7 +243,8 @@ class ObjectSearchThread(QThread):
                 for d_str in date_list:
                     score, phase = _score_target_for_date(
                         self.ra_deg, self.dec_deg,
-                        self.lat, self.lon, d_str, self.tz_name)
+                        self.lat, self.lon, d_str, self.tz_name,
+                        horizon_points=self.horizon_points)
                     out.append((d_str, score, phase))
                 return out
 
@@ -293,23 +299,25 @@ class ObjectSearchResultDialog(QDialog):
             best_dt    = datetime.strptime(best_date, "%Y-%m-%d")
             best_month = best_dt.strftime("%B %Y")
 
-            # Monthly averages
             month_scores = defaultdict(list)
             for d_str, score, _ in self.yearly_results:
-                month_key = d_str[:7]  # YYYY-MM
+                month_key = d_str[:7]
                 month_scores[month_key].append(score)
             best_month_key = max(month_scores, key=lambda k: sum(month_scores[k]) / len(month_scores[k]))
             best_month_avg  = sum(month_scores[best_month_key]) / len(month_scores[best_month_key])
             bm_dt = datetime.strptime(best_month_key + "-01", "%Y-%m-%d")
             best_month_name = bm_dt.strftime("%B %Y")
-        else:
-            best_date = best_score = best_month_name = best_month_avg = "—"
 
-        summary = QLabel(
-            f"<b>{name}</b>   RA {ra:.3f}°  Dec {dec:+.3f}°  |  "
-            f"Best night: <b>{best_date}</b> (score {best_score:.0f}/100)  |  "
-            f"Best month: <b>{best_month_name}</b> (avg {best_month_avg:.0f}/100)"
-        )
+            summary = QLabel(
+                f"<b>{name}</b>   RA {ra:.3f}°  Dec {dec:+.3f}°  |  "
+                f"Best night: <b>{best_date}</b> (score {best_score:.0f}/100)  |  "
+                f"Best month: <b>{best_month_name}</b> (avg {best_month_avg:.0f}/100)"
+            )
+        else:
+            summary = QLabel(
+                f"<b>{name}</b>   RA {ra:.3f}°  Dec {dec:+.3f}°  |  "
+                f"No observability data available."
+            )
         summary.setWordWrap(True)
         summary.setStyleSheet("font-size: 12px; padding: 4px;")
         outer.addWidget(summary)
@@ -895,7 +903,8 @@ class ObjectSearchDialog(QDialog):
         self._search_thread = ObjectSearchThread(
             ra, dec,
             self.observer["lat"], self.observer["lon"],
-            self.observer["tz"], start
+            self.observer["tz"], start,
+            horizon_points=self.observer.get("horizon_points", []),
         )
         self._search_thread.progress.connect(self._progress.setValue)
         self._search_thread.result_ready.connect(
@@ -995,7 +1004,8 @@ class ObjectSearchDialog(QDialog):
             obj["ra"], obj["dec"],
             self.observer["lat"], self.observer["lon"],
             self.observer["tz"],
-            start
+            start,
+            horizon_points=self.observer.get("horizon_points", []),
         )
         self._search_thread.progress.connect(self._progress.setValue)
         self._search_thread.result_ready.connect(
@@ -1174,6 +1184,7 @@ class CalculationThread(QThread):
                     self.latitude, self.longitude,
                     self.date, self.timezone,
                     float(row["Degrees from Moon"]), phase_pct,
+                    horizon_points=self.horizon_points,   # ← add
                 )
                 scores.append(s)
             df["Score"] = scores            
@@ -1411,7 +1422,7 @@ def _compute_alt_curve(ra_deg, dec_deg, lat, lon, date_str, tz_name):
     return times, local_hours, obj_alts, sun_alts, moon_alts, loc
 
 def _score_target(ra_deg, dec_deg, lat, lon, date_str, tz_name,
-                  moon_sep_deg, phase_pct):
+                  moon_sep_deg, phase_pct, horizon_points=None):
     """Returns a 0-100 observability score for the target on the given night."""
     try:
         local_tz = pytz.timezone(tz_name)
@@ -1424,17 +1435,33 @@ def _score_target(ra_deg, dec_deg, lat, lon, date_str, tz_name,
         times = t_start + np.linspace(0, 24, n) * u.hour
         frame = AltAz(obstime=times, location=loc)
 
-        obj_alts = SkyCoord(ra=ra_deg * u.deg, dec=dec_deg * u.deg)\
-                   .transform_to(frame).alt.deg
-        sun_alts = get_sun(times).transform_to(frame).alt.deg
+        obj_coord = SkyCoord(ra=ra_deg * u.deg, dec=dec_deg * u.deg)
+        altaz     = obj_coord.transform_to(frame)
+        obj_alts  = altaz.alt.deg
+        sun_alts  = get_sun(times).transform_to(frame).alt.deg
+
+        # Build per-timestep effective minimum altitude
+        # If custom horizon defined, compute azimuth at each timestep and
+        # look up the horizon limit — otherwise use flat 30°/20° thresholds
+        if horizon_points:
+            obj_az = altaz.az.deg
+            h_lim  = np.array([
+                _horizon_min_alt(float(az), horizon_points)
+                for az in obj_az
+            ], dtype=float)
+            above_quality = obj_alts >= np.maximum(h_lim, 30.0)
+            above_window  = obj_alts >= np.maximum(h_lim, 20.0)
+        else:
+            above_quality = obj_alts >= 30.0
+            above_window  = obj_alts >= 20.0
 
         astro_night = sun_alts < -18
         total_astro = float(np.sum(astro_night))
         if total_astro == 0:
             return 0.0
 
-        alt_score    = float(np.sum(astro_night & (obj_alts >= 30))) / total_astro
-        window_score = float(np.sum(astro_night & (obj_alts >= 20))) / total_astro
+        alt_score    = float(np.sum(astro_night & above_quality)) / total_astro
+        window_score = float(np.sum(astro_night & above_window))  / total_astro
 
         sep_norm   = min(1.0, moon_sep_deg / 90.0)
         phase_norm = 1.0 - (phase_pct / 100.0)
@@ -1444,8 +1471,8 @@ def _score_target(ra_deg, dec_deg, lat, lon, date_str, tz_name,
     except Exception:
         return 0.0
 
-
-def _score_target_for_date(ra_deg, dec_deg, lat, lon, date_str, tz_name) -> tuple[float, int]:
+def _score_target_for_date(ra_deg, dec_deg, lat, lon, date_str, tz_name,
+                            horizon_points=None) -> tuple[float, int]:
     """
     Compute score + lunar phase% for a specific date (self-contained — computes
     moon position internally so it can be called for arbitrary dates).
@@ -1468,7 +1495,7 @@ def _score_target_for_date(ra_deg, dec_deg, lat, lon, date_str, tz_name) -> tupl
         sep        = float(obj_coord.separation(moon_coord).deg)
 
         score = _score_target(ra_deg, dec_deg, lat, lon, date_str, tz_name,
-                              sep, phase_pct)
+                              sep, phase_pct, horizon_points=horizon_points)
         return score, phase_pct
     except Exception:
         return 0.0, 0
@@ -2761,9 +2788,13 @@ class WhatsInMySkyDialog(QDialog):
         act_planets    = QAction("🪐  Planet Separations…", self)
         act_aladin     = QAction("🗺   Open in Aladin…", self)
         act_astrobin   = QAction("🖼   Search AstroBin…", self)
+        act_yearly     = QAction("📅  Full Year Analysis…", self)
 
         menu.addAction(act_visibility)
         menu.addAction(act_score)
+        menu.addSeparator()
+        menu.addAction(act_yearly)
+        menu.addSeparator()
         menu.addAction(act_simbad)
         menu.addAction(act_planets)
         menu.addSeparator()
@@ -2778,6 +2809,50 @@ class WhatsInMySkyDialog(QDialog):
         act_astrobin.triggered.connect(lambda: self.on_row_double_click(item, 0))
 
         menu.exec(self.tree.viewport().mapToGlobal(pos))
+
+    def _open_yearly_analysis(self, item):
+        if not self._observer:
+            QMessageBox.information(self, "WIMS",
+                "Run Calculate first so the observer location is known.")
+            return
+        data = self._item_data(item)
+        if data is None:
+            QMessageBox.warning(self, "WIMS", "Could not parse RA/Dec for this object.")
+            return
+
+        # Reuse the same flow as ObjectSearchDialog._on_analyse
+        # but launch directly without needing to search first
+        from PyQt6.QtWidgets import QProgressDialog
+
+        prog = QProgressDialog(
+            f"Computing yearly visibility for {data['name']}…",
+            "Cancel", 0, 100, self)
+        prog.setWindowModality(Qt.WindowModality.WindowModal)
+        prog.setMinimumDuration(0)
+        prog.setValue(0)
+        prog.show()
+
+        start = self._observer.get("date", datetime.now().strftime("%Y-%m-%d"))
+        thread = ObjectSearchThread(
+            data["ra"], data["dec"],
+            self._observer["lat"], self._observer["lon"],
+            self._observer["tz"],
+            start,
+            horizon_points=self._horizon_points,
+        )
+        thread.progress.connect(prog.setValue)
+        thread.result_ready.connect(prog.close)
+        thread.result_ready.connect(
+            lambda results, d=data: self._show_yearly_results(d, results))
+
+        # Keep reference so thread isn't garbage collected
+        self._yearly_thread = thread
+        prog.canceled.connect(thread.terminate)
+        thread.start()
+
+    def _show_yearly_results(self, data, results):
+        dlg = ObjectSearchResultDialog(data, self._observer, results, parent=self)
+        dlg.show()
 
     def _open_score_dialog(self, item):
         if not self._observer:

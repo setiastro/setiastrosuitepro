@@ -17344,7 +17344,7 @@ class StackingSuiteDialog(QDialog):
             # FAST reference selection: score = starcount / (median * ecc)
             # uses stats we ALREADY measured → good for 100s of frames
             # ─────────────────────────────────────────────────────────────────────
-            self.update_status(self.tr("🧠 Selecting reference optimized for AstroAlign (starcount/(median*ecc))…"))
+            self.update_status(self.tr("🧠 Selecting reference frame (weighted score: stars × roundness × dark background)…"))
             QApplication.processEvents()
 
             def _dominant_pa_cluster_simple(fps, get_pa, tol=12.0):
@@ -17381,6 +17381,7 @@ class StackingSuiteDialog(QDialog):
                 ecc_term    = 1.0 - ecc_clamped
                 bg_term     = (2.0 / (math.sqrt(bg_clamped) + 1.0)) - 1.0
                 weighted_score = float(star_count) * ecc_term * bg_term if star_count > 0 else 0.0
+                return weighted_score 
 
             user_ref_locked = bool(getattr(self, "_user_ref_locked", False))
             user_ref = getattr(self, "reference_frame", None)
