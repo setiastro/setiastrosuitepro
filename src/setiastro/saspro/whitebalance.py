@@ -430,12 +430,14 @@ def apply_white_balance_to_doc(doc, preset: Optional[Dict] = None):
 
         else:  # "star"
             thr = float(p.get("threshold", 50.0))
+            use_cm = bool(p.get("use_color_matrix", False))
             out, _count, _overlay = apply_star_based_white_balance(
                 base_n,
                 threshold=thr,
                 autostretch=False,
                 reuse_cached_sources=False,
-                return_star_colors=False
+                return_star_colors=False,
+                use_color_matrix=use_cm,
             )
     except Exception as e:
         # Fallback: if SEP missing or star detection fails, try Auto WB
@@ -591,7 +593,24 @@ class WhiteBalanceDialog(QDialog):
         self.thr_label = QLabel("50")
         thr_row.addWidget(self.thr_slider); thr_row.addWidget(self.thr_label)
         sg.addLayout(thr_row)
-
+        self.chk_color_matrix = QCheckBox(self.tr(
+            "Advanced Color Matrix WB  "
+            "(cross-channel matrix aligned to blackbody locus)"
+        ))
+        self.chk_color_matrix.setChecked(False)
+        self.chk_color_matrix.setStyleSheet("color: #f0a000;")
+        self.chk_color_matrix.setToolTip(self.tr(
+            "Applies a 3×3 color matrix solved from the detected stellar population.\n"
+            "Unlike standard per-channel scaling, the matrix mixes channels to rotate\n"
+            "the stellar color scatter onto the blackbody locus — producing physically\n"
+            "accurate star and galaxy colors in broadband RGB data.\n\n"
+            "NOT recommended for narrowband or duoband data (Hα, OIII, SII etc.) —\n"
+            "emission line colors will be shifted away from their physically accurate values.\n\n"
+            "The amber color is a reminder that this changes color relationships differently\n"
+            "than standard diagonal white balance scaling."
+        ))
+        sg.addWidget(self.chk_color_matrix)
+    
         self.chk_reuse = None
 
         self.chk_autostretch_overlay = QCheckBox(self.tr("Autostretch overlay preview"))
@@ -682,17 +701,20 @@ class WhiteBalanceDialog(QDialog):
 
         from setiastro.saspro.imageops.starbasedwhitebalance import StarDetectionWorker
         img = _to_float01(np.asarray(self.doc.image))
-        worker = StarDetectionWorker(img, thr, auto, parent=None)
+        worker = StarDetectionWorker(img, thr, auto, parent=self)
         worker.finished.connect(self._on_worker_done)
         worker.failed.connect(self._on_worker_failed)
         self._detection_worker = worker
         worker.start()
 
     def _on_worker_done(self, overlay: np.ndarray, count: int):
+        worker = self._detection_worker
         self._detection_worker = None
 
-        # If a new request came in while we were running, service it now
         if self._pending_threshold is not None:
+            # Let the old worker finish before starting a new one
+            if worker is not None:
+                worker.wait(2000)  # wait up to 2s — already done since signal fired
             QTimer.singleShot(0, self._update_star_preview)
             return
 
@@ -711,8 +733,11 @@ class WhiteBalanceDialog(QDialog):
             self.preview.clear()
 
     def _on_worker_failed(self, error: str):
+        worker = self._detection_worker
         self._detection_worker = None
         if self._pending_threshold is not None:
+            if worker is not None:
+                worker.wait(2000)
             QTimer.singleShot(0, self._update_star_preview)
             return
         self.star_count.setText(self.tr("Detection failed."))
@@ -779,25 +804,27 @@ class WhiteBalanceDialog(QDialog):
                 self._finish_and_close()
                 return
 
-            else:  # --- Star-Based: compute here so we can plot like SASv2 ---
+            else:  # Star-Based
                 thr = float(self.thr_slider.value())
+                use_cm = bool(self.chk_color_matrix.isChecked())
 
                 preset = {
                     "mode": "star",
                     "threshold": thr,
+                    "use_color_matrix": use_cm,
                 }
 
                 base = _to_float01(
                     np.asarray(self.doc.image).astype(np.float32, copy=False)
                 )
 
-                # Ask for star colors so we can plot
                 result = apply_star_based_white_balance(
                     base,
                     threshold=thr,
                     autostretch=False,
                     reuse_cached_sources=False,
                     return_star_colors=True,
+                    use_color_matrix=use_cm,     # ← pass through
                 )
 
                 # Expected: (out, count, overlay, raw_colors, after_colors)
@@ -959,5 +986,25 @@ class WhiteBalanceDialog(QDialog):
             super().closeEvent(ev)
 
     def _cleanup(self):
-        # Now a no-op — closeEvent owns all teardown
-        pass
+        try:
+            if self._main and hasattr(self._main, "currentDocumentChanged") and self._active_doc_conn:
+                self._main.currentDocumentChanged.disconnect(self._on_active_doc_changed)
+        except Exception:
+            pass
+        self._active_doc_conn = False
+
+        try:
+            if getattr(self, "_debounce", None) is not None:
+                self._debounce.stop()
+        except Exception:
+            pass
+
+        # macOS: must cancel + wait before the thread object is destroyed
+        try:
+            worker = getattr(self, "_detection_worker", None)
+            if worker is not None and worker.isRunning():
+                worker.cancel()
+                worker.wait(3000)   # give it up to 3s to finish
+            self._detection_worker = None
+        except Exception:
+            pass

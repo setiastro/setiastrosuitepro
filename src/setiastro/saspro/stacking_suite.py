@@ -17344,7 +17344,7 @@ class StackingSuiteDialog(QDialog):
             # FAST reference selection: score = starcount / (median * ecc)
             # uses stats we ALREADY measured → good for 100s of frames
             # ─────────────────────────────────────────────────────────────────────
-            self.update_status(self.tr("🧠 Selecting reference optimized for AstroAlign (starcount/(median*ecc))…"))
+            self.update_status(self.tr("🧠 Selecting reference frame (weighted score: stars × roundness × dark background)…"))
             QApplication.processEvents()
 
             def _dominant_pa_cluster_simple(fps, get_pa, tol=12.0):
@@ -17373,11 +17373,15 @@ class StackingSuiteDialog(QDialog):
             def _fast_ref_score(fp: str) -> float:
                 info = star_counts.get(fp, {"count": 0, "eccentricity": 1.0})
                 star_count = float(info.get("count", 0.0))
-                ecc = float(info.get("eccentricity", 1.0))
                 med = float(preview_medians.get(fp, 0.0))
                 med = max(med, 1e-3)
-                ecc = max(0.25, min(ecc, 3.0))
-                return star_count / (med * ecc)
+                ecc       = float(info.get("eccentricity", 1.0))
+                bg_clamped  = float(min(max(med, 0.0), 1.0))
+                ecc_clamped = float(min(max(ecc, 0.0), 1.0))
+                ecc_term    = 1.0 - ecc_clamped
+                bg_term     = (2.0 / (math.sqrt(bg_clamped) + 1.0)) - 1.0
+                weighted_score = float(star_count) * ecc_term * bg_term if star_count > 0 else 0.0
+                return weighted_score 
 
             user_ref_locked = bool(getattr(self, "_user_ref_locked", False))
             user_ref = getattr(self, "reference_frame", None)
@@ -21749,10 +21753,14 @@ class StackingSuiteDialog(QDialog):
                 c   = star_counts[fp]["count"]
                 ecc = star_counts[fp]["eccentricity"]
                 m   = mean_values[fp]
-                # same weighting you had during registration measurement
-                c = max(c, 1)
-                m = max(m, 1e-6)
-                raw_w = (c * min(1.0, max(1.0 - ecc, 0.0))) / m
+
+                c = max(c, 0)
+                m_clamped   = float(min(max(m, 0.0), 1.0))
+                ecc_clamped = float(min(max(ecc, 0.0), 1.0))
+                ecc_term    = 1.0 - ecc_clamped
+                bg_term     = (2.0 / (math.sqrt(m_clamped) + 1.0)) - 1.0
+                raw_w       = float(c) * ecc_term * bg_term if c > 0 else 0.0
+
                 self.frame_weights[fp] = raw_w
                 max_w = max(max_w, raw_w)
                 dbg.append(f"📂 {os.path.basename(fp)} → StarCount={c}, Ecc={ecc:.4f}, Mean={m:.4f}, Weight={raw_w:.4f}")

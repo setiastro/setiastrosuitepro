@@ -185,23 +185,28 @@ class FinderChartRequest:
     scale_mult: int
     show_grid: bool
 
-    # star overlay
     show_star_names: bool = False
     star_mag_limit: float = 2.0
     star_max_labels: int = 30
 
-    # deep-sky overlay
     show_dso: bool = False
     dso_catalog: str = "Messier"
     dso_mag_limit: float = 10.0
     dso_max_labels: int = 30
 
-    # chart aids
     show_compass: bool = True
     show_scale_bar: bool = True
 
     out_px: int = 900
     overlay_opacity: float = 0.35
+
+    # Imaging train FOV overlay
+    show_fov_box: bool = False
+    focal_length_mm: float = 500.0
+    pixel_pitch_um: float = 3.76
+    sensor_w_px: int = 6248
+    sensor_h_px: int = 4176
+    rotation_deg: float = 0.0      # clockwise from north
 
 # ---------------- Catalog loading (cached) ----------------
 
@@ -1360,12 +1365,106 @@ def render_finder_chart_cached(
         except Exception:
             pass
 
+    # ---- FOV box overlay ----
+    if bg_wcs is not None and getattr(req, "show_fov_box", False):
+        try:
+            _draw_fov_box(ax, bg_wcs, center[0], req, int(req.out_px))
+        except Exception:
+            pass
+
+
     fig.canvas.draw()
     w, h = fig.canvas.get_width_height()
     rgba = np.asarray(fig.canvas.buffer_rgba(), dtype=np.uint8).reshape(h, w, 4)
     rgb = rgba[..., :3].copy()
     plt.close(fig)
     return rgb
+
+def _draw_fov_box(ax, bg_wcs: "WCS", center: "SkyCoord", req: "FinderChartRequest", out_px: int):
+    """
+    Draw the imaging sensor FOV rectangle centred on the field centre.
+    Rotation is clockwise from North (positive = CW in sky coords).
+    """
+    if not getattr(req, "show_fov_box", False):
+        return
+    if bg_wcs is None:
+        return
+
+    import astropy.units as u
+    from astropy.coordinates import SkyCoord
+
+    fl   = float(req.focal_length_mm)
+    pitch = float(req.pixel_pitch_um)
+    sw   = int(req.sensor_w_px)
+    sh   = int(req.sensor_h_px)
+    rot  = float(req.rotation_deg)   # degrees CW from North
+
+    if fl <= 0 or pitch <= 0 or sw <= 0 or sh <= 0:
+        return
+
+    try:
+        # Sensor angular half-sizes in degrees
+        half_w_deg = math.degrees(math.atan((pitch * sw) / (2000.0 * fl)))
+        half_h_deg = math.degrees(math.atan((pitch * sh) / (2000.0 * fl)))
+
+        ra0  = float(center.ra.deg)
+        dec0 = float(center.dec.deg)
+
+        # Build the 4 corners in sky coords.
+        # Start with unrotated corners in (dRA, dDec) offset space,
+        # then rotate CW by rot degrees.
+        rot_rad = math.radians(-rot)
+        cos_r = math.cos(rot_rad)
+        sin_r = math.sin(rot_rad)
+        cosd  = max(0.01, math.cos(math.radians(dec0)))
+
+        # Unrotated corners: (±half_w, ±half_h) in (E, N) offset space
+        # E is along RA (positive = east = decreasing RA), N is along Dec
+        corners_en = [
+            (-half_w_deg,  half_h_deg),   # NW
+            ( half_w_deg,  half_h_deg),   # NE
+            ( half_w_deg, -half_h_deg),   # SE
+            (-half_w_deg, -half_h_deg),   # SW
+        ]
+
+        sky_corners = []
+        for (de, dn) in corners_en:
+            # Rotate CW: new_E =  de*cos - dn*sin, new_N = de*sin + dn*cos
+            re =  de * cos_r - dn * sin_r
+            rn =  de * sin_r + dn * cos_r
+            # Convert offset to RA/Dec (small angle, compensate for cos(dec) in RA)
+            ra_c  = ra0  - re / cosd   # E offset = decreasing RA
+            dec_c = dec0 + rn
+            sky_corners.append(SkyCoord(ra_c * u.deg, dec_c * u.deg, frame="icrs"))
+
+        xs, ys = bg_wcs.world_to_pixel(
+            SkyCoord([c.ra for c in sky_corners], [c.dec for c in sky_corners])
+        )
+
+        # Close the rectangle
+        xs_plot = list(xs) + [xs[0]]
+        ys_plot = list(ys) + [ys[0]]
+
+        tx = ax.transData
+        ax.plot(xs_plot, ys_plot,
+                linewidth=1.5, color="#00ff88", alpha=0.9,
+                transform=tx, zorder=10)
+
+        # Label with FOV dimensions
+        fov_w_arcmin = half_w_deg * 2 * 60.0
+        fov_h_arcmin = half_h_deg * 2 * 60.0
+        cx_px = float(np.mean(xs))
+        cy_px = float(np.mean(ys))
+        ax.text(
+            cx_px, cy_px + (ys[1] - ys[2]) * 0.55,
+            f"{fov_w_arcmin:.1f}′ × {fov_h_arcmin:.1f}′",
+            transform=tx,
+            fontsize=8, color="#00ff88", alpha=0.95,
+            ha="center", va="bottom",
+        )
+
+    except Exception as e:
+        print(f"[FOV box] draw failed: {e}")
 
 class FinderChartFromCoordDialog(QDialog):
     """
@@ -1407,9 +1506,9 @@ class FinderChartFromCoordDialog(QDialog):
         row1.addWidget(QLabel("FOV:"))
         self.cmb_fov = QComboBox()
         self.cmb_fov.addItems([
-            "0.25°", "0.5°", "1°", "1.5°", "2°", "3°", "4°"
+            "0.25°", "0.5°", "1°", "1.5°", "2°", "3°", "4°", "6°", "8°", "10°"
         ])
-        self.cmb_fov.setCurrentIndex(2)  # default 1°
+        self.cmb_fov.setCurrentIndex(6)  # default 1°
         row1.addWidget(self.cmb_fov)
 
         row1.addSpacing(12)
@@ -1466,6 +1565,63 @@ class FinderChartFromCoordDialog(QDialog):
         row2.addStretch(1)
         root.addLayout(row2)
 
+        # Row 3: Imaging train FOV overlay
+        row3 = QHBoxLayout()
+        self.chk_fov_box = QCheckBox("Show FOV box")
+        row3.addWidget(self.chk_fov_box)
+
+        row3.addSpacing(8)
+        row3.addWidget(QLabel("Focal length (mm):"))
+        self.sb_focal = QDoubleSpinBox()
+        self.sb_focal.setRange(1.0, 20000.0)
+        self.sb_focal.setDecimals(1)
+        self.sb_focal.setSingleStep(50.0)
+        self.sb_focal.setValue(500.0)
+        self.sb_focal.setFixedWidth(80)
+        row3.addWidget(self.sb_focal)
+
+        row3.addSpacing(8)
+        row3.addWidget(QLabel("Pixel pitch (μm):"))
+        self.sb_pitch = QDoubleSpinBox()
+        self.sb_pitch.setRange(0.5, 30.0)
+        self.sb_pitch.setDecimals(2)
+        self.sb_pitch.setSingleStep(0.5)
+        self.sb_pitch.setValue(3.76)
+        self.sb_pitch.setFixedWidth(70)
+        row3.addWidget(self.sb_pitch)
+
+        row3.addSpacing(8)
+        row3.addWidget(QLabel("Sensor (px W×H):"))
+        self.sb_sensor_w = QSpinBox()
+        self.sb_sensor_w.setRange(1, 100000)
+        self.sb_sensor_w.setValue(6248)
+        self.sb_sensor_w.setFixedWidth(70)
+        row3.addWidget(self.sb_sensor_w)
+        row3.addWidget(QLabel("×"))
+        self.sb_sensor_h = QSpinBox()
+        self.sb_sensor_h.setRange(1, 100000)
+        self.sb_sensor_h.setValue(4176)
+        self.sb_sensor_h.setFixedWidth(70)
+        row3.addWidget(self.sb_sensor_h)
+
+        row3.addSpacing(8)
+        row3.addWidget(QLabel("Rotation (°CW):"))
+        self.sb_rotation = QDoubleSpinBox()
+        self.sb_rotation.setRange(-360.0, 360.0)
+        self.sb_rotation.setDecimals(1)
+        self.sb_rotation.setSingleStep(1.0)
+        self.sb_rotation.setValue(0.0)
+        self.sb_rotation.setFixedWidth(65)
+        row3.addWidget(self.sb_rotation)
+
+        # Live FOV readout label
+        self.lbl_fov_readout = QLabel("")
+        self.lbl_fov_readout.setStyleSheet("color:#aaa; font-size:10px;")
+        row3.addWidget(self.lbl_fov_readout)
+
+        row3.addStretch(1)
+        root.addLayout(row3)
+
         # Preview
         self.lbl = QLabel()
         self.lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1500,10 +1656,61 @@ class FinderChartFromCoordDialog(QDialog):
         self.sb_dso_mag.valueChanged.connect(lambda _=0: self._schedule_render(force_refetch=False, delay_ms=150))
         self.chk_compass.toggled.connect(lambda _=False: self._schedule_render(force_refetch=False, delay_ms=150))
         self.chk_scale.toggled.connect(lambda _=False: self._schedule_render(force_refetch=False, delay_ms=150))
+        self.chk_fov_box.toggled.connect(lambda _=False: self._on_imaging_train_changed())
+        self.sb_focal.valueChanged.connect(lambda _=0: self._on_imaging_train_changed())
+        self.sb_pitch.valueChanged.connect(lambda _=0: self._on_imaging_train_changed())
+        self.sb_sensor_w.valueChanged.connect(lambda _=0: self._on_imaging_train_changed())
+        self.sb_sensor_h.valueChanged.connect(lambda _=0: self._on_imaging_train_changed())
+        self.sb_rotation.valueChanged.connect(lambda _=0: self._on_imaging_train_changed())
 
+        self._load_imaging_settings()
+        self._on_imaging_train_changed()  # update the FOV readout label
         self.lbl.setText("Fetching survey background…")
         self.lbl.setStyleSheet("QLabel { background:#111; border:1px solid #333; color:#ccc; }")
         QTimer.singleShot(0, lambda: self._render_now(force_refetch=True))
+
+    def _load_imaging_settings(self):
+        s = self._settings
+        self.cmb_survey.setCurrentText(s.value("finder_coord/survey", "DSS2 (Color)", type=str))
+        fov_txt = s.value("finder_coord/fov", "4°", type=str)
+        idx = self.cmb_fov.findText(fov_txt)
+        self.cmb_fov.setCurrentIndex(idx if idx >= 0 else 6)
+        self.sb_px.setValue(s.value("finder_coord/out_px", 900, type=int))
+        self.chk_grid.setChecked(s.value("finder_coord/show_grid", False, type=bool))
+        self.chk_stars.setChecked(s.value("finder_coord/show_stars", False, type=bool))
+        self.sb_star_mag.setValue(s.value("finder_coord/star_mag", 5.0, type=float))
+        self.chk_dso.setChecked(s.value("finder_coord/show_dso", False, type=bool))
+        idx = self.cmb_dso.findText(s.value("finder_coord/dso_catalog", "All (DSO)", type=str))
+        self.cmb_dso.setCurrentIndex(idx if idx >= 0 else 0)
+        self.sb_dso_mag.setValue(s.value("finder_coord/dso_mag", 12.0, type=float))
+        self.chk_compass.setChecked(s.value("finder_coord/show_compass", True, type=bool))
+        self.chk_scale.setChecked(s.value("finder_coord/show_scale", True, type=bool))
+        self.chk_fov_box.setChecked(s.value("finder_coord/show_fov_box", False, type=bool))
+        self.sb_focal.setValue(s.value("finder_coord/focal_mm", 500.0, type=float))
+        self.sb_pitch.setValue(s.value("finder_coord/pixel_pitch", 3.76, type=float))
+        self.sb_sensor_w.setValue(s.value("finder_coord/sensor_w", 6248, type=int))
+        self.sb_sensor_h.setValue(s.value("finder_coord/sensor_h", 4176, type=int))
+        self.sb_rotation.setValue(s.value("finder_coord/rotation", 0.0, type=float))
+
+    def _save_imaging_settings(self):
+        s = self._settings
+        s.setValue("finder_coord/survey", self.cmb_survey.currentText())
+        s.setValue("finder_coord/fov", self.cmb_fov.currentText())
+        s.setValue("finder_coord/out_px", self.sb_px.value())
+        s.setValue("finder_coord/show_grid", self.chk_grid.isChecked())
+        s.setValue("finder_coord/show_stars", self.chk_stars.isChecked())
+        s.setValue("finder_coord/star_mag", self.sb_star_mag.value())
+        s.setValue("finder_coord/show_dso", self.chk_dso.isChecked())
+        s.setValue("finder_coord/dso_catalog", self.cmb_dso.currentText())
+        s.setValue("finder_coord/dso_mag", self.sb_dso_mag.value())
+        s.setValue("finder_coord/show_compass", self.chk_compass.isChecked())
+        s.setValue("finder_coord/show_scale", self.chk_scale.isChecked())
+        s.setValue("finder_coord/show_fov_box", self.chk_fov_box.isChecked())
+        s.setValue("finder_coord/focal_mm", self.sb_focal.value())
+        s.setValue("finder_coord/pixel_pitch", self.sb_pitch.value())
+        s.setValue("finder_coord/sensor_w", self.sb_sensor_w.value())
+        s.setValue("finder_coord/sensor_h", self.sb_sensor_h.value())
+        s.setValue("finder_coord/rotation", self.sb_rotation.value())
 
     def _fov_deg(self) -> float:
         txt = self.cmb_fov.currentText().replace("°", "").strip()
@@ -1515,7 +1722,7 @@ class FinderChartFromCoordDialog(QDialog):
     def _req(self) -> FinderChartRequest:
         return FinderChartRequest(
             survey=str(self.cmb_survey.currentText()),
-            scale_mult=1,          # not used — we drive fov directly
+            scale_mult=1,
             show_grid=bool(self.chk_grid.isChecked()),
             show_star_names=bool(self.chk_stars.isChecked()),
             star_mag_limit=float(self.sb_star_mag.value()),
@@ -1527,8 +1734,33 @@ class FinderChartFromCoordDialog(QDialog):
             show_compass=bool(self.chk_compass.isChecked()),
             show_scale_bar=bool(self.chk_scale.isChecked()),
             out_px=int(self.sb_px.value()),
-            overlay_opacity=0.0,   # no doc image to overlay
+            overlay_opacity=0.0,
+            show_fov_box=bool(self.chk_fov_box.isChecked()),
+            focal_length_mm=float(self.sb_focal.value()),
+            pixel_pitch_um=float(self.sb_pitch.value()),
+            sensor_w_px=int(self.sb_sensor_w.value()),
+            sensor_h_px=int(self.sb_sensor_h.value()),
+            rotation_deg=float(self.sb_rotation.value()),
         )
+
+    def _on_imaging_train_changed(self):
+        """Update the FOV readout label and schedule a re-render."""
+        fl = float(self.sb_focal.value())
+        pitch = float(self.sb_pitch.value())
+        sw = int(self.sb_sensor_w.value())
+        sh = int(self.sb_sensor_h.value())
+        if fl > 0 and pitch > 0 and sw > 0 and sh > 0:
+            fov_w_deg = math.degrees(2 * math.atan((pitch * sw) / (2000.0 * fl)))
+            fov_h_deg = math.degrees(2 * math.atan((pitch * sh) / (2000.0 * fl)))
+            fov_w_arcmin = fov_w_deg * 60.0
+            fov_h_arcmin = fov_h_deg * 60.0
+            self.lbl_fov_readout.setText(
+                f"  →  {fov_w_arcmin:.1f}′ × {fov_h_arcmin:.1f}′"
+            )
+        else:
+            self.lbl_fov_readout.setText("")
+        # No refetch needed — just re-render overlays
+        self._schedule_render(force_refetch=False, delay_ms=150)
 
     def _schedule_render(self, *, force_refetch=False, delay_ms=200):
         if hasattr(self, "lbl_status"):
@@ -1559,6 +1791,8 @@ class FinderChartFromCoordDialog(QDialog):
         import math as _math
         from astropy.coordinates import SkyCoord as _SkyCoord
         import astropy.units as _u
+
+        self._save_imaging_settings()
 
         self._set_busy(True, "Fetching survey background…")
         try:

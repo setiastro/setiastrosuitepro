@@ -52,21 +52,21 @@ def _nullcontext():
 
 
 def _autocast_context(torch, device) -> Any:
-    """
-    Use new torch.amp.autocast('cuda') when available.
-    Keep your cap >= 8.0 rule.
-    """
     try:
-        if hasattr(device, "type") and device.type == "cuda":
+        dev = str(getattr(device, "type", device)).lower()
+        
+        # privateuseone = torch-directml — no autocast support
+        if dev == "privateuseone":
+            return _nullcontext()
+
+        if dev == "cuda":
             major, minor = torch.cuda.get_device_capability()
-            cap = float(f"{major}.{minor}")
-            if cap >= 8.0:
+            if float(f"{major}.{minor}") >= 8.0:
                 if hasattr(torch, "amp") and hasattr(torch.amp, "autocast"):
                     return torch.amp.autocast(device_type="cuda")
                 return torch.cuda.amp.autocast()
 
-        elif hasattr(device, "type") and device.type == "mps":
-            # MPS often benefits from autocast in newer torch versions
+        elif dev == "mps":
             if hasattr(torch, "amp") and hasattr(torch.amp, "autocast"):
                 return torch.amp.autocast(device_type="mps")
 
@@ -124,6 +124,7 @@ def _is_device_lost_error(err: Exception) -> bool:
         "onderbroken",
         "dmlexecutionprovider",
         "executionprovider.cpp",
+        "privateuseone",
     ]
     return any(n in s for n in needles)
 
@@ -138,30 +139,6 @@ def _iter_batch_sizes(initial: int):
         if bs == 1:
             break
         bs = max(1, bs // 2)
-
-
-def _is_recoverable_batch_error(err: Exception) -> bool:
-    msg = f"{type(err).__name__}: {err}".lower()
-    needles = [
-        "out of memory",
-        "cuda",
-        "cudnn",
-        "cublas",
-        "directml",
-        "dml",
-        "mps",
-        "allocation",
-        "alloc",
-        "resource",
-        "execution provider",
-        "insufficient memory",
-        "bad allocation",
-        "memory",
-        "887a0005",
-        "device removed",
-        "device lost",
-    ]
-    return any(n in msg for n in needles)
 
 def _pad2d_to_multiple(x: np.ndarray, mult: int = 16, mode: str = "reflect") -> tuple[np.ndarray, int, int]:
     """Pad 2D array on bottom/right so H,W are multiples of `mult`."""
@@ -678,90 +655,59 @@ def _iter_batch_sizes(initial: int):
             break
         bs = max(1, bs // 2)
 
+# The second _is_recoverable_batch_error (lower in file) should be:
 def _is_recoverable_batch_error(err: Exception) -> bool:
-    """
-    Heuristic: errors likely caused by batching / backend / allocation pressure.
-    These are worth retrying with a smaller batch size.
-    """
     msg = f"{type(err).__name__}: {err}".lower()
-
     needles = [
         "out of memory",
-        "cuda",
-        "cudnn",
-        "cublas",
-        "directml",
-        "dml",
+        "cuda", "cudnn", "cublas",
+        "directml", "dml",
+        "privateuseone",
         "mps",
-        "allocation",
-        "alloc",
-        "resource",
+        "allocation", "alloc", "resource",
         "execution provider",
-        "insufficient memory",
-        "bad allocation",
-        "memory",
+        "insufficient memory", "bad allocation", "memory",
     ]
     return any(n in msg for n in needles)
 
-def _auto_batch_size(
-    models: DenoiseModels,
-    chunk_size: int,
-    *,
-    rgb: bool,
-    execution_mode: str = "auto",
-    batch_size_override: int = 0,
-) -> int:
+def _auto_batch_size(models, chunk_size, *, rgb, execution_mode="auto", batch_size_override=0):
     if batch_size_override and batch_size_override > 0:
         return int(batch_size_override)
-
     if execution_mode == "compatibility":
         return 1
 
-    dev = getattr(models.device, "type", None) or str(models.device)
+    dev = _device_type(models)   # ← use helper
     cs = int(chunk_size)
 
     if models.is_onnx:
-        if cs <= 256:
-            return 8 if rgb else 12
-        if cs <= 384:
-            return 4 if rgb else 8
-        if cs <= 512:
-            return 2 if rgb else 4
+        if cs <= 256: return 8 if rgb else 12
+        if cs <= 384: return 4 if rgb else 8
+        if cs <= 512: return 2 if rgb else 4
         return 1
 
     if dev == "cuda":
-        # Optional: be more conservative on older CUDA GPUs
         try:
             torch = models.torch
             major, minor = torch.cuda.get_device_capability()
             if major < 8:
-                if cs <= 256:
-                    return 4 if rgb else 6
-                if cs <= 384:
-                    return 2 if rgb else 4
+                if cs <= 256: return 4 if rgb else 6
+                if cs <= 384: return 2 if rgb else 4
                 return 1
         except Exception:
             pass
-
-        if cs <= 256:
-            return 16 if rgb else 24
-        if cs <= 384:
-            return 8 if rgb else 12
-        if cs <= 512:
-            return 4 if rgb else 8
+        if cs <= 256: return 16 if rgb else 24
+        if cs <= 384: return 8 if rgb else 12
+        if cs <= 512: return 4 if rgb else 8
         return 2
 
-    if dev in ("mps", "dml"):
-        if cs <= 256:
-            return 4 if rgb else 6
-        if cs <= 384:
-            return 2 if rgb else 4
+    if dev in ("mps", "dml"):   # ← dml now catches privateuseone too
+        if cs <= 256: return 4 if rgb else 6
+        if cs <= 384: return 2 if rgb else 4
         return 1
 
-    if cs <= 256:
-        return 4 if rgb else 6
-    if cs <= 384:
-        return 2 if rgb else 4
+    # CPU fallback
+    if cs <= 256: return 4 if rgb else 6
+    if cs <= 384: return 2 if rgb else 4
     return 1
 
 def _legacy_denoise_rgb_with_color_model(
@@ -1127,6 +1073,14 @@ def remove_border(image, border_size: int = 16):
         return image[border_size:-border_size, border_size:-border_size]
     return image[border_size:-border_size, border_size:-border_size, :]
 
+def _device_type(models: "DenoiseModels") -> str:
+    """Normalize device type string — torch-directml reports 'privateuseone'."""
+    dev = getattr(models.device, "type", None) or str(models.device)
+    dev = str(dev).lower()
+    if dev == "privateuseone":
+        return "dml"
+    return dev
+
 def _legacy_denoise_channel(
     channel,
     models: DenoiseModels,
@@ -1327,7 +1281,7 @@ def denoise_rgb01(
 
     try:
         backend = "onnx/DirectML" if models.is_onnx else "torch"
-        dev = getattr(models.device, "type", None) or str(models.device)
+        dev = _device_type(models)
         _log(
             f"[CC Denoise] variant={getattr(models,'variant','?')} "
             f"(lite={lite}) backend={backend} device={dev} "
@@ -1526,9 +1480,9 @@ def denoise_rgb01(
     try:
         return _run_with(models)
     except Exception as e:
-        dev = getattr(models.device, "type", None) or str(models.device)
-        if use_gpu and str(dev).lower() != "cpu" and _is_device_lost_error(e):
-            _log(f"[CC Denoise] GPU device lost on backend={dev}; retrying on CPU. {type(e).__name__}: {e}")
+        dev = _device_type(models)   # ← use helper
+        if use_gpu and dev != "cpu" and _is_device_lost_error(e):
+            _log(f"[CC Denoise] GPU device lost on backend={dev}; retrying on CPU.")
             cpu_models = load_models(use_gpu=False, lite=lite, walking=walking)
             return _run_with(cpu_models)
         raise
