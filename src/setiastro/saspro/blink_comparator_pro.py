@@ -223,6 +223,7 @@ class MetricsPanel(QWidget):
         import cv2
         import sep
         import numpy as np
+        import math
 
         idx, entry = i_entry
         img = entry.get("image_data", None)
@@ -325,8 +326,11 @@ class MetricsPanel(QWidget):
             # Weighted score: stars / (background * eccentricity)
             # Higher is better — more stars, less background, rounder stars
             bg = float(orig_back) if np.isfinite(orig_back) and orig_back > 0 else 1e-6
-            ecc_safe = max(ecc, 0.01)  # avoid div/0 for perfect circles
-            weighted_score = float(star_cnt) / (bg * ecc_safe) if star_cnt > 0 else 0.0
+            bg_clamped  = float(min(max(bg, 0.0), 1.0))
+            ecc_clamped = float(min(max(ecc, 0.0), 1.0))
+            ecc_term    = 1.0 - ecc_clamped
+            bg_term     = (2.0 / (math.sqrt(bg_clamped) + 1.0)) - 1.0
+            weighted_score = float(star_cnt) * ecc_term * bg_term if star_cnt > 0 else 0.0
 
             return idx, fwhm, ecc, orig_back, star_cnt, weighted_score
 
@@ -1187,9 +1191,19 @@ class BlinkTab(QWidget):
 
             def _after_restore():
                 self._restore_window_geometry()
-                # If you also persist splitter (below), it restores itself in BlinkTab
 
             QTimer.singleShot(0, _after_restore)
+
+        # Restore zoom panel visibility
+        try:
+            s = QSettings()
+            visible = s.value("blink/zoom_panel_visible", True, type=bool)
+            self._zoom_panel.setVisible(visible)
+            self.zoom_panel_btn.setText(
+                self.tr("Hide Zoom Panel") if visible else self.tr("Show Zoom Panel")
+            )
+        except Exception:
+            pass
 
     def closeEvent(self, e):
         self._save_window_geometry()
@@ -1432,6 +1446,13 @@ class BlinkTab(QWidget):
         self.aggressive_button.setCheckable(True)
         self.aggressive_button.clicked.connect(self.toggle_aggressive)
         zoom_controls_layout.addWidget(self.aggressive_button)
+        
+        self.zoom_panel_btn = QPushButton(self.tr("Hide Zoom Panel"), self)
+        self.zoom_panel_btn.setCheckable(True)
+        self.zoom_panel_btn.setChecked(False)
+        self.zoom_panel_btn.setFixedWidth(110)
+        self.zoom_panel_btn.clicked.connect(self._toggle_zoom_panel)
+        zoom_controls_layout.addWidget(self.zoom_panel_btn)
 
         self.scroll_area = QScrollArea(self)
         self.scroll_area.setWidgetResizable(True)
@@ -1497,6 +1518,19 @@ class BlinkTab(QWidget):
                        self._update_zoom_panel_to_viewport_center())
         )
         self.imagesChanged.connect(self._update_loaded_count_label)
+
+    def _toggle_zoom_panel(self):
+            visible = not self._zoom_panel.isVisible()
+            self._zoom_panel.setVisible(visible)
+            self.zoom_panel_btn.setText(
+                self.tr("Hide Zoom Panel") if visible else self.tr("Show Zoom Panel")
+            )
+            # Persist the state
+            try:
+                s = QSettings()
+                s.setValue("blink/zoom_panel_visible", visible)
+            except Exception:
+                pass
 
     def resizeEvent(self, e):
             super().resizeEvent(e)
