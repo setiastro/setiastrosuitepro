@@ -2730,16 +2730,12 @@ class WhatsInMySkyDialog(QDialog):
         catalog = getattr(self, "catalog_file", None) or \
                 os.path.join(os.path.expanduser("~"), "celestial_catalog.csv")
         if not catalog or not os.path.exists(catalog):
-            # Try to get the path from a fresh thread lookup
-            from setiastro.saspro.whatsinmysky import CalculationThread
             t = CalculationThread.__new__(CalculationThread)
             catalog = t.get_catalog_file_path()
-
         if not catalog or not os.path.exists(catalog):
             QMessageBox.warning(self, "Object Search",
                 "Catalog not found. Please run Calculate once first.")
             return
-
         # Read observer fields directly from the UI — no Calculate needed
         try:
             lat = _parse_deg_with_suffix(self.latitude_entry.text(), "lat")
