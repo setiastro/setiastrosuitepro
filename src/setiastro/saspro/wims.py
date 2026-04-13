@@ -307,11 +307,12 @@ class ObjectSearchResultDialog(QDialog):
             best_month_avg  = sum(month_scores[best_month_key]) / len(month_scores[best_month_key])
             bm_dt = datetime.strptime(best_month_key + "-01", "%Y-%m-%d")
             best_month_name = bm_dt.strftime("%B %Y")
-
+            badge = _score_badge(best_score)
+            month_badge = _score_badge(best_month_avg)
             summary = QLabel(
                 f"<b>{name}</b>   RA {ra:.3f}°  Dec {dec:+.3f}°  |  "
-                f"Best night: <b>{best_date}</b> (score {best_score:.0f}/100)  |  "
-                f"Best month: <b>{best_month_name}</b> (avg {best_month_avg:.0f}/100)"
+                f"Best night: <b>{best_date}</b> (score {best_score:.0f}/100 {badge})  |  "
+                f"Best month: <b>{best_month_name}</b> (avg {best_month_avg:.0f}/100 {month_badge})"
             )
         else:
             summary = QLabel(
@@ -364,7 +365,8 @@ class ObjectSearchResultDialog(QDialog):
                 pw.addItem(bar)
 
                 # Score label above bar
-                txt = pg.TextItem(f"{avg:.0f}", anchor=(0.5, 1.0), color="w")
+                badge = _score_badge(avg)
+                txt = pg.TextItem(f"{avg:.0f} {badge}", anchor=(0.5, 1.0), color="w")
                 txt.setPos(i, avg + 1)
                 pw.addItem(txt)
 
@@ -531,48 +533,39 @@ class ObjectSearchResultDialog(QDialog):
 
         # ── Custom horizon overlay ────────────────────────────────────────────
         horizon_pts = observer.get("horizon_points", [])
+        h_lim = None
         if horizon_pts:
             try:
                 obj_coord_h = SkyCoord(ra=ra * u.deg, dec=dec * u.deg)
                 frame_h     = AltAz(obstime=times, location=loc)
                 altaz_h     = obj_coord_h.transform_to(frame_h)
                 obj_az      = altaz_h.az.deg
-
                 h_lim = np.array([
                     _horizon_min_alt(float(az), horizon_pts)
                     for az in obj_az
                 ], dtype=float)
-
                 h_top  = pg.PlotDataItem(hrs, h_lim)
                 h_bot  = pg.PlotDataItem(hrs, np.zeros_like(h_lim))
                 h_fill = pg.FillBetweenItem(
                     h_bot, h_top,
-                    brush=pg.mkBrush(220, 60, 60, 70),
+                    brush=pg.mkBrush(255, 140, 0, 90),
                 )
                 pw.addItem(h_fill)
                 pw.plot(hrs, h_lim,
-                        pen=pg.mkPen((220, 80, 80), width=1.5,
+                        pen=pg.mkPen((255, 140, 0), width=1.5,
                                     style=Qt.PenStyle.DashLine),
                         name="Horizon limit")
             except Exception:
                 pass
 
-        # ── Azimuth compass labels along the object track ────────────────────
+        # ── Azimuth compass labels ────────────────────────────────────────────
         try:
-            if 'obj_az' not in dir():
-                # compute azimuth if horizon overlay didn't already
-                obj_coord_az = SkyCoord(ra=ra * u.deg, dec=dec * u.deg)
-                frame_az     = AltAz(obstime=times, location=loc)
-                altaz_az     = obj_coord_az.transform_to(frame_az)
-                obj_az       = altaz_az.az.deg
-
             def _az_to_compass(az: float) -> str:
                 dirs = ["N","NNE","NE","ENE","E","ESE","SE","SSE",
                         "S","SSW","SW","WSW","W","WNW","NW","NNW"]
                 idx = int((az + 11.25) / 22.5) % 16
                 return dirs[idx]
 
-            # Sample every ~2 hours along the track, only where object is above -5°
             step = max(1, len(hrs) // 12)
             labeled_xs = set()
             for i in range(0, len(hrs), step):
@@ -581,7 +574,6 @@ class ObjectSearchResultDialog(QDialog):
                     continue
                 x = float(hrs[i])
                 y = float(alt_val)
-                # Avoid label crowding — skip if another label is within 1.5h
                 too_close = any(abs(x - lx) < 1.5 for lx in labeled_xs)
                 if too_close:
                     continue
@@ -590,17 +582,17 @@ class ObjectSearchResultDialog(QDialog):
                 lbl = pg.TextItem(
                     compass,
                     anchor=(0.5, 1.2),
-                    color=(220, 180, 80),   # warm gold, distinct from the yellow track
+                    color=(220, 180, 80),
                 )
                 lbl.setFont(__import__('PyQt6.QtGui', fromlist=['QFont']).QFont("", 7))
                 lbl.setPos(x, y)
                 pw.addItem(lbl)
         except Exception:
-            pass  # compass labels are best-effort
+            pass
 
         pw.addLegend()
 
-        # Mark peak altitude
+        # ── Peak marker ───────────────────────────────────────────────────────
         peak_idx = int(np.argmax(obj_alts))
         peak_alt = float(obj_alts[peak_idx])
         peak_hr  = float(hrs[peak_idx])
@@ -612,11 +604,28 @@ class ObjectSearchResultDialog(QDialog):
 
         layout.addWidget(pw)
 
+        # ── Stats label ───────────────────────────────────────────────────────
         imaging_hrs = float(np.sum((obj_alts >= 20) & (sun_alts < -18))) * (24.0 / len(times))
-        stats = QLabel(
-            f"Peak altitude: {peak_alt:.1f}°  |  "
-            f"Imaging window (>20°, astro night): {imaging_hrs:.1f} h"
-        )
+
+        if horizon_pts and h_lim is not None:
+            try:
+                effective_mask = (obj_alts >= np.maximum(h_lim, 20.0)) & (sun_alts < -18)
+                effective_hrs  = float(np.sum(effective_mask)) * (24.0 / len(times))
+                stats = QLabel(
+                    f"Peak altitude: {peak_alt:.1f}°  |  "
+                    f"Imaging window (>20°, astro night): {imaging_hrs:.1f} h  |  "
+                    f"Effective above horizon: {effective_hrs:.1f} h"
+                )
+            except Exception:
+                stats = QLabel(
+                    f"Peak altitude: {peak_alt:.1f}°  |  "
+                    f"Imaging window (>20°, astro night): {imaging_hrs:.1f} h"
+                )
+        else:
+            stats = QLabel(
+                f"Peak altitude: {peak_alt:.1f}°  |  "
+                f"Imaging window (>20°, astro night): {imaging_hrs:.1f} h"
+            )
         stats.setStyleSheet("font-size: 11px; padding: 2px 4px;")
         layout.addWidget(stats)
 
@@ -1499,6 +1508,23 @@ def _score_target_for_date(ra_deg, dec_deg, lat, lon, date_str, tz_name,
         return score, phase_pct
     except Exception:
         return 0.0, 0
+
+def _score_badge(score) -> str:
+    """Return an emoji badge + label for an observability score."""
+    try:
+        s = float(score)
+    except (TypeError, ValueError):
+        return ""
+    if s < 35:
+        return "❌ Bad"
+    elif s < 55:
+        return "🔴 Poor"
+    elif s < 75:
+        return "🟡 Marginal"
+    elif s < 90:
+        return "🟢 Good"
+    else:
+        return "⭐ Excellent"
 
 class ObjectVisibilityDialog(QDialog):
     def __init__(self, item_data: dict, observer: dict, parent=None):
@@ -2490,6 +2516,9 @@ class WhatsInMySkyDialog(QDialog):
 
         self.calc_thread: Optional[CalculationThread] = None
         self.catalog_file: Optional[str] = None
+        geom = self.settings.value("wims/geometry")
+        if geom:
+            self.restoreGeometry(geom)
 
     # ── UI ────────────────────────────────────────────────────────────────
     def _build_ui(self, wrench_path):
@@ -2807,6 +2836,7 @@ class WhatsInMySkyDialog(QDialog):
         act_planets.triggered.connect(lambda: self._open_visibility_dialog(item, tab=3))
         act_aladin.triggered.connect(lambda: self._open_aladin_for(item))
         act_astrobin.triggered.connect(lambda: self.on_row_double_click(item, 0))
+        act_yearly.triggered.connect(lambda: self._open_yearly_analysis(item)) 
 
         menu.exec(self.tree.viewport().mapToGlobal(pos))
 
@@ -2958,6 +2988,7 @@ class WhatsInMySkyDialog(QDialog):
             "lat": latitude, "lon": longitude,
             "date": date_str, "time": time_str, "tz": tz_str,
             "min_alt": min_alt,
+            "horizon_points": self._horizon_points, 
         }
 
         catalogs = [n for n, cb in self.catalog_vars.items() if cb.isChecked()]
@@ -3082,3 +3113,7 @@ class WhatsInMySkyDialog(QDialog):
                 for i in range(self.tree.topLevelItemCount())]
         pd.DataFrame(rows, columns=cols).to_csv(path, index=False)
         self.update_status(f"Data saved to {path}")
+
+    def closeEvent(self, event):
+        self.settings.setValue("wims/geometry", self.saveGeometry())
+        super().closeEvent(event)
