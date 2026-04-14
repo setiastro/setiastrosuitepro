@@ -306,10 +306,6 @@ def _fit_rbf_on_small(small: np.ndarray, points: np.ndarray, smooth: float = 0.1
         return _upscale_bg(bg_r, (H, W)) if rbf_scale > 1 else bg_r
 
 def _legacy_stretch_unlinked(image: np.ndarray):
-    """
-    SASv2 stretch domain used for modeling: per-channel min shift + unlinked rational
-    stretch to target median=0.25. Returns (stretched_rgb, state_dict).
-    """
     was_single = False
     img = image
     if img.ndim == 2 or (img.ndim == 3 and img.shape[2] == 1):
@@ -335,19 +331,14 @@ def _legacy_stretch_unlinked(image: np.ndarray):
             den = np.where(den == 0.0, 1e-6, den)
             out[..., c] = num / den
 
-    out = np.clip(out, 0.0, 1.0)
+    # *** NO np.clip here — bright stars legitimately exceed 1.0 in stretch domain ***
     return out, {"mins": ch_mins, "meds": ch_meds, "was_single": was_single}
 
 
 def _legacy_unstretch_unlinked(image: np.ndarray, state: dict):
-    """
-    Inverse of the SASv2 stretch above. Accepts mono or RGB; returns same ndim
-    as input, except if original was single-channel it returns mono.
-    """
     mins = state["mins"]; meds = state["meds"]; was_single = state["was_single"]
     img = image.astype(np.float32, copy=True)
 
-    # Work as RGB internally
     if img.ndim == 2:
         img = np.stack([img] * 3, axis=-1)
     if img.ndim == 3 and img.shape[2] == 1:
@@ -363,35 +354,36 @@ def _legacy_unstretch_unlinked(image: np.ndarray, state: dict):
             img[..., c] = num / den
         img[..., c] += float(mins[c])
 
-    img = np.clip(img, 0.0, 1.0)
+    # *** NO np.clip here — let abe_run do the single final rescale ***
     if was_single:
-        # original was mono → return mono
         return img[..., 0]
     return img
 
 def _anchor_median_linear_rescale(img: np.ndarray, pivot: float, eps: float = 1e-8) -> np.ndarray:
     """
-    Linear rescale anchored at pivot:
-      pivot -> pivot
-      max(img) -> 1.0
-
-    This applies one straight-line mapping to the whole image, so values
-    below the pivot are lifted slightly when bright values need compression.
+    Clip-free range normalization anchored at the median (pivot).
+    Step 1: lift negatives (shift so min == 0, pivot adjusts accordingly).
+    Step 2: compress ceiling if max > 1.0, keeping pivot fixed.
+    No hard clipping — all data is preserved via linear mapping.
     """
     out = np.asarray(img, dtype=np.float32).copy()
 
+    # Step 1: lift negatives
+    mn = float(np.nanmin(out))
+    if mn < 0.0:
+        out -= mn
+        pivot = float(pivot) - mn
+
+    # Step 2: compress ceiling only if needed
     mx = float(np.nanmax(out))
     if not np.isfinite(mx) or mx <= 1.0:
         return out
 
-    p = float(pivot)
-    if not np.isfinite(p):
-        p = 0.0
-
+    p = float(pivot) if np.isfinite(pivot) else 0.0
     denom = max(mx - p, eps)
     a = (1.0 - p) / denom
-
     out = p + (out - p) * a
+
     return out.astype(np.float32, copy=False)
 
 def abe_run(
@@ -408,7 +400,15 @@ def abe_run(
     legacy_prestretch: bool = True,
     manual_points: np.ndarray | None = None,   # NEW: Nx2 full-image coords
 ) -> tuple[np.ndarray, np.ndarray] | np.ndarray:
-    """Two-stage ABE (poly + optional RBF) with SASv2-compatible pre/post stretch."""
+    """Two-stage ABE (poly + optional RBF) with SASv2-compatible pre/post stretch.
+
+    NOTE: For RGB images, always run ABE on the combined RGB image rather than
+    on individual channels separately. The legacy stretch/unstretch stage
+    operates on per-channel statistics — running it independently on R, G, B
+    then combining can introduce small inter-channel offsets at saturated pixels
+    that downstream tools (e.g. color matrix white balance) may amplify into
+    visible color artifacts.
+    """
     if image is None:
         raise ValueError("ABE: image is None")
 
@@ -485,10 +485,9 @@ def abe_run(
         after_poly = img_rgb - bg_poly
         med_after  = float(np.median(after_poly))
         after_poly = after_poly + (orig_med - med_after)
-        after_poly = _anchor_median_linear_rescale(after_poly, orig_med)
+        after_poly = _anchor_median_linear_rescale(after_poly, orig_med)  # ← restored
 
         total_bg = bg_poly.astype(np.float32, copy=False)
-
     # ---------- RBF refinement --------------------------------------------
     if use_rbf:
         if progress_cb: progress_cb("Downsampling for RBF stage…")
@@ -536,7 +535,7 @@ def abe_run(
         corrected = img_rgb - total_bg
         med2 = float(np.median(corrected))
         corrected = corrected + (orig_med - med2)
-        corrected = _anchor_median_linear_rescale(corrected, orig_med)
+        corrected = _anchor_median_linear_rescale(corrected, orig_med)  # ← restored
     else:
         if progress_cb: progress_cb("Finalizing…")
         corrected = after_poly
@@ -754,6 +753,20 @@ class ABEDialog(QDialog):
         params.addRow(self.tr("Patch size (px):"),   self.sp_patch)
         params.addRow(self.tr("Sample mode:"), self.cmb_sample_mode)
 
+        # ── Workflow note ───────────────────────────────────────────────
+        note_lbl = QLabel(
+            "💡 Tip: For best results with RGB data, combine R/G/B channels "
+            "before running ADBE. Running ADBE on individual mono channels "
+            "separately can cause color artifacts at saturated stars after combining."
+        )
+        note_lbl.setWordWrap(True)
+        note_lbl.setStyleSheet(
+            "font-size: 10px; color: palette(window-text); "
+            "background: palette(base); "
+            "border: 1px solid palette(mid); "
+            "border-radius: 3px; padding: 4px;"
+        )
+
         rbf_box = QGroupBox(self.tr("RBF Refinement"))
         rbf_form = QFormLayout()
         rbf_form.addRow(self.chk_use_rbf)
@@ -762,6 +775,7 @@ class ABEDialog(QDialog):
 
         opts = QVBoxLayout()
         opts.addLayout(params)          # degree, samples, downsample, patch, sample mode
+        opts.addWidget(note_lbl)
         opts.addWidget(gb_place)        # Place Grid / Show Auto Points — part of sampling setup
         opts.addWidget(self.btn_clear_samples)
         opts.addWidget(rbf_box)         # RBF refinement
