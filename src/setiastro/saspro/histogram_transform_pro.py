@@ -225,28 +225,94 @@ def _to_pixmap(img01: np.ndarray) -> QPixmap:
 
 
 # ---------------- widgets ----------------
-
 class CurveWidget(QWidget):
-    """Draw the histogram transform curve defined by black/mid/white."""
+    """Draw the histogram transform curve defined by black/mid/white — with draggable handles."""
+    from PyQt6.QtCore import pyqtSignal
+    paramsChanged = pyqtSignal(float, float, float)  # black, mid, white
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMinimumSize(260, 260)
         self.black = 0.0
-        self.mid = 0.5
+        self.mid   = 0.5
         self.white = 1.0
+        self._dragging = None   # "black" | "mid" | "white" | None
+        self.setMouseTracking(True)
 
-    def set_params(self, black: float, mid: float, white: float):
+    def set_params(self, black: float, mid: float, white: float, notify=False):
         self.black = float(black)
-        self.mid = float(mid)
+        self.mid   = float(mid)
         self.white = float(white)
         self.update()
+        if notify:
+            self.paramsChanged.emit(self.black, self.mid, self.white)
+
+    def _plot_rect(self):
+        return self.rect().adjusted(10, 10, -10, -10)
+
+    def _x_to_val(self, px: int) -> float:
+        r = self._plot_rect()
+        return float(np.clip((px - r.left()) / max(r.width(), 1), 0.0, 1.0))
+
+    def _val_to_x(self, val: float) -> int:
+        r = self._plot_rect()
+        return r.left() + int(np.clip(val, 0.0, 1.0) * r.width())
+
+    def _handle_at(self, x: int, y: int) -> str | None:
+        """Return which handle (if any) is close to (x, y)."""
+        r = self._plot_rect()
+        tol = 8
+        for name, val in (("black", self.black), ("mid", self.mid), ("white", self.white)):
+            hx = self._val_to_x(val)
+            # handle is at the bottom tick mark
+            hy = r.bottom() - 5
+            if abs(x - hx) <= tol and abs(y - hy) <= tol + 10:
+                return name
+        return None
+
+    def mousePressEvent(self, ev):
+        if ev.button() == Qt.MouseButton.LeftButton:
+            hit = self._handle_at(int(ev.position().x()), int(ev.position().y()))
+            if hit:
+                self._dragging = hit
+                ev.accept()
+                return
+        super().mousePressEvent(ev)
+
+    def mouseMoveEvent(self, ev):
+        x = int(ev.position().x())
+        y = int(ev.position().y())
+
+        if self._dragging:
+            val = self._x_to_val(x)
+            if self._dragging == "black":
+                self.black = min(val, self.white - 0.001)
+            elif self._dragging == "white":
+                self.white = max(val, self.black + 0.001)
+            elif self._dragging == "mid":
+                self.mid = float(np.clip(val, 0.0, 1.0))
+            self.update()
+            self.paramsChanged.emit(self.black, self.mid, self.white)
+            ev.accept()
+            return
+
+        # cursor hint
+        hit = self._handle_at(x, y)
+        self.setCursor(Qt.CursorShape.SizeHorCursor if hit else Qt.CursorShape.ArrowCursor)
+        super().mouseMoveEvent(ev)
+
+    def mouseReleaseEvent(self, ev):
+        if ev.button() == Qt.MouseButton.LeftButton and self._dragging:
+            self._dragging = None
+            ev.accept()
+            return
+        super().mouseReleaseEvent(ev)
 
     def paintEvent(self, ev):
         p = QPainter(self)
         p.fillRect(self.rect(), QColor(25, 25, 25))
 
-        # axes box
-        r = self.rect().adjusted(10, 10, -10, -10)
+        r = self._plot_rect()
         p.setPen(QPen(QColor(80, 80, 80), 1))
         p.drawRect(r)
 
@@ -258,17 +324,13 @@ class CurveWidget(QWidget):
             p.drawLine(x, r.top(), x, r.bottom())
             p.drawLine(r.left(), y, r.right(), y)
 
-        # curve samples
+        # curve
         xs = np.linspace(0.0, 1.0, 512, dtype=np.float32)
-        # normalize through black/white first
-        b = self.black
-        w = self.white
-        if w <= b + 1e-8:
-            w = b + 1e-8
+        b = self.black; w = self.white
+        if w <= b + 1e-8: w = b + 1e-8
         t = np.clip((xs - b) / (w - b), 0.0, 1.0)
         ys = _mtf_vect(t, self.mid)
 
-        # draw curve
         p.setPen(QPen(QColor(220, 220, 220), 2))
         last = None
         for x, y in zip(xs, ys):
@@ -278,14 +340,40 @@ class CurveWidget(QWidget):
                 p.drawLine(last[0], last[1], px, py)
             last = (px, py)
 
-        # draw point markers at black/mid/white (on x-axis)
-        def x_to_px(x):
-            return r.left() + int(np.clip(x, 0, 1) * r.width())
+        # handle definitions: (name, value, color, label)
+        handles = [
+            ("black", self.black, QColor(100, 160, 255), "B"),
+            ("mid",   self.mid,   QColor(100, 220, 100), "M"),
+            ("white", self.white, QColor(255, 180,  80), "W"),
+        ]
 
-        p.setPen(QPen(QColor(120, 200, 255), 2))
-        for x in (self.black, self.mid, self.white):
-            px = x_to_px(x)
-            p.drawLine(px, r.bottom(), px, r.bottom() - 10)
+        for name, val, color, label in handles:
+            hx = self._val_to_x(val)
+            is_dragging = (self._dragging == name)
+
+            # vertical dashed line from top to bottom
+            pen = QPen(color, 1, Qt.PenStyle.DashLine)
+            p.setPen(pen)
+            p.drawLine(hx, r.top(), hx, r.bottom())
+
+            # filled triangle handle at the bottom
+            from PyQt6.QtGui import QPolygon, QBrush
+            from PyQt6.QtCore import QPoint
+            tri_h = 9 if is_dragging else 7
+            tri_w = 6 if is_dragging else 5
+            tri = QPolygon([
+                QPoint(hx,          r.bottom() + 2),
+                QPoint(hx - tri_w,  r.bottom() + 2 + tri_h),
+                QPoint(hx + tri_w,  r.bottom() + 2 + tri_h),
+            ])
+            p.setBrush(QBrush(color))
+            p.setPen(QPen(color.darker(140), 1))
+            p.drawPolygon(tri)
+
+            # small label below the triangle
+            p.setPen(QPen(color, 1))
+            p.setFont(self.font())
+            p.drawText(hx - 4, r.bottom() + 2 + tri_h + 11, label)
 
         p.end()
 
@@ -479,6 +567,11 @@ class HistogramTransformDialogPro(QDialog):
         self.lbl_clip.setStyleSheet("color:#aaa;")
         gl.addWidget(self.lbl_clip, 5, 0, 1, 3)
         left.addWidget(gb)
+        # min/max stats label
+        self.lbl_minmax = QLabel("Min: —   Max: —", self)
+        self.lbl_minmax.setStyleSheet("color:#aaa; font-size: 11px;")
+        self.lbl_minmax.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        left.addWidget(self.lbl_minmax)
 
         # curve + histogram
         self.curve = CurveWidget(self)
@@ -544,9 +637,27 @@ class HistogramTransformDialogPro(QDialog):
         self.btn_apply.clicked.connect(self._apply_inplace)
         self.btn_new.clicked.connect(self._apply_new)
         self.btn_reset.clicked.connect(self._reset)
-
+        self.curve.paramsChanged.connect(self._on_curve_drag)
         # initial
         self.resize(1100, 720)
+
+    def _on_curve_drag(self, black: float, mid: float, white: float):
+        """Called when user drags a handle on the CurveWidget."""
+        for w in (self.sp_black, self.sp_mid, self.sp_white,
+                  self.sl_black, self.sl_mid, self.sl_white):
+            w.blockSignals(True)
+        try:
+            self.sp_black.setValue(black)
+            self.sp_mid.setValue(mid)
+            self.sp_white.setValue(white)
+            self.sl_black.setValue(int(round(black * 100000)))
+            self.sl_mid.setValue(int(round(mid   * 100000)))
+            self.sl_white.setValue(int(round(white * 100000)))
+        finally:
+            for w in (self.sp_black, self.sp_mid, self.sp_white,
+                      self.sl_black, self.sl_mid, self.sl_white):
+                w.blockSignals(False)
+        self._schedule()
 
     def _update_channel_ui_for_image(self):
         """
@@ -800,7 +911,19 @@ class HistogramTransformDialogPro(QDialog):
 
     def _recompute(self):
         b, m, w = self._sanitize_points()
- 
+
+        # update min/max stats label
+        try:
+            img_flat = self._preview_base.ravel()
+            mn = float(img_flat.min())
+            mx = float(img_flat.max())
+            self.lbl_minmax.setText(
+                f"Min: {mn:.5f}  ({int(mn*65535)})   "
+                f"Max: {mx:.5f}  ({int(mx*65535)})"
+            )
+        except Exception:
+            pass
+
         self.curve.set_params(b, m, w)
  
         chan = "L"
