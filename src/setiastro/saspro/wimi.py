@@ -1400,9 +1400,12 @@ class CustomGraphicsView(QGraphicsView):
 
 
     def scrollContentsBy(self, dx, dy):
-        """Called whenever the main preview scrolls, ensuring the green box updates in the mini preview."""
         super().scrollContentsBy(dx, dy)
-        self.parent.update_green_box()
+        # Debounced — timer lives on the WIMIDialog parent
+        try:
+            self.parent._green_box_timer.start()
+        except Exception:
+            self.parent.update_green_box()
 
     def update_mini_preview(self):
         """Update the mini preview with the current view rectangle and any additional mirrored elements."""
@@ -2846,8 +2849,14 @@ class WIMIDialog(QDialog):
         right_panel.addLayout(save_buttons_layout)        
 
         # Connect scroll events to update the green box in the mini preview
-        self.main_preview.verticalScrollBar().valueChanged.connect(self.main_preview.update_mini_preview)
-        self.main_preview.horizontalScrollBar().valueChanged.connect(self.main_preview.update_mini_preview)
+        # In WIMIDialog.__init__, replace the direct scrollbar connections with debounced ones:
+        self._mini_preview_timer = QTimer(self)
+        self._mini_preview_timer.setSingleShot(True)
+        self._mini_preview_timer.setInterval(150)  # ms after scroll stops
+        self._mini_preview_timer.timeout.connect(self.main_preview.update_mini_preview)
+
+        self.main_preview.verticalScrollBar().valueChanged.connect(self._mini_preview_timer.start)
+        self.main_preview.horizontalScrollBar().valueChanged.connect(self._mini_preview_timer.start)
 
         # Create a horizontal layout for the labels
         label_layout = QHBoxLayout()
@@ -3176,7 +3185,13 @@ class WIMIDialog(QDialog):
         # Initialize selected color and font with default values
         self.selected_color = QColor(Qt.GlobalColor.red)  # Default annotation color
         self.selected_font = QFont("Arial", 12)  # Default font for text annotations   
-        self.populate_object_tree()     
+        self.populate_object_tree() 
+
+        self._green_box_timer = QTimer(self)
+        self._green_box_timer.setSingleShot(True)
+        self._green_box_timer.setInterval(50)  # green box can be a bit faster
+        self._green_box_timer.timeout.connect(self.update_green_box)
+
         # Minor-planet bits
         # Minor-body initial state
         self.minor_db_path = self.settings.value(
@@ -3416,7 +3431,6 @@ class WIMIDialog(QDialog):
 
     # ---- drop-in replacements (proxies) that your existing code already calls ----
     def _cg_set_query_results_proxy(self, results):
-        # Recreate the color/category tagging that used to happen in CustomGraphicsView.set_query_results
         for obj in results:
             short_type = obj.get("short_type", "")
             category = OTYPE_TO_CATEGORY.get(short_type, "Errors & Artefacts")
@@ -6528,10 +6542,10 @@ class WIMIDialog(QDialog):
         positions = cat.compute_positions_skyfield(
             asteroid_rows=rows_df,
             jd=jd,
-            ephemeris_path=None,
+            ephemeris_path=str(self._minorbody_data_dir()),  # ← was None
             topocentric=None,
             progress_cb=progress_cb,
-            debug=True,
+            debug=False,
         )
 
         print(f"[MinorBodies] positions returned from Skyfield: {len(positions)}")
@@ -6546,6 +6560,12 @@ class WIMIDialog(QDialog):
             ang = self.calculate_angular_distance(ra_center, dec_center, ra, dec)
             if ang > radius_deg:
                 continue
+
+            # Debug: check pixel conversion
+            px, py = self.calculate_pixel_from_ra_dec(ra, dec)
+            print(f"[MinorBodies] {pos.get('designation','')} "
+                  f"ra={ra:.4f} dec={dec:.4f} → pixel x={px} y={py} "
+                  f"image size={self.main_image.width()}x{self.main_image.height()}")
 
             kept += 1
             desig = pos.get("designation", "") or "Unknown"
