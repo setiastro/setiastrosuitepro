@@ -4890,14 +4890,14 @@ class QuickStackCard(QFrame):
 
     def set_state(self, state: str):
         state = (state or "").lower()
-        colors = {
-            "red": "#ff4d4f",
-            "yellow": "#f0c040",
-            "green": "#52c41a",
+        symbols = {
+            "red":    ("✗", "#ff4d4f"),
+            "yellow": ("■", "#f0c040"),
+            "green":  ("✓", "#52c41a"),
         }
-        color = colors.get(state, "#888888")
+        symbol, color = symbols.get(state, ("●", "#888888"))
+        self.status_dot.setText(symbol)
         self.status_dot.setStyleSheet(f"color: {color};")
-
 # =============================================================================
 # SplitPreviewWidget
 # A single widget that shows two images side-by-side with a draggable
@@ -7356,7 +7356,31 @@ class StackingSuiteDialog(QDialog):
             self.tr("Minimum connected-pixel area to keep a detection as a star (px). Helps reject hot pixels/noise.")
         )
         fl_align.addRow(self.tr("Min star area (px):"), self.align_minarea)
+        self.align_min_fwhm = QDoubleSpinBox()
+        self.align_min_fwhm.setRange(0.5, 5.0)
+        self.align_min_fwhm.setDecimals(2)
+        self.align_min_fwhm.setSingleStep(0.1)
+        self.align_min_fwhm.setValue(
+            self.settings.value("stacking/align/min_fwhm", 1.2, type=float)
+        )
+        self.align_min_fwhm.setToolTip(
+            self.tr("Minimum star FWHM (px) to accept as a real star. "
+                    "Hot pixels are typically <1px FWHM. Default 1.2.")
+        )
+        fl_align.addRow(self.tr("Min star FWHM (px):"), self.align_min_fwhm)
 
+        self.align_max_ellipticity = QDoubleSpinBox()
+        self.align_max_ellipticity.setRange(0.1, 1.0)
+        self.align_max_ellipticity.setDecimals(2)
+        self.align_max_ellipticity.setSingleStep(0.05)
+        self.align_max_ellipticity.setValue(
+            self.settings.value("stacking/align/max_ellipticity", 0.6, type=float)
+        )
+        self.align_max_ellipticity.setToolTip(
+            self.tr("Maximum ellipticity (0=round, 1=line) to accept as a star. "
+                    "Rejects cosmic rays and satellite streaks. Default 0.6.")
+        )
+        fl_align.addRow(self.tr("Max ellipticity:"), self.align_max_ellipticity)
         # NEW: Max stars (Astroalign control points cap)
         self.align_limit_stars_spin = QSpinBox()
         self.align_limit_stars_spin.setRange(50, 5000)
@@ -8051,7 +8075,10 @@ class StackingSuiteDialog(QDialog):
         self.settings.setValue("stacking/align/max_cp",     int(self.align_max_cp.value()))
         self.settings.setValue("stacking/align/downsample", int(self.align_downsample.value()))
         self.settings.setValue("stacking/align/h_reproj",   float(self.h_ransac_reproj.value()))
-
+        self.settings.setValue("stacking/align/min_fwhm",
+                               float(self.align_min_fwhm.value()))
+        self.settings.setValue("stacking/align/max_ellipticity",
+                               float(self.align_max_ellipticity.value()))
         # Seed mode (persist as stable tokens: 'robust' | 'median')
         seed_idx = int(self.mf_seed_combo.currentIndex())
         if seed_idx == 2:

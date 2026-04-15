@@ -255,18 +255,17 @@ def _align_prefs(settings: QSettings | None = None) -> dict:
         settings.setValue("stacking/align/model", model)  # migrate to new key
 
     prefs = {
-        "model":       model,                 # "affine" | "homography" | "poly3" | "poly4"
+        "model":       model,
         "max_cp":      _get("max_cp", 250, int),
         "downsample":  _get("downsample", 3, int),
         "h_reproj":    _get("h_reproj", 3.0, float),
-
-        # Star detection / solve limits
-        "det_sigma":   _get("det_sigma", 12.0, float),   # try 8–12 in dense fields
-        "limit_stars": _get("limit_stars", 500, int),    # 500–1500 typical
+        "det_sigma":   _get("det_sigma", 12.0, float),
+        "limit_stars": _get("limit_stars", 500, int),
         "minarea":     _get("minarea", 10, int),
-
-        # NEW: per-job timeout (seconds)
         "timeout_per_job_sec": _get("timeout_per_job_sec", 300, int),
+        # Hot pixel rejection
+        "min_fwhm":        _get("min_fwhm", 1.2, float),
+        "max_ellipticity": _get("max_ellipticity", 0.6, float),
     }
 
     return prefs
@@ -1572,7 +1571,9 @@ def compute_affine_transform_astroalign_cropped(source_img, reference_img,
                                                 scale: float = 1.20,
                                                 limit_stars: int | None = None,
                                                 det_sigma: float = 12.0,
-                                                minarea: int = 10):
+                                                minarea: int = 10,
+                                                min_fwhm: float = 1.2,
+                                                max_ellipticity: float = 0.6):
     """
     Solve affine on a ~1.2x center crop of reference and lift into full-ref coords.
     Returns a 2x3 affine matrix in float64, or None.
@@ -1605,10 +1606,14 @@ def compute_affine_transform_astroalign_cropped(source_img, reference_img,
             # ---- NEW: uniform control points ----
             src_pts = _detect_stars_uniform(source_img, det_sigma, minarea,
                                             grid=(4,4), max_per_cell=25,
-                                            max_total=(limit_stars or 500))
+                                            max_total=(limit_stars or 500),
+                                            min_fwhm=min_fwhm,
+                                            max_ellipticity=max_ellipticity)
             ref_pts = _detect_stars_uniform(ref_crop, det_sigma, minarea,
                                             grid=(4,4), max_per_cell=25,
-                                            max_total=(limit_stars or 500))
+                                            max_total=(limit_stars or 500),
+                                            min_fwhm=min_fwhm,
+                                            max_ellipticity=max_ellipticity)
 
             cov_src = _coverage_fraction(src_pts, Hs, Ws, grid=(4,4))
             cov_ref = _coverage_fraction(ref_pts, h,  w,  grid=(4,4))
@@ -1939,11 +1944,9 @@ def compute_similarity_transform_astroalign_cropped(source_img, reference_img,
                                                    limit_stars: int | None = None,
                                                    det_sigma: float = 12.0,
                                                    minarea: int = 10,
-                                                   h_reproj: float = 3.0):
-    """
-    Like compute_affine_transform_astroalign_cropped, but returns a
-    similarity (rigid+uniform scale) 2x3 matrix: no shear.
-    """
+                                                   h_reproj: float = 3.0,
+                                                   min_fwhm: float = 1.2,
+                                                   max_ellipticity: float = 0.6):
     import numpy as np
     import astroalign
     import cv2
@@ -1956,7 +1959,6 @@ def compute_similarity_transform_astroalign_cropped(source_img, reference_img,
 
     Hs, Ws = source_img.shape[:2]
     Hr, Wr = reference_img.shape[:2]
-
     h = min(int(round(Hs * scale)), Hr)
     w = min(int(round(Ws * scale)), Wr)
     y0 = max(0, (Hr - h) // 2)
@@ -1967,17 +1969,19 @@ def compute_similarity_transform_astroalign_cropped(source_img, reference_img,
     if limit_stars is not None:
         kwargs["max_control_points"] = int(limit_stars)
 
-    # AA gives us correspondences
     with _lock:
         try:
             src_pts = _detect_stars_uniform(source_img, det_sigma, minarea,
                                             grid=(4,4), max_per_cell=25,
-                                            max_total=(limit_stars or 500))
+                                            max_total=(limit_stars or 500),
+                                            min_fwhm=min_fwhm,
+                                            max_ellipticity=max_ellipticity)
             ref_pts = _detect_stars_uniform(ref_crop, det_sigma, minarea,
                                             grid=(4,4), max_per_cell=25,
-                                            max_total=(limit_stars or 500))
+                                            max_total=(limit_stars or 500),
+                                            min_fwhm=min_fwhm,
+                                            max_ellipticity=max_ellipticity)
 
-            # ✅ ADD COVERAGE LOGGING HERE
             cov_src = _coverage_fraction(src_pts, Hs, Ws, grid=(4,4))
             cov_ref = _coverage_fraction(ref_pts, h,  w,  grid=(4,4))
             if cov_src < 0.5 or cov_ref < 0.5:
@@ -1987,26 +1991,23 @@ def compute_similarity_transform_astroalign_cropped(source_img, reference_img,
                 pt_kwargs = {}
                 if limit_stars is not None:
                     pt_kwargs["max_control_points"] = int(limit_stars)
-
                 tform, (src_pts_s, tgt_pts_s) = astroalign.find_transform(
                     src_pts, ref_pts, **pt_kwargs
                 )
             else:
                 raise RuntimeError("Too few uniform points, falling back to images.")
-
         except Exception:
-            # fallback to your current image AA
             tform, (src_pts_s, tgt_pts_s) = astroalign.find_transform(
                 np.ascontiguousarray(source_img.astype(np.float32)),
                 np.ascontiguousarray(ref_crop.astype(np.float32)),
                 **kwargs
             )
+
     src_xy = np.asarray(src_pts_s, dtype=np.float32)
     tgt_xy = np.asarray(tgt_pts_s, dtype=np.float32)
     tgt_xy[:, 0] += x0
     tgt_xy[:, 1] += y0
 
-    # Similarity fit (rotation + translation + uniform scale), RANSAC
     A, inl = cv2.estimateAffinePartial2D(
         src_xy, tgt_xy, method=cv2.RANSAC,
         ransacReprojThreshold=float(h_reproj)
@@ -2014,16 +2015,13 @@ def compute_similarity_transform_astroalign_cropped(source_img, reference_img,
     if A is not None:
         return np.asarray(A, np.float64).reshape(2, 3)
 
-    # Fallback: project AA base affine down to nearest similarity
     P = np.asarray(tform.params, dtype=np.float64)
     if P.shape == (3, 3):
         base = (np.array([[1,0,x0],[0,1,y0],[0,0,1]]) @ P)[0:2, :]
     else:
         A3 = np.vstack([P[0:2, :], [0,0,1]])
         base = (np.array([[1,0,x0],[0,1,y0],[0,0,1]]) @ A3)[0:2, :]
-
     return project_affine_to_similarity(base)
-
 
 def project_affine_to_similarity(A2x3: np.ndarray) -> np.ndarray:
     """
@@ -2051,10 +2049,11 @@ def _solve_delta_job(args):
     """
     Worker: compute incremental affine/similarity delta for one frame against the ref preview.
     args =
-      (orig_path, current_transform_2x3,
-       ref_small_ds, Wref_ds, Href_ds,
-       resample_flag, det_sigma, limit_stars, minarea,
-       model, h_reproj, ds)
+        (orig_path, current_transform_2x3,
+         ref_small_ds, Wref_ds, Href_ds,
+         resample_flag, det_sigma, limit_stars, minarea,
+         model, h_reproj, ds,
+         min_fwhm, max_ellipticity) = args 
     """
     try:
         import os
@@ -2065,7 +2064,8 @@ def _solve_delta_job(args):
         (orig_path, current_transform_2x3,
          ref_small_ds, Wref_ds, Href_ds,
          resample_flag, det_sigma, limit_stars, minarea,
-         model, h_reproj, ds) = args
+         model, h_reproj, ds,
+         min_fwhm, max_ellipticity) = args 
 
         ds = max(1, int(ds))
 
@@ -2119,14 +2119,18 @@ def _solve_delta_job(args):
                 limit_stars=int(limit_stars) if limit_stars is not None else None,
                 det_sigma=float(det_sigma),
                 minarea=int(minarea),
-                h_reproj=float(h_reproj)
+                h_reproj=float(h_reproj),
+                min_fwhm=float(min_fwhm),
+                max_ellipticity=float(max_ellipticity),
             )
         else:
             tform_ds = compute_affine_transform_astroalign_cropped(
                 src_for_match_ds, ref_for_match_ds,
                 limit_stars=int(limit_stars) if limit_stars is not None else None,
                 det_sigma=float(det_sigma),
-                minarea=int(minarea)
+                minarea=int(minarea),
+                min_fwhm=float(min_fwhm),
+                max_ellipticity=float(max_ellipticity),
             )
 
         if tform_ds is None:
@@ -2181,45 +2185,44 @@ def _residual_job_worker(args):
     except Exception as e:
         return (path, float("inf"), str(e))
 
-
-
 def _suppress_tiny_islands(img32: np.ndarray, det_sigma: float, minarea: int) -> np.ndarray:
-    """
-    Zero out connected components smaller than `minarea`, using
-    threshold = det_sigma * global RMS from SEP background.
-    Returns float32 image, same shape as input.
-    """
-
     import sep
     import cv2
 
     img32 = np.asarray(img32, np.float32, order="C")
 
-    # Tame single-pixel spikes so they don't form components
+    # ── Pre-filter: suppress hot pixels before background estimation ──
+    # 3x3 for single-pixel, then replace only pixels that spiked far above
+    # their neighborhood — preserves star cores better than a blind median.
     try:
-        img32 = cv2.medianBlur(img32, 3)
+        med3 = cv2.medianBlur(img32, 3)
+        # Only replace pixels where the original is >5σ above the local median
+        # (i.e. genuine isolated spikes, not star wings)
+        bkg_est = sep.Background(img32, bw=64, bh=64)
+        spike_thresh = float(bkg_est.globalrms) * 8.0
+        spike_mask = (img32 - med3) > spike_thresh
+        img32 = np.where(spike_mask, med3, img32)
     except Exception:
-        pass
+        try:
+            img32 = cv2.medianBlur(img32, 3)
+        except Exception:
+            pass
+    # ─────────────────────────────────────────────────────────────────
 
-    # Background + threshold
     bkg = sep.Background(img32, bw=64, bh=64)
-    back_img = bkg.back().astype(np.float32, copy=False)   # 2-D local background
-    thresh   = float(det_sigma) * float(bkg.globalrms)
+    back_img = bkg.back().astype(np.float32, copy=False)
+    thresh = float(det_sigma) * float(bkg.globalrms)
 
-    # Candidates above background + thresh
     mask = (img32 > (back_img + thresh)).astype(np.uint8)
-
-    # Label and prune tiny components
     num, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
     if num <= 1:
         return img32
 
     keep = np.zeros(num, dtype=np.uint8)
     keep[stats[:, cv2.CC_STAT_AREA] >= int(minarea)] = 1
-    keep[0] = 0  # background
-    pruned = keep[labels]  # 2-D map of components to keep (1) / drop (0)
+    keep[0] = 0
+    pruned = keep[labels]
 
-    # ✅ Replace tiny components with local background using element-wise where
     out = np.where(((mask == 1) & (pruned == 0)), back_img, img32)
     return out.astype(np.float32, copy=False)
 
@@ -2354,9 +2357,17 @@ def _finalize_write_job(args):
     Returns (orig_path, out_path or "", msg, success, drizzle_tuple or None)
     drizzle_tuple = (kind, matrix_or_None)
     """
-    (orig_path, align_model, ref_shape, ref_npy_path,
-     affine_2x3, h_reproj, output_directory,
-     det_sigma, minarea, limit_stars) = args
+    try:
+        (orig_path, align_model, ref_shape, ref_npy_path,
+         affine_2x3, h_reproj, output_directory,
+         det_sigma, minarea, limit_stars,
+         min_fwhm, max_ellipticity) = args
+    except ValueError:
+        # old-format args without hot pixel params
+        (orig_path, align_model, ref_shape, ref_npy_path,
+         affine_2x3, h_reproj, output_directory,
+         det_sigma, minarea, limit_stars) = args
+        min_fwhm, max_ellipticity = 1.2, 0.6
 
     import os
     os.environ.setdefault("OMP_NUM_THREADS", "1")
@@ -2864,26 +2875,54 @@ def _detect_stars_uniform(img32: np.ndarray,
                           minarea: int = 10,
                           grid=(4,4),
                           max_per_cell: int = 25,
-                          max_total: int = 500) -> np.ndarray:
-    """
-    Fast star detection on float32 mono image.
-    Returns Nx2 (x,y) float32 points spread across the image.
-    """
+                          max_total: int = 500,
+                          min_fwhm: float = 1.2,
+                          max_ellipticity: float = 0.6) -> np.ndarray:
     import numpy as np
     import sep
 
     img32 = np.asarray(img32, np.float32, order="C")
     H, W = img32.shape[:2]
 
-    # SEP background / threshold
     bkg = sep.Background(img32, bw=64, bh=64)
     thresh = float(det_sigma) * float(bkg.globalrms)
 
-    objs = sep.extract(img32 - bkg.back(), thresh, minarea=int(minarea))
+    # Request shape parameters from SEP
+    objs = sep.extract(img32 - bkg.back(), thresh, minarea=int(minarea),
+                       segmentation_map=False)
     if objs is None or len(objs) == 0:
         return np.empty((0,2), np.float32)
 
-    # sort by flux desc (brightest first)
+    # ── Hot pixel rejection ──────────────────────────────────────────
+    # 1) FWHM proxy: SEP gives a2 (semi-major axis). Hot pixels have a2 ~ 0.5px
+    #    Real stars have a2 >= ~1.0px even when undersampled.
+    a2 = objs["a"].astype(np.float32)   # semi-major axis (px)
+    b2 = objs["b"].astype(np.float32)   # semi-minor axis (px)
+
+    fwhm_approx = 2.0 * np.sqrt(2.0 * np.log(2.0)) * a2  # Gaussian FWHM estimate
+
+    # ellipticity = 1 - b/a (0=round, 1=infinitely elongated)
+    ellipticity = np.where(a2 > 1e-6, 1.0 - (b2 / a2), 1.0)
+
+    # npix = number of pixels above threshold — hot pixels are typically 1-4px
+    npix = objs["npix"].astype(np.int32) if "npix" in objs.dtype.names else np.ones(len(objs), np.int32)
+
+    valid = (
+        (fwhm_approx >= float(min_fwhm)) &   # reject single-pixel spikes
+        (ellipticity <= float(max_ellipticity)) &  # reject cosmic rays / streaks
+        (npix >= int(minarea))               # belt-and-suspenders with npix
+    )
+
+    if valid.sum() == 0:
+        # All rejected — fall back to size filter only (never return empty if detections exist)
+        valid = npix >= max(2, int(minarea) // 2)
+
+    objs = objs[valid]
+    if len(objs) == 0:
+        return np.empty((0,2), np.float32)
+    # ────────────────────────────────────────────────────────────────
+
+    # Sort by flux desc (brightest surviving real stars first)
     order = np.argsort(objs["flux"])[::-1]
     xs = objs["x"][order].astype(np.float32)
     ys = objs["y"][order].astype(np.float32)
@@ -2910,7 +2949,6 @@ def _detect_stars_uniform(img32: np.ndarray,
     if not pts:
         return np.empty((0,2), np.float32)
     return np.asarray(pts, np.float32)
-
 
 class StarRegistrationThread(QThread):
     progress_update = pyqtSignal(str)
@@ -2945,7 +2983,8 @@ class StarRegistrationThread(QThread):
         self.minarea     = int(self.align_prefs.get("minarea", 10))
         self.downsample = int(self.align_prefs.get("downsample", 3))
         self.drizzle_xforms = {}  # {orig_norm_path: (kind, matrix)}
-
+        self.min_fwhm        = float(self.align_prefs.get("min_fwhm", 1.2))
+        self.max_ellipticity = float(self.align_prefs.get("max_ellipticity", 0.6))
     @staticmethod
     def _aa_model_and_residual(src_gray: np.ndarray,
                             ref2d: np.ndarray,
@@ -3436,7 +3475,9 @@ class StarRegistrationThread(QThread):
                 int(self.limit_stars) if self.limit_stars is not None else None,
                 int(self.minarea),
                 refine_model, float(self.h_reproj),
-                int(ds)
+                int(ds),
+                float(self.min_fwhm),          # ← new
+                float(self.max_ellipticity),   # ← new                
             ))
 
         executor = _make_executor(procs)
@@ -3662,10 +3703,6 @@ class StarRegistrationThread(QThread):
             k = os.path.normpath(orig_path)
             A = np.asarray(self.alignment_matrices.get(k, IDENTITY_2x3), dtype=np.float64)
 
-            # 👉 If non-affine, we pass identity to make workers solve from scratch
-            #if self.align_model.lower() in ("homography", "poly3", "poly4"):
-            #    A = IDENTITY_2x3.copy()
-
             jobs.append((
                 orig_path,
                 self.align_model,
@@ -3676,7 +3713,9 @@ class StarRegistrationThread(QThread):
                 self.output_directory,
                 float(self.det_sigma),
                 int(self.minarea),
-                int(self.limit_stars) if self.limit_stars is not None else None
+                int(self.limit_stars) if self.limit_stars is not None else None,
+                float(getattr(self, "min_fwhm", 1.2)),         # ← new
+                float(getattr(self, "max_ellipticity", 0.6)),  # ← new
             ))
 
         self.progress_update.emit(f"📝 Finalizing aligned outputs with {finalize_workers} processes…")
@@ -3710,16 +3749,16 @@ class StarRegistrationThread(QThread):
                                 elif kind == "homography":
                                     self.drizzle_xforms[k] = ("homography", np.asarray(M, np.float64).reshape(3, 3))
                                 else:
-                                    self.drizzle_xforms[k] = (str(kind), None)  # poly3/4
+                                    self.drizzle_xforms[k] = (str(kind), None)
                             except Exception:
                                 pass
-                    self._increment_progress()           
+                    self._increment_progress()
         finally:
             try: shutil.rmtree(tmpdir, ignore_errors=True)
             except Exception as e:
                 import logging
                 logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
-            gc.collect()  # Free memory after finalization
+            gc.collect()
 
         try:
             sasd_path = os.path.join(self.output_directory, "alignment_transforms.sasd")
@@ -3727,7 +3766,6 @@ class StarRegistrationThread(QThread):
             self.progress_update.emit("✅ Transform file saved as alignment_transforms.sasd")
         except Exception as e:
             self.progress_update.emit(f"⚠️ Failed to save alignment_transforms.sasd: {e}")
-
 
     def _save_alignment_transforms_sasd(self, out_path: str):
         """
