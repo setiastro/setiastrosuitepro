@@ -25,8 +25,7 @@ from typing import Optional, Iterable, Dict, Any, Tuple
 from skyfield.api import load as sf_load
 from skyfield.data import mpc as sf_mpc
 from skyfield.constants import GM_SUN_Pitjeva_2005_km3_s2 as GM_SUN
-
-
+from skyfield.api import load as sf_load
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -438,10 +437,12 @@ class MinorBodyCatalog:
         list of dicts with keys:
             designation, ra_deg, dec_deg, distance_au
         """
-        if sf_load is None or sf_mpc is None or GM_SUN is None:
+        if sf_mpc is None or GM_SUN is None:
             raise RuntimeError("Skyfield is not available; install skyfield to use this feature.")
 
+        import os
         import pandas as pd
+        from skyfield.api import Loader
 
         # Normalize to DataFrame
         if isinstance(asteroid_rows, pd.DataFrame):
@@ -481,18 +482,21 @@ class MinorBodyCatalog:
                 print("[MinorBodies] no valid rows after cleaning; aborting.")
             return []
 
-        ts = sf_load.timescale()
+        # Build loader pointed at a writable directory — never use the global
+        # sf_load for file I/O since its default dir may be read-only.
+        if ephemeris_path is not None:
+            loader = Loader(str(ephemeris_path))
+        else:
+            fallback_dir = os.path.join(os.path.expanduser("~"), ".saspro", "ephemeris")
+            os.makedirs(fallback_dir, exist_ok=True)
+            loader = Loader(fallback_dir)
+
+        ts = loader.timescale()
         t = ts.tt_jd(jd)
 
-        eph = None  # track ephemeris so we can close it
+        eph = None
         try:
-            # Ephemeris
-            if ephemeris_path is not None:
-                eph = sf_load(str(ephemeris_path))
-            else:
-                # small ephemeris; OK for bundling/download
-                eph = sf_load("de440s.bsp")
-
+            eph = loader("de440s.bsp")
             sun = eph["sun"]
             earth = eph["earth"]
 
@@ -512,7 +516,6 @@ class MinorBodyCatalog:
             failed = 0
 
             for i, (_, row) in enumerate(df.iterrows(), start=1):
-                # Progress callback
                 if progress_cb is not None:
                     try:
                         cont = progress_cb(i, total)
@@ -524,22 +527,22 @@ class MinorBodyCatalog:
                         break
 
                 try:
-                    # Let Skyfield interpret the MPCORB-style dict
                     orb = sf_mpc.mpcorb_orbit(row, ts, GM_SUN)
-
-                    # Sun-centered small body, observed from Earth
                     body = sun + orb
-                    ast_at_t = earth.at(t).observe(body).apparent()
-                    ra, dec, distance = ast_at_t.radec()
+                    ast_at_t = earth.at(t).observe(body)
+                    ra, dec, distance = ast_at_t.radec(epoch=ts.J(2000.0))
 
-                    results.append(
-                        {
-                            "designation": row.get("designation", ""),
-                            "ra_deg": float(ra.hours * 15.0),
-                            "dec_deg": float(dec.degrees),
-                            "distance_au": float(distance.au),
-                        }
-                    )
+                    
+                    if debug and ok < 3:
+                        print(f"[MinorBodies] {row.get('designation','')} "
+                              f"epoch_packed={row.get('epoch_packed','')} "
+                              f"ra={ra.hours*15:.4f} dec={dec.degrees:.4f}")
+                    results.append({
+                        "designation": row.get("designation", ""),
+                        "ra_deg": float(ra.hours * 15.0),
+                        "dec_deg": float(dec.degrees),
+                        "distance_au": float(distance.au),
+                    })
                     ok += 1
                 except Exception as e:
                     failed += 1
@@ -557,7 +560,6 @@ class MinorBodyCatalog:
             return results
 
         finally:
-            # Make sure the ephemeris file handle is closed
             if eph is not None:
                 close = getattr(eph, "close", None)
                 if callable(close):

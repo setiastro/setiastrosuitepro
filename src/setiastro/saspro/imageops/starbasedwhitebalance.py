@@ -189,35 +189,28 @@ def _apply_color_matrix_wb(
     lum_src = 0.2126 * src[:, 0] + 0.7152 * src[:, 1] + 0.0722 * src[:, 2]
     lum_src = np.where(lum_src <= eps, eps, lum_src)
 
-    src_norm = src / lum_src[:, None]
+    # Work directly in raw pixel space — no luminance normalization
+    # This ensures the matrix is solved and applied in the same domain
+    src_raw = src.copy()  # already float64, shape (N, 3)
 
-    # Reconstruct target RGB preserving luminance:
-    # R_t/B_t = rb_target, G_t/B_t = gb_target
-    # 0.2126*R_t + 0.7152*G_t + 0.0722*B_t = lum_src
-    # → B_t = lum_src / (0.2126*rb_target + 0.7152*gb_target + 0.0722)
+    # Reconstruct target RGB from ratios, scaling B to match source luminance
     denom = 0.2126 * rb_target + 0.7152 * gb_target + 0.0722
     denom = np.where(denom <= eps, eps, denom)
     b_t = lum_src / denom
     r_t = rb_target * b_t
     g_t = gb_target * b_t
+    dst_raw = np.stack([r_t, g_t, b_t], axis=1)
 
-    dst = np.stack([r_t, g_t, b_t], axis=1)
-    dst_norm = dst / lum_src[:, None]
-
-    # Neutral constraint: (1,1,1) → (1, LOCUS_NEUTRAL_GB, 1) in RGB space
-    # i.e. a truly gray star should land on the locus at R/B=1
+    # Neutral constraint in raw pixel space:
+    # a mid-gray pixel (0.5, 0.5, 0.5) should map to (0.5, 0.48, 0.5)
     NEUTRAL_WEIGHT = float(np.sum(mask)) * 2.0
+    neutral_src = np.array([[0.5, 0.5, 0.5]], dtype=np.float64)
+    neutral_dst = np.array([[0.5, 0.5 * LOCUS_NEUTRAL_GB, 0.5]], dtype=np.float64)
 
-    lum_n_src = 0.2126 + 0.7152 + 0.0722              # = 1.0
-    lum_n_dst = 0.2126 + 0.7152 * LOCUS_NEUTRAL_GB + 0.0722
+    src_aug = np.vstack([src_raw, neutral_src * NEUTRAL_WEIGHT])
+    dst_aug = np.vstack([dst_raw, neutral_dst * NEUTRAL_WEIGHT])
 
-    neutral_src = np.ones((1, 3), dtype=np.float64) / lum_n_src
-    neutral_dst = np.array([[1.0, LOCUS_NEUTRAL_GB, 1.0]], dtype=np.float64) / lum_n_dst
-
-    src_aug = np.vstack([src_norm, neutral_src * NEUTRAL_WEIGHT])
-    dst_aug = np.vstack([dst_norm, neutral_dst * NEUTRAL_WEIGHT])
-
-    # Solve row-by-row: each output channel = linear combo of input channels
+    # Solve row-by-row
     M = np.zeros((3, 3), dtype=np.float64)
     for ch in range(3):
         coeffs, _, _, _ = np.linalg.lstsq(src_aug, dst_aug[:, ch], rcond=None)
@@ -242,16 +235,45 @@ def _apply_color_matrix_wb(
     print(f"[CC WB] Color matrix:\n{np.round(M, 4)}")
     print(f"[CC WB] Neutral check: {np.round(M @ np.array([1,1,1]), 4)}")
 
-    # Apply matrix — subtract pivot, transform, re-add pivot
-    p        = pivot.astype(np.float64).reshape(1, 1, 3)
+# Apply matrix directly (no pivot shift — matrix was solved in raw pixel space)
     img      = bg_neutral.astype(np.float64)
-    shifted  = img - p
-    flat     = shifted.reshape(-1, 3)
+    flat     = img.reshape(-1, 3)
     out_flat = flat @ M.T
-    out      = out_flat.reshape(img.shape) + p
+    out      = out_flat.reshape(img.shape)
 
-    return np.clip(out, 0.0, 1.0).astype(np.float32)
+    # Debug: report worst negative before any correction
+    min_val = float(np.nanmin(out))
+    if min_val < 0.0:
+        neg_pixels = np.sum(out < 0.0)
+        print(f"[CC WB] Post-matrix negatives: min={min_val:.4f}, "
+              f"affected pixels={neg_pixels} ({100*neg_pixels/out.size:.2f}%)")
 
+    result = out.astype(np.float32)
+
+    # Per-pixel negative fix: for any pixel with a negative channel,
+    # shift that pixel's RGB up by the minimum channel value so the
+    # darkest channel lands at 0. This is a local additive shift —
+    # it preserves the color ratios between channels for that pixel
+    # rather than hard-clipping one channel to 0 while leaving others intact.
+    pixel_mins = np.min(result, axis=-1, keepdims=True)  # (H, W, 1)
+    needs_fix = pixel_mins < 0.0
+    if np.any(needs_fix):
+        # Only shift pixels that actually have negatives
+        result = np.where(needs_fix, result - pixel_mins, result)
+
+    # Ceiling: single scalar compress to preserve inter-channel ratios
+    mx = float(np.nanmax(result))
+    if mx > 1.0:
+        lum_pivot = float(np.median(
+            0.2126 * result[..., 0] +
+            0.7152 * result[..., 1] +
+            0.0722 * result[..., 2]
+        ))
+        denom = max(mx - lum_pivot, 1e-8)
+        a = (1.0 - lum_pivot) / denom
+        result = lum_pivot + (result - lum_pivot) * a
+
+    return result
 def apply_star_based_white_balance(
     image: np.ndarray,
     threshold: float = 1.5,
