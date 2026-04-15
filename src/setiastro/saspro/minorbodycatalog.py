@@ -13,7 +13,6 @@ Responsibilities:
 This module is intentionally independent of Qt; higher-level UI / QSettings
 integration should live in the main app code and call into this helper.
 """
-
 import json
 import sqlite3
 import urllib.request
@@ -21,11 +20,27 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Iterable, Dict, Any, Tuple
 
-# Skyfield imports (required for position computations)
-from skyfield.api import load as sf_load
-from skyfield.data import mpc as sf_mpc
-from skyfield.constants import GM_SUN_Pitjeva_2005_km3_s2 as GM_SUN
-from skyfield.api import load as sf_load
+import numpy as np
+
+# Astropy imports for local Kepler propagation
+from astropy.time import Time
+from astropy.coordinates import (
+    SkyCoord,
+    get_body_barycentric_posvel,
+    solar_system_ephemeris,
+)
+import astropy.units as u
+
+# Skyfield imports kept for backward compatibility but no longer used
+# for position computation — can be removed entirely if desired
+try:
+    from skyfield.api import load as sf_load
+    from skyfield.data import mpc as sf_mpc
+    from skyfield.constants import GM_SUN_Pitjeva_2005_km3_s2 as GM_SUN
+except Exception:
+    sf_load = None
+    sf_mpc  = None
+    GM_SUN  = None
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -40,7 +55,52 @@ MANIFEST_URL = (
 DEFAULT_DB_BASENAME = "saspro_minor_bodies.sqlite"
 DEFAULT_MANIFEST_BASENAME = "saspro_minor_bodies_manifest.json"
 
+def _solve_kepler(M: float, e: float, tol: float = 1e-10, max_iter: int = 50) -> float:
+    """
+    Solve Kepler's equation M = E - e*sin(E) for E (eccentric anomaly).
+    Uses Newton-Raphson iteration.
+    """
+    # Good initial guess
+    E = M if e < 0.8 else np.pi
+    for _ in range(max_iter):
+        dE = (M - E + e * np.sin(E)) / (1.0 - e * np.cos(E))
+        E += dE
+        if abs(dE) < tol:
+            break
+    return E
 
+
+def _decode_packed_epoch(packed: str) -> float:
+    """
+    Decode MPC packed epoch string (e.g. 'K245N') to Julian date.
+    Format: C YY MM DD where C is century letter, MM/DD are base-36 encoded.
+    """
+    if not packed or len(packed) < 5:
+        # fallback to J2000
+        return 2451545.0
+
+    def n(c):
+        return ord(c) - (48 if c.isdigit() else 55)
+
+    try:
+        century = 100 * n(packed[0]) + int(packed[1:3])
+        month   = n(packed[3])
+        day     = n(packed[4])
+
+        # Julian day from calendar date (same formula as Skyfield uses)
+        y = century
+        m = month
+        d = day
+        if m <= 2:
+            y -= 1
+            m += 12
+        A = int(y / 100)
+        B = 2 - A + int(A / 4)
+        jd = int(365.25 * (y + 4716)) + int(30.6001 * (m + 1)) + d + B - 1524.5
+        return jd
+    except Exception:
+        return 2451545.0
+    
 # ---------------------------------------------------------------------------
 # Data structures
 # ---------------------------------------------------------------------------
@@ -406,54 +466,35 @@ class MinorBodyCatalog:
         return pd.read_sql_query(sql, conn, params=designations)
 
     # -----------------------------------------------------------------------
-    # Ephemeris / position scaffold (Skyfield-based, for small subsets)
+    # Ephemeris / position scaffold (astropy-based, for small subsets)
     # -----------------------------------------------------------------------
-    def compute_positions_skyfield(
+    def compute_positions_astropy(
         self,
         asteroid_rows,
         jd: float,
-        ephemeris_path: Optional[Path] = None,
-        topocentric: Optional[Tuple[float, float, float]] = None,
+        ephemeris_path=None,
+        topocentric=None,
         progress_cb=None,
         debug: bool = False,
     ):
         """
-        Compute RA/Dec for a small set of asteroids at a given Julian date.
-
-        Parameters
-        ----------
-        asteroid_rows : pandas.DataFrame or list of dict-like rows
-        jd : float
-            Julian date (TT or TDB is fine, as long as you're consistent).
-        ephemeris_path : Path or None
-        topocentric : (lat_deg, lon_deg, elevation_m) or None
-        progress_cb : callable or None
-            Optional callback(done:int, total:int) -> bool.
-            Return False to request abort.
-        debug : bool
-
-        Returns
-        -------
-        list of dicts with keys:
-            designation, ra_deg, dec_deg, distance_au
+        Compute RA/Dec using astropy + local orbital elements only.
+        No network calls, no Skyfield frame issues.
         """
-        if sf_mpc is None or GM_SUN is None:
-            raise RuntimeError("Skyfield is not available; install skyfield to use this feature.")
-
-        import os
         import pandas as pd
-        from skyfield.api import Loader
+        import numpy as np
+        from astropy.time import Time
+        from astropy.coordinates import (
+            SkyCoord, GCRS, HeliocentricEclipticIAU76,
+            get_body_barycentric_posvel, CartesianRepresentation
+        )
+        import astropy.units as u
 
-        # Normalize to DataFrame
         if isinstance(asteroid_rows, pd.DataFrame):
             df = asteroid_rows.copy()
         else:
             df = pd.DataFrame(list(asteroid_rows))
 
-        if debug:
-            print("[MinorBodies] DataFrame columns:", list(df.columns))
-
-        # REQUIRED NUMERIC COLUMNS (epoch_packed stays as string)
         required_numeric = [
             "mean_anomaly_degrees",
             "argument_of_perihelion_degrees",
@@ -463,8 +504,6 @@ class MinorBodyCatalog:
             "mean_daily_motion_degrees",
             "semimajor_axis_au",
         ]
-
-        # Coerce numeric columns safely
         for col in required_numeric:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -472,98 +511,151 @@ class MinorBodyCatalog:
         before = len(df)
         df = df.dropna(subset=[c for c in required_numeric if c in df.columns])
         if debug:
-            print(
-                f"[MinorBodies] rows after dropping NaNs in required numeric cols: "
-                f"{len(df)} (was {before})"
-            )
+            print(f"[MinorBodies] rows after cleaning: {len(df)} (was {before})")
 
         if df.empty:
-            if debug:
-                print("[MinorBodies] no valid rows after cleaning; aborting.")
             return []
 
-        # Build loader pointed at a writable directory — never use the global
-        # sf_load for file I/O since its default dir may be read-only.
-        if ephemeris_path is not None:
-            loader = Loader(str(ephemeris_path))
-        else:
-            fallback_dir = os.path.join(os.path.expanduser("~"), ".saspro", "ephemeris")
-            os.makedirs(fallback_dir, exist_ok=True)
-            loader = Loader(fallback_dir)
+        # Observation time
+        t_obs = Time(jd, format="jd", scale="tt")
+        if debug:
+            print(f"[MinorBodies] obs time: {t_obs.iso}  JD={jd:.6f}")
 
-        ts = loader.timescale()
-        t = ts.tt_jd(jd)
+        # Earth barycentric position at observation time (ICRS, AU)
+        from astropy.coordinates import solar_system_ephemeris
+        with solar_system_ephemeris.set("builtin"):
+            earth_bary, _ = get_body_barycentric_posvel("earth", t_obs)
+        earth_xyz = np.array([
+            earth_bary.x.to(u.au).value,
+            earth_bary.y.to(u.au).value,
+            earth_bary.z.to(u.au).value,
+        ])
 
-        eph = None
-        try:
-            eph = loader("de440s.bsp")
-            sun = eph["sun"]
-            earth = eph["earth"]
+        # Sun barycentric position
+        with solar_system_ephemeris.set("builtin"):
+            sun_bary, _ = get_body_barycentric_posvel("sun", t_obs)
+        sun_xyz = np.array([
+            sun_bary.x.to(u.au).value,
+            sun_bary.y.to(u.au).value,
+            sun_bary.z.to(u.au).value,
+        ])
 
-            # Optional observatory site
-            if topocentric is not None:
-                from skyfield.api import wgs84
-                lat_deg, lon_deg, elev_m = topocentric
-                earth = earth + wgs84.latlon(
-                    latitude_degrees=lat_deg,
-                    longitude_degrees=lon_deg,
-                    elevation_m=elev_m,
-                )
+        if debug:
+            print(f"[MinorBodies] Earth ICRS (AU): {earth_xyz}")
 
-            results = []
-            total = len(df)
-            ok = 0
-            failed = 0
+        results = []
+        total = len(df)
+        ok = 0
+        failed = 0
 
-            for i, (_, row) in enumerate(df.iterrows(), start=1):
-                if progress_cb is not None:
-                    try:
-                        cont = progress_cb(i, total)
-                    except Exception:
-                        cont = True
-                    if cont is False:
-                        if debug:
-                            print("[MinorBodies] progress_cb requested abort.")
-                        break
-
+        for i, (_, row) in enumerate(df.iterrows(), start=1):
+            if progress_cb is not None:
                 try:
-                    orb = sf_mpc.mpcorb_orbit(row, ts, GM_SUN)
-                    body = sun + orb
-                    ast_at_t = earth.at(t).observe(body)
-                    ra, dec, distance = ast_at_t.radec(epoch=ts.J(2000.0))
+                    cont = progress_cb(i, total)
+                except Exception:
+                    cont = True
+                if cont is False:
+                    if debug:
+                        print("[MinorBodies] aborted by progress_cb")
+                    break
 
-                    
-                    if debug and ok < 3:
-                        print(f"[MinorBodies] {row.get('designation','')} "
-                              f"epoch_packed={row.get('epoch_packed','')} "
-                              f"ra={ra.hours*15:.4f} dec={dec.degrees:.4f}")
-                    results.append({
-                        "designation": row.get("designation", ""),
-                        "ra_deg": float(ra.hours * 15.0),
-                        "dec_deg": float(dec.degrees),
-                        "distance_au": float(distance.au),
-                    })
-                    ok += 1
-                except Exception as e:
-                    failed += 1
-                    if debug and failed <= 10:
-                        print(
-                            f"[MinorBodies] mpcorb_orbit/observe FAILED for "
-                            f"'{row.get('designation', '')}': {repr(e)}"
-                        )
+            try:
+                # ── 1) Decode epoch ───────────────────────────────────────────
+                epoch_packed = str(row.get("epoch_packed", "")).strip()
+                epoch_jd = _decode_packed_epoch(epoch_packed)
+                t_epoch = Time(epoch_jd, format="jd", scale="tt")
 
-            if debug:
-                print(
-                    f"[MinorBodies] Skyfield positions: total={total}, ok={ok}, failed={failed}"
+                # ── 2) Orbital elements ───────────────────────────────────────
+                a   = float(row["semimajor_axis_au"])          # AU
+                e   = float(row["eccentricity"])
+                inc = np.radians(float(row["inclination_degrees"]))
+                Om  = np.radians(float(row["longitude_of_ascending_node_degrees"]))
+                om  = np.radians(float(row["argument_of_perihelion_degrees"]))
+                M0  = np.radians(float(row["mean_anomaly_degrees"]))
+                n   = np.radians(float(row["mean_daily_motion_degrees"]))  # rad/day
+
+                # ── 3) Propagate mean anomaly to obs time ─────────────────────
+                dt_days = float((t_obs - t_epoch).jd)
+                M = M0 + n * dt_days
+                M = M % (2 * np.pi)
+
+                # ── 4) Solve Kepler's equation  M = E - e*sin(E) ─────────────
+                E = _solve_kepler(M, e)
+
+                # ── 5) True anomaly ───────────────────────────────────────────
+                cos_E = np.cos(E)
+                sin_E = np.sin(E)
+                nu = np.arctan2(
+                    np.sqrt(1 - e*e) * sin_E,
+                    cos_E - e
                 )
 
-            return results
+                # ── 6) Heliocentric distance ──────────────────────────────────
+                r = a * (1 - e * cos_E)
 
-        finally:
-            if eph is not None:
-                close = getattr(eph, "close", None)
-                if callable(close):
-                    try:
-                        close()
-                    except Exception:
-                        pass
+                # ── 7) Position in orbital plane ──────────────────────────────
+                x_orb = r * np.cos(nu)
+                y_orb = r * np.sin(nu)
+
+                # ── 8) Rotate to ecliptic J2000 ───────────────────────────────
+                cos_Om = np.cos(Om); sin_Om = np.sin(Om)
+                cos_om = np.cos(om); sin_om = np.sin(om)
+                cos_i  = np.cos(inc); sin_i = np.sin(inc)
+
+                # Standard rotation matrix: orbital → ecliptic
+                Xx =  cos_Om*cos_om - sin_Om*sin_om*cos_i
+                Xy = -cos_Om*sin_om - sin_Om*cos_om*cos_i
+                Yx =  sin_Om*cos_om + cos_Om*sin_om*cos_i
+                Yy = -sin_Om*sin_om + cos_Om*cos_om*cos_i
+                Zx =  sin_om*sin_i
+                Zy =  cos_om*sin_i
+
+                x_ecl = Xx*x_orb + Xy*y_orb
+                y_ecl = Yx*x_orb + Yy*y_orb
+                z_ecl = Zx*x_orb + Zy*y_orb
+
+                # ── 9) Ecliptic J2000 → ICRS (rotate by obliquity of J2000) ──
+                eps = np.radians(23.439291111)   # obliquity J2000.0
+                cos_e = np.cos(eps); sin_e = np.sin(eps)
+
+                x_icrs = x_ecl
+                y_icrs = cos_e*y_ecl - sin_e*z_ecl
+                z_icrs = sin_e*y_ecl + cos_e*z_ecl
+
+                # ── 10) Heliocentric ICRS → barycentric ICRS ──────────────────
+                # Add Sun's barycentric position
+                x_bary = x_icrs + sun_xyz[0]
+                y_bary = y_icrs + sun_xyz[1]
+                z_bary = z_icrs + sun_xyz[2]
+
+                # ── 11) Topocentric vector (asteroid − Earth) ─────────────────
+                dx = x_bary - earth_xyz[0]
+                dy = y_bary - earth_xyz[1]
+                dz = z_bary - earth_xyz[2]
+                dist = np.sqrt(dx*dx + dy*dy + dz*dz)
+
+                # ── 12) ICRS RA/Dec ───────────────────────────────────────────
+                sc = SkyCoord(
+                    x=dx*u.au, y=dy*u.au, z=dz*u.au,
+                    representation_type="cartesian",
+                    frame="icrs",
+                )
+                sc_sph = sc.represent_as("unitspherical")
+
+                results.append({
+                    "designation": row.get("designation", ""),
+                    "ra_deg":      float(sc_sph.lon.deg),
+                    "dec_deg":     float(sc_sph.lat.deg),
+                    "distance_au": float(dist),
+                })
+                ok += 1
+
+            except Exception as exc:
+                failed += 1
+                if debug and failed <= 10:
+                    print(f"[MinorBodies] FAILED '{row.get('designation','')}': {repr(exc)}")
+
+        if debug:
+            print(f"[MinorBodies] total={total}, ok={ok}, failed={failed}")
+
+        return results

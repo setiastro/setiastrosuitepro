@@ -267,8 +267,9 @@ def _set_astrometry_api_key(settings, key: str) -> None:
 
 def _wcs_header_from_astrometry_calib(calib: dict, image_shape: tuple[int, ...]) -> Header:
     """
-    calib: dict with keys 'ra','dec','pixscale'(arcsec/px),'orientation'(deg, +CCW).
-    image_shape: (H, W) or (H, W, C). CRPIX is image center (1-based vs 0-based—astropy expects pixel coordinates in "fits" sense; mid-frame is fine).
+    calib: dict with keys 'ra','dec','pixscale'(arcsec/px),'orientation'(deg, +CCW from North).
+           Also uses 'parity' (1.0 = flipped/mirrored, -1.0 = normal) when present.
+    image_shape: (H, W) or (H, W, C).
     """
     H = int(image_shape[0]); W = int(image_shape[1])
     h = Header()
@@ -278,15 +279,28 @@ def _wcs_header_from_astrometry_calib(calib: dict, image_shape: tuple[int, ...])
     h["CRPIX2"] = H / 2.0
     h["CRVAL1"] = float(calib["ra"])
     h["CRVAL2"] = float(calib["dec"])
+
     scale_deg = float(calib["pixscale"]) / 3600.0  # deg/px
     theta = math.radians(float(calib.get("orientation", 0.0)))
-    # note: same sign convention as your SASv2 builder
-    h["CD1_1"] = -scale_deg * math.cos(theta)
-    h["CD1_2"] =  scale_deg * math.sin(theta)
-    h["CD2_1"] = -scale_deg * math.sin(theta)
-    h["CD2_2"] = -scale_deg * math.cos(theta)
+
+    # parity: Astrometry.net returns 1.0 when the solution required
+    # an E/W flip (i.e. the image is mirrored). -1.0 = normal orientation.
+    # When parity=1 we must negate the RA axis to un-mirror.
+    parity = float(calib.get("parity", -1.0))  # default -1.0 = normal
+    parity_sign = -1.0 if parity > 0 else 1.0   # flip RA axis when mirrored
+
+    # Standard CD matrix for TAN projection:
+    #   CD1_1 = -scale * cos(theta)  * parity_sign  (RA increases East = negative pixel direction)
+    #   CD1_2 =  scale * sin(theta)                 (RA rotation)
+    #   CD2_1 =  scale * sin(theta)  * parity_sign  (Dec rotation, parity-aware)
+    #   CD2_2 =  scale * cos(theta)                 (Dec increases North = positive pixel direction)
+    h["CD1_1"] = parity_sign * (-scale_deg * math.cos(theta))
+    h["CD1_2"] =               ( scale_deg * math.sin(theta))
+    h["CD2_1"] = parity_sign * (-scale_deg * math.sin(theta))
+    h["CD2_2"] =               ( scale_deg * math.cos(theta))
+
     h["RADECSYS"] = "ICRS"
-    h["WCSAXES"] = 2
+    h["WCSAXES"]  = 2
     return h
 
 # If you already ship 'requests', this is simplest:
@@ -687,7 +701,6 @@ def _float01(arr: np.ndarray) -> np.ndarray:
         return (a.astype(np.float32) / float(info.max))
     return np.clip(a.astype(np.float32), 0.0, 1.0)
 
-
 def _normalize_for_astap(img: np.ndarray) -> np.ndarray:
     """
     Use migrated stretch functions when available.
@@ -700,8 +713,7 @@ def _normalize_for_astap(img: np.ndarray) -> np.ndarray:
     if f01.ndim == 2 or (f01.ndim == 3 and f01.shape[2] == 1):
         if stretch_mono_image is not None:
             try:
-
-                out = stretch_mono_image(f01, 0.1, False)
+                out = stretch_mono_image(f01, 0.1, False, no_black_clip=True)
                 return np.clip(out.astype(np.float32), 0.0, 1.0)
             except Exception as e:
                 print("DEBUG mono stretch failed, fallback:", e)
@@ -710,15 +722,12 @@ def _normalize_for_astap(img: np.ndarray) -> np.ndarray:
     # Color
     if stretch_color_image is not None:
         try:
-
-            out = stretch_color_image(f01, 0.1, False, False)
+            out = stretch_color_image(f01, 0.1, False, False, no_black_clip=True)
             return np.clip(out.astype(np.float32), 0.0, 1.0)
         except Exception as e:
             print("DEBUG color stretch failed, fallback:", e)
 
     return np.clip(f01.astype(np.float32), 0.0, 1.0)
-
-
 
 
 def _first_float(v):
@@ -1470,6 +1479,8 @@ def _solve_numpy_with_astrometry(
             if not calib:
                 return False, QCoreApplication.translate("PlateSolver", "Astrometry.net calibration not received in time.")
 
+            # Debug: log parity so we can verify the fix
+            print(f"[Astrometry] calibration parity={calib.get('parity')} orientation={calib.get('orientation')} pixscale={calib.get('pixscale')}")
             _set_status_ui(parent, QCoreApplication.translate("PlateSolver", "Status: Building WCS header from calibration…"))
             hdr_wcs = _wcs_header_from_astrometry_calib(calib, (Hfull, Wfull))
 
@@ -1937,70 +1948,90 @@ def _estimate_scale_arcsec_from_header(hdr: Header) -> float | None:
     Tries WCS, then CD matrix, then PC*CDELT, then PIXSCALE-style keys.
     Returns None if we can't get a sane value.
     """
-    # Always work on a copy with our internal meta keys stripped
     hdr = _strip_nonfits_meta_keys_from_header(hdr)
 
-    # 1) Try astropy WCS, which handles CD vs PC*CDELT automatically
+    def _sane_arcsec(val: float | None) -> float | None:
+        """Return val only if it looks like a plausible arcsec/pixel scale."""
+        if val is None or not np.isfinite(val) or val <= 0:
+            return None
+        # If the value is suspiciously tiny it's probably still in degrees —
+        # try multiplying by 3600 once more as a rescue.
+        if val < 0.01:
+            val_rescued = val * 3600.0
+            if 0.01 <= val_rescued <= 1000.0:
+                print(f"[scale] value {val} looks like degrees/px, rescuing → {val_rescued} arcsec/px")
+                return val_rescued
+            return None   # still bad, give up
+        if val > 1000.0:
+            return None   # implausibly large
+        return float(val)
+
+    # 1) Try astropy WCS
     try:
         w = _wcs_from_header_2d(hdr, relax=True)
         from astropy.wcs.utils import proj_plane_pixel_scales
-        scales_deg = proj_plane_pixel_scales(w)  # degrees/pixel
+        scales_deg = proj_plane_pixel_scales(w)   # degrees/pixel
         if scales_deg is not None and len(scales_deg) >= 2:
-            s_deg = float(np.mean(scales_deg[:2]))
-            scale = s_deg * 3600.0  # arcsec/pixel
-            if 0 < scale < 10000:
-                return scale
+            s_arcsec = float(np.mean(scales_deg[:2])) * 3600.0
+            result = _sane_arcsec(s_arcsec)
+            if result is not None:
+                return result
     except Exception as e:
         print("Seed: WCS->scale via proj_plane_pixel_scales failed:", e)
 
-    # 2) Try CD matrix directly
+    # 2) CD matrix directly (values are in degrees/pixel)
     cd11 = hdr.get("CD1_1")
     cd21 = hdr.get("CD2_1")
     try:
         if cd11 is not None or cd21 is not None:
-            cd11 = float(cd11 or 0.0)
-            cd21 = float(cd21 or 0.0)
-            s_deg = (cd11 * cd11 + cd21 * cd21) ** 0.5
-            scale = s_deg * 3600.0
-            if 0 < scale < 10000:
-                return scale
+            s_arcsec = ((float(cd11 or 0.0)**2 + float(cd21 or 0.0)**2)**0.5) * 3600.0
+            result = _sane_arcsec(s_arcsec)
+            if result is not None:
+                return result
     except Exception as e:
         print("Seed: CD-based scale failed:", e)
 
-    # 3) Try PC * CDELT fallback
+    # 3) PC * CDELT (CDELT is in degrees/pixel)
     try:
         cdelt1 = hdr.get("CDELT1")
         cdelt2 = hdr.get("CDELT2")
         pc11   = hdr.get("PC1_1")
         pc21   = hdr.get("PC2_1")
-        if cdelt1 is not None and pc11 is not None:
-            cd11 = float(cdelt1) * float(pc11)
-        else:
-            cd11 = None
-        if cdelt2 is not None and pc21 is not None:
-            cd21 = float(cdelt2) * float(pc21)
-        else:
-            cd21 = None
-
-        if cd11 is not None or cd21 is not None:
-            s_deg = ( (cd11 or 0.0)**2 + (cd21 or 0.0)**2 ) ** 0.5
-            scale = s_deg * 3600.0
-            if 0 < scale < 10000:
-                return scale
+        cd11_v = float(cdelt1) * float(pc11) if (cdelt1 is not None and pc11 is not None) else None
+        cd21_v = float(cdelt2) * float(pc21) if (cdelt2 is not None and pc21 is not None) else None
+        if cd11_v is not None or cd21_v is not None:
+            s_arcsec = ((cd11_v or 0.0)**2 + (cd21_v or 0.0)**2)**0.5 * 3600.0
+            result = _sane_arcsec(s_arcsec)
+            if result is not None:
+                return result
     except Exception as e:
         print("Seed: PC*CDELT-based scale failed:", e)
 
-    # 4) Fallback on explicit pixscale-like keywords, if present
+    # 4) Explicit pixscale keywords (already in arcsec/pixel)
     for key in ("PIXSCALE", "SECPIX"):
         if key in hdr:
             try:
-                scale = float(hdr[key])
-                if 0 < scale < 10000:
-                    return scale
+                result = _sane_arcsec(float(hdr[key]))
+                if result is not None:
+                    return result
             except Exception:
                 pass
 
-    # If we get here, we couldn't find a sane scale
+    # 5) Pixel size + focal length
+    px_um_x  = _first_float(hdr.get("XPIXSZ"))
+    px_um_y  = _first_float(hdr.get("YPIXSZ"))
+    focal_mm = _first_float(hdr.get("FOCALLEN"))
+    if focal_mm and (px_um_x or px_um_y):
+        px_um = px_um_x or px_um_y
+        if px_um_x and px_um_y:
+            px_um = (px_um_x + px_um_y) / 2.0
+        bx = _first_int(hdr.get("XBINNING")) or _first_int(hdr.get("XBIN")) or 1
+        by = _first_int(hdr.get("YBINNING")) or _first_int(hdr.get("YBIN")) or 1
+        px_um_eff = px_um * ((bx + by) / 2.0)
+        result = _sane_arcsec(206.264806 * px_um_eff / float(focal_mm))
+        if result is not None:
+            return result
+
     return None
 
 def _seed_header_from_meta(meta: dict) -> Header:

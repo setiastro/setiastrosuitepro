@@ -6013,17 +6013,17 @@ class WIMIDialog(QDialog):
 
 
     def _prompt_for_observation_datetime(self):
-        """
-        Show a small dialog asking for observation date/time if header doesn't have it.
-        Returns a Python datetime or None if user cancels.
-        """
+        from PyQt6.QtWidgets import QDialog, QFormLayout, QDialogButtonBox, QComboBox
+        from PyQt6.QtCore import QDateTime
+        import pytz
+
         dialog = QDialog(self)
         dialog.setWindowTitle("Observation Date & Time")
 
         layout = QFormLayout(dialog)
         lbl = QLabel(
             "The FITS header does not contain an observation date/time.\n"
-            "Please enter the midpoint of the exposure (UTC):"
+            "Please enter the midpoint of the exposure:"
         )
         lbl.setWordWrap(True)
         layout.addRow(lbl)
@@ -6031,28 +6031,78 @@ class WIMIDialog(QDialog):
         dt_edit = QDateTimeEdit(dialog)
         dt_edit.setCalendarPopup(True)
         dt_edit.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
-        dt_edit.setDateTime(QDateTime.currentDateTimeUtc())
-        layout.addRow("Date & Time (UTC):", dt_edit)
+        dt_edit.setDateTime(QDateTime.currentDateTime())  # local time as default
+        layout.addRow("Date & Time:", dt_edit)
+
+        tz_combo = QComboBox(dialog)
+        # Common timezones first, then all
+        common = [
+            "UTC",
+            "US/Eastern", "US/Central", "US/Mountain", "US/Pacific",
+            "US/Alaska", "US/Hawaii",
+            "Europe/London", "Europe/Paris", "Europe/Berlin",
+            "Australia/Sydney", "Australia/Perth",
+            "Asia/Tokyo", "Asia/Shanghai", "Asia/Kolkata",
+        ]
+        all_tz = sorted(pytz.all_timezones)
+        # Put common ones at top with a separator
+        tz_combo.addItems(common)
+        tz_combo.insertSeparator(len(common))
+        tz_combo.addItems([t for t in all_tz if t not in common])
+        tz_combo.setCurrentText("UTC")
+        # Try to pre-select local timezone
+        try:
+            import tzlocal
+            local_tz = tzlocal.get_localzone_name()
+            idx = tz_combo.findText(local_tz)
+            if idx >= 0:
+                tz_combo.setCurrentIndex(idx)
+            else:
+                # Try matching against common list
+                for tz in common:
+                    if local_tz.split("/")[-1] in tz:
+                        tz_combo.setCurrentText(tz)
+                        break
+        except Exception:
+            pass
+
+        layout.addRow("Timezone:", tz_combo)
+
+        utc_preview = QLabel("UTC: —")
+        utc_preview.setStyleSheet("color: #aaa; font-size: 11px;")
+        layout.addRow(utc_preview)
+
+        def _update_preview():
+            try:
+                tz = pytz.timezone(tz_combo.currentText())
+                qdt = dt_edit.dateTime().toPyDateTime()
+                local_dt = tz.localize(qdt)
+                utc_dt = local_dt.astimezone(pytz.utc)
+                utc_preview.setText(f"UTC: {utc_dt.strftime('%Y-%m-%d %H:%M:%S')}")
+            except Exception:
+                utc_preview.setText("UTC: —")
+
+        dt_edit.dateTimeChanged.connect(_update_preview)
+        tz_combo.currentTextChanged.connect(_update_preview)
+        _update_preview()
 
         buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel
         )
         layout.addWidget(buttons)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
 
-        def _accept():
-            dialog.accept()
-
-        def _reject():
-            dialog.reject()
-
-        buttons.accepted.connect(_accept)
-        buttons.rejected.connect(_reject)
-
-        dialog.setLayout(layout)
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            qdt = dt_edit.dateTime().toUTC()
-            py_dt = qdt.toPyDateTime()
-            return py_dt
+            try:
+                tz = pytz.timezone(tz_combo.currentText())
+                qdt = dt_edit.dateTime().toPyDateTime()
+                local_dt = tz.localize(qdt)
+                utc_dt = local_dt.astimezone(pytz.utc)
+                return utc_dt.replace(tzinfo=None)  # naive UTC for downstream
+            except Exception:
+                return None
         return None
 
     def _get_or_prompt_observation_datetime(self):
@@ -6539,13 +6589,13 @@ class WIMIDialog(QDialog):
         print(
             f"[MinorBodies] compute_positions_skyfield: sending {total_rows} rows, jd={jd}"
         )
-        positions = cat.compute_positions_skyfield(
+        positions = cat.compute_positions_astropy(
             asteroid_rows=rows_df,
             jd=jd,
-            ephemeris_path=str(self._minorbody_data_dir()),  # ← was None
+            ephemeris_path=str(self._minorbody_data_dir()),
             topocentric=None,
             progress_cb=progress_cb,
-            debug=False,
+            debug=True,
         )
 
         print(f"[MinorBodies] positions returned from Skyfield: {len(positions)}")
