@@ -1040,7 +1040,7 @@ class CalculationThread(QThread):
 
     def __init__(self, latitude, longitude, date, time, timezone,
                  min_altitude, catalog_filters, object_limit,
-                 horizon_points=None):
+                 horizon_points=None, type_filters=None):   # ← add type_filters=None
         super().__init__()
         self.latitude        = float(latitude)
         self.longitude       = float(longitude)
@@ -1052,6 +1052,7 @@ class CalculationThread(QThread):
         self.object_limit    = int(object_limit)
         self.horizon_points  = list(horizon_points or [])
         self.catalog_file    = self.get_catalog_file_path()
+        self.type_filters    = list(type_filters) if type_filters else None
 
     def get_catalog_file_path(self) -> str:
         """
@@ -1147,6 +1148,21 @@ class CalculationThread(QThread):
 
             if self.catalog_filters:
                 df = df[df["Catalog"].isin(self.catalog_filters)]
+            # ── Object type filter ─────────────────────────────────────
+            if self.type_filters is not None and "Type" in df.columns:
+                include_blank = "(blank)" in self.type_filters
+                real_types = [t for t in self.type_filters if t != "(blank)"]
+                
+                if include_blank and real_types:
+                    df = df[df["Type"].isin(real_types) | df["Type"].isna() | 
+                            (df["Type"].astype(str).str.strip() == "")]
+                elif include_blank:
+                    df = df[df["Type"].isna() | (df["Type"].astype(str).str.strip() == "")]
+                elif real_types:
+                    df = df[df["Type"].isin(real_types)]
+                else:
+                    # Nothing selected — return empty
+                    df = df.iloc[0:0]              
             df.dropna(subset=["RA", "Dec"], inplace=True)
             df.reset_index(drop=True, inplace=True)
 
@@ -2513,6 +2529,7 @@ class WhatsInMySkyDialog(QDialog):
 
         self._build_ui(wrench_path)
         self._load_settings_into_ui()
+        self._preload_type_filters()
 
         self.calc_thread: Optional[CalculationThread] = None
         self.catalog_file: Optional[str] = None
@@ -2526,7 +2543,7 @@ class WhatsInMySkyDialog(QDialog):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # ── Left panel ────────────────────────────────────────────────────
+        # ── Left panel (unchanged) ────────────────────────────────────────
         left_outer = QFrame()
         left_outer.setFixedWidth(280)
         left_outer.setFrameShape(QFrame.Shape.NoFrame)
@@ -2648,6 +2665,55 @@ class WhatsInMySkyDialog(QDialog):
         moon_hbox.addLayout(moon_text, 1)
         left_vbox.addWidget(moon_frame, 0)
 
+        # ── Middle panel — Object Type Filter ────────────────────────────
+        mid_outer = QFrame()
+        mid_outer.setFixedWidth(180)
+        mid_outer.setFrameShape(QFrame.Shape.NoFrame)
+        mid_outer.setStyleSheet("border-right: 1px solid palette(shadow);")
+        mid_vbox = QVBoxLayout(mid_outer)
+        mid_vbox.setContentsMargins(6, 6, 6, 6)
+        mid_vbox.setSpacing(4)
+
+        type_hdr = QLabel("OBJECT TYPES")
+        type_hdr.setStyleSheet(
+            "font-size: 10px; font-weight: 500; color: palette(window-text);"
+            "letter-spacing: 0.05em;")
+        mid_vbox.addWidget(type_hdr)
+
+        # Toggle buttons row
+        tog_row = QHBoxLayout()
+        tog_row.setSpacing(4)
+        tog_all_btn = QPushButton("All")
+        tog_none_btn = QPushButton("None")
+        tog_all_btn.setFixedHeight(22)
+        tog_none_btn.setFixedHeight(22)
+        tog_all_btn.setStyleSheet("font-size: 10px;")
+        tog_none_btn.setStyleSheet("font-size: 10px;")
+        tog_all_btn.clicked.connect(lambda: self._set_all_type_filters(True))
+        tog_none_btn.clicked.connect(lambda: self._set_all_type_filters(False))
+        tog_row.addWidget(tog_all_btn)
+        tog_row.addWidget(tog_none_btn)
+        tog_row.addStretch()
+        mid_vbox.addLayout(tog_row)
+
+        # Scrollable checkbox list
+        type_scroll = QScrollArea()
+        type_scroll.setWidgetResizable(True)
+        type_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        type_scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+        self._type_filter_widget = QWidget()
+        self._type_filter_layout = QVBoxLayout(self._type_filter_widget)
+        self._type_filter_layout.setContentsMargins(2, 2, 2, 2)
+        self._type_filter_layout.setSpacing(1)
+        self._type_filter_layout.addStretch(1)
+
+        type_scroll.setWidget(self._type_filter_widget)
+        mid_vbox.addWidget(type_scroll, 1)
+
+        # dict of type_name → QCheckBox, populated lazily when catalog loads
+        self._type_filter_vars: dict[str, QCheckBox] = {}
+
         # ── Right panel ───────────────────────────────────────────────────
         right_outer = QWidget()
         right_vbox  = QVBoxLayout(right_outer)
@@ -2709,7 +2775,6 @@ class WhatsInMySkyDialog(QDialog):
         for col, w in enumerate([90,65,65,55,55,70,65,70,90,100,50,80,50]):
             self.tree.setColumnWidth(col, w)
 
-        # Double-click → AstroBin, Right-click → context menu
         self.tree.itemDoubleClicked.connect(self.on_row_double_click)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._show_context_menu)
@@ -2718,13 +2783,27 @@ class WhatsInMySkyDialog(QDialog):
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(left_outer)
+        splitter.addWidget(mid_outer)
         splitter.addWidget(right_outer)
         splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
+        splitter.setStretchFactor(1, 0)
+        splitter.setStretchFactor(2, 1)
         splitter.setChildrenCollapsible(False)
         splitter.setHandleWidth(1)
         root.addWidget(splitter)
-        self.resize(1100, 620)
+        self.resize(1300, 620)
+
+    def _preload_type_filters(self):
+        """Load catalog at startup to populate type filter checkboxes immediately."""
+        try:
+            t = CalculationThread.__new__(CalculationThread)
+            catalog_path = t.get_catalog_file_path()
+            if catalog_path and os.path.exists(catalog_path):
+                self.catalog_file = catalog_path
+                df = pd.read_csv(catalog_path, encoding="ISO-8859-1")
+                self._populate_type_filters(df)
+        except Exception:
+            pass
 
     def _open_object_search(self):
         catalog = getattr(self, "catalog_file", None) or \
@@ -2765,6 +2844,63 @@ class WhatsInMySkyDialog(QDialog):
 
         dlg = ObjectSearchDialog(catalog, observer, parent=self)
         dlg.show()
+
+    def _populate_type_filters(self, df: pd.DataFrame):
+        if "Type" not in df.columns:
+            return
+
+        types = sorted(df["Type"].dropna().unique().tolist())
+        
+        # Check if there are any blank/NaN type rows and add a synthetic entry
+        has_blank = df["Type"].isna().any() or (df["Type"].astype(str).str.strip() == "").any()
+        if has_blank:
+            types = ["(blank)"] + types
+
+        if not types:
+            return
+
+        saved = self.settings.value("wims/type_filters", None)
+        saved_set = set(saved) if isinstance(saved, list) else None
+
+        while self._type_filter_layout.count() > 1:
+            item = self._type_filter_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        self._type_filter_vars.clear()
+
+        for typ in types:
+            cb = QCheckBox(typ)
+            cb.setStyleSheet("font-size: 11px;")
+            checked = (saved_set is None) or (typ in saved_set)
+            cb.setChecked(checked)
+            cb.stateChanged.connect(self._save_type_filters)
+            self._type_filter_layout.insertWidget(
+                self._type_filter_layout.count() - 1, cb)
+            self._type_filter_vars[typ] = cb
+
+    def _get_selected_types(self) -> list[str] | None:
+        """
+        Return list of checked type strings, or None if all are checked
+        (so CalculationThread can skip filtering entirely for speed).
+        """
+        if not self._type_filter_vars:
+            return None
+        checked = [t for t, cb in self._type_filter_vars.items() if cb.isChecked()]
+        if len(checked) == len(self._type_filter_vars):
+            return None  # all selected — no filtering needed
+        return checked
+
+    def _set_all_type_filters(self, state: bool):
+        for cb in self._type_filter_vars.values():
+            cb.blockSignals(True)
+            cb.setChecked(state)
+            cb.blockSignals(False)
+        self._save_type_filters()
+
+    def _save_type_filters(self):
+        checked = [t for t, cb in self._type_filter_vars.items() if cb.isChecked()]
+        self.settings.setValue("wims/type_filters", checked)
 
     # ─ Custom horizon handling ─────────────────────────────────────────────
     def _load_horizon_from_settings(self) -> list:
@@ -2988,10 +3124,12 @@ class WhatsInMySkyDialog(QDialog):
         }
 
         catalogs = [n for n, cb in self.catalog_vars.items() if cb.isChecked()]
+        type_filters = self._get_selected_types()
         self.calc_thread = CalculationThread(
             latitude, longitude, date_str, time_str, tz_str,
             min_alt, catalogs, self.object_limit,
-            horizon_points=self._horizon_points)
+            horizon_points=self._horizon_points,
+            type_filters=type_filters)   
         self.catalog_file = self.calc_thread.catalog_file
         self.calc_thread.calculation_complete.connect(self.on_calculation_complete)
         self.calc_thread.lunar_phase_calculated.connect(self.update_lunar_phase)
@@ -3014,6 +3152,16 @@ class WhatsInMySkyDialog(QDialog):
             self.lunar_phase_image_label.clear()
 
     def on_calculation_complete(self, df, message):
+        # Populate type filter panel the first time we have catalog data
+        if self._type_filter_vars == {} and not df.empty:
+            # Load full catalog to get all types, not just this result subset
+            try:
+                catalog_path = self.catalog_file or \
+                    os.path.join(os.path.expanduser("~"), "celestial_catalog.csv")
+                full_df = pd.read_csv(catalog_path, encoding="ISO-8859-1")
+                self._populate_type_filters(full_df)
+            except Exception:
+                pass
         self.update_status(message)
         self.tree.clear()
         if df.empty:

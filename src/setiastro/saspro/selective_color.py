@@ -476,6 +476,10 @@ class SelectiveColorCorrection(QDialog):
         self._use_imported_mask = False     # checkbox state mirror
         self._mask_delay_ms = 200
         self._adj_delay_ms  = 200
+        self._region_mask_full = None    # full-res binary region mask (H x W) float32
+        self._lasso_points = []          # list of (x,y) in label coords while drawing
+        self._lasso_drawing = False
+        self._lasso_overlay = None       # QPixmap overlay for live lasso feedback        
         self._build_ui()
         self._mask_delay_ms = 200  # 0.2s idle before recomputing mask
         self._mask_timer = QTimer(self)
@@ -741,10 +745,15 @@ class SelectiveColorCorrection(QDialog):
         self.btn_export_mask.clicked.connect(self._export_mask_doc)
         self.btn_reset = QPushButton("↺ Reset")
         self.btn_reset.clicked.connect(self._reset_controls)
+        self.btn_clear_region = QPushButton("✕ Clear Region Mask")
+        self.btn_clear_region.setToolTip("Remove the freehand region constraint")
+        self.btn_clear_region.clicked.connect(self._clear_region_mask)
+        self.btn_clear_region.setEnabled(False)        
         row.addWidget(self.btn_apply)
         row.addWidget(self.btn_push)
         row.addWidget(self.btn_export_mask)
         row.addWidget(self.btn_reset)
+        row.addWidget(self.btn_clear_region)
         left_outer.addLayout(row)
 
         # ======================================================================
@@ -776,8 +785,9 @@ class SelectiveColorCorrection(QDialog):
 
         self.lbl_help = QLabel(
             "🖱️ <b>Click</b>: show hue  &nbsp;•&nbsp; "
-            "<b>Shift + Click</b>: select that color  &nbsp;•&nbsp; "
-            "<b>Ctrl + Click & Drag</b>: pan  &nbsp;•&nbsp; "
+            "<b>Shift+Click</b>: select that color  &nbsp;•&nbsp; "
+            "<b>Ctrl+Drag</b>: pan  &nbsp;•&nbsp; "
+            "<b>Alt+Drag</b>: draw region mask  &nbsp;•&nbsp; "
             "<b>Wheel</b>: zoom"
         )
 
@@ -811,7 +821,9 @@ class SelectiveColorCorrection(QDialog):
         # Hue readout
         self.lbl_hue_readout = QLabel("Picked hue: —")
         right.addWidget(self.lbl_hue_readout)
-
+        self.lbl_region_readout = QLabel("Region mask: none  (Alt+Drag to draw)")
+        self.lbl_region_readout.setStyleSheet("color: #888; font-size: 11px;")
+        right.addWidget(self.lbl_region_readout)
         # Splitter stretch: make preview greedy
         self.splitter.setStretchFactor(0, 0)  # left
         self.splitter.setStretchFactor(1, 1)  # right
@@ -870,6 +882,121 @@ class SelectiveColorCorrection(QDialog):
         # First paint
         self._update_preview_pixmap()
 
+    # --- Lasso helpers ---------------------------------------------------
+    def _clear_region_mask(self):
+        self._region_mask_full = None
+        self._lasso_points = []
+        self._lasso_overlay = None
+        self.lbl_region_readout.setText("Region mask: none  (Alt+Drag to draw)")
+        self.btn_clear_region.setEnabled(False)
+        self._recompute_mask_and_preview()
+
+    def _lasso_to_region_mask(self, points_label: list, base_shape: tuple) -> np.ndarray:
+        """
+        Convert lasso points (in label/zoomed coords) to a full-res binary mask.
+        points_label: list of (x, y) in label pixel coords
+        base_shape: (H, W) of the base image
+        """
+        if len(points_label) < 3:
+            return None
+
+        bh, bw = base_shape[:2]
+
+        # Convert label coords → base image coords
+        z = max(self._zoom, 1e-6)
+        pts_img = [(x / z, y / z) for x, y in points_label]
+
+        # Build polygon mask using cv2 fillPoly
+        if cv2 is not None:
+            pts_arr = np.array(pts_img, dtype=np.int32)
+            mask = np.zeros((bh, bw), dtype=np.uint8)
+            cv2.fillPoly(mask, [pts_arr], 255)
+            return mask.astype(np.float32) / 255.0
+        else:
+            # Pure numpy fallback — scanline fill
+            from matplotlib.path import Path
+            path = Path(pts_img)
+            yy, xx = np.mgrid[0:bh, 0:bw]
+            coords = np.column_stack([xx.ravel(), yy.ravel()])
+            inside = path.contains_points(coords)
+            return inside.reshape(bh, bw).astype(np.float32)
+
+    def _draw_lasso_overlay(self):
+        """Draw the current lasso as a dashed orange outline with transparent fill."""
+        if not self._lasso_points:
+            return
+
+        # Get the current pixmap — regenerate it clean first so we don't stack overlays
+        base = getattr(self, "_last_base", None)
+        if base is None:
+            return
+
+        # Re-render base preview without triggering full recompute
+        mask = getattr(self, "_mask", np.zeros(base.shape[:2], np.float32))
+        if self.cb_live.isChecked():
+            out = _apply_selective_adjustments(
+                base, mask,
+                cyan=float(self.ds_c.value()),
+                magenta=float(self.ds_m.value()),
+                yellow=float(self.ds_y.value()),
+                r=float(self.ds_r.value()),
+                g=float(self.ds_g.value()),
+                b=float(self.ds_b.value()),
+                lum=float(self.ds_l.value()),
+                chroma=float(self.ds_chroma.value()),
+                sat=float(self.ds_s.value()),
+                con=float(self.ds_c2.value()),
+                intensity=float(self.ds_int.value()),
+                use_chroma_mode=(self.dd_color_mode.currentIndex() == 0),
+            )
+            out = _ensure_rgb01(out)
+        else:
+            out = _ensure_rgb01(base)
+
+        if self.cb_show_mask.isChecked():
+            out = self._overlay_mask(out, mask * float(self.ds_int.value()))
+
+        pm = _to_pixmap(out)
+        h, w = out.shape[:2]
+        zw = max(1, int(round(w * self._zoom)))
+        zh = max(1, int(round(h * self._zoom)))
+        pm_scaled = pm.scaled(zw, zh, Qt.AspectRatioMode.IgnoreAspectRatio,
+                              Qt.TransformationMode.SmoothTransformation)
+
+        # Now paint the lasso on top
+        from PyQt6.QtGui import QPainter, QPen, QColor, QPainterPath
+        overlay = pm_scaled.copy()
+        painter = QPainter(overlay)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        if len(self._lasso_points) > 2:
+            path = QPainterPath()
+            path.moveTo(*self._lasso_points[0])
+            for px, py in self._lasso_points[1:]:
+                path.lineTo(px, py)
+            path.closeSubpath()
+            # Transparent orange fill
+            painter.fillPath(path, QColor(255, 165, 0, 35))
+
+        # Dashed orange outline
+        pen = QPen(QColor(255, 165, 0), 1)
+        pen.setStyle(Qt.PenStyle.DashLine)
+        painter.setPen(pen)
+        for i in range(1, len(self._lasso_points)):
+            x0, y0 = self._lasso_points[i-1]
+            x1, y1 = self._lasso_points[i]
+            painter.drawLine(int(x0), int(y0), int(x1), int(y1))
+
+        # Closing line back to start
+        if len(self._lasso_points) > 2:
+            x0, y0 = self._lasso_points[-1]
+            x1, y1 = self._lasso_points[0]
+            painter.setPen(QPen(QColor(255, 165, 0, 120), 1, Qt.PenStyle.DotLine))
+            painter.drawLine(int(x0), int(y0), int(x1), int(y1))
+
+        painter.end()
+        self.lbl_preview.setPixmap(overlay)
+        self.lbl_preview.resize(zw, zh)
     # --- Zoom helpers ----------------------------------------------------
     def _current_scroll(self):
         hbar = self.scroll.horizontalScrollBar()
@@ -1102,6 +1229,63 @@ class SelectiveColorCorrection(QDialog):
             return None
         return (x, y)
 
+    def _draw_region_outline_on_pixmap(self, pm: QPixmap) -> QPixmap:
+        """
+        If a region mask is active, draw its outline as a dashed orange border
+        on the given pixmap. Returns a new pixmap with the outline painted on it.
+        """
+        if self._region_mask_full is None:
+            return pm
+
+        # Get the contour of the region mask at preview resolution
+        if cv2 is None:
+            return pm
+
+        bh, bw = self._region_mask_full.shape[:2]
+        # Scale region mask to current zoom/preview size
+        pw = pm.width()
+        ph = pm.height()
+
+        try:
+            rm_preview = cv2.resize(
+                self._region_mask_full, (pw, ph),
+                interpolation=cv2.INTER_NEAREST)
+            rm_u8 = (rm_preview * 255).astype(np.uint8)
+            contours, _ = cv2.findContours(
+                rm_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        except Exception:
+            return pm
+
+        from PyQt6.QtGui import QPainter, QPen, QColor
+        result = pm.copy()
+        painter = QPainter(result)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # Outer glow — thicker semi-transparent line
+        pen_glow = QPen(QColor(255, 165, 0, 80), 4)
+        pen_glow.setStyle(Qt.PenStyle.SolidLine)
+        painter.setPen(pen_glow)
+        for contour in contours:
+            pts = contour.reshape(-1, 2)
+            for i in range(len(pts)):
+                x0, y0 = int(pts[i][0]),   int(pts[i][1])
+                x1, y1 = int(pts[(i+1) % len(pts)][0]), int(pts[(i+1) % len(pts)][1])
+                painter.drawLine(x0, y0, x1, y1)
+
+        # Dashed orange outline on top
+        pen_dash = QPen(QColor(255, 165, 0), 2)
+        pen_dash.setStyle(Qt.PenStyle.DashLine)
+        pen_dash.setDashPattern([6, 4])
+        painter.setPen(pen_dash)
+        for contour in contours:
+            pts = contour.reshape(-1, 2)
+            for i in range(len(pts)):
+                x0, y0 = int(pts[i][0]),   int(pts[i][1])
+                x1, y1 = int(pts[(i+1) % len(pts)][0]), int(pts[(i+1) % len(pts)][1])
+                painter.drawLine(x0, y0, x1, y1)
+
+        painter.end()
+        return result
 
     def eventFilter(self, obj, ev):
         from PyQt6.QtCore import QEvent, Qt
@@ -1150,6 +1334,67 @@ class SelectiveColorCorrection(QDialog):
             self._apply_zoom(self._zoom * factor, anchor_label_pos=anchor_label_pos)
             ev.accept()
             return True
+
+        # --- LASSO REGION MASK (Alt + LMB drag) on viewport or label ---
+        if obj in (self.scroll.viewport(), self.lbl_preview):
+            if ev.type() == QEvent.Type.MouseButtonPress:
+                if (ev.button() == Qt.MouseButton.LeftButton and
+                        ev.modifiers() & Qt.KeyboardModifier.AltModifier and
+                        not ev.modifiers() & Qt.KeyboardModifier.ControlModifier):
+                    # start lasso — get position in label coords
+                    if obj is self.lbl_preview:
+                        lpos = ev.position()
+                    else:
+                        lpos = self.lbl_preview.mapFrom(
+                            self.scroll.viewport(), ev.position().toPoint())
+                    self._lasso_drawing = True
+                    self._lasso_points = [(float(lpos.x()), float(lpos.y()))]
+                    self.scroll.viewport().setCursor(Qt.CursorShape.CrossCursor)
+                    return True
+
+            elif ev.type() == QEvent.Type.MouseMove and self._lasso_drawing:
+                if obj is self.lbl_preview:
+                    lpos = ev.position()
+                else:
+                    lpos = self.lbl_preview.mapFrom(
+                        self.scroll.viewport(), ev.position().toPoint())
+                self._lasso_points.append((float(lpos.x()), float(lpos.y())))
+                # Thin the points — only keep every 8th to reduce memory
+                if len(self._lasso_points) % 8 == 0:
+                    self._draw_lasso_overlay()
+                return True
+
+            elif ev.type() == QEvent.Type.MouseButtonRelease and self._lasso_drawing:
+                self._lasso_drawing = False
+                self.scroll.viewport().setCursor(Qt.CursorShape.ArrowCursor)
+
+                if len(self._lasso_points) >= 3 and hasattr(self, '_last_base'):
+                    base = self._last_base
+                    region = self._lasso_to_region_mask(
+                        self._lasso_points, base.shape)
+
+                    if region is not None:
+                        # Scale back up to full-res image coords
+                        fh, fw = self.img.shape[:2]
+                        bh, bw = base.shape[:2]
+                        if (bh, bw) != (fh, fw) and cv2 is not None:
+                            region_full = cv2.resize(
+                                region, (fw, fh),
+                                interpolation=cv2.INTER_LINEAR)
+                        else:
+                            region_full = region
+
+                        self._region_mask_full = np.clip(
+                            region_full.astype(np.float32), 0.0, 1.0)
+                        n_pts = len(self._lasso_points)
+                        self.lbl_region_readout.setText(
+                            f"Region mask: active ({n_pts} points)  "
+                            f"— click '✕ Clear Region Mask' to remove")
+                        self.btn_clear_region.setEnabled(True)
+
+                self._lasso_points = []
+                self._recompute_mask_and_preview()
+                return True
 
         # --- PANNING (Ctrl + LMB) on viewport *or* label ---
         if obj in (self.scroll.viewport(), self.lbl_preview):
@@ -1308,7 +1553,6 @@ class SelectiveColorCorrection(QDialog):
         base = self._downsample(self.img, 1200) if self.cb_small_preview.isChecked() else self.img
         self._last_base = base
 
-        # if user wants imported mask and we have one → use it
         if self._use_imported_mask and self._imported_mask_full is not None:
             imp = self._imported_mask_full
             bh, bw = base.shape[:2]
@@ -1324,7 +1568,6 @@ class SelectiveColorCorrection(QDialog):
                 mask = imp
             mask = np.clip(mask.astype(np.float32), 0.0, 1.0)
         else:
-            # your original hue-based build
             preset = self.dd_preset.currentText()
             if preset == "Custom":
                 ranges = [(float(self.sp_h1.value()), float(self.sp_h2.value()))]
@@ -1351,6 +1594,20 @@ class SelectiveColorCorrection(QDialog):
             k = int(self.sb_blur.value())
             if k > 0 and cv2 is not None:
                 mask = cv2.GaussianBlur(mask.astype(np.float32), (0, 0), float(k))
+
+        # ── AND with region mask for preview too ───────────────────────────
+        if self._region_mask_full is not None:
+            bh, bw = base.shape[:2]
+            rm = self._region_mask_full
+            mh, mw = rm.shape[:2]
+            if (mh, mw) != (bh, bw):
+                if cv2 is not None:
+                    rm = cv2.resize(rm, (bw, bh), interpolation=cv2.INTER_LINEAR)
+                else:
+                    yy = np.linspace(0, mh-1, bh).astype(int)
+                    xx = np.linspace(0, mw-1, bw).astype(int)
+                    rm = rm[yy[:, None], xx[None, :]]
+            mask = mask * np.clip(rm.astype(np.float32), 0.0, 1.0)
 
         self._mask = np.clip(mask, 0.0, 1.0)
         self._update_preview_pixmap()
@@ -1498,6 +1755,7 @@ class SelectiveColorCorrection(QDialog):
         zw, zh = max(1, int(round(w * self._zoom))), max(1, int(round(h * self._zoom)))
         pm_scaled = pm.scaled(zw, zh, Qt.AspectRatioMode.IgnoreAspectRatio,
                             Qt.TransformationMode.SmoothTransformation)
+        pm_scaled = self._draw_region_outline_on_pixmap(pm_scaled)
         self.lbl_preview.setPixmap(pm_scaled)
         self.lbl_preview.resize(zw, zh)
 
@@ -1555,10 +1813,6 @@ class SelectiveColorCorrection(QDialog):
 
 
     def _build_mask(self, base: np.ndarray) -> np.ndarray:
-        """
-        Build the full-res mask using the *current UI settings*.
-        This is exactly what your old _apply_fullres did, just pulled out.
-        """
         preset = self.dd_preset.currentText()
         ranges = (
             [(float(self.sp_h1.value()), float(self.sp_h2.value()))]
@@ -1566,7 +1820,6 @@ class SelectiveColorCorrection(QDialog):
             else _PRESETS[preset]
         )
 
-        # 1) hue / chroma / light / smooth / invert
         mask = _hue_mask(
             base,
             ranges_deg=ranges,
@@ -1577,7 +1830,6 @@ class SelectiveColorCorrection(QDialog):
             invert_range=self.cb_invert.isChecked(),
         )
 
-        # 2) shadows / highlights weighting
         mask = _weight_shadows_highlights(
             mask, base,
             shadows=float(self.ds_sh.value()),
@@ -1585,10 +1837,23 @@ class SelectiveColorCorrection(QDialog):
             balance=float(self.ds_bal.value()),
         )
 
-        # 3) optional blur
         k = int(self.sb_blur.value())
         if k > 0 and cv2 is not None:
             mask = cv2.GaussianBlur(mask.astype(np.float32), (0, 0), float(k))
+
+        # ── AND with region mask if one exists ─────────────────────────────
+        if self._region_mask_full is not None:
+            bh, bw = base.shape[:2]
+            rm = self._region_mask_full
+            mh, mw = rm.shape[:2]
+            if (mh, mw) != (bh, bw):
+                if cv2 is not None:
+                    rm = cv2.resize(rm, (bw, bh), interpolation=cv2.INTER_LINEAR)
+                else:
+                    yy = np.linspace(0, mh-1, bh).astype(int)
+                    xx = np.linspace(0, mw-1, bw).astype(int)
+                    rm = rm[yy[:, None], xx[None, :]]
+            mask = mask * np.clip(rm.astype(np.float32), 0.0, 1.0)
 
         return np.clip(mask, 0.0, 1.0).astype(np.float32)
 
