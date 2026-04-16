@@ -1039,8 +1039,8 @@ class CalculationThread(QThread):
     status_update          = pyqtSignal(str)
 
     def __init__(self, latitude, longitude, date, time, timezone,
-                 min_altitude, catalog_filters, object_limit,
-                 horizon_points=None, type_filters=None):   # ← add type_filters=None
+                min_altitude, catalog_filters, object_limit,
+                horizon_points=None, type_filters=None, sort_by_score=False):  
         super().__init__()
         self.latitude        = float(latitude)
         self.longitude       = float(longitude)
@@ -1053,6 +1053,7 @@ class CalculationThread(QThread):
         self.horizon_points  = list(horizon_points or [])
         self.catalog_file    = self.get_catalog_file_path()
         self.type_filters    = list(type_filters) if type_filters else None
+        self.sort_by_score = bool(sort_by_score)
 
     def get_catalog_file_path(self) -> str:
         """
@@ -1195,24 +1196,48 @@ class CalculationThread(QThread):
                                                    1440 - df["Minutes to Transit"],
                                                    df["Minutes to Transit"])
 
-            df = df.nsmallest(self.object_limit, "Minutes to Transit")
-            # ── Score each target ──────────────────────────────────────────
+            # ── Score each target (always computed, needed for sort) ───────
             moon  = get_body("moon", t, loc)
             sun   = get_sun(t)
             elong = moon.separation(sun).deg
             phase_pct = int(round((1 - np.cos(np.radians(elong))) / 2 * 100))
 
+            # ── Pre-compute constants shared across ALL objects ────────────
+            n       = 144
+            t_start = Time(local_tz.localize(
+                datetime(int(self.date[:4]), int(self.date[5:7]),
+                         int(self.date[8:10]), 12, 0)))
+            score_times  = t_start + np.linspace(0, 24, n) * u.hour
+            score_frame  = AltAz(obstime=score_times, location=loc)
+            sun_alts_pre = get_sun(score_times).transform_to(score_frame).alt.deg
+
+            moon_body  = get_body("moon", t, loc)
+            sun_body   = get_sun(t)
+            elong      = moon_body.separation(sun_body).deg
+            phase_pct  = int(round((1 - np.cos(np.radians(elong))) / 2 * 100))
+
+            # ── Score each target using pre-computed arrays ────────────────
+            moon_coord  = SkyCoord(ra=moon_body.ra.deg * u.deg,
+                                   dec=moon_body.dec.deg * u.deg)
+            all_obj     = SkyCoord(ra=df["RA"].to_numpy() * u.deg,
+                                   dec=df["Dec"].to_numpy() * u.deg)
+            moon_seps   = all_obj.separation(moon_coord).deg  # vectorized, one call
+
             scores = []
-            for _, row in df.iterrows():
-                s = _score_target(
+            for i, (_, row) in enumerate(df.iterrows()):
+                s = _score_target_precomputed(
                     float(row["RA"]), float(row["Dec"]),
-                    self.latitude, self.longitude,
-                    self.date, self.timezone,
-                    float(row["Degrees from Moon"]), phase_pct,
-                    horizon_points=self.horizon_points,   # ← add
+                    sun_alts_pre, score_times, loc,
+                    float(moon_seps[i]), phase_pct,
+                    horizon_points=self.horizon_points,
                 )
                 scores.append(s)
-            df["Score"] = scores            
+            df["Score"] = scores
+
+            if self.sort_by_score:
+                df = df.nlargest(self.object_limit, "Score")
+            else:
+                df = df.nsmallest(self.object_limit, "Minutes to Transit")           
             self.calculation_complete.emit(df, "Calculation complete.")
         except Exception as e:
             self.calculation_complete.emit(pd.DataFrame(), f"Error: {e!s}")
@@ -2512,6 +2537,46 @@ class HorizonEditorDialog(QDialog):
         """Return sorted list of (az, alt) tuples."""
         return [(p[0], p[1]) for p in self._sorted_pts()]
 
+def _score_target_precomputed(ra_deg, dec_deg, sun_alts, times, loc,
+                               moon_sep_deg, phase_pct, horizon_points=None):
+    """
+    Score a target using pre-computed sun_alts and times arrays.
+    Caller computes sun_alts, times, loc once and reuses across all objects.
+    """
+    try:
+        frame     = AltAz(obstime=times, location=loc)
+        obj_coord = SkyCoord(ra=ra_deg * u.deg, dec=dec_deg * u.deg)
+        altaz     = obj_coord.transform_to(frame)
+        obj_alts  = altaz.alt.deg
+
+        if horizon_points:
+            obj_az = altaz.az.deg
+            h_lim  = np.array([
+                _horizon_min_alt(float(az), horizon_points)
+                for az in obj_az
+            ], dtype=float)
+            above_quality = obj_alts >= np.maximum(h_lim, 30.0)
+            above_window  = obj_alts >= np.maximum(h_lim, 20.0)
+        else:
+            above_quality = obj_alts >= 30.0
+            above_window  = obj_alts >= 20.0
+
+        astro_night  = sun_alts < -18
+        total_astro  = float(np.sum(astro_night))
+        if total_astro == 0:
+            return 0.0
+
+        alt_score    = float(np.sum(astro_night & above_quality)) / total_astro
+        window_score = float(np.sum(astro_night & above_window))  / total_astro
+
+        sep_norm   = min(1.0, moon_sep_deg / 90.0)
+        phase_norm = 1.0 - (phase_pct / 100.0)
+        moon_score = sep_norm * (0.5 + 0.5 * phase_norm)
+
+        return round((alt_score * 0.40 + moon_score * 0.35 + window_score * 0.25) * 100, 1)
+    except Exception:
+        return 0.0
+
 # ---------------------------------------------------
 #  Main dialog
 # ---------------------------------------------------
@@ -2753,6 +2818,26 @@ class WhatsInMySkyDialog(QDialog):
         toolbar_frame.setStyleSheet("border-bottom: 1px solid palette(shadow);")
         toolbar_frame.setLayout(toolbar)
         right_vbox.addWidget(toolbar_frame, 0)
+
+        sort_row = QHBoxLayout()
+        sort_row.setContentsMargins(10, 2, 10, 2)
+        sort_row.setSpacing(8)
+        sort_lbl = QLabel("Generate List By:")
+        sort_lbl.setStyleSheet("font-size: 11px;")
+        self.sort_transit_rb = QRadioButton("Closest to Transit")
+        self.sort_score_rb   = QRadioButton("Best Nightly Score (May Take Longer)")
+        self.sort_transit_rb.setChecked(True)
+        self.sort_transit_rb.setStyleSheet("font-size: 11px;")
+        self.sort_score_rb.setStyleSheet("font-size: 11px;")
+        sort_grp = QButtonGroup(self)
+        sort_grp.addButton(self.sort_transit_rb)
+        sort_grp.addButton(self.sort_score_rb)
+        sort_row.addWidget(sort_lbl)
+        sort_row.addWidget(self.sort_transit_rb)
+        sort_row.addWidget(self.sort_score_rb)
+        sort_row.addStretch()
+        right_vbox.addLayout(sort_row)
+
         hint_lbl = QLabel("Tip: right-click any object for visibility plot, SIMBAD details, planet separations and more.")
         hint_lbl.setStyleSheet("font-size: 10px; color: palette(window-text); padding: 2px 10px;")
         hint_lbl.setWordWrap(True)
@@ -2947,6 +3032,7 @@ class WhatsInMySkyDialog(QDialog):
         act_score      = QAction("⭐  Weekly Observability Score…", self)
         act_simbad     = QAction("🔭  SIMBAD Details…", self)
         act_planets    = QAction("🪐  Planet Separations…", self)
+        act_finder     = QAction("🔍  Finder Chart…", self)
         act_aladin     = QAction("🗺   Open in Aladin…", self)
         act_astrobin   = QAction("🖼   Search AstroBin…", self)
         act_yearly     = QAction("📅  Full Year Analysis…", self)
@@ -2958,6 +3044,7 @@ class WhatsInMySkyDialog(QDialog):
         menu.addSeparator()
         menu.addAction(act_simbad)
         menu.addAction(act_planets)
+        menu.addAction(act_finder)
         menu.addSeparator()
         menu.addAction(act_aladin)
         menu.addAction(act_astrobin)
@@ -2966,11 +3053,32 @@ class WhatsInMySkyDialog(QDialog):
         act_score.triggered.connect(lambda: self._open_score_dialog(item))
         act_simbad.triggered.connect(lambda: self._open_visibility_dialog(item, tab=2))
         act_planets.triggered.connect(lambda: self._open_visibility_dialog(item, tab=3))
+        act_finder.triggered.connect(lambda: self._open_finder_chart_for(item))
         act_aladin.triggered.connect(lambda: self._open_aladin_for(item))
         act_astrobin.triggered.connect(lambda: self.on_row_double_click(item, 0))
-        act_yearly.triggered.connect(lambda: self._open_yearly_analysis(item)) 
+        act_yearly.triggered.connect(lambda: self._open_yearly_analysis(item))
 
         menu.exec(self.tree.viewport().mapToGlobal(pos))
+
+    def _open_finder_chart_for(self, item):
+            data = self._item_data(item)
+            if data is None:
+                QMessageBox.warning(self, "WIMS", "Could not parse RA/Dec for this object.")
+                return
+            try:
+                from setiastro.saspro.finder_chart import FinderChartFromCoordDialog
+            except ImportError as e:
+                QMessageBox.warning(self, "Finder Chart",
+                    f"Finder chart module not available:\n{e}")
+                return
+            dlg = FinderChartFromCoordDialog(
+                name=data["name"],
+                ra_deg=data["ra"],
+                dec_deg=data["dec"],
+                settings=self.settings,
+                parent=self,
+            )
+            dlg.show()
 
     def _open_yearly_analysis(self, item):
         if not self._observer:
@@ -3077,6 +3185,8 @@ class WhatsInMySkyDialog(QDialog):
         self.min_altitude_entry.setText(
             str(cast(self.settings.value("min_altitude", 0.0), float, 0.0)))
         self.object_limit = cast(self.settings.value("object_limit", 100), int, 100)
+        if self.settings.value("wims/sort_by_score", False, type=bool):
+            self.sort_score_rb.setChecked(True)
 
     def _save_settings(self, lat, lon, date, time, tz, min_alt):
         for k, v in [("latitude", lat), ("longitude", lon), ("date", date),
@@ -3113,6 +3223,7 @@ class WhatsInMySkyDialog(QDialog):
         else:
             self.update_status("Inputs look consistent.")
 
+        self.settings.setValue("wims/sort_by_score", self.sort_score_rb.isChecked())
         self._save_settings(latitude, longitude, date_str, time_str, tz_str, min_alt)
 
         # Store observer context for visibility dialogs
@@ -3129,7 +3240,8 @@ class WhatsInMySkyDialog(QDialog):
             latitude, longitude, date_str, time_str, tz_str,
             min_alt, catalogs, self.object_limit,
             horizon_points=self._horizon_points,
-            type_filters=type_filters)   
+            type_filters=type_filters,
+            sort_by_score=self.sort_score_rb.isChecked()) 
         self.catalog_file = self.calc_thread.catalog_file
         self.calc_thread.calculation_complete.connect(self.on_calculation_complete)
         self.calc_thread.lunar_phase_calculated.connect(self.update_lunar_phase)
