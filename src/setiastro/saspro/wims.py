@@ -1109,6 +1109,10 @@ class CalculationThread(QThread):
 
     def run(self):
         try:
+            from astropy.utils import iers
+            iers.conf.auto_download = False
+            iers.conf.auto_max_age = None
+
             local_tz = pytz.timezone(self.timezone)
             naive    = datetime.strptime(f"{self.date} {self.time}", "%Y-%m-%d %H:%M")
             local_dt = local_tz.localize(naive)
@@ -1197,47 +1201,43 @@ class CalculationThread(QThread):
                                                    df["Minutes to Transit"])
 
             # ── Score each target (always computed, needed for sort) ───────
-            moon  = get_body("moon", t, loc)
-            sun   = get_sun(t)
-            elong = moon.separation(sun).deg
-            phase_pct = int(round((1 - np.cos(np.radians(elong))) / 2 * 100))
-
-            # ── Pre-compute constants shared across ALL objects ────────────
-            n       = 144
-            t_start = Time(local_tz.localize(
-                datetime(int(self.date[:4]), int(self.date[5:7]),
-                         int(self.date[8:10]), 12, 0)))
-            score_times  = t_start + np.linspace(0, 24, n) * u.hour
-            score_frame  = AltAz(obstime=score_times, location=loc)
-            sun_alts_pre = get_sun(score_times).transform_to(score_frame).alt.deg
-
+            # ── Pre-compute moon position and phase (shared by both paths) ──
+            # ── Moon position and phase (shared by both scoring paths) ────
             moon_body  = get_body("moon", t, loc)
             sun_body   = get_sun(t)
             elong      = moon_body.separation(sun_body).deg
             phase_pct  = int(round((1 - np.cos(np.radians(elong))) / 2 * 100))
-
-            # ── Score each target using pre-computed arrays ────────────────
-            moon_coord  = SkyCoord(ra=moon_body.ra.deg * u.deg,
-                                   dec=moon_body.dec.deg * u.deg)
-            all_obj     = SkyCoord(ra=df["RA"].to_numpy() * u.deg,
-                                   dec=df["Dec"].to_numpy() * u.deg)
-            moon_seps   = all_obj.separation(moon_coord).deg  # vectorized, one call
-
-            scores = []
-            for i, (_, row) in enumerate(df.iterrows()):
-                s = _score_target_precomputed(
-                    float(row["RA"]), float(row["Dec"]),
-                    sun_alts_pre, score_times, loc,
-                    float(moon_seps[i]), phase_pct,
-                    horizon_points=self.horizon_points,
-                )
-                scores.append(s)
-            df["Score"] = scores
+            moon_coord = SkyCoord(ra=moon_body.ra.deg * u.deg,
+                                  dec=moon_body.dec.deg * u.deg)
 
             if self.sort_by_score:
+                # Score ALL visible objects, then take top N
+                all_obj   = SkyCoord(ra=df["RA"].to_numpy() * u.deg,
+                                     dec=df["Dec"].to_numpy() * u.deg)
+                moon_seps = all_obj.separation(moon_coord).deg
+                df["Score"] = _score_targets_batch(
+                    df["RA"].to_numpy(), df["Dec"].to_numpy(),
+                    self.latitude, self.longitude,
+                    self.date, self.timezone,
+                    moon_seps, phase_pct,
+                    horizon_points=self.horizon_points,
+                )
                 df = df.nlargest(self.object_limit, "Score")
             else:
-                df = df.nsmallest(self.object_limit, "Minutes to Transit")           
+                # Take top N by transit first, then score only those
+                df = df.nsmallest(self.object_limit, "Minutes to Transit")
+                df = df.reset_index(drop=True)
+                all_obj_trimmed   = SkyCoord(ra=df["RA"].to_numpy() * u.deg,
+                                             dec=df["Dec"].to_numpy() * u.deg)
+                moon_seps_trimmed = all_obj_trimmed.separation(moon_coord).deg
+                df["Score"] = _score_targets_batch(
+                    df["RA"].to_numpy(), df["Dec"].to_numpy(),
+                    self.latitude, self.longitude,
+                    self.date, self.timezone,
+                    moon_seps_trimmed, phase_pct,
+                    horizon_points=self.horizon_points,
+                )
+
             self.calculation_complete.emit(df, "Calculation complete.")
         except Exception as e:
             self.calculation_complete.emit(pd.DataFrame(), f"Error: {e!s}")
@@ -1470,6 +1470,89 @@ def _compute_alt_curve(ra_deg, dec_deg, lat, lon, date_str, tz_name):
     local_hours = 12.0 + np.linspace(0, 24, n)
 
     return times, local_hours, obj_alts, sun_alts, moon_alts, loc
+
+def _score_targets_batch(ra_arr, dec_arr, lat, lon, date_str, tz_name,
+                          moon_seps, phase_pct, horizon_points=None):
+    """
+    Score all objects using chunked ThreadPoolExecutor.
+    Each thread handles a chunk of objects sequentially, reducing overhead
+    and keeping threads busy long enough for real parallelism.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    N = len(ra_arr)
+    scores = np.zeros(N, dtype=float)
+
+    max_workers = max(4, min((os.cpu_count() or 8) // 2, N))
+    # Chunk size: divide evenly across workers, minimum 10 per chunk
+    chunk_size  = max(10, (N + max_workers - 1) // max_workers)
+    chunks      = [(i, min(i + chunk_size, N)) for i in range(0, N, chunk_size)]
+
+    def _score_chunk(start, end):
+        """Score a slice of objects — builds its own astropy state, no sharing."""
+        try:
+            import pytz as _pytz
+            from astropy import units as _u
+            from astropy.coordinates import (SkyCoord as _SC, EarthLocation as _EL,
+                                             AltAz as _AltAz, get_sun as _get_sun)
+            from astropy.time import Time as _Time
+            from datetime import datetime as _dt
+
+            local_tz = _pytz.timezone(tz_name)
+            naive    = _dt.strptime(date_str, "%Y-%m-%d")
+            t_start  = _Time(local_tz.localize(
+                _dt(naive.year, naive.month, naive.day, 12, 0)))
+            loc      = _EL(lat=lat * _u.deg, lon=lon * _u.deg, height=0 * _u.m)
+
+            n        = 144
+            times    = t_start + np.linspace(0, 24, n) * _u.hour
+            frame    = _AltAz(obstime=times, location=loc)
+            sun_alts = _get_sun(times).transform_to(frame).alt.deg
+            astro_night = sun_alts < -18
+            total_astro = float(np.sum(astro_night))
+
+            chunk_scores = np.zeros(end - start, dtype=float)
+            for j, i in enumerate(range(start, end)):
+                if total_astro == 0:
+                    chunk_scores[j] = 0.0
+                    continue
+                obj_coord = _SC(ra=float(ra_arr[i]) * _u.deg,
+                                dec=float(dec_arr[i]) * _u.deg)
+                altaz    = obj_coord.transform_to(frame)
+                obj_alts = altaz.alt.deg
+
+                if horizon_points:
+                    obj_az = altaz.az.deg
+                    h_lim  = np.array([
+                        _horizon_min_alt(float(az), horizon_points)
+                        for az in obj_az], dtype=float)
+                    above_quality = obj_alts >= np.maximum(h_lim, 30.0)
+                    above_window  = obj_alts >= np.maximum(h_lim, 20.0)
+                else:
+                    above_quality = obj_alts >= 30.0
+                    above_window  = obj_alts >= 20.0
+
+                alt_score    = float(np.sum(astro_night & above_quality)) / total_astro
+                window_score = float(np.sum(astro_night & above_window))  / total_astro
+                sep_norm     = min(1.0, float(moon_seps[i]) / 90.0)
+                phase_norm   = 1.0 - (phase_pct / 100.0)
+                moon_score   = sep_norm * (0.5 + 0.5 * phase_norm)
+                chunk_scores[j] = round(
+                    (alt_score * 0.40 + moon_score * 0.35 + window_score * 0.25) * 100, 1)
+        except Exception:
+            pass
+        return start, chunk_scores
+
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futs = [ex.submit(_score_chunk, s, e) for s, e in chunks]
+        for fut in as_completed(futs):
+            try:
+                start, chunk_scores = fut.result()
+                scores[start:start + len(chunk_scores)] = chunk_scores
+            except Exception:
+                pass
+
+    return scores
 
 def _score_target(ra_deg, dec_deg, lat, lon, date_str, tz_name,
                   moon_sep_deg, phase_pct, horizon_points=None):
@@ -2009,10 +2092,42 @@ class SortableTreeWidgetItem(QTreeWidgetItem):
     def __lt__(self, other):
         col = self.treeWidget().sortColumn()
         if col in [3, 4, 5, 7, 10, 12]:
-            try:
-                return float(self.text(col)) < float(other.text(col))
-            except ValueError:
-                pass
+            def _to_float(txt):
+                try:
+                    return (0, float(txt))
+                except (ValueError, TypeError):
+                    return (1, 0.0)
+
+            a = _to_float(self.text(col))
+            b = _to_float(other.text(col))
+            return a < b
+
+        if col == 11:   # Size column
+            def _size_key(txt):
+                import re
+                txt = txt.strip()
+                if not txt:
+                    return (1, 0.0)
+                # Abell clusters: "Num Galaxies: 51" → sort by galaxy count
+                m = re.search(r'Num\s+Galaxies:\s*(\d+)', txt, re.IGNORECASE)
+                if m:
+                    return (0, float(m.group(1)))
+                # Strip any trailing unit text (arc min, arcmin, arc sec, etc.)
+                txt = re.sub(r'\s*(arc\s*min|arc\s*sec|arcmin|arcsec|"|\').*$',
+                             '', txt, flags=re.IGNORECASE).strip()
+                if not txt:
+                    return (1, 0.0)
+                # Match "N x M" or "NxM" with optional spaces and decimals
+                m = re.match(r'([\d.]+)\s*x\s*([\d.]+)', txt, re.IGNORECASE)
+                if m:
+                    return (0, max(float(m.group(1)), float(m.group(2))))
+                # Plain number
+                try:
+                    return (0, float(txt))
+                except ValueError:
+                    return (1, 0.0)
+            return _size_key(self.text(col)) < _size_key(other.text(col))
+
         return self.text(col) < other.text(col)
 
 
@@ -2825,7 +2940,7 @@ class WhatsInMySkyDialog(QDialog):
         sort_lbl = QLabel("Generate List By:")
         sort_lbl.setStyleSheet("font-size: 11px;")
         self.sort_transit_rb = QRadioButton("Closest to Transit")
-        self.sort_score_rb   = QRadioButton("Best Nightly Score (May Take Longer)")
+        self.sort_score_rb   = QRadioButton("Best Nightly Score (Tip: Filter catalogs/types recommended — can be slow)")
         self.sort_transit_rb.setChecked(True)
         self.sort_transit_rb.setStyleSheet("font-size: 11px;")
         self.sort_score_rb.setStyleSheet("font-size: 11px;")
