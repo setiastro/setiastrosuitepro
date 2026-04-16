@@ -3465,7 +3465,9 @@ class StarRegistrationThread(QThread):
             # IMPORTANT: refinement reads ORIGINAL frame (no intermediate saves)
             current_path = ok
 
-            current_transform = self.alignment_matrices.get(ok, IDENTITY_2x3)
+            current_transform = self.alignment_matrices.get(ok)
+            if current_transform is None:
+                current_transform = IDENTITY_2x3.copy()
 
             jobs.append((
                 current_path,
@@ -3503,6 +3505,15 @@ class StarRegistrationThread(QThread):
 
                     if err:
                         self.on_worker_error(err)
+                        # MARK as failed so finalize skips it
+                        k_orig_for_err = rev_current_to_orig.get(
+                            os.path.normpath(returned_path), 
+                            os.path.normpath(returned_path)
+                        )
+                        # Only mark failed on pass 0 (first failure); don't overwrite a
+                        # previously good accumulated transform from an earlier pass.
+                        if pass_index == 0:
+                            self.alignment_matrices[k_orig_for_err] = None
                         self._increment_progress()
                         continue
 
@@ -3541,6 +3552,12 @@ class StarRegistrationThread(QThread):
                     fut_info.pop(fut, None)
                     if fut in pending:
                         pending.remove(fut)
+                    # Also mark timed-out frames as failed on pass 0
+                    if pass_index == 0:
+                        timed_out_orig = rev_current_to_orig.get(
+                            os.path.normpath(orig_path), os.path.normpath(orig_path)
+                        )
+                        self.alignment_matrices[timed_out_orig] = None
 
             pass_deltas, aligned_count = [], 0
             for orig in self.original_files:
@@ -3701,23 +3718,30 @@ class StarRegistrationThread(QThread):
         jobs = []
         for orig_path in self.original_files:
             k = os.path.normpath(orig_path)
-            A = np.asarray(self.alignment_matrices.get(k, IDENTITY_2x3), dtype=np.float64)
+            A = self.alignment_matrices.get(k, IDENTITY_2x3)
+
+            # Skip frames that failed alignment entirely
+            if A is None:
+                self.progress_update.emit(
+                    f"⏭️ Skipping {os.path.basename(orig_path)} — alignment failed, not writing output."
+                )
+                self._increment_progress()
+                continue
 
             jobs.append((
                 orig_path,
                 self.align_model,
                 (Href, Wref),
                 ref_npy,
-                A,
+                np.asarray(A, np.float64),
                 float(self.h_reproj),
                 self.output_directory,
                 float(self.det_sigma),
                 int(self.minarea),
                 int(self.limit_stars) if self.limit_stars is not None else None,
-                float(getattr(self, "min_fwhm", 1.2)),         # ← new
-                float(getattr(self, "max_ellipticity", 0.6)),  # ← new
+                float(getattr(self, "min_fwhm", 1.2)),
+                float(getattr(self, "max_ellipticity", 0.6)),
             ))
-
         self.progress_update.emit(f"📝 Finalizing aligned outputs with {finalize_workers} processes…")
 
         ok = 0

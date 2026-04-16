@@ -144,6 +144,33 @@ from setiastro.saspro.mfdeconv import (
     ELLIPSE_SCALE   as _SM_DEF_ES,
     VARMAP_SAMPLE_STRIDE as _VM_DEF_STRIDE,
 )
+import hashlib
+
+def _norm_out_name(fp: str, norm_dir: str) -> str:
+    base = os.path.basename(fp)
+    if base.endswith("_n.fit"):
+        base = base[:-6] + ".fit"
+    if base.lower().endswith(".fits"):
+        stem = base[:-5]
+    elif base.lower().endswith(".fit"):
+        stem = base[:-4]
+    else:
+        stem = base
+    src_dir = os.path.dirname(os.path.abspath(fp))
+    dir_hash = hashlib.md5(src_dir.encode()).hexdigest()[:6]
+    return os.path.join(norm_dir, f"{dir_hash}_{stem}_n.fit")
+
+def _cal_out_name(light_file: str, calibrated_dir: str) -> str:
+    """Collision-free calibrated output filename using source-dir hash prefix."""
+    base = os.path.basename(light_file)
+    root, ext = os.path.splitext(base)
+    # Handle double extensions like .fits.gz or bare .fits/.fit
+    if root.lower().endswith(".fits") or root.lower().endswith(".fit"):
+        root2, ext2 = os.path.splitext(root)
+        root = root2
+    src_dir = os.path.dirname(os.path.abspath(light_file))
+    dir_hash = hashlib.md5(src_dir.encode()).hexdigest()[:6]
+    return os.path.join(calibrated_dir, f"{dir_hash}_{root}_c.fit")
 
 _WINDOWS_RESERVED = {
     "CON","PRN","AUX","NUL",
@@ -15273,28 +15300,29 @@ class StackingSuiteDialog(QDialog):
         paths = []
         for i in range(self.light_tree.topLevelItemCount()):
             filter_item = self.light_tree.topLevelItem(i)
-            filter_name = filter_item.text(0)
-
             for j in range(filter_item.childCount()):
                 exposure_item = filter_item.child(j)
-                exposure_text = exposure_item.text(0)
-
                 for k in range(exposure_item.childCount()):
                     leaf = exposure_item.child(k)
-                    filename = leaf.text(0)
-                    meta = leaf.text(1) or ""
-
-                    # Session from metadata (matches how you look it up later)
-                    m = re.search(r"Session: ([^|]+)", meta)
-                    session_name = m.group(1).strip() if m else "Default"
-
-                    composite_key = (f"{filter_name} - {exposure_text}", session_name)
-                    file_list = self.light_files.get(composite_key, [])
-                    light_path = next((p for p in file_list if os.path.basename(p) == filename), None)
+                    # Full path stored at ingest time — collision-safe
+                    light_path = leaf.data(0, Qt.ItemDataRole.UserRole)
+                    if not light_path:
+                        # Legacy fallback: basename match (may collide with duplicate names)
+                        filename     = leaf.text(0)
+                        meta         = leaf.text(1) or ""
+                        filter_name  = filter_item.text(0)
+                        exposure_text = exposure_item.text(0)
+                        m            = re.search(r"Session: ([^|]+)", meta)
+                        session_name = m.group(1).strip() if m else "Default"
+                        composite_key = (f"{filter_name} - {exposure_text}", session_name)
+                        file_list    = self.light_files.get(composite_key, [])
+                        light_path   = next(
+                            (p for p in file_list if os.path.basename(p) == filename), None
+                        )
                     if light_path:
                         paths.append(light_path)
-        # unique, preserves order
-        return list(dict.fromkeys(paths))
+        # No dedup — every leaf is a distinct file, even if basenames collide
+        return paths
 
     def _apply_satellite_removal_to_calibrated_light(self, light_data, *, is_mono: bool):
         """
@@ -15583,19 +15611,22 @@ class StackingSuiteDialog(QDialog):
  
                 for k in range(exposure_item.childCount()):
                     leaf     = exposure_item.child(k)
-                    filename = leaf.text(0)
-                    meta     = leaf.text(1)
- 
-                    session_name = "Default"
-                    m = re.search(r"Session: ([^|]+)", meta)
-                    if m:
-                        session_name = m.group(1).strip()
- 
-                    composite_key   = (f"{filter_name} - {exposure_text}", session_name)
-                    light_file_list = self.light_files.get(composite_key, [])
-                    light_file = next(
-                        (f for f in light_file_list if os.path.basename(f) == filename), None
-                    )
+                    meta         = leaf.text(1)
+                    # Full path stored at ingest time — collision-safe across duplicate basenames
+                    light_file   = leaf.data(0, Qt.ItemDataRole.UserRole)
+                    session_name = leaf.data(0, Qt.ItemDataRole.UserRole + 1) or "Default"
+
+                    # Fallback for legacy trees that predate UserRole storage
+                    if not light_file:
+                        filename        = leaf.text(0)
+                        m               = re.search(r"Session: ([^|]+)", meta)
+                        session_name    = m.group(1).strip() if m else "Default"
+                        composite_key   = (f"{filter_name} - {exposure_text}", session_name)
+                        light_file_list = self.light_files.get(composite_key, [])
+                        light_file      = next(
+                            (f for f in light_file_list if os.path.basename(f) == filename), None
+                        )
+
                     if not light_file or light_file not in leaf_paths:
                         continue
  
@@ -15928,12 +15959,7 @@ class StackingSuiteDialog(QDialog):
                     except Exception:
                         pass
  
-                    base  = os.path.basename(light_file)
-                    root, ext = os.path.splitext(base)
-                    if root.lower().endswith(".fits") or root.lower().endswith(".fit"):
-                        root2, ext2 = os.path.splitext(root)
-                        root, ext   = root2, ext2 + ext
-                    calibrated_filename = os.path.join(calibrated_dir, f"{root}_c.fit")
+                    calibrated_filename = _cal_out_name(light_file, calibrated_dir)
  
                     save_image(
                         img_array=light_data,
@@ -16097,12 +16123,7 @@ class StackingSuiteDialog(QDialog):
         except Exception:
             pass
  
-        base  = os.path.basename(light_file)
-        root, ext = os.path.splitext(base)
-        if root.lower().endswith(".fits") or root.lower().endswith(".fit"):
-            root2, ext2 = os.path.splitext(root)
-            root, ext = root2, ext2 + ext
-        calibrated_filename = os.path.join(calibrated_dir, f"{root}_c.fit")
+        calibrated_filename = _cal_out_name(light_file, calibrated_dir)
  
         save_image(
             img_array=light_data,
@@ -17862,16 +17883,7 @@ class StackingSuiteDialog(QDialog):
                                 scaled_hdrs.append(hdr)
                             else:
                                 # write out normalized FITS
-                                base = os.path.basename(fp)
-                                if base.endswith("_n.fit"):
-                                    base = base.replace("_n.fit", ".fit")
-                                if base.lower().endswith(".fits"):
-                                    out_name = base[:-5] + "_n.fit"
-                                elif base.lower().endswith(".fit"):
-                                    out_name = base[:-4] + "_n.fit"
-                                else:
-                                    out_name = base + "_n.fit"
-                                out_path = os.path.join(norm_dir, out_name)
+                                out_path = _norm_out_name(fp, norm_dir)
 
                                 try:
                                     if os.path.splitext(fp)[1].lower() in (".fits", ".fit", ".fz"):
@@ -17923,16 +17935,7 @@ class StackingSuiteDialog(QDialog):
 
                     for i, fp in enumerate(scaled_paths):
                         img_out = abe_stack[i]; hdr = scaled_hdrs[i]
-                        base = os.path.basename(fp)
-                        if base.endswith("_n.fit"):
-                            base = base.replace("_n.fit", ".fit")
-                        if base.lower().endswith(".fits"):
-                            out_name = base[:-5] + "_n.fit"
-                        elif base.lower().endswith(".fit"):
-                            out_name = base[:-4] + "_n.fit"
-                        else:
-                            out_name = base + "_n.fit"
-                        out_path = os.path.join(norm_dir, out_name)
+                        out_path = _norm_out_name(fp, norm_dir)
 
                         try:
                             orig_header = fits.getheader(fp, ext=0)
@@ -17960,20 +17963,7 @@ class StackingSuiteDialog(QDialog):
 
             # Update self.light_files to *_n.fit
             for group, file_list in self.light_files.items():
-                new_list = []
-                for old_path in file_list:
-                    base = os.path.basename(old_path)
-                    if base.endswith("_n.fit"):
-                        new_list.append(os.path.join(norm_dir, base))
-                    else:
-                        if base.lower().endswith(".fits"):
-                            n_name = base[:-5] + "_n.fit"
-                        elif base.lower().endswith(".fit"):
-                            n_name = base[:-4] + "_n.fit"
-                        else:
-                            n_name = base + "_n.fit"
-                        new_list.append(os.path.join(norm_dir, n_name))
-                self.light_files[group] = new_list
+                self.light_files[group] = [_norm_out_name(p, norm_dir) for p in file_list]
 
             self.update_status(self.tr("✅ Updated self.light_files to use debayered, normalized *_n.fit frames."))
 
