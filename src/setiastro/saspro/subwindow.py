@@ -2047,7 +2047,12 @@ class ImageSubWindow(QWidget):
             drag.setHotSpot(QPoint(16, 16))  # optional, but feels nicer
 
         drag.exec(Qt.DropAction.CopyAction)
-
+        try:
+            mw = self._find_main_window()
+            if mw is not None:
+                mw._pending_spawn_cursor_pos = QCursor.pos()
+        except Exception:
+            pass
 
 
 

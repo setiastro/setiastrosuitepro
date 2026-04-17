@@ -1326,7 +1326,15 @@ class AstroSuiteProMainWindow(
                     self._apply_view_state_to_view(view, st)
                 except Exception:
                     pass
-
+                try:
+                    drop_pos = getattr(self, "_pending_spawn_cursor_pos", None)
+                    if drop_pos is not None:
+                        mdi_pos = self.mdi.mapFromGlobal(drop_pos)
+                        sw.move(max(0, mdi_pos.x() - sw.width() // 2),
+                                max(0, mdi_pos.y() - 16))
+                    self._pending_spawn_cursor_pos = None
+                except Exception:
+                    pass
                 self.mdi.setActiveSubWindow(sw)
                 if hasattr(self, "_log"):
                     try:
@@ -9223,17 +9231,15 @@ class AstroSuiteProMainWindow(
         except Exception:
             pass
 
-        # -- 11) If this is the first window and it's an image, mimic "Cascade Views"
-        #try:
-        #    if first_window and not is_table:
-        #        # Prefer our helper (does cascade + auto-fit), else raw Qt cascade
-        #        if hasattr(self, "_cascade_views") and callable(self._cascade_views):
-        #            self._cascade_views()
-        #        else:
-        #            self.mdi.cascadeSubWindows()
-        #except Exception:
-        #    pass
-
+        try:
+            drop_pos = getattr(self, "_pending_spawn_cursor_pos", None)
+            if drop_pos is not None and sw is not None and force_new:
+                mdi_pos = self.mdi.mapFromGlobal(drop_pos)
+                sw.move(max(0, mdi_pos.x() - sw.width() // 2),
+                        max(0, mdi_pos.y() - 16))
+            self._pending_spawn_cursor_pos = None
+        except Exception:
+            pass
         return sw
 
 
@@ -9421,6 +9427,17 @@ class AstroSuiteProMainWindow(
         # 5) Spawn the subwindow *now* (don't rely on an external documentAdded handler)
         sw = self._spawn_subwindow_for(new_doc, force_new=True)
         print(f"  Spawned subwindow for duplicated document ID {id(new_doc)}")
+
+        try:
+            drop_pos = getattr(self, "_pending_spawn_cursor_pos", None)
+            if drop_pos is not None and sw is not None:
+                mdi_pos = self.mdi.mapFromGlobal(drop_pos)
+                sw.move(max(0, mdi_pos.x() - sw.width() // 2),
+                        max(0, mdi_pos.y() - 16))
+            self._pending_spawn_cursor_pos = None
+        except Exception:
+            pass
+
         if not sw:
             # Extremely defensive: try once more on the next tick, then give up
             def _retry_spawn():
