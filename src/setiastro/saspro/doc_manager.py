@@ -1860,6 +1860,58 @@ class DocManager(QObject):
                     pass
         self.previewRepaintRequested.connect(_do_preview_repaint)
 
+    def resolve_doc_from_drag(self, *, uid: str | None = None,
+                            doc_ptr: int | None = None,
+                            file_path: str = "") -> "ImageDocument | None":
+        """
+        Single canonical document resolver for DnD payloads.
+        Priority: UID → file_path → id() scan of _docs → subwindow scan (catches proxies/ROI docs).
+        """
+        # 1) UID
+        if uid:
+            d = self._by_uid.get(uid)
+            if d is not None:
+                return d
+
+        fp = (file_path or "").strip()
+
+        # 2) Scan registered docs
+        for doc in self._docs:
+            meta = getattr(doc, "metadata", {}) or {}
+            d_uid = getattr(doc, "uid", None)
+
+            if uid and d_uid == uid:
+                return doc
+
+            if fp and not uid:
+                d_path = (meta.get("file_path") or "").strip()
+                if d_path == fp:
+                    return doc
+
+            if doc_ptr is not None and id(doc) == doc_ptr:
+                return doc
+
+        # 3) Subwindow scan — catches _DocProxy and _RoiViewDocument which
+        #    are not registered in _docs but do live in subwindows
+        if doc_ptr is not None and self._mdi is not None:
+            try:
+                for sw in self._mdi.subWindowList():
+                    try:
+                        w = sw.widget()
+                    except RuntimeError:
+                        continue
+                    d = getattr(w, "document", None)
+                    if d is not None and id(d) == doc_ptr:
+                        return d
+                    # also check base_document in case proxy id doesn't match
+                    base = getattr(w, "base_document", None)
+                    if base is not None and id(base) == doc_ptr:
+                        return base
+            except Exception:
+                pass
+
+        return None
+
     def get_document_for_view(self, view):
         """
         Given an ImageSubWindow widget, return either:
@@ -1911,14 +1963,34 @@ class DocManager(QObject):
         try:
             x, y, w, h = map(int, roi)
             key = (id(base), id(view), (x, y, w, h))
+
+            # Trim stale entries where the view has been GC'd
+            dead = [k for k in list(self._roi_doc_cache)
+                    if k[1] not in {id(v) for v in self._live_views()}]
+            for k in dead:
+                self._roi_doc_cache.pop(k, None)
+
             roi_doc = self._roi_doc_cache.get(key)
             if roi_doc is None:
                 roi_doc = self._build_roi_document(base, (x, y, w, h))
                 self._roi_doc_cache[key] = roi_doc
             return roi_doc
         except Exception:
-            # If anything about ROI construction fails, fall back
             return base
+
+    def _live_views(self):
+        """Return ids of currently live view widgets."""
+        if self._mdi is None:
+            return []
+        views = []
+        try:
+            for sw in self._mdi.subWindowList():
+                w = sw.widget()
+                if w is not None:
+                    views.append(w)
+        except Exception:
+            pass
+        return views
 
     def _invalidate_roi_cache(self, parent_doc, roi_tuple):
         """Drop cached ROI docs that overlap an updated region of parent_doc."""

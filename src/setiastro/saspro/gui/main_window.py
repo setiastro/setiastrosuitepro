@@ -829,39 +829,37 @@ class AstroSuiteProMainWindow(
         self._schedule_undo_redo_label_refresh()
 
     def _promote_roi_preview_to_real_doc(self, st: dict, preview_doc) -> None:
-        """
-        Turn a ROI preview doc into a real ImageDocument with correct WCS,
-        using the preview's already-cropped pixels and roi_header.
-
-        preview_doc: the RoiViewDocument we dragged from.
-        """
         dm = self.doc_manager
 
-        # ---- 1) Get pixels from the preview doc ----
-
-        arr = getattr(preview_doc, "image", None)
-        if arr is None:
-            
+        # ---- 1) Get pixels — crop from base doc using ROI coords ----
+        roi = st.get("roi")
+        if not roi or len(roi) != 4:
             return
 
-        H, W = arr.shape[:2]
+        x, y, w, h = map(int, roi)
 
+        # preview_doc may be the base ImageDocument or a _RoiViewDocument.
+        # Get the full image either way and crop it ourselves.
+        base_img = getattr(preview_doc, "image", None)
+        if base_img is None:
+            return
 
-        roi = st.get("roi") or [0, 0, W, H]
+        arr = np.asarray(base_img)
 
-
-        if len(roi) != 4:
-
-            x = y = 0
-            w, h = W, H
+        # If it's already the right size (e.g. already a _RoiViewDocument),
+        # use it directly; otherwise crop from the full image.
+        if arr.shape[0] == h and arr.shape[1] == w:
+            crop = arr.copy()
         else:
-            x, y, w, h = map(int, roi)
+            # Clamp to image bounds
+            img_h, img_w = arr.shape[:2]
+            x = max(0, min(x, img_w - 1))
+            y = max(0, min(y, img_h - 1))
+            w = max(1, min(w, img_w - x))
+            h = max(1, min(h, img_h - y))
+            crop = arr[y:y+h, x:x+w].copy()
 
-
-        # NOTE: roi in the drag state is in *full-frame* coords; the preview is
-        # already cropped. Cropping again with (x, y) would be wrong and often OOB,
-        # so we just use the entire preview image as the final crop.
-        crop = arr.copy()
+        H, W = crop.shape[:2]
 
 
         # ---- 2) Build metadata from the preview, stripping preview/ROI flags ----
@@ -1055,277 +1053,63 @@ class AstroSuiteProMainWindow(
             pass
 
 
-
-
     def _on_mdi_viewstate_drop(self, st: dict, target_sw: object | None):
         dm = self.doc_manager
-        doc = None
 
-        if _DEBUG_DND_DUP:
-            import json
-            print("\n[DNDDBG:DROP_ENTER] raw st dict:")
-            try:
-                # st is already a dict here
-                for k in sorted(st.keys()):
-                    print(f"  {k}: {st.get(k)!r}")
-            except Exception as e:
-                print("[DNDDBG:DROP_ENTER] failed printing st:", e)
-
-            # sanity: show which fields are present
-            print("[DNDDBG:DROP_ENTER] has source_view_title?", "source_view_title" in st)
-
-        # Prefer *stable* identifiers over the proxy pointer
         uid     = st.get("doc_uid")
         doc_ptr = st.get("doc_ptr")
         fpath   = (st.get("file_path") or "").strip()
 
-
-        # ----------------------------------------
-        # 1) First try: look up by UID in DocManager.
-        #    This gives us the real ImageDocument,
-        #    not the dynamic _DocProxy tied to tabs.
-        # ----------------------------------------
-        if uid and hasattr(dm, "lookup_by_uid"):
-
-            try:
-                doc = dm.lookup_by_uid(uid)
-
-            except Exception as e:
-
-                doc = None
-        else:
-            if uid:
-                pass
-
-        # ----------------------------------------
-        # 2) Fallback: DocManager pointer-based helpers
-        #    (still better than going through proxies).
-        # ----------------------------------------
-        if doc is None and doc_ptr is not None:
-            if hasattr(dm, "get_document_by_ptr"):
-
-                try:
-                    doc = dm.get_document_by_ptr(doc_ptr)
-
-                except Exception as e:
-                    pass
-            else:
-                pass
-
-        if doc is None and doc_ptr is not None:
-            if hasattr(dm, "lookup_by_python_id"):
-
-                try:
-                    doc = dm.lookup_by_python_id(doc_ptr)
-
-                except Exception as e:
-                    pass
-            else:
-                pass
-
-        # ----------------------------------------
-        # 3) Last-ditch: scan subwindows. We *still*
-        #    try UID / file_path first here, and only
-        #    finally fall back to matching the proxy.
-        # ----------------------------------------
-        if doc is None:
-            
-            try:
-                for sw in self.mdi.subWindowList():
-                    w = sw.widget() if hasattr(sw, "widget") else None
-                    d = getattr(w, "document", None)
-                    if d is None:
-                        continue
-
-                    meta = getattr(d, "metadata", {}) or {}
-                    d_uid = getattr(d, "uid", None)
-                    d_path = (meta.get("file_path") or "").strip()
-
-
-                    # 3a) UID match on the underlying doc (if present)
-                    if uid and d_uid == uid:
-
-                        doc = d
-                        break
-
-                    # 3b) file_path match
-                    meta = getattr(d, "metadata", {}) or {}
-                    d_path = (meta.get("file_path") or "").strip()
-
-                    # DEBUG print is already there in your version:
-                    # print("  [VIEWSTATE_DROP] candidate doc:", d, "uid:", d_uid, "file_path:", d_path)
-
-                    # Only use file_path when there is NO doc_uid in the drag state.
-                    # If uid is present, we want to keep scanning for the ROI doc whose uid matches.
-                    if fpath and d_path == fpath and not uid:
-
-                        doc = d
-                        break
-
-                    # 3c) absolute last resort -> pointer to proxy
-                    if doc_ptr is not None and id(d) == doc_ptr:
-
-                        doc = d
-                        break
-            except Exception as e:
-                pass
+        doc = dm.resolve_doc_from_drag(uid=uid, doc_ptr=doc_ptr, file_path=fpath)
 
         if doc is None:
-            print("[Main] viewstate_drop: could NOT resolve document; aborting.")
-            print("[VIEWSTATE_DROP] EXIT (no doc)")
+            self._log("[viewstate-drop] could not resolve source document; aborting.")
             return
 
-        if _DEBUG_DND_DUP:
-            try:
-                dname = doc.display_name() if hasattr(doc, "display_name") else None
-            except Exception:
-                dname = None
-            try:
-                meta = getattr(doc, "metadata", {}) or {}
-            except Exception:
-                meta = {}
-            print("\n[DNDDBG:DOC_RESOLVED]")
-            print("  doc_obj:", doc, "type:", type(doc).__name__, "id:", id(doc))
-            print("  doc.uid:", getattr(doc, "uid", None))
-            print("  doc.display_name():", dname)
-            print("  meta.display_name:", meta.get("display_name"))
-            print("  meta.file_path:", meta.get("file_path"))
+        # --- ROI/preview metadata ---
+        pmeta       = getattr(doc, "metadata", {}) or {}
+        base_uid    = pmeta.get("base_doc_uid")
+        roi_base_doc = dm._by_uid.get(base_uid) if base_uid else None
 
-        # ----------------------------------------
-        # 4) Peek at metadata to see if this is a
-        #    preview-of-ROI situation.
-        #    NOTE: doc is now a *real* document, not
-        #    the _DocProxy, so this metadata is stable
-        #    and no longer depends on tabs.
-        # ----------------------------------------
-        pmeta        = getattr(doc, "metadata", {}) or {}
-        base_uid     = pmeta.get("base_doc_uid")
-        roi_base_doc = None
-
-
-        if base_uid and hasattr(dm, "lookup_by_uid"):
-
-            try:
-                roi_base_doc = dm.lookup_by_uid(base_uid)
-
-            except Exception as e:
-
-                roi_base_doc = None
-        elif base_uid:
-            pass
-
-        # ----------------------------------------
-        # 5) Decide behavior: new view vs copy transform
-        # ----------------------------------------
         force_new   = (target_sw is None)
         source_kind = st.get("source_kind")
         roi         = st.get("roi")
         is_preview  = (source_kind in ("preview", "roi-preview")) or bool(roi)
 
-
-
-        # If this looks like a *preview of an already-promoted ROI doc*,
-        # we don't want to re-promote. Instead, treat it as a normal
-        # ROI image: duplicate the ROI base doc and ignore ROI coords.
+        # Preview of an already-promoted ROI doc → treat as plain duplicate
         if is_preview and roi_base_doc is not None:
-            base_meta = getattr(roi_base_doc, "metadata", {}) or {}
-
-            if base_meta.get("is_roi_doc"):
-
-                # preview-of-ROI -> behave like a plain ROI image doc
+            if (getattr(roi_base_doc, "metadata", {}) or {}).get("is_roi_doc"):
                 doc = roi_base_doc
                 is_preview = False
                 roi = None
 
-        # ----------------------------------------
-        # 6) ROI promotion block (only for genuine
-        #    previews of the *full* base doc).
-        # ----------------------------------------
+        # ROI promotion: genuine preview of a full base doc
         if force_new and is_preview and roi and len(roi) == 4:
-
-            # If this doc is already a promoted ROI doc, do NOT re-promote it.
-            # (Catches the case where the preview doc itself carries the flag.)
-            pmeta = getattr(doc, "metadata", {}) or {}
-
             if not pmeta.get("is_roi_doc"):
                 try:
-                    x, y, w, h = map(int, roi)  # sanity / logging
-
                     self._promote_roi_preview_to_real_doc(st, doc)
-
                     return
                 except Exception as e:
-                    try:
-                        self._log(f"[viewstate-drop ROI] failed: {e}")
-                    except Exception:
-                        print("[Main] viewstate_drop: ROI promotion failed:", e)
-                    # fall through to default behavior
+                    self._log(f"[viewstate-drop ROI] promotion failed: {e}")
+                    # fall through to default duplicate behavior
 
-            else:
-                pass
-
-        # ----------------------------------------
-        # 7) Default behavior:
-        #    - Background drop (force_new=True) -> new
-        #      subwindow for *this* doc (full or ROI).
-        #    - Drop onto existing subwindow -> just
-        #      copy the view transform.
-        # ----------------------------------------
-        # ----------------------------------------
-        # 7) Default behavior:
-        #    - Background drop (force_new=True) -> new
-        #      *independent document* (full or ROI),
-        #      same as legacy _duplicate_view_from_state.
-        #    - Drop onto existing subwindow -> just
-        #      copy the view transform.
-        # ----------------------------------------
         if force_new:
-            base_doc = doc
-
-            # 1) Prefer the dragged view's title
-            base_name = (st.get("source_view_title") or "").strip()
-
-            # 2) Fallback to document display name
-            if not base_name:
-                try:
-                    base_name = base_doc.display_name() or "Untitled"
-                except Exception:
-                    base_name = "Untitled"
-
-            # 3) Clean it (strip glyphs / "Active View" / etc.)
-            try:
-                base_name = _strip_ui_decorations(base_name)
-            except Exception:
-                if base_name.startswith("Active View: "):
-                    base_name = base_name[len("Active View: "):]
-
-            if _DEBUG_DND_DUP:
-                print("\n[DNDDBG:NAME_COMPUTE]")
-                print("  st.source_view_title:", (st.get("source_view_title") or "").strip())
-                print("  base_doc.display_name():", (base_doc.display_name() if hasattr(base_doc,"display_name") else None))
-                print("  base_name(after fallbacks/strip):", base_name)
-                print("  new_name passed:", f"{base_name}_duplicate")
-
-            new_doc = self.docman.duplicate_document(
-                base_doc, new_name=f"{base_name}_duplicate"
+            # Build a clean base name from the drag payload
+            base_name = _strip_ui_decorations(
+                (st.get("source_view_title") or "").strip()
+                or (doc.display_name() if hasattr(doc, "display_name") else "Untitled")
             )
 
-            # 2) Let doc_manager's documentAdded handler create the subwindow.
-            #    We just wait for it to show up and then apply the view state.
-            from PyQt6.QtCore import QTimer
+            new_doc = self.docman.duplicate_document(
+                doc, new_name=f"{base_name}_duplicate"
+            )
 
             def _apply_when_ready():
                 sw = self._find_subwindow_for_doc(new_doc)
                 if not sw:
                     QTimer.singleShot(0, _apply_when_ready)
                     return
-
-                view = sw.widget()
-                try:
-                    # Reuse the same helper the legacy code used
-                    self._apply_view_state_to_view(view, st)
-                except Exception:
-                    pass
+                self._apply_view_state_to_view(sw.widget(), st)
                 try:
                     drop_pos = getattr(self, "_pending_spawn_cursor_pos", None)
                     if drop_pos is not None:
@@ -1336,18 +1120,13 @@ class AstroSuiteProMainWindow(
                 except Exception:
                     pass
                 self.mdi.setActiveSubWindow(sw)
-                if hasattr(self, "_log"):
-                    try:
-                        self._log(f"Duplicated as independent document -> '{new_doc.display_name()}'")
-                    except Exception:
-                        pass
+                self._log(f"Duplicated -> '{new_doc.display_name()}'")
 
             QTimer.singleShot(0, _apply_when_ready)
 
         else:
-            # Dropped onto an existing subwindow -> just copy view transform
+            # Drop onto existing subwindow → copy view transform only
             tgt = target_sw.widget() if hasattr(target_sw, "widget") else None
-
             if tgt and hasattr(tgt, "set_view_transform"):
                 tgt.set_view_transform(
                     float(st.get("scale", 1.0)),
@@ -1358,13 +1137,7 @@ class AstroSuiteProMainWindow(
             if tgt and st.get("autostretch") and hasattr(tgt, "set_autostretch"):
                 tgt.set_autostretch(True)
                 if hasattr(tgt, "set_autostretch_target"):
-                    tgt.set_autostretch_target(
-                        float(st.get("autostretch_target", 0.25))
-                    )
-
-
-
-
+                    tgt.set_autostretch_target(float(st.get("autostretch_target", 0.25)))
 
     def _open_from_explorer(self, doc):
         sw = self._find_subwindow_for_doc(doc)
@@ -1382,55 +1155,26 @@ class AstroSuiteProMainWindow(
             return
         self._spawn_subwindow_for(doc, force_new=False)
 
-
     def _on_doc_region_updated(self, doc, roi):
-        """
-        Called after DocManager applies an edit to a doc (full image or ROI).
-        Refresh the visible view for that doc; if a Preview tab is active, rebuild it.
-        """
         sw = self._find_subwindow_for_doc(doc)
         if not sw:
             return
         vw = sw.widget()
 
-        # If your ImageSubWindow exposes targeted preview refresh:
-        if roi is not None:
-            # Prefer a region-aware hook if present
-            if hasattr(vw, "refresh_preview_region"):
-                try:
-                    vw.refresh_preview_region(roi)  # expects (x,y,w,h)
-                    return
-                except Exception:
-                    pass
+        if hasattr(vw, "refresh_from_docman"):
+            vw.refresh_from_docman()
 
-        # If a preview tab is active, ask it to rebuild from the document
-        if hasattr(vw, "has_active_preview") and callable(vw.has_active_preview):
-            try:
-                if vw.has_active_preview():
-                    # common helper names; use whichever you have
-                    for m in ("rebuild_active_preview", "refresh_from_document", "update_pixmap_from_doc"):
-                        if hasattr(vw, m):
-                            getattr(vw, m)()
-                            return
-            except Exception:
-                pass
-
-        # Fallback: refresh the main image view
-        for m in ("refresh_from_document", "update_pixmap_from_doc"):
-            if hasattr(vw, m):
-                try:
-                    getattr(vw, m)()
-                    return
-                except Exception:
-                    pass
-
-        # Last resort: repaint
         try:
-            vw.update()
-            sw.update()
+            vw._refresh_local_undo_buttons()
         except Exception:
             pass
 
+        # Defer replay button update so headless history is populated first
+        try:
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(0, vw._update_replay_button)
+        except Exception:
+            pass
 
     def _alive(self, obj) -> bool:
         if obj is None:
@@ -7930,61 +7674,63 @@ class AstroSuiteProMainWindow(
                 return a
         return None
 
+    def _find_doc_by_id(self, doc_ptr):
+        if doc_ptr is None:
+            return None, None
+        for sw in self.mdi.subWindowList():
+            w = sw.widget()
+            d = getattr(w, "document", None)
+            if d is not None and id(d) == doc_ptr:
+                return d, sw
+        return None, None
+
     # in AstroSuiteProMainWindow (or wherever your drop handlers are)
     def _resolve_doc_from_payload(self, payload: dict, *, prefer_base: bool = True):
-        """
-        Resolve an ImageDocument from a DnD payload. Prefer the backing/base doc
-        (full image) over a preview/proxy when requested.
-        """
         dm = getattr(self, "docman", None) or getattr(self, "doc_manager", None)
         if dm is None:
             return None
 
-        # 1) Try by uid (prefer base)
-        base_uid = payload.get("base_doc_uid")
-        doc_uid  = payload.get("doc_uid")
-        if prefer_base and base_uid:
-            try:
-                d = dm.get_document_by_uid(base_uid)
+        # Try base_doc_uid first when prefer_base is set
+        if prefer_base:
+            base_uid = (payload.get("base_doc_uid") or "").strip()
+            if base_uid:
+                d = dm._by_uid.get(base_uid)
                 if d is not None:
                     return d
-            except Exception:
-                pass
+
+        # Then the doc's own uid
+        doc_uid = (payload.get("doc_uid") or "").strip()
         if doc_uid:
-            try:
-                d = dm.get_document_by_uid(doc_uid)
-                if d is not None:
-                    return d
-            except Exception:
-                pass
+            d = dm._by_uid.get(doc_uid)
+            if d is not None:
+                return d
 
-        # 2) Fallback: try file path match
-        fp = (payload.get("file_path") or "").strip()
-        if fp:
-            try:
-                for d in dm.all_documents():
-                    meta = getattr(d, "metadata", {}) or {}
-                    if (meta.get("file_path") or "").strip() == fp:
-                        return d
-            except Exception:
-                pass
+        # Normalize pointer across all drag types
+        raw_ptr = (
+            payload.get("mask_doc_ptr")
+            or payload.get("wcs_from_doc_ptr")
+            or payload.get("doc_ptr")
+        )
 
-        # 3) Last resort: pointer from same-process drag (may be proxy)
-        ptr = payload.get("wcs_from_doc_ptr")
-        if ptr and hasattr(dm, "get_document_by_ptr"):
-            try:
-                d = dm.get_document_by_ptr(ptr)
-                if d is not None:
-                    # If this is a preview/proxy, map it back to the base if possible
-                    if hasattr(dm, "get_base_document_for"):
-                        b = dm.get_base_document_for(d) or d
-                        return b
+        # Scan subwindows by id() — catches DocProxy objects which live in
+        # subwindows but are not registered in dm._docs or dm._by_uid
+        if raw_ptr is not None:
+            ptr = int(raw_ptr)
+            for sw in self.mdi.subWindowList():
+                try:
+                    w = sw.widget()
+                except RuntimeError:
+                    continue
+                d = getattr(w, "document", None)
+                if d is not None and id(d) == ptr:
                     return d
-            except Exception:
-                pass
+
+        # Final fallback through canonical resolver (file_path match)
+        fpath = (payload.get("file_path") or "").strip()
+        if fpath:
+            return dm.resolve_doc_from_drag(uid=None, doc_ptr=None, file_path=fpath)
 
         return None
-
 
     def _target_doc_from_subwindow(self, subwin) -> object | None:
         """
@@ -8668,121 +8414,58 @@ class AstroSuiteProMainWindow(
 
     # In AstroSuiteProMainWindow
     def _on_image_region_updated_global(self, doc, roi_tuple_or_none):
-        """
-        Fan-out: when DocManager pastes an edit (full or ROI),
-        refresh every view that shows `doc`. If the view is on a Preview tab,
-        refresh only if its ROI intersects the changed region.
-        """
         def _roi_intersects(a, b):
             ax, ay, aw, ah = map(int, a)
             bx, by, bw, bh = map(int, b)
             if aw <= 0 or ah <= 0 or bw <= 0 or bh <= 0:
                 return False
-            return not (ax + aw <= bx or bx + bw <= ax or ay + ah <= by or by + bh <= ay)
+            return not (ax+aw <= bx or bx+bw <= ax or ay+ah <= by or by+bh <= ay)
 
         for sw in self.mdi.subWindowList():
             view = getattr(sw, "widget", lambda: None)()
             if view is None:
                 continue
-
             base = getattr(view, "base_document", None) or getattr(view, "document", None)
             if base is not doc:
-                # Some views replace .document with a proxy; compare by identity if possible
-                # If your proxy holds a ._base or ._doc, you can also try to unwrap here.
                 continue
-
-            # If not on a Preview tab, just force a repaint.
             if not (hasattr(view, "has_active_preview") and view.has_active_preview()):
                 if hasattr(view, "refresh_from_docman"):
                     view.refresh_from_docman()
-                elif hasattr(view, "_render"):
-                    view._render(rebuild=True)
                 continue
-
-            # Preview tab active -> refresh only if the changed region overlaps our ROI
             try:
-                my_roi = view.current_preview_roi()  # (x,y,w,h)
+                my_roi = view.current_preview_roi()
             except Exception:
                 my_roi = None
-
             if my_roi is None or roi_tuple_or_none is None or _roi_intersects(my_roi, roi_tuple_or_none):
                 if hasattr(view, "refresh_from_docman"):
                     view.refresh_from_docman()
-                elif hasattr(view, "_render"):
-                    view._render(rebuild=True)
 
     def _hook_preview_awareness(self, view):
-        """
-        Make the main window react when the user switches to/from the Preview tab
-        or changes the selected ROI, so toolbars/undo/etc. reflect the ROI doc.
-        """
-        from PyQt6.QtCore import QObject
-
         def _on_any_preview_change(*_):
-            # Re-resolve active doc using DocManager's ROI logic and refresh UI
             try:
                 dm = getattr(self, "doc_manager", None) or getattr(self, "docman", None)
                 if dm and hasattr(dm, "get_document_for_view"):
-                    resolved = dm.get_document_for_view(view)  # ROI-aware
-                    # mark that resolved doc as active so _active_doc() reflects it
+                    resolved = dm.get_document_for_view(view)
                     if hasattr(dm, "set_active_document"):
                         dm.set_active_document(resolved)
             except Exception:
                 pass
-
             try: self._schedule_undo_redo_label_refresh()
-            except Exception as e:
-                import logging
-                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
+            except Exception: pass
             try: self._refresh_mask_action_states()
-            except Exception as e:
-                import logging
-                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
+            except Exception: pass
             try:
-                # any other UI you keep in sync (histogram, header viewer, etc.)
-                if hasattr(self, "_hdr_refresh_timer") and self._hdr_refresh_timer is not None:
+                if hasattr(self, "_hdr_refresh_timer"):
                     self._hdr_refresh_timer.start(0)
-            except Exception:
-                pass
+            except Exception: pass
 
-        # Prefer explicit signals if your ImageSubWindow exposes them
-        hooked = False
-        for sig_name in ("previewActivated", "previewDeactivated", "previewROIChanged", "previewTabChanged"):
-            if hasattr(view, sig_name):
-                try:
-                    getattr(view, sig_name).connect(_on_any_preview_change)
-                    hooked = True
-                except Exception:
-                    pass
-
-        # Generic fallback: watch the tab widget if present
+        # Connect to the tab widget directly — this is the only signal we need
         try:
-            tabs = getattr(view, "tabs", None)
-            if tabs and hasattr(tabs, "currentChanged"):
+            tabs = getattr(view, "_tabs", None)
+            if tabs is not None:
                 tabs.currentChanged.connect(_on_any_preview_change)
-                hooked = True
         except Exception:
             pass
-
-        # Ultra-fallback: install an event filter on the view to catch tab changes
-        if not hooked:
-            class _PreviewEventFilter(QObject):
-                def eventFilter(self, _obj, ev):
-                    et = getattr(ev, "type", lambda: None)()
-                    #  CurrentChanged on QTabBar/QTabWidget routes through various event types;
-                    #  repaint + layout + focus-in when user clicks is a good cheap proxy.
-                    if et in (12, 14, 24):  # Paint, LayoutRequest, FocusIn
-                        _on_any_preview_change()
-                    return False
-            try:
-                ef = _PreviewEventFilter(view)
-                view.installEventFilter(ef)
-                # keep a ref so it doesn't get GC'd
-                if not hasattr(view, "_preview_event_filters"):
-                    view._preview_event_filters = []
-                view._preview_event_filters.append(ef)
-            except Exception:
-                pass
 
     def _pretty_title(self, doc, *, linked: bool | None = None) -> str:
         md = (getattr(doc, "metadata", {}) or {})
@@ -9243,12 +8926,6 @@ class AstroSuiteProMainWindow(
         return sw
 
 
-
-    def _connect_view_signals(self, view):
-        # Make sure all views we create are wired to our handlers
-        view.aboutToClose.connect(self._on_view_about_to_close)
-        view.requestDuplicate.connect(self._duplicate_view_from_signal)
-
     def _on_view_about_to_close(self, doc, sender_view=None):
         """
         Invoked before teardown.
@@ -9471,60 +9148,6 @@ class AstroSuiteProMainWindow(
         print(f"  Activated subwindow for duplicated document ID {id(new_doc)}")
         if hasattr(self, "_log"):
             self._log(f"Duplicated as independent document -> '{new_doc.display_name()}'")
-
-
-
-
-    def _find_doc_by_id(self, doc_ptr):
-        if doc_ptr is None:
-            return None, None
-        for sw in self.mdi.subWindowList():
-            w = sw.widget()
-            d = getattr(w, "document", None)
-            if d is not None and id(d) == doc_ptr:
-                return d, sw
-        return None, None
-
-    def _handle_viewstate_drop(self, state: dict, target_sw):
-        """
-        Legacy handler:
-        - target_sw is None -> duplicate view on background
-        - target_sw is a QMdiSubWindow -> copy zoom/pan/stretch to it
-
-        NOTE: If the payload came from a Preview/ROI, we let the ROI-aware
-        handler (_on_mdi_viewstate_drop) take over for background drops.
-        """
-        is_preview = (state.get("source_kind") == "preview") or bool(state.get("roi"))
-
-        # Background drop of a preview -> ROI logic lives in _on_mdi_viewstate_drop
-        if target_sw is None and is_preview:
-            return
-
-        if target_sw is None:
-            self._duplicate_view_from_state(state)
-        else:
-            self._apply_view_state_to_sub(state, target_sw)
-
-    def _duplicate_view_from_state(self, state: dict):
-        doc, source_sw = self._find_doc_by_id(state.get("doc_ptr"))
-        if not doc:
-            return
-
-        orig_title = source_sw.windowTitle() if source_sw else doc.display_name()
-        new_doc = self.docman.duplicate_document(doc, new_name=f"{orig_title}_duplicate")
-
-        def _apply_when_ready():
-            sw = self._find_subwindow_for_doc(new_doc)
-            if not sw:
-                QTimer.singleShot(0, _apply_when_ready)
-                return
-            view = sw.widget()
-            self._apply_view_state_to_view(view, state)
-            self.mdi.setActiveSubWindow(sw)
-            if hasattr(self, "_log"):
-                self._log(f"Duplicated as independent document -> '{new_doc.display_name()}'")
-
-        QTimer.singleShot(0, _apply_when_ready)
 
     def _apply_view_state_to_view(self, view, state: dict):
         if not hasattr(view, "scroll"):

@@ -415,9 +415,9 @@ class ImageSubWindow(QWidget):
     autostretchChanged = pyqtSignal(bool)
     requestDuplicate = pyqtSignal(object)  # document
     layers_changed = pyqtSignal() 
-    autostretchProfileChanged = pyqtSignal(str)
+
     viewTitleChanged = pyqtSignal(object, str)
-    activeSourceChanged = pyqtSignal(object)  # None for full, or (x,y,w,h) for ROI
+
     viewTransformChanged = pyqtSignal(float, int, int)
     _registry = weakref.WeakValueDictionary()
     resized = pyqtSignal() 
@@ -459,7 +459,7 @@ class ImageSubWindow(QWidget):
         self._link_emit_timer.setInterval(100)  # tweak 120–250ms to taste
         self._link_emit_timer.timeout.connect(self._emit_view_transform_now)
         self._suppress_link_emit = False  # guard while applying remote updates        
-        self._link_squelch = False  # prevents feedback on linked apply
+
         self._pan_live = False
         self._linked_views = weakref.WeakSet()
         ImageSubWindow._registry[id(self)] = self
@@ -491,7 +491,7 @@ class ImageSubWindow(QWidget):
 
         # Keep mask visuals in sync when doc changes
         self.document.changed.connect(self._on_doc_mask_changed)
-
+        self.document.changed.connect(self._update_replay_button)
         # ─────────────────────────────────────────────────────────
         # Preview tabs state
         # ─────────────────────────────────────────────────────────
@@ -672,7 +672,7 @@ class ImageSubWindow(QWidget):
 
         # Mask/title adornments
         self._mask_dot_enabled = self._active_mask_array() is not None
-        self._active_title_prefix = False
+
         self._rebuild_title()
 
         # Track docs used by layer stack (if any)
@@ -1008,11 +1008,6 @@ class ImageSubWindow(QWidget):
         self.replayOnBaseRequested.emit(self)
 
 
-
-    def _on_pan_or_zoom_changed(self, *_):
-        # Debounce lightly if you want; for now, just emit
-        self._emit_view_transform()
-
     def set_view_transform(self, scale, hval, vval, from_link=False):
         self._suppress_link_emit = True
         try:
@@ -1078,23 +1073,21 @@ class ImageSubWindow(QWidget):
 
     def _drag_identity_fields(self) -> dict:
         st = {}
-
-        # existing identity (whatever you already do)
         try:
             doc = getattr(self, "document", None)
-            st["doc_ptr"] = id(doc) if doc is not None else None
-            st["doc_uid"] = getattr(doc, "uid", None)
-            meta = getattr(doc, "metadata", {}) or {}
+            # Use base_document id if available — document may be a _DocProxy
+            base = getattr(self, "base_document", None) or doc
+            st["doc_ptr"] = id(base) if base is not None else None
+            st["doc_uid"] = getattr(base, "uid", None) or getattr(doc, "uid", None)
+            meta = getattr(base, "metadata", {}) or {}
             st["file_path"] = (meta.get("file_path") or "").strip()
             st["base_doc_uid"] = meta.get("base_doc_uid") or st["doc_uid"]
             st["source_kind"] = meta.get("source_kind") or "full"
         except Exception:
             pass
 
-        # ✅ NEW: add the current user-visible view title
         st["source_view_title"] = self._current_view_title_for_drag()
 
-        # (optional) also include the subwindow title raw, for debugging/forensics
         try:
             sw = self._mdi_subwindow()
             st["source_sw_title_raw"] = (sw.windowTitle() if sw is not None else "")
@@ -1127,106 +1120,6 @@ class ImageSubWindow(QWidget):
             # changed connections handle redraw + button refresh.
         except Exception:
             pass
-
-
-    def refresh_preview_roi(self, roi_tuple=None):
-        """
-        Rebuild the active preview pixmap from the parent document’s data.
-        If roi_tuple is provided, it's the updated region (x,y,w,h).
-        """
-        try:
-            if not (hasattr(self, "has_active_preview") and self.has_active_preview()):
-                return
-
-            # Optional: sanity check that roi matches the current preview
-            if roi_tuple is not None:
-                cur = self.current_preview_roi()
-                if not (cur and tuple(map(int, cur)) == tuple(map(int, roi_tuple))):
-                    return  # different preview; no refresh needed
-
-            # Your own method that (re)generates the preview pixmap from the doc
-            if hasattr(self, "rebuild_preview_pixmap") and callable(self.rebuild_preview_pixmap):
-                self.rebuild_preview_pixmap()
-            elif hasattr(self, "_update_preview_layer") and callable(self._update_preview_layer):
-                self._update_preview_layer()
-            else:
-                # Fallback: repaint
-                self.update()
-        except Exception:
-            pass
-
-    def refresh_full(self):
-        """Full-image redraw hook for non-ROI updates."""
-        try:
-            if hasattr(self, "rebuild_image_pixmap") and callable(self.rebuild_image_pixmap):
-                self.rebuild_image_pixmap()
-            else:
-                self.update()
-        except Exception:
-            pass
-
-    def refresh_preview_region(self, roi):
-        """
-        roi: (x,y,w,h) in FULL image coords. Rebuild the active Preview tab’s pixmap
-        from self.document.image[y:y+h, x:x+w].
-        """
-        if not (hasattr(self, "has_active_preview") and self.has_active_preview()):
-            # No preview active → fall back to full refresh
-            if hasattr(self, "refresh_from_document"):
-                self.refresh_from_document()
-            else:
-                self.update()
-            return
-
-        try:
-            x, y, w, h = map(int, roi)
-            arr = self.document.image[y:y+h, x:x+w]
-            # Whatever your existing path is to update the preview tab from an ndarray:
-            # e.g., self._set_preview_from_array(arr) or self._update_preview_pixmap(arr)
-            if hasattr(self, "_set_preview_from_array"):
-                self._set_preview_from_array(arr)
-            elif hasattr(self, "update_preview_from_array"):
-                self.update_preview_from_array(arr)
-            else:
-                # Fallback: full refresh if you don’t expose a thin setter
-                if hasattr(self, "rebuild_active_preview"):
-                    self.rebuild_active_preview()
-                elif hasattr(self, "refresh_from_document"):
-                    self.refresh_from_document()
-            self.update()
-        except Exception:
-            # Safe fallback
-            if hasattr(self, "rebuild_active_preview"):
-                self.rebuild_active_preview()
-            elif hasattr(self, "refresh_from_document"):
-                self.refresh_from_document()
-            else:
-                self.update()
-
-
-    def _ensure_tabs(self):
-        if self._tabs:
-            return
-        self._tabs = QTabWidget(self)
-        self._tabs.setTabsClosable(True)
-        self._tabs.tabCloseRequested.connect(self._on_tab_close_requested)
-        self._tabs.currentChanged.connect(self._on_tab_changed)
-        self._tabs.setDocumentMode(True)
-        self._tabs.setMovable(True)
-
-        # Build the default "Full" tab: it contains your scroll+label
-        full_host = QWidget(self)
-        v = QVBoxLayout(full_host)
-        v.setContentsMargins(QMargins(0,0,0,0))
-        # Reuse your existing scroll/label as the content of the "Full" tab
-        self.scroll = QScrollArea(full_host)
-        self.scroll.setWidgetResizable(False)
-        self.label = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
-        self.scroll.setWidget(self.label)
-        v.addWidget(self.scroll)
-        self._full_tab_idx = self._tabs.addTab(full_host, self.tr("Full"))
-        self._full_host = full_host    
-        self._tabs.tabBar().setVisible(False)  # hidden until a first preview exists
 
     def _on_tab_close_requested(self, idx: int):
         # Prevent closing "Full"
@@ -2204,68 +2097,6 @@ class ImageSubWindow(QWidget):
         return title or "Untitled"
 
 
-    def _install_view_tab(self):
-        self._view_tab = QToolButton(self)
-        self._view_tab.setText(self.tr("View"))
-        self._view_tab.setToolTip(self.tr("Drag onto another window to copy zoom/pan.\n"
-                                  "Double-click to duplicate this view."))
-        self._view_tab.setCursor(Qt.CursorShape.OpenHandCursor)
-        self._view_tab.setAutoRaise(True)
-        self._view_tab.move(8, 8)     # pinned near top-left of the subwindow
-        self._view_tab.show()
-
-        # start drag on press
-        self._view_tab.mousePressEvent = self._viewtab_mouse_press
-        # duplicate on double-click
-        self._view_tab.mouseDoubleClickEvent = self._viewtab_mouse_double
-
-    def _viewtab_mouse_press(self, ev):
-        if ev.button() != Qt.MouseButton.LeftButton:
-            return QToolButton.mousePressEvent(self._view_tab, ev)
-
-        hbar = self.scroll.horizontalScrollBar()
-        vbar = self.scroll.verticalScrollBar()
-
-        # NEW: capture the *current view title* the user sees
-        view_title = self._current_view_display_name()
-
-        state = {
-            "doc_ptr": id(self.document),
-            "doc_uid": getattr(self.document, "uid", None),   # harmless even if None
-            "file_path": (getattr(self.document, "metadata", {}) or {}).get("file_path", ""),
-            "scale": float(self.scale),
-            "hval": int(hbar.value()),
-            "vval": int(vbar.value()),
-            "autostretch": bool(self.autostretch_enabled),
-            "autostretch_target": float(self.autostretch_target),
-
-            # NEW: this is what we will use for naming duplicates
-            "source_view_title": view_title,
-        }
-        state.update(self._drag_identity_fields())
-        if _DEBUG_DND_DUP:
-            _dnd_dbg_dump_state("DRAG_START:viewtab", state)
-        mime = QMimeData()
-        mime.setData(MIME_VIEWSTATE, QByteArray(json.dumps(state).encode("utf-8")))
-
-        drag = QDrag(self)
-        drag.setMimeData(mime)
-
-        pm = self.label.pixmap()
-        if pm:
-            drag.setPixmap(pm.scaled(
-                96, 96,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
-            ))
-            drag.setHotSpot(QCursor.pos() - self.mapToGlobal(self._view_tab.pos()))
-
-        drag.exec(Qt.DropAction.CopyAction)
-
-    def _viewtab_mouse_double(self, _ev):
-        # ask main window to duplicate this subwindow
-        self.requestDuplicate.emit(self)
-
     # accept view-state drops anywhere in the view
     def dragEnterEvent(self, ev):
         md = ev.mimeData()
@@ -2508,6 +2339,7 @@ class ImageSubWindow(QWidget):
         changed signal connections, so only refresh local buttons here.
         """
         QTimer.singleShot(0, self._refresh_local_undo_buttons)
+        QTimer.singleShot(0, self._update_replay_button)
 
     def _on_doc_region_updated(self, doc, roi_tuple_or_none):
         # Only react if it’s our base doc
