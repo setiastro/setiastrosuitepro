@@ -14172,7 +14172,34 @@ class StackingSuiteDialog(QDialog):
                     self.update_status(self.tr(
                         "ℹ️ This flat group: Auto-Select is OFF and no override set → No Calibration."
                     ))
+                # -----------------------------------------------------------------
+                # Reference shape + per-group chunk size
+                # -----------------------------------------------------------------
+                if (exposure_time, image_size, filter_name, session) in group_shapes:
+                    height, width, channels, chunk_height, chunk_width = group_shapes[
+                        (exposure_time, image_size, filter_name, session)
+                    ]
+                else:
+                    ref_data, _, _, _ = load_image(file_list[0])
+                    if ref_data is None:
+                        self.update_status(self.tr(
+                            f"❌ Failed to load reference {os.path.basename(file_list[0])}"
+                        ))
+                        continue
+                    height, width = ref_data.shape[:2]
+                    channels = 1 if ref_data.ndim == 2 else 3
+                    channels = max(1, channels)
+                    N_tmp = len(file_list)
+                    try:
+                        chunk_height, chunk_width = compute_safe_chunk(
+                            height, width, N_tmp, channels, DTYPE,
+                            pref_chunk_h, pref_chunk_w
+                        )
+                    except MemoryError:
+                        chunk_height, chunk_width = pref_chunk_h, pref_chunk_w
 
+                channels = max(1, channels)
+                N = len(file_list)
                 # Load the chosen dark if any
                 if selected_master_dark:
                     dark_data, _, _, _ = load_image(selected_master_dark)
@@ -14212,34 +14239,7 @@ class StackingSuiteDialog(QDialog):
                 else:
                     dark_data = None
 
-                # -----------------------------------------------------------------
-                # Reference shape + per-group chunk size
-                # -----------------------------------------------------------------
-                if (exposure_time, image_size, filter_name, session) in group_shapes:
-                    height, width, channels, chunk_height, chunk_width = group_shapes[
-                        (exposure_time, image_size, filter_name, session)
-                    ]
-                else:
-                    ref_data, _, _, _ = load_image(file_list[0])
-                    if ref_data is None:
-                        self.update_status(self.tr(
-                            f"❌ Failed to load reference {os.path.basename(file_list[0])}"
-                        ))
-                        continue
-                    height, width = ref_data.shape[:2]
-                    channels = 1 if ref_data.ndim == 2 else 3
-                    channels = max(1, channels)
-                    N_tmp = len(file_list)
-                    try:
-                        chunk_height, chunk_width = compute_safe_chunk(
-                            height, width, N_tmp, channels, DTYPE,
-                            pref_chunk_h, pref_chunk_w
-                        )
-                    except MemoryError:
-                        chunk_height, chunk_width = pref_chunk_h, pref_chunk_w
 
-                channels = max(1, channels)
-                N = len(file_list)
 
                 # -----------------------------------------------------------------
                 # Detect Bayer (only meaningful when channels==1)
