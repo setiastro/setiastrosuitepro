@@ -115,17 +115,26 @@ def _subproc_entry(q, target, args, kwargs):
 def _simbad_query_worker(center_ra_deg: float, center_dec_deg: float, radius_deg: float,
                         servers: list[str], hard_timeout_s: float, row_limit: int):
     # Import inside subprocess
-    from astroquery import conf as aq_conf
-    from astroquery.simbad import Simbad, conf as simbad_conf
+    from astroquery.simbad import Simbad
     import astropy.units as u
     from astropy.coordinates import SkyCoord
 
-    aq_conf.timeout = float(hard_timeout_s)
     try:
-        simbad_conf.timeout = float(hard_timeout_s)
-    except Exception:
+        from astroquery import conf as aq_conf
+        aq_conf.timeout = float(hard_timeout_s)
+    except ImportError:
         pass
 
+    try:
+        from astroquery.simbad import conf as simbad_conf
+        simbad_conf.timeout = float(hard_timeout_s)
+    except ImportError:
+        pass
+
+    try:
+        Simbad.TIMEOUT = float(hard_timeout_s)
+    except Exception:
+        pass
     Simbad.reset_votable_fields()
     # try “new” fields first, then fallback
     try:
@@ -1431,6 +1440,175 @@ def _nearest_dist_stats(star_list, sources):
         "max": float(d.max()),
     }
 
+class FullImageAnnotatedDialog(QDialog):
+    """
+    Shows the full image with target mask (red overlay) and background rect (gold)
+    annotated, suitable for export to PNG for white papers etc.
+    """
+    def __init__(self, parent, img_rgb8: np.ndarray, obj_mask: np.ndarray,
+                 bg_rect: QRect, target_opacity: float = 0.35):
+        super().__init__(parent)
+        self.setWindowTitle("Full Image — Target & Background Annotated")
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self.resize(900, 700)
+
+        self._img_rgb8 = img_rgb8
+        self._obj_mask = obj_mask
+        self._bg_rect = bg_rect
+        self._opacity = target_opacity
+
+        # build the annotated pixmap once
+        self._annotated_pix = self._build_pixmap()
+
+        lay = QVBoxLayout(self)
+
+        # controls row
+        ctrl = QHBoxLayout()
+
+        ctrl.addWidget(QLabel("Target opacity:"))
+        self._spn_opacity = QDoubleSpinBox()
+        self._spn_opacity.setRange(0.0, 1.0)
+        self._spn_opacity.setSingleStep(0.05)
+        self._spn_opacity.setDecimals(2)
+        self._spn_opacity.setValue(target_opacity)
+        self._spn_opacity.valueChanged.connect(self._on_opacity_changed)
+        ctrl.addWidget(self._spn_opacity)
+        ctrl.addStretch(1)
+
+        self._btn_save = QPushButton("Save Image…")
+        self._btn_save.clicked.connect(self._on_save)
+        ctrl.addWidget(self._btn_save)
+
+        self._btn_copy = QPushButton("Copy to Clipboard")
+        self._btn_copy.clicked.connect(self._on_copy)
+        ctrl.addWidget(self._btn_copy)
+
+        btn_close = QPushButton("Close")
+        btn_close.clicked.connect(self.close)
+        ctrl.addWidget(btn_close)
+        lay.addLayout(ctrl)
+
+        # scrollable image view
+        self._scene = QGraphicsScene(self)
+        self._view = QGraphicsView(self._scene, self)
+        self._view.setRenderHints(
+            QPainter.RenderHint.Antialiasing |
+            QPainter.RenderHint.SmoothPixmapTransform
+        )
+        self._view.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self._pix_item = self._scene.addPixmap(self._annotated_pix)
+        self._scene.setSceneRect(self._pix_item.boundingRect())
+        lay.addWidget(self._view, 1)
+
+        # zoom buttons
+        zoom_row = QHBoxLayout()
+        for label, factor in [("Zoom In", 1.25), ("Zoom Out", 0.8), ("Fit", None), ("1:1", 0.0)]:
+            b = QPushButton(label)
+            if factor is None:
+                b.clicked.connect(self._fit)
+            elif factor == 0.0:
+                b.clicked.connect(self._zoom_100)
+            else:
+                b.clicked.connect(lambda _=False, f=factor: self._view.scale(f, f))
+            zoom_row.addWidget(b)
+        zoom_row.addStretch(1)
+        lay.addLayout(zoom_row)
+
+        QTimer.singleShot(0, self._fit)
+
+    def _on_copy(self):
+        QApplication.clipboard().setPixmap(self._annotated_pix)
+        # brief visual feedback
+        self._btn_copy.setText("Copied!")
+        QTimer.singleShot(1500, self._reset_copy_btn)
+
+    def _reset_copy_btn(self):
+        try:
+            self._btn_copy.setText("Copy to Clipboard")
+        except RuntimeError:
+            pass        
+
+    def _build_pixmap(self) -> QPixmap:
+        img = self._img_rgb8.copy()
+        H, W = img.shape[:2]
+
+        # red overlay for target mask
+        if self._obj_mask is not None:
+            mask = np.asarray(self._obj_mask, dtype=bool)
+            if mask.shape == (H, W):
+                alpha = float(self._opacity)
+                base = img.astype(np.float32)
+                red = np.array([255.0, 60.0, 60.0], dtype=np.float32)
+                base[mask] = (1.0 - alpha) * base[mask] + alpha * red
+                img = np.ascontiguousarray(base.clip(0, 255).astype(np.uint8))
+
+        qimg = QImage(img.data, W, H, img.strides[0], QImage.Format.Format_RGB888)
+        pix = QPixmap.fromImage(qimg.copy())
+
+        # draw background rect in gold on top
+        if self._bg_rect is not None and not self._bg_rect.isNull():
+            painter = QPainter(pix)
+            pen = QPen(QColor(255, 215, 0), 3)
+            pen.setCosmetic(False)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(self._bg_rect)
+
+            # label
+            painter.setFont(painter.font())
+            painter.setPen(QColor(255, 215, 0))
+            painter.drawText(
+                self._bg_rect.left() + 4,
+                self._bg_rect.top() - 6,
+                "Background"
+            )
+
+            # draw target bounding box outline in red
+            if self._obj_mask is not None:
+                mask = np.asarray(self._obj_mask, dtype=bool)
+                if mask.any():
+                    ys, xs = np.nonzero(mask)
+                    x0, x1 = int(xs.min()), int(xs.max())
+                    y0, y1 = int(ys.min()), int(ys.max())
+                    pen2 = QPen(QColor(255, 80, 80), 2)
+                    pen2.setStyle(Qt.PenStyle.DashLine)
+                    painter.setPen(pen2)
+                    painter.drawRect(QRect(x0, y0, x1 - x0, y1 - y0))
+                    painter.setPen(QColor(255, 80, 80))
+                    painter.drawText(x0 + 4, y0 - 6, "Target")
+
+            painter.end()
+
+        return pix
+
+    def _on_opacity_changed(self, val):
+        self._opacity = float(val)
+        self._annotated_pix = self._build_pixmap()
+        self._pix_item.setPixmap(self._annotated_pix)
+        self._scene.setSceneRect(self._pix_item.boundingRect())
+
+    def _fit(self):
+        self._view.resetTransform()
+        self._view.fitInView(self._pix_item, Qt.AspectRatioMode.KeepAspectRatio)
+
+    def _zoom_100(self):
+        self._view.resetTransform()
+
+    def _on_save(self):
+        from PyQt6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Annotated Image", "magnitude_annotated.png",
+            "PNG Image (*.png);;TIFF Image (*.tiff *.tif);;All Files (*)"
+        )
+        if not path:
+            return
+        if self._annotated_pix.save(path):
+            QMessageBox.information(self, "Saved", f"Saved to:\n{path}")
+        else:
+            QMessageBox.warning(self, "Save Failed", f"Could not save to:\n{path}")
 
 class MagnitudeToolDialog(QDialog):
     """
@@ -1582,7 +1760,9 @@ class MagnitudeToolDialog(QDialog):
         self.roi_pad.valueChanged.connect(self._update_roi_preview)
         side.addWidget(QLabel("ROI padding (px)"))
         side.addWidget(self.roi_pad)
-
+        self.btn_full_view = QPushButton("Full Image View…")
+        self.btn_full_view.clicked.connect(self._open_full_image_view)
+        side.addWidget(self.btn_full_view)
         side.addStretch(1)
 
         v.addWidget(roi_box)
@@ -1602,6 +1782,33 @@ class MagnitudeToolDialog(QDialog):
         self.btn_close.clicked.connect(self.reject)
         row2.addWidget(self.btn_close)
         v.addLayout(row2)
+
+    def _open_full_image_view(self):
+        if self.object_mask is None:
+            QMessageBox.information(self, "No Target", "Pick a target region first.")
+            return
+
+        try:
+            disp = self._doc_image_rgb01_for_display()
+        except Exception as e:
+            QMessageBox.warning(self, "No Image", str(e))
+            return
+
+        img_rgb8 = np.ascontiguousarray(
+            (np.clip(disp, 0, 1) * 255).astype(np.uint8)
+        )
+
+        opacity = float(self.roi_opacity.value()) if hasattr(self, "roi_opacity") else 0.35
+
+        dlg = FullImageAnnotatedDialog(
+            parent=self,
+            img_rgb8=img_rgb8,
+            obj_mask=self.object_mask,
+            bg_rect=self.background_rect,
+            target_opacity=opacity,
+        )
+        dlg.show()
+        dlg.raise_()
 
     # --- external wiring (from your ROI tool) ---
     def clear_all(self):
