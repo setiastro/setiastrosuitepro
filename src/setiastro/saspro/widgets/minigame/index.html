@@ -1,53 +1,98 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Neon Invaders: Hyperdrive</title>
-    <link rel="stylesheet" href="style.css">
+<meta charset="UTF-8">
+<title>Neon Invaders: Hyperdrive Enhanced</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <div id="game-container">
-        <canvas id="gameCanvas"></canvas>
-        <div id="ui-layer">
-            <div id="hud" class="hidden">
-                <div class="hud-item">SCORE: <span id="score">0</span></div>
-                <div class="hud-item center">LEVEL: <span id="level">1</span></div>
-                <div class="hud-item right">HP: <div id="hp-bar"><div id="hp-fill"></div></div></div>
-            </div>
-            
-            <div id="main-menu" class="screen">
-                <h1 class="glow-text">NEON INVADERS<br><span class="subtitle">HYPERDRIVE</span></h1>
-                <div class="menu-options">
-                    <button id="btn-start" class="menu-btn">START GAME</button>
-                    <button id="btn-levels" class="menu-btn">SELECT LEVEL</button>
-                    <div id="controls-hint">ARROWS to Move • SPACE to Shoot</div>
-                </div>
-            </div>
+<div id="gc">
+<canvas id="gameCanvas"></canvas>
+<div id="ui">
 
-            <div id="level-select" class="screen hidden">
-                <h2>SELECT LEVEL</h2>
-                <div class="level-grid" id="level-grid">
-                    <!-- Populated by JS -->
-                </div>
-                <button id="btn-back" class="menu-btn">BACK</button>
-            </div>
+<!-- MAIN MENU -->
+<div id="main-menu" class="screen">
+  <h1 style="color:#0ff;text-shadow:0 0 25px #0ff,0 0 50px rgba(0,255,255,0.3)">NEON INVADERS</h1>
+  <div class="sub">HYPERDRIVE ENHANCED</div>
+  <button class="btn" id="btn-start">NEW GAME</button>
+  <button class="btn btn-pink" id="btn-levels">SELECT LEVEL</button>
+  <button class="btn btn-gold" id="btn-lb">LEADERBOARD</button>
+  <div id="controls-hint">
+    ARROWS: MOVE &nbsp;|&nbsp; SPACE: FIRE &nbsp;|&nbsp; ENTER: NOVA BOMB<br>
+    SECRET CODES: SOLVE · DARKS · FLATS · DRIZZLE · SETI
+  </div>
+</div>
 
-            <div id="game-over" class="screen hidden">
-                <h1 class="danger-text">GAME OVER</h1>
-                <p>FINAL SCORE: <span id="final-score">0</span></p>
-                <button id="btn-retry" class="menu-btn">RETRY</button>
-                <button id="btn-menu" class="menu-btn">MAIN MENU</button>
-            </div>
-            
-            <div id="victory" class="screen hidden">
-                <h1 class="victory-text">MISSION COMPLETE</h1>
-                <p>YOU SAVED THE GALAXY!</p>
-                <p>FINAL SCORE: <span id="victory-score">0</span></p>
-                <button id="btn-menu-win" class="menu-btn">MAIN MENU</button>
-            </div>
-        </div>
+<!-- LEVEL SELECT -->
+<div id="level-select" class="screen hidden">
+  <h1 style="font-size:1.7rem;color:#f0f;text-shadow:0 0 20px #f0f">SELECT LEVEL</h1>
+  <div class="lvl-grid" id="level-grid"></div>
+  <button class="btn btn-pink" id="btn-back">BACK</button>
+</div>
+
+<!-- LEADERBOARD -->
+<div id="leaderboard" class="screen hidden">
+  <h1 style="font-size:1.7rem;color:#fa0;text-shadow:0 0 20px #fa0">LEADERBOARD</h1>
+  <div id="lb-wrap">
+    <table><thead><tr><th>#</th><th>PILOT</th><th>SCORE</th><th>LEVEL</th></tr></thead>
+    <tbody id="lb-body"><tr><td colspan="4" style="text-align:center;color:#444;padding:20px">NO SCORES YET</td></tr></tbody></table>
+  </div>
+  <button class="btn btn-gold" id="btn-lb-back">BACK</button>
+</div>
+
+<!-- GAME OVER -->
+<div id="game-over" class="screen hidden">
+  <h1 style="color:#f00;text-shadow:0 0 25px #f00">GAME OVER</h1>
+  <div class="score-big">SCORE: <span id="final-score">0</span></div>
+  <div class="name-row">
+    <div class="name-lbl">ENTER PILOT NAME FOR LEADERBOARD</div>
+    <input class="name-inp" id="player-name" type="text" maxlength="12" placeholder="PILOT NAME">
+  </div>
+  <button class="btn btn-gold" id="btn-submit-score">SUBMIT SCORE</button>
+  <button class="btn btn-pink" id="btn-retry">RETRY</button>
+  <button class="btn btn-pink" id="btn-menu">MENU</button>
+</div>
+
+<!-- VICTORY -->
+<div id="victory" class="screen hidden">
+  <h1 style="color:#0f0;text-shadow:0 0 25px #0f0;font-size:1.7rem">SECTOR CLEARED</h1>
+  <div class="score-big">SCORE: <span id="victory-score">0</span></div>
+  <div class="name-row">
+    <div class="name-lbl">ENTER PILOT NAME</div>
+    <input class="name-inp" id="vplayer-name" type="text" maxlength="12" placeholder="PILOT NAME">
+  </div>
+  <button class="btn btn-gold" id="btn-submit-vscore">SUBMIT SCORE</button>
+  <button class="btn btn-green" id="btn-next-level">NEXT LEVEL</button>
+  <button class="btn btn-pink" id="btn-menu-win">MENU</button>
+</div>
+
+<!-- HUD -->
+<div id="hud" class="hidden">
+  <div class="hud-l">
+    <div style="color:#fa0">SCORE: <span id="score">0</span></div>
+    <div style="color:#0ff;font-size:.7rem;letter-spacing:.1rem">LEVEL <span id="level">1</span></div>
+  </div>
+  <div class="hud-c" id="wave-info"></div>
+<div class="hud-r">
+    <div id="hp-wrap">
+    <span style="font-size:.65rem;color:#f44;letter-spacing:.1rem">HP</span>
+    <div id="hp-bar"><div id="hp-fill"></div></div>
     </div>
-    <script src="game.js"></script>
+    <div id="shield-ind"></div>
+    <div id="bomb-ind" style="font-size:.65rem;color:#fa0;letter-spacing:.08rem;min-height:14px"></div>
+</div>
+</div>
+
+<div id="combo-wrap"><div id="combo-disp"></div></div>
+<div id="boss-bar-wrap">
+  <div id="boss-name"></div>
+  <div id="boss-bar-outer"><div id="boss-bar-fill" style="width:100%"></div></div>
+</div>
+
+</div><!-- /ui -->
+</div><!-- /gc -->
+<script src="game.js"></script>
 </body>
 </html>
