@@ -18775,6 +18775,10 @@ class StackingSuiteDialog(QDialog):
             if fast_mode:
                 # In fast mode we keep everything that didn't fail
                 return True
+            # Comet mode: large shifts are expected (comet moves), skip shift gating
+            comet_mode = bool(getattr(self, "comet_cb", None) and self.comet_cb.isChecked())
+            if comet_mode:
+                return True
             # Normal (multi-pass) behavior: keep small last-pass shifts
             return shift_map.get(k, 0.0) <= accept_thresh
 
