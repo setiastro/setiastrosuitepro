@@ -141,9 +141,9 @@ window.addEventListener('keydown',e=>{
   if(e.key&&e.key.length===1&&/[a-zA-Z]/.test(e.key)) Secrets.feed(e.key);
 });
 
-// ─── LEADERBOARD (Google Forms → Sheets) ─────────────────────────────────────
-const FORM_URL = 'https://docs.google.com/forms/d/e/1FAIpQLSdKgBF_N9iIOGu2r_ELauDsisY2lEnjuRkBO1mYJeTFFq_npw/formResponse';
-const SHEET_CSV = 'https://docs.google.com/spreadsheets/d/1STNSRodcsrYyYZiMUZP-6ptp_pKg-ZaHnAKJCBwoYos/gviz/tq?tqx=out:csv&sheet=Form_Responses1';
+// ─── LEADERBOARD (Supabase) ───────────────────────────────────────────────────
+const SB_URL = 'https://rtdsyiudcmfznyccbkta.supabase.co';
+const SB_KEY = 'sb_publishable_5Ajgy3eW-ddgNBFfXujYpw_2V23vx8Y';
 
 function lbSave(name, sc, lv) {
     // Save to localStorage as backup
@@ -152,17 +152,19 @@ function lbSave(name, sc, lv) {
     rows.sort((a, b) => b.score - a.score);
     localStorage.setItem('ni_lb_v2', JSON.stringify(rows.slice(0, 50)));
 
-    // Submit to Google Form
-    const body = new URLSearchParams();
-    body.append('entry.1429657089', name.toUpperCase().slice(0, 12));
-    body.append('entry.1781738654', String(sc));
-    body.append('entry.454021907',  String(lv));
-
-    fetch(FORM_URL, {
+    // Save to Supabase
+    fetch(`${SB_URL}/rest/v1/leaderboard`, {
         method: 'POST',
-        mode: 'no-cors',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: body.toString()
+        headers: {
+            'Content-Type': 'application/json',
+            'apikey': SB_KEY,
+            'Authorization': `Bearer ${SB_KEY}`
+        },
+        body: JSON.stringify({
+            name: name.toUpperCase().slice(0, 12),
+            score: sc,
+            level: lv
+        })
     }).catch(() => {});
 }
 
@@ -175,49 +177,44 @@ function lbRender() {
     const tbody = document.getElementById('lb-body');
     tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#fa0;padding:20px">LOADING...</td></tr>';
 
-    fetch(SHEET_CSV)
-        .then(r => r.text())
-        .then(csv => {
-            const lines = csv.trim().split('\n').slice(1); // skip header
-            if (!lines.length || !lines[0]) {
-                tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#444;padding:20px">NO SCORES YET — BE FIRST!</td></tr>';
-                return;
-            }
-            const rows = lines.map(line => {
-                // CSV columns: Timestamp, name, score, level
-                const cols = line.split(',').map(c => c.replace(/^"|"$/g, '').trim());
-                return { name: cols[1], score: Number(cols[2]), level: cols[3] };
-            }).filter(r => r.name && !isNaN(r.score));
-            rows.sort((a, b) => b.score - a.score);
-            const top20 = rows.slice(0, 20);
-            tbody.innerHTML = top20.map((r, i) =>
-                `<tr>
-                    <td style="color:#fa0">${i + 1}</td>
-                    <td style="color:#0ff">${r.name}</td>
-                    <td style="color:#0f0">${r.score.toLocaleString()}</td>
-                    <td style="color:#f0f">L${r.level}</td>
-                </tr>`
-            ).join('');
-        })
-        .catch(() => {
-            // Fall back to localStorage
-            const rows = lbGet();
-            if (!rows.length) {
-                tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#444;padding:20px">NO SCORES YET — BE FIRST!</td></tr>';
-                return;
-            }
-            tbody.innerHTML = rows.map((r, i) =>
-                `<tr>
-                    <td style="color:#fa0">${i + 1}</td>
-                    <td style="color:#0ff">${r.name}</td>
-                    <td style="color:#0f0">${r.score.toLocaleString()}</td>
-                    <td style="color:#f0f">L${r.level}</td>
-                </tr>`
-            ).join('');
-            T.push('OFFLINE — SHOWING LOCAL SCORES', 120, '#fa0');
-        });
+    fetch(`${SB_URL}/rest/v1/leaderboard?select=name,score,level&order=score.desc&limit=20`, {
+        headers: {
+            'apikey': SB_KEY,
+            'Authorization': `Bearer ${SB_KEY}`
+        }
+    })
+    .then(r => r.json())
+    .then(rows => {
+        if (!rows || !rows.length) {
+            tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#444;padding:20px">NO SCORES YET — BE FIRST!</td></tr>';
+            return;
+        }
+        tbody.innerHTML = rows.map((r, i) =>
+            `<tr>
+                <td style="color:#fa0">${i + 1}</td>
+                <td style="color:#0ff">${r.name}</td>
+                <td style="color:#0f0">${Number(r.score).toLocaleString()}</td>
+                <td style="color:#f0f">L${r.level}</td>
+            </tr>`
+        ).join('');
+    })
+    .catch(() => {
+        const rows = lbGet();
+        if (!rows.length) {
+            tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#444;padding:20px">NO SCORES YET — BE FIRST!</td></tr>';
+            return;
+        }
+        tbody.innerHTML = rows.map((r, i) =>
+            `<tr>
+                <td style="color:#fa0">${i + 1}</td>
+                <td style="color:#0ff">${r.name}</td>
+                <td style="color:#0f0">${r.score.toLocaleString()}</td>
+                <td style="color:#f0f">L${r.level}</td>
+            </tr>`
+        ).join('');
+        T.push('OFFLINE — SHOWING LOCAL SCORES', 120, '#fa0');
+    });
 }
-
 // ─── CANVAS + GLOBALS ────────────────────────────────────────────────────────
 const canvas=document.getElementById('gameCanvas');
 const ctx=canvas.getContext('2d');
