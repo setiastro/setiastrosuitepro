@@ -19,41 +19,19 @@ from PyQt6.QtWidgets import (
 )
 
 # Import numba-accelerated functions
-try:
-    from setiastro.saspro.legacy.numba_utils import (
-        invert_image_numba,
-        flip_horizontal_numba,
-        flip_vertical_numba,
-        rotate_90_clockwise_numba,
-        rotate_90_counterclockwise_numba,
-        rotate_180_numba,
-        rescale_image_numba,
-    )
-except ImportError:
-    # Fallback stubs if numba_utils is not available
-    def invert_image_numba(arr):
-        return 1.0 - arr
 
-    def flip_horizontal_numba(arr):
-        return arr[:, ::-1].copy()
-
-    def flip_vertical_numba(arr):
-        return arr[::-1, :].copy()
-
-    def rotate_90_clockwise_numba(arr):
-        return np.rot90(arr, k=-1)
-
-    def rotate_90_counterclockwise_numba(arr):
-        return np.rot90(arr, k=1)
-
-    def rotate_180_numba(arr):
-        return np.rot90(arr, k=2)
-
-    def rescale_image_numba(arr, factor):
-        import cv2
-        h, w = arr.shape[:2]
-        new_h, new_w = int(h * factor), int(w * factor)
-        return cv2.resize(arr, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+from setiastro.saspro.legacy.numba_utils import (
+    invert_image_numba,
+    flip_horizontal_numba,
+    flip_vertical_numba,
+    rotate_90_clockwise_numba,
+    rotate_90_counterclockwise_numba,
+    rotate_180_numba,
+    rescale_image_numba,
+    _bin_NxN_numba,
+    _upsample_NxN,
+    bin2x2_numba,
+)
 
 
 from setiastro.saspro.wcs_update import update_wcs_after_crop
@@ -63,6 +41,120 @@ import math
 
 if TYPE_CHECKING:
     pass
+
+class RescaleDialog(QDialog):
+    def __init__(self, parent=None, *, cur_w=0, cur_h=0, icon=None):
+        super().__init__(parent)
+        self.setWindowTitle("Rescale Image")
+        self.setModal(True)
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        if icon:
+            self.setWindowIcon(icon)
+
+        self._cur_w = max(1, int(cur_w))
+        self._cur_h = max(1, int(cur_h))
+        self._updating = False
+
+        lay = QVBoxLayout(self)
+
+        # ── Method selector ──────────────────────────────────────────────
+        method_row = QHBoxLayout()
+        method_row.addWidget(QLabel("Method:"))
+        self.cmb_method = QComboBox(self)
+        self.cmb_method.addItem("Bilinear (smooth, any factor)",  userData="bilinear")
+        self.cmb_method.addItem("Integer Bin 2×2 (avg, ÷2)",     userData="bin2x2")
+        self.cmb_method.addItem("Integer Bin 3×3 (avg, ÷3)",     userData="bin3x3")
+        self.cmb_method.addItem("Integer Bin 4×4 (avg, ÷4)",     userData="bin4x4")
+        self.cmb_method.addItem("Integer Upsample 2× (repeat)",  userData="up2x")
+        self.cmb_method.addItem("Integer Upsample 3× (repeat)",  userData="up3x")
+        self.cmb_method.addItem("Integer Upsample 4× (repeat)",  userData="up4x")
+        method_row.addWidget(self.cmb_method, 1)
+        lay.addLayout(method_row)
+
+        # ── Factor / description stack ───────────────────────────────────
+        self.stk = QStackedLayout()
+
+        # Page 0 — bilinear: show factor spinner
+        bilinear_widget = QWidget()
+        bilinear_lay = QFormLayout(bilinear_widget)
+        bilinear_lay.setContentsMargins(0, 0, 0, 0)
+        self.spn_factor = QDoubleSpinBox()
+        self.spn_factor.setRange(0.1, 10.0)
+        self.spn_factor.setDecimals(3)
+        self.spn_factor.setSingleStep(0.05)
+        self.spn_factor.setValue(1.0)
+        bilinear_lay.addRow("Scale factor:", self.spn_factor)
+        self.stk.addWidget(bilinear_widget)
+
+        # Page 1 — integer methods: just show a description label
+        self.lbl_int_desc = QLabel()
+        self.lbl_int_desc.setWordWrap(True)
+        self.stk.addWidget(self.lbl_int_desc)
+
+        stk_host = QWidget()
+        stk_host.setLayout(self.stk)
+        lay.addWidget(stk_host)
+
+        # ── Result summary ───────────────────────────────────────────────
+        self.lbl_summary = QLabel()
+        self.lbl_summary.setWordWrap(True)
+        lay.addWidget(self.lbl_summary)
+
+        # ── Buttons ──────────────────────────────────────────────────────
+        bb = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel, self)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+
+        self.cmb_method.currentIndexChanged.connect(self._on_method_changed)
+        self.spn_factor.valueChanged.connect(self._update_summary)
+        self._on_method_changed()
+
+    def _on_method_changed(self):
+        method = self.cmb_method.currentData()
+        if method == "bilinear":
+            self.stk.setCurrentIndex(0)
+        else:
+            self.stk.setCurrentIndex(1)
+            descriptions = {
+                "bin2x2": "Averages every 2×2 block of pixels into one.\nOutput will be exactly half the width and height.\nIdeal for reducing noise while preserving signal (like CCD 2×2 binning).",
+                "bin3x3": "Averages every 3×3 block of pixels into one.\nOutput will be exactly one-third the width and height.\nStrong noise reduction, significant resolution loss.",
+                "bin4x4": "Averages every 4×4 block of pixels into one.\nOutput will be exactly one-quarter the width and height.\nMaximum noise reduction, use for very noisy data.",
+                "up2x":   "Repeats each pixel into a 2×2 block.\nOutput will be exactly double the width and height.\nPixel-perfect integer upscale — no interpolation artifacts.",
+                "up3x":   "Repeats each pixel into a 3×3 block.\nOutput will be exactly triple the width and height.",
+                "up4x":   "Repeats each pixel into a 4×4 block.\nOutput will be exactly 4× the width and height.",
+            }
+            self.lbl_int_desc.setText(descriptions.get(method, ""))
+        self._update_summary()
+
+    def _effective_factor(self):
+        method = self.cmb_method.currentData()
+        factors = {
+            "bilinear": self.spn_factor.value(),
+            "bin2x2": 0.5, "bin3x3": 1/3, "bin4x4": 0.25,
+            "up2x": 2.0,   "up3x": 3.0,   "up4x": 4.0,
+        }
+        return factors.get(method, 1.0)
+
+    def _update_summary(self):
+        f = self._effective_factor()
+        new_w = max(1, int(round(self._cur_w * f)))
+        new_h = max(1, int(round(self._cur_h * f)))
+        method = self.cmb_method.currentData()
+        method_label = self.cmb_method.currentText().split("(")[0].strip()
+        self.lbl_summary.setText(
+            f"Current: <b>{self._cur_w} × {self._cur_h}</b> px<br>"
+            f"Result:  <b>{new_w} × {new_h}</b> px  ({f:.4g}×)<br>"
+            f"Method:  <b>{method_label}</b>"
+        )
+
+    def values(self):
+        return {
+            "method": self.cmb_method.currentData(),
+            "factor": self._effective_factor(),
+        }
 
 class ResizeCanvasDialog(QDialog):
     def __init__(self, parent=None, *, cur_w=0, cur_h=0, icon: QIcon | None = None):
@@ -593,7 +685,6 @@ class GeometryMixin:
 
 
     def _exec_geom_rescale(self):
-        """Execute rescale operation on active view with dialog."""
         sw = self.mdi.activeSubWindow() if hasattr(self, "mdi") else None
         view = sw.widget() if sw else None
         doc = getattr(view, "document", None)
@@ -601,36 +692,25 @@ class GeometryMixin:
             QMessageBox.information(self, self.tr("Rescale Image"), self.tr("Active view has no image."))
             return
 
-        # remember last value
-        if not hasattr(self, "_last_rescale_factor"):
-            self._last_rescale_factor = 1.0
+        arr = np.asarray(doc.image)
+        h, w = arr.shape[:2]
 
-        dlg = QInputDialog(self)
-        dlg.setWindowTitle(self.tr("Rescale Image"))
-        dlg.setLabelText(self.tr("Enter scaling factor (e.g., 0.5 for 50%, 2 for 200%):"))
-        dlg.setInputMode(QInputDialog.InputMode.DoubleInput)
-        dlg.setDoubleRange(0.1, 10.0)
-        dlg.setDoubleDecimals(2)
-        dlg.setDoubleValue(self._last_rescale_factor)
-
-        # make sure it's a true window so the icon shows on all platforms
-        dlg.setWindowFlag(Qt.WindowType.Window, True)
-
-        # set the icon from rescale_path if available
         try:
             from setiastro.saspro.resources import rescale_path
-            dlg.setWindowIcon(QIcon(rescale_path))
+            icon = QIcon(rescale_path)
         except Exception:
-            pass
+            icon = None
 
+        dlg = RescaleDialog(self, cur_w=w, cur_h=h, icon=icon)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        factor = dlg.doubleValue()
 
+        vals = dlg.values()
         try:
-            self._apply_geom_rescale_to_doc(doc, factor=factor)
-            self._last_rescale_factor = factor
-            self._log(f"Rescale ({factor:g}×) applied to active view")
+            self._apply_geom_rescale_to_doc(doc, factor=vals["factor"], method=vals["method"])
+            self._last_rescale_factor = vals["factor"]
+            method_label = dlg.cmb_method.currentText().split("(")[0].strip()
+            self._log(f"Rescale ({method_label}, {vals['factor']:g}×) applied to active view")
         except Exception as e:
             QMessageBox.critical(self, self.tr("Rescale Image"), str(e))
 
@@ -861,21 +941,44 @@ class GeometryMixin:
         self._apply_geom_with_wcs(doc, out, M_src_to_dst=M, step_name=f"Rotate ({angle_deg:g}°)")
 
 
-    def _apply_geom_rescale_to_doc(self, doc, *, factor: float):
-        """Apply rescale to document with WCS update."""
-        factor = float(max(0.1, min(10.0, factor)))
+    def _apply_geom_rescale_to_doc(self, doc, *, factor: float, method: str = "bilinear"):
+        factor = float(factor)
         arr = np.asarray(doc.image, dtype=np.float32)
         h, w = arr.shape[:2]
-        out = rescale_image_numba(arr, factor)
+
+        if method == "bilinear":
+            factor = max(0.1, min(10.0, factor))
+            out = rescale_image_numba(arr, factor)
+        elif method == "bin2x2":
+            out = bin2x2_numba(arr)
+            factor = 0.5
+        elif method == "bin3x3":
+            out = _bin_NxN_numba(arr, 3)
+            factor = 1/3
+        elif method == "bin4x4":
+            out = _bin_NxN_numba(arr, 4)
+            factor = 0.25
+        elif method == "up2x":
+            out = _upsample_NxN(arr, 2)
+            factor = 2.0
+        elif method == "up3x":
+            out = _upsample_NxN(arr, 3)
+            factor = 3.0
+        elif method == "up4x":
+            out = _upsample_NxN(arr, 4)
+            factor = 4.0
+        else:
+            factor = max(0.1, min(10.0, factor))
+            out = rescale_image_numba(arr, factor)
 
         M = np.array([
-            [factor, 0.0, 0.0],
-            [0.0, factor, 0.0],
-            [0.0, 0.0, 1.0],
+            [factor, 0.0,    0.0],
+            [0.0,    factor, 0.0],
+            [0.0,    0.0,    1.0],
         ], dtype=float)
 
         self._apply_geom_with_wcs(doc, out, M_src_to_dst=M,
-                                  step_name=f"Rescale ({factor:g}×)")
+                                  step_name=f"Rescale ({method}, {factor:g}×)")
 
     def _apply_geom_resize_canvas_to_doc(
         self,

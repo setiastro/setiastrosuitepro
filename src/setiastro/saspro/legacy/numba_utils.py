@@ -206,6 +206,41 @@ def bin2x2_numba(image):
     return out
 
 @njit(parallel=True, fastmath=True, cache=True)
+def _bin_NxN_numba(image, n):
+    """General integer binning by N×N averaging."""
+    h, w = image.shape[:2]
+    h2 = h // n
+    w2 = w // n
+    scale = 1.0 / (n * n)
+    if image.ndim == 2:
+        out = np.zeros((h2, w2), dtype=np.float32)
+        for i in prange(h2):
+            for j in prange(w2):
+                s = 0.0
+                for di in range(n):
+                    for dj in range(n):
+                        s += image[i*n + di, j*n + dj]
+                out[i, j] = s * scale
+    else:
+        c = image.shape[2]
+        out = np.zeros((h2, w2, c), dtype=np.float32)
+        for i in prange(h2):
+            for j in prange(w2):
+                for k in range(c):
+                    s = 0.0
+                    for di in range(n):
+                        for dj in range(n):
+                            s += image[i*n + di, j*n + dj, k]
+                    out[i, j, k] = s * scale
+    return out
+
+
+def _upsample_NxN(image: np.ndarray, n: int) -> np.ndarray:
+    """Integer upsampling by pixel repetition using numpy repeat."""
+    out = np.repeat(np.repeat(image, n, axis=0), n, axis=1)
+    return np.ascontiguousarray(out, dtype=np.float32)
+
+@njit(parallel=True, fastmath=True, cache=True)
 def flip_horizontal_numba(image):
     """
     Flips an image horizontally using Numba JIT.
