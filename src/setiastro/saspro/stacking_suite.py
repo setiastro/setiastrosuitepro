@@ -15731,7 +15731,7 @@ class StackingSuiteDialog(QDialog):
  
                     # ── DARK ──────────────────────────────────────────
                     dark_data = None
-                    if dark_data is not None:
+                    if master_dark_path:
                         dark_data, _, dark_bit_depth, dark_is_mono = load_image(master_dark_path)
                         dark_data = _maybe_normalize_16bit_float(
                             dark_data, name=os.path.basename(master_dark_path)
@@ -15764,7 +15764,7 @@ class StackingSuiteDialog(QDialog):
                                     f"Rebuild your Master Dark from frames that match your lights "
                                     f"(both debayered or both raw Bayer/mono)."
                                 )
-                                return  # abort entire calibration run
+                                return
                             # ─────────────────────────────────────────────────────────
 
                             tmp        = subtract_dark_with_pedestal(
