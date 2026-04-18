@@ -14172,20 +14172,6 @@ class StackingSuiteDialog(QDialog):
                     self.update_status(self.tr(
                         "ℹ️ This flat group: Auto-Select is OFF and no override set → No Calibration."
                     ))
-                # Load the chosen dark if any
-                if selected_master_dark:
-                    dark_data, _, _, _ = load_image(selected_master_dark)
-                    if dark_data is not None:
-                        if dark_data.ndim == 3 and dark_data.shape[-1] == 3:
-                            # keep HWC
-                            dark_data = dark_data.astype(np.float32, copy=False)
-                        elif dark_data.ndim == 3 and dark_data.shape[0] in (1, 3):
-                            dark_data = dark_data.transpose(1, 2, 0).astype(np.float32, copy=False)
-                        else:
-                            dark_data = dark_data.astype(np.float32, copy=False)
-                else:
-                    dark_data = None
-
                 # -----------------------------------------------------------------
                 # Reference shape + per-group chunk size
                 # -----------------------------------------------------------------
@@ -14214,6 +14200,46 @@ class StackingSuiteDialog(QDialog):
 
                 channels = max(1, channels)
                 N = len(file_list)
+                # Load the chosen dark if any
+                if selected_master_dark:
+                    dark_data, _, _, _ = load_image(selected_master_dark)
+                    if dark_data is not None:
+                        if dark_data.ndim == 3 and dark_data.shape[-1] == 3:
+                            # keep HWC
+                            dark_data = dark_data.astype(np.float32, copy=False)
+                        elif dark_data.ndim == 3 and dark_data.shape[0] in (1, 3):
+                            dark_data = dark_data.transpose(1, 2, 0).astype(np.float32, copy=False)
+                        else:
+                            dark_data = dark_data.astype(np.float32, copy=False)
+
+                        # ── Shape mismatch check ──────────────────────────────────
+                        flat_is_color = (channels == 3)
+                        dark_is_color = (dark_data.ndim == 3 and (
+                            dark_data.shape[-1] == 3 or dark_data.shape[0] == 3
+                        ))
+                        if flat_is_color != dark_is_color:
+                            flat_desc = "color (debayered)" if flat_is_color else "mono/Bayer"
+                            dark_desc = "color (debayered)" if dark_is_color else "mono/Bayer"
+                            self.update_status(self.tr(
+                                f"❌ FLAT CALIBRATION ERROR: Flat group is {flat_desc} but "
+                                f"Master Dark is {dark_desc}. Skipping dark subtraction for this group.\n"
+                                f"  Dark: {os.path.basename(selected_master_dark)}"
+                            ))
+                            QMessageBox.warning(
+                                self,
+                                "Dark/Flat Mismatch",
+                                f"Cannot apply dark subtraction to flat group:\n\n"
+                                f"Flat frames are {flat_desc}\n"
+                                f"Master Dark is {dark_desc}\n\n"
+                                f"Dark: {os.path.basename(selected_master_dark)}\n\n"
+                                f"Continuing without dark subtraction for this flat group."
+                            )
+                            dark_data = None
+                        # ─────────────────────────────────────────────────────────
+                else:
+                    dark_data = None
+
+
 
                 # -----------------------------------------------------------------
                 # Detect Bayer (only meaningful when channels==1)
@@ -15713,6 +15739,34 @@ class StackingSuiteDialog(QDialog):
                         if dark_data is not None:
                             if not dark_is_mono and dark_data.ndim == 3 and dark_data.shape[-1] == 3:
                                 dark_data = dark_data.transpose(2, 0, 1)
+
+                            # ── Shape mismatch check ──────────────────────────────────
+                            light_is_color = (light_data.ndim == 3 and light_data.shape[0] == 3)
+                            dark_is_color  = (dark_data.ndim == 3 and dark_data.shape[0] == 3)
+                            if light_is_color != dark_is_color:
+                                light_desc = "color (debayered)" if light_is_color else "mono/Bayer"
+                                dark_desc  = "color (debayered)" if dark_is_color  else "mono/Bayer"
+                                self.update_status(self.tr(
+                                    f"❌ CALIBRATION ERROR: Light frame is {light_desc} but "
+                                    f"Master Dark is {dark_desc}. These cannot be combined.\n"
+                                    f"  Light: {os.path.basename(light_file)}\n"
+                                    f"  Dark:  {os.path.basename(master_dark_path)}\n"
+                                    f"Rebuild your Master Dark from frames matching your lights."
+                                ))
+                                QMessageBox.critical(
+                                    self,
+                                    "Dark/Light Mismatch",
+                                    f"Cannot apply dark subtraction:\n\n"
+                                    f"Light frame is {light_desc}\n"
+                                    f"Master Dark is {dark_desc}\n\n"
+                                    f"Light: {os.path.basename(light_file)}\n"
+                                    f"Dark: {os.path.basename(master_dark_path)}\n\n"
+                                    f"Rebuild your Master Dark from frames that match your lights "
+                                    f"(both debayered or both raw Bayer/mono)."
+                                )
+                                return
+                            # ─────────────────────────────────────────────────────────
+
                             tmp        = subtract_dark_with_pedestal(
                                 light_data[np.newaxis, :, :], dark_data, pedestal_value
                             )

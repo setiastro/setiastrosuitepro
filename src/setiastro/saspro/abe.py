@@ -161,7 +161,7 @@ def _gradient_descent_to_dim_spot(image: np.ndarray, x: int, y: int, max_iter: i
     return cx, cy
 
 
-def _generate_sample_points(image: np.ndarray, num_points: int = 100, exclusion_mask: np.ndarray | None = None, patch_size: int = 15) -> np.ndarray:
+def _generate_sample_points(image, num_points=100, exclusion_mask=None, patch_size=15, rng=None):
     H, W = image.shape[:2]
     pts: list[tuple[int, int]] = []
     border = 10
@@ -214,7 +214,8 @@ def _generate_sample_points(image: np.ndarray, num_points: int = 100, exclusion_
         if elig.size == 0:
             continue
         k = min(len(elig), max(1, num_points // 4))
-        sel = elig[np.random.choice(len(elig), k, replace=False)]
+        _rng = rng if rng is not None else np.random.default_rng()
+        sel = elig[_rng.choice(len(elig), k, replace=False)]
         for (yy, xx) in sel:
             gx, gy = x0 + int(xx), y0 + int(yy)
             nx, ny = _gradient_descent_to_dim_spot(image, gx, gy, patch_size=patch_size)
@@ -398,7 +399,8 @@ def abe_run(
     return_background: bool = True,
     progress_cb=None,
     legacy_prestretch: bool = True,
-    manual_points: np.ndarray | None = None,   # NEW: Nx2 full-image coords
+    manual_points: np.ndarray | None = None,
+    rng=None,
 ) -> tuple[np.ndarray, np.ndarray] | np.ndarray:
     """Two-stage ABE (poly + optional RBF) with SASv2-compatible pre/post stretch.
 
@@ -472,7 +474,8 @@ def abe_run(
                 small,
                 num_points=num_samples,
                 exclusion_mask=mask_small,
-                patch_size=patch_size
+                patch_size=patch_size,
+                rng=rng,
             )
 
         if progress_cb: progress_cb(f"Fitting polynomial (degree {degree})…")
@@ -521,7 +524,8 @@ def abe_run(
                 small_rbf,
                 num_points=num_samples,
                 exclusion_mask=mask_small,
-                patch_size=patch_size
+                patch_size=patch_size,
+                rng=rng,
             )
 
         if progress_cb: progress_cb(f"Fitting RBF (smooth={rbf_smooth:.3f})…")
@@ -685,6 +689,17 @@ class ABEDialog(QDialog):
         self.chk_preview_bg   = QCheckBox(self.tr("Preview background instead of corrected")); self.chk_preview_bg.setChecked(False)
         self.cmb_sample_mode = QComboBox()
         self.cmb_sample_mode.addItems(["Auto", "Manual"])
+
+        self.sp_seed = QSpinBox()
+        self.sp_seed.setRange(-1, 99999)
+        self.sp_seed.setValue(42)
+        self.sp_seed.setSpecialValueText("Random (no seed)")
+        self.sp_seed.setToolTip(
+            "Random seed for sample point placement.\n"
+            "-1 = non-deterministic (different each run).\n"
+            "Any other value = fully reproducible results."
+        )
+
         # ── Place Points group ──────────────────────────────────────────
         gb_place = QGroupBox(self.tr("Place Sample Points"))
         place_layout = QVBoxLayout(gb_place)
@@ -752,7 +767,7 @@ class ABEDialog(QDialog):
         params.addRow(self.tr("Downsample factor:"), self.sp_down)
         params.addRow(self.tr("Patch size (px):"),   self.sp_patch)
         params.addRow(self.tr("Sample mode:"), self.cmb_sample_mode)
-
+        params.addRow(self.tr("Random seed:"), self.sp_seed)
         # ── Workflow note ───────────────────────────────────────────────
         note_lbl = QLabel(
             "💡 Tip: For best results with RGB data, combine R/G/B channels "
@@ -817,7 +832,7 @@ class ABEDialog(QDialog):
         self.sp_samples.valueChanged.connect(self._save_settings)
         self.sp_down.valueChanged.connect(self._save_settings)
         self.sp_patch.valueChanged.connect(self._save_settings)
-
+        self.sp_seed.valueChanged.connect(self._save_settings)
         self.chk_use_rbf.toggled.connect(self._save_settings)
         self.sp_rbf.valueChanged.connect(self._save_settings)
 
@@ -847,6 +862,7 @@ class ABEDialog(QDialog):
         # Options
         self.chk_make_bg_doc.setChecked(bool(s.value("abe/make_bg_doc", False, type=bool)))
         self.chk_preview_bg.setChecked(bool(s.value("abe/preview_bg", False, type=bool)))
+        self.sp_seed.setValue(int(s.value("abe/seed", 42)))
 
         # Optional preview prefs
         self._autostretch_on = bool(s.value("abe/preview_autostretch", True, type=bool))
@@ -863,7 +879,7 @@ class ABEDialog(QDialog):
 
         s.setValue("abe/use_rbf", self.chk_use_rbf.isChecked())
         s.setValue("abe/rbf_smooth_x100", self.sp_rbf.value())
-
+        s.setValue("abe/seed", self.sp_seed.value())
         s.setValue("abe/make_bg_doc", self.chk_make_bg_doc.isChecked())
         s.setValue("abe/preview_bg", self.chk_preview_bg.isChecked())
 
@@ -991,11 +1007,15 @@ class ABEDialog(QDialog):
             mask_small = _downsample_area(excl.astype(np.float32), dwn) >= 0.5
 
         # Run the same auto sampler used internally
+        seed = int(self.sp_seed.value())
+        rng = np.random.default_rng(seed if seed >= 0 else None)
+
         pts_small = _generate_sample_points(
             small,
             num_points=npts,
             exclusion_mask=mask_small,
             patch_size=patch,
+            rng=rng,
         )
 
         if pts_small is None or len(pts_small) == 0:
@@ -1113,6 +1133,9 @@ class ABEDialog(QDialog):
         use_rbf = bool(self.chk_use_rbf.isChecked())
         rbf_smooth = float(self.sp_rbf.value()) * 0.01
 
+        seed = int(self.sp_seed.value())
+        rng = np.random.default_rng(seed if seed >= 0 else None)
+
         manual_pts = self._manual_points_array() if self._manual_mode() else None
 
         return abe_run(
@@ -1126,7 +1149,8 @@ class ABEDialog(QDialog):
             exclusion_mask=excl_mask,
             return_background=True,
             progress_cb=progress,
-            manual_points=manual_pts,   # NEW
+            manual_points=manual_pts,
+            rng=rng,
         )
 
     def _degree_changed(self, v: int):

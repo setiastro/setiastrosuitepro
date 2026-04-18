@@ -558,10 +558,11 @@ class ContinuumSubtractTab(QWidget):
             "Continuum Q Factor",
             "Q (scale of broadband subtraction, typical 0.6–1.0):",
             self.q_factor,
-            0.10, 2.00, 2  # min, max, decimals
+            0.10, 2.00, 2
         )
         if ok:
             self.q_factor = float(val)
+            self.q_label.setText(f"Continuum Q factor: {self.q_factor:.2f}")
 
         self.adv_summary_label.setText(f"Q {self.q_factor:.2f}   WB σ {self.threshold_value:.1f}")
 
@@ -571,12 +572,14 @@ class ContinuumSubtractTab(QWidget):
             "WB Threshold",
             "Sigma threshold for star detection:",
             self.threshold_value,
-            0.5, 50.0, 1  # min, max, decimals
+            0.5, 50.0, 1
         )
         if ok:
             self.threshold_value = float(val)
+            self.threshold_label.setText(f"WB star detect threshold: {self.threshold_value:.1f}")
 
         self.adv_summary_label.setText(f"Q {self.q_factor:.2f}   WB σ {self.threshold_value:.1f}")
+
 
     def _main_window(self) -> QMainWindow | None:
         # 1) explicit parent the tool may have been created with

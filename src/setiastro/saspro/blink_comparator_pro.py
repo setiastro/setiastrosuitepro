@@ -1131,7 +1131,10 @@ class _BlinkZoomPanel(QWidget):
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
-        QTimer.singleShot(0, self._redraw)
+        if hasattr(self, "_zoom_rect_overlay") and hasattr(self, "scroll_area"):
+            self._zoom_rect_overlay.setGeometry(self.scroll_area.viewport().rect())
+        if hasattr(self, "_update_zoom_panel_to_viewport_center"):
+            QTimer.singleShot(0, self._update_zoom_panel_to_viewport_center)
 
 class BlinkTab(QWidget):
     imagesChanged = pyqtSignal(int)
@@ -1520,17 +1523,21 @@ class BlinkTab(QWidget):
         self.imagesChanged.connect(self._update_loaded_count_label)
 
     def _toggle_zoom_panel(self):
-            visible = not self._zoom_panel.isVisible()
-            self._zoom_panel.setVisible(visible)
-            self.zoom_panel_btn.setText(
-                self.tr("Hide Zoom Panel") if visible else self.tr("Show Zoom Panel")
-            )
-            # Persist the state
-            try:
-                s = QSettings()
-                s.setValue("blink/zoom_panel_visible", visible)
-            except Exception:
-                pass
+        visible = not self._zoom_panel.isVisible()
+        self._zoom_panel.setVisible(visible)
+        self.zoom_panel_btn.setText(
+            self.tr("Hide Zoom Panel") if visible else self.tr("Show Zoom Panel")
+        )
+        if not visible and hasattr(self, "_zoom_rect_overlay"):
+            self._zoom_rect_overlay.set_rect(None)
+        elif visible:
+            # Force repaint of zoom panel and overlay rect on show
+            QTimer.singleShot(0, self._update_zoom_panel_to_viewport_center)
+        try:
+            s = QSettings()
+            s.setValue("blink/zoom_panel_visible", visible)
+        except Exception:
+            pass
 
     def resizeEvent(self, e):
             super().resizeEvent(e)
@@ -1545,6 +1552,7 @@ class BlinkTab(QWidget):
             pass
         if hasattr(self, "_zoom_rect_overlay") and hasattr(self, "scroll_area"):
             self._zoom_rect_overlay.setGeometry(self.scroll_area.viewport().rect())
+        QTimer.singleShot(0, self._update_zoom_panel_to_viewport_center)
 
     def _on_zoom_lock_toggled(self, checked: bool):
         if not checked:
@@ -3840,14 +3848,17 @@ class BlinkTab(QWidget):
 
     def _apply_zoom_at_norm(self, norm_cx, norm_cy):
         """Push normalized coords to zoom panel and update overlay rect."""
+        # If zoom panel is hidden, clear overlay and bail
+        if not self._zoom_panel.isVisible():
+            self._zoom_rect_overlay.set_rect(None)
+            return
+
         if not self.current_pixmap or self.current_pixmap.isNull():
             return
 
         src_x = int(norm_cx * self.current_pixmap.width())
         src_y = int(norm_cy * self.current_pixmap.height())
 
-        # Bypass the lock by writing directly to zoom panel internals
-        # instead of toggling lock_btn (which would fire _on_zoom_lock_toggled)
         zp = self._zoom_panel
         zp._source_pixmap = self.current_pixmap
         zp._norm_cx = float(norm_cx)
@@ -3855,7 +3866,6 @@ class BlinkTab(QWidget):
         zp.coords_label.setText(f"({src_x}, {src_y})")
         zp._redraw()
 
-        # Update overlay rect
         if not hasattr(self, "_zoom_rect_overlay"):
             return
 
