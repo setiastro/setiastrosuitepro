@@ -1149,7 +1149,9 @@ def sharpen_image_array(image: np.ndarray,
             out = np.empty_like(stretched)
             for c, label in enumerate(("R", "G", "B")):
                 progress_cb(0, 1, f"Sharpening {label} channel")
-                out[..., c] = _sharpen_plane(models, stretched[..., c], params, progress_cb)
+                plane_in = np.clip(stretched[..., c], 0.0, 1.0)
+                plane_out = _sharpen_plane(models, plane_in, params, progress_cb)
+                out[..., c] = np.clip(plane_out, 0.0, 1.0)
             sharpened = out
         else:
             y, cb, cr = extract_luminance_rgb(stretched)
