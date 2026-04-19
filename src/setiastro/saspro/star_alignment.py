@@ -3334,7 +3334,7 @@ class StarRegistrationThread(QThread):
 
             # --- Build shared ref at full + downsampled solve-res ---
             self.ref_small_full = np.ascontiguousarray(ref2d.astype(np.float32, copy=False))
-
+            print(f"[SRT] run() started, files={len(self.original_files)}, ref={self.reference}")
             # Use existing preference key you already have: self.downsample
             # (you load it in __init__: self.downsample = int(self.align_prefs.get("downsample", 2)))
             ds = max(1, int(self.downsample))
@@ -3367,7 +3367,9 @@ class StarRegistrationThread(QThread):
             # Registration passes (compute deltas only)
             for pass_idx in range(self.max_refinement_passes):
                 self.progress_update.emit(f"⏳ Refinement Pass {pass_idx + 1}/{self.max_refinement_passes}…")
+                print(f"[SRT] starting pass {pass_idx}, work_list={len(self.original_files)}")
                 success, msg = self.run_one_registration_pass(None, None, pass_idx)
+                print(f"[SRT] pass {pass_idx} completed: {success} ({msg})")
                 if not success:
                     any_aligned = any(x is not None for x in self.alignment_matrices.values())
                     if not any_aligned:
@@ -3690,6 +3692,7 @@ class StarRegistrationThread(QThread):
     # ─────────────────────────────────────────────────────────────
     def _finalize_writes(self):
         import shutil
+        print(f"[SRT] _finalize_writes called, {len(self.original_files)} files, output={self.output_directory}")
 
         self.drizzle_xforms = {}
 

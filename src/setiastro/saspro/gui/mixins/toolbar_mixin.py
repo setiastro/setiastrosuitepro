@@ -30,7 +30,7 @@ from setiastro.saspro.resources import (
     rotate180_path, maskcreate_path, maskapply_path, maskremove_path, histogram_transform_path,
     pixelmath_path, histogram_path, mosaic_path, rescale_path, staralign_path,
     platesolve_path, psf_path, supernova_path, starregistration_path, csv_icon_path, collage_path,
-    stacking_path, pedestal_icon_path, starspike_path, astrospike_path,
+    stacking_path, pedestal_icon_path, starspike_path, astrospike_path, dithericon_path,
     signature_icon_path, livestacking_path, convoicon_path, spcc_icon_path,
     exoicon_path, peeker_icon, dse_icon_path, isophote_path, statstretch_path,resizecanvas_path,
     starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path, narrowbandnormalization_path,
@@ -312,6 +312,7 @@ class ToolbarMixin:
 
         tb_star.addAction(self.act_image_peeker)
         tb_star.addAction(self.act_psf_viewer)
+        tb_star.addAction(self.act_dither_analysis)
         tb_star.addAction(self.act_stacking_suite)
         tb_star.addAction(self.act_live_stacking)
         tb_star.addAction(self.act_planetary_stacker)
@@ -1341,6 +1342,11 @@ class ToolbarMixin:
         self.act_star_register.setStatusTip(self.tr("Batch-align frames to a reference"))
         self.act_star_register.triggered.connect(self._open_stellar_registration)
 
+        self.act_dither_analysis = QAction(QIcon(dithericon_path), self.tr("Dither Analysis..."), self)
+        self.act_dither_analysis.setIconVisibleInMenu(True)
+        self.act_dither_analysis.setStatusTip(self.tr("analyze dither offsets from a set of frames or a completed stack run"))
+        self.act_dither_analysis.triggered.connect(self._open_dither_analysis)
+
         self.act_mosaic_master = QAction(QIcon(mosaic_path), self.tr("Mosaic Master..."), self)
         self.act_mosaic_master.setIconVisibleInMenu(True)
         self.act_mosaic_master.setStatusTip(self.tr("Build mosaics from overlapping frames"))
@@ -1582,6 +1588,7 @@ class ToolbarMixin:
         reg("project_load", self.act_project_load)     
         reg("image_combine", self.act_image_combine)   
         reg("psf_viewer", self.act_psf_viewer)
+        reg("dither_analysis", self.act_dither_analysis)
         reg("plate_solve", self.act_plate_solve)
         reg("magnitude_tool", self.act_magnitude)
         reg("snr_tool", self.act_snr)

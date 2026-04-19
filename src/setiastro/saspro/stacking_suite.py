@@ -17609,7 +17609,18 @@ class StackingSuiteDialog(QDialog):
             ref_target_median = float(np.nanmedian(ref_L - ref_min))
             self.update_status(self.tr(f"📊 Reference min={ref_min:.6f}, normalized-median={ref_target_median:.6f}"))
             QApplication.processEvents()
-
+            # Store pixscale from reference frame for Dither Analysis
+            # Done here unconditionally — works for single-group and multi-group runs
+            try:
+                ref_sx, ref_sy = _robust_scale_from_header(ref_hdr)
+                if ref_sx and ref_sy:
+                    self._ref_pixscale_arcsec = float((ref_sx + ref_sy) / 2.0)
+                    self.update_status(self.tr(f"📐 Reference pixel scale: {self._ref_pixscale_arcsec:.3f}\"/px"))
+                else:
+                    self._ref_pixscale_arcsec = None
+            except Exception:
+                self._ref_pixscale_arcsec = None
+                
             auto_thresh = bool(self.settings.value("stacking/align/auto_threshold", False, type=bool))
             if auto_thresh:
                 self.update_status(self.tr("🎯 Auto detecting threshold on reference"))
@@ -17778,7 +17789,6 @@ class StackingSuiteDialog(QDialog):
                 else:
                     target_sx = target_sy = None
                     self.update_status(self.tr("🎯 Target pixel scale unknown (no WCS/pixel size). Will skip scale normalization."))
-
 
                 # Decide skip for single-group+uniform bin case (only reached if policy didn't auto-skip)
                 uniform_binning = (min(b[0] for b in bin_map.values()) == max(b[0] for b in bin_map.values())
@@ -20031,7 +20041,54 @@ class StackingSuiteDialog(QDialog):
 
         # ---- normal popup summary ----
         if ok:
-            QMessageBox.information(self, self.tr("Post-Alignment Complete"), message)
+            sasd_path = os.path.join(self.stacking_directory, "alignment_transforms.sasd")
+            sasd_exists = os.path.exists(sasd_path)
+
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle(self.tr("Post-Alignment Complete"))
+            msg_box.setText(message)
+            msg_box.setIcon(QMessageBox.Icon.Information)
+
+            ok_btn = msg_box.addButton(QMessageBox.StandardButton.Ok)
+            dither_btn = None
+            if sasd_exists:
+                dither_btn = msg_box.addButton(
+                    self.tr("📊 Open Dither Analysis"), 
+                    QMessageBox.ButtonRole.ActionRole
+                )
+
+            msg_box.exec()
+
+            if dither_btn is not None and msg_box.clickedButton() == dither_btn:
+                try:
+                    from setiastro.saspro.dither_analysis import DitherAnalysisWindow
+                    dlg = DitherAnalysisWindow(parent=self)
+                    dlg.setWindowFlag(Qt.WindowType.Window, True)
+                    dlg.load_sasd(sasd_path)
+                    dlg.show()
+                    dlg.raise_()
+                    dlg.activateWindow()
+                    # keep a reference so it doesn't get garbage collected
+                    if not hasattr(self, "_dither_windows"):
+                        self._dither_windows = []
+                    self._dither_windows.append(dlg)
+                except Exception as e:
+                    QMessageBox.warning(
+                        self, "Dither Analysis",
+                        f"Could not open Dither Analysis:\n{e}"
+                    )
+
+            if sasd_exists:
+                try:
+                    from setiastro.saspro.dither_analysis import _save_pixscale_for_sasd
+                    ps = getattr(self, "_ref_pixscale_arcsec", None)
+                    if ps:
+                        _save_pixscale_for_sasd(
+                            QSettings("SetiAstro", "SASpro"), sasd_path, ps
+                        )
+                except Exception:
+                    pass
+
         else:
             QMessageBox.critical(self, self.tr("Post-Alignment Failed"), message)
 
