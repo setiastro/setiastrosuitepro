@@ -182,17 +182,12 @@ def _angular_diff(a: float, b: float) -> float:
 
 def _detect_flips(transforms: list[Optional[np.ndarray]]) -> np.ndarray:
     """
-    Detect meridian flips by looking for rotation-angle jumps of ~180°.
-
-    Strategy:
-      1. Extract rotation angle from every valid transform.
-      2. Use the median angle of all valid frames as the reference orientation.
-      3. Any frame whose angle differs from the reference median by > 90° is a flip.
-
-    This is robust to the stacking pipeline's _project_to_similarity which forces
-    det > 0 always (so det-sign detection never works).
-
-    Returns a bool array of length len(transforms), True = flipped.
+    Detect meridian flip *transitions* — the step between frame i and i+1
+    where the mount flipped. Returns a bool array of length len(transforms)-1
+    where True means the step between frame[i] and frame[i+1] is a flip transition.
+    
+    We use this ONLY to exclude that one giant step from step statistics.
+    All frame positions (offsets) remain valid data regardless of flip.
     """
     angles = []
     for M in transforms:
@@ -201,30 +196,29 @@ def _detect_flips(transforms: list[Optional[np.ndarray]]) -> np.ndarray:
         else:
             angles.append(_rotation_angle_deg(M))
 
-    valid_angles = [a for a in angles if not math.isnan(a)]
-    if not valid_angles:
-        return np.zeros(len(transforms), dtype=bool)
+    n = len(angles)
+    if n < 2:
+        return np.zeros(max(0, n - 1), dtype=bool)
 
-    # Circular median: use the angle of the circular mean of the majority cluster.
-    # Simple approach: sort angles, find the largest gap, the majority cluster is
-    # on the other side. For astrophotography sessions this is reliable.
-    sorted_a = sorted(valid_angles)
-    n_v = len(sorted_a)
+    # Find the reference angle from the first valid frame
+    ref_angle = next((a for a in angles if not math.isnan(a)), 0.0)
 
-    # Find reference angle as circular mean of the most common orientation cluster
-    # (handles case where flips are the minority, which is usual)
-    # Use the frame-0 angle as the seed; anything within 90° of it is "normal".
-    ref_angle = angles[next((i for i, a in enumerate(angles) if not math.isnan(a)), 0)]
-
-    flipped = np.zeros(len(transforms), dtype=bool)
-    for i, a in enumerate(angles):
+    # A flip transition occurs between frame i and i+1 when one is
+    # on the flipped side and the other is not
+    def _is_flipped_frame(a: float) -> bool:
         if math.isnan(a):
-            continue
-        diff = abs(_angular_diff(a, ref_angle))
-        if diff > 90.0:
-            flipped[i] = True
+            return False
+        return abs(_angular_diff(a, ref_angle)) > 90.0
 
-    return flipped
+    flip_transitions = np.zeros(n - 1, dtype=bool)
+    for i in range(n - 1):
+        a0 = angles[i]
+        a1 = angles[i + 1]
+        if math.isnan(a0) or math.isnan(a1):
+            continue
+        flip_transitions[i] = (_is_flipped_frame(a0) != _is_flipped_frame(a1))
+
+    return flip_transitions
 
 
 def _center_offsets(
@@ -235,17 +229,17 @@ def _center_offsets(
     For each transform compute where the image center (W/2, H/2) maps to,
     then subtract frame-0's mapped center so offsets are relative.
 
-    Returns (dx, dy, flipped_mask) — all length == len(transforms).
-    NaN entries for failed (None) frames.
-    ref_shape is (H, W).
+    Returns (dx, dy, flip_transitions) where:
+      dx, dy          — length == len(transforms), NaN for failed frames
+      flip_transitions — length == len(transforms)-1, True where a flip
+                         transition step should be excluded from step stats
     """
     H, W = ref_shape
     cx0, cy0 = W / 2.0, H / 2.0
 
-    # Detect flips across the whole population first
-    flipped = _detect_flips(transforms)
+    # Detect flip transitions (between consecutive frames, not per-frame)
+    flip_transitions = _detect_flips(transforms)
 
-    # First pass: get raw mapped centers
     raw_x: list[float] = []
     raw_y: list[float] = []
     for M in transforms:
@@ -267,8 +261,7 @@ def _center_offsets(
     dx = np.array([x - origin_x for x in raw_x])
     dy = np.array([y - origin_y for y in raw_y])
 
-    return dx, dy, flipped
-
+    return dx, dy, flip_transitions
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  Stats
@@ -276,9 +269,14 @@ def _center_offsets(
 def _compute_stats(
     dx: np.ndarray,
     dy: np.ndarray,
-    flipped: np.ndarray,
+    flip_transitions: np.ndarray,
 ) -> dict:
-    """dx/dy are the already-masked (valid frames only) center-offset arrays."""
+    """
+    dx/dy are the already-masked (valid frames only) center-offset arrays.
+    flip_transitions is length n-1, True where a step crosses a meridian flip.
+    All frame positions are valid — we only exclude flip transition steps
+    from step statistics.
+    """
     n = len(dx)
     if n == 0:
         return {}
@@ -288,8 +286,10 @@ def _compute_stats(
     # Steps between consecutive valid frames
     steps = np.hypot(np.diff(dx), np.diff(dy)) if n > 1 else np.array([0.0])
 
-    # Exclude flip-steps from step statistics (they're not dither steps)
-    valid_steps = steps[~flipped[1:n]] if len(flipped) >= n else steps
+    # Exclude only the flip transition steps from step statistics
+    # (that one giant jump when the mount flipped — not a dither step)
+    ft = flip_transitions[:n - 1] if len(flip_transitions) >= n - 1 else np.zeros(len(steps), bool)
+    valid_steps = steps[~ft] if ft.any() else steps
     if len(valid_steps) == 0:
         valid_steps = steps
 
@@ -303,19 +303,28 @@ def _compute_stats(
             pass
 
     if n > 1:
-        sa_rad    = np.arctan2(np.diff(dy), np.diff(dx))
-        circ_mean = math.degrees(
-            math.atan2(np.sin(sa_rad).mean(), np.cos(sa_rad).mean())
-        ) % 360
-        step_angles = np.degrees(sa_rad) % 360
+        # Step angles — exclude flip transitions from direction stats too
+        sa_rad_all = np.arctan2(np.diff(dy), np.diff(dx))
+        sa_rad_valid = sa_rad_all[~ft] if ft.any() else sa_rad_all
+        if len(sa_rad_valid) > 0:
+            circ_mean = math.degrees(
+                math.atan2(np.sin(sa_rad_valid).mean(), np.cos(sa_rad_valid).mean())
+            ) % 360
+            step_angles = np.degrees(sa_rad_valid) % 360
+        else:
+            circ_mean = 0.0
+            step_angles = np.array([0.0])
     else:
         step_angles = np.array([0.0])
         circ_mean   = 0.0
 
-    cs = _cluster_stats(dx, dy, valid_steps)    
+    cs = _cluster_stats(dx, dy, valid_steps)
+
+    n_flip_transitions = int(ft.sum()) if ft is not None else 0
 
     return dict(
-        n=n, dx=dx, dy=dy, radii=radii, flipped=flipped,
+        n=n, dx=dx, dy=dy, radii=radii,
+        flip_transitions=flip_transitions,
         steps=steps, valid_steps=valid_steps, step_angles=step_angles,
         rms_offset  = float(np.sqrt((dx**2 + dy**2).mean())),
         mean_radius = float(radii.mean()),
@@ -328,7 +337,7 @@ def _compute_stats(
         pref_dir    = circ_mean,
         span_x      = float(dx.max() - dx.min()),
         span_y      = float(dy.max() - dy.min()),
-        n_flipped   = int(flipped.sum()),
+        n_flip_transitions = n_flip_transitions,
         **cs,
     )
 
@@ -362,17 +371,10 @@ def _cluster_stats(
 
     n_frames = len(dx)
 
-    # Find threshold using the valley between small (intra-cluster) and
-    # large (inter-cluster) steps. Sort steps and look for the biggest
-    # relative jump — that gap is the natural cluster boundary.
     sorted_steps = np.sort(steps)
 
-    # Find the largest gap in the sorted step distribution
-    # This is robust to bimodal distributions regardless of scale
     if len(sorted_steps) > 2:
         gaps = np.diff(sorted_steps)
-        # Only look for gaps in the lower 80% of the range to avoid
-        # outliers skewing the threshold
         upper_idx = int(len(sorted_steps) * 0.85)
         gaps_clipped = gaps[:upper_idx]
         if len(gaps_clipped) > 0 and gaps_clipped.max() > 0:
@@ -383,8 +385,7 @@ def _cluster_stats(
     else:
         step_threshold = float(sorted_steps[0] * 1.5) if len(sorted_steps) else 1.0
 
-    # Sanity clamp — threshold should be between 0.5px and 50% of max step
-    step_threshold = max(0.5, min(step_threshold, float(steps.max()) * 0.5))
+    step_threshold = min(max(0.5, min(step_threshold, float(steps.max()) * 0.5)), 5.0)
 
     # Walk frames and count cluster sizes
     cluster_sizes = []
@@ -402,10 +403,16 @@ def _cluster_stats(
     mean_cluster_size = float(cluster_sizes.mean())
     max_cluster_size  = int(cluster_sizes.max())
 
-    clustered_frames = int(np.sum(cluster_sizes[cluster_sizes > 1]))
-    clustered_frac   = clustered_frames / max(1, n_frames)
+    # Only count frames in clusters of 3+ as "problematically clustered"
+    # Clusters of 1-2 are completely normal dithering patterns
+    MIN_PROBLEM_CLUSTER = 3
+    problem_frames = int(np.sum(cluster_sizes[cluster_sizes >= MIN_PROBLEM_CLUSTER]))
+    clustered_frac = problem_frames / max(1, n_frames)
 
-    is_clustered = (mean_cluster_size > 1.5) and (clustered_frac > 0.2)
+    # Flag only if mean cluster including problem clusters is large,
+    # the worst cluster is big, and a meaningful fraction of frames
+    # are in problem-sized clusters
+    is_clustered = (mean_cluster_size > 3.0) and (max_cluster_size > 4) and (clustered_frac > 0.3)
 
     return dict(
         n_clusters        = n_clusters,
@@ -582,7 +589,6 @@ class _DitherPlot(FigureCanvas if _MPL else QWidget):
             self._resize_timer.start()  # restart the 150ms countdown
 
     def _do_render(self, stats: dict, unit_scale: float = 1.0, unit_label: str = "px"):
-        """Actual rendering — called directly on data change, debounced on resize."""
         self.fig.clear()
 
         sc = float(unit_scale)
@@ -590,7 +596,7 @@ class _DitherPlot(FigureCanvas if _MPL else QWidget):
         dy      = stats["dy"] * sc
         steps   = stats["valid_steps"] * sc
         n       = stats["n"]
-        flipped = stats["flipped"]
+        ft      = stats.get("flip_transitions", np.zeros(max(0, n-1), dtype=bool))
         ul      = unit_label
 
         gs = self.fig.add_gridspec(2, 2, hspace=0.42, wspace=0.35)
@@ -606,36 +612,18 @@ class _DitherPlot(FigureCanvas if _MPL else QWidget):
                 sp.set_edgecolor(_ACCENT2)
 
         lbl = dict(color=_FG, fontsize=9)
-        norm_idx  = np.where(~flipped)[0]
-        flip_idx  = np.where(flipped)[0]
         frame_ids = np.arange(n)
 
-        # ── 1. Scatter ───────────────────────────────────────────────
-        if len(norm_idx):
-            sc_plot = ax_scatter.scatter(
-                dx[norm_idx], dy[norm_idx],
-                c=frame_ids[norm_idx], cmap="plasma",
-                s=30, zorder=3, edgecolors="none", alpha=0.85,
-                vmin=0, vmax=n - 1,
-            )
-            cb = self.fig.colorbar(sc_plot, ax=ax_scatter, pad=0.02)
-            cb.set_label("Frame #", color=_FG, fontsize=8)
-            cb.ax.yaxis.set_tick_params(color=_FG, labelsize=7)
-
-        if len(flip_idx):
-            ax_scatter.scatter(
-                dx[flip_idx], dy[flip_idx],
-                c=frame_ids[flip_idx], cmap="plasma",
-                s=80, zorder=4, edgecolors="none", alpha=0.85,
-                vmin=0, vmax=n - 1, marker="o",
-            )
-            ax_scatter.scatter(
-                dx[flip_idx], dy[flip_idx],
-                marker="x", s=80, c="white", zorder=5,
-                linewidths=1.2, alpha=0.9, label="Flipped side",
-            )
-            ax_scatter.legend(fontsize=7, facecolor=_PANEL,
-                              edgecolor=_ACCENT2, labelcolor=_FG)
+        # ── 1. Scatter — all frames, no distinction ───────────────────
+        sc_plot = ax_scatter.scatter(
+            dx, dy,
+            c=frame_ids, cmap="plasma",
+            s=30, zorder=3, edgecolors="none", alpha=0.85,
+            vmin=0, vmax=n - 1,
+        )
+        cb = self.fig.colorbar(sc_plot, ax=ax_scatter, pad=0.02)
+        cb.set_label("Frame #", color=_FG, fontsize=8)
+        cb.ax.yaxis.set_tick_params(color=_FG, labelsize=7)
 
         ax_scatter.scatter([0], [0], marker="+", s=120, c=_ACCENT,
                            zorder=5, linewidths=1.5)
@@ -655,56 +643,57 @@ class _DitherPlot(FigureCanvas if _MPL else QWidget):
         ax_scatter.axhline(0, color=_DIM, lw=0.5, ls="--")
         ax_scatter.axvline(0, color=_DIM, lw=0.5, ls="--")
 
-        # ── 2. Path ──────────────────────────────────────────────────
+        # ── 2. Path — flip transitions shown in orange ────────────────
         for i in range(n - 1):
-            col = _ORANGE if (flipped[i] or flipped[i + 1]) else _ACCENT2
+            is_flip = (i < len(ft)) and ft[i]
+            col = _ORANGE if is_flip else _ACCENT2
             ax_path.plot([dx[i], dx[i + 1]], [dy[i], dy[i + 1]],
                          color=col, lw=0.8, zorder=2)
 
-        if len(norm_idx):
-            ax_path.scatter(dx[norm_idx], dy[norm_idx],
-                            c=frame_ids[norm_idx], cmap="plasma",
-                            s=20, zorder=3, edgecolors="none", alpha=0.85,
-                            vmin=0, vmax=n - 1)
-        if len(flip_idx):
-            ax_path.scatter(dx[flip_idx], dy[flip_idx],
-                            c=frame_ids[flip_idx], cmap="plasma",
-                            s=60, zorder=4, edgecolors="none", alpha=0.85,
-                            vmin=0, vmax=n - 1, marker="o")
-            ax_path.scatter(dx[flip_idx], dy[flip_idx],
-                            marker="x", s=60, c="white", zorder=5,
-                            linewidths=1.2, alpha=0.9)
-
+        ax_path.scatter(dx, dy, c=frame_ids, cmap="plasma",
+                        s=20, zorder=3, edgecolors="none", alpha=0.85,
+                        vmin=0, vmax=n - 1)
         ax_path.scatter([dx[0]], [dy[0]], marker="*", s=100, c=_GREEN,
                         zorder=6, label="Frame 0")
+        # Add legend entry for flip transitions if any exist
+        if ft is not None and ft.any():
+            from matplotlib.lines import Line2D
+            ax_path.legend(
+                handles=[
+                    Line2D([0], [0], color=_GREEN, marker="*", markersize=7,
+                           linestyle="none", label="Frame 0"),
+                    Line2D([0], [0], color=_ORANGE, lw=1.5, label="Flip transition"),
+                ],
+                fontsize=7, facecolor=_PANEL, edgecolor=_ACCENT2,
+                labelcolor=_FG, loc="upper right"
+            )
+        else:
+            ax_path.legend(fontsize=7, facecolor=_PANEL,
+                           edgecolor=_ACCENT2, labelcolor=_FG, loc="upper right")
+
         ax_path.set_title("Dither Path", color=_ACCENT, fontsize=10)
         ax_path.set_xlabel(f"ΔX centre ({ul})", **lbl)
         ax_path.set_ylabel(f"ΔY centre ({ul})", **lbl)
         ax_path.axhline(0, color=_DIM, lw=0.5, ls="--")
         ax_path.axvline(0, color=_DIM, lw=0.5, ls="--")
-        ax_path.legend(fontsize=7, facecolor=_PANEL,
-                       edgecolor=_ACCENT2, labelcolor=_FG, loc="upper right")
 
-        # ── 3. Step histogram ────────────────────────────────────────
+        # ── 3. Step histogram (flip transition steps excluded) ────────
         bins = max(8, min(30, len(steps) // 2 + 1))
         ax_hist.hist(steps, bins=bins, color=_ACCENT, edgecolor=_BG, alpha=0.85)
         if len(steps):
             ax_hist.axvline(steps.mean(), color=_YELLOW, lw=1.2, ls="--",
                             label=f"Mean {steps.mean():.1f} {ul}")
-        ax_hist.set_title("Dither Step Distribution\n(flip steps excluded)",
+        ax_hist.set_title("Dither Step Distribution\n(flip transition steps excluded)",
                           color=_ACCENT, fontsize=10)
         ax_hist.set_xlabel(f"Step ({ul})", **lbl)
         ax_hist.set_ylabel("Count", **lbl)
         ax_hist.legend(fontsize=7, facecolor=_PANEL,
                        edgecolor=_ACCENT2, labelcolor=_FG)
 
-        # ── 4. Rose plot ─────────────────────────────────────────────
-        sa      = stats["step_angles"]
-        flip_tr = flipped[1:n] if len(flipped) >= n else np.zeros(len(sa), bool)
-        sa_ok   = sa[~flip_tr[:len(sa)]] if len(flip_tr) else sa
-
+        # ── 4. Rose plot (flip transition steps excluded) ─────────────
+        sa = stats["step_angles"]
         bins16 = np.linspace(0, 360, 17)
-        counts, _ = np.histogram(sa_ok if len(sa_ok) else sa, bins=bins16)
+        counts, _ = np.histogram(sa if len(sa) else np.array([0.0]), bins=bins16)
         theta  = np.radians(bins16[:-1] + 11.25)
         width  = np.radians(360 / 16)
         ax_rose.set_facecolor(_PANEL)
@@ -717,7 +706,7 @@ class _DitherPlot(FigureCanvas if _MPL else QWidget):
                 "", xy=(pref_rad, counts.max() * 1.15), xytext=(0, 0),
                 arrowprops=dict(arrowstyle="-|>", color=_YELLOW, lw=1.5),
             )
-        ax_rose.set_title("Step Directions\n(flip steps excluded)",
+        ax_rose.set_title("Step Directions\n(flip transition steps excluded)",
                           color=_ACCENT, fontsize=10, pad=12)
         ax_rose.set_theta_zero_location("E")
         ax_rose.set_theta_direction(1)
@@ -933,12 +922,11 @@ class DitherAnalysisWindow(QWidget):
 
     def _on_unit_toggle(self, checked: bool):
         self._btn_px_arcsec.setText("Show in pixels" if checked else "Show in arcsec")
-        # re-render plot and stats with current data
         if self._stats:
-            dx_full, dy_full, flipped_full = _center_offsets(
+            dx_full, dy_full, flip_transitions_full = _center_offsets(
                 self._transforms, self._ref_shape
             )
-            self._render_stats(self._stats, dx_full, dy_full, flipped_full)
+            self._render_stats(self._stats, dx_full, dy_full, flip_transitions_full)
             if self._plot is not None:
                 self._plot.render(self._stats, self._unit_scale, self._unit_label)
 
@@ -1356,16 +1344,14 @@ class DitherAnalysisWindow(QWidget):
     def _analyze(self):
         H, W = self._ref_shape
         if H == 0 or W == 0:
-            # No shape info — fall back to raw tx/ty with a warning
             self._lbl_status.setText(
                 "⚠  No REF_SHAPE available — showing raw tx/ty offsets "
-                "(meridian flips will not be corrected)."
+                "(meridian flip transitions will not be excluded from step stats)."
             )
             self._analyze_raw()
             return
 
-        # Compute image-centre offsets through each transform
-        dx_full, dy_full, flipped_full = _center_offsets(self._transforms, (H, W))
+        dx_full, dy_full, flip_transitions_full = _center_offsets(self._transforms, (H, W))
 
         failed  = int(np.sum(np.isnan(dx_full)))
         mask    = ~np.isnan(dx_full)
@@ -1382,32 +1368,37 @@ class DitherAnalysisWindow(QWidget):
             self._stats_text.setPlainText(msg)
             return
 
-        stats = _compute_stats(dx_full[mask], dy_full[mask], flipped_full[mask])
+        # flip_transitions is between consecutive valid frames after masking
+        # We need to re-derive it for the masked subset
+        ft_masked = flip_transitions_full[
+            np.where(mask)[0][:-1]
+        ] if n_good > 1 else np.zeros(0, dtype=bool)
+
+        stats = _compute_stats(dx_full[mask], dy_full[mask], ft_masked)
         stats["n_total"]  = n_total
         stats["n_failed"] = failed
         self._stats = stats
 
-        self._render_stats(stats, dx_full, dy_full, flipped_full)
+        self._render_stats(stats, dx_full, dy_full, flip_transitions_full)
         if self._plot is not None:
             self._plot.render(stats, self._unit_scale, self._unit_label)
 
         ps = getattr(self, "_pixscale_arcsec", None)
-        ps_suffix = f" ({stats['rms_offset']*ps:.2f}\")" if ps else ""
+        ps_suffix   = f" ({stats['rms_offset']*ps:.2f}\")" if ps else ""
         step_suffix = f" ({stats['mean_step']*ps:.2f}\")" if ps else ""
+        n_ft = stats.get("n_flip_transitions", 0)
         self._lbl_status.setText(
             f"Done — {n_good}/{n_total} frames  |  "
             f"RMS dither: {stats['rms_offset']:.2f} px{ps_suffix}  |  "
             f"Mean step: {stats['mean_step']:.2f} px{step_suffix}"
-            + (f"  |  Flipped frames: {stats['n_flipped']}" if stats["n_flipped"] else "")
+            + (f"  |  Meridian flips: {n_ft}" if n_ft else "")
         )
-        # Enable/disable arcsec toggle based on pixscale availability
         ps = getattr(self, "_pixscale_arcsec", None)
         self._btn_px_arcsec.setEnabled(bool(ps))
         if not ps:
             self._btn_px_arcsec.setToolTip("No pixel scale found in header")
         else:
             self._btn_px_arcsec.setToolTip(f"Pixel scale: {ps:.3f}\"/px")
-
 
     def _analyze_raw(self):
         """Fallback: use raw tx/ty when no REF_SHAPE is available."""
@@ -1431,17 +1422,19 @@ class DitherAnalysisWindow(QWidget):
         if n_good < 2:
             return
 
-        flipped = _detect_flips(self._transforms)
-        stats = _compute_stats(dx[mask], dy[mask], flipped[mask])
+        flip_transitions = _detect_flips(self._transforms)
+        # trim to n-1 for the masked subset
+        ft_masked = flip_transitions[:n_good - 1] if len(flip_transitions) >= n_good - 1 else np.zeros(n_good - 1, bool)
+
+        stats = _compute_stats(dx[mask], dy[mask], ft_masked)
         stats["n_total"]  = len(self._transforms)
         stats["n_failed"] = failed
         self._stats = stats
 
-        self._render_stats(stats, dx, dy, flipped)
+        self._render_stats(stats, dx, dy, flip_transitions)
         if self._plot is not None:
-            self._plot.render(stats)
+            self._plot.render(stats, self._unit_scale, self._unit_label)
 
-        # Enable/disable arcsec toggle based on pixscale availability
         ps = getattr(self, "_pixscale_arcsec", None)
         self._btn_px_arcsec.setEnabled(bool(ps))
         if not ps:
@@ -1455,7 +1448,7 @@ class DitherAnalysisWindow(QWidget):
         s: dict,
         dx_full: np.ndarray,
         dy_full: np.ndarray,
-        flipped_full: np.ndarray,
+        flip_transitions_full: np.ndarray,
     ):
         pref       = _dir_label(s["pref_dir"])
         cov        = s["coverage_px"]
@@ -1478,6 +1471,8 @@ class DitherAnalysisWindow(QWidget):
         cov_str = _px2(cov) if cov > 0 else "N/A (install scipy)"
         ps_str  = f"{ps:.3f}\"/px" if ps else "unknown (no WCS/pixscale in header)"
 
+        n_ft = s.get("n_flip_transitions", 0)
+
         # ── Clustering ───────────────────────────────────────────────
         is_clustered = s.get("is_clustered", False)
         n_cl  = s.get("n_clusters", 1)
@@ -1486,38 +1481,50 @@ class DitherAnalysisWindow(QWidget):
         cfrac = s.get("clustered_frac", 0.0)
         cthr  = s.get("step_threshold", 0.0) * unit_scale
 
-        if is_clustered:
+        n_valid_steps = len(s.get("valid_steps", []))
+        if n_valid_steps < 5:
+            cluster_note = (
+                f"  ℹ  Insufficient steps ({n_valid_steps}) for reliable\n"
+                f"     clustering analysis."
+            )
+        elif is_clustered:
             cluster_note = (
                 f"  ⚠  Clustering detected — {cfrac*100:.0f}% of frames share a\n"
-                f"     pointing position with neighbors.\n"
+                f"     pointing position with neighbours.\n"
                 f"     Within-cluster frames share fixed-pattern noise and\n"
                 f"     may not be fully separated by sigma rejection."
+            )
+        elif mc > 1.0 and n_cl >= 4:
+            cluster_note = (
+                f"  ✓  Dither pattern detected — mean {mc:.1f} frames per position.\n"
+                f"     This is normal for 'dither every N frames' workflows.\n"
+                f"     Fixed-pattern noise will be well suppressed."
             )
         else:
             cluster_note = f"  ✓  No significant clustering  (mean cluster size: {mc:.1f})"
 
         lines = [
             "═" * 52,
-            f"  Reference size   : {shape_str}",
-            f"  Pixel scale      : {ps_str}",
-            f"  Frames analyzed  : {s['n']} / {s['n_total']}",
-            f"  Failed / skipped : {s['n_failed']}",
-            f"  Flipped frames   : {s['n_flipped']}  (frames on opposite meridian side)",
+            f"  Reference size      : {shape_str}",
+            f"  Pixel scale         : {ps_str}",
+            f"  Frames analyzed     : {s['n']} / {s['n_total']}",
+            f"  Failed / skipped    : {s['n_failed']}",
+            f"  Meridian flips      : {n_ft}  (transition steps excluded from stats)",
             "─" * 52,
-            "  Image-centre dither offsets:",
-            f"  RMS offset       : {_px(s['rms_offset'])}",
-            f"  Mean offset      : {_px(s['mean_radius'])}",
-            f"  Max offset       : {_px(s['max_radius'])}",
-            f"  Span X           : {_px(s['span_x'])}",
-            f"  Span Y           : {_px(s['span_y'])}",
-            f"  Std(ΔX)          : {_px(s['std_dx'])}",
-            f"  Std(ΔY)          : {_px(s['std_dy'])}",
+            "  Image-centre dither offsets (all frames):",
+            f"  RMS offset          : {_px(s['rms_offset'])}",
+            f"  Mean offset         : {_px(s['mean_radius'])}",
+            f"  Max offset          : {_px(s['max_radius'])}",
+            f"  Span X              : {_px(s['span_x'])}",
+            f"  Span Y              : {_px(s['span_y'])}",
+            f"  Std(ΔX)             : {_px(s['std_dx'])}",
+            f"  Std(ΔY)             : {_px(s['std_dy'])}",
             "─" * 52,
-            "  Step statistics  (flip transitions excluded):",
-            f"  Mean step        : {_px(s['mean_step'])}",
-            f"  Max step         : {_px(s['max_step'])}",
-            f"  Preferred dir    : {s['pref_dir']:.1f}°  ({pref})",
-            f"  Coverage area    : {cov_str}",
+            "  Step statistics  (flip transition steps excluded):",
+            f"  Mean step           : {_px(s['mean_step'])}",
+            f"  Max step            : {_px(s['max_step'])}",
+            f"  Preferred dir       : {s['pref_dir']:.1f}°  ({pref})",
+            f"  Coverage area       : {cov_str}",
             "─" * 52,
             "  Clustering analysis:",
             f"  Distinct positions  : {n_cl}",
@@ -1540,18 +1547,21 @@ class DitherAnalysisWindow(QWidget):
                 dx_v = dx_full[i]
                 dy_v = dy_full[i]
                 r    = math.hypot(dx_v, dy_v) if not math.isnan(dx_v) else float("nan")
-                flip_tag = "  ⟳ FLIP" if flipped_full[i] else ""
+                # Flag if the step FROM this frame to the next was a flip transition
+                ft_tag = ""
+                if i < len(flip_transitions_full) and flip_transitions_full[i]:
+                    ft_tag = "  → FLIP"
                 if ps and not math.isnan(r):
                     lines.append(
                         f"  [{i:>4}] {fn}  →  "
                         f"ΔX={dx_v:+7.2f}px ({dx_v*ps:+7.2f}\")  "
                         f"ΔY={dy_v:+7.2f}px ({dy_v*ps:+7.2f}\")  "
-                        f"r={r:6.2f}px ({r*ps:.2f}\"){flip_tag}"
+                        f"r={r:6.2f}px ({r*ps:.2f}\"){ft_tag}"
                     )
                 else:
                     lines.append(
                         f"  [{i:>4}] {fn}  →  "
-                        f"ΔX={dx_v:+7.2f}  ΔY={dy_v:+7.2f}  r={r:6.2f} px{flip_tag}"
+                        f"ΔX={dx_v:+7.2f}  ΔY={dy_v:+7.2f}  r={r:6.2f} px{ft_tag}"
                     )
 
         self._stats_text.setPlainText("\n".join(lines))
