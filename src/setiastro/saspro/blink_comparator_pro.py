@@ -1397,9 +1397,15 @@ class BlinkTab(QWidget):
         left_layout.addWidget(self.clearFlagsButton)
 
         # "Clear Images" Button
+        clear_row = QHBoxLayout()
+        self.removeSelectedButton = QPushButton(self.tr('Remove Selected'), self)
+        self.removeSelectedButton.clicked.connect(self.remove_items_from_list)
+        clear_row.addWidget(self.removeSelectedButton)
+
         self.clearButton = QPushButton(self.tr('Clear Images'), self)
         self.clearButton.clicked.connect(self.clearImages)
-        left_layout.addWidget(self.clearButton)
+        clear_row.addWidget(self.clearButton)
+        left_layout.addLayout(clear_row)
 
         # Add progress bar
         self.progress_bar = QProgressBar(self)
@@ -3204,8 +3210,56 @@ class BlinkTab(QWidget):
         send_integ_act.triggered.connect(self._send_to_stacking_integration)
         menu.addAction(send_integ_act)
 
+        menu.addSeparator()
+
+        remove_action = QAction(self.tr("Remove Selected from List"), self)
+        remove_action.triggered.connect(self.remove_items_from_list)
+        menu.addAction(remove_action)        
+        
         menu.exec(self.fileTree.mapToGlobal(pos))
 
+    def remove_items_from_list(self):
+        """Remove selected images from the blink session without touching files on disk."""
+        selected_items = [it for it in self.fileTree.selectedItems() if it and it.childCount() == 0]
+        if not selected_items:
+            QMessageBox.warning(self, self.tr("Warning"), self.tr("No individual image items selected for removal."))
+            return
+
+        # Snapshot indices first before any mutation
+        triplets = []
+        for it in selected_items:
+            p = self._leaf_path(it)
+            if not p:
+                continue
+            try:
+                idx = self.image_paths.index(p)
+            except ValueError:
+                continue
+            triplets.append((idx, p, it))
+
+        if not triplets:
+            return
+
+        removed_indices = []
+        for idx, path, it in triplets:
+            removed_indices.append(idx)
+            # Remove leaf from tree immediately
+            parent = it.parent() or self.fileTree.invisibleRootItem()
+            parent.removeChild(it)
+
+        # Purge arrays descending so indices stay valid
+        for idx in sorted(set(removed_indices), reverse=True):
+            if 0 <= idx < len(self.image_paths):
+                del self.image_paths[idx]
+            if 0 <= idx < len(self.loaded_images):
+                del self.loaded_images[idx]
+
+        # Clear preview if it was showing one of the removed images
+        self.preview_label.clear()
+        self.preview_label.setText(self.tr("No image selected."))
+        self.current_pixmap = None
+
+        self._after_list_changed(sorted(set(removed_indices)))
 
     def push_to_docs(self, item: QTreeWidgetItem):
         """

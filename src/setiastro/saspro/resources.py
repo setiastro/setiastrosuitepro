@@ -264,6 +264,7 @@ class Icons:
     # Stacking
     STACKING = property(lambda self: _resource_path('stacking.png'))
     LIVE_STACKING = property(lambda self: _resource_path('livestacking.png'))
+    DITHER_ANALYSIS = property(lambda self: _resource_path('ditheranalysis.png'))
     IMAGE_COMBINE = property(lambda self: _resource_path('imagecombine.png'))
     PLANETARY_STACKER = property(lambda self: _resource_path('planetarystacker.png'))
     PLANET_PROJECTION = property(lambda self: _resource_path('3dplanet.png'))   
@@ -503,6 +504,7 @@ _LEGACY_ICON_MAP = {
     'mosaic_path': 'mosaic.png',
     'rescale_path': 'rescale.png',
     'staralign_path': 'staralign.png',
+    'dithericon_path': 'ditheranalysis.png',
     'mask_path': 'maskapply.png',
     'platesolve_path': 'platesolve.png',
     'psf_path': 'psf.png',

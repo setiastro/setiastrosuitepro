@@ -1,4 +1,4 @@
-#legacy.image_manager.py
+#src/setiastro/saspro/legacy/image_manager.py
 # --- required imports for this module ---
 import os
 import time

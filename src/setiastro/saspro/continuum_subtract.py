@@ -255,10 +255,21 @@ class ContinuumSubtractTab(QWidget):
         str_row.addStretch(1)
         opts_l.addLayout(str_row)
 
+        gpu_row = QHBoxLayout()
+        gpu_row.setContentsMargins(19, 0, 0, 0)
+        self.denoise_gpu_checkbox = QCheckBox("Use GPU")
+        self.denoise_gpu_checkbox.setChecked(True)
+        self.denoise_gpu_checkbox.setStyleSheet("font-size:11px;")
+        self.denoise_gpu_checkbox.setToolTip("Uncheck to force CPU denoising (slower but avoids GPU memory issues)")
+        gpu_row.addWidget(self.denoise_gpu_checkbox)
+        gpu_row.addStretch(1)
+        opts_l.addLayout(gpu_row)
+
         # wire enable/disable
         def _sync_denoise(checked):
             self.denoise_strength_btn.setEnabled(checked)
             self.denoise_strength_label.setEnabled(checked)
+            self.denoise_gpu_checkbox.setEnabled(checked)
         self.denoise_checkbox.toggled.connect(_sync_denoise)
         _sync_denoise(True)
 
@@ -823,6 +834,7 @@ class ContinuumSubtractTab(QWidget):
 
         denoise_linear    = self.denoise_checkbox.isChecked()
         denoise_strength  = self.denoise_strength
+        denoise_gpu       = self.denoise_gpu_checkbox.isChecked()
         do_stretch        = self.stretch_checkbox.isChecked()
         do_median_sub     = self.median_sub_checkbox.isChecked()
         do_curves         = self.curves_checkbox.isChecked()
@@ -846,6 +858,7 @@ class ContinuumSubtractTab(QWidget):
                 starless_nb=p["nb_sl"], starless_cont=p["cont_sl"], starless_only=p["starless_only"],
                 threshold=self.threshold_value, summary_gamma=self.summary_gamma, q_factor=self.q_factor,
                 denoise_linear=denoise_linear, denoise_strength=denoise_strength,
+                denoise_gpu=denoise_gpu,
                 do_stretch=do_stretch, do_median_sub=do_median_sub,
                 do_curves=do_curves, no_black_clip=no_black_clip,
             )
@@ -1202,24 +1215,25 @@ class ContinuumSubtractTab(QWidget):
         outer.addLayout(row)
 
         # Actions
+        no_black_clip = self.no_black_clip_checkbox.isChecked()
+
         def _do_autostretch():
             nonlocal current_arr
             try:
                 a = np.asarray(current_arr, dtype=np.float32)
-
-                # Autostretch in-place, respecting mono vs RGB
                 if a.ndim == 2:
-                    stretched = stretch_mono_image(a, target_median=0.25)
+                    stretched = stretch_mono_image(a, target_median=0.25,
+                                                   no_black_clip=no_black_clip)
                     current_arr = np.clip(stretched, 0.0, 1.0).astype(np.float32, copy=False)
                 elif a.ndim == 3 and a.shape[2] == 1:
-                    stretched = stretch_mono_image(a[..., 0], target_median=0.25)
+                    stretched = stretch_mono_image(a[..., 0], target_median=0.25,
+                                                   no_black_clip=no_black_clip)
                     current_arr = np.clip(stretched, 0.0, 1.0).astype(np.float32, copy=False)
                 else:
-                    stretched = stretch_color_image(a, target_median=0.25, linked=False)
+                    stretched = stretch_color_image(a, target_median=0.25, linked=False,
+                                                    no_black_clip=no_black_clip)
                     current_arr = np.clip(stretched, 0.0, 1.0).astype(np.float32, copy=False)
-
                 _set_scene_from_arr(current_arr)
-                # keep current zoom, just refresh pixmap
             except Exception as e:
                 QMessageBox.warning(dlg, "Detail View", f"Autostretch failed:\n{e}")
 
@@ -1347,6 +1361,7 @@ class ContinuumProcessingThread(QThread):
                 starless_nb=None, starless_cont=None, starless_only=False,
                 threshold: float = 5.0, summary_gamma: float = 0.6, q_factor: float = 0.8,
                 denoise_linear: bool = False, denoise_strength: float = 0.90,
+                denoise_gpu: bool = True,
                 do_stretch: bool = True, do_median_sub: bool = True,
                 do_curves: bool = True, no_black_clip: bool = False):
         super().__init__()
@@ -1367,6 +1382,7 @@ class ContinuumProcessingThread(QThread):
         # NEW: Cosmic Clarity integration
         self.denoise_linear   = bool(denoise_linear)
         self.denoise_strength = float(denoise_strength)
+        self.denoise_gpu      = bool(denoise_gpu)
         self.do_stretch       = bool(do_stretch)
         self.do_median_sub    = bool(do_median_sub)
         self.do_curves        = bool(do_curves)
@@ -1415,10 +1431,11 @@ class ContinuumProcessingThread(QThread):
         return QImage(rgb_uint8.data, w, h, 3*w, QImage.Format.Format_RGB888).copy()
 
     @staticmethod
-    def _nonlinear_finalize(lin_img: np.ndarray) -> np.ndarray:
+    def _nonlinear_finalize(lin_img: np.ndarray, no_black_clip: bool = False) -> np.ndarray:
         """Stretch → subtract pedestal → curves, returned as float32 in [0,1]."""
         target_median = 0.25
-        stretched = stretch_color_image(lin_img, target_median, True, False)
+        stretched = stretch_color_image(lin_img, target_median, True, False,
+                                        no_black_clip=no_black_clip)
         final = stretched - 0.7 * np.median(stretched)
         final = np.clip(final, 0, 1)
         return apply_curves_adjustment(final, np.median(final), 0.5).astype(np.float32, copy=False)
@@ -1682,7 +1699,7 @@ class ContinuumProcessingThread(QThread):
                 "separate_channels": False,
                 "denoise_lite": False,
                 "denoise_walking": False,
-                "gpu": True,
+                "gpu": self.denoise_gpu,
                 "chunk_size": 256,
                 "overlap": 64,
                 "temp_stretch": False,

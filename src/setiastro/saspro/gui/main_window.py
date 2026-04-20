@@ -179,7 +179,7 @@ from setiastro.saspro.resources import (
     convoicon_path, spcc_icon_path, sasp_data_path, exoicon_path, peeker_icon,rotatearbitrary_path,
     dse_icon_path, astrobin_filters_csv_path, isophote_path, statstretch_path,
     starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path,
-    nbtorgb_path, freqsep_path, contsub_path, halo_path, cosmic_path,
+    nbtorgb_path, freqsep_path, contsub_path, halo_path, cosmic_path,dithericon_path,
     satellite_path, imagecombine_path, wrench_path, eye_icon_path,multiscale_decomp_path,
     disk_icon_path, nuke_path, hubble_path, collage_path, annotated_path,
     colorwheel_path, font_path, csv_icon_path, spinner_path, wims_path, narrowbandnormalization_path,
@@ -4540,6 +4540,26 @@ class AstroSuiteProMainWindow(
         self._starreg_win.destroyed.connect(lambda: setattr(self, "_starreg_win", None))
         self._starreg_win.setWindowIcon(QIcon(starregistration_path))
         self._starreg_win.show()
+
+    def _open_dither_analysis(self):
+        win = getattr(self, "_dither_analysis_win", None)
+        if win is not None:
+            try:
+                if win.isVisible():
+                    win.raise_()
+                    win.activateWindow()
+                    return
+            except RuntimeError:
+                self._dither_analysis_win = None
+        from setiastro.saspro.dither_analysis import DitherAnalysisWindow
+        self._dither_analysis_win = DitherAnalysisWindow(parent=self)
+        self._dither_analysis_win.setWindowFlag(Qt.WindowType.Window, True)
+        self._dither_analysis_win.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self._dither_analysis_win.destroyed.connect(
+            lambda: setattr(self, "_dither_analysis_win", None)
+        )
+        self._dither_analysis_win.setWindowIcon(QIcon(dithericon_path))
+        self._dither_analysis_win.show()
 
     def _open_rgb_align(self):
         sw = self.mdi.activeSubWindow()
