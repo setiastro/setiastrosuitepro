@@ -372,3 +372,133 @@ def create_model(
         middle_blk_num=int(middle),
         use_sigmoid=False,  # IMPORTANT: keep linear output; engine clips/sanitizes later
     )
+
+class LayerNorm2d_Flat(nn.Module):
+    """1D weight/bias LayerNorm — used by NAFNetLite (Axiom 2.1)."""
+    def __init__(self, num_channels: int, eps: float = 1e-6):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(num_channels))
+        self.bias   = nn.Parameter(torch.zeros(num_channels))
+        self.eps = eps
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        mu    = x.mean(1, keepdim=True)
+        sigma = x.var(1, keepdim=True, unbiased=False)
+        x = (x - mu) / torch.sqrt(sigma + self.eps)
+        return x * self.weight.view(1, -1, 1, 1) + self.bias.view(1, -1, 1, 1)
+
+class SimplifiedChannelAttention(nn.Module):
+    def __init__(self, num_channels: int):
+        super().__init__()
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.conv = nn.Conv2d(num_channels, num_channels, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x * self.conv(self.pool(x))
+
+
+class NAFBlockLite(nn.Module):
+    """NAFBlock as used in Axiom 2.1 NAFNetLite."""
+
+    def __init__(self, channels: int, dw_expand: int = 2, ffn_expand: int = 2):
+        super().__init__()
+        dw_ch  = channels * dw_expand
+        ffn_ch = channels * ffn_expand
+
+        # Spatial mixing
+        self.norm1 = LayerNorm2d_Flat(channels)
+        self.conv1 = nn.Conv2d(channels, dw_ch, 1)
+        self.conv2 = nn.Conv2d(dw_ch, dw_ch, 3, padding=1, groups=dw_ch)  # depthwise
+        self.gate1 = SimpleGate()                                           # dw_ch → dw_ch//2
+        self.sca   = SimplifiedChannelAttention(dw_ch // 2)
+        self.conv3 = nn.Conv2d(dw_ch // 2, channels, 1)
+
+        # Channel mixing (FFN)
+        self.norm2 = LayerNorm2d_Flat(channels)
+        self.conv4 = nn.Conv2d(channels, ffn_ch, 1)
+        self.gate2 = SimpleGate()                                           # ffn_ch → ffn_ch//2
+        self.conv5 = nn.Conv2d(ffn_ch // 2, channels, 1)
+
+        self.beta  = nn.Parameter(torch.zeros(1, channels, 1, 1))
+        self.gamma = nn.Parameter(torch.zeros(1, channels, 1, 1))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        y = self.norm1(x)
+        y = self.conv1(y)
+        y = self.conv2(y)
+        y = self.gate1(y)
+        y = self.sca(y)
+        y = self.conv3(y)
+        x = x + y * self.beta
+
+        y = self.norm2(x)
+        y = self.conv4(y)
+        y = self.gate2(y)
+        y = self.conv5(y)
+        x = x + y * self.gamma
+        return x
+
+
+class NAFNetLite(nn.Module):
+    """NAFNet Lite as used by Axiom 2.1 — exact architecture match."""
+
+    def __init__(
+        self,
+        in_channels:     int   = 3,
+        out_channels:    int   = 3,
+        width:           int   = 32,
+        enc_blk_nums:    tuple = (2, 2, 4),
+        middle_blk_num:  int   = 4,
+        dec_blk_nums:    tuple = (2, 2, 2),
+    ):
+        super().__init__()
+        assert len(enc_blk_nums) == len(dec_blk_nums)
+
+        self.intro   = nn.Conv2d(in_channels, width, 3, padding=1)
+        self.ending  = nn.Conv2d(width, out_channels, 3, padding=1)
+
+        self.encoders = nn.ModuleList()
+        self.downs    = nn.ModuleList()
+        self.decoders = nn.ModuleList()
+        self.ups      = nn.ModuleList()
+        self.fusions  = nn.ModuleList()
+
+        ch = width
+        for num in enc_blk_nums:
+            self.encoders.append(nn.Sequential(*[NAFBlockLite(ch) for _ in range(num)]))
+            self.downs.append(nn.Conv2d(ch, ch * 2, 2, stride=2))
+            ch *= 2
+
+        self.middle = nn.Sequential(*[NAFBlockLite(ch) for _ in range(middle_blk_num)])
+
+        for num in reversed(dec_blk_nums):
+            # 3×3 upsample conv — matches checkpoint ups.N.0.weight (out, in, 3, 3)
+            self.ups.append(nn.Sequential(
+                nn.Conv2d(ch, ch * 2, 3, padding=1),
+                nn.PixelShuffle(2),   # ch*2 / 4 = ch//2
+            ))
+            ch //= 2
+            self.fusions.append(nn.Conv2d(ch * 2, ch, 1))
+            self.decoders.append(nn.Sequential(*[NAFBlockLite(ch) for _ in range(num)]))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        inp = x
+        x = self.intro(x)
+
+        skips = []
+        for encoder, down in zip(self.encoders, self.downs):
+            x = encoder(x)
+            skips.append(x)
+            x = down(x)
+
+        x = self.middle(x)
+
+        for decoder, up, fusion, skip in zip(
+            self.decoders, self.ups, self.fusions, reversed(skips)
+        ):
+            x = up(x)
+            x = fusion(torch.cat([x, skip], dim=1))
+            x = decoder(x)
+
+        x = self.ending(x)
+        return torch.clamp(inp + x, 0.0, 1.0)

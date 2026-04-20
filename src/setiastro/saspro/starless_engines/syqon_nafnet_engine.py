@@ -103,17 +103,20 @@ def _load_state_dict(torch, ckpt_path: str):
         out = dict(load_meta)
         if isinstance(src, dict):
             out["checkpoint_keys"] = list(src.keys())[:20]
-            for k in ("epoch", "best_val", "residual_output"):
+            for k in ("epoch", "best_val", "residual_output", "psnr"):
                 if k in src:
                     out[k] = src[k]
             if "args" in src and isinstance(src["args"], dict):
-                # only keep tiny safe bits if you want them
                 for ak in ("base_ch", "depth", "amp"):
                     if ak in src["args"]:
                         out[f"args_{ak}"] = src["args"][ak]
         return out
 
     if isinstance(ckpt, dict):
+        # Axiom 2.1 format: model_state_dict key
+        if "model_state_dict" in ckpt and isinstance(ckpt["model_state_dict"], dict):
+            return ckpt["model_state_dict"], _small_meta(ckpt)
+
         if "state_dict" in ckpt and isinstance(ckpt["state_dict"], dict):
             return ckpt["state_dict"], _small_meta(ckpt)
 
@@ -129,19 +132,47 @@ def _load_state_dict(torch, ckpt_path: str):
     if isinstance(ckpt, dict):
         sample_keys = list(ckpt.keys())[:20]
         raise RuntimeError(
-            f"Unsupported checkpoint format (expected state_dict-like dict). "
-            f"Top-level keys: {sample_keys}"
+            f"Unsupported checkpoint format. Top-level keys: {sample_keys}"
         )
 
     raise RuntimeError(
-        f"Unsupported checkpoint format: top-level object is {type(ckpt).__name__}, "
-        "expected a dict or a state_dict-like mapping."
+        f"Unsupported checkpoint format: top-level object is {type(ckpt).__name__}"
     )
 
+def _detect_block_variant(sd: dict) -> str:
+    """
+    Returns 'lite' if the checkpoint uses NAFBlockLite (Axiom 2.1 / nafnet_lite style),
+    'standard' if it uses the original NAFBlock.
 
-def _infer_nafnet_cfg_from_sd(sd: dict) -> Tuple[int, int]:
+    Lite block keys:  conv1/conv2/conv3/conv4/conv5 + sca.conv
+    Standard block keys: conv1/dwconv/conv2 + sca.1 + ffn1/ffn2
+    """
+    # Most reliable: check for conv3 which only exists in the lite block
+    for k in sd.keys():
+        if k.endswith(".conv3.weight"):
+            return "lite"
+
+    # Secondary: check for ffn1 which only exists in the standard block
+    for k in sd.keys():
+        if k.endswith(".ffn1.weight"):
+            return "standard"
+
+    # Tertiary: norm1.weight shape — (C,) = lite,  (1,C,1,1) = standard
+    for k, v in sd.items():
+        if ".norm1.weight" in k and hasattr(v, "ndim"):
+            return "lite" if v.ndim == 1 else "standard"
+
+    return "standard"
+
+
+def _infer_nafnet_cfg_from_sd(sd: dict) -> tuple[int, tuple, tuple, int]:
+    """
+    Returns (base_ch, enc_blk_nums, dec_blk_nums, middle_blk_num)
+    Auto-detects from state dict keys — works for both old and Axiom 2.1 checkpoints.
+    """
     base_ch = int(sd["intro.weight"].shape[0]) if "intro.weight" in sd else 32
 
+    # Count encoder levels from downs.* keys
     downs_idx = set()
     for k in sd.keys():
         if k.startswith("downs."):
@@ -150,7 +181,7 @@ def _infer_nafnet_cfg_from_sd(sd: dict) -> Tuple[int, int]:
                 downs_idx.add(int(parts[1]))
 
     if downs_idx:
-        levels = max(downs_idx) + 1
+        enc_levels = max(downs_idx) + 1
     else:
         enc_idx = set()
         for k in sd.keys():
@@ -158,10 +189,42 @@ def _infer_nafnet_cfg_from_sd(sd: dict) -> Tuple[int, int]:
                 parts = k.split(".")
                 if len(parts) > 1 and parts[1].isdigit():
                     enc_idx.add(int(parts[1]))
-        levels = (max(enc_idx) + 1) if enc_idx else 4
+        enc_levels = (max(enc_idx) + 1) if enc_idx else 4
 
-    levels = max(1, min(8, int(levels)))
-    return base_ch, levels
+    enc_levels = max(1, min(8, int(enc_levels)))
+
+    # Count blocks per encoder level
+    enc_blks = []
+    for lvl in range(enc_levels):
+        blk_idx = set()
+        for k in sd.keys():
+            if k.startswith(f"encoders.{lvl}.") and ".norm1.weight" in k:
+                parts = k.split(".")
+                if len(parts) > 2 and parts[2].isdigit():
+                    blk_idx.add(int(parts[2]))
+        enc_blks.append((max(blk_idx) + 1) if blk_idx else 2)
+
+    # Count blocks per decoder level
+    dec_blks = []
+    for lvl in range(enc_levels):
+        blk_idx = set()
+        for k in sd.keys():
+            if k.startswith(f"decoders.{lvl}.") and ".norm1.weight" in k:
+                parts = k.split(".")
+                if len(parts) > 2 and parts[2].isdigit():
+                    blk_idx.add(int(parts[2]))
+        dec_blks.append((max(blk_idx) + 1) if blk_idx else 2)
+
+    # Count middle blocks
+    mid_idx = set()
+    for k in sd.keys():
+        if k.startswith("middle.") and ".norm1.weight" in k:
+            parts = k.split(".")
+            if len(parts) > 1 and parts[1].isdigit():
+                mid_idx.add(int(parts[1]))
+    middle_blk_num = (max(mid_idx) + 1) if mid_idx else 2
+
+    return base_ch, tuple(enc_blks), tuple(dec_blks), middle_blk_num
 
 
 def load_nafnet_model(
@@ -172,6 +235,7 @@ def load_nafnet_model(
     model_kind: str = "nadir",
 ):
     from setiastro.saspro.runtime_torch import import_torch
+    from setiastro.saspro.syqon_model.model import NAFNet, NAFNetLite
 
     torch = import_torch(
         prefer_cuda=use_gpu,
@@ -180,48 +244,45 @@ def load_nafnet_model(
         status_cb=lambda *_: None,
     )
 
-    # unified factory (supports variant="nadir" | "axiomv2")
-    from setiastro.saspro.syqon_model.model import create_model
-
     sd, meta = _load_state_dict(torch, ckpt_path)
-    base_ch, depth = _infer_nafnet_cfg_from_sd(sd)
+    base_ch, enc_blks, dec_blks, middle_blk_num = _infer_nafnet_cfg_from_sd(sd)
+    block_variant = _detect_block_variant(sd)
 
-    variant = (model_kind or "nadir").lower().strip()
-    if variant not in ("nadir", "axiomv2"):
-        variant = "nadir"
+    if block_variant == "lite":
+        model = NAFNetLite(
+            width=base_ch,
+            enc_blk_nums=enc_blks,
+            dec_blk_nums=dec_blks,
+            middle_blk_num=middle_blk_num,
+        )
+    else:
+        model = NAFNet(
+            width=base_ch,
+            enc_blk_nums=enc_blks,
+            dec_blk_nums=dec_blks,
+            middle_blk_num=middle_blk_num,
+            use_sigmoid=False,
+        )
 
-    model = create_model(base_ch=base_ch, depth=depth, variant=variant)
-
-    # OPTIONAL: fail fast if it's clearly the wrong architecture/width
-    # (still keep strict=False for robustness if SyQon adds extra keys)
-    iw = sd.get("intro.weight", None)
-    if iw is not None and hasattr(iw, "shape"):
-        sd_width = int(iw.shape[0])
-        if int(base_ch) != sd_width:
-            raise RuntimeError(
-                f"SyQon checkpoint width mismatch: state_dict intro.weight[0]={sd_width} "
-                f"but inferred base_ch={base_ch} (variant={variant})."
-            )
-
-
-    model.load_state_dict(sd, strict=False)
+    model.load_state_dict(sd, strict=True)
     model.eval()
 
     device = _infer_device(torch, prefer_cuda=use_gpu, prefer_dml=prefer_dml)
     model.to(device)
 
     info = {
-        "model_kind": variant,
+        "model_kind": model_kind,
+        "block_variant": block_variant,
         "base_ch": base_ch,
-        "depth": depth,
+        "enc_blks": enc_blks,
+        "dec_blks": dec_blks,
+        "middle_blk_num": middle_blk_num,
         "meta": meta,
         "device": str(device),
         "torch_version": getattr(torch, "__version__", None),
         "torch_file": getattr(torch, "__file__", None),
     }
     return model, device, info, torch
-
-
 
 def _to_torch_chw(img_chw, device, torch):
     x = np.asarray(img_chw, dtype=np.float32)
@@ -300,7 +361,6 @@ def _predict_tile(
 
     return pred
 
-
 def nafnet_starless_rgb01(
     img_rgb01: np.ndarray,
     ckpt_path: str,
@@ -308,7 +368,7 @@ def nafnet_starless_rgb01(
     tile: int = 512,
     overlap: int = 64,
     prefer_cuda: bool = True,
-    residual_mode: bool = True,  # True = model predicts stars; starless = x - pred
+    residual_mode: bool = True,
     use_amp: bool = False,
     amp_dtype: str = "fp16",
     model_kind: str = "nadir",
@@ -316,10 +376,6 @@ def nafnet_starless_rgb01(
     progress_cb: Optional[Callable[[int, int, str], None]] = None,
     tile_cb=None,
 ):
-    """
-    Input: HWC float32 [0,1], RGB (or mono HxW)
-    Output: starless HWC float32 [0,1] and stars_only HWC float32 [0,1]
-    """
     x = np.asarray(img_rgb01, dtype=np.float32)
     was_mono = (x.ndim == 2) or (x.ndim == 3 and x.shape[2] == 1)
 
@@ -342,17 +398,22 @@ def nafnet_starless_rgb01(
         model_kind=model_kind,
     )
 
+    # NAFNetLite has global residual built into forward() — output IS starless
+    # NAFNet predicts star residual — starless = input - output
+    if info.get("block_variant") == "lite":
+        residual_mode = False
+
     info = dict(info or {})
     info["device"] = str(device)
     info["torch_version"] = getattr(torch, "__version__", None)
     info["torch_file"] = getattr(torch, "__file__", None)
-    # AMP config
+    info["residual_mode"] = residual_mode
+
     use_amp_requested = bool(use_amp)
     amp_dtype = (amp_dtype or "fp16").lower()
     if amp_dtype not in ("fp16", "bf16"):
         amp_dtype = "fp16"
 
-    # only allow AMP where it makes sense
     use_amp_effective = bool(use_amp_requested) and (device.type in ("cuda", "mps"))
     info["use_amp_requested"] = use_amp_requested
     info["use_amp_effective"] = use_amp_effective
@@ -361,11 +422,10 @@ def nafnet_starless_rgb01(
     out_acc = np.zeros((H, W, 3), dtype=np.float32)
     w_acc = np.zeros((H, W, 1), dtype=np.float32)
 
-    # feather weight
     wy = np.hanning(tile).astype(np.float32)
     wx = np.hanning(tile).astype(np.float32)
     w2 = (wy[:, None] * wx[None, :]).astype(np.float32)
-    w2 = w2[..., None]  # tile x tile x 1
+    w2 = w2[..., None]
 
     ys = list(range(0, H, stride))
     xs = list(range(0, W, stride))
@@ -386,18 +446,17 @@ def nafnet_starless_rgb01(
                     pad[:ph, :pw, :] = patch
                     patch = pad
 
-                chw = patch.transpose(2, 0, 1)  # CHW
+                chw = patch.transpose(2, 0, 1)
                 t = _to_torch_chw(chw, device, torch)
 
                 pred = _predict_tile(
-                    model,
-                    t,
+                    model, t,
                     device=device,
                     use_amp=use_amp_effective,
                     amp_dtype=amp_dtype,
                     info=info,
                     torch=torch,
-                )  # HWC float32
+                )
 
                 if residual_mode:
                     starless_patch = patch - pred
@@ -534,7 +593,11 @@ class syqonnafnetSession:
         amp_dtype: str = "fp16",
         progress_cb: Optional[Callable[[int, int, str], None]] = None,
     ):
-        # ---- identical logic to nafnet_starless_rgb01, but uses self.model/device/torch ----
+        # NAFNetLite has global residual built into forward() — output IS starless
+        # NAFNet predicts star residual — starless = input - output
+        if self.info.get("block_variant") == "lite":
+            residual_mode = False
+
         x = np.asarray(img_rgb01, dtype=np.float32)
         was_mono = (x.ndim == 2) or (x.ndim == 3 and x.shape[2] == 1)
 
@@ -553,7 +616,6 @@ class syqonnafnetSession:
         info = dict(self.info or {})
         info["device"] = str(self.device)
 
-        # AMP config (same rules)
         use_amp_requested = bool(use_amp)
         amp_dtype = (amp_dtype or "fp16").lower()
         if amp_dtype not in ("fp16", "bf16"):

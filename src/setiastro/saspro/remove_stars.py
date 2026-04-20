@@ -16,7 +16,7 @@ from PyQt6.QtCore import QThread, pyqtSignal, Qt, QSettings, QUrl
 from PyQt6.QtWidgets import (
     QInputDialog, QMessageBox, QFileDialog,QGroupBox,
     QDialog, QVBoxLayout, QTextEdit, QPushButton, QProgressBar, QDoubleSpinBox,
-    QLabel, QComboBox, QCheckBox, QSpinBox, QFormLayout, QDialogButtonBox, QWidget, QHBoxLayout
+    QLabel, QComboBox, QCheckBox, QSpinBox, QFormLayout, QDialogButtonBox, QWidget, QHBoxLayout, QApplication
 )
 from PyQt6.QtGui import QDesktopServices, QIcon, QPixmap
 
@@ -624,15 +624,19 @@ _SYQON_BUY_URL_NADIR = "https://donate.stripe.com/14AdR9fZFbw85Rb4Wq2B204"
 _SYQON_BUY_URL_AXIOMV2 = "https://syqon.it/starless/"
 
 def _syqon_buy_url_for(model_kind: str) -> str:
-    mk = (model_kind or "nadir").lower().strip()
-    return _SYQON_BUY_URL_AXIOMV2 if mk == "axiomv2" else _SYQON_BUY_URL_NADIR
+    mk = _syqon_norm_kind(model_kind)
+    if mk in ("axiomv2", "axiomv2.1"):
+        return _SYQON_BUY_URL_AXIOMV2
+    return _SYQON_BUY_URL_NADIR
 
 
 def _syqon_model_path(d: Path, model_kind: str) -> Path:
-    mk = (model_kind or "nadir").lower().strip()
-    if mk not in ("nadir", "axiomv2"):
-        mk = "nadir"
-    return d / ("axiomv2.pt" if mk == "axiomv2" else "nadir")
+    mk = _syqon_norm_kind(model_kind)
+    if mk == "axiomv2":
+        return d / "axiomv2.pt"
+    if mk == "axiomv2.1":
+        return d / "axiomv2.1.pt"
+    return d / "nadir"
 
 
 def _syqon_have_deps(d: Path, model_kind: str) -> tuple[bool, bool]:
@@ -691,15 +695,18 @@ def _syqon_compute_target_bg_from_doc(doc) -> float:
 _SYQON_MODEL_LABELS = {
     "nadir": "Nadir",
     "axiomv2": "AxiomV2",
+    "axiomv2.1": "AxiomV2.1",
 }
+
 
 def _syqon_norm_kind(v: str) -> str:
     v = (v or "").strip().lower()
-    # allow user-facing labels too, just in case
     if v in ("nadir", "nadir model"):
         return "nadir"
     if v in ("axiomv2", "axiom2", "axiom v2", "axiom-v2"):
         return "axiomv2"
+    if v in ("axiomv2.1", "axiom2.1", "axiom v2.1", "axiom-v2.1", "axiomv2_1"):
+        return "axiomv2.1"
     return "nadir"
 
 def _rgb01_to_qimage(rgb01: np.ndarray):
@@ -1309,9 +1316,9 @@ class SyQonStarlessDialog(QDialog):
         model_lay.addWidget(self.lbl_model_path)
         self.cmb_model = QComboBox(self)
         self.cmb_model.clear()
-        for key in ("nadir", "axiomv2"):
+        for key in ("nadir", "axiomv2", "axiomv2.1"):
             self.cmb_model.addItem(_SYQON_MODEL_LABELS[key], userData=key)
-        self.cmb_model.setCurrentIndex(0)  # Nadir
+        self.cmb_model.setCurrentIndex(0)
 
         model_lay.addWidget(QLabel("Model variant:", self))
         model_lay.addWidget(self.cmb_model)
@@ -1783,8 +1790,10 @@ class SyQonStarlessDialog(QDialog):
     def _have_model(self) -> bool:
         try:
             p = self._model_dst_path()
+
             return p.exists() and p.is_file()
-        except Exception:
+        except Exception as e:
+            print(f"[SyQon _have_model] exception: {e}")
             return False
 
     def _toggle_bg(self, on: bool):
@@ -1812,31 +1821,24 @@ class SyQonStarlessDialog(QDialog):
         mk = self._model_kind()
         dst = self._model_dst_path()
         url = _syqon_buy_url_for(mk)
-        self.lbl_model_path.setText(f"Installed model path:\n{str(dst)}")
-
-        if mk == "axiomv2":
-            expected = "the AxiomV2 model file"
-        else:
-            expected = "the Nadir model file"
+        label = _SYQON_MODEL_LABELS.get(mk, mk)
 
         if self._have_model():
-            self.lbl.setText("Ready (SyQon model installed).")
+            self.lbl_model_path.setText(f"Installed model path:\n{str(dst)}")
+            self.lbl.setText(f"Ready ({label} model installed).")
             self.btn_process.setEnabled(True)
             self.btn_remove.setEnabled(True)
         else:
+            self.lbl_model_path.setText(f"Model not installed.")
             self.lbl.setText(
-                "SyQon model is not installed.\n\n"
-                "1) Click “Get Starless Model Here…” to purchase/download it.\n"
-                "2) Then click “Install Downloaded Model…” and select the downloaded file named:\n"
-                f"   {expected}\n"
+                f"{label} model is not installed.\n\n"
+                "1) Click \"Get Starless Model Here…\" to purchase/download it.\n"
+                "2) Then click \"Install Downloaded Model…\" and select the downloaded file."
             )
             self.btn_process.setEnabled(False)
             self.btn_remove.setEnabled(False)
 
         self.btn_buy.setEnabled(True)
-        self.btn_buy.setToolTip(
-            "Open SyQon page for this model variant." if url else "Purchase URL not configured yet."
-        )
         self.btn_install.setEnabled(True)
 
     # ------------------------------------------------------------------
@@ -1866,17 +1868,13 @@ class SyQonStarlessDialog(QDialog):
         import shutil
 
         mk = self._model_kind()
-
-        if mk == "axiomv2":
-            expected_desc = "AxiomV2 model file"
-        else:
-            expected_desc = "Nadir model file"
+        label = _SYQON_MODEL_LABELS.get(mk, mk)
 
         src_path, _ = QFileDialog.getOpenFileName(
             self,
-            f"Select SyQon Model File ({expected_desc})",
+            f"Select SyQon {label} Model File",
             "",
-            "All Files (*)"
+            "Model Files (*.pt *.pth *.bin);;All Files (*)"
         )
         if not src_path:
             return
@@ -1886,12 +1884,13 @@ class SyQonStarlessDialog(QDialog):
             QMessageBox.warning(self, "SyQon", "Selected file does not exist.")
             return
 
-        dst = self._model_dst_path()
+        dst = _syqon_model_path(self.data_dir, mk)
         dst.parent.mkdir(parents=True, exist_ok=True)
 
         self.pbar.setVisible(True)
-        self.pbar.setRange(0, 0)  # indeterminate
-        self.lbl.setText("Installing model…")
+        self.pbar.setRange(0, 0)
+        self.lbl.setText(f"Installing {label} model…")
+        QApplication.processEvents()
 
         try:
             shutil.copy2(str(src), str(dst))
@@ -1902,7 +1901,7 @@ class SyQonStarlessDialog(QDialog):
             return
 
         self.pbar.setVisible(False)
-        self.lbl.setText("Model installed.")
+        self.lbl.setText(f"{label} model installed.")
 
         s = getattr(self.main, "settings", None)
         if s:
