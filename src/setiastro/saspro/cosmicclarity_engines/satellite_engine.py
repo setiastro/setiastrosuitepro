@@ -217,7 +217,23 @@ def _build_torch_models(torch):
                 nn.BatchNorm2d(64),
                 nn.ReLU()
             )
-            self.features = models.resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
+            try:
+                self.features = models.resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
+            except Exception as e:
+                import os
+                cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "torch", "hub", "checkpoints")
+                filename = "resnet18-f37072fd.pth"
+                url = "https://download.pytorch.org/models/resnet18-f37072fd.pth"
+                raise RuntimeError(
+                    f"Failed to download ResNet18 pretrained weights (SSL certificate error on macOS).\n\n"
+                    f"Please manually download the file and place it in the correct location:\n\n"
+                    f"  Download URL : {url}\n"
+                    f"  Save to      : {os.path.join(cache_dir, filename)}\n\n"
+                    f"On macOS you can run this in Terminal:\n"
+                    f"  mkdir -p \"{cache_dir}\"\n"
+                    f"  curl -L \"{url}\" -o \"{os.path.join(cache_dir, filename)}\"\n\n"
+                    f"Original error: {e}"
+                ) from e
             self.features.conv1 = nn.Conv2d(64, 64, kernel_size=7, stride=2, padding=3, bias=False)
             self.features.fc = nn.Linear(self.features.fc.in_features, 1)
 
@@ -239,7 +255,23 @@ def _build_torch_models(torch):
                 nn.BatchNorm2d(64),
                 nn.ReLU()
             )
-            self.mobilenet = models.mobilenet_v2(weights=MobileNet_V2_Weights.IMAGENET1K_V1)
+            try:
+                self.mobilenet = models.mobilenet_v2(weights=MobileNet_V2_Weights.IMAGENET1K_V1)
+            except Exception as e:
+                import os
+                cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "torch", "hub", "checkpoints")
+                filename = "mobilenet_v2-b0353104.pth"
+                url = "https://download.pytorch.org/models/mobilenet_v2-b0353104.pth"
+                raise RuntimeError(
+                    f"Failed to download MobileNetV2 pretrained weights (SSL certificate error on macOS).\n\n"
+                    f"Please manually download the file and place it in the correct location:\n\n"
+                    f"  Download URL : {url}\n"
+                    f"  Save to      : {os.path.join(cache_dir, filename)}\n\n"
+                    f"On macOS you can run this in Terminal:\n"
+                    f"  mkdir -p \"{cache_dir}\"\n"
+                    f"  curl -L \"{url}\" -o \"{os.path.join(cache_dir, filename)}\"\n\n"
+                    f"Original error: {e}"
+                ) from e
             self.mobilenet.features[0][0] = nn.Conv2d(
                 64, 32, kernel_size=3, stride=2, padding=1, bias=False
             )
