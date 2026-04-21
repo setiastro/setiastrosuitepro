@@ -271,23 +271,14 @@ def _compute_stats(
     dy: np.ndarray,
     flip_transitions: np.ndarray,
 ) -> dict:
-    """
-    dx/dy are the already-masked (valid frames only) center-offset arrays.
-    flip_transitions is length n-1, True where a step crosses a meridian flip.
-    All frame positions are valid — we only exclude flip transition steps
-    from step statistics.
-    """
     n = len(dx)
     if n == 0:
         return {}
 
     radii = np.hypot(dx, dy)
 
-    # Steps between consecutive valid frames
     steps = np.hypot(np.diff(dx), np.diff(dy)) if n > 1 else np.array([0.0])
 
-    # Exclude only the flip transition steps from step statistics
-    # (that one giant jump when the mount flipped — not a dither step)
     ft = flip_transitions[:n - 1] if len(flip_transitions) >= n - 1 else np.zeros(len(steps), bool)
     valid_steps = steps[~ft] if ft.any() else steps
     if len(valid_steps) == 0:
@@ -303,7 +294,6 @@ def _compute_stats(
             pass
 
     if n > 1:
-        # Step angles — exclude flip transitions from direction stats too
         sa_rad_all = np.arctan2(np.diff(dy), np.diff(dx))
         sa_rad_valid = sa_rad_all[~ft] if ft.any() else sa_rad_all
         if len(sa_rad_valid) > 0:
@@ -318,26 +308,72 @@ def _compute_stats(
         step_angles = np.array([0.0])
         circ_mean   = 0.0
 
-    cs = _cluster_stats(dx, dy, valid_steps)
+    # ── Walking noise metrics ─────────────────────────────────────────────
+    # 1) PCA linearity: ratio of first to second singular value of the
+    #    mean-centred point cloud.  A random 2-D dither → ~1.0.
+    #    A straight-line drift → very large.
+    if n >= 3:
+        pts_c = np.stack([dx - dx.mean(), dy - dy.mean()], axis=1)
+        sv = np.linalg.svd(pts_c, full_matrices=False, compute_uv=False)
+        linearity_ratio = float(sv[0] / (sv[1] + 1e-9))
+    else:
+        linearity_ratio = 1.0
 
+    # 2) Temporal drift: Pearson r between frame index and radial offset.
+    #    Near +1 → positions grow monotonically with time (drift).
+    #    Near 0  → no temporal structure (healthy random dither).
+    if n > 3:
+        frame_idx = np.arange(n, dtype=float)
+        temporal_drift_corr = float(np.corrcoef(frame_idx, radii)[0, 1])
+    else:
+        temporal_drift_corr = 0.0
+
+    # 3) Directional consistency: fraction of valid dither steps whose
+    #    direction lies within 45° of the circular mean direction.
+    #    Random dither → ~0.25 (uniform).  Walking → approaches 1.0.
+    if len(step_angles) > 3:
+        angular_diffs = np.abs(((step_angles - circ_mean + 180.0) % 360.0) - 180.0)
+        dir_consistency = float(np.mean(angular_diffs < 45.0))
+    else:
+        dir_consistency = 0.0
+
+    # Each metric scores 1 if it exceeds its threshold.
+    # Temporal drift alone is insufficient — it fires on outward-exploring
+    # dither patterns with small frame counts.  Require either:
+    #   - linearity alone (strong geometric evidence), or
+    #   - temporal drift + at least one corroborating metric
+    _lin_fired = linearity_ratio        > 4.0
+    _tdc_fired = abs(temporal_drift_corr) > 0.85
+    _dir_fired = dir_consistency        > 0.65
+
+    is_walking = (
+        _lin_fired
+        or (_tdc_fired and (_lin_fired or _dir_fired))
+    )
+
+    cs = _cluster_stats(dx, dy, valid_steps)
     n_flip_transitions = int(ft.sum()) if ft is not None else 0
 
     return dict(
         n=n, dx=dx, dy=dy, radii=radii,
         flip_transitions=flip_transitions,
         steps=steps, valid_steps=valid_steps, step_angles=step_angles,
-        rms_offset  = float(np.sqrt((dx**2 + dy**2).mean())),
-        mean_radius = float(radii.mean()),
-        max_radius  = float(radii.max()),
-        mean_step   = float(valid_steps.mean()),
-        max_step    = float(valid_steps.max()),
-        std_dx      = float(dx.std()),
-        std_dy      = float(dy.std()),
-        coverage_px = coverage,
-        pref_dir    = circ_mean,
-        span_x      = float(dx.max() - dx.min()),
-        span_y      = float(dy.max() - dy.min()),
-        n_flip_transitions = n_flip_transitions,
+        rms_offset       = float(np.sqrt((dx**2 + dy**2).mean())),
+        mean_radius      = float(radii.mean()),
+        max_radius       = float(radii.max()),
+        mean_step        = float(valid_steps.mean()),
+        max_step         = float(valid_steps.max()),
+        std_dx           = float(dx.std()),
+        std_dy           = float(dy.std()),
+        coverage_px      = coverage,
+        pref_dir         = circ_mean,
+        span_x           = float(dx.max() - dx.min()),
+        span_y           = float(dy.max() - dy.min()),
+        n_flip_transitions   = n_flip_transitions,
+        linearity_ratio      = linearity_ratio,
+        temporal_drift_corr  = temporal_drift_corr,
+        dir_consistency      = dir_consistency,
+        is_walking           = is_walking,
         **cs,
     )
 
@@ -843,6 +879,14 @@ class DitherAnalysisWindow(QWidget):
         grp_stats = QGroupBox("Statistics")
         grp_stats.setStyleSheet(self._grp_style())
         sv = QVBoxLayout(grp_stats)
+
+        # ── Warning cards (populated by _render_stats) ────────────────
+        self._warnings_widget = QWidget()
+        self._warnings_layout = QVBoxLayout(self._warnings_widget)
+        self._warnings_layout.setContentsMargins(0, 0, 0, 4)
+        self._warnings_layout.setSpacing(4)
+        sv.addWidget(self._warnings_widget)
+
         self._stats_text = QTextEdit()
         self._stats_text.setReadOnly(True)
         self._stats_text.setStyleSheet(
@@ -1368,8 +1412,6 @@ class DitherAnalysisWindow(QWidget):
             self._stats_text.setPlainText(msg)
             return
 
-        # flip_transitions is between consecutive valid frames after masking
-        # We need to re-derive it for the masked subset
         ft_masked = flip_transitions_full[
             np.where(mask)[0][:-1]
         ] if n_good > 1 else np.zeros(0, dtype=bool)
@@ -1383,17 +1425,19 @@ class DitherAnalysisWindow(QWidget):
         if self._plot is not None:
             self._plot.render(stats, self._unit_scale, self._unit_label)
 
-        ps = getattr(self, "_pixscale_arcsec", None)
+        ps          = getattr(self, "_pixscale_arcsec", None)
         ps_suffix   = f" ({stats['rms_offset']*ps:.2f}\")" if ps else ""
         step_suffix = f" ({stats['mean_step']*ps:.2f}\")" if ps else ""
-        n_ft = stats.get("n_flip_transitions", 0)
+        n_ft        = stats.get("n_flip_transitions", 0)
+        walking_tag = "  |  ✗ WALKING NOISE" if stats.get("is_walking") else ""
+
         self._lbl_status.setText(
             f"Done — {n_good}/{n_total} frames  |  "
             f"RMS dither: {stats['rms_offset']:.2f} px{ps_suffix}  |  "
             f"Mean step: {stats['mean_step']:.2f} px{step_suffix}"
             + (f"  |  Meridian flips: {n_ft}" if n_ft else "")
+            + walking_tag
         )
-        ps = getattr(self, "_pixscale_arcsec", None)
         self._btn_px_arcsec.setEnabled(bool(ps))
         if not ps:
             self._btn_px_arcsec.setToolTip("No pixel scale found in header")
@@ -1423,7 +1467,6 @@ class DitherAnalysisWindow(QWidget):
             return
 
         flip_transitions = _detect_flips(self._transforms)
-        # trim to n-1 for the masked subset
         ft_masked = flip_transitions[:n_good - 1] if len(flip_transitions) >= n_good - 1 else np.zeros(n_good - 1, bool)
 
         stats = _compute_stats(dx[mask], dy[mask], ft_masked)
@@ -1436,20 +1479,143 @@ class DitherAnalysisWindow(QWidget):
             self._plot.render(stats, self._unit_scale, self._unit_label)
 
         ps = getattr(self, "_pixscale_arcsec", None)
+        ps_suffix   = f" ({stats['rms_offset']*ps:.2f}\")" if ps else ""
+        step_suffix = f" ({stats['mean_step']*ps:.2f}\")" if ps else ""
+        n_ft        = stats.get("n_flip_transitions", 0)
+        walking_tag = "  |  ✗ WALKING NOISE" if stats.get("is_walking") else ""
+
+        self._lbl_status.setText(
+            f"Done — {n_good}/{stats['n_total']} frames  |  "
+            f"RMS dither: {stats['rms_offset']:.2f} px{ps_suffix}  |  "
+            f"Mean step: {stats['mean_step']:.2f} px{step_suffix}"
+            + (f"  |  Meridian flips: {n_ft}" if n_ft else "")
+            + walking_tag
+        )
         self._btn_px_arcsec.setEnabled(bool(ps))
         if not ps:
             self._btn_px_arcsec.setToolTip("No pixel scale found in header")
         else:
             self._btn_px_arcsec.setToolTip(f"Pixel scale: {ps:.3f}\"/px")
 
-    # ----------------------------------------------------------------- stats text
-    def _render_stats(
-        self,
-        s: dict,
-        dx_full: np.ndarray,
-        dy_full: np.ndarray,
-        flip_transitions_full: np.ndarray,
-    ):
+    def _build_warning_cards(self, stats: dict) -> list:
+        """
+        Build QFrame warning cards for any issues detected in stats.
+        Returns a list of QFrame widgets (may be empty if all clear).
+        """
+        from PyQt6.QtWidgets import QFrame
+        cards = []
+
+        def _make_card(color_border: str, color_bg: str, headline: str, body: str) -> QFrame:
+            card = QFrame()
+            card.setStyleSheet(
+                f"QFrame{{"
+                f"  background:{color_bg};"
+                f"  border:1px solid {color_border};"
+                f"  border-left:4px solid {color_border};"
+                f"  border-radius:4px;"
+                f"  padding:6px 10px;"
+                f"}}"
+            )
+            cv = QVBoxLayout(card)
+            cv.setContentsMargins(6, 4, 6, 4)
+            cv.setSpacing(2)
+
+            hl = QLabel(headline)
+            hl.setStyleSheet(
+                f"color:{color_border};font-weight:700;font-size:12px;"
+                f"border:none;background:transparent;"
+            )
+            hl.setWordWrap(True)
+            cv.addWidget(hl)
+
+            bl = QLabel(body)
+            bl.setStyleSheet(
+                "color:#cccccc;font-size:11px;"
+                "border:none;background:transparent;"
+            )
+            bl.setWordWrap(True)
+            cv.addWidget(bl)
+            return card
+
+        # ── Walking noise ────────────────────────────────────────────────
+        if stats.get("is_walking"):
+            lr   = stats.get("linearity_ratio", 1.0)
+            tdc  = stats.get("temporal_drift_corr", 0.0)
+            dc   = stats.get("dir_consistency", 0.0)
+
+            reasons = []
+            if lr > 3.5:
+                reasons.append(f"scatter linearity {lr:.1f}× (threshold 3.5×)")
+            if abs(tdc) > 0.75:
+                reasons.append(f"temporal drift correlation {tdc:+.2f} (threshold ±0.75)")
+            if dc > 0.65:
+                reasons.append(f"directional consistency {dc*100:.0f}% (threshold 65%)")
+
+            body = (
+                "Dither offsets form a near-linear track — fixed-pattern noise "
+                "will not be fully suppressed.\n"
+                "Triggered by:  " + ";  ".join(reasons) + "\n"
+                "Likely cause: unguided session with polar alignment error or "
+                "atmospheric drift.  Mitigation: guide, use PHD2 random-direction "
+                "dither, or spread frames across sessions."
+            )
+            cards.append(_make_card(
+                "#e94560", "#2a0d14",
+                "✗  Walking noise pattern detected",
+                body,
+            ))
+
+        # ── Clustering ───────────────────────────────────────────────────
+        if stats.get("is_clustered"):
+            cfrac = stats.get("clustered_frac", 0.0)
+            mx    = stats.get("max_cluster_size", 1)
+            mc    = stats.get("mean_cluster_size", 1.0)
+            body  = (
+                f"{cfrac*100:.0f}% of frames share a pointing position with neighbours "
+                f"(largest cluster: {mx} frames, mean: {mc:.1f}).  "
+                "Within-cluster frames share fixed-pattern noise and may not be "
+                "fully separated by sigma rejection.  Consider dithering every frame "
+                "or reducing the dither interval."
+            )
+            cards.append(_make_card(
+                "#ffc107", "#221a00",
+                "⚠  Dither clustering detected",
+                body,
+            ))
+
+        # ── All clear ────────────────────────────────────────────────────
+        if not cards:
+            ok = QFrame()
+            ok.setStyleSheet(
+                "QFrame{"
+                "  background:#0a1f0a;"
+                "  border:1px solid #4caf50;"
+                "  border-left:4px solid #4caf50;"
+                "  border-radius:4px;"
+                "  padding:6px 10px;"
+                "}"
+            )
+            ov = QVBoxLayout(ok)
+            ov.setContentsMargins(6, 4, 6, 4)
+            ov.setSpacing(0)
+            ol = QLabel("✓  Dither quality looks good")
+            ol.setStyleSheet(
+                "color:#4caf50;font-weight:700;font-size:12px;"
+                "border:none;background:transparent;"
+            )
+            ov.addWidget(ol)
+            cards.append(ok)
+
+        return cards
+
+    def _render_stats(self, s, dx_full, dy_full, flip_transitions_full):
+        # Rebuild warning cards
+        while self._warnings_layout.count():
+            item = self._warnings_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        for card in self._build_warning_cards(s):
+            self._warnings_layout.addWidget(card)
         pref       = _dir_label(s["pref_dir"])
         cov        = s["coverage_px"]
         H, W       = self._ref_shape
@@ -1470,10 +1636,9 @@ class DitherAnalysisWindow(QWidget):
 
         cov_str = _px2(cov) if cov > 0 else "N/A (install scipy)"
         ps_str  = f"{ps:.3f}\"/px" if ps else "unknown (no WCS/pixscale in header)"
+        n_ft    = s.get("n_flip_transitions", 0)
 
-        n_ft = s.get("n_flip_transitions", 0)
-
-        # ── Clustering ───────────────────────────────────────────────
+        # ── Clustering note ──────────────────────────────────────────────
         is_clustered = s.get("is_clustered", False)
         n_cl  = s.get("n_clusters", 1)
         mc    = s.get("mean_cluster_size", 1.0)
@@ -1502,6 +1667,44 @@ class DitherAnalysisWindow(QWidget):
             )
         else:
             cluster_note = f"  ✓  No significant clustering  (mean cluster size: {mc:.1f})"
+
+        # ── Walking noise note ───────────────────────────────────────────
+        is_walking          = s.get("is_walking", False)
+        linearity_ratio     = s.get("linearity_ratio", 1.0)
+        temporal_drift_corr = s.get("temporal_drift_corr", 0.0)
+        dir_consistency     = s.get("dir_consistency", 0.0)
+
+        if is_walking:
+            # Identify which metrics fired so the user understands the diagnosis
+            reasons = []
+            if linearity_ratio > 3.5:
+                reasons.append(f"scatter linearity {linearity_ratio:.1f}× (threshold 3.5×)")
+            if abs(temporal_drift_corr) > 0.75:
+                reasons.append(f"temporal drift correlation {temporal_drift_corr:+.2f} (threshold ±0.75)")
+            if dir_consistency > 0.65:
+                reasons.append(f"directional consistency {dir_consistency*100:.0f}% (threshold 65%)")
+            reason_lines = "\n".join(f"     · {r}" for r in reasons)
+            walking_note = (
+                f"  ✗  WALKING NOISE PATTERN DETECTED\n"
+                f"     The dither offsets form a near-linear track rather than\n"
+                f"     a 2-D scatter.  Triggered by:\n"
+                f"{reason_lines}\n"
+                f"     Fixed-pattern noise (amp glow, column bias, hot pixels)\n"
+                f"     will NOT be fully suppressed — the stack may show\n"
+                f"     residual gradient structure along the drift axis.\n"
+                f"     Likely cause: unguided session with consistent polar\n"
+                f"     alignment error or atmospheric refraction drift.\n"
+                f"     Mitigation: guide, use PHD2 random-direction dither,\n"
+                f"     or collect frames across multiple sessions with\n"
+                f"     intentionally varied PA / target hour angle."
+            )
+        else:
+            walking_note = (
+                f"  ✓  No walking noise pattern  "
+                f"(linearity {linearity_ratio:.1f}×, "
+                f"drift corr {temporal_drift_corr:+.2f}, "
+                f"dir consistency {dir_consistency*100:.0f}%)"
+            )
 
         lines = [
             "═" * 52,
@@ -1534,6 +1737,13 @@ class DitherAnalysisWindow(QWidget):
             f"  Step threshold used : {cthr:.2f} {ul}",
             "",
             cluster_note,
+            "─" * 52,
+            "  Walking noise analysis:",
+            f"  Scatter linearity   : {linearity_ratio:.2f}×  (1.0 = perfect 2-D scatter)",
+            f"  Temporal drift corr : {temporal_drift_corr:+.3f}  (0.0 = no drift)",
+            f"  Dir. consistency    : {dir_consistency*100:.1f}%  (25% = uniform random)",
+            "",
+            walking_note,
             "═" * 52,
             "",
             "  Per-frame  (ΔX, ΔY = image-centre offset from ref,  r = radius):",
@@ -1547,7 +1757,6 @@ class DitherAnalysisWindow(QWidget):
                 dx_v = dx_full[i]
                 dy_v = dy_full[i]
                 r    = math.hypot(dx_v, dy_v) if not math.isnan(dx_v) else float("nan")
-                # Flag if the step FROM this frame to the next was a flip transition
                 ft_tag = ""
                 if i < len(flip_transitions_full) and flip_transitions_full[i]:
                     ft_tag = "  → FLIP"

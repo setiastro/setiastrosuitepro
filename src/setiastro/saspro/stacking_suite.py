@@ -3471,8 +3471,8 @@ def _fits_read_any_hdu_noscale(path: str, memmap: bool) -> tuple[np.ndarray | No
 class _Progress:
     def __init__(self, owner, title: str, maximum: int):
         self._owner = owner
+        self._closed = False
         cancel_text = QCoreApplication.translate("_Progress", "Cancel")
-
         self._pd = QProgressDialog(
             title,
             cancel_text,
@@ -3492,6 +3492,13 @@ class _Progress:
 
         def _on_cancel():
             self._cancelled = True
+            # hide immediately so the user gets feedback, but don't destroy —
+            # the finally block in the stacking method will call close() cleanly
+            try:
+                self._pd.hide()
+            except Exception:
+                pass
+
         self._pd.canceled.connect(_on_cancel, Qt.ConnectionType.QueuedConnection)
         self._pd.show()
         QApplication.processEvents()
@@ -3501,12 +3508,16 @@ class _Progress:
         return self._cancelled
 
     def set_label(self, text: str):
+        if self._closed:
+            return
         try:
             self._pd.setLabelText(text)
         except Exception:
             pass
 
     def set_value(self, v: int):
+        if self._closed:
+            return
         self._value = max(0, min(int(v), self._pd.maximum()))
         try:
             self._pd.setValue(self._value)
@@ -3515,16 +3526,23 @@ class _Progress:
         QApplication.processEvents()
 
     def step(self, n: int = 1, label: str | None = None):
+        if self._closed:
+            return
         if label:
             self.set_label(label)
         self.set_value(self._value + n)
 
     def close(self):
+        if self._closed:
+            return
+        self._closed = True
         try:
+            self._pd.hide()
             self._pd.reset()
             self._pd.deleteLater()
         except Exception:
             pass
+        QApplication.processEvents()
 
 def _count_tiles(h: int, w: int, ch: int, cw: int) -> int:
     ty = (h + ch - 1) // ch
@@ -4925,6 +4943,8 @@ class QuickStackCard(QFrame):
         symbol, color = symbols.get(state, ("●", "#888888"))
         self.status_dot.setText(symbol)
         self.status_dot.setStyleSheet(f"color: {color};")
+
+
 # =============================================================================
 # SplitPreviewWidget
 # A single widget that shows two images side-by-side with a draggable
@@ -5354,7 +5374,8 @@ class StackingSuiteDialog(QDialog):
         if not hasattr(app, "_sasd_log_bus"):
             app._sasd_log_bus = LogBus()
         self._log_bus = app._sasd_log_bus
-
+        # ── Execution monitor (lazy-created, persists for the session) ──
+        self._exec_monitor: Optional["StackingMonitorDialog"] = None
         # Connect status signal ONCE, queued to GUI thread
         try:
             self.status_signal.disconnect()
@@ -5552,6 +5573,23 @@ class StackingSuiteDialog(QDialog):
         self._refresh_quick_stack_summary_later()
 
         self._migrate_drizzle_keys_once()
+
+    def _get_exec_monitor(self) -> "StackingMonitorDialog":
+        """Return the singleton monitor, creating it on first call."""
+        if self._exec_monitor is None or not self._exec_monitor.isVisible() and self._exec_monitor is None:
+            from setiastro.saspro.stacking_monitor import StackingMonitorDialog
+            self._exec_monitor = StackingMonitorDialog(parent=self)
+        return self._exec_monitor
+
+    def _start_exec_monitor(self):
+        m = self._get_exec_monitor()
+        # If a run is already active (timer running, rows present),
+        # just ensure the window is visible — don't clear it
+        if m._run_start is not None and m._tick_timer.isActive():
+            m.show()
+            m.raise_()
+            return
+        m.start_run()
 
     def ingest_paths_from_blink(self, paths: list[str], target: str):
         """
@@ -5955,6 +5993,9 @@ class StackingSuiteDialog(QDialog):
             self.auto_register_after_calibration_cb.setChecked(True)
         except Exception:
             self.settings.setValue("stacking/auto_register_after_cal", True)
+
+        self._start_exec_monitor()
+        self._exec_monitor_pipeline_active = True
 
         # Step 1: build master dark if raw darks exist
         has_raw_darks = bool(getattr(self, "dark_files", None)) or (
@@ -12944,6 +12985,7 @@ class StackingSuiteDialog(QDialog):
         """Creates master darks with minimal RAM usage by loading frames in small tiles
         (GPU-accelerated if available), with adaptive reducers, using a memmap-based
         tile reader (each source file opened once per group)."""
+        self._start_exec_monitor()
         self.update_status(self.tr("Starting Master Dark Creation..."))
         if not self.stacking_directory:
             self.select_stacking_directory()
@@ -13444,6 +13486,12 @@ class StackingSuiteDialog(QDialog):
                 import logging
                 logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             pd.close()
+            try:
+                if self._exec_monitor is not None:
+                    if not getattr(self, "_exec_monitor_pipeline_active", False):
+                        self._exec_monitor.finish_run(True)
+            except Exception:
+                pass
 
     def add_master_dark_to_tree(self, exposure_label: str, master_dark_path: str):
         """
@@ -13690,6 +13738,7 @@ class StackingSuiteDialog(QDialog):
         """Creates master flats using per-frame dark subtraction before stacking (GPU-accelerated if available),
         with adaptive reducers, fast per-frame normalization, and memmapped tile reads (each flat opened once per group)."""
         self.update_status(self.tr("Starting Master Flat Creation..."))
+        self._start_exec_monitor()
         if not self.stacking_directory:
             QMessageBox.warning(self, "Error", "Please set the stacking directory first using the wrench button.")
             return
@@ -14546,6 +14595,12 @@ class StackingSuiteDialog(QDialog):
                 import logging
                 logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             pd.close()
+            try:
+                if self._exec_monitor is not None:
+                    if not getattr(self, "_exec_monitor_pipeline_active", False):
+                        self._exec_monitor.finish_run(True)
+            except Exception:
+                pass
 
     def add_master_flat_to_tree(self, filter_name, master_flat_path):
         """ Adds the newly created Master Flat to the Master Flat TreeBox and stores it. """
@@ -15544,6 +15599,7 @@ class StackingSuiteDialog(QDialog):
     def calibrate_lights(self):
         """Performs calibration on selected light frames."""
         self.assign_best_master_files(fill_only=True)
+        self._start_exec_monitor()
  
         if not self.stacking_directory:
             QMessageBox.warning(self, "Error", "Please set the stacking directory first.")
@@ -16043,6 +16099,15 @@ class StackingSuiteDialog(QDialog):
  
         self.update_status(self.tr("✅ Calibration Complete!"))
         QApplication.processEvents()
+
+        if not self.settings.value("stacking/auto_register_after_cal", False, type=bool):
+            try:
+                if self._exec_monitor is not None:
+                    if not getattr(self, "_exec_monitor_pipeline_active", False):
+                        self._exec_monitor.finish_run(True)
+            except Exception:
+                pass
+
         self.populate_calibrated_lights()
         self._refresh_quick_stack_summary_later()
  
@@ -17134,6 +17199,8 @@ class StackingSuiteDialog(QDialog):
         if getattr(self, "_registration_busy", False):
             self.update_status(self.tr("⏸ Registration already running; ignoring extra click."))
             return
+        
+        self._start_exec_monitor()
         self.update_status(self.tr("🧹 Doing a little tidying up..."))
         user_ref_locked = bool(getattr(self, "_user_ref_locked", False))
 
@@ -17375,7 +17442,7 @@ class StackingSuiteDialog(QDialog):
             star_counts = {}
             measured_frames = []
             preview_medians = {}
-
+            self.update_status(self.tr("📏 Phase: Measurements starting…"))
             max_workers = os.cpu_count() or 4
             chunk_size = max_workers
             chunks = list(chunk_list(all_files, chunk_size))
@@ -17442,6 +17509,7 @@ class StackingSuiteDialog(QDialog):
                 return
 
             self.update_status(self.tr(f"✅ All chunks complete! Measured {len(measured_frames)} frames total."))
+            self.update_status(self.tr("📏 Phase: Measurements complete."))
             # ─────────────────────────────────────────────────────────────────────
             # FAST reference selection: score = starcount / (median * ecc)
             # uses stats we ALREADY measured → good for 100s of frames
@@ -17813,6 +17881,8 @@ class StackingSuiteDialog(QDialog):
             norm_dir = os.path.join(self.stacking_directory, "Normalized_Images")
             os.makedirs(norm_dir, exist_ok=True)
 
+            self.update_status(self.tr("📏 Phase: Normalization starting…"))
+
             ocv_prev = None
             try:
                 ocv_prev = cv2.getNumThreads()
@@ -18030,6 +18100,7 @@ class StackingSuiteDialog(QDialog):
                 self.light_files[group] = [_norm_out_name(p, norm_dir) for p in file_list]
 
             self.update_status(self.tr("✅ Updated self.light_files to use debayered, normalized *_n.fit frames."))
+            self.update_status(self.tr("📏 Phase: Normalization complete."))
 
             from os import path
             ref_path = path.normpath(self.reference_frame)
@@ -18078,7 +18149,10 @@ class StackingSuiteDialog(QDialog):
                 self.update_status(self.tr(f"🚨 Reference file does not exist: {ref_path}"))
                 return
             
+
             self._set_registration_busy(True)
+
+            self.update_status(self.tr("📏 Phase: Star alignment starting…"))
 
             self.alignment_thread = StarRegistrationThread(
                 ref_path,  
@@ -18761,6 +18835,7 @@ class StackingSuiteDialog(QDialog):
         }
 
     def on_registration_complete(self, success, msg):
+        self.update_status(self.tr("📏 Phase: Star alignment complete."))
        
         self.update_status(self.tr(msg))
         if not success:
@@ -19710,8 +19785,22 @@ class StackingSuiteDialog(QDialog):
             if getattr(self, "_mf_failures", None):
                 lines = [f"{g}: {m}" for g, m in self._mf_failures]
                 log("⚠️ MFDeconv finished with failures:\n" + "\n".join(lines))
+                # ↓ ADD THIS
+                try:
+                    if self._exec_monitor is not None:
+                        self._exec_monitor.finish_run(False)
+                    self._exec_monitor_pipeline_active = False
+                except Exception:
+                    pass
             else:
                 log("✅ MFDeconv complete for all groups.")
+                # ↓ ADD THIS
+                try:
+                    if self._exec_monitor is not None:
+                        self._exec_monitor.finish_run(True)
+                    self._exec_monitor_pipeline_active = False
+                except Exception:
+                    pass
             self._set_registration_busy(False)
 
         def _start_next_mf_job():
@@ -19859,6 +19948,7 @@ class StackingSuiteDialog(QDialog):
 
                 if ok and out:
                     self._mf_results[group_key] = out
+                    log(f"✅ MFDeconv group '{group_key}' complete → {os.path.basename(out)}")
 
                     if getattr(self, "_mf_autocrop_enabled", False) and getattr(self, "_mf_autocrop_rect", None):
                         try:
@@ -20004,25 +20094,29 @@ class StackingSuiteDialog(QDialog):
             self.update_status(self.tr(message))
         except Exception:
             pass
-
+        try:
+            if self._exec_monitor is not None:
+                summary = ""
+                if isinstance(payload, dict):
+                    lines = payload.get("summary_lines") or []
+                    summary = "  ".join(str(l) for l in lines if l and not l.startswith("•"))[:80]
+                self._exec_monitor.finish_run(ok, summary)
+                self._exec_monitor_pipeline_active = False
+        except Exception:
+            pass
         # ---- MF launch request from GUI thread ----
         if ok and isinstance(payload, dict) and payload.get("action") == "launch_mf":
             try:
                 grouped_files = payload["grouped_files"]
                 transforms_dict = payload["transforms_dict"]
                 prepass = payload["prepass"]
-
                 summary_lines = payload.get("summary_lines", []) or []
                 if summary_lines:
                     try:
                         self.update_status("\n".join(summary_lines))
                     except Exception:
                         pass
-
-                # IMPORTANT: no popup here; continue automatically
                 self.update_status(self.tr("Post-alignment complete. Launching MFDeconv from prepass..."))
-
-                # IMPORTANT: this is now on the GUI thread
                 self.launch_mfdeconv_from_prepass(
                     grouped_files=grouped_files,
                     transforms_dict=transforms_dict,
