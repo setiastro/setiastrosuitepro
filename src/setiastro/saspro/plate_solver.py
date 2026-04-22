@@ -1814,6 +1814,31 @@ def _debug_dump_meta(label: str, meta: dict):
 def tr(s: str) -> str:
     return QCoreApplication.translate("PlateSolver", s)
 
+def plate_solve_numpy_headless(
+    parent,
+    settings,
+    image: np.ndarray,
+    seed_header: "Header | None" = None,
+) -> "tuple[bool, Header | str]":
+    """
+    Solve a numpy image array headlessly — no active document required.
+    Uses the full ASTAP → astrometry.net fallback chain.
+    Returns (ok, merged_header) on success, (False, error_str) on failure.
+    """
+    from astropy.io.fits import Header
+
+    acq_base: Header | None = None
+    if isinstance(seed_header, Header):
+        acq_base = _strip_wcs_keys(seed_header.copy())
+
+    ok, res = _solve_numpy_with_fallback(parent, settings, image, seed_header)
+    if not ok:
+        return False, res
+
+    if isinstance(acq_base, Header) and isinstance(res, Header):
+        return True, _merge_wcs_into_base_header(acq_base, res)
+    return True, res
+
 def plate_solve_doc_inplace(parent, doc, settings) -> Tuple[bool, Header | str]:
     img = getattr(doc, "image", None)
     if img is None:
