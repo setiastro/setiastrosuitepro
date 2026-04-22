@@ -1513,6 +1513,10 @@ class ToolbarMixin:
         self.act_bored.setShortcut(QKeySequence("Ctrl+Alt+M"))
         self.act_bored.triggered.connect(self._launch_bored_minigame)
         
+        self.act_welcome = QAction(self.tr("Show Welcome Screen…"), self)
+        self.act_welcome.setStatusTip(self.tr("Show the SASpro welcome screen again"))
+        self.act_welcome.triggered.connect(self._show_welcome)
+
         # give each action a stable id and register
         def reg(cid, act):
             act.setProperty("command_id", cid)

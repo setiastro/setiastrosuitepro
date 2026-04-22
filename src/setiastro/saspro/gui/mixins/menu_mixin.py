@@ -371,7 +371,8 @@ class MenuMixin:
         m_about.addSeparator()
         m_about.addAction(self.tr("About..."), self._about)
         m_about.addAction(self.act_check_updates)
-
+        m_about.addSeparator()
+        m_about.addAction(self.act_welcome)
 
         m_about.addSeparator()
         m_about.addAction(self.tr("Statistics..."), self._show_statistics)

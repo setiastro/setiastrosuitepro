@@ -259,7 +259,7 @@ class FirstRunDialog(QDialog):
         content_lay = QVBoxLayout(content)
         content_lay.setContentsMargins(20, 18, 20, 18)
         content_lay.setSpacing(14)
-
+        self._add_welcome_blurb(content_lay)
         self._add_card(
             content_lay,
             section_label="THINGS TO DO FIRST",
@@ -428,6 +428,57 @@ class FirstRunDialog(QDialog):
         return None
 
     # ── Card builder ──────────────────────────────────────────────────────────
+    def _add_welcome_blurb(self, parent_layout: QVBoxLayout):
+        card = QFrame()
+        card.setObjectName("card")
+        card_lay = QVBoxLayout(card)
+        card_lay.setContentsMargins(18, 16, 18, 18)
+        card_lay.setSpacing(10)
+
+        lbl_heading = QLabel("Thank you for choosing Seti Astro Suite Pro")
+        lbl_heading.setObjectName("step_text")
+        lbl_heading.setStyleSheet(
+            "font-size: 15px; font-weight: 700; color: #dde0ff;"
+            "border: none; background: transparent;"
+        )
+        lbl_heading.setWordWrap(True)
+        card_lay.addWidget(lbl_heading)
+
+        sep = QFrame()
+        sep.setObjectName("h_sep")
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setFixedHeight(1)
+        card_lay.addWidget(sep)
+        card_lay.addSpacing(4)
+
+        blurb = QLabel(
+            "SASpro is a massive passion project — thousands of hours of development poured into "
+            "building something I'm genuinely proud of: a serious, full-featured "
+            "astrophotography processing and scientific analysis platform that anyone can use.\n\n"
+
+            "This project exists because of a genuine love for deep-sky imaging and a belief that "
+            "powerful tools should be accessible to everyone. Whether you're imaging "
+            "from a light-polluted backyard or a dark-sky site, chasing faint nebulae or transiting "
+            "exoplanets, SASpro was built to be there with you.\n\n"
+            "Thank you for being part of this journey. Clear skies."
+        )
+        blurb.setObjectName("step_note")
+        blurb.setStyleSheet(
+            "font-size: 12px; color: #aaaacc; line-height: 1.6;"
+            "border: none; background: transparent;"
+        )
+        blurb.setWordWrap(True)
+        card_lay.addWidget(blurb)
+
+        sig = QLabel("— Franklin Marek (Seti Astro)")
+        sig.setStyleSheet(
+            "font-size: 12px; font-style: italic; color: #7788cc;"
+            "border: none; background: transparent;"
+        )
+        sig.setAlignment(Qt.AlignmentFlag.AlignRight)
+        card_lay.addWidget(sig)
+
+        parent_layout.addWidget(card)
 
     def _add_card(self, parent_layout: QVBoxLayout, section_label: str, steps: list):
         card = QFrame()
