@@ -880,6 +880,8 @@ class MenuMixin:
                 from PyQt6.QtWidgets import QMessageBox
                 QMessageBox.warning(dlg, "Export PDF", f"PDF export failed:\n{e}")
 
+        btn_pdf.clicked.connect(_export_pdf)
+        
         if not hasattr(self, "_icon_cheat_sheet_dlg"):
             self._icon_cheat_sheet_dlg = None
         self._icon_cheat_sheet_dlg = dlg
