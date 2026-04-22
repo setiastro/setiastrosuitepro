@@ -55,6 +55,12 @@ try:
     from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
     from matplotlib.figure import Figure
     _MPL = True
+
+    # Harden against missing LaTeX installations — must run before any plot
+    matplotlib.rcParams["text.usetex"]        = False
+    matplotlib.rcParams["mathtext.fontset"]   = "dejavusans"
+    matplotlib.rcParams["font.family"]        = "DejaVu Sans"
+    matplotlib.rcParams["axes.unicode_minus"] = False
 except ImportError:
     _MPL = False
 
@@ -752,6 +758,16 @@ class _DitherPlot(FigureCanvas if _MPL else QWidget):
 
     def _do_render(self, stats, unit_scale=1.0, unit_label="px",
                    d_ra=None, d_dec=None, wcs_rotation_deg=None, show_radec=False):
+        # Guard against LaTeX being enabled globally (e.g. by another tool)
+        try:
+            import matplotlib
+            matplotlib.rcParams["text.usetex"]        = False
+            matplotlib.rcParams["mathtext.fontset"]   = "dejavusans"
+            matplotlib.rcParams["font.family"]        = "DejaVu Sans"
+            matplotlib.rcParams["axes.unicode_minus"] = False
+        except Exception:
+            pass
+
         self.fig.clear()
 
         use_radec = (show_radec and d_ra is not None and d_dec is not None)
