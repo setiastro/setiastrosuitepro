@@ -71,6 +71,9 @@ xisf = "*"
 rawpy = "*"
 imageio = "*"
 
+# PDF support
+pypdfium2 = "*"
+
 # utilities
 pytz = "*"
 py-cpuinfo = "*"

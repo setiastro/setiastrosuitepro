@@ -492,20 +492,6 @@ class MenuMixin:
         dlg = QDialog(self)
         dlg.setWindowTitle("Icon Cheat Sheet")
         dlg.setMinimumSize(900, 650)
-        dlg.setStyleSheet("""
-            QDialog { background: #1a1a2e; color: #eaeaea; }
-            QLineEdit {
-                background: #16213e; color: #eaeaea;
-                border: 1px solid #0f3460; border-radius: 4px;
-                padding: 6px 10px; font-size: 12px;
-            }
-            QScrollArea { border: none; background: #1a1a2e; }
-            QPushButton {
-                background: #0f3460; color: #eaeaea;
-                border-radius: 4px; padding: 6px 16px; font-size: 11px;
-            }
-            QPushButton:hover { background: #e94560; }
-        """)
 
         root = QVBoxLayout(dlg)
         root.setContentsMargins(12, 12, 12, 8)
@@ -527,7 +513,6 @@ class MenuMixin:
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         container = QWidget()
-        container.setStyleSheet("background: #1a1a2e;")
         grid = QGridLayout(container)
         grid.setContentsMargins(8, 8, 8, 8)
         grid.setSpacing(4)
@@ -539,9 +524,13 @@ class MenuMixin:
 
         def _card_style():
             return (
-                "QWidget { background: #16213e; border: 1px solid #0f3460; "
-                "border-radius: 6px; }"
+                "QWidget { "
+                "border: 1px solid rgba(255,255,255,0.12); "
+                "border-radius: 6px; "
+                "background: rgba(255,255,255,0.04); "
+                "}"
             )
+
 
         MENU_GROUPS = [
             ("File", [
@@ -669,7 +658,6 @@ class MenuMixin:
                     hdr = QLabel(group_name.upper())
                     hdr.setStyleSheet(
                         "font-size:10px;font-weight:700;color:#e94560;"
-                        "background:transparent;border:none;"
                         "padding:8px 4px 4px 4px;letter-spacing:2px;"
                     )
                     grid.addWidget(hdr, row, 0, 1, col_count)
@@ -699,18 +687,13 @@ class MenuMixin:
                 text_col.setContentsMargins(0, 0, 0, 0)
 
                 title_lbl = QLabel(title)
-                title_lbl.setStyleSheet(
-                    "font-size:11px;font-weight:600;color:#eaeaea;"
-                    "border:none;background:transparent;"
-                )
+                title_lbl.setStyleSheet("font-size:11px;font-weight:600;")
                 title_lbl.setWordWrap(False)
                 text_col.addWidget(title_lbl)
 
                 if tip:
                     tip_lbl = QLabel(tip)
-                    tip_lbl.setStyleSheet(
-                        "font-size:10px;color:#888;border:none;background:transparent;"
-                    )
+                    tip_lbl.setStyleSheet("font-size:10px;opacity:0.7;")
                     tip_lbl.setWordWrap(True)
                     text_col.addWidget(tip_lbl)
 
@@ -881,7 +864,7 @@ class MenuMixin:
                 QMessageBox.warning(dlg, "Export PDF", f"PDF export failed:\n{e}")
 
         btn_pdf.clicked.connect(_export_pdf)
-        
+
         if not hasattr(self, "_icon_cheat_sheet_dlg"):
             self._icon_cheat_sheet_dlg = None
         self._icon_cheat_sheet_dlg = dlg
