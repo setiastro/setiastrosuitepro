@@ -981,6 +981,7 @@ class StellarAlignmentDialog(QDialog):
             image = np.stack([image]*3, axis=-1)
         self.stellar_source = image
         self.lbl_source_file.setText(os.path.basename(path))
+        self.source_file_path = path
 
     def select_target_file(self):
         default_dir = self.settings.value("working_directory", "")
@@ -997,6 +998,7 @@ class StellarAlignmentDialog(QDialog):
             image = np.stack([image]*3, axis=-1)
         self.stellar_target = image
         self.lbl_target_file.setText(os.path.basename(path))
+        self.target_file_path = path
 
     # ------------------------
     # Preview + stretch
@@ -1496,18 +1498,41 @@ class StellarAlignmentDialog(QDialog):
         self.accept()
 
     def _proposed_title(self) -> str:
-        # try to build a friendly title from the source selection
-        if self.source_from_view_radio.isChecked():
-            doc = self.source_view_combo.currentData()
+        # Base the title on the TARGET (the image that was aligned),
+        # with a suffix indicating what it was aligned to.
+        target_name = ""
+        source_name = ""
+
+        # Get target name
+        if self.target_from_view_radio.isChecked():
             try:
-                name = doc.display_name() if callable(getattr(doc, "display_name", None)) else getattr(doc, "display_name", None)
-                if not isinstance(name, str):
-                    name = _fmt_doc_title(doc)
+                doc = self.target_view_combo.currentData()
+                target_name = doc.display_name() if callable(getattr(doc, "display_name", None)) else getattr(doc, "display_name", None)
+                if not isinstance(target_name, str):
+                    target_name = _fmt_doc_title(doc)
             except Exception:
-                name = "Source"
-            return f"Aligned_to_{name}"
-        if self.source_file_path:
-            return f"Aligned_to_{os.path.splitext(os.path.basename(self.source_file_path))[0]}"
+                target_name = ""
+        elif self.target_file_path:
+            target_name = os.path.splitext(os.path.basename(self.target_file_path))[0]
+
+        # Get source name (for the suffix)
+        if self.source_from_view_radio.isChecked():
+            try:
+                doc = self.source_view_combo.currentData()
+                source_name = doc.display_name() if callable(getattr(doc, "display_name", None)) else getattr(doc, "display_name", None)
+                if not isinstance(source_name, str):
+                    source_name = _fmt_doc_title(doc)
+            except Exception:
+                source_name = ""
+        elif self.source_file_path:
+            source_name = os.path.splitext(os.path.basename(self.source_file_path))[0]
+
+        if target_name and source_name:
+            return f"{target_name}_aligned_to_{source_name}"
+        if target_name:
+            return f"{target_name}_aligned"
+        if source_name:
+            return f"aligned_to_{source_name}"
         return "Aligned"
 
     def create_new_view(self):

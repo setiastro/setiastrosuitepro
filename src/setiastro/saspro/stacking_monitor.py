@@ -134,6 +134,26 @@ _r(r"❌ MFDeconv failed for '(.+?)'",            "MF Deconvolution", _ST_FAIL, 
 _r(r"✂️ \(MF\) Saved auto-cropped",              "MF Deconvolution", _ST_OK)
 _r(r"Post-MF finalize failed",                   "MF Deconvolution", _ST_WARN)
 
+# ── Comet stacking ────────────────────────────────────────────────────────
+_r(r"🌠 Comet mode enabled",                     "Comet Stack",      _ST_RUNNING)
+_r(r"🟢 Measuring comet centers",                "Comet Stack",      _ST_RUNNING)
+_r(r"🟠 Comet-aligned integration",              "Comet Stack",      _ST_RUNNING)
+_r(r"✅ Saved CometOnly",                        "Comet Stack",      _ST_OK)
+_r(r"🌠 Comet anchor in reference frame",        "Comet Stack",      _ST_INFO)
+_r(r"◦ user confirmed",                          "Comet Stack",      _ST_INFO)
+_r(r"◦ seed xy=",                               "Comet Stack",      _ST_INFO)
+
+# ── Comet star removal ────────────────────────────────────────────────────
+_r(r"✨ Comet star removal enabled",             "Comet StarRemoval", _ST_RUNNING)
+_r(r"✓ \[\d+/\d+\] starless saved",             "Comet StarRemoval", _ST_RUNNING)
+_r(r"✨ Using comet-aligned STARLESS",           "Comet StarRemoval", _ST_OK)
+_r(r"⚠️ star removal failed",                   "Comet StarRemoval", _ST_WARN)
+_r(r"⚠️ Comet star removal pre-process aborted", "Comet StarRemoval", _ST_FAIL)
+
+# ── Comet blend ───────────────────────────────────────────────────────────
+_r(r"🟡 Blending Stars\+Comet",                 "Comet Blend",      _ST_RUNNING)
+_r(r"✅ Saved CometBlend",                       "Comet Blend",      _ST_OK)
+
 # ── Noise patterns to suppress (tile-level chatter) ──────────────────────
 _SUPPRESS = re.compile(
     r"tile \d+/\d+"
@@ -179,6 +199,17 @@ _SUPPRESS = re.compile(
     r"|🧪 MF prepass payload"
     r"|🌟 MFDeconv star-mask"
     r"|MF prepass payload for"
+    r"|Integrating comet tile \d+"
+    r"|◦ applying rejection algorithm"
+    r"|◦ Tile source: STARLESS"
+    r"|◦ DarkStar comet"
+    r"|◦ StarNet comet"
+    r"|◦ using user seed"
+    r"|◦ seeding first registered"
+    r"|Comet High-Clip"
+    r"|Comet Lower-Trim"
+    r"|comet preview skipped"
+    r"|🌟 MFDeconv star-mask reference"    
     r"|rejection_map="
     r"|seed_image="    
     r"|🧪 Rejection prepass: \d+ group"

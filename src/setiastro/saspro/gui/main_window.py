@@ -4541,6 +4541,13 @@ class AstroSuiteProMainWindow(
         self._starreg_win.setWindowIcon(QIcon(starregistration_path))
         self._starreg_win.show()
 
+    def _show_welcome(self):
+        from setiastro.saspro.first_run_dialog import FirstRunDialog, _SETTINGS_KEY
+        self.settings.remove(_SETTINGS_KEY)
+        self.settings.sync()
+        dlg = FirstRunDialog(self)
+        dlg.exec()
+
     def _open_dither_analysis(self):
         win = getattr(self, "_dither_analysis_win", None)
         if win is not None:

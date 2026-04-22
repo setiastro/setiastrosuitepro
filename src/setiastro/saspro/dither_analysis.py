@@ -263,6 +263,53 @@ def _center_offsets(
 
     return dx, dy, flip_transitions
 
+def _wcs_cd_to_rotation_deg(hdr) -> Optional[float]:
+    """
+    Extract the image rotation angle (degrees, CCW from North to up-axis)
+    from a WCS CD matrix.  Returns None if CD keys are absent.
+    North-up convention: 0° = North, 90° = East (astronomical).
+    """
+    try:
+        cd11 = float(hdr["CD1_1"])
+        cd21 = float(hdr["CD2_1"])
+        # atan2(CD1_2, CD2_2) gives the position angle of North in the image
+        cd12 = float(hdr.get("CD1_2", 0.0))
+        cd22 = float(hdr.get("CD2_2", 0.0))
+        # PA of North = angle of the Dec axis in pixel space
+        rot_rad = math.atan2(cd12, cd22)
+        return math.degrees(rot_rad)
+    except Exception:
+        return None
+
+
+def _pixel_offsets_to_radec_arcsec(
+    dx_px: np.ndarray,
+    dy_px: np.ndarray,
+    hdr,
+) -> Optional[tuple[np.ndarray, np.ndarray]]:
+    """
+    Convert pixel dither offsets to (ΔRA, ΔDec) in arcsec using the CD matrix.
+    ΔRA is corrected for cos(Dec).
+    Returns (d_ra_arcsec, d_dec_arcsec) or None if WCS unavailable.
+    """
+    try:
+        cd11 = float(hdr["CD1_1"])  # deg/px
+        cd12 = float(hdr["CD1_2"])
+        cd21 = float(hdr["CD2_1"])
+        cd22 = float(hdr["CD2_2"])
+        dec_center = float(hdr.get("CRVAL2", 0.0))
+        cos_dec = math.cos(math.radians(dec_center))
+
+        # CD matrix maps pixel offsets to (ΔRA_deg, ΔDec_deg)
+        d_ra_deg  = cd11 * dx_px + cd12 * dy_px
+        d_dec_deg = cd21 * dx_px + cd22 * dy_px
+
+        d_ra_arcsec  = d_ra_deg  * 3600.0 * cos_dec
+        d_dec_arcsec = d_dec_deg * 3600.0
+        return d_ra_arcsec, d_dec_arcsec
+    except Exception:
+        return None
+
 # ═══════════════════════════════════════════════════════════════════════════
 #  Stats
 # ═══════════════════════════════════════════════════════════════════════════
@@ -598,7 +645,10 @@ class _DitherPlot(FigureCanvas if _MPL else QWidget):
         self._last_stats: dict = {}
         self._last_unit_scale: float = 1.0
         self._last_unit_label: str = "px"
-
+        self._on_frame_clicked = None  # callback(index, shift_held)
+        self.mpl_connect("button_press_event", self._on_canvas_click)
+        self._rect_selectors = []
+        self._on_frames_rect_selected = None  # callback(set of indices)        
         # Debounce timer — only rerender after 150ms of no resize events
         from PyQt6.QtCore import QTimer
         self._resize_timer = QTimer(self)
@@ -606,41 +656,131 @@ class _DitherPlot(FigureCanvas if _MPL else QWidget):
         self._resize_timer.setInterval(150)
         self._resize_timer.timeout.connect(self._deferred_draw)
 
-    def render(self, stats: dict, unit_scale: float = 1.0, unit_label: str = "px"):
+    def _install_rect_selectors(self):
+        """Install RectangleSelector on scatter and path axes — right-click drag to select."""
+        from matplotlib.widgets import RectangleSelector
+        self._rect_selectors = []
+        for ax in (getattr(self, "_ax_scatter", None), getattr(self, "_ax_path", None)):
+            if ax is None:
+                continue
+            rs = RectangleSelector(
+                ax,
+                self._on_rect_select,
+                useblit=True,
+                button=[3],  # right mouse button
+                minspanx=2, minspany=2,
+                spancoords="pixels",
+                interactive=False,
+                props=dict(facecolor="#ffc107", edgecolor="#ffc107",
+                           alpha=0.15, fill=True, linewidth=1.5,
+                           linestyle="--"),
+            )
+            self._rect_selectors.append(rs)
+
+    def _on_canvas_click(self, event):
+        if not _MPL or event.button != 1:
+            return
+        if self._on_frame_clicked is None:
+            return
+        if not hasattr(self, "_plot_x") or not hasattr(self, "_plot_y"):
+            return
+        if event.inaxes not in (
+            getattr(self, "_ax_scatter", None),
+            getattr(self, "_ax_path", None),
+        ):
+            return
+        px = self._plot_x
+        py = self._plot_y
+        n  = len(px)
+        if n == 0:
+            return
+        ax = event.inaxes
+        xy_display    = ax.transData.transform(np.column_stack([px, py]))
+        click_display = ax.transData.transform([[event.xdata, event.ydata]])[0]
+        dists = np.hypot(
+            xy_display[:, 0] - click_display[0],
+            xy_display[:, 1] - click_display[1],
+        )
+        nearest = int(np.argmin(dists))
+        if dists[nearest] > 12:
+            return
+        shift = bool(event.key and "shift" in event.key.lower())
+        self._on_frame_clicked(nearest, shift)
+
+    def _on_rect_select(self, eclick, erelease):
+        if not hasattr(self, "_plot_x") or not hasattr(self, "_plot_y"):
+            return
+        x0, x1 = sorted([eclick.xdata, erelease.xdata])
+        y0, y1 = sorted([eclick.ydata, erelease.ydata])
+        px = self._plot_x
+        py = self._plot_y
+        selected = {
+            i for i, (x, y) in enumerate(zip(px, py))
+            if x0 <= x <= x1 and y0 <= y <= y1
+        }
+        if self._on_frames_rect_selected is not None:
+            self._on_frames_rect_selected(selected)
+
+    def render(self, stats: dict, unit_scale: float = 1.0, unit_label: str = "px",
+               d_ra=None, d_dec=None, wcs_rotation_deg=None, show_radec=False):
         if not _MPL or not stats:
             return
-        # Store for deferred redraws triggered by resize
-        self._last_stats      = stats
-        self._last_unit_scale = unit_scale
-        self._last_unit_label = unit_label
-        self._do_render(stats, unit_scale, unit_label)
+        self._last_stats          = stats
+        self._last_unit_scale     = unit_scale
+        self._last_unit_label     = unit_label
+        self._last_d_ra           = d_ra
+        self._last_d_dec          = d_dec
+        self._last_wcs_rot        = wcs_rotation_deg
+        self._last_show_radec     = show_radec
+        self._do_render(stats, unit_scale, unit_label, d_ra, d_dec,
+                        wcs_rotation_deg, show_radec)
 
     def _deferred_draw(self):
         if self._last_stats:
-            self._do_render(self._last_stats, self._last_unit_scale, self._last_unit_label)
+            self._do_render(
+                self._last_stats, self._last_unit_scale, self._last_unit_label,
+                getattr(self, "_last_d_ra", None),
+                getattr(self, "_last_d_dec", None),
+                getattr(self, "_last_wcs_rot", None),
+                getattr(self, "_last_show_radec", False),
+            )
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if _MPL and self._last_stats:
             self._resize_timer.start()  # restart the 150ms countdown
 
-    def _do_render(self, stats: dict, unit_scale: float = 1.0, unit_label: str = "px"):
+    def _do_render(self, stats, unit_scale=1.0, unit_label="px",
+                   d_ra=None, d_dec=None, wcs_rotation_deg=None, show_radec=False):
         self.fig.clear()
 
-        sc = float(unit_scale)
-        dx      = stats["dx"] * sc
-        dy      = stats["dy"] * sc
-        steps   = stats["valid_steps"] * sc
+        use_radec = (show_radec and d_ra is not None and d_dec is not None)
+
+        if use_radec:
+            # RA increases West (left), Dec increases North (up)
+            # Flip RA so East is right on screen
+            plot_x = -d_ra    # East = positive x on plot
+            plot_y =  d_dec   # North = positive y on plot
+            xlabel = "ΔRA (\" East →)"
+            ylabel = "ΔDec (\" North →)"
+        else:
+            sc = float(unit_scale)
+            plot_x = stats["dx"] * sc
+            plot_y = stats["dy"] * sc
+            xlabel = f"ΔX centre ({unit_label})"
+            ylabel = f"ΔY centre ({unit_label})"
+
+        steps   = stats["valid_steps"] * (float(unit_scale) if not use_radec else 1.0)
         n       = stats["n"]
         ft      = stats.get("flip_transitions", np.zeros(max(0, n-1), dtype=bool))
-        ul      = unit_label
 
         gs = self.fig.add_gridspec(2, 2, hspace=0.42, wspace=0.35)
         ax_scatter = self.fig.add_subplot(gs[0, 0])
         ax_path    = self.fig.add_subplot(gs[0, 1])
         ax_hist    = self.fig.add_subplot(gs[1, 0])
         ax_rose    = self.fig.add_subplot(gs[1, 1], polar=True)
-
+        self._ax_scatter = ax_scatter
+        self._ax_path    = ax_path
         for ax in (ax_scatter, ax_path, ax_hist, ax_rose):
             ax.set_facecolor(_PANEL)
             ax.tick_params(colors=_FG, labelsize=8)
@@ -650,9 +790,9 @@ class _DitherPlot(FigureCanvas if _MPL else QWidget):
         lbl = dict(color=_FG, fontsize=9)
         frame_ids = np.arange(n)
 
-        # ── 1. Scatter — all frames, no distinction ───────────────────
+        # ── 1. Scatter ────────────────────────────────────────────────
         sc_plot = ax_scatter.scatter(
-            dx, dy,
+            plot_x, plot_y,
             c=frame_ids, cmap="plasma",
             s=30, zorder=3, edgecolors="none", alpha=0.85,
             vmin=0, vmax=n - 1,
@@ -660,38 +800,39 @@ class _DitherPlot(FigureCanvas if _MPL else QWidget):
         cb = self.fig.colorbar(sc_plot, ax=ax_scatter, pad=0.02)
         cb.set_label("Frame #", color=_FG, fontsize=8)
         cb.ax.yaxis.set_tick_params(color=_FG, labelsize=7)
-
         ax_scatter.scatter([0], [0], marker="+", s=120, c=_ACCENT,
                            zorder=5, linewidths=1.5)
 
+        if use_radec:
+            # Draw N/E compass arrows
+            xlim = ax_scatter.get_xlim()
+            ylim = ax_scatter.get_ylim()
         if n <= 80:
-            for i, (x, y) in enumerate(zip(dx, dy)):
+            for i, (x, y) in enumerate(zip(plot_x, plot_y)):
                 ax_scatter.annotate(
                     str(i), (x, y), fontsize=5, color=_DIM,
                     ha="center", va="bottom",
                     xytext=(0, 3), textcoords="offset points",
                 )
 
-        ax_scatter.set_title("Dither Scatter — image centre",
-                             color=_ACCENT, fontsize=10)
-        ax_scatter.set_xlabel(f"ΔX centre ({ul})", **lbl)
-        ax_scatter.set_ylabel(f"ΔY centre ({ul})", **lbl)
+        title_suffix = " (RA/Dec)" if use_radec else " — image centre"
+        ax_scatter.set_title(f"Dither Scatter{title_suffix}", color=_ACCENT, fontsize=10)
+        ax_scatter.set_xlabel(xlabel, **lbl)
+        ax_scatter.set_ylabel(ylabel, **lbl)
         ax_scatter.axhline(0, color=_DIM, lw=0.5, ls="--")
         ax_scatter.axvline(0, color=_DIM, lw=0.5, ls="--")
 
-        # ── 2. Path — flip transitions shown in orange ────────────────
+        # ── 2. Path ───────────────────────────────────────────────────
         for i in range(n - 1):
             is_flip = (i < len(ft)) and ft[i]
             col = _ORANGE if is_flip else _ACCENT2
-            ax_path.plot([dx[i], dx[i + 1]], [dy[i], dy[i + 1]],
+            ax_path.plot([plot_x[i], plot_x[i+1]], [plot_y[i], plot_y[i+1]],
                          color=col, lw=0.8, zorder=2)
-
-        ax_path.scatter(dx, dy, c=frame_ids, cmap="plasma",
+        ax_path.scatter(plot_x, plot_y, c=frame_ids, cmap="plasma",
                         s=20, zorder=3, edgecolors="none", alpha=0.85,
                         vmin=0, vmax=n - 1)
-        ax_path.scatter([dx[0]], [dy[0]], marker="*", s=100, c=_GREEN,
+        ax_path.scatter([plot_x[0]], [plot_y[0]], marker="*", s=100, c=_GREEN,
                         zorder=6, label="Frame 0")
-        # Add legend entry for flip transitions if any exist
         if ft is not None and ft.any():
             from matplotlib.lines import Line2D
             ax_path.legend(
@@ -706,51 +847,132 @@ class _DitherPlot(FigureCanvas if _MPL else QWidget):
         else:
             ax_path.legend(fontsize=7, facecolor=_PANEL,
                            edgecolor=_ACCENT2, labelcolor=_FG, loc="upper right")
-
-        ax_path.set_title("Dither Path", color=_ACCENT, fontsize=10)
-        ax_path.set_xlabel(f"ΔX centre ({ul})", **lbl)
-        ax_path.set_ylabel(f"ΔY centre ({ul})", **lbl)
+        ax_path.set_title(f"Dither Path{title_suffix}", color=_ACCENT, fontsize=10)
+        ax_path.set_xlabel(xlabel, **lbl)
+        ax_path.set_ylabel(ylabel, **lbl)
         ax_path.axhline(0, color=_DIM, lw=0.5, ls="--")
         ax_path.axvline(0, color=_DIM, lw=0.5, ls="--")
 
-        # ── 3. Step histogram (flip transition steps excluded) ────────
+        # ── 3. Step histogram (unchanged) ─────────────────────────────
         bins = max(8, min(30, len(steps) // 2 + 1))
         ax_hist.hist(steps, bins=bins, color=_ACCENT, edgecolor=_BG, alpha=0.85)
         if len(steps):
             ax_hist.axvline(steps.mean(), color=_YELLOW, lw=1.2, ls="--",
-                            label=f"Mean {steps.mean():.1f} {ul}")
+                            label=f"Mean {steps.mean():.1f} {unit_label}")
         ax_hist.set_title("Dither Step Distribution\n(flip transition steps excluded)",
                           color=_ACCENT, fontsize=10)
-        ax_hist.set_xlabel(f"Step ({ul})", **lbl)
+        ax_hist.set_xlabel(f"Step ({unit_label})", **lbl)
         ax_hist.set_ylabel("Count", **lbl)
         ax_hist.legend(fontsize=7, facecolor=_PANEL,
                        edgecolor=_ACCENT2, labelcolor=_FG)
 
-        # ── 4. Rose plot (flip transition steps excluded) ─────────────
-        sa = stats["step_angles"]
-        bins16 = np.linspace(0, 360, 17)
-        counts, _ = np.histogram(sa if len(sa) else np.array([0.0]), bins=bins16)
-        theta  = np.radians(bins16[:-1] + 11.25)
-        width  = np.radians(360 / 16)
+        # ── 4. Rose plot ──────────────────────────────────────────────
+        if use_radec and d_ra is not None and d_dec is not None:
+            d_east  = -np.diff(d_ra)
+            d_north =  -np.diff(d_dec)
+            ft_mask = ft[:len(d_east)] if len(ft) >= len(d_east) else np.zeros(len(d_east), bool)
+            d_east_v  = d_east[~ft_mask]
+            d_north_v = d_north[~ft_mask]
+            if len(d_east_v) == 0:
+                d_east_v  = d_east
+                d_north_v = d_north
+            sa_rad_plot  = np.arctan2(d_north_v, d_east_v) % (2 * math.pi)
+            mean_e = float(d_east_v.mean())
+            mean_n = float(d_north_v.mean())
+            pref_rad_plot = math.atan2(mean_n, mean_e) % (2 * math.pi)
+            rose_title = "Step Directions (N=up, E=right)"
+        else:
+            sa_rad_plot   = np.radians(stats["step_angles"])
+            pref_rad_plot = math.radians(stats["pref_dir"])
+            rose_title = "Step Directions\n(flip transition steps excluded)"
+        bins16 = np.linspace(0, 2 * math.pi, 17)
+        counts, _ = np.histogram(
+            sa_rad_plot if len(sa_rad_plot) else np.array([0.0]),
+            bins=bins16
+        )
+        theta = bins16[:-1] + math.pi / 16
+        width = 2 * math.pi / 16
         ax_rose.set_facecolor(_PANEL)
         ax_rose.tick_params(colors=_FG, labelsize=7)
         ax_rose.bar(theta, counts, width=width,
                     color=_ACCENT, edgecolor=_BG, alpha=0.85)
+
+        if use_radec:
+            ax_rose.set_theta_zero_location("E")
+            ax_rose.set_theta_direction(1)   # CCW
+            ax_rose.set_thetagrids(
+                [0, 90, 180, 270],
+                labels=["E", "N", "W", "S"],
+                color=_FG, fontsize=8
+            )
+        else:
+            ax_rose.set_theta_zero_location("E")
+            ax_rose.set_theta_direction(1)
+
         if counts.max() > 0:
-            pref_rad = math.radians(stats["pref_dir"])
             ax_rose.annotate(
-                "", xy=(pref_rad, counts.max() * 1.15), xytext=(0, 0),
+                "", xy=(pref_rad_plot, counts.max() * 1.15), xytext=(0, 0),
                 arrowprops=dict(arrowstyle="-|>", color=_YELLOW, lw=1.5),
             )
-        ax_rose.set_title("Step Directions\n(flip transition steps excluded)",
-                          color=_ACCENT, fontsize=10, pad=12)
-        ax_rose.set_theta_zero_location("E")
-        ax_rose.set_theta_direction(1)
-
+        ax_rose.set_title(rose_title, color=_ACCENT, fontsize=10, pad=12)
+        self._plot_x = plot_x
+        self._plot_y = plot_y
+        self._highlight_scatter = None
+        self._highlight_path    = None
+        self._install_rect_selectors()
         import warnings
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message=".*tight_layout.*")
             self.fig.tight_layout()
+        self.draw()
+
+    def highlight_frames(self, indices: set):
+        if not _MPL or not self._last_stats:
+            return
+        if not hasattr(self, "_ax_scatter") or self._ax_scatter is None:
+            return
+
+        # Remove previous highlight artists
+        if getattr(self, "_highlight_scatter", None) is not None:
+            try:
+                self._highlight_scatter.remove()
+            except Exception:
+                pass
+            self._highlight_scatter = None
+        if getattr(self, "_highlight_path", None) is not None:
+            try:
+                self._highlight_path.remove()
+            except Exception:
+                pass
+            self._highlight_path = None
+
+        if not indices or not hasattr(self, "_plot_x"):
+            self.draw()
+            return
+
+        px = self._plot_x
+        py = self._plot_y
+        n  = len(px)
+
+        # Clamp indices to valid range
+        valid = sorted(i for i in indices if 0 <= i < n)
+        if not valid:
+            self.draw()
+            return
+
+        hx = px[valid]
+        hy = py[valid]
+
+        self._highlight_scatter = self._ax_scatter.scatter(
+            hx, hy,
+            s=120, facecolors="none", edgecolors="#ffc107",
+            linewidths=2.0, zorder=6,
+        )
+        self._highlight_path = self._ax_path.scatter(
+            hx, hy,
+            s=120, facecolors="none", edgecolors="#ffc107",
+            linewidths=2.0, zorder=6,
+        )
         self.draw()
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -777,7 +999,12 @@ class DitherAnalysisWindow(QWidget):
         self._stats:      dict = {}
         self._save_dir:   str  = ""
         self._pixscale_arcsec: Optional[float] = None
+        self._frame0_wcs_header = None   # fits.Header with WCS if plate solved
+        self._d_ra_arcsec:  Optional[np.ndarray] = None
+        self._d_dec_arcsec: Optional[np.ndarray] = None
+        self._wcs_rotation_deg: Optional[float] = None        
         self._build_ui()
+        self.status = self._lbl_status
         self._restore_geometry()
 
     # ------------------------------------------------------------------ UI
@@ -834,6 +1061,8 @@ class DitherAnalysisWindow(QWidget):
             "QListWidget::item:selected{background:#e94560;color:#fff;}"
         )
         self._file_list.setMinimumHeight(140)
+        self._file_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._file_list.customContextMenuRequested.connect(self._on_file_list_context_menu)        
         gv.addWidget(self._file_list)
 
         self._chk_save = QCheckBox("Save aligned images")
@@ -849,7 +1078,30 @@ class DitherAnalysisWindow(QWidget):
         out_row.addWidget(self._btn_save_dir)
         out_row.addWidget(self._lbl_save_dir, stretch=1)
         gv.addLayout(out_row)
+        list_hint = QLabel("Right-click selected frames for move / copy / delete options")
+        list_hint.setStyleSheet("color:#888;font-size:10px;padding:1px 0;")
+        list_hint.setWordWrap(True)
+        lv.addWidget(list_hint)
         lv.addWidget(grp_files)
+
+        ps_row = QHBoxLayout()
+        self._btn_plate_solve = QPushButton("🔭 Plate Solve Frame 0")
+        self._btn_plate_solve.setFixedHeight(26)
+        self._btn_plate_solve.setFixedWidth(200)
+        self._btn_plate_solve.setEnabled(False)
+        self._btn_plate_solve.setToolTip(
+            "Plate solve the first frame to obtain sky orientation.\n"
+            "Enables RA/Dec display and true N/E/S/W rose plot."
+        )
+        self._btn_plate_solve.setStyleSheet(
+            "QPushButton{background:#0f3460;color:#eaeaea;border-radius:4px;font-size:11px;}"
+            "QPushButton:hover{background:#e94560;color:#fff;}"
+            "QPushButton:disabled{background:#222;color:#555;}"
+        )
+        self._btn_plate_solve.clicked.connect(self._run_plate_solve)
+        ps_row.addWidget(self._btn_plate_solve)
+        ps_row.addStretch()
+        lv.addLayout(ps_row)
 
         self._btn_run = QPushButton("▶  Run Registration && Analyze")
         self._btn_run.setFixedHeight(34)
@@ -912,21 +1164,51 @@ class DitherAnalysisWindow(QWidget):
         right = QWidget()
         rv = QVBoxLayout(right)
         rv.setContentsMargins(4, 0, 0, 0)
-        # ── toggle px / arcsec ───────────────────────────────────────
-        toggle_row = QHBoxLayout()
-        self._btn_px_arcsec = QPushButton("Show in arcsec")
-        self._btn_px_arcsec.setCheckable(True)
-        self._btn_px_arcsec.setChecked(False)
-        self._btn_px_arcsec.setFixedHeight(24)
-        self._btn_px_arcsec.setStyleSheet(
+
+        # ── unit / WCS controls ──────────────────────────────────────
+        ctrl_row = QHBoxLayout()
+
+        plot_hint = QLabel("Left-click a point to select  ·  Right-click+drag to select multiple")
+        plot_hint.setStyleSheet("color:#888;font-size:10px;padding:1px 0;")
+
+        self._btn_show_px = QPushButton("Pixels")
+        self._btn_show_px.setCheckable(True)
+        self._btn_show_px.setChecked(True)
+        self._btn_show_px.setFixedHeight(24)
+
+        self._btn_show_arcsec = QPushButton("Arcsec")
+        self._btn_show_arcsec.setCheckable(True)
+        self._btn_show_arcsec.setChecked(False)
+        self._btn_show_arcsec.setEnabled(False)
+        self._btn_show_arcsec.setFixedHeight(24)
+
+        self._btn_show_radec = QPushButton("RA / Dec")
+        self._btn_show_radec.setCheckable(True)
+        self._btn_show_radec.setChecked(False)
+        self._btn_show_radec.setEnabled(False)
+        self._btn_show_radec.setFixedHeight(24)
+
+        _btn_style = (
             "QPushButton{background:#0f3460;color:#eaeaea;border-radius:4px;font-size:11px;}"
             "QPushButton:checked{background:#e94560;color:#fff;}"
             "QPushButton:hover{background:#e94560;color:#fff;}"
+            "QPushButton:disabled{background:#222;color:#555;}"
         )
-        self._btn_px_arcsec.toggled.connect(self._on_unit_toggle)
-        toggle_row.addStretch()
-        toggle_row.addWidget(self._btn_px_arcsec)
-        rv.addLayout(toggle_row)
+        for b in (self._btn_show_px, self._btn_show_arcsec, self._btn_show_radec):
+            b.setStyleSheet(_btn_style)
+
+        self._btn_show_px.toggled.connect(self._on_unit_toggle)
+        self._btn_show_arcsec.toggled.connect(self._on_unit_toggle)
+        self._btn_show_radec.toggled.connect(self._on_unit_toggle)
+
+        ctrl_row.addWidget(plot_hint)
+        ctrl_row.addStretch()
+        ctrl_row.addWidget(self._btn_show_px)
+        ctrl_row.addWidget(self._btn_show_arcsec)
+        ctrl_row.addWidget(self._btn_show_radec)
+
+        rv.addLayout(ctrl_row)
+
         if _MPL:
             self._plot = _DitherPlot(right)
             rv.addWidget(self._plot, stretch=1)
@@ -954,6 +1236,197 @@ class DitherAnalysisWindow(QWidget):
         self._btn_save_dir.clicked.connect(self._pick_save_dir)
         self._btn_run.clicked.connect(self._run)
         self._btn_abort.clicked.connect(self._abort)
+        self._file_list.itemSelectionChanged.connect(self._on_frame_selection_changed)
+        self._plot._on_frame_clicked = self._on_plot_frame_clicked
+        self._plot._on_frames_rect_selected = self._on_plot_frames_rect_selected
+        
+    def _on_plot_frames_rect_selected(self, indices: set):
+        if not indices:
+            return
+        # Block selection-changed signal to avoid highlight flicker during bulk select
+        self._file_list.blockSignals(True)
+        self._file_list.clearSelection()
+        for idx in indices:
+            if 0 <= idx < self._file_list.count():
+                item = self._file_list.item(idx)
+                if item:
+                    item.setSelected(True)
+        self._file_list.blockSignals(False)
+
+        # Scroll to the first selected item
+        first = min(indices)
+        if 0 <= first < self._file_list.count():
+            self._file_list.scrollToItem(self._file_list.item(first))
+
+        # Manually trigger highlight since we blocked the signal
+        self._plot.highlight_frames(indices)        
+
+    def _resolve_item_path(self, item) -> Optional[str]:
+        """Resolve full path for a list item, searching near last-used dirs if needed."""
+        path = item.data(Qt.ItemDataRole.UserRole)
+        if path and os.path.exists(path):
+            return path
+
+        basename = item.text()
+        search_dirs = [
+            self._settings.value("DitherAnalysis/last_dir", "", type=str),
+            self._settings.value("DitherAnalysis/last_sasd_dir", "", type=str),
+        ]
+        for d in search_dirs:
+            if not d:
+                continue
+            candidate = os.path.join(d, basename)
+            if os.path.exists(candidate):
+                return candidate
+            stem = os.path.splitext(basename)[0]
+            for ext in (".fit", ".fits", ".fts", ".xisf", ".tif", ".tiff"):
+                candidate = os.path.join(d, stem + ext)
+                if os.path.exists(candidate):
+                    return candidate
+        return None
+
+    def _on_file_list_context_menu(self, pos):
+        selected_items = self._file_list.selectedItems()
+        if not selected_items:
+            return
+
+        from PyQt6.QtWidgets import QMenu
+        from PyQt6.QtGui import QAction
+
+        n = len(selected_items)
+        label = f"{n} frame{'s' if n != 1 else ''}"
+
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            "QMenu{background:#1a1a2e;color:#eaeaea;border:1px solid #0f3460;}"
+            "QMenu::item:selected{background:#e94560;color:#fff;}"
+            "QMenu::separator{height:1px;background:#0f3460;margin:3px 8px;}"
+        )
+
+        act_remove = QAction(f"Remove {label} from list", self)
+        act_move   = QAction(f"Move {label} to folder…", self)
+        act_copy   = QAction(f"Copy {label} to folder…", self)
+        act_delete = QAction(f"Permanently delete {label} from disk…", self)
+
+        act_remove.triggered.connect(lambda: self._ctx_remove(selected_items))
+        act_move.triggered.connect(lambda: self._ctx_move(selected_items))
+        act_copy.triggered.connect(lambda: self._ctx_copy(selected_items))
+        act_delete.triggered.connect(lambda: self._ctx_delete(selected_items))
+
+        # Only offer file operations when paths are available
+        paths = [self._resolve_item_path(i) for i in selected_items]
+        has_paths = any(p is not None for p in paths)
+        act_move.setEnabled(has_paths)
+        act_copy.setEnabled(has_paths)
+        act_delete.setEnabled(has_paths)
+
+        menu.addAction(act_remove)
+        menu.addSeparator()
+        menu.addAction(act_move)
+        menu.addAction(act_copy)
+        menu.addSeparator()
+        menu.addAction(act_delete)
+
+        menu.exec(self._file_list.mapToGlobal(pos))
+
+    def _ctx_remove(self, items):
+        for item in items:
+            self._file_list.takeItem(self._file_list.row(item))
+
+    def _ctx_move(self, items):
+        dest = QFileDialog.getExistingDirectory(self, "Move frames to folder…", "")
+        if not dest:
+            return
+
+        import shutil
+        failed = []
+        for item in items:
+            src = self._resolve_item_path(item)
+            if not src:
+                failed.append(f"{item.text()}: file not found on disk")
+                continue
+            try:
+                shutil.move(src, os.path.join(dest, os.path.basename(src)))
+                self._file_list.takeItem(self._file_list.row(item))
+            except Exception as e:
+                failed.append(f"{os.path.basename(src)}: {e}")
+
+        if failed:
+            QMessageBox.warning(self, "Move Frames",
+                "Some files could not be moved:\n\n" + "\n".join(failed))
+
+    def _ctx_copy(self, items):
+        dest = QFileDialog.getExistingDirectory(self, "Copy frames to folder…", "")
+        if not dest:
+            return
+
+        import shutil
+        failed = []
+        for item in items:
+            src = self._resolve_item_path(item)
+            if not src:
+                failed.append(f"{item.text()}: file not found on disk")
+                continue
+            try:
+                shutil.copy2(src, os.path.join(dest, os.path.basename(src)))
+            except Exception as e:
+                failed.append(f"{os.path.basename(src)}: {e}")
+
+        if failed:
+            QMessageBox.warning(self, "Copy Frames",
+                "Some files could not be copied:\n\n" + "\n".join(failed))
+
+    def _ctx_delete(self, items):
+        n = len(items)
+        reply = QMessageBox.warning(
+            self, "Permanently Delete Frames",
+            f"Permanently delete {n} frame{'s' if n != 1 else ''} from disk?\n\n"
+            "This cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        failed = []
+        for item in items:
+            src = self._resolve_item_path(item)
+            if not src:
+                # No path found but remove from list anyway
+                self._file_list.takeItem(self._file_list.row(item))
+                continue
+            try:
+                os.remove(src)
+                self._file_list.takeItem(self._file_list.row(item))
+            except Exception as e:
+                failed.append(f"{os.path.basename(src)}: {e}")
+
+        if failed:
+            QMessageBox.warning(self, "Delete Frames",
+                "Some files could not be deleted:\n\n" + "\n".join(failed))
+
+    def _on_plot_frame_clicked(self, index: int, shift: bool):
+        if index < 0 or index >= self._file_list.count():
+            return
+
+        item = self._file_list.item(index)
+        if item is None:
+            return
+
+        if not shift:
+            self._file_list.clearSelection()
+
+        item.setSelected(True)
+        self._file_list.scrollToItem(item)
+
+    def _on_frame_selection_changed(self):
+        if self._plot is None or not self._stats:
+            return
+        selected = {
+            self._file_list.row(item)
+            for item in self._file_list.selectedItems()
+        }
+        self._plot.highlight_frames(selected)
 
     @staticmethod
     def _grp_style() -> str:
@@ -965,27 +1438,53 @@ class DitherAnalysisWindow(QWidget):
         )
 
     def _on_unit_toggle(self, checked: bool):
-        self._btn_px_arcsec.setText("Show in pixels" if checked else "Show in arcsec")
+        # Enforce mutual exclusion — only one button active at a time
+        sender = self.sender()
+        if not checked:
+            # Don't allow deselecting the active button by clicking it again
+            if not any(b.isChecked() for b in
+                       (self._btn_show_px, self._btn_show_arcsec, self._btn_show_radec)):
+                sender.setChecked(True)
+            return
+
+        # Uncheck the others
+        for b in (self._btn_show_px, self._btn_show_arcsec, self._btn_show_radec):
+            if b is not sender and b.isChecked():
+                b.blockSignals(True)
+                b.setChecked(False)
+                b.blockSignals(False)
+
         if self._stats:
             dx_full, dy_full, flip_transitions_full = _center_offsets(
                 self._transforms, self._ref_shape
             )
             self._render_stats(self._stats, dx_full, dy_full, flip_transitions_full)
             if self._plot is not None:
-                self._plot.render(self._stats, self._unit_scale, self._unit_label)
+                self._plot.render(
+                    self._stats,
+                    self._unit_scale,
+                    self._unit_label,
+                    d_ra=self._d_ra_arcsec,
+                    d_dec=self._d_dec_arcsec,
+                    wcs_rotation_deg=self._wcs_rotation_deg,
+                    show_radec=self._btn_show_radec.isChecked(),
+                )
 
     @property
     def _unit_scale(self) -> float:
-        """Multiplier to apply to pixel values for display."""
+        if self._btn_show_radec.isChecked():
+            return 1.0  # handled separately via d_ra/d_dec
         ps = getattr(self, "_pixscale_arcsec", None)
-        if self._btn_px_arcsec.isChecked() and ps:
+        if self._btn_show_arcsec.isChecked() and ps:
             return float(ps)
         return 1.0
 
     @property
     def _unit_label(self) -> str:
+        if self._btn_show_radec.isChecked():
+            return "\""
         ps = getattr(self, "_pixscale_arcsec", None)
-        if self._btn_px_arcsec.isChecked() and ps:
+        if self._btn_show_arcsec.isChecked() and ps:
             return "\""
         return "px"
 
@@ -1009,6 +1508,8 @@ class DitherAnalysisWindow(QWidget):
                 item.setData(Qt.ItemDataRole.UserRole, p)
                 item.setToolTip(p)
                 self._file_list.addItem(item)
+        self._btn_plate_solve.setEnabled(self._file_list.count() > 0)
+
 
     def _remove_files(self):
         for item in self._file_list.selectedItems():
@@ -1033,6 +1534,189 @@ class DitherAnalysisWindow(QWidget):
             self._settings.setValue("DitherAnalysis/last_sasd_dir",
                                     os.path.dirname(path))
             self.load_sasd(path)
+
+    def _on_plate_solve_toggled(self, checked: bool):
+        if not checked:
+            self._frame0_wcs_header = None
+            self._d_ra_arcsec       = None
+            self._d_dec_arcsec      = None
+            self._wcs_rotation_deg  = None
+            self._btn_show_radec.setEnabled(False)
+            self._btn_show_radec.setChecked(False)
+            self._btn_show_px.setChecked(True)
+            if self._stats:
+                dx_full, dy_full, ft_full = _center_offsets(
+                    self._transforms, self._ref_shape
+                )
+                self._render_stats(self._stats, dx_full, dy_full, ft_full)
+                if self._plot is not None:
+                    self._plot.render(self._stats, self._unit_scale, self._unit_label)
+            return
+
+        if not self._transforms:
+            QMessageBox.warning(self, "Dither Analysis",
+                                "Load or run analysis first before plate solving.")
+            return
+
+        self._lbl_status.setText("Plate solving frame 0…")
+        QApplication.processEvents()
+        self._run_plate_solve()
+
+    def _run_plate_solve(self):
+        """Plate solve frame 0 by mimicking plate_solve_doc_inplace with a fake doc."""
+        if self._file_list.count() == 0:
+            self._lbl_status.setText("⚠  No frames in list for plate solving.")
+            return
+
+        frame0_item = self._file_list.item(0)
+        frame0_path = frame0_item.data(Qt.ItemDataRole.UserRole)
+
+        if not frame0_path or not os.path.exists(frame0_path):
+            basename = frame0_item.text()
+            search_dirs = [
+                self._settings.value("DitherAnalysis/last_dir", "", type=str),
+                self._settings.value("DitherAnalysis/last_sasd_dir", "", type=str),
+            ]
+            for d in search_dirs:
+                if not d:
+                    continue
+                candidate = os.path.join(d, basename)
+                if os.path.exists(candidate):
+                    frame0_path = candidate
+                    break
+                stem = os.path.splitext(basename)[0]
+                for ext in (".fit", ".fits", ".fts", ".xisf", ".tif", ".tiff"):
+                    candidate = os.path.join(d, stem + ext)
+                    if os.path.exists(candidate):
+                        frame0_path = candidate
+                        break
+                if frame0_path and os.path.exists(frame0_path):
+                    break
+
+        if not frame0_path or not os.path.exists(frame0_path):
+            self._lbl_status.setText("⚠  Cannot locate frame 0 on disk.")
+            QMessageBox.warning(self, "Plate Solve",
+                "Cannot locate the source file for frame 0.\n\n"
+                "For .sasd files, the original image files must be present\n"
+                "in the same folder as the .sasd file.")
+            return
+
+        self._lbl_status.setText(f"Plate solving {os.path.basename(frame0_path)}…")
+        QApplication.processEvents()
+
+        try:
+            from setiastro.saspro.legacy.image_manager import load_image
+            from setiastro.saspro.plate_solver import plate_solve_doc_inplace
+            from astropy.io.fits import Header as _Header
+
+            img, hdr, _, _ = load_image(frame0_path)
+            if img is None:
+                raise ValueError("load_image returned None")
+
+            # Build a minimal fake doc — exactly what plate_solve_doc_inplace expects
+            class _FakeDoc:
+                pass
+
+            doc = _FakeDoc()
+            doc.image = img
+
+            meta = {}
+            if isinstance(hdr, _Header):
+                meta["original_header"] = hdr
+            elif isinstance(hdr, dict):
+                h = _Header()
+                for k, v in hdr.items():
+                    try:
+                        h[k] = v
+                    except Exception:
+                        pass
+                meta["original_header"] = h
+
+            doc.metadata = meta
+
+            # Route status text to our label — plate_solve_doc_inplace looks for parent.status
+            self.status = self._lbl_status
+
+            # Walk up parent chain to find the main window's settings object
+            # exactly as ExoPlanetWindow does — our local _settings won't have
+            # the ASTAP path or astrometry key since those are saved by the main window
+            ps_settings = None
+            p = self.parent()
+            while p is not None:
+                s = getattr(p, "settings", None) or getattr(p, "_settings", None)
+                if s is not None:
+                    ps_settings = s
+                    break
+                p = p.parent()
+            if ps_settings is None:
+                ps_settings = self._settings  # last resort
+
+            ok, result = plate_solve_doc_inplace(self, doc, ps_settings)
+
+            if not ok:
+                self._lbl_status.setText(f"⚠  Plate solve failed: {result}")
+                QMessageBox.warning(self, "Plate Solve", f"Plate solve failed:\n{result}")
+                return
+
+            # doc.metadata was updated in-place by plate_solve_doc_inplace
+            solved_hdr = doc.metadata.get("original_header")
+            if not isinstance(solved_hdr, _Header):
+                raise ValueError("No solved header in doc.metadata after solve")
+
+            self._frame0_wcs_header = solved_hdr
+            self._wcs_rotation_deg  = _wcs_cd_to_rotation_deg(solved_hdr)
+
+            # Compute RA/Dec offsets if we already have transforms
+            if self._ref_shape != (0, 0) and self._transforms:
+                dx_full, dy_full, ft_full = _center_offsets(
+                    self._transforms, self._ref_shape
+                )
+                radec = _pixel_offsets_to_radec_arcsec(dx_full, dy_full, solved_hdr)
+                if radec is not None:
+                    self._d_ra_arcsec, self._d_dec_arcsec = radec
+            else:
+                self._d_ra_arcsec = self._d_dec_arcsec = None
+
+            self._btn_show_radec.setEnabled(True)
+            self._btn_show_radec.setToolTip(
+                f"WCS available  |  rotation {self._wcs_rotation_deg:.2f}°"
+                if self._wcs_rotation_deg is not None else "WCS available"
+            )
+
+            ps = _extract_pixscale(solved_hdr) or getattr(self, "_pixscale_arcsec", None)
+            if ps:
+                self._pixscale_arcsec = ps
+                self._btn_show_arcsec.setEnabled(True)
+
+            rot_str = (f"  |  rotation {self._wcs_rotation_deg:.2f}°"
+                       if self._wcs_rotation_deg is not None else "")
+            self._lbl_status.setText(f"✅ Plate solved{rot_str}")
+
+            if self._stats:
+                self._btn_show_radec.setChecked(True)
+                dx_full, dy_full, ft_full = _center_offsets(
+                    self._transforms, self._ref_shape
+                )
+                self._render_stats(self._stats, dx_full, dy_full, ft_full)
+                if self._plot is not None:
+                    self._plot.render(
+                        self._stats,
+                        self._unit_scale,
+                        self._unit_label,
+                        d_ra=self._d_ra_arcsec,
+                        d_dec=self._d_dec_arcsec,
+                        wcs_rotation_deg=self._wcs_rotation_deg,
+                        show_radec=True,
+                    )
+            else:
+                self._lbl_status.setText(
+                    f"✅ Plate solved{rot_str}  |  Run analysis to see RA/Dec view"
+                )
+
+        except Exception as e:
+            self._lbl_status.setText(f"⚠  Plate solve error: {e}")
+            import traceback
+            traceback.print_exc()
 
     # ----------------------------------------------------------------- run
     def _run(self):
@@ -1277,6 +1961,7 @@ class DitherAnalysisWindow(QWidget):
             pass
 
         self._lbl_status.setText("Registration complete.  Analysing offsets…")
+        self._btn_plate_solve.setEnabled(True)
         self.load_transforms(transforms, filenames, ref_shape=ref_shape)
     def _abort(self):
         if self._reg_thread and self._reg_thread.isRunning():
@@ -1325,6 +2010,8 @@ class DitherAnalysisWindow(QWidget):
         self._file_list.clear()
         for fn in filenames:
             self._file_list.addItem(QListWidgetItem(fn))
+
+        self._btn_plate_solve.setEnabled(len(filenames) > 0)
 
         self._analyze()
 
@@ -1438,11 +2125,24 @@ class DitherAnalysisWindow(QWidget):
             + (f"  |  Meridian flips: {n_ft}" if n_ft else "")
             + walking_tag
         )
-        self._btn_px_arcsec.setEnabled(bool(ps))
+
+        # If plate solve already ran before registration, compute RA/Dec offsets now
+        if self._frame0_wcs_header is not None and self._d_ra_arcsec is None:
+            radec = _pixel_offsets_to_radec_arcsec(dx_full, dy_full, self._frame0_wcs_header)
+            if radec is not None:
+                self._d_ra_arcsec, self._d_dec_arcsec = radec
+            self._btn_show_radec.setEnabled(True)
+
+        ps = getattr(self, "_pixscale_arcsec", None)
+        self._btn_show_arcsec.setEnabled(bool(ps))
         if not ps:
-            self._btn_px_arcsec.setToolTip("No pixel scale found in header")
+            self._btn_show_arcsec.setToolTip("No pixel scale found in header")
+            if self._btn_show_arcsec.isChecked():
+                self._btn_show_px.setChecked(True)
         else:
-            self._btn_px_arcsec.setToolTip(f"Pixel scale: {ps:.3f}\"/px")
+            self._btn_show_arcsec.setToolTip(f"Pixel scale: {ps:.3f}\"/px")
+        # RA/Dec enabled only if plate solve succeeded
+        self._btn_show_radec.setEnabled(self._frame0_wcs_header is not None)
 
     def _analyze_raw(self):
         """Fallback: use raw tx/ty when no REF_SHAPE is available."""
@@ -1491,11 +2191,24 @@ class DitherAnalysisWindow(QWidget):
             + (f"  |  Meridian flips: {n_ft}" if n_ft else "")
             + walking_tag
         )
-        self._btn_px_arcsec.setEnabled(bool(ps))
+
+        # If plate solve already ran before registration, compute RA/Dec offsets now
+        if self._frame0_wcs_header is not None and self._d_ra_arcsec is None:
+            radec = _pixel_offsets_to_radec_arcsec(dx[mask], dy[mask], self._frame0_wcs_header)
+            if radec is not None:
+                self._d_ra_arcsec, self._d_dec_arcsec = radec
+            self._btn_show_radec.setEnabled(True)
+
+        ps = getattr(self, "_pixscale_arcsec", None)
+        self._btn_show_arcsec.setEnabled(bool(ps))
         if not ps:
-            self._btn_px_arcsec.setToolTip("No pixel scale found in header")
+            self._btn_show_arcsec.setToolTip("No pixel scale found in header")
+            if self._btn_show_arcsec.isChecked():
+                self._btn_show_px.setChecked(True)
         else:
-            self._btn_px_arcsec.setToolTip(f"Pixel scale: {ps:.3f}\"/px")
+            self._btn_show_arcsec.setToolTip(f"Pixel scale: {ps:.3f}\"/px")
+        # RA/Dec enabled only if plate solve succeeded
+        self._btn_show_radec.setEnabled(self._frame0_wcs_header is not None)
 
     def _build_warning_cards(self, stats: dict) -> list:
         """

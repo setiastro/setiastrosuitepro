@@ -618,8 +618,9 @@ class FileMixin:
         # One-stop "All Supported" plus focused groups the user can switch to
         filters = (
             "All Supported (*.png *.jpg *.jpeg *.tif *.tiff "
-            "*.fits *.fit *.fits.gz *.fit.gz *.fz *.xisf "
+            "*.fits *.fit *.fits.gz *.fit.gz *.fz *.xisf *.pdf "
             "*.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef);;"
+            "PDF (*.pdf);;"
             "Astro (FITS/XISF) (*.xisf *.fits *.fit *.fits.gz *.fit.gz *.fz);;"
             "RAW Images (*.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef);;"
             "Common Images (*.png *.jpg *.jpeg *.tif *.tiff);;"
@@ -652,9 +653,12 @@ class FileMixin:
             # open each path (doc_manager should emit documentAdded; no manual spawn)
             for p in paths:
                 try:
-                    _ = self.docman.open_path(p)   # emits documentAdded; spawn will happen
+                    if p.lower().endswith(".pdf"):
+                        self._open_pdf(p)
+                        continue
+                    _ = self.docman.open_path(p)
                     self._log(f"Opened: {p}")
-                    self._add_recent_image(p)      # track MRU
+                    self._add_recent_image(p)
 
                     # Increment statistics
                     try:
@@ -676,6 +680,68 @@ class FileMixin:
             except Exception:
                 pass
 
+    def _open_pdf(self, path: str):
+        try:
+            import pypdfium2 as pdfium
+        except ImportError:
+            QMessageBox.warning(
+                self, "PDF Support",
+                "pypdfium2 is required to open PDF files.\n\n"
+                "Install it with:  pip install pypdfium2"
+            )
+            return
+
+        try:
+            pdf = pdfium.PdfDocument(path)
+        except Exception as e:
+            QMessageBox.critical(self, "Open PDF", f"Failed to open PDF:\n{e}")
+            return
+
+        n_pages = len(pdf)
+        stem = os.path.splitext(os.path.basename(path))[0]
+
+        # Ask DPI if multi-page so user knows what they're getting into
+        dpi = 150
+        if n_pages > 1:
+            from PyQt6.QtWidgets import QInputDialog
+            dpi, ok = QInputDialog.getInt(
+                self, "Open PDF",
+                f"PDF has {n_pages} pages. Render DPI:",
+                150, 72, 600, 50
+            )
+            if not ok:
+                return
+
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            for i, page in enumerate(pdf):
+                try:
+                    bitmap = page.render(scale=dpi / 72.0)
+                    pil_img = bitmap.to_pil()
+                    import numpy as np
+                    arr = np.asarray(pil_img, dtype=np.float32) / 255.0
+                    # ensure HWC RGB
+                    if arr.ndim == 2:
+                        arr = np.stack([arr] * 3, axis=-1)
+                    elif arr.shape[2] == 4:
+                        arr = arr[:, :, :3]
+
+                    title = f"{stem}_page{i + 1}" if n_pages > 1 else stem
+                    meta = {
+                        "display_name": title,
+                        "file_path": f"{path}::page{i + 1}",
+                        "original_format": "pdf",
+                        "bit_depth": "8-bit",
+                        "is_mono": False,
+                        "pdf_page": i + 1,
+                        "pdf_dpi": dpi,
+                    }
+                    self.docman.open_array(arr, metadata=meta, title=title)
+                    QApplication.processEvents()
+                except Exception as e:
+                    print(f"[PDF] Page {i + 1} failed: {e}")
+        finally:
+            QApplication.restoreOverrideCursor()
 
     def save_active(self):
         from setiastro.saspro.main_helpers import (

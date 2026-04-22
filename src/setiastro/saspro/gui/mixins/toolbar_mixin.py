@@ -285,18 +285,14 @@ class ToolbarMixin:
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_geom)
 
         tb_geom.addAction(self.act_geom_invert)
-        tb_geom.addSeparator()
         tb_geom.addAction(self.act_geom_flip_h)
         tb_geom.addAction(self.act_geom_flip_v)
-        tb_geom.addSeparator()
         tb_geom.addAction(self.act_geom_rot_cw)
         tb_geom.addAction(self.act_geom_rot_ccw)
         tb_geom.addAction(self.act_geom_rot_180)
         tb_geom.addAction(self.act_geom_rot_any)
-        tb_geom.addSeparator()
         tb_geom.addAction(self.act_geom_rescale)
         tb_geom.addAction(self.act_geom_resize_canvas)
-        tb_geom.addSeparator()
         tb_geom.addAction(self.act_debayer)
 
         self._restore_toolbar_order(tb_geom, "Toolbar/Geometry")
@@ -1513,6 +1509,10 @@ class ToolbarMixin:
         self.act_bored.setShortcut(QKeySequence("Ctrl+Alt+M"))
         self.act_bored.triggered.connect(self._launch_bored_minigame)
         
+        self.act_welcome = QAction(self.tr("Show Welcome Screen…"), self)
+        self.act_welcome.setStatusTip(self.tr("Show the SASpro welcome screen again"))
+        self.act_welcome.triggered.connect(self._show_welcome)
+
         # give each action a stable id and register
         def reg(cid, act):
             act.setProperty("command_id", cid)
