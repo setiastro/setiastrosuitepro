@@ -138,6 +138,20 @@ class MenuMixin:
         m_edit.addAction(self.act_rgb_to_mono)
         m_edit.addAction(self.act_swap_rb)  
 
+        m_display = mb.addMenu(self.tr("&Display"))
+        m_display.addAction(self.act_autostretch)
+        m_display.addAction(self.act_hardstretch)
+        m_display.addAction(self.act_autostretch_continuous)
+        m_display.addAction(self.act_stretch_linked)
+        m_display.addAction(self.act_display_target)
+        m_display.addAction(self.act_display_sigma)
+        m_display.addAction(self.act_bake_display_stretch)
+        m_display.addSeparator()
+        m_display.addAction(self.act_zoom_in)
+        m_display.addAction(self.act_zoom_out)
+        m_display.addAction(self.act_zoom_1_1)
+        m_display.addAction(self.act_zoom_fit)
+        m_display.addAction(self.act_auto_fit_resize)
 
         # Functions
         m_fn = mb.addMenu(self.tr("&Functions"))
@@ -278,7 +292,9 @@ class MenuMixin:
         act_cheats = QAction(self.tr("Keyboard Shortcut Cheat Sheet..."), self)
         act_cheats.triggered.connect(self._show_cheat_sheet)
         m_short.addAction(act_cheats)
-
+        act_icon_sheet = QAction(self.tr("Icon Cheat Sheet..."), self)
+        act_icon_sheet.triggered.connect(self._show_icon_cheat_sheet)
+        m_short.addAction(act_icon_sheet)
         # act_save_sc = QAction("Save Shortcuts Now", self, triggered=self.shortcuts.save_shortcuts)
         # Keep it if you like, but add explicit export/import:
         act_export_sc = QAction(self.tr("Export Shortcuts..."), self, triggered=self._export_shortcuts_dialog)
@@ -458,3 +474,415 @@ class MenuMixin:
                     pass
         except Exception:
             pass
+
+    def _show_icon_cheat_sheet(self):
+        from PyQt6.QtWidgets import (
+            QDialog, QVBoxLayout, QHBoxLayout, QLineEdit, QScrollArea,
+            QWidget, QGridLayout, QLabel, QPushButton, QSizePolicy, QFileDialog
+        )
+        from PyQt6.QtCore import Qt, QSize
+        from PyQt6.QtGui import QPixmap
+        if hasattr(self, "_icon_cheat_sheet_dlg") and self._icon_cheat_sheet_dlg is not None:
+            try:
+                self._icon_cheat_sheet_dlg.raise_()
+                self._icon_cheat_sheet_dlg.activateWindow()
+                return
+            except Exception:
+                self._icon_cheat_sheet_dlg = None
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Icon Cheat Sheet")
+        dlg.setMinimumSize(900, 650)
+        dlg.setStyleSheet("""
+            QDialog { background: #1a1a2e; color: #eaeaea; }
+            QLineEdit {
+                background: #16213e; color: #eaeaea;
+                border: 1px solid #0f3460; border-radius: 4px;
+                padding: 6px 10px; font-size: 12px;
+            }
+            QScrollArea { border: none; background: #1a1a2e; }
+            QPushButton {
+                background: #0f3460; color: #eaeaea;
+                border-radius: 4px; padding: 6px 16px; font-size: 11px;
+            }
+            QPushButton:hover { background: #e94560; }
+        """)
+
+        root = QVBoxLayout(dlg)
+        root.setContentsMargins(12, 12, 12, 8)
+        root.setSpacing(8)
+
+        search_row = QHBoxLayout()
+        search = QLineEdit()
+        search.setPlaceholderText("Search by name, tooltip, or category…")
+        search.setFixedHeight(32)
+        search_row.addWidget(search)
+
+        btn_pdf = QPushButton("Export PDF…")
+        btn_pdf.setFixedHeight(32)
+        search_row.addWidget(btn_pdf)
+        root.addLayout(search_row)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        container = QWidget()
+        container.setStyleSheet("background: #1a1a2e;")
+        grid = QGridLayout(container)
+        grid.setContentsMargins(8, 8, 8, 8)
+        grid.setSpacing(4)
+        scroll.setWidget(container)
+        root.addWidget(scroll, 1)
+
+        ICON_SIZE = 24
+        CARD_W = 260
+
+        def _card_style():
+            return (
+                "QWidget { background: #16213e; border: 1px solid #0f3460; "
+                "border-radius: 6px; }"
+            )
+
+        MENU_GROUPS = [
+            ("File", [
+                self.act_open, self.act_save, self.act_checkpoint_save,
+                self.act_project_new, self.act_project_save, self.act_project_load,
+            ]),
+            ("Edit", [
+                self.act_undo, self.act_redo, self.act_copy, self.act_paste,
+                self.act_mono_to_rgb, self.act_rgb_to_mono, self.act_swap_rb,
+            ]),
+            ("Display", [
+                self.act_autostretch, self.act_hardstretch, self.act_bake_display_stretch,
+                self.act_zoom_in, self.act_zoom_out, self.act_zoom_1_1, self.act_zoom_fit,
+            ]),
+            ("Functions", [
+                self.act_abe, self.act_graxpert, self.act_background_neutral,
+                self.act_stat_stretch, self.act_star_stretch, self.act_ghs,
+                self.act_curves, self.act_hist_transform, self.act_histogram,
+                self.act_white_balance, self.act_sfcc, self.act_remove_green,
+                self.act_linear_fit, self.act_remove_stars, self.act_add_stars,
+                self.act_halobgon, self.act_convo, self.act_clahe,
+                self.act_texture_clarity, self.act_wavescale_hdr, self.act_wavescale_de,
+                self.act_morphology, self.act_extract_luma, self.act_recombine_luma,
+                self.act_rgb_extract, self.act_rgb_combine, self.act_pedestal,
+                self.act_blemish, self.act_clone_stamp, self.act_crop,
+                self.act_pixelmath, self.act_signature, self.act_image_combine,
+            ]),
+            ("Smart Tools", [
+                self.actAberrationAI, self.actCosmicUI, self.actCosmicSat,
+                self.actSyQonTools,
+            ]),
+            ("Tools", [
+                self.act_blink, self.act_ppp, self.act_nbtorgb,
+                self.act_narrowband_normalization, self.act_selective_color,
+                self.act_selective_lum, self.act_freqsep, self.act_multiscale_decomp,
+                self.act_contsub, self.act_magnitude, self.act_snr,
+                self.act_view_bundles, self.act_function_bundles,
+            ]),
+            ("Geometry", [
+                self.act_geom_invert, self.act_geom_flip_h, self.act_geom_flip_v,
+                self.act_geom_rot_cw, self.act_geom_rot_ccw, self.act_geom_rot_180,
+                self.act_geom_rot_any, self.act_geom_rescale,
+                self.act_geom_resize_canvas, self.act_debayer,
+            ]),
+            ("Star Stuff", [
+                self.act_stacking_suite, self.act_live_stacking, self.act_planetary_stacker,
+                self.act_star_align, self.act_star_register, self.act_rgb_align,
+                self.act_mosaic_master, self.act_plate_solve, self.act_dither_analysis,
+                self.act_image_peeker, self.act_psf_viewer, self.act_exo_detector,
+                self.act_isophote, self.act_supernova_hunter,
+                self.act_planet_projection, self.act_star_spikes, self.act_astrospike,
+            ]),
+            ("Masks", [
+                self.act_create_mask, self.act_apply_mask, self.act_remove_mask,
+                self.act_show_mask, self.act_hide_mask, self.act_invert_mask,
+            ]),
+            ("What's In My…", [
+                self.act_whats_in_my_sky, self.act_wimi, self.act_finder_chart,
+            ]),
+            ("Header & Misc", [
+                self.act_fits_modifier, self.act_fits_batch_modifier,
+                self.act_batch_renamer, self.act_batch_convert,
+                self.act_astrobin_exporter, self.act_acv_exporter,
+                self.act_copy_astrometry,
+            ]),
+        ]
+
+        def _entry(act):
+            if act is None:
+                return None
+            title = act.text().replace("&", "").strip()
+            if not title:
+                return None
+            icon = act.icon()
+            pm = None
+            if icon and not icon.isNull():
+                pm = icon.pixmap(QSize(ICON_SIZE, ICON_SIZE))
+                if pm.isNull():
+                    pm = None
+            tip = act.statusTip() or act.toolTip() or ""
+            sc  = act.shortcut().toString() if act.shortcut() else ""
+            return (pm, title, tip, sc)
+
+        seen = set()
+        entries = []  # (group_name, pm, title, tip, sc)
+        for group_name, acts in MENU_GROUPS:
+            group_entries = []
+            for act in acts:
+                e = _entry(act)
+                if e is None:
+                    continue
+                pm, title, tip, sc = e
+                if title in seen:
+                    continue
+                seen.add(title)
+                group_entries.append((group_name, pm, title, tip, sc))
+            group_entries.sort(key=lambda e: e[2].lower())  # sort by title within group
+            entries.extend(group_entries)
+
+        card_widgets = []
+
+        def _build_cards(filter_text=""):
+            ft = filter_text.lower().strip()
+            while grid.count():
+                item = grid.takeAt(0)
+                w = item.widget()
+                if w:
+                    w.setParent(None)
+            card_widgets.clear()
+
+            col_count = 3
+            row = col = 0
+            current_group = None
+
+            for group_name, pm, title, tip, sc in entries:
+                if ft and ft not in title.lower() and ft not in tip.lower() and ft not in group_name.lower():
+                    continue
+
+                # Group header — spans all columns
+                if group_name != current_group:
+                    current_group = group_name
+                    if col > 0:
+                        col = 0
+                        row += 1
+                    hdr = QLabel(group_name.upper())
+                    hdr.setStyleSheet(
+                        "font-size:10px;font-weight:700;color:#e94560;"
+                        "background:transparent;border:none;"
+                        "padding:8px 4px 4px 4px;letter-spacing:2px;"
+                    )
+                    grid.addWidget(hdr, row, 0, 1, col_count)
+                    row += 1
+
+                card = QWidget()
+                card.setFixedWidth(CARD_W)
+                card.setStyleSheet(_card_style())
+                card.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
+
+                cl = QHBoxLayout(card)
+                cl.setContentsMargins(8, 6, 8, 6)
+                cl.setSpacing(8)
+
+                ico_lbl = QLabel()
+                ico_lbl.setFixedSize(ICON_SIZE, ICON_SIZE)
+                ico_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                if pm:
+                    ico_lbl.setPixmap(pm)
+                else:
+                    ico_lbl.setText("·")
+                    ico_lbl.setStyleSheet("color:#555;font-size:18px;")
+                cl.addWidget(ico_lbl)
+
+                text_col = QVBoxLayout()
+                text_col.setSpacing(1)
+                text_col.setContentsMargins(0, 0, 0, 0)
+
+                title_lbl = QLabel(title)
+                title_lbl.setStyleSheet(
+                    "font-size:11px;font-weight:600;color:#eaeaea;"
+                    "border:none;background:transparent;"
+                )
+                title_lbl.setWordWrap(False)
+                text_col.addWidget(title_lbl)
+
+                if tip:
+                    tip_lbl = QLabel(tip)
+                    tip_lbl.setStyleSheet(
+                        "font-size:10px;color:#888;border:none;background:transparent;"
+                    )
+                    tip_lbl.setWordWrap(True)
+                    text_col.addWidget(tip_lbl)
+
+                if sc:
+                    sc_lbl = QLabel(sc)
+                    sc_lbl.setStyleSheet(
+                        "font-size:9px;color:#e94560;border:none;background:transparent;"
+                    )
+                    text_col.addWidget(sc_lbl)
+
+                cl.addLayout(text_col, 1)
+                grid.addWidget(card, row, col)
+                card_widgets.append(card)
+
+                col += 1
+                if col >= col_count:
+                    col = 0
+                    row += 1
+
+        _build_cards()
+        search.textChanged.connect(_build_cards)
+
+        def _export_pdf():
+            path, _ = QFileDialog.getSaveFileName(
+                dlg, "Export Icon Cheat Sheet", "saspro_icons.pdf",
+                "PDF Files (*.pdf)"
+            )
+            if not path:
+                return
+            try:
+                from PyQt6.QtPrintSupport import QPrinter
+                from PyQt6.QtGui import QPainter, QFont, QColor
+                from PyQt6.QtCore import QRectF
+
+                printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+                printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
+                printer.setOutputFileName(path)
+                from PyQt6.QtGui import QPageSize
+                printer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
+
+                painter = QPainter(printer)
+                dpi = printer.resolution()
+                page_rect = printer.pageRect(QPrinter.Unit.DevicePixel)
+                pw = page_rect.width()
+                ph = page_rect.height()
+
+                margin    = dpi * 0.4
+                col_count = 3
+                cell_w    = (pw - margin * 2) / col_count
+                cell_h    = dpi * 0.45
+                icon_px   = int(dpi * 0.22)
+                x_base    = margin
+                y         = margin
+
+                title_font   = QFont("Segoe UI", 8, QFont.Weight.Bold)
+                tip_font     = QFont("Segoe UI", 6)
+                sc_font      = QFont("Segoe UI", 6)
+                hdr_font     = QFont("Segoe UI", 14, QFont.Weight.Bold)
+                grp_font     = QFont("Segoe UI", 7, QFont.Weight.Bold)
+
+                # Document title
+                painter.setFont(hdr_font)
+                painter.setPen(QColor("#e94560"))
+                painter.drawText(
+                    QRectF(x_base, y, pw - margin * 2, dpi * 0.35),
+                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                    "Seti Astro Suite Pro — Icon Cheat Sheet"
+                )
+                y += dpi * 0.45
+
+                col = 0
+                current_group = None
+                ft = search.text().lower().strip()
+
+                for group_name, pm, title, tip, sc in entries:
+                    if ft and ft not in title.lower() and ft not in tip.lower() and ft not in group_name.lower():
+                        continue
+
+                    # Group header in PDF
+                    if group_name != current_group:
+                        current_group = group_name
+                        if col > 0:
+                            col = 0
+                            y += cell_h + dpi * 0.04
+
+                        if y + dpi * 0.25 > ph - margin:
+                            printer.newPage()
+                            y = margin
+
+                        painter.setFont(grp_font)
+                        painter.setPen(QColor("#e94560"))
+                        painter.drawText(
+                            QRectF(x_base, y, pw - margin * 2, dpi * 0.22),
+                            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                            group_name.upper()
+                        )
+                        y += dpi * 0.25
+
+                    if y + cell_h > ph - margin:
+                        printer.newPage()
+                        y = margin
+                        # Reprint group header at top of new page
+                        painter.setFont(grp_font)
+                        painter.setPen(QColor("#e94560"))
+                        painter.drawText(
+                            QRectF(x_base, y, pw - margin * 2, dpi * 0.22),
+                            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                            f"{group_name.upper()} (continued)"
+                        )
+                        y += dpi * 0.25
+
+                    x = x_base + col * cell_w
+                    cell_margin = dpi * 0.05
+
+                    if pm:
+                        scaled_pm = pm.scaled(
+                            icon_px, icon_px,
+                            Qt.AspectRatioMode.KeepAspectRatio,
+                            Qt.TransformationMode.SmoothTransformation
+                        )
+                        painter.drawPixmap(
+                            int(x + cell_margin),
+                            int(y + (cell_h - icon_px) / 2),
+                            scaled_pm
+                        )
+
+                    tx     = x + cell_margin + icon_px + dpi * 0.06
+                    text_w = cell_w - cell_margin - icon_px - dpi * 0.1
+
+                    painter.setFont(title_font)
+                    painter.setPen(QColor("#111111"))
+                    painter.drawText(
+                        QRectF(tx, y + cell_margin, text_w, cell_h * 0.4),
+                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                        title
+                    )
+
+                    if tip:
+                        painter.setFont(tip_font)
+                        painter.setPen(QColor("#444444"))
+                        painter.drawText(
+                            QRectF(tx, y + cell_h * 0.42, text_w, cell_h * 0.35),
+                            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop |
+                            Qt.TextFlag.TextWordWrap,
+                            tip[:80]
+                        )
+
+                    if sc:
+                        painter.setFont(sc_font)
+                        painter.setPen(QColor("#cc3355"))
+                        painter.drawText(
+                            QRectF(tx, y + cell_h * 0.78, text_w, cell_h * 0.2),
+                            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                            sc
+                        )
+
+                    col += 1
+                    if col >= col_count:
+                        col = 0
+                        y += cell_h + dpi * 0.04
+
+                painter.end()
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.information(dlg, "Export PDF", f"Saved to:\n{path}")
+
+            except Exception as e:
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.warning(dlg, "Export PDF", f"PDF export failed:\n{e}")
+
+        if not hasattr(self, "_icon_cheat_sheet_dlg"):
+            self._icon_cheat_sheet_dlg = None
+        self._icon_cheat_sheet_dlg = dlg
+        dlg.setWindowFlag(Qt.WindowType.Window, True)
+        dlg.show()
+        dlg.raise_()
