@@ -452,6 +452,42 @@ class StackingMonitorDialog(QDialog):
 
 
     def finish_run(self, ok: bool, summary: str = ""):
+        # Close any rows that are still marked running
+        for op, idx in list(self._open.items()):
+            row = self._rows[idx]
+            if row.status == _ST_RUNNING:
+                row.finish(_ST_OK if ok else _ST_FAIL)
+                self._refresh_row(idx)
+        self._open.clear()
+
+        # Only stop the timer if no new operations could still arrive.
+        # For drizzle/MFD pipelines, finish_run is called after integration
+        # but before the post-processing phase — so we leave the timer running
+        # and let _on_message restart it if needed. We stop it here only as
+        # a soft stop; _on_message will restart if new RUNNING ops appear.
+        self._tick_timer.stop()
+
+        total_s = ""
+        if self._run_start is not None:
+            t = time.monotonic() - self._run_start
+            m, s = divmod(int(t), 60)
+            total_s = f"{m:02d}:{s:02d}"
+
+        # Show as "integration complete" rather than fully done,
+        # since drizzle/MFD may still follow
+        if ok:
+            self._lbl_total.setText(f"Integration phase done ({total_s}) — post-processing may follow…")
+            self._lbl_total.setStyleSheet(
+                "color:#f0c040; font-size:11px; font-weight:bold;"
+            )
+        else:
+            self._lbl_total.setText(f"Executed in {total_s}   ✗ Failed")
+            self._lbl_total.setStyleSheet(
+                "color:#ff4d4f; font-size:12px; font-weight:bold;"
+            )
+
+    def finish_all(self, ok: bool, summary: str = ""):
+        """Call this when the entire pipeline is done including drizzle/MFD."""
         for op, idx in list(self._open.items()):
             row = self._rows[idx]
             if row.status == _ST_RUNNING:
@@ -494,14 +530,20 @@ class StackingMonitorDialog(QDialog):
 
         op, group, status = result
 
-        # strip emoji/prefix from msg for the note field
         note = re.sub(
             r"^[\U0001F300-\U0001FFFF\u2600-\u26FF\u2700-\u27BF✅❌⚠️🔹📌✂️▶️🔄📊📐🧪🧱🔎💡↻⏭️⚡⏸]+\s*",
             "", msg
         ).strip()
-        # trim to reasonable length
         if len(note) > 120:
             note = note[:117] + "…"
+
+        # ── If a new RUNNING op arrives after the run was marked complete,
+        #    resume the timer — drizzle/MFD start after integration finishes
+        if status == _ST_RUNNING and not self._tick_timer.isActive():
+            self._tick_timer.start()
+            # Clear the "Complete" label so it doesn't show as done while work continues
+            self._lbl_total.setText("Running (post-integration phase)…")
+            self._lbl_total.setStyleSheet(f"color:{_YELLOW};font-size:11px;")
 
         # ── finishing transitions ─────────────────────────────────────────
         if status in (_ST_OK, _ST_FAIL, _ST_WARN) and op in self._open:
@@ -514,7 +556,6 @@ class StackingMonitorDialog(QDialog):
         if status == _ST_RUNNING and op in self._open:
             idx = self._open[op]
             row = self._rows[idx]
-            # update group if we got a more specific one
             if group and not row.group:
                 row.group = group
             row.note = note

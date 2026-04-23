@@ -19788,7 +19788,7 @@ class StackingSuiteDialog(QDialog):
                 # ↓ ADD THIS
                 try:
                     if self._exec_monitor is not None:
-                        self._exec_monitor.finish_run(False)
+                        self._exec_monitor.finish_all(False)
                     self._exec_monitor_pipeline_active = False
                 except Exception:
                     pass
@@ -20132,7 +20132,12 @@ class StackingSuiteDialog(QDialog):
                 self._cfa_for_this_run = None
                 QApplication.processEvents()
             return
-
+        
+        try:
+            if self._exec_monitor is not None:
+                self._exec_monitor.finish_all(ok, "")
+        except Exception:
+            pass
         # ---- normal popup summary ----
         if ok:
             sasd_path = os.path.join(self.stacking_directory, "alignment_transforms.sasd")
