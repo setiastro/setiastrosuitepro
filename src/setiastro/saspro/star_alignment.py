@@ -852,6 +852,37 @@ class StellarAlignmentDialog(QDialog):
         self.xf_h_reproj = QDoubleSpinBox(); self.xf_h_reproj.setRange(0.1, 10.0); self.xf_h_reproj.setDecimals(2)
         self.xf_h_reproj.setValue(prefs["h_reproj"])
         xf.addRow("Homog. RANSAC reproj (px):", self.xf_h_reproj)
+        self.xf_det_sigma = QDoubleSpinBox()
+        self.xf_det_sigma.setRange(1.0, 200.0)
+        self.xf_det_sigma.setDecimals(1)
+        self.xf_det_sigma.setSingleStep(1.0)
+        self.xf_det_sigma.setValue(prefs["det_sigma"])
+        self.xf_det_sigma.setToolTip(
+            "Detection threshold in sigma above background.\n"
+            "Lower = more stars detected (may include noise).\n"
+            "Higher = only bright stars (more robust on crowded fields).\n"
+            "Use Trial Detect to test before aligning."
+        )
+        xf.addRow("Detection threshold (σ):", self.xf_det_sigma)
+
+        # Trial detect row
+        trial_row = QHBoxLayout()
+        self.btn_trial_detect = QPushButton("🔍 Trial Detect")
+        self.btn_trial_detect.setFixedHeight(26)
+        self.btn_trial_detect.setToolTip(
+            "Run star detection on both source and target with the current\n"
+            "threshold and report how many stars were found in each."
+        )
+        self.btn_trial_detect.clicked.connect(self._run_trial_detect)
+        self._lbl_trial_result = QLabel("")
+        self._lbl_trial_result.setStyleSheet("color:#888;font-size:10px;")
+        self._lbl_trial_result.setWordWrap(True)
+        trial_row.addWidget(self.btn_trial_detect)
+        trial_row.addWidget(self._lbl_trial_result, 1)
+        xf.addRow("", trial_row)
+        sync_note = QLabel("ℹ  Detection settings are shared with Stacking Suite.")
+        sync_note.setStyleSheet("color:#888;font-size:10px;font-style:italic;")
+        xf.addRow("", sync_note)
 
         def _toggle_rows():
             is_h = (self.xf_model.currentIndex() == 1)  # 1 = Homography
@@ -907,6 +938,86 @@ class StellarAlignmentDialog(QDialog):
         # populate combos initially
         self._populate_view_combos()
 
+    def _run_trial_detect(self):
+        import sep
+        import numpy as np
+        from PyQt6.QtWidgets import QApplication
+
+        thresh = float(self.xf_det_sigma.value())
+
+        # Load source and target images on demand from current selections
+        src_img = None
+        tgt_img = None
+
+        try:
+            if self.source_from_view_radio.isChecked():
+                doc = self.source_view_combo.currentData()
+                src_img = _doc_image(doc)
+            elif self.stellar_source is not None:
+                src_img = self.stellar_source
+
+            if self.target_from_view_radio.isChecked():
+                doc = self.target_view_combo.currentData()
+                tgt_img = _doc_image(doc)
+            elif self.stellar_target is not None:
+                tgt_img = self.stellar_target
+        except Exception as e:
+            self._lbl_trial_result.setText(f"⚠  Could not load images: {e}")
+            return
+
+        if src_img is None and tgt_img is None:
+            self._lbl_trial_result.setText("⚠  Select source and/or target first.")
+            return
+
+        self.btn_trial_detect.setEnabled(False)
+        self._lbl_trial_result.setText("Detecting…")
+        QApplication.processEvents()
+
+        def _count_stars(img):
+            if img is None:
+                return None, None
+            gray = np.mean(img, axis=2).astype(np.float32) if img.ndim == 3 else img.astype(np.float32)
+            gray = np.ascontiguousarray(gray)
+            try:
+                sep.set_extract_pixstack(5000000)
+                bkg = sep.Background(gray)
+                objs = sep.extract(gray - bkg.back(), thresh * float(bkg.globalrms))
+                return len(objs), None
+            except Exception as e:
+                err = str(e)
+                if "pixel buffer full" in err or "pixstack" in err.lower():
+                    return None, f"too many pixels at σ={thresh:.1f} — raise threshold"
+                return None, err
+
+        parts = []
+        src_n, src_err = _count_stars(src_img)
+        tgt_n, tgt_err = _count_stars(tgt_img)
+
+        def _fmt(label, n, err):
+            if err:
+                return f"⚠ {label}: {err}"
+            if n is None:
+                return f"{label}: —"
+            if n == 0:
+                return f"⚠ {label}: 0 stars — lower threshold"
+            if n > 50000:
+                return f"⚠ {label}: {n:,} (very high — raise threshold)"
+            if n > 10000:
+                return f"⚠ {label}: {n:,} (high — consider raising threshold)"
+            return f"✓ {label}: {n:,} stars"
+
+        msg = "  |  ".join(filter(None, [
+            _fmt("Source", src_n, src_err) if src_img is not None else None,
+            _fmt("Target", tgt_n, tgt_err) if tgt_img is not None else None,
+        ]))
+
+        has_warning = "⚠" in msg
+        self._lbl_trial_result.setStyleSheet(
+            f"color:{'#ffc107' if has_warning else '#4caf50'};font-size:10px;"
+        )
+        self._lbl_trial_result.setText(msg)
+        self.btn_trial_detect.setEnabled(True)
+
     def _persist_xform_from_dialog(self):
         idx = self.xf_model.currentIndex()
         model = "affine" if idx==0 else ("homography" if idx==1 else ("poly3" if idx==2 else "poly4"))
@@ -915,6 +1026,7 @@ class StellarAlignmentDialog(QDialog):
         s.setValue("stacking/align/max_cp", int(self.xf_maxcp.value()))
         s.setValue("stacking/align/downsample", int(self.xf_downsample.value()))
         s.setValue("stacking/align/h_reproj", float(self.xf_h_reproj.value()))
+        s.setValue("stacking/align/det_sigma", float(self.xf_det_sigma.value()))
 
     # ------------------------
     # Source/Target loaders (File / Active View)

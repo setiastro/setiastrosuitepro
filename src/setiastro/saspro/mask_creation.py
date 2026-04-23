@@ -28,7 +28,7 @@ from PyQt6.QtWidgets import (
     QScrollArea, QSizePolicy,
     QGraphicsView, QGraphicsScene, QGraphicsItem,
     QGraphicsPixmapItem, QGraphicsPathItem, QGraphicsPolygonItem,
-    QGraphicsEllipseItem, QGraphicsRectItem, QMdiSubWindow, QLabel
+    QGraphicsEllipseItem, QGraphicsRectItem, QMdiSubWindow, QLabel, QWidget
 )
 
 from .masks_core import MaskLayer
@@ -865,7 +865,9 @@ class MaskCreationDialog(QDialog):
         self.lower_sl.valueChanged.connect(self._on_linked)
         self.link_cb.toggled.connect(self._on_link_switch)
         layout.addWidget(self.range_box); self.range_box.hide()
+        self._build_star_thresh_controls(layout)
         self.type_dd.currentTextChanged.connect(self._on_type_changed)
+
 
         # Preview & Clear
         # Preview & Clear
@@ -897,6 +899,135 @@ class MaskCreationDialog(QDialog):
         self.canvas.installEventFilter(self)
 
         self.resize(980, 640)
+
+    def _on_mask_type_changed(self, mask_type: str):
+        is_star = (mask_type == "Star Mask")  # match your exact string
+        self._star_thresh_row.setVisible(is_star)
+        self._btn_trial_detect.setVisible(is_star)
+
+    def _build_star_thresh_controls(self, parent_layout):
+        """Call this during __init__ to build the hidden threshold row."""
+        from PyQt6.QtWidgets import QHBoxLayout, QLabel, QDoubleSpinBox, QPushButton
+
+        # Threshold row
+        self._star_thresh_row = QWidget()
+        row_layout = QHBoxLayout(self._star_thresh_row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+
+        lbl = QLabel("Detection Threshold (σ):")
+        lbl.setStyleSheet("color:#eaeaea;font-size:11px;")
+
+        self._spin_star_thresh = QDoubleSpinBox()
+        self._spin_star_thresh.setRange(0.5, 50.0)
+        self._spin_star_thresh.setSingleStep(0.5)
+        self._spin_star_thresh.setValue(3.0)
+        self._spin_star_thresh.setFixedWidth(70)
+        self._spin_star_thresh.setToolTip(
+            "Lower = detect more/fainter stars (may over-detect).\n"
+            "Higher = only bright stars detected.\n"
+            "Use Trial Detect to test before generating the mask."
+        )
+        self._spin_star_thresh.valueChanged.connect(
+            lambda v: setattr(self, "_star_thresh", float(v))
+        )
+
+        row_layout.addWidget(lbl)
+        row_layout.addWidget(self._spin_star_thresh)
+        row_layout.addStretch()
+        parent_layout.addWidget(self._star_thresh_row)
+
+        # Trial Detect button
+        self._btn_trial_detect = QPushButton("🔍 Trial Detect")
+        self._btn_trial_detect.setFixedHeight(26)
+        self._btn_trial_detect.setStyleSheet(
+            "QPushButton{background:#0f3460;color:#eaeaea;border-radius:4px;font-size:11px;}"
+            "QPushButton:hover{background:#e94560;color:#fff;}"
+        )
+        self._btn_trial_detect.setToolTip(
+            "Run star detection with the current threshold and report how many\n"
+            "stars were found — without generating the full mask."
+        )
+        self._btn_trial_detect.clicked.connect(self._run_trial_detect)
+        parent_layout.addWidget(self._btn_trial_detect)
+
+        # Result label
+        self._lbl_trial_result = QLabel("")
+        self._lbl_trial_result.setStyleSheet("color:#888;font-size:10px;")
+        self._lbl_trial_result.setWordWrap(True)
+        parent_layout.addWidget(self._lbl_trial_result)
+
+        # Hide by default
+        self._star_thresh_row.setVisible(False)
+        self._btn_trial_detect.setVisible(False)
+        self._lbl_trial_result.setVisible(False)
+
+    def _run_trial_detect(self):
+        import sep
+        import numpy as np
+        from PyQt6.QtWidgets import QApplication
+        from PyQt6.QtCore import Qt
+
+        img = getattr(self, "image", None)
+        if img is None:
+            self._lbl_trial_result.setText("⚠  No image loaded.")
+            self._lbl_trial_result.setVisible(True)
+            return
+
+        thresh = float(getattr(self, "_star_thresh", 3.0))
+
+        self._btn_trial_detect.setEnabled(False)
+        self._lbl_trial_result.setText("Detecting…")
+        self._lbl_trial_result.setVisible(True)
+        QApplication.processEvents()
+
+        try:
+            if img.ndim == 3:
+                data = img.mean(axis=2).astype(np.float32)
+            else:
+                data = img.astype(np.float32)
+
+            data = np.ascontiguousarray(data)
+            bkg = sep.Background(data)
+            data_sub = data - bkg
+
+            sep.set_extract_pixstack(5000000)
+            objs = sep.extract(data_sub, thresh=thresh, err=bkg.globalrms)
+            n = len(objs)
+
+            if n == 0:
+                msg = f"⚠  No stars detected at σ={thresh:.1f} — try lowering the threshold."
+                color = "#ffc107"
+            elif n > 100000:
+                msg = (f"⚠  {n:,} objects detected at σ={thresh:.1f} — "
+                       f"threshold is probably too low. Try raising it.")
+                color = "#ff9800"
+            elif n > 20000:
+                msg = (f"⚠  {n:,} stars detected at σ={thresh:.1f} — "
+                       f"quite high, consider raising the threshold.")
+                color = "#ffc107"
+            else:
+                msg = f"✓  {n:,} stars detected at σ={thresh:.1f}"
+                color = "#4caf50"
+
+            self._lbl_trial_result.setText(msg)
+            self._lbl_trial_result.setStyleSheet(
+                f"color:{color};font-size:10px;"
+            )
+
+        except Exception as e:
+            err = str(e)
+            if "pixel buffer full" in err or "pixstack" in err.lower():
+                msg = (f"⚠  Too many active pixels at σ={thresh:.1f}. "
+                       f"Raise the threshold significantly.")
+                color = "#e94560"
+            else:
+                msg = f"⚠  Detection error: {err}"
+                color = "#e94560"
+            self._lbl_trial_result.setText(msg)
+            self._lbl_trial_result.setStyleSheet(f"color:{color};font-size:10px;")
+
+        finally:
+            self._btn_trial_detect.setEnabled(True)
 
     def _set_status(self, text: str):
         self.status_label.setText(text)
@@ -990,15 +1121,20 @@ class MaskCreationDialog(QDialog):
             self._schedule_live_preview()
 
     def _on_type_changed(self, txt: str):
-        show = (txt == "Range Selection")
-        self.range_box.setVisible(show)
-        if show:
+        show_range = (txt == "Range Selection")
+        self.range_box.setVisible(show_range)
+        if show_range:
             if not self.live_preview.isVisible():
                 self.live_preview.show()
             self._schedule_live_preview()
         else:
             if self.live_preview.isVisible():
                 self.live_preview.close()
+
+        is_star = (txt == "Star Mask")
+        self._star_thresh_row.setVisible(is_star)
+        self._btn_trial_detect.setVisible(is_star)
+        self._lbl_trial_result.setVisible(is_star and self._lbl_trial_result.text() != "")
 
     def _on_link_switch(self, checked: bool):
         if checked:
@@ -1075,14 +1211,32 @@ class MaskCreationDialog(QDialog):
         out = np.sqrt((cb - cb.mean())**2 + (cr - cr.mean())**2)
         return (out - out.min()) / (out.max() - out.min() + 1e-12)
 
-    def _generate_star_mask(self) -> np.ndarray:
-        if sep is None:
-            QMessageBox.warning(self, "Missing SEP", "Star mask requires the 'sep' package.")
-            return np.zeros(self.image.shape[:2], dtype=np.float32)
-        data = self._component_lightness().astype(np.float32)
-        bkg = sep.Background(data); data_sub = data - bkg.back()
-        thresh = float(self.blur_amount) if self.blur_amount > 0 else 3.0
-        objs = sep.extract(data_sub, thresh=thresh, err=bkg.globalrms)
+    def _generate_star_mask(self):
+        import sep
+        import numpy as np
+
+        img = self.image
+        if img is None:
+            return None
+
+        # Use mono for detection
+        if img.ndim == 3:
+            data = img.mean(axis=2).astype(np.float32)
+        else:
+            data = img.astype(np.float32)
+
+        data = np.ascontiguousarray(data)
+        thresh = float(getattr(self, "_star_thresh", 3.0))
+
+        try:
+            bkg = sep.Background(data)
+            data_sub = data - bkg
+            # Increase pixstack limit before extraction — default 300000 is too low
+            # for wide-field images with many/large stars
+            sep.set_extract_pixstack(5000000)
+            objs = sep.extract(data_sub, thresh=thresh, err=bkg.globalrms)
+        except Exception as e:
+            raise RuntimeError(str(e))
         h, w = data.shape; out = np.zeros((h, w), dtype=np.float32)
         if cv2 is None: return out
         MAX_RADIUS = 10
