@@ -1273,22 +1273,18 @@ class ABEDialog(QDialog):
                 self._set_status("Ready")
                 return
 
-            # Preserve mono vs color shape w.r.t. source
             out = corrected
             if out.ndim == 3 and out.shape[2] == 3 and (self.doc.image.ndim == 2 or (self.doc.image.ndim == 3 and self.doc.image.shape[2] == 1)):
                 out = out[..., 0]
 
-            # ✅ Blend with active mask before committing
             srcf = self._get_source_float()
             out_masked = self._blend_with_mask_float(out, srcf)
 
-            # Build step name for undo stack
-            # Build step name + params for undo stack + Replay
-            deg   = int(self.sp_degree.value())
-            npts  = int(self.sp_samples.value())
-            dwn   = int(self.sp_down.value())
-            patch = int(self.sp_patch.value())
-            use_rbf = bool(self.chk_use_rbf.isChecked())
+            deg        = int(self.sp_degree.value())
+            npts       = int(self.sp_samples.value())
+            dwn        = int(self.sp_down.value())
+            patch      = int(self.sp_patch.value())
+            use_rbf    = bool(self.chk_use_rbf.isChecked())
             rbf_smooth = float(self.sp_rbf.value()) * 0.01
             make_bg_doc = bool(self.chk_make_bg_doc.isChecked())
 
@@ -1297,20 +1293,15 @@ class ABEDialog(QDialog):
                 f"rbf={'on' if use_rbf else 'off'}, s={rbf_smooth:.3f})"
             )
 
-            # Normalized preset params (same schema as abe_preset.apply_abe_via_preset)
             params = {
-                "degree": deg,
-                "samples": npts,
-                "downsample": dwn,
-                "patch": patch,
-                "rbf": use_rbf,
-                "rbf_smooth": rbf_smooth,
+                "degree": deg, "samples": npts, "downsample": dwn,
+                "patch": patch, "rbf": use_rbf, "rbf_smooth": rbf_smooth,
                 "make_background_doc": make_bg_doc,
+                "sample_mode": self.cmb_sample_mode.currentText().lower(),
+                "manual_sample_count": len(self._manual_points),
             }
-            params["sample_mode"] = self.cmb_sample_mode.currentText().lower()
-            params["manual_sample_count"] = len(self._manual_points)
 
-            # 🔁 Remember this as the last headless-style command for Replay
+            # Remember for replay — do this before any close
             mw = self.parent()
             try:
                 remember = getattr(mw, "remember_last_headless_command", None)
@@ -1318,27 +1309,15 @@ class ABEDialog(QDialog):
                     remember = getattr(mw, "_remember_last_headless_command", None)
                 if callable(remember):
                     remember("abe", params, description="Automatic Background Extraction")
-                    try:
-                        if hasattr(mw, "_log"):
-                            mw._log(
-                                f"[Replay] ABE UI apply stored: "
-                                f"command_id='abe', preset_keys={list(params.keys())}"
-                            )
-                    except Exception:
-                        pass
+                    if hasattr(mw, "_log"):
+                        mw._log(f"[Replay] ABE UI apply stored: command_id='abe', preset_keys={list(params.keys())}")
             except Exception:
-                # don’t block the actual ABE apply if remembering fails
                 pass
 
-            # ✅ mask bookkeeping in metadata
             _marr, mid, mname = self._active_mask_layer()
-            abe_meta = dict(params)
-            abe_meta["exclusion"] = "polygons" if excl is not None else "none"
-            abe_meta["manual_sample_count"] = len(self._manual_points)
-
             meta = {
                 "step_name": "ABE",
-                "abe": abe_meta,
+                "abe": dict(params),
                 "masked": bool(mid),
                 "mask_id": mid,
                 "mask_name": mname,
@@ -1352,25 +1331,23 @@ class ABEDialog(QDialog):
                 metadata=meta,
             )
 
-
-            if self.chk_make_bg_doc.isChecked() and bg is not None:
+            # Background doc — do before close
+            if make_bg_doc and bg is not None:
                 self._set_status("Creating background document…")
-                mw = self.parent()
                 dm = getattr(mw, "docman", None)
                 if dm is not None:
                     base = os.path.splitext(self.doc.display_name())[0]
-                    meta = {
+                    bg_meta = {
                         "bit_depth": "32-bit floating point",
                         "is_mono": (bg.ndim == 2),
                         "source": "ABE background",
                         "original_header": self.doc.metadata.get("original_header"),
                     }
-                    doc_bg = dm.open_array(bg.astype(np.float32, copy=False), metadata=meta, title=f"{base}_ABE_BG")
+                    doc_bg = dm.open_array(bg.astype(np.float32, copy=False), metadata=bg_meta, title=f"{base}_ABE_BG")
                     if hasattr(mw, "_spawn_subwindow_for"):
                         mw._spawn_subwindow_for(doc_bg)
 
-            # Preserve the current view's autostretch state: capture before/restore after
-            mw = self.parent()
+            # Restore autostretch on the active view
             prev_autostretch = False
             view = None
             try:
@@ -1378,30 +1355,32 @@ class ABEDialog(QDialog):
                     view = mw.mdi.activeSubWindow().widget()
                     prev_autostretch = bool(getattr(view, "autostretch_enabled", False))
             except Exception:
-                prev_autostretch = False
-
+                pass
 
             if hasattr(mw, "_log"):
                 mw._log(step_name)
 
-            # Restore autostretch state on the view (recompute display) so the
-            # user's display-stretch choice survives the edit.
             try:
                 if view is not None and hasattr(view, "set_autostretch") and callable(view.set_autostretch):
                     view.set_autostretch(prev_autostretch)
             except Exception:
                 pass
 
-            self._set_status("Done")
-            # Dialog stays open so user can apply to other images
-            # Refresh to use the now-active document for next operation
-            self.close()
-            return
+            # All work is done — set flag so closeEvent knows it's a clean close
+            # then defer the actual close so this stack frame fully unwinds first
+            self._closing = True
+            QTimer.singleShot(0, self.close)
 
         except Exception as e:
-            self._set_status("Error")
-            QMessageBox.critical(self, "Apply failed", str(e))
-
+            # Guard: dialog may be partially torn down on some platforms
+            try:
+                from PyQt6 import sip
+                if not sip.isdeleted(self):
+                    self._set_status("Error")
+                    QMessageBox.critical(self, "Apply failed", str(e))
+            except Exception:
+                pass
+            
     def closeEvent(self, ev):
         self._closing = True
         try:
