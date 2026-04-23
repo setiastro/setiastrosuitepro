@@ -1553,19 +1553,67 @@ class CustomGraphicsView(QGraphicsView):
             self.parent.mini_preview.setPixmap(mini_pixmap)
 
     def place_celestial_compass(self, center):
-        """Draw a celestial compass at a given point aligned with celestial North and East."""
-        compass_radius = 50  # Length of the compass lines
+        compass_radius = 50
 
-        # Get the orientation in radians (assuming `self.parent.orientation` is in degrees)
+        # Determine parity from WCS CD matrix determinant
+        parity = 1.0
+        try:
+            hdr = self.parent.header
+            cd11 = float(hdr.get("CD1_1", 0))
+            cd12 = float(hdr.get("CD1_2", 0))
+            cd21 = float(hdr.get("CD2_1", 0))
+            cd22 = float(hdr.get("CD2_2", 0))
+            det = cd11 * cd22 - cd12 * cd21
+            if det > 0:
+                parity = -1.0
+        except Exception:
+            pass
+
         orientation_radians = math.radians(self.parent.orientation)
 
-        # Calculate North vector (upwards, adjusted for orientation)
-        north_dx = math.sin(orientation_radians) * compass_radius
+        north_dx =  parity * math.sin(orientation_radians) * compass_radius
         north_dy = -math.cos(orientation_radians) * compass_radius
+        east_dx  = -parity * math.cos(orientation_radians) * compass_radius
+        east_dy  = -math.sin(orientation_radians) * compass_radius
 
-        # Calculate East vector (rightwards, adjusted for orientation)
-        east_dx = math.cos(orientation_radians) * -compass_radius
-        east_dy = math.sin(orientation_radians) * -compass_radius
+        # ── WCS sanity check: verify arrows point the right way ──────────
+        wcs = getattr(self.parent, "wcs", None)
+        if wcs is not None:
+            try:
+                cx, cy = center.x(), center.y()
+                probe = 3  # pixels
+
+                # North check: moving north_dx/north_dy should increase Dec
+                ra0,  dec0  = self.parent.calculate_ra_dec_from_pixel(cx, cy)
+                ra_n, dec_n = self.parent.calculate_ra_dec_from_pixel(
+                    cx + north_dx / compass_radius * probe,
+                    cy + north_dy / compass_radius * probe
+                )
+                if dec_n is not None and dec0 is not None and (dec_n - dec0) < 0:
+                    # North arrow is pointing South — flip it
+                    north_dx, north_dy = -north_dx, -north_dy
+                    print("[Compass] North flipped by WCS sanity check")
+
+                # East check: moving east_dx/east_dy should decrease RA
+                # (RA increases westward, so East = decreasing RA)
+                ra_e, dec_e = self.parent.calculate_ra_dec_from_pixel(
+                    cx + east_dx / compass_radius * probe,
+                    cy + east_dy / compass_radius * probe
+                )
+                if ra_e is not None and ra0 is not None:
+                    dra = ra_e - ra0
+                    if dra > 180:
+                        dra -= 360
+                    elif dra < -180:
+                        dra += 360
+                    # East = direction of INCREASING RA in the sky
+                    # If probing our East arrow gives DECREASING RA, the arrow is wrong
+                    if dra < 0:
+                        east_dx, east_dy = -east_dx, -east_dy
+                        print("[Compass] East flipped by WCS sanity check")
+
+            except Exception as e:
+                print(f"[Compass] WCS sanity check failed: {e}")
 
         # Draw North line
         north_line = QGraphicsLineItem(
@@ -1583,7 +1631,6 @@ class CustomGraphicsView(QGraphicsView):
         east_line.setPen(QPen(Qt.GlobalColor.blue, 2))
         self.parent.main_scene.addItem(east_line)
 
-        # Add labels for North and East
         text_north = QGraphicsTextItem("N")
         text_north.setDefaultTextColor(Qt.GlobalColor.red)
         text_north.setPos(center.x() + north_dx - 10, center.y() + north_dy - 10)
@@ -1594,14 +1641,13 @@ class CustomGraphicsView(QGraphicsView):
         text_east.setPos(center.x() + east_dx - 15, center.y() + east_dy - 10)
         self.parent.main_scene.addItem(text_east)
 
-        # Append all compass components as a tuple to annotation_items for later redrawing
         self.annotation_items.append((
             "compass", {
                 "center": center,
                 "north_line": (center.x(), center.y(), center.x() + north_dx, center.y() + north_dy),
-                "east_line": (center.x(), center.y(), center.x() + east_dx, center.y() + east_dy),
+                "east_line":  (center.x(), center.y(), center.x() + east_dx,  center.y() + east_dy),
                 "north_label": (center.x() + north_dx - 10, center.y() + north_dy - 10, "N"),
-                "east_label": (center.x() + east_dx - 15, center.y() + east_dy - 10, "E"),
+                "east_label":  (center.x() + east_dx  - 15, center.y() + east_dy  - 10, "E"),
                 "orientation": self.parent.orientation
             }
         ))
