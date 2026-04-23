@@ -476,7 +476,7 @@ class StackingMonitorDialog(QDialog):
         # Show as "integration complete" rather than fully done,
         # since drizzle/MFD may still follow
         if ok:
-            self._lbl_total.setText(f"Integration phase done ({total_s}) — post-processing may follow…")
+            self._lbl_total.setText(f"Integration phase done ({total_s})")
             self._lbl_total.setStyleSheet(
                 "color:#f0c040; font-size:11px; font-weight:bold;"
             )
