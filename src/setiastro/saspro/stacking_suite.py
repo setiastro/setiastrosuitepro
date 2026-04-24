@@ -5573,6 +5573,7 @@ class StackingSuiteDialog(QDialog):
         self._refresh_quick_stack_summary_later()
 
         self._migrate_drizzle_keys_once()
+        QTimer.singleShot(0, self._restore_tab_file_lists)
 
     def _get_exec_monitor(self) -> "StackingMonitorDialog":
         """Return the singleton monitor, creating it on first call."""
@@ -8378,18 +8379,187 @@ class StackingSuiteDialog(QDialog):
             return (MultiFrameDeconvWorkerSport, "High-Octane")
         return (MultiFrameDeconvWorker, "Normal")
 
+    def _save_tab_file_lists(self):
+        import json
+        s = self.settings
+        try:
+            self.update_status(f"[RestoreDebug] Saving tab state before restart...")
+
+            def _serialize_dict(d):
+                """Convert tuple keys to JSON-safe strings."""
+                return {json.dumps(k) if isinstance(k, tuple) else k: v
+                        for k, v in d.items()}
+
+            dark_ser  = _serialize_dict(self.dark_files)
+            flat_ser  = _serialize_dict(self.flat_files)
+            light_ser = _serialize_dict(self.light_files)
+            reg_ser   = _serialize_dict(self.reg_files)
+
+            self.update_status(f"[RestoreDebug]   dark_files keys: {list(self.dark_files.keys())}, total files: {sum(len(v) for v in self.dark_files.values())}")
+            self.update_status(f"[RestoreDebug]   flat_files keys: {list(self.flat_files.keys())}, total files: {sum(len(v) for v in self.flat_files.values())}")
+            self.update_status(f"[RestoreDebug]   light_files keys: {list(self.light_files.keys())}, total files: {sum(len(v) for v in self.light_files.values())}")
+            self.update_status(f"[RestoreDebug]   reg_files keys: {list(self.reg_files.keys())}, total files: {sum(len(v) for v in self.reg_files.values())}")
+            self.update_status(f"[RestoreDebug]   manual_light_files count: {len(self.manual_light_files)}")
+
+            s.setValue("stacking/restart_state/dark_files",         json.dumps(dark_ser))
+            s.setValue("stacking/restart_state/flat_files",         json.dumps(flat_ser))
+            s.setValue("stacking/restart_state/light_files",        json.dumps(light_ser))
+            s.setValue("stacking/restart_state/reg_files",          json.dumps(reg_ser))
+            s.setValue("stacking/restart_state/manual_light_files", json.dumps(self.manual_light_files))
+            s.setValue("stacking/restart_state/session_tags",       json.dumps(self.session_tags))
+            s.setValue("stacking/restart_state/session_override",   json.dumps(self.session_override))
+            s.setValue("stacking/restart_state/pending", True)
+            s.sync()
+
+            verify = s.value("stacking/restart_state/pending", False, type=bool)
+            self.update_status(f"[RestoreDebug]   pending flag after sync: {verify}")
+
+        except Exception as e:
+            self.update_status(f"⚠️ Could not save tab state before restart: {e}")
+            import traceback
+            self.update_status(traceback.format_exc())
+
+    def rebuild_dark_tree(self, dark_files=None):
+        """Rebuild the dark_tree widget from self.dark_files (or supplied dict)."""
+        if dark_files is not None:
+            self.dark_files = dark_files
+        self.dark_tree.clear()
+        self._dark_group_item = {}
+        all_paths = [p for paths in self.dark_files.values() for p in paths]
+        if all_paths:
+            self._ingest_paths_with_progress(
+                paths=all_paths,
+                tree=self.dark_tree,
+                expected_type="DARK",
+                title="Loading Dark Files…"
+            )
+
+    def rebuild_light_tree(self, light_files=None):
+        """Rebuild the light_tree widget from self.light_files (or supplied dict)."""
+        if light_files is not None:
+            self.light_files = light_files
+        self.light_tree.clear()
+        self._light_filter_item = {}
+        self._light_exp_item = {}
+        all_paths = [p for paths in self.light_files.values() for p in paths]
+        if all_paths:
+            self._ingest_paths_with_progress(
+                paths=all_paths,
+                tree=self.light_tree,
+                expected_type="LIGHT",
+                title="Loading Light Files…"
+            )
+            try:
+                self.assign_best_master_files()
+            except Exception:
+                pass
+            try:
+                self._refresh_light_tree_summaries()
+            except Exception:
+                pass
+
+    def _restore_tab_file_lists(self):
+        import json
+        s = self.settings
+
+        if not s.value("stacking/restart_state/pending", False, type=bool):
+            return
+
+        def _load_dict(key):
+            raw = s.value(f"stacking/restart_state/{key}", None)
+            if not raw:
+                return {}
+            try:
+                flat = json.loads(raw)
+                result = {}
+                for k, v in flat.items():
+                    try:
+                        parsed = json.loads(k)
+                        result[tuple(parsed) if isinstance(parsed, list) else k] = v
+                    except Exception:
+                        result[k] = v
+                return result
+            except Exception:
+                return {}
+
+        def _load_list(key):
+            raw = s.value(f"stacking/restart_state/{key}", None)
+            if not raw:
+                return []
+            try:
+                return json.loads(raw)
+            except Exception:
+                return []
+
+        saved_darks  = _load_dict("dark_files")
+        saved_flats  = _load_dict("flat_files")
+        saved_lights = _load_dict("light_files")
+        saved_reg    = _load_dict("reg_files")
+        saved_manual = _load_list("manual_light_files")
+        saved_tags   = _load_dict("session_tags")
+        saved_ovr    = _load_dict("session_override")
+
+        def _merge(dest, src):
+            for k, v in src.items():
+                dest.setdefault(k, [])
+                for p in v:
+                    if p not in dest[k]:
+                        dest[k].append(p)
+
+        if saved_darks:  _merge(self.dark_files,  saved_darks)
+        if saved_flats:  _merge(self.flat_files,  saved_flats)
+        if saved_lights: _merge(self.light_files, saved_lights)
+        if saved_reg:    _merge(self.reg_files,   saved_reg)
+
+        for p in saved_manual:
+            if p not in self.manual_light_files:
+                self.manual_light_files.append(p)
+
+        if saved_tags: self.session_tags.update(saved_tags)
+        if saved_ovr:  self.session_override.update(saved_ovr)
+
+        # Repopulate all four tabs
+        try:
+            self.rebuild_dark_tree()
+        except Exception as e:
+            self.update_status(f"⚠️ Dark tree restore failed: {e}")
+
+        try:
+            self.rebuild_flat_tree()
+        except Exception as e:
+            self.update_status(f"⚠️ Flat tree restore failed: {e}")
+
+        try:
+            self.rebuild_light_tree()
+        except Exception as e:
+            self.update_status(f"⚠️ Light tree restore failed: {e}")
+
+        try:
+            self.populate_calibrated_lights()
+            if hasattr(self, "_refresh_reg_tree_summaries"):
+                self._refresh_reg_tree_summaries()
+        except Exception as e:
+            self.update_status(f"⚠️ Integration tab restore failed: {e}")
+
+        # Clean up
+        for key in ("pending", "dark_files", "flat_files", "light_files",
+                    "reg_files", "manual_light_files", "session_tags", "session_override"):
+            s.remove(f"stacking/restart_state/{key}")
+        s.sync()
+
+        self.update_status("✅ Restored tab file lists from previous session.")
 
     def _restart_self(self):
+        self._save_tab_file_lists()   # ← save before destroying
+
         geom = self.saveGeometry()
         try:
             cur_tab = self.tabs.currentIndex()
         except Exception:
             cur_tab = None
 
-        parent = self.parent()  # may be None
-
+        parent = self.parent()
         app = QApplication.instance()
-        # Keep a global strong ref so GC can't collect the new dialog
         if not hasattr(app, "_stacking_suite_ref"):
             app._stacking_suite_ref = None
 
@@ -8403,7 +8573,7 @@ class StackingSuiteDialog(QDialog):
                 except Exception:
                     pass
             new.show()
-            app._stacking_suite_ref = new  # <<< strong ref lives for app lifetime
+            app._stacking_suite_ref = new
 
         QTimer.singleShot(0, spawn)
         self.close()
@@ -8440,46 +8610,23 @@ class StackingSuiteDialog(QDialog):
         self.update_status(self.tr(f"📂 Stacking directory changed:\n    {old_dir or '(none)'} → {new_dir}"))
 
     def _reload_lists_for_new_dir(self):
-        """
-        Re-scan the new stacking directory and repopulate internal dicts AND UI.
-        """
         base = self.stacking_directory or ""
         self.conversion_output_directory = os.path.join(base, "Converted_Images")
 
-        # Rebuild dictionaries from disk
         self.dark_files  = self._discover_grouped(os.path.join(base, "Calibrated_Darks"))
         self.flat_files  = self._discover_grouped(os.path.join(base, "Calibrated_Flats"))
         self.light_files = self._discover_grouped(os.path.join(base, "Calibrated_Lights"))
 
-        # If you store master lists/sizes by path, clear/reseed minimally
         self.master_files.clear()
         self.master_sizes.clear()
 
-        # 🔄 Update the tab UIs if you have builders; try common method names safely
-        # Darks
-        if hasattr(self, "rebuild_dark_tree"):
-            self.rebuild_dark_tree(self.dark_files)
-        elif hasattr(self, "populate_dark_tab"):
-            self.populate_dark_tab()
-
-        # Flats
-        if hasattr(self, "rebuild_flat_tree"):
-            self.rebuild_flat_tree(self.flat_files)
-        elif hasattr(self, "populate_flat_tab"):
-            self.populate_flat_tab()
-
-        # Lights
-        if hasattr(self, "rebuild_light_tree"):
-            self.rebuild_light_tree(self.light_files)
-        elif hasattr(self, "populate_light_tab"):
-            self.populate_light_tab()
-
-        # Image Integration (registration) tab often shows counts/paths
-        if hasattr(self, "refresh_integration_tab"):
-            self.refresh_integration_tab()
+        self.rebuild_dark_tree()
+        self.rebuild_flat_tree()
+        self.rebuild_light_tree()
+        self.populate_calibrated_lights()
 
         self.update_status(self.tr(f"🔄 Re-scanned calibrated sets in: {base}"))
-
+        
     def _discover_grouped(self, root_dir: str) -> dict:
         """
         Walk 'root_dir' and return {group_name: [file_paths,...]}.
@@ -19788,7 +19935,7 @@ class StackingSuiteDialog(QDialog):
                 # ↓ ADD THIS
                 try:
                     if self._exec_monitor is not None:
-                        self._exec_monitor.finish_run(False)
+                        self._exec_monitor.finish_all(False)
                     self._exec_monitor_pipeline_active = False
                 except Exception:
                     pass
@@ -20132,7 +20279,12 @@ class StackingSuiteDialog(QDialog):
                 self._cfa_for_this_run = None
                 QApplication.processEvents()
             return
-
+        
+        try:
+            if self._exec_monitor is not None:
+                self._exec_monitor.finish_all(ok, "")
+        except Exception:
+            pass
         # ---- normal popup summary ----
         if ok:
             sasd_path = os.path.join(self.stacking_directory, "alignment_transforms.sasd")

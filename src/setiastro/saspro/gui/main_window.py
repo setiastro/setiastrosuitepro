@@ -4548,6 +4548,28 @@ class AstroSuiteProMainWindow(
         dlg = FirstRunDialog(self)
         dlg.exec()
 
+    def _toggle_tips(self):
+        currently_disabled = self.settings.value("tips/disabled", False, type=bool)
+        if currently_disabled:
+            self.settings.setValue("tips/disabled", False)
+            self.settings.remove("tips/recently_seen")  # reset seen list so they get fresh tips
+            self.settings.sync()
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.information(
+                self,
+                "Tips Enabled",
+                "Tip of the day has been re-enabled.\nA tip will appear next time you launch SASpro."
+            )
+        else:
+            self.settings.setValue("tips/disabled", True)
+            self.settings.sync()
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.information(
+                self,
+                "Tips Disabled",
+                "Tip of the day has been disabled.\nYou can re-enable it here at any time."
+            )
+
     def _open_dither_analysis(self):
         win = getattr(self, "_dither_analysis_win", None)
         if win is not None:

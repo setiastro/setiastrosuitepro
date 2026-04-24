@@ -389,7 +389,9 @@ class MenuMixin:
         m_about.addAction(self.act_check_updates)
         m_about.addSeparator()
         m_about.addAction(self.act_welcome)
-
+        act_tips = QAction("Enable / Disable Tip of the Day", self)
+        act_tips.triggered.connect(self._toggle_tips)
+        m_about.addAction(act_tips)
         m_about.addSeparator()
         m_about.addAction(self.tr("Statistics..."), self._show_statistics)
         m_about.addSeparator()
