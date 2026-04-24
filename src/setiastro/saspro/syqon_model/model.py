@@ -84,6 +84,7 @@ class NAFNet(nn.Module):
         dec_blk_nums: Union[Tuple[int, ...], list[int]] = (2, 2, 2, 2),
         middle_blk_num: int = 2,
         use_sigmoid: bool = True,
+        ups_mode: str = "bilinear",  # "bilinear" or "pixelshuffle"
     ):
         super().__init__()
         self.intro = nn.Conv2d(in_ch, width, kernel_size=3, padding=1, bias=True)
@@ -103,12 +104,22 @@ class NAFNet(nn.Module):
         self.middle = nn.Sequential(*[NAFBlock(ch) for _ in range(middle_blk_num)])
 
         for num in dec_blk_nums:
-            self.ups.append(
-                nn.Sequential(
-                    nn.Conv2d(ch, ch * 2, kernel_size=1, bias=True),
-                    nn.PixelShuffle(2),
+            if ups_mode == "pixelshuffle":
+                # ups.N.0.weight — Nadir older builds
+                self.ups.append(
+                    nn.Sequential(
+                        nn.Conv2d(ch, ch * 2, kernel_size=1, bias=True),
+                        nn.PixelShuffle(2),
+                    )
                 )
-            )
+            else:
+                # ups.N.1.weight — SyQon Nadir/AxiomV2 current
+                self.ups.append(
+                    nn.Sequential(
+                        nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False),
+                        nn.Conv2d(ch, ch // 2, kernel_size=3, padding=1, bias=True),
+                    )
+                )
             ch //= 2
             self.decoders.append(nn.Sequential(*[NAFBlock(ch) for _ in range(num)]))
 
@@ -129,7 +140,6 @@ class NAFNet(nn.Module):
             x = decoder(x)
         x = self.ending(x)
         return self.out_act(x)
-
 
 # =============================================================================
 # Legacy / extra models (kept for compatibility; not required by NAFNet inference)
@@ -440,8 +450,6 @@ class NAFBlockLite(nn.Module):
 
 
 class NAFNetLite(nn.Module):
-    """NAFNet Lite as used by Axiom 2.1 — exact architecture match."""
-
     def __init__(
         self,
         in_channels:     int   = 3,
@@ -472,10 +480,11 @@ class NAFNetLite(nn.Module):
         self.middle = nn.Sequential(*[NAFBlockLite(ch) for _ in range(middle_blk_num)])
 
         for num in reversed(dec_blk_nums):
-            # 3×3 upsample conv — matches checkpoint ups.N.0.weight (out, in, 3, 3)
+            # 3×3 conv before PixelShuffle — matches Axiom 2.1 checkpoint
+            # ups.N.0.weight shape: (ch*2, ch, 3, 3)
             self.ups.append(nn.Sequential(
                 nn.Conv2d(ch, ch * 2, 3, padding=1),
-                nn.PixelShuffle(2),   # ch*2 / 4 = ch//2
+                nn.PixelShuffle(2),   # ch*2/4 = ch//2
             ))
             ch //= 2
             self.fusions.append(nn.Conv2d(ch * 2, ch, 1))
@@ -501,4 +510,5 @@ class NAFNetLite(nn.Module):
             x = decoder(x)
 
         x = self.ending(x)
+        # Global residual: model predicts correction, output is clamped starless
         return torch.clamp(inp + x, 0.0, 1.0)

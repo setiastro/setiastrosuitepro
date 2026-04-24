@@ -139,25 +139,47 @@ def _load_state_dict(torch, ckpt_path: str):
         f"Unsupported checkpoint format: top-level object is {type(ckpt).__name__}"
     )
 
+def _detect_ups_variant(sd: dict) -> str:
+    """
+    Returns 'bilinear' if ups use Upsample+Conv (ups.N.1.weight — SyQon Nadir/AxiomV2),
+    or 'pixelshuffle' if ups use Conv+PixelShuffle (ups.N.0.weight — older builds).
+    """
+    for k in sd.keys():
+        if k.startswith("ups.") and k.endswith(".1.weight"):
+            return "bilinear"
+        if k.startswith("ups.") and k.endswith(".0.weight"):
+            return "pixelshuffle"
+    return "bilinear"  # default to what SyQon ships
+
 def _detect_block_variant(sd: dict) -> str:
     """
-    Returns 'lite' if the checkpoint uses NAFBlockLite (Axiom 2.1 / nafnet_lite style),
-    'standard' if it uses the original NAFBlock.
+    Returns 'lite' if NAFBlockLite (Axiom 2.1), 'standard' if NAFBlock (Nadir/AxiomV2).
 
-    Lite block keys:  conv1/conv2/conv3/conv4/conv5 + sca.conv
-    Standard block keys: conv1/dwconv/conv2 + sca.1 + ffn1/ffn2
+    Lite indicators:
+      - conv3.weight keys (only in NAFBlockLite spatial mixing)
+      - fusions.N.weight keys (fusion conv in NAFNetLite decoder)
+      - norm1.weight shape is 1D (C,) not (1,C,1,1)
+
+    Standard indicators:
+      - ffn1.weight keys (only in original NAFBlock)
+      - sca.1.weight keys (NAFBlock uses Sequential SCA with index)
     """
-    # Most reliable: check for conv3 which only exists in the lite block
+    # Most reliable: fusions layer only exists in NAFNetLite
+    for k in sd.keys():
+        if k.startswith("fusions."):
+            return "lite"
+
+    # conv3 only in NAFBlockLite spatial branch
     for k in sd.keys():
         if k.endswith(".conv3.weight"):
             return "lite"
 
-    # Secondary: check for ffn1 which only exists in the standard block
+    # ffn1 only in standard NAFBlock
     for k in sd.keys():
         if k.endswith(".ffn1.weight"):
             return "standard"
 
-    # Tertiary: norm1.weight shape — (C,) = lite,  (1,C,1,1) = standard
+    # norm1.weight shape: (C,) = lite,  (1,C,1,1) = standard
     for k, v in sd.items():
         if ".norm1.weight" in k and hasattr(v, "ndim"):
             return "lite" if v.ndim == 1 else "standard"
@@ -247,6 +269,7 @@ def load_nafnet_model(
     sd, meta = _load_state_dict(torch, ckpt_path)
     base_ch, enc_blks, dec_blks, middle_blk_num = _infer_nafnet_cfg_from_sd(sd)
     block_variant = _detect_block_variant(sd)
+    ups_variant = _detect_ups_variant(sd)  # ← new
 
     if block_variant == "lite":
         model = NAFNetLite(
@@ -262,6 +285,7 @@ def load_nafnet_model(
             dec_blk_nums=dec_blks,
             middle_blk_num=middle_blk_num,
             use_sigmoid=False,
+            ups_mode=ups_variant,  # ← new
         )
 
     model.load_state_dict(sd, strict=True)
@@ -273,6 +297,7 @@ def load_nafnet_model(
     info = {
         "model_kind": model_kind,
         "block_variant": block_variant,
+        "ups_variant": ups_variant,  # ← new, useful for debugging
         "base_ch": base_ch,
         "enc_blks": enc_blks,
         "dec_blks": dec_blks,
@@ -398,10 +423,14 @@ def nafnet_starless_rgb01(
         model_kind=model_kind,
     )
 
-    # NAFNetLite has global residual built into forward() — output IS starless
-    # NAFNet predicts star residual — starless = input - output
+    # Auto-correct residual_mode based on detected architecture
     if info.get("block_variant") == "lite":
+        # NAFNetLite: forward() returns clamped starless directly via global residual
         residual_mode = False
+    elif info.get("ups_variant") == "bilinear":
+        # SyQon bilinear NAFNet (AxiomV2): output is starless, not star residual
+        residual_mode = False
+    # pixelshuffle = Nadir: model predicts star residual, keep residual_mode True
 
     info = dict(info or {})
     info["device"] = str(device)
@@ -459,22 +488,22 @@ def nafnet_starless_rgb01(
                 )
 
                 if residual_mode:
+                    # model predicts star residual: starless = input - prediction
                     starless_patch = patch - pred
-                    stars_patch = pred
                 else:
+                    # model outputs starless directly
                     starless_patch = pred
-                    stars_patch = patch - pred
 
                 starless_patch = np.clip(starless_patch, 0.0, 1.0).astype(np.float32, copy=False)
-                stars_patch = np.clip(stars_patch, 0.0, 1.0).astype(np.float32, copy=False)
-
                 starless_patch = starless_patch[:ph, :pw, :]
                 wlocal = w2[:ph, :pw, :]
 
                 out_acc[y0:y1, x0:x1, :] += starless_patch * wlocal
                 w_acc[y0:y1, x0:x1, :] += wlocal
+
                 if callable(tile_cb):
                     tile_cb(y0, x0, ph, pw, starless_patch)
+
                 done += 1
                 if callable(progress_cb):
                     progress_cb(done, total, "SyQon NAFNet tiles…")
@@ -490,7 +519,6 @@ def nafnet_starless_rgb01(
             info,
         )
     return starless, stars_only, info
-
 
 def _get_setting_any(settings, keys, default):
     """
@@ -593,10 +621,14 @@ class syqonnafnetSession:
         amp_dtype: str = "fp16",
         progress_cb: Optional[Callable[[int, int, str], None]] = None,
     ):
-        # NAFNetLite has global residual built into forward() — output IS starless
-        # NAFNet predicts star residual — starless = input - output
+        # Auto-correct residual_mode based on detected architecture
         if self.info.get("block_variant") == "lite":
+            # NAFNetLite: forward() returns clamped starless directly via global residual
             residual_mode = False
+        elif self.info.get("ups_variant") == "bilinear":
+            # SyQon bilinear NAFNet (AxiomV2): output is starless, not star residual
+            residual_mode = False
+        # pixelshuffle = Nadir: model predicts star residual, keep residual_mode True
 
         x = np.asarray(img_rgb01, dtype=np.float32)
         was_mono = (x.ndim == 2) or (x.ndim == 3 and x.shape[2] == 1)
@@ -615,6 +647,7 @@ class syqonnafnetSession:
 
         info = dict(self.info or {})
         info["device"] = str(self.device)
+        info["residual_mode"] = residual_mode
 
         use_amp_requested = bool(use_amp)
         amp_dtype = (amp_dtype or "fp16").lower()
@@ -669,8 +702,10 @@ class syqonnafnetSession:
                     )
 
                     if residual_mode:
+                        # model predicts star residual: starless = input - prediction
                         starless_patch = patch - pred
                     else:
+                        # model outputs starless directly
                         starless_patch = pred
 
                     starless_patch = np.clip(starless_patch, 0.0, 1.0).astype(np.float32, copy=False)
