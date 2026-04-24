@@ -23,6 +23,70 @@ from PyQt6.QtGui import QDesktopServices, QPixmap, QIcon
 # ── Settings key ─────────────────────────────────────────────────────────────
 _SETTINGS_KEY = "ui/first_run_dialog_shown_v1"
 
+SASPRO_TIPS = [
+    "💡 Send all panels to the Secondary Dock Window via the Views menu — perfect for dual monitor setups.",
+    "💡 Command Search finds literally anything in SASpro — open it first, then just start typing.",
+    "💡 Right-click the menu bar to show and hide panels instantly.",
+    "💡 Use the dotted handle at the start of any toolbar to drag it anywhere or dock it vertically.",
+    "💡 Did you know you can create data Tables in SASpro? Check the File menu.",
+    "💡 Alt+drag the View icon onto another image window to link their views together.",
+    "💡 Press 'A' to toggle the display stretch on and off.",
+    "💡 Shift+A makes the current display stretch permanent — bakes it into the image.",
+    "💡 You can export your icon shortcuts to save a custom toolset — like a narrowband set or planet processing set.",
+    "💡 Alt+drag any function icon off the toolbar and drop it onto an image to run it instantly.",
+    "💡 Hold Spacebar and click on an image to see pixel values and WCS coordinates at that point.",
+    "💡 Ctrl+Shift+I quickly inverts your active mask.",
+    "💡 You can paste images directly into SASpro with Ctrl+V.",
+    "💡 Create an ROI to preview how a tool will affect just a small region before committing.",
+    "💡 Don't forget about History Explorer — every edit is tracked and reversible.",
+    "💡 The Blink Comparator lets you rapidly compare multiple images to spot differences.",
+    "💡 Right-click on tree widgets, images, and panels — there are often extra options lurking there.",
+    "💡 SASpro remembers your panel positions and sizes — float them anywhere and they'll be there next time.",
+    "💡 Right-click on most tree widgets in the Stacking Suite for extra options and session assignment.",
+    "💡 The wrench icon in the Stacking Suite opens all stacking settings including rejection algorithm tuning.",
+    "💡 You can drag the Stacking Suite log window to a second monitor and watch a run live.",
+    "💡 ABE (Automatic Background Extraction) supports manual sample point placement for tricky images.",
+    "💡 The Execution Monitor shows a live breakdown of every stacking phase with elapsed times.",
+    "💡 Plate solving is under Star Stuff — SASpro tries ASTAP first with astrometry.net as fallback.",
+    "💡 What's In My Image (WIMI) shows every catalogued object in your field of view.",
+    "💡 What's In My Sky tells you what's observable from your location right now.",
+    "💡 The Pixel Math tool supports full expressions — add, subtract, and combine images with formulas.",
+    "💡 When you save a project, all your edits are preserved including the full undo/redo stacks!",
+    "💡 You can undo and redo edits all the way back to the original using the History stack.",
+    "💡 Masks can be created from stars, luminance, ranges, colors, or drawn manually.",
+    "💡 Drag the View icon off to a blank area of the canvas to duplicate your image into a new window.",
+    "💡 The Levels tool supports per-channel adjustments with live histogram feedback.",
+    "💡 Some say Frank is actually an AI from the future sent back to help astrophotographers. We can neither confirm nor deny this. 🛸",
+    "💡 SASpro supports FITS, TIFF, XISF, JPG, PNG, Camera RAW, and even PDF as input formats.",
+    "💡 You can assign custom keyboard shortcuts to almost any function in SASpro.",
+    "💡 The Quick Stack tab in the Stacking Suite lets you run a full stack with minimal setup.",
+    "💡 The mouse wheel zooms in and out on your image.",
+    "💡 Did you know SASpro can do planetary stacking?",
+    "💡 Automate your entire processing workflow with Function Bundles and View Bundles — save and replay your full process in one click.",
+    "💡 Did you know SASpro can project any galaxy to be viewed top-down? Check it out under the Functions menu.",
+    "💡 Easily convert a mono image to a 3-channel color image under the Edit menu.",
+    "💡 Curious about keyboard shortcuts? There's a full cheat sheet under the Shortcuts menu.",
+    "💡 Bored? Check under the About menu. You're welcome. 🙂",
+    "💡 Batch convert files from one format to another using Batch File Conversion under Header Mods & Misc.",
+    "💡 Use Image Peaker to analyze your image and check if your sensor is too close to your reducer.",
+    "💡 The Dither Analysis tool visualizes your guiding drift and dither patterns after a stacking run.",
+    "💡 You can annotate your images with compass overlays, scale bars, and object labels directly from WIMI.",
+    "💡 The Stacking Suite supports comet stacking — it can track the comet and the stars separately and blend them.",
+    "💡 ABE supports exclusion polygons — draw around galaxies or nebulae so they don't affect the background model.",
+    "💡 You can right-click the toolbar to reset it if icons go missing or get rearranged.",
+    "💡 The Blink Comparator has a Weighted Score metric to help you rank your best frames automatically.",
+    "💡 Star Alignment in the Stacking Suite has a Trial Detect button — use it to tune your star detection threshold before committing to a full run.",
+    "💡 SASpro supports session-based flat and light grouping in the Stacking Suite — right-click frames to assign them to sessions.",
+    "💡 You can override the master dark or flat for individual light groups in the Stacking Suite via right-click.",
+    "💡 The Resource Monitor shows live CPU, RAM, and GPU usage — find it under the Views menu.",    
+    "💡 You can batch crop all your open views at the same time from the crop tool.",
+    "💡 The Header Viewer shows all FITS keywords for any open image.",
+    "💡 You can open multiple images at once — or drag and drop multiple files directly onto SASpro.",
+    "💡 The Icon Cheat Sheet under Help shows every toolbar icon with its function at a glance.",
+    "💡 DarkStar separates stars from nebulosity — find it under Remove Stars.",
+    "💡 You can link zoom and pan between windows using the View Sync controls.",
+    "💡 The Quick Stack tab gives a live summary of your loaded calibration files before you commit to a full stack.",
+]
 
 def _is_first_run() -> bool:
     return not QSettings().value(_SETTINGS_KEY, False, type=bool)
@@ -41,6 +105,149 @@ def maybe_show_first_run_dialog(main_window) -> None:
     dlg = FirstRunDialog(main_window)
     dlg.exec()
 
+def maybe_show_tip_of_day(main_window) -> None:
+    """Show a rotating tip bar at the bottom of the main window, once per session."""
+    from PyQt6.QtCore import QSettings
+    s = QSettings()
+    if s.value("tips/disabled", False, type=bool):
+        return
+    # Don't show if first run dialog is about to show
+    if _is_first_run():
+        return
+    from PyQt6.QtCore import QTimer
+    QTimer.singleShot(1500, lambda: _show_tip_bar(main_window))
+
+
+def _show_tip_bar(main_window) -> None:
+    import random
+    from PyQt6.QtWidgets import QWidget, QHBoxLayout, QLabel, QPushButton
+    from PyQt6.QtCore import QSettings, QTimer
+
+    s = QSettings()
+    if s.value("tips/disabled", False, type=bool):
+        return
+
+    # Check if update dialog is showing
+    if getattr(main_window, "_update_dialog_shown", False):
+        QTimer.singleShot(2000, lambda: _show_tip_bar(main_window))
+        return
+
+    # Pick a tip not seen recently
+    seen = list(s.value("tips/recently_seen", [], type=list) or [])
+    available = [t for t in SASPRO_TIPS if t not in seen]
+    if not available:
+        seen = []
+        available = SASPRO_TIPS[:]
+
+    tip = random.choice(available)
+    seen.append(tip)
+    s.setValue("tips/recently_seen", seen[-10:])
+    s.sync()
+
+    # Build the bar
+    bar = QWidget(main_window)
+    bar.setObjectName("tip_bar")
+    bar.setStyleSheet("""
+        QWidget#tip_bar {
+            background-color: rgba(20, 20, 40, 230);
+            border-top: 1px solid #2a2a4a;
+        }
+    """)
+
+    h = QHBoxLayout(bar)
+    h.setContentsMargins(12, 5, 8, 5)
+    h.setSpacing(10)
+
+    lbl = QLabel(tip)
+    lbl.setStyleSheet("color: #cccccc; font-size: 13px; font-weight: 500; background: transparent; border: none;")
+    lbl.setWordWrap(False)
+    h.addWidget(lbl, 1)
+
+    btn_dontshow = QPushButton("Don't show tips")
+    btn_dontshow.setStyleSheet("""
+        QPushButton {
+            background: transparent;
+            color: #555588;
+            border: none;
+            font-size: 10px;
+            text-decoration: underline;
+        }
+        QPushButton:hover { color: #8888bb; }
+    """)
+    btn_dontshow.setFixedHeight(20)
+    btn_dontshow.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    btn_dismiss = QPushButton("✕")
+    btn_dismiss.setFixedSize(20, 20)
+    btn_dismiss.setStyleSheet("""
+        QPushButton {
+            background: transparent;
+            color: #555577;
+            border: none;
+            font-size: 11px;
+        }
+        QPushButton:hover { color: #aaaacc; }
+    """)
+    btn_dismiss.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    h.addWidget(btn_dontshow)
+    h.addWidget(btn_dismiss)
+
+    def _dismiss():
+        try:
+            bar.setVisible(False)
+            bar.deleteLater()
+        except RuntimeError:
+            pass
+
+    def _dont_show():
+        s.setValue("tips/disabled", True)
+        s.sync()
+        _dismiss()
+
+    btn_dismiss.clicked.connect(_dismiss)
+    btn_dontshow.clicked.connect(_dont_show)
+
+    # Position it just below the menu bar
+    try:
+        menu_bar = main_window.menuBar()
+        menu_bottom = menu_bar.geometry().bottom()
+
+        bar.setFixedHeight(36)
+        bar.setFixedWidth(main_window.rect().width())
+        bar.move(0, menu_bottom + 1)
+        bar.raise_()
+        bar.show()
+        main_window.statusBar().setVisible(True)  # restore status bar since we're not using it anymore
+        main_window._tip_bar = bar
+
+        # Auto-dismiss after 20 seconds
+        QTimer.singleShot(20000, lambda: _safe_dismiss())
+
+        def _safe_dismiss():
+            try:
+                if bar.isVisible():
+                    _dismiss()
+            except RuntimeError:
+                pass  # already deleted, no problem
+
+        # Keep it pinned on resize
+        original_resize = main_window.resizeEvent
+        def _patched_resize(event):
+            try:
+                original_resize(event)
+                if bar.isVisible():
+                    mb = main_window.menuBar()
+                    r = main_window.rect()
+                    bar.setFixedWidth(r.width())
+                    bar.move(0, mb.geometry().bottom() + 1)
+                    bar.raise_()
+            except Exception:
+                pass
+        main_window.resizeEvent = _patched_resize
+
+    except Exception:
+        pass
 
 # ── Dialog ───────────────────────────────────────────────────────────────────
 
