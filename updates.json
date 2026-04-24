@@ -1,9 +1,9 @@
 {
-  "version": "1.15.2.post1",
+  "version": "1.15.3",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.15.2/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.15.2/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.15.2/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.15.3/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.15.3/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.15.3/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.15.2 PDF Support to open pdfs in SASpro. Updates to Dither Analysis for WCS RA and DEC, the ability to select files from the list of on the scatter plots, and context options for them. Icon Cheat Sheet under Shortcuts menu. Welcome screen updates and can be viewed anytime under About menu. Display menu created. V1.15.1 Stacking Execution Monitor for Stacking Suite. Additional analyses in Dither Analyzer V1.15.0 New Tool: Dither Analysis under Star Stuff. Load and analyze your raw images to verify your acquisition is dithering properly and what you are expecting. Can run Dither Analysis after Stacking now as well. Updated SyQon Starless in prep of AxiomV2.1. Other tools updated: Blink, Continuum Subtraction, Star Alignment, Stacking Suite, and Satellite Removal."
+  "notes": "Seti Astro Suite Pro V1.15.3 Tip of the Day in SASpro. Stacking Suite update to preserve files loaded in dark, flat, lights, and image integration when you change the stacking directory. Other bug fixes. V1.15.2 PDF Support to open pdfs in SASpro. Updates to Dither Analysis for WCS RA and DEC, the ability to select files from the list of on the scatter plots, and context options for them. Icon Cheat Sheet under Shortcuts menu. Welcome screen updates and can be viewed anytime under About menu. Display menu created. V1.15.1 Stacking Execution Monitor for Stacking Suite. Additional analyses in Dither Analyzer V1.15.0 New Tool: Dither Analysis under Star Stuff. Load and analyze your raw images to verify your acquisition is dithering properly and what you are expecting. Can run Dither Analysis after Stacking now as well. Updated SyQon Starless in prep of AxiomV2.1. Other tools updated: Blink, Continuum Subtraction, Star Alignment, Stacking Suite, and Satellite Removal."
 }
