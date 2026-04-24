@@ -28,14 +28,8 @@ except Exception:
 # ──────────────────────────────────────────────────────────────────────────────
 # REPLACE OLD _iter_open_docs WITH THIS
 def _iter_open_docs(main):
-    """
-    Find open views/docs by:
-    1) docman.{documents|docs|open_docs|views|iter_docs|all_docs}
-    2) Any attribute on main that has subWindowList() (QMdiArea), pulling docs
-       from subwindow.widget().{doc,_doc,document} or the widget itself if it
-       exposes an image.
-    Returns a list of (label, provider) where provider can be a doc or widget.
-    """
+    from PyQt6 import sip
+
     def _label_for(obj, fallback):
         name = ""
         try:
@@ -48,13 +42,17 @@ def _iter_open_docs(main):
         return name or fallback or f"View {len(items)}"
 
     def _image_from_any(x):
-        """Robustly get a numpy-ish image from doc/widget."""
-        if x is None: 
+        if x is None:
             return None
         chain = [x, getattr(x, "doc", None), getattr(x, "_doc", None), getattr(x, "document", None)]
         for c in chain:
             if c is None:
                 continue
+            try:
+                if isinstance(c, sip.wrappertype) and sip.isdeleted(c):
+                    continue
+            except Exception:
+                pass
             img = getattr(c, "image", None)
             if img is not None:
                 try:
@@ -63,7 +61,6 @@ def _iter_open_docs(main):
                         return a
                 except Exception:
                     pass
-            # method fallbacks
             for m in ("get_image", "current_image", "image_array"):
                 f = getattr(c, m, None)
                 if callable(f):
@@ -77,10 +74,15 @@ def _iter_open_docs(main):
         return None
 
     def _add_item(obj, label_hint=None):
+        try:
+            if isinstance(obj, sip.wrappertype) and sip.isdeleted(obj):
+                return
+        except Exception:
+            pass
         img = _image_from_any(obj)
         if img is None:
             return
-        key = id(getattr(obj, "image", obj))  # stable-ish identity
+        key = id(getattr(obj, "image", obj))
         if key in seen:
             return
         seen.add(key)
@@ -114,37 +116,72 @@ def _iter_open_docs(main):
             val = getattr(main, attr)
         except Exception:
             continue
-        if hasattr(val, "subWindowList"):
+
+        # Guard: skip deleted Qt objects before touching them at all
+        try:
+            if isinstance(val, sip.wrappertype) and sip.isdeleted(val):
+                continue
+        except Exception:
+            pass
+
+        try:
+            has_swl = hasattr(val, "subWindowList")
+        except Exception:
+            continue
+
+        if not has_swl:
+            continue
+
+        try:
+            sw_list = val.subWindowList()
+        except Exception:
+            continue
+
+        for sw in sw_list:
             try:
-                for sw in val.subWindowList():
-                    title = ""
-                    try:
-                        title = sw.windowTitle()
-                    except Exception:
-                        pass
-                    w = None
-                    try:
-                        w = sw.widget()
-                    except Exception:
-                        pass
-                    # prefer an actual doc if present; fallback to widget
-                    for candidate in (
-                        getattr(w, "doc", None),
-                        getattr(w, "_doc", None),
-                        getattr(w, "document", None),
-                        w,
-                    ):
-                        if candidate is None:
-                            continue
-                        if _image_from_any(candidate) is not None:
-                            _add_item(candidate, label_hint=title)
-                            break
+                if sip.isdeleted(sw):
+                    continue
             except Exception:
                 continue
 
+            title = ""
+            try:
+                title = sw.windowTitle()
+            except Exception:
+                pass
+
+            w = None
+            try:
+                w = sw.widget()
+            except Exception:
+                continue
+
+            if w is None:
+                continue
+
+            try:
+                if sip.isdeleted(w):
+                    continue
+            except Exception:
+                continue
+
+            for candidate in (
+                getattr(w, "doc", None),
+                getattr(w, "_doc", None),
+                getattr(w, "document", None),
+                w,
+            ):
+                if candidate is None:
+                    continue
+                try:
+                    if sip.isdeleted(candidate):
+                        continue
+                except Exception:
+                    pass
+                if _image_from_any(candidate) is not None:
+                    _add_item(candidate, label_hint=title)
+                    break
     return items
-
-
 
 def _doc_image(doc_like) -> np.ndarray | None:
     """
@@ -642,7 +679,6 @@ class AddStarsDialog(QDialog):
         except Exception:
             pass
 
-
     def _restore_ui_state(self):
         self._restoring_ui = True
         try:
@@ -684,6 +720,12 @@ class AddStarsDialog(QDialog):
 
         finally:
             self._restoring_ui = False
+
+        # Now load images from the restored selections and run preview
+        # Do this after _restoring_ui is False so signals work normally
+        self._pick_starless_from_combo()
+        self._pick_stars_from_combo()
+        QTimer.singleShot(0, self.update_preview)
 
     def closeEvent(self, ev):
         try:
