@@ -209,12 +209,22 @@ class UpdateMixin:
 
                 if msg_box.exec() == QMessageBox.StandardButton.Yes:
                     plat = sys.platform
-                    key = (
-                        "Windows" if plat.startswith("win") else
-                        "macOS"   if plat.startswith("darwin") else
-                        "Linux"   if plat.startswith("linux") else
-                        ""
-                    )
+                    
+                    if plat.startswith("darwin"):
+                        # Detect Intel vs Apple Silicon
+                        import platform
+                        machine = platform.machine().lower()
+                        if machine == "arm64":
+                            key = "macOS_AppleSilicon"
+                        else:
+                            key = "macOS_Intel"
+                    elif plat.startswith("win"):
+                        key = "Windows"
+                    elif plat.startswith("linux"):
+                        key = "Linux"
+                    else:
+                        key = ""
+
                     link = downloads.get(key, "")
                     if not link:
                         QMessageBox.warning(self, self.tr("Download"),
