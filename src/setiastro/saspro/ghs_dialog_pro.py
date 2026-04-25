@@ -155,30 +155,33 @@ def _build_log_lut(strength, g, lp, hp, sym_u, N=65536):
 
 def _build_exp_lut(strength, g, lp, hp, sym_u, N=65536):
     """
-    Pivot-aware Exponential stretch: raw(x) = exp(s*(x-SP)) - 1.
-    Same two-half normalisation as ArcSinh so f(0)=0, f(SP)=SP, f(1)=1.
-    Lifts shadows/midtones hard; complement to the logarithmic stretch.
+    Pivot-aware Exponential stretch, two-half normalisation:
+      right half [SP..1]: raw = expm1(s*(x-SP))          — lifts upward
+      left  half [0..SP]: raw = -expm1(s*(SP-x))         — mirror across diagonal
+    Guarantees f(0)=0, f(SP)=SP, f(1)=1.
+    LP/HP and gamma applied afterward.
     """
     us  = np.linspace(0.0, 1.0, N, dtype=np.float64)
     SP  = float(sym_u)
     s   = max(float(strength), 1e-6)
     eps = 1e-15
 
-    shifted = us - SP
-    raw     = np.expm1(s * shifted)            # exp(s*d) - 1, numerically stable
+    # right half: exp(s*(x-SP))-1, zero at SP, positive going right
+    raw_right_at_one  = np.expm1(s * (1.0 - SP))
+    # left half: -(exp(s*(SP-x))-1), zero at SP, positive going left (toward 0)
+    raw_left_at_zero  = np.expm1(s * SP)           # magnitude at x=0
 
-    raw_at_left  = np.expm1(s * (0.0 - SP))   # raw at x=0
-    raw_at_pivot = np.expm1(s * 0.0)           # == 0
-    raw_at_right = np.expm1(s * (1.0 - SP))   # raw at x=1
-
-    span_left  = raw_at_pivot - raw_at_left  + eps
-    span_right = raw_at_right - raw_at_pivot + eps
-
-    vp    = np.empty_like(us)
+    vp = np.empty_like(us)
     left  = us <= SP
     right = ~left
-    vp[left]  = SP * (raw[left]  - raw_at_left)  / span_left
-    vp[right] = SP + (1.0 - SP) * (raw[right] - raw_at_pivot) / span_right
+
+    # right: normalise [SP..1] → output [SP..1]
+    raw_r = np.expm1(s * (us[right] - SP))
+    vp[right] = SP + (1.0 - SP) * raw_r / (raw_right_at_one + eps)
+
+    # left: flip — mirrors the right shape across the diagonal
+    raw_l = np.expm1(s * (SP - us[left]))
+    vp[left] = SP - SP * raw_l / (raw_left_at_zero + eps)
 
     up = us.copy()
     if lp > 0:
@@ -780,20 +783,18 @@ class GhsDialogPro(QDialog):
         us  = np.linspace(0.0, 1.0, N, dtype=np.float64)
         eps = 1e-15
 
-        raw = np.expm1(s * (us - SP))          # exp(s*(x-SP)) - 1
-
-        raw_at_left  = np.expm1(s * (0.0 - SP))
-        raw_at_pivot = np.expm1(0.0)           # == 0
-        raw_at_right = np.expm1(s * (1.0 - SP))
-
-        span_left  = raw_at_pivot - raw_at_left  + eps
-        span_right = raw_at_right - raw_at_pivot + eps
+        raw_right_at_one = np.expm1(s * (1.0 - SP))
+        raw_left_at_zero = np.expm1(s * SP)
 
         vp    = np.empty_like(us)
         left  = us <= SP
         right = ~left
-        vp[left]  = SP * (raw[left]  - raw_at_left)  / span_left
-        vp[right] = SP + (1.0 - SP) * (raw[right] - raw_at_pivot) / span_right
+
+        raw_r = np.expm1(s * (us[right] - SP))
+        vp[right] = SP + (1.0 - SP) * raw_r / (raw_right_at_one + eps)
+
+        raw_l = np.expm1(s * (SP - us[left]))
+        vp[left] = SP - SP * raw_l / (raw_left_at_zero + eps)
 
         up = us.copy()
         if lp > 0:
