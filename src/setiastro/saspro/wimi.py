@@ -154,6 +154,7 @@ from matplotlib.patches import Circle
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from setiastro.saspro.plate_solver import plate_solve_doc_inplace, _active_doc_from_parent, _get_seed_mode, _set_seed_mode, _as_header
+from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 
 #################################
 # PyQt6 Imports
@@ -1408,149 +1409,11 @@ class CustomGraphicsView(QGraphicsView):
             self.parent.update_green_box()
 
     def update_mini_preview(self):
-        """Update the mini preview with the current view rectangle and any additional mirrored elements."""
-        if self.parent.main_image:
-            # Scale the main image to fit in the mini preview
-            mini_pixmap = self.parent.main_image.scaled(
-                self.parent.mini_preview.size(),
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
-            )
-            mini_painter = QPainter(mini_pixmap)
-
-            try:
-                # Define scale factors based on main image dimensions
-                if self.parent.main_image.width() > 0 and self.parent.main_image.height() > 0:
-                    scale_factor_x = mini_pixmap.width() / self.parent.main_image.width()
-                    scale_factor_y = mini_pixmap.height() / self.parent.main_image.height()
-
-                    # Draw the search circle if it's defined
-                    if self.circle_center is not None and self.circle_radius > 0:
-                        pen_circle = QPen(QColor(255, 0, 0), 2)
-                        mini_painter.setPen(pen_circle)
-                        mini_painter.drawEllipse(
-                            int(self.circle_center.x() * scale_factor_x - self.circle_radius * scale_factor_x),
-                            int(self.circle_center.y() * scale_factor_y - self.circle_radius * scale_factor_y),
-                            int(self.circle_radius * 2 * scale_factor_x),
-                            int(self.circle_radius * 2 * scale_factor_y)
-                        )
-
-                    # Draw the green box representing the current view
-                    mini_painter.setPen(QPen(QColor(0, 255, 0), 2))
-                    view_rect = self.parent.main_preview.mapToScene(
-                        self.parent.main_preview.viewport().rect()
-                    ).boundingRect()
-                    mini_painter.drawRect(
-                        int(view_rect.x() * scale_factor_x),
-                        int(view_rect.y() * scale_factor_y),
-                        int(view_rect.width() * scale_factor_x),
-                        int(view_rect.height() * scale_factor_y)
-                    )
-
-
-                    # Draw dots for each result with a color based on selection status
-                    for obj in self.parent.results:
-                        ra, dec = obj['ra'], obj['dec']
-                        x, y = self.parent.calculate_pixel_from_ra_dec(ra, dec)
-                        if x is not None and y is not None:
-                            # Change color to green if this is the selected object
-                            dot_color = QColor(0, 255, 0) if obj == getattr(self.parent, 'selected_object', None) else QColor(255, 0, 0)
-                            mini_painter.setPen(QPen(dot_color, 4))
-                            mini_painter.drawPoint(
-                                int(x * scale_factor_x),
-                                int(y * scale_factor_y)
-                            )
-
-                    # Redraw annotation items on the mini preview
-                    for item in self.annotation_items:
-                        pen = QPen(self.parent.selected_color, 1)  # Use a thinner pen for mini preview
-                        mini_painter.setPen(pen)
-
-                        # Interpret item type and draw accordingly
-                        if item[0] == 'ellipse':
-                            rect = item[1]
-                            mini_painter.drawEllipse(
-                                int(rect.x() * scale_factor_x), int(rect.y() * scale_factor_y),
-                                int(rect.width() * scale_factor_x), int(rect.height() * scale_factor_y)
-                            )
-                        elif item[0] == 'rect':
-                            rect = item[1]
-                            mini_painter.drawRect(
-                                int(rect.x() * scale_factor_x), int(rect.y() * scale_factor_y),
-                                int(rect.width() * scale_factor_x), int(rect.height() * scale_factor_y)
-                            )
-                        elif item[0] == 'line':
-                            line = item[1]
-                            mini_painter.drawLine(
-                                int(line.x1() * scale_factor_x), int(line.y1() * scale_factor_y),
-                                int(line.x2() * scale_factor_x), int(line.y2() * scale_factor_y)
-                            )
-                        elif item[0] == 'text':
-                            text = item[1]            # The text string
-                            pos = item[2]             # A QPointF for the position
-                            color = item[3]           # The color for the text
-
-                            # Create a smaller font for the mini preview
-                            mini_font = QFont(self.parent.selected_font)
-                            mini_font.setPointSize(int(self.parent.selected_font.pointSize() * 0.2))  # Scale down font size
-
-                            mini_painter.setFont(mini_font)
-                            mini_painter.setPen(color)  # Set the color for the text
-                            mini_painter.drawText(
-                                int(pos.x() * scale_factor_x), int(pos.y() * scale_factor_y),
-                                text
-                            )
-
-                        elif item[0] == 'freehand':
-                            # Scale the freehand path and draw it
-                            path = item[1]
-                            scaled_path = QPainterPath()
-                            
-                            # Scale each point in the path to fit the mini preview
-                            for i in range(path.elementCount()):
-                                point = path.elementAt(i)
-                                if i == 0:
-                                    scaled_path.moveTo(point.x * scale_factor_x, point.y * scale_factor_y)
-                                else:
-                                    scaled_path.lineTo(point.x * scale_factor_x, point.y * scale_factor_y)
-
-                            mini_painter.drawPath(scaled_path)
-
-                        elif item[0] == 'compass':
-                            compass = item[1]
-                            # Draw the North line
-                            mini_painter.setPen(QPen(Qt.GlobalColor.red, 1))
-                            north_line = compass["north_line"]
-                            mini_painter.drawLine(
-                                int(north_line[0] * scale_factor_x), int(north_line[1] * scale_factor_y),
-                                int(north_line[2] * scale_factor_x), int(north_line[3] * scale_factor_y)
-                            )
-
-                            # Draw the East line
-                            mini_painter.setPen(QPen(Qt.GlobalColor.blue, 1))
-                            east_line = compass["east_line"]
-                            mini_painter.drawLine(
-                                int(east_line[0] * scale_factor_x), int(east_line[1] * scale_factor_y),
-                                int(east_line[2] * scale_factor_x), int(east_line[3] * scale_factor_y)
-                            )
-
-                            # Draw North and East labels
-                            mini_painter.setPen(QPen(Qt.GlobalColor.red, 1))
-                            north_label = compass["north_label"]
-                            mini_painter.drawText(
-                                int(north_label[0] * scale_factor_x), int(north_label[1] * scale_factor_y), north_label[2]
-                            )
-
-                            mini_painter.setPen(QPen(Qt.GlobalColor.blue, 1))
-                            east_label = compass["east_label"]
-                            mini_painter.drawText(
-                                int(east_label[0] * scale_factor_x), int(east_label[1] * scale_factor_y), east_label[2]
-                            )                            
-
-            finally:
-                mini_painter.end()  # Ensure QPainter is properly ended
-
-            self.parent.mini_preview.setPixmap(mini_pixmap)
+        """Delegate to the parent's scene-render based mini preview."""
+        try:
+            QTimer.singleShot(0, self.parent.update_green_box)
+        except Exception:
+            pass
 
     def place_celestial_compass(self, center):
         compass_radius = 50
@@ -2620,6 +2483,64 @@ def open_minor_body_3d_page(name: str, kind: str = "Asteroid") -> None:
     url = f"https://3d-asteroids.space/{base}/{slug}"
     webbrowser.open(url)
 
+class _CrosshairOverlay(QWidget):
+    """Transparent overlay that draws a crosshair at the viewport center."""
+    MODES = ["off", "thin", "full", "gap"]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self._mode = 0  # 0=off, 1=thin full lines, 2=thick full lines, 3=gap center
+
+    def set_mode(self, mode: int):
+        self._mode = mode
+        self.update()
+
+    def paintEvent(self, e):
+        if self._mode == 0:
+            return
+        from PyQt6.QtGui import QPainter, QPen
+        w, h = self.width(), self.height()
+        cx, cy = w // 2, h // 2
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        if self._mode == 1:
+            # Thin full crosshair — simple white lines
+            pen = QPen(QColor(255, 255, 255, 160), 1, Qt.PenStyle.SolidLine)
+            p.setPen(pen)
+            p.drawLine(0, cy, w, cy)
+            p.drawLine(cx, 0, cx, h)
+
+        elif self._mode == 2:
+            # Gap crosshair — yellow lines with gap + center dot
+            gap = 20
+            pen = QPen(QColor(255, 255, 0, 220), 1, Qt.PenStyle.SolidLine)
+            p.setPen(pen)
+            p.drawLine(0, cy, cx - gap, cy)
+            p.drawLine(cx + gap, cy, w, cy)
+            p.drawLine(cx, 0, cx, cy - gap)
+            p.drawLine(cx, cy + gap, cx, h)
+            p.setBrush(QColor(255, 255, 0, 220))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawEllipse(cx - 2, cy - 2, 4, 4)
+
+        elif self._mode == 3:
+            # Concentric circles + thin crosshair lines
+            pen_line = QPen(QColor(255, 255, 255, 120), 1, Qt.PenStyle.SolidLine)
+            p.setPen(pen_line)
+            p.drawLine(0, cy, w, cy)
+            p.drawLine(cx, 0, cx, h)
+
+            pen_circle = QPen(QColor(255, 255, 255, 180), 1, Qt.PenStyle.SolidLine)
+            p.setPen(pen_circle)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            for r in (30, 60, 100):
+                p.drawEllipse(QPointF(cx, cy), r, r)
+
+        p.end()
 
 class WIMIDialog(QDialog):
     def __init__(self, parent=None, settings=None, doc_manager=None, wimi_path: Optional[str] = None, wrench_path: Optional[str] = None):
@@ -2827,13 +2748,31 @@ class WIMIDialog(QDialog):
 
         # Zoom buttons above the main preview
         zoom_controls_layout = QHBoxLayout()
-        self.zoom_in_button = QPushButton(self.tr("Zoom In"))
+        self.zoom_in_button  = themed_toolbtn("zoom-in",       self.tr("Zoom In"))
+        self.zoom_out_button = themed_toolbtn("zoom-out",      self.tr("Zoom Out"))
+        self.zoom_100_button = themed_toolbtn("zoom-original", self.tr("1:1"))
+        self.zoom_100_button.clicked.connect(self.zoom_100)        
+        self.fit_preview_button = themed_toolbtn("zoom-fit-best", self.tr("Fit to Preview"))
         self.zoom_in_button.clicked.connect(self.zoom_in)
-        self.zoom_out_button = QPushButton(self.tr("Zoom Out"))
         self.zoom_out_button.clicked.connect(self.zoom_out)
+        self.fit_preview_button.clicked.connect(self.fit_to_preview)
         zoom_controls_layout.addWidget(self.zoom_in_button)
         zoom_controls_layout.addWidget(self.zoom_out_button)
-        right_panel.addLayout(zoom_controls_layout)        
+        zoom_controls_layout.addWidget(self.zoom_100_button)
+        zoom_controls_layout.addWidget(self.fit_preview_button)
+        zoom_controls_layout.addStretch(1)
+
+        # Crosshair toggle button
+        self.crosshair_button = QPushButton("⊕ Crosshair")
+        self.crosshair_button.setCheckable(True)
+        self.crosshair_button.clicked.connect(self._cycle_crosshair)
+        zoom_controls_layout.addWidget(self.crosshair_button)
+        zoom_controls_layout.addStretch(1)
+        right_panel.addLayout(zoom_controls_layout)
+
+        # Crosshair state: 0=off, 1=thin, 2=full, 3=dot+lines
+        self._crosshair_mode = 0
+        self._crosshair_overlay = None  # created lazily after main_preview exists
 
         # Main Preview
         self.main_preview = CustomGraphicsView(self)
@@ -3270,6 +3209,38 @@ class WIMIDialog(QDialog):
         legend = LegendDialog(self)
         legend.setModal(False)
     
+    def _cycle_crosshair(self):
+        self._crosshair_mode = (self._crosshair_mode + 1) % 4
+
+        if self._crosshair_overlay is None:
+            self._crosshair_overlay = _CrosshairOverlay(self.main_preview.viewport())
+            self._crosshair_overlay.setGeometry(self.main_preview.viewport().rect())
+            self._crosshair_overlay.show()
+            # Install event filter on viewport to track resize/scroll
+            self.main_preview.viewport().installEventFilter(self)
+
+        self._crosshair_overlay.set_mode(self._crosshair_mode)
+        self.crosshair_button.setChecked(self._crosshair_mode != 0)
+        labels = ["Crosshair: Off", "Crosshair: Thin", "Crosshair: Outlined", "Crosshair: Gap"]
+        self.crosshair_button.setToolTip(labels[self._crosshair_mode])
+
+    def eventFilter(self, obj, event):
+        if obj is self.main_preview.viewport():
+            if event.type() in (
+                QEvent.Type.Resize,
+                QEvent.Type.Paint,
+                QEvent.Type.Move,
+            ):
+                if self._crosshair_overlay is not None:
+                    self._crosshair_overlay.setGeometry(self.main_preview.viewport().rect())
+                    self._crosshair_overlay.raise_()
+        return super().eventFilter(obj, event)
+
+    def _resize_crosshair_overlay(self):
+        """Keep the crosshair overlay sized to the viewport."""
+        if self._crosshair_overlay is not None:
+            self._crosshair_overlay.setGeometry(self.main_preview.viewport().rect())
+
     def count_minor_bodies_brighter_than_limits(self):
         """
         Count how many catalog objects are brighter than the current H limits
@@ -3486,21 +3457,20 @@ class WIMIDialog(QDialog):
 
         self._ensure_marker_layer()
         self._set_marker_points_from_results()
+        QTimer.singleShot(0, self.update_green_box)
 
     def _cg_draw_query_results_proxy(self):
-        """Keeps existing call sites working: self.main_preview.draw_query_results()"""
         self._ensure_marker_layer()
-        # Re-derive points (cheap) in case self.results changed elsewhere
         self._set_marker_points_from_results()
         if self._marker_layer:
             self._marker_layer.update()
+        QTimer.singleShot(0, self.update_green_box)
 
     def _cg_clear_query_results_proxy(self):
-        """Keeps existing call sites working: self.main_preview.clear_query_results()"""
         self.results = []
         if self._marker_layer:
             self._marker_layer.set_points([])
-
+        QTimer.singleShot(0, self.update_green_box)
 
     def _doc_for_solver(self):
         # Prefer the real pro document if we loaded from a view
@@ -5240,6 +5210,9 @@ class WIMIDialog(QDialog):
             scaled = pm.scaled(self.mini_preview.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
             self.mini_preview.setPixmap(scaled)
 
+        # Fit to preview after layout settles so viewport size is accurate
+        QTimer.singleShot(0, lambda: (self.fit_to_preview(), self.update_green_box()))
+
 
     @pyqtSlot()
     def open_image(self):
@@ -6783,29 +6756,61 @@ class WIMIDialog(QDialog):
             self.main_preview.update_mini_preview()
 
     def update_green_box(self):
-        if self.main_image:
-            factor_x = self.mini_preview.width() / self.main_image.width()
-            factor_y = self.mini_preview.height() / self.main_image.height()
-            
-            # Get the current view rectangle in the main preview (in scene coordinates)
-            view_rect = self.main_preview.mapToScene(self.main_preview.viewport().rect()).boundingRect()
-            
-            # Calculate the green box rectangle, shifted upward by half its height to center it
+        if not self.main_image:
+            return
+
+        mini_w = self.mini_preview.width()
+        mini_h = self.mini_preview.height()
+        if mini_w <= 0 or mini_h <= 0:
+            return
+
+        img_w = self.main_image.width()
+        img_h = self.main_image.height()
+
+        scale = min(mini_w / img_w, mini_h / img_h)
+        scaled_w = int(img_w * scale)
+        scaled_h = int(img_h * scale)
+
+        # Force marker layer to render uncached so scene.render() captures it
+        if self._marker_layer is not None and _qt_is_alive(self._marker_layer):
+            self._marker_layer.setCacheMode(QGraphicsItem.CacheMode.NoCache)
+
+        pixmap = QPixmap(mini_w, mini_h)
+        pixmap.fill(Qt.GlobalColor.black)
+        painter = QPainter(pixmap)
+        x_off = (mini_w - scaled_w) // 2
+        y_off = (mini_h - scaled_h) // 2
+        target_rect = QRectF(x_off, y_off, scaled_w, scaled_h)
+        source_rect = QRectF(0, 0, img_w, img_h)
+        self.main_scene.render(painter, target_rect, source_rect)
+        painter.end()
+
+        # Restore device coordinate cache for performance
+        if self._marker_layer is not None and _qt_is_alive(self._marker_layer):
+            self._marker_layer.setCacheMode(QGraphicsItem.CacheMode.DeviceCoordinateCache)
+
+        # Draw green box showing the current viewport
+        factor_x = scaled_w / img_w
+        factor_y = scaled_h / img_h
+
+        view_rect = self.main_preview.mapToScene(self.main_preview.viewport().rect()).boundingRect()
+        img_rect = QRectF(0, 0, img_w, img_h)
+        clamped = view_rect.intersected(img_rect)
+
+        painter2 = QPainter(pixmap)
+        if clamped.width() < img_w or clamped.height() < img_h:
             green_box_rect = QRectF(
-                view_rect.x() * factor_x,
-                view_rect.y() * factor_y,
-                view_rect.width() * factor_x,
-                view_rect.height() * factor_y
+                x_off + clamped.x() * factor_x,
+                y_off + clamped.y() * factor_y,
+                clamped.width() * factor_x,
+                clamped.height() * factor_y
             )
-            
-            # Scale the main image for the mini preview and draw the green box on it
-            pixmap = self.main_image.scaled(self.mini_preview.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-            painter = QPainter(pixmap)
             pen = QPen(QColor(0, 255, 0), 2)
-            painter.setPen(pen)
-            painter.drawRect(green_box_rect)
-            painter.end()
-            self.mini_preview.setPixmap(pixmap)
+            painter2.setPen(pen)
+            painter2.drawRect(green_box_rect)
+        painter2.end()
+
+        self.mini_preview.setPixmap(pixmap)
 
     @staticmethod
     def calculate_angular_distance(ra1, dec1, ra2, dec2):
@@ -6835,6 +6840,15 @@ class WIMIDialog(QDialog):
         else:
             self.zoom_out()
 
+    def zoom_100(self):
+        """Reset to 1:1 zoom (one image pixel = one screen pixel)."""
+        if not self.main_image:
+            return
+        self.zoom_level = 1.0
+        self.main_preview.resetTransform()
+        self.main_preview.setTransform(QTransform().scale(1.0, 1.0))
+        self.main_preview.centerOn(self.main_scene.sceneRect().center())
+        self.update_green_box()
 
     def zoom_in(self):
         self.zoom_level *= 1.2
@@ -6847,9 +6861,26 @@ class WIMIDialog(QDialog):
         self.main_preview.setTransform(QTransform().scale(self.zoom_level, self.zoom_level))
         self.update_green_box()
 
+    def fit_to_preview(self):
+        """Fit the image to the current viewport size."""
+        if not self.main_image:
+            return
+        vp = self.main_preview.viewport()
+        vp_w = max(1, vp.width())
+        vp_h = max(1, vp.height())
+        img_w = max(1, self.main_image.width())
+        img_h = max(1, self.main_image.height())
+        scale = min(vp_w / img_w, vp_h / img_h)
+        self.zoom_level = scale
+        self.main_preview.resetTransform()
+        self.main_preview.setTransform(QTransform().scale(scale, scale))
+        self.main_preview.centerOn(self.main_scene.sceneRect().center())
+        self.update_green_box()
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.update_green_box()
+        self._resize_crosshair_overlay()
 
 
     def compute_pixscale(self):

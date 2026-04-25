@@ -62,6 +62,7 @@ SASPRO_TIPS = [
     "💡 The Quick Stack tab in the Stacking Suite lets you run a full stack with minimal setup.",
     "💡 The mouse wheel zooms in and out on your image.",
     "💡 Did you know SASpro can do planetary stacking?",
+    "💡 Use View Bundles to Batch process hundreds or thousands of images in one go!",
     "💡 Automate your entire processing workflow with Function Bundles and View Bundles — save and replay your full process in one click.",
     "💡 Did you know SASpro can project any galaxy to be viewed top-down? Check it out under the Functions menu.",
     "💡 Easily convert a mono image to a 3-channel color image under the Edit menu.",

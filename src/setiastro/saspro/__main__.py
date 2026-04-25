@@ -1,6 +1,16 @@
 # src/setiastro/saspro/__main__.py
 from __future__ import annotations
 import sys
+import warnings
+
+# Suppress torch optree version warning — SASpro does not use torch.compile()
+# and the C++ pytree backend it guards has no effect on our inference paths.
+warnings.filterwarnings(
+    "ignore",
+    message="optree is installed but the version is too old",
+    category=FutureWarning,
+    module=r"torch\.utils\._pytree",
+)
 
 CLI_SUBCOMMANDS = {
     # wrapper aliases
