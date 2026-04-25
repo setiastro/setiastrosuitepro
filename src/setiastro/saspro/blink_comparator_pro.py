@@ -2309,7 +2309,6 @@ class BlinkTab(QWidget):
             exp = hdr.get('EXPOSURE', 'Unknown')
             grouped[(obj, fil, exp)].append(entry['file_path'])
 
-        # natural sort within each leaf group
         for key, paths in grouped.items():
             paths.sort(key=lambda p: self._natural_key(os.path.basename(p)))
 
@@ -2336,7 +2335,8 @@ class BlinkTab(QWidget):
                         leaf = QTreeWidgetItem([os.path.basename(p), "", "", "", ""])
                         leaf.setData(0, Qt.ItemDataRole.UserRole, p)
                         exp_item.addChild(leaf)
-        # 🔹 Re-apply flagged styling
+
+        # Re-apply flagged styling
         RED = Qt.GlobalColor.red
         normal = self.fileTree.palette().color(QPalette.ColorRole.WindowText)
 
@@ -2352,8 +2352,6 @@ class BlinkTab(QWidget):
                 item.setText(0, base)
                 item.setForeground(0, QBrush(normal))
 
-        self._update_tree_metrics_columns()
-
 
     def _after_list_changed(self, removed_indices: List[int] | None = None):
         self._rebuild_tree_from_loaded()
@@ -2362,22 +2360,18 @@ class BlinkTab(QWidget):
         if self.metrics_window and self.metrics_window.isVisible():
             order = self._tree_order_indices()
 
-            # If we know exactly which frames were removed, trim metrics in-place
-            # without recomputing.
             if removed_indices:
                 self.metrics_window._all_images = self.loaded_images
                 self.metrics_window.remove_indices(list(removed_indices))
-
-                # keep order aligned to the rebuilt tree
                 self.metrics_window._order_all = list(order)
-
-                # refresh the current group using the new ordering only
                 self.metrics_window.update_metrics(self.loaded_images, order=order)
             else:
-                # fallback path for non-removal mutations
                 self.metrics_window.update_metrics(self.loaded_images, order=order)
 
             self._sync_metrics_flags()
+
+        # ← Move this to AFTER metrics are updated so arrays are aligned
+        self._update_tree_metrics_columns()
 
     def get_tree_item_for_index(self, idx):
         target_path = self.image_paths[idx]
