@@ -832,7 +832,7 @@ class SettingsDialog(QDialog):
             candidates = [
                 ["py", "-3.12"],
                 ["python3.12"],
-                ["python", "-3.12"],  # uncommon but harmless to try
+                ["python", "-3.12"],
             ]
             for cmd in candidates:
                 ok, ver, disp = self._probe_python_version(cmd)
@@ -857,16 +857,105 @@ class SettingsDialog(QDialog):
                     return cmd, f"{' '.join(cmd)} -> {disp}"
             return None, "No runnable Python 3.12 found (Homebrew/PATH)."
 
-        # Linux: PATH
-        candidates = [
-            ["python3.12"],
-        ]
-        for cmd in candidates:
+        # Linux: exhaustive search across common install locations
+        tried: list[str] = []
+
+        # 1. Standard PATH name (apt, dnf, pacman, etc.)
+        for cmd in [["python3.12"], ["python3"], ["python"]]:
+            tried.append(" ".join(cmd))
             ok, ver, disp = self._probe_python_version(cmd)
             if ok and ver == (3, 12):
                 return cmd, f"{' '.join(cmd)} -> {disp}"
 
-        return None, "No runnable python3.12 found in PATH."
+        # 2. Common absolute paths (distro package managers)
+        abs_candidates = [
+            "/usr/bin/python3.12",
+            "/usr/local/bin/python3.12",
+            "/usr/lib/python3.12/bin/python3.12",
+            "/opt/python3.12/bin/python3.12",
+            "/opt/python/3.12/bin/python3.12",
+        ]
+        for exe in abs_candidates:
+            tried.append(exe)
+            if not os.path.isfile(exe):
+                continue
+            cmd = [exe]
+            ok, ver, disp = self._probe_python_version(cmd)
+            if ok and ver == (3, 12):
+                return cmd, f"{exe} -> {disp}"
+
+        # 3. pyenv shims / versions
+        pyenv_root = os.environ.get("PYENV_ROOT", os.path.expanduser("~/.pyenv"))
+        pyenv_shim = os.path.join(pyenv_root, "shims", "python3.12")
+        if os.path.isfile(pyenv_shim):
+            tried.append(pyenv_shim)
+            ok, ver, disp = self._probe_python_version([pyenv_shim])
+            if ok and ver == (3, 12):
+                return [pyenv_shim], f"{pyenv_shim} -> {disp}"
+
+        # Also scan pyenv versions/ directly (shim may not be set up)
+        pyenv_versions = os.path.join(pyenv_root, "versions")
+        if os.path.isdir(pyenv_versions):
+            for entry in sorted(os.listdir(pyenv_versions)):
+                if not entry.startswith("3.12"):
+                    continue
+                exe = os.path.join(pyenv_versions, entry, "bin", "python3.12")
+                if not os.path.isfile(exe):
+                    exe = os.path.join(pyenv_versions, entry, "bin", "python3")
+                if not os.path.isfile(exe):
+                    continue
+                tried.append(exe)
+                ok, ver, disp = self._probe_python_version([exe])
+                if ok and ver == (3, 12):
+                    return [exe], f"{exe} -> {disp}"
+
+        # 4. conda / mamba environments
+        for conda_root_var in ("CONDA_ROOT", "MAMBA_ROOT_PREFIX"):
+            conda_root = os.environ.get(conda_root_var, "")
+            if not conda_root:
+                continue
+            for env_dir in [conda_root, os.path.join(conda_root, "envs")]:
+                if not os.path.isdir(env_dir):
+                    continue
+                for entry in sorted(os.listdir(env_dir)):
+                    exe = os.path.join(env_dir, entry, "bin", "python3.12")
+                    if not os.path.isfile(exe):
+                        continue
+                    tried.append(exe)
+                    ok, ver, disp = self._probe_python_version([exe])
+                    if ok and ver == (3, 12):
+                        return [exe], f"{exe} -> {disp}"
+
+        # Also check common fixed conda roots even without env vars
+        for conda_root in [
+            os.path.expanduser("~/miniconda3"),
+            os.path.expanduser("~/anaconda3"),
+            os.path.expanduser("~/mambaforge"),
+            "/opt/conda",
+            "/opt/miniconda3",
+            "/opt/anaconda3",
+        ]:
+            for subpath in ["bin/python3.12", "envs"]:
+                full = os.path.join(conda_root, subpath)
+                if subpath == "bin/python3.12":
+                    if not os.path.isfile(full):
+                        continue
+                    tried.append(full)
+                    ok, ver, disp = self._probe_python_version([full])
+                    if ok and ver == (3, 12):
+                        return [full], f"{full} -> {disp}"
+                elif os.path.isdir(full):
+                    for entry in sorted(os.listdir(full)):
+                        exe = os.path.join(full, entry, "bin", "python3.12")
+                        if not os.path.isfile(exe):
+                            continue
+                        tried.append(exe)
+                        ok, ver, disp = self._probe_python_version([exe])
+                        if ok and ver == (3, 12):
+                            return [exe], f"{exe} -> {disp}"
+
+        tried_str = ", ".join(tried[:10]) + ("…" if len(tried) > 10 else "")
+        return None, f"No runnable python3.12 found in PATH or common locations.\nTried: {tried_str}"
 
     def _gate_python312_for_accel_install(self) -> bool:
         """
@@ -874,7 +963,11 @@ class SettingsDialog(QDialog):
         (We use this because runtime GPU wheels are only supported/validated for 3.12.)
         """
         from PyQt6.QtWidgets import QMessageBox
-
+        # If SASpro itself is already running under 3.12, we're done.
+        # This covers venv users and any launch method where the interpreter IS 3.12.
+        if sys.version_info[:2] == (3, 12):
+            return True
+        
         cmd, info = self._find_python312_cmd()
         if cmd is not None:
             return True  # Python 3.12 is available
