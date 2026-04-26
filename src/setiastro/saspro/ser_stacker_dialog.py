@@ -999,6 +999,15 @@ class SERStackerDialog(QDialog):
         form.addRow("Tracking", self.cmb_track)
         form.addRow("Keep %", self.spin_keep)
         form.addRow("", self.chk_debayer)
+        self.chk_center_planet = QCheckBox("Center planet in output", self)
+        self.chk_center_planet.setChecked(False)
+        self.chk_center_planet.setToolTip(
+            "Shift every frame so the planet's centroid lands at the exact\n"
+            "center of the output image, rather than aligned to the reference\n"
+            "frame position. Only available in Planetary tracking mode."
+        )
+        form.addRow("", self.chk_center_planet)
+
         form.addRow("Surface anchor", self.lbl_anchor)
 
         left.addWidget(gb, 0)
@@ -1029,7 +1038,7 @@ class SERStackerDialog(QDialog):
         scale_row.setContentsMargins(0, 0, 0, 0)
 
         self.cmb_drizzle = QComboBox(self)
-        self.cmb_drizzle.addItems(["Off (1x)", "1.5x", "2x"])
+        self.cmb_drizzle.addItems(["Off (1x)", "1.5x", "2x", "3x", "4x"])
 
         self.btn_drizzle_info = QToolButton(self)
         self.btn_drizzle_info.setText("?")
@@ -1088,6 +1097,8 @@ class SERStackerDialog(QDialog):
                 "Compute cost:\n"
                 "• 1.5× drizzle ≈ 225% compute (2.25×)\n"
                 "• 2× drizzle ≈ 400% compute (4×)\n\n"
+                "• 3× drizzle ≈ 900% compute (9×)\n"
+                "• 4× drizzle ≈ 1600% compute (16×)\n\n"                
                 "Pixfrac (drop shrink):\n"
                 "• Controls how large each input pixel’s “drop” is in the output grid.\n"
                 "• Lower pixfrac = tighter drops (sharper, but can create gaps/noise).\n"
@@ -1267,6 +1278,7 @@ class SERStackerDialog(QDialog):
         self.btn_stack.clicked.connect(self._start_stack)
         self.btn_blink.clicked.connect(self._blink_keepers)
         self.cmb_track.currentIndexChanged.connect(self._update_anchor_warning)
+        self.cmb_track.currentIndexChanged.connect(self._update_center_planet_ui)
         self.btn_analyze.clicked.connect(self._start_analyze)
         self.btn_edit_aps.clicked.connect(self._edit_aps)
         self.spin_keep.valueChanged.connect(self._on_keep_changed)
@@ -1317,8 +1329,16 @@ class SERStackerDialog(QDialog):
             self._append_log(f"Keep set from graph: {pct:.1f}% ({k}/{total})")
 
         self.graph.keepChanged.connect(_on_graph_keep_changed)
+        self._update_center_planet_ui()
 
     # ---------------- helpers ----------------
+    def _update_center_planet_ui(self):
+        is_planetary = self._track_mode_value() == "planetary"
+        self.chk_center_planet.setEnabled(is_planetary)
+        if not is_planetary:
+            self.chk_center_planet.setChecked(False)
+
+
     def _edit_aps(self):
         if self._analysis is None:
             return
@@ -1559,6 +1579,10 @@ class SERStackerDialog(QDialog):
         scale_text = self.cmb_drizzle.currentText()
         if "1.5" in scale_text:
             drizzle_scale = 1.5
+        elif "4" in scale_text:
+            drizzle_scale = 4.0
+        elif "3" in scale_text:
+            drizzle_scale = 3.0
         elif "2" in scale_text:
             drizzle_scale = 2.0
         else:
@@ -1589,6 +1613,10 @@ class SERStackerDialog(QDialog):
             planet_min_val=self._planet_min_val,
             planet_use_norm=self._planet_use_norm,
             planet_norm_hi_pct=self._planet_norm_hi_pct,
+            center_on_planet=bool(
+                getattr(self, "chk_center_planet", None)
+                and self.chk_center_planet.isChecked()
+            ),
             derotate_enabled=bool(getattr(self, "chk_derotate", None) and self.chk_derotate.isChecked()),
             derotate_deg_per_min=float(getattr(self, "spin_derot_rate", None).value()) if getattr(self, "spin_derot_rate", None) else 0.0,
             derotate_center=(float(self._derot["cx"]), float(self._derot["cy"])) if self._derot else None,
