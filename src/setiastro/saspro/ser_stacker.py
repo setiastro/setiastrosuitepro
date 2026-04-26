@@ -1106,9 +1106,10 @@ def stack_ser(
     drizzle_scale = float(drizzle_scale)
     drizzle_on = drizzle_scale > 1.0001
     drizzle_pixfrac = float(drizzle_pixfrac)
-    drizzle_kernel = str(drizzle_kernel).strip().lower()
-    if drizzle_kernel not in ("square", "circle", "gaussian"):
-        drizzle_kernel = "gaussian"
+
+    # Always use gaussian — it's the only kernel that produces clean
+    # sub-pixel blending without grid artifacts.
+    drizzle_kernel = "gaussian"
     drizzle_sigma = float(drizzle_sigma)
 
     # ---- Open once to get meta + first frame shape ----
@@ -1180,13 +1181,9 @@ def stack_ser(
             finalize_drizzle_3d,
         )
 
-        # map kernel string -> code used by your numba
-        kernel_code = {"square": 0, "circle": 1, "gaussian": 2}[drizzle_kernel]
+        kernel_code = 2  # always gaussian
 
-        # If gaussian sigma isn't provided, use something tied to pixfrac.
-        # Your numba interprets gaussian sigma as "sigma_out", and also enforces >= drop_shrink*0.5.
         if drizzle_sigma <= 1e-9:
-            # a good practical default: sigma ~ pixfrac*0.5
             drizzle_sigma_eff = max(1e-3, float(drizzle_pixfrac) * 0.5)
         else:
             drizzle_sigma_eff = drizzle_sigma
@@ -1194,12 +1191,7 @@ def stack_ser(
         H, W = int(acc_shape[0]), int(acc_shape[1])
         outH = int(round(H * drizzle_scale))
         outW = int(round(W * drizzle_scale))
-
-        # Identity transform from input pixels -> aligned/reference pixel coords
-        # drizzle_factor applies the scale.
-        T = np.zeros((2, 3), dtype=np.float32)
-        T[0, 0] = 1.0
-        T[1, 1] = 1.0
+        # NOTE: T is now built per-frame inside _stack_chunk
 
     # ---- Worker: accumulate its own sum OR its own drizzle buffers ----
     def _stack_chunk(chunk: list[int]):
@@ -1290,11 +1282,38 @@ def stack_ser(
                         warped = warped_g
 
                 if drizzle_on:
-                    # deposit aligned frame into drizzle buffers
-                    fw = 1.0  # frame_weight (could later use quality weights)
+                    # Build per-frame affine transform T that encodes the
+                    # sub-pixel fractional shift of this frame relative to the
+                    # reference, scaled up to drizzle output coordinates.
+                    #
+                    # The full-pixel part of (gdx, gdy) was already applied by
+                    # _shift_image / the local warp above, so what matters for
+                    # drizzle dithering is the fractional remainder — but we
+                    # actually want to pass the FULL shift to drizzle so it can
+                    # place each drop at the correct sub-pixel position on the
+                    # upscaled canvas.  We encode it as a translation-only
+                    # affine (scale on diagonal = drizzle_scale, translation =
+                    # shift * drizzle_scale).
+                    #
+                    # T maps input pixel (x,y) -> output pixel (x',y'):
+                    #   x' = drizzle_scale * x + tx
+                    #   y' = drizzle_scale * y + ty
+                    # where tx,ty carry the sub-pixel offset so drops from
+                    # different frames land at different positions.
+
+                    frac_dx = float(gdx) - round(float(gdx))
+                    frac_dy = float(gdy) - round(float(gdy))
+
+                    T_frame = np.zeros((2, 3), dtype=np.float32)
+                    T_frame[0, 0] = 1.0          # x scale (drizzle_factor handles upscale)
+                    T_frame[1, 1] = 1.0          # y scale
+                    T_frame[0, 2] = frac_dx      # sub-pixel x offset in input pixel units
+                    T_frame[1, 2] = frac_dy      # sub-pixel y offset in input pixel units
+
+                    fw = 1.0
                     if warped.ndim == 2:
                         drizzle_deposit_numba_kernel_mono(
-                            warped, T, dbuf, cbuf,
+                            warped, T_frame, dbuf, cbuf,
                             drizzle_factor=drizzle_scale,
                             drop_shrink=drizzle_pixfrac,
                             frame_weight=fw,
@@ -1303,7 +1322,7 @@ def stack_ser(
                         )
                     else:
                         drizzle_deposit_color_kernel(
-                            warped, T, dbuf, cbuf,
+                            warped, T_frame, dbuf, cbuf,
                             drizzle_factor=drizzle_scale,
                             drop_shrink=drizzle_pixfrac,
                             frame_weight=fw,

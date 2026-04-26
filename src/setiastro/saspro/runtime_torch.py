@@ -1,4 +1,4 @@
-# pro/runtime_torch.py  (hardened against shadowing / broken wheels)
+# pro/runtime_torch.py  (index-url strategy; Python 3.12/3.13/3.14 compatible)
 from __future__ import annotations
 import os
 import sys
@@ -13,19 +13,18 @@ import re
 from pathlib import Path
 from contextlib import contextmanager
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
 def _safe_text_kwargs() -> dict:
     import locale
-
     if platform.system() == "Windows":
         enc = locale.getpreferredencoding(False) or "cp1252"
     else:
         enc = locale.getpreferredencoding(False) or "utf-8"
+    return {"text": True, "encoding": enc, "errors": "replace"}
 
-    return {
-        "text": True,
-        "encoding": enc,
-        "errors": "replace",
-    }
 
 def _rt_dbg(msg: str, status_cb=print):
     try:
@@ -37,11 +36,13 @@ def _rt_dbg(msg: str, status_cb=print):
 # ──────────────────────────────────────────────────────────────────────────────
 # Paths & runtime selection
 # ──────────────────────────────────────────────────────────────────────────────
+
 def _venv_pyver(venv_python: Path) -> tuple[int, int] | None:
     """Return (major, minor) for the venv interpreter, or None if unknown."""
     try:
         out = subprocess.check_output(
-            [str(venv_python), "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
+            [str(venv_python), "-c",
+             "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
             **_safe_text_kwargs(),
         ).strip()
         maj, min_ = out.split(".")
@@ -49,14 +50,12 @@ def _venv_pyver(venv_python: Path) -> tuple[int, int] | None:
     except Exception:
         return None
 
+
 def _tag_for_pyver(maj: int, min_: int) -> str:
     return f"py{maj}{min_}"
 
+
 def _runtime_base_dir() -> Path:
-    """
-    Base folder that may contain multiple versioned runtimes (py310, py311, py312...).
-    Overridable via SASPRO_RUNTIME_DIR (which points to the parent "runtime" dir).
-    """
     env_override = os.getenv("SASPRO_RUNTIME_DIR")
     if env_override:
         base = Path(env_override).expanduser().resolve()
@@ -71,9 +70,10 @@ def _runtime_base_dir() -> Path:
         base = base / "SASpro" / "runtime"
     return base
 
-def _current_tag() -> str:
-    # HARD POLICY: runtime is always Python 3.12
-    return "py312"
+
+# Supported Python minor versions in preference order.
+_SUPPORTED_PY_MINORS = [12, 13, 14]
+
 
 def _discover_existing_runtime_dir(status_cb=print) -> Path | None:
     global _RUNTIME_DISCOVERY_LOGGED
@@ -82,39 +82,79 @@ def _discover_existing_runtime_dir(status_cb=print) -> Path | None:
     if not base.exists():
         return None
 
-    cur_dir = base / _current_tag()  # always py312 now
-    cur_vpy = cur_dir / "venv" / ("Scripts/python.exe" if platform.system() == "Windows" else "bin/python")
-    if cur_vpy.exists():
-        # log once only (this is called a lot during startup)
+    cur_minor = sys.version_info.minor if sys.version_info.major == 3 else None
+
+    # If the current interpreter is a supported version, ONLY accept a runtime
+    # that matches it exactly. Never fall back to a different Python version's
+    # venv — that would mean running py314 SASpro against a py312 torch venv.
+    if cur_minor in _SUPPORTED_PY_MINORS:
+        tag = _tag_for_pyver(3, cur_minor)
+        candidate = base / tag
+        vpy = (candidate / "venv" / "Scripts" / "python.exe"
+               if platform.system() == "Windows"
+               else candidate / "venv" / "bin" / "python")
+
+        if vpy.exists():
+            actual_ver = _venv_pyver(vpy)
+            if actual_ver == (3, cur_minor):
+                if not _RUNTIME_DISCOVERY_LOGGED:
+                    _rt_dbg(f"Found runtime: {candidate} (Python {actual_ver[0]}.{actual_ver[1]})", status_cb)
+                    _RUNTIME_DISCOVERY_LOGGED = True
+                return candidate
+            else:
+                _rt_dbg(
+                    f"Skipping {candidate}: folder tag says py3{cur_minor} but venv "
+                    f"reports Python {actual_ver[0]}.{actual_ver[1]}",
+                    status_cb,
+                )
+        # No matching runtime for current Python — return None to trigger fresh install
+        return None
+
+    # Current interpreter is not a supported version (shouldn't normally happen).
+    # Fall back to scanning all supported versions in preference order.
+    for minor in _SUPPORTED_PY_MINORS:
+        tag = _tag_for_pyver(3, minor)
+        candidate = base / tag
+        vpy = (candidate / "venv" / "Scripts" / "python.exe"
+               if platform.system() == "Windows"
+               else candidate / "venv" / "bin" / "python")
+
+        if not vpy.exists():
+            continue
+
+        actual_ver = _venv_pyver(vpy)
+        if actual_ver is None:
+            _rt_dbg(f"Skipping {candidate}: could not determine venv Python version", status_cb)
+            continue
+
+        if actual_ver != (3, minor):
+            _rt_dbg(
+                f"Skipping {candidate}: folder tag says py3{minor} but venv "
+                f"reports Python {actual_ver[0]}.{actual_ver[1]}",
+                status_cb,
+            )
+            continue
+
         if not _RUNTIME_DISCOVERY_LOGGED:
-            _rt_dbg(f"Found runtime: {cur_dir}", status_cb)
+            _rt_dbg(f"Found runtime: {candidate} (Python {actual_ver[0]}.{actual_ver[1]})", status_cb)
             _RUNTIME_DISCOVERY_LOGGED = True
-        return cur_dir
+        return candidate
 
     return None
 
 def _detect_rocm_arch() -> str:
-    """
-    Return the AMD ROCm gfx architecture string (e.g. 'gfx1151') if detected.
-    Linux only. Uses `rocminfo` output. Returns '' if unavailable/not detected.
-    """
+    """Return AMD ROCm gfx architecture string if detected (Linux only)."""
     try:
         if platform.system() != "Linux":
             return ""
-
-        # Small timeout so we don't hang if rocminfo is broken/misconfigured
         r = subprocess.run(
             ["rocminfo"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=8,
-            **_safe_text_kwargs(),
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            timeout=8, **_safe_text_kwargs(),
         )
-
         out = r.stdout or ""
         for line in out.splitlines():
             s = line.strip()
-            # Common rocminfo line examples contain "Name: gfx1030", etc.
             if s.startswith("Name:") and "gfx" in s:
                 parts = s.split()
                 for p in reversed(parts):
@@ -122,7 +162,6 @@ def _detect_rocm_arch() -> str:
                         return p
     except Exception:
         pass
-
     return ""
 
 
@@ -131,9 +170,19 @@ def _user_runtime_dir(status_cb=print) -> Path:
 
     if _RUNTIME_DIR_CACHED is None:
         existing = _discover_existing_runtime_dir(status_cb=status_cb)
-        _RUNTIME_DIR_CACHED = existing or (_runtime_base_dir() / _current_tag())
+        if existing:
+            _RUNTIME_DIR_CACHED = existing
+        else:
+            maj, min_ = sys.version_info.major, sys.version_info.minor
+            if maj == 3 and min_ in _SUPPORTED_PY_MINORS:
+                tag = _tag_for_pyver(maj, min_)
+            else:
+                # Current Python not supported — target the oldest supported
+                # version as the install target, _ensure_venv will redirect
+                # to the correct tag once it finds a supported interpreter.
+                tag = _tag_for_pyver(3, _SUPPORTED_PY_MINORS[0])
+            _RUNTIME_DIR_CACHED = _runtime_base_dir() / tag
 
-    # log once only (avoid startup spam)
     if not _RUNTIME_USERDIR_LOGGED:
         _rt_dbg(f"_user_runtime_dir() -> {_RUNTIME_DIR_CACHED}", status_cb)
         _RUNTIME_USERDIR_LOGGED = True
@@ -144,10 +193,8 @@ def _user_runtime_dir(status_cb=print) -> Path:
 def best_device(torch, *, prefer_cuda=True, prefer_dml=False, prefer_xpu=False):
     if prefer_cuda and getattr(torch, "cuda", None) and torch.cuda.is_available():
         return torch.device("cuda")
-
     if prefer_xpu and hasattr(torch, "xpu") and torch.xpu.is_available():
         return torch.device("xpu")
-
     if prefer_dml and platform.system() == "Windows":
         try:
             import torch_directml
@@ -156,13 +203,267 @@ def best_device(torch, *, prefer_cuda=True, prefer_dml=False, prefer_xpu=False):
             return d
         except Exception:
             pass
-
-    # Only pick MPS if caller wants “gpu-ish” behavior.
-    if (prefer_cuda or prefer_xpu or prefer_dml) and getattr(getattr(torch, "backends", None), "mps", None) and torch.backends.mps.is_available():
+    if (prefer_cuda or prefer_xpu or prefer_dml) and \
+            getattr(getattr(torch, "backends", None), "mps", None) and \
+            torch.backends.mps.is_available():
         return torch.device("mps")
-
     return torch.device("cpu")
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# CUDA version detection (system-level, no pip)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _detect_cuda_version(status_cb=print) -> tuple[int, int] | None:
+    # ---- 1. nvidia-smi ----
+    try:
+        r = subprocess.run(
+            ["nvidia-smi"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            timeout=10, **_safe_text_kwargs(),
+        )
+        out = r.stdout or ""
+        m = re.search(r"CUDA Version:\s*([0-9]+)\.([0-9]+)", out)
+        if m:
+            ver = (int(m.group(1)), int(m.group(2)))
+            _rt_dbg(f"CUDA {ver[0]}.{ver[1]} detected via nvidia-smi", status_cb)
+            return ver
+    except Exception:
+        pass
+
+    # ---- 2. nvcc ----
+    try:
+        r = subprocess.run(
+            ["nvcc", "--version"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            timeout=8, **_safe_text_kwargs(),
+        )
+        out = r.stdout or ""
+        m = re.search(r"release\s+([0-9]+)\.([0-9]+)", out, re.I)
+        if m:
+            ver = (int(m.group(1)), int(m.group(2)))
+            _rt_dbg(f"CUDA {ver[0]}.{ver[1]} detected via nvcc", status_cb)
+            return ver
+    except Exception:
+        pass
+
+    # ---- 3. Linux version files ----
+    if platform.system() == "Linux":
+        for cuda_root in ["/usr/local/cuda", "/usr/cuda"]:
+            vj = Path(cuda_root) / "version.json"
+            vt = Path(cuda_root) / "version.txt"
+            if vj.exists():
+                try:
+                    data = json.loads(vj.read_text(encoding="utf-8", errors="replace"))
+                    vs = (data.get("cuda", {}) or data).get("version", "")
+                    if vs:
+                        parts = str(vs).split(".")
+                        ver = (int(parts[0]), int(parts[1]))
+                        _rt_dbg(f"CUDA {ver[0]}.{ver[1]} detected via {vj}", status_cb)
+                        return ver
+                except Exception:
+                    pass
+            if vt.exists():
+                try:
+                    content = vt.read_text(encoding="utf-8", errors="replace")
+                    m = re.search(r"([0-9]+)\.([0-9]+)", content)
+                    if m:
+                        ver = (int(m.group(1)), int(m.group(2)))
+                        _rt_dbg(f"CUDA {ver[0]}.{ver[1]} detected via {vt}", status_cb)
+                        return ver
+                except Exception:
+                    pass
+
+    # ---- 4. Windows registry ----
+    if platform.system() == "Windows":
+        try:
+            import winreg
+            key_path = r"SOFTWARE\NVIDIA Corporation\GPU Computing Toolkit\CUDA"
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path) as key:
+                i = 0
+                best: tuple[int, int] | None = None
+                while True:
+                    try:
+                        sub_name = winreg.EnumKey(key, i)
+                        m = re.match(r"v?([0-9]+)\.([0-9]+)", sub_name)
+                        if m:
+                            candidate = (int(m.group(1)), int(m.group(2)))
+                            if best is None or candidate > best:
+                                best = candidate
+                        i += 1
+                    except OSError:
+                        break
+                if best:
+                    _rt_dbg(f"CUDA {best[0]}.{best[1]} detected via Windows registry", status_cb)
+                    return best
+        except Exception:
+            pass
+
+    _rt_dbg("CUDA not detected on this system", status_cb)
+    return None
+
+
+def _cuda_ver_to_cu_tag(cuda_ver: tuple[int, int]) -> str | None:
+    """
+    Map (major, minor) CUDA version to nearest supported PyTorch cu-tag.
+      CUDA 13.x      -> cu130
+      CUDA 12.9      -> cu129
+      CUDA 12.8      -> cu128
+      CUDA 12.6-12.7 -> cu126
+      CUDA 12.4-12.5 -> cu124
+      CUDA 12.1-12.3 -> cu121
+      CUDA 11.8      -> cu118
+      CUDA < 11.8    -> None (too old)
+    """
+    maj, min_ = cuda_ver
+    if maj >= 13:
+        return "cu130"
+    if maj == 12:
+        if min_ >= 9:
+            return "cu129"
+        if min_ >= 8:
+            return "cu128"
+        if min_ >= 6:
+            return "cu126"
+        if min_ >= 4:
+            return "cu124"
+        return "cu121"
+    if maj == 11:
+        if min_ >= 8:
+            return "cu118"
+        return None
+    return None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Version ladder & availability tables
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Ordered newest-first — used when iterating CUDA install attempts
+_TORCH_VERSION_LADDER_ORDERED = [
+    "2.11.0", "2.10.0", "2.9.1", "2.9.0",
+    "2.8.0",
+    "2.7.0",
+    "2.6.0",
+    "2.5.1", "2.5.0",
+    "2.4.1", "2.4.0",
+    "2.3.1", "2.3.0",
+]
+
+# torchvision companion version for each torch version
+_TORCHVISION_FOR_TORCH: dict[str, str] = {
+    "2.11.0": "0.26.0",
+    "2.10.0": "0.25.0",
+    "2.9.1":  "0.24.1",
+    "2.9.0":  "0.24.0",
+    "2.8.0":  "0.23.0",
+    "2.7.0":  "0.22.0",
+    "2.6.0":  "0.21.0",
+    "2.5.1":  "0.20.1",
+    "2.5.0":  "0.20.0",
+    "2.4.1":  "0.19.1",
+    "2.4.0":  "0.19.0",
+    "2.3.1":  "0.18.1",
+    "2.3.0":  "0.18.0",
+}
+
+# Which cu-tags have published CUDA wheels for each torch version
+_TORCH_CUDA_AVAILABILITY: dict[str, set[str]] = {
+    "2.11.0": {"cu128", "cu129", "cu130"},
+    "2.10.0": {"cu126", "cu128", "cu129"},
+    "2.9.1":  {"cu126", "cu128", "cu130"},
+    "2.9.0":  {"cu126", "cu128", "cu130"},
+    "2.8.0":  {"cu126", "cu128", "cu129"},
+    "2.7.0":  {"cu126", "cu128", "cu129"},
+    "2.6.0":  {"cu124", "cu126", "cu128", "cu129"},
+    "2.5.1":  {"cu118", "cu121", "cu124", "cu128"},
+    "2.5.0":  {"cu118", "cu121", "cu124", "cu128"},
+    "2.4.1":  {"cu118", "cu121", "cu124"},
+    "2.4.0":  {"cu118", "cu121", "cu124"},
+    "2.3.1":  {"cu118", "cu121"},
+    "2.3.0":  {"cu118", "cu121"},
+}
+
+# Which Python versions have CUDA wheels for each torch version
+# cp314 CUDA wheels exist from torch 2.9.x onward (cu126+)
+_TORCH_CUDA_PYTHON_AVAILABILITY: dict[str, set[str]] = {
+    "2.11.0": {"cp312", "cp313", "cp314"},
+    "2.10.0": {"cp312", "cp313", "cp314"},
+    "2.9.1":  {"cp312", "cp313", "cp314"},
+    "2.9.0":  {"cp312", "cp313", "cp314"},
+    "2.8.0":  {"cp312", "cp313"},
+    "2.7.0":  {"cp312", "cp313"},
+    "2.6.0":  {"cp312", "cp313"},
+    "2.5.1":  {"cp312", "cp313"},
+    "2.5.0":  {"cp312", "cp313"},
+    "2.4.1":  {"cp312"},
+    "2.4.0":  {"cp312"},
+    "2.3.1":  {"cp312"},
+    "2.3.0":  {"cp312"},
+}
+
+# Which Python versions have CPU wheels for each torch version (broader)
+_TORCH_CPU_PYTHON_AVAILABILITY: dict[str, set[str]] = {
+    "2.11.0": {"cp312", "cp313", "cp314"},
+    "2.10.0": {"cp312", "cp313", "cp314"},
+    "2.9.1":  {"cp312", "cp313", "cp314"},
+    "2.9.0":  {"cp312", "cp313", "cp314"},
+    "2.8.0":  {"cp312", "cp313", "cp314"},
+    "2.7.0":  {"cp312", "cp313"},
+    "2.6.0":  {"cp312", "cp313"},
+    "2.5.1":  {"cp312", "cp313"},
+    "2.5.0":  {"cp312", "cp313"},
+    "2.4.1":  {"cp312"},
+    "2.4.0":  {"cp312"},
+    "2.3.1":  {"cp312"},
+    "2.3.0":  {"cp312"},
+}
+
+_PYTORCH_WHL_BASE = "https://download.pytorch.org/whl"
+
+# Per-Python-version version ladder for index-url installs (ROCm, XPU, CPU fallback)
+_TORCH_VERSION_LADDER: dict[tuple[int, int], list[str]] = {
+    (3, 12): ["2.11.*", "2.10.*", "2.9.*", "2.8.*", "2.7.*", "2.6.*", "2.5.*", "2.4.*", "2.3.*"],
+    (3, 13): ["2.11.*", "2.10.*", "2.9.*", "2.8.*", "2.7.*", "2.6.*", "2.5.*"],
+    (3, 14): ["2.11.*", "2.10.*", "2.9.*", "2.8.*"],
+}
+
+_TORCH_COMPAT: dict[str, tuple[str, str]] = {
+    "2.11": ("0.26.*", "2.11.*"),
+    "2.10": ("0.25.*", "2.10.*"),
+    "2.9":  ("0.24.*", "2.9.*"),
+    "2.8":  ("0.23.*", "2.8.*"),
+    "2.7":  ("0.22.*", "2.7.*"),
+    "2.6":  ("0.21.*", "2.6.*"),
+    "2.5":  ("0.20.*", "2.5.*"),
+    "2.4":  ("0.19.*", "2.4.*"),
+    "2.3":  ("0.18.*", "2.3.*"),
+}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Platform helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _platform_tag(venv_python: Path | None = None) -> str:
+    sysname = platform.system()
+    machine = platform.machine().lower()
+    if sysname == "Windows":
+        return "win_amd64"
+    if sysname == "Darwin":
+        if "arm64" in machine or "aarch64" in machine:
+            return "macosx_11_0_arm64"
+        return "macosx_10_9_x86_64"
+    if "aarch64" in machine or "arm64" in machine:
+        return "linux_aarch64"
+    return "linux_x86_64"
+
+
+def _cp_tag(venv_python: Path) -> str | None:
+    ver = _venv_pyver(venv_python)
+    if ver is None:
+        return None
+    return f"cp{ver[0]}{ver[1]}"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -170,42 +471,30 @@ def best_device(torch, *, prefer_cuda=True, prefer_dml=False, prefer_xpu=False):
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _is_compiled_torch_dir(d: Path) -> bool:
-    """True if 'torch' directory contains the compiled extension files."""
     return any(d.glob("_C.*.pyd")) or any(d.glob("_C.*.so")) or any(d.glob("_C.cpython*"))
 
+
 def _looks_like_source_tree_torch(d: Path) -> bool:
-    """
-    True if this is a PyTorch repo / editable install dir (has torch/_C/__init__.py).
-    These can *never* satisfy torch._C at runtime.
-    """
     return (d / "_C" / "__init__.py").exists()
 
+
 def _ban_shadow_torch_paths(status_cb=print) -> None:
-    """
-    Remove (not just demote) any sys.path entries that would cause a source-tree
-    import of torch to win over the wheel. Also handles CWD ('') and editable installs.
-    """
     keep: list[str] = []
     banned: list[str] = []
-
     for entry in list(sys.path):
         try:
             base = Path(entry) if entry else Path.cwd()
             td = base / "torch"
             if td.is_dir():
-                # (a) repo/editable: has torch/_C/__init__.py  → ban outright
                 if _looks_like_source_tree_torch(td):
                     banned.append(entry or "<cwd>")
                     continue
-                # (b) any 'torch' dir without compiled _C.*  → ban (cannot work at runtime)
                 if not _is_compiled_torch_dir(td):
                     banned.append(entry or "<cwd>")
                     continue
         except Exception:
-            # if we can't inspect, keep it
             pass
         keep.append(entry)
-
     if banned:
         sys.path[:] = keep
         try:
@@ -213,25 +502,20 @@ def _ban_shadow_torch_paths(status_cb=print) -> None:
         except Exception:
             pass
 
+
 _demote_shadow_torch_paths = _ban_shadow_torch_paths
 
+
 def _purge_bad_torch_from_sysmodules(status_cb=print) -> None:
-    """
-    If 'torch' is already imported from a shadow location, drop it so we can
-    re-import from the wheel after cleaning sys.path.
-    """
     try:
-        import importlib
         if "torch" in sys.modules:
             mod = sys.modules["torch"]
             tf = getattr(mod, "__file__", "") or ""
-            if tf and (("site-packages" not in tf) and ("dist-packages" not in tf)):
-                # definitely a shadow import
+            if tf and ("site-packages" not in tf) and ("dist-packages" not in tf):
                 for k in list(sys.modules.keys()):
                     if k == "torch" or k.startswith("torch."):
                         sys.modules.pop(k, None)
                 status_cb(f"Purged shadowed torch import: {tf}")
-        # Always ensure we don't carry a stale extension handle
         sys.modules.pop("torch._C", None)
         importlib.invalidate_caches()
     except Exception:
@@ -241,36 +525,32 @@ def _purge_bad_torch_from_sysmodules(status_cb=print) -> None:
 def _torch_sanity_check(status_cb=print):
     try:
         import torch
-        import importlib
         tf = getattr(torch, "__file__", "") or ""
         pkg_dir = Path(tf).parent if tf else None
 
         if ("site-packages" not in tf) and ("dist-packages" not in tf):
             raise RuntimeError(f"Shadow import: torch.__file__ = {tf}")
-
         if not _is_compiled_torch_dir(pkg_dir):
             raise RuntimeError(f"Wheel missing torch._C in {pkg_dir}")
         if (pkg_dir / "_C" / "__init__.py").exists():
-            raise RuntimeError(f"Found package folder torch/_C at {pkg_dir/'_C'}, this indicates a source tree.")
+            raise RuntimeError(f"Source tree detected at torch/_C: {pkg_dir / '_C'}")
 
         importlib.import_module("torch._C")
 
         x = torch.ones(1)
-        y = x + 1
-        if int(y.item()) != 2:
-            raise RuntimeError("Unexpected tensor arithmetic result from torch sanity op.")
+        if int((x + 1).item()) != 2:
+            raise RuntimeError("Unexpected tensor arithmetic result.")
 
-        # NEW: verify inference_mode really works with this torch._C
         if hasattr(torch, "inference_mode"):
             try:
                 with torch.inference_mode():
-                    z = torch.ones(1)
-                    _ = (z + 1).item()
+                    _ = (torch.ones(1) + 1).item()
             except Exception as e:
-                raise RuntimeError(f"torch.inference_mode unusable: {e}")
+                _rt_dbg(f"torch.inference_mode not available in this build ({e}); continuing.", status_cb)
 
     except Exception as e:
         raise RuntimeError(f"PyTorch C-extension check failed: {e}") from e
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # OS / permissions helpers
@@ -282,42 +562,24 @@ def _pip_run(venv_python: Path, args: list[str], status_cb=print) -> subprocess.
     env.pop("PYTHONHOME", None)
     return subprocess.run(
         [str(venv_python), "-m", "pip", *args],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        env=env,
-        **_safe_text_kwargs(),
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        env=env, **_safe_text_kwargs(),
     )
+
 
 def _pip_ok(venv_python: Path, args: list[str], status_cb=print) -> bool:
     r = _pip_run(venv_python, args, status_cb=status_cb)
     if r.returncode != 0:
         tail = (r.stdout or "").strip()
-        try: status_cb(tail[-4000:])
-        except Exception as e:
-            import logging
-            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
+        try:
+            status_cb(tail[-4000:])
+        except Exception:
+            pass
     return r.returncode == 0
 
+
 def _ensure_numpy(venv_python: Path, status_cb=print) -> None:
-    """
-    Ensure NumPy exists in the runtime venv AND is ABI-compatible with common
-    torch/vision/audio wheels. In practice: enforce numpy<2.
-
-    Optimized behavior:
-      - Cheap probe on every startup (no pip calls if healthy)
-      - Run pip repair only when NumPy is missing or NumPy major >= 2
-      - Keep the same post-verification guarantees
-
-    Safe to call repeatedly.
-    """
-
     def _numpy_state() -> tuple[bool, int | None, str | None]:
-        """
-        Returns:
-          (present, major_version_or_None, full_version_or_None)
-
-        Uses a tiny subprocess probe only (cheap).
-        """
         code = (
             "import json, importlib.util\n"
             "spec = importlib.util.find_spec('numpy')\n"
@@ -334,67 +596,44 @@ def _ensure_numpy(venv_python: Path, status_cb=print) -> None:
         )
         try:
             out = subprocess.check_output(
-                [str(venv_python), "-c", code],
-                **_safe_text_kwargs(),
+                [str(venv_python), "-c", code], **_safe_text_kwargs(),
             ).strip()
             data = json.loads(out) if out else {}
             return bool(data.get("present")), data.get("major"), data.get("version")
         except Exception:
-            # Treat probe failure as "bad" so we repair conservatively
             return False, None, None
 
-    def _upgrade_pip_tools_once() -> None:
-        # Only called in repair path (Tier 2), not on healthy startup.
-        _pip_ok(venv_python, ["install", "--upgrade", "pip", "setuptools", "wheel"], status_cb=status_cb)
-
-    # -------- Tier 1: cheap probe (every startup) --------
     present, major, version = _numpy_state()
 
-    # Healthy -> return immediately (no pip/network/index work)
-    if present and (major is None or major < 2):
+    # For Python 3.14, torch 2.9+ supports numpy 2.x — don't force numpy<2
+    # The numpy<2 MINGW experimental build causes warnings and slowdowns
+    ver = _venv_pyver(venv_python)
+    if ver and ver[1] >= 14:
+        if present:
+            return  # whatever numpy is installed is fine for cp314
+        status_cb("[RT] Installing NumPy for Python 3.14 (no version pin)…")
+        _pip_ok(venv_python, ["install", "--prefer-binary", "--no-cache-dir", "numpy"], status_cb=status_cb)
         return
 
-    # -------- Tier 2: repair only if bad --------
-    _upgrade_pip_tools_once()
+    if present and (major is None or major < 2):
+        return  # healthy for py312/313, no-op
 
-    # 1) Missing NumPy → install safe pin
+    _pip_ok(venv_python, ["install", "--upgrade", "pip", "setuptools", "wheel"], status_cb=status_cb)
+
     if not present:
         status_cb("[RT] Installing NumPy (pinning to numpy<2 for torch wheel compatibility)…")
-        if not _pip_ok(
-            venv_python,
-            ["install", "--prefer-binary", "--no-cache-dir", "numpy<2"],
-            status_cb=status_cb,
-        ):
-            # last-ditch fallback (very widely available)
-            _pip_ok(
-                venv_python,
-                ["install", "--prefer-binary", "--no-cache-dir", "numpy==1.26.*"],
-                status_cb=status_cb,
-            )
-
-    # 2) NumPy 2.x present → downgrade to numpy<2
+        if not _pip_ok(venv_python, ["install", "--prefer-binary", "--no-cache-dir", "numpy<2"], status_cb=status_cb):
+            _pip_ok(venv_python, ["install", "--prefer-binary", "--no-cache-dir", "numpy==1.26.*"], status_cb=status_cb)
     elif major is not None and major >= 2:
-        status_cb(f"[RT] NumPy {version or '2.x'} detected in runtime venv; downgrading to numpy<2…")
-        if not _pip_ok(
-            venv_python,
-            ["install", "--prefer-binary", "--no-cache-dir", "--force-reinstall", "numpy<2"],
-            status_cb=status_cb,
-        ):
-            _pip_ok(
-                venv_python,
-                ["install", "--prefer-binary", "--no-cache-dir", "--force-reinstall", "numpy==1.26.*"],
-                status_cb=status_cb,
-            )
+        status_cb(f"[RT] NumPy {version or '2.x'} detected; downgrading to numpy<2…")
+        if not _pip_ok(venv_python, ["install", "--prefer-binary", "--no-cache-dir", "--force-reinstall", "numpy<2"], status_cb=status_cb):
+            _pip_ok(venv_python, ["install", "--prefer-binary", "--no-cache-dir", "--force-reinstall", "numpy==1.26.*"], status_cb=status_cb)
 
-    # -------- Post verification (same guarantees as before) --------
     present2, major2, version2 = _numpy_state()
     if not present2:
         raise RuntimeError("Failed to install NumPy into the SASpro runtime venv.")
     if major2 is not None and major2 >= 2:
-        raise RuntimeError(
-            f"NumPy is still {version2 or '2.x'} in the SASpro runtime venv after pinning; "
-            "torch stack may not import."
-        )
+        raise RuntimeError(f"NumPy is still {version2 or '2.x'} after pinning; torch stack may not import.")
 
 
 def _is_access_denied(exc: BaseException) -> bool:
@@ -402,7 +641,8 @@ def _is_access_denied(exc: BaseException) -> bool:
         return False
     if getattr(exc, "errno", None) == errno.EACCES:
         return True
-    return getattr(exc, "winerror", None) == 5  # ERROR_ACCESS_DENIED
+    return getattr(exc, "winerror", None) == 5
+
 
 def _access_denied_msg(base_path: Path) -> str:
     return (
@@ -412,10 +652,11 @@ def _access_denied_msg(base_path: Path) -> str:
         " • A corporate policy blocks writing to %LOCALAPPDATA%.\n"
         " • Security software is sandboxing the app.\n\n"
         "Fixes:\n"
-        " 1) Run SASpro once as Administrator (right-click → Run as administrator), or\n"
+        " 1) Run SASpro once as Administrator (right-click -> Run as administrator), or\n"
         " 2) Set an alternate writable folder via environment variable SASPRO_RUNTIME_DIR\n"
         "    (e.g. C:\\Users\\<you>\\SASproRuntime) and relaunch."
     )
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Venv creation & site discovery
@@ -424,44 +665,64 @@ def _access_denied_msg(base_path: Path) -> str:
 def _venv_paths(rt: Path):
     return {
         "venv": rt / "venv",
-        "python": (rt / "venv" / "Scripts" / "python.exe") if platform.system() == "Windows" else (rt / "venv" / "bin" / "python"),
+        "python": (rt / "venv" / "Scripts" / "python.exe")
+                  if platform.system() == "Windows"
+                  else (rt / "venv" / "bin" / "python"),
         "marker": rt / "torch_installed.json",
     }
+
 
 def _site_packages(venv_python: Path) -> Path:
     code = "import site, sys; print([p for p in site.getsitepackages() if 'site-packages' in p][-1])"
     out = subprocess.check_output(
-        [str(venv_python), "-c", code],
-        **_safe_text_kwargs(),
+        [str(venv_python), "-c", code], **_safe_text_kwargs(),
     ).strip()
     return Path(out)
 
+
 def _ensure_venv(rt: Path, status_cb=print) -> Path:
     p = _venv_paths(rt)
+    bootstrap_marker = p["venv"] / ".saspro_bootstrapped"
+
     if not p["python"].exists():
         try:
             status_cb(f"Setting up SASpro runtime venv at: {p['venv']}")
             p["venv"].mkdir(parents=True, exist_ok=True)
 
-            # choose the system python that will back this venv
             py_cmd = _find_system_python_cmd() if getattr(sys, "frozen", False) else [sys.executable]
-            # detect its version to ensure the folder tag matches
             out = subprocess.check_output(
                 py_cmd + ["-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
                 **_safe_text_kwargs(),
             ).strip()
             maj, min_ = map(int, out.split("."))
 
-            if (maj, min_) != (3, 12):
+            if maj != 3 or min_ not in _SUPPORTED_PY_MINORS:
                 raise RuntimeError(
-                    f"GPU acceleration runtime requires Python 3.12, but found {maj}.{min_}.\n"
-                    "Install Python 3.12 and relaunch SAS Pro."
+                    f"SASpro runtime requires Python 3.12, 3.13, or 3.14, "
+                    f"but found {maj}.{min_}.\n"
+                    "Install a supported Python version and relaunch SAS Pro."
                 )
 
-            env = os.environ.copy(); env.pop("PYTHONHOME", None); env.pop("PYTHONPATH", None)
+            expected_tag = _tag_for_pyver(maj, min_)
+            if rt.name != expected_tag:
+                correct_rt = _runtime_base_dir() / expected_tag
+                status_cb(f"Redirecting venv creation to {correct_rt} (interpreter is {maj}.{min_})")
+                return _ensure_venv(correct_rt, status_cb=status_cb)
+
+            env = os.environ.copy()
+            env.pop("PYTHONHOME", None)
+            env.pop("PYTHONPATH", None)
             subprocess.check_call(py_cmd + ["-m", "venv", str(p["venv"])], env=env)
             subprocess.check_call([str(p["python"]), "-m", "ensurepip", "--upgrade"], env=env)
-            subprocess.check_call([str(p["python"]), "-m", "pip", "install", "--upgrade", "pip", "wheel", "setuptools"], env=env)
+            subprocess.check_call(
+                [str(p["python"]), "-m", "pip", "install", "--upgrade", "pip", "wheel", "setuptools"],
+                env=env,
+            )
+            try:
+                bootstrap_marker.write_text(f"{maj}.{min_}", encoding="utf-8")
+            except Exception:
+                pass
+
         except subprocess.CalledProcessError:
             try:
                 if p["venv"].exists():
@@ -473,25 +734,32 @@ def _ensure_venv(rt: Path, status_cb=print) -> Path:
                 raise OSError(_access_denied_msg(rt)) from e
             raise
     else:
-        # venv already exists — verify its interpreter version matches the folder tag
         ver = _venv_pyver(p["python"])
-        if ver and (ver != (3, 12) or rt.name != "py312"):
-            status_cb(f"Runtime venv is Python {ver[0]}.{ver[1]} but policy requires 3.12. Rebuilding py312 runtime.")
+        if ver and (ver[0] != 3 or ver[1] not in _SUPPORTED_PY_MINORS):
+            status_cb(
+                f"Runtime venv is Python {ver[0]}.{ver[1]} which is no longer supported. Rebuilding."
+            )
             shutil.rmtree(p["venv"], ignore_errors=True)
-            return _ensure_venv(_runtime_base_dir() / "py312", status_cb=status_cb)
+            return _ensure_venv(rt, status_cb=status_cb)
 
+        if ver:
+            expected_minor = int(rt.name.replace("py3", "")) if rt.name.startswith("py3") else None
+            if expected_minor and ver[1] != expected_minor:
+                status_cb(
+                    f"Runtime venv is Python {ver[0]}.{ver[1]} but folder tag is {rt.name}. Rebuilding."
+                )
+                shutil.rmtree(p["venv"], ignore_errors=True)
+                return _ensure_venv(rt, status_cb=status_cb)
 
     return p["python"]
 
+
 # ──────────────────────────────────────────────────────────────────────────────
-# Install locking & version ladder
+# Install locking
 # ──────────────────────────────────────────────────────────────────────────────
 
 @contextmanager
 def _install_lock(rt: Path, timeout_s: int = 600):
-    """
-    Prevent concurrent partial installs into the same runtime.
-    """
     lock = rt / ".install.lock"
     rt.mkdir(parents=True, exist_ok=True)
     start = time.time()
@@ -512,16 +780,11 @@ def _install_lock(rt: Path, timeout_s: int = 600):
         except Exception:
             pass
 
-# coarse but practical ladder by Python minor
-_TORCH_VERSION_LADDER: dict[tuple[int, int], list[str]] = {
-    (3, 12): ["2.4.*", "2.3.*", "2.2.*"],
-}
-_TORCH_COMPAT: dict[str, tuple[str, str]] = {
-    "2.4": ("0.19.*", "2.4.*"),
-    "2.3": ("0.18.*", "2.3.*"),
-    "2.2": ("0.17.*", "2.2.*"),
-}
-# module-level caches
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Module-level caches & ROCm constants
+# ──────────────────────────────────────────────────────────────────────────────
+
 _TORCH_CACHED = None
 _RUNTIME_DIR_CACHED: Path | None = None
 _RUNTIME_DISCOVERY_LOGGED = False
@@ -536,31 +799,20 @@ _ROCM_PYTORCH_NIGHTLY_INDICES: list[tuple[str, str]] = [
     ("rocm6.2", "https://download.pytorch.org/whl/nightly/rocm6.2"),
 ]
 
-# Optional: per-arch hinting if you want to skip known-bad AMD gfx-v2 indices quickly
 _ROCM_AMD_GFX_BUCKETS_WITH_TORCH = {
-    "gfx1151",       # known working (your report)
-    "gfx1100", "gfx1101", "gfx1102",  # gfx110X-all family
-    "gfx1200", "gfx1201",             # gfx120X-all family
+    "gfx1151",
+    "gfx1100", "gfx1101", "gfx1102",
+    "gfx1200", "gfx1201",
 }
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Torch installation with robust fallbacks
+# Per-venv hardware checks
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _check_cuda_in_venv(venv_python: Path, status_cb=print) -> tuple[bool, str | None, str | None]:
-    """
-    Run a small script *inside the runtime venv* to see if CUDA is usable.
-
-    Returns (ok, cuda_tag, error_msg)
-      • ok       – True if torch imports and torch.cuda.is_available() and a small
-                   matmul on device='cuda' succeeds.
-      • cuda_tag – value of torch.version.cuda (if available)
-      • error_msg – text from any exception or stderr, for logging.
-    """
     code = r"""
-import json
-import sys
+import json, sys
 try:
     import torch
     info = {
@@ -569,7 +821,6 @@ try:
         "err": None,
     }
     if info["has_cuda"]:
-        # force some real GPU work
         x = torch.rand((256, 256), device="cuda", dtype=torch.float32)
         y = torch.rand((256, 256), device="cuda", dtype=torch.float32)
         _ = (x @ y).sum().item()
@@ -580,33 +831,25 @@ except Exception as e:
 """
     r = subprocess.run(
         [str(venv_python), "-c", code],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        **_safe_text_kwargs(),
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **_safe_text_kwargs(),
     )
-
     out = (r.stdout or "").strip()
-    # take last line in case pip noise gets mixed in
     last = out.splitlines()[-1] if out else ""
     try:
         data = json.loads(last) if last else {}
     except Exception as e:
-        msg = f"Failed to parse CUDA check output: {e}\nRaw output:\n{out}"
+        msg = f"Failed to parse CUDA check output: {e}\nRaw:\n{out}"
         try:
             status_cb(msg)
         except Exception:
             pass
         return False, None, msg
+    return bool(data.get("has_cuda")), data.get("cuda_tag"), data.get("err")
 
-    ok = bool(data.get("has_cuda"))
-    tag = data.get("cuda_tag")
-    err = data.get("err")
-    return ok, tag, err
 
 def _check_xpu_in_venv(venv_python: Path, status_cb=print) -> tuple[bool, str | None]:
     code = r"""
-import json
-import sys
+import json, sys
 try:
     import torch
     has_xpu = hasattr(torch, "xpu") and torch.xpu.is_available()
@@ -621,65 +864,45 @@ except Exception as e:
 """
     r = subprocess.run(
         [str(venv_python), "-c", code],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        **_safe_text_kwargs(),
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **_safe_text_kwargs(),
     )
     out = (r.stdout or "").strip()
     last = out.splitlines()[-1] if out else ""
     try:
         data = json.loads(last) if last else {}
     except Exception as e:
-        msg = f"Failed to parse XPU check output: {e}\nRaw output:\n{out}"
-        try: status_cb(msg)
-        except Exception as e:
-            import logging
-            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
+        msg = f"Failed to parse XPU check output: {e}\nRaw:\n{out}"
+        try:
+            status_cb(msg)
+        except Exception:
+            pass
         return False, msg
     return bool(data.get("has_xpu")), data.get("err")
 
+
 def _detect_rocm_version(status_cb=print) -> str:
-    """
-    Return installed ROCm version as 'major.minor' (e.g. '7.2') if detected.
-    Linux only. Tries hipconfig first, then rocminfo output. Returns '' if unknown.
-    """
     if platform.system() != "Linux":
         return ""
 
     patterns = [
-        # hipconfig often prints: HIP version: 7.2.0
         re.compile(r"\bHIP(?:\s+runtime)?\s+version\s*:\s*([0-9]+)\.([0-9]+)", re.I),
-        # generic ROCm version lines
         re.compile(r"\bROCm(?:\s+version)?\s*[:=]?\s*([0-9]+)\.([0-9]+)", re.I),
-        # package-ish strings like rocm-7.2.0
         re.compile(r"\brocm[-\s]?([0-9]+)\.([0-9]+)(?:\.[0-9]+)?\b", re.I),
     ]
 
     def _extract_ver(text: str) -> str:
-        if not text:
-            return ""
-        for line in text.splitlines():
-            s = line.strip()
+        for line in (text or "").splitlines():
             for pat in patterns:
-                m = pat.search(s)
+                m = pat.search(line.strip())
                 if m:
                     return f"{m.group(1)}.{m.group(2)}"
         return ""
 
-    cmds = [
-        (["hipconfig", "--version"], 6),
-        (["rocminfo", "--support"], 8),
-        (["rocminfo"], 8),
-    ]
-
-    for cmd, timeout_s in cmds:
+    for cmd, timeout_s in [(["hipconfig", "--version"], 6), (["rocminfo", "--support"], 8), (["rocminfo"], 8)]:
         try:
             r = subprocess.run(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                timeout=timeout_s,
-                **_safe_text_kwargs(),
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                timeout=timeout_s, **_safe_text_kwargs(),
             )
             ver = _extract_ver(r.stdout or "")
             if ver:
@@ -690,147 +913,90 @@ def _detect_rocm_version(status_cb=print) -> str:
                 return ver
         except Exception:
             continue
-
     return ""
 
+
 def _ordered_rocm_nightly_indices(detected_rocm_ver: str, status_cb=print) -> list[tuple[str, str]]:
-    """
-    Reorder _ROCM_PYTORCH_NIGHTLY_INDICES so the detected ROCm version is tried first.
-    Example detected_rocm_ver='7.2' prioritizes label 'rocm7.2'.
-    """
     base = list(_ROCM_PYTORCH_NIGHTLY_INDICES)
     if not detected_rocm_ver:
         return base
-
     target_label = f"rocm{detected_rocm_ver}"
-    preferred = []
-    rest = []
-    for label, url in base:
-        if label == target_label:
-            preferred.append((label, url))
-        else:
-            rest.append((label, url))
-
-    ordered = preferred + rest
+    preferred = [(l, u) for l, u in base if l == target_label]
+    rest = [(l, u) for l, u in base if l != target_label]
     if preferred:
         try:
-            status_cb(f"[RT] Prioritizing PyTorch ROCm nightly index for detected ROCm {detected_rocm_ver}: {target_label}")
+            status_cb(f"[RT] Prioritizing ROCm nightly index for detected ROCm {detected_rocm_ver}")
         except Exception:
             pass
-    else:
-        try:
-            status_cb(f"[RT] No exact PyTorch ROCm nightly index label match for detected ROCm {detected_rocm_ver}; using default order.")
-        except Exception:
-            pass
+    return preferred + rest
 
-    return ordered
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Core torch install — index-url strategy (no URL probing)
+# ──────────────────────────────────────────────────────────────────────────────
 
 def _install_torch(
-    venv_python: Path,
+    venv_python,
     prefer_cuda: bool,
     prefer_xpu: bool,
     prefer_dml: bool,
     prefer_rocm: bool = False,
-    status_cb=print
+    status_cb=print,
 ):
-
     """
-    Install torch into the per-user venv with best-effort backend detection:
-      • macOS arm64 → PyPI (MPS)
-      • Win/Linux + (prefer_cuda True) → try CUDA indices in order: cu124, cu121, cu118
-      • else → PyPI (CPU), with Linux fallback to official CPU index
-    Uses a version ladder when "no matching distribution" occurs.
-    """
-    import platform as _plat
-    INTEL_XPU_INDEX = "https://pytorch-extension.intel.com/release-whl/stable/xpu/us/"
+    Install torch/torchvision into the runtime venv using pip --index-url.
+    No URL probing — the PyTorch CDN blocks HEAD requests (403).
+    pip handles 404/no-match gracefully.
 
-    def _pip(*args, env=None) -> subprocess.CompletedProcess:
-        e = (os.environ.copy() if env is None else env)
-        e.pop("PYTHONPATH", None); e.pop("PYTHONHOME", None)
-        return subprocess.run(
-            [str(venv_python), "-m", "pip", *args],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            env=e,
-            **_safe_text_kwargs(),
+    cp314 + CUDA: wheels exist from torch 2.9.x onward on cu126+.
+    """
+    sysname = platform.system()
+    machine = platform.machine().lower()
+
+    def _pip_install_ok(cmd: list[str]) -> bool:
+        env = os.environ.copy()
+        env.pop("PYTHONPATH", None)
+        env.pop("PYTHONHOME", None)
+        r = subprocess.run(
+            [str(venv_python), "-m", "pip", *cmd],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            env=env, **_safe_text_kwargs(),
         )
-
-    def _pyver() -> tuple[int, int]:
-        code = "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
-        out = subprocess.check_output(
-            [str(venv_python), "-c", code],
-            **_safe_text_kwargs(),
-        ).strip()
-        major, minor = out.split(".")
-        return int(major), int(minor)
-
-    sysname = _plat.system()
-    machine = _plat.machine().lower()
-    py_major, py_minor = _pyver()
-
-    def _pip_ok(cmd: list[str]) -> bool:
-        r = _pip(*cmd)
         if r.returncode != 0:
             tail = (r.stdout or "").strip()
             status_cb(tail[-4000:])
         return r.returncode == 0
 
-    if (py_major, py_minor) != (3, 12):
-        raise RuntimeError(f"Runtime must be Python 3.12 (found {py_major}.{py_minor}).")
-
-    ladder = _TORCH_VERSION_LADDER.get((py_major, py_minor), ["2.4.*", "2.3.*", "2.2.*"])
-
-    status_cb(f"Runtime Python: {py_major}.{py_minor}")
-
     # Keep venv tools fresh
-    _pip_ok(["install", "--upgrade", "pip", "setuptools", "wheel"])
+    _pip_install_ok(["install", "--upgrade", "pip", "setuptools", "wheel"])
 
-    def _try_series(index_url: str | None, versions: list[str], *, pre: bool = False) -> bool:
-        base = ["install", "--prefer-binary", "--no-cache-dir"]
-        if pre:
-            base.append("--pre")
-        if index_url:
-            base += ["--index-url", index_url]
+    cp = _cp_tag(venv_python)
+    ver = _venv_pyver(venv_python)
 
-        # First try "latest pair" from that index
-        if _pip_ok(base + ["torch", "torchvision"]):
-            return True
+    if not cp or not ver:
+        raise RuntimeError("Could not determine Python version of the runtime venv.")
 
-        # Walk the ladder: pin TORCH only, let pip resolve compatible torchvision
-        for v in versions:
-            fam = v.replace(".*", "")
-            tv_v, _ta_v = _TORCH_COMPAT.get(fam, (None, None))
+    plat = _platform_tag(venv_python)
+    status_cb(f"[RT] Runtime: Python {ver[0]}.{ver[1]}, cp={cp}, platform={plat}")
 
-            # Fallback if mapping missing: pin torch only
-            if not tv_v:
-                if _pip_ok(base + [f"torch=={v}", "torchvision"]):
-                    return True
-                continue
-
-            if _pip_ok(base + [f"torch=={v}", f"torchvision=={tv_v}"]):
-                return True
-
-        return False
-
-    # macOS Apple Silicon → MPS wheels on PyPI
+    # ── macOS Apple Silicon → MPS (PyPI, no CUDA) ─────────────────────────────
     if sysname == "Darwin" and ("arm64" in machine or "aarch64" in machine):
-        status_cb("Installing PyTorch (macOS arm64, MPS)…")
-        if not _try_series(None, ladder):
-            raise RuntimeError("Failed to find a matching PyTorch wheel for macOS arm64.")
-        return
+        status_cb("Installing PyTorch for macOS arm64 (MPS via PyPI)…")
+        ladder = _TORCH_VERSION_LADDER.get((ver[0], ver[1]), ["2.11.*"])
+        for tv in ladder:
+            if _pip_install_ok(["install", "--prefer-binary", "--no-cache-dir",
+                                 f"torch=={tv}", "torchvision"]):
+                return
+        raise RuntimeError("Failed to find a matching PyTorch wheel for macOS arm64.")
 
-    # AMD ROCm (Linux only) — try before CUDA
+    # ── AMD ROCm (Linux only) ──────────────────────────────────────────────────
     rocm_arch = _detect_rocm_arch() if (prefer_rocm and sysname == "Linux") else ""
     rocm_ver = _detect_rocm_version(status_cb=status_cb) if (prefer_rocm and sysname == "Linux") else ""
 
     if rocm_arch:
         status_cb(f"ROCm GPU detected: {rocm_arch}" + (f" (ROCm {rocm_ver})" if rocm_ver else ""))
+        rocm_candidates: list[tuple[str, str, bool]] = []
 
-        # Build ROCm index candidates in priority order
-        rocm_candidates: list[tuple[str, str, bool]] = []  # (label, url, use_pre)
-
-        # 1) AMD gfx-specific nightly index first (only for known bucketed arches)
         if rocm_arch in _ROCM_AMD_GFX_BUCKETS_WITH_TORCH:
             rocm_candidates.append((
                 f"amd-gfx-nightly:{rocm_arch}",
@@ -838,156 +1004,224 @@ def _install_torch(
                 True,
             ))
         else:
-            status_cb(
-                f"ROCm arch {rocm_arch} may not have torch wheels in AMD gfx nightly buckets; "
-                "trying PyTorch nightly ROCm indexes."
-            )
+            status_cb(f"ROCm arch {rocm_arch}: no AMD gfx nightly bucket; trying PyTorch nightly ROCm.")
 
-        # 2) PyTorch nightly ROCm indexes (mainline), reordered by detected ROCm version
         env_rocm_nightly = (os.getenv("SASPRO_ROCM_NIGHTLY_INDEX") or "").strip()
         if env_rocm_nightly:
             rocm_candidates.insert(0, ("env-rocm-nightly", env_rocm_nightly.rstrip("/"), True))
 
-        ordered_pytorch_rocm = _ordered_rocm_nightly_indices(rocm_ver, status_cb=status_cb)
-        for label, url in ordered_pytorch_rocm:
+        for label, url in _ordered_rocm_nightly_indices(rocm_ver, status_cb=status_cb):
             rocm_candidates.append((f"pytorch-nightly:{label}", url, True))
 
-        # Try each candidate
+        ladder = _TORCH_VERSION_LADDER.get((ver[0], ver[1]), ["2.11.*"])
+
         for label, url, use_pre in rocm_candidates:
-            status_cb(f"Trying PyTorch ROCm wheels from {label} …")
-            if _try_series(url, ladder, pre=use_pre):
-                # ROCm is surfaced through torch.cuda in PyTorch; CUDA probe works here
+            status_cb(f"Trying PyTorch ROCm wheels from {label}…")
+            base = ["install", "--prefer-binary", "--no-cache-dir", "--index-url", url]
+            if use_pre:
+                base.append("--pre")
+
+            installed = False
+            for v in ladder:
+                fam = v.replace(".*", "")
+                tv_v, _ = _TORCH_COMPAT.get(fam, (None, None))
+                if tv_v and _pip_install_ok(base + [f"torch=={v}", f"torchvision=={tv_v}"]):
+                    installed = True
+                    break
+            if not installed:
+                installed = _pip_install_ok(base + ["torch", "torchvision"])
+
+            if installed:
                 ok, cuda_tag, err = _check_cuda_in_venv(venv_python, status_cb=status_cb)
                 if ok:
                     status_cb(f"Installed PyTorch ROCm from {label} (torch.version.cuda={cuda_tag}).")
                     return
-
-                status_cb(
-                    f"Installed from {label} but ROCm runtime check failed "
-                    f"(torch.version.cuda={cuda_tag!r}, err={err!r}). "
-                    "Uninstalling and trying next ROCm index…"
-                )
-                _pip_ok(["uninstall", "-y", "torch", "torchvision", "torchaudio"])
-                continue
-
-            status_cb(f"No compatible PyTorch ROCm wheels from {label}. Trying next…")
+                status_cb(f"ROCm check failed ({cuda_tag!r}, {err!r}). Trying next…")
+                _pip_install_ok(["uninstall", "-y", "torch", "torchvision", "torchaudio"])
+            else:
+                status_cb(f"No compatible PyTorch ROCm wheels from {label}.")
 
         status_cb("ROCm install attempts failed. Falling back to other backends…")
 
-    # Windows/Linux – CUDA first if requested, then CPU
-    try_cuda = prefer_cuda and sysname in ("Windows", "Linux")
-    cuda_indices = [
-        ("cu129", "https://download.pytorch.org/whl/cu129"),
-        ("cu128", "https://download.pytorch.org/whl/cu128"),        
-        ("cu124", "https://download.pytorch.org/whl/cu124"),
-        ("cu121", "https://download.pytorch.org/whl/cu121"),
-        ("cu118", "https://download.pytorch.org/whl/cu118"),
-    ]
-
-    if try_cuda:
-        for tag, url in cuda_indices:
-            status_cb(f"Trying PyTorch CUDA wheels: {tag} …")
-            if _try_series(url, ladder):
-                # Verify the wheel just installed in the *runtime venv*, not the GUI env.
-                ok, cuda_tag, err = _check_cuda_in_venv(venv_python, status_cb=status_cb)
-                if not ok:
-                    status_cb(
-                        f"Installed from {tag} but CUDA is not available in the runtime venv "
-                        f"(torch.version.cuda={cuda_tag!r}, err={err!r}). "
-                        "Uninstalling and trying next…"
-                    )
-                    _pip_ok(["uninstall", "-y", "torch", "torchvision", "torchaudio"])
-                    continue
-
-                status_cb(f"Installed PyTorch CUDA ({tag}; torch.version.cuda={cuda_tag}).")
-                return
-
-            status_cb(f"No matching CUDA {tag} wheel for this Python/OS. Trying next…")
-
-        status_cb("Falling back to CPU wheels (no matching CUDA wheel).")
-    try_xpu = prefer_xpu and sysname in ("Windows", "Linux")
-    if try_xpu:
+    # ── Intel XPU ─────────────────────────────────────────────────────────────
+    INTEL_XPU_INDEX = "https://pytorch-extension.intel.com/release-whl/stable/xpu/us/"
+    if prefer_xpu and sysname in ("Windows", "Linux"):
         status_cb("Trying PyTorch Intel XPU wheels…")
-        if _try_series(INTEL_XPU_INDEX, ladder):
+        ladder = _TORCH_VERSION_LADDER.get((ver[0], ver[1]), ["2.11.*"])
+        base = ["install", "--prefer-binary", "--no-cache-dir", "--index-url", INTEL_XPU_INDEX]
+        installed = False
+        for v in ladder:
+            fam = v.replace(".*", "")
+            tv_v, _ = _TORCH_COMPAT.get(fam, (None, None))
+            if tv_v and _pip_install_ok(base + [f"torch=={v}", f"torchvision=={tv_v}"]):
+                installed = True
+                break
+        if not installed:
+            installed = _pip_install_ok(base + ["torch", "torchvision"])
+
+        if installed:
             ok, err = _check_xpu_in_venv(venv_python, status_cb=status_cb)
             if ok:
-                status_cb("Installed PyTorch Intel XPU (torch.xpu available).")
+                status_cb("Installed PyTorch Intel XPU.")
                 return
-            else:
-                status_cb(f"XPU runtime test failed in venv: {err!r}. Uninstalling and falling back…")
-                _pip_ok(["uninstall", "-y", "torch", "torchvision", "torchaudio"])
+            status_cb(f"XPU runtime test failed: {err!r}. Uninstalling and falling back…")
+            _pip_install_ok(["uninstall", "-y", "torch", "torchvision", "torchaudio"])
         else:
             status_cb("No matching Intel XPU wheel for this Python/OS.")
-    
-    # NEW: DirectML FIRST (Windows, non-NVIDIA)
+
+    # ── CUDA: index-url installs walking version + cu-tag ladder ──────────────
+    if prefer_cuda and sysname in ("Windows", "Linux"):
+        cuda_ver = _detect_cuda_version(status_cb=status_cb)
+
+        if cuda_ver is None:
+            status_cb("[RT] CUDA not detected on this system; skipping CUDA install.")
+        else:
+            cu_tag = _cuda_ver_to_cu_tag(cuda_ver)
+            if cu_tag is None:
+                status_cb(
+                    f"[RT] CUDA {cuda_ver[0]}.{cuda_ver[1]} is too old for current PyTorch wheels. "
+                    "Falling back to CPU."
+                )
+            else:
+                status_cb(
+                    f"[RT] CUDA {cuda_ver[0]}.{cuda_ver[1]} -> {cu_tag}, "
+                    f"installing via pip index-url for {cp}…"
+                )
+
+                all_cu_tags = ["cu130", "cu129", "cu128", "cu126", "cu124", "cu121", "cu118"]
+                cu_tag_order = [cu_tag] + [t for t in all_cu_tags if t != cu_tag]
+
+                installed_cuda = False
+                for try_cu in cu_tag_order:
+                    index_url = f"{_PYTORCH_WHL_BASE}/{try_cu}"
+
+                    for torch_ver in _TORCH_VERSION_LADDER_ORDERED:
+                        avail_cu = _TORCH_CUDA_AVAILABILITY.get(torch_ver, set())
+                        avail_cp = _TORCH_CUDA_PYTHON_AVAILABILITY.get(torch_ver, set())
+                        if try_cu not in avail_cu or cp not in avail_cp:
+                            continue
+
+                        tv_ver = _TORCHVISION_FOR_TORCH.get(torch_ver, "")
+                        status_cb(f"[RT] Trying torch=={torch_ver}+{try_cu} via {index_url}…")
+
+                        base = ["install", "--prefer-binary", "--no-cache-dir",
+                                "--index-url", index_url]
+
+                        if tv_ver:
+                            ok = _pip_install_ok(base + [f"torch=={torch_ver}", f"torchvision=={tv_ver}"])
+                        else:
+                            ok = _pip_install_ok(base + [f"torch=={torch_ver}", "torchvision"])
+
+                        if not ok:
+                            continue
+
+                        cuda_ok, cuda_tag_found, err = _check_cuda_in_venv(venv_python, status_cb=status_cb)
+                        if cuda_ok:
+                            status_cb(f"[RT] CUDA verified (torch {torch_ver}+{try_cu}, cuda={cuda_tag_found}).")
+                            installed_cuda = True
+                            break
+                        else:
+                            status_cb(
+                                f"[RT] Installed from {try_cu} but CUDA not active "
+                                f"(cuda_tag={cuda_tag_found!r}, err={err!r}). Uninstalling…"
+                            )
+                            _pip_install_ok(["uninstall", "-y", "torch", "torchvision"])
+
+                    if installed_cuda:
+                        return
+
+                if not installed_cuda:
+                    status_cb(
+                        f"[RT] Could not install a working CUDA torch for {cp}. "
+                        "Falling back to CPU."
+                    )
+
+    # ── DirectML (Windows, non-NVIDIA) ────────────────────────────────────────
     if sysname == "Windows" and prefer_dml:
         status_cb("Installing PyTorch with DirectML (torch-directml)…")
+        _pip_install_ok(["uninstall", "-y", "torch", "torchvision", "torch-directml"])
 
-        # Clean slate helps resolver if something already got partially installed
-        _pip_ok(["uninstall", "-y", "torch", "torchvision", "torch-directml"])
-
-        if not _pip_ok(["install", "--prefer-binary", "--no-cache-dir", "torch-directml"]):
+        if not _pip_install_ok(["install", "--prefer-binary", "--no-cache-dir", "torch-directml"]):
             raise RuntimeError("Failed to install torch-directml.")
 
-        # torchvision is still useful for some models/utilities; torchaudio is optional.
-        _pip_ok(["install", "--prefer-binary", "--no-cache-dir", "torchvision"])
+        _pip_install_ok(["install", "--prefer-binary", "--no-cache-dir", "torchvision"])
 
-        # Verify import + device creation
-        code = "import torch, torch_directml; d=torch_directml.device(); x=torch.tensor([1]).to(d); y=torch.tensor([2]).to(d); print(int((x+y).item()))"
+        code = (
+            "import torch, torch_directml; d=torch_directml.device(); "
+            "x=torch.tensor([1]).to(d); y=torch.tensor([2]).to(d); print(int((x+y).item()))"
+        )
         r = subprocess.run(
             [str(venv_python), "-c", code],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            **_safe_text_kwargs(),
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **_safe_text_kwargs(),
         )
         if r.returncode != 0 or "3" not in (r.stdout or ""):
             status_cb((r.stdout or "")[-2000:])
             raise RuntimeError("torch-directml installed, but DirectML verification failed.")
 
         status_cb("Installed DirectML backend successfully.")
-        return    
-    
-    # CPU path
-    status_cb("Installing PyTorch (CPU)…")
-    if _try_series(None, ladder):
         return
-    if sysname == "Linux":
-        status_cb("Retry with official CPU index…")
-        if _try_series("https://download.pytorch.org/whl/cpu", ladder):
+
+    # ── CPU fallback ──────────────────────────────────────────────────────────
+    status_cb(f"[RT] Installing PyTorch (CPU) for {cp}…")
+
+    ladder = _TORCH_VERSION_LADDER.get((ver[0], ver[1]), ["2.11.*"])
+
+    cpu_index = f"{_PYTORCH_WHL_BASE}/cpu"
+    base_cpu = ["install", "--prefer-binary", "--no-cache-dir", "--index-url", cpu_index]
+
+    for v in ladder:
+        fam = v.replace(".*", "")
+        tv_v, _ = _TORCH_COMPAT.get(fam, (None, None))
+        if tv_v and _pip_install_ok(base_cpu + [f"torch=={v}", f"torchvision=={tv_v}"]):
+            status_cb(f"[RT] CPU torch {v} installed via PyTorch CPU index.")
             return
-    raise RuntimeError("Failed to install any compatible PyTorch wheel (CPU or CUDA).")
+        if _pip_install_ok(base_cpu + [f"torch=={v}", "torchvision"]):
+            status_cb(f"[RT] CPU torch {v} installed via PyTorch CPU index.")
+            return
+
+    status_cb("[RT] PyTorch CPU index failed; trying PyPI…")
+    base_pypi = ["install", "--prefer-binary", "--no-cache-dir"]
+    for v in ladder:
+        fam = v.replace(".*", "")
+        tv_v, _ = _TORCH_COMPAT.get(fam, (None, None))
+        if tv_v and _pip_install_ok(base_pypi + [f"torch=={v}", f"torchvision=={tv_v}"]):
+            return
+        if _pip_install_ok(base_pypi + [f"torch=={v}", "torchvision"]):
+            return
+
+    raise RuntimeError(
+        f"Failed to install any compatible PyTorch wheel for {cp}."
+    )
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Public entry points
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _venv_import_probe(venv_python: Path, modname: str) -> tuple[bool, str]:
-    """
-    Try importing a module INSIDE the runtime venv python.
-    Returns (ok, output_or_error_tail).
-    """
     code = (
+        "import warnings as _w\n"
+        "_w.filterwarnings('ignore')\n"
         "import importlib, sys\n"
         f"m=importlib.import_module('{modname}')\n"
         "print('OK', getattr(m,'__version__',None), getattr(m,'__file__',None))\n"
     )
     r = subprocess.run(
         [str(venv_python), "-c", code],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        **_safe_text_kwargs(),
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **_safe_text_kwargs(),
     )
     out = (r.stdout or "").strip()
-    if r.returncode == 0 and out.startswith("OK"):
-        return True, out
+
+    if r.returncode == 0:
+        for line in out.splitlines():
+            line = line.strip()
+            if line.startswith("OK"):
+                return True, line
+
     return False, out[-4000:] if out else "no output"
 
 
 def _write_torch_marker(marker: Path, status_cb=print, *, require_torchaudio: bool = False) -> None:
-    """
-    Create torch_installed.json based on runtime venv imports.
-    Safe to call repeatedly.
-    """
     rt = marker.parent
     vp = _venv_paths(rt)["python"]
 
@@ -999,26 +1233,16 @@ def _write_torch_marker(marker: Path, status_cb=print, *, require_torchaudio: bo
         "installed": bool(ok_t),
         "when": int(time.time()),
         "python": None,
-        "torch": None,
-        "torchvision": None,
-        "torchaudio": None,
-        "torch_file": None,
-        "torchvision_file": None,
-        "torchaudio_file": None,
+        "torch": None, "torchvision": None, "torchaudio": None,
+        "torch_file": None, "torchvision_file": None, "torchaudio_file": None,
         "require_torchaudio": bool(require_torchaudio),
-        "probe": {
-            "torch": out_t,
-            "torchvision": out_v,
-            "torchaudio": out_a,
-        }
+        "probe": {"torch": out_t, "torchvision": out_v, "torchaudio": out_a},
     }
 
     try:
         r = subprocess.run(
             [str(vp), "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            **_safe_text_kwargs(),
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, **_safe_text_kwargs(),
         )
         if r.returncode == 0:
             payload["python"] = (r.stdout or "").strip()
@@ -1028,9 +1252,7 @@ def _write_torch_marker(marker: Path, status_cb=print, *, require_torchaudio: bo
     def _parse_ok(s: str):
         try:
             parts = s.split(" ", 2)
-            ver = parts[1] if len(parts) > 1 else None
-            f = parts[2] if len(parts) > 2 else None
-            return ver, f
+            return (parts[1] if len(parts) > 1 else None), (parts[2] if len(parts) > 2 else None)
         except Exception:
             return None, None
 
@@ -1047,28 +1269,24 @@ def _write_torch_marker(marker: Path, status_cb=print, *, require_torchaudio: bo
     except Exception as e:
         status_cb(f"[RT] Failed to write marker {marker}: {e!r}")
 
+
 def _venv_has_torch_stack(
     vp: Path,
     status_cb=print,
     *,
-    require_torchaudio: bool = False
+    require_torchaudio: bool = False,
 ) -> tuple[bool, dict]:
-    """
-    Definitive check: can the RUNTIME VENV import torch/torchvision(/torchaudio)?
-    This does NOT use the frozen app interpreter to decide installation state.
-    """
     ok_t, out_t = _venv_import_probe(vp, "torch")
     ok_v, out_v = _venv_import_probe(vp, "torchvision")
     ok_a, out_a = _venv_import_probe(vp, "torchaudio")
-
     info = {
         "torch": (ok_t, out_t),
         "torchvision": (ok_v, out_v),
         "torchaudio": (ok_a, out_a),
     }
-
     ok_all = (ok_t and ok_v and ok_a) if require_torchaudio else (ok_t and ok_v)
     return ok_all, info
+
 
 def _marker_says_ready(
     marker: Path,
@@ -1078,69 +1296,49 @@ def _marker_says_ready(
     require_torchaudio: bool = False,
     max_age_days: int = 180,
 ) -> bool:
-    """
-    Advisory fast-path gate ONLY.
-
-    Returns True if the marker looks sane enough that an in-process import attempt
-    is worth trying *without* doing the expensive subprocess venv probes.
-    """
     try:
         if not marker.exists():
             return False
-
         raw = marker.read_text(encoding="utf-8", errors="replace")
         data = json.loads(raw) if raw else {}
-        if not isinstance(data, dict):
-            return False
-
-        if not data.get("installed", False):
+        if not isinstance(data, dict) or not data.get("installed", False):
             return False
 
         when = data.get("when")
         if isinstance(when, (int, float)):
-            age_s = max(0.0, time.time() - float(when))
-            if age_s > (max_age_days * 86400):
+            if max(0.0, time.time() - float(when)) > (max_age_days * 86400):
                 return False
 
         py = data.get("python")
         if not (isinstance(py, str) and py.strip()):
             return False
-
         try:
             maj_s, min_s = py.strip().split(".", 1)
             marker_ver = (int(maj_s), int(min_s))
         except Exception:
             return False
-
-        if venv_ver is None:
-            return False
-
-        if marker_ver != venv_ver:
+        if venv_ver is None or marker_ver != venv_ver:
             return False
 
         site_s = str(site)
-        tf = data.get("torch_file")
-        tvf = data.get("torchvision_file")
-        taf = data.get("torchaudio_file")
 
         def _under_site(p: str | None) -> bool:
-            if not p or not isinstance(p, str):
-                return False
-            return site_s in p
+            return bool(p and isinstance(p, str) and site_s in p)
 
-        if not _under_site(tf):
+        if not _under_site(data.get("torch_file")):
             return False
-        if not _under_site(tvf):
+        if not _under_site(data.get("torchvision_file")):
             return False
-        if require_torchaudio and not _under_site(taf):
+        if require_torchaudio and not _under_site(data.get("torchaudio_file")):
             return False
-
         return True
     except Exception:
         return False
 
+
 def _cache_file(rt: Path) -> Path:
     return rt / "torch_cache.json"
+
 
 def _fcache_get(rt: Path) -> dict | None:
     try:
@@ -1152,6 +1350,7 @@ def _fcache_get(rt: Path) -> dict | None:
     except Exception:
         return None
 
+
 def _fcache_set(rt: Path, payload: dict) -> None:
     try:
         p = _cache_file(rt)
@@ -1161,6 +1360,7 @@ def _fcache_set(rt: Path, payload: dict) -> None:
     except Exception:
         pass
 
+
 def _fcache_clear(rt: Path) -> None:
     try:
         p = _cache_file(rt)
@@ -1168,6 +1368,8 @@ def _fcache_clear(rt: Path) -> None:
             p.unlink()
     except Exception:
         pass
+
+
 def import_torch(
     prefer_cuda: bool = True,
     prefer_xpu: bool = False,
@@ -1178,24 +1380,12 @@ def import_torch(
     require_torchaudio: bool = False,
     allow_install: bool = False,
 ):
-    """
-    Return the runtime-venv torch module.
-
-    Behavior:
-      - Fast-path import from cached runtime site-packages when possible.
-      - Definitively probe the runtime venv for torch/torchvision(/torchaudio).
-      - If missing:
-          * allow_install=False  -> raise a clear "install from Preferences" error
-          * allow_install=True   -> explicitly install/repair runtime in-place, then re-probe
-      - Never performs silent/background installs unless allow_install=True.
-    """
+    """Return the runtime-venv torch module, installing if allow_install=True."""
     global _TORCH_CACHED
     if _TORCH_CACHED is not None:
         return _TORCH_CACHED
 
-    # ------------------------------------------------------------------
-    # Conservative ROCm redirect on Linux only
-    # ------------------------------------------------------------------
+    # Conservative ROCm redirect on Linux
     if platform.system() == "Linux" and prefer_cuda and not prefer_rocm:
         try:
             rocm_arch = _detect_rocm_arch()
@@ -1208,26 +1398,24 @@ def import_torch(
                     if not (has_cuda_now and not hip_now):
                         prefer_cuda = False
                         prefer_rocm = True
-                        status_cb(f"[RT] AMD ROCm GPU detected ({rocm_arch}); redirecting CUDA preference to ROCm.")
+                        status_cb(f"[RT] AMD ROCm GPU detected ({rocm_arch}); redirecting to ROCm.")
                 except Exception:
                     prefer_cuda = False
                     prefer_rocm = True
-                    status_cb(f"[RT] AMD ROCm GPU detected ({rocm_arch}); redirecting CUDA preference to ROCm.")
+                    status_cb(f"[RT] AMD ROCm GPU detected ({rocm_arch}); redirecting to ROCm.")
         except Exception:
             pass
 
-    # If explicitly preferring CUDA on Windows, don't also pursue DML here.
     if platform.system() == "Windows" and prefer_cuda:
         prefer_dml = False
 
     def _write_cache_best_effort(rt: Path, site: Path, venv_ver: tuple[int, int] | None):
         try:
-            import torch as _t  # noqa
-            import torchvision as _tv  # noqa
+            import torch as _t
+            import torchvision as _tv
             _ta = None
             if require_torchaudio:
-                import torchaudio as _ta  # noqa
-
+                import torchaudio as _ta
             _fcache_set(rt, {
                 "tag": rt.name,
                 "rt_dir": str(rt),
@@ -1243,34 +1431,27 @@ def import_torch(
             pass
 
     def _raise_missing_runtime(info: dict) -> None:
-        missing = []
-        if not info["torch"][0]:
-            missing.append("torch")
-        if not info["torchvision"][0]:
-            missing.append("torchvision")
-        if require_torchaudio and (not info["torchaudio"][0]):
+        missing = [k for k in ("torch", "torchvision") if not info[k][0]]
+        if require_torchaudio and not info["torchaudio"][0]:
             missing.append("torchaudio")
-
         if prefer_cuda or prefer_xpu or prefer_dml or prefer_rocm:
             msg = (
                 "GPU acceleration runtime is not installed or is incomplete.\n\n"
                 f"Missing packages in runtime venv: {', '.join(missing)}\n\n"
                 "Please go to Settings -> Preferences and install GPU Acceleration "
-                "before running Cosmic Clarity, Syqon, or other hardware accelerated tools."
+                "before running Cosmic Clarity, SyQon, or other hardware accelerated tools."
             )
         else:
             msg = (
                 "Hardware acceleration runtime is not installed or is incomplete.\n\n"
                 f"Missing packages in runtime venv: {', '.join(missing)}"
             )
-
         status_cb(f"[RT] {msg}")
         raise RuntimeError(msg)
 
     _rt_dbg(f"sys.frozen={getattr(sys, 'frozen', False)}", status_cb)
     _rt_dbg(f"sys.executable={sys.executable}", status_cb)
     _rt_dbg(f"sys.version={sys.version}", status_cb)
-    _rt_dbg(f"current_tag={_current_tag()}", status_cb)
     _rt_dbg(f"SASPRO_RUNTIME_DIR={os.getenv('SASPRO_RUNTIME_DIR')!r}", status_cb)
     _rt_dbg(
         f"prefs: cuda={prefer_cuda} xpu={prefer_xpu} dml={prefer_dml} rocm={prefer_rocm} "
@@ -1278,56 +1459,41 @@ def import_torch(
         status_cb,
     )
 
-    # Prevent source-tree shadowing
     _ban_shadow_torch_paths(status_cb=status_cb)
     _purge_bad_torch_from_sysmodules(status_cb=status_cb)
 
-    # ------------------------------------------------------------------
-    # Runtime + venv
-    # ------------------------------------------------------------------
     rt = _user_runtime_dir(status_cb=status_cb)
     vp = _ensure_venv(rt, status_cb=status_cb)
 
-    # ------------------------------------------------------------------
-    # Ultra-fast cache path
-    # ------------------------------------------------------------------
+    # Ultra-fast file cache path
     try:
         qc = _fcache_get(rt)
         if qc:
             site_s = (qc.get("site") or "").strip()
-            rt_s   = (qc.get("rt_dir") or "").strip()
-            req_ta = bool(qc.get("require_torchaudio", True))
-            tag    = (qc.get("tag") or "").strip()
-
+            rt_s = (qc.get("rt_dir") or "").strip()
+            req_ta = bool(qc.get("require_torchaudio", False))
+            tag = (qc.get("tag") or "").strip()
             if (
                 tag == rt.name
                 and site_s and Path(site_s).exists()
                 and rt_s and Path(rt_s).exists()
                 and (req_ta == require_torchaudio)
             ):
-                status_cb("[RT] File cache hit (runtime tag match); attempting zero-subprocess import.")
-
+                status_cb("[RT] File cache hit; attempting zero-subprocess import.")
                 if site_s not in sys.path:
                     sys.path.insert(0, site_s)
-
                 _demote_shadow_torch_paths(status_cb=status_cb)
                 _purge_bad_torch_from_sysmodules(status_cb=status_cb)
-
-                import torch  # noqa
-                import torchvision  # noqa
+                import torch
+                import torchvision
                 if require_torchaudio:
-                    import torchaudio  # noqa
-
+                    import torchaudio
                 _TORCH_CACHED = torch
                 return torch
-
     except Exception as e:
         status_cb(f"[RT] File-cache fast-path failed: {type(e).__name__}: {e}. Continuing…")
         _fcache_clear(rt)
 
-    # ------------------------------------------------------------------
-    # Runtime metadata / marker
-    # ------------------------------------------------------------------
     site = _site_packages(vp)
     marker = rt / "torch_installed.json"
     venv_ver = _venv_pyver(vp)
@@ -1343,49 +1509,35 @@ def import_torch(
     except Exception:
         pass
 
-    # ------------------------------------------------------------------
     # Marker fast path
-    # ------------------------------------------------------------------
     try:
         if _marker_says_ready(marker, site, venv_ver, require_torchaudio=require_torchaudio):
-            status_cb("[RT] Marker valid; attempting fast in-process import (skipping venv probe).")
-
+            status_cb("[RT] Marker valid; attempting fast in-process import.")
             sp = str(site)
             if sp not in sys.path:
                 sys.path.insert(0, sp)
-
             _demote_shadow_torch_paths(status_cb=status_cb)
             _purge_bad_torch_from_sysmodules(status_cb=status_cb)
-
-            import torch  # noqa
-            import torchvision  # noqa
+            import torch
+            import torchvision
             if require_torchaudio:
-                import torchaudio  # noqa
-
+                import torchaudio
             try:
                 _write_torch_marker(marker, status_cb=status_cb)
             except Exception:
                 pass
-
             _TORCH_CACHED = torch
             _write_cache_best_effort(rt, site, venv_ver)
             return torch
-
     except Exception as e:
-        status_cb(f"[RT] Marker fast-path failed: {type(e).__name__}: {e}. Falling back to full probe…")
+        status_cb(f"[RT] Marker fast-path failed: {type(e).__name__}: {e}. Falling back…")
         try:
             _fcache_clear(rt)
         except Exception:
             pass
 
-    # ------------------------------------------------------------------
-    # Definitive runtime-venv probe
-    # ------------------------------------------------------------------
-    ok_all, info = _venv_has_torch_stack(
-        vp,
-        status_cb=status_cb,
-        require_torchaudio=require_torchaudio,
-    )
+    # Definitive venv probe
+    ok_all, info = _venv_has_torch_stack(vp, status_cb=status_cb, require_torchaudio=require_torchaudio)
     status_cb(
         "[RT] venv probe: "
         f"torch={info['torch'][0]} "
@@ -1393,27 +1545,18 @@ def import_torch(
         f"torchaudio={info['torchaudio'][0]}"
     )
 
-    # ------------------------------------------------------------------
-    # Missing stack: either raise, or explicitly install/repair
-    # ------------------------------------------------------------------
     if not ok_all:
         if not allow_install:
             _raise_missing_runtime(info)
 
-        status_cb("[RT] Runtime torch stack missing/incomplete; explicit install is allowed. Starting install/repair…")
-
+        status_cb("[RT] Runtime torch stack missing/incomplete; explicit install allowed. Starting…")
         try:
             _fcache_clear(rt)
         except Exception:
             pass
 
         with _install_lock(rt):
-            # Another thread/process may have completed install while we waited.
-            ok_all_2, info_2 = _venv_has_torch_stack(
-                vp,
-                status_cb=status_cb,
-                require_torchaudio=require_torchaudio,
-            )
+            ok_all_2, _ = _venv_has_torch_stack(vp, status_cb=status_cb, require_torchaudio=require_torchaudio)
             if not ok_all_2:
                 status_cb("[RT] Installing torch stack into runtime venv…")
                 _install_torch(
@@ -1425,12 +1568,7 @@ def import_torch(
                     status_cb=status_cb,
                 )
 
-            # Re-probe after explicit install
-            ok_all_3, info_3 = _venv_has_torch_stack(
-                vp,
-                status_cb=status_cb,
-                require_torchaudio=require_torchaudio,
-            )
+            ok_all_3, info_3 = _venv_has_torch_stack(vp, status_cb=status_cb, require_torchaudio=require_torchaudio)
             status_cb(
                 "[RT] post-install probe: "
                 f"torch={info_3['torch'][0]} "
@@ -1439,18 +1577,13 @@ def import_torch(
             )
 
             if not ok_all_3:
-                missing = []
-                if not info_3["torch"][0]:
-                    missing.append("torch")
-                if not info_3["torchvision"][0]:
-                    missing.append("torchvision")
-                if require_torchaudio and (not info_3["torchaudio"][0]):
+                missing = [k for k in ("torch", "torchvision") if not info_3[k][0]]
+                if require_torchaudio and not info_3["torchaudio"][0]:
                     missing.append("torchaudio")
-
                 msg = (
-                    "Hardware acceleration install completed, but the runtime is still incomplete.\n\n"
+                    "Hardware acceleration install completed, but runtime is still incomplete.\n\n"
                     f"Missing packages in runtime venv: {', '.join(missing)}\n\n"
-                    "Please delete the SASpro runtime folder and try Install/Repair Hardware Acceleration again."
+                    "Please delete the SASpro runtime folder and try Install/Repair again."
                 )
                 status_cb(f"[RT] {msg}")
                 raise RuntimeError(msg)
@@ -1460,142 +1593,163 @@ def import_torch(
             except Exception:
                 pass
 
+        # After a fresh install, skip the in-process import entirely.
+        # The first in-process import after a cold install can fail on some cp314
+        # builds due to torch.hub side-effect imports that don't work in this
+        # process context. The marker is written and the next launch will use
+        # the fast marker path which works cleanly.
+        status_cb(
+            "[RT] Hardware Acceleration installed successfully. "
+            "Please restart SASpro to activate GPU acceleration."
+        )
+        raise RuntimeError(
+            "Hardware Acceleration installed successfully.\n\n"
+            "Please restart SASpro to activate GPU acceleration.\n\n"
+            "This is expected after a fresh installation — your settings have been saved."
+        )
+
     else:
         try:
             _write_torch_marker(marker, status_cb=status_cb)
         except Exception:
             pass
 
-    # ------------------------------------------------------------------
-    # Final in-process import from runtime site-packages
-    # ------------------------------------------------------------------
+    # Final in-process import (only reached when torch was already installed
+    # before this call — not after a fresh install)
     sp = str(site)
     if sp not in sys.path:
         sys.path.insert(0, sp)
-
     _demote_shadow_torch_paths(status_cb=status_cb)
     _purge_bad_torch_from_sysmodules(status_cb=status_cb)
 
     try:
-        import torch  # noqa
-        import torchvision  # noqa
+        import torch
+        import torchvision
         if require_torchaudio:
-            import torchaudio  # noqa
-
-        # Strong sanity check helps catch shadowing / broken wheel issues immediately.
+            import torchaudio
         _torch_sanity_check(status_cb=status_cb)
-
         _TORCH_CACHED = torch
         _write_cache_best_effort(rt, site, venv_ver)
         return torch
-
     except Exception as e:
         try:
             _fcache_clear(rt)
         except Exception:
             pass
-
-        ok_all_final, info_final = _venv_has_torch_stack(
-            vp,
-            status_cb=status_cb,
-            require_torchaudio=require_torchaudio,
-        )
+        ok_all_final, info_final = _venv_has_torch_stack(vp, status_cb=status_cb, require_torchaudio=require_torchaudio)
         msg = "\n".join([f"{k}: ok={ok} :: {out}" for k, (ok, out) in info_final.items()])
-
         raise RuntimeError(
             "Runtime venv probe says torch stack exists, but in-process import failed.\n"
-            "This typically indicates a frozen-stdlib / PyInstaller packaging issue, shadowed torch import,\n"
-            "or broken wheel import rather than a missing torch install.\n\n"
+            "This typically indicates a frozen-stdlib / PyInstaller packaging issue, "
+            "shadowed torch import, or broken wheel.\n\n"
             f"Original error: {type(e).__name__}: {e}\n\n"
             f"Probe ok_all={ok_all_final}\n"
             "Runtime venv probe:\n" + msg
         ) from e
-    
-def _find_system_python_cmd() -> list[str]:
-    """
-    Find a SYSTEM Python command suitable for creating the SASpro runtime venv.
 
-    HARD POLICY:
-      - Runtime venv must be created with Python 3.12.
-      - Do NOT fall back to other minors (3.11/3.13/etc).
-      - If 3.12 isn't available, raise with a clear message.
 
-    Returns a list of argv tokens (e.g. ["py","-3.12"] or ["/opt/homebrew/bin/python3.12"]).
-    """
-    import platform as _plat
+# ──────────────────────────────────────────────────────────────────────────────
+# System Python discovery
+# ──────────────────────────────────────────────────────────────────────────────
 
-    def _is_py312(cmd: list[str]) -> bool:
+def _find_system_python_cmd_for_minor(minor: int) -> list[str] | None:
+    """Find a system Python 3.minor command. Returns argv list or None."""
+    sysname = platform.system()
+
+    def _is_target(cmd: list[str]) -> bool:
         try:
             r = subprocess.run(
                 cmd + ["-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                **_safe_text_kwargs(),
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, **_safe_text_kwargs(),
             )
-            return r.returncode == 0 and (r.stdout or "").strip() == "3.12"
+            return r.returncode == 0 and (r.stdout or "").strip() == f"3.{minor}"
         except Exception:
             return False
 
-    sysname = _plat.system()
-
-    # macOS: prefer explicit python3.12 locations (Homebrew first)
-    if sysname == "Darwin":
-        candidates = [
-            ["/opt/homebrew/bin/python3.12"],
-            ["/usr/local/bin/python3.12"],
-            ["/usr/bin/python3.12"],
-        ]
-        for cmd in candidates:
-            exe = cmd[0]
-            if os.path.exists(exe) and os.access(exe, os.X_OK) and _is_py312(cmd):
-                return cmd
-        # also try PATH python3.12 if present
-        p = shutil.which("python3.12")
-        if p and _is_py312([p]):
-            return [p]
-
-        raise RuntimeError(
-            "Could not find Python 3.12 to create the SASpro runtime venv on macOS.\n"
-            "Install Python 3.12 (Apple Silicon: `brew install python@3.12`) and relaunch."
-        )
-
-    # Windows: use the Python Launcher and ONLY 3.12
     if sysname == "Windows":
-        for cmd in (["py", "-3.12"],):
-            if _is_py312(cmd):
-                return cmd
-
-        # As a backup, try an explicit python3.12 on PATH (rare on Windows, but possible)
-        p = shutil.which("python3.12")
-        if p and _is_py312([p]):
+        for c in (["py", f"-3.{minor}"], [f"python3.{minor}"], ["python"]):
+            if _is_target(c):
+                return c
+        p = shutil.which(f"python3.{minor}")
+        if p and _is_target([p]):
             return [p]
+        return None
 
-        raise RuntimeError(
-            "Could not find Python 3.12 to create the SASpro runtime venv on Windows.\n"
-            "Install Python 3.12 from python.org and ensure the Python Launcher is installed,\n"
-            "then confirm `py -3.12 --version` works, and relaunch SAS Pro."
-        )
+    if sysname == "Darwin":
+        for path in [
+            f"/opt/homebrew/bin/python3.{minor}",
+            f"/usr/local/bin/python3.{minor}",
+            f"/usr/bin/python3.{minor}",
+        ]:
+            if os.path.exists(path) and os.access(path, os.X_OK) and _is_target([path]):
+                return [path]
+        p = shutil.which(f"python3.{minor}")
+        if p and _is_target([p]):
+            return [p]
+        return None
 
-    # Linux / other: only accept python3.12
-    p = shutil.which("python3.12")
-    if p and _is_py312([p]):
-        return [p]
+    # Linux
+    for name in [f"python3.{minor}", "python3", "python"]:
+        p = shutil.which(name)
+        if p and _is_target([p]):
+            return [p]
+    for path in [
+        f"/usr/bin/python3.{minor}",
+        f"/usr/local/bin/python3.{minor}",
+        f"/opt/python3.{minor}/bin/python3.{minor}",
+    ]:
+        if os.path.isfile(path) and _is_target([path]):
+            return [path]
+    return None
+
+
+def _find_system_python_cmd() -> list[str]:
+    """
+    Find the best available system Python for creating a SASpro runtime venv.
+    Preference order: 3.12, 3.13, 3.14.
+    """
+    maj, min_ = sys.version_info.major, sys.version_info.minor
+    if maj == 3 and min_ in _SUPPORTED_PY_MINORS:
+        return [sys.executable]
+
+    for minor in _SUPPORTED_PY_MINORS:
+        cmd = _find_system_python_cmd_for_minor(minor)
+        if cmd:
+            return cmd
 
     raise RuntimeError(
-        "Could not find Python 3.12 to create the SASpro runtime venv.\n"
-        "Install Python 3.12 and ensure `python3.12 --version` returns 3.12, then relaunch.\n"
-        "Or set SASPRO_RUNTIME_DIR to a writable path (this does not replace the need for Python 3.12)."
+        "Could not find Python 3.12, 3.13, or 3.14 to create the SASpro runtime venv.\n"
+        "Install one of these Python versions and relaunch SAS Pro.\n\n"
+        "Windows:  install from python.org and ensure `py -3.12` (or -3.13/-3.14) works\n"
+        "macOS:    brew install python@3.12\n"
+        "Linux:    sudo apt install python3.12  (or your distro equivalent)"
     )
 
+
 def add_runtime_to_sys_path(status_cb=print) -> None:
-    """
-    Warm up sys.path so a fresh launch can see the runtime immediately.
-    """
     rt = _user_runtime_dir(status_cb=status_cb)
-    p  = _venv_paths(rt)
+    p = _venv_paths(rt)
     vpy = p["python"]
     if not vpy.exists():
         return
+
+    # Verify version match before injecting — prevents stale py312 polluting py314
+    ver = _venv_pyver(vpy)
+    if ver:
+        expected_minor = None
+        try:
+            expected_minor = int(rt.name[2:]) % 100  # "py314" -> 314 -> 14
+        except Exception:
+            pass
+
+        if expected_minor is not None and ver[1] != expected_minor:
+            _rt_dbg(
+                f"add_runtime_to_sys_path: skipping {rt} — venv is Python "
+                f"{ver[0]}.{ver[1]} but folder tag implies 3.{expected_minor}",
+                status_cb,
+            )
+            return
+
     try:
         site = _site_packages(vpy)
         sp = str(site)
@@ -1605,15 +1759,14 @@ def add_runtime_to_sys_path(status_cb=print) -> None:
                 status_cb(f"Added runtime site-packages to sys.path: {sp}")
             except Exception:
                 pass
-        # also consider sibling dirs:
         for c in (site, site.parent / "site-packages", site.parent / "dist-packages"):
             sc = str(c)
             if c.exists() and sc not in sys.path:
                 sys.path.insert(0, sc)
-        # After adding, demote any accidental shadowing paths
         _demote_shadow_torch_paths(status_cb=status_cb)
     except Exception:
         return
+
 
 def prewarm_torch_cache(
     status_cb=print,
@@ -1623,13 +1776,6 @@ def prewarm_torch_cache(
     ensure_numpy: bool = False,
     validate_marker: bool = True,
 ) -> None:
-    """
-    Build and persist the QSettings cache early (startup), so the first real
-    import_torch() call can be zero-subprocess.
-
-    By default this does NOT import torch (keeps startup lighter).
-    It only computes runtime rt/vpy/site and writes QSettings.
-    """
     try:
         _ban_shadow_torch_paths(status_cb=status_cb)
         _purge_bad_torch_from_sysmodules(status_cb=status_cb)
@@ -1640,7 +1786,6 @@ def prewarm_torch_cache(
 
         if ensure_venv:
             vp = _ensure_venv(rt, status_cb=status_cb)
-
         if not vp.exists():
             return
 
@@ -1654,15 +1799,10 @@ def prewarm_torch_cache(
         marker = rt / "torch_installed.json"
         venv_ver = _venv_pyver(vp)
 
-        # Optionally only cache if marker looks valid (recommended),
-        # otherwise you may cache a site-packages that doesn't actually contain torch yet.
         if validate_marker:
             if not _marker_says_ready(marker, site, venv_ver, require_torchaudio=require_torchaudio):
-                status_cb("[RT] prewarm: marker not valid; skipping QSettings cache write.")
+                status_cb("[RT] prewarm: marker not valid; skipping cache write.")
                 return
-
-        # IMPORTANT: use runtime tag, not app interpreter tag, for mixed-version scenarios
-        cache_tag = rt.name  # e.g. "py312"
 
         _fcache_set(rt, {
             "tag": rt.name,

@@ -211,13 +211,25 @@ class UpdateMixin:
                     plat = sys.platform
                     
                     if plat.startswith("darwin"):
-                        # Detect Intel vs Apple Silicon
                         import platform
                         machine = platform.machine().lower()
-                        if machine == "arm64":
+                        if machine in ("arm64", "aarch64"):
                             key = "macOS_AppleSilicon"
                         else:
-                            key = "macOS_Intel"
+                            # Rosetta 2 reports x86_64 even on Apple Silicon —
+                            # check sysctl as a fallback before assuming Intel
+                            try:
+                                import subprocess
+                                result = subprocess.run(
+                                    ["sysctl", "-n", "hw.optional.arm64"],
+                                    capture_output=True, text=True, timeout=2
+                                )
+                                if result.stdout.strip() == "1":
+                                    key = "macOS_AppleSilicon"
+                                else:
+                                    key = "macOS_Intel"
+                            except Exception:
+                                key = "macOS_Intel"
                     elif plat.startswith("win"):
                         key = "Windows"
                     elif plat.startswith("linux"):
