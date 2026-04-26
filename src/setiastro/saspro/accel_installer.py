@@ -6,18 +6,19 @@ import sys
 import os
 from typing import Callable, Optional
 
-from setiastro.saspro.runtime_torch import import_torch, add_runtime_to_sys_path, _user_runtime_dir, _venv_paths
+from setiastro.saspro.runtime_torch import (
+    import_torch, add_runtime_to_sys_path,
+    _user_runtime_dir, _venv_paths, _SUPPORTED_PY_MINORS,
+)
 
 LogCB = Callable[[str], None]
+
 
 def _run(cmd):
     return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 
+
 def _has_amd_rocm() -> tuple[bool, str]:
-    """
-    Return (True, gfx_arch) if an AMD ROCm-capable GPU is detected.
-    Linux only. Uses runtime_torch._detect_rocm_arch().
-    """
     try:
         if platform.system() != "Linux":
             return False, ""
@@ -29,53 +30,43 @@ def _has_amd_rocm() -> tuple[bool, str]:
 
 
 def _has_intel_arc() -> bool:
-    """
-    Return True if the machine appears to have an Intel Arc / Xe (XPU-capable) adapter.
-    Windows: CIM/WMIC name sniff.
-    Linux: lspci grep.
-    macOS: False.
-    """
     try:
         sysname = platform.system()
         if sysname == "Windows":
-            ps = _run(["powershell","-NoProfile","-Command",
+            ps = _run(["powershell", "-NoProfile", "-Command",
                        "(Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name) -join ';'"])
             out = (ps.stdout or "").lower()
-            # Accept 'arc' or 'iris xe' (dg/xe discrete & some laptops with XPU)
-            return ("intel" in out) and ("arc" in out or "iris xe" in out or "a770" in out or "a750" in out or "a580" in out or "a380" in out)
+            return ("intel" in out) and (
+                "arc" in out or "iris xe" in out
+                or "a770" in out or "a750" in out or "a580" in out or "a380" in out
+            )
         if sysname == "Linux":
-            r = _run(["bash","-lc","lspci -nn | grep -i 'vga\\|3d'"])
+            r = _run(["bash", "-lc", "lspci -nn | grep -i 'vga\\|3d'"])
             s = (r.stdout or "").lower()
             return ("intel" in s) and ("arc" in s or "iris xe" in s or "xe" in s)
         return False
     except Exception:
         return False
 
+
 def _has_nvidia() -> bool:
-    """
-    Return True if the machine *appears* to have an NVIDIA adapter.
-    Windows: try PowerShell CIM first (wmic is deprecated), then wmic.
-    Linux: use nvidia-smi.
-    macOS: always False.
-    """
     try:
-      sysname = platform.system()
-      if sysname == "Windows":
-          # Try CIM (preferred)
-          ps = _run(["powershell","-NoProfile","-Command",
-                     "(Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name) -join ';'"])
-          out = (ps.stdout or "").lower()
-          if "nvidia" in out:
-              return True
-          # Fallback to wmic (older systems)
-          w = _run(["wmic","path","win32_VideoController","get","name"])
-          return "nvidia" in (w.stdout or "").lower()
-      if sysname == "Linux":
-          r = _run(["nvidia-smi","-L"])
-          return "GPU" in (r.stdout or "")
-      return False
+        sysname = platform.system()
+        if sysname == "Windows":
+            ps = _run(["powershell", "-NoProfile", "-Command",
+                       "(Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name) -join ';'"])
+            out = (ps.stdout or "").lower()
+            if "nvidia" in out:
+                return True
+            w = _run(["wmic", "path", "win32_VideoController", "get", "name"])
+            return "nvidia" in (w.stdout or "").lower()
+        if sysname == "Linux":
+            r = _run(["nvidia-smi", "-L"])
+            return "GPU" in (r.stdout or "")
+        return False
     except Exception:
-      return False
+        return False
+
 
 def _nvidia_driver_ok(log_cb: LogCB) -> bool:
     try:
@@ -90,7 +81,12 @@ def _nvidia_driver_ok(log_cb: LogCB) -> bool:
         log_cb("Unable to query NVIDIA driver via nvidia-smi.")
         return False
 
-def ensure_torch_installed(prefer_gpu: bool, log_cb: LogCB, preferred_backend: str = "auto") -> tuple[bool, Optional[str]]:
+
+def ensure_torch_installed(
+    prefer_gpu: bool,
+    log_cb: LogCB,
+    preferred_backend: str = "auto",
+) -> tuple[bool, Optional[str]]:
 
     try:
         preferred_backend = (preferred_backend or "auto").lower()
@@ -101,8 +97,6 @@ def ensure_torch_installed(prefer_gpu: bool, log_cb: LogCB, preferred_backend: s
         has_intel = (not has_nv) and _has_intel_arc() and platform.system() in ("Windows", "Linux")
         has_amd, amd_arch = ((False, "") if not is_linux else _has_amd_rocm())
 
-        # Resolve requested backend into concrete preferences.
-        # Important: explicit user choices should be honored when possible.
         prefer_cuda = False
         prefer_xpu = False
         prefer_rocm = False
@@ -110,29 +104,18 @@ def ensure_torch_installed(prefer_gpu: bool, log_cb: LogCB, preferred_backend: s
 
         if preferred_backend == "cpu":
             pass
-
         elif preferred_backend == "cuda":
             prefer_cuda = prefer_gpu and has_nv
-
         elif preferred_backend == "xpu":
             prefer_xpu = prefer_gpu and (is_windows or is_linux) and (not has_nv) and has_intel
-
         elif preferred_backend == "rocm":
-            # Allow explicit ROCm even if Intel iGPU is also present (common on Linux systems)
             prefer_rocm = prefer_gpu and is_linux and (not has_nv) and has_amd
-
         elif preferred_backend == "directml":
             prefer_dml = prefer_gpu and is_windows and (not has_nv)
-
         else:  # auto
             prefer_cuda = prefer_gpu and has_nv
-            prefer_xpu  = prefer_gpu and (is_windows or is_linux) and (not has_nv) and has_intel
-
-            # In auto mode, prefer Intel XPU over ROCm when both are detected.
-            # (Keeps your previous auto-priority behavior.)
+            prefer_xpu = prefer_gpu and (is_windows or is_linux) and (not has_nv) and has_intel
             prefer_rocm = prefer_gpu and is_linux and (not has_nv) and (not has_intel) and has_amd
-
-            # DirectML only matters on Windows with no NVIDIA/XPU
             prefer_dml = prefer_gpu and is_windows and (not has_nv) and (not prefer_xpu)
 
         log_cb(
@@ -140,8 +123,6 @@ def ensure_torch_installed(prefer_gpu: bool, log_cb: LogCB, preferred_backend: s
             f"cuda={prefer_cuda}, xpu={prefer_xpu}, rocm={prefer_rocm}, dml={prefer_dml}"
         )
 
-
-        # Install/import torch (ROCm/CUDA/XPU/DML/CPU handled inside runtime_torch)
         torch = import_torch(
             prefer_cuda=prefer_cuda,
             prefer_xpu=prefer_xpu,
@@ -152,13 +133,11 @@ def ensure_torch_installed(prefer_gpu: bool, log_cb: LogCB, preferred_backend: s
             require_torchaudio=False,
         )
 
-        from setiastro.saspro.runtime_torch import add_runtime_to_sys_path
         add_runtime_to_sys_path(status_cb=log_cb)
 
         cuda_ok = bool(getattr(torch, "cuda", None) and torch.cuda.is_available())
-        xpu_ok  = bool(hasattr(torch, "xpu") and torch.xpu.is_available())
+        xpu_ok = bool(hasattr(torch, "xpu") and torch.xpu.is_available())
 
-        # ROCm check: in PyTorch ROCm still shows up through torch.cuda, but torch.version.hip is set
         rocm_ok = False
         rocm_ver = None
         try:
@@ -167,29 +146,21 @@ def ensure_torch_installed(prefer_gpu: bool, log_cb: LogCB, preferred_backend: s
         except Exception:
             rocm_ok = False
 
-        # HARD RULES about DirectML:
-        # • If NVIDIA exists: never use DML.
-        # • If XPU is active: also avoid DML.
-        # • If ROCm is active: also avoid DML (Linux anyway, but harmless safety)
-        if has_nv:
-            _maybe_uninstall_dml = True
-        else:
-            _maybe_uninstall_dml = xpu_ok or rocm_ok
-
+        # Uninstall DML if a real GPU backend won
+        _maybe_uninstall_dml = has_nv or xpu_ok or rocm_ok
         if _maybe_uninstall_dml:
             try:
-                from setiastro.saspro.runtime_torch import _user_runtime_dir, _venv_paths
                 rt = _user_runtime_dir()
                 vpy = _venv_paths(rt)["python"]
                 r = subprocess.run(
                     [str(vpy), "-m", "pip", "show", "torch-directml"],
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                 )
                 if r.returncode == 0 and r.stdout:
-                    log_cb("Non-DML path selected → uninstalling torch-directml.")
+                    log_cb("Non-DML path selected -> uninstalling torch-directml.")
                     subprocess.run(
                         [str(vpy), "-m", "pip", "uninstall", "-y", "torch-directml"],
-                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                     )
             except Exception:
                 pass
@@ -213,33 +184,28 @@ def ensure_torch_installed(prefer_gpu: bool, log_cb: LogCB, preferred_backend: s
                 log_cb("Intel XPU available.")
             return True, None
 
-        # No CUDA/XPU/ROCm ⇒ evaluate DML on Windows non-NVIDIA
-        dml_enabled = False
+        # No CUDA/XPU/ROCm — evaluate DML on Windows non-NVIDIA
         if is_windows and (not has_nv):
             try:
                 import importlib
                 importlib.invalidate_caches()
                 import torch_directml  # noqa
-                dml_enabled = True
                 log_cb("DirectML detected (already installed).")
             except Exception:
-                from setiastro.saspro.runtime_torch import _user_runtime_dir, _venv_paths
                 rt = _user_runtime_dir()
                 vpy = _venv_paths(rt)["python"]
                 log_cb("Installing torch-directml (Windows fallback)…")
                 r = subprocess.run(
                     [str(vpy), "-m", "pip", "install", "--prefer-binary", "torch-directml"],
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                 )
                 if r.returncode == 0:
                     try:
                         import importlib
                         importlib.invalidate_caches()
                         import torch_directml  # noqa
-                        dml_enabled = True
                         log_cb("DirectML backend available.")
                     except Exception:
-                        dml_enabled = False
                         log_cb("DirectML import failed after install; staying on CPU.")
                 else:
                     log_cb("DirectML install failed; staying on CPU.")
@@ -259,15 +225,11 @@ def ensure_torch_installed(prefer_gpu: bool, log_cb: LogCB, preferred_backend: s
                 "\n\nHints:\n"
                 " • Make sure you are not launching SAS Pro from a folder that contains a 'torch' directory.\n"
                 " • If you previously ran a local PyTorch checkout, remove it from PYTHONPATH.\n"
-                f" • To force a clean reinstall, delete: {os.path.join(str(_user_runtime_dir()), 'venv')} and click Install/Update again."
-            )
-        if "macOS arm64 on Python 3.13" in msg:
-            msg += (
-                "\n\nmacOS tip:\n"
-                " • Install Python 3.12: `brew install python@3.12`\n"
-                " • Ensure `/opt/homebrew/bin/python3.12` exists, then relaunch SAS Pro.\n"
+                f" • To force a clean reinstall, delete: "
+                f"{os.path.join(str(_user_runtime_dir()), 'venv')} and click Install/Update again."
             )
         return False, msg
+
 
 def current_backend() -> str:
     try:
@@ -276,7 +238,6 @@ def current_backend() -> str:
         import platform as _plat
         torch = importlib.import_module("torch")
 
-        # ROCm appears via torch.cuda in PyTorch, but torch.version.hip is populated
         try:
             hip_ver = getattr(getattr(torch, "version", None), "hip", None)
         except Exception:

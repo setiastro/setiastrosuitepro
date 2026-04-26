@@ -1,5 +1,4 @@
-from __future__ import annotations
-
+# src/setiastro/saspro/syqon_parallax_model/model.py
 # ============================================================================
 # SyQon Parallax — Sharpening model architecture
 # Placeholder — will be replaced with SyQon's actual architecture when released.
@@ -9,29 +8,36 @@ from __future__ import annotations
 #   star_reduce — star reduction
 #   star_abcorr — star aberration correction
 # ============================================================================
+from __future__ import annotations
 
 from typing import Literal
-import torch
-import torch.nn as nn
 
 ParallaxVariant = Literal["deblur", "star_reduce", "star_abcorr"]
 
 
-class _PlaceholderParallaxNet(nn.Module):
-    """
-    Passthrough placeholder — returns input unchanged.
-    Replace with SyQon's actual Parallax architecture when released.
-    """
-    def __init__(self):
-        super().__init__()
+def _build_PlaceholderParallaxNet():
+    """Builds the placeholder network class with lazy torch import."""
+    import torch
+    import torch.nn as nn
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x
+    class _PlaceholderParallaxNet(nn.Module):
+        """
+        Passthrough placeholder — returns input unchanged.
+        Replace with SyQon's actual Parallax architecture when released.
+        """
+        def __init__(self):
+            super().__init__()
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            return x
+
+    return _PlaceholderParallaxNet
 
 
-def create_parallax_model(variant: ParallaxVariant = "deblur") -> nn.Module:
+def create_parallax_model(variant: ParallaxVariant = "deblur"):
     """
     Factory for SyQon Parallax sharpening models.
+    Torch is imported lazily — safe at module-load time.
 
     Variants:
         deblur      — non-stellar deblur model
@@ -44,4 +50,6 @@ def create_parallax_model(variant: ParallaxVariant = "deblur") -> nn.Module:
     variant = str(variant or "deblur").strip().lower()
     if variant not in ("deblur", "star_reduce", "star_abcorr"):
         raise ValueError(f"Unknown Parallax variant: {variant!r}")
-    return _PlaceholderParallaxNet()
+
+    PlaceholderParallaxNet = _build_PlaceholderParallaxNet()
+    return PlaceholderParallaxNet()

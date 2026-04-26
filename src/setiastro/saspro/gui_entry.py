@@ -673,39 +673,135 @@ def _bootstrap_imports():
     if _imports_bootstrapped:
         return
     _imports_bootstrapped = True
-
-    # Make sure splash exists before we start doing heavy work
+ 
     if not _splash_initialized:
         _init_splash()
-
+ 
     _update_splash(QCoreApplication.translate("Splash", "Loading PyTorch runtime..."), 5)
-
+ 
     from setiastro.saspro.runtime_torch import (
         add_runtime_to_sys_path,
         _ban_shadow_torch_paths,
         _purge_bad_torch_from_sysmodules,
     )
-
-    add_runtime_to_sys_path(status_cb=lambda *_: None)
+ 
+    # Inject runtime site-packages IMMEDIATELY so bare `import torch` calls
+    # in any subsequently-imported module can resolve against the wheel.
     _ban_shadow_torch_paths(status_cb=lambda *_: None)
     _purge_bad_torch_from_sysmodules(status_cb=lambda *_: None)
+    add_runtime_to_sys_path(status_cb=lambda *_: None)
+ 
+    # ── Probe whether torch is actually importable right now ──────────────────
+    _torch_actually_available = False
+    try:
+        import importlib.util as _ilu
+        if _ilu.find_spec("torch") is not None:
+            import torch as _torch_probe  # noqa
+            _torch_actually_available = True
+    except Exception:
+        _torch_actually_available = False
+ 
+    # ── If torch is absent, inject a stub so the GUI can still open ───────────
+    if not _torch_actually_available:
+        import types
+        import sys as _sys
+ 
+        _TORCH_NOT_INSTALLED_MSG = (
+            "PyTorch is not installed in the SASpro runtime venv.\n"
+            "Go to Settings \u2192 Preferences \u2192 Install/Repair Hardware Acceleration."
+        )
+ 
+        class _TorchUnavailableStub(types.ModuleType):
+            """
+            Injected into sys.modules when the runtime venv has no torch.
+            Attribute access returns child stubs so module-level imports like
+            `import torch.nn as nn` don't crash.  Any real usage (calling,
+            subclassing nn.Module, tensor ops) raises RuntimeError with a
+            clear install prompt.
+            """
+            def __init__(self, name: str = "torch"):
+                super().__init__(name)
+                self.__path__ = []    # makes Python treat it as a package
+                self.__spec__ = None
+                self.__version__ = "0.0.0+unavailable"
+                # Minimal cuda/version stubs so guards like
+                # `torch.cuda.is_available()` return False instead of crashing
+                self.cuda = _sys.modules.get(
+                    "torch.cuda",
+                    _TorchUnavailableStub.__new__(_TorchUnavailableStub)
+                )
+                self.version = _sys.modules.get(
+                    "torch.version",
+                    _TorchUnavailableStub.__new__(_TorchUnavailableStub)
+                )
+ 
+            def __getattr__(self, name: str):
+                child_key = f"{self.__name__}.{name}"
+                if child_key not in _sys.modules:
+                    child = _TorchUnavailableStub(child_key)
+                    _sys.modules[child_key] = child
+                return _sys.modules[child_key]
+ 
+            def __call__(self, *a, **kw):
+                raise RuntimeError(_TORCH_NOT_INSTALLED_MSG)
+ 
+            def __bool__(self):
+                return False
+ 
+            # Keep isinstance(x, torch.nn.Module) from crashing — just False
+            def __instancecheck__(self, instance):
+                return False
+ 
+            # Make `torch.cuda.is_available()` return False instead of crashing
+            def is_available(self):
+                return False
+ 
+        # Only inject if torch is genuinely absent
+        if "torch" not in _sys.modules:
+            _stub_root = _TorchUnavailableStub("torch")
+            _sys.modules["torch"] = _stub_root
+ 
+            # Pre-populate the sub-modules most commonly imported at module level
+            _torch_submods = [
+                "torch.nn",
+                "torch.nn.functional",
+                "torch.nn.modules",
+                "torch.cuda",
+                "torch.backends",
+                "torch.backends.mps",
+                "torch.backends.cudnn",
+                "torch.utils",
+                "torch.utils.data",
+                "torch.amp",
+                "torch.version",
+                "torch.jit",
+                "torch.onnx",
+            ]
+            for _sm in _torch_submods:
+                if _sm not in _sys.modules:
+                    _sys.modules[_sm] = _TorchUnavailableStub(_sm)
+ 
+            print(
+                "[SASpro] torch not available in runtime venv \u2014 stub injected. "
+                "GPU tools will be unavailable until Hardware Acceleration is installed "
+                "via Settings \u2192 Preferences."
+            )
+ 
     _update_splash(QCoreApplication.translate("Splash", "Preparing AI runtime cache..."), 7)
     try:
         from setiastro.saspro.runtime_torch import prewarm_torch_cache
         prewarm_torch_cache(
-            status_cb=lambda *_: None,   # keep console clean during splash
-            require_torchaudio=True,
+            status_cb=lambda *_: None,
+            require_torchaudio=False,
             ensure_venv=True,
             ensure_numpy=False,
             validate_marker=True,
         )
     except Exception:
         pass
+ 
     _update_splash(QCoreApplication.translate("Splash", "Loading standard libraries..."), 10)
-
-    # ----------------------------------------
-    # Standard library imports (consolidated)
-    # ----------------------------------------
+ 
     import importlib
     import json
     import logging
@@ -719,7 +815,7 @@ def _bootstrap_imports():
     import traceback
     import warnings
     import webbrowser
-
+ 
     from collections import defaultdict
     from datetime import datetime
     from decimal import getcontext
@@ -729,56 +825,37 @@ def _bootstrap_imports():
     from pathlib import Path
     from typing import Dict, List, Optional, Set, Tuple
     from urllib.parse import quote, quote_plus
-
+ 
     _update_splash(QCoreApplication.translate("Splash", "Loading NumPy..."), 15)
-
-    # ----------------------------------------
-    # Third-party imports
-    # ----------------------------------------
-    # numpy deferred to modules that need it
-
-
-    # Image libraries (tifffile, XISF) deferred
-
-
+ 
     _update_splash(QCoreApplication.translate("Splash", "Configuring matplotlib..."), 25)
     from setiastro.saspro.config_bootstrap import ensure_mpl_config_dir
     _MPL_CFG_DIR = ensure_mpl_config_dir()
-
-    # Apply metadata patches for frozen builds
+ 
     from setiastro.saspro.metadata_patcher import apply_metadata_patches
     apply_metadata_patches()
-
+ 
     warnings.filterwarnings(
         "ignore",
         message=r"Call to deprecated function \(or staticmethod\) _destroy\.",
         category=DeprecationWarning,
     )
-
-    # Prevent lightkurve from applying mpl styles automatically
+ 
     os.environ["LIGHTKURVE_STYLE"] = "default"
-
-    # ----------------------------------------
-    # Matplotlib configuration (HARD NO-TeX)
-    # ----------------------------------------
+ 
     import matplotlib
-
-    # Backend selection must happen before pyplot is imported anywhere.
     try:
         matplotlib.use("QtAgg", force=True)
     except TypeError:
-        # Older mpl may not have force=
         matplotlib.use("QtAgg")
-
-    # Force MPL to NOT use LaTeX (prevents texmanager subprocess calls)
+ 
     try:
         matplotlib.rcParams["text.usetex"] = False
         matplotlib.rcParams["mathtext.fontset"] = "dejavusans"
         matplotlib.rcParams["font.family"] = "DejaVu Sans"
     except Exception:
         pass
-
-    # If any style got applied earlier (rare), this reasserts our policy.
+ 
     def _force_mpl_no_tex():
         try:
             matplotlib.rcParams["text.usetex"] = False
@@ -786,19 +863,15 @@ def _bootstrap_imports():
             matplotlib.rcParams["font.family"] = "DejaVu Sans"
         except Exception:
             pass
-
-    # HARD disable TeX (do NOT auto-enable even if latex exists)
+ 
     _force_mpl_no_tex()
-
-    # Configure stdout encoding
+ 
     if (sys.stdout is not None) and (hasattr(sys.stdout, "reconfigure")):
         sys.stdout.reconfigure(encoding='utf-8')
-
-    # --- Lazy imports for heavy dependencies (performance optimization) ---
-    # photutils: loaded on first use
+ 
     global _photutils_isophote
     _photutils_isophote = None
-
+ 
     def _get_photutils_isophote():
         global _photutils_isophote
         if _photutils_isophote is None:
@@ -808,41 +881,36 @@ def _bootstrap_imports():
             except Exception:
                 _photutils_isophote = False
         return _photutils_isophote if _photutils_isophote else None
-
+ 
     def get_Ellipse():
         mod = _get_photutils_isophote()
         return mod.Ellipse if mod else None
-
+ 
     def get_EllipseGeometry():
         mod = _get_photutils_isophote()
         return mod.EllipseGeometry if mod else None
-
+ 
     def get_build_ellipse_model():
         mod = _get_photutils_isophote()
         return mod.build_ellipse_model if mod else None
-
+ 
     global _lightkurve_module
     _lightkurve_module = None
-
+ 
     def get_lightkurve():
         global _lightkurve_module
         if _lightkurve_module is None:
             try:
                 import lightkurve as _lk
-                # prevent any implicit style behavior
                 _lk.MPLSTYLE = None
                 _lightkurve_module = _lk
             except Exception:
                 _lightkurve_module = False
-
-            # Re-assert no-TeX after any potential style meddling
             _force_mpl_no_tex()
-
         return _lightkurve_module if _lightkurve_module else None
-
-
+ 
     _update_splash(QCoreApplication.translate("Splash", "Loading UI utilities..."), 30)
-
+ 
     from setiastro.saspro.widgets.common_utilities import (
         AboutDialog,
         ProjectSaveWorker as _ProjectSaveWorker,
@@ -850,69 +918,38 @@ def _bootstrap_imports():
         _strip_ui_decorations,
         install_crash_handlers,
     )
-
-    # reproject deferred
-
-
-    # OpenCV deferred
-
-
+ 
     _update_splash(QCoreApplication.translate("Splash", "Loading PyQt6 components..."), 45)
-
+ 
     from PyQt6 import sip
-
+ 
     from PyQt6.QtWidgets import (QDialog, QApplication, QMainWindow, QWidget, QHBoxLayout, QFileDialog, QMessageBox, QSizePolicy, QToolBar, QPushButton, QAbstractItemDelegate,
         QLineEdit, QMenu, QListWidget, QListWidgetItem, QSplashScreen, QDockWidget, QListView, QCompleter, QMdiArea, QMdiSubWindow, QWidgetAction, QAbstractItemView,
         QInputDialog, QVBoxLayout, QLabel, QCheckBox, QProgressBar, QProgressDialog, QGraphicsItem, QTabWidget, QTableWidget, QHeaderView, QTableWidgetItem, QToolButton, QPlainTextEdit
     )
-
     from PyQt6.QtGui import (QPixmap, QColor, QIcon, QKeySequence, QShortcut, QGuiApplication, QStandardItemModel, QStandardItem, QAction, QPalette, QBrush, QActionGroup, QDesktopServices, QFont, QTextCursor
     )
-
     from PyQt6.QtCore import (Qt, pyqtSignal, QTimer, QSize, QSignalBlocker, QModelIndex, QThread, QUrl, QSettings, QEvent, QByteArray, QObject,
         QPropertyAnimation, QEasingCurve
     )
-
-
     from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
-
+ 
     global BUILD_TIMESTAMP
     try:
         from setiastro.saspro._generated.build_info import BUILD_TIMESTAMP
     except Exception:
         BUILD_TIMESTAMP = "dev"
-
+ 
     _update_splash(QCoreApplication.translate("Splash", "Loading resources..."), 50)
-
+ 
     from setiastro.saspro.resources import (
-        icon_path, windowslogo_path, # green_path, neutral_path, whitebalance_path,
-        #morpho_path, clahe_path, starnet_path, staradd_path, LExtract_path,
-        #LInsert_path, slot0_path, slot1_path, slot2_path, slot3_path, slot4_path,
-        #rgbcombo_path, rgbextract_path, copyslot_path, graxperticon_path,
-        #cropicon_path, openfile_path, abeicon_path, undoicon_path, redoicon_path,
-        #blastericon_path, hdr_path, invert_path, fliphorizontal_path,
-        #flipvertical_path, rotateclockwise_path, rotatecounterclockwise_path,
-        #rotate180_path, maskcreate_path, maskapply_path, maskremove_path,
-        #slot5_path, slot6_path, slot7_path, slot8_path, slot9_path, pixelmath_path,
-        #histogram_path, mosaic_path, rescale_path, staralign_path, mask_path,
-        #platesolve_path, psf_path, supernova_path, starregistration_path,
-        #stacking_path, pedestal_icon_path, starspike_path, aperture_path,
-        #jwstpupil_path, signature_icon_path, livestacking_path, hrdiagram_path,
-        #convoicon_path, spcc_icon_path, sasp_data_path, exoicon_path, peeker_icon,
-        #dse_icon_path, astrobin_filters_csv_path, isophote_path, statstretch_path,
-        #starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path,
-        #nbtorgb_path, freqsep_path, contsub_path, halo_path, cosmic_path,
-        #satellite_path, imagecombine_path, wrench_path, eye_icon_path,
-        #disk_icon_path, nuke_path, hubble_path, collage_path, annotated_path,
-        #colorwheel_path, font_path, csv_icon_path, spinner_path, wims_path,
-        #wimi_path, linearfit_path, debayer_path, aberration_path,
-        #functionbundles_path, viewbundles_path, selectivecolor_path, rgbalign_path,
+        icon_path, windowslogo_path,
     )
-
+ 
     _update_splash(QCoreApplication.translate("Splash", "Configuring Qt message handler..."), 55)
-
+ 
     from PyQt6.QtCore import qInstallMessageHandler, QtMsgType
-
+ 
     def _qt_msg_handler(mode, ctx, msg):
         lvl = {
             QtMsgType.QtDebugMsg:    logging.DEBUG,
@@ -922,16 +959,16 @@ def _bootstrap_imports():
             QtMsgType.QtFatalMsg:    logging.CRITICAL,
         }.get(mode, logging.ERROR)
         logging.log(lvl, "Qt: %s (%s:%s)", msg, getattr(ctx, "file", "?"), getattr(ctx, "line", -1))
-
+ 
     qInstallMessageHandler(_qt_msg_handler)
-
+ 
     _update_splash(QCoreApplication.translate("Splash", "Loading MDI widgets..."), 60)
-
+ 
     from setiastro.saspro.mdi_widgets import (
         MdiArea, ViewLinkController, ConsoleListWidget, QtLogStream, _DocProxy,
         ROLE_ACTION as _ROLE_ACTION,
     )
-
+ 
     from setiastro.saspro.main_helpers import (
         safe_join_dir_and_name as _safe_join_dir_and_name,
         normalize_save_path_chosen_filter as _normalize_save_path_chosen_filter,
@@ -941,7 +978,7 @@ def _bootstrap_imports():
         is_alive as _is_alive,
         safe_widget as _safe_widget,
     )
-
+ 
     from setiastro.saspro.file_utils import (
         _normalize_ext,
         _sanitize_filename,
@@ -949,14 +986,34 @@ def _bootstrap_imports():
         REPLACE_SPACES_WITH_UNDERSCORES as _REPLACE_SPACES_WITH_UNDERSCORES,
         WIN_RESERVED_NAMES as _WIN_RESERVED,
     )
-
+ 
     _update_splash(QCoreApplication.translate("Splash", "Loading main window module..."), 65)
-
-    from setiastro.saspro.gui.main_window import AstroSuiteProMainWindow
-
+ 
+    # Wrap the main_window import to catch sys.exit() / ImportError from any
+    # remaining bare `import torch` that slipped through the stub net.
+    try:
+        from setiastro.saspro.gui.main_window import AstroSuiteProMainWindow
+    except SystemExit as e:
+        raise RuntimeError(
+            "A module called sys.exit() during import.\n\n"
+            "This usually means a module still has a bare `import torch` at "
+            "module level that is not covered by the torch stub.\n\n"
+            "Open Settings \u2192 Preferences \u2192 Install/Repair Hardware Acceleration "
+            "to install PyTorch, then restart.\n\n"
+            f"Original exit code: {e.code}"
+        ) from e
+    except ImportError as e:
+        msg = str(e)
+        if "torch" in msg.lower() or "pytorch" in msg.lower():
+            raise RuntimeError(
+                "A module failed to import because PyTorch is not available.\n\n"
+                "Open Settings \u2192 Preferences \u2192 Install/Repair Hardware Acceleration.\n\n"
+                f"Original error: {e}"
+            ) from e
+        raise
+ 
     _update_splash(QCoreApplication.translate("Splash", "Modules loaded, finalizing..."), 70)
-
-    # Export things main() already relies on as globals (min disruption)
+ 
     globals().update({
         "logging": logging,
         "multiprocessing": multiprocessing,
@@ -971,8 +1028,8 @@ def _bootstrap_imports():
         "AstroSuiteProMainWindow": AstroSuiteProMainWindow,
         "BUILD_TIMESTAMP": BUILD_TIMESTAMP,
         "_force_mpl_no_tex": _force_mpl_no_tex,
+        "_torch_actually_available": _torch_actually_available,
     })
-
 
 
 def main(argv: list[str] | None = None) -> int:

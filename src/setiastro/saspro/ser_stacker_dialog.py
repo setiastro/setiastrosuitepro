@@ -1015,6 +1015,7 @@ class SERStackerDialog(QDialog):
 
         self.cmb_kernel = QComboBox(self)
         self.cmb_kernel.addItems(["Gaussian", "Circle", "Square"])
+        self.cmb_kernel.setCurrentText("Gaussian")
 
         self.spin_sigma = QDoubleSpinBox(self)
         self.spin_sigma.setRange(0.00, 10.00)
@@ -1044,6 +1045,15 @@ class SERStackerDialog(QDialog):
         fD.addRow("Scale", scale_row_w)
         fD.addRow("Pixfrac", self.spin_pixfrac)
         fD.addRow("Kernel", self.cmb_kernel)
+        self.cmb_kernel.hide()
+        # also hide the label QFormLayout created for that row
+        lbl = fD.labelForField(self.cmb_kernel)
+        if lbl:
+            lbl.hide()
+
+        self.lbl_kernel_info = QLabel("Advanced Gaussian Kernel Drizzling", self)
+        self.lbl_kernel_info.setStyleSheet("color:#6a9fd8; font-style:italic; font-size:11px;")
+        fD.addRow("Kernel", self.lbl_kernel_info)            
         fD.addRow("Sigma", self.spin_sigma)
 
         def _sync_drizzle_ui():
@@ -1554,7 +1564,7 @@ class SERStackerDialog(QDialog):
         else:
             drizzle_scale = 1.0
 
-        drizzle_kernel = self.cmb_kernel.currentText().strip().lower()  # gaussian/circle/square
+        drizzle_kernel = "gaussian"
 
         return SERStackConfig(
             source=self._source,
@@ -1680,7 +1690,7 @@ class SERStackerDialog(QDialog):
         else:
             drizzle_scale = 1.0
 
-        drizzle_kernel = self.cmb_kernel.currentText().strip().lower()  # "gaussian"/"circle"/"square"
+        drizzle_kernel = "gaussian"
         drizzle_pixfrac = float(self.spin_pixfrac.value())
         drizzle_sigma = float(self.spin_sigma.value())
         self.lbl_prog.setVisible(True)

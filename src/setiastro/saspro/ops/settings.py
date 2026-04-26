@@ -268,27 +268,28 @@ class SettingsDialog(QDialog):
         self.cb_accel_pref = QComboBox()
         self._accel_items = [
             (self.tr("Auto (recommended)"), "auto"),
-            (
-                self.tr("Apple Silicon GPU (MPS path)"),
-                "cuda"
-            ) if platform.system() == "Darwin" else (
-                self.tr("CUDA (NVIDIA)"),
-                "cuda"
-            ),
+            (self.tr("CUDA (NVIDIA)"), "cuda"),
         ]
-        # Linux AMD ROCm option (now supported)
+ 
+        # Linux AMD ROCm
         if platform.system() == "Linux":
             self._accel_items.append((self.tr("ROCm (AMD on Linux)"), "rocm"))
-
-        # Intel XPU is Windows/Linux
+ 
+        # Intel XPU (Windows/Linux)
         if platform.system() in ("Windows", "Linux"):
             self._accel_items.append((self.tr("Intel XPU (Arc/Xe)"), "xpu"))
-
-        # DirectML is Windows-only fallback
+ 
+        # DirectML (Windows only)
         if platform.system() == "Windows":
             self._accel_items.append((self.tr("DirectML (Windows AMD/Intel)"), "directml"))
-
+ 
+        # Apple MPS is handled automatically by runtime_torch for macOS arm64;
+        # we surface it here as an explicit option so users can force it.
+        if platform.system() == "Darwin":
+            self._accel_items.append((self.tr("Apple Silicon GPU (MPS)"), "cuda"))
+ 
         self._accel_items.append((self.tr("CPU only"), "cpu"))
+
 
 
         self.cb_accel_pref.clear()
@@ -783,16 +784,17 @@ class SettingsDialog(QDialog):
 
         torch_ok, torch_txt = self._pkg_status("torch", "torch")
         dml_ok, dml_txt     = self._pkg_status("torch-directml", "torch_directml")
-        ta_ok, ta_txt       = self._pkg_status("torchaudio", "torchaudio")
         tv_ok, tv_txt       = self._pkg_status("torchvision", "torchvision")
 
-        return (
-            f"Torch: <b>{torch_txt}</b><br>"
-            f"Torch-DirectML: <b>{dml_txt}</b><br>"
-            f"TorchAudio: <b>{ta_txt}</b><br>"
-            f"TorchVision: <b>{tv_txt}</b>"
-        )
+        lines = [
+            f"Torch: <b>{torch_txt}</b>",
+            f"TorchVision: <b>{tv_txt}</b>",
+        ]
 
+        if dml_ok:
+            lines.append(f"Torch-DirectML: <b>{dml_txt}</b>")
+
+        return "<br>".join(lines)
 
     def _run_capture(self, cmd: list[str]) -> tuple[int, str]:
         """Run a command and return (returncode, combined_output)."""
@@ -819,6 +821,22 @@ class SettingsDialog(QDialog):
             return True, ver, s
         except Exception:
             return False, None, s or "unknown"
+
+    def _find_python_cmd_for_minor(self, minor: int) -> tuple[list[str] | None, str]:
+        """
+        Find a runnable Python 3.minor on this system.
+        Returns (cmd_list_or_None, info_string).
+        Delegates to runtime_torch helper when available.
+        """
+        try:
+            from setiastro.saspro.runtime_torch import _find_system_python_cmd_for_minor
+            cmd = _find_system_python_cmd_for_minor(minor)
+            if cmd:
+                return cmd, f"Found: {' '.join(cmd)}"
+            return None, f"python3.{minor} not found"
+        except Exception as e:
+            return None, f"probe error: {e}"
+
 
     def _find_python312_cmd(self) -> tuple[list[str] | None, str]:
         """
@@ -957,52 +975,52 @@ class SettingsDialog(QDialog):
         tried_str = ", ".join(tried[:10]) + ("…" if len(tried) > 10 else "")
         return None, f"No runnable python3.12 found in PATH or common locations.\nTried: {tried_str}"
 
-    def _gate_python312_for_accel_install(self) -> bool:
+    def _gate_python_for_accel_install(self) -> bool:
         """
-        HARD STOP unless a runnable Python 3.12 is available on the system.
-        (We use this because runtime GPU wheels are only supported/validated for 3.12.)
+        Verify that a supported Python version (3.12, 3.13, or 3.14) is available
+        before attempting a hardware acceleration install.
+ 
+        Returns True if a supported Python is found; shows a warning and returns
+        False otherwise.
         """
         from PyQt6.QtWidgets import QMessageBox
-        # If SASpro itself is already running under 3.12, we're done.
-        # This covers venv users and any launch method where the interpreter IS 3.12.
-        if sys.version_info[:2] == (3, 12):
+        from setiastro.saspro.runtime_torch import _SUPPORTED_PY_MINORS
+ 
+        # Current interpreter is supported — no further check needed.
+        if sys.version_info[:2][0] == 3 and sys.version_info[:2][1] in _SUPPORTED_PY_MINORS:
             return True
-        
-        cmd, info = self._find_python312_cmd()
-        if cmd is not None:
-            return True  # Python 3.12 is available
-
+ 
+        # Search for any supported Python on the system.
+        for minor in _SUPPORTED_PY_MINORS:
+            cmd, info = self._find_python_cmd_for_minor(minor)
+            if cmd is not None:
+                return True
+ 
+        # None found — show a clear message and block.
         v = sys.version_info
         running = f"{v.major}.{v.minor}"
-
-        # Stronger wording for 3.13/3.14 (your “full stop” policy)
-        is_future = (v.major, v.minor) >= (3, 13)
-
-        if is_future:
-            title = self.tr("Unsupported Python Version")
-            headline = self.tr("Hardware acceleration cannot be installed with Python {0}.").format(running)
-            details = self.tr(
-                "SAS Pro hardware acceleration requires Python 3.12.\n\n"
-                "Please install Python 3.12 and re-launch SAS Pro.\n\n"
-                "Probe details: {0}"
-            ).format(info)
-        else:
-            title = self.tr("Python 3.12 Required")
-            headline = self.tr("Python 3.12 was not found on this system.")
-            details = self.tr(
-                "Hardware acceleration setup requires a runnable Python 3.12.\n\n"
-                "You are currently running Python {0}.\n\n"
-                "Install Python 3.12 and re-launch SAS Pro.\n\n"
-                "Probe details: {1}"
-            ).format(running, info)
-
-        QMessageBox.warning(self, title, headline + "\n\n" + details)
+        supported = ", ".join(f"3.{m}" for m in _SUPPORTED_PY_MINORS)
+ 
+        QMessageBox.warning(
+            self,
+            self.tr("Unsupported Python Version"),
+            self.tr(
+                "Hardware acceleration requires Python {supported}.\n\n"
+                "SAS Pro is currently running on Python {running} and could not "
+                "find a supported Python version on this system.\n\n"
+                "Please install Python 3.12, 3.13, or 3.14 and relaunch SAS Pro.\n\n"
+                "Windows:  python.org → install 3.12 or 3.13, ensure 'py -3.12' works\n"
+                "macOS:    brew install python@3.12\n"
+                "Linux:    sudo apt install python3.12"
+            ).format(supported=supported, running=running),
+        )
         return False
+
 
     def _install_or_update_accel(self):
         # Single hard-stop gate
-        if not self._gate_python312_for_accel_install():
-            self.backend_label.setText(self.tr("Backend: CPU (Python 3.12 required)"))
+        if not self._gate_python_for_accel_install():
+            self.backend_label.setText(self.tr("Backend: CPU (Python 3.12/3.13/3.14 required)"))
             return
 
         from PyQt6.QtWidgets import QMessageBox
@@ -1099,6 +1117,15 @@ class SettingsDialog(QDialog):
 
             if ok:
                 QMessageBox.information(self, self.tr("Acceleration"), self.tr("✅ {0}").format(msg))
+            elif "Hardware Acceleration installed successfully" in msg:
+                # Fresh install succeeded but in-process import was skipped —
+                # this is expected on some Python 3.14 builds. Show as success.
+                QMessageBox.information(
+                    self,
+                    self.tr("Acceleration"),
+                    self.tr("✅ Hardware Acceleration installed successfully.\n\n"
+                            "Please restart SASpro to activate GPU acceleration.")
+                )
             else:
                 QMessageBox.warning(self, self.tr("Acceleration"), self.tr("❌ {0}").format(msg))
 

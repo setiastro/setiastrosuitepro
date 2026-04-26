@@ -473,9 +473,9 @@ class FirstRunDialog(QDialog):
             section_label="THINGS TO DO FIRST",
             steps=[
                 {
-                    "text": "Install Python 3.12",
-                    "note": "Python 3.13 and 3.14 are NOT supported. Hardware acceleration requires Python 3.12 specifically.",
-                    "link": ("⬇  Download Python 3.12", "https://www.python.org/downloads/release/python-3128/"),
+                    "text": "Install Python 3.12, 3.13, or 3.14",
+                    "note": "Hardware acceleration requires Python 3.12, 3.13, or 3.14. SASpro will automatically detect and use whichever supported version you have installed.",
+                    "link": ("⬇  Download Python 3.13 (recommended)", "https://www.python.org/downloads/release/python-31313/"),
                 },
                 {
                     "text": "Open Preferences to configure SASpro",

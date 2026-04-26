@@ -22,105 +22,28 @@ def _get_base_path() -> str:
     """Get base path for resources (PyInstaller, installed package, or development)."""
     if hasattr(sys, '_MEIPASS'):
         return sys._MEIPASS
-    
-    # First, check if we're running from source (setiastrosuitepro.py exists)
-    # This takes priority when running the script directly from source
-    try:
-        # Check if we can find it via __main__ module (most reliable)
-        if '__main__' in sys.modules:
-            main_module = sys.modules['__main__']
-            if hasattr(main_module, '__file__') and main_module.__file__:
-                main_file = main_module.__file__
-                main_dir = os.path.dirname(os.path.abspath(main_file))
-                
-                # Case 1: Running setiastrosuitepro.py directly
-                if os.path.basename(main_file) == 'setiastrosuitepro.py':
-                    images_dir = os.path.join(main_dir, 'images')
-                    if os.path.exists(images_dir):
-                        return main_dir
-                
-                # Case 2: Running as module (python -m setiastro.saspro)
-                # __main__.py is at src/setiastro/saspro/__main__.py
-                # Need to go up 4 levels to reach project root
-                if os.path.basename(main_file) == '__main__.py':
-                    # Walk up from __main__.py to find project root with images/
-                    search_dir = main_dir
-                    for _ in range(6):  # Don't go too far up
-                        images_dir = os.path.join(search_dir, 'images')
-                        if os.path.exists(images_dir):
-                            return search_dir
-                        parent = os.path.dirname(search_dir)
-                        if parent == search_dir:  # Reached filesystem root
-                            break
-                        search_dir = parent
-        
-        # Check current working directory for setiastrosuitepro.py
-        # This handles the case where user runs: python setiastrosuitepro.py
-        cwd = os.getcwd()
-        main_script = os.path.join(cwd, 'setiastrosuitepro.py')
-        if os.path.exists(main_script):
-            images_dir = os.path.join(cwd, 'images')
-            if os.path.exists(images_dir):
-                return cwd
-        
-        # Also check parent directories (in case we're in a subdirectory)
-        # Walk up from current file location looking for images/ directory
-        current_file = os.path.abspath(__file__)
-        search_dir = os.path.dirname(current_file)
-        for _ in range(6):  # Don't go too far up
-            images_dir = os.path.join(search_dir, 'images')
-            if os.path.exists(images_dir):
-                return search_dir
-            parent = os.path.dirname(search_dir)
-            if parent == search_dir:  # Reached filesystem root
-                break
-            search_dir = parent
-    except Exception:
-        pass
-    
-    # Development: resources are in package directory (src/setiastro/images/)
-    # File is at: src/setiastro/saspro/resources.py
-    # Check if images/ exists in the setiastro package directory
+
+    # Most reliable: resources.py is always at src/setiastro/saspro/resources.py
+    # Images are always at src/setiastro/images/
+    # Use __file__ directly — works on all platforms in both dev and installed.
     current_file = os.path.abspath(__file__)
-    # Go up from resources.py -> saspro -> setiastro (package directory)
+    # Go up: resources.py -> saspro/ -> setiastro/
     package_dir = os.path.dirname(os.path.dirname(current_file))
-    images_dir = os.path.join(package_dir, 'images')
-    if os.path.exists(images_dir):
+    if os.path.exists(os.path.join(package_dir, 'images')):
         return package_dir
-    
-    # Fallback: try project root (for backward compatibility)
-    # Go up from resources.py -> saspro -> setiastro -> src -> project root
-    base = os.path.dirname(os.path.dirname(package_dir))
-    images_dir = os.path.join(base, 'images')
-    if os.path.exists(images_dir):
-        return base
-    
-    # Fallback: try going up one more level (in case structure is different)
-    base = os.path.dirname(base)
-    if os.path.exists(os.path.join(base, 'images')):
-        return base
-    
-    # Check if we're in an installed package (last resort)
-    # When installed via pip, the package is in site-packages
-    try:
-        import setiastro
-        package_dir = os.path.dirname(os.path.abspath(setiastro.__file__))
-        # Check if images/ exists at package root level (for pip-installed packages)
-        # The images/ directory should be at the same level as setiastro/ in site-packages
-        package_parent = os.path.dirname(package_dir)
-        images_dir = os.path.join(package_parent, 'images')
-        if os.path.exists(images_dir):
-            return package_parent
-        
-        # Also check if images/ is inside the package directory
-        images_in_package = os.path.join(package_dir, 'images')
-        if os.path.exists(images_in_package):
-            return package_dir
-    except (ImportError, AttributeError):
-        pass
-    
-    # Last resort: return the calculated path anyway
-    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(current_file))))
+
+    # Frozen/installed fallback: walk up from package_dir looking for images/
+    search_dir = package_dir
+    for _ in range(6):
+        if os.path.exists(os.path.join(search_dir, 'images')):
+            return search_dir
+        parent = os.path.dirname(search_dir)
+        if parent == search_dir:
+            break
+        search_dir = parent
+
+    # Last resort: return package_dir and let _resource_path handle candidates
+    return package_dir
 
 
 def _resource_path(filename: str) -> str:
