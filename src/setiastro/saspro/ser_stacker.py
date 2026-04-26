@@ -1043,11 +1043,10 @@ def stack_ser(
     drizzle_sigma: float = 0.0,
     keep_mask=None,
 
-    # ✅ NEW: explicit planetary derotation params (UI can pass these)
-    planet_pole_pa_deg: float | None = None,      # axis PA in image
-    planet_axis_tilt_ba: float | None = None,     # b/a ~ cos(subobs_lat)
+    planet_pole_pa_deg: float | None = None,
+    planet_axis_tilt_ba: float | None = None,
     planet_rot_deg_per_frame: float | None = None,
-    planet_cx: float | None = None,              # ROI coords
+    planet_cx: float | None = None,
     planet_cy: float | None = None,
     planet_r: float | None = None,
 ) -> tuple[np.ndarray, dict]:
@@ -1064,21 +1063,17 @@ def stack_ser(
         except Exception:
             pass
 
-    # ---- Validate analysis BEFORE touching it ----
+    # ---- Validate analysis ----
     if analysis is None or analysis.ref_image is None or analysis.ap_centers is None:
         raise ValueError("stack_ser expects analysis with ref_image + ap_centers (run Analyze first).")
 
-    # Ensure analysis.ang exists (rotation per-frame from analyze_ser)
     if getattr(analysis, "ang", None) is None:
         analysis.ang = np.zeros((int(analysis.frames_total),), dtype=np.float32)
 
-    # Pull reference image early (needed for defaults)
     ref_img = analysis.ref_image.astype(np.float32, copy=False)
-
     planet_derotate = bool(getattr(analysis, "planet_derotate", False))
 
-    # ---- Planetary derotation params (sphere lon-shift) ----
-    # Prefer explicit args -> analysis fields -> safe defaults
+    # ---- Planetary derotation params ----
     if planet_pole_pa_deg is None:
         planet_pole_pa_deg = float(getattr(analysis, "planet_pole_pa_deg", 0.0))
     if planet_axis_tilt_ba is None:
@@ -1093,22 +1088,14 @@ def stack_ser(
     if planet_r is None:
         planet_r = float(min(ref_img.shape[0], ref_img.shape[1]) * 0.45)
 
-    # Convert (b/a) -> subobserver latitude.
     ba = float(np.clip(float(planet_axis_tilt_ba), 0.0, 1.0))
     subobs_lat_rad = float(np.arccos(ba)) if ba > 1e-8 else float(np.pi * 0.5)
     pole_angle_rad = float(np.deg2rad(float(planet_pole_pa_deg)))
 
-    # NOTE: keep_idx and derot_ref_i are computed later (after keep_idx exists)
-    # so DO NOT reference keep_idx here.
-
-    # Precompute lon/lat grids ONCE per output shape (each worker will reuse its own precomp)
-
     drizzle_scale = float(drizzle_scale)
     drizzle_on = drizzle_scale > 1.0001
     drizzle_pixfrac = float(drizzle_pixfrac)
-
-    # Always use gaussian — it's the only kernel that produces clean
-    # sub-pixel blending without grid artifacts.
+    # Always gaussian — only kernel that avoids grid artifacts
     drizzle_kernel = "gaussian"
     drizzle_sigma = float(drizzle_sigma)
 
@@ -1134,7 +1121,7 @@ def stack_ser(
         ref_m = _to_mono01(ref_img).astype(np.float32, copy=False)
         ap_centers_all = np.asarray(analysis.ap_centers, np.int32)
         ap_size = int(getattr(analysis, "ap_size", 64) or 64)
-        derot_ref_i = int(keep_idx[0])  # now safe (keep_idx non-empty by construction)
+        derot_ref_i = int(keep_idx[0])
         first = _get_frame(
             src0, int(keep_idx[0]),
             roi=roi, debayer=debayer, to_float01=True,
@@ -1149,7 +1136,7 @@ def stack_ser(
             except Exception:
                 pass
 
-    # ---- Progress aggregation (thread-safe) ----
+    # ---- Progress (thread-safe) ----
     done_lock = threading.Lock()
     done_ct = 0
     total_ct = int(len(keep_idx))
@@ -1172,11 +1159,11 @@ def stack_ser(
     if progress_cb:
         progress_cb(0, total_ct, "Stack")
 
-    # ---- drizzle helpers ----
+    # ---- Drizzle setup ----
     if drizzle_on:
         from setiastro.saspro.legacy.numba_utils import (
-            drizzle_deposit_numba_kernel_mono,
-            drizzle_deposit_color_kernel,
+            drizzle_deposit_kernel_mono_fast,
+            drizzle_deposit_kernel_color_fast,
             finalize_drizzle_2d,
             finalize_drizzle_3d,
         )
@@ -1186,76 +1173,72 @@ def stack_ser(
         if drizzle_sigma <= 1e-9:
             drizzle_sigma_eff = max(1e-3, float(drizzle_pixfrac) * 0.5)
         else:
-            drizzle_sigma_eff = drizzle_sigma
+            drizzle_sigma_eff = float(drizzle_sigma)
 
         H, W = int(acc_shape[0]), int(acc_shape[1])
         outH = int(round(H * drizzle_scale))
         outW = int(round(W * drizzle_scale))
-        # NOTE: T is now built per-frame inside _stack_chunk
 
-    # ---- Worker: accumulate its own sum OR its own drizzle buffers ----
-    def _stack_chunk(chunk: list[int]):
+        # Shared drizzle buffers — written serially on main thread, no locking needed
+        if len(acc_shape) == 2:
+            dbuf_total = np.zeros((outH, outW), dtype=np.float32)
+            cbuf_total = np.zeros((outH, outW), dtype=np.float32)
+        else:
+            dbuf_total = np.zeros((outH, outW, acc_shape[2]), dtype=np.float32)
+            cbuf_total = np.zeros((outH, outW, acc_shape[2]), dtype=np.float32)
+
+        # Pre-allocate scratch tile ONCE — reused every frame, zero GC pressure.
+        # Gaussian r = ceil(3 * sigma_out), sigma_out = sigma_eff * drizzle_scale
+        _sigma_out_est = max(drizzle_sigma_eff * drizzle_scale, 1e-6)
+        _r_est = int(np.ceil(3.0 * _sigma_out_est)) + 2  # +2 safety margin
+        _tile_side = max(16, 2 * _r_est + 1)
+        scratch = np.zeros((_tile_side, _tile_side), dtype=np.float32)
+
+    # ---- Worker: ONLY aligns + warps, returns list of (warped, frac_dx, frac_dy) ----
+    def _warp_chunk(chunk: list[int]) -> list[tuple[np.ndarray, float, float]]:
         src, owns = _ensure_source(source_obj, cache_items=0)
+        results: list[tuple[np.ndarray, float, float]] = []
         try:
-            if drizzle_on:
-                if len(acc_shape) == 2:
-                    dbuf = np.zeros((outH, outW), dtype=np.float32)
-                    cbuf = np.zeros((outH, outW), dtype=np.float32)
-                else:
-                    dbuf = np.zeros((outH, outW, acc_shape[2]), dtype=np.float32)
-                    cbuf = np.zeros((outH, outW, acc_shape[2]), dtype=np.float32)
-            else:
-                acc = np.zeros(acc_shape, dtype=np.float32)
-                wacc = 0.0
-
             for i in chunk:
-                img = _get_frame(src, int(i), roi=roi, debayer=debayer, to_float01=True, force_rgb=bool(to_rgb), bayer_pattern=bayer_pattern).astype(np.float32, copy=False)
+                img = _get_frame(
+                    src, int(i), roi=roi, debayer=debayer,
+                    to_float01=True, force_rgb=bool(to_rgb),
+                    bayer_pattern=bayer_pattern
+                ).astype(np.float32, copy=False)
 
-                # Global prior (from Analyze)
-                gdx = float(analysis.dx[int(i)]) if (analysis.dx is not None) else 0.0
-                gdy = float(analysis.dy[int(i)]) if (analysis.dy is not None) else 0.0
+                gdx = float(analysis.dx[int(i)]) if analysis.dx is not None else 0.0
+                gdy = float(analysis.dy[int(i)]) if analysis.dy is not None else 0.0
 
-                # --- rotation only for planetary derotation (never for surface/moon) ---
-                # ---- translate first (global centroid/SSD alignment) ----
                 warped_g = _shift_image(img, gdx, gdy)
 
-                # ---- TRUE planetary derotation (sphere lon shift) ----
+                # Planetary derotation
                 if track_mode == "planetary" and planet_derotate and abs(planet_rot_deg_per_frame) > 1e-12:
-                    # longitude shift relative to reference kept frame
                     dframes = float(int(i) - int(derot_ref_i))
                     dlon_rad = float(np.deg2rad(planet_rot_deg_per_frame * dframes))
 
-                    # Build per-worker precomp lazily (depends on H/W)
-                    if not hasattr(_stack_chunk, "_derot_precomp"):
-                        _stack_chunk._derot_precomp = None
-
-                    if _stack_chunk._derot_precomp is None:
+                    if not hasattr(_warp_chunk, "_derot_precomp"):
+                        _warp_chunk._derot_precomp = None
+                    if _warp_chunk._derot_precomp is None:
                         Hh, Ww = warped_g.shape[:2]
-                        _stack_chunk._derot_precomp = _build_lonlat_grids(
-                            Hh, Ww,
-                            planet_cx, planet_cy, planet_r,
-                            pole_angle_rad,
-                            subobs_lat_rad,
+                        _warp_chunk._derot_precomp = _build_lonlat_grids(
+                            Hh, Ww, planet_cx, planet_cy, planet_r,
+                            pole_angle_rad, subobs_lat_rad,
                         )
-
                     warped_g = derotate_stack_lonshift(
                         warped_g,
-                        cx=planet_cx,
-                        cy=planet_cy,
-                        r=planet_r,
+                        cx=planet_cx, cy=planet_cy, r=planet_r,
                         dlon_rad=dlon_rad,
                         pole_angle_rad=pole_angle_rad,
                         subobs_lat_rad=subobs_lat_rad,
                         border_value=0.0,
-                        precomp=_stack_chunk._derot_precomp,
+                        precomp=_warp_chunk._derot_precomp,
                     )
 
-
-                if cv2 is None or (not local_warp):
+                # Local AP warp
+                if cv2 is None or not local_warp:
                     warped = warped_g
                 else:
                     cur_m_g = _to_mono01(warped_g).astype(np.float32, copy=False)
-
                     ap_rdx, ap_rdy, ap_resp = _ap_phase_shifts_per_ap(
                         ref_m, cur_m_g,
                         ap_centers=ap_centers_all,
@@ -1263,17 +1246,11 @@ def stack_ser(
                         max_dim=max_dim,
                     )
                     ap_cf = np.clip(ap_resp.astype(np.float32, copy=False), 0.0, 1.0)
-
                     keep = _reject_ap_outliers(ap_rdx, ap_rdy, ap_cf, z=3.5)
                     if np.any(keep):
-                        ap_centers = ap_centers_all[keep]
-                        ap_dx_k = ap_rdx[keep]
-                        ap_dy_k = ap_rdy[keep]
-                        ap_cf_k = ap_cf[keep]
-
                         dx_field, dy_field = _dense_field_from_ap_shifts(
                             warped_g.shape[0], warped_g.shape[1],
-                            ap_centers, ap_dx_k, ap_dy_k, ap_cf_k,
+                            ap_centers_all[keep], ap_rdx[keep], ap_rdy[keep], ap_cf[keep],
                             grid=32, power=2.0, conf_floor=0.15,
                             radius=float(ap_size) * 3.0,
                         )
@@ -1281,63 +1258,9 @@ def stack_ser(
                     else:
                         warped = warped_g
 
-                if drizzle_on:
-                    # Build per-frame affine transform T that encodes the
-                    # sub-pixel fractional shift of this frame relative to the
-                    # reference, scaled up to drizzle output coordinates.
-                    #
-                    # The full-pixel part of (gdx, gdy) was already applied by
-                    # _shift_image / the local warp above, so what matters for
-                    # drizzle dithering is the fractional remainder — but we
-                    # actually want to pass the FULL shift to drizzle so it can
-                    # place each drop at the correct sub-pixel position on the
-                    # upscaled canvas.  We encode it as a translation-only
-                    # affine (scale on diagonal = drizzle_scale, translation =
-                    # shift * drizzle_scale).
-                    #
-                    # T maps input pixel (x,y) -> output pixel (x',y'):
-                    #   x' = drizzle_scale * x + tx
-                    #   y' = drizzle_scale * y + ty
-                    # where tx,ty carry the sub-pixel offset so drops from
-                    # different frames land at different positions.
-
-                    frac_dx = float(gdx) - round(float(gdx))
-                    frac_dy = float(gdy) - round(float(gdy))
-
-                    T_frame = np.zeros((2, 3), dtype=np.float32)
-                    T_frame[0, 0] = 1.0          # x scale (drizzle_factor handles upscale)
-                    T_frame[1, 1] = 1.0          # y scale
-                    T_frame[0, 2] = frac_dx      # sub-pixel x offset in input pixel units
-                    T_frame[1, 2] = frac_dy      # sub-pixel y offset in input pixel units
-
-                    fw = 1.0
-                    if warped.ndim == 2:
-                        drizzle_deposit_numba_kernel_mono(
-                            warped, T_frame, dbuf, cbuf,
-                            drizzle_factor=drizzle_scale,
-                            drop_shrink=drizzle_pixfrac,
-                            frame_weight=fw,
-                            kernel_code=kernel_code,
-                            gaussian_sigma_or_radius=drizzle_sigma_eff,
-                        )
-                    else:
-                        drizzle_deposit_color_kernel(
-                            warped, T_frame, dbuf, cbuf,
-                            drizzle_factor=drizzle_scale,
-                            drop_shrink=drizzle_pixfrac,
-                            frame_weight=fw,
-                            kernel_code=kernel_code,
-                            gaussian_sigma_or_radius=drizzle_sigma_eff,
-                        )
-                else:
-                    acc += warped
-                    wacc += 1.0
-
-            _bump_progress(len(chunk), "Stack")
-
-            if drizzle_on:
-                return dbuf, cbuf
-            return acc, wacc
+                frac_dx = float(gdx) - round(float(gdx))
+                frac_dy = float(gdy) - round(float(gdy))
+                results.append((warped, frac_dx, frac_dy))
 
         finally:
             if owns:
@@ -1346,24 +1269,51 @@ def stack_ser(
                 except Exception:
                     pass
 
-    # ---- Parallel run + reduce ----
+        _bump_progress(len(chunk), "Warp" if not drizzle_on else "Align")
+        return results
+
+    # ---- Parallel warp → serial drizzle (avoids numba GIL contention + allocation storm) ----
     if drizzle_on:
-        # reduce drizzle buffers
-        if len(acc_shape) == 2:
-            dbuf_total = np.zeros((outH, outW), dtype=np.float32)
-            cbuf_total = np.zeros((outH, outW), dtype=np.float32)
-        else:
-            dbuf_total = np.zeros((outH, outW, acc_shape[2]), dtype=np.float32)
-            cbuf_total = np.zeros((outH, outW, acc_shape[2]), dtype=np.float32)
+        drizzle_done = 0
+        drizzle_total = int(len(keep_idx))
+        if progress_cb:
+            progress_cb(0, drizzle_total, "Drizzle")
 
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            futs = [ex.submit(_stack_chunk, c) for c in chunks if c]
+            futs = [ex.submit(_warp_chunk, c) for c in chunks if c]
             for fut in as_completed(futs):
-                db, cb = fut.result()
-                dbuf_total += db
-                cbuf_total += cb
+                for warped, frac_dx, frac_dy in fut.result():
+                    T_frame = np.zeros((2, 3), dtype=np.float32)
+                    T_frame[0, 0] = 1.0
+                    T_frame[1, 1] = 1.0
+                    T_frame[0, 2] = frac_dx
+                    T_frame[1, 2] = frac_dy
 
-        # finalize
+                    if warped.ndim == 2:
+                        drizzle_deposit_kernel_mono_fast(
+                            warped, T_frame, dbuf_total, cbuf_total,
+                            drizzle_factor=drizzle_scale,
+                            drop_shrink=drizzle_pixfrac,
+                            frame_weight=1.0,
+                            kernel_code=kernel_code,
+                            gaussian_sigma_or_radius=drizzle_sigma_eff,
+                            scratch=scratch,
+                        )
+                    else:
+                        drizzle_deposit_kernel_color_fast(
+                            warped, T_frame, dbuf_total, cbuf_total,
+                            drizzle_factor=drizzle_scale,
+                            drop_shrink=drizzle_pixfrac,
+                            frame_weight=1.0,
+                            kernel_code=kernel_code,
+                            gaussian_sigma_or_radius=drizzle_sigma_eff,
+                            scratch=scratch,
+                        )
+
+                    drizzle_done += 1
+                    if progress_cb:
+                        progress_cb(drizzle_done, drizzle_total, "Drizzle")
+
         if len(acc_shape) == 2:
             out = np.zeros((outH, outW), dtype=np.float32)
             finalize_drizzle_2d(dbuf_total, cbuf_total, out)
@@ -1374,15 +1324,16 @@ def stack_ser(
         out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
 
     else:
+        # Non-drizzle: parallel warp + serial accumulate
         acc_total = np.zeros(acc_shape, dtype=np.float32)
         wacc_total = 0.0
 
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            futs = [ex.submit(_stack_chunk, c) for c in chunks if c]
+            futs = [ex.submit(_warp_chunk, c) for c in chunks if c]
             for fut in as_completed(futs):
-                acc_c, w_c = fut.result()
-                acc_total += acc_c
-                wacc_total += float(w_c)
+                for warped, _fdx, _fdy in fut.result():
+                    acc_total += warped
+                    wacc_total += 1.0
 
         out = np.clip(acc_total / max(1e-6, wacc_total), 0.0, 1.0).astype(np.float32, copy=False)
 
@@ -1854,7 +1805,14 @@ def analyze_ser(
             ref_cx = float(mref.shape[1] * 0.5)
             ref_cy = float(mref.shape[0] * 0.5)
 
-        ref_center = (float(ref_cx), float(ref_cy))
+        center_on_planet = bool(getattr(cfg, "center_on_planet", False))
+        if center_on_planet:
+            ref_center = (
+                float(ref_m_full.shape[1] * 0.5),
+                float(ref_m_full.shape[0] * 0.5),
+            )
+        else:
+            ref_center = (float(ref_cx), float(ref_cy))
         ref_m_full = _to_mono01(ref_img).astype(np.float32, copy=False)
 
         # 🔵 enable derotation toggle
@@ -2244,7 +2202,14 @@ def realign_ser(
             ref_cx = float(mref.shape[1] * 0.5)
             ref_cy = float(mref.shape[0] * 0.5)
 
-        ref_center = (float(ref_cx), float(ref_cy))
+        center_on_planet = bool(getattr(cfg, "center_on_planet", False))
+        if center_on_planet:
+            ref_center = (
+                float(ref_m_full.shape[1] * 0.5),
+                float(ref_m_full.shape[0] * 0.5),
+            )
+        else:
+            ref_center = (float(ref_cx), float(ref_cy))
         ref_m_full = _to_mono01(ref_img).astype(np.float32, copy=False)
 
         def _shift_chunk(chunk: np.ndarray):

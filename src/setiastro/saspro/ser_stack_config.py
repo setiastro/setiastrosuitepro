@@ -16,6 +16,7 @@ class SERStackConfig:
     roi: Optional[Tuple[int, int, int, int]] = None
     track_mode: TrackMode = "planetary"
     surface_anchor: Optional[Tuple[int, int, int, int]] = None
+    center_on_planet: bool = False
     keep_percent: float = 20.0
     bayer_pattern: Optional[str] = None
 
@@ -72,6 +73,7 @@ class SERStackConfig:
         self.planet_use_norm     = bool(kwargs.pop("planet_use_norm", True))
         self.planet_norm_lo_pct  = float(kwargs.pop("planet_norm_lo_pct", 1.0))
         self.planet_norm_hi_pct  = float(kwargs.pop("planet_norm_hi_pct", 99.5))
+        self.center_on_planet = bool(kwargs.pop("center_on_planet", False))
 
         # sanitize
         self.planet_smooth_sigma = max(0.0, self.planet_smooth_sigma)
@@ -83,7 +85,7 @@ class SERStackConfig:
             self.planet_norm_hi_pct = min(100.0, self.planet_norm_lo_pct + 1.0)
         # ✅ NEW: Drizzle params
         self.drizzle_scale = float(kwargs.pop("drizzle_scale", 1.0))
-        if self.drizzle_scale not in (1.0, 1.5, 2.0):
+        if self.drizzle_scale not in (1.0, 1.5, 2.0, 3.0, 4.0):
             self.drizzle_scale = 1.0
 
         self.drizzle_pixfrac = float(kwargs.pop("drizzle_pixfrac", 0.80))
