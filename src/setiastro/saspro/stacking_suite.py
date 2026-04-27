@@ -12059,7 +12059,10 @@ class StackingSuiteDialog(QDialog):
 
 
     def add_light_files_to_registration(self):
-        last_dir = self.settings.value("last_opened_folder", "", type=str)
+        last_dir = (
+            self.settings.value("stacking/dir", "", type=str)
+            or self.settings.value("last_opened_folder", "", type=str)
+        )
         files, _ = QFileDialog.getOpenFileNames(
             self, "Select Light Frames", last_dir,
             "FITS Files (*.fits *.fit *.fz *.xisf *.tif *.tiff *.png *.jpg *.jpeg)"
@@ -12233,42 +12236,48 @@ class StackingSuiteDialog(QDialog):
 
 
     def load_master_dark(self):
-        """ Loads a Master Dark and updates the UI. """
-        last_dir = self.settings.value("last_opened_folder", "", type=str)  # Get last folder
+        last_dir = (
+            self.settings.value("stacking/last_master_dark_dir", "", type=str)
+            or self.settings.value("stacking/dir", "", type=str)
+            or self.settings.value("last_opened_folder", "", type=str)
+        )
         files, _ = QFileDialog.getOpenFileNames(
             self, "Select Master Dark", last_dir,
             "Master Calibration (*.fits *.fit *.xisf);;All Files (*)"
         )
-        
         if files:
-            self.settings.setValue("last_opened_folder", os.path.dirname(files[0]))  # Save last used folder
+            self.settings.setValue("stacking/last_master_dark_dir", os.path.dirname(files[0]))
             self.add_master_files(self.master_dark_tree, "DARK", files)
-            self.save_master_paths_to_settings() 
-
+            self.save_master_paths_to_settings()
         self.update_override_dark_combo()
         self.assign_best_master_dark()
         self.assign_best_master_files()
         self._refresh_quick_stack_summary_later()
         print("DEBUG: Loaded Master Darks and updated assignments.")
 
-
     def load_master_flat(self):
-        last_dir = self.settings.value("last_opened_folder", "", type=str)
+        last_dir = (
+            self.settings.value("stacking/last_master_flat_dir", "", type=str)
+            or self.settings.value("stacking/dir", "", type=str)
+            or self.settings.value("last_opened_folder", "", type=str)
+        )
         files, _ = QFileDialog.getOpenFileNames(
             self, "Select Master Flat", last_dir,
             "Master Calibration (*.fits *.fit *.xisf);;All Files (*)"
         )
-
         if files:
-            self.settings.setValue("last_opened_folder", os.path.dirname(files[0]))
+            self.settings.setValue("stacking/last_master_flat_dir", os.path.dirname(files[0]))
             self.add_master_files(self.master_flat_tree, "FLAT", files)
-            self.save_master_paths_to_settings() 
+            self.save_master_paths_to_settings()
             self._refresh_quick_stack_summary_later()
 
 
     def add_files(self, tree, title, expected_type):
         """ Adds FITS files and assigns best master files if needed. """
-        last_dir = self.settings.value("last_opened_folder", "", type=str)
+        last_dir = (
+            self.settings.value("stacking/dir", "", type=str)
+            or self.settings.value("last_opened_folder", "", type=str)
+        )
         files, _ = QFileDialog.getOpenFileNames(
             self, title, last_dir,
             "Images (*.fits *.fit *.fts *.fits.gz *.fit.gz *.fz *.xisf);;All Files (*)"
@@ -12301,7 +12310,10 @@ class StackingSuiteDialog(QDialog):
 
 
     def add_directory(self, tree, title, expected_type):
-        last_dir = self.settings.value("last_opened_folder", "", type=str)
+        last_dir = (
+            self.settings.value("stacking/dir", "", type=str)
+            or self.settings.value("last_opened_folder", "", type=str)
+        )
         directory = QFileDialog.getExistingDirectory(self, title, last_dir)
         if not directory:
             return

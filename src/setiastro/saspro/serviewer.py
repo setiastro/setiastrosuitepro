@@ -1172,7 +1172,74 @@ class SERViewer(QDialog):
         vbar.setValue(int(fy * new_h - anchor.y()))
         self._paint_overlays_on_current_pixmap()
 
+    def _detect_bayer_fft(self, src) -> bool:
+        """
+        Returns True if the first frame looks like a raw Bayer mosaic.
+        Uses FFT: a RGGB mosaic has a strong checkerboard peak at (N/2, N/2).
+        Completely safe — any exception returns False.
+        """
+        try:
+            frame = src.get_frame(
+                0,
+                roi=None,
+                debayer=False,
+                to_float01=True,
+                force_rgb=False,
+                bayer_pattern=None,
+            )
+            # Work on mono — if 3-channel, take first channel (packed mosaic) or luma
+            if frame.ndim == 3:
+                m = frame[..., 0].astype(np.float32, copy=False)
+            else:
+                m = frame.astype(np.float32, copy=False)
 
+            # Use a center crop for speed — 256×256 is plenty
+            H, W = m.shape[:2]
+            cs = min(256, H, W)
+            y0 = (H - cs) // 2
+            x0 = (W - cs) // 2
+            crop = m[y0:y0 + cs, x0:x0 + cs].copy()
+
+            # Remove DC / mean
+            crop -= crop.mean()
+
+            # 2D FFT magnitude
+            F = np.abs(np.fft.fft2(crop))
+            F = np.fft.fftshift(F)
+
+            ch, cw = F.shape
+            cy, cx = ch // 2, cw // 2
+
+            # The Bayer checkerboard produces peaks at the four Nyquist corners:
+            # (0,0), (0,N/2), (N/2,0), (N/2,N/2) after fftshift → corners of the shifted spectrum
+            # After fftshift the DC is at center; Nyquist corners are at (0,0),(0,-1),(-1,0),(-1,-1)
+            ny_radius = 3  # neighbourhood around each Nyquist corner
+            mid_radius = 8  # neighbourhood around DC (avoid it)
+
+            # Build a mask of the four corners
+            corner_mask = np.zeros_like(F, dtype=bool)
+            for cy2, cx2 in [(0, 0), (0, cw - 1), (ch - 1, 0), (ch - 1, cw - 1)]:
+                y1 = max(0, cy2 - ny_radius); y2 = min(ch, cy2 + ny_radius + 1)
+                x1 = max(0, cx2 - ny_radius); x2 = min(cw, cx2 + ny_radius + 1)
+                corner_mask[y1:y2, x1:x2] = True
+
+            # Mask out DC
+            dc_mask = np.zeros_like(F, dtype=bool)
+            dc_mask[cy - mid_radius:cy + mid_radius + 1,
+                    cx - mid_radius:cx + mid_radius + 1] = True
+
+            rest_mask = ~corner_mask & ~dc_mask
+
+            corner_mean = float(F[corner_mask].mean()) if corner_mask.any() else 0.0
+            rest_mean   = float(F[rest_mask].mean())   if rest_mask.any()   else 1.0
+
+            ratio = corner_mean / max(rest_mean, 1e-9)
+
+            # Empirically: bayered images have ratio > 3–5; mono images < 1.5
+            return ratio > 2.5
+
+        except Exception:
+            return False
 
     def _open_source(self):
         start_dir = self._last_open_dir()
@@ -1283,7 +1350,17 @@ class SERViewer(QDialog):
         self._playing = False
 
         self._refresh()
-
+        # ── Bayer AUTO-detection warning for AVI/video ──────────────────
+        src_kind = getattr(self.reader.meta, "source_kind", "ser")
+        if src_kind in ("avi",) and self.cmb_bayer.currentText().strip().upper() == "AUTO":
+            if self._detect_bayer_fft(self.reader):
+                self.lbl_info.setText(
+                    self.lbl_info.text()
+                    + "<br><span style='color:#f90;'>⚠ This AVI may contain raw Bayer data. "
+                    "If you see a grid pattern, select your camera's Bayer pattern manually "
+                    "(e.g. RGGB) in the Bayer pattern dropdown.</span>"
+                )
+                
     def _open_batch_clicked(self):
         from setiastro.saspro.ser_batch_dialog import SERBatchDialog
 

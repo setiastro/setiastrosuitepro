@@ -82,7 +82,9 @@ def _discover_existing_runtime_dir(status_cb=print) -> Path | None:
     if not base.exists():
         return None
 
-    cur_minor = sys.version_info.minor if sys.version_info.major == 3 else None
+    cur_minor = None  # frozen builds shouldn't lock to build Python version
+    if not getattr(sys, "frozen", False):
+        cur_minor = sys.version_info.minor if sys.version_info.major == 3 else None
 
     # If the current interpreter is a supported version, ONLY accept a runtime
     # that matches it exactly. Never fall back to a different Python version's
@@ -1708,9 +1710,12 @@ def _find_system_python_cmd() -> list[str]:
     Find the best available system Python for creating a SASpro runtime venv.
     Preference order: 3.12, 3.13, 3.14.
     """
-    maj, min_ = sys.version_info.major, sys.version_info.minor
-    if maj == 3 and min_ in _SUPPORTED_PY_MINORS:
-        return [sys.executable]
+    # When frozen (PyInstaller), sys.executable is the .exe — never use it as Python.
+    # Always search for a real system Python in the frozen case.
+    if not getattr(sys, "frozen", False):
+        maj, min_ = sys.version_info.major, sys.version_info.minor
+        if maj == 3 and min_ in _SUPPORTED_PY_MINORS:
+            return [sys.executable]
 
     for minor in _SUPPORTED_PY_MINORS:
         cmd = _find_system_python_cmd_for_minor(minor)
@@ -1720,7 +1725,7 @@ def _find_system_python_cmd() -> list[str]:
     raise RuntimeError(
         "Could not find Python 3.12, 3.13, or 3.14 to create the SASpro runtime venv.\n"
         "Install one of these Python versions and relaunch SAS Pro.\n\n"
-        "Windows:  install from python.org and ensure `py -3.12` (or -3.13/-3.14) works\n"
+        "Windows:  install from python.org and ensure 'py -3.12' (or -3.13/-3.14) works\n"
         "macOS:    brew install python@3.12\n"
         "Linux:    sudo apt install python3.12  (or your distro equivalent)"
     )

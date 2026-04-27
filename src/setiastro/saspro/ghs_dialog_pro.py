@@ -479,6 +479,12 @@ class GhsDialogPro(QDialog):
         _set_row_visible(self._row_B, ghs_only)
         _set_row_visible(self._row_S, asi_only)
         _set_row_visible(self._row_P, pip_only)
+        # γ, LP, HP always visible
+
+        # SP is meaningless for PIP — disable and grey it out
+        sp_active = not pip_only
+        self.sSP.setEnabled(sp_active)
+        self.spSP.setEnabled(sp_active)
         # γ, LP, HP, SP always visible
 
     # -----------------------------------------------------------------------
@@ -877,9 +883,15 @@ class GhsDialogPro(QDialog):
 
         try:
             if mode == self.MODE_GHS:
-                a = self.sA.value() / 50.0
-                b = self.sB.value() / 50.0
-                return _build_ghs_lut(a, b, g, lp, hp, SP)
+                # GHS: always derive the LUT from the curve editor itself,
+                # so the applied result exactly matches what the curve shows.
+                fn = getattr(self.editor, "getCurveFunction", None)
+                if not fn:
+                    return None
+                f = fn()
+                if f is None:
+                    return None
+                return build_curve_lut(f, size=65536)
             elif mode == self.MODE_ARCSINH:
                 s = max(self.sS.value() / 10.0, 1e-6)
                 return _build_arcsinh_lut(s, g, lp, hp, SP)
