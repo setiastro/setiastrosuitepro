@@ -708,7 +708,7 @@ def _bootstrap_imports():
  
         _TORCH_NOT_INSTALLED_MSG = (
             "PyTorch is not installed in the SASpro runtime venv.\n"
-            "Go to Settings \u2192 Preferences \u2192 Install/Repair Hardware Acceleration."
+            "Go to Settings -> Preferences -> Install/Repair Hardware Acceleration."
         )
  
         class _TorchUnavailableStub(types.ModuleType):
@@ -782,9 +782,9 @@ def _bootstrap_imports():
                     _sys.modules[_sm] = _TorchUnavailableStub(_sm)
  
             print(
-                "[SASpro] torch not available in runtime venv \u2014 stub injected. "
+                "[SASpro] torch not available in runtime venv -> stub injected. "
                 "GPU tools will be unavailable until Hardware Acceleration is installed "
-                "via Settings \u2192 Preferences."
+                "via Settings -> Preferences."
             )
  
     _update_splash(QCoreApplication.translate("Splash", "Preparing AI runtime cache..."), 7)
@@ -998,7 +998,7 @@ def _bootstrap_imports():
             "A module called sys.exit() during import.\n\n"
             "This usually means a module still has a bare `import torch` at "
             "module level that is not covered by the torch stub.\n\n"
-            "Open Settings \u2192 Preferences \u2192 Install/Repair Hardware Acceleration "
+            "Open Settings -> Preferences -> Install/Repair Hardware Acceleration "
             "to install PyTorch, then restart.\n\n"
             f"Original exit code: {e.code}"
         ) from e
@@ -1007,7 +1007,7 @@ def _bootstrap_imports():
         if "torch" in msg.lower() or "pytorch" in msg.lower():
             raise RuntimeError(
                 "A module failed to import because PyTorch is not available.\n\n"
-                "Open Settings \u2192 Preferences \u2192 Install/Repair Hardware Acceleration.\n\n"
+                "Open Settings -> Preferences -> Install/Repair Hardware Acceleration.\n\n"
                 f"Original error: {e}"
             ) from e
         raise

@@ -276,7 +276,12 @@ def run_onnx_tiled(session, img: np.ndarray, patch_size=512, overlap=64,
                 patch = arr[c:c+1, i:i+patch_size, j:j+patch_size]  # (1,P,P)
                 inp = np.ascontiguousarray(patch[np.newaxis, ...], dtype=np.float32)  # (1,1,P,P)
 
-                out_patch = session.run(None, {inp_name: inp})[0]   # (1,1,P,P)
+                try:
+                    out_patch = session.run(None, {inp_name: inp})[0]
+                except Exception as e:
+                    if "cuda" in str(e).lower() or "kernel image" in str(e).lower():
+                        raise RuntimeError(f"CUDA_FALLBACK:{e}")
+                    raise
                 out_patch = np.squeeze(out_patch, axis=0)           # (1,P,P)
 
                 out[c:c+1, i:i+patch_size, j:j+patch_size] += out_patch * win
@@ -294,20 +299,25 @@ def run_onnx_tiled(session, img: np.ndarray, patch_size=512, overlap=64,
 def pick_providers(auto_gpu=True) -> list[str]:
     """
     Windows: DirectML → CUDA → CPU
+    Linux: CPU only (CUDA version mismatches cause runtime kernel failures)
     mac(Intel): CPU → CoreML (optional)
-    mac(Apple Silicon): **CPU only** (avoid CoreML artifact path)
+    mac(Apple Silicon): CPU only (avoid CoreML artifact path)
     """
     if ort is None:
         return []
 
     avail = set(ort.get_available_providers())
 
-    # Apple Silicon: always CPU ( CoreML has 16,384-dim constraint and can artifact )
     if IS_APPLE_ARM:
         return ["CPUExecutionProvider"] if "CPUExecutionProvider" in avail else []
 
-    # Non-Apple ARM
     if not auto_gpu:
+        return ["CPUExecutionProvider"] if "CPUExecutionProvider" in avail else []
+
+    # Linux: skip CUDA — the bundled onnxruntime binary is built against a specific
+    # CUDA version and will crash at inference time on mismatched systems.
+    # CPU is fast enough for the aberration model.
+    if platform.system() == "Linux":
         return ["CPUExecutionProvider"] if "CPUExecutionProvider" in avail else []
 
     order = []
@@ -315,7 +325,6 @@ def pick_providers(auto_gpu=True) -> list[str]:
         order.append("DmlExecutionProvider")
     if "CUDAExecutionProvider" in avail:
         order.append("CUDAExecutionProvider")
-
     # mac(Intel) can still use CoreML if someone insists, but we won't put it first.
     if "CPUExecutionProvider" in avail:
         order.append("CPUExecutionProvider")
@@ -544,14 +553,24 @@ def run_aberration_ai_on_array(
             except Exception:
                 pass
 
-    out = run_onnx_tiled(
-        sess,
-        img,
-        patch_size=int(patch),
-        overlap=int(overlap),
-        progress_cb=_cb,
-        cancel_cb=cancel_cb,
-    )
+    try:            
+        out = run_onnx_tiled(
+            sess,
+            img,
+            patch_size=int(patch),
+            overlap=int(overlap),
+            progress_cb=_cb,
+            cancel_cb=cancel_cb,
+        )
+    except RuntimeError as e:
+        if str(e).startswith("CUDA_FALLBACK:"):
+            if log_cb:
+                log_cb("CUDA kernel mismatch — falling back to CPU...")
+            sess = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+            used_provider = "CPUExecutionProvider"
+            out = run_onnx_tiled(sess, img, ...)
+        else:
+            raise        
 
     if cancel_cb and cancel_cb():
         raise RuntimeError("Canceled")

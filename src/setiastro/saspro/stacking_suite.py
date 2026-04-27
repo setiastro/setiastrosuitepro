@@ -12059,7 +12059,10 @@ class StackingSuiteDialog(QDialog):
 
 
     def add_light_files_to_registration(self):
-        last_dir = self.settings.value("last_opened_folder", "", type=str)
+        last_dir = (
+            self.settings.value("stacking/dir", "", type=str)
+            or self.settings.value("last_opened_folder", "", type=str)
+        )
         files, _ = QFileDialog.getOpenFileNames(
             self, "Select Light Frames", last_dir,
             "FITS Files (*.fits *.fit *.fz *.xisf *.tif *.tiff *.png *.jpg *.jpeg)"
@@ -12268,7 +12271,10 @@ class StackingSuiteDialog(QDialog):
 
     def add_files(self, tree, title, expected_type):
         """ Adds FITS files and assigns best master files if needed. """
-        last_dir = self.settings.value("last_opened_folder", "", type=str)
+        last_dir = (
+            self.settings.value("stacking/dir", "", type=str)
+            or self.settings.value("last_opened_folder", "", type=str)
+        )
         files, _ = QFileDialog.getOpenFileNames(
             self, title, last_dir,
             "Images (*.fits *.fit *.fts *.fits.gz *.fit.gz *.fz *.xisf);;All Files (*)"
@@ -12301,7 +12307,10 @@ class StackingSuiteDialog(QDialog):
 
 
     def add_directory(self, tree, title, expected_type):
-        last_dir = self.settings.value("last_opened_folder", "", type=str)
+        last_dir = (
+            self.settings.value("stacking/dir", "", type=str)
+            or self.settings.value("last_opened_folder", "", type=str)
+        )
         directory = QFileDialog.getExistingDirectory(self, title, last_dir)
         if not directory:
             return
