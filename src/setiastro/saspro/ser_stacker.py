@@ -1260,6 +1260,17 @@ def stack_ser(
 
                 frac_dx = float(gdx) - round(float(gdx))
                 frac_dy = float(gdy) - round(float(gdy))
+
+                # For surface mode, shifts are integer-dominated so the
+                # fractional remainder doesn't provide meaningful dithering.
+                # Inject a small random sub-pixel offset so drops from
+                # different frames land at genuinely different canvas positions.
+                if track_mode == "surface":
+                    rng = np.random.default_rng(seed=int(i))   # deterministic per frame
+                    dither = rng.uniform(-0.45, 0.45, size=2)
+                    frac_dx += float(dither[0])
+                    frac_dy += float(dither[1])
+
                 results.append((warped, frac_dx, frac_dy))
 
         finally:
