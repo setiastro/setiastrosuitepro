@@ -298,9 +298,9 @@ def run_onnx_tiled(session, img: np.ndarray, patch_size=512, overlap=64,
 # ---------- providers ----------
 def pick_providers(auto_gpu=True) -> list[str]:
     """
-    Windows: DirectML → CUDA → CPU
-    Linux: CPU only (CUDA version mismatches cause runtime kernel failures)
-    mac(Intel): CPU → CoreML (optional)
+    Windows: DirectML -> CUDA -> CPU
+    Linux: CUDA -> CPU (with runtime fallback if CUDA kernel mismatch)
+    mac(Intel): CPU -> CoreML (optional)
     mac(Apple Silicon): CPU only (avoid CoreML artifact path)
     """
     if ort is None:
@@ -314,18 +314,11 @@ def pick_providers(auto_gpu=True) -> list[str]:
     if not auto_gpu:
         return ["CPUExecutionProvider"] if "CPUExecutionProvider" in avail else []
 
-    # Linux: skip CUDA — the bundled onnxruntime binary is built against a specific
-    # CUDA version and will crash at inference time on mismatched systems.
-    # CPU is fast enough for the aberration model.
-    if platform.system() == "Linux":
-        return ["CPUExecutionProvider"] if "CPUExecutionProvider" in avail else []
-
     order = []
     if "DmlExecutionProvider" in avail:
         order.append("DmlExecutionProvider")
     if "CUDAExecutionProvider" in avail:
         order.append("CUDAExecutionProvider")
-    # mac(Intel) can still use CoreML if someone insists, but we won't put it first.
     if "CPUExecutionProvider" in avail:
         order.append("CPUExecutionProvider")
     if "CoreMLExecutionProvider" in avail:
@@ -553,7 +546,7 @@ def run_aberration_ai_on_array(
             except Exception:
                 pass
 
-    try:            
+    try:
         out = run_onnx_tiled(
             sess,
             img,
@@ -565,12 +558,19 @@ def run_aberration_ai_on_array(
     except RuntimeError as e:
         if str(e).startswith("CUDA_FALLBACK:"):
             if log_cb:
-                log_cb("CUDA kernel mismatch — falling back to CPU...")
+                log_cb(f"CUDA kernel mismatch detected — falling back to CPU...")
             sess = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
             used_provider = "CPUExecutionProvider"
-            out = run_onnx_tiled(sess, img, ...)
+            out = run_onnx_tiled(
+                sess,
+                img,
+                patch_size=int(patch),
+                overlap=int(overlap),
+                progress_cb=_cb,
+                cancel_cb=cancel_cb,
+            )
         else:
-            raise        
+            raise      
 
     if cancel_cb and cancel_cb():
         raise RuntimeError("Canceled")
