@@ -805,6 +805,7 @@ class _StackWorker(QThread):
                 drizzle_kernel=str(getattr(self.cfg, "drizzle_kernel", "gaussian")),
                 drizzle_sigma=float(getattr(self.cfg, "drizzle_sigma", 0.0)),
                 keep_mask=getattr(self.cfg, "keep_mask", None),
+                center_planet=bool(getattr(self.cfg, "center_on_planet", False)),
             )
 
 
@@ -857,37 +858,36 @@ class SERStackerDialog(QDialog):
     stackProduced = pyqtSignal(object, object)  # out(np.ndarray), diag(dict)
 
     def __init__(
-        self,
-        parent=None,
-        *,
-        main,
-        source_doc=None,
-        ser_path: Optional[str] = None,   # ✅ typed + default
-        source: Optional[SourceSpec] = None,
-        roi=None,
-        track_mode: str = "planetary",
-        surface_anchor=None,
-        debayer: bool = True,
-        keep_percent: float = 20.0,
-        bayer_pattern: Optional[str] = None,
-        planet_min_val=0.02, planet_use_norm=False, planet_norm_hi_pct=99.5,
-        planet_thresh_pct=92.0, planet_smooth_sigma=1.5, **kwargs
-    ):
+            self,
+            parent=None,
+            *,
+            main,
+            source_doc=None,
+            ser_path: Optional[str] = None,
+            source: Optional[SourceSpec] = None,
+            roi=None,
+            track_mode: str = "planetary",
+            surface_anchor=None,
+            debayer: bool = True,
+            keep_percent: float = 20.0,
+            bayer_pattern: Optional[str] = None,
+            planet_simple_thresh: float = 0.5,
+            planet_use_norm: bool = False,
+            planet_smooth_sigma: float = 1.5,
+            **kwargs
+        ):
         super().__init__(parent)
-        self.setWindowTitle("Planetary Stacker - Beta")
+        self.setWindowTitle("Planetary Stacker")
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         self._bayer_pattern = bayer_pattern
-        self._keep_mask = None  # np.ndarray bool shape (N,) or None
+        self._keep_mask = None
 
-        self._planet_min_val = float(planet_min_val)
+        self._planet_simple_thresh = float(planet_simple_thresh)
         self._planet_use_norm = bool(planet_use_norm)
-        self._planet_norm_hi_pct = float(planet_norm_hi_pct)
-        self._planet_thresh_pct = float(planet_thresh_pct)
-        self._planet_smooth_sigma = float(planet_smooth_sigma)
 
-        self._derot = None  # dict from pick_planet_disk_params()
+        self._derot = None
 
 
         # ---- Normalize inputs ------------------------------------------------
@@ -1608,11 +1608,9 @@ class SERStackerDialog(QDialog):
             ),
 
             # ✅ NEW: planetary centroid knobs (add UI controls or set defaults)
-            planet_smooth_sigma=self._planet_smooth_sigma,
-            planet_thresh_pct=self._planet_thresh_pct,
-            planet_min_val=self._planet_min_val,
+            planet_smooth_sigma=1.5,
+            planet_simple_thresh=self._planet_simple_thresh,
             planet_use_norm=self._planet_use_norm,
-            planet_norm_hi_pct=self._planet_norm_hi_pct,
             center_on_planet=bool(
                 getattr(self, "chk_center_planet", None)
                 and self.chk_center_planet.isChecked()

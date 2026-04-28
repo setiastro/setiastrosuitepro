@@ -735,12 +735,21 @@ def _bootstrap_imports():
                     _TorchUnavailableStub.__new__(_TorchUnavailableStub)
                 )
  
+            _STUB_GETATTR_GUARD = set()  # add this as a class-level variable above __getattr__
+
             def __getattr__(self, name: str):
                 child_key = f"{self.__name__}.{name}"
-                if child_key not in _sys.modules:
-                    child = _TorchUnavailableStub(child_key)
-                    _sys.modules[child_key] = child
-                return _sys.modules[child_key]
+                # Guard against recursion during frozen module introspection
+                if child_key in _TorchUnavailableStub._STUB_GETATTR_GUARD:
+                    raise AttributeError(name)
+                _TorchUnavailableStub._STUB_GETATTR_GUARD.add(child_key)
+                try:
+                    if child_key not in _sys.modules:
+                        child = _TorchUnavailableStub(child_key)
+                        _sys.modules[child_key] = child
+                    return _sys.modules[child_key]
+                finally:
+                    _TorchUnavailableStub._STUB_GETATTR_GUARD.discard(child_key)
  
             def __call__(self, *a, **kw):
                 raise RuntimeError(_TORCH_NOT_INSTALLED_MSG)

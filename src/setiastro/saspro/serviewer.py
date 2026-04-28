@@ -304,8 +304,15 @@ class SERViewer(QDialog):
         sform = QFormLayout(stack)
 
         self.cmb_track = QComboBox(self)
-        self.cmb_track.addItems(["Planetary", "Surface", "Off"])   # map to config
+        self.cmb_track.addItems(["Planetary", "Surface", "Off"])
         self.cmb_track.setCurrentText("Planetary")
+        self.cmb_track.setToolTip(
+            "Planetary: tracks planets/disks by brightness threshold centroid.\n"
+            "Surface: tracks by surface features — use for the Moon, Sun, or\n"
+            "         objects filling a large portion of the frame.\n"
+            "         Set a surface anchor with Ctrl+Shift+drag.\n"
+            "Off: no tracking (stack without alignment)."
+        )
 
         self.spin_keep = QDoubleSpinBox(self)
         self.spin_keep.setRange(0.1, 100.0)
@@ -322,89 +329,44 @@ class SERViewer(QDialog):
         )
 
         self.btn_stack = QPushButton("Open Stacker…", self)
-        self.btn_stack.setEnabled(False)   # enabled once SER loaded
+        self.btn_stack.setEnabled(False)
         self.btn_batch = QPushButton("Batch Stack…", self)
-        self.btn_batch.setEnabled(True) 
-        self.btn_batch.setToolTip(
-            "Batch stack multiple SER/AVI files using the current viewer settings.\n"
-            "If a file is already loaded in the viewer, it will be pre-added to the list.\n"
-            "If a surface anchor is already set in the viewer (Ctrl+Shift+drag), it will\n"
-            "be inherited — otherwise you will be prompted to set one from the first file."
-        )       
-        self.chk_planet_norm = QCheckBox("Normalize for planetary centroid detect")
-        self.chk_planet_norm.setChecked(True)
-        self.chk_planet_norm.setToolTip("Detection-only normalization (does not change stacking pixels). Helps dim planets.")
+        self.btn_batch.setEnabled(True)
 
-        self.spin_planet_thresh = QDoubleSpinBox()
-        self.spin_planet_thresh.setRange(50.0, 99.9)
-        self.spin_planet_thresh.setDecimals(1)
-        self.spin_planet_thresh.setSingleStep(0.5)
-        self.spin_planet_thresh.setValue(92.0)
-        self.spin_planet_thresh.setToolTip("Percentile used to threshold the blob for centroid detection.")
-        self.spin_planet_min = QDoubleSpinBox()
-        self.spin_planet_min.setRange(0.0, 0.5)     # abs floor in [0..1]
-        self.spin_planet_min.setDecimals(3)
-        self.spin_planet_min.setSingleStep(0.005)
-        self.spin_planet_min.setValue(0.02)
-        self.spin_planet_min.setToolTip(
-            "Minimum normalized intensity (0..1) allowed for detection thresholding.\n"
-            "If percentile threshold is too low on dim planets, this prevents the mask from vanishing.\n"
-            "Typical: 0.01–0.05."
+        # Planetary detection controls
+        self.sld_simple_thresh = QSlider(Qt.Orientation.Horizontal, self)
+        self.sld_simple_thresh.setRange(0, 100)
+        self.sld_simple_thresh.setValue(25)
+        self.sld_simple_thresh.setToolTip(
+            "Brightness threshold (0–1). Pixels above this are used to find the planet center."
         )
+        self.lbl_simple_thresh = QLabel("0.25")
+        self.lbl_simple_thresh.setFixedWidth(36)
 
-        self.spin_planet_smooth = QDoubleSpinBox()
-        self.spin_planet_smooth.setRange(0.0, 10.0)
-        self.spin_planet_smooth.setDecimals(2)
-        self.spin_planet_smooth.setSingleStep(0.25)
-        self.spin_planet_smooth.setValue(1.5)
-        self.spin_planet_smooth.setToolTip("Gaussian blur sigma used before thresholding. 1.0–2.0 is typical.")
+        def _on_simple_thresh_changed(v):
+            self.lbl_simple_thresh.setText(f"{v/100:.2f}")
+            self._refresh()
+        self.sld_simple_thresh.valueChanged.connect(_on_simple_thresh_changed)
 
-        self.spin_norm_lo = QDoubleSpinBox(); self.spin_norm_lo.setRange(0.0, 20.0); self.spin_norm_lo.setValue(1.0)
-        self.spin_norm_hi = QDoubleSpinBox(); self.spin_norm_hi.setRange(80.0, 100.0); self.spin_norm_hi.setValue(99.5)
-       
-        # -----------------------------
-        # Advanced detection settings
-        # -----------------------------
-        adv = QGroupBox("Advanced detection settings", self)
-        adv.setCheckable(True)
-        adv.setChecked(False)
+        row_thresh = QHBoxLayout()
+        row_thresh.setContentsMargins(0, 0, 0, 0)
+        row_thresh.addWidget(self.sld_simple_thresh, 1)
+        row_thresh.addWidget(self.lbl_simple_thresh)
+        w_thresh = QWidget()
+        w_thresh.setLayout(row_thresh)
 
-        adv_body = QWidget(adv)                 # <- content container
-        adv_form = QFormLayout(adv_body)
-        adv_form.setContentsMargins(8, 8, 8, 8)
-        adv_form.setVerticalSpacing(6)
-        adv_form.setHorizontalSpacing(10)
-
-        adv_form.addRow("", self.chk_planet_norm)
-        adv_form.addRow("Planet detect thresh (%)", self.spin_planet_thresh)
-        adv_form.addRow("Norm low pct", self.spin_norm_lo)
-        adv_form.addRow("Norm high pct", self.spin_norm_hi)
-        adv_form.addRow("Planet min val", self.spin_planet_min)
-        adv_form.addRow("Planet smooth σ", self.spin_planet_smooth)
-
-        # Put the body into the groupbox layout
-        adv_layout = QVBoxLayout(adv)
-        adv_layout.setContentsMargins(8, 8, 8, 8)
-        adv_layout.addWidget(adv_body)
-
-        # show/hide only the body
-        adv_body.setVisible(False)
-        adv.toggled.connect(adv_body.setVisible)
+        self.chk_planet_norm = QCheckBox("Normalize image before detection")
+        self.chk_planet_norm.setChecked(False)
+        self.chk_planet_norm.setToolTip(
+            "Normalize pixel values before thresholding. "
+            "Helps with very dim planets. Leave off for typical bright targets."
+        )
+        self.chk_planet_norm.toggled.connect(self._refresh)
 
         sform.addRow("Tracking", self.cmb_track)
         sform.addRow("Keep %", self.spin_keep)
-
-        # instead of adding the detection rows directly:
-        # sform.addRow("", self.chk_planet_norm)
-        # sform.addRow("Planet detect thresh (%)", self.spin_planet_thresh)
-        # sform.addRow("Norm low pct", self.spin_norm_lo)
-        # sform.addRow("Norm high pct", self.spin_norm_hi)
-        # sform.addRow("Planet min val", self.spin_planet_min)
-        # sform.addRow("Planet smooth σ", self.spin_planet_smooth)
-
-        # add the advanced groupbox as a single row spanning the form
-        sform.addRow(adv)
-
+        sform.addRow("Threshold", w_thresh)
+        sform.addRow("", self.chk_planet_norm)
         sform.addRow("", self.lbl_anchor)
         sform.addRow("", self.btn_stack)
         sform.addRow("", self.btn_batch)
@@ -446,7 +408,9 @@ class SERViewer(QDialog):
         self.spin_trim_end.valueChanged.connect(self._on_trim_changed)
         self.btn_save_trimmed.clicked.connect(self._save_trimmed_ser)
 
+        self.chk_planet_norm.toggled.connect(self._refresh)
         self.resize(1200, 800)
+        self._on_track_mode_changed()
 
 
     #-----qsettings
@@ -703,14 +667,10 @@ class SERViewer(QDialog):
 
     def _on_track_mode_changed(self):
         mode = self._track_mode_value()
-
-        # ✅ always reflect current anchor state
         self._update_anchor_label()
-
         if mode == "surface" and self._surface_anchor is None:
             self.lbl_anchor.setText("Surface anchor: REQUIRED  •  Ctrl+Shift+drag to set")
             self.lbl_anchor.setStyleSheet("color:#c66;")
-
         self._refresh()
     
 
@@ -937,11 +897,9 @@ class SERViewer(QDialog):
             keep_percent=float(self.spin_keep.value()),
 
             # ✅ planetary detect knobs
-            planet_min_val=float(self.spin_planet_min.value()),
+            planet_simple_thresh=float(self.sld_simple_thresh.value() / 100.0),
             planet_use_norm=bool(self.chk_planet_norm.isChecked()),
-            planet_norm_hi_pct=float(self.spin_norm_hi.value()),   # <-- you already have this
-            planet_thresh_pct=float(self.spin_planet_thresh.value()),
-            planet_smooth_sigma=float(self.spin_planet_smooth.value()),
+            planet_smooth_sigma=1.5,
         )          
 
         dlg.stackProduced.connect(self._on_stacker_produced)
@@ -982,40 +940,15 @@ class SERViewer(QDialog):
             pass
 
     def _compute_planet_com_px(self, img01: np.ndarray) -> tuple[float, float] | None:
-        """
-        Compute a quick center-of-mass in *image pixel coords* of the currently displayed image (ROI-space).
-        Uses a simple brightness-weighted COM with background subtraction.
-        """
         try:
-            if img01 is None:
-                return None
-            if img01.ndim == 3:
-                # simple luma (no extra deps)
-                m = 0.2126 * img01[..., 0] + 0.7152 * img01[..., 1] + 0.0722 * img01[..., 2]
-            else:
-                m = img01
-
-            m = np.asarray(m, dtype=np.float32)
-            H, W = m.shape[:2]
-            if H < 2 or W < 2:
-                return None
-
-            # Robust-ish background subtraction to focus on the planet
-            bg = float(np.percentile(m, 60))  # helps ignore dark background
-            w = np.clip(m - bg, 0.0, None)
-
-            s = float(w.sum())
-            if s <= 1e-8:
-                return None
-
-            ys = np.arange(H, dtype=np.float32)[:, None]
-            xs = np.arange(W, dtype=np.float32)[None, :]
-            cy = float((w * ys).sum() / s)
-            cx = float((w * xs).sum() / s)
-            return (cx, cy)
+            from setiastro.saspro.ser_tracking import compute_planet_center
+            return compute_planet_center(
+                img01,
+                smooth_sigma=1.5,
+                simple_thresh=float(self.sld_simple_thresh.value() / 100.0),
+            )
         except Exception:
             return None
-
 
     def _img_xy_to_pixmap_xy(self, x: float, y: float) -> tuple[int, int] | None:
         """
@@ -1350,15 +1283,17 @@ class SERViewer(QDialog):
         self._playing = False
 
         self._refresh()
+        self._on_track_mode_changed()
         # ── Bayer AUTO-detection warning for AVI/video ──────────────────
         src_kind = getattr(self.reader.meta, "source_kind", "ser")
         if src_kind in ("avi",) and self.cmb_bayer.currentText().strip().upper() == "AUTO":
             if self._detect_bayer_fft(self.reader):
+                # Default to RGGB as the most common pattern
+                self.cmb_bayer.setCurrentText("RGGB")
                 self.lbl_info.setText(
                     self.lbl_info.text()
-                    + "<br><span style='color:#f90;'>⚠ This AVI may contain raw Bayer data. "
-                    "If you see a grid pattern, select your camera's Bayer pattern manually "
-                    "(e.g. RGGB) in the Bayer pattern dropdown.</span>"
+                    + "<br><span style='color:#f90;'>⚠ Bayer pattern detected — defaulting to RGGB. "
+                    "If colours look wrong, change the Bayer pattern dropdown to match your camera sensor.</span>"
                 )
                 
     def _open_batch_clicked(self):
@@ -1381,11 +1316,9 @@ class SERViewer(QDialog):
             ap_min_mean      = 0.03,
             ap_multiscale    = False,
             ssd_refine_bruteforce = False,
-            planet_smooth_sigma = float(self.spin_planet_smooth.value()),
-            planet_thresh_pct   = float(self.spin_planet_thresh.value()),
-            planet_min_val      = float(self.spin_planet_min.value()),
-            planet_use_norm     = bool(self.chk_planet_norm.isChecked()),
-            planet_norm_hi_pct  = float(self.spin_norm_hi.value()),
+            planet_smooth_sigma    = 1.5,
+            planet_simple_thresh   = float(self.sld_simple_thresh.value() / 100.0),
+            planet_use_norm        = bool(self.chk_planet_norm.isChecked()),
             drizzle_scale    = 1.0,
             drizzle_pixfrac  = 0.80,
             drizzle_kernel   = "gaussian",
@@ -1787,7 +1720,7 @@ class SERViewer(QDialog):
                 debayer=debayer,
                 to_float01=True,
                 force_rgb=False,
-                bayer_pattern=self.cmb_bayer.currentText(),  # ✅ NEW
+                bayer_pattern=self.cmb_bayer.currentText(),
             )
         except Exception as e:
             QMessageBox.warning(self, "SER Viewer", f"Frame read failed:\n{e}")
@@ -1799,21 +1732,20 @@ class SERViewer(QDialog):
                 if img.ndim == 2 and stretch_mono_image is not None:
                     img = np.clip(stretch_mono_image(img, target_median=0.25), 0.0, 1.0)
                 elif img.ndim == 3 and img.shape[2] == 3 and stretch_color_image is not None:
-                    # linked=True for planetary preview (you requested this)
                     img = np.clip(stretch_color_image(img, target_median=0.25, linked=True), 0.0, 1.0)
             except Exception:
-                # if stretch fails, fall back to raw preview
                 pass
 
-        try:
-            img = self._apply_preview_tone(img)
-        except Exception:
-            pass
-
-        # store for overlay calculations (ROI-sized if ROI is on)
+        # ✅ Store RAW (pre-tone) image for detection — brightness/gamma must not affect centroid
         self._last_disp_arr = img
 
-        qimg = self._to_qimage(img)
+        # Apply tone mapping for display only
+        try:
+            img_display = self._apply_preview_tone(img)
+        except Exception:
+            img_display = img
+
+        qimg = self._to_qimage(img_display)
         self._last_qimg = qimg
         self._render_last(anchor=self._viewport_center_anchor() if not self._fit_mode else None)
 

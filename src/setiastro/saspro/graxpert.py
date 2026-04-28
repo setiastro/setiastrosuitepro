@@ -280,35 +280,60 @@ def remove_gradient_with_graxpert(main_window, target_doc=None):
 
 
 # ---------- helpers ----------
+def _resolve_macos_app_bundle(path: str) -> str:
+    """
+    If path points to a .app bundle, resolve to the actual binary inside.
+    e.g. /Applications/GraXpert.app -> /Applications/GraXpert.app/Contents/MacOS/GraXpert
+    """
+    if not path.endswith(".app"):
+        return path
+    # Try to derive binary name from bundle name
+    bundle_name = os.path.splitext(os.path.basename(path))[0]
+    binary = os.path.join(path, "Contents", "MacOS", bundle_name)
+    if os.path.exists(binary):
+        return binary
+    # Fallback: scan Contents/MacOS/ and return the first executable
+    macos_dir = os.path.join(path, "Contents", "MacOS")
+    if os.path.isdir(macos_dir):
+        for entry in os.listdir(macos_dir):
+            candidate = os.path.join(macos_dir, entry)
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+    return path  # give up and return as-is
+
 def _resolve_graxpert_exec(main_window) -> str | None:
-    # prefer QSettings if available (all OS)
     path = None
     if hasattr(main_window, "settings"):
         try:
             path = main_window.settings.value("paths/graxpert", type=str)
         except Exception:
             path = None
-    if path and os.path.exists(path):
-        _ensure_exec_bit(path)
-        return path
+
+    if path:
+        # macOS: auto-resolve .app bundles to the actual binary
+        if platform.system() == "Darwin":
+            path = _resolve_macos_app_bundle(path)
+        if os.path.exists(path):
+            _ensure_exec_bit(path)
+            return path
 
     sysname = platform.system()
     default = Config.get_graxpert_default_path()
-    
+
     if sysname == "Windows":
-        # rely on PATH (like v2) or default
         return default if default else "GraXpert.exe"
-        
+
     if sysname == "Darwin":
         if default and os.path.exists(default):
-            _ensure_exec_bit(default)
-            if hasattr(main_window, "settings"):
-                main_window.settings.setValue("paths/graxpert", default)
-            return default
+            resolved = _resolve_macos_app_bundle(default)
+            if os.path.exists(resolved):
+                _ensure_exec_bit(resolved)
+                if hasattr(main_window, "settings"):
+                    main_window.settings.setValue("paths/graxpert", resolved)
+                return resolved
         return _pick_graxpert_path_and_store(main_window)
-        
+
     if sysname == "Linux":
-        # in v2 you asked user and saved; do the same
         return _pick_graxpert_path_and_store(main_window)
 
     QMessageBox.critical(main_window, "GraXpert", f"Unsupported operating system: {sysname}")

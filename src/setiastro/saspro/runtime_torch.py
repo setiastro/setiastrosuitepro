@@ -513,11 +513,22 @@ def _purge_bad_torch_from_sysmodules(status_cb=print) -> None:
         if "torch" in sys.modules:
             mod = sys.modules["torch"]
             tf = getattr(mod, "__file__", "") or ""
-            if tf and ("site-packages" not in tf) and ("dist-packages" not in tf):
+
+            # Detect our own stub by its sentinel version string
+            is_stub = (
+                not tf and
+                getattr(mod, "__version__", "") == "0.0.0+unavailable"
+            )
+
+            if is_stub or (tf and ("site-packages" not in tf) and ("dist-packages" not in tf)):
                 for k in list(sys.modules.keys()):
                     if k == "torch" or k.startswith("torch."):
                         sys.modules.pop(k, None)
-                status_cb(f"Purged shadowed torch import: {tf}")
+                if is_stub:
+                    status_cb("[RT] Purged torch stub from sys.modules before real import")
+                else:
+                    status_cb(f"[RT] Purged shadowed torch import: {tf}")
+
         sys.modules.pop("torch._C", None)
         importlib.invalidate_caches()
     except Exception:

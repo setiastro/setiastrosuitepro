@@ -266,6 +266,7 @@ class GhsDialogPro(QDialog):
         self._panning     = False
         self._pan_start   = QPointF()
         self._sym_u       = 0.5   # pivot in [0..1]
+        self._cached_processed_pix = None
 
         # ---------- layout ----------
         main = QHBoxLayout(self)
@@ -359,6 +360,20 @@ class GhsDialogPro(QDialog):
 
 
         # ── Buttons ──────────────────────────────────────────────────────
+        left.addLayout(rowSP)
+        self._sp_syncing = False
+
+        # ── Toggle Preview button ────────────────────────────────────────
+        toggle_row = QHBoxLayout()
+        self.btn_toggle_preview = QPushButton(self.tr("Preview: ON"))
+        self.btn_toggle_preview.setCheckable(True)
+        self.btn_toggle_preview.setChecked(True)
+        self.btn_toggle_preview.setFixedWidth(140)
+        toggle_row.addWidget(self.btn_toggle_preview)
+        toggle_row.addStretch(1)
+        left.addLayout(toggle_row)
+
+        # ── Buttons ──────────────────────────────────────────────────────
         rowb = QHBoxLayout()
         self.btn_apply = QPushButton(self.tr("Apply"))
         self.btn_reset = QToolButton(); self.btn_reset.setText(self.tr("Reset"))
@@ -447,11 +462,39 @@ class GhsDialogPro(QDialog):
         self._update_slider_visibility()
         self._rebuild_from_params()
 
+        self.btn_toggle_preview.toggled.connect(self._on_toggle_preview)
+
         QTimer.singleShot(0, self._fit)
 
     # -----------------------------------------------------------------------
     # Function-mode helpers
     # -----------------------------------------------------------------------
+    def _on_toggle_preview(self, checked: bool):
+        self.btn_toggle_preview.setText("Preview: ON" if checked else "Preview: OFF")
+        if self._pix is None:
+            return
+        if checked:
+            # show processed
+            if self._cached_processed_pix is not None:
+                self._pix = self._cached_processed_pix
+                self._apply_zoom()
+        else:
+            # show original
+            if self._preview_img is not None:
+                orig = _float_to_qimage_rgb8(self._preview_img)
+                self._pix = QPixmap.fromImage(orig)
+                self._apply_zoom()
+
+    def _update_preview_pix(self, img01):
+        if img01 is None:
+            self.label.clear(); self._pix = None; return
+        qimg = _float_to_qimage_rgb8(img01)
+        pm = QPixmap.fromImage(qimg)
+        self._cached_processed_pix = pm
+        # only update display if preview is ON
+        if getattr(self, "btn_toggle_preview", None) is None or self.btn_toggle_preview.isChecked():
+            self._pix = pm
+            self._apply_zoom()
 
     def _current_mode(self) -> str:
         return self.cmb_fn.currentText()
@@ -1066,14 +1109,6 @@ class GhsDialogPro(QDialog):
         self._full_img    = arr
         self._preview_img = _downsample_for_preview(arr, 1200)
         self._update_preview_pix(self._preview_img)
-
-    def _update_preview_pix(self, img01):
-        if img01 is None:
-            self.label.clear(); self._pix = None; return
-        qimg = _float_to_qimage_rgb8(img01)
-        pm   = QPixmap.fromImage(qimg)
-        self._pix = pm
-        self._apply_zoom()
 
     def _apply_zoom(self):
         if self._pix is None: return
