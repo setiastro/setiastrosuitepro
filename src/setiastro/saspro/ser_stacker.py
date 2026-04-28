@@ -1814,6 +1814,8 @@ def analyze_ser(
             ref_cx = float(mref.shape[1] * 0.5)
             ref_cy = float(mref.shape[0] * 0.5)
 
+        ref_m_full = _to_mono01(ref_img).astype(np.float32, copy=False)
+
         center_on_planet = bool(getattr(cfg, "center_on_planet", False))
         if center_on_planet:
             ref_center = (
@@ -1822,8 +1824,6 @@ def analyze_ser(
             )
         else:
             ref_center = (float(ref_cx), float(ref_cy))
-        ref_m_full = _to_mono01(ref_img).astype(np.float32, copy=False)
-
         # 🔵 enable derotation toggle
         planet_derotate = bool(getattr(cfg, "planet_derotate", False))
 
@@ -2208,6 +2208,8 @@ def realign_ser(
             ref_cx = float(mref.shape[1] * 0.5)
             ref_cy = float(mref.shape[0] * 0.5)
 
+        ref_m_full = _to_mono01(ref_img).astype(np.float32, copy=False)
+
         center_on_planet = bool(getattr(cfg, "center_on_planet", False))
         if center_on_planet:
             ref_center = (
@@ -2216,8 +2218,6 @@ def realign_ser(
             )
         else:
             ref_center = (float(ref_cx), float(ref_cy))
-        ref_m_full = _to_mono01(ref_img).astype(np.float32, copy=False)
-
         def _shift_chunk(chunk: np.ndarray):
             out_i: list[int] = []
             out_dx: list[float] = []
