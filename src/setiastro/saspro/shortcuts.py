@@ -2513,6 +2513,7 @@ class _SyQonToolsPresetDialog(QDialog):
         self.cmb_starless_model = QComboBox(self)
         self.cmb_starless_model.addItem("Nadir", "nadir")
         self.cmb_starless_model.addItem("AxiomV2", "axiomv2")
+        self.cmb_starless_model.addItem("AxiomV2.1", "axiomv2.1")
 
         sm0 = str(init.get("starless_model_kind", "nadir") or "nadir").strip().lower()
         idx = self.cmb_starless_model.findData(sm0)
