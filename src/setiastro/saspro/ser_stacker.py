@@ -1049,6 +1049,7 @@ def stack_ser(
     planet_cx: float | None = None,
     planet_cy: float | None = None,
     planet_r: float | None = None,
+    center_planet: bool = False,
 ) -> tuple[np.ndarray, dict]:
     source_obj = source
 
@@ -1265,7 +1266,7 @@ def stack_ser(
                 # fractional remainder doesn't provide meaningful dithering.
                 # Inject a small random sub-pixel offset so drops from
                 # different frames land at genuinely different canvas positions.
-                if track_mode == "surface":
+                if track_mode == "surface" or (drizzle_on and center_planet):
                     rng = np.random.default_rng(seed=int(i))   # deterministic per frame
                     dither = rng.uniform(-0.45, 0.45, size=2)
                     frac_dx += float(dither[0])

@@ -805,6 +805,7 @@ class _StackWorker(QThread):
                 drizzle_kernel=str(getattr(self.cfg, "drizzle_kernel", "gaussian")),
                 drizzle_sigma=float(getattr(self.cfg, "drizzle_sigma", 0.0)),
                 keep_mask=getattr(self.cfg, "keep_mask", None),
+                center_planet=bool(getattr(self.cfg, "center_on_planet", False)),
             )
 
 
@@ -876,7 +877,7 @@ class SERStackerDialog(QDialog):
             **kwargs
         ):
         super().__init__(parent)
-        self.setWindowTitle("Planetary Stacker - Beta")
+        self.setWindowTitle("Planetary Stacker")
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)

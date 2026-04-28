@@ -1288,11 +1288,12 @@ class SERViewer(QDialog):
         src_kind = getattr(self.reader.meta, "source_kind", "ser")
         if src_kind in ("avi",) and self.cmb_bayer.currentText().strip().upper() == "AUTO":
             if self._detect_bayer_fft(self.reader):
+                # Default to RGGB as the most common pattern
+                self.cmb_bayer.setCurrentText("RGGB")
                 self.lbl_info.setText(
                     self.lbl_info.text()
-                    + "<br><span style='color:#f90;'>⚠ This AVI may contain raw Bayer data. "
-                    "If you see a grid pattern, select your camera's Bayer pattern manually "
-                    "(e.g. RGGB) in the Bayer pattern dropdown.</span>"
+                    + "<br><span style='color:#f90;'>⚠ Bayer pattern detected — defaulting to RGGB. "
+                    "If colours look wrong, change the Bayer pattern dropdown to match your camera sensor.</span>"
                 )
                 
     def _open_batch_clicked(self):
