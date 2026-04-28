@@ -119,21 +119,54 @@ def _ghs_points_norm(alpha: float, beta: float, gamma: float,
 
 def _lut_from_ghs_preset(preset: Dict) -> tuple[np.ndarray, str, Dict]:
     p = dict(preset or {})
-    alpha  = float(p.get("alpha", 1.0))
-    beta   = float(p.get("beta",  1.0))
-    gamma  = float(p.get("gamma", 1.0))
-    pivot  = float(p.get("pivot", 0.5))
-    lp     = float(p.get("lp",    0.0))
-    hp     = float(p.get("hp",    0.0))
-    ch     = _norm_channel(p.get("channel", "K (Brightness)"))
+    fn   = str(p.get("function", "Hyperbolic Stretch"))
+    ch   = _norm_channel(p.get("channel", "K (Brightness)"))
+    gamma = float(p.get("gamma", 1.0))
+    lp    = float(p.get("lp",    0.0))
+    hp    = float(p.get("hp",    0.0))
+    pivot = float(p.get("pivot", 0.5))
 
-    ptsN   = _ghs_points_norm(alpha, beta, gamma, pivot, lp, hp, N=128)
-    ptsS   = _points_norm_to_scene(ptsN)
-    fn     = _interpolator_from_scene_points(ptsS)
-    lut01  = build_curve_lut(fn, size=65536)
+    fn_lower = fn.lower()
 
-    # sanitized params for metadata
-    params = {"alpha":alpha, "beta":beta, "gamma":gamma, "pivot":pivot, "lp":lp, "hp":hp, "channel":ch}
+    if "arcsinh" in fn_lower:
+        from setiastro.saspro.ghs_dialog_pro import _build_arcsinh_lut
+        strength = float(p.get("strength", 5.0))
+        lut01 = _build_arcsinh_lut(strength, gamma, lp, hp, pivot)
+        params = {"function": fn, "channel": ch, "strength": strength,
+                  "gamma": gamma, "lp": lp, "hp": hp, "pivot": pivot}
+
+    elif "log" in fn_lower:
+        from setiastro.saspro.ghs_dialog_pro import _build_log_lut
+        strength = float(p.get("strength", 5.0))
+        lut01 = _build_log_lut(strength, gamma, lp, hp, pivot)
+        params = {"function": fn, "channel": ch, "strength": strength,
+                  "gamma": gamma, "lp": lp, "hp": hp, "pivot": pivot}
+
+    elif "exp" in fn_lower:
+        from setiastro.saspro.ghs_dialog_pro import _build_exp_lut
+        strength = float(p.get("strength", 5.0))
+        lut01 = _build_exp_lut(strength, gamma, lp, hp, pivot)
+        params = {"function": fn, "channel": ch, "strength": strength,
+                  "gamma": gamma, "lp": lp, "hp": hp, "pivot": pivot}
+
+    elif "pip" in fn_lower or "inverted" in fn_lower:
+        from setiastro.saspro.ghs_dialog_pro import _build_pip_lut
+        strength = float(p.get("strength", 1.0))
+        lut01 = _build_pip_lut(strength, gamma, lp, hp, pivot)
+        params = {"function": fn, "channel": ch, "strength": strength,
+                  "gamma": gamma, "lp": lp, "hp": hp, "pivot": pivot}
+
+    else:
+        # Default: Hyperbolic Stretch (GHS)
+        alpha = float(p.get("alpha", 1.0))
+        beta  = float(p.get("beta",  1.0))
+        ptsN  = _ghs_points_norm(alpha, beta, gamma, pivot, lp, hp, N=128)
+        ptsS  = _points_norm_to_scene(ptsN)
+        fn_interp = _interpolator_from_scene_points(ptsS)
+        lut01 = build_curve_lut(fn_interp, size=65536)
+        params = {"function": fn, "channel": ch, "alpha": alpha, "beta": beta,
+                  "gamma": gamma, "lp": lp, "hp": hp, "pivot": pivot}
+
     return lut01, ch, params
 
 
@@ -181,20 +214,11 @@ def _blend_with_mask(processed: np.ndarray, src: np.ndarray, doc) -> np.ndarray:
 # ---------- headless apply ----------
 
 def apply_ghs_via_preset(main_window, doc, preset: Dict):
-    """
-    Headless Universal Hyperbolic Stretch:
-      - builds the curve from α/β/γ + pivot + LP/HP
-      - applies to K/R/G/B channel
-      - blends with active mask if any
-      - commits to document with metadata
-    """
     img = getattr(doc, "image", None)
     if img is None:
         return
 
     arr = np.asarray(img)
-
-    # normalize to float01
     if arr.dtype.kind in "ui":
         src01 = arr.astype(np.float32) / np.iinfo(arr.dtype).max
     elif arr.dtype.kind == "f":
@@ -206,36 +230,27 @@ def apply_ghs_via_preset(main_window, doc, preset: Dict):
     lut01, channel, params = _lut_from_ghs_preset(preset or {})
     out01 = _apply_mode_any(src01, channel, lut01)
 
-    # 🔁 Remember this as the last headless command for Replay
     try:
         remember = getattr(main_window, "remember_last_headless_command", None)
         if remember is None:
             remember = getattr(main_window, "_remember_last_headless_command", None)
-
         if callable(remember):
-            # store the sanitized params we just used
-            remember("ghs", params, description="Hyperbolic Stretch")
-
-            # optional debug
+            remember("ghs", params, description=f"Hyperbolic Stretch ({params.get('function','GHS')})")
             try:
                 if hasattr(main_window, "_log"):
-                    main_window._log(
-                        f"[Replay] GHS headless stored: command_id='ghs', "
-                        f"preset_keys={list(params.keys())}"
-                    )
+                    main_window._log(f"[Replay] GHS headless stored: fn={params.get('function')}, "
+                                     f"keys={list(params.keys())}")
             except Exception:
                 pass
     except Exception:
-        # don’t block the stretch if remembering fails
         pass
 
-    # Mask-aware blend, same semantics as dialog
     mask, mid, mname = _active_mask_layer(doc)
     if mask is not None:
         out01 = _blend_with_mask(out01, src01, doc)
 
     meta = {
-        "step_name": "Hyperbolic Stretch",
+        "step_name": f"Hyperbolic Stretch ({params.get('function', 'GHS')})",
         "ghs": params,
         "masked": bool(mid),
         "mask_id": mid,
@@ -246,16 +261,13 @@ def apply_ghs_via_preset(main_window, doc, preset: Dict):
     doc.apply_edit(
         out01.astype(np.float32, copy=False),
         metadata=meta,
-        step_name="Hyperbolic Stretch",
+        step_name=f"Hyperbolic Stretch ({params.get('function', 'GHS')})",
     )
-
-
 
 
 # ---------- open dialog seeded from preset ----------
 
 def open_ghs_with_preset(main_window, preset: Dict | None = None):
-    # find active document
     dm = getattr(main_window, "doc_manager", getattr(main_window, "docman", None))
     doc = dm.get_active_document() if (dm and hasattr(dm, "get_active_document")) else getattr(dm, "active_document", None)
     if doc is None:
@@ -265,17 +277,47 @@ def open_ghs_with_preset(main_window, preset: Dict | None = None):
     dlg = GhsDialogPro(main_window, doc)
 
     p = dict(preset or {})
-    # sliders use integer storage: α: *50, β:*50, γ:*100; LP/HP:*360
+    fn = str(p.get("function", "Hyperbolic Stretch"))
+    fn_lower = fn.lower()
+
     try:
-        dlg.sA.setValue(int(np.clip(float(p.get("alpha", 1.0)) * 50.0, 1, 500)))
-        dlg.sB.setValue(int(np.clip(float(p.get("beta",  1.0)) * 50.0, 1, 500)))
+        # Set function selector
+        if "arcsinh" in fn_lower:
+            idx = dlg.cmb_fn.findText("ArcSinh Stretch")
+        elif "log" in fn_lower:
+            idx = dlg.cmb_fn.findText("Logarithmic Stretch")
+        elif "exp" in fn_lower:
+            idx = dlg.cmb_fn.findText("Exponential Stretch")
+        elif "pip" in fn_lower or "inverted" in fn_lower:
+            idx = dlg.cmb_fn.findText("Power of Inverted Pixels")
+        else:
+            idx = dlg.cmb_fn.findText("Hyperbolic Stretch")
+        dlg.cmb_fn.setCurrentIndex(idx if idx >= 0 else 0)
+
+        # GHS-specific sliders
+        if "alpha" in p:
+            dlg.sA.setValue(int(np.clip(float(p["alpha"]) * 50.0, 1, 500)))
+        if "beta" in p:
+            dlg.sB.setValue(int(np.clip(float(p["beta"]) * 50.0, 1, 500)))
+
+        # Strength-based sliders (arcsinh/log/exp use /10, pip uses /100)
+        if "strength" in p:
+            if "pip" in fn_lower or "inverted" in fn_lower:
+                dlg.sP.setValue(int(np.clip(float(p["strength"]) * 100.0, 0, 200)))
+            else:
+                dlg.sS.setValue(int(np.clip(float(p["strength"]) * 10.0, 1, 1000)))
+
+        # Shared sliders
         dlg.sG.setValue(int(np.clip(float(p.get("gamma", 1.0)) * 100.0, 1, 500)))
-        dlg.sLP.setValue(int(np.clip(float(p.get("lp",    0.0)) * 360.0, 0, 360)))
-        dlg.sHP.setValue(int(np.clip(float(p.get("hp",    0.0)) * 360.0, 0, 360)))
+        dlg.sLP.setValue(int(np.clip(float(p.get("lp", 0.0)) * 360.0, 0, 360)))
+        dlg.sHP.setValue(int(np.clip(float(p.get("hp", 0.0)) * 360.0, 0, 360)))
+
         ch = _norm_channel(p.get("channel", "K (Brightness)"))
-        i = dlg.cmb_ch.findText(ch); dlg.cmb_ch.setCurrentIndex(i if i >= 0 else 0)
+        i = dlg.cmb_ch.findText(ch)
+        dlg.cmb_ch.setCurrentIndex(i if i >= 0 else 0)
+
         pv = float(np.clip(p.get("pivot", 0.5), 0.0, 1.0))
-        dlg._sym_u = pv
+        dlg._set_sym_u(pv)
         dlg.editor.setSymmetryPoint(pv * 360.0, 0)
         dlg._rebuild_from_params()
     except Exception:

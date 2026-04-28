@@ -74,6 +74,7 @@ def apply_abe_via_preset(main_window, doc, preset: dict | None = None):
     use_rbf     = bool(p.get("rbf", True))
     rbf_smooth  = float(p.get("rbf_smooth", 1.0))       # dialog default = 100 × 0.01 = 1.0
     make_bg_doc = bool(p.get("make_background_doc", False))
+    seed        = int(p.get("seed", 42))
 
     src01 = _doc_image_float01(doc)
     if src01 is None:
@@ -87,6 +88,7 @@ def apply_abe_via_preset(main_window, doc, preset: dict | None = None):
         "patch": patch_size,
         "rbf": use_rbf,
         "rbf_smooth": rbf_smooth,
+        "seed": seed,
         "make_background_doc": make_bg_doc,
     }
 
@@ -110,13 +112,16 @@ def apply_abe_via_preset(main_window, doc, preset: dict | None = None):
         pass
 
     # 🚫 No exclusion polygons in headless mode
+    rng = np.random.default_rng(seed if seed >= 0 else None)
+
     corrected, bg = abe_run(
         src01,
         degree=degree, num_samples=num_samples, downsample=downsample, patch_size=patch_size,
         use_rbf=use_rbf, rbf_smooth=rbf_smooth,
-        exclusion_mask=None,                   # ← force NO EXCLUSION AREA
+        exclusion_mask=None,
         return_background=True,
-        progress_cb=None
+        progress_cb=None,
+        rng=rng,
     )
 
     # Preserve mono vs color wrt original doc
@@ -186,6 +191,7 @@ def open_abe_with_preset(main_window, preset: dict | None = None):
     try:
         dlg.sp_degree.setValue(int(np.clip(p.get("degree", 2), 1, 6)))
         dlg.sp_samples.setValue(int(np.clip(p.get("samples", 120), 20, 100000)))
+        dlg.sp_seed.setValue(int(np.clip(p.get("seed", 42), -1, 99999)))
         dlg.sp_down.setValue(int(np.clip(p.get("downsample", 6), 1, 64)))
         dlg.sp_patch.setValue(int(np.clip(p.get("patch", 15), 5, 151)))
         dlg.chk_use_rbf.setChecked(bool(p.get("rbf", True)))

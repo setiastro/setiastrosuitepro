@@ -3493,32 +3493,57 @@ class _CurvesPresetDialog(QDialog):
                 d["shape"] = "linear"
                 d.pop("points_norm", None)
         return d
-
 class _GHSPresetDialog(QDialog):
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
         self.setWindowTitle("Universal Hyperbolic Stretch — Preset")
         init = dict(initial or {})
 
-        self.mode = QComboBox()
-        self.mode.addItems(["K (Brightness)", "R", "G", "B"])
-        want = (init.get("channel") or "K (Brightness)").strip()
-        i = self.mode.findText(want); self.mode.setCurrentIndex(max(0, i))
-
         def _mk_spin(minv, maxv, step, val, dec=2):
             s = QDoubleSpinBox(); s.setRange(minv, maxv); s.setDecimals(dec); s.setSingleStep(step); s.setValue(val); return s
 
+        # Function selector
+        self.function = QComboBox()
+        self.function.addItems([
+            "Hyperbolic Stretch",
+            "ArcSinh Stretch",
+            "Logarithmic Stretch",
+            "Exponential Stretch",
+            "Power of Inverted Pixels",
+        ])
+        want_fn = str(init.get("function", "Hyperbolic Stretch")).strip()
+        i = self.function.findText(want_fn)
+        self.function.setCurrentIndex(max(0, i))
+
+        # Channel selector
+        self.mode = QComboBox()
+        self.mode.addItems(["K (Brightness)", "R", "G", "B"])
+        want_ch = (init.get("channel") or "K (Brightness)").strip()
+        i = self.mode.findText(want_ch); self.mode.setCurrentIndex(max(0, i))
+
+        # GHS-only params
         self.alpha = _mk_spin(0.02, 10.0, 0.02, float(init.get("alpha", 1.00)))
         self.beta  = _mk_spin(0.02, 10.0, 0.02, float(init.get("beta",  1.00)))
+
+        # Strength-based params (arcsinh/log/exp/pip)
+        self.strength = _mk_spin(0.01, 100.0, 0.5, float(init.get("strength", 5.00)))
+
+        # Shared params
         self.gamma = _mk_spin(0.01,  5.0, 0.01, float(init.get("gamma", 1.00)))
         self.pivot = _mk_spin(0.00,  1.0, 0.01, float(init.get("pivot", 0.50)))
         self.lp    = _mk_spin(0.00,  1.0, 0.01, float(init.get("lp",    0.00)))
         self.hp    = _mk_spin(0.00,  1.0, 0.01, float(init.get("hp",    0.00)))
 
         form = QFormLayout(self)
+        form.addRow("Function:", self.function)
         form.addRow("Channel:", self.mode)
-        form.addRow("α (0.02–10):", self.alpha)
-        form.addRow("β (0.02–10):", self.beta)
+
+        self._lbl_alpha    = QLabel("α (0.02–10):")
+        self._lbl_beta     = QLabel("β (0.02–10):")
+        self._lbl_strength = QLabel("Strength:")
+        form.addRow(self._lbl_alpha,    self.alpha)
+        form.addRow(self._lbl_beta,     self.beta)
+        form.addRow(self._lbl_strength, self.strength)
         form.addRow("γ (0.01–5):",  self.gamma)
         form.addRow("Pivot (0–1):", self.pivot)
         form.addRow("LP (0–1):",    self.lp)
@@ -3528,16 +3553,56 @@ class _GHSPresetDialog(QDialog):
         btns.accepted.connect(self.accept); btns.rejected.connect(self.reject)
         form.addRow(btns)
 
+        self._form = form
+        self.function.currentTextChanged.connect(self._on_function_changed)
+        self._on_function_changed(self.function.currentText())
+
+    def _on_function_changed(self, text: str):
+        fn = text.lower()
+        is_ghs = "hyperbolic" in fn
+        is_pip = "pip" in fn or "inverted" in fn
+        is_strength = not is_ghs
+
+        self._lbl_alpha.setVisible(is_ghs)
+        self.alpha.setVisible(is_ghs)
+        self._lbl_beta.setVisible(is_ghs)
+        self.beta.setVisible(is_ghs)
+        self._lbl_strength.setVisible(is_strength)
+        self.strength.setVisible(is_strength)
+
+        # PIP strength range is 0..2, others are 0.01..100
+        if is_pip:
+            self.strength.setRange(0.0, 2.0)
+            self.strength.setSingleStep(0.05)
+            if self.strength.value() > 2.0:
+                self.strength.setValue(1.0)
+        else:
+            self.strength.setRange(0.01, 100.0)
+            self.strength.setSingleStep(0.5)
+
+        # Pivot is meaningless for PIP
+        self.pivot.setEnabled(not is_pip)
+
+        self.adjustSize()
+
     def result_dict(self) -> dict:
-        return {
-            "channel": self.mode.currentText(),
-            "alpha": float(self.alpha.value()),
-            "beta":  float(self.beta.value()),
-            "gamma": float(self.gamma.value()),
-            "pivot": float(self.pivot.value()),
-            "lp":    float(self.lp.value()),
-            "hp":    float(self.hp.value()),
-        }        
+        fn = self.function.currentText()
+        fn_lower = fn.lower()
+        is_ghs = "hyperbolic" in fn_lower
+        d = {
+            "function": fn,
+            "channel":  self.mode.currentText(),
+            "gamma":    float(self.gamma.value()),
+            "pivot":    float(self.pivot.value()),
+            "lp":       float(self.lp.value()),
+            "hp":       float(self.hp.value()),
+        }
+        if is_ghs:
+            d["alpha"] = float(self.alpha.value())
+            d["beta"]  = float(self.beta.value())
+        else:
+            d["strength"] = float(self.strength.value())
+        return d       
 
 class _ABEPresetDialog(QDialog):
     def __init__(self, parent=None, initial: dict | None = None):
@@ -3545,38 +3610,40 @@ class _ABEPresetDialog(QDialog):
         self.setWindowTitle("ABE — Preset")
         p = dict(initial or {})
         form = QFormLayout(self)
-
         self.degree  = QSpinBox(); self.degree.setRange(1, 6);  self.degree.setValue(int(p.get("degree", 2)))
         self.samples = QSpinBox(); self.samples.setRange(20, 100000); self.samples.setSingleStep(20); self.samples.setValue(int(p.get("samples", 120)))
         self.down    = QSpinBox(); self.down.setRange(1, 64); self.down.setValue(int(p.get("downsample", 6)))
         self.patch   = QSpinBox(); self.patch.setRange(5, 151); self.patch.setSingleStep(2); self.patch.setValue(int(p.get("patch", 15)))
         self.rbf     = QCheckBox("Enable RBF"); self.rbf.setChecked(bool(p.get("rbf", True)))
         self.smooth  = QDoubleSpinBox(); self.smooth.setRange(0.0, 10.0); self.smooth.setDecimals(3); self.smooth.setSingleStep(0.01); self.smooth.setValue(float(p.get("rbf_smooth", 1.0)))
+        self.seed    = QSpinBox(); self.seed.setRange(-1, 99999); self.seed.setValue(int(p.get("seed", 42)))
+        self.seed.setSpecialValueText("Random (no seed)")
+        self.seed.setToolTip("-1 = non-deterministic (different each run).\nAny other value = fully reproducible results.")
         self.mk_bg   = QCheckBox("Also create background document"); self.mk_bg.setChecked(bool(p.get("make_background_doc", False)))
-
         form.addRow("Polynomial degree:", self.degree)
         form.addRow("# samples:",         self.samples)
         form.addRow("Downsample:",        self.down)
         form.addRow("Patch size (px):",   self.patch)
         form.addRow(self.rbf)
         form.addRow("RBF smooth:",        self.smooth)
+        form.addRow("Random seed:",       self.seed)
         form.addRow(self.mk_bg)
-
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self)
         btns.accepted.connect(self.accept); btns.rejected.connect(self.reject)
         form.addRow(btns)
 
     def result_dict(self) -> dict:
         return {
-            "degree": int(self.degree.value()),
-            "samples": int(self.samples.value()),
-            "downsample": int(self.down.value()),
-            "patch": int(self.patch.value()),
-            "rbf": bool(self.rbf.isChecked()),
-            "rbf_smooth": float(self.smooth.value()),
+            "degree":              int(self.degree.value()),
+            "samples":             int(self.samples.value()),
+            "downsample":          int(self.down.value()),
+            "patch":               int(self.patch.value()),
+            "rbf":                 bool(self.rbf.isChecked()),
+            "rbf_smooth":          float(self.smooth.value()),
+            "seed":                int(self.seed.value()),
             "make_background_doc": bool(self.mk_bg.isChecked()),
-            # exclusion polygons: intentionally unsupported here
-        }        
+        }      
+    
 class _CropPresetDialog(QDialog):
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
