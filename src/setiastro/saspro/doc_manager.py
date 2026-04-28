@@ -2101,7 +2101,7 @@ class DocManager(QObject):
         norm_ext = _normalize_ext(ext)
 
         lower_path = path.lower()
-        is_fits = lower_path.endswith((".fit", ".fits", ".fit.gz", ".fits.gz", ".fz"))
+        is_fits = lower_path.endswith((".fit", ".fits", ".fts", ".fit.gz", ".fits.gz", ".fz"))
         is_xisf = (norm_ext == "xisf")
 
         primary_doc = None

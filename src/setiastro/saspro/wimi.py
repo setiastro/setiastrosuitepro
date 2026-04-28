@@ -6699,7 +6699,7 @@ class WIMIDialog(QDialog):
 
     #If originally a fits file update the header
     def update_fits_with_wcs(self, filepath, calibration_data):
-        if not filepath.lower().endswith(('.fits', '.fit')):
+        if not filepath.lower().endswith(('.fits', '.fit', '.fts', '.fits.gz', '.fit.gz', '.fts.gz', '.fz')):
             print("File is not a FITS file. Skipping WCS header update.")
             return
 

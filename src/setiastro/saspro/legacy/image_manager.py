@@ -1281,7 +1281,7 @@ def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = 
             original_header = None
 
             # --- Unified FITS handling ---
-            if filename.lower().endswith(('.fits', '.fit', '.fits.gz', '.fit.gz', '.fz', '.fz')):
+            if filename.lower().endswith(('.fits', '.fit', '.fts', '.fits.gz', '.fit.gz', '.fz')):
                 # Use get_valid_header to retrieve the header and extension index.
                 try:
                     original_header, ext_index = get_valid_header(filename)
