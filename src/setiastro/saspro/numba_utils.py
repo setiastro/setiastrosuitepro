@@ -1777,14 +1777,27 @@ def fast_star_count_lite(img: np.ndarray,
     avg_ecc = float(np.mean(ecc_vals)) if ecc_vals else 0.0
     return count, avg_ecc
 
-
-
 def compute_star_count_fast_preview(preview_2d: np.ndarray) -> tuple[int, float]:
     """
-    Wrapper used in measurement: downsample aggressively and run the lite counter.
+    Middle-ground star counter for stacking suite measurement phase.
+    
+    2× downsample (was 4×+stride-8, giving ~256×192 on 4K) → fast_star_count
+    (OpenCV Gaussian subtract + Otsu + ellipse fitting on contours).
+    
+    Much better quality than fast_star_count_lite while still being fast
+    enough for parallel preview measurement across hundreds of frames.
     """
-    tiny = _downsample_for_stars(preview_2d, factor=4)  # try 4–8 depending on your sensor
-    return fast_star_count_lite(tiny, sample_stride=8, localmax_k=3, thr_sigma=4.0, max_ecc_samples=120)
+    # 2× downsample — on a 4K image this gives ~2K working resolution,
+    # plenty of signal for star detection vs the previous ~256px
+    tiny = _downsample_for_stars(preview_2d, factor=2)
+    return fast_star_count(
+        tiny,
+        stretch=True,
+        gamma=0.45,
+        p_lo=0.1,
+        p_hi=99.8,
+        morph_open="auto",
+    )
 
 def compute_star_count(image):
     return fast_star_count(image)
