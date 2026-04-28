@@ -29,7 +29,7 @@ class SERStackConfig:
     keep_mask: Optional[np.ndarray] = None
     planet_smooth_sigma: float = 1.5
     planet_thresh_pct: float = 92.0
-    planet_use_norm: bool = True
+    planet_use_norm: bool = False
     planet_norm_lo_pct: float = 1.0
     planet_norm_hi_pct: float = 99.5
     planet_min_val: float = 0.02
@@ -70,7 +70,7 @@ class SERStackConfig:
         self.planet_smooth_sigma = float(kwargs.pop("planet_smooth_sigma", 1.5))
         self.planet_thresh_pct   = float(kwargs.pop("planet_thresh_pct", 92.0))
         self.planet_min_val      = float(kwargs.pop("planet_min_val", 0.02))
-        self.planet_use_norm     = bool(kwargs.pop("planet_use_norm", True))
+        self.planet_use_norm     = bool(kwargs.pop("planet_use_norm", False))
         self.planet_norm_lo_pct  = float(kwargs.pop("planet_norm_lo_pct", 1.0))
         self.planet_norm_hi_pct  = float(kwargs.pop("planet_norm_hi_pct", 99.5))
         self.center_on_planet = bool(kwargs.pop("center_on_planet", False))

@@ -24,17 +24,18 @@ class PlanetaryTracker:
         *,
         smooth_sigma: float = 1.5,
         thresh_pct: float = 92.0,
-        min_val: float = 0.02,          # ✅ NEW
+        min_val: float = 0.02,
         use_norm: bool = True,
         norm_hi_pct: float = 99.5,
         norm_lo_pct: float = 1.0,
     ):
         self.smooth_sigma = float(smooth_sigma)
         self.thresh_pct = float(thresh_pct)
-        self.min_val = float(min_val)  # ✅ store
+        self.min_val = float(min_val)
         self.use_norm = bool(use_norm)
         self.norm_hi_pct = float(norm_hi_pct)
         self.norm_lo_pct = float(norm_lo_pct)
+        self._ref_center = None
 
     def reset(self):
         self._ref_center = None
@@ -42,114 +43,156 @@ class PlanetaryTracker:
     def _blur(self, m: np.ndarray) -> np.ndarray:
         if cv2 is None:
             return m
-        # sigma->ksize
         sigma = max(0.0, self.smooth_sigma)
         if sigma <= 0:
             return m
         k = int(max(3, (sigma * 6) // 2 * 2 + 1))
         return cv2.GaussianBlur(m, (k, k), sigmaX=sigma, sigmaY=sigma)
 
-    def _largest_component_mask(self, mask: np.ndarray) -> np.ndarray:
-        if cv2 is None:
-            return mask
-        # mask uint8 0/255
-        num, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-        if num <= 1:
-            return mask
-        # skip background 0
-        areas = stats[1:, cv2.CC_STAT_AREA]
-        k = 1 + int(np.argmax(areas))
-        out = (labels == k).astype(np.uint8) * 255
-        return out
-
-    def _centroid(self, m: np.ndarray, mask: np.ndarray) -> tuple[float, float, float]:
-        if cv2 is None:
-            # fallback: simple average of mask pixels
-            ys, xs = np.nonzero(mask > 0)
-            if len(xs) < 10:
-                return (0.0, 0.0, 0.0)
-            return (float(xs.mean()), float(ys.mean()), 1.0)
-
-        mm = cv2.moments((mask > 0).astype(np.uint8), binaryImage=True)
-        if mm["m00"] <= 0:
-            return (0.0, 0.0, 0.0)
-        cx = float(mm["m10"] / mm["m00"])
-        cy = float(mm["m01"] / mm["m00"])
-        # confidence: area fraction
-        conf = float(np.clip(mm["m00"] / float(mask.size), 0.0, 1.0))
-        return (cx, cy, conf)
-
     def _normalize_for_detect(self, m: np.ndarray) -> np.ndarray:
         if not self.use_norm:
             return m
-
         lo = float(np.percentile(m, self.norm_lo_pct))
         hi = float(np.percentile(m, self.norm_hi_pct))
         if (not np.isfinite(lo)) or (not np.isfinite(hi)) or (hi <= lo + 1e-12):
             return m
-
         det = (m - lo) / (hi - lo)
         return np.clip(det, 0.0, 1.0).astype(np.float32, copy=False)
+
+    def _prep_mono01(self, img01: np.ndarray) -> np.ndarray:
+        m = _to_mono01(img01).astype(np.float32, copy=False)
+        m = np.nan_to_num(m, nan=0.0, posinf=0.0, neginf=0.0)
+        if self.smooth_sigma > 0.0 and cv2 is not None:
+            m = cv2.GaussianBlur(m, (0, 0), float(self.smooth_sigma))
+        m = self._normalize_for_detect(m)
+        return np.clip(m, 0.0, 1.0).astype(np.float32, copy=False)
+
+    def _find_brightest_blob_center(self, m: np.ndarray) -> tuple[float, float, float]:
+        """
+        For a planetary disk, geometric center of the brightest blob is always
+        more accurate than brightness-weighted centroid (which biases toward
+        the brighter limb/core).
+        """
+        if cv2 is None:
+            return self._fallback_geometric_center(m)
+
+        for pct in [99, 97, 95, 93, 90, 85, 80, 70, 60, 50]:
+            thr = float(np.percentile(m, pct))
+            if thr < self.min_val:
+                continue
+            mask = (m >= thr).astype(np.uint8)
+            num, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+            n_blobs = num - 1
+            if n_blobs < 1:
+                continue
+
+            # Find best blob: largest area × mean brightness
+            best_k = -1
+            best_score = -1.0
+            for k in range(1, num):
+                area = stats[k, cv2.CC_STAT_AREA]
+                if area < 4:
+                    continue
+                mean_val = float(m[labels == k].mean())
+                score = mean_val * (float(area) ** 0.3)
+                if score > best_score:
+                    best_score = score
+                    best_k = k
+
+            if best_k < 1:
+                continue
+
+            # Use minEnclosingCircle for geometric center — immune to brightness bias
+            blob_mask = (labels == best_k).astype(np.uint8) * 255
+            contours, _ = cv2.findContours(
+                blob_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            )
+            if not contours:
+                continue
+
+            # Merge all contours (shouldn't be more than one, but be safe)
+            all_pts = np.concatenate(contours, axis=0)
+            (cx, cy), radius = cv2.minEnclosingCircle(all_pts)
+
+            # Confidence: how round is the blob (circularity)
+            area = stats[best_k, cv2.CC_STAT_AREA]
+            circularity = float(area) / max(1.0, np.pi * radius * radius)
+            conf = float(np.clip(circularity * float(m[labels == best_k].mean()), 0.0, 1.0))
+
+            return (float(cx), float(cy), conf)
+
+        return self._fallback_geometric_center(m)
+
+
+    def _fallback_geometric_center(self, m: np.ndarray) -> tuple[float, float, float]:
+        """Bounding box center of top-5% brightest pixels."""
+        thr = float(np.percentile(m, 95))
+        thr = max(thr, self.min_val)
+        ys, xs = np.where(m >= thr)
+        if len(xs) < 4:
+            idx = np.argmax(m)
+            cy, cx = np.unravel_index(idx, m.shape)
+            return (float(cx), float(cy), 0.1)
+        # Bounding box center — not brightness-weighted
+        cx = float(xs.min() + xs.max()) / 2.0
+        cy = float(ys.min() + ys.max()) / 2.0
+        conf = float(np.clip(float(m[ys, xs].mean()) / max(1e-6, float(m.max())), 0.0, 1.0))
+        return (cx, cy, conf)
+
+    def _weighted_centroid_in_mask(
+        self, m: np.ndarray, mask: np.ndarray
+    ) -> tuple[float, float, float]:
+        """Brightness-weighted centroid within a binary mask."""
+        ys, xs = np.nonzero(mask)
+        if len(xs) < 4:
+            return (m.shape[1] * 0.5, m.shape[0] * 0.5, 0.0)
+        w = m[ys, xs].astype(np.float64)
+        sw = float(w.sum()) + 1e-12
+        cx = float((xs * w).sum() / sw)
+        cy = float((ys * w).sum() / sw)
+        conf = float(np.clip(float(w.mean()) / max(1e-6, float(m.max())), 0.0, 1.0))
+        return (cx, cy, conf)
+
+    def _fallback_weighted_centroid(self, m: np.ndarray) -> tuple[float, float, float]:
+        """Top-5% brightness weighted centroid, no connectivity needed."""
+        thr = float(np.percentile(m, 95))
+        thr = max(thr, self.min_val)
+        ys, xs = np.where(m >= thr)
+        if len(xs) < 4:
+            # Last resort: just use the single brightest pixel
+            idx = np.argmax(m)
+            cy, cx = np.unravel_index(idx, m.shape)
+            return (float(cx), float(cy), 0.1)
+        w = m[ys, xs].astype(np.float64)
+        sw = float(w.sum()) + 1e-12
+        cx = float((xs * w).sum() / sw)
+        cy = float((ys * w).sum() / sw)
+        conf = float(np.clip(float(w.mean()) / max(1e-6, float(m.max())), 0.0, 1.0))
+        return (cx, cy, conf)
+
+    def compute_center(self, img01: np.ndarray) -> tuple[float, float, float]:
+        m = self._prep_mono01(img01)
+        return self._find_brightest_blob_center(m)
 
     def step(self, img01: np.ndarray) -> tuple[float, float, float]:
         cx, cy, conf = self.compute_center(img01)
         if conf <= 0.0:
             return 0.0, 0.0, 0.0
-
         if self._ref_center is None:
             self._ref_center = (cx, cy)
             return 0.0, 0.0, conf
-
         rx, ry = self._ref_center
-        dx = rx - cx
-        dy = ry - cy
-        return float(dx), float(dy), float(conf)
-    
-    def _prep_mono01(self, img01: np.ndarray) -> np.ndarray:
-        m = _to_mono01(img01).astype(np.float32, copy=False)
-        m = np.nan_to_num(m, nan=0.0, posinf=0.0, neginf=0.0)
+        return float(rx - cx), float(ry - cy), float(conf)
 
-        # match step(): blur then lo/hi percentile normalize
-        if self.smooth_sigma > 0.0 and cv2 is not None:
-            m = cv2.GaussianBlur(m, (0, 0), float(self.smooth_sigma))
-
-        m = self._normalize_for_detect(m)
-        return np.clip(m, 0.0, 1.0).astype(np.float32, copy=False)
-
-    def compute_center(self, img01: np.ndarray):
-        m = self._prep_mono01(img01)  # already blurred + normalized
-
-        thr = float(np.percentile(m, np.clip(self.thresh_pct, 0.0, 100.0)))
-        if not np.isfinite(thr):
-            return (m.shape[1] * 0.5), (m.shape[0] * 0.5), 0.0
-
-        # ✅ critical: threshold cannot be below min_val (same domain: normalized [0..1])
-        thr = max(thr, float(self.min_val))
-
-        mask = (m >= thr).astype(np.uint8)
-        if int(mask.sum()) < 10:
-            return (m.shape[1] * 0.5), (m.shape[0] * 0.5), 0.0
-
-        ys, xs = np.nonzero(mask)
-        w = m[ys, xs]
-        sw = float(w.sum()) + 1e-12
-        cx = float((xs * w).sum() / sw)
-        cy = float((ys * w).sum() / sw)
-
-        conf = float(np.clip((float(np.mean(w)) - thr) / max(1e-6, (1.0 - thr)), 0.0, 1.0))
-        return cx, cy, conf
-
-
-    def shift_to_ref(self, img01: np.ndarray, ref_center: tuple[float, float]) -> tuple[float, float, float]:
-        """
-        Returns (dx, dy, conf) shifting FROM current frame TO the provided reference center.
-        """
+    def shift_to_ref(
+        self, img01: np.ndarray, ref_center: tuple[float, float]
+    ) -> tuple[float, float, float]:
         cx, cy, conf = self.compute_center(img01)
         if conf <= 0.0:
             return 0.0, 0.0, 0.0
         rx, ry = ref_center
         return float(rx - cx), float(ry - cy), float(conf)
-
+    
 class SurfaceTracker:
     """
     Tracks by translation using phase correlation between anchor patch and current patch.
@@ -226,3 +269,29 @@ class SurfaceTracker:
         cur = _to_mono01(np.asarray(cur_patch, dtype=np.float32))
         ref = self.ref
         return self._phase_corr(ref, cur)
+    
+
+def compute_planet_center(img01: np.ndarray, *, smooth_sigma: float = 1.5,
+                          min_val: float = 0.02, use_norm: bool = True,
+                          norm_hi_pct: float = 99.5, norm_lo_pct: float = 1.0,
+                          thresh_pct: float = 92.0) -> tuple[float, float] | None:
+    """
+    Single source of truth for planetary disk center detection.
+    Used by the viewer overlay, analyze_ser, and realign_ser.
+    Returns (cx, cy) in image pixel coords, or None on failure.
+    """
+    try:
+        tracker = PlanetaryTracker(
+            smooth_sigma=smooth_sigma,
+            thresh_pct=thresh_pct,
+            min_val=min_val,
+            use_norm=use_norm,
+            norm_hi_pct=norm_hi_pct,
+            norm_lo_pct=norm_lo_pct,
+        )
+        cx, cy, conf = tracker.compute_center(img01)
+        if conf <= 0.0:
+            return None
+        return (float(cx), float(cy))
+    except Exception:
+        return None    

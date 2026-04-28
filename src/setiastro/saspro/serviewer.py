@@ -304,8 +304,14 @@ class SERViewer(QDialog):
         sform = QFormLayout(stack)
 
         self.cmb_track = QComboBox(self)
-        self.cmb_track.addItems(["Planetary", "Surface", "Off"])   # map to config
+        self.cmb_track.addItems(["Planetary", "Surface", "Off"])
         self.cmb_track.setCurrentText("Planetary")
+        self.cmb_track.setToolTip(
+            "Planetary: tracks small/medium planets (Jupiter, Saturn, Mars, etc.) by disk centroid.\n"
+            "Surface: tracks by surface features — use this for the Moon, Sun, or any object\n"
+            "         that fills a large portion of the frame. Set a surface anchor with Ctrl+Shift+drag.\n"
+            "Off: no tracking (stack without alignment)."
+        )
 
         self.spin_keep = QDoubleSpinBox(self)
         self.spin_keep.setRange(0.1, 100.0)
@@ -332,7 +338,7 @@ class SERViewer(QDialog):
             "be inherited — otherwise you will be prompted to set one from the first file."
         )       
         self.chk_planet_norm = QCheckBox("Normalize for planetary centroid detect")
-        self.chk_planet_norm.setChecked(True)
+        self.chk_planet_norm.setChecked(False)
         self.chk_planet_norm.setToolTip("Detection-only normalization (does not change stacking pixels). Helps dim planets.")
 
         self.spin_planet_thresh = QDoubleSpinBox()
@@ -445,8 +451,13 @@ class SERViewer(QDialog):
         self.spin_trim_start.valueChanged.connect(self._on_trim_changed)
         self.spin_trim_end.valueChanged.connect(self._on_trim_changed)
         self.btn_save_trimmed.clicked.connect(self._save_trimmed_ser)
-
+        # Detection knobs should update crosshair in real time
+        for w in (self.spin_planet_thresh, self.spin_planet_min,
+                  self.spin_planet_smooth, self.spin_norm_lo, self.spin_norm_hi):
+            w.valueChanged.connect(self._refresh)
+        self.chk_planet_norm.toggled.connect(self._refresh)
         self.resize(1200, 800)
+        self._on_track_mode_changed()
 
 
     #-----qsettings
@@ -703,13 +714,27 @@ class SERViewer(QDialog):
 
     def _on_track_mode_changed(self):
         mode = self._track_mode_value()
-
-        # ✅ always reflect current anchor state
         self._update_anchor_label()
 
         if mode == "surface" and self._surface_anchor is None:
             self.lbl_anchor.setText("Surface anchor: REQUIRED  •  Ctrl+Shift+drag to set")
             self.lbl_anchor.setStyleSheet("color:#c66;")
+        elif mode == "planetary" and self.reader is not None:
+            m = self.reader.meta
+            frame_area = float(m.width * m.height)
+            roi = self._roi_tuple()
+            if roi:
+                roi_area = float(roi[2] * roi[3])
+            else:
+                roi_area = frame_area
+
+            # Warn if the working area is more than 50% of the full frame —
+            # likely Moon/Sun rather than a small planetary disk in black sky
+            if roi_area > frame_area * 0.5:
+                self.lbl_anchor.setText(
+                    "⚠ Large field: if imaging the Moon or Sun, Surface mode works better than Planetary."
+                )
+                self.lbl_anchor.setStyleSheet("color:#f90;")
 
         self._refresh()
     
@@ -982,40 +1007,18 @@ class SERViewer(QDialog):
             pass
 
     def _compute_planet_com_px(self, img01: np.ndarray) -> tuple[float, float] | None:
-        """
-        Compute a quick center-of-mass in *image pixel coords* of the currently displayed image (ROI-space).
-        Uses a simple brightness-weighted COM with background subtraction.
-        """
         try:
-            if img01 is None:
-                return None
-            if img01.ndim == 3:
-                # simple luma (no extra deps)
-                m = 0.2126 * img01[..., 0] + 0.7152 * img01[..., 1] + 0.0722 * img01[..., 2]
-            else:
-                m = img01
-
-            m = np.asarray(m, dtype=np.float32)
-            H, W = m.shape[:2]
-            if H < 2 or W < 2:
-                return None
-
-            # Robust-ish background subtraction to focus on the planet
-            bg = float(np.percentile(m, 60))  # helps ignore dark background
-            w = np.clip(m - bg, 0.0, None)
-
-            s = float(w.sum())
-            if s <= 1e-8:
-                return None
-
-            ys = np.arange(H, dtype=np.float32)[:, None]
-            xs = np.arange(W, dtype=np.float32)[None, :]
-            cy = float((w * ys).sum() / s)
-            cx = float((w * xs).sum() / s)
-            return (cx, cy)
+            from setiastro.saspro.ser_tracking import compute_planet_center
+            return compute_planet_center(
+                img01,
+                smooth_sigma=float(self.spin_planet_smooth.value()),
+                min_val=float(self.spin_planet_min.value()),
+                use_norm=bool(self.chk_planet_norm.isChecked()),
+                norm_hi_pct=float(self.spin_norm_hi.value()),
+                thresh_pct=float(self.spin_planet_thresh.value()),
+            )
         except Exception:
             return None
-
 
     def _img_xy_to_pixmap_xy(self, x: float, y: float) -> tuple[int, int] | None:
         """
@@ -1350,6 +1353,7 @@ class SERViewer(QDialog):
         self._playing = False
 
         self._refresh()
+        self._on_track_mode_changed()
         # ── Bayer AUTO-detection warning for AVI/video ──────────────────
         src_kind = getattr(self.reader.meta, "source_kind", "ser")
         if src_kind in ("avi",) and self.cmb_bayer.currentText().strip().upper() == "AUTO":
@@ -1787,7 +1791,7 @@ class SERViewer(QDialog):
                 debayer=debayer,
                 to_float01=True,
                 force_rgb=False,
-                bayer_pattern=self.cmb_bayer.currentText(),  # ✅ NEW
+                bayer_pattern=self.cmb_bayer.currentText(),
             )
         except Exception as e:
             QMessageBox.warning(self, "SER Viewer", f"Frame read failed:\n{e}")
@@ -1799,21 +1803,20 @@ class SERViewer(QDialog):
                 if img.ndim == 2 and stretch_mono_image is not None:
                     img = np.clip(stretch_mono_image(img, target_median=0.25), 0.0, 1.0)
                 elif img.ndim == 3 and img.shape[2] == 3 and stretch_color_image is not None:
-                    # linked=True for planetary preview (you requested this)
                     img = np.clip(stretch_color_image(img, target_median=0.25, linked=True), 0.0, 1.0)
             except Exception:
-                # if stretch fails, fall back to raw preview
                 pass
 
-        try:
-            img = self._apply_preview_tone(img)
-        except Exception:
-            pass
-
-        # store for overlay calculations (ROI-sized if ROI is on)
+        # ✅ Store RAW (pre-tone) image for detection — brightness/gamma must not affect centroid
         self._last_disp_arr = img
 
-        qimg = self._to_qimage(img)
+        # Apply tone mapping for display only
+        try:
+            img_display = self._apply_preview_tone(img)
+        except Exception:
+            img_display = img
+
+        qimg = self._to_qimage(img_display)
         self._last_qimg = qimg
         self._render_last(anchor=self._viewport_center_anchor() if not self._fit_mode else None)
 
