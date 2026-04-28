@@ -163,7 +163,7 @@ import time
 from scipy.spatial import KDTree, Delaunay
 from astropy.stats import sigma_clipped_stats
 from astropy.io.fits import Header
-from photutils.detection import DAOStarFinder
+
 from astropy.table import vstack
 from astropy.io import fits
 from astropy.time import Time
@@ -3743,6 +3743,7 @@ class StarRegistrationThread(QThread):
 
     # ----- Star detection (reference) -----
     def detect_stars(self, image):
+        from photutils.detection import DAOStarFinder
         self.progress_update.emit("✨ Detecting stars in reference frame")
         if image.ndim == 3:
             image = np.mean(image, axis=2)
@@ -6305,6 +6306,7 @@ class MosaicMasterDialog(QDialog):
             Expects a 2D image; if 3D, we average over channels.
             You might need to tweak fwhm/threshold for your data.
             """
+            from photutils.detection import DAOStarFinder
             if image.ndim == 3:
                 image = np.mean(image, axis=2)
 
@@ -7185,6 +7187,7 @@ class MosaicMasterDialog(QDialog):
 
     def detect_stars(self, image2d, max_stars=50):
         # Retrieve user-defined values for sigma and fwhm.
+        from photutils.detection import DAOStarFinder
         sigma_val = self.settings.value("mosaic/star_sigma", 3.0, type=float)
         fwhm_val = self.settings.value("mosaic/star_fwhm", 3.0, type=float)
         
