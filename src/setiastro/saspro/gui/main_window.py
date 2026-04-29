@@ -9447,22 +9447,19 @@ class AstroSuiteProMainWindow(
             geo = s.value("ui/main/geometry")
             st  = s.value("ui/main/state")
             is_max = s.value("ui/main/maximized", False, type=bool)
-
-            if geo is not None:
+            if geo is not None and len(geo) > 0:
                 self.restoreGeometry(geo)
-            if st is not None:
-                self.restoreState(st, version=1)
-
-            # Make sure we're on a visible screen
+            if st is not None and len(st) > 0:
+                result = self.restoreState(st, version=1)
+                if not result:
+                    s.remove("ui/main/state")
             from PyQt6.QtGui import QGuiApplication
             r = self.frameGeometry()
             scr = QGuiApplication.screenAt(r.center()) or QGuiApplication.primaryScreen()
             if scr:
                 ag = scr.availableGeometry()
                 if not ag.intersects(r):
-                    # Center on the available geometry
                     self.move(ag.center() - self.rect().center())
-
             if is_max:
                 self.showMaximized()
         except Exception:
@@ -9671,37 +9668,20 @@ class AstroSuiteProMainWindow(
     def restore_main_window_state(self):
         s = self.settings
         k = self._mw_key()
-
-        # 1) restore dock/layout state first OR geometry first?
-        # Qt generally works best with: restoreState then restoreGeometry, then apply maximized.
         st = s.value(f"{k}/state", None)
-        if st is not None:
-            try:
-                self.restoreState(st)
-            except Exception:
-                pass
-
+        if st is not None and len(st) > 0:
+            result = self.restoreState(st)
+            if not result:
+                s.remove(f"{k}/state")
         geom = s.value(f"{k}/geometry", None)
-        if geom is not None:
-            try:
-                self.restoreGeometry(geom)
-            except Exception:
-                pass
-
-        # Maximized/fullscreen flags should be applied last
+        if geom is not None and len(geom) > 0:
+            self.restoreGeometry(geom)
         was_max = s.value(f"{k}/maximized", False, type=bool)
         was_full = s.value(f"{k}/fullscreen", False, type=bool)
-
         if was_full:
-            try:
-                self.showFullScreen()
-            except Exception:
-                pass
+            self.showFullScreen()
         elif was_max:
-            try:
-                self.showMaximized()
-            except Exception:
-                pass
+            self.showMaximized()
 
     def save_main_window_state(self):
         s = self.settings
