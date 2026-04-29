@@ -180,7 +180,7 @@ from setiastro.saspro.resources import (
     dse_icon_path, astrobin_filters_csv_path, isophote_path, statstretch_path,
     starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path,
     nbtorgb_path, freqsep_path, contsub_path, halo_path, cosmic_path,dithericon_path,
-    satellite_path, imagecombine_path, wrench_path, eye_icon_path,multiscale_decomp_path,
+    satellite_path, imagecombine_path, wrench_path, eye_icon_path,multiscale_decomp_path, nbi_path,
     disk_icon_path, nuke_path, hubble_path, collage_path, annotated_path,
     colorwheel_path, font_path, csv_icon_path, spinner_path, wims_path, narrowbandnormalization_path,
     wimi_path, linearfit_path, debayer_path, aberration_path, acv_icon_path, snr_path,
@@ -4285,6 +4285,17 @@ class AstroSuiteProMainWindow(
         w.setWindowTitle("Continuum Subtract")
         try:
             w.setWindowIcon(QIcon(contsub_path))
+        except Exception:
+            pass
+        w.show()
+
+    def _open_narrowband_integration(self):
+        from setiastro.saspro.narrowbandintegration import NarrowbandIntegrationDialog
+        w = NarrowbandIntegrationDialog(doc_manager=self.docman)
+        w.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        w.setWindowTitle("Narrowband Integration")
+        try:
+            w.setWindowIcon(QIcon(nbi_path))
         except Exception:
             pass
         w.show()

@@ -239,6 +239,7 @@ class Icons:
     FREQ_SEP = property(lambda self: _resource_path('freqsep.png'))
     MULTISCALE_DECOMP = property(lambda self: _resource_path('multiscale_decomp.png'))
     CONT_SUB = property(lambda self: _resource_path('contsub.png'))
+    NBI = property(lambda self: _resource_path('contadd.png'))
     HALO = property(lambda self: _resource_path('halo.png'))
     ABERRATION = property(lambda self: _resource_path('aberration.png'))
     SYQON = property(lambda self: _resource_path('syqon.png'))
@@ -460,6 +461,7 @@ _LEGACY_ICON_MAP = {
     'freqsep_path': 'freqsep.png',
     'multiscale_decomp_path': 'multiscale_decomp.png',
     'contsub_path': 'contsub.png',
+    'nbi_path': 'contadd.png',
     'halo_path': 'halo.png',
     'cosmic_path': 'cosmic.png',
     'satellite_path': 'cosmicsat.png',

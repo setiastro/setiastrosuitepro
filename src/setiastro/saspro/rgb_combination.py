@@ -124,6 +124,57 @@ class RGBCombinationDialogPro(QDialog):
         self._refresh_mode()
 
     # --- helpers
+
+    def _guess_channel(self, titles: list[str], channel: str) -> int:
+        """
+        Score each title for how likely it is to be the given channel (R/G/B).
+        Returns the index of the best match, or 0 if no confident match.
+        """
+        import re
+        channel = channel.upper()
+
+        def score(title: str) -> int:
+            t = title.lower()
+            s = 0
+
+            if channel == "R":
+                # Strong signals
+                if re.search(r'\bred\b', t):           s += 10
+                if re.search(r'[_\-\s\.]r[_\-\s\.\d]', t): s += 8   # _r_ r_ _r
+                if re.search(r'[_\-\s\.]ha[_\-\s\.]', t):  s += 6   # Ha = red
+                if re.search(r'[_\-\s\.]sii[_\-\s\.]', t): s += 5   # SII often mapped to R
+                if t.endswith('_r') or t.endswith('-r'):     s += 7
+                if re.search(r'[_\-\s\.]r$', t):            s += 7
+                # Penalty: if it looks green or blue, penalise
+                if re.search(r'\bgreen\b|\bblue\b', t):      s -= 10
+                if re.search(r'[_\-\s\.]g[_\-\s\.]|[_\-\s\.]b[_\-\s\.]', t): s -= 5
+
+            elif channel == "G":
+                if re.search(r'\bgreen\b', t):               s += 10
+                if re.search(r'[_\-\s\.]g[_\-\s\.\d]', t):  s += 8
+                if t.endswith('_g') or t.endswith('-g'):      s += 7
+                if re.search(r'[_\-\s\.]g$', t):             s += 7
+                if re.search(r'[_\-\s\.]oiii[_\-\s\.]', t): s += 5  # OIII often mapped to G
+                if re.search(r'\bred\b|\bblue\b', t):         s -= 10
+                if re.search(r'[_\-\s\.]r[_\-\s\.]|[_\-\s\.]b[_\-\s\.]', t): s -= 5
+
+            elif channel == "B":
+                if re.search(r'\bblue\b', t):                s += 10
+                if re.search(r'[_\-\s\.]b[_\-\s\.\d]', t):  s += 8
+                if t.endswith('_b') or t.endswith('-b'):      s += 7
+                if re.search(r'[_\-\s\.]b$', t):             s += 7
+                if re.search(r'[_\-\s\.]oiii[_\-\s\.]', t): s += 4  # OIII sometimes B
+                if re.search(r'\bred\b|\bgreen\b', t):        s -= 10
+                if re.search(r'[_\-\s\.]r[_\-\s\.]|[_\-\s\.]g[_\-\s\.]', t): s -= 5
+
+            return s
+
+        scores = [score(t) for t in titles]
+        best_score = max(scores)
+        if best_score <= 0:
+            return 0  # no confident match, leave at index 0
+        return scores.index(best_score)
+
     def _labeled(self, text, w):
         box = QVBoxLayout()
         box.addWidget(QLabel(text))
@@ -132,10 +183,17 @@ class RGBCombinationDialogPro(QDialog):
 
     def _populate_views(self):
         self.cmb_r.clear(); self.cmb_g.clear(); self.cmb_b.clear()
+        titles = []
         for title, doc in self._list_open_docs():
             self.cmb_r.addItem(title, doc)
             self.cmb_g.addItem(title, doc)
             self.cmb_b.addItem(title, doc)
+            titles.append(title)
+
+        if len(titles) >= 3:
+            self.cmb_r.setCurrentIndex(self._guess_channel(titles, "R"))
+            self.cmb_g.setCurrentIndex(self._guess_channel(titles, "G"))
+            self.cmb_b.setCurrentIndex(self._guess_channel(titles, "B"))
 
     def _refresh_mode(self):
         use_views = self.use_views_radio.isChecked()

@@ -34,7 +34,7 @@ from setiastro.saspro.resources import (
     signature_icon_path, livestacking_path, convoicon_path, spcc_icon_path,
     exoicon_path, peeker_icon, dse_icon_path, isophote_path, statstretch_path,resizecanvas_path,
     starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path, narrowbandnormalization_path,
-    nbtorgb_path, freqsep_path, multiscale_decomp_path, contsub_path, halo_path, cosmic_path,
+    nbtorgb_path, freqsep_path, multiscale_decomp_path, contsub_path, halo_path, cosmic_path, nbi_path,
     satellite_path, imagecombine_path, wims_path, wimi_path, linearfit_path, snr_path,
     debayer_path, aberration_path, functionbundles_path, viewbundles_path, planetarystacker_path,syqon_path,
     selectivecolor_path, selectivelum_path, rgbalign_path, planetprojection_path, clonestampicon_path, finderchart_path,magnitude_path,
@@ -269,6 +269,7 @@ class ToolbarMixin:
         tb_tl.addAction(self.act_freqsep)
         tb_tl.addAction(self.act_multiscale_decomp)
         tb_tl.addAction(self.act_contsub)
+        tb_tl.addAction(self.act_narrowband_integration)
         tb_tl.addAction(self.act_image_combine)
         tb_tl.addAction(self.act_magnitude)
         tb_tl.addAction(self.act_snr)
@@ -1286,6 +1287,11 @@ class ToolbarMixin:
         self.act_contsub.setIconVisibleInMenu(True)
         self.act_contsub.triggered.connect(self._open_contsub_tool)
 
+        self.act_narrowband_integration = QAction(QIcon(nbi_path), self.tr("Narrowband Integration..."), self)
+        self.act_narrowband_integration.setStatusTip(self.tr("Integrate continuum subtracted narrowband data into RGB channels"))
+        self.act_narrowband_integration.setIconVisibleInMenu(True)
+        self.act_narrowband_integration.triggered.connect(self._open_narrowband_integration)
+
         # History
         self.act_history_explorer = QAction(self.tr("History Explorer..."), self)
         self.act_history_explorer.setStatusTip(self.tr("Inspect and restore from the slot's history"))
@@ -1546,6 +1552,7 @@ class ToolbarMixin:
         reg("selective_lum", self.act_selective_lum)
         reg("narrowband_normalization", self.act_narrowband_normalization)
         reg("contsub",      self.act_contsub)
+        reg("narrowband_integration", self.act_narrowband_integration)
         reg("abe",          self.act_abe)
         reg("create_mask", self.act_create_mask)
         reg("graxpert", self.act_graxpert)        
