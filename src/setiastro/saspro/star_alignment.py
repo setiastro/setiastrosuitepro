@@ -3977,7 +3977,13 @@ class StarRegistrationThread(QThread):
                     kind, M = self.drizzle_xforms[k]
                 else:
                     # fallback: affine-only (2x3) from accumulated alignment_matrices
-                    M_aff = np.asarray(self.alignment_matrices.get(k, IDENTITY_2x3), dtype=np.float32)
+                    M_raw = self.alignment_matrices.get(k)
+                    if M_raw is None:
+                        f.write(f"FILE: {k}\n")
+                        f.write("KIND: affine\n")
+                        f.write("MATRIX:\nUNSUPPORTED\n\n")
+                        continue
+                    M_aff = np.asarray(M_raw, dtype=np.float32)
                     kind, M = "affine", M_aff
 
                 f.write(f"FILE: {k}\n")

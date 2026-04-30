@@ -108,7 +108,18 @@ from setiastro.saspro.torch_rejection import (
     torch_available as _torch_ok,
     gpu_algo_supported as _gpu_algo_supported,
     torch_reduce_tile as _torch_reduce_tile,
+    _get_torch,
+    _safe_inference_ctx as _safe_inference_ctx_impl,
 )
+
+def _safe_torch_inference_ctx():
+    """Wrapper that resolves torch then returns a proper context manager instance."""
+    try:
+        torch = _get_torch(prefer_cuda=True)
+        return _safe_inference_ctx_impl(torch)
+    except Exception:
+        import contextlib
+        return contextlib.nullcontext()
 
 import inspect
 try:
@@ -584,29 +595,6 @@ def load_image_fast_norm(path: str) -> tuple[np.ndarray | None, fits.Header | No
         return None, None
 
     
-def _safe_torch_inference_ctx():
-    """
-    Return a context manager suitable for inference:
-    - torch.inference_mode() if available and enterable
-    - else torch.no_grad()
-    - else a no-op context if torch isn't importable
-    """
-    try:
-        import torch
-    except Exception:
-        return contextlib.nullcontext  # returns the *type*; call as _ctx()
-
-    cm = getattr(torch, "inference_mode", None)
-    if cm is not None:
-        # Probe once — older/alt backends may have the symbol but not the C++ hook
-        try:
-            with cm():
-                pass
-            return cm
-        except Exception:
-            return getattr(torch, "no_grad", contextlib.nullcontext)
-    return getattr(torch, "no_grad", contextlib.nullcontext)
-
 # ---------- Lightweight FITS preview + header/bin cache + link helper ----------
 
 import shutil
@@ -20981,48 +20969,73 @@ class StackingSuiteDialog(QDialog):
 
                 # Build seeds in the *registered* space
                 seeds = {}
-                reg_path = None  # ensure defined for logging checks below
+                reg_path = None
                 if hasattr(self, "_comet_seed") and self._comet_seed:
                     seed_src_path = os.path.normpath(self._comet_seed.get("path", ""))
                     seed_xy       = tuple(self._comet_seed.get("xy", (0.0, 0.0)))
 
-                    # 1) try exact mapping: original/normalized -> registered path
+                    # 1) exact mapping: original/normalized -> registered path
                     if transforms_dict:
                         reg_path = transforms_dict.get(seed_src_path)
 
-                    # 2) fuzzy fallback by basename prefix (handles _n -> _n_r)
+                    # 2) fuzzy fallback: match by stem substring in either direction
+                    #    handles prefix additions (d6036a_foo) and suffix additions (foo_n_r)
                     if not reg_path:
-                        bn = os.path.basename(os.path.splitext(seed_src_path)[0])
+                        seed_stem = os.path.splitext(os.path.basename(seed_src_path))[0]
                         for p in sorted_files:
-                            if os.path.basename(p).startswith(bn):
+                            p_stem = os.path.splitext(os.path.basename(p))[0]
+                            if (seed_stem in p_stem) or (p_stem in seed_stem):
                                 reg_path = p
+                                log(f"  ◦ comet seed fuzzy matched: {os.path.basename(seed_src_path)} → {os.path.basename(p)}")
                                 break
 
-                    # 3) transform XY into registered frame
+                    # 3) last resort: use the closest file by time to when the seed was picked
+                    #    (seed_src_path mtime vs sorted_files mtimes)
+                    if not reg_path and sorted_files:
+                        try:
+                            seed_mtime = os.path.getmtime(seed_src_path) if os.path.exists(seed_src_path) else None
+                            if seed_mtime is not None:
+                                reg_path = min(sorted_files,
+                                               key=lambda p: abs(os.path.getmtime(p) - seed_mtime)
+                                               if os.path.exists(p) else float("inf"))
+                                log(f"  ◦ comet seed mtime-matched to {os.path.basename(reg_path)}")
+                        except Exception:
+                            reg_path = sorted_files[0]
+                            log(f"  ◦ comet seed mtime match failed; using first frame {os.path.basename(reg_path)}")
+
+                    # 4) transform XY into registered frame space
                     if reg_path:
-                        M = self.matrix_by_aligned.get(os.path.normpath(reg_path))
-                        if M is not None and np.asarray(M).shape == (2,3):
+                        reg_path_norm = os.path.normpath(reg_path)
+                        M = self.matrix_by_aligned.get(reg_path_norm)
+                        if M is not None and np.asarray(M).shape == (2, 3):
                             x, y = seed_xy
-                            a,b,tx = M[0]; c,d,ty = M[1]
-                            seeds[os.path.normpath(reg_path)] = (
+                            a, b, tx = M[0]; c, d, ty = M[1]
+                            seeds[reg_path_norm] = (
                                 float(a*x + b*y + tx),
                                 float(c*x + d*y + ty)
                             )
-                            log(f"  ◦ using user seed on {os.path.basename(reg_path)}")
+                            log(f"  ◦ comet seed transformed to registered space: "
+                                f"({x:.1f},{y:.1f}) → ({seeds[reg_path_norm][0]:.1f},{seeds[reg_path_norm][1]:.1f}) "
+                                f"on {os.path.basename(reg_path)}")
                         else:
-                            log("  ⚠️ user seed: no affine for that registered file")
+                            # No affine available — use seed xy as-is (already in image space)
+                            seeds[reg_path_norm] = seed_xy
+                            log(f"  ◦ comet seed placed as-is (no affine): ({seed_xy[0]:.1f},{seed_xy[1]:.1f}) "
+                                f"on {os.path.basename(reg_path)}")
 
-                # 4) Last resort: if no seed mapped to any of the files, drop the reference-frame seed
-                if not any(fp in seeds for fp in sorted_files):
+                # 5) absolute last resort: use _comet_ref_xy on first frame
+                if not any(os.path.normpath(fp) in seeds for fp in sorted_files):
                     if getattr(self, "_comet_ref_xy", None):
-                        seeds[sorted_files[0]] = tuple(map(float, self._comet_ref_xy))
-                        log("  ◦ seeding first registered frame with _comet_ref_xy")
+                        seeds[os.path.normpath(sorted_files[0])] = tuple(map(float, self._comet_ref_xy))
+                        log(f"  ◦ seeding first registered frame with _comet_ref_xy: {self._comet_ref_xy}")
+                    elif sorted_files:
+                        log("  ⚠️ No comet seed could be resolved — auto-detection will run on first frame")
 
-                # Sanity log if we actually have a reg_path and seed
+                # Sanity log
                 if reg_path and (os.path.normpath(reg_path) in seeds):
                     sx, sy = seeds[os.path.normpath(reg_path)]
-                    log(f"  ◦ seed xy={sx:.1f},{sy:.1f} within {W}×{H}? "
-                        f"{'OK' if (0<=sx<W and 0<=sy<H) else 'OUT-OF-BOUNDS'}")
+                    log(f"  ◦ seed xy=({sx:.1f},{sy:.1f}) within {W}×{H}? "
+                        f"{'OK' if (0<=sx<W and 0<=sy<H) else '⚠️ OUT-OF-BOUNDS'}")
 
                 # 1) Measure comet centers (auto baseline)
                 log("🟢 Measuring comet centers (template match)…")
@@ -21310,8 +21323,6 @@ class StackingSuiteDialog(QDialog):
             "autocrop_outputs": autocrop_outputs
         }
 
-
-
     def integrate_comet_aligned(
         self,
         group_key: str,
@@ -21325,16 +21336,19 @@ class StackingSuiteDialog(QDialog):
         from setiastro.saspro.starless_engines.syqon_nafnet_engine import syqon_starless_from_array
         from setiastro.saspro.starless_engines.syqon_nafnet_engine import nafnet_starless_rgb01
         collect_per_file = bool(self._get_drizzle_enabled())
-        per_file_rejections = {f: [] for f in file_list} if collect_per_file else None
         debug_starrem = bool(self.settings.value("stacking/comet_starrem/debug_dump", False, type=bool))
         debug_dir = os.path.join(self.stacking_directory, "debug_comet_starrem")
-        os.makedirs(debug_dir, exist_ok=True)        
+        os.makedirs(debug_dir, exist_ok=True)
         """
         Translate each frame so its comet centroid lands on a single reference pixel
-        (from file_list[0]). Optional comet star-removal runs AFTER this alignment,
-        with a single fixed core mask in comet space. No NaNs; reduction uses the
-        selected rejection algorithm.
+        (from file_list[0]). Pre-warps all frames into memmaps once, then feeds the
+        tile loop with double-buffered prefetch — identical pipeline to
+        normal_integration_with_rejection for maximum GPU throughput.
         """
+        import contextlib
+        import time as _time
+        import tempfile as _tempfile
+
         log = status_cb or (lambda *_: None)
         if not file_list:
             return None, {}, None
@@ -21350,7 +21364,6 @@ class StackingSuiteDialog(QDialog):
         H, W = ref_img.shape[:2]
         C = 3 if is_color else 1
 
-        # The single pixel we align to (in ref frame):
         ref_xy = comet_xy[ref_file]
         log(f"📌 Comet reference pixel @ {ref_file} → ({ref_xy[0]:.2f},{ref_xy[1]:.2f})")
 
@@ -21358,13 +21371,13 @@ class StackingSuiteDialog(QDialog):
         sources = []
         try:
             for p in file_list:
-                sources.append(_MMImage(p))   # << was _MMFits
+                sources.append(_MMImage(p))
         except Exception as e:
             for s in sources:
                 try: s.close()
-                except Exception as e:
+                except Exception as ex:
                     import logging
-                    logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
+                    logging.debug(f"Exception suppressed: {type(ex).__name__}: {ex}")
             log(f"⚠️ Failed to open images (memmap): {e}")
             return None, {}, None
 
@@ -21372,7 +21385,7 @@ class StackingSuiteDialog(QDialog):
         integrated_image = np.zeros((H, W, C), dtype=DTYPE)
         per_file_rejections = {p: [] for p in file_list}
 
-        # --- Chunking (same policy as normal integration) ---
+        # --- Chunking ---
         pref_h, pref_w = self.chunk_height, self.chunk_width
         try:
             chunk_h, chunk_w = compute_safe_chunk(H, W, len(file_list), C, DTYPE, pref_h, pref_w)
@@ -21380,17 +21393,14 @@ class StackingSuiteDialog(QDialog):
         except MemoryError as e:
             for s in sources:
                 try: s.close()
-                except Exception as e:
+                except Exception as ex:
                     import logging
-                    logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
+                    logging.debug(f"Exception suppressed: {type(ex).__name__}: {ex}")
             log(f"⚠️ {e}")
             return None, {}, None
 
-        # Reusable tile buffer
-        ts_buf = np.empty((len(file_list), chunk_h, chunk_w, C), dtype=np.float32, order='F')
         weights_array = np.array([frame_weights.get(p, 1.0) for p in file_list], dtype=np.float32)
 
-        # Rejection maps (for MEF layers)
         rej_any   = np.zeros((H, W), dtype=np.bool_)
         rej_count = np.zeros((H, W), dtype=np.uint16)
 
@@ -21401,112 +21411,141 @@ class StackingSuiteDialog(QDialog):
             dx = ref_xy[0] - cx
             dy = ref_xy[1] - cy
             affines[p] = np.array([[1.0, 0.0, dx],
-                                [0.0, 1.0, dy]], dtype=np.float32)
+                                    [0.0, 1.0, dy]], dtype=np.float32)
+
+        # --- Determine algo and GPU availability ONCE before tile loop ---
+        algo = (algo_override or self.rejection_algorithm)
+        use_gpu = bool(self._hw_accel_enabled()) and _torch_ok() and _gpu_algo_supported(algo)
+        log(f"📊 Comet integration: algo={algo}  GPU={'yes' if use_gpu else 'no'}")
+
+        # --- CPU fallback reducer (comet-aware) ---
+        def _comet_cpu_reduce(ts, th, tw):
+            if algo in ("Comet Median", "Simple Median (No Rejection)"):
+                return np.median(ts, axis=0), np.zeros((len(file_list), th, tw), dtype=bool)
+            elif algo == "Comet High-Clip Percentile":
+                k = self.settings.value("stacking/comet_hclip_k", 1.30, type=float)
+                p = self.settings.value("stacking/comet_hclip_p", 25.0, type=float)
+                return _high_clip_percentile(ts, k=float(k), p=float(p)), np.zeros((len(file_list), th, tw), dtype=bool)
+            elif algo == "Comet Lower-Trim (30%)":
+                return _lower_trimmed_mean(ts, trim_hi_frac=0.30), np.zeros((len(file_list), th, tw), dtype=bool)
+            elif algo == "Comet Percentile (40th)":
+                return _percentile40(ts), np.zeros((len(file_list), th, tw), dtype=bool)
+            elif algo == "Simple Average (No Rejection)":
+                return np.average(ts, axis=0, weights=weights_array), np.zeros((len(file_list), th, tw), dtype=bool)
+            elif algo == "Weighted Windsorized Sigma Clipping":
+                return windsorized_sigma_clip_weighted(ts, weights_array, lower=self.sigma_low, upper=self.sigma_high)
+            elif algo == "Kappa-Sigma Clipping":
+                return kappa_sigma_clip_weighted(ts, weights_array, kappa=self.kappa, iterations=self.iterations)
+            elif algo == "Trimmed Mean":
+                return trimmed_mean_weighted(ts, weights_array, trim_fraction=self.trim_fraction)
+            elif algo == "Extreme Studentized Deviate (ESD)":
+                return esd_clip_weighted(ts, weights_array, threshold=self.esd_threshold)
+            elif algo == "Biweight Estimator":
+                return biweight_location_weighted(ts, weights_array, tuning_constant=self.biweight_constant)
+            elif algo == "Modified Z-Score Clipping":
+                return modified_zscore_clip_weighted(ts, weights_array, threshold=self.modz_threshold)
+            elif algo == "Max Value":
+                return max_value_stack(ts, weights_array)
+            else:
+                return np.median(ts, axis=0), np.zeros((len(file_list), th, tw), dtype=bool)
 
         # ---------- OPTIONAL comet star removal (pre-process per frame) ----------
         csr_enabled = self.settings.value("stacking/comet_starrem/enabled", False, type=bool)
-        csr_tool    = self.settings.value("stacking/comet_starrem/tool", "StarNet", type=str)
         core_r      = float(self.settings.value("stacking/comet_starrem/core_r", 22.0, type=float))
         core_soft   = float(self.settings.value("stacking/comet_starrem/core_soft", 6.0, type=float))
 
-        csr_outputs_are_aligned = False   # tells the tile loop whether to warp again
+        csr_outputs_are_aligned = False
         tmp_root = None
         starless_temp_paths: list[str] | None = None
+        starless_readers_paths: list[str] = []
+        csr_tool = self.settings.value("stacking/comet_starrem/tool", "starnet", type=str)
+
+        _csr_tool_norm = {
+            "cosmicclaritydarkstar": "darkstar",
+            "darkstar":              "darkstar",
+            "syqonnafnet":           "syqonnafnet",
+            "starnet":               "starnet",
+        }
+        csr_tool = _csr_tool_norm.get(
+            (csr_tool or "starnet").strip().lower().replace(" ", ""),
+            "starnet"
+        )
 
         if csr_enabled:
             log("✨ Comet star removal enabled — pre-processing frames…")
 
-            # Build a single core-protection mask in comet-aligned coords (center = ref_xy)
             core_mask = CS._protect_core_mask(H, W, ref_xy[0], ref_xy[1], core_r, core_soft).astype(np.float32)
 
             starless_temp_paths = []
-            starless_map = {}  # ← add this
+            starless_map = {}
             tmp_root = tempfile.mkdtemp(prefix="sas_comet_starless_")
+
             if csr_tool == "syqonnafnet":
                 ckpt = _resolve_syqon_ckpt_for_comet(self.settings)
                 if (not ckpt) or (not os.path.exists(ckpt)):
                     raise RuntimeError(f"SyQon checkpoint path is not configured or missing: {ckpt!r}")
-
-                # Optional: persist the resolved good path so future runs don’t have to fall back
                 try:
                     self.settings.setValue("stacking/comet_starrem/syqon_ckpt", ckpt)
                 except Exception:
                     pass
-
-                syq_tile   = int(self.settings.value("stacking/comet_starrem/syqon_tile", 512, type=int))
-                syq_ov     = int(self.settings.value("stacking/comet_starrem/syqon_overlap", 64, type=int))
-                syq_amp    = bool(self.settings.value("stacking/comet_starrem/syqon_amp", False, type=bool))
-                syq_dtype  = str(self.settings.value("stacking/comet_starrem/syqon_amp_dtype", "fp16", type=str))
-                prefer_dml = bool(self.settings.value("stacking/comet_starrem/syqon_prefer_dml", True, type=bool))
-                use_gpu    = bool(self.settings.value("stacking/comet_starrem/syqon_use_gpu", True, type=bool))
+                syq_tile    = int(self.settings.value("stacking/comet_starrem/syqon_tile", 512, type=int))
+                syq_ov      = int(self.settings.value("stacking/comet_starrem/syqon_overlap", 64, type=int))
+                syq_amp     = bool(self.settings.value("stacking/comet_starrem/syqon_amp", False, type=bool))
+                syq_dtype   = str(self.settings.value("stacking/comet_starrem/syqon_amp_dtype", "fp16", type=str))
+                prefer_dml  = bool(self.settings.value("stacking/comet_starrem/syqon_prefer_dml", True, type=bool))
+                syq_use_gpu = bool(self.settings.value("stacking/comet_starrem/syqon_use_gpu", True, type=bool))
 
             try:
                 for i, p in enumerate(file_list, 1):
                     try:
-                        src = sources[i-1].read_full()  # float32 (H,W) or (H,W,3)
-                        # Ensure 3ch for the external tools
+                        src = sources[i-1].read_full()
                         if src.ndim == 2:
                             src = src[..., None]
                         if src.shape[2] == 1:
                             src = np.repeat(src, 3, axis=2)
 
-                        # Warp into comet space once (so the same mask applies to all frames)
                         M = affines[p]
                         warped = cv2.warpAffine(
                             src, M, (W, H),
                             flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_REFLECT
                         ).astype(np.float32, copy=False)
 
-                        # Run chosen remover in comet space
                         print(f"CSR_Tool chosen: {csr_tool}")
                         if csr_tool == "syqonnafnet":
                             def _syq_prog(done, total, stage):
                                 if done == 1 or done == total or (done % 10 == 0):
                                     log(f"    · {stage} {done}/{total}")
-
                             starless, _stars, info = nafnet_starless_rgb01(
-                                warped,
-                                ckpt,                        # <-- explicit headless ckpt path
-                                tile=syq_tile,
-                                overlap=syq_ov,
-                                residual_mode=True,
-                                use_amp=syq_amp,
-                                amp_dtype=syq_dtype,
-                                use_gpu=use_gpu,
-                                prefer_dml=prefer_dml,
-                                progress_cb=_syq_prog,
+                                warped, ckpt,
+                                tile=syq_tile, overlap=syq_ov,
+                                residual_mode=True, use_amp=syq_amp,
+                                amp_dtype=syq_dtype, use_gpu=syq_use_gpu,
+                                prefer_dml=prefer_dml, progress_cb=_syq_prog,
                             )
-
                             m3 = _expand_mask_for(warped, core_mask)
                             protected = np.clip(starless * (1.0 - m3) + warped * m3, 0.0, 1.0).astype(np.float32)
 
-
-                        elif csr_tool == "CosmicClarityDarkStar":
+                        elif csr_tool == "darkstar":
                             log("  ◦ DarkStar comet star removal…")
                             starless = CS.darkstar_starless_from_array(warped, self.settings)
-                            orig_for_blend = warped
-
                             m3 = _expand_mask_for(warped, core_mask)
-                            protected = np.clip(starless * (1.0 - m3) + orig_for_blend * m3, 0.0, 1.0).astype(np.float32)                            
+                            protected = np.clip(starless * (1.0 - m3) + warped * m3, 0.0, 1.0).astype(np.float32)
+
                         else:
                             log("  ◦ StarNet comet star removal…")
-                            # Frames are linear at this stage
                             protected, _ = CS.starnet_starless_pair_from_array(
                                 warped, self.settings, is_linear=True,
-                                debug_save_dir=debug_dir, debug_tag=f"{i:04d}_{os.path.splitext(os.path.basename(p))[0]}", core_mask=core_mask
+                                debug_save_dir=debug_dir,
+                                debug_tag=f"{i:04d}_{os.path.splitext(os.path.basename(p))[0]}",
+                                core_mask=core_mask
                             )
                             protected = np.clip(protected, 0.0, 1.0).astype(np.float32)
 
-
-                        # Persist as temp FITS (comet-aligned)
                         outp = os.path.join(tmp_root, f"starless_{i:04d}.fit")
                         save_image(
-                            img_array=protected,
-                            filename=outp,
-                            original_format="fit",
-                            bit_depth="32-bit floating point",
-                            original_header=ref_header,  # simple header OK
-                            is_mono=False
+                            img_array=protected, filename=outp,
+                            original_format="fit", bit_depth="32-bit floating point",
+                            original_header=ref_header, is_mono=False
                         )
                         if self.settings.value("stacking/comet/save_starless", False, type=bool):
                             save_dir = os.path.join(self.stacking_directory, "starless_comet_aligned")
@@ -21514,216 +21553,280 @@ class StackingSuiteDialog(QDialog):
                             base_name = os.path.splitext(os.path.basename(p))[0]
                             out_user = os.path.join(save_dir, f"{base_name}_starless.fit")
                             save_image(
-                                img_array=protected,
-                                filename=out_user,
-                                original_format="fit",
-                                bit_depth="32-bit floating point",
-                                original_header=ref_header,
-                                is_mono=False
-                            )                        
+                                img_array=protected, filename=out_user,
+                                original_format="fit", bit_depth="32-bit floating point",
+                                original_header=ref_header, is_mono=False
+                            )
                         starless_temp_paths.append(outp)
-                        starless_map[p] = outp    
+                        starless_map[p] = outp
                         log(f"    ✓ [{i}/{len(file_list)}] starless saved")
+
                     except Exception as e:
                         log(f"  ⚠️ star removal failed on {os.path.basename(p)}: {e}")
-
-                        fallback = warped
+                        try:
+                            fallback = warped
+                        except Exception:
+                            fallback = None
                         if fallback is None:
                             try:
                                 fallback = src
                             except Exception:
                                 fallback = None
-
                         if fallback is None:
-                            # absolute last resort: black frame
                             fallback = np.zeros((H, W, 3), np.float32)
-
                         outp = os.path.join(tmp_root, f"starless_{i:04d}.fit")
                         save_image(
                             img_array=fallback.astype(np.float32, copy=False),
-                            filename=outp,
-                            original_format="fit",
+                            filename=outp, original_format="fit",
                             bit_depth="32-bit floating point",
-                            original_header=ref_header,
-                            is_mono=False
+                            original_header=ref_header, is_mono=False
                         )
                         starless_temp_paths.append(outp)
                         continue
 
-                # Swap readers to the comet-aligned starless temp files
                 for s in sources:
                     try: s.close()
-                    except Exception as e:
+                    except Exception as ex:
                         import logging
-                        logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
+                        logging.debug(f"Exception suppressed: {type(ex).__name__}: {ex}")
                 sources = [_MMImage(p) for p in starless_temp_paths]
-                starless_readers_paths = list(starless_temp_paths)  
+                starless_readers_paths = list(starless_temp_paths)
 
-                # These temp frames are already comet-aligned ⇒ no further warp in tile loop
                 for p in file_list:
                     affines[p] = np.array([[1.0, 0.0, 0.0],
-                                        [0.0, 1.0, 0.0]], dtype=np.float32)
+                                           [0.0, 1.0, 0.0]], dtype=np.float32)
                 csr_outputs_are_aligned = True
-                self._last_comet_used_starless = True                    # ← record for UI/summary
+                self._last_comet_used_starless = True
                 log(f"✨ Using comet-aligned STARLESS frames for stack ({len(starless_temp_paths)} files).")
+
             except Exception as e:
                 log(f"⚠️ Comet star removal pre-process aborted: {e}")
                 csr_outputs_are_aligned = False
                 self._last_comet_used_starless = False
 
-        # --- Tile loop ---
-        t_idx = 0
-        for y0 in range(0, H, chunk_h):
-            y1 = min(y0 + chunk_h, H); th = y1 - y0
-            for x0 in range(0, W, chunk_w):
-                x1 = min(x0 + chunk_w, W); tw = x1 - x0
-                t_idx += 1
-                log(f"Integrating comet tile {t_idx}…")
+        # ---------- PRE-WARP: warp all frames into memmaps once ----------
+        # This is the key performance fix — instead of read_full()+warpAffine()
+        # inside the tile loop (repeated for every tile), we do it once here and
+        # write contiguous float32 (H,W,C) memmaps. The tile loop then reads tiny
+        # slices from these memmaps with prefetch overlap, exactly like
+        # normal_integration_with_rejection.
+        warp_dir = _tempfile.mkdtemp(prefix="sas_comet_warp_")
+        warp_mms = None  # list of np.memmap, opened read-only
+        warp_paths = []
+
+        try:
+            log(f"🔧 Pre-warping {len(file_list)} frame(s) into comet-aligned memmaps…")
+            for i, src in enumerate(sources):
+                full = src.read_full()  # (H,W) or (H,W,3) float32
+
                 if csr_outputs_are_aligned:
-                    log("   • Tile source: STARLESS (pre-aligned)")
+                    # already warped and starless — just normalise shape
+                    if C == 1:
+                        frame = full[..., 0] if full.ndim == 3 else full
+                        frame = frame[..., None]  # (H,W,1)
+                    else:
+                        if full.ndim == 2:
+                            full = full[..., None].repeat(3, axis=2)
+                        frame = full  # (H,W,3)
+                else:
+                    M = affines[file_list[i]]
+                    if C == 1:
+                        full2d = full[..., 0] if full.ndim == 3 else full
+                        warped2d = cv2.warpAffine(full2d, M, (W, H),
+                                                  flags=cv2.INTER_LANCZOS4,
+                                                  borderMode=cv2.BORDER_REFLECT)
+                        frame = warped2d[..., None]  # (H,W,1)
+                    else:
+                        if full.ndim == 2:
+                            full = full[..., None].repeat(3, axis=2)
+                        frame = cv2.warpAffine(full, M, (W, H),
+                                               flags=cv2.INTER_LANCZOS4,
+                                               borderMode=cv2.BORDER_REFLECT)
+                        # (H,W,3)
 
-                ts = ts_buf[:, :th, :tw, :C]
+                frame = np.ascontiguousarray(frame.astype(np.float32, copy=False))
 
+                warp_path = os.path.join(warp_dir, f"warp_{i:04d}.npy")
+                mm = open_memmap(warp_path, mode="w+", dtype=np.float32, shape=(H, W, C))
+                mm[:] = frame
+                del mm  # flush to disk
+                warp_paths.append(warp_path)
+                log(f"  ◦ pre-warp {i+1}/{len(file_list)} done")
+
+            # close original/starless sources — no longer needed
+            for s in sources:
+                try: s.close()
+                except Exception: pass
+            sources = []
+
+            # open all warp memmaps read-only for tile loop
+            warp_mms = [np.load(p, mmap_mode="r") for p in warp_paths]
+            log(f"✅ Pre-warp complete — {len(warp_mms)} frame(s) ready.")
+
+        except Exception as e:
+            log(f"⚠️ Pre-warp failed ({e}); tile loop will fall back to per-tile warp.")
+            warp_mms = None
+            # reopen original sources for fallback
+            if not sources:
+                try:
+                    sources = [_MMImage(p) for p in
+                               (starless_readers_paths if csr_outputs_are_aligned else file_list)]
+                except Exception:
+                    pass
+
+        # ---------- Double-buffer tile loop (mirrors normal_integration) ----------
+        buf0 = np.empty((len(file_list), chunk_h, chunk_w, C), dtype=np.float32, order='C')
+        buf1 = np.empty((len(file_list), chunk_h, chunk_w, C), dtype=np.float32, order='C')
+
+        def _read_comet_tile_into(buf, y0, y1, x0, x1):
+            th = y1 - y0
+            tw = x1 - x0
+            ts = buf[:len(file_list), :th, :tw, :C]
+
+            if warp_mms is not None:
+                # fast path: slice from pre-warped memmaps
+                for i, mm in enumerate(warp_mms):
+                    ts[i, :th, :tw, :] = mm[y0:y1, x0:x1, :]
+            else:
+                # fallback: full read + warp per tile (slow, but safe)
                 for i, src in enumerate(sources):
-                    full = src.read_full()  # (H,W) or (H,W,3) float32
-
-                    # --- sanity: ensure this reader corresponds to the original file index
+                    full = src.read_full()
                     if csr_outputs_are_aligned:
-                        # Optional soft sanity check (index-based)
-                        expected = os.path.normpath(starless_readers_paths[i])
-                        actual   = os.path.normpath(getattr(src, "path", expected))
-                        if actual != expected:
-                            log(f"   ⚠️ Starless reader path mismatch at i={i}; "
-                                f"got {os.path.basename(actual)}, expected {os.path.basename(expected)}. Using index order.")
-
-                    if csr_outputs_are_aligned:
-                        # Already comet-aligned; just slice the tile
                         if C == 1:
-                            if full.ndim == 3:
-                                full = full[..., 0]  # collapse RGB→mono (same as stars stack behavior)
-                            tile = full[y0:y1, x0:x1]
-                            ts[i, :, :, 0] = tile
+                            if full.ndim == 3: full = full[..., 0]
+                            ts[i, :, :, 0] = full[y0:y1, x0:x1]
                         else:
-                            if full.ndim == 2:
-                                full = full[..., None].repeat(3, axis=2)
+                            if full.ndim == 2: full = full[..., None].repeat(3, axis=2)
                             ts[i, :, :, :] = full[y0:y1, x0:x1, :]
                     else:
-                        # Warp into comet space on the fly
                         M = affines[file_list[i]]
                         if C == 1:
                             full2d = full[..., 0] if full.ndim == 3 else full
-                            warped2d = cv2.warpAffine(full2d, M, (W, H),
-                                                    flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_REFLECT)
-                            ts[i, :, :, 0] = warped2d[y0:y1, x0:x1]
+                            w2d = cv2.warpAffine(full2d, M, (W, H),
+                                                 flags=cv2.INTER_LANCZOS4,
+                                                 borderMode=cv2.BORDER_REFLECT)
+                            ts[i, :, :, 0] = w2d[y0:y1, x0:x1]
                         else:
-                            if full.ndim == 2:
-                                full = full[..., None].repeat(3, axis=2)
-                            warped = cv2.warpAffine(full, M, (W, H),
-                                                    flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_REFLECT)
-                            ts[i, :, :, :] = warped[y0:y1, x0:x1, :]
+                            if full.ndim == 2: full = full[..., None].repeat(3, axis=2)
+                            wf = cv2.warpAffine(full, M, (W, H),
+                                                flags=cv2.INTER_LANCZOS4,
+                                                borderMode=cv2.BORDER_REFLECT)
+                            ts[i, :, :, :] = wf[y0:y1, x0:x1, :]
+            return th, tw
 
-                # --- Apply selected rejection algorithm ---
-                algo = (algo_override or self.rejection_algorithm)
-                log(f"  ◦ applying rejection algorithm: {algo}")
+        tiles = []
+        for y0 in range(0, H, chunk_h):
+            y1 = min(y0 + chunk_h, H)
+            for x0 in range(0, W, chunk_w):
+                x1 = min(x0 + chunk_w, W)
+                tiles.append((y0, y1, x0, x1))
+        total_tiles = len(tiles)
 
-                if algo in ("Comet Median", "Simple Median (No Rejection)"):
-                    tile_result  = np.median(ts, axis=0)
-                    tile_rej_map = np.zeros((len(file_list), th, tw), dtype=bool)
+        from concurrent.futures import ThreadPoolExecutor as _TPE
+        tp = _TPE(max_workers=1)
 
-                elif algo == "Comet High-Clip Percentile":
-                    k = self.settings.value("stacking/comet_hclip_k", 1.30, type=float)
-                    p = self.settings.value("stacking/comet_hclip_p", 25.0, type=float)
-                    # keep a small dict across tiles to reuse scratch buffers
+        # prime first tile
+        y0, y1, x0, x1 = tiles[0]
+        fut = tp.submit(_read_comet_tile_into, buf0, y0, y1, x0, x1)
+        use_buf0 = True
 
-                    tile_result = _high_clip_percentile(ts, k=float(k), p=float(p))
-                    tile_rej_map = np.zeros((len(file_list), th, tw), dtype=bool)
+        _ctx_instance = _safe_torch_inference_ctx() if use_gpu else contextlib.nullcontext()
 
-                elif algo == "Comet Lower-Trim (30%)":
-                    tile_result  = _lower_trimmed_mean(ts, trim_hi_frac=0.30)
-                    tile_rej_map = np.zeros((len(file_list), th, tw), dtype=bool)
+        with _ctx_instance:
+            for tile_idx, (y0, y1, x0, x1) in enumerate(tiles, start=1):
+                t0_tile = _time.perf_counter()
 
-                elif algo == "Comet Percentile (40th)":
-                    tile_result  = _percentile40(ts)
-                    tile_rej_map = np.zeros((len(file_list), th, tw), dtype=bool)
+                th, tw = fut.result()
+                ts = (buf0 if use_buf0 else buf1)[:len(file_list), :th, :tw, :C]
 
-                elif algo == "Simple Average (No Rejection)":
-                    tile_result  = np.average(ts, axis=0, weights=weights_array)
-                    tile_rej_map = np.zeros((len(file_list), th, tw), dtype=bool)
-
-                elif algo == "Weighted Windsorized Sigma Clipping":
-                    tile_result, tile_rej_map = windsorized_sigma_clip_weighted(
-                        ts, weights_array, lower=self.sigma_low, upper=self.sigma_high
+                # prefetch next tile while GPU/CPU works on current
+                if tile_idx < total_tiles:
+                    ny0, ny1, nx0, nx1 = tiles[tile_idx]
+                    fut = tp.submit(
+                        _read_comet_tile_into,
+                        (buf1 if use_buf0 else buf0),
+                        ny0, ny1, nx0, nx1
                     )
 
-                elif algo == "Kappa-Sigma Clipping":
-                    tile_result, tile_rej_map = kappa_sigma_clip_weighted(
-                        ts, weights_array, kappa=self.kappa, iterations=self.iterations
-                    )
+                log(f"Integrating comet tile {tile_idx}/{total_tiles} "
+                    f"[y:{y0}:{y1} x:{x0}:{x1} size={th}×{tw}] "
+                    f"mode={'GPU' if use_gpu else 'CPU'}…")
 
-                elif algo == "Trimmed Mean":
-                    tile_result, tile_rej_map = trimmed_mean_weighted(
-                        ts, weights_array, trim_fraction=self.trim_fraction
-                    )
-
-                elif algo == "Extreme Studentized Deviate (ESD)":
-                    tile_result, tile_rej_map = esd_clip_weighted(
-                        ts, weights_array, threshold=self.esd_threshold
-                    )
-
-                elif algo == "Biweight Estimator":
-                    tile_result, tile_rej_map = biweight_location_weighted(
-                        ts, weights_array, tuning_constant=self.biweight_constant
-                    )
-
-                elif algo == "Modified Z-Score Clipping":
-                    tile_result, tile_rej_map = modified_zscore_clip_weighted(
-                        ts, weights_array, threshold=self.modz_threshold
-                    )
-
-                elif algo == "Max Value":
-                    tile_result, tile_rej_map = max_value_stack(ts, weights_array)
-
+                if use_gpu:
+                    try:
+                        tile_result, tile_rej_map = _torch_reduce_tile(
+                            ts,
+                            weights_array,
+                            algo_name=algo,
+                            kappa=float(self.kappa),
+                            iterations=int(self.iterations),
+                            sigma_low=float(self.sigma_low),
+                            sigma_high=float(self.sigma_high),
+                            trim_fraction=float(self.trim_fraction),
+                            esd_threshold=float(self.esd_threshold),
+                            biweight_constant=float(self.biweight_constant),
+                            modz_threshold=float(self.modz_threshold),
+                            comet_hclip_k=float(self.settings.value("stacking/comet_hclip_k", 1.30, type=float)),
+                            comet_hclip_p=float(self.settings.value("stacking/comet_hclip_p", 25.0, type=float)),
+                        )
+                        if hasattr(tile_result, "detach"):
+                            tile_result = tile_result.detach().cpu().numpy()
+                        if hasattr(tile_rej_map, "detach"):
+                            tile_rej_map = tile_rej_map.detach().cpu().numpy()
+                    except Exception as e:
+                        log(f"⚠️ GPU failed on comet tile {tile_idx}: {e} — falling back to CPU.")
+                        use_gpu = False
+                        tile_result, tile_rej_map = _comet_cpu_reduce(ts, th, tw)
                 else:
-                    # default to comet-safe median
-                    tile_result  = np.median(ts, axis=0)
-                    tile_rej_map = np.zeros((len(file_list), th, tw), dtype=bool)
+                    tile_result, tile_rej_map = _comet_cpu_reduce(ts, th, tw)
 
                 integrated_image[y0:y1, x0:x1, :] = tile_result
 
-                # Accumulate rejection bookkeeping
-                trm = tile_rej_map
+                trm = np.asarray(tile_rej_map, dtype=bool)
                 if trm.ndim == 4:
-                    trm = np.any(trm, axis=-1)  # (N, th, tw)
-                rej_any[y0:y1, x0:x1]  |= np.any(trm, axis=0)
+                    trm = np.any(trm, axis=-1)
+                rej_any[y0:y1, x0:x1]   |= np.any(trm, axis=0)
                 rej_count[y0:y1, x0:x1] += trm.sum(axis=0).astype(np.uint16)
 
                 if collect_per_file:
                     for i, fpath in enumerate(file_list):
                         m = trm[i]
                         if np.any(m):
-                            # store as a tile mask, not coord list
                             per_file_rejections[fpath].append((x0, y0, m.copy()))
 
+                dt = _time.perf_counter() - t0_tile
+                work_px = th * tw * len(file_list) * C
+                mpx_s = (work_px / 1e6) / dt if dt > 0 else float("inf")
+                log(f"  ↳ tile {tile_idx} done in {dt:.3f}s (~{mpx_s:.1f} MPx/s)")
 
-        # Close readers and clean temp
+                use_buf0 = not use_buf0
+
+        tp.shutdown(wait=True)
+
+        # --- Cleanup warp memmaps ---
+        for mm in (warp_mms or []):
+            try: del mm
+            except Exception: pass
+        try:
+            shutil.rmtree(warp_dir, ignore_errors=True)
+        except Exception: pass
+
+        # --- Cleanup starless temps ---
         for s in sources:
             try: s.close()
-            except Exception as e:
-                import logging
-                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
+            except Exception: pass
 
         if tmp_root is not None:
             try: shutil.rmtree(tmp_root, ignore_errors=True)
-            except Exception as e:
+            except Exception as ex:
                 import logging
-                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
+                logging.debug(f"Exception suppressed: {type(ex).__name__}: {ex}")
 
         if C == 1:
             integrated_image = integrated_image[..., 0]
 
         integrated_image = self._normalize_stack_01(integrated_image)
 
-        # Store MEF rejection maps for this comet stack
         if not hasattr(self, "_rej_maps"):
             self._rej_maps = {}
         rej_frac = (rej_count.astype(np.float32) / float(max(1, len(file_list))))
@@ -21735,7 +21838,6 @@ class StackingSuiteDialog(QDialog):
         }
 
         return integrated_image, per_file_rejections, ref_header
-
 
     def save_registered_images(self, success, msg, frame_weights):
         if not success:
@@ -23246,8 +23348,8 @@ class StackingSuiteDialog(QDialog):
         fut = tp.submit(_read_tile_into, buf0, maskbuf0, y0, y1, x0, x1)
         use_buf0 = True
 
-        _ctx = _safe_torch_inference_ctx() if use_gpu else contextlib.nullcontext
-        with _ctx():
+        _ctx_instance = _safe_torch_inference_ctx() if use_gpu else contextlib.nullcontext()
+        with _ctx_instance:
             for tile_idx, (y0, y1, x0, x1) in enumerate(tiles, start=1):
                 t0 = time.perf_counter()
 

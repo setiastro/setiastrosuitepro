@@ -2434,7 +2434,8 @@ class BlinkTab(QWidget):
         if directory:
             # Supported image extensions
             supported_extensions = (
-                '.png', '.tif', '.tiff', '.fits', '.fit',
+                '.png', '.tif', '.tiff', '.fits', '.fit', '.fts',
+                '.fits.gz', '.fit.gz', '.fts.gz', '.fz',
                 '.xisf', '.cr2', '.nef', '.arw', '.dng', '.raf',
                 '.orf', '.rw2', '.pef'
             )
@@ -2552,7 +2553,7 @@ class BlinkTab(QWidget):
     @staticmethod
     def debayer_image(image, file_path, header):
         """Check if image is OSC (One-Shot Color) and debayer if required."""
-        if file_path.lower().endswith(('.fits', '.fit')):
+        if file_path.lower().endswith(('.fits', '.fit', '.fts', '.fits.gz', '.fit.gz', '.fts.gz', '.fz')):
             bayer_pattern = header.get('BAYERPAT', None)
             if bayer_pattern:
                 image = debayer_fits_fast(image, bayer_pattern)

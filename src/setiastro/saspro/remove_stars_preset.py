@@ -486,12 +486,15 @@ class RemoveStarsPresetDialog(QDialog):
         self.syq_make_stars = QCheckBox("Also create stars-only document (_stars)")
         self.syq_make_stars.setChecked(True)
         self.syq_model = QComboBox()
+        self.syq_model = QComboBox()
         self.syq_model.addItem("Nadir", "nadir")
         self.syq_model.addItem("AxiomV2", "axiomv2")
+        self.syq_model.addItem("AxiomV2.1", "axiomv2.1")
         self.syq_model.setCurrentIndex(0)
 
         mk = str(p.get("model_kind", "nadir")).strip().lower()
-        j = self.syq_model.findData("axiomv2" if "axiom" in mk else "nadir")
+        from .remove_stars import _syqon_norm_kind
+        j = self.syq_model.findData(_syqon_norm_kind(mk))
         if j >= 0:
             self.syq_model.setCurrentIndex(j)
 
@@ -637,7 +640,9 @@ def _run_syqon_headless(main, doc, p):
     model_kind = str(p.get("model_kind", "nadir")).strip().lower()
     if model_kind in ("axiom2", "axiom v2", "axiom-v2"):
         model_kind = "axiomv2"
-    if model_kind not in ("nadir", "axiomv2"):
+    if model_kind in ("axiom2.1", "axiom v2.1", "axiom-v2.1", "axiomv2_1"):
+        model_kind = "axiomv2.1"
+    if model_kind not in ("nadir", "axiomv2", "axiomv2.1"):
         model_kind = "nadir"
 
     # ---- resolve ckpt path (prefer QSettings installed path, then default location) ----

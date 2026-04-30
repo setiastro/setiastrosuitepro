@@ -618,10 +618,10 @@ class FileMixin:
         # One-stop "All Supported" plus focused groups the user can switch to
         filters = (
             "All Supported (*.png *.jpg *.jpeg *.tif *.tiff "
-            "*.fits *.fit *.fits.gz *.fit.gz *.fz *.xisf *.pdf "
+            "*.fits *.fit *.fts *.fits.gz *.fit.gz *.fz *.xisf *.pdf "
             "*.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef);;"
             "PDF (*.pdf);;"
-            "Astro (FITS/XISF) (*.xisf *.fits *.fit *.fits.gz *.fit.gz *.fz);;"
+            "Astro (FITS/XISF) (*.xisf *.fits *.fit *.fts *.fits.gz *.fit.gz *.fz);;"
             "RAW Images (*.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef);;"
             "Common Images (*.png *.jpg *.jpeg *.tif *.tiff);;"
             "All Files (*)"

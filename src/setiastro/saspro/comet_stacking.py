@@ -18,7 +18,7 @@ from setiastro.saspro.cosmicclarity_engines.darkstar_engine import (
     DarkStarParams,
 )
 
-
+from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.legacy.image_manager import (load_image, save_image)
 from setiastro.saspro.imageops.stretch import stretch_color_image, stretch_mono_image
 from setiastro.saspro.starless_engines.syqon_nafnet_engine import syqonnafnetSession
@@ -569,6 +569,20 @@ def blend_screen_stretched(
 
     return np.clip(out_s, 0.0, 1.0).astype(np.float32, copy=False)
 
+def _detection_stretch(img: np.ndarray) -> np.ndarray:
+    """
+    Statistical stretch for detection — works on mono or color input.
+    Returns float32 [0..1] mono luma, adapted to actual image content.
+    """
+    L = _to_luma(img).astype(np.float32)
+    try:
+        return np.clip(stretch_mono_image(L, target_median=0.25), 0.0, 1.0)
+    except Exception:
+        lo = np.percentile(L, 1.0)
+        hi = np.percentile(L, 99.5)
+        if hi <= lo:
+            return L
+        return np.clip((L - lo) / (hi - lo), 0.0, 1.0).astype(np.float32)
 
 # --- REPLACE measure_comet_positions with this version ---
 def measure_comet_positions(
@@ -582,181 +596,246 @@ def measure_comet_positions(
     min_search_px: float = 16.0,
     max_search_px: float = 80.0,
     score_floor: float = 0.35,
-    gamma_pow: float = 0.6,
     refine_r: int = 12,
-    adapt_tpl_alpha: float = 0.12
+    adapt_tpl_alpha: float = 0.12,
+    max_jump_px: float = 120.0,   # hard sanity cap — results further than this are replaced by prediction
 ) -> Dict[str, Tuple[float,float]]:
     """
-    Track the comet by template matching on blurred luma.
+    Track the comet nucleus by template matching on statistically-stretched luma.
     Frames are processed in temporal order (DATE-OBS; fallback mtime).
 
-    Now with a SECOND PASS local refinement that mirrors the Comet preview “Auto” button.
+    Seed propagation:
+    - Find the seed frame in temporal order.
+    - Track FORWARD from seed to last frame.
+    - Track BACKWARD from seed to first frame.
+    - Merge results, apply light smoothing, then a subpixel Pass 2 refinement.
     """
     log = status_cb or (lambda *_: None)
 
-    # -------- PASS 1: existing template-matching pipeline (unchanged) --------
     ordered = sorted(list(file_list), key=_minmax_time_key)
-    out: Dict[str, Tuple[float,float]] = {}
-    prev_xy: Optional[Tuple[float,float]] = None
-    prev2_xy: Optional[Tuple[float,float]] = None
-    tpl: Optional[np.ndarray] = None
-    tpl_hw = int(tpl_half)
-
-    # Seed selection logic (unchanged)
+    if not ordered:
+        return {}
+    # Remap seed keys to match ordered list where possible
+    if seeds:
+        remapped = {}
+        for sk, sv in seeds.items():
+            if sk in ordered:
+                remapped[sk] = sv
+            else:
+                sk_stem = os.path.splitext(os.path.basename(sk))[0]
+                for fp in ordered:
+                    fp_stem = os.path.splitext(os.path.basename(fp))[0]
+                    if fp_stem == sk_stem or fp_stem.startswith(sk_stem) or sk_stem.startswith(fp_stem):
+                        remapped[fp] = sv
+                        break
+                else:
+                    remapped[sk] = sv  # keep as-is, will miss but won't crash
+        seeds = remapped
+    # --- find seed frame index ---
     seed_idx = 0
+    seed_xy: Optional[Tuple[float, float]] = None
     if seeds:
         for i, f in enumerate(ordered):
             if f in seeds:
                 seed_idx = i
+                seed_xy = seeds[f]
                 break
+        if seed_xy is None:
+            # seeds dict exists but none matched ordered — grab first seed value
+            first_seed_file = next(iter(seeds))
+            seed_xy = seeds[first_seed_file]
+            seed_idx = 0
+            log(f"  ⚠️ Seed frame not found in ordered list; using first seed at ({seed_xy[0]:.1f},{seed_xy[1]:.1f}) on frame 0")
 
-    for i, fp in enumerate(ordered):
+    def _load_detection(fp: str):
         img, hdr, _, _ = load_image(fp)
         if img is None:
-            log(f"⚠️ measure: failed to load {fp}")
-            continue
+            return None, None
+        L = _luma_gauss(img, sigma=blur_sigma)
+        G = _detection_stretch(L)
+        return img, G
 
-        # blurred luma + gamma for detection
-        L = _luma_gauss(img, sigma=blur_sigma)       # float32
-        G = _gamma_stretch(L, gamma=gamma_pow)       # [0..1]
-        H, W = G.shape
-
-        if tpl is None:
-            # choose seed
-            if seeds and fp in seeds:
-                cx, cy = seeds[fp]
-            elif seeds:
-                for f in ordered:
-                    if f in seeds: cx, cy = seeds[f]; break
-            else:
-                j = int(np.argmax(G)); cy, cx = divmod(j, W)
-
-            # keep user/global seed as the first output; refine subpixel on original luma (gamma’d)
-            L0g = _gamma_stretch(_to_luma(img), gamma=gamma_pow)
-            cx, cy = _refine_centroid(L0g, float(cx), float(cy), r=refine_r)
-
-            x1,y1,x2,y2 = _crop_bounds(cx, cy, tpl_half, W, H)
-            tpl = _norm_patch(G[y1:y2, x1:x2])
-            prev_xy = (float(cx), float(cy))
-            out[fp] = prev_xy
-            log(f"  ◦ seed @ {os.path.basename(fp)} → ({prev_xy[0]:.2f},{prev_xy[1]:.2f}) [template {tpl.shape[1]}×{tpl.shape[0]}]")
-            continue
-
-        # prediction & adaptive search window
+    def _match_one(G, tpl, prev_xy, prev2_xy, W, H, img):
+        """
+        Template match on G, returning (px, py, ok, score).
+        Uses adaptive search window based on recent motion.
+        """
         guess = _predict(prev_xy, prev2_xy)
-        if prev2_xy is None:
-            sr = max(min_search_px, 0.5*max_step_px)
-        else:
-            mv = math.hypot(prev_xy[0]-prev2_xy[0], prev_xy[1]-prev2_xy[1])
-            sr = np.clip(1.5*mv, min_search_px, max_search_px)
 
-        # ensure search ≥ template
+        if prev2_xy is None:
+            sr = max(min_search_px, 0.5 * max_step_px)
+        else:
+            mv = math.hypot(prev_xy[0] - prev2_xy[0], prev_xy[1] - prev2_xy[1])
+            sr = float(np.clip(1.5 * mv, min_search_px, max_search_px))
+
         min_half_needed = 0.5 * max(tpl.shape[1], tpl.shape[0]) + 1.0
         sr = max(sr, min_half_needed)
 
-        # crop and match
         x1, y1, x2, y2 = _bounds_with_min_size(guess[0], guess[1], sr, W, H,
-                                               min_w=tpl.shape[1], min_h=tpl.shape[0])
+                                                min_w=tpl.shape[1], min_h=tpl.shape[0])
         search = _norm_patch(G[y1:y2, x1:x2])
         res = cv2.matchTemplate(search, tpl, cv2.TM_CCOEFF_NORMED)
         _, score, _, loc = cv2.minMaxLoc(res)
-        px = x1 + loc[0] + tpl.shape[1]*0.5
-        py = y1 + loc[1] + tpl.shape[0]*0.5
-
+        px = x1 + loc[0] + tpl.shape[1] * 0.5
+        py = y1 + loc[1] + tpl.shape[0] * 0.5
         step = math.hypot(px - prev_xy[0], py - prev_xy[1])
         ok = (score >= score_floor) and (step <= max_step_px)
 
         if not ok:
-            # one wider search
+            # wider retry
             x1b, y1b, x2b, y2b = _bounds_with_min_size(guess[0], guess[1], max_search_px, W, H,
-                                                       min_w=tpl.shape[1], min_h=tpl.shape[0])
+                                                        min_w=tpl.shape[1], min_h=tpl.shape[0])
             search2 = _norm_patch(G[y1b:y2b, x1b:x2b])
             res2 = cv2.matchTemplate(search2, tpl, cv2.TM_CCOEFF_NORMED)
             _, score2, _, loc2 = cv2.minMaxLoc(res2)
-            px2 = x1b + loc2[0] + tpl.shape[1]*0.5
-            py2 = y1b + loc2[1] + tpl.shape[0]*0.5
+            px2 = x1b + loc2[0] + tpl.shape[1] * 0.5
+            py2 = y1b + loc2[1] + tpl.shape[0] * 0.5
             step2 = math.hypot(px2 - prev_xy[0], py2 - prev_xy[1])
-            if (score2 > score) and (step2 <= max_step_px*1.2):
+            if score2 > score and step2 <= max_step_px * 1.2:
                 px, py, score, step = px2, py2, score2, step2
                 ok = (score >= 0.30)
 
-        if not ok:
-            px, py = _predict(prev_xy, prev2_xy)
-            px = float(np.clip(px, 0, W-1)); py = float(np.clip(py, 0, H-1))
-            log(f"  ◦ {os.path.basename(fp)} fallback → ({px:.2f},{py:.2f})")
+        # hard sanity cap — never accept a jump > max_jump_px
+        if math.hypot(px - prev_xy[0], py - prev_xy[1]) > max_jump_px:
+            ok = False
+
+        return px, py, ok, score
+
+    def _track_sequence(frames: List[str], seed_pos: Tuple[float, float], seed_img_file: str):
+        """
+        Track comet through `frames` in order, seeding at seed_pos on seed_img_file
+        (which must be frames[0]).
+        Returns dict {fp: (cx, cy)}.
+        """
+        out: Dict[str, Tuple[float, float]] = {}
+        prev_xy: Optional[Tuple[float, float]] = None
+        prev2_xy: Optional[Tuple[float, float]] = None
+        tpl: Optional[np.ndarray] = None
+
+        for fi, fp in enumerate(frames):
+            img, G = _load_detection(fp)
+            if img is None:
+                log(f"⚠️ measure: failed to load {os.path.basename(fp)}")
+                # keep prediction alive if possible
+                if prev_xy is not None:
+                    px, py = _predict(prev_xy, prev2_xy)
+                    out[fp] = (float(np.clip(px, 0, 1e6)), float(np.clip(py, 0, 1e6)))
+                continue
+
+            H_img, W_img = G.shape
+
+            if tpl is None:
+                # This is the seed frame
+                cx, cy = seed_pos
+                # refine seed position
+                det = _detection_stretch(img)
+                cx, cy = _refine_centroid(det, float(cx), float(cy), r=refine_r)
+                x1, y1, x2, y2 = _crop_bounds(cx, cy, tpl_half, W_img, H_img)
+                tpl = _norm_patch(G[y1:y2, x1:x2])
+                prev_xy = (float(cx), float(cy))
+                out[fp] = prev_xy
+                log(f"  ◦ seed @ {os.path.basename(fp)} → ({cx:.2f},{cy:.2f}) "
+                    f"[template {tpl.shape[1]}×{tpl.shape[0]}]")
+                continue
+
+            px, py, ok, score = _match_one(G, tpl, prev_xy, prev2_xy, W_img, H_img, img)
+
+            if not ok:
+                px, py = _predict(prev_xy, prev2_xy)
+                px = float(np.clip(px, 0, W_img - 1))
+                py = float(np.clip(py, 0, H_img - 1))
+                log(f"  ◦ {os.path.basename(fp)} fallback → ({px:.2f},{py:.2f})")
+            else:
+                det = _detection_stretch(img)
+                px, py = _refine_centroid(det, px, py, r=refine_r)
+                log(f"  ◦ {os.path.basename(fp)} match={score:.3f} → ({px:.2f},{py:.2f})")
+                # gentle template adaptation
+                x1t, y1t, x2t, y2t = _crop_bounds(px, py, tpl_half, W_img, H_img)
+                new_tpl = _norm_patch(G[y1t:y2t, x1t:x2t])
+                if new_tpl.shape == tpl.shape:
+                    tpl = (1.0 - adapt_tpl_alpha) * tpl + adapt_tpl_alpha * new_tpl
+
+            out[fp] = (px, py)
+            prev2_xy, prev_xy = prev_xy, (px, py)
+
+        return out
+
+    # --- get seed position, refining on seed frame ---
+    seed_file = ordered[seed_idx]
+    if seed_xy is None:
+        # no seeds at all — find brightest blob on seed frame
+        img0, G0 = _load_detection(seed_file)
+        if G0 is not None:
+            H0, W0 = G0.shape
+            j = int(np.argmax(G0)); cy0, cx0 = divmod(j, W0)
+            seed_xy = (float(cx0), float(cy0))
         else:
-            # subpixel refine on original luma (gamma’d)
-            L0 = _to_luma(img)
-            L0g = _gamma_stretch(L0, gamma=gamma_pow)
-            px, py = _refine_centroid(L0g, px, py, r=refine_r)
-            log(f"  ◦ {os.path.basename(fp)} match={score:.3f} step={step:.1f}px → ({px:.2f},{py:.2f})")
+            seed_xy = (0.0, 0.0)
+        log(f"  ◦ No seed provided; auto-detected at ({seed_xy[0]:.1f},{seed_xy[1]:.1f})")
 
-            # gentle template adaptation
-            x1t, y1t, x2t, y2t = _crop_bounds(px, py, tpl_half, W, H)
-            new_tpl = _norm_patch(G[y1t:y2t, x1t:x2t])
-            if new_tpl.shape == tpl.shape:
-                tpl = (1.0 - adapt_tpl_alpha) * tpl + adapt_tpl_alpha * new_tpl
+    log(f"  ◦ Seed frame: {os.path.basename(seed_file)} idx={seed_idx}/{len(ordered)-1} "
+        f"xy=({seed_xy[0]:.1f},{seed_xy[1]:.1f})")
 
-        out[fp] = (px, py)
-        prev2_xy, prev_xy = prev_xy, (px, py)
+    # --- forward pass: seed_idx → end ---
+    forward_frames = ordered[seed_idx:]
+    log(f"  ◦ Forward pass: {len(forward_frames)} frame(s)")
+    out_forward = _track_sequence(forward_frames, seed_xy, seed_file)
 
-    # light smoothing (unchanged)
+    # --- backward pass: seed_idx → start (reversed, excluding seed frame) ---
+    out_backward: Dict[str, Tuple[float, float]] = {}
+    if seed_idx > 0:
+        backward_frames = list(reversed(ordered[:seed_idx + 1]))  # seed + earlier frames, newest-first
+        log(f"  ◦ Backward pass: {len(backward_frames) - 1} frame(s)")
+        out_backward_raw = _track_sequence(backward_frames, seed_xy, seed_file)
+        # drop the seed frame itself (already in forward)
+        for fp, xy in out_backward_raw.items():
+            if fp != seed_file:
+                out_backward[fp] = xy
+
+    # --- merge ---
+    out: Dict[str, Tuple[float, float]] = {}
+    out.update(out_backward)
+    out.update(out_forward)  # forward wins on seed frame
+
+    # --- light smoothing ---
+    def _smooth(v: np.ndarray) -> np.ndarray:
+        s = v.copy()
+        for k in range(2, len(v) - 2):
+            s[k] = (-3*v[k-2] + 12*v[k-1] + 17*v[k] + 12*v[k+1] - 3*v[k+2]) / 35.0
+        return s
+
     if len(out) >= 5:
-        ordered_xy = [out[f] for f in ordered]
+        ordered_xy = [out[f] for f in ordered if f in out]
+        ordered_files = [f for f in ordered if f in out]
         xs = np.array([p[0] for p in ordered_xy], dtype=np.float64)
         ys = np.array([p[1] for p in ordered_xy], dtype=np.float64)
-        def _smooth(v):
-            s = v.copy()
-            for k in range(2, len(v)-2):
-                s[k] = (-3*v[k-2] + 12*v[k-1] + 17*v[k] + 12*v[k+1] - 3*v[k+2]) / 35.0
-            return s
         xs, ys = _smooth(xs), _smooth(ys)
-        for f, x, y in zip(ordered, xs, ys):
+        for f, x, y in zip(ordered_files, xs, ys):
             out[f] = (float(x), float(y))
 
-    # -------- PASS 2: local “Auto” refinement around first-pass XY --------
-    # Mirrors the dialog’s Auto: star-suppress → multi-scale LoG peak → gamma → subpixel refine
-    hint = max(4.0, blur_sigma)                    # reuse blur as the size hint
-    sigmas = [0.6*hint, 0.9*hint, 1.3*hint, 1.8*hint, 2.4*hint]
-    local_half = int(max(24, 3.0*hint))            # tight local window
-
+    # --- Pass 2: subpixel refinement only ---
     for fp in ordered:
         if fp not in out:
             continue
         img, _, _, _ = load_image(fp)
         if img is None:
             continue
-        Lfull = _to_luma(img).astype(np.float32)
+        det = _detection_stretch(img)
         cx0, cy0 = out[fp]
-        x1, y1, x2, y2 = _crop_bounds(cx0, cy0, local_half, Lfull.shape[1], Lfull.shape[0])
-
-        # star-suppressed local area + LoG peak
-        Ls = _star_suppress(Lfull[y1:y2, x1:x2])
-        cx, cy, used = _log_big_blob(Ls, sigmas)
-        cx += x1; cy += y1
-
-        # gamma + subpixel refine on the full-luma gamma space
-        gL = _gamma_stretch(Lfull, gamma=gamma_pow)
-        cx, cy = _refine_centroid(gL, float(cx), float(cy), r=max(refine_r, int(used)))
-
+        cx, cy = _refine_centroid(det, float(cx0), float(cy0), r=refine_r)
         out[fp] = (float(cx), float(cy))
 
-    # light re-smoothing (keeps trajectories silky)
+    # --- final light re-smoothing ---
     if len(out) >= 5:
-        ordered_xy = [out[f] for f in ordered]
+        ordered_xy = [out[f] for f in ordered if f in out]
+        ordered_files = [f for f in ordered if f in out]
         xs = np.array([p[0] for p in ordered_xy], dtype=np.float64)
         ys = np.array([p[1] for p in ordered_xy], dtype=np.float64)
-        def _smooth(v):
-            s = v.copy()
-            for k in range(2, len(v)-2):
-                s[k] = (-3*v[k-2] + 12*v[k-1] + 17*v[k] + 12*v[k+1] - 3*v[k+2]) / 35.0
-            return s
         xs, ys = _smooth(xs), _smooth(ys)
-        for f, x, y in zip(ordered, xs, ys):
+        for f, x, y in zip(ordered_files, xs, ys):
             out[f] = (float(x), float(y))
 
     return out
-
 
 def _bounds_with_min_size(cx, cy, half, W, H, min_w, min_h):
     # Start from requested half-size
@@ -1119,7 +1198,7 @@ def _starless_frame_for_comet(img: np.ndarray,
     else: src = img.astype(np.float32, copy=False)
 
     # run
-    if tool == "CosmicClarityDarkStar":
+    if tool == "darkstar":
         base_for_mask = src  # RGB [0..1]
 
         # optional: forward progress from comet stacking if you want
@@ -1248,6 +1327,7 @@ class CometCentroidPreview(QDialog):
         self.blur  = 3.5
         self.dot_r = 12
         self.zoom  = 1.0
+        self._zoom_step = 1.25  # factor per zoom in/out action
 
         # --- left: list ---
         self.listw = QListWidget()
@@ -1268,6 +1348,8 @@ class CometCentroidPreview(QDialog):
         self.view.setDragMode(QGraphicsView.DragMode.NoDrag)
         self.view.setCursor(QCursor(CursorShape.ArrowCursor))
         self.view.viewport().setCursor(QCursor(CursorShape.ArrowCursor))
+        self.view.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self.view.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.pix_item = QGraphicsPixmapItem()
         self.scene.addItem(self.pix_item)
         self.cross = QGraphicsEllipseItem(-self.dot_r, -self.dot_r, 2*self.dot_r, 2*self.dot_r)
@@ -1279,10 +1361,8 @@ class CometCentroidPreview(QDialog):
         # --- right: controls ---
         self.s_gamma = QSlider(Qt.Orientation.Horizontal); self._prep_slider(self.s_gamma, 10, 200, int(self.gamma*100))
         self.s_blur  = QSlider(Qt.Orientation.Horizontal); self._prep_slider(self.s_blur, 0, 80, int(self.blur*10))
-        self.s_zoom  = QSlider(Qt.Orientation.Horizontal); self._prep_slider(self.s_zoom, 10, 300, int(self.zoom*100))
         self.s_gamma.valueChanged.connect(self._refresh_current)
         self.s_blur.valueChanged.connect(self._refresh_current)
-        self.s_zoom.valueChanged.connect(self._apply_zoom)
 
         self.n_prop = QSpinBox(); self.n_prop.setRange(1, 50); self.n_prop.setValue(3)
         self.cb_show_gamma = QCheckBox("Show gamma preview"); self.cb_show_gamma.setChecked(True)
@@ -1304,8 +1384,24 @@ class CometCentroidPreview(QDialog):
         ctrls = QVBoxLayout()
         ctrls.addWidget(QLabel("Gamma")); ctrls.addWidget(self.s_gamma)
         ctrls.addWidget(QLabel("Blur σ")); ctrls.addWidget(self.s_blur)
-        ctrls.addWidget(QLabel("Zoom")); ctrls.addWidget(self.s_zoom)
         ctrls.addWidget(self.cb_show_gamma)
+
+        # Zoom buttons
+        zoom_row = QHBoxLayout()
+        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
+        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
+        self.btn_zoom_100 = themed_toolbtn("zoom-original", "1:1")
+        self.btn_zoom_fit = themed_toolbtn("zoom-fit-best", "Fit")
+        self.btn_zoom_in.clicked.connect(self._zoom_in)
+        self.btn_zoom_out.clicked.connect(self._zoom_out)
+        self.btn_zoom_100.clicked.connect(self._zoom_11)
+        self.btn_zoom_fit.clicked.connect(self._zoom_fit)
+        zoom_row.addWidget(self.btn_zoom_out)
+        zoom_row.addWidget(self.btn_zoom_in)
+        zoom_row.addWidget(self.btn_zoom_100)
+        zoom_row.addWidget(self.btn_zoom_fit)
+        ctrls.addLayout(zoom_row)
+
         r1 = QHBoxLayout(); r1.addWidget(self.btn_auto); r1.addWidget(self.btn_copyf); r1.addWidget(self.n_prop); ctrls.addLayout(r1)
         r2 = QHBoxLayout(); r2.addWidget(self.btn_prev); r2.addWidget(self.btn_next); ctrls.addLayout(r2)
         ctrls.addStretch(1)
@@ -1326,12 +1422,27 @@ class CometCentroidPreview(QDialog):
             self._auto_pick(one_file=self.files[0], silent=True)
             self._place_cross()
 
-        self.view.viewport().installEventFilter(self)     
+        self.view.viewport().installEventFilter(self)
 
     def eventFilter(self, obj, ev):
         if obj is self.view.viewport():
             if ev.type() == QEvent.Type.CursorChange:
                 obj.setCursor(QCursor(CursorShape.ArrowCursor))
+                return True
+            if ev.type() == QEvent.Type.Wheel:
+                modifiers = ev.modifiers()
+                delta = ev.angleDelta().y()
+                if modifiers & Qt.KeyboardModifier.ControlModifier:
+                    # Ctrl+wheel: zoom anchored to mouse pointer
+                    if delta > 0:
+                        self._zoom_by(self._zoom_step)
+                    else:
+                        self._zoom_by(1.0 / self._zoom_step)
+                else:
+                    # plain wheel: scroll vertically
+                    self.view.verticalScrollBar().setValue(
+                        self.view.verticalScrollBar().value() - delta // 3
+                    )
                 return True
             if ev.type() == QEvent.Type.MouseButtonPress:
                 if ev.button() == Qt.MouseButton.LeftButton:
@@ -1340,12 +1451,31 @@ class CometCentroidPreview(QDialog):
                     return True
         return super().eventFilter(obj, ev)
 
-
     # --- Qt6 helpers ---
     def _prep_slider(self, s, lo, hi, val):
         s.setRange(lo, hi); s.setValue(val); s.setSingleStep(1); s.setPageStep(5)
 
+    # --- zoom helpers ---
+    def _zoom_by(self, factor: float):
+        self.zoom = max(0.05, min(self.zoom * factor, 32.0))
+        self.view.resetTransform()
+        self.view.scale(self.zoom, self.zoom)
 
+    def _zoom_in(self):
+        self._zoom_by(self._zoom_step)
+
+    def _zoom_out(self):
+        self._zoom_by(1.0 / self._zoom_step)
+
+    def _zoom_11(self):
+        self.zoom = 1.0
+        self.view.resetTransform()
+
+    def _zoom_fit(self):
+        self.view.fitInView(self.pix_item, Qt.AspectRatioMode.KeepAspectRatio)
+        # read back the actual scale so _zoom_by stays in sync
+        t = self.view.transform()
+        self.zoom = t.m11()
 
     def keyPressEvent(self, ev):
         k = ev.key()
@@ -1354,7 +1484,7 @@ class CometCentroidPreview(QDialog):
             dy = -0.5 if k == Qt.Key.Key_Up   else (0.5 if k == Qt.Key.Key_Down  else 0.0)
             f = self._cur_file()
             if f in self.xy:
-                x,y = self.xy[f]; self.xy[f] = (x+dx, y+dy); self._place_cross()
+                x, y = self.xy[f]; self.xy[f] = (x+dx, y+dy); self._place_cross()
             ev.accept(); return
         super().keyPressEvent(ev)
 
@@ -1367,16 +1497,11 @@ class CometCentroidPreview(QDialog):
         r = self.listw.currentRow()
         self.listw.setCurrentRow(max(0, min(len(self.files)-1, r+delta)))
 
-    def _apply_zoom(self):
-        self.zoom = max(0.1, self.s_zoom.value()/100.0)
-        self.view.resetTransform()
-        self.view.scale(self.zoom, self.zoom)
-
     def _render_preview(self, img):
         if self.cb_show_gamma.isChecked():
             sigma = max(0.0, self.s_blur.value()/10.0)
             g = max(0.1, self.s_gamma.value()/100.0)
-            L = _luma_gauss(img, sigma if sigma>0 else 0.0)
+            L = _luma_gauss(img, sigma if sigma > 0 else 0.0)
             G = _gamma_stretch(L, gamma=g)
             disp = cv2.normalize(G, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
         else:
@@ -1396,12 +1521,14 @@ class CometCentroidPreview(QDialog):
         if fp not in self.xy:
             self._auto_pick(one_file=fp, silent=True)
         self._place_cross()
-        self._apply_zoom()
+        # fit on first load; subsequent frame changes preserve zoom
+        if self.zoom == 1.0:
+            self._zoom_fit()
 
     def _place_cross(self):
         fp = self._cur_file()
         if not fp or fp not in self.xy: return
-        x,y = self.xy[fp]
+        x, y = self.xy[fp]
         self.cross.setPos(QPointF(x, y))
 
     def _set_xy_current(self, x, y):
@@ -1420,27 +1547,24 @@ class CometCentroidPreview(QDialog):
             img, _, _, _ = load_image(fp)
             if img is None: continue
             L = _to_luma(img).astype(np.float32)
+            det = _detection_stretch(img)
 
-            # 1) try local search around existing xy (seed or previous)
             cx0, cy0 = self.xy.get(fp, (None, None))
             found = False
             if cx0 is not None:
                 half = max(24, int(3*hint))
-                x1,y1,x2,y2 = _crop_bounds(cx0, cy0, half, L.shape[1], L.shape[0])
+                x1, y1, x2, y2 = _crop_bounds(cx0, cy0, half, L.shape[1], L.shape[0])
                 Ls = _star_suppress(L[y1:y2, x1:x2])
                 cx, cy, used = _log_big_blob(Ls, sigmas)
                 cx += x1; cy += y1
-                g = max(0.1, self.s_gamma.value()/100.0)
-                cx, cy = _refine_centroid(_gamma_stretch(L, g), float(cx), float(cy), r=max(10, int(used)))
+                cx, cy = _refine_centroid(det, float(cx), float(cy), r=max(10, int(used)))
                 self.xy[fp] = (float(cx), float(cy))
                 found = True
 
-            # 2) global fallback
             if not found:
                 Ls = _star_suppress(L)
                 cx, cy, used = _log_big_blob(Ls, sigmas)
-                g = max(0.1, self.s_gamma.value()/100.0)
-                cx, cy = _refine_centroid(_gamma_stretch(L, g), float(cx), float(cy), r=max(10, int(used)))
+                cx, cy = _refine_centroid(det, float(cx), float(cy), r=max(10, int(used)))
                 self.xy[fp] = (float(cx), float(cy))
 
         self._place_cross()
@@ -1463,7 +1587,6 @@ class CometCentroidPreview(QDialog):
         return dict(self.xy)
 
     def _refresh_current(self):
-        """Re-render current frame with the latest gamma/blur and keep the cross in place."""
         r = self.listw.currentRow()
         if r < 0 or r >= len(self.files):
             return
@@ -1473,7 +1596,7 @@ class CometCentroidPreview(QDialog):
             return
         disp = self._render_preview(img)
         qimg = QImage(disp.data, disp.shape[1], disp.shape[0], disp.strides[0],
-                    QImage.Format.Format_Grayscale8)
+                      QImage.Format.Format_Grayscale8)
         self.pix_item.setPixmap(QPixmap.fromImage(qimg.copy()))
         self.scene.setSceneRect(0, 0, disp.shape[1], disp.shape[0])
-        self._place_cross()   # keep marker where it was
+        self._place_cross()

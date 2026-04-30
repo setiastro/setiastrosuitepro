@@ -266,21 +266,14 @@ def compute_luminance(
     return np.clip(lum.astype(np.float32, copy=False), 0.0, 1.0)
 
 # ---------- luminance recombine (linear scaling) ----------
-
 def recombine_luminance_linear_scale(
     target_rgb: np.ndarray,
     new_L: np.ndarray,
-    weights: np.ndarray = _LUMA_REC709,
+    weights: np.ndarray = _LUMA_REC709,  # kept for API compat, not used in Lab path
     eps: float = 1e-6,
-    blend: float = 1.0,           # 0..1, 1=full replace
-    highlight_soft_knee: float = 0.0  # 0..1, optional protection
+    blend: float = 1.0,
+    highlight_soft_knee: float = 0.0,
 ) -> np.ndarray:
-    """
-    Replace linear luminance Y (w·RGB) with `new_L` by per-pixel scaling:
-      s = new_L / (Y + eps);  RGB' = RGB * s
-    This preserves hue/chroma in linear space and round-trips when new_L==Y.
-    Optional: blend (mix with original) and highlight soft-knee protection.
-    """
     rgb = _to_float01_strict(target_rgb)
     if rgb.ndim != 3 or rgb.shape[2] != 3:
         raise ValueError("Recombine Luminance requires an RGB target image.")
@@ -290,27 +283,33 @@ def recombine_luminance_linear_scale(
     if L.shape[:2] != (H, W):
         L = cv2.resize(L, (W, H), interpolation=cv2.INTER_LINEAR)
 
-    w = np.asarray(weights, dtype=np.float32)
-    if w.shape != (3,):
-        raise ValueError("weights must be length-3 for RGB recombine.")
+    # Convert RGB → CIE L*a*b* (via OpenCV which expects uint8 or float32 BGR)
+    # cv2 Lab: L* in [0,100], a* in [-127,127], b* in [-127,127]
+    rgb_bgr = rgb[..., ::-1].astype(np.float32)
+    lab = cv2.cvtColor(rgb_bgr, cv2.COLOR_BGR2Lab)
 
-    # current Y
-    Y = rgb[..., 0]*w[0] + rgb[..., 1]*w[1] + rgb[..., 2]*w[2]
-    s = L / (Y + eps)
+    # Replace L* channel — new_L is [0,1], cv2 L* is [0,100]
+    new_L_scaled = np.clip(L * 100.0, 0.0, 100.0)
 
     if highlight_soft_knee > 0.0:
-        # compress extreme upsizing to avoid blowing out tiny Y
-        # knee in [0..1], higher = more protection
+        # Apply soft knee compression to the new L* before injecting
         k = np.clip(highlight_soft_knee, 0.0, 1.0)
-        s = s / (1.0 + k*(s - 1.0))
-
-    out = rgb * s[..., None]
-    out = np.clip(out, 0.0, 1.0)
+        old_L_norm = lab[..., 0] / 100.0
+        new_L_norm = new_L_scaled / 100.0
+        ratio = new_L_norm / (old_L_norm + eps / 100.0)
+        ratio = ratio / (1.0 + k * (ratio - 1.0))
+        new_L_scaled = np.clip(old_L_norm * ratio * 100.0, 0.0, 100.0)
 
     if 0.0 <= blend < 1.0:
-        out = rgb*(1.0 - blend) + out*blend
+        lab[..., 0] = lab[..., 0] * (1.0 - blend) + new_L_scaled * blend
+    else:
+        lab[..., 0] = new_L_scaled
 
-    return out.astype(np.float32, copy=False)
+    # Convert back Lab → RGB
+    rgb_out_bgr = cv2.cvtColor(lab, cv2.COLOR_Lab2BGR)
+    out = np.clip(rgb_out_bgr[..., ::-1], 0.0, 1.0).astype(np.float32)
+
+    return out
 
 def _resolve_active_doc_from(main, target_doc=None):
     doc = target_doc

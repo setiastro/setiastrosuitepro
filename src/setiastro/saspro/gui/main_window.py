@@ -180,7 +180,7 @@ from setiastro.saspro.resources import (
     dse_icon_path, astrobin_filters_csv_path, isophote_path, statstretch_path,
     starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path,
     nbtorgb_path, freqsep_path, contsub_path, halo_path, cosmic_path,dithericon_path,
-    satellite_path, imagecombine_path, wrench_path, eye_icon_path,multiscale_decomp_path,
+    satellite_path, imagecombine_path, wrench_path, eye_icon_path,multiscale_decomp_path, nbi_path,
     disk_icon_path, nuke_path, hubble_path, collage_path, annotated_path,
     colorwheel_path, font_path, csv_icon_path, spinner_path, wims_path, narrowbandnormalization_path,
     wimi_path, linearfit_path, debayer_path, aberration_path, acv_icon_path, snr_path,
@@ -4285,6 +4285,17 @@ class AstroSuiteProMainWindow(
         w.setWindowTitle("Continuum Subtract")
         try:
             w.setWindowIcon(QIcon(contsub_path))
+        except Exception:
+            pass
+        w.show()
+
+    def _open_narrowband_integration(self):
+        from setiastro.saspro.narrowbandintegration import NarrowbandIntegrationDialog
+        w = NarrowbandIntegrationDialog(doc_manager=self.docman, parent=self)
+        w.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        w.setWindowTitle("Narrowband Integration")
+        try:
+            w.setWindowIcon(QIcon(nbi_path))
         except Exception:
             pass
         w.show()
@@ -9447,22 +9458,19 @@ class AstroSuiteProMainWindow(
             geo = s.value("ui/main/geometry")
             st  = s.value("ui/main/state")
             is_max = s.value("ui/main/maximized", False, type=bool)
-
-            if geo is not None:
+            if geo is not None and len(geo) > 0:
                 self.restoreGeometry(geo)
-            if st is not None:
-                self.restoreState(st, version=1)
-
-            # Make sure we're on a visible screen
+            if st is not None and len(st) > 0:
+                result = self.restoreState(st, version=1)
+                if not result:
+                    s.remove("ui/main/state")
             from PyQt6.QtGui import QGuiApplication
             r = self.frameGeometry()
             scr = QGuiApplication.screenAt(r.center()) or QGuiApplication.primaryScreen()
             if scr:
                 ag = scr.availableGeometry()
                 if not ag.intersects(r):
-                    # Center on the available geometry
                     self.move(ag.center() - self.rect().center())
-
             if is_max:
                 self.showMaximized()
         except Exception:
@@ -9671,37 +9679,20 @@ class AstroSuiteProMainWindow(
     def restore_main_window_state(self):
         s = self.settings
         k = self._mw_key()
-
-        # 1) restore dock/layout state first OR geometry first?
-        # Qt generally works best with: restoreState then restoreGeometry, then apply maximized.
         st = s.value(f"{k}/state", None)
-        if st is not None:
-            try:
-                self.restoreState(st)
-            except Exception:
-                pass
-
+        if st is not None and len(st) > 0:
+            result = self.restoreState(st)
+            if not result:
+                s.remove(f"{k}/state")
         geom = s.value(f"{k}/geometry", None)
-        if geom is not None:
-            try:
-                self.restoreGeometry(geom)
-            except Exception:
-                pass
-
-        # Maximized/fullscreen flags should be applied last
+        if geom is not None and len(geom) > 0:
+            self.restoreGeometry(geom)
         was_max = s.value(f"{k}/maximized", False, type=bool)
         was_full = s.value(f"{k}/fullscreen", False, type=bool)
-
         if was_full:
-            try:
-                self.showFullScreen()
-            except Exception:
-                pass
+            self.showFullScreen()
         elif was_max:
-            try:
-                self.showMaximized()
-            except Exception:
-                pass
+            self.showMaximized()
 
     def save_main_window_state(self):
         s = self.settings

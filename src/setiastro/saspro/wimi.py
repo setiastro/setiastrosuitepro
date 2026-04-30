@@ -2808,6 +2808,11 @@ class WIMIDialog(QDialog):
         self.show_annotations_button.clicked.connect(self.toggle_annotation_tools)
         save_buttons_layout.addWidget(self.show_annotations_button)
         
+        self.push_annotated_btn = QPushButton(self.tr("Push Annotated to View"))
+        self.push_annotated_btn.setIcon(QApplication.style().standardIcon(QStyle.StandardPixmap.SP_ArrowForward))
+        self.push_annotated_btn.clicked.connect(self.push_annotated_to_view)
+        save_buttons_layout.addWidget(self.push_annotated_btn)
+
         self.save_annotated_button = QPushButton(self.tr("Save Annotated Image"))
         self.save_annotated_button.setIcon(QIcon(annotated_path))
         self.save_annotated_button.clicked.connect(self.save_annotated_image)
@@ -3869,8 +3874,53 @@ class WIMIDialog(QDialog):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to save FITS file: {e}")
 
+    def push_annotated_to_view(self):
+        if not self.main_image:
+            QMessageBox.warning(self, "No Image", "No image loaded.")
+            return
+        if self._doc_manager is None:
+            QMessageBox.warning(self, "No Document Manager", "Cannot push to view without a document manager.")
+            return
 
+        # Render full scene (same as save_annotated_image full mode)
+        original_circle_center = self.main_preview.circle_center
+        original_circle_radius = self.main_preview.circle_radius
+        self.main_preview.circle_center = None
+        self.main_preview.circle_radius = 0
+        self.main_preview.draw_query_results()
 
+        pixmap = QPixmap(self.main_image.size())
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        self.main_scene.render(painter)
+        painter.end()
+
+        self.main_preview.circle_center = original_circle_center
+        self.main_preview.circle_radius = original_circle_radius
+        self.main_preview.draw_query_results()
+
+        # Convert QPixmap → numpy float32 array
+        qimg = pixmap.toImage().convertToFormat(QImage.Format.Format_RGB888)
+        w, h = qimg.width(), qimg.height()
+        buf = qimg.bits()
+        buf.setsize(h * w * 3)
+        arr = np.frombuffer(buf, dtype=np.uint8).reshape((h, w, 3)).astype(np.float32) / 255.0
+
+        # Push to doc manager
+        title = "Annotated Image"
+        if self.image_path:
+            import os
+            title = f"{os.path.splitext(os.path.basename(self.image_path))[0]} [Annotated]"
+
+        try:
+            if hasattr(self._doc_manager, "open_array"):
+                self._doc_manager.open_array(arr, title=title)
+            elif hasattr(self._doc_manager, "open_numpy"):
+                self._doc_manager.open_numpy(arr, title=title)
+            else:
+                self._doc_manager.create_document(image=arr, name=title)
+        except Exception as e:
+            QMessageBox.critical(self, "Push Failed", f"Failed to push to view:\n{e}")
 
     def save_annotated_image(self):
         """Save the annotated image as a full or cropped view, excluding the search circle."""
@@ -6699,7 +6749,7 @@ class WIMIDialog(QDialog):
 
     #If originally a fits file update the header
     def update_fits_with_wcs(self, filepath, calibration_data):
-        if not filepath.lower().endswith(('.fits', '.fit')):
+        if not filepath.lower().endswith(('.fits', '.fit', '.fts', '.fits.gz', '.fit.gz', '.fts.gz', '.fz')):
             print("File is not a FITS file. Skipping WCS header update.")
             return
 
