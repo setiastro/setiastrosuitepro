@@ -17,10 +17,11 @@ BLEND_MODES = [
     "Add",
     "Lighten",
     "Darken",
-    "Difference", 
+    "Difference",
     "Difference (Squared)",
-    "Relativistic Addition", 
+    "Relativistic Addition",
     "Sigmoid",
+    "Luminosity",
 ]
 
 
@@ -383,7 +384,20 @@ def _apply_mode(base: np.ndarray, src: np.ndarray, layer: ImageLayer) -> np.ndar
         w = w[..., None]  # broadcast over channels
 
         return base * (1.0 - w) + src * w
-
+    if mode == "Luminosity":
+        from setiastro.saspro.luminancerecombine import (
+            compute_luminance,
+            recombine_luminance_linear_scale,
+            _LUMA_REC709,
+        )
+        src_luma = compute_luminance(src, method="rec709")
+        return recombine_luminance_linear_scale(
+            base,
+            src_luma,
+            weights=_LUMA_REC709,
+            blend=1.0,
+            highlight_soft_knee=0.0,
+        )
     # Normal
     return src
 
