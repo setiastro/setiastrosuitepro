@@ -4291,7 +4291,7 @@ class AstroSuiteProMainWindow(
 
     def _open_narrowband_integration(self):
         from setiastro.saspro.narrowbandintegration import NarrowbandIntegrationDialog
-        w = NarrowbandIntegrationDialog(doc_manager=self.docman)
+        w = NarrowbandIntegrationDialog(doc_manager=self.docman, parent=self)
         w.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         w.setWindowTitle("Narrowband Integration")
         try:

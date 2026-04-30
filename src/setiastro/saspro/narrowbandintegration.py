@@ -746,6 +746,14 @@ class NarrowbandIntegrationDialog(QDialog):
                 cmb.blockSignals(True)
                 cmb.setCurrentIndex(best + 1)  # +1 for "— None —"
                 cmb.blockSignals(False)
+                # enable the checkbox and controls — signals blocked so no preview fires
+                self._nb_enabled[label].blockSignals(True)
+                self._nb_enabled[label].setChecked(True)
+                self._nb_enabled[label].blockSignals(False)
+                self._nb_combos[label].setEnabled(True)
+                self._nb_hue_sliders[label].setEnabled(True)
+                self._nb_hue_spins[label].setEnabled(True)
+                self._nb_amount[label].setEnabled(True)
     # -----------------------------------------------------------------------
     # Fixed channel enable/hue sync
     # -----------------------------------------------------------------------
