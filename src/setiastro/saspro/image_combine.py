@@ -21,7 +21,7 @@ from setiastro.saspro.widgets.image_utils import (
     extract_mask_from_document as _active_mask_array_from_doc
 )
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
-
+from setiastro.saspro.luminancerecombine import recombine_luminance_linear_scale as _recombine_luma_into_rgb
 
 _LUMA_WEIGHTS = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
 
@@ -39,14 +39,6 @@ def _rgb_to_luma(img: np.ndarray) -> np.ndarray:
         return f[..., 0]*w[0] + f[..., 1]*w[1] + f[..., 2]*w[2]
     raise ValueError(f"Unsupported image shape: {img.shape}")
 
-def _recombine_luma_into_rgb(Y: np.ndarray, RGB: np.ndarray) -> np.ndarray:
-    rgb = _to_float01(RGB)
-    if rgb.ndim != 3 or rgb.shape[2] != 3:
-        raise ValueError("Recombine requires RGB target.")
-    w = _LUMA_WEIGHTS
-    orig_Y = rgb[..., 0]*w[0] + rgb[..., 1]*w[1] + rgb[..., 2]*w[2]
-    chroma = rgb / (orig_Y[..., None] + 1e-6)
-    return np.clip(chroma * Y[..., None], 0.0, 1.0)
 
 def _blend_dispatch(A: np.ndarray, B: np.ndarray, mode: str, alpha: float) -> np.ndarray:
     A = _to_float01(A); B = _to_float01(B)
@@ -394,7 +386,7 @@ class ImageCombineDialog(QDialog):
                 if m is not None:
                     Ymix = Ymix*m + YA*(1.0 - m)
 
-                blended = _recombine_luma_into_rgb(Ymix, imgA)
+                blended = _recombine_luma_into_rgb(imgA, Ymix)
 
             else:
                 A3 = imgA if imgA.ndim == 3 else imgA[..., None]
@@ -455,7 +447,7 @@ class ImageCombineDialog(QDialog):
                 if m is not None:
                     Ymix = Ymix*m + YA*(1.0 - m)
 
-                result = _recombine_luma_into_rgb(Ymix, imgA)
+                result = _recombine_luma_into_rgb(imgA, Ymix)
                 step = f"Luminance {mode}"
             else:
                 A3 = imgA if imgA.ndim == 3 else imgA[..., None]
