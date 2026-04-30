@@ -8,12 +8,13 @@ try:
 except Exception:
     cv2 = None
 
-from PyQt6.QtCore import Qt, QTimer, QSettings
+from PyQt6.QtCore import Qt, QTimer, QSettings, pyqtSignal
 from PyQt6.QtGui import QImage, QPixmap, QIcon, QGuiApplication
 from PyQt6.QtWidgets import (
-    QDialog, QWidget, QLabel, QPushButton, QComboBox, QSlider, QGroupBox,
-    QVBoxLayout, QHBoxLayout, QGridLayout, QMessageBox, QDoubleSpinBox,
-    QScrollArea, QFrame, QSplitter, QSizePolicy, QCheckBox
+    QDialog, QWidget, QLabel, QPushButton, QComboBox, QGroupBox,
+    QVBoxLayout, QHBoxLayout, QMessageBox, QDoubleSpinBox,
+    QScrollArea, QFrame, QSplitter, QSizePolicy, QCheckBox, QLineEdit,
+    QInputDialog
 )
 
 try:
@@ -27,18 +28,30 @@ except Exception:
 
 
 # ---------------------------------------------------------------------------
-# Wavelength → approximate RGB hue (degrees)
-# Ha  656nm  →  ~0°   (deep red)
-# SII 672nm  →  ~345° (slightly crimson-red, just below red)
-# OIII 496nm →  ~185° (cyan-teal)
+# Wavelength → approximate HSV hue (degrees)
 # ---------------------------------------------------------------------------
 _DEFAULT_HUE = {
-    "Ha":   4.0,    # 656nm — warm red, slight orange shift
-    "SII":  0.0,    # 672nm — pure/deep red (redder than Ha, at the spectrum edge)
-    "OIII": 156.0,  # 496nm — green-cyan (NOT pure cyan — this was the main error)
+    "Ha":   4.0,    # 656nm — warm red
+    "SII":  0.0,    # 672nm — pure/deep red
+    "OIII": 156.0,  # 496nm — green-cyan
 }
 
 _NB_LABELS = ["Ha", "SII", "OIII"]
+
+# Preset filter library for the dynamic "Add Filter" feature
+# name → (wavelength_nm, hue_deg, description)
+_FILTER_PRESETS = {
+    "Ha"      : (656, 4.0,   "Hydrogen Alpha 656 nm"),
+    "SII"     : (672, 0.0,   "Sulfur II 672 nm"),
+    "OIII"    : (496, 156.0, "Oxygen III 496/501 nm"),
+    "Neon"    : (585, 52.0,  "Neon 585 nm"),
+    "Argon"   : (488, 196.0, "Argon 488 nm"),
+    "Nitrogen": (658, 2.0,   "Nitrogen 658 nm"),
+    "Helium"  : (587, 51.0,  "Helium 587 nm"),
+    "Custom"  : (None, 0.0,  "Custom wavelength"),
+}
+
+_FILTER_PRESET_NAMES = ["Ha", "SII", "OIII", "Neon", "Argon", "Nitrogen", "Helium", "Custom"]
 
 
 # ---------------------------------------------------------------------------
@@ -53,16 +66,13 @@ def _to_f32(arr: np.ndarray) -> np.ndarray:
 
 
 def _ensure_mono(arr: np.ndarray) -> np.ndarray:
-    """Return HxW float32."""
     a = _to_f32(arr)
     if a.ndim == 3:
-        # luminance
         return (0.2989 * a[..., 0] + 0.5870 * a[..., 1] + 0.1140 * a[..., 2]).astype(np.float32)
     return a
 
 
 def _ensure_rgb(arr: np.ndarray) -> np.ndarray:
-    """Return HxWx3 float32."""
     a = _to_f32(arr)
     if a.ndim == 2:
         return np.repeat(a[..., None], 3, axis=2)
@@ -70,39 +80,24 @@ def _ensure_rgb(arr: np.ndarray) -> np.ndarray:
 
 
 def _colorize(mono: np.ndarray, hue_deg: float) -> np.ndarray:
-    """
-    Colorize a mono image (HxW, 0..1) with a given hue (degrees).
-    Returns HxWx3 float32.
-    Strategy: HSV with S=1, V=pixel value, H=hue_deg.
-    """
-    h = float(hue_deg) % 360.0
+    h  = float(hue_deg) % 360.0
     hi = int(h / 60.0) % 6
     f  = (h / 60.0) - int(h / 60.0)
-    v  = mono.astype(np.float32)  # HxW
-
-    p = np.zeros_like(v)            # v*(1-s)=0
-    q = v * (1.0 - f)
-    t = v * f
-
-    rgb_sectors = [
-        (v, t, p),  # 0
-        (q, v, p),  # 1
-        (p, v, t),  # 2
-        (p, q, v),  # 3
-        (t, p, v),  # 4
-        (v, p, q),  # 5
-    ]
-    r_ch, g_ch, b_ch = rgb_sectors[hi]
+    v  = mono.astype(np.float32)
+    p  = np.zeros_like(v)
+    q  = v * (1.0 - f)
+    t  = v * f
+    sectors = [(v,t,p),(q,v,p),(p,v,t),(p,q,v),(t,p,v),(v,p,q)]
+    r_ch, g_ch, b_ch = sectors[hi]
     return np.clip(np.stack([r_ch, g_ch, b_ch], axis=-1), 0.0, 1.0).astype(np.float32)
 
 
 def _screen(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """Screen blend: a + b - a*b  (both HxWx3, result HxWx3)."""
     return np.clip(a + b - a * b, 0.0, 1.0).astype(np.float32)
 
 
 def _to_pixmap(img01: np.ndarray) -> QPixmap:
-    a = np.clip(_ensure_rgb(img01), 0.0, 1.0)
+    a  = np.clip(_ensure_rgb(img01), 0.0, 1.0)
     u8 = (a * 255.0 + 0.5).astype(np.uint8)
     h, w, _ = u8.shape
     qimg = QImage(u8.data, w, h, u8.strides[0], QImage.Format.Format_RGB888)
@@ -122,15 +117,10 @@ def _downsample(img: np.ndarray, max_dim: int = 1200) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
-# Hue gradient widget
+# Hue gradient slider widget
 # ---------------------------------------------------------------------------
 
 class HueGradientSlider(QWidget):
-    """
-    A slider with a hue-spectrum gradient track (0..360 degrees).
-    Emits hueChanged(float) when value changes.
-    """
-    from PyQt6.QtCore import pyqtSignal
     hueChanged = pyqtSignal(float)
 
     def __init__(self, default_hue: float = 0.0, parent=None):
@@ -159,60 +149,45 @@ class HueGradientSlider(QWidget):
                 and self._gradient_img.width() == w
                 and self._gradient_img.height() == h):
             return
-        # Build hue row
-        hues = np.linspace(0, 179, w, dtype=np.uint8)
-        sat  = np.full(w, 220, dtype=np.uint8)
-        val  = np.full(w, 230, dtype=np.uint8)
-        hsv_row = np.stack([hues, sat, val], axis=-1)[None, :, :]  # 1 x W x 3
+        hues    = np.linspace(0, 179, w, dtype=np.uint8)
+        sat     = np.full(w, 220, dtype=np.uint8)
+        val     = np.full(w, 230, dtype=np.uint8)
+        hsv_row = np.stack([hues, sat, val], axis=-1)[None, :, :]
         if cv2 is not None:
             rgb_row = cv2.cvtColor(hsv_row, cv2.COLOR_HSV2RGB)
         else:
-            # fallback: just a rainbow using hue directly
             r = np.clip(np.abs(hues.astype(float)/180*6 - 3) - 1, 0, 1)
             g = np.clip(2 - np.abs(hues.astype(float)/180*6 - 2), 0, 1)
             b = np.clip(2 - np.abs(hues.astype(float)/180*6 - 4), 0, 1)
-            rgb_row = np.stack([r, g, b], axis=-1)[None] * 230
-            rgb_row = rgb_row.astype(np.uint8)
-        row = np.repeat(rgb_row, h, axis=0)
+            rgb_row = (np.stack([r, g, b], axis=-1)[None] * 230).astype(np.uint8)
+        row  = np.repeat(rgb_row, h, axis=0)
         qimg = QImage(row.data, w, h, row.strides[0], QImage.Format.Format_RGB888).copy()
         self._gradient_img = qimg
 
     def paintEvent(self, ev):
-        from PyQt6.QtGui import QPainter, QPen, QColor, QBrush, QLinearGradient
+        from PyQt6.QtGui import QPainter, QPen, QColor, QBrush
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-        track_h = 14
-        track_y = (self.height() - track_h) // 2
+        track_h      = 14
+        track_y      = (self.height() - track_h) // 2
         track_rect_x = 10
         track_rect_w = self.width() - 20
-
-        # Draw gradient track
         self._build_gradient(track_rect_w, track_h)
         p.drawImage(track_rect_x, track_y, self._gradient_img)
-
-        # Track border
         p.setPen(QPen(QColor(60, 60, 60), 1))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawRect(track_rect_x, track_y, track_rect_w, track_h)
-
-        # Thumb position
         tx = int(track_rect_x + (self._hue / 360.0) * track_rect_w)
         ty = self.height() // 2
-
-        # Shadow
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QBrush(QColor(0, 0, 0, 60)))
         p.drawEllipse(tx - 9, ty - 9, 18, 18)
-
-        # Thumb fill — use the hue color itself
         hsv_pix = np.array([[[int(self._hue / 2), 220, 230]]], dtype=np.uint8)
         if cv2 is not None:
-            rgb_pix = cv2.cvtColor(hsv_pix, cv2.COLOR_HSV2RGB)[0, 0]
+            rgb_pix    = cv2.cvtColor(hsv_pix, cv2.COLOR_HSV2RGB)[0, 0]
             fill_color = QColor(int(rgb_pix[0]), int(rgb_pix[1]), int(rgb_pix[2]))
         else:
             fill_color = QColor(200, 200, 200)
-
         p.setBrush(QBrush(fill_color))
         p.setPen(QPen(QColor(255, 255, 255), 2))
         p.drawEllipse(tx - 8, ty - 8, 16, 16)
@@ -237,13 +212,195 @@ class HueGradientSlider(QWidget):
 
 
 # ---------------------------------------------------------------------------
+# Dynamic filter row widget
+# ---------------------------------------------------------------------------
+
+class DynamicFilterRow(QWidget):
+    """
+    A self-contained widget representing one user-added narrowband filter row.
+    Emits changed() whenever any control value changes.
+    Emits removeRequested() when the ✕ button is clicked.
+    """
+    changed         = pyqtSignal()
+    removeRequested = pyqtSignal(object)  # passes self
+
+    def __init__(self, doc_items: list[tuple], default_name: str = "Custom",
+                 default_hue: float = 0.0, parent=None):
+        """
+        doc_items: list of (display_name, doc_object) for populating the dropdown.
+                   First entry should be ("— None —", None).
+        """
+        super().__init__(parent)
+        self._doc_items = doc_items
+        self._build(default_name, default_hue)
+
+    def _build(self, default_name: str, default_hue: float):
+        # Outer group box — title will be the filter name
+        self._gb = QGroupBox(default_name)
+        gb_layout = QVBoxLayout(self._gb)
+        gb_layout.setSpacing(6)
+
+        # Row 0: enable + name + preset dropdown + remove button
+        row0 = QHBoxLayout()
+
+        self.cb_enable = QCheckBox("Enable")
+        self.cb_enable.setChecked(False)
+        self.cb_enable.toggled.connect(self._on_enable_toggled)
+        row0.addWidget(self.cb_enable)
+
+        self.cmb_doc = QComboBox()
+        self.cmb_doc.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.cmb_doc.setMinimumContentsLength(20)
+        self.cmb_doc.setEnabled(False)
+        for name, doc in self._doc_items:
+            self.cmb_doc.addItem(name, doc)
+        self.cmb_doc.currentIndexChanged.connect(self.changed)
+        row0.addWidget(self.cmb_doc, 1)
+
+        # Preset snap button
+        self.cmb_preset = QComboBox()
+        self.cmb_preset.setToolTip("Snap hue to a known filter wavelength")
+        for pname in _FILTER_PRESET_NAMES:
+            _, hue, desc = _FILTER_PRESETS[pname]
+            nm = _FILTER_PRESETS[pname][0]
+            label = f"{pname}" if nm is None else f"{pname} ({nm}nm)"
+            self.cmb_preset.addItem(label, pname)
+        self.cmb_preset.setCurrentIndex(_FILTER_PRESET_NAMES.index("Custom"))
+        self.cmb_preset.currentIndexChanged.connect(self._on_preset_selected)
+        self.cmb_preset.setFixedWidth(130)
+        row0.addWidget(self.cmb_preset)
+
+        # Name edit
+        self.name_edit = QLineEdit(default_name)
+        self.name_edit.setPlaceholderText("Filter name")
+        self.name_edit.setFixedWidth(90)
+        self.name_edit.textChanged.connect(self._on_name_changed)
+        row0.addWidget(self.name_edit)
+
+        # Remove button
+        btn_remove = QPushButton("✕")
+        btn_remove.setFixedSize(24, 24)
+        btn_remove.setToolTip("Remove this filter")
+        btn_remove.clicked.connect(lambda: self.removeRequested.emit(self))
+        row0.addWidget(btn_remove)
+
+        gb_layout.addLayout(row0)
+
+        # Row 1: hue label
+        gb_layout.addWidget(QLabel("Colorize hue (°):"))
+
+        # Row 2: hue gradient slider
+        self.hue_slider = HueGradientSlider(default_hue=default_hue)
+        self.hue_slider.setEnabled(False)
+        self.hue_slider.hueChanged.connect(self._on_hue_slider_changed)
+        gb_layout.addWidget(self.hue_slider)
+
+        # Row 3: hue spin + amount
+        row3 = QHBoxLayout()
+        row3.addWidget(QLabel("Hue:"))
+        self.hue_spin = QDoubleSpinBox()
+        self.hue_spin.setRange(0.0, 359.9)
+        self.hue_spin.setSingleStep(1.0)
+        self.hue_spin.setDecimals(1)
+        self.hue_spin.setValue(default_hue)
+        self.hue_spin.setEnabled(False)
+        self.hue_spin.valueChanged.connect(self._on_hue_spin_changed)
+        row3.addWidget(self.hue_spin)
+
+        row3.addSpacing(16)
+        row3.addWidget(QLabel("Amount:"))
+        self.amt_spin = QDoubleSpinBox()
+        self.amt_spin.setRange(0.0, 2.0)
+        self.amt_spin.setSingleStep(0.05)
+        self.amt_spin.setDecimals(2)
+        self.amt_spin.setValue(1.0)
+        self.amt_spin.setEnabled(False)
+        self.amt_spin.setToolTip("0 = no contribution, 1 = full screen, 2 = double weight")
+        self.amt_spin.valueChanged.connect(self.changed)
+        row3.addWidget(self.amt_spin)
+        gb_layout.addLayout(row3)
+
+        # Wrap group box in this widget's layout
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(self._gb)
+        self.setMinimumWidth(340)
+
+    # --- internal helpers ---
+
+    def _on_enable_toggled(self, checked: bool):
+        self.cmb_doc.setEnabled(checked)
+        self.hue_slider.setEnabled(checked)
+        self.hue_spin.setEnabled(checked)
+        self.amt_spin.setEnabled(checked)
+        self.changed.emit()
+
+    def _on_name_changed(self, text: str):
+        self._gb.setTitle(text or "Custom")
+
+    def _on_preset_selected(self, _):
+        key = self.cmb_preset.currentData()
+        if key and key != "Custom":
+            _, hue, _ = _FILTER_PRESETS[key]
+            self.hue_slider.setHue(hue, notify=False)
+            self.hue_slider.update()
+            self.hue_spin.blockSignals(True)
+            self.hue_spin.setValue(hue)
+            self.hue_spin.blockSignals(False)
+            # Also update name to match preset
+            self.name_edit.setText(key)
+            self.changed.emit()
+
+    def _on_hue_slider_changed(self, hue: float):
+        self.hue_spin.blockSignals(True)
+        self.hue_spin.setValue(hue % 360.0)
+        self.hue_spin.blockSignals(False)
+        self.changed.emit()
+
+    def _on_hue_spin_changed(self, hue: float):
+        self.hue_slider.setHue(hue, notify=False)
+        self.hue_slider.update()
+        self.changed.emit()
+
+    # --- public API ---
+
+    def filter_name(self) -> str:
+        return self.name_edit.text() or "Custom"
+
+    def is_enabled(self) -> bool:
+        return self.cb_enable.isChecked()
+
+    def current_doc(self):
+        return self.cmb_doc.currentData()
+
+    def hue(self) -> float:
+        return self.hue_slider.hue()
+
+    def amount(self) -> float:
+        return self.amt_spin.value()
+
+    def reset(self):
+        self.cb_enable.setChecked(False)
+        key = self.cmb_preset.currentData()
+        if key and key != "Custom":
+            _, hue, _ = _FILTER_PRESETS[key]
+        else:
+            hue = 0.0
+        self.hue_slider.setHue(hue, notify=False)
+        self.hue_slider.update()
+        self.hue_spin.blockSignals(True)
+        self.hue_spin.setValue(hue)
+        self.hue_spin.blockSignals(False)
+        self.amt_spin.setValue(1.0)
+
+
+# ---------------------------------------------------------------------------
 # Main dialog
 # ---------------------------------------------------------------------------
 
 class NarrowbandIntegrationDialog(QDialog):
     """
-    Screen narrowband (Ha/SII/OIII) data into an RGB broadband image.
-    Each narrowband channel gets a colorize hue slider and an amount knob.
+    Screen narrowband (Ha/SII/OIII + user-defined) data into an RGB broadband image.
     Screen formula: out = rgb + colorized_nb - rgb * colorized_nb
     """
 
@@ -257,23 +414,23 @@ class NarrowbandIntegrationDialog(QDialog):
         except Exception:
             pass
 
-        self.docman = doc_manager
-        self._zoom = 1.0
-        self._panning = False
-        self._pan_start_pos_vp = None
-        self._pan_start_scroll = (0, 0)
-        self._pan_deadzone = 1
+        self.docman          = doc_manager
+        self._zoom           = 1.0
+        self._panning        = False
+        self._pan_start_pos_vp  = None
+        self._pan_start_scroll  = (0, 0)
+        self._pan_deadzone   = 1
+        self._dynamic_rows: list[DynamicFilterRow] = []
+        self._state_restored = False
+        self._cached_result_pm = None
 
-        # Timer must exist before _build_ui() so signal connections during
-        # widget construction can't fire _schedule_preview() on a missing attribute
+        # Timer must exist before _build_ui
         self._preview_timer = QTimer(self)
         self._preview_timer.setSingleShot(True)
         self._preview_timer.timeout.connect(self._update_preview)
 
         self._build_ui()
         self._populate_views()
-
-        QTimer.singleShot(0, self._update_preview)
 
     # -----------------------------------------------------------------------
     # UI construction
@@ -291,7 +448,7 @@ class NarrowbandIntegrationDialog(QDialog):
 
         # ── LEFT PANE ──────────────────────────────────────────────────────
         left_widget = QWidget()
-        left_widget.setMinimumWidth(360)
+        left_widget.setMinimumWidth(380)
         left_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         self.splitter.addWidget(left_widget)
 
@@ -299,11 +456,11 @@ class NarrowbandIntegrationDialog(QDialog):
         left_outer.setContentsMargins(0, 0, 0, 0)
         left_outer.setSpacing(8)
 
-        # Scroll area for controls
-        controls_container = QWidget()
-        left = QVBoxLayout(controls_container)
-        left.setContentsMargins(4, 4, 4, 4)
-        left.setSpacing(10)
+        # Scrollable controls
+        self._controls_container = QWidget()
+        self._controls_layout    = QVBoxLayout(self._controls_container)
+        self._controls_layout.setContentsMargins(4, 4, 4, 4)
+        self._controls_layout.setSpacing(10)
 
         # ── RGB source ──────────────────────────────────────────────────────
         gb_rgb = QGroupBox("Broadband RGB Image")
@@ -313,14 +470,14 @@ class NarrowbandIntegrationDialog(QDialog):
         self.cmb_rgb.setMinimumContentsLength(28)
         self.cmb_rgb.currentIndexChanged.connect(self._schedule_preview)
         gl_rgb.addWidget(self.cmb_rgb)
-        left.addWidget(gb_rgb)
+        self._controls_layout.addWidget(gb_rgb)
 
-        # ── Narrowband channels ─────────────────────────────────────────────
-        self._nb_combos   = {}   # label → QComboBox
-        self._nb_hue_sliders = {}  # label → HueGradientSlider
-        self._nb_hue_spins   = {}  # label → QDoubleSpinBox
-        self._nb_amount      = {}  # label → QDoubleSpinBox
-        self._nb_enabled     = {}  # label → QCheckBox
+        # ── Fixed narrowband channels ───────────────────────────────────────
+        self._nb_combos      = {}
+        self._nb_hue_sliders = {}
+        self._nb_hue_spins   = {}
+        self._nb_amount      = {}
+        self._nb_enabled     = {}
 
         nb_descriptions = {
             "Ha":   "Hα  656 nm  (hydrogen alpha)",
@@ -333,7 +490,6 @@ class NarrowbandIntegrationDialog(QDialog):
             g  = QVBoxLayout(gb)
             g.setSpacing(6)
 
-            # Row 0: enabled checkbox + dropdown
             row0 = QHBoxLayout()
             cb_en = QCheckBox("Enable")
             cb_en.setChecked(False)
@@ -350,20 +506,14 @@ class NarrowbandIntegrationDialog(QDialog):
             row0.addWidget(cmb, 1)
             g.addLayout(row0)
 
-            # Row 1: hue label
-            hue_label_row = QHBoxLayout()
-            hue_label_row.addWidget(QLabel("Colorize hue (°):"))
-            hue_label_row.addStretch()
-            g.addLayout(hue_label_row)
+            g.addWidget(QLabel("Colorize hue (°):"))
 
-            # Row 2: gradient slider
             hue_slider = HueGradientSlider(default_hue=_DEFAULT_HUE[label])
             hue_slider.setEnabled(False)
             hue_slider.hueChanged.connect(lambda h, lbl=label: self._on_hue_changed(lbl, h))
             self._nb_hue_sliders[label] = hue_slider
             g.addWidget(hue_slider)
 
-            # Row 3: spin for precise hue entry + amount
             row3 = QHBoxLayout()
             row3.addWidget(QLabel("Hue:"))
             hue_spin = QDoubleSpinBox()
@@ -390,26 +540,39 @@ class NarrowbandIntegrationDialog(QDialog):
             row3.addWidget(amt_spin)
             g.addLayout(row3)
 
-            left.addWidget(gb)
+            self._controls_layout.addWidget(gb)
 
-        left.addStretch(1)
+        # ── Dynamic rows placeholder — inserted before the add button ───────
+        # We'll keep a reference to insert dynamic rows above the add button
+        self._dynamic_rows_layout = QVBoxLayout()
+        self._dynamic_rows_layout.setSpacing(10)
+        self._controls_layout.addLayout(self._dynamic_rows_layout)
+
+        # ── Add Filter button ───────────────────────────────────────────────
+        add_row = QHBoxLayout()
+        self.btn_add_filter = QPushButton("＋  Add Filter")
+        self.btn_add_filter.setToolTip("Add a custom narrowband filter channel")
+        self.btn_add_filter.clicked.connect(self._add_dynamic_filter)
+        add_row.addWidget(self.btn_add_filter)
+        add_row.addStretch(1)
+        self._controls_layout.addLayout(add_row)
+
+        self._controls_layout.addStretch(1)
 
         # Scroll wrapper
         left_scroll = QScrollArea()
-        left_scroll.setWidget(controls_container)
-        left_scroll.setWidgetResizable(False)
+        left_scroll.setWidget(self._controls_container)
+        left_scroll.setWidgetResizable(True)
         left_scroll.setFrameShape(QFrame.Shape.NoFrame)
         left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         left_scroll.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         left_outer.addWidget(left_scroll, 1)
 
-        # Small preview toggle (outside scroll)
         self.cb_small = QCheckBox("Small preview (fast)")
         self.cb_small.setChecked(True)
         self.cb_small.toggled.connect(self._schedule_preview)
         left_outer.addWidget(self.cb_small)
 
-        # Buttons
         btn_row = QHBoxLayout()
         self.btn_apply     = QPushButton("Apply to Current View")
         self.btn_apply_new = QPushButton("Apply as New Document")
@@ -432,7 +595,6 @@ class NarrowbandIntegrationDialog(QDialog):
         right.setContentsMargins(0, 0, 0, 0)
         right.setSpacing(6)
 
-        # Zoom toolbar
         zoom_row = QHBoxLayout()
         self.btn_zoom_out = themed_toolbtn("zoom-out",      "Zoom Out")
         self.btn_zoom_in  = themed_toolbtn("zoom-in",       "Zoom In")
@@ -455,7 +617,6 @@ class NarrowbandIntegrationDialog(QDialog):
         lbl_help.setStyleSheet("color: #888; font-size: 11px;")
         right.addWidget(lbl_help)
 
-        # Preview scroll area
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(False)
         self.lbl_preview = QLabel()
@@ -470,10 +631,9 @@ class NarrowbandIntegrationDialog(QDialog):
         self.lbl_preview.setMouseTracking(True)
         self.lbl_preview.installEventFilter(self)
 
-        # Splitter config
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)
-        self.splitter.setSizes([400, 900])
+        self.splitter.setSizes([420, 900])
 
         self.setSizeGripEnabled(True)
         try:
@@ -485,42 +645,71 @@ class NarrowbandIntegrationDialog(QDialog):
             self.resize(1100, 720)
 
     # -----------------------------------------------------------------------
+    # Dynamic filter management
+    # -----------------------------------------------------------------------
+
+    def _build_doc_items(self) -> list[tuple]:
+        """Build the (name, doc) list used by dynamic row dropdowns."""
+        items = [("— None —", None)]
+        if self.docman is None:
+            return items
+        try:
+            docs = self.docman.all_documents() or []
+        except Exception:
+            return items
+        for d in docs:
+            if hasattr(d, "image") and d.image is not None:
+                items.append((self._doc_name(d), d))
+        return items
+
+    def _add_dynamic_filter(self):
+        doc_items = self._build_doc_items()
+        row = DynamicFilterRow(doc_items=doc_items, default_name="Custom",
+                            default_hue=0.0, parent=None)
+        row.changed.connect(self._schedule_preview)
+        row.removeRequested.connect(self._remove_dynamic_filter)
+        self._dynamic_rows.append(row)
+        self._dynamic_rows_layout.addWidget(row)
+
+    def _remove_dynamic_filter(self, row: DynamicFilterRow):
+        if row in self._dynamic_rows:
+            self._dynamic_rows.remove(row)
+        self._dynamic_rows_layout.removeWidget(row)
+        row.setParent(None)
+        row.deleteLater()
+        self._schedule_preview()
+
+    # -----------------------------------------------------------------------
     # View population
     # -----------------------------------------------------------------------
 
     def _populate_views(self):
-        """Populate all combo boxes from open documents."""
         if self.docman is None:
             return
-
-        docs = []
         try:
             docs = self.docman.all_documents() or []
         except Exception:
-            pass
+            docs = []
         img_docs = [(d, self._doc_name(d)) for d in docs
                     if hasattr(d, "image") and d.image is not None]
 
-        none_item = ("— None —", None)
-
-        # RGB combo: no None option (must pick something)
         self.cmb_rgb.blockSignals(True)
         self.cmb_rgb.clear()
+        self.cmb_rgb.addItem("— Select RGB image —", None)   # blank default
         for d, name in img_docs:
             self.cmb_rgb.addItem(name, d)
+        self.cmb_rgb.setCurrentIndex(0)   # force blank
         self.cmb_rgb.blockSignals(False)
 
-        # NB combos: include None
         for label in _NB_LABELS:
             cmb = self._nb_combos[label]
             cmb.blockSignals(True)
             cmb.clear()
-            cmb.addItem(none_item[0], none_item[1])
+            cmb.addItem("— None —", None)
             for d, name in img_docs:
                 cmb.addItem(name, d)
             cmb.blockSignals(False)
 
-        # Auto-guess from names
         titles = [name for _, name in img_docs]
         self._autofill_combos(img_docs, titles)
 
@@ -531,31 +720,17 @@ class NarrowbandIntegrationDialog(QDialog):
             return "Untitled"
 
     def _autofill_combos(self, img_docs, titles):
-        """Guess which doc is RGB, which are Ha/SII/OIII using name heuristics."""
         import re
 
-        def score_rgb(t: str) -> int:
-            t = t.lower()
-            s = 0
-            if re.search(r'\brgb\b', t): s += 10
-            if re.search(r'\bbroadband\b', t): s += 8
-            if re.search(r'\blight\b', t): s += 4
-            # penalise obvious NB names
-            for kw in ('ha', 'hα', 'sii', 'oiii', 'nb', 'narrowband'):
-                if kw in t: s -= 8
-            return s
-
-        def score_nb(t: str, label: str) -> int:
-            t = t.lower()
-            s = 0
-            lbl = label.lower()
-            if lbl == 'ha':
+        def score_nb(t, label):
+            t = t.lower(); s = 0
+            if label == 'ha':
                 if re.search(r'\bha\b|hα|h.alpha|halpha', t): s += 10
                 if re.search(r'[_\-\.]ha[_\-\.\s]|[_\-\.]ha$', t): s += 8
-            elif lbl == 'sii':
+            elif label == 'sii':
                 if re.search(r'\bsii\b|s2\b|sulfur', t): s += 10
                 if re.search(r'[_\-\.]sii[_\-\.\s]|[_\-\.]sii$|[_\-\.]s2[_\-\.]', t): s += 8
-            elif lbl == 'oiii':
+            elif label == 'oiii':
                 if re.search(r'\boiii\b|o3\b|oxygen', t): s += 10
                 if re.search(r'[_\-\.]oiii[_\-\.\s]|[_\-\.]oiii$|[_\-\.]o3[_\-\.]', t): s += 8
             return s
@@ -563,24 +738,16 @@ class NarrowbandIntegrationDialog(QDialog):
         if not titles:
             return
 
-        # Best RGB guess
-        rgb_scores = [score_rgb(t) for t in titles]
-        best_rgb = max(range(len(rgb_scores)), key=lambda i: rgb_scores[i])
-        if rgb_scores[best_rgb] > 0:
-            self.cmb_rgb.setCurrentIndex(best_rgb)
-
-        # Best NB guesses
         for label in _NB_LABELS:
-            scores = [score_nb(t, label) for t in titles]
-            best = max(range(len(scores)), key=lambda i: scores[i])
+            scores = [score_nb(t, label.lower()) for t in titles]
+            best   = max(range(len(scores)), key=lambda i: scores[i])
             if scores[best] > 0:
-                # +1 because index 0 is "— None —"
-                self._nb_combos[label].setCurrentIndex(best + 1)
-                # auto-enable if a good match was found
-                self._nb_enabled[label].setChecked(True)
-
+                cmb = self._nb_combos[label]
+                cmb.blockSignals(True)
+                cmb.setCurrentIndex(best + 1)  # +1 for "— None —"
+                cmb.blockSignals(False)
     # -----------------------------------------------------------------------
-    # Enable/disable per-channel controls
+    # Fixed channel enable/hue sync
     # -----------------------------------------------------------------------
 
     def _on_nb_enable_toggled(self, label: str, checked: bool):
@@ -589,10 +756,6 @@ class NarrowbandIntegrationDialog(QDialog):
         self._nb_hue_spins[label].setEnabled(checked)
         self._nb_amount[label].setEnabled(checked)
         self._schedule_preview()
-
-    # -----------------------------------------------------------------------
-    # Hue sync between slider and spin
-    # -----------------------------------------------------------------------
 
     def _on_hue_changed(self, label: str, hue: float):
         spin = self._nb_hue_spins[label]
@@ -613,7 +776,7 @@ class NarrowbandIntegrationDialog(QDialog):
 
     def _schedule_preview(self, *_):
         self._preview_timer.stop()
-        self._preview_timer.start(150)
+        self._preview_timer.start(300)
 
     def _get_rgb_image(self) -> np.ndarray | None:
         doc = self.cmb_rgb.currentData()
@@ -621,7 +784,7 @@ class NarrowbandIntegrationDialog(QDialog):
             return None
         return _ensure_rgb(_to_f32(doc.image))
 
-    def _get_nb_image(self, label: str) -> np.ndarray | None:
+    def _get_nb_image_fixed(self, label: str) -> np.ndarray | None:
         if not self._nb_enabled[label].isChecked():
             return None
         doc = self._nb_combos[label].currentData()
@@ -630,57 +793,75 @@ class NarrowbandIntegrationDialog(QDialog):
         return _ensure_mono(_to_f32(doc.image))
 
     def _compute_result(self, rgb: np.ndarray) -> np.ndarray:
-        """Apply all enabled NB screens onto a copy of rgb."""
         out = rgb.copy()
+
+        # Fixed channels
         for label in _NB_LABELS:
-            nb_mono = self._get_nb_image(label)
+            nb_mono = self._get_nb_image_fixed(label)
             if nb_mono is None:
                 continue
             hue    = float(self._nb_hue_sliders[label].hue())
             amount = float(self._nb_amount[label].value())
             if amount < 1e-4:
                 continue
+            out = self._apply_nb_screen(out, nb_mono, hue, amount)
 
-            # Resize NB to match RGB if needed
-            rh, rw = out.shape[:2]
-            mh, mw = nb_mono.shape[:2]
-            if (mh, mw) != (rh, rw):
-                if cv2 is not None:
-                    nb_mono = cv2.resize(nb_mono, (rw, rh), interpolation=cv2.INTER_AREA)
-                else:
-                    nb_mono = nb_mono[
-                        np.linspace(0, mh-1, rh).astype(int)[:, None],
-                        np.linspace(0, mw-1, rw).astype(int)[None, :]
-                    ]
-
-            colorized = _colorize(nb_mono, hue)
-
-            # Scale colorized by amount (amount > 1 → brighten before screen for stronger effect)
-            colorized_scaled = np.clip(colorized * amount, 0.0, 1.0)
-
-            out = _screen(out, colorized_scaled)
+        # Dynamic channels
+        for row in self._dynamic_rows:
+            if not row.is_enabled():
+                continue
+            doc = row.current_doc()
+            if doc is None or not hasattr(doc, "image") or doc.image is None:
+                continue
+            nb_mono = _ensure_mono(_to_f32(doc.image))
+            hue     = row.hue()
+            amount  = row.amount()
+            if amount < 1e-4:
+                continue
+            out = self._apply_nb_screen(out, nb_mono, hue, amount)
 
         return np.clip(out, 0.0, 1.0)
 
+    def _apply_nb_screen(self, out: np.ndarray, nb_mono: np.ndarray,
+                         hue: float, amount: float) -> np.ndarray:
+        rh, rw = out.shape[:2]
+        mh, mw = nb_mono.shape[:2]
+        if (mh, mw) != (rh, rw):
+            if cv2 is not None:
+                nb_mono = cv2.resize(nb_mono, (rw, rh), interpolation=cv2.INTER_AREA)
+            else:
+                nb_mono = nb_mono[
+                    np.linspace(0, mh-1, rh).astype(int)[:, None],
+                    np.linspace(0, mw-1, rw).astype(int)[None, :]
+                ]
+        colorized = _colorize(nb_mono, hue)
+        colorized_scaled = np.clip(colorized * amount, 0.0, 1.0)
+        return _screen(out, colorized_scaled)
+
     def _update_preview(self):
+        if not self.isVisible():
+            return
         rgb = self._get_rgb_image()
         if rgb is None:
             self.lbl_preview.setText("Select a broadband RGB image.")
+            self._cached_result_pm = None
             return
+        base   = _downsample(rgb, 1200) if self.cb_small.isChecked() else rgb
+        result = self._compute_result(base)
+        self._cached_result_pm = _to_pixmap(result)
+        self._cached_result_size = (result.shape[1], result.shape[0])  # w, h
+        self._redisplay_preview()
 
-        if self.cb_small.isChecked():
-            rgb_small = _downsample(rgb, 1200)
-        else:
-            rgb_small = rgb
-
-        result = self._compute_result(rgb_small)
-        pm = _to_pixmap(result)
-        h, w = result.shape[:2]
-        zw = max(1, int(round(w * self._zoom)))
-        zh = max(1, int(round(h * self._zoom)))
-        pm_scaled = pm.scaled(zw, zh,
-                              Qt.AspectRatioMode.IgnoreAspectRatio,
-                              Qt.TransformationMode.SmoothTransformation)
+    def _redisplay_preview(self):
+        if self._cached_result_pm is None:
+            return
+        w, h  = self._cached_result_size
+        zw    = max(1, int(round(w * self._zoom)))
+        zh    = max(1, int(round(h * self._zoom)))
+        pm_scaled = self._cached_result_pm.scaled(
+            zw, zh,
+            Qt.AspectRatioMode.IgnoreAspectRatio,
+            Qt.TransformationMode.SmoothTransformation)
         self.lbl_preview.setPixmap(pm_scaled)
         self.lbl_preview.resize(zw, zh)
 
@@ -715,16 +896,14 @@ class NarrowbandIntegrationDialog(QDialog):
         pvx = cx * old_zoom - sx
         pvy = cy * old_zoom - sy
         self._zoom = new_zoom
-        self._update_preview()
-        nx = cx * new_zoom - pvx
-        ny = cy * new_zoom - pvy
-        self._set_scroll(nx, ny)
+        self._redisplay_preview()   # ← was _update_preview
+        self._set_scroll(cx * new_zoom - pvx, cy * new_zoom - pvy)
 
     def _fit_to_preview(self):
         pm = self.lbl_preview.pixmap()
         if pm is None or pm.isNull():
             return
-        vp = self.scroll.viewport().size()
+        vp    = self.scroll.viewport().size()
         orig_w = max(1, int(round(pm.width()  / self._zoom)))
         orig_h = max(1, int(round(pm.height() / self._zoom)))
         k = min(vp.width() / orig_w, vp.height() / orig_h)
@@ -738,12 +917,9 @@ class NarrowbandIntegrationDialog(QDialog):
                 return e.position()
             return self.lbl_preview.mapTo(self.scroll.viewport(), e.position().toPoint())
 
-        # Wheel zoom
         if obj in (self.scroll.viewport(), self.lbl_preview) and ev.type() == QEvent.Type.Wheel:
-            if obj is self.lbl_preview:
-                anchor = ev.position()
-            else:
-                anchor = self.lbl_preview.mapFrom(self.scroll.viewport(), ev.position().toPoint())
+            anchor = ev.position() if obj is self.lbl_preview else \
+                     self.lbl_preview.mapFrom(self.scroll.viewport(), ev.position().toPoint())
             dy = ev.pixelDelta().y()
             if dy != 0:
                 factor = 1.03 if dy > 0 else 1.0 / 1.03
@@ -754,7 +930,6 @@ class NarrowbandIntegrationDialog(QDialog):
             ev.accept()
             return True
 
-        # Pan (Ctrl + drag)
         if obj in (self.scroll.viewport(), self.lbl_preview):
             if ev.type() == QEvent.Type.MouseButtonPress:
                 if ev.button() == Qt.MouseButton.LeftButton:
@@ -767,10 +942,10 @@ class NarrowbandIntegrationDialog(QDialog):
                     return True
             elif ev.type() == QEvent.Type.MouseMove and self._panning:
                 cur = _vp_pos(obj, ev)
-                dx = cur.x() - self._pan_start_pos_vp.x()
-                dy = cur.y() - self._pan_start_pos_vp.y()
-                hb = self.scroll.horizontalScrollBar()
-                vb = self.scroll.verticalScrollBar()
+                dx  = cur.x() - self._pan_start_pos_vp.x()
+                dy  = cur.y() - self._pan_start_pos_vp.y()
+                hb  = self.scroll.horizontalScrollBar()
+                vb  = self.scroll.verticalScrollBar()
                 hb.setValue(int(self._pan_start_scroll[0] - dx))
                 vb.setValue(int(self._pan_start_scroll[1] - dy))
                 return True
@@ -782,9 +957,11 @@ class NarrowbandIntegrationDialog(QDialog):
 
         return super().eventFilter(obj, ev)
 
+
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
-        QTimer.singleShot(0, self._update_preview)
+        if self._state_restored and self.isVisible():
+            self._redisplay_preview() 
 
     # -----------------------------------------------------------------------
     # Reset
@@ -794,10 +971,13 @@ class NarrowbandIntegrationDialog(QDialog):
         for label in _NB_LABELS:
             self._nb_enabled[label].setChecked(False)
             self._nb_hue_sliders[label].setHue(_DEFAULT_HUE[label], notify=False)
+            self._nb_hue_sliders[label].update()
             self._nb_hue_spins[label].blockSignals(True)
             self._nb_hue_spins[label].setValue(_DEFAULT_HUE[label])
             self._nb_hue_spins[label].blockSignals(False)
             self._nb_amount[label].setValue(1.0)
+        for row in self._dynamic_rows:
+            row.reset()
         self._schedule_preview()
 
     # -----------------------------------------------------------------------
@@ -809,8 +989,7 @@ class NarrowbandIntegrationDialog(QDialog):
         if doc is None or not hasattr(doc, "image") or doc.image is None:
             QMessageBox.information(self, "No image", "Please select a broadband RGB image.")
             return None
-        rgb = _ensure_rgb(_to_f32(doc.image))
-        return self._compute_result(rgb)
+        return self._compute_result(_ensure_rgb(_to_f32(doc.image)))
 
     def _apply_to_current(self):
         result = self._apply_fullres()
@@ -823,22 +1002,19 @@ class NarrowbandIntegrationDialog(QDialog):
                 return
         except Exception:
             pass
-        # fallback: open as new
-        self._open_result(result, doc, suffix="[NB Integration]")
+        self._open_result(result, doc, "[NB Integration]")
 
     def _apply_as_new(self):
         result = self._apply_fullres()
         if result is None:
             return
-        doc = self.cmb_rgb.currentData()
-        self._open_result(result, doc, suffix="[NB Integration]")
+        self._open_result(result, self.cmb_rgb.currentData(), "[NB Integration]")
 
     def _open_result(self, result: np.ndarray, source_doc, suffix: str):
         if self.docman is None:
             QMessageBox.warning(self, "No document manager", "Cannot create new document.")
             return
-        name = self._doc_name(source_doc) if source_doc else "Result"
-        title = f"{name} {suffix}"
+        title = f"{self._doc_name(source_doc)} {suffix}" if source_doc else suffix
         try:
             if hasattr(self.docman, "open_array"):
                 self.docman.open_array(result, title=title)
@@ -850,38 +1026,41 @@ class NarrowbandIntegrationDialog(QDialog):
             QMessageBox.critical(self, "Error", f"Failed to create document:\n{e}")
 
     # -----------------------------------------------------------------------
-    # Window state persistence
+    # Window state
     # -----------------------------------------------------------------------
 
     def _save_state(self):
         try:
             s = QSettings()
-            s.setValue("nbintegration/geometry", self.saveGeometry())
-            s.setValue("nbintegration/splitter", self.splitter.saveState())
-            s.setValue("nbintegration/small_preview", self.cb_small.isChecked())
+            s.setValue("nbintegration/geometry",      self.saveGeometry())
+            s.setValue("nbintegration/splitter",       self.splitter.saveState())
+            s.setValue("nbintegration/small_preview",  self.cb_small.isChecked())
             s.sync()
         except Exception:
             pass
 
     def _restore_state(self):
         try:
-            s = QSettings()
+            s   = QSettings()
             geo = s.value("nbintegration/geometry")
             if geo is not None and len(geo) > 0:
                 self.restoreGeometry(geo)
-            sp = s.value("nbintegration/splitter")
+            sp  = s.value("nbintegration/splitter")
             if sp is not None and len(sp) > 0:
                 self.splitter.restoreState(sp)
             self.cb_small.setChecked(bool(s.value("nbintegration/small_preview", True, type=bool)))
         except Exception:
             pass
+        # Always trigger first preview here, after geometry is settled
+        self._schedule_preview()
 
     def showEvent(self, ev):
         super().showEvent(ev)
-        if getattr(self, "_state_restored", False):
+        if self._state_restored:
             return
         self._state_restored = True
         QTimer.singleShot(0, self._restore_state)
+
 
     def closeEvent(self, ev):
         self._save_state()
