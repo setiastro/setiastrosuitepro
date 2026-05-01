@@ -3899,12 +3899,15 @@ class WIMIDialog(QDialog):
         self.main_preview.circle_radius = original_circle_radius
         self.main_preview.draw_query_results()
 
-        # Convert QPixmap → numpy float32 array
+        # Convert QPixmap → numpy float32 array, respecting row stride
         qimg = pixmap.toImage().convertToFormat(QImage.Format.Format_RGB888)
         w, h = qimg.width(), qimg.height()
+        bytes_per_line = qimg.bytesPerLine()  # may be > w*3 due to padding
         buf = qimg.bits()
-        buf.setsize(h * w * 3)
-        arr = np.frombuffer(buf, dtype=np.uint8).reshape((h, w, 3)).astype(np.float32) / 255.0
+        buf.setsize(h * bytes_per_line)
+        # Read with actual stride, then slice to true width
+        arr = np.frombuffer(buf, dtype=np.uint8).reshape((h, bytes_per_line))
+        arr = arr[:, :w * 3].reshape((h, w, 3)).astype(np.float32) / 255.0
 
         # Push to doc manager
         title = "Annotated Image"
