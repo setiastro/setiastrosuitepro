@@ -5213,18 +5213,51 @@ class AstroSuiteProMainWindow(
         dlg.show()
 
     def _open_wimi(self):
-        # Lazy import to avoid loading lightkurve at startup (~12s)
-        from setiastro.saspro.wimi import WIMIDialog
-        dlg = WIMIDialog(
-            parent=self,
+        from setiastro.saspro.wimi_loader import WIMISplash, WIMILoader
+        splash = WIMISplash(parent=self, wimi_path=wimi_path)
+        splash.show()
+        QApplication.processEvents()
+
+        self._wimi_loader = WIMILoader(
+            parent_widget=self,
+            wimi_path=wimi_path,
+            wrench_path=wrench_path,
             settings=getattr(self, "settings", None),
             doc_manager=getattr(self, "doc_manager", None),
-            wimi_path=wimi_path,       # window icon
-            wrench_path=wrench_path    # optional for settings button
         )
-        dlg.setWindowFlag(Qt.WindowType.Window, True)
-        dlg.setWindowIcon(QIcon(wimi_path))
-        dlg.show()
+
+        def _on_imported():
+            """Called on GUI thread after the slow import finishes."""
+            splash.set_status("Building interface…")
+            QApplication.processEvents()
+            try:
+                from setiastro.saspro.wimi import WIMIDialog   # already cached, instant
+                dlg = WIMIDialog(
+                    parent=self,
+                    settings=getattr(self, "settings", None),
+                    doc_manager=getattr(self, "doc_manager", None),
+                    wimi_path=wimi_path,
+                    wrench_path=wrench_path,
+                )
+                dlg.setWindowFlag(Qt.WindowType.Window, True)
+                dlg.setWindowIcon(QIcon(wimi_path))
+                splash.close()
+                dlg.show()
+            except Exception as exc:
+                splash.close()
+                QMessageBox.critical(self, "WIMI Error", f"Failed to open WIMI:\n{exc}")
+
+        def _on_progress(msg):
+            splash.set_status(msg)
+
+        def _on_error(msg):
+            splash.close()
+            QMessageBox.critical(self, "WIMI Error", f"Failed to open WIMI:\n{msg}")
+
+        self._wimi_loader.progress.connect(_on_progress)
+        self._wimi_loader.ready.connect(_on_imported)
+        self._wimi_loader.error.connect(_on_error)
+        self._wimi_loader.start()
 
 
     def _open_fits_modifier(self):
