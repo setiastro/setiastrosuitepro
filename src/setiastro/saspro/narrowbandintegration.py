@@ -465,11 +465,18 @@ class NarrowbandIntegrationDialog(QDialog):
         # ── RGB source ──────────────────────────────────────────────────────
         gb_rgb = QGroupBox("Broadband RGB Image")
         gl_rgb = QVBoxLayout(gb_rgb)
+        rgb_row = QHBoxLayout()
         self.cmb_rgb = QComboBox()
         self.cmb_rgb.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.cmb_rgb.setMinimumContentsLength(28)
         self.cmb_rgb.currentIndexChanged.connect(self._schedule_preview)
-        gl_rgb.addWidget(self.cmb_rgb)
+        rgb_row.addWidget(self.cmb_rgb, 1)
+        btn_refresh = QPushButton("↺ Refresh")
+        btn_refresh.setToolTip("Refresh dropdowns from currently open images")
+        btn_refresh.setFixedWidth(80)
+        btn_refresh.clicked.connect(self._refresh_views)
+        rgb_row.addWidget(btn_refresh)
+        gl_rgb.addLayout(rgb_row)
         self._controls_layout.addWidget(gb_rgb)
 
         # ── Fixed narrowband channels ───────────────────────────────────────
@@ -647,6 +654,30 @@ class NarrowbandIntegrationDialog(QDialog):
     # -----------------------------------------------------------------------
     # Dynamic filter management
     # -----------------------------------------------------------------------
+
+    def _refresh_views(self):
+        # Remember current selections by doc identity so we can restore them
+        current_rgb = self.cmb_rgb.currentData()
+        current_nb  = {lbl: self._nb_combos[lbl].currentData() for lbl in _NB_LABELS}
+
+        self._populate_views()
+
+        # Restore RGB selection if still open
+        if current_rgb is not None:
+            for i in range(self.cmb_rgb.count()):
+                if self.cmb_rgb.itemData(i) is current_rgb:
+                    self.cmb_rgb.setCurrentIndex(i)
+                    break
+
+        # Restore NB selections if still open
+        for lbl in _NB_LABELS:
+            prev = current_nb[lbl]
+            if prev is not None:
+                cmb = self._nb_combos[lbl]
+                for i in range(cmb.count()):
+                    if cmb.itemData(i) is prev:
+                        cmb.setCurrentIndex(i)
+                        break
 
     def _build_doc_items(self) -> list[tuple]:
         """Build the (name, doc) list used by dynamic row dropdowns."""
