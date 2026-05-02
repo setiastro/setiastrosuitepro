@@ -8,7 +8,7 @@ This module contains the heavy GUI startup path (splash, runtime bootstrap,
 PyQt6 imports, main window creation). It must NOT be imported from the CLI path
 unless the user is launching the GUI.
 """
-
+import platform
 import sys
 import os
 from pathlib import Path
@@ -133,7 +133,7 @@ def _init_splash():
 
     # Minimal imports for splash screen
     from PyQt6.QtWidgets import QApplication, QWidget
-    from PyQt6.QtCore import Qt, QCoreApplication, QRect, QPropertyAnimation, QEasingCurve
+    from PyQt6.QtCore import Qt, QCoreApplication, QRect, QPropertyAnimation, QEasingCurve, QEvent
     from PyQt6.QtGui import (
         QGuiApplication, QIcon, QPixmap, QColor, QPainter, QFont, QLinearGradient
     )
@@ -161,6 +161,22 @@ def _init_splash():
     QCoreApplication.setOrganizationName("SetiAstro")
     QCoreApplication.setOrganizationDomain("setiastrosuite.pro")
     QCoreApplication.setApplicationName("Seti Astro Suite Pro")
+    class _SASProApplication(QApplication):
+        def event(self, e):
+            if (
+                e.type() == QEvent.Type.ApplicationActivate
+                and platform.system() == "Darwin"
+            ):
+                for window in self.topLevelWidgets():
+                    if (
+                        hasattr(window, '__class__')
+                        and window.__class__.__name__ != '_EarlySplash'
+                        and window.isVisible()
+                        and not window.isMinimized()
+                    ):
+                        window.raise_()
+                        window.activateWindow()
+            return super().event(e)
 
     # ---------------------------------------------------------------------
     # Path resolution helpers (NO QIcon/QPixmap usage before QApplication)
@@ -313,7 +329,8 @@ def _init_splash():
     # ---------------------------
     # Create QApplication (Qt image/icon creation allowed after this)
     # ---------------------------
-    _app = QApplication(sys.argv)
+
+    _app = _SASProApplication(sys.argv)
 
     try:
         _app.setQuitOnLastWindowClosed(True)
