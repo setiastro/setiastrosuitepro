@@ -5,7 +5,7 @@ import math
 import numpy as np
 import cv2
 from typing import Optional
-
+import platform
 from PyQt6.QtCore import Qt, QEvent, QPointF, QRectF, pyqtSignal, QPoint, QTimer, QSettings, QByteArray
 from PyQt6.QtGui import QPixmap, QImage, QPen, QBrush, QColor, QPainterPath
 from PyQt6.QtWidgets import (
@@ -370,6 +370,9 @@ class CropDialogPro(QDialog):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Crop Tool"))
         self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        if platform.system() == "Darwin":
+            self.setWindowFlag(Qt.WindowType.Tool, True)        
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         self._main = parent
