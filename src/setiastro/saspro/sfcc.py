@@ -998,6 +998,9 @@ class SFCCDialog(QDialog):
         _force_mpl_no_tex()
         self.setWindowTitle(self.tr("Spectral Photometric Flux Color Calibration"))
         self.setWindowFlag(Qt.WindowType.Window, True)
+        import platform
+        if platform.system() == "Darwin":
+            self.setWindowFlag(Qt.WindowType.Tool, True)  
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         try:

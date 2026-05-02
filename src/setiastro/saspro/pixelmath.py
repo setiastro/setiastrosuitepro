@@ -850,6 +850,9 @@ class PixelMathDialogPro(QDialog):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Pixel Math"))
         self.setWindowFlag(Qt.WindowType.Window, True)
+        import platform
+        if platform.system() == "Darwin":
+            self.setWindowFlag(Qt.WindowType.Tool, True)  
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         if icon:

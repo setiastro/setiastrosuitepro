@@ -14,6 +14,7 @@ import math
 import os
 import re
 import sys
+import platform
 import threading
 import time
 import traceback
@@ -1727,12 +1728,23 @@ class AstroSuiteProMainWindow(
 
     def changeEvent(self, ev):
         super().changeEvent(ev)
+        if ev.type() == QEvent.Type.ActivationChange:
+            if platform.system() == "Darwin" and self.isActiveWindow():
+                app = QApplication.instance()
+                if app:
+                    for window in app.topLevelWidgets():
+                        if (
+                            window is not self
+                            and window.__class__.__name__ not in ('_EarlySplash',)
+                            and window.isVisible()
+                            and not window.isMinimized()
+                        ):
+                            window.raise_()
         if ev.type() == QEvent.Type.WindowStateChange:
             if self.windowState() & Qt.WindowState.WindowMinimized:
                 # entering minimized -- just guard; do not snapshot false vis
                 self._suspend_dock_sync = True
                 return
-
             # leaving minimized / other state change
             if self._suspend_dock_sync:
                 try:
@@ -1741,30 +1753,24 @@ class AstroSuiteProMainWindow(
                         self.restoreState(self._last_good_state)
                 except Exception:
                     pass
-
                 # Enforce intended vis for each known dock (in case restoreState wasn't enough)
                 for name, want in dict(self._dock_vis_intended).items():
                     d = self.findChild(QDockWidget, name)
                     if d:
                         if want: d.show()
                         else:    d.hide()
-
                 # Re-sync menu checks
                 for name, act in getattr(self, "_view_panels_actions", {}).items():
                     dock = self.findChild(QDockWidget, name)
                     if dock:
                         act.setChecked(dock.isVisible())
-
                 # Resume normal syncing
                 self._suspend_dock_sync = False
-
                 # Capture a fresh last-good layout now that we're back
                 try:
                     self._last_good_state = self.saveState()
                 except Exception:
                     pass
-
-
 
     def _remove_dock_from_view_menu(self, name: str):
         if getattr(self, "_shutting_down", False):

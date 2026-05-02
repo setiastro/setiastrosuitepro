@@ -494,6 +494,9 @@ class WhiteBalanceResultDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(self.tr("White Balance Result"))
         self.setWindowFlag(Qt.WindowType.Window, True)
+        import platform
+        if platform.system() == "Darwin":
+            self.setWindowFlag(Qt.WindowType.Tool, True)  
         self.setModal(False)
         self.resize(1100, 700)
 
@@ -538,6 +541,9 @@ class WhiteBalanceDialog(QDialog):
             self.setWindowIcon(icon)
         self.setWindowTitle(self.tr("White Balance"))
         self.setWindowFlag(Qt.WindowType.Window, True)
+        import platform
+        if platform.system() == "Darwin":
+            self.setWindowFlag(Qt.WindowType.Tool, True)  
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         try:

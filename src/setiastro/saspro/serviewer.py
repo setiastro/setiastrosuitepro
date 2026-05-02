@@ -113,6 +113,9 @@ class SERViewer(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Planetary Stacker Viewer")
         self.setWindowFlag(Qt.WindowType.Window, True)
+        import platform
+        if platform.system() == "Darwin":
+            self.setWindowFlag(Qt.WindowType.Tool, True)  
         self.setWindowModality(Qt.WindowModality.NonModal)
         try:
             self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)

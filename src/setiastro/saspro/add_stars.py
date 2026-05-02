@@ -264,6 +264,9 @@ class AddStarsDialog(QDialog):
         self.setWindowTitle(self.tr("Add Stars to Image"))
 
         self.setWindowFlag(Qt.WindowType.Window, True)
+        import platform
+        if platform.system() == "Darwin":
+            self.setWindowFlag(Qt.WindowType.Tool, True)  
         # Non-modal: allow user to switch between images while dialog is open
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)

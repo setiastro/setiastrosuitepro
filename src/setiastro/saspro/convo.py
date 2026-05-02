@@ -157,6 +157,9 @@ class ConvoDeconvoDialog(QDialog):
             pass  # older PyQt6 versions
         self.setWindowTitle(self.tr("Convolution / Deconvolution"))
         self.setWindowFlag(Qt.WindowType.Window, True)
+        import platform
+        if platform.system() == "Darwin":
+            self.setWindowFlag(Qt.WindowType.Tool, True)  
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         self.resize(1000, 650)

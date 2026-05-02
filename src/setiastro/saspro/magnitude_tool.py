@@ -749,6 +749,9 @@ class _ResultsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(title)
         self.setWindowFlag(Qt.WindowType.Window, True)
+        import platform
+        if platform.system() == "Darwin":
+            self.setWindowFlag(Qt.WindowType.Tool, True)  
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
@@ -829,6 +832,9 @@ class ZeroPointPlotsDialog(QDialog):
         root.addWidget(btn_close)
         
         self.setWindowFlag(Qt.WindowType.Window, True)
+        import platform
+        if platform.system() == "Darwin":
+            self.setWindowFlag(Qt.WindowType.Tool, True)  
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
@@ -856,6 +862,9 @@ class MagnitudeRegionDialog(QDialog):
 
         self.setWindowTitle("Magnitude Tool — Select Target Region")
         self.setWindowFlag(Qt.WindowType.Window, True)
+        import platform
+        if platform.system() == "Darwin":
+            self.setWindowFlag(Qt.WindowType.Tool, True)  
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         self.resize(900, 600)
@@ -1450,6 +1459,9 @@ class FullImageAnnotatedDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Full Image — Target & Background Annotated")
         self.setWindowFlag(Qt.WindowType.Window, True)
+        import platform
+        if platform.system() == "Darwin":
+            self.setWindowFlag(Qt.WindowType.Tool, True)  
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
@@ -1627,6 +1639,9 @@ class MagnitudeToolDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Magnitude / Surface Brightness")
         self.setWindowFlag(Qt.WindowType.Window, True)
+        import platform
+        if platform.system() == "Darwin":
+            self.setWindowFlag(Qt.WindowType.Tool, True)  
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         self.setMinimumSize(520, 320)

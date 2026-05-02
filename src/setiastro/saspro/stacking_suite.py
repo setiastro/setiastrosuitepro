@@ -5146,6 +5146,9 @@ class FlatStrengthPreviewDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(f"Flat Strength — {group_label}")
         self.setWindowFlag(Qt.WindowType.Window, True)
+        import platform
+        if platform.system() == "Darwin":
+            self.setWindowFlag(Qt.WindowType.Tool, True)  
         self.setModal(True)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
 

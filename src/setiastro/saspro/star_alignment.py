@@ -726,6 +726,9 @@ class StellarAlignmentDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Stellar Alignment")
         self.setWindowFlag(Qt.WindowType.Window, True)
+        import platform
+        if platform.system() == "Darwin":
+            self.setWindowFlag(Qt.WindowType.Tool, True)  
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         try:
@@ -4042,6 +4045,9 @@ class StarRegistrationWindow(QWidget):
         self.thread = None
         self.parent_window = parent
         self.setWindowFlag(Qt.WindowType.Window, True)
+        import platform
+        if platform.system() == "Darwin":
+            self.setWindowFlag(Qt.WindowType.Tool, True)  
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         #self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)        
         self.initUI()
@@ -5166,6 +5172,9 @@ class MosaicMasterDialog(QDialog):
 
         self.setWindowTitle("Mosaic Master")
         self.setWindowFlag(Qt.WindowType.Window, True)
+        import platform
+        if platform.system() == "Darwin":
+            self.setWindowFlag(Qt.WindowType.Tool, True)  
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
 

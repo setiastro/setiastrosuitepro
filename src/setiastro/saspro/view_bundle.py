@@ -378,6 +378,9 @@ class SelectViewsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Add Views to Bundle")
         self.setWindowFlag(Qt.WindowType.Window, True)
+        import platform
+        if platform.system() == "Darwin":
+            self.setWindowFlag(Qt.WindowType.Tool, True)  
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         #self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
@@ -512,6 +515,9 @@ class ViewBundleDialog(QDialog):
         _pin_on_top_mac(self)
         self.setWindowTitle(self.tr("View Bundles"))
         self.setWindowFlag(Qt.WindowType.Window, True)
+        import platform
+        if platform.system() == "Darwin":
+            self.setWindowFlag(Qt.WindowType.Tool, True)  
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         self.resize(900, 540)

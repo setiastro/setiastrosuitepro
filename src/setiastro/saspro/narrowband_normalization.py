@@ -70,6 +70,9 @@ class NarrowbandNormalization(QWidget):
 
         # Force top-level floating window behavior even if parent is main window
         self.setWindowFlag(Qt.WindowType.Window, True)
+        import platform
+        if platform.system() == "Darwin":
+            self.setWindowFlag(Qt.WindowType.Tool, True)  
         self.setWindowModality(Qt.WindowModality.NonModal)
         try:
             self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)

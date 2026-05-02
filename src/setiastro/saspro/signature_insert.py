@@ -631,6 +631,9 @@ class SignatureInsertDialogPro(QDialog):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Signature / Insert"))
         self.setWindowFlag(Qt.WindowType.Window, True)
+        import platform
+        if platform.system() == "Darwin":
+            self.setWindowFlag(Qt.WindowType.Tool, True)  
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         self.settings = QSettings()  # match the rest of your app if you already use QSettings elsewhere

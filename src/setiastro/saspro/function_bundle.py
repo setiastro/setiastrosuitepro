@@ -335,6 +335,9 @@ class FunctionBundleDialog(QDialog):
         _pin_on_top_mac(self)
         self.setWindowTitle(self.tr("Function Bundles"))
         self.setWindowFlag(Qt.WindowType.Window, True)
+        import platform
+        if platform.system() == "Darwin":
+            self.setWindowFlag(Qt.WindowType.Tool, True)  
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         self.resize(920, 560)

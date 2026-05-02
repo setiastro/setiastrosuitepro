@@ -204,6 +204,9 @@ class TextureClarityDialog(QDialog):
         self.doc  = doc
         self.setWindowTitle("Texture and Clarity")
         self.setWindowFlag(Qt.WindowType.Window, True)
+        import platform
+        if platform.system() == "Darwin":
+            self.setWindowFlag(Qt.WindowType.Tool, True)  
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
 
