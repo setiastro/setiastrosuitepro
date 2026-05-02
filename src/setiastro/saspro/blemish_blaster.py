@@ -432,14 +432,26 @@ class BlemishBlasterDialogPro(QDialog):
         feather = float(self.s_feather.value()) / 100.0
         opacity = float(self.s_opacity.value()) / 100.0
 
-        chans = [0, 1, 2]  # we always run on the 3-channel display buffer
+        # Snapshot only the affected region before healing
+        h, w = self._image.shape[:2]
+        pad = int(radius * 1.5) + radius + 2
+        py0 = max(0, y - pad)
+        px0 = max(0, x - pad)
+        py1 = min(h, y + pad + 1)
+        px1 = min(w, x + pad + 1)
+        pre_patch = (py0, px0, self._image[py0:py1, px0:px1].copy())
+
+        chans = [0, 1, 2]
         worker = _BlemishWorker(self._image, x, y, radius, feather, opacity, chans)
-        worker.signals.finished.connect(self._on_worker_done)
+        worker.signals.finished.connect(lambda corrected: self._on_worker_done(corrected, pre_patch))
         self.setEnabled(False)
         self._threadpool.start(worker)
 
-    def _on_worker_done(self, corrected: np.ndarray):
-        self._undo.append(self._image.copy()); self._redo.clear()
+    def _on_worker_done(self, corrected: np.ndarray, pre_patch: tuple):
+        self._undo.append(pre_patch)
+        if len(self._undo) > 20:
+            self._undo.pop(0)
+        self._redo.clear()
         self._image = corrected.astype(np.float32, copy=False)
         self._display = self._image.copy()
         self._update_display_autostretch()
@@ -529,19 +541,25 @@ class BlemishBlasterDialogPro(QDialog):
 
     # ── Undo/Redo
     def _undo_step(self):
-        if not self._undo: 
+        if not self._undo:
             return
-        self._redo.append(self._image.copy())
-        self._image = self._undo.pop()
+        py0, px0, pre = self._undo.pop()
+        ph, pw = pre.shape[:2]
+        redo_patch = (py0, px0, self._image[py0:py0 + ph, px0:px0 + pw].copy())
+        self._redo.append(redo_patch)
+        self._image[py0:py0 + ph, px0:px0 + pw] = pre
         self._display = self._image.copy()
         self._update_display_autostretch()
         self._update_undo_redo_buttons()
 
     def _redo_step(self):
-        if not self._redo: 
+        if not self._redo:
             return
-        self._undo.append(self._image.copy())
-        self._image = self._redo.pop()
+        py0, px0, post = self._redo.pop()
+        ph, pw = post.shape[:2]
+        undo_patch = (py0, px0, self._image[py0:py0 + ph, px0:px0 + pw].copy())
+        self._undo.append(undo_patch)
+        self._image[py0:py0 + ph, px0:px0 + pw] = post
         self._display = self._image.copy()
         self._update_display_autostretch()
         self._update_undo_redo_buttons()
@@ -673,4 +691,8 @@ class BlemishBlasterDialogPro(QDialog):
             self._save_window_geometry()
         except Exception:
             pass
-        super().closeEvent(ev)        
+        self._image = None
+        self._display = None
+        self._undo.clear()
+        self._redo.clear()
+        super().closeEvent(ev)       

@@ -132,7 +132,8 @@ class CloneStampDialogPro(QDialog):
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         self.setMinimumSize(900, 650)
-
+        self._stroke_dirty_patches = []
+        self._stroke_dirty_mask = set()
         self._mask_cache_key = None
         self._mask_cache = None
         self._did_initial_fit = False
@@ -572,61 +573,78 @@ class CloneStampDialogPro(QDialog):
         self.src_x2.setVisible(True)
         self.link.setVisible(False)
 
-    def _start_paint_at(self, scene_pos: QPointF):
+    def _start_paint_at(self, scene_pos: QPointF) -> None:
         if not self._has_source:
             QMessageBox.information(self, "Clone Stamp", "Ctrl+Click to set a source point first.")
             return
-
         tx, ty = int(round(scene_pos.x())), int(round(scene_pos.y()))
         if not (0 <= tx < self._image.shape[1] and 0 <= ty < self._image.shape[0]):
             return
-
         sx, sy = self._src_point
         self._offset = (sx - tx, sy - ty)
-
-        self._undo.append((
-            self._image.copy(),
-            self._display_raw.copy(),
-            self._display_stretched.copy(),
-        ))
         self._redo.clear()
-        self._update_undo_redo_buttons()
-
+        self._stroke_dirty_patches = []
+        self._stroke_dirty_mask = set()
         self._painting = True
         self._stroke_last_pos = (scene_pos.x(), scene_pos.y())
         self._paint_segment(scene_pos)
+    TILE = 64
 
-    def _end_paint(self):
+    def _snapshot_tiles_for_dab(self, tx: int, ty: int, r: int) -> None:
+        h, w = self._image.shape[:2]
+        x0 = max(0, tx - r)
+        x1 = min(w, tx + r + 1)
+        y0 = max(0, ty - r)
+        y1 = min(h, ty + r + 1)
+        t0x = x0 // self.TILE
+        t1x = (x1 - 1) // self.TILE
+        t0y = y0 // self.TILE
+        t1y = (y1 - 1) // self.TILE
+        for tiy in range(t0y, t1y + 1):
+            for tix in range(t0x, t1x + 1):
+                key = (tiy, tix)
+                if key in self._stroke_dirty_mask:
+                    continue
+                self._stroke_dirty_mask.add(key)
+                py0 = tiy * self.TILE
+                px0 = tix * self.TILE
+                py1 = min(h, py0 + self.TILE)
+                px1 = min(w, px0 + self.TILE)
+                self._stroke_dirty_patches.append(
+                    (py0, px0, self._image[py0:py1, px0:px1].copy())
+                )
+
+    def _end_paint(self) -> None:
         self._painting = False
         self._stroke_last_pos = None
+        if self._stroke_dirty_patches:
+            self._undo.append(self._stroke_dirty_patches)
+            if len(self._undo) > 20:
+                self._undo.pop(0)
+            self._update_undo_redo_buttons()
+        self._stroke_dirty_patches = []
+        self._stroke_dirty_mask = set()
         self._display = self._display_stretched if self.cb_autostretch.isChecked() else self._display_raw
         self._refresh_pix()
 
-    def _paint_segment(self, scene_pos: QPointF):
+    def _paint_segment(self, scene_pos: QPointF) -> None:
         if not (self._painting and self._has_source):
             return
-
         x1, y1 = float(scene_pos.x()), float(scene_pos.y())
         if self._stroke_last_pos is None:
             self._stroke_last_pos = (x1, y1)
-
         x0, y0 = self._stroke_last_pos
         dx = x1 - x0
         dy = y1 - y0
         dist = float((dx * dx + dy * dy) ** 0.5)
-
         radius = int(self.s_radius.value())
         feather = float(self.s_feather.value()) / 100.0
         opacity = float(self.s_opacity.value()) / 100.0
-
         spacing = max(1.0, radius * self._stroke_spacing_frac)
         steps = max(1, int(dist / spacing))
-
         mask = self._get_mask(radius, feather)
         ox, oy = self._offset
-
         h, w = self._image.shape[:2]
-
         for i in range(1, steps + 1):
             t = i / steps
             xt = x0 + dx * t
@@ -634,18 +652,11 @@ class CloneStampDialogPro(QDialog):
             tx, ty = int(round(xt)), int(round(yt))
             if not (0 <= tx < w and 0 <= ty < h):
                 continue
-
             sx, sy = tx + ox, ty + oy
-
-            # Authoritative non-stretched image for final Apply
+            self._snapshot_tiles_for_dab(tx, ty, radius)
             _blend_clone_inplace(self._image, tx, ty, sx, sy, mask, radius, opacity)
-
-            # Raw preview buffer
             _blend_clone_inplace(self._display_raw, tx, ty, sx, sy, mask, radius, opacity)
-
-            # Stretched preview buffer
             _blend_clone_inplace(self._display_stretched, tx, ty, sx, sy, mask, radius, opacity)
-
         self._stroke_last_pos = (x1, y1)
         self._schedule_paint_refresh()
 
@@ -749,34 +760,32 @@ class CloneStampDialogPro(QDialog):
         t = self.view.transform()
         self._zoom = t.m11()
 
-    def _undo_step(self):
+    def _undo_step(self) -> None:
         if not self._undo:
             return
-
-        self._redo.append((
-            self._image.copy(),
-            self._display_raw.copy(),
-            self._display_stretched.copy(),
-        ))
-
-        self._image, self._display_raw, self._display_stretched = self._undo.pop()
-        self._display = self._display_stretched if self.cb_autostretch.isChecked() else self._display_raw
-        self._refresh_pix()
+        patches = self._undo.pop()
+        redo_patches = []
+        for py0, px0, pre in patches:
+            ph, pw = pre.shape[:2]
+            redo_patches.append((py0, px0, self._image[py0:py0 + ph, px0:px0 + pw].copy()))
+            self._image[py0:py0 + ph, px0:px0 + pw] = pre
+            self._display_raw[py0:py0 + ph, px0:px0 + pw] = pre
+        self._redo.append(redo_patches)
+        self._update_display_autostretch()
         self._update_undo_redo_buttons()
 
-    def _redo_step(self):
+    def _redo_step(self) -> None:
         if not self._redo:
             return
-
-        self._undo.append((
-            self._image.copy(),
-            self._display_raw.copy(),
-            self._display_stretched.copy(),
-        ))
-
-        self._image, self._display_raw, self._display_stretched = self._redo.pop()
-        self._display = self._display_stretched if self.cb_autostretch.isChecked() else self._display_raw
-        self._refresh_pix()
+        patches = self._redo.pop()
+        undo_patches = []
+        for py0, px0, post in patches:
+            ph, pw = post.shape[:2]
+            undo_patches.append((py0, px0, self._image[py0:py0 + ph, px0:px0 + pw].copy()))
+            self._image[py0:py0 + ph, px0:px0 + pw] = post
+            self._display_raw[py0:py0 + ph, px0:px0 + pw] = post
+        self._undo.append(undo_patches)
+        self._update_display_autostretch()
         self._update_undo_redo_buttons()
 
     def _commit_to_doc(self):
@@ -871,9 +880,18 @@ class CloneStampDialogPro(QDialog):
 
         QTimer.singleShot(0, self._fit_view)
 
-    def closeEvent(self, ev):
+    def closeEvent(self, ev) -> None:
         try:
             self._save_window_geometry()
         except Exception:
             pass
+        self._image = None
+        self._display_raw = None
+        self._display_stretched = None
+        self._display = None
+        self._undo.clear()
+        self._redo.clear()
+        self._mask_cache = None
+        self._stroke_dirty_patches = []
+        self._stroke_dirty_mask = set()
         super().closeEvent(ev)
