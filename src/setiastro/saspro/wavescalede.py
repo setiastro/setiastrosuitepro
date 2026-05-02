@@ -203,6 +203,9 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
                 logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
         self.resize(980, 700)
         self.setWindowFlag(Qt.WindowType.Window, True)
+        import platform
+        if platform.system() == "Darwin":
+            self.setWindowFlag(Qt.WindowType.Tool, True)  
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         try:

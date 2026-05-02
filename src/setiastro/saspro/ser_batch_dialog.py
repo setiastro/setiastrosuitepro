@@ -379,6 +379,9 @@ class SERBatchDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Batch Planetary Stacker")
         self.setWindowFlag(Qt.WindowType.Window, True)
+        import platform
+        if platform.system() == "Darwin":
+            self.setWindowFlag(Qt.WindowType.Tool, True)  
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.resize(820, 660)
 

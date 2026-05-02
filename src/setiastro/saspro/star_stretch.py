@@ -128,6 +128,9 @@ class StarStretchDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Star Stretch"))
         self.setWindowFlag(Qt.WindowType.Window, True)
+        import platform
+        if platform.system() == "Darwin":
+            self.setWindowFlag(Qt.WindowType.Tool, True)  
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         self._main = parent

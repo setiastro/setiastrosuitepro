@@ -53,6 +53,9 @@ class StatisticalStretchDialog(QDialog):
 
         # --- Top-level non-modal tool window (Linux WM friendly) ---
         self.setWindowFlag(Qt.WindowType.Window, True)
+        import platform
+        if platform.system() == "Darwin":
+            self.setWindowFlag(Qt.WindowType.Tool, True)  
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         try:

@@ -126,6 +126,9 @@ class CloneStampDialogPro(QDialog):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Clone Stamp"))
         self.setWindowFlag(Qt.WindowType.Window, True)
+        import platform
+        if platform.system() == "Darwin":
+            self.setWindowFlag(Qt.WindowType.Tool, True)  
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         self.setMinimumSize(900, 650)

@@ -370,7 +370,13 @@ class CropDialogPro(QDialog):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Crop Tool"))
         self.setWindowFlag(Qt.WindowType.Window, True)
+        import platform
+        if platform.system() == "Darwin":
+            self.setWindowFlag(Qt.WindowType.Tool, True)  
         self.setWindowFlag(Qt.WindowType.Window, True)
+        import platform
+        if platform.system() == "Darwin":
+            self.setWindowFlag(Qt.WindowType.Tool, True)  
         if platform.system() == "Darwin":
             self.setWindowFlag(Qt.WindowType.Tool, True)        
         self.setWindowModality(Qt.WindowModality.NonModal)

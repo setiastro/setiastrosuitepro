@@ -275,6 +275,9 @@ class StackingMonitorDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Stacking Execution Monitor")
         self.setWindowFlag(Qt.WindowType.Window, True)
+        import platform
+        if platform.system() == "Darwin":
+            self.setWindowFlag(Qt.WindowType.Tool, True)  
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, False)
         self.setMinimumSize(960, 500)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)

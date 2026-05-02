@@ -405,6 +405,9 @@ class IsophoteModelerDialog(QDialog):
                  title_hint: Optional[str] = None, image_manager=None, doc_manager=None):
         super().__init__(parent)
         self.setWindowFlag(Qt.WindowType.Window, True)
+        import platform
+        if platform.system() == "Darwin":
+            self.setWindowFlag(Qt.WindowType.Tool, True)  
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         try:

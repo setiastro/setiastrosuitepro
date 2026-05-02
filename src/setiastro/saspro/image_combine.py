@@ -84,6 +84,9 @@ class ImageCombineDialog(QDialog):
         super().__init__(main_window)
         self.setWindowTitle("Image Combine")
         self.setWindowFlag(Qt.WindowType.Window, True)
+        import platform
+        if platform.system() == "Darwin":
+            self.setWindowFlag(Qt.WindowType.Tool, True)  
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         try:

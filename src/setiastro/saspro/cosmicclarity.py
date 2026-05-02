@@ -481,6 +481,9 @@ class CosmicClarityDialogPro(QDialog):
 
         self.setWindowTitle(self.tr("Cosmic Clarity"))
         self.setWindowFlag(Qt.WindowType.Window, True)
+        import platform
+        if platform.system() == "Darwin":
+            self.setWindowFlag(Qt.WindowType.Tool, True)  
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         try:
@@ -1513,6 +1516,9 @@ class CosmicClaritySatelliteDialogPro(QDialog):
 
         self.setWindowTitle("Cosmic Clarity – Satellite Removal")
         self.setWindowFlag(Qt.WindowType.Window, True)
+        import platform
+        if platform.system() == "Darwin":
+            self.setWindowFlag(Qt.WindowType.Tool, True)  
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         if icon:
