@@ -281,5 +281,8 @@ def current_backend() -> str:
                 pass
 
         return "CPU"
-    except Exception:
+    except Exception as e:
+        import traceback
+        print(f"[current_backend] FAILED: {type(e).__name__}: {e}")
+        print(traceback.format_exc())
         return "Not installed"
