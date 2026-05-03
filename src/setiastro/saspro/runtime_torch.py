@@ -743,16 +743,24 @@ def _ensure_venv(rt: Path, status_cb=print) -> Path:
             env = os.environ.copy()
             env.pop("PYTHONHOME", None)
             env.pop("PYTHONPATH", None)
-            subprocess.check_call(py_cmd + ["-m", "venv", str(p["venv"])], env=env)
-            subprocess.check_call([str(p["python"]), "-m", "ensurepip", "--upgrade"], env=env)
-            subprocess.check_call(
-                [str(p["python"]), "-m", "pip", "install", "--upgrade", "pip", "wheel", "setuptools"],
-                env=env,
-            )
             try:
-                bootstrap_marker.write_text(f"{maj}.{min_}", encoding="utf-8")
-            except Exception:
-                pass
+                subprocess.check_call(py_cmd + ["-m", "venv", str(p["venv"])], env=env)
+            except subprocess.CalledProcessError as e:
+                print(f"[RT] venv creation failed: {e}")
+                raise
+
+            try:
+                subprocess.check_call([str(p["python"]), "-m", "ensurepip", "--upgrade"], env=env)
+            except subprocess.CalledProcessError as e:
+                print(f"[RT] ensurepip failed (non-fatal): {e}")
+
+            try:
+                subprocess.check_call(
+                    [str(p["python"]), "-m", "pip", "install", "--upgrade", "pip", "wheel", "setuptools"],
+                    env=env,
+                )
+            except subprocess.CalledProcessError as e:
+                print(f"[RT] pip bootstrap failed (non-fatal): {e}")
 
         except subprocess.CalledProcessError:
             try:
