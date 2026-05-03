@@ -25,6 +25,24 @@ def _safe_text_kwargs() -> dict:
         enc = locale.getpreferredencoding(False) or "utf-8"
     return {"text": True, "encoding": enc, "errors": "replace"}
 
+def _clean_subprocess_env() -> dict:
+    env = os.environ.copy()
+    env.pop("PYTHONPATH", None)
+    env.pop("PYTHONHOME", None)
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        meipass = sys._MEIPASS
+        for var in ("LD_LIBRARY_PATH", "LD_PRELOAD", "DYLD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES"):
+            val = env.get(var, "")
+            if val:
+                cleaned = os.pathsep.join(
+                    p for p in val.split(os.pathsep)
+                    if meipass not in p
+                )
+                if cleaned:
+                    env[var] = cleaned
+                else:
+                    env.pop(var, None)
+    return env
 
 def _rt_dbg(msg: str, status_cb=print):
     try:
@@ -585,9 +603,7 @@ def _torch_sanity_check(status_cb=print):
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _pip_run(venv_python: Path, args: list[str], status_cb=print) -> subprocess.CompletedProcess:
-    env = os.environ.copy()
-    env.pop("PYTHONPATH", None)
-    env.pop("PYTHONHOME", None)
+    env = _clean_subprocess_env()
     return subprocess.run(
         [str(venv_python), "-m", "pip", *args],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -740,9 +756,7 @@ def _ensure_venv(rt: Path, status_cb=print) -> Path:
                 _RUNTIME_DIR_CACHED = correct_rt
                 return _ensure_venv(correct_rt, status_cb=status_cb)
 
-            env = os.environ.copy()
-            env.pop("PYTHONHOME", None)
-            env.pop("PYTHONPATH", None)
+            env = _clean_subprocess_env()
             try:
                 subprocess.check_call(py_cmd + ["-m", "venv", str(p["venv"])], env=env)
             except subprocess.CalledProcessError as e:
@@ -993,9 +1007,7 @@ def _install_torch(
     machine = platform.machine().lower()
 
     def _pip_install_ok(cmd: list[str]) -> bool:
-        env = os.environ.copy()
-        env.pop("PYTHONPATH", None)
-        env.pop("PYTHONHOME", None)
+        env = _clean_subprocess_env()
         r = subprocess.run(
             [str(venv_python), "-m", "pip", *cmd],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
