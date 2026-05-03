@@ -1541,6 +1541,11 @@ def import_torch(
                     sys.path.insert(0, site_s)
                 _demote_shadow_torch_paths(status_cb=status_cb)
                 _purge_bad_torch_from_sysmodules(status_cb=status_cb)
+                if getattr(sys, "frozen", False):
+                    try:
+                        os.chdir(Path.home())
+                    except Exception:
+                        pass
                 import torch
                 import torchvision
                 if require_torchaudio:
@@ -1575,6 +1580,11 @@ def import_torch(
                 sys.path.insert(0, sp)
             _demote_shadow_torch_paths(status_cb=status_cb)
             _purge_bad_torch_from_sysmodules(status_cb=status_cb)
+            if getattr(sys, "frozen", False):
+                try:
+                    os.chdir(Path.home())
+                except Exception:
+                    pass
             import torch
             import torchvision
             if require_torchaudio:
@@ -1678,7 +1688,11 @@ def import_torch(
         sys.path.insert(0, sp)
     _demote_shadow_torch_paths(status_cb=status_cb)
     _purge_bad_torch_from_sysmodules(status_cb=status_cb)
-
+    if getattr(sys, "frozen", False):
+        try:
+            os.chdir(Path.home())
+        except Exception:
+            pass
     try:
         import torch
         import torchvision

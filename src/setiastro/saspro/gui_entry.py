@@ -704,6 +704,11 @@ def _bootstrap_imports():
  
     # Inject runtime site-packages IMMEDIATELY so bare `import torch` calls
     # in any subsequently-imported module can resolve against the wheel.
+    if getattr(sys, "frozen", False):
+        try:
+            os.chdir(Path.home())
+        except Exception:
+            pass
     _ban_shadow_torch_paths(status_cb=lambda *_: None)
     _purge_bad_torch_from_sysmodules(status_cb=lambda *_: None)
     add_runtime_to_sys_path(status_cb=lambda *_: None)
