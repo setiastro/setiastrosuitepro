@@ -1205,14 +1205,13 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 win.raise_()
                 win.activateWindow()
-                if win.settings.value("updates/check_on_startup", True, type=bool):
+                from setiastro.saspro.first_run_dialog import _is_first_run
+                if win.settings.value("updates/check_on_startup", True, type=bool) and not _is_first_run():
                     QTimer.singleShot(1000, win.check_for_updates_startup)
             except Exception:
                 pass
-            # First-run dialog fires after splash is fully gone
             try:
                 from setiastro.saspro.first_run_dialog import maybe_show_first_run_dialog, maybe_show_tip_of_day
-
                 QTimer.singleShot(200, lambda: maybe_show_first_run_dialog(win))
                 QTimer.singleShot(2000, lambda: maybe_show_tip_of_day(win))
             except Exception:
