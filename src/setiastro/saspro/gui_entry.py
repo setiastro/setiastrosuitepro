@@ -696,10 +696,10 @@ def _bootstrap_imports():
 
     import sys as _sys 
     if getattr(sys, "frozen", False):
-    try:
-        os.chdir(Path.home())
-    except Exception:
-        pass
+        try:
+            os.chdir(Path.home())
+        except Exception:
+            pass
     _update_splash(QCoreApplication.translate("Splash", "Loading PyTorch runtime..."), 5)
  
     from setiastro.saspro.runtime_torch import (
