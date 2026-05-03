@@ -166,7 +166,6 @@ def _detect_rocm_arch() -> str:
         pass
     return ""
 
-
 def _user_runtime_dir(status_cb=print) -> Path:
     global _RUNTIME_DIR_CACHED, _RUNTIME_USERDIR_LOGGED
 
@@ -175,15 +174,31 @@ def _user_runtime_dir(status_cb=print) -> Path:
         if existing:
             _RUNTIME_DIR_CACHED = existing
         else:
-            maj, min_ = sys.version_info.major, sys.version_info.minor
-            if maj == 3 and min_ in _SUPPORTED_PY_MINORS:
-                tag = _tag_for_pyver(maj, min_)
-            else:
-                # Current Python not supported — target the oldest supported
-                # version as the install target, _ensure_venv will redirect
-                # to the correct tag once it finds a supported interpreter.
-                tag = _tag_for_pyver(3, _SUPPORTED_PY_MINORS[0])
-            _RUNTIME_DIR_CACHED = _runtime_base_dir() / tag
+            # In frozen builds sys.version_info is the bundled PyInstaller Python
+            # which may not match the system Python we'll actually use for the venv.
+            # Probe the system Python first so the tag is correct from the start.
+            if getattr(sys, "frozen", False):
+                try:
+                    cmd = _find_system_python_cmd()
+                    out = subprocess.check_output(
+                        cmd + ["-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
+                        **_safe_text_kwargs(),
+                    ).strip()
+                    maj, min_ = map(int, out.split("."))
+                    if maj == 3 and min_ in _SUPPORTED_PY_MINORS:
+                        tag = _tag_for_pyver(maj, min_)
+                        _RUNTIME_DIR_CACHED = _runtime_base_dir() / tag
+                except Exception:
+                    pass
+
+            # Fall back to sys.version_info if probe failed or not frozen
+            if _RUNTIME_DIR_CACHED is None:
+                maj, min_ = sys.version_info.major, sys.version_info.minor
+                if maj == 3 and min_ in _SUPPORTED_PY_MINORS:
+                    tag = _tag_for_pyver(maj, min_)
+                else:
+                    tag = _tag_for_pyver(3, _SUPPORTED_PY_MINORS[0])
+                _RUNTIME_DIR_CACHED = _runtime_base_dir() / tag
 
     if not _RUNTIME_USERDIR_LOGGED:
         _rt_dbg(f"_user_runtime_dir() -> {_RUNTIME_DIR_CACHED}", status_cb)
