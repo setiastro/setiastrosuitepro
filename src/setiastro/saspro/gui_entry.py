@@ -695,9 +695,11 @@ def _bootstrap_imports():
         _init_splash()
 
     import sys as _sys 
-    if getattr(sys, "frozen", False):
+    if getattr(_sys, "frozen", False):
         try:
-            os.chdir(Path.home())
+            import os as _os
+            from pathlib import Path as _Path
+            _os.chdir(_Path.home())
         except Exception:
             pass
     _update_splash(QCoreApplication.translate("Splash", "Loading PyTorch runtime..."), 5)
