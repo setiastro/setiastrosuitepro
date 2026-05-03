@@ -510,7 +510,13 @@ def _is_compiled_torch_dir(d: Path) -> bool:
 
 
 def _looks_like_source_tree_torch(d: Path) -> bool:
-    return (d / "_C" / "__init__.py").exists()
+    # A real source tree has _C/__init__.py AND setup.py or CMakeLists.txt
+    # alongside the torch directory — the wheel install does NOT have those.
+    if not (d / "_C" / "__init__.py").exists():
+        return False
+    # Check for source tree indicators in the parent directory
+    parent = d.parent
+    return (parent / "setup.py").exists() or (parent / "CMakeLists.txt").exists()
 
 
 def _ban_shadow_torch_paths(status_cb=print) -> None:
