@@ -291,17 +291,19 @@ class UpdateMixin:
         update_script = Path.home() / ".local" / "share" / "SASpro" / "update-saspro.sh"
 
         if not update_script.exists():
-            # Fallback — update script missing, send them to PyPI instructions
-            QMessageBox.information(
+            ok = QMessageBox.question(
                 self,
                 self.tr("Update Available"),
                 self.tr(
                     "Version {0} is available.\n\n"
-                    "To update, open a terminal and run:\n\n"
-                    "  ~/.local/share/SASpro/venv/bin/pip install --upgrade setiastrosuitepro\n\n"
-                    "Then restart SASpro."
-                ).format(latest_str)
+                    "To update, please download the new installer from the releases page.\n\n"
+                    "Open the download page now?"
+                ).format(latest_str),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
             )
+            if ok == QMessageBox.StandardButton.Yes:
+                webbrowser.open("https://github.com/setiastro/setiastrosuitepro/releases/latest")
             return
 
         ok = QMessageBox.question(
