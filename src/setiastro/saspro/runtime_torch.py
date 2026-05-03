@@ -720,6 +720,9 @@ def _ensure_venv(rt: Path, status_cb=print) -> Path:
             if rt.name != expected_tag:
                 correct_rt = _runtime_base_dir() / expected_tag
                 status_cb(f"Redirecting venv creation to {correct_rt} (interpreter is {maj}.{min_})")
+                # Update the global cache to point at the correct runtime dir
+                global _RUNTIME_DIR_CACHED
+                _RUNTIME_DIR_CACHED = correct_rt
                 return _ensure_venv(correct_rt, status_cb=status_cb)
 
             env = os.environ.copy()
