@@ -693,7 +693,15 @@ def _bootstrap_imports():
  
     if not _splash_initialized:
         _init_splash()
- 
+
+    import sys as _sys 
+    if getattr(_sys, "frozen", False):
+        try:
+            import os as _os
+            from pathlib import Path as _Path
+            _os.chdir(_Path.home())
+        except Exception:
+            pass
     _update_splash(QCoreApplication.translate("Splash", "Loading PyTorch runtime..."), 5)
  
     from setiastro.saspro.runtime_torch import (
@@ -704,6 +712,7 @@ def _bootstrap_imports():
  
     # Inject runtime site-packages IMMEDIATELY so bare `import torch` calls
     # in any subsequently-imported module can resolve against the wheel.
+
     _ban_shadow_torch_paths(status_cb=lambda *_: None)
     _purge_bad_torch_from_sysmodules(status_cb=lambda *_: None)
     add_runtime_to_sys_path(status_cb=lambda *_: None)
@@ -1205,14 +1214,13 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 win.raise_()
                 win.activateWindow()
-                if win.settings.value("updates/check_on_startup", True, type=bool):
+                from setiastro.saspro.first_run_dialog import _is_first_run
+                if win.settings.value("updates/check_on_startup", True, type=bool) and not _is_first_run():
                     QTimer.singleShot(1000, win.check_for_updates_startup)
             except Exception:
                 pass
-            # First-run dialog fires after splash is fully gone
             try:
                 from setiastro.saspro.first_run_dialog import maybe_show_first_run_dialog, maybe_show_tip_of_day
-
                 QTimer.singleShot(200, lambda: maybe_show_first_run_dialog(win))
                 QTimer.singleShot(2000, lambda: maybe_show_tip_of_day(win))
             except Exception:

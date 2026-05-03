@@ -245,6 +245,8 @@ class UpdateMixin:
 
                     if plat.startswith("win"):
                         self._start_windows_update_download(link)
+                    elif plat.startswith("linux"):
+                        self._start_linux_update(latest_str)
                     else:
                         webbrowser.open(link)
             else:
@@ -279,6 +281,58 @@ class UpdateMixin:
                 print(f"[models] ai4 check failed: {type(e).__name__}: {e}")                   
         finally:
             reply.deleteLater()
+
+    def _start_linux_update(self, latest_str: str):
+        import os
+        import subprocess
+        from pathlib import Path
+        from PyQt6.QtWidgets import QMessageBox
+
+        update_script = Path.home() / ".local" / "share" / "SASpro" / "update-saspro.sh"
+
+        if not update_script.exists():
+            # Fallback — update script missing, send them to PyPI instructions
+            QMessageBox.information(
+                self,
+                self.tr("Update Available"),
+                self.tr(
+                    "Version {0} is available.\n\n"
+                    "To update, open a terminal and run:\n\n"
+                    "  ~/.local/share/SASpro/venv/bin/pip install --upgrade setiastrosuitepro\n\n"
+                    "Then restart SASpro."
+                ).format(latest_str)
+            )
+            return
+
+        ok = QMessageBox.question(
+            self,
+            self.tr("Update Available"),
+            self.tr(
+                "Version {0} is available.\n\n"
+                "SASpro will close and the updater will run in a terminal.\n\n"
+                "Proceed?"
+            ).format(latest_str),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if ok != QMessageBox.StandardButton.Yes:
+            return
+
+        # Launch updater in a terminal and exit
+        try:
+            for terminal in ["gnome-terminal", "konsole", "xterm", "xfce4-terminal", "mate-terminal"]:
+                if subprocess.run(["which", terminal], capture_output=True).returncode == 0:
+                    subprocess.Popen([terminal, "--", "bash", str(update_script)])
+                    break
+            else:
+                # No terminal found — run headless
+                subprocess.Popen(["bash", str(update_script)])
+        except Exception as e:
+            QMessageBox.warning(self, self.tr("Update"), self.tr(f"Could not launch updater:\n{e}"))
+            return
+
+        from PyQt6.QtWidgets import QApplication
+        QApplication.instance().quit()
 
     def _is_windows(self) -> bool:
         """Check if running on Windows."""

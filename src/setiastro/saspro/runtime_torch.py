@@ -25,6 +25,24 @@ def _safe_text_kwargs() -> dict:
         enc = locale.getpreferredencoding(False) or "utf-8"
     return {"text": True, "encoding": enc, "errors": "replace"}
 
+def _clean_subprocess_env() -> dict:
+    env = os.environ.copy()
+    env.pop("PYTHONPATH", None)
+    env.pop("PYTHONHOME", None)
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        meipass = sys._MEIPASS
+        for var in ("LD_LIBRARY_PATH", "LD_PRELOAD", "DYLD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES"):
+            val = env.get(var, "")
+            if val:
+                cleaned = os.pathsep.join(
+                    p for p in val.split(os.pathsep)
+                    if meipass not in p
+                )
+                if cleaned:
+                    env[var] = cleaned
+                else:
+                    env.pop(var, None)
+    return env
 
 def _rt_dbg(msg: str, status_cb=print):
     try:
@@ -166,7 +184,6 @@ def _detect_rocm_arch() -> str:
         pass
     return ""
 
-
 def _user_runtime_dir(status_cb=print) -> Path:
     global _RUNTIME_DIR_CACHED, _RUNTIME_USERDIR_LOGGED
 
@@ -175,15 +192,31 @@ def _user_runtime_dir(status_cb=print) -> Path:
         if existing:
             _RUNTIME_DIR_CACHED = existing
         else:
-            maj, min_ = sys.version_info.major, sys.version_info.minor
-            if maj == 3 and min_ in _SUPPORTED_PY_MINORS:
-                tag = _tag_for_pyver(maj, min_)
-            else:
-                # Current Python not supported — target the oldest supported
-                # version as the install target, _ensure_venv will redirect
-                # to the correct tag once it finds a supported interpreter.
-                tag = _tag_for_pyver(3, _SUPPORTED_PY_MINORS[0])
-            _RUNTIME_DIR_CACHED = _runtime_base_dir() / tag
+            # In frozen builds sys.version_info is the bundled PyInstaller Python
+            # which may not match the system Python we'll actually use for the venv.
+            # Probe the system Python first so the tag is correct from the start.
+            if getattr(sys, "frozen", False):
+                try:
+                    cmd = _find_system_python_cmd()
+                    out = subprocess.check_output(
+                        cmd + ["-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
+                        **_safe_text_kwargs(),
+                    ).strip()
+                    maj, min_ = map(int, out.split("."))
+                    if maj == 3 and min_ in _SUPPORTED_PY_MINORS:
+                        tag = _tag_for_pyver(maj, min_)
+                        _RUNTIME_DIR_CACHED = _runtime_base_dir() / tag
+                except Exception:
+                    pass
+
+            # Fall back to sys.version_info if probe failed or not frozen
+            if _RUNTIME_DIR_CACHED is None:
+                maj, min_ = sys.version_info.major, sys.version_info.minor
+                if maj == 3 and min_ in _SUPPORTED_PY_MINORS:
+                    tag = _tag_for_pyver(maj, min_)
+                else:
+                    tag = _tag_for_pyver(3, _SUPPORTED_PY_MINORS[0])
+                _RUNTIME_DIR_CACHED = _runtime_base_dir() / tag
 
     if not _RUNTIME_USERDIR_LOGGED:
         _rt_dbg(f"_user_runtime_dir() -> {_RUNTIME_DIR_CACHED}", status_cb)
@@ -477,7 +510,13 @@ def _is_compiled_torch_dir(d: Path) -> bool:
 
 
 def _looks_like_source_tree_torch(d: Path) -> bool:
-    return (d / "_C" / "__init__.py").exists()
+    # A real source tree has _C/__init__.py AND setup.py or CMakeLists.txt
+    # alongside the torch directory — the wheel install does NOT have those.
+    if not (d / "_C" / "__init__.py").exists():
+        return False
+    # Check for source tree indicators in the parent directory
+    parent = d.parent
+    return (parent / "setup.py").exists() or (parent / "CMakeLists.txt").exists()
 
 
 def _ban_shadow_torch_paths(status_cb=print) -> None:
@@ -570,9 +609,7 @@ def _torch_sanity_check(status_cb=print):
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _pip_run(venv_python: Path, args: list[str], status_cb=print) -> subprocess.CompletedProcess:
-    env = os.environ.copy()
-    env.pop("PYTHONPATH", None)
-    env.pop("PYTHONHOME", None)
+    env = _clean_subprocess_env()
     return subprocess.run(
         [str(venv_python), "-m", "pip", *args],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -720,21 +757,30 @@ def _ensure_venv(rt: Path, status_cb=print) -> Path:
             if rt.name != expected_tag:
                 correct_rt = _runtime_base_dir() / expected_tag
                 status_cb(f"Redirecting venv creation to {correct_rt} (interpreter is {maj}.{min_})")
+                # Update the global cache to point at the correct runtime dir
+                global _RUNTIME_DIR_CACHED
+                _RUNTIME_DIR_CACHED = correct_rt
                 return _ensure_venv(correct_rt, status_cb=status_cb)
 
-            env = os.environ.copy()
-            env.pop("PYTHONHOME", None)
-            env.pop("PYTHONPATH", None)
-            subprocess.check_call(py_cmd + ["-m", "venv", str(p["venv"])], env=env)
-            subprocess.check_call([str(p["python"]), "-m", "ensurepip", "--upgrade"], env=env)
-            subprocess.check_call(
-                [str(p["python"]), "-m", "pip", "install", "--upgrade", "pip", "wheel", "setuptools"],
-                env=env,
-            )
+            env = _clean_subprocess_env()
             try:
-                bootstrap_marker.write_text(f"{maj}.{min_}", encoding="utf-8")
-            except Exception:
-                pass
+                subprocess.check_call(py_cmd + ["-m", "venv", str(p["venv"])], env=env)
+            except subprocess.CalledProcessError as e:
+                print(f"[RT] venv creation failed: {e}")
+                raise
+
+            try:
+                subprocess.check_call([str(p["python"]), "-m", "ensurepip", "--upgrade"], env=env)
+            except subprocess.CalledProcessError as e:
+                print(f"[RT] ensurepip failed (non-fatal): {e}")
+
+            try:
+                subprocess.check_call(
+                    [str(p["python"]), "-m", "pip", "install", "--upgrade", "pip", "wheel", "setuptools"],
+                    env=env,
+                )
+            except subprocess.CalledProcessError as e:
+                print(f"[RT] pip bootstrap failed (non-fatal): {e}")
 
         except subprocess.CalledProcessError:
             try:
@@ -967,9 +1013,7 @@ def _install_torch(
     machine = platform.machine().lower()
 
     def _pip_install_ok(cmd: list[str]) -> bool:
-        env = os.environ.copy()
-        env.pop("PYTHONPATH", None)
-        env.pop("PYTHONHOME", None)
+        env = _clean_subprocess_env()
         r = subprocess.run(
             [str(venv_python), "-m", "pip", *cmd],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -1497,6 +1541,11 @@ def import_torch(
                     sys.path.insert(0, site_s)
                 _demote_shadow_torch_paths(status_cb=status_cb)
                 _purge_bad_torch_from_sysmodules(status_cb=status_cb)
+                if getattr(sys, "frozen", False):
+                    try:
+                        os.chdir(Path.home())
+                    except Exception:
+                        pass
                 import torch
                 import torchvision
                 if require_torchaudio:
@@ -1531,6 +1580,11 @@ def import_torch(
                 sys.path.insert(0, sp)
             _demote_shadow_torch_paths(status_cb=status_cb)
             _purge_bad_torch_from_sysmodules(status_cb=status_cb)
+            if getattr(sys, "frozen", False):
+                try:
+                    os.chdir(Path.home())
+                except Exception:
+                    pass
             import torch
             import torchvision
             if require_torchaudio:
@@ -1634,7 +1688,11 @@ def import_torch(
         sys.path.insert(0, sp)
     _demote_shadow_torch_paths(status_cb=status_cb)
     _purge_bad_torch_from_sysmodules(status_cb=status_cb)
-
+    if getattr(sys, "frozen", False):
+        try:
+            os.chdir(Path.home())
+        except Exception:
+            pass
     try:
         import torch
         import torchvision

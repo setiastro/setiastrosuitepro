@@ -5164,7 +5164,7 @@ class FlatStrengthPreviewDialog(QDialog):
         self._debounce.timeout.connect(self._refresh_preview)
 
         # pre-render the "before" pixmap once (it never changes)
-        self._pm_before   = self._to_pixmap(self._light)
+        self._pm_before = self._to_pixmap(self._light, bayer_blur=not self._is_mono)
 
         self._build_ui()
         QTimer.singleShot(0, self._refresh_preview)
@@ -5274,9 +5274,11 @@ class FlatStrengthPreviewDialog(QDialog):
             f[f == 0] = 1.0
         return np.clip(light / f, 0.0, None).astype(np.float32)
 
-    def _to_pixmap(self, arr: np.ndarray, max_dim: int = 2048) -> QPixmap:
+    def _to_pixmap(self, arr: np.ndarray, max_dim: int = 2048,
+                bayer_blur: bool = False) -> QPixmap:
         """Convert float array to QPixmap via autostretch.  No downsampling
-        beyond max_dim so zooming in still looks sharp."""
+        beyond max_dim so zooming in still looks sharp.
+        bayer_blur=True suppresses Bayer pattern with a mild Gaussian blur."""
         a = np.clip(arr.astype(np.float32, copy=False), 0.0, None)
         if a.ndim == 3 and a.shape[0] == 3:
             a = a.transpose(1, 2, 0)      # CHW → HWC
@@ -5297,10 +5299,34 @@ class FlatStrengthPreviewDialog(QDialog):
             nh    = max(1, int(h * scale))
             nw    = max(1, int(w * scale))
             a     = a[::max(1, h // nh), ::max(1, w // nw), :]
-        u8   = (a * 255.0 + 0.5).astype(np.uint8)
+        u8 = (a * 255.0 + 0.5).astype(np.uint8)
+        if bayer_blur:
+            try:
+                import cv2
+                u8 = cv2.GaussianBlur(u8, (0, 0), sigmaX=1.5)
+            except ImportError:
+                try:
+                    from scipy.ndimage import uniform_filter
+                    u8 = uniform_filter(u8, size=3).astype(np.uint8)
+                except ImportError:
+                    # pure numpy 3×3 box blur fallback
+                    k = np.ones((3, 3), np.float32) / 9.0
+                    import math
+                    pad = 1
+                    u8f = u8.astype(np.float32)
+                    blurred = np.zeros_like(u8f)
+                    for c in range(3):
+                        ch = u8f[:, :, c]
+                        p  = np.pad(ch, pad, mode='edge')
+                        b  = np.zeros_like(ch)
+                        for dy in range(3):
+                            for dx in range(3):
+                                b += p[dy:dy+ch.shape[0], dx:dx+ch.shape[1]] * k[dy, dx]
+                        blurred[:, :, c] = b
+                    u8 = blurred.astype(np.uint8)
         h2, w2 = u8.shape[:2]
         qimg = QImage(u8.data, w2, h2, u8.strides[0],
-                      QImage.Format.Format_RGB888).copy()
+                    QImage.Format.Format_RGB888).copy()
         return QPixmap.fromImage(qimg)
 
     # ------------------------------------------------------------------
@@ -5311,8 +5337,9 @@ class FlatStrengthPreviewDialog(QDialog):
         self._debounce.start() 
 
     def _refresh_preview(self):
-        after  = self._apply_flat_normalized(self._light, self._adjusted_flat())
-        pm_after = self._to_pixmap(after)
+        blur = not self._is_mono
+        after    = self._apply_flat_normalized(self._light, self._adjusted_flat())
+        pm_after = self._to_pixmap(after, bayer_blur=blur)
         self.split_view.set_images(self._pm_before, pm_after)
 
     # ------------------------------------------------------------------
