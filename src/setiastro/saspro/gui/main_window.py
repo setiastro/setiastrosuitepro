@@ -9844,7 +9844,7 @@ class AstroSuiteProMainWindow(
         e.ignore() # Defer close until animation completes
         self.setEnabled(False) # Prevent further interaction
         
-        # Hide monitor immediately when fade starts (user preference)
+        # Hide monitor immediately before shutdown/fade
         if hasattr(self, "resource_monitor") and self.resource_monitor:
             try:
                 if hasattr(self.resource_monitor, "backend"):
@@ -9853,7 +9853,18 @@ class AstroSuiteProMainWindow(
                 pass
             self.resource_monitor.hide()
             self.resource_monitor.close()
-        
+
+        # Linux compositors don't support window opacity — skip the fade and
+        # shut down immediately.
+        import platform
+        if platform.system() == "Linux":
+            self._do_shutdown_steps(e)
+            return
+
+        # Start Fade Out Animation (Windows / macOS only)
+        e.ignore()           # Defer close until animation completes
+        self.setEnabled(False)  # Prevent further interaction
+
         self._anim_close = QPropertyAnimation(self, b"windowOpacity")
         self._anim_close.setDuration(800)
         self._anim_close.setStartValue(1.0)
