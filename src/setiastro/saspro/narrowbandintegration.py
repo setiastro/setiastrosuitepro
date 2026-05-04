@@ -295,7 +295,7 @@ class DynamicFilterRow(QWidget):
         self.hue_slider.hueChanged.connect(self._on_hue_slider_changed)
         gb_layout.addWidget(self.hue_slider)
 
-        # Row 3: hue spin + amount
+        # Row 3: hue spin + amount + saturation
         row3 = QHBoxLayout()
         row3.addWidget(QLabel("Hue:"))
         self.hue_spin = QDoubleSpinBox()
@@ -318,6 +318,21 @@ class DynamicFilterRow(QWidget):
         self.amt_spin.setToolTip("0 = no contribution, 1 = full screen, 2 = double weight")
         self.amt_spin.valueChanged.connect(self.changed)
         row3.addWidget(self.amt_spin)
+
+        row3.addSpacing(16)
+        row3.addWidget(QLabel("Sat:"))
+        self.sat_spin = QDoubleSpinBox()
+        self.sat_spin.setRange(0.0, 1.0)
+        self.sat_spin.setSingleStep(0.05)
+        self.sat_spin.setDecimals(2)
+        self.sat_spin.setValue(1.0)
+        self.sat_spin.setEnabled(False)
+        self.sat_spin.setToolTip(
+            "1.0 = full colorized hue  |  0.0 = greyscale signal only (no hue, full luminance)"
+        )
+        self.sat_spin.valueChanged.connect(self.changed)
+        row3.addWidget(self.sat_spin)
+
         gb_layout.addLayout(row3)
 
         # Wrap group box in this widget's layout
@@ -333,6 +348,7 @@ class DynamicFilterRow(QWidget):
         self.hue_slider.setEnabled(checked)
         self.hue_spin.setEnabled(checked)
         self.amt_spin.setEnabled(checked)
+        self.sat_spin.setEnabled(checked)
         self.changed.emit()
 
     def _on_name_changed(self, text: str):
@@ -379,6 +395,9 @@ class DynamicFilterRow(QWidget):
     def amount(self) -> float:
         return self.amt_spin.value()
 
+    def saturation(self) -> float:
+        return self.sat_spin.value()
+
     def reset(self):
         self.cb_enable.setChecked(False)
         key = self.cmb_preset.currentData()
@@ -392,6 +411,7 @@ class DynamicFilterRow(QWidget):
         self.hue_spin.setValue(hue)
         self.hue_spin.blockSignals(False)
         self.amt_spin.setValue(1.0)
+        self.sat_spin.setValue(1.0)
 
 
 # ---------------------------------------------------------------------------
@@ -402,6 +422,11 @@ class NarrowbandIntegrationDialog(QDialog):
     """
     Screen narrowband (Ha/SII/OIII + user-defined) data into an RGB broadband image.
     Screen formula: out = rgb + colorized_nb - rgb * colorized_nb
+
+    Saturation control: lerps the colorized layer toward greyscale before screening.
+      colorized_final = colorized * sat + mono_rgb * (1 - sat)
+    At sat=1.0 the full hue is applied; at sat=0.0 the NB signal is added as pure
+    luminance with no hue shift, preserving all signal while stripping the colour cast.
     """
 
     def __init__(self, doc_manager=None, parent=None, window_icon: QIcon | None = None):
@@ -484,6 +509,7 @@ class NarrowbandIntegrationDialog(QDialog):
         self._nb_hue_sliders = {}
         self._nb_hue_spins   = {}
         self._nb_amount      = {}
+        self._nb_sat         = {}   # saturation spins for fixed channels
         self._nb_enabled     = {}
 
         nb_descriptions = {
@@ -545,12 +571,27 @@ class NarrowbandIntegrationDialog(QDialog):
             amt_spin.valueChanged.connect(self._schedule_preview)
             self._nb_amount[label] = amt_spin
             row3.addWidget(amt_spin)
+
+            row3.addSpacing(16)
+            row3.addWidget(QLabel("Sat:"))
+            sat_spin = QDoubleSpinBox()
+            sat_spin.setRange(0.0, 1.0)
+            sat_spin.setSingleStep(0.05)
+            sat_spin.setDecimals(2)
+            sat_spin.setValue(1.0)
+            sat_spin.setEnabled(False)
+            sat_spin.setToolTip(
+                "1.0 = full colorized hue  |  0.0 = greyscale signal only (no hue, full luminance)"
+            )
+            sat_spin.valueChanged.connect(self._schedule_preview)
+            self._nb_sat[label] = sat_spin
+            row3.addWidget(sat_spin)
+
             g.addLayout(row3)
 
             self._controls_layout.addWidget(gb)
 
         # ── Dynamic rows placeholder — inserted before the add button ───────
-        # We'll keep a reference to insert dynamic rows above the add button
         self._dynamic_rows_layout = QVBoxLayout()
         self._dynamic_rows_layout.setSpacing(10)
         self._controls_layout.addLayout(self._dynamic_rows_layout)
@@ -656,20 +697,17 @@ class NarrowbandIntegrationDialog(QDialog):
     # -----------------------------------------------------------------------
 
     def _refresh_views(self):
-        # Remember current selections by doc identity so we can restore them
         current_rgb = self.cmb_rgb.currentData()
         current_nb  = {lbl: self._nb_combos[lbl].currentData() for lbl in _NB_LABELS}
 
         self._populate_views()
 
-        # Restore RGB selection if still open
         if current_rgb is not None:
             for i in range(self.cmb_rgb.count()):
                 if self.cmb_rgb.itemData(i) is current_rgb:
                     self.cmb_rgb.setCurrentIndex(i)
                     break
 
-        # Restore NB selections if still open
         for lbl in _NB_LABELS:
             prev = current_nb[lbl]
             if prev is not None:
@@ -680,7 +718,6 @@ class NarrowbandIntegrationDialog(QDialog):
                         break
 
     def _build_doc_items(self) -> list[tuple]:
-        """Build the (name, doc) list used by dynamic row dropdowns."""
         items = [("— None —", None)]
         if self.docman is None:
             return items
@@ -726,10 +763,10 @@ class NarrowbandIntegrationDialog(QDialog):
 
         self.cmb_rgb.blockSignals(True)
         self.cmb_rgb.clear()
-        self.cmb_rgb.addItem("— Select RGB image —", None)   # blank default
+        self.cmb_rgb.addItem("— Select RGB image —", None)
         for d, name in img_docs:
             self.cmb_rgb.addItem(name, d)
-        self.cmb_rgb.setCurrentIndex(0)   # force blank
+        self.cmb_rgb.setCurrentIndex(0)
         self.cmb_rgb.blockSignals(False)
 
         for label in _NB_LABELS:
@@ -775,9 +812,8 @@ class NarrowbandIntegrationDialog(QDialog):
             if scores[best] > 0:
                 cmb = self._nb_combos[label]
                 cmb.blockSignals(True)
-                cmb.setCurrentIndex(best + 1)  # +1 for "— None —"
+                cmb.setCurrentIndex(best + 1)
                 cmb.blockSignals(False)
-                # enable the checkbox and controls — signals blocked so no preview fires
                 self._nb_enabled[label].blockSignals(True)
                 self._nb_enabled[label].setChecked(True)
                 self._nb_enabled[label].blockSignals(False)
@@ -785,6 +821,8 @@ class NarrowbandIntegrationDialog(QDialog):
                 self._nb_hue_sliders[label].setEnabled(True)
                 self._nb_hue_spins[label].setEnabled(True)
                 self._nb_amount[label].setEnabled(True)
+                self._nb_sat[label].setEnabled(True)
+
     # -----------------------------------------------------------------------
     # Fixed channel enable/hue sync
     # -----------------------------------------------------------------------
@@ -794,6 +832,7 @@ class NarrowbandIntegrationDialog(QDialog):
         self._nb_hue_sliders[label].setEnabled(checked)
         self._nb_hue_spins[label].setEnabled(checked)
         self._nb_amount[label].setEnabled(checked)
+        self._nb_sat[label].setEnabled(checked)
         self._schedule_preview()
 
     def _on_hue_changed(self, label: str, hue: float):
@@ -841,9 +880,10 @@ class NarrowbandIntegrationDialog(QDialog):
                 continue
             hue    = float(self._nb_hue_sliders[label].hue())
             amount = float(self._nb_amount[label].value())
+            sat    = float(self._nb_sat[label].value())
             if amount < 1e-4:
                 continue
-            out = self._apply_nb_screen(out, nb_mono, hue, amount)
+            out = self._apply_nb_screen(out, nb_mono, hue, amount, sat)
 
         # Dynamic channels
         for row in self._dynamic_rows:
@@ -855,14 +895,15 @@ class NarrowbandIntegrationDialog(QDialog):
             nb_mono = _ensure_mono(_to_f32(doc.image))
             hue     = row.hue()
             amount  = row.amount()
+            sat     = row.saturation()
             if amount < 1e-4:
                 continue
-            out = self._apply_nb_screen(out, nb_mono, hue, amount)
+            out = self._apply_nb_screen(out, nb_mono, hue, amount, sat)
 
         return np.clip(out, 0.0, 1.0)
 
     def _apply_nb_screen(self, out: np.ndarray, nb_mono: np.ndarray,
-                         hue: float, amount: float) -> np.ndarray:
+                         hue: float, amount: float, saturation: float = 1.0) -> np.ndarray:
         rh, rw = out.shape[:2]
         mh, mw = nb_mono.shape[:2]
         if (mh, mw) != (rh, rw):
@@ -873,7 +914,16 @@ class NarrowbandIntegrationDialog(QDialog):
                     np.linspace(0, mh-1, rh).astype(int)[:, None],
                     np.linspace(0, mw-1, rw).astype(int)[None, :]
                 ]
+
         colorized = _colorize(nb_mono, hue)
+
+        # Saturation lerp: blend colorized hue toward greyscale (mono repeated into 3ch).
+        # At sat=1.0 → full colour; at sat=0.0 → pure luminance, no hue shift.
+        if saturation < 0.9999:
+            mono_rgb  = np.repeat(nb_mono[..., None], 3, axis=2)
+            colorized = colorized * saturation + mono_rgb * (1.0 - saturation)
+            colorized = np.clip(colorized, 0.0, 1.0).astype(np.float32)
+
         colorized_scaled = np.clip(colorized * amount, 0.0, 1.0)
         return _screen(out, colorized_scaled)
 
@@ -888,7 +938,7 @@ class NarrowbandIntegrationDialog(QDialog):
         base   = _downsample(rgb, 1200) if self.cb_small.isChecked() else rgb
         result = self._compute_result(base)
         self._cached_result_pm = _to_pixmap(result)
-        self._cached_result_size = (result.shape[1], result.shape[0])  # w, h
+        self._cached_result_size = (result.shape[1], result.shape[0])
         self._redisplay_preview()
 
     def _redisplay_preview(self):
@@ -935,7 +985,7 @@ class NarrowbandIntegrationDialog(QDialog):
         pvx = cx * old_zoom - sx
         pvy = cy * old_zoom - sy
         self._zoom = new_zoom
-        self._redisplay_preview()   # ← was _update_preview
+        self._redisplay_preview()
         self._set_scroll(cx * new_zoom - pvx, cy * new_zoom - pvy)
 
     def _fit_to_preview(self):
@@ -996,11 +1046,10 @@ class NarrowbandIntegrationDialog(QDialog):
 
         return super().eventFilter(obj, ev)
 
-
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
         if self._state_restored and self.isVisible():
-            self._redisplay_preview() 
+            self._redisplay_preview()
 
     # -----------------------------------------------------------------------
     # Reset
@@ -1015,6 +1064,7 @@ class NarrowbandIntegrationDialog(QDialog):
             self._nb_hue_spins[label].setValue(_DEFAULT_HUE[label])
             self._nb_hue_spins[label].blockSignals(False)
             self._nb_amount[label].setValue(1.0)
+            self._nb_sat[label].setValue(1.0)
         for row in self._dynamic_rows:
             row.reset()
         self._schedule_preview()
@@ -1090,7 +1140,6 @@ class NarrowbandIntegrationDialog(QDialog):
             self.cb_small.setChecked(bool(s.value("nbintegration/small_preview", True, type=bool)))
         except Exception:
             pass
-        # Always trigger first preview here, after geometry is settled
         self._schedule_preview()
 
     def showEvent(self, ev):
@@ -1099,7 +1148,6 @@ class NarrowbandIntegrationDialog(QDialog):
             return
         self._state_restored = True
         QTimer.singleShot(0, self._restore_state)
-
 
     def closeEvent(self, ev):
         self._save_state()
