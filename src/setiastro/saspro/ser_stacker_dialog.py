@@ -849,6 +849,50 @@ class _ReAlignWorker(QThread):
         except Exception as e:
             self.failed.emit(f"{e}\n\n{traceback.format_exc()}")
 
+class _ExportAlignedWorker(QThread):
+    progress = pyqtSignal(int, int, str)
+    finished_ok = pyqtSignal(str)       # out_path
+    failed = pyqtSignal(str)
+
+    def __init__(self, cfg: SERStackConfig, analysis: AnalyzeResult, out_path: str, *,
+                 debayer: bool, frame_indices=None,
+                 apply_field_rotation: bool = True,
+                 apply_planet_derotation: bool = True,
+                 apply_local_warp: bool = True):
+        super().__init__()
+        self.cfg = cfg
+        self.analysis = analysis
+        self.out_path = out_path
+        self.debayer = bool(debayer)
+        self.frame_indices = frame_indices
+        self.apply_field_rotation = apply_field_rotation
+        self.apply_planet_derotation = apply_planet_derotation
+        self.apply_local_warp = apply_local_warp
+
+    def run(self):
+        try:
+            from setiastro.saspro.ser_stacker import export_aligned_ser
+
+            def cb(done: int, total: int, phase: str):
+                self.progress.emit(int(done), int(total), str(phase))
+
+            export_aligned_ser(
+                self.cfg.source,
+                self.out_path,
+                self.analysis,
+                roi=self.cfg.roi,
+                debayer=self.debayer,
+                to_rgb=False,
+                bayer_pattern=getattr(self.cfg, "bayer_pattern", None),
+                frame_indices=self.frame_indices,
+                apply_field_rotation=self.apply_field_rotation,
+                apply_planet_derotation=self.apply_planet_derotation,
+                apply_local_warp=self.apply_local_warp,
+                progress_cb=cb,
+            )
+            self.finished_ok.emit(self.out_path)
+        except Exception as e:
+            self.failed.emit(f"{e}\n\n{traceback.format_exc()}")
 
 class SERStackerDialog(QDialog):
     """
@@ -1234,13 +1278,19 @@ class SERStackerDialog(QDialog):
         row = QHBoxLayout()
         self.btn_analyze = QPushButton("(1) Analyze", self)
         self.btn_analyze.setEnabled(True)
-        self.btn_blink = QPushButton("(3) Blink Keepers", self)   # ✅ new
-        self.btn_stack = QPushButton("(4) Stack Now", self)
+        self.btn_blink = QPushButton("(3) Blink Keepers", self)
+        self.btn_blink.setEnabled(False)
+        self.btn_export_aligned = QPushButton("(4) Export Aligned SER…", self)   # ← NEW
+        self.btn_export_aligned.setEnabled(False)                                  # ← NEW
+        self.btn_stack = QPushButton("(5) Stack Now", self)
+        self.btn_stack.setEnabled(False)
         self.btn_close = QPushButton("Close", self)
 
         row.addWidget(self.btn_analyze)
         row.addStretch(1)
-        row.addWidget(self.btn_blink) 
+        row.addWidget(self.btn_blink)
+        row.addStretch(1)
+        row.addWidget(self.btn_export_aligned)                                     # ← NEW
         row.addStretch(1)
         row.addWidget(self.btn_stack)
         row.addWidget(self.btn_close)
@@ -1340,7 +1390,7 @@ class SERStackerDialog(QDialog):
 
         self.cmb_derot_planet.currentIndexChanged.connect(lambda _=None: _apply_derot_preset())
         self.chk_derot_reverse.toggled.connect(lambda _=None: _apply_derot_preset())
-
+        self.btn_export_aligned.clicked.connect(self._export_aligned_clicked)  
         # Clicking on the graph updates Keep %
         def _on_graph_keep_changed(k: int, total: int):
             total = max(1, int(total))
@@ -1409,6 +1459,8 @@ class SERStackerDialog(QDialog):
                 self.btn_stack.setEnabled(False)
                 self.btn_analyze.setEnabled(False)
                 self.btn_edit_aps.setEnabled(False)
+                self.btn_blink.setEnabled(False)
+                self.btn_export_aligned.setEnabled(False)
 
                 self._worker_realign = _ReAlignWorker(cfg, self._analysis, debayer=bool(self.chk_debayer.isChecked()), to_rgb=False)
                 self._worker_realign.progress.connect(self._on_analyze_progress)  # reuse progress UI
@@ -1432,10 +1484,119 @@ class SERStackerDialog(QDialog):
         self.btn_stack.setEnabled(True)
         self.btn_analyze.setEnabled(True)
         self.btn_edit_aps.setEnabled(True)
+        self.btn_blink.setEnabled(True)
         self.btn_close.setEnabled(True)
+        self.btn_export_aligned.setEnabled(True)
 
         self._append_log("Re-align done (dx/dy/conf updated from APs).")
 
+    def _export_aligned_clicked(self):
+        if self._analysis is None:
+            return
+
+        cfg = self._make_cfg()
+        N = int(self._analysis.frames_total)
+
+        # Ask: all frames or keep% only
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QRadioButton, QDialogButtonBox, QFileDialog
+        sel_dlg = QDialog(self)
+        sel_dlg.setWindowTitle("Export Aligned SER")
+        vl = QVBoxLayout(sel_dlg)
+        rb_all = QRadioButton(f"All frames ({N})", sel_dlg)
+        keep_k = max(1, min(N, int(round(N * float(self.spin_keep.value()) / 100.0))))
+        rb_keep = QRadioButton(f"Keep % only ({keep_k} frames)", sel_dlg)
+        rb_all.setChecked(True)
+        from PyQt6.QtWidgets import QCheckBox as _QCB
+        chk_field_rot = _QCB("Apply field rotation correction", sel_dlg)
+        chk_field_rot.setChecked(bool(getattr(self, "chk_field_rotation", None) and self.chk_field_rotation.isChecked()))
+        chk_planet_derot = _QCB("Apply planet axial derotation", sel_dlg)
+        chk_planet_derot.setChecked(bool(getattr(self._analysis, "planet_derotate", False)))
+        chk_local_warp = _QCB("Apply local AP warp", sel_dlg)
+        chk_local_warp.setChecked(True)
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, sel_dlg)
+        bb.accepted.connect(sel_dlg.accept)
+        bb.rejected.connect(sel_dlg.reject)
+        for w in (rb_all, rb_keep, chk_field_rot, chk_planet_derot, chk_local_warp, bb):
+            vl.addWidget(w)
+        if sel_dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        frame_indices = None
+        if rb_keep.isChecked():
+            order = np.asarray(self._analysis.order, np.int32)
+            frame_indices = order[:keep_k].tolist()
+
+        # Pick output path
+        src = self._source
+        if isinstance(src, str) and src:
+            default_dir = os.path.dirname(src)
+            default_name = os.path.splitext(os.path.basename(src))[0] + "_aligned.ser"
+        else:
+            default_dir = ""
+            default_name = "aligned.ser"
+
+        out_path, _ = QFileDialog.getSaveFileName(
+            self, "Save Aligned SER",
+            os.path.join(default_dir, default_name),
+            "SER Videos (*.ser)"
+        )
+        if not out_path:
+            return
+        if not out_path.lower().endswith(".ser"):
+            out_path += ".ser"
+
+        self.btn_export_aligned.setEnabled(False)
+        self.btn_analyze.setEnabled(False)
+        self.btn_stack.setEnabled(False)
+        self.btn_close.setEnabled(False)
+        self.lbl_prog.setVisible(True)
+        self.prog.setVisible(True)
+        self.prog.setRange(0, 100)
+        self.prog.setValue(0)
+        self.lbl_prog.setText("Exporting aligned SER…")
+        self._append_log(f"Exporting aligned SER → {os.path.basename(out_path)}")
+
+        self._worker_export = _ExportAlignedWorker(
+            cfg, self._analysis, out_path,
+            debayer=bool(self.chk_debayer.isChecked()),
+            frame_indices=frame_indices,
+            apply_field_rotation=bool(chk_field_rot.isChecked()),
+            apply_planet_derotation=bool(chk_planet_derot.isChecked()),
+            apply_local_warp=bool(chk_local_warp.isChecked()),
+        )
+        self._worker_export.progress.connect(self._on_analyze_progress)
+        self._worker_export.finished_ok.connect(self._on_export_aligned_ok)
+        self._worker_export.failed.connect(self._on_export_aligned_fail)
+        self._worker_export.start()
+
+    def _on_export_aligned_ok(self, out_path: str):
+        self.prog.setVisible(False)
+        self.lbl_prog.setVisible(False)
+        self.btn_export_aligned.setEnabled(True)
+        self.btn_analyze.setEnabled(True)
+        self.btn_stack.setEnabled(True)
+        self.btn_close.setEnabled(True)
+        self._append_log(f"Export done: {os.path.basename(out_path)}")
+        self._append_log("Tip: load this SER with Tracking=Off for fast restacking.")
+        QMessageBox.information(self, "Export Aligned SER",
+            f"Saved aligned SER:\n{out_path}\n\n"
+            "To restack this file quickly:\n"
+            "  1. Open it in the Planetary Stacker\n"
+            "  2. Set Tracking = Off\n"
+            "  3. Run Analyze (fast — no shift computation)\n"
+            "  4. Stack Now\n\n"
+            "Alignment is already baked in — Analyze just scores quality\n"
+            "and places AP points for the local warp.")
+        
+    def _on_export_aligned_fail(self, msg: str):
+        self.prog.setVisible(False)
+        self.lbl_prog.setVisible(False)
+        self.btn_export_aligned.setEnabled(True)
+        self.btn_analyze.setEnabled(True)
+        self.btn_stack.setEnabled(True)
+        self.btn_close.setEnabled(True)
+        self._append_log("EXPORT FAILED:")
+        self._append_log(msg)
 
 
     def _append_log(self, s: str):
@@ -1495,6 +1656,8 @@ class SERStackerDialog(QDialog):
         self.btn_analyze.setEnabled(False)
         self.btn_stack.setEnabled(False)
         self.btn_close.setEnabled(False)
+        self.btn_blink.setEnabled(False)
+        self.btn_export_aligned.setEnabled(False)
         self.lbl_prog.setVisible(True)
         self.lbl_prog.setText("Analyzing…")
         self.prog.setVisible(True)
@@ -1536,6 +1699,7 @@ class SERStackerDialog(QDialog):
         self.btn_stack.setEnabled(True)
         self.btn_blink.setEnabled(True)
         self.btn_close.setEnabled(True)
+        self.btn_export_aligned.setEnabled(True)     
 
         self._append_log(f"Analyze done. frames={ar.frames_total}  track={ar.track_mode}")
         self._append_log(f"Ref: {ar.ref_mode} (N={ar.ref_count})")
@@ -1738,7 +1902,13 @@ class SERStackerDialog(QDialog):
         if mode == "surface" and self._surface_anchor is None:
             self._append_log("Surface mode requires an anchor. Set it in the viewer (Ctrl+Shift+drag).")
             return
-
+        if self._analysis is None:
+            QMessageBox.warning(
+                self, "Analyze Required",
+                "Please run Analyze first.\n\n"
+                "Even with Tracking=Off, Analyze is needed to score frame quality\n"
+                "and place alignment points for the local warp.")
+            return
         cfg = self._make_cfg()
         cfg.keep_mask = self._keep_mask
         debayer = bool(self.chk_debayer.isChecked())
@@ -1748,7 +1918,9 @@ class SERStackerDialog(QDialog):
         self.btn_stack.setEnabled(False)
         self.btn_close.setEnabled(False)
         self.btn_analyze.setEnabled(False)
+        self.btn_blink.setEnabled(False)
         self.btn_edit_aps.setEnabled(False)
+        self.btn_export_aligned.setEnabled(False)
         scale_text = self.cmb_drizzle.currentText()
         if "1.5" in scale_text:
             drizzle_scale = 1.5

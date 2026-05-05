@@ -2678,3 +2678,295 @@ def _ap_phase_shift_multiscale(
     conf = float(np.clip((w2 * cf2 + w1 * cf1 + w0 * cf0) / wsum, 0.0, 1.0))
 
     return float(dx), float(dy), float(conf)
+
+import struct as _struct
+
+def _write_ser_header(f, *, width: int, height: int, frames: int, color_id: int = 0) -> None:
+    """Write a minimal SER v3 header for a uint16 mono or RGB file."""
+    sig = b"LUCAM-RECORDER\x00"[:14].ljust(14, b"\x00")
+    # color_id: 0=MONO, 24=RGB
+    # pixel_depth: 16
+    # little_endian: 1
+    hdr = bytearray(178)
+    hdr[:14] = sig
+    _struct.pack_into("<7I", hdr, 14,
+        0,           # LuID
+        color_id,    # ColorID
+        1,           # LittleEndian
+        int(width),
+        int(height),
+        16,          # PixelDepth
+        int(frames),
+    )
+    f.write(bytes(hdr))
+
+
+def export_aligned_ser(
+    source: str | list[str] | PlanetaryFrameSource,
+    out_path: str,
+    analysis: AnalyzeResult,
+    *,
+    roi=None,
+    debayer: bool = True,
+    to_rgb: bool = False,
+    bayer_pattern: Optional[str] = None,
+    frame_indices=None,          # None = all frames, else list/array of frame indices
+    apply_field_rotation: bool = True,
+    apply_planet_derotation: bool = True,
+    apply_local_warp: bool = True,
+    planet_cx: float | None = None,
+    planet_cy: float | None = None,
+    planet_r: float | None = None,
+    planet_pole_pa_deg: float | None = None,
+    planet_axis_tilt_ba: float | None = None,
+    planet_rot_deg_per_frame: float | None = None,
+    max_dim: int = 512,
+    progress_cb=None,
+    workers: int | None = None,
+) -> None:
+    """
+    Apply all analysis transforms (translation, field rotation, planet derotation,
+    optional local AP warp) to every selected frame and write a uint16 SER file.
+
+    The output SER can be loaded back into the planetary stacker and stacked
+    with track_mode='off' for fast restacking without re-analysis.
+    """
+    source_obj = source
+
+    if analysis is None or analysis.ref_image is None:
+        raise ValueError("export_aligned_ser requires a completed AnalyzeResult.")
+
+    if getattr(analysis, "ang", None) is None:
+        analysis.ang = np.zeros((int(analysis.frames_total),), dtype=np.float32)
+
+    if workers is None:
+        cpu = os.cpu_count() or 4
+        workers = max(1, min(cpu, 16))
+
+    if cv2 is not None:
+        try:
+            cv2.setNumThreads(1)
+        except Exception:
+            pass
+
+    ref_img = analysis.ref_image.astype(np.float32, copy=False)
+    track_mode = str(getattr(analysis, "track_mode", "planetary"))
+
+    # ---- Planet derotation params ----
+    planet_derotate = bool(getattr(analysis, "planet_derotate", False)) and apply_planet_derotation
+    if planet_pole_pa_deg is None:
+        planet_pole_pa_deg = float(getattr(analysis, "planet_pole_pa_deg", 0.0))
+    if planet_axis_tilt_ba is None:
+        planet_axis_tilt_ba = float(getattr(analysis, "planet_axis_tilt_ba", 1.0))
+    if planet_rot_deg_per_frame is None:
+        planet_rot_deg_per_frame = float(getattr(analysis, "planet_rot_deg_per_frame", 0.0))
+    if planet_cx is None:
+        planet_cx = float(getattr(analysis, "ref_cx", ref_img.shape[1] * 0.5))
+    if planet_cy is None:
+        planet_cy = float(getattr(analysis, "ref_cy", ref_img.shape[0] * 0.5))
+    if planet_r is None:
+        planet_r = float(min(ref_img.shape[0], ref_img.shape[1]) * 0.45)
+
+    ba = float(np.clip(float(planet_axis_tilt_ba), 0.0, 1.0))
+    subobs_lat_rad = float(np.arccos(ba)) if ba > 1e-8 else float(np.pi * 0.5)
+    pole_angle_rad = float(np.deg2rad(float(planet_pole_pa_deg)))
+
+    # Surface rotation center
+    _surface_rot_cx: float | None = None
+    _surface_rot_cy: float | None = None
+    sa = getattr(analysis, "surface_anchor_rot_cx", None)
+    if sa is not None:
+        _surface_rot_cx = float(sa)
+        _surface_rot_cy = float(getattr(analysis, "surface_anchor_rot_cy", ref_img.shape[0] * 0.5))
+
+    # ---- Frame list ----
+    n_total = int(analysis.frames_total)
+    if frame_indices is None:
+        indices = list(range(n_total))
+    else:
+        indices = [int(i) for i in frame_indices]
+
+    n_out = len(indices)
+    if n_out == 0:
+        raise ValueError("No frames to export.")
+
+    # ---- Probe first frame for shape ----
+    src0, owns0 = _ensure_source(source_obj, cache_items=2)
+    try:
+        first = _get_frame(
+            src0, indices[0],
+            roi=roi, debayer=debayer, to_float01=True,
+            force_rgb=bool(to_rgb), bayer_pattern=bayer_pattern
+        )
+        frame_shape = first.shape
+    finally:
+        if owns0:
+            try:
+                src0.close()
+            except Exception:
+                pass
+
+    is_color = (len(frame_shape) == 3 and frame_shape[2] >= 3)
+    color_id = 24 if is_color else 0  # RGB or MONO
+    H, W = int(frame_shape[0]), int(frame_shape[1])
+
+    # AP warp setup
+    ref_m = _to_mono01(ref_img).astype(np.float32, copy=False)
+    ap_centers_all = np.asarray(analysis.ap_centers, np.int32) if analysis.ap_centers is not None else None
+    ap_size = int(getattr(analysis, "ap_size", 64) or 64)
+    use_multiscale = bool(getattr(analysis, "ap_multiscale", False))
+    derot_ref_i = int(indices[0])
+
+    # Planet derotation precompute
+    _derot_precomp = None
+    if planet_derotate and abs(planet_rot_deg_per_frame) > 1e-12:
+        try:
+            _derot_precomp = _build_lonlat_grids(
+                H, W, planet_cx, planet_cy, planet_r,
+                pole_angle_rad, subobs_lat_rad,
+            )
+        except Exception:
+            _derot_precomp = None
+
+    # ---- Progress ----
+    done_lock = threading.Lock()
+    done_ct = 0
+
+    def _bump(delta: int):
+        nonlocal done_ct
+        if progress_cb is None:
+            return
+        with done_lock:
+            done_ct += int(delta)
+            d = done_ct
+        progress_cb(d, n_out, "Export aligned SER")
+
+    if progress_cb:
+        progress_cb(0, n_out, "Export aligned SER")
+
+    # ---- Warp one frame ----
+    def _warp_one(i: int, src) -> np.ndarray:
+        img = _get_frame(
+            src, int(i), roi=roi, debayer=debayer,
+            to_float01=True, force_rgb=bool(to_rgb),
+            bayer_pattern=bayer_pattern
+        ).astype(np.float32, copy=False)
+
+        gdx = float(analysis.dx[int(i)]) if analysis.dx is not None else 0.0
+        gdy = float(analysis.dy[int(i)]) if analysis.dy is not None else 0.0
+        warped = _shift_image(img, gdx, gdy)
+
+        # Field rotation
+        if apply_field_rotation:
+            ang_i = float(analysis.ang[int(i)]) if analysis.ang is not None else 0.0
+            if abs(ang_i) > 1e-6:
+                if track_mode == "planetary":
+                    rot_cx, rot_cy = float(planet_cx), float(planet_cy)
+                else:
+                    if _surface_rot_cx is not None:
+                        rot_cx, rot_cy = _surface_rot_cx, float(_surface_rot_cy)
+                    else:
+                        rot_cx, rot_cy = float(W * 0.5), float(H * 0.5)
+                warped = _rotate_about(warped, rot_cx, rot_cy, ang_i)
+
+        # Planet axial derotation
+        if planet_derotate and abs(planet_rot_deg_per_frame) > 1e-12:
+            dframes = float(int(i) - int(derot_ref_i))
+            dlon_rad = float(np.deg2rad(planet_rot_deg_per_frame * dframes))
+            try:
+                warped = derotate_stack_lonshift(
+                    warped,
+                    cx=planet_cx, cy=planet_cy, r=planet_r,
+                    dlon_rad=dlon_rad,
+                    pole_angle_rad=pole_angle_rad,
+                    subobs_lat_rad=subobs_lat_rad,
+                    border_value=0.0,
+                    precomp=_derot_precomp,
+                )
+            except Exception:
+                pass
+
+        # Local AP warp
+        if apply_local_warp and cv2 is not None and ap_centers_all is not None and len(ap_centers_all) > 0:
+            cur_m_g = _to_mono01(warped).astype(np.float32, copy=False)
+            if use_multiscale:
+                s2, s1, s05 = _scaled_ap_sizes(ap_size)
+                def _one(s):
+                    rdx, rdy, resp = _ap_phase_shifts_per_ap(ref_m, cur_m_g, ap_centers=ap_centers_all, ap_size=s, max_dim=max_dim)
+                    cf = np.clip(resp.astype(np.float32, copy=False), 0.0, 1.0)
+                    return rdx, rdy, cf
+                rdx2, rdy2, cf2 = _one(s2)
+                rdx1, rdy1, cf1 = _one(s1)
+                rdx0, rdy0, cf0 = _one(s05)
+                w2 = np.maximum(cf2, 1e-3) * 1.25
+                w1 = np.maximum(cf1, 1e-3) * 1.00
+                w0 = np.maximum(cf0, 1e-3) * 0.85
+                wsum = w2 + w1 + w0
+                ap_rdx = (w2*rdx2 + w1*rdx1 + w0*rdx0) / wsum
+                ap_rdy = (w2*rdy2 + w1*rdy1 + w0*rdy0) / wsum
+                ap_cf  = np.clip((w2*cf2 + w1*cf1 + w0*cf0) / wsum, 0.0, 1.0)
+            else:
+                ap_rdx, ap_rdy, ap_resp = _ap_phase_shifts_per_ap(ref_m, cur_m_g, ap_centers=ap_centers_all, ap_size=ap_size, max_dim=max_dim)
+                ap_cf = np.clip(ap_resp.astype(np.float32, copy=False), 0.0, 1.0)
+
+            keep = _reject_ap_outliers(ap_rdx, ap_rdy, ap_cf, z=3.5)
+            if np.any(keep):
+                dx_field, dy_field = _dense_field_from_ap_shifts(
+                    warped.shape[0], warped.shape[1],
+                    ap_centers_all[keep], ap_rdx[keep], ap_rdy[keep], ap_cf[keep],
+                    grid=32, power=2.0, conf_floor=0.15,
+                    radius=float(ap_size) * 3.0,
+                )
+                warped = _warp_by_dense_field(warped, dx_field, dy_field)
+
+        return warped
+
+    def _frame_to_uint16(warped: np.ndarray) -> bytes:
+        """Convert float32 [0..1] frame to uint16 little-endian bytes."""
+        clipped = np.clip(warped, 0.0, 1.0)
+        u16 = (clipped * 65535.0).astype(np.uint16)
+        if not u16.flags["C_CONTIGUOUS"]:
+            u16 = np.ascontiguousarray(u16)
+        return u16.tobytes()
+
+    # ---- Write SER serially to avoid seek contention ----
+    # Warp in parallel chunks, write serially in index order.
+    chunk_size = max(4, int(np.ceil(n_out / float(max(1, workers) * 2))))
+    idx_chunks = [indices[i:i+chunk_size] for i in range(0, n_out, chunk_size)]
+
+    # Pre-warp chunks in parallel, collect ordered results, write serially
+    chunk_results: dict[int, list[np.ndarray]] = {}
+
+    def _warp_chunk(chunk_start: int, chunk: list[int]) -> tuple[int, list[np.ndarray]]:
+        src, owns = _ensure_source(source_obj, cache_items=0)
+        results = []
+        try:
+            for i in chunk:
+                results.append(_warp_one(i, src))
+        finally:
+            if owns:
+                try:
+                    src.close()
+                except Exception:
+                    pass
+        return chunk_start, results
+
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+
+    with open(out_path, "wb") as f:
+        _write_ser_header(f, width=W, height=H, frames=n_out, color_id=color_id)
+
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            # Map chunk_index -> future for ordered retrieval
+            chunk_futs = [ex.submit(_warp_chunk, i * chunk_size, chunk)
+                          for i, chunk in enumerate(idx_chunks)]
+
+            # Retrieve in submission order so frames are written in sequence
+            for fut in chunk_futs:
+                _, warped_frames = fut.result()
+                for warped in warped_frames:
+                    f.write(_frame_to_uint16(warped))
+                    _bump(1)
+
+    if progress_cb:
+        progress_cb(n_out, n_out, "Export aligned SER")
