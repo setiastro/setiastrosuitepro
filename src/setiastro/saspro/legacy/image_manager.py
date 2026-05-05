@@ -1983,26 +1983,60 @@ def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = 
 
             elif filename.lower().endswith('.png'):
                 print(f"Loading PNG file: {filename}")
-                img = Image.open(filename)
 
-                # Convert unsupported modes to RGB
-                if img.mode not in ('L', 'RGB'):
-                    print(f"Unsupported PNG mode: {img.mode}, converting to RGB")
-                    img = img.convert("RGB")
+                # Try cv2 first — handles 16-bit PNGs that PIL cannot identify
+                loaded = False
+                try:
+                    import cv2 as _cv2
+                    img_cv = _cv2.imread(filename, _cv2.IMREAD_UNCHANGED)
+                    if img_cv is not None:
+                        if img_cv.ndim == 2:
+                            # mono
+                            if img_cv.dtype == np.uint16:
+                                bit_depth = "16-bit"
+                                image = img_cv.astype(np.float32) / 65535.0
+                            else:
+                                bit_depth = "8-bit"
+                                image = img_cv.astype(np.float32) / 255.0
+                            is_mono = True
+                        elif img_cv.ndim == 3:
+                            # cv2 gives BGR — convert to RGB
+                            if img_cv.shape[2] == 4:
+                                img_cv = img_cv[:, :, :3]
+                            img_cv = img_cv[:, :, ::-1]  # BGR -> RGB
+                            if img_cv.dtype == np.uint16:
+                                bit_depth = "16-bit"
+                                image = img_cv.astype(np.float32) / 65535.0
+                            else:
+                                bit_depth = "8-bit"
+                                image = img_cv.astype(np.float32) / 255.0
+                            is_mono = False
+                        loaded = True
+                        print(f"Loaded PNG via cv2: shape={image.shape}, bit_depth={bit_depth}, mono={is_mono}")
+                except Exception as e_cv:
+                    print(f"cv2 PNG load failed, falling back to PIL: {e_cv}")
 
-                # Convert image to numpy array and normalize pixel values to [0, 1]
-                image = np.array(img, dtype=np.float32) / 255.0
-                bit_depth = "8-bit"
+                if not loaded:
+                    # PIL fallback
+                    img = Image.open(filename)
+                    if img.mode not in ('L', 'RGB', 'I;16', 'I'):
+                        print(f"Unsupported PNG mode: {img.mode}, converting to RGB")
+                        img = img.convert("RGB")
 
-                # Determine if the image is grayscale or RGB
-                if len(image.shape) == 2:  # Grayscale image
-                    is_mono = True
-                elif len(image.shape) == 3 and image.shape[2] == 3:  # RGB image
-                    is_mono = False
-                else:
-                    raise ValueError(f"Unsupported PNG dimensions: {image.shape}")
-
-                print(f"Loaded PNG image: shape={image.shape}, bit depth={bit_depth}, mono={is_mono}")
+                    if img.mode in ('I;16', 'I'):
+                        # 16-bit grayscale
+                        image = np.array(img, dtype=np.float32)
+                        mx = float(image.max())
+                        if mx > 1.0:
+                            image = image / max(1.0, mx if mx <= 65535.0 else 65535.0)
+                        bit_depth = "16-bit"
+                        is_mono = True
+                    else:
+                        image = np.array(img, dtype=np.float32) / 255.0
+                        bit_depth = "8-bit"
+                        is_mono = (len(image.shape) == 2)
+                        if len(image.shape) == 3 and image.shape[2] != 3:
+                            raise ValueError(f"Unsupported PNG dimensions: {image.shape}")
 
             elif filename.lower().endswith(('.jpg', '.jpeg')):
                 print(f"Loading JPG file: {filename}")
