@@ -35,6 +35,8 @@ try:
 except ImportError:
     _HAS_PG = False
 
+from setiastro.saspro.altaz_field_rotation import AltAzFieldRotationDialog
+
 # ---------------------------------------------------
 #  paths / globals
 # ---------------------------------------------------
@@ -2928,6 +2930,11 @@ class WhatsInMySkyDialog(QDialog):
         horizon_btn.setFixedHeight(28)
         toolbar.addWidget(horizon_btn)
 
+        fieldrot_btn = QPushButton("🔄 Field Rotation…")
+        fieldrot_btn.clicked.connect(self._open_field_rotation)
+        fieldrot_btn.setFixedHeight(28)
+        toolbar.addWidget(fieldrot_btn)
+
         toolbar_frame = QFrame()
         toolbar_frame.setFrameShape(QFrame.Shape.NoFrame)
         toolbar_frame.setStyleSheet("border-bottom: 1px solid palette(shadow);")
@@ -3135,6 +3142,70 @@ class WhatsInMySkyDialog(QDialog):
         dlg.horizon_changed.connect(self._on_horizon_changed)
         dlg.exec()
 
+
+    def _open_field_rotation(self):
+        """Open the Alt/Az Field Rotation Calculator.
+ 
+        If a row is selected in the results tree, pre-fills Alt and Az from
+        that row so the user doesn't have to type them.
+        """
+        try:
+            lat = float(self.settings.value("latitude",  0.0))
+            lon = float(self.settings.value("longitude", 0.0))
+        except (TypeError, ValueError):
+            lat, lon = 0.0, 0.0
+ 
+        # Try to read Alt/Az from the currently selected tree item
+        alt_prefill = None
+        az_prefill  = None
+        sel = self.tree.selectedItems()
+        if sel:
+            item = sel[0]
+            try:
+                alt_prefill = float(item.text(3))   # column 3 = Altitude
+                az_prefill  = float(item.text(4))   # column 4 = Azimuth
+            except (ValueError, IndexError):
+                pass
+ 
+        from setiastro.saspro.altaz_field_rotation import AltAzFieldRotationDialog
+        dlg = AltAzFieldRotationDialog(
+            lat=lat,
+            lon=lon,
+            alt=alt_prefill,
+            az=az_prefill,
+            settings=self.settings,
+            parent=self,
+        )
+        dlg.show()
+
+    def _open_field_rotation_for(self, item):
+        """Open field rotation calculator pre-filled from a specific tree item."""
+        try:
+            lat = float(self.settings.value("latitude",  0.0))
+            lon = float(self.settings.value("longitude", 0.0))
+        except (TypeError, ValueError):
+            lat, lon = 0.0, 0.0
+ 
+        alt_prefill = None
+        az_prefill  = None
+        try:
+            alt_prefill = float(item.text(3))
+            az_prefill  = float(item.text(4))
+        except (ValueError, IndexError):
+            pass
+ 
+        from setiastro.saspro.altaz_field_rotation import AltAzFieldRotationDialog
+        dlg = AltAzFieldRotationDialog(
+            lat=lat,
+            lon=lon,
+            alt=alt_prefill,
+            az=az_prefill,
+            settings=self.settings,
+            parent=self,
+        )
+        dlg.show()
+
+
     # ── Context menu ──────────────────────────────────────────────────────
     def _show_context_menu(self, pos):
         item = self.tree.itemAt(pos)
@@ -3160,6 +3231,11 @@ class WhatsInMySkyDialog(QDialog):
         menu.addAction(act_simbad)
         menu.addAction(act_planets)
         menu.addAction(act_finder)
+
+        act_fieldrot = QAction("🔄  Field Rotation…", self)
+        menu.addAction(act_fieldrot)
+        act_fieldrot.triggered.connect(lambda: self._open_field_rotation_for(item))
+
         menu.addSeparator()
         menu.addAction(act_aladin)
         menu.addAction(act_astrobin)
