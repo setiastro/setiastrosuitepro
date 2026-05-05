@@ -98,15 +98,15 @@ def max_exposure_seconds(lat_deg: float, az_deg: float, alt_deg: float,
 def severity_badge(t_sec: float) -> str:
     if t_sec == float("inf"):
         return "⭐ No limit (E/W)"
-    if t_sec >= 120:
-        return "⭐ Excellent  (≥ 120 s)"
     if t_sec >= 60:
-        return "🟢 Good  (60–120 s)"
-    if t_sec >= 30:
-        return "🟡 Marginal  (30–60 s)"
+        return "⭐ Excellent  (≥ 60 s)"
+    if t_sec >= 20:
+        return "🟢 Good  (20–60 s)"
     if t_sec >= 10:
-        return "🔴 Poor  (10–30 s)"
-    return "❌ Very limited  (< 10 s)"
+        return "🟡 Marginal  (10–20 s)"
+    if t_sec >= 5:
+        return "🔴 Poor  (5–10 s)"
+    return "❌ Very limited  (< 5 s)"
 
 
 # ── Dialog ────────────────────────────────────────────────────────────────────
@@ -394,47 +394,167 @@ class AltAzFieldRotationDialog(QDialog):
 
         self._save_persisted()
 
-        res   = max_exposure_seconds(self._lat, az, alt, sw, sh, px,
-                                      max_corner_pixels=tol)
-        t     = res["t_max_sec"]
-        badge = severity_badge(t)
-
-        self._result_badge.setStyleSheet("")
-        t_str = "∞  (no field rotation)" if t == float("inf") else f"{t:.1f} s"
-        self._result_badge.setText(f"{t_str}   {badge}")
-
-        def _row(label, value, row):
+        def _row(label, value, row, bold=False):
             lbl = QLabel(label)
             lbl.setStyleSheet("font-size: 11px; color: palette(placeholderText);")
             val = QLabel(str(value))
-            val.setStyleSheet("font-size: 12px; font-weight: 500;")
+            weight = "700" if bold else "500"
+            val.setStyleSheet(f"font-size: 12px; font-weight: {weight};")
             self._result_grid.addWidget(lbl, row, 0, Qt.AlignmentFlag.AlignRight)
             self._result_grid.addWidget(val, row, 1)
 
-        rate_sign = "+" if res["rate_arcsec_per_sec"] >= 0 else "−"
-        _row("Field rotation rate:",
-             f"{res['rate_mag_asec_sec']:.4f} arcsec/sec  "
-             f"({res['rate_mag_asec_sec']*60:.2f} arcsec/min, {rate_sign}ve)", 0)
-        _row("Corner half-diagonal:",
-             f"{res['half_diag_mm']:.2f} mm  ({res['half_diag_um']:.0f} µm)", 1)
-        _row("Diagonal / pixel ratio:",
-             f"{res['d_over_s']:.1f} pixels", 2)
-        _row("Tolerance:",
-             f"{tol:.1f} corner pixel{'s' if tol != 1 else ''}", 3)
-        _row("Max exposure at current Alt/Az:",
-             t_str, 4)
+        def _t_str(t):
+            return "∞" if t == float("inf") else f"{t:.1f} s"
 
-        for ref_tol, row_offset in [(1, 5), (3, 6), (5, 7), (10, 8)]:
-            res2  = max_exposure_seconds(self._lat, az, alt, sw, sh, px,
-                                          max_corner_pixels=float(ref_tol))
-            t2    = res2["t_max_sec"]
-            t2_str = "∞" if t2 == float("inf") else f"{t2:.1f} s"
-            _row(f"  @ {ref_tol} px tolerance:", t2_str, row_offset)
+        # ── Equipment summary (always shown) ──────────────────────────────
+        res_now = max_exposure_seconds(self._lat, az, alt, sw, sh, px,
+                                        max_corner_pixels=tol)
+        _row("Corner half-diagonal:",
+             f"{res_now['half_diag_mm']:.2f} mm  "
+             f"({res_now['half_diag_um']:.0f} µm)", 0)
+        _row("Diagonal / pixel ratio:",
+             f"{res_now['d_over_s']:.1f} pixels", 1)
+        _row("Tolerance:",
+             f"{tol:.1f} corner pixel{'s' if tol != 1 else ''}", 2)
+
+        # ── Nightly stats — sample every 10 min during astronomical night ─
+        # Uses RA/Dec + date if available; falls back to single-point otherwise.
+        night_samples = self._sample_night_exposures(sw, sh, px, tol)
+
+        row_offset = 3
+        if night_samples is not None and len(night_samples) > 0:
+            arr = np.array(night_samples, dtype=float)
+            # Cap at 120 s for stats consistency with the plot
+            arr = np.minimum(arr, 120.0)
+            t_max    = float(np.max(arr))
+            t_min    = float(np.min(arr))
+            t_median = float(np.median(arr))
+
+            self._result_badge.setStyleSheet("")
+            self._result_badge.setText(
+                f"Nightly median  {_t_str(t_median)}   {severity_badge(t_median)}")
+
+            sep_lbl = QLabel("── Nightly stats (astro night, sampled every 10 min) ──")
+            sep_lbl.setStyleSheet(
+                "font-size: 10px; color: palette(placeholderText); padding-top: 8px;")
+            self._result_grid.addWidget(sep_lbl, row_offset, 0, 1, 2)
+            row_offset += 1
+
+            _row("Best exposure (max):",
+                 f"{_t_str(t_max)}   {severity_badge(t_max)}", row_offset, bold=True)
+            row_offset += 1
+            _row("Median exposure:",
+                 f"{_t_str(t_median)}   {severity_badge(t_median)}", row_offset, bold=True)
+            row_offset += 1
+            _row("Worst exposure (min):",
+                 f"{_t_str(t_min)}   {severity_badge(t_min)}", row_offset, bold=True)
+            row_offset += 1
+            _row("Samples during astro night:",
+                 f"{len(arr)}", row_offset)
+            row_offset += 1
+
+            # Per-tolerance comparison table
+            sep2 = QLabel("── Median at other tolerances ──")
+            sep2.setStyleSheet(
+                "font-size: 10px; color: palette(placeholderText); padding-top: 6px;")
+            self._result_grid.addWidget(sep2, row_offset, 0, 1, 2)
+            row_offset += 1
+
+            for ref_tol in (1, 3, 5, 10):
+                if abs(ref_tol - tol) < 0.01:
+                    continue   # skip the one we already showed above
+                other_samples = self._sample_night_exposures(sw, sh, px,
+                                                              float(ref_tol))
+                if other_samples:
+                    other_arr = np.minimum(np.array(other_samples, dtype=float), 300.0)
+                    t_med2 = float(np.median(other_arr))
+                    _row(f"  @ {ref_tol} px tolerance (median):",
+                         f"{_t_str(t_med2)}   {severity_badge(t_med2)}", row_offset)
+                    row_offset += 1
+
+        else:
+            # Fallback: no ephemeris — show single-point result
+            t     = res_now["t_max_sec"]
+            rate_sign = "+" if res_now["rate_arcsec_per_sec"] >= 0 else "−"
+            self._result_badge.setStyleSheet("")
+            self._result_badge.setText(
+                f"{_t_str(t)}   {severity_badge(t)}")
+            _row("Field rotation rate:",
+                 f"{res_now['rate_mag_asec_sec']:.4f} arcsec/sec  "
+                 f"({res_now['rate_mag_asec_sec']*60:.2f} arcsec/min, {rate_sign}ve)",
+                 row_offset)
+            row_offset += 1
+            _row("Max exposure at entered Alt/Az:", _t_str(t), row_offset, bold=True)
+            row_offset += 1
+            note = QLabel(
+                "<small><i>No target RA/Dec available — showing single-point result at "
+                "entered Alt/Az.  Select an object in WIMS to get nightly stats.</i></small>")
+            note.setWordWrap(True)
+            note.setStyleSheet("color: palette(placeholderText); font-size: 10px;")
+            self._result_grid.addWidget(note, row_offset, 0, 1, 2)
 
         self._tabs.setCurrentIndex(0)
 
         if _HAS_PG and self._night_plot is not None:
             self._build_night_curve(sw, sh, px, tol)
+
+    def _sample_night_exposures(self, sw: float, sh: float,
+                                 px: float, tol: float) -> list | None:
+        """
+        Sample max exposure every 10 minutes during astronomical night
+        using the stored RA/Dec + date ephemeris.
+
+        Returns a list of exposure values (seconds, uncapped) during the
+        astronomical night window, or None if ephemeris data is unavailable.
+        """
+        if None in (self._ra_deg, self._dec_deg,
+                    self._date_str, self._tz_name):
+            return None
+
+        try:
+            import pytz
+            from datetime import datetime
+            from astropy import units as u
+            from astropy.coordinates import (SkyCoord, EarthLocation,
+                                              AltAz, get_sun)
+            from astropy.time import Time
+
+            local_tz = pytz.timezone(self._tz_name)
+            naive    = datetime.strptime(self._date_str, "%Y-%m-%d")
+            t_start  = Time(local_tz.localize(
+                datetime(naive.year, naive.month, naive.day, 12, 0)))
+            loc      = EarthLocation(lat=self._lat * u.deg,
+                                     lon=self._lon * u.deg,
+                                     height=0 * u.m)
+
+            # 144 samples = one every 10 minutes over 24 hours
+            n     = 144
+            times = t_start + np.linspace(0, 24, n) * u.hour
+            frame = AltAz(obstime=times, location=loc)
+
+            obj_coord = SkyCoord(ra=self._ra_deg * u.deg,
+                                 dec=self._dec_deg * u.deg)
+            altaz_arr = obj_coord.transform_to(frame)
+            obj_alts  = altaz_arr.alt.deg
+            obj_azs   = altaz_arr.az.deg
+            sun_alts  = get_sun(times).transform_to(frame).alt.deg
+
+            samples = []
+            for i in range(n):
+                # Only sample during astronomical night while target is up
+                if sun_alts[i] >= -18.0 or obj_alts[i] < 0.0:
+                    continue
+                alt_i = min(float(obj_alts[i]), 89.9)
+                az_i  = float(obj_azs[i])
+                r     = max_exposure_seconds(self._lat, az_i, alt_i,
+                                              sw, sh, px,
+                                              max_corner_pixels=tol)
+                samples.append(r["t_max_sec"])
+
+            return samples if samples else None
+
+        except Exception:
+            return None
 
     # ── Night exposure curve ───────────────────────────────────────────────
 
@@ -498,8 +618,11 @@ class AltAzFieldRotationDialog(QDialog):
             self._night_plot_hint.setText(f"Could not compute night curve: {e}")
             return
 
-        # ── Compute max exposure at each timestep — hard cap 300 s ───────────
-        HARD_CAP  = 300.0   # meaningful ceiling: anything above ~5 min is "go for it"
+        # ── Compute max exposure at each timestep — hard cap 120 s ───────────
+        # 120 s is the practical ceiling: "no rotation" at due E/W is
+        # instantaneous — after 2 minutes the azimuth has drifted enough
+        # that rotation has accumulated significantly on a large chip.
+        HARD_CAP  = 120.0
         exp_curve = np.zeros(n, dtype=float)
         above     = obj_alts >= 0.0
 
@@ -515,8 +638,7 @@ class AltAzFieldRotationDialog(QDialog):
             exp_curve[i] = min(r["t_max_sec"], HARD_CAP)
 
         # ── Dynamic Y ceiling: night peak rounded up to a clean number ───────
-        # Always <= 300 s.  Using the astronomical-night peak means a target
-        # that peaks at 4 s gets a 5 s axis, not a 300 s axis with a flat line.
+        # Always <= 120 s.
         astro_mask  = sun_alts < -18
         night_valid = astro_mask & above
         if np.any(night_valid):
@@ -526,10 +648,9 @@ class AltAzFieldRotationDialog(QDialog):
         else:
             night_peak = 10.0   # fallback — target never rises
 
-        # Round up to the nearest clean number with ~25% headroom, max 300
         raw_ceil = night_peak * 1.25
-        nice_levels = [5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 240, 300]
-        CAP = next((v for v in nice_levels if v >= raw_ceil), 300)
+        nice_levels = [5, 10, 15, 20, 30, 45, 60, 90, 120]
+        CAP = next((v for v in nice_levels if v >= raw_ceil), 120)
 
         # ── Twilight shading — same logic as ObjectVisibilityDialog ───────
         def _sun_x_at_threshold(threshold):
@@ -572,10 +693,10 @@ class AltAzFieldRotationDialog(QDialog):
 
         # ── Severity threshold lines — only draw ones inside visible range ──
         for y_val, color, label in [
-            (120, (80,  200,  80), "120 s"),
-            ( 60, (180, 180,  40),  "60 s"),
-            ( 30, (200, 120,  40),  "30 s"),
-            ( 10, (200,  40,  40),  "10 s"),
+            (60, (80,  200,  80), "60 s"),
+            (20, (180, 180,  40), "20 s"),
+            (10, (200, 120,  40), "10 s"),
+            ( 5, (200,  40,  40),  "5 s"),
         ]:
             if y_val > CAP:
                 continue
@@ -611,7 +732,7 @@ class AltAzFieldRotationDialog(QDialog):
         pw.getAxis("bottom").setTicks([ticks])
         pw.setLabel("bottom", "Local Time (h)")
 
-        cap_str = f"{int(CAP)} s" if CAP < 300 else "300 s (max)"
+        cap_str = f"{int(CAP)} s" if CAP < 120 else "120 s (max)"
         pw.setLabel("left",
                     f"Max Exposure (s)  [{tol:.0f} px tolerance, cap {cap_str}]")
 
