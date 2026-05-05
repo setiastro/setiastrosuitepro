@@ -740,6 +740,7 @@ class _AnalyzeWorker(QThread):
     progress = pyqtSignal(int, int, str)   # done, total, phase
     finished_ok = pyqtSignal(object)
     failed = pyqtSignal(str)
+    log_msg = pyqtSignal(str) 
 
     def __init__(self, cfg: SERStackConfig, *, debayer: bool, to_rgb: bool, ref_mode: str, ref_count: int):
         super().__init__()
@@ -756,6 +757,9 @@ class _AnalyzeWorker(QThread):
             def cb(done: int, total: int, phase: str):
                 self.progress.emit(int(done), int(total), str(phase))
 
+            def log(msg: str):
+                self.log_msg.emit(str(msg))
+
             ar = analyze_ser(
                 self.cfg,
                 debayer=self.debayer,
@@ -764,6 +768,7 @@ class _AnalyzeWorker(QThread):
                 ref_mode=self.ref_mode,
                 ref_count=self.ref_count,
                 progress_cb=cb,
+                log_cb=log,             # ← NEW
             )
             self.finished_ok.emit(ar)
         except Exception as e:
@@ -793,12 +798,11 @@ class _StackWorker(QThread):
                 roi=self.cfg.roi,
                 debayer=self.debayer,
                 to_rgb=self.to_rgb,
-                bayer_pattern=getattr(self.cfg, "bayer_pattern", None),  # ✅ add this
+                bayer_pattern=getattr(self.cfg, "bayer_pattern", None),
                 keep_percent=float(getattr(self.cfg, "keep_percent", 20.0)),
                 track_mode=str(getattr(self.cfg, "track_mode", "planetary")),
                 surface_anchor=getattr(self.cfg, "surface_anchor", None),
                 analysis=self.analysis,
-                local_warp=True,
                 progress_cb=cb,
                 drizzle_scale=float(getattr(self.cfg, "drizzle_scale", 1.0)),
                 drizzle_pixfrac=float(getattr(self.cfg, "drizzle_pixfrac", 0.80)),
@@ -845,6 +849,50 @@ class _ReAlignWorker(QThread):
         except Exception as e:
             self.failed.emit(f"{e}\n\n{traceback.format_exc()}")
 
+class _ExportAlignedWorker(QThread):
+    progress = pyqtSignal(int, int, str)
+    finished_ok = pyqtSignal(str)       # out_path
+    failed = pyqtSignal(str)
+
+    def __init__(self, cfg: SERStackConfig, analysis: AnalyzeResult, out_path: str, *,
+                 debayer: bool, frame_indices=None,
+                 apply_field_rotation: bool = True,
+                 apply_planet_derotation: bool = True,
+                 apply_local_warp: bool = True):
+        super().__init__()
+        self.cfg = cfg
+        self.analysis = analysis
+        self.out_path = out_path
+        self.debayer = bool(debayer)
+        self.frame_indices = frame_indices
+        self.apply_field_rotation = apply_field_rotation
+        self.apply_planet_derotation = apply_planet_derotation
+        self.apply_local_warp = apply_local_warp
+
+    def run(self):
+        try:
+            from setiastro.saspro.ser_stacker import export_aligned_ser
+
+            def cb(done: int, total: int, phase: str):
+                self.progress.emit(int(done), int(total), str(phase))
+
+            export_aligned_ser(
+                self.cfg.source,
+                self.out_path,
+                self.analysis,
+                roi=self.cfg.roi,
+                debayer=self.debayer,
+                to_rgb=False,
+                bayer_pattern=getattr(self.cfg, "bayer_pattern", None),
+                frame_indices=self.frame_indices,
+                apply_field_rotation=self.apply_field_rotation,
+                apply_planet_derotation=self.apply_planet_derotation,
+                apply_local_warp=self.apply_local_warp,
+                progress_cb=cb,
+            )
+            self.finished_ok.emit(self.out_path)
+        except Exception as e:
+            self.failed.emit(f"{e}\n\n{traceback.format_exc()}")
 
 class SERStackerDialog(QDialog):
     """
@@ -1197,10 +1245,30 @@ class SERStackerDialog(QDialog):
         self.cmb_ap_scale.addItems(["Single", "Multi-scale (2× / 1× / ½×)"])
         fA.addRow("AP scale", self.cmb_ap_scale)
 
-        self.chk_ssd_bruteforce = QCheckBox("SSD refine: brute force (slower, can rescue tough data)", self)
+        self.chk_ssd_bruteforce = QCheckBox(
+            "SSD refine: brute force (slower, can rescue tough data)", self)
         self.chk_ssd_bruteforce.setChecked(False)
         fA.addRow("", self.chk_ssd_bruteforce)
 
+        self.chk_field_rotation = QCheckBox(
+            "Correct field rotation", self)
+        self.chk_field_rotation.setChecked(False)
+        self.chk_field_rotation.setToolTip(
+            "After translation alignment, search for a small rotation that further\n"
+            "reduces residual error. Useful for alt-az mounts without a field rotator.\n"
+            "Rotation center: planet centroid (planetary) or surface anchor (surface).\n"
+            "Searches up to the max rotation set below, with a hysteresis quality check."
+        )
+        fA.addRow("", self.chk_field_rotation)
+        self.spin_field_rot_max = QDoubleSpinBox(self)
+        self.spin_field_rot_max.setRange(1.0, 45.0)
+        self.spin_field_rot_max.setDecimals(1)
+        self.spin_field_rot_max.setSingleStep(1.0)
+        self.spin_field_rot_max.setValue(10.0)
+        self.spin_field_rot_max.setToolTip("Maximum field rotation to search for (degrees). Increase for longer clips or faster mounts.")
+        self.spin_field_rot_max.setEnabled(False)
+
+        fA.addRow("Max rotation (°)", self.spin_field_rot_max)
         fA.addRow("AP size (px)", self.spin_ap_size)
         fA.addRow("AP spacing (px)", self.spin_ap_spacing)
 
@@ -1210,13 +1278,19 @@ class SERStackerDialog(QDialog):
         row = QHBoxLayout()
         self.btn_analyze = QPushButton("(1) Analyze", self)
         self.btn_analyze.setEnabled(True)
-        self.btn_blink = QPushButton("(3) Blink Keepers", self)   # ✅ new
-        self.btn_stack = QPushButton("(4) Stack Now", self)
+        self.btn_blink = QPushButton("(3) Blink Keepers", self)
+        self.btn_blink.setEnabled(False)
+        self.btn_export_aligned = QPushButton("(4) Export Aligned SER…", self)   # ← NEW
+        self.btn_export_aligned.setEnabled(False)                                  # ← NEW
+        self.btn_stack = QPushButton("(5) Stack Now", self)
+        self.btn_stack.setEnabled(False)
         self.btn_close = QPushButton("Close", self)
 
         row.addWidget(self.btn_analyze)
         row.addStretch(1)
-        row.addWidget(self.btn_blink) 
+        row.addWidget(self.btn_blink)
+        row.addStretch(1)
+        row.addWidget(self.btn_export_aligned)                                     # ← NEW
         row.addStretch(1)
         row.addWidget(self.btn_stack)
         row.addWidget(self.btn_close)
@@ -1288,7 +1362,9 @@ class SERStackerDialog(QDialog):
         self.btn_set_disk.clicked.connect(self._set_derotation_disk)
         self.chk_derotate.toggled.connect(lambda _: self._update_derot_ui())
         self.spin_derot_rate.valueChanged.connect(lambda _: self._update_derot_ui())
-
+        self.chk_field_rotation.toggled.connect(
+            lambda checked: self.spin_field_rot_max.setEnabled(checked)
+        )
         # Keep % edits update the cutoff line
         self.spin_keep.valueChanged.connect(self._update_graph_cutoff)
         def _apply_derot_preset():
@@ -1314,7 +1390,7 @@ class SERStackerDialog(QDialog):
 
         self.cmb_derot_planet.currentIndexChanged.connect(lambda _=None: _apply_derot_preset())
         self.chk_derot_reverse.toggled.connect(lambda _=None: _apply_derot_preset())
-
+        self.btn_export_aligned.clicked.connect(self._export_aligned_clicked)  
         # Clicking on the graph updates Keep %
         def _on_graph_keep_changed(k: int, total: int):
             total = max(1, int(total))
@@ -1383,6 +1459,8 @@ class SERStackerDialog(QDialog):
                 self.btn_stack.setEnabled(False)
                 self.btn_analyze.setEnabled(False)
                 self.btn_edit_aps.setEnabled(False)
+                self.btn_blink.setEnabled(False)
+                self.btn_export_aligned.setEnabled(False)
 
                 self._worker_realign = _ReAlignWorker(cfg, self._analysis, debayer=bool(self.chk_debayer.isChecked()), to_rgb=False)
                 self._worker_realign.progress.connect(self._on_analyze_progress)  # reuse progress UI
@@ -1406,10 +1484,119 @@ class SERStackerDialog(QDialog):
         self.btn_stack.setEnabled(True)
         self.btn_analyze.setEnabled(True)
         self.btn_edit_aps.setEnabled(True)
+        self.btn_blink.setEnabled(True)
         self.btn_close.setEnabled(True)
+        self.btn_export_aligned.setEnabled(True)
 
         self._append_log("Re-align done (dx/dy/conf updated from APs).")
 
+    def _export_aligned_clicked(self):
+        if self._analysis is None:
+            return
+
+        cfg = self._make_cfg()
+        N = int(self._analysis.frames_total)
+
+        # Ask: all frames or keep% only
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QRadioButton, QDialogButtonBox, QFileDialog
+        sel_dlg = QDialog(self)
+        sel_dlg.setWindowTitle("Export Aligned SER")
+        vl = QVBoxLayout(sel_dlg)
+        rb_all = QRadioButton(f"All frames ({N})", sel_dlg)
+        keep_k = max(1, min(N, int(round(N * float(self.spin_keep.value()) / 100.0))))
+        rb_keep = QRadioButton(f"Keep % only ({keep_k} frames)", sel_dlg)
+        rb_all.setChecked(True)
+        from PyQt6.QtWidgets import QCheckBox as _QCB
+        chk_field_rot = _QCB("Apply field rotation correction", sel_dlg)
+        chk_field_rot.setChecked(bool(getattr(self, "chk_field_rotation", None) and self.chk_field_rotation.isChecked()))
+        chk_planet_derot = _QCB("Apply planet axial derotation", sel_dlg)
+        chk_planet_derot.setChecked(bool(getattr(self._analysis, "planet_derotate", False)))
+        chk_local_warp = _QCB("Apply local AP warp", sel_dlg)
+        chk_local_warp.setChecked(True)
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, sel_dlg)
+        bb.accepted.connect(sel_dlg.accept)
+        bb.rejected.connect(sel_dlg.reject)
+        for w in (rb_all, rb_keep, chk_field_rot, chk_planet_derot, chk_local_warp, bb):
+            vl.addWidget(w)
+        if sel_dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        frame_indices = None
+        if rb_keep.isChecked():
+            order = np.asarray(self._analysis.order, np.int32)
+            frame_indices = order[:keep_k].tolist()
+
+        # Pick output path
+        src = self._source
+        if isinstance(src, str) and src:
+            default_dir = os.path.dirname(src)
+            default_name = os.path.splitext(os.path.basename(src))[0] + "_aligned.ser"
+        else:
+            default_dir = ""
+            default_name = "aligned.ser"
+
+        out_path, _ = QFileDialog.getSaveFileName(
+            self, "Save Aligned SER",
+            os.path.join(default_dir, default_name),
+            "SER Videos (*.ser)"
+        )
+        if not out_path:
+            return
+        if not out_path.lower().endswith(".ser"):
+            out_path += ".ser"
+
+        self.btn_export_aligned.setEnabled(False)
+        self.btn_analyze.setEnabled(False)
+        self.btn_stack.setEnabled(False)
+        self.btn_close.setEnabled(False)
+        self.lbl_prog.setVisible(True)
+        self.prog.setVisible(True)
+        self.prog.setRange(0, 100)
+        self.prog.setValue(0)
+        self.lbl_prog.setText("Exporting aligned SER…")
+        self._append_log(f"Exporting aligned SER → {os.path.basename(out_path)}")
+
+        self._worker_export = _ExportAlignedWorker(
+            cfg, self._analysis, out_path,
+            debayer=bool(self.chk_debayer.isChecked()),
+            frame_indices=frame_indices,
+            apply_field_rotation=bool(chk_field_rot.isChecked()),
+            apply_planet_derotation=bool(chk_planet_derot.isChecked()),
+            apply_local_warp=bool(chk_local_warp.isChecked()),
+        )
+        self._worker_export.progress.connect(self._on_analyze_progress)
+        self._worker_export.finished_ok.connect(self._on_export_aligned_ok)
+        self._worker_export.failed.connect(self._on_export_aligned_fail)
+        self._worker_export.start()
+
+    def _on_export_aligned_ok(self, out_path: str):
+        self.prog.setVisible(False)
+        self.lbl_prog.setVisible(False)
+        self.btn_export_aligned.setEnabled(True)
+        self.btn_analyze.setEnabled(True)
+        self.btn_stack.setEnabled(True)
+        self.btn_close.setEnabled(True)
+        self._append_log(f"Export done: {os.path.basename(out_path)}")
+        self._append_log("Tip: load this SER with Tracking=Off for fast restacking.")
+        QMessageBox.information(self, "Export Aligned SER",
+            f"Saved aligned SER:\n{out_path}\n\n"
+            "To restack this file quickly:\n"
+            "  1. Open it in the Planetary Stacker\n"
+            "  2. Set Tracking = Off\n"
+            "  3. Run Analyze (fast — no shift computation)\n"
+            "  4. Stack Now\n\n"
+            "Alignment is already baked in — Analyze just scores quality\n"
+            "and places AP points for the local warp.")
+        
+    def _on_export_aligned_fail(self, msg: str):
+        self.prog.setVisible(False)
+        self.lbl_prog.setVisible(False)
+        self.btn_export_aligned.setEnabled(True)
+        self.btn_analyze.setEnabled(True)
+        self.btn_stack.setEnabled(True)
+        self.btn_close.setEnabled(True)
+        self._append_log("EXPORT FAILED:")
+        self._append_log(msg)
 
 
     def _append_log(self, s: str):
@@ -1469,6 +1656,8 @@ class SERStackerDialog(QDialog):
         self.btn_analyze.setEnabled(False)
         self.btn_stack.setEnabled(False)
         self.btn_close.setEnabled(False)
+        self.btn_blink.setEnabled(False)
+        self.btn_export_aligned.setEnabled(False)
         self.lbl_prog.setVisible(True)
         self.lbl_prog.setText("Analyzing…")
         self.prog.setVisible(True)
@@ -1485,6 +1674,7 @@ class SERStackerDialog(QDialog):
         self._worker_analyze.finished_ok.connect(self._on_analyze_ok)
         self._worker_analyze.failed.connect(self._on_analyze_fail)
         self._worker_analyze.progress.connect(self._on_analyze_progress)
+        self._worker_analyze.log_msg.connect(self._append_log) 
         self._worker_analyze.start()
 
 
@@ -1509,6 +1699,7 @@ class SERStackerDialog(QDialog):
         self.btn_stack.setEnabled(True)
         self.btn_blink.setEnabled(True)
         self.btn_close.setEnabled(True)
+        self.btn_export_aligned.setEnabled(True)     
 
         self._append_log(f"Analyze done. frames={ar.frames_total}  track={ar.track_mode}")
         self._append_log(f"Ref: {ar.ref_mode} (N={ar.ref_count})")
@@ -1577,7 +1768,6 @@ class SERStackerDialog(QDialog):
             self._append_log(f"Blink Keepers failed: {e}")
             self._append_log(tb)
 
-
     def _make_cfg(self) -> SERStackConfig:
         scale_text = self.cmb_drizzle.currentText()
         if "1.5" in scale_text:
@@ -1607,10 +1797,19 @@ class SERStackerDialog(QDialog):
             ap_min_mean=float(self.spin_ap_min.value()),
             ap_multiscale=(self.cmb_ap_scale.currentIndex() == 1),
             ssd_refine_bruteforce=bool(
-                getattr(self, "chk_ssd_bruteforce", None) and self.chk_ssd_bruteforce.isChecked()
+                getattr(self, "chk_ssd_bruteforce", None)
+                and self.chk_ssd_bruteforce.isChecked()
             ),
+            correct_field_rotation=bool(
+                getattr(self, "chk_field_rotation", None)
+                and self.chk_field_rotation.isChecked()
+            ),
+            field_rotation_max_deg=float(
+                getattr(self, "spin_field_rot_max", None).value()
+                if getattr(self, "spin_field_rot_max", None) else 10.0
+            ),
+            field_rotation_step_deg=0.5,
 
-            # ✅ NEW: planetary centroid knobs (add UI controls or set defaults)
             planet_smooth_sigma=1.5,
             planet_simple_thresh=self._planet_simple_thresh,
             planet_use_norm=self._planet_use_norm,
@@ -1618,19 +1817,22 @@ class SERStackerDialog(QDialog):
                 getattr(self, "chk_center_planet", None)
                 and self.chk_center_planet.isChecked()
             ),
-            derotate_enabled=bool(getattr(self, "chk_derotate", None) and self.chk_derotate.isChecked()),
-            derotate_deg_per_min=float(getattr(self, "spin_derot_rate", None).value()) if getattr(self, "spin_derot_rate", None) else 0.0,
+            derotate_enabled=bool(
+                getattr(self, "chk_derotate", None) and self.chk_derotate.isChecked()
+            ),
+            derotate_deg_per_min=float(
+                getattr(self, "spin_derot_rate", None).value()
+            ) if getattr(self, "spin_derot_rate", None) else 0.0,
             derotate_center=(float(self._derot["cx"]), float(self._derot["cy"])) if self._derot else None,
             derotate_radius=float(self._derot["r"]) if self._derot else None,
-            derotate_overlay_mode=str(self._derot.get("overlay_mode","none")) if self._derot else "none",
+            derotate_overlay_mode=str(self._derot.get("overlay_mode", "none")) if self._derot else "none",
             derotate_rings=(
-                float(self._derot.get("ring_pa",0.0)),
-                float(self._derot.get("ring_tilt",0.35)),
-                float(self._derot.get("ring_outer",2.2)),
-                float(self._derot.get("ring_inner",1.25)),
+                float(self._derot.get("ring_pa", 0.0)),
+                float(self._derot.get("ring_tilt", 0.35)),
+                float(self._derot.get("ring_outer", 2.2)),
+                float(self._derot.get("ring_inner", 1.25)),
             ) if self._derot else None,
 
-            # drizzle
             drizzle_scale=float(drizzle_scale),
             drizzle_pixfrac=float(self.spin_pixfrac.value()),
             drizzle_kernel=str(drizzle_kernel),
@@ -1700,7 +1902,13 @@ class SERStackerDialog(QDialog):
         if mode == "surface" and self._surface_anchor is None:
             self._append_log("Surface mode requires an anchor. Set it in the viewer (Ctrl+Shift+drag).")
             return
-
+        if self._analysis is None:
+            QMessageBox.warning(
+                self, "Analyze Required",
+                "Please run Analyze first.\n\n"
+                "Even with Tracking=Off, Analyze is needed to score frame quality\n"
+                "and place alignment points for the local warp.")
+            return
         cfg = self._make_cfg()
         cfg.keep_mask = self._keep_mask
         debayer = bool(self.chk_debayer.isChecked())
@@ -1710,7 +1918,9 @@ class SERStackerDialog(QDialog):
         self.btn_stack.setEnabled(False)
         self.btn_close.setEnabled(False)
         self.btn_analyze.setEnabled(False)
+        self.btn_blink.setEnabled(False)
         self.btn_edit_aps.setEnabled(False)
+        self.btn_export_aligned.setEnabled(False)
         scale_text = self.cmb_drizzle.currentText()
         if "1.5" in scale_text:
             drizzle_scale = 1.5
@@ -2067,7 +2277,6 @@ class BlinkKeepersDialog(QDialog):
 
         return (v * 255.0 + 0.5).astype(np.uint8)
 
-    
     def _show_index(self, i: int):
         if self.keepers.size == 0:
             return
@@ -2084,10 +2293,35 @@ class BlinkKeepersDialog(QDialog):
             bayer_pattern=getattr(self, "_bayer_pattern", None),
         ).astype(np.float32, copy=False)
 
-        # ✅ apply analyze global alignment (same as stack_ser does first)
+        # Apply global translation
         gdx = float(self.analysis.dx[int(fi)]) if (getattr(self.analysis, "dx", None) is not None) else 0.0
         gdy = float(self.analysis.dy[int(fi)]) if (getattr(self.analysis, "dy", None) is not None) else 0.0
         img = _shift_image(img, gdx, gdy)
+
+        # Apply field rotation correction if present
+        ang_i = 0.0
+        if getattr(self.analysis, "ang", None) is not None and self.analysis.ang is not None:
+            ang_i = float(self.analysis.ang[int(fi)])
+
+        if abs(ang_i) > 1e-6:
+            track_mode = getattr(self.analysis, "track_mode", "planetary")
+            ref_img = getattr(self.analysis, "ref_image", None)
+
+            if track_mode == "planetary":
+                rot_cx = float(getattr(self.analysis, "ref_cx", img.shape[1] * 0.5))
+                rot_cy = float(getattr(self.analysis, "ref_cy", img.shape[0] * 0.5))
+            else:
+                # surface: use anchor center or image center
+                rot_cx = float(getattr(self.analysis, "surface_anchor_rot_cx", None) or img.shape[1] * 0.5)
+                rot_cy = float(getattr(self.analysis, "surface_anchor_rot_cy", None) or img.shape[0] * 0.5)
+
+            import cv2 as _cv2
+            H, W = img.shape[:2]
+            M = _cv2.getRotationMatrix2D((float(rot_cx), float(rot_cy)), float(ang_i), 1.0)
+            img = _cv2.warpAffine(img, M, (W, H),
+                                  flags=_cv2.INTER_LINEAR,
+                                  borderMode=_cv2.BORDER_CONSTANT,
+                                  borderValue=0)
 
         # display mono channel
         if img.ndim == 3:
@@ -2095,11 +2329,11 @@ class BlinkKeepersDialog(QDialog):
 
         u8 = self._disp_u8(img, brightness=getattr(self, "_preview_brightness", 0.0))
 
-
-        # ✅ memmap/FITS-safe: guarantee tight row stride for bytesPerLine=w
         if not u8.flags["C_CONTIGUOUS"]:
             u8 = np.ascontiguousarray(u8)
 
+        from PyQt6.QtGui import QImage, QPixmap
+        from PyQt6.QtCore import Qt
         h, w = u8.shape
         qimg = QImage(u8.data, w, h, w, QImage.Format.Format_Grayscale8).copy()
         pm = QPixmap.fromImage(qimg)

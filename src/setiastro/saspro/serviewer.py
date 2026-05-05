@@ -339,22 +339,44 @@ class SERViewer(QDialog):
         # Planetary detection controls
         self.sld_simple_thresh = QSlider(Qt.Orientation.Horizontal, self)
         self.sld_simple_thresh.setRange(0, 100)
-        self.sld_simple_thresh.setValue(25)
+        self.sld_simple_thresh.setValue(5)
         self.sld_simple_thresh.setToolTip(
             "Brightness threshold (0–1). Pixels above this are used to find the planet center."
         )
-        self.lbl_simple_thresh = QLabel("0.25")
-        self.lbl_simple_thresh.setFixedWidth(36)
 
         def _on_simple_thresh_changed(v):
             self.lbl_simple_thresh.setText(f"{v/100:.2f}")
             self._refresh()
         self.sld_simple_thresh.valueChanged.connect(_on_simple_thresh_changed)
 
+        self.spin_simple_thresh = QDoubleSpinBox(self)
+        self.spin_simple_thresh.setRange(0.00, 1.00)
+        self.spin_simple_thresh.setDecimals(2)
+        self.spin_simple_thresh.setSingleStep(0.01)
+        self.spin_simple_thresh.setValue(0.05)
+        self.spin_simple_thresh.setFixedWidth(64)
+        self.spin_simple_thresh.setToolTip("Brightness threshold (0–1)")
+
+        def _on_thresh_slider(v):
+            self.spin_simple_thresh.blockSignals(True)
+            self.spin_simple_thresh.setValue(v / 100.0)
+            self.spin_simple_thresh.blockSignals(False)
+            self._refresh()
+
+        def _on_thresh_spin(v):
+            self.sld_simple_thresh.blockSignals(True)
+            self.sld_simple_thresh.setValue(int(round(v * 100)))
+            self.sld_simple_thresh.blockSignals(False)
+            self._refresh()
+
+        self.sld_simple_thresh.valueChanged.disconnect()
+        self.sld_simple_thresh.valueChanged.connect(_on_thresh_slider)
+        self.spin_simple_thresh.valueChanged.connect(_on_thresh_spin)
+
         row_thresh = QHBoxLayout()
         row_thresh.setContentsMargins(0, 0, 0, 0)
         row_thresh.addWidget(self.sld_simple_thresh, 1)
-        row_thresh.addWidget(self.lbl_simple_thresh)
+        row_thresh.addWidget(self.spin_simple_thresh)
         w_thresh = QWidget()
         w_thresh.setLayout(row_thresh)
 

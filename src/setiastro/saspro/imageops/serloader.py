@@ -13,7 +13,11 @@ import time
 from PyQt6 import sip
 
 import cv2
-
+if cv2 is not None:
+    try:
+        cv2.setLogLevel(0)  # 0 = silent
+    except Exception:
+        pass
 
 from PIL import Image
 
@@ -1174,14 +1178,7 @@ class AVIReader(PlanetaryFrameSource):
 # -----------------------------
 # Image-sequence reader
 # -----------------------------
-
 def _imread_any(path: str) -> np.ndarray:
-    """
-    Read PNG/JPG/TIF/FITS/etc into numpy.
-    Returns:
-      - grayscale: (H,W)
-      - color:     (H,W,3) in RGB when applicable
-    """
     p = os.fspath(path)
     ext = os.path.splitext(p)[1].lower()
 
@@ -1189,44 +1186,62 @@ def _imread_any(path: str) -> np.ndarray:
     if ext in (".fit", ".fits"):
         try:
             from astropy.io import fits
-
             data = fits.getdata(p, memmap=False)
             if data is None:
                 raise ValueError("Empty FITS data.")
-
             arr = np.asarray(data)
-
-            # Common shapes:
-            # (H,W) -> mono
-            # (C,H,W) -> convert to (H,W,C)
-            # (H,W,C) -> already fine
             if arr.ndim == 3:
-                # If first axis is small (1/3/4), assume CHW
                 if arr.shape[0] in (1, 3, 4) and arr.shape[1] > 8 and arr.shape[2] > 8:
-                    arr = np.moveaxis(arr, 0, -1)  # CHW -> HWC
-
-                # If now HWC and has alpha, drop it
+                    arr = np.moveaxis(arr, 0, -1)
                 if arr.shape[-1] >= 4:
                     arr = arr[..., :3]
-
-                # If single channel, squeeze
                 if arr.shape[-1] == 1:
                     arr = arr[..., 0]
-
             return arr
         except Exception as e:
             raise RuntimeError(f"Failed to read FITS: {p}\n{e}")
 
     # Prefer cv2 if available
     if cv2 is not None:
-        img = cv2.imdecode(np.fromfile(p, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+        # Attempt to suppress C-level stderr (libpng CRC warnings etc.)
+        # Falls back silently if fd redirection isn't available (frozen env, bad fd, etc.)
+        _saved_fd = None
+        _devnull_fd = None
+        try:
+            _devnull_fd = os.open(os.devnull, os.O_WRONLY)
+            _saved_fd = os.dup(2)
+            os.dup2(_devnull_fd, 2)
+        except OSError:
+            # Can't redirect stderr — just read without suppression
+            if _devnull_fd is not None:
+                try:
+                    os.close(_devnull_fd)
+                except OSError:
+                    pass
+            _saved_fd = None
+            _devnull_fd = None
+
+        try:
+            img = cv2.imdecode(np.fromfile(p, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+        finally:
+            if _saved_fd is not None:
+                try:
+                    os.dup2(_saved_fd, 2)
+                except OSError:
+                    pass
+                try:
+                    os.close(_saved_fd)
+                except OSError:
+                    pass
+            if _devnull_fd is not None:
+                try:
+                    os.close(_devnull_fd)
+                except OSError:
+                    pass
+
         if img is not None:
-            # cv2 gives:
-            # - gray: HxW
-            # - color: HxWx3 (BGR)
-            # - sometimes HxWx4 (BGRA)
             if img.ndim == 3 and img.shape[2] >= 3:
-                img = img[..., :3]  # drop alpha if present
+                img = img[..., :3]
                 img = img[..., ::-1].copy()  # BGR -> RGB
             return img
 
@@ -1234,10 +1249,8 @@ def _imread_any(path: str) -> np.ndarray:
     if Image is None:
         raise RuntimeError("Neither OpenCV nor PIL are available to read images.")
     im = Image.open(p)
-    # Preserve 16-bit if possible; PIL handles many TIFFs.
     if im.mode in ("I;16", "I;16B", "I"):
-        arr = np.array(im)
-        return arr
+        return np.array(im)
     if im.mode in ("L",):
         return np.array(im)
     im = im.convert("RGB")

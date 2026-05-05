@@ -35,6 +35,8 @@ try:
 except ImportError:
     _HAS_PG = False
 
+from setiastro.saspro.altaz_field_rotation import AltAzFieldRotationDialog
+
 # ---------------------------------------------------
 #  paths / globals
 # ---------------------------------------------------
@@ -2928,6 +2930,11 @@ class WhatsInMySkyDialog(QDialog):
         horizon_btn.setFixedHeight(28)
         toolbar.addWidget(horizon_btn)
 
+        fieldrot_btn = QPushButton("🔄 Alt/AzField Rotation…")
+        fieldrot_btn.clicked.connect(self._open_field_rotation)
+        fieldrot_btn.setFixedHeight(28)
+        toolbar.addWidget(fieldrot_btn)
+
         toolbar_frame = QFrame()
         toolbar_frame.setFrameShape(QFrame.Shape.NoFrame)
         toolbar_frame.setStyleSheet("border-bottom: 1px solid palette(shadow);")
@@ -3135,6 +3142,120 @@ class WhatsInMySkyDialog(QDialog):
         dlg.horizon_changed.connect(self._on_horizon_changed)
         dlg.exec()
 
+
+    def _open_field_rotation(self):
+        """
+        Open the Alt/Az Field Rotation Calculator.
+ 
+        If a row is selected in the results tree, pre-fills Alt, Az, RA, Dec,
+        date, timezone, and target name so the night curve renders immediately.
+        """
+        try:
+            lat = float(self.settings.value("latitude",  0.0))
+            lon = float(self.settings.value("longitude", 0.0))
+        except (TypeError, ValueError):
+            lat, lon = 0.0, 0.0
+ 
+        alt_prefill  = None
+        az_prefill   = None
+        ra_prefill   = None
+        dec_prefill  = None
+        name_prefill = None
+ 
+        sel = self.tree.selectedItems()
+        if sel:
+            item = sel[0]
+            try:
+                alt_prefill = float(item.text(3))   # column 3 = Altitude
+                az_prefill  = float(item.text(4))   # column 4 = Azimuth
+            except (ValueError, IndexError):
+                pass
+            try:
+                data = self._item_data(item)
+                if data:
+                    ra_prefill   = data["ra"]
+                    dec_prefill  = data["dec"]
+                    name_prefill = data.get("name", "")
+            except Exception:
+                pass
+ 
+        date_str = (self._observer.get("date")
+                    or self.date_entry.text().strip()
+                    or None)
+        tz_name  = (self._observer.get("tz")
+                    or self.timezone_combo.currentText()
+                    or None)
+ 
+        from setiastro.saspro.altaz_field_rotation import AltAzFieldRotationDialog
+        dlg = AltAzFieldRotationDialog(
+            lat=lat,
+            lon=lon,
+            alt=alt_prefill,
+            az=az_prefill,
+            ra_deg=ra_prefill,
+            dec_deg=dec_prefill,
+            date_str=date_str,
+            tz_name=tz_name,
+            target_name=name_prefill,
+            settings=self.settings,
+            parent=self,
+        )
+        dlg.show()
+ 
+    def _open_field_rotation_for(self, item):
+        """
+        Open the field rotation calculator pre-filled from a specific tree item.
+        Called from the context menu.
+        """
+        try:
+            lat = float(self.settings.value("latitude",  0.0))
+            lon = float(self.settings.value("longitude", 0.0))
+        except (TypeError, ValueError):
+            lat, lon = 0.0, 0.0
+ 
+        alt_prefill  = None
+        az_prefill   = None
+        ra_prefill   = None
+        dec_prefill  = None
+        name_prefill = None
+ 
+        try:
+            alt_prefill = float(item.text(3))
+            az_prefill  = float(item.text(4))
+        except (ValueError, IndexError):
+            pass
+        try:
+            data = self._item_data(item)
+            if data:
+                ra_prefill   = data["ra"]
+                dec_prefill  = data["dec"]
+                name_prefill = data.get("name", "")
+        except Exception:
+            pass
+ 
+        date_str = (self._observer.get("date")
+                    or self.date_entry.text().strip()
+                    or None)
+        tz_name  = (self._observer.get("tz")
+                    or self.timezone_combo.currentText()
+                    or None)
+ 
+        from setiastro.saspro.altaz_field_rotation import AltAzFieldRotationDialog
+        dlg = AltAzFieldRotationDialog(
+            lat=lat,
+            lon=lon,
+            alt=alt_prefill,
+            az=az_prefill,
+            ra_deg=ra_prefill,
+            dec_deg=dec_prefill,
+            date_str=date_str,
+            tz_name=tz_name,
+            target_name=name_prefill,
+            settings=self.settings,
+            parent=self,
+        )
+        dlg.show()
+
     # ── Context menu ──────────────────────────────────────────────────────
     def _show_context_menu(self, pos):
         item = self.tree.itemAt(pos)
@@ -3160,6 +3281,11 @@ class WhatsInMySkyDialog(QDialog):
         menu.addAction(act_simbad)
         menu.addAction(act_planets)
         menu.addAction(act_finder)
+
+        act_fieldrot = QAction("🔄  Field Rotation…", self)
+        menu.addAction(act_fieldrot)
+        act_fieldrot.triggered.connect(lambda: self._open_field_rotation_for(item))
+
         menu.addSeparator()
         menu.addAction(act_aladin)
         menu.addAction(act_astrobin)
