@@ -1008,45 +1008,45 @@ class SERStackerDialog(QDialog):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(10, 10, 10, 10)
         outer.setSpacing(8)
-
+ 
         # Split into two columns so we don't exceed monitor height:
         # Left: settings/analyze/actions/progress
         # Right: quality graph + log
         cols = QHBoxLayout()
         cols.setSpacing(10)
         outer.addLayout(cols, 1)
-
+ 
         left = QVBoxLayout()
         left.setSpacing(8)
         right = QVBoxLayout()
         right.setSpacing(8)
-
+ 
         cols.addLayout(left, 0)
         cols.addLayout(right, 1)
-
+ 
         # =========================
         # LEFT COLUMN
         # =========================
-
+ 
         # --- Stack Settings ---
         gb = QGroupBox("Stack Settings", self)
         form = QFormLayout(gb)
-
+ 
         self.cmb_track = QComboBox(self)
         self.cmb_track.addItems(["Planetary", "Surface", "Off"])
-
+ 
         self.spin_keep = QDoubleSpinBox(self)
         self.spin_keep.setRange(0.1, 100.0)
         self.spin_keep.setDecimals(1)
         self.spin_keep.setSingleStep(1.0)
         self.spin_keep.setValue(20.0)
-
+ 
         self.chk_debayer = QCheckBox("Debayer (Bayer SER)", self)
         self.chk_debayer.setChecked(True)
-
+ 
         self.lbl_anchor = QLabel("", self)
         self.lbl_anchor.setWordWrap(True)
-
+ 
         form.addRow("Tracking", self.cmb_track)
         form.addRow("Keep %", self.spin_keep)
         form.addRow("", self.chk_debayer)
@@ -1058,50 +1058,49 @@ class SERStackerDialog(QDialog):
             "frame position. Only available in Planetary tracking mode."
         )
         form.addRow("", self.chk_center_planet)
-
         form.addRow("Surface anchor", self.lbl_anchor)
-
+ 
         left.addWidget(gb, 0)
-
+ 
         # --- Drizzle ---
         gbD = QGroupBox("Drizzle", self)
         fD = QFormLayout(gbD)
-
+ 
         self.spin_pixfrac = QDoubleSpinBox(self)
         self.spin_pixfrac.setRange(0.30, 1.00)
         self.spin_pixfrac.setDecimals(2)
         self.spin_pixfrac.setSingleStep(0.05)
         self.spin_pixfrac.setValue(0.80)
-
+ 
         self.cmb_kernel = QComboBox(self)
         self.cmb_kernel.addItems(["Gaussian", "Circle", "Square"])
         self.cmb_kernel.setCurrentText("Gaussian")
-
+ 
         self.spin_sigma = QDoubleSpinBox(self)
         self.spin_sigma.setRange(0.00, 10.00)
         self.spin_sigma.setDecimals(2)
         self.spin_sigma.setSingleStep(0.05)
         self.spin_sigma.setValue(0.00)   # 0 = auto
         self.spin_sigma.setToolTip("Gaussian sigma in output pixels (0 = auto from pixfrac)")
-
+ 
         # scale row: combo + info button in same row
         scale_row = QHBoxLayout()
         scale_row.setContentsMargins(0, 0, 0, 0)
-
+ 
         self.cmb_drizzle = QComboBox(self)
         self.cmb_drizzle.addItems(["Off (1x)", "1.5x", "2x", "3x", "4x"])
-
+ 
         self.btn_drizzle_info = QToolButton(self)
         self.btn_drizzle_info.setText("?")
         self.btn_drizzle_info.setToolTip("Drizzle info")
         self.btn_drizzle_info.setFixedSize(22, 22)
-
+ 
         scale_row.addWidget(self.cmb_drizzle, 1)
         scale_row.addWidget(self.btn_drizzle_info, 0)
-
+ 
         scale_row_w = QWidget(self)
         scale_row_w.setLayout(scale_row)
-
+ 
         fD.addRow("Scale", scale_row_w)
         fD.addRow("Pixfrac", self.spin_pixfrac)
         fD.addRow("Kernel", self.cmb_kernel)
@@ -1110,23 +1109,22 @@ class SERStackerDialog(QDialog):
         lbl = fD.labelForField(self.cmb_kernel)
         if lbl:
             lbl.hide()
-
+ 
         self.lbl_kernel_info = QLabel("Advanced Gaussian Kernel Drizzling", self)
         self.lbl_kernel_info.setStyleSheet("color:#6a9fd8; font-style:italic; font-size:11px;")
-        fD.addRow("Kernel", self.lbl_kernel_info)            
+        fD.addRow("Kernel", self.lbl_kernel_info)
         fD.addRow("Sigma", self.spin_sigma)
-
+ 
         def _sync_drizzle_ui():
             t = self.cmb_drizzle.currentText()
             off = "Off" in t
             self.spin_pixfrac.setEnabled(not off)
             self.cmb_kernel.setEnabled(not off)
-
+ 
             k = self.cmb_kernel.currentText().lower()
             is_gauss = ("gaussian" in k)
             self.spin_sigma.setEnabled((not off) and is_gauss)
-
-            # sensible defaults when enabling drizzle
+ 
             if off:
                 return
             if "1.5" in t:
@@ -1135,11 +1133,11 @@ class SERStackerDialog(QDialog):
             elif "2" in t:
                 if abs(self.spin_pixfrac.value() - 0.70) < 1e-6 or self.spin_pixfrac.value() in (0.80,):
                     self.spin_pixfrac.setValue(0.70)
-
+ 
         self.cmb_drizzle.currentIndexChanged.connect(lambda _=None: _sync_drizzle_ui())
         self.cmb_kernel.currentIndexChanged.connect(lambda _=None: _sync_drizzle_ui())
         _sync_drizzle_ui()
-
+ 
         def _show_drizzle_info():
             QMessageBox.information(
                 self,
@@ -1149,46 +1147,50 @@ class SERStackerDialog(QDialog):
                 "• 1.5× drizzle ≈ 225% compute (2.25×)\n"
                 "• 2× drizzle ≈ 400% compute (4×)\n\n"
                 "• 3× drizzle ≈ 900% compute (9×)\n"
-                "• 4× drizzle ≈ 1600% compute (16×)\n\n"                
+                "• 4× drizzle ≈ 1600% compute (16×)\n\n"
                 "Pixfrac (drop shrink):\n"
-                "• Controls how large each input pixel’s “drop” is in the output grid.\n"
+                "• Controls how large each input pixel's 'drop' is in the output grid.\n"
                 "• Lower pixfrac = tighter drops (sharper, but can create gaps/noise).\n"
                 "• Higher pixfrac = smoother coverage (less noise, slightly softer).\n\n"
                 "When drizzle helps:\n"
                 "• Best when you are under-sampled and you have good alignment / many frames.\n"
                 "• Helps most with stable seeing and lots of usable frames.\n\n"
                 "When drizzle may NOT help:\n"
-                "• If you’re already well-sampled (common around f/10–f/20 depending on pixel size),\n"
+                "• If you're already well-sampled (common around f/10–f/20 depending on pixel size),\n"
                 "  gains can be minimal.\n"
                 "• If seeing is very poor, drizzle often just magnifies blur/noise.\n\n"
                 "Tip: Start with 1.5× and pixfrac ~0.8. If coverage looks sparse/noisy, increase pixfrac."
             )
 
+ 
         self.btn_drizzle_info.clicked.connect(_show_drizzle_info)
-
+ 
         left.addWidget(gbD, 0)
-        gbR = QGroupBox("Derotation", self)
+ 
+        # --- Planet Axial Rotation ---
+        gbR = QGroupBox("Planet Axial Rotation", self)
         fR = QFormLayout(gbR)
-
+ 
         self.chk_derotate = QCheckBox("Enable derotation", self)
         self.chk_derotate.setChecked(False)
         self.btn_set_disk = QPushButton("Set disk…", self)
         self.btn_set_disk.setEnabled(False)
-
+ 
         self.lbl_derot_disk = QLabel("(not set)", self)
         self.lbl_derot_disk.setWordWrap(True)
         self.lbl_derot_disk.setStyleSheet("color:#888;")
-
+ 
         fR.addRow("", self.chk_derotate)
         self.cmb_derot_planet = QComboBox(self)
         self.cmb_derot_planet.addItems(list(_PLANET_ROT_PRESETS_DEG_PER_MIN.keys()))
         self.cmb_derot_planet.setCurrentText("Custom…")
-
+ 
         self.chk_derot_reverse = QCheckBox("Reverse sign", self)
-        self.chk_derot_reverse.setToolTip("Flip direction if your camera orientation makes smearing worse with the default sign.")
-        # --- Derotation rate (deg/min) ---
+        self.chk_derot_reverse.setToolTip(
+            "Flip direction if your camera orientation makes smearing worse with the default sign.")
+ 
         self.spin_derot_rate = QDoubleSpinBox(self)
-        self.spin_derot_rate.setRange(-10.0, 10.0)    # plenty for planets; moon is ~0.00915 deg/min
+        self.spin_derot_rate.setRange(-10.0, 10.0)
         self.spin_derot_rate.setDecimals(6)
         self.spin_derot_rate.setSingleStep(0.001)
         self.spin_derot_rate.setValue(0.0)
@@ -1200,58 +1202,16 @@ class SERStackerDialog(QDialog):
         fR.addRow("Preset", self.cmb_derot_planet)
         fR.addRow("", self.chk_derot_reverse)
         fR.addRow("Rate (deg/min)", self.spin_derot_rate)
-
         fR.addRow("", self.btn_set_disk)
         fR.addRow("Disk", self.lbl_derot_disk)
-
+ 
         left.addWidget(gbR, 0)
-
-        # --- Analyze settings (no graph in left column anymore) ---
-        gbA = QGroupBox("Analyze", self)
-        fA = QFormLayout(gbA)
-
-        self.cmb_ref = QComboBox(self)
-        self.cmb_ref.addItems(["Best frame", "Best stack (N)"])
-
-        self.spin_refN = QSpinBox(self)
-        self.spin_refN.setRange(2, 200)
-        self.spin_refN.setValue(10)
-
-        self.spin_ap_min = QDoubleSpinBox(self)
-        self.spin_ap_min.setRange(0.0, 1.0)
-        self.spin_ap_min.setDecimals(3)
-        self.spin_ap_min.setSingleStep(0.005)
-        self.spin_ap_min.setValue(0.03)
-        fA.addRow("AP min mean (0..1)", self.spin_ap_min)
-
-        self.btn_edit_aps = QPushButton("(2) Edit APs…", self)
-        self.btn_edit_aps.setEnabled(False)
-        fA.addRow("", self.btn_edit_aps)
-
-        self.spin_ap_size = QSpinBox(self)
-        self.spin_ap_size.setRange(16, 256)
-        self.spin_ap_size.setSingleStep(8)
-        self.spin_ap_size.setValue(64)
-
-        self.spin_ap_spacing = QSpinBox(self)
-        self.spin_ap_spacing.setRange(8, 256)
-        self.spin_ap_spacing.setSingleStep(8)
-        self.spin_ap_spacing.setValue(48)
-
-        fA.addRow("Reference", self.cmb_ref)
-        fA.addRow("Ref stack N", self.spin_refN)
-
-        self.cmb_ap_scale = QComboBox(self)
-        self.cmb_ap_scale.addItems(["Single", "Multi-scale (2× / 1× / ½×)"])
-        fA.addRow("AP scale", self.cmb_ap_scale)
-
-        self.chk_ssd_bruteforce = QCheckBox(
-            "SSD refine: brute force (slower, can rescue tough data)", self)
-        self.chk_ssd_bruteforce.setChecked(False)
-        fA.addRow("", self.chk_ssd_bruteforce)
-
-        self.chk_field_rotation = QCheckBox(
-            "Correct field rotation", self)
+ 
+        # --- Field Rotation ---
+        gbFR = QGroupBox("Field Rotation", self)
+        fFR = QFormLayout(gbFR)
+ 
+        self.chk_field_rotation = QCheckBox("Correct field rotation", self)
         self.chk_field_rotation.setChecked(False)
         self.chk_field_rotation.setToolTip(
             "After translation alignment, search for a small rotation that further\n"
@@ -1259,98 +1219,147 @@ class SERStackerDialog(QDialog):
             "Rotation center: planet centroid (planetary) or surface anchor (surface).\n"
             "Searches up to the max rotation set below, with a hysteresis quality check."
         )
-        fA.addRow("", self.chk_field_rotation)
+        fFR.addRow("", self.chk_field_rotation)
+ 
         self.spin_field_rot_max = QDoubleSpinBox(self)
         self.spin_field_rot_max.setRange(1.0, 45.0)
         self.spin_field_rot_max.setDecimals(1)
         self.spin_field_rot_max.setSingleStep(1.0)
         self.spin_field_rot_max.setValue(10.0)
-        self.spin_field_rot_max.setToolTip("Maximum field rotation to search for (degrees). Increase for longer clips or faster mounts.")
+        self.spin_field_rot_max.setToolTip(
+            "Maximum field rotation to search for (degrees).\n"
+            "Increase for longer clips or faster alt-az mounts."
+        )
         self.spin_field_rot_max.setEnabled(False)
-
-        fA.addRow("Max rotation (°)", self.spin_field_rot_max)
+        fFR.addRow("Max rotation (°)", self.spin_field_rot_max)
+ 
+        left.addWidget(gbFR, 0)
+ 
+        # --- Analyze ---
+        gbA = QGroupBox("Analyze", self)
+        fA = QFormLayout(gbA)
+ 
+        self.cmb_ref = QComboBox(self)
+        self.cmb_ref.addItems(["Best frame", "Best stack (N)"])
+ 
+        self.spin_refN = QSpinBox(self)
+        self.spin_refN.setRange(2, 200)
+        self.spin_refN.setValue(10)
+ 
+        self.spin_ap_min = QDoubleSpinBox(self)
+        self.spin_ap_min.setRange(0.0, 1.0)
+        self.spin_ap_min.setDecimals(3)
+        self.spin_ap_min.setSingleStep(0.005)
+        self.spin_ap_min.setValue(0.03)
+        fA.addRow("AP min mean (0..1)", self.spin_ap_min)
+ 
+        self.btn_edit_aps = QPushButton("(2) Edit APs…", self)
+        self.btn_edit_aps.setEnabled(False)
+        fA.addRow("", self.btn_edit_aps)
+ 
+        self.spin_ap_size = QSpinBox(self)
+        self.spin_ap_size.setRange(16, 256)
+        self.spin_ap_size.setSingleStep(8)
+        self.spin_ap_size.setValue(64)
+ 
+        self.spin_ap_spacing = QSpinBox(self)
+        self.spin_ap_spacing.setRange(8, 256)
+        self.spin_ap_spacing.setSingleStep(8)
+        self.spin_ap_spacing.setValue(48)
+ 
+        fA.addRow("Reference", self.cmb_ref)
+        fA.addRow("Ref stack N", self.spin_refN)
+ 
+        self.cmb_ap_scale = QComboBox(self)
+        self.cmb_ap_scale.addItems(["Single", "Multi-scale (2× / 1× / ½×)"])
+        fA.addRow("AP scale", self.cmb_ap_scale)
+ 
+        self.chk_ssd_bruteforce = QCheckBox(
+            "SSD refine: brute force (slower, can rescue tough data)", self)
+        self.chk_ssd_bruteforce.setChecked(False)
+        fA.addRow("", self.chk_ssd_bruteforce)
+ 
         fA.addRow("AP size (px)", self.spin_ap_size)
         fA.addRow("AP spacing (px)", self.spin_ap_spacing)
-
+ 
         left.addWidget(gbA, 0)
-
+ 
         # --- Action buttons ---
         row = QHBoxLayout()
         self.btn_analyze = QPushButton("(1) Analyze", self)
         self.btn_analyze.setEnabled(True)
         self.btn_blink = QPushButton("(3) Blink Keepers", self)
         self.btn_blink.setEnabled(False)
-        self.btn_export_aligned = QPushButton("(4) Export Aligned SER…", self)   # ← NEW
-        self.btn_export_aligned.setEnabled(False)                                  # ← NEW
+        self.btn_export_aligned = QPushButton("(4) Export Aligned SER…", self)
+        self.btn_export_aligned.setEnabled(False)
         self.btn_stack = QPushButton("(5) Stack Now", self)
         self.btn_stack.setEnabled(False)
         self.btn_close = QPushButton("Close", self)
-
+ 
         row.addWidget(self.btn_analyze)
         row.addStretch(1)
         row.addWidget(self.btn_blink)
         row.addStretch(1)
-        row.addWidget(self.btn_export_aligned)                                     # ← NEW
+        row.addWidget(self.btn_export_aligned)
         row.addStretch(1)
         row.addWidget(self.btn_stack)
         row.addWidget(self.btn_close)
-
+ 
         left.addLayout(row, 0)
-
+ 
         # --- Progress ---
         self.prog = QProgressBar(self)
         self.prog.setRange(0, 0)
         self.prog.setVisible(False)
         left.addWidget(self.prog, 0)
-
+ 
         self.lbl_prog = QLabel("", self)
         self.lbl_prog.setStyleSheet("color:#aaa;")
         self.lbl_prog.setVisible(False)
         left.addWidget(self.lbl_prog, 0)
-
+ 
         left.addStretch(1)
-
+ 
         # =========================
         # RIGHT COLUMN
         # =========================
-
+ 
         # --- Quality Graph ---
         gbQ = QGroupBox("Quality", self)
         vQ = QVBoxLayout(gbQ)
         vQ.setContentsMargins(8, 8, 8, 8)
         vQ.setSpacing(6)
-
+ 
         self.graph = QualityGraph(self)
         self.graph.setMinimumHeight(180)
-        self.graph.setMinimumWidth(480)  # keeps the right column from scrunching
-
-        # small hint under the graph
+        self.graph.setMinimumWidth(480)
+ 
         self.lbl_graph_hint = QLabel("Tip: click the graph to set Keep cutoff.", self)
         self.lbl_graph_hint.setStyleSheet("color:#888; font-size:11px;")
         self.lbl_graph_hint.setWordWrap(True)
-
+ 
         vQ.addWidget(self.graph, 1)
         vQ.addWidget(self.lbl_graph_hint, 0)
-
+ 
         right.addWidget(gbQ, 1)
-
+ 
         # --- Log ---
         gbL = QGroupBox("Log", self)
         vL = QVBoxLayout(gbL)
         vL.setContentsMargins(8, 8, 8, 8)
-
+ 
         self.log = QTextEdit(self)
         self.log.setReadOnly(True)
         self.log.setMinimumHeight(140)
         self.log.setPlaceholderText("Log…")
-
+ 
         vL.addWidget(self.log, 1)
         right.addWidget(gbL, 1)
-
+ 
         # =========================
         # Signals / wiring
         # =========================
-
+ 
         self.btn_close.clicked.connect(self.close)
         self.btn_stack.clicked.connect(self._start_stack)
         self.btn_blink.clicked.connect(self._blink_keepers)
@@ -1365,48 +1374,43 @@ class SERStackerDialog(QDialog):
         self.chk_field_rotation.toggled.connect(
             lambda checked: self.spin_field_rot_max.setEnabled(checked)
         )
-        # Keep % edits update the cutoff line
         self.spin_keep.valueChanged.connect(self._update_graph_cutoff)
+ 
         def _apply_derot_preset():
             key = self.cmb_derot_planet.currentText().strip()
             base = float(_PLANET_ROT_PRESETS_DEG_PER_MIN.get(key, 0.0))
-
-            # Custom => user edits
+ 
             is_custom = (key.lower().startswith("custom"))
             self.spin_derot_rate.setEnabled(bool(self.chk_derotate.isChecked()) and is_custom)
-
+ 
             if not is_custom:
-                # apply preset value (respect reverse checkbox)
                 rate = -base if self.chk_derot_reverse.isChecked() else base
-
                 block = self.spin_derot_rate.blockSignals(True)
                 try:
                     self.spin_derot_rate.setValue(float(rate))
                 finally:
                     self.spin_derot_rate.blockSignals(block)
-
-            # keep your existing status text logic
+ 
             self._update_derot_ui()
-
+ 
         self.cmb_derot_planet.currentIndexChanged.connect(lambda _=None: _apply_derot_preset())
         self.chk_derot_reverse.toggled.connect(lambda _=None: _apply_derot_preset())
-        self.btn_export_aligned.clicked.connect(self._export_aligned_clicked)  
-        # Clicking on the graph updates Keep %
+        self.btn_export_aligned.clicked.connect(self._export_aligned_clicked)
+ 
         def _on_graph_keep_changed(k: int, total: int):
             total = max(1, int(total))
             k = max(1, min(total, int(k)))
             pct = 100.0 * float(k) / float(total)
-
+ 
             block = self.spin_keep.blockSignals(True)
             try:
                 self.spin_keep.setValue(float(pct))
             finally:
                 self.spin_keep.blockSignals(block)
-
-            # update graph line (using current analysis ordering)
+ 
             self._update_graph_cutoff()
             self._append_log(f"Keep set from graph: {pct:.1f}% ({k}/{total})")
-
+ 
         self.graph.keepChanged.connect(_on_graph_keep_changed)
         self._update_center_planet_ui()
 
