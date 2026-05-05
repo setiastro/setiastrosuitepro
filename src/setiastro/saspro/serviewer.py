@@ -339,7 +339,7 @@ class SERViewer(QDialog):
         # Planetary detection controls
         self.sld_simple_thresh = QSlider(Qt.Orientation.Horizontal, self)
         self.sld_simple_thresh.setRange(0, 100)
-        self.sld_simple_thresh.setValue(25)
+        self.sld_simple_thresh.setValue(5)
         self.sld_simple_thresh.setToolTip(
             "Brightness threshold (0–1). Pixels above this are used to find the planet center."
         )
@@ -353,7 +353,7 @@ class SERViewer(QDialog):
         self.spin_simple_thresh.setRange(0.00, 1.00)
         self.spin_simple_thresh.setDecimals(2)
         self.spin_simple_thresh.setSingleStep(0.01)
-        self.spin_simple_thresh.setValue(0.25)
+        self.spin_simple_thresh.setValue(0.05)
         self.spin_simple_thresh.setFixedWidth(64)
         self.spin_simple_thresh.setToolTip("Brightness threshold (0–1)")
 
