@@ -1251,13 +1251,13 @@ class SERStackerDialog(QDialog):
         fA.addRow("", self.chk_ssd_bruteforce)
 
         self.chk_field_rotation = QCheckBox(
-            "Correct field rotation (searches ±5° per frame)", self)
+            "Correct field rotation", self)
         self.chk_field_rotation.setChecked(False)
         self.chk_field_rotation.setToolTip(
             "After translation alignment, search for a small rotation that further\n"
             "reduces residual error. Useful for alt-az mounts without a field rotator.\n"
             "Rotation center: planet centroid (planetary) or surface anchor (surface).\n"
-            "Adds ~20 extra evaluations per frame — moderate cost."
+            "Searches up to the max rotation set below, with a hysteresis quality check."
         )
         fA.addRow("", self.chk_field_rotation)
         self.spin_field_rot_max = QDoubleSpinBox(self)

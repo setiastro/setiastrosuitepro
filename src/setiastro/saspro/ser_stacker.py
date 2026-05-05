@@ -1011,17 +1011,43 @@ def _find_best_rotation_ssd(
     frame_idx: int = -1,
     coarse_step_deg: float = 2.0,
     fine_window_deg: float = 3.0,
-    log_cb=None,        # ← NEW: callable(str) or None
+    log_cb=None,
+    max_eval_size: int = 640,   # cap the working patch to this in each dimension
 ) -> tuple[float, float]:
     """
-    Two-pass rotation search:
-      Pass 1 (coarse): scan [-max_deg-hyst .. +max_deg+hyst] at coarse_step_deg
-      Pass 2 (fine):   scan [coarse_best ± fine_window_deg] at step_deg
-    Then apply hysteresis check on the fine-pass SSD curve.
+    Two-pass rotation search on a center-cropped patch at full resolution.
+    Cropping to max_eval_size keeps warpAffine cost bounded without losing
+    gradient detail — rotation is measured on real pixels, just fewer of them.
     """
-    cur_shifted = _shift_image(cur_m, dx, dy)
+    H, W = ref_m.shape[:2]
 
-    _, rgc, sl = _ssd_prepare_ref(ref_m, crop=crop)
+    # ---- Center crop both images to max_eval_size at full resolution ----
+    # Crop is centered on (cx, cy) so the rotation center stays in the middle,
+    # which is where rotation signal is most reliable anyway.
+    if max(H, W) > max_eval_size:
+        half = max_eval_size // 2
+        # crop center, clamped to image bounds
+        x0c = int(max(0, min(W - max_eval_size, int(round(cx)) - half)))
+        y0c = int(max(0, min(H - max_eval_size, int(round(cy)) - half)))
+        x1c = x0c + min(max_eval_size, W)
+        y1c = y0c + min(max_eval_size, H)
+        ref_work = ref_m[y0c:y1c, x0c:x1c].astype(np.float32, copy=False)
+        cur_work = cur_m[y0c:y1c, x0c:x1c].astype(np.float32, copy=False)
+        # rotation center in crop coords
+        cx_work = float(cx) - x0c
+        cy_work = float(cy) - y0c
+        dx_work = float(dx)   # shift is still in full-frame pixels but
+        dy_work = float(dy)   # warpAffine on the crop handles it correctly
+    else:
+        ref_work = ref_m.astype(np.float32, copy=False)
+        cur_work = cur_m.astype(np.float32, copy=False)
+        cx_work = float(cx)
+        cy_work = float(cy)
+        dx_work = float(dx)
+        dy_work = float(dy)
+
+    cur_shifted = _shift_image(cur_work, dx_work, dy_work)
+    _, rgc, sl = _ssd_prepare_ref(ref_work, crop=crop)
     y0, y1, x0, x1 = sl
 
     hyst_steps = max(1, int(round(float(hysteresis_deg) / float(step_deg))))
@@ -1035,7 +1061,7 @@ def _find_best_rotation_ssd(
 
     coarse_ssds: list[float] = []
     for ang in coarse_angles:
-        rotated = _rotate_about(cur_shifted, cx, cy, float(ang))
+        rotated = _rotate_about(cur_shifted, cx_work, cy_work, float(ang))
         cg = _grad_img(rotated)
         cgc = cg[y0:y1, x0:x1]
         d = rgc - cgc
@@ -1050,12 +1076,8 @@ def _find_best_rotation_ssd(
     # ------------------------------------------------------------------
     fine_step = float(step_deg)
     fine_half = float(fine_window_deg) + hyst_steps * fine_step
-    fine_lo = coarse_best_ang - fine_half
-    fine_hi = coarse_best_ang + fine_half
-
-    # clamp to the original extended range
-    fine_lo = max(-extended_max, fine_lo)
-    fine_hi = min(extended_max, fine_hi)
+    fine_lo = max(-extended_max, coarse_best_ang - fine_half)
+    fine_hi = min(extended_max, coarse_best_ang + fine_half)
 
     angles = np.arange(fine_lo, fine_hi + 1e-9, fine_step)
     if len(angles) == 0:
@@ -1063,7 +1085,7 @@ def _find_best_rotation_ssd(
 
     ssds: list[tuple[float, float]] = []
     for ang in angles:
-        rotated = _rotate_about(cur_shifted, cx, cy, float(ang))
+        rotated = _rotate_about(cur_shifted, cx_work, cy_work, float(ang))
         cg = _grad_img(rotated)
         cgc = cg[y0:y1, x0:x1]
         d = rgc - cgc
@@ -1087,14 +1109,12 @@ def _find_best_rotation_ssd(
     right_ok = True
 
     if best_idx > 0 and left_start < best_idx:
-        left_ssds = ssd_values[left_start:best_idx]
-        left_ok = bool(np.all(left_ssds >= best_ssd))
+        left_ok = bool(np.all(ssd_values[left_start:best_idx] >= best_ssd))
     else:
         left_ok = False
 
     if best_idx < len(ssd_values) - 1 and right_end > best_idx:
-        right_ssds = ssd_values[best_idx + 1:right_end + 1]
-        right_ok = bool(np.all(right_ssds >= best_ssd))
+        right_ok = bool(np.all(ssd_values[best_idx + 1:right_end + 1] >= best_ssd))
     else:
         right_ok = False
 
@@ -1130,18 +1150,14 @@ def _find_best_rotation_ssd(
             ang_sub = float(np.clip(ang_sub, -fine_step * 0.75, fine_step * 0.75))
 
     best_ang_f = best_ang + ang_sub
-
     lift = min(left_edge_ssd - best_ssd, right_edge_ssd - best_ssd)
     conf = float(np.clip(lift / max(1e-6, best_ssd * 0.05), 0.0, 1.0))
 
     if log_cb is not None:
         log_cb(
-            f"Frame {frame_idx:4d}  ang={best_ang_f:+7.3f}°  conf={conf:.3f}  "
+            f"Frame {frame_idx:4d}  ang={best_ang_f:+7.3f}° "
             f"ssd_range={ssd_range:.6f}  "
-            f"left_lift={left_edge_ssd - best_ssd:.6f}  right_lift={right_edge_ssd - best_ssd:.6f}"
         )
-
-    return float(best_ang_f), float(conf)
 
     return float(best_ang_f), float(conf)
 
@@ -2027,6 +2043,19 @@ def analyze_ser(
             done_ct += int(ii.size)
             if progress_cb:
                 progress_cb(done_ct, n, "SSD Refine")
+    # ---- Penalize rotation-rejected frames ----
+    # ang_cf == 0.0 means hysteresis failed (rejected) — NOT a genuine measurement.
+    # The reference frame genuinely measures 0° but still gets ang_cf > 0.
+    # Zero out quality for rejected frames so they sort to the end of keep% ordering.
+    if correct_rot:
+        rejected_mask = (np.abs(ang_conf) < 1e-9)  # ang_cf == 0.0
+        rejected_mask[int(order[0])] = False        # never penalize the reference frame
+        n_rejected = int(np.count_nonzero(rejected_mask))
+        if n_rejected > 0:
+            quality[rejected_mask] = 0.0
+            order[:] = np.argsort(-quality).astype(np.int32, copy=False)
+            if log_cb is not None:
+                log_cb(f"Rotation: {n_rejected} frames rejected (flat curve) — moved to end of quality order.")
 
     if cfg.track_mode == "surface":
         _print_surface_debug(dx=dx, dy=dy, conf=conf, coarse_conf=coarse_conf,
@@ -2386,7 +2415,17 @@ def realign_ser(
             done_ct += int(ii.size)
             if progress_cb:
                 progress_cb(done_ct, n, "SSD Refine")
-
+    # ---- Penalize rotation-rejected frames ----
+    if correct_rot:
+        rejected_mask = (np.abs(ang_conf_arr) < 1e-9)
+        ref_frame_idx = int(analysis.order[0]) if analysis.order is not None and len(analysis.order) > 0 else 0
+        rejected_mask[ref_frame_idx] = False
+        n_rejected = int(np.count_nonzero(rejected_mask))
+        if n_rejected > 0:
+            analysis.quality[rejected_mask] = 0.0
+            analysis.order[:] = np.argsort(-analysis.quality).astype(np.int32, copy=False)
+            if log_cb is not None:
+                log_cb(f"Rotation: {n_rejected} frames rejected (flat curve) — moved to end of quality order.")
     analysis.dx = dx
     analysis.dy = dy
     analysis.conf = conf
