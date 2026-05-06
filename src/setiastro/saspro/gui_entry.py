@@ -724,8 +724,53 @@ def _bootstrap_imports():
         if _ilu.find_spec("torch") is not None:
             import torch as _torch_probe  # noqa
             _torch_actually_available = True
+ 
+            # ── Pre-warm torch._C._InferenceMode in the main thread ──────────
+            # torch 2.6+ on Windows has a pybind11 thread-affinity quirk where
+            # torch._C._InferenceMode is absent when torch is first accessed
+            # inside a QThread (CUDA context not yet initialized on that thread).
+            # Touching it here in the main thread — where the CUDA context IS
+            # fully initialized — ensures the attribute is registered in the
+            # shared C extension state before any worker thread runs.
+            # This prevents 'module torch._C has no attribute _InferenceMode'
+            # errors in QThreads that use spandrel or call model().
+            try:
+                if hasattr(_torch_probe, "_C") and not hasattr(_torch_probe._C, "_InferenceMode"):
+                    # Force CUDA context init on the main thread so pybind11
+                    # registers the C++ class bindings that back _InferenceMode.
+                    if hasattr(_torch_probe, "cuda") and _torch_probe.cuda.is_available():
+                        _ = _torch_probe.zeros(1, device="cuda")
+                    # Verify the attribute appeared after the CUDA touch.
+                    # If it still doesn't exist, install a Python-level shim so
+                    # all threads (which share torch._C) have a working fallback.
+                    if not hasattr(_torch_probe._C, "_InferenceMode"):
+                        class _InferenceModeShim:
+                            """
+                            Pure-Python fallback for torch._C._InferenceMode.
+                            Used when the pybind11 C++ binding fails to register
+                            in the current process (torch 2.6+ / Windows quirk).
+                            Disables gradient computation exactly like the real class.
+                            """
+                            def __init__(self, enabled=True):
+                                self._enabled = bool(enabled)
+                                self._prev = False
+                            def __enter__(self):
+                                self._prev = _torch_probe.is_grad_enabled()
+                                if self._enabled:
+                                    _torch_probe.set_grad_enabled(False)
+                                return self
+                            def __exit__(self, *args):
+                                _torch_probe.set_grad_enabled(self._prev)
+                        _torch_probe._C._InferenceMode = _InferenceModeShim
+                        print("[SASpro] torch._C._InferenceMode shim installed (torch 2.6+ thread quirk)")
+                    else:
+                        print("[SASpro] torch._C._InferenceMode pre-warmed ok")
+            except Exception as _e:
+                print(f"[SASpro] torch._C._InferenceMode pre-warm warning (non-fatal): {_e}")
+ 
     except Exception:
         _torch_actually_available = False
+
  
     # ── If torch is absent, inject a stub so the GUI can still open ───────────
     if not _torch_actually_available:

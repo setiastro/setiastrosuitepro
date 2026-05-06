@@ -645,6 +645,7 @@ class PythonHighlighter(QSyntaxHighlighter):
 class ScriptEditorDock(QDockWidget):
     def __init__(self, app_window, parent=None):
         super().__init__("Script Editor", parent or app_window)
+        self.setObjectName("ScriptEditorDock") 
         self.app = app_window
         self.scripts_dir = get_scripts_dir()
 

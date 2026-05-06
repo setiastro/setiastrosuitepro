@@ -1058,7 +1058,17 @@ class SERStackerDialog(QDialog):
             "frame position. Only available in Planetary tracking mode."
         )
         form.addRow("", self.chk_center_planet)
+        self.chk_atm_dispersion = QCheckBox("Correct atmospheric dispersion", self)
+        self.chk_atm_dispersion.setChecked(False)
+        self.chk_atm_dispersion.setToolTip(
+            "Align R, G, and B channel centroids independently so atmospheric\n"
+            "prismatic dispersion (colour fringing) is removed before stacking.\n"
+            "Only effective for debayered colour frames in Planetary mode."
+        )
+        form.addRow("", self.chk_atm_dispersion)
+ 
         form.addRow("Surface anchor", self.lbl_anchor)
+
  
         left.addWidget(gb, 0)
  
@@ -1365,6 +1375,7 @@ class SERStackerDialog(QDialog):
         self.btn_blink.clicked.connect(self._blink_keepers)
         self.cmb_track.currentIndexChanged.connect(self._update_anchor_warning)
         self.cmb_track.currentIndexChanged.connect(self._update_center_planet_ui)
+        self.chk_debayer.toggled.connect(lambda _: self._update_center_planet_ui())
         self.btn_analyze.clicked.connect(self._start_analyze)
         self.btn_edit_aps.clicked.connect(self._edit_aps)
         self.spin_keep.valueChanged.connect(self._on_keep_changed)
@@ -1420,6 +1431,12 @@ class SERStackerDialog(QDialog):
         self.chk_center_planet.setEnabled(is_planetary)
         if not is_planetary:
             self.chk_center_planet.setChecked(False)
+        # Dispersion correction only makes sense for planetary + debayer
+        self.chk_atm_dispersion.setEnabled(
+            is_planetary and bool(self.chk_debayer.isChecked()))
+        if not is_planetary:
+            self.chk_atm_dispersion.setChecked(False)
+
 
 
     def _edit_aps(self):
@@ -1808,6 +1825,11 @@ class SERStackerDialog(QDialog):
                 getattr(self, "chk_field_rotation", None)
                 and self.chk_field_rotation.isChecked()
             ),
+            correct_atm_dispersion=bool(
+                getattr(self, "chk_atm_dispersion", None)
+                and self.chk_atm_dispersion.isChecked()
+            ),
+
             field_rotation_max_deg=float(
                 getattr(self, "spin_field_rot_max", None).value()
                 if getattr(self, "spin_field_rot_max", None) else 10.0

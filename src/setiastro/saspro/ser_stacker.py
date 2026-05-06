@@ -100,6 +100,11 @@ class AnalyzeResult:
     planet_derotate: bool = False
     surface_anchor_rot_cx: Optional[float] = None
     surface_anchor_rot_cy: Optional[float] = None
+    # Per-frame per-channel dispersion offsets (shape n×3, columns R/G/B).
+    # disp_dx[i, c] = extra dx to apply to channel c of frame i so it
+    # aligns to the G-channel centroid.  G column is always 0.
+    disp_dx: Optional[np.ndarray] = None   # (n, 3) float32
+    disp_dy: Optional[np.ndarray] = None   # (n, 3) float32
 
 @dataclass
 class FrameEval:
@@ -853,6 +858,54 @@ def _shift_image(img01: np.ndarray, dx: float, dy: float) -> np.ndarray:
     out = np.roll(out, shift=rx, axis=1)
     return out
 
+
+def _channel_centroid_shifts(
+    img: np.ndarray,
+    tracker,
+    ref_cx: float,
+    ref_cy: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Compute per-channel (R, G, B) centroid shifts relative to the G channel.
+ 
+    Given a 3-channel float32 frame (already globally translated so the
+    planet is roughly centred), find the centroid of each colour channel
+    independently and return the additional (dx, dy) needed to align R and B
+    to G.  The G entry is always (0, 0).
+ 
+    Returns:
+        ch_dx : float32 array shape (3,)  — dx for R, G, B
+        ch_dy : float32 array shape (3,)  — dy for R, G, B
+    """
+    ch_dx = np.zeros(3, dtype=np.float32)
+    ch_dy = np.zeros(3, dtype=np.float32)
+ 
+    if img.ndim != 3 or img.shape[2] < 3:
+        # mono frame — nothing to correct
+        return ch_dx, ch_dy
+ 
+    # Find G centroid first (index 1)
+    g_chan = img[:, :, 1].astype(np.float32, copy=False)
+    gcx, gcy, gcc = tracker.compute_center(g_chan)
+    if gcc <= 0.0:
+        # G centroid failed — fall back to image centre
+        gcx = float(g_chan.shape[1] * 0.5)
+        gcy = float(g_chan.shape[0] * 0.5)
+ 
+    # For R (0) and B (2), find centroid and compute shift to align to G
+    for c_idx in (0, 2):
+        chan = img[:, :, c_idx].astype(np.float32, copy=False)
+        ccx, ccy, ccc = tracker.compute_center(chan)
+        if ccc <= 0.0:
+            # centroid failed — no correction for this channel
+            continue
+        # shift needed: move this channel's centroid to where G is
+        ch_dx[c_idx] = gcx - ccx
+        ch_dy[c_idx] = gcy - ccy
+ 
+    return ch_dx, ch_dy
+
+
 def _downsample_mono01(img01: np.ndarray, max_dim: int = 512) -> np.ndarray:
     """
     Convert to mono and downsample for analysis/tracking. Returns float32 in [0,1].
@@ -1276,6 +1329,16 @@ def stack_ser(
             keep_idx = keep_idx[km[keep_idx]]
             if keep_idx.size == 0:
                 raise ValueError("keep_mask rejected all frames in the Keep% set.")
+        # ── Quality weights ───────────────────────────────────────────────
+        # analysis.quality already has the half-pedestal subtraction applied
+        # in analyze_ser, so we use it directly as weights.
+        # Build a per-frame-index lookup so _warp_chunk can pass the weight
+        # back without any shared state.
+        _q_all = analysis.quality.astype(np.float32, copy=False)
+        _weight_for: dict[int, float] = {
+            int(idx): max(float(_q_all[int(idx)]), 1e-6)
+            for idx in keep_idx
+        }
 
         ref_img = analysis.ref_image.astype(np.float32, copy=False)
         ref_m = _to_mono01(ref_img).astype(np.float32, copy=False)
@@ -1423,6 +1486,27 @@ def stack_ser(
                         precomp=_warp_chunk._derot_precomp,
                     )
 
+                # ── Atmospheric dispersion correction ─────────────────────
+                # Apply per-channel (R/G/B) prismatic shift so all channels
+                # are aligned to the G-channel centroid before the local warp.
+                _disp_dx = getattr(analysis, "disp_dx", None)
+                _disp_dy = getattr(analysis, "disp_dy", None)
+                if (_disp_dx is not None
+                        and warped_g.ndim == 3
+                        and warped_g.shape[2] >= 3):
+                    cdx = _disp_dx[int(i)]   # shape (3,)
+                    cdy = _disp_dy[int(i)]
+                    # Only correct R and B; G is the reference (shift = 0)
+                    corrected = warped_g.copy()
+                    for c_idx in (0, 2):
+                        if abs(cdx[c_idx]) > 1e-6 or abs(cdy[c_idx]) > 1e-6:
+                            corrected[:, :, c_idx] = _shift_image(
+                                warped_g[:, :, c_idx],
+                                float(cdx[c_idx]),
+                                float(cdy[c_idx]),
+                            )
+                    warped_g = corrected
+
                 # ---- Local AP warp — always, for both planetary and surface ----
                 # After global translation (and derotation if planetary), compute
                 # per-AP residual shifts and build a dense displacement field.
@@ -1488,7 +1572,7 @@ def stack_ser(
                     frac_dx += float(dither[0])
                     frac_dy += float(dither[1])
 
-                results.append((warped, frac_dx, frac_dy))
+                results.append((warped, frac_dx, frac_dy, int(i)))
 
         finally:
             if owns:
@@ -1510,19 +1594,21 @@ def stack_ser(
         with ThreadPoolExecutor(max_workers=workers) as ex:
             futs = [ex.submit(_warp_chunk, c) for c in chunks if c]
             for fut in as_completed(futs):
-                for warped, frac_dx, frac_dy in fut.result():
+                for warped, frac_dx, frac_dy, frame_idx in fut.result():
+                    w = _weight_for.get(int(frame_idx), 1.0)
+ 
                     T_frame = np.zeros((2, 3), dtype=np.float32)
                     T_frame[0, 0] = 1.0
                     T_frame[1, 1] = 1.0
                     T_frame[0, 2] = frac_dx
                     T_frame[1, 2] = frac_dy
-
+ 
                     if warped.ndim == 2:
                         drizzle_deposit_kernel_mono_fast(
                             warped, T_frame, dbuf_total, cbuf_total,
                             drizzle_factor=drizzle_scale,
                             drop_shrink=drizzle_pixfrac,
-                            frame_weight=1.0,
+                            frame_weight=w,
                             kernel_code=kernel_code,
                             gaussian_sigma_or_radius=drizzle_sigma_eff,
                             scratch=scratch,
@@ -1532,15 +1618,16 @@ def stack_ser(
                             warped, T_frame, dbuf_total, cbuf_total,
                             drizzle_factor=drizzle_scale,
                             drop_shrink=drizzle_pixfrac,
-                            frame_weight=1.0,
+                            frame_weight=w,
                             kernel_code=kernel_code,
                             gaussian_sigma_or_radius=drizzle_sigma_eff,
                             scratch=scratch,
                         )
-
+ 
                     drizzle_done += 1
                     if progress_cb:
                         progress_cb(drizzle_done, drizzle_total, "Drizzle")
+
 
         if len(acc_shape) == 2:
             out = np.zeros((outH, outW), dtype=np.float32)
@@ -1552,18 +1639,20 @@ def stack_ser(
         out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
 
     else:
-        # Non-drizzle: parallel warp + serial accumulate
-        acc_total = np.zeros(acc_shape, dtype=np.float32)
+        # Non-drizzle: parallel warp + quality-weighted serial accumulate
+        acc_total  = np.zeros(acc_shape, dtype=np.float32)
         wacc_total = 0.0
-
+ 
         with ThreadPoolExecutor(max_workers=workers) as ex:
             futs = [ex.submit(_warp_chunk, c) for c in chunks if c]
             for fut in as_completed(futs):
-                for warped, _fdx, _fdy in fut.result():
-                    acc_total += warped
-                    wacc_total += 1.0
-
+                for warped, _fdx, _fdy, frame_idx in fut.result():
+                    w = _weight_for.get(int(frame_idx), 1.0)
+                    acc_total  += warped * w
+                    wacc_total += w
+ 
         out = np.clip(acc_total / max(1e-6, wacc_total), 0.0, 1.0).astype(np.float32, copy=False)
+
 
     diag = {
         "frames_total": int(n),
@@ -1623,6 +1712,95 @@ def _cfg_get_source(cfg) -> Any:
     if src is not None and src != "":
         return src
     return getattr(cfg, "ser_path", None)
+
+
+def _quality_score(m: np.ndarray) -> float:
+    """
+    Quality metric for a single downsampled mono frame (float32, 0..1).
+ 
+    Two components, both computed only over pixels with signal > 0.05
+    (excludes black background around the planetary disc / empty sky):
+ 
+    1. Sharpness  — variance of the Laplacian within the signal mask.
+                    Variance punishes frames where sharpness is spatially
+                    inconsistent (e.g. half the disc in focus, half not),
+                    unlike mean-abs which can be fooled by a few bright edges.
+ 
+    2. Feature richness — fraction of signal-mask pixels whose gradient
+                    magnitude exceeds a threshold (75th percentile of the
+                    in-mask gradient).  Rewards frames that have lots of
+                    visible fine structure, not just a sharp limb edge.
+ 
+    Final score = 0.70 * sharpness_norm + 0.30 * richness
+ 
+    Both components are individually normalised to [0, 1] via a soft
+    log-scale so extreme outliers don't dominate.  The raw score is
+    returned un-clamped so the caller can decide on normalisation across
+    the frame set (scores are comparable within a single clip).
+    """
+    m = np.asarray(m, dtype=np.float32)
+ 
+    # ── Signal mask: exclude background and hot pixels ───────────────────
+    SIGNAL_FLOOR = 0.05
+    mask = m > SIGNAL_FLOOR          # bool (H, W)
+    n_sig = int(np.count_nonzero(mask))
+ 
+    if n_sig < 16 or cv2 is None:
+        # Fallback: simple finite-difference gradient mean (cv2 unavailable
+        # or frame is essentially empty)
+        gx = float(np.abs(m[:, 1:] - m[:, :-1]).mean())
+        gy = float(np.abs(m[1:, :] - m[:-1, :]).mean())
+        return float(gx + gy)
+ 
+    # ── Laplacian (ksize=5 is slightly more noise-resistant than 3) ──────
+    lap = cv2.Laplacian(m, cv2.CV_32F, ksize=5)
+ 
+    lap_sig = lap[mask]              # values inside the signal region only
+ 
+    # Variance of Laplacian — the primary sharpness measure.
+    # A perfectly sharp frame has high, consistent edge responses → high var.
+    # A blurry frame has small, uniform Laplacian → low var.
+    # A noisy-but-soft frame has moderate random values → moderate var.
+    sharpness = float(np.var(lap_sig))
+ 
+    # ── Gradient magnitude for feature richness ──────────────────────────
+    gx = cv2.Sobel(m, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(m, cv2.CV_32F, 0, 1, ksize=3)
+    gmag = cv2.magnitude(gx, gy)    # (H, W)
+ 
+    gmag_sig = gmag[mask]
+ 
+    # Richness = fraction of signal pixels with gradient above the 75th
+    # percentile of the in-mask gradient distribution.
+    # This rewards frames with lots of fine structure uniformly spread
+    # across the disc, not just a sharp limb or a single bright feature.
+    p75 = float(np.percentile(gmag_sig, 75))
+    if p75 < 1e-9:
+        richness = 0.0
+    else:
+        richness = float(np.mean(gmag_sig > p75))
+        # Note: by definition this is always ~0.25 for a uniform dist,
+        # but real data varies because the threshold is absolute within the
+        # mask — frames with more fine detail will have more pixels above
+        # the 75th percentile of *their own* distribution... actually we
+        # want a fixed threshold, not percentile-within-frame.
+        # Use mean gradient magnitude as a more discriminating richness:
+        richness = float(np.mean(gmag_sig)) / max(1e-9, float(gmag_sig.max()))
+ 
+    # ── Combine ──────────────────────────────────────────────────────────
+    # Sharpness is on an arbitrary scale (variance of Laplacian of a
+    # float32 image).  Apply log1p so the metric doesn't compress the
+    # distribution at the top end when one exceptional frame is much
+    # sharper than the rest.
+    sharpness_log = float(np.log1p(sharpness * 1e4))   # scale factor keeps
+                                                         # typical values in
+                                                         # a comfortable range
+ 
+    # richness is already in [0, 1]
+    q = 0.70 * sharpness_log + 0.30 * richness
+ 
+    return float(q)
+
 
 def analyze_ser(
     cfg: SERStackConfig,
@@ -1707,12 +1885,7 @@ def analyze_ser(
                 img = _get_frame(src, int(i), roi=roi_used, debayer=debayer,
                                  to_float01=True, force_rgb=bool(to_rgb), bayer_pattern=bpat)
                 m = _downsample_mono01(img, max_dim=max_dim)
-                if cv2 is not None:
-                    lap = cv2.Laplacian(m, cv2.CV_32F, ksize=3)
-                    q = float(np.mean(np.abs(lap)))
-                else:
-                    q = float(np.abs(m[:, 1:] - m[:, :-1]).mean() +
-                              np.abs(m[1:, :] - m[:-1, :]).mean())
+                q = _quality_score(m)
                 out_i.append(int(i))
                 out_q.append(q)
         finally:
@@ -1732,6 +1905,18 @@ def analyze_ser(
             done_ct += int(ii.size)
             if progress_cb:
                 progress_cb(done_ct, n, "Quality")
+
+    # ── Half-pedestal subtraction ─────────────────────────────────────
+    # Subtract half the minimum score from all frames.
+    # This removes the DC offset / pedestal that the log1p scaling
+    # introduces, broadening the relative spread so that score
+    # differences are more proportionally meaningful.
+    # The adjusted scores are stored back into quality so the graph,
+    # keep% ordering, and weighted stacking all see the same values.
+    _q_min = float(quality.min())
+    quality -= _q_min * 0.5
+    quality  = np.maximum(quality, 0.0).astype(np.float32)
+
 
     order = np.argsort(-quality).astype(np.int32, copy=False)
 
@@ -1780,6 +1965,9 @@ def analyze_ser(
     coarse_conf: Optional[np.ndarray] = None
     ang = np.zeros((n,), dtype=np.float32)
     ang_conf = np.zeros((n,), dtype=np.float32)
+    correct_disp = bool(getattr(cfg, "correct_atm_dispersion", False))
+    disp_dx = np.zeros((n, 3), dtype=np.float32)   # per-frame R/G/B dx
+    disp_dy = np.zeros((n, 3), dtype=np.float32)   # per-frame R/G/B dy
 
     if cfg.track_mode == "off" or cv2 is None:
         return AnalyzeResult(
@@ -1973,6 +2161,8 @@ def analyze_ser(
             out_cf = []
             out_ang = []
             out_acf = []
+            out_cdx: list[np.ndarray] = []
+            out_cdy: list[np.ndarray] = []
 
             src, owns = _ensure_source(source_obj, cache_items=0)
             try:
@@ -1996,6 +2186,18 @@ def analyze_ser(
                         dy_i += dyr
                         cf_i = float(np.clip(0.85 * float(cf_i) + 0.15 * c_ssd, 0.05, 1.0))
 
+                    # ── Atmospheric dispersion correction ─────────────────
+                    # Split into R/G/B, find each channel's centroid relative
+                    # to G, store the per-channel shift for use in _warp_chunk.
+                    cdx_i = np.zeros(3, dtype=np.float32)
+                    cdy_i = np.zeros(3, dtype=np.float32)
+                    if correct_disp and img.ndim == 3 and img.shape[2] >= 3:
+                        # Apply global shift first so centroid is on-disc
+                        img_shifted = _shift_image(img, float(dx_i), float(dy_i))
+                        cdx_i, cdy_i = _channel_centroid_shifts(
+                            img_shifted, tracker, float(ref_cx), float(ref_cy))
+
+
                     # Field rotation — gated only on the checkbox, NOT on centroid confidence.
                     # Has its own internal hysteresis quality gate.
                     if correct_rot:
@@ -2018,6 +2220,9 @@ def analyze_ser(
                     out_cf.append(float(cf_i))
                     out_ang.append(float(ang_i))
                     out_acf.append(float(ang_cf_i))
+                    out_cdx.append(cdx_i)
+                    out_cdy.append(cdy_i)
+
 
             finally:
                 if owns:
@@ -2026,23 +2231,35 @@ def analyze_ser(
                     except Exception:
                         pass
 
-            return (np.asarray(out_i, np.int32), np.asarray(out_dx, np.float32),
-                    np.asarray(out_dy, np.float32), np.asarray(out_cf, np.float32),
-                    np.asarray(out_ang, np.float32), np.asarray(out_acf, np.float32))
+            return (np.asarray(out_i, np.int32),
+                    np.asarray(out_dx,  np.float32),
+                    np.asarray(out_dy,  np.float32),
+                    np.asarray(out_cf,  np.float32),
+                    np.asarray(out_ang, np.float32),
+                    np.asarray(out_acf, np.float32),
+                    np.stack(out_cdx, axis=0).astype(np.float32),   # (chunk, 3)
+                    np.stack(out_cdy, axis=0).astype(np.float32))
 
     done_ct = 0
     with ThreadPoolExecutor(max_workers=workers) as ex:
         futs = [ex.submit(_shift_chunk, c) for c in chunks2 if c.size > 0]
         for fut in as_completed(futs):
-            ii, ddx, ddy, ccf, aang, acf = fut.result()
-            dx[ii] = ddx
-            dy[ii] = ddy
-            conf[ii] = np.clip(ccf, 0.05, 1.0)
-            ang[ii] = aang
+            if cfg.track_mode == "surface":
+                ii, ddx, ddy, ccf, aang, acf = fut.result()
+            else:
+                ii, ddx, ddy, ccf, aang, acf, ccdx, ccdy = fut.result()
+                if correct_disp:
+                    disp_dx[ii] = ccdx
+                    disp_dy[ii] = ccdy
+            dx[ii]       = ddx
+            dy[ii]       = ddy
+            conf[ii]     = np.clip(ccf, 0.05, 1.0)
+            ang[ii]      = aang
             ang_conf[ii] = acf
             done_ct += int(ii.size)
             if progress_cb:
                 progress_cb(done_ct, n, "SSD Refine")
+
     # ---- Penalize rotation-rejected frames ----
     # ang_cf == 0.0 means hysteresis failed (rejected) — NOT a genuine measurement.
     # The reference frame genuinely measures 0° but still gets ang_cf > 0.
@@ -2072,8 +2289,10 @@ def analyze_ser(
         planet_derotate=planet_derotate if cfg.track_mode == "planetary" else False,
         surface_anchor_rot_cx=surface_anchor_rot_cx,
         surface_anchor_rot_cy=surface_anchor_rot_cy,
-    )
+        disp_dx=disp_dx if correct_disp else None,
+        disp_dy=disp_dy if correct_disp else None,
 
+    )
 
 def realign_ser(
     cfg: SERStackConfig,
@@ -2085,8 +2304,32 @@ def realign_ser(
     progress_cb=None,
     bayer_pattern: Optional[str] = None,
     workers: Optional[int] = None,
-    log_cb=None, 
+    log_cb=None,
 ) -> AnalyzeResult:
+    """
+    Re-run the AP-level shift refinement after the user edits alignment points.
+
+    What we KEEP from the existing analysis (unchanged by AP edits):
+      - quality, order          — frame scoring is independent of APs
+      - ref_image, ref_cx/cy   — reference frame doesn't change
+      - ang, ang_conf           — field rotation search is independent of APs
+      - disp_dx, disp_dy        — chromatic dispersion is independent of APs
+      - coarse_conf             — surface coarse drift is independent of APs
+
+    What we RECOMPUTE (the only thing AP edits actually affect):
+      - dx, dy, conf            — SSD refine using the new AP layout as a
+                                  starting point on top of the existing global
+                                  centroid / coarse drift shifts
+
+    For planetary: the existing dx/dy from the centroid tracker are already
+    good starting points — we just re-run SSD refine on top of them with the
+    updated ap_centers stored in analysis.
+
+    For surface: the coarse NCC drift (dx/dy) is already stored in analysis
+    from the original analyze_ser run — we re-run the AP-level SSD refine
+    on top of those, exactly as before but without repeating the expensive
+    coarse pass.
+    """
     bpat = bayer_pattern or _cfg_bayer_pattern(cfg)
 
     if analysis is None:
@@ -2098,142 +2341,95 @@ def realign_ser(
     if not source_obj:
         raise ValueError("SERStackConfig.source/ser_path is empty")
 
-    n = int(analysis.frames_total)
-    roi_used = analysis.roi_used
-    ref_img = analysis.ref_image
+    n          = int(analysis.frames_total)
+    roi_used   = analysis.roi_used
+    ref_img    = analysis.ref_image
 
     if cfg.track_mode == "off" or cv2 is None:
-        analysis.dx = np.zeros((n,), dtype=np.float32)
-        analysis.dy = np.zeros((n,), dtype=np.float32)
-        analysis.conf = np.ones((n,), dtype=np.float32)
-        analysis.ang = np.zeros((n,), dtype=np.float32)
-        if hasattr(analysis, "coarse_conf"):
-            analysis.coarse_conf = None
+        # Nothing to refine — zero out shifts and return
+        analysis.dx   = np.zeros((n,), dtype=np.float32)
+        analysis.dy   = np.zeros((n,), dtype=np.float32)
+        analysis.conf = np.ones((n,),  dtype=np.float32)
         return analysis
+
+    # ── Update AP centers from cfg (the whole point of calling realign) ──────
+    ap_size    = int(getattr(cfg, "ap_size",    64) or 64)
+    ap_spacing = int(getattr(cfg, "ap_spacing", 48) or 48)
+    ap_min_mean = float(getattr(cfg, "ap_min_mean", 0.03))
 
     ap_centers = getattr(analysis, "ap_centers", None)
     if ap_centers is None or np.asarray(ap_centers).size == 0:
-        ap_centers = _autoplace_aps(
-            ref_img,
-            ap_size=int(getattr(cfg, "ap_size", 64)),
-            ap_spacing=int(getattr(cfg, "ap_spacing", 48)),
-            ap_min_mean=float(getattr(cfg, "ap_min_mean", 0.03)),
-        )
-        analysis.ap_centers = ap_centers
+        ap_centers = _autoplace_aps(ref_img, ap_size=ap_size,
+                                    ap_spacing=ap_spacing,
+                                    ap_min_mean=ap_min_mean)
+    analysis.ap_centers = ap_centers
+    analysis.ap_size    = ap_size
 
     if workers is None:
         cpu = os.cpu_count() or 4
         workers = max(1, min(cpu, 48))
-
     if cv2 is not None:
         try:
             cv2.setNumThreads(1)
         except Exception:
             pass
 
-    src0, owns0 = _ensure_source(source_obj, cache_items=2)
-    try:
-        meta = src0.meta
-        src_w = int(meta.width)
-        src_h = int(meta.height)
-    finally:
-        if owns0:
-            try:
-                src0.close()
-            except Exception:
-                pass
-
-    def _surface_tracking_roi() -> Optional[Tuple[int, int, int, int]]:
-        if roi_used is None:
-            return None
-        margin = int(getattr(cfg, "surface_track_margin", 256))
-        x, y, w, h = [int(v) for v in roi_used]
-        x0 = max(0, x - margin)
-        y0 = max(0, y - margin)
-        x1 = min(src_w, x + w + margin)
-        y1 = min(src_h, y + h + margin)
-        return _clamp_roi_in_bounds((x0, y0, x1 - x0, y1 - y0), src_w, src_h)
-
-    roi_track = _surface_tracking_roi() if cfg.track_mode == "surface" else roi_used
-
-    idxs2 = np.arange(n, dtype=np.int32)
-    chunk_factor = int(getattr(cfg, "progress_chunk_factor", 5))
-    n_chunks2 = max(5, int(workers) * chunk_factor)
-    n_chunks2 = max(1, min(int(n), n_chunks2))
-    chunks2 = np.array_split(idxs2, n_chunks2)
-
-    dx = np.zeros((n,), dtype=np.float32)
-    dy = np.zeros((n,), dtype=np.float32)
-    conf = np.ones((n,), dtype=np.float32)
-    ang = np.zeros((n,), dtype=np.float32)
-    ang_conf_arr = np.zeros((n,), dtype=np.float32)
-
-    ref_m = _to_mono01(ref_img).astype(np.float32, copy=False)
-    ap_size = int(getattr(cfg, "ap_size", 64) or 64)
+    # ── Shared state read from existing analysis ──────────────────────────────
+    ref_m        = _to_mono01(ref_img).astype(np.float32, copy=False)
     use_multiscale = bool(getattr(cfg, "ap_multiscale", False))
-    correct_rot = bool(getattr(cfg, "correct_field_rotation", False))
-    rot_max = float(getattr(cfg, "field_rotation_max_deg", 5.0))
-    rot_step = float(getattr(cfg, "field_rotation_step_deg", 0.5))
+    correct_rot  = bool(getattr(cfg, "correct_field_rotation", False))
+    rot_max      = float(getattr(cfg, "field_rotation_max_deg",  5.0))
+    rot_step     = float(getattr(cfg, "field_rotation_step_deg", 0.5))
+    correct_disp = bool(getattr(cfg, "correct_atm_dispersion", False))
+    bruteforce   = bool(getattr(cfg, "ssd_refine_bruteforce", False))
 
-    # Surface rotation center
-    surface_anchor_rot_cx: Optional[float] = getattr(analysis, "surface_anchor_rot_cx", None)
-    surface_anchor_rot_cy: Optional[float] = getattr(analysis, "surface_anchor_rot_cy", None)
-    if cfg.track_mode == "surface" and correct_rot and surface_anchor_rot_cx is None:
-        sa = getattr(cfg, "surface_anchor", None)
-        if sa is not None:
-            try:
-                ax, ay, aw, ah = [int(v) for v in sa]
-                surface_anchor_rot_cx = float(ax + aw * 0.5)
-                surface_anchor_rot_cy = float(ay + ah * 0.5)
-            except Exception:
-                pass
-        if surface_anchor_rot_cx is None:
-            surface_anchor_rot_cx = float(ref_img.shape[1] * 0.5)
-            surface_anchor_rot_cy = float(ref_img.shape[0] * 0.5)
+    # Existing global shifts — used as warm starts for SSD refine
+    prev_dx  = np.asarray(analysis.dx,  dtype=np.float32).copy()
+    prev_dy  = np.asarray(analysis.dy,  dtype=np.float32).copy()
 
-    coarse_conf: Optional[np.ndarray] = None
-    if cfg.track_mode == "surface":
-        coarse_conf = np.zeros((n,), dtype=np.float32)
-        if progress_cb:
-            progress_cb(0, n, "Surface: coarse drift (ref-locked NCC+subpix)…")
+    # Output arrays (conf will be refreshed; dx/dy may be nudged by SSD)
+    dx   = prev_dx.copy()
+    dy   = prev_dy.copy()
+    conf = np.ones((n,), dtype=np.float32)
 
-        dx_chain, dy_chain, cc_chain = _coarse_surface_ref_locked(
-            source_obj, n=n, roi=roi_track, roi_used=roi_used,
-            debayer=debayer, to_rgb=to_rgb, bayer_pattern=bpat,
-            progress_cb=progress_cb, progress_every=25,
-            down=2, template_size=256, search_radius=96, bandpass=True,
-            workers=min(workers, 8), stride=16,
-        )
-        dx[:] = dx_chain
-        dy[:] = dy_chain
-        coarse_conf[:] = cc_chain
+    # ── Chunking ─────────────────────────────────────────────────────────────
+    idxs          = np.arange(n, dtype=np.int32)
+    chunk_factor  = int(getattr(cfg, "progress_chunk_factor", 5))
+    n_chunks      = max(5, min(int(n), int(workers) * chunk_factor))
+    chunks        = np.array_split(idxs, n_chunks)
 
     if progress_cb:
         progress_cb(0, n, "SSD Refine")
 
+    # ── Surface branch ────────────────────────────────────────────────────────
     if cfg.track_mode == "surface":
-        def _shift_chunk(chunk: np.ndarray):
-            out_i: list[int] = []
+        surface_anchor_rot_cx = getattr(analysis, "surface_anchor_rot_cx", None)
+        surface_anchor_rot_cy = getattr(analysis, "surface_anchor_rot_cy", None)
+        coarse_conf = getattr(analysis, "coarse_conf", None)
+
+        def _shift_chunk_surface(chunk: np.ndarray):
+            out_i:  list[int]   = []
             out_dx: list[float] = []
             out_dy: list[float] = []
             out_cf: list[float] = []
-            out_cc: list[float] = []
-            out_ang: list[float] = []
-            out_acf: list[float] = []
 
             src, owns = _ensure_source(source_obj, cache_items=0)
             try:
                 for i in chunk.tolist():
-                    img = _get_frame(src, int(i), roi=roi_used, debayer=debayer,
-                                     to_float01=True, force_rgb=bool(to_rgb), bayer_pattern=bpat)
+                    img   = _get_frame(src, int(i), roi=roi_used, debayer=debayer,
+                                       to_float01=True, force_rgb=bool(to_rgb),
+                                       bayer_pattern=bpat)
                     cur_m = _to_mono01(img).astype(np.float32, copy=False)
 
-                    coarse_dx = float(dx[int(i)])
-                    coarse_dy = float(dy[int(i)])
-                    cc = float(coarse_conf[int(i)]) if coarse_conf is not None else 0.5
+                    # Warm-start from the coarse drift already stored in analysis
+                    coarse_dx = float(prev_dx[int(i)])
+                    coarse_dy = float(prev_dy[int(i)])
+                    cc_i = (float(coarse_conf[int(i)])
+                            if coarse_conf is not None else 0.5)
 
                     cur_m_g = _shift_image(cur_m, coarse_dx, coarse_dy)
 
+                    # AP-level residual shift
                     if use_multiscale:
                         s2, s1, s05 = _scaled_ap_sizes(ap_size)
 
@@ -2252,23 +2448,24 @@ def realign_ser(
                         dx2, dy2, cf2 = _one_scale(s2)
                         dx1, dy1, cf1 = _one_scale(s1)
                         dx0, dy0, cf0 = _one_scale(s05)
-                        w2 = max(1e-3, float(cf2)) * 1.25
-                        w1 = max(1e-3, float(cf1)) * 1.00
-                        w0 = max(1e-3, float(cf0)) * 0.85
+                        w2   = max(1e-3, float(cf2)) * 1.25
+                        w1   = max(1e-3, float(cf1)) * 1.00
+                        w0   = max(1e-3, float(cf0)) * 0.85
                         wsum = w2 + w1 + w0
                         dx_res = (w2 * dx2 + w1 * dx1 + w0 * dx0) / wsum
                         dy_res = (w2 * dy2 + w1 * dy1 + w0 * dy0) / wsum
-                        cf_ap = float(np.clip((w2 * cf2 + w1 * cf1 + w0 * cf0) / wsum, 0.0, 1.0))
+                        cf_ap  = float(np.clip(
+                            (w2 * cf2 + w1 * cf1 + w0 * cf0) / wsum, 0.0, 1.0))
                     else:
                         rdx, rdy, resp = _ap_phase_shifts_per_ap(
                             ref_m, cur_m_g, ap_centers=ap_centers,
                             ap_size=ap_size, max_dim=max_dim)
-                        cf = np.clip(resp.astype(np.float32, copy=False), 0.0, 1.0)
+                        cf   = np.clip(resp.astype(np.float32, copy=False), 0.0, 1.0)
                         keep = _reject_ap_outliers(rdx, rdy, cf, z=3.5)
                         if np.any(keep):
                             dx_res = float(np.median(rdx[keep]))
                             dy_res = float(np.median(rdy[keep]))
-                            cf_ap = float(np.median(cf[keep]))
+                            cf_ap  = float(np.median(cf[keep]))
                         else:
                             dx_res, dy_res, cf_ap = 0.0, 0.0, 0.25
 
@@ -2276,34 +2473,18 @@ def realign_ser(
                     dy_i = float(coarse_dy + dy_res)
 
                     dxr, dyr, c_ssd = _refine_shift_ssd(
-                        ref_m, cur_m, dx_i, dy_i, radius=5, crop=0.80,
-                        bruteforce=bool(getattr(cfg, "ssd_refine_bruteforce", False)))
+                        ref_m, cur_m, dx_i, dy_i,
+                        radius=5, crop=0.80, bruteforce=bruteforce)
                     dx_i += float(dxr)
                     dy_i += float(dyr)
 
-                    cf_i = float(np.clip(0.60 * cc + 0.40 * float(cf_ap), 0.0, 1.0))
-                    cf_i = float(np.clip(0.85 * cf_i + 0.15 * float(c_ssd), 0.05, 1.0))
-
-                    # Field rotation — gated only on checkbox, not on conf
-                    ang_i = 0.0
-                    ang_cf_i = 0.0
-                    if correct_rot:
-                        rot_cx = float(surface_anchor_rot_cx) if surface_anchor_rot_cx is not None else float(ref_m.shape[1] * 0.5)
-                        rot_cy = float(surface_anchor_rot_cy) if surface_anchor_rot_cy is not None else float(ref_m.shape[0] * 0.5)
-                        ang_i, ang_cf_i = _find_best_rotation_ssd(
-                            ref_m, cur_m, dx_i, dy_i,
-                            cx=rot_cx, cy=rot_cy,
-                            max_deg=rot_max, step_deg=rot_step, crop=0.80,
-                            frame_idx=int(i),
-                            log_cb=log_cb,)
+                    cf_i = float(np.clip(0.60 * cc_i + 0.40 * cf_ap, 0.0, 1.0))
+                    cf_i = float(np.clip(0.85 * cf_i + 0.15 * c_ssd, 0.05, 1.0))
 
                     out_i.append(int(i))
                     out_dx.append(dx_i)
                     out_dy.append(dy_i)
                     out_cf.append(cf_i)
-                    out_cc.append(float(cc))
-                    out_ang.append(ang_i)
-                    out_acf.append(ang_cf_i)
 
             finally:
                 if owns:
@@ -2312,77 +2493,59 @@ def realign_ser(
                     except Exception:
                         pass
 
-            return (np.asarray(out_i, np.int32), np.asarray(out_dx, np.float32),
-                    np.asarray(out_dy, np.float32), np.asarray(out_cf, np.float32),
-                    np.asarray(out_cc, np.float32), np.asarray(out_ang, np.float32),
-                    np.asarray(out_acf, np.float32))
+            return (np.asarray(out_i,  np.int32),
+                    np.asarray(out_dx,  np.float32),
+                    np.asarray(out_dy,  np.float32),
+                    np.asarray(out_cf,  np.float32))
 
+        done_ct = 0
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futs = [ex.submit(_shift_chunk_surface, c) for c in chunks if c.size > 0]
+            for fut in as_completed(futs):
+                ii, ddx, ddy, ccf = fut.result()
+                dx[ii]   = ddx
+                dy[ii]   = ddy
+                conf[ii] = np.clip(ccf, 0.05, 1.0).astype(np.float32)
+                done_ct += int(ii.size)
+                if progress_cb:
+                    progress_cb(done_ct, n, "SSD Refine")
+
+    # ── Planetary branch ──────────────────────────────────────────────────────
     else:
-        # planetary
-        tracker = PlanetaryTracker(
-            smooth_sigma=float(getattr(cfg, "planet_smooth_sigma", 1.5)),
-            simple_thresh=float(getattr(cfg, "planet_simple_thresh", 0.5)),
-        )
-
-        ref_cx, ref_cy, ref_cc = tracker.compute_center(ref_img)
-        if ref_cc <= 0.0:
-            mref = _to_mono01(ref_img)
-            ref_cx = float(mref.shape[1] * 0.5)
-            ref_cy = float(mref.shape[0] * 0.5)
-
+        ref_cx = float(getattr(analysis, "ref_cx", ref_img.shape[1] * 0.5))
+        ref_cy = float(getattr(analysis, "ref_cy", ref_img.shape[0] * 0.5))
         ref_m_full = _to_mono01(ref_img).astype(np.float32, copy=False)
-        center_on_planet = bool(getattr(cfg, "center_on_planet", False))
-        if center_on_planet:
-            ref_center = (float(ref_m_full.shape[1] * 0.5), float(ref_m_full.shape[0] * 0.5))
-        else:
-            ref_center = (float(ref_cx), float(ref_cy))
 
-        def _shift_chunk(chunk: np.ndarray):
-            out_i: list[int] = []
+        def _shift_chunk_planetary(chunk: np.ndarray):
+            out_i:  list[int]   = []
             out_dx: list[float] = []
             out_dy: list[float] = []
             out_cf: list[float] = []
-            out_ang: list[float] = []
-            out_acf: list[float] = []
 
             src, owns = _ensure_source(source_obj, cache_items=0)
             try:
                 for i in chunk.tolist():
-                    img = _get_frame(src, int(i), roi=roi_used, debayer=debayer,
-                                     to_float01=True, force_rgb=bool(to_rgb), bayer_pattern=bpat)
-
-                    dx_i, dy_i, cf_i = tracker.shift_to_ref(img, ref_center)
-                    ang_i = 0.0
-                    ang_cf_i = 0.0
-
-                    # Always compute cur_m — needed for rotation search regardless of conf
+                    img   = _get_frame(src, int(i), roi=roi_used, debayer=debayer,
+                                       to_float01=True, force_rgb=bool(to_rgb),
+                                       bayer_pattern=bpat)
                     cur_m = _to_mono01(img).astype(np.float32, copy=False)
 
-                    # SSD refine gated on centroid confidence
-                    if float(cf_i) >= 0.25:
-                        dxr, dyr, c_ssd = _refine_shift_ssd(
-                            ref_m_full, cur_m, float(dx_i), float(dy_i),
-                            radius=2, crop=0.80,
-                            bruteforce=bool(getattr(cfg, "ssd_refine_bruteforce", False)))
-                        dx_i = float(dx_i) + dxr
-                        dy_i = float(dy_i) + dyr
-                        cf_i = float(np.clip(0.85 * float(cf_i) + 0.15 * c_ssd, 0.05, 1.0))
+                    # Warm-start from the centroid shifts already in analysis
+                    dx_i = float(prev_dx[int(i)])
+                    dy_i = float(prev_dy[int(i)])
 
-                    # Field rotation — gated only on checkbox, NOT on centroid confidence
-                    if correct_rot:
-                        ang_i, ang_cf_i = _find_best_rotation_ssd(
-                            ref_m_full, cur_m, dx_i, dy_i,
-                            cx=float(ref_cx), cy=float(ref_cy),
-                            max_deg=rot_max, step_deg=rot_step, crop=0.80,
-                            frame_idx=int(i),
-                            log_cb=log_cb,)
+                    # Re-run SSD refine from the existing warm start
+                    dxr, dyr, c_ssd = _refine_shift_ssd(
+                        ref_m_full, cur_m, dx_i, dy_i,
+                        radius=5, crop=0.80, bruteforce=bruteforce)
+                    dx_i += float(dxr)
+                    dy_i += float(dyr)
+                    cf_i  = float(np.clip(c_ssd, 0.05, 1.0))
 
                     out_i.append(int(i))
-                    out_dx.append(float(dx_i))
-                    out_dy.append(float(dy_i))
-                    out_cf.append(float(cf_i))
-                    out_ang.append(ang_i)
-                    out_acf.append(ang_cf_i)
+                    out_dx.append(dx_i)
+                    out_dy.append(dy_i)
+                    out_cf.append(cf_i)
 
             finally:
                 if owns:
@@ -2391,53 +2554,33 @@ def realign_ser(
                     except Exception:
                         pass
 
-            return (np.asarray(out_i, np.int32), np.asarray(out_dx, np.float32),
-                    np.asarray(out_dy, np.float32), np.asarray(out_cf, np.float32),
-                    np.asarray(out_ang, np.float32), np.asarray(out_acf, np.float32))
+            return (np.asarray(out_i,  np.int32),
+                    np.asarray(out_dx,  np.float32),
+                    np.asarray(out_dy,  np.float32),
+                    np.asarray(out_cf,  np.float32))
 
-    done_ct = 0
-    with ThreadPoolExecutor(max_workers=workers) as ex:
-        futs = [ex.submit(_shift_chunk, c) for c in chunks2 if c.size > 0]
-        for fut in as_completed(futs):
-            if cfg.track_mode == "surface":
-                ii, ddx, ddy, ccf, ccc, aang, aacf = fut.result()
-                if coarse_conf is not None:
-                    coarse_conf[ii] = ccc
-            else:
-                ii, ddx, ddy, ccf, aang, aacf = fut.result()
+        done_ct = 0
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futs = [ex.submit(_shift_chunk_planetary, c) for c in chunks if c.size > 0]
+            for fut in as_completed(futs):
+                ii, ddx, ddy, ccf = fut.result()
+                dx[ii]   = ddx
+                dy[ii]   = ddy
+                conf[ii] = np.clip(ccf, 0.05, 1.0).astype(np.float32)
+                done_ct += int(ii.size)
+                if progress_cb:
+                    progress_cb(done_ct, n, "SSD Refine")
 
-            dx[ii] = ddx
-            dy[ii] = ddy
-            conf[ii] = np.clip(ccf, 0.05, 1.0).astype(np.float32, copy=False)
-            ang[ii] = aang
-            ang_conf_arr[ii] = aacf
-
-            done_ct += int(ii.size)
-            if progress_cb:
-                progress_cb(done_ct, n, "SSD Refine")
-    # ---- Penalize rotation-rejected frames ----
-    if correct_rot:
-        rejected_mask = (np.abs(ang_conf_arr) < 1e-9)
-        ref_frame_idx = int(analysis.order[0]) if analysis.order is not None and len(analysis.order) > 0 else 0
-        rejected_mask[ref_frame_idx] = False
-        n_rejected = int(np.count_nonzero(rejected_mask))
-        if n_rejected > 0:
-            analysis.quality[rejected_mask] = 0.0
-            analysis.order[:] = np.argsort(-analysis.quality).astype(np.int32, copy=False)
-            if log_cb is not None:
-                log_cb(f"Rotation: {n_rejected} frames rejected (flat curve) — moved to end of quality order.")
-    analysis.dx = dx
-    analysis.dy = dy
+    # ── Write back only what changed ─────────────────────────────────────────
+    # ang, ang_conf, disp_dx, disp_dy, quality, order, ref_image, ref_cx/cy,
+    # coarse_conf — all preserved from the original analyze_ser run.
+    analysis.dx   = dx
+    analysis.dy   = dy
     analysis.conf = conf
-    analysis.ang = ang
-    analysis.ang_conf = ang_conf_arr
-    if hasattr(analysis, "coarse_conf"):
-        analysis.coarse_conf = coarse_conf
-    analysis.surface_anchor_rot_cx = surface_anchor_rot_cx
-    analysis.surface_anchor_rot_cy = surface_anchor_rot_cy
 
     if cfg.track_mode == "surface":
-        _print_surface_debug(dx=dx, dy=dy, conf=conf, coarse_conf=coarse_conf,
+        _print_surface_debug(dx=dx, dy=dy, conf=conf,
+                             coarse_conf=getattr(analysis, "coarse_conf", None),
                              floor=0.05, prefix="[SER][Surface][realign]")
 
     return analysis

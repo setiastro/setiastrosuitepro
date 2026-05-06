@@ -171,7 +171,7 @@ class SERViewer(QDialog):
         top.addStretch(1)
         left.addLayout(top)
 
-        self.lbl_info = QLabel("No SER loaded.", self)
+        self.lbl_info = QLabel("No SER/AVI/Frames loaded.", self)
         self.lbl_info.setStyleSheet("color:#888;")
         self.lbl_info.setWordWrap(True)
         left.addWidget(self.lbl_info)
