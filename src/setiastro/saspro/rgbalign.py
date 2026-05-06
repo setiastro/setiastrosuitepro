@@ -8,7 +8,7 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal, QEvent, QTimer
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QApplication,
     QComboBox, QCheckBox, QMessageBox, QProgressBar, QPlainTextEdit,
-    QSpinBox, QGridLayout, QWidget
+    QSpinBox, QDoubleSpinBox, QGridLayout, QWidget
 )
 from PyQt6.QtGui import QImage, QPixmap, QMouseEvent, QCursor
 
@@ -39,39 +39,51 @@ def _translate_channel(ch: np.ndarray, dx: float, dy: float) -> np.ndarray:
         borderValue=0,
     )
 
-def _planet_centroid(ch: np.ndarray):
-    """Return (cx, cy, area) of dominant planet blob, or None."""
-    if cv2 is None:
+def _planet_centroid(ch: np.ndarray, signal_floor: float = 0.05):
+    """
+    Return (cx, cy, effective_area) of the planet disc using an
+    intensity-weighted centroid (centre of mass) over all pixels
+    above `signal_floor` (fraction of the channel's own max).
+ 
+    This is the same approach used in the planetary stacker — far more
+    robust than Otsu thresholding because it:
+      • Handles limb darkening naturally (bright limb still dominates)
+      • Is not fooled by hot pixels (they add negligible mass)
+      • Degrades gracefully when the planet fills most of the frame
+      • Requires no morphological cleanup
+ 
+    Returns None if too few signal pixels are found.
+    """
+    img = np.asarray(ch, dtype=np.float32)
+ 
+    # Normalise to [0, 1] robustly
+    ch_max = float(np.percentile(img, 99.5))
+    ch_min = float(np.percentile(img,  0.5))
+    if ch_max <= ch_min + 1e-9:
         return None
-
-    img = ch.astype(np.float32, copy=False)
-    p1 = float(np.percentile(img, 1.0))
-    p99 = float(np.percentile(img, 99.5))
-    if p99 <= p1:
+ 
+    norm = np.clip((img - ch_min) / (ch_max - ch_min), 0.0, 1.0)
+ 
+    # Signal mask — pixels that are part of the planet
+    mask = norm > signal_floor
+    n_sig = int(np.count_nonzero(mask))
+    if n_sig < 16:
         return None
-
-    scaled = (img - p1) * (255.0 / (p99 - p1))
-    scaled = np.clip(scaled, 0, 255).astype(np.uint8)
-    scaled = cv2.GaussianBlur(scaled, (0, 0), 1.2)
-
-    _, bw = cv2.threshold(scaled, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-    bw = cv2.morphologyEx(bw, cv2.MORPH_OPEN, k, iterations=1)
-    bw = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, k, iterations=2)
-
-    num, labels, stats, cents = cv2.connectedComponentsWithStats(bw, connectivity=8)
-    if num <= 1:
+ 
+    # Intensity-weighted centroid
+    weights = norm * mask          # zero outside disc, brightness inside
+    total_w = float(weights.sum())
+    if total_w < 1e-9:
         return None
+ 
+    h, w = img.shape[:2]
+    ys, xs = np.mgrid[0:h, 0:w]
+ 
+    cx = float((weights * xs).sum() / total_w)
+    cy = float((weights * ys).sum() / total_w)
+ 
+    return (cx, cy, float(n_sig))
 
-    areas = stats[1:, cv2.CC_STAT_AREA]
-    j = int(np.argmax(areas)) + 1
-    area = float(stats[j, cv2.CC_STAT_AREA])
-    if area < 200:
-        return None
-
-    cx, cy = cents[j]
-    return (float(cx), float(cy), area)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -88,11 +100,14 @@ class RGBAlignWorker(QThread):
     MIN_MATCHES = 6
 
 
-    def __init__(self, img: np.ndarray, model: str, sep_sigma: float = 3.0):
+    def __init__(self, img: np.ndarray, model: str, sep_sigma: float = 3.0,
+                 planet_floor: float = 0.05):
         super().__init__()
         self.img = img
         self.model = model
         self.sep_sigma = float(sep_sigma)
+        self.planet_floor = float(planet_floor)
+
 
         self.r_xform = None
         self.b_xform = None
@@ -210,63 +225,183 @@ class RGBAlignWorker(QThread):
         except Exception as e:
             self.failed.emit(str(e))
 
-    def _planet_centroid(self, ch: np.ndarray):
+    def _planet_centroid(self, ch: np.ndarray, signal_floor: float = 0.05):
         """
-        Return (cx, cy, area) in pixel coordinates for the dominant planet blob.
-        Robust for uint8/uint16/float images.
+        Intensity-weighted centroid over pixels above signal_floor.
+        Same algorithm as the module-level function — kept as a method
+        so the worker can call it without importing the module function.
         """
-        if cv2 is None:
+        img = np.asarray(ch, dtype=np.float32)
+ 
+        ch_max = float(np.percentile(img, 99.5))
+        ch_min = float(np.percentile(img,  0.5))
+        if ch_max <= ch_min + 1e-9:
             return None
-
-        img = ch.astype(np.float32, copy=False)
-
-        # Normalize to 0..255 for thresholding (robust percentile scaling)
-        p1 = float(np.percentile(img, 1.0))
-        p99 = float(np.percentile(img, 99.5))
-        if p99 <= p1:
+ 
+        norm = np.clip((img - ch_min) / (ch_max - ch_min), 0.0, 1.0)
+ 
+        mask = norm > signal_floor
+        n_sig = int(np.count_nonzero(mask))
+        if n_sig < 16:
             return None
-
-        scaled = (img - p1) * (255.0 / (p99 - p1))
-        scaled = np.clip(scaled, 0, 255).astype(np.uint8)
-
-        # Blur to suppress banding/noise
-        scaled = cv2.GaussianBlur(scaled, (0, 0), 1.2)
-
-        # Otsu threshold to separate planet from background
-        _, bw = cv2.threshold(scaled, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-        # Clean up small junk / fill holes a bit
-        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-        bw = cv2.morphologyEx(bw, cv2.MORPH_OPEN, k, iterations=1)
-        bw = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, k, iterations=2)
-
-        # Largest connected component = planet
-        num, labels, stats, cents = cv2.connectedComponentsWithStats(bw, connectivity=8)
-        if num <= 1:
+ 
+        weights = norm * mask
+        total_w = float(weights.sum())
+        if total_w < 1e-9:
             return None
+ 
+        h, w = img.shape[:2]
+        ys, xs = np.mgrid[0:h, 0:w]
+ 
+        cx = float((weights * xs).sum() / total_w)
+        cy = float((weights * ys).sum() / total_w)
+ 
+        return (cx, cy, float(n_sig))
 
-        # stats: [label, x, y, w, h, area] but area is stats[:, cv2.CC_STAT_AREA]
-        areas = stats[1:, cv2.CC_STAT_AREA]
-        j = int(np.argmax(areas)) + 1
-        area = float(stats[j, cv2.CC_STAT_AREA])
-        if area < 200:  # too tiny = probably noise
-            return None
-
-        cx, cy = cents[j]
-        return (float(cx), float(cy), area)
-
-    def _estimate_translation_by_centroid(self, src: np.ndarray, ref: np.ndarray):
-        c_src = self._planet_centroid(src)
-        c_ref = self._planet_centroid(ref)
+    def _estimate_translation_by_centroid(
+        self,
+        src: np.ndarray,
+        ref: np.ndarray,
+        refine_ssd: bool = True,
+        ssd_radius: int = 8,
+    ):
+        """
+        Estimate the (dx, dy) shift to align src to ref using:
+ 
+          Pass 1 — Intensity-weighted centroid.
+                   Find the planet centre in each channel and compute
+                   the shift that moves src's centroid onto ref's centroid.
+                   This handles the bulk of atmospheric dispersion.
+ 
+          Pass 2 — SSD gradient refinement (optional, default on).
+                   Apply the centroid shift to src, then minimise the
+                   Sum of Squared Differences between the gradient images
+                   of the shifted src and ref over a small search window.
+                   The grey-world hypothesis means that when R, G, B are
+                   properly aligned their spatial structure is identical,
+                   so the minimum SSD gives the true sub-pixel alignment.
+ 
+        Returns:
+            (dx, dy, src_info, ref_info)  or  None if centroid fails.
+ 
+        src_info / ref_info are (cx, cy, n_sig) tuples for diagnostics.
+        """
+        c_src = self._planet_centroid(src, signal_floor=self.planet_floor)
+        c_ref = self._planet_centroid(ref, signal_floor=self.planet_floor)
+ 
         if c_src is None or c_ref is None:
             return None
-
+ 
         sx, sy, sa = c_src
         rx, ry, ra = c_ref
-
+ 
+        # Centroid shift (coarse)
         dx = rx - sx
         dy = ry - sy
-        return (dx, dy, (sx, sy, sa), (rx, ry, ra))
+ 
+        # ── SSD refinement ────────────────────────────────────────────────
+        # Apply the centroid shift to src, then find the residual shift
+        # that minimises the gradient SSD in a small window around (0,0).
+        if refine_ssd and cv2 is not None:
+            try:
+                # Shift src by the coarse estimate
+                H, W = src.shape[:2]
+                M_coarse = np.array([[1, 0, dx],
+                                     [0, 1, dy]], dtype=np.float32)
+                src_shifted = cv2.warpAffine(
+                    src.astype(np.float32, copy=False),
+                    M_coarse, (W, H),
+                    flags=cv2.INTER_LANCZOS4,
+                    borderMode=cv2.BORDER_REPLICATE,
+                )
+ 
+                # Gradient images (Sobel) — captures structure, not brightness
+                def _grad(im):
+                    gx = cv2.Sobel(im, cv2.CV_32F, 1, 0, ksize=3)
+                    gy = cv2.Sobel(im, cv2.CV_32F, 0, 1, ksize=3)
+                    g  = cv2.magnitude(gx, gy)
+                    g -= float(g.mean())
+                    s  = float(g.std()) + 1e-6
+                    return (g / s).astype(np.float32)
+ 
+                ref_g = _grad(ref.astype(np.float32, copy=False))
+                src_g = _grad(src_shifted)
+ 
+                # Crop centre 80% to avoid border artifacts from warpAffine
+                cfy = max(8, int(H * 0.10))
+                cfx = max(8, int(W * 0.10))
+                ref_gc = ref_g[cfy:H-cfy, cfx:W-cfx]
+                src_gc = src_g[cfy:H-cfy, cfx:W-cfx]
+ 
+                # Brute-force SSD scan over [-ssd_radius, +ssd_radius]
+                r = int(ssd_radius)
+                best_ssd = float("inf")
+                best_ddx = 0
+                best_ddy = 0
+ 
+                ch_, cw_ = ref_gc.shape[:2]
+                for ddy in range(-r, r + 1):
+                    for ddx in range(-r, r + 1):
+                        # Overlap slices
+                        x0r = max(0,  ddx);  x1r = min(cw_,  cw_ + ddx)
+                        y0r = max(0,  ddy);  y1r = min(ch_,  ch_ + ddy)
+                        x0s = max(0, -ddx);  x1s = min(cw_, cw_  - ddx)
+                        y0s = max(0, -ddy);  y1s = min(ch_, ch_  - ddy)
+ 
+                        rr = ref_gc[y0r:y1r, x0r:x1r]
+                        ss = src_gc[y0s:y1s, x0s:x1s]
+                        if rr.size == 0:
+                            continue
+                        d = rr - ss
+                        ssd = float(np.mean(d * d))
+                        if ssd < best_ssd:
+                            best_ssd = ssd
+                            best_ddx = ddx
+                            best_ddy = ddy
+ 
+                # Subpixel quadratic polish (separable)
+                def _quad_min(vm, v0, vp):
+                    denom = vm - 2.0 * v0 + vp
+                    if abs(denom) < 1e-12:
+                        return 0.0
+                    return float(np.clip(0.5 * (vm - vp) / denom, -0.75, 0.75))
+ 
+                def _ssd_at(ddx_, ddy_):
+                    x0r = max(0,  ddx_);  x1r = min(cw_,  cw_ + ddx_)
+                    y0r = max(0,  ddy_);  y1r = min(ch_,  ch_ + ddy_)
+                    x0s = max(0, -ddx_);  x1s = min(cw_, cw_  - ddx_)
+                    y0s = max(0, -ddy_);  y1s = min(ch_, ch_  - ddy_)
+                    rr = ref_gc[y0r:y1r, x0r:x1r]
+                    ss = src_gc[y0s:y1s, x0s:x1s]
+                    if rr.size == 0:
+                        return best_ssd
+                    d = rr - ss
+                    return float(np.mean(d * d))
+ 
+                sub_x = 0.0
+                sub_y = 0.0
+                if abs(best_ddx - 1) <= r:
+                    sub_x = _quad_min(
+                        _ssd_at(best_ddx - 1, best_ddy),
+                        best_ssd,
+                        _ssd_at(best_ddx + 1, best_ddy),
+                    )
+                if abs(best_ddy - 1) <= r:
+                    sub_y = _quad_min(
+                        _ssd_at(best_ddx, best_ddy - 1),
+                        best_ssd,
+                        _ssd_at(best_ddx, best_ddy + 1),
+                    )
+ 
+                dx += float(best_ddx) + sub_x
+                dy += float(best_ddy) + sub_y
+ 
+            except Exception as e:
+                # SSD refinement is best-effort; fall back to centroid-only
+                print(f"[RGBAlign] SSD refinement failed (using centroid only): {e}")
+ 
+        return (dx, dy, c_src, c_ref)
+
 
 
     # ───── helpers (basically mini versions of your big star alignment logic) ─────
@@ -275,18 +410,18 @@ class RGBAlignWorker(QThread):
 
         # ── Planet centroid ADC mode ─────────────────────────────
         if model == "planet-centroid":
-            t = self._estimate_translation_by_centroid(src, ref)
+            t = self._estimate_translation_by_centroid(src, ref, refine_ssd=True, ssd_radius=8)
             if t is None:
-                # fall back to affine/astroalign if centroid fails
-                # (or you can hard-fail here if you prefer)
+                # fall through to astroalign if centroid fails
                 pass
             else:
                 dx, dy, src_info, ref_info = t
-                # store "pairs" as tiny diagnostic info
+                # src_info / ref_info are (cx, cy, n_sig) tuples
                 src_xy = np.array([[src_info[0], src_info[1]]], dtype=np.float32)
                 dst_xy = np.array([[ref_info[0], ref_info[1]]], dtype=np.float32)
                 X = (float(dx), float(dy))
                 return ("translate", X, (src_xy, dst_xy))
+
         # ── 0) edge-only, SEP-based path ─────────────────────────────
         if model == "edge-sep":
             src_xy, dst_xy = self._pair_edge_points(src, ref, (H, W))
@@ -562,22 +697,42 @@ class RGBAlignDialog(QDialog):
         # ── SEP controls ─────────────────────────
         sep_row = QHBoxLayout()
         sep_row.addWidget(QLabel(self.tr("SEP sigma:")))
-
         self.sep_spin = QSpinBox()
         self.sep_spin.setRange(1, 100)
-        self.sep_spin.setValue(5)   # default; 1.5 was too hungry
+        self.sep_spin.setValue(5)
         self.sep_spin.setToolTip("Detection threshold (σ) for SEP star finding in EDGE mode.\n"
                                  "Higher = fewer stars, lower = more stars.")
         sep_row.addWidget(self.sep_spin)
-
         self.btn_trial_sep = QPushButton(self.tr("Trial detect stars"))
         self.btn_trial_sep.setToolTip("Run SEP on the green channel with this sigma and report how many "
                                       "stars it finds and how many are in the EDGE ring.")
         self.btn_trial_sep.clicked.connect(self._trial_sep_detect)
         sep_row.addWidget(self.btn_trial_sep)
+        # wrap in a widget so we can show/hide the whole row including its label
+        self.sep_row_widget = QWidget()
+        self.sep_row_widget.setLayout(sep_row)
+        lay.addWidget(self.sep_row_widget)
 
-        lay.addLayout(sep_row)
-
+        # ── Planet controls (planet centroid mode) ────────────────────────────
+        from PyQt6.QtWidgets import QDoubleSpinBox
+        planet_row = QHBoxLayout()
+        planet_row.addWidget(QLabel(self.tr("Signal floor (0..1):")))
+        self.planet_floor_spin = QDoubleSpinBox()
+        self.planet_floor_spin.setRange(0.01, 0.50)
+        self.planet_floor_spin.setSingleStep(0.01)
+        self.planet_floor_spin.setDecimals(2)
+        self.planet_floor_spin.setValue(0.05)
+        self.planet_floor_spin.setToolTip(
+            "Pixels with normalised brightness above this value are considered\n"
+            "part of the planet disc for centroid calculation.\n"
+            "Lower = include more of the disc (better for dim limbs).\n"
+            "Higher = ignore faint halo/noise (better for bright planets)."
+        )
+        planet_row.addWidget(self.planet_floor_spin)
+        planet_row.addStretch(1)
+        self.planet_row_widget = QWidget()
+        self.planet_row_widget.setLayout(planet_row)
+        lay.addWidget(self.planet_row_widget)
 
         self.chk_new_doc = QCheckBox(self.tr("Create new document (keep original)"))
         self.chk_new_doc.setChecked(True)
@@ -615,6 +770,8 @@ class RGBAlignDialog(QDialog):
 
         self.btn_run.clicked.connect(self._start_align)
         self.btn_close.clicked.connect(self.close)
+        self.model_combo.currentIndexChanged.connect(self._update_mode_ui)
+        self._update_mode_ui()   # set initial state
 
         self.worker: RGBAlignWorker | None = None
 
@@ -666,6 +823,15 @@ class RGBAlignDialog(QDialog):
                     self.doc.image = out
         except Exception as e:
             QMessageBox.warning(self, "RGB Align", f"Manual aligned image created, but applying failed:\n{e}")
+
+    def _update_mode_ui(self):
+        """Show SEP controls for star-based modes, planet floor for planet mode."""
+        is_planet = "planet" in self.model_combo.currentText().lower() \
+                    or "centroid" in self.model_combo.currentText().lower() \
+                    or "adc" in self.model_combo.currentText().lower()
+ 
+        self.sep_row_widget.setVisible(not is_planet)
+        self.planet_row_widget.setVisible(is_planet)
 
 
     def _trial_sep_detect(self):
@@ -723,8 +889,16 @@ class RGBAlignDialog(QDialog):
         sep_sigma = float(self.sep_spin.value())
         self.progress_label.setText("Starting…")
         self.progress_bar.setValue(0)
+        is_planet = "planet" in self.model_combo.currentText().lower() \
+                    or "centroid" in self.model_combo.currentText().lower() \
+                    or "adc" in self.model_combo.currentText().lower()
+        planet_floor = float(self.planet_floor_spin.value()) if is_planet else 0.05
+        self.worker = RGBAlignWorker(
+            self.image, model,
+            sep_sigma=sep_sigma,
+            planet_floor=planet_floor,
+        )
 
-        self.worker = RGBAlignWorker(self.image, model, sep_sigma=sep_sigma)
         self.worker.progress.connect(self._on_worker_progress)
         self.worker.done.connect(self._on_worker_done)
         self.worker.failed.connect(self._on_worker_failed)
