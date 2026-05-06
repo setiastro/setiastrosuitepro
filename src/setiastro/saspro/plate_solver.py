@@ -1394,158 +1394,157 @@ def _write_temp_fit_via_save_image(gray2d: np.ndarray, _header: Header | None) -
     print(f"Saved FITS image to: {fit_path}")
     return fit_path, os.path.splitext(fit_path)[0] + ".wcs"
 
-def _solve_numpy_with_astrometry(
-    parent,
-    settings,
-    image: np.ndarray,
-    base_header: Header | None
-) -> tuple[bool, Header | str]:
+def _solve_numpy_with_fallback(
+    parent, settings, image: np.ndarray, seed_header
+) -> tuple[bool, "Header | str"]:
     """
-    Try local solve-field first; if unavailable/failed, try astrometry.net web API.
-
-    WEB MODE:
-      - keep ORIGINAL dimensions (no downsample)
-      - stretch to non-linear for star detectability
-      - quantize to 16-bit unsigned FITS to reduce upload size
-      - prefer solved WCS file from astrometry.net (includes SIP)
+    Three-pass solve strategy:
+ 
+    Pass 1 — ASTAP seeded (auto from header, -r 179, compute FOV from scale).
+              Fast when header has good RA/Dec.
+ 
+    Pass 2 — ASTAP blind (-r 179, -fov 0, -z 0, no RA/Dec seed).
+              Slower but handles completely wrong or missing coordinates.
+ 
+    Pass 3 — Astrometry.net (local solve-field if configured, then web API).
+              Last resort for fields ASTAP can't solve.
     """
-    import os
-    import numpy as np
     from astropy.io.fits import Header
-
-    # Build full-res mono in [0,1], but NON-LINEAR (stretched) for detectability
-    norm_full = _normalize_for_astap(image)                 # float32 [0,1], mono/color
-    gray_full = _to_gray2d_unit(norm_full)                 # 2D float32 [0,1]
-    Hfull, Wfull = int(gray_full.shape[0]), int(gray_full.shape[1])
-
-    # Always write a full-res temp for LOCAL solve-field (float32)
-    tmp_fit_full, _unused_sidecar = _write_temp_fit_via_save_image(gray_full, None)
-
-    try:
-        # 1) local solve-field path (full-res float FITS)
-        ok, res = _solve_with_local_solvefield(parent, settings, tmp_fit_full)
-        if ok:
-            hdr = res if isinstance(res, Header) else None
-            if hdr is not None:
-                d = _ensure_ctypes(_coerce_wcs_numbers(dict(hdr)))
-                if any(re.match(r"^(A|B|AP|BP)_\d+_\d+$", k) for k in d.keys()):
-                    if not str(d.get("CTYPE1","RA---TAN")).endswith("-SIP"):
-                        d["CTYPE1"] = "RA---TAN-SIP"
-                    if not str(d.get("CTYPE2","DEC--TAN")).endswith("-SIP"):
-                        d["CTYPE2"] = "DEC--TAN-SIP"
-                hh = Header()
-                for k, v in d.items():
-                    try: hh[k] = v
-                    except Exception as e:
-                        import logging
-                        logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
-                return True, hh
-            return False, QCoreApplication.translate("PlateSolver", "solve-field returned no header.")
-
-        # 2) web API fallback (full-res, 16-bit upload)
-        if requests is None:
-            return False, QCoreApplication.translate("PlateSolver", "requests not available for astrometry.net API.")
-
-        _set_status_ui(parent, QCoreApplication.translate("PlateSolver", "Status: Preparing full-res 16-bit FITS for web solve…"))
-
-        tmp_fit_web = _write_temp_fit_web_16bit(gray_full)
-
-        # Verify web temp file isn't empty
-        try:
-            sz = os.path.getsize(tmp_fit_web)
-            if sz < 3000:
-                return False, QCoreApplication.translate("PlateSolver", "Temp FITS for web upload is empty/tiny ({0} bytes).").format(sz)
-        except Exception:
-            pass
-
-        session = _astrometry_login(settings, parent=parent)
-        if not session:
-            return False, QCoreApplication.translate("PlateSolver", "Astrometry.net login failed.")
-
-        subid = _astrometry_upload(settings, session, tmp_fit_web, parent=parent)
-        if not subid:
-            return False, QCoreApplication.translate("PlateSolver", "Astrometry.net upload failed.")
-
-        job_id = _astrometry_poll_job(settings, subid, parent=parent)
-        if not job_id:
-            return False, QCoreApplication.translate("PlateSolver", "Astrometry.net job ID not received in time.")
-
-        # Prefer full WCS file (includes SIP)
-        hdr_wcs = _astrometry_download_wcs_file(settings, job_id, parent=parent)
-
-        if hdr_wcs is None:
-            # fallback to calibration (no SIP)
-            calib = _astrometry_poll_calib(settings, job_id, parent=parent)
-            if not calib:
-                return False, QCoreApplication.translate("PlateSolver", "Astrometry.net calibration not received in time.")
-
-            # Debug: log parity so we can verify the fix
-            print(f"[Astrometry] calibration parity={calib.get('parity')} orientation={calib.get('orientation')} pixscale={calib.get('pixscale')}")
-            _set_status_ui(parent, QCoreApplication.translate("PlateSolver", "Status: Building WCS header from calibration…"))
-            hdr_wcs = _wcs_header_from_astrometry_calib(calib, (Hfull, Wfull))
-
-        # Coerce & ensure TAN-SIP if SIP terms exist
-        d = _ensure_ctypes(_coerce_wcs_numbers(dict(hdr_wcs)))
-        if any(re.match(r"^(A|B|AP|BP)_\d+_\d+$", k) for k in d.keys()):
-            if not str(d.get("CTYPE1","RA---TAN")).endswith("-SIP"):
-                d["CTYPE1"] = "RA---TAN-SIP"
-            if not str(d.get("CTYPE2","DEC--TAN")).endswith("-SIP"):
-                d["CTYPE2"] = "DEC--TAN-SIP"
-
-        # Build a WCS-only Header from d
-        wcs_hdr = Header()
-        for k, v in d.items():
-            try:
-                wcs_hdr[k] = v
-            except Exception:
-                pass
-
-        # Merge with acquisition header (base_header)
-        merged = _merge_wcs_into_base_header(base_header, wcs_hdr)
-
-        # clean temp web file ...
-        try:
-            if os.path.exists(tmp_fit_web):
-                os.remove(tmp_fit_web)
-        except Exception:
-            pass
-
-        return True, merged
-
-    finally:
-        # clean temp + solve-field byproducts next to tmp_fit_full
-        try:
-            base = os.path.splitext(tmp_fit_full)[0]
-            for ext in (".fit",".fits",".wcs",".axy",".corr",".rdls",".solved",".new",".match",".ngc",".png",".ppm",".xyls"):
-                p = base + ext
-                if os.path.exists(p):
-                    os.remove(p)
-        except Exception:
-            pass
-
-
-def _solve_numpy_with_fallback(parent, settings, image: np.ndarray, seed_header: Header | None) -> tuple[bool, Header | str]:
-    # Try ASTAP first
-    _set_status_ui(parent, QCoreApplication.translate("PlateSolver", "Status: Solving with ASTAP…"))
-    ok, res = _solve_numpy_with_astap(parent, settings, image, seed_header)
-    if ok:
-        _set_status_ui(parent, QCoreApplication.translate("PlateSolver", "Status: Solved with ASTAP."))
-        return True, res
-
-    # ASTAP failed → tell the user and fall back
-    err_msg = str(res) if res is not None else "unknown error"
-    print("ASTAP failed:", err_msg)
-    _set_status_ui(parent, QCoreApplication.translate("PlateSolver", "Status: ASTAP failed ({0}). Falling back to Astrometry.net…").format(err_msg))
-    QApplication.processEvents()
-
-    # Fallback: astrometry.net (local solve-field first, then web API inside)
-    ok2, res2 = _solve_numpy_with_astrometry(parent, settings, image, seed_header)
-    if ok2:
-        _set_status_ui(parent, QCoreApplication.translate("PlateSolver", "Status: Solved via Astrometry.net."))
+ 
+    # Save original settings to restore after each pass
+    _orig_radius_mode = settings.value("astap/seed_radius_mode", "auto",    type=str)
+    _orig_radius_val  = settings.value("astap/seed_radius_value", 5.0,      type=float)
+    _orig_fov_mode    = settings.value("astap/seed_fov_mode",    "compute", type=str)
+    _orig_fov_val     = settings.value("astap/seed_fov_value",    0.0,      type=float)
+    _orig_seed_mode   = settings.value("astap/seed_mode",        "auto",    type=str)
+ 
+    def _restore():
+        settings.setValue("astap/seed_radius_mode",  _orig_radius_mode)
+        settings.setValue("astap/seed_radius_value",  _orig_radius_val)
+        settings.setValue("astap/seed_fov_mode",      _orig_fov_mode)
+        settings.setValue("astap/seed_fov_value",     _orig_fov_val)
+        settings.setValue("astap/seed_mode",           _orig_seed_mode)
+ 
+    # ── Pass 1: ASTAP seeded ─────────────────────────────────────────────────
+    # Derive scale and FOV directly from the seed header so we never fall
+    # back to -fov 0 due to a missing scale.  -r 179 is a very wide search
+    # radius that still uses the RA/Dec center point.
+    _set_status_ui(
+        parent,
+        QCoreApplication.translate("PlateSolver",
+            "Status: ASTAP solving (seeded from header, r=179)…")
+    )
+ 
+    # Compute scale and FOV from seed header
+    # NOTE: image here may be 2x2 binned (exoplanet loads binned frames).
+    # The pixel scale in the header is for the FULL resolution image, so
+    # FOV = (binned_height * bin_factor * scale) / 3600.
+    # We detect the bin factor by comparing the header NAXIS2 to the
+    # actual image height. If no NAXIS2 is available, assume bin factor 1.
+    _pass1_scale = None
+    _pass1_fov   = None
+    if isinstance(seed_header, Header):
+        _pass1_scale = _estimate_scale_arcsec_from_header(seed_header)
+        if _pass1_scale is not None:
+            H_img = int(image.shape[0]) if image.ndim >= 2 else 0
+            if H_img > 0:
+                # Check if the header tells us the original full-res height
+                naxis2 = seed_header.get("NAXIS2", None)
+                try:
+                    H_full = int(naxis2)
+                    bin_factor = max(1, round(H_full / H_img))
+                except (TypeError, ValueError):
+                    bin_factor = 1
+                H_effective = H_img * bin_factor
+                _pass1_fov = (H_effective * _pass1_scale) / 3600.0
+                print(f"[PlateSolver] Pass 1: H_img={H_img}  H_full(hdr)={H_effective}  bin_factor={bin_factor}")
+ 
+    # Set settings for Pass 1
+    settings.setValue("astap/seed_mode",          "auto")
+    settings.setValue("astap/seed_radius_mode",   "value")
+    settings.setValue("astap/seed_radius_value",   179.0)
+    if _pass1_fov is not None and _pass1_fov > 0:
+        # We have a real FOV — pass it explicitly as a value
+        settings.setValue("astap/seed_fov_mode",  "value")
+        settings.setValue("astap/seed_fov_value",  _pass1_fov)
+        print(f"[PlateSolver] Pass 1: scale={_pass1_scale:.3f}\"/px  fov={_pass1_fov:.4f}°  r=179")
     else:
-        _set_status_ui(parent, QCoreApplication.translate("PlateSolver", "Status: Astrometry.net failed ({0}).").format(res2))
+        # No scale available — let ASTAP infer FOV
+        settings.setValue("astap/seed_fov_mode",  "auto")
+        settings.setValue("astap/seed_fov_value",  0.0)
+        print("[PlateSolver] Pass 1: no scale in header, fov=auto  r=179")
+ 
+    try:
+        ok, res = _solve_numpy_with_astap(parent, settings, image, seed_header)
+    finally:
+        _restore()
+ 
+    if ok:
+        _set_status_ui(
+            parent,
+            QCoreApplication.translate("PlateSolver", "Status: Solved with ASTAP (seeded).")
+        )
+        return True, res
+ 
+    err1 = str(res) if res is not None else "unknown error"
+    print(f"[PlateSolver] Pass 1 (ASTAP seeded) failed: {err1}")
+ 
+    # ── Pass 2: ASTAP blind ──────────────────────────────────────────────────
+    _set_status_ui(
+        parent,
+        QCoreApplication.translate("PlateSolver",
+            "Status: ASTAP seeded solve failed ({0}). Trying blind solve…"
+        ).format(err1)
+    )
+    QApplication.processEvents()
+ 
+    settings.setValue("astap/seed_mode",          "none")   # no RA/Dec
+    settings.setValue("astap/seed_radius_mode",   "value")
+    settings.setValue("astap/seed_radius_value",   179.0)
+    settings.setValue("astap/seed_fov_mode",       "auto")
+    settings.setValue("astap/seed_fov_value",       0.0)
+    print("[PlateSolver] Pass 2: blind  r=179  fov=auto")
+ 
+    try:
+        ok2, res2 = _solve_numpy_with_astap(parent, settings, image, None)
+    finally:
+        _restore()
+ 
+    if ok2:
+        _set_status_ui(
+            parent,
+            QCoreApplication.translate("PlateSolver", "Status: Solved with ASTAP (blind).")
+        )
+        return True, res2
+ 
+    err2 = str(res2) if res2 is not None else "unknown error"
+    print(f"[PlateSolver] Pass 2 (ASTAP blind) failed: {err2}")
+ 
+    # ── Pass 3: Astrometry.net ───────────────────────────────────────────────
+    _set_status_ui(
+        parent,
+        QCoreApplication.translate("PlateSolver",
+            "Status: ASTAP blind solve failed ({0}). Falling back to Astrometry.net…"
+        ).format(err2)
+    )
+    QApplication.processEvents()
+ 
+    ok3, res3 = _solve_numpy_with_astrometry(parent, settings, image, seed_header)
+    if ok3:
+        _set_status_ui(
+            parent,
+            QCoreApplication.translate("PlateSolver", "Status: Solved via Astrometry.net.")
+        )
+    else:
+        _set_status_ui(
+            parent,
+            QCoreApplication.translate("PlateSolver",
+                "Status: All solvers failed. Last error: {0}"
+            ).format(str(res3))
+        )
+ 
+    return ok3, res3
 
-    return ok2, res2
 
 
 def _save_temp_fits_via_save_image(norm_img: np.ndarray, clean_header: Header, is_mono: bool) -> str:
