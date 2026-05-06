@@ -447,26 +447,30 @@ class ObjectSearchResultDialog(QDialog):
         # Bottom row
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-
+ 
         btn_vis = QPushButton("Full Visibility Dialog…")
         btn_vis.clicked.connect(self._open_full_visibility)
         btn_row.addWidget(btn_vis)
-
+ 
         btn_aladin = QPushButton("Open in Aladin")
         btn_aladin.clicked.connect(lambda: webbrowser.open(
             f"https://aladin.cds.unistra.fr/AladinLite/"
             f"?target={ra:.5f}+{dec:+.5f}&fov=0.5&survey=P/DSS2/color"))
         btn_row.addWidget(btn_aladin)
-
-        # In the bottom btn_row, before btn_close:
+ 
         btn_finder = QPushButton("Finder Chart…")
         btn_finder.clicked.connect(self._open_finder_chart)
         btn_row.addWidget(btn_finder)
-
+ 
+        btn_fieldrot = QPushButton("🔄 Field Rotation…")
+        btn_fieldrot.clicked.connect(self._open_field_rotation)
+        btn_row.addWidget(btn_fieldrot)
+ 
         btn_close = QPushButton("Close")
         btn_close.clicked.connect(self.accept)
         btn_row.addWidget(btn_close)
         outer.addLayout(btn_row)
+
 
     def _open_finder_chart(self):
         try:
@@ -630,6 +634,71 @@ class ObjectSearchResultDialog(QDialog):
             )
         stats.setStyleSheet("font-size: 11px; padding: 2px 4px;")
         layout.addWidget(stats)
+
+
+    def _open_field_rotation(self):
+        """
+        Open the Alt/Az Field Rotation Calculator for this object, using the
+        best viewing night discovered by the year-long score sweep.
+ 
+        We compute the full altitude curve for the best night, find the moment
+        of peak altitude (transit), and use that alt/az as the pre-fill.  This
+        gives the *worst-case* rotation for the night — which is the most
+        informative single-point value — while the night curve in the dialog
+        shows the full picture across the night.
+        """
+        name     = self.obj_data.get("name", "Object")
+        ra       = self.obj_data.get("ra",  0.0)
+        dec      = self.obj_data.get("dec", 0.0)
+        lat      = self.observer["lat"]
+        lon      = self.observer["lon"]
+        tz       = self.observer["tz"]
+ 
+        # Use the best night if the yearly sweep found one, else fall back to
+        # the observer's current date.
+        if self.yearly_results:
+            best_date = max(self.yearly_results, key=lambda r: r[1])[0]
+        else:
+            best_date = self.observer.get("date", "")
+ 
+        alt_prefill = None
+        az_prefill  = None
+ 
+        if best_date:
+            try:
+                # Reuse _compute_alt_curve — same function used everywhere else
+                times, hrs, obj_alts, sun_alts, moon_alts, loc = \
+                    _compute_alt_curve(ra, dec, lat, lon, best_date, tz)
+ 
+                from astropy import units as u
+                from astropy.coordinates import SkyCoord, AltAz
+ 
+                peak_idx = int(np.argmax(obj_alts))
+                frame    = AltAz(obstime=times, location=loc)
+                altaz    = SkyCoord(ra=ra * u.deg,
+                                    dec=dec * u.deg).transform_to(frame)
+                alt_prefill = float(altaz.alt.deg[peak_idx])
+                az_prefill  = float(altaz.az.deg[peak_idx])
+            except Exception:
+                pass   # fall through to manual entry if ephemeris fails
+ 
+        from setiastro.saspro.altaz_field_rotation import AltAzFieldRotationDialog
+        dlg = AltAzFieldRotationDialog(
+            lat=lat,
+            lon=lon,
+            alt=alt_prefill,
+            az=az_prefill,
+            ra_deg=ra,
+            dec_deg=dec,
+            date_str=best_date or None,
+            tz_name=tz,
+            target_name=name,
+            settings=QSettings(),
+            parent=self,
+        )
+        dlg.show()
+ 
+
 
     def _start_simbad(self, name, ra, dec):
         alt_name = self.obj_data.get("alt_name", "")
