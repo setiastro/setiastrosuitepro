@@ -2011,32 +2011,47 @@ class ExoPlanetWindow(QDialog):
 
         # ── Step 1: trust existing WCS only if NOT from XISF and not forcing ─
         force_solve = self.force_solve_cb.isChecked()
-
+ 
         if not source_is_xisf and not force_solve:
             existing_wcs = self._try_wcs_from_header(hdr, plane2d)
             if existing_wcs is not None:
-                self._wcs = existing_wcs
-                self._wcs_bin_factor = 2  # header WCS is full-res; star coords are binned
-                H, W = plane2d.shape[:2]
-                try:
-                    # Use center of the BINNED plane, scaled to full-res coords
-                    center = self._wcs.pixel_to_world(W, H)  # W,H = half full-res
-                    self.wcs_ra  = float(center.ra.deg)
-                    self.wcs_dec = float(center.dec.deg)
-                except Exception:
-                    self.wcs_ra = self.wcs_dec = None
-
-                ra_str  = "nan" if self.wcs_ra  is None else f"{self.wcs_ra:.5f}"
-                dec_str = "nan" if self.wcs_dec is None else f"{self.wcs_dec:.5f}"
-                self.status_label.setText(f"WCS from header: RA={ra_str}, Dec={dec_str}")
-                self.fetch_tesscut_btn.setEnabled(True)
-                return
+                # Ask the user whether to reuse the existing WCS or re-solve
+                ans = QMessageBox.question(
+                    self,
+                    "WCS Found",
+                    "A valid WCS solution was found in the image header.\n\n"
+                    "Use the existing WCS?\n\n"
+                    "• Yes — use the header WCS as-is (fast)\n"
+                    "• No  — run the plate solver to get a fresh solution",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.Yes,
+                )
+                if ans == QMessageBox.StandardButton.Yes:
+                    self._wcs = existing_wcs
+                    self._wcs_bin_factor = 2  # header WCS is full-res; star coords are binned
+                    H, W = plane2d.shape[:2]
+                    try:
+                        center = self._wcs.pixel_to_world(W, H)
+                        self.wcs_ra  = float(center.ra.deg)
+                        self.wcs_dec = float(center.dec.deg)
+                    except Exception:
+                        self.wcs_ra = self.wcs_dec = None
+ 
+                    ra_str  = "nan" if self.wcs_ra  is None else f"{self.wcs_ra:.5f}"
+                    dec_str = "nan" if self.wcs_dec is None else f"{self.wcs_dec:.5f}"
+                    self.status_label.setText(f"WCS from header: RA={ra_str}, Dec={dec_str}")
+                    self.fetch_tesscut_btn.setEnabled(True)
+                    return
+                # else: fall through to plate solve below
         else:
             if force_solve:
                 self.status_label.setText("Force blind solve enabled — ignoring any existing WCS…")
             else:
-                self.status_label.setText("XISF source detected — skipping approximate WCS, running plate solve…")
+                self.status_label.setText(
+                    "XISF source detected — skipping approximate WCS, running plate solve…")
             QApplication.processEvents()
+
+
 
         # ── Step 2: plate-solve ───────────────────────────────────────────
         seed_hdr = self._coerce_seed_header(hdr if hdr is not None else {}, plane2d)

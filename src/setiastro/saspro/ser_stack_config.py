@@ -35,6 +35,7 @@ class SERStackConfig:
     correct_field_rotation: bool = False
     field_rotation_max_deg: float = 5.0
     field_rotation_step_deg: float = 0.5
+    correct_atm_dispersion: bool = False
 
     # Drizzle
     drizzle_scale: float = 1.0
@@ -85,6 +86,7 @@ class SERStackConfig:
         self.correct_field_rotation  = bool(kwargs.pop("correct_field_rotation", False))
         self.field_rotation_max_deg  = float(kwargs.pop("field_rotation_max_deg", 5.0))
         self.field_rotation_step_deg = float(kwargs.pop("field_rotation_step_deg", 0.5))
+        self.correct_atm_dispersion  = bool(kwargs.pop("correct_atm_dispersion", False))
         # clamp to sane values
         self.field_rotation_max_deg  = max(0.5, min(45.0, self.field_rotation_max_deg))
         self.field_rotation_step_deg = max(0.1, min(5.0,  self.field_rotation_step_deg))
