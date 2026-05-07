@@ -107,7 +107,7 @@ def _build_NAFNet():
             dec_blk_nums: Union[Tuple[int, ...], list] = (2, 2, 2, 2),
             middle_blk_num: int = 2,
             use_sigmoid: bool = True,
-            ups_mode: str = "bilinear",  # "bilinear" or "pixelshuffle"
+            ups_mode: str = "bilinear",
         ):
             super().__init__()
             self.intro = nn.Conv2d(in_ch, width, kernel_size=3, padding=1, bias=True)
@@ -128,7 +128,6 @@ def _build_NAFNet():
 
             for num in dec_blk_nums:
                 if ups_mode == "pixelshuffle":
-                    # ups.N.0.weight — Nadir older builds
                     self.ups.append(
                         nn.Sequential(
                             nn.Conv2d(ch, ch * 2, kernel_size=1, bias=True),
@@ -136,7 +135,6 @@ def _build_NAFNet():
                         )
                     )
                 else:
-                    # ups.N.1.weight — SyQon Nadir/AxiomV2 current
                     self.ups.append(
                         nn.Sequential(
                             nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False),
@@ -165,6 +163,109 @@ def _build_NAFNet():
             return self.out_act(x)
 
     return NAFNet
+
+
+# =============================================================================
+# StarNetGenerator (AxiomV2.2) — lazy builder
+# =============================================================================
+
+def _build_StarNetGenerator():
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+
+    class _SafeBatchNorm2d(nn.BatchNorm2d):
+        def forward(self, x):
+            if self.training and x.numel() // x.shape[1] == 1:
+                return F.batch_norm(
+                    x, self.running_mean, self.running_var,
+                    self.weight, self.bias, False, self.momentum, self.eps,
+                )
+            return super().forward(x)
+
+    class _ConvBlock(nn.Module):
+        def __init__(self, in_ch, out_ch, use_bn=True):
+            super().__init__()
+            layers = [
+                nn.LeakyReLU(0.2, inplace=True),
+                nn.Conv2d(in_ch, out_ch, kernel_size=4, stride=2, padding=1),
+            ]
+            if use_bn:
+                layers.append(_SafeBatchNorm2d(out_ch, eps=1e-5, momentum=0.1))
+            self.block = nn.Sequential(*layers)
+
+        def forward(self, x):
+            return self.block(x)
+
+    class _DeconvBlock(nn.Module):
+        def __init__(self, in_ch, out_ch):
+            super().__init__()
+            self.block = nn.Sequential(
+                nn.ReLU(inplace=True),
+                nn.Upsample(scale_factor=2, mode="nearest"),
+                nn.Conv2d(in_ch, out_ch, kernel_size=3, stride=1, padding=1),
+                _SafeBatchNorm2d(out_ch, eps=1e-5, momentum=0.1),
+            )
+
+        def forward(self, x):
+            return self.block(x)
+
+    class StarNetGenerator(nn.Module):
+        """
+        AxiomV2.2 StarNet-style subtractive residual UNet generator.
+
+        Forward:
+            removal  = relu(raw_removal)
+            starless = input - removal
+        """
+        def __init__(self, in_channels=3, repair_scale=0.35):
+            super().__init__()
+            self.in_channels  = in_channels
+            self.repair_scale = repair_scale
+
+            self.g_conv0 = nn.Conv2d(in_channels, 64, kernel_size=4, stride=2, padding=1)
+            self.g_conv1 = _ConvBlock(64,  128)
+            self.g_conv2 = _ConvBlock(128, 256)
+            self.g_conv3 = _ConvBlock(256, 512)
+            self.g_conv4 = _ConvBlock(512, 512)
+            self.g_conv5 = _ConvBlock(512, 512)
+            self.g_conv6 = _ConvBlock(512, 512)
+            self.g_conv7 = _ConvBlock(512, 512)
+
+            self.g_deconv0 = _DeconvBlock(512,  512)
+            self.g_deconv1 = _DeconvBlock(1024, 512)
+            self.g_deconv2 = _DeconvBlock(1024, 512)
+            self.g_deconv3 = _DeconvBlock(1024, 512)
+            self.g_deconv4 = _DeconvBlock(1024, 256)
+            self.g_deconv5 = _DeconvBlock(512,  128)
+            self.g_deconv6 = _DeconvBlock(256,  64)
+            self.g_deconv7 = nn.Sequential(
+                nn.Upsample(scale_factor=2, mode="nearest"),
+                nn.Conv2d(128, in_channels, kernel_size=3, stride=1, padding=1),
+            )
+
+        def forward(self, x):
+            c0 = self.g_conv0(x)
+            c1 = self.g_conv1(c0)
+            c2 = self.g_conv2(c1)
+            c3 = self.g_conv3(c2)
+            c4 = self.g_conv4(c3)
+            c5 = self.g_conv5(c4)
+            c6 = self.g_conv6(c5)
+            c7 = self.g_conv7(c6)
+
+            d0 = self.g_deconv0(c7)
+            d1 = self.g_deconv1(torch.cat([d0, c6], dim=1))
+            d2 = self.g_deconv2(torch.cat([d1, c5], dim=1))
+            d3 = self.g_deconv3(torch.cat([d2, c4], dim=1))
+            d4 = self.g_deconv4(torch.cat([d3, c3], dim=1))
+            d5 = self.g_deconv5(torch.cat([d4, c2], dim=1))
+            d6 = self.g_deconv6(torch.cat([d5, c1], dim=1))
+            raw_removal = self.g_deconv7(torch.cat([d6, c0], dim=1))
+            removal = F.relu(raw_removal)
+            return x - removal
+
+    return StarNetGenerator
 
 
 # =============================================================================
@@ -342,7 +443,6 @@ def _build_NAFNetLite():
     import torch.nn as nn
 
     class LayerNorm2d_Flat(nn.Module):
-        """1D weight/bias LayerNorm — used by NAFNetLite (Axiom 2.1)."""
         def __init__(self, num_channels: int, eps: float = 1e-6):
             super().__init__()
             self.weight = nn.Parameter(torch.ones(num_channels))
@@ -370,24 +470,21 @@ def _build_NAFNetLite():
             return x1 * x2
 
     class NAFBlockLite(nn.Module):
-        """NAFBlock as used in Axiom 2.1 NAFNetLite."""
         def __init__(self, channels: int, dw_expand: int = 2, ffn_expand: int = 2):
             super().__init__()
             dw_ch  = channels * dw_expand
             ffn_ch = channels * ffn_expand
 
-            # Spatial mixing
             self.norm1 = LayerNorm2d_Flat(channels)
             self.conv1 = nn.Conv2d(channels, dw_ch, 1)
-            self.conv2 = nn.Conv2d(dw_ch, dw_ch, 3, padding=1, groups=dw_ch)  # depthwise
-            self.gate1 = SimpleGate()                                           # dw_ch -> dw_ch//2
+            self.conv2 = nn.Conv2d(dw_ch, dw_ch, 3, padding=1, groups=dw_ch)
+            self.gate1 = SimpleGate()
             self.sca   = SimplifiedChannelAttention(dw_ch // 2)
             self.conv3 = nn.Conv2d(dw_ch // 2, channels, 1)
 
-            # Channel mixing (FFN)
             self.norm2 = LayerNorm2d_Flat(channels)
             self.conv4 = nn.Conv2d(channels, ffn_ch, 1)
-            self.gate2 = SimpleGate()                                           # ffn_ch -> ffn_ch//2
+            self.gate2 = SimpleGate()
             self.conv5 = nn.Conv2d(ffn_ch // 2, channels, 1)
 
             self.beta  = nn.Parameter(torch.zeros(1, channels, 1, 1))
@@ -440,11 +537,9 @@ def _build_NAFNetLite():
             self.middle = nn.Sequential(*[NAFBlockLite(ch) for _ in range(middle_blk_num)])
 
             for num in reversed(dec_blk_nums):
-                # 3x3 conv before PixelShuffle — matches Axiom 2.1 checkpoint
-                # ups.N.0.weight shape: (ch*2, ch, 3, 3)
                 self.ups.append(nn.Sequential(
                     nn.Conv2d(ch, ch * 2, 3, padding=1),
-                    nn.PixelShuffle(2),   # ch*2/4 = ch//2
+                    nn.PixelShuffle(2),
                 ))
                 ch //= 2
                 self.fusions.append(nn.Conv2d(ch * 2, ch, 1))
@@ -470,7 +565,6 @@ def _build_NAFNetLite():
                 x = decoder(x)
 
             x = self.ending(x)
-            # Global residual: model predicts correction, output is clamped starless
             return torch.clamp(inp + x, 0.0, 1.0)
 
     return NAFNetLite
@@ -497,15 +591,10 @@ def _cfg_nadir(depth: int) -> Tuple[Tuple[int, ...], Tuple[int, ...], int]:
 
 
 def _cfg_axiomv2(depth: int) -> Tuple[Tuple[int, ...], Tuple[int, ...], int]:
-    """
-    Matches the SyQon axiomv2 snippet — kept separate from Nadir in case SyQon
-    changes defaults later.
-    """
     return _cfg_nadir(depth)
 
 
 def infer_variant_from_state_dict(sd: dict) -> str:
-    """Best-effort variant inference from a state dict. Returns 'nadir' by default."""
     _ = sd
     return "nadir"
 
@@ -523,23 +612,9 @@ def create_model(
     *,
     variant: str = "nadir",
 ):
-    """
-    Unified factory for SyQon Nadir / AxiomV2 models.
-
-    Parameters used for NAFNet inference:
-      - base_ch  (width)
-      - depth    (number of encoder/decoder stages; maps to enc/dec block counts)
-      - variant  'nadir' or 'axiomv2'
-
-    Other args (groups/use_attention/use_sigmoid) are retained for compatibility
-    with legacy callers. For NAFNet inference we force use_sigmoid=False because
-    SyQon starless models are trained in linear space (no clamping).
-
-    Torch is imported lazily — safe to call at module load time.
-    """
     _ = groups
     _ = use_attention
-    _ = use_sigmoid  # ignored for NAFNet outputs; engine clips/sanitizes later
+    _ = use_sigmoid
 
     v = (variant or "nadir").lower().strip()
     if v in ("axiomv2", "axiom", "ax2"):
@@ -553,12 +628,12 @@ def create_model(
         enc_blk_nums=enc,
         dec_blk_nums=dec,
         middle_blk_num=int(middle),
-        use_sigmoid=False,  # IMPORTANT: keep linear output
+        use_sigmoid=False,
     )
 
 
 # =============================================================================
-# Public lazy constructors for callers that instantiate classes directly
+# Public lazy constructors
 # =============================================================================
 
 def build_NAFNet(**kwargs):
@@ -569,6 +644,9 @@ def build_NAFNetLite(**kwargs):
 
 def build_UNetStar(**kwargs):
     return _build_UNetStar()(**kwargs)
+
+def build_StarNetGenerator(**kwargs):
+    return _build_StarNetGenerator()(**kwargs)
 
 
 class NAFNet:
@@ -590,3 +668,8 @@ class LayerNorm2d:
     """Lazy proxy."""
     def __new__(cls, **kwargs):
         return _build_LayerNorm2d()(**kwargs)
+
+class StarNetGenerator:
+    """Lazy proxy — instantiating this builds and returns the real StarNetGenerator."""
+    def __new__(cls, **kwargs):
+        return _build_StarNetGenerator()(**kwargs)

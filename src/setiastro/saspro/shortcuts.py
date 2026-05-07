@@ -2460,7 +2460,9 @@ class _SyQonToolsPresetDialog(QDialog):
       family: "starless" | "denoise" | "sharpening"
 
       # Starless
-      starless_model_kind: "nadir" | "axiomv2"
+      starless_model_kind:        "nadir" | "axiomv2" | "axiomv2.1" | "axiomv2.2"
+      starless_use_mtf:           bool   (apply temporary stretch before inference)
+      starless_mtf_target_median: float  (stretch target median, default 0.25)
 
       # Prism
       prism_model_kind: "prism_mini" | "prism_deep"
@@ -2488,12 +2490,12 @@ class _SyQonToolsPresetDialog(QDialog):
 
         # ---- family ----
         self.cmb_family = QComboBox(self)
-        self.cmb_family.addItem("Starless", "starless")
-        self.cmb_family.addItem("Denoise", "denoise")
+        self.cmb_family.addItem("Starless",   "starless")
+        self.cmb_family.addItem("Denoise",    "denoise")
         self.cmb_family.addItem("Sharpening", "sharpening")
 
         fam0 = str(init.get("family", "starless") or "starless").strip().lower()
-        idx = self.cmb_family.findData(fam0)
+        idx  = self.cmb_family.findData(fam0)
         if idx < 0:
             idx = self.cmb_family.findData("starless")
         if idx >= 0:
@@ -2510,10 +2512,12 @@ class _SyQonToolsPresetDialog(QDialog):
         self.grp_starless = QGroupBox("Starless Preset", self)
         fs = QFormLayout(self.grp_starless)
 
+        # Model
         self.cmb_starless_model = QComboBox(self)
-        self.cmb_starless_model.addItem("Nadir", "nadir")
-        self.cmb_starless_model.addItem("AxiomV2", "axiomv2")
+        self.cmb_starless_model.addItem("Nadir",     "nadir")
+        self.cmb_starless_model.addItem("AxiomV2",   "axiomv2")
         self.cmb_starless_model.addItem("AxiomV2.1", "axiomv2.1")
+        self.cmb_starless_model.addItem("AxiomV2.2", "axiomv2.2")
 
         sm0 = str(init.get("starless_model_kind", "nadir") or "nadir").strip().lower()
         idx = self.cmb_starless_model.findData(sm0)
@@ -2521,8 +2525,23 @@ class _SyQonToolsPresetDialog(QDialog):
             idx = self.cmb_starless_model.findData("nadir")
         if idx >= 0:
             self.cmb_starless_model.setCurrentIndex(idx)
-
         fs.addRow("Model:", self.cmb_starless_model)
+
+        # Temp stretch
+        self.chk_starless_use_mtf = QCheckBox(
+            "Apply temporary stretch before inference (recommended for linear data)", self
+        )
+        self.chk_starless_use_mtf.setChecked(bool(init.get("starless_use_mtf", True)))
+        fs.addRow("", self.chk_starless_use_mtf)
+
+        self.spin_starless_mtf_median = QDoubleSpinBox(self)
+        self.spin_starless_mtf_median.setRange(0.01, 0.50)
+        self.spin_starless_mtf_median.setDecimals(3)
+        self.spin_starless_mtf_median.setSingleStep(0.01)
+        self.spin_starless_mtf_median.setValue(float(init.get("starless_mtf_target_median", 0.25)))
+        self.spin_starless_mtf_median.setEnabled(self.chk_starless_use_mtf.isChecked())
+        self.chk_starless_use_mtf.toggled.connect(self.spin_starless_mtf_median.setEnabled)
+        fs.addRow("Stretch target median:", self.spin_starless_mtf_median)
 
         # ---- prism group ----
         self.grp_prism = QGroupBox("Prism Preset", self)
@@ -2600,21 +2619,23 @@ class _SyQonToolsPresetDialog(QDialog):
 
     def result_dict(self) -> dict:
         return {
-            "family": str(self.cmb_family.currentData() or "starless"),
+            "family":   str(self.cmb_family.currentData() or "starless"),
             "auto_run": True,
 
-            "starless_model_kind": str(self.cmb_starless_model.currentData() or "nadir"),
+            "starless_model_kind":        str(self.cmb_starless_model.currentData() or "nadir"),
+            "starless_use_mtf":           bool(self.chk_starless_use_mtf.isChecked()),
+            "starless_mtf_target_median": float(self.spin_starless_mtf_median.value()),
 
-            "prism_model_kind": str(self.cmb_prism_model.currentData() or "prism_mini"),
-            "prism_tile_size": int(self.spin_tile.value()),
-            "prism_overlap": int(self.spin_overlap.value()),
-            "prism_pad": int(self.spin_pad.value()),
-            "prism_strength": float(self.spin_strength.value()),
-            "prism_use_mtf": bool(self.chk_prism_mtf.isChecked()),
+            "prism_model_kind":        str(self.cmb_prism_model.currentData() or "prism_mini"),
+            "prism_tile_size":         int(self.spin_tile.value()),
+            "prism_overlap":           int(self.spin_overlap.value()),
+            "prism_pad":               int(self.spin_pad.value()),
+            "prism_strength":          float(self.spin_strength.value()),
+            "prism_use_mtf":           bool(self.chk_prism_mtf.isChecked()),
             "prism_mtf_target_median": float(self.spin_mtf_target.value()),
-            "prism_use_amp": bool(self.chk_prism_amp.isChecked()),
+            "prism_use_amp":           bool(self.chk_prism_amp.isChecked()),
         }
-
+    
 class _RemoveGreenPresetDialog(QDialog):
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
