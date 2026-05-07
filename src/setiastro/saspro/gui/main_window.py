@@ -3372,9 +3372,17 @@ class AstroSuiteProMainWindow(
                 docs.append((sw.windowTitle(), d))
         return docs
 
+ 
     def _recombine_luminance_ui(self, target_doc=None):
-        """If target_doc is None, use active; then pick a luminance source and overwrite target."""
-        # resolve target
+        """Pick a luminance source and recombine into the target document."""
+        from PyQt6.QtWidgets import (
+            QDialog, QVBoxLayout, QHBoxLayout, QLabel, QSlider,
+            QDoubleSpinBox, QDialogButtonBox, QComboBox, QPushButton,
+            QFrame,
+        )
+        from PyQt6.QtCore import Qt
+ 
+        # ── Resolve target ────────────────────────────────────────────────────
         if target_doc is None:
             sw = self.mdi.activeSubWindow()
             if not sw:
@@ -3384,13 +3392,13 @@ class AstroSuiteProMainWindow(
             if target_doc is None or getattr(target_doc, "image", None) is None:
                 QMessageBox.information(self, "Recombine Luminance", "Active window has no image.")
                 return
-
+ 
         tgt_img = np.asarray(target_doc.image)
         if tgt_img.ndim != 3 or tgt_img.shape[2] != 3:
             QMessageBox.warning(self, "Recombine Luminance", "Target image must be RGB.")
             return
-
-        # gather candidates (all other open docs)
+ 
+        # ── Gather candidates ─────────────────────────────────────────────────
         candidates = []
         for title, d in self._subwindow_docs():
             if d is target_doc:
@@ -3398,38 +3406,138 @@ class AstroSuiteProMainWindow(
             img = getattr(d, "image", None)
             if img is None:
                 continue
-            # accept mono directly, or RGB (we'll extract Y')
-            if img.ndim == 2 or (img.ndim == 3 and img.shape[2] in (1,3)):
+            if img.ndim == 2 or (img.ndim == 3 and img.shape[2] in (1, 3)):
                 candidates.append((title, d))
-
+ 
         if not candidates:
-            QMessageBox.information(self, "Recombine Luminance", "Open a luminance (mono) view or any image to use as L.")
+            QMessageBox.information(
+                self, "Recombine Luminance",
+                "Open a luminance (mono) view or any image to use as L."
+            )
             return
-
-        # auto-pick if only one
-        if len(candidates) == 1:
-            sel_title, src_doc = candidates[0]
-        else:
-            titles = [t for (t, _) in candidates]
-            item, ok = QInputDialog.getItem(self, "Select Luminance Source",
-                                            "Choose the image to use as luminance (mono accepted; RGB will be converted):",
-                                            titles, 0, False)
-            if not ok:
-                return
-            idx = titles.index(item)
-            sel_title, src_doc = candidates[idx]
-
+ 
+        # ── Dialog ────────────────────────────────────────────────────────────
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Recombine Luminance")
+        dlg.setMinimumWidth(400)
+        lay = QVBoxLayout(dlg)
+ 
+        # Source selector
+        lay.addWidget(QLabel("Luminance source:"))
+        src_combo = QComboBox()
+        for title, _ in candidates:
+            src_combo.addItem(title)
+        for i, (title, d) in enumerate(candidates):
+            img = getattr(d, "image", None)
+            if img is not None and img.ndim == 2:
+                src_combo.setCurrentIndex(i)
+                break
+        lay.addWidget(src_combo)
+ 
+        lay.addSpacing(8)
+ 
+        # ── Blend ─────────────────────────────────────────────────────────────
+        lay.addWidget(QLabel("Blend strength  (1.0 = full L replacement):"))
+ 
+        def _linked_row(lo, hi, decimals, step, default, label_fmt=None):
+            """Return (row_layout, slider, spinbox)."""
+            row = QHBoxLayout()
+            slider = QSlider(Qt.Orientation.Horizontal)
+            slider.setRange(0, 100)
+            slider.setValue(int(round(default * 100)))
+            spin = QDoubleSpinBox()
+            spin.setRange(lo, hi)
+            spin.setSingleStep(step)
+            spin.setDecimals(decimals)
+            spin.setValue(default)
+            spin.setFixedWidth(72)
+            slider.valueChanged.connect(lambda v, s=spin: s.setValue(v / 100.0))
+            spin.valueChanged.connect(lambda v, sl=slider: sl.setValue(int(round(v * 100))))
+            row.addWidget(slider, 1)
+            row.addWidget(spin)
+            return row, slider, spin
+ 
+        blend_row, blend_slider, blend_spin = _linked_row(0.0, 1.0, 2, 0.05, 1.0)
+        lay.addLayout(blend_row)
+ 
+        lay.addSpacing(8)
+ 
+        # ── Advanced (collapsed by default) ───────────────────────────────────
+        adv_btn = QPushButton("▶  Advanced")
+        adv_btn.setCheckable(True)
+        adv_btn.setChecked(False)
+        adv_btn.setFlat(True)
+        adv_btn.setStyleSheet("text-align:left; font-weight:600;")
+        lay.addWidget(adv_btn)
+ 
+        adv_frame = QFrame()
+        adv_frame.setFrameShape(QFrame.Shape.StyledPanel)
+        adv_frame.setVisible(False)
+        adv_lay = QVBoxLayout(adv_frame)
+        adv_lay.setContentsMargins(8, 6, 8, 6)
+        adv_lay.setSpacing(6)
+ 
+        # Pedestal
+        adv_lay.addWidget(QLabel(
+            "Noise-floor pedestal  (0.05 = default 5% lift):\n"
+            "Prevents near-zero hue skew in deep shadows.\n"
+            "0.0 = disabled (pure linear scaling)."
+        ))
+        ped_row, ped_slider, ped_spin = _linked_row(0.0, 0.5, 3, 0.005, 0.05)
+        adv_lay.addLayout(ped_row)
+ 
+        adv_lay.addSpacing(4)
+ 
+        # Soft knee
+        adv_lay.addWidget(QLabel(
+            "Highlight soft-knee  (0.0 = disabled):\n"
+            "Compresses over-bright scaling to protect highlights."
+        ))
+        knee_row, knee_slider, knee_spin = _linked_row(0.0, 1.0, 2, 0.05, 0.0)
+        adv_lay.addLayout(knee_row)
+ 
+        lay.addWidget(adv_frame)
+ 
+        def _toggle_adv(checked):
+            adv_frame.setVisible(checked)
+            adv_btn.setText(("▼" if checked else "▶") + "  Advanced")
+            dlg.adjustSize()
+ 
+        adv_btn.toggled.connect(_toggle_adv)
+ 
+        lay.addSpacing(8)
+ 
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        lay.addWidget(btns)
+ 
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+ 
+        idx        = src_combo.currentIndex()
+        sel_title, src_doc = candidates[idx]
+        blend      = float(blend_spin.value())
+        pedestal   = float(ped_spin.value())
+        soft_knee  = float(knee_spin.value())
+ 
+        # ── Apply ─────────────────────────────────────────────────────────────
         try:
-            from setiastro.saspro.luminancerecombine import _to_float01_strict, _LUMA_REC601, _LUMA_REC2020
+            from setiastro.saspro.luminancerecombine import (
+                apply_recombine_to_doc,
+                _to_float01_strict,
+                _LUMA_REC601,
+                _LUMA_REC2020,
+            )
+ 
             src_img = _to_float01_strict(np.asarray(src_doc.image))
-
-            # Prefer the source doc's stored method/weights (for perfect round-trip),
-            # otherwise fall back to current menu selection.
-            meta = dict(getattr(src_doc, "metadata", {}) or {})
+ 
+            meta   = dict(getattr(src_doc, "metadata", {}) or {})
             method = meta.get("luma_method", getattr(self, "luma_method", "rec709"))
             weights = None
-            noise_sigma = None
-
+ 
             if "luma_weights" in meta:
                 lw = np.asarray(meta["luma_weights"], dtype=np.float32)
                 if lw.size == 3:
@@ -3439,28 +3547,27 @@ class AstroSuiteProMainWindow(
                     weights = _LUMA_REC601
                 elif method == "rec2020":
                     weights = _LUMA_REC2020
-                elif method == "snr":
-                    noise_sigma = None  # will estimate inside apply if src_img is RGB
-
-            # Optional knobs: you can expose these in a small dialog later
-            blend = 1.0       # exact replace
-            soft_knee = 0.0   # no highlight protection by default
-            from setiastro.saspro.luminancerecombine import apply_recombine_to_doc
+ 
             apply_recombine_to_doc(
                 target_doc,
                 luminance_source_img=src_img,
                 method=method,
                 weights=weights,
-                noise_sigma=noise_sigma,
+                noise_sigma=None,
                 blend=blend,
-                soft_knee=soft_knee
+                soft_knee=soft_knee,
+                pedestal=pedestal,
             )
-
+ 
             try:
-                self._log(f"Recombine Luminance: '{sel_title}' -> '{target_doc.display_name()}' [{method}]")
+                self._log(
+                    f"Recombine Luminance: '{sel_title}' → '{target_doc.display_name()}'"
+                    f" [{method}] blend={blend:.2f}  pedestal={pedestal:.3f}"
+                    f"  knee={soft_knee:.2f}"
+                )
             except Exception:
                 pass
-
+ 
         except Exception as e:
             QMessageBox.critical(self, "Recombine Luminance", f"Failed: {e}")
 
