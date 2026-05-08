@@ -272,50 +272,70 @@ def recombine_luminance_linear_scale(
     weights: np.ndarray = _LUMA_REC709,
     eps: float = 1e-6,
     blend: float = 1.0,
-    highlight_soft_knee: float = 0.0
+    highlight_soft_knee: float = 0.0,
+    pedestal: float = 0.05,
 ) -> np.ndarray:
     """
     Replace linear luminance Y (w·RGB) with `new_L` by per-pixel scaling:
       s = new_L / (Y + eps);  RGB' = RGB * s
     This preserves hue/chroma in linear space and round-trips when new_L==Y.
-    Both images are lifted and compressed by 10% before recombine to prevent
-    near-zero hue skew, then the inverse is applied to the output.
+ 
+    Both images are lifted by `pedestal` and compressed by (1 + pedestal)
+    before recombining to prevent near-zero hue skew, then the inverse is
+    applied to the output.
+ 
+    Parameters
+    ----------
+    pedestal : float
+        Noise-floor compression amount (default 0.05 = 5%).
+        Higher values protect more shadow detail from hue skew at the cost
+        of slightly reducing contrast in very dark areas.
+        0.0 disables the lift entirely (pure linear scaling).
+ 
     Optional: blend (mix with original) and highlight soft-knee protection.
     """
     rgb = _to_float01_strict(target_rgb)
     if rgb.ndim != 3 or rgb.shape[2] != 3:
         raise ValueError("Recombine Luminance requires an RGB target image.")
-
+ 
     H, W, _ = rgb.shape
     L = new_L.astype(np.float32)
     if L.shape[:2] != (H, W):
         L = cv2.resize(L, (W, H), interpolation=cv2.INTER_LINEAR)
-
+ 
     w = np.asarray(weights, dtype=np.float32)
     if w.shape != (3,):
         raise ValueError("weights must be length-3 for RGB recombine.")
-
-    # Lift and compress both images 10% to neutralize near-zero hue skew
-    rgb_p = (rgb + 0.1) / 1.1
-    L_p   = (L   + 0.1) / 1.1
-
+ 
+    p = float(np.clip(pedestal, 0.0, 0.5))   # clamp to sane range
+    denom = 1.0 + p
+ 
+    if p > 0.0:
+        rgb_p = (rgb + p) / denom
+        L_p   = (L   + p) / denom
+    else:
+        rgb_p = rgb
+        L_p   = L
+ 
     Y = rgb_p[..., 0]*w[0] + rgb_p[..., 1]*w[1] + rgb_p[..., 2]*w[2]
     s = L_p / (Y + eps)
-
+ 
     if highlight_soft_knee > 0.0:
         k = np.clip(highlight_soft_knee, 0.0, 1.0)
         s = s / (1.0 + k*(s - 1.0))
-
+ 
     out = rgb_p * s[..., None]
-
-    # Invert the lift/compress
-    out = out * 1.1 - 0.1
+ 
+    if p > 0.0:
+        out = out * denom - p
+ 
     out = np.clip(out, 0.0, 1.0)
-
+ 
     if 0.0 <= blend < 1.0:
         out = rgb*(1.0 - blend) + out*blend
-
+ 
     return out.astype(np.float32, copy=False)
+
 
 def _resolve_active_doc_from(main, target_doc=None):
     doc = target_doc
@@ -333,7 +353,8 @@ def apply_recombine_to_doc(
     weights: Optional[np.ndarray] = None,
     noise_sigma: Optional[np.ndarray] = None,
     blend: float = 1.0,
-    soft_knee: float = 0.0
+    soft_knee: float = 0.0,
+    pedestal: float = 0.05,
 ):
     """
     Overwrite target_doc.image by recombining with luminance from source (RGB or mono).
@@ -390,6 +411,7 @@ def apply_recombine_to_doc(
         weights=recombine_w,
         blend=float(blend),
         highlight_soft_knee=float(soft_knee),
+        pedestal=float(pedestal),
     )
 
     # Metadata

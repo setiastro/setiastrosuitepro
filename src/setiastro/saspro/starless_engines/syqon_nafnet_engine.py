@@ -13,11 +13,9 @@ _SYQON_SESSION = None
 _SYQON_CKPT = None
 
 def _infer_device(torch, *, prefer_cuda: bool = True, prefer_dml: bool = True):
-    # CUDA
     if prefer_cuda and getattr(torch, "cuda", None) and torch.cuda.is_available():
         return torch.device("cuda")
 
-    # DirectML (Windows)
     if prefer_dml and (os.name == "nt"):
         try:
             import torch_directml
@@ -25,7 +23,6 @@ def _infer_device(torch, *, prefer_cuda: bool = True, prefer_dml: bool = True):
         except Exception:
             pass
 
-    # MPS (macOS)
     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         return torch.device("mps")
 
@@ -42,13 +39,7 @@ def _looks_like_decode_error(exc: Exception) -> bool:
     )
 
 def _torch_load_once(torch, ckpt_path: str, *, encoding=None):
-    """
-    Small helper so we can consistently try torch.load with/without encoding,
-    and prefer weights_only=False when supported for compatibility with full checkpoints.
-    """
-    kwargs = {
-        "map_location": "cpu",
-    }
+    kwargs = {"map_location": "cpu"}
     if encoding is not None:
         kwargs["encoding"] = encoding
 
@@ -60,16 +51,10 @@ def _torch_load_once(torch, ckpt_path: str, *, encoding=None):
                 raise
             f.seek(0)
             return torch.load(f, **kwargs)
-        
+
 def _torch_load_fallback(torch, ckpt_path: str):
-    """
-    Robust torch.load() with encoding fallbacks for older / odd pickle metadata.
-    Some torch builds bubble decode problems as non-UnicodeDecodeError exceptions,
-    so we inspect the message too.
-    """
     last_exc = None
 
-    # 1) fast path
     try:
         return _torch_load_once(torch, ckpt_path), {"torch_load_encoding": "default"}
     except Exception as e:
@@ -77,35 +62,62 @@ def _torch_load_fallback(torch, ckpt_path: str):
         if not _looks_like_decode_error(e):
             raise
 
-    # 2) encoding fallbacks
     for enc in ("latin1", "cp1252", "iso-8859-1"):
         try:
             return _torch_load_once(torch, ckpt_path, encoding=enc), {"torch_load_encoding": enc}
         except Exception as e:
             last_exc = e
-
-            # If this torch build doesn't accept encoding=..., keep trying logic simple
-            # but only bail out if this is clearly not a decode-related issue.
             if "unexpected keyword argument" in str(e).lower() and "encoding" in str(e).lower():
                 break
-
             if not _looks_like_decode_error(e):
                 raise
 
-    # 3) final failure
     raise last_exc
 
 
+def _detect_arch(sd: dict) -> str:
+    """
+    Returns 'starnet', 'lite', or 'standard'.
+
+    'starnet'  — StarNetGenerator (AxiomV2.2): g_conv / g_deconv keys
+    'lite'     — NAFNetLite (AxiomV2.1):       fusions / conv3 keys
+    'standard' — NAFNet (Nadir / AxiomV2):     ffn1 / sca.1 keys
+    """
+    if any(k.startswith("g_conv") or k.startswith("g_deconv") for k in sd):
+        return "starnet"
+    for k in sd:
+        if k.startswith("fusions.") or k.endswith(".conv3.weight"):
+            return "lite"
+    for k in sd:
+        if k.endswith(".ffn1.weight") or k.endswith(".sca.1.weight"):
+            return "standard"
+    for k, v in sd.items():
+        if ".norm1.weight" in k and hasattr(v, "ndim"):
+            return "lite" if v.ndim == 1 else "standard"
+    return "standard"
+
+
 def _load_state_dict(torch, ckpt_path: str):
+    """
+    Returns (state_dict, meta_dict).
+
+    Handles:
+      - Full training checkpoints with 'generator' key (AxiomV2.2)
+      - model_state_dict / state_dict / model wrapped checkpoints
+      - Bare NAFNet state dicts
+    """
     ckpt, load_meta = _torch_load_fallback(torch, ckpt_path)
 
     def _small_meta(src):
         out = dict(load_meta)
         if isinstance(src, dict):
             out["checkpoint_keys"] = list(src.keys())[:20]
-            for k in ("epoch", "best_val", "residual_output", "psnr"):
+            for k in ("epoch", "best_val", "residual_output", "psnr", "step", "best_ema"):
                 if k in src:
-                    out[k] = src[k]
+                    try:
+                        out[k] = float(src[k]) if not isinstance(src[k], (str, dict, list)) else str(src[k])
+                    except Exception:
+                        pass
             if "args" in src and isinstance(src["args"], dict):
                 for ak in ("base_ch", "depth", "amp"):
                     if ak in src["args"]:
@@ -113,7 +125,14 @@ def _load_state_dict(torch, ckpt_path: str):
         return out
 
     if isinstance(ckpt, dict):
-        # Axiom 2.1 format: model_state_dict key
+        # AxiomV2.2 full training checkpoint — generator key
+        if "generator" in ckpt and isinstance(ckpt["generator"], dict):
+            sd = ckpt["generator"]
+            sd = {(k[7:] if k.startswith("module.") else k): v for k, v in sd.items()}
+            meta = _small_meta(ckpt)
+            meta["source_key"] = "generator"
+            return sd, meta
+
         if "model_state_dict" in ckpt and isinstance(ckpt["model_state_dict"], dict):
             return ckpt["model_state_dict"], _small_meta(ckpt)
 
@@ -123,78 +142,42 @@ def _load_state_dict(torch, ckpt_path: str):
         if "model" in ckpt and isinstance(ckpt["model"], dict):
             return ckpt["model"], _small_meta(ckpt)
 
+        # bare state dict — NAFNet or StarNet keys at top level
         if any(
-            k.startswith(("intro.", "ending.", "encoders.", "downs.", "middle.", "decoders.", "ups."))
+            k.startswith(("intro.", "ending.", "encoders.", "downs.", "middle.",
+                          "decoders.", "ups.", "g_conv", "g_deconv"))
             for k in ckpt.keys()
         ):
-            return ckpt, dict(load_meta)
+            sd = {(k[7:] if k.startswith("module.") else k): v for k, v in ckpt.items()}
+            return sd, dict(load_meta)
 
     if isinstance(ckpt, dict):
-        sample_keys = list(ckpt.keys())[:20]
         raise RuntimeError(
-            f"Unsupported checkpoint format. Top-level keys: {sample_keys}"
+            f"Unsupported checkpoint format. Top-level keys: {list(ckpt.keys())[:20]}"
         )
-
     raise RuntimeError(
         f"Unsupported checkpoint format: top-level object is {type(ckpt).__name__}"
     )
 
+
 def _detect_ups_variant(sd: dict) -> str:
-    """
-    Returns 'bilinear' if ups use Upsample+Conv (ups.N.1.weight — SyQon Nadir/AxiomV2),
-    or 'pixelshuffle' if ups use Conv+PixelShuffle (ups.N.0.weight — older builds).
-    """
     for k in sd.keys():
         if k.startswith("ups.") and k.endswith(".1.weight"):
             return "bilinear"
         if k.startswith("ups.") and k.endswith(".0.weight"):
             return "pixelshuffle"
-    return "bilinear"  # default to what SyQon ships
+    return "bilinear"
 
-def _detect_block_variant(sd: dict) -> str:
-    """
-    Returns 'lite' if NAFBlockLite (Axiom 2.1), 'standard' if NAFBlock (Nadir/AxiomV2).
 
-    Lite indicators:
-      - conv3.weight keys (only in NAFBlockLite spatial mixing)
-      - fusions.N.weight keys (fusion conv in NAFNetLite decoder)
-      - norm1.weight shape is 1D (C,) not (1,C,1,1)
-
-    Standard indicators:
-      - ffn1.weight keys (only in original NAFBlock)
-      - sca.1.weight keys (NAFBlock uses Sequential SCA with index)
-    """
-    # Most reliable: fusions layer only exists in NAFNetLite
-    for k in sd.keys():
-        if k.startswith("fusions."):
-            return "lite"
-
-    # conv3 only in NAFBlockLite spatial branch
-    for k in sd.keys():
-        if k.endswith(".conv3.weight"):
-            return "lite"
-
-    # ffn1 only in standard NAFBlock
-    for k in sd.keys():
-        if k.endswith(".ffn1.weight"):
-            return "standard"
-
-    # norm1.weight shape: (C,) = lite,  (1,C,1,1) = standard
-    for k, v in sd.items():
-        if ".norm1.weight" in k and hasattr(v, "ndim"):
-            return "lite" if v.ndim == 1 else "standard"
-
-    return "standard"
+def _infer_starnet_channels(sd: dict) -> int:
+    if "g_conv0.weight" in sd:
+        return int(sd["g_conv0.weight"].shape[1])
+    return 3
 
 
 def _infer_nafnet_cfg_from_sd(sd: dict) -> tuple[int, tuple, tuple, int]:
-    """
-    Returns (base_ch, enc_blk_nums, dec_blk_nums, middle_blk_num)
-    Auto-detects from state dict keys — works for both old and Axiom 2.1 checkpoints.
-    """
     base_ch = int(sd["intro.weight"].shape[0]) if "intro.weight" in sd else 32
 
-    # Count encoder levels from downs.* keys
     downs_idx = set()
     for k in sd.keys():
         if k.startswith("downs."):
@@ -215,7 +198,6 @@ def _infer_nafnet_cfg_from_sd(sd: dict) -> tuple[int, tuple, tuple, int]:
 
     enc_levels = max(1, min(8, int(enc_levels)))
 
-    # Count blocks per encoder level
     enc_blks = []
     for lvl in range(enc_levels):
         blk_idx = set()
@@ -226,7 +208,6 @@ def _infer_nafnet_cfg_from_sd(sd: dict) -> tuple[int, tuple, tuple, int]:
                     blk_idx.add(int(parts[2]))
         enc_blks.append((max(blk_idx) + 1) if blk_idx else 2)
 
-    # Count blocks per decoder level
     dec_blks = []
     for lvl in range(enc_levels):
         blk_idx = set()
@@ -237,7 +218,6 @@ def _infer_nafnet_cfg_from_sd(sd: dict) -> tuple[int, tuple, tuple, int]:
                     blk_idx.add(int(parts[2]))
         dec_blks.append((max(blk_idx) + 1) if blk_idx else 2)
 
-    # Count middle blocks
     mid_idx = set()
     for k in sd.keys():
         if k.startswith("middle.") and ".norm1.weight" in k:
@@ -257,7 +237,7 @@ def load_nafnet_model(
     model_kind: str = "nadir",
 ):
     from setiastro.saspro.runtime_torch import import_torch
-    from setiastro.saspro.syqon_model.model import NAFNet, NAFNetLite
+    from setiastro.saspro.syqon_model.model import NAFNet, NAFNetLite, StarNetGenerator
 
     torch = import_torch(
         prefer_cuda=use_gpu,
@@ -267,47 +247,67 @@ def load_nafnet_model(
     )
 
     sd, meta = _load_state_dict(torch, ckpt_path)
-    base_ch, enc_blks, dec_blks, middle_blk_num = _infer_nafnet_cfg_from_sd(sd)
-    block_variant = _detect_block_variant(sd)
-    ups_variant = _detect_ups_variant(sd)  # ← new
+    arch = _detect_arch(sd)
 
-    if block_variant == "lite":
-        model = NAFNetLite(
-            width=base_ch,
-            enc_blk_nums=enc_blks,
-            dec_blk_nums=dec_blks,
-            middle_blk_num=middle_blk_num,
-        )
+    if arch == "starnet":
+        in_channels = _infer_starnet_channels(sd)
+        model = StarNetGenerator(in_channels=in_channels)
+        model.load_state_dict(sd, strict=True)
+        model.eval()
+
+        info = {
+            "model_kind":    model_kind,
+            "arch":          "starnet",
+            "in_channels":   in_channels,
+            "meta":          meta,
+        }
+
     else:
-        model = NAFNet(
-            width=base_ch,
-            enc_blk_nums=enc_blks,
-            dec_blk_nums=dec_blks,
-            middle_blk_num=middle_blk_num,
-            use_sigmoid=False,
-            ups_mode=ups_variant,  # ← new
-        )
+        # NAFNet / NAFNetLite path (backward compat)
+        ups_variant = _detect_ups_variant(sd)
+        base_ch, enc_blks, dec_blks, middle_blk_num = _infer_nafnet_cfg_from_sd(sd)
 
-    model.load_state_dict(sd, strict=True)
-    model.eval()
+        if arch == "lite":
+            model = NAFNetLite(
+                width=base_ch,
+                enc_blk_nums=enc_blks,
+                dec_blk_nums=dec_blks,
+                middle_blk_num=middle_blk_num,
+            )
+        else:
+            model = NAFNet(
+                width=base_ch,
+                enc_blk_nums=enc_blks,
+                dec_blk_nums=dec_blks,
+                middle_blk_num=middle_blk_num,
+                use_sigmoid=False,
+                ups_mode=ups_variant,
+            )
+
+        model.load_state_dict(sd, strict=True)
+        model.eval()
+
+        info = {
+            "model_kind":      model_kind,
+            "arch":            arch,
+            "block_variant":   arch,
+            "ups_variant":     ups_variant,
+            "base_ch":         base_ch,
+            "enc_blks":        enc_blks,
+            "dec_blks":        dec_blks,
+            "middle_blk_num":  middle_blk_num,
+            "meta":            meta,
+        }
 
     device = _infer_device(torch, prefer_cuda=use_gpu, prefer_dml=prefer_dml)
     model.to(device)
 
-    info = {
-        "model_kind": model_kind,
-        "block_variant": block_variant,
-        "ups_variant": ups_variant,  # ← new, useful for debugging
-        "base_ch": base_ch,
-        "enc_blks": enc_blks,
-        "dec_blks": dec_blks,
-        "middle_blk_num": middle_blk_num,
-        "meta": meta,
-        "device": str(device),
-        "torch_version": getattr(torch, "__version__", None),
-        "torch_file": getattr(torch, "__file__", None),
-    }
+    info["device"]        = str(device)
+    info["torch_version"] = getattr(torch, "__version__", None)
+    info["torch_file"]    = getattr(torch, "__file__", None)
+
     return model, device, info, torch
+
 
 def _to_torch_chw(img_chw, device, torch):
     x = np.asarray(img_chw, dtype=np.float32)
@@ -329,62 +329,62 @@ def _predict_tile(
     info: dict,
     torch,
 ):
-    """
-    Run model(t) and return pred as HWC float32 numpy.
-
-    If AMP is enabled and non-finite output occurs, fallback to fp32 for this tile
-    and record info["amp_fallback"] / info["amp_reason"].
-    """
-
     def _to_numpy(pred_t):
-        # pred_t: 1CHW torch
         pred_np = pred_t[0].detach().to("cpu").numpy().transpose(1, 2, 0)
         return pred_np.astype(np.float32, copy=False)
 
-    # --- AMP path (if requested & supported) ---
     if use_amp and device.type == "cuda":
         dtype = torch.float16 if amp_dtype == "fp16" else torch.bfloat16
         with torch.cuda.amp.autocast(dtype=dtype):
             pred_t = model(t)
         pred = _to_numpy(pred_t)
-
         if not np.isfinite(pred).all():
-            # fallback to fp32 for this tile
             info["amp_fallback"] = True
-            info["amp_reason"] = "non-finite output detected under CUDA AMP; reran tile in fp32"
+            info["amp_reason"] = "non-finite output under CUDA AMP; reran tile in fp32"
             pred_t = model(t)
             pred = _to_numpy(pred_t)
-
         return pred
 
     if use_amp and device.type == "mps":
-        # Conservative: autocast enabled, no explicit dtype forcing
         try:
             with torch.autocast(device_type="mps"):
                 pred_t = model(t)
             pred = _to_numpy(pred_t)
-
             if not np.isfinite(pred).all():
                 info["amp_fallback"] = True
-                info["amp_reason"] = "non-finite output detected under MPS autocast; reran tile in fp32"
+                info["amp_reason"] = "non-finite output under MPS autocast; reran tile in fp32"
                 pred_t = model(t)
                 pred = _to_numpy(pred_t)
-
             return pred
         except Exception:
-            # If autocast isn't supported in their torch build, just do fp32
             pred_t = model(t)
-            pred = _to_numpy(pred_t)
-            return pred
+            return _to_numpy(pred_t)
 
-    # --- fp32 path ---
     pred_t = model(t)
     pred = _to_numpy(pred_t)
-
     if not np.isfinite(pred).all():
         raise RuntimeError("Non-finite output detected in fp32 inference.")
-
     return pred
+
+
+def _resolve_residual_mode(info: dict) -> bool:
+    """
+    Determine whether the model output is a star residual (True) or starless directly (False).
+
+    StarNetGenerator (AxiomV2.2): output IS starless (input - relu(removal)), so False.
+    NAFNetLite (AxiomV2.1):       output IS starless (global residual clamped), so False.
+    NAFNet bilinear (AxiomV2):    output IS starless, so False.
+    NAFNet pixelshuffle (Nadir):  output is star residual, so True.
+    """
+    arch = info.get("arch", "standard")
+    if arch == "starnet":
+        return False
+    if arch == "lite":
+        return False
+    # standard NAFNet
+    ups = info.get("ups_variant", "bilinear")
+    return (ups == "pixelshuffle")
+
 
 def nafnet_starless_rgb01(
     img_rgb01: np.ndarray,
@@ -397,7 +397,8 @@ def nafnet_starless_rgb01(
     use_amp: bool = False,
     amp_dtype: str = "fp16",
     model_kind: str = "nadir",
-    use_gpu: bool = True, prefer_dml: bool = True,
+    use_gpu: bool = True,
+    prefer_dml: bool = True,
     progress_cb: Optional[Callable[[int, int, str], None]] = None,
     tile_cb=None,
 ):
@@ -412,9 +413,9 @@ def nafnet_starless_rgb01(
         x = x[..., :3]
 
     H, W = x.shape[:2]
-    tile = int(tile)
+    tile    = int(tile)
     overlap = int(overlap)
-    stride = max(tile - overlap, 1)
+    stride  = max(tile - overlap, 1)
 
     model, device, info, torch = load_nafnet_model(
         ckpt_path,
@@ -423,43 +424,37 @@ def nafnet_starless_rgb01(
         model_kind=model_kind,
     )
 
-    # Auto-correct residual_mode based on detected architecture
-    if info.get("block_variant") == "lite":
-        # NAFNetLite: forward() returns clamped starless directly via global residual
-        residual_mode = False
-    elif info.get("ups_variant") == "bilinear":
-        # SyQon bilinear NAFNet (AxiomV2): output is starless, not star residual
-        residual_mode = False
-    # pixelshuffle = Nadir: model predicts star residual, keep residual_mode True
+    # Always auto-resolve; caller's residual_mode hint is ignored in favour of
+    # what we detected from the state dict so old callers remain correct too.
+    residual_mode = _resolve_residual_mode(info)
 
-    info = dict(info or {})
-    info["device"] = str(device)
-    info["torch_version"] = getattr(torch, "__version__", None)
-    info["torch_file"] = getattr(torch, "__file__", None)
-    info["residual_mode"] = residual_mode
+    info = dict(info)
+    info["residual_mode"]     = residual_mode
+    info["device"]            = str(device)
+    info["torch_version"]     = getattr(torch, "__version__", None)
+    info["torch_file"]        = getattr(torch, "__file__", None)
 
     use_amp_requested = bool(use_amp)
     amp_dtype = (amp_dtype or "fp16").lower()
     if amp_dtype not in ("fp16", "bf16"):
         amp_dtype = "fp16"
-
     use_amp_effective = bool(use_amp_requested) and (device.type in ("cuda", "mps"))
+
     info["use_amp_requested"] = use_amp_requested
     info["use_amp_effective"] = use_amp_effective
-    info["amp_dtype"] = amp_dtype
+    info["amp_dtype"]         = amp_dtype
 
     out_acc = np.zeros((H, W, 3), dtype=np.float32)
-    w_acc = np.zeros((H, W, 1), dtype=np.float32)
+    w_acc   = np.zeros((H, W, 1), dtype=np.float32)
 
     wy = np.hanning(tile).astype(np.float32)
     wx = np.hanning(tile).astype(np.float32)
-    w2 = (wy[:, None] * wx[None, :]).astype(np.float32)
-    w2 = w2[..., None]
+    w2 = (wy[:, None] * wx[None, :]).astype(np.float32)[..., None]
 
-    ys = list(range(0, H, stride))
-    xs = list(range(0, W, stride))
+    ys    = list(range(0, H, stride))
+    xs    = list(range(0, W, stride))
     total = len(ys) * len(xs)
-    done = 0
+    done  = 0
 
     with torch.no_grad():
         for y0 in ys:
@@ -476,7 +471,7 @@ def nafnet_starless_rgb01(
                     patch = pad
 
                 chw = patch.transpose(2, 0, 1)
-                t = _to_torch_chw(chw, device, torch)
+                t   = _to_torch_chw(chw, device, torch)
 
                 pred = _predict_tile(
                     model, t,
@@ -488,29 +483,26 @@ def nafnet_starless_rgb01(
                 )
 
                 if residual_mode:
-                    # model predicts star residual: starless = input - prediction
                     starless_patch = patch - pred
                 else:
-                    # model outputs starless directly
                     starless_patch = pred
 
                 starless_patch = np.clip(starless_patch, 0.0, 1.0).astype(np.float32, copy=False)
                 starless_patch = starless_patch[:ph, :pw, :]
-                wlocal = w2[:ph, :pw, :]
+                wlocal         = w2[:ph, :pw, :]
 
                 out_acc[y0:y1, x0:x1, :] += starless_patch * wlocal
-                w_acc[y0:y1, x0:x1, :] += wlocal
+                w_acc  [y0:y1, x0:x1, :] += wlocal
 
                 if callable(tile_cb):
                     tile_cb(y0, x0, ph, pw, starless_patch)
 
                 done += 1
                 if callable(progress_cb):
-                    progress_cb(done, total, "SyQon NAFNet tiles…")
+                    progress_cb(done, total, "SyQon tiles…")
 
-    starless = out_acc / np.maximum(w_acc, 1e-8)
-    starless = np.clip(starless, 0.0, 1.0).astype(np.float32, copy=False)
-    stars_only = np.clip(x - starless, 0.0, 1.0).astype(np.float32, copy=False)
+    starless   = np.clip(out_acc / np.maximum(w_acc, 1e-8), 0.0, 1.0).astype(np.float32)
+    stars_only = np.clip(x - starless, 0.0, 1.0).astype(np.float32)
 
     if was_mono:
         return (
@@ -520,21 +512,16 @@ def nafnet_starless_rgb01(
         )
     return starless, stars_only, info
 
+
 def _get_setting_any(settings, keys, default):
-    """
-    settings may be QSettings or dict-like.
-    keys can be a tuple/list of possible setting names.
-    """
     for k in keys:
         try:
-            # QSettings: value(key, default, type=?)
             v = settings.value(k, None)
             if v is not None and v != "":
                 return v
         except Exception:
             pass
         try:
-            # dict-like
             if k in settings and settings[k] not in (None, ""):
                 return settings[k]
         except Exception:
@@ -554,15 +541,8 @@ def syqon_starless_from_array(
     amp_key: str = "stacking/comet_starrem/syqon_amp",
     amp_dtype_key: str = "stacking/comet_starrem/syqon_amp_dtype",
     progress_cb: ProgressCB | None = None,
-    residual_mode: bool = True,
+    residual_mode: bool = True,   # kept for signature compat; auto-resolved internally
 ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
-    """
-    Convenience wrapper:
-      - ensures RGB float32 [0..1]
-      - caches the SyQon session (so you don't reload ckpt every frame)
-      - runs tiling with settings-driven tile/overlap/AMP
-    Returns: (starless_rgb01, stars_rgb01, info)
-    """
     global _SYQON_SESSION, _SYQON_CKPT
 
     ckpt = str(_get_setting_any(settings, (ckpt_key, "syqon/ckpt_path"), ""))
@@ -570,19 +550,17 @@ def syqon_starless_from_array(
         raise RuntimeError(f"SyQon checkpoint path is not configured or missing: '{ckpt}'")
 
     prefer_dml = bool(_get_setting_any(settings, (prefer_dml_key,), True))
-    use_gpu    = bool(_get_setting_any(settings, (use_gpu_key,), True))
+    use_gpu    = bool(_get_setting_any(settings, (use_gpu_key,),    True))
 
-    # cache session if ckpt changes or session missing
     if _SYQON_SESSION is None or _SYQON_CKPT != ckpt:
         _SYQON_SESSION = syqonnafnetSession(ckpt, use_gpu=use_gpu, prefer_dml=prefer_dml)
         _SYQON_CKPT = ckpt
 
-    tile = int(_get_setting_any(settings, (tile_key,), 512))
-    ov   = int(_get_setting_any(settings, (overlap_key,), 64))
-    amp  = bool(_get_setting_any(settings, (amp_key,), False))
+    tile      = int(_get_setting_any(settings, (tile_key,),     512))
+    ov        = int(_get_setting_any(settings, (overlap_key,),  64))
+    amp       = bool(_get_setting_any(settings, (amp_key,),     False))
     amp_dtype = str(_get_setting_any(settings, (amp_dtype_key,), "fp16"))
 
-    # ensure RGB
     if img.ndim == 2:
         src = np.stack([img]*3, axis=-1)
     elif img.ndim == 3 and img.shape[2] == 1:
@@ -595,20 +573,22 @@ def syqon_starless_from_array(
         src,
         tile=tile,
         overlap=ov,
-        residual_mode=residual_mode,
         use_amp=amp,
         amp_dtype=amp_dtype,
         progress_cb=progress_cb,
     )
     return starless, stars, info
 
+
 class syqonnafnetSession:
     def __init__(self, ckpt_path: str, *, use_gpu: bool, prefer_dml: bool, model_kind: str = "nadir"):
-        self.ckpt_path = ckpt_path
+        self.ckpt_path  = ckpt_path
         self.model_kind = (model_kind or "nadir").lower().strip()
         self.model, self.device, self.info, self.torch = load_nafnet_model(
             ckpt_path, use_gpu=use_gpu, prefer_dml=prefer_dml, model_kind=self.model_kind
         )
+        # Resolve once at load time
+        self._residual_mode = _resolve_residual_mode(self.info)
 
     def run_starless_rgb01(
         self,
@@ -616,19 +596,12 @@ class syqonnafnetSession:
         *,
         tile: int = 512,
         overlap: int = 64,
-        residual_mode: bool = True,
+        residual_mode: bool = True,   # kept for compat; ignored, auto-resolved at init
         use_amp: bool = False,
         amp_dtype: str = "fp16",
         progress_cb: Optional[Callable[[int, int, str], None]] = None,
     ):
-        # Auto-correct residual_mode based on detected architecture
-        if self.info.get("block_variant") == "lite":
-            # NAFNetLite: forward() returns clamped starless directly via global residual
-            residual_mode = False
-        elif self.info.get("ups_variant") == "bilinear":
-            # SyQon bilinear NAFNet (AxiomV2): output is starless, not star residual
-            residual_mode = False
-        # pixelshuffle = Nadir: model predicts star residual, keep residual_mode True
+        residual_mode = self._residual_mode
 
         x = np.asarray(img_rgb01, dtype=np.float32)
         was_mono = (x.ndim == 2) or (x.ndim == 3 and x.shape[2] == 1)
@@ -640,13 +613,13 @@ class syqonnafnetSession:
         else:
             x = x[..., :3]
 
-        H, W = x.shape[:2]
-        tile = int(tile)
+        H, W    = x.shape[:2]
+        tile    = int(tile)
         overlap = int(overlap)
-        stride = max(tile - overlap, 1)
+        stride  = max(tile - overlap, 1)
 
         info = dict(self.info or {})
-        info["device"] = str(self.device)
+        info["device"]        = str(self.device)
         info["residual_mode"] = residual_mode
 
         use_amp_requested = bool(use_amp)
@@ -657,22 +630,22 @@ class syqonnafnetSession:
 
         info["use_amp_requested"] = use_amp_requested
         info["use_amp_effective"] = use_amp_effective
-        info["amp_dtype"] = amp_dtype
+        info["amp_dtype"]         = amp_dtype
 
         out_acc = np.zeros((H, W, 3), dtype=np.float32)
-        w_acc = np.zeros((H, W, 1), dtype=np.float32)
+        w_acc   = np.zeros((H, W, 1), dtype=np.float32)
 
         wy = np.hanning(tile).astype(np.float32)
         wx = np.hanning(tile).astype(np.float32)
         w2 = (wy[:, None] * wx[None, :]).astype(np.float32)[..., None]
 
-        ys = list(range(0, H, stride))
-        xs = list(range(0, W, stride))
+        ys    = list(range(0, H, stride))
+        xs    = list(range(0, W, stride))
         total = len(ys) * len(xs)
-        done = 0
+        done  = 0
 
-        torch = self.torch
-        model = self.model
+        torch  = self.torch
+        model  = self.model
         device = self.device
 
         with torch.no_grad():
@@ -690,7 +663,7 @@ class syqonnafnetSession:
                         patch = pad
 
                     chw = patch.transpose(2, 0, 1)
-                    t = _to_torch_chw(chw, device, torch)
+                    t   = _to_torch_chw(chw, device, torch)
 
                     pred = _predict_tile(
                         model, t,
@@ -702,26 +675,23 @@ class syqonnafnetSession:
                     )
 
                     if residual_mode:
-                        # model predicts star residual: starless = input - prediction
                         starless_patch = patch - pred
                     else:
-                        # model outputs starless directly
                         starless_patch = pred
 
                     starless_patch = np.clip(starless_patch, 0.0, 1.0).astype(np.float32, copy=False)
                     starless_patch = starless_patch[:ph, :pw, :]
-                    wlocal = w2[:ph, :pw, :]
+                    wlocal         = w2[:ph, :pw, :]
 
                     out_acc[y0:y1, x0:x1, :] += starless_patch * wlocal
-                    w_acc[y0:y1, x0:x1, :] += wlocal
+                    w_acc  [y0:y1, x0:x1, :] += wlocal
 
                     done += 1
                     if callable(progress_cb):
-                        progress_cb(done, total, "SyQon NAFNet tiles…")
+                        progress_cb(done, total, "SyQon tiles…")
 
-        starless = out_acc / np.maximum(w_acc, 1e-8)
-        starless = np.clip(starless, 0.0, 1.0).astype(np.float32, copy=False)
-        stars_only = np.clip(x - starless, 0.0, 1.0).astype(np.float32, copy=False)
+        starless   = np.clip(out_acc / np.maximum(w_acc, 1e-8), 0.0, 1.0).astype(np.float32)
+        stars_only = np.clip(x - starless, 0.0, 1.0).astype(np.float32)
 
         if was_mono:
             return (
@@ -731,30 +701,22 @@ class syqonnafnetSession:
             )
         return starless, stars_only, info
 
-def clear_axiom_models_cache(*, aggressive: bool = False, status_cb=print) -> None:
-    """
-    Clears in-process SyQon Axiom/NAFNet cached session state so RAM/VRAM
-    can be reclaimed between runs.
 
-    - aggressive=False: clears Python references only
-    - aggressive=True : also runs gc.collect() and torch cache cleanup
-    """
+def clear_axiom_models_cache(*, aggressive: bool = False, status_cb=print) -> None:
     global _SYQON_SESSION, _SYQON_CKPT
 
     try:
         had_session = _SYQON_SESSION is not None
-        had_ckpt = _SYQON_CKPT is not None
-
+        had_ckpt    = _SYQON_CKPT    is not None
         _SYQON_SESSION = None
-        _SYQON_CKPT = None
-
+        _SYQON_CKPT    = None
         status_cb(
-            f"[SyQon Axiom] Cleared cache "
+            f"[SyQon] Cleared cache "
             f"(session={'yes' if had_session else 'no'}, ckpt={'yes' if had_ckpt else 'no'})"
         )
     except Exception as e:
         try:
-            status_cb(f"[SyQon Axiom] Cache clear failed: {type(e).__name__}: {e}")
+            status_cb(f"[SyQon] Cache clear failed: {type(e).__name__}: {e}")
         except Exception:
             pass
 
@@ -764,35 +726,30 @@ def clear_axiom_models_cache(*, aggressive: bool = False, status_cb=print) -> No
     try:
         import gc
         gc.collect()
-        status_cb("[SyQon Axiom] gc.collect() called")
+        status_cb("[SyQon] gc.collect() called")
     except Exception:
         pass
 
     try:
         from setiastro.saspro.runtime_torch import import_torch
         torch = import_torch(
-            prefer_cuda=True,
-            prefer_xpu=False,
-            prefer_dml=True,
+            prefer_cuda=True, prefer_xpu=False, prefer_dml=True,
             status_cb=lambda *_: None,
         )
-
         try:
             if getattr(torch, "cuda", None) and torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 if hasattr(torch.cuda, "ipc_collect"):
                     torch.cuda.ipc_collect()
-                status_cb("[SyQon Axiom] torch.cuda.empty_cache() called")
+                status_cb("[SyQon] torch.cuda.empty_cache() called")
         except Exception:
             pass
-
         try:
-            if hasattr(torch, "backends") and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
                 if hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
                     torch.mps.empty_cache()
-                    status_cb("[SyQon Axiom] torch.mps.empty_cache() called")
+                    status_cb("[SyQon] torch.mps.empty_cache() called")
         except Exception:
             pass
-
     except Exception:
         pass
