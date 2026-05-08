@@ -21,6 +21,7 @@ CLI_SUBCOMMANDS = {
 
     # other CLI tools you may add
     "benchmark",
+    "report",
 }
 
 def entry(argv: list[str] | None = None) -> int:

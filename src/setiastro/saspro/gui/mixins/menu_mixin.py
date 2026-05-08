@@ -387,6 +387,7 @@ class MenuMixin:
         m_about.addAction(self.act_docs)  
         m_about.addSeparator()
         m_about.addAction(self.tr("About..."), self._about)
+        m_about.addAction(self.tr("Generate Diagnostics Report..."), self._show_diagnostics_report)
         m_about.addAction(self.act_check_updates)
         m_about.addSeparator()
         m_about.addAction(self.act_welcome)

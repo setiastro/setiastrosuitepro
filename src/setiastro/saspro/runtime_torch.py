@@ -93,6 +93,26 @@ def _runtime_base_dir() -> Path:
 _SUPPORTED_PY_MINORS = [12, 13, 14]
 
 
+def supported_python_version_strings() -> list[str]:
+    return [f"3.{minor}" for minor in _SUPPORTED_PY_MINORS]
+
+
+def supported_python_versions_text(*, conjunction: str = "or") -> str:
+    versions = supported_python_version_strings()
+    if not versions:
+        return ""
+    if len(versions) == 1:
+        return versions[0]
+    return f"{', '.join(versions[:-1])}, {conjunction} {versions[-1]}"
+
+
+def is_supported_runtime_python(version: tuple[int, int] | None = None) -> bool:
+    if version is None:
+        version = (sys.version_info.major, sys.version_info.minor)
+    major, minor = version
+    return major == 3 and minor in _SUPPORTED_PY_MINORS
+
+
 def _discover_existing_runtime_dir(status_cb=print) -> Path | None:
     global _RUNTIME_DISCOVERY_LOGGED
 

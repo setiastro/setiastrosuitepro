@@ -5,7 +5,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from setiastro.saspro.cosmicclarity_headless import run_cosmicclarity_on_file
+from setiastro.saspro.diagnostics import collect_diagnostics, write_report
 
 
 # ───────────────────────────────────────────────────────────────
@@ -212,6 +212,8 @@ def build_cc_parser() -> argparse.ArgumentParser:
 
 
 def _run_cc(argv: list[str]) -> int:
+    from setiastro.saspro.cosmicclarity_headless import run_cosmicclarity_on_file
+
     args = build_cc_parser().parse_args(argv)
 
     inp = str(Path(args.input))
@@ -301,6 +303,33 @@ def _run_cc(argv: list[str]) -> int:
         return 2
 
 
+def build_report_parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(
+        prog="setiastrosuitepro report",
+        description="Generate a SASpro diagnostics report",
+    )
+    ap.add_argument(
+        "--save",
+        action="store_true",
+        help="Also save the report to the default support/reports folder.",
+    )
+    ap.add_argument(
+        "--output",
+        help="Write the report to an explicit path.",
+    )
+    return ap
+
+
+def _run_report(argv: list[str]) -> int:
+    args = build_report_parser().parse_args(argv)
+    report = collect_diagnostics()
+    sys.stdout.write(report.markdown)
+    if args.save or args.output:
+        path = write_report(report.markdown, output_path=args.output)
+        print(f"[report] wrote diagnostics report to: {path}", file=sys.stderr, flush=True)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
 
@@ -309,6 +338,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if argv and argv[0].lower() in ("cc", "cosmicclarity"):
         return _run_cc(argv[1:] or ["--help"])
+
+    if argv and argv[0].lower() == "report":
+        return _run_report(argv[1:])
 
     if _looks_like_path_token(argv[0]):
         paths = [str(Path(a)) for a in argv if _looks_like_path_token(a)]
