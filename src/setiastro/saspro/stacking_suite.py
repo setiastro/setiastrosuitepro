@@ -10791,9 +10791,14 @@ class StackingSuiteDialog(QDialog):
 
         # same installer wiring as before
         def _install_accel():
+            from setiastro.saspro.runtime_torch import is_supported_runtime_python, supported_python_versions_text
+
             v = sys.version_info
-            if not (v.major == 3 and v.minor in (10, 11, 12)):
-                why = self.tr("This app is running on Python {0}.{1}. GPU acceleration requires Python 3.10, 3.11, or 3.12.").format(v.major, v.minor)
+            if not is_supported_runtime_python((v.major, v.minor)):
+                supported_text = supported_python_versions_text()
+                why = self.tr(
+                    "This app is running on Python {0}.{1}. GPU acceleration requires Python {2}."
+                ).format(v.major, v.minor, supported_text)
                 tip = ""
                 sysname = platform.system()
                 if sysname == "Darwin":
@@ -10802,11 +10807,11 @@ class StackingSuiteDialog(QDialog):
                         " • Then relaunch the app so it can create its runtime with 3.12.")
                 elif sysname == "Windows":
                     tip = self.tr("\n\nWindows tip:\n"
-                        " • Install Python 3.12/3.11/3.10 (x64) from python.org\n"
+                        " • Install Python 3.12/3.13/3.14 (x64) from python.org\n"
                         " • Then relaunch the app.")
                 else:
                     tip = self.tr("\n\nLinux tip:\n"
-                        " • Install python3.12 or 3.11 via your package manager\n"
+                        " • Install python3.12, python3.13, or python3.14 via your package manager\n"
                         " • Then relaunch the app.")
 
                 QMessageBox.warning(self, self.tr("Unsupported Python Version"), why + tip)
