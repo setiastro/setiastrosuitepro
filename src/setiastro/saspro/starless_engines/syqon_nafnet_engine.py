@@ -319,48 +319,62 @@ def _to_torch_chw(img_chw, device, torch):
     return t.to(device=device, dtype=torch.float32)
 
 
-def _predict_tile(
-    model,
-    t,
-    *,
-    device,
-    use_amp: bool,
-    amp_dtype: str,
-    info: dict,
-    torch,
-):
+def _pad_to_multiple(t, multiple=8, torch=None):
+    """Pad tensor (1, C, H, W) to next multiple on H and W dims."""
+    _, _, H, W = t.shape
+    pad_h = (multiple - H % multiple) % multiple
+    pad_w = (multiple - W % multiple) % multiple
+    if pad_h == 0 and pad_w == 0:
+        return t, H, W
+    # F.pad pads last dims first: (left, right, top, bottom)
+    import torch.nn.functional as F
+    t = F.pad(t, (0, pad_w, 0, pad_h), mode="reflect")
+    return t, H, W
+
+
+def _predict_tile(model, t, *, device, use_amp, amp_dtype, info, torch):
+    import torch.nn.functional as F
+
+    # Pad to multiple of 8 to prevent skip-connection size mismatches
+    t_padded, orig_H, orig_W = _pad_to_multiple(t, multiple=8, torch=torch)
+
+    def _run(inp):
+        return model(inp)
+
     def _to_numpy(pred_t):
         pred_np = pred_t[0].detach().to("cpu").numpy().transpose(1, 2, 0)
+        # Crop back to original spatial size before padding
+        pred_np = pred_np[:orig_H, :orig_W, :]
         return pred_np.astype(np.float32, copy=False)
 
     if use_amp and device.type == "cuda":
         dtype = torch.float16 if amp_dtype == "fp16" else torch.bfloat16
         with torch.cuda.amp.autocast(dtype=dtype):
-            pred_t = model(t)
+            pred_t = _run(t_padded)
         pred = _to_numpy(pred_t)
         if not np.isfinite(pred).all():
             info["amp_fallback"] = True
             info["amp_reason"] = "non-finite output under CUDA AMP; reran tile in fp32"
-            pred_t = model(t)
+            pred_t = _run(t_padded)
             pred = _to_numpy(pred_t)
         return pred
 
     if use_amp and device.type == "mps":
         try:
             with torch.autocast(device_type="mps"):
-                pred_t = model(t)
+                pred_t = _run(t_padded)
             pred = _to_numpy(pred_t)
             if not np.isfinite(pred).all():
                 info["amp_fallback"] = True
                 info["amp_reason"] = "non-finite output under MPS autocast; reran tile in fp32"
-                pred_t = model(t)
+                pred_t = _run(t_padded)
                 pred = _to_numpy(pred_t)
             return pred
         except Exception:
-            pred_t = model(t)
+            pred_t = _run(t_padded)
             return _to_numpy(pred_t)
 
-    pred_t = model(t)
+    pred_t = _run(t_padded)
     pred = _to_numpy(pred_t)
     if not np.isfinite(pred).all():
         raise RuntimeError("Non-finite output detected in fp32 inference.")
