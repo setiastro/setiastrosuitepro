@@ -2541,134 +2541,6 @@ class AfterAlignWorker(QObject):
                 None
             )
 
-class StatusLogWindow(QDialog):
-    MAX_BLOCKS = 2000
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle(self.tr("Stacking Suite Log"))
-
-        # ── key flags ─────────────────────────────────────────────
-        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)   # hide, don't delete
-        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
-        self.setWindowFlag(Qt.WindowType.Tool, True)                    # tool window (no taskbar)
-        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, False)   # ❗ not global topmost
-        self.setWindowModality(Qt.WindowModality.NonModal)              # don't block UI
-        self._was_visible_on_deactivate = False   
-        # ─────────────────────────────────────────────────────────
-        # follow app activation/deactivation
-        QApplication.instance().applicationStateChanged.connect(self._on_app_state_changed)
-
-        # watch the parent to keep the log above it while the app is active
-        #if parent is not None:
-        #    parent.installEventFilter(self)
-
-        self.resize(800, 250)
-
-        lay = QVBoxLayout(self)
-        self.view = QPlainTextEdit(self)
-        self.view.setReadOnly(True)
-        self.view.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        self.view.setStyleSheet(
-            "background-color: black; color: white; font-family: Monospace; padding: 6px;"
-        )
-        lay.addWidget(self.view)
-
-        row = QHBoxLayout()
-        self.clear_btn = QPushButton(self.tr("Clear"))
-        self.clear_btn.clicked.connect(self.view.clear)
-        row.addWidget(self.clear_btn)
-        row.addStretch(1)
-        lay.addLayout(row)
-
-
-    def _apply_topmost(self, enable: bool):
-        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, enable)
-        # Re-apply the native flags and stacking
-        if enable:
-            # When re-activating, make sure it’s shown even if the OS hid it
-            self.show()               # ← **always** show on enable
-            self.raise_()
-        else:
-            # When deactivating, keep whatever visible state it had
-            # (don’t force-hide here—let the OS do whatever it wants)
-            self.show()  # reapply flags without changing visibility
-
-    @pyqtSlot(Qt.ApplicationState)
-    def _on_app_state_changed(self, state):
-        if state == Qt.ApplicationState.ApplicationActive:
-            # If it was visible when we lost focus, ensure it’s back
-            if self._was_visible_on_deactivate:
-                self.show()
-                self.raise_()
-            self._apply_topmost(True)
-        else:
-            # Remember whether we should bring it back later
-            self._was_visible_on_deactivate = self.isVisible()
-            self._apply_topmost(False)
-
-    def eventFilter(self, obj, event):
-        if obj is self.parent() and event.type() in (
-            QEvent.Type.WindowActivate,
-            QEvent.Type.ZOrderChange,
-            QEvent.Type.ActivationChange,
-        ):
-            if (QApplication.instance().applicationState() == Qt.ApplicationState.ApplicationActive
-                and self.isVisible()):
-                self.raise_()
-        return super().eventFilter(obj, event)
-
-    def show_raise(self):
-        self.show()
-        self.raise_()
-
-    @pyqtSlot(str)
-    def append_line(self, message: str):
-        doc = self.view.document()
-
-        if message.startswith("🔄 Normalizing") and doc.blockCount() > 0:
-            last = doc.findBlockByNumber(doc.blockCount() - 1)
-            if last.isValid() and last.text().startswith("🔄 Normalizing"):
-                cur = self.view.textCursor()
-                cur.movePosition(QTextCursor.MoveOperation.End)
-                cur.movePosition(QTextCursor.MoveOperation.StartOfBlock,
-                                 QTextCursor.MoveMode.KeepAnchor)
-                cur.removeSelectedText()
-                cur.insertText(message)
-                self.view.setTextCursor(cur)
-            else:
-                self.view.appendPlainText(message)
-        else:
-            self.view.appendPlainText(message)
-
-        # trim
-        if doc.blockCount() > self.MAX_BLOCKS:
-            extra = doc.blockCount() - self.MAX_BLOCKS
-            cur = self.view.textCursor()
-            cur.movePosition(QTextCursor.MoveOperation.Start)
-            cur.movePosition(QTextCursor.MoveOperation.Down,
-                             QTextCursor.MoveMode.KeepAnchor, extra)
-            cur.removeSelectedText()
-            self.view.setTextCursor(self.view.textCursor())
-
-        # autoscroll
-        sb = self.view.verticalScrollBar()
-        sb.setValue(sb.maximum())
-
-    @pyqtSlot(str)
-    def _on_post_status(self, msg: str):
-        # update small “last status” indicator in the dialog (GUI thread slot)
-        self._update_status_gui(msg)
-        # append to the shared log window
-        self.status_signal.emit(msg)
-        # reflect in progress dialog label if it exists
-        try:
-            if getattr(self, "post_progress", None):
-                self.post_progress.setLabelText(msg)
-                QApplication.processEvents()
-        except Exception:
-            pass
-
 def _save_master_with_rejection_layers(
     img_array: np.ndarray,
     hdr: "fits.Header",
@@ -5400,7 +5272,10 @@ class StackingSuiteDialog(QDialog):
         except Exception:
             pass
         self.status_signal.connect(self._update_status_gui, Qt.ConnectionType.QueuedConnection)
-        self.status_signal.connect(self._log_bus.posted.emit, Qt.ConnectionType.QueuedConnection)
+        self.status_signal.connect(
+            lambda msg: self._log_bus.posted.emit(msg),
+            Qt.ConnectionType.QueuedConnection
+        )
 
         self._cfa_for_this_run = None  # None = follow checkbox; True/False = override for this run
 
@@ -5595,7 +5470,7 @@ class StackingSuiteDialog(QDialog):
 
     def _get_exec_monitor(self) -> "StackingMonitorDialog":
         """Return the singleton monitor, creating it on first call."""
-        if self._exec_monitor is None or not self._exec_monitor.isVisible() and self._exec_monitor is None:
+        if self._exec_monitor is None:
             from setiastro.saspro.stacking_monitor import StackingMonitorDialog
             self._exec_monitor = StackingMonitorDialog(parent=self)
         return self._exec_monitor
@@ -6823,36 +6698,30 @@ class StackingSuiteDialog(QDialog):
 
     @pyqtSlot(str)
     def _update_status_gui(self, message: str):
-        # Update in-dialog status label if you have one
+        display = message[1:] if message.startswith("\r") else message
         if hasattr(self, "_last_status_label") and self._last_status_label:
-            self._last_status_label.setText(message)
-
-        # Optional: your own helper for status breadcrumb/history
+            self._last_status_label.setText(display)
         if hasattr(self, "_set_last_status"):
             try:
-                self._set_last_status(message)
+                self._set_last_status(display)
             except Exception:
                 pass
-
 
     def update_status(self, message: str):
         """
         Thread-safe status update:
         • If already on GUI thread -> update immediately + push to log bus directly
         • If from worker thread    -> emit once; slots are queued to GUI + log
+        • Messages prefixed with \\r overwrite the last line in the log window
         """
         if QThread.currentThread() is self._gui_thread:
-            # Immediate UI update
             self._update_status_gui(message)
-            # Send to log window directly (don’t signal back into ourselves)
             try:
-                self._log_bus.posted.emit(message)
+                self._log_bus.posted.emit(message)  # \r passed through to log window handler
             except Exception:
                 pass
         else:
-            # One queued signal fan-out to GUI + log
-            self.status_signal.emit(message)
-
+            self.status_signal.emit(message)  # status_signal connected to both slots
 
     @pyqtSlot(str)
     def _on_post_status(self, msg: str):
@@ -7431,7 +7300,11 @@ class StackingSuiteDialog(QDialog):
             self.settings.value("stacking/align/auto_threshold", False, type=bool)
         )
         fl_align.addRow(self.align_auto_thresh_cb)
+        def _toggle_sigma_enable(checked: bool):
+            self.align_det_sigma.setEnabled(not checked)
 
+        self.align_auto_thresh_cb.toggled.connect(_toggle_sigma_enable)
+        _toggle_sigma_enable(self.align_auto_thresh_cb.isChecked()) 
         # (Optional) Minimum star area in pixels
         self.align_minarea = QSpinBox()
         self.align_minarea.setRange(1, 200)
@@ -10791,9 +10664,14 @@ class StackingSuiteDialog(QDialog):
 
         # same installer wiring as before
         def _install_accel():
+            from setiastro.saspro.runtime_torch import is_supported_runtime_python, supported_python_versions_text
+
             v = sys.version_info
-            if not (v.major == 3 and v.minor in (10, 11, 12)):
-                why = self.tr("This app is running on Python {0}.{1}. GPU acceleration requires Python 3.10, 3.11, or 3.12.").format(v.major, v.minor)
+            if not is_supported_runtime_python((v.major, v.minor)):
+                supported_text = supported_python_versions_text()
+                why = self.tr(
+                    "This app is running on Python {0}.{1}. GPU acceleration requires Python {2}."
+                ).format(v.major, v.minor, supported_text)
                 tip = ""
                 sysname = platform.system()
                 if sysname == "Darwin":
@@ -10802,11 +10680,11 @@ class StackingSuiteDialog(QDialog):
                         " • Then relaunch the app so it can create its runtime with 3.12.")
                 elif sysname == "Windows":
                     tip = self.tr("\n\nWindows tip:\n"
-                        " • Install Python 3.12/3.11/3.10 (x64) from python.org\n"
+                        " • Install Python 3.12/3.13/3.14 (x64) from python.org\n"
                         " • Then relaunch the app.")
                 else:
                     tip = self.tr("\n\nLinux tip:\n"
-                        " • Install python3.12 or 3.11 via your package manager\n"
+                        " • Install python3.12, python3.13, or python3.14 via your package manager\n"
                         " • Then relaunch the app.")
 
                 QMessageBox.warning(self, self.tr("Unsupported Python Version"), why + tip)
@@ -16999,20 +16877,16 @@ class StackingSuiteDialog(QDialog):
         return bool(getattr(self, "_comet_seed", None))
 
     # small helper to toggle UI while registration is running
-    def _set_registration_busy(self, busy: bool):
+    def _set_registration_busy(self, busy: bool, label: str = "Registering"):
         self._registration_busy = bool(busy)
         self.register_images_btn.setEnabled(not busy)
         self.integrate_registered_btn.setEnabled(not busy)
-        # optional visual hint
         if busy:
-            self.register_images_btn.setText("⏳ Registering…")
-            self.register_images_btn.setToolTip("Registration in progress…")
+            self.register_images_btn.setText(f"⏳ {label}…")
+            self.register_images_btn.setToolTip(f"{label} in progress…")
         else:
             self.register_images_btn.setText("🔥🚀Register and Integrate Images🔥🚀")
             self.register_images_btn.setToolTip("")
-
-        # prevent accidental double-queue from keyboard/space
-        self.register_images_btn.blockSignals(busy)
 
     def _cosmetic_enabled(self) -> bool:
         try:
@@ -19013,7 +18887,12 @@ class StackingSuiteDialog(QDialog):
 
     def on_registration_complete(self, success, msg):
         self.update_status(self.tr("📏 Phase: Star alignment complete."))
-       
+        prev = getattr(self, "_align_det_sigma_prev", None)
+        if prev is not None:
+            self.settings.setValue("stacking/align/det_sigma", prev)
+            self.settings.setValue("stacking/align/detection_sigma", prev)
+            self.settings.setValue("stacking/align/star_detect_sigma", prev)
+            self._align_det_sigma_prev = None       
         self.update_status(self.tr(msg))
         if not success:
             self._set_registration_busy(False)
@@ -22055,7 +21934,8 @@ class StackingSuiteDialog(QDialog):
         if getattr(self, "_registration_busy", False):
             self.update_status(self.tr("⏸ Another job is running; ignoring extra click."))
             return
-        self._set_registration_busy(True)
+        self._set_registration_busy(True, label="Integrating")
+        self._start_exec_monitor() 
 
         try:
             self.update_status(self.tr("🔄 Integrating Previously Registered Images…"))
@@ -23377,7 +23257,11 @@ class StackingSuiteDialog(QDialog):
         y0, y1, x0, x1 = tiles[0]
         fut = tp.submit(_read_tile_into, buf0, maskbuf0, y0, y1, x0, x1)
         use_buf0 = True
-
+        log(
+            f"🔧 Integrating {total_tiles} tiles "
+            f"({'GPU' if use_gpu else 'CPU'}, {n_rows}×{n_cols} grid, "
+            f"chunk {chunk_h}×{chunk_w})…"
+        )
         _ctx_instance = _safe_torch_inference_ctx() if use_gpu else contextlib.nullcontext()
         with _ctx_instance:
             for tile_idx, (y0, y1, x0, x1) in enumerate(tiles, start=1):
@@ -23406,12 +23290,6 @@ class StackingSuiteDialog(QDialog):
                             (maskbuf1 if use_buf0 else maskbuf0),
                             ny0, ny1, nx0, nx1
                         )
-
-                    log(
-                        f"Integrating tile {tile_idx}/{total_tiles} "
-                        f"[y:{y0}:{y1} x:{x0}:{x1} size={th}×{tw}] "
-                        f"mode={'GPU' if use_gpu else 'CPU'}…"
-                    )
 
                     if use_gpu:
                         try:
@@ -23463,9 +23341,9 @@ class StackingSuiteDialog(QDialog):
                 dt = time.perf_counter() - t0
                 work_px = th * tw * N * channels
                 mpx_s = (work_px / 1e6) / dt if dt > 0 else float("inf")
-                log(f"  ↳ tile {tile_idx} done in {dt:.3f}s  (~{mpx_s:.1f} MPx/s)")
 
                 use_buf0 = not use_buf0
+                log(f"\r  🔧 Tile {tile_idx}/{total_tiles} [{group_key}] — {mpx_s:.1f} MPx/s")
 
         tp.shutdown(wait=True)
         if use_memmap_sources:

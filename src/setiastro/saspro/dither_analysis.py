@@ -46,7 +46,7 @@ from PyQt6.QtWidgets import (
     QAbstractItemView, QCheckBox, QFileDialog, QGroupBox,
     QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
     QMessageBox, QPushButton, QSizePolicy, QSplitter,
-    QTextEdit, QVBoxLayout, QWidget, QApplication
+    QTextEdit, QVBoxLayout, QWidget, QApplication, QDoubleSpinBox
 )
 
 try:
@@ -1118,7 +1118,48 @@ class DitherAnalysisWindow(QWidget):
         ps_row.addWidget(self._btn_plate_solve)
         ps_row.addStretch()
         lv.addLayout(ps_row)
+        # ── Detection sigma + trial detect (mirrors RGB Align) ──────────────
+        sep_row = QHBoxLayout()
+        sep_lbl = QLabel("Detection σ:")
+        sep_lbl.setStyleSheet("color:#eaeaea;font-size:11px;")
 
+        self._sep_sigma_spin = QDoubleSpinBox()
+        self._sep_sigma_spin.setRange(1.0, 200.0)
+        self._sep_sigma_spin.setDecimals(1)
+        self._sep_sigma_spin.setSingleStep(1.0)
+        self._sep_sigma_spin.setValue(12.0)
+        self._sep_sigma_spin.setFixedHeight(26)
+        self._sep_sigma_spin.setFixedWidth(70)
+        self._sep_sigma_spin.setToolTip(
+            "Detection threshold in sigma above background.\n"
+            "Lower = more stars (may include noise).\n"
+            "Higher = only bright stars.\n"
+            "Use Trial Detect to test before running."
+        )
+
+        self._btn_trial_detect = QPushButton("🔍 Trial Detect")
+        self._btn_trial_detect.setFixedHeight(26)
+        self._btn_trial_detect.setEnabled(False)
+        self._btn_trial_detect.setStyleSheet(
+            "QPushButton{background:#0f3460;color:#eaeaea;border-radius:4px;font-size:11px;}"
+            "QPushButton:hover{background:#e94560;color:#fff;}"
+            "QPushButton:disabled{background:#222;color:#555;}"
+        )
+        self._btn_trial_detect.setToolTip(
+            "Run SEP star detection on frame 0 with the current\n"
+            "threshold and report how many stars were found."
+        )
+        self._btn_trial_detect.clicked.connect(self._run_trial_detect)
+
+        self._lbl_trial_result = QLabel("")
+        self._lbl_trial_result.setStyleSheet("color:#888;font-size:10px;")
+        self._lbl_trial_result.setWordWrap(True)
+
+        sep_row.addWidget(sep_lbl)
+        sep_row.addWidget(self._sep_sigma_spin)
+        sep_row.addWidget(self._btn_trial_detect)
+        sep_row.addWidget(self._lbl_trial_result, 1)
+        lv.addLayout(sep_row)
         self._btn_run = QPushButton("▶  Run Registration && Analyze")
         self._btn_run.setFixedHeight(34)
         self._btn_run.setStyleSheet(
@@ -1524,7 +1565,9 @@ class DitherAnalysisWindow(QWidget):
                 item.setData(Qt.ItemDataRole.UserRole, p)
                 item.setToolTip(p)
                 self._file_list.addItem(item)
-        self._btn_plate_solve.setEnabled(self._file_list.count() > 0)
+        has_files = self._file_list.count() > 0
+        self._btn_plate_solve.setEnabled(has_files)
+        self._btn_trial_detect.setEnabled(has_files)
 
 
     def _remove_files(self):
@@ -1860,6 +1903,7 @@ class DitherAnalysisWindow(QWidget):
         from PyQt6.QtCore import QSettings
 
         prefs = _align_prefs(QSettings())
+        prefs["det_sigma"] = float(self._sep_sigma_spin.value())
 
         self._reg_thread = StarRegistrationThread(
             reference_image_path_or_view=clean_paths[0],
@@ -2009,26 +2053,31 @@ class DitherAnalysisWindow(QWidget):
     # ─────────────────────────────────────────────────────────────────
     #  Public entry points
     # ─────────────────────────────────────────────────────────────────
-    def load_transforms(
-        self,
-        transforms: list,
-        filenames: list[str],
-        ref_shape: tuple[int, int] = (0, 0),
-    ):
-        """
-        Load pre-computed 2×3 transforms (or None for failed frames) and analyze.
-        ref_shape = (H, W) of the reference/output image.
-        """
+    def load_transforms(self, transforms, filenames, ref_shape=(0,0)):
         self._transforms = list(transforms)
         self._filenames  = list(filenames)
         self._ref_shape  = ref_shape
 
+        # Build a basename→path map from the current list before clearing it
+        path_map = {}
+        for i in range(self._file_list.count()):
+            item = self._file_list.item(i)
+            p = item.data(Qt.ItemDataRole.UserRole)
+            if p:
+                path_map[os.path.basename(p)] = p
+
         self._file_list.clear()
         for fn in filenames:
-            self._file_list.addItem(QListWidgetItem(fn))
+            item = QListWidgetItem(fn)
+            # Restore full path if we have it
+            full = path_map.get(fn) or path_map.get(os.path.basename(fn))
+            if full:
+                item.setData(Qt.ItemDataRole.UserRole, full)
+                item.setToolTip(full)
+            self._file_list.addItem(item)
 
         self._btn_plate_solve.setEnabled(len(filenames) > 0)
-
+        self._btn_trial_detect.setEnabled(len(filenames) > 0)
         self._analyze()
 
     def load_sasd(self, path: str):
@@ -2086,6 +2135,68 @@ class DitherAnalysisWindow(QWidget):
             + (f"  |  {self._pixscale_arcsec:.3f}\"/px" if self._pixscale_arcsec else "")
         )
         self.load_transforms(transforms, basenames, ref_shape=ref_shape)
+
+    def _run_trial_detect(self):
+        import sep
+        import numpy as np
+        from PyQt6.QtWidgets import QApplication
+
+        if self._file_list.count() == 0:
+            return
+
+        frame0_item = self._file_list.item(0)
+        frame0_path = frame0_item.data(Qt.ItemDataRole.UserRole)
+        if not frame0_path or not os.path.exists(frame0_path):
+            self._lbl_trial_result.setText("⚠  Cannot locate frame 0 on disk.")
+            return
+
+        self._btn_trial_detect.setEnabled(False)
+        self._lbl_trial_result.setText("Detecting…")
+        self._lbl_trial_result.setStyleSheet("color:#888;font-size:10px;")
+        QApplication.processEvents()
+
+        try:
+            from setiastro.saspro.legacy.image_manager import load_image
+            img, _, _, _ = load_image(frame0_path)
+            if img is None:
+                raise ValueError("load_image returned None")
+
+            gray = np.mean(img, axis=2).astype(np.float32) if img.ndim == 3 else img.astype(np.float32)
+            gray = np.ascontiguousarray(gray)
+
+            sigma = float(self._sep_sigma_spin.value())
+            sep.set_extract_pixstack(5_000_000)
+            bkg = sep.Background(gray)
+            objs = sep.extract(gray - bkg.back(), sigma * float(bkg.globalrms))
+            n = len(objs) if objs is not None else 0
+
+            if n == 0:
+                msg = "⚠  0 stars — lower threshold"
+                color = "#e94560"
+            elif n < 5:
+                msg = f"⚠  {n} stars — lower threshold"
+                color = "#e94560"
+            elif n < 100:
+                msg = f"⚠  {n} stars — consider lowering threshold"
+                color = "#ffc107"
+            elif n > 25000:
+                msg = f"⚠  {n:,} stars (very high — raise threshold)"
+                color = "#e94560"
+            elif n > 10000:
+                msg = f"⚠  {n:,} stars (high — consider raising threshold)"
+                color = "#ffc107"
+            else:
+                msg = f"✓  {n:,} stars"
+                color = "#4caf50"
+
+            self._lbl_trial_result.setStyleSheet(f"color:{color};font-size:10px;")
+            self._lbl_trial_result.setText(msg)
+
+        except Exception as e:
+            self._lbl_trial_result.setStyleSheet("color:#ffc107;font-size:10px;")
+            self._lbl_trial_result.setText(f"⚠  {e}")
+        finally:
+            self._btn_trial_detect.setEnabled(True)
 
     # ----------------------------------------------------------------- analyze
     def _analyze(self):

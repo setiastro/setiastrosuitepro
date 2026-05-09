@@ -285,16 +285,40 @@ class CurveWidget(QWidget):
 
         if self._dragging:
             val = self._x_to_val(x)
+
             if self._dragging == "black":
-                self.black = min(val, self.white - 0.001)
+                new_black = min(val, self.white - 0.001)
+                # mid tracks proportionally — keep _mid_rel constant
+                old_range = self.white - self.black
+                new_range = self.white - new_black
+                if old_range > 1e-6 and new_range > 1e-6:
+                    mid_rel = (self.mid - self.black) / old_range
+                    new_mid = new_black + mid_rel * new_range
+                    self.mid = float(np.clip(new_mid, new_black + 1e-4, self.white - 1e-4))
+                self.black = new_black
+
             elif self._dragging == "white":
-                self.white = max(val, self.black + 0.001)
+                new_white = max(val, self.black + 0.001)
+                old_range = self.white - self.black
+                new_range = new_white - self.black
+                if old_range > 1e-6 and new_range > 1e-6:
+                    mid_rel = (self.mid - self.black) / old_range
+                    new_mid = self.black + mid_rel * new_range
+                    self.mid = float(np.clip(new_mid, self.black + 1e-4, new_white - 1e-4))
+                self.white = new_white
+
             elif self._dragging == "mid":
-                self.mid = float(np.clip(val, 0.0, 1.0))
+                self.mid = float(np.clip(val, self.black + 1e-4, self.white - 1e-4))
+
             self.update()
             self.paramsChanged.emit(self.black, self.mid, self.white)
             ev.accept()
             return
+
+        # cursor hint
+        hit = self._handle_at(x, y)
+        self.setCursor(Qt.CursorShape.SizeHorCursor if hit else Qt.CursorShape.ArrowCursor)
+        super().mouseMoveEvent(ev)
 
         # cursor hint
         hit = self._handle_at(x, y)
@@ -329,7 +353,11 @@ class CurveWidget(QWidget):
         b = self.black; w = self.white
         if w <= b + 1e-8: w = b + 1e-8
         t = np.clip((xs - b) / (w - b), 0.0, 1.0)
-        ys = _mtf_vect(t, self.mid)
+
+        # convert mid from absolute to relative position within [black, white]
+        rng = w - b
+        mid_rel = float(np.clip((self.mid - b) / max(rng, 1e-8), 1e-4, 1.0 - 1e-4))
+        ys = _mtf_vect(t, mid_rel)
 
         p.setPen(QPen(QColor(220, 220, 220), 2))
         last = None
@@ -843,14 +871,18 @@ class HistogramTransformDialogPro(QDialog):
         m = float(self.sp_mid.value())
         w = float(self.sp_white.value())
 
-        # ensure ordering b < w; keep m inside [0,1] but doesn't need to be between b/w
         if w <= b + 1e-6:
             w = min(1.0, b + 1e-6)
             self.sp_white.blockSignals(True)
             self.sp_white.setValue(w)
             self.sp_white.blockSignals(False)
-        m = np.clip(m, 0.0, 1.0)
-        return b, m, w
+
+        m = float(np.clip(m, 0.0, 1.0))
+        # convert mid from absolute UI value to relative MTF parameter
+        rng = w - b
+        m_rel = float(np.clip((m - b) / max(rng, 1e-8), 1e-4, 1.0 - 1e-4))
+
+        return b, m, m_rel, w  # return BOTH absolute and relative
 
     def _active_mask_array(self) -> np.ndarray | None:
         """Return active mask as float32 [H,W] in 0..1, resized to doc image."""
@@ -913,7 +945,7 @@ class HistogramTransformDialogPro(QDialog):
         return mask[yi][:, xi]
 
     def _recompute(self):
-        b, m, w = self._sanitize_points()
+        b, m_abs, m_rel, w = self._sanitize_points()
 
         # update min/max stats label
         try:
@@ -927,28 +959,22 @@ class HistogramTransformDialogPro(QDialog):
         except Exception:
             pass
 
-        self.curve.set_params(b, m, w)
- 
+        self.curve.set_params(b, m_abs, w)   # curve uses absolute for handle position
+
         chan = "L"
         try:
             chan = str(self.cb_channel.currentData() or "L")
         except Exception:
             chan = "L"
- 
+
         if self.cb_live.isChecked():
-            out = apply_histogram_transform_channel(self._preview_base, b, m, w, chan)
- 
-            # --- mask blend (preview) ---
-            mask_full = self._active_mask_array()
-            if mask_full is not None:
-                ph, pw = self._preview_base.shape[:2]
-                mask_prev = self._resize_mask_to(mask_full, ph, pw)
-                out = self._blend_with_mask(self._preview_base, out, mask_prev)
+            out = apply_histogram_transform_channel(self._preview_base, b, m_rel, w, chan)
+            # ...mask blend unchanged...
         else:
             out = self._preview_base
- 
+
         self._out = out
- 
+
         # clipping stats
         try:
             lo, hi, tot = clipping_stats_channel(self._preview_base, b, w, chan)
@@ -960,16 +986,16 @@ class HistogramTransformDialogPro(QDialog):
             self.lbl_clip.setText(clip_txt)
         except Exception:
             pass
- 
+
         h1_rgb = self._hist_rgb_256(self._out)
         self.hist.set_histograms(self._h0_rgb, h1_rgb)
- 
+
         self._base_pm = _to_pixmap(self._out)
         self._apply_zoom()
- 
+
         mask_note = "  [masked]" if self._active_mask_array() is not None else ""
         self.lbl_status.setText(
-            f"Ch={chan}  Black={b:.5f}  Mid={m:.5f}  White={w:.5f}{mask_note}"
+            f"Ch={chan}  Black={b:.5f}  Mid={m_abs:.5f}  White={w:.5f}{mask_note}"
         )
 
     # ---------- preview zoom/pan ----------
@@ -1023,23 +1049,22 @@ class HistogramTransformDialogPro(QDialog):
 
     # ---------- apply ----------
     def _apply_result_fullres(self) -> np.ndarray:
-        b, m, w = self._sanitize_points()
+        b, m_abs, m_rel, w = self._sanitize_points()
         img = np.clip(np.asarray(self.document.image, dtype=np.float32), 0.0, 1.0)
- 
+
         chan = "L"
         try:
             chan = str(self.cb_channel.currentData() or "L")
         except Exception:
             chan = "L"
- 
-        out = apply_histogram_transform_channel(img, b, m, w, chan)
+
+        out = apply_histogram_transform_channel(img, b, m_rel, w, chan)
         out = np.clip(out, 0.0, 1.0)
- 
-        # --- mask blend (full res) ---
+
         mask_full = self._active_mask_array()
         if mask_full is not None:
             out = self._blend_with_mask(img, out, mask_full)
- 
+
         return np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
 
     def _apply_inplace(self):

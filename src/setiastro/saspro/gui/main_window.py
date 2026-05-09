@@ -92,6 +92,7 @@ from setiastro.saspro.widgets.common_utilities import (
     _strip_ui_decorations,
     install_crash_handlers,
 )
+from setiastro.saspro.gui.diagnostics_dialog import DiagnosticsReportDialog
 
 
 # Reproject and OpenCV imports removed (unused or available via lazy_imports)
@@ -5564,6 +5565,10 @@ class AstroSuiteProMainWindow(
         )
         dlg.exec()
 
+    def _show_diagnostics_report(self):
+        dlg = DiagnosticsReportDialog(self)
+        dlg.exec()
+
     #######-------COMMAND DROPS-------#################
     def remember_last_headless_command(
         self,
@@ -10022,4 +10027,3 @@ from setiastro.saspro.cheat_sheet import (
 )
 
 # _ProjectSaveWorker and install_crash_handlers imported from setiastro.saspro.widgets.common_utilities
-
