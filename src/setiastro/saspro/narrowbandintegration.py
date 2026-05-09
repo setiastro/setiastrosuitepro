@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
     QDialog, QWidget, QLabel, QPushButton, QComboBox, QGroupBox,
     QVBoxLayout, QHBoxLayout, QMessageBox, QDoubleSpinBox,
     QScrollArea, QFrame, QSplitter, QSizePolicy, QCheckBox, QLineEdit,
-    QInputDialog
+    QInputDialog, QSlider
 )
 
 try:
@@ -115,7 +115,200 @@ def _downsample(img: np.ndarray, max_dim: int = 1200) -> np.ndarray:
         return cv2.resize(img, (nw, nh), interpolation=cv2.INTER_AREA)
     return img[::int(1.0/k), ::int(1.0/k)]
 
+class NbLevelsWidget(QWidget):
+    """
+    Single gradient bar with three draggable chevron handles.
+    Black (blue), Mid (green), White (orange).
+    Mid is stored as a RELATIVE position within [black, white] (0..1),
+    matching PI MTF convention. Dragging black/white rescales mid proportionally.
+    """
+    levelsChanged = pyqtSignal()
 
+    _HANDLE_R = 7
+    _HANDLE_H = 8
+    _PAD      = 12
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._black   = 0.0
+        self._mid_rel = 0.5   # relative position within [black, white]
+        self._white   = 1.0
+        self._dragging = None
+        self.setMouseTracking(True)
+        self.setMinimumHeight(36)
+        self.setMinimumWidth(160)
+
+    # ── public API ────────────────────────────────────────────────────────
+    def levels(self) -> tuple[float, float, float]:
+        """Returns (black, mid_relative, white). mid_relative is 0..1 within [black,white]."""
+        return (self._black, self._mid_rel, self._white)
+
+    def setLevels(self, black: float, mid_rel: float, white: float, notify: bool = False):
+        self._black   = float(np.clip(black,   0.0, 1.0))
+        self._white   = float(np.clip(white,   0.0, 1.0))
+        self._mid_rel = float(np.clip(mid_rel, 0.0, 1.0))
+        self.update()
+        if notify:
+            self.levelsChanged.emit()
+
+    def reset(self):
+        self.setLevels(0.0, 0.5, 1.0, notify=True)
+
+    def setEnabled(self, enabled: bool):
+        super().setEnabled(enabled)
+        self.update()
+
+    # ── mid absolute position (for painting) ─────────────────────────────
+    def _mid_abs(self) -> float:
+        """Absolute [0..1] position of mid handle for display."""
+        return self._black + self._mid_rel * (self._white - self._black)
+
+    # ── geometry helpers ──────────────────────────────────────────────────
+    def _track_rect(self):
+        bar_h = 14
+        y = 2
+        return (self._PAD, y, self.width() - 2 * self._PAD, bar_h)
+
+    def _val_to_x(self, val: float) -> int:
+        x, _, w, _ = self._track_rect()
+        return int(x + np.clip(val, 0.0, 1.0) * w)
+
+    def _x_to_val(self, px: int) -> float:
+        x, _, w, _ = self._track_rect()
+        return float(np.clip((px - x) / max(w, 1), 0.0, 1.0))
+
+    def _chevron_y(self) -> int:
+        _, y, _, h = self._track_rect()
+        return y + h + 1
+
+    def _hit(self, mx: int, my: int) -> str | None:
+        cy = self._chevron_y()
+        hh = self._HANDLE_H + 4
+        # check mid first so it wins when stacked near black/white
+        for name, abs_val in (
+            ("mid",   self._mid_abs()),
+            ("black", self._black),
+            ("white", self._white),
+        ):
+            hx = self._val_to_x(abs_val)
+            if abs(mx - hx) <= self._HANDLE_R + 3 and my >= cy - 2 and my <= cy + hh:
+                return name
+        return None
+
+    # ── paint ─────────────────────────────────────────────────────────────
+    def paintEvent(self, _ev):
+        from PyQt6.QtGui import (QPainter, QLinearGradient, QColor,
+                                 QPen, QBrush, QPolygon)
+        from PyQt6.QtCore import QPoint, QRect
+
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        x, y, w, h = self._track_rect()
+        alpha = 255 if self.isEnabled() else 120
+
+        grad = QLinearGradient(x, y, x + w, y)
+        grad.setColorAt(0.0, QColor(0,   0,   0,   alpha))
+        grad.setColorAt(0.5, QColor(128, 128, 128, alpha))
+        grad.setColorAt(1.0, QColor(255, 255, 255, alpha))
+        p.fillRect(QRect(x, y, w, h), grad)
+        p.setPen(QPen(QColor(80, 80, 80), 1))
+        p.drawRect(QRect(x, y, w, h))
+
+        cy  = self._chevron_y()
+        hr  = self._HANDLE_R
+        hh  = self._HANDLE_H
+
+        handles = [
+            ("black", self._black,    QColor(100, 160, 255, alpha)),
+            ("mid",   self._mid_abs(), QColor(100, 220, 100, alpha)),
+            ("white", self._white,    QColor(255, 180,  80, alpha)),
+        ]
+
+        for name, val, color in handles:
+            hx     = self._val_to_x(val)
+            scale  = 1.2 if self._dragging == name else 1.0
+            ehr    = int(hr * scale)
+            ehh    = int(hh * scale)
+
+            tri = QPolygon([
+                QPoint(hx,       cy),
+                QPoint(hx - ehr, cy + ehh),
+                QPoint(hx + ehr, cy + ehh),
+            ])
+            p.setBrush(QBrush(color))
+            p.setPen(QPen(color.darker(150), 1))
+            p.drawPolygon(tri)
+
+        p.end()
+
+    # ── mouse ─────────────────────────────────────────────────────────────
+    def mousePressEvent(self, ev):
+        if not self.isEnabled():
+            return
+        if ev.button() == Qt.MouseButton.LeftButton:
+            hit = self._hit(int(ev.position().x()), int(ev.position().y()))
+            if hit:
+                self._dragging = hit
+                ev.accept()
+                return
+        super().mousePressEvent(ev)
+
+    def mouseMoveEvent(self, ev):
+        if not self.isEnabled():
+            return
+        mx = int(ev.position().x())
+        my = int(ev.position().y())
+
+        if self._dragging:
+            val = self._x_to_val(mx)
+
+            if self._dragging == "black":
+                new_black = float(np.clip(val, 0.0, self._white - 0.001))
+                # just clamp mid_rel so it can't go negative if black overshoots
+                # _mid_rel stays the same → green chevron moves proportionally
+                mid_abs_new = new_black + self._mid_rel * (self._white - new_black)
+                if mid_abs_new >= self._white - 1e-4:
+                    self._mid_rel = (self._white - 1e-4 - new_black) / max(self._white - new_black, 1e-8)
+                self._black = new_black
+
+            elif self._dragging == "white":
+                new_white = float(np.clip(val, self._black + 0.001, 1.0))
+                # same — _mid_rel stays, green tracks automatically
+                mid_abs_new = self._black + self._mid_rel * (new_white - self._black)
+                if mid_abs_new <= self._black + 1e-4:
+                    self._mid_rel = 1e-4 / max(new_white - self._black, 1e-8)
+                self._white = new_white
+
+            elif self._dragging == "mid":
+                # mid is constrained to (black, white), stored as relative
+                mid_abs = float(np.clip(val, self._black + 1e-4, self._white - 1e-4))
+                rng = self._white - self._black
+                self._mid_rel = (mid_abs - self._black) / max(rng, 1e-8)
+
+            self.update()
+            self.levelsChanged.emit()
+            ev.accept()
+            return
+
+        hit = self._hit(mx, my)
+        self.setCursor(
+            Qt.CursorShape.SizeHorCursor if hit else Qt.CursorShape.ArrowCursor
+        )
+        super().mouseMoveEvent(ev)
+
+    def mouseReleaseEvent(self, ev):
+        if ev.button() == Qt.MouseButton.LeftButton and self._dragging:
+            self._dragging = None
+            self.update()
+            ev.accept()
+            return
+        super().mouseReleaseEvent(ev)
+
+    def sizeHint(self):
+        from PyQt6.QtCore import QSize
+        return QSize(200, 36)
+    
 # ---------------------------------------------------------------------------
 # Hue gradient slider widget
 # ---------------------------------------------------------------------------
@@ -334,7 +527,15 @@ class DynamicFilterRow(QWidget):
         row3.addWidget(self.sat_spin)
 
         gb_layout.addLayout(row3)
+        lbl_levels = QLabel("Levels  (Black / Mid / White):")
+        lbl_levels.setStyleSheet("color:#aaa; font-size:11px;")
+        lbl_levels.setEnabled(False)
+        gb_layout.addWidget(lbl_levels)
 
+        self.levels_widget = NbLevelsWidget()
+        self.levels_widget.setEnabled(False)
+        self.levels_widget.levelsChanged.connect(self.changed)
+        gb_layout.addWidget(self.levels_widget)
         # Wrap group box in this widget's layout
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -349,6 +550,7 @@ class DynamicFilterRow(QWidget):
         self.hue_spin.setEnabled(checked)
         self.amt_spin.setEnabled(checked)
         self.sat_spin.setEnabled(checked)
+        self.levels_widget.setEnabled(checked)
         self.changed.emit()
 
     def _on_name_changed(self, text: str):
@@ -379,7 +581,9 @@ class DynamicFilterRow(QWidget):
         self.changed.emit()
 
     # --- public API ---
-
+    def levels(self) -> tuple[float, float, float]:
+        return self.levels_widget.levels()
+    
     def filter_name(self) -> str:
         return self.name_edit.text() or "Custom"
 
@@ -412,6 +616,7 @@ class DynamicFilterRow(QWidget):
         self.hue_spin.blockSignals(False)
         self.amt_spin.setValue(1.0)
         self.sat_spin.setValue(1.0)
+        self.levels_widget.reset()
 
 
 # ---------------------------------------------------------------------------
@@ -448,7 +653,8 @@ class NarrowbandIntegrationDialog(QDialog):
         self._dynamic_rows: list[DynamicFilterRow] = []
         self._state_restored = False
         self._cached_result_pm = None
-
+        self._nb_levels: dict[str, NbLevelsWidget] = {}
+        self._nb_levels_label: dict[str, QLabel] = {}
         # Timer must exist before _build_ui
         self._preview_timer = QTimer(self)
         self._preview_timer.setSingleShot(True)
@@ -588,6 +794,18 @@ class NarrowbandIntegrationDialog(QDialog):
             row3.addWidget(sat_spin)
 
             g.addLayout(row3)
+
+            lbl_levels = QLabel("Levels  (Black / Mid / White):")
+            lbl_levels.setStyleSheet("color:#aaa; font-size:11px;")
+            lbl_levels.setEnabled(False)
+            g.addWidget(lbl_levels)
+
+            lvl = NbLevelsWidget()
+            lvl.setEnabled(False)
+            lvl.levelsChanged.connect(self._schedule_preview)
+            self._nb_levels[label] = lvl
+            self._nb_levels_label[label] = lbl_levels
+            g.addWidget(lvl)
 
             self._controls_layout.addWidget(gb)
 
@@ -822,6 +1040,8 @@ class NarrowbandIntegrationDialog(QDialog):
                 self._nb_hue_spins[label].setEnabled(True)
                 self._nb_amount[label].setEnabled(True)
                 self._nb_sat[label].setEnabled(True)
+                self._nb_levels[label].setEnabled(True)
+                self._nb_levels_label[label].setEnabled(True)
 
     # -----------------------------------------------------------------------
     # Fixed channel enable/hue sync
@@ -833,6 +1053,8 @@ class NarrowbandIntegrationDialog(QDialog):
         self._nb_hue_spins[label].setEnabled(checked)
         self._nb_amount[label].setEnabled(checked)
         self._nb_sat[label].setEnabled(checked)
+        self._nb_levels[label].setEnabled(checked)
+        self._nb_levels_label[label].setEnabled(checked)
         self._schedule_preview()
 
     def _on_hue_changed(self, label: str, hue: float):
@@ -883,7 +1105,8 @@ class NarrowbandIntegrationDialog(QDialog):
             sat    = float(self._nb_sat[label].value())
             if amount < 1e-4:
                 continue
-            out = self._apply_nb_screen(out, nb_mono, hue, amount, sat)
+            out = self._apply_nb_screen(out, nb_mono, hue, amount, sat,
+                                        levels=self._nb_levels[label].levels())
 
         # Dynamic channels
         for row in self._dynamic_rows:
@@ -898,12 +1121,22 @@ class NarrowbandIntegrationDialog(QDialog):
             sat     = row.saturation()
             if amount < 1e-4:
                 continue
-            out = self._apply_nb_screen(out, nb_mono, hue, amount, sat)
+            out = self._apply_nb_screen(out, nb_mono, hue, amount, sat,
+                                        levels=row.levels())
 
         return np.clip(out, 0.0, 1.0)
 
     def _apply_nb_screen(self, out: np.ndarray, nb_mono: np.ndarray,
-                         hue: float, amount: float, saturation: float = 1.0) -> np.ndarray:
+                         hue: float, amount: float, saturation: float = 1.0,
+                         levels: tuple[float, float, float] = (0.0, 0.5, 1.0)) -> np.ndarray:
+        black, mid, white = levels
+        # apply levels to mono channel before colorizing
+        if black > 0.0 or abs(mid - 0.5) > 1e-4 or white < 1.0:
+            if white <= black + 1e-8:
+                white = black + 1e-8
+            t = np.clip((nb_mono - black) / (white - black), 0.0, 1.0)
+            from setiastro.saspro.histogram_transform_pro import _mtf_vect
+            nb_mono = _mtf_vect(t, mid)
         rh, rw = out.shape[:2]
         mh, mw = nb_mono.shape[:2]
         if (mh, mw) != (rh, rw):
@@ -1067,6 +1300,8 @@ class NarrowbandIntegrationDialog(QDialog):
             self._nb_sat[label].setValue(1.0)
         for row in self._dynamic_rows:
             row.reset()
+        for label in _NB_LABELS:
+            self._nb_levels[label].reset()            
         self._schedule_preview()
 
     # -----------------------------------------------------------------------
