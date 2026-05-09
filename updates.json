@@ -1,10 +1,10 @@
 {
-  "version": "1.15.14",
+  "version": "1.15.15",
   "downloads": {
-      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.15.14/setiastrosuitepro_windows.zip",
-      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.15.14/SetiAstroSuitePro_macOS_Intel.dmg",
-      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.15.14/SetiAstroSuitePro_AppleSilicon.dmg",
-      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.15.14/SetiAstroSuitePro_linux.tar.xz"
+      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.15.15/setiastrosuitepro_windows.zip",
+      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.15.15/SetiAstroSuitePro_macOS_Intel.dmg",
+      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.15.15/SetiAstroSuitePro_AppleSilicon.dmg",
+      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.15.15/SetiAstroSuitePro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.15.14 Maintenance Update for AxiomV2.2 compatibility and extra options for Luma recombination."
+  "notes": "Seti Astro Suite Pro V1.15.15 New Diagnostics tool under About, updates to NarrowbandIntegration, Levels, stacking suite, torch imports, dither analysis, and more."
 }
