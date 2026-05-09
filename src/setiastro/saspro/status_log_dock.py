@@ -41,19 +41,33 @@ class StatusLogDock(QDockWidget):
     def append_line(self, message: str):
         doc = self.view.document()
 
-        # coalesce “Normalizing …” lines (replace last if same prefix)
-        if message.startswith("🔄 Normalizing") and doc.blockCount() > 0:
+        # \r prefix = overwrite last line in place (tile progress etc.)
+        if message.startswith("\r"):
+            display = message[1:]
+            if doc.blockCount() > 0:
+                cur = self.view.textCursor()
+                cur.movePosition(QTextCursor.MoveOperation.End)
+                cur.movePosition(QTextCursor.MoveOperation.StartOfBlock,
+                                QTextCursor.MoveMode.KeepAnchor)
+                cur.removeSelectedText()
+                cur.insertText(display)
+                self.view.setTextCursor(cur)
+            else:
+                self.view.appendPlainText(display)
+
+        elif message.startswith("🔄 Normalizing") and doc.blockCount() > 0:
             last = doc.findBlockByNumber(doc.blockCount() - 1)
             if last.isValid() and last.text().startswith("🔄 Normalizing"):
                 cur = self.view.textCursor()
                 cur.movePosition(QTextCursor.MoveOperation.End)
                 cur.movePosition(QTextCursor.MoveOperation.StartOfBlock,
-                                 QTextCursor.MoveMode.KeepAnchor)
+                                QTextCursor.MoveMode.KeepAnchor)
                 cur.removeSelectedText()
                 cur.insertText(message)
                 self.view.setTextCursor(cur)
             else:
                 self.view.appendPlainText(message)
+
         else:
             self.view.appendPlainText(message)
 
@@ -63,7 +77,7 @@ class StatusLogDock(QDockWidget):
             cur = self.view.textCursor()
             cur.movePosition(QTextCursor.MoveOperation.Start)
             cur.movePosition(QTextCursor.MoveOperation.Down,
-                             QTextCursor.MoveMode.KeepAnchor, extra)
+                            QTextCursor.MoveMode.KeepAnchor, extra)
             cur.removeSelectedText()
             self.view.setTextCursor(self.view.textCursor())
 
