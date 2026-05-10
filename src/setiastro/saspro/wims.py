@@ -1002,17 +1002,29 @@ class ObjectSearchDialog(QDialog):
 
         import re as _re
         q = query.lower().strip()
+
+        # ── PK → PN-G translation ─────────────────────────────────────────
+        # Users may type "PK 064.6+48.2" or "PK064.6+48.2" — map to PN-G
+        def _pk_to_png(s: str) -> str:
+            return _re.sub(r'^pk\s*', 'pn-g ', s.strip().lower())
+
+        q_is_pk = _re.match(r'^pk[\s\d]', q) is not None
+        q_png   = _pk_to_png(q) if q_is_pk else q   # "pn-g 064.6+48.2"
+
         q_spaced = _re.sub(
-            r'^(ngc|ic|m|ugc|pgc|aco|lbn|ldn|sh2|png|abell|sh2-?)\s*(\d)',
+            r'^(ngc|ic|m|ugc|pgc|aco|lbn|ldn|sh2|png|pn-g|abell|sh2-?|pk)\s*(\d)',
             r'\1 \2', q
         )
         q_compact = _re.sub(r'\s+', '', q)
+        q_png_spaced  = _re.sub(r'\s+', ' ', q_png).strip() if q_is_pk else q_spaced
+        q_png_compact = _re.sub(r'\s+', '', q_png)          if q_is_pk else q_compact
 
-        # Also build a version where we space-normalize the catalog column itself
         def _normalize(s):
             s = str(s).lower().strip()
+            # Normalize PK → PN-G in catalog data too
+            s = _re.sub(r'^pk\s*', 'pn-g ', s)
             return _re.sub(
-                r'^(ngc|ic|m|ugc|pgc|aco|lbn|ldn|sh2|png|abell|sh2-?)\s*(\d)',
+                r'^(ngc|ic|m|ugc|pgc|aco|lbn|ldn|sh2|png|pn-g|abell|sh2-?)\s*(\d)',
                 r'\1 \2', s
             )
 
@@ -1020,14 +1032,23 @@ class ObjectSearchDialog(QDialog):
         altname_col = self._df.get("Alt Name", pd.Series(dtype=str)).astype(str).apply(_normalize)
 
         mask = (
-            name_col.str.contains(q,         na=False) |
-            name_col.str.contains(q_spaced,  na=False) |
-            name_col.str.contains(q_compact, na=False) |
-            altname_col.str.contains(q,        na=False) |
-            altname_col.str.contains(q_spaced, na=False) |
-            # Also search raw (original) columns for partial matches
-            self._df["Name"].astype(str).str.lower().str.contains(q_compact, na=False)
+            name_col.str.contains(_re.escape(q),           na=False) |
+            name_col.str.contains(_re.escape(q_spaced),    na=False) |
+            name_col.str.contains(_re.escape(q_compact),   na=False) |
+            altname_col.str.contains(_re.escape(q),        na=False) |
+            altname_col.str.contains(_re.escape(q_spaced), na=False) |
+            self._df["Name"].astype(str).str.lower().str.contains(
+                _re.escape(q_compact), na=False)
         )
+
+        # If PK query, also search the PN-G translated forms
+        if q_is_pk:
+            mask = mask | (
+                name_col.str.contains(_re.escape(q_png),         na=False) |
+                name_col.str.contains(_re.escape(q_png_spaced),  na=False) |
+                name_col.str.contains(_re.escape(q_png_compact), na=False)
+            )
+
         matches = self._df[mask].head(50)
 
         self._results_list.clear()
@@ -1406,15 +1427,37 @@ class ObjectDetailThread(QThread):
             def _variants_for(n: str) -> list:
                 n = " ".join(n.split())
                 variants = [n, n.replace(" ", "")]
-                
-                # For names like "NGC891" → also try "NGC 891"
-                # For names like "NGC 891" → also try "NGC891" (already covered above)
+
                 import re
-                spaced = re.sub(r'^(NGC|IC|M|UGC|PGC|ACO|LBN|LDN|SH2|PNG)\s*(\d)', 
-                                r'\1 \2', n, flags=re.IGNORECASE)
+                # Space-normalize catalog prefix
+                spaced = re.sub(
+                    r'^(NGC|IC|M|UGC|PGC|ACO|LBN|LDN|SH2|PNG|PN-G)\s*(\d)',
+                    r'\1 \2', n, flags=re.IGNORECASE)
                 if spaced not in variants:
                     variants.append(spaced)
-                
+
+                # ── PK ↔ PN-G cross-reference ──────────────────────────────
+                # If name looks like a PN-G designation, also try PK prefix
+                # e.g. "PN-G 063.1+13.9" → try "PK 063.1+13.9", "PK063.1+13.9"
+                png_match = re.match(
+                    r'^pn-?g\s*([\d.]+[+-][\d.]+)',
+                    n.strip().lower()
+                )
+                if png_match:
+                    coords = png_match.group(1)
+                    for pk_form in (f"PK {coords}", f"PK{coords}"):
+                        if pk_form not in variants:
+                            variants.append(pk_form)
+
+                # If name looks like a PK designation, also try PN-G prefix
+                pk_match = re.match(r'^pk\s*([\d.]+[+-][\d.]+)', n.strip().lower())
+                if pk_match:
+                    coords = pk_match.group(1)
+                    for png_form in (f"PN G{coords}", f"PNG {coords}",
+                                     f"PN-G {coords}", f"PN-G{coords}"):
+                        if png_form not in variants:
+                            variants.append(png_form)
+
                 return variants
 
             # Collect all names we have
@@ -2854,11 +2897,22 @@ class WhatsInMySkyDialog(QDialog):
         cat_lay.setHorizontalSpacing(4)
         cat_lay.setVerticalSpacing(2)
         self.catalog_vars: dict[str, QCheckBox] = {}
-        for i, name in enumerate(["Messier","NGC","IC","Caldwell","Abell",
-                                   "Sharpless","LBN","LDN","PNG","User"]):
-            cb = QCheckBox(name)
+        catalogs = [
+            ("Messier",       "Messier"),
+            ("NGC",           "NGC"),
+            ("IC",            "IC"),
+            ("Caldwell",      "Caldwell"),
+            ("Abell",         "Abell"),
+            ("Sharpless",     "Sharpless"),
+            ("LBN",           "LBN"),
+            ("LDN",           "LDN"),
+            ("PNG (inc. PK)", "PNG"),
+            ("User",          "User"),
+        ]
+        for i, (label, key) in enumerate(catalogs):
+            cb = QCheckBox(label)
             cat_lay.addWidget(cb, i // 2, i % 2)
-            self.catalog_vars[name] = cb
+            self.catalog_vars[key] = cb
         form.addWidget(cat_grid)
 
         form.addWidget(_section("RA/Dec Format"))
@@ -3574,9 +3628,7 @@ class WhatsInMySkyDialog(QDialog):
             self.lunar_phase_image_label.clear()
 
     def on_calculation_complete(self, df, message):
-        # Populate type filter panel the first time we have catalog data
         if self._type_filter_vars == {} and not df.empty:
-            # Load full catalog to get all types, not just this result subset
             try:
                 catalog_path = self.catalog_file or \
                     os.path.join(os.path.expanduser("~"), "celestial_catalog.csv")
@@ -3595,6 +3647,7 @@ class WhatsInMySkyDialog(QDialog):
                 ra_disp  = sc.ra.to_string(unit=u.hour, sep=":")
                 dec_disp = sc.dec.to_string(unit=u.deg, sep=":")
             size_arcmin = str(row.get("Info","")) if pd.notna(row.get("Info","")) else ""
+            alt_full = str(row.get("Alt Name","")) if pd.notna(row.get("Alt Name","")) else ""
             vals = [
                 str(row.get("Name","") or ""),
                 str(ra_disp), str(dec_disp),
@@ -3604,13 +3657,16 @@ class WhatsInMySkyDialog(QDialog):
                 str(row.get("Before/After Transit","")),
                 str(round(row.get("Degrees from Moon",0.0),2))
                     if pd.notna(row.get("Degrees from Moon", np.nan)) else "",
-                row.get("Alt Name","") if pd.notna(row.get("Alt Name","")) else "",
+                alt_full,
                 row.get("Type","")     if pd.notna(row.get("Type",""))     else "",
                 str(row.get("Magnitude","")) if pd.notna(row.get("Magnitude","")) else "",
                 size_arcmin,
                 str(row.get("Score", 0.0)),
             ]
-            self.tree.addTopLevelItem(SortableTreeWidgetItem(vals))
+            item = SortableTreeWidgetItem(vals)
+            # Full alt name on hover so nothing is ever hidden
+            item.setToolTip(8, alt_full)
+            self.tree.addTopLevelItem(item)
 
     def update_status(self, msg):
         self.status_label.setText(f"Status: {msg}")
