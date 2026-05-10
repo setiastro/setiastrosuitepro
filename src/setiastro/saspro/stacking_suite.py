@@ -6971,7 +6971,7 @@ class StackingSuiteDialog(QDialog):
         self.settings.sync()
 
 
-    def open_stacking_settings(self):
+    def open_stacking_settings(self, origin: str = "stacking"):
         """Opens a 2-column Stacking Settings dialog."""
         from PyQt6.QtWidgets import (
             QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox, QFormLayout,
@@ -7963,7 +7963,7 @@ class StackingSuiteDialog(QDialog):
 
         # --- Buttons ---
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        btns.accepted.connect(lambda: self.save_stacking_settings(dialog))
+        btns.accepted.connect(lambda: self.save_stacking_settings(dialog, origin=origin))
         btns.rejected.connect(dialog.reject)
         root.addWidget(btns)
 
@@ -7976,7 +7976,7 @@ class StackingSuiteDialog(QDialog):
             pass        
 
 
-    def save_stacking_settings(self, dialog):
+    def save_stacking_settings(self, dialog, origin: str = "stacking"):
         """
         Save settings and restart the Stacking Suite if the directory OR internal dtype changed.
         Uses dialog-scoped dir_edit and normalized path comparison.
@@ -8142,8 +8142,10 @@ class StackingSuiteDialog(QDialog):
         self._update_stacking_path_display()
 
         # --- restart if needed ---
-        dir_changed = (new_dir != prev_dir)
-        if dir_changed or dtype_changed:
+        dir_changed   = (new_dir != prev_dir)
+        should_restart = dir_changed or dtype_changed
+
+        if should_restart and origin == "stacking":
             reasons = []
             if dir_changed:
                 reasons.append(self.tr("folder change"))
@@ -8153,6 +8155,11 @@ class StackingSuiteDialog(QDialog):
             dialog.accept()
             self._restart_self()
             return
+        elif should_restart and origin != "stacking":
+            # Called from Blink or elsewhere — save but don't restart
+            self.update_status(
+                self.tr("⚠️ Stacking directory or precision changed — "
+                        "restart Stacking Suite to apply these changes."))
 
         dialog.accept()
 

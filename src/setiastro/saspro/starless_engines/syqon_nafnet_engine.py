@@ -77,14 +77,14 @@ def _torch_load_fallback(torch, ckpt_path: str):
 
 def _detect_arch(sd: dict) -> str:
     """
-    Returns 'starnet', 'lite', or 'standard'.
+    Returns 'axiomv22', 'lite', or 'standard'.
 
-    'starnet'  — StarNetGenerator (AxiomV2.2): g_conv / g_deconv keys
-    'lite'     — NAFNetLite (AxiomV2.1):       fusions / conv3 keys
-    'standard' — NAFNet (Nadir / AxiomV2):     ffn1 / sca.1 keys
+    'axiomv22' — AxiomV2.2 UNet generator: g_conv / g_deconv keys
+    'lite'     — NAFNetLite (AxiomV2.1):   fusions / conv3 keys
+    'standard' — NAFNet (Nadir / AxiomV2): ffn1 / sca.1 keys
     """
     if any(k.startswith("g_conv") or k.startswith("g_deconv") for k in sd):
-        return "starnet"
+        return "axiomv22"
     for k in sd:
         if k.startswith("fusions.") or k.endswith(".conv3.weight"):
             return "lite"
@@ -142,7 +142,7 @@ def _load_state_dict(torch, ckpt_path: str):
         if "model" in ckpt and isinstance(ckpt["model"], dict):
             return ckpt["model"], _small_meta(ckpt)
 
-        # bare state dict — NAFNet or StarNet keys at top level
+        # bare state dict — NAFNet or AxiomV2.2 keys at top level
         if any(
             k.startswith(("intro.", "ending.", "encoders.", "downs.", "middle.",
                           "decoders.", "ups.", "g_conv", "g_deconv"))
@@ -249,17 +249,16 @@ def load_nafnet_model(
     sd, meta = _load_state_dict(torch, ckpt_path)
     arch = _detect_arch(sd)
 
-    if arch == "starnet":
+    if arch == "axiomv22":
         in_channels = _infer_starnet_channels(sd)
         model = StarNetGenerator(in_channels=in_channels)
         model.load_state_dict(sd, strict=True)
         model.eval()
-
         info = {
-            "model_kind":    model_kind,
-            "arch":          "starnet",
-            "in_channels":   in_channels,
-            "meta":          meta,
+            "model_kind":  model_kind,
+            "arch":        "axiomv22",
+            "in_channels": in_channels,
+            "meta":        meta,
         }
 
     else:
@@ -326,24 +325,62 @@ def _pad_to_multiple(t, multiple=8, torch=None):
     pad_w = (multiple - W % multiple) % multiple
     if pad_h == 0 and pad_w == 0:
         return t, H, W
-    # F.pad pads last dims first: (left, right, top, bottom)
     import torch.nn.functional as F
     t = F.pad(t, (0, pad_w, 0, pad_h), mode="reflect")
     return t, H, W
 
 
-def _predict_tile(model, t, *, device, use_amp, amp_dtype, info, torch):
-    import torch.nn.functional as F
+def _build_blend_weights(tile: int, stride: int, arch: str) -> np.ndarray:
+    """
+    Return a (tile, tile, 1) float32 blend weight map.
 
-    # Pad to multiple of 8 to prevent skip-connection size mismatches
-    t_padded, orig_H, orig_W = _pad_to_multiple(t, multiple=8, torch=torch)
+    AxiomV2.2 ('axiomv22'): cosine ramp — matches SyQon training tiling exactly.
+    NAFNetLite / NAFNet   : Hanning window — unchanged from original behaviour.
+    """
+    if arch == "axiomv22":
+        overlap     = tile - stride
+        blend       = max(1, overlap)
+        coords      = np.arange(tile, dtype=np.float32)
+        border_dist = np.minimum(coords, coords[::-1])
+        t_ramp      = np.clip(border_dist / float(blend), 0.0, 1.0)
+        ramp        = (0.5 - 0.5 * np.cos(np.pi * t_ramp)).astype(np.float32)
+        ramp        = np.clip(ramp, 1e-3, 1.0)
+        w2          = (ramp[:, None] * ramp[None, :]).astype(np.float32)[..., None]
+    else:
+        wy = np.hanning(tile).astype(np.float32)
+        wx = np.hanning(tile).astype(np.float32)
+        w2 = (wy[:, None] * wx[None, :]).astype(np.float32)[..., None]
+    return w2
+
+
+def _predict_tile(model, t, *, device, use_amp, amp_dtype, info, torch):
+    """
+    Run one tile through the model.
+
+    AxiomV2.2 ('axiomv22'):
+      - Input normalised [0,1] → [-1,1] before the model (trained range).
+      - Output denormalised [-1,1] → [0,1] after the model.
+
+    NAFNetLite / NAFNet:
+      - Input and output remain in [0,1] — no change from original behaviour.
+    """
+    arch       = info.get("arch", "standard")
+    is_axiomv22 = (arch == "axiomv22")
+
+    # AxiomV2.2 was trained on [-1, 1] input
+    t_input = (t * 2.0 - 1.0) if is_axiomv22 else t
+
+    t_padded, orig_H, orig_W = _pad_to_multiple(t_input, multiple=8, torch=torch)
 
     def _run(inp):
         return model(inp)
 
     def _to_numpy(pred_t):
         pred_np = pred_t[0].detach().to("cpu").numpy().transpose(1, 2, 0)
-        # Crop back to original spatial size before padding
+        # AxiomV2.2 output is in [-1,1] — map back to [0,1]
+        # NAFNetLite / NAFNet output is already in [0,1]
+        if is_axiomv22:
+            pred_np = (pred_np + 1.0) * 0.5
         pred_np = pred_np[:orig_H, :orig_W, :]
         return pred_np.astype(np.float32, copy=False)
 
@@ -385,13 +422,13 @@ def _resolve_residual_mode(info: dict) -> bool:
     """
     Determine whether the model output is a star residual (True) or starless directly (False).
 
-    StarNetGenerator (AxiomV2.2): output IS starless (input - relu(removal)), so False.
-    NAFNetLite (AxiomV2.1):       output IS starless (global residual clamped), so False.
-    NAFNet bilinear (AxiomV2):    output IS starless, so False.
-    NAFNet pixelshuffle (Nadir):  output is star residual, so True.
+    AxiomV2.2 ('axiomv22'): output IS the final blended starless image, so False.
+    NAFNetLite ('lite'):    output IS starless (global residual clamped), so False.
+    NAFNet bilinear:        output IS starless, so False.
+    NAFNet pixelshuffle:    output is the star residual, so True.
     """
     arch = info.get("arch", "standard")
-    if arch == "starnet":
+    if arch == "axiomv22":
         return False
     if arch == "lite":
         return False
@@ -441,6 +478,7 @@ def nafnet_starless_rgb01(
     # Always auto-resolve; caller's residual_mode hint is ignored in favour of
     # what we detected from the state dict so old callers remain correct too.
     residual_mode = _resolve_residual_mode(info)
+    arch          = info.get("arch", "standard")
 
     info = dict(info)
     info["residual_mode"]     = residual_mode
@@ -461,9 +499,8 @@ def nafnet_starless_rgb01(
     out_acc = np.zeros((H, W, 3), dtype=np.float32)
     w_acc   = np.zeros((H, W, 1), dtype=np.float32)
 
-    wy = np.hanning(tile).astype(np.float32)
-    wx = np.hanning(tile).astype(np.float32)
-    w2 = (wy[:, None] * wx[None, :]).astype(np.float32)[..., None]
+    # Blend weights — cosine ramp for AxiomV2.2, Hanning for everything else
+    w2 = _build_blend_weights(tile, stride, arch)
 
     ys    = list(range(0, H, stride))
     xs    = list(range(0, W, stride))
@@ -603,6 +640,7 @@ class syqonnafnetSession:
         )
         # Resolve once at load time
         self._residual_mode = _resolve_residual_mode(self.info)
+        self._arch          = self.info.get("arch", "standard")
 
     def run_starless_rgb01(
         self,
@@ -649,9 +687,8 @@ class syqonnafnetSession:
         out_acc = np.zeros((H, W, 3), dtype=np.float32)
         w_acc   = np.zeros((H, W, 1), dtype=np.float32)
 
-        wy = np.hanning(tile).astype(np.float32)
-        wx = np.hanning(tile).astype(np.float32)
-        w2 = (wy[:, None] * wx[None, :]).astype(np.float32)[..., None]
+        # Blend weights — cosine ramp for AxiomV2.2, Hanning for everything else
+        w2 = _build_blend_weights(tile, stride, self._arch)
 
         ys    = list(range(0, H, stride))
         xs    = list(range(0, W, stride))
