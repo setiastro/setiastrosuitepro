@@ -1545,6 +1545,105 @@ def _solve_numpy_with_fallback(
  
     return ok3, res3
 
+def _solve_numpy_with_astrometry(
+    parent, settings, image: np.ndarray, seed_header
+) -> tuple[bool, "Header | str"]:
+    """
+    Solve via Astrometry.net (local solve-field first, then web API fallback).
+    Returns (ok, Header) on success, (False, error_str) on failure.
+    """
+    from astropy.io.fits import Header
+
+    # ── Try local solve-field first if configured ────────────────────────────
+    solvefield = _get_solvefield_exe(settings)
+    if solvefield and os.path.exists(solvefield):
+        _set_status_ui(
+            parent,
+            QCoreApplication.translate("PlateSolver", "Status: Trying local solve-field…")
+        )
+        try:
+            gray = _to_gray2d_unit(_normalize_for_astap(image))
+            tmp_path = _write_temp_fit_web_16bit(gray)
+            try:
+                ok, res = _solve_with_local_solvefield(parent, settings, tmp_path)
+            finally:
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+            if ok and isinstance(res, Header):
+                acq_base = None
+                if isinstance(seed_header, Header):
+                    acq_base = _strip_wcs_keys(seed_header.copy())
+                if acq_base is not None:
+                    return True, _merge_wcs_into_base_header(acq_base, res)
+                return True, res
+        except Exception as e:
+            print(f"[Astrometry] local solve-field exception: {e}")
+
+    # ── Web API ──────────────────────────────────────────────────────────────
+    api_key = _get_astrometry_api_key(settings)
+    if not api_key:
+        return False, QCoreApplication.translate(
+            "PlateSolver",
+            "Astrometry.net API key not configured (Preferences → API Keys)."
+        )
+
+    session = _astrometry_login(settings, parent=parent)
+    if not session:
+        return False, QCoreApplication.translate(
+            "PlateSolver", "Astrometry.net login failed."
+        )
+
+    # Write a 16-bit grayscale FITS for upload
+    try:
+        gray = _to_gray2d_unit(_normalize_for_astap(image))
+        tmp_path = _write_temp_fit_web_16bit(gray)
+    except Exception as e:
+        return False, QCoreApplication.translate(
+            "PlateSolver", "Failed to write upload FITS: {0}"
+        ).format(str(e))
+
+    try:
+        subid = _astrometry_upload(settings, session, tmp_path, parent=parent)
+    finally:
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+
+    if not subid:
+        return False, QCoreApplication.translate(
+            "PlateSolver", "Astrometry.net upload failed."
+        )
+
+    job_id = _astrometry_poll_job(settings, subid, parent=parent)
+    if not job_id:
+        return False, QCoreApplication.translate(
+            "PlateSolver", "Astrometry.net job assignment timed out."
+        )
+
+    calib = _astrometry_poll_calib(settings, job_id, parent=parent)
+    if not calib:
+        return False, QCoreApplication.translate(
+            "PlateSolver", "Astrometry.net solve timed out or failed."
+        )
+
+    # Try to get the full WCS FITS (includes SIP terms if available)
+    wcs_hdr = _astrometry_download_wcs_file(settings, job_id, parent=parent)
+
+    if wcs_hdr is None:
+        # Fall back to building a plain TAN header from the calibration dict
+        wcs_hdr = _wcs_header_from_astrometry_calib(calib, image.shape)
+
+    # Merge with acquisition header
+    acq_base: Header | None = None
+    if isinstance(seed_header, Header):
+        acq_base = _strip_wcs_keys(seed_header.copy())
+
+    if acq_base is not None:
+        return True, _merge_wcs_into_base_header(acq_base, wcs_hdr)
+    return True, wcs_hdr
 
 
 def _save_temp_fits_via_save_image(norm_img: np.ndarray, clean_header: Header, is_mono: bool) -> str:

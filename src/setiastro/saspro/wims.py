@@ -853,7 +853,7 @@ class ObjectSearchDialog(QDialog):
 
     def _load_catalog(self):
         try:
-            self._df = pd.read_csv(self.catalog_file, encoding="ISO-8859-1")
+            self._df = _load_full_catalog(self.catalog_file)
         except Exception as e:
             self._status.setText(f"Could not load catalog: {e}")
 
@@ -1002,17 +1002,29 @@ class ObjectSearchDialog(QDialog):
 
         import re as _re
         q = query.lower().strip()
+
+        # ── PK → PN-G translation ─────────────────────────────────────────
+        # Users may type "PK 064.6+48.2" or "PK064.6+48.2" — map to PN-G
+        def _pk_to_png(s: str) -> str:
+            return _re.sub(r'^pk\s*', 'pn-g ', s.strip().lower())
+
+        q_is_pk = _re.match(r'^pk[\s\d]', q) is not None
+        q_png   = _pk_to_png(q) if q_is_pk else q   # "pn-g 064.6+48.2"
+
         q_spaced = _re.sub(
-            r'^(ngc|ic|m|ugc|pgc|aco|lbn|ldn|sh2|png|abell|sh2-?)\s*(\d)',
+            r'^(ngc|ic|m|ugc|pgc|aco|lbn|ldn|sh2|png|pn-g|abell|sh2-?|pk|arp)\s*(\d)',
             r'\1 \2', q
         )
         q_compact = _re.sub(r'\s+', '', q)
+        q_png_spaced  = _re.sub(r'\s+', ' ', q_png).strip() if q_is_pk else q_spaced
+        q_png_compact = _re.sub(r'\s+', '', q_png)          if q_is_pk else q_compact
 
-        # Also build a version where we space-normalize the catalog column itself
         def _normalize(s):
             s = str(s).lower().strip()
+            # Normalize PK → PN-G in catalog data too
+            s = _re.sub(r'^pk\s*', 'pn-g ', s)
             return _re.sub(
-                r'^(ngc|ic|m|ugc|pgc|aco|lbn|ldn|sh2|png|abell|sh2-?)\s*(\d)',
+                r'^(ngc|ic|m|ugc|pgc|aco|lbn|ldn|sh2|png|pn-g|abell|sh2-?)\s*(\d)',
                 r'\1 \2', s
             )
 
@@ -1020,14 +1032,23 @@ class ObjectSearchDialog(QDialog):
         altname_col = self._df.get("Alt Name", pd.Series(dtype=str)).astype(str).apply(_normalize)
 
         mask = (
-            name_col.str.contains(q,         na=False) |
-            name_col.str.contains(q_spaced,  na=False) |
-            name_col.str.contains(q_compact, na=False) |
-            altname_col.str.contains(q,        na=False) |
-            altname_col.str.contains(q_spaced, na=False) |
-            # Also search raw (original) columns for partial matches
-            self._df["Name"].astype(str).str.lower().str.contains(q_compact, na=False)
+            name_col.str.contains(_re.escape(q),           na=False) |
+            name_col.str.contains(_re.escape(q_spaced),    na=False) |
+            name_col.str.contains(_re.escape(q_compact),   na=False) |
+            altname_col.str.contains(_re.escape(q),        na=False) |
+            altname_col.str.contains(_re.escape(q_spaced), na=False) |
+            self._df["Name"].astype(str).str.lower().str.contains(
+                _re.escape(q_compact), na=False)
         )
+
+        # If PK query, also search the PN-G translated forms
+        if q_is_pk:
+            mask = mask | (
+                name_col.str.contains(_re.escape(q_png),         na=False) |
+                name_col.str.contains(_re.escape(q_png_spaced),  na=False) |
+                name_col.str.contains(_re.escape(q_png_compact), na=False)
+            )
+
         matches = self._df[mask].head(50)
 
         self._results_list.clear()
@@ -1100,6 +1121,71 @@ class ObjectSearchDialog(QDialog):
         dlg = ObjectSearchResultDialog(obj, self.observer, results, parent=self)
         dlg.show()
 
+
+# ── Module-level constants (add near top of whatsinmysky.py) ──────────────────
+USER_OBJECTS_PATH    = os.path.join(os.path.expanduser("~"), "saspro_user_objects.csv")
+_USER_OBJECTS_COLS   = ["Name", "RA", "Dec", "Alt Name", "Type", "Magnitude", "Info", "Catalog"]
+
+
+def _migrate_user_objects_from_home_catalog():
+    """
+    One-time migration: if the old celestial_catalog.csv exists in user home
+    and contains User catalog rows, extract them into saspro_user_objects.csv
+    before we stop using the home copy.
+    Called once at startup.
+    """
+    old_path = os.path.join(os.path.expanduser("~"), "celestial_catalog.csv")
+    if not os.path.exists(old_path):
+        return
+    if os.path.exists(USER_OBJECTS_PATH):
+        return  # already migrated
+
+    try:
+        old_df   = pd.read_csv(old_path, encoding="ISO-8859-1", quotechar='"', quoting=0)
+        user_rows = old_df[old_df["Catalog"].astype(str).str.strip().str.upper() == "USER"]
+        if user_rows.empty:
+            print("[WIMS] No user objects found in old home catalog — nothing to migrate.")
+        else:
+            # Ensure all expected columns exist
+            for col in _USER_OBJECTS_COLS:
+                if col not in user_rows.columns:
+                    user_rows = user_rows.copy()
+                    user_rows[col] = ""
+            user_rows[_USER_OBJECTS_COLS].to_csv(
+                USER_OBJECTS_PATH, index=False, encoding="utf-8")
+            print(f"[WIMS] Migrated {len(user_rows)} user object(s) → {USER_OBJECTS_PATH}")
+    except Exception as e:
+        print(f"[WIMS] Migration failed: {e}")
+
+
+def _load_full_catalog(catalog_file: str) -> pd.DataFrame:
+    """
+    Load bundled catalog + user objects CSV, merged into one DataFrame.
+    The bundled catalog is never written to. User objects live separately.
+    """
+    frames = []
+
+    if catalog_file and os.path.exists(catalog_file):
+        try:
+            frames.append(pd.read_csv(catalog_file, encoding="ISO-8859-1",
+                                      quotechar='"', quoting=0))
+        except Exception as e:
+            print(f"[WIMS] Could not load bundled catalog: {e}")
+
+    if os.path.exists(USER_OBJECTS_PATH):
+        try:
+            user_df = pd.read_csv(USER_OBJECTS_PATH, encoding="utf-8",
+                                  quotechar='"', quoting=0)
+            # Force Catalog column to "User" in case it got blank somehow
+            user_df["Catalog"] = "User"
+            frames.append(user_df)
+        except Exception as e:
+            print(f"[WIMS] Could not load user objects: {e}")
+
+    if not frames:
+        return pd.DataFrame(columns=_USER_OBJECTS_COLS)
+
+    return pd.concat(frames, ignore_index=True)
 # ---------------------------------------------------
 #  Worker thread
 # ---------------------------------------------------
@@ -1127,33 +1213,14 @@ class CalculationThread(QThread):
         self.sort_by_score = bool(sort_by_score)
 
     def get_catalog_file_path(self) -> str:
-        """
-        Locate the celestial catalog, trying multiple locations in priority order.
-        Returns the path of the first catalog found, or the user home path as
-        a last resort (so the caller can report exactly what was missing).
-        """
-        user_catalog_path = os.path.join(os.path.expanduser("~"), "celestial_catalog.csv")
-
-        # Already exists in user home — use it
-        if os.path.exists(user_catalog_path):
-            return user_catalog_path
-
-        # Build a list of candidate bundled locations to search
         app_root = _app_root()
         candidates = [
-            # Standard SASpro package layout
             os.path.join(app_root, "data", "catalogs", "celestial_catalog.csv"),
-            # One level up (running from src/setiastro/saspro/)
             os.path.join(app_root, "..", "data", "catalogs", "celestial_catalog.csv"),
-            # Two levels up (alternate layouts)
             os.path.join(app_root, "..", "..", "data", "catalogs", "celestial_catalog.csv"),
-            # Alongside the package root
             os.path.join(app_root, "celestial_catalog.csv"),
-            # Common GitHub clone root layouts
             os.path.join(app_root, "..", "..", "..", "data", "catalogs", "celestial_catalog.csv"),
         ]
-
-        # Normalise and deduplicate
         seen = set()
         unique_candidates = []
         for c in candidates:
@@ -1162,21 +1229,13 @@ class CalculationThread(QThread):
                 seen.add(n)
                 unique_candidates.append(n)
 
-        # Try each candidate — copy to user home on first hit
         for bundled in unique_candidates:
             if os.path.exists(bundled):
-                try:
-                    shutil.copyfile(bundled, user_catalog_path)
-                    print(f"[WIMS] Catalog copied from {bundled} → {user_catalog_path}")
-                    return user_catalog_path
-                except Exception as e:
-                    print(f"[WIMS] Could not copy catalog from {bundled}: {e}")
-                    # Use the bundled path directly if copy failed
-                    return bundled
+                return bundled
 
-        # Nothing found — store the search paths for the error message
         self._catalog_search_paths = unique_candidates
-        return user_catalog_path   # caller will detect missing and report paths
+        return ""   # caller detects empty string as not found
+
 
     def run(self):
         try:
@@ -1199,46 +1258,41 @@ class CalculationThread(QThread):
             self.lunar_phase_calculated.emit(phase_pct, phase_icon, rts)
 
             catalog_file = self.catalog_file
-            if not os.path.exists(catalog_file):
+            if not catalog_file or not os.path.exists(catalog_file):
                 searched = getattr(self, "_catalog_search_paths", [])
-                user_home = os.path.join(os.path.expanduser("~"), "celestial_catalog.csv")
-                lines = [
-                    f"Catalog file not found.",
-                    f"",
-                    f"Expected at: {user_home}",
-                ]
+                lines = ["Catalog file not found.", ""]
                 if searched:
-                    lines.append(f"Also searched bundled locations:")
+                    lines.append("Searched locations:")
                     for p in searched:
                         lines.append(f"  {p}")
-                lines += [
-                    f"",
-                    f"app root: {_app_root()}",
-                    f"Please ensure celestial_catalog.csv is present in one of the above locations.",
-                ]
-                msg = "\n".join(lines)
-                print(f"[WIMS] {msg}")
-                self.calculation_complete.emit(pd.DataFrame(), "Catalog file not found — check console for details.")
+                lines += ["", f"app root: {_app_root()}"]
+                print(f"[WIMS] {chr(10).join(lines)}")
+                self.calculation_complete.emit(
+                    pd.DataFrame(),
+                    "Catalog file not found — check console for details.")
                 return
-            df = pd.read_csv(catalog_file, encoding="ISO-8859-1")
+
+            df = _load_full_catalog(catalog_file)
 
             if self.catalog_filters:
                 df = df[df["Catalog"].isin(self.catalog_filters)]
-            # ── Object type filter ─────────────────────────────────────
+
+            # ── Object type filter ─────────────────────────────────────────
             if self.type_filters is not None and "Type" in df.columns:
                 include_blank = "(blank)" in self.type_filters
-                real_types = [t for t in self.type_filters if t != "(blank)"]
-                
+                real_types    = [t for t in self.type_filters if t != "(blank)"]
+
                 if include_blank and real_types:
-                    df = df[df["Type"].isin(real_types) | df["Type"].isna() | 
+                    df = df[df["Type"].isin(real_types) | df["Type"].isna() |
                             (df["Type"].astype(str).str.strip() == "")]
                 elif include_blank:
-                    df = df[df["Type"].isna() | (df["Type"].astype(str).str.strip() == "")]
+                    df = df[df["Type"].isna() |
+                            (df["Type"].astype(str).str.strip() == "")]
                 elif real_types:
                     df = df[df["Type"].isin(real_types)]
                 else:
-                    # Nothing selected — return empty
-                    df = df.iloc[0:0]              
+                    df = df.iloc[0:0]
+
             df.dropna(subset=["RA", "Dec"], inplace=True)
             df.reset_index(drop=True, inplace=True)
 
@@ -1254,7 +1308,7 @@ class CalculationThread(QThread):
 
             # ── Custom horizon filter ──────────────────────────────────────
             if self.horizon_points:
-                horizon_mins = _horizon_min_alts_vectorized(
+                horizon_mins  = _horizon_min_alts_vectorized(
                     df["Azimuth"].to_numpy(), self.horizon_points)
                 effective_min = np.maximum(horizon_mins, self.min_altitude)
                 df = df[df["Altitude"].to_numpy() >= effective_min]
@@ -1271,9 +1325,7 @@ class CalculationThread(QThread):
                                                    1440 - df["Minutes to Transit"],
                                                    df["Minutes to Transit"])
 
-            # ── Score each target (always computed, needed for sort) ───────
-            # ── Pre-compute moon position and phase (shared by both paths) ──
-            # ── Moon position and phase (shared by both scoring paths) ────
+            # ── Moon position and phase (shared by both scoring paths) ─────
             moon_body  = get_body("moon", t, loc)
             sun_body   = get_sun(t)
             elong      = moon_body.separation(sun_body).deg
@@ -1282,7 +1334,6 @@ class CalculationThread(QThread):
                                   dec=moon_body.dec.deg * u.deg)
 
             if self.sort_by_score:
-                # Score ALL visible objects, then take top N
                 all_obj   = SkyCoord(ra=df["RA"].to_numpy() * u.deg,
                                      dec=df["Dec"].to_numpy() * u.deg)
                 moon_seps = all_obj.separation(moon_coord).deg
@@ -1295,7 +1346,6 @@ class CalculationThread(QThread):
                 )
                 df = df.nlargest(self.object_limit, "Score")
             else:
-                # Take top N by transit first, then score only those
                 df = df.nsmallest(self.object_limit, "Minutes to Transit")
                 df = df.reset_index(drop=True)
                 all_obj_trimmed   = SkyCoord(ra=df["RA"].to_numpy() * u.deg,
@@ -1406,15 +1456,37 @@ class ObjectDetailThread(QThread):
             def _variants_for(n: str) -> list:
                 n = " ".join(n.split())
                 variants = [n, n.replace(" ", "")]
-                
-                # For names like "NGC891" → also try "NGC 891"
-                # For names like "NGC 891" → also try "NGC891" (already covered above)
+
                 import re
-                spaced = re.sub(r'^(NGC|IC|M|UGC|PGC|ACO|LBN|LDN|SH2|PNG)\s*(\d)', 
-                                r'\1 \2', n, flags=re.IGNORECASE)
+                # Space-normalize catalog prefix
+                spaced = re.sub(
+                    r'^(NGC|IC|M|UGC|PGC|ACO|LBN|LDN|SH2|PNG|PN-G)\s*(\d)',
+                    r'\1 \2', n, flags=re.IGNORECASE)
                 if spaced not in variants:
                     variants.append(spaced)
-                
+
+                # ── PK ↔ PN-G cross-reference ──────────────────────────────
+                # If name looks like a PN-G designation, also try PK prefix
+                # e.g. "PN-G 063.1+13.9" → try "PK 063.1+13.9", "PK063.1+13.9"
+                png_match = re.match(
+                    r'^pn-?g\s*([\d.]+[+-][\d.]+)',
+                    n.strip().lower()
+                )
+                if png_match:
+                    coords = png_match.group(1)
+                    for pk_form in (f"PK {coords}", f"PK{coords}"):
+                        if pk_form not in variants:
+                            variants.append(pk_form)
+
+                # If name looks like a PK designation, also try PN-G prefix
+                pk_match = re.match(r'^pk\s*([\d.]+[+-][\d.]+)', n.strip().lower())
+                if pk_match:
+                    coords = pk_match.group(1)
+                    for png_form in (f"PN G{coords}", f"PNG {coords}",
+                                     f"PN-G {coords}", f"PN-G{coords}"):
+                        if png_form not in variants:
+                            variants.append(png_form)
+
                 return variants
 
             # Collect all names we have
@@ -2773,6 +2845,9 @@ class WhatsInMySkyDialog(QDialog):
         if wims_path:
             self.setWindowIcon(QIcon(wims_path))
 
+        # One-time migration of user objects from old home catalog copy
+        _migrate_user_objects_from_home_catalog()
+
         self.settings     = QSettings()
         self.object_limit = int(self.settings.value("object_limit", 100, int))
         self._observer    = {}
@@ -2854,11 +2929,23 @@ class WhatsInMySkyDialog(QDialog):
         cat_lay.setHorizontalSpacing(4)
         cat_lay.setVerticalSpacing(2)
         self.catalog_vars: dict[str, QCheckBox] = {}
-        for i, name in enumerate(["Messier","NGC","IC","Caldwell","Abell",
-                                   "Sharpless","LBN","LDN","PNG","User"]):
-            cb = QCheckBox(name)
+        catalogs = [
+            ("Messier",       "Messier"),
+            ("NGC",           "NGC"),
+            ("IC",            "IC"),
+            ("Caldwell",      "Caldwell"),
+            ("Abell",         "Abell"),
+            ("Sharpless",     "Sharpless"),
+            ("LBN",           "LBN"),
+            ("LDN",           "LDN"),
+            ("PNG (inc. PK)", "PNG"),
+            ("Arp",           "Arp"),
+            ("User",          "User"),
+        ]
+        for i, (label, key) in enumerate(catalogs):
+            cb = QCheckBox(label)
             cat_lay.addWidget(cb, i // 2, i % 2)
-            self.catalog_vars[name] = cb
+            self.catalog_vars[key] = cb
         form.addWidget(cat_grid)
 
         form.addWidget(_section("RA/Dec Format"))
@@ -2978,31 +3065,67 @@ class WhatsInMySkyDialog(QDialog):
         self.status_label.setStyleSheet(
             "font-size: 11px; color: palette(window-text);")
         toolbar.addWidget(self.status_label, 1)
+        _TOOLBAR_BTN_STYLE = """
+            QPushButton {
+                background-color: #2a6496;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 0 10px;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                background-color: #3a7ab6;
+            }
+            QPushButton:pressed {
+                background-color: #1e4f78;
+            }
+        """
+
+        _WRENCH_BTN_STYLE = """
+            QPushButton {
+                background-color: #e07b00;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 0 10px;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background-color: #f59120;
+            }
+            QPushButton:pressed {
+                background-color: #b56200;
+            }
+        """
+
         add_btn      = QPushButton("Add Object…"); add_btn.clicked.connect(self.add_custom_object)
         save_btn     = QPushButton("Save CSV…");   save_btn.clicked.connect(self.save_to_csv)
         settings_btn = QPushButton()
         if wrench_path and os.path.exists(wrench_path):
             settings_btn.setIcon(QIcon(wrench_path))
+            settings_btn.setToolTip("Settings")
         else:
-            settings_btn.setText("⚙")
+            settings_btn.setText("⚙ Settings")
         settings_btn.clicked.connect(self.open_settings)
-        for b in (add_btn, save_btn, settings_btn):
-            b.setFixedHeight(28); toolbar.addWidget(b)
 
         search_btn = QPushButton("Search Object…")
         search_btn.clicked.connect(self._open_object_search)
-        search_btn.setFixedHeight(28)
-        toolbar.addWidget(search_btn)
 
         horizon_btn = QPushButton("🏔 Horizon…")
         horizon_btn.clicked.connect(self.open_horizon_editor)
-        horizon_btn.setFixedHeight(28)
-        toolbar.addWidget(horizon_btn)
 
-        fieldrot_btn = QPushButton("🔄 Alt/AzField Rotation…")
+        fieldrot_btn = QPushButton("🔄 Alt/Az Field Rotation…")
         fieldrot_btn.clicked.connect(self._open_field_rotation)
-        fieldrot_btn.setFixedHeight(28)
-        toolbar.addWidget(fieldrot_btn)
+
+        for b in (add_btn, save_btn, search_btn, horizon_btn, fieldrot_btn):
+            b.setFixedHeight(28)
+            b.setStyleSheet(_TOOLBAR_BTN_STYLE)
+            toolbar.addWidget(b)
+
+        settings_btn.setFixedHeight(28)
+        settings_btn.setStyleSheet(_WRENCH_BTN_STYLE)
+        toolbar.addWidget(settings_btn)
 
         toolbar_frame = QFrame()
         toolbar_frame.setFrameShape(QFrame.Shape.NoFrame)
@@ -3070,13 +3193,12 @@ class WhatsInMySkyDialog(QDialog):
         self.resize(1300, 620)
 
     def _preload_type_filters(self):
-        """Load catalog at startup to populate type filter checkboxes immediately."""
         try:
             t = CalculationThread.__new__(CalculationThread)
             catalog_path = t.get_catalog_file_path()
             if catalog_path and os.path.exists(catalog_path):
                 self.catalog_file = catalog_path
-                df = pd.read_csv(catalog_path, encoding="ISO-8859-1")
+                df = _load_full_catalog(catalog_path)
                 self._populate_type_filters(df)
         except Exception:
             pass
@@ -3574,13 +3696,15 @@ class WhatsInMySkyDialog(QDialog):
             self.lunar_phase_image_label.clear()
 
     def on_calculation_complete(self, df, message):
-        # Populate type filter panel the first time we have catalog data
+        # DEBUG — remove after confirming fix
+        if not df.empty and "Alt Name" in df.columns:
+            png_rows = df[df.get("Catalog", pd.Series(dtype=str)).astype(str).str.strip().str.upper() == "PNG"]
+            for _, r in png_rows.head(5).iterrows():
+                raw = r.get("Alt Name", "")
+                print(f"[DEBUG] Name={r['Name']!r}  AltName={raw!r}  type={type(raw)}")        
         if self._type_filter_vars == {} and not df.empty:
-            # Load full catalog to get all types, not just this result subset
             try:
-                catalog_path = self.catalog_file or \
-                    os.path.join(os.path.expanduser("~"), "celestial_catalog.csv")
-                full_df = pd.read_csv(catalog_path, encoding="ISO-8859-1")
+                full_df = _load_full_catalog(self.catalog_file or "")
                 self._populate_type_filters(full_df)
             except Exception:
                 pass
@@ -3595,6 +3719,7 @@ class WhatsInMySkyDialog(QDialog):
                 ra_disp  = sc.ra.to_string(unit=u.hour, sep=":")
                 dec_disp = sc.dec.to_string(unit=u.deg, sep=":")
             size_arcmin = str(row.get("Info","")) if pd.notna(row.get("Info","")) else ""
+            alt_full = str(row.get("Alt Name","")) if pd.notna(row.get("Alt Name","")) else ""
             vals = [
                 str(row.get("Name","") or ""),
                 str(ra_disp), str(dec_disp),
@@ -3604,13 +3729,16 @@ class WhatsInMySkyDialog(QDialog):
                 str(row.get("Before/After Transit","")),
                 str(round(row.get("Degrees from Moon",0.0),2))
                     if pd.notna(row.get("Degrees from Moon", np.nan)) else "",
-                row.get("Alt Name","") if pd.notna(row.get("Alt Name","")) else "",
+                alt_full,
                 row.get("Type","")     if pd.notna(row.get("Type",""))     else "",
                 str(row.get("Magnitude","")) if pd.notna(row.get("Magnitude","")) else "",
                 size_arcmin,
                 str(row.get("Score", 0.0)),
             ]
-            self.tree.addTopLevelItem(SortableTreeWidgetItem(vals))
+            item = SortableTreeWidgetItem(vals)
+            # Full alt name on hover so nothing is ever hidden
+            item.setToolTip(8, alt_full)
+            self.tree.addTopLevelItem(item)
 
     def update_status(self, msg):
         self.status_label.setText(f"Status: {msg}")
@@ -3632,25 +3760,39 @@ class WhatsInMySkyDialog(QDialog):
 
     def add_custom_object(self):
         name, ok = QInputDialog.getText(self, "Add Custom Object", "Enter object name:")
-        if not ok or not name: return
-        ra,  ok = QInputDialog.getDouble(self, "Add Custom Object", "Enter RA (deg):",  decimals=3)
-        if not ok: return
+        if not ok or not name:
+            return
+        ra, ok = QInputDialog.getDouble(self, "Add Custom Object", "Enter RA (deg):", decimals=3)
+        if not ok:
+            return
         dec, ok = QInputDialog.getDouble(self, "Add Custom Object", "Enter Dec (deg):", decimals=3)
-        if not ok: return
-        entry = {"Name": name, "RA": ra, "Dec": dec, "Catalog": "User",
-                 "Alt Name": "User Defined", "Type": "Custom",
-                 "Magnitude": "", "Info": ""}
-        csv = self.catalog_file or os.path.join(os.path.expanduser("~"),
-                                                  "celestial_catalog.csv")
+        if not ok:
+            return
+
+        entry = {
+            "Name":      name,
+            "RA":        ra,
+            "Dec":       dec,
+            "Alt Name":  "",
+            "Type":      "Custom",
+            "Magnitude": "",
+            "Info":      "",
+            "Catalog":   "User",
+        }
+
         try:
-            df = pd.read_csv(csv, encoding="ISO-8859-1") if os.path.exists(csv) \
-                 else pd.DataFrame()
-            df = pd.concat([df, pd.DataFrame([entry])], ignore_index=True)
-            df.to_csv(csv, index=False, encoding="ISO-8859-1")
+            if os.path.exists(USER_OBJECTS_PATH):
+                existing = pd.read_csv(USER_OBJECTS_PATH, encoding="utf-8",
+                                       quotechar='"', quoting=0)
+            else:
+                existing = pd.DataFrame(columns=_USER_OBJECTS_COLUMNS)
+
+            updated = pd.concat([existing, pd.DataFrame([entry])], ignore_index=True)
+            updated.to_csv(USER_OBJECTS_PATH, index=False, encoding="utf-8")
             self.update_status(f"Added custom object: {name}")
         except Exception as e:
             QMessageBox.warning(self, "Add Custom Object",
-                                f"Could not update catalog:\n{e}")
+                                f"Could not save user object:\n{e}")
 
     def update_ra_dec_format(self):
         use_deg = self.ra_dec_degrees.isChecked()

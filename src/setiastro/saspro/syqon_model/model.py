@@ -210,19 +210,34 @@ def _build_StarNetGenerator():
         def forward(self, x):
             return self.block(x)
 
+    def _init_weights(module):
+        if isinstance(module, (nn.Conv2d, nn.ConvTranspose2d)):
+            nn.init.xavier_uniform_(module.weight)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.BatchNorm2d):
+            nn.init.normal_(module.weight, mean=1.0, std=0.02)
+            nn.init.zeros_(module.bias)
+
     class StarNetGenerator(nn.Module):
         """
-        AxiomV2.2 StarNet-style subtractive residual UNet generator.
+        AxiomV2.2 StarNet-style generator.
 
-        Forward:
-            removal  = relu(raw_removal)
-            starless = input - removal
+        Three-branch output head:
+          - removal branch  → relu(raw_removal)
+          - inpaint branch  → tanh(raw_inpainted)
+          - alpha gate      → sigmoid(raw_alpha) → avg_pool smoothed
+
+        Final output:
+          output = (1 - alpha) * (input - removal) + alpha * inpainted
         """
-        def __init__(self, in_channels=3, repair_scale=0.35):
+        def __init__(self, in_channels=3, repair_scale=0.35, alpha_smooth_kernel=5):
             super().__init__()
-            self.in_channels  = in_channels
-            self.repair_scale = repair_scale
+            self.in_channels         = in_channels
+            self.repair_scale        = repair_scale        # kept for checkpoint compat
+            self.alpha_smooth_kernel = int(alpha_smooth_kernel)
 
+            # Encoder
             self.g_conv0 = nn.Conv2d(in_channels, 64, kernel_size=4, stride=2, padding=1)
             self.g_conv1 = _ConvBlock(64,  128)
             self.g_conv2 = _ConvBlock(128, 256)
@@ -232,6 +247,7 @@ def _build_StarNetGenerator():
             self.g_conv6 = _ConvBlock(512, 512)
             self.g_conv7 = _ConvBlock(512, 512)
 
+            # Decoder
             self.g_deconv0 = _DeconvBlock(512,  512)
             self.g_deconv1 = _DeconvBlock(1024, 512)
             self.g_deconv2 = _DeconvBlock(1024, 512)
@@ -239,12 +255,22 @@ def _build_StarNetGenerator():
             self.g_deconv4 = _DeconvBlock(1024, 256)
             self.g_deconv5 = _DeconvBlock(512,  128)
             self.g_deconv6 = _DeconvBlock(256,  64)
-            self.g_deconv7 = nn.Sequential(
-                nn.Upsample(scale_factor=2, mode="nearest"),
-                nn.Conv2d(128, in_channels, kernel_size=3, stride=1, padding=1),
-            )
 
-        def forward(self, x):
+            # V2.2 output head
+            self.g_deconv7_feat = nn.Sequential(
+                nn.Upsample(scale_factor=2, mode="nearest"),
+                nn.Conv2d(128, 64, kernel_size=3, stride=1, padding=1),
+                nn.LeakyReLU(0.2, inplace=True),
+            )
+            # outputs: removal(in_ch) + inpainted(in_ch) + alpha(1)
+            self.g_out = nn.Conv2d(64, in_channels * 2 + 1, kernel_size=3, stride=1, padding=1)
+
+            # Weight init
+            self.apply(_init_weights)
+            # Bias alpha gate toward "no inpainting" at init
+            nn.init.constant_(self.g_out.bias[in_channels * 2:], -3.0)
+
+        def forward(self, x, return_aux=False):
             c0 = self.g_conv0(x)
             c1 = self.g_conv1(c0)
             c2 = self.g_conv2(c1)
@@ -261,12 +287,39 @@ def _build_StarNetGenerator():
             d4 = self.g_deconv4(torch.cat([d3, c3], dim=1))
             d5 = self.g_deconv5(torch.cat([d4, c2], dim=1))
             d6 = self.g_deconv6(torch.cat([d5, c1], dim=1))
-            raw_removal = self.g_deconv7(torch.cat([d6, c0], dim=1))
-            removal = F.relu(raw_removal)
-            return x - removal
+
+            features  = self.g_deconv7_feat(torch.cat([d6, c0], dim=1))
+            out_preds = self.g_out(features)
+
+            raw_removal   = out_preds[:, 0:self.in_channels, :, :]
+            raw_inpainted = out_preds[:, self.in_channels:self.in_channels * 2, :, :]
+            raw_alpha     = out_preds[:, self.in_channels * 2:, :, :]
+
+            removal          = F.relu(raw_removal)
+            residual_output  = x - removal
+            inpainted_output = torch.tanh(raw_inpainted)
+            alpha            = torch.sigmoid(raw_alpha)
+
+            # ── Smooth alpha to feather residual/inpaint transition edges ──
+            k = self.alpha_smooth_kernel
+            if k % 2 == 0:
+                k += 1
+            alpha = F.avg_pool2d(alpha, kernel_size=k, stride=1, padding=k // 2)
+            alpha = torch.clamp(alpha, 0.0, 1.0)
+            # ──────────────────────────────────────────────────────────────
+
+            output = (1.0 - alpha) * residual_output + alpha * inpainted_output
+
+            if return_aux:
+                return output, {
+                    "alpha":     alpha,
+                    "residual":  residual_output,
+                    "inpainted": inpainted_output,
+                    "removal":   removal,
+                }
+            return output
 
     return StarNetGenerator
-
 
 # =============================================================================
 # Legacy / extra models — all kept for compatibility, all lazified

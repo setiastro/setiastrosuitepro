@@ -1277,6 +1277,14 @@ class BlinkTab(QWidget):
         self.send_integ_btn.clicked.connect(self._send_to_stacking_integration)
         push_row.addWidget(self.send_integ_btn)
 
+        self.stacking_settings_btn = QPushButton(self.tr("⚙ Stacking Settings"), self)
+        self.stacking_settings_btn.setToolTip(self.tr(
+            "Edit stacking suite settings (saved immediately, "
+            "but Stacking Suite must be restarted separately if "
+            "directory or precision changed)"))
+        self.stacking_settings_btn.clicked.connect(self._open_stacking_settings_from_blink)
+        push_row.addWidget(self.stacking_settings_btn)
+
         left_layout.addLayout(push_row)
 
         # Playback controls (left arrow, play, pause, right arrow)
@@ -1527,6 +1535,24 @@ class BlinkTab(QWidget):
                        self._update_zoom_panel_to_viewport_center())
         )
         self.imagesChanged.connect(self._update_loaded_count_label)
+
+    def _open_stacking_settings_from_blink(self):
+        """
+        Open the Stacking Suite settings dialog directly.
+        No live Stacking Suite instance needed — settings are read/written
+        via QSettings so they persist regardless.
+        """
+        try:
+            from setiastro.saspro.stacking_suite import StackingSuiteDialog
+            mw = self._main_window()
+            # Instantiate a minimal instance just to host the settings dialog
+            stacking = StackingSuiteDialog.__new__(StackingSuiteDialog)
+            stacking.__init__(parent=mw)
+            stacking.open_stacking_settings(origin="blink")
+        except Exception as e:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, self.tr("Stacking Settings"),
+                self.tr("Could not open Stacking Settings:\n{0}").format(str(e)))
 
     def _toggle_zoom_panel(self):
         visible = not self._zoom_panel.isVisible()

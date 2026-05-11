@@ -559,6 +559,7 @@ class _SyQonProcessThread(QThread):
         model_kind: str = "nadir",
         use_amp: bool = False,
         amp_dtype: str = "fp16",
+        channel_mode: str = "rgb",        # ← add
         *,
         live_preview: bool = False,
         preview_src_rgb01: np.ndarray | None = None,
@@ -570,6 +571,7 @@ class _SyQonProcessThread(QThread):
         self.x_for_net   = x_for_net
         self.ckpt_path   = str(ckpt_path)
         self.model_kind  = (model_kind or "nadir").lower().strip()
+        self.channel_mode = (channel_mode or "rgb").lower().strip()
         self.tile        = int(tile)
         self.overlap     = int(overlap)
         self.target_bg   = float(target_bg)
@@ -677,9 +679,10 @@ class _SyQonProcessThread(QThread):
                 use_gpu=True,
                 prefer_dml=True,
                 model_kind=self.model_kind,
-                residual_mode=True,   # auto-resolved inside engine
+                residual_mode=True,
                 use_amp=self.use_amp,
                 amp_dtype=self.amp_dtype,
+                channel_mode=self.channel_mode,    # ← add
                 progress_cb=_prog,
                 tile_cb=_tile_cb if (self.live_preview and preview_buf is not None) else None,
             )
@@ -876,7 +879,16 @@ class SyQonStarlessDialog(QDialog):
         self.chk_pad.setChecked(True)
         self.chk_amp = QCheckBox("Use AMP (mixed precision) — faster on some GPUs", self)
         self.chk_amp.setChecked(False)
-
+        self.chk_rgb_perchan = QCheckBox(
+            "RGB + Per-Channel mode (may improve colour accuracy)", self
+        )
+        self.chk_rgb_perchan.setChecked(False)
+        self.chk_rgb_perchan.setToolTip(
+            "Runs the model twice: once on the full RGB image and once per channel independently.\n"
+            "The two results are averaged, then Lab chroma correction is applied.\n"
+            "Can reduce colour fringing on narrowband or colour-imbalanced images.\n"
+            "Takes approximately 4× longer than standard mode."
+        )
         self.spin_pad = QSpinBox(self)
         self.spin_pad.setRange(0, 1024); self.spin_pad.setSingleStep(16)
         self.spin_pad.setValue(256)
@@ -897,6 +909,7 @@ class SyQonStarlessDialog(QDialog):
             self.chk_mtf.setChecked(bool(s.value("syqon/use_mtf", True, type=bool)))
             self.spin_mtf_median.setValue(float(s.value("syqon/mtf_target_median", 0.10)))
             self.chk_amp.setChecked(bool(s.value("syqon/use_amp", False, type=bool)))
+            self.chk_rgb_perchan.setChecked(bool(s.value("syqon/rgb_perchan_mode", False, type=bool)))
             self.edt_cli_path.setText(str(s.value("syqon/standalone_cli_path", "")))
             saved = _syqon_norm_kind(str(s.value("syqon/model_kind", "nadir")))
             idx = self.cmb_model.findData(saved)
@@ -928,6 +941,7 @@ class SyQonStarlessDialog(QDialog):
         form.addRow("", self.chk_pad)
         form.addRow("Pad pixels:", self.spin_pad)
         form.addRow("", self.chk_amp)
+        form.addRow("", self.chk_rgb_perchan)  
         form.addRow("Stars-only extraction:", self.cmb_stars_extract)
 
         self.chk_live_preview = QCheckBox("Live tile preview (slower)", self)
@@ -1171,6 +1185,7 @@ class SyQonStarlessDialog(QDialog):
                     "make_stars":  bool(self.chk_make_stars.isChecked()),
                     "pad_edges":   bool(pad_edges),
                     "pad_pixels":  int(pad_pixels),
+                    "channel_mode": "rgb+perchan" if bool(self.chk_rgb_perchan.isChecked()) else "rgb",
                     "stars_extract": str(stars_extract_mode),
                     "model_path":  str(self._model_dst_path()),
                     "label":       "Remove Stars (SyQon)",
@@ -1199,6 +1214,7 @@ class SyQonStarlessDialog(QDialog):
                     "pad_pixels":  int(pad_pixels),
                     "stars_extract": str(stars_extract_mode),
                     "use_mtf":     bool(do_mtf),
+                    "channel_mode": "rgb+perchan" if bool(self.chk_rgb_perchan.isChecked()) else "rgb",
                 },
             }
         except Exception:
@@ -1362,6 +1378,7 @@ class SyQonStarlessDialog(QDialog):
         s.setValue("syqon/use_mtf",              bool(self.chk_mtf.isChecked()))
         s.setValue("syqon/mtf_target_median",    float(self.spin_mtf_median.value()))
         s.setValue("syqon/use_amp",              bool(self.chk_amp.isChecked()))
+        s.setValue("syqon/rgb_perchan_mode", bool(self.chk_rgb_perchan.isChecked()))
         s.setValue("syqon/model_kind",           self._model_kind())
         s.setValue("syqon/standalone_cli_path",  self.edt_cli_path.text().strip())
 
@@ -1474,6 +1491,7 @@ class SyQonStarlessDialog(QDialog):
             model_kind=model_kind,
             use_amp=bool(self.chk_amp.isChecked()),
             amp_dtype="fp16",
+            channel_mode="rgb+perchan" if self.chk_rgb_perchan.isChecked() else "rgb",  # ← add
             live_preview=live_preview,
             preview_src_rgb01=(preview_src if live_preview else None),
             preview_max_dim=900,

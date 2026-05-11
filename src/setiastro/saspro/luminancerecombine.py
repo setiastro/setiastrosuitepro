@@ -345,6 +345,55 @@ def _resolve_active_doc_from(main, target_doc=None):
     doc = unwrap_docproxy(doc)
     return doc
 
+# ---------- pre-recombine saturation boost (HSV space) ----------
+def _boost_saturation(rgb: np.ndarray, amount: float) -> np.ndarray:
+    """
+    Boost saturation of a float32 HWC RGB image in [0,1].
+    amount=0.0 → no change, amount=1.0 → double saturation, amount=-1.0 → grayscale.
+    Uses OpenCV HSV conversion to avoid hue drift.
+    """
+    if abs(amount) < 1e-4:
+        return rgb
+    bgr = cv2.cvtColor(
+        np.clip(rgb, 0.0, 1.0).astype(np.float32),
+        cv2.COLOR_RGB2BGR
+    )
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    hsv[..., 1] = np.clip(hsv[..., 1] * (1.0 + float(amount)), 0.0, 1.0)
+    bgr_out = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+    return np.clip(cv2.cvtColor(bgr_out, cv2.COLOR_BGR2RGB), 0.0, 1.0)
+
+
+# ---------- pre-recombine chrominance NR blur ----------
+def _chrominance_nr(rgb: np.ndarray, sigma: float) -> np.ndarray:
+    """
+    Blur only the color channels (Cb/Cr in YCbCr) while preserving luma.
+    sigma: Gaussian sigma in pixels. 0.0 → no-op.
+    Equivalent to PI's Chrominance Noise Reduction slider.
+    """
+    if sigma < 0.1:
+        return rgb
+
+    f = np.clip(rgb, 0.0, 1.0).astype(np.float32)
+
+    # YCbCr in float [0,1]: standard matrix (BT.601, good enough for pre-processing)
+    Y  =  0.299*f[...,0] + 0.587*f[...,1] + 0.114*f[...,2]
+    Cb = -0.16875*f[...,0] - 0.33126*f[...,1] + 0.5*f[...,2] + 0.5
+    Cr =  0.5*f[...,0] - 0.41869*f[...,1] - 0.08131*f[...,2] + 0.5
+
+    ksize = int(sigma * 6) | 1   # nearest odd integer ≥ 6σ
+    ksize = max(ksize, 3)
+    Cb_b = cv2.GaussianBlur(Cb, (ksize, ksize), sigma)
+    Cr_b = cv2.GaussianBlur(Cr, (ksize, ksize), sigma)
+
+    # Back to RGB (inverse of the forward matrix above)
+    Cb_s = Cb_b - 0.5
+    Cr_s = Cr_b - 0.5
+    R = Y                   + 1.402   * Cr_s
+    G = Y - 0.34414 * Cb_s - 0.71414 * Cr_s
+    B = Y + 1.772   * Cb_s
+
+    return np.clip(np.stack([R, G, B], axis=-1), 0.0, 1.0).astype(np.float32)
 
 def apply_recombine_to_doc(
     target_doc,
@@ -355,17 +404,25 @@ def apply_recombine_to_doc(
     blend: float = 1.0,
     soft_knee: float = 0.0,
     pedestal: float = 0.05,
+    saturation_boost: float = 0.0,
+    chrominance_nr_sigma: float = 0.0,
 ):
     """
     Overwrite target_doc.image by recombining with luminance from source (RGB or mono).
     Uses linear scaling recombine; honors destination mask if present.
+
+    Pre-recombine pipeline (applied to the target RGB before luma extraction):
+      1. Saturation boost  (saturation_boost > 0 → richer color)
+      2. Chrominance NR   (chrominance_nr_sigma > 0 → blur Cb/Cr only)
+    Both operate on the RGB target before luminance is measured, so they
+    cannot skew the new luma that gets placed.
     """
     base = _to_float01_strict(np.asarray(target_doc.image))
 
     # Resolve profile (sensor profiles return weights w)
     resolved_method, w, profile_name = resolve_luma_profile_weights(method)
 
-    # Caller override for weights wins (useful for custom UI / scripts)
+    # Caller override for weights wins
     if weights is not None:
         w = np.asarray(weights, dtype=np.float32).reshape(-1)
         if w.size != 3:
@@ -373,31 +430,33 @@ def apply_recombine_to_doc(
     elif w is not None:
         w = np.asarray(w, dtype=np.float32).reshape(-1)
         if w.size != 3:
-            w = None  # ignore bad profile weights defensively
+            w = None
 
-    # Build L (mono source passes through; RGB is weighted)
+    # ── Pre-recombine colour processing ─────────────────────────────────────
+    # Saturation boost first (changes colour richness, not luminance structure)
+    rgb_pre = _boost_saturation(base, saturation_boost)
+
+    # Chrominance NR second (blurs Cb/Cr, leaving Y untouched)
+    rgb_pre = _chrominance_nr(rgb_pre, chrominance_nr_sigma)
+    # ────────────────────────────────────────────────────────────────────────
+
+    # Build L from source
     src = _to_float01_strict(luminance_source_img)
     if src.ndim == 2 or (src.ndim == 3 and src.shape[2] == 1):
         L = src if src.ndim == 2 else src[..., 0]
-        # For mono L sources, we still want recombine weights to match the selected method/profile.
     else:
-        # Noise sigma: if caller provided, use it; otherwise estimate when needed
         ns = None
         if resolved_method == "snr":
             if noise_sigma is not None:
                 ns = np.asarray(noise_sigma, dtype=np.float32).reshape(-1)
             else:
                 ns = _estimate_noise_sigma_per_channel(src)
-
-        # compute_luminance respects weights override; for sensor/custom profiles w is used
         L = compute_luminance(src, method=resolved_method, weights=w, noise_sigma=ns)
 
-    # For scaling recombine, we need an actual RGB weight vector.
-    # If we don't have one from the chosen mode/profile, fall back sensibly.
+    # Recombine weight vector
     if w is not None and w.size == 3:
         recombine_w = w
     else:
-        # If your resolver returns w=None for rec709/rec601/rec2020, fill explicitly here:
         if resolved_method == "rec601":
             recombine_w = _LUMA_REC601
         elif resolved_method == "rec2020":
@@ -405,8 +464,9 @@ def apply_recombine_to_doc(
         else:
             recombine_w = _LUMA_REC709
 
+    # Recombine against the pre-processed RGB (not the raw base)
     replaced = recombine_luminance_linear_scale(
-        base,
+        rgb_pre,
         L,
         weights=recombine_w,
         blend=float(blend),
@@ -420,9 +480,12 @@ def apply_recombine_to_doc(
         md["luma_profile"] = profile_name
     if w is not None:
         md["luma_weights"] = np.asarray(w, dtype=np.float32).tolist()
+    if saturation_boost != 0.0:
+        md["saturation_boost"] = float(saturation_boost)
+    if chrominance_nr_sigma > 0.0:
+        md["chrominance_nr_sigma"] = float(chrominance_nr_sigma)
 
     target_doc.apply_edit(replaced.astype(np.float32, copy=False), metadata=md, step_name="Recombine Luminance")
-
 
 def run_recombine_luminance_via_preset(main_or_ctx, preset=None, target_doc=None):
     """

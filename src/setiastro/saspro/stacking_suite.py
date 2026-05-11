@@ -4065,19 +4065,28 @@ class _MMImage:
 
     def close(self):
         """Release any open handles / buffers associated with this image."""
-        # Close FITS HDUList if present
-        try:
-            if getattr(self, "_fits_hdul", None) is not None:
-                self._fits_hdul.close()
-        except Exception:
-            pass
+        import gc
 
-        # For XISF, just drop references so GC can reclaim
+        # Null all references BEFORE closing so GC finalizers on other threads
+        # cannot race against an open handle during the close sequence.
+        hdul = self._fits_hdul
         self._fits_hdul = None
         self._fits_data = None
+        self._fits_header = None
         self._xisf = None
         self._xisf_memmap = None
         self._xisf_arr = None
+
+        try:
+            if hdul is not None:
+                hdul.close()
+        except Exception:
+            pass
+
+        # Force immediate reclamation of the mmap file handle on Windows.
+        # Without this, CPython defers finalization and the handle stays open
+        # long enough for a concurrent GC sweep to fault on it.
+        gc.collect()
 
 def _open_sources_for_mfdeconv(paths, log):
     srcs = []
@@ -5382,7 +5391,7 @@ class StackingSuiteDialog(QDialog):
         self.wrench_button = QPushButton()
         self.wrench_button.setIcon(QIcon(self._wrench_path))
         self.wrench_button.setToolTip(self.tr("Set Stacking Directory & Sigma Clipping"))
-        self.wrench_button.clicked.connect(self.open_stacking_settings)
+        self.wrench_button.clicked.connect(lambda: self.open_stacking_settings(origin="stacking"))
         self.wrench_button.setStyleSheet("""
             QPushButton {
                 background-color: #FF4500;
@@ -6971,7 +6980,7 @@ class StackingSuiteDialog(QDialog):
         self.settings.sync()
 
 
-    def open_stacking_settings(self):
+    def open_stacking_settings(self, origin: str = "stacking"):
         """Opens a 2-column Stacking Settings dialog."""
         from PyQt6.QtWidgets import (
             QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox, QFormLayout,
@@ -7963,7 +7972,7 @@ class StackingSuiteDialog(QDialog):
 
         # --- Buttons ---
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        btns.accepted.connect(lambda: self.save_stacking_settings(dialog))
+        btns.accepted.connect(lambda: self.save_stacking_settings(dialog, origin=origin))
         btns.rejected.connect(dialog.reject)
         root.addWidget(btns)
 
@@ -7975,81 +7984,76 @@ class StackingSuiteDialog(QDialog):
         except Exception:
             pass        
 
-
-    def save_stacking_settings(self, dialog):
+    def save_stacking_settings(self, dialog, origin: str = "stacking"):
         """
         Save settings and restart the Stacking Suite if the directory OR internal dtype changed.
         Uses dialog-scoped dir_edit and normalized path comparison.
         """
         # --- capture previous state BEFORE we change anything ---
+        # Read prev dtype from QSettings (same source the combo was populated from),
+        # NOT from the runtime attribute — they can diverge between sessions and cause
+        # a spurious dtype_changed=True on every open even if the user didn't touch it.
         prev_dir_raw   = self.stacking_directory or ""
         prev_dir       = self._norm_dir(prev_dir_raw)
-        prev_dtype_str = "float64" if (getattr(self, "internal_dtype", np.float32) is np.float64) else "float32"
-
+        prev_dtype_str = (self.settings.value("stacking/internal_dtype", "float32") or "float32").lower()
 
         # --- read dialog widgets ---
-        dir_edit   = getattr(dialog, "_dir_edit", None)
-        new_dir_raw = (dir_edit.text() if dir_edit else prev_dir_raw)
+        dir_edit    = getattr(dialog, "_dir_edit", None)
+        new_dir_raw = (dir_edit.text().strip() if dir_edit else prev_dir_raw)
         new_dir     = self._norm_dir(new_dir_raw)
 
         # Persist the rest
-        self.sigma_high       = self.sigma_high_spinbox.value()
-        self.sigma_low        = self.sigma_low_spinbox.value()
-        self.rejection_algorithm = self.rejection_algo_combo.currentText()
-        self.kappa           = self.kappa_spinbox.value()
-        self.iterations      = self.iterations_spinbox.value()
-        self.esd_threshold   = self.esd_spinbox.value()
-        self.biweight_constant = self.biweight_spinbox.value()
-        self.trim_fraction   = self.trim_spinbox.value()
-        self.modz_threshold  = self.modz_spinbox.value()
-        self.chunk_height    = self.chunkHeightSpinBox.value()
-        self.chunk_width     = self.chunkWidthSpinBox.value()
+        self.sigma_high            = self.sigma_high_spinbox.value()
+        self.sigma_low             = self.sigma_low_spinbox.value()
+        self.rejection_algorithm   = self.rejection_algo_combo.currentText()
+        self.kappa                 = self.kappa_spinbox.value()
+        self.iterations            = self.iterations_spinbox.value()
+        self.esd_threshold         = self.esd_spinbox.value()
+        self.biweight_constant     = self.biweight_spinbox.value()
+        self.trim_fraction         = self.trim_spinbox.value()
+        self.modz_threshold        = self.modz_spinbox.value()
+        self.chunk_height          = self.chunkHeightSpinBox.value()
+        self.chunk_width           = self.chunkWidthSpinBox.value()
 
         # Update instance + QSettings (write RAW path; use normalized only for comparison)
         self.stacking_directory = new_dir_raw
-        self.settings.setValue("stacking/dir", new_dir_raw)
-        self.settings.setValue("stacking/sigma_high", self.sigma_high)
-        self.settings.setValue("stacking/sigma_low", self.sigma_low)
-        self.settings.setValue("stacking/rejection_algorithm", self.rejection_algorithm)
-        self.settings.setValue("stacking/kappa", self.kappa)
-        self.settings.setValue("stacking/iterations", self.iterations)
-        self.settings.setValue("stacking/esd_threshold", self.esd_threshold)
-        self.settings.setValue("stacking/biweight_constant", self.biweight_constant)
-        self.settings.setValue("stacking/trim_fraction", self.trim_fraction)
-        self.settings.setValue("stacking/modz_threshold", self.modz_threshold)
-        self.settings.setValue("stacking/chunk_height", self.chunk_height)
-        self.settings.setValue("stacking/chunk_width", self.chunk_width)
-        self.settings.setValue("stacking/autocrop_enabled", self.autocrop_cb.isChecked())
-        self.settings.setValue("stacking/autocrop_pct", float(self.autocrop_pct.value()))
+        self.settings.setValue("stacking/dir",                  new_dir_raw)
+        self.settings.setValue("stacking/sigma_high",           self.sigma_high)
+        self.settings.setValue("stacking/sigma_low",            self.sigma_low)
+        self.settings.setValue("stacking/rejection_algorithm",  self.rejection_algorithm)
+        self.settings.setValue("stacking/kappa",                self.kappa)
+        self.settings.setValue("stacking/iterations",           self.iterations)
+        self.settings.setValue("stacking/esd_threshold",        self.esd_threshold)
+        self.settings.setValue("stacking/biweight_constant",    self.biweight_constant)
+        self.settings.setValue("stacking/trim_fraction",        self.trim_fraction)
+        self.settings.setValue("stacking/modz_threshold",       self.modz_threshold)
+        self.settings.setValue("stacking/chunk_height",         self.chunk_height)
+        self.settings.setValue("stacking/chunk_width",          self.chunk_width)
+        self.settings.setValue("stacking/autocrop_enabled",     self.autocrop_cb.isChecked())
+        self.settings.setValue("stacking/autocrop_pct",         float(self.autocrop_pct.value()))
         self.temp_group_step = float(self.temp_group_step_spin.value())
-        self.settings.setValue("stacking/temp_group_step", self.temp_group_step)
-        # ----- alignment model (affine | homography | poly3 | poly4) -----
+        self.settings.setValue("stacking/temp_group_step",      self.temp_group_step)
+
         model_idx = self.align_model_combo.currentIndex()
         if   model_idx == 0: model_name = "affine"
-        elif model_idx == 1: model_name = "similarity"   # No Distortion mode
+        elif model_idx == 1: model_name = "similarity"
         elif model_idx == 2: model_name = "homography"
         elif model_idx == 3: model_name = "poly3"
         else:                model_name = "poly4"
 
-        self.settings.setValue("stacking/align/model",      model_name)
-        self.settings.setValue("stacking/align/max_cp",     int(self.align_max_cp.value()))
-        self.settings.setValue("stacking/align/downsample", int(self.align_downsample.value()))
-        self.settings.setValue("stacking/align/h_reproj",   float(self.h_ransac_reproj.value()))
-        self.settings.setValue("stacking/align/min_fwhm",
-                               float(self.align_min_fwhm.value()))
-        self.settings.setValue("stacking/align/max_ellipticity",
-                               float(self.align_max_ellipticity.value()))
-        # Seed mode (persist as stable tokens: 'robust' | 'median')
+        self.settings.setValue("stacking/align/model",              model_name)
+        self.settings.setValue("stacking/align/max_cp",             int(self.align_max_cp.value()))
+        self.settings.setValue("stacking/align/downsample",         int(self.align_downsample.value()))
+        self.settings.setValue("stacking/align/h_reproj",           float(self.h_ransac_reproj.value()))
+        self.settings.setValue("stacking/align/min_fwhm",           float(self.align_min_fwhm.value()))
+        self.settings.setValue("stacking/align/max_ellipticity",     float(self.align_max_ellipticity.value()))
+
         seed_idx = int(self.mf_seed_combo.currentIndex())
-        if seed_idx == 2:
-            seed_mode_val = "median"
-        elif seed_idx == 1:
-            seed_mode_val = "robust"
-        else:
-            seed_mode_val = "integrated"
+        if   seed_idx == 2: seed_mode_val = "median"
+        elif seed_idx == 1: seed_mode_val = "robust"
+        else:               seed_mode_val = "integrated"
         self.settings.setValue("stacking/mfdeconv/seed_mode", seed_mode_val)
 
-        # Star mask params
         self.settings.setValue("stacking/mfdeconv/star_mask/thresh_sigma",  float(self.sm_thresh.value()))
         self.settings.setValue("stacking/mfdeconv/star_mask/grow_px",       int(self.sm_grow.value()))
         self.settings.setValue("stacking/mfdeconv/star_mask/soft_sigma",    float(self.sm_soft.value()))
@@ -8058,104 +8062,107 @@ class StackingSuiteDialog(QDialog):
         self.settings.setValue("stacking/mfdeconv/star_mask/keep_floor",    float(self.sm_keepfloor.value()))
         self.settings.setValue("stacking/mfdeconv/star_mask/ellipse_scale", float(self.sm_es.value()))
 
-        # Variance map params
         self.settings.setValue("stacking/mfdeconv/varmap/sample_stride", int(self.vm_stride.value()))
         self.settings.setValue("stacking/mfdeconv/varmap/smooth_sigma",  float(self.vm_sigma.value()))
         vm_floor = 10.0 ** float(self.vm_floor_log.value())
         self.settings.setValue("stacking/mfdeconv/varmap/floor", vm_floor)
 
-        # MFDeconv engine selection
         if   self.mf_eng_cudnn_rb.isChecked(): mf_engine = "cudnn"
         elif self.mf_eng_sport_rb.isChecked(): mf_engine = "sport"
         else:                                   mf_engine = "normal"
-        self.settings.setValue("stacking/mfdeconv/engine", mf_engine)
+        self.settings.setValue("stacking/mfdeconv/engine",  mf_engine)
+        self.settings.setValue("stacking/high_octane",      mf_engine == "sport")
 
-        # (compat: drop the legacy boolean; keep it synced for older configs if you like)
-        self.settings.setValue("stacking/high_octane", mf_engine == "sport")
-        # Gradient settings
-        self.settings.setValue("stacking/grad_poly2/enabled",   self.chk_poly2.isChecked())
-        self.settings.setValue("stacking/grad_poly2/mode",       "divide" if self.grad_mode_combo.currentIndex() == 1 else "subtract")
-        self.settings.setValue("stacking/grad_poly2/samples",    self.grad_samples_spin.value())
-        self.settings.setValue("stacking/grad_poly2/downsample", self.grad_downsample_spin.value())
-        self.settings.setValue("stacking/grad_poly2/patch_size", self.grad_patch_spin.value())
+        self.settings.setValue("stacking/grad_poly2/enabled",      self.chk_poly2.isChecked())
+        self.settings.setValue("stacking/grad_poly2/mode",         "divide" if self.grad_mode_combo.currentIndex() == 1 else "subtract")
+        self.settings.setValue("stacking/grad_poly2/samples",      self.grad_samples_spin.value())
+        self.settings.setValue("stacking/grad_poly2/downsample",   self.grad_downsample_spin.value())
+        self.settings.setValue("stacking/grad_poly2/patch_size",   self.grad_patch_spin.value())
         self.settings.setValue("stacking/grad_poly2/min_strength", float(self.grad_min_strength.value()))
-        self.settings.setValue("stacking/grad_poly2/gain_lo",    float(self.grad_gain_lo.value()))
-        self.settings.setValue("stacking/grad_poly2/gain_hi",    float(self.grad_gain_hi.value()))
+        self.settings.setValue("stacking/grad_poly2/gain_lo",      float(self.grad_gain_lo.value()))
+        self.settings.setValue("stacking/grad_poly2/gain_hi",      float(self.grad_gain_hi.value()))
 
-        # Cosmetic (Advanced)
-        self.settings.setValue("stacking/cosmetic/custom_enable", self.cosm_enable_cb.isChecked())
+        self.settings.setValue("stacking/cosmetic/custom_enable",  self.cosm_enable_cb.isChecked())
         self.settings.setValue("stacking/cosmetic/hot_sigma",      float(self.cosm_hot_sigma.value()))
         self.settings.setValue("stacking/cosmetic/cold_sigma",     float(self.cosm_cold_sigma.value()))
         self.settings.setValue("stacking/cosmetic/star_mean_ratio",float(self.cosm_star_mean_ratio.value()))
         self.settings.setValue("stacking/cosmetic/star_max_ratio", float(self.cosm_star_max_ratio.value()))
         self.settings.setValue("stacking/cosmetic/sat_quantile",   float(self.cosm_sat_quantile.value()))
 
-        self.settings.setValue("stacking/use_hardware_accel", self.hw_accel_cb.isChecked())
+        self.settings.setValue("stacking/use_hardware_accel",      self.hw_accel_cb.isChecked())
         self.use_gpu_integration = bool(self.hw_accel_cb.isChecked())
 
-        self.settings.setValue("stacking/comet_starrem/enabled", bool(self.csr_enable.isChecked()))
-
+        self.settings.setValue("stacking/comet_starrem/enabled",   bool(self.csr_enable.isChecked()))
         tool_key = self.csr_tool.currentData()
         if not tool_key:
-            # ultra-safe fallback if userData missing
             tool_key = (self.csr_tool.currentText() or "StarNet").strip().lower().replace(" ", "")
-        self.settings.setValue("stacking/comet_starrem/tool", tool_key)
-        self.settings.setValue("stacking/comet_starrem/core_r", float(self.csr_core_r.value()))
+        self.settings.setValue("stacking/comet_starrem/tool",      tool_key)
+        self.settings.setValue("stacking/comet_starrem/core_r",    float(self.csr_core_r.value()))
         self.settings.setValue("stacking/comet_starrem/core_soft", float(self.csr_core_soft.value()))
 
         passes = 1 if self.align_passes_combo.currentIndex() == 0 else 3
-        self.settings.setValue("stacking/refinement_passes", passes)
-        self.settings.setValue("stacking/shift_tolerance", self.shift_tol_spin.value())
-        self.settings.setValue("stacking/accept_shift_px", float(self.accept_shift_spin.value()))
-        self.accept_thresh = float(self.accept_shift_spin.value())  # keep runtime attribute in sync        
-        self.settings.setValue("stacking/align/det_sigma",   float(self.align_det_sigma.value()))
-        self.settings.setValue("stacking/align/minarea",     int(self.align_minarea.value()))
-        self.settings.setValue("stacking/align/auto_threshold", bool(self.align_auto_thresh_cb.isChecked()))
-
-        self.settings.setValue("stacking/align/limit_stars", int(self.align_limit_stars_spin.value()))
-        self.settings.setValue("stacking/align/timeout_per_job_sec", int(self.align_timeout_spin.value()))
-
-        self.settings.setValue("stacking/drop_shrink", float(self.drop_shrink_spin.value()))
+        self.settings.setValue("stacking/refinement_passes",           passes)
+        self.settings.setValue("stacking/shift_tolerance",             self.shift_tol_spin.value())
+        self.settings.setValue("stacking/accept_shift_px",             float(self.accept_shift_spin.value()))
+        self.accept_thresh = float(self.accept_shift_spin.value())
+        self.settings.setValue("stacking/align/det_sigma",             float(self.align_det_sigma.value()))
+        self.settings.setValue("stacking/align/minarea",               int(self.align_minarea.value()))
+        self.settings.setValue("stacking/align/auto_threshold",        bool(self.align_auto_thresh_cb.isChecked()))
+        self.settings.setValue("stacking/align/limit_stars",           int(self.align_limit_stars_spin.value()))
+        self.settings.setValue("stacking/align/timeout_per_job_sec",   int(self.align_timeout_spin.value()))
+        self.settings.setValue("stacking/drop_shrink",                 float(self.drop_shrink_spin.value()))
 
         kidx = self.drizzle_kernel_combo.currentIndex()
-        kname = "square" if kidx==0 else ("circular" if kidx==1 else "gaussian")
-        self.settings.setValue("stacking/drizzle_kernel", kname)
+        kname = "square" if kidx == 0 else ("circular" if kidx == 1 else "gaussian")
+        self.settings.setValue("stacking/drizzle_kernel",             kname)
+        self.settings.setValue("stacking/drizzle_gauss_sigma",        float(self.gauss_sigma_spin.value()))
+        self.settings.setValue("stacking/comet_hclip_k",              float(self.comet_hclip_k.value()))
+        self.settings.setValue("stacking/comet_hclip_p",              float(self.comet_hclip_p.value()))
 
-        self.settings.setValue("stacking/drizzle_gauss_sigma", float(self.gauss_sigma_spin.value()))
-        self.settings.setValue("stacking/comet_hclip_k", float(self.comet_hclip_k.value()))
-        self.settings.setValue("stacking/comet_hclip_p", float(self.comet_hclip_p.value()))
         # --- precision (internal dtype) ---
-        chosen = self.precision_combo.currentText()  # "32-bit float" or "64-bit float"
+        chosen        = self.precision_combo.currentText()
         new_dtype_str = "float64" if "64" in chosen else "float32"
+        # Compare against what was in settings at dialog-open time (prev_dtype_str),
+        # not the runtime attribute which can be stale.
         dtype_changed = (new_dtype_str != prev_dtype_str)
 
         self.internal_dtype = np.float64 if new_dtype_str == "float64" else np.float32
         self.settings.setValue("stacking/internal_dtype", new_dtype_str)
 
-        # Make sure everything is flushed
         self.settings.sync()
 
-        # Logging
         self.update_status(self.tr("✅ Saved stacking settings."))
         self.update_status(self.tr("• Internal precision: {0}").format(new_dtype_str))
         self.update_status(self.tr("• Hardware acceleration: {0}").format('ON' if self.use_gpu_integration else 'OFF'))
         self._update_stacking_path_display()
 
-        # --- restart if needed ---
-        dir_changed = (new_dir != prev_dir)
-        if dir_changed or dtype_changed:
+        # --- restart only when called from within the stacking suite AND something restart-worthy changed ---
+        dir_changed    = (new_dir != prev_dir)
+        should_restart = dir_changed or dtype_changed
+
+        if should_restart and origin == "stacking":
             reasons = []
-            if dir_changed:
-                reasons.append(self.tr("folder change"))
-            if dtype_changed:
-                reasons.append(self.tr("precision → {0}").format(new_dtype_str))
-            self.update_status(self.tr("🔁 Restarting Stacking Suite to apply {0}…").format(', '.join(reasons)))
+            if dir_changed:   reasons.append(self.tr("folder change"))
+            if dtype_changed: reasons.append(self.tr("precision → {0}").format(new_dtype_str))
+            self.update_status(
+                self.tr("🔁 Restarting Stacking Suite to apply {0}…").format(', '.join(reasons))
+            )
             dialog.accept()
             self._restart_self()
             return
 
+        if should_restart and origin != "stacking":
+            self.update_status(
+                self.tr("⚠️ Stacking directory or precision changed — "
+                        "restart Stacking Suite to apply these changes.")
+            )
+
         dialog.accept()
 
+        try:
+            self._refresh_comet_starless_enable()
+        except Exception:
+            pass
 
     # --- Drizzle config: single source of truth ---
     def _get_drizzle_pixfrac(self) -> float:
@@ -22933,7 +22940,6 @@ class StackingSuiteDialog(QDialog):
 
         return int(ref_H), int(ref_W), xforms
 
-
     def normal_integration_with_rejection(
         self,
         group_key,
@@ -22945,6 +22951,7 @@ class StackingSuiteDialog(QDialog):
         collect_per_file_rejections: bool = False,
     ):
         import errno
+        import gc
         import os
         import math
         import time
@@ -22973,7 +22980,19 @@ class StackingSuiteDialog(QDialog):
         N = len(file_list)
 
         algo = (algo_override or self.rejection_algorithm)
-        use_gpu = bool(self._hw_accel_enabled()) and _torch_ok() and _gpu_algo_supported(algo)
+
+        # -------------------------------------------------------------------
+        # FIX 1: Resolve torch / GPU availability BEFORE opening any memmaps.
+        # Lazy torchvision import inside _torch_ok() / _get_torch() triggers
+        # importlib C-extension loading which is not re-entrant with concurrent
+        # astropy mmap teardown, causing a Windows access violation.
+        # We force the resolution here while no FITS handles are open yet.
+        # -------------------------------------------------------------------
+        gc.disable()
+        try:
+            use_gpu = bool(self._hw_accel_enabled()) and _torch_ok() and _gpu_algo_supported(algo)
+        finally:
+            gc.enable()
 
         log(f"📊 Stacking group '{group_key}' with {algo}{' [GPU]' if use_gpu else ''}")
 
@@ -23013,10 +23032,20 @@ class StackingSuiteDialog(QDialog):
         sources: list[_MMImage] = []
         source_paths = list(file_list)
 
+        # -------------------------------------------------------------------
+        # FIX 2: Open all memmaps with GC disabled.
+        # CPython on Windows will inline-finalize any _MMImage whose refcount
+        # hits zero on THIS thread during the open loop (e.g. a partially built
+        # list element that gets replaced on retry). That finalizer calls
+        # hdul.close() which flushes the mmap, and re-entering astropy's FITS
+        # open machinery from inside a GC finalizer corrupts internal state.
+        # -------------------------------------------------------------------
+        gc.disable()
         try:
             for p in file_list:
                 sources.append(_MMImage(p))
         except OSError as e:
+            gc.enable()
             if e.errno in (errno.EMFILE, errno.ENFILE):
                 log(f"⚠️ Too many open files ({e}); falling back to lazy per-tile reads.")
                 for s in sources:
@@ -23035,6 +23064,7 @@ class StackingSuiteDialog(QDialog):
                 log(f"⚠️ Failed to open images (memmap): {e}")
                 return None, {}, None
         except Exception as e:
+            gc.enable()
             for s in sources:
                 try:
                     s.close()
@@ -23042,6 +23072,8 @@ class StackingSuiteDialog(QDialog):
                     pass
             log(f"⚠️ Failed to open images (memmap): {e}")
             return None, {}, None
+        else:
+            gc.enable()
 
         DTYPE = self._dtype()
         integrated_image, integrated_memmap_path = smart_zeros((height, width, channels), dtype=DTYPE)
@@ -23111,6 +23143,14 @@ class StackingSuiteDialog(QDialog):
                             src.close()
                         except Exception:
                             pass
+                        # ---------------------------------------------------
+                        # FIX 3: In the lazy path, force immediate handle
+                        # reclamation after each per-tile open/close cycle.
+                        # Without this the handle lingers until the next GC
+                        # sweep which may race with the prefetch thread.
+                        # ---------------------------------------------------
+                        del src
+                        gc.collect()
                     if sub.ndim == 2:
                         if channels == 3:
                             sub = sub[:, :, None].repeat(3, axis=2)
@@ -23123,6 +23163,71 @@ class StackingSuiteDialog(QDialog):
                         ms[i, :, :] = mfull[y0:y1, x0:x1]
 
             return th, tw
+
+        # -------------------------------------------------------------------
+        # FIX 4: Force Numba JIT compilation eagerly on throwaway arrays
+        # BEFORE the tile loop starts and BEFORE any memmaps are being actively
+        # read by the prefetch thread. Numba's type-inference pass holds
+        # internal C-level locks that are not GC-safe. If the first real tile
+        # triggers lazy JIT while the GC is also finalizing a dropped buffer,
+        # the process hard-faults. Each dispatcher has a 3D and 4D kernel —
+        # both must be warmed up because they compile to different specializations.
+        # cache=True means this only pays the JIT cost once per install.
+        # -------------------------------------------------------------------
+        _NUMBA_CPU_ALGOS = {
+            "Weighted Windsorized Sigma Clipping",
+            "Windsorized Sigma Clipping",
+            "Kappa-Sigma Clipping",
+            "Trimmed Mean",
+            "Extreme Studentized Deviate (ESD)",
+            "Biweight Estimator",
+            "Modified Z-Score Clipping",
+        }
+        if not use_gpu and algo in _NUMBA_CPU_ALGOS:
+            try:
+                _dummy3 = np.ones((2, 2, 2), dtype=np.float32)
+                _dummy4 = np.ones((2, 2, 2, 1), dtype=np.float32)
+                _dummy_w = np.ones(2, dtype=np.float32)
+                gc.disable()
+                try:
+                    if algo in ("Weighted Windsorized Sigma Clipping", "Windsorized Sigma Clipping"):
+                        windsorized_sigma_clip_weighted(_dummy3, _dummy_w,
+                                                        lower=float(self.sigma_low),
+                                                        upper=float(self.sigma_high))
+                        windsorized_sigma_clip_weighted(_dummy4, _dummy_w,
+                                                        lower=float(self.sigma_low),
+                                                        upper=float(self.sigma_high))
+                    elif algo == "Kappa-Sigma Clipping":
+                        kappa_sigma_clip_weighted(_dummy3, _dummy_w,
+                                                  kappa=float(self.kappa),
+                                                  iterations=int(self.iterations))
+                        kappa_sigma_clip_weighted(_dummy4, _dummy_w,
+                                                  kappa=float(self.kappa),
+                                                  iterations=int(self.iterations))
+                    elif algo == "Trimmed Mean":
+                        trimmed_mean_weighted(_dummy3, _dummy_w,
+                                              trim_fraction=float(self.trim_fraction))
+                        trimmed_mean_weighted(_dummy4, _dummy_w,
+                                              trim_fraction=float(self.trim_fraction))
+                    elif algo == "Extreme Studentized Deviate (ESD)":
+                        esd_clip_weighted(_dummy3, _dummy_w,
+                                          threshold=float(self.esd_threshold))
+                        esd_clip_weighted(_dummy4, _dummy_w,
+                                          threshold=float(self.esd_threshold))
+                    elif algo == "Biweight Estimator":
+                        biweight_location_weighted(_dummy3, _dummy_w,
+                                                   tuning_constant=float(self.biweight_constant))
+                        biweight_location_weighted(_dummy4, _dummy_w,
+                                                   tuning_constant=float(self.biweight_constant))
+                    elif algo == "Modified Z-Score Clipping":
+                        modified_zscore_clip_weighted(_dummy3, _dummy_w,
+                                                      threshold=float(self.modz_threshold))
+                        modified_zscore_clip_weighted(_dummy4, _dummy_w,
+                                                      threshold=float(self.modz_threshold))
+                finally:
+                    gc.enable()
+            except Exception:
+                pass
 
         from concurrent.futures import ThreadPoolExecutor
         tp = ThreadPoolExecutor(max_workers=1)
@@ -23378,7 +23483,7 @@ class StackingSuiteDialog(QDialog):
             pass
 
         return integrated_image, per_file_rejections, ref_header
-
+    
     def _safe_component(self, s: str, *, replacement:str="_", maxlen:int=180) -> str:
         """
         Sanitize a *single* path component for cross-platform safety.
