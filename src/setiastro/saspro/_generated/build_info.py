@@ -1,3 +1,3 @@
 # Auto-generated at build time. Do not edit.
-BUILD_TIMESTAMP = "2026-05-09T21:03:00Z"
-APP_VERSION = "1.15.15"
+BUILD_TIMESTAMP = "2026-05-11T17:27:31Z"
+APP_VERSION = "1.15.16"

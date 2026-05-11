@@ -3065,31 +3065,67 @@ class WhatsInMySkyDialog(QDialog):
         self.status_label.setStyleSheet(
             "font-size: 11px; color: palette(window-text);")
         toolbar.addWidget(self.status_label, 1)
+        _TOOLBAR_BTN_STYLE = """
+            QPushButton {
+                background-color: #2a6496;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 0 10px;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                background-color: #3a7ab6;
+            }
+            QPushButton:pressed {
+                background-color: #1e4f78;
+            }
+        """
+
+        _WRENCH_BTN_STYLE = """
+            QPushButton {
+                background-color: #e07b00;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 0 10px;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background-color: #f59120;
+            }
+            QPushButton:pressed {
+                background-color: #b56200;
+            }
+        """
+
         add_btn      = QPushButton("Add Object…"); add_btn.clicked.connect(self.add_custom_object)
         save_btn     = QPushButton("Save CSV…");   save_btn.clicked.connect(self.save_to_csv)
         settings_btn = QPushButton()
         if wrench_path and os.path.exists(wrench_path):
             settings_btn.setIcon(QIcon(wrench_path))
+            settings_btn.setToolTip("Settings")
         else:
-            settings_btn.setText("⚙")
+            settings_btn.setText("⚙ Settings")
         settings_btn.clicked.connect(self.open_settings)
-        for b in (add_btn, save_btn, settings_btn):
-            b.setFixedHeight(28); toolbar.addWidget(b)
 
         search_btn = QPushButton("Search Object…")
         search_btn.clicked.connect(self._open_object_search)
-        search_btn.setFixedHeight(28)
-        toolbar.addWidget(search_btn)
 
         horizon_btn = QPushButton("🏔 Horizon…")
         horizon_btn.clicked.connect(self.open_horizon_editor)
-        horizon_btn.setFixedHeight(28)
-        toolbar.addWidget(horizon_btn)
 
-        fieldrot_btn = QPushButton("🔄 Alt/AzField Rotation…")
+        fieldrot_btn = QPushButton("🔄 Alt/Az Field Rotation…")
         fieldrot_btn.clicked.connect(self._open_field_rotation)
-        fieldrot_btn.setFixedHeight(28)
-        toolbar.addWidget(fieldrot_btn)
+
+        for b in (add_btn, save_btn, search_btn, horizon_btn, fieldrot_btn):
+            b.setFixedHeight(28)
+            b.setStyleSheet(_TOOLBAR_BTN_STYLE)
+            toolbar.addWidget(b)
+
+        settings_btn.setFixedHeight(28)
+        settings_btn.setStyleSheet(_WRENCH_BTN_STYLE)
+        toolbar.addWidget(settings_btn)
 
         toolbar_frame = QFrame()
         toolbar_frame.setFrameShape(QFrame.Shape.NoFrame)

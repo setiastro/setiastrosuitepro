@@ -98,14 +98,6 @@ def _detect_arch(sd: dict) -> str:
 
 
 def _load_state_dict(torch, ckpt_path: str):
-    """
-    Returns (state_dict, meta_dict).
-
-    Handles:
-      - Full training checkpoints with 'generator' key (AxiomV2.2)
-      - model_state_dict / state_dict / model wrapped checkpoints
-      - Bare NAFNet state dicts
-    """
     ckpt, load_meta = _torch_load_fallback(torch, ckpt_path)
 
     def _small_meta(src):
@@ -125,7 +117,6 @@ def _load_state_dict(torch, ckpt_path: str):
         return out
 
     if isinstance(ckpt, dict):
-        # AxiomV2.2 full training checkpoint — generator key
         if "generator" in ckpt and isinstance(ckpt["generator"], dict):
             sd = ckpt["generator"]
             sd = {(k[7:] if k.startswith("module.") else k): v for k, v in sd.items()}
@@ -142,7 +133,6 @@ def _load_state_dict(torch, ckpt_path: str):
         if "model" in ckpt and isinstance(ckpt["model"], dict):
             return ckpt["model"], _small_meta(ckpt)
 
-        # bare state dict — NAFNet or AxiomV2.2 keys at top level
         if any(
             k.startswith(("intro.", "ending.", "encoders.", "downs.", "middle.",
                           "decoders.", "ups.", "g_conv", "g_deconv"))
@@ -262,7 +252,6 @@ def load_nafnet_model(
         }
 
     else:
-        # NAFNet / NAFNetLite path (backward compat)
         ups_variant = _detect_ups_variant(sd)
         base_ch, enc_blks, dec_blks, middle_blk_num = _infer_nafnet_cfg_from_sd(sd)
 
@@ -362,14 +351,12 @@ def _predict_tile(model, t, *, device, use_amp, amp_dtype, info, torch):
       - Output denormalised [-1,1] → [0,1] after the model.
 
     NAFNetLite / NAFNet:
-      - Input and output remain in [0,1] — no change from original behaviour.
+      - Input and output remain in [0,1].
     """
-    arch       = info.get("arch", "standard")
+    arch        = info.get("arch", "standard")
     is_axiomv22 = (arch == "axiomv22")
 
-    # AxiomV2.2 was trained on [-1, 1] input
     t_input = (t * 2.0 - 1.0) if is_axiomv22 else t
-
     t_padded, orig_H, orig_W = _pad_to_multiple(t_input, multiple=8, torch=torch)
 
     def _run(inp):
@@ -377,8 +364,6 @@ def _predict_tile(model, t, *, device, use_amp, amp_dtype, info, torch):
 
     def _to_numpy(pred_t):
         pred_np = pred_t[0].detach().to("cpu").numpy().transpose(1, 2, 0)
-        # AxiomV2.2 output is in [-1,1] — map back to [0,1]
-        # NAFNetLite / NAFNet output is already in [0,1]
         if is_axiomv22:
             pred_np = (pred_np + 1.0) * 0.5
         pred_np = pred_np[:orig_H, :orig_W, :]
@@ -432,80 +417,36 @@ def _resolve_residual_mode(info: dict) -> bool:
         return False
     if arch == "lite":
         return False
-    # standard NAFNet
     ups = info.get("ups_variant", "bilinear")
     return (ups == "pixelshuffle")
 
 
-def nafnet_starless_rgb01(
-    img_rgb01: np.ndarray,
-    ckpt_path: str,
-    *,
-    tile: int = 512,
-    overlap: int = 64,
-    prefer_cuda: bool = True,
-    residual_mode: bool = True,
-    use_amp: bool = False,
-    amp_dtype: str = "fp16",
-    model_kind: str = "nadir",
-    use_gpu: bool = True,
-    prefer_dml: bool = True,
-    progress_cb: Optional[Callable[[int, int, str], None]] = None,
+# =============================================================================
+# Tiled inference helpers
+# =============================================================================
+
+def _run_tiled_rgb(
+    model, x: np.ndarray, *,
+    tile: int, stride: int, arch: str,
+    device, torch,
+    use_amp: bool, amp_dtype: str,
+    info: dict,
+    residual_mode: bool,
+    progress_cb: Optional[Callable] = None,
+    progress_offset: int = 0,
+    progress_total: int = 1,
     tile_cb=None,
-):
-    x = np.asarray(img_rgb01, dtype=np.float32)
-    was_mono = (x.ndim == 2) or (x.ndim == 3 and x.shape[2] == 1)
-
-    if x.ndim == 2:
-        x = np.stack([x] * 3, axis=-1)
-    elif x.ndim == 3 and x.shape[2] == 1:
-        x = np.repeat(x, 3, axis=2)
-    else:
-        x = x[..., :3]
-
-    H, W = x.shape[:2]
-    tile    = int(tile)
-    overlap = int(overlap)
-    stride  = max(tile - overlap, 1)
-
-    model, device, info, torch = load_nafnet_model(
-        ckpt_path,
-        use_gpu=use_gpu,
-        prefer_dml=prefer_dml,
-        model_kind=model_kind,
-    )
-
-    # Always auto-resolve; caller's residual_mode hint is ignored in favour of
-    # what we detected from the state dict so old callers remain correct too.
-    residual_mode = _resolve_residual_mode(info)
-    arch          = info.get("arch", "standard")
-
-    info = dict(info)
-    info["residual_mode"]     = residual_mode
-    info["device"]            = str(device)
-    info["torch_version"]     = getattr(torch, "__version__", None)
-    info["torch_file"]        = getattr(torch, "__file__", None)
-
-    use_amp_requested = bool(use_amp)
-    amp_dtype = (amp_dtype or "fp16").lower()
-    if amp_dtype not in ("fp16", "bf16"):
-        amp_dtype = "fp16"
-    use_amp_effective = bool(use_amp_requested) and (device.type in ("cuda", "mps"))
-
-    info["use_amp_requested"] = use_amp_requested
-    info["use_amp_effective"] = use_amp_effective
-    info["amp_dtype"]         = amp_dtype
+    label: str = "",
+) -> np.ndarray:
+    """Full RGB tiled inference pass. Returns (H, W, 3) float32."""
+    H, W  = x.shape[:2]
+    w2    = _build_blend_weights(tile, stride, arch)
+    ys    = list(range(0, H, stride))
+    xs    = list(range(0, W, stride))
 
     out_acc = np.zeros((H, W, 3), dtype=np.float32)
     w_acc   = np.zeros((H, W, 1), dtype=np.float32)
-
-    # Blend weights — cosine ramp for AxiomV2.2, Hanning for everything else
-    w2 = _build_blend_weights(tile, stride, arch)
-
-    ys    = list(range(0, H, stride))
-    xs    = list(range(0, W, stride))
-    total = len(ys) * len(xs)
-    done  = 0
+    done    = 0
 
     with torch.no_grad():
         for y0 in ys:
@@ -526,18 +467,11 @@ def nafnet_starless_rgb01(
 
                 pred = _predict_tile(
                     model, t,
-                    device=device,
-                    use_amp=use_amp_effective,
-                    amp_dtype=amp_dtype,
-                    info=info,
-                    torch=torch,
+                    device=device, use_amp=use_amp, amp_dtype=amp_dtype,
+                    info=info, torch=torch,
                 )
 
-                if residual_mode:
-                    starless_patch = patch - pred
-                else:
-                    starless_patch = pred
-
+                starless_patch = (patch - pred) if residual_mode else pred
                 starless_patch = np.clip(starless_patch, 0.0, 1.0).astype(np.float32, copy=False)
                 starless_patch = starless_patch[:ph, :pw, :]
                 wlocal         = w2[:ph, :pw, :]
@@ -550,9 +484,273 @@ def nafnet_starless_rgb01(
 
                 done += 1
                 if callable(progress_cb):
-                    progress_cb(done, total, "SyQon tiles…")
+                    stage = f"{label} SyQon tiles…" if label else "SyQon tiles…"
+                    progress_cb(progress_offset + done, progress_total, stage)
 
-    starless   = np.clip(out_acc / np.maximum(w_acc, 1e-8), 0.0, 1.0).astype(np.float32)
+    return np.clip(out_acc / np.maximum(w_acc, 1e-8), 0.0, 1.0).astype(np.float32)
+
+
+def _run_tiled_per_channel(
+    model, x: np.ndarray, *,
+    tile: int, stride: int, arch: str,
+    device, torch,
+    use_amp: bool, amp_dtype: str,
+    info: dict,
+    residual_mode: bool,
+    progress_cb: Optional[Callable] = None,
+    progress_offset: int = 0,
+    progress_total: int = 1,
+) -> np.ndarray:
+    """
+    Per-channel tiled inference. Each channel replicated to 3-ch input,
+    channel 0 of output taken, recombined. Returns (H, W, 3) float32.
+    """
+    H, W    = x.shape[:2]
+    w2_mono = _build_blend_weights(tile, stride, arch)[..., 0]
+    ys      = list(range(0, H, stride))
+    xs      = list(range(0, W, stride))
+    total   = len(ys) * len(xs)
+
+    starless_channels = []
+    patch_buf = np.zeros((tile, tile, 3), dtype=np.float32)
+
+    for c, ch_name in enumerate(("R", "G", "B")):
+        out_acc = np.zeros((H, W), dtype=np.float32)
+        w_acc   = np.zeros((H, W), dtype=np.float32)
+        done    = 0
+
+        with torch.no_grad():
+            for y0 in ys:
+                for x0 in xs:
+                    y1 = min(y0 + tile, H)
+                    x1 = min(x0 + tile, W)
+
+                    patch_ch = x[y0:y1, x0:x1, c]
+                    ph, pw   = patch_ch.shape
+
+                    patch_buf.fill(0.0)
+                    patch_buf[:ph, :pw, 0] = patch_ch
+                    patch_buf[:ph, :pw, 1] = patch_ch
+                    patch_buf[:ph, :pw, 2] = patch_ch
+
+                    chw = patch_buf.transpose(2, 0, 1)
+                    t   = _to_torch_chw(chw, device, torch)
+
+                    pred = _predict_tile(
+                        model, t,
+                        device=device, use_amp=use_amp, amp_dtype=amp_dtype,
+                        info=info, torch=torch,
+                    )
+
+                    # Take channel 0 — all 3 are identical for replicated mono input
+                    pred_ch        = pred[:, :, 0]
+                    patch_ch_full  = patch_buf[:ph, :pw, 0]
+                    starless_patch = (patch_ch_full - pred_ch[:ph, :pw]) if residual_mode else pred_ch[:ph, :pw]
+                    starless_patch = np.clip(starless_patch, 0.0, 1.0).astype(np.float32, copy=False)
+                    wlocal         = w2_mono[:ph, :pw]
+
+                    out_acc[y0:y1, x0:x1] += starless_patch * wlocal
+                    w_acc  [y0:y1, x0:x1] += wlocal
+
+                    done += 1
+                    if callable(progress_cb):
+                        progress_cb(
+                            progress_offset + c * total + done,
+                            progress_total,
+                            f"[{ch_name}] SyQon tiles…",
+                        )
+
+        starless_channels.append(
+            np.clip(out_acc / np.maximum(w_acc, 1e-8), 0.0, 1.0).astype(np.float32)
+        )
+
+    return np.stack(starless_channels, axis=-1)
+
+
+def _lab_chroma_correction(
+    original_rgb01: np.ndarray,
+    starless_rgb01: np.ndarray,
+    *,
+    strength: float = 0.65,
+    sat_threshold: float = 0.98,
+    dark_threshold: float = 0.05,
+    star_diff_threshold: float = 0.15,
+    blur_sigma: float = 12.0,
+) -> np.ndarray:
+    """
+    Masked chroma transfer from original to starless in Lab space.
+    Keeps L from starless, corrects a,b distribution to match original.
+    Returns corrected starless float32 RGB [0,1].
+    """
+    try:
+        from skimage import color as skcolor
+        import scipy.ndimage as ndi
+    except ImportError:
+        print("[chroma_correction] skimage/scipy not available — skipping correction.")
+        return starless_rgb01
+
+    orig = np.clip(np.asarray(original_rgb01, dtype=np.float32), 0.0, 1.0)
+    star = np.clip(np.asarray(starless_rgb01, dtype=np.float32), 0.0, 1.0)
+
+    lum_orig = orig.mean(axis=2)
+    lum_star = star.mean(axis=2)
+
+    sat_mask  = (orig.max(axis=2) < sat_threshold)
+    dark_mask = (lum_star > dark_threshold)
+    star_mask = (np.abs(lum_orig - lum_star) < star_diff_threshold)
+    valid     = sat_mask & dark_mask & star_mask
+
+    if valid.sum() < 100:
+        print("[chroma_correction] Not enough valid pixels — skipping.")
+        return star
+
+    orig_lab = skcolor.rgb2lab(orig)
+    star_lab = skcolor.rgb2lab(star)
+
+    def _masked_stats(ch):
+        vals = ch[valid]
+        return float(vals.mean()), float(vals.std()) + 1e-8
+
+    mean_a_orig, std_a_orig = _masked_stats(orig_lab[..., 1])
+    mean_b_orig, std_b_orig = _masked_stats(orig_lab[..., 2])
+    mean_a_star, std_a_star = _masked_stats(star_lab[..., 1])
+    mean_b_star, std_b_star = _masked_stats(star_lab[..., 2])
+
+    print(f"[chroma_correction] a: orig={mean_a_orig:.3f}±{std_a_orig:.3f}  "
+          f"star={mean_a_star:.3f}±{std_a_star:.3f}")
+    print(f"[chroma_correction] b: orig={mean_b_orig:.3f}±{std_b_orig:.3f}  "
+          f"star={mean_b_star:.3f}±{std_b_star:.3f}")
+    print(f"[chroma_correction] valid pixels: {valid.sum()} / {valid.size}")
+
+    corrected_lab = star_lab.copy()
+    corrected_lab[..., 1] = (star_lab[..., 1] - mean_a_star) / std_a_star * std_a_orig + mean_a_orig
+    corrected_lab[..., 2] = (star_lab[..., 2] - mean_b_star) / std_b_star * std_b_orig + mean_b_orig
+    corrected_lab[..., 0] = star_lab[..., 0]   # keep L from starless
+
+    corrected_rgb = np.clip(skcolor.lab2rgb(corrected_lab).astype(np.float32), 0.0, 1.0)
+
+    soft_mask = ndi.gaussian_filter(valid.astype(np.float32), sigma=blur_sigma)[..., None]
+    soft_mask = np.clip(soft_mask * strength, 0.0, 1.0)
+
+    return np.clip(star * (1.0 - soft_mask) + corrected_rgb * soft_mask, 0.0, 1.0).astype(np.float32)
+
+
+# =============================================================================
+# Public inference entry points
+# =============================================================================
+
+def nafnet_starless_rgb01(
+    img_rgb01: np.ndarray,
+    ckpt_path: str,
+    *,
+    tile: int = 512,
+    overlap: int = 64,
+    prefer_cuda: bool = True,
+    residual_mode: bool = True,
+    use_amp: bool = False,
+    amp_dtype: str = "fp16",
+    model_kind: str = "nadir",
+    use_gpu: bool = True,
+    prefer_dml: bool = True,
+    channel_mode: str = "rgb",
+    progress_cb: Optional[Callable[[int, int, str], None]] = None,
+    tile_cb=None,
+):
+    """
+    channel_mode:
+      'rgb'         — standard single RGB pass (default)
+      'rgb+perchan' — full RGB pass + per-channel R/G/B pass averaged,
+                      then Lab chroma correction applied (works for all archs)
+    """
+    channel_mode = (channel_mode or "rgb").strip().lower()
+    if channel_mode not in ("rgb", "rgb+perchan"):
+        channel_mode = "rgb"
+
+    x = np.asarray(img_rgb01, dtype=np.float32)
+    was_mono = (x.ndim == 2) or (x.ndim == 3 and x.shape[2] == 1)
+
+    if x.ndim == 2:
+        x = np.stack([x] * 3, axis=-1)
+    elif x.ndim == 3 and x.shape[2] == 1:
+        x = np.repeat(x, 3, axis=2)
+    else:
+        x = x[..., :3]
+
+    H, W    = x.shape[:2]
+    tile    = int(tile)
+    overlap = int(overlap)
+    stride  = max(tile - overlap, 1)
+
+    model, device, info, torch = load_nafnet_model(
+        ckpt_path, use_gpu=use_gpu, prefer_dml=prefer_dml, model_kind=model_kind,
+    )
+
+    residual_mode = _resolve_residual_mode(info)
+    arch          = info.get("arch", "standard")
+
+    info = dict(info)
+    info["residual_mode"]  = residual_mode
+    info["device"]         = str(device)
+    info["torch_version"]  = getattr(torch, "__version__", None)
+    info["torch_file"]     = getattr(torch, "__file__", None)
+    info["channel_mode"]   = channel_mode
+
+    use_amp_requested = bool(use_amp)
+    amp_dtype = (amp_dtype or "fp16").lower()
+    if amp_dtype not in ("fp16", "bf16"):
+        amp_dtype = "fp16"
+    use_amp_effective = bool(use_amp_requested) and (device.type in ("cuda", "mps"))
+
+    info["use_amp_requested"] = use_amp_requested
+    info["use_amp_effective"] = use_amp_effective
+    info["amp_dtype"]         = amp_dtype
+
+    ys          = list(range(0, H, stride))
+    xs_         = list(range(0, W, stride))
+    tiles_per   = len(ys) * len(xs_)
+
+    shared = dict(
+        tile=tile, stride=stride, arch=arch,
+        device=device, torch=torch,
+        use_amp=use_amp_effective, amp_dtype=amp_dtype,
+        info=info, residual_mode=residual_mode,
+    )
+
+    if channel_mode == "rgb+perchan":
+        grand_total = 4 * tiles_per
+
+        starless_rgb = _run_tiled_rgb(
+            model, x, **shared,
+            progress_cb=progress_cb, progress_offset=0,
+            progress_total=grand_total, tile_cb=tile_cb, label="[RGB]",
+        )
+
+        starless_per_ch = _run_tiled_per_channel(
+            model, x, **shared,
+            progress_cb=progress_cb, progress_offset=tiles_per,
+            progress_total=grand_total,
+        )
+
+        if callable(progress_cb):
+            progress_cb(grand_total, grand_total, "Averaging RGB and per-channel results…")
+
+        starless_avg = np.clip(0.5 * starless_rgb + 0.5 * starless_per_ch, 0.0, 1.0).astype(np.float32)
+
+        if callable(progress_cb):
+            progress_cb(grand_total, grand_total, "Applying Lab chroma correction…")
+
+        starless = _lab_chroma_correction(x, starless_avg)
+        info["chroma_correction"] = True
+
+    else:
+        grand_total = tiles_per
+        starless = _run_tiled_rgb(
+            model, x, **shared,
+            progress_cb=progress_cb, progress_offset=0,
+            progress_total=grand_total, tile_cb=tile_cb, label="",
+        )
+        info["chroma_correction"] = False
+
     stars_only = np.clip(x - starless, 0.0, 1.0).astype(np.float32)
 
     if was_mono:
@@ -592,7 +790,7 @@ def syqon_starless_from_array(
     amp_key: str = "stacking/comet_starrem/syqon_amp",
     amp_dtype_key: str = "stacking/comet_starrem/syqon_amp_dtype",
     progress_cb: ProgressCB | None = None,
-    residual_mode: bool = True,   # kept for signature compat; auto-resolved internally
+    residual_mode: bool = True,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
     global _SYQON_SESSION, _SYQON_CKPT
 
@@ -621,11 +819,7 @@ def syqon_starless_from_array(
     src = src.astype(np.float32, copy=False)
 
     starless, stars, info = _SYQON_SESSION.run_starless_rgb01(
-        src,
-        tile=tile,
-        overlap=ov,
-        use_amp=amp,
-        amp_dtype=amp_dtype,
+        src, tile=tile, overlap=ov, use_amp=amp, amp_dtype=amp_dtype,
         progress_cb=progress_cb,
     )
     return starless, stars, info
@@ -638,7 +832,6 @@ class syqonnafnetSession:
         self.model, self.device, self.info, self.torch = load_nafnet_model(
             ckpt_path, use_gpu=use_gpu, prefer_dml=prefer_dml, model_kind=self.model_kind
         )
-        # Resolve once at load time
         self._residual_mode = _resolve_residual_mode(self.info)
         self._arch          = self.info.get("arch", "standard")
 
@@ -648,11 +841,13 @@ class syqonnafnetSession:
         *,
         tile: int = 512,
         overlap: int = 64,
-        residual_mode: bool = True,   # kept for compat; ignored, auto-resolved at init
+        residual_mode: bool = True,
         use_amp: bool = False,
         amp_dtype: str = "fp16",
+        channel_mode: str = "rgb",
         progress_cb: Optional[Callable[[int, int, str], None]] = None,
     ):
+        channel_mode  = (channel_mode or "rgb").strip().lower()
         residual_mode = self._residual_mode
 
         x = np.asarray(img_rgb01, dtype=np.float32)
@@ -665,7 +860,6 @@ class syqonnafnetSession:
         else:
             x = x[..., :3]
 
-        H, W    = x.shape[:2]
         tile    = int(tile)
         overlap = int(overlap)
         stride  = max(tile - overlap, 1)
@@ -673,6 +867,7 @@ class syqonnafnetSession:
         info = dict(self.info or {})
         info["device"]        = str(self.device)
         info["residual_mode"] = residual_mode
+        info["channel_mode"]  = channel_mode
 
         use_amp_requested = bool(use_amp)
         amp_dtype = (amp_dtype or "fp16").lower()
@@ -684,64 +879,52 @@ class syqonnafnetSession:
         info["use_amp_effective"] = use_amp_effective
         info["amp_dtype"]         = amp_dtype
 
-        out_acc = np.zeros((H, W, 3), dtype=np.float32)
-        w_acc   = np.zeros((H, W, 1), dtype=np.float32)
+        H, W      = x.shape[:2]
+        ys        = list(range(0, H, stride))
+        xs_       = list(range(0, W, stride))
+        tiles_per = len(ys) * len(xs_)
 
-        # Blend weights — cosine ramp for AxiomV2.2, Hanning for everything else
-        w2 = _build_blend_weights(tile, stride, self._arch)
+        shared = dict(
+            tile=tile, stride=stride, arch=self._arch,
+            device=self.device, torch=self.torch,
+            use_amp=use_amp_effective, amp_dtype=amp_dtype,
+            info=info, residual_mode=residual_mode,
+        )
 
-        ys    = list(range(0, H, stride))
-        xs    = list(range(0, W, stride))
-        total = len(ys) * len(xs)
-        done  = 0
+        if channel_mode == "rgb+perchan":
+            grand_total = 4 * tiles_per
 
-        torch  = self.torch
-        model  = self.model
-        device = self.device
+            starless_rgb = _run_tiled_rgb(
+                self.model, x, **shared,
+                progress_cb=progress_cb, progress_offset=0,
+                progress_total=grand_total, label="[RGB]",
+            )
+            starless_per_ch = _run_tiled_per_channel(
+                self.model, x, **shared,
+                progress_cb=progress_cb, progress_offset=tiles_per,
+                progress_total=grand_total,
+            )
 
-        with torch.no_grad():
-            for y0 in ys:
-                for x0 in xs:
-                    y1 = min(y0 + tile, H)
-                    x1 = min(x0 + tile, W)
+            if callable(progress_cb):
+                progress_cb(grand_total, grand_total, "Averaging RGB and per-channel results…")
 
-                    patch = x[y0:y1, x0:x1, :]
-                    ph, pw = patch.shape[:2]
+            starless_avg = np.clip(0.5 * starless_rgb + 0.5 * starless_per_ch, 0.0, 1.0).astype(np.float32)
 
-                    if ph != tile or pw != tile:
-                        pad = np.zeros((tile, tile, 3), dtype=np.float32)
-                        pad[:ph, :pw, :] = patch
-                        patch = pad
+            if callable(progress_cb):
+                progress_cb(grand_total, grand_total, "Applying Lab chroma correction…")
 
-                    chw = patch.transpose(2, 0, 1)
-                    t   = _to_torch_chw(chw, device, torch)
+            starless = _lab_chroma_correction(x, starless_avg)
+            info["chroma_correction"] = True
 
-                    pred = _predict_tile(
-                        model, t,
-                        device=device,
-                        use_amp=use_amp_effective,
-                        amp_dtype=amp_dtype,
-                        info=info,
-                        torch=torch,
-                    )
+        else:
+            grand_total = tiles_per
+            starless = _run_tiled_rgb(
+                self.model, x, **shared,
+                progress_cb=progress_cb, progress_offset=0,
+                progress_total=grand_total, label="",
+            )
+            info["chroma_correction"] = False
 
-                    if residual_mode:
-                        starless_patch = patch - pred
-                    else:
-                        starless_patch = pred
-
-                    starless_patch = np.clip(starless_patch, 0.0, 1.0).astype(np.float32, copy=False)
-                    starless_patch = starless_patch[:ph, :pw, :]
-                    wlocal         = w2[:ph, :pw, :]
-
-                    out_acc[y0:y1, x0:x1, :] += starless_patch * wlocal
-                    w_acc  [y0:y1, x0:x1, :] += wlocal
-
-                    done += 1
-                    if callable(progress_cb):
-                        progress_cb(done, total, "SyQon tiles…")
-
-        starless   = np.clip(out_acc / np.maximum(w_acc, 1e-8), 0.0, 1.0).astype(np.float32)
         stars_only = np.clip(x - starless, 0.0, 1.0).astype(np.float32)
 
         if was_mono:
