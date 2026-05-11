@@ -3373,7 +3373,6 @@ class AstroSuiteProMainWindow(
                 docs.append((sw.windowTitle(), d))
         return docs
 
- 
     def _recombine_luminance_ui(self, target_doc=None):
         """Pick a luminance source and recombine into the target document."""
         from PyQt6.QtWidgets import (
@@ -3382,7 +3381,7 @@ class AstroSuiteProMainWindow(
             QFrame,
         )
         from PyQt6.QtCore import Qt
- 
+
         # ── Resolve target ────────────────────────────────────────────────────
         if target_doc is None:
             sw = self.mdi.activeSubWindow()
@@ -3393,12 +3392,12 @@ class AstroSuiteProMainWindow(
             if target_doc is None or getattr(target_doc, "image", None) is None:
                 QMessageBox.information(self, "Recombine Luminance", "Active window has no image.")
                 return
- 
+
         tgt_img = np.asarray(target_doc.image)
         if tgt_img.ndim != 3 or tgt_img.shape[2] != 3:
             QMessageBox.warning(self, "Recombine Luminance", "Target image must be RGB.")
             return
- 
+
         # ── Gather candidates ─────────────────────────────────────────────────
         candidates = []
         for title, d in self._subwindow_docs():
@@ -3409,20 +3408,20 @@ class AstroSuiteProMainWindow(
                 continue
             if img.ndim == 2 or (img.ndim == 3 and img.shape[2] in (1, 3)):
                 candidates.append((title, d))
- 
+
         if not candidates:
             QMessageBox.information(
                 self, "Recombine Luminance",
                 "Open a luminance (mono) view or any image to use as L."
             )
             return
- 
+
         # ── Dialog ────────────────────────────────────────────────────────────
         dlg = QDialog(self)
         dlg.setWindowTitle("Recombine Luminance")
-        dlg.setMinimumWidth(400)
+        dlg.setMinimumWidth(420)
         lay = QVBoxLayout(dlg)
- 
+
         # Source selector
         lay.addWidget(QLabel("Luminance source:"))
         src_combo = QComboBox()
@@ -3434,35 +3433,35 @@ class AstroSuiteProMainWindow(
                 src_combo.setCurrentIndex(i)
                 break
         lay.addWidget(src_combo)
- 
+
         lay.addSpacing(8)
- 
+
         # ── Blend ─────────────────────────────────────────────────────────────
         lay.addWidget(QLabel("Blend strength  (1.0 = full L replacement):"))
- 
-        def _linked_row(lo, hi, decimals, step, default, label_fmt=None):
-            """Return (row_layout, slider, spinbox)."""
+
+        def _linked_row(lo, hi, decimals, step, default, scale=100):
+            """Return (row_layout, slider, spinbox). scale controls slider int range."""
             row = QHBoxLayout()
             slider = QSlider(Qt.Orientation.Horizontal)
-            slider.setRange(0, 100)
-            slider.setValue(int(round(default * 100)))
+            slider.setRange(int(round(lo * scale)), int(round(hi * scale)))
+            slider.setValue(int(round(default * scale)))
             spin = QDoubleSpinBox()
             spin.setRange(lo, hi)
             spin.setSingleStep(step)
             spin.setDecimals(decimals)
             spin.setValue(default)
             spin.setFixedWidth(72)
-            slider.valueChanged.connect(lambda v, s=spin: s.setValue(v / 100.0))
-            spin.valueChanged.connect(lambda v, sl=slider: sl.setValue(int(round(v * 100))))
+            slider.valueChanged.connect(lambda v, s=spin, sc=scale: s.setValue(v / sc))
+            spin.valueChanged.connect(lambda v, sl=slider, sc=scale: sl.setValue(int(round(v * sc))))
             row.addWidget(slider, 1)
             row.addWidget(spin)
             return row, slider, spin
- 
+
         blend_row, blend_slider, blend_spin = _linked_row(0.0, 1.0, 2, 0.05, 1.0)
         lay.addLayout(blend_row)
- 
+
         lay.addSpacing(8)
- 
+
         # ── Advanced (collapsed by default) ───────────────────────────────────
         adv_btn = QPushButton("▶  Advanced")
         adv_btn.setCheckable(True)
@@ -3470,25 +3469,49 @@ class AstroSuiteProMainWindow(
         adv_btn.setFlat(True)
         adv_btn.setStyleSheet("text-align:left; font-weight:600;")
         lay.addWidget(adv_btn)
- 
+
         adv_frame = QFrame()
         adv_frame.setFrameShape(QFrame.Shape.StyledPanel)
         adv_frame.setVisible(False)
         adv_lay = QVBoxLayout(adv_frame)
         adv_lay.setContentsMargins(8, 6, 8, 6)
         adv_lay.setSpacing(6)
- 
+
+        # Saturation boost
+        adv_lay.addWidget(QLabel(
+            "Saturation boost  (0.0 = no change, applied before recombine):\n"
+            "Enriches colour before L is placed — cannot skew the new luminance.\n"
+            "Negative values desaturate."
+        ))
+        # Range -1.0..3.0, scale=100 → slider -100..300
+        sat_row, sat_slider, sat_spin = _linked_row(-1.0, 3.0, 2, 0.05, 0.0, scale=100)
+        adv_lay.addLayout(sat_row)
+
+        adv_lay.addSpacing(4)
+
+        # Chrominance NR
+        adv_lay.addWidget(QLabel(
+            "Chrominance NR  (σ px, 0.0 = disabled, applied before recombine):\n"
+            "Blurs only Cb/Cr — preserves luma detail while reducing colour noise.\n"
+            "Typical range: 0.5–3.0 px."
+        ))
+        # Range 0.0..20.0, scale=10 → slider 0..200 (0.1px steps)
+        cnr_row, cnr_slider, cnr_spin = _linked_row(0.0, 20.0, 1, 0.5, 0.0, scale=10)
+        adv_lay.addLayout(cnr_row)
+
+        adv_lay.addSpacing(4)
+
         # Pedestal
         adv_lay.addWidget(QLabel(
             "Noise-floor pedestal  (0.05 = default 5% lift):\n"
             "Prevents near-zero hue skew in deep shadows.\n"
             "0.0 = disabled (pure linear scaling)."
         ))
-        ped_row, ped_slider, ped_spin = _linked_row(0.0, 0.5, 3, 0.005, 0.05)
+        ped_row, ped_slider, ped_spin = _linked_row(0.0, 0.5, 3, 0.005, 0.05, scale=1000)
         adv_lay.addLayout(ped_row)
- 
+
         adv_lay.addSpacing(4)
- 
+
         # Soft knee
         adv_lay.addWidget(QLabel(
             "Highlight soft-knee  (0.0 = disabled):\n"
@@ -3496,34 +3519,36 @@ class AstroSuiteProMainWindow(
         ))
         knee_row, knee_slider, knee_spin = _linked_row(0.0, 1.0, 2, 0.05, 0.0)
         adv_lay.addLayout(knee_row)
- 
+
         lay.addWidget(adv_frame)
- 
+
         def _toggle_adv(checked):
             adv_frame.setVisible(checked)
             adv_btn.setText(("▼" if checked else "▶") + "  Advanced")
             dlg.adjustSize()
- 
+
         adv_btn.toggled.connect(_toggle_adv)
- 
+
         lay.addSpacing(8)
- 
+
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
         btns.accepted.connect(dlg.accept)
         btns.rejected.connect(dlg.reject)
         lay.addWidget(btns)
- 
+
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
- 
-        idx        = src_combo.currentIndex()
+
+        idx               = src_combo.currentIndex()
         sel_title, src_doc = candidates[idx]
-        blend      = float(blend_spin.value())
-        pedestal   = float(ped_spin.value())
-        soft_knee  = float(knee_spin.value())
- 
+        blend             = float(blend_spin.value())
+        pedestal          = float(ped_spin.value())
+        soft_knee         = float(knee_spin.value())
+        saturation_boost  = float(sat_spin.value())
+        chrominance_nr    = float(cnr_spin.value())
+
         # ── Apply ─────────────────────────────────────────────────────────────
         try:
             from setiastro.saspro.luminancerecombine import (
@@ -3532,13 +3557,13 @@ class AstroSuiteProMainWindow(
                 _LUMA_REC601,
                 _LUMA_REC2020,
             )
- 
+
             src_img = _to_float01_strict(np.asarray(src_doc.image))
- 
+
             meta   = dict(getattr(src_doc, "metadata", {}) or {})
             method = meta.get("luma_method", getattr(self, "luma_method", "rec709"))
             weights = None
- 
+
             if "luma_weights" in meta:
                 lw = np.asarray(meta["luma_weights"], dtype=np.float32)
                 if lw.size == 3:
@@ -3548,7 +3573,7 @@ class AstroSuiteProMainWindow(
                     weights = _LUMA_REC601
                 elif method == "rec2020":
                     weights = _LUMA_REC2020
- 
+
             apply_recombine_to_doc(
                 target_doc,
                 luminance_source_img=src_img,
@@ -3558,20 +3583,22 @@ class AstroSuiteProMainWindow(
                 blend=blend,
                 soft_knee=soft_knee,
                 pedestal=pedestal,
+                saturation_boost=saturation_boost,
+                chrominance_nr_sigma=chrominance_nr,
             )
- 
+
             try:
                 self._log(
                     f"Recombine Luminance: '{sel_title}' → '{target_doc.display_name()}'"
                     f" [{method}] blend={blend:.2f}  pedestal={pedestal:.3f}"
-                    f"  knee={soft_knee:.2f}"
+                    f"  knee={soft_knee:.2f}  sat={saturation_boost:.2f}"
+                    f"  cnr={chrominance_nr:.1f}px"
                 )
             except Exception:
                 pass
- 
+
         except Exception as e:
             QMessageBox.critical(self, "Recombine Luminance", f"Failed: {e}")
-
     def _rgb_extract_active(self):
         sw = self.mdi.activeSubWindow()
         if not sw:

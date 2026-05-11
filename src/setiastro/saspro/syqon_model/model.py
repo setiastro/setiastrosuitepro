@@ -226,15 +226,16 @@ def _build_StarNetGenerator():
         Three-branch output head:
           - removal branch  → relu(raw_removal)
           - inpaint branch  → tanh(raw_inpainted)
-          - alpha gate      → sigmoid(raw_alpha)
+          - alpha gate      → sigmoid(raw_alpha) → avg_pool smoothed
 
         Final output:
           output = (1 - alpha) * (input - removal) + alpha * inpainted
         """
-        def __init__(self, in_channels=3, repair_scale=0.35):
+        def __init__(self, in_channels=3, repair_scale=0.35, alpha_smooth_kernel=5):
             super().__init__()
-            self.in_channels  = in_channels
-            self.repair_scale = repair_scale   # kept for checkpoint compat
+            self.in_channels         = in_channels
+            self.repair_scale        = repair_scale        # kept for checkpoint compat
+            self.alpha_smooth_kernel = int(alpha_smooth_kernel)
 
             # Encoder
             self.g_conv0 = nn.Conv2d(in_channels, 64, kernel_size=4, stride=2, padding=1)
@@ -255,7 +256,7 @@ def _build_StarNetGenerator():
             self.g_deconv5 = _DeconvBlock(512,  128)
             self.g_deconv6 = _DeconvBlock(256,  64)
 
-            # New V2.2 output head — feat layer + multi-branch conv
+            # V2.2 output head
             self.g_deconv7_feat = nn.Sequential(
                 nn.Upsample(scale_factor=2, mode="nearest"),
                 nn.Conv2d(128, 64, kernel_size=3, stride=1, padding=1),
@@ -287,17 +288,25 @@ def _build_StarNetGenerator():
             d5 = self.g_deconv5(torch.cat([d4, c2], dim=1))
             d6 = self.g_deconv6(torch.cat([d5, c1], dim=1))
 
-            features    = self.g_deconv7_feat(torch.cat([d6, c0], dim=1))
-            out_preds   = self.g_out(features)
+            features  = self.g_deconv7_feat(torch.cat([d6, c0], dim=1))
+            out_preds = self.g_out(features)
 
             raw_removal   = out_preds[:, 0:self.in_channels, :, :]
             raw_inpainted = out_preds[:, self.in_channels:self.in_channels * 2, :, :]
             raw_alpha     = out_preds[:, self.in_channels * 2:, :, :]
 
-            removal           = F.relu(raw_removal)
-            residual_output   = x - removal
-            inpainted_output  = torch.tanh(raw_inpainted)
-            alpha             = torch.sigmoid(raw_alpha)
+            removal          = F.relu(raw_removal)
+            residual_output  = x - removal
+            inpainted_output = torch.tanh(raw_inpainted)
+            alpha            = torch.sigmoid(raw_alpha)
+
+            # ── Smooth alpha to feather residual/inpaint transition edges ──
+            k = self.alpha_smooth_kernel
+            if k % 2 == 0:
+                k += 1
+            alpha = F.avg_pool2d(alpha, kernel_size=k, stride=1, padding=k // 2)
+            alpha = torch.clamp(alpha, 0.0, 1.0)
+            # ──────────────────────────────────────────────────────────────
 
             output = (1.0 - alpha) * residual_output + alpha * inpainted_output
 

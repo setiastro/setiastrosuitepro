@@ -18,7 +18,7 @@ classifiers = [
 packages = [{include = "setiastro", from = "src"}]
 
 [tool.poetry.dependencies]
-python = "^3.10"
+python = ">=3.10,<3.15"
 # numeric & scientific
 numpy = "*"
 scipy = "*"
@@ -71,7 +71,7 @@ onnxruntime = {version = ">=1.19.0", markers = "sys_platform != 'linux' and sys_
 
 # image formats & camera raw
 xisf = "*"
-rawpy = "*"
+rawpy = ">=0.26.0"
 imageio = "*"
 
 # PDF support
