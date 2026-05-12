@@ -51,6 +51,77 @@ from setiastro.saspro.resources import get_icon_path
 getcontext().prec = 24
 warnings.filterwarnings("ignore")
 
+ATLAS_CATALOG_URL = "https://f005.backblazeb2.com/file/setiastro-atlas/catalog.json"
+
+class AtlasCatalogThread(QThread):
+    """Fetch the community atlas catalog.json in the background."""
+    finished = pyqtSignal(list)   # list of atlas entries, or [] on failure
+ 
+    def run(self):
+        import urllib.request
+        import json as _json
+ 
+        for attempt in range(3):
+            try:
+                with urllib.request.urlopen(ATLAS_CATALOG_URL, timeout=8) as resp:
+                    data = _json.loads(resp.read().decode("utf-8"))
+                    entries = data if isinstance(data, list) else data.get("entries", [])
+                    self.finished.emit(entries)
+                    return
+            except Exception:
+                if attempt < 2:
+                    import time
+                    time.sleep(1.5)
+        # All attempts failed — emit empty list silently
+        self.finished.emit([])
+
+def _ra_in_atlas(ra_deg: float, dec_deg: float, atlas_entries: list) -> bool:
+    """
+    Returns True if (ra_deg, dec_deg) falls within the bounding box of any
+    atlas entry's four corner coordinates.
+ 
+    Fast enough for thousands of WIMS objects against a small atlas catalog.
+    Handles RA wrap-around at 0/360.
+    """
+    for entry in atlas_entries:
+        c_ra  = entry.get("corners_ra",  [])
+        c_dec = entry.get("corners_dec", [])
+        if len(c_ra) != 4 or len(c_dec) != 4:
+            # Fallback: use center + half-FOV bounding box
+            ra_c   = entry.get("ra_center",  0.0)
+            dec_c  = entry.get("dec_center", 0.0)
+            fov_w  = entry.get("fov_w_deg",  0.0)
+            fov_h  = entry.get("fov_h_deg",  0.0)
+            if abs(dec_deg - dec_c) > fov_h / 2.0:
+                continue
+            # RA delta with wrap
+            dra = abs(ra_deg - ra_c) % 360
+            if dra > 180:
+                dra = 360 - dra
+            if dra <= fov_w / 2.0:
+                return True
+            continue
+ 
+        dec_min = min(c_dec)
+        dec_max = max(c_dec)
+        if not (dec_min <= dec_deg <= dec_max):
+            continue
+ 
+        ra_min = min(c_ra)
+        ra_max = max(c_ra)
+        ra_span = ra_max - ra_min
+ 
+        if ra_span > 180:
+            # Footprint straddles 0/360 — check outside the gap
+            if ra_deg >= ra_min or ra_deg <= ra_max:
+                return True
+        else:
+            if ra_min <= ra_deg <= ra_max:
+                return True
+ 
+    return False
+
+
 class WeeklyScoreThread(QThread):
     result_ready = pyqtSignal(list)   # list of (date_str, score, phase_pct)
 
@@ -2852,6 +2923,8 @@ class WhatsInMySkyDialog(QDialog):
         self.object_limit = int(self.settings.value("object_limit", 100, int))
         self._observer    = {}
         self._horizon_points: list = self._load_horizon_from_settings()
+        self._atlas_entries: list = []
+        self._atlas_thread: AtlasCatalogThread | None = None
 
         self._build_ui(wrench_path)
         self._load_settings_into_ui()
@@ -3161,7 +3234,7 @@ class WhatsInMySkyDialog(QDialog):
         self.tree.setHeaderLabels([
             "Name","RA","Dec","Altitude","Azimuth",
             "Min→Transit","B/A Transit","°from Moon",
-            "Alt Name","Type","Magnitude","Size (arcmin)","Score"])
+            "Alt Name","Type","Magnitude","Size (arcmin)","Score","Community"])
         self.tree.setSortingEnabled(True)
         hdr = self.tree.header()
         hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
@@ -3171,7 +3244,7 @@ class WhatsInMySkyDialog(QDialog):
         self.tree.setAlternatingRowColors(True)
         self.tree.setUniformRowHeights(True)
         self.tree.setFrameShape(QFrame.Shape.NoFrame)
-        for col, w in enumerate([90,65,65,55,55,70,65,70,90,100,50,80,50]):
+        for col, w in enumerate([90,65,65,55,55,70,65,70,90,100,50,80,50,50]):
             self.tree.setColumnWidth(col, w)
 
         self.tree.itemDoubleClicked.connect(self.on_row_double_click)
@@ -3480,7 +3553,10 @@ class WhatsInMySkyDialog(QDialog):
         menu.addSeparator()
         menu.addAction(act_aladin)
         menu.addAction(act_astrobin)
-
+        menu.addSeparator()
+        act_atlas = QAction("🌌  View in Seti Astro Community Atlas…", self)
+        menu.addAction(act_atlas)
+        act_atlas.triggered.connect(lambda: self._open_atlas_for(item))
         act_visibility.triggered.connect(lambda: self._open_visibility_dialog(item))
         act_score.triggered.connect(lambda: self._open_score_dialog(item))
         act_simbad.triggered.connect(lambda: self._open_visibility_dialog(item, tab=2))
@@ -3491,6 +3567,23 @@ class WhatsInMySkyDialog(QDialog):
         act_yearly.triggered.connect(lambda: self._open_yearly_analysis(item))
 
         menu.exec(self.tree.viewport().mapToGlobal(pos))
+
+    def _open_atlas_for(self, item):
+        import webbrowser
+        data = self._item_data(item)
+        if data:
+            # Open atlas and let Aladin navigate to the object's coordinates
+            ra  = data["ra"]
+            dec = data["dec"]
+            webbrowser.open(
+                f"https://f005.backblazeb2.com/file/setiastro-atlas/atlas.html"
+                f"?ra={ra:.5f}&dec={dec:.5f}"
+            )
+        else:
+            import webbrowser
+            webbrowser.open(
+                "https://f005.backblazeb2.com/file/setiastro-atlas/atlas.html"
+            )
 
     def _open_finder_chart_for(self, item):
             data = self._item_data(item)
@@ -3681,6 +3774,59 @@ class WhatsInMySkyDialog(QDialog):
         self.calc_thread.status_update.connect(self.update_status)
         self.update_status("Calculating…")
         self.calc_thread.start()
+        self._fetch_atlas_catalog()
+
+    def _fetch_atlas_catalog(self):
+        """Kick off a background fetch of the community atlas catalog."""
+        if self._atlas_thread is not None:
+            try:
+                self._atlas_thread.quit()
+            except Exception:
+                pass
+        self._atlas_thread = AtlasCatalogThread()
+        self._atlas_thread.finished.connect(self._on_atlas_catalog_ready)
+        self._atlas_thread.start()
+ 
+    def _on_atlas_catalog_ready(self, entries: list):
+        self._atlas_entries = entries
+        # If the tree is already populated, update the Community column
+        if self.tree.topLevelItemCount() > 0:
+            self._update_community_column()
+
+    def _update_community_column(self):
+        """
+        Walk the populated tree and tick the Community column for any object
+        whose RA/Dec falls inside an atlas footprint.
+        """
+        if not self._atlas_entries:
+            return
+        for i in range(self.tree.topLevelItemCount()):
+            item = self.tree.topLevelItem(i)
+            try:
+                ra_txt  = item.text(1)
+                dec_txt = item.text(2)
+                if ":" in ra_txt:
+                    from astropy.coordinates import SkyCoord
+                    import astropy.units as u
+                    sc = SkyCoord(ra=ra_txt, dec=dec_txt,
+                                  unit=(u.hourangle, u.deg))
+                    ra  = float(sc.ra.deg)
+                    dec = float(sc.dec.deg)
+                else:
+                    ra  = float(ra_txt)
+                    dec = float(dec_txt)
+ 
+                if _ra_in_atlas(ra, dec, self._atlas_entries):
+                    item.setText(13, "✓")
+                    item.setForeground(13,
+                        __import__("PyQt6.QtGui", fromlist=["QBrush"]).QBrush(
+                            __import__("PyQt6.QtGui", fromlist=["QColor"]).QColor(
+                                80, 200, 120)))
+                else:
+                    item.setText(13, "")
+            except Exception:
+                pass
+
 
     # ── Slots ─────────────────────────────────────────────────────────────
     def update_lunar_phase(self, phase_percentage, phase_image_name, rts):
@@ -3734,11 +3880,16 @@ class WhatsInMySkyDialog(QDialog):
                 str(row.get("Magnitude","")) if pd.notna(row.get("Magnitude","")) else "",
                 size_arcmin,
                 str(row.get("Score", 0.0)),
+                ""  # Community column, to be filled in later
             ]
             item = SortableTreeWidgetItem(vals)
             # Full alt name on hover so nothing is ever hidden
             item.setToolTip(8, alt_full)
             self.tree.addTopLevelItem(item)
+        if self._atlas_entries:
+            self._update_community_column()
+
+
 
     def update_status(self, msg):
         self.status_label.setText(f"Status: {msg}")
@@ -3785,7 +3936,7 @@ class WhatsInMySkyDialog(QDialog):
                 existing = pd.read_csv(USER_OBJECTS_PATH, encoding="utf-8",
                                        quotechar='"', quoting=0)
             else:
-                existing = pd.DataFrame(columns=_USER_OBJECTS_COLUMNS)
+                existing = pd.DataFrame(columns=_USER_OBJECTS_COLS)
 
             updated = pd.concat([existing, pd.DataFrame([entry])], ignore_index=True)
             updated.to_csv(USER_OBJECTS_PATH, index=False, encoding="utf-8")

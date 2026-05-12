@@ -12852,7 +12852,6 @@ class StackingSuiteDialog(QDialog):
 
             # === DARKs ===
             if expected_type_u == "DARK":
-                # --- temperature for grouping (prefer CCD-TEMP else SET-TEMP) ---
                 ccd_t = _get_key_float(header, "CCD-TEMP")
                 set_t = _get_key_float(header, "SET-TEMP")
                 chosen_t = ccd_t if ccd_t is not None else set_t
@@ -12862,23 +12861,33 @@ class StackingSuiteDialog(QDialog):
                 temp_bucket = self._bucket_temp(chosen_t, step=temp_step)
                 temp_label = self._temp_label(temp_bucket, step=temp_step)
 
-                # --- tree grouping: exposure/size -> temp bucket -> files ---
+                # --- gain / offset ---
+                gain_val   = _get_key_float(header, "GAIN")
+                offset_val = _get_key_float(header, "OFFSET")
+                if offset_val is None:
+                    offset_val = _get_key_float(header, "BLKLEVEL")
+
+                gain_label   = f"G{int(round(gain_val))}"   if gain_val   is not None else "Gunk"
+                offset_label = f"O{int(round(offset_val))}" if offset_val is not None else "Ounk"
+                go_label = f"{gain_label} {offset_label}"
+
                 base_key = f"{exposure_text} ({image_size})"
 
-                # ensure caches exist
                 if not hasattr(self, "_dark_group_item") or self._dark_group_item is None:
                     self._dark_group_item = {}
                 if not hasattr(self, "_dark_temp_item") or self._dark_temp_item is None:
-                    self._dark_temp_item = {}  # (base_key, temp_label) -> QTreeWidgetItem
+                    self._dark_temp_item = {}
+                if not hasattr(self, "_dark_go_item") or self._dark_go_item is None:
+                    self._dark_go_item = {}   # (base_key, temp_label, go_label) -> QTreeWidgetItem
 
-                # top-level exposure group
+                # top-level: exposure group
                 exposure_item = self._dark_group_item.get(base_key)
                 if exposure_item is None:
                     exposure_item = QTreeWidgetItem([base_key, ""])
                     tree.addTopLevelItem(exposure_item)
                     self._dark_group_item[base_key] = exposure_item
 
-                # second-level temp group under that exposure group
+                # second-level: temp group
                 temp_key = (base_key, temp_label)
                 temp_item = self._dark_temp_item.get(temp_key)
                 if temp_item is None:
@@ -12886,20 +12895,28 @@ class StackingSuiteDialog(QDialog):
                     exposure_item.addChild(temp_item)
                     self._dark_temp_item[temp_key] = temp_item
 
-                # --- store in dict for stacking ---
-                # Key includes session + temp bucket so create_master_dark can split properly.
-                # (We keep compatibility: your create_master_dark already handles tuple keys.)
-                composite_key = (base_key, session_tag, temp_bucket)
+                # third-level: gain/offset group
+                go_key = (base_key, temp_label, go_label)
+                go_item = self._dark_go_item.get(go_key)
+                if go_item is None:
+                    go_item = QTreeWidgetItem([go_label, ""])
+                    temp_item.addChild(go_item)
+                    self._dark_go_item[go_key] = go_item
+
+                # composite key now includes gain_val and offset_val
+                composite_key = (base_key, session_tag, temp_bucket, gain_val, offset_val)
                 self.dark_files.setdefault(composite_key, []).append(path)
 
-                # --- leaf row ---
-                # Also add temp info to metadata text so user can see it per file
-                meta_text_dark = f"Size: {image_size} | Session: {session_tag} | {temp_label}"
+                meta_text_dark = (
+                    f"Size: {image_size} | Session: {session_tag} | {temp_label} | {go_label}"
+                )
                 leaf = QTreeWidgetItem([os.path.basename(path), meta_text_dark])
                 leaf.setData(0, Qt.ItemDataRole.UserRole, path)
                 leaf.setData(0, Qt.ItemDataRole.UserRole + 1, session_tag)
-                leaf.setData(0, Qt.ItemDataRole.UserRole + 2, temp_bucket)   # handy later
-                temp_item.addChild(leaf)
+                leaf.setData(0, Qt.ItemDataRole.UserRole + 2, temp_bucket)
+                leaf.setData(0, Qt.ItemDataRole.UserRole + 3, gain_val)
+                leaf.setData(0, Qt.ItemDataRole.UserRole + 4, offset_val)
+                go_item.addChild(leaf)
 
             # === FLATs ===
             elif expected_type_u == "FLAT":
@@ -13091,17 +13108,32 @@ class StackingSuiteDialog(QDialog):
         TEMP_STEP = float(self.settings.value("stacking/temp_group_step", 1.0, type=float) or 1.0)
         TEMP_STEP = max(0.0, TEMP_STEP)
 
-        dark_files_by_group: dict[tuple[float, str, str, float | None], list[str]] = {}  # (exp,size,session,temp)->list
+        dark_files_by_group: dict[tuple[float, str, str, float | None, float | None, float | None], list[str]] = {}
+
+        def _read_go_quick(path: str) -> tuple[float | None, float | None]:
+            """Read GAIN and OFFSET/BLKLEVEL from header with minimal I/O."""
+            try:
+                hdr = fits.getheader(path, memmap=True)
+            except Exception:
+                return None, None
+            gain = _get_key_float(hdr, "GAIN")
+            offset = _get_key_float(hdr, "OFFSET")
+            if offset is None:
+                offset = _get_key_float(hdr, "BLKLEVEL")
+            return gain, offset
 
         for key, file_list in (self.dark_files or {}).items():
-            # Support both legacy dark_files (key=str) and newer tuple keys.
-            # We DO NOT assume dark_files already contains temp in key — we re-bucket from headers anyway.
             if isinstance(key, tuple) and len(key) >= 2:
                 exposure_key = str(key[0])
-                session = str(key[1]) if str(key[1]).strip() else "Default"
+                session      = str(key[1]) if str(key[1]).strip() else "Default"
+                # key may already carry gain/offset from new ingest (len>=5)
+                stored_gain   = key[4] if len(key) >= 5 else None
+                stored_offset = key[5] if len(key) >= 6 else None
             else:
-                exposure_key = str(key)
-                session = "Default"
+                exposure_key  = str(key)
+                session       = "Default"
+                stored_gain   = None
+                stored_offset = None
 
             try:
                 exposure_time_str, image_size = exposure_key.split(" (", 1)
@@ -13117,28 +13149,34 @@ class StackingSuiteDialog(QDialog):
                 except Exception:
                     exposure_time = 0.0
 
-            # Split the incoming list by temp bucket so mixed temps do not merge.
-            bucketed: dict[float | None, list[str]] = {}
+            # Split each file by (temp_bucket, gain, offset)
+            bucketed: dict[tuple[float | None, float | None, float | None], list[str]] = {}
             for p in (file_list or []):
                 _, _, chosen = _read_temp_quick(p)
                 tb = _bucket_temp(chosen, step=TEMP_STEP)
-                bucketed.setdefault(tb, []).append(p)
+                # prefer header read; fall back to what was stored in the key
+                gain, offset = _read_go_quick(p)
+                if gain   is None: gain   = stored_gain
+                if offset is None: offset = stored_offset
+                bucketed.setdefault((tb, gain, offset), []).append(p)
 
-            # Apply exposure tolerance grouping PER temp bucket
-            for temp_bucket, paths_in_bucket in bucketed.items():
+            for (temp_bucket, gain, offset), paths_in_bucket in bucketed.items():
                 matched_group = None
-                for (existing_exposure, existing_size, existing_session, existing_temp) in list(dark_files_by_group.keys()):
+                for existing_key in list(dark_files_by_group.keys()):
+                    ex_exp, ex_size, ex_sess, ex_temp, ex_gain, ex_offset = existing_key
                     if (
-                        existing_session == session
-                        and existing_size == image_size
-                        and existing_temp == temp_bucket
-                        and abs(existing_exposure - exposure_time) <= exposure_tolerance
+                        ex_sess   == session
+                        and ex_size   == image_size
+                        and ex_temp   == temp_bucket
+                        and ex_gain   == gain
+                        and ex_offset == offset
+                        and abs(ex_exp - exposure_time) <= exposure_tolerance
                     ):
-                        matched_group = (existing_exposure, existing_size, existing_session, existing_temp)
+                        matched_group = existing_key
                         break
 
                 if matched_group is None:
-                    matched_group = (exposure_time, image_size, session, temp_bucket)
+                    matched_group = (exposure_time, image_size, session, temp_bucket, gain, offset)
                     dark_files_by_group[matched_group] = []
 
                 dark_files_by_group[matched_group].extend(paths_in_bucket)
@@ -13169,7 +13207,7 @@ class StackingSuiteDialog(QDialog):
         pref_chunk_w = self.chunk_width
         DTYPE = np.float32
 
-        for (exposure_time, image_size, session, temp_bucket), file_list in dark_files_by_group.items():
+        for (exposure_time, image_size, session, temp_bucket, gain, offset), file_list in dark_files_by_group.items():
             if len(file_list) < 2:
                 continue
 
@@ -13187,7 +13225,7 @@ class StackingSuiteDialog(QDialog):
             except MemoryError:
                 chunk_h, chunk_w = pref_chunk_h, pref_chunk_w
 
-            gk = (exposure_time, image_size, session, temp_bucket)
+            gk = (exposure_time, image_size, session, temp_bucket, gain, offset)
             group_shapes[gk] = (H, W, C, chunk_h, chunk_w)
             total_tiles += _count_tiles(H, W, chunk_h, chunk_w)
 
@@ -13245,7 +13283,7 @@ class StackingSuiteDialog(QDialog):
             # ---------------------------------------------------------------------
             # Per-group stacking loop
             # ---------------------------------------------------------------------
-            for (exposure_time, image_size, session, temp_bucket), file_list in dark_files_by_group.items():
+            for (exposure_time, image_size, session, temp_bucket, gain, offset), file_list in dark_files_by_group.items():
                 if len(file_list) < 2:
                     self.update_status(self.tr(
                         f"⚠️ Skipping {exposure_time:g}s ({image_size}) [{session}] - Not enough frames to stack."
@@ -13265,7 +13303,7 @@ class StackingSuiteDialog(QDialog):
                 QApplication.processEvents()
 
                 # --- reference shape and per-group chunk size ---
-                gk = (exposure_time, image_size, session, temp_bucket)
+                gk = (exposure_time, image_size, session, temp_bucket, gain, offset)
                 if gk in group_shapes:
                     height, width, channels, chunk_height, chunk_width = group_shapes[gk]
                 else:
@@ -13308,10 +13346,13 @@ class StackingSuiteDialog(QDialog):
                     continue
 
                 # Create temp memmap (stem-safe normalization)
-                tb_tag = "notemp" if temp_bucket is None else _temp_to_stem_tag(float(temp_bucket))
-                memmap_base = f"temp_dark_{session}_{exposure_time:g}s_{image_size}_{tb_tag}.dat"
+                tb_tag     = "notemp" if temp_bucket is None else _temp_to_stem_tag(float(temp_bucket))
+                exp_stem   = f"{exposure_time:g}".replace("e-", "em").replace("e+", "ep").replace(".", "p")
+                gain_stem   = f"_G{int(round(gain))}"   if gain   is not None else ""
+                offset_stem = f"_O{int(round(offset))}" if offset is not None else ""
+                memmap_base = f"temp_dark_{session}_{exp_stem}s_{image_size}_{tb_tag}{gain_stem}{offset_stem}.dat"
                 memmap_base = self._normalize_master_stem(memmap_base)
-                memmap_path = os.path.join(master_dir, memmap_base)
+                memmap_path = os.path.normpath(os.path.join(master_dir, memmap_base))
 
                 self.update_status(self.tr(
                     f"🗂️ Creating temp memmap: {os.path.basename(memmap_path)} "
@@ -13465,7 +13506,10 @@ class StackingSuiteDialog(QDialog):
                 except Exception:
                     temp_tag = ""
 
-                master_dark_stem = f"MasterDark_{session}_{int(exposure_time)}s_{image_size}{temp_tag}"
+                gain_tag   = f"_G{int(round(gain))}"     if gain   is not None else ""
+                offset_tag = f"_O{int(round(offset))}"   if offset is not None else ""
+                exp_stem = f"{exposure_time:g}".replace("e-", "em").replace("e+", "ep").replace(".", "p")
+                master_dark_stem = f"MasterDark_{session}_{exp_stem}s_{image_size}{temp_tag}{gain_tag}{offset_tag}"
                 master_dark_stem = self._normalize_master_stem(master_dark_stem)
                 master_dark_path = self._build_out(master_dir, master_dark_stem, "fit")
 
@@ -13478,7 +13522,10 @@ class StackingSuiteDialog(QDialog):
                 master_header["SESSION"]  = (str(session), "User session tag")
                 master_header["NCOMBINE"] = (int(N), "Number of darks combined")
                 master_header["NSTACK"]   = (int(N), "Alias of NCOMBINE (SetiAstro)")
-
+                if gain is not None:
+                    master_header["GAIN"]   = (float(gain),   "Camera gain used for these darks")
+                if offset is not None:
+                    master_header["OFFSET"] = (float(offset), "Camera offset/black level used for these darks")
                 # Temperature provenance (only write keys that exist)
                 if temp_info.get("ccd_med") is not None:
                     master_header["CCD-TEMP"] = (float(temp_info["ccd_med"]), "Median CCD temp of input darks (C)")
@@ -13661,26 +13708,63 @@ class StackingSuiteDialog(QDialog):
                 best_match = None
                 best_diff = float("inf")
 
+                # Read gain/offset for the flat's lights if available
+                flat_gain = flat_offset = None
+                if exposure_item.childCount() > 0:
+                    flat_gain   = exposure_item.child(0).data(0, Qt.ItemDataRole.UserRole + 3)
+                    flat_offset = exposure_item.child(0).data(0, Qt.ItemDataRole.UserRole + 4)
+
                 for master_dark_exposure, master_dark_path in self.master_files.items():
                     master_dark_exposure_match = re.match(r"([\d.]+)s?", master_dark_exposure)
                     if not master_dark_exposure_match:
-                        continue  # Skip if master dark exposure is invalid
+                        continue
 
                     master_dark_exposure_time = float(master_dark_exposure_match.group(1))
                     master_dark_size = self.master_sizes.get(master_dark_path, "Unknown")
                     if master_dark_size == "Unknown":
-                        with fits.open(master_dark_path) as hdul:
-                            master_dark_size = f"{hdul[0].data.shape[1]}x{hdul[0].data.shape[0]}"
-                            self.master_sizes[master_dark_path] = master_dark_size  # ✅ Store it
+                        try:
+                            with fits.open(master_dark_path) as hdul:
+                                master_dark_size = f"{hdul[0].data.shape[1]}x{hdul[0].data.shape[0]}"
+                                self.master_sizes[master_dark_path] = master_dark_size
+                        except Exception:
+                            continue
 
-                    print(f"🔎 Comparing with Master Dark: {master_dark_exposure_time}s ({master_dark_size})")
+                    if image_size != master_dark_size:
+                        continue
 
-                    # Match both image size and exposure time
-                    if image_size == master_dark_size:
-                        diff = abs(master_dark_exposure_time - exposure_time)
-                        if diff < best_diff:
-                            best_match = master_dark_path
-                            best_diff = diff
+                    exp_diff = abs(master_dark_exposure_time - exposure_time)
+
+                    # Read gain/offset from master header (cache in master_sizes-adjacent dict)
+                    if not hasattr(self, "_master_dark_go"):
+                        self._master_dark_go = {}
+                    if master_dark_path not in self._master_dark_go:
+                        try:
+                            hdr = fits.getheader(master_dark_path, memmap=True)
+                            mg = _get_key_float(hdr, "GAIN")
+                            mo = _get_key_float(hdr, "OFFSET")
+                            if mo is None:
+                                mo = _get_key_float(hdr, "BLKLEVEL")
+                            self._master_dark_go[master_dark_path] = (mg, mo)
+                        except Exception:
+                            self._master_dark_go[master_dark_path] = (None, None)
+
+                    master_gain, master_offset = self._master_dark_go[master_dark_path]
+
+                    # Gain/offset penalty: prefer exact match; if both are unknown treat as match
+                    go_mismatch = False
+                    if flat_gain is not None and master_gain is not None:
+                        if abs(flat_gain - master_gain) > 1:
+                            go_mismatch = True
+                    if flat_offset is not None and master_offset is not None:
+                        if abs(flat_offset - master_offset) > 1:
+                            go_mismatch = True
+
+                    # Score: exposure diff is primary; gain/offset mismatch adds a large penalty
+                    score = exp_diff + (10000.0 if go_mismatch else 0.0)
+
+                    if score < best_diff:
+                        best_match = master_dark_path
+                        best_diff = score
 
                 # Assign best match in column 3
                 if best_match:
@@ -13880,7 +13964,7 @@ class StackingSuiteDialog(QDialog):
         QApplication.processEvents()
 
         # Output folder
-        master_dir = os.path.join(self.stacking_directory, "Master_Calibration_Files")
+        master_dir = os.path.normpath(os.path.join(self.stacking_directory, "Master_Calibration_Files"))
         os.makedirs(master_dir, exist_ok=True)
 
         # -------------------------------------------------------------------------
