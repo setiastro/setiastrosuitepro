@@ -323,6 +323,7 @@ class AtlasDialog(QDialog):
         self._no_wcs_label.setVisible(False)
         layout.addWidget(self._no_wcs_label)
         # Buttons
+        btn_row = QHBoxLayout()
         self._atlas_btn = QPushButton(self.tr("View Atlas"))
         self._atlas_btn.setStyleSheet(
             "QPushButton { background: #1a2a4a; color: #7a9fff; padding: 6px 18px; "
@@ -331,7 +332,7 @@ class AtlasDialog(QDialog):
         )
         self._atlas_btn.clicked.connect(self._open_atlas_page)
         btn_row.addWidget(self._atlas_btn)
-
+        
         btn_row.addStretch()
         self._cancel_btn = QPushButton(self.tr("Cancel"))
         self._cancel_btn.clicked.connect(self.close)
