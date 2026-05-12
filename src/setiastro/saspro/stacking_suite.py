@@ -3883,20 +3883,23 @@ class _MMImage:
     def _apply_fixed_fits_scale(self, arr: np.ndarray) -> np.ndarray:
         """
         Map 8/16-bit FITS integer samples to [0,1] using a fixed divisor.
-        IMPORTANT: Only do this for integer dtypes. If Astropy already returned
-        float (e.g. BSCALE/BZERO applied), do NOT divide again.
+        Uses BITPIX from header since array may already be cast to float32.
         """
-        # Only scale raw integer pixel arrays
-        if arr.dtype.kind not in ("u", "i"):
+        bitpix = getattr(self, "_bitpix", 0)
+        orig_dtype = getattr(self, "_orig_dtype", None)
+
+        # If astropy already returned float (BSCALE/BZERO applied), do NOT divide
+        if orig_dtype is not None and orig_dtype.kind == "f":
             return arr
 
-        bitpix = getattr(self, "_bitpix", 0)
         if bitpix == 8:
             return arr / 255.0
-        elif bitpix == 16:
+        elif bitpix in (16, -16):
             return arr / 65535.0
+        elif bitpix == 32 and (orig_dtype is None or orig_dtype.kind in ("u", "i")):
+            return arr / 4294967295.0
         return arr
-
+    
     def read_tile_into(self, dst: np.ndarray, y0, y1, x0, x1, channels: int):
         """
         Fill dst (shape (th,tw,C) float32) with the tile.
@@ -14160,10 +14163,11 @@ class StackingSuiteDialog(QDialog):
                     b  = _safe_med(planes.get("B",  sub))
                     meds[i, :] = (r, g1, g2, b)
 
-            gmed = np.median(meds, axis=0)
-            gmed = np.where(np.isfinite(gmed) & (gmed > 0), gmed, 1.0)
-
-            scales = meds / gmed
+            ref = meds[0].copy()
+            ref = np.where(np.isfinite(ref) & (ref > 0), ref, np.median(meds, axis=0))
+            ref = np.where(np.isfinite(ref) & (ref > 0), ref, 1.0)
+            # scale[i] = ref / meds[i]  →  multiply frame i by this to match frame 0
+            scales = ref / np.where(np.isfinite(meds) & (meds > 0), meds, ref)
             return np.clip(scales, 1e-3, 1e3).astype(np.float32)
 
 
@@ -14213,10 +14217,11 @@ class StackingSuiteDialog(QDialog):
 
                     meds[i] = float(np.median(sub))
 
-            gmed = float(np.median(meds)) if np.all(np.isfinite(meds)) else 1.0
-            if not np.isfinite(gmed) or gmed == 0.0:
-                gmed = 1.0
-            scales = meds / gmed
+            ref = float(meds[0]) if (np.isfinite(meds[0]) and meds[0] > 0) else float(np.median(meds))
+            if not np.isfinite(ref) or ref == 0.0:
+                ref = 1.0
+            # scale[i] = ref / meds[i]  →  multiply frame i by this to match frame 0
+            scales = ref / np.where(np.isfinite(meds) & (meds > 0), meds, ref)
             return np.clip(scales, 1e-3, 1e3).astype(np.float32)
 
 
@@ -14256,7 +14261,7 @@ class StackingSuiteDialog(QDialog):
                     idx = p2i[(py, px)]
                     ys = y_sel[py]
                     xs = x_sel[px]
-                    ts_np[:, ys, xs, 0] /= scales4[:, idx].reshape(-1, 1, 1)
+                    ts_np[:, ys, xs, 0] *= scales4[:, idx].reshape(-1, 1, 1)
 
         pd = _Progress(self, "Create Master Flats", total_tiles)
         self.update_status(self.tr(f"Progress initialized: {total_tiles} tiles across groups."))
@@ -14475,6 +14480,11 @@ class StackingSuiteDialog(QDialog):
                 else:
                     scales = _estimate_flat_scales(file_list, height, width, channels, dark_data)
 
+                # DEBUG
+                print(f"\n[FLAT DEBUG] Scale estimation results for group [{filter_name}] {exposure_time}s:")
+                print(f"  scales min={float(scales.min()):.6f}  max={float(scales.max()):.6f}  mean={float(scales.mean()):.6f}")
+                for fi, sc in enumerate(scales):
+                    print(f"  frame[{fi}]: scale={float(sc):.6f}")
                 self.update_status(self.tr(
                     f"⚙️ {'GPU' if use_gpu else 'CPU'} reducer for flats — {algo_name} "
                     f"({ 'k=%.1f' % params.get('kappa', 0) if cpu_label=='kappa1' else 'trim=%.0f%%' % (params.get('trim_fraction', 0)*100) if cpu_label=='trimmed' else 'median'})"
@@ -14605,11 +14615,18 @@ class StackingSuiteDialog(QDialog):
                         np.clip(ts_np, 0.0, None, out=ts_np)
                     # ---- fast per-frame normalization ----
                     if is_bayer_group:
-                        # scales is (N,4); apply to correct parity pixels in this tile
                         _apply_bayer_scales_stack_inplace(ts_np, scales, bayerpat, y0, x0)
                     else:
-                        # scales is (N,)
-                        ts_np /= scales.reshape(N, 1, 1, 1)
+                        if t_idx == 1:  # only first tile to avoid spam
+                            print(f"\n[FLAT DEBUG] --- Pre-normalization tile medians ---")
+                            for fi in range(N):
+                                print(f"  frame[{fi}]: median={float(np.median(ts_np[fi])):.6f}  scale={float(scales[fi]):.6f}")
+                        ts_np *= scales.reshape(N, 1, 1, 1)
+                        if t_idx == 1:
+                            print(f"[FLAT DEBUG] --- Post-normalization tile medians ---")
+                            for fi in range(N):
+                                print(f"  frame[{fi}]: median={float(np.median(ts_np[fi])):.6f}")
+                            print(f"[FLAT DEBUG] tile stack median after reduce will be approx: {float(np.median(ts_np)):.6f}")
 
                     # ---- reduction (GPU or CPU) ----
                     if use_gpu:
@@ -14641,7 +14658,8 @@ class StackingSuiteDialog(QDialog):
                                 ts_np,
                                 float(params.get("kappa", 3.0)),
                             )
-
+                    if t_idx == 1:
+                        print(f"[FLAT DEBUG] tile_result after reduce: median={float(np.median(tile_result)):.6f}  min={float(tile_result.min()):.6f}  max={float(tile_result.max()):.6f}")
                     # Ensure tile_result has correct shape (th, tw, channels)
                     if tile_result.ndim == 2:
                         tile_result = tile_result[:, :, None]
