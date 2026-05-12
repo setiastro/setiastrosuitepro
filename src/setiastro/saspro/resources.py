@@ -233,6 +233,7 @@ class Icons:
     SIGNATURE = property(lambda self: _resource_path('pen.png'))
     HR_DIAGRAM = property(lambda self: _resource_path('HRDiagram.png'))
     EXOPLANET = property(lambda self: _resource_path('exoicon.png'))
+    ATLAS = property(lambda self: _resource_path('atlas.png'))
     
     # Deconvolution & filters
     CONVO = property(lambda self: _resource_path('convo.png'))
@@ -445,6 +446,7 @@ _LEGACY_ICON_MAP = {
     'hrdiagram_path': 'HRDiagram.png',
     'convoicon_path': 'convo.png',
     'spcc_icon_path': 'spcc.png',
+    'atlas_path': 'atlas.png',
 
     'exoicon_path': 'exoicon.png',
     'peeker_icon': 'gridicon.png',

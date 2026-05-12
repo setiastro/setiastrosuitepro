@@ -31,7 +31,7 @@ from setiastro.saspro.resources import (
     pixelmath_path, histogram_path, mosaic_path, rescale_path, staralign_path,
     platesolve_path, psf_path, supernova_path, starregistration_path, csv_icon_path, collage_path,
     stacking_path, pedestal_icon_path, starspike_path, astrospike_path, dithericon_path,
-    signature_icon_path, livestacking_path, convoicon_path, spcc_icon_path,
+    signature_icon_path, livestacking_path, convoicon_path, spcc_icon_path, atlas_path,
     exoicon_path, peeker_icon, dse_icon_path, isophote_path, statstretch_path,resizecanvas_path,
     starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path, narrowbandnormalization_path,
     nbtorgb_path, freqsep_path, multiscale_decomp_path, contsub_path, halo_path, cosmic_path, nbi_path,
@@ -355,6 +355,7 @@ class ToolbarMixin:
 
         tb_wim.addAction(self.act_whats_in_my_sky)
         tb_wim.addAction(self.act_wimi)
+        tb_wim.addAction(self.act_atlas)
 
         self._restore_toolbar_order(tb_wim, "Toolbar/WhatsInMy")
         try:
@@ -1389,6 +1390,11 @@ class ToolbarMixin:
         self.act_finder_chart.setStatusTip(self.tr("Show a finder chart for the active plate-solved image"))
         self.act_finder_chart.triggered.connect(self._open_finder_chart)
 
+        self.act_atlas = QAction(QIcon(atlas_path), self.tr("Seti Astro Atlas..."), self)
+        self.act_atlas.setIconVisibleInMenu(True)
+        self.act_atlas.setStatusTip(self.tr("Share this plate-solved image to the SASpro community sky atlas"))
+        self.act_atlas.triggered.connect(self._open_atlas)
+
         self.act_whats_in_my_sky = QAction(QIcon(wims_path), self.tr("What's In My Sky..."), self)
         self.act_whats_in_my_sky.setIconVisibleInMenu(True)
         self.act_whats_in_my_sky.setStatusTip(self.tr("Plan targets by altitude, transit time, and lunar separation"))
@@ -1612,6 +1618,7 @@ class ToolbarMixin:
         reg("exo_detector", self.act_exo_detector)
         reg("isophote", self.act_isophote) 
         reg("finder_chart", self.act_finder_chart)
+        reg("atlas", self.act_atlas)
         reg("rgb_align", self.act_rgb_align) 
         reg("whats_in_my_sky", self.act_whats_in_my_sky)
         reg("whats_in_my_image", self.act_wimi)

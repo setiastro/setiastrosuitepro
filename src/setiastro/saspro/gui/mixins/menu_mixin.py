@@ -269,6 +269,7 @@ class MenuMixin:
         m_wim.addAction(self.act_whats_in_my_sky)
         m_wim.addAction(self.act_wimi)
         m_wim.addAction(self.act_finder_chart) 
+        m_wim.addAction(self.act_atlas)
 
         m_scripts = mb.addMenu(self.tr("&Scripts"))
         self.menu_scripts = m_scripts
