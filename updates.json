@@ -1,10 +1,10 @@
 {
-  "version": "1.15.16",
+  "version": "1.16.0",
   "downloads": {
-      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.15.16/setiastrosuitepro_windows.zip",
-      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.15.16/SetiAstroSuitePro_macOS_Intel.dmg",
-      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.15.16/SetiAstroSuitePro_AppleSilicon.dmg",
-      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.15.16/SetiAstroSuitePro_linux.tar.xz"
+      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.16.0/setiastrosuitepro_windows.zip",
+      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.16.0/SetiAstroSuitePro_macOS_Intel.dmg",
+      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.16.0/SetiAstroSuitePro_AppleSilicon.dmg",
+      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.16.0/SetiAstroSuitePro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.15.16 Added all PK and ARP objects to WIMS, updated WIMS catalog for better use with user defined objects, updated UI. Updates to Blink Comparator, Luma Recombine, Plate Solver, Remove Stars, and Stacking Suite"
+  "notes": "Seti Astro Suite Pro V1.16.0 Seti Astro Community's Sky Atlas: Upload your plate solved final image to the community's sky atlas and see all the objects on the sky built up from SASpro users! Let's fill up the whole sky with our images! PSFViewer major overhaul. Other Bug fixes and UX tweaks."
 }
