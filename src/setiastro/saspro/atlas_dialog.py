@@ -317,13 +317,21 @@ class AtlasDialog(QDialog):
         self._status_label.setVisible(False)
         layout.addWidget(self._status_label)
 
+        self._no_wcs_label = QLabel("")
+        self._no_wcs_label.setStyleSheet("color: #cc8844; font-size: 11px;")
+        self._no_wcs_label.setWordWrap(True)
+        self._no_wcs_label.setVisible(False)
+        layout.addWidget(self._no_wcs_label)
         # Buttons
-        btn_row = QHBoxLayout()
         self._atlas_btn = QPushButton(self.tr("View Atlas"))
-        self._atlas_btn.setFlat(True)
-        self._atlas_btn.setStyleSheet("color: #7a9fff; font-size: 11px;")
+        self._atlas_btn.setStyleSheet(
+            "QPushButton { background: #1a2a4a; color: #7a9fff; padding: 6px 18px; "
+            "border-radius: 4px; border: 1px solid #3355aa; }"
+            "QPushButton:hover { background: #223366; border-color: #5577cc; }"
+        )
         self._atlas_btn.clicked.connect(self._open_atlas_page)
         btn_row.addWidget(self._atlas_btn)
+
         btn_row.addStretch()
         self._cancel_btn = QPushButton(self.tr("Cancel"))
         self._cancel_btn.clicked.connect(self.close)
@@ -338,6 +346,23 @@ class AtlasDialog(QDialog):
         self._share_btn.clicked.connect(self._on_share)
         btn_row.addWidget(self._share_btn)
         layout.addLayout(btn_row)
+        self._update_share_state()
+
+    def _update_share_state(self):
+        image_data = getattr(self._doc, "image", None) if self._doc else None
+        wcs = self._doc.metadata.get("wcs") if (self._doc and hasattr(self._doc, "metadata")) else None
+
+        if image_data is None or wcs is None:
+            self._share_btn.setEnabled(False)
+            if self._doc is None or image_data is None:
+                reason = "Open an image in SASpro to submit to the atlas."
+            else:
+                reason = "Plate solve this image first to enable submission."
+            self._no_wcs_label.setText(self.tr(reason))
+            self._no_wcs_label.setVisible(True)
+        else:
+            self._share_btn.setEnabled(True)
+            self._no_wcs_label.setVisible(False)
 
     def _on_desc_changed(self):
         text = self._desc_edit.toPlainText()
@@ -369,23 +394,12 @@ class AtlasDialog(QDialog):
             return
 
         image_data = getattr(self._doc, "image", None)
-        wcs        = self._doc.metadata.get("wcs") if hasattr(self._doc, "metadata") else None
-
-        if image_data is None:
-            QMessageBox.warning(self, self.tr("No Image"),
-                                self.tr("No image data found in the active document."))
-            return
-        if wcs is None:
-            QMessageBox.warning(self, self.tr("No WCS"),
-                                self.tr("No WCS solution found. Plate solve the image first."))
-            return
-
+        wcs        = self._doc.metadata.get("wcs")
         filter_name = self._filter_combo.currentText()
         object_name = self._object_edit.text().strip()
         description = self._desc_edit.toPlainText().strip()
         link        = self._link_edit.text().strip()
 
-        # Basic URL validation
         if link and not link.startswith(("http://", "https://")):
             link = "https://" + link
 
@@ -396,7 +410,7 @@ class AtlasDialog(QDialog):
         self._status_label.setText(self.tr("Starting upload…"))
 
         self._worker = _UploadWorker(image_data, wcs, filter_name,
-                                     object_name, description, link)
+                                    object_name, description, link)
         self._worker.progress.connect(self._on_progress)
         self._worker.finished.connect(self._on_finished)
         self._worker.error.connect(self._on_error)

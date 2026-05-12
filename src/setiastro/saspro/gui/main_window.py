@@ -5344,13 +5344,6 @@ class AstroSuiteProMainWindow(
 
     def _open_atlas(self):
         doc = self._active_doc()
-        if not self._doc_has_wcs(doc):
-            QMessageBox.information(
-                self,
-                self.tr("Seti Astro Atlas"),
-                self.tr("Active image has no astrometric solution (WCS). Plate solve first.")
-            )
-            return
         from setiastro.saspro.atlas_dialog import AtlasDialog
         dlg = AtlasDialog(doc=doc, settings=self.settings, parent=self)
         dlg.setWindowFlag(Qt.WindowType.Window, True)
