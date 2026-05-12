@@ -183,7 +183,7 @@ from setiastro.saspro.resources import (
     starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path,
     nbtorgb_path, freqsep_path, contsub_path, halo_path, cosmic_path,dithericon_path,
     satellite_path, imagecombine_path, wrench_path, eye_icon_path,multiscale_decomp_path, nbi_path,
-    disk_icon_path, nuke_path, hubble_path, collage_path, annotated_path,
+    disk_icon_path, nuke_path, hubble_path, collage_path, annotated_path, atlas_path,
     colorwheel_path, font_path, csv_icon_path, spinner_path, wims_path, narrowbandnormalization_path,
     wimi_path, linearfit_path, debayer_path, aberration_path, acv_icon_path, snr_path,
     functionbundles_path, viewbundles_path, selectivecolor_path, selectivelum_path, rgbalign_path, planetarystacker_path,syqon_path,
@@ -5340,6 +5340,21 @@ class AstroSuiteProMainWindow(
         )
         dlg.setWindowFlag(Qt.WindowType.Window, True)
         dlg.setWindowIcon(QIcon(isophote_path))
+        dlg.show()
+
+    def _open_atlas(self):
+        doc = self._active_doc()
+        if not self._doc_has_wcs(doc):
+            QMessageBox.information(
+                self,
+                self.tr("Seti Astro Atlas"),
+                self.tr("Active image has no astrometric solution (WCS). Plate solve first.")
+            )
+            return
+        from setiastro.saspro.atlas_dialog import AtlasDialog
+        dlg = AtlasDialog(doc=doc, settings=self.settings, parent=self)
+        dlg.setWindowFlag(Qt.WindowType.Window, True)
+        dlg.setWindowIcon(QIcon(atlas_path))
         dlg.show()
 
     def _open_whats_in_my_sky(self):
