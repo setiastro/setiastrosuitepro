@@ -47,11 +47,11 @@ class _UploadWorker(QThread):
     finished = pyqtSignal(str)
     error    = pyqtSignal(str)
 
-    def __init__(self, image_data: np.ndarray, wcs, filter_name: str,
-                 object_name: str, description: str, link: str):
+    def __init__(self, image_data, wcs, filter_name, object_name, description, link, doc=None):
         super().__init__()
         self._image_data  = image_data
         self._wcs         = wcs
+        self._doc         = doc   # fallback for header-based WCS
         self._filter_name = filter_name
         self._object_name = object_name
         self._description = description
@@ -109,14 +109,71 @@ class _UploadWorker(QThread):
 
     def _extract_wcs_meta(self) -> dict:
         from astropy.wcs import WCS as AstropyWCS
+        from astropy.io import fits
         import math
 
-        wcs: AstropyWCS = self._wcs
+        # --- Resolve WCS object from whatever is available in the doc ------
+        wcs = self._wcs  # may be None, or a proper AstropyWCS
 
-        # Drop to 2D if WCS has extra axes from a 3D FITS header
+        if not isinstance(wcs, AstropyWCS):
+            doc_meta = getattr(self._doc, "metadata", {}) or {}
+
+            # 1) Try meta["wcs"] directly (astropy WCS object)
+            candidate = doc_meta.get("wcs")
+            if isinstance(candidate, AstropyWCS):
+                wcs = candidate
+
+            # 2) Try wcs_header (fits.Header or serialized string)
+            if wcs is None:
+                wcs_hdr = doc_meta.get("wcs_header")
+                if wcs_hdr is not None:
+                    try:
+                        if isinstance(wcs_hdr, str) and wcs_hdr.strip():
+                            wcs_hdr = fits.Header.fromstring(wcs_hdr)
+                        if isinstance(wcs_hdr, fits.Header):
+                            wcs = AstropyWCS(wcs_hdr)
+                    except Exception:
+                        wcs = None
+
+            # 3) Try original_header / fits_header
+            if wcs is None:
+                for key in ("original_header", "fits_header"):
+                    hdr = doc_meta.get(key)
+                    if isinstance(hdr, str) and hdr.strip():
+                        try:
+                            hdr = fits.Header.fromstring(hdr)
+                        except Exception:
+                            hdr = None
+                    if isinstance(hdr, fits.Header):
+                        try:
+                            wcs = AstropyWCS(hdr)
+                            break
+                        except Exception:
+                            wcs = None
+
+            # 4) Try image_meta["WCS"] dict (stored by Copy Astrometry)
+            if wcs is None:
+                wcs_dict = (doc_meta.get("image_meta") or {}).get("WCS")
+                if wcs_dict and isinstance(wcs_dict, dict):
+                    try:
+                        hdr = fits.Header()
+                        for k, v in wcs_dict.items():
+                            try:
+                                hdr[str(k)] = v.item() if hasattr(v, "item") else v
+                            except Exception:
+                                pass
+                        wcs = AstropyWCS(hdr)
+                    except Exception:
+                        wcs = None
+
+        if wcs is None:
+            raise ValueError("No WCS solution found. Plate solve this image first.")
+
+        # Drop to 2D if WCS has extra axes (e.g. from a 3D FITS header)
         if wcs.naxis > 2:
             wcs = wcs.dropaxis(2)
 
+        # --- Image shape ---------------------------------------------------
         shape = getattr(wcs, "array_shape", None) or getattr(wcs, "pixel_shape", None)
         if shape is None:
             h, w = self._image_data.shape[:2]
@@ -126,11 +183,13 @@ class _UploadWorker(QThread):
             else:
                 h, w = shape[-2], shape[-1]
 
+        # --- Center RA/Dec -------------------------------------------------
         cx, cy = w / 2.0, h / 2.0
         sky_center = wcs.pixel_to_world(cx, cy)
         ra_center  = float(sky_center.ra.deg)
         dec_center = float(sky_center.dec.deg)
 
+        # --- Four corners --------------------------------------------------
         corners_px = [(0, 0), (w, 0), (w, h), (0, h)]
         c_ra, c_dec = [], []
         for px, py in corners_px:
@@ -138,6 +197,7 @@ class _UploadWorker(QThread):
             c_ra.append(round(float(sky.ra.deg), 6))
             c_dec.append(round(float(sky.dec.deg), 6))
 
+        # --- FOV -----------------------------------------------------------
         sky_left  = wcs.pixel_to_world(0,  cy)
         sky_right = wcs.pixel_to_world(w,  cy)
         sky_top   = wcs.pixel_to_world(cx, 0)
@@ -145,6 +205,7 @@ class _UploadWorker(QThread):
         fov_w = float(sky_left.separation(sky_right).deg)
         fov_h = float(sky_top.separation(sky_bot).deg)
 
+        # --- Position angle (fallback only) --------------------------------
         try:
             sky_north = wcs.pixel_to_world(cx, cy + 10)
             dra  = sky_north.ra.deg  - ra_center
@@ -153,12 +214,67 @@ class _UploadWorker(QThread):
         except Exception:
             pa = 0.0
 
+        # --- CD matrix scaled to thumbnail pixel resolution ----------------
+        # The WCS CD matrix is in deg/pixel at ORIGINAL image resolution.
+        # The thumbnail is 1024px on the long side, so we must scale it.
+        THUMB_LONG = 1024
+        if w >= h:
+            thumb_w = THUMB_LONG
+            thumb_h = max(1, round(THUMB_LONG * h / w))
+        else:
+            thumb_h = THUMB_LONG
+            thumb_w = max(1, round(THUMB_LONG * w / h))
+
+        # Scale factor: original pixels per thumbnail pixel
+        scale_x = w / thumb_w   # original pixels per thumbnail pixel in X
+        scale_y = h / thumb_h   # original pixels per thumbnail pixel in Y
+
+        try:
+            wcs_out = wcs.to_header(relax=True)
+
+            if "CD1_1" in wcs_out:
+                # Native CD matrix
+                cd1_1 = float(wcs_out["CD1_1"])
+                cd1_2 = float(wcs_out["CD1_2"])
+                cd2_1 = float(wcs_out["CD2_1"])
+                cd2_2 = float(wcs_out["CD2_2"])
+            elif "PC1_1" in wcs_out:
+                # PC matrix + CDELT — convert to CD
+                cdelt1 = float(wcs_out.get("CDELT1", 1.0))
+                cdelt2 = float(wcs_out.get("CDELT2", 1.0))
+                cd1_1 = float(wcs_out["PC1_1"]) * cdelt1
+                cd1_2 = float(wcs_out["PC1_2"]) * cdelt2
+                cd2_1 = float(wcs_out["PC2_1"]) * cdelt1
+                cd2_2 = float(wcs_out["PC2_2"]) * cdelt2
+            else:
+                raise ValueError("No CD or PC matrix in WCS header")
+
+            # Scale from original to thumbnail pixel resolution
+            # CD element units are deg/original_pixel
+            # → deg/thumb_pixel = deg/original_pixel * original_pixels/thumb_pixel
+            cd1_1_thumb = cd1_1 * scale_x
+            cd1_2_thumb = cd1_2 * scale_y
+            cd2_1_thumb = cd2_1 * scale_x
+            cd2_2_thumb = cd2_2 * scale_y
+
+        except Exception:
+            # Fallback: reconstruct from pa and fov at thumbnail resolution
+            pa_rad = pa * math.pi / 180.0
+            cd1_1_thumb = -(fov_w / thumb_w) * math.cos(pa_rad)
+            cd1_2_thumb = -(fov_h / thumb_h) * math.sin(pa_rad)
+            cd2_1_thumb =  (fov_w / thumb_w) * math.sin(pa_rad)
+            cd2_2_thumb =  (fov_h / thumb_h) * math.cos(pa_rad)
+
         return {
             "ra_center":   round(ra_center,  6),
             "dec_center":  round(dec_center, 6),
             "fov_w_deg":   round(fov_w, 4),
             "fov_h_deg":   round(fov_h, 4),
             "pa_deg":      pa,
+            "cd1_1":       cd1_1_thumb,
+            "cd1_2":       cd1_2_thumb,
+            "cd2_1":       cd2_1_thumb,
+            "cd2_2":       cd2_2_thumb,
             "corners_ra":  json.dumps(c_ra),
             "corners_dec": json.dumps(c_dec),
         }
@@ -176,6 +292,10 @@ class _UploadWorker(QThread):
             "object_name": self._object_name,
             "description": self._description,
             "link":        self._link,
+            "cd1_1": str(meta["cd1_1"]),
+            "cd1_2": str(meta["cd1_2"]),
+            "cd2_1": str(meta["cd2_1"]),
+            "cd2_2": str(meta["cd2_2"]),            
         }
         files = {"thumbnail": ("thumbnail.jpg", jpeg_bytes, "image/jpeg")}
         resp = requests.post(ATLAS_ENDPOINT, data=data, files=files, timeout=120)
@@ -198,7 +318,10 @@ class AtlasDialog(QDialog):
         self.setMinimumWidth(500)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self._build_ui()
-
+        # Refresh share state if the document changes (e.g. after plate solve or copy astrometry)
+        if self._doc is not None and hasattr(self._doc, "changed"):
+            self._doc.changed.connect(self._update_share_state)
+            
     def _build_ui(self):
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
@@ -351,14 +474,20 @@ class AtlasDialog(QDialog):
 
     def _update_share_state(self):
         image_data = getattr(self._doc, "image", None) if self._doc else None
-        wcs = self._doc.metadata.get("wcs") if (self._doc and hasattr(self._doc, "metadata")) else None
+        meta = self._doc.metadata if (self._doc and hasattr(self._doc, "metadata")) else {}
 
-        if image_data is None or wcs is None:
+        has_wcs = bool(
+            meta.get("wcs")
+            or meta.get("wcs_header")
+            or (meta.get("image_meta") or {}).get("WCS")
+            or meta.get("HasAstrometricSolution")
+        )
+
+        if image_data is None or not has_wcs:
             self._share_btn.setEnabled(False)
-            if self._doc is None or image_data is None:
-                reason = "Open an image in SASpro to submit to the atlas."
-            else:
-                reason = "Plate solve this image first to enable submission."
+            reason = ("Open an image in SASpro to submit to the atlas."
+                    if (self._doc is None or image_data is None)
+                    else "Plate solve this image first to enable submission.")
             self._no_wcs_label.setText(self.tr(reason))
             self._no_wcs_label.setVisible(True)
         else:
@@ -395,7 +524,12 @@ class AtlasDialog(QDialog):
             return
 
         image_data = getattr(self._doc, "image", None)
-        wcs        = self._doc.metadata.get("wcs")
+        meta = self._doc.metadata if hasattr(self._doc, "metadata") else {}
+        wcs = (meta.get("wcs")
+            or meta.get("image_meta", {}).get("WCS"))
+        # if wcs is not AstropyWCS, pass None and let _extract_wcs_meta build it from headers
+        if not hasattr(wcs, "pixel_to_world"):
+            wcs = None
         filter_name = self._filter_combo.currentText()
         object_name = self._object_edit.text().strip()
         description = self._desc_edit.toPlainText().strip()
@@ -411,7 +545,7 @@ class AtlasDialog(QDialog):
         self._status_label.setText(self.tr("Starting upload…"))
 
         self._worker = _UploadWorker(image_data, wcs, filter_name,
-                                    object_name, description, link)
+                                    object_name, description, link, doc=self._doc)
         self._worker.progress.connect(self._on_progress)
         self._worker.finished.connect(self._on_finished)
         self._worker.error.connect(self._on_error)

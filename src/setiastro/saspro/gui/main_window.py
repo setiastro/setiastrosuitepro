@@ -8039,55 +8039,66 @@ class AstroSuiteProMainWindow(
         meta = getattr(doc, "metadata", {}) or {}
 
         # --- 1) Get current headers ----------------------------------------
-        # Acquisition header from loader (what you see as "FITS Header.*")
-        fits_hdr = meta.get("fits_header")
-        # Existing WCS header (usually just WCSAXES/CRVAL/CRPIX/CD/SIP etc.)
-        wcs_hdr = meta.get("wcs_header")
-        # Old "original" header, if any
-        orig_hdr = meta.get("original_header")
+        fits_hdr  = meta.get("fits_header")
+        wcs_hdr   = meta.get("wcs_header")
+        orig_hdr  = meta.get("original_header")
 
-        # Normalize types
+        # --- 2) Normalize fits_hdr to fits.Header --------------------------
         if not isinstance(fits_hdr, fits.Header):
-            # If we have an original header but no fits_header, use that as base
-            if isinstance(orig_hdr, fits.Header):
+            if isinstance(fits_hdr, str) and fits_hdr.strip():
+                try:
+                    fits_hdr = fits.Header.fromstring(fits_hdr)
+                except Exception:
+                    fits_hdr = fits.Header()
+            elif isinstance(orig_hdr, fits.Header):
                 fits_hdr = orig_hdr.copy()
+            elif isinstance(orig_hdr, str) and orig_hdr.strip():
+                try:
+                    fits_hdr = fits.Header.fromstring(orig_hdr)
+                except Exception:
+                    fits_hdr = fits.Header()
             else:
                 fits_hdr = fits.Header()
 
+        # --- 3) Normalize wcs_hdr to fits.Header ---------------------------
         if not isinstance(wcs_hdr, fits.Header):
-            wcs_hdr = fits.Header()
+            if isinstance(wcs_hdr, str) and wcs_hdr.strip():
+                try:
+                    wcs_hdr = fits.Header.fromstring(wcs_hdr)
+                except Exception:
+                    wcs_hdr = fits.Header()
+            else:
+                wcs_hdr = fits.Header()
 
-        # --- 2) Normalize / sanitize the incoming WCS dict ------------------
+        # --- 4) Normalize / sanitize the incoming WCS dict -----------------
         if hasattr(self, "_normalize_wcs_dict"):
             w = self._normalize_wcs_dict(wcs_dict)
         else:
             w = dict(wcs_dict)
 
-        # If you have WCS key sets / prefixes defined, you can optionally
-        # filter w down to "true" WCS keys here. Otherwise we just trust w.
-
-        # --- 3) Merge WCS into wcs_header (WCS-only store) ------------------
+        # --- 5) Merge WCS into wcs_header ----------------------------------
         changed = False
         for k, v in w.items():
             try:
+                # coerce numpy scalars to plain Python types
+                if hasattr(v, "item"):
+                    v = v.item()
                 old = wcs_hdr.get(k)
                 if old != v:
                     wcs_hdr[k] = v
                     changed = True
             except Exception:
-                # Skip weird keys
                 pass
 
-        # --- 4) Build a full combined header for export / WCS object -------
+        # --- 6) Build combined header for export / WCS object --------------
         full_hdr = fits_hdr.copy()
         for card in wcs_hdr.cards:
             try:
                 full_hdr[card.keyword] = card.value, card.comment
             except Exception:
-                # Be robust against pathological keywords
                 pass
 
-        # Mark solution flags in header and metadata
+        # Mark solution flags
         try:
             if full_hdr.get("HasAstrometricSolution") is not True:
                 full_hdr["HasAstrometricSolution"] = True
@@ -8099,29 +8110,43 @@ class AstroSuiteProMainWindow(
             meta["HasAstrometricSolution"] = True
             changed = True
 
-        # --- 5) Mirror into image_meta["WCS"] for quick lookups ------------
+        # --- 7) Mirror into image_meta["WCS"] for quick lookups -----------
         im = meta.get("image_meta")
         if not isinstance(im, dict):
             im = {}
-        im["WCS"] = dict(w)
+        # coerce numpy scalars in w before storing
+        clean_w = {}
+        for k, v in w.items():
+            try:
+                clean_w[k] = v.item() if hasattr(v, "item") else v
+            except Exception:
+                clean_w[k] = v
+        im["WCS"] = clean_w
         meta["image_meta"] = im
 
-        # --- 6) Build astropy WCS from the combined header ------------------
+        # --- 8) Build astropy WCS from the combined header -----------------
         try:
             from astropy.wcs import WCS
             meta["wcs"] = WCS(full_hdr)
-        except Exception:
-            # If this fails we still keep headers; WCS-based tools can handle None
+        except Exception as e:
+            # Log the failure so it's visible but don't hard-fail the whole operation
+            try:
+                import logging
+                logging.getLogger(__name__).warning(
+                    f"_apply_wcs_dict_to_doc: WCS(full_hdr) failed: {e}"
+                )
+            except Exception:
+                pass
             meta.pop("wcs", None)
 
-        # --- 7) Store headers back into metadata ---------------------------
-        meta["fits_header"] = fits_hdr           # unchanged acquisition header
-        meta["wcs_header"] = wcs_hdr             # updated WCS-only header
-        meta["original_header"] = full_hdr       # full export header
+        # --- 9) Store headers back into metadata ---------------------------
+        meta["fits_header"]     = fits_hdr
+        meta["wcs_header"]      = wcs_hdr
+        meta["original_header"] = full_hdr
 
         doc.metadata = meta
 
-        # --- 8) Notify UI / listeners --------------------------------------
+        # --- 10) Notify UI / listeners ------------------------------------
         if changed and hasattr(doc, "changed"):
             try:
                 doc.changed.emit()
@@ -8141,7 +8166,7 @@ class AstroSuiteProMainWindow(
                 pass
 
         return True
-
+    
     def _on_astrometry_drop(self, payload: dict, target_subwindow):
         """
         Handle MIME_ASTROMETRY drops. Copies WCS/SIP from the *base* source doc
