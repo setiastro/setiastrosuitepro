@@ -378,6 +378,7 @@ class MenuMixin:
 
         m_workflow = mb.addMenu(self.tr("&Workflows"))
         m_workflow.addAction(self.act_workflows)
+        m_workflow.addAction(self.act_mini_workflows)
 
         m_settings = mb.addMenu(self.tr("&Settings"))
         m_settings.addAction(self.tr("Preferences..."), self._open_settings)

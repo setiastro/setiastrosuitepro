@@ -1516,6 +1516,10 @@ class ToolbarMixin:
         self.act_workflows.setStatusTip(self.tr("Create and run guided workflows"))
         self.act_workflows.triggered.connect(self._open_workflows)
 
+        self.act_mini_workflows = QAction(self.tr("Run Workflow..."), self)
+        self.act_mini_workflows.setStatusTip(self.tr("Open the compact workflow runner"))
+        self.act_mini_workflows.triggered.connect(self._open_mini_workflow)
+
         self.act_bored = QAction(self.tr("Bored?"), self)
         self.act_bored.setStatusTip(self.tr("Launch a hidden minigame"))
         self.act_bored.setShortcut(QKeySequence("Ctrl+Alt+M"))
