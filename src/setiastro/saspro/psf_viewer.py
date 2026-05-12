@@ -52,22 +52,24 @@ class _StarWidget(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumSize(180, 180)
-        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setMinimumSize(150, 150)
         self._cached_pm: QPixmap | None = None
         self._a     = 2.0
         self._b     = 1.8
         self._theta = 0.0
         self._fwhm  = 4.7
         self._hfr   = 4.0
+        self._ecc   = 0.0
         self._valid = False
 
-    def set_star(self, a: float, b: float, theta: float, fwhm: float, hfr: float):
+    def set_star(self, a: float, b: float, theta: float, fwhm: float, hfr: float, ecc: float):
         self._a     = max(float(a),    0.1)
         self._b     = max(float(b),    0.1)
         self._theta = float(theta)
         self._fwhm  = max(float(fwhm), 0.5)
         self._hfr   = max(float(hfr),  0.5)
+        self._ecc   = float(ecc)
         self._valid = True
         self._rebuild_cache()
         self.update()
@@ -87,8 +89,8 @@ class _StarWidget(QWidget):
         scale = (N * 0.16) / max(self._a, self._b)
         scale = max(scale, 2.0)
 
-        a_px = self._a * scale
-        b_px = self._b * scale
+        a_px  = self._a * scale
+        b_px  = self._b * scale
         theta = self._theta
 
         xs = np.arange(N, dtype=np.float32) - cx
@@ -106,7 +108,7 @@ class _StarWidget(QWidget):
         rgb = np.stack([gauss, gauss, gauss], axis=2)
         rgb = np.ascontiguousarray(rgb)
         h, w, _ = rgb.shape
-        qi = QImage(rgb.data, w, h, w * 3, QImage.Format.Format_RGB888)
+        qi      = QImage(rgb.data, w, h, w * 3, QImage.Format.Format_RGB888)
         base_pm = QPixmap.fromImage(qi)
 
         # --- Paint overlays onto the pixmap --------------------------------
@@ -115,26 +117,29 @@ class _StarWidget(QWidget):
         p = QPainter(pm)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        # Draw gaussian blob
+        # Gaussian blob
         p.drawPixmap(0, 0, base_pm)
 
+        # Pre-compute ellipse semi-axes in screen pixels
+        # Major axis (along a) and minor axis (along b), scaled to match blob
+        hfr_a  = (self._hfr  / 2.0) * scale
+        hfr_b  = hfr_a  * (self._b / max(self._a, 1e-9))
+        fwhm_a = (self._fwhm / 2.0) * scale
+        fwhm_b = fwhm_a * (self._b / max(self._a, 1e-9))
+
         # HFR ellipse (orange) — rotated to match star orientation
-        hfr_a = (self._hfr / 2.0) * scale
-        hfr_b = hfr_a * (self._b / max(self._a, 1e-9))
         p.save()
         p.translate(cx, cy)
-        p.rotate(-math.degrees(theta))
+        p.rotate(90.0 - math.degrees(theta))
         p.setPen(QPen(QColor(255, 140, 0), 1.8, Qt.PenStyle.SolidLine))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawEllipse(QRectF(-hfr_a, -hfr_b, hfr_a * 2, hfr_b * 2))
         p.restore()
 
         # FWHM ellipse (green) — rotated to match star orientation
-        fwhm_a = (self._fwhm / 2.0) * scale
-        fwhm_b = fwhm_a * (self._b / max(self._a, 1e-9))
         p.save()
         p.translate(cx, cy)
-        p.rotate(-math.degrees(theta))
+        p.rotate(90.0 - math.degrees(theta))
         p.setPen(QPen(QColor(80, 200, 80), 1.8, Qt.PenStyle.SolidLine))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawEllipse(QRectF(-fwhm_a, -fwhm_b, fwhm_a * 2, fwhm_b * 2))
@@ -159,18 +164,18 @@ class _StarWidget(QWidget):
         p.setPen(QPen(QColor(80, 120, 220), 2.0))
         p.drawLine(QPointF(cx - dx_b, cy - dy_b), QPointF(cx + dx_b, cy + dy_b))
 
-        # Legend + eccentricity readout
+        # Legend
         p.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
         lx, ly, lh = 8, 14, 17
-        p.setPen(QColor(220, 60, 60));  p.drawText(lx, ly,        "PSF X")
-        p.setPen(QColor(80, 120, 220)); p.drawText(lx, ly + lh,   "PSF Y")
-        p.setPen(QColor(80, 200, 80));  p.drawText(lx, ly + lh*2, "FWHM")
-        p.setPen(QColor(255, 140, 0));  p.drawText(lx, ly + lh*3, "HFR")
+        p.setPen(QColor(220, 60, 60));  p.drawText(lx, ly,         "PSF X")
+        p.setPen(QColor(80, 120, 220)); p.drawText(lx, ly + lh,    "PSF Y")
+        p.setPen(QColor(80, 200, 80));  p.drawText(lx, ly + lh*2,  "FWHM")
+        p.setPen(QColor(255, 140, 0));  p.drawText(lx, ly + lh*3,  "HFR")
 
-        ecc = math.sqrt(1.0 - (self._b / max(self._a, 1e-9)) ** 2)
+        # Eccentricity readout bottom-left
         p.setFont(QFont("Segoe UI", 8))
         p.setPen(QColor(200, 200, 200))
-        p.drawText(8, N - 8, f"ecc: {ecc:.3f}")
+        p.drawText(8, N - 8, f"ecc: {self._ecc:.3f}")
 
         p.end()
         self._cached_pm = pm
@@ -316,39 +321,40 @@ class PSFViewer(QDialog):
         top_layout = QHBoxLayout()
         top_layout.setSpacing(10)
 
-        # Histogram
+        # Histogram scroll area — expands with window
         self.scroll_area = QScrollArea(self)
-        self.scroll_area.setFixedSize(520, 230)
+        self.scroll_area.setMinimumSize(400, 180)
+        self.scroll_area.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
         self.scroll_area.setWidgetResizable(False)
         self.hist_label = QLabel(self)
         self.hist_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.scroll_area.setWidget(self.hist_label)
-        top_layout.addWidget(self.scroll_area)
+        top_layout.addWidget(self.scroll_area, stretch=3)
 
-        # Star graphic column
+        # Star graphic column — expands with window
         star_col = QVBoxLayout()
         star_col.setSpacing(4)
-        star_col.setAlignment(Qt.AlignmentFlag.AlignTop)
         star_lbl = QLabel("Median Star Profile")
         star_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         star_lbl.setStyleSheet("font-size: 11px; color: #aaa;")
         self._star_widget = _StarWidget(self)
-        self._star_widget.setFixedSize(200, 200)
+        self._star_widget.setMinimumSize(150, 150)
+        self._star_widget.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
         star_col.addWidget(star_lbl)
         star_col.addWidget(self._star_widget)
-        # No addStretch() — Fixed size policy handles it
-        top_layout.addLayout(star_col)
-        top_layout.setAlignment(star_col, Qt.AlignmentFlag.AlignTop)
+        top_layout.addLayout(star_col, stretch=1)
 
-        main_layout.addLayout(top_layout)
+        main_layout.addLayout(top_layout, stretch=1)
 
         # ── Stats table — tall enough to avoid scrollbar ────────────────
         self.stats_table = QTableWidget(self)
         self.stats_table.setRowCount(4)
         self.stats_table.setColumnCount(0)
-        # Order: Median first, then Min / Max / StdDev
         self.stats_table.setVerticalHeaderLabels(["Median", "Min", "Max", "StdDev"])
-        # 4 rows × ~26px + header ~30px + 2px border = ~138px
         self.stats_table.setMinimumHeight(138)
         self.stats_table.setMaximumHeight(160)
         self.stats_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -507,12 +513,16 @@ class PSFViewer(QDialog):
             self._star_widget.clear()
             return
         try:
-            a     = float(np.median(np.array(self.star_list["a"],     dtype=float)))
-            b     = float(np.median(np.array(self.star_list["b"],     dtype=float)))
+            a_arr   = np.array(self.star_list["a"],     dtype=float)
+            b_arr   = np.array(self.star_list["b"],     dtype=float)
+            ecc_arr = np.sqrt(1.0 - (b_arr / np.maximum(a_arr, 1e-9)) ** 2)
+            a     = float(np.median(a_arr))
+            b     = float(np.median(b_arr))
             theta = float(np.median(np.array(self.star_list["theta"], dtype=float)))
             fwhm  = float(np.median(np.array(self.star_list["FWHM"],  dtype=float)))
             hfr   = float(np.median(np.array(self.star_list["HFR"],   dtype=float)))
-            self._star_widget.set_star(a, b, theta, fwhm, hfr)
+            ecc   = float(np.median(ecc_arr))
+            self._star_widget.set_star(a, b, theta, fwhm, hfr, ecc)
         except Exception:
             self._star_widget.clear()
 
@@ -563,10 +573,14 @@ class PSFViewer(QDialog):
         super().resizeEvent(e)
         if hasattr(self, "_overlay") and self._overlay is not None and self._overlay.isVisible():
             self._overlay.resize(self.scroll_area.viewport().size())
+        # Redraw histogram to fill new viewport size
+        if hasattr(self, "_base_hist_pm"):
+            self.drawHistogram()
 
     # ------------------------------------------------------------------
     def drawHistogram(self):
-        base_w, h = 512, 210
+        base_w = max(self.scroll_area.viewport().width(), 400)
+        h      = max(self.scroll_area.viewport().height() - 20, 150)
 
         pix = QPixmap(base_w, h)
         pix.fill(Qt.GlobalColor.white)
