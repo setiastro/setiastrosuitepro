@@ -455,7 +455,14 @@ class AtlasDialog(QDialog):
         )
         self._atlas_btn.clicked.connect(self._open_atlas_page)
         btn_row.addWidget(self._atlas_btn)
-        
+        self._gallery_btn = QPushButton(self.tr("View Gallery"))
+        self._gallery_btn.setStyleSheet(
+            "QPushButton { background: #1a2a4a; color: #7a9fff; padding: 6px 18px; "
+            "border-radius: 4px; border: 1px solid #3355aa; }"
+            "QPushButton:hover { background: #223366; border-color: #5577cc; }"
+        )
+        self._gallery_btn.clicked.connect(self._open_gallery_page)
+        btn_row.addWidget(self._gallery_btn)
         btn_row.addStretch()
         self._cancel_btn = QPushButton(self.tr("Cancel"))
         self._cancel_btn.clicked.connect(self.close)
@@ -471,6 +478,10 @@ class AtlasDialog(QDialog):
         btn_row.addWidget(self._share_btn)
         layout.addLayout(btn_row)
         self._update_share_state()
+
+    def _open_gallery_page(self):
+        import webbrowser
+        webbrowser.open("https://f005.backblazeb2.com/file/setiastro-atlas/gallery.html")
 
     def _update_share_state(self):
         image_data = getattr(self._doc, "image", None) if self._doc else None
