@@ -190,7 +190,7 @@ import math
 from setiastro.saspro.legacy.image_manager import load_image, save_image
 from setiastro.saspro.imageops.stretch import stretch_color_image, stretch_mono_image
 from setiastro.saspro import minorbodycatalog as mbc
-
+from setiastro.saspro.resources import get_icon_path
 
 # Determine if running inside a PyInstaller bundle
 if hasattr(sys, '_MEIPASS'):
@@ -2542,6 +2542,77 @@ class _CrosshairOverlay(QWidget):
 
         p.end()
 
+ATLAS_CATALOG_URL = "https://f005.backblazeb2.com/file/setiastro-atlas/catalog.json"
+
+class AtlasCatalogThread(QThread):
+    """Fetch the community atlas catalog.json in the background."""
+    finished = pyqtSignal(list)   # list of atlas entries, or [] on failure
+ 
+    def run(self):
+        import urllib.request
+        import json as _json
+ 
+        for attempt in range(3):
+            try:
+                with urllib.request.urlopen(ATLAS_CATALOG_URL, timeout=8) as resp:
+                    data = _json.loads(resp.read().decode("utf-8"))
+                    entries = data if isinstance(data, list) else data.get("entries", [])
+                    self.finished.emit(entries)
+                    return
+            except Exception:
+                if attempt < 2:
+                    import time
+                    time.sleep(1.5)
+        # All attempts failed — emit empty list silently
+        self.finished.emit([])
+
+def _ra_in_atlas(ra_deg: float, dec_deg: float, atlas_entries: list) -> bool:
+    """
+    Returns True if (ra_deg, dec_deg) falls within the bounding box of any
+    atlas entry's four corner coordinates.
+ 
+    Fast enough for thousands of WIMS objects against a small atlas catalog.
+    Handles RA wrap-around at 0/360.
+    """
+    for entry in atlas_entries:
+        c_ra  = entry.get("corners_ra",  [])
+        c_dec = entry.get("corners_dec", [])
+        if len(c_ra) != 4 or len(c_dec) != 4:
+            # Fallback: use center + half-FOV bounding box
+            ra_c   = entry.get("ra_center",  0.0)
+            dec_c  = entry.get("dec_center", 0.0)
+            fov_w  = entry.get("fov_w_deg",  0.0)
+            fov_h  = entry.get("fov_h_deg",  0.0)
+            if abs(dec_deg - dec_c) > fov_h / 2.0:
+                continue
+            # RA delta with wrap
+            dra = abs(ra_deg - ra_c) % 360
+            if dra > 180:
+                dra = 360 - dra
+            if dra <= fov_w / 2.0:
+                return True
+            continue
+ 
+        dec_min = min(c_dec)
+        dec_max = max(c_dec)
+        if not (dec_min <= dec_deg <= dec_max):
+            continue
+ 
+        ra_min = min(c_ra)
+        ra_max = max(c_ra)
+        ra_span = ra_max - ra_min
+ 
+        if ra_span > 180:
+            # Footprint straddles 0/360 — check outside the gap
+            if ra_deg >= ra_min or ra_deg <= ra_max:
+                return True
+        else:
+            if ra_min <= ra_deg <= ra_max:
+                return True
+ 
+    return False
+
+
 class WIMIDialog(QDialog):
     def __init__(self, parent=None, settings=None, doc_manager=None, wimi_path: Optional[str] = None, wrench_path: Optional[str] = None):
         super().__init__(parent)
@@ -2572,7 +2643,7 @@ class WIMIDialog(QDialog):
         left_panel = QVBoxLayout()
 
         # Load the image using the resource_path function
-        wimilogo_path = resource_path("wimilogo.png")
+        wimilogo_path = get_icon_path("wimilogo.png")
 
         # Create a QLabel to display the logo
         self.logo_label = QLabel()
@@ -2594,7 +2665,37 @@ class WIMIDialog(QDialog):
 
         # Add the logo_label to your layout
         left_panel.addWidget(self.logo_label)
-       
+
+        # ── Community Sky Atlas banner ──────────────────────────────────────
+        self._atlas_entries   = []
+        self._atlas_thread    = None
+
+        self._atlas_banner = QFrame()
+        self._atlas_banner.setStyleSheet(
+            "QFrame { background: #1a2a1a; border: 1px solid #3a6a3a; border-radius: 6px; }"
+        )
+        self._atlas_banner.setVisible(False)
+        atlas_banner_layout = QVBoxLayout(self._atlas_banner)
+        atlas_banner_layout.setContentsMargins(10, 8, 10, 8)
+        atlas_banner_layout.setSpacing(4)
+
+        self._atlas_banner_label = QLabel("🌌 Community Atlas")
+        self._atlas_banner_label.setStyleSheet("color: #8bc88b; font-size: 11px; font-weight: bold;")
+        self._atlas_banner_label.setWordWrap(True)
+        atlas_banner_layout.addWidget(self._atlas_banner_label)
+
+        self._atlas_banner_btn = QPushButton("View in Sky Atlas →")
+        self._atlas_banner_btn.setStyleSheet(
+            "QPushButton { background: #2a4a2a; color: #8bc88b; border: 1px solid #3a6a3a; "
+            "border-radius: 4px; padding: 4px 10px; font-size: 11px; }"
+            "QPushButton:hover { background: #3a5a3a; border-color: #5a9a5a; }"
+        )
+        self._atlas_banner_btn.clicked.connect(self._open_atlas_at_center)
+        atlas_banner_layout.addWidget(self._atlas_banner_btn)
+
+        left_panel.addWidget(self._atlas_banner)
+        # ────────────────────────────────────────────────────────────────────
+
         button_layout = QHBoxLayout()
         
         # Load button
@@ -2739,9 +2840,6 @@ class WIMIDialog(QDialog):
         self.mini_preview.mouseMoveEvent = self.on_mini_preview_drag
         self.mini_preview.mouseReleaseEvent = self.on_mini_preview_release
         left_panel.addWidget(self.mini_preview)
-
-  
-
 
         # Right Column Layout
         right_panel = QVBoxLayout()
@@ -3214,6 +3312,58 @@ class WIMIDialog(QDialog):
         legend = LegendDialog(self)
         legend.setModal(False)
     
+    ATLAS_CATALOG_URL = "https://f005.backblazeb2.com/file/setiastro-atlas/catalog.json"
+
+    def _fetch_atlas_catalog(self):
+        if self._atlas_thread is not None and self._atlas_thread.isRunning():
+            print("[WIMI Atlas] thread already running, skipping")
+            return
+        self._atlas_thread = AtlasCatalogThread(parent=self)
+        self._atlas_thread.finished.connect(self._on_wimi_atlas_ready)
+        self._atlas_thread.start()
+
+
+    def _on_wimi_atlas_ready(self, entries):
+        self._atlas_entries = entries
+        self._check_atlas_overlap()
+
+    def _check_atlas_overlap(self):
+        if not self._atlas_entries or self.wcs is None:
+            self._atlas_banner.setVisible(False)
+            return
+
+        ra  = getattr(self, "center_ra",  None)
+        dec = getattr(self, "center_dec", None)
+        if ra is None or dec is None:
+            self._atlas_banner.setVisible(False)
+            return
+
+        hits = [e for e in self._atlas_entries if _ra_in_atlas(ra, dec, [e])]
+
+        count = len(hits)
+        if count == 0:
+            self._atlas_banner.setVisible(False)
+        else:
+            plural = "images" if count != 1 else "image"
+            self._atlas_banner_label.setText(
+                f"🌌 {count} community {plural} overlap this field"
+            )
+            self._atlas_banner.setVisible(True)
+
+    def _open_atlas_at_center(self):
+        import webbrowser
+        ra  = getattr(self, "center_ra",  None)
+        dec = getattr(self, "center_dec", None)
+        if ra is not None and dec is not None:
+            webbrowser.open(
+                f"https://f005.backblazeb2.com/file/setiastro-atlas/atlas.html"
+                f"?ra={ra:.5f}&dec={dec:.5f}"
+            )
+        else:
+            webbrowser.open(
+                "https://f005.backblazeb2.com/file/setiastro-atlas/atlas.html"
+            )
+
     def _cycle_crosshair(self):
         self._crosshair_mode = (self._crosshair_mode + 1) % 4
 
@@ -5218,6 +5368,8 @@ class WIMIDialog(QDialog):
                 header = self._sanitize_wcs_header(header)
                 self.initialize_wcs_from_header(header)
                 self.status_label.setText("Status: Loaded view with astrometric solution.")
+                print(f"[WIMI Atlas] WCS initialized, center_ra={self.center_ra}, center_dec={self.center_dec}, scheduling atlas fetch")
+                QTimer.singleShot(0, self._fetch_atlas_catalog)
             except Exception as e:
                 self.wcs = None
                 self.status_label.setText(f"Status: Loaded view (no valid WCS) — {e}")
@@ -5542,7 +5694,9 @@ class WIMIDialog(QDialog):
                 self.orientation_label.setText("Orientation: N/A")
 
             print(f"WCS data loaded: RA={self.center_ra}, Dec={self.center_dec}, Pixel Scale={self.pixscale} arcsec/px")
-
+            # kick off atlas overlap check whenever WCS is freshly initialized
+            print(f"[WIMI Atlas] WCS initialized, center_ra={self.center_ra}, center_dec={self.center_dec}, scheduling atlas fetch")
+            QTimer.singleShot(0, self._fetch_atlas_catalog)
         except ValueError as e:
             raise ValueError(f"WCS initialization error: {e}")
 
