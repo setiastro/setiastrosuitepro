@@ -794,14 +794,22 @@ class WorkflowDialog(QDialog):
         bottom.addWidget(self.btn_save)
         bottom.addWidget(self.btn_save_as)
         bottom.addSpacing(16)
+        self.btn_run_mini = QPushButton("Run Workflow", self)
+        self.btn_run_mini.setStatusTip("Open the compact runner for this workflow")
+        self.btn_run_mini.clicked.connect(self._open_mini_runner)
+
         bottom.addWidget(self.btn_canned)
+        bottom.addSpacing(16)
+        bottom.addWidget(self.btn_run_mini)
         bottom.addStretch(1)
 
         root.addLayout(bottom)
-
     # ------------------------------------------------------------------
     # Catalog
     # ------------------------------------------------------------------
+    def _open_mini_runner(self):
+        from setiastro.saspro.workflows import show_mini_workflow_dialog
+        show_mini_workflow_dialog(self.main)
 
     def _populate_action_catalog(self):
         self.tool_tree.clear()
@@ -1543,7 +1551,460 @@ class WorkflowDialog(QDialog):
 
 
 # -----------------------------------------------------------------------------
-# Public entry point
+# Mini lane list (read-only drag, execution-only)
+# -----------------------------------------------------------------------------
+
+class MiniWorkflowLaneList(QListWidget):
+    """
+    A read-only (no editing) lane list for MiniWorkflowDialog.
+    Double-click opens the step; no drag-drop editing.
+    """
+    def __init__(self, dialog: "MiniWorkflowDialog", lane_name: str, parent=None):
+        super().__init__(parent)
+        self._dialog = dialog
+        self.lane_name = lane_name
+
+        self.setDragEnabled(False)
+        self.setAcceptDrops(False)
+        self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+
+        self.currentRowChanged.connect(self._notify_selection)
+        self.itemSelectionChanged.connect(self._notify_selection_changed)
+        self.itemDoubleClicked.connect(self._dialog._run_selected_step)
+
+    def _notify_selection_changed(self):
+        self._dialog._on_any_step_selected(self)
+
+    def _notify_selection(self, _row: int):
+        self._dialog._on_any_step_selected(self)
+
+
+# -----------------------------------------------------------------------------
+# Mini workflow dialog
+# -----------------------------------------------------------------------------
+
+class MiniWorkflowDialog(QDialog):
+    """
+    A compact, execution-only view of a workflow.
+
+    Shows lanes and steps, lets the user step through with Previous / Open Step /
+    Mark Complete / Next Step / Reset Progress.  Mark Complete automatically
+    advances to the next step.  Double-clicking a step opens it directly.
+
+    No editing: the full WorkflowDialog handles that.
+    """
+
+    def __init__(self, main, workflow: WorkflowDefinition, catalog: Dict[str, WorkflowActionInfo], parent=None):
+        super().__init__(parent or main)
+        self.main = main
+        self.settings = _main_settings(main)
+
+        self.workflow = workflow
+        self.catalog = catalog
+
+        self.lane_lists: Dict[str, MiniWorkflowLaneList] = {}
+        self.current_lane_name: Optional[str] = None
+
+        self.setWindowTitle(f"Running: {workflow.name}")
+        self.resize(860, 560)
+
+        self._build_ui()
+        self._populate()
+        self._restore_geometry()
+
+    # ------------------------------------------------------------------
+    # UI
+    # ------------------------------------------------------------------
+
+    def _build_ui(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(6)
+
+        # Workflow name header
+        self.lbl_title = QLabel(self.workflow.name, self)
+        self.lbl_title.setStyleSheet("font-size: 13px; font-weight: 700; padding: 2px 0;")
+        root.addWidget(self.lbl_title)
+
+        # Scrollable lanes area
+        self.lanes_scroll = QScrollArea(self)
+        self.lanes_scroll.setWidgetResizable(True)
+        self.lanes_host = QWidget(self)
+        self.lanes_layout = QHBoxLayout(self.lanes_host)
+        self.lanes_layout.setContentsMargins(4, 4, 4, 4)
+        self.lanes_layout.setSpacing(8)
+        self.lanes_scroll.setWidget(self.lanes_host)
+        root.addWidget(self.lanes_scroll, 1)
+
+        # Step detail label
+        self.lbl_step_info = QLabel("Select a step to view details.", self)
+        self.lbl_step_info.setWordWrap(True)
+        self.lbl_step_info.setFrameShape(QFrame.Shape.StyledPanel)
+        self.lbl_step_info.setMinimumHeight(72)
+        self.lbl_step_info.setContentsMargins(6, 4, 6, 4)
+        root.addWidget(self.lbl_step_info)
+
+        # Navigation buttons
+        nav = QHBoxLayout()
+        self.btn_prev = QPushButton("◀  Previous", self)
+        self.btn_run = QPushButton("Open Step", self)
+        self.btn_done = QPushButton("✓  Mark Complete", self)
+        self.btn_next = QPushButton("Next  ▶", self)
+        self.btn_reset = QPushButton("Reset Progress", self)
+
+        self.btn_prev.setMinimumWidth(100)
+        self.btn_run.setMinimumWidth(110)
+        self.btn_done.setMinimumWidth(130)
+        self.btn_next.setMinimumWidth(100)
+
+        self.btn_prev.clicked.connect(self._prev_step)
+        self.btn_run.clicked.connect(self._run_selected_step)
+        self.btn_done.clicked.connect(self._mark_complete_and_advance)
+        self.btn_next.clicked.connect(self._next_step)
+        self.btn_reset.clicked.connect(self._reset_progress)
+
+        nav.addWidget(self.btn_prev)
+        nav.addWidget(self.btn_run)
+        nav.addSpacing(8)
+        nav.addWidget(self.btn_done)
+        nav.addSpacing(8)
+        nav.addWidget(self.btn_next)
+        nav.addStretch(1)
+        nav.addWidget(self.btn_reset)
+        root.addLayout(nav)
+
+    # ------------------------------------------------------------------
+    # Populate lanes from workflow
+    # ------------------------------------------------------------------
+
+    def _populate(self):
+        # Clear existing lane widgets
+        while self.lanes_layout.count():
+            item = self.lanes_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        self.lane_lists.clear()
+
+        lanes = self.workflow.lanes or ["main"]
+
+        for lane_name in lanes:
+            card = QWidget(self.lanes_host)
+            card.setMinimumWidth(220)
+            card_lay = QVBoxLayout(card)
+            card_lay.setContentsMargins(4, 4, 4, 4)
+            card_lay.setSpacing(4)
+
+            header = QLabel(lane_name, card)
+            header.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            header.setFrameShape(QFrame.Shape.StyledPanel)
+            header.setStyleSheet("font-weight: 600; padding: 4px;")
+            card_lay.addWidget(header)
+
+            lst = MiniWorkflowLaneList(self, lane_name=lane_name, parent=card)
+            card_lay.addWidget(lst, 1)
+
+            self.lane_lists[lane_name] = lst
+            self.lanes_layout.addWidget(card)
+
+        self.lanes_layout.addStretch(1)
+
+        # Distribute steps into their lanes
+        by_lane: Dict[str, List[WorkflowStep]] = {lane: [] for lane in lanes}
+        for step in self.workflow.steps:
+            target = step.lane if step.lane in by_lane else lanes[0]
+            by_lane[target].append(step)
+
+        for lane_name, steps in by_lane.items():
+            lst = self.lane_lists.get(lane_name)
+            if lst is None:
+                continue
+            for step in steps:
+                lst.addItem(self._make_item(step))
+
+        # Select first available step
+        self.current_lane_name = None
+        for lane_name in lanes:
+            lst = self.lane_lists.get(lane_name)
+            if lst and lst.count() > 0:
+                self.current_lane_name = lane_name
+                lst.setCurrentRow(0)
+                break
+
+        self._refresh_visuals()
+        self._update_info()
+
+    def _make_item(self, step: WorkflowStep) -> QListWidgetItem:
+        label = self._step_label(step)
+        item = QListWidgetItem(label)
+
+        if step.kind == "action":
+            info = self.catalog.get(step.command_id)
+            if info and not info.icon.isNull():
+                item.setIcon(info.icon)
+
+        item.setData(Qt.ItemDataRole.UserRole,     step.id)
+        item.setData(Qt.ItemDataRole.UserRole + 1, step.command_id)
+        item.setData(Qt.ItemDataRole.UserRole + 2, step.note)
+        item.setData(Qt.ItemDataRole.UserRole + 3, bool(step.enabled))
+        item.setData(Qt.ItemDataRole.UserRole + 4, step.kind)
+        item.setData(Qt.ItemDataRole.UserRole + 5, list(step.inputs))
+        item.setData(Qt.ItemDataRole.UserRole + 6, list(step.outputs))
+        item.setData(Qt.ItemDataRole.UserRole + 7, False)  # completed
+        return item
+
+    def _step_label(self, step: WorkflowStep) -> str:
+        if step.kind == "note":
+            return "📝 Note"
+        if step.kind == "split":
+            return "⇢ Split"
+        if step.kind == "merge":
+            return "⇠ Merge"
+        info = self.catalog.get(step.command_id)
+        return info.text if info else (step.command_id or "Action")
+
+    # ------------------------------------------------------------------
+    # Selection
+    # ------------------------------------------------------------------
+
+    def _on_any_step_selected(self, lane_list: MiniWorkflowLaneList):
+        if lane_list.currentItem() is None and not lane_list.selectedItems():
+            return
+
+        for other_list in self.lane_lists.values():
+            if other_list is lane_list:
+                continue
+            other_list.blockSignals(True)
+            try:
+                other_list.clearSelection()
+                other_list.setCurrentRow(-1)
+                other_list.setCurrentItem(None)
+                sm = other_list.selectionModel()
+                if sm is not None:
+                    sm.clearSelection()
+                    sm.clearCurrentIndex()
+            finally:
+                other_list.blockSignals(False)
+
+        self.current_lane_name = lane_list.lane_name
+        self._refresh_visuals()
+        self._update_info()
+
+    def _current_list(self) -> Optional[MiniWorkflowLaneList]:
+        if self.current_lane_name:
+            lst = self.lane_lists.get(self.current_lane_name)
+            if lst is not None:
+                return lst
+        for lst in self.lane_lists.values():
+            if lst.currentRow() >= 0:
+                self.current_lane_name = lst.lane_name
+                return lst
+        return None
+
+    def _current_item(self) -> Optional[QListWidgetItem]:
+        lst = self._current_list()
+        return lst.currentItem() if lst else None
+
+    # ------------------------------------------------------------------
+    # Visuals
+    # ------------------------------------------------------------------
+
+    def _refresh_visuals(self):
+        current_item = self._current_item()
+        for lst in self.lane_lists.values():
+            for i in range(lst.count()):
+                item = lst.item(i)
+                completed = bool(item.data(Qt.ItemDataRole.UserRole + 7))
+                text = item.text()
+
+                if completed and not text.startswith("✓ "):
+                    item.setText(f"✓ {text}")
+                elif not completed and text.startswith("✓ "):
+                    item.setText(text[2:])
+
+                font = item.font()
+                font.setBold(item is current_item)
+                item.setFont(font)
+
+    def _update_info(self):
+        item = self._current_item()
+        if item is None:
+            self.lbl_step_info.setText("Select a step to view details.")
+            return
+
+        kind      = str(item.data(Qt.ItemDataRole.UserRole + 4) or "action")
+        cid       = str(item.data(Qt.ItemDataRole.UserRole + 1) or "")
+        note      = str(item.data(Qt.ItemDataRole.UserRole + 2) or "")
+        completed = bool(item.data(Qt.ItemDataRole.UserRole + 7))
+        inputs    = list(item.data(Qt.ItemDataRole.UserRole + 5) or [])
+        outputs   = list(item.data(Qt.ItemDataRole.UserRole + 6) or [])
+
+        if kind == "action":
+            info  = self.catalog.get(cid)
+            title = info.text if info else cid
+            tip   = (info.status_tip if info else "") or ""
+        elif kind == "note":
+            title = "Note Step"
+            tip   = "Instruction-only step; no tool is launched."
+        elif kind == "split":
+            title = "Split Marker"
+            tip   = "Branch point — processing continues in multiple lanes."
+        else:
+            title = "Merge Marker"
+            tip   = "Merge point — lanes come back together here."
+
+        parts = [f"<b>{title}</b>"]
+        if self.current_lane_name:
+            parts.append(f"<b>Lane:</b> {self.current_lane_name}")
+        if tip:
+            parts.append(tip)
+        if note:
+            parts.append(f"<br><b>Note:</b> {note}")
+        if inputs:
+            parts.append(f"<b>Inputs:</b> {', '.join(inputs)}")
+        if outputs:
+            parts.append(f"<b>Outputs:</b> {', '.join(outputs)}")
+        parts.append(f"<b>Status:</b> {'✓ Completed' if completed else 'Not completed'}")
+
+        self.lbl_step_info.setText("<br>".join(parts))
+
+    # ------------------------------------------------------------------
+    # Navigation helpers
+    # ------------------------------------------------------------------
+
+    def _ordered_items(self) -> List[tuple]:
+        out = []
+        for lane_name in (self.workflow.lanes or ["main"]):
+            lst = self.lane_lists.get(lane_name)
+            if lst is None:
+                continue
+            for i in range(lst.count()):
+                out.append((lane_name, lst, i, lst.item(i)))
+        return out
+
+    def _prev_step(self):
+        flat = self._ordered_items()
+        cur  = self._current_item()
+        if not flat or cur is None:
+            return
+        idx = next((i for i, (_, _, _, it) in enumerate(flat) if it is cur), None)
+        if idx is None:
+            return
+        idx = max(0, idx - 1)
+        lane_name, lst, row, _ = flat[idx]
+        self.current_lane_name = lane_name
+        lst.setCurrentRow(row)
+
+    def _next_step(self):
+        flat = self._ordered_items()
+        cur  = self._current_item()
+        if not flat:
+            return
+        if cur is None:
+            lane_name, lst, row, _ = flat[0]
+            self.current_lane_name = lane_name
+            lst.setCurrentRow(row)
+            return
+        idx = next((i for i, (_, _, _, it) in enumerate(flat) if it is cur), None)
+        if idx is None:
+            return
+        idx = min(len(flat) - 1, idx + 1)
+        lane_name, lst, row, _ = flat[idx]
+        self.current_lane_name = lane_name
+        lst.setCurrentRow(row)
+
+    # ------------------------------------------------------------------
+    # Actions
+    # ------------------------------------------------------------------
+
+    def _run_selected_step(self):
+        item = self._current_item()
+        if item is None:
+            return
+
+        kind = str(item.data(Qt.ItemDataRole.UserRole + 4) or "action")
+        if kind != "action":
+            note = str(item.data(Qt.ItemDataRole.UserRole + 2) or "")
+            msg  = note if note else "This step is a marker — no tool to launch."
+            QMessageBox.information(self, "Instruction Step", msg)
+            return
+
+        command_id = str(item.data(Qt.ItemDataRole.UserRole + 1) or "")
+        if not command_id:
+            QMessageBox.warning(self, "No Command", "This step has no command ID.")
+            return
+
+        action = _find_action_by_command_id(self.main, command_id)
+        if action is None:
+            QMessageBox.warning(self, "Action Not Found",
+                                f"Could not find QAction for command_id:\n{command_id}")
+            return
+
+        try:
+            action.trigger()
+        except Exception as e:
+            QMessageBox.critical(self, "Step Failed",
+                                 f"Error opening step:\n\n{command_id}\n\n{e}")
+
+    def _mark_complete_and_advance(self):
+        item = self._current_item()
+        if item is None:
+            return
+
+        # Mark current step done
+        item.setData(Qt.ItemDataRole.UserRole + 7, True)
+        self._refresh_visuals()
+        self._update_info()
+
+        # Advance to the next step automatically
+        flat = self._ordered_items()
+        cur_idx = next((i for i, (_, _, _, it) in enumerate(flat) if it is item), None)
+        if cur_idx is not None and cur_idx < len(flat) - 1:
+            next_lane, next_lst, next_row, _ = flat[cur_idx + 1]
+            self.current_lane_name = next_lane
+            next_lst.setCurrentRow(next_row)
+
+    def _reset_progress(self):
+        for lst in self.lane_lists.values():
+            for i in range(lst.count()):
+                lst.item(i).setData(Qt.ItemDataRole.UserRole + 7, False)
+        self._refresh_visuals()
+        self._update_info()
+
+    # ------------------------------------------------------------------
+    # Geometry persistence
+    # ------------------------------------------------------------------
+
+    def closeEvent(self, event):
+        self._save_geometry()
+        try:
+            if getattr(self.main, "_mini_workflow_dialog", None) is self:
+                self.main._mini_workflow_dialog = None
+        except Exception:
+            pass
+        super().closeEvent(event)
+
+    def _restore_geometry(self):
+        if self.settings is None:
+            return
+        try:
+            g = self.settings.value("mini_workflow_dialog/geometry")
+            if g:
+                self.restoreGeometry(g)
+        except Exception:
+            pass
+
+    def _save_geometry(self):
+        if self.settings is None:
+            return
+        try:
+            self.settings.setValue("mini_workflow_dialog/geometry", self.saveGeometry())
+        except Exception:
+            pass
+
+
+# -----------------------------------------------------------------------------
+# Public entry points
 # -----------------------------------------------------------------------------
 
 def show_workflow_dialog(main):
@@ -1552,6 +2013,91 @@ def show_workflow_dialog(main):
         dlg = WorkflowDialog(main, parent=main)
         main._workflow_dialog = dlg
 
+    dlg.show()
+    dlg.raise_()
+    dlg.activateWindow()
+
+def show_mini_workflow_dialog(main):
+    full_dlg: Optional[WorkflowDialog] = getattr(main, "_workflow_dialog", None)
+
+    if full_dlg is not None and full_dlg.current_workflow.steps:
+        workflow = full_dlg.current_workflow
+        catalog  = full_dlg.catalog
+        _launch_mini(main, workflow, catalog)
+        return
+
+    # Nothing loaded yet — ask the user what they want to do
+    from PyQt6.QtWidgets import QDialog, QDialogButtonBox, QVBoxLayout, QLabel, QComboBox
+
+    picker = QDialog(main)
+    picker.setWindowTitle("Run Workflow")
+    lay = QVBoxLayout(picker)
+
+    lay.addWidget(QLabel("No workflow is currently loaded.\nChoose how to get started:"))
+
+    combo = QComboBox(picker)
+    combo.addItem("Open Workflow Assistant (build or edit)")
+    for wf in _default_canned_workflows():
+        combo.addItem(f"Canned: {wf.name}", userData=wf)
+
+    wf_dir = _workflows_dir(main)
+    saved_paths = sorted(wf_dir.glob("*.json"))
+    for p in saved_paths:
+        combo.addItem(f"Saved: {p.stem}", userData=p)
+
+    lay.addWidget(combo)
+
+    btns = QDialogButtonBox(
+        QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+        parent=picker,
+    )
+    btns.accepted.connect(picker.accept)
+    btns.rejected.connect(picker.reject)
+    lay.addWidget(btns)
+
+    if picker.exec() != QDialog.DialogCode.Accepted:
+        return
+
+    idx = combo.currentIndex()
+    data = combo.currentData()
+
+    if idx == 0:
+        # Open the full assistant
+        show_workflow_dialog(main)
+        return
+
+    if isinstance(data, WorkflowDefinition):
+        wf = data
+    elif isinstance(data, Path):
+        try:
+            wf = WorkflowDefinition.from_dict(
+                json.loads(data.read_text(encoding="utf-8"))
+            )
+        except Exception as e:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.critical(main, "Load Failed", f"Could not load workflow:\n\n{e}")
+            return
+    else:
+        return
+
+    # Build a catalog without spinning up the full dialog UI
+    categories = _discover_toolbar_categories(main)
+    for cat_name, items in _discover_script_categories(main).items():
+        categories.setdefault(cat_name, []).extend(items)
+    catalog: Dict[str, WorkflowActionInfo] = {}
+    for items in categories.values():
+        for info in items:
+            catalog[info.command_id] = info
+
+    _launch_mini(main, wf, catalog)
+
+
+def _launch_mini(main, workflow: WorkflowDefinition, catalog: Dict[str, WorkflowActionInfo]):
+    existing: Optional[MiniWorkflowDialog] = getattr(main, "_mini_workflow_dialog", None)
+    if existing is not None:
+        existing.close()
+    dlg = MiniWorkflowDialog(main, workflow=workflow, catalog=catalog, parent=main)
+    main._mini_workflow_dialog = dlg
     dlg.show()
     dlg.raise_()
     dlg.activateWindow()
