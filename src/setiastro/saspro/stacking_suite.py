@@ -14482,9 +14482,13 @@ class StackingSuiteDialog(QDialog):
 
                 # DEBUG
                 print(f"\n[FLAT DEBUG] Scale estimation results for group [{filter_name}] {exposure_time}s:")
-                print(f"  scales min={float(scales.min()):.6f}  max={float(scales.max()):.6f}  mean={float(scales.mean()):.6f}")
-                for fi, sc in enumerate(scales):
-                    print(f"  frame[{fi}]: scale={float(sc):.6f}")
+                print(f"  scales shape={scales.shape}  min={float(scales.min()):.6f}  max={float(scales.max()):.6f}  mean={float(scales.mean()):.6f}")
+                for fi in range(len(scales)):
+                    sc = scales[fi]
+                    if sc.ndim == 0:
+                        print(f"  frame[{fi}]: scale={float(sc):.6f}")
+                    else:
+                        print(f"  frame[{fi}]: scales={[round(float(v),6) for v in sc.flat]}")
                 self.update_status(self.tr(
                     f"⚙️ {'GPU' if use_gpu else 'CPU'} reducer for flats — {algo_name} "
                     f"({ 'k=%.1f' % params.get('kappa', 0) if cpu_label=='kappa1' else 'trim=%.0f%%' % (params.get('trim_fraction', 0)*100) if cpu_label=='trimmed' else 'median'})"
