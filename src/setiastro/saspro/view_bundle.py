@@ -140,60 +140,137 @@ class BundleChip(QWidget):
         self._panel = panel
         self._bundle_uuid = bundle_uuid
         self._name = name
-        self._steps = steps or []   # optional future use (not required now)
+        self._steps = steps or []
 
         self.setAcceptDrops(True)
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)  # ← so Delete/Backspace work
-
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setObjectName("BundleChip")
-        self.setMinimumSize(160, 38)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setMinimumSize(200, 56)
+        self.setMaximumSize(280, 56)
         self.setCursor(Qt.CursorShape.OpenHandCursor)
+
         self.setStyleSheet("""
             QWidget#BundleChip {
-                background: rgba(60, 60, 70, 200);
-                border: 1px solid rgba(220,220,220,64);
-                border-radius: 8px;
-            }
-            QLabel#chipTitle {
-                padding: 6px 10px 2px 10px;
-                color: #e6e6e6;
-                font-weight: 600;
-            }
-            QLabel#chipHint {
-                padding: 0 10px 6px 10px;
-                color: #bdbdbd;
-                font-size: 11px;
+                background: #523a1e;
+                border: 1.5px solid #cc7020;
+                border-radius: 10px;
             }
             QWidget#BundleChip:hover {
-                border-color: rgba(255,255,255,128);
+                background: #6a4a28;
+                border: 1.5px solid #ee9040;
+            }
+            QLabel#chipIcon {
+                color: #ffaa55;
+                font-size: 18px;
+                padding: 0 6px 0 10px;
+            }
+            QLabel#chipTitle {
+                color: #fff0e0;
+                font-weight: 700;
+                font-size: 12px;
+            }
+            QLabel#chipSub {
+                color: #c0a080;
+                font-size: 10px;
+            }
+            QLabel#chipBadge {
+                background: #aa5500;
+                color: #ffffff;
+                font-size: 9px;
+                font-weight: 700;
+                border-radius: 7px;
+                padding: 1px 5px;
+                min-width: 14px;
             }
         """)
 
-        v = QVBoxLayout(self)
-        v.setContentsMargins(0, 0, 0, 0)
-        v.setSpacing(0)
-        self._title = QLabel(self._name)
+        # Accent bar on the left edge (painted in paintEvent)
+        self._accent_color = "#dd7722"
+
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(0, 0, 8, 0)
+        outer.setSpacing(0)
+
+        # Left accent strip (4px wide, painted; we fake it with a tiny QFrame)
+        accent = QFrame(self)
+        accent.setFixedWidth(4)
+        accent.setStyleSheet("background: #dd7722; border-radius: 2px;")
+        self._accent_color = "#dd7722"
+        outer.addWidget(accent)
+
+        # Icon
+        icon_lbl = QLabel("⬡", self)   # bundle glyph
+        icon_lbl.setObjectName("chipIcon")
+        icon_lbl.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignCenter)
+        outer.addWidget(icon_lbl)
+
+        # Text column
+        text_col = QVBoxLayout()
+        text_col.setContentsMargins(0, 6, 0, 6)
+        text_col.setSpacing(1)
+
+        self._title = QLabel(self._name, self)
         self._title.setObjectName("chipTitle")
-        self._hint = QLabel(self._panel.tr("Drag to move · Ctrl+drag to apply · Drop views/shortcuts here"))
-        self._hint.setObjectName("chipHint")
-        v.addWidget(self._title, 0, Qt.AlignmentFlag.AlignCenter)
-        v.addWidget(self._hint, 0, Qt.AlignmentFlag.AlignCenter)
+        self._title.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+
+        self._sub = QLabel(self.tr("Drop views or shortcuts here"), self)
+        self._sub.setObjectName("chipSub")
+        self._sub.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+
+        text_col.addWidget(self._title)
+        text_col.addWidget(self._sub)
+        outer.addLayout(text_col, 1)
+
+        # Badge (view count)
+        self._badge = QLabel("0", self)
+        self._badge.setObjectName("chipBadge")
+        self._badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._badge.setFixedSize(22, 16)
+        outer.addWidget(self._badge)
 
         self._press_pos: QPoint | None = None
         self._moving = False
         self._grab_offset = None
         self._dragging = False
 
+        self._update_badge()
+
     # --- data binding ---
     @property
     def bundle_uuid(self) -> str:
         return self._bundle_uuid
+
+    def _update_badge(self):
+        """Refresh the view-count badge from the live bundle data."""
+        try:
+            b = self._panel._get_bundle(self._bundle_uuid)
+            if b:
+                n_views = len(b.get("doc_ptrs",   []))
+                n_files = len(b.get("file_paths", []))
+                total   = n_views + n_files
+                self._badge.setText(str(total))
+                self._badge.setVisible(True)
+                # Colour the badge: green when loaded, amber when files only, grey when empty
+                if n_views > 0:
+                    colour = "#aa4400"
+                elif n_files > 0:
+                    colour = "#886600"
+                else:
+                    colour = "#554433"
+                self._badge.setStyleSheet(
+                    f"background:{colour}; color:#fff; font-size:9px; font-weight:700;"
+                    " border-radius:7px; padding:1px 5px; min-width:14px;"
+                )
+        except Exception:
+            pass
 
     def sync_from_panel(self):
         b = self._panel._get_bundle(self._bundle_uuid)
         if b:
             self._name = b.get("name", "Bundle")
             self._title.setText(self._name)
+        self._update_badge()
 
     # --- movement inside canvas / external DnD ---
     def mousePressEvent(self, ev):
@@ -351,6 +428,10 @@ class BundleChip(QWidget):
                 _QMB.warning(self, "Apply to Bundle", f"Could not parse/execute shortcut:\n{ex}")
         e.ignore()
 
+        try:
+            self._update_badge()
+        except Exception:
+            pass
 
 def spawn_bundle_chip_on_canvas(mw: QWidget, panel: "ViewBundleDialog",
                                 bundle_uuid: str, name: str) -> BundleChip | None:
@@ -361,11 +442,14 @@ def spawn_bundle_chip_on_canvas(mw: QWidget, panel: "ViewBundleDialog",
     chip = BundleChip(panel, bundle_uuid, name, parent=canvas)
     chip.resize(190, 46)
 
-    # place near cursor, clamped inside canvas
-    pt = canvas.mapFromGlobal(QCursor.pos()) - chip.rect().center()
-    pt.setX(max(0, min(pt.x(), canvas.width() - chip.width())))
-    pt.setY(max(0, min(pt.y(), canvas.height() - chip.height())))
-    chip.move(pt)
+    # Place near top-center, offset slightly so multiple chips don't stack
+    existing_count = sum(1 for c in canvas.children()
+                         if isinstance(c, BundleChip) and c.isVisible())
+    x = max(0, (canvas.width() - chip.width()) // 2) + (existing_count * 24)
+    y = 16 + (existing_count * 8)
+    x = min(x, max(0, canvas.width()  - chip.width()))
+    y = min(y, max(0, canvas.height() - chip.height()))
+    chip.move(x, y)
     chip.show()
     chip.raise_()
     return chip

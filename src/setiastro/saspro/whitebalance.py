@@ -949,47 +949,74 @@ class WhiteBalanceDialog(QDialog):
             self.close()
 
     def closeEvent(self, ev):
-            # Stop debounce so no new workers can start
-            try:
-                self._debounce.stop()
-            except Exception:
-                pass
+        # Stop debounce so no new workers can start
+        try:
+            self._debounce.stop()
+        except Exception:
+            pass
 
-            # Detach active-doc signal
-            try:
-                if self._active_doc_conn and hasattr(self._main, "currentDocumentChanged"):
-                    self._main.currentDocumentChanged.disconnect(self._on_active_doc_changed)
-            except Exception:
-                pass
-            self._active_doc_conn = False
+        # Detach active-doc signal
+        try:
+            if self._active_doc_conn and hasattr(self._main, "currentDocumentChanged"):
+                self._main.currentDocumentChanged.disconnect(self._on_active_doc_changed)
+        except Exception:
+            pass
+        self._active_doc_conn = False
 
-            # Orphan the worker — disconnect its signals, cancel, keep alive in module list
-            try:
-                worker = getattr(self, "_detection_worker", None)
-                if worker is not None:
+        # Cancel the running worker and WAIT for it to actually finish before
+        # allowing the dialog (and its children) to be destroyed.  Without the
+        # wait, Qt destroys the QThread object while the OS thread is still
+        # running, which causes the hard crash.
+        try:
+            worker = getattr(self, "_detection_worker", None)
+            if worker is not None:
+                # Disconnect signals first so _on_worker_done / _on_worker_failed
+                # can't fire into a half-destroyed dialog after we return.
+                try:
+                    worker.finished.disconnect()
+                except Exception:
+                    pass
+                try:
+                    worker.failed.disconnect()
+                except Exception:
+                    pass
+
+                worker.cancel()
+
+                if worker.isRunning():
+                    # Re-parent to None so Qt doesn't destroy it with the dialog,
+                    # then keep a module-level reference until it finishes.
                     try:
-                        worker.finished.disconnect()
+                        worker.setParent(None)
                     except Exception:
                         pass
-                    try:
-                        worker.failed.disconnect()
-                    except Exception:
-                        pass
-                    worker.cancel()
                     _orphaned_workers.append(worker)
-                    worker.finished.connect(
-                        lambda *_: _orphaned_workers.remove(worker)
-                        if worker in _orphaned_workers else None
-                    )
-                    worker.failed.connect(
-                        lambda *_: _orphaned_workers.remove(worker)
-                        if worker in _orphaned_workers else None
-                    )
-                    self._detection_worker = None
-            except Exception:
-                pass
 
-            super().closeEvent(ev)
+                    # Connect cleanup — removes from list once thread is done
+                    def _cleanup_orphan(w=worker):
+                        try:
+                            _orphaned_workers.remove(w)
+                        except ValueError:
+                            pass
+
+                    worker.finished.connect(_cleanup_orphan)
+                    worker.failed.connect(_cleanup_orphan)
+
+                    # Wait up to 5 s for the thread to honour the cancel flag.
+                    # This blocks the close briefly but is far better than a crash.
+                    if not worker.wait(5000):
+                        # Still running after 5 s — terminate forcefully as last resort
+                        try:
+                            worker.terminate()
+                            worker.wait(1000)
+                        except Exception:
+                            pass
+
+                self._detection_worker = None
+        except Exception:
+            pass
+
+        super().closeEvent(ev)
 
     def _cleanup(self):
         try:

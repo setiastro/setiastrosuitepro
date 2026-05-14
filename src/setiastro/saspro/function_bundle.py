@@ -99,9 +99,9 @@ class FunctionBundleChip(QWidget):
     """
     def __init__(self, panel: "FunctionBundleDialog", name: str, bundle_key: str, parent_canvas: QWidget):
         super().__init__(parent_canvas)
-        
+
         self._panel = panel
-        self._bundle_key = bundle_key     # <── store bundle key for panel lookups
+        self._bundle_key = bundle_key
         self._bundle_index: int | None = None
         self._dragging = False
         self._grab_offset = None
@@ -109,38 +109,108 @@ class FunctionBundleChip(QWidget):
         self.setAcceptDrops(True)
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)  # paint background
         self.setMouseTracking(True)
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)  # <── allows Delete key
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
         self.setObjectName("FunctionBundleChip")
-        self.setMinimumSize(240, 44)
+        self.setMinimumSize(200, 56)
+        self.setMaximumSize(280, 56)
         self.setCursor(Qt.CursorShape.OpenHandCursor)
+
         self.setStyleSheet("""
             QWidget#FunctionBundleChip {
-                background: rgba(34, 34, 38, 240);
-                color: #ddd;
-                border: 1px solid #666;
-                border-radius: 8px;
+                background: #311a4a;
+                border: 1.5px solid #bb22cc;
+                border-radius: 10px;
             }
-            QLabel#title { font-weight: 600; padding-left: 10px; padding-top: 6px; }
-            QLabel#count { color:#aaa; padding-right: 8px; }
-            QLabel#hint  { color:#bbb; font-size:11px; padding: 0 10px 6px 10px; }
+            QWidget#FunctionBundleChip:hover {
+                background: #3e2260;
+                border: 1.5px solid #dd55ee;
+            }
+            QLabel#chipIcon {
+                color: #dd55ff;
+                font-size: 18px;
+                padding: 0 6px 0 10px;
+            }
+            QLabel#chipTitle {
+                color: #f0e0ff;
+                font-weight: 700;
+                font-size: 12px;
+            }
+            QLabel#chipSub {
+                color: #b090c8;
+                font-size: 10px;
+            }
+            QLabel#chipBadge {
+                background: #882299;
+                color: #ffffff;
+                font-size: 9px;
+                font-weight: 700;
+                border-radius: 7px;
+                padding: 1px 5px;
+                min-width: 14px;
+            }
         """)
 
-        v = QVBoxLayout(self); v.setContentsMargins(6, 4, 6, 4); v.setSpacing(0)
-        top = QHBoxLayout(); top.setContentsMargins(0,0,0,0)
-        self._title = QLabel(name); self._title.setObjectName("title")
-        self._count = QLabel("(0)"); self._count.setObjectName("count")
-        top.addWidget(self._title); top.addStretch(1); top.addWidget(self._count)
-        v.addLayout(top)
-        self._hint = QLabel("Drop shortcuts to add • Alt+Drag to apply")
-        self._hint.setObjectName("hint")
-        v.addWidget(self._hint)
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(0, 0, 8, 0)
+        outer.setSpacing(0)
+
+        # Left accent strip — magenta to match the icon
+        from PyQt6.QtWidgets import QFrame as _QFrame
+        accent = _QFrame(self)
+        accent.setFixedWidth(4)
+        accent.setStyleSheet("background: #cc22dd; border-radius: 2px;")
+        outer.addWidget(accent)
+
+        # Icon — gear/function glyph
+        icon_lbl = QLabel("⚙", self)
+        icon_lbl.setObjectName("chipIcon")
+        icon_lbl.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignCenter)
+        outer.addWidget(icon_lbl)
+
+        # Text column
+        text_col = QVBoxLayout()
+        text_col.setContentsMargins(0, 6, 0, 6)
+        text_col.setSpacing(1)
+
+        self._title = QLabel(name, self)
+        self._title.setObjectName("chipTitle")
+        self._title.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+
+        self._sub = QLabel(self.tr("Drop shortcuts • Alt+drag to apply"), self)
+        self._sub.setObjectName("chipSub")
+        self._sub.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+
+        text_col.addWidget(self._title)
+        text_col.addWidget(self._sub)
+        outer.addLayout(text_col, 1)
+
+        # Step-count badge
+        self._badge = QLabel("0", self)
+        self._badge.setObjectName("chipBadge")
+        self._badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._badge.setFixedSize(22, 16)
+        outer.addWidget(self._badge)
 
         self._sync_count()
 
     def _sync_count(self):
-        self._count.setText(f"({self._panel.step_count()})")
+        if self._bundle_index is not None:
+            try:
+                n = self._panel.step_count_for_index(self._bundle_index)
+            except Exception:
+                n = self._panel.step_count()
+        else:
+            n = self._panel.step_count()
+
+        self._badge.setText(str(n))
+        colour = "#882299" if n > 0 else "#443355"
+        self._badge.setStyleSheet(
+            f"background:{colour}; color:#fff; font-size:9px; font-weight:700;"
+            " border-radius:7px; padding:1px 5px; min-width:14px;"
+        )
 
     def mousePressEvent(self, ev):
         if ev.button() == Qt.MouseButton.LeftButton:
@@ -287,33 +357,34 @@ class FunctionBundleChip(QWidget):
             self._bundle_index = None
         self._sync_count()
 
-    def _sync_count(self):
-        # Show the count for *this* bundle, not whatever is currently selected
-        if self._bundle_index is not None:
-            try:
-                n = self._panel.step_count_for_index(self._bundle_index)
-            except Exception:
-                n = self._panel.step_count()
-        else:
-            n = self._panel.step_count()
-        self._count.setText(f"({n})")
-
 # helper to create/place the chip on the ShortcutCanvas
 def _spawn_function_chip_on_canvas(mw: QWidget, panel: "FunctionBundleDialog",
                                    name: str, bundle_key: str) -> FunctionBundleChip | None:
     canvas = _find_shortcut_canvas(mw)
     if not canvas:
         return None
+
     chip = FunctionBundleChip(panel, name, bundle_key, parent_canvas=canvas)
-    # place near cursor, clamped
-    pt = canvas.mapFromGlobal(QCursor.pos()) - chip.rect().center()
-    pt.setX(max(0, min(pt.x(), canvas.width() - chip.width())))
-    pt.setY(max(0, min(pt.y(), canvas.height() - chip.height())))
-    chip.move(pt)
+    chip.resize(210, 56)
+
+    # Count existing function bundle chips to stagger placement
+    existing_count = sum(
+        1 for c in canvas.children()
+        if isinstance(c, FunctionBundleChip) and c.isVisible()
+    )
+
+    # Upper-right area — leaves upper-left free for view bundle chips
+    margin = 16
+    x = max(0, canvas.width() - chip.width() - margin) - (existing_count * 24)
+    y = margin + (existing_count * 8)
+    x = max(0, min(x, canvas.width()  - chip.width()))
+    y = max(0, min(y, canvas.height() - chip.height()))
+
+    chip.move(x, y)
     chip.show()
     chip.raise_()
     return chip
-
+    
 def _activate_target_sw(mw, sw):
     try:
         if hasattr(mw, "mdi") and mw.mdi.activeSubWindow() is not sw:
