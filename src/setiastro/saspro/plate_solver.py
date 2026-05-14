@@ -1109,6 +1109,12 @@ def _get_astap_fov_value(settings) -> float:
     except Exception:
         return 0.0
 
+def _get_solver_preference(settings) -> str:
+    """Returns 'both', 'astap_only', or 'astrometry_only'."""
+    return (settings.value("plate_solver/preference", "both", type=str) or "both").lower()
+
+def _set_solver_preference(settings, pref: str):
+    settings.setValue("plate_solver/preference", (pref or "both").lower())
 
 def _read_header_from_fits(path: str) -> Dict[str, Any]:
     with fits.open(path, memmap=False) as hdul:
@@ -1410,7 +1416,22 @@ def _solve_numpy_with_fallback(
               Last resort for fields ASTAP can't solve.
     """
     from astropy.io.fits import Header
- 
+    pref = _get_solver_preference(settings)
+
+    # Astrometry.net only — skip ASTAP entirely
+    if pref == "astrometry_only":
+        _set_status_ui(
+            parent,
+            QCoreApplication.translate("PlateSolver",
+                "Status: Solver preference = Astrometry.net only…")
+        )
+        return _solve_numpy_with_astrometry(parent, settings, image, seed_header)
+
+    # ASTAP only — run seeded then blind, never fall through to Astrometry.net
+    if pref == "astap_only":
+        # reuse the same seeded/blind logic but stop before Pass 3
+        # we'll handle this with a flag checked before Pass 3
+        pass
     # Save original settings to restore after each pass
     _orig_radius_mode = settings.value("astap/seed_radius_mode", "auto",    type=str)
     _orig_radius_val  = settings.value("astap/seed_radius_value", 5.0,      type=float)
@@ -1425,76 +1446,74 @@ def _solve_numpy_with_fallback(
         settings.setValue("astap/seed_fov_value",     _orig_fov_val)
         settings.setValue("astap/seed_mode",           _orig_seed_mode)
  
-    # ── Pass 1: ASTAP seeded ─────────────────────────────────────────────────
-    # Derive scale and FOV directly from the seed header so we never fall
-    # back to -fov 0 due to a missing scale.  -r 179 is a very wide search
-    # radius that still uses the RA/Dec center point.
-    _set_status_ui(
-        parent,
-        QCoreApplication.translate("PlateSolver",
-            "Status: ASTAP solving (seeded from header, r=179)…")
-    )
- 
-    # Compute scale and FOV from seed header
-    # NOTE: image here may be 2x2 binned (exoplanet loads binned frames).
-    # The pixel scale in the header is for the FULL resolution image, so
-    # FOV = (binned_height * bin_factor * scale) / 3600.
-    # We detect the bin factor by comparing the header NAXIS2 to the
-    # actual image height. If no NAXIS2 is available, assume bin factor 1.
-    _pass1_scale = None
-    _pass1_fov   = None
+    # ── Determine if we actually have useful seed data ───────────────────────
+    _has_seed = False
     if isinstance(seed_header, Header):
-        _pass1_scale = _estimate_scale_arcsec_from_header(seed_header)
-        if _pass1_scale is not None:
-            H_img = int(image.shape[0]) if image.ndim >= 2 else 0
-            if H_img > 0:
-                # Check if the header tells us the original full-res height
-                naxis2 = seed_header.get("NAXIS2", None)
-                try:
-                    H_full = int(naxis2)
-                    bin_factor = max(1, round(H_full / H_img))
-                except (TypeError, ValueError):
-                    bin_factor = 1
-                H_effective = H_img * bin_factor
-                _pass1_fov = (H_effective * _pass1_scale) / 3600.0
-                print(f"[PlateSolver] Pass 1: H_img={H_img}  H_full(hdr)={H_effective}  bin_factor={bin_factor}")
- 
-    # Set settings for Pass 1
-    settings.setValue("astap/seed_mode",          "auto")
-    settings.setValue("astap/seed_radius_mode",   "value")
-    settings.setValue("astap/seed_radius_value",   179.0)
-    if _pass1_fov is not None and _pass1_fov > 0:
-        # We have a real FOV — pass it explicitly as a value
-        settings.setValue("astap/seed_fov_mode",  "value")
-        settings.setValue("astap/seed_fov_value",  _pass1_fov)
-        print(f"[PlateSolver] Pass 1: scale={_pass1_scale:.3f}\"/px  fov={_pass1_fov:.4f}°  r=179")
-    else:
-        # No scale available — let ASTAP infer FOV
-        settings.setValue("astap/seed_fov_mode",  "auto")
-        settings.setValue("astap/seed_fov_value",  0.0)
-        print("[PlateSolver] Pass 1: no scale in header, fov=auto  r=179")
- 
-    try:
-        ok, res = _solve_numpy_with_astap(parent, settings, image, seed_header)
-    finally:
-        _restore()
- 
-    if ok:
+        ra  = _parse_ra_deg(seed_header)
+        dec = _parse_dec_deg(seed_header)
+        _has_seed = (ra is not None and dec is not None)
+
+    # ── Pass 1: ASTAP seeded (only if we actually have RA/Dec) ───────────────
+    if _has_seed:
         _set_status_ui(
             parent,
-            QCoreApplication.translate("PlateSolver", "Status: Solved with ASTAP (seeded).")
+            QCoreApplication.translate("PlateSolver",
+                "Status: ASTAP solving (seeded from header, r=179)…")
         )
-        return True, res
- 
-    err1 = str(res) if res is not None else "unknown error"
-    print(f"[PlateSolver] Pass 1 (ASTAP seeded) failed: {err1}")
- 
+
+        _pass1_scale = None
+        _pass1_fov   = None
+        if isinstance(seed_header, Header):
+            _pass1_scale = _estimate_scale_arcsec_from_header(seed_header)
+            if _pass1_scale is not None:
+                H_img = int(image.shape[0]) if image.ndim >= 2 else 0
+                if H_img > 0:
+                    naxis2 = seed_header.get("NAXIS2", None)
+                    try:
+                        H_full = int(naxis2)
+                        bin_factor = max(1, round(H_full / H_img))
+                    except (TypeError, ValueError):
+                        bin_factor = 1
+                    H_effective = H_img * bin_factor
+                    _pass1_fov = (H_effective * _pass1_scale) / 3600.0
+                    print(f"[PlateSolver] Pass 1: H_img={H_img}  H_full(hdr)={H_effective}  bin_factor={bin_factor}")
+
+        settings.setValue("astap/seed_mode",          "auto")
+        settings.setValue("astap/seed_radius_mode",   "value")
+        settings.setValue("astap/seed_radius_value",   179.0)
+        if _pass1_fov is not None and _pass1_fov > 0:
+            settings.setValue("astap/seed_fov_mode",  "value")
+            settings.setValue("astap/seed_fov_value",  _pass1_fov)
+            print(f"[PlateSolver] Pass 1: scale={_pass1_scale:.3f}\"/px  fov={_pass1_fov:.4f}°  r=179")
+        else:
+            settings.setValue("astap/seed_fov_mode",  "auto")
+            settings.setValue("astap/seed_fov_value",  0.0)
+            print("[PlateSolver] Pass 1: no scale in header, fov=auto  r=179")
+
+        try:
+            ok, res = _solve_numpy_with_astap(parent, settings, image, seed_header)
+        finally:
+            _restore()
+
+        if ok:
+            _set_status_ui(
+                parent,
+                QCoreApplication.translate("PlateSolver", "Status: Solved with ASTAP (seeded).")
+            )
+            return True, res
+
+        err1 = str(res) if res is not None else "unknown error"
+        print(f"[PlateSolver] Pass 1 (ASTAP seeded) failed: {err1}")
+    else:
+        err1 = "no seed available"
+        print(f"[PlateSolver] Pass 1 skipped — {err1}")
+
     # ── Pass 2: ASTAP blind ──────────────────────────────────────────────────
     _set_status_ui(
         parent,
         QCoreApplication.translate("PlateSolver",
-            "Status: ASTAP seeded solve failed ({0}). Trying blind solve…"
-        ).format(err1)
+            "Status: {0} Trying ASTAP blind solve…"
+        ).format(f"Seeded solve failed ({err1})." if _has_seed else "No seed available.")
     )
     QApplication.processEvents()
  
@@ -1521,6 +1540,18 @@ def _solve_numpy_with_fallback(
     print(f"[PlateSolver] Pass 2 (ASTAP blind) failed: {err2}")
  
     # ── Pass 3: Astrometry.net ───────────────────────────────────────────────
+    if pref == "astap_only":
+        _set_status_ui(
+            parent,
+            QCoreApplication.translate("PlateSolver",
+                "Status: ASTAP failed and solver is set to ASTAP only — not falling back to Astrometry.net."
+            )
+        )
+        return False, QCoreApplication.translate(
+            "PlateSolver",
+            "ASTAP solve failed (both seeded and blind). Astrometry.net fallback is disabled."
+        )
+
     _set_status_ui(
         parent,
         QCoreApplication.translate("PlateSolver",
@@ -2028,18 +2059,47 @@ def plate_solve_doc_inplace(parent, doc, settings) -> Tuple[bool, Header | str]:
         _debug_dump_header("DOC.METADATA['original_header'] AFTER SOLVE", doc.metadata.get("original_header"))
         _debug_dump_header("DOC.METADATA['wcs_header'] AFTER SOLVE", doc.metadata.get("wcs_header"))
 
-
-        # Notify UI
+        # Notify UI — emit changed first, then force header refresh directly
         if hasattr(doc, "changed"):
-            try: doc.changed.emit()
+            try:
+                doc.changed.emit()
             except Exception as e:
                 import logging
                 logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
-        if hasattr(parent, "header_viewer") and hasattr(parent.header_viewer, "set_document"):
-            QTimer.singleShot(0, lambda: parent.header_viewer.set_document(doc))
-        if hasattr(parent, "_refresh_header_viewer"):
-            QTimer.singleShot(0, lambda: parent._refresh_header_viewer(doc))
+        # Walk up to the main window so we can call the mixin methods directly
+        def _find_main(w):
+            while w is not None:
+                if hasattr(w, "_refresh_header_viewer") and hasattr(w, "header_viewer"):
+                    return w
+                w = getattr(w, "parent", lambda: None)()
+            return None
+
+        main_win = _find_main(parent)
+
+        # Force the header dock to reload — bypass any "same doc" guard by
+        # calling set_document(None) then set_document(doc) so the dock sees
+        # a real change, then fall back to _refresh_header_viewer.
+        def _force_header_refresh():
+            try:
+                hv = getattr(main_win, "header_viewer", None) if main_win else None
+                if hv and hasattr(hv, "set_document"):
+                    try:
+                        hv.set_document(None)   # clear guard state
+                    except Exception:
+                        pass
+                    try:
+                        hv.set_document(doc)
+                    except Exception:
+                        pass
+                if main_win and hasattr(main_win, "_refresh_header_viewer"):
+                    main_win._refresh_header_viewer(doc)
+            except Exception as e:
+                import logging
+                logging.debug(f"Header refresh suppressed: {e}")
+
+        QTimer.singleShot(0, _force_header_refresh)
+
         if hasattr(parent, "currentDocumentChanged"):
             QTimer.singleShot(0, lambda: parent.currentDocumentChanged.emit(doc))
 
@@ -2413,6 +2473,13 @@ class PlateSolverDialog(QDialog):
         fov_row.addStretch(1)
         seed_form.addRow(self.tr("FOV:"), fov_row)
 
+        # Solver preference
+        self.cb_solver_pref = QComboBox(seed_box)
+        self.cb_solver_pref.addItem(self.tr("ASTAP → Astrometry.net (both)"), "both")
+        self.cb_solver_pref.addItem(self.tr("ASTAP only"),                     "astap_only")
+        self.cb_solver_pref.addItem(self.tr("Astrometry.net only"),            "astrometry_only")
+        seed_form.addRow(self.tr("Solver:"), self.cb_solver_pref)
+
         # Tooltips
         self.cb_seed_mode.setToolTip(self.tr("Use FITS header, your manual RA/Dec/scale, or blind solve."))
         self.le_scale.setToolTip(self.tr('Pixel scale in arcseconds/pixel (e.g., 1.46).'))
@@ -2488,6 +2555,10 @@ class PlateSolverDialog(QDialog):
         fov_mode = _get_astap_fov_mode(self.settings)
         self.cb_fov_mode.setCurrentIndex(1 if fov_mode == "auto" else (2 if fov_mode == "value" else 0))
         self.le_fov_val.setText(str(_get_astap_fov_value(self.settings)))
+        pref_map = {"both": 0, "astap_only": 1, "astrometry_only": 2}
+        self.cb_solver_pref.setCurrentIndex(
+            pref_map.get(_get_solver_preference(self.settings), 0)
+        )
 
         def _update_visibility():
             manual = (self.cb_seed_mode.currentIndex() == 1)
@@ -2548,6 +2619,11 @@ class PlateSolverDialog(QDialog):
             self.settings.setValue("astap/seed_radius_value", float(self.le_radius_val.text().strip()))
         except Exception:
             pass
+        pref_idx_map = {0: "both", 1: "astap_only", 2: "astrometry_only"}
+        _set_solver_preference(
+            self.settings,
+            pref_idx_map.get(self.cb_solver_pref.currentIndex(), "both")
+        )        
         # fov
         self.settings.setValue("astap/seed_fov_mode",
                                "compute" if self.cb_fov_mode.currentIndex()==0 else ("auto" if self.cb_fov_mode.currentIndex()==1 else "value"))
