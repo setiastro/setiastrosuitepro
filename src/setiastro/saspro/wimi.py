@@ -3316,7 +3316,6 @@ class WIMIDialog(QDialog):
 
     def _fetch_atlas_catalog(self):
         if self._atlas_thread is not None and self._atlas_thread.isRunning():
-            print("[WIMI Atlas] thread already running, skipping")
             return
         self._atlas_thread = AtlasCatalogThread(parent=self)
         self._atlas_thread.finished.connect(self._on_wimi_atlas_ready)
@@ -5368,7 +5367,6 @@ class WIMIDialog(QDialog):
                 header = self._sanitize_wcs_header(header)
                 self.initialize_wcs_from_header(header)
                 self.status_label.setText("Status: Loaded view with astrometric solution.")
-                print(f"[WIMI Atlas] WCS initialized, center_ra={self.center_ra}, center_dec={self.center_dec}, scheduling atlas fetch")
                 QTimer.singleShot(0, self._fetch_atlas_catalog)
             except Exception as e:
                 self.wcs = None
@@ -5695,7 +5693,6 @@ class WIMIDialog(QDialog):
 
             print(f"WCS data loaded: RA={self.center_ra}, Dec={self.center_dec}, Pixel Scale={self.pixscale} arcsec/px")
             # kick off atlas overlap check whenever WCS is freshly initialized
-            print(f"[WIMI Atlas] WCS initialized, center_ra={self.center_ra}, center_dec={self.center_dec}, scheduling atlas fetch")
             QTimer.singleShot(0, self._fetch_atlas_catalog)
         except ValueError as e:
             raise ValueError(f"WCS initialization error: {e}")
