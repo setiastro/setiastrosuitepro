@@ -5351,6 +5351,7 @@ class StackingSuiteDialog(QDialog):
         layout.addWidget(self.tabs)
 
         self.dir_path_edit = QLineEdit(self.stacking_directory)
+        self._open_stacking_log_file()
 
         # Add tabs
         # Create tabs
@@ -5479,6 +5480,27 @@ class StackingSuiteDialog(QDialog):
 
         self._migrate_drizzle_keys_once()
         QTimer.singleShot(0, self._restore_tab_file_lists)
+
+    def _open_stacking_log_file(self):
+        """Open a timestamped log file in the stacking directory."""
+        directory = (self.stacking_directory or "").strip()
+        if not directory:
+            return  # no directory yet; will be opened when user sets one
+
+        dock = _get_log_dock()
+        if dock is None:
+            return
+
+        path = dock.open_log_file(directory)
+        if path:
+            self.update_status(f"📋 Log file opened: {path}")
+
+    def _reopen_stacking_log_file(self):
+        """
+        Call this whenever stacking_directory changes so the log
+        file moves to the new location.
+        """
+        self._open_stacking_log_file()
 
     def _get_exec_monitor(self) -> "StackingMonitorDialog":
         """Return the singleton monitor, creating it on first call."""
@@ -8021,6 +8043,8 @@ class StackingSuiteDialog(QDialog):
         # Update instance + QSettings (write RAW path; use normalized only for comparison)
         self.stacking_directory = new_dir_raw
         self.settings.setValue("stacking/dir",                  new_dir_raw)
+        if new_dir != prev_dir:
+            self._reopen_stacking_log_file()        
         self.settings.setValue("stacking/sigma_high",           self.sigma_high)
         self.settings.setValue("stacking/sigma_low",            self.sigma_low)
         self.settings.setValue("stacking/rejection_algorithm",  self.rejection_algorithm)
@@ -8264,6 +8288,15 @@ class StackingSuiteDialog(QDialog):
                 self.alignment_thread.wait(1500)
         except Exception:
             pass
+
+        # Flush and close the stacking log file
+        try:
+            dock = _get_log_dock()
+            if dock is not None:
+                dock.close_log_file()
+        except Exception:
+            pass
+
         super().closeEvent(e)
 
     def _mf_worker_class_from_settings(self):
