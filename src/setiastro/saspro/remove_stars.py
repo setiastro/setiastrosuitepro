@@ -468,6 +468,18 @@ def _syqon_model_path(d: Path, model_kind: str) -> Path:
         return d / "axiomv2.2.pt"
     return d / "nadir"
 
+def _syqon_signal_path(d: Path) -> Path:
+    """Path to the Signal 1.0 model file, always signal_v1.pt."""
+    return d / "signal_v1.pt"
+ 
+ 
+def _syqon_have_signal(d: Path) -> bool:
+    try:
+        p = _syqon_signal_path(d)
+        return p.exists() and p.is_file()
+    except Exception:
+        return False
+
 
 def _syqon_have_deps(d: Path, model_kind: str) -> tuple[bool, bool]:
     return True, _syqon_model_path(d, model_kind).exists()
@@ -548,6 +560,7 @@ class _SyQonProcessThread(QThread):
     preview  = pyqtSignal(object)
     finished = pyqtSignal(object, object, dict, str)
 
+
     def __init__(
         self,
         x_for_net: np.ndarray,
@@ -566,6 +579,10 @@ class _SyQonProcessThread(QThread):
         preview_max_dim: int = 900,
         preview_emit_ms: int = 120,
         parent=None,
+        signal_ckpt_path: str = "",
+        signal_tile: int = 1024,
+        signal_overlap: int = 64,
+        signal_diff_threshold: float = 0.020,        
     ):
         super().__init__(parent)
         self.x_for_net   = x_for_net
@@ -586,6 +603,10 @@ class _SyQonProcessThread(QThread):
             ad = "fp16"
         self.amp_dtype = ad
         self._cancel = False
+        self.signal_ckpt_path      = str(signal_ckpt_path)
+        self.signal_tile           = int(signal_tile)
+        self.signal_overlap        = int(signal_overlap)
+        self.signal_diff_threshold = float(signal_diff_threshold)
 
     def cancel(self):
         self._cancel = True
@@ -685,6 +706,11 @@ class _SyQonProcessThread(QThread):
                 channel_mode=self.channel_mode,    # ← add
                 progress_cb=_prog,
                 tile_cb=_tile_cb if (self.live_preview and preview_buf is not None) else None,
+                signal_ckpt_path      = self.signal_ckpt_path,
+                signal_tile           = self.signal_tile,
+                signal_overlap        = self.signal_overlap,
+                signal_diff_threshold = self.signal_diff_threshold,
+
             )
 
             if self._cancel:
@@ -1243,7 +1269,7 @@ class SyQonStarlessDialog(QDialog):
 
     def _refresh_state(self):
         standalone = (self._engine_mode() == "standalone_cli")
-
+    
         if standalone:
             exe_path = self.edt_cli_path.text().strip()
             if exe_path and os.path.isfile(exe_path):
@@ -1256,14 +1282,22 @@ class SyQonStarlessDialog(QDialog):
                 )
                 self.btn_process.setEnabled(False)
             return
-
+    
         mk    = self._model_kind()
         dst   = self._model_dst_path()
         label = _SYQON_MODEL_LABELS.get(mk, mk)
-
+    
         if self._have_model():
             self.lbl_model_path.setText(f"Installed model path:\n{str(dst)}")
-            self.lbl.setText(f"Ready ({label} model installed).")
+    
+            # Show Signal status for AxiomV2.2
+            if mk == "axiomv2.2":
+                sig_ok = _syqon_have_signal(self.data_dir)
+                sig_status = "Signal 1.0: installed ✓" if sig_ok else "Signal 1.0: not installed (optional but recommended)"
+                self.lbl.setText(f"Ready ({label} model installed).\n{sig_status}")
+            else:
+                self.lbl.setText(f"Ready ({label} model installed).")
+    
             self.btn_process.setEnabled(True)
             self.btn_remove.setEnabled(True)
         else:
@@ -1275,9 +1309,10 @@ class SyQonStarlessDialog(QDialog):
             )
             self.btn_process.setEnabled(False)
             self.btn_remove.setEnabled(False)
-
+    
         self.btn_buy.setEnabled(True)
         self.btn_install.setEnabled(True)
+
 
     def _open_buy_page(self):
         mk  = (self.cmb_model.currentText() or "nadir").lower().strip()
@@ -1292,31 +1327,32 @@ class SyQonStarlessDialog(QDialog):
             return
         QDesktopServices.openUrl(QUrl(url))
 
+
     def _install_model(self):
         import shutil
         mk    = self._model_kind()
         label = _SYQON_MODEL_LABELS.get(mk, mk)
-
+    
         src_path, _ = QFileDialog.getOpenFileName(
             self, f"Select SyQon {label} Model File", "",
             "Model Files (*.pt *.pth *.bin);;All Files (*)"
         )
         if not src_path:
             return
-
+    
         src = Path(src_path)
         if not src.exists():
             QMessageBox.warning(self, "SyQon", "Selected file does not exist.")
             return
-
+    
         dst = _syqon_model_path(self.data_dir, mk)
         dst.parent.mkdir(parents=True, exist_ok=True)
-
+    
         self.pbar.setVisible(True)
         self.pbar.setRange(0, 0)
         self.lbl.setText(f"Installing {label} model…")
         QApplication.processEvents()
-
+    
         try:
             shutil.copy2(str(src), str(dst))
         except Exception as e:
@@ -1324,17 +1360,52 @@ class SyQonStarlessDialog(QDialog):
             QMessageBox.critical(self, "SyQon", f"Failed to install model:\n{e}")
             self._refresh_state()
             return
-
+    
         self.pbar.setVisible(False)
-        self.lbl.setText(f"{label} model installed.")
-
+    
         s = getattr(self.main, "settings", None)
         if s:
             s.setValue("syqon/model_kind", mk)
             s.setValue(f"syqon/model_src_path/{mk}", str(src))
             s.setValue(f"syqon/model_installed_path/{mk}", str(dst))
-
+    
+        # ------------------------------------------------------------------
+        # AxiomV2.2: offer Signal 1.0 install immediately after Axiom install
+        # ------------------------------------------------------------------
+        if mk == "axiomv2.2":
+            reply = QMessageBox.question(
+                self,
+                "Install Signal 1.0?",
+                "Axiom V2.2 works with Signal 1.0 for star-core inpainting.\n\n"
+                "Would you like to install the Signal 1.0 model now?\n"
+                "(You can install it later via Install Downloaded Model…)",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                sig_src_path, _ = QFileDialog.getOpenFileName(
+                    self, "Select Signal 1.0 Model File (signal_v1.pt)", "",
+                    "Model Files (*.pt *.pth *.bin);;All Files (*)"
+                )
+                if sig_src_path:
+                    sig_src = Path(sig_src_path)
+                    sig_dst = _syqon_signal_path(self.data_dir)
+                    self.pbar.setVisible(True)
+                    self.pbar.setRange(0, 0)
+                    self.lbl.setText("Installing Signal 1.0 model…")
+                    QApplication.processEvents()
+                    try:
+                        shutil.copy2(str(sig_src), str(sig_dst))
+                        self.lbl.setText("Signal 1.0 model installed.")
+                        if s:
+                            s.setValue("syqon/signal_installed_path", str(sig_dst))
+                    except Exception as e:
+                        QMessageBox.warning(self, "SyQon", f"Signal 1.0 install failed:\n{e}")
+                    self.pbar.setVisible(False)
+    
+        self.lbl.setText(f"{label} model installed.")
         self._refresh_state()
+
 
     def _remove_model(self):
         dst = self._model_dst_path()
@@ -1480,7 +1551,12 @@ class SyQonStarlessDialog(QDialog):
         model_kind   = self._model_kind()
         live_preview = bool(self.chk_live_preview.isChecked())
         preview_src  = x_for_net if do_mtf else xrgb
-
+        # Resolve Signal 1.0 path — only used for AxiomV2.2
+        signal_ckpt_path = ""
+        if model_kind == "axiomv2.2":
+            sig_path = _syqon_signal_path(self.data_dir)
+            if sig_path.exists():
+                signal_ckpt_path = str(sig_path)
         self.proc_thr = _SyQonProcessThread(
             x_for_net=x_for_net,
             ckpt_path=ckpt_path,
@@ -1491,7 +1567,11 @@ class SyQonStarlessDialog(QDialog):
             model_kind=model_kind,
             use_amp=bool(self.chk_amp.isChecked()),
             amp_dtype="fp16",
-            channel_mode="rgb+perchan" if self.chk_rgb_perchan.isChecked() else "rgb",  # ← add
+            channel_mode="rgb+perchan" if self.chk_rgb_perchan.isChecked() else "rgb",
+            signal_ckpt_path=signal_ckpt_path,
+            signal_tile=1024,
+            signal_overlap=64,
+            signal_diff_threshold=0.020,
             live_preview=live_preview,
             preview_src_rgb01=(preview_src if live_preview else None),
             preview_max_dim=900,
