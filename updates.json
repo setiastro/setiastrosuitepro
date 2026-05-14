@@ -1,10 +1,10 @@
 {
-  "version": "1.16.1",
+  "version": "1.16.2",
   "downloads": {
-      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.16.1/setiastrosuitepro_windows.zip",
-      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.16.1/SetiAstroSuitePro_macOS_Intel.dmg",
-      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.16.1/SetiAstroSuitePro_AppleSilicon.dmg",
-      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.16.1/SetiAstroSuitePro_linux.tar.xz"
+      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.16.2/setiastrosuitepro_windows.zip",
+      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.16.2/SetiAstroSuitePro_macOS_Intel.dmg",
+      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.16.2/SetiAstroSuitePro_AppleSilicon.dmg",
+      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.16.2/SetiAstroSuitePro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.16.1 Update to Workflows including a Run UI that is a mini UI to use your workflow once you have it built. Updates to both WIMI and WIMS to show if there are community images in your search area. Gallery option now in the Sky Atlas UI.   V1.16.0 Seti Astro Community's Sky Atlas: Upload your plate solved final image to the community's sky atlas and see all the objects on the sky built up from SASpro users! Let's fill up the whole sky with our images! PSFViewer major overhaul. Other Bug fixes and UX tweaks."
+  "notes": "Seti Astro Suite Pro V1.16.2 Stacking Suite log will now be created and updated in the stacking directory. Function Bundle and View Bundle chip upgrade. Remove Stars update for Axiom 2.2 release.  V1.16.1 Update to Workflows including a Run UI that is a mini UI to use your workflow once you have it built. Updates to both WIMI and WIMS to show if there are community images in your search area. Gallery option now in the Sky Atlas UI.   V1.16.0 Seti Astro Community's Sky Atlas: Upload your plate solved final image to the community's sky atlas and see all the objects on the sky built up from SASpro users! Let's fill up the whole sky with our images! PSFViewer major overhaul. Other Bug fixes and UX tweaks."
 }
