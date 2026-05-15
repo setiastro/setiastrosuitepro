@@ -3912,14 +3912,19 @@ class StarRegistrationThread(QThread):
                         if isinstance(drizzle, tuple) and len(drizzle) == 2:
                             kind, M = drizzle
                             try:
-                                if kind == "affine":
+                                if kind == "affine" and M is not None:
                                     self.drizzle_xforms[k] = ("affine", np.asarray(M, np.float64).reshape(2, 3))
-                                elif kind == "homography":
+                                elif kind == "homography" and M is not None:
                                     self.drizzle_xforms[k] = ("homography", np.asarray(M, np.float64).reshape(3, 3))
+                                elif M is None:
+                                    # poly or other model — fall back to accumulated affine for drizzle
+                                    A_fallback = self.alignment_matrices.get(k)
+                                    if A_fallback is not None:
+                                        self.drizzle_xforms[k] = ("affine", np.asarray(A_fallback, np.float64).reshape(2, 3))
                                 else:
                                     self.drizzle_xforms[k] = (str(kind), None)
-                            except Exception:
-                                pass
+                            except Exception as ex:
+                                self.progress_update.emit(f"⚠️ Could not store drizzle transform for {os.path.basename(orig_path)}: {ex}")
                     self._increment_progress()
         finally:
             try: shutil.rmtree(tmpdir, ignore_errors=True)
@@ -3995,18 +4000,34 @@ class StarRegistrationThread(QThread):
 
                 _fmt = lambda x: f"{float(x):.16g}"
 
-                # then for writing:
-                if kind == "homography":
-                    H = np.asarray(M, np.float64).reshape(3, 3)
-                    f.write(f"{_fmt(H[0,0])}, {_fmt(H[0,1])}, {_fmt(H[0,2])}\n")
-                    f.write(f"{_fmt(H[1,0])}, {_fmt(H[1,1])}, {_fmt(H[1,2])}\n")
-                    f.write(f"{_fmt(H[2,0])}, {_fmt(H[2,1])}, {_fmt(H[2,2])}\n\n")
-                elif kind == "affine":
-                    A = np.asarray(M, np.float64).reshape(2, 3)
-                    f.write(f"{_fmt(A[0,0])}, {_fmt(A[0,1])}, {_fmt(A[0,2])}\n")
-                    f.write(f"{_fmt(A[1,0])}, {_fmt(A[1,1])}, {_fmt(A[1,2])}\n\n")
+                if kind == "homography" and M is not None:
+                    try:
+                        H = np.asarray(M, np.float64).reshape(3, 3)
+                        f.write(f"{_fmt(H[0,0])}, {_fmt(H[0,1])}, {_fmt(H[0,2])}\n")
+                        f.write(f"{_fmt(H[1,0])}, {_fmt(H[1,1])}, {_fmt(H[1,2])}\n")
+                        f.write(f"{_fmt(H[2,0])}, {_fmt(H[2,1])}, {_fmt(H[2,2])}\n\n")
+                    except Exception:
+                        f.write("UNSUPPORTED\n\n")
+                elif kind in ("affine", "similarity") and M is not None:
+                    try:
+                        A = np.asarray(M, np.float64).reshape(2, 3)
+                        f.write(f"{_fmt(A[0,0])}, {_fmt(A[0,1])}, {_fmt(A[0,2])}\n")
+                        f.write(f"{_fmt(A[1,0])}, {_fmt(A[1,1])}, {_fmt(A[1,2])}\n\n")
+                    except Exception:
+                        f.write("UNSUPPORTED\n\n")
                 else:
-                    f.write("MATRIX: \nUNSUPPORTED\n\n")
+                    # M is None (poly models) or unknown kind — write what we can from alignment_matrices
+                    M_raw = self.alignment_matrices.get(k)
+                    if M_raw is not None:
+                        try:
+                            A = np.asarray(M_raw, np.float64).reshape(2, 3)
+                            f.write(f"# fallback affine from refinement\n")
+                            f.write(f"{_fmt(A[0,0])}, {_fmt(A[0,1])}, {_fmt(A[0,2])}\n")
+                            f.write(f"{_fmt(A[1,0])}, {_fmt(A[1,1])}, {_fmt(A[1,2])}\n\n")
+                        except Exception:
+                            f.write("UNSUPPORTED\n\n")
+                    else:
+                        f.write("UNSUPPORTED\n\n")
 
 def _center_crop_params(Href, Wref, Hsrc, Wsrc, scale=1.10):
     # crop box centered in reference, sized ~ source*scale, but clamped to ref

@@ -320,7 +320,6 @@ class _BatchWorker(QThread):
                     track_mode=str(cfg.track_mode),
                     surface_anchor=cfg.surface_anchor,
                     analysis=ar,
-                    local_warp=True,
                     progress_cb=_cb,
                     drizzle_scale=float(cfg.drizzle_scale),
                     drizzle_pixfrac=float(cfg.drizzle_pixfrac),
