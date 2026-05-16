@@ -23,6 +23,34 @@ if TYPE_CHECKING:
 
 import os
 
+
+from PyQt6.QtWidgets import QStyledItemDelegate
+from PyQt6.QtGui import QPainter, QColor
+from PyQt6.QtCore import QRect
+
+class ActiveDocDelegate(QStyledItemDelegate):
+    """Draws a teal left-bar accent on the row whose doc is the active document."""
+
+    def __init__(self, get_active_fn, parent=None):
+        super().__init__(parent)
+        self._get_active = get_active_fn   # callable → current active doc
+
+    def paint(self, painter: QPainter, option, index):
+        super().paint(painter, option, index)
+        doc = index.data(Qt.ItemDataRole.UserRole)
+        if doc is None:
+            return
+        active = self._get_active()
+        if active is None:
+            return
+        if doc is active or getattr(doc, "_base_doc", doc) is getattr(active, "_base_doc", active):
+            painter.save()
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor("#3dbf9f"))   # teal accent
+            bar = QRect(option.rect.left(), option.rect.top(), 3, option.rect.height())
+            painter.drawRect(bar)
+            painter.restore()
+
 GLYPHS = "■●◆▲▪▫•◼◻◾◽🔗"
 
 def _strip_ui_decorations(text: str) -> str:
@@ -204,6 +232,12 @@ class DockMixin:
         self.explorer_dock.setObjectName("ExplorerDock")
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.explorer_dock)
 
+        self._active_doc_delegate = ActiveDocDelegate(
+            lambda: getattr(self, "_current_active_doc", None),
+            self.explorer
+        )
+        self.explorer.setItemDelegate(self._active_doc_delegate)
+
     def _init_console_dock(self):
         self.console = QListWidget()
 
@@ -374,6 +408,24 @@ class DockMixin:
         # self.currentDocumentChanged.disconnect(self.header_viewer.set_document)  # if previously connected
         # (If you prefer to keep the signal for explicit tab switches, it's fine to leave
         #  it connected--the dock's new guard will ignore non-active/hover docs.)
+
+    def _sync_explorer_to_active_doc(self, doc):
+        """Called whenever the active MDI document changes."""
+        # Normalize to base doc
+        base = self._normalize_base_doc(doc) if doc else None
+        self._current_active_doc = base
+
+        # Repaint explorer so the delegate re-draws the accent bar
+        self.explorer.viewport().update()
+
+        # Also scroll the active row into view (but don't change selection)
+        if base is None:
+            return
+        for i in range(self.explorer.topLevelItemCount()):
+            it = self.explorer.topLevelItem(i)
+            if it.data(0, Qt.ItemDataRole.UserRole) is base:
+                self.explorer.scrollToItem(it, QAbstractItemView.ScrollHint.EnsureVisible)
+                break
 
     def _all_known_docks(self) -> list[QDockWidget]:
         docks = []
