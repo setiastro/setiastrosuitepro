@@ -23,7 +23,7 @@ from PyQt6.QtCore import Qt, QSize, QEvent, QPointF, QTimer, QSettings, QByteArr
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QSpinBox,
     QCheckBox, QPushButton, QScrollArea, QWidget, QMessageBox, QComboBox,
-    QGroupBox, QApplication, QToolBar, QToolButton
+    QGroupBox, QApplication, QToolBar, QToolButton, QRadioButton
 )
 from PyQt6.QtGui import QImage, QPixmap, QPainter, QColor, QPen
 from PyQt6 import sip
@@ -401,45 +401,34 @@ def abe_run(
     legacy_prestretch: bool = True,
     manual_points: np.ndarray | None = None,
     rng=None,
+    correction_mode: str = "subtract",
 ) -> tuple[np.ndarray, np.ndarray] | np.ndarray:
-    """Two-stage ABE (poly + optional RBF) with SASv2-compatible pre/post stretch.
-
-    NOTE: For RGB images, always run ABE on the combined RGB image rather than
-    on individual channels separately. The legacy stretch/unstretch stage
-    operates on per-channel statistics — running it independently on R, G, B
-    then combining can introduce small inter-channel offsets at saturated pixels
-    that downstream tools (e.g. color matrix white balance) may amplify into
-    visible color artifacts.
-    """
     if image is None:
         raise ValueError("ABE: image is None")
 
     img_src = np.asarray(image).astype(np.float32, copy=False)
     mono = (img_src.ndim == 2) or (img_src.ndim == 3 and img_src.shape[2] == 1)
-    # Preserve dynamic range: normalize only for internal modeling if needed,
-    # then restore the original scale before returning.
+
     finite_mask = np.isfinite(img_src)
     work_scale = float(np.max(img_src[finite_mask])) if np.any(finite_mask) else 1.0
     if not np.isfinite(work_scale) or work_scale <= 0.0:
         work_scale = 1.0
 
     img_src_work = img_src / work_scale if work_scale > 1.0 else img_src
-    # Work in RGB internally (even for mono) so pre/post stretch matches SASv2 behavior
     img_rgb = img_src_work if (img_src_work.ndim == 3 and img_src_work.shape[2] == 3) else np.stack(
         [img_src_work.squeeze()] * 3, axis=-1
     )
 
-    # --- SASv2 modeling domain (optional) ---------------------------------
+    # --- Stretch for background FITTING only ---
     stretch_state = None
+    img_rgb_stretched = img_rgb
     if legacy_prestretch:
-        img_rgb, stretch_state = _legacy_stretch_unlinked(img_rgb)
+        img_rgb_stretched, stretch_state = _legacy_stretch_unlinked(img_rgb)
 
-    # IMPORTANT: compute original median ONCE in the modeling domain
-    orig_med = float(np.median(img_rgb))
+    orig_med = float(np.median(img_rgb_stretched))
 
-    # downsample & mask (for fitting only)
     if progress_cb: progress_cb("Downsampling image…")
-    small = _downsample_area(img_rgb, downsample)
+    small = _downsample_area(img_rgb_stretched, downsample)
     mask_small = None
     if exclusion_mask is not None:
         if progress_cb: progress_cb("Downsampling exclusion mask…")
@@ -449,8 +438,6 @@ def abe_run(
         mp = np.asarray(manual_points, dtype=np.int32)
         if mp.ndim == 2 and mp.shape[1] == 2 and len(mp) > 0:
             manual_small = _scale_points_to_small(mp, img_rgb.shape[:2], small.shape[:2])
-
-            # honor exclusion mask if present
             if mask_small is not None and len(manual_small) > 0:
                 keep = []
                 Hs, Ws = mask_small.shape[:2]
@@ -460,11 +447,11 @@ def abe_run(
                     if bool(mask_small[yy, xx]):
                         keep.append((xx, yy))
                 manual_small = np.asarray(keep, dtype=np.int32) if keep else np.zeros((0, 2), dtype=np.int32)
-    # ---------- Polynomial stage (skip when degree == 0) ----------
+
+    # --- Polynomial stage ---
     if degree <= 0:
         if progress_cb: progress_cb("Degree 0: skipping polynomial stage…")
-        after_poly = img_rgb.copy()                         # nothing removed yet
-        total_bg   = np.zeros_like(img_rgb, dtype=np.float32)
+        bg_poly_stretched = np.zeros_like(img_rgb_stretched, dtype=np.float32)
     else:
         if progress_cb: progress_cb("Sampling points (poly stage)…")
         if manual_small is not None and len(manual_small) > 0:
@@ -477,24 +464,24 @@ def abe_run(
                 patch_size=patch_size,
                 rng=rng,
             )
-
         if progress_cb: progress_cb(f"Fitting polynomial (degree {degree})…")
         bg_poly_small = _fit_poly_on_small(small, pts, degree=degree, patch_size=patch_size)
-
         if progress_cb: progress_cb("Upscaling polynomial background…")
-        bg_poly = _upscale_bg(bg_poly_small, img_rgb.shape[:2])
+        bg_poly_stretched = _upscale_bg(bg_poly_small, img_rgb_stretched.shape[:2])
 
-        if progress_cb: progress_cb("Subtracting polynomial background & re-centering…")
-        after_poly = img_rgb - bg_poly
-        med_after  = float(np.median(after_poly))
-        after_poly = after_poly + (orig_med - med_after)
-        after_poly = _anchor_median_linear_rescale(after_poly, orig_med)  # ← restored
-
-        total_bg = bg_poly.astype(np.float32, copy=False)
-    # ---------- RBF refinement --------------------------------------------
+    # --- RBF stage ---
     if use_rbf:
+        # RBF refines on the poly-subtracted stretched image
+        if degree > 0:
+            after_poly_stretched = img_rgb_stretched - bg_poly_stretched
+            med_after = float(np.median(after_poly_stretched))
+            after_poly_stretched = after_poly_stretched + (orig_med - med_after)
+            after_poly_stretched = _anchor_median_linear_rescale(after_poly_stretched, orig_med)
+        else:
+            after_poly_stretched = img_rgb_stretched.copy()
+
         if progress_cb: progress_cb("Downsampling for RBF stage…")
-        small_rbf = _downsample_area(after_poly, downsample)
+        small_rbf = _downsample_area(after_poly_stretched, downsample)
 
         if progress_cb: progress_cb("Sampling points (RBF stage)…")
         if manual_points is not None and len(manual_points) > 0:
@@ -503,16 +490,11 @@ def abe_run(
                 img_rgb.shape[:2],
                 small_rbf.shape[:2],
             )
-
             if mask_small is not None and len(pts_rbf) > 0:
                 keep = []
                 Hs, Ws = small_rbf.shape[:2]
-                # if mask_small shape differs slightly from small_rbf, rebuild a matching one
-                if mask_small.shape[:2] != small_rbf.shape[:2]:
-                    mask_rbf = _downsample_area(exclusion_mask.astype(np.float32), downsample) >= 0.5
-                else:
-                    mask_rbf = mask_small
-
+                mask_rbf = mask_small if mask_small.shape[:2] == small_rbf.shape[:2] else \
+                    _downsample_area(exclusion_mask.astype(np.float32), downsample) >= 0.5
                 for x, y in pts_rbf:
                     xx = int(np.clip(x, 0, Ws - 1))
                     yy = int(np.clip(y, 0, Hs - 1))
@@ -530,49 +512,64 @@ def abe_run(
 
         if progress_cb: progress_cb(f"Fitting RBF (smooth={rbf_smooth:.3f})…")
         bg_rbf_small = _fit_rbf_on_small(small_rbf, pts_rbf, smooth=rbf_smooth, patch_size=patch_size)
-
         if progress_cb: progress_cb("Upscaling RBF background…")
-        bg_rbf = _upscale_bg(bg_rbf_small, img_rgb.shape[:2])
+        bg_rbf_stretched = _upscale_bg(bg_rbf_small, img_rgb_stretched.shape[:2])
 
-        if progress_cb: progress_cb("Combining backgrounds & finalizing…")
-        total_bg = (total_bg + bg_rbf).astype(np.float32)
-        corrected = img_rgb - total_bg
-        med2 = float(np.median(corrected))
-        corrected = corrected + (orig_med - med2)
-        corrected = _anchor_median_linear_rescale(corrected, orig_med)  # ← restored
+        # Total background in stretched space
+        total_bg_stretched = (bg_poly_stretched + bg_rbf_stretched).astype(np.float32)
     else:
-        if progress_cb: progress_cb("Finalizing…")
-        corrected = after_poly
+        total_bg_stretched = bg_poly_stretched.astype(np.float32)
 
-    # --- Undo SASv2 modeling domain if used -------------------------------
+    # ---------------------------------------------------------------
+    # KEY FIX: unstretch the background BEFORE subtracting,
+    # then subtract in linear space from the original linear image.
+    # This preserves star colors and all linear photometric relationships.
+    # ---------------------------------------------------------------
     if legacy_prestretch and stretch_state is not None:
-        if progress_cb: progress_cb("Unstretching to source domain…")
-        corrected = _legacy_unstretch_unlinked(corrected, stretch_state)
-        total_bg  = _legacy_unstretch_unlinked(total_bg,  stretch_state)
-
-        # Make sure types are float32
-        corrected = corrected.astype(np.float32, copy=False)
-        total_bg  = total_bg.astype(np.float32, copy=False)
-
-        # If original was mono, squeeze to 2D
-        if mono:
-            if corrected.ndim == 3:
-                corrected = corrected[..., 0]
-            if total_bg.ndim == 3:
-                total_bg  = total_bg[..., 0]
+        if progress_cb: progress_cb("Unstretching background to linear domain…")
+        total_bg_linear = _legacy_unstretch_unlinked(total_bg_stretched, stretch_state)
+        total_bg_linear = total_bg_linear.astype(np.float32, copy=False)
     else:
-        # We stayed in RGB all along; if the source was mono, return mono
-        if mono:
-            corrected = corrected[..., 0]
-            total_bg  = total_bg[..., 0]
-    # Restore original input scale if we normalized for internal processing
+        total_bg_linear = total_bg_stretched
+
+    if progress_cb: progress_cb("Applying background correction in linear space…")
+    if correction_mode == "divide":
+        # Normalize background to 1.0 at its median so division is stable
+        bg_med = float(np.median(total_bg_linear))
+        bg_med = bg_med if bg_med > 1e-8 else 1e-8
+        bg_norm = total_bg_linear / bg_med
+        bg_norm = np.where(bg_norm < 1e-8, 1e-8, bg_norm)
+        corrected = img_rgb / bg_norm
+        # Re-center to original median
+        orig_linear_med = float(np.median(img_rgb))
+        corr_med = float(np.median(corrected))
+        if corr_med > 1e-8:
+            corrected = corrected * (orig_linear_med / corr_med)
+    else:
+        corrected = img_rgb - total_bg_linear
+        orig_linear_med = float(np.median(img_rgb))
+        corr_med = float(np.median(corrected))
+        corrected = corrected + (orig_linear_med - corr_med)
+
+    corrected = _anchor_median_linear_rescale(corrected, float(np.median(img_rgb)))
+    corrected = corrected.astype(np.float32, copy=False)
+    total_bg_linear = total_bg_linear.astype(np.float32, copy=False)
+
+    # Restore original input scale
     if work_scale > 1.0:
         corrected = corrected * work_scale
-        total_bg = total_bg * work_scale
+        total_bg_linear = total_bg_linear * work_scale
+
+    # Squeeze mono back to 2D
+    if mono:
+        if corrected.ndim == 3:
+            corrected = corrected[..., 0]
+        if total_bg_linear.ndim == 3:
+            total_bg_linear = total_bg_linear[..., 0]
 
     if progress_cb: progress_cb("Ready")
     if return_background:
-        return corrected.astype(np.float32, copy=False), total_bg.astype(np.float32, copy=False)
+        return corrected.astype(np.float32, copy=False), total_bg_linear.astype(np.float32, copy=False)
     return corrected.astype(np.float32, copy=False)
 
 
@@ -688,6 +685,22 @@ class ABEDialog(QDialog):
         self.sp_patch = QSpinBox(); self.sp_patch.setRange(5, 151); self.sp_patch.setSingleStep(2); self.sp_patch.setValue(15)
         self.chk_use_rbf = QCheckBox(self.tr("Enable RBF refinement (after polynomial)")); self.chk_use_rbf.setChecked(True)
         self.sp_rbf = QSpinBox(); self.sp_rbf.setRange(0, 1000); self.sp_rbf.setValue(100)  # shown as ×0.01 below
+        corr_box = QGroupBox(self.tr("Correction Mode"))
+        corr_layout = QHBoxLayout(corr_box)
+        self.radio_subtract = QRadioButton(self.tr("Subtract"))
+        self.radio_divide   = QRadioButton(self.tr("Divide"))
+        self.radio_subtract.setChecked(True)
+        self.radio_subtract.setToolTip(
+            "Subtract the background model from the image.\n"
+            "Standard approach for most deep-sky data."
+        )
+        self.radio_divide.setToolTip(
+            "Divide the image by the background model (normalized to 1).\n"
+            "Better for images with strong vignetting or multiplicative gradients."
+        )
+        corr_layout.addWidget(self.radio_subtract)
+        corr_layout.addWidget(self.radio_divide)
+        corr_layout.addStretch(1)
         self.chk_make_bg_doc = QCheckBox(self.tr("Create background document")); self.chk_make_bg_doc.setChecked(False)
         self.chk_preview_bg   = QCheckBox(self.tr("Preview background instead of corrected")); self.chk_preview_bg.setChecked(False)
         self.cmb_sample_mode = QComboBox()
@@ -797,6 +810,7 @@ class ABEDialog(QDialog):
         opts.addWidget(gb_place)        # Place Grid / Show Auto Points — part of sampling setup
         opts.addWidget(self.btn_clear_samples)
         opts.addWidget(rbf_box)         # RBF refinement
+        opts.addWidget(corr_box)   
         opts.addWidget(self.chk_make_bg_doc)
         opts.addWidget(self.chk_preview_bg)
         row = QHBoxLayout()
@@ -838,7 +852,8 @@ class ABEDialog(QDialog):
         self.sp_seed.valueChanged.connect(self._save_settings)
         self.chk_use_rbf.toggled.connect(self._save_settings)
         self.sp_rbf.valueChanged.connect(self._save_settings)
-
+        self.radio_subtract.toggled.connect(self._save_settings)
+        self.radio_divide.toggled.connect(self._save_settings)
         self.chk_make_bg_doc.toggled.connect(self._save_settings)
         self.chk_preview_bg.toggled.connect(self._save_settings)
 
@@ -861,7 +876,10 @@ class ABEDialog(QDialog):
         # RBF
         self.chk_use_rbf.setChecked(bool(s.value("abe/use_rbf", True, type=bool)))
         self.sp_rbf.setValue(int(s.value("abe/rbf_smooth_x100", 100)))
-
+        divide = bool(s.value("abe/correction_divide", False, type=bool))
+        if hasattr(self, "radio_divide"):
+            self.radio_divide.setChecked(divide)
+            self.radio_subtract.setChecked(not divide)
         # Options
         self.chk_make_bg_doc.setChecked(bool(s.value("abe/make_bg_doc", False, type=bool)))
         self.chk_preview_bg.setChecked(bool(s.value("abe/preview_bg", False, type=bool)))
@@ -879,6 +897,7 @@ class ABEDialog(QDialog):
         s.setValue("abe/downsample", self.sp_down.value())
         s.setValue("abe/patch_size", self.sp_patch.value())
         s.setValue("abe/sample_mode", self.cmb_sample_mode.currentText())
+        s.setValue("abe/correction_divide", self.radio_divide.isChecked())
 
         s.setValue("abe/use_rbf", self.chk_use_rbf.isChecked())
         s.setValue("abe/rbf_smooth_x100", self.sp_rbf.value())
@@ -1140,6 +1159,7 @@ class ABEDialog(QDialog):
         rng = np.random.default_rng(seed if seed >= 0 else None)
 
         manual_pts = self._manual_points_array() if self._manual_mode() else None
+        correction_mode = "divide" if self.radio_divide.isChecked() else "subtract"
 
         return abe_run(
             imgf,
@@ -1153,6 +1173,7 @@ class ABEDialog(QDialog):
             return_background=True,
             progress_cb=progress,
             manual_points=manual_pts,
+            correction_mode=correction_mode,
             rng=rng,
         )
 

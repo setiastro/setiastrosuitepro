@@ -243,8 +243,8 @@ class RGBCombinationDialogPro(QDialog):
                 r = _mono_from_any(getattr(rdoc, "image", None))
                 g = _mono_from_any(getattr(gdoc, "image", None))
                 b = _mono_from_any(getattr(bdoc, "image", None))
-                # propose a title from selections
                 title = "RGB_Combined"
+                wcs_donor_docs = [gdoc, rdoc, bdoc]  # G → R → B priority
             else:
                 if not (self.r_path and self.g_path and self.b_path):
                     QMessageBox.information(self, "RGB Combination", "Please choose three files.")
@@ -253,6 +253,7 @@ class RGBCombinationDialogPro(QDialog):
                 g = self._load_file_mono(self.g_path)
                 b = self._load_file_mono(self.b_path)
                 title = f"RGB_{os.path.splitext(os.path.basename(self.r_path))[0]}"
+                wcs_donor_docs = []  # file mode: no open docs to pull WCS from
 
             if r.shape != g.shape or r.shape != b.shape:
                 raise ValueError("All three images must have identical dimensions.")
@@ -262,7 +263,7 @@ class RGBCombinationDialogPro(QDialog):
 
             if not self._docman:
                 raise RuntimeError("No document manager available.")
-            # create new document every time
+
             if hasattr(self._docman, "open_array"):
                 newdoc = self._docman.open_array(rgb, metadata={"step_name": "RGB Combination"}, title=title)
             elif hasattr(self._docman, "open_numpy"):
@@ -270,8 +271,20 @@ class RGBCombinationDialogPro(QDialog):
             else:
                 newdoc = self._docman.create_document(image=rgb, metadata={"step_name": "RGB Combination"}, name=title)
 
-            if hasattr(self.parent(), "_spawn_subwindow_for"):
-                self.parent()._spawn_subwindow_for(newdoc)
+            # Inherit WCS from G → R → B, whichever has one first
+            mw = self.parent()
+            if wcs_donor_docs and hasattr(mw, "_extract_wcs_dict") and hasattr(mw, "_apply_wcs_dict_to_doc"):
+                for donor in wcs_donor_docs:
+                    try:
+                        wcs = mw._extract_wcs_dict(donor)
+                        if wcs:
+                            mw._apply_wcs_dict_to_doc(newdoc, dict(wcs))
+                            break
+                    except Exception:
+                        continue
+
+            if hasattr(mw, "_spawn_subwindow_for"):
+                mw._spawn_subwindow_for(newdoc)
 
             self.accept()
 
