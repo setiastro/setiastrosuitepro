@@ -434,7 +434,7 @@ def torch_reduce_tile(
                 f"Unsupported forced_reject_mask_np ndim={frm.ndim} shape={frm.shape}"
             )
 
-        forced_reject = torch.from_numpy(np.ascontiguousarray(frm)).to(dev, dtype=torch.bool, non_blocking=False)
+        forced_reject = torch.from_numpy(np.array(frm, dtype=bool, order="C")).to(dev, dtype=torch.bool, non_blocking=False)
 
     algo = algo_name
 

@@ -628,6 +628,7 @@ class AstroSuiteProMainWindow(
 
         self._minimize_interceptor = MinimizeInterceptor(self.window_shelf, self)
         self.currentDocumentChanged.connect(self._sync_docman_active)
+        self.currentDocumentChanged.connect(self._sync_explorer_to_active_doc)
         self.scriptman = ScriptManager(self)
         self.scriptman.load_registry()
         # Docks

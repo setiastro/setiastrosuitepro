@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "setiastrosuitepro"
-version = "1.16.3"
+version = "1.16.4"
 description = "Seti Astro Suite Pro - Advanced astrophotography toolkit for image calibration, stacking, registration, photometry, and visualization"
 authors = ["Franklin Marek <frank@setiastro.com>"]
 readme = "README.md"
@@ -46,7 +46,6 @@ imagecodecs = "*"
 # astronomy
 astropy = "*"
 photutils = "*"
-astroalign = "*"
 sep = "*"
 reproject = "*"
 tzlocal = "*"
