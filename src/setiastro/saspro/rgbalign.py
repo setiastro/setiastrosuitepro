@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QImage, QPixmap, QMouseEvent, QCursor
 
 
-import astroalign
+from setiastro.saspro import astroalign
 
 import sep
 

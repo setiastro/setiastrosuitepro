@@ -5,7 +5,7 @@ import json
 import re
 import numpy as np
 import cv2
-import astroalign
+from setiastro.saspro import astroalign
 from PyQt6.QtWidgets import (
     QDialog, QFormLayout, QDialogButtonBox, QComboBox, QLineEdit, QCheckBox,
     QSpinBox, QPushButton, QFileDialog, QWidget, QMessageBox

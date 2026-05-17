@@ -1,4 +1,4 @@
-#pro.star_alignment.py
+#saspro.star_alignment.py
 from __future__ import annotations
 
 import os
@@ -154,7 +154,7 @@ import traceback
 import requests
 import numpy as np
 
-import astroalign
+from setiastro.saspro import astroalign
 import sep
 import re
 import warnings
@@ -1719,7 +1719,7 @@ def compute_affine_transform_astroalign_cropped(source_img, reference_img,
     Returns a 2x3 affine matrix in float64, or None.
     """
     import numpy as np
-    import astroalign
+    from setiastro.saspro import astroalign
 
     # Optional global AA lock (if present in your module)
     try:
@@ -1944,7 +1944,7 @@ def _aa_find_pairs_multitile(src_gray: np.ndarray,
         (if you want only AA limiting, set tiles=1).
     """
     import numpy as np
-    import astroalign
+    from setiastro.saspro import astroalign
     try:
         _lock = _AA_LOCK
     except NameError:
@@ -2088,7 +2088,7 @@ def compute_similarity_transform_astroalign_cropped(source_img, reference_img,
                                                    min_fwhm: float = 1.2,
                                                    max_ellipticity: float = 0.6):
     import numpy as np
-    import astroalign
+    from setiastro.saspro import astroalign
     import cv2
 
     try:
@@ -2915,7 +2915,7 @@ class StarRegistrationWorker(QRunnable):
         image-based Astroalign only if needed.
         """
         import numpy as np
-        import astroalign
+        from setiastro.saspro import astroalign
 
         global _AA_LOCK
 
@@ -3141,7 +3141,7 @@ class StarRegistrationThread(QThread):
         For poly3/4 we still return the base model here; finalize does the true residual warp.
         """
         import numpy as np
-        import astroalign
+        from setiastro.saspro import astroalign
         import cv2
 
         src = np.ascontiguousarray(src_gray.astype(np.float32))

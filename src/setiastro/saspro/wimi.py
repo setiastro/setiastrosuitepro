@@ -82,7 +82,7 @@ from astropy.table import Table, vstack
 from numba import njit, prange
 from scipy.optimize import curve_fit
 import exifread
-import astroalign
+from setiastro.saspro import astroalign
 import sqlite3
 from datetime import datetime
 import traceback

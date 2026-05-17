@@ -1328,7 +1328,12 @@ def main(argv: list[str] | None = None) -> int:
             start_background_warmup()
         except Exception:
             pass  # Non-critical if warmup fails
-
+        try:
+            import threading
+            from setiastro.saspro.astroalign import warmup_jit
+            threading.Thread(target=warmup_jit, daemon=True, name="aa-jit-warmup").start()
+        except Exception:
+            pass
         if _splash:
             _splash.setMessage(QCoreApplication.translate("Splash", "Ready!"))
             _splash.setProgress(100)
