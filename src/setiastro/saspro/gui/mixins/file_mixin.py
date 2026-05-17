@@ -591,6 +591,7 @@ class FileMixin:
                 f"Exported FITS bundle: {path} "
                 f"({chosen_bd}, {len(selected_entries)} view(s))"
             )
+            self._add_recent_image(path)
             self.settings.setValue("paths/last_save_dir", os.path.dirname(path))
         except Exception as e:
             QMessageBox.critical(
@@ -833,6 +834,7 @@ class FileMixin:
                 export_opts=export_opts,
             )
             self._log(f"Saved: {path} ({chosen_bd})")
+            self._add_recent_image(path)
             self.settings.setValue("paths/last_save_dir", os.path.dirname(path))
         except Exception as e:
             QMessageBox.critical(self, self.tr("Save failed"), str(e))
@@ -1300,6 +1302,7 @@ class FileMixin:
                 export_opts=dlg.export_options(),
             )
             self._log(f"Saved: {path} ({dlg.selected_bit_depth()})")
+            self._add_recent_image(path)
             self.settings.setValue("paths/last_save_dir", os.path.dirname(path))
         except Exception as e:
             QMessageBox.critical(self, self.tr("Save failed"), str(e))    
