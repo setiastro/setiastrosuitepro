@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "setiastrosuitepro"
-version = "1.16.4.post1"
+version = "1.16.4.post2"
 description = "Seti Astro Suite Pro - Advanced astrophotography toolkit for image calibration, stacking, registration, photometry, and visualization"
 authors = ["Franklin Marek <frank@setiastro.com>"]
 readme = "README.md"
@@ -89,6 +89,7 @@ psutil = "*"
 
 # computer vision
 opencv-python-headless = "*"
+scikit-image = "*"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "*"
