@@ -238,6 +238,10 @@ def current_backend() -> str:
         import platform as _plat
         torch = importlib.import_module("torch")
 
+        # check for stub (injected when torch isn't installed yet)
+        if getattr(torch, "__version__", "") == "0.0.0+unavailable":
+            return "Not installed"
+
         try:
             hip_ver = getattr(getattr(torch, "version", None), "hip", None)
         except Exception:
@@ -281,8 +285,11 @@ def current_backend() -> str:
                 pass
 
         return "CPU"
+    except ModuleNotFoundError:
+        # torch not installed yet (first run) — silent, expected
+        return "Not installed"
     except Exception as e:
-        import traceback
-        print(f"[current_backend] FAILED: {type(e).__name__}: {e}")
-        print(traceback.format_exc())
+        # Unexpected failure — log concisely, no traceback spam
+        import logging
+        logging.debug("[current_backend] failed: %s: %s", type(e).__name__, e)
         return "Not installed"
