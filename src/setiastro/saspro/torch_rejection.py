@@ -469,7 +469,9 @@ def torch_reduce_tile(
             for _ in range(int(iterations)):
                 x = ts.masked_fill(~keep, float("nan"))
                 med = _nanmedian(torch, x, dim=0)
-                std = _nanstd(torch, x, dim=0)
+                abs_dev = (ts - med.unsqueeze(0)).abs().masked_fill(~keep, float("nan"))
+                mad = _nanmedian(torch, abs_dev, dim=0)
+                std = (mad * 1.4826).clamp_min(1e-12)
                 lo = med - low * std
                 hi = med + high * std
                 keep = valid & (ts >= lo.unsqueeze(0)) & (ts <= hi.unsqueeze(0))
@@ -543,7 +545,9 @@ def torch_reduce_tile(
             for _ in range(int(iterations)):
                 x = ts.masked_fill(~keep, float("nan"))
                 med = _nanmedian(torch, x, dim=0)
-                std = _nanstd(torch, x, dim=0)
+                abs_dev = (ts - med.unsqueeze(0)).abs().masked_fill(~keep, float("nan"))
+                mad = _nanmedian(torch, abs_dev, dim=0)
+                std = (mad * 1.4826).clamp_min(1e-12)
                 lo = med - float(kappa) * std
                 hi = med + float(kappa) * std
                 keep = valid & (ts >= lo.unsqueeze(0)) & (ts <= hi.unsqueeze(0))
@@ -560,7 +564,9 @@ def torch_reduce_tile(
             for _ in range(int(iterations)):
                 x = ts.masked_fill(~keep, float("nan"))
                 med = _nanmedian(torch, x, dim=0)
-                std = _nanstd(torch, x, dim=0)
+                abs_dev = (ts - med.unsqueeze(0)).abs().masked_fill(~keep, float("nan"))
+                mad = _nanmedian(torch, abs_dev, dim=0)
+                std = (mad * 1.4826).clamp_min(1e-12)
                 lo = med - low * std
                 hi = med + high * std
                 keep = valid & (ts >= lo.unsqueeze(0)) & (ts <= hi.unsqueeze(0))
@@ -591,21 +597,24 @@ def torch_reduce_tile(
 
         if algo == "Extreme Studentized Deviate (ESD)":
             x = ts.masked_fill(~valid, float("nan"))
-            mean = torch.nanmean(x, dim=0)
-            std = _nanstd(torch, x, dim=0).clamp_min(1e-12)
+            keep = valid.clone()
+            med = _nanmedian(torch, x, dim=0)
+            std = torch.ones_like(med)
 
-            z = (ts - mean.unsqueeze(0)).abs() / std.unsqueeze(0)
-            keep = valid & (z < float(esd_threshold))
+            for _ in range(int(iterations)):
+                x_iter = ts.masked_fill(~keep, float("nan"))
+                med = _nanmedian(torch, x_iter, dim=0)
+                abs_dev = (ts - med.unsqueeze(0)).abs().masked_fill(~keep, float("nan"))
+                mad = _nanmedian(torch, abs_dev, dim=0)
+                std = (mad * 1.4826).clamp_min(1e-12)
+                z = (ts - med.unsqueeze(0)).abs() / std.unsqueeze(0)
+                keep = valid & (z < float(esd_threshold))
 
-            esd_w = _soft_outlier_weight(torch, z, float(esd_threshold), mode="quartic")
-            w_eff = torch.where(valid, w * esd_w, torch.zeros_like(w))
-
+            w_eff = torch.where(keep, w, torch.zeros_like(w))
             den = w_eff.sum(dim=0)
             num = (ts * w_eff).sum(dim=0)
-
             fallback = _nanmedian(torch, x, dim=0)
             out = torch.where(den > 1e-20, num / den.clamp_min(1e-20), fallback)
-
             rej = ~keep
             return out.to(dtype=torch.float32).contiguous().cpu().numpy(), rej.cpu().numpy()
 
