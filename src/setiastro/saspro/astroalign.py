@@ -39,7 +39,7 @@ import warnings
 import numpy as np
 from scipy.spatial import KDTree as _KDTree
 from skimage.transform import SimilarityTransform as _SimilarityTransform
-print("loaded saspro.astroalign version", __version__)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Numba bootstrap — optional but strongly preferred.
 # If numba is unavailable we fall back to a pure-numpy path that is still
