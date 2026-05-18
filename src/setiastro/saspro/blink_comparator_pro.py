@@ -70,7 +70,8 @@ class MetricsPanel(QWidget):
         self.plots, self.scats, self.lines = [], [], []
         self.median_lines = []
         self.sigma_lines = []
-
+        self.sigma1_lines = []  
+        self.sigma2_lines = []  
         titles = [
             self.tr("FWHM (px)"),
             self.tr("Eccentricity"),
@@ -114,21 +115,44 @@ class MetricsPanel(QWidget):
             median_ln = pg.InfiniteLine(pos=0, angle=0, movable=False,
                                         pen=pg.mkPen((220, 220, 220, 170), width=1,
                                                      style=Qt.PenStyle.DashLine))
+            # 3σ — red
             sigma_lo = pg.InfiniteLine(pos=0, angle=0, movable=False,
-                                       pen=pg.mkPen((220, 220, 220, 120), width=1,
+                                    pen=pg.mkPen((220, 50, 50, 120), width=1,
                                                     style=Qt.PenStyle.DashLine))
             sigma_hi = pg.InfiniteLine(pos=0, angle=0, movable=False,
-                                       pen=pg.mkPen((220, 220, 220, 120), width=1,
+                                    pen=pg.mkPen((220, 50, 50, 120), width=1,
+                                                    style=Qt.PenStyle.DashLine))
+
+            # 2σ — orange
+            sigma2_lo = pg.InfiniteLine(pos=0, angle=0, movable=False,
+                                        pen=pg.mkPen((255, 140, 0, 120), width=1,
+                                                    style=Qt.PenStyle.DashLine))
+            sigma2_hi = pg.InfiniteLine(pos=0, angle=0, movable=False,
+                                        pen=pg.mkPen((255, 140, 0, 120), width=1,
+                                                    style=Qt.PenStyle.DashLine))
+
+            # 1σ — yellow
+            sigma1_lo = pg.InfiniteLine(pos=0, angle=0, movable=False,
+                                        pen=pg.mkPen((255, 220, 50, 120), width=1,
+                                                    style=Qt.PenStyle.DashLine))
+            sigma1_hi = pg.InfiniteLine(pos=0, angle=0, movable=False,
+                                        pen=pg.mkPen((255, 220, 50, 120), width=1,
                                                     style=Qt.PenStyle.DashLine))
             median_ln.setZValue(-10)
-            sigma_lo.setZValue(-10)
-            sigma_hi.setZValue(-10)
+
             pw.addItem(median_ln)
-            pw.addItem(sigma_lo)
-            pw.addItem(sigma_hi)
+
+            for ln in (sigma_lo, sigma_hi, sigma2_lo, sigma2_hi, sigma1_lo, sigma1_hi):
+                ln.setZValue(-10)
+                pw.addItem(ln)
+                ln.hide()
+
+            self.sigma_lines.append((sigma_lo, sigma_hi))
+            self.sigma2_lines.append((sigma2_lo, sigma2_hi))
+            self.sigma1_lines.append((sigma1_lo, sigma1_hi))
 
             self.median_lines.append(median_ln)
-            self.sigma_lines.append((sigma_lo, sigma_hi))
+
 
             # Weighted Score spans both rows in col 2
             if idx == 4:
@@ -152,6 +176,10 @@ class MetricsPanel(QWidget):
                 for lo, hi in self.sigma_lines:
                     lo.hide()
                     hi.hide()
+                for lo, hi in self.sigma2_lines:
+                    lo.hide(); hi.hide()
+                for lo, hi in self.sigma1_lines:
+                    lo.hide(); hi.hide()                    
             return
 
         # ✅ turning ON: recompute/restore based on what’s currently plotted
@@ -182,12 +210,17 @@ class MetricsPanel(QWidget):
                 mline.hide()
 
             if np.isfinite(med) and np.isfinite(sig) and sig > 0:
-                lo = med - 3.0 * sig
-                hi = med + 3.0 * sig
-                if m == 3:
-                    lo = max(0.0, lo)
-                lo_ln.setPos(lo); hi_ln.setPos(hi)
+                # 3σ (existing)
+                lo_ln.setPos(med - 3.0 * sig); hi_ln.setPos(med + 3.0 * sig)
                 lo_ln.show(); hi_ln.show()
+                # 2σ
+                lo2, hi2 = self.sigma2_lines[m]
+                lo2.setPos(med - 2.0 * sig); hi2.setPos(med + 2.0 * sig)
+                lo2.show(); hi2.show()
+                # 1σ
+                lo1, hi1 = self.sigma1_lines[m]
+                lo1.setPos(med - 1.0 * sig); hi1.setPos(med + 1.0 * sig)
+                lo1.show(); hi1.show()
             else:
                 lo_ln.hide(); hi_ln.hide()
 
@@ -475,6 +508,10 @@ class MetricsPanel(QWidget):
                 for lo, hi in self.sigma_lines:
                     lo.hide()
                     hi.hide()
+                for lo, hi in self.sigma2_lines:
+                    lo.hide(); hi.hide()
+                for lo, hi in self.sigma1_lines:
+                    lo.hide(); hi.hide()                    
             return
 
         # compute & cache on first call or new image list
