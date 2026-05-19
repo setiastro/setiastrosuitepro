@@ -1129,19 +1129,20 @@ class CosmicClarityDialogPro(QDialog):
             main = self.parent_ref or self.parent()
             if main is not None:
                 preset = self.build_preset_from_ui()
-                payload = {
-                    "cid": "cosmic_clarity",
-                    "preset": preset,
-                    "label": f"Cosmic Clarity ({preset.get('mode', 'sharpen')})",
-                }
-                if hasattr(main, "_set_last_headless_command"):
-                    main._set_last_headless_command(payload)
+                if hasattr(main, "_remember_last_headless_command"):
+                    main._remember_last_headless_command(
+                        "cosmic_clarity", preset,
+                        description=f"Cosmic Clarity ({preset.get('mode', 'sharpen')})"
+                    )
                 else:
-                    setattr(main, "_last_headless_command", payload)
+                    main._last_headless_command = {
+                        "command_id": "cosmic_clarity",
+                        "preset": preset,
+                    }
                     if hasattr(main, "_update_replay_button"):
                         main._update_replay_button()
         except Exception:
-            pass  # never block processing
+            pass
 
         # --- Snapshot UI preset ---
         # --- Snapshot UI preset ---
@@ -1355,8 +1356,18 @@ class CosmicClarityDialogPro(QDialog):
 
     def _apply_to_active(self, arr: np.ndarray, step_title: str):
         mid = self._active_mask_id()
+
+        # Build the full preset so _preview_commands captures it correctly
+        preset = {}
+        try:
+            preset = self.build_preset_from_ui()
+        except Exception:
+            pass
+
         meta = {
             "step_name": step_title,
+            "command_id": "cosmic_clarity",
+            "preset": preset,
             "masked": bool(mid),
             "mask_id": mid,
             "mask_blend": "m*out+(1-m)*src",

@@ -943,35 +943,59 @@ class ImageSubWindow(QWidget):
 
         commands = getattr(roi_doc, "_preview_commands", [])
         if not (0 <= index < len(commands)):
-            print(f"[Replay] index {index} out of range (commands len={len(commands)})")
             return
 
         entry = commands[index]
+
+        # Find the matching entry in _headless_history by command_id + position
+        # so we can restore _last_headless_command to exactly what it was
+        command_id = entry.get("command_id")
         target_sw = self._mdi_subwindow()
 
-        command_id = entry.get("command_id")
-        preset = dict(entry.get("preset") or {})
+        # Walk headless history to find the nth occurrence of this cid
+        # (history entries are in the same order as _preview_commands)
+        hist = getattr(mw, "_headless_history", []) or []
+        
+        # Count how many times this cid appears in preview_commands up to and including index
+        occurrence = sum(
+            1 for e in commands[:index + 1]
+            if e.get("command_id") == command_id
+        )
+        
+        # Find the nth matching entry in headless history
+        found = None
+        count = 0
+        for h in hist:
+            from setiastro.saspro.command_ids import normalize_command_id
+            if normalize_command_id(str(h.get("command_id", ""))) == command_id:
+                count += 1
+                if count == occurrence:
+                    found = h
+                    break
 
-        # If preset is empty, try to get it from the main window's last headless command
-        # for this command_id (Cosmic Clarity and similar tools store params there)
-        if not preset and mw is not None:
+        if found is not None:
+            payload = {
+                "command_id": found.get("command_id"),
+                "preset": dict(found.get("preset") or {}),
+            }
+            print(f"[Replay] replaying '{entry.get('step')}' cid={command_id!r} "
+                  f"via history entry, preset_keys={list(payload['preset'].keys())}")
+            old = getattr(mw, "_last_headless_command", None)
+            try:
+                mw._last_headless_command = payload
+                mw.replay_last_action_on_base(target_sw=target_sw)
+            finally:
+                mw._last_headless_command = old
+        else:
+            # Fallback: use whatever is in _last_headless_command if cid matches
             last = getattr(mw, "_last_headless_command", None) or {}
-            if str(last.get("command_id", "")).lower() == str(command_id or "").lower():
-                preset = dict(last.get("preset") or {})
-
-        payload = {
-            "command_id": command_id,
-            "preset": preset,
-        }
-
-        print(f"[Replay] replaying '{entry.get('step')}' (cid={payload['command_id']!r}) on base")
-
-        old = getattr(mw, "_last_headless_command", None)
-        try:
-            mw._last_headless_command = payload
-            mw.replay_last_action_on_base(target_sw=target_sw)
-        finally:
-            mw._last_headless_command = old
+            from setiastro.saspro.command_ids import normalize_command_id
+            if normalize_command_id(str(last.get("command_id", ""))) == command_id:
+                print(f"[Replay] replaying '{entry.get('step')}' cid={command_id!r} "
+                      f"via _last_headless_command fallback")
+                mw.replay_last_action_on_base(target_sw=target_sw)
+            else:
+                print(f"[Replay] no matching history entry for cid={command_id!r}, skipping")
 
     def _on_replay_last_clicked(self):
         """

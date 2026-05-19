@@ -2145,7 +2145,23 @@ class CurvesDialogPro(QDialog):
                 "mask_blend": "m*out + (1-m)*src",
             }
 
-            # 1) Apply to the document (updates the active view)
+            # ── NEW: store last action BEFORE apply_edit so that
+            # _preview_commands can find it via topLevelWidgets walk ──────
+            try:
+                self._remember_as_last_action()
+            except Exception:
+                pass
+
+            # Build the preset we just stored and inject it into metadata
+            # so apply_edit → _preview_commands captures it directly
+            mw = self._find_main_window()
+            if mw is not None:
+                last = getattr(mw, "_last_headless_command", None) or {}
+                if last.get("command_id") == "curves":
+                    meta["command_id"] = "curves"
+                    meta["preset"] = dict(last.get("preset") or {})
+
+            # 1) Apply to the document
             self.doc.apply_edit(out01.copy(), metadata=meta, step_name="Curves")
 
             try:
