@@ -1440,15 +1440,38 @@ class _RoiViewDocument(ImageDocument):
             self._preview_commands = []
         md = dict(metadata or {})
 
-        # Prefer explicit command_id, fall back to step_name, then step_name param
-        from setiastro.saspro.command_ids import normalize_command_id
-
-        # In apply_edit, when storing _preview_commands:
         cid = (md.get("command_id") or md.get("step_name") or step_name or "").strip()
+
+        from setiastro.saspro.command_ids import normalize_command_id
+        normalized_cid = normalize_command_id(cid)
+
+        preset = dict(md.get("preset") or {})
+
+        # If preset is empty, try to pull it from the main window's last headless command
+        # Tools like Cosmic Clarity and Curves store params there, not in apply_edit metadata
+        if not preset:
+            try:
+                # Walk up to find the main window via the parent doc
+                import gc
+                from PyQt6.QtWidgets import QApplication
+                app = QApplication.instance()
+                if app is not None:
+                    for widget in app.topLevelWidgets():
+                        last = getattr(widget, "_last_headless_command", None)
+                        if last is not None:
+                            last_cid = normalize_command_id(
+                                str(last.get("command_id") or "")
+                            )
+                            if last_cid == normalized_cid:
+                                preset = dict(last.get("preset") or {})
+                                break
+            except Exception:
+                pass
+
         self._preview_commands.append({
             "step": step_name or cid,
-            "command_id": normalize_command_id(cid),
-            "preset": dict(md.get("preset") or {}),
+            "command_id": normalized_cid,
+            "preset": preset,
         })
         self._preview_override = img
         _debug_log_undo(
@@ -2054,7 +2077,6 @@ class DocManager(QObject):
         self.documentAdded.emit(doc)
 
     def _build_roi_document(self, base_doc, roi):
-        #print("[DocManager] Building ROI view document")
         doc = _RoiViewDocument(base_doc, roi, name_suffix=" (Preview)")
         try:
             import weakref
@@ -2062,31 +2084,51 @@ class DocManager(QObject):
         except Exception:
             doc._doc_manager = self
 
-        # Repaint the active view on ROI preview changes, but DO NOT invalidate cache.
         try:
-            #print("[DocManager] Connecting ROI view document change signal")
             import weakref
             dm_ref = weakref.ref(self)
-            roi_tuple = tuple(map(int, roi))
+
+            # Find the view that owns this ROI right now so we can target it directly
+            owner_view = None
+            for sw in (self._mdi.subWindowList() if self._mdi else []):
+                try:
+                    w = sw.widget()
+                    if w is None:
+                        continue
+                    base = (getattr(w, "base_document", None)
+                            or getattr(w, "document", None))
+                    if base is base_doc and hasattr(w, "has_active_preview"):
+                        owner_view = weakref.ref(w)
+                        break
+                except Exception:
+                    pass
 
             def _on_roi_changed():
                 dm = dm_ref()
                 if dm is None:
                     return
-                vw = dm._active_view_widget()
+                # Try the specific owning view first, fall back to active view
+                vw = None
+                if owner_view is not None:
+                    vw = owner_view()
+                if vw is None:
+                    vw = dm._active_view_widget()
                 if vw is not None:
                     try:
-                        # MUST be rebuild=True so _render re-pulls from the ROI doc
                         vw._render(rebuild=True)
                     except Exception:
                         pass
+                # Also nudge the parent doc's changed signal so DocProxy
+                # connected views redraw even if focus was stolen
+                try:
+                    base_doc.changed.emit()
+                except Exception:
+                    pass
 
             doc.changed.connect(_on_roi_changed)
 
-            #print("[DocManager] ROI view document change signal connected")
         except Exception:
             print("[DocManager] Failed to connect ROI view document change signal")
-            pass
 
         return doc
 

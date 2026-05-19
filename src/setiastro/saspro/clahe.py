@@ -342,24 +342,18 @@ class CLAHEDialogPro(QDialog):
             # ── Register as last_headless_command for replay ─────────────
             try:
                 main = self.parent()
+                while main is not None and not hasattr(main, "_remember_last_headless_command"):
+                    main = main.parent()
                 if main is not None:
                     preset = {
                         "clip_limit": float(clip),
                         "tile_px": int(tile_px),
-                        "blend": float(blend),   # 0..1
+                        "blend": float(blend),
                     }
-                    payload = {"command_id": "clahe", "preset": dict(preset)}
-                    setattr(main, "_last_headless_command", payload)
-
-                    try:
-                        if hasattr(main, "_log"):
-                            main._log(
-                                f"[Replay] Registered CLAHE as last action "
-                                f"(clip_limit={preset['clip_limit']}, tile_px={preset['tile_px']}, "
-                                f"blend={preset['blend']:.2f})"
-                            )
-                    except Exception:
-                        pass
+                    main._remember_last_headless_command(
+                        "clahe", preset,
+                        description=f"CLAHE (clip={clip:.1f}, tile={tile_px}px, blend={blend:.2f})"
+                    )
             except Exception:
                 pass
             # ─────────────────────────────────────────────────────────────
