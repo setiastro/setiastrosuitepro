@@ -1159,6 +1159,53 @@ class AberrationAIDialog(QDialog):
         QMessageBox.critical(self, "ONNX Error", msg)
         self.reject()   # closes the dialog
 
+    def _active_mask_id(self, doc) -> str | None:
+        return getattr(doc, "active_mask_id", None) or None
+
+    def _blend_with_mask(self, processed: np.ndarray, doc) -> np.ndarray:
+        mid = self._active_mask_id(doc)
+        if not mid:
+            return processed
+
+        layer = getattr(doc, "masks", {}).get(mid)
+        if layer is None:
+            return processed
+
+        m = np.asarray(getattr(layer, "data", None))
+        if m is None or m.size == 0:
+            return processed
+
+        m = m.astype(np.float32)
+        if m.dtype.kind in "ui":
+            m /= float(np.iinfo(m.dtype).max)
+        else:
+            mx = float(m.max()) if m.size else 1.0
+            if mx > 1.0:
+                m /= mx
+        m = np.clip(m, 0.0, 1.0)
+
+        # resample mask to match output if needed
+        mh, mw = m.shape[:2]
+        oh, ow = processed.shape[:2]
+        if (mh, mw) != (oh, ow):
+            yi = np.linspace(0, mh - 1, oh).astype(np.int32)
+            xi = np.linspace(0, mw - 1, ow).astype(np.int32)
+            m = m[yi][:, xi]
+
+        src = np.asarray(doc.image).astype(np.float32)
+
+        out = processed.astype(np.float32)
+        if out.ndim == 3 and out.shape[2] >= 3:
+            m = m[..., None]  # broadcast across channels
+
+        # shape reconcile (mono src + RGB out or vice versa)
+        if src.ndim == 2 and out.ndim == 3:
+            src = np.stack([src] * 3, axis=-1)
+        elif src.ndim == 3 and out.ndim == 2:
+            src = src[..., 0]
+
+        return (m * out + (1.0 - m) * src).astype(np.float32)
+
     def _on_ok(self, out: np.ndarray):
         used = getattr(self._worker, "used_provider", None) or \
             (self.cmb_provider.currentText() if not self.chk_auto.isChecked() else "auto")        
@@ -1179,6 +1226,7 @@ class AberrationAIDialog(QDialog):
             except Exception:
                 src = None
         out = _preserve_border(out, src, BORDER_PX)
+        out = self._blend_with_mask(out, doc)
 
         # 2) Metadata for this step (stored on the document)
         meta = {
@@ -1192,7 +1240,10 @@ class AberrationAIDialog(QDialog):
                     "provider": used,
                     "border_px": BORDER_PX,
                 }
-            }
+            },
+            "masked": bool(self._active_mask_id(doc)),
+            "mask_id": self._active_mask_id(doc),
+            "mask_blend": "m*out+(1-m)*src",            
         }
 
         # 3) Apply through history-aware API (either path is fine)

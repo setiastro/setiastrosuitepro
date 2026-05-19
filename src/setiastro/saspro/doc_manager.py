@@ -2227,6 +2227,23 @@ class DocManager(QObject):
             src_dtype = arr.dtype
             bit_depth = None
 
+            # ── NEW: detect count/integer layers that should NOT be normalized to [0,1] ──
+            extname = str(hdr.get("EXTNAME", "") or "").upper().strip()
+            is_count_layer = any(tag in extname for tag in ("REJ_CNT", "COUNT", "NCOMBINE"))
+            
+            if is_count_layer and src_dtype in (np.uint16, np.uint32, np.int32):
+                # Preserve as float32 with actual count values, no normalization
+                bit_depth = "32-bit floating point"
+                a = arr.astype(np.float32)
+                a = np.squeeze(a)
+                is_mono = (a.ndim == 2)
+                if a.ndim == 3 and a.shape[0] == 1:
+                    a = a[0]
+                    is_mono = True
+                a = np.nan_to_num(a, nan=0.0)
+                a = np.asarray(a, dtype=np.float32, order="C")
+                return a, bit_depth, is_mono
+
             # ---- dtype -> float32 conversion ----
             if src_dtype == np.uint8:
                 bit_depth = "8-bit"
@@ -2376,7 +2393,7 @@ class DocManager(QObject):
         # ---------- 2) FITS: enumerate HDUs (tables + vector HDUs + extra images + ICC) ----------
         if is_fits:
             try:
-                with fits.open(path, memmap=True) as hdul:
+                with fits.open(path, memmap=False) as hdul:
                     base = os.path.basename(path)
 
                     for i, hdu in enumerate(hdul):
@@ -2417,9 +2434,8 @@ class DocManager(QObject):
                                 created_any = True
                             except Exception as e_tab:
                                 print(f"[DocManager] Table HDU {nice} → in-app view failed: {e_tab}")
-                            continue  # IMPORTANT: don’t treat a table as an image
+                            continue
 
-                        # --- Not a table: ICC / vector / image ---
                         if hdu.data is None:
                             continue
 
@@ -2429,7 +2445,6 @@ class DocManager(QObject):
                         en_up = (extname or "").upper()
                         is_probable_icc = ("ICC" in en_up or "PROFILE" in en_up)
 
-                        # ICC ONLY if name suggests ICC/profile AND data is 1-D uint8
                         if arr.ndim == 1 and arr.dtype == np.uint8 and is_probable_icc:
                             try:
                                 icc_path = f"{os.path.splitext(path)[0]}_{extname or f'HDU{i}'}_.icc".replace(" ", "_")
@@ -2440,7 +2455,6 @@ class DocManager(QObject):
                             except Exception as e_icc:
                                 print(f"[DocManager] ICC export failed: {e_icc} — will try as image")
 
-                        # --- 1-D FITS image HDU → vector-style TableDocument ---
                         if arr_sq.ndim == 1 and arr_sq.size > 0:
                             try:
                                 _make_vector_table_doc_from_hdu(hdu, path, base, key_str)
@@ -2449,7 +2463,6 @@ class DocManager(QObject):
                                 print(f"[DocManager] FITS HDU {i} vector build failed: {e_vec}")
                             continue
 
-                        # --- Otherwise: treat as image doc ---
                         try:
                             a, ext_depth, ext_mono = _decode_fits_hdu_image(hdu)
                             disp = f"{base} {key_str}"
@@ -2463,10 +2476,12 @@ class DocManager(QObject):
                                 "image_meta": {"derived_from": path, "layer": key_str, "readonly": True},
                                 "display_name": disp,
                             }
-
-                            # attach WCS from this HDU header
+                            # For count/rejection layers, store the raw max so readout can show actual counts
+                            extname_up = (extname or "").upper()
+                            if any(tag in extname_up for tag in ("REJ_CNT", "COUNT", "NCOMBINE")):
+                                aux_meta["is_count_layer"] = True
+                                aux_meta["count_max"] = float(a.max()) if a.size else 1.0
                             aux_meta = attach_wcs_to_metadata(aux_meta, ext_hdr)
-
                             _snapshot_header_for_metadata(aux_meta)
                             a = _normalize_image_01(a)
                             aux_doc = ImageDocument(a, aux_meta)
@@ -2481,10 +2496,11 @@ class DocManager(QObject):
 
                         except Exception as e_img:
                             print(f"[DocManager] FITS HDU {i} image build failed: {e_img}")
+                            import traceback; traceback.print_exc()
 
             except Exception as _e:
                 print(f"[DocManager] FITS HDU enumeration failed: {_e}")
-
+                import traceback; traceback.print_exc()
         # ---------- 3) XISF: create primary if needed, then enumerate extras ----------
         if is_xisf:
             try:

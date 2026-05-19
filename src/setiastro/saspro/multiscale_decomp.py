@@ -426,6 +426,7 @@ class MultiscaleDecompDialog(QDialog):
             img3 = img[:, :, :3]
 
         self._image = img3.copy()      # 3ch for display only
+        self._orig_for_mask = img3.copy()
         self._preview_img = img3.copy()
 
         # decomposition cache
@@ -758,6 +759,59 @@ class MultiscaleDecompDialog(QDialog):
 
         # Connect viewport scroll changes
         self._connect_viewport_signals()
+
+    def _active_mask_id(self) -> str | None:
+        return getattr(self._doc, "active_mask_id", None) or None
+
+    def _blend_with_mask(self, processed: np.ndarray) -> np.ndarray:
+        mid = self._active_mask_id()
+        if not mid:
+            return processed
+
+        layer = getattr(self._doc, "masks", {}).get(mid)
+        if layer is None:
+            return processed
+
+        m = np.asarray(getattr(layer, "data", None))
+        if m is None or m.size == 0:
+            return processed
+
+        m = m.astype(np.float32)
+        if m.dtype.kind in "ui":
+            imax = float(np.iinfo(m.dtype).max)
+            m = m / imax if imax > 0 else m
+        else:
+            mx = float(m.max()) if m.size else 0.0
+            if mx > 1.0:
+                m = m / mx
+            elif mx == 0.0:
+                return processed
+
+        m = np.clip(m, 0.0, 1.0)
+
+        mh, mw = m.shape[:2]
+        oh, ow = processed.shape[:2]
+        if (mh, mw) != (oh, ow):
+            yi = np.linspace(0, mh - 1, oh).astype(np.int32)
+            xi = np.linspace(0, mw - 1, ow).astype(np.int32)
+            m = m[yi][:, xi]
+
+        # src must match processed shape exactly
+        src = self._orig_for_mask.astype(np.float32)
+        out = processed.astype(np.float32)
+
+        if out.ndim == 3 and out.shape[2] >= 3:
+            m = m[..., None]
+            if src.ndim == 2:
+                src = np.stack([src] * 3, axis=-1)
+        elif out.ndim == 2:
+            if src.ndim == 3:
+                src = src[..., 0]
+
+        result = m * out + (1.0 - m) * src
+        if not np.isfinite(result).all():
+            return processed
+        return result.astype(np.float32)
 
     # ---------- Preview plumbing ----------
     def _spinner_on(self):
@@ -1637,7 +1691,6 @@ class MultiscaleDecompDialog(QDialog):
 
 
     # ---------- Apply to doc ----------
-
     def _commit_to_doc(self):
         try: self._save_window_state()
         except Exception: pass
@@ -1645,40 +1698,58 @@ class MultiscaleDecompDialog(QDialog):
             tuned, residual = self._build_tuned_layers()
             if tuned is None or residual is None:
                 return
- 
+
             res = residual if self.residual_enabled else np.zeros_like(residual)
             out_raw = multiscale_reconstruct(tuned, res)
- 
+
             if not self.residual_enabled:
                 d = out_raw.astype(np.float32, copy=False)
                 out = np.clip(0.5 + d * 4.0, 0.0, 1.0).astype(np.float32, copy=False)
             else:
                 out = np.clip(out_raw, 0.0, 1.0).astype(np.float32, copy=False)
- 
-            # out may be 2D (H,W) if we processed _image_work (mono)
-            # or 3D (H,W,3) if RGB.
-            # We need to restore to the original document shape.
+
+            # Restore to original document shape
             if self._orig_mono:
-                # Flatten to 2D regardless of what came out
                 if out.ndim == 3:
                     out2d = out[:, :, 0]
                 else:
                     out2d = out
-                # Restore to original mono shape
                 if len(self._orig_shape) == 2:
                     out_final = out2d.astype(np.float32, copy=False)
                 else:
-                    # original was (H, W, 1)
                     out_final = out2d[:, :, None].astype(np.float32, copy=False)
             else:
-                # RGB — ensure (H, W, 3)
                 if out.ndim == 2:
                     out_final = np.repeat(out[:, :, None], 3, axis=2).astype(np.float32, copy=False)
                 else:
                     out_final = out[:, :, :3].astype(np.float32, copy=False)
- 
+
+            # ← ADD: blend with active mask before applying
+            # _blend_with_mask works in 3ch space, so expand mono temporarily
+            if out_final.ndim == 2:
+                out_blend = self._blend_with_mask(
+                    np.stack([out_final] * 3, axis=-1)
+                )[:, :, 0]
+            elif out_final.ndim == 3 and out_final.shape[2] == 1:
+                out_blend = self._blend_with_mask(
+                    np.repeat(out_final, 3, axis=2)
+                )[:, :, 0:1]
+            else:
+                out_blend = self._blend_with_mask(out_final)
+            out_final = out_blend
+
+            mid = self._active_mask_id()
+            meta = {
+                "step_name": "Multiscale Decomposition",
+                "masked": bool(mid),
+                "mask_id": mid,
+                "mask_blend": "m*out+(1-m)*src",
+            }
+
             try:
-                if hasattr(self._doc, "set_image"):
+                if hasattr(self._doc, "apply_edit"):
+                    self._doc.apply_edit(out_final, meta, step_name="Multiscale Decomposition")
+                elif hasattr(self._doc, "set_image"):
                     self._doc.set_image(out_final, step_name="Multiscale Decomposition")
                 elif hasattr(self._doc, "apply_numpy"):
                     self._doc.apply_numpy(out_final, step_name="Multiscale Decomposition")
@@ -1687,13 +1758,13 @@ class MultiscaleDecompDialog(QDialog):
             except Exception as e:
                 QMessageBox.critical(self, "Multiscale Decomposition", f"Failed to write to document:\n{e}")
                 return
- 
+
             if hasattr(self.parent(), "_refresh_active_view"):
                 try:
                     self.parent()._refresh_active_view()
                 except Exception:
                     pass
- 
+
             self.accept()
 
 

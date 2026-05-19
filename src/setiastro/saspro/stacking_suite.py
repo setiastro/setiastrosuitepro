@@ -17283,6 +17283,61 @@ class StackingSuiteDialog(QDialog):
             self.reset_reference_to_auto()
         # When turning OFF, do nothing special—user can pick a ref again if they want.
 
+    def _fix_header_for_upscale(self, hdr, upscale_x: float, upscale_y: float):
+        """
+        Correct FITS header fields that are wrong when frames were upscaled
+        to match a higher-resolution reference (e.g. bin2 RGB upscaled to match bin1 L).
+        upscale_x/y: e.g. 2.0 means the image was doubled in that dimension.
+        """
+        if abs(upscale_x - 1.0) < 1e-4 and abs(upscale_y - 1.0) < 1e-4:
+            return hdr
+
+        # Binning: divide by upscale factor, floor to 1
+        for key in ("XBINNING", "CCDXBIN"):
+            if key in hdr:
+                try:
+                    hdr[key] = max(1, round(float(hdr[key]) / upscale_x))
+                except Exception:
+                    pass
+        for key in ("YBINNING", "CCDYBIN"):
+            if key in hdr:
+                try:
+                    hdr[key] = max(1, round(float(hdr[key]) / upscale_y))
+                except Exception:
+                    pass
+
+        # Physical pixel size: divide (effective pixel size shrinks as image grows)
+        if "XPIXSZ" in hdr:
+            try:
+                hdr["XPIXSZ"] = float(hdr["XPIXSZ"]) / upscale_x
+            except Exception:
+                pass
+        if "YPIXSZ" in hdr:
+            try:
+                hdr["YPIXSZ"] = float(hdr["YPIXSZ"]) / upscale_y
+            except Exception:
+                pass
+
+        # Plate scale: divide (more pixels per arcsec)
+        avg_upscale = (upscale_x + upscale_y) / 2.0
+        for key in ("SCALE", "PIXSCALE"):
+            if key in hdr:
+                try:
+                    hdr[key] = float(hdr[key]) / avg_upscale
+                except Exception:
+                    pass
+
+        # WCS reference pixel: multiply (shifts with the enlarged image)
+        for key in ("CRPIX1", "CRPIX2"):
+            if key in hdr:
+                try:
+                    factor = upscale_x if key == "CRPIX1" else upscale_y
+                    hdr[key] = float(hdr[key]) * factor
+                except Exception:
+                    pass
+
+        return hdr
+
     def register_images(self):
 
         # ---- local helper: force exact (H,W) via center-crop or reflect-pad ----
@@ -17707,6 +17762,7 @@ class StackingSuiteDialog(QDialog):
 
             self.update_status(self.tr(f"✅ All chunks complete! Measured {len(measured_frames)} frames total."))
             self.update_status(self.tr("📏 Phase: Measurements complete."))
+           
             # ─────────────────────────────────────────────────────────────────────
             # FAST reference selection: score = starcount / (median * ecc)
             # uses stats we ALREADY measured → good for 100s of frames
@@ -17786,7 +17842,31 @@ class StackingSuiteDialog(QDialog):
                     + (f"(score={best_score:.4f})" if best_fp else "(fallback)")
                 ))
                 QApplication.processEvents()
+            # Populate frame_weights from quality metrics measured above.
+            # Normalize to mean=1.0 so weighted mean scale is preserved.
+            # Floor at 0.1 so even poor frames contribute rather than being
+            # fully excluded (rejection algorithms handle actual exclusion).
+            raw_scores = {}
+            for fp in measured_frames:
+                raw_scores[fp] = _fast_ref_score(fp)
 
+            score_vals = [v for v in raw_scores.values() if v > 0]
+            if score_vals:
+                mean_score = float(np.mean(score_vals))
+                for fp in measured_frames:
+                    s = raw_scores.get(fp, 0.0)
+                    self.frame_weights[fp] = max(0.1, s / mean_score) if mean_score > 1e-6 else 1.0
+            else:
+                # All scores zero (no stars detected) — uniform weights
+                for fp in measured_frames:
+                    self.frame_weights[fp] = 1.0
+
+            self.update_status(self.tr(
+                f"⚖️ Frame weights computed: "
+                f"min={min(self.frame_weights.values()):.3f}, "
+                f"max={max(self.frame_weights.values()):.3f}, "
+                f"mean={float(np.mean(list(self.frame_weights.values()))):.3f}"
+            )) 
 
             ref_stats_meas = star_counts.get(self.reference_frame, {"count": 0, "eccentricity": 0.0})
             ref_count = ref_stats_meas["count"]
@@ -18162,13 +18242,11 @@ class StackingSuiteDialog(QDialog):
                                 if raw_psx and raw_psy and target_sx and target_sy:
                                     gx = float(raw_psx) / float(target_sx)
                                     gy = float(raw_psy) / float(target_sy)
-
                                     # clamp tiny jitter
                                     if _rel_delta(gx, 1.0) <= tol:
                                         gx = 1.0
                                     if _rel_delta(gy, 1.0) <= tol:
                                         gy = 1.0
-
                                     if (gx != 1.0) or (gy != 1.0):
                                         before_hw = img.shape[:2]
                                         img = _resize_to_scale(img, gx, gy)
@@ -18178,6 +18256,11 @@ class StackingSuiteDialog(QDialog):
                                             f"{target_sx:.3f}\"/{target_sy:.3f}\" | "
                                             f"size {before_hw[1]}×{before_hw[0]} → {after_hw[1]}×{after_hw[0]}"
                                         ))
+                                        if not hasattr(self, "_upscale_factor_by_orig"):
+                                            self._upscale_factor_by_orig = {}
+                                        self._upscale_factor_by_orig[
+                                            os.path.normcase(os.path.normpath(fp))
+                                        ] = (gx, gy)
                             else:
                                 # We are NOT doing physical/pixel-scale normalization (single group, within tol).
                                 # In that case we ONLY need to unify binning → simple pixel resample.
@@ -18192,6 +18275,11 @@ class StackingSuiteDialog(QDialog):
                                         f"🔧 Resampled for binning {xb}×{yb} → {target_xbin}×{target_ybin} "
                                         f"size {before[1]}×{before[0]} → {after[1]}×{after[0]}"
                                     ))
+                                    if not hasattr(self, "_upscale_factor_by_orig"):
+                                        self._upscale_factor_by_orig = {}
+                                    self._upscale_factor_by_orig[
+                                        os.path.normcase(os.path.normpath(fp))
+                                    ] = (sx, sy)
                             # 3) Brightness normalization / scale refine
                             pm = float(preview_medians.get(fp, 0.0))
                             s, offset = _compute_scale(
@@ -19646,6 +19734,16 @@ class StackingSuiteDialog(QDialog):
             hdr_orig["NCOMBINE"] = (int(n_frames_group), "Number of frames combined")
             hdr_orig["NSTACK"] = (int(n_frames_group), "Alias of NCOMBINE (SetiAstro)")
 
+            # Correct header fields if frames were upscaled during normalization
+            # (e.g. bin2 RGB upscaled to match bin1 L — binning, pixscale, CRPIX all wrong otherwise)
+            upscale_map = getattr(self, "_upscale_factor_by_orig", {})
+            if upscale_map and file_list:
+                rep_key = os.path.normcase(os.path.normpath(file_list[0]))
+                uf = upscale_map.get(rep_key)
+                if uf and (abs(uf[0] - 1.0) > 1e-4 or abs(uf[1] - 1.0) > 1e-4):
+                    hdr_orig = self._fix_header_for_upscale(hdr_orig, uf[0], uf[1])
+                    log(f"📐 Header corrected for {uf[0]:.3f}×{uf[1]:.3f} upscale (binning/pixscale/CRPIX).")
+
             is_mono_orig = (integrated_image.ndim == 2)
             if is_mono_orig:
                 hdr_orig["NAXIS"] = 2
@@ -19760,6 +19858,11 @@ class StackingSuiteDialog(QDialog):
                 )
                 hdr_crop["NCOMBINE"] = (int(n_frames_group), "Number of frames combined")
                 hdr_crop["NSTACK"] = (int(n_frames_group), "Alias of NCOMBINE (SetiAstro)")
+                if upscale_map and file_list:
+                    rep_key = os.path.normcase(os.path.normpath(file_list[0]))
+                    uf = upscale_map.get(rep_key)
+                    if uf and (abs(uf[0] - 1.0) > 1e-4 or abs(uf[1] - 1.0) > 1e-4):
+                        hdr_crop = self._fix_header_for_upscale(hdr_crop, uf[0], uf[1])                
                 is_mono_crop = (cropped_img.ndim == 2)
                 Hc, Wc = (cropped_img.shape[:2] if cropped_img.ndim >= 2 else (H, W))
                 display_group_crop = self._label_with_dims(group_key, Wc, Hc)
@@ -21454,7 +21557,60 @@ class StackingSuiteDialog(QDialog):
             log(f"⚠️ {e}")
             return None, {}, None
 
-        weights_array = np.array([frame_weights.get(p, 1.0) for p in file_list], dtype=np.float32)
+        # frame_weights keys: original paths as-measured (raw, not normcase)
+        # _orig2norm keys:     normcase(normpath(original))
+        # _orig2norm values:   normpath(normalized)   -- NOT normcase
+        # orig_by_aligned keys:  normpath(aligned)    -- NOT normcase
+        # orig_by_aligned values: normpath(normalized) -- NOT normcase
+
+        _orig_by_aligned = getattr(self, "orig_by_aligned", {})
+
+        # Build reverse: normpath(normalized) -> normcase(original)
+        # _orig2norm: normcase(orig) -> normpath(norm)
+        # We need normpath(norm) -> normcase(orig) for the lookup
+        _norm2orig = {
+            os.path.normpath(v): k
+            for k, v in getattr(self, "_orig2norm", {}).items()
+        }
+        # Also build normcase version of frame_weights for final fallback
+        _fw_normcase = {
+            os.path.normcase(os.path.normpath(k)): v
+            for k, v in frame_weights.items()
+        }
+
+        def _resolve_weight(aligned_path: str) -> float:
+            # step 1: aligned -> normalized
+            # orig_by_aligned keyed by normpath (not normcase)
+            ap_normpath = os.path.normpath(aligned_path)
+            norm_path = _orig_by_aligned.get(ap_normpath)
+            if norm_path is None:
+                log(f"DEBUG weight miss step1: {os.path.basename(aligned_path)}")
+                log(f"  ap_normpath={ap_normpath}")
+                log(f"  sample orig_by_aligned key={next(iter(_orig_by_aligned), 'EMPTY')}")
+                return 1.0
+            if norm_path:
+                # step 2: normalized -> original key (normcase)
+                # _norm2orig keyed by normpath(normalized)
+                norm_normpath = os.path.normpath(norm_path)
+                orig_key = _norm2orig.get(norm_normpath)  # gives normcase(original)
+                if orig_key:
+                    # frame_weights keyed by raw original paths
+                    # orig_key is normcase so try normcase lookup
+                    w = _fw_normcase.get(orig_key)
+                    if w is not None:
+                        return float(w)
+
+            # last resort: try aligned path directly in normcase weights
+            return float(_fw_normcase.get(
+                os.path.normcase(os.path.normpath(aligned_path)), 1.0
+            ))
+
+        weights_array = np.array(
+            [_resolve_weight(p) for p in file_list], dtype=np.float32
+        )
+        log(f"⚖️ Weight range for '{group_key}': "
+            f"min={weights_array.min():.3f} max={weights_array.max():.3f} "
+            f"mean={weights_array.mean():.3f}")
 
         rej_any   = np.zeros((H, W), dtype=np.bool_)
         rej_count = np.zeros((H, W), dtype=np.uint16)
@@ -23239,7 +23395,60 @@ class StackingSuiteDialog(QDialog):
         maskbuf0 = _mk_mask_buf()
         maskbuf1 = _mk_mask_buf()
 
-        weights_array = np.array([frame_weights.get(p, 1.0) for p in file_list], dtype=np.float32)
+        # frame_weights keys: original paths as-measured (raw, not normcase)
+        # _orig2norm keys:     normcase(normpath(original))
+        # _orig2norm values:   normpath(normalized)   -- NOT normcase
+        # orig_by_aligned keys:  normpath(aligned)    -- NOT normcase
+        # orig_by_aligned values: normpath(normalized) -- NOT normcase
+
+        _orig_by_aligned = getattr(self, "orig_by_aligned", {})
+
+        # Build reverse: normpath(normalized) -> normcase(original)
+        # _orig2norm: normcase(orig) -> normpath(norm)
+        # We need normpath(norm) -> normcase(orig) for the lookup
+        _norm2orig = {
+            os.path.normpath(v): k
+            for k, v in getattr(self, "_orig2norm", {}).items()
+        }
+        # Also build normcase version of frame_weights for final fallback
+        _fw_normcase = {
+            os.path.normcase(os.path.normpath(k)): v
+            for k, v in frame_weights.items()
+        }
+
+        def _resolve_weight(aligned_path: str) -> float:
+            # step 1: aligned -> normalized
+            # orig_by_aligned keyed by normpath (not normcase)
+            ap_normpath = os.path.normpath(aligned_path)
+            norm_path = _orig_by_aligned.get(ap_normpath)
+            if norm_path is None:
+                log(f"DEBUG weight miss step1: {os.path.basename(aligned_path)}")
+                log(f"  ap_normpath={ap_normpath}")
+                log(f"  sample orig_by_aligned key={next(iter(_orig_by_aligned), 'EMPTY')}")
+                return 1.0
+            if norm_path:
+                # step 2: normalized -> original key (normcase)
+                # _norm2orig keyed by normpath(normalized)
+                norm_normpath = os.path.normpath(norm_path)
+                orig_key = _norm2orig.get(norm_normpath)  # gives normcase(original)
+                if orig_key:
+                    # frame_weights keyed by raw original paths
+                    # orig_key is normcase so try normcase lookup
+                    w = _fw_normcase.get(orig_key)
+                    if w is not None:
+                        return float(w)
+
+            # last resort: try aligned path directly in normcase weights
+            return float(_fw_normcase.get(
+                os.path.normcase(os.path.normpath(aligned_path)), 1.0
+            ))
+
+        weights_array = np.array(
+            [_resolve_weight(p) for p in file_list], dtype=np.float32
+        )
+        log(f"⚖️ Weight range for '{group_key}': "
+            f"min={weights_array.min():.3f} max={weights_array.max():.3f} "
+            f"mean={weights_array.mean():.3f}")
 
         n_rows = math.ceil(height / chunk_h)
         n_cols = math.ceil(width / chunk_w)

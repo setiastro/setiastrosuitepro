@@ -502,7 +502,12 @@ class CosmicClarityDialogPro(QDialog):
         self.doc = doc
         self._engine_thread = None
         self._closing_after_cancel = False
-        self.orig = np.clip(np.asarray(doc.image, dtype=np.float32), 0.0, 1.0)
+        _orig = np.clip(np.asarray(doc.image, dtype=np.float32), 0.0, 1.0)
+        if _orig.ndim == 2:
+            _orig = np.stack([_orig, _orig, _orig], axis=-1)
+        elif _orig.ndim == 3 and _orig.shape[2] == 1:
+            _orig = np.repeat(_orig, 3, axis=2)
+        self.orig = _orig
         self.cosmic_root = ""   # no longer used by in-process engines
 
         # ------------------------------------------------------------------
@@ -1264,7 +1269,10 @@ class CosmicClarityDialogPro(QDialog):
         # Collapse back to mono if the input was mono
         if getattr(self, "_orig_was_mono", False):
             if out_arr.ndim == 3:
-                out_arr = out_arr.mean(axis=2).astype(np.float32, copy=False)
+                out_arr = out_arr.mean(axis=2).astype(np.float32)
+
+        # ← ADD: blend with active mask before applying
+        out_arr = self._blend_with_mask(out_arr)
 
         create_new = (self.cmb_target.currentIndex() == 1)
         if create_new:
@@ -1291,10 +1299,71 @@ class CosmicClarityDialogPro(QDialog):
                 pass
         return "image"
 
+    def _active_mask_id(self) -> str | None:
+        return getattr(self.doc, "active_mask_id", None) or None
+
+    def _blend_with_mask(self, processed: np.ndarray) -> np.ndarray:
+        mid = self._active_mask_id()
+        if not mid:
+            return processed
+
+        layer = getattr(self.doc, "masks", {}).get(mid)
+        if layer is None:
+            return processed
+
+        m = np.asarray(getattr(layer, "data", None))
+        if m is None or m.size == 0:
+            return processed
+
+        m = m.astype(np.float32)
+        # Guard against uint mask or float mask with values > 1
+        if m.dtype.kind in "ui":
+            imax = float(np.iinfo(m.dtype).max)
+            m = m / imax if imax > 0 else m
+        else:
+            mx = float(m.max()) if m.size else 0.0
+            if mx > 1.0:
+                m = m / mx
+            elif mx == 0.0:
+                return processed  # ← blank mask = no effect, return unmodified
+
+        m = np.clip(m, 0.0, 1.0)
+
+        mh, mw = m.shape[:2]
+        oh, ow = processed.shape[:2]
+        if (mh, mw) != (oh, ow):
+            yi = np.linspace(0, mh - 1, oh).astype(np.int32)
+            xi = np.linspace(0, mw - 1, ow).astype(np.int32)
+            m = m[yi][:, xi]
+
+        src = self.orig.astype(np.float32)  # always 3-channel now
+
+        out = processed.astype(np.float32)
+
+        if out.ndim == 3 and out.shape[2] >= 3:
+            m = m[..., None]
+            if src.ndim == 2:
+                src = np.stack([src] * 3, axis=-1)
+        elif out.ndim == 2:
+            if src.ndim == 3:
+                src = src[..., 0]
+
+        result = m * out + (1.0 - m) * src
+        if not np.isfinite(result).all():
+            return processed  # ← safety net: never return NaN to the document
+        return result.astype(np.float32)
 
     def _apply_to_active(self, arr: np.ndarray, step_title: str):
-        """Overwrite the active document image."""
-        if hasattr(self.doc, "set_image"):
+        mid = self._active_mask_id()
+        meta = {
+            "step_name": step_title,
+            "masked": bool(mid),
+            "mask_id": mid,
+            "mask_blend": "m*out+(1-m)*src",
+        }
+        if hasattr(self.doc, "apply_edit"):
+            self.doc.apply_edit(arr, meta, step_name=step_title)
+        elif hasattr(self.doc, "set_image"):
             self.doc.set_image(arr, step_name=step_title)
         elif hasattr(self.doc, "apply_numpy"):
             self.doc.apply_numpy(arr, step_name=step_title)
