@@ -408,6 +408,15 @@ class ToolbarMixin:
         # Rebind ALL dropdowns after reorder/membership moves
         self._rebind_view_dropdowns()
         self._rebind_extract_luma_dropdown()
+        self._apply_toolbar_icon_size()
+
+    def _apply_toolbar_icon_size(self):
+        from PyQt6.QtCore import QSize
+        from setiastro.saspro.shortcuts import DraggableToolBar
+        size = int(self.settings.value("toolbar/icon_size", 24, type=int))
+        qs = QSize(size, size)
+        for tb in self.findChildren(DraggableToolBar):
+            tb.setIconSize(qs)
 
     def _toolbar_containing_action(self, action: QAction):
         from setiastro.saspro.shortcuts import DraggableToolBar

@@ -250,7 +250,12 @@ class SettingsDialog(QDialog):
         left_col.addRow(self.chk_smooth_zoom_settle)
         left_col.addRow(self.tr("Background Opacity:"), w_bg_opacity)
         left_col.addRow(self.tr("Background Image:"), w_bg_image)
-
+        self.sp_icon_size = QSpinBox()
+        self.sp_icon_size.setRange(16, 64)
+        self.sp_icon_size.setSingleStep(4)
+        self.sp_icon_size.setSuffix(" px")
+        self.sp_icon_size.setToolTip(self.tr("Toolbar icon size in pixels (default: 24)"))
+        left_col.addRow(self.tr("Toolbar Icon Size:"), self.sp_icon_size)
         # ---- Acceleration ----
         left_col.addRow(QLabel(self.tr("<b>Acceleration</b>")))
 
@@ -1210,6 +1215,8 @@ class SettingsDialog(QDialog):
         self.slider_bg_opacity.blockSignals(False)
         self.lbl_bg_opacity_val.setText(f"{current_opacity}%")
         self._initial_bg_opacity = int(current_opacity) # For cancel/revert
+
+        self.sp_icon_size.setValue(self.settings.value("toolbar/icon_size", 24, type=int))
         
         # Custom background
         self._initial_bg_path = self.settings.value("ui/custom_background", "", type=str) or ""
@@ -1455,6 +1462,16 @@ class SettingsDialog(QDialog):
             self.settings.remove("paths/cosmic_clarity")
         except Exception:
             pass
+
+        self.settings.setValue("toolbar/icon_size", int(self.sp_icon_size.value()))
+
+        # Apply live
+        p = self.parent()
+        if p and hasattr(p, "_apply_toolbar_icon_size"):
+            try:
+                p._apply_toolbar_icon_size()
+            except Exception:
+                pass
 
         self.accept()
 
