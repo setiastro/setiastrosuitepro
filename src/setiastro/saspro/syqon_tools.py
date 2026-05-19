@@ -37,6 +37,61 @@ def _syqon_prism_buy_url_for(model_kind: str) -> str:
     mk = (model_kind or "prism_mini").lower().strip()
     return _SYQON_BUY_URL_PRISM_DEEP if mk == "prism_deep" else _SYQON_BUY_URL_PRISM_MINI
 
+def _blend_result_with_mask(processed: np.ndarray, orig: np.ndarray, doc) -> np.ndarray:
+    """
+    Blend processed result with orig using doc's active mask.
+    orig must already match the shape/dtype of processed.
+    Returns processed unchanged if no mask is active or mask is invalid.
+    """
+    mid = getattr(doc, "active_mask_id", None) or None
+    if not mid:
+        return processed
+
+    layer = getattr(doc, "masks", {}).get(mid)
+    if layer is None:
+        return processed
+
+    m = np.asarray(getattr(layer, "data", None))
+    if m is None or m.size == 0:
+        return processed
+
+    m = m.astype(np.float32)
+    if m.dtype.kind in "ui":
+        imax = float(np.iinfo(m.dtype).max)
+        m = m / imax if imax > 0 else m
+    else:
+        mx = float(m.max()) if m.size else 0.0
+        if mx > 1.0:
+            m = m / mx
+        elif mx == 0.0:
+            return processed  # blank mask = no effect
+
+    m = np.clip(m, 0.0, 1.0)
+
+    # resample mask if needed
+    mh, mw = m.shape[:2]
+    oh, ow = processed.shape[:2]
+    if (mh, mw) != (oh, ow):
+        yi = np.linspace(0, mh - 1, oh).astype(np.int32)
+        xi = np.linspace(0, mw - 1, ow).astype(np.int32)
+        m = m[yi][:, xi]
+
+    out = processed.astype(np.float32)
+    src = orig.astype(np.float32)
+
+    if out.ndim == 3 and out.shape[2] >= 3:
+        m = m[..., None]
+        if src.ndim == 2:
+            src = np.stack([src] * 3, axis=-1)
+    elif out.ndim == 2:
+        if src.ndim == 3:
+            src = src[..., 0]
+
+    result = m * out + (1.0 - m) * src
+    if not np.isfinite(result).all():
+        return processed  # safety net
+    return result.astype(np.float32)
+
 class SyQonToolsDialog(QDialog):
     def __init__(self, parent, docman, get_active_doc_callable, icon: QIcon | None = None):
         super().__init__(parent)
@@ -706,6 +761,7 @@ class _SyQonDenoiseHubPage(QWidget):
 
             den_base = denoised_lin.mean(axis=2).astype(np.float32, copy=False)
             final_to_apply = ((1.0 - strength) * orig_base + strength * den_base).astype(np.float32, copy=False)
+            orig_for_mask = orig_base
         else:
             if orig.ndim == 2:
                 orig_rgb = np.stack([orig] * 3, axis=-1)
@@ -715,13 +771,19 @@ class _SyQonDenoiseHubPage(QWidget):
                 orig_rgb = orig[..., :3]
 
             final_to_apply = ((1.0 - strength) * orig_rgb + strength * denoised_lin).astype(np.float32, copy=False)
+            orig_for_mask = orig_rgb
 
         final_to_apply = np.clip(final_to_apply, 0.0, 1.0).astype(np.float32, copy=False)
+        orig_for_mask = orig_base if orig_was_mono else orig_rgb
+        final_to_apply = _blend_result_with_mask(final_to_apply, orig_for_mask, self.doc)
 
         meta = {
             "step_name": "Denoised",
             "bit_depth": "32-bit floating point",
             "is_mono": bool(orig_was_mono),
+            "masked": bool(getattr(self.doc, "active_mask_id", None)),
+            "mask_id": getattr(self.doc, "active_mask_id", None) or None,
+            "mask_blend": "m*out+(1-m)*src",            
             "replay_last": {
                 "op": "syqon_prism",
                 "params": {
@@ -1241,6 +1303,7 @@ def _run_syqon_prism_headless(main, doc, preset: dict | None = None):
 
             den_base = denoised_lin.mean(axis=2).astype(np.float32, copy=False)
             final_to_apply = ((1.0 - strength) * orig_base + strength * den_base).astype(np.float32, copy=False)
+            orig_for_mask = orig_base
         else:
             if orig.ndim == 2:
                 orig_rgb = np.stack([orig] * 3, axis=-1)
@@ -1250,13 +1313,19 @@ def _run_syqon_prism_headless(main, doc, preset: dict | None = None):
                 orig_rgb = orig[..., :3]
 
             final_to_apply = ((1.0 - strength) * orig_rgb + strength * denoised_lin).astype(np.float32, copy=False)
+            orig_for_mask = orig_rgb
 
         final_to_apply = np.clip(final_to_apply, 0.0, 1.0).astype(np.float32, copy=False)
+        orig_for_mask = orig_base if orig_was_mono else orig_rgb
+        final_to_apply = _blend_result_with_mask(final_to_apply, orig_for_mask, doc)
 
         meta = {
             "step_name": "Denoised",
             "bit_depth": "32-bit floating point",
             "is_mono": bool(orig_was_mono),
+            "masked": bool(getattr(doc, "active_mask_id", None)),
+            "mask_id": getattr(doc, "active_mask_id", None) or None,
+            "mask_blend": "m*out+(1-m)*src",            
             "replay_last": {
                 "op": "syqon_prism",
                 "params": {
