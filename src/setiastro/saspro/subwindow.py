@@ -887,97 +887,82 @@ class ImageSubWindow(QWidget):
 
     #------ Replay helpers------
     def _update_replay_button(self):
-        """
-        Update the 'Replay on main image' button:
-
-        - Enabled only when a Preview/ROI is active.
-        - Populates the dropdown menu with all headless-history entries
-          from the main window (newest first).
-        """
         btn = getattr(self, "_btn_replay_main", None)
         if not btn:
             return
 
-        # Do we have an active preview in this view?
         try:
             has_preview = self.has_active_preview()
         except Exception:
             has_preview = False
 
-        mw = self._find_main_window()
         menu = getattr(self, "_replay_menu", None)
-
-        history = []
-        has_history = False
-
-        # Pull history from main window if available
-        if mw is not None and hasattr(mw, "get_headless_history"):
-            try:
-                history = mw.get_headless_history() or []
-                has_history = bool(history)
-            except Exception:
-                history = []
-                has_history = False
-
-        # Rebuild the dropdown menu
         if menu is not None:
             menu.clear()
-            if has_history:
-                # We want newest actions at the *top* of the menu
-                for idx_from_end, entry in enumerate(reversed(history)):
-                    real_index = len(history) - 1 - idx_from_end  # index into original list
 
-                    cid  = entry.get("command_id", "") or ""
-                    desc = entry.get("description") or cid or f"#{real_index+1}"
-
-                    act = menu.addAction(desc)
-                    if cid and cid != desc:
-                        act.setToolTip(cid)
-
-                    # Capture the index in a default arg so each action gets its own index
-                    act.triggered.connect(
-                        lambda _chk=False, i=real_index: self._replay_history_index(i)
-                    )
-
-        # Also allow left-click "last action" when main window still has a last payload
-        has_last = bool(mw and getattr(mw, "_last_headless_command", None))
-
-        enabled = bool(has_preview and (has_history or has_last))
-        btn.setEnabled(enabled)
-
-
-    def _replay_history_index(self, index: int):
-        """
-        Called when the user selects an entry from the replay dropdown.
-
-        We forward to MainWindow.replay_headless_history_entry_on_base(index, target_sw),
-        which reuses the big replay_last_action_on_base() switchboard.
-        """
-        mw = self._find_main_window()
-        if mw is None or not hasattr(mw, "replay_headless_history_entry_on_base"):
-            try:
-                print("[Replay] _replay_history_index: main window or handler missing")
-            except Exception:
-                pass
+        if not has_preview:
+            btn.setEnabled(False)
             return
 
+        roi_doc = None
+        dm = getattr(self, "_docman", None)
+        if dm is not None:
+            try:
+                roi_doc = dm.get_document_for_view(self)
+            except Exception:
+                roi_doc = None
+
+        history = list(getattr(roi_doc, "_preview_commands", []) or [])
+
+        if menu is not None:
+            for idx, entry in enumerate(reversed(history)):
+                real_index = len(history) - 1 - idx
+                step = entry.get("step") or f"Step {real_index+1}"
+                act = menu.addAction(step)
+                act.triggered.connect(
+                    lambda _chk=False, i=real_index: self._replay_history_index(i)
+                )
+
+        btn.setEnabled(bool(history))
+
+    def _replay_history_index(self, index: int):
+        mw = self._find_main_window()
+        if mw is None:
+            return
+
+        roi_doc = None
+        dm = getattr(self, "_docman", None)
+        if dm is not None:
+            try:
+                roi_doc = dm.get_document_for_view(self)
+            except Exception:
+                roi_doc = None
+
+        if roi_doc is None:
+            return
+
+        commands = getattr(roi_doc, "_preview_commands", [])
+        if not (0 <= index < len(commands)):
+            print(f"[Replay] index {index} out of range (commands len={len(commands)})")
+            return
+
+        entry = commands[index]
         target_sw = self._mdi_subwindow()
 
-        try:
-            mw.replay_headless_history_entry_on_base(index, target_sw=target_sw)
-            try:
-                print(
-                    f"[Replay] _replay_history_index: index={index}, "
-                    f"view id={id(self)}, target_sw={id(target_sw) if target_sw else None}"
-                )
-            except Exception:
-                pass
-        except Exception as e:
-            try:
-                print(f"[Replay] _replay_history_index failed: {e}")
-            except Exception:
-                pass
+        # Build payload in the schema replay_last_action_on_base expects
+        payload = {
+            "command_id": entry.get("command_id"),
+            "preset": dict(entry.get("preset") or {}),
+        }
 
+        print(f"[Replay] replaying '{entry.get('step')}' (cid={payload['command_id']!r}) on base")
+
+        old = getattr(mw, "_last_headless_command", None)
+        try:
+            mw._last_headless_command = payload
+            mw.replay_last_action_on_base(target_sw=target_sw)
+        finally:
+            mw._last_headless_command = old
 
     def _on_replay_last_clicked(self):
         """
@@ -1894,6 +1879,7 @@ class ImageSubWindow(QWidget):
             "vval": int(vbar.value()),
             "autostretch": bool(self.autostretch_enabled),
             "autostretch_target": float(self.autostretch_target),
+            "source_view_id": id(self),   # ← ADD THIS
         }
         state.update(self._drag_identity_fields())
 
@@ -1917,7 +1903,16 @@ class ImageSubWindow(QWidget):
                 state["preview_name"] = str(pname)
         else:
             state["source_kind"] = "full"
-
+        # When on a preview tab, include the ROI doc identity so the
+        # duplicate opens the edited preview, not the base image
+        if roi and self._docman is not None:
+            try:
+                roi_doc = self._docman.get_document_for_view(self)
+                if roi_doc is not None:
+                    state["roi_doc_ptr"] = id(roi_doc)
+                    state["roi_doc_uid"] = getattr(roi_doc, "uid", None)
+            except Exception:
+                pass
         if _DEBUG_DND_DUP:
             _dnd_dbg_dump_state("DRAG_START:dragtab", state)
 
@@ -1938,7 +1933,6 @@ class ImageSubWindow(QWidget):
                 )
             )
             drag.setHotSpot(QPoint(16, 16))  # optional, but feels nicer
-
         drag.exec(Qt.DropAction.CopyAction)
         try:
             mw = self._find_main_window()

@@ -1089,13 +1089,36 @@ class AstroSuiteProMainWindow(
         # ROI promotion: genuine preview of a full base doc
         if force_new and is_preview and roi and len(roi) == 4:
             if not pmeta.get("is_roi_doc"):
+                # roi_doc_ptr is set by _start_viewstate_drag when on a preview tab
+                roi_doc_ptr = st.get("roi_doc_ptr")
+                if roi_doc_ptr is not None:
+                    try:
+                        ptr = int(roi_doc_ptr)
+                        # scan all subwindow views for the ROI doc
+                        from setiastro.saspro.subwindow import ImageSubWindow
+                        for sw in self.mdi.subWindowList():
+                            try:
+                                w = sw.widget()
+                                if not isinstance(w, ImageSubWindow):
+                                    continue
+                                dm2 = getattr(self, "doc_manager", None) or getattr(self, "docman", None)
+                                if dm2 is None:
+                                    continue
+                                roi_doc = dm2.get_document_for_view(w)
+                                if roi_doc is not None and id(roi_doc) == ptr:
+                                    if getattr(roi_doc, "image", None) is not None:
+                                        doc = roi_doc
+                                    break
+                            except Exception:
+                                continue
+                    except Exception as e:
+                        print(f"[DUP DEBUG] roi_doc_ptr resolution failed: {e}")
+
                 try:
                     self._promote_roi_preview_to_real_doc(st, doc)
                     return
                 except Exception as e:
                     self._log(f"[viewstate-drop ROI] promotion failed: {e}")
-                    # fall through to default duplicate behavior
-
         if force_new:
             # Build a clean base name from the drag payload
             base_name = _strip_ui_decorations(
@@ -5829,7 +5852,35 @@ class AstroSuiteProMainWindow(
                 except Exception:
                     pass
             return
+        if cid == "texture_clarity":
+            try:
+                from setiastro.saspro.texture_clarity import texture_clarity_headless
 
+                preset_dict = preset if isinstance(preset, dict) else {}
+                texture_clarity_headless(
+                    base_doc,
+                    texture_amount = float(preset_dict.get("t_amt", 0.0)),
+                    texture_radius = float(preset_dict.get("t_rad", 1.0)),
+                    clarity_amount = float(preset_dict.get("c_amt", 0.0)),
+                    clarity_radius = float(preset_dict.get("c_rad", 1.0)),
+                    mask_strength  = float(preset_dict.get("mask_str", 1.0)),
+                )
+
+                try:
+                    self._log(
+                        f"[Replay] Applied Texture and Clarity to base of "
+                        f"'{target_sw.windowTitle()}' "
+                        f"(t_amt={preset_dict.get('t_amt',0):.2f}, "
+                        f"c_amt={preset_dict.get('c_amt',0):.2f})"
+                    )
+                except Exception:
+                    pass
+            except Exception as e:
+                try:
+                    QMessageBox.warning(self, "Texture and Clarity", f"Replay-on-base failed:\n{e}")
+                except Exception:
+                    print("Texture and Clarity replay-on-base failed:", e)
+            return
         if cid == "levels":
             try:
                 from setiastro.saspro.levels_preset import apply_levels_via_preset
@@ -9273,25 +9324,39 @@ class AstroSuiteProMainWindow(
 
     def _duplicate_view_from_signal(self, source_view):
         print("Duplicating view from signal...")
-        from PyQt6.QtCore import QTimer  # safe even if unused on some code paths
+        from PyQt6.QtCore import QTimer
 
-        # 0) Resolve the *base* document (avoid DocProxy/ROI targets)
         doc = getattr(source_view, "document", None)
         if doc is None:
             return
 
         base_doc = getattr(source_view, "base_document", None)
         if base_doc is None:
-            # If doc is a _DocProxy, try to resolve; otherwise fall back to doc
             try:
-                base_doc = doc._target()  # may exist on our proxy
+                base_doc = doc._target()
             except Exception:
                 base_doc = doc
 
         if getattr(base_doc, "image", None) is None:
             return
 
-        # 1) Capture source view state
+        # ── NEW: if a preview tab is active, duplicate the ROI doc's current
+        #         edited image rather than the pristine base document ──────────
+        source_doc_for_dup = base_doc
+        extra_name_hint = None
+        if getattr(source_view, "has_active_preview", lambda: False)():
+            dm = getattr(self, "doc_manager", None) or getattr(self, "docman", None)
+            if dm is not None:
+                try:
+                    roi_doc = dm.get_document_for_view(source_view)
+                    if roi_doc is not None and getattr(roi_doc, "image", None) is not None:
+                        source_doc_for_dup = roi_doc
+                        extra_name_hint = source_view.current_preview_name()
+                except Exception:
+                    pass
+        # ──────────────────────────────────────────────────────────────────────
+
+        # Capture source view state
         hbar = source_view.scroll.horizontalScrollBar()
         vbar = source_view.scroll.verticalScrollBar()
         state = {
@@ -9302,34 +9367,32 @@ class AstroSuiteProMainWindow(
             "autostretch_target": float(getattr(source_view, "autostretch_target", 0.25)),
         }
 
-        # 2) New name (normalized: NO decorators like 🔗■●◆▲▪▫•◼◻◾◽)
         try:
-            base_name = self._doc_window_title(base_doc)  # might include decorations
+            base_name = self._doc_window_title(base_doc)
         except Exception:
             base_name = "Untitled"
-
-        # Normalize it so uniqueness checks don't miss decorated titles
         try:
             base_name = normalize_doc_title(base_name)
         except Exception:
             base_name = (base_name or "Untitled").strip()
 
-        # Build a set of existing document names (normalized)
+        if extra_name_hint:
+            try:
+                base_name = f"{base_name}_{normalize_doc_title(extra_name_hint)}"
+            except Exception:
+                pass
+
         existing = set()
         try:
             dm = getattr(self, "doc_manager", None) or getattr(self, "docman", None)
             docs = []
-
-            # Prefer an official accessor if you have one
             if dm is not None:
                 if hasattr(dm, "documents"):
                     docs = list(dm.documents())
                 elif hasattr(dm, "_docs"):
                     docs = list(dm._docs)
-
             for d in docs:
                 try:
-                    dn = ""
                     md = getattr(d, "metadata", {}) or {}
                     dn = (md.get("display_name") or "").strip() or (d.display_name() or "").strip()
                     dn = normalize_doc_title(dn)
@@ -9340,7 +9403,6 @@ class AstroSuiteProMainWindow(
         except Exception:
             pass
 
-        # Pick a unique duplicate name: base_duplicate, base_duplicate2, ...
         candidate = f"{base_name}_duplicate"
         if candidate in existing:
             n = 2
@@ -9351,11 +9413,11 @@ class AstroSuiteProMainWindow(
                     break
                 n += 1
 
-        # 3) Duplicate the *base* document (not the ROI proxy)
-        new_doc = self.docman.duplicate_document(base_doc, new_name=candidate)
-        print(f"  Duplicated document ID {id(base_doc)} -> {id(new_doc)}")
+        # Duplicate from the ROI doc (edited preview) or base doc
+        new_doc = self.docman.duplicate_document(source_doc_for_dup, new_name=candidate)
+        print(f"  Duplicated document ID {id(source_doc_for_dup)} -> {id(new_doc)}")
 
-        # 4) Ensure the duplicate starts mask-free (so we don't inherit mask UI state)
+        # Clear masks on the duplicate
         try:
             mid = getattr(new_doc, "active_mask_id", None)
             if mid and hasattr(new_doc, "remove_mask"):
@@ -9378,7 +9440,6 @@ class AstroSuiteProMainWindow(
             except Exception:
                 pass
 
-        # 5) Spawn the subwindow *now* (don't rely on an external documentAdded handler)
         sw = self._spawn_subwindow_for(new_doc, force_new=True)
         print(f"  Spawned subwindow for duplicated document ID {id(new_doc)}")
 
@@ -9393,7 +9454,6 @@ class AstroSuiteProMainWindow(
             pass
 
         if not sw:
-            # Extremely defensive: try once more on the next tick, then give up
             def _retry_spawn():
                 sw2 = self._spawn_subwindow_for(new_doc, force_new=True)
                 if not sw2 and hasattr(self, "_log"):
@@ -9402,25 +9462,20 @@ class AstroSuiteProMainWindow(
             return
 
         view = sw.widget()
-
-        # If the view was constructed before we cleared the doc masks, force-clear the UI dot.
         if hasattr(view, "_mask_dot_enabled") and view._mask_dot_enabled:
             view._mask_dot_enabled = False
             try:
                 view._rebuild_title()
             except Exception:
-                # last resort: set a clean title
                 t = getattr(view, "base_doc_title", lambda: new_doc.display_name())()
                 sw.setWindowTitle(t)
                 sw.setToolTip(t)
 
-        # 6) Apply the saved view state (zoom/pan/autostretch)
         try:
             self._apply_view_state_to_view(view, state)
         except Exception:
             pass
 
-        # 7) Focus the new window and log
         self.mdi.setActiveSubWindow(sw)
         print(f"  Activated subwindow for duplicated document ID {id(new_doc)}")
         if hasattr(self, "_log"):

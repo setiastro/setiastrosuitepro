@@ -163,6 +163,8 @@ def texture_clarity_headless(doc, texture_amount=0.0, texture_radius=1.0,
     out = _blend_mask(out, src, _active_mask_array_from_doc(doc))
     doc.apply_edit(out, metadata={
         "step_name": "Texture and Clarity",
+        "command_id": "texture_clarity",
+        "preset": params,
         "texture_clarity": params,
     }, step_name="Texture and Clarity")
 
@@ -477,14 +479,36 @@ class TextureClarityDialog(QDialog):
     def _apply(self):
         if self.doc is None:
             return
+
+        params = dict(
+            t_amt    = self.sl_t_amt.value() / 100.0,
+            t_rad    = self.sl_t_rad.value() / 10.0,
+            c_amt    = self.sl_c_amt.value() / 100.0,
+            c_rad    = self.sl_c_rad.value() / 10.0,
+            mask_str = self.sl_mask.value()  / 100.0,
+        )
+
         texture_clarity_headless(
             self.doc,
-            texture_amount = self.sl_t_amt.value() / 100.0,
-            texture_radius = self.sl_t_rad.value() / 10.0,
-            clarity_amount = self.sl_c_amt.value() / 100.0,
-            clarity_radius = self.sl_c_rad.value() / 10.0,
-            mask_strength  = self.sl_mask.value()  / 100.0,
+            texture_amount = params["t_amt"],
+            texture_radius = params["t_rad"],
+            clarity_amount = params["c_amt"],
+            clarity_radius = params["c_rad"],
+            mask_strength  = params["mask_str"],
         )
+
+        # Register as replayable headless command — same pattern as Curves
+        try:
+            mw = self.main
+            if hasattr(mw, "_remember_last_headless_command"):
+                mw._remember_last_headless_command(
+                    "texture_clarity",
+                    params,
+                    description="Texture and Clarity",
+                )
+        except Exception:
+            pass
+
         self._save_geometry()
         self.close()
 
