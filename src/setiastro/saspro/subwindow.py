@@ -1704,7 +1704,7 @@ class ImageSubWindow(QWidget):
         a_doc  = menu.addAction(self.tr("Rename Document…  (F2)"))
         menu.addSeparator()
         a_min  = menu.addAction(self.tr("Send to Shelf"))
-        a_clear = menu.addAction(self.tr("Clear View Name (use doc name)"))
+        a_clear = menu.addAction(self.tr("Reset Document Name…"))
         menu.addSeparator()
         a_unlink = menu.addAction(self.tr("Unlink from Linked Views"))
         menu.addSeparator()
@@ -1745,8 +1745,25 @@ class ImageSubWindow(QWidget):
         elif act == a_min:
             self._send_to_shelf()
         elif act == a_clear:
-            self._view_title_override = None
-            self._sync_host_title()
+            current = self.document.display_name()
+            # Try to derive original name from file path
+            meta = getattr(self.document, "metadata", {}) or {}
+            fpath = (meta.get("file_path") or "").strip()
+            if fpath:
+                import os
+                original = os.path.splitext(os.path.basename(fpath))[0]
+            else:
+                original = current
+
+            new_name, ok = QInputDialog.getText(
+                self, self.tr("Reset Document Name"),
+                self.tr("Document name:"),
+                text=original
+            )
+            if ok and new_name.strip() and new_name.strip() != current:
+                self.document.metadata["display_name"] = new_name.strip()
+                self.document.changed.emit()
+                self._sync_host_title()
         elif act == a_unlink:
             self.unlink_all()
         elif act == a_help:
