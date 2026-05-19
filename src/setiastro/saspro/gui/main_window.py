@@ -6631,100 +6631,13 @@ class AstroSuiteProMainWindow(
         if not isinstance(preset, dict):
             preset = {}
 
+        from setiastro.saspro.command_ids import normalize_command_id
+
         def _cid_norm(c: str) -> str:
             s = (c or "").strip()
-
-            # IMPORTANT: do NOT lowercase the script id suffix
-            # cid_raw might be "script:MyScript42" or even a filename-based id
             if s.lower().startswith("script:"):
-                return "script:" + s.split(":", 1)[1]  # preserve exact suffix casing
-
-            c = s.lower()
-
-            aliases = {
-                # geometry short <-> long ids
-                "flip_horizontal": "geom_flip_horizontal",
-                "geom_flip_h": "geom_flip_horizontal",
-                "geom_flip_horizontal": "geom_flip_horizontal",
-
-                "flip_vertical": "geom_flip_vertical",
-                "geom_flip_v": "geom_flip_vertical",
-                "geom_rotate_clockwise": "geom_rotate_clockwise",
-                "rotate_clockwise": "geom_rotate_clockwise",
-                "geom_rot_cw": "geom_rotate_clockwise",
-
-                "rotate_counterclockwise": "geom_rotate_counterclockwise",
-                "geom_rot_ccw": "geom_rotate_counterclockwise",
-                "geom_rotate_counterclockwise": "geom_rotate_counterclockwise",
-
-                "rotate_180": "geom_rotate_180",
-                "geom_rotate_180": "geom_rotate_180",
-
-                "rotate_any": "geom_rotate_any",
-                "rotate_arbitrary": "geom_rotate_any",
-                "geom_rotate_any": "geom_rotate_any",
-
-                "invert": "geom_invert",
-                "geom_invert": "geom_invert",
-
-                "rescale": "geom_rescale",
-                "geom_rescale": "geom_rescale",
-
-                "geom_resize_canvas": "geom_resize_canvas",
-                "resize_canvas": "geom_resize_canvas",
-
-                "levels": "levels",
-                "histogram_transform": "levels",
-                "histogram": "levels",
-
-                "ghs": "ghs",
-                "hyperbolic_stretch": "ghs",
-                "universal_hyperbolic_stretch": "ghs",
-
-                "abe": "abe",
-                "automatic_background_extraction": "abe",
-
-                "graxpert": "graxpert",
-                "grax": "graxpert",
-                "remove_gradient_graxpert": "graxpert",
-
-                "remove_stars": "remove_stars",
-                "star_removal": "remove_stars",
-                "starnet": "remove_stars",
-                "darkstar": "remove_stars",
-
-                "aberrationai": "aberrationai",
-                "aberration": "aberrationai",
-                "ai_aberration": "aberrationai",
-
-                "cosmic": "cosmic_clarity",
-                "cosmicclarity": "cosmic_clarity",
-                "cosmic_clarity": "cosmic_clarity",
-
-                "crop": "crop",
-                "geom_crop": "crop",
-
-                "wavescale_hdr": "wavescale_hdr",
-                "wavescalehdr": "wavescale_hdr",
-                "wavescale": "wavescale_hdr",
-
-                "wavescale_dark_enhance": "wavescale_dark_enhance",
-                "wavescale_dark_enhancer": "wavescale_dark_enhance",
-                "wsde": "wavescale_dark_enhance",
-                "dark_enhancer": "wavescale_dark_enhance",
-
-                "star_alignment": "star_align",
-                "align_stars": "star_align",
-                "align": "star_align",
-
-                "syqontools": "syqontools",
-
-                "convo": "convo",
-                "convolution": "convo",
-                "deconvolution": "convo",
-                "convo_deconvo": "convo",
-            }
-            return aliases.get(c, c)
+                return "script:" + s.split(":", 1)[1]
+            return normalize_command_id(s)
 
         cid = _cid_norm(cid_raw)
 

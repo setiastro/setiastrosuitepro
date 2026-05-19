@@ -949,10 +949,19 @@ class ImageSubWindow(QWidget):
         entry = commands[index]
         target_sw = self._mdi_subwindow()
 
-        # Build payload in the schema replay_last_action_on_base expects
+        command_id = entry.get("command_id")
+        preset = dict(entry.get("preset") or {})
+
+        # If preset is empty, try to get it from the main window's last headless command
+        # for this command_id (Cosmic Clarity and similar tools store params there)
+        if not preset and mw is not None:
+            last = getattr(mw, "_last_headless_command", None) or {}
+            if str(last.get("command_id", "")).lower() == str(command_id or "").lower():
+                preset = dict(last.get("preset") or {})
+
         payload = {
-            "command_id": entry.get("command_id"),
-            "preset": dict(entry.get("preset") or {}),
+            "command_id": command_id,
+            "preset": preset,
         }
 
         print(f"[Replay] replaying '{entry.get('step')}' (cid={payload['command_id']!r}) on base")

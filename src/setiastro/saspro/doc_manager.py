@@ -1439,9 +1439,15 @@ class _RoiViewDocument(ImageDocument):
         if not hasattr(self, "_preview_commands"):
             self._preview_commands = []
         md = dict(metadata or {})
+
+        # Prefer explicit command_id, fall back to step_name, then step_name param
+        from setiastro.saspro.command_ids import normalize_command_id
+
+        # In apply_edit, when storing _preview_commands:
+        cid = (md.get("command_id") or md.get("step_name") or step_name or "").strip()
         self._preview_commands.append({
-            "step": step_name,
-            "command_id": md.get("command_id") or md.get("step_name") or step_name,
+            "step": step_name or cid,
+            "command_id": normalize_command_id(cid),
             "preset": dict(md.get("preset") or {}),
         })
         self._preview_override = img
