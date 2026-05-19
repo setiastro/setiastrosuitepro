@@ -3410,6 +3410,14 @@ class ImageSubWindow(QWidget):
             except Exception:
                 pass
 
+        # ---- Count layer readout: show actual integer count, not normalized float ----
+        doc = getattr(self, "document", None)
+        meta = getattr(doc, "metadata", {}) or {}
+        if meta.get("is_count_layer") and k is not None:
+            count_max = float(meta.get("count_max", 1.0))
+            actual_count = int(round(k * count_max))
+            msg = msg.replace(f"K={k:.6f}", f"frames_rejected={actual_count}")
+
         mw.statusBar().showMessage(msg)
 
 
