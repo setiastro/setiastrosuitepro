@@ -1436,7 +1436,14 @@ class _RoiViewDocument(ImageDocument):
         # snapshot current visible preview for local undo
         self._pundo.append((self._current_preview_copy(), dict(self.metadata), step_name))
         self._predo.clear()
-
+        if not hasattr(self, "_preview_commands"):
+            self._preview_commands = []
+        md = dict(metadata or {})
+        self._preview_commands.append({
+            "step": step_name,
+            "command_id": md.get("command_id") or md.get("step_name") or step_name,
+            "preset": dict(md.get("preset") or {}),
+        })
         self._preview_override = img
         _debug_log_undo(
             "_RoiViewDocument.apply_edit.after",
