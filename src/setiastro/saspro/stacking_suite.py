@@ -17762,6 +17762,7 @@ class StackingSuiteDialog(QDialog):
 
             self.update_status(self.tr(f"✅ All chunks complete! Measured {len(measured_frames)} frames total."))
             self.update_status(self.tr("📏 Phase: Measurements complete."))
+           
             # ─────────────────────────────────────────────────────────────────────
             # FAST reference selection: score = starcount / (median * ecc)
             # uses stats we ALREADY measured → good for 100s of frames
@@ -17841,7 +17842,31 @@ class StackingSuiteDialog(QDialog):
                     + (f"(score={best_score:.4f})" if best_fp else "(fallback)")
                 ))
                 QApplication.processEvents()
+            # Populate frame_weights from quality metrics measured above.
+            # Normalize to mean=1.0 so weighted mean scale is preserved.
+            # Floor at 0.1 so even poor frames contribute rather than being
+            # fully excluded (rejection algorithms handle actual exclusion).
+            raw_scores = {}
+            for fp in measured_frames:
+                raw_scores[fp] = _fast_ref_score(fp)
 
+            score_vals = [v for v in raw_scores.values() if v > 0]
+            if score_vals:
+                mean_score = float(np.mean(score_vals))
+                for fp in measured_frames:
+                    s = raw_scores.get(fp, 0.0)
+                    self.frame_weights[fp] = max(0.1, s / mean_score) if mean_score > 1e-6 else 1.0
+            else:
+                # All scores zero (no stars detected) — uniform weights
+                for fp in measured_frames:
+                    self.frame_weights[fp] = 1.0
+
+            self.update_status(self.tr(
+                f"⚖️ Frame weights computed: "
+                f"min={min(self.frame_weights.values()):.3f}, "
+                f"max={max(self.frame_weights.values()):.3f}, "
+                f"mean={float(np.mean(list(self.frame_weights.values()))):.3f}"
+            )) 
 
             ref_stats_meas = star_counts.get(self.reference_frame, {"count": 0, "eccentricity": 0.0})
             ref_count = ref_stats_meas["count"]
@@ -21532,7 +21557,60 @@ class StackingSuiteDialog(QDialog):
             log(f"⚠️ {e}")
             return None, {}, None
 
-        weights_array = np.array([frame_weights.get(p, 1.0) for p in file_list], dtype=np.float32)
+        # frame_weights keys: original paths as-measured (raw, not normcase)
+        # _orig2norm keys:     normcase(normpath(original))
+        # _orig2norm values:   normpath(normalized)   -- NOT normcase
+        # orig_by_aligned keys:  normpath(aligned)    -- NOT normcase
+        # orig_by_aligned values: normpath(normalized) -- NOT normcase
+
+        _orig_by_aligned = getattr(self, "orig_by_aligned", {})
+
+        # Build reverse: normpath(normalized) -> normcase(original)
+        # _orig2norm: normcase(orig) -> normpath(norm)
+        # We need normpath(norm) -> normcase(orig) for the lookup
+        _norm2orig = {
+            os.path.normpath(v): k
+            for k, v in getattr(self, "_orig2norm", {}).items()
+        }
+        # Also build normcase version of frame_weights for final fallback
+        _fw_normcase = {
+            os.path.normcase(os.path.normpath(k)): v
+            for k, v in frame_weights.items()
+        }
+
+        def _resolve_weight(aligned_path: str) -> float:
+            # step 1: aligned -> normalized
+            # orig_by_aligned keyed by normpath (not normcase)
+            ap_normpath = os.path.normpath(aligned_path)
+            norm_path = _orig_by_aligned.get(ap_normpath)
+            if norm_path is None:
+                log(f"DEBUG weight miss step1: {os.path.basename(aligned_path)}")
+                log(f"  ap_normpath={ap_normpath}")
+                log(f"  sample orig_by_aligned key={next(iter(_orig_by_aligned), 'EMPTY')}")
+                return 1.0
+            if norm_path:
+                # step 2: normalized -> original key (normcase)
+                # _norm2orig keyed by normpath(normalized)
+                norm_normpath = os.path.normpath(norm_path)
+                orig_key = _norm2orig.get(norm_normpath)  # gives normcase(original)
+                if orig_key:
+                    # frame_weights keyed by raw original paths
+                    # orig_key is normcase so try normcase lookup
+                    w = _fw_normcase.get(orig_key)
+                    if w is not None:
+                        return float(w)
+
+            # last resort: try aligned path directly in normcase weights
+            return float(_fw_normcase.get(
+                os.path.normcase(os.path.normpath(aligned_path)), 1.0
+            ))
+
+        weights_array = np.array(
+            [_resolve_weight(p) for p in file_list], dtype=np.float32
+        )
+        log(f"⚖️ Weight range for '{group_key}': "
+            f"min={weights_array.min():.3f} max={weights_array.max():.3f} "
+            f"mean={weights_array.mean():.3f}")
 
         rej_any   = np.zeros((H, W), dtype=np.bool_)
         rej_count = np.zeros((H, W), dtype=np.uint16)
@@ -23317,7 +23395,60 @@ class StackingSuiteDialog(QDialog):
         maskbuf0 = _mk_mask_buf()
         maskbuf1 = _mk_mask_buf()
 
-        weights_array = np.array([frame_weights.get(p, 1.0) for p in file_list], dtype=np.float32)
+        # frame_weights keys: original paths as-measured (raw, not normcase)
+        # _orig2norm keys:     normcase(normpath(original))
+        # _orig2norm values:   normpath(normalized)   -- NOT normcase
+        # orig_by_aligned keys:  normpath(aligned)    -- NOT normcase
+        # orig_by_aligned values: normpath(normalized) -- NOT normcase
+
+        _orig_by_aligned = getattr(self, "orig_by_aligned", {})
+
+        # Build reverse: normpath(normalized) -> normcase(original)
+        # _orig2norm: normcase(orig) -> normpath(norm)
+        # We need normpath(norm) -> normcase(orig) for the lookup
+        _norm2orig = {
+            os.path.normpath(v): k
+            for k, v in getattr(self, "_orig2norm", {}).items()
+        }
+        # Also build normcase version of frame_weights for final fallback
+        _fw_normcase = {
+            os.path.normcase(os.path.normpath(k)): v
+            for k, v in frame_weights.items()
+        }
+
+        def _resolve_weight(aligned_path: str) -> float:
+            # step 1: aligned -> normalized
+            # orig_by_aligned keyed by normpath (not normcase)
+            ap_normpath = os.path.normpath(aligned_path)
+            norm_path = _orig_by_aligned.get(ap_normpath)
+            if norm_path is None:
+                log(f"DEBUG weight miss step1: {os.path.basename(aligned_path)}")
+                log(f"  ap_normpath={ap_normpath}")
+                log(f"  sample orig_by_aligned key={next(iter(_orig_by_aligned), 'EMPTY')}")
+                return 1.0
+            if norm_path:
+                # step 2: normalized -> original key (normcase)
+                # _norm2orig keyed by normpath(normalized)
+                norm_normpath = os.path.normpath(norm_path)
+                orig_key = _norm2orig.get(norm_normpath)  # gives normcase(original)
+                if orig_key:
+                    # frame_weights keyed by raw original paths
+                    # orig_key is normcase so try normcase lookup
+                    w = _fw_normcase.get(orig_key)
+                    if w is not None:
+                        return float(w)
+
+            # last resort: try aligned path directly in normcase weights
+            return float(_fw_normcase.get(
+                os.path.normcase(os.path.normpath(aligned_path)), 1.0
+            ))
+
+        weights_array = np.array(
+            [_resolve_weight(p) for p in file_list], dtype=np.float32
+        )
+        log(f"⚖️ Weight range for '{group_key}': "
+            f"min={weights_array.min():.3f} max={weights_array.max():.3f} "
+            f"mean={weights_array.mean():.3f}")
 
         n_rows = math.ceil(height / chunk_h)
         n_cols = math.ceil(width / chunk_w)
