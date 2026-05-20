@@ -282,7 +282,7 @@ def measure_psf_radius(chunk2d: np.ndarray, default_radius: float = 3.0) -> floa
     if sep is None:
         return default_radius
     try:
-        data = chunk2d.astype(np.float32)
+        data = chunk2d.astype(np.float32, copy=False)
         bkg = sep.Background(data)
         sub = data - bkg.back()
         rms = bkg.rms()
@@ -858,7 +858,7 @@ def _infer_chunk_psf(models: SharpenModels, model: Any, chunk2d: np.ndarray, psf
         y = model(t_rgb, psf_t)       # (1,3,Hp,Wp)
         y = y[:, 0].detach().float().cpu().numpy()[0]
 
-    return y[:h0, :w0].astype(np.float32)
+    return y[:h0, :w0].astype(np.float32, copy=False)
 
 def _infer_chunk_psf_onnx(models: SharpenModels, session: Any, chunk2d: np.ndarray, psf01: float) -> np.ndarray:
     """ONNX version of PSF-conditional infer. Returns 2D float32."""
@@ -885,7 +885,7 @@ def _infer_chunk_psf_onnx(models: SharpenModels, session: Any, chunk2d: np.ndarr
     else:
         raise RuntimeError(f"Unexpected ONNX output shape: {out.shape}")
 
-    return y[:h0, :w0].astype(np.float32)
+    return y[:h0, :w0].astype(np.float32, copy=False)
 
 def _infer_chunks_batched(
     models: SharpenModels,
@@ -940,7 +940,7 @@ def _infer_chunks_batched(
                         y = y[:, 0].detach().float().cpu().numpy()
 
                     for bi, (orig_idx, _chp, h0, w0) in enumerate(batch):
-                        outputs[orig_idx] = y[bi, :h0, :w0].astype(np.float32)
+                        outputs[orig_idx] = y[bi, :h0, :w0].astype(np.float32, copy=False)
 
                     done += len(batch)
                     if progress_cb is not None:
@@ -1013,7 +1013,7 @@ def _infer_chunks_psf_batched(
                         y = y[:, 0].detach().float().cpu().numpy()
 
                     for bi, (orig_idx, _chp, h0, w0, _psf01) in enumerate(batch):
-                        outputs[orig_idx] = y[bi, :h0, :w0].astype(np.float32)
+                        outputs[orig_idx] = y[bi, :h0, :w0].astype(np.float32, copy=False)
 
                     done += len(batch)
                     if progress_cb is not None:
@@ -1053,7 +1053,7 @@ def _infer_chunk(models: SharpenModels, model: Any, chunk2d: np.ndarray) -> np.n
         else:
             raise RuntimeError(f"Unexpected ONNX output shape: {out.shape}")
 
-        return y[:h0, :w0].astype(np.float32)
+        return y[:h0, :w0].astype(np.float32, copy=False)
 
     torch = models.torch
     dev = models.device
@@ -1067,7 +1067,7 @@ def _infer_chunk(models: SharpenModels, model: Any, chunk2d: np.ndarray) -> np.n
         y = model(t_rgb)              # (1,3,Hp,Wp)
         y = y[:, 0].detach().float().cpu().numpy()[0]
 
-    return y[:h0, :w0].astype(np.float32)
+    return y[:h0, :w0].astype(np.float32, copy=False)
 
 
 # ---------------- Main API ----------------
@@ -1121,7 +1121,7 @@ def sharpen_image_array(image: np.ndarray,
 
     img = np.asarray(image)
     if img.dtype != np.float32:
-        img = img.astype(np.float32)
+        img = img.astype(np.float32, copy=False)
 
     img3, was_mono = _to_3ch(img)
     img3 = np.clip(img3, 0.0, 1.0)
@@ -1165,7 +1165,7 @@ def sharpen_image_array(image: np.ndarray,
 
         if was_mono:
             if sharpened.ndim == 3 and sharpened.shape[2] == 3:
-                sharpened = np.mean(sharpened, axis=2, keepdims=True).astype(np.float32)
+                sharpened = np.mean(sharpened, axis=2, keepdims=True).astype(np.float32, copy=False)
 
         out = np.clip(sharpened, 0.0, 1.0)
         return out, was_mono

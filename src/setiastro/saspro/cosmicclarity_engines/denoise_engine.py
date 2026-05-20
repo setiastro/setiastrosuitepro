@@ -481,7 +481,7 @@ def _infer_chunk_rgb(models: DenoiseModels, model: Any, chunk_rgb: np.ndarray) -
         if out.ndim != 4:
             raise RuntimeError(f"Unexpected ONNX output shape: {out.shape}")
         y = np.transpose(out[0], (1, 2, 0))
-        return y[:h0, :w0].astype(np.float32)
+        return y[:h0, :w0].astype(np.float32, copy=False)
 
     torch = models.torch
     dev = models.device
@@ -493,7 +493,7 @@ def _infer_chunk_rgb(models: DenoiseModels, model: Any, chunk_rgb: np.ndarray) -
         y = model(t)[0].detach().float().cpu().numpy()
 
     y = np.transpose(y, (1, 2, 0))
-    return y[:h0, :w0].astype(np.float32)
+    return y[:h0, :w0].astype(np.float32, copy=False)
 
 def _infer_chunk_2d(models: DenoiseModels, model: Any, chunk2d: np.ndarray) -> np.ndarray:
     """
@@ -504,7 +504,7 @@ def _infer_chunk_2d(models: DenoiseModels, model: Any, chunk2d: np.ndarray) -> n
     chunk_p, h0, w0 = _pad2d_to_multiple(chunk2d, mult=16, mode="reflect")
 
     if models.is_onnx:
-        inp = np.repeat(chunk_p[None, None, :, :], 3, axis=1).astype(np.float32)
+        inp = np.repeat(chunk_p[None, None, :, :], 3, axis=1).astype(np.float32, copy=False)
         name_img, name_out = _ort_pick_io_names_single_input(model)
         out = model.run([name_out], {name_img: inp})[0]
 
@@ -517,7 +517,7 @@ def _infer_chunk_2d(models: DenoiseModels, model: Any, chunk2d: np.ndarray) -> n
         else:
             raise RuntimeError(f"Unexpected ONNX output shape: {out.shape}")
 
-        return y[:h0, :w0].astype(np.float32)
+        return y[:h0, :w0].astype(np.float32, copy=False)
 
     torch = models.torch
     dev = models.device
@@ -529,7 +529,7 @@ def _infer_chunk_2d(models: DenoiseModels, model: Any, chunk2d: np.ndarray) -> n
         y = model(t3)
         y = y[0, 0].detach().float().cpu().numpy()
 
-    return y[:h0, :w0].astype(np.float32)
+    return y[:h0, :w0].astype(np.float32, copy=False)
 
 # ----------------------------
 # Your helpers: luminance/chroma, chunks, borders, stretch
@@ -769,7 +769,7 @@ def _legacy_denoise_rgb_with_color_model(
                 pass
 
     out /= np.maximum(wts[..., None], 1.0)
-    return out.astype(np.float32)
+    return out.astype(np.float32, copy=False)
 
 def denoise_rgb_with_color_model(
     img_rgb,
@@ -820,7 +820,7 @@ def denoise_rgb_with_color_model(
                     batch_np = np.stack(
                         [padded[y:y + chunk_size, x:x + chunk_size, :] for (y, x) in batch_coords],
                         axis=0
-                    ).astype(np.float32)  # (B,H,W,3)
+                    ).astype(np.float32, copy=False)  # (B,H,W,3)
 
                     inp = np.ascontiguousarray(np.transpose(batch_np, (0, 3, 1, 2)))  # (B,3,H,W)
                     out = models.color.run([name_out], {name_img: inp})[0]
@@ -828,7 +828,7 @@ def denoise_rgb_with_color_model(
                     if out.ndim != 4:
                         raise RuntimeError(f"Unexpected ONNX output shape: {out.shape}")
 
-                    pred = np.transpose(out, (0, 2, 3, 1)).astype(np.float32)  # (B,H,W,3)
+                    pred = np.transpose(out, (0, 2, 3, 1)).astype(np.float32, copy=False)  # (B,H,W,3)
 
                     for k, (y, x) in enumerate(batch_coords):
                         acc[y:y + chunk_size, x:x + chunk_size, :] += pred[k] * weight3
@@ -852,7 +852,7 @@ def denoise_rgb_with_color_model(
                     batch_np = np.stack(
                         [padded[y:y + chunk_size, x:x + chunk_size, :] for (y, x) in batch_coords],
                         axis=0
-                    ).astype(np.float32)  # (B,H,W,3)
+                    ).astype(np.float32, copy=False)  # (B,H,W,3)
 
                     inp = np.ascontiguousarray(np.transpose(batch_np, (0, 3, 1, 2)))  # (B,3,H,W)
                     t = torch.from_numpy(inp).to(dev, non_blocking=True)
@@ -861,7 +861,7 @@ def denoise_rgb_with_color_model(
                         out = models.color(t)  # (B,3,H,W)
                         pred = out.detach().float().cpu().numpy()
 
-                    pred = np.transpose(pred, (0, 2, 3, 1)).astype(np.float32)
+                    pred = np.transpose(pred, (0, 2, 3, 1)).astype(np.float32, copy=False)
 
                     for k, (y, x) in enumerate(batch_coords):
                         acc[y:y + chunk_size, x:x + chunk_size, :] += pred[k] * weight3
@@ -876,7 +876,7 @@ def denoise_rgb_with_color_model(
                             pass
 
             out = acc / np.maximum(wts[..., None], 1e-8)
-            return out[:H, :W, :].astype(np.float32)
+            return out[:H, :W, :].astype(np.float32, copy=False)
 
         except Exception as e:
             last_err = e
@@ -1165,7 +1165,7 @@ def denoise_channel(
                     batch_np = np.stack(
                         [padded[y:y + chunk_size, x:x + chunk_size] for (y, x) in batch_coords],
                         axis=0
-                    ).astype(np.float32)  # (B,H,W)
+                    ).astype(np.float32, copy=False)  # (B,H,W)
 
                     inp = np.repeat(batch_np[:, None, :, :], 3, axis=1)  # (B,3,H,W)
                     out = model.run([name_out], {name_img: inp})[0]
@@ -1207,7 +1207,7 @@ def denoise_channel(
                     batch_np = np.stack(
                         [padded[y:y + chunk_size, x:x + chunk_size] for (y, x) in batch_coords],
                         axis=0
-                    ).astype(np.float32)  # (B,H,W)
+                    ).astype(np.float32, copy=False)  # (B,H,W)
 
                     t = torch.from_numpy(batch_np).unsqueeze(1).to(dev, non_blocking=True)
                     t3 = t.expand(-1, 3, -1, -1).contiguous()
@@ -1229,7 +1229,7 @@ def denoise_channel(
                             pass
 
             out = acc / np.maximum(wts, 1e-8)
-            return out[:H, :W].astype(np.float32)
+            return out[:H, :W].astype(np.float32, copy=False)
 
         except Exception as e:
             last_err = e
@@ -1337,7 +1337,7 @@ def denoise_rgb01(
             if stretch_needed:
                 mono_s, original_min, original_meds = stretch_image(mono, target_median=tm)
             else:
-                mono_s = mono.astype(np.float32)
+                mono_s = mono.astype(np.float32, copy=False)
                 original_min = float(np.min(mono))
                 original_meds = [float(np.median(mono_s))]
 
@@ -1364,7 +1364,7 @@ def denoise_rgb01(
                 mono_out = unstretch_image(mono_out, original_meds, original_min, target_median=tm)
 
             mono_out = remove_border(mono_out, border_size=16)
-            mono_out = np.clip(mono_out, 0.0, 1.0).astype(np.float32)
+            mono_out = np.clip(mono_out, 0.0, 1.0).astype(np.float32, copy=False)
 
             if progress_cb is not None:
                 progress_cb(total_units, total_units)
@@ -1379,7 +1379,7 @@ def denoise_rgb01(
         if stretch_needed:
             stretched_core, original_min, original_medians = stretch_image(arr, target_median=tm)
         else:
-            stretched_core = arr.astype(np.float32)
+            stretched_core = arr.astype(np.float32, copy=False)
             original_min = float(np.min(arr))
             original_medians = [float(np.median(arr[..., c])) for c in range(3)]
 
@@ -1470,7 +1470,7 @@ def denoise_rgb01(
             den = unstretch_image(den, original_medians, original_min, target_median=tm)
 
         den = remove_border(den, border_size=16)
-        den = np.clip(den, 0.0, 1.0).astype(np.float32)
+        den = np.clip(den, 0.0, 1.0).astype(np.float32, copy=False)
 
         if progress_cb is not None:
             progress_cb(total_units, total_units)

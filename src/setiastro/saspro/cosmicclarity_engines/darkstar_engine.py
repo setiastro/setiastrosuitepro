@@ -330,7 +330,7 @@ def stretch_image_mono(img: np.ndarray, target_median: float = 0.25):
         )
 
     x = np.clip(x, 0, 1)
-    return x.astype(np.float32), np.float32(orig_min), np.float32(orig_med)
+    return x.astype(np.float32, copy=False), np.float32(orig_min), np.float32(orig_med)
 
 
 def unstretch_image_mono(img: np.ndarray, orig_med, orig_min):
@@ -342,7 +342,7 @@ def unstretch_image_mono(img: np.ndarray, orig_med, orig_min):
         x = ((m_now - 1.0) * m0 * x) / (m_now * (m0 + x - 1.0) - m0 * x)
 
     x = x + float(orig_min)
-    return np.clip(x, 0, 1).astype(np.float32)
+    return np.clip(x, 0, 1).astype(np.float32, copy=False)
 
 
 def stretch_image_unlinked_rgb(img_rgb: np.ndarray, target_median: float = 0.25):
@@ -359,7 +359,7 @@ def stretch_image_unlinked_rgb(img_rgb: np.ndarray, target_median: float = 0.25)
             )
 
     x = np.clip(x, 0, 1)
-    return x.astype(np.float32), orig_min.astype(np.float32), orig_meds.astype(np.float32)
+    return x.astype(np.float32, copy=False), orig_min.astype(np.float32), orig_meds.astype(np.float32)
 
 
 def unstretch_image_unlinked_rgb(img_rgb: np.ndarray, orig_meds, orig_min):
@@ -373,7 +373,7 @@ def unstretch_image_unlinked_rgb(img_rgb: np.ndarray, orig_meds, orig_min):
             )
 
     x = x + orig_min.reshape(1, 1, 3)
-    return np.clip(x, 0, 1).astype(np.float32)
+    return np.clip(x, 0, 1).astype(np.float32, copy=False)
 
 # -----------------------------------------------------------------------------
 # Luma helpers
@@ -389,7 +389,7 @@ def _compute_luminance_rec709(img_rgb: np.ndarray) -> np.ndarray:
         + img_rgb[..., 2] * _LUMA_REC709[2],
         0.0,
         1.0,
-    ).astype(np.float32)
+    ).astype(np.float32, copy=False)
 
 def _recombine_luminance_linear_scale(
     target_rgb: np.ndarray,
@@ -402,7 +402,7 @@ def _recombine_luminance_linear_scale(
     Y = _compute_luminance_rec709(target_rgb)
     scale = new_luma / np.maximum(Y, eps)
     out = target_rgb * scale[..., None]
-    return np.clip(out, 0.0, 1.0).astype(np.float32)
+    return np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
 
 # -----------------------------------------------------------------------------
 # Chunking / stitching
@@ -646,7 +646,7 @@ def _infer_tiles_rgb_batched(
         batch_tiles = padded_tiles[i:i + batch_size]
         batch_np = np.stack(batch_tiles, axis=0)                # NHWC
         batch_np = np.transpose(batch_np, (0, 3, 1, 2))         # NCHW
-        batch_np = batch_np.astype(np.float32)
+        batch_np = batch_np.astype(np.float32, copy=False)
 
         x = torch.from_numpy(batch_np)
         if hasattr(device, "type") and device.type == "cuda":
@@ -661,7 +661,7 @@ def _infer_tiles_rgb_batched(
 
         for j, out in enumerate(y):
             h, w = orig_shapes[i + j]
-            outs.append(out[:h, :w, :].astype(np.float32))
+            outs.append(out[:h, :w, :].astype(np.float32, copy=False))
 
         done += len(batch_tiles)
         if callable(progress_cb):
@@ -688,7 +688,7 @@ def _infer_tile_rgb_with_model(models: DarkStarModels, tile_rgb: np.ndarray, mod
         y = model(t)[0].detach().float().cpu().numpy()
 
     y = np.transpose(y, (1, 2, 0))
-    return y[:h0, :w0, :].astype(np.float32)
+    return y[:h0, :w0, :].astype(np.float32, copy=False)
 
 def _run_rgb_chunked_with_model(
     img_rgb: np.ndarray,
@@ -746,15 +746,15 @@ def _run_rgb_chunked_with_model(
     )
 
     starless = remove_border(starless_b, border_size=5)
-    starless = np.clip(starless, 0.0, 1.0).astype(np.float32)
+    starless = np.clip(starless, 0.0, 1.0).astype(np.float32, copy=False)
     return starless, done
 
 def _compute_stars_only(original: np.ndarray, starless: np.ndarray, mode: str) -> np.ndarray:
     if mode == "additive":
-        return np.clip(original - starless, 0.0, 1.0).astype(np.float32)
+        return np.clip(original - starless, 0.0, 1.0).astype(np.float32, copy=False)
 
     denom = np.maximum(1.0 - starless, 1e-6)
-    return np.clip((original - starless) / denom, 0.0, 1.0).astype(np.float32)
+    return np.clip((original - starless) / denom, 0.0, 1.0).astype(np.float32, copy=False)
 
 def _run_channel_chunked(
     ch: np.ndarray,
@@ -808,7 +808,7 @@ def _run_channel_chunked(
 
     out_tiles = []
     for pred_rgb, (_, i, j) in zip(pred_tiles_rgb, chunks):
-        pred_mono = pred_rgb[..., 0].astype(np.float32)
+        pred_mono = pred_rgb[..., 0].astype(np.float32, copy=False)
         out_tiles.append((pred_mono, i, j))
 
     if callable(progress_cb):
@@ -826,7 +826,7 @@ def _run_channel_chunked(
     )
 
     starless = remove_border(starless_b, border_size=5)
-    starless = np.clip(starless, 0.0, 1.0).astype(np.float32)
+    starless = np.clip(starless, 0.0, 1.0).astype(np.float32, copy=False)
     return starless, done
 
 # -----------------------------------------------------------------------------
@@ -874,7 +874,7 @@ def darkstar_starremoval_rgb01(
     # Case 1: pure 2D mono
     # -------------------------------------------------------------------------
     if img.ndim == 2:
-        mono = np.clip(img, 0.0, 1.0).astype(np.float32)
+        mono = np.clip(img, 0.0, 1.0).astype(np.float32, copy=False)
 
         stretch_needed = float(np.median(mono - float(np.min(mono)))) < 0.125
         if stretch_needed:
@@ -908,15 +908,15 @@ def darkstar_starremoval_rgb01(
         if stretch_needed:
             starless = unstretch_image_mono(starless, orig_med, orig_min)
 
-        starless = np.clip(starless, 0.0, 1.0).astype(np.float32)
+        starless = np.clip(starless, 0.0, 1.0).astype(np.float32, copy=False)
 
         stars_only = None
         if params.output_stars_only:
             if params.mode == "additive":
-                stars_only = np.clip(mono - starless, 0.0, 1.0).astype(np.float32)
+                stars_only = np.clip(mono - starless, 0.0, 1.0).astype(np.float32, copy=False)
             else:
                 denom = np.maximum(1.0 - starless, 1e-6)
-                stars_only = np.clip((mono - starless) / denom, 0.0, 1.0).astype(np.float32)
+                stars_only = np.clip((mono - starless) / denom, 0.0, 1.0).astype(np.float32, copy=False)
 
             stars_only = stars_only[..., None]
 
@@ -926,7 +926,7 @@ def darkstar_starremoval_rgb01(
     # Case 2: HxWx1 mono
     # -------------------------------------------------------------------------
     if img.ndim == 3 and img.shape[2] == 1:
-        mono = np.clip(img[..., 0], 0.0, 1.0).astype(np.float32)
+        mono = np.clip(img[..., 0], 0.0, 1.0).astype(np.float32, copy=False)
 
         stretch_needed = float(np.median(mono - float(np.min(mono)))) < 0.125
         if stretch_needed:
@@ -957,15 +957,15 @@ def darkstar_starremoval_rgb01(
         if stretch_needed:
             starless = unstretch_image_mono(starless, orig_med, orig_min)
 
-        starless = np.clip(starless, 0.0, 1.0).astype(np.float32)
+        starless = np.clip(starless, 0.0, 1.0).astype(np.float32, copy=False)
 
         stars_only = None
         if params.output_stars_only:
             if params.mode == "additive":
-                stars_only = np.clip(mono - starless, 0.0, 1.0).astype(np.float32)
+                stars_only = np.clip(mono - starless, 0.0, 1.0).astype(np.float32, copy=False)
             else:
                 denom = np.maximum(1.0 - starless, 1e-6)
-                stars_only = np.clip((mono - starless) / denom, 0.0, 1.0).astype(np.float32)
+                stars_only = np.clip((mono - starless) / denom, 0.0, 1.0).astype(np.float32, copy=False)
 
             stars_only = stars_only[..., None]
 
@@ -974,7 +974,7 @@ def darkstar_starremoval_rgb01(
     # -------------------------------------------------------------------------
     # Case 3: HxWx3 color
     # -------------------------------------------------------------------------
-    img3 = np.clip(img, 0.0, 1.0).astype(np.float32)
+    img3 = np.clip(img, 0.0, 1.0).astype(np.float32, copy=False)
 
     stretch_needed = float(np.median(img3 - float(np.min(img3)))) < 0.125
     if stretch_needed:
@@ -1096,7 +1096,7 @@ def darkstar_starremoval_rgb01(
     if stretch_needed:
         starless = unstretch_image_unlinked_rgb(starless, orig_meds, orig_min)
 
-    starless = np.clip(starless, 0.0, 1.0).astype(np.float32)
+    starless = np.clip(starless, 0.0, 1.0).astype(np.float32, copy=False)
 
     stars_only = None
     if params.output_stars_only:
