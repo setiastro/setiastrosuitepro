@@ -668,8 +668,7 @@ def windsorized_sigma_clip_weighted_3d_iter(stack, weights, lower=2.5, upper=2.5
                 pixel_weights = weights[:, i, j]
 
             valid_mask = pixel_values != 0.0
-            lower_bound = 0.0
-            upper_bound = 0.0
+            med_final = 0.0
 
             for _ in range(iterations):
                 count = 0
@@ -682,42 +681,32 @@ def windsorized_sigma_clip_weighted_3d_iter(stack, weights, lower=2.5, upper=2.5
                 n = valid_vals.shape[0]
                 sorted_vals = np.sort(valid_vals)
                 mid = n // 2
-                if n % 2 == 1:
-                    median_val = sorted_vals[mid]
-                else:
-                    median_val = (sorted_vals[mid - 1] + sorted_vals[mid]) * 0.5
-                abs_dev = np.abs(valid_vals - median_val)
-                sorted_dev = np.sort(abs_dev)
-                mad = sorted_dev[mid] if n % 2 == 1 else (sorted_dev[mid - 1] + sorted_dev[mid]) * 0.5
-                std_dev = mad * 1.4826
+                med_final = sorted_vals[mid] if n % 2 == 1 else (sorted_vals[mid - 1] + sorted_vals[mid]) * 0.5
+                sum_sq = 0.0
+                for k in range(n):
+                    d = valid_vals[k] - med_final
+                    sum_sq += d * d
+                std_dev = (sum_sq / float(n)) ** 0.5
                 if std_dev < 1e-12:
-                    lower_bound = median_val
-                    upper_bound = median_val
                     break
-                lower_bound = median_val - lower * std_dev
-                upper_bound = median_val + upper * std_dev
-                # update valid_mask for next iteration's stats only
+                lower_bound = med_final - lower * std_dev
+                upper_bound = med_final + upper * std_dev
                 for k in range(num_frames):
                     if valid_mask[k]:
                         v = pixel_values[k]
                         if v < lower_bound or v > upper_bound:
                             valid_mask[k] = False
 
-            # rejection map: what fell outside bounds
             for f in range(num_frames):
                 rej_mask[f, i, j] = not valid_mask[f]
 
-            # True Winsorized mean: clamp ALL valid pixels to [lower_bound, upper_bound]
-            # then weighted average — outliers contribute at boundary, not excluded
+            # Winsorized mean: rejected pixels replaced with converged median,
+            # not excluded and not clamped to boundary
             wsum = 0.0
             vsum = 0.0
             for k in range(num_frames):
-                if pixel_values[k] != 0.0:  # all originally valid frames contribute
-                    v = pixel_values[k]
-                    if v < lower_bound:
-                        v = lower_bound
-                    elif v > upper_bound:
-                        v = upper_bound
+                if pixel_values[k] != 0.0:
+                    v = pixel_values[k] if valid_mask[k] else med_final
                     w = pixel_weights[k]
                     wsum += w
                     vsum += v * w
@@ -725,11 +714,7 @@ def windsorized_sigma_clip_weighted_3d_iter(stack, weights, lower=2.5, upper=2.5
             if wsum > 0:
                 clipped[i, j] = vsum / wsum
             else:
-                nonzero = pixel_values[pixel_values != 0.0]
-                if nonzero.size > 0:
-                    clipped[i, j] = np.median(nonzero)
-                else:
-                    clipped[i, j] = 0.0
+                clipped[i, j] = med_final
 
     return clipped, rej_mask
 
@@ -750,8 +735,7 @@ def windsorized_sigma_clip_weighted_4d_iter(stack, weights, lower=2.5, upper=2.5
                     pixel_weights = weights[:, i, j, c]
 
                 valid_mask = pixel_values != 0.0
-                lower_bound = 0.0
-                upper_bound = 0.0
+                med_final = 0.0
 
                 for _ in range(iterations):
                     count = 0
@@ -764,20 +748,16 @@ def windsorized_sigma_clip_weighted_4d_iter(stack, weights, lower=2.5, upper=2.5
                     n = valid_vals.shape[0]
                     sorted_vals = np.sort(valid_vals)
                     mid = n // 2
-                    if n % 2 == 1:
-                        median_val = sorted_vals[mid]
-                    else:
-                        median_val = (sorted_vals[mid - 1] + sorted_vals[mid]) * 0.5
-                    abs_dev = np.abs(valid_vals - median_val)
-                    sorted_dev = np.sort(abs_dev)
-                    mad = sorted_dev[mid] if n % 2 == 1 else (sorted_dev[mid - 1] + sorted_dev[mid]) * 0.5
-                    std_dev = mad * 1.4826
+                    med_final = sorted_vals[mid] if n % 2 == 1 else (sorted_vals[mid - 1] + sorted_vals[mid]) * 0.5
+                    sum_sq = 0.0
+                    for k in range(n):
+                        d = valid_vals[k] - med_final
+                        sum_sq += d * d
+                    std_dev = (sum_sq / float(n)) ** 0.5
                     if std_dev < 1e-12:
-                        lower_bound = median_val
-                        upper_bound = median_val
                         break
-                    lower_bound = median_val - lower * std_dev
-                    upper_bound = median_val + upper * std_dev
+                    lower_bound = med_final - lower * std_dev
+                    upper_bound = med_final + upper * std_dev
                     for k in range(num_frames):
                         if valid_mask[k]:
                             v = pixel_values[k]
@@ -791,11 +771,7 @@ def windsorized_sigma_clip_weighted_4d_iter(stack, weights, lower=2.5, upper=2.5
                 vsum = 0.0
                 for k in range(num_frames):
                     if pixel_values[k] != 0.0:
-                        v = pixel_values[k]
-                        if v < lower_bound:
-                            v = lower_bound
-                        elif v > upper_bound:
-                            v = upper_bound
+                        v = pixel_values[k] if valid_mask[k] else med_final
                         w = pixel_weights[k]
                         wsum += w
                         vsum += v * w
@@ -803,11 +779,7 @@ def windsorized_sigma_clip_weighted_4d_iter(stack, weights, lower=2.5, upper=2.5
                 if wsum > 0:
                     clipped[i, j, c] = vsum / wsum
                 else:
-                    nonzero = pixel_values[pixel_values != 0.0]
-                    if nonzero.size > 0:
-                        clipped[i, j, c] = np.median(nonzero)
-                    else:
-                        clipped[i, j, c] = 0.0
+                    clipped[i, j, c] = med_final
 
     return clipped, rej_mask
 
@@ -1640,10 +1612,8 @@ def windsorized_sigma_clip_3d(stack, lower=2.5, upper=2.5):
         for j in range(width):
             pixel_values = stack[:, i, j]
             valid_mask = pixel_values != 0.0
-            lower_bound = 0.0
-            upper_bound = 0.0
+            med_final = 0.0
 
-            # iterative clipping to converge bounds
             for _ in range(3):
                 count = 0
                 for k in range(num_frames):
@@ -1655,52 +1625,37 @@ def windsorized_sigma_clip_3d(stack, lower=2.5, upper=2.5):
                 n = valid_vals.shape[0]
                 sorted_vals = np.sort(valid_vals)
                 mid = n // 2
-                median_val = sorted_vals[mid] if n % 2 == 1 else (sorted_vals[mid-1] + sorted_vals[mid]) * 0.5
+                med_final = sorted_vals[mid] if n % 2 == 1 else (sorted_vals[mid - 1] + sorted_vals[mid]) * 0.5
                 sum_sq = 0.0
                 for k in range(n):
-                    d = valid_vals[k] - median_val
+                    d = valid_vals[k] - med_final
                     sum_sq += d * d
                 std_dev = (sum_sq / float(n)) ** 0.5
                 if std_dev < 1e-12:
-                    lower_bound = median_val
-                    upper_bound = median_val
                     break
-                lower_bound = median_val - lower * std_dev
-                upper_bound = median_val + upper * std_dev
+                lower_bound = med_final - lower * std_dev
+                upper_bound = med_final + upper * std_dev
                 for k in range(num_frames):
                     if valid_mask[k]:
                         v = pixel_values[k]
                         if v < lower_bound or v > upper_bound:
                             valid_mask[k] = False
 
-            # rejection map
             for f in range(num_frames):
                 rej_mask[f, i, j] = not valid_mask[f]
 
-            # True Winsorized mean: clamp all originally valid pixels to boundary
             vsum = 0.0
             count = 0
             for f in range(num_frames):
                 if pixel_values[f] != 0.0:
-                    v = pixel_values[f]
-                    if v < lower_bound:
-                        v = lower_bound
-                    elif v > upper_bound:
-                        v = upper_bound
+                    v = pixel_values[f] if valid_mask[f] else med_final
                     vsum += v
                     count += 1
 
             if count > 0:
                 clipped[i, j] = vsum / float(count)
             else:
-                nonzero = pixel_values[pixel_values != 0.0]
-                if nonzero.size > 0:
-                    n = nonzero.size
-                    sorted_nz = np.sort(nonzero)
-                    mid = n // 2
-                    clipped[i, j] = sorted_nz[mid] if n % 2 == 1 else (sorted_nz[mid-1] + sorted_nz[mid]) * 0.5
-                else:
-                    clipped[i, j] = 0.0
+                clipped[i, j] = med_final
 
     return clipped, rej_mask
 
@@ -1716,8 +1671,7 @@ def windsorized_sigma_clip_4d(stack, lower=2.5, upper=2.5):
             for c in range(channels):
                 pixel_values = stack[:, i, j, c]
                 valid_mask = pixel_values != 0.0
-                lower_bound = 0.0
-                upper_bound = 0.0
+                med_final = 0.0
 
                 for _ in range(3):
                     count = 0
@@ -1730,18 +1684,16 @@ def windsorized_sigma_clip_4d(stack, lower=2.5, upper=2.5):
                     n = valid_vals.shape[0]
                     sorted_vals = np.sort(valid_vals)
                     mid = n // 2
-                    median_val = sorted_vals[mid] if n % 2 == 1 else (sorted_vals[mid-1] + sorted_vals[mid]) * 0.5
+                    med_final = sorted_vals[mid] if n % 2 == 1 else (sorted_vals[mid - 1] + sorted_vals[mid]) * 0.5
                     sum_sq = 0.0
                     for k in range(n):
-                        d = valid_vals[k] - median_val
+                        d = valid_vals[k] - med_final
                         sum_sq += d * d
                     std_dev = (sum_sq / float(n)) ** 0.5
                     if std_dev < 1e-12:
-                        lower_bound = median_val
-                        upper_bound = median_val
                         break
-                    lower_bound = median_val - lower * std_dev
-                    upper_bound = median_val + upper * std_dev
+                    lower_bound = med_final - lower * std_dev
+                    upper_bound = med_final + upper * std_dev
                     for k in range(num_frames):
                         if valid_mask[k]:
                             v = pixel_values[k]
@@ -1755,25 +1707,14 @@ def windsorized_sigma_clip_4d(stack, lower=2.5, upper=2.5):
                 count = 0
                 for f in range(num_frames):
                     if pixel_values[f] != 0.0:
-                        v = pixel_values[f]
-                        if v < lower_bound:
-                            v = lower_bound
-                        elif v > upper_bound:
-                            v = upper_bound
+                        v = pixel_values[f] if valid_mask[f] else med_final
                         vsum += v
                         count += 1
 
                 if count > 0:
                     clipped[i, j, c] = vsum / float(count)
                 else:
-                    nonzero = pixel_values[pixel_values != 0.0]
-                    if nonzero.size > 0:
-                        n = nonzero.size
-                        sorted_nz = np.sort(nonzero)
-                        mid = n // 2
-                        clipped[i, j, c] = sorted_nz[mid] if n % 2 == 1 else (sorted_nz[mid-1] + sorted_nz[mid]) * 0.5
-                    else:
-                        clipped[i, j, c] = 0.0
+                    clipped[i, j, c] = med_final
 
     return clipped, rej_mask
 

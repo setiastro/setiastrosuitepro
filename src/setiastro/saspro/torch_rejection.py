@@ -476,15 +476,9 @@ def torch_reduce_tile(
                 hi = med + high * std
                 keep = valid & (ts >= lo.unsqueeze(0)) & (ts <= hi.unsqueeze(0))
 
-            # rejection map from iterative process
             rej = ~keep
 
-            # True Winsorized mean: clamp all originally valid pixels to final bounds
-            ts_winsorized = torch.where(
-                valid,
-                ts.clamp(min=lo.unsqueeze(0), max=hi.unsqueeze(0)),
-                torch.zeros_like(ts)
-            )
+            ts_winsorized = torch.where(valid & keep, ts, torch.where(valid, med.unsqueeze(0), torch.zeros_like(ts)))
             cnt = valid.sum(dim=0).to(ts.dtype)
             num = torch.where(valid, ts_winsorized, torch.zeros_like(ts)).sum(dim=0)
             x_valid = ts.masked_fill(~valid, float("nan"))
@@ -563,20 +557,10 @@ def torch_reduce_tile(
                 hi = med + high * std
                 keep = valid & (ts >= lo.unsqueeze(0)) & (ts <= hi.unsqueeze(0))
 
-            # True Winsorized mean: replace rejected pixels with the boundary value,
-            # don't remove them. High-rejected → replaced with hi, low-rejected → lo.
-            # This way all valid frames still contribute directionally.
-            lo_final = med - low * std
-            hi_final = med + high * std
+            # True Winsorized mean: replace rejected pixels with the converged median
+            # (best estimate of true value), not the boundary — boundary still biases.
+            ts_winsorized = torch.where(valid & keep, ts, torch.where(valid, med.unsqueeze(0), torch.zeros_like(ts)))
 
-            # For each valid pixel: clamp to [lo, hi] boundary, keep invalid as-is
-            ts_winsorized = torch.where(
-                valid,
-                ts.clamp(min=lo_final.unsqueeze(0), max=hi_final.unsqueeze(0)),
-                torch.zeros_like(ts)
-            )
-
-            # Weighted mean of winsorized values (all valid frames contribute)
             w_valid = torch.where(valid, w, torch.zeros_like(w))
             num = (ts_winsorized * w_valid).sum(dim=0)
             den = w_valid.sum(dim=0)
@@ -586,7 +570,6 @@ def torch_reduce_tile(
             fallback = torch.nan_to_num(fallback, nan=0.0)
             out = torch.where(den > 1e-20, num / den.clamp_min(1e-20), fallback)
 
-            # rejection map still marks what was outside bounds
             rej = ~keep
             return out.to(dtype=torch.float32).contiguous().cpu().numpy(), rej.cpu().numpy()
 

@@ -241,18 +241,6 @@ class MetricsPanel(QWidget):
 
     @staticmethod
     def _compute_one(i_entry):
-        """
-        Compute (FWHM, eccentricity, background, star_count) using SEP on a fixed 2× downsampled
-        mono float32 frame.
-
-        - Downsample is fixed at 2× via cv2.INTER_AREA.
-        - FWHM is computed on downsampled image and converted back to full-res pixels by *2.
-        - Eccentricity is scale-invariant.
-        - minarea is scaled down (16 -> 4) and a small ladder is used for hard frames.
-
-        Failure / no-stars behavior:
-        return "bad" metrics (fwhm=30.0, ecc=1.0, stars=0) so threshold culling catches them.
-        """
         import cv2
         import sep
         import numpy as np
@@ -261,7 +249,6 @@ class MetricsPanel(QWidget):
         idx, entry = i_entry
         img = entry.get("image_data", None)
 
-        # default "bad" return (cull-friendly)
         BAD_FWHM = 30.0
         BAD_ECC  = 1.0
 
@@ -273,9 +260,7 @@ class MetricsPanel(QWidget):
             data = np.asarray(img)
             h0, w0 = data.shape[:2]
 
-            # 1) mono float32
             if data.ndim == 3:
-                # handles RGB and HWC "fake mono"
                 data = data.mean(axis=2)
 
             if data.dtype == np.uint8:
@@ -285,40 +270,31 @@ class MetricsPanel(QWidget):
             else:
                 data = data.astype(np.float32, copy=False)
 
-            # finite guard
             if not np.isfinite(data).all():
                 data = np.nan_to_num(data, nan=0.0, posinf=1.0, neginf=0.0).astype(np.float32, copy=False)
 
-            # 2) fixed 2× downsample
             new_w = max(16, int(w0 // 2))
             new_h = max(16, int(h0 // 2))
             ds = cv2.resize(data, (new_w, new_h), interpolation=cv2.INTER_AREA).astype(np.float32, copy=False)
 
-            # 3) SEP background + rms
             bkg = sep.Background(ds)
             back = bkg.back()
-
             try:
                 gr = float(bkg.globalrms)
             except Exception:
-                # median of rms map if globalrms missing
                 try:
                     gr = float(np.nanmedian(np.asarray(bkg.rms(), dtype=np.float32)))
                 except Exception:
                     gr = np.nan
-
-            # ensure usable err
             if not np.isfinite(gr) or gr <= 0:
-                gr = None  # sep.extract accepts err=None
+                gr = None
 
-            # 4) extraction ladder
             candidates = [
                 (7.0, 4),
                 (5.0, 4),
                 (4.0, 3),
                 (3.5, 2),
             ]
-
             cat = None
             for thr, minarea in candidates:
                 try:
@@ -332,22 +308,19 @@ class MetricsPanel(QWidget):
                     )
                 except Exception:
                     cat = None
-
                 if cat is not None and len(cat) > 0:
                     break
 
-            # 5) if no stars, return "bad" metrics for culling
             if cat is None or len(cat) == 0:
                 orig_back = entry.get("orig_background", np.nan)
                 return idx, BAD_FWHM, BAD_ECC, orig_back, 0, 0.0
 
-            # 6) compute FWHM + ecc
             a = np.maximum(cat["a"].astype(np.float32, copy=False), 1e-12)
             b = np.maximum(cat["b"].astype(np.float32, copy=False), 0.0)
 
             sig = np.sqrt(a * b).astype(np.float32, copy=False)
             fwhm_ds = float(np.nanmedian(2.3548 * sig))
-            fwhm = fwhm_ds * 2.0  # convert to full-res px
+            fwhm = fwhm_ds * 2.0
 
             q = np.clip(b / a, 0.0, 1.0)
             e_true = np.sqrt(np.maximum(0.0, 1.0 - q * q))
@@ -356,8 +329,6 @@ class MetricsPanel(QWidget):
             star_cnt = int(len(cat))
             orig_back = entry.get("orig_background", np.nan)
 
-            # Weighted score: stars / (background * eccentricity)
-            # Higher is better — more stars, less background, rounder stars
             bg = float(orig_back) if np.isfinite(orig_back) and orig_back > 0 else 1e-6
             bg_clamped  = float(min(max(bg, 0.0), 1.0))
             ecc_clamped = float(min(max(ecc, 0.0), 1.0))
@@ -417,30 +388,25 @@ class MetricsPanel(QWidget):
         cpu = os.cpu_count() or 1
 
         # ----------------------------
-        # 3) Worker sizing by RAM (downsample-aware)
+        # 3) Worker sizing by contention-aware heuristic
         # ----------------------------
-        # Estimate using the same max_dim as _compute_one (default 1024).
-        # Use first frame to estimate scale.
-        max_dim = int(loaded_images[0].get("metrics_max_dim", 1024))
+        # Profiling shows SEP's internal C allocator serializes under heavy
+        # threading on large images — more workers = more contention = slower
+        # wall time. RAM is not the constraint; allocator lock contention is.
+        # Empirically 4-6 workers is the sweet spot for bin-2 downsampled frames.
         h0, w0 = loaded_images[0]["image_data"].shape[:2]
-        scale = 1.0
-        if max(h0, w0) > max_dim:
-            scale = max_dim / float(max(h0, w0))
+        ds_pixels = (h0 // 2) * (w0 // 2)
 
-        hd = max(16, int(round(h0 * scale)))
-        wd = max(16, int(round(w0 * scale)))
+        if ds_pixels > 8_000_000:       # >8MP downsampled (e.g. 5644x8288 -> ~11.7MP)
+            workers = min(4, cpu)
+        elif ds_pixels > 4_000_000:     # >4MP downsampled
+            workers = min(6, cpu)
+        elif ds_pixels > 1_000_000:     # >1MP downsampled
+            workers = min(8, cpu)
+        else:                           # small frames, contention minimal
+            workers = min(12, cpu)
 
-        # float32 mono downsample buffer
-        bytes_per = hd * wd * 4
-
-        # SEP allocates extra maps; budget ~3x to be safe.
-        budget_per_worker = int(bytes_per * 3.0)
-
-        avail = psutil.virtual_memory().available
-        max_by_mem = max(1, int(avail / max(budget_per_worker, 1)))
-
-        # Don’t exceed CPU, and don’t go crazy high even if RAM is huge
-        workers = max(1, min(cpu, max_by_mem, 24))
+        workers = max(1, workers)
 
         tasks = [(i, loaded_images[i]) for i in range(n)]
         done = 0
