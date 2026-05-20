@@ -1267,21 +1267,26 @@ class CosmicClarityDialogPro(QDialog):
             self._wait.close()
             self._wait = None
 
-        # Collapse back to mono if the input was mono
+        # Capture preset HERE on the main thread before any processing
+        preset = {}
+        try:
+            preset = self.build_preset_from_ui()
+        except Exception:
+            pass
+
         if getattr(self, "_orig_was_mono", False):
             if out_arr.ndim == 3:
                 out_arr = out_arr.mean(axis=2).astype(np.float32)
 
-        # ← ADD: blend with active mask before applying
         out_arr = self._blend_with_mask(out_arr)
 
         create_new = (self.cmb_target.currentIndex() == 1)
         if create_new:
             ok = self._spawn_new_doc_from_numpy(out_arr, step_title)
             if not ok:
-                self._apply_to_active(out_arr, step_title)
+                self._apply_to_active(out_arr, step_title, preset=preset)
         else:
-            self._apply_to_active(out_arr, step_title)
+            self._apply_to_active(out_arr, step_title, preset=preset)
 
         self.accept()
 
@@ -1354,15 +1359,11 @@ class CosmicClarityDialogPro(QDialog):
             return processed  # ← safety net: never return NaN to the document
         return result.astype(np.float32)
 
-    def _apply_to_active(self, arr: np.ndarray, step_title: str):
+    def _apply_to_active(self, arr: np.ndarray, step_title: str, preset: dict | None = None):
         mid = self._active_mask_id()
 
-        # Build the full preset so _preview_commands captures it correctly
-        preset = {}
-        try:
-            preset = self.build_preset_from_ui()
-        except Exception:
-            pass
+        if preset is None:
+            preset = {}
 
         meta = {
             "step_name": step_title,

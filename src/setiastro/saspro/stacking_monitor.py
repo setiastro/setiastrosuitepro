@@ -559,12 +559,23 @@ class StackingMonitorDialog(QDialog):
         if status == _ST_RUNNING and op in self._open:
             idx = self._open[op]
             row = self._rows[idx]
-            if group and not row.group:
-                row.group = group
-            row.note = note
-            self._refresh_row(idx)
-            return
 
+            # NEW: if the group changed, the previous group finished —
+            # close the old row and open a fresh one for the new group
+            if group and row.group and group != row.group:
+                # finish the previous group row
+                row.finish(_ST_OK)
+                self._refresh_row(idx)
+                self._open.pop(op)
+
+                # fall through to create a new row below
+            else:
+                # same group, just update note/group
+                if group and not row.group:
+                    row.group = group
+                row.note = note
+                self._refresh_row(idx)
+                return
         # ── new row ───────────────────────────────────────────────────────
         r = _MonitorRow(op, group, status, note)
         self._rows.append(r)
