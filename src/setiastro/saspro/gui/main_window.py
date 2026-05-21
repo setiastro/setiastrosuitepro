@@ -1165,22 +1165,6 @@ class AstroSuiteProMainWindow(
                 if hasattr(tgt, "set_autostretch_target"):
                     tgt.set_autostretch_target(float(st.get("autostretch_target", 0.25)))
 
-    def _open_from_explorer(self, doc):
-        sw = self._find_subwindow_for_doc(doc)
-        if sw:
-            # robust raise path (covers minimized/hidden)
-            try:
-                sw.show(); sw.widget().show()
-                st = sw.windowState()
-                if st & Qt.WindowState.WindowMinimized:
-                    sw.setWindowState(st & ~Qt.WindowState.WindowMinimized)
-                self.mdi.setActiveSubWindow(sw)
-                sw.raise_()
-            except Exception:
-                pass
-            return
-        self._spawn_subwindow_for(doc, force_new=False)
-
     def _on_doc_region_updated(self, doc, roi):
         sw = self._find_subwindow_for_doc(doc)
         if not sw:
@@ -9425,19 +9409,41 @@ class AstroSuiteProMainWindow(
         if hasattr(self, "_log"):
             self._log(f"Copied view state -> '{target_sw.windowTitle()}'")
 
+    def _open_from_explorer(self, doc):
+        # Route through the active method — this ensures shelf restore works correctly
+        # if anything still calls this stale method
+        for i in range(self.explorer.topLevelItemCount()):
+            it = self.explorer.topLevelItem(i)
+            if it.data(0, Qt.ItemDataRole.UserRole) is doc:
+                self._activate_or_open_from_explorer(it)
+                return
+        # fallback if doc isn't in explorer yet
+        self._spawn_subwindow_for(doc, force_new=False)
 
     def _activate_or_open_from_explorer(self, item):
         doc = item.data(0, Qt.ItemDataRole.UserRole)
         if doc is None:
             return
-        # you already have logic for this; typically:
+
+        shelf = getattr(self, "window_shelf", None)
+        if shelf is not None:
+            for i in range(shelf.list.count()):
+                it = shelf.list.item(i)
+                tok = it.data(Qt.ItemDataRole.UserRole)
+                sub = shelf._tok2sub.get(tok)
+                if sub is not None and not shelf._is_dead(sub):
+                    w = sub.widget()
+                    if w is not None and getattr(w, "base_document", None) is doc:
+                        shelf.list.itemClicked.emit(it)
+                        return
+
         sw = self._find_subwindow_for_doc(doc)
         if sw:
             self.mdi.setActiveSubWindow(sw)
             sw.show()
             sw.raise_()
             return
-        # else open it (if your app supports opening closed docs, otherwise no-op)
+
         try:
             self._open_subwindow_for_added_doc(doc)
         except Exception:

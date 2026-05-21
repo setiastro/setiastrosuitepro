@@ -17,8 +17,8 @@ from PyQt6.QtWidgets import (
 from setiastro.saspro.wcs_update import update_wcs_after_crop
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 
-# -------- util: Siril-style preview stretch (non-destructive) ----------
-def siril_style_autostretch(image: np.ndarray, sigma: float = 3.0) -> np.ndarray:
+# -------- util: s_-style preview stretch (non-destructive) ----------
+def histogram_style_autostretch(image: np.ndarray, sigma: float = 3.0) -> np.ndarray:
     def stretch_channel(c):
         med = np.median(c); mad = np.median(np.abs(c - med))
         mad_std = mad * 1.4826
@@ -621,7 +621,7 @@ class CropDialogPro(QDialog):
     def _load_from_doc(self):
         self._full01 = self._img01_from_doc()
         self._orig_h, self._orig_w = self._full01.shape[:2]
-        self._preview01 = self._full01 if not self._autostretch_on else siril_style_autostretch(self._full01)
+        self._preview01 = self._full01 if not self._autostretch_on else histogram_style_autostretch(self._full01)
 
         self.scene.clear()
         q = self._to_qimage(self._preview01)

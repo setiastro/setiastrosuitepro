@@ -759,9 +759,9 @@ def stretch_color_image(image: np.ndarray,
 
 
 
-def siril_style_autostretch(image, sigma=3.0):
+def histogram_style_autostretch(image, sigma=3.0):
     """
-    Perform a 'Siril-style histogram stretch' using MAD for robust contrast enhancement.
+    Perform a 'histogram stretch' using MAD for robust contrast enhancement.
     
     Parameters:
         image (np.ndarray): Input image, assumed to be normalized to [0, 1] range.

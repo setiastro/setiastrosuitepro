@@ -85,9 +85,8 @@ class AboutDialog(QDialog):
         # Build about text with optional build timestamp
         about_lines = [
             f"<h2>Seti Astro's Suite Pro {version}</h2>",
-            f"<p>{self.tr('Written by Franklin Marek')}</p>",
-            f"<p>{self.tr('Collaborators: Fabio Tempera')}</p>",
-            f"<p>{self.tr('Copyright © 2025 Seti Astro')}</p>",
+            f"<p>{self.tr('By Franklin Marek')}</p>",
+            f"<p>{self.tr('Copyright © 2026 Seti Astro')}</p>",
         ]
 
         if build_timestamp and build_timestamp != "Unknown":

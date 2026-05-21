@@ -135,7 +135,7 @@ def _run_starnet_headless(main, doc, p):
         img_for_starnet = _apply_mtf_unlinked_rgb(processing_norm, mtf_params)
         try:
             setattr(main, "_starnet_stat_meta", {
-                "scheme": "siril_mtf",
+                "scheme": "s__mtf",
                 "s":      np.asarray(mtf_params["s"], dtype=np.float32),
                 "m":      np.asarray(mtf_params["m"], dtype=np.float32),
                 "h":      np.asarray(mtf_params["h"], dtype=np.float32),
@@ -195,7 +195,7 @@ def _finish_starnet(main, doc, rc, dlg, in_path, out_path, did_stretch):
 
     if did_stretch:
         meta = getattr(main, "_starnet_stat_meta", None)
-        if isinstance(meta, dict) and meta.get("scheme") == "siril_mtf":
+        if isinstance(meta, dict) and meta.get("scheme") == "s__mtf":
             try:
                 p = {
                     "s": np.asarray(meta.get("s"), dtype=np.float32),

@@ -22,7 +22,7 @@ from PyQt6.QtCore import (
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QGroupBox, QScrollArea, QDialog, QInputDialog, QFileDialog,
-    QMessageBox, QCheckBox, QApplication, QMainWindow, QCheckBox
+    QMessageBox, QCheckBox, QApplication, QMainWindow, QCheckBox, QComboBox, QSlider, QSizePolicy, QGraphicsScene,QGraphicsPixmapItem
 )
 from PyQt6.QtGui import (
     QPixmap, QImage, QCursor, QWheelEvent
@@ -76,6 +76,235 @@ def apply_curves_adjustment(image, target_median, curves_boost):
     # Now apply the piecewise linear function in Numba
     adjusted_image = apply_curves_numba(image_32, xvals, yvals)
     return adjusted_image
+
+class QPreviewDialog(QDialog):
+    """
+    Non-blocking dialog shown after calibration, before final subtraction.
+    Lets the user tweak Q per filter with a slider + live autostretch preview.
+    """
+
+    # emitted when user accepts: dict of {filter_name: q_value}
+    accepted_q = pyqtSignal(dict)
+
+    def __init__(self, calibration_entries: list[dict], parent=None):
+        """
+        calibration_entries: list of dicts, one per filter, each containing:
+            {
+                "name":        str,           # "Ha", "OIII", etc.
+                "balanced":    np.ndarray,    # full-res float32 HxWx3 balanced RGB
+                "green_med":   float,
+                "recipe":      dict,          # full recipe for final pass
+                "preview":     np.ndarray,    # downsampled balanced RGB for UI
+            }
+        """
+        super().__init__(parent)
+        self.setWindowTitle("Interactive Q Preview")
+        self.setWindowFlags(
+            self.windowFlags() |
+            Qt.WindowType.Window |
+            Qt.WindowType.WindowMinimizeButtonHint |
+            Qt.WindowType.WindowMaximizeButtonHint
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
+        self.resize(900, 700)
+
+        self._entries     = {e["name"]: e for e in calibration_entries}
+        self._q_values    = {e["name"]: 0.80 for e in calibration_entries}
+        self._current     = calibration_entries[0]["name"] if calibration_entries else ""
+        self._autostretch = True
+
+        # debounce timer
+        self._debounce = QTimer(self)
+        self._debounce.setSingleShot(True)
+        self._debounce.setInterval(150)
+        self._debounce.timeout.connect(self._update_preview)
+
+        self._build_ui()
+        self._update_preview()
+
+    # ── UI construction ───────────────────────────────────────────────────────
+    def _build_ui(self):
+        from setiastro.saspro.widgets.graphics_views import ZoomableGraphicsView
+        from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
+
+        outer = QVBoxLayout(self)
+        outer.setSpacing(8)
+        outer.setContentsMargins(10, 10, 10, 10)
+
+        # ── filter selector header (prominent, centered) ──────────────────────
+        filter_header = QHBoxLayout()
+        filter_header.addStretch(1)
+
+        filter_title = QLabel("Filter:")
+        filter_title.setStyleSheet("font-size:13px; font-weight:600;")
+        filter_header.addWidget(filter_title)
+
+        self._filter_combo = QComboBox()
+        self._filter_combo.setStyleSheet("font-size:13px; font-weight:600; padding: 3px 10px;")
+        self._filter_combo.setMinimumWidth(140)
+        for name in self._entries:
+            self._filter_combo.addItem(name)
+        self._filter_combo.currentTextChanged.connect(self._on_filter_changed)
+        filter_header.addWidget(self._filter_combo)
+
+        filter_header.addStretch(1)
+        outer.addLayout(filter_header)
+
+        # thin separator under the filter header
+        sep = QWidget()
+        sep.setFixedHeight(1)
+        sep.setStyleSheet("background: palette(mid);")
+        outer.addWidget(sep)
+
+        # ── Q slider + autostretch toolbar row ────────────────────────────────
+        toolbar = QHBoxLayout()
+
+        toolbar.addWidget(QLabel("Q:"))
+
+        self._q_slider = QSlider(Qt.Orientation.Horizontal)
+        self._q_slider.setMinimum(10)
+        self._q_slider.setMaximum(200)
+        self._q_slider.setValue(80)
+        self._q_slider.setTickInterval(10)
+        self._q_slider.setFixedWidth(260)
+        self._q_slider.valueChanged.connect(self._on_slider_changed)
+        toolbar.addWidget(self._q_slider)
+
+        self._q_label = QLabel("0.80")
+        self._q_label.setFixedWidth(36)
+        toolbar.addWidget(self._q_label)
+
+        toolbar.addSpacing(20)
+        self._stretch_check = QCheckBox("Autostretch")
+        self._stretch_check.setChecked(True)
+        self._stretch_check.toggled.connect(self._on_stretch_toggled)
+        toolbar.addWidget(self._stretch_check)
+
+        toolbar.addStretch(1)
+        outer.addLayout(toolbar)
+
+        # ── zoom toolbar row ──────────────────────────────────────────────────
+        zoom_row = QHBoxLayout()
+
+        btn_zoom_out  = themed_toolbtn("zoom-out",      "Zoom Out")
+        btn_zoom_in   = themed_toolbtn("zoom-in",       "Zoom In")
+        btn_zoom_1to1 = themed_toolbtn("zoom-original", "1:1 (100%)")
+        btn_zoom_fit  = themed_toolbtn("zoom-fit-best", "Fit to Preview")
+
+        zoom_row.addWidget(btn_zoom_out)
+        zoom_row.addWidget(btn_zoom_in)
+        zoom_row.addWidget(btn_zoom_1to1)
+        zoom_row.addWidget(btn_zoom_fit)
+        zoom_row.addStretch(1)
+        outer.addLayout(zoom_row)
+
+        # ── graphics view ─────────────────────────────────────────────────────
+        self._scene = QGraphicsScene(self)
+        self._view  = ZoomableGraphicsView(self._scene)
+        self._view.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._pix_item = QGraphicsPixmapItem()
+        self._scene.addItem(self._pix_item)
+        outer.addWidget(self._view, stretch=1)
+
+        # wire zoom buttons
+        btn_zoom_out.clicked.connect(self._view.zoom_out)
+        btn_zoom_in.clicked.connect(self._view.zoom_in)
+        btn_zoom_1to1.clicked.connect(
+            self._view.one_to_one if hasattr(self._view, "one_to_one") else (lambda: None)
+        )
+        btn_zoom_fit.clicked.connect(lambda: self._view.fit_to_item(self._pix_item))
+
+        # ── status + buttons ──────────────────────────────────────────────────
+        self._status = QLabel("Adjust Q and click Accept to run final subtraction.")
+        self._status.setStyleSheet("font-size:11px; color: palette(placeholderText);")
+        outer.addWidget(self._status)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        self._btn_accept = QPushButton("Accept — Run Final")
+        self._btn_accept.setDefault(True)
+        self._btn_accept.clicked.connect(self._on_accept)
+        btn_row.addWidget(self._btn_accept)
+
+        btn_cancel = QPushButton("Cancel")
+        btn_cancel.clicked.connect(self.reject)
+        btn_row.addWidget(btn_cancel)
+        outer.addLayout(btn_row)
+
+    # ── slots ─────────────────────────────────────────────────────────────────
+
+    def _on_filter_changed(self, name: str):
+        self._current = name
+        q = self._q_values.get(name, 0.80)
+        self._q_slider.blockSignals(True)
+        self._q_slider.setValue(int(round(q * 100)))
+        self._q_slider.blockSignals(False)
+        self._q_label.setText(f"{q:.2f}")
+        self._debounce.start()
+
+    def _on_slider_changed(self, value: int):
+        q = value / 100.0
+        self._q_label.setText(f"{q:.2f}")
+        self._q_values[self._current] = q
+        self._debounce.start()   # debounced — won't fire until slider rests 150ms
+
+    def _on_stretch_toggled(self, checked: bool):
+        self._autostretch = checked
+        self._debounce.start()
+
+    def _on_accept(self):
+        self.accepted_q.emit(dict(self._q_values))
+        self.accept()
+
+    # ── preview rendering ─────────────────────────────────────────────────────
+    def _update_preview(self):
+        entry = self._entries.get(self._current)
+        if entry is None:
+            return
+
+        q       = self._q_values.get(self._current, 0.80)
+        preview = entry["preview"]
+        gmed    = entry["green_med"]
+
+        r = preview[..., 0]
+        g = preview[..., 1]
+        result = np.clip(r - q * (g - gmed), 0.0, 1.0).astype(np.float32, copy=False)
+
+        if self._autostretch:
+            from setiastro.saspro.imageops.stretch import stretch_mono_image
+            result = stretch_mono_image(result, target_median=0.25, no_black_clip=True)
+            result = np.clip(result, 0.0, 1.0).astype(np.float32, copy=False)
+
+        u8 = (result * 255.0 + 0.5).astype(np.uint8, copy=False)
+        h, w = u8.shape[:2]
+        qimg = QImage(u8.data, w, h, w, QImage.Format.Format_Grayscale8).copy()
+        pm   = QPixmap.fromImage(qimg)
+
+        self._pix_item.setPixmap(pm)
+        self._scene.setSceneRect(self._pix_item.boundingRect())
+
+        # fit on first render; subsequent slider updates leave zoom alone
+        if not getattr(self, "_initial_fit_done", False):
+            self._initial_fit_done = True
+            self._view.fit_to_item(self._pix_item)
+
+        stars = entry.get("star_count", 0)
+        self._status.setText(
+            f"Filter: {self._current}   Q: {q:.2f}   "
+            f"Stars used for WB: {stars}   (preview is downsampled)"
+        )
+
+
+class _CalibrationRunner(QThread):
+    """Thin wrapper: calls thread.run_calibration_only(name) off the UI thread."""
+    def __init__(self, thread: ContinuumProcessingThread, name: str, parent=None):
+        super().__init__(parent=None)
+        self._t    = thread
+        self._name = name
+
+    def run(self):
+        self._t.run_calibration_only(self._name)
 
 class ContinuumSubtractTab(QWidget):
     def __init__(self, doc_manager, document=None, parent=None):
@@ -800,26 +1029,20 @@ class ContinuumSubtractTab(QWidget):
         return image, header, bit_depth, is_mono, path
 
     def startContinuumSubtraction(self):
-        # STARRED (with stars) continuum channels
-        cont_red_starry   = self.red_image   if self.red_image   is not None else (self.osc_image[..., 0] if self.osc_image is not None else None)
-        cont_green_starry = self.green_image if self.green_image is not None else (self.osc_image[..., 1] if self.osc_image is not None else None)
-
-        # STARLESS continuum channels
+        cont_red_starry     = self.red_image   if self.red_image   is not None else (self.osc_image[..., 0]         if self.osc_image         is not None else None)
+        cont_green_starry   = self.green_image if self.green_image is not None else (self.osc_image[..., 1]         if self.osc_image         is not None else None)
         cont_red_starless   = self.red_starless_image   if self.red_starless_image   is not None else (self.osc_starless_image[..., 0] if self.osc_starless_image is not None else None)
         cont_green_starless = self.green_starless_image if self.green_starless_image is not None else (self.osc_starless_image[..., 1] if self.osc_starless_image is not None else None)
 
-        # Build tasks per NB filter
         pairs = []
         def add_pair(name, nb_starry, cont_starry, nb_starless, cont_starless):
-            has_starry   = (nb_starry is not None and cont_starry is not None)
+            has_starry   = (nb_starry   is not None and cont_starry   is not None)
             has_starless = (nb_starless is not None and cont_starless is not None)
             if has_starry or has_starless:
                 pairs.append({
                     "name": name,
-                    "nb": nb_starry,
-                    "cont": cont_starry,
-                    "nb_sl": nb_starless,
-                    "cont_sl": cont_starless,
+                    "nb": nb_starry, "cont": cont_starry,
+                    "nb_sl": nb_starless, "cont_sl": cont_starless,
                     "starless_only": (has_starless and not has_starry),
                 })
 
@@ -830,58 +1053,113 @@ class ContinuumSubtractTab(QWidget):
         if not pairs:
             self.statusLabel.setText("Load at least one NB + matching continuum channel (or OSC).")
             return
-        mw = self._main_window()
 
-        denoise_linear    = self.denoise_checkbox.isChecked()
-        denoise_strength  = self.denoise_strength
-        denoise_gpu       = self.denoise_gpu_checkbox.isChecked()
-        do_stretch        = self.stretch_checkbox.isChecked()
-        do_median_sub     = self.median_sub_checkbox.isChecked()
-        do_curves         = self.curves_checkbox.isChecked()
-        no_black_clip     = self.no_black_clip_checkbox.isChecked()
         self.showSpinner()
-        self._threads = []
-        self._results = []
-        self._pushed_results = False
-        self._pending = 0
+        self._threads          = []
+        self._calib_entries    = {}   # name -> entry dict
+        self._calib_threads    = {}   # name -> ContinuumProcessingThread
+        self._calib_pending    = 0
+        self._final_threads    = []   # kept alive
+        self._results          = []
+        self._pushed_results   = False
+        self._wb_diag_entries  = []
 
-        # How many result signals do we expect in total?
-        self._expected_results = sum(
-            (1 if p["nb"]    is not None and p["cont"]    is not None else 0) +
-            (1 if p["nb_sl"] is not None and p["cont_sl"] is not None else 0)
-            for p in pairs
-        )
+        # How many final result signals to expect (set after Q accepted)
+        self._expected_results = 0
+
+        denoise_linear   = self.denoise_checkbox.isChecked()
+        denoise_strength = self.denoise_strength
+        denoise_gpu      = self.denoise_gpu_checkbox.isChecked()
+        do_stretch       = self.stretch_checkbox.isChecked()
+        do_median_sub    = self.median_sub_checkbox.isChecked()
+        do_curves        = self.curves_checkbox.isChecked()
+        no_black_clip    = self.no_black_clip_checkbox.isChecked()
 
         for p in pairs:
+            name = p["name"]
             t = ContinuumProcessingThread(
                 p["nb"], p["cont"], self.linear_output_checkbox.isChecked(),
-                starless_nb=p["nb_sl"], starless_cont=p["cont_sl"], starless_only=p["starless_only"],
-                threshold=self.threshold_value, summary_gamma=self.summary_gamma, q_factor=self.q_factor,
-                denoise_linear=denoise_linear, denoise_strength=denoise_strength,
+                starless_nb=p["nb_sl"], starless_cont=p["cont_sl"],
+                starless_only=p["starless_only"],
+                threshold=self.threshold_value,
+                summary_gamma=self.summary_gamma,
+                q_factor=self.q_factor,
+                denoise_linear=denoise_linear,
+                denoise_strength=denoise_strength,
                 denoise_gpu=denoise_gpu,
-                do_stretch=do_stretch, do_median_sub=do_median_sub,
-                do_curves=do_curves, no_black_clip=no_black_clip,
+                do_stretch=do_stretch,
+                do_median_sub=do_median_sub,
+                do_curves=do_curves,
+                no_black_clip=no_black_clip,
             )
-            name = p["name"]  # avoid late binding in lambdas
 
-            if p["nb"] is not None and p["cont"] is not None:
-                self._pending += 1
-                t.processing_complete.connect(
-                    lambda img, stars, overlay, raw, after, n=f"{name} (starry)":
-                        self._onOneResult(n, img, stars, overlay, raw, after)
-                )
-
-            if p["nb_sl"] is not None and p["cont_sl"] is not None:
-                self._pending += 1
-                t.processing_complete_starless.connect(
-                    lambda img, stars, overlay, raw, after, n=f"{name} (starless)":
-                        self._onOneResult(n, img, stars, overlay, raw, after)
-                )
-
+            t.calibration_ready.connect(self._onCalibrationReady)
+            t.processing_complete.connect(
+                lambda img, stars, overlay, raw, after, n=name:
+                    self._onOneResult(n, img, stars, overlay, raw, after)
+            )
+            t.processing_complete_starless.connect(
+                lambda img, stars, overlay, raw, after, n=f"{name} (starless)":
+                    self._onOneResult(n, img, stars, overlay, raw, after)
+            )
             t.status_update.connect(self.update_status_label)
-            self._threads.append(t)
-            t.start()
 
+            self._calib_threads[name] = t
+            self._calib_pending += 1
+
+            # kick off calibration via a dedicated thread
+            calib_runner = _CalibrationRunner(t, name)
+            calib_runner.finished.connect(lambda r=calib_runner: self._threads.remove(r) if r in self._threads else None)
+            self._threads.append(calib_runner)
+            calib_runner.start()
+
+    def _onAllCalibrationsReady(self):
+        self.hideSpinner()
+        entries = list(self._calib_entries.values())
+
+        dlg = QPreviewDialog(entries, parent=self)
+        dlg.accepted_q.connect(self._onQAccepted)
+        self._q_preview_dlg = dlg   # prevent GC
+        dlg.show()
+
+    def _onQAccepted(self, q_values: dict):
+        """User clicked Accept in QPreviewDialog — run final subtracts."""
+        self.showSpinner()
+        self._results          = []
+        self._pushed_results   = False
+        self._wb_diag_entries  = []
+
+        # count expected signals
+        self._expected_results = 0
+        for name, entry in self._calib_entries.items():
+            recipe = entry["recipe"]
+            is_sl  = recipe.get("starless_only", False)
+            t      = self._calib_threads.get(name)
+            if t is None:
+                continue
+            # starry result (or starless-only result)
+            self._expected_results += 1
+            # paired starless
+            if not is_sl and t.starless_nb is not None and t.starless_cont is not None:
+                self._expected_results += 1
+
+        for name, entry in self._calib_entries.items():
+            q = q_values.get(name, self.q_factor)
+            t = self._calib_threads.get(name)
+            if t is None:
+                continue
+            ft = FinalSubtractThread(t, name, entry, q)
+            ft.finished.connect(lambda f=ft: self._final_threads.remove(f) if f in self._final_threads else None)
+            self._final_threads.append(ft)
+            ft.start()
+
+    def _onCalibrationReady(self, entry: dict):
+        name = entry["name"]
+        self._calib_entries[name] = entry
+        self._calib_pending -= 1
+        self.update_status_label(f"Calibration done for {name}.")
+        if self._calib_pending == 0:
+            self._onAllCalibrationsReady()
 
     def _onOneResult(self, filt, img, star_count, overlay_qimg, raw_pixels, after_pixels):
         self._results.append({
@@ -1350,53 +1628,57 @@ class ContinuumSubtractTab(QWidget):
         if hasattr(self, "execute_button"):
             self.execute_button.setEnabled(True)
 
-
-
 class ContinuumProcessingThread(QThread):
-    processing_complete = pyqtSignal(np.ndarray, int, QImage, np.ndarray, np.ndarray)
+    # emitted once per filter when calibration is done (pre-subtraction)
+    calibration_ready = pyqtSignal(dict)          # one entry dict per filter
+    # emitted once per filter for the final result (post Q-accept)
+    processing_complete          = pyqtSignal(np.ndarray, int, QImage, np.ndarray, np.ndarray)
     processing_complete_starless = pyqtSignal(np.ndarray, int, QImage, np.ndarray, np.ndarray)
     status_update = pyqtSignal(str)
 
+    # Max pixels on the long axis for the interactive preview
+    PREVIEW_MAX = 1024
+
     def __init__(self, nb_image, continuum_image, output_linear, *,
-                starless_nb=None, starless_cont=None, starless_only=False,
-                threshold: float = 5.0, summary_gamma: float = 0.6, q_factor: float = 0.8,
-                denoise_linear: bool = False, denoise_strength: float = 0.90,
-                denoise_gpu: bool = True,
-                do_stretch: bool = True, do_median_sub: bool = True,
-                do_curves: bool = True, no_black_clip: bool = False):
-        super().__init__()
-        self.nb_image = nb_image
+                 starless_nb=None, starless_cont=None, starless_only=False,
+                 threshold: float = 5.0, summary_gamma: float = 0.6, q_factor: float = 0.8,
+                 denoise_linear: bool = False, denoise_strength: float = 0.90,
+                 denoise_gpu: bool = True,
+                 do_stretch: bool = True, do_median_sub: bool = True,
+                 do_curves: bool = True, no_black_clip: bool = False):
+        super().__init__(parent=None)
+        self.nb_image        = nb_image
         self.continuum_image = continuum_image
-        self.output_linear = output_linear
-        self.starless_nb = starless_nb
-        self.starless_cont = starless_cont
-        self.starless_only = starless_only
+        self.output_linear   = output_linear
+        self.starless_nb     = starless_nb
+        self.starless_cont   = starless_cont
+        self.starless_only   = starless_only
         self.background_reference = None
-        self._recipe = None  # learned from starry pass
-
-        # user knobs
-        self.threshold = float(threshold)
-        self.summary_gamma = float(summary_gamma)
-        self.q_factor = float(q_factor)
-
-        # NEW: Cosmic Clarity integration
-        self.denoise_linear   = bool(denoise_linear)
+        self.threshold       = float(threshold)
+        self.summary_gamma   = float(summary_gamma)
+        self.q_factor        = float(q_factor)
+        self.denoise_linear  = bool(denoise_linear)
         self.denoise_strength = float(denoise_strength)
-        self.denoise_gpu      = bool(denoise_gpu)
-        self.do_stretch       = bool(do_stretch)
-        self.do_median_sub    = bool(do_median_sub)
-        self.do_curves        = bool(do_curves)
-        self.no_black_clip    = bool(no_black_clip)
+        self.denoise_gpu     = bool(denoise_gpu)
+        self.do_stretch      = bool(do_stretch)
+        self.do_median_sub   = bool(do_median_sub)
+        self.do_curves       = bool(do_curves)
+        self.no_black_clip   = bool(no_black_clip)
 
-    # ---------- small helpers ----------
+        # set by the tab after the user accepts Q values
+        self._accepted_q: float | None = None
+
+    def set_accepted_q(self, q: float):
+        self._accepted_q = q
+
+    # ── helpers (unchanged from original) ─────────────────────────────────────
+
     @staticmethod
     def _to_mono(img):
         a = np.asarray(img)
         if a.ndim == 3:
-            if a.shape[2] == 3:
-                return a[..., 0]  # use R channel for NB/cont slots when color
-            if a.shape[2] == 1:
-                return a[..., 0]
+            if a.shape[2] == 3: return a[..., 0]
+            if a.shape[2] == 1: return a[..., 0]
         return a
 
     @staticmethod
@@ -1426,29 +1708,28 @@ class ContinuumProcessingThread(QThread):
 
     @staticmethod
     def _qimage_from_uint8(rgb_uint8: np.ndarray) -> QImage:
-        """Create a deep-copied QImage from an HxWx3 uint8 array."""
         h, w = rgb_uint8.shape[:2]
         return QImage(rgb_uint8.data, w, h, 3*w, QImage.Format.Format_RGB888).copy()
 
-    @staticmethod
-    def _nonlinear_finalize(lin_img: np.ndarray, no_black_clip: bool = False) -> np.ndarray:
-        """Stretch → subtract pedestal → curves, returned as float32 in [0,1]."""
+    def _nonlinear_finalize_with_opts(self, lin_img: np.ndarray) -> np.ndarray:
+        if not self.do_stretch:
+            return np.clip(lin_img, 0.0, 1.0).astype(np.float32, copy=False)
         target_median = 0.25
         stretched = stretch_color_image(lin_img, target_median, True, False,
-                                        no_black_clip=no_black_clip)
-        final = stretched - 0.7 * np.median(stretched)
-        final = np.clip(final, 0, 1)
-        return apply_curves_adjustment(final, np.median(final), 0.5).astype(np.float32, copy=False)
+                                        no_black_clip=self.no_black_clip)
+        if self.do_median_sub:
+            stretched = stretched - 0.7 * np.median(stretched)
+            stretched = np.clip(stretched, 0.0, 1.0)
+        if self.do_curves:
+            stretched = apply_curves_adjustment(stretched, np.median(stretched), 0.5)
+        return np.clip(stretched, 0.0, 1.0).astype(np.float32, copy=False)
 
-    # ---------- BG neutral: return pedestals (no in-place surprises) ----------
     def _compute_bg_pedestal(self, rgb):
         height, width, _ = rgb.shape
         num_boxes, box_size, iterations = 200, 25, 25
-
         boxes = [(np.random.randint(0, height - box_size),
                   np.random.randint(0, width - box_size)) for _ in range(num_boxes)]
         best = np.full(num_boxes, np.inf, dtype=np.float32)
-
         for _ in range(iterations):
             for i, (y, x) in enumerate(boxes):
                 if y + box_size <= height and x + box_size <= width:
@@ -1459,33 +1740,26 @@ class ContinuumProcessingThread(QThread):
                     for dy in (-1, 0, 1):
                         for dx in (-1, 0, 1):
                             yy, xx = y + dy*box_size, x + dx*box_size
-                            if 0 <= yy < height - box_size and 0 <= xx < width - box_size:
+                            if 0 <= yy < height-box_size and 0 <= xx < width-box_size:
                                 p2 = rgb[yy:yy+box_size, xx:xx+box_size]
-                                if p2.size:
-                                    sv.append(np.median(p2))
+                                if p2.size: sv.append(np.median(p2))
                     if sv:
                         k = int(np.argmin(sv))
                         y += (k // 3 - 1) * box_size
-                        x += (k % 3  - 1) * box_size
+                        x += (k %  3 - 1) * box_size
                         boxes[i] = (y, x)
-
-        # pick darkest
         darkest = np.inf; ref = None
         for y, x in boxes:
-            if y + box_size <= height and x + box_size <= width:
+            if y+box_size <= height and x+box_size <= width:
                 patch = rgb[y:y+box_size, x:x+box_size]
                 med = np.median(patch) if patch.size else np.inf
                 if med < darkest:
                     darkest, ref = med, patch
-
         ped = np.zeros(3, dtype=np.float32)
         if ref is not None:
             self.background_reference = np.median(ref.reshape(-1, 3), axis=0)
             chan_meds = np.median(rgb, axis=(0, 1))
-            # pedestal to lift channels toward their own median
             ped = np.maximum(0.0, chan_meds - self.background_reference)
-
-            # specifically lift G/B if below R reference
             r_ref = float(self.background_reference[0])
             for ch in (1, 2):
                 if self.background_reference[ch] < r_ref:
@@ -1494,203 +1768,29 @@ class ContinuumProcessingThread(QThread):
 
     @staticmethod
     def _apply_pedestal(rgb, ped):
-        return np.clip(rgb + ped.reshape(1,1,3), 0.0, 1.0)
+        return np.clip(rgb + ped.reshape(1, 1, 3), 0.0, 1.0)
 
     @staticmethod
     def _normalize_red_to_green(rgb):
-        r = rgb[...,0]; g = rgb[...,1]
+        r = rgb[..., 0]; g = rgb[..., 1]
         mad_r = float(np.mean(np.abs(r - np.mean(r))))
         mad_g = float(np.mean(np.abs(g - np.mean(g))))
         med_r = float(np.median(r))
         med_g = float(np.median(g))
-        g_gain = (mad_g / max(mad_r, 1e-9))
-        g_offs = (-g_gain * med_r + med_g)
+        g_gain = mad_g / max(mad_r, 1e-9)
+        g_offs = -g_gain * med_r + med_g
         rgb2 = rgb.copy()
-        rgb2[...,0] = np.clip(r * g_gain + g_offs, 0.0, 1.0)
+        rgb2[..., 0] = np.clip(r * g_gain + g_offs, 0.0, 1.0)
         return rgb2, g_gain, g_offs
 
     def _linear_subtract(self, rgb, Q, green_median):
-        r = rgb[...,0]; g = rgb[...,1]
+        r = rgb[..., 0]; g = rgb[..., 1]
         return np.clip(r - Q * (g - green_median), 0.0, 1.0)
-
-    def _nonlinear_finalize_with_opts(self, lin_img: np.ndarray) -> np.ndarray:
-        """Stretch → optional median sub → optional curves, honouring user checkboxes."""
-        if not self.do_stretch:
-            return np.clip(lin_img, 0.0, 1.0).astype(np.float32, copy=False)
-
-        target_median = 0.25
-        stretched = stretch_color_image(
-            lin_img, target_median, True, False,
-            no_black_clip=self.no_black_clip
-        )
-
-        if self.do_median_sub:
-            stretched = stretched - 0.7 * np.median(stretched)
-            stretched = np.clip(stretched, 0.0, 1.0)
-
-        if self.do_curves:
-            stretched = apply_curves_adjustment(stretched, np.median(stretched), 0.5)
-
-        return np.clip(stretched, 0.0, 1.0).astype(np.float32, copy=False)
-
-    # ---------- main ----------
-    def run(self):
-        try:
-            # STARLESS-ONLY early exit
-            if (self.nb_image is None or self.continuum_image is None) and self.starless_only:
-                self._run_starless_only()
-                return
-
-            recipe = None
-
-            # ----- starry pass (learn recipe) -----
-            if self.nb_image is not None and self.continuum_image is not None:
-                rgb = self._as_rgb(self.nb_image, self.continuum_image)
-
-                self.status_update.emit("Performing background neutralization...")
-                ped = self._compute_bg_pedestal(rgb)
-                rgb = self._apply_pedestal(rgb, ped)
-
-                self.status_update.emit("Normalizing red to green…")
-                rgb, g_gain, g_offs = self._normalize_red_to_green(rgb)
-
-                self.status_update.emit("Performing star-based white balance…")
-                balanced_rgb, star_count, star_overlay, raw_star_pixels, after_star_pixels = \
-                    apply_star_based_white_balance(
-                        rgb, threshold=self.threshold, autostretch=False,
-                        reuse_cached_sources=True, return_star_colors=True
-                    )
-
-                # per-channel affine fit to reproduce WB later
-                wb_a = np.zeros(3, np.float32)
-                wb_b = np.zeros(3, np.float32)
-                for c in range(3):
-                    a, b = self._fit_ab(rgb[..., c], balanced_rgb[..., c])
-                    wb_a[c], wb_b[c] = a, b
-
-                green_med = float(np.median(balanced_rgb[..., 1]))
-                Q = self.q_factor
-                linear_image = self._linear_subtract(balanced_rgb, Q, green_med)
-                if self.denoise_linear:
-                    self.status_update.emit("Denoising continuum-subtracted image (Cosmic Clarity)…")
-                    linear_image = self._denoise_linear_image(linear_image)
-                # --- NEW: gamma brighten overlay for the summary ---
-                g = max(self.summary_gamma, 1e-6)
-                overlay_gamma = np.power(np.clip(star_overlay, 0.0, 1.0), g)
-                overlay_uint8 = (overlay_gamma * 255).astype(np.uint8)
-                qimg = self._qimage_from_uint8(overlay_uint8)
-
-                if self.output_linear:
-                    self.processing_complete.emit(
-                        np.clip(linear_image, 0, 1), int(star_count), qimg,
-                        np.array(raw_star_pixels), np.array(after_star_pixels)
-                    )
-                else:
-                    self.status_update.emit("Linear → Non-linear stretch…")
-                    final = self._nonlinear_finalize_with_opts(linear_image)
-                    self.processing_complete.emit(
-                        final, int(star_count), qimg,
-                        np.array(raw_star_pixels), np.array(after_star_pixels)
-                    )
-
-                # learned recipe + fit data (reused for starless)
-            recipe = {
-                "pedestal": ped,
-                "rnorm_gain": g_gain,
-                "rnorm_offs": g_offs,
-                "wb_a": wb_a,
-                "wb_b": wb_b,
-                "Q": Q,
-                "green_median": green_med,
-
-                # store raw overlay + star stats for reuse
-                "overlay_uint8": overlay_uint8,
-                "fit_star_count": int(star_count),
-                "fit_raw": np.array(raw_star_pixels, copy=True),
-                "fit_after": np.array(after_star_pixels, copy=True),
-            }
-
-            # ----- starless paired pass (apply recipe) -----
-            if self.starless_nb is not None and self.starless_cont is not None:
-                if recipe is not None:
-                    rgb = self._as_rgb(self.starless_nb, self.starless_cont)
-                    # apply starry recipe exactly
-                    rgb = self._apply_pedestal(rgb, recipe["pedestal"])
-                    r = rgb[..., 0]
-                    rgb[..., 0] = np.clip(r * recipe["rnorm_gain"] + recipe["rnorm_offs"], 0.0, 1.0)
-                    for c in range(3):
-                        rgb[..., c] = np.clip(rgb[..., c] * recipe["wb_a"][c] + recipe["wb_b"][c], 0.0, 1.0)
-
-                    lin = self._linear_subtract(rgb, recipe["Q"], recipe["green_median"])
-                    if self.denoise_linear:
-                        self.status_update.emit("Denoising starless continuum-subtracted image (Cosmic Clarity)…")
-                        lin = self._denoise_linear_image(lin)
-                    # reuse gamma-bright overlay & fit info from the starry pass
-                    # rebuild overlay & make fresh copies of arrays for the starless emit
-                    overlay_uint8 = np.array(recipe["overlay_uint8"], copy=True)
-                    fit_qimg = self._qimage_from_uint8(overlay_uint8)
-                    fit_count = int(recipe["fit_star_count"])
-                    fit_raw   = np.array(recipe["fit_raw"], copy=True)
-                    fit_after = np.array(recipe["fit_after"], copy=True)
-
-                    if self.output_linear:
-                        self.processing_complete_starless.emit(
-                            np.clip(lin, 0, 1), fit_count, fit_qimg, fit_raw, fit_after
-                        )
-                    else:
-                        self.status_update.emit("Linear → Non-linear stretch (starless)…")
-                        final = self._nonlinear_finalize_with_opts(lin)
-                        self.processing_complete_starless.emit(
-                            final, fit_count, fit_qimg, fit_raw, fit_after
-                        )
-
-                elif self.starless_only:
-                    pass  # handled in _run_starless_only
-        except Exception as e:
-            try:
-                self.status_update.emit(f"Continuum subtraction failed: {e}")
-            except Exception:
-                pass
-
-    # ----- starless-only path (no WB; same math you had) -----
-    def _run_starless_only(self):
-        rgb = self._as_rgb(self.starless_nb, self.starless_cont)
-
-        self.status_update.emit("Performing background neutralization…")
-        ped = self._compute_bg_pedestal(rgb)
-        rgb = self._apply_pedestal(rgb, ped)
-
-        self.status_update.emit("Normalizing red to green…")
-        rgb, _, _ = self._normalize_red_to_green(rgb)
-
-        green_med = float(np.median(rgb[..., 1]))
-        lin = self._linear_subtract(rgb, 0.9, green_med)
-        if self.denoise_linear:
-            self.status_update.emit("Denoising starless continuum-subtracted image (Cosmic Clarity)…")
-            lin = self._denoise_linear_image(lin)
-        # Blank overlay & empty star lists (no star detection in starless-only path)
-        h, w = lin.shape[:2]
-        blank = np.zeros((h, w, 3), np.uint8)
-        qimg  = self._qimage_from_uint8(blank)
-        empty = np.empty((0, 2), float)
-
-        if self.output_linear:
-            self.processing_complete_starless.emit(np.clip(lin, 0, 1), 0, qimg, empty, empty)
-            return
-
-        self.status_update.emit("Linear → Non-linear stretch…")
-        final = self._nonlinear_finalize_with_opts(lin)
-        self.processing_complete_starless.emit(final, 0, qimg, empty, empty)
 
     def _denoise_linear_image(self, img: np.ndarray) -> np.ndarray:
         try:
-            if img is None:
+            if img is None or _cc_denoise is None:
                 return img
-
-            if _cc_denoise is None:
-                self.status_update.emit("Cosmic Clarity denoise unavailable (import failed).")
-                return img
-
             preset = {
                 "mode": "denoise",
                 "denoise_luma": self.denoise_strength,
@@ -1705,14 +1805,226 @@ class ContinuumProcessingThread(QThread):
                 "temp_stretch": False,
                 "target_median": 0.25,
             }
-
             arr = np.clip(np.asarray(img, dtype=np.float32), 0.0, 1.0)
             result = _cc_denoise(arr, preset)
             return np.clip(np.asarray(result, dtype=np.float32), 0.0, 1.0)
+        except Exception as e:
+            try: self.status_update.emit(f"Cosmic Clarity denoise failed: {e}")
+            except Exception: pass
+            return img
+
+    @staticmethod
+    def _downsample(arr: np.ndarray, max_px: int) -> np.ndarray:
+        """Downsample arr so its long axis is ≤ max_px."""
+        h, w = arr.shape[:2]
+        long = max(h, w)
+        if long <= max_px:
+            return arr
+        scale = max_px / long
+        nh, nw = max(1, int(h * scale)), max(1, int(w * scale))
+        # simple block-average via reshape when divisible, otherwise slice stride
+        try:
+            if cv2 is not None:
+                return cv2.resize(arr, (nw, nh), interpolation=cv2.INTER_AREA)
+        except Exception:
+            pass
+        # fallback: nearest-neighbour via index stride
+        sy = max(1, h // nh); sx = max(1, w // nw)
+        return arr[::sy, ::sx][: nh, :nw]
+
+    # ── calibration pass (runs in thread) ─────────────────────────────────────
+
+    def _calibrate(self, nb, cont, name: str) -> dict | None:
+        """
+        Run everything up to (but not including) the linear subtract.
+        Returns a dict that can be handed to QPreviewDialog and later
+        to _final_subtract().
+        """
+        try:
+            rgb = self._as_rgb(nb, cont)
+
+            self.status_update.emit(f"[{name}] Background neutralization…")
+            ped = self._compute_bg_pedestal(rgb)
+            rgb = self._apply_pedestal(rgb, ped)
+
+            self.status_update.emit(f"[{name}] Normalizing red to green…")
+            rgb, g_gain, g_offs = self._normalize_red_to_green(rgb)
+
+            self.status_update.emit(f"[{name}] Star-based white balance…")
+            balanced_rgb, star_count, star_overlay, raw_pix, after_pix = \
+                apply_star_based_white_balance(
+                    rgb, threshold=self.threshold, autostretch=False,
+                    reuse_cached_sources=True, return_star_colors=True
+                )
+
+            wb_a = np.zeros(3, np.float32)
+            wb_b = np.zeros(3, np.float32)
+            for c in range(3):
+                a, b = self._fit_ab(rgb[..., c], balanced_rgb[..., c])
+                wb_a[c], wb_b[c] = a, b
+
+            green_med = float(np.median(balanced_rgb[..., 1]))
+
+            g = max(self.summary_gamma, 1e-6)
+            overlay_gamma = np.power(np.clip(star_overlay, 0.0, 1.0), g)
+            overlay_uint8 = (overlay_gamma * 255).astype(np.uint8)
+
+            preview = self._downsample(balanced_rgb, self.PREVIEW_MAX)
+
+            recipe = {
+                "pedestal":    ped,
+                "rnorm_gain":  g_gain,
+                "rnorm_offs":  g_offs,
+                "wb_a":        wb_a,
+                "wb_b":        wb_b,
+                "green_median": green_med,
+                "overlay_uint8": overlay_uint8,
+                "fit_star_count": int(star_count),
+                "fit_raw":   np.array(raw_pix,   copy=True),
+                "fit_after": np.array(after_pix, copy=True),
+            }
+
+            return {
+                "name":       name,
+                "balanced":   balanced_rgb,   # full-res, kept for final subtract
+                "green_med":  green_med,
+                "recipe":     recipe,
+                "preview":    preview,         # downsampled
+                "star_count": int(star_count),
+            }
 
         except Exception as e:
-            try:
-                self.status_update.emit(f"Cosmic Clarity denoise failed: {e}")
-            except Exception:
-                pass
-            return img
+            self.status_update.emit(f"[{name}] Calibration failed: {e}")
+            return None
+
+    def run_calibration_only(self, name: str):
+        """Entry point: calibrate and emit calibration_ready. Called from run()."""
+        if self.starless_only:
+            self._run_starless_only_calibrate(name)
+            return
+
+        entry = self._calibrate(self.nb_image, self.continuum_image, name)
+        if entry is not None:
+            self.calibration_ready.emit(entry)
+
+    def _run_starless_only_calibrate(self, name: str):
+        """Starless-only path: no WB, just BG+norm, then emit calibration_ready."""
+        try:
+            rgb = self._as_rgb(self.starless_nb, self.starless_cont)
+            self.status_update.emit(f"[{name}] Background neutralization…")
+            ped = self._compute_bg_pedestal(rgb)
+            rgb = self._apply_pedestal(rgb, ped)
+            self.status_update.emit(f"[{name}] Normalizing…")
+            rgb, _, _ = self._normalize_red_to_green(rgb)
+            green_med = float(np.median(rgb[..., 1]))
+            preview   = self._downsample(rgb, self.PREVIEW_MAX)
+            h, w      = rgb.shape[:2]
+            blank     = np.zeros((h, w, 3), np.uint8)
+            recipe    = {
+                "pedestal": np.zeros(3, np.float32),
+                "rnorm_gain": 1.0, "rnorm_offs": 0.0,
+                "wb_a": np.ones(3, np.float32), "wb_b": np.zeros(3, np.float32),
+                "green_median": green_med,
+                "overlay_uint8": blank,
+                "fit_star_count": 0,
+                "fit_raw":   np.empty((0, 2), float),
+                "fit_after": np.empty((0, 2), float),
+                "starless_only": True,
+            }
+            entry = {
+                "name":       name,
+                "balanced":   rgb,
+                "green_med":  green_med,
+                "recipe":     recipe,
+                "preview":    preview,
+                "star_count": 0,
+            }
+            self.calibration_ready.emit(entry)
+        except Exception as e:
+            self.status_update.emit(f"[{name}] Starless calibration failed: {e}")
+
+    def run_final_subtract(self, name: str, entry: dict, q: float):
+        """
+        Called from a second QThread (FinalSubtractThread) after Q is accepted.
+        Does the actual subtraction + optional denoise + stretch and emits results.
+        """
+        try:
+            balanced  = entry["balanced"]
+            green_med = entry["green_med"]
+            recipe    = entry["recipe"]
+            is_sl     = recipe.get("starless_only", False)
+
+            self.status_update.emit(f"[{name}] Applying Q={q:.2f} subtraction…")
+            linear = self._linear_subtract(balanced, q, green_med)
+
+            if self.denoise_linear:
+                self.status_update.emit(f"[{name}] Denoising…")
+                linear = self._denoise_linear_image(linear)
+
+            qimg       = self._qimage_from_uint8(recipe["overlay_uint8"])
+            star_count = recipe["fit_star_count"]
+            raw_pix    = recipe["fit_raw"]
+            after_pix  = recipe["fit_after"]
+
+            if self.output_linear:
+                result = np.clip(linear, 0, 1)
+            else:
+                self.status_update.emit(f"[{name}] Stretching…")
+                result = self._nonlinear_finalize_with_opts(linear)
+
+            sig = self.processing_complete_starless if is_sl else self.processing_complete
+            sig.emit(result, star_count, qimg,
+                     np.array(raw_pix), np.array(after_pix))
+
+            # paired starless pass (apply same recipe + new Q)
+            if (not is_sl and
+                    self.starless_nb is not None and
+                    self.starless_cont is not None):
+                self.status_update.emit(f"[{name}] Applying recipe to starless…")
+                rgb_sl = self._as_rgb(self.starless_nb, self.starless_cont)
+                rgb_sl = self._apply_pedestal(rgb_sl, recipe["pedestal"])
+                rgb_sl[..., 0] = np.clip(
+                    rgb_sl[..., 0] * recipe["rnorm_gain"] + recipe["rnorm_offs"],
+                    0.0, 1.0
+                )
+                for c in range(3):
+                    rgb_sl[..., c] = np.clip(
+                        rgb_sl[..., c] * recipe["wb_a"][c] + recipe["wb_b"][c],
+                        0.0, 1.0
+                    )
+                lin_sl = self._linear_subtract(rgb_sl, q, green_med)
+                if self.denoise_linear:
+                    lin_sl = self._denoise_linear_image(lin_sl)
+                if self.output_linear:
+                    res_sl = np.clip(lin_sl, 0, 1)
+                else:
+                    res_sl = self._nonlinear_finalize_with_opts(lin_sl)
+                overlay_sl = np.array(recipe["overlay_uint8"], copy=True)
+                fit_qimg   = self._qimage_from_uint8(overlay_sl)
+                self.processing_complete_starless.emit(
+                    res_sl, star_count, fit_qimg,
+                    np.array(raw_pix, copy=True),
+                    np.array(after_pix, copy=True)
+                )
+
+        except Exception as e:
+            self.status_update.emit(f"[{name}] Final subtract failed: {e}")
+
+    def run(self):
+        # This run() is only used for the calibration phase now.
+        # The tab calls run_calibration_only() by kicking off one thread per filter.
+        pass
+
+
+class FinalSubtractThread(QThread):
+    """Thin wrapper that calls thread.run_final_subtract() off the UI thread."""
+    def __init__(self, thread: ContinuumProcessingThread,
+                 name: str, entry: dict, q: float, parent=None):
+        super().__init__(parent=None)
+        self._t     = thread
+        self._name  = name
+        self._entry = entry
+        self._q     = q
+
+    def run(self):
+        self._t.run_final_subtract(self._name, self._entry, self._q)
