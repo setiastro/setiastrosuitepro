@@ -63,96 +63,94 @@ def _r(pat: str, op: str, st: str, grp: Optional[int] = None):
     _RULES.append((re.compile(pat, re.IGNORECASE), op, st, grp))
 
 # ── Master dark ───────────────────────────────────────────────────────────
-_r(r"Starting Master Dark",                      "Master Darks",     _ST_RUNNING)
-_r(r"🟢 Processing \d+ darks for (.+?) in session", "Master Darks",  _ST_RUNNING, 1)
-_r(r"✅ Master Dark saved and added to UI", "Master Darks", _ST_OK)
-_r(r"⚠️.*dark.*skip",                            "Master Darks",     _ST_WARN)
+_r(r"Starting Master Dark",                         "Master Darks",      _ST_RUNNING)
+_r(r"🟢 Processing \d+ darks for (.+?) in session", "Master Darks",      _ST_RUNNING, 1)
+_r(r"✅ Master Dark saved and added to UI",          "Master Darks",      _ST_OK)
+_r(r"⚠️.*dark.*skip",                               "Master Darks",      _ST_WARN)
 
 # ── Master flat ───────────────────────────────────────────────────────────
-_r(r"Starting Master Flat",                      "Master Flats",     _ST_RUNNING)
-_r(r"🟢 Processing \d+ flats for .+?\[(.+?)\]",  "Master Flats",     _ST_RUNNING, 1)
-_r(r"✅ Master Flat saved",                       "Master Flats",     _ST_OK)
-_r(r"⚠️.*flat.*skip",                            "Master Flats",     _ST_WARN)
+_r(r"Starting Master Flat",                         "Master Flats",      _ST_RUNNING)
+_r(r"🟢 Processing \d+ flats for .+?\[(.+?)\]",     "Master Flats",      _ST_RUNNING, 1)
+_r(r"✅ Master Flat saved",                          "Master Flats",      _ST_OK)
+_r(r"⚠️.*flat.*skip",                               "Master Flats",      _ST_WARN)
 
-# ── Calibration ───────────────────────────────────────────────────────────
-_r(r"Dark Subtracted",                           "Calibration",      _ST_RUNNING)
-_r(r"Flat Applied",                              "Calibration",      _ST_RUNNING)
-_r(r"✅ Calibration Complete",                   "Calibration",      _ST_OK)
-_r(r"Saved: .+\.fit \(\d+/(\d+)\)",             "Calibration",      _ST_RUNNING)
-_r(r"❌ (?:ERROR|CALIBRATION ERROR)",            "Calibration",      _ST_FAIL)
-
-
-
-# Replace the existing Measurement, Normalization, Registration rules with:
+# ── Calibration — specific rules BEFORE generic catch-alls ───────────────
+_r(r"📦 Loading master calibration frames",         "Calibration",       _ST_RUNNING)
+_r(r"🎚️ Interactive flat",                          "Calibration",       _ST_RUNNING)
+_r(r"🔧 Calibration frames ready",                  "Calibration",       _ST_INFO)
+_r(r"📷 Calibrating group: (.+)",                   "Calibration",       _ST_RUNNING, 1)
+_r(r"📷 Progress: .+ — \d+/\d+ frames",             "Calibration",       _ST_RUNNING)
+_r(r"✅ Calibration Complete",                      "Calibration",       _ST_OK)
+_r(r"❌ (?:ERROR|CALIBRATION ERROR)",               "Calibration",       _ST_FAIL)
 
 # ── Measurements ─────────────────────────────────────────────────────────
-_r(r"📏 Phase: Measurements starting",           "Measurements",     _ST_RUNNING)
-_r(r"📏 Phase: Measurements complete",           "Measurements",     _ST_OK)
+_r(r"📏 Phase: Measurements starting",              "Measurements",      _ST_RUNNING)
+_r(r"📏 Phase: Measurements complete",              "Measurements",      _ST_OK)
 
 # ── Normalization ─────────────────────────────────────────────────────────
-_r(r"📏 Phase: Normalization starting",          "Normalization",    _ST_RUNNING)
-_r(r"📏 Phase: Normalization complete",          "Normalization",    _ST_OK)
+_r(r"📏 Phase: Normalization starting",             "Normalization",     _ST_RUNNING)
+_r(r"📏 Phase: Normalization complete",             "Normalization",     _ST_OK)
 
 # ── Reference frame ───────────────────────────────────────────────────────
 _r(r"Auto-selected reference|Using user-specified reference", "Ref Frame Selection", _ST_OK)
-_r(r"📌 Reference for alignment",               "Ref Frame Selection", _ST_INFO)
+_r(r"📌 Reference for alignment",                  "Ref Frame Selection", _ST_INFO)
 
 # ── Star alignment ────────────────────────────────────────────────────────
-_r(r"📏 Phase: Star alignment starting",         "Registration",     _ST_RUNNING)
-_r(r"📏 Phase: Star alignment complete",         "Registration",     _ST_OK)
-_r(r"Alignment summary: (\d+ succeeded)",        "Registration",     _ST_OK,      1)
-_r(r"🚨 Rejected \d+ frame",                    "Registration",     _ST_WARN)
+_r(r"📏 Phase: Star alignment starting",            "Registration",      _ST_RUNNING)
+_r(r"📏 Phase: Star alignment complete",            "Registration",      _ST_OK)
+_r(r"Alignment summary: (\d+ succeeded)",           "Registration",      _ST_OK,   1)
+_r(r"🚨 Rejected \d+ frame",                        "Registration",      _ST_WARN)
 
 # ── Integration ───────────────────────────────────────────────────────────
-_r(r"📏 Phase: Integration starting",            "Integration",      _ST_RUNNING)
-_r(r"Starting integration for group '(.+?)' with", "Integration",    _ST_RUNNING, 1)
-_r(r"📊 Stacking group '(.+?)' with (.+)",       "Integration",      _ST_RUNNING, 1)
-_r(r"Post-align finalize from prepass",          "Integration",      _ST_RUNNING)
-_r(r"🔹 .* Finalizing '(.+?)' from prepass",     "Integration",      _ST_RUNNING, 1)
-_r(r"✅ Saved integrated image.*for '(.+?)'",    "Integration",      _ST_OK,      1)
-_r(r"📐 Drizzle for '(.+?)'",                    "Integration",      _ST_RUNNING, 1)
+_r(r"📏 Phase: Integration starting",               "Integration",       _ST_RUNNING)
+_r(r"Starting integration for group '(.+?)' with",  "Integration",       _ST_RUNNING, 1)
+_r(r"📊 Stacking group '(.+?)' with (.+)",           "Integration",       _ST_RUNNING, 1)
+_r(r"Post-align finalize from prepass",             "Integration",       _ST_RUNNING)
+_r(r"🔹 .* Finalizing '(.+?)' from prepass",         "Integration",       _ST_RUNNING, 1)
+_r(r"✅ Saved integrated image.*for '(.+?)'",        "Integration",       _ST_OK,   1)
+_r(r"📐 Drizzle for '(.+?)'",                        "Integration",       _ST_RUNNING, 1)
 
 # ── Autocrop ──────────────────────────────────────────────────────────────
-_r(r"✂️.*[Cc]rop",                              "Autocrop",         _ST_RUNNING)
-_r(r"✂️ Saved auto-cropped",                    "Autocrop",         _ST_OK)
+_r(r"✂️.*[Cc]rop",                                  "Autocrop",          _ST_RUNNING)
+_r(r"✂️ Saved auto-cropped",                         "Autocrop",          _ST_OK)
 
-# ── Astrometric solution (SASD / dither) ─────────────────────────────────
-_r(r"Transform file saved.*\.sasd \(v2\)", "Alignment Transforms", _ST_OK)
+# ── Astrometric solution ──────────────────────────────────────────────────
+_r(r"Transform file saved.*\.sasd \(v2\)",          "Alignment Transforms", _ST_OK)
 
-# ── Generic success / warning / error catch-alls ─────────────────────────
+# ── MF Deconvolution ──────────────────────────────────────────────────────
+_r(r"MFDeconv launched for (\d+) group",            "MF Deconvolution",  _ST_RUNNING, 1)
+_r(r"Deconvolving '(.+?)' \(\d+ frames\)",           "MF Deconvolution",  _ST_RUNNING, 1)
+_r(r"⚙️ MFDeconv engine",                           "MF Deconvolution",  _ST_RUNNING)
+_r(r"✅ MFDeconv complete for all groups",           "MF Deconvolution",  _ST_OK)
+_r(r"⚠️ MFDeconv finished with failures",           "MF Deconvolution",  _ST_WARN)
+_r(r"❌ MFDeconv failed for '(.+?)'",               "MF Deconvolution",  _ST_FAIL, 1)
+_r(r"✂️ \(MF\) Saved auto-cropped",                  "MF Deconvolution",  _ST_OK)
+_r(r"Post-MF finalize failed",                      "MF Deconvolution",  _ST_WARN)
+
+# ── Comet stacking ────────────────────────────────────────────────────────
+_r(r"🌠 Comet mode enabled",                        "Comet Stack",       _ST_RUNNING)
+_r(r"🟢 Measuring comet centers",                   "Comet Stack",       _ST_RUNNING)
+_r(r"🟠 Comet-aligned integration",                 "Comet Stack",       _ST_RUNNING)
+_r(r"✅ Saved CometOnly",                           "Comet Stack",       _ST_OK)
+_r(r"🌠 Comet anchor in reference frame",           "Comet Stack",       _ST_INFO)
+_r(r"◦ user confirmed",                             "Comet Stack",       _ST_INFO)
+_r(r"◦ seed xy=",                                  "Comet Stack",       _ST_INFO)
+
+# ── Comet star removal ────────────────────────────────────────────────────
+_r(r"✨ Comet star removal enabled",                "Comet StarRemoval", _ST_RUNNING)
+_r(r"✓ \[\d+/\d+\] starless saved",                "Comet StarRemoval", _ST_RUNNING)
+_r(r"✨ Using comet-aligned STARLESS",              "Comet StarRemoval", _ST_OK)
+_r(r"⚠️ star removal failed",                      "Comet StarRemoval", _ST_WARN)
+_r(r"⚠️ Comet star removal pre-process aborted",   "Comet StarRemoval", _ST_FAIL)
+
+# ── Comet blend ───────────────────────────────────────────────────────────
+_r(r"🟡 Blending Stars\+Comet",                    "Comet Blend",       _ST_RUNNING)
+_r(r"✅ Saved CometBlend",                          "Comet Blend",       _ST_OK)
+
+# ── Generic catch-alls — MUST be last ─────────────────────────────────────
 _r(r"^✅",   "Complete",  _ST_OK)
 _r(r"^⚠️",  "Warning",   _ST_WARN)
 _r(r"^❌",   "Error",     _ST_FAIL)
-
-# ── MF Deconvolution ──────────────────────────────────────────────────────
-_r(r"MFDeconv launched for (\d+) group",         "MF Deconvolution", _ST_RUNNING, 1)
-_r(r"Deconvolving '(.+?)' \(\d+ frames\)",        "MF Deconvolution", _ST_RUNNING, 1)
-_r(r"⚙️ MFDeconv engine",                        "MF Deconvolution", _ST_RUNNING)
-_r(r"✅ MFDeconv complete for all groups",        "MF Deconvolution", _ST_OK)
-_r(r"⚠️ MFDeconv finished with failures",        "MF Deconvolution", _ST_WARN)
-_r(r"❌ MFDeconv failed for '(.+?)'",            "MF Deconvolution", _ST_FAIL,    1)
-_r(r"✂️ \(MF\) Saved auto-cropped",              "MF Deconvolution", _ST_OK)
-_r(r"Post-MF finalize failed",                   "MF Deconvolution", _ST_WARN)
-
-# ── Comet stacking ────────────────────────────────────────────────────────
-_r(r"🌠 Comet mode enabled",                     "Comet Stack",      _ST_RUNNING)
-_r(r"🟢 Measuring comet centers",                "Comet Stack",      _ST_RUNNING)
-_r(r"🟠 Comet-aligned integration",              "Comet Stack",      _ST_RUNNING)
-_r(r"✅ Saved CometOnly",                        "Comet Stack",      _ST_OK)
-_r(r"🌠 Comet anchor in reference frame",        "Comet Stack",      _ST_INFO)
-_r(r"◦ user confirmed",                          "Comet Stack",      _ST_INFO)
-_r(r"◦ seed xy=",                               "Comet Stack",      _ST_INFO)
-
-# ── Comet star removal ────────────────────────────────────────────────────
-_r(r"✨ Comet star removal enabled",             "Comet StarRemoval", _ST_RUNNING)
-_r(r"✓ \[\d+/\d+\] starless saved",             "Comet StarRemoval", _ST_RUNNING)
-_r(r"✨ Using comet-aligned STARLESS",           "Comet StarRemoval", _ST_OK)
-_r(r"⚠️ star removal failed",                   "Comet StarRemoval", _ST_WARN)
-_r(r"⚠️ Comet star removal pre-process aborted", "Comet StarRemoval", _ST_FAIL)
-
-# ── Comet blend ───────────────────────────────────────────────────────────
-_r(r"🟡 Blending Stars\+Comet",                 "Comet Blend",      _ST_RUNNING)
-_r(r"✅ Saved CometBlend",                       "Comet Blend",      _ST_OK)
 
 # ── Noise patterns to suppress (tile-level chatter) ──────────────────────
 _SUPPRESS = re.compile(
@@ -164,6 +162,12 @@ _SUPPRESS = re.compile(
     r"|min ="
     r"|max ="
     r"|LIGHT final"
+    r"|💾 Saved:"
+    r"|📷 Progress:"
+    r"|  ✓ GPU calibrated:"
+    r"|  ✓ Dark loaded:"
+    r"|  ✓ Flat loaded:"
+    r"|  Mask saved:"
     r"|Aligning stars… \(\d"
     r"|🗂️"
     r"|📦 \d+ tiles"
@@ -176,7 +180,7 @@ _SUPPRESS = re.compile(
     r"|✅ Prepass '"
     r"|🔹 \[\d+/\d+\] Finalizing"
     r"|Rejection prepass:"
-    r"|🔹 .* Finalizing '.+?' from prepass"    
+    r"|🔹 .* Finalizing '.+?' from prepass"
     r"|preview median"
     r"|Debayer"
     r"|↻ 180"
@@ -191,7 +195,7 @@ _SUPPRESS = re.compile(
     r"|Measuring chunk"
     r"|✅ All chunks complete"
     r"|🌀 Normalizing chunk"
-    r"|Updated self\.light_files"    
+    r"|Updated self\.light_files"
     r"|Transform file saved.*alignment_transforms\.sasd(?! \(v2\))"
     r"|_n\.fit"
     r"|ABE Poly"
@@ -209,9 +213,9 @@ _SUPPRESS = re.compile(
     r"|Comet High-Clip"
     r"|Comet Lower-Trim"
     r"|comet preview skipped"
-    r"|🌟 MFDeconv star-mask reference"    
+    r"|🌟 MFDeconv star-mask reference"
     r"|rejection_map="
-    r"|seed_image="    
+    r"|seed_image="
     r"|🧪 Rejection prepass: \d+ group"
     r"|🔹 \[\d+/\d+\] Rejection prepass",
     re.IGNORECASE

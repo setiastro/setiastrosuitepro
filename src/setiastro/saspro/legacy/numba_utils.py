@@ -667,8 +667,7 @@ def windsorized_sigma_clip_weighted_3d_iter(stack, weights, lower=2.5, upper=2.5
                 pixel_weights = weights[:, i, j]
 
             valid_mask = pixel_values != 0.0
-            lower_bound = 0.0
-            upper_bound = 0.0
+            med_final = 0.0
 
             for _ in range(iterations):
                 count = 0
@@ -681,42 +680,32 @@ def windsorized_sigma_clip_weighted_3d_iter(stack, weights, lower=2.5, upper=2.5
                 n = valid_vals.shape[0]
                 sorted_vals = np.sort(valid_vals)
                 mid = n // 2
-                if n % 2 == 1:
-                    median_val = sorted_vals[mid]
-                else:
-                    median_val = (sorted_vals[mid - 1] + sorted_vals[mid]) * 0.5
-                abs_dev = np.abs(valid_vals - median_val)
-                sorted_dev = np.sort(abs_dev)
-                mad = sorted_dev[mid] if n % 2 == 1 else (sorted_dev[mid - 1] + sorted_dev[mid]) * 0.5
-                std_dev = mad * 1.4826
+                med_final = sorted_vals[mid] if n % 2 == 1 else (sorted_vals[mid - 1] + sorted_vals[mid]) * 0.5
+                sum_sq = 0.0
+                for k in range(n):
+                    d = valid_vals[k] - med_final
+                    sum_sq += d * d
+                std_dev = (sum_sq / float(n)) ** 0.5
                 if std_dev < 1e-12:
-                    lower_bound = median_val
-                    upper_bound = median_val
                     break
-                lower_bound = median_val - lower * std_dev
-                upper_bound = median_val + upper * std_dev
-                # update valid_mask for next iteration's stats only
+                lower_bound = med_final - lower * std_dev
+                upper_bound = med_final + upper * std_dev
                 for k in range(num_frames):
                     if valid_mask[k]:
                         v = pixel_values[k]
                         if v < lower_bound or v > upper_bound:
                             valid_mask[k] = False
 
-            # rejection map: what fell outside bounds
             for f in range(num_frames):
                 rej_mask[f, i, j] = not valid_mask[f]
 
-            # True Winsorized mean: clamp ALL valid pixels to [lower_bound, upper_bound]
-            # then weighted average — outliers contribute at boundary, not excluded
+            # Winsorized mean: rejected pixels replaced with converged median,
+            # not excluded and not clamped to boundary
             wsum = 0.0
             vsum = 0.0
             for k in range(num_frames):
-                if pixel_values[k] != 0.0:  # all originally valid frames contribute
-                    v = pixel_values[k]
-                    if v < lower_bound:
-                        v = lower_bound
-                    elif v > upper_bound:
-                        v = upper_bound
+                if pixel_values[k] != 0.0:
+                    v = pixel_values[k] if valid_mask[k] else med_final
                     w = pixel_weights[k]
                     wsum += w
                     vsum += v * w
@@ -724,11 +713,7 @@ def windsorized_sigma_clip_weighted_3d_iter(stack, weights, lower=2.5, upper=2.5
             if wsum > 0:
                 clipped[i, j] = vsum / wsum
             else:
-                nonzero = pixel_values[pixel_values != 0.0]
-                if nonzero.size > 0:
-                    clipped[i, j] = np.median(nonzero)
-                else:
-                    clipped[i, j] = 0.0
+                clipped[i, j] = med_final
 
     return clipped, rej_mask
 
@@ -749,8 +734,7 @@ def windsorized_sigma_clip_weighted_4d_iter(stack, weights, lower=2.5, upper=2.5
                     pixel_weights = weights[:, i, j, c]
 
                 valid_mask = pixel_values != 0.0
-                lower_bound = 0.0
-                upper_bound = 0.0
+                med_final = 0.0
 
                 for _ in range(iterations):
                     count = 0
@@ -763,20 +747,16 @@ def windsorized_sigma_clip_weighted_4d_iter(stack, weights, lower=2.5, upper=2.5
                     n = valid_vals.shape[0]
                     sorted_vals = np.sort(valid_vals)
                     mid = n // 2
-                    if n % 2 == 1:
-                        median_val = sorted_vals[mid]
-                    else:
-                        median_val = (sorted_vals[mid - 1] + sorted_vals[mid]) * 0.5
-                    abs_dev = np.abs(valid_vals - median_val)
-                    sorted_dev = np.sort(abs_dev)
-                    mad = sorted_dev[mid] if n % 2 == 1 else (sorted_dev[mid - 1] + sorted_dev[mid]) * 0.5
-                    std_dev = mad * 1.4826
+                    med_final = sorted_vals[mid] if n % 2 == 1 else (sorted_vals[mid - 1] + sorted_vals[mid]) * 0.5
+                    sum_sq = 0.0
+                    for k in range(n):
+                        d = valid_vals[k] - med_final
+                        sum_sq += d * d
+                    std_dev = (sum_sq / float(n)) ** 0.5
                     if std_dev < 1e-12:
-                        lower_bound = median_val
-                        upper_bound = median_val
                         break
-                    lower_bound = median_val - lower * std_dev
-                    upper_bound = median_val + upper * std_dev
+                    lower_bound = med_final - lower * std_dev
+                    upper_bound = med_final + upper * std_dev
                     for k in range(num_frames):
                         if valid_mask[k]:
                             v = pixel_values[k]
@@ -790,11 +770,7 @@ def windsorized_sigma_clip_weighted_4d_iter(stack, weights, lower=2.5, upper=2.5
                 vsum = 0.0
                 for k in range(num_frames):
                     if pixel_values[k] != 0.0:
-                        v = pixel_values[k]
-                        if v < lower_bound:
-                            v = lower_bound
-                        elif v > upper_bound:
-                            v = upper_bound
+                        v = pixel_values[k] if valid_mask[k] else med_final
                         w = pixel_weights[k]
                         wsum += w
                         vsum += v * w
@@ -802,11 +778,7 @@ def windsorized_sigma_clip_weighted_4d_iter(stack, weights, lower=2.5, upper=2.5
                 if wsum > 0:
                     clipped[i, j, c] = vsum / wsum
                 else:
-                    nonzero = pixel_values[pixel_values != 0.0]
-                    if nonzero.size > 0:
-                        clipped[i, j, c] = np.median(nonzero)
-                    else:
-                        clipped[i, j, c] = 0.0
+                    clipped[i, j, c] = med_final
 
     return clipped, rej_mask
 
@@ -1638,10 +1610,8 @@ def windsorized_sigma_clip_3d(stack, lower=2.5, upper=2.5):
         for j in range(width):
             pixel_values = stack[:, i, j]
             valid_mask = pixel_values != 0.0
-            lower_bound = 0.0
-            upper_bound = 0.0
+            med_final = 0.0
 
-            # iterative clipping to converge bounds
             for _ in range(3):
                 count = 0
                 for k in range(num_frames):
@@ -1653,52 +1623,37 @@ def windsorized_sigma_clip_3d(stack, lower=2.5, upper=2.5):
                 n = valid_vals.shape[0]
                 sorted_vals = np.sort(valid_vals)
                 mid = n // 2
-                median_val = sorted_vals[mid] if n % 2 == 1 else (sorted_vals[mid-1] + sorted_vals[mid]) * 0.5
+                med_final = sorted_vals[mid] if n % 2 == 1 else (sorted_vals[mid - 1] + sorted_vals[mid]) * 0.5
                 sum_sq = 0.0
                 for k in range(n):
-                    d = valid_vals[k] - median_val
+                    d = valid_vals[k] - med_final
                     sum_sq += d * d
                 std_dev = (sum_sq / float(n)) ** 0.5
                 if std_dev < 1e-12:
-                    lower_bound = median_val
-                    upper_bound = median_val
                     break
-                lower_bound = median_val - lower * std_dev
-                upper_bound = median_val + upper * std_dev
+                lower_bound = med_final - lower * std_dev
+                upper_bound = med_final + upper * std_dev
                 for k in range(num_frames):
                     if valid_mask[k]:
                         v = pixel_values[k]
                         if v < lower_bound or v > upper_bound:
                             valid_mask[k] = False
 
-            # rejection map
             for f in range(num_frames):
                 rej_mask[f, i, j] = not valid_mask[f]
 
-            # True Winsorized mean: clamp all originally valid pixels to boundary
             vsum = 0.0
             count = 0
             for f in range(num_frames):
                 if pixel_values[f] != 0.0:
-                    v = pixel_values[f]
-                    if v < lower_bound:
-                        v = lower_bound
-                    elif v > upper_bound:
-                        v = upper_bound
+                    v = pixel_values[f] if valid_mask[f] else med_final
                     vsum += v
                     count += 1
 
             if count > 0:
                 clipped[i, j] = vsum / float(count)
             else:
-                nonzero = pixel_values[pixel_values != 0.0]
-                if nonzero.size > 0:
-                    n = nonzero.size
-                    sorted_nz = np.sort(nonzero)
-                    mid = n // 2
-                    clipped[i, j] = sorted_nz[mid] if n % 2 == 1 else (sorted_nz[mid-1] + sorted_nz[mid]) * 0.5
-                else:
-                    clipped[i, j] = 0.0
+                clipped[i, j] = med_final
 
     return clipped, rej_mask
 
@@ -1714,8 +1669,7 @@ def windsorized_sigma_clip_4d(stack, lower=2.5, upper=2.5):
             for c in range(channels):
                 pixel_values = stack[:, i, j, c]
                 valid_mask = pixel_values != 0.0
-                lower_bound = 0.0
-                upper_bound = 0.0
+                med_final = 0.0
 
                 for _ in range(3):
                     count = 0
@@ -1728,18 +1682,16 @@ def windsorized_sigma_clip_4d(stack, lower=2.5, upper=2.5):
                     n = valid_vals.shape[0]
                     sorted_vals = np.sort(valid_vals)
                     mid = n // 2
-                    median_val = sorted_vals[mid] if n % 2 == 1 else (sorted_vals[mid-1] + sorted_vals[mid]) * 0.5
+                    med_final = sorted_vals[mid] if n % 2 == 1 else (sorted_vals[mid - 1] + sorted_vals[mid]) * 0.5
                     sum_sq = 0.0
                     for k in range(n):
-                        d = valid_vals[k] - median_val
+                        d = valid_vals[k] - med_final
                         sum_sq += d * d
                     std_dev = (sum_sq / float(n)) ** 0.5
                     if std_dev < 1e-12:
-                        lower_bound = median_val
-                        upper_bound = median_val
                         break
-                    lower_bound = median_val - lower * std_dev
-                    upper_bound = median_val + upper * std_dev
+                    lower_bound = med_final - lower * std_dev
+                    upper_bound = med_final + upper * std_dev
                     for k in range(num_frames):
                         if valid_mask[k]:
                             v = pixel_values[k]
@@ -1753,25 +1705,14 @@ def windsorized_sigma_clip_4d(stack, lower=2.5, upper=2.5):
                 count = 0
                 for f in range(num_frames):
                     if pixel_values[f] != 0.0:
-                        v = pixel_values[f]
-                        if v < lower_bound:
-                            v = lower_bound
-                        elif v > upper_bound:
-                            v = upper_bound
+                        v = pixel_values[f] if valid_mask[f] else med_final
                         vsum += v
                         count += 1
 
                 if count > 0:
                     clipped[i, j, c] = vsum / float(count)
                 else:
-                    nonzero = pixel_values[pixel_values != 0.0]
-                    if nonzero.size > 0:
-                        n = nonzero.size
-                        sorted_nz = np.sort(nonzero)
-                        mid = n // 2
-                        clipped[i, j, c] = sorted_nz[mid] if n % 2 == 1 else (sorted_nz[mid-1] + sorted_nz[mid]) * 0.5
-                    else:
-                        clipped[i, j, c] = 0.0
+                    clipped[i, j, c] = med_final
 
     return clipped, rej_mask
 
@@ -2813,96 +2754,208 @@ def hsv_to_rgb_numba(hsv):
 @njit(parallel=True, fastmath=True, cache=True)
 def _cosmetic_correction_core(src, dst, H, W, C,
                               hot_sigma, cold_sigma,
-                              star_mean_ratio,  # e.g. 0.18..0.30
-                              star_max_ratio,   # e.g. 0.45..0.65
-                              sat_threshold,    # absolute cutoff in src units
-                              cold_cluster_max  # max # of neighbors below low before we skip
-                              ):
-    """
-    Read from src, write to dst. Center is EXCLUDED from stats.
-    Star guard: if ring mean or ring max are a decent fraction of center, skip (likely a PSF).
-    Cold guard: if many neighbors are also low, skip (structure/shadow, not a dead pixel).
-    """
-    local_vals = np.empty(8, dtype=np.float32)
+                              star_mean_ratio,
+                              star_max_ratio,
+                              sat_threshold,
+                              cold_cluster_max):
+    # 5x5 neighborhood = 24 pixels excluding center
+    local_vals = np.empty(24, dtype=np.float32)
 
-    for y in prange(1, H-1):
-        for x in range(1, W-1):
+    for y in prange(2, H - 2):
+        for x in range(2, W - 2):
             for c in range(C if src.ndim == 3 else 1):
-                # gather 8-neighbor ring (no center)
+                # gather 5x5 ring excluding center
                 k = 0
                 ring_sum = 0.0
                 ring_max = -1e30
-                for dy in (-1, 0, 1):
-                    for dx in (-1, 0, 1):
+                for dy in range(-2, 3):
+                    for dx in range(-2, 3):
                         if dy == 0 and dx == 0:
                             continue
                         if src.ndim == 3:
-                            v = src[y+dy, x+dx, c]
+                            v = src[y + dy, x + dx, c]
                         else:
-                            v = src[y+dy, x+dx]
+                            v = src[y + dy, x + dx]
                         local_vals[k] = v
                         ring_sum += v
                         if v > ring_max:
                             ring_max = v
                         k += 1
 
-                # median and MAD from ring only
-                M = np.median(local_vals)
-                abs_devs = np.empty(8, dtype=np.float32)
-                for i in range(8):
-                    abs_devs[i] = abs(local_vals[i] - M)
-                MAD = np.median(abs_devs)
-                sigma = 1.4826 * MAD + 1e-8  # epsilon guard
+                # median and std from 24-pixel neighborhood
+                # std is more appropriate than MAD here — we want
+                # sensitivity to genuine outliers, not robustness
+                sorted_vals = np.sort(local_vals[:24])
+                M = (sorted_vals[11] + sorted_vals[12]) * 0.5  # median of 24
 
-                # center
+                mean_val = 0.0
+                for i in range(24):
+                    mean_val += local_vals[i]
+                mean_val /= 24.0
+                sum_sq = 0.0
+                for i in range(24):
+                    d = local_vals[i] - mean_val
+                    sum_sq += d * d
+                sigma = (sum_sq / 24.0) ** 0.5 + 1e-8
+
+                # center pixel
                 T = src[y, x, c] if src.ndim == 3 else src[y, x]
 
                 # saturation guard
                 if T >= sat_threshold:
-                    if src.ndim == 3: dst[y, x, c] = T
-                    else:             dst[y, x]    = T
+                    if src.ndim == 3:
+                        dst[y, x, c] = T
+                    else:
+                        dst[y, x] = T
                     continue
 
-                high = M + hot_sigma  * sigma
+                high = M + hot_sigma * sigma
                 low  = M - cold_sigma * sigma
 
                 replace = False
 
                 if T > high:
-                    # Star guard for HOT: neighbors should not form a footprint
-                    ring_mean = ring_sum / 8.0
-                    if (ring_mean / (T + 1e-8) < star_mean_ratio) and (ring_max / (T + 1e-8) < star_max_ratio):
+                    # star guard: if neighbors form a PSF footprint, skip
+                    ring_mean = ring_sum / 24.0
+                    if (ring_mean / (T + 1e-8) < star_mean_ratio) and \
+                       (ring_max / (T + 1e-8) < star_max_ratio):
                         replace = True
                 elif T < low:
-                    # Cold pixel: only if it's isolated (few neighbors also low)
+                    # cold guard: only fix isolated cold pixels
                     count_below = 0
-                    for i in range(8):
+                    for i in range(24):
                         if local_vals[i] < low:
                             count_below += 1
                     if count_below <= cold_cluster_max:
                         replace = True
 
                 if replace:
-                    if src.ndim == 3: dst[y, x, c] = M
-                    else:             dst[y, x]    = M
+                    if src.ndim == 3:
+                        dst[y, x, c] = M
+                    else:
+                        dst[y, x] = M
                 else:
-                    if src.ndim == 3: dst[y, x, c] = T
-                    else:             dst[y, x]    = T
+                    if src.ndim == 3:
+                        dst[y, x, c] = T
+                    else:
+                        dst[y, x] = T
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def _detect_hot_cold_pixels(src, H, W, hot_sigma, cold_sigma, avg_dev):
+    """
+    Pass 1: identify hot and cold pixels
+    """
+    hot_map  = np.zeros((H, W), dtype=np.bool_)
+    cold_map = np.zeros((H, W), dtype=np.bool_)
+
+    for y in prange(1, H - 1):
+        for x in range(1, W - 1):
+            T = src[y, x]
+
+            # 5 nearest neighbors: N, S, E, W + center itself
+            five = np.empty(5, dtype=np.float32)
+            five[0] = src[y - 1, x]  # N
+            five[1] = src[y + 1, x]  # S
+            five[2] = src[y, x - 1]  # W
+            five[3] = src[y, x + 1]  # E
+            five[4] = T               # center
+
+            # sort and take median of 5
+            # simple insertion sort — faster than np.sort for 5 elements in numba
+            for ii in range(1, 5):
+                key = five[ii]
+                jj = ii - 1
+                while jj >= 0 and five[jj] > key:
+                    five[jj + 1] = five[jj]
+                    jj -= 1
+                five[jj + 1] = key
+            m5 = five[2]  # median of 5
+
+            hot_thresh  = m5 + max(avg_dev, hot_sigma * avg_dev)
+            cold_thresh = m5 - cold_sigma * avg_dev
+
+            if T > hot_thresh:
+                # star guard: if 3x3 neighbor average is elevated,
+                # this is likely a star PSF core — don't flag it
+                s = 0.0
+                for dy in range(-1, 2):
+                    for dx in range(-1, 2):
+                        if dy == 0 and dx == 0:
+                            continue
+                        s += src[y + dy, x + dx]
+                avg3x3 = s / 8.0
+                if avg3x3 < m5 + avg_dev * 0.5:
+                    hot_map[y, x] = True
+
+            elif T < cold_thresh:
+                cold_map[y, x] = True
+
+    return hot_map, cold_map
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def _correct_hot_cold_pixels(src, dst, hot_map, cold_map, H, W):
+    """
+    Pass 2: correct flagged pixels
+    """
+    for y in prange(1, H - 1):
+        for x in range(1, W - 1):
+            if not hot_map[y, x] and not cold_map[y, x]:
+                dst[y, x] = src[y, x]
+                continue
+
+            # Collect clean (non-flagged) 8-neighbors
+            vals = np.empty(8, dtype=np.float32)
+            k = 0
+            for dy in range(-1, 2):
+                for dx in range(-1, 2):
+                    if dy == 0 and dx == 0:
+                        continue
+                    ny = y + dy
+                    nx = x + dx
+                    if not hot_map[ny, nx] and not cold_map[ny, nx]:
+                        vals[k] = src[ny, nx]
+                        k += 1
+
+            if k == 0:
+                # Rare: all 8 neighbors are also flagged
+                # Fall back to using all neighbors regardless of flag status
+                k = 0
+                for dy in range(-1, 2):
+                    for dx in range(-1, 2):
+                        if dy == 0 and dx == 0:
+                            continue
+                        vals[k] = src[y + dy, x + dx]
+                        k += 1
+
+            # Insertion sort and median of k clean neighbors
+            for ii in range(1, k):
+                key = vals[ii]
+                jj = ii - 1
+                while jj >= 0 and vals[jj] > key:
+                    vals[jj + 1] = vals[jj]
+                    jj -= 1
+                vals[jj + 1] = key
+
+            mid = k // 2
+            dst[y, x] = vals[mid] if k % 2 == 1 else (vals[mid - 1] + vals[mid]) * 0.5
 
 
 def bulk_cosmetic_correction_numba(image,
-                                   hot_sigma=5.0,
-                                   cold_sigma=5.0,
+                                   hot_sigma=3.0,
+                                   cold_sigma=3.0,
                                    star_mean_ratio=0.22,
                                    star_max_ratio=0.55,
                                    sat_quantile=0.9995):
     """
-    Star-safe cosmetic correction for 2D (mono) or 3D (RGB) arrays.
-    Reads from the original, writes to a new array (two-pass).
-    - star_mean_ratio: how large neighbor mean must be vs center to *skip* (PSF)
-    - star_max_ratio : how large neighbor max must be vs center to *skip* (PSF)
-    - sat_quantile   : top quantile to protect from edits (bright cores)
+    Orchestrator: try GPU first, fall back to Numba CPU.
     """
+    from setiastro.saspro.torch_rejection import (cosmetic_correction_gpu, torch_available as _torch_ok) 
+    
+    return cosmetic_correction_gpu(image, hot_sigma=hot_sigma, cold_sigma=cold_sigma)
+
+    # ── Numba CPU fallback ────────────────────────────────────────────
     img = image.astype(np.float32, copy=False)
     was_gray = (img.ndim == 2)
     if was_gray:
@@ -2913,26 +2966,25 @@ def bulk_cosmetic_correction_numba(image,
     H, W, C = src.shape
     dst = src.copy()
 
-    # per-channel saturation guards
-    sat_thresholds = np.empty(C, dtype=np.float32)
     for ci in range(C):
         plane = src[:, :, ci]
-        # Compute in Python (Numba doesn't support np.quantile well)
-        sat_thresholds[ci] = float(np.quantile(plane, sat_quantile))
+        med = float(np.median(plane))
+        avg_dev = float(np.mean(np.abs(plane - med)))
 
-    # run per-channel to use per-channel saturation
-    for ci in range(C):
-        _cosmetic_correction_core(src[:, :, ci], dst[:, :, ci],
-                                  H, W, 1,
-                                  float(hot_sigma), float(cold_sigma),
-                                  float(star_mean_ratio), float(star_max_ratio),
-                                  float(sat_thresholds[ci]),
-                                  1)  # cold_cluster_max: allow 1 neighbor to be low
+        hot_map, cold_map = _detect_hot_cold_pixels(
+            plane, H, W,
+            float(hot_sigma), float(cold_sigma),
+            avg_dev
+        )
+        _correct_hot_cold_pixels(
+            plane, dst[:, :, ci],
+            hot_map, cold_map,
+            H, W
+        )
 
     if was_gray:
         return dst[:, :, 0]
     return dst
-
 
 def bulk_cosmetic_correction_bayer(image,
                                    hot_sigma=5.5,

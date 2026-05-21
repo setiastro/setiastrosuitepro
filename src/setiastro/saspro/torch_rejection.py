@@ -311,6 +311,405 @@ def _soft_outlier_weight(torch, z, threshold: float, mode: str = "quartic"):
     return torch.where(u < 1.0, w, torch.zeros_like(u))
 
 # ---------------------------------------------------------------------------
+# GPU Calibration Pipeline — dark sub, flat div, cosmetic correction
+# All operate on tensors already on device to avoid round-trips
+# ---------------------------------------------------------------------------
+
+def _upload_calibration_frame(torch, dev, arr: np.ndarray):
+    """Upload a numpy calibration frame (dark or flat) to GPU as float32 tensor.
+    Handles 2D (mono), 3D CHW, and 3D HWC layouts — always returns (C, H, W)."""
+    a = np.asarray(arr, dtype=np.float32)
+    if a.ndim == 2:
+        a = a[np.newaxis, :, :]          # (1, H, W)
+    elif a.ndim == 3 and a.shape[-1] in (1, 3):
+        a = a.transpose(2, 0, 1)          # HWC → CHW
+    return torch.from_numpy(a).to(dev, dtype=torch.float32, non_blocking=True)
+
+
+def calibration_pipeline_gpu(
+    light_np: np.ndarray,
+    dark_t,                          # (C,H,W) tensor on GPU or None
+    flat_t,                          # (C,H,W) tensor on GPU or None
+    pedestal: float = 0.0,
+    hot_sigma: float = 3.0,
+    cold_sigma: float = 3.0,
+    apply_cosmetic: bool = True,
+    bayer_pattern: str | None = None,
+) -> np.ndarray:
+    """
+    Full per-frame calibration pipeline on GPU:
+      1. dark subtraction (with pedestal offset)
+      2. flat division
+      3. cosmetic correction (two-pass)
+
+    light_np: (H,W) mono or (H,W,C) HWC or (C,H,W) CHW float32
+    Returns: same layout as input, float32
+    """
+    torch = _get_torch(prefer_cuda=True)
+    dev   = _device() or (
+        torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    )
+
+    light_np = np.asarray(light_np, dtype=np.float32)
+
+    # remember input layout so we can restore it on output
+    was_2d  = (light_np.ndim == 2)
+    was_hwc = (light_np.ndim == 3 and light_np.shape[-1] in (1, 3))
+
+    # normalise to CHW for GPU ops
+    if was_2d:
+        t = torch.from_numpy(light_np[np.newaxis]).to(dev, non_blocking=True)  # (1,H,W)
+    elif was_hwc:
+        t = torch.from_numpy(
+            light_np.transpose(2, 0, 1)
+        ).to(dev, non_blocking=True)                                              # (C,H,W)
+    else:
+        t = torch.from_numpy(light_np).to(dev, non_blocking=True)               # (C,H,W)
+
+    C, H, W = t.shape
+
+    with _safe_inference_ctx(torch), _no_amp_ctx(torch, dev):
+
+        # ── 1. dark subtraction ──────────────────────────────────────
+        if dark_t is not None:
+            d = dark_t
+            if d.shape[0] == 1 and C > 1:
+                d = d.expand(C, H, W)
+            t = t - d
+            if pedestal != 0.0:
+                t = t + pedestal
+            t = t.clamp(min=0.0)
+
+        # ── 2. flat division ─────────────────────────────────────────
+        if flat_t is not None:
+            f = flat_t
+            if f.shape[0] == 1 and C > 1:
+                f = f.expand(C, H, W)
+            # flat already normalised (median=1) by caller
+            t = t / f.clamp(min=1e-6)
+
+        # ── 3. cosmetic correction ───────────────────────────────────
+        if apply_cosmetic:
+            t = _cosmetic_correction_tensor(
+                torch, dev, t,
+                hot_sigma=hot_sigma,
+                cold_sigma=cold_sigma,
+                bayer_pattern=bayer_pattern,
+            )
+
+    # ── back to CPU, restore original layout ─────────────────────────
+    out = t.cpu().numpy()               # (C, H, W)
+    if was_2d:
+        return out[0]                   # (H, W)
+    elif was_hwc:
+        return out.transpose(1, 2, 0)  # (H, W, C)
+    return out                          # (C, H, W)
+
+
+# Module-level buffer cache — keyed by (device_str, H, W)
+_CC_BUFFERS: dict = {}
+
+
+def _get_cc_buffers(torch, dev, H, W):
+    """Get or create persistent reusable buffers for cosmetic correction."""
+    key = (str(dev), H, W)
+    if key not in _CC_BUFFERS:
+        _CC_BUFFERS[key] = {
+            "five":         torch.empty((5, H, W), device=dev, dtype=torch.float32),
+            "stacked":      torch.empty((8, H, W), device=dev, dtype=torch.float32),
+            "sorted_s":     torch.empty((8, H, W), device=dev, dtype=torch.float32),
+            "sort_idx":     torch.empty((8, H, W), device=dev, dtype=torch.int64),
+            "m5":           torch.empty((H, W),    device=dev, dtype=torch.float32),
+            "hot_thresh":   torch.empty((H, W),    device=dev, dtype=torch.float32),
+            "cold_thresh":  torch.empty((H, W),    device=dev, dtype=torch.float32),
+            "avg3x3":       torch.empty((H, W),    device=dev, dtype=torch.float32),
+            "replacement":  torch.empty((H, W),    device=dev, dtype=torch.float32),
+            "ones_k":       torch.ones(1, 1, 3, 3, device=dev, dtype=torch.float32),
+        }
+    return _CC_BUFFERS[key]
+
+
+def _clear_cc_buffers():
+    """Free all cached cosmetic correction buffers. Call after calibration run."""
+    _CC_BUFFERS.clear()
+
+
+def _cosmetic_correction_tensor(torch, dev, t, hot_sigma, cold_sigma, bayer_pattern=None):
+    """
+    Two-pass cosmetic correction on a (C,H,W) tensor already on device.
+    Uses pre-allocated persistent buffers to avoid per-frame cudaMalloc overhead.
+    Stride = 2 for Bayer (same-color neighbors), 1 otherwise.
+    """
+    import torch.nn.functional as F
+
+    s = 2 if bayer_pattern else 1
+    C, H, W = t.shape
+    buf = _get_cc_buffers(torch, dev, H, W)
+    result = torch.empty_like(t)
+
+    # strided sample for fast avgDev — full median on 46M pixels is slow
+    # 1% sample is accurate enough for thresholding
+    _stride = max(1, min(H, W) // 100)
+
+    for ci in range(C):
+        plane = t[ci]  # (H, W)
+
+        # ── fast avgDev via strided sample ────────────────────────────
+        sample  = plane[::_stride, ::_stride]
+        med_val = sample.median()
+        avg_dev = (sample - med_val).abs().mean()
+        avg_dev_f = float(avg_dev)
+        del sample
+
+        # ── pad plane once — reused for both m5 and neighbor lookups ──
+        pad_amt = s
+        p = F.pad(
+            plane.unsqueeze(0).unsqueeze(0),
+            (pad_amt, pad_amt, pad_amt, pad_amt),
+            mode='reflect'
+        ).squeeze(0).squeeze(0)
+        # p: (H + 2s, W + 2s)
+
+        # ── m5: median of {N, S, E, W, center} ───────────────────────
+        buf["five"][0].copy_(p[0:H,                 pad_amt:W+pad_amt])        # N
+        buf["five"][1].copy_(p[2*pad_amt:H+2*pad_amt, pad_amt:W+pad_amt])      # S
+        buf["five"][2].copy_(p[pad_amt:H+pad_amt,   0:W])                      # W
+        buf["five"][3].copy_(p[pad_amt:H+pad_amt,   2*pad_amt:W+2*pad_amt])    # E
+        buf["five"][4].copy_(plane)                                             # center
+        buf["m5"].copy_(buf["five"].median(dim=0).values)
+        m5 = buf["m5"]
+
+        # ── detection thresholds ──────────────────────────────────────
+        scale_f = max(avg_dev_f * float(hot_sigma), avg_dev_f)
+        torch.add(m5, scale_f, out=buf["hot_thresh"])
+        torch.sub(m5, avg_dev_f * float(cold_sigma), out=buf["cold_thresh"])
+
+        hot_candidates = plane > buf["hot_thresh"]
+        cold_map       = plane < buf["cold_thresh"]
+
+        # ── star guard: 3x3 neighbor average (stride-1 always) ───────
+        plane_4d  = plane.unsqueeze(0).unsqueeze(0)
+        plane_pad1 = F.pad(plane_4d, (1, 1, 1, 1), mode='reflect')
+        box3x3 = F.conv2d(plane_pad1, buf["ones_k"]).squeeze(0).squeeze(0)
+        torch.sub(box3x3, plane, out=buf["avg3x3"])
+        buf["avg3x3"].div_(8.0)
+        del box3x3, plane_pad1, plane_4d
+
+        star_guard = buf["avg3x3"] < (m5 + avg_dev_f * 0.5)
+        hot_map    = hot_candidates & star_guard
+        flagged    = hot_map | cold_map
+
+        del hot_candidates, cold_map, star_guard, hot_map
+
+        # ── pad flagged mask using same pad_amt ───────────────────────
+        fp = F.pad(
+            flagged.float().unsqueeze(0).unsqueeze(0),
+            (pad_amt, pad_amt, pad_amt, pad_amt),
+            mode='reflect'
+        ).squeeze(0).squeeze(0)
+
+        # ── build 8-neighbor stack directly into pre-allocated buffer ─
+        # flagged neighbors → inf so they sort to the end
+        offsets = [
+            (-s, -s), (-s,  0), (-s, +s),
+            ( 0, -s),           ( 0, +s),
+            (+s, -s), (+s,  0), (+s, +s),
+        ]
+
+        for i, (dy, dx) in enumerate(offsets):
+            ny0, ny1 = dy + pad_amt, dy + pad_amt + H
+            nx0, nx1 = dx + pad_amt, dx + pad_amt + W
+            nbr_vals    = p[ny0:ny1, nx0:nx1]
+            nbr_flagged = fp[ny0:ny1, nx0:nx1] > 0.5
+            torch.where(nbr_flagged, nbr_vals.new_full((), float('inf')),
+                        nbr_vals, out=buf["stacked"][i])
+
+        del fp, p
+
+        # ── sort to find median of clean neighbors ────────────────────
+        torch.sort(buf["stacked"], dim=0, out=(buf["sorted_s"], buf["sort_idx"]))
+
+        # count clean (non-inf) neighbors per pixel
+        valid_count = (buf["stacked"] < float('inf')).sum(dim=0).clamp(min=1)
+
+        mid_lo = ((valid_count - 1) // 2).long()
+        mid_hi = (valid_count       // 2).long()
+
+        rep_lo = buf["sorted_s"].gather(0, mid_lo.unsqueeze(0)).squeeze(0)
+        rep_hi = buf["sorted_s"].gather(0, mid_hi.unsqueeze(0)).squeeze(0)
+
+        torch.add(rep_lo, rep_hi, out=buf["replacement"])
+        buf["replacement"].mul_(0.5)
+
+        # fallback to m5 where all 8 neighbors were also flagged
+        all_flagged = valid_count == 0
+        torch.where(all_flagged, m5, buf["replacement"], out=buf["replacement"])
+
+        del valid_count, mid_lo, mid_hi, rep_lo, rep_hi, all_flagged
+
+        # ── apply correction only to flagged pixels ───────────────────
+        torch.where(flagged, buf["replacement"], plane, out=result[ci])
+
+        del flagged
+
+    return result
+
+
+def prepare_calibration_frame(
+    arr: np.ndarray,
+    frame_type: str,          # "dark" or "flat"
+    normalize_flat: bool = True,
+) -> np.ndarray:
+    """
+    Prepare a master dark or flat for upload:
+    - ensures float32
+    - for flat: normalises each channel to median=1, guards zeros
+    Returns (C, H, W) float32 numpy array ready for _upload_calibration_frame.
+    """
+    a = np.asarray(arr, dtype=np.float32)
+
+    # normalise layout to CHW
+    if a.ndim == 2:
+        a = a[np.newaxis]
+    elif a.ndim == 3 and a.shape[-1] in (1, 3):
+        a = a.transpose(2, 0, 1)
+
+    if frame_type == "flat" and normalize_flat:
+        for ci in range(a.shape[0]):
+            band  = a[ci]
+            v     = band[np.isfinite(band) & (band > 0)]
+            denom = float(np.median(v)) if v.size else 1.0
+            denom = denom if (np.isfinite(denom) and denom > 0) else 1.0
+            a[ci] = band / denom
+        a = np.nan_to_num(a, nan=1.0, posinf=1.0, neginf=1.0)
+        a[a == 0] = 1.0
+
+    return a
+
+# ---------------------------------------------------------------------------
+# GPU Cosmetic Correction
+# ---------------------------------------------------------------------------
+def cosmetic_correction_gpu(
+    image: np.ndarray,
+    hot_sigma: float = 3.0,
+    cold_sigma: float = 3.0,
+    bayer_pattern: str | None = None,
+) -> np.ndarray:
+    """
+    Two-pass cosmetic correction on GPU.
+    bayer_pattern: if set (e.g. "RGGB"), uses stride-2 neighbors so only
+                   same-color CFA pixels are compared. Otherwise uses stride-1
+                   for debayered/mono images.
+    """
+    torch = _get_torch(prefer_cuda=True)
+    dev = _device() or (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
+
+    img = np.asarray(image, dtype=np.float32)
+    was_gray = (img.ndim == 2)
+    if was_gray:
+        img = img[:, :, None]
+
+    H, W, C = img.shape
+    t = torch.from_numpy(img.transpose(2, 0, 1)).to(dev, dtype=torch.float32)
+    result = torch.empty_like(t)
+
+    # stride-2 for Bayer (same-color neighbors), stride-1 for mono/debayered
+    s = 2 if bayer_pattern else 1
+
+    with _safe_inference_ctx(torch), _no_amp_ctx(torch, dev):
+        for ci in range(C):
+            plane = t[ci]  # (H, W)
+
+            med_val = plane.median()
+            avg_dev = (plane - med_val).abs().mean()
+
+            # pad by stride amount so border pixels are handled cleanly
+            p = torch.nn.functional.pad(
+                plane.unsqueeze(0).unsqueeze(0),
+                (s, s, s, s), mode='reflect'
+            ).squeeze(0).squeeze(0)
+            # p: (H+2s, W+2s)
+
+            north  = p[0:H,       s:W+s  ]
+            south  = p[2*s:H+2*s, s:W+s  ]
+            west   = p[s:H+s,     0:W    ]
+            east   = p[s:H+s,     2*s:W+2*s]
+            center = plane
+
+            five = torch.stack([north, south, west, east, center], dim=0)
+            m5 = five.median(dim=0).values
+
+            scale       = torch.clamp(avg_dev * hot_sigma, min=float(avg_dev))
+            hot_thresh  = m5 + scale
+            cold_thresh = m5 - avg_dev * cold_sigma
+
+            hot_candidates = plane > hot_thresh
+            cold_map       = plane < cold_thresh
+
+            # star guard: 3x3 (or 5x5 for Bayer to cover same stride) neighbor average
+            guard_pad = s * 2 if bayer_pattern else 1
+            ones_k = torch.ones(1, 1, 3, 3, device=dev, dtype=torch.float32)
+            plane_4d  = plane.unsqueeze(0).unsqueeze(0)
+            plane_pad = torch.nn.functional.pad(plane_4d, (1, 1, 1, 1), mode='reflect')
+            box3x3    = torch.nn.functional.conv2d(plane_pad, ones_k).squeeze(0).squeeze(0)
+            avg3x3_neighbors = (box3x3 - plane) / 8.0
+            star_guard = avg3x3_neighbors < (m5 + avg_dev * 0.5)
+            hot_map    = hot_candidates & star_guard
+
+            flagged = hot_map | cold_map
+
+            # 8 neighbors at stride s
+            offsets = [
+                (-s, -s), (-s,  0), (-s, +s),
+                ( 0, -s),           ( 0, +s),
+                (+s, -s), (+s,  0), (+s, +s),
+            ]
+
+            flagged_pad = torch.nn.functional.pad(
+                flagged.float().unsqueeze(0).unsqueeze(0),
+                (s, s, s, s), mode='reflect'
+            ).squeeze().bool()
+
+            plane_pad2 = torch.nn.functional.pad(
+                plane.unsqueeze(0).unsqueeze(0),
+                (s, s, s, s), mode='reflect'
+            ).squeeze()
+
+            neighbor_stack = []
+            for dy, dx in offsets:
+                ny0, ny1 = dy + s, dy + s + H
+                nx0, nx1 = dx + s, dx + s + W
+                nbr_vals    = plane_pad2[ny0:ny1, nx0:nx1]
+                nbr_flagged = flagged_pad[ny0:ny1, nx0:nx1]
+                nbr_clean   = torch.where(
+                    nbr_flagged,
+                    torch.full_like(nbr_vals, float('nan')),
+                    nbr_vals
+                )
+                neighbor_stack.append(nbr_clean)
+
+            stacked     = torch.stack(neighbor_stack, dim=0)
+            stacked_inf = torch.where(torch.isnan(stacked),
+                                      torch.full_like(stacked, float('inf')), stacked)
+            sorted_s, _ = stacked_inf.sort(dim=0)
+
+            valid_count = (~torch.isnan(stacked)).sum(dim=0).clamp(min=1)
+            mid_lo = ((valid_count - 1) // 2).long()
+            mid_hi = (valid_count       // 2).long()
+
+            rep_lo      = sorted_s.gather(0, mid_lo.unsqueeze(0)).squeeze(0)
+            rep_hi      = sorted_s.gather(0, mid_hi.unsqueeze(0)).squeeze(0)
+            replacement = (rep_lo + rep_hi) * 0.5
+            replacement = torch.where(torch.isinf(replacement), m5, replacement)
+
+            result[ci] = torch.where(flagged, replacement, plane)
+
+    out = result.cpu().numpy().transpose(1, 2, 0)
+    if was_gray:
+        return out[:, :, 0]
+    return out
+
+# ---------------------------------------------------------------------------
 # Public GPU reducer – lazy-loads Torch, never decorates at import time
 # ---------------------------------------------------------------------------
 def torch_reduce_tile(
@@ -476,15 +875,9 @@ def torch_reduce_tile(
                 hi = med + high * std
                 keep = valid & (ts >= lo.unsqueeze(0)) & (ts <= hi.unsqueeze(0))
 
-            # rejection map from iterative process
             rej = ~keep
 
-            # True Winsorized mean: clamp all originally valid pixels to final bounds
-            ts_winsorized = torch.where(
-                valid,
-                ts.clamp(min=lo.unsqueeze(0), max=hi.unsqueeze(0)),
-                torch.zeros_like(ts)
-            )
+            ts_winsorized = torch.where(valid & keep, ts, torch.where(valid, med.unsqueeze(0), torch.zeros_like(ts)))
             cnt = valid.sum(dim=0).to(ts.dtype)
             num = torch.where(valid, ts_winsorized, torch.zeros_like(ts)).sum(dim=0)
             x_valid = ts.masked_fill(~valid, float("nan"))
@@ -563,20 +956,10 @@ def torch_reduce_tile(
                 hi = med + high * std
                 keep = valid & (ts >= lo.unsqueeze(0)) & (ts <= hi.unsqueeze(0))
 
-            # True Winsorized mean: replace rejected pixels with the boundary value,
-            # don't remove them. High-rejected → replaced with hi, low-rejected → lo.
-            # This way all valid frames still contribute directionally.
-            lo_final = med - low * std
-            hi_final = med + high * std
+            # True Winsorized mean: replace rejected pixels with the converged median
+            # (best estimate of true value), not the boundary — boundary still biases.
+            ts_winsorized = torch.where(valid & keep, ts, torch.where(valid, med.unsqueeze(0), torch.zeros_like(ts)))
 
-            # For each valid pixel: clamp to [lo, hi] boundary, keep invalid as-is
-            ts_winsorized = torch.where(
-                valid,
-                ts.clamp(min=lo_final.unsqueeze(0), max=hi_final.unsqueeze(0)),
-                torch.zeros_like(ts)
-            )
-
-            # Weighted mean of winsorized values (all valid frames contribute)
             w_valid = torch.where(valid, w, torch.zeros_like(w))
             num = (ts_winsorized * w_valid).sum(dim=0)
             den = w_valid.sum(dim=0)
@@ -586,7 +969,6 @@ def torch_reduce_tile(
             fallback = torch.nan_to_num(fallback, nan=0.0)
             out = torch.where(den > 1e-20, num / den.clamp_min(1e-20), fallback)
 
-            # rejection map still marks what was outside bounds
             rej = ~keep
             return out.to(dtype=torch.float32).contiguous().cpu().numpy(), rej.cpu().numpy()
 

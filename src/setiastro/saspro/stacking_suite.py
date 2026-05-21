@@ -67,7 +67,7 @@ from pathlib import Path
 from setiastro.saspro.legacy.xisf import XISF  # ← add this
 from PyQt6 import sip
 # your helpers/utilities
-from setiastro.saspro.imageops.stretch import stretch_mono_image, stretch_color_image, siril_style_autostretch
+from setiastro.saspro.imageops.stretch import stretch_mono_image, stretch_color_image, histogram_style_autostretch
 
 # Fix for missing star count preview function
 from setiastro.saspro.legacy.numba_utils import compute_star_count_fast_preview
@@ -2231,7 +2231,7 @@ class ReferenceFrameReviewDialog(QDialog):
         """Robust, very gentle stretch for display when image would quantize to black."""
         try:
             img = self._normalize_preview_01(img)
-            out = siril_style_autostretch(img, sigma=3.0).astype(np.float32, copy=False)
+            out = histogram_style_autostretch(img, sigma=3.0).astype(np.float32, copy=False)
             mx = float(out.max())
             if mx > 0:
                 out /= mx  # keep in [0,1]
@@ -15796,42 +15796,20 @@ class StackingSuiteDialog(QDialog):
             mx = float(a.max()) if a.size else 1.0
             return a / max(mx, 1e-12)
 
+    def _calibrate_lights_cpu(self, frame_infos, calibrated_dir, total_files,
+                               master_bias_np, interactive_flat, do_satellite,
+                               hot_sigma, cold_sigma):
+        """
+        CPU fallback calibration path — used when hardware acceleration is disabled.
+        Sequential single-threaded processing, no GPU involvement.
+        """
+        import gc
 
-    def calibrate_lights(self):
-        """Performs calibration on selected light frames."""
-        self.assign_best_master_files(fill_only=True)
-        self._start_exec_monitor()
- 
-        if not self.stacking_directory:
-            QMessageBox.warning(self, "Error", "Please set the stacking directory first.")
-            return
- 
-        calibrated_dir = os.path.join(self.stacking_directory, "Calibrated")
-        os.makedirs(calibrated_dir, exist_ok=True)
- 
-        leaf_paths = self._collect_leaf_paths_from_tree()
-        total_files = len(leaf_paths)
+        star_mean_ratio = self.settings.value("stacking/cosmetic/star_mean_ratio", 0.22, type=float)
+        star_max_ratio  = self.settings.value("stacking/cosmetic/star_max_ratio",  0.55, type=float)
+        sat_quantile    = self.settings.value("stacking/cosmetic/sat_quantile",  0.9995, type=float)
         processed_files = 0
- 
-        for key in list(self.light_files.keys()):
-            self.light_files[key] = [p for p in self.light_files[key] if p in leaf_paths]
-            if not self.light_files[key]:
-                del self.light_files[key]
- 
-        interactive_flat = self.settings.value(
-            "stacking/interactive_flat_strength", False, type=bool
-        )
- 
-        # ── per-group tracking for interactive mode ───────────────────
-        # group_key -> {"files": [...], "medians": {path: float},
-        #               "flat_path": str, "dark_path": str|None,
-        #               "pedestal_value": float, "is_mono": bool}
-        _group_registry: dict[tuple, dict] = {}
-        _groups_prompted: set              = set()   # keys we've shown dialog for
-        # group_key -> adjusted flat ndarray (set once dialog accepted)
-        _group_adjusted_flat: dict[tuple, np.ndarray | None] = {}
- 
-        # ---------- local helpers ----------
+
         def _mask2d_from_image_zero_pixels(arr):
             a = np.asarray(arr)
             if a.ndim == 2:
@@ -15840,49 +15818,566 @@ class StackingSuiteDialog(QDialog):
                 ax = 0 if a.shape[0] == 3 else -1
                 return np.any(a == 0.0, axis=ax)
             raise ValueError(f"Unsupported shape: {a.shape}")
- 
+
         def _merge_masks(ma, mb):
             if ma is None: return np.asarray(mb, dtype=bool)
             if mb is None: return np.asarray(ma, dtype=bool)
             return np.asarray(ma, dtype=bool) | np.asarray(mb, dtype=bool)
- 
+
         def _save_rejection_mask(mask2d, cal_filename):
             try:
                 base_no_ext, _ = os.path.splitext(cal_filename)
-                mask_path       = base_no_ext + "_satmask.npy"
+                mask_path = base_no_ext + "_satmask.npy"
                 np.save(mask_path, np.asarray(mask2d, dtype=np.uint8), allow_pickle=False)
                 return mask_path
             except Exception as e:
                 self.update_status(self.tr(f"⚠️ Could not save rejection mask: {e}"))
                 return None
- 
-        # ---------- MASTER BIAS (once) ----------
-        master_bias = None
-        bias_path   = self.master_files.get("Bias")
+
+        # ── load raw flats for interactive dialog ─────────────────────────
+        flat_raws = {}
+        if interactive_flat:
+            unique_flats = {fi["master_flat_path"] for fi in frame_infos
+                            if fi["master_flat_path"]}
+            for flat_path in unique_flats:
+                try:
+                    flat_np, _, _, flat_is_mono = load_image(flat_path)
+                    flat_np = _maybe_normalize_16bit_float(
+                        flat_np, name=os.path.basename(flat_path)
+                    )
+                    if flat_np is not None:
+                        if (not flat_is_mono) and flat_np.ndim == 3 \
+                                and flat_np.shape[-1] == 3:
+                            flat_np = flat_np.transpose(2, 0, 1)
+                        elif flat_np.ndim == 2:
+                            flat_np = flat_np[np.newaxis]
+                        flat_raws[flat_path] = flat_np.astype(np.float32)
+                except Exception as e:
+                    self.update_status(
+                        self.tr(f"  ⚠️ Could not load flat {os.path.basename(flat_path)}: {e}")
+                    )
+                QApplication.processEvents()
+
+        # ── interactive flat dialogs upfront ──────────────────────────────
+        group_adjusted_flat_np = {}  # group_key -> adjusted flat numpy or None
+
+        if interactive_flat:
+            self.update_status(self.tr("🎚️ Interactive flat: configuring all groups…"))
+            QApplication.processEvents()
+
+            seen_groups = {}
+            for fi in frame_infos:
+                gk = fi["group_key"]
+                if gk not in seen_groups and fi["master_flat_path"]:
+                    seen_groups[gk] = fi
+
+            for gk, fi in seen_groups.items():
+                flat_path = fi["master_flat_path"]
+                if flat_path not in flat_raws:
+                    group_adjusted_flat_np[gk] = None
+                    continue
+
+                raw_flat_chw = flat_raws[flat_path]
+
+                rep_light = None
+                try:
+                    rep_light_raw, _, _, rep_is_mono = load_image(fi["light_file"])
+                    if rep_light_raw is not None:
+                        rep_light = rep_light_raw.astype(np.float32, copy=True)
+
+                        if master_bias_np is not None:
+                            b = _bias_to_match_light(rep_light, master_bias_np)
+                            rep_light = rep_light - b.astype(np.float32, copy=False)
+
+                        dark_path = fi["master_dark_path"]
+                        if dark_path:
+                            dark_np, _, _, dark_is_mono = load_image(dark_path)
+                            dark_np = _maybe_normalize_16bit_float(
+                                dark_np, name=os.path.basename(dark_path)
+                            )
+                            if dark_np is not None:
+                                if (not dark_is_mono) and dark_np.ndim == 3 \
+                                        and dark_np.shape[-1] == 3:
+                                    dark_np = dark_np.transpose(2, 0, 1)
+                                elif dark_np.ndim == 2:
+                                    dark_np = dark_np[np.newaxis]
+
+                                if rep_light.ndim == 2:
+                                    dark_2d = dark_np[0] if dark_np.shape[0] == 1 \
+                                              else dark_np.mean(axis=0)
+                                    rep_light = rep_light - dark_2d
+                                elif rep_light.ndim == 3 and rep_light.shape[-1] == 3:
+                                    dark_hwc = dark_np[0:1].transpose(1, 2, 0) \
+                                               if dark_np.shape[0] == 1 \
+                                               else dark_np.transpose(1, 2, 0)
+                                    if dark_np.shape[0] == 1:
+                                        dark_hwc = np.repeat(dark_hwc, 3, axis=2)
+                                    rep_light = rep_light - dark_hwc
+                                else:
+                                    rep_light = rep_light - dark_np[0]
+
+                                if fi["pedestal_value"] != 0.0:
+                                    rep_light = rep_light + fi["pedestal_value"]
+                                rep_light = np.clip(rep_light, 0.0, None)
+
+                except Exception as e:
+                    self.update_status(
+                        self.tr(f"  ⚠️ Could not prepare rep light for flat dialog: {e}")
+                    )
+                    rep_light = None
+
+                if rep_light is None:
+                    group_adjusted_flat_np[gk] = None
+                    continue
+
+                if rep_light.ndim == 2:
+                    raw_flat_for_dlg = raw_flat_chw[0]
+                    is_mono_flat = True
+                else:
+                    if raw_flat_chw.shape[0] == 1:
+                        raw_flat_for_dlg = np.repeat(
+                            raw_flat_chw[0:1].transpose(1, 2, 0), 3, axis=2
+                        )
+                    else:
+                        raw_flat_for_dlg = raw_flat_chw.transpose(1, 2, 0)
+                    is_mono_flat = False
+
+                n_files = sum(1 for f2 in frame_infos if f2["group_key"] == gk)
+
+                dlg = FlatStrengthPreviewDialog(
+                    parent=self,
+                    group_label=(
+                        f"{fi['filter_name']} — {fi['exposure_text']} "
+                        f"({n_files} frame{'s' if n_files != 1 else ''})"
+                    ),
+                    rep_light_arr=rep_light,
+                    raw_flat=raw_flat_for_dlg,
+                    is_mono=is_mono_flat,
+                    autostretch_fn=self._autostretch_for_preview,
+                )
+                result = dlg.exec()
+                if result == QDialog.DialogCode.Accepted:
+                    group_adjusted_flat_np[gk] = dlg.adjusted_flat()
+                else:
+                    group_adjusted_flat_np[gk] = None
+
+                QApplication.processEvents()
+
+        flat_raws.clear()
+
+        # ── main calibration loop ─────────────────────────────────────────
+        _groups_prompted = set()
+
+        for fi in frame_infos:
+            try:
+                light_data, hdr, bit_depth, is_mono = load_image(fi["light_file"])
+                if light_data is None or hdr is None:
+                    self.update_status(
+                        self.tr(f"❌ ERROR: Failed to load {os.path.basename(fi['light_file'])}")
+                    )
+                    continue
+
+                if not is_mono and light_data.ndim == 3 and light_data.shape[-1] == 3:
+                    light_data = light_data.transpose(2, 0, 1)
+
+                try:
+                    rejection_mask_2d = _mask2d_from_image_zero_pixels(light_data)
+                except Exception:
+                    rejection_mask_2d = None
+
+                # bias
+                if master_bias_np is not None:
+                    b = _bias_to_match_light(light_data, master_bias_np)
+                    light_data = light_data.astype(np.float32, copy=False) - \
+                                 b.astype(np.float32, copy=False)
+
+                # dark
+                dark_data = None
+                master_dark_path = fi["master_dark_path"]
+                if master_dark_path:
+                    dark_data, _, _, dark_is_mono = load_image(master_dark_path)
+                    dark_data = _maybe_normalize_16bit_float(
+                        dark_data, name=os.path.basename(master_dark_path)
+                    )
+                    if dark_data is not None:
+                        if not dark_is_mono and dark_data.ndim == 3 \
+                                and dark_data.shape[-1] == 3:
+                            dark_data = dark_data.transpose(2, 0, 1)
+
+                        light_is_color = (
+                            light_data.ndim == 3 and light_data.shape[0] == 3
+                        )
+                        dark_is_color = (
+                            dark_data.ndim == 3 and dark_data.shape[0] == 3
+                        )
+                        if light_is_color != dark_is_color:
+                            light_desc = "color (debayered)" if light_is_color else "mono/Bayer"
+                            dark_desc  = "color (debayered)" if dark_is_color  else "mono/Bayer"
+                            self.update_status(self.tr(
+                                f"❌ CALIBRATION ERROR: Light is {light_desc} but "
+                                f"Dark is {dark_desc}.\n"
+                                f"  Light: {os.path.basename(fi['light_file'])}\n"
+                                f"  Dark:  {os.path.basename(master_dark_path)}"
+                            ))
+                            continue
+
+                        tmp = subtract_dark_with_pedestal(
+                            light_data[np.newaxis, :, :], dark_data, fi["pedestal_value"]
+                        )
+                        light_data = tmp[0]
+                        self.update_status(
+                            self.tr(f"Dark Subtracted: {os.path.basename(master_dark_path)}")
+                        )
+                        QApplication.processEvents()
+
+                if master_dark_path:
+                    light_data = np.clip(light_data, 0.0, None)
+
+                # flat
+                master_flat_path = fi["master_flat_path"]
+                flat_data = None
+                if master_flat_path:
+                    gk = fi["group_key"]
+                    if interactive_flat:
+                        adj = group_adjusted_flat_np.get(gk)
+                        if adj is None:
+                            flat_data = None
+                            master_flat_path = None
+                        else:
+                            flat_data = np.asarray(adj, dtype=np.float32).copy()
+                    else:
+                        flat_data, _, _, flat_is_mono = load_image(master_flat_path)
+                        flat_data = _maybe_normalize_16bit_float(
+                            flat_data, name=os.path.basename(master_flat_path)
+                        )
+
+                    if flat_data is not None:
+                        if not interactive_flat:
+                            flat_is_mono_flag = flat_data.ndim < 3 or \
+                                                flat_data.shape[-1] == 1 or \
+                                                flat_data.shape[0] == 1
+                            if (not flat_is_mono_flag) and flat_data.ndim == 3 \
+                                    and flat_data.shape[-1] == 3:
+                                flat_data = flat_data.transpose(2, 0, 1)
+                            if flat_is_mono_flag and flat_data.ndim == 3:
+                                flat_data = flat_data[:, :, 0] \
+                                            if flat_data.shape[-1] == 1 else flat_data[0]
+
+                        flat_data = flat_data.astype(np.float32, copy=False)
+                        flat_data = np.nan_to_num(
+                            flat_data, nan=1.0, posinf=1.0, neginf=1.0
+                        )
+                        flat_data[flat_data == 0] = 1.0
+
+                        bayerpat_str = fi["bayerpat"] or ""
+                        is_bayer_mosaic = (
+                            light_data.ndim == 2 and flat_data.ndim == 2 and
+                            bayerpat_str in ("RGGB", "BGGR", "GRBG", "GBRG")
+                        )
+
+                        if is_bayer_mosaic:
+                            light_data = apply_flat_division_bayer(
+                                light_data, flat_data, bayerpat_str
+                            )
+                        else:
+                            if flat_data.ndim == 2:
+                                v = flat_data[np.isfinite(flat_data) & (flat_data > 0)]
+                                denom = float(np.median(v)) if v.size else 1.0
+                                denom = denom if (np.isfinite(denom) and denom > 0) else 1.0
+                                flat_data /= denom
+                                flat_data[flat_data == 0] = 1.0
+                            else:
+                                for c in range(flat_data.shape[0]):
+                                    band = flat_data[c]
+                                    v = band[np.isfinite(band) & (band > 0)]
+                                    denom = float(np.median(v)) if v.size else 1.0
+                                    denom = denom if (np.isfinite(denom) and denom > 0) else 1.0
+                                    flat_data[c] = band / denom
+                                flat_data[flat_data == 0] = 1.0
+                            light_data = apply_flat_division_numba(light_data, flat_data)
+
+                        self.update_status(
+                            self.tr(f"Flat Applied: {os.path.basename(master_flat_path)}")
+                        )
+                        QApplication.processEvents()
+
+                # cosmetic
+                if fi["apply_cosmetic"]:
+                    array_is_color = (
+                        light_data.ndim == 3 and (
+                            light_data.shape[0] == 3 or light_data.shape[-1] == 3
+                        )
+                    )
+                    bayerpat = fi["bayerpat"]
+                    use_bayer_cosmetic = (not array_is_color) and bool(bayerpat)
+
+                    if use_bayer_cosmetic:
+                        light_data = bulk_cosmetic_correction_bayer(
+                            light_data, hot_sigma=hot_sigma, cold_sigma=cold_sigma
+                        )
+                    else:
+                        light_data = bulk_cosmetic_correction_numba(
+                            light_data, hot_sigma=hot_sigma, cold_sigma=cold_sigma
+                        )
+                    self.update_status(self.tr("Cosmetic Correction Applied"))
+                    QApplication.processEvents()
+
+                # satellite
+                if do_satellite:
+                    try:
+                        original_light_data = np.asarray(
+                            light_data, dtype=np.float32, copy=True
+                        )
+                        _, sat_mask_2d = self._apply_satellite_removal_to_calibrated_light(
+                            light_data, is_mono=is_mono
+                        )
+                        sat_mask_2d = np.asarray(sat_mask_2d, dtype=bool)
+                        rejection_mask_2d = _merge_masks(rejection_mask_2d, sat_mask_2d)
+                        light_data = original_light_data
+                        self.update_status(
+                            self.tr(f"Satellite Trail Removal Applied "
+                                    f"({int(np.count_nonzero(sat_mask_2d))} px)")
+                        )
+                        QApplication.processEvents()
+                    except Exception as e:
+                        self.update_status(
+                            self.tr(f"⚠️ Satellite Trail Removal skipped: {e}")
+                        )
+
+                # back to HWC for saving
+                if not is_mono and light_data.ndim == 3 and light_data.shape[0] == 3:
+                    light_data = light_data.transpose(1, 2, 0)
+
+                light_data = np.nan_to_num(
+                    light_data.astype(np.float32, copy=False),
+                    nan=0.0, posinf=0.0, neginf=0.0
+                )
+
+                min_val = float(np.min(light_data))
+                max_val = float(np.max(light_data))
+
+                try:
+                    if hasattr(hdr, "add_history"):
+                        hdr.add_history("Calibrated: bias/dark sub, flat division")
+                        if rejection_mask_2d is not None and np.any(rejection_mask_2d):
+                            hdr.add_history("Satellite rejection mask saved as sidecar")
+                    else:
+                        hdr["HISTORY"] = "Calibrated: bias/dark sub, flat division"
+                    hdr["CALMIN"] = (min_val, "Min pixel before save (float)")
+                    hdr["CALMAX"] = (max_val, "Max pixel before save (float)")
+                    if rejection_mask_2d is not None:
+                        hdr["SATMASK"] = (
+                            1, "Binary satellite reject mask written as sidecar"
+                        )
+                except Exception:
+                    pass
+
+                calibrated_filename = _cal_out_name(fi["light_file"], calibrated_dir)
+                save_image(
+                    img_array=light_data,
+                    filename=calibrated_filename,
+                    original_format="fit",
+                    bit_depth="32-bit floating point",
+                    original_header=hdr,
+                    is_mono=is_mono,
+                )
+
+                del light_data
+                del hdr
+
+                if rejection_mask_2d is not None:
+                    mask_path = _save_rejection_mask(rejection_mask_2d, calibrated_filename)
+                    if mask_path:
+                        self.update_status(
+                            self.tr(f"Saved mask: {os.path.basename(mask_path)} "
+                                    f"({int(np.count_nonzero(rejection_mask_2d))} px)")
+                        )
+
+                processed_files += 1
+                self.update_status(
+                    self.tr(f"💾 Saved: {os.path.basename(calibrated_filename)} "
+                            f"({processed_files}/{total_files})")
+                )
+                QApplication.processEvents()
+
+            except Exception as e:
+                self.update_status(
+                    self.tr(f"⚠️ Failed to calibrate "
+                            f"{os.path.basename(fi['light_file'])}: {e}")
+                )
+                QApplication.processEvents()
+
+        import gc
+        group_adjusted_flat_np.clear()
+        gc.collect()
+
+        self.update_status(self.tr("✅ Calibration Complete!"))
+        QApplication.processEvents()
+
+        if not self.settings.value("stacking/auto_register_after_cal", False, type=bool):
+            try:
+                if self._exec_monitor is not None:
+                    if not getattr(self, "_exec_monitor_pipeline_active", False):
+                        self._exec_monitor.finish_run(True)
+            except Exception:
+                pass
+
+        self.populate_calibrated_lights()
+        self._refresh_quick_stack_summary_later()
+
+        try:
+            if self.settings.value("stacking/auto_register_after_cal", False, type=bool):
+                if hasattr(self, "tabs") and self.tabs is not None:
+                    try:
+                        for idx in range(self.tabs.count()):
+                            if self.tabs.tabText(idx).lower().startswith(
+                                "image registration"
+                            ):
+                                self.tabs.setCurrentIndex(idx)
+                                break
+                    except Exception:
+                        pass
+                self.update_status(
+                    self.tr("⚙️ Auto: starting registration & integration…")
+                )
+                QApplication.processEvents()
+                if hasattr(self, "register_images_btn") \
+                        and self.register_images_btn is not None:
+                    if not getattr(self, "_registration_busy", False):
+                        self.register_images_btn.click()
+                    else:
+                        self.update_status(
+                            self.tr("ℹ️ Registration already in progress; auto-run skipped.")
+                        )
+                elif hasattr(self, "register_images"):
+                    if not getattr(self, "_registration_busy", False):
+                        self.register_images()
+                    else:
+                        self.update_status(
+                            self.tr("ℹ️ Registration already in progress; auto-run skipped.")
+                        )
+        except Exception as e:
+            self.update_status(self.tr(f"⚠️ Auto register/integrate failed: {e}"))
+
+    def calibrate_lights(self):
+        """
+        Pipelined calibration:
+        Phase 0  — load all master calibration frames to GPU once;
+                    show all interactive flat dialogs upfront so user
+                    can configure and walk away.
+        Pipeline — producer thread loads raw lights; GPU thread runs
+                    dark sub + flat div + cosmetic correction;
+                    consumer thread saves results.
+        Satellite removal runs in the save thread (CPU, mask-only).
+        """
+        from setiastro.saspro.torch_rejection import (
+            calibration_pipeline_gpu,
+            prepare_calibration_frame,
+            _upload_calibration_frame,
+            _get_torch,
+            _device,
+        )
+        from concurrent.futures import ThreadPoolExecutor
+        from queue import Queue, Empty
+        import threading
+
+        self.assign_best_master_files(fill_only=True)
+        self._start_exec_monitor()
+
+        if not self.stacking_directory:
+            QMessageBox.warning(self, "Error", "Please set the stacking directory first.")
+            return
+
+        calibrated_dir = os.path.join(self.stacking_directory, "Calibrated")
+        os.makedirs(calibrated_dir, exist_ok=True)
+
+        leaf_paths = self._collect_leaf_paths_from_tree()
+        total_files = len(leaf_paths)
+        if total_files == 0:
+            self.update_status(self.tr("⚠️ No light files selected for calibration."))
+            return
+
+        for key in list(self.light_files.keys()):
+            self.light_files[key] = [p for p in self.light_files[key] if p in leaf_paths]
+            if not self.light_files[key]:
+                del self.light_files[key]
+
+        interactive_flat = self.settings.value(
+            "stacking/interactive_flat_strength", False, type=bool
+        )
+        do_satellite = self.settings.value(
+            "stacking/calibration_satellite_enabled", False, type=bool
+        )
+
+        hot_sigma       = self.settings.value("stacking/cosmetic/hot_sigma",       3.0,    type=float)
+        cold_sigma      = self.settings.value("stacking/cosmetic/cold_sigma",       3.0,    type=float)
+        star_mean_ratio = self.settings.value("stacking/cosmetic/star_mean_ratio",  0.22,   type=float)
+        star_max_ratio  = self.settings.value("stacking/cosmetic/star_max_ratio",   0.55,   type=float)
+        sat_quantile    = self.settings.value("stacking/cosmetic/sat_quantile",     0.9995, type=float)
+
+        # ── helpers ───────────────────────────────────────────────────────
+        def _mask2d_from_image_zero_pixels(arr):
+            a = np.asarray(arr)
+            if a.ndim == 2:
+                return a == 0.0
+            if a.ndim == 3:
+                ax = 0 if a.shape[0] == 3 else -1
+                return np.any(a == 0.0, axis=ax)
+            raise ValueError(f"Unsupported shape: {a.shape}")
+
+        def _merge_masks(ma, mb):
+            if ma is None: return np.asarray(mb, dtype=bool)
+            if mb is None: return np.asarray(ma, dtype=bool)
+            return np.asarray(ma, dtype=bool) | np.asarray(mb, dtype=bool)
+
+        def _save_rejection_mask(mask2d, cal_filename):
+            try:
+                base_no_ext, _ = os.path.splitext(cal_filename)
+                mask_path = base_no_ext + "_satmask.npy"
+                np.save(mask_path, np.asarray(mask2d, dtype=np.uint8), allow_pickle=False)
+                return mask_path
+            except Exception as e:
+                self.update_status(self.tr(f"⚠️ Could not save rejection mask: {e}"))
+                return None
+
+        # ════════════════════════════════════════════════════════════════
+        # PHASE 0A — master bias (once, CPU — small)
+        # ════════════════════════════════════════════════════════════════
+        master_bias_np = None
+        bias_path = self.master_files.get("Bias")
         if bias_path:
             try:
-                master_bias, _, _, bias_is_mono = load_image(bias_path)
-                if master_bias is not None:
-                    if (not bias_is_mono) and master_bias.ndim == 3 and master_bias.shape[-1] == 3:
-                        master_bias = master_bias.transpose(2, 0, 1)
-                    self.update_status(self.tr(f"Using Master Bias: {os.path.basename(bias_path)}"))
+                master_bias_np, _, _, bias_is_mono = load_image(bias_path)
+                if master_bias_np is not None:
+                    if (not bias_is_mono) and master_bias_np.ndim == 3 \
+                            and master_bias_np.shape[-1] == 3:
+                        master_bias_np = master_bias_np.transpose(2, 0, 1)
+                    self.update_status(
+                        self.tr(f"Using Master Bias: {os.path.basename(bias_path)}")
+                    )
             except Exception as e:
                 self.update_status(self.tr(f"⚠️ Could not load Master Bias: {e}"))
- 
-        # ══════════════════════════════════════════════════════════════
-        # MAIN LOOP  (single pass — same structure as original)
-        # ══════════════════════════════════════════════════════════════
+
+        # ════════════════════════════════════════════════════════════════
+        # PHASE 0B — collect all frame metadata, build group catalogue
+        # ════════════════════════════════════════════════════════════════
+        # frame_infos: ordered list of dicts, one per leaf
+        frame_infos = []
+
         for i in range(self.light_tree.topLevelItemCount()):
-            filter_item = self.light_tree.topLevelItem(i)
-            filter_name = filter_item.text(0)
- 
+            filter_item  = self.light_tree.topLevelItem(i)
+            filter_name  = filter_item.text(0)
+
             for j in range(filter_item.childCount()):
                 exposure_item = filter_item.child(j)
                 exposure_text = exposure_item.text(0)
- 
-                apply_cosmetic, apply_pedestal = self._resolve_corrections_for_exposure(exposure_item)
-                pedestal_value = (self.pedestal_spinbox.value() / 65535.0) if apply_pedestal else 0.0
- 
+
+                apply_cosmetic, apply_pedestal = \
+                    self._resolve_corrections_for_exposure(exposure_item)
+                pedestal_value = (
+                    self.pedestal_spinbox.value() / 65535.0
+                ) if apply_pedestal else 0.0
+
                 try:
                     exposure_item.setText(
                         4,
@@ -15891,15 +16386,15 @@ class StackingSuiteDialog(QDialog):
                     )
                 except Exception:
                     pass
- 
-                for k in range(exposure_item.childCount()):
-                    leaf     = exposure_item.child(k)
-                    meta         = leaf.text(1)
-                    # Full path stored at ingest time — collision-safe across duplicate basenames
-                    light_file   = leaf.data(0, Qt.ItemDataRole.UserRole)
-                    session_name = leaf.data(0, Qt.ItemDataRole.UserRole + 1) or "Default"
 
-                    # Fallback for legacy trees that predate UserRole storage
+                for k in range(exposure_item.childCount()):
+                    leaf         = exposure_item.child(k)
+                    meta         = leaf.text(1)
+                    light_file   = leaf.data(0, Qt.ItemDataRole.UserRole)
+                    session_name = (
+                        leaf.data(0, Qt.ItemDataRole.UserRole + 1) or "Default"
+                    )
+
                     if not light_file:
                         filename        = leaf.text(0)
                         m               = re.search(r"Session: ([^|]+)", meta)
@@ -15907,18 +16402,19 @@ class StackingSuiteDialog(QDialog):
                         composite_key   = (f"{filter_name} - {exposure_text}", session_name)
                         light_file_list = self.light_files.get(composite_key, [])
                         light_file      = next(
-                            (f for f in light_file_list if os.path.basename(f) == filename), None
+                            (f for f in light_file_list
+                            if os.path.basename(f) == filename), None
                         )
 
                     if not light_file or light_file not in leaf_paths:
                         continue
- 
+
                     header, _ = get_valid_header(light_file)
                     width      = int(header.get("NAXIS1", 0))
                     height     = int(header.get("NAXIS2", 0))
                     image_size = f"{width}x{height}"
- 
-                    # ── resolve dark ──────────────────────────────────
+
+                    # resolve dark
                     master_dark_path = self._leaf_assigned_dark_path(leaf)
                     if master_dark_path is None:
                         full  = f"{filter_name} - {exposure_text}"
@@ -15936,9 +16432,11 @@ class StackingSuiteDialog(QDialog):
                     if master_dark_path is None:
                         mm       = re.match(r"([\d.]+)s", exposure_text or "")
                         exp_time = float(mm.group(1)) if mm else 0.0
-                        master_dark_path = self._auto_pick_master_dark(image_size, exp_time)
- 
-                    # ── resolve flat ──────────────────────────────────
+                        master_dark_path = self._auto_pick_master_dark(
+                            image_size, exp_time
+                        )
+
+                    # resolve flat
                     master_flat_path = self._leaf_assigned_flat_path(leaf)
                     if master_flat_path is None:
                         master_flat_path = self.manual_flat_overrides.get(
@@ -15954,350 +16452,578 @@ class StackingSuiteDialog(QDialog):
                         master_flat_path = self._auto_pick_master_flat(
                             filter_name, image_size, session_name
                         )
- 
-                    # ── group key for interactive tracking ───────────
-                    group_key = (filter_name, exposure_text, session_name,
-                                 master_flat_path or "")
- 
-                    # ── LOAD LIGHT ────────────────────────────────────
-                    light_data, hdr, bit_depth, is_mono = load_image(light_file)
-                    if light_data is None or hdr is None:
-                        self.update_status(
-                            self.tr(f"❌ ERROR: Failed to load {os.path.basename(light_file)}")
-                        )
-                        continue
- 
-                    if not is_mono and light_data.ndim == 3 and light_data.shape[-1] == 3:
-                        light_data = light_data.transpose(2, 0, 1)
- 
-                    try:
-                        rejection_mask_2d = _mask2d_from_image_zero_pixels(light_data)
-                    except Exception:
-                        rejection_mask_2d = None
- 
-                    # ── BIAS ──────────────────────────────────────────
-                    if master_bias is not None:
-                        b = _bias_to_match_light(light_data, master_bias)
-                        if light_data.dtype != np.float32:
-                            light_data = light_data.astype(np.float32, copy=False)
-                        if isinstance(b, np.ndarray) and b.dtype != np.float32:
-                            b = b.astype(np.float32, copy=False)
-                        light_data -= b
-                        self.update_status(self.tr("Bias Subtracted"))
-                        QApplication.processEvents()
- 
-                    # ── DARK ──────────────────────────────────────────
-                    dark_data = None
-                    if master_dark_path:
-                        dark_data, _, dark_bit_depth, dark_is_mono = load_image(master_dark_path)
-                        dark_data = _maybe_normalize_16bit_float(
-                            dark_data, name=os.path.basename(master_dark_path)
-                        )
-                        if dark_data is not None:
-                            if not dark_is_mono and dark_data.ndim == 3 and dark_data.shape[-1] == 3:
-                                dark_data = dark_data.transpose(2, 0, 1)
 
-                            # ── Shape mismatch check ──────────────────────────────────
-                            light_is_color = (light_data.ndim == 3 and light_data.shape[0] == 3)
-                            dark_is_color  = (dark_data.ndim == 3 and dark_data.shape[0] == 3)
-                            if light_is_color != dark_is_color:
-                                light_desc = "color (debayered)" if light_is_color else "mono/Bayer"
-                                dark_desc  = "color (debayered)" if dark_is_color  else "mono/Bayer"
-                                self.update_status(self.tr(
-                                    f"❌ CALIBRATION ERROR: Light frame is {light_desc} but "
-                                    f"Master Dark is {dark_desc}. These cannot be combined.\n"
-                                    f"  Light: {os.path.basename(light_file)}\n"
-                                    f"  Dark:  {os.path.basename(master_dark_path)}\n"
-                                    f"Rebuild your Master Dark from frames matching your lights."
-                                ))
-                                QMessageBox.critical(
-                                    self,
-                                    "Dark/Light Mismatch",
-                                    f"Cannot apply dark subtraction:\n\n"
-                                    f"Light frame is {light_desc}\n"
-                                    f"Master Dark is {dark_desc}\n\n"
-                                    f"Light: {os.path.basename(light_file)}\n"
-                                    f"Dark: {os.path.basename(master_dark_path)}\n\n"
-                                    f"Rebuild your Master Dark from frames that match your lights "
-                                    f"(both debayered or both raw Bayer/mono)."
-                                )
-                                return
-                            # ─────────────────────────────────────────────────────────
+                    group_key = (
+                        filter_name, exposure_text, session_name,
+                        master_dark_path or "", master_flat_path or ""
+                    )
 
-                            tmp        = subtract_dark_with_pedestal(
-                                light_data[np.newaxis, :, :], dark_data, pedestal_value
-                            )
-                            light_data = tmp[0]
-                            self.update_status(
-                                self.tr(f"Dark Subtracted: {os.path.basename(master_dark_path)}")
-                            )
-                            QApplication.processEvents()
-                     # Clip negative values after dark subtraction — physically
-                    # meaningless and cause chaos in subsequent flat division
-                    if master_dark_path:
-                        light_data = np.clip(light_data, 0.0, None)
-                    # ── RECORD MEDIAN SCALAR for darkest-frame selection ──
-                    # (free — we have the array right now; store only a float)
-                    if interactive_flat and master_flat_path:
-                        h2, w2 = light_data.shape[:2]
-                        ch, cw = max(1, h2 // 4), max(1, w2 // 4)
-                        if light_data.ndim == 2:
-                            crop = light_data[h2//4: h2//4 + ch*2, w2//4: w2//4 + cw*2]
-                        else:
-                            crop = light_data[:, h2//4: h2//4 + ch*2, w2//4: w2//4 + cw*2]
-                        centre_med = float(np.median(crop))
- 
-                        if group_key not in _group_registry:
-                            _group_registry[group_key] = {
-                                "files":          [],
-                                "medians":        {},
-                                "flat_path":      master_flat_path,
-                                "dark_path":      master_dark_path,
-                                "pedestal_value": pedestal_value,
-                                "is_mono":        is_mono,
-                                "filter_name":    filter_name,
-                                "exposure_text":  exposure_text,
-                            }
-                        reg = _group_registry[group_key]
-                        reg["files"].append(light_file)
-                        reg["medians"][light_file] = centre_med
- 
-                    # ── FLAT ──────────────────────────────────────────
-                    flat_data = None
-                    if master_flat_path:
-                        # ── interactive: show dialog on first file of each group ──
-                        if interactive_flat and group_key not in _groups_prompted:
-                            _groups_prompted.add(group_key)
- 
-                            # Load raw flat (before normalisation) for the dialog
-                            try:
-                                raw_flat_for_dlg, _, _, flat_is_mono_dlg = load_image(master_flat_path)
-                                raw_flat_for_dlg = _maybe_normalize_16bit_float(
-                                    raw_flat_for_dlg,
-                                    name=os.path.basename(master_flat_path)
-                                ).astype(np.float32)
-                                if (not flat_is_mono_dlg) and raw_flat_for_dlg.ndim == 3 \
-                                        and raw_flat_for_dlg.shape[-1] == 3:
-                                    raw_flat_for_dlg = raw_flat_for_dlg.transpose(2, 0, 1)
-                            except Exception as e:
-                                self.update_status(
-                                    self.tr(f"⚠️ Could not load flat for preview: {e}")
-                                )
-                                raw_flat_for_dlg = None
- 
-                            if raw_flat_for_dlg is not None:
-                                reg = _group_registry.get(group_key, {})
-                                n_files = len(reg.get("files", [light_file]))
-                                dlg = FlatStrengthPreviewDialog(
-                                    parent=self,
-                                    group_label=(
-                                        f"{filter_name} — {exposure_text} "
-                                        f"({n_files} frame{'s' if n_files != 1 else ''})"
-                                    ),
-                                    rep_light_arr=light_data,   # current frame (dark-corrected)
-                                    raw_flat=raw_flat_for_dlg,
-                                    is_mono=is_mono,
-                                    autostretch_fn=self._autostretch_for_preview,
-                                )
-                                result = dlg.exec()
-                                if result == QDialog.DialogCode.Accepted:
-                                    _group_adjusted_flat[group_key] = dlg.adjusted_flat()
+                    bayerpat = str(header.get("BAYERPAT") or "").strip().upper()
+                    if bayerpat not in ("RGGB", "BGGR", "GRBG", "GBRG"):
+                        bayerpat = None
+
+                    frame_infos.append({
+                        "light_file":       light_file,
+                        "filter_name":      filter_name,
+                        "exposure_text":    exposure_text,
+                        "session_name":     session_name,
+                        "group_key":        group_key,
+                        "master_dark_path": master_dark_path,
+                        "master_flat_path": master_flat_path,
+                        "apply_cosmetic":   apply_cosmetic,
+                        "pedestal_value":   pedestal_value,
+                        "bayerpat":         bayerpat,
+                        "image_size":       image_size,
+                    })
+
+        if not frame_infos:
+            self.update_status(self.tr("⚠️ No light files to calibrate."))
+            return
+        # ── hardware acceleration check ───────────────────────────────────
+        use_hw_accel = self.settings.value("stacking/use_hardware_accel", True, type=bool)
+        if not use_hw_accel:
+            self._calibrate_lights_cpu(
+                frame_infos=frame_infos,
+                calibrated_dir=calibrated_dir,
+                total_files=total_files,
+                master_bias_np=master_bias_np,
+                interactive_flat=interactive_flat,
+                do_satellite=do_satellite,
+                hot_sigma=self.settings.value("stacking/cosmetic/hot_sigma", 3.0, type=float),
+                cold_sigma=self.settings.value("stacking/cosmetic/cold_sigma", 3.0, type=float),
+            )
+            return
+        # ════════════════════════════════════════════════════════════════
+        # PHASE 0C — load master darks + flats to GPU once per unique path
+        # ════════════════════════════════════════════════════════════════
+        self.update_status(self.tr(
+            "📦 Loading master calibration frames to GPU…"
+        ))
+        QApplication.processEvents()
+
+        torch  = _get_torch(prefer_cuda=True)
+        dev    = _device() or (
+            torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+        )
+
+        dark_tensors = {}   # path -> (C,H,W) tensor on GPU
+        flat_tensors = {}   # path -> (C,H,W) tensor on GPU (normalised)
+
+        # collect unique paths
+        unique_darks = {fi["master_dark_path"] for fi in frame_infos
+                        if fi["master_dark_path"]}
+        unique_flats = {fi["master_flat_path"] for fi in frame_infos
+                        if fi["master_flat_path"]}
+
+        for dark_path in unique_darks:
+            try:
+                dark_np, _, _, dark_is_mono = load_image(dark_path)
+                dark_np = _maybe_normalize_16bit_float(
+                    dark_np, name=os.path.basename(dark_path)
+                )
+                if dark_np is not None:
+                    if (not dark_is_mono) and dark_np.ndim == 3 \
+                            and dark_np.shape[-1] == 3:
+                        dark_np = dark_np.transpose(2, 0, 1)
+                    dark_prepared = prepare_calibration_frame(dark_np, "dark")
+                    dark_tensors[dark_path] = torch.from_numpy(
+                        dark_prepared
+                    ).to(dev, dtype=torch.float32, non_blocking=True)
+                    self.update_status(
+                        self.tr(f"  ✓ Dark loaded: {os.path.basename(dark_path)}")
+                    )
+            except Exception as e:
+                self.update_status(
+                    self.tr(f"  ⚠️ Could not load dark {os.path.basename(dark_path)}: {e}")
+                )
+            QApplication.processEvents()
+
+        # flats: load raw first (needed for interactive dialog), normalise after
+        flat_raws = {}   # path -> raw numpy (CHW, float32, NOT normalised)
+        for flat_path in unique_flats:
+            try:
+                flat_np, _, _, flat_is_mono = load_image(flat_path)
+                flat_np = _maybe_normalize_16bit_float(
+                    flat_np, name=os.path.basename(flat_path)
+                )
+                if flat_np is not None:
+                    if (not flat_is_mono) and flat_np.ndim == 3 \
+                            and flat_np.shape[-1] == 3:
+                        flat_np = flat_np.transpose(2, 0, 1)
+                    elif flat_np.ndim == 2:
+                        flat_np = flat_np[np.newaxis]
+                    flat_raws[flat_path] = flat_np.astype(np.float32)
+                    self.update_status(
+                        self.tr(f"  ✓ Flat loaded: {os.path.basename(flat_path)}")
+                    )
+            except Exception as e:
+                self.update_status(
+                    self.tr(f"  ⚠️ Could not load flat {os.path.basename(flat_path)}: {e}")
+                )
+            QApplication.processEvents()
+
+        # ════════════════════════════════════════════════════════════════
+        # PHASE 0D — interactive flat dialogs (ALL groups, upfront)
+        # ════════════════════════════════════════════════════════════════
+        # group_key -> adjusted flat numpy CHW (or None = skip flat)
+        group_adjusted_flat_np = {}
+
+        if interactive_flat:
+            self.update_status(self.tr("🎚️ Interactive flat: configuring all groups…"))
+            QApplication.processEvents()
+
+            seen_groups = {}
+            for fi in frame_infos:
+                gk = fi["group_key"]
+                if gk not in seen_groups and fi["master_flat_path"]:
+                    seen_groups[gk] = fi
+
+            for gk, fi in seen_groups.items():
+                flat_path = fi["master_flat_path"]
+                if flat_path not in flat_raws:
+                    group_adjusted_flat_np[gk] = None
+                    continue
+
+                raw_flat_chw = flat_raws[flat_path]  # (C, H, W)
+
+                # ── prepare rep light: manual bias + dark subtraction, no torch ──
+                rep_light = None
+                try:
+                    rep_light_raw, _, _, rep_is_mono = load_image(fi["light_file"])
+                    if rep_light_raw is not None:
+                        rep_light = rep_light_raw.astype(np.float32, copy=True)
+
+                        # keep in native load layout (2D mono or HWC color) for now
+                        # bias subtraction
+                        if master_bias_np is not None:
+                            b = _bias_to_match_light(rep_light, master_bias_np)
+                            rep_light = rep_light - b.astype(np.float32, copy=False)
+
+                        # dark subtraction — use the raw numpy dark, not the GPU tensor
+                        dark_path = fi["master_dark_path"]
+                        if dark_path and dark_path in dark_tensors:
+                            # pull dark back to numpy in its native layout
+                            dark_np = dark_tensors[dark_path].cpu().numpy()  # (C, H, W)
+
+                            # convert dark to match rep_light layout
+                            if rep_light.ndim == 2:
+                                # mono light: dark should be 2D
+                                if dark_np.shape[0] == 1:
+                                    dark_2d = dark_np[0]
                                 else:
-                                    # "Skip flat" → store None → no flat applied for group
-                                    _group_adjusted_flat[group_key] = None
-                            else:
-                                # flat failed to load → skip for group
-                                _group_adjusted_flat[group_key] = None
- 
-                        # ── determine which flat array to use ─────────
-                        if interactive_flat:
-                            effective_flat = _group_adjusted_flat.get(group_key)
-                            # None means "skip flat for this group"
-                            if effective_flat is None:
-                                flat_data = None
-                                master_flat_path = None   # suppress save annotation
-                            else:
-                                flat_data = effective_flat.copy()
-                        else:
-                            # Non-interactive: load and use flat normally
-                            flat_data, _, flat_bit_depth, flat_is_mono = load_image(master_flat_path)
-                            flat_data = _maybe_normalize_16bit_float(
-                                flat_data, name=os.path.basename(master_flat_path)
-                            )
- 
-                        if flat_data is not None:
-                            if not interactive_flat:
-                                # non-interactive layout normalisation
-                                flat_is_mono = flat_data.ndim < 3 or flat_data.shape[-1] == 1 or flat_data.shape[0] == 1
-                                if (not flat_is_mono) and flat_data.ndim == 3 and flat_data.shape[-1] == 3:
-                                    flat_data = flat_data.transpose(2, 0, 1)
-                                if flat_is_mono and flat_data.ndim == 3:
-                                    flat_data = flat_data[:, :, 0] if flat_data.shape[-1] == 1 else flat_data[0]
- 
-                            flat_data = flat_data.astype(np.float32, copy=False)
-                            flat_data = np.nan_to_num(flat_data, nan=1.0, posinf=1.0, neginf=1.0)
-                            flat_data[flat_data == 0] = 1.0
- 
-                            bayerpat = str(hdr.get("BAYERPAT") or "").strip().upper()
-                            is_bayer_mosaic = (
-                                light_data.ndim == 2 and flat_data.ndim == 2 and
-                                bayerpat in ("RGGB", "BGGR", "GRBG", "GBRG")
-                            )
- 
-                            if is_bayer_mosaic:
-                                light_data = apply_flat_division_bayer(light_data, flat_data, bayerpat)
-                            else:
-                                if flat_data.ndim == 2:
-                                    v     = flat_data[np.isfinite(flat_data) & (flat_data > 0)]
-                                    denom = float(np.median(v)) if v.size else 1.0
-                                    denom = denom if (np.isfinite(denom) and denom > 0) else 1.0
-                                    flat_data /= denom
-                                    flat_data[flat_data == 0] = 1.0
-                                else:
-                                    for c in range(flat_data.shape[0]):
-                                        band  = flat_data[c]
-                                        v     = band[np.isfinite(band) & (band > 0)]
-                                        denom = float(np.median(v)) if v.size else 1.0
-                                        denom = denom if (np.isfinite(denom) and denom > 0) else 1.0
-                                        flat_data[c] = band / denom
-                                    flat_data[flat_data == 0] = 1.0
-                                light_data = apply_flat_division_numba(light_data, flat_data)
- 
-                            strength_note = ""
-                            if interactive_flat:
-                                adj = _group_adjusted_flat.get(group_key)
-                                if adj is not None:
-                                    s = getattr(
-                                        self, "_last_flat_strength_" + str(group_key), 1.0
+                                    dark_2d = dark_np.mean(axis=0)
+                                rep_light = rep_light - dark_2d
+                            elif rep_light.ndim == 3 and rep_light.shape[-1] == 3:
+                                # HWC color light: convert dark CHW → HWC
+                                if dark_np.shape[0] == 1:
+                                    dark_hwc = np.repeat(
+                                        dark_np[0:1].transpose(1, 2, 0), 3, axis=2
                                     )
-                                    strength_note = ""   # no easy way to recover scalar here
-                            self.update_status(
-                                self.tr(f"Flat Applied: {os.path.basename(master_flat_path)}")
-                            )
-                            QApplication.processEvents()
- 
-                    # ── COSMETIC ──────────────────────────────────────
-                    if apply_cosmetic:
-                        hot_sigma       = self.settings.value("stacking/cosmetic/hot_sigma", 5.0, type=float)
-                        cold_sigma      = self.settings.value("stacking/cosmetic/cold_sigma", 5.0, type=float)
-                        star_mean_ratio = self.settings.value("stacking/cosmetic/star_mean_ratio", 0.22, type=float)
-                        star_max_ratio  = self.settings.value("stacking/cosmetic/star_max_ratio", 0.55, type=float)
-                        sat_quantile    = self.settings.value("stacking/cosmetic/sat_quantile", 0.9995, type=float)
- 
-                        array_is_color = (
-                            light_data.ndim == 3 and (
-                                light_data.shape[0] == 3 or light_data.shape[-1] == 3
-                            )
-                        )
-                        if array_is_color:
-                            is_mono = False
-                        bayerpat = hdr.get("BAYERPAT")
-                        use_bayer_cosmetic = (not array_is_color) and bool(bayerpat)
- 
-                        if use_bayer_cosmetic:
-                            pattern = str(bayerpat).strip().upper()
-                            if pattern not in ("RGGB", "BGGR", "GRBG", "GBRG"):
-                                pattern = "RGGB"
-                            light_data = bulk_cosmetic_correction_bayer(
-                                light_data, hot_sigma=hot_sigma, cold_sigma=cold_sigma
-                            )
-                            self.update_status(
-                                self.tr(f"Cosmetic Correction Applied for Bayer Pattern ({pattern})")
-                            )
-                        else:
-                            light_data = bulk_cosmetic_correction_numba(
-                                light_data, hot_sigma=hot_sigma, cold_sigma=cold_sigma
-                            )
-                            self.update_status(self.tr("Cosmetic Correction Applied (debayered/mono)"))
-                        QApplication.processEvents()
- 
-                    # ── SATELLITE TRAIL REMOVAL ───────────────────────
-                    if self.settings.value("stacking/calibration_satellite_enabled", False, type=bool):
-                        try:
-                            self.update_status(self.tr("Running Satellite Trail Removal..."))
-                            QApplication.processEvents()
-                            original_light_data = np.asarray(light_data, dtype=np.float32, copy=True)
-                            sat_out_img, sat_mask_2d = self._apply_satellite_removal_to_calibrated_light(
-                                light_data, is_mono=is_mono
-                            )
-                            sat_mask_2d       = np.asarray(sat_mask_2d, dtype=bool)
-                            rejection_mask_2d = _merge_masks(rejection_mask_2d, sat_mask_2d)
-                            light_data        = original_light_data
-                            self.update_status(
-                                self.tr(f"Satellite Trail Removal Applied "
-                                        f"(mask only: {int(np.count_nonzero(sat_mask_2d))} rejected px)")
-                            )
-                            QApplication.processEvents()
-                        except Exception as e:
-                            self.update_status(self.tr(f"⚠️ Satellite Trail Removal skipped: {e}"))
-                            QApplication.processEvents()
- 
-                    # ── BACK TO HWC, SANITISE, SAVE ───────────────────
-                    if not is_mono and light_data.ndim == 3 and light_data.shape[0] == 3:
-                        light_data = light_data.transpose(1, 2, 0)
- 
-                    light_data = np.nan_to_num(
-                        light_data.astype(np.float32, copy=False),
-                        nan=0.0, posinf=0.0, neginf=0.0
-                    )
- 
-                    min_val = float(np.min(light_data))
-                    max_val = float(np.max(light_data))
+                                else:
+                                    dark_hwc = dark_np.transpose(1, 2, 0)
+                                rep_light = rep_light - dark_hwc
+                            else:
+                                rep_light = rep_light - dark_np[0]
+
+                            if fi["pedestal_value"] != 0.0:
+                                rep_light = rep_light + fi["pedestal_value"]
+                            rep_light = np.clip(rep_light, 0.0, None)
+
+                except Exception as e:
                     self.update_status(
-                        self.tr(f"Before saving: min = {min_val:.4f}, max = {max_val:.4f}")
+                        self.tr(f"  ⚠️ Could not prepare rep light for flat dialog: {e}")
                     )
-                    print(f"Before saving: min = {min_val:.4f}, max = {max_val:.4f}")
- 
-                    _warn_if_units_mismatch(
-                        light_data,
-                        dark_data if master_dark_path else None,
-                        flat_data if master_flat_path else None,
-                    )
-                    _print_stats("LIGHT final", light_data)
-                    QApplication.processEvents()
- 
+                    rep_light = None
+
+                if rep_light is None:
+                    group_adjusted_flat_np[gk] = None
+                    continue
+
+                # ── convert flat to match rep_light layout for the dialog ────────
+                # dialog expects raw_flat in same layout as light (2D or HWC)
+                # and does its own normalisation internally
+                raw_flat_chw = flat_raws[flat_path]  # (C, H, W)
+                if rep_light.ndim == 2:
+                    # mono: pass flat as 2D
+                    raw_flat_for_dlg = raw_flat_chw[0]          # (H, W)
+                    is_mono_flat = True
+                else:
+                    # color: pass flat as HWC
+                    if raw_flat_chw.shape[0] == 1:
+                        raw_flat_for_dlg = np.repeat(
+                            raw_flat_chw[0:1].transpose(1, 2, 0), 3, axis=2
+                        )                                        # (H, W, 3)
+                    else:
+                        raw_flat_for_dlg = raw_flat_chw.transpose(1, 2, 0)  # (H, W, 3)
+                    is_mono_flat = False
+
+                n_files = sum(1 for f2 in frame_infos if f2["group_key"] == gk)
+
+                dlg = FlatStrengthPreviewDialog(
+                    parent=self,
+                    group_label=(
+                        f"{fi['filter_name']} — {fi['exposure_text']} "
+                        f"({n_files} frame{'s' if n_files != 1 else ''})"
+                    ),
+                    rep_light_arr=rep_light,       # 2D or HWC, dark-corrected
+                    raw_flat=raw_flat_for_dlg,     # 2D or HWC, raw un-normalised
+                    is_mono=is_mono_flat,
+                    autostretch_fn=self._autostretch_for_preview,
+                )
+                result = dlg.exec()
+                if result == QDialog.DialogCode.Accepted:
+                    group_adjusted_flat_np[gk] = dlg.adjusted_flat()
+                else:
+                    group_adjusted_flat_np[gk] = None
+
+                QApplication.processEvents()
+
+        # ── upload (possibly adjusted) flats to GPU ───────────────────────
+        for flat_path, raw_chw in flat_raws.items():
+            # find any group using this flat to check for interactive override
+            # if interactive, we need per-group tensors; otherwise one per path
+            pass  # handled below per-frame using group_key
+
+        # build group-keyed flat tensors (respects interactive adjustments)
+        group_flat_tensors = {}   # group_key -> tensor on GPU or None
+        for fi in frame_infos:
+            gk        = fi["group_key"]
+            flat_path = fi["master_flat_path"]
+            if gk in group_flat_tensors:
+                continue
+
+            if flat_path is None:
+                group_flat_tensors[gk] = None
+                continue
+
+            if interactive_flat:
+                adj = group_adjusted_flat_np.get(gk)
+                if adj is None:
+                    group_flat_tensors[gk] = None   # user chose to skip
+                    continue
+                # adj is already adjusted numpy array from dialog
+                flat_np = np.asarray(adj, dtype=np.float32)
+                if flat_np.ndim == 2:
+                    flat_np = flat_np[np.newaxis]
+                elif flat_np.ndim == 3 and flat_np.shape[-1] in (1, 3):
+                    flat_np = flat_np.transpose(2, 0, 1)
+                # normalise
+                flat_prepared = prepare_calibration_frame(flat_np, "flat")
+            else:
+                if flat_path not in flat_raws:
+                    group_flat_tensors[gk] = None
+                    continue
+                flat_prepared = prepare_calibration_frame(
+                    flat_raws[flat_path], "flat"
+                )
+
+            group_flat_tensors[gk] = torch.from_numpy(
+                flat_prepared
+            ).to(dev, dtype=torch.float32, non_blocking=True)
+
+        # free raw flat numpy — no longer needed
+        flat_raws.clear()
+
+        self.update_status(
+            self.tr(f"🔧 Calibration frames ready. Starting pipeline on {total_files} frame(s)…")
+        )
+        QApplication.processEvents()
+
+        # ════════════════════════════════════════════════════════════════
+        # PIPELINE — producer / GPU / consumer
+        # PREFETCH_N controls how many raw frames sit in RAM at once
+        # ════════════════════════════════════════════════════════════════
+        PREFETCH_N = 4
+
+        raw_queue    = Queue(maxsize=PREFETCH_N)
+        result_queue = Queue(maxsize=PREFETCH_N)
+        pipeline_error = threading.Event()
+
+        processed_files = 0
+        total_done      = 0
+
+        # ── producer: loads raw lights from disk ──────────────────────────
+        def _producer():
+            for fi in frame_infos:
+                if pipeline_error.is_set():
+                    break
+                try:
+                    light_data, hdr, bit_depth, is_mono = load_image(fi["light_file"])
+                    if light_data is None or hdr is None:
+                        raw_queue.put(("error", fi, "Failed to load"))
+                        continue
+
+                    if master_bias_np is not None:
+                        b = _bias_to_match_light(light_data, master_bias_np)
+                        light_data = light_data.astype(np.float32, copy=False) - \
+                                    b.astype(np.float32, copy=False)
+
                     try:
-                        if hasattr(hdr, "add_history"):
-                            hdr.add_history("Calibrated: bias/dark sub, flat division")
-                            if rejection_mask_2d is not None and np.any(rejection_mask_2d):
-                                hdr.add_history("Satellite rejection mask saved as sidecar")
-                        else:
-                            hdr["HISTORY"] = "Calibrated: bias/dark sub, flat division"
-                        hdr["CALMIN"] = (min_val, "Min pixel before save (float)")
-                        hdr["CALMAX"] = (max_val, "Max pixel before save (float)")
-                        if rejection_mask_2d is not None:
-                            hdr["SATMASK"] = (1, "Binary satellite reject mask written as sidecar")
+                        rej_mask = _mask2d_from_image_zero_pixels(light_data)
                     except Exception:
-                        pass
- 
-                    calibrated_filename = _cal_out_name(light_file, calibrated_dir)
- 
-                    save_image(
-                        img_array=light_data,
-                        filename=calibrated_filename,
-                        original_format="fit",
-                        bit_depth="32-bit floating point",
-                        original_header=hdr,
-                        is_mono=is_mono,
-                    )
- 
-                    if rejection_mask_2d is not None:
-                        mask_path = _save_rejection_mask(rejection_mask_2d, calibrated_filename)
-                        if mask_path:
-                            masked_px = int(np.count_nonzero(rejection_mask_2d))
-                            self.update_status(
-                                self.tr(f"Saved mask: {os.path.basename(mask_path)} "
-                                        f"({masked_px} rejected px)")
-                            )
-                            QApplication.processEvents()
- 
+                        rej_mask = None
+
+                    raw_queue.put(("frame", fi, light_data, hdr, is_mono, rej_mask))
+                    del light_data  # ← producer drops its reference immediately
+
+                except Exception as e:
+                    raw_queue.put(("error", fi, str(e)))
+
+            raw_queue.put(None)
+
+        # ── consumer: saves corrected frames, runs satellite removal ─────
+        import queue as _queue
+        _status_queue = _queue.SimpleQueue()
+
+        def _consumer():
+            nonlocal processed_files
+            import threading as _threading
+            import gc
+            _write_lock = _threading.Lock()
+
+            def _save_one(item):
+                nonlocal processed_files
+                fi, light_data, hdr, is_mono, rej_mask = item
+                del item
+
+                if do_satellite:
+                    try:
+                        original = np.asarray(light_data, dtype=np.float32, copy=True)
+                        _, sat_mask_2d = self._apply_satellite_removal_to_calibrated_light(
+                            light_data, is_mono=is_mono
+                        )
+                        sat_mask_2d = np.asarray(sat_mask_2d, dtype=bool)
+                        rej_mask    = _merge_masks(rej_mask, sat_mask_2d)
+                        light_data  = original
+                        del original
+                    except Exception as e:
+                        _status_queue.put(
+                            f"⚠️ Satellite removal skipped for "
+                            f"{os.path.basename(fi['light_file'])}: {e}"
+                        )
+
+                if not is_mono and light_data.ndim == 3 and light_data.shape[0] == 3:
+                    light_data = light_data.transpose(1, 2, 0)
+
+                light_data = np.nan_to_num(
+                    light_data.astype(np.float32, copy=False),
+                    nan=0.0, posinf=0.0, neginf=0.0
+                )
+
+                min_val = float(np.min(light_data))
+                max_val = float(np.max(light_data))
+
+                try:
+                    if hasattr(hdr, "add_history"):
+                        hdr.add_history("Calibrated: bias/dark sub, flat division")
+                        if rej_mask is not None and np.any(rej_mask):
+                            hdr.add_history("Satellite rejection mask saved as sidecar")
+                    else:
+                        hdr["HISTORY"] = "Calibrated: bias/dark sub, flat division"
+                    hdr["CALMIN"] = (min_val, "Min pixel before save (float)")
+                    hdr["CALMAX"] = (max_val, "Max pixel before save (float)")
+                    if rej_mask is not None:
+                        hdr["SATMASK"] = (1, "Binary satellite reject mask written as sidecar")
+                except Exception:
+                    pass
+
+                calibrated_filename = _cal_out_name(fi["light_file"], calibrated_dir)
+                save_image(
+                    img_array=light_data,
+                    filename=calibrated_filename,
+                    original_format="fit",
+                    bit_depth="32-bit floating point",
+                    original_header=hdr,
+                    is_mono=is_mono,
+                )
+
+                del light_data
+                del hdr
+
+                if rej_mask is not None:
+                    mask_path = _save_rejection_mask(rej_mask, calibrated_filename)
+                    if mask_path:
+                        _status_queue.put(
+                            f"  Mask saved: {os.path.basename(mask_path)} "
+                            f"({int(np.count_nonzero(rej_mask))} px)"
+                        )
+                del rej_mask
+
+                with _write_lock:
                     processed_files += 1
-                    self.update_status(
-                        self.tr(f"Saved: {os.path.basename(calibrated_filename)} "
-                                f"({processed_files}/{total_files})")
+                    count = processed_files
+
+                _status_queue.put(
+                    f"💾 Saved: {os.path.basename(calibrated_filename)} "
+                    f"({count}/{total_files})"
+                )
+
+            WRITE_WORKERS = 3
+            with ThreadPoolExecutor(max_workers=WRITE_WORKERS) as write_pool:
+                # drain futures in a sliding window — never hold more than
+                # WRITE_WORKERS completed futures at once
+                pending = []
+                while True:
+                    item = result_queue.get()
+                    if item is None:
+                        result_queue.task_done()
+                        break
+                    try:
+                        pending.append(write_pool.submit(_save_one, item))
+                        del item
+                    except Exception as e:
+                        _status_queue.put(f"⚠️ Could not submit save task: {e}")
+                        del item
+                    finally:
+                        result_queue.task_done()
+
+                    # drain completed futures immediately — don't let them accumulate
+                    still_pending = []
+                    for f in pending:
+                        if f.done():
+                            try:
+                                f.result()
+                            except Exception as e:
+                                _status_queue.put(f"⚠️ Write error: {e}")
+                            # future is done and result collected — drop it
+                        else:
+                            still_pending.append(f)
+                    pending = still_pending
+
+                # drain any remaining
+                for f in pending:
+                    try:
+                        f.result()
+                    except Exception as e:
+                        _status_queue.put(f"⚠️ Write error: {e}")
+                pending.clear()
+                del pending
+
+            gc.collect()
+
+        # ── start producer and consumer in threads ─────────────────────
+        producer_thread = threading.Thread(target=_producer, daemon=True)
+        consumer_thread = threading.Thread(target=_consumer, daemon=True)
+        producer_thread.start()
+        consumer_thread.start()
+
+        # ── GPU main loop ─────────────────────────────────────────────
+        _current_group_label = None
+        _group_frame_count   = 0
+        _group_frame_total   = 0
+
+        while True:
+            item = raw_queue.get()
+            if item is None:
+                break
+
+            if item[0] == "error":
+                _, fi, msg = item
+                self.update_status(
+                    self.tr(f"❌ {os.path.basename(fi['light_file'])}: {msg}")
+                )
+                QApplication.processEvents()
+                continue
+
+            _, fi, light_data, hdr, is_mono, rej_mask = item
+            gk = fi["group_key"]
+
+            # ── group change detection ────────────────────────────────
+            group_label = f"{fi['filter_name']} — {fi['exposure_text']}"
+            if group_label != _current_group_label:
+                _current_group_label = group_label
+                _group_frame_count   = 0
+                _group_frame_total   = sum(
+                    1 for f2 in frame_infos
+                    if f2["filter_name"] == fi["filter_name"]
+                    and f2["exposure_text"] == fi["exposure_text"]
+                )
+                self.update_status(
+                    self.tr(f"📷 Calibrating group: {group_label}")
+                )
+
+            try:
+                dark_path = fi["master_dark_path"]
+                dark_t    = dark_tensors.get(dark_path)
+                flat_t    = group_flat_tensors.get(gk)
+
+                if dark_t is not None:
+                    light_is_color = (
+                        light_data.ndim == 3 and
+                        (light_data.shape[0] == 3 or light_data.shape[-1] == 3)
                     )
-                    QApplication.processEvents()
- 
+                    dark_is_color = (dark_t.shape[0] == 3)
+                    if light_is_color != dark_is_color:
+                        light_desc = "color" if light_is_color else "mono/Bayer"
+                        dark_desc  = "color" if dark_is_color  else "mono/Bayer"
+                        self.update_status(self.tr(
+                            f"❌ Dark/Light mismatch for "
+                            f"{os.path.basename(fi['light_file'])}: "
+                            f"light={light_desc}, dark={dark_desc}. Skipping."
+                        ))
+                        QApplication.processEvents()
+                        continue
+
+                light_data = calibration_pipeline_gpu(
+                    light_data,
+                    dark_t=dark_t,
+                    flat_t=flat_t,
+                    pedestal=fi["pedestal_value"],
+                    hot_sigma=hot_sigma,
+                    cold_sigma=cold_sigma,
+                    apply_cosmetic=fi["apply_cosmetic"],
+                    bayer_pattern=fi["bayerpat"],
+                )
+
+                _group_frame_count += 1
+                self.update_status(
+                    self.tr(f"📷 Progress: {group_label} — "
+                            f"{_group_frame_count}/{_group_frame_total} frames")
+                )
+
+            except Exception as e:
+                self.update_status(
+                    self.tr(f"⚠️ GPU calibration failed for "
+                            f"{os.path.basename(fi['light_file'])}: {e}")
+                )
+                QApplication.processEvents()
+                continue
+
+            result_queue.put((fi, light_data, hdr, is_mono, rej_mask))
+            del light_data
+            QApplication.processEvents()
+            
+        # wait for consumer to finish saving
+        result_queue.put(None)
+        consumer_thread.join()
+        producer_thread.join()
+
+        # drain status messages
+        while not _status_queue.empty():
+            self.update_status(self.tr(_status_queue.get_nowait()))
+        QApplication.processEvents()
+
+        # explicit cleanup — force memory back to OS
+        import gc
+        from setiastro.saspro.torch_rejection import _clear_cc_buffers
+        _clear_cc_buffers()
+
+        dark_tensors.clear()
+        group_flat_tensors.clear()
+        frame_infos.clear()
+        del dark_tensors
+        del group_flat_tensors
+        del frame_infos
+
+        try:
+            import torch as _torch
+            if _torch.cuda.is_available():
+                _torch.cuda.empty_cache()
+        except Exception:
+            pass
+
+        gc.collect()
+
         self.update_status(self.tr("✅ Calibration Complete!"))
         QApplication.processEvents()
 
@@ -16311,20 +17037,25 @@ class StackingSuiteDialog(QDialog):
 
         self.populate_calibrated_lights()
         self._refresh_quick_stack_summary_later()
- 
+
         try:
             if self.settings.value("stacking/auto_register_after_cal", False, type=bool):
                 if hasattr(self, "tabs") and self.tabs is not None:
                     try:
                         for idx in range(self.tabs.count()):
-                            if self.tabs.tabText(idx).lower().startswith("image registration"):
+                            if self.tabs.tabText(idx).lower().startswith(
+                                "image registration"
+                            ):
                                 self.tabs.setCurrentIndex(idx)
                                 break
                     except Exception:
                         pass
-                self.update_status(self.tr("⚙️ Auto: starting registration & integration…"))
+                self.update_status(
+                    self.tr("⚙️ Auto: starting registration & integration…")
+                )
                 QApplication.processEvents()
-                if hasattr(self, "register_images_btn") and self.register_images_btn is not None:
+                if hasattr(self, "register_images_btn") \
+                        and self.register_images_btn is not None:
                     if not getattr(self, "_registration_busy", False):
                         self.register_images_btn.click()
                     else:
@@ -16340,134 +17071,6 @@ class StackingSuiteDialog(QDialog):
                         )
         except Exception as e:
             self.update_status(self.tr(f"⚠️ Auto register/integrate failed: {e}"))
-
-    def _finish_and_save_calibrated_light(
-        self,
-        light_data, hdr, is_mono, light_file, calibrated_dir,
-        rejection_mask_2d, apply_cosmetic, dark_data, flat_data,
-        processed_files_ref, total_files,
-        _mask2d_from_image_zero_pixels, _merge_masks, _save_rejection_mask,
-    ):
-        """
-        Applies cosmetic correction, satellite trail removal, and saves the
-        calibrated light frame.  Called from both the non-interactive and
-        interactive flat-strength paths in calibrate_lights.
-        """
-        # ---------- COSMETIC (optional) ----------
-        if apply_cosmetic:
-            hot_sigma       = self.settings.value("stacking/cosmetic/hot_sigma", 5.0, type=float)
-            cold_sigma      = self.settings.value("stacking/cosmetic/cold_sigma", 5.0, type=float)
-            star_mean_ratio = self.settings.value("stacking/cosmetic/star_mean_ratio", 0.22, type=float)
-            star_max_ratio  = self.settings.value("stacking/cosmetic/star_max_ratio", 0.55, type=float)
-            sat_quantile    = self.settings.value("stacking/cosmetic/sat_quantile", 0.9995, type=float)
- 
-            array_is_color = (
-                light_data.ndim == 3 and (
-                    light_data.shape[0] == 3 or light_data.shape[-1] == 3
-                )
-            )
-            if array_is_color:
-                is_mono = False
-            bayerpat = (hdr or {}).get("BAYERPAT")
-            use_bayer_cosmetic = (not array_is_color) and bool(bayerpat)
- 
-            if use_bayer_cosmetic:
-                pattern = str(bayerpat).strip().upper()
-                if pattern not in ("RGGB", "BGGR", "GRBG", "GBRG"):
-                    pattern = "RGGB"
-                light_data = bulk_cosmetic_correction_bayer(
-                    light_data, hot_sigma=hot_sigma, cold_sigma=cold_sigma
-                )
-                self.update_status(self.tr(f"Cosmetic Correction Applied for Bayer Pattern ({pattern})"))
-            else:
-                light_data = bulk_cosmetic_correction_numba(
-                    light_data, hot_sigma=hot_sigma, cold_sigma=cold_sigma
-                )
-                self.update_status(self.tr("Cosmetic Correction Applied (debayered/mono)"))
-            QApplication.processEvents()
- 
-        # ---------- SATELLITE TRAIL REMOVAL (optional) ----------
-        if self.settings.value("stacking/calibration_satellite_enabled", False, type=bool):
-            try:
-                self.update_status(self.tr("Running Satellite Trail Removal..."))
-                QApplication.processEvents()
-                original_light_data = np.asarray(light_data, dtype=np.float32, copy=True)
-                sat_out_img, sat_mask_2d = self._apply_satellite_removal_to_calibrated_light(
-                    light_data, is_mono=is_mono
-                )
-                sat_mask_2d = np.asarray(sat_mask_2d, dtype=bool)
-                rejection_mask_2d = _merge_masks(rejection_mask_2d, sat_mask_2d)
-                light_data = original_light_data
-                self.update_status(
-                    self.tr(f"Satellite Trail Removal Applied "
-                            f"(mask only: {int(np.count_nonzero(sat_mask_2d))} rejected px)")
-                )
-                QApplication.processEvents()
-            except Exception as e:
-                self.update_status(self.tr(f"⚠️ Satellite Trail Removal skipped: {e}"))
-                QApplication.processEvents()
- 
-        # Back to HWC for saving if color
-        if not is_mono and light_data.ndim == 3 and light_data.shape[0] == 3:
-            light_data = light_data.transpose(1, 2, 0)  # CHW → HWC
- 
-        light_data = np.nan_to_num(
-            light_data.astype(np.float32, copy=False),
-            nan=0.0, posinf=0.0, neginf=0.0
-        )
- 
-        min_val = float(np.min(light_data))
-        max_val = float(np.max(light_data))
-        self.update_status(self.tr(f"Before saving: min = {min_val:.4f}, max = {max_val:.4f}"))
- 
-        _warn_if_units_mismatch(
-            light_data,
-            dark_data if dark_data is not None else None,
-            flat_data if flat_data is not None else None,
-        )
-        _print_stats("LIGHT final", light_data)
-        QApplication.processEvents()
- 
-        # Annotate header
-        try:
-            if hasattr(hdr, "add_history"):
-                hdr.add_history("Calibrated: bias/dark sub, flat division")
-                if rejection_mask_2d is not None and np.any(rejection_mask_2d):
-                    hdr.add_history("Satellite rejection mask saved as sidecar")
-            else:
-                hdr["HISTORY"] = "Calibrated: bias/dark sub, flat division"
-            hdr["CALMIN"] = (min_val, "Min pixel before save (float)")
-            hdr["CALMAX"] = (max_val, "Max pixel before save (float)")
-            if rejection_mask_2d is not None:
-                hdr["SATMASK"] = (1, "Binary satellite reject mask written as sidecar")
-        except Exception:
-            pass
- 
-        calibrated_filename = _cal_out_name(light_file, calibrated_dir)
- 
-        save_image(
-            img_array=light_data,
-            filename=calibrated_filename,
-            original_format="fit",
-            bit_depth="32-bit floating point",
-            original_header=hdr,
-            is_mono=is_mono,
-        )
- 
-        if rejection_mask_2d is not None:
-            mask_path = _save_rejection_mask(rejection_mask_2d, calibrated_filename)
-            if mask_path:
-                masked_px = int(np.count_nonzero(rejection_mask_2d))
-                self.update_status(self.tr(
-                    f"Saved mask: {os.path.basename(mask_path)} ({masked_px} rejected px)"
-                ))
-                QApplication.processEvents()
- 
-        n = processed_files_ref[0]
-        self.update_status(self.tr(
-            f"Saved: {os.path.basename(calibrated_filename)} ({n + 1}/{total_files})"
-        ))
-        QApplication.processEvents()
 
     def select_reference_frame_robust(self, frame_weights, sigma_threshold=1.0):
         """

@@ -1,4 +1,4 @@
-# pro/window_shelf.py
+# saspro/window_shelf.py
 from __future__ import annotations
 from PyQt6.QtCore import Qt, QEvent, QTimer, QSize, QObject, QRect
 from PyQt6.QtWidgets import QDockWidget, QListWidget, QListWidgetItem, QMdiSubWindow, QWidget
@@ -111,13 +111,11 @@ class WindowShelf(QDockWidget):
         if not tok:
             return
 
-        # remove shelf item first
         row = self.list.row(item)
         self.list.takeItem(row)
 
         sub = self._tok2sub.get(tok)
 
-        # if deleted/closed, just cleanup
         if self._is_dead(sub):
             self._tok2sub.pop(tok, None)
             self._saved_state.pop(tok, None)
@@ -133,25 +131,30 @@ class WindowShelf(QDockWidget):
             else:
                 r = QRect(st["geom"]) if (st and isinstance(st.get("geom"), QRect)) else QRect()
 
-                def apply_rect():
-                    if self._is_dead(sub):
+                def apply_rect(o=sub, rect=r):
+                    if self._is_dead(o):
                         return
-                    if r.isValid() and not sub.isMaximized():
-                        sub.setWindowState(Qt.WindowState.WindowNoState)
-                        sub.resize(r.size())
-                        sub.move(r.topLeft())
-                        sub.setGeometry(r)
+                    if rect.isValid() and not o.isMaximized():
+                        o.setWindowState(Qt.WindowState.WindowNoState)
+                        o.showNormal()
+                        o.resize(rect.size())
+                        o.move(rect.topLeft())
+                        o.setGeometry(rect)
+
+                # Show first so the WM knows about the window before we set geometry
+                sub.setWindowState(Qt.WindowState.WindowNoState)
+                sub.showNormal()
 
                 if r.isValid():
-                    sub.setWindowState(Qt.WindowState.WindowNoState)
-                    sub.setGeometry(r)
                     sub.resize(r.size())
                     sub.move(r.topLeft())
+                    sub.setGeometry(r)
 
-                sub.showNormal()
-                QTimer.singleShot(0, apply_rect)
-                QTimer.singleShot(30, apply_rect)
+                # Re-assert geometry at increasing delays to survive WM post-layout passes
+                QTimer.singleShot(0,   apply_rect)
+                QTimer.singleShot(30,  apply_rect)
                 QTimer.singleShot(120, apply_rect)
+                QTimer.singleShot(250, apply_rect)  # catches slower WMs (Cinnamon/Mint)
 
             mdi = sub.mdiArea()
             if mdi is not None and not self._is_dead(mdi):
@@ -160,7 +163,6 @@ class WindowShelf(QDockWidget):
             sub.raise_()
             sub.activateWindow()
         finally:
-            # cleanup saved state for that token once restored
             self._tok2sub.pop(tok, None)
             self._saved_state.pop(tok, None)
 
