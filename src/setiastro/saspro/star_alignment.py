@@ -3695,29 +3695,6 @@ class StarRegistrationThread(QThread):
                     )
                     self._increment_progress()
 
-                # Timeouts
-                now = time.monotonic()
-                forget = []
-                for fut in pending:
-                    start_t, orig_path = fut_info.get(fut, (None, "<unknown>"))
-                    if start_t is None:
-                        continue
-                    if (now - start_t) > timeout_sec:
-                        base = os.path.basename(orig_path or "<unknown>")
-                        self.on_worker_error(f"Astroalign timeout for {base} (>{timeout_sec}s) – skipping")
-                        forget.append(fut)
-                        self._increment_progress()
-                for fut in forget:
-                    fut_info.pop(fut, None)
-                    if fut in pending:
-                        pending.remove(fut)
-                    # Also mark timed-out frames as failed on pass 0
-                    if pass_index == 0:
-                        timed_out_orig = rev_current_to_orig.get(
-                            os.path.normpath(orig_path), os.path.normpath(orig_path)
-                        )
-                        self.alignment_matrices[timed_out_orig] = None
-
             pass_deltas, aligned_count = [], 0
             for orig in self.original_files:
                 k = os.path.normpath(orig)
