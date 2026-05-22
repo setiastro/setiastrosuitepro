@@ -7252,11 +7252,10 @@ class StackingSuiteDialog(QDialog):
         self.align_max_cp.setValue(self.settings.value("stacking/align/max_cp", 250, type=int))
         disto_form.addRow(self.tr("Max control points:"), self.align_max_cp)
 
+        # Legacy profile compatibility: instantiated but not shown — downsample is now automatic.
         self.align_downsample = QSpinBox()
-        self.align_downsample.setRange(1, 64)  # or 1..32; 64 if you want “any integer”
+        self.align_downsample.setRange(1, 64)
         self.align_downsample.setValue(self.settings.value("stacking/align/downsample", 3, type=int))
-        self.align_downsample.setToolTip(self.tr("Alignment solve downsample. 1 = full res; higher = faster but less accurate."))
-        disto_form.addRow(self.tr("Solve downsample:"), self.align_downsample)
 
         # Homography / Similarity-specific RANSAC reprojection threshold
         self.h_ransac_reproj = QDoubleSpinBox()
@@ -7838,7 +7837,6 @@ class StackingSuiteDialog(QDialog):
         gb_cosm = QGroupBox(self.tr("Cosmetic Correction (Advanced)"))
         fl_cosm = QFormLayout(gb_cosm)
 
-        # Enable/disable advanced controls (purely for UI clarity)
         self.cosm_enable_cb = QCheckBox(self.tr("Enable advanced cosmetic tuning"))
         self.cosm_enable_cb.setChecked(
             self.settings.value("stacking/cosmetic/custom_enable", False, type=bool)
@@ -7853,7 +7851,6 @@ class StackingSuiteDialog(QDialog):
             sb.setValue(self.settings.value(key, default, type=float))
             return sb
 
-        # σ thresholds
         self.cosm_hot_sigma = _mk_fspin(0.1, 20.0, 0.1, 2,
             "stacking/cosmetic/hot_sigma", 5.0)
         self.cosm_cold_sigma = _mk_fspin(0.1, 20.0, 0.1, 2,
@@ -7865,40 +7862,25 @@ class StackingSuiteDialog(QDialog):
         row_sig_h.addWidget(QLabel(self.tr("Cold σ:"))); row_sig_h.addWidget(self.cosm_cold_sigma)
         fl_cosm.addRow(self.tr("Sigma thresholds:"), row_sig)
 
-        # Star guards (skip replacements if neighbors look like a PSF)
+        # Legacy profile compatibility: read-but-don't-show star guard / sat quantile values
+        # so old profiles don't error on load. These are never written back.
         self.cosm_star_mean_ratio = _mk_fspin(0.05, 0.60, 0.01, 3,
             "stacking/cosmetic/star_mean_ratio", 0.22)
         self.cosm_star_max_ratio  = _mk_fspin(0.10, 0.95, 0.01, 3,
             "stacking/cosmetic/star_max_ratio", 0.55)
-        row_star = QWidget(); row_star_h = QHBoxLayout(row_star); row_star_h.setContentsMargins(0,0,0,0)
-        row_star_h.addWidget(QLabel(self.tr("Mean ratio:"))); row_star_h.addWidget(self.cosm_star_mean_ratio)
-        row_star_h.addSpacing(8)
-        row_star_h.addWidget(QLabel(self.tr("Max ratio:")));  row_star_h.addWidget(self.cosm_star_max_ratio)
-        fl_cosm.addRow(self.tr("Star guards:"), row_star)
-
-        # Saturation guard quantile
-        self.cosm_sat_quantile = _mk_fspin(0.90, 0.9999, 0.0005, 4,
+        self.cosm_sat_quantile    = _mk_fspin(0.90, 0.9999, 0.0005, 4,
             "stacking/cosmetic/sat_quantile", 0.9995)
-        self.cosm_sat_quantile.setToolTip(self.tr("Pixels above this image quantile are treated as saturated and never replaced."))
-        fl_cosm.addRow(self.tr("Saturation quantile:"), self.cosm_sat_quantile)
 
-        # Small helper to enable/disable rows by master checkbox
         def _toggle_cosm_enabled(on: bool):
-            for w in (row_sig, row_star, self.cosm_sat_quantile):
-                w.setEnabled(on)
+            row_sig.setEnabled(on)
 
-        # Defaults button
         btn_defaults = QPushButton(self.tr("Restore Recommended"))
         def _restore_defaults():
             self.cosm_hot_sigma.setValue(5.0)
             self.cosm_cold_sigma.setValue(5.0)
-            self.cosm_star_mean_ratio.setValue(0.22)
-            self.cosm_star_max_ratio.setValue(0.55)
-            self.cosm_sat_quantile.setValue(0.9995)
         btn_defaults.clicked.connect(_restore_defaults)
         fl_cosm.addRow(btn_defaults)
 
-        # wire
         self.cosm_enable_cb.toggled.connect(_toggle_cosm_enabled)
         _toggle_cosm_enabled(self.cosm_enable_cb.isChecked())
 
@@ -18461,8 +18443,17 @@ class StackingSuiteDialog(QDialog):
                     self.frame_weights[fp] = max(0.1, s / mean_score) if mean_score > 1e-6 else 1.0
             else:
                 # All scores zero (no stars detected) — uniform weights
+                # All scores zero (no stars detected) — use inverse background mean
+                # darker sky = lower mean = better frame quality
+                self.update_status(self.tr(
+                    "ℹ️ No stars detected — using inverse background mean as frame quality proxy."
+                ))
+                means_list = [preview_medians.get(fp, 1.0) for fp in measured_frames]
+                min_mean = min(m for m in means_list if m > 1e-6) or 1e-6
                 for fp in measured_frames:
-                    self.frame_weights[fp] = 1.0
+                    m = preview_medians.get(fp, 1.0)
+                    m = max(m, 1e-6)
+                    self.frame_weights[fp] = min_mean / m
 
             self.update_status(self.tr(
                 f"⚖️ Frame weights computed: "
@@ -22182,32 +22173,24 @@ class StackingSuiteDialog(QDialog):
         }
 
         def _resolve_weight(aligned_path: str) -> float:
-            # step 1: aligned -> normalized
-            # orig_by_aligned keyed by normpath (not normcase)
             ap_normpath = os.path.normpath(aligned_path)
             norm_path = _orig_by_aligned.get(ap_normpath)
             if norm_path is None:
-                log(f"DEBUG weight miss step1: {os.path.basename(aligned_path)}")
-                log(f"  ap_normpath={ap_normpath}")
-                log(f"  sample orig_by_aligned key={next(iter(_orig_by_aligned), 'EMPTY')}")
-                return 1.0
+                # pre-aligned path — try direct lookup in frame_weights
+                return float(_fw_normcase.get(
+                    os.path.normcase(ap_normpath), 1.0
+                ))
             if norm_path:
-                # step 2: normalized -> original key (normcase)
-                # _norm2orig keyed by normpath(normalized)
                 norm_normpath = os.path.normpath(norm_path)
-                orig_key = _norm2orig.get(norm_normpath)  # gives normcase(original)
+                orig_key = _norm2orig.get(norm_normpath)
                 if orig_key:
-                    # frame_weights keyed by raw original paths
-                    # orig_key is normcase so try normcase lookup
                     w = _fw_normcase.get(orig_key)
                     if w is not None:
                         return float(w)
 
-            # last resort: try aligned path directly in normcase weights
             return float(_fw_normcase.get(
                 os.path.normcase(os.path.normpath(aligned_path)), 1.0
             ))
-
         weights_array = np.array(
             [_resolve_weight(p) for p in file_list], dtype=np.float32
         )
@@ -23053,6 +23036,7 @@ class StackingSuiteDialog(QDialog):
             QApplication.processEvents()
 
             # 3) Weights — keep your current logic (fast & good)
+            # 3) Weights — keep your current logic (fast & good)
             self.update_status(self.tr("⚖️ Computing frame weights…"))
             dbg = ["\n📊 **Frame Weights Debug Log:**"]
             max_w = 0.0
@@ -23075,6 +23059,18 @@ class StackingSuiteDialog(QDialog):
             if max_w > 0:
                 for k in self.frame_weights:
                     self.frame_weights[k] /= max_w
+            else:
+                # No stars detected — use inverse mean as proxy (darker sky = better frame)
+                self.update_status(self.tr(
+                    "ℹ️ No stars detected — using inverse background mean as frame quality proxy."
+                ))
+                means_list = [mean_values.get(fp, 1.0) for fp in measured_frames]
+                min_mean = min(m for m in means_list if m > 1e-6) or 1e-6
+                for fp in measured_frames:
+                    m = mean_values.get(fp, 1.0)
+                    m = max(m, 1e-6)
+                    # darker frame (lower mean) gets higher weight
+                    self.frame_weights[fp] = min_mean / m
 
             self.update_status(self.tr("\n".join(dbg)))
 
@@ -23879,13 +23875,6 @@ class StackingSuiteDialog(QDialog):
 
         algo = (algo_override or self.rejection_algorithm)
 
-        # -------------------------------------------------------------------
-        # FIX 1: Resolve torch / GPU availability BEFORE opening any memmaps.
-        # Lazy torchvision import inside _torch_ok() / _get_torch() triggers
-        # importlib C-extension loading which is not re-entrant with concurrent
-        # astropy mmap teardown, causing a Windows access violation.
-        # We force the resolution here while no FITS handles are open yet.
-        # -------------------------------------------------------------------
         gc.disable()
         try:
             use_gpu = bool(self._hw_accel_enabled()) and _torch_ok() and _gpu_algo_supported(algo)
@@ -23894,7 +23883,6 @@ class StackingSuiteDialog(QDialog):
 
         log(f"📊 Stacking group '{group_key}' with {algo}{' [GPU]' if use_gpu else ''}")
 
-        # ---------- satellite sidecar helpers ----------
         def _satmask_sidecar_path(image_path: str) -> str:
             root, _ = os.path.splitext(image_path)
             return root + "_satmask.npy"
@@ -23910,10 +23898,7 @@ class StackingSuiteDialog(QDialog):
                     log(f"⚠️ Ignoring malformed satellite mask for {os.path.basename(image_path)}: shape={m.shape}")
                     return None
                 if m.shape != (height, width):
-                    log(
-                        f"⚠️ Ignoring satellite mask with wrong shape for {os.path.basename(image_path)}: "
-                        f"{m.shape} != {(height, width)}"
-                    )
+                    log(f"⚠️ Ignoring satellite mask with wrong shape for {os.path.basename(image_path)}: {m.shape} != {(height, width)}")
                     return None
                 return m
             except Exception as e:
@@ -23925,19 +23910,10 @@ class StackingSuiteDialog(QDialog):
         if satmask_present:
             log(f"🛰️ Found aligned satellite masks for {satmask_present}/{N} frame(s).")
 
-        # --- keep all FITSes open (memmap) once for the whole group ---
         use_memmap_sources = True
         sources: list[_MMImage] = []
         source_paths = list(file_list)
 
-        # -------------------------------------------------------------------
-        # FIX 2: Open all memmaps with GC disabled.
-        # CPython on Windows will inline-finalize any _MMImage whose refcount
-        # hits zero on THIS thread during the open loop (e.g. a partially built
-        # list element that gets replaced on retry). That finalizer calls
-        # hdul.close() which flushes the mmap, and re-entering astropy's FITS
-        # open machinery from inside a GC finalizer corrupts internal state.
-        # -------------------------------------------------------------------
         gc.disable()
         try:
             for p in file_list:
@@ -23947,27 +23923,21 @@ class StackingSuiteDialog(QDialog):
             if e.errno in (errno.EMFILE, errno.ENFILE):
                 log(f"⚠️ Too many open files ({e}); falling back to lazy per-tile reads.")
                 for s in sources:
-                    try:
-                        s.close()
-                    except Exception:
-                        pass
+                    try: s.close()
+                    except Exception: pass
                 sources.clear()
                 use_memmap_sources = False
             else:
                 for s in sources:
-                    try:
-                        s.close()
-                    except Exception:
-                        pass
+                    try: s.close()
+                    except Exception: pass
                 log(f"⚠️ Failed to open images (memmap): {e}")
                 return None, {}, None
         except Exception as e:
             gc.enable()
             for s in sources:
-                try:
-                    s.close()
-                except Exception:
-                    pass
+                try: s.close()
+                except Exception: pass
             log(f"⚠️ Failed to open images (memmap): {e}")
             return None, {}, None
         else:
@@ -23993,62 +23963,30 @@ class StackingSuiteDialog(QDialog):
         def _mk_mask_buf():
             return np.zeros((N, chunk_h, chunk_w), dtype=np.bool_, order='C')
 
-        buf0 = _mk_buf()
-        buf1 = _mk_buf()
-        maskbuf0 = _mk_mask_buf()
-        maskbuf1 = _mk_mask_buf()
-
-        # frame_weights keys: original paths as-measured (raw, not normcase)
-        # _orig2norm keys:     normcase(normpath(original))
-        # _orig2norm values:   normpath(normalized)   -- NOT normcase
-        # orig_by_aligned keys:  normpath(aligned)    -- NOT normcase
-        # orig_by_aligned values: normpath(normalized) -- NOT normcase
-
         _orig_by_aligned = getattr(self, "orig_by_aligned", {})
-
-        # Build reverse: normpath(normalized) -> normcase(original)
-        # _orig2norm: normcase(orig) -> normpath(norm)
-        # We need normpath(norm) -> normcase(orig) for the lookup
         _norm2orig = {
             os.path.normpath(v): k
             for k, v in getattr(self, "_orig2norm", {}).items()
         }
-        # Also build normcase version of frame_weights for final fallback
         _fw_normcase = {
             os.path.normcase(os.path.normpath(k)): v
             for k, v in frame_weights.items()
         }
 
         def _resolve_weight(aligned_path: str) -> float:
-            # step 1: aligned -> normalized
-            # orig_by_aligned keyed by normpath (not normcase)
             ap_normpath = os.path.normpath(aligned_path)
             norm_path = _orig_by_aligned.get(ap_normpath)
             if norm_path is None:
-                log(f"DEBUG weight miss step1: {os.path.basename(aligned_path)}")
-                log(f"  ap_normpath={ap_normpath}")
-                log(f"  sample orig_by_aligned key={next(iter(_orig_by_aligned), 'EMPTY')}")
-                return 1.0
+                return float(_fw_normcase.get(os.path.normcase(ap_normpath), 1.0))
             if norm_path:
-                # step 2: normalized -> original key (normcase)
-                # _norm2orig keyed by normpath(normalized)
-                norm_normpath = os.path.normpath(norm_path)
-                orig_key = _norm2orig.get(norm_normpath)  # gives normcase(original)
+                orig_key = _norm2orig.get(os.path.normpath(norm_path))
                 if orig_key:
-                    # frame_weights keyed by raw original paths
-                    # orig_key is normcase so try normcase lookup
                     w = _fw_normcase.get(orig_key)
                     if w is not None:
                         return float(w)
+            return float(_fw_normcase.get(os.path.normcase(os.path.normpath(aligned_path)), 1.0))
 
-            # last resort: try aligned path directly in normcase weights
-            return float(_fw_normcase.get(
-                os.path.normcase(os.path.normpath(aligned_path)), 1.0
-            ))
-
-        weights_array = np.array(
-            [_resolve_weight(p) for p in file_list], dtype=np.float32
-        )
+        weights_array = np.array([_resolve_weight(p) for p in file_list], dtype=np.float32)
         log(f"⚖️ Weight range for '{group_key}': "
             f"min={weights_array.min():.3f} max={weights_array.max():.3f} "
             f"mean={weights_array.mean():.3f}")
@@ -24057,14 +23995,10 @@ class StackingSuiteDialog(QDialog):
         n_cols = math.ceil(width / chunk_w)
         total_tiles = n_rows * n_cols
 
-        rej_any = np.zeros((height, width), dtype=np.bool_)
+        rej_any   = np.zeros((height, width), dtype=np.bool_)
         rej_count = np.zeros((height, width), dtype=np.uint16)
 
         def _read_tile_into(buf, maskbuf, y0, y1, x0, x1):
-            """
-            Fill image tile buffer and matching forced-reject tile buffer.
-            maskbuf is (N, th, tw) boolean, one 2D mask per frame.
-            """
             th = y1 - y0
             tw = x1 - x0
             ts = buf[:N, :th, :tw, :channels]
@@ -24075,12 +24009,8 @@ class StackingSuiteDialog(QDialog):
                 for i, src in enumerate(sources):
                     sub = src.read_tile(y0, y1, x0, x1)
                     if sub.ndim == 2:
-                        if channels == 3:
-                            sub = sub[:, :, None].repeat(3, axis=2)
-                        else:
-                            sub = sub[:, :, None]
+                        sub = sub[:, :, None].repeat(channels, axis=2) if channels == 3 else sub[:, :, None]
                     ts[i, :, :, :] = sub
-
                     mfull = satmask_full_list[i]
                     if mfull is not None:
                         ms[i, :, :] = mfull[y0:y1, x0:x1]
@@ -24090,49 +24020,23 @@ class StackingSuiteDialog(QDialog):
                     try:
                         sub = src.read_tile(y0, y1, x0, x1)
                     finally:
-                        try:
-                            src.close()
-                        except Exception:
-                            pass
-                        # ---------------------------------------------------
-                        # FIX 3: In the lazy path, force immediate handle
-                        # reclamation after each per-tile open/close cycle.
-                        # Without this the handle lingers until the next GC
-                        # sweep which may race with the prefetch thread.
-                        # ---------------------------------------------------
+                        try: src.close()
+                        except Exception: pass
                         del src
                         gc.collect()
                     if sub.ndim == 2:
-                        if channels == 3:
-                            sub = sub[:, :, None].repeat(3, axis=2)
-                        else:
-                            sub = sub[:, :, None]
+                        sub = sub[:, :, None].repeat(channels, axis=2) if channels == 3 else sub[:, :, None]
                     ts[i, :, :, :] = sub
-
                     mfull = satmask_full_list[i]
                     if mfull is not None:
                         ms[i, :, :] = mfull[y0:y1, x0:x1]
-
             return th, tw
 
-        # -------------------------------------------------------------------
-        # FIX 4: Force Numba JIT compilation eagerly on throwaway arrays
-        # BEFORE the tile loop starts and BEFORE any memmaps are being actively
-        # read by the prefetch thread. Numba's type-inference pass holds
-        # internal C-level locks that are not GC-safe. If the first real tile
-        # triggers lazy JIT while the GC is also finalizing a dropped buffer,
-        # the process hard-faults. Each dispatcher has a 3D and 4D kernel —
-        # both must be warmed up because they compile to different specializations.
-        # cache=True means this only pays the JIT cost once per install.
-        # -------------------------------------------------------------------
+        # Numba JIT warmup
         _NUMBA_CPU_ALGOS = {
-            "Weighted Windsorized Sigma Clipping",
-            "Windsorized Sigma Clipping",
-            "Kappa-Sigma Clipping",
-            "Trimmed Mean",
-            "Extreme Studentized Deviate (ESD)",
-            "Biweight Estimator",
-            "Modified Z-Score Clipping",
+            "Weighted Windsorized Sigma Clipping", "Windsorized Sigma Clipping",
+            "Kappa-Sigma Clipping", "Trimmed Mean", "Extreme Studentized Deviate (ESD)",
+            "Biweight Estimator", "Modified Z-Score Clipping",
         }
         if not use_gpu and algo in _NUMBA_CPU_ALGOS:
             try:
@@ -24142,46 +24046,32 @@ class StackingSuiteDialog(QDialog):
                 gc.disable()
                 try:
                     if algo in ("Weighted Windsorized Sigma Clipping", "Windsorized Sigma Clipping"):
-                        windsorized_sigma_clip_weighted(_dummy3, _dummy_w,
-                                                        lower=float(self.sigma_low),
-                                                        upper=float(self.sigma_high))
-                        windsorized_sigma_clip_weighted(_dummy4, _dummy_w,
-                                                        lower=float(self.sigma_low),
-                                                        upper=float(self.sigma_high))
+                        windsorized_sigma_clip_weighted(_dummy3, _dummy_w, lower=float(self.sigma_low), upper=float(self.sigma_high))
+                        windsorized_sigma_clip_weighted(_dummy4, _dummy_w, lower=float(self.sigma_low), upper=float(self.sigma_high))
                     elif algo == "Kappa-Sigma Clipping":
-                        kappa_sigma_clip_weighted(_dummy3, _dummy_w,
-                                                  kappa=float(self.kappa),
-                                                  iterations=int(self.iterations))
-                        kappa_sigma_clip_weighted(_dummy4, _dummy_w,
-                                                  kappa=float(self.kappa),
-                                                  iterations=int(self.iterations))
+                        kappa_sigma_clip_weighted(_dummy3, _dummy_w, kappa=float(self.kappa), iterations=int(self.iterations))
+                        kappa_sigma_clip_weighted(_dummy4, _dummy_w, kappa=float(self.kappa), iterations=int(self.iterations))
                     elif algo == "Trimmed Mean":
-                        trimmed_mean_weighted(_dummy3, _dummy_w,
-                                              trim_fraction=float(self.trim_fraction))
-                        trimmed_mean_weighted(_dummy4, _dummy_w,
-                                              trim_fraction=float(self.trim_fraction))
+                        trimmed_mean_weighted(_dummy3, _dummy_w, trim_fraction=float(self.trim_fraction))
+                        trimmed_mean_weighted(_dummy4, _dummy_w, trim_fraction=float(self.trim_fraction))
                     elif algo == "Extreme Studentized Deviate (ESD)":
-                        esd_clip_weighted(_dummy3, _dummy_w,
-                                          threshold=float(self.esd_threshold))
-                        esd_clip_weighted(_dummy4, _dummy_w,
-                                          threshold=float(self.esd_threshold))
+                        esd_clip_weighted(_dummy3, _dummy_w, threshold=float(self.esd_threshold))
+                        esd_clip_weighted(_dummy4, _dummy_w, threshold=float(self.esd_threshold))
                     elif algo == "Biweight Estimator":
-                        biweight_location_weighted(_dummy3, _dummy_w,
-                                                   tuning_constant=float(self.biweight_constant))
-                        biweight_location_weighted(_dummy4, _dummy_w,
-                                                   tuning_constant=float(self.biweight_constant))
+                        biweight_location_weighted(_dummy3, _dummy_w, tuning_constant=float(self.biweight_constant))
+                        biweight_location_weighted(_dummy4, _dummy_w, tuning_constant=float(self.biweight_constant))
                     elif algo == "Modified Z-Score Clipping":
-                        modified_zscore_clip_weighted(_dummy3, _dummy_w,
-                                                      threshold=float(self.modz_threshold))
-                        modified_zscore_clip_weighted(_dummy4, _dummy_w,
-                                                      threshold=float(self.modz_threshold))
+                        modified_zscore_clip_weighted(_dummy3, _dummy_w, threshold=float(self.modz_threshold))
+                        modified_zscore_clip_weighted(_dummy4, _dummy_w, threshold=float(self.modz_threshold))
                 finally:
                     gc.enable()
             except Exception:
                 pass
 
         from concurrent.futures import ThreadPoolExecutor
-        tp = ThreadPoolExecutor(max_workers=1)
+        from collections import deque
+        PREFETCH_DEPTH = 5
+        tp = ThreadPoolExecutor(max_workers=PREFETCH_DEPTH)
 
         tiles = []
         for y0 in range(0, height, chunk_h):
@@ -24191,201 +24081,125 @@ class StackingSuiteDialog(QDialog):
                 tiles.append((y0, y1, x0, x1))
 
         def _cpu_reduce_tile(ts, forced_reject_2d, th, tw):
-            """
-            CPU rejection/integration for a single tile.
-            forced_reject_2d: (N, th, tw) boolean sidecar mask for this tile
-            Returns (tile_result, tile_rej_map)
-            """
             ts = np.asarray(ts, dtype=np.float32)
-            forced_reject_2d = np.asarray(forced_reject_2d, dtype=bool)
-
-            # Expand forced reject mask across channels
-            forced_reject = forced_reject_2d[..., None]  # (N, th, tw, 1)
-
+            forced_reject = np.asarray(forced_reject_2d, dtype=bool)[..., None]
             valid = np.isfinite(ts) & (ts != 0.0) & (~forced_reject)
-
             ts_masked = np.where(valid, ts, np.nan)
-
-            base_rej = np.any(~valid, axis=-1)  # (N, th, tw)
+            base_rej = np.any(~valid, axis=-1)
 
             if algo in ("Comet Median", "Simple Median (No Rejection)"):
-                tile_result = np.nanmedian(ts_masked, axis=0)
-                tile_rej_map = base_rej
-
+                return np.nanmedian(ts_masked, axis=0).astype(np.float32), base_rej
             elif algo == "Comet High-Clip Percentile":
                 k = self.settings.value("stacking/comet_hclip_k", 1.30, type=float)
                 p = self.settings.value("stacking/comet_hclip_p", 25.0, type=float)
-                tile_result = _high_clip_percentile(ts_masked, k=float(k), p=float(p))
-                tile_rej_map = base_rej
-
+                return _high_clip_percentile(ts_masked, k=float(k), p=float(p)).astype(np.float32), base_rej
             elif algo == "Comet Lower-Trim (30%)":
-                tile_result = _lower_trimmed_mean(ts_masked, trim_hi_frac=0.30)
-                tile_rej_map = base_rej
-
+                return _lower_trimmed_mean(ts_masked, trim_hi_frac=0.30).astype(np.float32), base_rej
             elif algo == "Comet Percentile (40th)":
-                tile_result = np.nanpercentile(ts_masked, 40.0, axis=0)
-                tile_rej_map = base_rej
-
+                return np.nanpercentile(ts_masked, 40.0, axis=0).astype(np.float32), base_rej
             elif algo == "Simple Average (No Rejection)":
                 w = weights_array[:, None, None, None].astype(np.float32)
                 w_eff = np.where(valid, w, 0.0)
-                ts_eff = np.where(valid, ts, 0.0)
-                num = np.sum(ts_eff * w_eff, axis=0)
+                num = np.sum(np.where(valid, ts, 0.0) * w_eff, axis=0)
                 den = np.sum(w_eff, axis=0)
                 fallback = np.nanmedian(ts_masked, axis=0)
-                tile_result = np.where(den > 0, num / np.maximum(den, 1e-20), fallback)
-                tile_rej_map = base_rej
-
-            elif algo == "Weighted Windsorized Sigma Clipping":
-                tile_result, tile_rej_map = windsorized_sigma_clip_weighted(
-                    ts_masked, weights_array, lower=self.sigma_low, upper=self.sigma_high
-                )
-                tile_rej_map = np.asarray(tile_rej_map, dtype=bool)
-                if tile_rej_map.ndim == 4:
-                    tile_rej_map = np.any(tile_rej_map, axis=-1)
-                tile_rej_map |= base_rej
-
-            elif algo == "Kappa-Sigma Clipping":
-                tile_result, tile_rej_map = kappa_sigma_clip_weighted(
-                    ts_masked, weights_array, kappa=self.kappa, iterations=self.iterations
-                )
-                tile_rej_map = np.asarray(tile_rej_map, dtype=bool)
-                if tile_rej_map.ndim == 4:
-                    tile_rej_map = np.any(tile_rej_map, axis=-1)
-                tile_rej_map |= base_rej
-
-            elif algo == "Trimmed Mean":
-                tile_result, tile_rej_map = trimmed_mean_weighted(
-                    ts_masked, weights_array, trim_fraction=self.trim_fraction
-                )
-                tile_rej_map = np.asarray(tile_rej_map, dtype=bool)
-                if tile_rej_map.ndim == 4:
-                    tile_rej_map = np.any(tile_rej_map, axis=-1)
-                tile_rej_map |= base_rej
-
-            elif algo == "Extreme Studentized Deviate (ESD)":
-                tile_result, tile_rej_map = esd_clip_weighted(
-                    ts_masked, weights_array, threshold=self.esd_threshold
-                )
-                tile_rej_map = np.asarray(tile_rej_map, dtype=bool)
-                if tile_rej_map.ndim == 4:
-                    tile_rej_map = np.any(tile_rej_map, axis=-1)
-                tile_rej_map |= base_rej
-
-            elif algo == "Biweight Estimator":
-                tile_result, tile_rej_map = biweight_location_weighted(
-                    ts_masked, weights_array, tuning_constant=self.biweight_constant
-                )
-                tile_rej_map = np.asarray(tile_rej_map, dtype=bool)
-                if tile_rej_map.ndim == 4:
-                    tile_rej_map = np.any(tile_rej_map, axis=-1)
-                tile_rej_map |= base_rej
-
-            elif algo == "Modified Z-Score Clipping":
-                tile_result, tile_rej_map = modified_zscore_clip_weighted(
-                    ts_masked, weights_array, threshold=self.modz_threshold
-                )
-                tile_rej_map = np.asarray(tile_rej_map, dtype=bool)
-                if tile_rej_map.ndim == 4:
-                    tile_rej_map = np.any(tile_rej_map, axis=-1)
-                tile_rej_map |= base_rej
-
+                return np.where(den > 0, num / np.maximum(den, 1e-20), fallback).astype(np.float32), base_rej
             elif algo == "Max Value":
                 x = np.where(valid, ts, -np.inf)
-                tile_result = np.max(x, axis=0)
-                tile_result = np.where(np.isfinite(tile_result), tile_result, 0.0).astype(np.float32)
-                tile_rej_map = base_rej
+                result = np.max(x, axis=0)
+                return np.where(np.isfinite(result), result, 0.0).astype(np.float32), base_rej
 
-            else:
-                tile_result, tile_rej_map = windsorized_sigma_clip_weighted(
-                    ts_masked, weights_array, lower=self.sigma_low, upper=self.sigma_high
-                )
-                tile_rej_map = np.asarray(tile_rej_map, dtype=bool)
-                if tile_rej_map.ndim == 4:
-                    tile_rej_map = np.any(tile_rej_map, axis=-1)
-                tile_rej_map |= base_rej
-
-            tile_result = np.asarray(tile_result, dtype=np.float32)
+            # Numba algorithms
+            fn_map = {
+                "Weighted Windsorized Sigma Clipping": lambda: windsorized_sigma_clip_weighted(ts_masked, weights_array, lower=self.sigma_low, upper=self.sigma_high),
+                "Windsorized Sigma Clipping":          lambda: windsorized_sigma_clip_weighted(ts_masked, weights_array, lower=self.sigma_low, upper=self.sigma_high),
+                "Kappa-Sigma Clipping":                lambda: kappa_sigma_clip_weighted(ts_masked, weights_array, kappa=self.kappa, iterations=self.iterations),
+                "Trimmed Mean":                        lambda: trimmed_mean_weighted(ts_masked, weights_array, trim_fraction=self.trim_fraction),
+                "Extreme Studentized Deviate (ESD)":   lambda: esd_clip_weighted(ts_masked, weights_array, threshold=self.esd_threshold),
+                "Biweight Estimator":                  lambda: biweight_location_weighted(ts_masked, weights_array, tuning_constant=self.biweight_constant),
+                "Modified Z-Score Clipping":           lambda: modified_zscore_clip_weighted(ts_masked, weights_array, threshold=self.modz_threshold),
+            }
+            fn = fn_map.get(algo, lambda: windsorized_sigma_clip_weighted(ts_masked, weights_array, lower=self.sigma_low, upper=self.sigma_high))
+            tile_result, tile_rej_map = fn()
             tile_rej_map = np.asarray(tile_rej_map, dtype=bool)
-            return tile_result, tile_rej_map
+            if tile_rej_map.ndim == 4:
+                tile_rej_map = np.any(tile_rej_map, axis=-1)
+            return np.asarray(tile_result, dtype=np.float32), tile_rej_map | base_rej
 
-        # Prime first read
-        y0, y1, x0, x1 = tiles[0]
-        fut = tp.submit(_read_tile_into, buf0, maskbuf0, y0, y1, x0, x1)
-        use_buf0 = True
-        log(
-            f"🔧 Integrating {total_tiles} tiles "
+        # Deep prefetch pipeline
+        _buf_pool  = [_mk_buf()      for _ in range(PREFETCH_DEPTH + 1)]
+        _mask_pool = [_mk_mask_buf() for _ in range(PREFETCH_DEPTH + 1)]
+        pending      = deque()
+        next_read_idx = 0
+        buf_in_use    = 0
+
+        def _submit_next():
+            nonlocal next_read_idx, buf_in_use
+            if next_read_idx >= len(tiles):
+                return
+            y0r, y1r, x0r, x1r = tiles[next_read_idx]
+            bidx = buf_in_use % (PREFETCH_DEPTH + 1)
+            buf_in_use += 1
+            f = tp.submit(_read_tile_into, _buf_pool[bidx], _mask_pool[bidx], y0r, y1r, x0r, x1r)
+            pending.append((f, bidx, next_read_idx))
+            next_read_idx += 1
+
+        for _ in range(PREFETCH_DEPTH):
+            _submit_next()
+
+        log(f"🔧 Integrating {total_tiles} tiles "
             f"({'GPU' if use_gpu else 'CPU'}, {n_rows}×{n_cols} grid, "
-            f"chunk {chunk_h}×{chunk_w})…"
-        )
+            f"chunk {chunk_h}×{chunk_w}, prefetch={PREFETCH_DEPTH})…")
+
         _ctx_instance = _safe_torch_inference_ctx() if use_gpu else contextlib.nullcontext()
         with _ctx_instance:
             for tile_idx, (y0, y1, x0, x1) in enumerate(tiles, start=1):
                 t0 = time.perf_counter()
 
+                fut, bidx, _ = pending.popleft()
                 th, tw = fut.result()
-                if use_buf0:
-                    ts = buf0[:N, :th, :tw, :channels]
-                    forced_mask_tile = maskbuf0[:N, :th, :tw]
-                else:
-                    ts = buf1[:N, :th, :tw, :channels]
-                    forced_mask_tile = maskbuf1[:N, :th, :tw]
+                ts               = _buf_pool[bidx][:N, :th, :tw, :channels]
+                forced_mask_tile = _mask_pool[bidx][:N, :th, :tw]
+
+                _submit_next()
 
                 if ts.size == 0 or ts.shape[1] == 0 or ts.shape[2] == 0 or ts.shape[3] == 0:
-                    log(
-                        f"⚠️ Degenerate tile shape {ts.shape} at tile {tile_idx} "
-                        f"[y:{y0}:{y1} x:{x0}:{x1}] – using CPU for this tile."
-                    )
                     tile_result, tile_rej_map = _cpu_reduce_tile(ts, forced_mask_tile, th, tw)
-                else:
-                    if tile_idx < total_tiles:
-                        ny0, ny1, nx0, nx1 = tiles[tile_idx]
-                        fut = tp.submit(
-                            _read_tile_into,
-                            (buf1 if use_buf0 else buf0),
-                            (maskbuf1 if use_buf0 else maskbuf0),
-                            ny0, ny1, nx0, nx1
+                elif use_gpu:
+                    try:
+                        tile_result, tile_rej_map = _torch_reduce_tile(
+                            ts, weights_array,
+                            algo_name=algo,
+                            kappa=float(self.kappa),
+                            iterations=int(self.iterations),
+                            sigma_low=float(self.sigma_low),
+                            sigma_high=float(self.sigma_high),
+                            trim_fraction=float(self.trim_fraction),
+                            esd_threshold=float(self.esd_threshold),
+                            biweight_constant=float(self.biweight_constant),
+                            modz_threshold=float(self.modz_threshold),
+                            comet_hclip_k=float(self.settings.value("stacking/comet_hclip_k", 1.30, type=float)),
+                            comet_hclip_p=float(self.settings.value("stacking/comet_hclip_p", 25.0, type=float)),
+                            forced_reject_mask_np=forced_mask_tile,
                         )
-
-                    if use_gpu:
-                        try:
-                            tile_result, tile_rej_map = _torch_reduce_tile(
-                                ts,
-                                weights_array,
-                                algo_name=algo,
-                                kappa=float(self.kappa),
-                                iterations=int(self.iterations),
-                                sigma_low=float(self.sigma_low),
-                                sigma_high=float(self.sigma_high),
-                                trim_fraction=float(self.trim_fraction),
-                                esd_threshold=float(self.esd_threshold),
-                                biweight_constant=float(self.biweight_constant),
-                                modz_threshold=float(self.modz_threshold),
-                                comet_hclip_k=float(self.settings.value("stacking/comet_hclip_k", 1.30, type=float)),
-                                comet_hclip_p=float(self.settings.value("stacking/comet_hclip_p", 25.0, type=float)),
-                                forced_reject_mask_np=forced_mask_tile,
-                            )
-                            if hasattr(tile_result, "detach"):
-                                tile_result = tile_result.detach().cpu().numpy()
-                            if hasattr(tile_rej_map, "detach"):
-                                tile_rej_map = tile_rej_map.detach().cpu().numpy()
-                        except Exception as e:
-                            log(
-                                f"⚠️ GPU rejection failed on tile {tile_idx}/{total_tiles} "
-                                f"shape={ts.shape}: {e} – falling back to CPU for this and remaining tiles."
-                            )
-                            use_gpu = False
-                            tile_result, tile_rej_map = _cpu_reduce_tile(ts, forced_mask_tile, th, tw)
-                    else:
+                        if hasattr(tile_result, "detach"):
+                            tile_result = tile_result.detach().cpu().numpy()
+                        if hasattr(tile_rej_map, "detach"):
+                            tile_rej_map = tile_rej_map.detach().cpu().numpy()
+                    except Exception as e:
+                        log(f"⚠️ GPU rejection failed on tile {tile_idx}/{total_tiles} "
+                            f"shape={ts.shape}: {e} – falling back to CPU for this and remaining tiles.")
+                        use_gpu = False
                         tile_result, tile_rej_map = _cpu_reduce_tile(ts, forced_mask_tile, th, tw)
+                else:
+                    tile_result, tile_rej_map = _cpu_reduce_tile(ts, forced_mask_tile, th, tw)
 
                 integrated_image[y0:y1, x0:x1, :] = tile_result
 
                 trm = np.asarray(tile_rej_map, dtype=bool)
                 if trm.ndim == 4:
                     trm = np.any(trm, axis=-1)
-
-                rej_any[y0:y1, x0:x1] |= np.any(trm, axis=0)
+                rej_any[y0:y1, x0:x1]   |= np.any(trm, axis=0)
                 rej_count[y0:y1, x0:x1] += trm.sum(axis=0).astype(np.uint16)
 
                 if collect_per_file:
@@ -24397,41 +24211,46 @@ class StackingSuiteDialog(QDialog):
                 dt = time.perf_counter() - t0
                 work_px = th * tw * N * channels
                 mpx_s = (work_px / 1e6) / dt if dt > 0 else float("inf")
-
-                use_buf0 = not use_buf0
                 log(f"\r  🔧 Tile {tile_idx}/{total_tiles} [{group_key}] — {mpx_s:.1f} MPx/s")
 
+        if use_gpu:
+            try:
+                import torch as _torch
+                if _torch.cuda.is_available():
+                    _torch.cuda.synchronize()
+            except Exception:
+                pass
+
         tp.shutdown(wait=True)
+
+        # close memmaps in background — don't block the return
         if use_memmap_sources:
-            for s in sources:
-                s.close()
+            import threading as _threading2
+            _sources_to_close = list(sources)
+            sources.clear()
+            def _close_memmaps():
+                for s in _sources_to_close:
+                    try: s.close()
+                    except Exception: pass
+            _threading2.Thread(target=_close_memmaps, daemon=True).start()
 
         if channels == 1:
             integrated_image = integrated_image[..., 0]
 
         if not hasattr(self, "_rej_maps"):
             self._rej_maps = {}
-        rej_frac = (rej_count.astype(np.float32) / float(max(1, N)))
-        self._rej_maps[group_key] = {
-            "any": rej_any,
-            "frac": rej_frac,
-            "count": rej_count,
-            "n": N
-        }
+        rej_frac = rej_count.astype(np.float32) / float(max(1, N))
+        self._rej_maps[group_key] = {"any": rej_any, "frac": rej_frac, "count": rej_count, "n": N}
 
         log(f"Integration complete for group '{group_key}'.")
 
         if integrated_memmap_path is not None:
             integrated_image = np.array(integrated_image)
-            try:
-                cleanup_memmap(None, integrated_memmap_path)
-            except Exception:
-                pass
+            try: cleanup_memmap(None, integrated_memmap_path)
+            except Exception: pass
 
-        try:
-            _free_torch_memory()
-        except Exception:
-            pass
+        import threading as _threading
+        _threading.Thread(target=lambda: _free_torch_memory(), daemon=True).start()
 
         return integrated_image, per_file_rejections, ref_header
     

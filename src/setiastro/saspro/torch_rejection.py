@@ -1,4 +1,4 @@
-# pro/torch_rejection.py
+# src/setiastro/saspro/torch_rejection.py
 from __future__ import annotations
 import contextlib
 import numpy as np
@@ -730,19 +730,7 @@ def torch_reduce_tile(
     ignore_zero_pixels: bool = True,
     forced_reject_mask_np: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Returns: (tile_result, tile_rej_map)
-      tile_result: (th, tw, C) float32
-      tile_rej_map: (F, th, tw, C) bool   (collapse C on caller if needed)
 
-    forced_reject_mask_np:
-      Optional binary reject mask for this tile.
-      Accepted shapes:
-        (H, W)       -> broadcast to all frames/channels
-        (F, H, W)    -> per-frame mask, broadcast across channels
-        (F, H, W, 1) -> per-frame mask, already channel-shaped
-        (F, H, W, C) -> full per-frame/per-channel mask
-    """
     torch = _get_torch(prefer_cuda=True)
     dev = _device() or (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
 
@@ -757,6 +745,43 @@ def torch_reduce_tile(
             "This usually means a bad edge tile or corrupted frame; "
             "try disabling GPU rejection or reducing chunk size."
         )
+
+    # ── multi-channel: process each plane separately then recombine ──────
+    # Avoids the 9x tile/memory overhead of the 4D (F,H,W,3) path — each
+    # channel is reduced independently as (F,H,W,1) and stacked at the end.
+    #if C > 1:
+    #    results  = []
+    #    rej_maps = []
+    #    for ci in range(C):
+    #        r, rj = torch_reduce_tile(
+    #            ts_np[:, :, :, ci:ci+1],   # (F, H, W, 1) — zero-copy slice
+    #            weights_np,
+    #            algo_name=algo_name,
+    #            kappa=kappa,
+    #            iterations=iterations,
+    #            sigma_low=sigma_low,
+    #            sigma_high=sigma_high,
+    #            trim_fraction=trim_fraction,
+    #            esd_threshold=esd_threshold,
+    #            biweight_constant=biweight_constant,
+    #            modz_threshold=modz_threshold,
+    #            comet_hclip_k=comet_hclip_k,
+    #            comet_hclip_p=comet_hclip_p,
+    #            ignore_zero_pixels=ignore_zero_pixels,
+    ##            forced_reject_mask_np=(
+    #                forced_reject_mask_np[:, :, :, ci:ci+1]
+    #                if forced_reject_mask_np is not None
+    #                and forced_reject_mask_np.ndim == 4
+    #                else forced_reject_mask_np
+    #            ),
+    #        )
+    #        results.append(r)    # (H, W, 1)
+    #        rej_maps.append(rj)  # (F, H, W, 1)
+
+    #    return (
+    #        np.concatenate(results,  axis=-1),   # (H, W, C)
+    #        np.concatenate(rej_maps, axis=-1),   # (F, H, W, C)
+    #    )
     if C < 1:
         raise ValueError(f"torch_reduce_tile received input with C={C} channels (shape={ts_np.shape}). Expected C >= 1.")
 

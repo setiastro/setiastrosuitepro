@@ -2207,8 +2207,6 @@ def _solve_delta_job(args):
          model, h_reproj, ds,
          min_fwhm, max_ellipticity) = args 
 
-        ds = max(1, int(ds))
-
         try:
             cv2.setNumThreads(1)
             try: cv2.ocl.setUseOpenCL(False)
@@ -2224,6 +2222,10 @@ def _solve_delta_job(args):
                 return (orig_path, None, f"Could not load {os.path.basename(orig_path)}")
             gray = arr if arr.ndim == 2 else np.mean(arr, axis=2)
             gray = np.nan_to_num(gray, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
+
+        # Compute downsample to target ~1024px on long side
+        long_side = max(gray.shape[0], gray.shape[1])
+        ds = max(1, int(round(long_side / 1024)))
 
         # 2) downsample source to DS space
         if ds > 1:
@@ -2244,9 +2246,10 @@ def _solve_delta_job(args):
         )
 
         # 4) denoise sparse islands in DS space (cheaper)
-        src_for_match_ds = _suppress_tiny_islands(src_for_match_ds, det_sigma=det_sigma, minarea=minarea)
-        ref_for_match_ds = _suppress_tiny_islands(np.asarray(ref_small_ds, np.float32, order="C"),
-                                                  det_sigma=det_sigma, minarea=minarea)
+        # fast hot pixel suppression — 3x3 median replaces only extreme spikes,
+        # no SEP background estimation needed
+        #src_for_match_ds = _suppress_hotpx_fast(src_for_match_ds)
+        ref_for_match_ds = np.asarray(ref_small_ds, np.float32, order="C") #_suppress_hotpx_fast(np.asarray(ref_small_ds, np.float32, order="C"))
 
         # 5) AA delta solve in DS space
         m = (model or "affine").lower()
@@ -2489,6 +2492,22 @@ def _warp_satmask_with_kind(mask2d, kind: str, X: object, out_hw: tuple[int, int
     out[:hh, :ww] = src[:hh, :ww].astype(bool)
     return out
 
+def _suppress_hotpx_fast(img32: np.ndarray) -> np.ndarray:
+    """
+    Fast hot pixel suppression via 3x3 median, no SEP needed.
+    Only replaces pixels that are extreme outliers vs their local neighborhood.
+    Hot pixels typically spike 10-100x above neighbors; real stars have
+    smooth PSFs so their cores survive this filter.
+    """
+    import cv2
+    img32 = np.asarray(img32, np.float32, order="C")
+    med3  = cv2.medianBlur(img32, 3)
+
+    # Replace only pixels > 8x their local median — genuine hot pixels
+    # Real star cores are typically < 3x their immediate neighbors
+    ratio = np.where(med3 > 1e-9, img32 / med3, 1.0)
+    return np.where(ratio > 8.0, med3, img32)
+
 def _finalize_write_job(args):
     """
     Process-safe worker: read full-res, choose model, warp, save.
@@ -2587,8 +2606,8 @@ def _finalize_write_job(args):
         if model != "affine":
             dbg(f"[finalize] base={base} model={model} det_sigma={det_sigma} minarea={minarea} limit_stars={limit_stars}")
 
-            ds = 2
-            ds = max(1, int(ds))
+            long_side = max(ref2d.shape[0], ref2d.shape[1])
+            ds = max(1, int(round(long_side / 1024)))
 
             if ds > 1:
                 ref_ds = cv2.resize(ref2d, (max(1, Wref // ds), max(1, Href // ds)), interpolation=cv2.INTER_AREA)
@@ -2611,8 +2630,8 @@ def _finalize_write_job(args):
                 flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT_101
             )
 
-            src_pre_ds = _suppress_tiny_islands(src_pre_ds, det_sigma=float(det_sigma), minarea=int(minarea))
-            ref_ds     = _suppress_tiny_islands(ref_ds,     det_sigma=float(det_sigma), minarea=int(minarea))
+            #src_pre_ds = _suppress_hotpx_fast(src_pre_ds)
+            #ref_ds     = _suppress_hotpx_fast(ref_ds)
 
             max_cp = None
             try:
@@ -3475,9 +3494,9 @@ class StarRegistrationThread(QThread):
             # --- Build shared ref at full + downsampled solve-res ---
             self.ref_small_full = np.ascontiguousarray(ref2d.astype(np.float32, copy=False))
             print(f"[SRT] run() started, files={len(self.original_files)}, ref={self.reference}")
-            # Use existing preference key you already have: self.downsample
-            # (you load it in __init__: self.downsample = int(self.align_prefs.get("downsample", 2)))
-            ds = max(1, int(self.downsample))
+            # Always downsample to ~1024px long side — plenty for triangle invariants
+            long_side = max(ref2d.shape[0], ref2d.shape[1])
+            ds = max(1, int(round(long_side / 1024)))
             self.solve_downsample = ds
 
             if ds > 1 and cv2 is not None:
@@ -3667,7 +3686,10 @@ class StarRegistrationThread(QThread):
                     self.delta_transforms[k_orig] = float(np.hypot(T_new[0, 2], T_new[1, 2]))
 
                     # Accumulate: T_total = T_new ∘ T_prev
-                    T_prev = np.array(self.alignment_matrices.get(k_orig, IDENTITY_2x3), dtype=np.float64).reshape(2, 3)
+                    T_prev_raw = self.alignment_matrices.get(k_orig, IDENTITY_2x3)
+                    if T_prev_raw is None or np.asarray(T_prev_raw).size != 6:
+                        T_prev_raw = IDENTITY_2x3
+                    T_prev = np.array(T_prev_raw, dtype=np.float64).reshape(2, 3)
                     prev_3 = np.vstack([T_prev, [0, 0, 1]])
                     new_3  = np.vstack([T_new,  [0, 0, 1]])
                     self.alignment_matrices[k_orig] = (new_3 @ prev_3)[0:2, :]

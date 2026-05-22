@@ -1921,7 +1921,8 @@ class AstroSuiteProMainWindow(
         kb = self._build_cheats_keyboard_rows()
         gs = self._build_cheats_gesture_rows()
         dlg = _CheatSheetDialog(self, kb, gs)
-        dlg.exec()
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dlg.show()
 
     def _doc_by_ptr(self, ptr: int):
         dm = getattr(self, "doc_manager", None) or getattr(self, "docman", None)
