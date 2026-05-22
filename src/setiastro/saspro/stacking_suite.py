@@ -7386,17 +7386,12 @@ class StackingSuiteDialog(QDialog):
         )
         fl_align.addRow(self.tr("Max stars:"), self.align_limit_stars_spin)
 
-        # NEW: Timeout per frame (seconds)
+        # Timeout spinbox kept for QSettings back-compat but hidden from UI
         self.align_timeout_spin = QSpinBox()
-        self.align_timeout_spin.setRange(10, 3600)
-        self.align_timeout_spin.setSingleStep(10)
         self.align_timeout_spin.setValue(
             self.settings.value("stacking/align/timeout_per_job_sec", 300, type=int)
         )
-        self.align_timeout_spin.setToolTip(
-            self.tr("Per-frame alignment timeout for the parallel workers. Default 300s.")
-        )
-        fl_align.addRow(self.tr("Timeout per frame (s):"), self.align_timeout_spin)
+        self.align_timeout_spin.hide()
 
         left_col.addWidget(gb_align)
 

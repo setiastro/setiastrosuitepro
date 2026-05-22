@@ -3648,31 +3648,27 @@ class StarRegistrationThread(QThread):
             fut_info, pending = {}, set()
             for j in jobs:
                 f = executor.submit(_solve_delta_job, j)
-                fut_info[f] = (time.monotonic(), j[0])
+                fut_info[f] = j[0]
                 pending.add(f)
 
             while pending:
                 done, pending = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
                 for fut in done:
-                    start_t, returned_path = fut_info.pop(fut, (None, "<unknown>"))
+                    returned_path = fut_info.pop(fut, "<unknown>")
                     try:
                         curr_path_r, T_new, err = fut.result()
                     except Exception as e:
                         curr_path_r, T_new, err = (returned_path or "<unknown>", None, f"Worker crashed: {e}")
 
-                    # Map back to ORIGINAL key
                     curr_norm = os.path.normpath(curr_path_r)
                     k_orig = rev_current_to_orig.get(curr_norm, curr_norm)
 
                     if err:
                         self.on_worker_error(err)
-                        # MARK as failed so finalize skips it
                         k_orig_for_err = rev_current_to_orig.get(
-                            os.path.normpath(returned_path), 
+                            os.path.normpath(returned_path),
                             os.path.normpath(returned_path)
                         )
-                        # Only mark failed on pass 0 (first failure); don't overwrite a
-                        # previously good accumulated transform from an earlier pass.
                         if pass_index == 0:
                             self.alignment_matrices[k_orig_for_err] = None
                         self._increment_progress()
@@ -3685,7 +3681,6 @@ class StarRegistrationThread(QThread):
 
                     self.delta_transforms[k_orig] = float(np.hypot(T_new[0, 2], T_new[1, 2]))
 
-                    # Accumulate: T_total = T_new ∘ T_prev
                     T_prev_raw = self.alignment_matrices.get(k_orig, IDENTITY_2x3)
                     if T_prev_raw is None or np.asarray(T_prev_raw).size != 6:
                         T_prev_raw = IDENTITY_2x3

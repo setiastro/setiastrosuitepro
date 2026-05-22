@@ -385,6 +385,7 @@ def _init_splash():
             self._version = _EARLY_VERSION
             self._build = ""
             self.current_message = QCoreApplication.translate("Splash", "Starting...")
+            self.technical_message = ""
             self.progress_value = 0
 
             self.setWindowFlags(
@@ -454,6 +455,12 @@ def _init_splash():
 
         def setMessage(self, message: str):
             self.current_message = message
+            self.repaint()
+            if _app:
+                _app.processEvents()
+
+        def setTechnicalMessage(self, message: str):
+            self.technical_message = message
             self.repaint()
             if _app:
                 _app.processEvents()
@@ -584,6 +591,16 @@ def _init_splash():
                 self.current_message
             )
 
+            if self.technical_message:
+                technical_font = QFont("Segoe UI", 7)
+                painter.setFont(technical_font)
+                painter.setPen(QColor(80, 80, 110))
+                painter.drawText(
+                    QRect(bar_margin, bar_y + 28, bar_width, 16),
+                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                    self.technical_message
+                )
+
             painter.setFont(self.copyright_font)
             painter.setPen(QColor(100, 100, 130))
             painter.drawText(
@@ -681,6 +698,11 @@ def _update_splash(msg: str, progress: int):
         _splash.setMessage(msg)
         _splash.setProgress(progress)
 
+def _update_splash_technical(msg: str):
+    global _splash
+    if _splash is not None:
+        _splash.setTechnicalMessage(msg)
+
 def _bootstrap_imports():
     """
     Heavy imports + runtime bootstrap.
@@ -693,7 +715,31 @@ def _bootstrap_imports():
  
     if not _splash_initialized:
         _init_splash()
+    # ── Gravitas field messages ───────────────────────────────────────
+    _GRAVITAS_MESSAGES = [
+        "Preserving diffuse gravitas fields...",
+        "Initializing volumetric coherence engine...",
+        "Calibrating transitional density gradients...",
+        "Mapping low-frequency spatial continuity...",
+        "Harmonizing environmental structure tensors...",
+        "Synchronizing large-scale field topology...",
+        "Resolving photometric flux coherence vectors...",
+        "Warming up statistical homogenization suppressor...",
+        "Aligning nebular gravitas preservers...",
+        "Configuring spatially believable rendering pipeline...",
+        "Bootstrapping coherent emission field integrator...",
+        "Loading diffuse structure continuity module...",
+        "Preparing quantum-adjacent star alignment kernels...",
+        "Engaging probabilistic pixel gravity synthesizer...",
+        "Normalizing interstellar density transition buffers...",
+    ]
+    _grav_idx = [0]
 
+    def _update_splash_gravitas(progress: int):
+        msg = _GRAVITAS_MESSAGES[_grav_idx[0] % len(_GRAVITAS_MESSAGES)]
+        _grav_idx[0] += 1
+        _update_splash(msg, progress)
+    # ─────────────────────────────────────────────────────────────────
     import sys as _sys 
     if getattr(_sys, "frozen", False):
         try:
@@ -702,7 +748,8 @@ def _bootstrap_imports():
             _os.chdir(_Path.home())
         except Exception:
             pass
-    _update_splash(QCoreApplication.translate("Splash", "Loading PyTorch runtime..."), 5)
+    _update_splash_gravitas(5)
+    _update_splash_technical("Loading PyTorch runtime...")
  
     from setiastro.saspro.runtime_torch import (
         add_runtime_to_sys_path,
@@ -867,7 +914,8 @@ def _bootstrap_imports():
                 "via Settings -> Preferences."
             )
  
-    _update_splash(QCoreApplication.translate("Splash", "Preparing AI runtime cache..."), 7)
+    _update_splash_gravitas(7)
+    _update_splash_technical("Preparing AI runtime cache...")
     try:
         from setiastro.saspro.runtime_torch import prewarm_torch_cache
         prewarm_torch_cache(
@@ -880,7 +928,8 @@ def _bootstrap_imports():
     except Exception:
         pass
  
-    _update_splash(QCoreApplication.translate("Splash", "Loading standard libraries..."), 10)
+    _update_splash_gravitas(10)
+    _update_splash_technical("Loading standard libraries...")
  
     import importlib
     import json
@@ -906,9 +955,11 @@ def _bootstrap_imports():
     from typing import Dict, List, Optional, Set, Tuple
     from urllib.parse import quote, quote_plus
  
-    _update_splash(QCoreApplication.translate("Splash", "Loading NumPy..."), 15)
+    _update_splash_gravitas(15)
+    _update_splash_technical("Loading NumPy...")
  
-    _update_splash(QCoreApplication.translate("Splash", "Configuring matplotlib..."), 25)
+    _update_splash_gravitas(25)
+    _update_splash_technical("Configuring matplotlib...")
     from setiastro.saspro.config_bootstrap import ensure_mpl_config_dir
     _MPL_CFG_DIR = ensure_mpl_config_dir()
  
@@ -989,7 +1040,8 @@ def _bootstrap_imports():
             _force_mpl_no_tex()
         return _lightkurve_module if _lightkurve_module else None
  
-    _update_splash(QCoreApplication.translate("Splash", "Loading UI utilities..."), 30)
+    _update_splash_gravitas(30)
+    _update_splash_technical("Loading UI utilities...")
  
     from setiastro.saspro.widgets.common_utilities import (
         AboutDialog,
@@ -999,7 +1051,8 @@ def _bootstrap_imports():
         install_crash_handlers,
     )
  
-    _update_splash(QCoreApplication.translate("Splash", "Loading PyQt6 components..."), 45)
+    _update_splash_gravitas(45)
+    _update_splash_technical("Loading PyQt6 components...")
  
     from PyQt6 import sip
  
@@ -1020,13 +1073,15 @@ def _bootstrap_imports():
     except Exception:
         BUILD_TIMESTAMP = "dev"
  
-    _update_splash(QCoreApplication.translate("Splash", "Loading resources..."), 50)
+    _update_splash_gravitas(50)
+    _update_splash_technical("Loading resources...")
  
     from setiastro.saspro.resources import (
         icon_path, windowslogo_path,
     )
  
-    _update_splash(QCoreApplication.translate("Splash", "Configuring Qt message handler..."), 55)
+    _update_splash_gravitas(55)
+    _update_splash_technical("Configuring Qt message handler...")
  
     from PyQt6.QtCore import qInstallMessageHandler, QtMsgType
  
@@ -1042,7 +1097,8 @@ def _bootstrap_imports():
  
     qInstallMessageHandler(_qt_msg_handler)
  
-    _update_splash(QCoreApplication.translate("Splash", "Loading MDI widgets..."), 60)
+    _update_splash_gravitas(60)
+    _update_splash_technical("Loading MDI widgets...")
  
     from setiastro.saspro.mdi_widgets import (
         MdiArea, ViewLinkController, ConsoleListWidget, QtLogStream, _DocProxy,
@@ -1067,7 +1123,8 @@ def _bootstrap_imports():
         WIN_RESERVED_NAMES as _WIN_RESERVED,
     )
  
-    _update_splash(QCoreApplication.translate("Splash", "Loading main window module..."), 65)
+    _update_splash_gravitas(65)
+    _update_splash_technical("Loading main window module...")
  
     # Wrap the main_window import to catch sys.exit() / ImportError from any
     # remaining bare `import torch` that slipped through the stub net.
@@ -1092,7 +1149,8 @@ def _bootstrap_imports():
             ) from e
         raise
  
-    _update_splash(QCoreApplication.translate("Splash", "Modules loaded, finalizing..."), 70)
+    _update_splash_gravitas(70)
+    _update_splash_technical("Modules loaded, finalizing...")
  
     globals().update({
         "logging": logging,
