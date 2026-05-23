@@ -16,6 +16,13 @@ try:
     from setiastro.saspro.legacy.numba_utils import debayer_fits_fast
 except Exception as e:  # very unlikely in your env
     debayer_fits_fast = None
+from setiastro.saspro.bayer_utils import (
+    VALID_BAYER_PATTERNS,
+    detect_bayer_offsets_and_roworder as _detect_bayer_offsets_and_roworder_from_meta,
+    detect_bayer_pattern,
+    normalize_bayer_token as _normalize_bayer_token,
+    roworder_is_bottom_up as _roworder_is_bottom_up,
+)
 
 
 _RAW_EXTS = (".raf", ".raw", ".rw2", ".arw", ".nef", ".cr2", ".cr3", ".dng", ".orf", ".pef")
@@ -49,97 +56,16 @@ _XTRANS_METHODS = [
     ("AHD (rawpy)", "AHD"),
     ("DHT (rawpy)", "DHT"),
 ]
-_VALID = {"RGGB", "BGGR", "GRBG", "GBRG"}
+_VALID = set(VALID_BAYER_PATTERNS)
 
 # --- Bayer offset / roworder helpers ---------------------------------------
-
-_PAT2MAT = {
-    "RGGB": (("R","G"),("G","B")),
-    "BGGR": (("B","G"),("G","R")),
-    "GRBG": (("G","R"),("B","G")),
-    "GBRG": (("G","B"),("R","G")),
-}
-_MAT2PAT = {v: k for k, v in _PAT2MAT.items()}
-
-def _parse_int_maybe(x) -> Optional[int]:
-    try:
-        if x is None:
-            return None
-        if isinstance(x, (int, np.integer)):
-            return int(x)
-        s = str(x).strip()
-        if s == "":
-            return None
-        return int(float(s))  # tolerate "1.0"
-    except Exception:
-        return None
-
-def _header_get_case_insensitive(probe: dict, key: str) -> Optional[str]:
-    return probe.get(key.upper())
 
 def _detect_bayer_offsets_and_roworder(doc) -> tuple[int, int, str]:
     """
     Returns (xoff, yoff, roworder_str). Missing values default to 0.
     """
     hdr, meta, _ = _extract_doc_info(doc)
-
-    probe = {}
-    # header
-    if hdr is not None:
-        try:
-            for k in (list(hdr.keys()) if hasattr(hdr, "keys") else []):
-                try:
-                    v = hdr.get(k) if hasattr(hdr, "get") else hdr[k]
-                except Exception:
-                    v = None
-                probe[str(k).upper()] = "" if v is None else str(v)
-        except Exception:
-            pass
-    # metadata
-    if isinstance(meta, dict):
-        for k, v in list(meta.items()):
-            try:
-                probe[str(k).upper()] = "" if v is None else str(v)
-            except Exception:
-                pass
-
-    xoff = _parse_int_maybe(_header_get_case_insensitive(probe, "XBAYROFF")) or 0
-    yoff = _parse_int_maybe(_header_get_case_insensitive(probe, "YBAYROFF")) or 0
-    roworder = (probe.get("ROWORDER") or "").upper().strip()
-    return xoff, yoff, roworder
-
-def _bayer_apply_xy_offset(pat: str, xoff: int, yoff: int) -> str:
-    """
-    Apply parity shift (xoff,yoff) to the 2x2 CFA.
-    xoff/yoff are interpreted modulo 2.
-    """
-    pat = (pat or "").upper()
-    if pat not in _PAT2MAT:
-        return pat
-    m = _PAT2MAT[pat]
-    xo = int(xoff) & 1
-    yo = int(yoff) & 1
-    # parity shift: new(0,0) samples old(xo,yo)
-    nm = (
-        (m[yo][xo],     m[yo][xo ^ 1]),
-        (m[yo ^ 1][xo], m[yo ^ 1][xo ^ 1]),
-    )
-    return _MAT2PAT.get(nm, pat)
-
-def _roworder_is_bottom_up(roworder: str) -> bool:
-    s = (roworder or "").upper()
-    # tolerate common variants
-    return ("BOTTOM" in s) or (s in ("BU", "BOTTOMUP", "BOTTOM-UP", "UPWARDS", "UPWARD"))
-
-
-def _normalize_bayer_token(s: str) -> Optional[str]:
-    if not s:
-        return None
-    s = s.upper().replace(",", "").replace(" ", "").replace("/", "").replace("|", "")
-    if len(s) == 4 and set(s) <= {"R", "G", "B"}:
-        if s.count("R") == 1 and s.count("G") == 2 and s.count("B") == 1:
-            return s if s in _VALID else None
-    return None
+    return _detect_bayer_offsets_and_roworder_from_meta(hdr, meta)
 
 def _detect_bayer_from_header(doc) -> Optional[str]:
     """
@@ -147,72 +73,14 @@ def _detect_bayer_from_header(doc) -> Optional[str]:
     Returns 'RGGB'/'BGGR'/'GRBG'/'GBRG' or None if not found.
     """
     hdr, meta, _ = _extract_doc_info(doc)
-
-    probe = {}
-    # FITS-like header (astropy Header behaves like a dict, case-insensitive)
-    if hdr is not None:
-        try:
-            keys = list(hdr.keys()) if hasattr(hdr, "keys") else []
-            for k in keys:
-                try:
-                    v = hdr.get(k) if hasattr(hdr, "get") else hdr[k]
-                except Exception:
-                    v = None
-                probe[str(k).upper()] = "" if v is None else str(v)
-        except Exception:
-            pass
-
-    # Merge doc metadata (strings only)
-    if isinstance(meta, dict):
-        for k, v in list(meta.items()):
-            try:
-                probe[str(k).upper()] = "" if v is None else str(v)
-            except Exception:
-                continue
-
-    # 1) find base pattern as you already do
-    base_pat = None
-    keys = [
-        "BAYERPAT", "BAYERPATN", "BAYER_PATTERN", "BAYERPATTERN",
-        "CFAPATTERN", "CFA_PATTERN", "PATTERN", "COLORTYPE", "COLORFILTERARRAY"
-    ]
-    for k in keys:
-        raw = probe.get(k)
-        if not raw:
-            continue
-        s = str(raw).upper()
-        for pat in _VALID:
-            if pat in s:
-                base_pat = pat
-                break
-        if base_pat:
-            break
-        norm = _normalize_bayer_token(s)
-        if norm:
-            base_pat = norm
-            break
-
-    if not base_pat:
-        return None
-
-    # 2) apply XBAYROFF/YBAYROFF (+ ROWORDER parity if needed)
-    xoff, yoff, roworder = _detect_bayer_offsets_and_roworder(doc)
-
-    # If ROWORDER is bottom-up and we plan to flip the array for debayering,
-    # the y-parity shifts by (H-1) mod 2 after the flip.
-    H = None
+    image_shape = None
     try:
         img = getattr(doc, "image", None)
         if img is not None:
-            H = int(np.asarray(img).shape[0])
+            image_shape = np.asarray(img).shape
     except Exception:
-        H = None
-
-    if _roworder_is_bottom_up(roworder) and H is not None and H > 0:
-        yoff = (yoff + ((H - 1) & 1))  # adjust parity after vertical flip
-
-    eff = _bayer_apply_xy_offset(base_pat, xoff, yoff)
-    return eff
+        image_shape = None
+    return detect_bayer_pattern(hdr, meta, image_shape=image_shape)
 
 
 def _detect_cfa_family(doc) -> Optional[str]:

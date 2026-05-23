@@ -32,8 +32,9 @@ from collections import OrderedDict
 from setiastro.saspro.legacy.image_manager import load_image
 
 from setiastro.saspro.imageops.stretch import stretch_color_image, stretch_mono_image
+from setiastro.saspro.bayer_utils import detect_bayer_pattern
 
-from setiastro.saspro.legacy.numba_utils import debayer_fits_fast, debayer_raw_fast
+from setiastro.saspro.legacy.numba_utils import debayer_raw_fast
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 
 
@@ -2582,12 +2583,10 @@ class BlinkTab(QWidget):
     @staticmethod
     def debayer_image(image, file_path, header):
         """Check if image is OSC (One-Shot Color) and debayer if required."""
-        if file_path.lower().endswith(('.fits', '.fit', '.fts', '.fits.gz', '.fit.gz', '.fts.gz', '.fz')):
-            bayer_pattern = header.get('BAYERPAT', None)
-            if bayer_pattern:
-                image = debayer_fits_fast(image, bayer_pattern)
-        elif file_path.lower().endswith(('.cr2', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2', '.pef')):
-            image = debayer_raw_fast(image, bayer_pattern="RGGB")
+        _ = file_path
+        bayer_pattern = detect_bayer_pattern(header, image_shape=np.asarray(image).shape)
+        if bayer_pattern:
+            image = debayer_raw_fast(image, bayer_pattern=bayer_pattern)
         return image
 
     @staticmethod
