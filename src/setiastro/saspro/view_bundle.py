@@ -637,7 +637,7 @@ class ViewBundleDialog(QDialog):
         self.btn_add_files = QPushButton(self.tr("Add Files…"))
         self.btn_add_dir   = QPushButton(self.tr("Add Directory (Recursive)…"))        
         self.btn_compress = QPushButton(self.tr("Compress to Chip"))
-        self.drop_hint = QLabel(self.tr("Drop views here to add • Drop shortcuts here to apply to THIS bundle"))
+        self.drop_hint = QLabel(self.tr("Drop views here to add • Alt && Drop shortcuts here to apply to THIS bundle"))
         self.drop_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.drop_hint.setStyleSheet("color:#aaa; padding:6px; border:1px dashed #666; border-radius:6px;")
 

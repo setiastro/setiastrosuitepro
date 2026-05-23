@@ -4301,16 +4301,17 @@ class AstroSuiteProMainWindow(
         dlg = BlinkComparatorPro(doc_manager=self.docman)
         dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         dlg.setWindowTitle("Blink Comparator")
+        dlg.setWindowFlags(
+            Qt.WindowType.Window |
+            Qt.WindowType.WindowStaysOnTopHint
+        )
         try:
             dlg.setWindowIcon(QIcon(blink_path))
         except Exception:
             pass
-
-        # pass blink dialog back so we can bring it to front afterward
         dlg.sendToStacking.connect(
             lambda paths, target, d=dlg: self._on_blink_send_to_stacking(paths, target, d)
         )
-
         dlg.show()
 
     def _open_narrowband_normalization_tool(self):
