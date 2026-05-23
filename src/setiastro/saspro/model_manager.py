@@ -35,6 +35,14 @@ def require_model(filename: str) -> Path:
         )
     return p
 
+def optional_model_path(filename: str) -> Path | None:
+    """
+    Return full path to a model file if it exists, None if missing.
+    Never raises — use for optional/dev models.
+    """
+    p = model_path(filename)
+    return p if p.exists() else None
+
 def app_data_root() -> str:
     """
     Frozen-safe persistent data root.

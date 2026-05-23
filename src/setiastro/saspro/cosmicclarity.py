@@ -360,6 +360,7 @@ class CosmicClarityEngineWorker(QThread):
                         overlap=int(p.get("overlap", 64)),
                         execution_mode=sharpen_execution_mode,
                         batch_size_override=sharpen_batch_override,
+                        stellar_correct_mode=str(p.get("stellar_correct_mode", "sharpen_only")),  # ← ADD THIS
                         progress_cb=prog,
                     )
 
@@ -619,43 +620,72 @@ class CosmicClarityDialogPro(QDialog):
         sh.setHorizontalSpacing(8)
         sh.setVerticalSpacing(6)
 
+        # --- Stellar Correction Mode ---
+        self.lbl_stellar_correct = QLabel("Stellar Correction:")
+        sh.addWidget(self.lbl_stellar_correct, 0, 0)
+ 
+        corr_row = QHBoxLayout()
+        self.rb_correct_only    = QRadioButton("Correct Only")
+        self.rb_correct_sharpen = QRadioButton("Correct + Sharpen")
+        self.rb_sharpen_only    = QRadioButton("Sharpen Only")
+        self.rb_sharpen_only.setChecked(True)   # default: existing behaviour
+        self.rb_correct_only.setToolTip(
+            "Run the Aberration Correction model only.\n"
+            "Fixes pinched optics, coma, spherical aberration, chromatic aberration etc.\n"
+            "No sharpening is applied."
+        )
+        self.rb_correct_sharpen.setToolTip(
+            "Run Aberration Correction first, then Stellar Sharpening.\n"
+            "Best for images with both shape aberrations and soft stars."
+        )
+        self.rb_sharpen_only.setToolTip(
+            "Standard Cosmic Clarity stellar sharpening — no correction pre-pass."
+        )
+        corr_row.addWidget(self.rb_correct_only)
+        corr_row.addWidget(self.rb_correct_sharpen)
+        corr_row.addWidget(self.rb_sharpen_only)
+        corr_row.addStretch(1)
+        sh.addLayout(corr_row, 0, 1)
+ 
+        # --- Sharpening Mode (only visible when sharpening is active) ---
         self.lbl_sh_mode = QLabel("Sharpening Mode:")
         self.cmb_sh_mode = QComboBox()
         self.cmb_sh_mode.addItems(["Both", "Stellar Only", "Non-Stellar Only"])
-        sh.addWidget(self.lbl_sh_mode, 0, 0)
-        sh.addWidget(self.cmb_sh_mode, 0, 1)
+        sh.addWidget(self.lbl_sh_mode, 1, 0)
+        sh.addWidget(self.cmb_sh_mode, 1, 1)
 
         self.chk_sh_sep = QCheckBox("Sharpen RGB channels separately")
         self.chk_sh_sep.setToolTip(
             "Run the mono sharpening model independently on R, G, and B instead of a shared color model.\n"
             "Use for difficult color data where channels need slightly different sharpening."
         )
-        sh.addWidget(self.chk_sh_sep, 1, 0, 1, 2)
-
+        sh.addWidget(self.chk_sh_sep, 2, 0, 1, 2)
+ 
         self.chk_auto_psf = QCheckBox("Auto Detect PSF")
         self.chk_auto_psf.setChecked(True)
-        sh.addWidget(self.chk_auto_psf, 2, 0, 1, 2)
-
+        sh.addWidget(self.chk_auto_psf, 3, 0, 1, 2)
+ 
         self.lbl_psf = QLabel("Non-Stellar PSF (1.0–8.0): 3.0")
         self.sld_psf = QSlider(Qt.Orientation.Horizontal)
         self.sld_psf.setRange(10, 80)
         self.sld_psf.setValue(30)
         self.sld_psf.valueChanged.connect(self._psf_label)
-        _add_inline_slider(sh, 3, self.lbl_psf, self.sld_psf)
-
+        _add_inline_slider(sh, 4, self.lbl_psf, self.sld_psf)
+ 
         self.lbl_st_amt = QLabel("Stellar Amount (0–1): 0.50")
         self.sld_st_amt = QSlider(Qt.Orientation.Horizontal)
         self.sld_st_amt.setRange(0, 100)
-        self.sld_st_amt.setValue(50)   # UI default 0.50 => engine 0.50
+        self.sld_st_amt.setValue(50)
         self.sld_st_amt.valueChanged.connect(self._on_st_amt)
-        _add_inline_slider(sh, 4, self.lbl_st_amt, self.sld_st_amt)
-
+        _add_inline_slider(sh, 5, self.lbl_st_amt, self.sld_st_amt)
+ 
         self.lbl_nst_amt = QLabel("Non-Stellar Amount (0–1): 0.50")
         self.sld_nst_amt = QSlider(Qt.Orientation.Horizontal)
         self.sld_nst_amt.setRange(0, 100)
         self.sld_nst_amt.setValue(50)
         self.sld_nst_amt.valueChanged.connect(self._on_nst_amt)
-        _add_inline_slider(sh, 5, self.lbl_nst_amt, self.sld_nst_amt)
+        _add_inline_slider(sh, 6, self.lbl_nst_amt, self.sld_nst_amt)
+
 
         sh.setColumnStretch(1, 1)
         left_col.addWidget(grp_sh)
@@ -836,6 +866,18 @@ class CosmicClarityDialogPro(QDialog):
 
         self.chk_aberration_first.toggled.connect(self._save_cc_ui_settings)
         self.chk_dn_compat.toggled.connect(self._save_cc_ui_settings)
+        self.rb_correct_only.toggled.connect(self._mode_changed)
+        self.rb_correct_sharpen.toggled.connect(self._mode_changed)
+        self.rb_sharpen_only.toggled.connect(self._mode_changed)
+
+        from setiastro.saspro.resources import get_resources
+        _r = get_resources()
+        _cp = getattr(_r, "CC_C_PTH", None)
+        self._correct_available = bool(_cp and os.path.exists(_cp))
+        self.lbl_stellar_correct.setVisible(self._correct_available)
+        self.rb_correct_only.setVisible(self._correct_available)
+        self.rb_correct_sharpen.setVisible(self._correct_available)
+        self.rb_sharpen_only.setVisible(self._correct_available)
 
         self.setMinimumSize(760, 520)
         self.resize(860, 560)
@@ -1078,35 +1120,42 @@ class CosmicClarityDialogPro(QDialog):
 
     def _mode_changed(self):
         idx = self.cmb_mode.currentIndex()  # 0 Sharpen, 1 Denoise, 2 Both, 3 Super-Res
-        # Sharpen controls visible if Sharpen or Both
         show_sh = idx in (0, 2)
-        for w in (self.lbl_sh_mode, self.cmb_sh_mode, self.chk_sh_sep, self.chk_auto_psf, self.lbl_psf, self.sld_psf, self.lbl_st_amt, self.sld_st_amt, self.lbl_nst_amt, self.sld_nst_amt):
-            w.setVisible(show_sh)
-
-        # Denoise controls visible if Denoise or Both
         show_dn = idx in (1, 2)
-        for w in (
-            self.lbl_dn_lum, self.sld_dn_lum,
-            self.lbl_dn_col, self.sld_dn_col,
-            self.lbl_dn_mode, self.cmb_dn_mode,
-            self.chk_dn_sep, self.cmb_dn_model, self.lbl_dn_model
-        ):
-            w.setVisible(show_dn)
-
-        # Compatibility mode applies to Sharpen, Denoise, and Both (not superres)
-        self.chk_dn_compat.setVisible(idx in (0, 1, 2))
-
-        # Super-res controls visible if Super-Res
         show_sr = idx == 3
+        show_gpu = not show_sr
+ 
+        # Correction radio buttons only visible when Sharpen group is shown AND model is installed
+        _ca = getattr(self, "_correct_available", False)
+        for w in (self.lbl_stellar_correct,
+                  self.rb_correct_only, self.rb_correct_sharpen, self.rb_sharpen_only):
+            w.setVisible(show_sh and _ca)
+ 
+        # Sharpening sub-controls hidden when Correct Only is selected
+        _ca = getattr(self, "_correct_available", False)
+        sharpen_active = show_sh and not (_ca and self.rb_correct_only.isChecked())
+        for w in (self.lbl_sh_mode, self.cmb_sh_mode, self.chk_sh_sep,
+                  self.chk_auto_psf, self.lbl_psf, self.sld_psf,
+                  self.lbl_st_amt, self.sld_st_amt,
+                  self.lbl_nst_amt, self.sld_nst_amt):
+            w.setVisible(sharpen_active)
+ 
+        for w in (self.lbl_dn_lum, self.sld_dn_lum,
+                  self.lbl_dn_col, self.sld_dn_col,
+                  self.lbl_dn_mode, self.cmb_dn_mode,
+                  self.chk_dn_sep, self.cmb_dn_model, self.lbl_dn_model):
+            w.setVisible(show_dn)
+ 
+        self.chk_dn_compat.setVisible(idx in (0, 1, 2))
+ 
         for w in (self.lbl_scale, self.cmb_scale):
             w.setVisible(show_sr)
-
-        # GPU hidden for superres (matches your SASv2)
-        show_gpu = (not show_sr)
+ 
         self.lbl_gpu.setVisible(show_gpu)
         self.cmb_gpu.setVisible(show_gpu)
-
+ 
         self._update_denoise_dependent_ui()
+
 
     # ----- Validation -----
     def _validate_root(self) -> bool:
@@ -1429,6 +1478,12 @@ class CosmicClarityDialogPro(QDialog):
         self.sld_nst_amt.setValue(int(max(0, min(100, round(float(p.get("nonstellar_amount",0.5))*100)))))
         # NEW: allow presets to opt into per-channel sharpen (still defaults off without a preset)
         self.chk_sh_sep.setChecked(bool(p.get("sharpen_channels_separately", False)))
+        scm = p.get("stellar_correct_mode", "sharpen_only")
+        self.rb_correct_only.setChecked(scm == "correct_only")
+        self.rb_correct_sharpen.setChecked(scm == "correct_sharpen")
+        self.rb_sharpen_only.setChecked(scm not in ("correct_only", "correct_sharpen"))
+        self._mode_changed()   # refresh sub-control visibility
+
         if "chunk_size" in p:
             self.cmb_chunk.setCurrentText(str(int(p["chunk_size"])))
         if "overlap" in p:
@@ -1496,6 +1551,13 @@ class CosmicClarityDialogPro(QDialog):
                 "overlap": int(self.cmb_ov.currentText()),
                 "temp_stretch": self.chk_temp_stretch.isChecked(),
                 "target_median": self.sld_target_median.value() / 100.0,
+                "stellar_correct_mode": (
+                    (
+                        "correct_only"    if self.rb_correct_only.isChecked()    else
+                        "correct_sharpen" if self.rb_correct_sharpen.isChecked() else
+                        "sharpen_only"
+                    ) if getattr(self, "_correct_available", False) else "sharpen_only"
+                ),
 
                 # sharpen compatibility controls
                 "sharpen_execution_mode": "compatibility" if compat else "auto",
