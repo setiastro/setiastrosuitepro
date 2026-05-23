@@ -315,12 +315,22 @@ def _load_torch_models(torch, device, *, lite: bool, walking: bool = False) -> D
                 x = enc(x); skips.append(x); x = down(x)
             x = self.middle(x)
             for up, dec in zip(self.ups, self.decoders):
-                x = up(x); x = x + skips.pop(); x = dec(x)
+                x = up(x)
+                sk = skips.pop()
+                if x.shape != sk.shape:
+                    x = x[:, :, :sk.shape[2], :sk.shape[3]]
+                x = x + sk
+                x = dec(x)
             return self.ending(x)
 
         def forward(self, x):
             delta = self.forward_delta(x)
-            y = x + delta if self.residual_out else delta
+            if self.residual_out:
+                if x.shape != delta.shape:
+                    x = x[:, :, :delta.shape[2], :delta.shape[3]]
+                y = x + delta
+            else:
+                y = delta
             if self.clamp_out:
                 y = y.clamp(0.0, 1.0)
             return y

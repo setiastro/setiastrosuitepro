@@ -563,12 +563,22 @@ def _load_torch_models(torch, device) -> SharpenModels:
                 x = enc(x); skips.append(x); x = down(x)
             x = self.middle(x)
             for up, dec in zip(self.ups, self.decoders):
-                x = up(x); x = x + skips.pop(); x = dec(x)
+                x = up(x)
+                sk = skips.pop()
+                if x.shape != sk.shape:
+                    x = x[:, :, :sk.shape[2], :sk.shape[3]]
+                x = x + sk
+                x = dec(x)
             return self.ending(x)
 
         def forward(self, x):
             delta = self.forward_delta(x)
-            y = x + delta if self.residual_out else delta
+            if self.residual_out:
+                if x.shape != delta.shape:
+                    x = x[:, :, :delta.shape[2], :delta.shape[3]]
+                y = x + delta
+            else:
+                y = delta
             if self.clamp_out:
                 y = y.clamp(0.0, 1.0)
             return y
@@ -581,11 +591,16 @@ def _load_torch_models(torch, device) -> SharpenModels:
             psf_map = psf_t.view(b, 1, 1, 1).expand(b, 1, h, w)
             x4 = torch.cat([x_rgb, psf_map], dim=1)
             delta = self.forward_delta(x4)
-            y = x_rgb + delta if self.residual_out else delta
+            if self.residual_out:
+                res = x_rgb
+                if res.shape != delta.shape:
+                    res = res[:, :, :delta.shape[2], :delta.shape[3]]
+                y = res + delta
+            else:
+                y = delta
             if self.clamp_out:
                 y = y.clamp(0.0, 1.0)
             return y
-
     # ---- Aberration correction model ----
     # Identical U-Net family but middle_blk_num=6 and trained for PSF correction.
     # Loaded from deep_correct_stellar_AI4.deploy.pth (or .pth).
@@ -624,9 +639,18 @@ def _load_torch_models(torch, device) -> SharpenModels:
                 y = enc(y); skips.append(y); y = down(y)
             y = self.middle(y)
             for up, dec in zip(self.ups, self.decoders):
-                y = up(y); y = y + skips.pop(); y = dec(y)
+                y = up(y)
+                sk = skips.pop()
+                if y.shape != sk.shape:
+                    y = y[:, :, :sk.shape[2], :sk.shape[3]]
+                y = y + sk
+                y = dec(y)
             delta = self.ending(y)
-            return (x0 + delta) if self.residual_out else delta
+            if self.residual_out:
+                if x0.shape != delta.shape:
+                    x0 = x0[:, :, :delta.shape[2], :delta.shape[3]]
+                return x0 + delta
+            return delta
 
     R = get_resources()
 
@@ -802,10 +826,23 @@ def _infer_chunks_batched(
             for s in range(0, len(chunks2d), bs):
                 batch = chunks2d[s:s + bs]
 
-                arr = np.stack(
-                    [np.ascontiguousarray(np.asarray(ch, np.float32)) for ch in batch],
-                    axis=0
-                )[:, None, :, :]  # (B,1,H,W)
+                orig_shapes = [(np.asarray(ch, np.float32).shape) for ch in batch]
+                target_h = max(sh[0] for sh in orig_shapes)
+                target_w = max(sh[1] for sh in orig_shapes)
+                # Round up to multiple of 16 so U-Net stride-2 stages stay aligned
+                target_h = ((target_h + 15) // 16) * 16
+                target_w = ((target_w + 15) // 16) * 16
+
+                padded = []
+                for ch in batch:
+                    c = np.asarray(ch, np.float32)
+                    ph = target_h - c.shape[0]
+                    pw = target_w - c.shape[1]
+                    if ph > 0 or pw > 0:
+                        c = np.pad(c, ((0, ph), (0, pw)), mode="reflect")
+                    padded.append(np.ascontiguousarray(c))
+
+                arr = np.stack(padded, axis=0)[:, None, :, :]  # (B,1,H,W)
                 t = torch.from_numpy(arr).to(dev, dtype=torch.float32)
                 t_rgb = t.expand(-1, 3, -1, -1)
 
@@ -814,7 +851,8 @@ def _infer_chunks_batched(
                     y = y[:, 0].detach().float().cpu().numpy()
 
                 for bi, out_ch in enumerate(y):
-                    outputs[s + bi] = out_ch.astype(np.float32, copy=False)
+                    oh, ow = orig_shapes[bi]
+                    outputs[s + bi] = out_ch[:oh, :ow].astype(np.float32, copy=False)
 
                 done += len(batch)
                 if progress_cb is not None:
@@ -870,10 +908,23 @@ def _infer_chunks_psf_batched(
                 batch       = chunks2d[s:s + bs]
                 psf_batch   = psf01_list[s:s + bs]
 
-                arr     = np.stack(
-                    [np.ascontiguousarray(np.asarray(ch, np.float32)) for ch in batch],
-                    axis=0
-                )[:, None, :, :]  # (B,1,H,W)
+                orig_shapes = [(np.asarray(ch, np.float32).shape) for ch in batch]
+                target_h = max(sh[0] for sh in orig_shapes)
+                target_w = max(sh[1] for sh in orig_shapes)
+                # Round up to multiple of 16 so U-Net stride-2 stages stay aligned
+                target_h = ((target_h + 15) // 16) * 16
+                target_w = ((target_w + 15) // 16) * 16
+
+                padded = []
+                for ch in batch:
+                    c = np.asarray(ch, np.float32)
+                    ph = target_h - c.shape[0]
+                    pw = target_w - c.shape[1]
+                    if ph > 0 or pw > 0:
+                        c = np.pad(c, ((0, ph), (0, pw)), mode="reflect")
+                    padded.append(np.ascontiguousarray(c))
+
+                arr = np.stack(padded, axis=0)[:, None, :, :]  # (B,1,H,W)
                 psf_arr = np.array([[p] for p in psf_batch], dtype=np.float32)  # (B,1)
 
                 t     = torch.from_numpy(arr).to(dev, dtype=torch.float32)
@@ -885,7 +936,8 @@ def _infer_chunks_psf_batched(
                     y = y[:, 0].detach().float().cpu().numpy()
 
                 for bi, out_ch in enumerate(y):
-                    outputs[s + bi] = out_ch.astype(np.float32, copy=False)
+                    oh, ow = orig_shapes[bi]
+                    outputs[s + bi] = out_ch[:oh, :ow].astype(np.float32, copy=False)
 
                 done += len(batch)
                 if progress_cb is not None:
