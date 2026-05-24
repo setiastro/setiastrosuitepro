@@ -1853,6 +1853,15 @@ class ImageSubWindow(QWidget):
     def _send_to_shelf(self):
         sub = self._mdi_subwindow()
         mw  = self._find_main_window()
+        
+        # Activate neighbor before hiding so focus flows naturally
+        if sub is not None and mw is not None:
+            if hasattr(mw, "_activate_neighbor_on_close"):
+                try:
+                    mw._activate_neighbor_on_close(sub)
+                except Exception:
+                    pass
+
         if sub and mw and hasattr(mw, "window_shelf"):
             sub.hide()
             mw.window_shelf.add_entry(sub)

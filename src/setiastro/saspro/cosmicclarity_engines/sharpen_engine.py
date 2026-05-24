@@ -1169,7 +1169,20 @@ def sharpen_image_array(image: np.ndarray,
     def _run_with(models: SharpenModels) -> tuple[np.ndarray, bool]:
         bordered = add_border(img3, border_size=16)
 
-        # ── Aberration correction pre-pass ──────────────────────────────────
+        # ── Stretch decision — applies to ALL modes including correct-only ───
+        if bool(getattr(params, "temp_stretch", False)):
+            stretch_needed = True
+        else:
+            med_metric = float(np.median(bordered - np.min(bordered)))
+            stretch_needed = (med_metric < 0.08)
+
+        if stretch_needed:
+            tm = float(np.clip(getattr(params, "target_median", 0.25), 0.01, 0.50))
+            stretched, orig_min, orig_meds = stretch_image_unlinked_rgb(bordered, target_median=tm)
+        else:
+            stretched, orig_min, orig_meds = bordered, None, None
+
+        # ── Aberration correction pre-pass (on stretched data) ───────────────
         if stellar_correct_mode in ("correct_only", "correct_sharpen"):
             if models.correct is None:
                 try:
@@ -1179,9 +1192,9 @@ def sharpen_image_array(image: np.ndarray,
             else:
                 try:
                     progress_cb(0, 1, "Aberration correction")
-                    bordered = _correct_rgb_image(
+                    stretched = _correct_rgb_image(
                         models,
-                        bordered,
+                        stretched,
                         chunk_size=int(params.chunk_size),
                         overlap=int(params.overlap),
                         execution_mode=getattr(params, "execution_mode", "auto"),
@@ -1194,25 +1207,16 @@ def sharpen_image_array(image: np.ndarray,
                     except Exception:
                         pass
 
-        # ── Early exit for correct-only mode ────────────────────────────────
+        # ── Early exit for correct-only — unstretch before returning ─────────
         if stellar_correct_mode == "correct_only":
-            out = remove_border(bordered, border_size=16)
+            if stretch_needed:
+                corrected = unstretch_image_unlinked_rgb(stretched, orig_meds, orig_min, was_mono)
+            else:
+                corrected = stretched
+            out = remove_border(corrected, border_size=16)
             if was_mono and out.ndim == 3 and out.shape[2] == 3:
                 out = np.mean(out, axis=2, keepdims=True).astype(np.float32, copy=False)
             return np.clip(out, 0.0, 1.0), was_mono
-
-        # ── Standard sharpening (sharpen_only or correct_sharpen) ───────────
-        if bool(getattr(params, "temp_stretch", False)):
-            stretch_needed = True
-        else:
-            med_metric = float(np.median(bordered - np.min(bordered)))
-            stretch_needed = (med_metric < 0.08)
-
-        if stretch_needed:
-            tm = float(np.clip(getattr(params, "target_median", 0.25), 0.01, 0.50))
-            stretched, orig_min, orig_meds = stretch_image_unlinked_rgb(bordered, target_median=tm)
-        else:
-            stretched, orig_min, orig_meds = bordered, None, None
 
         if params.sharpen_channels_separately and (not was_mono):
             out = np.empty_like(stretched)
