@@ -52,7 +52,10 @@ class ModelsDownloadWorker(QObject):
                  expected_sha256: str | None = None, should_cancel=None,
                  walking_zip_url: str | None = None,
                  walking_zip_backup: str | None = None,
-                 walking_zip_tertiary: str | None = None):
+                 walking_zip_tertiary: str | None = None,
+                 correct_zip_url: str | None = None,
+                 correct_zip_backup: str | None = None,
+                 correct_zip_tertiary: str | None = None):
         super().__init__()
         self.primary = primary
         self.backup = backup
@@ -62,6 +65,9 @@ class ModelsDownloadWorker(QObject):
         self.walking_zip_url      = (walking_zip_url      or "").strip() or None
         self.walking_zip_backup   = (walking_zip_backup   or "").strip() or None
         self.walking_zip_tertiary = (walking_zip_tertiary or "").strip() or None
+        self.correct_zip_url      = (correct_zip_url      or "").strip() or None
+        self.correct_zip_backup   = (correct_zip_backup   or "").strip() or None
+        self.correct_zip_tertiary = (correct_zip_tertiary or "").strip() or None
 
     def run(self):
         try:
@@ -208,6 +214,65 @@ class ModelsDownloadWorker(QObject):
                                 f"Warning: Walking Noise supplement failed ({e}). "
                                 "You can install it later from Settings → AI Models."
                             )
+
+            # ── Phase 3: aberration correction supplement (optional, may not be released yet) ──
+            correct_sources = []
+
+            fid_c1 = extract_drive_file_id(self.correct_zip_url or "")
+            fid_c2 = extract_drive_file_id(self.correct_zip_backup or "")
+
+            if fid_c1:
+                correct_sources.append(("google_drive", fid_c1, "correct primary (Google Drive)"))
+            if fid_c2 and fid_c2 != fid_c1:
+                correct_sources.append(("google_drive", fid_c2, "correct backup (Google Drive)"))
+            if self.correct_zip_tertiary:
+                correct_sources.append(("http", self.correct_zip_tertiary, "correct tertiary (GitHub)"))
+
+            if correct_sources:
+                tmp_correct = os.path.join(tempfile.gettempdir(), "saspro_models_correct.zip")
+                self.progress.emit("Downloading Aberration Correction model (supplement)…")
+                for idx, (kind, value, label) in enumerate(correct_sources, start=1):
+                    try:
+                        if self.should_cancel and self.should_cancel():
+                            raise RuntimeError("Download canceled.")
+                        try:
+                            if os.path.exists(tmp_correct):
+                                os.remove(tmp_correct)
+                        except Exception:
+                            pass
+
+                        if kind == "google_drive":
+                            self.progress.emit(f"Trying {label}…")
+                            download_google_drive_file(
+                                value, tmp_correct,
+                                progress_cb=lambda s: self.progress.emit(s),
+                                should_cancel=self.should_cancel,
+                            )
+                        elif kind == "http":
+                            self.progress.emit(f"Trying {label}…")
+                            download_http_file(
+                                value, tmp_correct,
+                                progress_cb=lambda s: self.progress.emit(s),
+                                should_cancel=self.should_cancel,
+                            )
+
+                        from setiastro.saspro.model_manager import install_models_zip_supplement
+                        install_models_zip_supplement(
+                            tmp_correct,
+                            progress_cb=lambda s: self.progress.emit(s),
+                        )
+                        self.progress.emit("Aberration Correction model installed.")
+                        break
+
+                    except Exception as e:
+                        if idx < len(correct_sources):
+                            self.progress.emit(f"{label} failed, trying next… ({e})")
+                        else:
+                            self.progress.emit(
+                                f"Note: Aberration Correction model not yet available ({e}). "
+                                "Check Settings → AI Models when it is released."
+                            )
+            # correct_sources empty = URLs all None = model not released yet, skip silently
 
             # Done
             if src_kind == "google_drive":
