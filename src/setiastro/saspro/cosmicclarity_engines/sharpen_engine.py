@@ -760,6 +760,78 @@ def _encode_psf_log2_0_1(psf: float, psf_min: float = 1.0, psf_max: float = 8.0)
     t = (math.log2(psf) - math.log2(psf_min)) / (math.log2(psf_max) - math.log2(psf_min))
     return float(np.clip(t, 0.0, 1.0))
 
+def _infer_chunks_batched_rgb(
+    models: SharpenModels,
+    model: Any,
+    chunks_hwc: list[np.ndarray],  # each is HxWx3 float32
+    batch_size: int,
+    *,
+    progress_cb: Optional[Callable[[int, int], bool]] = None,
+    progress_done_start: int = 0,
+    progress_total: int = 0,
+) -> list[np.ndarray]:
+    """Like _infer_chunks_batched but input/output are HxWx3 (RGB) not HxW (mono)."""
+    if not chunks_hwc:
+        return []
+
+    if progress_total <= 0:
+        progress_total = len(chunks_hwc)
+
+    torch = models.torch
+    dev   = models.device
+    last_err = None
+
+    for bs in _iter_batch_sizes(batch_size):
+        try:
+            outputs: list[np.ndarray] = [None] * len(chunks_hwc)
+
+            done = 0
+            for s in range(0, len(chunks_hwc), bs):
+                batch = chunks_hwc[s:s + bs]
+
+                orig_shapes = [(c.shape[0], c.shape[1]) for c in batch]
+                target_h = max(sh[0] for sh in orig_shapes)
+                target_w = max(sh[1] for sh in orig_shapes)
+                target_h = ((target_h + 15) // 16) * 16
+                target_w = ((target_w + 15) // 16) * 16
+
+                # Build (B, 3, H, W) tensor
+                padded = []
+                for ch in batch:
+                    c = np.asarray(ch, np.float32)
+                    ph = target_h - c.shape[0]
+                    pw = target_w - c.shape[1]
+                    if ph > 0 or pw > 0:
+                        c = np.pad(c, ((0, ph), (0, pw), (0, 0)), mode="reflect")
+                    padded.append(np.ascontiguousarray(np.transpose(c, (2, 0, 1))))  # HWC->CHW
+
+                arr = np.stack(padded, axis=0)  # (B, 3, H, W)
+                t = torch.from_numpy(arr).to(dev, dtype=torch.float32)
+
+                with torch.no_grad(), _autocast_context(torch, dev):
+                    y = model(t)                          # (B, 3, H, W)
+                    y = y.detach().float().cpu().numpy()  # (B, 3, H, W)
+
+                for bi in range(len(batch)):
+                    oh, ow = orig_shapes[bi]
+                    # CHW -> HWC, crop padding
+                    outputs[s + bi] = np.transpose(
+                        y[bi, :, :oh, :ow], (1, 2, 0)
+                    ).astype(np.float32, copy=False)
+
+                done += len(batch)
+                if progress_cb is not None:
+                    if progress_cb(progress_done_start + done, progress_total) is False:
+                        raise RuntimeError("Cancelled.")
+
+            return outputs
+
+        except Exception as e:
+            last_err = e
+            if bs == 1 or not _is_recoverable_batch_error(e):
+                break
+
+    raise last_err
 
 def _infer_chunk_psf(models: SharpenModels, model: Any, chunk2d: np.ndarray, psf01: float) -> np.ndarray:
     torch = models.torch
@@ -1003,18 +1075,13 @@ def _correct_rgb_image(
     progress_done_start: int = 0,
     progress_total: int = 0,
 ) -> np.ndarray:
-    """
-    Run the aberration correction model over a full HxWx3 image.
-    Returns HxWx3 float32.  Gracefully returns the input unchanged if the
-    correction model was not loaded (e.g. pth file missing).
-    """
     if models.correct is None:
-        _dbg("_correct_rgb_image: correction model not loaded, skipping.", status_cb=print)
         return image_rgb
 
-    torch  = models.torch
-    dev    = models.device
-    H, W   = image_rgb.shape[:2]
+    H, W = image_rgb.shape[:2]
+    chunk_size = max(64, min(1024, int(chunk_size)))
+    overlap    = max(0, min(chunk_size - 1, int(overlap)))
+
     coords = _chunk_coords_with_overlap(H, W, chunk_size, overlap)
     total  = len(coords)
 
@@ -1028,86 +1095,89 @@ def _correct_rgb_image(
         batch_size_override=batch_size_override,
     )
 
-    # Accumulator (float64 to reduce rounding) + weight map
-    accum   = np.zeros((H, W, 3), dtype=np.float64)
-    weights = np.zeros((H, W),    dtype=np.float64)
+    # Extract HxWx3 chunks
+    TARGET_MED = 0.25
 
-    # Build Hanning window once at the most common shape
-    _hann_cache: dict[tuple[int,int], np.ndarray] = {}
+    def _mtf(tile: np.ndarray, m: float) -> np.ndarray:
+        """PixInsight-style MTF: moves median to TARGET_MED. No black point subtraction."""
+        if m <= 0.0 or m >= 1.0:
+            return tile
+        num = (m - 1.0) * TARGET_MED * tile
+        den = m * (TARGET_MED + tile - 1.0) - TARGET_MED * tile
+        den = np.where(np.abs(den) < 1e-12, 1e-12, den)
+        return np.clip(num / den, 0.0, 1.0).astype(np.float32, copy=False)
 
-    def _hann2d(h: int, w: int) -> np.ndarray:
-        if (h, w) not in _hann_cache:
-            wy = np.hanning(h).astype(np.float64)
-            wx = np.hanning(w).astype(np.float64)
-            _hann_cache[(h, w)] = np.outer(wy, wx)
-        return _hann_cache[(h, w)]
+    def _mtf_inv(tile: np.ndarray, m: float) -> np.ndarray:
+        """Inverse MTF — undoes _mtf(tile, m)."""
+        if m <= 0.0 or m >= 1.0:
+            return tile
+        # Solve the MTF equation for x given y=tile and original median m
+        # x = (m * y) / ((m - 1) * TARGET_MED * (1 - y) + m * y)  [derived algebraically]
+        y = tile
+        num = m * TARGET_MED * y
+        den = (m - 1.0) * TARGET_MED * (y - 1.0) + m * y * TARGET_MED
+        # Simpler closed form: inverse of MTF(x,m) with target t is MTF(x, 1-m) scaled
+        # Use the direct re-parameterization: inv_m = m / (2*m - 1) clamped
+        inv_m = m / (2.0 * m - 1.0) if abs(2.0 * m - 1.0) > 1e-9 else m
+        inv_m = float(np.clip(inv_m, 1e-6, 1.0 - 1e-6))
+        num2 = (inv_m - 1.0) * TARGET_MED * tile
+        den2 = inv_m * (TARGET_MED + tile - 1.0) - TARGET_MED * tile
+        den2 = np.where(np.abs(den2) < 1e-12, 1e-12, den2)
+        return np.clip(num2 / den2, 0.0, 1.0).astype(np.float32, copy=False)
 
-    last_err = None
-    for bs in _iter_batch_sizes(batch_size):
-        try:
-            accum[:]   = 0.0
-            weights[:] = 0.0
-            done = 0
+    def _compute_mtf_m(current_med: float) -> float:
+        """Solve for MTF m that maps current_med -> TARGET_MED."""
+        cb = float(np.clip(current_med, 1e-6, 1.0 - 1e-6))
+        tb = TARGET_MED
+        den = cb * (2.0 * tb - 1.0) - tb
+        if abs(den) < 1e-12:
+            den = 1e-12
+        m = (cb * (tb - 1.0)) / den
+        return float(np.clip(m, 1e-6, 1.0 - 1e-6))
 
-            for s in range(0, total, bs):
-                batch_coords = coords[s:s + bs]
+    # Extract chunks, store original median per tile for unstretch
+    chunks_hwc = []
+    tile_orig_meds = []
 
-                # Build batch tensor (B, 3, H_p, W_p) — pad each chunk to mult-of-16
-                padded_list, orig_shapes = [], []
-                for (i, j, ei, ej, _) in batch_coords:
-                    patch = image_rgb[i:ei, j:ej, :3].astype(np.float32, copy=False)
-                    ph, pw = patch.shape[:2]
-                    # pad to multiple of 16
-                    rh = (16 - ph % 16) % 16
-                    rw = (16 - pw % 16) % 16
-                    if rh or rw:
-                        patch = np.pad(patch, ((0, rh), (0, rw), (0, 0)), mode="reflect")
-                    padded_list.append(patch)
-                    orig_shapes.append((ph, pw))
+    for (i, j, ei, ej, _) in coords:
+        tile = image_rgb[i:ei, j:ej, :3].astype(np.float32, copy=False)
+        med = float(np.median(tile))
+        m = _compute_mtf_m(med)
+        tile = _mtf(tile, m)
+        tile_orig_meds.append(med)
+        chunks_hwc.append(tile)
 
-                # batch only if all same padded shape (group by shape like other infer fns)
-                shape_groups: dict[tuple[int,int], list] = {}
-                for bi, (patch, (ph, pw)) in enumerate(zip(padded_list, orig_shapes)):
-                    shape_groups.setdefault(patch.shape[:2], []).append((bi, patch, ph, pw))
+    inferred_raw = _infer_chunks_batched_rgb(
+        models, models.correct, chunks_hwc, batch_size=batch_size,
+        progress_cb=(lambda done, tot: progress_cb(progress_done_start + done, progress_total))
+                    if progress_cb is not None else None,
+        progress_done_start=0,
+        progress_total=total,
+    )
 
-                results: dict[int, np.ndarray] = {}
-                for _sh, items in shape_groups.items():
-                    arr = np.stack(
-                        [np.transpose(it[1], (2, 0, 1)) for it in items], axis=0
-                    ).astype(np.float32)   # (B, 3, Hp, Wp)
-                    t = torch.from_numpy(arr).to(dev, dtype=torch.float32)
-                    with torch.no_grad(), _autocast_context(torch, dev):
-                        out = models.correct(t)          # (B, 3, Hp, Wp)
-                        out = out.detach().float().cpu().numpy()
-                    for k, (bi, _patch, ph, pw) in enumerate(items):
-                        results[bi] = np.transpose(out[k, :, :ph, :pw], (1, 2, 0))  # (ph, pw, 3)
+    # Unstretch using original median — same math as unstretch_image_unlinked_rgb
+    inferred = []
+    for tile_out, orig_med in zip(inferred_raw, tile_orig_meds):
+        if orig_med > 0.0:
+            m_now = float(np.median(tile_out))
+            m0 = orig_med
+            if m_now > 1e-6 and m0 > 1e-6:
+                num = (m_now - 1.0) * m0 * tile_out
+                den = m_now * (m0 + tile_out - 1.0) - m0 * tile_out
+                den = np.where(np.abs(den) < 1e-12, 1e-12, den)
+                tile_out = np.clip(num / den, 0.0, 1.0).astype(np.float32, copy=False)
+        inferred.append(tile_out)
 
-                # Accumulate with Hanning weights
-                for bi, (i, j, ei, ej, _) in enumerate(batch_coords):
-                    ph, pw = orig_shapes[bi]
-                    corrected = np.clip(results[bi], 0.0, 1.0).astype(np.float64)
-                    w2d = _hann2d(ph, pw)
-                    accum[i:i+ph, j:j+pw]   += corrected * w2d[:, :, None]
-                    weights[i:i+ph, j:j+pw] += w2d
+    # Stitch each channel separately using the existing stitcher
+    out_channels = []
+    for c in range(3):
+        out_chunks = []
+        for (i, j, ei, ej, is_edge), tile_hwc in zip(coords, inferred):
+            out_chunks.append((tile_hwc[..., c], i, j, is_edge))
+        stitched = stitch_chunks_ignore_border(out_chunks, (H, W), border_size=16)
+        out_channels.append(stitched)
 
-                done += len(batch_coords)
-                if progress_cb is not None:
-                    if progress_cb(progress_done_start + done, progress_total) is False:
-                        raise RuntimeError("Cancelled.")
-
-            # Normalise
-            w_safe = np.maximum(weights, 1e-9)
-            result  = (accum / w_safe[:, :, None]).astype(np.float32)
-            return np.clip(result, 0.0, 1.0)
-
-        except Exception as e:
-            last_err = e
-            if bs == 1 or not _is_recoverable_batch_error(e):
-                break
-
-    raise last_err
-
-
+    return np.clip(np.stack(out_channels, axis=-1), 0.0, 1.0).astype(np.float32)
 # ---------------- Main API ----------------
 
 @dataclass
@@ -1169,7 +1239,6 @@ def sharpen_image_array(image: np.ndarray,
     def _run_with(models: SharpenModels) -> tuple[np.ndarray, bool]:
         bordered = add_border(img3, border_size=16)
 
-        # ── Stretch decision — applies to ALL modes including correct-only ───
         if bool(getattr(params, "temp_stretch", False)):
             stretch_needed = True
         else:
@@ -1182,19 +1251,46 @@ def sharpen_image_array(image: np.ndarray,
         else:
             stretched, orig_min, orig_meds = bordered, None, None
 
-        # ── Aberration correction pre-pass (on stretched data) ───────────────
-        if stellar_correct_mode in ("correct_only", "correct_sharpen"):
-            if models.correct is None:
-                try:
-                    status_cb("Aberration correction model not loaded — skipping correction pass.")
-                except Exception:
-                    pass
-            else:
+        # ── correct_only: correction pass then early return, no sharpening ───
+        if stellar_correct_mode == "correct_only":
+            if models.correct is not None:
                 try:
                     progress_cb(0, 1, "Aberration correction")
                     stretched = _correct_rgb_image(
-                        models,
-                        stretched,
+                        models, stretched,
+                        chunk_size=int(params.chunk_size),
+                        overlap=int(params.overlap),
+                        execution_mode=getattr(params, "execution_mode", "auto"),
+                        batch_size_override=getattr(params, "batch_size_override", 0),
+                        progress_cb=lambda d, t: progress_cb(d, t, "Aberration correction"),
+                    )
+                except Exception as e:
+                    try:
+                        status_cb(f"Aberration correction failed ({e}); returning original.")
+                    except Exception:
+                        pass
+            else:
+                try:
+                    status_cb("Aberration correction model not loaded — skipping.")
+                except Exception:
+                    pass
+
+            if stretch_needed:
+                out = unstretch_image_unlinked_rgb(stretched, orig_meds, orig_min, was_mono)
+            else:
+                out = stretched
+            out = remove_border(out, border_size=16)
+            if was_mono and out.ndim == 3 and out.shape[2] == 3:
+                out = np.mean(out, axis=2, keepdims=True).astype(np.float32, copy=False)
+            return np.clip(out, 0.0, 1.0), was_mono
+
+        # ── correct_sharpen: correction pre-pass then fall through to sharpen ─
+        if stellar_correct_mode == "correct_sharpen":
+            if models.correct is not None:
+                try:
+                    progress_cb(0, 1, "Aberration correction")
+                    stretched = _correct_rgb_image(
+                        models, stretched,
                         chunk_size=int(params.chunk_size),
                         overlap=int(params.overlap),
                         execution_mode=getattr(params, "execution_mode", "auto"),
@@ -1206,18 +1302,13 @@ def sharpen_image_array(image: np.ndarray,
                         status_cb(f"Aberration correction failed ({e}); continuing without correction.")
                     except Exception:
                         pass
-
-        # ── Early exit for correct-only — unstretch before returning ─────────
-        if stellar_correct_mode == "correct_only":
-            if stretch_needed:
-                corrected = unstretch_image_unlinked_rgb(stretched, orig_meds, orig_min, was_mono)
             else:
-                corrected = stretched
-            out = remove_border(corrected, border_size=16)
-            if was_mono and out.ndim == 3 and out.shape[2] == 3:
-                out = np.mean(out, axis=2, keepdims=True).astype(np.float32, copy=False)
-            return np.clip(out, 0.0, 1.0), was_mono
+                try:
+                    status_cb("Aberration correction model not loaded — skipping pre-pass.")
+                except Exception:
+                    pass
 
+        # ── sharpen_only or correct_sharpen fall-through: run sharpening ─────
         if params.sharpen_channels_separately and (not was_mono):
             out = np.empty_like(stretched)
             for c, label in enumerate(("R", "G", "B")):
@@ -1236,9 +1327,8 @@ def sharpen_image_array(image: np.ndarray,
 
         sharpened = remove_border(sharpened, border_size=16)
 
-        if was_mono:
-            if sharpened.ndim == 3 and sharpened.shape[2] == 3:
-                sharpened = np.mean(sharpened, axis=2, keepdims=True).astype(np.float32, copy=False)
+        if was_mono and sharpened.ndim == 3 and sharpened.shape[2] == 3:
+            sharpened = np.mean(sharpened, axis=2, keepdims=True).astype(np.float32, copy=False)
 
         return np.clip(sharpened, 0.0, 1.0), was_mono
 
