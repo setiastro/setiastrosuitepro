@@ -398,6 +398,7 @@ source .venv/bin/activate
 ```bash
 python -m pip install --upgrade pip
 pip install -r requirements.txt
+pip install -e .
 ```
 
 ### Step 4 — Launch the Application
