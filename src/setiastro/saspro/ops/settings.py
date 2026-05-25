@@ -639,7 +639,11 @@ class SettingsDialog(QDialog):
 
         WALKING_PRIMARY  = "https://drive.google.com/file/d/1yAn5gc6KVmkADvhKn-QKNNuDXSgAz1pY/view?usp=sharing"
         WALKING_BACKUP   = "https://drive.google.com/file/d/1IEB9xosEA0JPGc-L5gDfueJoFYYXN_67/view?usp=sharing"
-        WALKING_TERTIARY = "https://github.com/setiastro/setiastrosuitepro/releases/download/benchmarkFIT/SASPro_Models_Walking.zip"
+        WALKING_TERTIARY = "https://github.com/setiastro/setiastrosuitepro/releases/download/benchmarkFIT/SASPro_Models_AI4_Walking.zip"
+
+        CORRECT_PRIMARY  = None   # not yet — placeholder for when Drive links are ready
+        CORRECT_BACKUP   = None
+        CORRECT_TERTIARY = "https://github.com/setiastro/setiastrosuitepro/releases/download/benchmarkFIT/SASPro_Models_AI4_Correct.zip"
 
         self._models_worker = ModelsDownloadWorker(
             PRIMARY, BACKUP, TERTIARY,
@@ -648,8 +652,10 @@ class SettingsDialog(QDialog):
             walking_zip_url=WALKING_PRIMARY,
             walking_zip_backup=WALKING_BACKUP,
             walking_zip_tertiary=WALKING_TERTIARY,
+            correct_zip_url=CORRECT_PRIMARY,
+            correct_zip_backup=CORRECT_BACKUP,
+            correct_zip_tertiary=CORRECT_TERTIARY,
         )
-
         self._models_worker.moveToThread(self._models_thread)
 
         self._models_thread.started.connect(self._models_worker.run, Qt.ConnectionType.QueuedConnection)
@@ -728,6 +734,18 @@ class SettingsDialog(QDialog):
             lines.append(self.tr("Walking Noise models: ✅ installed"))
         else:
             lines.append(self.tr("Walking Noise models: — not installed"))
+
+        # Check aberration correction model
+        from setiastro.saspro.model_manager import check_correct_model_available
+        correct_on_disk = os.path.exists(os.path.join(models_dir, "deep_correct_stellar_AI4.pth"))
+        if correct_on_disk:
+            lines.append(self.tr("Aberration Correction model: ✅ installed"))
+        else:
+            correct_available = check_correct_model_available()
+            if correct_available:
+                lines.append(self.tr("Aberration Correction model: — not installed (available — click Download/Update Models)"))
+            else:
+                lines.append(self.tr("Aberration Correction model: — not yet released"))
 
         self.lbl_models_status.setText("\n".join(lines))
         self.lbl_models_status.setStyleSheet("color:#888;")

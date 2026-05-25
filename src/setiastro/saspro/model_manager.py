@@ -430,3 +430,27 @@ def sha256_file(path: str | os.PathLike, *, chunk_size: int = 1024 * 1024) -> st
                 break
             h.update(b)
     return h.hexdigest()
+
+CORRECT_MODEL_TERTIARY_URL = "https://github.com/setiastro/setiastrosuitepro/releases/download/benchmarkFIT/SASPro_Models_AI4_Correct.zip"
+CORRECT_MODEL_FILENAME = "deep_correct_stellar_AI4.pth"
+
+
+def check_correct_model_available() -> bool:
+    """
+    Probe GitHub to see if the correct model zip has been published yet.
+    Does a HEAD request only — never downloads anything.
+    Returns True if the asset exists (HTTP 200/302), False if not found or any error.
+    """
+    import urllib.request
+    try:
+        req = urllib.request.Request(CORRECT_MODEL_TERTIARY_URL, method="HEAD")
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            return resp.status < 400
+    except Exception:
+        return False
+
+
+def correct_model_installed() -> bool:
+    """Returns True if the aberration correction model file is present on disk."""
+    return os.path.exists(os.path.join(models_root(), CORRECT_MODEL_FILENAME))
+
