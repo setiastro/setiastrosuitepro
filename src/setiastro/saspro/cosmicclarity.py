@@ -822,26 +822,7 @@ class CosmicClarityDialogPro(QDialog):
         self._load_cc_ui_settings()
  
         # ------------------------------------------------------------------
-        # Step 3: now that load is done, set up dependent UI state
-        # ------------------------------------------------------------------
-        self._mode_changed()
-        self._update_denoise_dependent_ui()
- 
-        # Sync temp-stretch enable state without saving
-        self.lbl_target_median.setEnabled(self.chk_temp_stretch.isChecked())
-        self.sld_target_median.setEnabled(self.chk_temp_stretch.isChecked())
- 
-        # Sync PSF label
-        self._psf_label()
-        self._on_st_amt(self.sld_st_amt.value())
-        self._on_nst_amt(self.sld_nst_amt.value())
-        self.lbl_dn_lum.setText(f"Luminance Denoise (0–1): {self.sld_dn_lum.value()/100:.2f}")
-        self.lbl_dn_col.setText(f"Color Denoise (0–1): {self.sld_dn_col.value()/100:.2f}")
-        tm = self.sld_target_median.value()
-        self.lbl_target_median.setText(f"Target Median (0.01–0.50): {tm/100:.2f}")
- 
-        # ------------------------------------------------------------------
-        # Step 4: wire correct model availability
+        # Step 3: wire correct model availability FIRST so _mode_changed sees it
         # ------------------------------------------------------------------
         from setiastro.saspro.resources import get_resources
         _r = get_resources()
@@ -851,6 +832,25 @@ class CosmicClarityDialogPro(QDialog):
         self.rb_correct_only.setVisible(self._correct_available)
         self.rb_correct_sharpen.setVisible(self._correct_available)
         self.rb_sharpen_only.setVisible(self._correct_available)
+
+        # ------------------------------------------------------------------
+        # Step 4: now that _correct_available is set, apply dependent UI state
+        # ------------------------------------------------------------------
+        self._mode_changed()
+        self._update_denoise_dependent_ui()
+
+        # Sync temp-stretch enable state without saving
+        self.lbl_target_median.setEnabled(self.chk_temp_stretch.isChecked())
+        self.sld_target_median.setEnabled(self.chk_temp_stretch.isChecked())
+
+        # Sync PSF label
+        self._psf_label()
+        self._on_st_amt(self.sld_st_amt.value())
+        self._on_nst_amt(self.sld_nst_amt.value())
+        self.lbl_dn_lum.setText(f"Luminance Denoise (0–1): {self.sld_dn_lum.value()/100:.2f}")
+        self.lbl_dn_col.setText(f"Color Denoise (0–1): {self.sld_dn_col.value()/100:.2f}")
+        tm = self.sld_target_median.value()
+        self.lbl_target_median.setText(f"Target Median (0.01–0.50): {tm/100:.2f}")
  
         # ------------------------------------------------------------------
         # Step 5: wire headless flag
