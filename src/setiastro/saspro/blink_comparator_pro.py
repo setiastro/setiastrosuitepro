@@ -32,8 +32,9 @@ from collections import OrderedDict
 from setiastro.saspro.legacy.image_manager import load_image
 
 from setiastro.saspro.imageops.stretch import stretch_color_image, stretch_mono_image
+from setiastro.saspro.bayer_utils import detect_bayer_pattern
 
-from setiastro.saspro.legacy.numba_utils import debayer_fits_fast, debayer_raw_fast
+from setiastro.saspro.legacy.numba_utils import debayer_raw_fast
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 
 
@@ -64,6 +65,7 @@ class MetricsPanel(QWidget):
         self.metrics_data = None       # list of 4 numpy arrays
         self.flags = None              # list of bools
         self._threshold_initialized = [False]*5
+        self._last_group_id = None
         self._open_previews = []
         self._show_guides = True  # default on (or False if you prefer)
 
@@ -548,6 +550,7 @@ class MetricsPanel(QWidget):
 
 
             # initialize threshold line once
+            # initialize threshold line if this is a new group and no saved threshold
             if not self._threshold_initialized[m]:
                 mx, mn = np.nanmax(y), np.nanmin(y)
                 span   = mx-mn if mx!=mn else 1.0
@@ -625,7 +628,7 @@ class MetricsPanel(QWidget):
 
 class MetricsWindow(QWidget):
     def __init__(self, parent=None):
-        super().__init__(parent, Qt.WindowType.Window)
+        super().__init__(parent, Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint)
         self._thresholds_per_group: dict[str, List[float|None]] = {}
         self.setWindowTitle(self.tr("Frame Metrics"))
         self.resize(800, 600)
@@ -687,12 +690,16 @@ class MetricsWindow(QWidget):
         if gid == "__ALL__":
             self._current_indices = self._order_all
         else:
-            filt = gid  # this is the real FILTER string, not translated
+            filt = gid
             self._current_indices = [
                 i for i in self._order_all
                 if (self._all_images[i].get('header', {}) or {}).get('FILTER', 'Unknown') == filt
             ]
 
+        # Reset so plot() will auto-init lines for this group's data range
+        self.metrics_panel._threshold_initialized = [False] * 5
+
+        # Restore saved thresholds for this group (overrides auto-init if saved)
         self._apply_thresholds(gid)
         self.metrics_panel.plot(self._all_images, indices=self._current_indices)
 
@@ -752,7 +759,7 @@ class MetricsWindow(QWidget):
 
         # ─── show “All” by default and plot ───────────────────────
         self._current_indices = self._order_all
-        self._apply_thresholds("__All__")
+        self._apply_thresholds("__ALL__")
         self.metrics_panel.plot(self._all_images, indices=self._current_indices)
         self.metrics_panel.set_guides_visible(self.chk_guides.isChecked())
         self._update_status()
@@ -866,33 +873,20 @@ class MetricsWindow(QWidget):
         self.metrics_panel.refresh_colors_and_status()
         self._update_status()
 
-    def _on_group_change(self, name: str):
-        if name == self.tr("__All__"):
-            self._current_indices = self._order_all
-        else:
-            # preserve Tree order inside the chosen FILTER
-            filt = name
-            self._current_indices = [
-                i for i in self._order_all
-                if (self._all_images[i].get('header', {}) or {}).get('FILTER', 'Unknown') == filt
-            ]
-        self._apply_thresholds(name)
-        self.metrics_panel.plot(self._all_images, indices=self._current_indices)
 
     def _on_panel_threshold_change(self, metric_idx: int, new_val: float):
-        """User just dragged a threshold line."""
-        grp = self.group_combo.currentText()
-        # save it for this group
-        self._thresholds_per_group[grp][metric_idx] = new_val
-        self.metrics_panel.plot(self._all_images, indices=self._current_indices)
-        self.metrics_panel.set_guides_visible(self.chk_guides.isChecked())
-        # (if you also want immediate re-flagging in the tree, keep your BlinkTab logic hooked here)
+        grp = self._current_group_id()
+        thr_list = self._thresholds_per_group.setdefault(grp, [None] * 5)
+        while len(thr_list) < 5:
+            thr_list.append(None)
+        thr_list[metric_idx] = new_val
 
     def _apply_thresholds(self, group_id: str):
         saved = self._thresholds_per_group.get(group_id, [None] * 5)
         for idx, line in enumerate(self.metrics_panel.lines):
             if idx < len(saved) and saved[idx] is not None:
                 line.setPos(saved[idx])
+                self.metrics_panel._threshold_initialized[idx] = True  # mark as set, skip auto-init
 
 
     def update_metrics(self, loaded_images, order=None):
@@ -1154,7 +1148,7 @@ class BlinkTab(QWidget):
         self.zoom_level = 0.5  # Default zoom level
         self.dragging = False  # Track whether the mouse is dragging
         self.last_mouse_pos = None  # Store the last mouse position
-        self.thresholds_by_group: dict[str, List[float|None]] = {}
+
         self.aggressive_stretch_enabled = False
         self.current_sigma = 3.7
         self.current_pixmap = None
@@ -1186,6 +1180,21 @@ class BlinkTab(QWidget):
         try:
             s = QSettings()
             s.setValue("blink/window_geometry", self.saveGeometry())
+        except Exception:
+            pass
+
+    def _last_folder(self) -> str:
+        try:
+            s = QSettings()
+            return s.value("blink/last_folder", "", type=str) or ""
+        except Exception:
+            return ""
+
+    def _save_last_folder(self, path: str):
+        try:
+            folder = os.path.dirname(path) if os.path.isfile(path) else path
+            if folder and os.path.isdir(folder):
+                QSettings().setValue("blink/last_folder", folder)
         except Exception:
             pass
 
@@ -2149,9 +2158,11 @@ class BlinkTab(QWidget):
         file_paths, _ = QFileDialog.getOpenFileNames(
             self,
             self.tr("Add Additional Images"),
-            "",
+            self._last_folder(),
             self.tr("Images (*.png *.tif *.tiff *.fits *.fit *.xisf *.cr2 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef);;All Files (*)")
         )
+        if file_paths:
+            self._save_last_folder(file_paths[0])        
         # filter out duplicates
         new_paths = [p for p in file_paths if p not in self.image_paths]
         if not new_paths:
@@ -2222,12 +2233,6 @@ class BlinkTab(QWidget):
         panel = self.metrics_window.metrics_panel
 
         # --- restore thresholds into the UI instead of overwriting saved state ---
-        group = getattr(self, "current_group_name", None) or self.tr("All")
-        saved = self.thresholds_by_group.get(group) or self.thresholds_by_group.get(self.tr("All"))
-
-        if saved and len(saved) == len(panel.lines):
-            for line, v in zip(panel.lines, saved):
-                line.setValue(float(v))  # adjust name if your API is setPos/set_value/etc.
 
         self.metrics_window.show()
         self.metrics_window.raise_()
@@ -2274,52 +2279,58 @@ class BlinkTab(QWidget):
         if panel.metrics_data is None:
             return
 
-        group_id = self.metrics_window.group_combo.currentData()
-        if not isinstance(group_id, str):
-            group_id = "__ALL__"
+        group_id = self.metrics_window._current_group_id()
 
-        thr_list = self.thresholds_by_group.setdefault(group_id, [None] * 5)
-        # Expand any stale 4-element list from earlier in the session
+        # Save into MetricsWindow's dict — single source of truth
+        thr_list = self.metrics_window._thresholds_per_group.setdefault(group_id, [None] * 5)
         while len(thr_list) < 5:
             thr_list.append(None)
         thr_list[metric_idx] = threshold
 
-        if group_id == "__ALL__":
-            indices = range(len(self.loaded_images))
-        else:
-            filt = group_id
-            indices = [
-                i for i, e in enumerate(self.loaded_images)
-                if (e.get('header', {}) or {}).get('FILTER', 'Unknown') == filt
-            ]
+        # Re-evaluate ALL frames using ALL groups' thresholds cumulatively.
+        # A frame is flagged if ANY group whose threshold covers it triggers.
+        # Start clean: unflag everything, then re-apply all saved thresholds.
+        for entry in self.loaded_images:
+            entry['flagged'] = False
 
-        for i in indices:
-            entry = self.loaded_images[i]
-            flagged = False
-            for m, thr in enumerate(thr_list):
-                if thr is None:
-                    continue
-                if m >= len(panel.metrics_data):
-                    continue
-                val = panel.metrics_data[m][i]
-                if np.isnan(val):
-                    continue
-                if (m in (0, 1, 2) and val > thr) or (m in (3, 4) and val < thr):
-                    flagged = True
-                    break
-            entry['flagged'] = flagged
+        for gid, thr_list in self.metrics_window._thresholds_per_group.items():
+            if gid == "__ALL__":
+                indices = range(len(self.loaded_images))
+            else:
+                indices = [
+                    i for i, e in enumerate(self.loaded_images)
+                    if (e.get('header', {}) or {}).get('FILTER', 'Unknown') == gid
+                ]
 
+            for i in indices:
+                if self.loaded_images[i]['flagged']:
+                    continue  # already flagged, skip further checks
+                for m, thr in enumerate(thr_list):
+                    if thr is None:
+                        continue
+                    if m >= len(panel.metrics_data):
+                        continue
+                    val = panel.metrics_data[m][i]
+                    if np.isnan(val):
+                        continue
+                    if (m in (0, 1, 2) and val > thr) or (m in (3, 4) and val < thr):
+                        self.loaded_images[i]['flagged'] = True
+                        break
+
+        # Update tree visuals for all frames
+        RED = Qt.GlobalColor.red
+        normal = self.fileTree.palette().color(QPalette.ColorRole.WindowText)
+        for i, entry in enumerate(self.loaded_images):
             item = self.get_tree_item_for_index(i)
-            if item:
-                RED = Qt.GlobalColor.red
-                normal = self.fileTree.palette().color(QPalette.ColorRole.WindowText)
-                name = item.text(0).lstrip("⚠️ ")
-                if flagged:
-                    item.setText(0, f"⚠️ {name}")
-                    item.setForeground(0, QBrush(RED))
-                else:
-                    item.setText(0, name)
-                    item.setForeground(0, QBrush(normal))
+            if not item:
+                continue
+            name = item.text(0).lstrip("⚠️ ")
+            if entry['flagged']:
+                item.setText(0, f"⚠️ {name}")
+                item.setForeground(0, QBrush(RED))
+            else:
+                item.setText(0, name)
+                item.setForeground(0, QBrush(normal))
 
         panel.flags = [e['flagged'] for e in self.loaded_images]
         panel._refresh_scatter_colors()
@@ -2459,7 +2470,9 @@ class BlinkTab(QWidget):
 
     def openDirectoryDialog(self):
         """Allow users to select a directory and load all images within it recursively."""
-        directory = QFileDialog.getExistingDirectory(self, self.tr("Select Directory"), "")
+        directory = QFileDialog.getExistingDirectory(self, self.tr("Select Directory"), self._last_folder())
+        if directory:
+            self._save_last_folder(directory)
         if directory:
             # Supported image extensions
             supported_extensions = (
@@ -2582,12 +2595,10 @@ class BlinkTab(QWidget):
     @staticmethod
     def debayer_image(image, file_path, header):
         """Check if image is OSC (One-Shot Color) and debayer if required."""
-        if file_path.lower().endswith(('.fits', '.fit', '.fts', '.fits.gz', '.fit.gz', '.fts.gz', '.fz')):
-            bayer_pattern = header.get('BAYERPAT', None)
-            if bayer_pattern:
-                image = debayer_fits_fast(image, bayer_pattern)
-        elif file_path.lower().endswith(('.cr2', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2', '.pef')):
-            image = debayer_raw_fast(image, bayer_pattern="RGGB")
+        _ = file_path
+        bayer_pattern = detect_bayer_pattern(header, image_shape=np.asarray(image).shape)
+        if bayer_pattern:
+            image = debayer_raw_fast(image, bayer_pattern=bayer_pattern)
         return image
 
     @staticmethod
@@ -2870,10 +2881,11 @@ class BlinkTab(QWidget):
         file_paths, _ = QFileDialog.getOpenFileNames(
             self,
             self.tr("Open Images"),
-            "",
+            self._last_folder(),
             self.tr("Images (*.png *.tif *.tiff *.fits *.fit *.xisf *.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef);;All Files (*)")
         )
-        
+        if file_paths:
+            self._save_last_folder(file_paths[0])        
         # Filter out already loaded images to prevent duplicates
         new_file_paths = [path for path in file_paths if path not in self.image_paths]
 
@@ -4152,4 +4164,3 @@ BlinkComparatorPro = BlinkTab
 class BlinkComparatorPro(BlinkTab):
     """Alias class so the main app can import a SASpro-named tool."""
     pass
-

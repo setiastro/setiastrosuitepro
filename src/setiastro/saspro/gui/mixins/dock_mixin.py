@@ -780,6 +780,69 @@ class DockMixin:
         host.raise_()
         host.activateWindow()
 
+    def save_dock_host_state(self):
+        host = getattr(self, "dock_host", None)
+        if host is None:
+            return
+
+        s = self.settings
+        k = self._mw_key()
+
+        try:
+            s.setValue(f"{k}/dock_host/active", True)
+            s.setValue(f"{k}/dock_host/geometry", host.saveGeometry())
+            s.setValue(f"{k}/dock_host/state", host.saveState())
+        except Exception:
+            pass
+
+        # Record which dock object names were in the host
+        in_host = []
+        for dock in self._all_known_docks():
+            if self._dock_is_in_host(dock):
+                in_host.append(dock.objectName())
+        s.setValue(f"{k}/dock_host/docks", in_host)
+        s.sync()
+
+    def restore_dock_host_state(self):
+        s = self.settings
+        k = self._mw_key()
+
+        was_active = s.value(f"{k}/dock_host/active", False, type=bool)
+        if not was_active:
+            return
+
+        in_host = s.value(f"{k}/dock_host/docks", [], type=list)
+        if not in_host:
+            return
+
+        # Build name -> dock map
+        name_map = {d.objectName(): d for d in self._all_known_docks()}
+
+        host = self._ensure_dock_host()
+
+        # Move the right docks into the host first
+        for name in in_host:
+            dock = name_map.get(name)
+            if dock is not None:
+                self._move_dock_to_host(dock)
+
+        # Restore host geometry then state
+        geom = s.value(f"{k}/dock_host/geometry", None)
+        if geom is not None and len(geom) > 0:
+            try:
+                host.restoreGeometry(geom)
+            except Exception:
+                pass
+
+        state = s.value(f"{k}/dock_host/state", None)
+        if state is not None and len(state) > 0:
+            try:
+                host.restoreState(state)
+            except Exception:
+                pass
+
+        host.show()
+
     def _return_all_host_docks_to_main(self):
         default_areas = {
             "ExplorerDock": Qt.DockWidgetArea.LeftDockWidgetArea,

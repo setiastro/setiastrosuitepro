@@ -472,7 +472,7 @@ class StatisticalStretchDialog(QDialog):
 
             # mode-affecting => refresh clip stats
             self._schedule_clip_stats()
-
+        self._load_settings()
         self.chk_luma_only.toggled.connect(_on_luma_only_toggled)
         _on_luma_only_toggled(self.chk_luma_only.isChecked())
 
@@ -494,7 +494,7 @@ class StatisticalStretchDialog(QDialog):
         self.chk_curves.toggled.connect(self._save_settings)
         self.sld_curves.valueChanged.connect(self._save_settings)
 
-        self._load_settings()
+        
         #self._restore_window_geometry()
         # Initial preview + clip stats
         self._populate_initial_preview()

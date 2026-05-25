@@ -1,7 +1,7 @@
 # src/setiastro/saspro/cosmicclarity_engines/sharpen_engine.py
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional, Any
 import os
@@ -35,19 +35,16 @@ _SCOND_NAFNET = dict(
     middle_blk_num=4,
 )
 
+# Aberration correction model — wider middle than sharpening (6 vs 4)
+_CORRECT_NAFNET = dict(
+    width=32,
+    enc_blk_nums=(2, 4, 6, 8),
+    dec_blk_nums=(2, 2, 2, 2),
+    middle_blk_num=6,
+)
+
 def _dbg(msg: str, status_cb=print):
     pass
-    #"""Debug print to terminal; also tries status_cb."""
-    #if not _DEBUG_SHARPEN:
-    #    return
-
-    #ts = time.strftime("%H:%M:%S")
-    #line = f"[SharpenDBG {ts}] {msg}"
-    #print(line, flush=True)
-    #try:
-    #    status_cb(line)
-    #except Exception:
-    #    pass
 
 
 ProgressCB = Callable[[int, int, str], bool]  # True=continue, False=cancel
@@ -64,11 +61,8 @@ def _get_torch(*, prefer_cuda: bool, prefer_dml: bool, status_cb=print):
     )
 
 def _get_ort(status_cb=print):
-    """
-    Import onnxruntime AFTER runtime_torch has added runtime site-packages to sys.path.
-    """
     try:
-        import onnxruntime as ort  # type: ignore
+        import onnxruntime as ort
         return ort
     except Exception as e:
         try:
@@ -84,10 +78,6 @@ def _nullcontext():
 
 
 def _autocast_context(torch, device) -> Any:
-    """
-    Use new torch.amp.autocast('cuda') when available.
-    Keep your cap >= 8.0 rule.
-    """
     try:
         if hasattr(device, "type") and device.type == "cuda":
             major, minor = torch.cuda.get_device_capability()
@@ -96,18 +86,12 @@ def _autocast_context(torch, device) -> Any:
                 if hasattr(torch, "amp") and hasattr(torch.amp, "autocast"):
                     return torch.amp.autocast(device_type="cuda")
                 return torch.cuda.amp.autocast()
-
         elif hasattr(device, "type") and device.type == "mps":
-            # MPS often benefits from autocast in newer torch versions
             if hasattr(torch, "amp") and hasattr(torch.amp, "autocast"):
                 return torch.amp.autocast(device_type="mps")
-
     except Exception:
         pass
-
     return _nullcontext()
-
-
 
 
 def _to_3ch(image: np.ndarray) -> tuple[np.ndarray, bool]:
@@ -122,7 +106,6 @@ def _to_3ch(image: np.ndarray) -> tuple[np.ndarray, bool]:
     return image, False
 
 
-# Your BT.601 luminance extraction / merge
 def extract_luminance_rgb(image_rgb: np.ndarray):
     image_rgb = np.asarray(image_rgb, dtype=np.float32)
     if image_rgb.shape[-1] != 3:
@@ -153,7 +136,7 @@ def merge_luminance(y: np.ndarray, cb: np.ndarray, cr: np.ndarray) -> np.ndarray
     return ycbcr_to_rgb(np.clip(y, 0, 1), np.clip(cb, 0, 1), np.clip(cr, 0, 1))
 
 
-# ---------------- Chunking & stitching (your exact behavior) ----------------
+# ---------------- Chunking & stitching ----------------
 
 def split_image_into_chunks_with_overlap(image2d: np.ndarray, chunk_size: int, overlap: int):
     H, W = image2d.shape
@@ -184,41 +167,29 @@ def stitch_chunks_ignore_border(chunks, image_shape, border_size: int = 16):
         bh = min(border_size, h // 2)
         bw = min(border_size, w // 2)
 
-        y0 = i + bh
-        y1 = i + h - bh
-        x0 = j + bw
-        x1 = j + w - bw
+        y0 = i + bh;  y1 = i + h - bh
+        x0 = j + bw;  x1 = j + w - bw
 
-        # empty inner region? skip
         if y1 <= y0 or x1 <= x0:
             continue
 
         inner = chunk[bh:h-bh, bw:w-bw]
 
-        # clip destination to image bounds
-        yy0 = max(0, y0)
-        yy1 = min(H, y1)
-        xx0 = max(0, x0)
-        xx1 = min(W, x1)
+        yy0 = max(0, y0);  yy1 = min(H, y1)
+        xx0 = max(0, x0);  xx1 = min(W, x1)
 
-        # did clipping erase it?
         if yy1 <= yy0 or xx1 <= xx0:
             continue
 
-        # clip source to match clipped destination
-        sy0 = yy0 - y0
-        sy1 = sy0 + (yy1 - yy0)
-        sx0 = xx0 - x0
-        sx1 = sx0 + (xx1 - xx0)
+        sy0 = yy0 - y0;  sy1 = sy0 + (yy1 - yy0)
+        sx0 = xx0 - x0;  sx1 = sx0 + (xx1 - xx0)
 
         src = inner[sy0:sy1, sx0:sx1]
-
         stitched[yy0:yy1, xx0:xx1] += src
         weights[yy0:yy1,  xx0:xx1] += 1.0
 
     stitched /= np.maximum(weights, 1.0)
     return stitched
-
 
 
 def add_border(image: np.ndarray, border_size: int = 16) -> np.ndarray:
@@ -241,14 +212,13 @@ def blend_images(before: np.ndarray, after: np.ndarray, amount: float) -> np.nda
     return (1.0 - a) * before + a * after
 
 
-# ---------------- Stretch / unstretch (your current logic) ----------------
+# ---------------- Stretch / unstretch ----------------
 
 def stretch_image_unlinked_rgb(image_rgb: np.ndarray, target_median: float = 0.25):
     x = image_rgb.astype(np.float32, copy=True)
     orig_min = float(np.min(x))
     x -= orig_min
     orig_meds = [float(np.median(x[..., c])) for c in range(3)]
-
     for c in range(3):
         m = orig_meds[c]
         if m != 0:
@@ -271,12 +241,11 @@ def unstretch_image_unlinked_rgb(image_rgb: np.ndarray, orig_meds, orig_min: flo
     x += float(orig_min)
     x = np.clip(x, 0, 1)
     if was_mono:
-        # match your behavior: return mono with keepdims
         x = np.mean(x, axis=2, keepdims=True)
     return x
 
 
-# ---------------- Auto PSF per chunk (SEP) ----------------
+# ---------------- Auto PSF ----------------
 
 def measure_psf_radius(chunk2d: np.ndarray, default_radius: float = 3.0) -> float:
     if sep is None:
@@ -295,24 +264,16 @@ def measure_psf_radius(chunk2d: np.ndarray, default_radius: float = 3.0) -> floa
                 continue
             sigma = float(np.sqrt(o["a"] * o["b"]))
             fwhm = sigma * 2.0 * np.sqrt(2.0 * np.log(2.0))
-            radius = fwhm * 0.5
-            radii.append(radius)
+            radii.append(fwhm * 0.5)
         return float(np.median(radii)) if radii else default_radius
     except Exception:
         return default_radius
 
+
 def _is_device_lost_error(err: Exception) -> bool:
     s = f"{type(err).__name__}: {err}".lower()
-    needles = [
-        "887a0005",
-        "getdeviceremovedreason",
-        "device removed",
-        "device lost",
-        "gpu-apparaat",
-        "onderbroken",
-        "dmlexecutionprovider",
-        "executionprovider.cpp",
-    ]
+    needles = ["887a0005", "getdeviceremovedreason", "device removed", "device lost",
+               "gpu-apparaat", "onderbroken", "dmlexecutionprovider", "executionprovider.cpp"]
     return any(n in s for n in needles)
 
 
@@ -330,27 +291,13 @@ def _iter_batch_sizes(initial: int):
 
 def _is_recoverable_batch_error(err: Exception) -> bool:
     msg = f"{type(err).__name__}: {err}".lower()
-    needles = [
-        "out of memory",
-        "cuda",
-        "cudnn",
-        "cublas",
-        "directml",
-        "dml",
-        "mps",
-        "allocation",
-        "alloc",
-        "resource",
-        "execution provider",
-        "insufficient memory",
-        "bad allocation",
-        "memory",
-        "887a0005",
-        "device removed",
-        "device lost",
-    ]
+    needles = ["out of memory", "cuda", "cudnn", "cublas", "directml", "dml", "mps",
+               "allocation", "alloc", "resource", "execution provider", "insufficient memory",
+               "bad allocation", "memory", "887a0005", "device removed", "device lost"]
     return any(n in msg for n in needles)
-# ---------------- Model bundle + loading ----------------
+
+
+# ---------------- Model bundle ----------------
 
 @dataclass
 class SharpenModels:
@@ -362,99 +309,69 @@ class SharpenModels:
     ns4: Any
     ns8: Any
     ns_cond: Any | None = None
-    stellar_cond: bool = False          # <-- NEW: stellar uses PSF input?
+    stellar_cond: bool = False
+    correct: Any | None = None        # ← aberration correction model (NAFNetCorrect)
     torch: Any | None = None
 
 
 def _pad2d_to_multiple(x: np.ndarray, mult: int = 16, mode: str = "reflect") -> tuple[np.ndarray, int, int]:
-    """Pad 2D array on bottom/right so H,W are multiples of `mult`."""
     h, w = x.shape
     ph = (mult - (h % mult)) % mult
     pw = (mult - (w % mult)) % mult
     if ph == 0 and pw == 0:
         return x, h, w
-    # reflect is usually safe; edge/constant also OK
     xp = np.pad(x, ((0, ph), (0, pw)), mode=mode)
     return xp, h, w
 
 
+_MODELS_CACHE: dict[tuple[str, str], SharpenModels] = {}
 
-# Cache by (backend_tag, resolved_backend)
-_MODELS_CACHE: dict[tuple[str, str], SharpenModels] = {}  # (backend_tag, resolved)
 
 def load_sharpen_models(use_gpu: bool, status_cb=print) -> SharpenModels:
     backend_tag = "cc_sharpen_ai4"
     is_windows = (os.name == "nt")
     _dbg(f"ENTER load_sharpen_models(use_gpu={use_gpu})", status_cb=status_cb)
 
-    # ---- torch runtime import ----
     t0 = time.time()
     try:
-        _dbg("Calling _get_torch(...)", status_cb=status_cb)
         torch = _get_torch(
             prefer_cuda=bool(use_gpu),
             prefer_dml=bool(use_gpu) and (os.name == "nt"),
             status_cb=status_cb,
         )
-        _dbg(f"_get_torch OK in {time.time()-t0:.3f}s; torch={getattr(torch,'__version__',None)} file={getattr(torch,'__file__',None)}",
-             status_cb=status_cb)
     except Exception as e:
         _dbg("ERROR in _get_torch:\n" + "".join(traceback.format_exception(type(e), e, e.__traceback__)),
              status_cb=status_cb)
         raise
     ort = _get_ort(status_cb=status_cb)
-    # ---- runtime venv CUDA probe (subprocess) ----
+
     try:
         rt = _user_runtime_dir()
         vpy = _venv_paths(rt)["python"]
-        _dbg(f"Runtime dir={rt} venv_python={vpy}", status_cb=status_cb)
-        t1 = time.time()
         ok, cuda_tag, err = _check_cuda_in_venv(vpy, status_cb=status_cb)
-        _dbg(f"CUDA probe finished in {time.time()-t1:.3f}s: ok={ok}, torch.version.cuda={cuda_tag}, err={err!r}",
-             status_cb=status_cb)
     except Exception as e:
         _dbg("Runtime CUDA probe FAILED:\n" + "".join(traceback.format_exception(type(e), e, e.__traceback__)),
              status_cb=status_cb)
 
-    # ---- CUDA branch ----
     if use_gpu:
-        _dbg("Checking torch.cuda.is_available() ...", status_cb=status_cb)
         try:
-            t2 = time.time()
             cuda_ok = bool(getattr(torch, "cuda", None) and torch.cuda.is_available())
-            _dbg(f"torch.cuda.is_available()={cuda_ok} (took {time.time()-t2:.3f}s)", status_cb=status_cb)
-        except Exception as e:
-            _dbg("torch.cuda.is_available() raised:\n" + "".join(traceback.format_exception(type(e), e, e.__traceback__)),
-                 status_cb=status_cb)
+        except Exception:
             cuda_ok = False
 
         if cuda_ok:
             cache_key = (backend_tag, "cuda")
             if cache_key in _MODELS_CACHE:
-                _dbg("Returning cached CUDA models.", status_cb=status_cb)
                 return _MODELS_CACHE[cache_key]
-
             try:
-                _dbg("Creating torch.device('cuda') ...", status_cb=status_cb)
                 device = torch.device("cuda")
-                _dbg("Querying torch.cuda.get_device_name(0) ...", status_cb=status_cb)
-                name = torch.cuda.get_device_name(0)
-                _dbg(f"Using CUDA device: {name}", status_cb=status_cb)
-
-                _dbg("Loading torch .pth models (CUDA) ...", status_cb=status_cb)
-                t3 = time.time()
                 models = _load_torch_models(torch, device)
-                _dbg(f"Loaded CUDA models in {time.time()-t3:.3f}s", status_cb=status_cb)
-
                 _MODELS_CACHE[cache_key] = models
                 return models
             except Exception as e:
                 _dbg("CUDA path failed:\n" + "".join(traceback.format_exception(type(e), e, e.__traceback__)),
                      status_cb=status_cb)
-                # fall through to DML/ORT/CPU
-    # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-    # ADD THE MPS BLOCK RIGHT HERE (after CUDA, before DirectML)
-    # ---- MPS branch (macOS Apple Silicon) ----
+
     if use_gpu:
         try:
             mps_ok = bool(
@@ -468,93 +385,58 @@ def load_sharpen_models(use_gpu: bool, status_cb=print) -> SharpenModels:
         if mps_ok:
             cache_key = (backend_tag, "mps")
             if cache_key in _MODELS_CACHE:
-                _dbg("Returning cached MPS models.", status_cb=status_cb)
                 return _MODELS_CACHE[cache_key]
-
             try:
                 device = torch.device("mps")
-                _dbg("CosmicClarity Sharpen: using MPS", status_cb=status_cb)
-
-                t_m = time.time()
                 models = _load_torch_models(torch, device)
-                _dbg(f"Loaded MPS models in {time.time()-t_m:.3f}s", status_cb=status_cb)
-
                 _MODELS_CACHE[cache_key] = models
                 return models
             except Exception as e:
                 _dbg("MPS path failed:\n" + "".join(traceback.format_exception(type(e), e, e.__traceback__)),
                      status_cb=status_cb)
-                # fall through
-    # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
-    # ---- Torch DirectML branch ----
+
     if use_gpu and is_windows:
-        _dbg("Trying torch-directml path ...", status_cb=status_cb)
         try:
             import torch_directml
             cache_key = (backend_tag, "dml_torch")
             if cache_key in _MODELS_CACHE:
-                _dbg("Returning cached DML-torch models.", status_cb=status_cb)
                 return _MODELS_CACHE[cache_key]
-
-            t4 = time.time()
-            dml = torch_directml.device()            
-            _ = (torch.ones(1, device=dml) + 1).to("cpu").item()  # verify DML actually works
-            _dbg(f"torch_directml.device() OK in {time.time()-t4:.3f}s", status_cb=status_cb)
-
-            _dbg("Loading torch .pth models (DirectML) ...", status_cb=status_cb)
-            t5 = time.time()
+            dml = torch_directml.device()
+            _ = (torch.ones(1, device=dml) + 1).to("cpu").item()
             models = _load_torch_models(torch, dml)
-            _dbg(f"Loaded DML-torch models in {time.time()-t5:.3f}s", status_cb=status_cb)
-
             _MODELS_CACHE[cache_key] = models
             return models
         except Exception as e:
             _dbg("DirectML (torch-directml) failed:\n" + "".join(traceback.format_exception(type(e), e, e.__traceback__)),
                  status_cb=status_cb)
 
-    # ---- ONNX Runtime DirectML fallback ----
-    # ---- ONNX Runtime DirectML fallback ----
     if use_gpu and ort is not None:
-        _dbg("Checking ORT providers ...", status_cb=status_cb)
         try:
             prov = ort.get_available_providers()
-            _dbg(f"ORT providers: {prov}", status_cb=status_cb)
             if "DmlExecutionProvider" in prov:
                 cache_key = (backend_tag, "dml_ort")
                 if cache_key in _MODELS_CACHE:
-                    _dbg("Returning cached DML-ORT models.", status_cb=status_cb)
                     return _MODELS_CACHE[cache_key]
-
-                _dbg("Loading ONNX models (DML EP) ...", status_cb=status_cb)
-                t6 = time.time()
-                models = _load_onnx_models(ort)   # <<<< CHANGED
-                _dbg(f"Loaded ONNX models in {time.time()-t6:.3f}s", status_cb=status_cb)
-
+                models = _load_onnx_models(ort)
                 _MODELS_CACHE[cache_key] = models
                 return models
         except Exception as e:
             _dbg("ORT provider check/load failed:\n" + "".join(traceback.format_exception(type(e), e, e.__traceback__)),
                  status_cb=status_cb)
 
-
-    # ---- CPU fallback ----
     cache_key = (backend_tag, "cpu")
     if cache_key in _MODELS_CACHE:
-        _dbg("Returning cached CPU models.", status_cb=status_cb)
         return _MODELS_CACHE[cache_key]
-
     try:
-        _dbg("Falling back to CPU torch models ...", status_cb=status_cb)
         device = torch.device("cpu")
-        t7 = time.time()
         models = _load_torch_models(torch, device)
-        _dbg(f"Loaded CPU models in {time.time()-t7:.3f}s", status_cb=status_cb)
         _MODELS_CACHE[cache_key] = models
         return models
     except Exception as e:
         _dbg("CPU model load failed:\n" + "".join(traceback.format_exception(type(e), e, e.__traceback__)),
              status_cb=status_cb)
         raise
+
 
 def _load_onnx_models(ort) -> SharpenModels:
     prov = ["DmlExecutionProvider", "CPUExecutionProvider"]
@@ -566,13 +448,13 @@ def _load_onnx_models(ort) -> SharpenModels:
         so.inter_op_num_threads = 1
         return ort.InferenceSession(path, sess_options=so, providers=prov)
 
-    # NEW AI4 names
-    stellar = s(R.CC_STELLAR_NAF_ONNX)        # deep_stellar_sharp_conditional_psf_AI4.onnx (but NOT PSF-aware)
+    stellar  = s(R.CC_STELLAR_NAF_ONNX)
     img_name, psf_name, out_name = _ort_pick_io_names(stellar)
     if psf_name is not None:
-        raise RuntimeError("Stellar ONNX unexpectedly has a PSF input; exporter should produce 1-input model.")
-    ns_cond = s(R.CC_NS_COND_NAF_ONNX)        # deep_nonstellar_sharp_conditional_psf_AI4.onnx (PSF-aware)
+        raise RuntimeError("Stellar ONNX unexpectedly has a PSF input.")
+    ns_cond = s(R.CC_NS_COND_NAF_ONNX)
 
+    # Correction model — no ONNX export yet, leave as None for ONNX path
     return SharpenModels(
         device="DirectML",
         is_onnx=True,
@@ -580,51 +462,36 @@ def _load_onnx_models(ort) -> SharpenModels:
         ns1=None, ns2=None, ns4=None, ns8=None,
         ns_cond=ns_cond,
         stellar_cond=False,
+        correct=None,
         torch=None,
     )
 
 
-
 def _ort_pick_io_names(session) -> tuple[str, Optional[str], str]:
-    """
-    Returns: (img_name, psf_name_or_None, out_name)
-
-    Robustly identifies which input is image vs PSF based on input shapes/ranks.
-    Works even if exporter changes ordering.
-    """
     ins = session.get_inputs()
     out = session.get_outputs()[0].name
-
     img_name = None
     psf_name = None
-
     for i in ins:
-        shp = i.shape  # may contain None/dynamic
-        # Heuristic:
-        # - Image is NCHW => rank 4
-        # - PSF is scalar/batch scalar => rank 1 or 2 (e.g. [1] or [1,1])
+        shp  = i.shape
         rank = len(shp) if shp is not None else 0
         if rank == 4:
             img_name = i.name
         elif rank in (1, 2):
             psf_name = i.name
-
-    # Fallbacks if shapes are weird/dynamic:
     if img_name is None:
         img_name = ins[0].name
     if len(ins) == 1:
         psf_name = None
     elif psf_name is None:
-        # assume 2-input model where second is PSF
         psf_name = ins[1].name
-
     return img_name, psf_name, out
 
 
 def _load_torch_models(torch, device) -> SharpenModels:
-    import torch.nn as nn  # comes from runtime torch env
+    import torch.nn as nn
 
-    # ---- NEW: NAFNet PSF model defs (must match training) ----
+    # ---- Shared block definitions ----
     class LayerNorm2d(nn.Module):
         def __init__(self, channels, eps=1e-6):
             super().__init__()
@@ -645,132 +512,195 @@ def _load_torch_models(torch, device) -> SharpenModels:
     class NAFBlock(nn.Module):
         def __init__(self, channels):
             super().__init__()
-            self.norm1 = LayerNorm2d(channels)
-            self.conv1 = nn.Conv2d(channels, channels * 2, 1, bias=True)
+            self.norm1  = LayerNorm2d(channels)
+            self.conv1  = nn.Conv2d(channels, channels * 2, 1, bias=True)
             self.dwconv = nn.Conv2d(channels * 2, channels * 2, 3, padding=1, groups=channels * 2, bias=True)
-            self.sg = SimpleGate()
-            self.sca = nn.Sequential(nn.AdaptiveAvgPool2d(1), nn.Conv2d(channels, channels, 1, bias=True))
-            self.conv2 = nn.Conv2d(channels, channels, 1, bias=True)
-
-            self.norm2 = LayerNorm2d(channels)
-            self.ffn1 = nn.Conv2d(channels, channels * 2, 1, bias=True)
-            self.ffn2 = nn.Conv2d(channels, channels, 1, bias=True)
-
-            self.beta  = nn.Parameter(torch.zeros(1, channels, 1, 1))
-            self.gamma = nn.Parameter(torch.zeros(1, channels, 1, 1))
+            self.sg     = SimpleGate()
+            self.sca    = nn.Sequential(nn.AdaptiveAvgPool2d(1), nn.Conv2d(channels, channels, 1, bias=True))
+            self.conv2  = nn.Conv2d(channels, channels, 1, bias=True)
+            self.norm2  = LayerNorm2d(channels)
+            self.ffn1   = nn.Conv2d(channels, channels * 2, 1, bias=True)
+            self.ffn2   = nn.Conv2d(channels, channels, 1, bias=True)
+            self.beta   = nn.Parameter(torch.zeros(1, channels, 1, 1))
+            self.gamma  = nn.Parameter(torch.zeros(1, channels, 1, 1))
 
         def forward(self, x):
-            y = self.norm1(x)
-            y = self.conv1(y)
-            y = self.dwconv(y)
-            y = self.sg(y)
-            y = y * self.sca(y)
-            y = self.conv2(y)
+            y = self.norm1(x); y = self.conv1(y); y = self.dwconv(y)
+            y = self.sg(y);    y = y * self.sca(y); y = self.conv2(y)
             x = x + y * self.beta
-
-            y = self.norm2(x)
-            y = self.ffn1(y)
-            y = self.sg(y)
-            y = self.ffn2(y)
+            y = self.norm2(x); y = self.ffn1(y); y = self.sg(y); y = self.ffn2(y)
             x = x + y * self.gamma
             return x
 
+    # ---- Sharpening model (unchanged) ----
     class NAFNetSharpen(nn.Module):
         def __init__(self, in_ch=3, out_ch=3, width=32,
-                    enc_blk_nums=(2,4,6,8), dec_blk_nums=(2,2,2,2),
-                    middle_blk_num=4,
-                    residual_out=True, clamp_out=False):
+                     enc_blk_nums=(2,4,6,8), dec_blk_nums=(2,2,2,2),
+                     middle_blk_num=4, residual_out=True, clamp_out=False):
             super().__init__()
-            self.intro = nn.Conv2d(in_ch, width, 3, padding=1, bias=True)
-
+            self.intro    = nn.Conv2d(in_ch, width, 3, padding=1, bias=True)
             self.encoders = nn.ModuleList()
             self.downs    = nn.ModuleList()
             self.decoders = nn.ModuleList()
             self.ups      = nn.ModuleList()
-
             ch = width
             for n in enc_blk_nums:
                 self.encoders.append(nn.Sequential(*[NAFBlock(ch) for _ in range(n)]))
                 self.downs.append(nn.Conv2d(ch, ch * 2, 2, stride=2, bias=True))
                 ch *= 2
-
             self.middle = nn.Sequential(*[NAFBlock(ch) for _ in range(middle_blk_num)])
-
             for n in dec_blk_nums:
                 self.ups.append(nn.Sequential(nn.Conv2d(ch, ch * 2, 1, bias=True), nn.PixelShuffle(2)))
                 ch //= 2
                 self.decoders.append(nn.Sequential(*[NAFBlock(ch) for _ in range(n)]))
-
-            self.ending = nn.Conv2d(width, out_ch, 3, padding=1, bias=True)
-
+            self.ending       = nn.Conv2d(width, out_ch, 3, padding=1, bias=True)
             self.residual_out = bool(residual_out)
-            self.clamp_out = bool(clamp_out)
+            self.clamp_out    = bool(clamp_out)
 
         def forward_delta(self, x):
-            x = self.intro(x)
-            skips = []
+            x = self.intro(x); skips = []
             for enc, down in zip(self.encoders, self.downs):
                 x = enc(x); skips.append(x); x = down(x)
             x = self.middle(x)
             for up, dec in zip(self.ups, self.decoders):
-                x = up(x); x = x + skips.pop(); x = dec(x)
+                x = up(x)
+                sk = skips.pop()
+                if x.shape != sk.shape:
+                    x = x[:, :, :sk.shape[2], :sk.shape[3]]
+                x = x + sk
+                x = dec(x)
             return self.ending(x)
 
         def forward(self, x):
-            # IMPORTANT: stellar model expects RGB->RGB sharpened output
             delta = self.forward_delta(x)
-            y = x + delta if self.residual_out else delta
+            if self.residual_out:
+                if x.shape != delta.shape:
+                    x = x[:, :, :delta.shape[2], :delta.shape[3]]
+                y = x + delta
+            else:
+                y = delta
             if self.clamp_out:
                 y = y.clamp(0.0, 1.0)
             return y
-
 
     class NAFNetSharpenPSF(NAFNetSharpen):
         def __init__(self, **kw):
             super().__init__(in_ch=4, out_ch=3, **kw)
-
         def forward(self, x_rgb, psf_t):
             b, _, h, w = x_rgb.shape
-            psf_map = psf_t.view(b,1,1,1).expand(b,1,h,w)
+            psf_map = psf_t.view(b, 1, 1, 1).expand(b, 1, h, w)
             x4 = torch.cat([x_rgb, psf_map], dim=1)
             delta = self.forward_delta(x4)
-            y = x_rgb + delta if self.residual_out else delta
+            if self.residual_out:
+                res = x_rgb
+                if res.shape != delta.shape:
+                    res = res[:, :, :delta.shape[2], :delta.shape[3]]
+                y = res + delta
+            else:
+                y = delta
             if self.clamp_out:
                 y = y.clamp(0.0, 1.0)
             return y
+    # ---- Aberration correction model ----
+    # Identical U-Net family but middle_blk_num=6 and trained for PSF correction.
+    # Loaded from deep_correct_stellar_AI4.deploy.pth (or .pth).
+    class NAFNetCorrect(nn.Module):
+        """
+        Stellar aberration correction model.
+        Residual output: corrected = input + delta.
+        middle_blk_num=6 — extra capacity for cross-channel PSF reasoning.
+        Accepts RGB input; also handles mono (triplicated channel) transparently.
+        """
+        def __init__(self, in_ch=3, out_ch=3, width=32,
+                     enc_blk_nums=(2,4,6,8), dec_blk_nums=(2,2,2,2),
+                     middle_blk_num=6, residual_out=True):
+            super().__init__()
+            self.intro    = nn.Conv2d(in_ch, width, 3, padding=1, bias=True)
+            self.encoders = nn.ModuleList()
+            self.downs    = nn.ModuleList()
+            self.decoders = nn.ModuleList()
+            self.ups      = nn.ModuleList()
+            ch = width
+            for n in enc_blk_nums:
+                self.encoders.append(nn.Sequential(*[NAFBlock(ch) for _ in range(n)]))
+                self.downs.append(nn.Conv2d(ch, ch * 2, 2, stride=2, bias=True))
+                ch *= 2
+            self.middle = nn.Sequential(*[NAFBlock(ch) for _ in range(middle_blk_num)])
+            for n in dec_blk_nums:
+                self.ups.append(nn.Sequential(nn.Conv2d(ch, ch * 2, 1, bias=True), nn.PixelShuffle(2)))
+                ch //= 2
+                self.decoders.append(nn.Sequential(*[NAFBlock(ch) for _ in range(n)]))
+            self.ending       = nn.Conv2d(width, out_ch, 3, padding=1, bias=True)
+            self.residual_out = bool(residual_out)
 
+        def forward(self, x: "torch.Tensor") -> "torch.Tensor":
+            x0 = x; y = self.intro(x); skips = []
+            for enc, down in zip(self.encoders, self.downs):
+                y = enc(y); skips.append(y); y = down(y)
+            y = self.middle(y)
+            for up, dec in zip(self.ups, self.decoders):
+                y = up(y)
+                sk = skips.pop()
+                if y.shape != sk.shape:
+                    y = y[:, :, :sk.shape[2], :sk.shape[3]]
+                y = y + sk
+                y = dec(y)
+            delta = self.ending(y)
+            if self.residual_out:
+                if x0.shape != delta.shape:
+                    x0 = x0[:, :, :delta.shape[2], :delta.shape[3]]
+                return x0 + delta
+            return delta
 
     R = get_resources()
 
     def m_naf_rgb(path: str, cfg: dict):
         net = NAFNetSharpen(**cfg, residual_out=True, clamp_out=False)
-        sd = torch.load(path, map_location="cpu")
+        sd  = torch.load(path, map_location="cpu")
         net.load_state_dict(sd)
         net.eval()
         return net.to(device)
 
     def m_naf_psf(path: str, cfg: dict):
         net = NAFNetSharpenPSF(**cfg, residual_out=True, clamp_out=False)
-        sd = torch.load(path, map_location="cpu")
+        sd  = torch.load(path, map_location="cpu")
         net.load_state_dict(sd)
         net.eval()
         return net.to(device)
 
-    # --- STELLAR (NOT PSF-aware; new NAFNet) ---
+    def m_naf_correct(path: str, cfg: dict):
+        net = NAFNetCorrect(**cfg, residual_out=True)
+        # deploy checkpoint wraps weights under "model_state_dict"
+        raw = torch.load(path, map_location="cpu")
+        sd  = raw.get("model_state_dict", raw)
+        net.load_state_dict(sd)
+        net.eval()
+        return net.to(device)
+
+    # Stellar sharpening model
     stellar_path = getattr(R, "CC_S_PTH", None)
     if not stellar_path or not os.path.exists(stellar_path):
         raise RuntimeError("Sharpen: CC_S_PTH (stellar NAFNet) not found.")
-
     stellar = m_naf_rgb(stellar_path, _SCOND_NAFNET)
 
-    # --- NONSTELLAR (PSF-aware) ---
-    ns_cond = None
+    # Non-stellar PSF-aware model
     ns_path = getattr(R, "CC_NS_PTH", None)
-    if ns_path and os.path.exists(ns_path):
-        ns_cond = m_naf_psf(ns_path, _NSCOND_NAFNET)
-    else:
+    if not ns_path or not os.path.exists(ns_path):
         raise RuntimeError("Sharpen: CC_NS_PTH (nonstellar PSF NAFNet) not found.")
+    ns_cond = m_naf_psf(ns_path, _NSCOND_NAFNET)
 
+    # Aberration correction model (optional — graceful degradation if absent)
+    correct = None
+    correct_path = getattr(R, "CC_C_PTH", None)
+    if correct_path and os.path.exists(correct_path):
+        try:
+            correct = m_naf_correct(correct_path, _CORRECT_NAFNET)
+            _dbg(f"Loaded aberration correction model from {correct_path}", status_cb=print)
+        except Exception as e:
+            _dbg(f"Failed to load correction model ({correct_path}): {e}", status_cb=print)
+            correct = None
+    else:
+        _dbg("CC_C_PTH not found — aberration correction unavailable.", status_cb=print)
 
     return SharpenModels(
         device=device,
@@ -779,16 +709,14 @@ def _load_torch_models(torch, device) -> SharpenModels:
         ns1=None, ns2=None, ns4=None, ns8=None,
         ns_cond=ns_cond,
         stellar_cond=False,
+        correct=correct,
         torch=torch,
     )
 
+
 # ---------------- Inference helpers ----------------
+
 def _chunk_coords_with_overlap(H: int, W: int, chunk_size: int, overlap: int):
-    """
-    Returns stable chunk coordinates so we can reuse them across stages
-    without rebuilding chunk lists from scratch.
-    Each entry: (i, j, ei, ej, is_edge)
-    """
     step = chunk_size - overlap
     out = []
     for i in range(0, H, step):
@@ -812,80 +740,126 @@ def _recommended_batch_size(
 ) -> int:
     if batch_size_override and batch_size_override > 0:
         return int(batch_size_override)
-
     if execution_mode == "compatibility":
         return 1
-
     if models.is_onnx:
         return 1
-
     dev = getattr(models.device, "type", str(models.device)).lower()
-
     if dev == "cuda":
-        if chunk_size <= 256:
-            return 16 if not psf else 12
-        if chunk_size <= 384:
-            return 8 if not psf else 6
-        if chunk_size <= 512:
-            return 4 if not psf else 3
+        if chunk_size <= 256:  return 16 if not psf else 12
+        if chunk_size <= 384:  return 8  if not psf else 6
+        if chunk_size <= 512:  return 4  if not psf else 3
         return 2
-
     if dev == "mps":
-        if chunk_size <= 256:
-            return 4 if not psf else 3
+        if chunk_size <= 256:  return 4 if not psf else 3
         return 2
-
     return 1
+
 
 def _encode_psf_log2_0_1(psf: float, psf_min: float = 1.0, psf_max: float = 8.0) -> float:
     t = (math.log2(psf) - math.log2(psf_min)) / (math.log2(psf_max) - math.log2(psf_min))
     return float(np.clip(t, 0.0, 1.0))
 
+def _infer_chunks_batched_rgb(
+    models: SharpenModels,
+    model: Any,
+    chunks_hwc: list[np.ndarray],  # each is HxWx3 float32
+    batch_size: int,
+    *,
+    progress_cb: Optional[Callable[[int, int], bool]] = None,
+    progress_done_start: int = 0,
+    progress_total: int = 0,
+) -> list[np.ndarray]:
+    """Like _infer_chunks_batched but input/output are HxWx3 (RGB) not HxW (mono)."""
+    if not chunks_hwc:
+        return []
+
+    if progress_total <= 0:
+        progress_total = len(chunks_hwc)
+
+    torch = models.torch
+    dev   = models.device
+    last_err = None
+
+    for bs in _iter_batch_sizes(batch_size):
+        try:
+            outputs: list[np.ndarray] = [None] * len(chunks_hwc)
+
+            done = 0
+            for s in range(0, len(chunks_hwc), bs):
+                batch = chunks_hwc[s:s + bs]
+
+                orig_shapes = [(c.shape[0], c.shape[1]) for c in batch]
+                target_h = max(sh[0] for sh in orig_shapes)
+                target_w = max(sh[1] for sh in orig_shapes)
+                target_h = ((target_h + 15) // 16) * 16
+                target_w = ((target_w + 15) // 16) * 16
+
+                # Build (B, 3, H, W) tensor
+                padded = []
+                for ch in batch:
+                    c = np.asarray(ch, np.float32)
+                    ph = target_h - c.shape[0]
+                    pw = target_w - c.shape[1]
+                    if ph > 0 or pw > 0:
+                        c = np.pad(c, ((0, ph), (0, pw), (0, 0)), mode="reflect")
+                    padded.append(np.ascontiguousarray(np.transpose(c, (2, 0, 1))))  # HWC->CHW
+
+                arr = np.stack(padded, axis=0)  # (B, 3, H, W)
+                t = torch.from_numpy(arr).to(dev, dtype=torch.float32)
+
+                with torch.no_grad(), _autocast_context(torch, dev):
+                    y = model(t)                          # (B, 3, H, W)
+                    y = y.detach().float().cpu().numpy()  # (B, 3, H, W)
+
+                for bi in range(len(batch)):
+                    oh, ow = orig_shapes[bi]
+                    # CHW -> HWC, crop padding
+                    outputs[s + bi] = np.transpose(
+                        y[bi, :, :oh, :ow], (1, 2, 0)
+                    ).astype(np.float32, copy=False)
+
+                done += len(batch)
+                if progress_cb is not None:
+                    if progress_cb(progress_done_start + done, progress_total) is False:
+                        raise RuntimeError("Cancelled.")
+
+            return outputs
+
+        except Exception as e:
+            last_err = e
+            if bs == 1 or not _is_recoverable_batch_error(e):
+                break
+
+    raise last_err
+
 def _infer_chunk_psf(models: SharpenModels, model: Any, chunk2d: np.ndarray, psf01: float) -> np.ndarray:
     torch = models.torch
-    dev = models.device
-
+    dev   = models.device
     chunk2d = np.asarray(chunk2d, np.float32)
-    chunk_p, h0, w0 = _pad2d_to_multiple(chunk2d, mult=16, mode="reflect")
-
-    t = torch.from_numpy(np.ascontiguousarray(chunk_p)).unsqueeze(0).unsqueeze(0)  # (1,1,Hp,Wp)
+    t = torch.from_numpy(np.ascontiguousarray(chunk2d)).unsqueeze(0).unsqueeze(0)
     t = t.to(dev, dtype=torch.float32)
-    t_rgb = t.expand(-1, 3, -1, -1)  # (1,3,Hp,Wp)
-
+    t_rgb = t.expand(-1, 3, -1, -1)
     psf_t = torch.tensor([[float(psf01)]], dtype=torch.float32, device=dev)
-
     with torch.no_grad(), _autocast_context(torch, dev):
-        y = model(t_rgb, psf_t)       # (1,3,Hp,Wp)
+        y = model(t_rgb, psf_t)
         y = y[:, 0].detach().float().cpu().numpy()[0]
+    return y.astype(np.float32, copy=False)
 
-    return y[:h0, :w0].astype(np.float32, copy=False)
 
 def _infer_chunk_psf_onnx(models: SharpenModels, session: Any, chunk2d: np.ndarray, psf01: float) -> np.ndarray:
-    """ONNX version of PSF-conditional infer. Returns 2D float32."""
-    h0, w0 = chunk2d.shape
-
-    chunk_p, h0, w0 = _pad2d_to_multiple(np.asarray(chunk2d, np.float32), mult=16, mode="reflect")
-    inp = chunk_p[np.newaxis, np.newaxis, :, :].astype(np.float32)  # (1,1,Hp,Wp)
-    inp = np.tile(inp, (1, 3, 1, 1))                                # (1,3,Hp,Wp)
-
+    inp = np.asarray(chunk2d, np.float32)[np.newaxis, np.newaxis, :, :]
+    inp = np.tile(inp, (1, 3, 1, 1))
     name_img, name_psf, name_out = _ort_pick_io_names(session)
     if name_psf is None:
-        raise RuntimeError("PSF-conditional ONNX model expected 2 inputs, but only 1 input was found.")
-
-    psf = np.array([[float(psf01)]], dtype=np.float32)  # (1,1)
-
+        raise RuntimeError("PSF-conditional ONNX model expected 2 inputs, but only 1 found.")
+    psf = np.array([[float(psf01)]], dtype=np.float32)
     out = session.run([name_out], {name_img: inp, name_psf: psf})[0]
+    if out.ndim == 4:   y = out[0, 0]
+    elif out.ndim == 3: y = out[0]; y = y[0] if y.shape[0] in (1, 3) else y
+    else: raise RuntimeError(f"Unexpected ONNX output shape: {out.shape}")
+    return y.astype(np.float32, copy=False)
 
-    if out.ndim == 4:
-        y = out[0, 0]
-    elif out.ndim == 3:
-        y = out[0]
-        if y.shape[0] in (1, 3):
-            y = y[0]
-    else:
-        raise RuntimeError(f"Unexpected ONNX output shape: {out.shape}")
-
-    return y[:h0, :w0].astype(np.float32, copy=False)
 
 def _infer_chunks_batched(
     models: SharpenModels,
@@ -919,33 +893,43 @@ def _infer_chunks_batched(
     for bs in _iter_batch_sizes(batch_size):
         try:
             outputs: list[np.ndarray] = [None] * len(chunks2d)  # type: ignore
-            groups: dict[tuple[int, int], list[tuple[int, np.ndarray, int, int]]] = {}
-
-            for idx, ch in enumerate(chunks2d):
-                ch = np.asarray(ch, np.float32)
-                ch_p, h0, w0 = _pad2d_to_multiple(ch, mult=16, mode="reflect")
-                groups.setdefault(ch_p.shape, []).append((idx, ch_p, h0, w0))
 
             done = 0
-            for _shape, items in groups.items():
-                for s in range(0, len(items), bs):
-                    batch = items[s:s + bs]
+            for s in range(0, len(chunks2d), bs):
+                batch = chunks2d[s:s + bs]
 
-                    arr = np.stack([np.ascontiguousarray(it[1]) for it in batch], axis=0)[:, None, :, :]
-                    t = torch.from_numpy(arr).to(dev, dtype=torch.float32)
-                    t_rgb = t.expand(-1, 3, -1, -1)
+                orig_shapes = [(np.asarray(ch, np.float32).shape) for ch in batch]
+                target_h = max(sh[0] for sh in orig_shapes)
+                target_w = max(sh[1] for sh in orig_shapes)
+                # Round up to multiple of 16 so U-Net stride-2 stages stay aligned
+                target_h = ((target_h + 15) // 16) * 16
+                target_w = ((target_w + 15) // 16) * 16
 
-                    with torch.no_grad(), _autocast_context(torch, dev):
-                        y = model(t_rgb)
-                        y = y[:, 0].detach().float().cpu().numpy()
+                padded = []
+                for ch in batch:
+                    c = np.asarray(ch, np.float32)
+                    ph = target_h - c.shape[0]
+                    pw = target_w - c.shape[1]
+                    if ph > 0 or pw > 0:
+                        c = np.pad(c, ((0, ph), (0, pw)), mode="reflect")
+                    padded.append(np.ascontiguousarray(c))
 
-                    for bi, (orig_idx, _chp, h0, w0) in enumerate(batch):
-                        outputs[orig_idx] = y[bi, :h0, :w0].astype(np.float32, copy=False)
+                arr = np.stack(padded, axis=0)[:, None, :, :]  # (B,1,H,W)
+                t = torch.from_numpy(arr).to(dev, dtype=torch.float32)
+                t_rgb = t.expand(-1, 3, -1, -1)
 
-                    done += len(batch)
-                    if progress_cb is not None:
-                        if progress_cb(progress_done_start + done, progress_total) is False:
-                            raise RuntimeError("Cancelled.")
+                with torch.no_grad(), _autocast_context(torch, dev):
+                    y = model(t_rgb)
+                    y = y[:, 0].detach().float().cpu().numpy()
+
+                for bi, out_ch in enumerate(y):
+                    oh, ow = orig_shapes[bi]
+                    outputs[s + bi] = out_ch[:oh, :ow].astype(np.float32, copy=False)
+
+                done += len(batch)
+                if progress_cb is not None:
+                    if progress_cb(progress_done_start + done, progress_total) is False:
+                        raise RuntimeError("Cancelled.")
 
             return outputs
 
@@ -955,6 +939,7 @@ def _infer_chunks_batched(
                 break
 
     raise last_err
+
 
 def _infer_chunks_psf_batched(
     models: SharpenModels,
@@ -989,36 +974,47 @@ def _infer_chunks_psf_batched(
     for bs in _iter_batch_sizes(batch_size):
         try:
             outputs: list[np.ndarray] = [None] * len(chunks2d)  # type: ignore
-            groups: dict[tuple[int, int], list[tuple[int, np.ndarray, int, int, float]]] = {}
-
-            for idx, (ch, psf01) in enumerate(zip(chunks2d, psf01_list)):
-                ch = np.asarray(ch, np.float32)
-                ch_p, h0, w0 = _pad2d_to_multiple(ch, mult=16, mode="reflect")
-                groups.setdefault(ch_p.shape, []).append((idx, ch_p, h0, w0, float(psf01)))
 
             done = 0
-            for _shape, items in groups.items():
-                for s in range(0, len(items), bs):
-                    batch = items[s:s + bs]
+            for s in range(0, len(chunks2d), bs):
+                batch       = chunks2d[s:s + bs]
+                psf_batch   = psf01_list[s:s + bs]
 
-                    arr = np.stack([np.ascontiguousarray(it[1]) for it in batch], axis=0)[:, None, :, :]
-                    psf_arr = np.array([[it[4]] for it in batch], dtype=np.float32)
+                orig_shapes = [(np.asarray(ch, np.float32).shape) for ch in batch]
+                target_h = max(sh[0] for sh in orig_shapes)
+                target_w = max(sh[1] for sh in orig_shapes)
+                # Round up to multiple of 16 so U-Net stride-2 stages stay aligned
+                target_h = ((target_h + 15) // 16) * 16
+                target_w = ((target_w + 15) // 16) * 16
 
-                    t = torch.from_numpy(arr).to(dev, dtype=torch.float32)
-                    t_rgb = t.expand(-1, 3, -1, -1)
-                    psf_t = torch.from_numpy(psf_arr).to(dev, dtype=torch.float32)
+                padded = []
+                for ch in batch:
+                    c = np.asarray(ch, np.float32)
+                    ph = target_h - c.shape[0]
+                    pw = target_w - c.shape[1]
+                    if ph > 0 or pw > 0:
+                        c = np.pad(c, ((0, ph), (0, pw)), mode="reflect")
+                    padded.append(np.ascontiguousarray(c))
 
-                    with torch.no_grad(), _autocast_context(torch, dev):
-                        y = model(t_rgb, psf_t)
-                        y = y[:, 0].detach().float().cpu().numpy()
+                arr = np.stack(padded, axis=0)[:, None, :, :]  # (B,1,H,W)
+                psf_arr = np.array([[p] for p in psf_batch], dtype=np.float32)  # (B,1)
 
-                    for bi, (orig_idx, _chp, h0, w0, _psf01) in enumerate(batch):
-                        outputs[orig_idx] = y[bi, :h0, :w0].astype(np.float32, copy=False)
+                t     = torch.from_numpy(arr).to(dev, dtype=torch.float32)
+                t_rgb = t.expand(-1, 3, -1, -1)
+                psf_t = torch.from_numpy(psf_arr).to(dev, dtype=torch.float32)
 
-                    done += len(batch)
-                    if progress_cb is not None:
-                        if progress_cb(progress_done_start + done, progress_total) is False:
-                            raise RuntimeError("Cancelled.")
+                with torch.no_grad(), _autocast_context(torch, dev):
+                    y = model(t_rgb, psf_t)
+                    y = y[:, 0].detach().float().cpu().numpy()
+
+                for bi, out_ch in enumerate(y):
+                    oh, ow = orig_shapes[bi]
+                    outputs[s + bi] = out_ch[:oh, :ow].astype(np.float32, copy=False)
+
+                done += len(batch)
+                if progress_cb is not None:
+                    if progress_cb(progress_done_start + done, progress_total) is False:
+                        raise RuntimeError("Cancelled.")
 
             return outputs
 
@@ -1028,48 +1024,160 @@ def _infer_chunks_psf_batched(
                 break
 
     raise last_err
+
+
 def _infer_chunk(models: SharpenModels, model: Any, chunk2d: np.ndarray) -> np.ndarray:
-    """Returns 2D float32 (cropped to original chunk shape)."""
+    """Returns 2D float32 (same shape as input chunk)."""
     chunk2d = np.asarray(chunk2d, np.float32)
-    chunk_p, h0, w0 = _pad2d_to_multiple(chunk2d, mult=16, mode="reflect")
 
     if models.is_onnx:
-        inp = chunk_p[np.newaxis, np.newaxis, :, :].astype(np.float32)  # (1,1,Hp,Wp)
-        inp = np.repeat(inp, 3, axis=1)                                  # (1,3,Hp,Wp)
-
+        inp = chunk2d[np.newaxis, np.newaxis, :, :].astype(np.float32)
+        inp = np.repeat(inp, 3, axis=1)
         name_img, name_psf, name_out = _ort_pick_io_names(model)
         feeds = {name_img: inp}
         if name_psf is not None:
             feeds[name_psf] = np.array([[0.5]], dtype=np.float32)
-
         out = model.run([name_out], feeds)[0]
-
-        if out.ndim == 4:
-            y = out[0, 0]
-        elif out.ndim == 3:
-            y = out[0]
-            if y.shape[0] in (1, 3):
-                y = y[0]
-        else:
-            raise RuntimeError(f"Unexpected ONNX output shape: {out.shape}")
-
-        return y[:h0, :w0].astype(np.float32, copy=False)
+        if out.ndim == 4:   y = out[0, 0]
+        elif out.ndim == 3: y = out[0]; y = y[0] if y.shape[0] in (1, 3) else y
+        else: raise RuntimeError(f"Unexpected ONNX output shape: {out.shape}")
+        return y.astype(np.float32, copy=False)
 
     torch = models.torch
-    dev = models.device
-
-    # from_numpy avoids an extra copy vs torch.tensor(...)
-    t = torch.from_numpy(np.ascontiguousarray(chunk_p)).unsqueeze(0).unsqueeze(0)  # (1,1,Hp,Wp)
-    t = t.to(dev, dtype=torch.float32)
-    t_rgb = t.expand(-1, 3, -1, -1)  # cheap view, no real repeat copy
+    dev   = models.device
+    t     = torch.from_numpy(np.ascontiguousarray(chunk2d)).unsqueeze(0).unsqueeze(0)
+    t     = t.to(dev, dtype=torch.float32)
+    t_rgb = t.expand(-1, 3, -1, -1)
 
     with torch.no_grad(), _autocast_context(torch, dev):
-        y = model(t_rgb)              # (1,3,Hp,Wp)
+        y = model(t_rgb)
         y = y[:, 0].detach().float().cpu().numpy()[0]
 
-    return y[:h0, :w0].astype(np.float32, copy=False)
+    return y.astype(np.float32, copy=False)
 
 
+# ────────────────────────────────────────────────────────────────────────────
+# Aberration correction — RGB tiled inference
+#
+# Operates on a full HxWx3 float32 image using Hanning-weighted blending.
+# For mono images (triplicated channels) the correction is purely geometric
+# so the output is meaningful and consistent.
+# ────────────────────────────────────────────────────────────────────────────
+
+def _correct_rgb_image(
+    models: SharpenModels,
+    image_rgb: np.ndarray,
+    chunk_size: int = 256,
+    overlap: int = 64,
+    execution_mode: str = "auto",
+    batch_size_override: int = 0,
+    progress_cb: Optional[Callable[[int, int], bool]] = None,
+    progress_done_start: int = 0,
+    progress_total: int = 0,
+) -> np.ndarray:
+    if models.correct is None:
+        return image_rgb
+
+    H, W = image_rgb.shape[:2]
+    chunk_size = max(64, min(1024, int(chunk_size)))
+    overlap    = max(0, min(chunk_size - 1, int(overlap)))
+
+    coords = _chunk_coords_with_overlap(H, W, chunk_size, overlap)
+    total  = len(coords)
+
+    if progress_total <= 0:
+        progress_total = total
+
+    batch_size = _recommended_batch_size(
+        models, chunk_size,
+        psf=False,
+        execution_mode=execution_mode,
+        batch_size_override=batch_size_override,
+    )
+
+    # Extract HxWx3 chunks
+    TARGET_MED = 0.25
+
+    def _mtf(tile: np.ndarray, m: float) -> np.ndarray:
+        """PixInsight-style MTF: moves median to TARGET_MED. No black point subtraction."""
+        if m <= 0.0 or m >= 1.0:
+            return tile
+        num = (m - 1.0) * TARGET_MED * tile
+        den = m * (TARGET_MED + tile - 1.0) - TARGET_MED * tile
+        den = np.where(np.abs(den) < 1e-12, 1e-12, den)
+        return np.clip(num / den, 0.0, 1.0).astype(np.float32, copy=False)
+
+    def _mtf_inv(tile: np.ndarray, m: float) -> np.ndarray:
+        """Inverse MTF — undoes _mtf(tile, m)."""
+        if m <= 0.0 or m >= 1.0:
+            return tile
+        # Solve the MTF equation for x given y=tile and original median m
+        # x = (m * y) / ((m - 1) * TARGET_MED * (1 - y) + m * y)  [derived algebraically]
+        y = tile
+        num = m * TARGET_MED * y
+        den = (m - 1.0) * TARGET_MED * (y - 1.0) + m * y * TARGET_MED
+        # Simpler closed form: inverse of MTF(x,m) with target t is MTF(x, 1-m) scaled
+        # Use the direct re-parameterization: inv_m = m / (2*m - 1) clamped
+        inv_m = m / (2.0 * m - 1.0) if abs(2.0 * m - 1.0) > 1e-9 else m
+        inv_m = float(np.clip(inv_m, 1e-6, 1.0 - 1e-6))
+        num2 = (inv_m - 1.0) * TARGET_MED * tile
+        den2 = inv_m * (TARGET_MED + tile - 1.0) - TARGET_MED * tile
+        den2 = np.where(np.abs(den2) < 1e-12, 1e-12, den2)
+        return np.clip(num2 / den2, 0.0, 1.0).astype(np.float32, copy=False)
+
+    def _compute_mtf_m(current_med: float) -> float:
+        """Solve for MTF m that maps current_med -> TARGET_MED."""
+        cb = float(np.clip(current_med, 1e-6, 1.0 - 1e-6))
+        tb = TARGET_MED
+        den = cb * (2.0 * tb - 1.0) - tb
+        if abs(den) < 1e-12:
+            den = 1e-12
+        m = (cb * (tb - 1.0)) / den
+        return float(np.clip(m, 1e-6, 1.0 - 1e-6))
+
+    # Extract chunks, store original median per tile for unstretch
+    chunks_hwc = []
+    tile_orig_meds = []
+
+    for (i, j, ei, ej, _) in coords:
+        tile = image_rgb[i:ei, j:ej, :3].astype(np.float32, copy=False)
+        med = float(np.median(tile))
+        m = _compute_mtf_m(med)
+        tile = _mtf(tile, m)
+        tile_orig_meds.append(med)
+        chunks_hwc.append(tile)
+
+    inferred_raw = _infer_chunks_batched_rgb(
+        models, models.correct, chunks_hwc, batch_size=batch_size,
+        progress_cb=(lambda done, tot: progress_cb(progress_done_start + done, progress_total))
+                    if progress_cb is not None else None,
+        progress_done_start=0,
+        progress_total=total,
+    )
+
+    # Unstretch using original median — same math as unstretch_image_unlinked_rgb
+    inferred = []
+    for tile_out, orig_med in zip(inferred_raw, tile_orig_meds):
+        if orig_med > 0.0:
+            m_now = float(np.median(tile_out))
+            m0 = orig_med
+            if m_now > 1e-6 and m0 > 1e-6:
+                num = (m_now - 1.0) * m0 * tile_out
+                den = m_now * (m0 + tile_out - 1.0) - m0 * tile_out
+                den = np.where(np.abs(den) < 1e-12, 1e-12, den)
+                tile_out = np.clip(num / den, 0.0, 1.0).astype(np.float32, copy=False)
+        inferred.append(tile_out)
+
+    # Stitch each channel separately using the existing stitcher
+    out_channels = []
+    for c in range(3):
+        out_chunks = []
+        for (i, j, ei, ej, is_edge), tile_hwc in zip(coords, inferred):
+            out_chunks.append((tile_hwc[..., c], i, j, is_edge))
+        stitched = stitch_chunks_ignore_border(out_chunks, (H, W), border_size=16)
+        out_channels.append(stitched)
+
+    return np.clip(np.stack(out_channels, axis=-1), 0.0, 1.0).astype(np.float32)
 # ---------------- Main API ----------------
 
 @dataclass
@@ -1087,20 +1195,19 @@ class SharpenParams:
     target_median: float = 0.25
     execution_mode: str = "auto"
     batch_size_override: int = 0
+    # "sharpen_only" | "correct_only" | "correct_sharpen"
+    stellar_correct_mode: str = "sharpen_only"
+
 
 def sharpen_image_array(image: np.ndarray,
                         params: SharpenParams,
                         progress_cb: Optional[ProgressCB] = None,
                         status_cb=print) -> tuple[np.ndarray, bool]:
-    # progress_cb may be either:
-    #   - (done, total) -> bool   (UI-friendly)
-    #   - (done, total, stage) -> bool (engine-native)
+
     def _call_progress(cb, done: int, total: int, stage: str) -> bool:
         try:
-            # try 3-arg first
             return bool(cb(int(done), int(total), str(stage)))
         except TypeError:
-            # fallback to 2-arg
             try:
                 return bool(cb(int(done), int(total)))
             except Exception:
@@ -1109,15 +1216,12 @@ def sharpen_image_array(image: np.ndarray,
             return True
 
     if progress_cb is None:
-        def progress_cb(done, total, stage):  # type: ignore
+        def progress_cb(done, total, stage):
             return True
     else:
         _user_cb = progress_cb
-        def progress_cb(done, total, stage):  # type: ignore
+        def progress_cb(done, total, stage):
             return _call_progress(_user_cb, done, total, stage)
-
-    _dbg("ENTER sharpen_image_array()", status_cb=status_cb)
-    t_all = time.time()
 
     img = np.asarray(image)
     if img.dtype != np.float32:
@@ -1125,6 +1229,8 @@ def sharpen_image_array(image: np.ndarray,
 
     img3, was_mono = _to_3ch(img)
     img3 = np.clip(img3, 0.0, 1.0)
+
+    stellar_correct_mode = str(getattr(params, "stellar_correct_mode", "sharpen_only")).lower()
 
     if getattr(params, "execution_mode", "auto") == "compatibility":
         params.batch_size_override = 1
@@ -1145,41 +1251,96 @@ def sharpen_image_array(image: np.ndarray,
         else:
             stretched, orig_min, orig_meds = bordered, None, None
 
+        # ── correct_only: correction pass then early return, no sharpening ───
+        if stellar_correct_mode == "correct_only":
+            if models.correct is not None:
+                try:
+                    progress_cb(0, 1, "Aberration correction")
+                    stretched = _correct_rgb_image(
+                        models, stretched,
+                        chunk_size=int(params.chunk_size),
+                        overlap=int(params.overlap),
+                        execution_mode=getattr(params, "execution_mode", "auto"),
+                        batch_size_override=getattr(params, "batch_size_override", 0),
+                        progress_cb=lambda d, t: progress_cb(d, t, "Aberration correction"),
+                    )
+                except Exception as e:
+                    try:
+                        status_cb(f"Aberration correction failed ({e}); returning original.")
+                    except Exception:
+                        pass
+            else:
+                try:
+                    status_cb("Aberration correction model not loaded — skipping.")
+                except Exception:
+                    pass
+
+            if stretch_needed:
+                out = unstretch_image_unlinked_rgb(stretched, orig_meds, orig_min, was_mono)
+            else:
+                out = stretched
+            out = remove_border(out, border_size=16)
+            if was_mono and out.ndim == 3 and out.shape[2] == 3:
+                out = np.mean(out, axis=2, keepdims=True).astype(np.float32, copy=False)
+            return np.clip(out, 0.0, 1.0), was_mono
+
+        # ── correct_sharpen: correction pre-pass then fall through to sharpen ─
+        if stellar_correct_mode == "correct_sharpen":
+            if models.correct is not None:
+                try:
+                    progress_cb(0, 1, "Aberration correction")
+                    stretched = _correct_rgb_image(
+                        models, stretched,
+                        chunk_size=int(params.chunk_size),
+                        overlap=int(params.overlap),
+                        execution_mode=getattr(params, "execution_mode", "auto"),
+                        batch_size_override=getattr(params, "batch_size_override", 0),
+                        progress_cb=lambda d, t: progress_cb(d, t, "Aberration correction"),
+                    )
+                except Exception as e:
+                    try:
+                        status_cb(f"Aberration correction failed ({e}); continuing without correction.")
+                    except Exception:
+                        pass
+            else:
+                try:
+                    status_cb("Aberration correction model not loaded — skipping pre-pass.")
+                except Exception:
+                    pass
+
+        # ── sharpen_only or correct_sharpen fall-through: run sharpening ─────
         if params.sharpen_channels_separately and (not was_mono):
             out = np.empty_like(stretched)
             for c, label in enumerate(("R", "G", "B")):
                 progress_cb(0, 1, f"Sharpening {label} channel")
-                plane_in = np.clip(stretched[..., c], 0.0, 1.0)
+                plane_in  = np.clip(stretched[..., c], 0.0, 1.0)
                 plane_out = _sharpen_plane(models, plane_in, params, progress_cb)
                 out[..., c] = np.clip(plane_out, 0.0, 1.0)
             sharpened = out
         else:
-            y, cb, cr = extract_luminance_rgb(stretched)
+            y, cb_ch, cr = extract_luminance_rgb(stretched)
             y2 = _sharpen_plane(models, y, params, progress_cb)
-            sharpened = merge_luminance(y2, cb, cr)
+            sharpened = merge_luminance(y2, cb_ch, cr)
 
         if stretch_needed:
             sharpened = unstretch_image_unlinked_rgb(sharpened, orig_meds, orig_min, was_mono)
 
         sharpened = remove_border(sharpened, border_size=16)
 
-        if was_mono:
-            if sharpened.ndim == 3 and sharpened.shape[2] == 3:
-                sharpened = np.mean(sharpened, axis=2, keepdims=True).astype(np.float32, copy=False)
+        if was_mono and sharpened.ndim == 3 and sharpened.shape[2] == 3:
+            sharpened = np.mean(sharpened, axis=2, keepdims=True).astype(np.float32, copy=False)
 
-        out = np.clip(sharpened, 0.0, 1.0)
-        return out, was_mono
+        return np.clip(sharpened, 0.0, 1.0), was_mono
 
     try:
         progress_cb(0, 1, "Loading models")
         models = load_sharpen_models(use_gpu=params.use_gpu, status_cb=status_cb)
         out, was_mono = _run_with(models)
-        _dbg(f"EXIT sharpen_image_array total_time={time.time()-t_all:.2f}s out_shape={out.shape}", status_cb=status_cb)
         return out, was_mono
 
     except Exception as e:
         try:
-            dev = getattr(models.device, "type", None) or str(models.device)  # type: ignore[name-defined]
+            dev = getattr(models.device, "type", None) or str(models.device)
         except Exception:
             dev = "unknown"
 
@@ -1188,7 +1349,6 @@ def sharpen_image_array(image: np.ndarray,
                 status_cb(f"CosmicClarity Sharpen: GPU device lost on backend={dev}; retrying on CPU.")
             except Exception:
                 pass
-
             cpu_models = load_sharpen_models(use_gpu=False, status_cb=status_cb)
             out, was_mono = _run_with(cpu_models)
             return out, was_mono
@@ -1197,6 +1357,7 @@ def sharpen_image_array(image: np.ndarray,
              status_cb=status_cb)
         raise
 
+
 def _sharpen_plane(models: SharpenModels,
                    plane: np.ndarray,
                    params: SharpenParams,
@@ -1204,16 +1365,14 @@ def _sharpen_plane(models: SharpenModels,
     plane = np.asarray(plane, np.float32)
 
     chunk_size = int(getattr(params, "chunk_size", 256))
-    overlap = int(getattr(params, "overlap", 64))
-
+    overlap    = int(getattr(params, "overlap", 64))
     chunk_size = max(64, min(1024, chunk_size))
-    overlap = max(0, min(chunk_size - 1, overlap))
+    overlap    = max(0,  min(chunk_size - 1, overlap))
 
-    H, W = plane.shape
+    H, W   = plane.shape
     coords = _chunk_coords_with_overlap(H, W, chunk_size, overlap)
-    total = len(coords)
+    total  = len(coords)
 
-    # progress space for this plane
     if params.mode == "Both":
         total_progress_units = max(1, total * 2)
     else:
@@ -1226,35 +1385,24 @@ def _sharpen_plane(models: SharpenModels,
 
     psf_ref_plane = plane.copy() if params.mode == "Both" else plane
 
-    # -------------------------
-    # Stage 1: stellar
-    # -------------------------
+    # ── Stage 1: stellar ────────────────────────────────────────────────────
     if params.mode in ("Stellar Only", "Both"):
-        stellar_chunks = [plane[i:ei, j:ej] for (i, j, ei, ej, _is_edge) in coords]
+        stellar_chunks = [plane[i:ei, j:ej] for (i, j, ei, ej, _) in coords]
         batch_size = _recommended_batch_size(
-            models,
-            chunk_size,
-            psf=False,
+            models, chunk_size, psf=False,
             execution_mode=getattr(params, "execution_mode", "auto"),
             batch_size_override=getattr(params, "batch_size_override", 0),
         )
-
         stellar_out = _infer_chunks_batched(
-            models,
-            models.stellar,
-            stellar_chunks,
-            batch_size=batch_size,
+            models, models.stellar, stellar_chunks, batch_size=batch_size,
             progress_cb=lambda done, tot: progress_cb(done, total_progress_units, "Stellar sharpening"),
-            progress_done_start=0,
-            progress_total=total,
+            progress_done_start=0, progress_total=total,
         )
-
         out_chunks = []
         for (i, j, ei, ej, is_edge), y in zip(coords, stellar_out):
-            chunk = plane[i:ei, j:ej]
+            chunk   = plane[i:ei, j:ej]
             blended = blend_images(chunk, y, params.stellar_amount)
             out_chunks.append((blended, i, j, is_edge))
-
         plane = stitch_chunks_ignore_border(out_chunks, plane.shape, border_size=16)
 
         if params.mode == "Stellar Only":
@@ -1264,55 +1412,41 @@ def _sharpen_plane(models: SharpenModels,
                 pass
             return plane
 
-    # -------------------------
-    # Stage 2: non-stellar
-    # -------------------------
+    # ── Stage 2: non-stellar ─────────────────────────────────────────────────
     if params.mode in ("Non-Stellar Only", "Both"):
         if models.ns_cond is None:
             raise RuntimeError("Non-stellar sharpen: ns_cond model is required but not loaded.")
 
-        ns_chunks = [plane[i:ei, j:ej] for (i, j, ei, ej, _is_edge) in coords]
-
-        psf01_list = []
-        for (i, j, ei, ej, _is_edge), chunk in zip(coords, ns_chunks):
+        ns_chunks   = [plane[i:ei, j:ej] for (i, j, ei, ej, _) in coords]
+        psf01_list  = []
+        for (i, j, ei, ej, _), chunk in zip(coords, ns_chunks):
             if params.auto_detect_psf:
                 ref = psf_ref_plane[i:ei, j:ej]
                 h, w = chunk.shape
                 if ref.shape != chunk.shape:
                     ref = ref[:h, :w]
-                r = measure_psf_radius(ref, default_radius=3.0)
-                r = float(np.clip(r, 1.0, 8.0))
+                r = float(np.clip(measure_psf_radius(ref, default_radius=3.0), 1.0, 8.0))
             else:
                 r = float(np.clip(params.nonstellar_strength, 1.0, 8.0))
             psf01_list.append(_encode_psf_log2_0_1(r, 1.0, 8.0))
 
-        batch_size = _recommended_batch_size(
-            models,
-            chunk_size,
-            psf=True,
+        batch_size   = _recommended_batch_size(
+            models, chunk_size, psf=True,
             execution_mode=getattr(params, "execution_mode", "auto"),
             batch_size_override=getattr(params, "batch_size_override", 0),
         )
-
         start_offset = total if params.mode == "Both" else 0
 
         ns_out = _infer_chunks_psf_batched(
-            models,
-            models.ns_cond,
-            ns_chunks,
-            psf01_list,
-            batch_size=batch_size,
+            models, models.ns_cond, ns_chunks, psf01_list, batch_size=batch_size,
             progress_cb=lambda done, tot: progress_cb(done, total_progress_units, "Non-stellar sharpening"),
-            progress_done_start=start_offset,
-            progress_total=total,
+            progress_done_start=start_offset, progress_total=total,
         )
-
         out_chunks = []
         for (i, j, ei, ej, is_edge), y in zip(coords, ns_out):
-            chunk = plane[i:ei, j:ej]
+            chunk   = plane[i:ei, j:ej]
             blended = blend_images(chunk, y, params.nonstellar_amount)
             out_chunks.append((blended, i, j, is_edge))
-
         plane = stitch_chunks_ignore_border(out_chunks, plane.shape, border_size=16)
 
     try:
@@ -1321,6 +1455,8 @@ def _sharpen_plane(models: SharpenModels,
         pass
 
     return plane
+
+
 def sharpen_rgb01(
     image_rgb01: np.ndarray,
     *,
@@ -1337,6 +1473,7 @@ def sharpen_rgb01(
     target_median: float = 0.25,
     execution_mode: str = "auto",
     batch_size_override: int = 0,
+    stellar_correct_mode: str = "sharpen_only",
     progress_cb: Optional[Callable[[int, int], bool]] = None,
     status_cb=print,
 ) -> np.ndarray:
@@ -1364,6 +1501,7 @@ def sharpen_rgb01(
         target_median=float(target_median),
         execution_mode=str(execution_mode),
         batch_size_override=int(batch_size_override),
+        stellar_correct_mode=str(stellar_correct_mode),
     )
 
     out, _was_mono = sharpen_image_array(
@@ -1373,6 +1511,7 @@ def sharpen_rgb01(
         status_cb=status_cb,
     )
     return np.asarray(out, dtype=np.float32)
+
 
 def clear_sharpen_models_cache(*, aggressive: bool = False, status_cb=print) -> None:
     global _MODELS_CACHE

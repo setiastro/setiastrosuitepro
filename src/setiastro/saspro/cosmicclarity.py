@@ -360,6 +360,7 @@ class CosmicClarityEngineWorker(QThread):
                         overlap=int(p.get("overlap", 64)),
                         execution_mode=sharpen_execution_mode,
                         batch_size_override=sharpen_batch_override,
+                        stellar_correct_mode=str(p.get("stellar_correct_mode", "sharpen_only")),  # ← ADD THIS
                         progress_cb=prog,
                     )
 
@@ -458,7 +459,7 @@ class CosmicClarityDialogPro(QDialog):
         self._wait = None
         self.icons = get_icons()
         self._orig_was_mono = False
-        
+ 
         # Hard guard unless explicitly bypassed (used by preset runner)
         if not bypass_guard and self._headless_guard_active():
             try:
@@ -468,7 +469,7 @@ class CosmicClarityDialogPro(QDialog):
                 logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             QTimer.singleShot(0, self.reject)
             return
-
+ 
         ok, detail = _cc_models_installed("core")
         if not ok:
             _warn_models_missing_and_close(self, detail)
@@ -478,26 +479,26 @@ class CosmicClarityDialogPro(QDialog):
                 pass
             QTimer.singleShot(0, self.reject)
             return
-
+ 
         self.setWindowTitle(self.tr("Cosmic Clarity"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         import platform
         if platform.system() == "Darwin":
-            self.setWindowFlag(Qt.WindowType.Tool, True)  
+            self.setWindowFlag(Qt.WindowType.Tool, True)
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         try:
             self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         except Exception:
-            pass  # older PyQt6 versions
-
+            pass
+ 
         if icon:
             try:
                 self.setWindowIcon(icon)
             except Exception as e:
                 import logging
                 logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
-
+ 
         self.parent_ref = parent
         self.doc = doc
         self._engine_thread = None
@@ -508,26 +509,26 @@ class CosmicClarityDialogPro(QDialog):
         elif _orig.ndim == 3 and _orig.shape[2] == 1:
             _orig = np.repeat(_orig, 3, axis=2)
         self.orig = _orig
-        self.cosmic_root = ""   # no longer used by in-process engines
-
+        self.cosmic_root = ""
+ 
         # ------------------------------------------------------------------
         # Helpers
         # ------------------------------------------------------------------
         def _add_inline_slider(layout: QGridLayout, row: int, label: QLabel, slider: QSlider, col_span: int = 1):
             layout.addWidget(label, row, 0)
             layout.addWidget(slider, row, 1, 1, col_span)
-
+ 
         # ------------------------------------------------------------------
         # Main layout
         # ------------------------------------------------------------------
         outer = QVBoxLayout(self)
         outer.setContentsMargins(10, 10, 10, 10)
         outer.setSpacing(8)
-
+ 
         # ---------------- Header ----------------
         header = QHBoxLayout()
         header.setSpacing(10)
-
+ 
         self.lbl_logo = QLabel(self)
         self.lbl_logo.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         try:
@@ -539,15 +540,13 @@ class CosmicClarityDialogPro(QDialog):
                 header.addWidget(self.lbl_logo, 0)
         except Exception:
             pass
-
+ 
         hdr_text = QVBoxLayout()
         hdr_text.setContentsMargins(0, 0, 0, 0)
-
         text_wrap = QWidget()
         text_lay = QVBoxLayout(text_wrap)
         text_lay.setContentsMargins(0, 0, 0, 0)
         text_lay.setSpacing(2)
-
         lbl_title = QLabel(self.tr("Cosmic Clarity"))
         try:
             f = lbl_title.font()
@@ -556,142 +555,150 @@ class CosmicClarityDialogPro(QDialog):
             lbl_title.setFont(f)
         except Exception:
             pass
-
         lbl_sub = QLabel(self.tr("Sharpen, denoise, and super-resolution for the active image."))
         lbl_sub.setWordWrap(True)
-
         text_lay.addWidget(lbl_title)
         text_lay.addWidget(lbl_sub)
-
         hdr_text.addStretch(1)
         hdr_text.addWidget(text_wrap, 0, Qt.AlignmentFlag.AlignVCenter)
         hdr_text.addStretch(1)
-
         header.addLayout(hdr_text, 1)
         outer.addLayout(header)
-
+ 
         # ---------------- General group ----------------
         grp_general = QGroupBox(self.tr("General"))
         gen = QGridLayout(grp_general)
         gen.setContentsMargins(8, 8, 8, 8)
         gen.setHorizontalSpacing(8)
         gen.setVerticalSpacing(6)
-
-        # Mode
+ 
         gen.addWidget(QLabel(self.tr("Mode:")), 0, 0)
         self.cmb_mode = QComboBox()
         self.cmb_mode.addItems(["Sharpen", "Denoise", "Both", "Super Resolution"])
-        self.cmb_mode.currentIndexChanged.connect(self._mode_changed)
         gen.addWidget(self.cmb_mode, 0, 1)
-
-        # GPU
+ 
         self.lbl_gpu = QLabel(self.tr("Use GPU:"))
         gen.addWidget(self.lbl_gpu, 0, 2)
-
         self.cmb_gpu = QComboBox()
         self.cmb_gpu.addItems([self.tr("Yes"), self.tr("No")])
         gen.addWidget(self.cmb_gpu, 0, 3)
-
-        # Apply target
+ 
         gen.addWidget(QLabel(self.tr("Apply to:")), 1, 0)
         self.cmb_target = QComboBox()
         self.cmb_target.addItems(["Overwrite active view", "Create new view"])
         gen.addWidget(self.cmb_target, 1, 1, 1, 3)
-
+ 
         gen.setColumnStretch(1, 1)
         gen.setColumnStretch(3, 1)
         outer.addWidget(grp_general)
-
+ 
         # ---------------- Two-column body ----------------
         body = QHBoxLayout()
         body.setSpacing(10)
-
         left_col = QVBoxLayout()
         left_col.setSpacing(8)
-
         right_col = QVBoxLayout()
         right_col.setSpacing(8)
-
+ 
         # ---------------- Sharpen group ----------------
         grp_sh = QGroupBox(self.tr("Sharpen"))
         sh = QGridLayout(grp_sh)
         sh.setContentsMargins(8, 8, 8, 8)
         sh.setHorizontalSpacing(8)
         sh.setVerticalSpacing(6)
-
+ 
+        self.lbl_stellar_correct = QLabel("Stellar Correction:")
+        sh.addWidget(self.lbl_stellar_correct, 0, 0)
+ 
+        corr_row = QHBoxLayout()
+        self.rb_correct_only    = QRadioButton("Correct Only")
+        self.rb_correct_sharpen = QRadioButton("Correct + Sharpen")
+        self.rb_sharpen_only    = QRadioButton("Sharpen Only")
+        self.rb_correct_sharpen.setChecked(True)
+        self.rb_correct_only.setToolTip(
+            "Run the Aberration Correction model only.\n"
+            "Fixes pinched optics, coma, spherical aberration, chromatic aberration etc.\n"
+            "No sharpening is applied."
+        )
+        self.rb_correct_sharpen.setToolTip(
+            "Run Aberration Correction first, then Stellar Sharpening.\n"
+            "Best for images with both shape aberrations and soft stars."
+        )
+        self.rb_sharpen_only.setToolTip(
+            "Standard Cosmic Clarity stellar sharpening — no correction pre-pass."
+        )
+        corr_row.addWidget(self.rb_correct_only)
+        corr_row.addWidget(self.rb_correct_sharpen)
+        corr_row.addWidget(self.rb_sharpen_only)
+        corr_row.addStretch(1)
+        sh.addLayout(corr_row, 0, 1)
+ 
         self.lbl_sh_mode = QLabel("Sharpening Mode:")
         self.cmb_sh_mode = QComboBox()
         self.cmb_sh_mode.addItems(["Both", "Stellar Only", "Non-Stellar Only"])
-        sh.addWidget(self.lbl_sh_mode, 0, 0)
-        sh.addWidget(self.cmb_sh_mode, 0, 1)
-
+        sh.addWidget(self.lbl_sh_mode, 1, 0)
+        sh.addWidget(self.cmb_sh_mode, 1, 1)
+ 
         self.chk_sh_sep = QCheckBox("Sharpen RGB channels separately")
         self.chk_sh_sep.setToolTip(
             "Run the mono sharpening model independently on R, G, and B instead of a shared color model.\n"
             "Use for difficult color data where channels need slightly different sharpening."
         )
-        sh.addWidget(self.chk_sh_sep, 1, 0, 1, 2)
-
+        sh.addWidget(self.chk_sh_sep, 2, 0, 1, 2)
+ 
         self.chk_auto_psf = QCheckBox("Auto Detect PSF")
         self.chk_auto_psf.setChecked(True)
-        sh.addWidget(self.chk_auto_psf, 2, 0, 1, 2)
-
+        sh.addWidget(self.chk_auto_psf, 3, 0, 1, 2)
+ 
         self.lbl_psf = QLabel("Non-Stellar PSF (1.0–8.0): 3.0")
         self.sld_psf = QSlider(Qt.Orientation.Horizontal)
         self.sld_psf.setRange(10, 80)
         self.sld_psf.setValue(30)
-        self.sld_psf.valueChanged.connect(self._psf_label)
-        _add_inline_slider(sh, 3, self.lbl_psf, self.sld_psf)
-
+        _add_inline_slider(sh, 4, self.lbl_psf, self.sld_psf)
+ 
         self.lbl_st_amt = QLabel("Stellar Amount (0–1): 0.50")
         self.sld_st_amt = QSlider(Qt.Orientation.Horizontal)
         self.sld_st_amt.setRange(0, 100)
-        self.sld_st_amt.setValue(50)   # UI default 0.50 => engine 0.50
-        self.sld_st_amt.valueChanged.connect(self._on_st_amt)
-        _add_inline_slider(sh, 4, self.lbl_st_amt, self.sld_st_amt)
-
+        self.sld_st_amt.setValue(50)
+        _add_inline_slider(sh, 5, self.lbl_st_amt, self.sld_st_amt)
+ 
         self.lbl_nst_amt = QLabel("Non-Stellar Amount (0–1): 0.50")
         self.sld_nst_amt = QSlider(Qt.Orientation.Horizontal)
         self.sld_nst_amt.setRange(0, 100)
         self.sld_nst_amt.setValue(50)
-        self.sld_nst_amt.valueChanged.connect(self._on_nst_amt)
-        _add_inline_slider(sh, 5, self.lbl_nst_amt, self.sld_nst_amt)
-
+        _add_inline_slider(sh, 6, self.lbl_nst_amt, self.sld_nst_amt)
+ 
         sh.setColumnStretch(1, 1)
         left_col.addWidget(grp_sh)
-
+ 
         # ---------------- Denoise group ----------------
         grp_dn = QGroupBox(self.tr("Denoise"))
         dn = QGridLayout(grp_dn)
         dn.setContentsMargins(8, 8, 8, 8)
         dn.setHorizontalSpacing(8)
         dn.setVerticalSpacing(6)
-
+ 
         self.lbl_dn_lum = QLabel("Luminance Denoise (0–1): 0.50")
         self.sld_dn_lum = QSlider(Qt.Orientation.Horizontal)
         self.sld_dn_lum.setRange(0, 100)
         self.sld_dn_lum.setValue(50)
-        self.sld_dn_lum.valueChanged.connect(lambda v: self.lbl_dn_lum.setText(f"Luminance Denoise (0–1): {v/100:.2f}"))
         _add_inline_slider(dn, 0, self.lbl_dn_lum, self.sld_dn_lum)
-
+ 
         self.lbl_dn_col = QLabel("Color Denoise (0–1): 0.50")
         self.sld_dn_col = QSlider(Qt.Orientation.Horizontal)
         self.sld_dn_col.setRange(0, 100)
         self.sld_dn_col.setValue(50)
-        self.sld_dn_col.valueChanged.connect(lambda v: self.lbl_dn_col.setText(f"Color Denoise (0–1): {v/100:.2f}"))
         _add_inline_slider(dn, 1, self.lbl_dn_col, self.sld_dn_col)
-
+ 
         self.lbl_dn_mode = QLabel("Denoise Mode:")
         self.cmb_dn_mode = QComboBox()
         self.cmb_dn_mode.addItems(["full", "luminance"])
         dn.addWidget(self.lbl_dn_mode, 2, 0)
         dn.addWidget(self.cmb_dn_mode, 2, 1)
-
+ 
         self.chk_dn_sep = QCheckBox("Denoise RGB channels separately")
-        self.chk_dn_sep.toggled.connect(self._dn_sep_changed)
         dn.addWidget(self.chk_dn_sep, 3, 0, 1, 2)
-
-        # Denoise model variant
+ 
         self.lbl_dn_model = QLabel("Denoise Model:")
         self.cmb_dn_model = QComboBox()
         self.cmb_dn_model.addItems(["Standard", "Walking Noise", "Lite (faster)"])
@@ -701,44 +708,41 @@ class CosmicClarityDialogPro(QDialog):
             "  (polar misalignment, no guiding). Also handles normal noise.\n"
             "Lite: smaller faster model, slightly less detail."
         )
-        self.cmb_dn_model.currentIndexChanged.connect(self._dn_model_changed)
         dn.addWidget(self.lbl_dn_model, 4, 0)
         dn.addWidget(self.cmb_dn_model, 4, 1)
-
+ 
         self.chk_dn_compat = QCheckBox("GPU Compatibility Mode (slower, safer)")
         self.chk_dn_compat.setToolTip(
             "Uses safer inference settings for Cosmic Clarity processing.\n"
             "Recommended if sharpen or denoise fails, hangs, or produces GPU errors on older or fragile hardware."
         )
         dn.addWidget(self.chk_dn_compat, 5, 0, 1, 2)
-
+ 
         dn.setColumnStretch(1, 1)
         left_col.addWidget(grp_dn)
         left_col.addStretch(1)
-
+ 
         # ---------------- Super Resolution group ----------------
         grp_sr = QGroupBox(self.tr("Super Resolution"))
         sr = QGridLayout(grp_sr)
         sr.setContentsMargins(8, 8, 8, 8)
         sr.setHorizontalSpacing(8)
         sr.setVerticalSpacing(6)
-
         self.lbl_scale = QLabel("Scale Factor:")
         self.cmb_scale = QComboBox()
         self.cmb_scale.addItems(["2x", "3x", "4x"])
         sr.addWidget(self.lbl_scale, 0, 0)
         sr.addWidget(self.cmb_scale, 0, 1)
         sr.setColumnStretch(1, 1)
-
         right_col.addWidget(grp_sr)
-
-        # ---------------- Advanced / Preprocessing group ----------------
+ 
+        # ---------------- Advanced group ----------------
         grp_adv = QGroupBox(self.tr("Advanced"))
         adv = QGridLayout(grp_adv)
         adv.setContentsMargins(8, 8, 8, 8)
         adv.setHorizontalSpacing(8)
         adv.setVerticalSpacing(6)
-
+ 
         self.chk_temp_stretch = QCheckBox("Temporary Stretch for AI (linear assist)")
         self.chk_temp_stretch.setChecked(True)
         self.chk_temp_stretch.setToolTip(
@@ -746,46 +750,44 @@ class CosmicClarityDialogPro(QDialog):
             "Useful for very linear / low-signal data. If off, engines use automatic behavior."
         )
         adv.addWidget(self.chk_temp_stretch, 0, 0, 1, 2)
-
+ 
         self.lbl_target_median = QLabel("Target Median (0.01–0.50): 0.25")
         self.sld_target_median = QSlider(Qt.Orientation.Horizontal)
-        self.sld_target_median.setRange(1, 50)   # 0.01..0.50
-        self.sld_target_median.setValue(25)      # 0.25 default
-        self.sld_target_median.valueChanged.connect(self._on_target_median)
+        self.sld_target_median.setRange(1, 50)
+        self.sld_target_median.setValue(25)
         _add_inline_slider(adv, 1, self.lbl_target_median, self.sld_target_median)
-
+ 
         self.chk_aberration_first = QCheckBox("Run Aberration Remover first")
         self.chk_aberration_first.setToolTip(
             "Runs R.A.'s Aberration Correction before Cosmic Clarity processing.\n"
             "Useful for cleaning color/fringe aberrations before sharpen, denoise, or super-resolution."
         )
         adv.addWidget(self.chk_aberration_first, 2, 0, 1, 2)
-
+ 
         self.lbl_chunk = QLabel("Chunk Size:")
         self.cmb_chunk = QComboBox()
         self.cmb_chunk.addItems(["128", "192", "256", "320", "384", "512", "640", "768", "1024"])
         self.cmb_chunk.setCurrentText("256")
         adv.addWidget(self.lbl_chunk, 3, 0)
         adv.addWidget(self.cmb_chunk, 3, 1)
-
+ 
         self.lbl_ov = QLabel("Overlap:")
         self.cmb_ov = QComboBox()
         self.cmb_ov.addItems(["16", "32", "48", "64", "80", "96", "128", "192", "256", "320", "384", "512"])
         self.cmb_ov.setCurrentText("64")
         adv.addWidget(self.lbl_ov, 4, 0)
         adv.addWidget(self.cmb_ov, 4, 1)
-
+ 
         adv.setColumnStretch(1, 1)
         right_col.addWidget(grp_adv)
         right_col.addStretch(1)
-
+ 
         body.addLayout(left_col, 1)
         body.addLayout(right_col, 1)
         outer.addLayout(body, 1)
-
+ 
         # ---------------- Buttons ----------------
         row = QHBoxLayout()
-
         self.btn_clear_cache = QPushButton(self.tr("Clear AI Cache"))
         self.btn_clear_cache.setToolTip(
             "Clears cached AI models from RAM/VRAM.\n"
@@ -793,38 +795,66 @@ class CosmicClarityDialogPro(QDialog):
             "Use if you are low on memory or troubleshooting."
         )
         self.btn_clear_cache.clicked.connect(self._clear_ai_cache_clicked)
-
         b_run = QPushButton(self.tr("Execute"))
         b_run.clicked.connect(self._run_main)
-
         b_close = QPushButton(self.tr("Close"))
         b_close.clicked.connect(self.reject)
-
         row.addWidget(self.btn_clear_cache)
         row.addStretch(1)
         row.addWidget(b_run)
         row.addWidget(b_close)
         outer.addLayout(row)
-
-        # ---------------- Settings / signals ----------------
+ 
+        # ------------------------------------------------------------------
+        # Step 1: load chunk/overlap (no save signals yet)
+        # ------------------------------------------------------------------
         self._load_chunk_overlap_settings()
-
-        # Save whenever user changes either dropdown
+ 
+        # chunk/overlap have their own save keys — wire those now
         self.cmb_chunk.currentTextChanged.connect(self._save_chunk_overlap_settings)
         self.cmb_ov.currentTextChanged.connect(self._save_chunk_overlap_settings)
         self.cmb_chunk.currentTextChanged.connect(self._enforce_overlap_vs_chunk)
         self.cmb_ov.currentTextChanged.connect(self._enforce_overlap_vs_chunk)
-
+ 
+        # ------------------------------------------------------------------
+        # Step 2: load all other settings with ALL signals blocked
+        # ------------------------------------------------------------------
         self._load_cc_ui_settings()
+ 
+        # ------------------------------------------------------------------
+        # Step 3: wire correct model availability FIRST so _mode_changed sees it
+        # ------------------------------------------------------------------
+        from setiastro.saspro.resources import get_resources
+        _r = get_resources()
+        _cp = getattr(_r, "CC_C_PTH", None)
+        self._correct_available = bool(_cp and os.path.exists(_cp))
+        self.lbl_stellar_correct.setVisible(self._correct_available)
+        self.rb_correct_only.setVisible(self._correct_available)
+        self.rb_correct_sharpen.setVisible(self._correct_available)
+        self.rb_sharpen_only.setVisible(self._correct_available)
 
-        self.chk_dn_compat.toggled.connect(self._save_cc_ui_settings)
+        # ------------------------------------------------------------------
+        # Step 4: now that _correct_available is set, apply dependent UI state
+        # ------------------------------------------------------------------
+        self._mode_changed()
+        self._update_denoise_dependent_ui()
 
-        self._mode_changed()  # set initial visibility
+        # Sync temp-stretch enable state without saving
+        self.lbl_target_median.setEnabled(self.chk_temp_stretch.isChecked())
+        self.sld_target_median.setEnabled(self.chk_temp_stretch.isChecked())
 
-        self._wait = None
-        self.chk_temp_stretch.toggled.connect(self._temp_stretch_changed)
-        self._temp_stretch_changed(self.chk_temp_stretch.isChecked())
-
+        # Sync PSF label
+        self._psf_label()
+        self._on_st_amt(self.sld_st_amt.value())
+        self._on_nst_amt(self.sld_nst_amt.value())
+        self.lbl_dn_lum.setText(f"Luminance Denoise (0–1): {self.sld_dn_lum.value()/100:.2f}")
+        self.lbl_dn_col.setText(f"Color Denoise (0–1): {self.sld_dn_col.value()/100:.2f}")
+        tm = self.sld_target_median.value()
+        self.lbl_target_median.setText(f"Target Median (0.01–0.50): {tm/100:.2f}")
+ 
+        # ------------------------------------------------------------------
+        # Step 5: wire headless flag
+        # ------------------------------------------------------------------
         self._headless = bool(headless)
         if self._headless:
             try:
@@ -832,13 +862,55 @@ class CosmicClarityDialogPro(QDialog):
             except Exception as e:
                 import logging
                 logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
-
-
-        self.chk_aberration_first.toggled.connect(self._save_cc_ui_settings)
+ 
+        self._wait = None
+ 
+        # ------------------------------------------------------------------
+        # Step 6: connect ALL signals that trigger saves — LAST
+        # ------------------------------------------------------------------
+        # Label-update only (no save)
+        self.sld_psf.valueChanged.connect(self._psf_label)
+        self.sld_st_amt.valueChanged.connect(self._on_st_amt)
+        self.sld_nst_amt.valueChanged.connect(self._on_nst_amt)
+        self.sld_dn_lum.valueChanged.connect(lambda v: self.lbl_dn_lum.setText(f"Luminance Denoise (0–1): {v/100:.2f}"))
+        self.sld_dn_col.valueChanged.connect(lambda v: self.lbl_dn_col.setText(f"Color Denoise (0–1): {v/100:.2f}"))
+        self.sld_target_median.valueChanged.connect(self._on_target_median)
+        self.chk_temp_stretch.toggled.connect(self._temp_stretch_changed)
+        self.chk_dn_sep.toggled.connect(self._dn_sep_changed)
+ 
+        # Mode visibility
+        self.cmb_mode.currentIndexChanged.connect(self._mode_changed)
+        self.rb_correct_only.toggled.connect(self._mode_changed)
+        self.rb_correct_sharpen.toggled.connect(self._mode_changed)
+        self.rb_sharpen_only.toggled.connect(self._mode_changed)
+        self.cmb_dn_model.currentIndexChanged.connect(self._dn_model_changed)
+ 
+        # Save on any user change
+        self.sld_st_amt.valueChanged.connect(self._save_cc_ui_settings)
+        self.sld_nst_amt.valueChanged.connect(self._save_cc_ui_settings)
+        self.sld_psf.valueChanged.connect(self._save_cc_ui_settings)
+        self.sld_dn_lum.valueChanged.connect(self._save_cc_ui_settings)
+        self.sld_dn_col.valueChanged.connect(self._save_cc_ui_settings)
+        self.sld_target_median.valueChanged.connect(self._save_cc_ui_settings)
+        self.chk_auto_psf.toggled.connect(self._save_cc_ui_settings)
+        self.chk_sh_sep.toggled.connect(self._save_cc_ui_settings)
+        self.chk_dn_sep.toggled.connect(self._save_cc_ui_settings)
         self.chk_dn_compat.toggled.connect(self._save_cc_ui_settings)
-
+        self.chk_aberration_first.toggled.connect(self._save_cc_ui_settings)
+        self.chk_temp_stretch.toggled.connect(self._save_cc_ui_settings)
+        self.cmb_sh_mode.currentTextChanged.connect(self._save_cc_ui_settings)
+        self.cmb_dn_mode.currentTextChanged.connect(self._save_cc_ui_settings)
+        self.cmb_mode.currentIndexChanged.connect(self._save_cc_ui_settings)
+        self.cmb_gpu.currentIndexChanged.connect(self._save_cc_ui_settings)
+        self.cmb_target.currentIndexChanged.connect(self._save_cc_ui_settings)
+        self.cmb_scale.currentTextChanged.connect(self._save_cc_ui_settings)
+        self.rb_correct_only.toggled.connect(self._save_cc_ui_settings)
+        self.rb_correct_sharpen.toggled.connect(self._save_cc_ui_settings)
+        self.rb_sharpen_only.toggled.connect(self._save_cc_ui_settings)
+ 
         self.setMinimumSize(760, 520)
         self.resize(860, 560)
+
 
     def _dn_model_changed(self, idx: int):
             self._save_cc_ui_settings()
@@ -893,38 +965,146 @@ class CosmicClarityDialogPro(QDialog):
         self.sld_target_median.setEnabled(bool(checked))
         self._save_cc_ui_settings()
 
+ 
     def _load_cc_ui_settings(self):
+        """Load all persisted settings, blocking all widget signals to prevent save-during-load."""
         s = QSettings()
-        dn_model = s.value("cc/denoise_model", "Standard")
-        idx = self.cmb_dn_model.findText(dn_model)
-        self.cmb_dn_model.setCurrentIndex(max(0, idx))
-        # Prefer new key; fall back to old key
-        compat = s.value("cc/gpu_compat_mode", None)
-        if compat is None:
-            compat = s.value("cc/denoise_compat_mode", False, type=bool)
-        else:
-            # force boolean interpretation even if stored as string
-            compat = s.value("cc/gpu_compat_mode", False, type=bool)
+ 
+        # Collect every widget that might fire a signal during setValue/setChecked
+        all_widgets = [
+            self.cmb_dn_model, self.chk_dn_compat, self.chk_temp_stretch,
+            self.sld_target_median, self.chk_aberration_first,
+            self.sld_st_amt, self.sld_nst_amt, self.sld_psf,
+            self.chk_auto_psf, self.chk_sh_sep, self.cmb_sh_mode,
+            self.sld_dn_lum, self.sld_dn_col, self.cmb_dn_mode, self.chk_dn_sep,
+            self.cmb_mode, self.cmb_gpu, self.cmb_target, self.cmb_scale,
+            self.rb_correct_only, self.rb_correct_sharpen, self.rb_sharpen_only,
+        ]
+ 
+        # Block all signals before touching any widget
+        for w in all_widgets:
+            w.blockSignals(True)
+ 
+        try:
+            # Denoise model + compat
+            dn_model = s.value("cc/denoise_model", "Standard")
+            idx = self.cmb_dn_model.findText(str(dn_model))
+            self.cmb_dn_model.setCurrentIndex(max(0, idx))
+ 
+            compat = s.value("cc/gpu_compat_mode", None)
+            if compat is None:
+                compat = s.value("cc/denoise_compat_mode", False, type=bool)
+            else:
+                compat = s.value("cc/gpu_compat_mode", False, type=bool)
+            self.chk_dn_compat.setChecked(bool(compat))
+ 
+            # Temp stretch + target median
+            self.chk_temp_stretch.setChecked(s.value("cc/temp_stretch", True, type=bool))
+            try:
+                tm = max(1, min(50, int(float(s.value("cc/target_median", 0.25)) * 100)))
+            except Exception:
+                tm = 25
+            self.sld_target_median.setValue(tm)
+ 
+            self.chk_aberration_first.setChecked(s.value("cc/aberration_first", False, type=bool))
+ 
+            # Sharpen sliders
+            try:
+                self.sld_st_amt.setValue(int(s.value("cc/stellar_amount", 50)))
+            except Exception:
+                self.sld_st_amt.setValue(50)
+            try:
+                self.sld_nst_amt.setValue(int(s.value("cc/nonstellar_amount", 50)))
+            except Exception:
+                self.sld_nst_amt.setValue(50)
+            try:
+                self.sld_psf.setValue(int(s.value("cc/nonstellar_psf", 30)))
+            except Exception:
+                self.sld_psf.setValue(30)
+ 
+            self.chk_auto_psf.setChecked(s.value("cc/auto_psf", True, type=bool))
+            self.chk_sh_sep.setChecked(s.value("cc/sharpen_sep", False, type=bool))
+ 
+            sh_mode = str(s.value("cc/sharpening_mode", "Both"))
+            if self.cmb_sh_mode.findText(sh_mode) >= 0:
+                self.cmb_sh_mode.setCurrentText(sh_mode)
+ 
+            # Denoise sliders
+            try:
+                self.sld_dn_lum.setValue(int(s.value("cc/denoise_luma", 50)))
+            except Exception:
+                self.sld_dn_lum.setValue(50)
+            try:
+                self.sld_dn_col.setValue(int(s.value("cc/denoise_color", 50)))
+            except Exception:
+                self.sld_dn_col.setValue(50)
+ 
+            dn_mode = str(s.value("cc/denoise_mode", "full"))
+            if self.cmb_dn_mode.findText(dn_mode) >= 0:
+                self.cmb_dn_mode.setCurrentText(dn_mode)
+ 
+            self.chk_dn_sep.setChecked(s.value("cc/denoise_sep", False, type=bool))
+ 
+            # General combos
+            try:
+                self.cmb_mode.setCurrentIndex(int(s.value("cc/mode", 0)))
+            except Exception:
+                self.cmb_mode.setCurrentIndex(0)
+            try:
+                self.cmb_gpu.setCurrentIndex(int(s.value("cc/gpu", 0)))
+            except Exception:
+                self.cmb_gpu.setCurrentIndex(0)
+            try:
+                self.cmb_target.setCurrentIndex(int(s.value("cc/target", 0)))
+            except Exception:
+                self.cmb_target.setCurrentIndex(0)
+ 
+            scale = str(s.value("cc/scale", "2x"))
+            if self.cmb_scale.findText(scale) >= 0:
+                self.cmb_scale.setCurrentText(scale)
+ 
+            # Stellar correct mode radio
+            scm = str(s.value("cc/stellar_correct_mode", "correct_sharpen"))
+            if scm == "correct_only":
+                self.rb_correct_only.setChecked(True)
+            elif scm == "sharpen_only":
+                self.rb_sharpen_only.setChecked(True)
+            else:
+                self.rb_correct_sharpen.setChecked(True)
+ 
+        finally:
+            # Always unblock — even if something raised
+            for w in all_widgets:
+                w.blockSignals(False)
 
-        self.chk_dn_compat.setChecked(bool(compat))
-
-        self.chk_temp_stretch.setChecked(s.value("cc/temp_stretch", False, type=bool))
-
-        tm = float(s.value("cc/target_median", 0.25))
-        tm = max(0.01, min(0.50, tm))
-        self.sld_target_median.setValue(int(round(tm * 100)))
-        self._on_target_median(self.sld_target_median.value())
-
-        self.chk_aberration_first.setChecked(s.value("cc/aberration_first", False, type=bool))
 
     def _save_cc_ui_settings(self):
         s = QSettings()
         s.setValue("cc/denoise_model", self.cmb_dn_model.currentText())
         s.setValue("cc/gpu_compat_mode", self.chk_dn_compat.isChecked())
-        s.setValue("cc/denoise_compat_mode", self.chk_dn_compat.isChecked())  # backward compatibility
+        s.setValue("cc/denoise_compat_mode", self.chk_dn_compat.isChecked())
         s.setValue("cc/temp_stretch", self.chk_temp_stretch.isChecked())
         s.setValue("cc/target_median", self.sld_target_median.value() / 100.0)
         s.setValue("cc/aberration_first", self.chk_aberration_first.isChecked())
+        s.setValue("cc/stellar_amount", self.sld_st_amt.value())
+        s.setValue("cc/nonstellar_amount", self.sld_nst_amt.value())
+        s.setValue("cc/nonstellar_psf", self.sld_psf.value())
+        s.setValue("cc/auto_psf", self.chk_auto_psf.isChecked())
+        s.setValue("cc/sharpen_sep", self.chk_sh_sep.isChecked())
+        s.setValue("cc/sharpening_mode", self.cmb_sh_mode.currentText())
+        s.setValue("cc/denoise_luma", self.sld_dn_lum.value())
+        s.setValue("cc/denoise_color", self.sld_dn_col.value())
+        s.setValue("cc/denoise_mode", self.cmb_dn_mode.currentText())
+        s.setValue("cc/denoise_sep", self.chk_dn_sep.isChecked())
+        s.setValue("cc/mode", self.cmb_mode.currentIndex())
+        s.setValue("cc/gpu", self.cmb_gpu.currentIndex())
+        s.setValue("cc/target", self.cmb_target.currentIndex())
+        s.setValue("cc/scale", self.cmb_scale.currentText())
+        s.setValue("cc/stellar_correct_mode",
+            "correct_only"    if self.rb_correct_only.isChecked()    else
+            "correct_sharpen" if self.rb_correct_sharpen.isChecked() else
+            "sharpen_only"
+        )
 
 
 
@@ -1078,35 +1258,42 @@ class CosmicClarityDialogPro(QDialog):
 
     def _mode_changed(self):
         idx = self.cmb_mode.currentIndex()  # 0 Sharpen, 1 Denoise, 2 Both, 3 Super-Res
-        # Sharpen controls visible if Sharpen or Both
         show_sh = idx in (0, 2)
-        for w in (self.lbl_sh_mode, self.cmb_sh_mode, self.chk_sh_sep, self.chk_auto_psf, self.lbl_psf, self.sld_psf, self.lbl_st_amt, self.sld_st_amt, self.lbl_nst_amt, self.sld_nst_amt):
-            w.setVisible(show_sh)
-
-        # Denoise controls visible if Denoise or Both
         show_dn = idx in (1, 2)
-        for w in (
-            self.lbl_dn_lum, self.sld_dn_lum,
-            self.lbl_dn_col, self.sld_dn_col,
-            self.lbl_dn_mode, self.cmb_dn_mode,
-            self.chk_dn_sep, self.cmb_dn_model, self.lbl_dn_model
-        ):
-            w.setVisible(show_dn)
-
-        # Compatibility mode applies to Sharpen, Denoise, and Both (not superres)
-        self.chk_dn_compat.setVisible(idx in (0, 1, 2))
-
-        # Super-res controls visible if Super-Res
         show_sr = idx == 3
+        show_gpu = not show_sr
+ 
+        # Correction radio buttons only visible when Sharpen group is shown AND model is installed
+        _ca = getattr(self, "_correct_available", False)
+        for w in (self.lbl_stellar_correct,
+                  self.rb_correct_only, self.rb_correct_sharpen, self.rb_sharpen_only):
+            w.setVisible(show_sh and _ca)
+ 
+        # Sharpening sub-controls hidden when Correct Only is selected
+        _ca = getattr(self, "_correct_available", False)
+        sharpen_active = show_sh and not (_ca and self.rb_correct_only.isChecked())
+        for w in (self.lbl_sh_mode, self.cmb_sh_mode, self.chk_sh_sep,
+                  self.chk_auto_psf, self.lbl_psf, self.sld_psf,
+                  self.lbl_st_amt, self.sld_st_amt,
+                  self.lbl_nst_amt, self.sld_nst_amt):
+            w.setVisible(sharpen_active)
+ 
+        for w in (self.lbl_dn_lum, self.sld_dn_lum,
+                  self.lbl_dn_col, self.sld_dn_col,
+                  self.lbl_dn_mode, self.cmb_dn_mode,
+                  self.chk_dn_sep, self.cmb_dn_model, self.lbl_dn_model):
+            w.setVisible(show_dn)
+ 
+        self.chk_dn_compat.setVisible(idx in (0, 1, 2))
+ 
         for w in (self.lbl_scale, self.cmb_scale):
             w.setVisible(show_sr)
-
-        # GPU hidden for superres (matches your SASv2)
-        show_gpu = (not show_sr)
+ 
         self.lbl_gpu.setVisible(show_gpu)
         self.cmb_gpu.setVisible(show_gpu)
-
+ 
         self._update_denoise_dependent_ui()
+
 
     # ----- Validation -----
     def _validate_root(self) -> bool:
@@ -1429,6 +1616,12 @@ class CosmicClarityDialogPro(QDialog):
         self.sld_nst_amt.setValue(int(max(0, min(100, round(float(p.get("nonstellar_amount",0.5))*100)))))
         # NEW: allow presets to opt into per-channel sharpen (still defaults off without a preset)
         self.chk_sh_sep.setChecked(bool(p.get("sharpen_channels_separately", False)))
+        scm = p.get("stellar_correct_mode", "sharpen_only")
+        self.rb_correct_only.setChecked(scm == "correct_only")
+        self.rb_correct_sharpen.setChecked(scm == "correct_sharpen")
+        self.rb_sharpen_only.setChecked(scm not in ("correct_only", "correct_sharpen"))
+        self._mode_changed()   # refresh sub-control visibility
+
         if "chunk_size" in p:
             self.cmb_chunk.setCurrentText(str(int(p["chunk_size"])))
         if "overlap" in p:
@@ -1496,6 +1689,13 @@ class CosmicClarityDialogPro(QDialog):
                 "overlap": int(self.cmb_ov.currentText()),
                 "temp_stretch": self.chk_temp_stretch.isChecked(),
                 "target_median": self.sld_target_median.value() / 100.0,
+                "stellar_correct_mode": (
+                    (
+                        "correct_only"    if self.rb_correct_only.isChecked()    else
+                        "correct_sharpen" if self.rb_correct_sharpen.isChecked() else
+                        "sharpen_only"
+                    ) if getattr(self, "_correct_available", False) else "sharpen_only"
+                ),
 
                 # sharpen compatibility controls
                 "sharpen_execution_mode": "compatibility" if compat else "auto",

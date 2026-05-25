@@ -179,7 +179,7 @@ class FunctionBundleChip(QWidget):
         self._title.setObjectName("chipTitle")
         self._title.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
-        self._sub = QLabel(self.tr("Drop shortcuts • Alt+drag to apply"), self)
+        self._sub = QLabel(self.tr("Alt && Drop shortcuts • Alt+drag to apply"), self)
         self._sub.setObjectName("chipSub")
         self._sub.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 

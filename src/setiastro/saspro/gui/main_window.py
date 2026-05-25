@@ -4301,16 +4301,17 @@ class AstroSuiteProMainWindow(
         dlg = BlinkComparatorPro(doc_manager=self.docman)
         dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         dlg.setWindowTitle("Blink Comparator")
+        dlg.setWindowFlags(
+            Qt.WindowType.Window |
+            Qt.WindowType.WindowStaysOnTopHint
+        )
         try:
             dlg.setWindowIcon(QIcon(blink_path))
         except Exception:
             pass
-
-        # pass blink dialog back so we can bring it to front afterward
         dlg.sendToStacking.connect(
             lambda paths, target, d=dlg: self._on_blink_send_to_stacking(paths, target, d)
         )
-
         dlg.show()
 
     def _open_narrowband_normalization_tool(self):
@@ -9151,15 +9152,45 @@ class AstroSuiteProMainWindow(
             pass
         return sw
 
+    def _activate_neighbor_on_close(self, closing_sw):
+        try:
+            all_subs = [sw for sw in self.mdi.subWindowList() if sw.isVisible()]
+            neighbors = [sw for sw in all_subs if sw is not closing_sw]
+            if not neighbors:
+                return
+
+            try:
+                idx = all_subs.index(closing_sw)
+            except ValueError:
+                QTimer.singleShot(0, lambda sw=neighbors[-1]: self._safe_activate_sw(sw))
+                return
+
+            # Prefer the one that slides into this slot (idx),
+            # fall back to the one just before (idx-1) if we were last
+            if idx < len(neighbors):
+                candidate = neighbors[idx]
+            else:
+                candidate = neighbors[idx - 1]
+
+            QTimer.singleShot(0, lambda sw=candidate: self._safe_activate_sw(sw))
+        except Exception:
+            pass
+
+    def _safe_activate_sw(self, sw):
+        try:
+            from PyQt6 import sip
+            if sip.isdeleted(sw):
+                return
+        except Exception:
+            pass
+        try:
+            self.mdi.setActiveSubWindow(sw)
+            sw.activateWindow()
+            sw.setFocus()
+        except Exception:
+            pass
 
     def _on_view_about_to_close(self, doc, sender_view=None):
-        """
-        Invoked before teardown.
-        Remove the *base* document from DocManager only if no other subwindow
-        is still showing it.
-        """
-
-        # During full app shutdown, don't do document-close bookkeeping here.
         try:
             from PyQt6.QtWidgets import QApplication
             app = QApplication.instance()
@@ -9167,13 +9198,33 @@ class AstroSuiteProMainWindow(
                 return
         except Exception:
             return
-
         if getattr(self, "_shutting_down", False):
             return
 
         base = self._normalize_base_doc(doc)
         if base is None:
             return
+
+        # --- Find the closing subwindow and schedule neighbor activation ---
+        closing_sw = None
+        try:
+            for sw in self.mdi.subWindowList():
+                try:
+                    w = sw.widget()
+                except RuntimeError:
+                    continue
+                if sender_view is not None and w is sender_view:
+                    closing_sw = sw
+                    break
+                if sender_view is None and getattr(w, "base_document", None) is base:
+                    closing_sw = sw
+                    break
+        except Exception:
+            pass
+
+        if closing_sw is not None:
+            self._activate_neighbor_on_close(closing_sw)
+        # --- end neighbor activation ---
 
         still_open = []
         try:
@@ -9182,7 +9233,6 @@ class AstroSuiteProMainWindow(
                     w = sw.widget()
                 except RuntimeError:
                     continue
-
                 if getattr(w, "base_document", None) is base:
                     if sender_view is not None and w is sender_view:
                         continue
@@ -9199,11 +9249,9 @@ class AstroSuiteProMainWindow(
                 pass
 
         try:
-            from PyQt6.QtCore import QTimer
             QTimer.singleShot(0, self._maybe_clear_ui_after_close)
         except Exception:
             pass
-
 
     def _maybe_clear_ui_after_close(self):
         from setiastro.saspro.header_viewer import HeaderViewerDock
@@ -9868,38 +9916,16 @@ class AstroSuiteProMainWindow(
         except Exception:
             pass
 
-    def restore_main_window_state(self):
-        s = self.settings
-        k = self._mw_key()
-        st = s.value(f"{k}/state", None)
-        if st is not None and len(st) > 0:
-            result = self.restoreState(st)
-            if not result:
-                s.remove(f"{k}/state")
-        geom = s.value(f"{k}/geometry", None)
-        if geom is not None and len(geom) > 0:
-            self.restoreGeometry(geom)
-        was_max = s.value(f"{k}/maximized", False, type=bool)
-        was_full = s.value(f"{k}/fullscreen", False, type=bool)
-        if was_full:
-            self.showFullScreen()
-        elif was_max:
-            self.showMaximized()
-
     def save_main_window_state(self):
         s = self.settings
         k = self._mw_key()
 
-        # If maximized/fullscreen, geometry can be “last normal” or weird depending on platform.
-        # Store flags separately.
         is_full = bool(self.windowState() & Qt.WindowState.WindowFullScreen)
         is_max  = bool(self.windowState() & Qt.WindowState.WindowMaximized)
 
         s.setValue(f"{k}/fullscreen", is_full)
         s.setValue(f"{k}/maximized", is_max)
 
-        # Save “normal” geometry even if maximized, so restore feels sane.
-        # Qt provides normalGeometry() for QMainWindow/QWidget.
         try:
             if is_max or is_full:
                 s.setValue(f"{k}/geometry_normal", self.normalGeometry())
@@ -9908,7 +9934,6 @@ class AstroSuiteProMainWindow(
         except Exception:
             pass
 
-        # Primary geometry/state payloads
         try:
             s.setValue(f"{k}/geometry", self.saveGeometry())
         except Exception:
@@ -9918,8 +9943,37 @@ class AstroSuiteProMainWindow(
         except Exception:
             pass
 
+        # Save dock host state
+        try:
+            self.save_dock_host_state()
+        except Exception:
+            pass
+
         s.sync()
 
+    def restore_main_window_state(self):
+        s = self.settings
+        k = self._mw_key()
+
+        st = s.value(f"{k}/state", None)
+        if st is not None and len(st) > 0:
+            result = self.restoreState(st)
+            if not result:
+                s.remove(f"{k}/state")
+
+        geom = s.value(f"{k}/geometry", None)
+        if geom is not None and len(geom) > 0:
+            self.restoreGeometry(geom)
+
+        was_max = s.value(f"{k}/maximized", False, type=bool)
+        was_full = s.value(f"{k}/fullscreen", False, type=bool)
+        if was_full:
+            self.showFullScreen()
+        elif was_max:
+            self.showMaximized()
+
+        # Restore dock host state — deferred so all docks are fully constructed first
+        QTimer.singleShot(0, self.restore_dock_host_state)
 
     def closeEvent(self, e):
         self._update_usage_stats()

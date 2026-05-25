@@ -10,7 +10,7 @@ import subprocess
 import numpy as np
 
 from PyQt6.QtCore import QThread, pyqtSignal, Qt, QTimer, QSettings, QLockFile
-from PyQt6.QtWidgets import QDialog, QFormLayout, QDialogButtonBox, QDoubleSpinBox, QComboBox, QCheckBox, QMessageBox, QApplication, QHBoxLayout, QVBoxLayout, QLabel, QPushButton
+from PyQt6.QtWidgets import QDialog, QFormLayout, QDialogButtonBox, QDoubleSpinBox, QComboBox, QCheckBox, QMessageBox, QApplication, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QWidget
 from PyQt6.QtCore import QThread, pyqtSignal, Qt, QTimer, QSettings, QLockFile, QEventLoop
 
 
@@ -322,86 +322,200 @@ def run_cosmicclarity_via_preset(main, preset: dict | None = None, *, doc=None):
 
 # ---------------- Optional: tiny preset editor for the shortcut button ----------------
 class _CosmicClarityPresetDialog(QDialog):
-    """
-    Minimal preset editor for the shortcut:
-      Mode, GPU, create_new_view plus a few key params per mode.
-    """
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
         self.setWindowTitle("Cosmic Clarity — Preset")
         p = dict(initial or {})
+
+        # Check if correction model is available
+        try:
+            from setiastro.saspro.resources import get_resources
+            _r = get_resources()
+            _cp = getattr(_r, "CC_C_PTH", None)
+            self._correct_available = bool(_cp and os.path.exists(_cp))
+        except Exception:
+            self._correct_available = False
+
         f = QFormLayout(self)
 
-        self.mode = QComboBox(); self.mode.addItems(["sharpen", "denoise", "both", "superres"])
+        self.mode = QComboBox()
+        self.mode.addItems(["sharpen", "denoise", "both", "superres"])
         self.mode.setCurrentText(str(p.get("mode", "sharpen")))
+        self.mode.currentTextChanged.connect(self._mode_changed)
         f.addRow("Mode:", self.mode)
 
-        self.gpu = QCheckBox("Use GPU"); self.gpu.setChecked(bool(p.get("gpu", True)))
+        self.gpu = QCheckBox("Use GPU")
+        self.gpu.setChecked(bool(p.get("gpu", True)))
         f.addRow(self.gpu)
+
         self.ab_first = QCheckBox("Run Aberration Remover first")
         self.ab_first.setChecked(bool(p.get("aberration_first", False)))
         f.addRow(self.ab_first)
 
-        self.newview = QCheckBox("Create new view"); self.newview.setChecked(bool(p.get("create_new_view", False)))
+        self.newview = QCheckBox("Create new view")
+        self.newview.setChecked(bool(p.get("create_new_view", False)))
         f.addRow(self.newview)
 
-        # Sharpen
-        self.sh_mode = QComboBox(); self.sh_mode.addItems(["Both", "Stellar Only", "Non-Stellar Only"])
+        # --- Stellar Correction Mode (only shown if model installed) ---
+        self._corr_label = QLabel("Stellar Correction:")
+        corr_row = QWidget()
+        corr_lay = QHBoxLayout(corr_row)
+        corr_lay.setContentsMargins(0, 0, 0, 0)
+        from PyQt6.QtWidgets import QRadioButton
+        self.rb_correct_only    = QRadioButton("Correct Only")
+        self.rb_correct_sharpen = QRadioButton("Correct + Sharpen")
+        self.rb_sharpen_only    = QRadioButton("Sharpen Only")
+        self.rb_sharpen_only.setChecked(True)
+        corr_lay.addWidget(self.rb_correct_only)
+        corr_lay.addWidget(self.rb_correct_sharpen)
+        corr_lay.addWidget(self.rb_sharpen_only)
+        corr_lay.addStretch(1)
+        f.addRow(self._corr_label, corr_row)
+        self._corr_row_widget = corr_row
+
+        # Restore correction mode from preset
+        scm = p.get("stellar_correct_mode", "sharpen_only")
+        self.rb_correct_only.setChecked(scm == "correct_only")
+        self.rb_correct_sharpen.setChecked(scm == "correct_sharpen")
+        self.rb_sharpen_only.setChecked(scm not in ("correct_only", "correct_sharpen"))
+
+        # Connect to update sharpen sub-control visibility
+        self.rb_correct_only.toggled.connect(self._mode_changed)
+        self.rb_correct_sharpen.toggled.connect(self._mode_changed)
+        self.rb_sharpen_only.toggled.connect(self._mode_changed)
+
+        # --- Sharpen controls ---
+        self.sh_mode = QComboBox()
+        self.sh_mode.addItems(["Both", "Stellar Only", "Non-Stellar Only"])
         self.sh_mode.setCurrentText(p.get("sharpening_mode", "Both"))
-        self.auto_psf = QCheckBox("Auto PSF"); self.auto_psf.setChecked(bool(p.get("auto_psf", True)))
-        self.psf = QDoubleSpinBox(); self.psf.setRange(1.0, 8.0); self.psf.setSingleStep(0.1); self.psf.setValue(float(p.get("nonstellar_psf", 3.0)))
-        engine_st = float(p.get("stellar_amount", 0.50))
-        ui_st = engine_st * 2.0
+
+        self.auto_psf = QCheckBox("Auto PSF")
+        self.auto_psf.setChecked(bool(p.get("auto_psf", True)))
+
+        self.psf = QDoubleSpinBox()
+        self.psf.setRange(1.0, 8.0)
+        self.psf.setSingleStep(0.1)
+        self.psf.setValue(float(p.get("nonstellar_psf", 3.0)))
 
         self.st_amt = QDoubleSpinBox()
         self.st_amt.setRange(0.0, 1.0)
         self.st_amt.setSingleStep(0.05)
-        self.st_amt.setValue(float(ui_st))
-        self.nst_amt= QDoubleSpinBox(); self.nst_amt.setRange(0.0, 1.0); self.nst_amt.setSingleStep(0.05); self.nst_amt.setValue(float(p.get("nonstellar_amount", 0.50)))
-        f.addRow("Sharpening Mode:", self.sh_mode)
-        f.addRow(self.auto_psf)
-        f.addRow("Non-stellar PSF:", self.psf)
-        f.addRow("Stellar Amount (0-1):", self.st_amt)
-        f.addRow("Non-stellar Amount (0-1):", self.nst_amt)
+        self.st_amt.setValue(float(p.get("stellar_amount", 0.5)))
 
-        # NEW: Sharpen RGB channels separately
+        self.nst_amt = QDoubleSpinBox()
+        self.nst_amt.setRange(0.0, 1.0)
+        self.nst_amt.setSingleStep(0.05)
+        self.nst_amt.setValue(float(p.get("nonstellar_amount", 0.5)))
+
         self.sh_sep = QCheckBox("Sharpen RGB channels separately")
         self.sh_sep.setChecked(bool(p.get("sharpen_channels_separately", False)))
+
+        self._sh_mode_label = QLabel("Sharpening Mode:")
+        f.addRow(self._sh_mode_label, self.sh_mode)
+        f.addRow(self.auto_psf)
+        self._psf_label = QLabel("Non-stellar PSF:")
+        f.addRow(self._psf_label, self.psf)
+        self._st_label = QLabel("Stellar Amount (0-1):")
+        f.addRow(self._st_label, self.st_amt)
+        self._nst_label = QLabel("Non-stellar Amount (0-1):")
+        f.addRow(self._nst_label, self.nst_amt)
         f.addRow(self.sh_sep)
-        # Denoise
-        self.dn_lum = QDoubleSpinBox(); self.dn_lum.setRange(0.0, 1.0); self.dn_lum.setSingleStep(0.05); self.dn_lum.setValue(float(p.get("denoise_luma", 0.50)))
-        self.dn_col = QDoubleSpinBox(); self.dn_col.setRange(0.0, 1.0); self.dn_col.setSingleStep(0.05); self.dn_col.setValue(float(p.get("denoise_color", 0.50)))
-        self.dn_mode= QComboBox(); self.dn_mode.addItems(["full","luminance"]); self.dn_mode.setCurrentText(p.get("denoise_mode", "full"))
-        self.dn_sep = QCheckBox("Separate RGB channels"); self.dn_sep.setChecked(bool(p.get("separate_channels", False)))
-        f.addRow("Denoise Luma:", self.dn_lum)
-        f.addRow("Denoise Color:", self.dn_col)
-        f.addRow("Denoise Mode:", self.dn_mode)
-        f.addRow(self.dn_sep)
-        # Denoise model variant
+
+        # Track sharpen sub-widgets for visibility toggling
+        self._sharpen_sub_widgets = [
+            self._sh_mode_label, self.sh_mode,
+            self.auto_psf,
+            self._psf_label, self.psf,
+            self._st_label, self.st_amt,
+            self._nst_label, self.nst_amt,
+            self.sh_sep,
+        ]
+
+        # --- Denoise controls ---
+        self.dn_lum = QDoubleSpinBox()
+        self.dn_lum.setRange(0.0, 1.0)
+        self.dn_lum.setSingleStep(0.05)
+        self.dn_lum.setValue(float(p.get("denoise_luma", 0.5)))
+
+        self.dn_col = QDoubleSpinBox()
+        self.dn_col.setRange(0.0, 1.0)
+        self.dn_col.setSingleStep(0.05)
+        self.dn_col.setValue(float(p.get("denoise_color", 0.5)))
+
+        self.dn_mode = QComboBox()
+        self.dn_mode.addItems(["full", "luminance"])
+        self.dn_mode.setCurrentText(p.get("denoise_mode", "full"))
+
+        self.dn_sep = QCheckBox("Separate RGB channels")
+        self.dn_sep.setChecked(bool(p.get("separate_channels", False)))
+
         self.dn_model = QComboBox()
         self.dn_model.addItems(["Standard", "Walking Noise", "Lite (faster)"])
-        self.dn_model.setToolTip(
-            "Standard: general-purpose AI4 denoise model.\n"
-            "Walking Noise: specialist model for fixed-pattern drift streaks.\n"
-            "Lite: smaller faster model, slightly less detail."
-        )
-        # restore from preset
         if p.get("denoise_walking", False):
             self.dn_model.setCurrentText("Walking Noise")
         elif p.get("denoise_lite", False):
             self.dn_model.setCurrentText("Lite (faster)")
         else:
             self.dn_model.setCurrentText("Standard")
-        f.addRow("Denoise Model:", self.dn_model)
-        # Super-res
-        self.scale = QComboBox(); self.scale.addItems(["2","3","4"]); self.scale.setCurrentText(str(int(p.get("scale", 2))))
-        f.addRow("Super-Res Scale:", self.scale)
 
-        # OK/Cancel
-        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self)
-        btns.accepted.connect(self.accept); btns.rejected.connect(self.reject)
+        self._dn_lum_label = QLabel("Denoise Luma:")
+        self._dn_col_label = QLabel("Denoise Color:")
+        self._dn_mode_label = QLabel("Denoise Mode:")
+        self._dn_model_label = QLabel("Denoise Model:")
+        f.addRow(self._dn_lum_label, self.dn_lum)
+        f.addRow(self._dn_col_label, self.dn_col)
+        f.addRow(self._dn_mode_label, self.dn_mode)
+        f.addRow(self.dn_sep)
+        f.addRow(self._dn_model_label, self.dn_model)
+
+        self._denoise_sub_widgets = [
+            self._dn_lum_label, self.dn_lum,
+            self._dn_col_label, self.dn_col,
+            self._dn_mode_label, self.dn_mode,
+            self.dn_sep,
+            self._dn_model_label, self.dn_model,
+        ]
+
+        # --- Super-res ---
+        self.scale = QComboBox()
+        self.scale.addItems(["2", "3", "4"])
+        self.scale.setCurrentText(str(int(p.get("scale", 2))))
+        self._scale_label = QLabel("Super-Res Scale:")
+        f.addRow(self._scale_label, self.scale)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=self
+        )
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
         f.addRow(btns)
 
+        self._mode_changed()
+
+    def _mode_changed(self, *_):
+        m = self.mode.currentText()
+        show_sh = m in ("sharpen", "both")
+        show_dn = m in ("denoise", "both")
+        show_sr = m == "superres"
+
+        # Correction radio buttons only when sharpen is active and model installed
+        corr_visible = show_sh and self._correct_available
+        self._corr_label.setVisible(corr_visible)
+        self._corr_row_widget.setVisible(corr_visible)
+
+        # Sharpen sub-controls hidden when correct-only is selected
+        sharpen_active = show_sh and not (
+            self._correct_available and self.rb_correct_only.isChecked()
+        )
+        for w in self._sharpen_sub_widgets:
+            w.setVisible(sharpen_active)
+
+        for w in self._denoise_sub_widgets:
+            w.setVisible(show_dn)
+
+        self._scale_label.setVisible(show_sr)
+        self.scale.setVisible(show_sr)
 
     def result_dict(self) -> dict:
         m = self.mode.currentText()
@@ -411,17 +525,23 @@ class _CosmicClarityPresetDialog(QDialog):
             "create_new_view": bool(self.newview.isChecked()),
             "aberration_first": bool(self.ab_first.isChecked()),
         }
-        if m in ("sharpen","both"):
+        if m in ("sharpen", "both"):
+            scm = (
+                "correct_only"    if self.rb_correct_only.isChecked()    else
+                "correct_sharpen" if self.rb_correct_sharpen.isChecked() else
+                "sharpen_only"
+            ) if self._correct_available else "sharpen_only"
+
             out.update({
+                "stellar_correct_mode": scm,
                 "sharpening_mode": self.sh_mode.currentText(),
                 "auto_psf": bool(self.auto_psf.isChecked()),
                 "nonstellar_psf": float(self.psf.value()),
                 "stellar_amount": float(self.st_amt.value()),
                 "nonstellar_amount": float(self.nst_amt.value()),
-                # NEW: propagate sharpen-separate into preset dict
                 "sharpen_channels_separately": bool(self.sh_sep.isChecked()),
             })
-        if m in ("denoise","both"):
+        if m in ("denoise", "both"):
             dn_model = self.dn_model.currentText()
             out.update({
                 "denoise_luma": float(self.dn_lum.value()),

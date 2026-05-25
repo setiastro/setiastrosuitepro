@@ -559,6 +559,7 @@ class Resources:
     CC_STELLAR_NAF_ONNX = property(lambda self: model_path('deep_sharp_stellar_AI4.onnx'))
     CC_NS_PTH = property(lambda self: model_path('deep_nonstellar_sharp_conditional_psf_AI4.pth'))
     CC_NS_COND_NAF_ONNX = property(lambda self: model_path('deep_nonstellar_sharp_conditional_psf_AI4.onnx'))
+    CC_C_PTH = property(lambda self: optional_model_path('deep_correct_stellar_AI4.pth'))
 
     # --- Cosmic Clarity Denoise (NAFNet AI4) ---
     CC_DENOISE_MONO_PTH  = property(lambda self: model_path('deep_denoise_mono_AI4.pth'))
@@ -630,6 +631,13 @@ def model_path(filename: str) -> str:
     _assert_not_internal_models_path(p)
     return p
 
+def optional_model_path(filename: str) -> str | None:
+    from setiastro.saspro.model_manager import optional_model_path as _opt
+    p = _opt(filename)
+    if p is None:
+        return None
+    _assert_not_internal_models_path(str(p))
+    return str(p)
 
 # QML helper
 resource_monitor_qml = _resource_path(os.path.join("qml", "ResourceMonitor.qml"))
