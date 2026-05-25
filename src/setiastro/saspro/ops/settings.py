@@ -1184,6 +1184,8 @@ class SettingsDialog(QDialog):
 
         # Shortcuts
         self.chk_save_shortcuts.setChecked(
+            self.settings.value("shortcuts/save_on_exit", True, type=bool)
+        )
         
         # Theme
         theme_val = (self.settings.value("ui/theme", "system", type=str) or "system").lower()
