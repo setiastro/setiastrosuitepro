@@ -1177,9 +1177,13 @@ class SettingsDialog(QDialog):
         )
         
         # Shortcuts
+        # Always re-enable model buttons on refresh — guards against stuck state
+        # from a previous download that crashed before its _done callback fired
+        self.btn_models_update.setEnabled(True)
+        self.btn_models_install_zip.setEnabled(True)
+
+        # Shortcuts
         self.chk_save_shortcuts.setChecked(
-            self.settings.value("shortcuts/save_on_exit", True, type=bool)
-        )
         
         # Theme
         theme_val = (self.settings.value("ui/theme", "system", type=str) or "system").lower()
