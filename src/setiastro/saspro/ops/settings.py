@@ -641,8 +641,8 @@ class SettingsDialog(QDialog):
         WALKING_BACKUP   = "https://drive.google.com/file/d/1IEB9xosEA0JPGc-L5gDfueJoFYYXN_67/view?usp=sharing"
         WALKING_TERTIARY = "https://github.com/setiastro/setiastrosuitepro/releases/download/benchmarkFIT/SASPro_Models_AI4_Walking.zip"
 
-        CORRECT_PRIMARY  = None   # not yet — placeholder for when Drive links are ready
-        CORRECT_BACKUP   = None
+        CORRECT_PRIMARY  = "https://drive.google.com/file/d/11Qb6C46OlJG7rmKM-zOPCkzN4xbRsvIc/view?usp=sharing"
+        CORRECT_BACKUP   = "https://drive.google.com/file/d/1XgqKNd8iBgV3LW8CfzGyS4jigxsxIf86/view?usp=sharing"
         CORRECT_TERTIARY = "https://github.com/setiastro/setiastrosuitepro/releases/download/benchmarkFIT/SASPro_Models_AI4_Correct.zip"
 
         self._models_worker = ModelsDownloadWorker(

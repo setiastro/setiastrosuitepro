@@ -110,7 +110,7 @@ class DockMixin:
     
     def _ensure_dock_host(self):
         if getattr(self, "dock_host", None) is None:
-            self.dock_host = DockHostWindow(self)
+            self.dock_host = DockHostWindow(None)  # None = proper top-level, own taskbar entry
             try:
                 self.dock_host.setWindowIcon(self.app_icon)
             except Exception:
@@ -755,6 +755,16 @@ class DockMixin:
     def _send_default_docks_to_host(self):
         host = self._ensure_dock_host()
 
+        # Save the current main window dock layout BEFORE moving docks out
+        # so we can restore it if the user returns panels to main
+        try:
+            s = self.settings
+            k = self._mw_key()
+            s.setValue(f"{k}/pre_host_dock_state", self.saveState())
+            s.sync()
+        except Exception:
+            pass
+
         mapping = [
             (getattr(self, "explorer_dock", None), Qt.DockWidgetArea.LeftDockWidgetArea),
             (getattr(self, "layers_dock", None), Qt.DockWidgetArea.RightDockWidgetArea),
@@ -770,24 +780,41 @@ class DockMixin:
 
         try:
             if getattr(self, "header_dock", None) and getattr(self, "layers_dock", None):
-                host.splitDockWidget(self.header_viewer, self.layers_dock, Qt.Orientation.Vertical)
+                host.splitDockWidget(self.header_dock, self.layers_dock, Qt.Orientation.Vertical)
         except Exception:
             pass
 
     def _show_dock_host(self):
         host = self._ensure_dock_host()
+        # If minimized, restore it properly
+        if host.isMinimized():
+            host.setWindowState(
+                host.windowState() & ~Qt.WindowState.WindowMinimized
+                | Qt.WindowState.WindowActive
+            )
         host.show()
         host.raise_()
         host.activateWindow()
 
     def save_dock_host_state(self):
         host = getattr(self, "dock_host", None)
-        if host is None:
-            return
-
         s = self.settings
         k = self._mw_key()
 
+        # Check if any docks are actually in the host right now
+        in_host = []
+        if host is not None:
+            for dock in self._all_known_docks():
+                if self._dock_is_in_host(dock):
+                    in_host.append(dock.objectName())
+
+        if not in_host:
+            # No docks in host — mark as inactive so we don't restore it next launch
+            s.setValue(f"{k}/dock_host/active", False)
+            s.sync()
+            return
+
+        # Docks are in host — save everything
         try:
             s.setValue(f"{k}/dock_host/active", True)
             s.setValue(f"{k}/dock_host/geometry", host.saveGeometry())
@@ -795,11 +822,6 @@ class DockMixin:
         except Exception:
             pass
 
-        # Record which dock object names were in the host
-        in_host = []
-        for dock in self._all_known_docks():
-            if self._dock_is_in_host(dock):
-                in_host.append(dock.objectName())
         s.setValue(f"{k}/dock_host/docks", in_host)
         s.sync()
 
@@ -815,18 +837,15 @@ class DockMixin:
         if not in_host:
             return
 
-        # Build name -> dock map
         name_map = {d.objectName(): d for d in self._all_known_docks()}
-
         host = self._ensure_dock_host()
+        host.hide()
 
-        # Move the right docks into the host first
         for name in in_host:
             dock = name_map.get(name)
             if dock is not None:
                 self._move_dock_to_host(dock)
 
-        # Restore host geometry then state
         geom = s.value(f"{k}/dock_host/geometry", None)
         if geom is not None and len(geom) > 0:
             try:
@@ -834,14 +853,15 @@ class DockMixin:
             except Exception:
                 pass
 
+        # Show first, then restoreState — Qt needs window visible for layout
+        host.show()
+
         state = s.value(f"{k}/dock_host/state", None)
         if state is not None and len(state) > 0:
             try:
                 host.restoreState(state)
             except Exception:
                 pass
-
-        host.show()
 
     def _return_all_host_docks_to_main(self):
         default_areas = {
@@ -862,4 +882,24 @@ class DockMixin:
             if getattr(self, "header_dock", None) and getattr(self, "layers_dock", None):
                 self.splitDockWidget(self.header_dock, self.layers_dock, Qt.Orientation.Vertical)
         except Exception:
-            pass        
+            pass
+
+        # Restore the main window dock layout from before panels were sent to host
+        try:
+            s = self.settings
+            k = self._mw_key()
+            pre_state = s.value(f"{k}/pre_host_dock_state", None)
+            if pre_state is not None and len(pre_state) > 0:
+                self.restoreState(pre_state)
+        except Exception:
+            pass
+
+        # Close the secondary dock host — it's empty now
+        try:
+            host = getattr(self, "dock_host", None)
+            if host is not None:
+                host.hide()
+                host.close()
+                self.dock_host = None
+        except Exception:
+            pass

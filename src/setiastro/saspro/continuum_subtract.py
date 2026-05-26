@@ -338,10 +338,6 @@ class ContinuumSubtractTab(QWidget):
         self.original_header = None
         self._clickable_images = {}
         self._wb_diag_entries = []   # list of dicts built in _onOneResult
-        try:
-            self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        except Exception as e:
-            print(f"ContinuumSubtractTab init error: {e}")
 
     def initUI(self):
         self.spinnerLabel = QLabel("")
@@ -1162,6 +1158,11 @@ class ContinuumSubtractTab(QWidget):
             self._onAllCalibrationsReady()
 
     def _onOneResult(self, filt, img, star_count, overlay_qimg, raw_pixels, after_pixels):
+        try:
+            # quick sip check — if self has been destroyed, any attr access will raise
+            _ = self.wb_diag_button
+        except RuntimeError:
+            return
         self._results.append({
             "filter": filt, "image": img, "stars": star_count,
             "overlay": overlay_qimg, "raw": raw_pixels, "after": after_pixels
@@ -1212,8 +1213,11 @@ class ContinuumSubtractTab(QWidget):
             "overlay_pix": overlay_pix,   # full res
         })
 
-        if hasattr(self, "wb_diag_button"):
-            self.wb_diag_button.setEnabled(True)
+        try:
+            if hasattr(self, "wb_diag_button"):
+                self.wb_diag_button.setEnabled(True)
+        except RuntimeError:
+            return  # widget was deleted, bail out entirely
 
         if (not getattr(self, "_pushed_results", False)
                 and len(self._results) == getattr(self, "_expected_results", 0)):
@@ -1627,6 +1631,23 @@ class ContinuumSubtractTab(QWidget):
         self.spinnerLabel.clear()
         if hasattr(self, "execute_button"):
             self.execute_button.setEnabled(True)
+
+    def closeEvent(self, event):
+        # Disconnect all threads to prevent signals firing into a dead widget
+        for t in list(getattr(self, '_calib_threads', {}).values()):
+            try:
+                t.calibration_ready.disconnect()
+                t.processing_complete.disconnect()
+                t.processing_complete_starless.disconnect()
+                t.status_update.disconnect()
+            except Exception:
+                pass
+        for t in list(getattr(self, '_final_threads', [])):
+            try:
+                t.finished.disconnect()
+            except Exception:
+                pass
+        super().closeEvent(event)
 
 class ContinuumProcessingThread(QThread):
     # emitted once per filter when calibration is done (pre-subtraction)
