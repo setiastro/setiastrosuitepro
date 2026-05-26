@@ -771,6 +771,13 @@ class AstroSuiteProMainWindow(
 
         self.status_log_dock.hide()
         self.restore_main_window_state()
+        # If docks were previously sent to secondary host, restore that now
+        # Done here at end of __init__ so all docks are guaranteed constructed
+        s = self.settings
+        k = self._mw_key()
+        if s.value(f"{k}/dock_host/active", False, type=bool):
+            self.restore_dock_host_state()
+            self._send_default_docks_to_host()
 
     def _mw_key(self) -> str:
         return "main_window"
@@ -9972,8 +9979,6 @@ class AstroSuiteProMainWindow(
         elif was_max:
             self.showMaximized()
 
-        # Restore dock host state — deferred so all docks are fully constructed first
-        QTimer.singleShot(0, self.restore_dock_host_state)
 
     def closeEvent(self, e):
         self._update_usage_stats()
@@ -10060,7 +10065,15 @@ class AstroSuiteProMainWindow(
                 pass
             self.resource_monitor.hide()
             self.resource_monitor.close()
-
+        try:
+            host = getattr(self, "dock_host", None)
+            if host is not None:
+                self.save_dock_host_state()  # capture current arrangement
+                host.hide()                  # hide immediately (clean visual)
+                # don't close yet — let _do_shutdown_steps do it
+                # so Qt doesn't destroy docks before state is flushed
+        except Exception:
+            pass
         # Linux compositors don't support window opacity — skip the fade and
         # shut down immediately.
         import platform
@@ -10086,14 +10099,20 @@ class AstroSuiteProMainWindow(
         self.close()
 
     def _do_shutdown_steps(self, e):
-        """Actual shutdown logic after verification and animation."""
         self._force_close_all = True
         self._shutting_down = True
 
-        # Save UI layout/placement
         self.save_ui_state()
 
-        # wait on bg threads
+        # Now safe to fully close the dock host
+        try:
+            host = getattr(self, "dock_host", None)
+            if host is not None:
+                host.hide()
+                host.close()
+        except Exception:
+            pass
+
         try:
             for t in list(getattr(self, "_bg_threads", [])):
                 try:
@@ -10104,7 +10123,6 @@ class AstroSuiteProMainWindow(
             pass
 
         self._clear_view_bundles_for_next_launch()
-
         super().closeEvent(e)
 
 # CheatSheet dialog and helper functions imported from setiastro.saspro.cheat_sheet

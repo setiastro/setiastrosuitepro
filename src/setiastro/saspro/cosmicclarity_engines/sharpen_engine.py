@@ -1139,8 +1139,13 @@ def _correct_rgb_image(
     chunks_hwc = []
     tile_orig_meds = []
 
+    PEDESTAL = 0.05
+
     for (i, j, ei, ej, _) in coords:
         tile = image_rgb[i:ei, j:ej, :3].astype(np.float32, copy=False)
+        # Add pedestal to prevent zeros from destabilizing the model
+        tile = (tile + PEDESTAL) / (1.0 + PEDESTAL)
+        # Record median AFTER pedestal for MTF and inverse MTF
         med = float(np.median(tile))
         m = _compute_mtf_m(med)
         tile = _mtf(tile, m)
@@ -1156,8 +1161,11 @@ def _correct_rgb_image(
     )
 
     # Unstretch using original median — same math as unstretch_image_unlinked_rgb
+    PEDESTAL = 0.05
+
     inferred = []
     for tile_out, orig_med in zip(inferred_raw, tile_orig_meds):
+        # Inverse MTF back to post-pedestal median
         if orig_med > 0.0:
             m_now = float(np.median(tile_out))
             m0 = orig_med
@@ -1166,6 +1174,8 @@ def _correct_rgb_image(
                 den = m_now * (m0 + tile_out - 1.0) - m0 * tile_out
                 den = np.where(np.abs(den) < 1e-12, 1e-12, den)
                 tile_out = np.clip(num / den, 0.0, 1.0).astype(np.float32, copy=False)
+        # Remove pedestal
+        tile_out = np.clip(tile_out * (1.0 + PEDESTAL) - PEDESTAL, 0.0, 1.0).astype(np.float32, copy=False)
         inferred.append(tile_out)
 
     # Stitch each channel separately using the existing stitcher

@@ -758,10 +758,8 @@ class CosmicClarityDialogPro(QDialog):
         _add_inline_slider(adv, 1, self.lbl_target_median, self.sld_target_median)
  
         self.chk_aberration_first = QCheckBox("Run Aberration Remover first")
-        self.chk_aberration_first.setToolTip(
-            "Runs R.A.'s Aberration Correction before Cosmic Clarity processing.\n"
-            "Useful for cleaning color/fringe aberrations before sharpen, denoise, or super-resolution."
-        )
+        self.chk_aberration_first.setChecked(False)   # permanently disabled
+        self.chk_aberration_first.setVisible(False)   # hidden — superseded by native correction
         adv.addWidget(self.chk_aberration_first, 2, 0, 1, 2)
  
         self.lbl_chunk = QLabel("Chunk Size:")
@@ -1006,7 +1004,7 @@ class CosmicClarityDialogPro(QDialog):
                 tm = 25
             self.sld_target_median.setValue(tm)
  
-            self.chk_aberration_first.setChecked(s.value("cc/aberration_first", False, type=bool))
+            self.chk_aberration_first.setChecked(False) 
  
             # Sharpen sliders
             try:
@@ -1666,7 +1664,7 @@ class CosmicClarityDialogPro(QDialog):
             "mode": mode,
             "gpu": (self.cmb_gpu.currentIndex() == 0),
             "create_new_view": (self.cmb_target.currentIndex() == 1),
-            "aberration_first": self.chk_aberration_first.isChecked(),
+            "aberration_first": False,
 
             # global compatibility controls
             "compat_mode": compat,
