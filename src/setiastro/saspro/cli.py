@@ -72,16 +72,6 @@ def _add_temp_stretch_opts(p: argparse.ArgumentParser):
         help="Target median used for temporary stretch (default: 0.25)."
     )
 
-
-def _add_aberration_opts(p: argparse.ArgumentParser):
-    p.add_argument(
-        "--aberration-first",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Run Aberration Remover before Cosmic Clarity processing."
-    )
-
-
 def _add_darkstar_opts(p: argparse.ArgumentParser):
     p.add_argument(
         "--star-removal-mode",
@@ -134,7 +124,6 @@ def build_cc_parser() -> argparse.ArgumentParser:
     _add_common_io(p)
     _add_chunking_opts(p)
     _add_temp_stretch_opts(p)
-    _add_aberration_opts(p)
     p.add_argument("--sharpening-mode", default="Both", choices=["Both", "Stellar Only", "Non-Stellar Only"])
     p.add_argument("--stellar-amount", type=float, default=0.5)
     p.add_argument("--nonstellar-amount", type=float, default=0.5)
@@ -158,7 +147,6 @@ def build_cc_parser() -> argparse.ArgumentParser:
     _add_common_io(p)
     _add_chunking_opts(p)
     _add_temp_stretch_opts(p)
-    _add_aberration_opts(p)
     p.add_argument("--denoise-luma", type=float, default=0.5)
     p.add_argument("--denoise-color", type=float, default=0.5)
     p.add_argument("--denoise-mode", default="full", choices=["full", "luminance"])
@@ -172,7 +160,6 @@ def build_cc_parser() -> argparse.ArgumentParser:
     _add_common_io(p)
     _add_chunking_opts(p)
     _add_temp_stretch_opts(p)
-    _add_aberration_opts(p)
     p.add_argument("--sharpening-mode", default="Both", choices=["Both", "Stellar Only", "Non-Stellar Only"])
     p.add_argument("--stellar-amount", type=float, default=0.5)
     p.add_argument("--nonstellar-amount", type=float, default=0.5)
@@ -197,7 +184,6 @@ def build_cc_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("superres", help="Super resolution")
     _add_common_io(p)
     _add_chunking_opts(p)
-    _add_aberration_opts(p)
     p.add_argument("--scale", type=int, default=2, choices=[2, 3, 4])
 
     p = sub.add_parser("satellite", help="Satellite trail removal")
@@ -211,7 +197,6 @@ def build_cc_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("darkstar", help="DarkStar star removal")
     _add_common_io(p)
-    _add_aberration_opts(p)
     p.add_argument(
         "--chunk-size",
         type=int,
@@ -243,7 +228,6 @@ def _run_cc(argv: list[str]) -> int:
         "overlap": int(getattr(args, "overlap", 64)),
         "temp_stretch": bool(getattr(args, "temp_stretch", False)),
         "target_median": float(getattr(args, "target_median", 0.25)),
-        "aberration_first": bool(getattr(args, "aberration_first", False)),
     }
 
     if args.cmd == "sharpen":
