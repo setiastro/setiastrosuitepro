@@ -141,6 +141,18 @@ def build_cc_parser() -> argparse.ArgumentParser:
     p.add_argument("--nonstellar-psf", type=float, default=3.0)
     p.add_argument("--auto-psf", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--sharpen-channels-separately", action="store_true", default=False)
+    p.add_argument(
+        "--stellar-correct-mode",
+        default="sharpen_only",
+        choices=["sharpen_only", "correct_only", "correct_sharpen"],
+        help="Stellar correction mode: sharpen_only (default), correct_only (aberration correction, no sharpen), "
+             "or correct_sharpen (aberration correction then sharpen)."
+    )
+
+    p = sub.add_parser("correct", help="Aberration correction only (no sharpening)")
+    _add_common_io(p)
+    _add_chunking_opts(p)
+    _add_temp_stretch_opts(p)
 
     p = sub.add_parser("denoise", help="Denoise only")
     _add_common_io(p)
@@ -167,10 +179,12 @@ def build_cc_parser() -> argparse.ArgumentParser:
     p.add_argument("--nonstellar-psf", type=float, default=3.0)
     p.add_argument("--auto-psf", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--sharpen-channels-separately", action="store_true", default=False)
-    p.add_argument("--denoise-luma", type=float, default=0.5)
-    p.add_argument("--denoise-color", type=float, default=0.5)
-    p.add_argument("--denoise-mode", default="full", choices=["full", "luminance"])
-    p.add_argument("--separate-channels", action="store_true", default=False)
+    p.add_argument(
+        "--stellar-correct-mode",
+        default="sharpen_only",
+        choices=["sharpen_only", "correct_only", "correct_sharpen"],
+        help="Stellar correction mode for the sharpen pass."
+    )
     p.add_argument("--denoise-walking", action="store_true", default=False,
                    help="Use Walking Noise specialist model instead of standard.")
     p.add_argument("--denoise-lite", action="store_true", default=False,
@@ -237,6 +251,18 @@ def _run_cc(argv: list[str]) -> int:
             "nonstellar_psf": args.nonstellar_psf,
             "auto_psf": bool(args.auto_psf),
             "sharpen_channels_separately": bool(args.sharpen_channels_separately),
+            "stellar_correct_mode": str(args.stellar_correct_mode),
+        })
+    elif args.cmd == "correct":
+        preset.update({
+            "mode": "sharpen",
+            "stellar_correct_mode": "correct_only",
+            "sharpening_mode": "Both",
+            "stellar_amount": 0.5,
+            "nonstellar_amount": 0.5,
+            "nonstellar_psf": 3.0,
+            "auto_psf": True,
+            "sharpen_channels_separately": False,
         })
     elif args.cmd == "denoise":
         preset.update({
@@ -258,6 +284,7 @@ def _run_cc(argv: list[str]) -> int:
             "nonstellar_psf": args.nonstellar_psf,
             "auto_psf": bool(args.auto_psf),
             "sharpen_channels_separately": bool(args.sharpen_channels_separately),
+            "stellar_correct_mode": str(args.stellar_correct_mode),
             "denoise_luma": args.denoise_luma,
             "denoise_color": args.denoise_color,
             "denoise_mode": args.denoise_mode,
@@ -346,7 +373,7 @@ def main(argv: list[str] | None = None) -> int:
         paths = [str(Path(a)) for a in argv if _looks_like_path_token(a)]
         return _launch_gui(open_paths=paths)
 
-    known = {"sharpen", "denoise", "both", "superres", "satellite", "darkstar", "--help", "-h"}
+    known = {"sharpen", "correct", "denoise", "both", "superres", "satellite", "darkstar", "--help", "-h"}
     if argv[0].lower() in known:
         return _run_cc(argv)
 
