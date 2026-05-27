@@ -268,8 +268,6 @@ def run_cosmicclarity_on_file(
         print(f"[Satellite] {e} Output not written.", flush=True)
         return
 
-    out = run_cosmicclarity_on_array(img, preset, progress_cb=progress_cb)
-
     out_mono = mono or (out.ndim == 2)
 
     # Prefer output extension; if user gave no extension, fall back to input extension

@@ -656,14 +656,14 @@ def _load_torch_models(torch, device) -> SharpenModels:
 
     def m_naf_rgb(path: str, cfg: dict):
         net = NAFNetSharpen(**cfg, residual_out=True, clamp_out=False)
-        sd  = torch.load(path, map_location="cpu")
+        sd  = torch.load(path, map_location="cpu", weights_only=False)
         net.load_state_dict(sd)
         net.eval()
         return net.to(device)
 
     def m_naf_psf(path: str, cfg: dict):
         net = NAFNetSharpenPSF(**cfg, residual_out=True, clamp_out=False)
-        sd  = torch.load(path, map_location="cpu")
+        sd  = torch.load(path, map_location="cpu", weights_only=False)
         net.load_state_dict(sd)
         net.eval()
         return net.to(device)
@@ -671,7 +671,7 @@ def _load_torch_models(torch, device) -> SharpenModels:
     def m_naf_correct(path: str, cfg: dict):
         net = NAFNetCorrect(**cfg, residual_out=True)
         # deploy checkpoint wraps weights under "model_state_dict"
-        raw = torch.load(path, map_location="cpu")
+        raw = torch.load(path, map_location="cpu", weights_only=False)
         sd  = raw.get("model_state_dict", raw)
         net.load_state_dict(sd)
         net.eval()
@@ -814,7 +814,7 @@ def _infer_chunks_batched_rgb(
 
                 for bi in range(len(batch)):
                     oh, ow = orig_shapes[bi]
-                    # CHW -> HWC, crop padding
+                    # CHW -> HWC, crop padding — no clamp here, let values float
                     outputs[s + bi] = np.transpose(
                         y[bi, :, :oh, :ow], (1, 2, 0)
                     ).astype(np.float32, copy=False)
@@ -1141,13 +1141,19 @@ def _correct_rgb_image(
 
     PEDESTAL = 0.05
 
+    WHITE_COMPRESS = 0.95   # pull white point down before model; undone after
+
     for (i, j, ei, ej, _) in coords:
         tile = image_rgb[i:ei, j:ej, :3].astype(np.float32, copy=False)
+        # Compress white point to give the model headroom on bright tiles
+        tile = tile * WHITE_COMPRESS
         # Add pedestal to prevent zeros from destabilizing the model
         tile = (tile + PEDESTAL) / (1.0 + PEDESTAL)
         # Record median AFTER pedestal for MTF and inverse MTF
         med = float(np.median(tile))
-        m = _compute_mtf_m(med)
+        # Cap median for MTF so very bright tiles don't get over-compressed
+        med_for_mtf = min(med, 0.50)
+        m = _compute_mtf_m(med_for_mtf)
         tile = _mtf(tile, m)
         tile_orig_meds.append(med)
         chunks_hwc.append(tile)
@@ -1174,8 +1180,10 @@ def _correct_rgb_image(
                 den = m_now * (m0 + tile_out - 1.0) - m0 * tile_out
                 den = np.where(np.abs(den) < 1e-12, 1e-12, den)
                 tile_out = np.clip(num / den, 0.0, 1.0).astype(np.float32, copy=False)
-        # Remove pedestal
-        tile_out = np.clip(tile_out * (1.0 + PEDESTAL) - PEDESTAL, 0.0, 1.0).astype(np.float32, copy=False)
+        # Remove pedestal — no clamp yet, let values float through stitching
+        tile_out = (tile_out * (1.0 + PEDESTAL) - PEDESTAL).astype(np.float32, copy=False)
+        # Undo white point compression
+        tile_out = (tile_out / WHITE_COMPRESS).astype(np.float32, copy=False)
         inferred.append(tile_out)
 
     # Stitch each channel separately using the existing stitcher
@@ -1188,6 +1196,8 @@ def _correct_rgb_image(
         out_channels.append(stitched)
 
     return np.clip(np.stack(out_channels, axis=-1), 0.0, 1.0).astype(np.float32)
+
+
 # ---------------- Main API ----------------
 
 @dataclass

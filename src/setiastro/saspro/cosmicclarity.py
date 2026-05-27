@@ -1821,6 +1821,7 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         self._wait = None
 
         self._build_ui()
+        self._load_satellite_settings()
 
     # ---------- UI ----------
     def _build_ui(self):
@@ -1927,22 +1928,68 @@ class CosmicClaritySatelliteDialogPro(QDialog):
 
         self.resize(900, 600)
 
+    def _load_satellite_settings(self):
+        s = self.settings
+        
+        # Folders
+        self.input_folder = s.value("satellite/input_folder", "", type=str) or ""
+        self.output_folder = s.value("satellite/output_folder", "", type=str) or ""
+        if self.input_folder:
+            self.btn_in.setText(f"Input: {os.path.basename(self.input_folder)}")
+            self._watch(self.input_folder)
+            self._refresh_tree(self.tree_in, self.input_folder)
+        if self.output_folder:
+            self.btn_out.setText(f"Output: {os.path.basename(self.output_folder)}")
+            self._watch(self.output_folder)
+            self._refresh_tree(self.tree_out, self.output_folder)
+
+        gpu = s.value("satellite/use_gpu", "Yes", type=str)
+        self.cmb_gpu.setCurrentText(gpu if gpu in ("Yes", "No") else "Yes")
+        self.chk_gpu_compat.setChecked(s.value("satellite/gpu_compat", False, type=bool))
+
+        mode = s.value("satellite/mode", "Full", type=str)
+        idx = self.cmb_mode.findText(mode)
+        self.cmb_mode.setCurrentIndex(idx if idx >= 0 else 0)
+
+        self.chk_clip.setChecked(s.value("satellite/clip_trail", True, type=bool))
+
+        sens = s.value("satellite/sensitivity", 10, type=int)
+        self.sld_sens.setValue(max(1, min(50, sens)))
+
+        self.chk_skip.setChecked(s.value("satellite/skip_save", False, type=bool))
+
+    def _save_satellite_settings(self):
+        s = self.settings
+        s.setValue("satellite/input_folder", self.input_folder)
+        s.setValue("satellite/output_folder", self.output_folder)
+        s.setValue("satellite/use_gpu", self.cmb_gpu.currentText())
+        s.setValue("satellite/gpu_compat", self.chk_gpu_compat.isChecked())
+        s.setValue("satellite/mode", self.cmb_mode.currentText())
+        s.setValue("satellite/clip_trail", self.chk_clip.isChecked())
+        s.setValue("satellite/sensitivity", self.sld_sens.value())
+        s.setValue("satellite/skip_save", self.chk_skip.isChecked())
+        s.sync()
+
     # ---------- IO folders ----------
     def _choose_input(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Input Folder", self.input_folder or "")
-        if not folder: return
+        if not folder:
+            return
         self.input_folder = folder
         self.btn_in.setText(f"Input: {os.path.basename(folder)}")
         self._watch(folder)
         self._refresh_tree(self.tree_in, folder)
+        self._save_satellite_settings()
 
     def _choose_output(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Output Folder", self.output_folder or "")
-        if not folder: return
+        if not folder:
+            return
         self.output_folder = folder
         self.btn_out.setText(f"Output: {os.path.basename(folder)}")
         self._watch(folder)
         self._refresh_tree(self.tree_out, folder)
+        self._save_satellite_settings()
 
     def _watch(self, folder):
         try:
@@ -2337,7 +2384,10 @@ class CosmicClaritySatelliteDialogPro(QDialog):
                 logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
         QMessageBox.information(self, "Done", "Processing finished.")
 
-
+    def closeEvent(self, e):
+        self._save_satellite_settings()
+        super().closeEvent(e)
+        
     # ---------- Utils ----------
     @staticmethod
     def _create_temp_folder(base="~"):
