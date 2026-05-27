@@ -185,6 +185,10 @@ def build_cc_parser() -> argparse.ArgumentParser:
         choices=["sharpen_only", "correct_only", "correct_sharpen"],
         help="Stellar correction mode for the sharpen pass."
     )
+    p.add_argument("--denoise-luma", type=float, default=0.5)
+    p.add_argument("--denoise-color", type=float, default=0.5)
+    p.add_argument("--denoise-mode", default="full", choices=["full", "luminance"])
+    p.add_argument("--separate-channels", action="store_true", default=False)
     p.add_argument("--denoise-walking", action="store_true", default=False,
                    help="Use Walking Noise specialist model instead of standard.")
     p.add_argument("--denoise-lite", action="store_true", default=False,
