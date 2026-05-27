@@ -14,8 +14,24 @@ from setiastro.saspro.cosmicclarity_engines.satellite_engine import (
     get_satellite_models,
     satellite_remove_image,
 )
-from setiastro.saspro.aberration_ai import run_aberration_ai_on_array
-from setiastro.saspro.remove_stars import darkstar_starless_from_array
+
+def _get_darkstar():
+    import os
+    import sys
+    # On Linux, when invoked as a subprocess from PixInsight, the inherited
+    # LD_LIBRARY_PATH includes PI's Qt6 libs which clash with PyQt6.
+    # Stripping PI paths from the environment before importing PyQt6 resolves
+    # the undefined symbol crash.
+    if sys.platform.startswith("linux"):
+        lp = os.environ.get("LD_LIBRARY_PATH", "")
+        filtered = ":".join(
+            p for p in lp.split(":")
+            if "PixInsight" not in p and "pixinsight" not in p
+        )
+        os.environ["LD_LIBRARY_PATH"] = filtered
+
+    from setiastro.saspro.remove_stars import darkstar_starless_from_array
+    return darkstar_starless_from_array
 
 ProgressCB = Optional[Callable[[int, int], bool]]  # (done,total)->continue?
 
@@ -80,13 +96,7 @@ def run_cosmicclarity_on_array(
     rgb01, was_mono = _to_rgb01(img)
     out = rgb01
 
-    apply_aberration = bool(preset.get("aberration_first", False))
-
-    # Build stage list dynamically
     stages: list[str] = []
-    if apply_aberration:
-        stages.append("aberration")
-
     if mode == "sharpen":
         stages.append("sharpen")
     elif mode == "denoise":
@@ -121,27 +131,7 @@ def run_cosmicclarity_on_array(
     for i, stage in enumerate(stages):
         prog = stage_progress_adapter(i)
 
-        if stage == "aberration":
-            def _ab_prog(frac: float):
-                if progress_cb is None:
-                    return
-                frac = max(0.0, min(1.0, float(frac)))
-                done = int(frac * 1000)
-                prog(done, 1000)
-
-            out, _used_provider = run_aberration_ai_on_array(
-                out,
-                patch=int(preset.get("aberration_patch", 512)),
-                overlap=int(preset.get("aberration_overlap", 64)),
-                border_px=int(preset.get("aberration_border_px", 10)),
-                auto_gpu=bool(preset.get("aberration_auto_gpu", True)) and use_gpu,
-                provider=preset.get("aberration_provider", None),
-                progress_cb=_ab_prog,
-                cancel_cb=None,
-                log_cb=None,
-            )
-
-        elif stage == "sharpen":
+        if stage == "sharpen":
             out = sharpen_rgb01(
                 out,
                 sharpening_mode=str(preset.get("sharpening_mode", "Both")),
@@ -217,6 +207,7 @@ def run_cosmicclarity_on_array(
                     return
                 prog(done, total)
 
+            darkstar_starless_from_array = _get_darkstar()
             starless, _stars_only, _was_mono_engine = darkstar_starless_from_array(
                 out,
                 use_gpu=use_gpu,

@@ -22,7 +22,7 @@ from PyQt6.QtCore import QProcess
 from setiastro.saspro.legacy.image_manager import load_image, save_image  
 
 from setiastro.saspro.imageops.stretch import stretch_mono_image, stretch_color_image
-from setiastro.saspro.aberration_ai import run_aberration_ai_on_array
+# (deleted — aberration_ai is no longer used; kept only as dead code in worker)
 from setiastro.saspro.resources import get_icons
 
 from setiastro.saspro.cosmicclarity_engines.sharpen_engine import sharpen_rgb01
@@ -389,24 +389,7 @@ class CosmicClarityEngineWorker(QThread):
                         batch_size_override=int(self._preset.get("denoise_batch_size_override", 0)),
                     )
                 elif st == "aberration":
-                    def _ab_prog(frac: float):
-                        if self._cancel or self.isInterruptionRequested():
-                            raise RuntimeError("Canceled")
-                        pct = base_pct + stage_weight * 100.0 * float(frac)
-                        self.progress.emit(int(max(0, min(100, round(pct)))))
-
-                    out, used_provider = run_aberration_ai_on_array(
-                        out,
-                        patch=ab_patch,
-                        overlap=ab_overlap,
-                        border_px=ab_border,
-                        auto_gpu=ab_auto_gpu if use_gpu else False,
-                        provider=ab_provider,
-                        progress_cb=_ab_prog,
-                        cancel_cb=lambda: self._cancel or self.isInterruptionRequested(),
-                        log_cb=lambda s: self.log.emit(str(s)),
-                    )
-                    self.log.emit(f"Aberration AI complete ({used_provider})")
+                    pass  # aberration stage removed
 
                 elif st == "superres":
                     scale = int(p.get("scale", 2))
