@@ -146,7 +146,7 @@ def run_cosmicclarity_on_array(
                 temp_stretch=bool(preset.get("temp_stretch", False)),
                 target_median=float(preset.get("target_median", 0.25)),
                 stellar_correct_mode=str(preset.get("stellar_correct_mode", "sharpen_only")),
-                correct_model_version=str(preset.get("correct_model_version", "V2 (latest)"))
+                correct_model_version=str(preset.get("correct_model_version", "V2 (latest)")),
                 execution_mode=str(preset.get("sharpen_execution_mode", preset.get("execution_mode", "auto"))),
                 batch_size_override=int(preset.get("sharpen_batch_size_override", preset.get("batch_size_override", 0))),
                 progress_cb=prog,
