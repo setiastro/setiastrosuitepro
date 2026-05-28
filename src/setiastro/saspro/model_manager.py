@@ -454,3 +454,19 @@ def correct_model_installed() -> bool:
     """Returns True if the aberration correction model file is present on disk."""
     return os.path.exists(os.path.join(models_root(), CORRECT_MODEL_FILENAME))
 
+CORRECT_V2_MODEL_TERTIARY_URL = "https://github.com/setiastro/setiastrosuitepro/releases/download/benchmarkFIT/SASPro_Models_AI4_CorrectV2.zip"
+CORRECT_V2_MODEL_FILENAME = "deep_correct_stellar_V2_AI4.pth"
+
+def check_correct_v2_model_available() -> bool:
+    """Probe GitHub to see if the V2 correct model zip has been published yet."""
+    import urllib.request
+    try:
+        req = urllib.request.Request(CORRECT_V2_MODEL_TERTIARY_URL, method="HEAD")
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            return resp.status < 400
+    except Exception:
+        return False
+
+def correct_v2_model_installed() -> bool:
+    """Returns True if the V2 aberration correction model file is present on disk."""
+    return os.path.exists(os.path.join(models_root(), CORRECT_V2_MODEL_FILENAME))

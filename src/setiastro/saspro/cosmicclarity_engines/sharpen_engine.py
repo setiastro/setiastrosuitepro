@@ -310,7 +310,8 @@ class SharpenModels:
     ns8: Any
     ns_cond: Any | None = None
     stellar_cond: bool = False
-    correct: Any | None = None        # ← aberration correction model (NAFNetCorrect)
+    correct: Any | None = None
+    correct_v2: Any | None = None   # ADD THIS
     torch: Any | None = None
 
 
@@ -701,7 +702,16 @@ def _load_torch_models(torch, device) -> SharpenModels:
             correct = None
     else:
         _dbg("CC_C_PTH not found — aberration correction unavailable.", status_cb=print)
-
+    # V2 aberration correction model
+    correct_v2 = None
+    correct_v2_path = getattr(R, "CC_C2_PTH", None)
+    if correct_v2_path and os.path.exists(correct_v2_path):
+        try:
+            correct_v2 = m_naf_correct(correct_v2_path, _CORRECT_NAFNET)
+            _dbg(f"Loaded aberration correction V2 model from {correct_v2_path}", status_cb=print)
+        except Exception as e:
+            _dbg(f"Failed to load correction V2 model ({correct_v2_path}): {e}", status_cb=print)
+            correct_v2 = None
     return SharpenModels(
         device=device,
         is_onnx=False,
@@ -710,9 +720,9 @@ def _load_torch_models(torch, device) -> SharpenModels:
         ns_cond=ns_cond,
         stellar_cond=False,
         correct=correct,
+        correct_v2=correct_v2,   # ADD THIS
         torch=torch,
     )
-
 
 # ---------------- Inference helpers ----------------
 
@@ -1199,7 +1209,6 @@ def _correct_rgb_image(
 
 
 # ---------------- Main API ----------------
-
 @dataclass
 class SharpenParams:
     mode: str
@@ -1215,8 +1224,8 @@ class SharpenParams:
     target_median: float = 0.25
     execution_mode: str = "auto"
     batch_size_override: int = 0
-    # "sharpen_only" | "correct_only" | "correct_sharpen"
     stellar_correct_mode: str = "sharpen_only"
+    correct_model_version: str = "V2 (latest)"   # ADD THIS
 
 
 def sharpen_image_array(image: np.ndarray,
@@ -1259,6 +1268,16 @@ def sharpen_image_array(image: np.ndarray,
     def _run_with(models: SharpenModels) -> tuple[np.ndarray, bool]:
         bordered = add_border(img3, border_size=16)
 
+        def _pick_correct_model(models: SharpenModels):
+            """Pick V2 if available and requested, else fall back to V1."""
+            ver = str(getattr(params, "correct_model_version", "V2 (latest)")).lower()
+            if "v2" in ver and models.correct_v2 is not None:
+                return models.correct_v2
+            if models.correct is not None:
+                return models.correct
+            # fallback: try V2 even if V1 was requested but V1 missing
+            return models.correct_v2
+
         if bool(getattr(params, "temp_stretch", False)):
             stretch_needed = True
         else:
@@ -1273,9 +1292,12 @@ def sharpen_image_array(image: np.ndarray,
 
         # ── correct_only: correction pass then early return, no sharpening ───
         if stellar_correct_mode == "correct_only":
-            if models.correct is not None:
+            chosen_correct = _pick_correct_model(models)
+            if chosen_correct is not None:
                 try:
-                    progress_cb(0, 1, "Aberration correction")
+                    # temporarily swap models.correct so _correct_rgb_image uses the right one
+                    _orig = models.correct
+                    models.correct = chosen_correct
                     stretched = _correct_rgb_image(
                         models, stretched,
                         chunk_size=int(params.chunk_size),
@@ -1284,6 +1306,7 @@ def sharpen_image_array(image: np.ndarray,
                         batch_size_override=getattr(params, "batch_size_override", 0),
                         progress_cb=lambda d, t: progress_cb(d, t, "Aberration correction"),
                     )
+                    models.correct = _orig
                 except Exception as e:
                     try:
                         status_cb(f"Aberration correction failed ({e}); returning original.")
@@ -1494,6 +1517,7 @@ def sharpen_rgb01(
     execution_mode: str = "auto",
     batch_size_override: int = 0,
     stellar_correct_mode: str = "sharpen_only",
+    correct_model_version: str = "V2 (latest)",
     progress_cb: Optional[Callable[[int, int], bool]] = None,
     status_cb=print,
 ) -> np.ndarray:
@@ -1522,6 +1546,7 @@ def sharpen_rgb01(
         execution_mode=str(execution_mode),
         batch_size_override=int(batch_size_override),
         stellar_correct_mode=str(stellar_correct_mode),
+        correct_model_version=str(correct_model_version),
     )
 
     out, _was_mono = sharpen_image_array(
