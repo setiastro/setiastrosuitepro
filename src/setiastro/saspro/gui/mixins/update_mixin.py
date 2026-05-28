@@ -282,9 +282,153 @@ class UpdateMixin:
             try:
                 self._maybe_notify_correct_model_available()
             except Exception as e:
-                print(f"[models] correct model check failed: {type(e).__name__}: {e}")               
+                print(f"[models] correct model check failed: {type(e).__name__}: {e}")  
+            try:
+                self._maybe_notify_correct_v2_model_available()
+            except Exception as e:
+                print(f"[models] correct v2 model check failed: {type(e).__name__}: {e}")                             
         finally:
             reply.deleteLater()
+
+    def _maybe_notify_correct_v2_model_available(self):
+        """
+        Notify the user once if the Aberration Correction V2 model is now available
+        on GitHub but not yet installed on disk.
+        """
+        from setiastro.saspro.model_manager import correct_v2_model_installed, check_correct_v2_model_available
+
+        if correct_v2_model_installed():
+            return
+
+        if getattr(self, "_correct_v2_model_notified", False):
+            return
+
+        available = check_correct_v2_model_available()
+        if not available:
+            return
+
+        self._correct_v2_model_notified = True
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle(self.tr("New Cosmic Clarity Model Available"))
+        box.setText(self.tr(
+            "Cosmic Clarity Aberration Correction V2 model is now available!\n\n"
+            "V2 features updated weights with improved correction quality.\n\n"
+            "Click 'Download Now' to install it alongside your existing models."
+        ))
+        dl_btn = box.addButton(self.tr("Download Now…"), QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(self.tr("Not Now"), QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+
+        if box.clickedButton() == dl_btn:
+            try:
+                self._download_correct_v2_model_only()
+            except Exception:
+                pass
+
+    def _download_correct_v2_model_only(self):
+        """Download only the Aberration Correction V2 model supplement."""
+        from PyQt6.QtWidgets import QProgressDialog
+        from PyQt6.QtCore import Qt, QThread, QObject, pyqtSignal
+
+        self._open_preferences_models()
+
+        CORRECT_V2_PRIMARY  = "https://drive.google.com/file/d/1HJYiYoH3r5EbFMgE6v1mRkz1_LnXuHOR/view?usp=sharing"
+        CORRECT_V2_BACKUP   = "https://drive.google.com/file/d/1kquTombkmjxLPycbyYhDtap4U4IUt7Pl/view?usp=sharing"
+        CORRECT_V2_TERTIARY = "https://github.com/setiastro/setiastrosuitepro/releases/download/benchmarkFIT/SASPro_Models_AI4_CorrectV2.zip"
+
+        pd = QProgressDialog("Downloading Aberration Correction V2 model…", "Cancel", 0, 0, self)
+        pd.setWindowTitle("Cosmic Clarity — Aberration Correction V2 Model")
+        pd.setWindowModality(Qt.WindowModality.ApplicationModal)
+        pd.setAutoClose(True)
+        pd.setMinimumDuration(0)
+        pd.show()
+
+        class _CorrectV2Worker(QObject):
+            progress = pyqtSignal(str)
+            finished = pyqtSignal(bool, str)
+
+            def __init__(self, primary, backup, tertiary):
+                super().__init__()
+                self._primary  = primary
+                self._backup   = backup
+                self._tertiary = tertiary
+                self._cancel   = False
+
+            def cancel(self): self._cancel = True
+
+            def run(self):
+                import os, tempfile
+                from setiastro.saspro.model_manager import (
+                    extract_drive_file_id, download_google_drive_file,
+                    download_http_file, install_models_zip_supplement,
+                )
+                tmp = os.path.join(tempfile.gettempdir(), "saspro_models_correct_v2.zip")
+                sources = []
+                fid1 = extract_drive_file_id(self._primary or "")
+                fid2 = extract_drive_file_id(self._backup or "")
+                if fid1:
+                    sources.append(("google_drive", fid1, "primary (Google Drive)"))
+                if fid2 and fid2 != fid1:
+                    sources.append(("google_drive", fid2, "backup (Google Drive)"))
+                if self._tertiary:
+                    sources.append(("http", self._tertiary, "GitHub mirror"))
+
+                for idx, (kind, value, label) in enumerate(sources, start=1):
+                    try:
+                        if self._cancel:
+                            self.finished.emit(False, "Canceled.")
+                            return
+                        try:
+                            if os.path.exists(tmp): os.remove(tmp)
+                        except Exception:
+                            pass
+                        self.progress.emit(f"Trying {label}…")
+                        if kind == "google_drive":
+                            download_google_drive_file(
+                                value, tmp,
+                                progress_cb=lambda s: self.progress.emit(s),
+                                should_cancel=lambda: self._cancel,
+                            )
+                        else:
+                            download_http_file(
+                                value, tmp,
+                                progress_cb=lambda s: self.progress.emit(s),
+                                should_cancel=lambda: self._cancel,
+                            )
+                        install_models_zip_supplement(
+                            tmp, progress_cb=lambda s: self.progress.emit(s)
+                        )
+                        self.finished.emit(True, "Aberration Correction V2 model installed.")
+                        return
+                    except Exception as e:
+                        if idx < len(sources):
+                            self.progress.emit(f"{label} failed, trying next… ({e})")
+                        else:
+                            self.finished.emit(False, str(e))
+
+        self._correct_v2_thread = QThread(self)
+        self._correct_v2_worker = _CorrectV2Worker(CORRECT_V2_PRIMARY, CORRECT_V2_BACKUP, CORRECT_V2_TERTIARY)
+        self._correct_v2_worker.moveToThread(self._correct_v2_thread)
+        self._correct_v2_thread.started.connect(self._correct_v2_worker.run, Qt.ConnectionType.QueuedConnection)
+        self._correct_v2_worker.progress.connect(pd.setLabelText, Qt.ConnectionType.QueuedConnection)
+        pd.canceled.connect(self._correct_v2_worker.cancel, Qt.ConnectionType.QueuedConnection)
+
+        def _done(ok, msg):
+            pd.reset(); pd.deleteLater()
+            self._correct_v2_thread.quit(); self._correct_v2_thread.wait()
+            if ok:
+                QMessageBox.information(self, "Cosmic Clarity", f"✅ {msg}")
+                try: self._settings_dlg._refresh_models_status()
+                except Exception: pass
+            else:
+                QMessageBox.warning(self, "Cosmic Clarity", f"❌ {msg}")
+
+        self._correct_v2_worker.finished.connect(_done, Qt.ConnectionType.QueuedConnection)
+        self._correct_v2_thread.finished.connect(self._correct_v2_worker.deleteLater, Qt.ConnectionType.QueuedConnection)
+        self._correct_v2_thread.finished.connect(self._correct_v2_thread.deleteLater, Qt.ConnectionType.QueuedConnection)
+        self._correct_v2_thread.start()
 
     def _start_linux_update(self, latest_str: str):
         import os
