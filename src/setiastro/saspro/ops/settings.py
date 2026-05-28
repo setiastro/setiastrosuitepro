@@ -645,8 +645,8 @@ class SettingsDialog(QDialog):
         CORRECT_BACKUP   = "https://drive.google.com/file/d/1XgqKNd8iBgV3LW8CfzGyS4jigxsxIf86/view?usp=sharing"
         CORRECT_TERTIARY = "https://github.com/setiastro/setiastrosuitepro/releases/download/benchmarkFIT/SASPro_Models_AI4_Correct.zip"
 
-        CORRECT_V2_PRIMARY  = None #planned for future release; keep as None to skip
-        CORRECT_V2_BACKUP   = None #planned for future release; keep as None to skip
+        CORRECT_V2_PRIMARY  = "https://drive.google.com/file/d/1HJYiYoH3r5EbFMgE6v1mRkz1_LnXuHOR/view?usp=sharing"
+        CORRECT_V2_BACKUP   = "https://drive.google.com/file/d/1kquTombkmjxLPycbyYhDtap4U4IUt7Pl/view?usp=sharing"
         CORRECT_V2_TERTIARY = "https://github.com/setiastro/setiastrosuitepro/releases/download/benchmarkFIT/SASPro_Models_AI4_CorrectV2.zip"
 
         self._models_worker = ModelsDownloadWorker(
