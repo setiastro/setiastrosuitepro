@@ -12081,11 +12081,7 @@ class StackingSuiteDialog(QDialog):
 
 
     def on_tab_changed(self, idx):
-        try:
-            if self.tabs.tabText(idx) == "Flats":
-                self.update_override_dark_combo()
-        except Exception:
-            pass
+        pass
 
 
 
@@ -12236,7 +12232,7 @@ class StackingSuiteDialog(QDialog):
             self.settings.setValue("stacking/last_master_dark_dir", os.path.dirname(files[0]))
             self.add_master_files(self.master_dark_tree, "DARK", files)
             self.save_master_paths_to_settings()
-        self.update_override_dark_combo()
+        
         self.assign_best_master_dark()
         self.assign_best_master_files()
         self._refresh_quick_stack_summary_later()
@@ -13668,7 +13664,7 @@ class StackingSuiteDialog(QDialog):
 
             # Post pass refresh (unchanged behavior)
             self.assign_best_master_dark()
-            self.update_override_dark_combo()
+            
             self.assign_best_master_files()
             self._refresh_quick_stack_summary_later()
 
@@ -13740,7 +13736,7 @@ class StackingSuiteDialog(QDialog):
         exposure_item.addChild(master_item)
 
         # ✅ Refresh UI bits that depend on master darks
-        self.update_override_dark_combo()
+        
         self.assign_best_master_dark()  # auto-select
         self.update_status(self.tr(f"✅ Master Dark saved and added to UI: {master_dark_path}"))
         print(f"📝 DEBUG: Stored Master Dark -> {exposure_key}: {master_dark_path}")
@@ -14950,143 +14946,117 @@ class StackingSuiteDialog(QDialog):
                     curr_flat = (leaf_item.text(3) or "").strip()
 
                     # ---------- DARK RESOLUTION ----------
-                    # 1) Manual overrides: prefer "Filter - exposure" then bare exposure
                     dark_key_full  = f"{filter_name_raw} - {exposure_text}"
                     dark_key_short = exposure_text
                     dark_override  = dark_over.get(dark_key_full) or dark_over.get(dark_key_short)
 
-                    if dark_override:
+                    # Per-leaf UserRole path always wins — set by override_selected_master_dark
+                    existing_leaf_dark = leaf_item.data(2, Qt.ItemDataRole.UserRole)
+                    if existing_leaf_dark and os.path.isfile(existing_leaf_dark):
+                        dark_choice = curr_dark  # leaf has its own per-file override, leave it
+                    elif dark_override:
                         dark_choice = os.path.basename(dark_override)
+                    elif fill_only and curr_dark and curr_dark.lower() != "none":
+                        dark_choice = curr_dark
                     else:
-                        # Check if UserRole already has a full path (from a manual override)
-                        existing_full_path = leaf.data(2, Qt.ItemDataRole.UserRole)
-                        if existing_full_path and os.path.isfile(existing_full_path):
-                            dark_choice = curr_dark  # keep what's there, don't touch it
-                        elif fill_only and curr_dark and curr_dark.lower() != "none":
-                            dark_choice = curr_dark
-                        else:
-                            # 3) Auto-pick by size + closest exposure + closest temperature (and prefer same session)
-                            light_path = leaf_item.data(0, Qt.ItemDataRole.UserRole)
-                            l_ccd, l_set, l_temp = self._get_light_temp(light_path)
+                        light_path = leaf_item.data(0, Qt.ItemDataRole.UserRole)
+                        l_ccd, l_set, l_temp = self._get_light_temp(light_path)
 
-                            best_path = None
-                            best_score = None
+                        best_path = None
+                        best_score = None
 
-                            for mk, mp in (self.master_files or {}).items():
-                                if not mp:
-                                    continue
+                        for mk, mp in (self.master_files or {}).items():
+                            if not mp:
+                                continue
 
-                                mk_str = str(mk or "").strip()
-                                bn = os.path.basename(mp).lower()
+                            mk_str = str(mk or "").strip()
+                            bn = os.path.basename(mp).lower()
 
-                                # Skip obvious flats in the mixed master_files dict.
-                                # Dark keys are like: "120s (8288x5644)"
-                                # Flat keys are like: "L (8288x5644) [2026-03-19]"
-                                is_dark_key = bool(re.match(r"^\s*[\d.]+s\s*\(\d+x\d+\)\s*$", mk_str, re.IGNORECASE))
-                                if (not is_dark_key) and ("masterflat" in bn):
-                                    continue
-                                if not is_dark_key and ("exposure-" not in bn):
-                                    continue
+                            is_dark_key = bool(re.match(r"^\s*[\d.]+s\s*\(\d+x\d+\)\s*$", mk_str, re.IGNORECASE))
+                            if (not is_dark_key) and ("masterflat" in bn):
+                                continue
+                            if not is_dark_key and ("exposure-" not in bn):
+                                continue
 
+                            md = {}
+                            try:
+                                md = self._get_master_dark_meta(mp) or {}
+                            except Exception:
                                 md = {}
-                                try:
-                                    md = self._get_master_dark_meta(mp) or {}
-                                except Exception:
-                                    md = {}
 
-                                # ---- size fallback ----
-                                md_size = md.get("size")
-                                if not md_size:
-                                    msize_key = re.search(r"\((\d+x\d+)\)", mk_str)
-                                    if msize_key:
-                                        md_size = msize_key.group(1)
+                            md_size = md.get("size")
+                            if not md_size:
+                                msize_key = re.search(r"\((\d+x\d+)\)", mk_str)
+                                if msize_key:
+                                    md_size = msize_key.group(1)
+                            if not md_size:
+                                msize_name = re.search(r"_(\d+x\d+)_EXPOSURE-", os.path.basename(mp), re.IGNORECASE)
+                                if msize_name:
+                                    md_size = msize_name.group(1)
 
-                                if not md_size:
-                                    msize_name = re.search(r"_(\d+x\d+)_EXPOSURE-", os.path.basename(mp), re.IGNORECASE)
-                                    if msize_name:
-                                        md_size = msize_name.group(1)
+                            if (md_size or "Unknown") != image_size:
+                                continue
 
-                                if (md_size or "Unknown") != image_size:
-                                    continue
+                            md_exp = md.get("exp")
+                            if md_exp is None:
+                                mexp_key = re.match(r"^\s*([\d.]+)s\s*\(", mk_str, re.IGNORECASE)
+                                if mexp_key:
+                                    md_exp = float(mexp_key.group(1))
+                            if md_exp is None:
+                                mexp_name = re.search(r"EXPOSURE-([\d.]+)s", os.path.basename(mp), re.IGNORECASE)
+                                if mexp_name:
+                                    md_exp = float(mexp_name.group(1))
+                            if md_exp is None:
+                                continue
 
-                                # ---- exposure fallback ----
-                                md_exp = md.get("exp")
-                                if md_exp is None:
-                                    mexp_key = re.match(r"^\s*([\d.]+)s\s*\(", mk_str, re.IGNORECASE)
-                                    if mexp_key:
-                                        md_exp = float(mexp_key.group(1))
+                            exp_diff = abs(float(md_exp) - float(exposure_time))
+                            md_sess = (md.get("session") or "Default").strip()
+                            sess_mismatch = 0 if md_sess == session_name else 1
 
-                                if md_exp is None:
-                                    mexp_name = re.search(r"EXPOSURE-([\d.]+)s", os.path.basename(mp), re.IGNORECASE)
-                                    if mexp_name:
-                                        md_exp = float(mexp_name.group(1))
+                            md_temp = md.get("temp")
+                            if (l_temp is not None) and (md_temp is not None):
+                                temp_diff = abs(float(md_temp) - float(l_temp))
+                                temp_unknown = 0
+                            else:
+                                temp_diff = 9999.0
+                                temp_unknown = 1
 
-                                if md_exp is None:
-                                    continue
+                            score = (sess_mismatch, exp_diff, temp_unknown, temp_diff)
+                            if best_score is None or score < best_score:
+                                best_score = score
+                                best_path = mp
 
-                                # exposure closeness
-                                exp_diff = abs(float(md_exp) - float(exposure_time))
-
-                                # ---- session fallback ----
-                                md_sess = (md.get("session") or "Default").strip()
-                                sess_mismatch = 0 if md_sess == session_name else 1
-
-                                # ---- temperature fallback ----
-                                md_temp = md.get("temp")
-                                if (l_temp is not None) and (md_temp is not None):
-                                    temp_diff = abs(float(md_temp) - float(l_temp))
-                                    temp_unknown = 0
-                                else:
-                                    temp_diff = 9999.0
-                                    temp_unknown = 1
-
-                                # Priority:
-                                # 1) exact session if available
-                                # 2) exposure closeness
-                                # 3) temperature availability
-                                # 4) temperature closeness
-                                score = (sess_mismatch, exp_diff, temp_unknown, temp_diff)
-
-                                if best_score is None or score < best_score:
-                                    best_score = score
-                                    best_path = mp
-
-                            print(f"🔎 Light {leaf_item.text(0)} size={image_size} exp={exposure_time}s -> best dark: {best_path} score={best_score}")
-                            dark_choice = os.path.basename(best_path) if best_path else ("None" if not curr_dark else curr_dark)
+                        print(f"🔎 Light {leaf_item.text(0)} size={image_size} exp={exposure_time}s -> best dark: {best_path} score={best_score}")
+                        dark_choice = os.path.basename(best_path) if best_path else ("None" if not curr_dark else curr_dark)
 
                     # ---------- FLAT RESOLUTION ----------
                     flat_key_full  = f"{filter_name_raw} - {exposure_text}"
                     flat_key_short = exposure_text
                     flat_override  = flat_over.get(flat_key_full) or flat_over.get(flat_key_short)
 
-                    if flat_override:
+                    # Per-leaf UserRole path always wins — set by override_selected_master_flat
+                    existing_leaf_flat = leaf_item.data(3, Qt.ItemDataRole.UserRole)
+                    if existing_leaf_flat and os.path.isfile(existing_leaf_flat):
+                        flat_choice = curr_flat  # leaf has its own per-file override, leave it
+                    elif flat_override:
                         flat_choice = os.path.basename(flat_override)
+                    elif fill_only and curr_flat and curr_flat.lower() != "none":
+                        flat_choice = curr_flat
                     else:
-                        # Check if UserRole already has a full path (from a manual override)
-                        existing_full_path = leaf.data(3, Qt.ItemDataRole.UserRole)
-                        if existing_full_path and os.path.isfile(existing_full_path):
-                            flat_choice = curr_flat  # keep what's there
-                        elif fill_only and curr_flat and curr_flat.lower() != "none":
-                            flat_choice = curr_flat
+                        light_path = leaf_item.data(0, Qt.ItemDataRole.UserRole)
+                        best_flat_path = None
+
+                        exact_key = f"{filter_name} ({image_size}) [{session_name}]"
+                        if exact_key in self.master_files:
+                            best_flat_path = self.master_files[exact_key]
                         else:
-                            # Get the full path of the light leaf (we stored it during ingest)
-                            light_path = leaf_item.data(0, Qt.ItemDataRole.UserRole)
-                            # Prefer exact session match; otherwise nearest-night fallback
-                            best_flat_path = None
+                            best_flat_path = self._closest_flat_for(
+                                filter_name=filter_name,
+                                image_size=image_size,
+                                light_path=light_path
+                            )
 
-                            # Fast exact-key path
-                            exact_key = f"{filter_name} ({image_size}) [{session_name}]"
-                            if exact_key in self.master_files:
-                                best_flat_path = self.master_files[exact_key]
-                            else:
-                                # Date-aware fallback across same filter+size
-                                best_flat_path = self._closest_flat_for(
-                                    filter_name=filter_name,
-                                    image_size=image_size,
-                                    light_path=light_path
-                                )
-
-                            flat_choice = os.path.basename(best_flat_path) if best_flat_path else ("None" if not curr_flat else curr_flat)
+                        flat_choice = os.path.basename(best_flat_path) if best_flat_path else ("None" if not curr_flat else curr_flat)
 
                     # ---------- WRITE CELLS ----------
                     leaf_item.setText(2, dark_choice)
@@ -15192,77 +15162,54 @@ class StackingSuiteDialog(QDialog):
 
 
     def override_selected_master_dark(self):
-        """Override Dark for selected Light exposure group or individual files."""
         selected_items = self.light_tree.selectedItems()
         if not selected_items:
             print("⚠️ No light item selected for dark frame override.")
             return
 
-        # --- pick a good starting directory ---
         last_dir = self.settings.value("stacking/last_master_dark_dir", "", type=str) if hasattr(self, "settings") else ""
         if not last_dir:
-            # try stacking dir
             last_dir = getattr(self, "stacking_directory", "") or ""
-
-        # try selected leaf path folder (best UX)
         try:
             it0 = selected_items[0]
-            # leaf stores path in UserRole, groups do not
             p0 = it0.data(0, Qt.ItemDataRole.UserRole)
             if isinstance(p0, str) and os.path.exists(p0):
                 last_dir = os.path.dirname(p0)
         except Exception:
             pass
-
         if not last_dir:
             last_dir = os.path.expanduser("~")
 
         file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select Master Dark",
-            last_dir,
+            self, "Select Master Dark", last_dir,
             "Master Calibration (*.fits *.fit *.xisf);;All Files (*)"
         )
         if not file_path:
             return
 
-        # remember for next time
         try:
             if hasattr(self, "settings"):
                 self.settings.setValue("stacking/last_master_dark_dir", os.path.dirname(file_path))
         except Exception:
             pass
 
-        # Ensure dict exists
         if not hasattr(self, "manual_dark_overrides") or self.manual_dark_overrides is None:
             self.manual_dark_overrides = {}
 
         for item in selected_items:
-            # If the user clicked an exposure row under a filter
             if item.parent() and item.childCount() > 0:
-                filter_name = item.parent().text(0)
-                exposure_text = item.text(0)
-
-                # store override under BOTH keys
-                self.manual_dark_overrides[f"{filter_name} - {exposure_text}"] = file_path
-                self.manual_dark_overrides[exposure_text] = file_path
-
+                # Exposure group row selected — apply to all leaves in this group
                 for i in range(item.childCount()):
                     leaf = item.child(i)
                     leaf.setText(2, os.path.basename(file_path))
-                    leaf.setData(2, Qt.ItemDataRole.UserRole, file_path)  
+                    leaf.setData(2, Qt.ItemDataRole.UserRole, file_path)
 
-            # If the user clicked a leaf under an exposure row
             elif item.parent() and item.parent().parent():
-                exposure_item = item.parent()
-                filter_name = exposure_item.parent().text(0)
-                exposure_text = exposure_item.text(0)
-
-                self.manual_dark_overrides[f"{filter_name} - {exposure_text}"] = file_path
-                self.manual_dark_overrides[exposure_text] = file_path
+                # Individual leaf selected
                 item.setText(2, os.path.basename(file_path))
                 item.setData(2, Qt.ItemDataRole.UserRole, file_path)
 
+        # Do NOT write to manual_dark_overrides — per-leaf UserRole is the source of truth
         print("✅ DEBUG: Light Dark override applied.")
 
 
@@ -16238,7 +16185,6 @@ class StackingSuiteDialog(QDialog):
         from queue import Queue, Empty
         import threading
 
-        self.assign_best_master_files(fill_only=True)
         self._start_exec_monitor()
 
         if not self.stacking_directory:
@@ -16371,9 +16317,10 @@ class StackingSuiteDialog(QDialog):
                     height     = int(header.get("NAXIS2", 0))
                     image_size = f"{width}x{height}"
 
-                    # resolve dark
+                    # resolve dark — per-leaf UserRole wins, then group override, then auto
                     master_dark_path = self._leaf_assigned_dark_path(leaf)
                     if master_dark_path is None:
+                        # Only use group override if this specific leaf has no per-leaf path
                         full  = f"{filter_name} - {exposure_text}"
                         short = exposure_text
                         master_dark_path = (
@@ -16382,10 +16329,11 @@ class StackingSuiteDialog(QDialog):
                         )
                     if master_dark_path is None:
                         name_in_leaf = (leaf.text(2) or "").strip()
-                        if name_in_leaf:
+                        if name_in_leaf and name_in_leaf.lower() != "none":
                             for _, path in self.master_files.items():
                                 if os.path.basename(path) == name_in_leaf:
-                                    master_dark_path = path; break
+                                    master_dark_path = path
+                                    break
                     if master_dark_path is None:
                         mm       = re.match(r"([\d.]+)s", exposure_text or "")
                         exp_time = float(mm.group(1)) if mm else 0.0
@@ -16432,7 +16380,11 @@ class StackingSuiteDialog(QDialog):
                         "bayerpat":         bayerpat,
                         "image_size":       image_size,
                     })
-
+                    print(f"📋 {os.path.basename(light_file)} -> "
+                          f"Dark: {os.path.basename(master_dark_path) if master_dark_path else 'None'} | "
+                          f"Flat: {os.path.basename(master_flat_path) if master_flat_path else 'None'} | "
+                          f"LeafDarkUR: {os.path.basename(leaf.data(2, Qt.ItemDataRole.UserRole)) if leaf.data(2, Qt.ItemDataRole.UserRole) else 'None'} | "
+                          f"LeafFlatUR: {os.path.basename(leaf.data(3, Qt.ItemDataRole.UserRole)) if leaf.data(3, Qt.ItemDataRole.UserRole) else 'None'}")
         if not frame_infos:
             self.update_status(self.tr("⚠️ No light files to calibrate."))
             return
@@ -16920,7 +16872,11 @@ class StackingSuiteDialog(QDialog):
                         ))
                         QApplication.processEvents()
                         continue
-
+                self.update_status(self.tr(f"🔧 {os.path.basename(fi['light_file'])} -> "
+                      f"Dark: {os.path.basename(fi['master_dark_path']) if fi['master_dark_path'] else 'None'} | "
+                      f"Flat: {os.path.basename(fi['master_flat_path']) if fi['master_flat_path'] else 'None'} | "
+                      f"Cosmetic: {fi['apply_cosmetic']}")
+                )
                 light_data = calibration_pipeline_gpu(
                     light_data,
                     dark_t=dark_t,
