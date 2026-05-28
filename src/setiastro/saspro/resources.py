@@ -560,6 +560,7 @@ class Resources:
     CC_NS_PTH = property(lambda self: model_path('deep_nonstellar_sharp_conditional_psf_AI4.pth'))
     CC_NS_COND_NAF_ONNX = property(lambda self: model_path('deep_nonstellar_sharp_conditional_psf_AI4.onnx'))
     CC_C_PTH = property(lambda self: optional_model_path('deep_correct_stellar_AI4.pth'))
+    CC_C2_PTH = property(lambda self: optional_model_path('deep_correct_stellar_V2_AI4.pth'))
 
     # --- Cosmic Clarity Denoise (NAFNet AI4) ---
     CC_DENOISE_MONO_PTH  = property(lambda self: model_path('deep_denoise_mono_AI4.pth'))

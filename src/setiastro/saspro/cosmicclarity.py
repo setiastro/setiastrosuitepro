@@ -361,6 +361,7 @@ class CosmicClarityEngineWorker(QThread):
                         execution_mode=sharpen_execution_mode,
                         batch_size_override=sharpen_batch_override,
                         stellar_correct_mode=str(p.get("stellar_correct_mode", "sharpen_only")),  # ← ADD THIS
+                        correct_model_version=str(p.get("correct_model_version", "V2 (latest)")),
                         progress_cb=prog,
                     )
 
@@ -615,41 +616,51 @@ class CosmicClarityDialogPro(QDialog):
         corr_row.addWidget(self.rb_sharpen_only)
         corr_row.addStretch(1)
         sh.addLayout(corr_row, 0, 1)
- 
+         # V1 / V2 model selector — shown only when correction is available
+        self.lbl_correct_ver = QLabel("Correction Model:")
+        self.cmb_correct_ver = QComboBox()
+        self.cmb_correct_ver.addItems(["V2 (latest)", "V1"])
+        self.cmb_correct_ver.setToolTip(
+            "V2: Updated weights, improved correction quality (recommended).\n"
+            "V1: Original correction model."
+        )
+        sh.addWidget(self.lbl_correct_ver, 1, 0)
+        sh.addWidget(self.cmb_correct_ver, 1, 1)
+
         self.lbl_sh_mode = QLabel("Sharpening Mode:")
         self.cmb_sh_mode = QComboBox()
         self.cmb_sh_mode.addItems(["Both", "Stellar Only", "Non-Stellar Only"])
-        sh.addWidget(self.lbl_sh_mode, 1, 0)
-        sh.addWidget(self.cmb_sh_mode, 1, 1)
+        sh.addWidget(self.lbl_sh_mode, 2, 0)
+        sh.addWidget(self.cmb_sh_mode, 2, 1)
  
         self.chk_sh_sep = QCheckBox("Sharpen RGB channels separately")
         self.chk_sh_sep.setToolTip(
             "Run the mono sharpening model independently on R, G, and B instead of a shared color model.\n"
             "Use for difficult color data where channels need slightly different sharpening."
         )
-        sh.addWidget(self.chk_sh_sep, 2, 0, 1, 2)
+        sh.addWidget(self.chk_sh_sep, 3, 0, 1, 2)
  
         self.chk_auto_psf = QCheckBox("Auto Detect PSF")
         self.chk_auto_psf.setChecked(True)
-        sh.addWidget(self.chk_auto_psf, 3, 0, 1, 2)
+        sh.addWidget(self.chk_auto_psf, 4, 0, 1, 2)
  
         self.lbl_psf = QLabel("Non-Stellar PSF (1.0–8.0): 3.0")
         self.sld_psf = QSlider(Qt.Orientation.Horizontal)
         self.sld_psf.setRange(10, 80)
         self.sld_psf.setValue(30)
-        _add_inline_slider(sh, 4, self.lbl_psf, self.sld_psf)
+        _add_inline_slider(sh, 5, self.lbl_psf, self.sld_psf)
  
         self.lbl_st_amt = QLabel("Stellar Amount (0–1): 0.50")
         self.sld_st_amt = QSlider(Qt.Orientation.Horizontal)
         self.sld_st_amt.setRange(0, 100)
         self.sld_st_amt.setValue(50)
-        _add_inline_slider(sh, 5, self.lbl_st_amt, self.sld_st_amt)
+        _add_inline_slider(sh, 6, self.lbl_st_amt, self.sld_st_amt)
  
         self.lbl_nst_amt = QLabel("Non-Stellar Amount (0–1): 0.50")
         self.sld_nst_amt = QSlider(Qt.Orientation.Horizontal)
         self.sld_nst_amt.setRange(0, 100)
         self.sld_nst_amt.setValue(50)
-        _add_inline_slider(sh, 6, self.lbl_nst_amt, self.sld_nst_amt)
+        _add_inline_slider(sh, 7, self.lbl_nst_amt, self.sld_nst_amt)
  
         sh.setColumnStretch(1, 1)
         left_col.addWidget(grp_sh)
@@ -807,12 +818,30 @@ class CosmicClarityDialogPro(QDialog):
         # ------------------------------------------------------------------
         from setiastro.saspro.resources import get_resources
         _r = get_resources()
-        _cp = getattr(_r, "CC_C_PTH", None)
-        self._correct_available = bool(_cp and os.path.exists(_cp))
-        self.lbl_stellar_correct.setVisible(self._correct_available)
-        self.rb_correct_only.setVisible(self._correct_available)
-        self.rb_correct_sharpen.setVisible(self._correct_available)
-        self.rb_sharpen_only.setVisible(self._correct_available)
+        _cp  = getattr(_r, "CC_C_PTH",  None)
+        _cp2 = getattr(_r, "CC_C2_PTH", None)
+        self._correct_available    = bool((_cp and os.path.exists(_cp)) or (_cp2 and os.path.exists(_cp2)))
+        self._correct_v2_available = bool(_cp2 and os.path.exists(_cp2))
+
+        # Disable V2 option if not installed
+        v2_idx = self.cmb_correct_ver.findText("V2 (latest)")
+        if v2_idx >= 0:
+            item_flags = self.cmb_correct_ver.model().item(v2_idx).flags()
+            from PyQt6.QtCore import Qt as _Qt
+            from PyQt6.QtGui import QStandardItem
+            item = self.cmb_correct_ver.model().item(v2_idx)
+            if self._correct_v2_available:
+                item.setFlags(item.flags() | _Qt.ItemFlag.ItemIsEnabled | _Qt.ItemFlag.ItemIsSelectable)
+                item.setToolTip("V2 correction model — installed")
+            else:
+                item.setFlags(item.flags() & ~_Qt.ItemFlag.ItemIsEnabled & ~_Qt.ItemFlag.ItemIsSelectable)
+                item.setToolTip("V2 correction model — not installed (click Download/Update Models in Preferences)")
+
+        # Default selection
+        if not self._correct_v2_available:
+            self.cmb_correct_ver.setCurrentText("V1")
+        else:
+            self.cmb_correct_ver.setCurrentText("V2 (latest)")
 
         # ------------------------------------------------------------------
         # Step 4: now that _correct_available is set, apply dependent UI state
@@ -878,6 +907,7 @@ class CosmicClarityDialogPro(QDialog):
         self.chk_dn_sep.toggled.connect(self._save_cc_ui_settings)
         self.chk_dn_compat.toggled.connect(self._save_cc_ui_settings)
         self.chk_aberration_first.toggled.connect(self._save_cc_ui_settings)
+        self.cmb_correct_ver.currentTextChanged.connect(self._save_cc_ui_settings)
         self.chk_temp_stretch.toggled.connect(self._save_cc_ui_settings)
         self.cmb_sh_mode.currentTextChanged.connect(self._save_cc_ui_settings)
         self.cmb_dn_mode.currentTextChanged.connect(self._save_cc_ui_settings)
@@ -959,7 +989,7 @@ class CosmicClarityDialogPro(QDialog):
             self.chk_auto_psf, self.chk_sh_sep, self.cmb_sh_mode,
             self.sld_dn_lum, self.sld_dn_col, self.cmb_dn_mode, self.chk_dn_sep,
             self.cmb_mode, self.cmb_gpu, self.cmb_target, self.cmb_scale,
-            self.rb_correct_only, self.rb_correct_sharpen, self.rb_sharpen_only,
+            self.rb_correct_only, self.rb_correct_sharpen, self.rb_sharpen_only,self.cmb_correct_ver,
         ]
  
         # Block all signals before touching any widget
@@ -1005,7 +1035,9 @@ class CosmicClarityDialogPro(QDialog):
  
             self.chk_auto_psf.setChecked(s.value("cc/auto_psf", True, type=bool))
             self.chk_sh_sep.setChecked(s.value("cc/sharpen_sep", False, type=bool))
- 
+            corr_ver = s.value("cc/correct_model_version", "V2 (latest)", type=str)
+            idx = self.cmb_correct_ver.findText(corr_ver)
+            self.cmb_correct_ver.setCurrentIndex(max(0, idx))
             sh_mode = str(s.value("cc/sharpening_mode", "Both"))
             if self.cmb_sh_mode.findText(sh_mode) >= 0:
                 self.cmb_sh_mode.setCurrentText(sh_mode)
@@ -1068,6 +1100,7 @@ class CosmicClarityDialogPro(QDialog):
         s.setValue("cc/target_median", self.sld_target_median.value() / 100.0)
         s.setValue("cc/aberration_first", self.chk_aberration_first.isChecked())
         s.setValue("cc/stellar_amount", self.sld_st_amt.value())
+        s.setValue("cc/correct_model_version", self.cmb_correct_ver.currentText())
         s.setValue("cc/nonstellar_amount", self.sld_nst_amt.value())
         s.setValue("cc/nonstellar_psf", self.sld_psf.value())
         s.setValue("cc/auto_psf", self.chk_auto_psf.isChecked())
@@ -1246,9 +1279,15 @@ class CosmicClarityDialogPro(QDialog):
  
         # Correction radio buttons only visible when Sharpen group is shown AND model is installed
         _ca = getattr(self, "_correct_available", False)
+        _cv2 = getattr(self, "_correct_v2_available", False)
+        corr_active = show_sh and _ca
         for w in (self.lbl_stellar_correct,
                   self.rb_correct_only, self.rb_correct_sharpen, self.rb_sharpen_only):
-            w.setVisible(show_sh and _ca)
+            w.setVisible(corr_active)
+
+        # Show version selector only when correction is active and at least one version installed
+        self.lbl_correct_ver.setVisible(corr_active)
+        self.cmb_correct_ver.setVisible(corr_active)
  
         # Sharpening sub-controls hidden when Correct Only is selected
         _ca = getattr(self, "_correct_available", False)
@@ -1602,7 +1641,10 @@ class CosmicClarityDialogPro(QDialog):
         self.rb_correct_sharpen.setChecked(scm == "correct_sharpen")
         self.rb_sharpen_only.setChecked(scm not in ("correct_only", "correct_sharpen"))
         self._mode_changed()   # refresh sub-control visibility
-
+        corr_ver = p.get("correct_model_version", "V2 (latest)")
+        idx = self.cmb_correct_ver.findText(corr_ver)
+        if idx >= 0:
+            self.cmb_correct_ver.setCurrentIndex(idx)
         if "chunk_size" in p:
             self.cmb_chunk.setCurrentText(str(int(p["chunk_size"])))
         if "overlap" in p:
@@ -1666,6 +1708,7 @@ class CosmicClarityDialogPro(QDialog):
                 "stellar_amount": (self.sld_st_amt.value() / 100.0),
                 "nonstellar_amount": self.sld_nst_amt.value() / 100.0,
                 "sharpen_channels_separately": self.chk_sh_sep.isChecked(),
+                "correct_model_version": self.cmb_correct_ver.currentText(),
                 "chunk_size": int(self.cmb_chunk.currentText()),
                 "overlap": int(self.cmb_ov.currentText()),
                 "temp_stretch": self.chk_temp_stretch.isChecked(),

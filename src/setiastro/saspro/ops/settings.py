@@ -645,6 +645,10 @@ class SettingsDialog(QDialog):
         CORRECT_BACKUP   = "https://drive.google.com/file/d/1XgqKNd8iBgV3LW8CfzGyS4jigxsxIf86/view?usp=sharing"
         CORRECT_TERTIARY = "https://github.com/setiastro/setiastrosuitepro/releases/download/benchmarkFIT/SASPro_Models_AI4_Correct.zip"
 
+        CORRECT_V2_PRIMARY  = None #planned for future release; keep as None to skip
+        CORRECT_V2_BACKUP   = None #planned for future release; keep as None to skip
+        CORRECT_V2_TERTIARY = "https://github.com/setiastro/setiastrosuitepro/releases/download/benchmarkFIT/SASPro_Models_AI4_CorrectV2.zip"
+
         self._models_worker = ModelsDownloadWorker(
             PRIMARY, BACKUP, TERTIARY,
             expected_sha256=None,
@@ -655,6 +659,9 @@ class SettingsDialog(QDialog):
             correct_zip_url=CORRECT_PRIMARY,
             correct_zip_backup=CORRECT_BACKUP,
             correct_zip_tertiary=CORRECT_TERTIARY,
+            correct_v2_zip_url=CORRECT_V2_PRIMARY,
+            correct_v2_zip_backup=CORRECT_V2_BACKUP,
+            correct_v2_zip_tertiary=CORRECT_V2_TERTIARY,
         )
         self._models_worker.moveToThread(self._models_thread)
 
@@ -737,15 +744,24 @@ class SettingsDialog(QDialog):
 
         # Check aberration correction model
         from setiastro.saspro.model_manager import check_correct_model_available
-        correct_on_disk = os.path.exists(os.path.join(models_dir, "deep_correct_stellar_AI4.pth"))
-        if correct_on_disk:
-            lines.append(self.tr("Aberration Correction model: ✅ installed"))
+        # Check V1 aberration correction model
+        correct_v1_on_disk = os.path.exists(os.path.join(models_dir, "deep_correct_stellar_AI4.pth"))
+        if correct_v1_on_disk:
+            lines.append(self.tr("Aberration Correction V1 model: ✅ installed"))
         else:
-            correct_available = check_correct_model_available()
-            if correct_available:
-                lines.append(self.tr("Aberration Correction model: — not installed (available — click Download/Update Models)"))
+            lines.append(self.tr("Aberration Correction V1 model: — not installed"))
+
+        # Check V2 aberration correction model
+        from setiastro.saspro.model_manager import check_correct_v2_model_available
+        correct_v2_on_disk = os.path.exists(os.path.join(models_dir, "deep_correct_stellar_V2_AI4.pth"))
+        if correct_v2_on_disk:
+            lines.append(self.tr("Aberration Correction V2 model: ✅ installed"))
+        else:
+            correct_v2_available = check_correct_v2_model_available()
+            if correct_v2_available:
+                lines.append(self.tr("Aberration Correction V2 model: — not installed (available — click Download/Update Models)"))
             else:
-                lines.append(self.tr("Aberration Correction model: — not yet released"))
+                lines.append(self.tr("Aberration Correction V2 model: — not yet released"))
 
         self.lbl_models_status.setText("\n".join(lines))
         self.lbl_models_status.setStyleSheet("color:#888;")

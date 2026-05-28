@@ -1897,6 +1897,38 @@ class _SyQonStandaloneCLIThread(QThread):
                 except Exception:
                     pass
 
+def _detect_starnet_version(exe: str) -> str:
+    """
+    Returns 'v25' for StarNet2 2.5+ (new CLI), 'v2' for classic StarNet++ v2.
+    Detection is based on executable name first, then --version output as fallback.
+    """
+    import subprocess
+    import os
+
+    exe_name = os.path.basename(exe).lower()
+
+    # New 2.5+ CLI uses 'starnet2' as the binary name
+    if "starnet2" in exe_name and "++" not in exe_name:
+        return "v25"
+
+    # Classic v2 uses 'starnet++' or 'starnetv2' etc.
+    if "++" in exe_name or "starnetv2" in exe_name:
+        return "v2"
+
+    # Ambiguous name — probe --version output
+    try:
+        r = subprocess.run(
+            [exe, "--version"],
+            capture_output=True, text=True, timeout=8
+        )
+        out = (r.stdout or "") + (r.stderr or "")
+        # New version reports "StarNet2 v2.5.x"
+        if "2.5" in out or "onnx" in out.lower() or "-i " in out or "--input" in out:
+            return "v25"
+    except Exception:
+        pass
+
+    return "v2"
 
 def _run_starnet(main, doc, icon_path=None):
     import os
@@ -2030,10 +2062,26 @@ def _run_starnet(main, doc, icon_path=None):
 
     # --- Build command
     exe_name = os.path.basename(exe).lower()
-    if sysname in ("Windows", "Linux"):
-        command = [exe, input_image_path, output_image_path, "256"]
+    # --- Detect version and build command ---
+    starnet_version = _detect_starnet_version(exe)
+
+    if sysname == "Windows":
+        if starnet_version == "v25":
+            command = [exe, "-i", input_image_path, "-o", output_image_path, "-s", "256"]
+        else:
+            command = [exe, input_image_path, output_image_path, "256"]
+
+    elif sysname == "Linux":
+        if starnet_version == "v25":
+            command = [exe, "-i", input_image_path, "-o", output_image_path, "-s", "256"]
+        else:
+            command = [exe, input_image_path, output_image_path, "256"]
+
     else:  # macOS
-        if "starnet2" in exe_name:
+        if starnet_version == "v25":
+            command = [exe, "-i", input_image_path, "-o", output_image_path, "-s", "256"]
+        elif "starnet2" in exe_name:
+            # old macOS starnet2 variant used --input/--output
             command = [exe, "--input", input_image_path, "--output", output_image_path]
         else:
             command = [exe, input_image_path, output_image_path]
