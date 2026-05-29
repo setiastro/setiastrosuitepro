@@ -39,21 +39,33 @@ def _find_main_window(w: QWidget):
 
 
 def _resolve_doc_and_subwindow(mw, doc_ptr):
-    """
-    Resolve a (doc, sw) pair given the id(ptr) of the document.
-    Prefers the main-window helper if available; otherwise, scans open subwindows.
-    """
-    if hasattr(mw, "_find_doc_by_id"):
-        doc, sw = mw._find_doc_by_id(doc_ptr)
+    # Try DocManager's canonical resolver first — handles proxies, ROI docs, uid, file_path
+    dm = getattr(mw, "docman", None) or getattr(mw, "doc_manager", None)
+    if dm is not None and hasattr(dm, "resolve_doc_from_drag"):
+        doc = dm.resolve_doc_from_drag(doc_ptr=doc_ptr)
         if doc is not None:
-            return doc, sw
+            # Now find the subwindow for it
+            try:
+                for sw in mw.mdi.subWindowList():
+                    vw = sw.widget()
+                    d = getattr(vw, "document", None)
+                    base = getattr(vw, "base_document", None) or d
+                    underlying = getattr(d, "_doc", None) or getattr(d, "_document", None) or getattr(d, "_base", None)
+                    if d is doc or base is doc or underlying is doc:
+                        return doc, sw
+            except Exception:
+                pass
+            return doc, None
 
-    # fallback: scan MDI
+    # Fallback: scan MDI directly
     try:
         for sw in mw.mdi.subWindowList():
             vw = sw.widget()
             d = getattr(vw, "document", None)
-            if d is not None and id(d) == int(doc_ptr):
+            if d is None:
+                continue
+            underlying = getattr(d, "_doc", None) or getattr(d, "_document", None) or getattr(d, "_base", None)
+            if id(d) == int(doc_ptr) or (underlying is not None and id(underlying) == int(doc_ptr)):
                 return d, sw
     except Exception:
         pass
@@ -596,6 +608,7 @@ class ViewBundleDialog(QDialog):
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
+        self._main_window = parent
         _pin_on_top_mac(self)
         self.setWindowTitle(self.tr("View Bundles"))
         self.setWindowFlag(Qt.WindowType.Window, True)
@@ -698,7 +711,13 @@ class ViewBundleDialog(QDialog):
             self._restore_chips_from_settings()
         except Exception:
             pass
-
+        
+    def _find_mw(self):
+        mw = _find_main_window(self)
+        if mw is None:
+            mw = getattr(self, "_main_window", None)
+        return mw
+    
     def _save_chip_layout(self):
         """
         Persist current bundle chips and their positions so they reappear
@@ -725,7 +744,7 @@ class ViewBundleDialog(QDialog):
         Recreate chips on the ShortcutCanvas from saved layout.
         Called on dialog init.
         """
-        mw = _find_main_window(self)
+        mw = self._find_mw()
         if not mw:
             return
 
@@ -1008,6 +1027,7 @@ class ViewBundleDialog(QDialog):
     def _refresh_docs_list(self):
         self.docs.clear()
         mw = _find_main_window(self)
+
         # --- views ---
         for p in self.current_bundle_doc_ptrs():
             title = f"(unresolved) [{p}]"
@@ -1078,7 +1098,7 @@ class ViewBundleDialog(QDialog):
                 self._focus_view_ptr(int(ptr))
 
     def _focus_view_ptr(self, doc_ptr: int):
-        mw = _find_main_window(self)
+        mw = self._find_mw()
         if mw is None:
             return
         doc, sw = _resolve_doc_and_subwindow(mw, doc_ptr)
@@ -1096,7 +1116,7 @@ class ViewBundleDialog(QDialog):
 
     def _open_file_in_new_view(self, path: str):
         """Open a bundle-listed file into a brand-new view (no save/overwrite)."""
-        mw = _find_main_window(self)
+        mw = self._find_mw()
         if mw is None:
             _QMB.information(self, "Open", "Main window not available.")
             return
@@ -1205,7 +1225,7 @@ class ViewBundleDialog(QDialog):
             if u: self._set_bundle_files_by_uuid(u, remain)
 
     def _add_from_open_picker(self):
-        mw = _find_main_window(self)
+        mw = self._find_mw()
         if mw is None:
             _QMB.information(self, "Add from Open", "Main window not available.")
             return
@@ -1229,7 +1249,7 @@ class ViewBundleDialog(QDialog):
         if not b: return
         u = b["uuid"]; name = b.get("name", "Bundle")
 
-        mw = _find_main_window(self)
+        mw = self._find_mw()
         if not mw:
             _QMB.information(self, "Compress", "Main window not available.")
             return
@@ -1272,8 +1292,11 @@ class ViewBundleDialog(QDialog):
             try:
                 st = json.loads(bytes(md.data(MIME_VIEWSTATE)).decode("utf-8"))
                 doc_ptr = int(st.get("doc_ptr", 0))
+                doc_uid = st.get("doc_uid")
                 if doc_ptr:
                     self._add_doc_ptrs_to_uuid(u, [doc_ptr])
+                if doc_uid:
+                    self._add_doc_uids_to_uuid(u, [doc_uid])
             except Exception:
                 pass
             e.acceptProposedAction()
@@ -1312,7 +1335,7 @@ class ViewBundleDialog(QDialog):
 
     # ---------- applying shortcuts to all views in a bundle ----------
     def _apply_payload_to_bundle(self, payload: dict, target_uuid: Optional[str] = None):
-        mw = _find_main_window(self)
+        mw = self._find_mw()
         if mw is None or not hasattr(mw, "_handle_command_drop"):
             _QMB.information(self, "Apply", "Main window not available.")
             return
@@ -1449,7 +1472,7 @@ class ViewBundleDialog(QDialog):
         - apply shortcuts via the same dispatcher using a FakeSubWindow
         - save with legacy I/O
         """
-        mw = _find_main_window(self)
+        mw = self._find_mw()
         if mw is None:
             raise RuntimeError("Main window not available")
 
@@ -1506,7 +1529,7 @@ class ViewBundleDialog(QDialog):
         """
         Your previous UI-based routine, but using docman.open_path(path) (no file picker).
         """
-        mw = _find_main_window(self)
+        mw = self._find_mw()
         if mw is None:
             raise RuntimeError("Main window not available")
 
