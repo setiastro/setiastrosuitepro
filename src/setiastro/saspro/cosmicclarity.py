@@ -360,8 +360,9 @@ class CosmicClarityEngineWorker(QThread):
                         overlap=int(p.get("overlap", 64)),
                         execution_mode=sharpen_execution_mode,
                         batch_size_override=sharpen_batch_override,
-                        stellar_correct_mode=str(p.get("stellar_correct_mode", "sharpen_only")),  # ← ADD THIS
+                        stellar_correct_mode=str(p.get("stellar_correct_mode", "sharpen_only")),
                         correct_model_version=str(p.get("correct_model_version", "V2 (latest)")),
+                        correct_conservative=bool(p.get("correct_conservative", False)),
                         progress_cb=prog,
                     )
 
@@ -661,7 +662,14 @@ class CosmicClarityDialogPro(QDialog):
         self.sld_nst_amt.setRange(0, 100)
         self.sld_nst_amt.setValue(50)
         _add_inline_slider(sh, 7, self.lbl_nst_amt, self.sld_nst_amt)
- 
+
+        self.chk_correct_conservative = QCheckBox("Conservative White Compression (reduces tiling on high-contrast images)")
+        self.chk_correct_conservative.setToolTip(
+            "When enabled, uses stronger white point compression during aberration correction.\n"
+            "Reduces tiling artifacts on images with extreme bright/dark contrast within a single tile.\n"
+        )
+        sh.addWidget(self.chk_correct_conservative, 8, 0, 1, 2)
+
         sh.setColumnStretch(1, 1)
         left_col.addWidget(grp_sh)
  
@@ -918,6 +926,7 @@ class CosmicClarityDialogPro(QDialog):
         self.rb_correct_only.toggled.connect(self._save_cc_ui_settings)
         self.rb_correct_sharpen.toggled.connect(self._save_cc_ui_settings)
         self.rb_sharpen_only.toggled.connect(self._save_cc_ui_settings)
+        self.chk_correct_conservative.toggled.connect(self._save_cc_ui_settings)
  
         self.setMinimumSize(760, 520)
         self.resize(860, 560)
@@ -990,6 +999,7 @@ class CosmicClarityDialogPro(QDialog):
             self.sld_dn_lum, self.sld_dn_col, self.cmb_dn_mode, self.chk_dn_sep,
             self.cmb_mode, self.cmb_gpu, self.cmb_target, self.cmb_scale,
             self.rb_correct_only, self.rb_correct_sharpen, self.rb_sharpen_only,self.cmb_correct_ver,
+            self.chk_correct_conservative,
         ]
  
         # Block all signals before touching any widget
@@ -1038,6 +1048,7 @@ class CosmicClarityDialogPro(QDialog):
             corr_ver = s.value("cc/correct_model_version", "V2 (latest)", type=str)
             idx = self.cmb_correct_ver.findText(corr_ver)
             self.cmb_correct_ver.setCurrentIndex(max(0, idx))
+            self.chk_correct_conservative.setChecked(s.value("cc/correct_conservative", False, type=bool))
             sh_mode = str(s.value("cc/sharpening_mode", "Both"))
             if self.cmb_sh_mode.findText(sh_mode) >= 0:
                 self.cmb_sh_mode.setCurrentText(sh_mode)
@@ -1101,6 +1112,7 @@ class CosmicClarityDialogPro(QDialog):
         s.setValue("cc/aberration_first", self.chk_aberration_first.isChecked())
         s.setValue("cc/stellar_amount", self.sld_st_amt.value())
         s.setValue("cc/correct_model_version", self.cmb_correct_ver.currentText())
+        s.setValue("cc/correct_conservative", self.chk_correct_conservative.isChecked())
         s.setValue("cc/nonstellar_amount", self.sld_nst_amt.value())
         s.setValue("cc/nonstellar_psf", self.sld_psf.value())
         s.setValue("cc/auto_psf", self.chk_auto_psf.isChecked())
@@ -1288,6 +1300,7 @@ class CosmicClarityDialogPro(QDialog):
         # Show version selector only when correction is active and at least one version installed
         self.lbl_correct_ver.setVisible(corr_active)
         self.cmb_correct_ver.setVisible(corr_active)
+        self.chk_correct_conservative.setVisible(corr_active)
  
         # Sharpening sub-controls hidden when Correct Only is selected
         _ca = getattr(self, "_correct_available", False)
@@ -1634,6 +1647,7 @@ class CosmicClarityDialogPro(QDialog):
         self.sld_psf.setValue(int(max(10, min(80, round(float(p.get("nonstellar_psf",3.0))*10)))))
         self.sld_st_amt.setValue(int(max(0, min(100, round(float(p.get("stellar_amount", 0.5)) * 100)))))
         self.sld_nst_amt.setValue(int(max(0, min(100, round(float(p.get("nonstellar_amount",0.5))*100)))))
+        self.chk_correct_conservative.setChecked(bool(p.get("correct_conservative", False)))
         # NEW: allow presets to opt into per-channel sharpen (still defaults off without a preset)
         self.chk_sh_sep.setChecked(bool(p.get("sharpen_channels_separately", False)))
         scm = p.get("stellar_correct_mode", "sharpen_only")
@@ -1709,6 +1723,7 @@ class CosmicClarityDialogPro(QDialog):
                 "nonstellar_amount": self.sld_nst_amt.value() / 100.0,
                 "sharpen_channels_separately": self.chk_sh_sep.isChecked(),
                 "correct_model_version": self.cmb_correct_ver.currentText(),
+                "correct_conservative": self.chk_correct_conservative.isChecked(),
                 "chunk_size": int(self.cmb_chunk.currentText()),
                 "overlap": int(self.cmb_ov.currentText()),
                 "temp_stretch": self.chk_temp_stretch.isChecked(),

@@ -421,7 +421,13 @@ class _CosmicClarityPresetDialog(QDialog):
         self._nst_label = QLabel("Non-stellar Amount (0-1):")
         f.addRow(self._nst_label, self.nst_amt)
         f.addRow(self.sh_sep)
-
+        self.correct_conservative = QCheckBox("Conservative White Compression (reduces tiling on high-contrast images)")
+        self.correct_conservative.setChecked(bool(p.get("correct_conservative", False)))
+        self.correct_conservative.setToolTip(
+            "Uses stronger white point compression (0.75 vs 0.95) during aberration correction.\n"
+            "Reduces tiling artifacts on images with extreme bright/dark contrast within a single tile."
+        )
+        f.addRow(self.correct_conservative)
         # Track sharpen sub-widgets for visibility toggling
         self._sharpen_sub_widgets = [
             self._sh_mode_label, self.sh_mode,
@@ -500,12 +506,11 @@ class _CosmicClarityPresetDialog(QDialog):
         show_dn = m in ("denoise", "both")
         show_sr = m == "superres"
 
-        # Correction radio buttons only when sharpen is active and model installed
         corr_visible = show_sh and self._correct_available
         self._corr_label.setVisible(corr_visible)
         self._corr_row_widget.setVisible(corr_visible)
+        self.correct_conservative.setVisible(corr_visible)  # ADD THIS
 
-        # Sharpen sub-controls hidden when correct-only is selected
         sharpen_active = show_sh and not (
             self._correct_available and self.rb_correct_only.isChecked()
         )
@@ -541,6 +546,7 @@ class _CosmicClarityPresetDialog(QDialog):
                 "stellar_amount": float(self.st_amt.value()),
                 "nonstellar_amount": float(self.nst_amt.value()),
                 "sharpen_channels_separately": bool(self.sh_sep.isChecked()),
+                "correct_conservative": bool(self.correct_conservative.isChecked()),
             })
         if m in ("denoise", "both"):
             dn_model = self.dn_model.currentText()
