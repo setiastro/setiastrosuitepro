@@ -23,7 +23,7 @@ case "$ARCH" in
         ;;
 esac
 
-DMG_NAME="${PROJECT_NAME}_${ARCH_SUFFIX}"
+DMG_NAME="${PROJECT_NAME}_macOS_${ARCH_SUFFIX}"
 echo "🚀 Creating DMG for ${PROJECT_NAME} (${ARCH_DISPLAY})"
 
 echo "🔧 Generating build info..."
