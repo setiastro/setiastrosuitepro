@@ -71,6 +71,16 @@ def _get_ort(status_cb=print):
             pass
         return None
 
+def _safe_exception_str(err: Exception) -> str:
+    """Convert exception to string safely, handling non-UTF-8 encoded messages (e.g. Japanese Windows)."""
+    try:
+        return f"{type(err).__name__}: {err}"
+    except Exception:
+        pass
+    try:
+        return f"{type(err).__name__}: {str(err).encode('utf-8', errors='replace').decode('utf-8')}"
+    except Exception:
+        return type(err).__name__
 
 def _nullcontext():
     from contextlib import nullcontext
@@ -271,7 +281,7 @@ def measure_psf_radius(chunk2d: np.ndarray, default_radius: float = 3.0) -> floa
 
 
 def _is_device_lost_error(err: Exception) -> bool:
-    s = f"{type(err).__name__}: {err}".lower()
+    s = _safe_exception_str(err).lower()
     needles = ["887a0005", "getdeviceremovedreason", "device removed", "device lost",
                "gpu-apparaat", "onderbroken", "dmlexecutionprovider", "executionprovider.cpp"]
     return any(n in s for n in needles)
@@ -290,7 +300,7 @@ def _iter_batch_sizes(initial: int):
 
 
 def _is_recoverable_batch_error(err: Exception) -> bool:
-    msg = f"{type(err).__name__}: {err}".lower()
+    msg = _safe_exception_str(err).lower()
     needles = ["out of memory", "cuda", "cudnn", "cublas", "directml", "dml", "mps",
                "allocation", "alloc", "resource", "execution provider", "insufficient memory",
                "bad allocation", "memory", "887a0005", "device removed", "device lost"]
@@ -824,10 +834,23 @@ def _infer_chunks_batched_rgb(
 
                 for bi in range(len(batch)):
                     oh, ow = orig_shapes[bi]
-                    # CHW -> HWC, crop padding — no clamp here, let values float
-                    outputs[s + bi] = np.transpose(
+                    tile_out = np.transpose(
                         y[bi, :, :oh, :ow], (1, 2, 0)
                     ).astype(np.float32, copy=False)
+                    if not np.isfinite(tile_out).all():
+                        # Re-run this tile in full float32 without autocast
+                        single = np.ascontiguousarray(
+                            np.transpose(chunks_hwc[s + bi], (2, 0, 1))[np.newaxis]
+                        )
+                        t_single = torch.from_numpy(single).to(dev, dtype=torch.float32)
+                        with torch.no_grad():
+                            y_single = model(t_single).detach().float().cpu().numpy()
+                        tile_out = np.transpose(
+                            y_single[0, :, :oh, :ow], (1, 2, 0)
+                        ).astype(np.float32, copy=False)
+                        if not np.isfinite(tile_out).all():
+                            tile_out = chunks_hwc[s + bi][:oh, :ow].astype(np.float32, copy=False)
+                    outputs[s + bi] = tile_out
 
                 done += len(batch)
                 if progress_cb is not None:
@@ -934,7 +957,21 @@ def _infer_chunks_batched(
 
                 for bi, out_ch in enumerate(y):
                     oh, ow = orig_shapes[bi]
-                    outputs[s + bi] = out_ch[:oh, :ow].astype(np.float32, copy=False)
+                    tile_out = out_ch[:oh, :ow].astype(np.float32, copy=False)
+                    if not np.isfinite(tile_out).all():
+                        # Re-run this tile in full float32 without autocast
+                        c = np.asarray(chunks2d[s + bi], np.float32)
+                        t_single = torch.from_numpy(
+                            np.ascontiguousarray(c)[np.newaxis, np.newaxis]
+                        ).to(dev, dtype=torch.float32)
+                        t_rgb = t_single.expand(-1, 3, -1, -1)
+                        with torch.no_grad():
+                            y_single = model(t_rgb)
+                            y_single = y_single[:, 0].detach().float().cpu().numpy()[0]
+                        tile_out = y_single[:oh, :ow].astype(np.float32, copy=False)
+                        if not np.isfinite(tile_out).all():
+                            tile_out = chunks2d[s + bi][:oh, :ow].astype(np.float32, copy=False)
+                    outputs[s + bi] = tile_out
 
                 done += len(batch)
                 if progress_cb is not None:
@@ -1081,16 +1118,19 @@ def _correct_rgb_image(
     overlap: int = 64,
     execution_mode: str = "auto",
     batch_size_override: int = 0,
+    correct_model: Any = None,
+    conservative_compression: bool = False,   # ADD THIS
     progress_cb: Optional[Callable[[int, int], bool]] = None,
     progress_done_start: int = 0,
     progress_total: int = 0,
 ) -> np.ndarray:
-    if models.correct is None:
+    active_model = correct_model if correct_model is not None else models.correct
+    if active_model is None:
         return image_rgb
-
     H, W = image_rgb.shape[:2]
     chunk_size = max(64, min(1024, int(chunk_size)))
     overlap    = max(0, min(chunk_size - 1, int(overlap)))
+    WHITE_COMPRESS = 0.75 if conservative_compression else 0.95
 
     coords = _chunk_coords_with_overlap(H, W, chunk_size, overlap)
     total  = len(coords)
@@ -1151,8 +1191,6 @@ def _correct_rgb_image(
 
     PEDESTAL = 0.05
 
-    WHITE_COMPRESS = 0.95   # pull white point down before model; undone after
-
     for (i, j, ei, ej, _) in coords:
         tile = image_rgb[i:ei, j:ej, :3].astype(np.float32, copy=False)
         # Compress white point to give the model headroom on bright tiles
@@ -1169,7 +1207,7 @@ def _correct_rgb_image(
         chunks_hwc.append(tile)
 
     inferred_raw = _infer_chunks_batched_rgb(
-        models, models.correct, chunks_hwc, batch_size=batch_size,
+        models, active_model, chunks_hwc, batch_size=batch_size,
         progress_cb=(lambda done, tot: progress_cb(progress_done_start + done, progress_total))
                     if progress_cb is not None else None,
         progress_done_start=0,
@@ -1181,6 +1219,8 @@ def _correct_rgb_image(
 
     inferred = []
     for tile_out, orig_med in zip(inferred_raw, tile_orig_meds):
+        # Hard clamp model output before inverse — values above 1.0 corrupt the unstretch math
+        tile_out = np.clip(tile_out, 0.0, 1.0).astype(np.float32, copy=False)
         # Inverse MTF back to post-pedestal median
         if orig_med > 0.0:
             m_now = float(np.median(tile_out))
@@ -1190,7 +1230,7 @@ def _correct_rgb_image(
                 den = m_now * (m0 + tile_out - 1.0) - m0 * tile_out
                 den = np.where(np.abs(den) < 1e-12, 1e-12, den)
                 tile_out = np.clip(num / den, 0.0, 1.0).astype(np.float32, copy=False)
-        # Remove pedestal — no clamp yet, let values float through stitching
+        # Remove pedestal
         tile_out = (tile_out * (1.0 + PEDESTAL) - PEDESTAL).astype(np.float32, copy=False)
         # Undo white point compression
         tile_out = (tile_out / WHITE_COMPRESS).astype(np.float32, copy=False)
@@ -1226,6 +1266,7 @@ class SharpenParams:
     batch_size_override: int = 0
     stellar_correct_mode: str = "sharpen_only"
     correct_model_version: str = "V2 (latest)"   # ADD THIS
+    correct_conservative: bool = False    
 
 
 def sharpen_image_array(image: np.ndarray,
@@ -1268,15 +1309,64 @@ def sharpen_image_array(image: np.ndarray,
     def _run_with(models: SharpenModels) -> tuple[np.ndarray, bool]:
         bordered = add_border(img3, border_size=16)
 
-        def _pick_correct_model(models: SharpenModels):
-            """Pick V2 if available and requested, else fall back to V1."""
+        def _pick_correct_model(models: SharpenModels) -> Any:
             ver = str(getattr(params, "correct_model_version", "V2 (latest)")).lower()
-            if "v2" in ver and models.correct_v2 is not None:
+
+            if not models.is_onnx:
+                if "v2" in ver and models.correct_v2 is not None:
+                    return models.correct_v2
+                if models.correct is not None:
+                    return models.correct
                 return models.correct_v2
-            if models.correct is not None:
-                return models.correct
-            # fallback: try V2 even if V1 was requested but V1 missing
-            return models.correct_v2
+
+            # ONNX path — no .onnx correction model exists, load .pth via CPU torch
+            R = get_resources()
+            if "v2" in ver:
+                path = getattr(R, "CC_C2_PTH", None)
+                if not path or not os.path.exists(str(path)):
+                    path = getattr(R, "CC_C_PTH", None)
+            else:
+                path = getattr(R, "CC_C_PTH", None)
+                if not path or not os.path.exists(str(path)):
+                    path = getattr(R, "CC_C2_PTH", None)
+
+            if not path or not os.path.exists(str(path)):
+                return None
+
+            try:
+                import torch as _torch
+
+                class _CorrectLoader:
+                    """Minimal torch wrapper just for loading the correction .pth on CPU."""
+                    pass
+
+                cpu = _torch.device("cpu")
+                # Reuse m_naf_correct from _load_torch_models scope isn't accessible here,
+                # so inline the load directly
+                import torch.nn as _nn
+
+                # NAFNetCorrect is defined inside _load_torch_models so we need torch models
+                # loaded — but we can call _load_torch_models with CPU and just grab correct
+                tmp = _load_torch_models(_torch, cpu)
+                chosen = None
+                if "v2" in ver and tmp.correct_v2 is not None:
+                    chosen = tmp.correct_v2
+                elif tmp.correct is not None:
+                    chosen = tmp.correct
+                else:
+                    chosen = tmp.correct_v2
+
+                try:
+                    status_cb("Correction model loaded via CPU torch (ONNX backend fallback).")
+                except Exception:
+                    pass
+                return chosen
+            except Exception as e:
+                try:
+                    status_cb(f"Correction model CPU fallback failed: {_safe_exception_str(e)}")
+                except Exception:
+                    pass
+                return None
 
         if bool(getattr(params, "temp_stretch", False)):
             stretch_needed = True
@@ -1295,26 +1385,25 @@ def sharpen_image_array(image: np.ndarray,
             chosen_correct = _pick_correct_model(models)
             if chosen_correct is not None:
                 try:
-                    # temporarily swap models.correct so _correct_rgb_image uses the right one
-                    _orig = models.correct
-                    models.correct = chosen_correct
+                    progress_cb(0, 1, "Aberration correction")
                     stretched = _correct_rgb_image(
                         models, stretched,
                         chunk_size=int(params.chunk_size),
                         overlap=int(params.overlap),
                         execution_mode=getattr(params, "execution_mode", "auto"),
                         batch_size_override=getattr(params, "batch_size_override", 0),
+                        correct_model=chosen_correct,
+                        conservative_compression=bool(getattr(params, "correct_conservative", False)),
                         progress_cb=lambda d, t: progress_cb(d, t, "Aberration correction"),
                     )
-                    models.correct = _orig
                 except Exception as e:
                     try:
-                        status_cb(f"Aberration correction failed ({e}); returning original.")
+                        status_cb(f"Aberration correction failed ({_safe_exception_str(e)}); returning original.")
                     except Exception:
                         pass
             else:
                 try:
-                    status_cb("Aberration correction model not loaded — skipping.")
+                    status_cb("Aberration correction model not installed — skipping. Install via Settings → AI Models.")
                 except Exception:
                     pass
 
@@ -1329,7 +1418,8 @@ def sharpen_image_array(image: np.ndarray,
 
         # ── correct_sharpen: correction pre-pass then fall through to sharpen ─
         if stellar_correct_mode == "correct_sharpen":
-            if models.correct is not None:
+            chosen_correct = _pick_correct_model(models)
+            if chosen_correct is not None:
                 try:
                     progress_cb(0, 1, "Aberration correction")
                     stretched = _correct_rgb_image(
@@ -1338,16 +1428,18 @@ def sharpen_image_array(image: np.ndarray,
                         overlap=int(params.overlap),
                         execution_mode=getattr(params, "execution_mode", "auto"),
                         batch_size_override=getattr(params, "batch_size_override", 0),
+                        correct_model=chosen_correct,
+                        conservative_compression=bool(getattr(params, "correct_conservative", False)),
                         progress_cb=lambda d, t: progress_cb(d, t, "Aberration correction"),
                     )
                 except Exception as e:
                     try:
-                        status_cb(f"Aberration correction failed ({e}); continuing without correction.")
+                        status_cb(f"Aberration correction failed ({_safe_exception_str(e)}); continuing without correction.")
                     except Exception:
                         pass
             else:
                 try:
-                    status_cb("Aberration correction model not loaded — skipping pre-pass.")
+                    status_cb("Aberration correction model not installed — skipping pre-pass. Install via Settings → AI Models.")
                 except Exception:
                     pass
 
@@ -1518,6 +1610,7 @@ def sharpen_rgb01(
     batch_size_override: int = 0,
     stellar_correct_mode: str = "sharpen_only",
     correct_model_version: str = "V2 (latest)",
+    correct_conservative: bool = False,
     progress_cb: Optional[Callable[[int, int], bool]] = None,
     status_cb=print,
 ) -> np.ndarray:
@@ -1547,6 +1640,7 @@ def sharpen_rgb01(
         batch_size_override=int(batch_size_override),
         stellar_correct_mode=str(stellar_correct_mode),
         correct_model_version=str(correct_model_version),
+        correct_conservative=bool(correct_conservative),
     )
 
     out, _was_mono = sharpen_image_array(

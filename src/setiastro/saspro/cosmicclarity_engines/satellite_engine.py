@@ -1079,6 +1079,9 @@ def satellite_remove_image(
         return out_rgb, detected, np.asarray(trail_mask, dtype=bool)
     return out_rgb, detected
 
+def _is_border_tile(y0: int, x0: int, y1: int, x1: int, H: int, W: int, border_size: int = 16) -> bool:
+    """Returns True if this tile overlaps the image border region."""
+    return y0 < border_size or x0 < border_size or y1 > H - border_size or x1 > W - border_size
 # ---------- Satellite remove loop (FIX: use correct ONNX sessions, not det1/rem confusion) ----------
 def _satellite_remove_rgb(
     rgb01: np.ndarray,
@@ -1116,7 +1119,10 @@ def _satellite_remove_rgb(
 
             detected = bool(d1 and d2)
             if detected:
-                trail_any = True
+                for idx, (tile, y0, x0) in enumerate(all_tiles, start=1):
+                    orig = tile.astype(np.float32)
+                    y1 = y0 + tile.shape[0]   # ADD THIS
+                    x1 = x0 + tile.shape[1]   # ADD THIS
                 pred = _onnx_remove(orig, rem_sess)
                 if clip_trail:
                     final, trail_mask = _apply_clip_trail_logic(
@@ -1199,7 +1205,17 @@ def _satellite_remove_rgb(
                 progress_cb(sum(done_flags), total)
 
         detected_indices = [i for i, flag in enumerate(detected_flags) if flag]
-        trail_any = bool(detected_indices)
+        # Only count interior tile detections toward trail_any — border tiles have
+        # reflected padding content that causes false positives for skip-save logic
+        trail_any = any(
+            not _is_border_tile(
+                all_tiles[i][1], all_tiles[i][2],
+                all_tiles[i][1] + all_tiles[i][0].shape[0],
+                all_tiles[i][2] + all_tiles[i][0].shape[1],
+                H, W, border_size
+            )
+            for i in detected_indices
+        )
 
         if detected_indices:
             padded_tiles = []
