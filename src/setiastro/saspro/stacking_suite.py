@@ -1764,120 +1764,6 @@ def _get_log_dock():
     app = QApplication.instance()
     return getattr(app, "_sasd_status_console", None)  # set by main window
 
-class _MMFits:
-    """
-    Keeps one FITS open for the whole group; slices tiles without re-opening.
-    Handles spatial/color axis detection and fixed normalization once.
-    """
-    def __init__(self, path: str):
-        self.path = path
-        import os
-        from astropy.io import fits
-
-        def _do_open(memmap_flag: bool):
-            hdul = fits.open(path, memmap=memmap_flag)
-            h0 = hdul[0]
-            data = h0.data
-            if data is None:
-                hdul.close()
-                raise ValueError(f"Empty FITS: {path}")
-            return hdul, h0, data
-
-        try:
-            hdul, h0, data = _do_open(memmap_flag=True)
-        except Exception as e:
-            #self._log(f"[MMImage] File uses FITS scaling keywords; falling back to non-memmap load for {os.path.basename(path)}.")
-            hdul, h0, data = _do_open(memmap_flag=False)
-
-        self.hdul = hdul
-        self.header = h0.header
-        self.data = data
-        self.shape = self.data.shape
-        self.ndim = self.data.ndim
-        self.orig_dtype = self.data.dtype
-
-        try:
-            self._bitpix = int(self.header.get("BITPIX", 0))
-        except Exception:
-            self._bitpix = 0
-
-        # detect color axis (size==3) and spatial axes once
-        if self.ndim == 2:
-            self.color_axis = None
-            self.spat_axes = (0, 1)
-        elif self.ndim == 3:
-            dims = self.shape
-            self.color_axis = next((i for i, d in enumerate(dims) if d == 3), None)
-            if self.color_axis is None:
-                self.spat_axes = (0, 1)
-            else:
-                self.spat_axes = tuple(i for i in range(3) if i != self.color_axis)
-        else:
-            raise ValueError(f"Unsupported ndim={self.ndim} for {path}")
-
-    def _apply_fixed_fits_scale(self, arr: np.ndarray) -> np.ndarray:
-        """
-        Map 8/16-bit FITS integer samples to [0,1] using a fixed divisor.
-        IMPORTANT: Only do this for integer dtypes. If Astropy already returned
-        float (e.g. BSCALE/BZERO applied), do NOT divide again.
-        """
-        # Only scale raw integer pixel arrays
-        if arr.dtype.kind not in ("u", "i"):
-            return arr
-
-        bitpix = getattr(self, "_bitpix", 0)
-        if bitpix == 8:
-            return arr / 255.0
-        elif bitpix == 16:
-            return arr / 65535.0
-        return arr
-
-    def read_tile(self, y0, y1, x0, x1) -> np.ndarray:
-        d = self.data
-        if self.ndim == 2:
-            tile = d[y0:y1, x0:x1]
-        else:
-            sl = [slice(None)] * 3
-            sl[self.spat_axes[0]] = slice(y0, y1)
-            sl[self.spat_axes[1]] = slice(x0, x1)
-            tile = d[tuple(sl)]
-            # move color to last if present
-            if self.color_axis is not None and self.color_axis != 2:
-                tile = np.moveaxis(tile, self.color_axis, -1)
-
-        tile = tile.astype(np.float32, copy=False)
-        tile = self._apply_fixed_fits_scale(tile)
-
-        # ensure (h,w,3) or (h,w)
-        if tile.ndim == 3 and tile.shape[-1] not in (1, 3):
-            if tile.shape[0] == 3 and tile.shape[-1] != 3:
-                tile = np.moveaxis(tile, 0, -1)
-        return tile
-
-    def read_full(self) -> np.ndarray:
-        d = self.data
-        if self.ndim == 2:
-            full = d
-        else:
-            full = d
-            if self.color_axis is not None and self.color_axis != 2:
-                full = np.moveaxis(full, self.color_axis, -1)
-
-        full = full.astype(np.float32, copy=False)
-        full = self._apply_fixed_fits_scale(full)
-
-        if full.ndim == 3 and full.shape[-1] not in (1, 3):
-            if full.shape[0] == 3 and full.shape[-1] != 3:
-                full = np.moveaxis(full, 0, -1)
-        return full
-
-    def close(self):
-        try:
-            self.hdul.close()
-        except Exception:
-            pass
-
-
 # --------------------------------------------------
 # Stacking Suite
 # --------------------------------------------------
@@ -2390,8 +2276,6 @@ def compute_safe_chunk(height, width, N, channels, dtype, pref_h, pref_w):
     if ch < 1 or cw < 1:
         raise MemoryError(f"Chunk too small after fudge: {ch}×{cw}")
 
-    print(f"[DEBUG] raw_side={raw_side}, workers={workers} ⇒ safe_side={safe_side}")
-    print(f"[DEBUG] final chunk: {ch}×{cw}")
     return ch, cw
 
 _DIM_RE = re.compile(r"\s*\(\d+\s*x\s*\d+\)\s*")
@@ -3790,16 +3674,22 @@ class _MMImage:
 
         def _do_open(memmap_flag: bool):
             hdul = fits.open(path, memmap=memmap_flag)
-            # choose first image-like HDU (don’t assume PRIMARY only)
-            hdu = None
-            for h in hdul:
-                if getattr(h, "data", None) is not None:
-                    hdu = h
-                    break
-            if hdu is None or hdu.data is None:
-                hdul.close()
-                raise ValueError(f"Empty FITS: {path}")
-            return hdul, hdu
+            try:
+                hdu = None
+                for h in hdul:
+                    if getattr(h, "data", None) is not None:
+                        hdu = h
+                        break
+                if hdu is None or hdu.data is None:
+                    hdul.close()
+                    raise ValueError(f"Empty FITS: {path}")
+                return hdul, hdu
+            except Exception:
+                try:
+                    hdul.close()
+                except Exception:
+                    pass
+                raise
 
         # First attempt: memmap=True
         try:
@@ -4021,9 +3911,7 @@ class _MMImage:
 
         # ---- APPLY FIXED SCALE (your real suspect) ----
         if self._kind == "fits":
-            out2 = self._apply_fixed_fits_scale(out)
-
-            out = out2
+            out = self._apply_fixed_fits_scale(out)
 
         # ensure (h,w,3) or (h,w)
         if out.ndim == 3 and out.shape[-1] not in (1, 3):
@@ -4090,6 +3978,12 @@ class _MMImage:
         # Without this, CPython defers finalization and the handle stays open
         # long enough for a concurrent GC sweep to fault on it.
         gc.collect()
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
 def _open_sources_for_mfdeconv(paths, log):
     srcs = []
@@ -5731,10 +5625,10 @@ class StackingSuiteDialog(QDialog):
     def restore_saved_master_calibrations(self):
         saved_darks = self.settings.value("stacking/master_darks", [], type=list)
         saved_flats = self.settings.value("stacking/master_flats", [], type=list)
-
+        print(f"[RESTORE] saved_darks={saved_darks}")
+        print(f"[RESTORE] saved_flats={saved_flats}")
         if saved_darks:
             self.add_master_files(self.master_dark_tree, "DARK", saved_darks)
-
         if saved_flats:
             self.add_master_files(self.master_flat_tree, "FLAT", saved_flats)
 
@@ -8293,8 +8187,6 @@ class StackingSuiteDialog(QDialog):
         import json
         s = self.settings
         try:
-            self.update_status(f"[RestoreDebug] Saving tab state before restart...")
-
             def _serialize_dict(d):
                 """Convert tuple keys to JSON-safe strings."""
                 return {json.dumps(k) if isinstance(k, tuple) else k: v
@@ -8305,11 +8197,6 @@ class StackingSuiteDialog(QDialog):
             light_ser = _serialize_dict(self.light_files)
             reg_ser   = _serialize_dict(self.reg_files)
 
-            self.update_status(f"[RestoreDebug]   dark_files keys: {list(self.dark_files.keys())}, total files: {sum(len(v) for v in self.dark_files.values())}")
-            self.update_status(f"[RestoreDebug]   flat_files keys: {list(self.flat_files.keys())}, total files: {sum(len(v) for v in self.flat_files.values())}")
-            self.update_status(f"[RestoreDebug]   light_files keys: {list(self.light_files.keys())}, total files: {sum(len(v) for v in self.light_files.values())}")
-            self.update_status(f"[RestoreDebug]   reg_files keys: {list(self.reg_files.keys())}, total files: {sum(len(v) for v in self.reg_files.values())}")
-            self.update_status(f"[RestoreDebug]   manual_light_files count: {len(self.manual_light_files)}")
 
             s.setValue("stacking/restart_state/dark_files",         json.dumps(dark_ser))
             s.setValue("stacking/restart_state/flat_files",         json.dumps(flat_ser))
@@ -8322,7 +8209,6 @@ class StackingSuiteDialog(QDialog):
             s.sync()
 
             verify = s.value("stacking/restart_state/pending", False, type=bool)
-            self.update_status(f"[RestoreDebug]   pending flag after sync: {verify}")
 
         except Exception as e:
             self.update_status(f"⚠️ Could not save tab state before restart: {e}")
@@ -8969,12 +8855,19 @@ class StackingSuiteDialog(QDialog):
 
         exposure_tolerance_layout = QHBoxLayout()
         exposure_tolerance_label = QLabel(self.tr("Exposure Tolerance (seconds):"))
-        self.flat_exposure_tolerance_spinbox = QSpinBox()
-        self.flat_exposure_tolerance_spinbox.setRange(0, 30)
-        self.flat_exposure_tolerance_spinbox.setValue(5)
+        self.flat_exposure_tolerance_spinbox = QDoubleSpinBox()
+        self.flat_exposure_tolerance_spinbox.setRange(0.0, 30.0)
+        self.flat_exposure_tolerance_spinbox.setDecimals(2)
+        self.flat_exposure_tolerance_spinbox.setSingleStep(0.01)
+        self.flat_exposure_tolerance_spinbox.setValue(
+            self.settings.value("stacking/flat_exposure_tolerance", 0.5, type=float)
+        )
         exposure_tolerance_layout.addWidget(exposure_tolerance_label)
         exposure_tolerance_layout.addWidget(self.flat_exposure_tolerance_spinbox)
         right_controls_layout.addLayout(exposure_tolerance_layout)
+        self.flat_exposure_tolerance_spinbox.valueChanged.connect(
+            lambda v: self.settings.setValue("stacking/flat_exposure_tolerance", float(v))
+        )
         self.flat_exposure_tolerance_spinbox.valueChanged.connect(self.rebuild_flat_tree)
 
         self.auto_select_dark_checkbox = QCheckBox(self.tr("Auto-Select Closest Master Dark"))
@@ -10348,14 +10241,11 @@ class StackingSuiteDialog(QDialog):
         for i in range(tree.topLevelItemCount()):
             _summarize_item(tree.topLevelItem(i))
 
-    def _find_or_make_exposure_group_key(self, grouped: dict, filt: str, exp: float, size: str) -> str:
-        """
-        Reuse the same exposure-tolerance grouping logic used by the registration tab.
-
-        grouped: dict[str, list]
-        returns: existing or new group key
-        """
-        tol = float(self.exposure_tolerance_spin.value())
+    def _find_or_make_exposure_group_key(self, grouped: dict, filt: str, exp: float, size: str,
+                                          gain: float | None = None) -> str:
+        exp_tol = float(self.exposure_tolerance_spin.value())
+        gain_tol = float(getattr(self, "gain_tolerance_spin", None) and
+                         self.gain_tolerance_spin.value() or 10)
 
         for key in grouped:
             try:
@@ -10363,10 +10253,30 @@ class StackingSuiteDialog(QDialog):
             except Exception:
                 continue
 
-            if filt == f2 and s2 == size and abs(float(exp) - float(e2)) <= tol:
-                return key
+            if filt != f2 or s2 != size:
+                continue
+            if abs(float(exp) - float(e2)) > exp_tol:
+                continue
 
-        return f"{filt} - {float(exp):.1f}s ({size})"
+            # Gain check — extract gain from key if present
+            g2 = None
+            m = re.search(r"\[G([\d.]+)\]", key)
+            if m:
+                try:
+                    g2 = float(m.group(1))
+                except Exception:
+                    pass
+
+            # If either is unknown, treat as match; otherwise check tolerance
+            if gain is not None and g2 is not None:
+                if abs(gain - g2) > gain_tol:
+                    continue
+
+            return key
+
+        # Build new key including gain if known
+        gain_suffix = f" [G{int(gain)}]" if gain is not None else ""
+        return f"{filt} - {float(exp):.1f}s ({size}){gain_suffix}"
 
     def create_image_registration_tab(self):
         """
@@ -10417,6 +10327,26 @@ class StackingSuiteDialog(QDialog):
         self.exposure_tolerance_spin.setValue(0)
         self.exposure_tolerance_spin.setSingleStep(5)
         tol_layout.addWidget(self.exposure_tolerance_spin)
+
+        tol_layout.addWidget(QLabel(self.tr("Gain Tolerance:")))
+        self.gain_tolerance_spin = QSpinBox()
+        self.gain_tolerance_spin.setRange(0, 500)
+        self.gain_tolerance_spin.setValue(
+            self.settings.value("stacking/gain_tolerance", 10, type=int)
+        )
+        self.gain_tolerance_spin.setSingleStep(5)
+        self.gain_tolerance_spin.setToolTip(self.tr(
+            "Max gain difference to group files together.\n"
+            "0 = exact match only. 500 = ignore gain differences."
+        ))
+        tol_layout.addWidget(self.gain_tolerance_spin)
+        self.gain_tolerance_spin.valueChanged.connect(
+            lambda v: (
+                self.settings.setValue("stacking/gain_tolerance", int(v)),
+                self.populate_calibrated_lights(),
+                self._refresh_reg_tree_summaries()
+            )
+        )        
         tol_layout.addStretch()
 
         # Auto-crop moved here
@@ -11606,22 +11536,23 @@ class StackingSuiteDialog(QDialog):
             e_min = min(p[1] for p in files)
             e_max = max(p[1] for p in files)
 
-            expmin = np.floor(e_min)
-            # label matches what create_master_flat expects to re-parse
-            exposure_str = f"{expmin:.1f}s–{(expmin + tol):.1f}s" if len(files) > 1 else f"{e_min:.1f}s"
+            exposure_str = f"{e_min:.2f}s–{e_max:.2f}s" if abs(e_max - e_min) > 0.001 else f"{e_min:.2f}s"
 
             top_item = QTreeWidgetItem()
             top_item.setText(0, f"{filter_name} - {exposure_str} ({image_size})")
             top_item.setText(1, f"{len(files)} files")
 
-            # canonical group_key (used by overrides & create_master_flat)
-            group_key = f"{filter_name}|{image_size}|{expmin:.3f}|{(expmin+tol):.3f}"
+            group_key = f"{filter_name}|{image_size}|{e_min:.3f}|{(e_min+tol):.3f}"
             top_item.setData(0, Qt.ItemDataRole.UserRole, group_key)
 
             # column 2 shows what dark will be used
-            ud = self.flat_dark_override.get(group_key, None)  # None→Auto, "__NO_DARK__", or path
+            ud = self.flat_dark_override.get(group_key, None)
             if ud is None:
-                col2_txt = "Auto" if self.auto_select_dark_checkbox.isChecked() else "None"
+                if self.auto_select_dark_checkbox.isChecked():
+                    auto_dark = self._auto_pick_master_dark(image_size, e_min)
+                    col2_txt = os.path.basename(auto_dark) if auto_dark else "None"
+                else:
+                    col2_txt = "None"
             elif ud == "__NO_DARK__":
                 col2_txt = "No Calibration"
             else:
@@ -11865,9 +11796,22 @@ class StackingSuiteDialog(QDialog):
                 # extra safety: ignore anything unexpected
                 continue
 
-            # find existing group with same filter+size and exposure within tolerance
-            key = self._find_or_make_exposure_group_key(grouped, filt, exp, size)
-            grouped.setdefault(key, []).append({"path": fp, "exp": exp, "size": size})
+            # Read gain from header
+            gain = None
+            try:
+                if ext in (".fits", ".fit", ".ftz", ".fz"):
+                    from astropy.io import fits as _fits
+                    hdr = _fits.getheader(fp, memmap=True)
+                    g = hdr.get("GAIN", None)
+                    if g is not None:
+                        gain = float(g)
+                elif ext == ".xisf":
+                    pass  # XISF gain would need _probe_xisf_meta extension
+            except Exception:
+                pass
+
+            key = self._find_or_make_exposure_group_key(grouped, filt, exp, size, gain=gain)
+            grouped.setdefault(key, []).append({"path": fp, "exp": exp, "size": size, "gain": gain})
 
         # current global drizzle defaults
         global_enabled = self.drizzle_checkbox.isChecked()
@@ -11906,7 +11850,10 @@ class StackingSuiteDialog(QDialog):
             # leaf rows: show basename + per-file size
             for d in entries:
                 fp = d["path"]
-                leaf = QTreeWidgetItem([os.path.basename(fp), f"Size: {d['size']}"])
+                leaf = QTreeWidgetItem([
+                    os.path.basename(fp),
+                    f"Size: {d['size']}" + (f", Gain: {int(d['gain'])}" if d.get('gain') is not None else "")
+                ])
                 leaf.setData(0, Qt.ItemDataRole.UserRole, fp)
                 top.addChild(leaf)
 
@@ -12236,7 +12183,6 @@ class StackingSuiteDialog(QDialog):
         self.assign_best_master_dark()
         self.assign_best_master_files()
         self._refresh_quick_stack_summary_later()
-        print("DEBUG: Loaded Master Darks and updated assignments.")
 
     def load_master_flat(self):
         last_dir = (
@@ -12615,29 +12561,46 @@ class StackingSuiteDialog(QDialog):
         cache[path] = d
         return d
 
-    def _closest_flat_for(self, *, filter_name: str, image_size: str, light_path: str):
-        """
-        Choose a flat master path by:
-        1) exact key 'Filter (WxH) [Session]' matching light's session (if present)
-        2) else among 'Filter (WxH) ...', pick by nearest local-night date to light.
-        Returns path or None.
-        """
-        # normalize filter token the same way you build master keys
+    def _closest_flat_for(self, *, filter_name: str, image_size: str, light_path: str,
+                           light_gain: float | None = None, light_offset: float | None = None):
         ftoken = self._sanitize_name(filter_name)
-        # light's date
         light_d = self._file_local_night_date(light_path)
 
-        # Collect candidate flats (same filter+size)
         candidates = []
         for key, path in self.master_files.items():
-            # flats often keyed like "Filter (WxH) [Session]" or "Filter (WxH)"
             if (ftoken in key) and (f"({image_size})" in key):
                 candidates.append((key, path))
-
         if not candidates:
             return None
 
-        # 1) exact session match if we can infer the light's session name
+        # Cache flat gain/offset
+        if not hasattr(self, "_master_flat_go"):
+            self._master_flat_go = {}
+
+        def _flat_go(path):
+            if path not in self._master_flat_go:
+                try:
+                    hdr = fits.getheader(path, memmap=True)
+                    g = _get_key_float(hdr, "GAIN")
+                    o = _get_key_float(hdr, "OFFSET")
+                    if o is None:
+                        o = _get_key_float(hdr, "BLKLEVEL")
+                    self._master_flat_go[path] = (g, o)
+                except Exception:
+                    self._master_flat_go[path] = (None, None)
+            return self._master_flat_go[path]
+
+        def _go_mismatch(path):
+            if light_gain is None and light_offset is None:
+                return False
+            fg, fo = _flat_go(path)
+            if light_gain is not None and fg is not None and abs(light_gain - fg) > 1:
+                return True
+            if light_offset is not None and fo is not None and abs(light_offset - fo) > 1:
+                return True
+            return False
+
+        # 1) exact session + gain match
         light_hdr = None
         try:
             with fits.open(light_path, memmap=True) as hdul:
@@ -12645,29 +12608,36 @@ class StackingSuiteDialog(QDialog):
         except Exception:
             pass
         light_session = self._session_from_dateobs_local_night(light_hdr) if light_hdr else None
-
         if light_session:
             exact_key = f"{ftoken} ({image_size}) [{light_session}]"
+            for key, path in candidates:
+                if key == exact_key and not _go_mismatch(path):
+                    return path
+            # exact session but gain mismatch — still prefer over wrong session
             for key, path in candidates:
                 if key == exact_key:
                     return path
 
-        # 2) otherwise pick by nearest date (local night)
+        # 2) nearest date, gain-matched candidates preferred
         if light_d is None:
-            # No DATE-OBS for light → fall back to first candidate
+            # prefer gain match among candidates
+            for _, path in candidates:
+                if not _go_mismatch(path):
+                    return path
             return candidates[0][1]
 
-        best = (None, 10**9)  # (path, |Δdays|)
+        best = (None, 10**9, True)   # (path, |Δdays|, go_mismatch)
         for _key, fpath in candidates:
             fd = self._file_local_night_date(fpath)
             if fd is None:
                 continue
             delta = abs((fd - light_d).days)
-            if delta < best[1]:
-                best = (fpath, delta)
+            mismatch = _go_mismatch(fpath)
+            # prefer gain match; within same gain bucket prefer nearest date
+            if (mismatch, delta) < (best[2], best[1]):
+                best = (fpath, delta, mismatch)
 
         return best[0] if best[0] else candidates[0][1]
-
 
     def _ingest_paths_with_progress(self, paths, tree, expected_type, title, manual_session_name=None):
         total = len(paths)
@@ -13096,11 +13066,14 @@ class StackingSuiteDialog(QDialog):
                     except Exception:
                         exposure_text = f"{exposure}s" if str(exposure).endswith("s") else str(exposure)
 
-                    key = f"{exposure_text} ({image_size})"
-                    self.master_files[key] = file_path  # Store master dark
-                    self.master_sizes[file_path] = image_size  # Store size
+                    sensor_temp = header.get("CCD-TEMP", header.get("SET-TEMP", None))
+                    gain_val = header.get("GAIN", None)
+                    temp_suffix = f" [{float(sensor_temp):+.1f}C]" if sensor_temp is not None else ""
+                    gain_suffix = f" [G{int(gain_val)}]" if gain_val is not None else ""
+                    key = f"{exposure_text} ({image_size}){temp_suffix}{gain_suffix}"
+                    self.master_files[key] = file_path
+                    self.master_sizes[file_path] = image_size
                 elif file_type.upper() == "FLAT":
-                    # Attempt to extract session name from filename
                     session_name = "Default"
                     filename = os.path.basename(file_path)
                     if filename.lower().startswith("masterflat_"):
@@ -13108,7 +13081,11 @@ class StackingSuiteDialog(QDialog):
                         if len(parts) > 1:
                             session_name = parts[1]
 
-                    key = f"{filter_name} ({image_size}) [{session_name}]"
+                    gain_val = header.get("GAIN", None)
+                    offset_val = header.get("OFFSET", header.get("BLKLEVEL", None))
+                    gain_suffix = f" [G{int(gain_val)}]" if gain_val is not None else ""
+
+                    key = f"{filter_name} ({image_size}) [{session_name}]{gain_suffix}"
                     self.master_files[key] = file_path
                     self.master_sizes[file_path] = image_size
 
@@ -13128,12 +13105,11 @@ class StackingSuiteDialog(QDialog):
                 # Add the master file as a child node with metadata.
                 item.addChild(QTreeWidgetItem([os.path.basename(file_path), metadata]))
 
-                print(f"✅ DEBUG: Added Master {file_type} -> {file_path} under {key} with metadata: {metadata}")
+
                 self.update_status(self.tr(f"✅ Added Master {file_type} -> {file_path} under {key} with metadata: {metadata}"))
-                print(f"📂 DEBUG: Master Files Stored: {self.master_files}")
+
                 self.update_status(self.tr(f"📂 DEBUG: Master Files Stored: {self.master_files}"))
                 QApplication.processEvents()
-                self.assign_best_master_files()
 
             except Exception as e:
                 print(f"❌ ERROR: Failed to load master file {file_path} - {e}")
@@ -13528,13 +13504,14 @@ class StackingSuiteDialog(QDialog):
                     pd.step()
                     use0 = not use0
 
-                tp.shutdown(wait=True)
-
-                for s in sources:
-                    try:
-                        s.close()
-                    except Exception:
-                        pass
+                try:
+                    tp.shutdown(wait=True)
+                finally:
+                    for s in sources:
+                        try:
+                            s.close()
+                        except Exception:
+                            pass
 
                 if cancelled_group:
                     self.update_status(self.tr("⛔ Master Dark creation cancelled; cleaning up temporary files."))
@@ -13711,15 +13688,32 @@ class StackingSuiteDialog(QDialog):
         except Exception:
             size = "Unknown"
 
-        exposure_key = str(exposure_label).strip()  # e.g. "30s (4128x2806)"
+        exposure_key = str(exposure_label).strip()
 
-        # ✅ Record paths/sizes
         if not hasattr(self, "master_files"):
             self.master_files = {}
         if not hasattr(self, "master_sizes"):
             self.master_sizes = {}
 
-        self.master_files[exposure_key] = master_dark_path
+        # Build gain-aware key to match what add_master_files writes
+        try:
+            hdr = fits.getheader(master_dark_path, memmap=True)
+            gain_val = _get_key_float(hdr, "GAIN")
+            temp_val = hdr.get("CCD-TEMP", hdr.get("SET-TEMP", None))
+            gain_suffix = f" [G{int(gain_val)}]" if gain_val is not None else ""
+            temp_suffix = f" [{float(temp_val):+.1f}C]" if temp_val is not None else ""
+            # Extract base exposure+size from the label
+            m = re.match(r"^([\d.]+s\s*\([^)]+\))", exposure_key)
+            if m:
+                full_key = f"{m.group(1)}{temp_suffix}{gain_suffix}"
+            else:
+                full_key = f"{exposure_key}{temp_suffix}{gain_suffix}"
+        except Exception:
+            full_key = exposure_key
+
+        # Only store if this exact key isn't already present (add_master_files may have written it)
+        if full_key not in self.master_files:
+            self.master_files[full_key] = master_dark_path
         self.master_sizes[master_dark_path] = size
 
         # ✅ Update UI Tree
@@ -13739,14 +13733,10 @@ class StackingSuiteDialog(QDialog):
         
         self.assign_best_master_dark()  # auto-select
         self.update_status(self.tr(f"✅ Master Dark saved and added to UI: {master_dark_path}"))
-        print(f"📝 DEBUG: Stored Master Dark -> {exposure_key}: {master_dark_path}")
-
-
 
 
     def assign_best_master_dark(self):
         """ Assigns the closest matching master dark based on exposure & image size. """
-        print("\n🔍 DEBUG: Assigning best master darks to flats...\n")
 
         if not self.master_files:
             print("⚠️ WARNING: No Master Darks available.")
@@ -13757,107 +13747,99 @@ class StackingSuiteDialog(QDialog):
         for key, value in self.master_files.items():
             print(f"   📌 {key} -> {value}")
 
-        # Iterate through all flat filters
+        # Iterate through all flat groups (flat tree is single-level: one item per group)
         for i in range(self.flat_tree.topLevelItemCount()):
-            filter_item = self.flat_tree.topLevelItem(i)
+            exposure_item = self.flat_tree.topLevelItem(i)
+            exposure_text = exposure_item.text(0)  # e.g. "G - 0.0s–5.0s (4144x2822)"
 
-            for j in range(filter_item.childCount()):
-                exposure_item = filter_item.child(j)
-                exposure_text = exposure_item.text(0)  # Example: "0.0007s (8288x5644)"
+            # Extract exposure time — handle both "G - 0.01s (4144x2822)" and "0.01s (4144x2822)"
+            match = re.search(r"([\d.]+)s", exposure_text)
+            if not match:
+                continue
 
-                # Extract exposure time
-                match = re.match(r"([\d.]+)s?", exposure_text)
-                if not match:
-                    print(f"⚠️ WARNING: Could not parse exposure time from {exposure_text}")
-                    continue  # Skip if exposure is invalid
+            exposure_time = float(match.group(1))
 
-                exposure_time = float(match.group(1))  # Extracted number
-                print(f"🟢 Checking Flat Group: {exposure_text} (Parsed: {exposure_time}s)")
+            # Extract image size from the group label
+            size_match = re.search(r"\((\d+x\d+)\)", exposure_text)
+            image_size = size_match.group(1) if size_match else "Unknown"
 
-                # Extract image size from metadata
-                if exposure_item.childCount() > 0:
-                    metadata_text = exposure_item.child(0).text(1)  # Metadata column
-                    size_match = re.search(r"Size: (\d+x\d+)", metadata_text)
-                    image_size = size_match.group(1) if size_match else "Unknown"
-                else:
-                    image_size = "Unknown"
+            # Read gain/offset from first leaf child if available
+            flat_gain = flat_offset = None
+            if exposure_item.childCount() > 0:
+                flat_gain   = exposure_item.child(0).data(0, Qt.ItemDataRole.UserRole + 3)
+                flat_offset = exposure_item.child(0).data(0, Qt.ItemDataRole.UserRole + 4)
 
-                print(f"✅ Parsed Flat Size: {image_size}")
+            # Skip if this group has a manual override already set
+            ud = exposure_item.data(2, Qt.ItemDataRole.UserRole)
+            if ud is not None:
+                continue
 
-                # Find the best matching master dark
-                best_match = None
-                best_diff = float("inf")
+            # Find best matching master dark
+            best_match = None
+            best_diff = float("inf")
 
-                # Read gain/offset for the flat's lights if available
-                flat_gain = flat_offset = None
-                if exposure_item.childCount() > 0:
-                    flat_gain   = exposure_item.child(0).data(0, Qt.ItemDataRole.UserRole + 3)
-                    flat_offset = exposure_item.child(0).data(0, Qt.ItemDataRole.UserRole + 4)
+            if not hasattr(self, "_master_dark_go"):
+                self._master_dark_go = {}
 
-                for master_dark_exposure, master_dark_path in self.master_files.items():
-                    master_dark_exposure_match = re.match(r"([\d.]+)s?", master_dark_exposure)
-                    if not master_dark_exposure_match:
+            for master_dark_key, master_dark_path in self.master_files.items():
+                # Only consider dark keys (start with exposure time)
+                if not re.match(r"^\s*[\d.]+s\s*\(", str(master_dark_key)):
+                    continue
+
+                master_dark_size = self.master_sizes.get(master_dark_path, "Unknown")
+                if master_dark_size == "Unknown":
+                    try:
+                        with fits.open(master_dark_path) as hdul:
+                            master_dark_size = f"{hdul[0].data.shape[1]}x{hdul[0].data.shape[0]}"
+                            self.master_sizes[master_dark_path] = master_dark_size
+                    except Exception:
                         continue
 
-                    master_dark_exposure_time = float(master_dark_exposure_match.group(1))
-                    master_dark_size = self.master_sizes.get(master_dark_path, "Unknown")
-                    if master_dark_size == "Unknown":
-                        try:
-                            with fits.open(master_dark_path) as hdul:
-                                master_dark_size = f"{hdul[0].data.shape[1]}x{hdul[0].data.shape[0]}"
-                                self.master_sizes[master_dark_path] = master_dark_size
-                        except Exception:
-                            continue
+                if image_size != master_dark_size:
+                    continue
 
-                    if image_size != master_dark_size:
-                        continue
+                m_exp = re.match(r"^\s*([\d.]+)s", str(master_dark_key))
+                if not m_exp:
+                    continue
+                master_exp_time = float(m_exp.group(1))
+                exp_diff = abs(master_exp_time - exposure_time)
 
-                    exp_diff = abs(master_dark_exposure_time - exposure_time)
+                # Read and cache gain/offset from master dark header
+                if master_dark_path not in self._master_dark_go:
+                    try:
+                        hdr = fits.getheader(master_dark_path, memmap=True)
+                        mg = _get_key_float(hdr, "GAIN")
+                        mo = _get_key_float(hdr, "OFFSET")
+                        if mo is None:
+                            mo = _get_key_float(hdr, "BLKLEVEL")
+                        self._master_dark_go[master_dark_path] = (mg, mo)
+                    except Exception:
+                        self._master_dark_go[master_dark_path] = (None, None)
 
-                    # Read gain/offset from master header (cache in master_sizes-adjacent dict)
-                    if not hasattr(self, "_master_dark_go"):
-                        self._master_dark_go = {}
-                    if master_dark_path not in self._master_dark_go:
-                        try:
-                            hdr = fits.getheader(master_dark_path, memmap=True)
-                            mg = _get_key_float(hdr, "GAIN")
-                            mo = _get_key_float(hdr, "OFFSET")
-                            if mo is None:
-                                mo = _get_key_float(hdr, "BLKLEVEL")
-                            self._master_dark_go[master_dark_path] = (mg, mo)
-                        except Exception:
-                            self._master_dark_go[master_dark_path] = (None, None)
+                master_gain, master_offset = self._master_dark_go[master_dark_path]
 
-                    master_gain, master_offset = self._master_dark_go[master_dark_path]
+                go_mismatch = False
+                if flat_gain is not None and master_gain is not None:
+                    if abs(flat_gain - master_gain) > 1:
+                        go_mismatch = True
+                if flat_offset is not None and master_offset is not None:
+                    if abs(flat_offset - master_offset) > 1:
+                        go_mismatch = True
 
-                    # Gain/offset penalty: prefer exact match; if both are unknown treat as match
-                    go_mismatch = False
-                    if flat_gain is not None and master_gain is not None:
-                        if abs(flat_gain - master_gain) > 1:
-                            go_mismatch = True
-                    if flat_offset is not None and master_offset is not None:
-                        if abs(flat_offset - master_offset) > 1:
-                            go_mismatch = True
+                score = exp_diff + (10000.0 if go_mismatch else 0.0)
+                if score < best_diff:
+                    best_match = master_dark_path
+                    best_diff = score
 
-                    # Score: exposure diff is primary; gain/offset mismatch adds a large penalty
-                    score = exp_diff + (10000.0 if go_mismatch else 0.0)
+            if best_match:
+                exposure_item.setText(2, os.path.basename(best_match))
+            else:
+                exposure_item.setText(2, "None")
 
-                    if score < best_diff:
-                        best_match = master_dark_path
-                        best_diff = score
-
-                # Assign best match in column 3
-                if best_match:
-                    exposure_item.setText(2, os.path.basename(best_match))
-                    print(f"🔵 Assigned Master Dark: {os.path.basename(best_match)}")
-                else:
-                    exposure_item.setText(2, "None")
-                    print(f"⚠️ No matching Master Dark found for {exposure_text}")
+        self.flat_tree.viewport().update()
 
         # 🔥 Force UI update to reflect changes
         self.flat_tree.viewport().update()
-
-        print("\n✅ DEBUG: Finished assigning best matching Master Darks to Flats.\n")
 
 
     def create_master_flat(self):
@@ -14457,15 +14439,6 @@ class StackingSuiteDialog(QDialog):
                 else:
                     scales = _estimate_flat_scales(file_list, height, width, channels, dark_data)
 
-                # DEBUG
-                print(f"\n[FLAT DEBUG] Scale estimation results for group [{filter_name}] {exposure_time}s:")
-                print(f"  scales shape={scales.shape}  min={float(scales.min()):.6f}  max={float(scales.max()):.6f}  mean={float(scales.mean()):.6f}")
-                for fi in range(len(scales)):
-                    sc = scales[fi]
-                    if sc.ndim == 0:
-                        print(f"  frame[{fi}]: scale={float(sc):.6f}")
-                    else:
-                        print(f"  frame[{fi}]: scales={[round(float(v),6) for v in sc.flat]}")
                 self.update_status(self.tr(
                     f"⚙️ {'GPU' if use_gpu else 'CPU'} reducer for flats — {algo_name} "
                     f"({ 'k=%.1f' % params.get('kappa', 0) if cpu_label=='kappa1' else 'trim=%.0f%%' % (params.get('trim_fraction', 0)*100) if cpu_label=='trimmed' else 'median'})"
@@ -14528,13 +14501,7 @@ class StackingSuiteDialog(QDialog):
                     tw = x1 - x0
                     ts = buf[:N, :th, :tw, :channels]
                     for i, src in enumerate(sources):
-                        sub = src.read_tile(y0, y1, x0, x1)  # float32 (th,tw) or (th,tw,3)
-                        if sub.ndim == 2:
-                            if channels == 3:
-                                sub = sub[:, :, None].repeat(3, axis=2)
-                            else:
-                                sub = sub[:, :, None]
-                        ts[i, :, :, :] = sub
+                        src.read_tile_into(ts[i], y0, y1, x0, x1, channels)
                     return th, tw
 
                 tp = ThreadPoolExecutor(max_workers=1)
@@ -14598,16 +14565,7 @@ class StackingSuiteDialog(QDialog):
                     if is_bayer_group:
                         _apply_bayer_scales_stack_inplace(ts_np, scales, bayerpat, y0, x0)
                     else:
-                        if t_idx == 1:  # only first tile to avoid spam
-                            print(f"\n[FLAT DEBUG] --- Pre-normalization tile medians ---")
-                            for fi in range(N):
-                                print(f"  frame[{fi}]: median={float(np.median(ts_np[fi])):.6f}  scale={float(scales[fi]):.6f}")
                         ts_np *= scales.reshape(N, 1, 1, 1)
-                        if t_idx == 1:
-                            print(f"[FLAT DEBUG] --- Post-normalization tile medians ---")
-                            for fi in range(N):
-                                print(f"  frame[{fi}]: median={float(np.median(ts_np[fi])):.6f}")
-                            print(f"[FLAT DEBUG] tile stack median after reduce will be approx: {float(np.median(ts_np)):.6f}")
 
                     # ---- reduction (GPU or CPU) ----
                     if use_gpu:
@@ -14639,8 +14597,6 @@ class StackingSuiteDialog(QDialog):
                                 ts_np,
                                 float(params.get("kappa", 3.0)),
                             )
-                    if t_idx == 1:
-                        print(f"[FLAT DEBUG] tile_result after reduce: median={float(np.median(tile_result)):.6f}  min={float(tile_result.min()):.6f}  max={float(tile_result.max()):.6f}")
                     # Ensure tile_result has correct shape (th, tw, channels)
                     if tile_result.ndim == 2:
                         tile_result = tile_result[:, :, None]
@@ -14658,14 +14614,14 @@ class StackingSuiteDialog(QDialog):
                     pd.step()
                     use0 = not use0
 
-                tp.shutdown(wait=True)
-
-                # Close memmapped sources
-                for s in sources:
-                    try:
-                        s.close()
-                    except Exception:
-                        pass
+                try:
+                    tp.shutdown(wait=True)
+                finally:
+                    for s in sources:
+                        try:
+                            s.close()
+                        except Exception:
+                            pass
 
                 if cancelled_group:
                     self.update_status(self.tr("⛔ Master Flat creation cancelled; cleaning up temporary files."))
@@ -14699,6 +14655,7 @@ class StackingSuiteDialog(QDialog):
                 header["IMAGETYP"] = "FLAT"
                 header["EXPTIME"] = (exposure_time, "grouped exposure")
                 header["FILTER"] = filter_name
+                header["SESSION"] = (str(session), "User session tag")
                 if channels == 3:
                     header["NAXIS"] = 3
                     header["NAXIS1"] = master_flat_data.shape[1]
@@ -14710,7 +14667,19 @@ class StackingSuiteDialog(QDialog):
                     header["NAXIS2"] = master_flat_data.shape[0]
                     if is_bayer_group and bayerpat:
                         header["BAYERPAT"] = bayerpat
-
+                # Read gain/offset from first flat frame header
+                try:
+                    hdr0_full, _ = get_valid_header(file_list[0])
+                    flat_gain_val = _get_key_float(hdr0_full, "GAIN")
+                    flat_offset_val = _get_key_float(hdr0_full, "OFFSET")
+                    if flat_offset_val is None:
+                        flat_offset_val = _get_key_float(hdr0_full, "BLKLEVEL")
+                    if flat_gain_val is not None:
+                        header["GAIN"] = (flat_gain_val, "Camera gain of source flats")
+                    if flat_offset_val is not None:
+                        header["OFFSET"] = (flat_offset_val, "Camera offset of source flats")
+                except Exception:
+                    pass
                 save_image(
                     master_flat_data,
                     master_flat_path,
@@ -14720,8 +14689,6 @@ class StackingSuiteDialog(QDialog):
                     is_mono=(channels == 1),
                 )
 
-                key = f"{filter_name} ({image_size}) [{session}]"
-                self.master_files[key] = master_flat_path
                 self.master_sizes[master_flat_path] = image_size
                 self.add_master_flat_to_tree(filter_name, master_flat_path)
                 self.update_status(self.tr(f"✅ Master Flat saved: {master_flat_path}"))
@@ -14748,21 +14715,36 @@ class StackingSuiteDialog(QDialog):
                 pass
 
     def add_master_flat_to_tree(self, filter_name, master_flat_path):
-        """ Adds the newly created Master Flat to the Master Flat TreeBox and stores it. """
+        size = self.master_sizes.get(master_flat_path, "Unknown")
 
-        key = f"{filter_name} ({self.master_sizes[master_flat_path]})"
-        self.master_files[key] = master_flat_path  # ✅ Store the flat file for future use
-        print(f"📝 DEBUG: Stored Master Flat -> {key}: {master_flat_path}")
+        session = "Default"
+        gain_suffix = ""
+        try:
+            hdr = fits.getheader(master_flat_path, memmap=True)
+            s = str(hdr.get("SESSION", "") or "").strip()
+            if s:
+                session = s
+            g = _get_key_float(hdr, "GAIN")
+            if g is not None:
+                gain_suffix = f" [G{int(g)}]"
+        except Exception:
+            pass
+
+        key = f"{filter_name} ({size}) [{session}]{gain_suffix}"
+        if key not in self.master_files:
+            self.master_files[key] = master_flat_path
 
         existing_items = self.master_flat_tree.findItems(filter_name, Qt.MatchFlag.MatchExactly, 0)
-
         if existing_items:
             filter_item = existing_items[0]
         else:
             filter_item = QTreeWidgetItem([filter_name])
             self.master_flat_tree.addTopLevelItem(filter_item)
 
-        master_item = QTreeWidgetItem([os.path.basename(master_flat_path)])
+        # Show session + gain in the child label so it's visible like master darks
+        child_label = f"{os.path.basename(master_flat_path)}"
+        child_meta = f"Size: {size}, Session: {session}{gain_suffix}"
+        master_item = QTreeWidgetItem([child_label, child_meta])
         filter_item.addChild(master_item)
 
     def _parse_float(self, v):
@@ -14905,8 +14887,8 @@ class StackingSuiteDialog(QDialog):
         - Honors manual overrides (never ignored).
         - If fill_only is True, do NOT overwrite non-empty cells.
         """
-        print("\n🔍 DEBUG: Assigning best Master Darks & Flats to Lights...\n")
-
+        for k, v in self.master_files.items():
+            print(f"  {k!r} -> {v!r}")
         if not getattr(self, "master_files", None):
             print("⚠️ WARNING: No Master Calibration Files available.")
             self.update_status(self.tr("⚠️ WARNING: No Master Calibration Files available."))
@@ -14944,7 +14926,18 @@ class StackingSuiteDialog(QDialog):
                     # Current cells (so we can skip if fill_only)
                     curr_dark = (leaf_item.text(2) or "").strip()
                     curr_flat = (leaf_item.text(3) or "").strip()
-
+                    # Read light path and gain/offset once — used for both dark and flat matching
+                    light_path = leaf_item.data(0, Qt.ItemDataRole.UserRole)
+                    l_gain = l_offset = None
+                    try:
+                        if light_path:
+                            _lhdr = fits.getheader(light_path, memmap=True)
+                            l_gain = _get_key_float(_lhdr, "GAIN")
+                            l_offset = _get_key_float(_lhdr, "OFFSET")
+                            if l_offset is None:
+                                l_offset = _get_key_float(_lhdr, "BLKLEVEL")
+                    except Exception:
+                        pass
                     # ---------- DARK RESOLUTION ----------
                     dark_key_full  = f"{filter_name_raw} - {exposure_text}"
                     dark_key_short = exposure_text
@@ -14959,8 +14952,10 @@ class StackingSuiteDialog(QDialog):
                     elif fill_only and curr_dark and curr_dark.lower() != "none":
                         dark_choice = curr_dark
                     else:
-                        light_path = leaf_item.data(0, Qt.ItemDataRole.UserRole)
                         l_ccd, l_set, l_temp = self._get_light_temp(light_path)
+
+                        if not hasattr(self, "_master_dark_go"):
+                            self._master_dark_go = {}
 
                         best_path = None
                         best_score = None
@@ -14972,7 +14967,7 @@ class StackingSuiteDialog(QDialog):
                             mk_str = str(mk or "").strip()
                             bn = os.path.basename(mp).lower()
 
-                            is_dark_key = bool(re.match(r"^\s*[\d.]+s\s*\(\d+x\d+\)\s*$", mk_str, re.IGNORECASE))
+                            is_dark_key = bool(re.match(r"^\s*[\d.]+s\s*\(\d+x\d+\)", mk_str, re.IGNORECASE))
                             if (not is_dark_key) and ("masterflat" in bn):
                                 continue
                             if not is_dark_key and ("exposure-" not in bn):
@@ -15021,12 +15016,32 @@ class StackingSuiteDialog(QDialog):
                                 temp_diff = 9999.0
                                 temp_unknown = 1
 
-                            score = (sess_mismatch, exp_diff, temp_unknown, temp_diff)
+                            # Gain/offset matching
+                            if mp not in self._master_dark_go:
+                                try:
+                                    hdr = fits.getheader(mp, memmap=True)
+                                    mg = _get_key_float(hdr, "GAIN")
+                                    mo = _get_key_float(hdr, "OFFSET")
+                                    if mo is None:
+                                        mo = _get_key_float(hdr, "BLKLEVEL")
+                                    self._master_dark_go[mp] = (mg, mo)
+                                except Exception:
+                                    self._master_dark_go[mp] = (None, None)
+
+                            master_gain, master_offset = self._master_dark_go[mp]
+                            go_mismatch = False
+                            if l_gain is not None and master_gain is not None:
+                                if abs(l_gain - master_gain) > 1:
+                                    go_mismatch = True
+                            if l_offset is not None and master_offset is not None:
+                                if abs(l_offset - master_offset) > 1:
+                                    go_mismatch = True
+
+                            score = (sess_mismatch, (1 if go_mismatch else 0), exp_diff, temp_unknown, temp_diff)
                             if best_score is None or score < best_score:
                                 best_score = score
                                 best_path = mp
 
-                        print(f"🔎 Light {leaf_item.text(0)} size={image_size} exp={exposure_time}s -> best dark: {best_path} score={best_score}")
                         dark_choice = os.path.basename(best_path) if best_path else ("None" if not curr_dark else curr_dark)
 
                     # ---------- FLAT RESOLUTION ----------
@@ -15043,17 +15058,37 @@ class StackingSuiteDialog(QDialog):
                     elif fill_only and curr_flat and curr_flat.lower() != "none":
                         flat_choice = curr_flat
                     else:
-                        light_path = leaf_item.data(0, Qt.ItemDataRole.UserRole)
                         best_flat_path = None
 
                         exact_key = f"{filter_name} ({image_size}) [{session_name}]"
                         if exact_key in self.master_files:
-                            best_flat_path = self.master_files[exact_key]
-                        else:
+                            # still check gain match — if mismatch, fall through to _closest_flat_for
+                            candidate = self.master_files[exact_key]
+                            if not hasattr(self, "_master_flat_go"):
+                                self._master_flat_go = {}
+                            if candidate not in self._master_flat_go:
+                                try:
+                                    hdr = fits.getheader(candidate, memmap=True)
+                                    g = _get_key_float(hdr, "GAIN")
+                                    o = _get_key_float(hdr, "OFFSET")
+                                    if o is None:
+                                        o = _get_key_float(hdr, "BLKLEVEL")
+                                    self._master_flat_go[candidate] = (g, o)
+                                except Exception:
+                                    self._master_flat_go[candidate] = (None, None)
+                            fg, fo = self._master_flat_go[candidate]
+                            gain_ok = (l_gain is None or fg is None or abs(l_gain - fg) <= 1)
+                            offset_ok = (l_offset is None or fo is None or abs(l_offset - fo) <= 1)
+                            if gain_ok and offset_ok:
+                                best_flat_path = candidate
+
+                        if best_flat_path is None:
                             best_flat_path = self._closest_flat_for(
                                 filter_name=filter_name,
                                 image_size=image_size,
-                                light_path=light_path
+                                light_path=light_path,
+                                light_gain=l_gain,
+                                light_offset=l_offset,
                             )
 
                         flat_choice = os.path.basename(best_flat_path) if best_flat_path else ("None" if not curr_flat else curr_flat)
@@ -15062,10 +15097,8 @@ class StackingSuiteDialog(QDialog):
                     leaf_item.setText(2, dark_choice)
                     leaf_item.setText(3, flat_choice)
 
-                    print(f"📌 Assigned to {leaf_item.text(0)} -> Dark: {leaf_item.text(2)}, Flat: {leaf_item.text(3)}")
-
         self.light_tree.viewport().update()
-        print("\n✅ DEBUG: Finished assigning Master Files per leaf.\n")
+
 
 
     def update_light_corrections(self):
@@ -15212,9 +15245,13 @@ class StackingSuiteDialog(QDialog):
         # Do NOT write to manual_dark_overrides — per-leaf UserRole is the source of truth
         print("✅ DEBUG: Light Dark override applied.")
 
+    def _auto_pick_master_dark(self, image_size: str, exposure_time: float,
+                                light_gain: float | None = None,
+                                light_offset: float | None = None):
+        if not hasattr(self, "_master_dark_go"):
+            self._master_dark_go = {}
 
-    def _auto_pick_master_dark(self, image_size: str, exposure_time: float):
-        best_path, best_diff = None, float("inf")
+        best_path, best_score = None, float("inf")
         for key, path in self.master_files.items():
             m = re.match(r"^\s*([\d.]+)s\b", str(key))
             if not m:
@@ -15223,6 +15260,7 @@ class StackingSuiteDialog(QDialog):
                 dark_exp = float(m.group(1))
             except Exception:
                 continue
+
             size = self.master_sizes.get(path)
             if size is None:
                 try:
@@ -15231,10 +15269,39 @@ class StackingSuiteDialog(QDialog):
                     self.master_sizes[path] = size
                 except Exception:
                     continue
-            if size == image_size:
-                diff = abs(dark_exp - exposure_time)
-                if diff < best_diff:
-                    best_diff, best_path = diff, path
+
+            if size != image_size:
+                continue
+
+            # Read and cache gain/offset from master header
+            if path not in self._master_dark_go:
+                try:
+                    hdr = fits.getheader(path, memmap=True)
+                    mg = _get_key_float(hdr, "GAIN")
+                    mo = _get_key_float(hdr, "OFFSET")
+                    if mo is None:
+                        mo = _get_key_float(hdr, "BLKLEVEL")
+                    self._master_dark_go[path] = (mg, mo)
+                except Exception:
+                    self._master_dark_go[path] = (None, None)
+
+            master_gain, master_offset = self._master_dark_go[path]
+
+            go_mismatch = False
+            if light_gain is not None and master_gain is not None:
+                if abs(light_gain - master_gain) > 1:
+                    go_mismatch = True
+            if light_offset is not None and master_offset is not None:
+                if abs(light_offset - master_offset) > 1:
+                    go_mismatch = True
+
+            exp_diff = abs(dark_exp - exposure_time)
+            score = exp_diff + (10000.0 if go_mismatch else 0.0)
+
+            if score < best_score:
+                best_score = score
+                best_path = path
+
         return best_path
 
     def _auto_pick_master_flat(self, filter_name: str, image_size: str, session_name: str):
@@ -16338,7 +16405,9 @@ class StackingSuiteDialog(QDialog):
                         mm       = re.match(r"([\d.]+)s", exposure_text or "")
                         exp_time = float(mm.group(1)) if mm else 0.0
                         master_dark_path = self._auto_pick_master_dark(
-                            image_size, exp_time
+                            image_size, exp_time,
+                            light_gain=fi.get("light_gain"),
+                            light_offset=fi.get("light_offset"),
                         )
 
                     # resolve flat
@@ -16367,6 +16436,16 @@ class StackingSuiteDialog(QDialog):
                     if bayerpat not in ("RGGB", "BGGR", "GRBG", "GBRG"):
                         bayerpat = None
 
+                    light_gain = None
+                    light_offset = None
+                    try:
+                        light_gain = _get_key_float(header, "GAIN")
+                        light_offset = _get_key_float(header, "OFFSET")
+                        if light_offset is None:
+                            light_offset = _get_key_float(header, "BLKLEVEL")
+                    except Exception:
+                        pass
+
                     frame_infos.append({
                         "light_file":       light_file,
                         "filter_name":      filter_name,
@@ -16379,12 +16458,10 @@ class StackingSuiteDialog(QDialog):
                         "pedestal_value":   pedestal_value,
                         "bayerpat":         bayerpat,
                         "image_size":       image_size,
+                        "light_gain":   light_gain,
+                        "light_offset": light_offset,                        
                     })
-                    print(f"📋 {os.path.basename(light_file)} -> "
-                          f"Dark: {os.path.basename(master_dark_path) if master_dark_path else 'None'} | "
-                          f"Flat: {os.path.basename(master_flat_path) if master_flat_path else 'None'} | "
-                          f"LeafDarkUR: {os.path.basename(leaf.data(2, Qt.ItemDataRole.UserRole)) if leaf.data(2, Qt.ItemDataRole.UserRole) else 'None'} | "
-                          f"LeafFlatUR: {os.path.basename(leaf.data(3, Qt.ItemDataRole.UserRole)) if leaf.data(3, Qt.ItemDataRole.UserRole) else 'None'}")
+
         if not frame_infos:
             self.update_status(self.tr("⚠️ No light files to calibrate."))
             return
