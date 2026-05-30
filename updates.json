@@ -1,10 +1,10 @@
 {
-  "version": "1.16.13",
+  "version": "1.16.14",
   "downloads": {
-      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.16.13/setiastrosuitepro_windows.zip",
-      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.16.13/SetiAstroSuitePro_macOS_Intel.dmg",
-      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.16.13/SetiAstroSuitePro_AppleSilicon.dmg",
-      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.16.13/SetiAstroSuitePro_linux.tar.xz"
+      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.16.14/setiastrosuitepro_windows.zip",
+      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.16.14/SetiAstroSuitePro_macOS_Intel.dmg",
+      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.16.14/SetiAstroSuitePro_AppleSilicon.dmg",
+      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.16.14/SetiAstroSuitePro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro\n\nV1.16.13  Update to Cosmic Clarity Correction, new checkbox for more conservative white point compression to help if you experience any tiling artifact. Update to Satellite Trail removal skip save logic."
+  "notes": "Seti Astro Suite Pro\n\nV1.16.14\nStacking Suite updates: gain usage, groups, flat creation, group keys, other backend items.\n\nV1.16.13  Update to Cosmic Clarity Correction, new checkbox for more conservative white point compression to help if you experience any tiling artifact. Update to Satellite Trail removal skip save logic."
 }
