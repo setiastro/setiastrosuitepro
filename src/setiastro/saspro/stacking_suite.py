@@ -16384,6 +16384,15 @@ class StackingSuiteDialog(QDialog):
                     height     = int(header.get("NAXIS2", 0))
                     image_size = f"{width}x{height}"
 
+                    light_gain = None
+                    light_offset = None
+                    try:
+                        light_gain = _get_key_float(header, "GAIN")
+                        light_offset = _get_key_float(header, "OFFSET")
+                        if light_offset is None:
+                            light_offset = _get_key_float(header, "BLKLEVEL")
+                    except Exception:
+                        pass
                     # resolve dark — per-leaf UserRole wins, then group override, then auto
                     master_dark_path = self._leaf_assigned_dark_path(leaf)
                     if master_dark_path is None:
@@ -16406,8 +16415,8 @@ class StackingSuiteDialog(QDialog):
                         exp_time = float(mm.group(1)) if mm else 0.0
                         master_dark_path = self._auto_pick_master_dark(
                             image_size, exp_time,
-                            light_gain=fi.get("light_gain"),
-                            light_offset=fi.get("light_offset"),
+                            light_gain=light_gain,
+                            light_offset=light_offset,
                         )
 
                     # resolve flat
@@ -16436,15 +16445,6 @@ class StackingSuiteDialog(QDialog):
                     if bayerpat not in ("RGGB", "BGGR", "GRBG", "GBRG"):
                         bayerpat = None
 
-                    light_gain = None
-                    light_offset = None
-                    try:
-                        light_gain = _get_key_float(header, "GAIN")
-                        light_offset = _get_key_float(header, "OFFSET")
-                        if light_offset is None:
-                            light_offset = _get_key_float(header, "BLKLEVEL")
-                    except Exception:
-                        pass
 
                     frame_infos.append({
                         "light_file":       light_file,
