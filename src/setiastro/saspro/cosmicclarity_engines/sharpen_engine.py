@@ -1,8 +1,8 @@
 # src/setiastro/saspro/cosmicclarity_engines/sharpen_engine.py
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from pathlib import Path
+from dataclasses import dataclass
+
 from typing import Callable, Optional, Any
 import os
 import numpy as np
@@ -16,10 +16,6 @@ try:
 except Exception:
     sep = None
 
-
-import sys, time, tempfile, traceback
-
-_DEBUG_SHARPEN = True  # flip False later
 
 _NSCOND_NAFNET = dict(
     width=32,
@@ -42,9 +38,6 @@ _CORRECT_NAFNET = dict(
     dec_blk_nums=(2, 2, 2, 2),
     middle_blk_num=6,
 )
-
-def _dbg(msg: str, status_cb=print):
-    pass
 
 
 ProgressCB = Callable[[int, int, str], bool]  # True=continue, False=cancel
@@ -341,28 +334,22 @@ _MODELS_CACHE: dict[tuple[str, str], SharpenModels] = {}
 def load_sharpen_models(use_gpu: bool, status_cb=print) -> SharpenModels:
     backend_tag = "cc_sharpen_ai4"
     is_windows = (os.name == "nt")
-    _dbg(f"ENTER load_sharpen_models(use_gpu={use_gpu})", status_cb=status_cb)
 
-    t0 = time.time()
-    try:
-        torch = _get_torch(
-            prefer_cuda=bool(use_gpu),
-            prefer_dml=bool(use_gpu) and (os.name == "nt"),
-            status_cb=status_cb,
-        )
-    except Exception as e:
-        _dbg("ERROR in _get_torch:\n" + "".join(traceback.format_exception(type(e), e, e.__traceback__)),
-             status_cb=status_cb)
-        raise
+    torch = _get_torch(
+        prefer_cuda=bool(use_gpu),
+        prefer_dml=bool(use_gpu) and (os.name == "nt"),
+        status_cb=status_cb,
+    )
+
     ort = _get_ort(status_cb=status_cb)
 
     try:
         rt = _user_runtime_dir()
         vpy = _venv_paths(rt)["python"]
         ok, cuda_tag, err = _check_cuda_in_venv(vpy, status_cb=status_cb)
-    except Exception as e:
-        _dbg("Runtime CUDA probe FAILED:\n" + "".join(traceback.format_exception(type(e), e, e.__traceback__)),
-             status_cb=status_cb)
+    except Exception:
+        pass
+
 
     if use_gpu:
         try:
@@ -374,14 +361,11 @@ def load_sharpen_models(use_gpu: bool, status_cb=print) -> SharpenModels:
             cache_key = (backend_tag, "cuda")
             if cache_key in _MODELS_CACHE:
                 return _MODELS_CACHE[cache_key]
-            try:
-                device = torch.device("cuda")
-                models = _load_torch_models(torch, device)
-                _MODELS_CACHE[cache_key] = models
-                return models
-            except Exception as e:
-                _dbg("CUDA path failed:\n" + "".join(traceback.format_exception(type(e), e, e.__traceback__)),
-                     status_cb=status_cb)
+            device = torch.device("cuda")
+            models = _load_torch_models(torch, device)
+            _MODELS_CACHE[cache_key] = models
+            return models
+
 
     if use_gpu:
         try:
@@ -397,14 +381,11 @@ def load_sharpen_models(use_gpu: bool, status_cb=print) -> SharpenModels:
             cache_key = (backend_tag, "mps")
             if cache_key in _MODELS_CACHE:
                 return _MODELS_CACHE[cache_key]
-            try:
-                device = torch.device("mps")
-                models = _load_torch_models(torch, device)
-                _MODELS_CACHE[cache_key] = models
-                return models
-            except Exception as e:
-                _dbg("MPS path failed:\n" + "".join(traceback.format_exception(type(e), e, e.__traceback__)),
-                     status_cb=status_cb)
+            device = torch.device("mps")
+            models = _load_torch_models(torch, device)
+            _MODELS_CACHE[cache_key] = models
+            return models
+
 
     if use_gpu and is_windows:
         try:
@@ -417,36 +398,28 @@ def load_sharpen_models(use_gpu: bool, status_cb=print) -> SharpenModels:
             models = _load_torch_models(torch, dml)
             _MODELS_CACHE[cache_key] = models
             return models
-        except Exception as e:
-            _dbg("DirectML (torch-directml) failed:\n" + "".join(traceback.format_exception(type(e), e, e.__traceback__)),
-                 status_cb=status_cb)
+        except Exception:
+            pass
+
 
     if use_gpu and ort is not None:
-        try:
-            prov = ort.get_available_providers()
-            if "DmlExecutionProvider" in prov:
-                cache_key = (backend_tag, "dml_ort")
-                if cache_key in _MODELS_CACHE:
-                    return _MODELS_CACHE[cache_key]
-                models = _load_onnx_models(ort)
-                _MODELS_CACHE[cache_key] = models
-                return models
-        except Exception as e:
-            _dbg("ORT provider check/load failed:\n" + "".join(traceback.format_exception(type(e), e, e.__traceback__)),
-                 status_cb=status_cb)
+        prov = ort.get_available_providers()
+        if "DmlExecutionProvider" in prov:
+            cache_key = (backend_tag, "dml_ort")
+            if cache_key in _MODELS_CACHE:
+                return _MODELS_CACHE[cache_key]
+            models = _load_onnx_models(ort)
+            _MODELS_CACHE[cache_key] = models
+            return models
+
 
     cache_key = (backend_tag, "cpu")
     if cache_key in _MODELS_CACHE:
         return _MODELS_CACHE[cache_key]
-    try:
-        device = torch.device("cpu")
-        models = _load_torch_models(torch, device)
-        _MODELS_CACHE[cache_key] = models
-        return models
-    except Exception as e:
-        _dbg("CPU model load failed:\n" + "".join(traceback.format_exception(type(e), e, e.__traceback__)),
-             status_cb=status_cb)
-        raise
+    device = torch.device("cpu")
+    models = _load_torch_models(torch, device)
+    _MODELS_CACHE[cache_key] = models
+    return models
 
 
 def _load_onnx_models(ort) -> SharpenModels:
@@ -706,21 +679,15 @@ def _load_torch_models(torch, device) -> SharpenModels:
     if correct_path and os.path.exists(correct_path):
         try:
             correct = m_naf_correct(correct_path, _CORRECT_NAFNET)
-            _dbg(f"Loaded aberration correction model from {correct_path}", status_cb=print)
         except Exception as e:
-            _dbg(f"Failed to load correction model ({correct_path}): {e}", status_cb=print)
             correct = None
-    else:
-        _dbg("CC_C_PTH not found — aberration correction unavailable.", status_cb=print)
     # V2 aberration correction model
     correct_v2 = None
     correct_v2_path = getattr(R, "CC_C2_PTH", None)
     if correct_v2_path and os.path.exists(correct_v2_path):
         try:
             correct_v2 = m_naf_correct(correct_v2_path, _CORRECT_NAFNET)
-            _dbg(f"Loaded aberration correction V2 model from {correct_v2_path}", status_cb=print)
         except Exception as e:
-            _dbg(f"Failed to load correction V2 model ({correct_v2_path}): {e}", status_cb=print)
             correct_v2 = None
     return SharpenModels(
         device=device,
@@ -1488,8 +1455,6 @@ def sharpen_image_array(image: np.ndarray,
             out, was_mono = _run_with(cpu_models)
             return out, was_mono
 
-        _dbg("sharpen_image_array ERROR:\n" + "".join(traceback.format_exception(type(e), e, e.__traceback__)),
-             status_cb=status_cb)
         raise
 
 
