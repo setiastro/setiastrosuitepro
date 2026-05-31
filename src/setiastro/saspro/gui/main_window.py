@@ -185,7 +185,7 @@ from setiastro.saspro.resources import (
     satellite_path, imagecombine_path, wrench_path, eye_icon_path,multiscale_decomp_path, nbi_path,
     disk_icon_path, nuke_path, hubble_path, collage_path, annotated_path, atlas_path,
     colorwheel_path, font_path, csv_icon_path, spinner_path, wims_path, narrowbandnormalization_path,
-    wimi_path, linearfit_path, debayer_path, aberration_path, acv_icon_path, snr_path,
+    wimi_path, linearfit_path, debayer_path, aberration_path, acv_icon_path, snr_path,nbextract_icon,
     functionbundles_path, viewbundles_path, selectivecolor_path, selectivelum_path, rgbalign_path, planetarystacker_path,syqon_path,
     background_path, script_icon_path, planetprojection_path,clonestampicon_path, finderchart_path,magnitude_path,
 )
@@ -3051,6 +3051,48 @@ class AstroSuiteProMainWindow(
         except Exception:
             pass
         self.SFCC_window.show()
+
+    def _open_nbextract(self):
+        from setiastro.saspro.nbextract import NBExtractDialog
+        from setiastro.saspro.doc_manager import DocManager
+
+        if getattr(self, "_nbextract_window", None) and self._nbextract_window.isVisible():
+            self._nbextract_window.raise_()
+            self._nbextract_window.activateWindow()
+            return
+
+        if not hasattr(self, "doc_manager") or self.doc_manager is None:
+            self.doc_manager = DocManager(
+                image_manager=getattr(self, "image_manager", None),
+                parent=self,
+            )
+
+        if not os.path.exists(sasp_data_path):
+            QMessageBox.critical(
+                self, "Missing Resource",
+                f"SASP data file not found:\n{sasp_data_path}"
+            )
+            return
+
+        self._nbextract_window = NBExtractDialog(
+            doc_manager=self.doc_manager,
+            sasp_data_path=sasp_data_path,
+            parent=self,
+        )
+
+        try:
+            self._nbextract_window.setWindowIcon(QIcon(nbextract_icon))
+        except Exception:
+            pass
+
+        try:
+            self._nbextract_window.destroyed.connect(
+                lambda _=None: setattr(self, "_nbextract_window", None)
+            )
+        except Exception:
+            pass
+
+        self._nbextract_window.show()
 
     def _open_magnitude_tool(self):
         import os

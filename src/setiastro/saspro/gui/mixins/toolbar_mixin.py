@@ -32,7 +32,7 @@ from setiastro.saspro.resources import (
     platesolve_path, psf_path, supernova_path, starregistration_path, csv_icon_path, collage_path,
     stacking_path, pedestal_icon_path, starspike_path, astrospike_path, dithericon_path,
     signature_icon_path, livestacking_path, convoicon_path, spcc_icon_path, atlas_path,
-    exoicon_path, peeker_icon, dse_icon_path, isophote_path, statstretch_path,resizecanvas_path,
+    exoicon_path, peeker_icon, dse_icon_path, isophote_path, statstretch_path,resizecanvas_path,nbextract_icon,
     starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path, narrowbandnormalization_path,
     nbtorgb_path, freqsep_path, multiscale_decomp_path, contsub_path, halo_path, cosmic_path, nbi_path,
     satellite_path, imagecombine_path, wims_path, wimi_path, linearfit_path, snr_path,
@@ -262,6 +262,7 @@ class ToolbarMixin:
         tb_tl.addAction(self.act_blink)  # Tools start here; Blink shows with QIcon(blink_path)
         tb_tl.addAction(self.act_ppp)    # Perfect Palette Picker
         tb_tl.addAction(self.act_nbtorgb)
+        tb_tl.addAction(self.act_nbextract)
         tb_tl.addAction(self.act_narrowband_normalization)
         
         tb_tl.addAction(self.act_selective_color)
@@ -1034,6 +1035,12 @@ class ToolbarMixin:
         self.act_sfcc.setToolTip(self.tr("Open SPfCC (Pickles + GAIA + Filters + Sensor QE)"))
         self.act_sfcc.triggered.connect(self.SFCC_show)
 
+        self.act_nbextract = QAction(QIcon(nbextract_icon), self.tr("Narrowband Channel Extractor..."), self)
+        self.act_nbextract.setObjectName("nbextract")
+        self.act_nbextract.setIconVisibleInMenu(True)
+        self.act_nbextract.setStatusTip(self.tr("Empirically calibrated dual-band narrowband channel extraction (Ha/OIII, SII/OIII, SII/Hβ)"))
+        self.act_nbextract.triggered.connect(self._open_nbextract)
+
         self.act_convo = QAction(QIcon(convoicon_path), self.tr("Convolution / Deconvolution..."), self)
         self.act_convo.setObjectName("convo_deconvo")
         self.act_convo.setToolTip(self.tr("Open Convolution / Deconvolution"))
@@ -1584,6 +1591,7 @@ class ToolbarMixin:
         reg("background_neutral", self.act_background_neutral)
         reg("white_balance", self.act_white_balance)
         reg("sfcc",    self.act_sfcc)
+        reg("nbextract", self.act_nbextract)
         reg("convo", self.act_convo)
         reg("extract_luminance", self.act_extract_luma)
         reg("recombine_luminance", self.act_recombine_luma)
