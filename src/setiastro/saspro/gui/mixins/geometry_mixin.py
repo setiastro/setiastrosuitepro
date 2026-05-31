@@ -711,6 +711,13 @@ class GeometryMixin:
             self._last_rescale_factor = vals["factor"]
             method_label = dlg.cmb_method.currentText().split("(")[0].strip()
             self._log(f"Rescale ({method_label}, {vals['factor']:g}×) applied to active view")
+
+            if getattr(self, "_auto_fit_on_resize", False) and view is not None:
+                if hasattr(view, "fit_to_window"):
+                    view.fit_to_window()
+                elif hasattr(self, "_zoom_active_fit"):
+                    self._zoom_active_fit()
+
         except Exception as e:
             QMessageBox.critical(self, self.tr("Rescale Image"), str(e))
 

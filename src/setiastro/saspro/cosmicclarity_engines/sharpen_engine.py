@@ -1152,25 +1152,35 @@ def _correct_rgb_image(
         m = (cb * (tb - 1.0)) / den
         return float(np.clip(m, 1e-6, 1.0 - 1e-6))
 
-    # Extract chunks, store original median per tile for unstretch
+    # Unstretch using original median — same math as unstretch_image_unlinked_rgb
+    PEDESTAL = 0.05
     chunks_hwc = []
     tile_orig_meds = []
 
-    PEDESTAL = 0.05
-
     for (i, j, ei, ej, _) in coords:
         tile = image_rgb[i:ei, j:ej, :3].astype(np.float32, copy=False)
-        # Compress white point to give the model headroom on bright tiles
-        tile = tile * WHITE_COMPRESS
-        # Add pedestal to prevent zeros from destabilizing the model
+
+        # Record raw median before any transforms
+        raw_med = float(np.median(tile))
+
+        # Apply MTF first on raw tile
+        med_for_mtf = min(raw_med, 0.50)
+        m_fwd = _compute_mtf_m(med_for_mtf)
+        tile = _mtf(tile, m_fwd)
+
+        # Add pedestal to lift zeros
         tile = (tile + PEDESTAL) / (1.0 + PEDESTAL)
-        # Record median AFTER pedestal for MTF and inverse MTF
-        med = float(np.median(tile))
-        # Cap median for MTF so very bright tiles don't get over-compressed
-        med_for_mtf = min(med, 0.50)
-        m = _compute_mtf_m(med_for_mtf)
-        tile = _mtf(tile, m)
-        tile_orig_meds.append(med)
+
+        # Find minimum after pedestal
+        black = float(np.min(tile))
+
+        # Compress white point anchored at black — preserves black, only squishes headroom
+        tile = black + (tile - black) * WHITE_COMPRESS
+
+        # Record median after full forward transform
+        med_after = float(np.median(tile))
+
+        tile_orig_meds.append((med_after, black, m_fwd, raw_med))
         chunks_hwc.append(tile)
 
     inferred_raw = _infer_chunks_batched_rgb(
@@ -1181,26 +1191,39 @@ def _correct_rgb_image(
         progress_total=total,
     )
 
-    # Unstretch using original median — same math as unstretch_image_unlinked_rgb
     PEDESTAL = 0.05
 
     inferred = []
-    for tile_out, orig_med in zip(inferred_raw, tile_orig_meds):
-        # Hard clamp model output before inverse — values above 1.0 corrupt the unstretch math
-        tile_out = np.clip(tile_out, 0.0, 1.0).astype(np.float32, copy=False)
-        # Inverse MTF back to post-pedestal median
-        if orig_med > 0.0:
-            m_now = float(np.median(tile_out))
-            m0 = orig_med
-            if m_now > 1e-6 and m0 > 1e-6:
-                num = (m_now - 1.0) * m0 * tile_out
-                den = m_now * (m0 + tile_out - 1.0) - m0 * tile_out
-                den = np.where(np.abs(den) < 1e-12, 1e-12, den)
-                tile_out = np.clip(num / den, 0.0, 1.0).astype(np.float32, copy=False)
-        # Remove pedestal
+    for tile_out, (orig_med, black, m_fwd, raw_med) in zip(inferred_raw, tile_orig_meds):
+        tile_out = tile_out.astype(np.float32, copy=False)
+
+        # Handle flux-preserving overflow from model
+        tile_out = np.clip(tile_out, 0.0, 1.1)
+        tile_max = float(np.max(tile_out))
+        if tile_max > 1.0:
+            tile_out = tile_out / tile_max
+            cur_med = float(np.median(tile_out))
+            if cur_med > 1e-6:
+                m_renorm = _compute_mtf_m(cur_med)
+                tile_out = _mtf(tile_out, m_renorm)
+
+        tile_out = np.clip(tile_out, 0.0, 1.0)
+
+        # Inverse of white compression anchored at black point
+        tile_out = black + (tile_out - black) / WHITE_COMPRESS
+
+        # Inverse of pedestal
         tile_out = (tile_out * (1.0 + PEDESTAL) - PEDESTAL).astype(np.float32, copy=False)
-        # Undo white point compression
-        tile_out = (tile_out / WHITE_COMPRESS).astype(np.float32, copy=False)
+
+        # Inverse of MTF: map current median back to raw_med
+        m_now = float(np.median(tile_out))
+        m0 = raw_med
+        if m_now > 1e-6 and m0 > 1e-6:
+            num = (m_now - 1.0) * m0 * tile_out
+            den = m_now * (m0 + tile_out - 1.0) - m0 * tile_out
+            den = np.where(np.abs(den) < 1e-12, 1e-12, den)
+            tile_out = np.clip(num / den, 0.0, 1.0).astype(np.float32, copy=False)
+
         inferred.append(tile_out)
 
     # Stitch each channel separately using the existing stitcher
