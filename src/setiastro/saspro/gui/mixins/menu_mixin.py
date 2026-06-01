@@ -173,6 +173,7 @@ class MenuMixin:
         m_fn.addAction(self.act_hist_transform)
         m_fn.addAction(self.act_linear_fit)
         m_fn.addAction(self.act_morphology)
+        m_fn.addAction(self.act_nbextract)
         m_fn.addAction(self.act_pedestal)
         m_fn.addAction(self.act_pixelmath)
         m_fn.addAction(self.act_recombine_luma)
@@ -205,7 +206,7 @@ class MenuMixin:
         m_tools.addAction(self.act_freqsep)
         m_tools.addAction(self.act_image_combine)
         m_tools.addAction(self.act_multiscale_decomp)
-        m_tools.addAction(self.act_nbextract)
+        
         m_tools.addAction(self.act_narrowband_integration)
         m_tools.addAction(self.act_narrowband_normalization)
         m_tools.addAction(self.act_nbtorgb)

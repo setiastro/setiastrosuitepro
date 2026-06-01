@@ -214,6 +214,7 @@ class ToolbarMixin:
         tb_fn.addAction(self.act_add_stars)
         tb_fn.addAction(self.act_background_neutral)
         tb_fn.addAction(self.act_white_balance)
+        tb_fn.addAction(self.act_nbextract)
         tb_fn.addAction(self.act_sfcc)
         tb_fn.addAction(self.act_remove_green)
         tb_fn.addAction(self.act_convo)
@@ -262,7 +263,7 @@ class ToolbarMixin:
         tb_tl.addAction(self.act_blink)  # Tools start here; Blink shows with QIcon(blink_path)
         tb_tl.addAction(self.act_ppp)    # Perfect Palette Picker
         tb_tl.addAction(self.act_nbtorgb)
-        tb_tl.addAction(self.act_nbextract)
+        
         tb_tl.addAction(self.act_narrowband_normalization)
         
         tb_tl.addAction(self.act_selective_color)

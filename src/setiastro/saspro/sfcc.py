@@ -1175,8 +1175,8 @@ class SFCCDialog(QDialog):
         row4.addSpacing(15)
         row4.addWidget(QLabel(self.tr("Star detect σ:")))
         self.sep_thr_spin = QSpinBox()
-        self.sep_thr_spin.setRange(2, 50)        # should be enough
-        self.sep_thr_spin.setValue(5)            # our current hardcoded value
+        self.sep_thr_spin.setRange(2, 100)        # should be enough
+        self.sep_thr_spin.setValue(15)            # our current hardcoded value
         self.sep_thr_spin.valueChanged.connect(self.save_sep_threshold_setting)
         row4.addWidget(self.sep_thr_spin)
         self.gaia_fallback_chk = QCheckBox(self.tr("Gaia XP fallback (slower, fills missing data)"))
@@ -1864,11 +1864,12 @@ class SFCCDialog(QDialog):
                     best = gs
 
             if best is not None and best_sep <= float(max_match_arcsec):
-                st["gaia_source_id"] = int(best["source_id"])
-                st["gaia_bp_rp"] = best.get("bp_rp")
-                st["gaia_gmag"] = best.get("gmag")
+                st["gaia_source_id"]  = int(best["source_id"])
+                st["gaia_bp_rp"]      = best.get("bp_rp")
+                st["gaia_gmag"]       = best.get("gmag")
                 st["gaia_sep_arcsec"] = float(best_sep)
-                matched_star_count += 1
+                st["sp_source"]       = "gaia_xp"   # ← real measured spectrum available
+                matched_star_count   += 1
 
         return {
             "query_ok": query_ok,
@@ -2279,13 +2280,16 @@ class SFCCDialog(QDialog):
                 continue
 
             # Clean / infer spectral class
-            sp_clean = None
+            sp_clean  = None
+            sp_source = None
             if raw_sp and str(raw_sp).strip():
                 sp = str(raw_sp).strip().upper()
                 if not (sp.startswith("SN") or sp.startswith("KA")):
-                    sp_clean = sp
+                    sp_clean  = sp
+                    sp_source = "simbad"
             elif (bmag is not None) and (vmag is not None):
-                sp_clean = infer_letter(bmag - vmag)
+                sp_clean  = infer_letter(bmag - vmag)
+                sp_source = "bv_inferred"
 
             match_list = pickles_match_for_simbad(sp_clean, self.pickles_templates) if sp_clean else []
             best_template = match_list[0] if match_list else None
@@ -2310,6 +2314,7 @@ class SFCCDialog(QDialog):
                 "Bmag": float(bmag) if bmag is not None else None,
                 "Vmag": float(vmag) if vmag is not None else None,
                 "Rmag": float(rmag) if rmag is not None else None,
+                "sp_source": sp_source,   # "simbad", "bv_inferred", or None
             })
 
             if best_template is not None:
@@ -2424,8 +2429,11 @@ class SFCCDialog(QDialog):
                                     bv = (s["gaia_B"] - s["gaia_V"]) if (s.get("gaia_B") is not None and s.get("gaia_V") is not None) else None
                                     letter = _infer_letter_from_bv(bv)
                                     if letter:
-                                        s["sp_clean"] = letter
-
+                                        s["sp_clean"]  = letter
+                                        s["sp_source"] = "bv_inferred"
+                                        # Note: gaia_source_id is set separately;
+                                        # the XP spectrum itself is real but the
+                                        # sp_clean letter here is still a B-V guess
                         _sfcc_status(self, f"[SPCC] Gaia XP: attached synthetic B/V/R to {got} stars")
 
                         # Recompute Pickles match if we upgraded sp_clean
