@@ -1141,14 +1141,25 @@ class NBExtractDialog(SFCCDialog):
         QApplication.processEvents()
 
         if n_used < 6:
-            QMessageBox.warning(
-                self, "Too Few Stars",
-                f"Only {n_used} usable calibration stars (need ≥ 6).\n\n"
-                "Try:\n"
+            reply = QMessageBox.question(
+                self, "Too Few Stars — Use Fallback?",
+                f"Only {n_used} usable calibration star(s) found (need ≥ 6 for NNLS).\n\n"
+                "This is common for sparse fields, galaxy images, or small FOVs\n"
+                "where few stars have catalogued spectral types.\n\n"
+                "Use the stellar flux color mixing fallback instead?\n\n"
+                "This fits a 3×3 color mixing matrix from whatever stars are\n"
+                "available — even a handful can provide a useful correction —\n"
+                f"and extracts the dominant channel for {l1_key} and {l2_key}.\n\n"
+                "Alternatively, try:\n"
                 "  • Lowering the SEP detection threshold\n"
                 "  • Re-plate-solving the image\n"
-                "  • Enabling the Gaia XP fallback"
+                "  • Enabling the Gaia XP fallback",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
             )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            self._run_wb_fallback(doc, img_float, l1_key, l2_key)
             return
 
         A, n_clipped_used = fit_mixing_matrix(star_records)
@@ -1166,7 +1177,7 @@ class NBExtractDialog(SFCCDialog):
                 "stellar fluxes in your image — the same stars, the same data.\n"
                 "It corrects inter-channel cross-talk using the actual photon\n"
                 "counts through your specific optical train, then extracts\n"
-                f"the {l1_key}-dominant R channel and {l2_key}-dominant G channel.\n\n"
+                f"the dominant channel for {l1_key} and {l2_key}.\n\n"
                 "Less precise than the full NNLS solve but physically grounded\n"
                 "and works on any image including synthetic palettes.",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -1268,38 +1279,61 @@ class NBExtractDialog(SFCCDialog):
         _force_mpl_no_tex()
         self.figure.clf()
 
-        # ── Left: channel sensitivity percentages ─────────────────────────
+        # ── Left: normalized channel sensitivity ────────────────────────────
+        # Each line is normalized to its own maximum so the plot shows
+        # *relative* sensitivity — which channel dominates each line and
+        # how much bleeds into the others.  Absolute cross-talk percentages
+        # are shown in the matrix label above; this graph shows the shape.
         ax_bar = self.figure.add_subplot(1, 2, 1)
 
-        def _pct(row, col):
-            total = float(A[row, 0] + A[row, 1])
-            return 100.0 * float(A[row, col]) / total if total > 0 else 0.0
+        # Raw absolute sensitivity per channel per line
+        def _abs_sensitivity(col):
+            """Absolute sensitivity of each RGB channel for line `col`."""
+            vals = np.array([float(A[r, col]) for r in range(3)])
+            total = vals.sum()
+            return (100.0 * vals / total) if total > 0 else vals
+
+        abs1 = _abs_sensitivity(0)   # line1 (Ha/SII) per-channel %
+        abs2 = _abs_sensitivity(1)   # line2 (OIII/Hβ) per-channel %
+
+        # Normalize each line to its own maximum channel
+        max1 = float(abs1.max()) if abs1.max() > 0 else 1.0
+        max2 = float(abs2.max()) if abs2.max() > 0 else 1.0
+        norm1 = abs1 / max1   # peaks at 1.0
+        norm2 = abs2 / max2   # peaks at 1.0
 
         ch_labels = ("R", "G", "B")
-        ch_colors = ("firebrick", "seagreen", "royalblue")
         x = np.arange(3)
         width = 0.35
 
-        bars1 = ax_bar.bar(x - width / 2,
-                           [_pct(r, 0) for r in range(3)],
-                           width, label=l1_key, color="tomato", edgecolor="none")
-        bars2 = ax_bar.bar(x + width / 2,
-                           [_pct(r, 1) for r in range(3)],
-                           width, label=l2_key, color="cornflowerblue", edgecolor="none")
+        bars1 = ax_bar.bar(x - width / 2, norm1, width,
+                           label=l1_key, color="tomato", edgecolor="none")
+        bars2 = ax_bar.bar(x + width / 2, norm2, width,
+                           label=l2_key, color="cornflowerblue", edgecolor="none")
 
-        # Label each bar with its percentage
-        for bar in list(bars1) + list(bars2):
+        # Annotate each bar with the absolute percentage so the exact number
+        # is still readable without needing to read the matrix label
+        for bar, abs_val in zip(list(bars1), abs1):
             h = bar.get_height()
-            ax_bar.text(
-                bar.get_x() + bar.get_width() / 2, h + 0.8,
-                f"{h:.0f}%", ha="center", va="bottom", fontsize=8,
-            )
+            if h > 0.02:
+                ax_bar.text(
+                    bar.get_x() + bar.get_width() / 2, h + 0.02,
+                    f"{abs_val:.0f}%", ha="center", va="bottom", fontsize=7,
+                )
+        for bar, abs_val in zip(list(bars2), abs2):
+            h = bar.get_height()
+            if h > 0.02:
+                ax_bar.text(
+                    bar.get_x() + bar.get_width() / 2, h + 0.02,
+                    f"{abs_val:.0f}%", ha="center", va="bottom", fontsize=7,
+                )
 
         ax_bar.set_xticks(x)
         ax_bar.set_xticklabels(ch_labels)
-        ax_bar.set_ylabel("Channel sensitivity (%)")
+        ax_bar.set_ylabel("Relative sensitivity (normalized to peak)")
         ax_bar.set_title("Filter channel sensitivity")
-        ax_bar.set_ylim(0, 110)
+        ax_bar.set_ylim(0, 1.22)
+        ax_bar.axhline(1.0, color="white", lw=0.6, linestyle="--", alpha=0.4)
         ax_bar.legend(fontsize=8)
         ax_bar.grid(axis="y", linestyle="--", alpha=0.3)
 

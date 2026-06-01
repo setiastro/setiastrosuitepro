@@ -201,6 +201,9 @@ def download_xp_spectra_only(
             cwd0 = os.getcwd()
             try:
                 os.chdir(str(tmp_dir))
+                # GaiaXPy API note: calibrate() signature and return format has changed
+                # across versions. DR4 may require a gaiaxpy version bump.
+                # If calibrate() breaks: pip install --upgrade gaiaxpy                
                 calibrated, sampling = calibrate(batch_ids)
             finally:
                 os.chdir(cwd0)
@@ -832,6 +835,10 @@ class GaiaDownloader:
 
         # ADQL query for Gaia DR3
         # NOTE: has_xp_continuous is boolean in the archive; use true/false (not 'True')
+        # ── DR4 migration note ────────────────────────────────────────────
+        # gaiadr3 → gaiadr4 when DR4 is live; has_xp_continuous should persist
+        # but verify at https://gea.esac.esa.int/archive/
+        # ─────────────────────────────────────────────────────────────────        
         query = f"""
         SELECT TOP {max_sources}
             source_id,
@@ -918,6 +925,9 @@ class GaiaDownloader:
 
             try:
                 with saspro_tmp_context(self.tmp_dir):
+                    # GaiaXPy API note: calibrate() signature and return format has changed
+                    # across versions. DR4 may require a gaiaxpy version bump.
+                    # If calibrate() breaks: pip install --upgrade gaiaxpy                    
                     calibrated, sampling = calibrate(batch_ids)
 
                 wavelengths = self._sampling_to_wavelengths(sampling, fallback=fallback_wl)

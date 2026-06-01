@@ -2159,7 +2159,7 @@ class BlinkTab(QWidget):
             self,
             self.tr("Add Additional Images"),
             self._last_folder(),
-            self.tr("Images (*.png *.tif *.tiff *.fits *.fit *.xisf *.cr2 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef);;All Files (*)")
+            self.tr("Images (*.png *.jpg *.jpeg *.tif *.tiff *.fits *.fit *.xisf *.cr2 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef);;All Files (*)")
         )
         if file_paths:
             self._save_last_folder(file_paths[0])        

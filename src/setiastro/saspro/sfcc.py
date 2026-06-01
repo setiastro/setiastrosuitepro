@@ -52,7 +52,7 @@ from matplotlib import pyplot as plt
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 
 from PyQt6.QtCore import (Qt, QPoint, QRect, QMimeData, QSettings, QByteArray,
-                          QDataStream, QIODevice, QEvent, QStandardPaths)
+                          QDataStream, QIODevice, QEvent, QStandardPaths,QThread, pyqtSignal as _Signal)
 from PyQt6.QtGui import (QAction, QDrag, QIcon, QMouseEvent, QPixmap, QKeyEvent)
 from PyQt6.QtWidgets import (QToolBar, QWidget, QToolButton, QMenu, QApplication, QVBoxLayout, QHBoxLayout, QComboBox, QGroupBox, QGridLayout, QDoubleSpinBox, QSpinBox,
                              QInputDialog, QMessageBox, QDialog, QFileDialog,
@@ -1694,7 +1694,12 @@ class SFCCDialog(QDialog):
             return []
 
         Gaia.ROW_LIMIT = max_rows
-
+        # ── DR4 migration note ────────────────────────────────────────────
+        # When Gaia DR4 releases, update:
+        #   gaiadr3.gaia_source  →  gaiadr4.gaia_source  (or gaiaedr4 if early)
+        #   has_xp_continuous    →  verify column still exists / same name
+        #   mag limit 15.5       →  DR4 XP coverage extends fainter, consider 16.5+
+        # ─────────────────────────────────────────────────────────────────
         adql = f"""
         SELECT
             source_id, ra, dec, phot_g_mean_mag, bp_rp
@@ -1879,6 +1884,73 @@ class SFCCDialog(QDialog):
             "needed_star_count": needed_star_count,
         }
 
+    def _download_gaia_spectra_with_progress(
+        self,
+        missing_spectra: list,
+        dl,
+        batch_size: int = 25,
+    ) -> int:
+        """
+        Download missing Gaia XP spectra on a background thread with a
+        cancellable progress dialog.  Returns number of spectra stored.
+        Blocks the calling code (via a local event loop) until done or cancelled.
+        """
+        from PyQt6.QtWidgets import QProgressDialog
+        from PyQt6.QtCore import Qt, QEventLoop
+
+        total = len(missing_spectra)
+
+        dlg = QProgressDialog(
+            f"Downloading Gaia XP spectra (0/{total})…\n"
+            f"Gaia archive may be slow — please wait.",
+            "Cancel",
+            0, total,
+            self,
+        )
+        dlg.setWindowTitle("Gaia XP Spectra Download")
+        dlg.setWindowModality(Qt.WindowModality.WindowModal)
+        dlg.setMinimumDuration(0)
+        dlg.setMinimumWidth(460)
+        dlg.setValue(0)
+        dlg.show()
+
+        loop   = QEventLoop()
+        stored = 0
+
+        worker = _GaiaSpectraWorker(dl, missing_spectra, batch_size=batch_size, parent=self)
+
+        def _on_progress(done, total_, msg):
+            if not dlg.wasCanceled():
+                dlg.setValue(done)
+                dlg.setLabelText(msg)
+
+        def _on_finished(n):
+            nonlocal stored
+            stored = n
+            dlg.setValue(total)
+            loop.quit()
+
+        def _on_failed(err):
+            dlg.setLabelText(f"Download error: {err}")
+            loop.quit()
+
+        def _on_cancel():
+            worker.cancel()
+            dlg.setLabelText("Cancelling after current batch…")
+
+        worker.progress.connect(_on_progress)
+        worker.finished.connect(_on_finished)
+        worker.failed.connect(_on_failed)
+        dlg.canceled.connect(_on_cancel)
+
+        worker.start()
+        loop.exec()          # blocks here (but processes Qt events) until finished/failed
+
+        worker.wait()        # ensure thread fully done before returning
+        dlg.close()
+
+        return stored
+
     def _gaia_integrals_for_source_ids(
         self,
         source_ids: list[int],
@@ -1966,46 +2038,9 @@ class SFCCDialog(QDialog):
 
         # Download missing spectra in batches (GaiaXPy calibrate)
         if missing_spectra:
-            try:
-                total = len(missing_spectra)
-                for i in range(0, total, int(batch_size)):
-                    batch = missing_spectra[i:i + int(batch_size)]
-
-                    # progress to label
-                    if getattr(self, "count_label", None) is not None:
-                        self.count_label.setText(
-                            f"Gaia XP: downloading/calibrating spectra {i+1}-{min(i+len(batch), total)} of {total}…"
-                        )
-                    try:
-                        from PyQt6.QtWidgets import QApplication
-                        QApplication.processEvents()
-                    except Exception:
-                        pass
-
-                    spectra = dl.download_xp_spectra(batch, batch_size=len(batch))
-
-                    # Store into sqlite cache
-                    if hasattr(dl.db, "add_spectra"):
-                        dl.db.add_spectra(spectra)
-                    elif hasattr(dl.db, "upsert_spectra"):
-                        dl.db.upsert_spectra(spectra)
-                    elif hasattr(dl.db, "insert_spectra"):
-                        dl.db.insert_spectra(spectra)
-                    elif hasattr(dl.db, "save_spectra"):
-                        dl.db.save_spectra(spectra)
-                    else:
-                        raise AttributeError(
-                            "GaiaSpectraDB has no spectra insert method. "
-                            "Expected one of add_spectra/upsert_spectra/insert_spectra/save_spectra. "
-                            f"Available: {', '.join([m for m in dir(dl.db) if 'spect' in m.lower()])}"
-                        )
-
-                    # optional sanity print if calibrate returned nothing useful
-                    if not spectra:
-                        print(f"[SPCC] Gaia XP: calibrate returned 0 spectra for batch size {len(batch)}")
-
-            except Exception as e:
-                print(f"[SPCC] Gaia XP download failed: {e}")
+            self._download_gaia_spectra_with_progress(
+                missing_spectra, dl, batch_size=batch_size
+            )
 
         # ---- integrate anything we can (and cache the results) ----
         eps = 1e-30
@@ -3553,3 +3588,66 @@ def open_sfcc(doc_manager, sasp_data_path: str, parent=None) -> SFCCDialog:
     dlg = SFCCDialog(doc_manager=doc_manager, sasp_data_path=sasp_data_path, parent=parent)
     dlg.show()
     return dlg
+
+
+
+class _GaiaSpectraWorker(QThread):
+    """
+    Downloads and caches Gaia XP spectra in batches on a background thread.
+    Emits progress after each batch; checks cancel flag between batches.
+    """
+    progress   = _Signal(int, int, str)   # (done, total, message)
+    finished   = _Signal(int)             # spectra_stored count
+    failed     = _Signal(str)             # error message
+
+    def __init__(
+        self,
+        dl,                               # GaiaDownloader instance
+        missing_spectra: list,
+        batch_size: int = 100,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self._dl           = dl
+        self._missing      = list(missing_spectra)
+        self._batch_size   = int(batch_size)
+        self._cancel_flag  = False
+
+    def cancel(self):
+        self._cancel_flag = True
+
+    def run(self):
+        total   = len(self._missing)
+        stored  = 0
+        try:
+            for i in range(0, total, self._batch_size):
+                if self._cancel_flag:
+                    self.progress.emit(stored, total, "Cancelled.")
+                    self.finished.emit(stored)
+                    return
+
+                batch = self._missing[i:i + self._batch_size]
+                done_so_far = min(i + len(batch), total)
+
+                self.progress.emit(
+                    i, total,
+                    f"Downloading Gaia XP spectra {i+1}–{done_so_far} of {total}…\n"
+                    f"(Gaia archive may be slow — each batch can take 1–3 min)"
+                )
+
+                try:
+                    spectra = self._dl.download_xp_spectra(batch, batch_size=len(batch))
+                    if spectra:
+                        self._dl.db.add_spectra(spectra)
+                        stored += len(spectra)
+                except Exception as e:
+                    print(f"[SPCC] Gaia batch {i//self._batch_size+1} failed: {e}")
+                    # continue to next batch — partial results are fine
+
+                self.progress.emit(done_so_far, total,
+                    f"Batch complete ({done_so_far}/{total})…")
+
+            self.finished.emit(stored)
+
+        except Exception as e:
+            self.failed.emit(str(e))
