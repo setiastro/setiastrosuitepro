@@ -247,6 +247,7 @@ class Icons:
     
     # Color
     SPCC = property(lambda self: _resource_path('spcc.png'))
+    NBEXTRACT = property(lambda self: _resource_path('nbextract.png'))
     MAGNITUDE = property(lambda self: _resource_path('magnitude.png'))
     SNR_TOOL = property(lambda self: _resource_path('snr.png'))
     DSE = property(lambda self: _resource_path('dse.png'))
@@ -446,6 +447,7 @@ _LEGACY_ICON_MAP = {
     'hrdiagram_path': 'HRDiagram.png',
     'convoicon_path': 'convo.png',
     'spcc_icon_path': 'spcc.png',
+    'nbextract_icon': 'nbextract.png',
     'atlas_path': 'atlas.png',
 
     'exoicon_path': 'exoicon.png',

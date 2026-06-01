@@ -11147,52 +11147,81 @@ class StackingSuiteDialog(QDialog):
             parent = item.parent()
 
             if parent is None:
-                # top-level exposure group
+                # top-level exposure group — purge all caches for this group
                 gk = item.text(0)
 
-                # remove ALL sessions for this exposure group
-                keys_to_remove = []
-                for k in list(file_dict.keys()):
-                    if isinstance(k, tuple) and len(k) >= 2:
-                        if str(k[0]) == gk:
-                            keys_to_remove.append(k)
-                    else:
-                        if str(k) == gk:
-                            keys_to_remove.append(k)
-
+                keys_to_remove = [
+                    k for k in list(file_dict.keys())
+                    if (isinstance(k, tuple) and str(k[0]) == gk)
+                    or (not isinstance(k, tuple) and str(k) == gk)
+                ]
                 for k in keys_to_remove:
                     for p in file_dict.get(k, []) or []:
                         removed_paths.append(p)
                     del file_dict[k]
 
+                # Purge item caches for this exposure group and all its children
+                if hasattr(self, "_dark_group_item"):
+                    self._dark_group_item.pop(gk, None)
+                if hasattr(self, "_dark_temp_item"):
+                    for k in [k for k in list(self._dark_temp_item.keys()) if k[0] == gk]:
+                        self._dark_temp_item.pop(k, None)
+                if hasattr(self, "_dark_go_item"):
+                    for k in [k for k in list(self._dark_go_item.keys()) if k[0] == gk]:
+                        self._dark_go_item.pop(k, None)
+
                 tree.takeTopLevelItem(tree.indexOfTopLevelItem(item))
                 continue
 
-            # leaf file node under exposure group
-            gk = parent.text(0)
+            # mid-level temp or gain/offset group
+            if item.childCount() > 0:
+                # collect all leaf paths under this node
+                stack = [item]
+                while stack:
+                    cur = stack.pop()
+                    if cur.childCount() == 0:
+                        fp = cur.data(0, Qt.ItemDataRole.UserRole)
+                        if fp:
+                            removed_paths.append(fp)
+                    else:
+                        for j in range(cur.childCount()):
+                            stack.append(cur.child(j))
+
+                # purge matching caches
+                item_text = item.text(0)
+                if hasattr(self, "_dark_temp_item"):
+                    for k in [k for k in list(self._dark_temp_item.keys()) if k[1] == item_text]:
+                        self._dark_temp_item.pop(k, None)
+                if hasattr(self, "_dark_go_item"):
+                    for k in [k for k in list(self._dark_go_item.keys()) if k[2] == item_text or k[1] == item_text]:
+                        self._dark_go_item.pop(k, None)
+
+                parent.removeChild(item)
+                continue
+
+            # leaf file node
+            gk = None
+            anc = parent
+            while anc.parent() is not None:
+                anc = anc.parent()
+            gk = anc.text(0)
+
             fpath = item.data(0, Qt.ItemDataRole.UserRole)
             filename = item.text(0).lstrip("⚠️ ").strip()
 
-            keys_to_check = []
-            for k in list(file_dict.keys()):
-                if isinstance(k, tuple) and len(k) >= 2:
-                    if str(k[0]) == gk:
-                        keys_to_check.append(k)
-                else:
-                    if str(k) == gk:
-                        keys_to_check.append(k)
-
+            keys_to_check = [
+                k for k in list(file_dict.keys())
+                if (isinstance(k, tuple) and str(k[0]) == gk)
+                or (not isinstance(k, tuple) and str(k) == gk)
+            ]
             for k in keys_to_check:
                 lst = file_dict.get(k, []) or []
-                new_lst = []
-                for p in lst:
-                    if fpath and p == fpath:
-                        removed_paths.append(p)
-                        continue
-                    if (not fpath) and os.path.basename(p) == filename:
-                        removed_paths.append(p)
-                        continue
-                    new_lst.append(p)
+                new_lst = [p for p in lst if not (
+                    (fpath and p == fpath) or
+                    ((not fpath) and os.path.basename(p) == filename)
+                )]
+                if new_lst != lst:
+                    removed_paths.extend(p for p in lst if p not in new_lst)
                 if new_lst:
                     file_dict[k] = new_lst
                 else:
@@ -11201,8 +11230,6 @@ class StackingSuiteDialog(QDialog):
             parent.removeChild(item)
 
         self._purge_removed_paths(removed_paths)
-
-        # normalize if sessioned (or if legacy)
         self._normalize_sessioned_files_map(file_dict)
         self._refresh_quick_stack_summary_later()
 
@@ -11274,6 +11301,12 @@ class StackingSuiteDialog(QDialog):
         self._normalize_sessioned_files_map(self.light_files)
         self._refresh_quick_stack_summary_later()
 
+        # Purge light item caches so next add creates fresh tree items
+        if hasattr(self, "_light_filter_item"):
+            self._light_filter_item.clear()
+        if hasattr(self, "_light_exp_item"):
+            self._light_exp_item.clear()
+
         try:
             self.rebuild_light_tree()
         except Exception:
@@ -11281,7 +11314,7 @@ class StackingSuiteDialog(QDialog):
                 self._refresh_light_tree_summaries()
             except Exception:
                 pass
-            
+
 
     def clear_tree_selection_flat(self, tree, file_dict):
         """
@@ -11301,11 +11334,9 @@ class StackingSuiteDialog(QDialog):
             return os.path.normcase(os.path.abspath(p))
 
         def _remove_path_everywhere(fpath: str):
-            """Remove fpath from ALL buckets in file_dict (robust against group_key mismatches)."""
             if not fpath:
                 return
             f_norm = _norm(fpath)
-
             keys_to_delete = []
             for k, lst in list(file_dict.items()):
                 if not (isinstance(k, tuple) and len(k) >= 2):
@@ -11317,19 +11348,16 @@ class StackingSuiteDialog(QDialog):
                         removed = True
                     else:
                         keep.append(p)
-
                 if removed:
                     removed_paths.append(fpath)
                     if keep:
                         file_dict[k] = keep
                     else:
                         keys_to_delete.append(k)
-
             for k in keys_to_delete:
                 file_dict.pop(k, None)
 
         def _collect_leaf_paths_under(node):
-            """Return all descendant leaf file paths under a node (supports group nodes)."""
             out = []
             stack = [node]
             while stack:
@@ -11343,45 +11371,39 @@ class StackingSuiteDialog(QDialog):
                     stack.append(cur.child(j))
             return out
 
-        # We’ll delete dict entries by file paths (most robust), then rebuild UI.
         for item in selected_items:
             parent = item.parent()
 
             if parent is None:
-                # Selected a top-level node (either "group" in 2-level, or "filter" in 3-level).
-                # Remove every leaf path under it from the dict.
                 for fp in _collect_leaf_paths_under(item):
                     _remove_path_everywhere(fp)
-
-                # Remove UI node
                 idx = tree.indexOfTopLevelItem(item)
                 if idx >= 0:
                     tree.takeTopLevelItem(idx)
                 continue
 
-            # Selected a leaf or mid-level node; remove all descendant leaf paths
             for fp in _collect_leaf_paths_under(item):
                 _remove_path_everywhere(fp)
 
-            # Remove UI node
             parent.removeChild(item)
 
-        # purge caches + normalize
         self._purge_removed_paths(removed_paths)
         self._normalize_sessioned_files_map(file_dict)
         self._refresh_quick_stack_summary_later()
 
-        # Rebuild from dict (this ensures UI reflects the dict truth)
+        # Purge flat item caches so next add creates fresh tree items
+        if hasattr(self, "_flat_filter_item"):
+            self._flat_filter_item.clear()
+        if hasattr(self, "_flat_exp_item"):
+            self._flat_exp_item.clear()
+
         try:
             self.rebuild_flat_tree()
         except Exception:
-            # If you really don't want rebuild here, at least:
             try:
                 self._refresh_flat_tree_summaries()
             except Exception:
                 pass
-
-
 
     def _sync_group_userrole(self, top_item: QTreeWidgetItem):
         paths = []
