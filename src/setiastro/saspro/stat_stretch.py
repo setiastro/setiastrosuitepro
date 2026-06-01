@@ -1,1426 +1,1672 @@
-# pro/stat_stretch.py
+# nbextract.py
+# SetiAstro Suite Pro — Narrowband Channel Extractor
+#
+#   ███╗   ██╗██████╗ ███████╗██╗  ██╗████████╗██████╗  █████╗  ██████╗████████╗
+#   ████╗  ██║██╔══██╗██╔════╝╚██╗██╔╝╚══██╔══╝██╔══██╗██╔══██╗██╔════╝╚══██╔══╝
+#   ██╔██╗ ██║██████╔╝█████╗   ╚███╔╝    ██║   ██████╔╝███████║██║        ██║
+#   ██║╚██╗██║██╔══██╗██╔══╝   ██╔██╗    ██║   ██╔══██╗██╔══██║██║        ██║
+#   ██║ ╚████║██████╔╝███████╗██╔╝ ██╗   ██║   ██║  ██║██║  ██║╚██████╗   ██║
+#   ╚═╝  ╚═══╝╚═════╝ ╚══════╝╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝   ╚═╝
+#
+# Copyright (c) 2024 Franklin Marek / SetiAstro
+#
+# Empirically calibrated dual-band narrowband channel extraction.
+#
+# Philosophy
+# ----------
+# Rather than relying on published sensor QE curves (which are often promotional
+# approximations), we use stars with known Pickles spectral templates to fit the
+# mixing matrix A empirically from the actual image data.  The filter bandwidths
+# tell us WHERE to integrate on the SED; the stars tell us HOW MUCH each channel
+# responds.  QE uncertainty cancels out because we're fitting ratios against the
+# same instrument that took the image.
+#
+# For a dual-band Ha+OIII filter the system is:
+#
+#   R_meas = a·Ha_signal  +  b·OIII_signal  +  noise
+#   G_meas = c·Ha_signal  +  d·OIII_signal  +  noise
+#   B_meas = e·Ha_signal  +  f·OIII_signal  +  noise
+#
+# With 3 equations and 2 unknowns this is a well-conditioned overdetermined
+# system solved per-pixel via non-negative least squares.
+#
+# Supported filter presets
+# ------------------------
+#   Ha / OIII   — most common dual-band (L-eXtreme, Antlia ALP-T, ...)
+#   SII / OIII  — tri-band variant where SII replaces Ha in the red window
+#   SII / Hβ    — less common, but correctly handled
+#
+# Triband (Ha + OIII + SII in one filter) is explicitly NOT supported for
+# 3-line extraction; you still only get 2 reliably separated channels.  The
+# tool warns the user accordingly.
+#
+# Imports shared with sfcc.py
+# ---------------------------
+# fetch_stars infrastructure, Pickles SED loading, SEP photometry helpers,
+# Gaia XP fallback, and the WCS / SIMBAD plumbing all come straight from
+# sfcc.py via explicit imports below.  Nothing is duplicated.
+
 from __future__ import annotations
-from PyQt6.QtCore import Qt, QSize, QEvent
-from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QDoubleSpinBox,
-    QCheckBox, QPushButton, QScrollArea, QWidget, QMessageBox, QSlider, QToolBar, QToolButton, QComboBox,QProgressBar, QApplication
-)
-from PyQt6.QtGui import QImage, QPixmap, QMouseEvent, QCursor
+
+import os
+import math
+from typing import Optional, Dict, Tuple, List
+
 import numpy as np
-from PyQt6 import sip
-from PyQt6.QtCore import QObject, QThread, pyqtSignal, pyqtSlot, Qt, QSize, QEvent, QTimer, QSettings, QByteArray
-from PyQt6.QtWidgets import QProgressDialog, QApplication
-from .doc_manager import ImageDocument
-# use your existing stretch code
-from setiastro.saspro.imageops.stretch import (
-    stretch_mono_image,
-    stretch_color_image,
-    _compute_blackpoint_sigma,
-    _compute_blackpoint_sigma_per_channel,
+from scipy.optimize import nnls
+
+try:
+    _trapz = np.trapezoid
+except AttributeError:
+    _trapz = np.trapz
+
+from astropy.io import fits
+from PyQt6.QtCore import Qt, QSettings, QStandardPaths
+from PyQt6.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
+    QLabel, QComboBox, QDoubleSpinBox, QPushButton,
+    QCheckBox, QMessageBox, QApplication, QGroupBox,
+    QSizePolicy, QWidget, QLineEdit,
+)
+from PyQt6.QtGui import QIcon
+
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+
+# ── shared helpers from sfcc ──────────────────────────────────────────────────
+from setiastro.saspro.sfcc import (
+    pickles_match_for_simbad,
+    measure_star_rgb_photometry,
+    measure_star_rgb_raw_aperture,
+    _ensure_angstrom,
+    _sfcc_status,
+    _sfcc_busy,
+    _force_mpl_no_tex,
+    SFCCDialog,          # we subclass for fetch_stars / Gaia machinery
 )
 
-from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
-from setiastro.saspro.luminancerecombine import LUMA_PROFILES
+# ─────────────────────────────────────────────────────────────────────────────
+# Constants
+# ─────────────────────────────────────────────────────────────────────────────
 
-class _StretchWorker(QObject):
-    finished = pyqtSignal(object, str)  # (out_array_or_None, error_message_or_empty)
+#: Emission line rest wavelengths in nm (air)
+LINE_CENTERS_NM: Dict[str, float] = {
+    "Ha":   656.28,
+    "OIII": 500.70,
+    "SII":  671.64,
+    "Hb":   486.13,   # Hβ
+}
 
-    def __init__(self, dialog_ref):
-        super().__init__()
-        self._dlg = dialog_ref
+#: Dual-band filter presets  →  (line1_key, line2_key)
+#: "Custom" uses user-supplied line names and centres.
+FILTER_PRESETS: Dict[str, Tuple[str, str]] = {
+    "Ha / OIII":  ("Ha",  "OIII"),
+    "SII / OIII": ("SII", "OIII"),
+    "SII / Hβ":   ("SII", "Hb"),
+    "Custom":     ("Line1", "Line2"),   # user-defined centres and labels
+}
 
-    @pyqtSlot()
-    def run(self):
-        try:
-            # dialog might be closing; guard
-            if self._dlg is None or sip.isdeleted(self._dlg):
-                self.finished.emit(None, "Dialog was closed.")
-                return
+#: Preset name → whether line centres/labels are user-editable
+FILTER_PRESET_CUSTOM = "Custom"
 
-            out = self._dlg._run_stretch()
-            self.finished.emit(out, "")
-        except Exception as e:
-            self.finished.emit(None, str(e))
+#: Default bandwidths (FWHM, nm) for each line — user can override
+DEFAULT_BW_NM: Dict[str, float] = {
+    "Ha":   7.0,
+    "OIII": 6.5,
+    "SII":  7.0,
+    "Hb":   6.5,
+}
+
+#: Settings keys
+_SK_PRESET  = "NBExtract/FilterPreset"
+_SK_BW1     = "NBExtract/BW_Line1"
+_SK_BW2     = "NBExtract/BW_Line2"
+_SK_CENTER1 = "NBExtract/Center_Line1"
+_SK_CENTER2 = "NBExtract/Center_Line2"
 
 
-class StatisticalStretchDialog(QDialog):
+# ─────────────────────────────────────────────────────────────────────────────
+# Core maths
+# ─────────────────────────────────────────────────────────────────────────────
+
+def integrate_sed_over_window(
+    sed_wl_nm: np.ndarray,
+    sed_fl: np.ndarray,
+    center_nm: float,
+    bw_nm: float,
+) -> float:
     """
-    Non-destructive preview; Apply commits to the document image.
+    Integrate a Pickles SED over a top-hat passband window.
+
+    Parameters
+    ----------
+    sed_wl_nm : wavelength array in nm
+    sed_fl    : flux array (arbitrary units; only ratios matter)
+    center_nm : line centre in nm
+    bw_nm     : FWHM bandwidth in nm
+
+    Returns
+    -------
+    Integrated flux (same units as sed_fl × nm).  Returns 0.0 if the
+    window falls entirely outside the SED coverage.
     """
-    def __init__(self, parent, document: ImageDocument):
-        super().__init__(parent)
-        self.setWindowTitle(self.tr("Statistical Stretch"))
+    lo = center_nm - bw_nm * 0.5
+    hi = center_nm + bw_nm * 0.5
 
-        # --- Top-level non-modal tool window (Linux WM friendly) ---
-        self.setWindowFlag(Qt.WindowType.Window, True)
-        import platform
-        if platform.system() == "Darwin":
-            self.setWindowFlag(Qt.WindowType.Tool, True)  
-        self.setWindowModality(Qt.WindowModality.NonModal)
-        self.setModal(False)
-        try:
-            self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        except Exception:
-            pass
+    wl = np.asarray(sed_wl_nm, dtype=np.float64)
+    fl = np.asarray(sed_fl,    dtype=np.float64)
 
-        # --- State / refs ---
-        self._main = parent
-        self.doc = document
+    mask = (wl >= lo) & (wl <= hi)
+    if not np.any(mask):
+        return float(np.interp(center_nm, wl, fl, left=0.0, right=0.0) * bw_nm)
 
-        self._last_preview = None
-        self._preview_qimg = None
-        self._preview_scale = 1.0
-        self._fit_mode = True
+    wl_w = wl[mask].copy()
+    fl_w = fl[mask].copy()
 
-        self._panning = False
-        self._pan_last = None  # QPoint
+    if wl_w[0] > lo:
+        fl_lo = float(np.interp(lo, wl, fl))
+        wl_w = np.concatenate([[lo], wl_w])
+        fl_w = np.concatenate([[fl_lo], fl_w])
+    if wl_w[-1] < hi:
+        fl_hi = float(np.interp(hi, wl, fl))
+        wl_w = np.concatenate([wl_w, [hi]])
+        fl_w = np.concatenate([fl_w, [fl_hi]])
 
-        self._hdr_knee_user_locked = False
-        self._pending_close = False
-        self._suppress_replay_record = False
+    return float(_trapz(fl_w, x=wl_w))
 
-        # ---- Clip-stats scheduling (define EARLY so init callbacks can't crash) ----
-        self._clip_timer = None
 
-        def _schedule_clip_stats():
-            # Safe early stub; once timer exists it will debounce
-            if getattr(self, "_job_running", False):
-                return
-            if sip.isdeleted(self):
-                return
-            t = getattr(self, "_clip_timer", None)
-            if t is None:
-                return
-            t.start()
+def auto_q_from_condition_number(k: float) -> float:
+    """
+    Global Q from condition number — used as a baseline / fallback.
+    Formula: Q = clip(1 / (1 + 0.1 * k), 0.2, 0.9)
+    """
+    return float(np.clip(1.0 / (1.0 + 0.1 * k), 0.2, 0.9))
 
-        self._schedule_clip_stats = _schedule_clip_stats
 
-        self._thread = None
-        self._worker = None
-        self._follow_conn = None
-        self._job_running = False
-        self._job_mode = ""
+def dominant_channels_from_matrix(A: np.ndarray) -> Tuple[int, int]:
+    """
+    Determine which RGB channel (0=R, 1=G, 2=B) is the dominant receiver
+    for line1 and line2 by reading the column maxima of A.
 
-        # --- Follow active document changes (optional) ---
-        if hasattr(self._main, "currentDocumentChanged"):
+    Used to select the correct raw channel as the Q-blend prior for each
+    line — generalises beyond the Ha→R / OIII→G assumption so custom
+    filter types (NII, HeI, Hβ, etc.) work correctly.
+
+    Returns
+    -------
+    (ch1, ch2) : channel indices 0-2 for line1 and line2 respectively
+
+    Note: the returned indices are used as slice indices into img_float.
+    When the top two channels for a line are within 5 percentage points of
+    each other the caller should average those two channels rather than
+    picking one arbitrarily — see raw_prior_from_matrix().
+    """
+    ch1 = int(np.argmax(A[:, 0]))   # channel most sensitive to line1
+    ch2 = int(np.argmax(A[:, 1]))   # channel most sensitive to line2
+    return ch1, ch2
+
+
+def raw_prior_from_matrix(img_rgb: np.ndarray, A: np.ndarray, line_col: int) -> np.ndarray:
+    """
+    Build the raw channel prior for one emission line.
+
+    If the top two channels are within 5 percentage points of each other
+    in the A matrix column, average them — they are genuinely tied and
+    neither is a clearly better prior.  Otherwise use the single dominant
+    channel.
+
+    Parameters
+    ----------
+    img_rgb  : (H, W, 3) float32 image
+    A        : (3, 2) mixing matrix
+    line_col : 0 for line1, 1 for line2
+
+    Returns
+    -------
+    (H, W) float32 raw prior array
+    """
+    col = A[:, line_col]
+    total = col.sum()
+    if total <= 0:
+        # Degenerate column — fall back to argmax channel
+        return img_rgb[..., int(np.argmax(col))].copy()
+
+    pct = 100.0 * col / total   # percentage sensitivity per channel
+
+    # Sort channels by sensitivity descending
+    order = np.argsort(pct)[::-1]
+    best, second = int(order[0]), int(order[1])
+
+    ch_names = {0: "R", 1: "G", 2: "B"}
+    if (pct[best] - pct[second]) <= 5.0:
+        # Near-tie: average the two highest channels
+        prior = 0.5 * (img_rgb[..., best].astype(np.float32) +
+                       img_rgb[..., second].astype(np.float32))
+        print(
+            f"[NBExtract] line{line_col+1} prior: averaging "
+            f"{ch_names[best]}({pct[best]:.1f}%) + {ch_names[second]}({pct[second]:.1f}%)"
+        )
+    else:
+        prior = img_rgb[..., best].copy().astype(np.float32)
+        print(
+            f"[NBExtract] line{line_col+1} prior: {ch_names[best]} "
+            f"({pct[best]:.1f}% vs {pct[second]:.1f}% next)"
+        )
+
+    return prior
+
+
+def auto_q_per_channel(A: np.ndarray) -> Tuple[float, float]:
+    """
+    Derive independent Q values for line1 and line2 by examining how
+    well each line direction is resolved in the mixing matrix.
+
+    The dominant channel per line is read from the A matrix itself via
+    dominant_channels_from_matrix() — works for any custom filter, not
+    just Ha/OIII.
+
+    Returns
+    -------
+    (q1, q2) : floats in [0.2, 0.9]
+    """
+    try:
+        ch1, ch2 = dominant_channels_from_matrix(A)
+
+        # ── Global condition number → baseline Q ─────────────────────────
+        k = float(np.linalg.cond(A))
+        q_global = float(np.clip(1.0 / (1.0 + 0.1 * k), 0.2, 0.9))
+
+        # ── SVD: how independently are the two lines resolved? ────────────
+        _, sv, _ = np.linalg.svd(A, full_matrices=False)
+        sv1, sv2 = float(sv[0]), float(sv[1])
+        sv_ratio = sv2 / sv1 if sv1 > 0 else 0.0
+
+        # Q₁ (line1): mainly depends on global conditioning
+        q1 = float(np.clip(q_global, 0.2, 0.9))
+
+        # Q₂ (line2): penalised by weak second singular value
+        q2_svd = float(np.clip(q_global * sv_ratio, 0.2, 0.9))
+
+        # ── Non-dominant row degeneracy check for line2 ───────────────────
+        # Find the two rows that are NOT the dominant channel for line2.
+        # If they carry nearly identical line2 sensitivity the inversion
+        # is extrapolating noise rather than measuring signal.
+        all_rows = {0, 1, 2}
+        non_dom_rows = sorted(all_rows - {ch2})
+        val_a = float(A[non_dom_rows[0], 1])
+        val_b = float(A[non_dom_rows[1], 1])
+
+        row_sum = abs(val_a) + abs(val_b)
+        if row_sum > 1e-10:
+            similarity = 1.0 - abs(val_a - val_b) / row_sum
+        else:
+            similarity = 1.0   # both zero — completely degenerate
+
+        # Squared penalty mirrors noise amplification physics (gain ∝ cond²)
+        # similarity=0.0 → no penalty,   q2 = q2_svd
+        # similarity=0.7 → factor 0.608, q2 = 0.608 * q2_svd
+        # similarity=0.9 → factor 0.352, q2 = 0.352 * q2_svd
+        # similarity=1.0 → floor 0.2
+        q2 = float(np.clip(q2_svd * (1.0 - similarity**2 * 0.8), 0.2, 0.9))
+
+        ch_names = {0: "R", 1: "G", 2: "B"}
+        print(
+            f"[NBExtract] Auto-Q: k={k:.2f}  sv_ratio={sv_ratio:.3f}  "
+            f"row_similarity={similarity:.3f}  "
+            f"dominant=({ch_names[ch1]},{ch_names[ch2]})  "
+            f"->  Q1={q1:.2f}  Q2={q2:.2f}"
+        )
+
+        return q1, q2
+
+    except Exception as e:
+        print(f"[NBExtract] auto_q_per_channel failed ({e}), using global fallback")
+        k = float(np.linalg.cond(A)) if A is not None else 10.0
+        q = auto_q_from_condition_number(k)
+        return q, q
+
+
+def fit_mixing_matrix(
+    star_records: List[Dict],
+    *,
+    sigma_clip: float = 3.0,
+    max_iter: int = 3,
+) -> Tuple[Optional[np.ndarray], int]:
+    """
+    Fit the 3x2 empirical mixing matrix A from stellar photometry,
+    with iterative sigma clipping to reject outliers.
+
+    Returns
+    -------
+    (A, n_used) where:
+        A      : ndarray shape (3, 2) or None if fitting fails
+        n_used : int, number of stars surviving sigma clipping
+    """
+    if not star_records:
+        return None, 0
+
+    S1 = np.array([s["S_line1"] for s in star_records], dtype=np.float64)
+    S2 = np.array([s["S_line2"] for s in star_records], dtype=np.float64)
+    Rm = np.array([s["R_meas"]  for s in star_records], dtype=np.float64)
+    Gm = np.array([s["G_meas"]  for s in star_records], dtype=np.float64)
+    Bm = np.array([s["B_meas"]  for s in star_records], dtype=np.float64)
+
+    # Normalise design matrix columns so NNLS isn't fighting scale differences.
+    s1_scale = float(np.median(S1)) if np.any(S1 > 0) else 1.0
+    s2_scale = float(np.median(S2)) if np.any(S2 > 0) else 1.0
+    if s1_scale <= 0: s1_scale = 1.0
+    if s2_scale <= 0: s2_scale = 1.0
+
+    S1_n = S1 / s1_scale
+    S2_n = S2 / s2_scale
+
+    r_scale = float(np.median(Rm)) if np.any(Rm > 0) else 1.0
+    g_scale = float(np.median(Gm)) if np.any(Gm > 0) else 1.0
+    b_scale = float(np.median(Bm)) if np.any(Bm > 0) else 1.0
+    if r_scale <= 0: r_scale = 1.0
+    if g_scale <= 0: g_scale = 1.0
+    if b_scale <= 0: b_scale = 1.0
+
+    Rm_n = Rm / r_scale
+    Gm_n = Gm / g_scale
+    Bm_n = Bm / b_scale
+
+    X_full = np.column_stack([S1_n, S2_n])
+    keep   = np.ones(len(star_records), dtype=bool)
+    A_n    = np.zeros((3, 2), dtype=np.float64)
+
+    for iteration in range(max_iter):
+        X        = X_full[keep]
+        channels = [Rm_n[keep], Gm_n[keep], Bm_n[keep]]
+
+        A_iter = np.zeros((3, 2), dtype=np.float64)
+        ok = True
+        for ch_idx, y in enumerate(channels):
             try:
-                self._main.currentDocumentChanged.connect(self._on_active_doc_changed)
-                self._follow_conn = True
-            except Exception:
-                self._follow_conn = None
-
-        # ------------------------------------------------------------------
-        # Controls
-        # ------------------------------------------------------------------
-
-        # Target median
-        self.spin_target = QDoubleSpinBox()
-        self.spin_target.setRange(0.01, 0.99)
-        self.spin_target.setSingleStep(0.01)
-        self.spin_target.setValue(0.25)
-        self.spin_target.setDecimals(3)
-
-        # Linked channels
-        self.chk_linked = QCheckBox(self.tr("Linked channels"))
-        self.chk_linked.setChecked(False)
-
-        # Normalize
-        self.chk_normalize = QCheckBox(self.tr("Normalize to [0..1]"))
-        self.chk_normalize.setChecked(False)
-
-        # --- Black point sigma row ---
-        self.row_bp = QWidget()
-        bp_lay = QHBoxLayout(self.row_bp)
-        bp_lay.setContentsMargins(0, 0, 0, 0)
-        bp_lay.setSpacing(8)
-
-        bp_lay.addWidget(QLabel(self.tr("Black point σ:")))
-
-        self.sld_bp = QSlider(Qt.Orientation.Horizontal)
-        self.sld_bp.setRange(50, 1000)   # 0.50 .. 10.00
-        self.sld_bp.setValue(500)       # 5.00 default (matches your label)
-        bp_lay.addWidget(self.sld_bp, 1)
-
-        self.lbl_bp = QLabel(f"{self.sld_bp.value()/100:.2f}")
-        bp_lay.addWidget(self.lbl_bp)
-
-        bp_tip = self.tr(
-            "Black point (σ) controls how aggressively the dark background is clipped.\n"
-            "Higher values clip more (darker background, more contrast), but can crush faint dust.\n"
-            "Lower values preserve faint background, but may leave the image gray.\n"
-            "Tip: start around 2.7–5.0 depending on gradient/noise."
-        )
-        self.row_bp.setToolTip(bp_tip)
-        self.sld_bp.setToolTip(bp_tip)
-        self.lbl_bp.setToolTip(bp_tip)
-
-        # No black clipping
-        self.chk_no_black_clip = QCheckBox(self.tr("No black clipping (Old Stat Stretch behavior)"))
-        self.chk_no_black_clip.setChecked(False)
-        self.chk_no_black_clip.setToolTip(self.tr(
-            "Disables black-point clipping.\n"
-            "Uses the image minimum as the black point (preserves faint background),\n"
-            "but the result may look flatter / hazier."
-        ))
-
-        # --- HDR compress ---
-        self.chk_hdr = QCheckBox(self.tr("HDR highlight compress"))
-        self.chk_hdr.setChecked(False)
-        self.chk_hdr.setToolTip(self.tr(
-            "Compresses bright highlights after the stretch.\n"
-            "Use lightly: high values can flatten the image and create star ringing."
-        ))
-
-        self.hdr_row = QWidget()
-        hdr_lay = QVBoxLayout(self.hdr_row)
-        hdr_lay.setContentsMargins(0, 0, 0, 0)
-        hdr_lay.setSpacing(6)
-
-        # HDR amount row
-        row_a = QHBoxLayout()
-        row_a.setContentsMargins(0, 0, 0, 0)
-        row_a.setSpacing(8)
-        row_a.addWidget(QLabel(self.tr("Amount:")))
-
-        self.sld_hdr_amt = QSlider(Qt.Orientation.Horizontal)
-        self.sld_hdr_amt.setRange(0, 100)
-        self.sld_hdr_amt.setValue(15)
-        row_a.addWidget(self.sld_hdr_amt, 1)
-
-        self.lbl_hdr_amt = QLabel(f"{self.sld_hdr_amt.value()/100:.2f}")
-        row_a.addWidget(self.lbl_hdr_amt)
-
-        self.sld_hdr_amt.setToolTip(self.tr(
-            "Compression strength (0–1).\n"
-            "Start low (0.10–0.15). Too much can flatten the image and ring stars."
-        ))
-        self.lbl_hdr_amt.setToolTip(self.sld_hdr_amt.toolTip())
-
-        # HDR knee row
-        row_k = QHBoxLayout()
-        row_k.setContentsMargins(0, 0, 0, 0)
-        row_k.setSpacing(8)
-        row_k.addWidget(QLabel(self.tr("Knee:")))
-
-        self.sld_hdr_knee = QSlider(Qt.Orientation.Horizontal)
-        self.sld_hdr_knee.setRange(10, 95)
-        self.sld_hdr_knee.setValue(75)
-        row_k.addWidget(self.sld_hdr_knee, 1)
-
-        self.lbl_hdr_knee = QLabel(f"{self.sld_hdr_knee.value()/100:.2f}")
-        row_k.addWidget(self.lbl_hdr_knee)
-
-        self.sld_hdr_knee.setToolTip(self.tr(
-            "Where compression begins (0–1).\n"
-            "Good starting point: knee ≈ target median + 0.10 to + 0.20.\n"
-            "Example: target 0.25 → knee 0.35–0.45."
-        ))
-        self.lbl_hdr_knee.setToolTip(self.sld_hdr_knee.toolTip())
-
-        hdr_lay.addLayout(row_a)
-        hdr_lay.addLayout(row_k)
-
-        self.hdr_row.setEnabled(False)
-
-        # --- Luma-only row (checkbox + dropdown on one line) ---
-        self.luma_row = QWidget()
-        lr = QHBoxLayout(self.luma_row)
-        lr.setContentsMargins(0, 0, 0, 0)
-        lr.setSpacing(8)
-
-        self.chk_luma_only = QCheckBox(self.tr("Luminance-only"))
-        self.chk_luma_only.setChecked(False)
-
-        self.cmb_luma = QComboBox()
-        keys = list(LUMA_PROFILES.keys())
-
-        def _cat(k):
-            return str(LUMA_PROFILES.get(k, {}).get("category", ""))
-
-        keys.sort(key=lambda k: (_cat(k), k.lower()))
-        self.cmb_luma.addItems(keys)
-        self.cmb_luma.setCurrentText("rec709")
-        self.cmb_luma.setEnabled(False)
-
-        lr.addWidget(self.chk_luma_only)
-        lr.addWidget(QLabel(self.tr("Mode:")))
-        lr.addWidget(self.cmb_luma, 1)
-
-        # --- Luma blend row (only meaningful when Luma-only is enabled) ---
-        self.luma_blend_row = QWidget()
-        lbr = QHBoxLayout(self.luma_blend_row)
-        lbr.setContentsMargins(0, 0, 0, 0)
-        lbr.setSpacing(8)
-
-        lbr.addWidget(QLabel(self.tr("Luma blend:")))
-
-        self.sld_luma_blend = QSlider(Qt.Orientation.Horizontal)
-        self.sld_luma_blend.setRange(0, 100)   # 0=normal linked, 100=luma-only
-        self.sld_luma_blend.setValue(60)       # nice default: “mostly luma” but tame
-        lbr.addWidget(self.sld_luma_blend, 1)
-
-        self.lbl_luma_blend = QLabel(f"{self.sld_luma_blend.value()/100:.2f}")
-        lbr.addWidget(self.lbl_luma_blend)
-
-        tip = self.tr(
-            "Blend between a normal linked RGB stretch (0.00) and a luminance-only stretch (1.00).\n"
-            "Use this to tame the saturation punch of luma-only."
-        )
-        self.luma_blend_row.setToolTip(tip)
-        self.sld_luma_blend.setToolTip(tip)
-        self.lbl_luma_blend.setToolTip(tip)
-
-        self.luma_blend_row.setEnabled(False)
-
-        # --- Curves boost ---
-        self.chk_curves = QCheckBox(self.tr("Curves boost"))
-        self.chk_curves.setChecked(False)
-
-        self.curves_row = QWidget()
-        cr_lay = QHBoxLayout(self.curves_row)
-        cr_lay.setContentsMargins(0, 0, 0, 0)
-        cr_lay.setSpacing(8)
-
-        cr_lay.addWidget(QLabel(self.tr("Strength:")))
-        self.sld_curves = QSlider(Qt.Orientation.Horizontal)
-        self.sld_curves.setRange(0, 100)
-        self.sld_curves.setValue(20)
-        cr_lay.addWidget(self.sld_curves, 1)
-
-        self.lbl_curves_val = QLabel(f"{self.sld_curves.value()/100:.2f}")
-        cr_lay.addWidget(self.lbl_curves_val)
-
-        self.curves_row.setEnabled(False)
-
-        # ------------------------------------------------------------------
-        # Preview UI
-        # ------------------------------------------------------------------
-        self.preview_label = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
-        self.preview_label.setMinimumSize(QSize(320, 240))
-        self.preview_label.setScaledContents(False)
-        self.preview_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-
-        self.preview_scroll = QScrollArea()
-        self.preview_scroll.setWidgetResizable(False)
-        self.preview_scroll.setWidget(self.preview_label)
-        self.preview_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.preview_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.preview_scroll.viewport().installEventFilter(self)
-
-        # Zoom buttons
-        zoom_row = QHBoxLayout()
-        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
-        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
-        self.btn_zoom_100 = themed_toolbtn("zoom-original", "1:1")
-        self.btn_zoom_fit = themed_toolbtn("zoom-fit-best", "Fit")
-
-        zoom_row.addStretch(1)
-        for b in (self.btn_zoom_out, self.btn_zoom_in, self.btn_zoom_100, self.btn_zoom_fit):
-            zoom_row.addWidget(b)
-        zoom_row.addStretch(1)
-
-        # Buttons
-        self.btn_preview = QPushButton(self.tr("Preview"))
-        self.btn_apply   = QPushButton(self.tr("Apply"))
-        self.btn_close   = QPushButton(self.tr("Close"))
-        self.btn_reset = QPushButton(self.tr("Reset ⟳"))  
-
-        self.btn_clipstats = QPushButton(self.tr("Clip stats"))
-        self.lbl_clipstats = QLabel("")
-        self.lbl_clipstats.setWordWrap(True)
-        self.lbl_clipstats.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.lbl_clipstats.setMinimumHeight(38)
-        self.lbl_clipstats.setFrameShape(QLabel.Shape.StyledPanel)
-        self.lbl_clipstats.setFrameShadow(QLabel.Shadow.Sunken)
-        self.lbl_clipstats.setContentsMargins(6, 4, 6, 4)
-
-        # --- In-UI busy indicator (Wayland-friendly) ---
-        self.busy_row = QWidget()
-        br = QHBoxLayout(self.busy_row)
-        br.setContentsMargins(0, 0, 0, 0)
-        br.setSpacing(8)
-
-        self.lbl_busy = QLabel(self.tr("Processing…"))
-        self.lbl_busy.setStyleSheet("color:#888;")
-        self.pbar_busy = QProgressBar()
-        self.pbar_busy.setRange(0, 0)          # indeterminate
-        self.pbar_busy.setTextVisible(False)
-        self.pbar_busy.setFixedHeight(10)
-
-        br.addWidget(self.lbl_busy)
-        br.addWidget(self.pbar_busy, 1)
-
-        self.busy_row.setVisible(False)        # hidden until needed
-
-        # ------------------------------------------------------------------
-        # Layout
-        # ------------------------------------------------------------------
-        form = QFormLayout()
-        form.addRow(self.tr("Target median:"), self.spin_target)
-        form.addRow("", self.chk_linked)
-        form.addRow("", self.row_bp)
-        form.addRow("", self.chk_no_black_clip)
-        form.addRow("", self.chk_hdr)
-        form.addRow("", self.hdr_row)
-        form.addRow("", self.luma_row)
-        form.addRow("", self.luma_blend_row)
-        form.addRow("", self.chk_normalize)
-        form.addRow("", self.chk_curves)
-        form.addRow("", self.curves_row)
-
-        left = QVBoxLayout()
-        left.addLayout(form)
-
-        btn_row = QHBoxLayout()
-        btn_row.addWidget(self.btn_preview)
-        btn_row.addWidget(self.btn_apply)
-        btn_row.addWidget(self.btn_clipstats)
-        btn_row.addStretch(1)        
-        btn_row.addWidget(self.btn_reset)  
-        btn_row.addStretch(1)
-        left.addLayout(btn_row)
-
-        left.addWidget(self.lbl_clipstats)
-        left.addWidget(self.busy_row)
-        left.addStretch(1)
-
-        right = QVBoxLayout()
-        right.addLayout(zoom_row)
-        right.addWidget(self.preview_scroll, 1)
-
-        main = QHBoxLayout(self)
-        main.addLayout(left, 0)
-        main.addLayout(right, 1)
-
-        # ------------------------------------------------------------------
-        # Behavior / wiring
-        # ------------------------------------------------------------------
-
-        # Blackpoint slider -> label + debounced clip stats
-        def _on_bp_changed(v: int):
-            self.lbl_bp.setText(f"{v/100:.2f}")
-            self._schedule_clip_stats()
-
-        self.sld_bp.valueChanged.connect(_on_bp_changed)
-
-        # No-black-clip toggles blackpoint UI + triggers stats
-        def _on_no_black_clip_toggled(on: bool):
-            self.row_bp.setEnabled(not on)
-            self._schedule_clip_stats()
-
-        self.chk_no_black_clip.toggled.connect(_on_no_black_clip_toggled)
-        _on_no_black_clip_toggled(self.chk_no_black_clip.isChecked())
-
-        # Curves
-        self.chk_curves.toggled.connect(self.curves_row.setEnabled)
-        self.sld_curves.valueChanged.connect(lambda v: self.lbl_curves_val.setText(f"{v/100:.2f}"))
-
-        # HDR enable toggles HDR row
-        self.chk_hdr.toggled.connect(self.hdr_row.setEnabled)
-        self.sld_hdr_amt.valueChanged.connect(lambda v: self.lbl_hdr_amt.setText(f"{v/100:.2f}"))
-        self.sld_hdr_knee.valueChanged.connect(lambda v: self.lbl_hdr_knee.setText(f"{v/100:.2f}"))
-        self.sld_hdr_knee.sliderPressed.connect(lambda: setattr(self, "_hdr_knee_user_locked", True))
-
-        # Auto-suggest HDR knee from target (unless user locked)
-        def _suggest_hdr_knee_from_target():
-            if getattr(self, "_hdr_knee_user_locked", False):
-                return
-            t = float(self.spin_target.value())
-            knee = float(np.clip(t + 0.10, 0.10, 0.95))
-            self.sld_hdr_knee.blockSignals(True)
-            self.sld_hdr_knee.setValue(int(round(knee * 100)))
-            self.sld_hdr_knee.blockSignals(False)
-            self.lbl_hdr_knee.setText(f"{knee:.2f}")
-
-        self.spin_target.valueChanged.connect(_suggest_hdr_knee_from_target)
-
-        # Zoom buttons
-        self.btn_zoom_in.clicked.connect(lambda: self._zoom_by(1.25))
-        self.btn_zoom_out.clicked.connect(lambda: self._zoom_by(1/1.25))
-        self.btn_zoom_100.clicked.connect(self._zoom_reset_100)
-        self.btn_zoom_fit.clicked.connect(self._fit_preview)
-
-        # Main buttons
-        self.btn_preview.clicked.connect(self._do_preview)
-        self.btn_apply.clicked.connect(self._do_apply)
-        self.btn_reset.clicked.connect(self._reset_defaults)   
-        self.btn_close.clicked.connect(self.close)
-        self.btn_clipstats.clicked.connect(self._do_clip_stats)
-
-        # Debounced clip stats timer
-        self._clip_timer = QTimer(self)
-        self._clip_timer.setSingleShot(True)
-        self._clip_timer.setInterval(500)
-        self._clip_timer.timeout.connect(self._do_clip_stats)
-
-        # Initialize UI state
-        _suggest_hdr_knee_from_target()
-        self.sld_luma_blend.valueChanged.connect(
-            lambda v: self.lbl_luma_blend.setText(f"{v/100:.2f}")
-        )
-
-        # Luma-only: one unified handler for all dependent UI state
-        def _on_luma_only_toggled(on: bool):
-            # enable luma mode dropdown only when luma-only is on
-            self.cmb_luma.setEnabled(on)
-
-            # linked channels doesn't make sense in luma-only mode
-            self.chk_linked.setEnabled(not on)
-
-            # luma blend row only meaningful when luma-only is enabled
-            self.luma_blend_row.setEnabled(on)
-
-            # mode-affecting => refresh clip stats
-            self._schedule_clip_stats()
-        self._load_settings()
-        self.chk_luma_only.toggled.connect(_on_luma_only_toggled)
-        _on_luma_only_toggled(self.chk_luma_only.isChecked())
-
-        self.spin_target.valueChanged.connect(self._save_settings)
-        self.chk_linked.toggled.connect(self._save_settings)
-        self.chk_normalize.toggled.connect(self._save_settings)
-
-        self.sld_bp.valueChanged.connect(self._save_settings)
-        self.chk_no_black_clip.toggled.connect(self._save_settings)
-
-        self.chk_hdr.toggled.connect(self._save_settings)
-        self.sld_hdr_amt.valueChanged.connect(self._save_settings)
-        self.sld_hdr_knee.valueChanged.connect(self._save_settings)
-
-        self.chk_luma_only.toggled.connect(self._save_settings)
-        self.cmb_luma.currentTextChanged.connect(self._save_settings)
-        self.sld_luma_blend.valueChanged.connect(self._save_settings)
-
-        self.chk_curves.toggled.connect(self._save_settings)
-        self.sld_curves.valueChanged.connect(self._save_settings)
-
-        
-        #self._restore_window_geometry()
-        # Initial preview + clip stats
-        self._populate_initial_preview()
-
-
-    # ----- helpers -----
-    def _load_settings(self):
-        s = QSettings()
-
-        # Core stretch controls
-        self.spin_target.setValue(float(s.value("stat_stretch/target_median", 0.25)))
-        self.chk_linked.setChecked(bool(s.value("stat_stretch/linked", False, type=bool)))
-        self.chk_normalize.setChecked(bool(s.value("stat_stretch/normalize", False, type=bool)))
-
-        # Black point controls
-        self.sld_bp.setValue(int(s.value("stat_stretch/blackpoint_sigma_x100", 500)))
-        self.chk_no_black_clip.setChecked(bool(s.value("stat_stretch/no_black_clip", False, type=bool)))
-
-        # HDR
-        self.chk_hdr.setChecked(bool(s.value("stat_stretch/hdr_enabled", False, type=bool)))
-        self.sld_hdr_amt.setValue(int(s.value("stat_stretch/hdr_amount_x100", 15)))
-        self.sld_hdr_knee.setValue(int(s.value("stat_stretch/hdr_knee_x100", 75)))
-
-        # Luma-only
-        self.chk_luma_only.setChecked(bool(s.value("stat_stretch/luma_only", False, type=bool)))
-        luma_mode = str(s.value("stat_stretch/luma_mode", "rec709"))
-        if self.cmb_luma.findText(luma_mode) >= 0:
-            self.cmb_luma.setCurrentText(luma_mode)
-        self.sld_luma_blend.setValue(int(s.value("stat_stretch/luma_blend_x100", 60)))
-
-        # Curves
-        self.chk_curves.setChecked(bool(s.value("stat_stretch/curves_enabled", False, type=bool)))
-        self.sld_curves.setValue(int(s.value("stat_stretch/curves_strength_x100", 20)))
-
-
-    def _save_settings(self):
-        s = QSettings()
-
-        s.setValue("stat_stretch/target_median", float(self.spin_target.value()))
-        s.setValue("stat_stretch/linked", self.chk_linked.isChecked())
-        s.setValue("stat_stretch/normalize", self.chk_normalize.isChecked())
-
-        s.setValue("stat_stretch/blackpoint_sigma_x100", self.sld_bp.value())
-        s.setValue("stat_stretch/no_black_clip", self.chk_no_black_clip.isChecked())
-
-        s.setValue("stat_stretch/hdr_enabled", self.chk_hdr.isChecked())
-        s.setValue("stat_stretch/hdr_amount_x100", self.sld_hdr_amt.value())
-        s.setValue("stat_stretch/hdr_knee_x100", self.sld_hdr_knee.value())
-
-        s.setValue("stat_stretch/luma_only", self.chk_luma_only.isChecked())
-        s.setValue("stat_stretch/luma_mode", self.cmb_luma.currentText())
-        s.setValue("stat_stretch/luma_blend_x100", self.sld_luma_blend.value())
-
-        s.setValue("stat_stretch/curves_enabled", self.chk_curves.isChecked())
-        s.setValue("stat_stretch/curves_strength_x100", self.sld_curves.value())
-
-    def _restore_window_geometry(self):
-        try:
-            s = QSettings()
-            g = s.value("stat_stretch/window_geometry", None, type=QByteArray)
-            if g and isinstance(g, QByteArray) and not g.isEmpty():
-                self.restoreGeometry(g)
-        except Exception:
-            pass
-
-    def _save_window_geometry(self):
-        try:
-            s = QSettings()
-            s.setValue("stat_stretch/window_geometry", self.saveGeometry())
-        except Exception:
-            pass
-
-    def showEvent(self, e):
-        super().showEvent(e)
-
-        # Restore geometry once, AFTER the WM has created the real window
-        if getattr(self, "_geom_restored", False):
-            return
-        self._geom_restored = True
-
-        QTimer.singleShot(0, self._restore_window_geometry)
-
-    def _show_busy(self, title: str, text: str):
-        # title kept for signature compatibility; not shown
-        try:
-            self.lbl_busy.setText(text or self.tr("Processing…"))
-            self.busy_row.setVisible(True)
-            # make sure UI repaints before thread work starts
-            QApplication.processEvents()
-        except Exception:
-            pass
-
-    def _hide_busy(self):
-        try:
-            if getattr(self, "busy_row", None) is not None:
-                self.busy_row.setVisible(False)
-        except Exception:
-            pass
-
-
-    def _set_controls_enabled(self, enabled: bool):
-        try:
-            self.btn_preview.setEnabled(enabled)
-            self.btn_apply.setEnabled(enabled)
-            if getattr(self, "btn_reset", None) is not None:
-                self.btn_reset.setEnabled(enabled)  # <-- NEW
-            if getattr(self, "btn_clipstats", None) is not None:
-                self.btn_clipstats.setEnabled(enabled)
-        except Exception:
-            pass
-
-    def _reset_defaults(self):
-        """Reset all controls back to factory defaults."""
-        if getattr(self, "_job_running", False):
-            return
-
-        # Defaults (must match your __init__ setValue/setChecked calls)
-        DEFAULT_TARGET = 0.25
-        DEFAULT_LINKED = False
-        DEFAULT_NORMALIZE = False
-        DEFAULT_BP_SLIDER = 500          # 5.00
-        DEFAULT_NO_BLACK_CLIP = False
-
-        DEFAULT_HDR_ON = False
-        DEFAULT_HDR_AMT = 15             # 0.15
-        DEFAULT_HDR_KNEE = 75            # 0.75
-
-        DEFAULT_LUMA_ONLY = False
-        DEFAULT_LUMA_MODE = "rec709"
-        DEFAULT_LUMA_BLEND = 60          # 0.60
-
-        DEFAULT_CURVES_ON = False
-        DEFAULT_CURVES_STRENGTH = 20     # 0.20
-
-        # Avoid cascading signal storms while we set everything
-        widgets = [
-            self.spin_target,
-            self.chk_linked,
-            self.chk_normalize,
-            self.sld_bp,
-            self.chk_no_black_clip,
-            self.chk_hdr,
-            self.sld_hdr_amt,
-            self.sld_hdr_knee,
-            self.chk_luma_only,
-            self.cmb_luma,
-            self.sld_luma_blend,
-            self.chk_curves,
-            self.sld_curves,
+                coeffs, _ = nnls(X, y)
+                A_iter[ch_idx] = coeffs
+            except Exception as e:
+                print(f"[NBExtract] NNLS failed for channel {ch_idx} iter {iteration}: {e}")
+                ok = False
+                break
+        if not ok:
+            break
+
+        A_n = A_iter
+
+        predicted = X_full @ A_n.T
+        measured  = np.column_stack([Rm_n, Gm_n, Bm_n])
+        with np.errstate(divide="ignore", invalid="ignore"):
+            frac_res = np.where(predicted > 0,
+                                np.abs(measured - predicted) / predicted,
+                                0.0)
+        star_res = np.mean(frac_res, axis=1)
+
+        med = np.median(star_res[keep])
+        mad = np.median(np.abs(star_res[keep] - med)) * 1.4826
+        if mad <= 0:
+            break
+
+        new_keep  = keep & (star_res < med + sigma_clip * mad)
+        n_clipped = int(np.sum(keep) - np.sum(new_keep))
+
+        if n_clipped == 0:
+            break
+
+        print(f"[NBExtract] Sigma clip iter {iteration+1}: "
+              f"clipped {n_clipped} stars, {int(np.sum(new_keep))} remaining")
+
+        if np.sum(new_keep) < 6:
+            print("[NBExtract] Too few stars after clipping; keeping previous mask.")
+            break
+
+        keep = new_keep
+
+    n_used = int(np.sum(keep))
+
+    flux_scales = [r_scale, g_scale, b_scale]
+    A = np.zeros((3, 2), dtype=np.float64)
+    for ch in range(3):
+        A[ch, 0] = A_n[ch, 0] * flux_scales[ch] / s1_scale
+        A[ch, 1] = A_n[ch, 1] * flux_scales[ch] / s2_scale
+
+    if np.any(~np.isfinite(A)):
+        print("[NBExtract] Mixing matrix contains non-finite values.")
+        return None, 0
+
+    try:
+        k = float(np.linalg.cond(A))
+        if k > 1e8:
+            print(
+                f"[NBExtract] Mixing matrix is numerically singular (cond={k:.2e}).\n"
+                f"  Likely cause: G and B channels are identical (e.g. a synthetic HOO image\n"
+                f"  where G=B=OIII). NBExtract requires a real dual-band OSC image where\n"
+                f"  the green and blue Bayer pixels have genuinely different responses."
+            )
+            return None, 0
+    except Exception:
+        pass
+
+    return A, n_used
+
+
+def extract_channels_nnls(
+    img_rgb: np.ndarray,
+    A: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Solve the per-pixel 3x2 system for line1 and line2 channel images.
+
+    Uses the Moore-Penrose pseudo-inverse of A followed by non-negativity
+    clipping.  Returns raw linear pseudo-flux arrays — no normalisation or
+    scaling is applied here.  The caller is responsible for any stretch.
+    """
+    H, W = img_rgb.shape[:2]
+    pixels = img_rgb.reshape(-1, 3).astype(np.float64)
+
+    A_pinv = np.linalg.pinv(A)
+    out = (A_pinv @ pixels.T).T
+    out = np.clip(out, 0.0, None)
+
+    line1 = out[:, 0].reshape(H, W).astype(np.float32)
+    line2 = out[:, 1].reshape(H, W).astype(np.float32)
+
+    return line1, line2
+
+
+def condition_number_warning(A: np.ndarray) -> Tuple[Optional[str], str]:
+    """
+    Return (warning_text, severity) where severity is one of:
+        "ok"      — k < 25,  clean separation
+        "caution" — 25 <= k < 100, moderate overlap, auto-Q will compensate
+        "severe"  — k >= 100, noise amplification too large for reliable extraction
+
+    warning_text is None when severity is "ok".
+    """
+    try:
+        k = float(np.linalg.cond(A))
+        if k >= 100:
+            return (
+                f"Condition number is {k:.1f} — channel separation is too poor for\n"
+                f"reliable NNLS extraction (noise amplified ~{k**2:.0f}×).\n"
+                "The stellar flux color mixing fallback will give better results.",
+                "severe"
+            )
+        if k >= 25:
+            return (
+                f"Condition number is {k:.1f} — moderate channel overlap.\n"
+                "Auto-Q has been set conservatively. Check the extracted channels\n"
+                "for dark halos and reduce Q further if needed.",
+                "caution"
+            )
+    except Exception:
+        pass
+    return None, "ok"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Dialog
+# ─────────────────────────────────────────────────────────────────────────────
+
+class NBExtractDialog(SFCCDialog):
+    """
+    Narrowband Channel Extractor dialog.
+
+    Subclasses SFCCDialog to inherit:
+        fetch_stars()                   — SIMBAD + Gaia XP star catalogue
+        _make_working_base_for_sep()    — SEP-ready image preparation
+        Pickles FITS loading machinery
+        WCS initialisation
+
+    Adds:
+        Filter type + bandwidth UI
+        Step 2: empirical mixing matrix calibration (auto-Q from condition number)
+        Step 3: per-pixel NNLS channel extraction with Q-blended regularisation
+        Two new output documents (line1, line2)
+    """
+
+    def __init__(self, doc_manager, sasp_data_path: str, parent=None):
+        super().__init__(doc_manager, sasp_data_path, parent)
+
+        _force_mpl_no_tex()
+        self.setWindowTitle("Narrowband Channel Extractor (NBExtract)")
+        self.setMinimumSize(740, 560)
+
+        # Internal state
+        self._A_matrix: Optional[np.ndarray] = None
+        self._nb_star_records: List[Dict] = []
+        self._fallback_mode: bool = False
+
+        self._inject_nb_ui()
+        self._load_nb_settings()
+
+    # ── UI injection ──────────────────────────────────────────────────────────
+
+    def _inject_nb_ui(self):
+        _sfcc_only = [
+            "r_filter_combo", "g_filter_combo", "b_filter_combo",
+            "sens_combo", "lp_filter_combo", "lp_filter_combo2",
+            "run_spcc_btn", "run_grad_btn", "grad_method_combo",
+            "neutralize_chk", "open_sasp_btn",
+            "add_curve_btn", "remove_curve_btn", "star_combo",
         ]
-
-        old_blocks = []
-        for w in widgets:
-            try:
-                old_blocks.append((w, w.blockSignals(True)))
-            except Exception:
-                pass
-
-        try:
-            # Reset “user locked” HDR knee behavior
-            self._hdr_knee_user_locked = False
-
-            # Core controls
-            self.spin_target.setValue(DEFAULT_TARGET)
-            self.chk_linked.setChecked(DEFAULT_LINKED)
-            self.chk_normalize.setChecked(DEFAULT_NORMALIZE)
-
-            # Black point
-            self.chk_no_black_clip.setChecked(DEFAULT_NO_BLACK_CLIP)
-            self.sld_bp.setValue(DEFAULT_BP_SLIDER)
-            self.lbl_bp.setText(f"{DEFAULT_BP_SLIDER/100:.2f}")
-
-            # HDR
-            self.chk_hdr.setChecked(DEFAULT_HDR_ON)
-            self.sld_hdr_amt.setValue(DEFAULT_HDR_AMT)
-            self.lbl_hdr_amt.setText(f"{DEFAULT_HDR_AMT/100:.2f}")
-            self.sld_hdr_knee.setValue(DEFAULT_HDR_KNEE)
-            self.lbl_hdr_knee.setText(f"{DEFAULT_HDR_KNEE/100:.2f}")
-
-            # Luma-only + mode + blend
-            self.chk_luma_only.setChecked(DEFAULT_LUMA_ONLY)
-            if DEFAULT_LUMA_MODE:
-                self.cmb_luma.setCurrentText(DEFAULT_LUMA_MODE)
-            self.sld_luma_blend.setValue(DEFAULT_LUMA_BLEND)
-            self.lbl_luma_blend.setText(f"{DEFAULT_LUMA_BLEND/100:.2f}")
-
-            # Curves
-            self.chk_curves.setChecked(DEFAULT_CURVES_ON)
-            self.sld_curves.setValue(DEFAULT_CURVES_STRENGTH)
-            self.lbl_curves_val.setText(f"{DEFAULT_CURVES_STRENGTH/100:.2f}")
-
-        finally:
-            # Restore signal states
-            for w, _prev in old_blocks:
+        for attr in _sfcc_only:
+            w = getattr(self, attr, None)
+            if w is not None:
                 try:
-                    w.blockSignals(False)
+                    w.hide()
                 except Exception:
                     pass
 
-        # Re-apply dependent enable/disable states exactly like normal interactions
-        try:
-            # no-black-clip disables BP row
-            self.row_bp.setEnabled(not self.chk_no_black_clip.isChecked())
-        except Exception:
-            pass
+        self._hide_sfcc_filter_labels()
 
-        try:
-            # HDR enables HDR row
-            self.hdr_row.setEnabled(self.chk_hdr.isChecked())
-        except Exception:
-            pass
+        grp = QGroupBox("Narrowband Filter Configuration")
+        grp_lay = QVBoxLayout(grp)
 
-        try:
-            # Curves enables curves row
-            self.curves_row.setEnabled(self.chk_curves.isChecked())
-        except Exception:
-            pass
+        # Preset selector row
+        row_preset = QHBoxLayout()
+        row_preset.addWidget(QLabel("Filter type:"))
+        self.nb_preset_combo = QComboBox()
+        for name in FILTER_PRESETS:
+            self.nb_preset_combo.addItem(name)
+        self.nb_preset_combo.currentIndexChanged.connect(self._on_preset_changed)
+        row_preset.addWidget(self.nb_preset_combo)
+        row_preset.addStretch()
+        grp_lay.addLayout(row_preset)
 
-        try:
-            # Luma-only enables dropdown + blend row, disables linked
-            luma_on = self.chk_luma_only.isChecked()
-            self.cmb_luma.setEnabled(luma_on)
-            self.luma_blend_row.setEnabled(luma_on)
-            self.chk_linked.setEnabled(not luma_on)
-        except Exception:
-            pass
+        # Line 1 row
+        row_l1 = QHBoxLayout()
+        self.nb_line1_label = QLabel("Ha centre (nm):")
+        row_l1.addWidget(self.nb_line1_label)
+        self.nb_center1_spin = QDoubleSpinBox()
+        self.nb_center1_spin.setRange(400.0, 800.0)
+        self.nb_center1_spin.setDecimals(2)
+        self.nb_center1_spin.setSingleStep(0.1)
+        self.nb_center1_spin.setSuffix(" nm")
+        row_l1.addWidget(self.nb_center1_spin)
+        row_l1.addSpacing(16)
+        row_l1.addWidget(QLabel("Bandwidth (FWHM):"))
+        self.nb_bw1_spin = QDoubleSpinBox()
+        self.nb_bw1_spin.setRange(1.0, 30.0)
+        self.nb_bw1_spin.setDecimals(1)
+        self.nb_bw1_spin.setSingleStep(0.5)
+        self.nb_bw1_spin.setSuffix(" nm")
+        row_l1.addWidget(self.nb_bw1_spin)
+        row_l1.addStretch()
+        grp_lay.addLayout(row_l1)
 
-        # Auto-suggest HDR knee from target (since we cleared lock)
-        try:
-            t = float(self.spin_target.value())
-            knee = float(np.clip(t + 0.10, 0.10, 0.95))
-            self.sld_hdr_knee.setValue(int(round(knee * 100)))
-            self.lbl_hdr_knee.setText(f"{knee:.2f}")
-        except Exception:
-            pass
+        # Line 2 row
+        row_l2 = QHBoxLayout()
+        self.nb_line2_label = QLabel("OIII centre (nm):")
+        row_l2.addWidget(self.nb_line2_label)
+        self.nb_center2_spin = QDoubleSpinBox()
+        self.nb_center2_spin.setRange(400.0, 800.0)
+        self.nb_center2_spin.setDecimals(2)
+        self.nb_center2_spin.setSingleStep(0.1)
+        self.nb_center2_spin.setSuffix(" nm")
+        row_l2.addWidget(self.nb_center2_spin)
+        row_l2.addSpacing(16)
+        row_l2.addWidget(QLabel("Bandwidth (FWHM):"))
+        self.nb_bw2_spin = QDoubleSpinBox()
+        self.nb_bw2_spin.setRange(1.0, 30.0)
+        self.nb_bw2_spin.setDecimals(1)
+        self.nb_bw2_spin.setSingleStep(0.5)
+        self.nb_bw2_spin.setSuffix(" nm")
+        row_l2.addWidget(self.nb_bw2_spin)
+        row_l2.addStretch()
+        grp_lay.addLayout(row_l2)
 
-        try:
-            self._save_settings()
-        except Exception:
-            pass
+        # Custom line name row — only visible for Custom preset
+        row_names = QHBoxLayout()
+        row_names.addWidget(QLabel("Line 1 name:"))
+        self.nb_line1_name = QLineEdit("Line1")
+        self.nb_line1_name.setMaximumWidth(80)
+        self.nb_line1_name.setPlaceholderText("e.g. NII")
+        self.nb_line1_name.setToolTip("Short label for line 1 (used in output document names)")
+        row_names.addWidget(self.nb_line1_name)
+        row_names.addSpacing(24)
+        row_names.addWidget(QLabel("Line 2 name:"))
+        self.nb_line2_name = QLineEdit("Line2")
+        self.nb_line2_name.setMaximumWidth(80)
+        self.nb_line2_name.setPlaceholderText("e.g. HeI")
+        self.nb_line2_name.setToolTip("Short label for line 2 (used in output document names)")
+        row_names.addWidget(self.nb_line2_name)
+        row_names.addStretch()
+        self.nb_custom_names_row = QWidget()
+        self.nb_custom_names_row.setLayout(row_names)
+        self.nb_custom_names_row.setVisible(False)   # hidden until Custom selected
+        grp_lay.addWidget(self.nb_custom_names_row)
 
-        # Refresh baseline preview + clip stats
-        self._populate_initial_preview()
+        # Action buttons row
+        row_act = QHBoxLayout()
 
+        self.nb_calibrate_btn = QPushButton("Step 2: Calibrate Mixing Matrix")
+        f = self.nb_calibrate_btn.font()
+        f.setBold(True)
+        self.nb_calibrate_btn.setFont(f)
+        self.nb_calibrate_btn.clicked.connect(self._calibrate_mixing_matrix)
+        row_act.addWidget(self.nb_calibrate_btn)
 
-    def _clip_mode_label(self, imgf: np.ndarray) -> str:
-        # Mono image
-        if imgf.ndim == 2 or (imgf.ndim == 3 and imgf.shape[2] == 1):
-            return self.tr("Mono")
+        self.nb_extract_btn = QPushButton("Step 3: Extract Channels")
+        f2 = self.nb_extract_btn.font()
+        f2.setBold(True)
+        self.nb_extract_btn.setFont(f2)
+        self.nb_extract_btn.setEnabled(False)
+        self.nb_extract_btn.clicked.connect(self._extract_channels)
+        row_act.addWidget(self.nb_extract_btn)
 
-        # RGB image
-        luma_only = bool(getattr(self, "chk_luma_only", None) and self.chk_luma_only.isChecked())
-        if luma_only:
-            return self.tr("Luma-only (L ≤ bp)")
+        self.nb_stretch_chk = QCheckBox("Match output median to source")
+        self.nb_stretch_chk.setChecked(True)
+        self.nb_stretch_chk.setToolTip(
+            "Applies a statistical stretch to each extracted channel so its\n"
+            "median matches the corresponding source channel median.\n"
+            "Leave checked for a linear output that sits at the same\n"
+            "intensity level as the input image."
+        )
+        row_act.addWidget(self.nb_stretch_chk)
+        row_act.addStretch()
+        grp_lay.addLayout(row_act)
 
-        linked = bool(getattr(self, "chk_linked", None) and self.chk_linked.isChecked())
-        if linked:
-            return self.tr("Linked (L ≤ bp)")
+        # Matrix readout
+        self.nb_matrix_label = QLabel("Mixing matrix: (not yet calibrated)")
+        self.nb_matrix_label.setWordWrap(True)
+        grp_lay.addWidget(self.nb_matrix_label)
 
-        return self.tr("Unlinked (any channel ≤ bp)")
+        # ── Advanced: per-channel Q blending ─────────────────────────────
+        adv_hdr = QHBoxLayout()
+        self.nb_adv_btn = QPushButton("Advanced ▸")
+        self.nb_adv_btn.setFlat(True)
+        self.nb_adv_btn.setStyleSheet("font-size:11px; text-align:left;")
+        self.nb_adv_btn.clicked.connect(self._toggle_nb_advanced)
 
+        self.nb_adv_summary = QLabel("Q auto")
+        self.nb_adv_summary.setStyleSheet("font-size:10px; color: palette(placeholderText);")
+        adv_hdr.addWidget(self.nb_adv_btn)
+        adv_hdr.addStretch(1)
+        adv_hdr.addWidget(self.nb_adv_summary)
+        grp_lay.addLayout(adv_hdr)
 
-    def _do_clip_stats(self):
-        imgf = self._get_source_float()
-        if imgf is None or imgf.size == 0:
-            self.lbl_clipstats.setText(self.tr("No image loaded."))
-            return
+        self.nb_adv_panel = QWidget()
+        adv_l = QVBoxLayout(self.nb_adv_panel)
+        adv_l.setContentsMargins(4, 0, 0, 0)
+        adv_l.setSpacing(6)
 
-        sig = float(self.sld_bp.value()) / 100.0
-        no_black_clip = bool(self.chk_no_black_clip.isChecked())
+        # Auto-Q explanation label
+        self.nb_q_auto_label = QLabel(
+            "Q values are set automatically from the matrix condition number.\n"
+            "Lower Q = more conservative (less NNLS correction, closer to raw channel).\n"
+            "Override below if needed."
+        )
+        self.nb_q_auto_label.setStyleSheet("font-size:10px; color: palette(placeholderText);")
+        self.nb_q_auto_label.setWordWrap(True)
+        adv_l.addWidget(self.nb_q_auto_label)
 
-        # Modes that affect how we count / threshold
-        luma_only = bool(getattr(self, "chk_luma_only", None) and self.chk_luma_only.isChecked())
-        linked = bool(getattr(self, "chk_linked", None) and self.chk_linked.isChecked())
+        # Q1 row (line1)
+        q1_row = QHBoxLayout()
+        self.nb_q1_label = QLabel("Line 1 (Ha) mixing strength Q:")
+        self.nb_q1_label.setStyleSheet("font-size:11px;")
+        self.nb_q1_spin = QDoubleSpinBox()
+        self.nb_q1_spin.setRange(0.0, 1.0)
+        self.nb_q1_spin.setDecimals(2)
+        self.nb_q1_spin.setSingleStep(0.05)
+        self.nb_q1_spin.setValue(1.0)
+        self.nb_q1_spin.setToolTip(
+            "Blend between raw R channel (0.0) and full NNLS extraction (1.0).\n"
+            "Auto-set from condition number after calibration.\n"
+            "If the Ha channel shows dark halos or over-subtraction, reduce toward 0.5-0.7."
+        )
+        q1_row.addWidget(self.nb_q1_label)
+        q1_row.addWidget(self.nb_q1_spin)
+        q1_row.addStretch(1)
+        adv_l.addLayout(q1_row)
 
-        # Outputs we’ll fill
-        bp = None            # float threshold (mono / L-based modes)
-        bp3 = None           # per-channel thresholds (unlinked RGB)
-        clipped = None       # [H,W] bool
+        # Q2 row (line2)
+        q2_row = QHBoxLayout()
+        self.nb_q2_label = QLabel("Line 2 (OIII) mixing strength Q:")
+        self.nb_q2_label.setStyleSheet("font-size:11px;")
+        self.nb_q2_spin = QDoubleSpinBox()
+        self.nb_q2_spin.setRange(0.0, 1.0)
+        self.nb_q2_spin.setDecimals(2)
+        self.nb_q2_spin.setSingleStep(0.05)
+        self.nb_q2_spin.setValue(1.0)
+        self.nb_q2_spin.setToolTip(
+            "Blend between raw G channel (0.0) and full NNLS extraction (1.0).\n"
+            "Auto-set from condition number after calibration.\n"
+            "If the OIII channel shows dark holes or over-subtraction, reduce toward 0.5-0.7."
+        )
+        q2_row.addWidget(self.nb_q2_label)
+        q2_row.addWidget(self.nb_q2_spin)
+        q2_row.addStretch(1)
+        adv_l.addLayout(q2_row)
 
-        # --- Compute blackpoint threshold(s) exactly like stretch.py ---
-        if imgf.ndim == 2 or (imgf.ndim == 3 and imgf.shape[2] == 1):
-            mono = imgf.squeeze().astype(np.float32, copy=False)
-            if no_black_clip:
-                bp = float(mono.min())
-            else:
-                bp, _ = _compute_blackpoint_sigma(mono, sig)
+        self.nb_q1_spin.valueChanged.connect(self._update_nb_adv_summary)
+        self.nb_q2_spin.valueChanged.connect(self._update_nb_adv_summary)
 
-            clipped = (mono <= bp)
+        self.nb_adv_panel.setVisible(False)
+        grp_lay.addWidget(self.nb_adv_panel)
 
+        # Insert group above the status label
+        layout = self.layout()
+        idx = self._find_widget_index_in_layout(layout, self.count_label)
+        if idx >= 0:
+            layout.insertWidget(idx, grp)
         else:
-            rgb = imgf.astype(np.float32, copy=False)
+            layout.addWidget(grp)
 
-            if luma_only or linked:
-                # One threshold for the pixel: use luminance proxy
-                L = 0.2126 * rgb[..., 0] + 0.7152 * rgb[..., 1] + 0.0722 * rgb[..., 2]
-                if no_black_clip:
-                    bp = float(L.min())
-                else:
-                    bp, _ = _compute_blackpoint_sigma(L, sig)
-
-                clipped = (L <= bp)
-
-            else:
-                # Unlinked: per-channel thresholds
-                if no_black_clip:
-                    bp3 = np.array(
-                        [float(rgb[..., 0].min()),
-                        float(rgb[..., 1].min()),
-                        float(rgb[..., 2].min())],
-                        dtype=np.float32
-                    )
-                else:
-                    bp3 = _compute_blackpoint_sigma_per_channel(rgb, sig).astype(np.float32, copy=False)
-
-                # Pixel considered clipped if ANY channel would clip
-                clipped = np.any(rgb <= bp3.reshape((1, 1, 3)), axis=2)
-
-        # --- Count pixels (NOT rgb elements) ---
-        clipped_count = int(np.count_nonzero(clipped))
-        total = int(clipped.size)
-        pct = 100.0 * clipped_count / max(1, total)
-
-        # --- Optional masked-area stats ---
-        masked_note = ""
-        m = self._active_mask_array()
-        if m is not None:
-            affected = (m > 0.01)
-            aff_total = int(np.count_nonzero(affected))
-            aff_clip = int(np.count_nonzero(clipped & affected))
-            aff_pct = 100.0 * aff_clip / max(1, aff_total)
-            masked_note = self.tr(f" | masked area: {aff_clip:,}/{aff_total:,} ({aff_pct:.4f}%)")
-
-        mode_lbl = self._clip_mode_label(imgf)
-
-        # --- No-black-clip message (must be mode-aware) ---
-        if no_black_clip:
-            if imgf.ndim == 2 or (imgf.ndim == 3 and imgf.shape[2] == 1):
-                bp_text = self.tr(f"min={float(bp):.6f}")
-            else:
-                if luma_only or linked:
-                    bp_text = self.tr(f"L min={float(bp):.6f}")
-                else:
-                    # bp3 exists here
-                    bp_text = self.tr(
-                        f"R min={float(bp3[0]):.6f}, G min={float(bp3[1]):.6f}, B min={float(bp3[2]):.6f}"
-                    )
-
-            self.lbl_clipstats.setText(
-                self.tr(f"Black clipping disabled ({mode_lbl}). Threshold={bp_text}: "
-                        f"{clipped_count:,}/{total:,} pixels ({pct:.4f}%)") + masked_note
-            )
-            return
-
-        # --- Normal message: show correct threshold(s) ---
-        if (imgf.ndim == 3 and imgf.shape[2] == 3) and not (luma_only or linked):
-            # Unlinked RGB: show per-channel thresholds
-            bp_disp = self.tr(
-                f"R={float(bp3[0]):.6f}, G={float(bp3[1]):.6f}, B={float(bp3[2]):.6f}"
-            )
-        else:
-            # Mono or L-based: single threshold
-            bp_disp = self.tr(f"{float(bp):.6f}")
-
-        self.lbl_clipstats.setText(
-            self.tr(f"Black clip ({mode_lbl}) @ {bp_disp}: "
-                    f"{clipped_count:,}/{total:,} pixels ({pct:.4f}%)") + masked_note
+        # Wire custom name edits to refresh the centre labels live
+        self.nb_line1_name.textChanged.connect(
+            lambda _: self._on_preset_changed() if self.nb_preset_combo.currentText() == FILTER_PRESET_CUSTOM else None
+        )
+        self.nb_line2_name.textChanged.connect(
+            lambda _: self._on_preset_changed() if self.nb_preset_combo.currentText() == FILTER_PRESET_CUSTOM else None
         )
 
+        self._on_preset_changed()
 
-    def _start_stretch_job(self, mode: str):
+    def _hide_sfcc_filter_labels(self):
+        layout = self.layout()
+        if layout is None:
+            return
+        _sfcc_label_fragments = (
+            "R Filter", "G Filter", "B Filter",
+            "Sensor", "LP/Cut", "Select White",
+        )
+        for i in range(layout.count()):
+            item = layout.itemAt(i)
+            if item is None:
+                continue
+            sub = item.layout()
+            if sub is None:
+                continue
+            for j in range(sub.count()):
+                sub_item = sub.itemAt(j)
+                if sub_item is None:
+                    continue
+                w = sub_item.widget()
+                if isinstance(w, QLabel):
+                    if any(frag in w.text() for frag in _sfcc_label_fragments):
+                        w.hide()
+
+    @staticmethod
+    def _find_widget_index_in_layout(layout, target) -> int:
+        for i in range(layout.count()):
+            item = layout.itemAt(i)
+            if item and item.widget() is target:
+                return i
+        return -1
+
+    # ── Preset / settings ─────────────────────────────────────────────────────
+
+    def _on_preset_changed(self, _=None):
+        preset_name = self.nb_preset_combo.currentText()
+        if preset_name not in FILTER_PRESETS:
+            return
+
+        is_custom = (preset_name == FILTER_PRESET_CUSTOM)
+        l1_key, l2_key = FILTER_PRESETS[preset_name]
+
+        # Show/hide custom name editors
+        if hasattr(self, "nb_custom_names_row"):
+            self.nb_custom_names_row.setVisible(is_custom)
+
+        # For Custom preset the centre/BW spinners are always editable;
+        # for named presets they snap to the known values.
+        if not is_custom:
+            for sp in (self.nb_center1_spin, self.nb_center2_spin,
+                       self.nb_bw1_spin, self.nb_bw2_spin):
+                sp.blockSignals(True)
+            self.nb_center1_spin.setValue(LINE_CENTERS_NM[l1_key])
+            self.nb_center2_spin.setValue(LINE_CENTERS_NM[l2_key])
+            self.nb_bw1_spin.setValue(DEFAULT_BW_NM[l1_key])
+            self.nb_bw2_spin.setValue(DEFAULT_BW_NM[l2_key])
+            for sp in (self.nb_center1_spin, self.nb_center2_spin,
+                       self.nb_bw1_spin, self.nb_bw2_spin):
+                sp.blockSignals(False)
+        # Custom: leave spinners at whatever the user last set
+
+        # Update labels — for Custom use the QLineEdit names
+        if is_custom:
+            n1 = self.nb_line1_name.text().strip() or "Line1"
+            n2 = self.nb_line2_name.text().strip() or "Line2"
+        else:
+            n1, n2 = l1_key, l2_key
+
+        self.nb_line1_label.setText(f"{n1} centre (nm):")
+        self.nb_line2_label.setText(f"{n2} centre (nm):")
+
+        if hasattr(self, "nb_q1_label"):
+            self.nb_q1_label.setText(f"Line 1 ({n1}) mixing strength Q:")
+        if hasattr(self, "nb_q2_label"):
+            self.nb_q2_label.setText(f"Line 2 ({n2}) mixing strength Q:")
+
+        self._A_matrix = None
+        self.nb_extract_btn.setEnabled(False)
+        self.nb_matrix_label.setText("Mixing matrix: (not yet calibrated)")
+
+    def _toggle_nb_advanced(self):
+        show = not self.nb_adv_panel.isVisible()
+        self.nb_adv_panel.setVisible(show)
+        self.nb_adv_btn.setText("Advanced ▾" if show else "Advanced ▸")
+        self.nb_adv_summary.setVisible(not show)
+
+    def _update_nb_adv_summary(self):
+        q1 = float(self.nb_q1_spin.value())
+        q2 = float(self.nb_q2_spin.value())
+        self.nb_adv_summary.setText(f"Q\u2081 {q1:.2f}   Q\u2082 {q2:.2f}")
+
+    def _set_auto_q(self, A: np.ndarray):
         """
-        mode: 'preview' or 'apply'
+        Set Q spinners from the mixing matrix using per-channel SVD analysis.
+        Q₁ (line1/Ha) depends on global conditioning.
+        Q₂ (line2/OIII) is additionally penalised by G/B row degeneracy —
+        the most common cause of OIII over-subtraction.
         """
-        if getattr(self, "_job_running", False):
-            return
+        k = float(np.linalg.cond(A))
+        q1, q2 = auto_q_per_channel(A)
 
-        self._job_running = True
-        self._job_mode = mode
+        self.nb_q1_spin.blockSignals(True)
+        self.nb_q2_spin.blockSignals(True)
+        self.nb_q1_spin.setValue(q1)
+        self.nb_q2_spin.setValue(q2)
+        self.nb_q1_spin.blockSignals(False)
+        self.nb_q2_spin.blockSignals(False)
 
-        self._set_controls_enabled(False)
-        self._show_busy("Statistical Stretch", "Processing preview…" if mode == "preview" else "Applying stretch…")
+        self._update_nb_adv_summary()
 
+        if k < 5:
+            quality = "well-conditioned — channels separate cleanly"
+        elif k < 15:
+            quality = "moderate — some channel overlap"
+        elif k < 50:
+            quality = "poorly conditioned — significant channel overlap"
+        else:
+            quality = "very poorly conditioned — channels barely separable"
 
-        self._thread = QThread(self._main)
-        self._worker = _StretchWorker(self)
-        self._worker.moveToThread(self._thread)
+        self.nb_q_auto_label.setText(
+            f"Q auto-derived from matrix structure (condition number {k:.2f}, {quality}).\n"
+            f"Q₁ = {q1:.2f} ({q1*100:.0f}% NNLS + {(1-q1)*100:.0f}% raw R).\n"
+            f"Q₂ = {q2:.2f} ({q2*100:.0f}% NNLS + {(1-q2)*100:.0f}% raw G) — "
+            f"penalised by G/B channel similarity in OIII column.\n"
+            f"Override below if needed."
+        )
 
-        self._thread.started.connect(self._worker.run)
-        self._worker.finished.connect(self._on_stretch_done)
-        self._worker.finished.connect(self._thread.quit)
-        self._worker.finished.connect(self._worker.deleteLater)
-        self._thread.finished.connect(self._thread.deleteLater)
+    # ── fetch_stars override ──────────────────────────────────────────────────
 
-        self._thread.start()
-
-
-    def _get_source_float(self) -> np.ndarray:
+    def fetch_stars(self):
         """
-        Return a float32 array scaled into ~[0..1] for stretching.
+        Override to redraw histogram after parent runs, showing only
+        calibration-eligible stars (not B-V inferred).
         """
-        src = np.asarray(self.doc.image)
-        if src is None or src.size == 0:
-            return None
+        super().fetch_stars()
 
-        if np.issubdtype(src.dtype, np.integer):
-            # Assume 16-bit astro sources by default; adjust if you prefer
-            scale = 65535.0 if src.dtype.itemsize >= 2 else 255.0
-            return (src.astype(np.float32) / scale).clip(0, 1)
-        else:
-            f = src.astype(np.float32)
-            # If values are way above 1 (linear calibrated data), compress softly
-            mx = float(f.max()) if f.size else 1.0
-            if mx > 5.0:
-                f = f / mx
-            return f
-
-    def _apply_current_zoom(self):
-        """Apply the current zoom mode (fit or manual) to the preview image."""
-        if self._preview_qimg is None:
-            return
-        if self._fit_mode:
-            self._fit_preview()
-        else:
-            self._update_preview_scaled()
-
-    def _fit_preview(self):
-        """Fit the image into the visible scroll viewport."""
-        if self._preview_qimg is None:
-            return
-        vp = self.preview_scroll.viewport().size()
-        if vp.width() <= 1 or vp.height() <= 1:
-            return
-        iw, ih = self._preview_qimg.width(), self._preview_qimg.height()
-        if iw <= 0 or ih <= 0:
-            return
-        # compute scale to fit
-        sx = vp.width()  / iw
-        sy = vp.height() / ih
-        self._preview_scale = max(0.05, min(sx, sy))
-        self._fit_mode = True
-        self._update_preview_scaled()
-
-    def _zoom_reset_100(self):
-        """Set zoom to 100% (1:1)."""
-        self._fit_mode = False
-        self._preview_scale = 1.0
-        self._update_preview_scaled()
-
-    def _zoom_by(self, factor: float):
-        vp = self.preview_scroll.viewport()
-        center = vp.rect().center()
-        self._zoom_at(factor, center)
-
-    def _zoom_at(self, factor: float, vp_pos):
-        """Zoom keeping the image point under vp_pos (viewport coords) stationary."""
-        if self._preview_qimg is None:
+        if not getattr(self, "star_list", None):
             return
 
-        old_scale = float(self._preview_scale)
-
-        # Content coords (in scaled-image pixels) currently under the mouse
-        hsb = self.preview_scroll.horizontalScrollBar()
-        vsb = self.preview_scroll.verticalScrollBar()
-        cx = hsb.value() + int(vp_pos.x())
-        cy = vsb.value() + int(vp_pos.y())
-
-        # Convert to image-space coords (unscaled)
-        ix = cx / old_scale
-        iy = cy / old_scale
-
-        # Apply zoom
-        self._fit_mode = False
-        new_scale = max(0.05, min(old_scale * float(factor), 8.0))
-        self._preview_scale = new_scale
-
-        # Rebuild pixmap/label size
-        self._update_preview_scaled()
-
-        # New content coords for same image-space point
-        ncx = int(ix * new_scale)
-        ncy = int(iy * new_scale)
-
-        # Set scrollbars so that point stays under the mouse
-        hsb.setValue(ncx - int(vp_pos.x()))
-        vsb.setValue(ncy - int(vp_pos.y()))
-
-
-    # --- MASK helpers ----------------------------------------------------
-    def _active_mask_array(self) -> np.ndarray | None:
-        """Return active mask as float32 [H,W] in 0..1, resized to doc image."""
-        try:
-            mid = getattr(self.doc, "active_mask_id", None)
-            if not mid:
-                return None
-            layer = getattr(self.doc, "masks", {}).get(mid)
-            if layer is None:
-                return None
-
-            m = np.asarray(getattr(layer, "data", None))
-            if m is None or m.size == 0:
-                return None
-
-            # squeeze to 2D
-            if m.ndim == 3 and m.shape[2] == 1:
-                m = m[..., 0]
-            elif m.ndim == 3:  # RGB/whatever → luminance
-                m = (0.2126*m[...,0] + 0.7152*m[...,1] + 0.0722*m[...,2])
-
-            orig = m
-            # normalize if integer
-            if orig.dtype.kind in "ui":
-                m = orig.astype(np.float32) / float(np.iinfo(orig.dtype).max)
-            else:
-                m = orig.astype(np.float32, copy=False)
-
-            m = np.clip(m, 0.0, 1.0)
-
-            th, tw = self.doc.image.shape[:2]
-            sh, sw = m.shape[:2]
-            if (sh, sw) != (th, tw):
-                yi = (np.linspace(0, sh-1, th)).astype(np.int32)
-                xi = (np.linspace(0, sw-1, tw)).astype(np.int32)
-                m = m[yi][:, xi]
-
-            # honor opacity if present
-            opacity = float(getattr(layer, "opacity", 1.0) or 1.0)
-            if opacity < 1.0:
-                m *= opacity
-            return m
-        except Exception:
-            return None
-
-    def _blend_with_mask(self, base: np.ndarray, out: np.ndarray, mask: np.ndarray) -> np.ndarray:
-        """base/out can be mono or 3ch; mask is [H,W] in 0..1."""
-        if out.ndim == 3 and out.shape[2] == 3:
-            m = mask[..., None]
-        else:
-            m = mask
-        return base * (1.0 - m) + out * m
-
-
-    def _run_stretch(self) -> np.ndarray | None:
-        imgf = self._get_source_float()
-        if imgf is None:
-            return None
-        blackpoint_sigma = float(self.sld_bp.value()) / 100.0
-        hdr_on = bool(self.chk_hdr.isChecked())
-        hdr_amount = float(self.sld_hdr_amt.value()) / 100.0
-        hdr_knee = float(self.sld_hdr_knee.value()) / 100.0
-        luma_only = bool(getattr(self, "chk_luma_only", None) and self.chk_luma_only.isChecked())
-        luma_mode = str(self.cmb_luma.currentText()) if getattr(self, "cmb_luma", None) else "rec709"
-        no_black_clip = bool(self.chk_no_black_clip.isChecked())
-        luma_blend = float(self.sld_luma_blend.value()) / 100.0 if getattr(self, "sld_luma_blend", None) else 1.0
-
-        target = float(self.spin_target.value())
-        linked = bool(self.chk_linked.isChecked())
-        normalize = bool(self.chk_normalize.isChecked())
-        apply_curves = bool(self.chk_curves.isChecked())
-        curves_boost = float(self.sld_curves.value()) / 100.0
-
-        if imgf.ndim == 2 or (imgf.ndim == 3 and imgf.shape[2] == 1):
-            out = stretch_mono_image(
-                imgf.squeeze(),
-                target_median=target,
-                normalize=normalize,
-                apply_curves=apply_curves,
-                curves_boost=curves_boost,
-                blackpoint_sigma=blackpoint_sigma,
-                no_black_clip=no_black_clip,
-                hdr_compress=hdr_on,
-                hdr_amount=hdr_amount,
-                hdr_knee=hdr_knee,
-            )
-        else:
-            out = stretch_color_image(
-                imgf,
-                target_median=target,
-                linked=linked,
-                normalize=normalize,
-                apply_curves=apply_curves,
-                curves_boost=curves_boost,
-                blackpoint_sigma=blackpoint_sigma,
-                no_black_clip=no_black_clip,
-                hdr_compress=hdr_on,
-                hdr_amount=hdr_amount,
-                hdr_knee=hdr_knee,
-                luma_only=luma_only,
-                luma_mode=luma_mode,
-                luma_blend=luma_blend,   # <-- NEW
-            )
-
-        # ✅ If a mask is active, blend stretched result with original
-        m = self._active_mask_array()
-        if m is not None:
-            base = imgf.astype(np.float32, copy=False)
-            out = self._blend_with_mask(base, out, m)
-
-        return out            
-
-
-    def _set_preview_pixmap(self, arr: np.ndarray):
-        vis = arr
-        if vis is None or vis.size == 0:
-            self.preview_label.clear()
-            return
-
-        # Ensure 3 channels for display
-        if vis.ndim == 2:
-            vis3 = np.stack([vis] * 3, axis=-1)
-        elif vis.ndim == 3 and vis.shape[2] == 1:
-            vis3 = np.repeat(vis, 3, axis=2)
-        else:
-            vis3 = vis
-
-        # Convert to 8-bit RGB
-        if vis3.dtype == np.uint8:
-            buf8 = vis3
-        elif vis3.dtype == np.uint16:
-            buf8 = (vis3.astype(np.float32) / 65535.0 * 255.0).clip(0, 255).astype(np.uint8)
-        else:
-            buf8 = (np.clip(vis3, 0.0, 1.0) * 255.0).astype(np.uint8)
-
-        # Must be C-contiguous for QImage
-        buf8 = np.ascontiguousarray(buf8)
-        h, w, _ = buf8.shape
-        bytes_per_line = buf8.strides[0]
-
-        # Build QImage from raw pointer; keep references alive
-        self._last_preview = buf8  # keep backing store alive
-        ptr = sip.voidptr(self._last_preview.ctypes.data)
-        qimg = QImage(ptr, w, h, bytes_per_line, QImage.Format.Format_RGB888)
-
-        self._preview_qimg = qimg
-        self._apply_current_zoom() 
-
-    # ----- active document change -----
-    def _on_active_doc_changed(self, doc):
-        """Called when user clicks a different image window."""
-        if doc is None or getattr(doc, "image", None) is None:
-            return
-        self.doc = doc
-        self._populate_initial_preview()
-        try:
-            self._schedule_clip_stats()
-        except Exception:
-            pass        
-
-    # ----- slots -----
-    def _populate_initial_preview(self):
-        # show the current (unstretched) image as baseline
-        src = self._get_source_float()
-        if src is not None:
-            self._set_preview_pixmap(np.clip(src, 0, 1))
-        try:
-            self.lbl_clipstats.setText(self.tr("Calculating clip stats…"))
-        except Exception:
-            pass
-        try:
-            self._schedule_clip_stats()
-        except Exception:
-            pass
-
-
-    def _do_preview(self):
-        self._start_stretch_job("preview")
-
-
-    def _do_apply(self):
-        self._start_stretch_job("apply")
-
-    def _apply_out_to_doc(self, out: np.ndarray):
-        # Preserve mono vs color shape
-        if out.ndim == 3 and out.shape[2] == 3 and (self.doc.image.ndim == 2 or self.doc.image.shape[-1] == 1):
-            out = out[..., 0]
-
-        # --- Gather current UI state ------------------------------------
-        target = float(self.spin_target.value())
-        linked = bool(self.chk_linked.isChecked())
-        normalize = bool(self.chk_normalize.isChecked())
-        apply_curves = bool(getattr(self, "chk_curves", None) and self.chk_curves.isChecked())
-        curves_boost = float(self.sld_curves.value()) / 100.0 if getattr(self, "sld_curves", None) is not None else 0.0
-        blackpoint_sigma = float(self.sld_bp.value()) / 100.0
-        hdr_on = bool(self.chk_hdr.isChecked())
-        hdr_amount = float(self.sld_hdr_amt.value()) / 100.0
-        hdr_knee = float(self.sld_hdr_knee.value()) / 100.0
-        luma_only = bool(getattr(self, "chk_luma_only", None) and self.chk_luma_only.isChecked())
-        luma_mode = str(self.cmb_luma.currentText()) if getattr(self, "cmb_luma", None) else "rec709"
-        no_black_clip = bool(self.chk_no_black_clip.isChecked())
-        luma_blend = float(self.sld_luma_blend.value()) / 100.0 if getattr(self, "sld_luma_blend", None) else 1.0
-
-        parts = [f"target={target:.2f}", "linked" if linked else "unlinked"]
-        if normalize:
-            parts.append("norm")
-        if apply_curves:
-            parts.append(f"curves={curves_boost:.2f}")
-        if self._active_mask_array() is not None:
-            parts.append("masked")
-        parts.append(f"bpσ={blackpoint_sigma:.2f}")
-        if hdr_on and hdr_amount > 0:
-            parts.append(f"hdr={hdr_amount:.2f}@{hdr_knee:.2f}")
-        if luma_only:
-            parts.append(f"luma={luma_mode}")
-            parts.append(f"blend={luma_blend:.2f}")
-        if no_black_clip:
-            parts.append("no_black_clip")
-
-        step_name = f"Statistical Stretch ({', '.join(parts)})"
-        self.doc.apply_edit(out.astype(np.float32, copy=False), step_name=step_name)
-
-        # Turn off display stretch on the active view, if any
-        mw = self.parent()
-        if hasattr(mw, "mdi") and mw.mdi.activeSubWindow():
-            view = mw.mdi.activeSubWindow().widget()
-            if getattr(view, "autostretch_enabled", False):
-                view.set_autostretch(False)
-
-            # Existing logging, now using the same values as above
-            if hasattr(mw, "_log"):
-                curves_on = apply_curves
-                boost_val = curves_boost if curves_on else 0.0
-                mw._log(
-                    "Applied Statistical Stretch "
-                    f"(target={target:.3f}, linked={linked}, normalize={normalize}, "
-                    f"bp_sigma={blackpoint_sigma:.2f}, "
-                    f"hdr={'ON' if hdr_on else 'OFF'}"
-                    f"{', amt='+str(round(hdr_amount,2))+' knee='+str(round(hdr_knee,2)) if hdr_on else ''}, "
-                    f"luma={'ON' if luma_only else 'OFF'}{', mode='+luma_mode if luma_only else ''}, "
-                    f"curves={'ON' if curves_on else 'OFF'}"
-                    f"{', boost='+str(round(boost_val,2)) if curves_on else ''}, "
-                    f"mask={'ON' if self._active_mask_array() is not None else 'OFF'})"
+        templates_real = []
+        for s in self.star_list:
+            tmpl      = s.get("pickles_match")
+            sp_source = s.get("sp_source", "")
+            sp_clean  = s.get("sp_clean", "") or ""
+            if tmpl is None:
+                continue
+            is_bv_inferred = (
+                sp_source == "bv_inferred"
+                or (
+                    sp_source not in ("simbad", "gaia_xp")
+                    and len(sp_clean.strip()) == 1
                 )
+            )
+            if not is_bv_inferred:
+                templates_real.append(tmpl)
 
-            # --- Build preset for headless replay ---------------------------
-            # --- Build preset for headless replay ---------------------------
-            preset = {
-                "target_median": target,
-                "linked": linked,
-                "normalize": normalize,
-                "apply_curves": apply_curves,
-                "curves_boost": curves_boost,
-                "blackpoint_sigma": blackpoint_sigma,
-                "no_black_clip": no_black_clip,
-                "hdr_compress": hdr_on,
-                "hdr_amount": hdr_amount,
-                "hdr_knee": hdr_knee,
-                "luma_only": luma_only,
-                "luma_mode": luma_mode,
-                "luma_blend": luma_blend,
-            }
+        if not templates_real:
+            return
 
-            # ✅ Remember this as the last headless-style command
-            #    (unless we are in a headless/suppressed call)
-            suppress = bool(getattr(self, "_suppress_replay_record", False))
-            if not suppress:
-                from PyQt6.QtWidgets import QMainWindow
-                try:
-                    mw2 = self.parent()
-                    while mw2 is not None and not isinstance(mw2, QMainWindow):
-                        mw2 = mw2.parent()
-
-                    if mw2 is not None and hasattr(mw2, "remember_last_headless_command"):
-                        mw2.remember_last_headless_command(
-                            command_id="stat_stretch",
-                            preset=preset,
-                            description="Statistical Stretch",
-                        )
-                        print(f"Remembered Statistical Stretch last headless command: {preset}")
-                    else:
-                        print("No main window with remember_last_headless_command; cannot store stat_stretch preset")
-                except Exception as e:
-                    print(f"Failed to remember Statistical Stretch last headless command: {e}")
-            else:
-                # optional debug
-                print("Statistical Stretch: replay recording suppressed for this apply()")
-        self._save_window_geometry()
-        self.close()
-
-
-    def _refresh_document_from_active(self):
-        """
-        Refresh the dialog's document reference to the currently active document.
-        This allows reusing the same dialog on different images.
-        """
         try:
-            main = self.parent()
-            if main and hasattr(main, "_active_doc"):
-                new_doc = main._active_doc()
-                if new_doc is not None and new_doc is not self.doc:
-                    self.doc = new_doc
-                    # Reset preview state for new document
-                    self._last_preview = None
-                    self._preview_qimg = None
-        except Exception:
-            pass
+            _force_mpl_no_tex()
+            self.figure.clf()
+            uniq, cnt = np.unique(templates_real, return_counts=True)
+            ax = self.figure.add_subplot(111)
+            ax.bar(uniq, cnt, edgecolor="black")
+            ax.set_xlabel("Spectral Type")
+            ax.set_ylabel("Count")
+            ax.set_title(
+                f"Spectral Distribution (calibration-eligible stars only, n={len(templates_real)})"
+            )
+            ax.tick_params(axis="x", rotation=90)
+            ax.grid(axis="y", linestyle="--", alpha=0.3)
+            self.canvas.setVisible(True)
+            self.canvas.draw()
 
-    @pyqtSlot(object, str)
-    def _on_stretch_done(self, out, err: str):
-        # dialog might be closing; guard
-        if sip.isdeleted(self):
+            types_str = ", ".join([str(u) for u in uniq])
+            if getattr(self, "count_label", None) is not None:
+                self.count_label.setText(
+                    f"Found {len(self.star_list)} stars; "
+                    f"{len(templates_real)} eligible for NBExtract calibration; "
+                    f"templates: {types_str}"
+                )
+        except Exception as e:
+            print(f"[NBExtract] Histogram redraw failed: {e}")
+
+    # ── Settings ──────────────────────────────────────────────────────────────
+
+    def _load_nb_settings(self):
+        s = QSettings()
+        preset = s.value(_SK_PRESET, "Ha / OIII")
+        idx = self.nb_preset_combo.findText(preset)
+        if idx >= 0:
+            self.nb_preset_combo.setCurrentIndex(idx)
+        for key, spin in (
+            (_SK_BW1,     self.nb_bw1_spin),
+            (_SK_BW2,     self.nb_bw2_spin),
+            (_SK_CENTER1, self.nb_center1_spin),
+            (_SK_CENTER2, self.nb_center2_spin),
+        ):
+            val = s.value(key, None)
+            if val is not None:
+                try:
+                    spin.setValue(float(val))
+                except Exception:
+                    pass
+
+    def _save_nb_settings(self):
+        s = QSettings()
+        s.setValue(_SK_PRESET,  self.nb_preset_combo.currentText())
+        s.setValue(_SK_BW1,     self.nb_bw1_spin.value())
+        s.setValue(_SK_BW2,     self.nb_bw2_spin.value())
+        s.setValue(_SK_CENTER1, self.nb_center1_spin.value())
+        s.setValue(_SK_CENTER2, self.nb_center2_spin.value())
+
+    # ── SED loading ───────────────────────────────────────────────────────────
+
+    def _load_sed_nm(self, extname: str) -> Tuple[np.ndarray, np.ndarray]:
+        for path in (self.user_custom_path, self.sasp_data_path):
+            try:
+                with fits.open(path, memmap=False) as hd:
+                    if extname in hd:
+                        d      = hd[extname].data
+                        wl_raw = d["WAVELENGTH"].astype(np.float64)
+                        fl     = d["FLUX"].astype(np.float64)
+                        wl_ang = _ensure_angstrom(wl_raw)
+                        wl_nm  = wl_ang / 10.0
+                        return wl_nm, fl
+            except Exception:
+                continue
+        raise KeyError(f"SED extension '{extname}' not found in FITS data files.")
+
+    # ── Step 2: calibrate mixing matrix ──────────────────────────────────────
+
+    def _calibrate_mixing_matrix(self):
+        if not getattr(self, "star_list", None):
+            QMessageBox.warning(
+                self, "No Stars",
+                "Please run Step 1: Fetch Stars first.\n"
+                "The image must be plate-solved."
+            )
             return
 
-        self._hide_busy()
-        self._set_controls_enabled(True)
-        self._job_running = False
-
-        if err:
-            QMessageBox.warning(self, "Stretch failed", err)
+        doc = self.doc_manager.get_active_document()
+        if doc is None or doc.image is None:
+            QMessageBox.critical(self, "Error", "No active document.")
             return
 
-        if out is None:
-            QMessageBox.information(self, "No image", "No image is loaded in the active document.")
+        img = doc.image
+        if img.ndim != 3 or img.shape[2] != 3:
+            QMessageBox.critical(self, "Error", "Active document must be RGB (3 channels).")
             return
 
-        if getattr(self, "_job_mode", "") == "preview":
-            self._set_preview_pixmap(out)
+        center1_nm  = float(self.nb_center1_spin.value())
+        center2_nm  = float(self.nb_center2_spin.value())
+        bw1_nm      = float(self.nb_bw1_spin.value())
+        bw2_nm      = float(self.nb_bw2_spin.value())
+        preset_name = self.nb_preset_combo.currentText()
+        l1_key, l2_key = FILTER_PRESETS.get(preset_name, ("Ha", "OIII"))
+        # For Custom preset, use whatever names the user typed
+        if preset_name == FILTER_PRESET_CUSTOM:
+            l1_key = self.nb_line1_name.text().strip() or "Line1"
+            l2_key = self.nb_line2_name.text().strip() or "Line2"
+
+        _sfcc_status(self, "NBExtract: preparing image for star photometry…")
+        QApplication.processEvents()
+
+        img_float = img.astype(np.float32) / (255.0 if img.dtype == np.uint8 else 1.0)
+        base = self._make_working_base_for_sep(img_float)
+
+        import sep
+        gray     = np.mean(base, axis=2).astype(np.float32)
+        bkg      = sep.Background(gray)
+        data_sub = gray - bkg.back()
+        err      = float(bkg.globalrms)
+
+        sep_sigma = float(self.sep_thr_spin.value()) if hasattr(self, "sep_thr_spin") else 5.0
+        _sfcc_status(self, f"NBExtract: detecting stars (SEP σ={sep_sigma:.1f})…")
+        QApplication.processEvents()
+
+        sources = sep.extract(data_sub, sep_sigma, err=err)
+        if sources.size == 0:
+            QMessageBox.critical(self, "SEP Error", "SEP found no sources.")
             return
 
-        # apply mode: reuse your existing apply logic, but using `out` we already computed
-        self._apply_out_to_doc(out)
+        r_fluxrad, _ = sep.flux_radius(
+            gray, sources["x"], sources["y"],
+            2.0 * sources["a"], 0.5,
+            normflux=sources["flux"], subpix=5,
+        )
+        mask    = (r_fluxrad > 0.2) & (r_fluxrad <= 10)
+        sources = sources[mask]
+        if sources.size == 0:
+            QMessageBox.critical(self, "SEP Error",
+                                 "All SEP detections rejected by radius filter.")
+            return
 
-        if getattr(self, "_pending_close", False):
-            self._pending_close = False
-            self.close()
+        star_records = []
+        n_no_template  = 0
+        n_bv_skipped   = 0
+
+        for star in self.star_list:
+            tmpl = star.get("pickles_match")
+            if tmpl is None:
+                n_no_template += 1
+                continue
+
+            sp_source = star.get("sp_source", "")
+            sp_clean  = star.get("sp_clean", "") or ""
+
+            is_bv_inferred = (
+                sp_source == "bv_inferred"
+                or (
+                    sp_source not in ("simbad", "gaia_xp")
+                    and len(sp_clean.strip()) == 1
+                )
+            )
+            if is_bv_inferred:
+                n_bv_skipped += 1
+                continue
+
+            dx = sources["x"] - star["x"]
+            dy = sources["y"] - star["y"]
+            j  = int(np.argmin(dx * dx + dy * dy))
+            if (dx[j] ** 2 + dy[j] ** 2) >= 9.0:
+                continue
+
+            x    = float(sources["x"][j])
+            y    = float(sources["y"][j])
+            a    = float(sources["a"][j])
+            r    = float(np.clip(2.0 * a, 2.0, 10.0))
+
+            phot = measure_star_rgb_raw_aperture(base, x, y, r)
+            if phot is None:
+                continue
+
+            Rm = float(phot["R_raw"])
+            Gm = float(phot["G_raw"])
+            Bm = float(phot["B_raw"])
+
+            if not (np.isfinite(Rm) and np.isfinite(Gm) and np.isfinite(Bm)):
+                continue
+            if Rm <= 0 or Gm <= 0 or Bm <= 0:
+                continue
+
+            try:
+                wl_nm, fl = self._load_sed_nm(tmpl)
+            except Exception as e:
+                print(f"[NBExtract] Cannot load SED '{tmpl}': {e}")
+                continue
+
+            S1 = integrate_sed_over_window(wl_nm, fl, center1_nm, bw1_nm)
+            S2 = integrate_sed_over_window(wl_nm, fl, center2_nm, bw2_nm)
+
+            if S1 <= 0.0 or S2 <= 0.0:
+                continue
+
+            star_records.append({
+                "template": tmpl,
+                "x": x,
+                "y": y,
+                "R_meas":  Rm,
+                "G_meas":  Gm,
+                "B_meas":  Bm,
+                "S_line1": S1,
+                "S_line2": S2,
+            })
+
+        n_used = len(star_records)
+        _sfcc_status(
+            self,
+            f"NBExtract: {n_used} stars usable for calibration "
+            f"({n_no_template} no Pickles template, {n_bv_skipped} B-V-only rejected).",
+        )
+        QApplication.processEvents()
+
+        if n_used < 6:
+            QMessageBox.warning(
+                self, "Too Few Stars",
+                f"Only {n_used} usable calibration stars (need ≥ 6).\n\n"
+                "Try:\n"
+                "  • Lowering the SEP detection threshold\n"
+                "  • Re-plate-solving the image\n"
+                "  • Enabling the Gaia XP fallback"
+            )
+            return
+
+        A, n_clipped_used = fit_mixing_matrix(star_records)
+        if A is None:
+            reply = QMessageBox.question(
+                self, "Matrix Fit Failed — Use Fallback?",
+                "Could not fit the full NNLS mixing matrix.\n\n"
+                "Common causes:\n"
+                "  • Image is a synthetic palette (e.g. HOO where G=B=OIII exactly)\n"
+                "    — the full solve requires a real dual-band OSC image.\n"
+                "  • Too few spectrally diverse calibration stars survived filtering.\n"
+                "  • All calibration stars are the same spectral type.\n\n"
+                "Use the stellar flux mixing fallback?\n\n"
+                "This fits a 3×3 color mixing matrix directly from the measured\n"
+                "stellar fluxes in your image — the same stars, the same data.\n"
+                "It corrects inter-channel cross-talk using the actual photon\n"
+                "counts through your specific optical train, then extracts\n"
+                f"the {l1_key}-dominant R channel and {l2_key}-dominant G channel.\n\n"
+                "Less precise than the full NNLS solve but physically grounded\n"
+                "and works on any image including synthetic palettes.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            self._run_wb_fallback(doc, img_float, l1_key, l2_key)
+            return
+
+        self._A_matrix        = A
+        self._fallback_mode   = False
+        self._nb_star_records = star_records
+        self._save_nb_settings()
+
+        # ── Auto-Q from condition number ──────────────────────────────────
+        k = float(np.linalg.cond(A))
+        self._set_auto_q(A)
+
+        # ── Diagnostics ───────────────────────────────────────────────────
+        self._plot_calibration_diagnostics(star_records, A, l1_key, l2_key)
+
+        # ── Matrix readout ────────────────────────────────────────────────
+        warn_text, warn_severity = condition_number_warning(A)
+
+        def _pct(row, col):
+            total = float(A[row, 0] + A[row, 1])
+            if total <= 0:
+                return 0.0
+            return 100.0 * float(A[row, col]) / total
+
+        matrix_lines = [
+            f"Channel sensitivity  ({l1_key} %  |  {l2_key} %):",
+            f"  R :  {_pct(0,0):.1f}%  {l1_key}   {_pct(0,1):.1f}%  {l2_key}",
+            f"  G :  {_pct(1,0):.1f}%  {l1_key}   {_pct(1,1):.1f}%  {l2_key}",
+            f"  B :  {_pct(2,0):.1f}%  {l1_key}   {_pct(2,1):.1f}%  {l2_key}",
+            f"  Condition number : {k:.2f}",
+            f"  Stars used : {n_clipped_used} of {n_used}  ({n_used - n_clipped_used} outliers clipped)",
+        ]
+        if warn_text:
+            prefix = "  🛑  " if warn_severity == "severe" else "  ⚠  "
+            matrix_lines.append(f"{prefix}{warn_text}")
+        self.nb_matrix_label.setText("\n".join(matrix_lines))
+
+        # Severe condition number — prompt to switch to fallback instead of proceeding
+        if warn_severity == "severe":
+            reply = QMessageBox.question(
+                self, "Poor Channel Separation — Use Fallback?",
+                f"Condition number is {k:.1f} — noise would be amplified "
+                f"~{k**2:.0f}\u00d7 by the NNLS inversion.\n\n"
+                f"At this level the extracted channels will be dominated by amplified "
+                f"noise rather than real emission signal. This typically happens with "
+                f"triband filters where all three lines compete in every channel.\n\n"
+                f"Switch to the stellar flux color mixing fallback instead?\n"
+                f"It uses the same calibration stars but avoids the inversion entirely,\n"
+                f"giving a physically grounded result without noise amplification.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self.nb_extract_btn.setEnabled(False)
+                self._run_wb_fallback(doc, img_float, l1_key, l2_key)
+                return
+            # User chose to proceed anyway
+            self.nb_extract_btn.setEnabled(True)
+        else:
+            self.nb_extract_btn.setEnabled(True)
+
+        q1_val = float(self.nb_q1_spin.value())
+        q2_val = float(self.nb_q2_spin.value())
+        summary = (
+            f"Mixing matrix fitted from {n_clipped_used} stars "
+            f"({n_used - n_clipped_used} clipped as outliers).\n"
+            f"Condition number: {k:.2f}\n"
+            f"Auto Q₁ = {q1_val:.2f}  Q₂ = {q2_val:.2f}  (derived from matrix structure)\n\n"
+        )
+        summary += warn_text if warn_text else "Matrix looks well-conditioned ✓"
+        QMessageBox.information(self, "Calibration Complete", summary)
+
+    def _plot_calibration_diagnostics(
+        self,
+        star_records: List[Dict],
+        A: np.ndarray,
+        l1_key: str,
+        l2_key: str,
+    ):
+        """
+        Two-panel calibration summary:
+
+        Left — Channel sensitivity bar chart.
+            Shows what percentage of each channel's response comes from
+            line1 vs line2.  Directly answers "what did my filter actually do."
+
+        Right — Fractional residual histogram.
+            Distribution of (measured - predicted) / predicted across all
+            stars and channels.  Tight peak near zero = good calibration.
+            Wide or offset distribution = suspect stars or gradient issues.
+        """
+        _force_mpl_no_tex()
+        self.figure.clf()
+
+        # ── Left: channel sensitivity percentages ─────────────────────────
+        ax_bar = self.figure.add_subplot(1, 2, 1)
+
+        def _pct(row, col):
+            total = float(A[row, 0] + A[row, 1])
+            return 100.0 * float(A[row, col]) / total if total > 0 else 0.0
+
+        ch_labels = ("R", "G", "B")
+        ch_colors = ("firebrick", "seagreen", "royalblue")
+        x = np.arange(3)
+        width = 0.35
+
+        bars1 = ax_bar.bar(x - width / 2,
+                           [_pct(r, 0) for r in range(3)],
+                           width, label=l1_key, color="tomato", edgecolor="none")
+        bars2 = ax_bar.bar(x + width / 2,
+                           [_pct(r, 1) for r in range(3)],
+                           width, label=l2_key, color="cornflowerblue", edgecolor="none")
+
+        # Label each bar with its percentage
+        for bar in list(bars1) + list(bars2):
+            h = bar.get_height()
+            ax_bar.text(
+                bar.get_x() + bar.get_width() / 2, h + 0.8,
+                f"{h:.0f}%", ha="center", va="bottom", fontsize=8,
+            )
+
+        ax_bar.set_xticks(x)
+        ax_bar.set_xticklabels(ch_labels)
+        ax_bar.set_ylabel("Channel sensitivity (%)")
+        ax_bar.set_title("Filter channel sensitivity")
+        ax_bar.set_ylim(0, 110)
+        ax_bar.legend(fontsize=8)
+        ax_bar.grid(axis="y", linestyle="--", alpha=0.3)
+
+        # ── Right: fractional residual histogram ──────────────────────────
+        ax_res = self.figure.add_subplot(1, 2, 2)
+
+        S1   = np.array([s["S_line1"] for s in star_records])
+        S2   = np.array([s["S_line2"] for s in star_records])
+        X    = np.column_stack([S1, S2])
+        pred = X @ A.T   # (N, 3)
+
+        meas = np.column_stack([
+            [s["R_meas"] for s in star_records],
+            [s["G_meas"] for s in star_records],
+            [s["B_meas"] for s in star_records],
+        ])
+
+        with np.errstate(divide="ignore", invalid="ignore"):
+            frac_res = np.where(pred > 0, (meas - pred) / pred, np.nan)
+
+        residuals = frac_res[np.isfinite(frac_res)].ravel()
+
+        if len(residuals) > 0:
+            median_res = float(np.median(residuals))
+            std_res    = float(np.std(residuals))
+
+            # Set display range to ±3σ around the median, uncapped —
+            # outliers show as a natural tail rather than piling at a boundary
+            lo = median_res - 3.0 * std_res
+            hi = median_res + 3.0 * std_res
+            n_outliers = int(np.sum((residuals < lo) | (residuals > hi)))
+
+            ax_res.hist(residuals, bins=40, range=(lo, hi),
+                        color="steelblue", edgecolor="none", alpha=0.8)
+            ax_res.axvline(0, color="white", lw=1.2, linestyle="--", alpha=0.7)
+            ax_res.axvline(median_res, color="tomato", lw=1.0,
+                           linestyle="--", alpha=0.8, label=f"median {median_res:+.2f}")
+            ax_res.legend(fontsize=7)
+
+            title = f"Fit residuals  (σ={std_res:.2f}"
+            if n_outliers > 0:
+                title += f",  {n_outliers} beyond ±3σ"
+            title += ")"
+            ax_res.set_title(title, fontsize=9)
+        else:
+            ax_res.set_title("Fit residuals (no data)")
+
+        ax_res.set_xlabel("(measured − predicted) / predicted")
+        ax_res.set_ylabel("Star count")
+        ax_res.grid(axis="y", linestyle="--", alpha=0.3)
+
+        self.figure.suptitle(
+            f"NBExtract calibration  —  {l1_key} / {l2_key}  "
+            f"({len(star_records)} stars)",
+            fontsize=10,
+        )
+        self.figure.tight_layout()
+        self.canvas.setVisible(True)
+        self.canvas.draw()
+
+    # ── WB fallback ───────────────────────────────────────────────────────────
+
+    def _run_wb_fallback(self, doc, img_float: np.ndarray, l1_key: str, l2_key: str):
+        from setiastro.saspro.imageops.starbasedwhitebalance import (
+            apply_star_based_white_balance,
+        )
+
+        _sfcc_status(self, "NBExtract fallback: applying stellar flux color mixing…")
+        QApplication.processEvents()
+
+        sep_sigma = float(self.sep_thr_spin.value()) if hasattr(self, "sep_thr_spin") else 5.0
+
+        try:
+            balanced, star_count, _overlay = apply_star_based_white_balance(
+                img_float,
+                threshold=sep_sigma,
+                autostretch=False,
+                reuse_cached_sources=False,
+                return_star_colors=False,
+                use_color_matrix=True,
+            )
+        except Exception as e:
+            print(f"[NBExtract] WB fallback failed ({e}), using raw channel split.")
+            balanced = img_float
+            star_count = 0
+
+        # Pick channels by wavelength: <520nm→blue, >600nm→red, else green
+        def _wl_to_channel(center_nm: float) -> int:
+            if center_nm < 520.0: return 2
+            elif center_nm > 600.0: return 0
+            else: return 1
+        fb_ch1 = _wl_to_channel(float(self.nb_center1_spin.value()))
+        fb_ch2 = _wl_to_channel(float(self.nb_center2_spin.value()))
+        line1_img = balanced[..., fb_ch1].copy()
+        line2_img = balanced[..., fb_ch2].copy()
+
+        if self.nb_stretch_chk.isChecked():
+            try:
+                from setiastro.saspro.imageops.stretch import stretch_mono_image
+                median_1 = float(np.median(img_float[..., fb_ch1]))
+                median_2 = float(np.median(img_float[..., fb_ch2]))
+                if median_1 > 1e-6:
+                    line1_img = stretch_mono_image(
+                        line1_img, target_median=median_1,
+                        normalize=False, no_black_clip=True,
+                    )
+                if median_2 > 1e-6:
+                    line2_img = stretch_mono_image(
+                        line2_img, target_median=median_2,
+                        normalize=False, no_black_clip=True,
+                    )
+            except Exception as e:
+                print(f"[NBExtract] WB fallback median match failed: {e}")
+
+        def _linear_scale_to_unity(ch: np.ndarray) -> np.ndarray:
+            ch = np.maximum(np.asarray(ch, dtype=np.float32), 0.0)
+            mx = float(ch.max())
+            return ch / mx if mx > 1.0 else ch
+
+        line1_img = _linear_scale_to_unity(line1_img)
+        line2_img = _linear_scale_to_unity(line2_img)
+
+        preset_name = self.nb_preset_combo.currentText()
+        l1_key = self.nb_line1_name.text().strip() or "Line1" if preset_name == FILTER_PRESET_CUSTOM else l1_key
+        l2_key = self.nb_line2_name.text().strip() or "Line2" if preset_name == FILTER_PRESET_CUSTOM else l2_key
+        meta_base   = dict(doc.metadata or {})
+
+        meta1 = {**meta_base, "NBExtract_line": l1_key, "NBExtract_preset": preset_name,
+                 "NBExtract_center_nm": float(self.nb_center1_spin.value()),
+                 "NBExtract_bw_nm": float(self.nb_bw1_spin.value()),
+                 "NBExtract_method": "wb_fallback", "NBExtract_wb_stars": int(star_count)}
+        meta2 = {**meta_base, "NBExtract_line": l2_key, "NBExtract_preset": preset_name,
+                 "NBExtract_center_nm": float(self.nb_center2_spin.value()),
+                 "NBExtract_bw_nm": float(self.nb_bw2_spin.value()),
+                 "NBExtract_method": "wb_fallback", "NBExtract_wb_stars": int(star_count)}
+
+        self._push_new_document(line1_img, meta1, f"{l1_key} (NBExtract)")
+        self._push_new_document(line2_img, meta2, f"{l2_key} (NBExtract)")
+
+        self.nb_matrix_label.setText(
+            f"Method: Stellar flux color mixing fallback\n"
+            f"  {l1_key} = color-corrected R channel\n"
+            f"  {l2_key} = color-corrected G channel\n"
+            f"  Stars used: {star_count}"
+        )
+        self.nb_extract_btn.setEnabled(False)
+
+        _sfcc_status(self,
+            f"NBExtract color mixing fallback complete — '{l1_key}' and '{l2_key}' "
+            f"created from {star_count} stars.")
+
+        QMessageBox.information(
+            self, "Color Mixing Fallback Complete",
+            f"Created two new documents using stellar flux color mixing:\n"
+            f"  •  {l1_key} (NBExtract) — color-corrected R channel\n"
+            f"  •  {l2_key} (NBExtract) — color-corrected G channel\n\n"
+            f"3×3 color mixing matrix fitted from {star_count} stellar flux measurements.\n"
+        )
+
+    # ── Step 3: extract channels ──────────────────────────────────────────────
+
+    def _extract_channels(self):
+        if self._A_matrix is None:
+            QMessageBox.warning(self, "Not Calibrated",
+                                "Please run Step 2: Calibrate Mixing Matrix first.")
+            return
+
+        doc = self.doc_manager.get_active_document()
+        if doc is None or doc.image is None:
+            QMessageBox.critical(self, "Error", "No active document.")
+            return
+
+        img = doc.image
+        if img.ndim != 3 or img.shape[2] != 3:
+            QMessageBox.critical(self, "Error", "Active document must be RGB (3 channels).")
+            return
+
+        preset_name = self.nb_preset_combo.currentText()
+        l1_key, l2_key = FILTER_PRESETS.get(preset_name, ("Ha", "OIII"))
+        if preset_name == FILTER_PRESET_CUSTOM:
+            l1_key = self.nb_line1_name.text().strip() or "Line1"
+            l2_key = self.nb_line2_name.text().strip() or "Line2"
+
+        img_float = img.astype(np.float32) / (255.0 if img.dtype == np.uint8 else 1.0)
+
+        _sfcc_status(self, "NBExtract: solving per-pixel mixing system…")
+        QApplication.processEvents()
+
+        line1_nnls, line2_nnls = extract_channels_nnls(img_float, self._A_matrix)
+
+        # Build raw priors from A matrix — handles near-tied channels by averaging
+        raw1 = raw_prior_from_matrix(img_float, self._A_matrix, 0)
+        raw2 = raw_prior_from_matrix(img_float, self._A_matrix, 1)
+        # Still need ch1/ch2 for median matching below
+        ch1, ch2 = dominant_channels_from_matrix(self._A_matrix)
+
+        def _linear_scale_to_unity(ch: np.ndarray) -> np.ndarray:
+            ch = np.asarray(ch, dtype=np.float32)
+            ch = np.maximum(ch, 0.0)
+            mx = float(ch.max())
+            return ch / mx if mx > 1.0 else ch
+
+        # Bring NNLS outputs and raw priors to the same intensity level
+        # BEFORE blending so Q operates in a consistent scale.
+        if self.nb_stretch_chk.isChecked():
+            try:
+                from setiastro.saspro.imageops.stretch import stretch_mono_image
+
+                median_1 = float(np.median(img_float[..., ch1]))
+                median_2 = float(np.median(img_float[..., ch2]))
+
+                if median_1 > 1e-6:
+                    line1_nnls = stretch_mono_image(
+                        line1_nnls, target_median=median_1,
+                        normalize=False, no_black_clip=True,
+                    )
+                    raw1 = stretch_mono_image(
+                        raw1, target_median=median_1,
+                        normalize=False, no_black_clip=True,
+                    )
+                if median_2 > 1e-6:
+                    line2_nnls = stretch_mono_image(
+                        line2_nnls, target_median=median_2,
+                        normalize=False, no_black_clip=True,
+                    )
+                    raw2 = stretch_mono_image(
+                        raw2, target_median=median_2,
+                        normalize=False, no_black_clip=True,
+                    )
+            except Exception as e:
+                print(f"[NBExtract] Median match stretch failed (continuing): {e}")
+
+        # Q was auto-set from condition number at calibration time;
+        # user may have overridden in Advanced panel.
+        q1 = float(self.nb_q1_spin.value()) if hasattr(self, "nb_q1_spin") else 1.0
+        q2 = float(self.nb_q2_spin.value()) if hasattr(self, "nb_q2_spin") else 1.0
+
+        line1_img = _linear_scale_to_unity(
+            (q1 * line1_nnls + (1.0 - q1) * raw1).astype(np.float32)
+        )
+        line2_img = _linear_scale_to_unity(
+            (q2 * line2_nnls + (1.0 - q2) * raw2).astype(np.float32)
+        )
+
+        meta_base = dict(doc.metadata or {})
+        A_list    = self._A_matrix.tolist()
+        n_cal     = len(self._nb_star_records)
+
+        meta1 = {**meta_base, "NBExtract_line": l1_key, "NBExtract_preset": preset_name,
+                 "NBExtract_center_nm": float(self.nb_center1_spin.value()),
+                 "NBExtract_bw_nm": float(self.nb_bw1_spin.value()),
+                 "NBExtract_n_cal_stars": n_cal, "NBExtract_A_matrix": A_list,
+                 "NBExtract_Q1": q1}
+        meta2 = {**meta_base, "NBExtract_line": l2_key, "NBExtract_preset": preset_name,
+                 "NBExtract_center_nm": float(self.nb_center2_spin.value()),
+                 "NBExtract_bw_nm": float(self.nb_bw2_spin.value()),
+                 "NBExtract_n_cal_stars": n_cal, "NBExtract_A_matrix": A_list,
+                 "NBExtract_Q2": q2}
+
+        self._push_new_document(line1_img, meta1, f"{l1_key} (NBExtract)")
+        self._push_new_document(line2_img, meta2, f"{l2_key} (NBExtract)")
+
+        k = float(np.linalg.cond(self._A_matrix))
+        _sfcc_status(self,
+            f"NBExtract complete — '{l1_key}' and '{l2_key}' channels created "
+            f"from {n_cal} stars  (Q₁={q1:.2f}  Q₂={q2:.2f}).")
+
+        QMessageBox.information(
+            self, "Extraction Complete",
+            f"Two new documents created:\n"
+            f"  •  {l1_key}  (NBExtract)\n"
+            f"  •  {l2_key}  (NBExtract)\n\n"
+            f"Calibrated from {n_cal} stars.\n"
+            f"Condition number: {k:.2f}\n"
+            f"Q₁ = {q1:.2f}   Q₂ = {q2:.2f}  (auto-derived from condition number)\n\n"
+            f"Tip: if you see over-subtraction (dark halos/holes), open Advanced\n"
+            f"and reduce Q. If under-subtraction (residual bleed), increase Q."
+        )
+
+    # ── Document / window helpers ─────────────────────────────────────────────
 
     def closeEvent(self, ev):
-        # If a job is running, DO NOT close (WA_DeleteOnClose would delete the QThread)
-        if getattr(self, "_job_running", False):
-            self._pending_close = True
-            try:
-                self._hide_busy()
-            except Exception:
-                pass
-            try:
-                self.hide()
-            except Exception:
-                pass
-            ev.ignore()
-            return
+        """
+        Disconnect any active-document follow connections before closing so
+        NBExtract doesn't keep firing on every document switch in the background.
+        SFCCDialog may have connected currentDocumentChanged or similar signals
+        on the main window — we clean those up here before handing off to super.
+        """
+        mw = self._main_window()
+        if mw is not None:
+            # Disconnect any signals SFCCDialog wired to the main window
+            for sig_name in ("currentDocumentChanged", "activeDocumentChanged"):
+                sig = getattr(mw, sig_name, None)
+                if sig is not None:
+                    try:
+                        sig.disconnect(self._on_active_doc_changed)
+                    except Exception:
+                        pass
+                    # Also try any SFCCDialog-level slots
+                    for slot_name in ("_on_doc_changed", "_on_active_changed",
+                                      "_refresh", "_on_document_changed"):
+                        slot = getattr(self, slot_name, None)
+                        if slot is not None:
+                            try:
+                                sig.disconnect(slot)
+                            except Exception:
+                                pass
 
-        # disconnect follow behavior
-        try:
-            if self._follow_conn and hasattr(self._main, "currentDocumentChanged"):
-                self._main.currentDocumentChanged.disconnect(self._on_active_doc_changed)
-        except Exception:
-            pass
-        self._save_window_geometry()
+        # Disconnect the follow connection stored by SFCCDialog (if any)
+        follow = getattr(self, "_follow_conn", None)
+        if follow is not None:
+            for sig_name in ("currentDocumentChanged", "activeDocumentChanged"):
+                sig = getattr(mw, sig_name, None) if mw else None
+                if sig is not None:
+                    try:
+                        sig.disconnect()
+                    except Exception:
+                        pass
+            self._follow_conn = None
+
         super().closeEvent(ev)
 
+    def _main_window(self):
+        p = self.parent()
+        while p is not None:
+            if hasattr(p, "mdi"):
+                return p
+            p = p.parent()
+        from PyQt6.QtWidgets import QApplication
+        for w in QApplication.topLevelWidgets():
+            if hasattr(w, "mdi"):
+                return w
+        return None
 
-    def _update_preview_scaled(self):
-        if self._preview_qimg is None:
-            self.preview_label.clear()
+    def _push_new_document(self, img_mono: np.ndarray, metadata: dict, title: str):
+        dm = self.doc_manager
+        mw = self._main_window()
+
+        if dm is None or mw is None or not hasattr(mw, "_spawn_subwindow_for"):
+            QMessageBox.critical(self, "NBExtract",
+                f"Cannot create document '{title}':\nDocManager or MainWindow not available.")
             return
-        sw = max(1, int(self._preview_qimg.width()  * self._preview_scale))
-        sh = max(1, int(self._preview_qimg.height() * self._preview_scale))
-        scaled = self._preview_qimg.scaled(
-            sw, sh,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation
+
+        meta = {**metadata, "display_name": title, "file_path": title,
+                "bit_depth": "32-bit floating point", "is_mono": True}
+        try:
+            doc = dm.create_document(img_mono, metadata=meta, name=title)
+            mw._spawn_subwindow_for(doc)
+        except Exception as e:
+            QMessageBox.critical(self, "NBExtract", f"Failed to create document '{title}':\n{e}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Entry point
+# ─────────────────────────────────────────────────────────────────────────────
+
+def open_nbextract(doc_manager, sasp_data_path: str, parent=None) -> NBExtractDialog:
+    """
+    Instantiate and show the Narrowband Channel Extractor dialog.
+
+        from setiastro.saspro.nbextract import open_nbextract
+        self._nb_dlg = open_nbextract(
+            self.doc_manager, self._sasp_data_path, parent=self
         )
-        self.preview_label.setPixmap(QPixmap.fromImage(scaled))
-        self.preview_label.resize(scaled.size())            # <- crucial for scrollbars
-
-    def resizeEvent(self, ev):
-        super().resizeEvent(ev)
-        if self._fit_mode:
-            self._fit_preview()
-
-    def eventFilter(self, obj, ev):
-        # Wheel zoom
-        if ev.type() == QEvent.Type.Wheel and obj is self.preview_scroll.viewport():
-            dy = ev.pixelDelta().y()
-
-            if dy != 0:
-                abs_dy = abs(dy)
-                ctrl_down = bool(ev.modifiers() & Qt.KeyboardModifier.ControlModifier)
-
-                if abs_dy <= 3:
-                    base_factor = 1.012 if ctrl_down else 1.010
-                elif abs_dy <= 10:
-                    base_factor = 1.025 if ctrl_down else 1.020
-                else:
-                    base_factor = 1.040 if ctrl_down else 1.030
-
-                factor = base_factor if dy > 0 else (1.0 / base_factor)
-            else:
-                dy = ev.angleDelta().y()
-                if dy == 0:
-                    ev.accept()
-                    return True
-
-                ctrl_down = bool(ev.modifiers() & Qt.KeyboardModifier.ControlModifier)
-                step = 1.25 if ctrl_down else 1.15
-                factor = step if dy > 0 else (1.0 / step)
-
-            self._zoom_at(factor, ev.position())
-            ev.accept()
-            return True
-
-        # Click+drag pan (left or middle mouse)
-        if obj is self.preview_scroll.viewport():
-            if ev.type() == QEvent.Type.MouseButtonPress:
-                if ev.button() in (Qt.MouseButton.LeftButton, Qt.MouseButton.MiddleButton):
-                    self._panning = True
-                    self._pan_last = ev.globalPosition().toPoint()
-                    self.preview_scroll.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
-                    return True
-
-            elif ev.type() == QEvent.Type.MouseMove and self._panning:
-                pos = ev.globalPosition().toPoint()
-                delta = pos - self._pan_last
-                self._pan_last = pos
-
-                hsb = self.preview_scroll.horizontalScrollBar()
-                vsb = self.preview_scroll.verticalScrollBar()
-                hsb.setValue(hsb.value() - delta.x())
-                vsb.setValue(vsb.value() - delta.y())
-                return True
-
-            elif ev.type() == QEvent.Type.MouseButtonRelease and self._panning:
-                if ev.button() in (Qt.MouseButton.LeftButton, Qt.MouseButton.MiddleButton):
-                    self._panning = False
-                    self._pan_last = None
-                    self.preview_scroll.viewport().unsetCursor()
-                    return True
-
-        return super().eventFilter(obj, ev)
-     
+    """
+    dlg = NBExtractDialog(
+        doc_manager=doc_manager,
+        sasp_data_path=sasp_data_path,
+        parent=parent,
+    )
+    dlg.show()
+    return dlg

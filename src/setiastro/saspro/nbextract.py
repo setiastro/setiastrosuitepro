@@ -66,7 +66,7 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
     QLabel, QComboBox, QDoubleSpinBox, QPushButton,
     QCheckBox, QMessageBox, QApplication, QGroupBox,
-    QSizePolicy, QWidget,
+    QSizePolicy, QWidget, QLineEdit,
 )
 from PyQt6.QtGui import QIcon
 
@@ -74,6 +74,8 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 
 # ── shared helpers from sfcc ──────────────────────────────────────────────────
+# Imported at module level; if a circular import occurs at startup, move this
+# import inside open_nbextract() or NBExtractDialog.__init__().
 from setiastro.saspro.sfcc import (
     pickles_match_for_simbad,
     measure_star_rgb_photometry,
@@ -82,7 +84,7 @@ from setiastro.saspro.sfcc import (
     _sfcc_status,
     _sfcc_busy,
     _force_mpl_no_tex,
-    SFCCDialog,          # we subclass for fetch_stars / Gaia machinery
+    SFCCDialog,
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -98,11 +100,16 @@ LINE_CENTERS_NM: Dict[str, float] = {
 }
 
 #: Dual-band filter presets  →  (line1_key, line2_key)
+#: "Custom" uses user-supplied line names and centres.
 FILTER_PRESETS: Dict[str, Tuple[str, str]] = {
     "Ha / OIII":  ("Ha",  "OIII"),
     "SII / OIII": ("SII", "OIII"),
     "SII / Hβ":   ("SII", "Hb"),
+    "Custom":     ("Line1", "Line2"),   # user-defined centres and labels
 }
+
+#: Preset name → whether line centres/labels are user-editable
+FILTER_PRESET_CUSTOM = "Custom"
 
 #: Default bandwidths (FWHM, nm) for each line — user can override
 DEFAULT_BW_NM: Dict[str, float] = {
@@ -178,82 +185,138 @@ def auto_q_from_condition_number(k: float) -> float:
     return float(np.clip(1.0 / (1.0 + 0.1 * k), 0.2, 0.9))
 
 
+def dominant_channels_from_matrix(A: np.ndarray) -> Tuple[int, int]:
+    """
+    Determine which RGB channel (0=R, 1=G, 2=B) is the dominant receiver
+    for line1 and line2 by reading the column maxima of A.
+
+    Used to select the correct raw channel as the Q-blend prior for each
+    line — generalises beyond the Ha→R / OIII→G assumption so custom
+    filter types (NII, HeI, Hβ, etc.) work correctly.
+
+    Returns
+    -------
+    (ch1, ch2) : channel indices 0-2 for line1 and line2 respectively
+
+    Note: the returned indices are used as slice indices into img_float.
+    When the top two channels for a line are within 5 percentage points of
+    each other the caller should average those two channels rather than
+    picking one arbitrarily — see raw_prior_from_matrix().
+    """
+    ch1 = int(np.argmax(A[:, 0]))   # channel most sensitive to line1
+    ch2 = int(np.argmax(A[:, 1]))   # channel most sensitive to line2
+    return ch1, ch2
+
+
+def raw_prior_from_matrix(img_rgb: np.ndarray, A: np.ndarray, line_col: int) -> np.ndarray:
+    """
+    Build the raw channel prior for one emission line.
+
+    If the top two channels are within 5 percentage points of each other
+    in the A matrix column, average them — they are genuinely tied and
+    neither is a clearly better prior.  Otherwise use the single dominant
+    channel.
+
+    Parameters
+    ----------
+    img_rgb  : (H, W, 3) float32 image
+    A        : (3, 2) mixing matrix
+    line_col : 0 for line1, 1 for line2
+
+    Returns
+    -------
+    (H, W) float32 raw prior array
+    """
+    col = A[:, line_col]
+    total = col.sum()
+    if total <= 0:
+        # Degenerate column — fall back to argmax channel
+        return img_rgb[..., int(np.argmax(col))].copy()
+
+    pct = 100.0 * col / total   # percentage sensitivity per channel
+
+    # Sort channels by sensitivity descending
+    order = np.argsort(pct)[::-1]
+    best, second = int(order[0]), int(order[1])
+
+    ch_names = {0: "R", 1: "G", 2: "B"}
+    if (pct[best] - pct[second]) <= 5.0:
+        # Near-tie: average the two highest channels
+        prior = 0.5 * (img_rgb[..., best].astype(np.float32) +
+                       img_rgb[..., second].astype(np.float32))
+        print(
+            f"[NBExtract] line{line_col+1} prior: averaging "
+            f"{ch_names[best]}({pct[best]:.1f}%) + {ch_names[second]}({pct[second]:.1f}%)"
+        )
+    else:
+        prior = img_rgb[..., best].copy().astype(np.float32)
+        print(
+            f"[NBExtract] line{line_col+1} prior: {ch_names[best]} "
+            f"({pct[best]:.1f}% vs {pct[second]:.1f}% next)"
+        )
+
+    return prior
+
+
 def auto_q_per_channel(A: np.ndarray) -> Tuple[float, float]:
     """
     Derive independent Q values for line1 and line2 by examining how
     well each line direction is resolved in the mixing matrix.
 
-    Uses the SVD of A to measure the relative strength of each singular
-    direction.  The first singular vector captures whichever line dominates
-    (usually Ha/SII in R), the second captures the cross-channel separation
-    (usually OIII/Hβ in G/B).
-
-    The second singular value is almost always smaller — meaning OIII is
-    harder to separate.  We penalise Q₂ more aggressively to prevent the
-    over-subtraction that shows up as dark holes in the OIII channel.
-
-    Additionally we look directly at the G and B rows of the OIII column:
-    if they are nearly identical the pseudo-inverse has no independent
-    information to separate OIII from Ha using those channels, so we
-    drive Q₂ toward zero regardless of the global condition number.
+    The dominant channel per line is read from the A matrix itself via
+    dominant_channels_from_matrix() — works for any custom filter, not
+    just Ha/OIII.
 
     Returns
     -------
     (q1, q2) : floats in [0.2, 0.9]
-        q1 — mixing strength for line1 (Ha/SII dominant)
-        q2 — mixing strength for line2 (OIII/Hβ dominant)
     """
     try:
+        ch1, ch2 = dominant_channels_from_matrix(A)
+
         # ── Global condition number → baseline Q ─────────────────────────
         k = float(np.linalg.cond(A))
         q_global = float(np.clip(1.0 / (1.0 + 0.1 * k), 0.2, 0.9))
 
         # ── SVD: how independently are the two lines resolved? ────────────
-        _, sv, _ = np.linalg.svd(A, full_matrices=False)   # sv shape (2,)
+        _, sv, _ = np.linalg.svd(A, full_matrices=False)
         sv1, sv2 = float(sv[0]), float(sv[1])
-
-        # Ratio of singular values: how much weaker is the second direction?
-        # sv_ratio = 1.0 means both lines equally well-resolved (ideal)
-        # sv_ratio → 0 means second line barely separable
         sv_ratio = sv2 / sv1 if sv1 > 0 else 0.0
 
-        # Q₁ (line1 / Ha): mainly depends on global conditioning
-        # Cap at 0.9 even for best case — small regulariser always helps
+        # Q₁ (line1): mainly depends on global conditioning
         q1 = float(np.clip(q_global, 0.2, 0.9))
 
-        # Q₂ (line2 / OIII): penalised by how weak the second singular value is
-        # sv_ratio=1.0 → no extra penalty; sv_ratio=0.1 → heavy penalty
-        # Multiply q_global by sv_ratio so poor second-direction resolution
-        # drives Q₂ toward the conservative end independently of Q₁
+        # Q₂ (line2): penalised by weak second singular value
         q2_svd = float(np.clip(q_global * sv_ratio, 0.2, 0.9))
 
-        # ── G/B degeneracy check ──────────────────────────────────────────
-        # If G-row and B-row OIII entries are nearly identical the pseudo-
-        # inverse is extrapolating, not measuring.  Scale Q₂ down further.
-        g_oiii = float(A[1, 1])   # G channel, line2 (OIII)
-        b_oiii = float(A[2, 1])   # B channel, line2 (OIII)
+        # ── Non-dominant row degeneracy check for line2 ───────────────────
+        # Find the two rows that are NOT the dominant channel for line2.
+        # If they carry nearly identical line2 sensitivity the inversion
+        # is extrapolating noise rather than measuring signal.
+        all_rows = {0, 1, 2}
+        non_dom_rows = sorted(all_rows - {ch2})
+        val_a = float(A[non_dom_rows[0], 1])
+        val_b = float(A[non_dom_rows[1], 1])
 
-        oiii_sum = abs(g_oiii) + abs(b_oiii)
-        if oiii_sum > 1e-10:
-            # similarity = 1 when G and B OIII entries are identical
-            # similarity = 0 when they differ maximally
-            similarity = 1.0 - abs(g_oiii - b_oiii) / oiii_sum
+        row_sum = abs(val_a) + abs(val_b)
+        if row_sum > 1e-10:
+            similarity = 1.0 - abs(val_a - val_b) / row_sum
         else:
             similarity = 1.0   # both zero — completely degenerate
 
-        # Penalise Q₂ by how similar G and B are in the OIII column.
-        # Squared similarity mirrors the noise amplification physics — matrix
-        # inversion noise gain scales as condition^2, so the penalty should too.
-        # similarity=0.0 (very different) → no penalty,   q2 = q2_svd
-        # similarity=0.7 (moderate)       → factor 0.608, q2 = 0.608 * q2_svd
-        # similarity=0.9 (nearly same)    → factor 0.352, q2 = 0.352 * q2_svd
-        # similarity=1.0 (identical)      → factor 0.2,   q2 = floor 0.2
+        # Squared penalty mirrors noise amplification physics (gain ∝ cond²)
+        # similarity=0.0 → no penalty,   q2 = q2_svd
+        # similarity=0.7 → factor 0.608, q2 = 0.608 * q2_svd
+        # similarity=0.9 → factor 0.352, q2 = 0.352 * q2_svd
+        # similarity=1.0 → floor 0.2
         q2 = float(np.clip(q2_svd * (1.0 - similarity**2 * 0.8), 0.2, 0.9))
 
-
+        ch_names = {0: "R", 1: "G", 2: "B"}
         print(
             f"[NBExtract] Auto-Q: k={k:.2f}  sv_ratio={sv_ratio:.3f}  "
-            f"GB_similarity={similarity:.3f}  →  Q₁={q1:.2f}  Q₂={q2:.2f}"
+            f"row_similarity={similarity:.3f}  "
+            f"dominant=({ch_names[ch1]},{ch_names[ch2]})  "
+            f"->  Q1={q1:.2f}  Q2={q2:.2f}"
         )
 
         return q1, q2
@@ -413,21 +476,34 @@ def extract_channels_nnls(
     return line1, line2
 
 
-def condition_number_warning(A: np.ndarray) -> Optional[str]:
+def condition_number_warning(A: np.ndarray) -> Tuple[Optional[str], str]:
     """
-    Return a human-readable warning string if the mixing matrix is
-    ill-conditioned, or None if it looks acceptable.
+    Return (warning_text, severity) where severity is one of:
+        "ok"      — k < 25,  clean separation
+        "caution" — 25 <= k < 100, moderate overlap, auto-Q will compensate
+        "severe"  — k >= 100, noise amplification too large for reliable extraction
+
+    warning_text is None when severity is "ok".
     """
     try:
         k = float(np.linalg.cond(A))
-        if k > 50:
+        if k >= 100:
             return (
-                f"Condition number is {k:.1f} — extraction may amplify noise.\n"
-                "Consider using more calibration stars or adjusting bandwidths."
+                f"Condition number is {k:.1f} — channel separation is too poor for\n"
+                f"reliable NNLS extraction (noise amplified ~{k**2:.0f}×).\n"
+                "The stellar flux color mixing fallback will give better results.",
+                "severe"
+            )
+        if k >= 25:
+            return (
+                f"Condition number is {k:.1f} — moderate channel overlap.\n"
+                "Auto-Q has been set conservatively. Check the extracted channels\n"
+                "for dark halos and reduce Q further if needed.",
+                "caution"
             )
     except Exception:
         pass
-    return None
+    return None, "ok"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -541,6 +617,27 @@ class NBExtractDialog(SFCCDialog):
         row_l2.addWidget(self.nb_bw2_spin)
         row_l2.addStretch()
         grp_lay.addLayout(row_l2)
+
+        # Custom line name row — only visible for Custom preset
+        row_names = QHBoxLayout()
+        row_names.addWidget(QLabel("Line 1 name:"))
+        self.nb_line1_name = QLineEdit("Line1")
+        self.nb_line1_name.setMaximumWidth(80)
+        self.nb_line1_name.setPlaceholderText("e.g. NII")
+        self.nb_line1_name.setToolTip("Short label for line 1 (used in output document names)")
+        row_names.addWidget(self.nb_line1_name)
+        row_names.addSpacing(24)
+        row_names.addWidget(QLabel("Line 2 name:"))
+        self.nb_line2_name = QLineEdit("Line2")
+        self.nb_line2_name.setMaximumWidth(80)
+        self.nb_line2_name.setPlaceholderText("e.g. HeI")
+        self.nb_line2_name.setToolTip("Short label for line 2 (used in output document names)")
+        row_names.addWidget(self.nb_line2_name)
+        row_names.addStretch()
+        self.nb_custom_names_row = QWidget()
+        self.nb_custom_names_row.setLayout(row_names)
+        self.nb_custom_names_row.setVisible(False)   # hidden until Custom selected
+        grp_lay.addWidget(self.nb_custom_names_row)
 
         # Action buttons row
         row_act = QHBoxLayout()
@@ -658,6 +755,14 @@ class NBExtractDialog(SFCCDialog):
         else:
             layout.addWidget(grp)
 
+        # Wire custom name edits to refresh the centre labels live
+        self.nb_line1_name.textChanged.connect(
+            lambda _: self._on_preset_changed() if self.nb_preset_combo.currentText() == FILTER_PRESET_CUSTOM else None
+        )
+        self.nb_line2_name.textChanged.connect(
+            lambda _: self._on_preset_changed() if self.nb_preset_combo.currentText() == FILTER_PRESET_CUSTOM else None
+        )
+
         self._on_preset_changed()
 
     def _hide_sfcc_filter_labels(self):
@@ -698,28 +803,43 @@ class NBExtractDialog(SFCCDialog):
         preset_name = self.nb_preset_combo.currentText()
         if preset_name not in FILTER_PRESETS:
             return
+
+        is_custom = (preset_name == FILTER_PRESET_CUSTOM)
         l1_key, l2_key = FILTER_PRESETS[preset_name]
 
-        self.nb_line1_label.setText(f"{l1_key} centre (nm):")
-        self.nb_line2_label.setText(f"{l2_key} centre (nm):")
+        # Show/hide custom name editors
+        if hasattr(self, "nb_custom_names_row"):
+            self.nb_custom_names_row.setVisible(is_custom)
+
+        # For Custom preset the centre/BW spinners are always editable;
+        # for named presets they snap to the known values.
+        if not is_custom:
+            for sp in (self.nb_center1_spin, self.nb_center2_spin,
+                       self.nb_bw1_spin, self.nb_bw2_spin):
+                sp.blockSignals(True)
+            self.nb_center1_spin.setValue(LINE_CENTERS_NM[l1_key])
+            self.nb_center2_spin.setValue(LINE_CENTERS_NM[l2_key])
+            self.nb_bw1_spin.setValue(DEFAULT_BW_NM[l1_key])
+            self.nb_bw2_spin.setValue(DEFAULT_BW_NM[l2_key])
+            for sp in (self.nb_center1_spin, self.nb_center2_spin,
+                       self.nb_bw1_spin, self.nb_bw2_spin):
+                sp.blockSignals(False)
+        # Custom: leave spinners at whatever the user last set
+
+        # Update labels — for Custom use the QLineEdit names
+        if is_custom:
+            n1 = self.nb_line1_name.text().strip() or "Line1"
+            n2 = self.nb_line2_name.text().strip() or "Line2"
+        else:
+            n1, n2 = l1_key, l2_key
+
+        self.nb_line1_label.setText(f"{n1} centre (nm):")
+        self.nb_line2_label.setText(f"{n2} centre (nm):")
 
         if hasattr(self, "nb_q1_label"):
-            self.nb_q1_label.setText(f"Line 1 ({l1_key}) mixing strength Q:")
+            self.nb_q1_label.setText(f"Line 1 ({n1}) mixing strength Q:")
         if hasattr(self, "nb_q2_label"):
-            self.nb_q2_label.setText(f"Line 2 ({l2_key}) mixing strength Q:")
-
-        for sp in (self.nb_center1_spin, self.nb_center2_spin,
-                   self.nb_bw1_spin, self.nb_bw2_spin):
-            sp.blockSignals(True)
-
-        self.nb_center1_spin.setValue(LINE_CENTERS_NM[l1_key])
-        self.nb_center2_spin.setValue(LINE_CENTERS_NM[l2_key])
-        self.nb_bw1_spin.setValue(DEFAULT_BW_NM[l1_key])
-        self.nb_bw2_spin.setValue(DEFAULT_BW_NM[l2_key])
-
-        for sp in (self.nb_center1_spin, self.nb_center2_spin,
-                   self.nb_bw1_spin, self.nb_bw2_spin):
-            sp.blockSignals(False)
+            self.nb_q2_label.setText(f"Line 2 ({n2}) mixing strength Q:")
 
         self._A_matrix = None
         self.nb_extract_btn.setEnabled(False)
@@ -766,9 +886,9 @@ class NBExtractDialog(SFCCDialog):
 
         self.nb_q_auto_label.setText(
             f"Q auto-derived from matrix structure (condition number {k:.2f}, {quality}).\n"
-            f"Q₁ = {q1:.2f}\n"
-            f"Q₂ = {q2:.2f}— "
-            f"penalised by G/B channel similarity in line2 column.\n"
+            f"Q₁ = {q1:.2f} ({q1*100:.0f}% NNLS + {(1-q1)*100:.0f}% raw R).\n"
+            f"Q₂ = {q2:.2f} ({q2*100:.0f}% NNLS + {(1-q2)*100:.0f}% raw G) — "
+            f"penalised by G/B channel similarity in OIII column.\n"
             f"Override below if needed."
         )
 
@@ -903,6 +1023,10 @@ class NBExtractDialog(SFCCDialog):
         bw2_nm      = float(self.nb_bw2_spin.value())
         preset_name = self.nb_preset_combo.currentText()
         l1_key, l2_key = FILTER_PRESETS.get(preset_name, ("Ha", "OIII"))
+        # For Custom preset, use whatever names the user typed
+        if preset_name == FILTER_PRESET_CUSTOM:
+            l1_key = self.nb_line1_name.text().strip() or "Line1"
+            l2_key = self.nb_line2_name.text().strip() or "Line2"
 
         _sfcc_status(self, "NBExtract: preparing image for star photometry…")
         QApplication.processEvents()
@@ -1034,12 +1158,17 @@ class NBExtractDialog(SFCCDialog):
                 "Could not fit the full NNLS mixing matrix.\n\n"
                 "Common causes:\n"
                 "  • Image is a synthetic palette (e.g. HOO where G=B=OIII exactly)\n"
+                "    — the full solve requires a real dual-band OSC image.\n"
                 "  • Too few spectrally diverse calibration stars survived filtering.\n"
-                "  • All remaining stars are the same spectral type.\n\n"
-                "Fall back to color channel mixing extraction?\n"
-                "This applies a star-flux color channel mixing correction, then\n"
-                f"returns the corrected R mixed channel as {l1_key} and G mixed channel as {l2_key}.\n"
-                "Less precise than NNLS but works on any image.",
+                "  • All calibration stars are the same spectral type.\n\n"
+                "Use the stellar flux mixing fallback?\n\n"
+                "This fits a 3×3 color mixing matrix directly from the measured\n"
+                "stellar fluxes in your image — the same stars, the same data.\n"
+                "It corrects inter-channel cross-talk using the actual photon\n"
+                "counts through your specific optical train, then extracts\n"
+                f"the {l1_key}-dominant R channel and {l2_key}-dominant G channel.\n\n"
+                "Less precise than the full NNLS solve but physically grounded\n"
+                "and works on any image including synthetic palettes.",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.Yes,
             )
@@ -1061,14 +1190,15 @@ class NBExtractDialog(SFCCDialog):
         self._plot_calibration_diagnostics(star_records, A, l1_key, l2_key)
 
         # ── Matrix readout ────────────────────────────────────────────────
-        warn = condition_number_warning(A)
+        warn_text, warn_severity = condition_number_warning(A)
+
         def _pct(row, col):
             total = float(A[row, 0] + A[row, 1])
             if total <= 0:
                 return 0.0
             return 100.0 * float(A[row, col]) / total
 
-        lines = [
+        matrix_lines = [
             f"Channel sensitivity  ({l1_key} %  |  {l2_key} %):",
             f"  R :  {_pct(0,0):.1f}%  {l1_key}   {_pct(0,1):.1f}%  {l2_key}",
             f"  G :  {_pct(1,0):.1f}%  {l1_key}   {_pct(1,1):.1f}%  {l2_key}",
@@ -1076,19 +1206,44 @@ class NBExtractDialog(SFCCDialog):
             f"  Condition number : {k:.2f}",
             f"  Stars used : {n_clipped_used} of {n_used}  ({n_used - n_clipped_used} outliers clipped)",
         ]
-        if warn:
-            lines.append(f"  ⚠  {warn}")
-        self.nb_matrix_label.setText("\n".join(lines))
+        if warn_text:
+            prefix = "  🛑  " if warn_severity == "severe" else "  ⚠  "
+            matrix_lines.append(f"{prefix}{warn_text}")
+        self.nb_matrix_label.setText("\n".join(matrix_lines))
 
-        self.nb_extract_btn.setEnabled(True)
+        # Severe condition number — prompt to switch to fallback instead of proceeding
+        if warn_severity == "severe":
+            reply = QMessageBox.question(
+                self, "Poor Channel Separation — Use Fallback?",
+                f"Condition number is {k:.1f} — noise would be amplified "
+                f"~{k**2:.0f}\u00d7 by the NNLS inversion.\n\n"
+                f"At this level the extracted channels will be dominated by amplified "
+                f"noise rather than real emission signal. This typically happens with "
+                f"triband filters where all three lines compete in every channel.\n\n"
+                f"Switch to the stellar flux color mixing fallback instead?\n"
+                f"It uses the same calibration stars but avoids the inversion entirely,\n"
+                f"giving a physically grounded result without noise amplification.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self.nb_extract_btn.setEnabled(False)
+                self._run_wb_fallback(doc, img_float, l1_key, l2_key)
+                return
+            # User chose to proceed anyway
+            self.nb_extract_btn.setEnabled(True)
+        else:
+            self.nb_extract_btn.setEnabled(True)
 
+        q1_val = float(self.nb_q1_spin.value())
+        q2_val = float(self.nb_q2_spin.value())
         summary = (
             f"Mixing matrix fitted from {n_clipped_used} stars "
             f"({n_used - n_clipped_used} clipped as outliers).\n"
             f"Condition number: {k:.2f}\n"
-            f"Auto Q₁ = {float(self.nb_q1_spin.value()):.2f}  Q₂ = {float(self.nb_q2_spin.value()):.2f}  (derived from matrix structure)\n\n"
+            f"Auto Q₁ = {q1_val:.2f}  Q₂ = {q2_val:.2f}  (derived from matrix structure)\n\n"
         )
-        summary += warn if warn else "Matrix looks well-conditioned ✓"
+        summary += warn_text if warn_text else "Matrix looks well-conditioned ✓"
         QMessageBox.information(self, "Calibration Complete", summary)
 
     def _plot_calibration_diagnostics(
@@ -1098,13 +1253,63 @@ class NBExtractDialog(SFCCDialog):
         l1_key: str,
         l2_key: str,
     ):
+        """
+        Two-panel calibration summary:
+
+        Left — Channel sensitivity bar chart.
+            Shows what percentage of each channel's response comes from
+            line1 vs line2.  Directly answers "what did my filter actually do."
+
+        Right — Fractional residual histogram.
+            Distribution of (measured - predicted) / predicted across all
+            stars and channels.  Tight peak near zero = good calibration.
+            Wide or offset distribution = suspect stars or gradient issues.
+        """
         _force_mpl_no_tex()
         self.figure.clf()
+
+        # ── Left: channel sensitivity percentages ─────────────────────────
+        ax_bar = self.figure.add_subplot(1, 2, 1)
+
+        def _pct(row, col):
+            total = float(A[row, 0] + A[row, 1])
+            return 100.0 * float(A[row, col]) / total if total > 0 else 0.0
+
+        ch_labels = ("R", "G", "B")
+        ch_colors = ("firebrick", "seagreen", "royalblue")
+        x = np.arange(3)
+        width = 0.35
+
+        bars1 = ax_bar.bar(x - width / 2,
+                           [_pct(r, 0) for r in range(3)],
+                           width, label=l1_key, color="tomato", edgecolor="none")
+        bars2 = ax_bar.bar(x + width / 2,
+                           [_pct(r, 1) for r in range(3)],
+                           width, label=l2_key, color="cornflowerblue", edgecolor="none")
+
+        # Label each bar with its percentage
+        for bar in list(bars1) + list(bars2):
+            h = bar.get_height()
+            ax_bar.text(
+                bar.get_x() + bar.get_width() / 2, h + 0.8,
+                f"{h:.0f}%", ha="center", va="bottom", fontsize=8,
+            )
+
+        ax_bar.set_xticks(x)
+        ax_bar.set_xticklabels(ch_labels)
+        ax_bar.set_ylabel("Channel sensitivity (%)")
+        ax_bar.set_title("Filter channel sensitivity")
+        ax_bar.set_ylim(0, 110)
+        ax_bar.legend(fontsize=8)
+        ax_bar.grid(axis="y", linestyle="--", alpha=0.3)
+
+        # ── Right: fractional residual histogram ──────────────────────────
+        ax_res = self.figure.add_subplot(1, 2, 2)
 
         S1   = np.array([s["S_line1"] for s in star_records])
         S2   = np.array([s["S_line2"] for s in star_records])
         X    = np.column_stack([S1, S2])
-        pred = X @ A.T
+        pred = X @ A.T   # (N, 3)
 
         meas = np.column_stack([
             [s["R_meas"] for s in star_records],
@@ -1112,28 +1317,43 @@ class NBExtractDialog(SFCCDialog):
             [s["B_meas"] for s in star_records],
         ])
 
-        palette   = ("firebrick", "seagreen", "royalblue")
-        ch_labels = ("R channel", "G channel", "B channel")
+        with np.errstate(divide="ignore", invalid="ignore"):
+            frac_res = np.where(pred > 0, (meas - pred) / pred, np.nan)
 
-        for i, (color, label) in enumerate(zip(palette, ch_labels)):
-            ax = self.figure.add_subplot(1, 3, i + 1)
-            ax.scatter(pred[:, i], meas[:, i], c=color, alpha=0.7, s=18, edgecolors="none")
-            x_lo, x_hi = float(pred[:, i].min()), float(pred[:, i].max())
-            y_lo, y_hi = float(meas[:, i].min()), float(meas[:, i].max())
-            ref_lo = min(x_lo, y_lo)
-            ref_hi = max(x_hi, y_hi)
-            ax.plot([ref_lo, ref_hi], [ref_lo, ref_hi], "k--", lw=0.8, alpha=0.5)
-            pad_x = max((x_hi - x_lo) * 0.05, 1e-6)
-            pad_y = max((y_hi - y_lo) * 0.05, 1e-6)
-            ax.set_xlim(x_lo - pad_x, x_hi + pad_x)
-            ax.set_ylim(y_lo - pad_y, y_hi + pad_y)
-            ax.set_xlabel("Model predicted flux")
-            ax.set_ylabel("Measured flux")
-            ax.set_title(label)
-            ax.grid(True, linestyle="--", alpha=0.3)
+        residuals = frac_res[np.isfinite(frac_res)].ravel()
+
+        if len(residuals) > 0:
+            median_res = float(np.median(residuals))
+            std_res    = float(np.std(residuals))
+
+            # Set display range to ±3σ around the median, uncapped —
+            # outliers show as a natural tail rather than piling at a boundary
+            lo = median_res - 3.0 * std_res
+            hi = median_res + 3.0 * std_res
+            n_outliers = int(np.sum((residuals < lo) | (residuals > hi)))
+
+            ax_res.hist(residuals, bins=40, range=(lo, hi),
+                        color="steelblue", edgecolor="none", alpha=0.8)
+            ax_res.axvline(0, color="white", lw=1.2, linestyle="--", alpha=0.7)
+            ax_res.axvline(median_res, color="tomato", lw=1.0,
+                           linestyle="--", alpha=0.8, label=f"median {median_res:+.2f}")
+            ax_res.legend(fontsize=7)
+
+            title = f"Fit residuals  (σ={std_res:.2f}"
+            if n_outliers > 0:
+                title += f",  {n_outliers} beyond ±3σ"
+            title += ")"
+            ax_res.set_title(title, fontsize=9)
+        else:
+            ax_res.set_title("Fit residuals (no data)")
+
+        ax_res.set_xlabel("(measured − predicted) / predicted")
+        ax_res.set_ylabel("Star count")
+        ax_res.grid(axis="y", linestyle="--", alpha=0.3)
 
         self.figure.suptitle(
-            f"NBExtract calibration: predicted vs measured  ({l1_key} / {l2_key})",
+            f"NBExtract calibration  —  {l1_key} / {l2_key}  "
+            f"({len(star_records)} stars)",
             fontsize=10,
         )
         self.figure.tight_layout()
@@ -1166,22 +1386,29 @@ class NBExtractDialog(SFCCDialog):
             balanced = img_float
             star_count = 0
 
-        line1_img = balanced[..., 0].copy()
-        line2_img = balanced[..., 1].copy()
+        # Pick channels by wavelength: <520nm→blue, >600nm→red, else green
+        def _wl_to_channel(center_nm: float) -> int:
+            if center_nm < 520.0: return 2
+            elif center_nm > 600.0: return 0
+            else: return 1
+        fb_ch1 = _wl_to_channel(float(self.nb_center1_spin.value()))
+        fb_ch2 = _wl_to_channel(float(self.nb_center2_spin.value()))
+        line1_img = balanced[..., fb_ch1].copy()
+        line2_img = balanced[..., fb_ch2].copy()
 
         if self.nb_stretch_chk.isChecked():
             try:
                 from setiastro.saspro.imageops.stretch import stretch_mono_image
-                median_r = float(np.median(img_float[..., 0]))
-                median_g = float(np.median(img_float[..., 1]))
-                if median_r > 1e-6:
+                median_1 = float(np.median(img_float[..., fb_ch1]))
+                median_2 = float(np.median(img_float[..., fb_ch2]))
+                if median_1 > 1e-6:
                     line1_img = stretch_mono_image(
-                        line1_img, target_median=median_r,
+                        line1_img, target_median=median_1,
                         normalize=False, no_black_clip=True,
                     )
-                if median_g > 1e-6:
+                if median_2 > 1e-6:
                     line2_img = stretch_mono_image(
-                        line2_img, target_median=median_g,
+                        line2_img, target_median=median_2,
                         normalize=False, no_black_clip=True,
                     )
             except Exception as e:
@@ -1196,6 +1423,8 @@ class NBExtractDialog(SFCCDialog):
         line2_img = _linear_scale_to_unity(line2_img)
 
         preset_name = self.nb_preset_combo.currentText()
+        l1_key = self.nb_line1_name.text().strip() or "Line1" if preset_name == FILTER_PRESET_CUSTOM else l1_key
+        l2_key = self.nb_line2_name.text().strip() or "Line2" if preset_name == FILTER_PRESET_CUSTOM else l2_key
         meta_base   = dict(doc.metadata or {})
 
         meta1 = {**meta_base, "NBExtract_line": l1_key, "NBExtract_preset": preset_name,
@@ -1250,6 +1479,9 @@ class NBExtractDialog(SFCCDialog):
 
         preset_name = self.nb_preset_combo.currentText()
         l1_key, l2_key = FILTER_PRESETS.get(preset_name, ("Ha", "OIII"))
+        if preset_name == FILTER_PRESET_CUSTOM:
+            l1_key = self.nb_line1_name.text().strip() or "Line1"
+            l2_key = self.nb_line2_name.text().strip() or "Line2"
 
         img_float = img.astype(np.float32) / (255.0 if img.dtype == np.uint8 else 1.0)
 
@@ -1258,8 +1490,11 @@ class NBExtractDialog(SFCCDialog):
 
         line1_nnls, line2_nnls = extract_channels_nnls(img_float, self._A_matrix)
 
-        raw1 = img_float[..., 0].copy()
-        raw2 = img_float[..., 1].copy()
+        # Build raw priors from A matrix — handles near-tied channels by averaging
+        raw1 = raw_prior_from_matrix(img_float, self._A_matrix, 0)
+        raw2 = raw_prior_from_matrix(img_float, self._A_matrix, 1)
+        # Still need ch1/ch2 for median matching below
+        ch1, ch2 = dominant_channels_from_matrix(self._A_matrix)
 
         def _linear_scale_to_unity(ch: np.ndarray) -> np.ndarray:
             ch = np.asarray(ch, dtype=np.float32)
@@ -1273,25 +1508,25 @@ class NBExtractDialog(SFCCDialog):
             try:
                 from setiastro.saspro.imageops.stretch import stretch_mono_image
 
-                median_r = float(np.median(img_float[..., 0]))
-                median_g = float(np.median(img_float[..., 1]))
+                median_1 = float(np.median(img_float[..., ch1]))
+                median_2 = float(np.median(img_float[..., ch2]))
 
-                if median_r > 1e-6:
+                if median_1 > 1e-6:
                     line1_nnls = stretch_mono_image(
-                        line1_nnls, target_median=median_r,
+                        line1_nnls, target_median=median_1,
                         normalize=False, no_black_clip=True,
                     )
                     raw1 = stretch_mono_image(
-                        raw1, target_median=median_r,
+                        raw1, target_median=median_1,
                         normalize=False, no_black_clip=True,
                     )
-                if median_g > 1e-6:
+                if median_2 > 1e-6:
                     line2_nnls = stretch_mono_image(
-                        line2_nnls, target_median=median_g,
+                        line2_nnls, target_median=median_2,
                         normalize=False, no_black_clip=True,
                     )
                     raw2 = stretch_mono_image(
-                        raw2, target_median=median_g,
+                        raw2, target_median=median_2,
                         normalize=False, no_black_clip=True,
                     )
             except Exception as e:
@@ -1345,6 +1580,18 @@ class NBExtractDialog(SFCCDialog):
         )
 
     # ── Document / window helpers ─────────────────────────────────────────────
+
+    def closeEvent(self, ev):
+        """
+        SFCCDialog._cleanup() (called by super().closeEvent) already disconnects
+        activeDocumentChanged / currentDocumentChanged and releases the star list,
+        WCS, matplotlib canvas, and Gaia downloader.  We just need to clear
+        NBExtract-specific state before handing off.
+        """
+        self._A_matrix = None
+        self._nb_star_records = []
+        self._fallback_mode = False
+        super().closeEvent(ev)
 
     def _main_window(self):
         p = self.parent()
