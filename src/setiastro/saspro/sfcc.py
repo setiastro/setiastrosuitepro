@@ -211,14 +211,11 @@ def _gaiaxp_synth_bvr_cached(
                 # and sees per-batch progress. We need a GaiaDownloader
                 # instance that wraps the existing db connection.
                 try:
-                    _, tmp_dir, _ = ensure_saspro_spcc_dirs()
-                    dl_tmp = GaiaDownloader.__new__(GaiaDownloader)
-                    dl_tmp.db = db
-                    dl_tmp.tmp_dir = tmp_dir
-                    dl_tmp.cache_dir, _, dl_tmp.db_dir = ensure_saspro_spcc_dirs()
+                    dl_worker = GaiaDownloader(db_path)
                     self._download_gaia_spectra_with_progress(
-                        missing_spectra_ids, dl_tmp, batch_size=25
+                        missing_spectra_ids, dl_worker, batch_size=25
                     )
+                    dl_worker.close()
                 except Exception as e:
                     status_cb(f"[SPCC] Gaia XP BVR download failed: {e}")
             # 4) Compute integrals for missing ids, then upsert into synth_phot
@@ -2043,9 +2040,14 @@ class SFCCDialog(QDialog):
 
         # Download missing spectra in batches (GaiaXPy calibrate)
         if missing_spectra:
-            self._download_gaia_spectra_with_progress(
-                missing_spectra, dl, batch_size=batch_size
-            )
+            try:
+                dl_worker = GaiaDownloader(dl.db.db_path)
+                self._download_gaia_spectra_with_progress(
+                    missing_spectra, dl_worker, batch_size=batch_size
+                )
+                dl_worker.close()
+            except Exception as e:
+                print(f"[SPCC] Gaia XP download failed: {e}")
 
         # ---- integrate anything we can (and cache the results) ----
         eps = 1e-30
