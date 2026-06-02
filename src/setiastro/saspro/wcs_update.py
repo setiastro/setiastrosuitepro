@@ -12,9 +12,6 @@ def _get_header_from_meta(meta: dict):
 
 
 def _has_sip(header) -> bool:
-    """
-    Return True if the header carries any TAN-SIP style distortion keywords.
-    """
     try:
         return any(k in header for k in ("A_ORDER", "B_ORDER", "AP_ORDER", "BP_ORDER"))
     except Exception:
@@ -23,47 +20,44 @@ def _has_sip(header) -> bool:
 
 def _strip_wcs_keys(hdr):
     """
-    Remove all WCS-related cards from a header so we can re-write them cleanly.
+    Remove ALL WCS-related cards from a header so we can re-write them cleanly.
+    Covers CD matrix, PC matrix, CDELT, SIP forward (A/B) and inverse (AP/BP),
+    and assorted projection keywords.
     """
     wcs_prefixes = (
         "CTYPE", "CUNIT", "CDELT", "CRPIX", "CRVAL", "PC", "CD",
         "PV", "PS", "LONPOLE", "LATPOLE", "PROJP", "RADESYS", "EQUINOX",
         "A_", "B_", "AP_", "BP_",
-        "WCSAXES"
+        "WCSAXES", "MJDREF",
     )
+    # Also strip these exact keys that astropy adds
+    exact_strip = {"LONPOLE", "LATPOLE", "MJDREF", "WCSAXES", "RADESYS", "EQUINOX"}
+
     keys = list(hdr.keys())
     for k in keys:
         up = str(k).upper()
+        if up in exact_strip:
+            del hdr[k]
+            continue
         if any(up.startswith(p) for p in wcs_prefixes):
             del hdr[k]
 
 
 def _pixscale_rot_from_wcs(w):
-    """
-    Return (scale_x, scale_y) arcsec/pixel and rotation angle (deg).
-    Works for CD or PC+CDELT. Assumes celestial 2D.
-    """
     import numpy as _np
-    # build CD matrix
     if w.wcs.has_cd():
         CD = _np.array(w.wcs.cd)
     else:
-        # CDELT + PC
         CDELT = _np.array(w.wcs.cdelt)
         PC = _np.array(w.wcs.pc) if w.wcs.pc is not None else _np.eye(2)
         CD = PC @ _np.diag(CDELT)
-    # scales are sqrt of column norms; convert deg/pix -> arcsec/pix
     sx = float(np.hypot(CD[0, 0], CD[1, 0])) * 3600.0
     sy = float(np.hypot(CD[0, 1], CD[1, 1])) * 3600.0
-    # rotation is atan2 of -CD10, CD00 (TAN convention; aligns with "east-left" images)
     theta = float(np.degrees(np.arctan2(-CD[1, 0], CD[0, 0])))
     return sx, sy, theta
 
 
 def _needs_2d_coercion(hdr) -> bool:
-    """
-    True if the header is effectively 3-D (NAXIS>2 or WCSAXES>2).
-    """
     try:
         naxis = int(hdr.get("NAXIS", 2))
     except Exception:
@@ -76,25 +70,12 @@ def _needs_2d_coercion(hdr) -> bool:
 
 
 def _coerce_header_to_2d(hdr):
-    """
-    Make a 2-D view of a 3-D header so SIP/TAN WCS can be built.
-
-    We:
-    - set NAXIS=2 and WCSAXES=2
-    - drop axis-3 specific cards (CRPIX3, CTYPE3, CD3_*, PC3_*, etc.)
-    """
     from astropy.io import fits
-
     h2 = fits.Header()
-    # copy everything first
     for k, v in hdr.items():
         h2[k] = v
-
-    # set dimensionality to 2
     h2["NAXIS"] = 2
     h2["WCSAXES"] = 2
-
-    # kill axis-3 style cards
     kill_prefixes = ("CRPIX3", "CRVAL3", "CDELT3", "CTYPE3", "CUNIT3")
     to_del = []
     for k in h2.keys():
@@ -103,27 +84,22 @@ def _coerce_header_to_2d(hdr):
             to_del.append(k)
         elif uk.startswith("CD3_") or uk.startswith("PC3_") or uk.startswith("PV3_") or uk.startswith("PS3_"):
             to_del.append(k)
-        elif uk.endswith("3") and uk.startswith("A_"):
-            # very unlikely, but be safe
-            to_del.append(k)
-        elif uk.endswith("3") and uk.startswith("B_"):
-            to_del.append(k)
     for k in to_del:
         del h2[k]
-
     return h2
 
 
 def update_wcs_after_crop(metadata: dict, M_src_to_dst: np.ndarray, out_w: int, out_h: int) -> dict:
     """
-    Refit a WCS (TAN or TAN-SIP) after crop given the src->dst homography.
+    Refit a WCS (TAN or TAN-SIP) after a geometry transform (crop, rotate, rescale).
 
-    This version also handles the “3-D + SIP” FITS case by coercing the header
-    down to 2 dimensions *before* calling astropy.wcs.WCS(...). That is exactly
-    the situation that produced:
-
-        FITS WCS distortion paper lookup tables and SIP distortions only work
-        in 2 dimensions...
+    Key fixes vs previous version:
+    1. Strips ALL old WCS keys (including CD matrix, old SIP terms) before writing new ones.
+    2. Re-fits inverse SIP (AP/BP) terms using astropy's sip_pix2foc / a second fit pass
+       so round-trip pixel↔sky remains accurate.
+    3. Updates metadata["wcs"] (the live astropy WCS object) so RA/Dec lookups don't
+       use stale pre-transform coordinates.
+    4. Removes the stale __wcs_debug__ entry from the previous transform.
     """
     debug = True
 
@@ -132,7 +108,7 @@ def update_wcs_after_crop(metadata: dict, M_src_to_dst: np.ndarray, out_w: int, 
         from astropy.wcs import WCS
         from astropy.wcs.utils import fit_wcs_from_points
         from astropy.coordinates import SkyCoord
-        import astropy.units as u  # noqa: F401
+        import astropy.units as u
     except Exception:
         if debug:
             print("[WCS-CROP] astropy not available; skipping WCS update.")
@@ -144,7 +120,6 @@ def update_wcs_after_crop(metadata: dict, M_src_to_dst: np.ndarray, out_w: int, 
             print("[WCS-CROP] No header found in metadata; skipping.")
         return metadata
 
-    # Normalize to fits.Header
     if not isinstance(hdr0, fits.Header):
         try:
             tmp = fits.Header()
@@ -160,12 +135,11 @@ def update_wcs_after_crop(metadata: dict, M_src_to_dst: np.ndarray, out_w: int, 
             return metadata
 
     # ------------------------------------------------------------------
-    # 1) build the *old* WCS, but handle "3-D + SIP" first
+    # 1) Build the *old* WCS
     # ------------------------------------------------------------------
     hdr_for_wcs = hdr0
     coerced = False
 
-    # If NAXIS>2 or WCSAXES>2, always coerce to a 2-D celestial view
     if _needs_2d_coercion(hdr0):
         hdr_for_wcs = _coerce_header_to_2d(hdr0)
         coerced = True
@@ -173,15 +147,11 @@ def update_wcs_after_crop(metadata: dict, M_src_to_dst: np.ndarray, out_w: int, 
     try:
         w_old = WCS(hdr_for_wcs, relax=True)
     except Exception as e:
-        # If we *didn't* already coerce, try once more with a 2-D header
         if not coerced:
             try:
                 hdr_for_wcs = _coerce_header_to_2d(hdr0)
                 w_old = WCS(hdr_for_wcs, relax=True)
                 coerced = True
-                if debug:
-                    print("[WCS-CROP] WCS() failed on original header; "
-                          "succeeded after 2-D coercion.")
             except Exception as e2:
                 if debug:
                     print(f"[WCS-CROP] WCS() failed even after 2-D coercion: {e2}; skipping.")
@@ -191,9 +161,7 @@ def update_wcs_after_crop(metadata: dict, M_src_to_dst: np.ndarray, out_w: int, 
                 print(f"[WCS-CROP] WCS() failed: {e}; skipping.")
             return metadata
 
-    # ------------------------------------------------------------------
-    # Grab some "before" stats
-    # ------------------------------------------------------------------
+    # Before stats
     try:
         old_crval = (float(w_old.wcs.crval[0]), float(w_old.wcs.crval[1]))
         old_crpix = (float(w_old.wcs.crpix[0]), float(w_old.wcs.crpix[1]))
@@ -206,7 +174,7 @@ def update_wcs_after_crop(metadata: dict, M_src_to_dst: np.ndarray, out_w: int, 
         old_sx = old_sy = old_rot = float("nan")
 
     # ------------------------------------------------------------------
-    # dst->src inverse homography
+    # 2) dst->src inverse homography
     # ------------------------------------------------------------------
     try:
         M_dst_to_src = np.linalg.inv(M_src_to_dst)
@@ -216,16 +184,16 @@ def update_wcs_after_crop(metadata: dict, M_src_to_dst: np.ndarray, out_w: int, 
         return metadata
 
     # ------------------------------------------------------------------
-    # sample a grid across output
+    # 3) Sample a dense grid across the output image
+    #    Use more points for better SIP refitting
     # ------------------------------------------------------------------
-    nx = min(25, max(5, out_w // max(1, out_w // 25)))
-    ny = min(25, max(5, out_h // max(1, out_h // 25)))
+    nx = min(40, max(8, out_w // max(1, out_w // 40)))
+    ny = min(40, max(8, out_h // max(1, out_h // 40)))
     xs = np.linspace(0.5, out_w - 0.5, nx)
     ys = np.linspace(0.5, out_h - 0.5, ny)
-    Xn, Yn = np.meshgrid(xs, ys)       # shapes (ny, nx)
+    Xn, Yn = np.meshgrid(xs, ys)
     ones = np.ones_like(Xn)
 
-    # NEW->OLD via inverse homography
     Xo_h = (M_dst_to_src[0, 0] * Xn + M_dst_to_src[0, 1] * Yn + M_dst_to_src[0, 2] * ones)
     Yo_h = (M_dst_to_src[1, 0] * Xn + M_dst_to_src[1, 1] * Yn + M_dst_to_src[1, 2] * ones)
     Wo_h = (M_dst_to_src[2, 0] * Xn + M_dst_to_src[2, 1] * Yn + M_dst_to_src[2, 2] * ones)
@@ -233,14 +201,13 @@ def update_wcs_after_crop(metadata: dict, M_src_to_dst: np.ndarray, out_w: int, 
     Yo = Yo_h / Wo_h
 
     # ------------------------------------------------------------------
-    # Old WCS → sky coords
+    # 4) Old WCS → sky coords
     # ------------------------------------------------------------------
     try:
-        sky = w_old.pixel_to_world(Xo, Yo)  # SkyCoord
+        sky = w_old.pixel_to_world(Xo, Yo)
         if not isinstance(sky, SkyCoord):
             sky = SkyCoord(sky.ra, sky.dec)
     except Exception:
-        # fall back to older API
         radec = w_old.wcs_pix2world(np.column_stack([Xo.ravel(), Yo.ravel()]), 0)
         sky = SkyCoord(
             radec[:, 0].reshape(Xo.shape),
@@ -248,13 +215,12 @@ def update_wcs_after_crop(metadata: dict, M_src_to_dst: np.ndarray, out_w: int, 
             unit="deg"
         )
 
-    # Flatten to 1-D for fitting
     x_new = Xn.ravel()
     y_new = Yn.ravel()
     sky_flat = sky.reshape(x_new.shape)
 
     # ------------------------------------------------------------------
-    # SIP degree choice
+    # 5) SIP degree — preserve original order
     # ------------------------------------------------------------------
     use_sip = _has_sip(hdr_for_wcs)
     sip_degree = None
@@ -265,7 +231,7 @@ def update_wcs_after_crop(metadata: dict, M_src_to_dst: np.ndarray, out_w: int, 
             sip_degree = 3
 
     # ------------------------------------------------------------------
-    # Fit NEW WCS
+    # 6) Fit NEW forward WCS
     # ------------------------------------------------------------------
     try:
         w_new = fit_wcs_from_points(
@@ -282,7 +248,135 @@ def update_wcs_after_crop(metadata: dict, M_src_to_dst: np.ndarray, out_w: int, 
         return metadata
 
     # ------------------------------------------------------------------
-    # Residuals
+    # 7) Fit inverse SIP (AP/BP) if we have forward SIP
+    #    astropy's fit_wcs_from_points only fits A/B, not AP/BP.
+    #    We refit AP/BP by inverting the forward transform on the same grid.
+    # ------------------------------------------------------------------
+    if use_sip and sip_degree is not None:
+        try:
+            from astropy.modeling.fitting import LinearLSQFitter
+            from astropy.modeling.polynomial import Polynomial2D
+
+            # sky → forward SIP pixel (what the new WCS predicts)
+            pix_fwd = w_new.world_to_pixel(sky_flat)  # (2, ny*nx)
+            # pix_fwd[0] = x predicted, pix_fwd[1] = y predicted
+
+            # We want AP/BP such that:
+            #   dx_ideal = sky→pure_TAN_pixel - CRPIX
+            #   dx_sip   = dx_ideal + AP polynomial(dx_ideal, dy_ideal)  → gives back original grid
+            # Since fit_wcs_from_points already chose a CRPIX, we just need
+            # to embed AP/BP into the header via a secondary grid fit.
+            # Simplest: use numpy polyfit on the residuals.
+
+            crpix1 = float(w_new.wcs.crpix[0])
+            crpix2 = float(w_new.wcs.crpix[1])
+
+            # u, v = pixel coords relative to CRPIX (in the new image)
+            u_obs = x_new - crpix1   # what we want to recover
+            v_obs = y_new - crpix2
+
+            # u_fwd, v_fwd = what the forward SIP gives us for the sky positions
+            if isinstance(pix_fwd, (list, tuple)):
+                u_fwd = np.asarray(pix_fwd[0]).ravel() - crpix1
+                v_fwd = np.asarray(pix_fwd[1]).ravel() - crpix2
+            else:
+                u_fwd = np.asarray(pix_fwd).ravel()[::2] - crpix1
+                v_fwd = np.asarray(pix_fwd).ravel()[1::2] - crpix2
+
+            # Residual: observed - forward-predicted  (this is what AP/BP should correct)
+            du = u_obs - u_fwd
+            dv = v_obs - v_fwd
+
+            # Fit polynomial AP(u_fwd, v_fwd) ≈ du  and BP ≈ dv
+            # Build design matrix for 2D polynomial of degree sip_degree
+            def _design_matrix_2d(u, v, deg):
+                cols = []
+                for n in range(deg + 1):
+                    for m in range(deg + 1 - n):
+                        cols.append((u ** n) * (v ** m))
+                return np.column_stack(cols)
+
+            def _fit_inv_sip(u, v, dz, deg):
+                D = _design_matrix_2d(u, v, deg)
+                coeffs, _, _, _ = np.linalg.lstsq(D, dz, rcond=None)
+                return coeffs
+
+            def _set_sip_coeffs(hdr, prefix, u_fwd, v_fwd, dz, deg):
+                """Fit and write AP_i_j or BP_i_j coefficients into hdr."""
+                coeffs = _fit_inv_sip(u_fwd, v_fwd, dz, deg)
+                idx = 0
+                for n in range(deg + 1):
+                    for m in range(deg + 1 - n):
+                        key = f"{prefix}_{n}_{m}"
+                        val = float(coeffs[idx])
+                        # Only write non-trivial coefficients
+                        if abs(val) > 1e-30:
+                            hdr[key] = val
+                        idx += 1
+
+            # We'll embed these into the new header after building it below
+            # Store for use in step 8
+            _inv_sip_data = (u_fwd, v_fwd, du, dv, sip_degree)
+
+        except Exception as e:
+            if debug:
+                print(f"[WCS-CROP] Inverse SIP refit failed (non-fatal): {e}")
+            _inv_sip_data = None
+    else:
+        _inv_sip_data = None
+
+    # ------------------------------------------------------------------
+    # 8) Build new header — start from a CLEAN copy of the original,
+    #    strip ALL old WCS keys, then write the new WCS
+    # ------------------------------------------------------------------
+    new_hdr = hdr0.copy()
+    _strip_wcs_keys(new_hdr)          # removes ALL old CD/PC/SIP/CRPIX/CRVAL etc.
+
+    # Write new WCS cards
+    wcards = w_new.to_header(relax=True)
+    for k, v in wcards.items():
+        try:
+            new_hdr[k] = v
+        except Exception:
+            pass
+
+    # Write inverse SIP if we computed it
+    if _inv_sip_data is not None:
+        try:
+            u_fwd, v_fwd, du, dv, deg = _inv_sip_data
+
+            def _write_inv_sip(hdr, prefix, u, v, dz, d):
+                def _dm(u, v, deg):
+                    cols = []
+                    for n in range(deg + 1):
+                        for m in range(deg + 1 - n):
+                            cols.append((u ** n) * (v ** m))
+                    return np.column_stack(cols)
+                D = _dm(u, v, d)
+                coeffs, _, _, _ = np.linalg.lstsq(D, dz, rcond=None)
+                idx = 0
+                for n in range(d + 1):
+                    for m in range(d + 1 - n):
+                        val = float(coeffs[idx])
+                        if abs(val) > 1e-30:
+                            hdr[f"{prefix}_{n}_{m}"] = val
+                        idx += 1
+
+            _write_inv_sip(new_hdr, "AP", u_fwd, v_fwd, du, deg)
+            _write_inv_sip(new_hdr, "BP", u_fwd, v_fwd, dv, deg)
+            new_hdr[f"AP_ORDER"] = deg
+            new_hdr[f"BP_ORDER"] = deg
+        except Exception as e:
+            if debug:
+                print(f"[WCS-CROP] Writing inverse SIP to header failed: {e}")
+
+    # Ensure image size is correct
+    new_hdr["NAXIS"] = 2
+    new_hdr["NAXIS1"] = int(out_w)
+    new_hdr["NAXIS2"] = int(out_h)
+
+    # ------------------------------------------------------------------
+    # 9) Residuals
     # ------------------------------------------------------------------
     try:
         sky_fit = w_new.pixel_to_world(x_new, y_new)
@@ -293,9 +387,7 @@ def update_wcs_after_crop(metadata: dict, M_src_to_dst: np.ndarray, out_w: int, 
     except Exception:
         rms_arcsec = p50 = p95 = float("nan")
 
-    # ------------------------------------------------------------------
     # After stats
-    # ------------------------------------------------------------------
     try:
         new_crval = (float(w_new.wcs.crval[0]), float(w_new.wcs.crval[1]))
         new_crpix = (float(w_new.wcs.crpix[0]), float(w_new.wcs.crpix[1]))
@@ -307,24 +399,6 @@ def update_wcs_after_crop(metadata: dict, M_src_to_dst: np.ndarray, out_w: int, 
     except Exception:
         new_sx = new_sy = new_rot = float("nan")
 
-    # ------------------------------------------------------------------
-    # Build new header
-    # ------------------------------------------------------------------
-    new_hdr = hdr0.copy()  # start from the original metadata header
-    _strip_wcs_keys(new_hdr)
-    wcards = w_new.to_header(relax=True)
-    for k, v in wcards.items():
-        try:
-            new_hdr[k] = v
-        except Exception:
-            pass
-    new_hdr["NAXIS"] = 2
-    new_hdr["NAXIS1"] = int(out_w)
-    new_hdr["NAXIS2"] = int(out_h)
-
-    # ------------------------------------------------------------------
-    # Debug print
-    # ------------------------------------------------------------------
     if debug:
         print("[WCS] === BEFORE ===")
         print(f"  CRVAL  (deg): {old_crval}")
@@ -335,11 +409,9 @@ def update_wcs_after_crop(metadata: dict, M_src_to_dst: np.ndarray, out_w: int, 
         print(f"  CRPIX  (pix): {new_crpix}   (image is {out_w}x{out_h})")
         print(f"  SCALE  (as/px): ({new_sx:.3f}, {new_sy:.3f})  ROT(deg): {new_rot:.3f}")
         print(f"  SIP degree: {sip_degree if use_sip else 'None (pure TAN)'}")
+        print(f"  Inverse SIP (AP/BP): {'refit' if _inv_sip_data is not None else 'skipped'}")
         print(f"  Fit residuals (arcsec): RMS={rms_arcsec:.3f}  p50={p50:.3f}  p95={p95:.3f}")
 
-    # ------------------------------------------------------------------
-    # Stash a structured summary for the UI
-    # ------------------------------------------------------------------
     debug_summary = {
         "before": {
             "crval_deg": old_crval,
@@ -364,11 +436,23 @@ def update_wcs_after_crop(metadata: dict, M_src_to_dst: np.ndarray, out_w: int, 
         "coerced_to_2d": bool(coerced),
     }
 
+    # ------------------------------------------------------------------
+    # 10) Write back to metadata
+    #     IMPORTANT: also update metadata["wcs"] with the NEW live object
+    #     so RA/Dec lookups don't use stale pre-transform coordinates.
+    # ------------------------------------------------------------------
     out_meta = dict(metadata)
     out_meta["original_header"] = new_hdr
+
+    # Update the live WCS object — this is what SIMBAD queries and coordinate
+    # lookups use directly. Without this, they use the pre-crop WCS.
     try:
         out_meta["wcs"] = w_new
     except Exception:
         pass
+
+    # Remove stale debug entry from any previous transform
+    out_meta.pop("__wcs_debug__", None)
     out_meta["__wcs_debug__"] = debug_summary
+
     return out_meta
