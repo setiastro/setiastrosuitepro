@@ -1909,19 +1909,34 @@ class SFCCDialog(QDialog):
         dlg.setMinimumDuration(0)
         dlg.setMinimumWidth(460)
         dlg.setValue(0)
+        dlg.setAutoClose(False)
+        dlg.setAutoReset(False)
+        dlg.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, False)
         dlg.show()
 
-        loop      = QEventLoop()
-        stored    = 0
+        loop = QEventLoop()
+        stored = 0
         _cancelled = False
 
-        worker = _GaiaSpectraWorker(dl, missing_spectra, batch_size=batch_size, parent=self)
+        # This flag gates closeEvent — set True only after thread is done.
+        _allow_close = False
+
+        # Patch closeEvent on the instance to block closing until we allow it.
+        def _blocked_close(event):
+            if _allow_close:
+                event.accept()
+            else:
+                event.ignore()
+        dlg.closeEvent = _blocked_close
+
+        worker = _GaiaSpectraWorker(dl, missing_spectra, batch_size=batch_size, parent=None)
 
         def _on_progress(done, total_, msg):
             if _cancelled:
                 dlg.setLabelText(
                     f"Cancelling… waiting for current batch to finish.\n"
-                    f"({done}/{total_} downloaded so far — please wait)"
+                    f"({done}/{total_} downloaded so far — please wait)\n\n"
+                    f"Please do not close this window."
                 )
             else:
                 dlg.setValue(done)
@@ -1930,24 +1945,26 @@ class SFCCDialog(QDialog):
         def _on_finished(n):
             nonlocal stored
             stored = n
-            dlg.setValue(total)
             loop.quit()
 
         def _on_failed(err):
-            dlg.setLabelText(f"Download error: {err}")
             loop.quit()
 
         def _on_cancel():
             nonlocal _cancelled
             _cancelled = True
             worker.cancel()
-            # Remove the cancel button so the user can't click it again,
-            # and keep the dialog visible so they know we're still working.
+            # Qt has already hidden the dialog by the time this slot runs.
+            # Show it again and lock it down.
             dlg.setCancelButton(None)
             dlg.setLabelText(
                 "Cancelling… waiting for current batch to finish.\n"
-                "Please wait — this may take 1–3 minutes."
+                "Please wait — this may take 1–3 minutes.\n\n"
+                "Please do not close this window."
             )
+            dlg.show()
+            dlg.raise_()
+            # Do NOT call loop.quit() — wait for _on_finished/_on_failed.
 
         worker.progress.connect(_on_progress)
         worker.finished.connect(_on_finished)
@@ -1955,16 +1972,12 @@ class SFCCDialog(QDialog):
         dlg.canceled.connect(_on_cancel)
 
         worker.start()
-        loop.exec()   # blocks but keeps Qt events processing
+        loop.exec()  # only exits via _on_finished or _on_failed
 
-        # Always wait for the thread to fully exit before returning —
-        # prevents "QThread destroyed while still running" crash regardless
-        # of whether the user cancelled or it completed normally.
         if worker.isRunning():
-            dlg.setLabelText("Waiting for current batch to finish…")
-            QApplication.processEvents()
             worker.wait()
 
+        _allow_close = True
         dlg.close()
         return stored
 
