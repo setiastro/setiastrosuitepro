@@ -294,7 +294,7 @@ class GaiaSpectraDB:
 
     def _init_db(self):
         """Initialize database schema."""
-        self._conn = sqlite3.connect(str(self.db_path))
+        self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL;")
         self._conn.execute("PRAGMA synchronous=NORMAL;")
         self._conn.execute("PRAGMA temp_store=MEMORY;")

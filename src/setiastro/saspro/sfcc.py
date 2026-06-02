@@ -1892,11 +1892,6 @@ class SFCCDialog(QDialog):
         dl,
         batch_size: int = 25,
     ) -> int:
-        """
-        Download missing Gaia XP spectra on a background thread with a
-        cancellable progress dialog.  Returns number of spectra stored.
-        Blocks the calling code (via a local event loop) until done or cancelled.
-        """
         from PyQt6.QtWidgets import QProgressDialog
         from PyQt6.QtCore import Qt, QEventLoop
 
@@ -1916,13 +1911,19 @@ class SFCCDialog(QDialog):
         dlg.setValue(0)
         dlg.show()
 
-        loop   = QEventLoop()
-        stored = 0
+        loop      = QEventLoop()
+        stored    = 0
+        _cancelled = False
 
         worker = _GaiaSpectraWorker(dl, missing_spectra, batch_size=batch_size, parent=self)
 
         def _on_progress(done, total_, msg):
-            if not dlg.wasCanceled():
+            if _cancelled:
+                dlg.setLabelText(
+                    f"Cancelling… waiting for current batch to finish.\n"
+                    f"({done}/{total_} downloaded so far — please wait)"
+                )
+            else:
                 dlg.setValue(done)
                 dlg.setLabelText(msg)
 
@@ -1937,8 +1938,16 @@ class SFCCDialog(QDialog):
             loop.quit()
 
         def _on_cancel():
+            nonlocal _cancelled
+            _cancelled = True
             worker.cancel()
-            dlg.setLabelText("Cancelling after current batch…")
+            # Remove the cancel button so the user can't click it again,
+            # and keep the dialog visible so they know we're still working.
+            dlg.setCancelButton(None)
+            dlg.setLabelText(
+                "Cancelling… waiting for current batch to finish.\n"
+                "Please wait — this may take 1–3 minutes."
+            )
 
         worker.progress.connect(_on_progress)
         worker.finished.connect(_on_finished)
@@ -1946,11 +1955,17 @@ class SFCCDialog(QDialog):
         dlg.canceled.connect(_on_cancel)
 
         worker.start()
-        loop.exec()          # blocks here (but processes Qt events) until finished/failed
+        loop.exec()   # blocks but keeps Qt events processing
 
-        worker.wait()        # ensure thread fully done before returning
+        # Always wait for the thread to fully exit before returning —
+        # prevents "QThread destroyed while still running" crash regardless
+        # of whether the user cancelled or it completed normally.
+        if worker.isRunning():
+            dlg.setLabelText("Waiting for current batch to finish…")
+            QApplication.processEvents()
+            worker.wait()
+
         dlg.close()
-
         return stored
 
     def _gaia_integrals_for_source_ids(
