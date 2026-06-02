@@ -921,7 +921,7 @@ class GaiaDownloader:
 
         for i in range(0, len(ids), int(batch_size)):
             batch_ids = ids[i:i + int(batch_size)]
-            print(f"Downloading spectra {i+1}-{min(i+len(batch_ids), len(ids))} of {len(ids)}...")
+            print(f"[Gaia XP] Downloading batch {i//int(batch_size)+1}: spectra {i+1}–{min(i+len(batch_ids), len(ids))} of {len(ids)}…")
 
             try:
                 with saspro_tmp_context(self.tmp_dir):
