@@ -89,7 +89,7 @@ import re
 import contextlib
 
 from setiastro.saspro.gaia_downloader import GaiaSpectraDB, CalibratedSpectrum
-from setiastro.saspro.gaia_downloader import download_xp_spectra_only
+from setiastro.saspro.gaia_downloader import download_xp_spectra_only, ensure_saspro_spcc_dirs
 
 def _force_mpl_no_tex():
     try:
@@ -207,15 +207,20 @@ def _gaiaxp_synth_bvr_cached(
             if missing_spectra_ids:
                 status_cb(f"[SPCC] Gaia XP: downloading {len(missing_spectra_ids)} missing XP spectra…")
 
-                spectra = download_xp_spectra_only(
-                    db,
-                    missing_spectra_ids,
-                    batch_size=batch_size,
-                    status_cb=status_cb,
-                )
-                if spectra:
-                    db.add_spectra(spectra)
-
+                # Use the threaded progress dialog so the user can cancel
+                # and sees per-batch progress. We need a GaiaDownloader
+                # instance that wraps the existing db connection.
+                try:
+                    _, tmp_dir, _ = ensure_saspro_spcc_dirs()
+                    dl_tmp = GaiaDownloader.__new__(GaiaDownloader)
+                    dl_tmp.db = db
+                    dl_tmp.tmp_dir = tmp_dir
+                    dl_tmp.cache_dir, _, dl_tmp.db_dir = ensure_saspro_spcc_dirs()
+                    self._download_gaia_spectra_with_progress(
+                        missing_spectra_ids, dl_tmp, batch_size=25
+                    )
+                except Exception as e:
+                    status_cb(f"[SPCC] Gaia XP BVR download failed: {e}")
             # 4) Compute integrals for missing ids, then upsert into synth_phot
             rows_to_upsert: List[Tuple[int, float, float, float]] = []
 
@@ -1959,7 +1964,7 @@ class SFCCDialog(QDialog):
         T_sys_G: np.ndarray,
         T_sys_B: np.ndarray,
         *,
-        batch_size: int = 128,
+        batch_size: int = 25,
     ) -> dict[int, tuple[float, float, float]]:
         """
         Ensure Gaia XP spectra exist in the local cache (download missing ones),
@@ -2752,7 +2757,7 @@ class SFCCDialog(QDialog):
                         T_sys_R=T_sys_R.astype(np.float64),
                         T_sys_G=T_sys_G.astype(np.float64),
                         T_sys_B=T_sys_B.astype(np.float64),
-                        batch_size=128
+                        batch_size=25
                     )
 
                     print(f"[SPCC] Gaia integrals available for {len(gaia_integrals)} source_ids")
