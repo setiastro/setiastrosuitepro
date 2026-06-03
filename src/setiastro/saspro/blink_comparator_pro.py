@@ -2206,16 +2206,12 @@ class BlinkTab(QWidget):
 
         is_onnx = bool(models.get("is_onnx", False))
         chunk_size = 256
-        overlap = 64
+        overlap = 0
         border_size = 16
         detect_bs = 32
 
         # ── Tile prep function (runs on CPU in background thread) ────────────
         def _prepare_tiles(entry):
-            """
-            Returns list of resized tile arrays ready for the detection models,
-            or None if the image is too small / has no interior tiles.
-            """
             try:
                 img = entry["image_data"]
                 rgb01, _was_mono, _orig_min, _scale = _normalize_for_satellite(img)
@@ -2226,7 +2222,7 @@ class BlinkTab(QWidget):
                     arr, _smin, _smeds = stretch_image(arr, target_median=0.25)
 
                 all_tiles = list(_split_chunks(arr, chunk_size, overlap))
-                interior_tiles = [
+                interior = [
                     (tile, y0, x0)
                     for (tile, y0, x0) in all_tiles
                     if not _is_border_tile(
@@ -2236,36 +2232,36 @@ class BlinkTab(QWidget):
                     )
                 ]
 
-                if not interior_tiles:
+                if not interior:
                     return None
 
-                tiles_only = [t.astype(np.float32) for (t, _, _) in interior_tiles]
+                tiles_only = [t.astype(np.float32) for (t, _, _) in interior]
+                coords = [(y0, x0) for (_, y0, x0) in interior]   # ← keep coords
 
                 if is_onnx:
-                    # ONNX path doesn't resize ahead of time — return raw tiles
-                    return tiles_only
+                    return tiles_only, coords
                 else:
-                    # Torch path: resize all tiles to 256×256 here on the CPU thread
-                    return [_resize_tile_for_detect(t) for t in tiles_only]
+                    return [_resize_tile_for_detect(t) for t in tiles_only], coords
 
             except Exception as e:
                 print(f"[Sat detect] Tile prep failed for {entry.get('file_path','?')}: {e}")
                 return None
 
-        # ── Inference function (runs on GPU, called from main thread) ────────
-        def _run_inference(resized_tiles):
+            # ── Inference function (runs on GPU, called from main thread) ────────
+        def _run_inference(resized_tiles, interior_tiles_coords):
             """
-            Returns True if any interior tile passes both det1 + det2.
-            resized_tiles: list of (H,W,3) float32 arrays already at 256×256.
+            Returns True if at least 2 spatially adjacent interior tiles both pass det1 + det2.
+            interior_tiles_coords: list of (y0, x0) for each tile in resized_tiles.
             """
+            passing_coords = []
+
             if is_onnx:
                 det1_sess = models["detection_model1"]
                 det2_sess = models["detection_model2"]
-                for tile in resized_tiles:
+                for i, tile in enumerate(resized_tiles):
                     from setiastro.saspro.cosmicclarity_engines.satellite_engine import _onnx_detect
                     if _onnx_detect(tile, det1_sess) and _onnx_detect(tile, det2_sess):
-                        return True
-                return False
+                        passing_coords.append(interior_tiles_coords[i])
             else:
                 torch = models["torch"]
                 device = models["device"]
@@ -2290,10 +2286,28 @@ class BlinkTab(QWidget):
                         idxs = keep1.nonzero(as_tuple=False).flatten()
                         with torch.no_grad():
                             o2 = det2(x[idxs]).flatten()
-                        if (o2 > 0.25).any():
-                            return True
+                        passing_mask = (o2 > 0.25)
+                        for j, global_i in enumerate(idxs.tolist()):
+                            if passing_mask[j]:
+                                passing_coords.append(interior_tiles_coords[i + global_i])
 
+            # Need at least 2 passing tiles that are spatially adjacent (8-connected)
+            # tile coords are (y0, x0) in pixel space; tiles are chunk_size apart minus overlap
+            # Two tiles are adjacent if their origins differ by at most (chunk_size - overlap) in each axis
+            if len(passing_coords) < 2:
                 return False
+
+            step = chunk_size  # pixel distance between adjacent tile origins
+            tolerance = step * 1.5       # slightly loose to handle edge tiles
+
+            for i in range(len(passing_coords)):
+                y0_a, x0_a = passing_coords[i]
+                for j in range(i + 1, len(passing_coords)):
+                    y0_b, x0_b = passing_coords[j]
+                    if abs(y0_a - y0_b) <= tolerance and abs(x0_a - x0_b) <= tolerance:
+                        return True
+
+            return False
 
         # ── Prefetch pipeline ─────────────────────────────────────────────────
         # We keep exactly ONE image prepping in the background while the GPU
@@ -2338,7 +2352,8 @@ class BlinkTab(QWidget):
                     entry["sat_detected"] = False
                 else:
                     try:
-                        trail_found = _run_inference(tiles)
+                        resized_tiles, coords = tiles
+                        trail_found = _run_inference(resized_tiles, coords)
                         entry["sat_detected"] = trail_found
                         if trail_found:
                             n_detected += 1
