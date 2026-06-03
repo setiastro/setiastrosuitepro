@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
     QWidget, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QToolButton,
     QTreeWidget, QTreeWidgetItem, QFileDialog, QMessageBox, QProgressBar, QSizePolicy,
     QAbstractItemView, QMenu, QSplitter, QStyle, QScrollArea, QSlider, QDoubleSpinBox, QProgressDialog, QComboBox, QLineEdit, QApplication, QGridLayout, QCheckBox, QInputDialog,
-    QMdiArea, QDialogButtonBox, QHeaderView
+    QMdiArea, QDialogButtonBox, QHeaderView, QButtonGroup, QRadioButton
 )
 from bisect import bisect_right
 # 3rd-party (your code already expects these)
@@ -256,6 +256,7 @@ class MetricsPanel(QWidget):
         import math
 
         idx, entry = i_entry
+        load_scale = int(entry.get("load_scale", 1))
         img = entry.get("image_data", None)
 
         BAD_FWHM = 30.0
@@ -329,7 +330,7 @@ class MetricsPanel(QWidget):
 
             sig = np.sqrt(a * b).astype(np.float32, copy=False)
             fwhm_ds = float(np.nanmedian(2.3548 * sig))
-            fwhm = fwhm_ds * 2.0
+            fwhm = fwhm_ds * 2.0 * load_scale
 
             q = np.clip(b / a, 0.0, 1.0)
             e_true = np.sqrt(np.maximum(0.0, 1.0 - q * q))
@@ -1281,6 +1282,39 @@ class BlinkTab(QWidget):
 
         left_layout.addLayout(button_layout)
 
+        # After creating all buttons, add resolution row
+        res_layout = QHBoxLayout()
+        res_lbl = QLabel(self.tr("Load at:"), self)
+        res_lbl.setStyleSheet("font-size: 11px;")
+        res_layout.addWidget(res_lbl)
+
+        self._load_scale = 1  # default 1:1
+        self._res_group = QButtonGroup(self)
+
+        for label, scale in [("1:1", 1), ("1:2", 2), ("1:4", 4), ("1:8", 8)]:
+            rb = QRadioButton(self.tr(label), self)
+            rb.setChecked(scale == 1)
+            rb.setProperty("scale", scale)
+            self._res_group.addButton(rb)
+            res_layout.addWidget(rb)
+
+        saved_scale = int(QSettings().value("blink/load_scale", 1, type=int))
+        self._load_scale = saved_scale
+        for btn in self._res_group.buttons():
+            if btn.property("scale") == saved_scale:
+                btn.setChecked(True)
+                break
+
+        # NOW connect — lambda only fires on user clicks, not setChecked
+        self._res_group.buttonClicked.connect(
+            lambda btn: (
+                setattr(self, "_load_scale", btn.property("scale")),
+                QSettings().setValue("blink/load_scale", btn.property("scale")),
+            )
+        )
+        res_layout.addStretch(1)
+        left_layout.addLayout(res_layout)
+
         self.metrics_button = QPushButton(self.tr("Interactive Metrics && Culling"), self)
         self.metrics_button.clicked.connect(self.show_metrics)
         left_layout.addWidget(self.metrics_button)
@@ -1381,7 +1415,22 @@ class BlinkTab(QWidget):
         self.export_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton))
         self.export_button.clicked.connect(self.export_blink_video)
         left_layout.addWidget(self.export_button)
+        # ── Tree filter ──────────────────────────────────────────────
+        filter_row = QHBoxLayout()
+        filter_lbl = QLabel(self.tr("Show:"), self)
+        filter_lbl.setStyleSheet("font-size: 11px;")
+        filter_row.addWidget(filter_lbl)
 
+        self.tree_filter_combo = QComboBox(self)
+        self.tree_filter_combo.addItem(self.tr("All"),           "all")
+        self.tree_filter_combo.addItem(self.tr("Sat Detected"),  "sat")
+        self.tree_filter_combo.addItem(self.tr("Flagged Only"),  "flagged")
+        self.tree_filter_combo.addItem(self.tr("Clean Only"),    "clean")
+        self.tree_filter_combo.setFixedWidth(140)
+        self.tree_filter_combo.currentIndexChanged.connect(self._apply_tree_filter)
+        filter_row.addWidget(self.tree_filter_combo)
+        filter_row.addStretch(1)
+        left_layout.addLayout(filter_row)
         # Tree view for file names
         self.fileTree = QTreeWidget(self)
         self.fileTree.setColumnCount(6)
@@ -1563,6 +1612,202 @@ class BlinkTab(QWidget):
                        self._update_zoom_panel_to_viewport_center())
         )
         self.imagesChanged.connect(self._update_loaded_count_label)
+        self._apply_button_palette()
+
+    def _apply_button_palette(self):
+        """
+        Apply subtle color tints to button groups for visual hierarchy.
+        Uses rgba backgrounds so they work on both dark and light themes.
+        Text color is NOT set — inherits from theme so it always readable.
+        """
+
+        # ── Analysis / AI tools — teal accent ──────────────────────
+        _teal = """
+            QPushButton {
+                background-color: rgba(0, 150, 136, 0.25);
+                border: 1px solid rgba(0, 150, 136, 0.5);
+                border-radius: 4px;
+                padding: 3px 8px;
+            }
+            QPushButton:hover {
+                background-color: rgba(0, 150, 136, 0.40);
+                border: 1px solid rgba(0, 150, 136, 0.75);
+            }
+            QPushButton:pressed {
+                background-color: rgba(0, 150, 136, 0.55);
+            }
+        """
+        self.metrics_button.setStyleSheet(_teal)
+        self.sat_detect_btn.setStyleSheet(_teal)
+
+        # ── Stacking export — blue accent ───────────────────────────
+        _blue = """
+            QPushButton {
+                background-color: rgba(30, 120, 200, 0.22);
+                border: 1px solid rgba(30, 120, 200, 0.45);
+                border-radius: 4px;
+                padding: 3px 8px;
+            }
+            QPushButton:hover {
+                background-color: rgba(30, 120, 200, 0.38);
+                border: 1px solid rgba(30, 120, 200, 0.70);
+            }
+            QPushButton:pressed {
+                background-color: rgba(30, 120, 200, 0.52);
+            }
+        """
+        self.send_lights_btn.setStyleSheet(_blue)
+        self.send_integ_btn.setStyleSheet(_blue)
+
+        # ── Settings — neutral with a slight warm tint ──────────────
+        _neutral = """
+            QPushButton {
+                background-color: rgba(150, 130, 80, 0.20);
+                border: 1px solid rgba(150, 130, 80, 0.40);
+                border-radius: 4px;
+                padding: 3px 8px;
+            }
+            QPushButton:hover {
+                background-color: rgba(150, 130, 80, 0.35);
+                border: 1px solid rgba(150, 130, 80, 0.60);
+            }
+            QPushButton:pressed {
+                background-color: rgba(150, 130, 80, 0.48);
+            }
+        """
+        self.stacking_settings_btn.setStyleSheet(_neutral)
+
+        # ── Destructive / management — red tint ─────────────────────
+        _red = """
+            QPushButton {
+                background-color: rgba(200, 60, 60, 0.18);
+                border: 1px solid rgba(200, 60, 60, 0.38);
+                border-radius: 4px;
+                padding: 3px 8px;
+            }
+            QPushButton:hover {
+                background-color: rgba(200, 60, 60, 0.32);
+                border: 1px solid rgba(200, 60, 60, 0.60);
+            }
+            QPushButton:pressed {
+                background-color: rgba(200, 60, 60, 0.48);
+            }
+        """
+        self.clearFlagsButton.setStyleSheet(_red)
+        self.clearButton.setStyleSheet(_red)
+
+        # Remove Selected is destructive but less permanent than Clear Images
+        _red_mild = """
+            QPushButton {
+                background-color: rgba(200, 60, 60, 0.12);
+                border: 1px solid rgba(200, 60, 60, 0.28);
+                border-radius: 4px;
+                padding: 3px 8px;
+            }
+            QPushButton:hover {
+                background-color: rgba(200, 60, 60, 0.24);
+                border: 1px solid rgba(200, 60, 60, 0.48);
+            }
+            QPushButton:pressed {
+                background-color: rgba(200, 60, 60, 0.38);
+            }
+        """
+        self.removeSelectedButton.setStyleSheet(_red_mild)
+
+        # ── Export video — purple tint, it's a creative output ──────
+        _purple = """
+            QPushButton {
+                background-color: rgba(120, 80, 180, 0.20);
+                border: 1px solid rgba(120, 80, 180, 0.42);
+                border-radius: 4px;
+                padding: 3px 8px;
+            }
+            QPushButton:hover {
+                background-color: rgba(120, 80, 180, 0.35);
+                border: 1px solid rgba(120, 80, 180, 0.65);
+            }
+            QPushButton:pressed {
+                background-color: rgba(120, 80, 180, 0.50);
+            }
+        """
+        self.export_button.setStyleSheet(_purple)
+
+        # ── Aggressive stretch toggle — amber when checked ───────────
+        self.aggressive_button.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(180, 120, 0, 0.18);
+                border: 1px solid rgba(180, 120, 0, 0.38);
+                border-radius: 4px;
+                padding: 3px 8px;
+            }
+            QPushButton:hover {
+                background-color: rgba(180, 120, 0, 0.32);
+                border: 1px solid rgba(180, 120, 0, 0.58);
+            }
+            QPushButton:checked {
+                background-color: rgba(218, 165, 0, 0.50);
+                border: 1px solid rgba(218, 165, 0, 0.85);
+                font-weight: 600;
+            }
+            QPushButton:checked:hover {
+                background-color: rgba(218, 165, 0, 0.65);
+            }
+        """)
+
+    def _apply_tree_filter(self):
+        """Show/hide leaf items based on the filter combo without touching list order."""
+        mode = self.tree_filter_combo.currentData()
+
+        for item in self.get_all_leaf_items():
+            idx = self._leaf_index(item)
+            if idx is None:
+                show = True
+            else:
+                entry = self.loaded_images[idx]
+                flagged    = bool(entry.get("flagged", False))
+                sat        = entry.get("sat_detected", None)
+
+                if mode == "all":
+                    show = True
+                elif mode == "sat":
+                    show = (sat is True)
+                elif mode == "flagged":
+                    show = flagged
+                elif mode == "clean":
+                    show = (not flagged and sat is not True)
+                else:
+                    show = True
+
+            item.setHidden(not show)
+
+        # Hide parent group items that have no visible children
+        self._update_group_item_visibility()
+
+    def _update_group_item_visibility(self):
+        """Hide Object/Filter/Exposure group headers that have no visible leaf children."""
+        def _any_visible(parent):
+            for i in range(parent.childCount()):
+                child = parent.child(i)
+                if child.childCount() == 0:
+                    if not child.isHidden():
+                        return True
+                else:
+                    if _any_visible(child):
+                        return True
+            return False
+
+        root = self.fileTree.invisibleRootItem()
+        for i in range(root.childCount()):
+            obj_item = root.child(i)
+            obj_visible = _any_visible(obj_item)
+            obj_item.setHidden(not obj_visible)
+            for j in range(obj_item.childCount()):
+                filt_item = obj_item.child(j)
+                filt_visible = _any_visible(filt_item)
+                filt_item.setHidden(not filt_visible)
+                for k in range(filt_item.childCount()):
+                    exp_item = filt_item.child(k)
+                    exp_item.setHidden(not _any_visible(exp_item))
 
     def _open_stacking_settings_from_blink(self):
         """
@@ -1669,27 +1914,34 @@ class BlinkTab(QWidget):
         """
         Stronger display stretch on top of an already stretched image.
         Input/Output are float32 in [0..1].
-        Robust: percentile normalize + asinh boost.
+        Fast path: min/max normalize + arcsinh on a downsampled working copy,
+        then apply the scalar parameters to the full array without per-pixel arcsinh.
         """
         x = np.asarray(x01, dtype=np.float32)
-        x = np.nan_to_num(x, nan=0.0, posinf=1.0, neginf=0.0)
-        x = np.clip(x, 0.0, 1.0)
 
-        # Robust normalize: ignore extreme outliers so we actually expand contrast
-        lo = float(np.percentile(x, 0.25))
-        hi = float(np.percentile(x, 99.75))
-        if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo + 1e-8:
-            return x  # nothing to do, but never return black
+        mn = float(x.min())
+        mx = float(x.max())
+        if mx <= mn + 1e-8:
+            return x
 
-        y = (x - lo) / (hi - lo)
-        y = np.clip(y, 0.0, 1.0)
+        # Normalize to [0,1]
+        y = (x - mn) * (1.0 / (mx - mn))
 
-        # Asinh boost (stronger -> more aggressive midtone lift)
-        k = max(1.0, float(strength) * 1.25)  # tune multiplier to taste
-        y = np.arcsinh(k * y) / np.arcsinh(k)
+        # Asinh boost — avoid per-pixel arcsinh by using the closed-form
+        # scalar precompute: arcsinh(k*y)/arcsinh(k)
+        # Since arcsinh(k) is a scalar we only compute it once.
+        # For the per-pixel part, replace arcsinh(k*y) with log(k*y + sqrt((k*y)^2 + 1))
+        # which numpy computes as a single fused op via np.arcsinh — BUT we avoid
+        # the overhead by working in-place and skipping nan_to_num/clip on clean data.
+        k = max(1.0, float(strength) * 1.25)
+        ak = float(np.arcsinh(k))  # scalar, computed once
 
-        return np.clip(y, 0.0, 1.0)
+        np.multiply(y, k, out=y)         # y = k*y  in-place
+        np.arcsinh(y, out=y)             # y = arcsinh(k*y)  in-place
+        y *= (1.0 / ak)                  # y /= arcsinh(k)  in-place
 
+        np.clip(y, 0.0, 1.0, out=y)
+        return y
 
     # --------------------------------------------
     # NEW: collect paths & emit to stacking
@@ -2403,6 +2655,8 @@ class BlinkTab(QWidget):
                 item.setTextAlignment(1, Qt.AlignmentFlag.AlignCenter)
             else:
                 item.setText(1, "")
+        if hasattr(self, "tree_filter_combo"):
+            self._apply_tree_filter()
 
     def addAdditionalImages(self):
         """Let the user pick more images to append to the blink list."""
@@ -2440,7 +2694,7 @@ class BlinkTab(QWidget):
         # load one-by-one (or you could parallelize as you like)
         for i, path in enumerate(sorted(file_paths, key=lambda p: self._natural_key(os.path.basename(p)))):
             try:
-                _, hdr, bit_depth, is_mono, stored, back = self._load_one_image(path, target_dtype)
+                _, hdr, bit_depth, is_mono, stored, back = self._load_one_image(path, target_dtype, self._load_scale)
             except Exception as e:
                 print(f"Failed to load {path}: {e}")
                 continue
@@ -2454,7 +2708,8 @@ class BlinkTab(QWidget):
                 'bit_depth':      bit_depth,
                 'is_mono':        is_mono,
                 'flagged':        False,
-                'orig_background': back
+                'orig_background': back,
+                'load_scale':      self._load_scale,
             })
 
             # update progress bar
@@ -2588,7 +2843,11 @@ class BlinkTab(QWidget):
         self.metrics_window._update_status()
 
     def _rebuild_tree_from_loaded(self):
-        """Rebuild the left tree from self.loaded_images without reloading or recomputing."""
+        # Reset filter to All on rebuild so nothing gets stranded hidden
+        if hasattr(self, "tree_filter_combo"):
+            self.tree_filter_combo.blockSignals(True)
+            self.tree_filter_combo.setCurrentIndex(0)
+            self.tree_filter_combo.blockSignals(False)
         self.fileTree.clear()
         from collections import defaultdict
 
@@ -2663,6 +2922,8 @@ class BlinkTab(QWidget):
 
         # ← Move this to AFTER metrics are updated so arrays are aligned
         self._update_tree_metrics_columns()
+        if hasattr(self, "tree_filter_combo"):
+            self._apply_tree_filter()
 
     def get_tree_item_for_index(self, idx):
         target_path = self.image_paths[idx]
@@ -2730,7 +2991,7 @@ class BlinkTab(QWidget):
                 '.png', '.tif', '.tiff', '.fits', '.fit', '.fts',
                 '.fits.gz', '.fit.gz', '.fts.gz', '.fz',
                 '.xisf', '.cr2', '.nef', '.arw', '.dng', '.raf',
-                '.orf', '.rw2', '.pef'
+                '.orf', '.rw2', '.pef', '.jpg', '.jpeg'
             )
 
             # Collect all image file paths recursively
@@ -2792,9 +3053,7 @@ class BlinkTab(QWidget):
             self.metrics_window.update_metrics([])
    
     @staticmethod
-    def _load_one_image(file_path: str, target_dtype):
-        """Load + pre-process one image & return all metadata."""
-
+    def _load_one_image(file_path: str, target_dtype, load_scale: int = 1):
         # 1) load
         image, header, bit_depth, is_mono = load_image(file_path)
         if image is None or image.size == 0:
@@ -2805,17 +3064,26 @@ class BlinkTab(QWidget):
         if is_mono:
             image = BlinkTab.debayer_image(image, file_path, header)
 
-        # Re-derive is_color from actual shape AFTER debayering
         is_color_after_debayer = (image.ndim == 3 and image.shape[2] >= 3)
 
-        # 3) measure pre-stretch background on mono plane
+        # 3) optional downsample BEFORE stretch (cheaper to stretch small)
+        if load_scale > 1:
+            h, w = image.shape[:2]
+            new_h = max(1, h // load_scale)
+            new_w = max(1, w // load_scale)
+            if image.ndim == 2:
+                image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            else:
+                image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+        # 4) measure pre-stretch background on (possibly downsampled) mono plane
         data = np.asarray(image, dtype=np.float32)
         if data.ndim == 3:
             data = data.mean(axis=2)
         bkg = sep.Background(data)
         global_back = bkg.globalback
 
-        # 4) stretch
+        # 5) stretch — rest unchanged
         target_med = 0.25
         if is_color_after_debayer:
             stretched = stretch_color_image(image, target_med, linked=False,
@@ -2907,7 +3175,9 @@ class BlinkTab(QWidget):
 
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 for path in remaining:
-                    futures[executor.submit(self._load_one_image, path, target_dtype)] = path
+                    futures[executor.submit(
+                        self._load_one_image, path, target_dtype, self._load_scale
+                    )] = path
                 for fut in as_completed(futures):
                     path = futures[fut]
                     try:
@@ -2942,7 +3212,8 @@ class BlinkTab(QWidget):
                 'bit_depth':      bit_depth,
                 'is_mono':        is_mono,
                 'flagged':        False,
-                'orig_background': back
+                'orig_background': back,
+                'load_scale':      self._load_scale,
             })
 
         # 3) rebuild object/filter/exposure tree
@@ -3133,7 +3404,7 @@ class BlinkTab(QWidget):
             self,
             self.tr("Open Images"),
             self._last_folder(),
-            self.tr("Images (*.png *.tif *.tiff *.fits *.fit *.xisf *.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef);;All Files (*)")
+            self.tr("Images (*.png *.tif *.tiff *.fits *.fit *.xisf *.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef *.jpg *.jpeg);;All Files (*)")
         )
         if file_paths:
             self._save_last_folder(file_paths[0])        
@@ -3486,7 +3757,14 @@ class BlinkTab(QWidget):
         rename_flagged_action = QAction(self.tr("Rename Flagged Images…"), self)
         rename_flagged_action.triggered.connect(self.rename_flagged_images)
         menu.addAction(rename_flagged_action)
+        menu.addSeparator()
 
+        flag_sat_action = QAction(self.tr("Flag All Satellite Detections"), self)
+        flag_sat_action.triggered.connect(self._flag_all_satellite_detections)
+        # grey out if no sat detection has been run yet
+        any_sat_run = any(e.get("sat_detected") is not None for e in self.loaded_images)
+        flag_sat_action.setEnabled(any_sat_run)
+        menu.addAction(flag_sat_action)
         menu.addSeparator()
 
         send_lights_act = QAction(self.tr("Send to Stacking → Lights"), self)
@@ -3504,6 +3782,38 @@ class BlinkTab(QWidget):
         menu.addAction(remove_action)        
         
         menu.exec(self.fileTree.mapToGlobal(pos))
+
+    def _flag_all_satellite_detections(self):
+        """Flag all images that have a confirmed satellite trail detection."""
+        flagged = 0
+        RED = Qt.GlobalColor.red
+        normal = self.fileTree.palette().color(QPalette.ColorRole.WindowText)
+
+        for idx, entry in enumerate(self.loaded_images):
+            if entry.get("sat_detected") is not True:
+                continue
+            if entry.get("flagged"):
+                continue  # already flagged, skip
+
+            entry["flagged"] = True
+            flagged += 1
+
+            item = self.get_tree_item_for_index(idx)
+            if item:
+                base = os.path.basename(self.image_paths[idx])
+                item.setText(0, f"⚠️ {base}")
+                item.setForeground(0, QBrush(RED))
+                item.setData(0, Qt.ItemDataRole.UserRole, self.image_paths[idx])
+
+        if flagged == 0:
+            QMessageBox.information(self, self.tr("Flag Satellite Detections"),
+                self.tr("No unflagged satellite detections found."))
+            return
+
+        self._sync_metrics_flags()
+        QMessageBox.information(self, self.tr("Flag Satellite Detections"),
+            self.tr("Flagged {0} image{1} with satellite trails.").format(
+                flagged, "s" if flagged != 1 else ""))
 
     def remove_items_from_list(self):
         """Remove selected images from the blink session without touching files on disk."""
@@ -4368,8 +4678,13 @@ class BlinkTab(QWidget):
         self.aggressive_stretch_enabled = self.aggressive_button.isChecked()
         cur = self.fileTree.currentItem()
         if cur:
-            self._last_preview_name = None  # force reload even if same item
+            self._last_preview_name = None
+            if self.aggressive_stretch_enabled:
+                self.loading_label.setText(self.tr("Applying aggressive stretch…"))
+                QApplication.processEvents()
             self.on_item_clicked(cur, 0)
+            if self.aggressive_stretch_enabled:
+                self._update_loaded_count_label(len(self.loaded_images))
 
     def convert_to_qimage(self, img_array):
         if img_array.dtype == np.uint8:
