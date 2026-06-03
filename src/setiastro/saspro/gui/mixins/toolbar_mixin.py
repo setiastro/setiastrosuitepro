@@ -94,6 +94,7 @@ class ToolbarMixin:
             save_menu.addAction(self.act_save_tiff)
             save_menu.addAction(self.act_save_png)
             save_menu.addAction(self.act_save_jpeg)
+            save_menu.addAction(self.act_save_psb)
             btn_save.setMenu(save_menu)
             btn_save.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)        
         tb.addAction(self.act_checkpoint_save) 
@@ -643,6 +644,7 @@ class ToolbarMixin:
                 save_menu.addAction(self.act_save_tiff)
                 save_menu.addAction(self.act_save_png)
                 save_menu.addAction(self.act_save_jpeg)
+                save_menu.addAction(self.act_save_psb)
                 btn_save.setMenu(save_menu)
                 btn_save.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
                 
@@ -755,12 +757,14 @@ class ToolbarMixin:
         self.act_save_tiff  = QAction(self.tr("TIFF (.tiff)"),  self)
         self.act_save_png   = QAction(self.tr("PNG (.png)"),    self)
         self.act_save_jpeg  = QAction(self.tr("JPEG (.jpg)"),   self)
+        self.act_save_psb = QAction(self.tr("Photoshop Large Doc (.psb)"), self)
 
         self.act_save_fits.triggered.connect(lambda: self.save_active_as_format("fits"))
         self.act_save_xisf.triggered.connect(lambda: self.save_active_as_format("xisf"))
         self.act_save_tiff.triggered.connect(lambda: self.save_active_as_format("tiff"))
         self.act_save_png.triggered.connect(lambda:  self.save_active_as_format("png"))
         self.act_save_jpeg.triggered.connect(lambda: self.save_active_as_format("jpeg"))
+        self.act_save_psb.triggered.connect(lambda: self.save_active_as_format("psb"))
 
         self.act_export_fits_bundle = QAction(self.tr("Export FITS Bundle..."), self)
         self.act_export_fits_bundle.setStatusTip(

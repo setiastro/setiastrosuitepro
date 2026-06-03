@@ -17,7 +17,42 @@ import re
 from pathlib import Path
 from typing import Optional, List, Set
 
-
+# ---------------------------------------------------------------------------
+# !! ADDING A NEW FILE FORMAT !! — checklist for future Frank (or future AI)
+#
+# When adding a new save/load format, update ALL of the following:
+#
+#  1. file_utils.py          (THIS FILE)
+#                             - EXT_ALIASES          if the ext has aliases (e.g. jpeg→jpg)
+#                             - ALLOWED_BIT_DEPTHS   add the format + its supported depths
+#
+#  2. save_options.py        (pro/save_options.py)
+#                             - _BIT_DEPTHS dict     same depths as above, controls Export dialog
+#
+#  3. doc_manager.py         (saspro/doc_manager.py)
+#                             - _ALLOWED_DEPTHS dict  same again, used by save pipeline validation
+#
+#  4. image_manager.py       (saspro/legacy/image_manager.py)
+#                             - save_image()          add a new `if fmt == "xyz":` branch
+#                             - load_image()          add a new `elif filename.endswith('.xyz'):` branch
+#                             - The actual writer/reader can live in saspro/imageops/
+#
+#  5. file_mixin.py          (pro/gui/mixins/file_mixin.py)
+#                             - open_files()          add *.xyz to the file dialog filter string
+#                             - save_active()         add to the filter string
+#                             - save_active_as_format() add to fmt_map and all_filters
+#
+#  6. toolbar_mixin.py       (pro/gui/mixins/toolbar_mixin.py)
+#                             - _create_actions()     create self.act_save_xyz + connect
+#                             - _init_toolbar()       add act_save_xyz to save_menu dropdown
+#                             - _rebind_view_dropdowns() add act_save_xyz to save_menu rebuild
+#
+#  7. menubar_mixin.py       (pro/gui/mixins/menubar_mixin.py or _init_menubar in toolbar_mixin)
+#                             - Save As Format submenu  add m_save_as.addAction(self.act_save_xyz)
+#
+# That's 7 files / 8+ touchpoints. Yes, it's a lot. No, we can't easily collapse them
+# without a larger refactor. This comment is the next best thing.
+# ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -36,6 +71,7 @@ WIN_RESERVED_NAMES: Set[str] = {
 EXT_ALIASES = {
     "jpeg": "jpg",
     "tiff": "tif",
+    "psb": "psb",
 }
 
 # Allowed bit depths per format
@@ -46,6 +82,7 @@ ALLOWED_BIT_DEPTHS = {
     "fit":  {"32-bit floating point"},
     "tif":  {"8-bit", "16-bit", "32-bit unsigned", "32-bit floating point"},
     "xisf": {"16-bit", "32-bit unsigned", "32-bit floating point"},
+    "psb":  {"16-bit", "32-bit floating point"},
 }
 
 

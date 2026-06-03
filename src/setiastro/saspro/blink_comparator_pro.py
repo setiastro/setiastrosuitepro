@@ -1287,7 +1287,9 @@ class BlinkTab(QWidget):
         self.sat_detect_btn = QPushButton(self.tr("Detect Satellite Trails"), self)
         self.sat_detect_btn.setToolTip(self.tr(
             "Runs the Cosmic Clarity satellite detection model on all loaded images.\n"
-            "Images with detected trails are flagged in the Sat column."
+            "Images with detected trails are flagged in the Sat column.\n"
+            "This is a quick pre-pass that may produce false positives, especially large diffraction spikes,\n"
+            "but can help identify problematic frames before stacking."
         ))
         self.sat_detect_btn.clicked.connect(self._detect_satellite_trails)
         left_layout.addWidget(self.sat_detect_btn)

@@ -620,10 +620,11 @@ class FileMixin:
         filters = (
             "All Supported (*.png *.jpg *.jpeg *.tif *.tiff "
             "*.fits *.fit *.fts *.fits.gz *.fit.gz *.fz *.xisf *.pdf "
-            "*.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef);;"
+            "*.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef *.psb);;"
             "PDF (*.pdf);;"
             "Astro (FITS/XISF) (*.xisf *.fits *.fit *.fts *.fits.gz *.fit.gz *.fz);;"
             "RAW Images (*.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef);;"
+            "Photoshop Documents (*.psb);;"
             "Common Images (*.png *.jpg *.jpeg *.tif *.tiff);;"
             "All Files (*)"
         )
@@ -760,7 +761,8 @@ class FileMixin:
             "XISF (*.xisf);;"
             "TIFF (*.tif *.tiff);;"
             "PNG (*.png);;"
-            "JPEG (*.jpg *.jpeg)"
+            "JPEG (*.jpg *.jpeg);;"
+            "Photoshop Large Doc (*.psb)"
         )
 
         # --- Determine initial directory nicely -----------------------------
@@ -1223,11 +1225,12 @@ class FileMixin:
             return
 
         fmt_map = {
-            "fits":  ("FITS (*.fits *.fit)",  ".fits"),
-            "xisf":  ("XISF (*.xisf)",        ".xisf"),
-            "tiff":  ("TIFF (*.tif *.tiff)",  ".tiff"),
-            "png":   ("PNG (*.png)",           ".png"),
-            "jpeg":  ("JPEG (*.jpg *.jpeg)",   ".jpg"),
+            "fits":  ("FITS (*.fits *.fit)",              ".fits"),
+            "xisf":  ("XISF (*.xisf)",                   ".xisf"),
+            "tiff":  ("TIFF (*.tif *.tiff)",              ".tiff"),
+            "png":   ("PNG (*.png)",                      ".png"),
+            "jpeg":  ("JPEG (*.jpg *.jpeg)",              ".jpg"),
+            "psb":   ("Photoshop Large Doc (*.psb)",      ".psb"),
         }
         if fmt not in fmt_map:
             self.save_active()
@@ -1242,6 +1245,7 @@ class FileMixin:
             "TIFF (*.tif *.tiff)",
             "PNG (*.png)",
             "JPEG (*.jpg *.jpeg)",
+            "Photoshop Large Doc (*.psb)",
         ]
         # Move chosen filter to top
         ordered = [selected_filter] + [f for f in all_filters if f != selected_filter]
