@@ -100,15 +100,15 @@ LINE_CENTERS_NM: Dict[str, float] = {
 }
 
 #: Dual-band filter presets  →  (line1_key, line2_key)
-#: "Custom" uses user-supplied line names and centres.
+#: "Custom" uses user-supplied line names and centers.
 FILTER_PRESETS: Dict[str, Tuple[str, str]] = {
     "Ha / OIII":  ("Ha",  "OIII"),
     "SII / OIII": ("SII", "OIII"),
     "SII / Hβ":   ("SII", "Hb"),
-    "Custom":     ("Line1", "Line2"),   # user-defined centres and labels
+    "Custom":     ("Line1", "Line2"),   # user-defined centers and labels
 }
 
-#: Preset name → whether line centres/labels are user-editable
+#: Preset name → whether line centers/labels are user-editable
 FILTER_PRESET_CUSTOM = "Custom"
 
 #: Default bandwidths (FWHM, nm) for each line — user can override
@@ -144,7 +144,7 @@ def integrate_sed_over_window(
     ----------
     sed_wl_nm : wavelength array in nm
     sed_fl    : flux array (arbitrary units; only ratios matter)
-    center_nm : line centre in nm
+    center_nm : line center in nm
     bw_nm     : FWHM bandwidth in nm
 
     Returns
@@ -578,7 +578,7 @@ class NBExtractDialog(SFCCDialog):
 
         # Line 1 row
         row_l1 = QHBoxLayout()
-        self.nb_line1_label = QLabel("Ha centre (nm):")
+        self.nb_line1_label = QLabel("Ha center (nm):")
         row_l1.addWidget(self.nb_line1_label)
         self.nb_center1_spin = QDoubleSpinBox()
         self.nb_center1_spin.setRange(400.0, 800.0)
@@ -599,7 +599,7 @@ class NBExtractDialog(SFCCDialog):
 
         # Line 2 row
         row_l2 = QHBoxLayout()
-        self.nb_line2_label = QLabel("OIII centre (nm):")
+        self.nb_line2_label = QLabel("OIII center (nm):")
         row_l2.addWidget(self.nb_line2_label)
         self.nb_center2_spin = QDoubleSpinBox()
         self.nb_center2_spin.setRange(400.0, 800.0)
@@ -755,7 +755,7 @@ class NBExtractDialog(SFCCDialog):
         else:
             layout.addWidget(grp)
 
-        # Wire custom name edits to refresh the centre labels live
+        # Wire custom name edits to refresh the center labels live
         self.nb_line1_name.textChanged.connect(
             lambda _: self._on_preset_changed() if self.nb_preset_combo.currentText() == FILTER_PRESET_CUSTOM else None
         )
@@ -811,7 +811,7 @@ class NBExtractDialog(SFCCDialog):
         if hasattr(self, "nb_custom_names_row"):
             self.nb_custom_names_row.setVisible(is_custom)
 
-        # For Custom preset the centre/BW spinners are always editable;
+        # For Custom preset the center/BW spinners are always editable;
         # for named presets they snap to the known values.
         if not is_custom:
             for sp in (self.nb_center1_spin, self.nb_center2_spin,
@@ -833,8 +833,8 @@ class NBExtractDialog(SFCCDialog):
         else:
             n1, n2 = l1_key, l2_key
 
-        self.nb_line1_label.setText(f"{n1} centre (nm):")
-        self.nb_line2_label.setText(f"{n2} centre (nm):")
+        self.nb_line1_label.setText(f"{n1} center (nm):")
+        self.nb_line2_label.setText(f"{n2} center (nm):")
 
         if hasattr(self, "nb_q1_label"):
             self.nb_q1_label.setText(f"Line 1 ({n1}) mixing strength Q:")

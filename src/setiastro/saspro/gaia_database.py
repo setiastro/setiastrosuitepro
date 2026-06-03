@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
+import math
 
 import numpy as np
 
@@ -64,7 +65,7 @@ BAND_DEFS: List[Dict] = [
         "est_stars": "~60k stars",
         "est_size":  "~35 MB",
         "description": "Brightest stars — Vega, Sirius, and their ilk. "
-                        "Essential for any colour calibration.",
+                        "Essential for any color calibration.",
     },
     {
         "filename": "gaia_xp_8_10.sqlite",
@@ -486,7 +487,7 @@ class SpectrumViewerWidget(QWidget):
         self._ax.set_facecolor("#1a1a2e")
         self._fig.patch.set_facecolor("#1a1a2e")
 
-        # Colour the spectrum by wavelength band
+        # color the spectrum by wavelength band
         # BP: 330–680 nm  RP: 640–1050 nm  overlap blended
         bp_mask = wl <= 680
         rp_mask = wl >= 640
@@ -798,7 +799,7 @@ class GaiaDatabaseDialog(QDialog):
         lib_layout.setSpacing(8)
 
         info_lbl = QLabel(
-            "Install Gaia DR3 XP spectral library files for offline colour calibration. "
+            "Install Gaia DR3 XP spectral library files for offline color calibration. "
             "SASpro checks these before hitting the live Gaia archive."
         )
         info_lbl.setWordWrap(True)
@@ -884,7 +885,7 @@ class GaiaDatabaseDialog(QDialog):
         <p>Spectra were extracted from the
         <b>xp_sampled_mean_spectrum</b> table of the Gaia DR3 bulk download
         repository and stored in a compact, compressed format compatible with
-        SASpro's spectral photometric colour calibration (SFCC) pipeline.</p>
+        SASpro's spectral photometric color calibration (SFCC) pipeline.</p>
         <p><b>No GaiaXPy required</b> — the spectra are already calibrated by DPAC.</p>
         <h4 style="color:#8899ee;">Lookup priority in SASpro</h4>
         <ol>
