@@ -2051,7 +2051,11 @@ def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = 
                     bit_depth = "8-bit"
                 else:
                     raise ValueError("Unsupported JPG format!")            
-
+            elif filename.lower().endswith('.psb'):
+                print(f"Loading PSB file: {filename}")
+                from setiastro.saspro.imageops.save_psb import load_psb
+                image, bit_depth, is_mono = load_psb(filename)
+                image = _finalize_loaded_image(image)
             else:
                 raise ValueError("Unsupported file format!")
 
@@ -2147,6 +2151,7 @@ def _normalize_format(fmt: str) -> str:
     f = (fmt or "").lower().lstrip(".")
     if f == "jpeg": f = "jpg"
     if f == "tiff": f = "tif"
+    if f == "psb": f = "psb"
     return f
 
 def _is_header_obj(h) -> bool:
@@ -3289,7 +3294,23 @@ def save_image(img_array,
             )
             print(f"Saved {bd} XISF image to: {filename}")
             return
+        # ---------------------------------------------------------------------
+        # PSB — Photoshop Large Document (no size limit, pure numpy writer)
+        # ---------------------------------------------------------------------
+        if fmt == "psb":
+            from setiastro.saspro.imageops.save_psb import save_psb
 
+            # PSB depth: default 32-bit float; honor 16-bit if explicitly requested
+            bd = (bit_depth or "32-bit floating point").lower()
+            psb_depth = 16 if bd == "16-bit" else 32
+
+            # Ensure correct extension
+            if not filename.lower().endswith(".psb"):
+                filename = f"{base}.psb"
+
+            save_psb(filename, img_array, depth=psb_depth)
+            print(f"Saved {psb_depth}-bit PSB image to: {filename}")
+            return
         # ---------------------------------------------------------------------
         # Unknown format
         # ---------------------------------------------------------------------

@@ -33,7 +33,14 @@ from setiastro.saspro.legacy.image_manager import load_image
 
 from setiastro.saspro.imageops.stretch import stretch_color_image, stretch_mono_image
 from setiastro.saspro.bayer_utils import detect_bayer_pattern
-
+from setiastro.saspro.cosmicclarity_engines.satellite_engine import (
+    get_satellite_models,
+    _normalize_for_satellite,
+    _resize_tile_for_detect,
+    _split_chunks,
+    _is_border_tile,
+    stretch_image,
+)
 from setiastro.saspro.legacy.numba_utils import debayer_raw_fast
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 
@@ -1277,7 +1284,15 @@ class BlinkTab(QWidget):
         self.metrics_button = QPushButton(self.tr("Interactive Metrics && Culling"), self)
         self.metrics_button.clicked.connect(self.show_metrics)
         left_layout.addWidget(self.metrics_button)
-
+        self.sat_detect_btn = QPushButton(self.tr("Detect Satellite Trails"), self)
+        self.sat_detect_btn.setToolTip(self.tr(
+            "Runs the Cosmic Clarity satellite detection model on all loaded images.\n"
+            "Images with detected trails are flagged in the Sat column.\n"
+            "This is a quick pre-pass that may produce false positives, especially large diffraction spikes,\n"
+            "but can help identify problematic frames before stacking."
+        ))
+        self.sat_detect_btn.clicked.connect(self._detect_satellite_trails)
+        left_layout.addWidget(self.sat_detect_btn)
         push_row = QHBoxLayout()
         self.send_lights_btn = QPushButton(self.tr("→ Stacking: Lights"), self)
         self.send_lights_btn.setToolTip(self.tr("Send selected (or all) blink files to the Stacking Suite → Light tab"))
@@ -1369,25 +1384,26 @@ class BlinkTab(QWidget):
 
         # Tree view for file names
         self.fileTree = QTreeWidget(self)
-        self.fileTree.setColumnCount(5)
+        self.fileTree.setColumnCount(6)
+        self.fileTree.setColumnCount(6)
         self.fileTree.setHeaderLabels([
             self.tr("Image Files"),
+            self.tr("Sat"),
             self.tr("Stars"),
             self.tr("FWHM"),
             self.tr("Ecc"),
             self.tr("BG"),
         ])
 
-        # Optional: nicer alignment
-        for c in (1, 2, 3, 4):
-            self.fileTree.headerItem().setTextAlignment(c, Qt.AlignmentFlag.AlignRight)
+        for c in (1, 2, 3, 4, 5):
+            self.fileTree.headerItem().setTextAlignment(c, Qt.AlignmentFlag.AlignCenter)
 
-        # Optional: column widths
-        self.fileTree.setColumnWidth(0, 520)
-        self.fileTree.setColumnWidth(1, 70)
-        self.fileTree.setColumnWidth(2, 70)
-        self.fileTree.setColumnWidth(3, 70)
-        self.fileTree.setColumnWidth(4, 70)
+        self.fileTree.setColumnWidth(0, 450)
+        self.fileTree.setColumnWidth(1, 35)
+        self.fileTree.setColumnWidth(2, 55)
+        self.fileTree.setColumnWidth(3, 55)
+        self.fileTree.setColumnWidth(4, 55)
+        self.fileTree.setColumnWidth(5, 55)
         self.fileTree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)  # Allow multiple selections
         #self.fileTree.itemClicked.connect(self.on_item_clicked)
         self.fileTree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -2101,10 +2117,6 @@ class BlinkTab(QWidget):
 
     #    ----    metrics to leaves    ----
     def _update_tree_metrics_columns(self):
-        """
-        Write (Stars, FWHM, Ecc, BG) into columns 1..4 for each leaf item.
-        Uses MetricsWindow -> MetricsPanel cached arrays once they exist.
-        """
         if not self.metrics_window:
             return
         panel = getattr(self.metrics_window, "metrics_panel", None)
@@ -2130,19 +2142,26 @@ class BlinkTab(QWidget):
             if idx is None or idx < 0 or idx >= n:
                 continue
 
-            # Stars
-            item.setText(1, fmt_i(m3[idx]))
-            # FWHM px
-            item.setText(2, fmt_f(m0[idx]))
-            # Ecc
-            item.setText(3, fmt_f(m1[idx]))
-            # BG
-            item.setText(4, fmt_f(m2[idx]))
+            # Sat column (1) — from sat_detected
+            if idx < len(self.loaded_images):
+                detected = self.loaded_images[idx].get("sat_detected", None)
+                if detected is True:
+                    item.setText(1, "⚠")
+                    item.setForeground(1, QBrush(QColor(255, 160, 0)))
+                    item.setTextAlignment(1, Qt.AlignmentFlag.AlignCenter)
+                elif detected is False:
+                    item.setText(1, "✓")
+                    item.setForeground(1, QBrush(QColor(100, 200, 100)))
+                    item.setTextAlignment(1, Qt.AlignmentFlag.AlignCenter)
 
-            # Right-align numeric cells
-            for c in (1, 2, 3, 4):
-                item.setTextAlignment(c, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)   
+            # Stars (2), FWHM (3), Ecc (4), BG (5)
+            item.setText(2, fmt_i(m3[idx]))
+            item.setText(3, fmt_f(m0[idx]))
+            item.setText(4, fmt_f(m1[idx]))
+            item.setText(5, fmt_f(m2[idx]))
 
+            for c in (2, 3, 4, 5):
+                item.setTextAlignment(c, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
     # inside BlinkTab
     def _sync_metrics_flags(self):
         if self.metrics_window:
@@ -2152,6 +2171,238 @@ class BlinkTab(QWidget):
             # after a move/delete, current_indices might be stale → refresh text safely
             self.metrics_window._update_status()
 
+    def _detect_satellite_trails(self):
+        """
+        Run the Cosmic Clarity ResNet detection pass on all loaded images.
+        Uses a prefetch pipeline so CPU tile prep overlaps with GPU inference.
+        """
+        if not self.loaded_images:
+            QMessageBox.information(self, self.tr("No Images"),
+                                    self.tr("Load images before running satellite detection."))
+            return
+
+        prog = QProgressDialog(
+            self.tr("Loading satellite detection model…"),
+            self.tr("Cancel"),
+            0, len(self.loaded_images),
+            self,
+        )
+        prog.setWindowTitle(self.tr("Satellite Trail Detection"))
+        prog.setWindowModality(Qt.WindowModality.WindowModal)
+        prog.setMinimumDuration(0)
+        prog.setMinimumWidth(420)
+        prog.setValue(0)
+        prog.show()
+        QApplication.processEvents()
+
+        try:
+            models = get_satellite_models(use_gpu=True,
+                                        status_cb=lambda m: print(f"[Sat] {m}"))
+        except Exception as e:
+            prog.close()
+            QMessageBox.critical(self, self.tr("Model Load Error"),
+                                self.tr("Could not load satellite detection model:\n{0}").format(e))
+            return
+
+        is_onnx = bool(models.get("is_onnx", False))
+        chunk_size = 256
+        overlap = 0
+        border_size = 16
+        detect_bs = 32
+
+        # ── Tile prep function (runs on CPU in background thread) ────────────
+        def _prepare_tiles(entry):
+            try:
+                img = entry["image_data"]
+                rgb01, _was_mono, _orig_min, _scale = _normalize_for_satellite(img)
+                H, W = rgb01.shape[:2]
+
+                arr = rgb01.astype(np.float32)
+                if np.median(arr - np.min(arr)) < 0.05:
+                    arr, _smin, _smeds = stretch_image(arr, target_median=0.25)
+
+                all_tiles = list(_split_chunks(arr, chunk_size, overlap))
+                interior = [
+                    (tile, y0, x0)
+                    for (tile, y0, x0) in all_tiles
+                    if not _is_border_tile(
+                        y0, x0,
+                        y0 + tile.shape[0], x0 + tile.shape[1],
+                        H, W, border_size
+                    )
+                ]
+
+                if not interior:
+                    return None
+
+                tiles_only = [t.astype(np.float32) for (t, _, _) in interior]
+                coords = [(y0, x0) for (_, y0, x0) in interior]   # ← keep coords
+
+                if is_onnx:
+                    return tiles_only, coords
+                else:
+                    return [_resize_tile_for_detect(t) for t in tiles_only], coords
+
+            except Exception as e:
+                print(f"[Sat detect] Tile prep failed for {entry.get('file_path','?')}: {e}")
+                return None
+
+            # ── Inference function (runs on GPU, called from main thread) ────────
+        def _run_inference(resized_tiles, interior_tiles_coords):
+            """
+            Returns True if at least 2 spatially adjacent interior tiles both pass det1 + det2.
+            interior_tiles_coords: list of (y0, x0) for each tile in resized_tiles.
+            """
+            passing_coords = []
+
+            if is_onnx:
+                det1_sess = models["detection_model1"]
+                det2_sess = models["detection_model2"]
+                for i, tile in enumerate(resized_tiles):
+                    from setiastro.saspro.cosmicclarity_engines.satellite_engine import _onnx_detect
+                    if _onnx_detect(tile, det1_sess) and _onnx_detect(tile, det2_sess):
+                        passing_coords.append(interior_tiles_coords[i])
+            else:
+                torch = models["torch"]
+                device = models["device"]
+                det1 = models["detection_model1"]
+                det2 = models["detection_model2"]
+
+                for i in range(0, len(resized_tiles), detect_bs):
+                    batch_np = np.stack(resized_tiles[i:i + detect_bs], axis=0)
+                    batch_np = np.transpose(batch_np, (0, 3, 1, 2)).astype(np.float32)
+
+                    x = torch.from_numpy(batch_np)
+                    if hasattr(device, "type") and device.type == "cuda":
+                        x = x.pin_memory().to(device, dtype=torch.float32, non_blocking=True)
+                    else:
+                        x = x.to(device=device, dtype=torch.float32)
+
+                    with torch.no_grad():
+                        o1 = det1(x).flatten()
+                    keep1 = (o1 > 0.5)
+
+                    if keep1.any():
+                        idxs = keep1.nonzero(as_tuple=False).flatten()
+                        with torch.no_grad():
+                            o2 = det2(x[idxs]).flatten()
+                        passing_mask = (o2 > 0.25)
+                        for j, global_i in enumerate(idxs.tolist()):
+                            if passing_mask[j]:
+                                passing_coords.append(interior_tiles_coords[i + global_i])
+
+            # Need at least 2 passing tiles that are spatially adjacent (8-connected)
+            # tile coords are (y0, x0) in pixel space; tiles are chunk_size apart minus overlap
+            # Two tiles are adjacent if their origins differ by at most (chunk_size - overlap) in each axis
+            if len(passing_coords) < 2:
+                return False
+
+            step = chunk_size  # pixel distance between adjacent tile origins
+            tolerance = step * 1.5       # slightly loose to handle edge tiles
+
+            for i in range(len(passing_coords)):
+                y0_a, x0_a = passing_coords[i]
+                for j in range(i + 1, len(passing_coords)):
+                    y0_b, x0_b = passing_coords[j]
+                    if abs(y0_a - y0_b) <= tolerance and abs(x0_a - x0_b) <= tolerance:
+                        return True
+
+            return False
+
+        # ── Prefetch pipeline ─────────────────────────────────────────────────
+        # We keep exactly ONE image prepping in the background while the GPU
+        # runs inference on the current image. This fully hides CPU prep latency
+        # without buffering large amounts of tile data in RAM.
+        import concurrent.futures
+
+        n_images = len(self.loaded_images)
+        n_detected = 0
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+        try:
+            # Kick off prep for the first image immediately
+            next_future = executor.submit(_prepare_tiles, self.loaded_images[0])
+
+            for img_idx in range(n_images):
+                if prog.wasCanceled():
+                    break
+
+                prog.setLabelText(
+                    self.tr("Checking image {0} of {1}: {2}").format(
+                        img_idx + 1, n_images,
+                        os.path.basename(self.loaded_images[img_idx]["file_path"])
+                    )
+                )
+                QApplication.processEvents()
+
+                # Collect current image's tiles (already prepped by background thread)
+                try:
+                    tiles = next_future.result()
+                except Exception as e:
+                    print(f"[Sat detect] Prep failed for image {img_idx}: {e}")
+                    tiles = None
+
+                # Kick off prep for the NEXT image immediately — overlaps with GPU below
+                if img_idx + 1 < n_images and not prog.wasCanceled():
+                    next_future = executor.submit(_prepare_tiles, self.loaded_images[img_idx + 1])
+
+                # Run inference on current image while next is prepping in background
+                entry = self.loaded_images[img_idx]
+                if tiles is None:
+                    entry["sat_detected"] = False
+                else:
+                    try:
+                        resized_tiles, coords = tiles
+                        trail_found = _run_inference(resized_tiles, coords)
+                        entry["sat_detected"] = trail_found
+                        if trail_found:
+                            n_detected += 1
+                    except Exception as e:
+                        print(f"[Sat detect] Inference failed on {entry['file_path']}: {e}")
+                        entry["sat_detected"] = False
+
+                prog.setValue(img_idx + 1)
+                QApplication.processEvents()
+
+        finally:
+            executor.shutdown(wait=False)
+
+        prog.close()
+
+        self._update_tree_sat_column()
+
+        if not prog.wasCanceled():
+            QMessageBox.information(
+                self,
+                self.tr("Satellite Detection Complete"),
+                self.tr(
+                    "Checked {0} image{1}.\n"
+                    "{2} potential satellite trail{3} detected.\n\n"
+                    "Images with trails are marked ⚠ in the Sat column.\n"
+                    "Use 'F' or click a dot in Metrics to flag for culling."
+                ).format(
+                    n_images,
+                    "s" if n_images != 1 else "",
+                    n_detected,
+                    "s" if n_detected != 1 else "",
+                )
+            )
+    def _update_tree_sat_column(self):
+        for item in self.get_all_leaf_items():
+            idx = self._leaf_index(item)
+            if idx is None or idx < 0 or idx >= len(self.loaded_images):
+                continue
+            detected = self.loaded_images[idx].get("sat_detected", None)
+            if detected is True:
+                item.setText(1, "⚠")
+                item.setForeground(1, QBrush(QColor(255, 160, 0)))
+                item.setTextAlignment(1, Qt.AlignmentFlag.AlignCenter)
+            elif detected is False:
+                item.setText(1, "✓")
+                item.setForeground(1, QBrush(QColor(100, 200, 100)))
+                item.setTextAlignment(1, Qt.AlignmentFlag.AlignCenter)
+            else:
+                item.setText(1, "")
 
     def addAdditionalImages(self):
         """Let the user pick more images to append to the blink list."""
@@ -2372,7 +2623,7 @@ class BlinkTab(QWidget):
                     exp_item.setExpanded(True)
 
                     for p in by_object[obj][fil][exp]:
-                        leaf = QTreeWidgetItem([os.path.basename(p), "", "", "", ""])
+                        leaf = QTreeWidgetItem([os.path.basename(p), "", "", "", "", ""])
                         leaf.setData(0, Qt.ItemDataRole.UserRole, p)
                         exp_item.addChild(leaf)
 
@@ -2725,7 +2976,7 @@ class BlinkTab(QWidget):
                     exp_item.setExpanded(True)
 
                     for p in by_object[obj][filt][exp]:
-                        leaf = QTreeWidgetItem([os.path.basename(p), "", "", "", ""])
+                        leaf = QTreeWidgetItem([os.path.basename(p), "", "", "", "", ""])
                         leaf.setData(0, Qt.ItemDataRole.UserRole, p)
                         exp_item.addChild(leaf)
 
@@ -2999,7 +3250,7 @@ class BlinkTab(QWidget):
 
         # Add the file item
         file_name = os.path.basename(file_path)
-        item = QTreeWidgetItem([file_name, "", "", "", ""])
+        item = QTreeWidgetItem([file_name, "", "", "", "", ""])
         item.setData(0, Qt.ItemDataRole.UserRole, file_path)
         exposure_item.addChild(item)
 

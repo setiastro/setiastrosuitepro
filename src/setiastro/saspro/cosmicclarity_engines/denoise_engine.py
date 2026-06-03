@@ -677,6 +677,7 @@ def _is_recoverable_batch_error(err: Exception) -> bool:
         "allocation", "alloc", "resource",
         "execution provider",
         "insufficient memory", "bad allocation", "memory",
+        "unknown error",   # torch-directml internal failures
     ]
     return any(n in msg for n in needles)
 
@@ -686,8 +687,9 @@ def _auto_batch_size(models, chunk_size, *, rgb, execution_mode="auto", batch_si
     if execution_mode == "compatibility":
         return 1
 
-    dev = _device_type(models)   # ← use helper
+    dev = _device_type(models)
     cs = int(chunk_size)
+    is_walking = getattr(models, "variant", "") == "walking"
 
     if models.is_onnx:
         if cs <= 256: return 8 if rgb else 12
@@ -710,7 +712,11 @@ def _auto_batch_size(models, chunk_size, *, rgb, execution_mode="auto", batch_si
         if cs <= 512: return 4 if rgb else 8
         return 2
 
-    if dev in ("mps", "dml"):   # ← dml now catches privateuseone too
+    if dev in ("mps", "dml"):
+        # Walking model is heavier — start conservative on DML to avoid
+        # the "unknown error" that DirectML emits when it runs out of resources
+        if is_walking:
+            return 1
         if cs <= 256: return 4 if rgb else 6
         if cs <= 384: return 2 if rgb else 4
         return 1
