@@ -256,6 +256,7 @@ class Icons:
     SELECTIVE_LUM = property(lambda self: _resource_path('selectiveluma.png'))
     NB_TO_RGB = property(lambda self: _resource_path('nbtorgb.png'))
     NARROWBANDNORMALIZATION = property(lambda self: _resource_path('narrowbandnormalization.png'))
+    GAIA = property(lambda self: _resource_path('gaia.png'))
     
     # Stretching
     STAT_STRETCH = property(lambda self: _resource_path('statstretch.png'))
@@ -449,6 +450,7 @@ _LEGACY_ICON_MAP = {
     'spcc_icon_path': 'spcc.png',
     'nbextract_icon': 'nbextract.png',
     'atlas_path': 'atlas.png',
+    'gaia_path': 'gaia.png',
 
     'exoicon_path': 'exoicon.png',
     'peeker_icon': 'gridicon.png',

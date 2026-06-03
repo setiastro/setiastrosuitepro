@@ -30,7 +30,7 @@ from setiastro.saspro.resources import (
     rotate180_path, maskcreate_path, maskapply_path, maskremove_path, histogram_transform_path,
     pixelmath_path, histogram_path, mosaic_path, rescale_path, staralign_path,
     platesolve_path, psf_path, supernova_path, starregistration_path, csv_icon_path, collage_path,
-    stacking_path, pedestal_icon_path, starspike_path, astrospike_path, dithericon_path,
+    stacking_path, pedestal_icon_path, starspike_path, astrospike_path, dithericon_path,gaia_path,
     signature_icon_path, livestacking_path, convoicon_path, spcc_icon_path, atlas_path,
     exoicon_path, peeker_icon, dse_icon_path, isophote_path, statstretch_path,resizecanvas_path,nbextract_icon,
     starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path, narrowbandnormalization_path,
@@ -328,6 +328,7 @@ class ToolbarMixin:
         tb_star.addAction(self.act_astrospike)
         tb_star.addAction(self.act_exo_detector)
         tb_star.addAction(self.act_isophote)
+        tb_star.addAction(self.act_gaia_database)
 
         self._restore_toolbar_order(tb_star, "Toolbar/StarStuff")
         try:
@@ -1045,6 +1046,11 @@ class ToolbarMixin:
         self.act_nbextract.setIconVisibleInMenu(True)
         self.act_nbextract.setStatusTip(self.tr("Empirically calibrated dual-band narrowband channel extraction (Ha/OIII, SII/OIII, SII/Hβ)"))
         self.act_nbextract.triggered.connect(self._open_nbextract)
+
+        self.act_gaia_database = QAction(QIcon(gaia_path), self.tr("Gaia XP Spectral Library..."), self)
+        self.act_gaia_database.setObjectName("gaia_database")
+        self.act_gaia_database.setToolTip(self.tr("Manage Gaia DR3 XP spectral library databases"))
+        self.act_gaia_database.triggered.connect(self._open_gaia_database)
 
         self.act_convo = QAction(QIcon(convoicon_path), self.tr("Convolution / Deconvolution..."), self)
         self.act_convo.setObjectName("convo_deconvo")

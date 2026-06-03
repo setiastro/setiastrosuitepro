@@ -180,7 +180,7 @@ from setiastro.saspro.resources import (
     jwstpupil_path, signature_icon_path, livestacking_path, hrdiagram_path,
     convoicon_path, spcc_icon_path, sasp_data_path, exoicon_path, peeker_icon,rotatearbitrary_path,
     dse_icon_path, astrobin_filters_csv_path, isophote_path, statstretch_path,
-    starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path,
+    starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path,gaia_path,
     nbtorgb_path, freqsep_path, contsub_path, halo_path, cosmic_path,dithericon_path,
     satellite_path, imagecombine_path, wrench_path, eye_icon_path,multiscale_decomp_path, nbi_path,
     disk_icon_path, nuke_path, hubble_path, collage_path, annotated_path, atlas_path,
@@ -3093,6 +3093,25 @@ class AstroSuiteProMainWindow(
             pass
 
         self._nbextract_window.show()
+
+    def _open_gaia_database(self):
+        from setiastro.saspro.gaia_database import GaiaDatabaseDialog
+        if getattr(self, "_gaia_db_window", None) and self._gaia_db_window.isVisible():
+            self._gaia_db_window.raise_()
+            self._gaia_db_window.activateWindow()
+            return
+        self._gaia_db_window = GaiaDatabaseDialog(parent=self)
+        try:
+            self._gaia_db_window.setWindowIcon(QIcon(gaia_path))
+        except Exception:
+            pass
+        try:
+            self._gaia_db_window.destroyed.connect(
+                lambda _=None: setattr(self, "_gaia_db_window", None)
+            )
+        except Exception:
+            pass
+        self._gaia_db_window.show()
 
     def _open_magnitude_tool(self):
         import os

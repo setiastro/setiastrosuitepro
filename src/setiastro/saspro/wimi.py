@@ -3809,20 +3809,20 @@ class WIMIDialog(QDialog):
         self.object_count_label.setText(f"Objects Found: {count}")
 
     def open_context_menu(self, position):
+        from setiastro.saspro.gaia_database import get_library
+        import math
         
-        # Get the item at the mouse position
         item = self.results_tree.itemAt(position)
         if not item:
-            return  # If no item is clicked, do nothing
+            return
         
         self.on_tree_item_clicked(item)
 
-        # Create the context menu
         menu = QMenu(self)
 
-        # Define actions
         open_website_action = QAction(self.tr("Open Website"), self)
-        open_website_action.triggered.connect(lambda: self.results_tree.itemDoubleClicked.emit(item, 0))
+        open_website_action.triggered.connect(
+            lambda: self.results_tree.itemDoubleClicked.emit(item, 0))
         menu.addAction(open_website_action)
 
         zoom_to_object_action = QAction(self.tr("Zoom to Object"), self)
@@ -3833,8 +3833,75 @@ class WIMIDialog(QDialog):
         copy_info_action.triggered.connect(lambda: self.copy_object_information(item))
         menu.addAction(copy_info_action)
 
-        # Display the context menu at the cursor position
+        # Gaia XP Spectrum
+        try:
+            lib = get_library()
+            has_lib = bool(lib.installed_bands())
+        except Exception:
+            has_lib = False
+
+        act_spectrum = QAction(self.tr("View Gaia XP Spectrum"), self)
+        act_spectrum.triggered.connect(lambda: self._show_gaia_spectrum_for_item(item))
+        act_spectrum.setEnabled(has_lib)
+        if not has_lib:
+            act_spectrum.setToolTip(
+                "No Gaia library installed — use Settings → Gaia XP Spectral Library")
+        menu.addAction(act_spectrum)
+
         menu.exec(self.results_tree.viewport().mapToGlobal(position))
+
+    def _show_gaia_spectrum_for_item(self, item):
+        from setiastro.saspro.gaia_database import (
+            GaiaBulkLibrary, get_library, SpectrumViewerWidget
+        )
+        import math
+
+        try:
+            ra  = float(item.text(0))
+            dec = float(item.text(1))
+            name = item.text(2)
+        except Exception:
+            return
+
+        lib = get_library()
+        if not lib.installed_bands():
+            QMessageBox.information(
+                self, "Gaia Library",
+                "No Gaia XP spectral library installed.\n"
+                "Open Settings → Gaia XP Spectral Library to install bands."
+            )
+            return
+
+        result = lib.find_nearest(ra, dec, radius_arcsec=3.0)
+        if result is None:
+            QMessageBox.information(
+                self, "No Spectrum",
+                f"No Gaia XP spectrum found within 3\" of {name}.\n"
+                f"The relevant magnitude band may not be installed."
+            )
+            return
+
+        source_id, sep = result
+        spec = lib.get_spectrum(source_id)
+        if spec is None:
+            QMessageBox.information(self, "No Spectrum", "Source found but spectrum data missing.")
+            return
+
+        # Show in a small popup
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Gaia XP Spectrum — {name}")
+        dlg.setMinimumSize(600, 320)
+        layout = QVBoxLayout(dlg)
+        viewer = SpectrumViewerWidget(dlg)
+        layout.addWidget(viewer)
+        info = QLabel(f"source_id: {source_id}   separation: {sep:.2f}\"")
+        info.setStyleSheet("font-size: 10px; color: #888;")
+        layout.addWidget(info)
+        btn = QPushButton("Close")
+        btn.clicked.connect(dlg.accept)
+        layout.addWidget(btn)
+        viewer.show_spectrum(spec, title=f"{name}  (G source {source_id})")
+        dlg.exec()
 
     def toggle_autostretch(self):
         if not hasattr(self, 'original_image'):

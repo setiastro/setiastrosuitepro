@@ -492,13 +492,36 @@ class GaiaSpectraDB:
 
 
     def get_spectrum(self, source_id: int) -> Optional[CalibratedSpectrum]:
-        """Retrieve a spectrum by source ID."""
-        cursor = self._conn.cursor()
-        cursor.execute('''
-            SELECT flux_compressed, flux_error_compressed FROM spectra
-            WHERE source_id = ?
-        ''', (int(source_id),))
+        """
+        Retrieve a spectrum by source ID.
+        Lookup order:
+          1. Bulk library (locally installed SQLite band files) — instant
+          2. This cache DB (live-downloaded spectra)
+        """
+        sid = int(source_id)
 
+        # ── 1. Check bulk library first ───────────────────────────────────
+        try:
+            lib = _get_bulk_library()
+            if lib is not None:
+                bulk_spec = lib.get_spectrum(sid)
+                if bulk_spec is not None:
+                    # Wrap in our CalibratedSpectrum type for consistency
+                    return CalibratedSpectrum(
+                        source_id=sid,
+                        wavelengths=bulk_spec.wavelengths,
+                        flux=bulk_spec.flux,
+                        flux_error=bulk_spec.flux_error,
+                    )
+        except Exception:
+            pass
+
+        # ── 2. Fall back to live cache DB ─────────────────────────────────
+        cursor = self._conn.cursor()
+        cursor.execute(
+            "SELECT flux_compressed, flux_error_compressed FROM spectra WHERE source_id=?",
+            (sid,)
+        )
         row = cursor.fetchone()
         if row is None:
             return None
@@ -506,17 +529,16 @@ class GaiaSpectraDB:
         flux = self._decompress_array(row[0])
         flux_error = self._decompress_array(row[1]) if row[1] else None
 
-        # ensure correct length (older DBs / corruption)
         if flux.size != self.N_WAVELENGTHS:
             flux = flux[:self.N_WAVELENGTHS]
         if flux_error is not None and flux_error.size != self.N_WAVELENGTHS:
             flux_error = flux_error[:self.N_WAVELENGTHS]
 
         return CalibratedSpectrum(
-            source_id=int(source_id),
+            source_id=sid,
             wavelengths=self.wavelengths,
             flux=flux,
-            flux_error=flux_error
+            flux_error=flux_error,
         )
 
     def get_source(self, source_id: int) -> Optional[GaiaSource]:
@@ -772,6 +794,13 @@ class GaiaSpectraDB:
         stats = self.get_stats()
         return f"GaiaSpectraDB('{self.db_path.name}', sources={stats['total_sources']}, spectra={stats['total_spectra']})"
 
+# Lazy import to avoid circular imports — gaia_database imports from here
+def _get_bulk_library():
+    try:
+        from setiastro.saspro.gaia_database import get_library
+        return get_library()
+    except Exception:
+        return None
 
 class GaiaDownloader:
     """
