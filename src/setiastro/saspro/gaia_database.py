@@ -838,19 +838,76 @@ class GaiaDatabaseDialog(QDialog):
         viewer_tab = QWidget()
         viewer_layout = QVBoxLayout(viewer_tab)
         viewer_layout.setContentsMargins(16, 16, 16, 16)
+        viewer_layout.setSpacing(8)
 
-        search_row = QHBoxLayout()
-        from PyQt6.QtWidgets import QLineEdit
+        # Search mode toggle
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(QLabel("Search by:"))
+        from PyQt6.QtWidgets import QLineEdit, QComboBox
+        self._search_mode = QComboBox()
+        self._search_mode.addItems(["Star Name (SIMBAD)", "RA / Dec", "Gaia source_id"])
+        self._search_mode.setFixedWidth(200)
+        self._search_mode.currentIndexChanged.connect(self._on_search_mode_changed)
+        mode_row.addWidget(self._search_mode)
+        mode_row.addStretch()
+        viewer_layout.addLayout(mode_row)
+
+        # Search inputs — stacked, only one visible at a time
+        # -- Name search --
+        self._name_row = QWidget()
+        name_layout = QHBoxLayout(self._name_row)
+        name_layout.setContentsMargins(0, 0, 0, 0)
+        self._name_edit = QLineEdit()
+        self._name_edit.setPlaceholderText("e.g. Vega, Sirius, HD 12345, Albireo A…")
+        self._name_edit.returnPressed.connect(self._lookup_spectrum)
+        name_layout.addWidget(self._name_edit, stretch=1)
+        btn_name = QPushButton("Look Up")
+        btn_name.clicked.connect(self._lookup_spectrum)
+        name_layout.addWidget(btn_name)
+        viewer_layout.addWidget(self._name_row)
+
+        # -- RA/Dec search --
+        self._radec_row = QWidget()
+        radec_layout = QHBoxLayout(self._radec_row)
+        radec_layout.setContentsMargins(0, 0, 0, 0)
+        radec_layout.addWidget(QLabel("RA (deg):"))
+        self._ra_edit = QLineEdit()
+        self._ra_edit.setPlaceholderText("e.g. 279.234")
+        self._ra_edit.setFixedWidth(110)
+        self._ra_edit.returnPressed.connect(self._lookup_spectrum)
+        radec_layout.addWidget(self._ra_edit)
+        radec_layout.addWidget(QLabel("Dec (deg):"))
+        self._dec_edit = QLineEdit()
+        self._dec_edit.setPlaceholderText("e.g. 38.783")
+        self._dec_edit.setFixedWidth(110)
+        self._dec_edit.returnPressed.connect(self._lookup_spectrum)
+        radec_layout.addWidget(self._dec_edit)
+        radec_layout.addWidget(QLabel("Radius (arcsec):"))
+        self._radius_edit = QLineEdit("5.0")
+        self._radius_edit.setFixedWidth(60)
+        radec_layout.addWidget(self._radius_edit)
+        btn_radec = QPushButton("Look Up")
+        btn_radec.clicked.connect(self._lookup_spectrum)
+        radec_layout.addWidget(btn_radec)
+        radec_layout.addStretch()
+        self._radec_row.setVisible(False)
+        viewer_layout.addWidget(self._radec_row)
+
+        # -- Source ID search --
+        self._sid_row = QWidget()
+        sid_layout = QHBoxLayout(self._sid_row)
+        sid_layout.setContentsMargins(0, 0, 0, 0)
         self._sid_edit = QLineEdit()
-        self._sid_edit.setPlaceholderText("Enter Gaia source_id…")
+        self._sid_edit.setPlaceholderText("Enter Gaia DR3 source_id…")
         self._sid_edit.returnPressed.connect(self._lookup_spectrum)
-        search_row.addWidget(self._sid_edit, stretch=1)
-        btn_lookup = QPushButton("Look Up")
-        btn_lookup.clicked.connect(self._lookup_spectrum)
-        search_row.addWidget(btn_lookup)
-        viewer_layout.addLayout(search_row)
+        sid_layout.addWidget(self._sid_edit, stretch=1)
+        btn_sid = QPushButton("Look Up")
+        btn_sid.clicked.connect(self._lookup_spectrum)
+        sid_layout.addWidget(btn_sid)
+        self._sid_row.setVisible(False)
+        viewer_layout.addWidget(self._sid_row)
 
-        self._viewer_status = QLabel("Enter a Gaia DR3 source_id to view its XP spectrum.")
+        self._viewer_status = QLabel("Search for a star by name, coordinates, or Gaia source_id.")
         self._viewer_status.setStyleSheet("color: #668; font-size: 11px;")
         viewer_layout.addWidget(self._viewer_status)
 
@@ -1065,23 +1122,103 @@ class GaiaDatabaseDialog(QDialog):
 
     # ── Spectrum viewer ───────────────────────────────────────────────────
 
-    def _lookup_spectrum(self):
-        from PyQt6.QtWidgets import QLineEdit
-        raw = self._sid_edit.text().strip()
-        if not raw:
-            return
-        try:
-            sid = int(raw)
-        except ValueError:
-            self._viewer_status.setText("Invalid source_id — must be an integer.")
-            return
+    def _on_search_mode_changed(self, index: int):
+        self._name_row.setVisible(index == 0)
+        self._radec_row.setVisible(index == 1)
+        self._sid_row.setVisible(index == 2)
 
-        spec = self._library.get_spectrum(sid)
-        if spec is None:
-            # Try the live cache db as well
-            from setiastro.saspro.gaia_downloader import GaiaSpectraDB
+    def _lookup_spectrum(self):
+        mode = self._search_mode.currentIndex()
+
+        ra, dec = None, None
+        sid = None
+        label = ""
+
+        # ── Resolve coordinates from search mode ──────────────────────────
+        if mode == 0:
+            # Name → SIMBAD resolve → ra/dec → find_nearest
+            name = self._name_edit.text().strip()
+            if not name:
+                return
+            self._viewer_status.setText(f"Resolving '{name}' via SIMBAD…")
+            QApplication.processEvents()
             try:
-                from PyQt6.QtCore import QStandardPaths
+                from astropy.coordinates import SkyCoord
+                coord = SkyCoord.from_name(name)
+                ra  = coord.ra.deg
+                dec = coord.dec.deg
+                label = name
+                self._viewer_status.setText(
+                    f"Resolved {name} → RA={ra:.5f}°  Dec={dec:.5f}°  "
+                    f"— searching library…"
+                )
+                QApplication.processEvents()
+            except Exception as e:
+                self._viewer_status.setText(
+                    f"Could not resolve '{name}' via SIMBAD: {e}")
+                return
+
+        elif mode == 1:
+            # Direct RA/Dec
+            try:
+                ra  = float(self._ra_edit.text().strip())
+                dec = float(self._dec_edit.text().strip())
+                label = f"RA={ra:.5f}° Dec={dec:.5f}°"
+            except ValueError:
+                self._viewer_status.setText("Invalid RA or Dec — enter decimal degrees.")
+                return
+
+        elif mode == 2:
+            # Direct source_id
+            try:
+                sid = int(self._sid_edit.text().strip())
+            except ValueError:
+                self._viewer_status.setText("Invalid source_id — must be an integer.")
+                return
+
+        # ── Spectrum lookup ───────────────────────────────────────────────
+        spec = None
+
+        if sid is not None:
+            # Direct source_id lookup
+            spec = self._library.get_spectrum(sid)
+            info = self._library.get_source_info(sid)
+            if info:
+                ra, dec = info["ra"], info["dec"]
+                label = f"Gaia source {sid}  (G={info['gmag']:.2f})"
+            else:
+                label = f"Gaia source {sid}"
+
+        elif ra is not None and dec is not None:
+            # Positional lookup
+            try:
+                radius = float(self._radius_edit.text().strip()) if mode == 1 else 5.0
+            except ValueError:
+                radius = 5.0
+
+            result = self._library.find_nearest(ra, dec, radius_arcsec=radius)
+            if result is None:
+                self._viewer_status.setText(
+                    f"No Gaia XP spectrum found within {radius}\" of {label}.\n"
+                    f"Try increasing the search radius, or the relevant band may not be installed."
+                )
+                self._spectrum_viewer.clear()
+                self._source_info.clear()
+                return
+
+            sid, sep = result
+            spec = self._library.get_spectrum(sid)
+            info = self._library.get_source_info(sid)
+            if info:
+                label = (f"{label}  →  Gaia source {sid}  "
+                         f"(G={info['gmag']:.2f},  sep={sep:.2f}\")")
+            else:
+                label = f"{label}  →  Gaia source {sid}  (sep={sep:.2f}\")"
+
+        # ── Fall back to live cache if not in bulk library ─────────────────
+        if spec is None and sid is not None:
+            try:
+                from setiastro.saspro.gaia_downloader import GaiaSpectraDB
                 base = QStandardPaths.writableLocation(
                     QStandardPaths.StandardLocation.AppDataLocation)
                 db_path = os.path.join(base, "gaia", "gaia_xp_cache.sqlite")
@@ -1101,39 +1238,32 @@ class GaiaDatabaseDialog(QDialog):
 
         if spec is None:
             self._viewer_status.setText(
-                f"source_id {sid} not found in local library or cache.\n"
-                f"Star may not have an XP spectrum, or the relevant band is not installed."
+                f"No spectrum found for {label}. "
+                f"The relevant magnitude band may not be installed."
             )
             self._spectrum_viewer.clear()
             self._source_info.clear()
             return
 
-        # Get source info
-        info = self._library.get_source_info(sid)
-        if info:
-            self._source_info.setPlainText(
-                f"source_id: {sid}\n"
-                f"RA: {info['ra']:.6f}°    Dec: {info['dec']:.6f}°    "
-                f"G mag: {info['gmag']:.3f}"
-            )
-            title = f"Gaia source {sid}  (G={info['gmag']:.2f})"
+        # ── Display ───────────────────────────────────────────────────────
+        if sid is not None:
+            info = self._library.get_source_info(sid)
+            if info:
+                self._source_info.setPlainText(
+                    f"source_id: {sid}\n"
+                    f"RA: {info['ra']:.6f}°    Dec: {info['dec']:.6f}°    "
+                    f"G mag: {info['gmag']:.3f}"
+                )
+            else:
+                self._source_info.setPlainText(f"source_id: {sid}")
         else:
-            self._source_info.setPlainText(f"source_id: {sid}")
-            title = f"Gaia source {sid}"
+            self._source_info.clear()
 
-        self._spectrum_viewer.show_spectrum(spec, title=title)
+        self._spectrum_viewer.show_spectrum(spec, title=label)
         self._viewer_status.setText(
-            f"Spectrum found — "
+            f"Spectrum loaded — "
             f"{'local library' if self._library.has_spectrum(sid) else 'live cache'}"
         )
-
-    def closeEvent(self, event):
-        # Cancel any running downloads
-        for worker in list(self._workers.values()):
-            worker.cancel()
-            worker.wait()
-        self._workers.clear()
-        super().closeEvent(event)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

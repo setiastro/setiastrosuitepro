@@ -2465,8 +2465,14 @@ class BlinkTab(QWidget):
         # ── Tile prep function (runs on CPU in background thread) ────────────
         def _prepare_tiles(entry):
             try:
-                img = entry["image_data"]
-                rgb01, _was_mono, _orig_min, _scale = _normalize_for_satellite(img)
+                # Load original file fresh — linear, un-debayered, un-stretched
+                # This is what the satellite model expects
+                from setiastro.saspro.legacy.image_manager import load_image
+                raw_image, header, bit_depth, is_mono = load_image(entry["file_path"])
+                if raw_image is None:
+                    return None
+
+                rgb01, _was_mono, _orig_min, _scale = _normalize_for_satellite(raw_image)
                 H, W = rgb01.shape[:2]
 
                 arr = rgb01.astype(np.float32)
@@ -2566,14 +2572,22 @@ class BlinkTab(QWidget):
         # runs inference on the current image. This fully hides CPU prep latency
         # without buffering large amounts of tile data in RAM.
         import concurrent.futures
+        from collections import deque
 
         n_images = len(self.loaded_images)
         n_detected = 0
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        PREFETCH_DEPTH = 4  # keep this many images prepped ahead of GPU
+
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=PREFETCH_DEPTH)
+        pending = deque()  # deque of (img_idx, future)
 
         try:
-            # Kick off prep for the first image immediately
-            next_future = executor.submit(_prepare_tiles, self.loaded_images[0])
+            # Seed the pipeline — submit first PREFETCH_DEPTH images immediately
+            for seed_idx in range(min(PREFETCH_DEPTH, n_images)):
+                fut = executor.submit(_prepare_tiles, self.loaded_images[seed_idx])
+                pending.append((seed_idx, fut))
+
+            next_to_submit = PREFETCH_DEPTH  # index of next image to submit
 
             for img_idx in range(n_images):
                 if prog.wasCanceled():
@@ -2587,18 +2601,23 @@ class BlinkTab(QWidget):
                 )
                 QApplication.processEvents()
 
-                # Collect current image's tiles (already prepped by background thread)
+                # Pop the next ready result from the front of the queue
+                current_idx, current_future = pending.popleft()
+                assert current_idx == img_idx  # should always match
+
                 try:
-                    tiles = next_future.result()
+                    tiles = current_future.result()
                 except Exception as e:
                     print(f"[Sat detect] Prep failed for image {img_idx}: {e}")
                     tiles = None
 
-                # Kick off prep for the NEXT image immediately — overlaps with GPU below
-                if img_idx + 1 < n_images and not prog.wasCanceled():
-                    next_future = executor.submit(_prepare_tiles, self.loaded_images[img_idx + 1])
+                # Immediately submit the next image to keep pipeline full
+                if next_to_submit < n_images and not prog.wasCanceled():
+                    fut = executor.submit(_prepare_tiles, self.loaded_images[next_to_submit])
+                    pending.append((next_to_submit, fut))
+                    next_to_submit += 1
 
-                # Run inference on current image while next is prepping in background
+                # Run GPU inference while next images are prepping
                 entry = self.loaded_images[img_idx]
                 if tiles is None:
                     entry["sat_detected"] = False
