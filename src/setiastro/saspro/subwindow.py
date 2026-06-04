@@ -458,7 +458,8 @@ class ImageSubWindow(QWidget):
         self._link_emit_timer.setSingleShot(True)
         self._link_emit_timer.setInterval(100)  # tweak 120–250ms to taste
         self._link_emit_timer.timeout.connect(self._emit_view_transform_now)
-        self._suppress_link_emit = False  # guard while applying remote updates        
+        self._suppress_link_emit = False  # guard while applying remote updates      
+        self._no_black_clip = QSettings().value("display/no_black_clip", False, type=bool)
 
         self._pan_live = False
         self._linked_views = weakref.WeakSet()
@@ -2538,6 +2539,11 @@ class ImageSubWindow(QWidget):
 
         return cropped.toImage()
 
+    def set_no_black_clip(self, enabled: bool):
+        self._no_black_clip = bool(enabled)
+        if self.autostretch_enabled:
+            self._autostretch_lut_cache = None   # invalidate cache
+            self._render(rebuild=True)
     # ---------- rendering ----------
     def _render(self, rebuild: bool = False):
         # ---- GUARD: widget/label/document may be deleted during teardown ----
@@ -2638,6 +2644,7 @@ class ImageSubWindow(QWidget):
                 bool(self._autostretch_linked),
                 float(self.autostretch_target),
                 float(self.autostretch_sigma),
+                bool(getattr(self, "_no_black_clip", False)),   # ← add this
                 tuple(arr_f.shape),
             )
 
@@ -2660,6 +2667,7 @@ class ImageSubWindow(QWidget):
                     sigma=self.autostretch_sigma,
                     linked=(not is_mono and self._autostretch_linked),
                     use_24bit=None,
+                    no_black_clip=bool(getattr(self, "_no_black_clip", False)),   # ← add this
                 )
                 self._autostretch_lut_cache = lut_cache
                 self._autostretch_cache_key = cache_key

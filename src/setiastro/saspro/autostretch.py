@@ -38,24 +38,26 @@ def _choose_stride(h: int, w: int, max_pixels: int) -> tuple[int, int]:
     return s, s
 
 def _compute_lut_from_sample(sample_uN: np.ndarray, target: float, sigma: float, maxv: int,
-                             qfloor: float = 0.001) -> np.ndarray:
-    """Return a 0..maxv -> [0..1] LUT using the same math as _fast_channel_autostretch_uN."""
+                             qfloor: float = 0.001, no_black_clip: bool = False) -> np.ndarray:
     hist = np.bincount(sample_uN.ravel(), minlength=maxv + 1)
     total = int(hist.sum()) or 1
 
     cdf = np.cumsum(hist)
     med = int(np.searchsorted(cdf, (total + 1) // 2))
 
-    bins      = np.arange(maxv + 1, dtype=np.float64)
-    hist_low  = hist[:med + 1]
-    total_low = int(hist_low.sum()) or 1
-    mean_low  = float((hist_low * bins[:med + 1]).sum() / total_low)
-    var_low   = float((hist_low * (bins[:med + 1] - mean_low)**2).sum() / total_low)
-    std_low   = float(np.sqrt(max(1e-12, var_low)))
-
-    floor_idx = int(np.searchsorted(cdf, int(qfloor * total)))
-    bp = int(max(floor_idx, med - sigma * std_low))
-    bp = int(np.clip(bp, 0, maxv - 1))
+    if no_black_clip:
+        # Use true image minimum as black point — no sigma clipping
+        bp = int(np.argmax(hist > 0))
+    else:
+        bins      = np.arange(maxv + 1, dtype=np.float64)
+        hist_low  = hist[:med + 1]
+        total_low = int(hist_low.sum()) or 1
+        mean_low  = float((hist_low * bins[:med + 1]).sum() / total_low)
+        var_low   = float((hist_low * (bins[:med + 1] - mean_low)**2).sum() / total_low)
+        std_low   = float(np.sqrt(max(1e-12, var_low)))
+        floor_idx = int(np.searchsorted(cdf, int(qfloor * total)))
+        bp = int(max(floor_idx, med - sigma * std_low))
+        bp = int(np.clip(bp, 0, maxv - 1))
 
     return _build_lut_generic(bp, target, med, maxv)
 
@@ -183,6 +185,7 @@ def autostretch_with_lut(
     *,
     use_24bit: bool | None = None,
     use_16bit: bool | None = None,
+    no_black_clip: bool = False,
     **_ignored_kwargs,
 ):
     if img is None:
@@ -203,7 +206,7 @@ def autostretch_with_lut(
 
     if a.ndim == 2 or (a.ndim == 3 and a.shape[2] == 1):
         u = _to_uN(a.squeeze(), maxv)
-        lut = _compute_lut_from_sample(u, target_median, sigma, maxv)
+        lut = _compute_lut_from_sample(u, target_median, sigma, maxv, no_black_clip=no_black_clip)
         out = lut[u].astype(np.float32, copy=False)
         return out, lut
 
@@ -215,7 +218,7 @@ def autostretch_with_lut(
         sy, sx = _choose_stride(h, w, max(1, _MAX_STATS_PIXELS // 3))
         sample = u[::sy, ::sx]
         lum = (0.2126 * sample[..., 0] + 0.7152 * sample[..., 1] + 0.0722 * sample[..., 2]).astype(u.dtype)
-        lut = _compute_lut_from_sample(lum, target_median, sigma, maxv)
+        lut = _compute_lut_from_sample(lum, target_median, sigma, maxv, no_black_clip=no_black_clip)
 
         out = np.empty_like(u, dtype=np.float32)
         out[..., :3] = lut[u[..., :3]]
@@ -226,7 +229,7 @@ def autostretch_with_lut(
     out = np.empty_like(u, dtype=np.float32)
     luts = []
     for c in range(min(3, C)):
-        lut = _compute_lut_from_sample(u[..., c], target_median, sigma, maxv)
+        lut = _compute_lut_from_sample(u[..., c], target_median, sigma, maxv, no_black_clip=no_black_clip)
         luts.append(lut)
         out[..., c] = lut[u[..., c]]
 
@@ -243,8 +246,9 @@ def autostretch(
     sigma: float = _DEFAULT_SIGMA,
     *,
     use_24bit: bool | None = None,
-    use_16bit: bool | None = None,   # <-- legacy compat (ignored / mapped)
-    **_ignored_kwargs,               # <-- swallow any other legacy flags safely
+    use_16bit: bool | None = None,
+    no_black_clip: bool = False,
+    **_ignored_kwargs,
 ) -> np.ndarray:
     out, _lut = autostretch_with_lut(
         img,
@@ -253,6 +257,7 @@ def autostretch(
         sigma=sigma,
         use_24bit=use_24bit,
         use_16bit=use_16bit,
+        no_black_clip=no_black_clip,
         **_ignored_kwargs,
     )
     return out

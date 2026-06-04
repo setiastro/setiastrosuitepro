@@ -146,6 +146,7 @@ class MenuMixin:
         m_display.addAction(self.act_stretch_linked)
         m_display.addAction(self.act_display_target)
         m_display.addAction(self.act_display_sigma)
+        m_display.addAction(self.act_no_black_clip)
         m_display.addAction(self.act_bake_display_stretch)
         m_display.addSeparator()
         m_display.addAction(self.act_zoom_in)
@@ -389,7 +390,7 @@ class MenuMixin:
         m_settings.addAction(self.tr("Benchmark..."), self._open_benchmark)
         m_settings.addSeparator()
         m_settings.addAction(self.act_gaia_database)
-        
+
         m_about = mb.addMenu(self.tr("&About"))
         m_about.addAction(self.act_docs)  
         m_about.addSeparator()

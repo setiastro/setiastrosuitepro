@@ -122,6 +122,7 @@ class ToolbarMixin:
             menu.addSeparator()
             menu.addAction(self.act_display_target)
             menu.addAction(self.act_display_sigma)
+            menu.addAction(self.act_no_black_clip)
 
             presets = QMenu("Presets", menu)
             a_norm = presets.addAction("Normal (target 0.30, σ 5)")
@@ -583,6 +584,7 @@ class ToolbarMixin:
                 menu.addSeparator()
                 menu.addAction(self.act_display_target)
                 menu.addAction(self.act_display_sigma)
+                menu.addAction(self.act_no_black_clip)
 
                 presets = QMenu(self.tr("Presets"), menu)
                 a_norm = presets.addAction(self.tr("Normal (target 0.30, σ 5)"))
@@ -661,6 +663,7 @@ class ToolbarMixin:
             menu.addSeparator()
             menu.addAction(self.act_display_target)
             menu.addAction(self.act_display_sigma)
+            menu.addAction(self.act_no_black_clip)
 
             presets = QMenu(self.tr("Presets"), menu)
             a_norm = presets.addAction(self.tr("Normal (target 0.30, σ 5)"))
@@ -865,7 +868,14 @@ class ToolbarMixin:
         self.act_display_sigma = QAction(self.tr("Set Sigma..."), self)
         self.act_display_sigma.setStatusTip(self.tr("Set the sigma for Display-Stretch (e.g., 5.0)"))
         self.act_display_sigma.triggered.connect(self._edit_display_sigma)
-
+        self.act_no_black_clip = QAction(self.tr("No Black Clip"), self, checkable=True)
+        self.act_no_black_clip.setStatusTip(
+            self.tr("Use image minimum as black point instead of sigma clipping")
+        )
+        self.act_no_black_clip.setChecked(
+            self.settings.value("display/no_black_clip", False, type=bool)
+        )
+        self.act_no_black_clip.toggled.connect(self._set_no_black_clip_from_action)
         # Defaults if not already present
         if self.settings.value("display/target", None) is None:
             self.settings.setValue("display/target", 0.30)
