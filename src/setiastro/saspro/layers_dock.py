@@ -525,23 +525,29 @@ class LayersDock(QDockWidget):
 
     def _refresh_views(self):
         subs = self._all_subwindows()
-        current = self.current_view()
+        current_uid = self._current_view_uid()
+
         self.view_combo.blockSignals(True)
         self.view_combo.clear()
         for w in subs:
             title = w._effective_title() or "Untitled"
-            self.view_combo.addItem(title, userData=w)
+            uid = getattr(getattr(w, "document", None), "uid", None) or id(w)
+            self.view_combo.addItem(title, userData=uid)
         self.view_combo.blockSignals(False)
 
-        if current and current in subs:
-            idx = subs.index(current)
-            self.view_combo.setCurrentIndex(idx)
+        # Restore selection by uid
+        if current_uid is not None:
+            for i in range(self.view_combo.count()):
+                if self.view_combo.itemData(i) == current_uid:
+                    self.view_combo.setCurrentIndex(i)
+                    break
+            else:
+                if subs:
+                    self.view_combo.setCurrentIndex(0)
         elif subs:
             self.view_combo.setCurrentIndex(0)
 
-        # NEW: listen for future title changes
         self._wire_title_change_listeners(subs)
-
         self._rebuild_list()
 
 
@@ -558,56 +564,65 @@ class LayersDock(QDockWidget):
             self._wired_title_sources.add(sw)
 
     def _refresh_titles_only(self):
-        """Update just the titles in the View dropdown, mask source lists,
-        and base-row label, preserving current selection and layer state."""
         subs = self._all_subwindows()
         if not subs:
             return
 
-        # Update the View dropdown text in place
+        # Build uid->title map for fast lookup
+        uid_to_title = {}
+        for sw in subs:
+            uid = getattr(getattr(sw, "document", None), "uid", None) or id(sw)
+            uid_to_title[uid] = sw._effective_title() or "Untitled"
+
         self.view_combo.blockSignals(True)
         cur_idx = self.view_combo.currentIndex()
-        for i, sw in enumerate(subs):
-            t = sw._effective_title() or "Untitled"
-            if i < self.view_combo.count():
-                self.view_combo.setItemText(i, t)
-            else:
-                self.view_combo.addItem(t, userData=sw)
+        for i in range(self.view_combo.count()):
+            uid = self.view_combo.itemData(i)
+            if uid in uid_to_title:
+                self.view_combo.setItemText(i, uid_to_title[uid])
         self.view_combo.blockSignals(False)
         if 0 <= cur_idx < self.view_combo.count():
             self.view_combo.setCurrentIndex(cur_idx)
 
         # Update mask choices shown in each row (titles only)
         choices = [(sw._effective_title() or "Untitled", sw.document) for sw in subs]
-        docs = [d for _, d in choices]
 
         for i in range(self.list.count()):
             roww = self.list.itemWidget(self.list.item(i))
             if not isinstance(roww, _LayerRow):
                 continue
 
-            # base row label
             if getattr(roww, "_is_base", False):
                 vw = self.current_view()
                 base_name = vw._effective_title() if (vw and hasattr(vw, "_effective_title")) else "Current View"
                 roww.setName(f"Base • {base_name}")
                 continue
 
-            # non-base row: update mask combo item texts without changing selection
             if roww.mask_combo.count() > 0:
-                # index 0 is "(none)"
-                # build a map from doc -> title
                 title_for_doc = {doc: title for title, doc in choices}
                 for idx in range(1, roww.mask_combo.count()):
                     doc = roww.mask_combo.itemData(idx)
                     if doc in title_for_doc:
                         roww.mask_combo.setItemText(idx, title_for_doc[doc])
 
-    def current_view(self):
+    def _current_view_uid(self):
+        """Return the uid stored in the current combo selection, or None."""
         idx = self.view_combo.currentIndex()
         if idx < 0:
             return None
         return self.view_combo.itemData(idx)
+
+    def current_view(self):
+        """Return the live ImageSubWindow for the currently selected uid, or None."""
+        uid = self._current_view_uid()
+        if uid is None:
+            return None
+        for sw in self._all_subwindows():
+            doc = getattr(sw, "document", None)
+            sw_uid = getattr(doc, "uid", None) or id(sw)
+            if sw_uid == uid:
+                return sw
+        return None
 
     def _on_pick_view(self, _i):
         self._rebuild_list()

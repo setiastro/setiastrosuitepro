@@ -458,7 +458,8 @@ class ImageSubWindow(QWidget):
         self._link_emit_timer.setSingleShot(True)
         self._link_emit_timer.setInterval(100)  # tweak 120–250ms to taste
         self._link_emit_timer.timeout.connect(self._emit_view_transform_now)
-        self._suppress_link_emit = False  # guard while applying remote updates        
+        self._suppress_link_emit = False  # guard while applying remote updates      
+        self._no_black_clip = QSettings().value("display/no_black_clip", False, type=bool)
 
         self._pan_live = False
         self._linked_views = weakref.WeakSet()
@@ -1825,7 +1826,6 @@ class ImageSubWindow(QWidget):
         if mw is None:
             return
 
-        # Show and raise the dock
         layers_dock = getattr(mw, "layers_dock", None)
         if layers_dock is None:
             return
@@ -1836,15 +1836,19 @@ class ImageSubWindow(QWidget):
         except Exception:
             pass
 
-        # Switch its view combo to point at this subwindow
         try:
-            dock_widget = layers_dock.widget() if hasattr(layers_dock, "widget") else None
             combo = getattr(layers_dock, "view_combo", None)
             if combo is None:
                 return
 
+            # Compare uids — never widget identity, widgets can be deleted
+            my_doc = getattr(self, "document", None)
+            my_uid = getattr(my_doc, "uid", None)
+            if my_uid is None:
+                return
+
             for i in range(combo.count()):
-                if combo.itemData(i) is self:
+                if combo.itemData(i) == my_uid:
                     combo.setCurrentIndex(i)
                     break
         except Exception:
@@ -2535,26 +2539,14 @@ class ImageSubWindow(QWidget):
 
         return cropped.toImage()
 
+    def set_no_black_clip(self, enabled: bool):
+        self._no_black_clip = bool(enabled)
+        if self.autostretch_enabled:
+            self._autostretch_lut_cache = None   # invalidate cache
+            self._render(rebuild=True)
     # ---------- rendering ----------
     def _render(self, rebuild: bool = False):
-        #print("[ImageSubWindow] _render called, rebuild =", rebuild)
-        """
-        Render the current view.
-
-        Fast path:
-        - rebuild=False: only rescale already-built pixmap/QImage (NO numpy work).
-        Slow path:
-        - rebuild=True: rebuild visualization (autostretch, 8-bit conversion, overlays),
-                        refresh QImage/QPixmap cache, then present.
-
-        Rules:
-        - If a Preview is active, FIRST sync that preview's stored arr from the
-        DocManager's ROI document (the thing tools actually modify), then render.
-        - Never reslice from the parent/full image here.
-        - Keep a strong reference to the numpy buffer that backs the QImage.
-        """
-
-        # ---- GUARD: widget/label may be deleted but document.changed still fires ----
+        # ---- GUARD: widget/label/document may be deleted during teardown ----
         try:
             from PyQt6 import sip as _sip
             if _sip.isdeleted(self):
@@ -2562,9 +2554,14 @@ class ImageSubWindow(QWidget):
             lbl = getattr(self, "label", None)
             if lbl is None or _sip.isdeleted(lbl):
                 return
-        except Exception:
-            if not hasattr(self, "label"):
+            doc = getattr(self, "document", None)
+            if doc is None:
                 return
+            img = getattr(doc, "image", None)
+            if img is None:
+                return
+        except Exception:
+            return
         # ---------------------------------------------------------------------------
 
         # ---------------------------------------------------------------------------
@@ -2583,7 +2580,6 @@ class ImageSubWindow(QWidget):
             src = next((p for p in self._previews if p["id"] == self._active_preview_id), None)
             if src is not None:
                 if rebuild:
-                    # Always re-pull from DocManager on rebuild — this is where edits land
                     roi_img = None
                     if hasattr(self, "_docman") and self._docman is not None:
                         try:
@@ -2595,7 +2591,6 @@ class ImageSubWindow(QWidget):
                     if roi_img is not None:
                         src["arr"] = np.asarray(roi_img).copy()
                     else:
-                        # Fallback: slice directly from parent document
                         roi = src["roi"]
                         x, y, w, h = roi
                         parent_img = getattr(self.document, "image", None)
@@ -2649,6 +2644,7 @@ class ImageSubWindow(QWidget):
                 bool(self._autostretch_linked),
                 float(self.autostretch_target),
                 float(self.autostretch_sigma),
+                bool(getattr(self, "_no_black_clip", False)),   # ← add this
                 tuple(arr_f.shape),
             )
 
@@ -2671,6 +2667,7 @@ class ImageSubWindow(QWidget):
                     sigma=self.autostretch_sigma,
                     linked=(not is_mono and self._autostretch_linked),
                     use_24bit=None,
+                    no_black_clip=bool(getattr(self, "_no_black_clip", False)),   # ← add this
                 )
                 self._autostretch_lut_cache = lut_cache
                 self._autostretch_cache_key = cache_key
@@ -2719,7 +2716,9 @@ class ImageSubWindow(QWidget):
                 buf8 = bf.astype(np.uint8, copy=False)
 
         # ---------------------------------------
-        # 6) Wrap into QImage (keep buffer alive)
+        # 6) Build QImage with deep copy so Qt owns the buffer.
+        #    The zero-copy sip.voidptr path leaves a dangling pointer
+        #    if _buf8 is GC'd during subwindow teardown — segfaults on Linux.
         # ---------------------------------------
         if buf8.dtype != np.uint8:
             buf8 = buf8.astype(np.uint8)
@@ -2728,32 +2727,33 @@ class ImageSubWindow(QWidget):
         h, w, c = buf8.shape
         bytes_per_line = int(w * 3)
 
-        self._buf8 = buf8  # keep alive
+        self._buf8 = buf8  # keep numpy ref alive as backup
 
         try:
-            addr = int(self._buf8.ctypes.data)
-            ptr  = sip.voidptr(addr)
-            qimg = QImage(ptr, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+            # tobytes() makes a deep copy — Qt owns this memory independently
+            # of the numpy array lifetime, eliminating the dangling pointer crash
+            qimg = QImage(
+                buf8.tobytes(),
+                w, h,
+                bytes_per_line,
+                QImage.Format.Format_RGB888,
+            )
             if qimg is None or qimg.isNull():
                 raise RuntimeError("QImage null")
         except Exception:
-            buf8c = np.array(self._buf8, copy=True, order="C")
-            self._buf8 = buf8c
-            addr = int(self._buf8.ctypes.data)
-            ptr  = sip.voidptr(addr)
-            qimg = QImage(ptr, w, h, bytes_per_line, QImage.Format.Format_RGB888)
-
-        self._qimg_src = qimg
-        if qimg is None or qimg.isNull():
+            self._qimg_src = None
             self._pm_src = None
             self._pm_src_wcs = None
+            self._buf8 = None
             self.label.clear()
             return
+
+        self._qimg_src = qimg
 
         # Cache unscaled pixmap ONCE per rebuild
         self._pm_src = QPixmap.fromImage(self._qimg_src)
 
-        # Invalidate any cached “WCS baked” pixmap on rebuild
+        # Invalidate any cached "WCS baked" pixmap on rebuild
         self._pm_src_wcs = None
 
         # Present final-quality after rebuild
@@ -3723,19 +3723,31 @@ class ImageSubWindow(QWidget):
 
 
     def closeEvent(self, e):
+        # Cancel pending timers before teardown so they can't fire into
+        # a partially-destroyed widget and trigger segfaults
+        try:
+            zt = getattr(self, "_zoom_timer", None)
+            if zt is not None:
+                zt.stop()
+        except Exception:
+            pass
+        try:
+            lt = getattr(self, "_link_emit_timer", None)
+            if lt is not None:
+                lt.stop()
+        except Exception:
+            pass
+
         mw = self._find_main_window()
         doc = getattr(self, "document", None)
 
-        # If main window is force-closing (global exit accepted), don't ask.
         force = bool(getattr(mw, "_force_close_all", False))
 
         if not force and doc is not None:
-            # Ask only if this doc has edits
             should_warn = False
             if mw and hasattr(mw, "_document_has_edits"):
                 should_warn = mw._document_has_edits(doc)
             else:
-                # Fallback if called standalone
                 try:
                     should_warn = bool(doc.can_undo())
                 except Exception:
@@ -3744,7 +3756,7 @@ class ImageSubWindow(QWidget):
             if should_warn:
                 r = QMessageBox.question(
                     self, self.tr("Close Image?"),
-                    self.tr("This image has edits that aren’t applied/saved.\nClose anyway?"),
+                    self.tr("This image has edits that aren't applied/saved.\nClose anyway?"),
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                     QMessageBox.StandardButton.No
                 )
@@ -3755,7 +3767,6 @@ class ImageSubWindow(QWidget):
         try:
             if hasattr(self, "_docman") and self._docman is not None:
                 self._docman.imageRegionUpdated.disconnect(self._on_doc_region_updated)
-                # NEW: also drop the nudge hook(s)
                 try:
                     self._docman.imageRegionUpdated.disconnect(self._on_docman_nudge)
                 except Exception:
@@ -3782,13 +3793,19 @@ class ImageSubWindow(QWidget):
                 ImageSubWindow._registry.pop(id(self), None)
         except Exception:
             pass
-        # proceed with your current teardown
         try:
-            # emit your existing signal if you have it
             if hasattr(self, "aboutToClose"):
                 self.aboutToClose.emit(doc)
         except Exception:
             pass
+
+        # Clear cached buffers so numpy arrays are released before Qt
+        # finishes tearing down child widgets
+        self._buf8 = None
+        self._qimg_src = None
+        self._pm_src = None
+        self._pm_src_wcs = None
+
         super().closeEvent(e)
 
     def _resolve_history_doc(self):

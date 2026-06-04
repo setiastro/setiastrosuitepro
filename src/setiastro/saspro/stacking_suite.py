@@ -20072,20 +20072,7 @@ class StackingSuiteDialog(QDialog):
 
                 # Fallback to existing (mask-based) method if needed
                 if _mf_global_rect is None:
-                    _mf_global_rect = self._compute_common_autocrop_rect(
-                        aligned_light_files,
-                        autocrop_pct_ui,
-                        status_cb=self.update_status
-                    )
-                    if _mf_global_rect:
-                        x0,y0,x1,y1 = _mf_global_rect
-                        self.update_status(self.tr(
-                            f"✂️ (MF) Mask-based crop → [{x0}:{x1}]×[{y0}:{y1}] "
-                            f"({x1-x0}×{y1-y0})"
-                        ))
-                    else:
-                        self.update_status(self.tr("✂️ (MF) Auto-crop disabled (no common region)."))
-
+                    self.update_status(self.tr("✂️ (MF) No transform-based crop rect available; autocrop will be skipped."))
                 QApplication.processEvents()
             except Exception as e:
                 self.update_status(self.tr(f"⚠️ (MF) Global crop failed: {e}"))
@@ -20312,16 +20299,7 @@ class StackingSuiteDialog(QDialog):
                 global_rect = None
 
             if global_rect is None:
-                try:
-                    global_rect = self._compute_common_autocrop_rect(
-                        grouped_files, autocrop_pct, status_cb=log
-                    )
-                    if global_rect:
-                        x0, y0, x1, y1 = map(int, global_rect)
-                        log(f"✂️ Mask-based crop (global) → [{x0}:{x1}]×[{y0}:{y1}] ({x1-x0}×{y1-y0})")
-                except Exception as e:
-                    log(f"⚠️ Global crop (mask-based) failed: {e}")
-                    global_rect = None
+                log("✂️ No transform-based global crop rect available; autocrop will be skipped.")
 
         group_integration_data = {}
         summary_lines = []
@@ -20461,9 +20439,7 @@ class StackingSuiteDialog(QDialog):
                             )
 
                         if group_rect is None:
-                            group_rect = self._compute_common_autocrop_rect(
-                                {group_key: file_list}, autocrop_pct, status_cb=log
-                            )
+                            log(f"✂️ No transform crop rect for '{group_key}'; skipping per-group autocrop.")
                     except Exception as e:
                         log(f"⚠️ Per-group transform crop failed for '{group_key}': {e}")
                         group_rect = None
@@ -21546,18 +21522,8 @@ class StackingSuiteDialog(QDialog):
 
             # --- SLOW FALLBACK: your existing mask-based method ---------------------
             if global_rect is None:
-                try:
-                    global_rect = self._compute_common_autocrop_rect(
-                        grouped_files, autocrop_pct, status_cb=log
-                    )
-                    if global_rect:
-                        x0, y0, x1, y1 = map(int, global_rect)
-                        log(f"✂️ Mask-based crop (global) → [{x0}:{x1}]×[{y0}:{y1}] ({x1-x0}×{y1-y0})")
-                    else:
-                        log("✂️ Global crop disabled; will fall back to per-group.")
-                except Exception as e:
-                    global_rect = None
-                    log(f"⚠️ Global crop (mask-based) failed: {e}")
+                log("✂️ No transform-based global crop rect available; autocrop will be skipped.")
+
         QApplication.processEvents()
 
         group_integration_data = {}
@@ -21699,10 +21665,7 @@ class StackingSuiteDialog(QDialog):
                             )
 
                         if group_rect is None:
-                            # Fallback to existing mask-based per-group method
-                            group_rect = self._compute_common_autocrop_rect(
-                                {group_key: file_list}, autocrop_pct, status_cb=log
-                            )
+                            log(f"✂️ No transform crop rect for '{group_key}'; skipping per-group autocrop.")
                     except Exception as e:
                         log(f"⚠️ Per-group transform crop failed for '{group_key}': {e}")
                         group_rect = None
@@ -23129,6 +23092,20 @@ class StackingSuiteDialog(QDialog):
 
             # Keep light_files in sync with whatever we're about to integrate
             self.light_files = aligned_light_files
+
+            # Warn if autocrop requested but no SASD exists
+            try:
+                autocrop_enabled_ui = self.autocrop_cb.isChecked()
+            except Exception:
+                autocrop_enabled_ui = False
+
+            if autocrop_enabled_ui:
+                sasd_path = os.path.join(self.stacking_directory, "alignment_transforms.sasd")
+                if not os.path.exists(sasd_path):
+                    self.update_status(self.tr(
+                        "ℹ️ Autocrop requires alignment_transforms.sasd which was not found "
+                        "for pre-registered frames. Autocrop will be skipped for this run."
+                    ))
 
             # 8) Hand off to unified MFDeconv + integration pipeline
             self._run_mfdeconv_then_continue(aligned_light_files)

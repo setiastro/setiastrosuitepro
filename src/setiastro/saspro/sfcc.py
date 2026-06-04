@@ -1785,24 +1785,9 @@ class SFCCDialog(QDialog):
         *,
         radius_deg: float,
         mag_limit: float = 15.5,
-        max_match_arcsec: float = 1.0
+        max_match_arcsec: float = 10.0
     ):
-        """
-        Enrich self.star_list entries with Gaia XP source_id when:
-        - SIMBAD spectral type is missing OR
-        - pickles_match is None (no Pickles template)
-
-        Returns a status dict:
-        {
-            "query_ok": bool,
-            "query_error": str | None,
-            "gaia_source_count": int,
-            "matched_star_count": int,
-            "needed_star_count": int,
-        }
-        """
         if not self._gaia_enabled():
-            print("[SPCC] Gaia fallback disabled (missing astroquery.gaia and/or gaiaxpy and/or gaia_downloader).")
             return {
                 "query_ok": False,
                 "query_error": "Gaia fallback unavailable",
@@ -1825,6 +1810,65 @@ class SFCCDialog(QDialog):
             if (not st.get("sp_clean")) or (st.get("pickles_match") is None)
         )
 
+        # ── Try bulk library first — instant, no network ──────────────────
+        gaia_sources = []
+        query_ok = False
+        query_error = None
+        used_bulk = False
+
+        try:
+            from setiastro.saspro.gaia_database import get_library
+            lib = get_library()
+            if lib.installed_bands():
+                _sfcc_status(self, "[SPCC] Matching SIMBAD stars via local Gaia library…")
+                QApplication.processEvents()
+
+                # Use the cache DB's query_region which already searches
+                # installed bulk files via GaiaSpectraDB.get_spectrum → _get_bulk_library
+                # Instead, query bulk library directly by position for each star
+                for st in self.star_list:
+                    needs_gaia = (not st.get("sp_clean")) or (st.get("pickles_match") is None)
+                    if not needs_gaia:
+                        continue
+                    result = lib.find_nearest(
+                        float(st["ra"]), float(st["dec"]),
+                        radius_arcsec=max_match_arcsec   # max_match_arcsec is already in arcsec (1.0)
+                    )
+                    if result is not None:
+                        sid, sep_arcsec = result
+                        # sep_arcsec is already in arcsec, max_match_arcsec is 1.0 arcsec
+                        if sep_arcsec <= max_match_arcsec:
+                            info = lib.get_source_info(sid)
+                            st["gaia_source_id"]  = int(sid)
+                            st["gaia_bp_rp"]      = None
+                            st["gaia_gmag"]       = info["gmag"] if info else None
+                            st["gaia_sep_arcsec"] = float(sep_arcsec)
+                            st["sp_source"]       = "gaia_xp"
+                            gaia_sources.append({"source_id": int(sid)})
+
+                matched_star_count = sum(
+                    1 for st in self.star_list if st.get("gaia_source_id") is not None
+                        and st.get("sp_source") == "gaia_xp"
+                )
+                used_bulk = True
+                query_ok = True
+                _sfcc_status(self,
+                    f"[SPCC] Bulk library match: {matched_star_count} of {needed_star_count} "
+                    f"fallback stars matched locally — no Gaia archive query needed.")
+                return {
+                    "query_ok": True,
+                    "query_error": None,
+                    "gaia_source_count": len(gaia_sources),
+                    "matched_star_count": matched_star_count,
+                    "needed_star_count": needed_star_count,
+                }
+        except Exception as e:
+            print(f"[SPCC] Bulk library match failed, falling back to archive: {e}")
+
+        # ── Fall back to Gaia archive query ───────────────────────────────
+        _sfcc_status(self, "[SPCC] Matching SIMBAD stars to Gaia source_ids via archive…")
+        QApplication.processEvents()
+
         gaia_sources = self._query_gaia_sources_in_field(
             self.center_ra,
             self.center_dec,
@@ -1846,20 +1890,25 @@ class SFCCDialog(QDialog):
 
         try:
             dl = self._get_gaia_downloader()
-            dl.db.add_sources([dl.GaiaSource(
-                s["source_id"], s["ra"], s["dec"], s["gmag"], s["bp_rp"], None, None, None
-            ) for s in gaia_sources])
+            for s in gaia_sources:
+                try:
+                    dl.db._conn.execute(
+                        "INSERT OR IGNORE INTO sources (source_id, ra, dec, phot_g_mean_mag, bp_rp) VALUES (?,?,?,?,?)",
+                        (s["source_id"], s["ra"], s["dec"], s.get("gmag"), s.get("bp_rp"))
+                    )
+                except Exception:
+                    pass
+            dl.db._conn.commit()
         except Exception:
             pass
 
         matched_star_count = 0
-
         for st in self.star_list:
             needs_gaia = (not st.get("sp_clean")) or (st.get("pickles_match") is None)
             if not needs_gaia:
                 continue
 
-            ra = float(st["ra"])
+            ra  = float(st["ra"])
             dec = float(st["dec"])
             best = None
             best_sep = 1e9
@@ -1875,7 +1924,7 @@ class SFCCDialog(QDialog):
                 st["gaia_bp_rp"]      = best.get("bp_rp")
                 st["gaia_gmag"]       = best.get("gmag")
                 st["gaia_sep_arcsec"] = float(best_sep)
-                st["sp_source"]       = "gaia_xp"   # ← real measured spectrum available
+                st["sp_source"]       = "gaia_xp"
                 matched_star_count   += 1
 
         return {
@@ -2404,7 +2453,7 @@ class SFCCDialog(QDialog):
                 gaia_info = self._attach_gaia_ids_to_star_list(
                     radius_deg=radius_deg,
                     mag_limit=15.5,
-                    max_match_arcsec=1.0
+                    max_match_arcsec=10.0
                 )
 
                 n_gaia_total = sum(1 for s in self.star_list if s.get("gaia_source_id") is not None)

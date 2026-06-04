@@ -30,7 +30,7 @@ from setiastro.saspro.resources import (
     rotate180_path, maskcreate_path, maskapply_path, maskremove_path, histogram_transform_path,
     pixelmath_path, histogram_path, mosaic_path, rescale_path, staralign_path,
     platesolve_path, psf_path, supernova_path, starregistration_path, csv_icon_path, collage_path,
-    stacking_path, pedestal_icon_path, starspike_path, astrospike_path, dithericon_path,
+    stacking_path, pedestal_icon_path, starspike_path, astrospike_path, dithericon_path,gaia_path,
     signature_icon_path, livestacking_path, convoicon_path, spcc_icon_path, atlas_path,
     exoicon_path, peeker_icon, dse_icon_path, isophote_path, statstretch_path,resizecanvas_path,nbextract_icon,
     starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path, narrowbandnormalization_path,
@@ -122,6 +122,7 @@ class ToolbarMixin:
             menu.addSeparator()
             menu.addAction(self.act_display_target)
             menu.addAction(self.act_display_sigma)
+            menu.addAction(self.act_no_black_clip)
 
             presets = QMenu("Presets", menu)
             a_norm = presets.addAction("Normal (target 0.30, σ 5)")
@@ -328,6 +329,7 @@ class ToolbarMixin:
         tb_star.addAction(self.act_astrospike)
         tb_star.addAction(self.act_exo_detector)
         tb_star.addAction(self.act_isophote)
+        tb_star.addAction(self.act_gaia_database)
 
         self._restore_toolbar_order(tb_star, "Toolbar/StarStuff")
         try:
@@ -582,6 +584,7 @@ class ToolbarMixin:
                 menu.addSeparator()
                 menu.addAction(self.act_display_target)
                 menu.addAction(self.act_display_sigma)
+                menu.addAction(self.act_no_black_clip)
 
                 presets = QMenu(self.tr("Presets"), menu)
                 a_norm = presets.addAction(self.tr("Normal (target 0.30, σ 5)"))
@@ -660,6 +663,7 @@ class ToolbarMixin:
             menu.addSeparator()
             menu.addAction(self.act_display_target)
             menu.addAction(self.act_display_sigma)
+            menu.addAction(self.act_no_black_clip)
 
             presets = QMenu(self.tr("Presets"), menu)
             a_norm = presets.addAction(self.tr("Normal (target 0.30, σ 5)"))
@@ -864,7 +868,14 @@ class ToolbarMixin:
         self.act_display_sigma = QAction(self.tr("Set Sigma..."), self)
         self.act_display_sigma.setStatusTip(self.tr("Set the sigma for Display-Stretch (e.g., 5.0)"))
         self.act_display_sigma.triggered.connect(self._edit_display_sigma)
-
+        self.act_no_black_clip = QAction(self.tr("No Black Clip"), self, checkable=True)
+        self.act_no_black_clip.setStatusTip(
+            self.tr("Use image minimum as black point instead of sigma clipping")
+        )
+        self.act_no_black_clip.setChecked(
+            self.settings.value("display/no_black_clip", False, type=bool)
+        )
+        self.act_no_black_clip.toggled.connect(self._set_no_black_clip_from_action)
         # Defaults if not already present
         if self.settings.value("display/target", None) is None:
             self.settings.setValue("display/target", 0.30)
@@ -1045,6 +1056,11 @@ class ToolbarMixin:
         self.act_nbextract.setIconVisibleInMenu(True)
         self.act_nbextract.setStatusTip(self.tr("Empirically calibrated dual-band narrowband channel extraction (Ha/OIII, SII/OIII, SII/Hβ)"))
         self.act_nbextract.triggered.connect(self._open_nbextract)
+
+        self.act_gaia_database = QAction(QIcon(gaia_path), self.tr("Gaia XP Spectral Library..."), self)
+        self.act_gaia_database.setObjectName("gaia_database")
+        self.act_gaia_database.setToolTip(self.tr("Manage Gaia DR3 XP spectral library databases"))
+        self.act_gaia_database.triggered.connect(self._open_gaia_database)
 
         self.act_convo = QAction(QIcon(convoicon_path), self.tr("Convolution / Deconvolution..."), self)
         self.act_convo.setObjectName("convo_deconvo")

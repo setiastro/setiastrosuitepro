@@ -20,6 +20,7 @@ from setiastro.saspro.curves_preset import (
 from PyQt6.QtWidgets import QFrame, QSizePolicy
 from scipy.interpolate import PchipInterpolator
 from setiastro.saspro.curves_preset import _sanitize_scene_points, _norm_mode
+from setiastro.saspro.histogram_transform_pro import HistogramWidget
 
 try:
     from setiastro.saspro.legacy.numba_utils import (
@@ -34,6 +35,19 @@ try:
     _HAS_NUMBA = True
 except Exception:
     _HAS_NUMBA = False
+
+def _compute_hist_rgb(img01: np.ndarray) -> dict:
+    """256-bin RGB + L histograms — expects a pre-downsampled input."""
+    from setiastro.saspro.histogram_transform_pro import _ensure_rgb01, _rgb_to_luma
+    a = _ensure_rgb01(img01)
+    out = {}
+    for key, idx in (("R", 0), ("G", 1), ("B", 2)):
+        hist, _ = np.histogram(a[..., idx].ravel(), bins=256, range=(0.0, 1.0))
+        out[key] = hist.astype(np.int64)
+    Y = _rgb_to_luma(a)
+    hist, _ = np.histogram(Y.ravel(), bins=256, range=(0.0, 1.0))
+    out["L"] = hist.astype(np.int64)
+    return out
 
 class DraggablePoint(QGraphicsEllipseItem):
     def __init__(self, curve_editor, x, y, color=Qt.GlobalColor.green, lock_axis=None, position_type=None):
@@ -1045,7 +1059,10 @@ class CurvesDialogPro(QDialog):
         left = QVBoxLayout()
         self.editor = CurveEditor(self)
         left.addWidget(self.editor)
-
+        self.hist = HistogramWidget(self)
+        self.hist.setMinimumHeight(120)
+        self.hist.setMaximumHeight(140)
+        left.addWidget(self.hist, 0)
         # mode radio
         self.mode_group = QButtonGroup(self)
         self.mode_group.setExclusive(True)
@@ -1913,7 +1930,16 @@ class CurvesDialogPro(QDialog):
         self._preview_img  = _downsample_for_preview(arr, 1200)
         self._preview_orig = self._preview_img.copy()
         self._preview_proc = None
+        max_hist_dim = 1400
+        h, w = arr.shape[:2]
+        if max(h, w) > max_hist_dim:
+            step = max(1, int(np.ceil(max(h, w) / max_hist_dim)))
+            self._hist_base = arr[::step, ::step, ...]
+        else:
+            self._hist_base = arr
 
+        self._h0_rgb = _compute_hist_rgb(self._hist_base)
+        self.hist.set_histograms(self._h0_rgb, None)
         self._show_proc = True                      # ⬅️ start with preview ON
         self._quick_preview()                       # ⬅️ build first processed DS frame
         self._update_preview_pix(                   # ⬅️ show processed immediately
@@ -1937,12 +1963,21 @@ class CurvesDialogPro(QDialog):
 
     def _toggle_preview(self, on: bool):
         self._show_proc = bool(on)
-        # Ensure we have a processed frame ready
         if self._preview_proc is None:
             self._quick_preview()
-        # Pick which buffer to show (both are downsampled)
         img = self._preview_proc if (self._show_proc and self._preview_proc is not None) else self._preview_orig
         self._update_preview_pix(img)
+
+        # show original hist when preview is off
+        try:
+            if not on:
+                self.hist.set_histograms(self._h0_rgb, None)
+            else:
+                h1_rgb = _compute_hist_rgb(self._preview_proc)
+                self.hist.set_histograms(self._h0_rgb, h1_rgb)
+        except Exception:
+            pass
+
         self._set_status(self.tr("Preview ON") if self._show_proc else self.tr("Preview OFF"))
 
 
@@ -1956,6 +1991,14 @@ class CurvesDialogPro(QDialog):
         self._preview_proc = proc
         if self._show_proc:
             self._update_preview_pix(self._preview_proc)
+
+        # histogram from the larger hist_base, not the display preview
+        try:
+            hist_proc = self._apply_all_curves_once(self._hist_base, luts)
+            h1_rgb = _compute_hist_rgb(hist_proc)
+            self.hist.set_histograms(self._h0_rgb, h1_rgb)
+        except Exception:
+            pass
         try:
             bt, wt = self.editor.current_black_white_thresholds()
 
@@ -2484,16 +2527,16 @@ class CurvesDialogPro(QDialog):
 
         return super().eventFilter(obj, ev)
 
-
     def _reset_curve(self):
-        # 1) reset editor drawing to linear
         self.editor.initCurve()
-        # 2) mark *every* stored curve linear
         for k in list(self._curves_store.keys()):
             self._curves_store[k] = [(0.0, 0.0), (1.0, 1.0)]
-        # 3) refresh overlays & preview
         self._refresh_overlays()
         self._quick_preview()
+        try:
+            self.hist.set_histograms(self._h0_rgb, None)
+        except Exception:
+            pass
         self._set_status(self.tr("All curves reset."))
 
     def _find_main_window(self):

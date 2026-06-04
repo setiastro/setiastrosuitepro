@@ -361,6 +361,22 @@ class ViewMixin:
             sw.widget().set_autostretch(on)
             self._log(f"Display-Stretch {'ON' if on else 'OFF'} -> {sw.windowTitle()}")
 
+    def _set_no_black_clip_from_action(self, checked: bool):
+        self.settings.setValue("display/no_black_clip", bool(checked))
+        sw = self.mdi.activeSubWindow()
+        if not sw:
+            return
+        view = sw.widget()
+        if hasattr(view, "set_no_black_clip"):
+            view.set_no_black_clip(bool(checked))
+        # Kick a stretch recalculation if autostretch is active
+        if getattr(view, "autostretch_enabled", False):
+            if hasattr(view, "_refresh_autostretch"):
+                view._refresh_autostretch()
+            elif hasattr(view, "set_autostretch"):
+                view.set_autostretch(True)
+        self._log(f"Display-Stretch no-black-clip -> {'ON' if checked else 'OFF'}")
+
     def _set_hard_autostretch_from_action(self, checked: bool):
         """Set hard autostretch profile from toolbar action."""
         from PyQt6.QtCore import QSignalBlocker
@@ -442,7 +458,7 @@ class ViewMixin:
         
         cur = float(self.settings.value("display/sigma", 5.0, type=float))
         val, ok = QInputDialog.getDouble(
-            self, "Sigma", "Sigma (0.5 - 10.0):", cur, 0.5, 10.0, 2
+            self, "Sigma", "Sigma (0.5 - 20.0):", cur, 0.5, 20.0, 2
         )
         if not ok:
             return
