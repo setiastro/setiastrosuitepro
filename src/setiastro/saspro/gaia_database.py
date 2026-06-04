@@ -460,7 +460,7 @@ class _GroupDownloadWorker(QThread):
     Downloads all missing sub-files for one group sequentially.
     Emits file-level and overall progress.
     """
-    file_progress    = _Signal(int, int, str)   # bytes, total, msg
+    file_progress = _Signal(float, float, str)   # bytes_done_mb, bytes_total_mb, msg
     file_done        = _Signal(str, bool)        # filename, success
     group_progress   = _Signal(int, int)         # files_done, files_total
     group_finished   = _Signal(bool, str)        # success, message
@@ -513,7 +513,7 @@ class _GroupDownloadWorker(QThread):
                             done_mb  = done  / (1024 * 1024)
                             total_mb = total / (1024 * 1024)
                             self.file_progress.emit(
-                                done, total,
+                                done_mb, total_mb,
                                 f"[{done_files+1}/{total_files}]  {fname}\n"
                                 f"{done_mb:.0f} / {total_mb:.0f} MB  ({pct}%)"
                             )
@@ -803,7 +803,7 @@ class _GroupRowWidget(QFrame):
             )
             self._btn_install.setText("Resume")
             self._btn_install.setVisible(True)
-            self._btn_browse.setVisible(False)
+            self._btn_browse.setVisible(True)
             self._btn_remove.setVisible(True)
 
         else:
@@ -833,20 +833,56 @@ class _GroupRowWidget(QFrame):
             self._progress.setValue(0)
             self._lbl_file_count.setText("")
 
-    def update_file_progress(self, done: int, total: int, msg: str):
+    def update_file_progress(self, done_mb: float, total_mb: float, msg: str):
         self._progress.setVisible(True)
-        if total > 0:
-            self._progress.setMaximum(total)
-            self._progress.setValue(done)
+        if total_mb > 0:
+            total_kb = int(total_mb * 1024)
+            done_kb  = int(done_mb  * 1024)
+            self._progress.setMaximum(total_kb)
+            self._progress.setValue(done_kb)
+            self._progress.setFormat(f"{done_mb:.0f}/{total_mb:.0f} MB  ({int(done_mb/total_mb*100)}%)")
         else:
             self._progress.setMaximum(0)
-        # Show filename on the bar (first line of msg)
-        short = msg.split("\n")[0] if "\n" in msg else msg
-        self._progress.setFormat(short[-40:])
+            self._progress.setValue(0)
+            self._progress.setFormat("")
+            self._lbl_file_count.setVisible(True)
+            self._lbl_file_count.setText(f"{done_mb:,.0f} MB")
 
     def update_group_progress(self, done: int, total: int):
-        self._lbl_file_count.setText(f"{done}/{total} files")
+        # Only show files counter here — MB display handled by update_file_progress
+        # when Content-Length is missing
+        if self._progress.maximum() > 0:
+            self._lbl_file_count.setText(f"{done}/{total} files")
+        else:
+            # Large file mode — lbl_file_count shows MB, append file count
+            current = self._lbl_file_count.text()
+            mb_part = current.split("·")[0].strip() if "·" in current else current
+            self._lbl_file_count.setText(f"{mb_part}  ·  {done}/{total} files")
 
+class _SpectraCountWorker(QThread):
+    finished = _Signal(dict, int)   # {group_key: count}, total
+
+    def __init__(self, library: GaiaBulkLibrary, parent=None):
+        super().__init__(parent)
+        self._library = library
+
+    def run(self):
+        group_counts = {}
+        total = 0
+        for g in GROUP_DEFS:
+            count = 0
+            for fname in g.filenames:
+                conn = self._library._connections.get(fname)
+                if conn is None:
+                    continue
+                try:
+                    n = conn.execute("SELECT COUNT(*) FROM spectra").fetchone()[0]
+                    count += n
+                    total += n
+                except Exception:
+                    pass
+            group_counts[g.key] = count
+        self.finished.emit(group_counts, total)
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  Main dialog
@@ -1099,7 +1135,23 @@ class GaiaDatabaseDialog(QDialog):
             row.deleteLater()
         self._rows.clear()
 
-        for status in self._library.get_group_status():
+        # Build status without spectra counts first — fast, no SQLite COUNT(*)
+        for g in GROUP_DEFS:
+            installed = [f for f in g.filenames
+                         if (self._library._dir / f).exists()]
+            missing   = [f for f in g.filenames
+                         if not (self._library._dir / f).exists()]
+            total_mb  = sum(
+                (self._library._dir / f).stat().st_size / (1024 * 1024)
+                for f in installed
+            )
+            status = GroupStatus(
+                group=g,
+                installed=installed,
+                missing=missing,
+                total_mb=total_mb,
+                total_spectra=0,   # filled in later by background thread
+            )
             row = _GroupRowWidget(status)
             row.install_requested.connect(self._on_install)
             row.remove_requested.connect(self._on_remove)
@@ -1107,8 +1159,45 @@ class GaiaDatabaseDialog(QDialog):
             self._group_layout.insertWidget(self._group_layout.count() - 1, row)
             self._rows[status.group.key] = row
 
-        total = self._library.total_spectra()
-        n_groups = sum(1 for s in self._library.get_group_status() if s.fully_installed)
+        n_groups = sum(1 for g in GROUP_DEFS
+                       if all((self._library._dir / f).exists() for f in g.filenames))
+        self._total_lbl.setText(
+            f"{n_groups}/{len(GROUP_DEFS)} groups installed  ·  counting spectra…")
+
+        # Count spectra in background
+        self._start_spectra_count()
+
+    def _start_spectra_count(self):
+        worker = _SpectraCountWorker(self._library, parent=None)
+        worker.finished.connect(self._on_spectra_counted)
+        worker.start()
+        self._count_worker = worker
+
+    def _on_spectra_counted(self, group_counts: dict, total: int):
+        # Update each row with actual spectra count
+        for key, row in self._rows.items():
+            g = next((g for g in GROUP_DEFS if g.key == key), None)
+            if g is None:
+                continue
+            installed = [f for f in g.filenames
+                         if (self._library._dir / f).exists()]
+            missing   = [f for f in g.filenames
+                         if not (self._library._dir / f).exists()]
+            total_mb  = sum(
+                (self._library._dir / f).stat().st_size / (1024 * 1024)
+                for f in installed
+            )
+            status = GroupStatus(
+                group=g,
+                installed=installed,
+                missing=missing,
+                total_mb=total_mb,
+                total_spectra=group_counts.get(key, 0),
+            )
+            row.update_status(status)
+
+        n_groups = sum(1 for g in GROUP_DEFS
+                       if all((self._library._dir / f).exists() for f in g.filenames))
         self._total_lbl.setText(
             f"{n_groups}/{len(GROUP_DEFS)} groups installed  ·  {total:,} spectra")
 
@@ -1210,38 +1299,66 @@ class GaiaDatabaseDialog(QDialog):
     def _on_browse(self, key: str):
         """Let user point to a locally-built SQLite file for one group."""
         group_def = next(g for g in GROUP_DEFS if g.key == key)
-        statuses  = {s.group.key: s for s in self._library.get_group_status()}
-        missing   = statuses[key].missing
+        lib_dir   = get_library_dir()
+
+        missing = [f for f in group_def.filenames
+                   if not (lib_dir / f).exists()]
 
         if not missing:
             QMessageBox.information(self, "Already Installed",
                                     f"{group_def.label} is already fully installed.")
             return
 
-        QMessageBox.information(
-            self, "Browse for Files",
-            f"Select the sub-files for '{group_def.label}' one at a time.\n\n"
-            f"Missing files:\n" + "\n".join(f"  {f}" for f in missing)
-        )
+        # Pick the first missing file
+        start_dir = getattr(self, "_last_browse_dir", str(lib_dir))
+        path, _ = QFileDialog.getOpenFileName(
+            self, f"Locate a file for '{group_def.label}'", start_dir,
+            "SQLite files (*.sqlite);;All files (*)")
+        if not path:
+            return
 
+        selected_path = Path(path)
+        self._last_browse_dir = str(selected_path.parent)
+
+        # Scan the selected folder for other missing files from this group
+        found_others = []
         for fname in missing:
-            path, _ = QFileDialog.getOpenFileName(
-                self, f"Locate {fname}", str(Path.home()),
-                f"{fname};;SQLite files (*.sqlite);;All files (*)")
-            if not path:
+            candidate = selected_path.parent / fname
+            if candidate.exists() and candidate != selected_path:
+                found_others.append((fname, candidate))
+
+        # Build the full install list — selected file + any found siblings
+        to_install = [(selected_path.name, selected_path)]
+        if found_others:
+            names_list = "\n".join(f"  {f}" for f, _ in found_others)
+            reply = QMessageBox.question(
+                self, "Additional Files Found",
+                f"Found {len(found_others)} other file(s) for '{group_def.label}' "
+                f"in the same folder:\n\n{names_list}\n\n"
+                f"Install all of them?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                to_install.extend(found_others)
+
+        # Copy all selected files
+        import shutil
+        copied = 0
+        for fname, src in to_install:
+            dest = lib_dir / fname
+            if dest.exists():
                 continue
-            import shutil
-            dest = get_library_dir() / fname
             try:
-                shutil.copy2(path, dest)
+                shutil.copy2(src, dest)
+                copied += 1
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Could not copy {fname}:\n{e}")
-                continue
 
-        refresh_library()
-        self._library = get_library()
-        self._refresh_groups()
-        self.library_changed.emit()
+        if copied > 0:
+            refresh_library()
+            self._library = get_library()
+            self._refresh_groups()
+            self.library_changed.emit()
 
     def _open_library_dir(self):
         import subprocess, sys
