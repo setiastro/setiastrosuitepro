@@ -458,7 +458,7 @@ class ViewMixin:
         
         cur = float(self.settings.value("display/sigma", 5.0, type=float))
         val, ok = QInputDialog.getDouble(
-            self, "Sigma", "Sigma (0.5 - 10.0):", cur, 0.5, 10.0, 2
+            self, "Sigma", "Sigma (0.5 - 20.0):", cur, 0.5, 20.0, 2
         )
         if not ok:
             return

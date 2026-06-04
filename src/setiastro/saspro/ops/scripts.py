@@ -795,8 +795,6 @@ class ScriptManager(QObject):
             except Exception:
                 self._log(f"[Scripts] Failed to load {path.name}:\n{traceback.format_exc()}")
 
-        self._log(f"[Scripts] Loaded {len(self.registry)} script(s) from {scripts_dir}")
-
     def load_script_from_path(self, path: Path) -> ScriptEntry | None:
         scripts_root = get_scripts_dir()
         return self._load_one_script(path, scripts_root)
