@@ -1825,7 +1825,6 @@ class ImageSubWindow(QWidget):
         if mw is None:
             return
 
-        # Show and raise the dock
         layers_dock = getattr(mw, "layers_dock", None)
         if layers_dock is None:
             return
@@ -1836,15 +1835,19 @@ class ImageSubWindow(QWidget):
         except Exception:
             pass
 
-        # Switch its view combo to point at this subwindow
         try:
-            dock_widget = layers_dock.widget() if hasattr(layers_dock, "widget") else None
             combo = getattr(layers_dock, "view_combo", None)
             if combo is None:
                 return
 
+            # Compare uids — never widget identity, widgets can be deleted
+            my_doc = getattr(self, "document", None)
+            my_uid = getattr(my_doc, "uid", None)
+            if my_uid is None:
+                return
+
             for i in range(combo.count()):
-                if combo.itemData(i) is self:
+                if combo.itemData(i) == my_uid:
                     combo.setCurrentIndex(i)
                     break
         except Exception:
@@ -3796,7 +3799,7 @@ class ImageSubWindow(QWidget):
         self._pm_src_wcs = None
 
         super().closeEvent(e)
-        
+
     def _resolve_history_doc(self):
         """
         Return the doc whose history we should mutate:
