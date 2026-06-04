@@ -88,7 +88,7 @@ GROUP_DEFS: List[GroupDef] = [
         mag_lo=None, mag_hi=8.0,
         filenames=["gaia_xp_lt8.sqlite"],
         est_size="~220 MB",
-        est_stars="~60k stars",
+        est_stars="~55k stars",
         description="Vega, Sirius, Arcturus — the brightest stars in the sky. "
                     "Essential for any colour calibration.",
         recommended=True,
@@ -99,7 +99,7 @@ GROUP_DEFS: List[GroupDef] = [
         mag_lo=8.0, mag_hi=10.0,
         filenames=["gaia_xp_8_10.sqlite"],
         est_size="~1.5 GB",
-        est_stars="~415k stars",
+        est_stars="~385k stars",
         description="Covers most calibration stars reachable from backyard setups.",
         recommended=True,
     ),
@@ -129,10 +129,11 @@ GROUP_DEFS: List[GroupDef] = [
             "gaia_xp_132_134.sqlite", "gaia_xp_134_136.sqlite",
             "gaia_xp_136_138.sqlite", "gaia_xp_138_140.sqlite",
         ],
-        est_size="~25 GB  (10 files)",
-        est_stars="~12.8M stars",
-        description="Deep coverage for long-exposure narrowband work.",
-        warning="Large download — ~25 GB total. Allow several hours on a typical connection.",
+        est_size="~50 GB  (10 files)",
+        est_stars="~12.9M stars",
+        description="Deep coverage for long-exposure narrowband work. "
+                    "Note: file sizes range from 2–9 GB each.",
+        warning="Large download — ~50 GB total. Allow many hours on a typical connection.",
     ),
     GroupDef(
         key="very_faint",
@@ -145,14 +146,14 @@ GROUP_DEFS: List[GroupDef] = [
             "gaia_xp_146_147.sqlite", "gaia_xp_147_148.sqlite",
             "gaia_xp_148_149.sqlite", "gaia_xp_149_150.sqlite",
         ],
-        est_size="~47 GB  (10 files)",
+        est_size="~73 GB  (10 files)",
         est_stars="~18.7M stars",
         description="Maximum depth. For the deepest narrowband fields. "
                     "Gaia DR3 XP spectra top out at G≈15.",
-        warning="Very large download — ~47 GB total. Only needed for extreme deep-field work.",
+        warning="Very large download — ~73 GB total. Files range 5–10 GB each. "
+                "Only needed for extreme deep-field work.",
     ),
 ]
-
 # Fast lookup: filename → group key
 _FILENAME_TO_GROUP: Dict[str, str] = {
     fn: g.key for g in GROUP_DEFS for fn in g.filenames
