@@ -89,8 +89,9 @@ GROUP_DEFS: List[GroupDef] = [
         filenames=["gaia_xp_lt8.sqlite"],
         est_size="~220 MB",
         est_stars="~55k stars",
-        description="Vega, Sirius, Arcturus — the brightest stars in the sky. "
-                    "Essential for any color calibration.",
+        description="Bright stars from G≈2.2 to G<8 — Arneb, Muphrid, Algieba and tens of "
+                    "thousands more. Note: Gaia's detector saturates below G≈2.2, so stars "
+                    "like Vega, Sirius, Arcturus and Rigel are not in the dataset.",
         recommended=True,
     ),
     GroupDef(
@@ -977,7 +978,7 @@ class GaiaDatabaseDialog(QDialog):
         name_layout = QHBoxLayout(self._name_row)
         name_layout.setContentsMargins(0, 0, 0, 0)
         self._name_edit  = QLineEdit()
-        self._name_edit.setPlaceholderText("e.g. Vega, Sirius, HD 12345, Albireo A…")
+        self._name_edit.setPlaceholderText("e.g. Arneb, Muphrid, Algieba, HD 12345…")
         self._name_edit.returnPressed.connect(self._lookup_spectrum)
         name_layout.addWidget(self._name_edit, stretch=1)
         btn_name = QPushButton("Look Up")
@@ -1055,10 +1056,13 @@ class GaiaDatabaseDialog(QDialog):
         <h3 style="color:#8899ee;">Gaia DR3 XP Spectral Library</h3>
         <p>Pre-calibrated Gaia BP/RP spectra (336–1020 nm, 343 points, 2 nm step)
         from Gaia Data Release 3, stored in compact compressed SQLite databases.</p>
+        <p>Gaia DR3 XP spectra cover <b>G ≈ 2.2 to G ≲ 15.0</b>. Stars brighter than G≈2.2 
+        (Vega, Sirius, Arcturus, Rigel, Betelgeuse, etc.) saturate Gaia's detectors and 
+        have no XP spectra. The brightest sources in this library are stars like Arneb 
+        (Alpha Leporis, G=2.55) and Muphrid (Eta Bootis, G=2.56). The Very Faint group 
+        represents the practical depth limit of the DR3 dataset at G≈15.</p>
         <p>Spectra were extracted from the <b>xp_sampled_mean_spectrum</b> table
         of the Gaia DR3 bulk CDN. No GaiaXPy required — calibrated by DPAC.</p>
-        <p>Gaia DR3 XP spectra cover G ≲ 15.0. The Very Faint group represents
-        the practical depth limit of the DR3 dataset.</p>
         <h4 style="color:#8899ee;">Lookup priority in SASpro</h4>
         <ol>
         <li>Local bulk library (these files) — instant, no network</li>
@@ -1076,6 +1080,12 @@ class GaiaDatabaseDialog(QDialog):
         about_layout.addWidget(about_text)
         tabs.addTab(about_tab, "About")
 
+        # Footer
+        footer = QWidget()
+        footer.setStyleSheet("background: #0a0a18; border-top: 1px solid #1a1a3e;")
+        footer_layout = QHBoxLayout(footer)
+        footer_layout.setContentsMargins(16, 8, 16, 8)
+        footer_layout.addStretch()
         btn_close = QPushButton("Close")
         btn_close.clicked.connect(self.close)
         footer_layout.addWidget(btn_close)
@@ -1309,11 +1319,25 @@ class GaiaDatabaseDialog(QDialog):
             except ValueError:
                 radius = 5.0
 
-            result = self._library.find_nearest(ra, dec, radius_arcsec=radius)
+            # For name searches, try progressively larger radii since SIMBAD
+            # and Gaia coordinate epochs can differ by arcseconds for bright stars
+            search_radii = [radius, 30.0, 120.0, 600.0] if mode == 0 else [radius]
+
+            result = None
+            for r in search_radii:
+                result = self._library.find_nearest(ra, dec, radius_arcsec=r)
+                if result is not None:
+                    if r > radius and mode == 0:
+                        self._viewer_status.setText(
+                            f"Found at {r:.0f}\" (SIMBAD/Gaia epoch offset) — loading…")
+                        QApplication.processEvents()
+                    break
+
             if result is None:
                 self._viewer_status.setText(
-                    f"No spectrum found within {radius}\" of {label}. "
-                    f"Try a larger radius or install the relevant band.")
+                    f"No spectrum found within {search_radii[-1]:.0f}\" of {label}. "
+                    f"Try RA/Dec mode or source_id directly. "
+                    f"Note: very bright stars (G<2.2) are not in Gaia XP.")
                 self._spectrum_viewer.clear()
                 self._source_info.clear()
                 return
