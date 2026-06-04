@@ -90,22 +90,11 @@ class DockMixin:
     """
     
     def _init_log_dock(self):
-        """Initialize the system log dock widget."""
-        self.log_dock = QDockWidget(self.tr("System Log"), self)
-        self.log_dock.setObjectName("LogDock")
-        self.log_dock.setAllowedAreas(
-            Qt.DockWidgetArea.BottomDockWidgetArea
-            | Qt.DockWidgetArea.TopDockWidgetArea
-        )
-
-        self.log_text = QPlainTextEdit(self.log_dock)
-        self.log_text.setReadOnly(True)
-        self.log_text.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        self.log_dock.setWidget(self.log_text)
-
-        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.log_dock)
-
-        self.act_toggle_log = self.log_dock.toggleViewAction()
+        from setiastro.saspro.system_log_dock import SystemLogDock
+        self.system_log_dock = SystemLogDock(self)
+        self.log_text = self.system_log_dock.log_text  # keeps _append_log_text compat
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.system_log_dock)
+        self.act_toggle_log = self.system_log_dock.toggleViewAction()
         self.act_toggle_log.setText(self.tr("Show System Log Panel"))
     
     def _ensure_dock_host(self):
@@ -126,6 +115,7 @@ class DockMixin:
             "layers_dock",
             "header_dock",
             "log_dock",
+            "system_log_dock",   # ← add this
             "window_shelf",
         ):
             d = getattr(self, name, None)
@@ -134,15 +124,10 @@ class DockMixin:
         return docks
 
     def _append_log_text(self, text: str):
-        """Append text to the system log dock."""
-        if not text:
-            return
-        # Append to the bottom and keep view scrolled
-        cursor = self.log_text.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        cursor.insertText(text)
-        self.log_text.setTextCursor(cursor)
-        self.log_text.ensureCursorVisible()
+        try:
+            self.system_log_dock.append_text(text)
+        except Exception:
+            pass
     
     def _hook_stdout_stderr(self):
         """Hook stdout/stderr to redirect to the system log dock."""
@@ -429,7 +414,6 @@ class DockMixin:
 
     def _all_known_docks(self) -> list[QDockWidget]:
         docks = []
-
         for name in (
             "explorer_dock",
             "console_dock",
@@ -437,13 +421,13 @@ class DockMixin:
             "layers_dock",
             "header_dock",
             "log_dock",
+            "system_log_dock",   # ← add this
             "window_shelf",
         ):
             d = getattr(self, name, None)
             if isinstance(d, QDockWidget):
                 docks.append(d)
 
-        # de-dupe while preserving order
         out = []
         seen = set()
         for d in docks:
@@ -469,6 +453,8 @@ class DockMixin:
             self.tr("Layers"): 40,
             self.tr("Window Shelf"): 50,
             self.tr("Command Search"): 60,
+            self.tr("System Log"): 70,     # ← add this
+            self.tr("Stacking Log"): 80,   # ← and this for status_log_dock
         }
         
         # Add special action for overlay monitor
