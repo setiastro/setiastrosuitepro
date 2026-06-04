@@ -89,7 +89,7 @@ GROUP_DEFS: List[GroupDef] = [
         filenames=["gaia_xp_lt8.sqlite"],
         est_size="~220 MB",
         est_stars="~55k stars",
-        description="Bright stars from G≈2.2 to G<8 — Arneb, Muphrid, Algieba and tens of "
+        description="Bright stars from G≈2.2 to G<8 — Arneb, Muphrid, Tania Australis, and tens of "
                     "thousands more. Note: Gaia's detector saturates below G≈2.2, so stars "
                     "like Vega, Sirius, Arcturus and Rigel are not in the dataset.",
         recommended=True,
@@ -978,7 +978,7 @@ class GaiaDatabaseDialog(QDialog):
         name_layout = QHBoxLayout(self._name_row)
         name_layout.setContentsMargins(0, 0, 0, 0)
         self._name_edit  = QLineEdit()
-        self._name_edit.setPlaceholderText("e.g. Arneb, Muphrid, Algieba, HD 12345…")
+        self._name_edit.setPlaceholderText("e.g. Arneb, Muphrid, Tania Australis, HD 12345…")
         self._name_edit.returnPressed.connect(self._lookup_spectrum)
         name_layout.addWidget(self._name_edit, stretch=1)
         btn_name = QPushButton("Look Up")
