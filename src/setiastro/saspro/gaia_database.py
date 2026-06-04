@@ -90,7 +90,7 @@ GROUP_DEFS: List[GroupDef] = [
         est_size="~220 MB",
         est_stars="~55k stars",
         description="Vega, Sirius, Arcturus — the brightest stars in the sky. "
-                    "Essential for any colour calibration.",
+                    "Essential for any color calibration.",
         recommended=True,
     ),
     GroupDef(
@@ -923,7 +923,7 @@ class GaiaDatabaseDialog(QDialog):
         lib_layout.setSpacing(8)
 
         info_lbl = QLabel(
-            "Install Gaia DR3 XP spectral library files for offline colour calibration. "
+            "Install Gaia DR3 XP spectral library files for offline color calibration. "
             "SASpro checks these before hitting the live Gaia archive. "
             "Interrupted downloads resume automatically — just click Install again."
         )
@@ -1076,13 +1076,6 @@ class GaiaDatabaseDialog(QDialog):
         about_layout.addWidget(about_text)
         tabs.addTab(about_tab, "About")
 
-        # Footer
-        footer = QWidget()
-        footer.setStyleSheet("background: #0a0a18; border-top: 1px solid #1a1a3e;")
-        footer_layout = QHBoxLayout(footer)
-        footer_layout.setContentsMargins(16, 8, 16, 8)
-        footer_layout.addWidget(QLabel("Written by Franklin Marek / www.setiastro.com"))
-        footer_layout.addStretch()
         btn_close = QPushButton("Close")
         btn_close.clicked.connect(self.close)
         footer_layout.addWidget(btn_close)
