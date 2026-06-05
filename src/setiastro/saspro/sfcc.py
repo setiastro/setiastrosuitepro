@@ -1810,51 +1810,114 @@ class SFCCDialog(QDialog):
             if (not st.get("sp_clean")) or (st.get("pickles_match") is None)
         )
 
-        # ── Try bulk library first — instant, no network ──────────────────
         gaia_sources = []
-        query_ok = False
-        query_error = None
-        used_bulk = False
 
         try:
             from setiastro.saspro.gaia_database import get_library
             lib = get_library()
             if lib.installed_bands():
-                _sfcc_status(self, "[SPCC] Matching SIMBAD stars via local Gaia library…")
+                _sfcc_status(self, "[SPCC] Matching SIMBAD stars to Gaia source_ids via SIMBAD ids…")
                 QApplication.processEvents()
 
-                # Use the cache DB's query_region which already searches
-                # installed bulk files via GaiaSpectraDB.get_spectrum → _get_bulk_library
-                # Instead, query bulk library directly by position for each star
-                for st in self.star_list:
-                    needs_gaia = (not st.get("sp_clean")) or (st.get("pickles_match") is None)
-                    if not needs_gaia:
-                        continue
-                    result = lib.find_nearest(
-                        float(st["ra"]), float(st["dec"]),
-                        radius_arcsec=max_match_arcsec   # max_match_arcsec is already in arcsec (1.0)
-                    )
-                    if result is not None:
-                        sid, sep_arcsec = result
-                        # sep_arcsec is already in arcsec, max_match_arcsec is 1.0 arcsec
-                        if sep_arcsec <= max_match_arcsec:
-                            info = lib.get_source_info(sid)
-                            st["gaia_source_id"]  = int(sid)
+                # ── Step 1: SIMBAD ids batch query for exact Gaia DR3 source_ids ──
+                needed_stars = [
+                    st for st in self.star_list
+                    if ((not st.get("sp_clean")) or (st.get("pickles_match") is None))
+                ]
+                main_ids_needed = [
+                    st["main_id"] for st in needed_stars if st.get("main_id")
+                ]
+
+                simbad_to_gaia: Dict[str, int] = {}
+                if main_ids_needed:
+                    s = Simbad()
+                    s.add_votable_fields("ids")
+                    BATCH = 200
+                    for i in range(0, len(main_ids_needed), BATCH):
+                        batch = main_ids_needed[i:i + BATCH]
+                        try:
+                            res = s.query_objects(batch)
+                            if res is None:
+                                continue
+                            ids_col = next(
+                                (c for c in res.colnames if c.upper() == "IDS"), None)
+                            main_id_col = next(
+                                (c for c in res.colnames if c.upper() == "MAIN_ID"), None)
+                            if ids_col is None:
+                                continue
+                            for row in res:
+                                obj_name = str(row[main_id_col]).strip() if main_id_col else ""
+                                ids_str  = str(row[ids_col])
+                                for part in ids_str.split("|"):
+                                    part = part.strip()
+                                    if part.startswith("Gaia DR3 "):
+                                        try:
+                                            sid = int(part.replace("Gaia DR3 ", "").strip())
+                                            simbad_to_gaia[obj_name] = sid
+                                        except ValueError:
+                                            pass
+                                        break
+                        except Exception as e:
+                            print(f"[SPCC] SIMBAD ids batch failed: {e}")
+                            continue
+
+                _sfcc_status(self,
+                    f"[SPCC] SIMBAD ids resolved {len(simbad_to_gaia)} Gaia DR3 source_ids — "
+                    f"running batch spatial match for remainder…")
+                QApplication.processEvents()
+
+                # ── Step 2: assign source_ids from SIMBAD ids where available ──
+                unmatched_indices = []   # indices into needed_stars that still need positional match
+                for idx, st in enumerate(needed_stars):
+                    main_id = st.get("main_id")
+                    if main_id and main_id in simbad_to_gaia:
+                        candidate = simbad_to_gaia[main_id]
+                        if lib.has_spectrum(candidate):
+                            info = lib.get_source_info(candidate)
+                            st["gaia_source_id"]  = int(candidate)
                             st["gaia_bp_rp"]      = None
                             st["gaia_gmag"]       = info["gmag"] if info else None
-                            st["gaia_sep_arcsec"] = float(sep_arcsec)
+                            st["gaia_sep_arcsec"] = 0.0
                             st["sp_source"]       = "gaia_xp"
-                            gaia_sources.append({"source_id": int(sid)})
+                            gaia_sources.append({"source_id": int(candidate)})
+                            continue
+                    unmatched_indices.append(idx)
+
+                # ── Step 3: batch spatial match for stars not resolved via SIMBAD ids ──
+                if unmatched_indices:
+                    _sfcc_status(self,
+                        f"[SPCC] Batch spatial match for {len(unmatched_indices)} "
+                        f"unresolved stars…")
+                    QApplication.processEvents()
+
+                    batch_coords = [
+                        (float(needed_stars[i]["ra"]), float(needed_stars[i]["dec"]))
+                        for i in unmatched_indices
+                    ]
+                    batch_results = lib.find_nearest_batch(
+                        batch_coords, radius_arcsec=max_match_arcsec)
+
+                    for local_idx, (sid, sep_arcsec) in batch_results.items():
+                        st = needed_stars[unmatched_indices[local_idx]]
+                        info = lib.get_source_info(sid)
+                        st["gaia_source_id"]  = int(sid)
+                        st["gaia_bp_rp"]      = None
+                        st["gaia_gmag"]       = info["gmag"] if info else None
+                        st["gaia_sep_arcsec"] = float(sep_arcsec)
+                        st["sp_source"]       = "gaia_xp"
+                        gaia_sources.append({"source_id": int(sid)})
 
                 matched_star_count = sum(
-                    1 for st in self.star_list if st.get("gaia_source_id") is not None
-                        and st.get("sp_source") == "gaia_xp"
+                    1 for st in self.star_list
+                    if st.get("gaia_source_id") is not None
+                    and st.get("sp_source") == "gaia_xp"
                 )
-                used_bulk = True
-                query_ok = True
+                simbad_matched = len(simbad_to_gaia)
+                positional_matched = matched_star_count - simbad_matched
                 _sfcc_status(self,
                     f"[SPCC] Bulk library match: {matched_star_count} of {needed_star_count} "
-                    f"fallback stars matched locally — no Gaia archive query needed.")
+                    f"fallback stars matched ({simbad_matched} via SIMBAD ids, "
+                    f"{positional_matched} via position) — no Gaia archive query needed.")
                 return {
                     "query_ok": True,
                     "query_error": None,
@@ -1893,7 +1956,8 @@ class SFCCDialog(QDialog):
             for s in gaia_sources:
                 try:
                     dl.db._conn.execute(
-                        "INSERT OR IGNORE INTO sources (source_id, ra, dec, phot_g_mean_mag, bp_rp) VALUES (?,?,?,?,?)",
+                        "INSERT OR IGNORE INTO sources "
+                        "(source_id, ra, dec, phot_g_mean_mag, bp_rp) VALUES (?,?,?,?,?)",
                         (s["source_id"], s["ra"], s["dec"], s.get("gmag"), s.get("bp_rp"))
                     )
                 except Exception:
@@ -1910,7 +1974,7 @@ class SFCCDialog(QDialog):
 
             ra  = float(st["ra"])
             dec = float(st["dec"])
-            best = None
+            best     = None
             best_sep = 1e9
 
             for gs in gaia_sources:
@@ -2189,7 +2253,11 @@ class SFCCDialog(QDialog):
         from astroquery.simbad import Simbad
         from astropy.io import fits
         from PyQt6.QtWidgets import QMessageBox, QApplication
+        def _try_new_fields():
+            Simbad.add_votable_fields("sp", "B", "V", "R", "ra", "dec", "main_id")
 
+        def _try_legacy_fields():
+            Simbad.add_votable_fields("sp", "flux(B)", "flux(V)", "flux(R)", "ra(d)", "dec(d)", "main_id")
         # 0) Grab current image + header from the active document
         img, hdr, _meta = self._get_active_image_and_header()
         self.current_image = img
@@ -2246,14 +2314,6 @@ class SFCCDialog(QDialog):
 
         # --- SIMBAD fields (NEW first, fallback to legacy) ---
         Simbad.reset_votable_fields()
-
-        def _try_new_fields():
-            # new names: B,V,R + ra,dec
-            Simbad.add_votable_fields("sp", "B", "V", "R", "ra", "dec")
-
-        def _try_legacy_fields():
-            # legacy names
-            Simbad.add_votable_fields("sp", "flux(B)", "flux(V)", "flux(R)", "ra(d)", "dec(d)")
 
         ok = False
         for _ in range(5):
@@ -2423,17 +2483,20 @@ class SFCCDialog(QDialog):
             if not (0 <= xpix < W and 0 <= ypix < H):
                 continue
 
+            main_id_col = cols_lower.get("main_id", None)
+
             self.star_list.append({
                 "ra": float(sc.ra.deg),
                 "dec": float(sc.dec.deg),
-                "sp_clean": sp_clean,            # may be None
-                "pickles_match": best_template,  # may be None
+                "main_id": str(row[main_id_col]).strip() if main_id_col and row[main_id_col] else None,
+                "sp_clean": sp_clean,
+                "pickles_match": best_template,
                 "x": float(xpix),
                 "y": float(ypix),
                 "Bmag": float(bmag) if bmag is not None else None,
                 "Vmag": float(vmag) if vmag is not None else None,
                 "Rmag": float(rmag) if rmag is not None else None,
-                "sp_source": sp_source,   # "simbad", "bv_inferred", or None
+                "sp_source": sp_source,
             })
 
             if best_template is not None:
