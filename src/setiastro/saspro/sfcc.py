@@ -1181,10 +1181,6 @@ class SFCCDialog(QDialog):
         self.sep_thr_spin.setValue(15)            # our current hardcoded value
         self.sep_thr_spin.valueChanged.connect(self.save_sep_threshold_setting)
         row4.addWidget(self.sep_thr_spin)
-        self.gaia_fallback_chk = QCheckBox(self.tr("Gaia XP fallback (slower, fills missing data)"))
-        self.gaia_fallback_chk.setChecked(True)  # default ON
-        self.gaia_fallback_chk.toggled.connect(self.save_gaia_fallback_setting)
-        row4.addWidget(self.gaia_fallback_chk)
         row4.addStretch()
         self.add_curve_btn = QPushButton(self.tr("Add Custom Filter/Sensor Curve…"))
         self.add_curve_btn.clicked.connect(self.add_custom_curve); row4.addWidget(self.add_curve_btn)
@@ -1266,11 +1262,6 @@ class SFCCDialog(QDialog):
 
     # ── Curve utilities ─────────────────────────────────────────────────
     def _use_gaia_fallback(self) -> bool:
-        try:
-            if hasattr(self, "gaia_fallback_chk") and not self.gaia_fallback_chk.isChecked():
-                return False
-        except Exception:
-            return False
         return bool(self._gaia_enabled())
 
 
@@ -2246,19 +2237,14 @@ class SFCCDialog(QDialog):
 
 
     def fetch_stars(self):
-        import time
         from astropy.coordinates import SkyCoord
         import astropy.units as u
         from astropy.wcs.wcs import NoConvergence
         from astroquery.simbad import Simbad
         from astropy.io import fits
         from PyQt6.QtWidgets import QMessageBox, QApplication
-        def _try_new_fields():
-            Simbad.add_votable_fields("sp", "B", "V", "R", "ra", "dec", "main_id")
 
-        def _try_legacy_fields():
-            Simbad.add_votable_fields("sp", "flux(B)", "flux(V)", "flux(R)", "ra(d)", "dec(d)", "main_id")
-        # 0) Grab current image + header from the active document
+        # 0) Grab current image + header
         img, hdr, _meta = self._get_active_image_and_header()
         self.current_image = img
         self.current_header = hdr
@@ -2281,7 +2267,7 @@ class SFCCDialog(QDialog):
                                 if extname and extname not in self.pickles_templates:
                                     self.pickles_templates.append(extname)
                 except Exception as e:
-                    print(f"[SPCC] [fetch_stars] Could not load Pickles templates from {p}: {e}")
+                    print(f"[SPCC] Could not load Pickles templates from {p}: {e}")
             self.pickles_templates.sort()
 
         # Build WCS
@@ -2295,403 +2281,483 @@ class SFCCDialog(QDialog):
             QMessageBox.critical(self, "WCS Error", "Could not build a 2D WCS from header.")
             return
 
-        # Use celestial WCS if possible (safe when WCS has extra axes)
         wcs2 = self.wcs.celestial if hasattr(self.wcs, "celestial") else self.wcs
-
         H, W = self.current_image.shape[:2]
 
-        # --- original radius method (center + 4 corners) ---
-        pix = np.array([[W / 2, H / 2], [0, 0], [W, 0], [0, H], [W, H]], dtype=float)
-        try:
-            sky = wcs2.all_pix2world(pix, 0)
-        except Exception as e:
-            QMessageBox.critical(self, "WCS Conversion Error", str(e))
+        # ── Step 1: SEP detection ──────────────────────────────────────────
+        _sfcc_status(self, "Detecting stars with SEP…")
+        QApplication.processEvents()
+
+        if self.current_image.dtype == np.uint8:
+            img_float = self.current_image.astype(np.float32) / 255.0
+        else:
+            img_float = self.current_image.astype(np.float32, copy=False)
+
+        base  = self._make_working_base_for_sep(img_float)
+        gray  = np.mean(base, axis=2).astype(np.float32)
+        bkg   = sep.Background(gray)
+        data_sub = gray - bkg.back()
+        err   = float(bkg.globalrms)
+
+        sep_sigma = float(self.sep_thr_spin.value()) if hasattr(self, "sep_thr_spin") else 5.0
+        sources = sep.extract(data_sub, sep_sigma, err=err)
+
+        if sources.size == 0:
+            QMessageBox.critical(self, "SEP Error", "SEP found no sources.")
             return
 
-        center_sky = SkyCoord(ra=float(sky[0, 0]) * u.deg, dec=float(sky[0, 1]) * u.deg, frame="icrs")
-        corners_sky = SkyCoord(ra=sky[1:, 0] * u.deg, dec=sky[1:, 1] * u.deg, frame="icrs")
-        radius = center_sky.separation(corners_sky).max() * 1.05  # small margin
+        r_fluxrad, _ = sep.flux_radius(
+            gray, sources["x"], sources["y"],
+            2.0 * sources["a"], 0.5,
+            normflux=sources["flux"], subpix=5
+        )
+        mask = (r_fluxrad > 0.2) & (r_fluxrad <= 10)
+        sources = sources[mask]
+        if sources.size == 0:
+            QMessageBox.critical(self, "SEP Error", "All SEP detections rejected by radius filter.")
+            return
 
-        # --- SIMBAD fields (NEW first, fallback to legacy) ---
+        _sfcc_status(self, f"SEP detected {sources.size:,} stars — converting to sky coords…")
+        QApplication.processEvents()
+
+        # ── Step 2: WCS → RA/Dec for every SEP source ─────────────────────
+        xs = sources["x"].astype(np.float64)
+        ys = sources["y"].astype(np.float64)
+
+        try:
+            sky_coords = wcs2.all_pix2world(np.column_stack([xs, ys]), 0)
+        except Exception as e:
+            QMessageBox.critical(self, "WCS Error", str(e))
+            return
+
+        valid_mask = (
+            np.isfinite(sky_coords[:, 0]) & np.isfinite(sky_coords[:, 1]) &
+            (sky_coords[:, 1] >= -90) & (sky_coords[:, 1] <= 90)
+        )
+        sources     = sources[valid_mask]
+        sky_coords  = sky_coords[valid_mask]
+
+        if sources.size == 0:
+            QMessageBox.critical(self, "WCS Error", "No valid sky coordinates after WCS conversion.")
+            return
+
+        # ── Step 3: Gaia bulk library positional match ─────────────────────
+        self.star_list = []
+        gaia_source_map: dict[int, int] = {}   # sep_index → gaia source_id
+
+        if self._use_gaia_fallback():
+            try:
+                from setiastro.saspro.gaia_database import get_library
+                lib = get_library()
+                if lib.installed_bands():
+                    _sfcc_status(self,
+                        f"Matching {sources.size:,} SEP stars against local Gaia library…")
+                    QApplication.processEvents()
+
+                    coords_list = [(float(sky_coords[i, 0]), float(sky_coords[i, 1]))
+                                   for i in range(len(sources))]
+                    batch_results = lib.find_nearest_batch(coords_list, radius_arcsec=3.0)
+
+                    for sep_idx, (sid, sep_arcsec) in batch_results.items():
+                        gaia_source_map[sep_idx] = sid
+
+                    _sfcc_status(self,
+                        f"Gaia library matched {len(gaia_source_map):,} of "
+                        f"{sources.size:,} SEP stars")
+                    QApplication.processEvents()
+            except Exception as e:
+                print(f"[SPCC] Gaia bulk match failed: {e}")
+
+        # ── Step 4: Build star_list from SEP + Gaia matches ───────────────
+        for i in range(len(sources)):
+            ra_deg  = float(sky_coords[i, 0])
+            dec_deg = float(sky_coords[i, 1])
+            xpix    = float(sources["x"][i])
+            ypix    = float(sources["y"][i])
+
+            sid = gaia_source_map.get(i)
+            info = None
+            if sid is not None:
+                try:
+                    from setiastro.saspro.gaia_database import get_library
+                    info = get_library().get_source_info(sid)
+                except Exception:
+                    pass
+
+            self.star_list.append({
+                "ra":             ra_deg,
+                "dec":            dec_deg,
+                "x":              xpix,
+                "y":              ypix,
+                "a":              float(sources["a"][i]),
+                "main_id":        None,
+                "sp_clean":       None,
+                "pickles_match":  None,
+                "sp_source":      None,
+                "Bmag":           None,
+                "Vmag":           None,
+                "Rmag":           None,
+                "gaia_source_id": sid,
+                "gaia_gmag":      info["gmag"] if info else None,
+                "gaia_sep_arcsec": batch_results.get(i, (None, None))[1] if i in gaia_source_map else None,
+                "sp_source":      "gaia_xp" if sid is not None else None,
+            })
+
+        # ── Step 5: SIMBAD region query for spectral types ─────────────────
+        pix_corners = np.array([[W/2, H/2], [0,0], [W,0], [0,H], [W,H]], dtype=float)
+        try:
+            sky_corners = wcs2.all_pix2world(pix_corners, 0)
+        except Exception as e:
+            QMessageBox.critical(self, "WCS Error", str(e))
+            return
+
+        center_sky  = SkyCoord(ra=float(sky_corners[0,0])*u.deg,
+                               dec=float(sky_corners[0,1])*u.deg, frame="icrs")
+        corners_sky = SkyCoord(ra=sky_corners[1:,0]*u.deg,
+                               dec=sky_corners[1:,1]*u.deg, frame="icrs")
+        radius = center_sky.separation(corners_sky).max() * 1.05
+
         Simbad.reset_votable_fields()
+
+        def _try_new_fields():
+            Simbad.add_votable_fields("sp", "B", "V", "R", "ra", "dec", "main_id")
+
+        def _try_legacy_fields():
+            Simbad.add_votable_fields("sp", "flux(B)", "flux(V)", "flux(R)",
+                                      "ra(d)", "dec(d)", "main_id")
 
         ok = False
         for _ in range(5):
             try:
-                _try_new_fields()
-                ok = True
-                break
+                _try_new_fields(); ok = True; break
             except Exception:
-                QApplication.processEvents()
-                non_blocking_sleep(0.8)
-
+                QApplication.processEvents(); non_blocking_sleep(0.8)
         if not ok:
             for _ in range(5):
                 try:
-                    _try_legacy_fields()
-                    ok = True
+                    _try_legacy_fields(); ok = True; break
+                except Exception:
+                    QApplication.processEvents(); non_blocking_sleep(0.8)
+
+        simbad_result = None
+        if ok:
+            Simbad.ROW_LIMIT = 10000
+            for attempt in range(1, 6):
+                try:
+                    _sfcc_status(self, f"Querying SIMBAD for spectral types (attempt {attempt}/5)…")
+                    QApplication.processEvents()
+                    simbad_result = Simbad.query_region(center_sky, radius=radius)
                     break
                 except Exception:
-                    QApplication.processEvents()
-                    non_blocking_sleep(0.8)
+                    QApplication.processEvents(); non_blocking_sleep(1.2)
 
-        if not ok:
-            QMessageBox.critical(self, "SIMBAD Error", "Could not configure SIMBAD votable fields.")
-            return
-
-        Simbad.ROW_LIMIT = 10000
-
-        # --- Query SIMBAD ---
-        result = None
-        for attempt in range(1, 6):
-            try:
-                if getattr(self, "count_label", None) is not None:
-                    self.count_label.setText(f"Attempt {attempt}/5 to query SIMBAD…")
-                QApplication.processEvents()
-                result = Simbad.query_region(center_sky, radius=radius)
-                break
-            except Exception:
-                QApplication.processEvents()
-                non_blocking_sleep(1.2)
-                result = None
-
-        if result is None or len(result) == 0:
-            QMessageBox.information(self, "No Stars", "SIMBAD returned zero objects in that region.")
-            self.star_list = []
-            if getattr(self, "star_combo", None) is not None:
-                self.star_combo.clear()
-                self.star_combo.addItem("Vega (A0V)", userData="A0V")
-            return
-
-        # --- helpers ---
-        def _unmask_num(x):
-            try:
-                if x is None:
-                    return None
-                if ma.isMaskedArray(x) and ma.is_masked(x):
-                    return None
-                return float(x)
-            except Exception:
-                return None
-
-        def infer_letter(bv):
-            if bv is None or (isinstance(bv, float) and np.isnan(bv)):
-                return None
-            if bv < 0.00:
-                return "B"
-            elif bv < 0.30:
-                return "A"
-            elif bv < 0.58:
-                return "F"
-            elif bv < 0.81:
-                return "G"
-            elif bv < 1.40:
-                return "K"
-            elif bv > 1.40:
-                return "M"
-            return None
-
-        def safe_world2pix(ra_deg, dec_deg):
-            try:
-                xpix, ypix = wcs2.all_world2pix(ra_deg, dec_deg, 0)
-                xpix, ypix = float(xpix), float(ypix)
-                if np.isfinite(xpix) and np.isfinite(ypix):
-                    return xpix, ypix
-                return None
-            except NoConvergence as e:
-                try:
-                    xpix, ypix = e.best_solution
-                    xpix, ypix = float(xpix), float(ypix)
-                    if np.isfinite(xpix) and np.isfinite(ypix):
-                        return xpix, ypix
-                except Exception:
-                    pass
-                return None
-            except Exception:
-                return None
-
-        # Column names (astroquery changed these)
-        cols_lower = {c.lower(): c for c in result.colnames}
-
-        # RA/Dec in degrees:
-        ra_col = cols_lower.get("ra", None) or cols_lower.get("ra(d)", None) or cols_lower.get("ra_d", None)
-        dec_col = cols_lower.get("dec", None) or cols_lower.get("dec(d)", None) or cols_lower.get("dec_d", None)
-
-        # Mag columns:
-        b_col = cols_lower.get("b", None) or cols_lower.get("flux_b", None)
-        v_col = cols_lower.get("v", None) or cols_lower.get("flux_v", None)
-        r_col = cols_lower.get("r", None) or cols_lower.get("flux_r", None)
-
-        if ra_col is None or dec_col is None:
-            QMessageBox.critical(
-                self,
-                "SIMBAD Columns",
-                "SIMBAD result did not include degree RA/Dec columns (ra/dec).\n"
-                "Print result.colnames to see what's returned."
-            )
-            return
-
-        # --- main loop ---
-        self.star_list = []
+        # ── Step 6: Cross-match SIMBAD results onto star_list by position ──
         templates_for_hist = []
 
-        for row in result:
-            # spectral type column name in table
-            raw_sp = None
-            if "SP_TYPE" in result.colnames:
-                raw_sp = row["SP_TYPE"]
-            elif "sp_type" in result.colnames:
-                raw_sp = row["sp_type"]
+        if simbad_result is not None and len(simbad_result) > 0:
+            cols_lower = {c.lower(): c for c in simbad_result.colnames}
+            ra_col  = (cols_lower.get("ra")  or cols_lower.get("ra(d)")  or
+                       cols_lower.get("ra_d"))
+            dec_col = (cols_lower.get("dec") or cols_lower.get("dec(d)") or
+                       cols_lower.get("dec_d"))
+            b_col   = cols_lower.get("b") or cols_lower.get("flux_b")
+            v_col   = cols_lower.get("v") or cols_lower.get("flux_v")
+            r_col   = cols_lower.get("r") or cols_lower.get("flux_r")
+            main_id_col = cols_lower.get("main_id")
 
-            bmag = _unmask_num(row[b_col]) if b_col is not None else None
-            vmag = _unmask_num(row[v_col]) if v_col is not None else None
-            rmag = _unmask_num(row[r_col]) if r_col is not None else None
-
-            # ra/dec degrees
-            ra_deg = _unmask_num(row[ra_col])
-            dec_deg = _unmask_num(row[dec_col])
-            if ra_deg is None or dec_deg is None:
-                continue
-
-            try:
-                sc = SkyCoord(ra=ra_deg * u.deg, dec=dec_deg * u.deg, frame="icrs")
-            except Exception:
-                continue
-
-            # Clean / infer spectral class
-            sp_clean  = None
-            sp_source = None
-            if raw_sp and str(raw_sp).strip():
-                sp = str(raw_sp).strip().upper()
-                if not (sp.startswith("SN") or sp.startswith("KA")):
-                    sp_clean  = sp
-                    sp_source = "simbad"
-            elif (bmag is not None) and (vmag is not None):
-                sp_clean  = infer_letter(bmag - vmag)
-                sp_source = "bv_inferred"
-
-            match_list = pickles_match_for_simbad(sp_clean, self.pickles_templates) if sp_clean else []
-            best_template = match_list[0] if match_list else None
-
-            # Convert to pixel coords (must happen before using xpix/ypix)
-            xy = safe_world2pix(sc.ra.deg, sc.dec.deg)
-            if xy is None:
-                continue
-            xpix, ypix = xy
-
-            # Keep only in-frame stars
-            if not (0 <= xpix < W and 0 <= ypix < H):
-                continue
-
-            main_id_col = cols_lower.get("main_id", None)
-
-            self.star_list.append({
-                "ra": float(sc.ra.deg),
-                "dec": float(sc.dec.deg),
-                "main_id": str(row[main_id_col]).strip() if main_id_col and row[main_id_col] else None,
-                "sp_clean": sp_clean,
-                "pickles_match": best_template,
-                "x": float(xpix),
-                "y": float(ypix),
-                "Bmag": float(bmag) if bmag is not None else None,
-                "Vmag": float(vmag) if vmag is not None else None,
-                "Rmag": float(rmag) if rmag is not None else None,
-                "sp_source": sp_source,
-            })
-
-            if best_template is not None:
-                templates_for_hist.append(best_template)
-
-        # --- Gaia XP fallback enrichment (only for missing/failed Pickles cases) ---
-        # --- Gaia XP fallback enrichment ---
-        try:
-            radius_deg = float(radius.to(u.deg).value)
-        except Exception:
-            radius_deg = None
-
-        if radius_deg is not None and self._use_gaia_fallback():
-            try:
-                _sfcc_busy(self, True, "[SPCC] Matching SIMBAD stars to Gaia source_ids…")
-
-                gaia_info = self._attach_gaia_ids_to_star_list(
-                    radius_deg=radius_deg,
-                    mag_limit=15.5,
-                    max_match_arcsec=10.0
-                )
-
-                n_gaia_total = sum(1 for s in self.star_list if s.get("gaia_source_id") is not None)
-
-                if not gaia_info.get("query_ok", False):
-                    err = gaia_info.get("query_error") or "unknown network/query error"
-                    _sfcc_status(
-                        self,
-                        f"[SPCC] Gaia query failed after retries; no Gaia IDs attached ({err})"
-                    )
-                else:
-                    needed = int(gaia_info.get("needed_star_count", 0))
-                    matched = int(gaia_info.get("matched_star_count", 0))
-                    source_count = int(gaia_info.get("gaia_source_count", 0))
-
-                    if source_count == 0:
-                        _sfcc_status(
-                            self,
-                            f"[SPCC] Gaia query succeeded but returned 0 XP sources in field"
-                        )
-                    else:
-                        _sfcc_status(
-                            self,
-                            f"[SPCC] Gaia ID match: {matched} of {needed} fallback stars "
-                            f"({n_gaia_total} total attached; {source_count} Gaia sources queried)"
-                        )
-
-            except Exception as e:
-                _sfcc_status(self, f"[SPCC] Gaia ID match failed: {e}")
-            finally:
-                _sfcc_busy(self, False)
-
-            # Now actually compute Gaia XP synthetic B/V/R for matched stars and use it
-            gaia_ids = [s.get("gaia_source_id") for s in self.star_list if s.get("gaia_source_id") is not None]
-            if gaia_ids:
+            def _unmask_num(x):
                 try:
-                    _sfcc_busy(self, True, "[SPCC] Gaia XP: downloading or using cached synthetic photometry (this may take a minute)…")
+                    if x is None: return None
+                    if ma.isMaskedArray(x) and ma.is_masked(x): return None
+                    return float(x)
+                except Exception:
+                    return None
 
-                    # If you have COSMOS creds stored somewhere, pass them; otherwise None.
-                    user = getattr(self, "cosmos_username", None)
-                    pw   = getattr(self, "cosmos_password", None)
+            def infer_letter(bv):
+                if bv is None or (isinstance(bv, float) and np.isnan(bv)):
+                    return None
+                if bv < 0.00: return "B"
+                elif bv < 0.30: return "A"
+                elif bv < 0.58: return "F"
+                elif bv < 0.81: return "G"
+                elif bv < 1.40: return "K"
+                else: return "M"
 
-                    cache_dir = os.path.join(
-                        QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation),
-                        "gaiaxpy_cache"
-                    )
-                    os.makedirs(cache_dir, exist_ok=True)
-                    gaia_ids = [s.get("gaia_source_id") for s in self.star_list if s.get("gaia_source_id") is not None]
+            # Build numpy arrays of star_list coords for fast matching
+            sl_ras  = np.array([s["ra"]  for s in self.star_list], dtype=np.float64)
+            sl_decs = np.array([s["dec"] for s in self.star_list], dtype=np.float64)
 
-                    # only compute for those missing cached gaia mags in star_list
-                    needs_bvr = []
-                    for s in self.star_list:
-                        sid = s.get("gaia_source_id")
-                        if sid is None:
-                            continue
-                        if (s.get("gaia_B") is None) or (s.get("gaia_V") is None) or (s.get("gaia_R") is None):
-                            needs_bvr.append(int(sid))
+            matched_simbad = 0
+            for row in simbad_result:
+                if ra_col is None or dec_col is None:
+                    continue
+                sra  = _unmask_num(row[ra_col])
+                sdec = _unmask_num(row[dec_col])
+                if sra is None or sdec is None:
+                    continue
 
-                    needs_bvr = sorted(set(needs_bvr))
-                    if needs_bvr:
-                        bvr_map = _gaiaxp_synth_bvr_cached(
-                            self,
-                            needs_bvr,   # <-- only missing, not all gaia_ids
-                            db_path=self._gaia_db_path(),  # implement helper or hardcode
-                            status_cb=lambda m: _sfcc_status(self, m),
-                            username=user,
-                            password=pw,
-                            cache_dir=cache_dir,
-                        )
+                # Find closest star_list entry within 3"
+                cosd = max(1e-6, abs(math.cos(math.radians(sdec))))
+                dras  = (sl_ras - sra) * cosd
+                ddecs = sl_decs - sdec
+                seps  = np.hypot(dras, ddecs) * 3600.0
+                j = int(np.argmin(seps))
+                if seps[j] > 3.0:
+                    continue
 
-                        # Attach Gaia B/V/R to star_list
-                        got = 0
-                        for s in self.star_list:
-                            sid = s.get("gaia_source_id")
-                            sid_i = int(sid) if sid is not None else None
-                            if sid_i is not None and sid_i in bvr_map:
-                                s["gaia_B"] = bvr_map[sid]["B"]
-                                s["gaia_V"] = bvr_map[sid]["V"]
-                                s["gaia_R"] = bvr_map[sid]["R"]
-                                got += 1
+                st = self.star_list[j]
 
-                                # If SIMBAD mags are missing, fill them from Gaia synthetic
-                                if s.get("Bmag") is None:
-                                    s["Bmag"] = s["gaia_B"]
-                                if s.get("Vmag") is None:
-                                    s["Vmag"] = s["gaia_V"]
-                                if s.get("Rmag") is None:
-                                    s["Rmag"] = s["gaia_R"]
+                # Attach SIMBAD data
+                raw_sp = None
+                if "SP_TYPE" in simbad_result.colnames:
+                    raw_sp = row["SP_TYPE"]
+                elif "sp_type" in simbad_result.colnames:
+                    raw_sp = row["sp_type"]
 
-                                # If SIMBAD sp_clean is missing/garbage, infer from Gaia B-V
-                                if not s.get("sp_clean"):
-                                    bv = (s["gaia_B"] - s["gaia_V"]) if (s.get("gaia_B") is not None and s.get("gaia_V") is not None) else None
-                                    letter = _infer_letter_from_bv(bv)
-                                    if letter:
-                                        s["sp_clean"]  = letter
-                                        s["sp_source"] = "bv_inferred"
-                                        # Note: gaia_source_id is set separately;
-                                        # the XP spectrum itself is real but the
-                                        # sp_clean letter here is still a B-V guess
-                        _sfcc_status(self, f"[SPCC] Gaia XP: attached synthetic B/V/R to {got} stars")
+                bmag = _unmask_num(row[b_col]) if b_col else None
+                vmag = _unmask_num(row[v_col]) if v_col else None
+                rmag = _unmask_num(row[r_col]) if r_col else None
 
-                        # Recompute Pickles match if we upgraded sp_clean
-                        for s in self.star_list:
-                            if s.get("pickles_match") is None and s.get("sp_clean"):
-                                match_list = pickles_match_for_simbad(s["sp_clean"], self.pickles_templates)
-                                s["pickles_match"] = match_list[0] if match_list else None
-                    else:
-                        _sfcc_status(self, "[SPCC] Gaia XP: B/V/R already cached in star_list — skipping.")
+                sp_clean  = None
+                sp_source = None
+                if raw_sp and str(raw_sp).strip():
+                    sp = str(raw_sp).strip().upper()
+                    if not (sp.startswith("SN") or sp.startswith("KA")):
+                        sp_clean  = sp
+                        sp_source = "simbad"
+                elif bmag is not None and vmag is not None:
+                    sp_clean  = infer_letter(bmag - vmag)
+                    sp_source = "bv_inferred"
+
+                match_list   = pickles_match_for_simbad(sp_clean, self.pickles_templates) if sp_clean else []
+                best_template = match_list[0] if match_list else None
+
+                st["main_id"]       = str(row[main_id_col]).strip() if main_id_col and row[main_id_col] else None
+                st["sp_clean"]      = sp_clean
+                st["sp_source"]     = sp_source if st["sp_source"] != "gaia_xp" else "gaia_xp"
+                st["pickles_match"] = best_template
+                st["Bmag"]          = float(bmag) if bmag is not None else None
+                st["Vmag"]          = float(vmag) if vmag is not None else None
+                st["Rmag"]          = float(rmag) if rmag is not None else None
+
+                if best_template:
+                    templates_for_hist.append(best_template)
+                matched_simbad += 1
+
+            _sfcc_status(self,
+                f"SIMBAD matched {matched_simbad} stars — "
+                f"{len(gaia_source_map):,} have Gaia XP spectra")
+            QApplication.processEvents()
+
+        # ── Step 7: For Gaia-matched stars without Pickles, get SIMBAD ids
+        #           then compute synthetic B/V/R from XP spectra ───────────
+        if self._use_gaia_fallback():
+            # SIMBAD ids lookup for stars that have main_id but no Gaia source_id yet
+            # (handles stars SIMBAD matched but Gaia positional missed)
+            needs_simbad_ids = [
+                st for st in self.star_list
+                if st.get("main_id") and st.get("gaia_source_id") is None
+                and ((not st.get("sp_clean")) or st.get("pickles_match") is None)
+            ]
+            if needs_simbad_ids:
+                try:
+                    from setiastro.saspro.gaia_database import get_library
+                    lib = get_library()
+                    if lib.installed_bands():
+                        _sfcc_status(self,
+                            f"SIMBAD ids lookup for {len(needs_simbad_ids)} unmatched stars…")
+                        QApplication.processEvents()
+
+                        s_obj = Simbad()
+                        s_obj.add_votable_fields("ids")
+                        main_ids = [st["main_id"] for st in needs_simbad_ids]
+                        BATCH = 200
+                        simbad_to_gaia: dict[str, int] = {}
+                        for i in range(0, len(main_ids), BATCH):
+                            batch = main_ids[i:i+BATCH]
+                            try:
+                                res = s_obj.query_objects(batch)
+                                if res is None:
+                                    continue
+                                ids_col     = next((c for c in res.colnames if c.upper() == "IDS"), None)
+                                mid_col     = next((c for c in res.colnames if c.upper() == "MAIN_ID"), None)
+                                if ids_col is None:
+                                    continue
+                                for row in res:
+                                    obj_name = str(row[mid_col]).strip() if mid_col else ""
+                                    for part in str(row[ids_col]).split("|"):
+                                        part = part.strip()
+                                        if part.startswith("Gaia DR3 "):
+                                            try:
+                                                sid = int(part.replace("Gaia DR3 ", "").strip())
+                                                simbad_to_gaia[obj_name] = sid
+                                            except ValueError:
+                                                pass
+                                            break
+                            except Exception as e:
+                                print(f"[SPCC] SIMBAD ids batch failed: {e}")
+
+                        for st in needs_simbad_ids:
+                            mid = st.get("main_id")
+                            if mid and mid in simbad_to_gaia:
+                                candidate = simbad_to_gaia[mid]
+                                if lib.has_spectrum(candidate):
+                                    info = lib.get_source_info(candidate)
+                                    st["gaia_source_id"]  = int(candidate)
+                                    st["gaia_gmag"]       = info["gmag"] if info else None
+                                    st["gaia_sep_arcsec"] = 0.0
+                                    st["sp_source"]       = "gaia_xp"
+                                    gaia_source_map[self.star_list.index(st)] = candidate
                 except Exception as e:
-                    _sfcc_status(self, f"[SPCC] Gaia XP fallback failed: {e}")
+                    print(f"[SPCC] SIMBAD ids fallback failed: {e}")
+
+            # Compute synthetic B/V/R for all Gaia-matched stars
+            gaia_ids_all = [
+                st["gaia_source_id"] for st in self.star_list
+                if st.get("gaia_source_id") is not None
+            ]
+            if gaia_ids_all:
+                try:
+                    _sfcc_busy(self, True,
+                        f"Inferring spectral types from Gaia XP for {len(gaia_ids_all):,} unclassified stars…")
+                    needs_bvr = sorted(set(
+                        int(st["gaia_source_id"]) for st in self.star_list
+                        if st.get("gaia_source_id") is not None
+                        and (st.get("gaia_B") is None or st.get("gaia_V") is None)
+                    ))
+                    if needs_bvr:
+                        user = getattr(self, "cosmos_username", None)
+                        pw   = getattr(self, "cosmos_password", None)
+                        cache_dir = os.path.join(
+                            QStandardPaths.writableLocation(
+                                QStandardPaths.StandardLocation.AppDataLocation),
+                            "gaiaxpy_cache")
+                        os.makedirs(cache_dir, exist_ok=True)
+                        bvr_map = _gaiaxp_synth_bvr_cached(
+                            self, needs_bvr,
+                            db_path=self._gaia_db_path(),
+                            status_cb=lambda m: _sfcc_status(self, m),
+                            username=user, password=pw, cache_dir=cache_dir,
+                        )
+                        got = 0
+                        for st in self.star_list:
+                            sid_i = st.get("gaia_source_id")
+                            if sid_i is None or int(sid_i) not in bvr_map:
+                                continue
+                            bvr = bvr_map[int(sid_i)]
+                            st["gaia_B"] = bvr["B"]
+                            st["gaia_V"] = bvr["V"]
+                            st["gaia_R"] = bvr["R"]
+                            got += 1
+                            if st.get("Bmag") is None: st["Bmag"] = bvr["B"]
+                            if st.get("Vmag") is None: st["Vmag"] = bvr["V"]
+                            if st.get("Rmag") is None: st["Rmag"] = bvr["R"]
+                            if not st.get("sp_clean"):
+                                bv = bvr["B"] - bvr["V"]
+                                letter = _infer_letter_from_bv(bv)
+                                if letter:
+                                    st["sp_clean"]  = letter
+                                    st["sp_source"] = "bv_inferred"
+                            if st.get("sp_clean") and not st.get("pickles_match"):
+                                ml = pickles_match_for_simbad(st["sp_clean"], self.pickles_templates)
+                                st["pickles_match"] = ml[0] if ml else None
+                                if st["pickles_match"]:
+                                    templates_for_hist.append(st["pickles_match"])
+                        _sfcc_status(self,
+                            f"Inferred Spectral Types computed for {got:,} stars")
+                except Exception as e:
+                    _sfcc_status(self, f"[SPCC] Gaia XP BVR failed: {e}")
                 finally:
                     _sfcc_busy(self, False)
 
+        # ── Summary ───────────────────────────────────────────────────────
+        n_gaia    = sum(1 for s in self.star_list if s.get("gaia_source_id") is not None)
+        n_pickles = sum(1 for s in self.star_list if s.get("pickles_match") is not None)
+        n_bv      = sum(1 for s in self.star_list if s.get("sp_source") == "bv_inferred")
 
-
-        # --- plot / UI feedback (unchanged) ---
-        if getattr(self, "figure", None) is not None:
-            self.figure.clf()
         doc = self.doc_manager.get_active_document()
         if doc is not None:
             meta = dict(doc.metadata or {})
-            meta["SFCC_star_list"] = list(self.star_list)  # keep it JSON-ish
-            self.doc_manager.update_active_document(doc.image, metadata=meta, step_name="SFCC Stars Cached", doc=doc)
-        if templates_for_hist:
-            uniq, cnt = np.unique(templates_for_hist, return_counts=True)
-            types_str = ", ".join([str(u) for u in uniq])
-            if getattr(self, "count_label", None) is not None:
-                self.count_label.setText(f"Found {len(self.star_list)} stars; templates: {types_str}")
+            meta["SFCC_star_list"] = list(self.star_list)
+            self.doc_manager.update_active_document(
+                doc.image, metadata=meta, step_name="SFCC Stars Cached", doc=doc)
 
-            if getattr(self, "figure", None) is not None and getattr(self, "canvas", None) is not None:
-                ax = self.figure.add_subplot(111)
-                ax.bar(uniq, cnt, edgecolor="black")
-                ax.set_xlabel("Spectral Type")
-                ax.set_ylabel("Count")
-                ax.set_title("Spectral Distribution")
-                ax.tick_params(axis='x', rotation=90)
-                ax.grid(axis="y", linestyle="--", alpha=0.3)
-                self.canvas.setVisible(True)
-                try:
-                    from setiastro.saspro.gui_entry import _force_mpl_no_tex
-                    _force_mpl_no_tex()
-                except Exception:
-                    try:
-                        import matplotlib
-                        matplotlib.rcParams["text.usetex"] = False
-                    except Exception:
-                        pass
-                _force_mpl_no_tex()
-                self.canvas.draw()
-        else:
-            if getattr(self, "count_label", None) is not None:
-                self.count_label.setText(f"Found {len(self.star_list)} in-frame SIMBAD stars (0 with Pickles matches).")
-            if getattr(self, "canvas", None) is not None:
-                self.canvas.setVisible(False)
-                try:
-                    from setiastro.saspro.gui_entry import _force_mpl_no_tex
-                    _force_mpl_no_tex()
-                except Exception:
-                    try:
-                        import matplotlib
-                        matplotlib.rcParams["text.usetex"] = False
-                    except Exception:
-                        pass
-                _force_mpl_no_tex()
-                self.canvas.draw()
+        # ── Summary plot ──────────────────────────────────────────────────
+        if getattr(self, "figure", None) is not None:
+            self.figure.clf()
 
-    # ── Core SFCC ───────────────────────────────────────────────────────
+        if getattr(self, "figure", None) is not None and getattr(self, "canvas", None) is not None:
+            fig = self.figure
+            
+            # Left: spectral type distribution (Pickles + B-V inferred)
+            ax1 = fig.add_subplot(1, 2, 1)
+            if templates_for_hist:
+                uniq, cnt = np.unique(templates_for_hist, return_counts=True)
+                ax1.bar(uniq, cnt, edgecolor="black", color="#5588cc", label="Pickles")
+            # overlay B-V inferred
+            bv_types = [s["sp_clean"] for s in self.star_list
+                        if s.get("sp_source") == "bv_inferred" and s.get("sp_clean")]
+            if bv_types:
+                bv_uniq, bv_cnt = np.unique(bv_types, return_counts=True)
+                ax1.bar(bv_uniq, bv_cnt, edgecolor="black", color="#cc8844",
+                        alpha=0.7, label="B-V inferred")
+            ax1.set_xlabel("Spectral Type")
+            ax1.set_ylabel("Count")
+            ax1.set_title("Spectral Type Distribution")
+            ax1.tick_params(axis="x", rotation=90)
+            ax1.grid(axis="y", linestyle="--", alpha=0.3)
+            ax1.legend(fontsize=8)
+
+            # Right: source breakdown pie — mutually exclusive buckets
+            ax2 = fig.add_subplot(1, 2, 2)
+
+            n_gaia_xp        = sum(1 for s in self.star_list
+                                   if s.get("gaia_source_id") is not None)
+            n_simbad_pickles = sum(1 for s in self.star_list
+                                   if s.get("gaia_source_id") is None
+                                   and s.get("sp_source") == "simbad"
+                                   and s.get("pickles_match") is not None)
+            n_bv_pickles     = sum(1 for s in self.star_list
+                                   if s.get("gaia_source_id") is None
+                                   and s.get("sp_source") == "bv_inferred")
+            n_none           = len(self.star_list) - n_gaia_xp - n_simbad_pickles - n_bv_pickles
+
+            labels, sizes, colors = [], [], []
+            for label, size, color in [
+                (f"Gaia XP ({n_gaia_xp})",               n_gaia_xp,        "#44cc88"),
+                (f"Pickles/SIMBAD ({n_simbad_pickles})",  n_simbad_pickles, "#5588cc"),
+                (f"Pickles/B-V ({n_bv_pickles})",         n_bv_pickles,     "#cc8844"),
+                (f"No spectrum ({n_none})",                n_none,           "#555555"),
+            ]:
+                if size > 0:
+                    labels.append(label)
+                    sizes.append(size)
+                    colors.append(color)
+
+            if sizes:
+                ax2.pie(sizes, labels=labels, colors=colors, autopct="%1.0f%%",
+                        textprops={"fontsize": 8})
+            ax2.set_title("Calibration Source Breakdown")
+
+            fig.tight_layout()
+            self.canvas.setVisible(True)
+            _force_mpl_no_tex()
+            self.canvas.draw()
+
+        _sfcc_status(self,
+            f"Step 1 complete — {len(self.star_list):,} stars detected  ·  "
+            f"{n_gaia_xp:,} Gaia XP  ·  {n_simbad_pickles:,} Pickles/SIMBAD  ·  "
+            f"{n_bv_pickles:,} Pickles/B-V  ·  {n_none:,} unclassified")
+
+    # -- Step 2: Core color calibration using matched stars + synthetic photometry ---------
     def run_spcc(self):
         ref_sed_name = self.star_combo.currentData()
-        r_filt = self.r_filter_combo.currentText()
-        g_filt = self.g_filter_combo.currentText()
-        b_filt = self.b_filter_combo.currentText()
+        r_filt  = self.r_filter_combo.currentText()
+        g_filt  = self.g_filter_combo.currentText()
+        b_filt  = self.b_filter_combo.currentText()
         sens_name = self.sens_combo.currentText()
-        lp_filt  = self.lp_filter_combo.currentText()
-        lp_filt2 = self.lp_filter_combo2.currentText()
+        lp_filt   = self.lp_filter_combo.currentText()
+        lp_filt2  = self.lp_filter_combo2.currentText()
 
         if not ref_sed_name:
             QMessageBox.warning(self, "Error", "Select a reference spectral type (e.g. A0V).")
@@ -2714,95 +2780,84 @@ class SFCCDialog(QDialog):
             QMessageBox.critical(self, "Error", "Active document must be RGB (3 channels).")
             return
 
-        # ---- Convert to float working space ----
+        if not getattr(self, "star_list", None):
+            QMessageBox.warning(self, "Error", "Run Step 1: Fetch Stars before running color calibration.")
+            return
+
+        # ── Float working space ───────────────────────────────────────────
         if img.dtype == np.uint8:
             img_float = img.astype(np.float32) / 255.0
         else:
             img_float = img.astype(np.float32, copy=False)
 
-        # ---- Build SEP working copy (ONE pedestal handling only) ----
         base = self._make_working_base_for_sep(img_float)
-
-        # Optional BN after calibration:
-        # IMPORTANT: do NOT remove pedestal here either (avoid double pedestal removal).
         if self.neutralize_chk.isChecked():
             base = self._neutralize_background(base, remove_pedestal=False)
 
-        # SEP on grayscale
-        gray = np.mean(base, axis=2).astype(np.float32)
-
-        bkg = sep.Background(gray)
+        # ── SEP re-detection ──────────────────────────────────────────────
+        gray     = np.mean(base, axis=2).astype(np.float32)
+        bkg      = sep.Background(gray)
         data_sub = gray - bkg.back()
-        err = float(bkg.globalrms)
+        err      = float(bkg.globalrms)
 
-        # User threshold
         sep_sigma = float(self.sep_thr_spin.value()) if hasattr(self, "sep_thr_spin") else 5.0
-        self.count_label.setText(f"Detecting stars (SEP σ={sep_sigma:.1f})…")
+        _sfcc_status(self, f"Re-detecting stars for photometry (SEP σ={sep_sigma:.1f})…")
         QApplication.processEvents()
 
         sources = sep.extract(data_sub, sep_sigma, err=err)
 
-        MAX_SOURCES = 300_000
-        if sources.size > MAX_SOURCES:
-            QMessageBox.warning(
-                self,
-                "Too many detections",
+        if sources.size > 300_000:
+            QMessageBox.warning(self, "Too many detections",
                 f"SEP found {sources.size:,} sources with σ={sep_sigma:.1f}.\n"
-                f"Increase the threshold and rerun SFCC."
-            )
+                f"Increase the threshold and rerun.")
             return
-
         if sources.size == 0:
             QMessageBox.critical(self, "SEP Error", "SEP found no sources.")
             return
 
-        # Radius filtering (unchanged)
+        _sfcc_status(self, f"SEP found {sources.size:,} sources — applying radius filter…")
+        QApplication.processEvents()
+
         r_fluxrad, _ = sep.flux_radius(
             gray, sources["x"], sources["y"],
             2.0 * sources["a"], 0.5,
-            normflux=sources["flux"], subpix=5
-        )
+            normflux=sources["flux"], subpix=5)
         mask = (r_fluxrad > 0.2) & (r_fluxrad <= 10)
         sources = sources[mask]
         if sources.size == 0:
             QMessageBox.critical(self, "SEP Error", "All SEP detections rejected by radius filter.")
             return
 
-        if not getattr(self, "star_list", None):
-            QMessageBox.warning(self, "Error", "Fetch Stars (with WCS) before running SFCC.")
-            return
+        # ── Match star_list → current SEP sources ─────────────────────────
+        _sfcc_status(self, f"Matching {sources.size:,} SEP sources to star catalog…")
+        QApplication.processEvents()
 
-        # ---- Match SIMBAD stars to SEP detections ----
         raw_matches = []
         for i, star in enumerate(self.star_list):
             dx = sources["x"] - star["x"]
             dy = sources["y"] - star["y"]
-            j = int(np.argmin(dx * dx + dy * dy))
-            if (dx[j] * dx[j] + dy[j] * dy[j]) < (3.0 ** 2):
-                x_c = float(sources["x"][j])
-                y_c = float(sources["y"][j])
-                tmpl = star.get("pickles_match")
-                spc  = star.get("sp_clean")
+            j  = int(np.argmin(dx * dx + dy * dy))
+            if (dx[j]**2 + dy[j]**2) < (3.0**2):
                 raw_matches.append({
                     "sim_index": i,
-                    "template": tmpl or spc or "",   # never None
+                    "template":  star.get("pickles_match") or star.get("sp_clean") or "",
                     "src_index": j,
-
-                    # New canonical centroid keys
-                    "x": x_c,
-                    "y": y_c,
-
-                    # Back-compat keys used elsewhere (gradient step, older code paths)
-                    "x_pix": x_c,
-                    "y_pix": y_c,
-
-                    "a": float(sources["a"][j]),
+                    "x":         float(sources["x"][j]),
+                    "y":         float(sources["y"][j]),
+                    "x_pix":     float(sources["x"][j]),
+                    "y_pix":     float(sources["y"][j]),
+                    "a":         float(sources["a"][j]),
                 })
 
         if not raw_matches:
-            QMessageBox.warning(self, "No Matches", "No SIMBAD star matched to SEP detections.")
+            QMessageBox.warning(self, "No Matches",
+                "No catalog stars matched to SEP detections.")
             return
 
+        _sfcc_status(self, f"Matched {len(raw_matches):,} stars — loading filter/sensor curves…")
+        QApplication.processEvents()
+
+        # ── Load curves + build throughput arrays ─────────────────────────
         wl_min, wl_max = 3000, 11000
         wl_grid = np.arange(wl_min, wl_max + 1)
 
@@ -2810,7 +2865,7 @@ class SFCCDialog(QDialog):
             for p in (self.user_custom_path, self.sasp_data_path):
                 with fits.open(p, memmap=False) as hd:
                     if ext in hd:
-                        d = hd[ext].data
+                        d  = hd[ext].data
                         wl = _ensure_angstrom(d["WAVELENGTH"].astype(float))
                         tp = d["THROUGHPUT"].astype(float)
                         return wl, tp
@@ -2820,78 +2875,45 @@ class SFCCDialog(QDialog):
             for p in (self.user_custom_path, self.sasp_data_path):
                 with fits.open(p, memmap=False) as hd:
                     if ext in hd:
-                        d = hd[ext].data
+                        d  = hd[ext].data
                         wl = _ensure_angstrom(d["WAVELENGTH"].astype(float))
                         fl = d["FLUX"].astype(float)
                         return wl, fl
             raise KeyError(f"SED '{ext}' not found")
 
-        interp = lambda wl_o, tp_o: np.interp(wl_grid, wl_o, tp_o, left=0.0, right=0.0)
+        interp_tp = lambda wl_o, tp_o: np.interp(wl_grid, wl_o, tp_o, left=0.0, right=0.0)
 
-        T_R = interp(*load_curve(r_filt)) if r_filt != "(None)" else np.ones_like(wl_grid)
-        T_G = interp(*load_curve(g_filt)) if g_filt != "(None)" else np.ones_like(wl_grid)
-        T_B = interp(*load_curve(b_filt)) if b_filt != "(None)" else np.ones_like(wl_grid)
-        QE  = interp(*load_curve(sens_name)) if sens_name != "(None)" else np.ones_like(wl_grid)
-        LP1 = interp(*load_curve(lp_filt))   if lp_filt  != "(None)" else np.ones_like(wl_grid)
-        LP2 = interp(*load_curve(lp_filt2))  if lp_filt2 != "(None)" else np.ones_like(wl_grid)
+        T_R = interp_tp(*load_curve(r_filt)) if r_filt != "(None)" else np.ones_like(wl_grid)
+        T_G = interp_tp(*load_curve(g_filt)) if g_filt != "(None)" else np.ones_like(wl_grid)
+        T_B = interp_tp(*load_curve(b_filt)) if b_filt != "(None)" else np.ones_like(wl_grid)
+        QE  = interp_tp(*load_curve(sens_name)) if sens_name != "(None)" else np.ones_like(wl_grid)
+        LP1 = interp_tp(*load_curve(lp_filt))   if lp_filt  != "(None)" else np.ones_like(wl_grid)
+        LP2 = interp_tp(*load_curve(lp_filt2))  if lp_filt2 != "(None)" else np.ones_like(wl_grid)
         LP  = LP1 * LP2
 
-        T_sys_R, T_sys_G, T_sys_B = T_R * QE * LP, T_G * QE * LP, T_B * QE * LP
+        T_sys_R = T_R * QE * LP
+        T_sys_G = T_G * QE * LP
+        T_sys_B = T_B * QE * LP
 
         wl_ref, fl_ref = load_sed(ref_sed_name)
-        fr_i = np.interp(wl_grid, wl_ref, fl_ref, left=0.0, right=0.0)
-
+        fr_i    = np.interp(wl_grid, wl_ref, fl_ref, left=0.0, right=0.0)
         S_ref_R = _trapz(fr_i * T_sys_R, x=wl_grid)
         S_ref_G = _trapz(fr_i * T_sys_G, x=wl_grid)
         S_ref_B = _trapz(fr_i * T_sys_B, x=wl_grid)
 
-        diag_meas_RG, diag_exp_RG = [], []
-        diag_meas_BG, diag_exp_BG = [], []
-        enriched = []
+        # ── Step A: Gaia XP integrals for ALL matched stars that have one ──
+        _sfcc_status(self, "Computing Gaia XP synthetic photometry integrals…")
+        QApplication.processEvents()
 
-        # ---- Pre-calc integrals for unique templates ----
-        unique_simbad_types = set(m["template"] for m in raw_matches)
-
-        simbad_to_pickles = {}
-        pickles_templates_needed = set()
-        for sp in unique_simbad_types:
-            cands = pickles_match_for_simbad(sp, getattr(self, "pickles_templates", []))
-            if cands:
-                pname = cands[0]
-                simbad_to_pickles[sp] = pname
-                pickles_templates_needed.add(pname)
-
-        template_integrals = {}
-        for pname in pickles_templates_needed:
-            try:
-                wl_s, fl_s = load_sed(pname)
-                fs_i = np.interp(wl_grid, wl_s, fl_s, left=0.0, right=0.0)
-                S_sr = _trapz(fs_i * T_sys_R, x=wl_grid)
-                S_sg = _trapz(fs_i * T_sys_G, x=wl_grid)
-                S_sb = _trapz(fs_i * T_sys_B, x=wl_grid)
-                template_integrals[pname] = (S_sr, S_sg, S_sb)
-            except Exception as e:
-                print(f"[SPCC] Warning: failed to load/integrate template {pname}: {e}")
-
-        # ---- Gaia XP fallback: precompute integrals for stars lacking Pickles ----
-        gaia_integrals = {}
+        gaia_integrals: dict[int, tuple[float, float, float]] = {}
         if self._use_gaia_fallback():
             try:
-                # Collect Gaia IDs only for stars that will need fallback
-                gaia_ids_needed = []
-                for m in raw_matches:
-                    sp = m["template"]
-                    pname = simbad_to_pickles.get(sp)
-                    if pname:
-                        continue
-                    # find the SIMBAD star record so we can read gaia_source_id
-                    si = int(m["sim_index"])
-                    if 0 <= si < len(self.star_list):
-                        sid = self.star_list[si].get("gaia_source_id")
-                        if sid is not None:
-                            gaia_ids_needed.append(int(sid))
-
-                gaia_ids_needed = sorted(set(gaia_ids_needed))
+                gaia_ids_needed = sorted(set(
+                    int(self.star_list[int(m["sim_index"])]["gaia_source_id"])
+                    for m in raw_matches
+                    if 0 <= int(m["sim_index"]) < len(self.star_list)
+                    and self.star_list[int(m["sim_index"])].get("gaia_source_id") is not None
+                ))
                 if gaia_ids_needed:
                     gaia_integrals = self._gaia_integrals_for_source_ids(
                         gaia_ids_needed,
@@ -2899,32 +2921,70 @@ class SFCCDialog(QDialog):
                         T_sys_R=T_sys_R.astype(np.float64),
                         T_sys_G=T_sys_G.astype(np.float64),
                         T_sys_B=T_sys_B.astype(np.float64),
-                        batch_size=25
+                        batch_size=25,
                     )
-
-                    print(f"[SPCC] Gaia integrals available for {len(gaia_integrals)} source_ids")
+                    _sfcc_status(self,
+                        f"Gaia XP: {len(gaia_integrals):,} integrals computed — "
+                        f"computing Pickles integrals for remaining stars…")
+                    QApplication.processEvents()
             except Exception as e:
-                print(f"[SPCC] Gaia XP fallback failed: {e}")
-                gaia_integrals = {}
+                print(f"[SPCC] Gaia XP integrals failed: {e}")
         else:
-            print("[SPCC] Gaia XP fallback skipped (disabled by user or unavailable).")
+            _sfcc_status(self, "Gaia XP fallback disabled — computing Pickles integrals…")
+            QApplication.processEvents()
 
-        # ---- Main match loop (measure from 'base' only) ----
-        # ---- Main match loop (measure from 'base' only) ----
+        # ── Step B: Pickles integrals for stars WITHOUT a Gaia XP integral ─
+        # Collect unique spectral types only for stars that need Pickles
+        types_needing_pickles: set[str] = set()
+        simbad_to_pickles:     dict[str, str] = {}
+
         for m in raw_matches:
+            si  = int(m["sim_index"])
+            sid = self.star_list[si].get("gaia_source_id") if 0 <= si < len(self.star_list) else None
+            # Skip if Gaia XP integral already available for this star
+            if sid is not None and int(sid) in gaia_integrals:
+                continue
             sp = m["template"]
+            if not sp:
+                continue
+            cands = pickles_match_for_simbad(sp, getattr(self, "pickles_templates", []))
+            if cands:
+                pname = cands[0]
+                simbad_to_pickles[sp] = pname
+                types_needing_pickles.add(pname)
 
-            # measure on the SEP working copy (already BN’d, only one pedestal handling)
-            x = float(m["x"])
-            y = float(m["y"])
+        template_integrals: dict[str, tuple[float, float, float]] = {}
+        for pname in types_needing_pickles:
+            try:
+                wl_s, fl_s = load_sed(pname)
+                fs_i = np.interp(wl_grid, wl_s, fl_s, left=0.0, right=0.0)
+                template_integrals[pname] = (
+                    _trapz(fs_i * T_sys_R, x=wl_grid),
+                    _trapz(fs_i * T_sys_G, x=wl_grid),
+                    _trapz(fs_i * T_sys_B, x=wl_grid),
+                )
+            except Exception as e:
+                print(f"[SPCC] Warning: failed to integrate Pickles template {pname}: {e}")
 
-            # Aperture radius choice
-            a = float(m.get("a", 1.5))
-            r = float(np.clip(2.5 * a, 2.0, 12.0))
+        _sfcc_status(self,
+            f"Measuring stellar flux — "
+            f"{len(gaia_integrals):,} real XP spectra + {len(template_integrals):,} Pickles templates "
+            f"across {len(raw_matches):,} matched stars…")
+        QApplication.processEvents()
 
-            # Annulus
-            rin  = float(np.clip(3.0 * r, 6.0, 40.0))
-            rout = float(np.clip(5.0 * r, rin + 2.0, 60.0))
+        # ── Step C: Aperture photometry + flux ratio measurement ───────────
+        diag_meas_RG, diag_exp_RG = [], []
+        diag_meas_BG, diag_exp_BG = [], []
+        enriched = []
+
+        for m in raw_matches:
+            si  = int(m["sim_index"])
+            x   = float(m["x"])
+            y   = float(m["y"])
+            a   = float(m.get("a", 1.5))
+            r   = float(np.clip(2.5 * a, 2.0, 12.0))
+            rin  = float(np.clip(3.0 * r,       6.0,       40.0))
+            rout = float(np.clip(5.0 * r, rin + 2.0,       60.0))
 
             phot = measure_star_rgb_photometry(base, x, y, r, rin, rout)
             if phot is None:
@@ -2934,45 +2994,38 @@ class SFCCDialog(QDialog):
             Gm = float(phot["G"]["star_sum"])
             Bm = float(phot["B"]["star_sum"])
 
-            # reject non-physical or unusable star-only fluxes
-            if (not np.isfinite(Rm)) or (not np.isfinite(Gm)) or (not np.isfinite(Bm)):
+            if not (np.isfinite(Rm) and np.isfinite(Gm) and np.isfinite(Bm)):
                 continue
             if Gm <= 0 or Rm <= 0 or Bm <= 0:
                 continue
 
-            pname = simbad_to_pickles.get(sp)
+            # Gaia XP first — real measured spectrum for this specific star
+            sid = self.star_list[si].get("gaia_source_id") \
+                  if 0 <= si < len(self.star_list) else None
+            integrals = gaia_integrals.get(int(sid)) if sid is not None else None
 
-            # --- primary: Pickles template integrals ---
-            integrals = template_integrals.get(pname) if pname else None
-
-            # --- fallback: Gaia XP spectrum integrals (if available) ---
+            # Pickles fallback — spectral template
             if integrals is None:
-                si = int(m["sim_index"])
-                sid = None
-                if 0 <= si < len(self.star_list):
-                    sid = self.star_list[si].get("gaia_source_id")
-
-                if sid is not None:
-                    integrals = gaia_integrals.get(int(sid))
+                sp    = m["template"]
+                pname = simbad_to_pickles.get(sp)
+                integrals = template_integrals.get(pname) if pname else None
 
             if integrals is None:
                 continue
 
             S_sr, S_sg, S_sb = integrals
-
-            if (not np.isfinite(S_sr)) or (not np.isfinite(S_sg)) or (not np.isfinite(S_sb)):
+            if not (np.isfinite(S_sr) and np.isfinite(S_sg) and np.isfinite(S_sb)):
                 continue
             if S_sg <= 0 or S_sr <= 0 or S_sb <= 0:
                 continue
 
-            exp_RG = S_sr / S_sg
-            exp_BG = S_sb / S_sg
-            meas_RG = Rm / Gm
-            meas_BG = Bm / Gm
+            exp_RG  = S_sr / S_sg
+            exp_BG  = S_sb / S_sg
+            meas_RG = Rm   / Gm
+            meas_BG = Bm   / Gm
 
-            if (not np.isfinite(exp_RG)) or (not np.isfinite(exp_BG)):
-                continue
-            if (not np.isfinite(meas_RG)) or (not np.isfinite(meas_BG)):
+            if not (np.isfinite(exp_RG) and np.isfinite(exp_BG) and
+                    np.isfinite(meas_RG) and np.isfinite(meas_BG)):
                 continue
 
             diag_meas_RG.append(meas_RG)
@@ -2982,87 +3035,85 @@ class SFCCDialog(QDialog):
 
             enriched.append({
                 **m,
-
-                # aperture geometry
-                "r_ap": float(r),
-                "r_in": float(rin),
-                "r_out": float(rout),
-                "ap_area": float(phot["area_ap"]),
-                "ann_area": float(phot["area_ann"]),
-
-                # raw aperture sums
-                "R_raw": float(phot["R"]["raw_sum"]),
-                "G_raw": float(phot["G"]["raw_sum"]),
-                "B_raw": float(phot["B"]["raw_sum"]),
-
-                # annulus sums
+                "r_ap":      float(r),
+                "r_in":      float(rin),
+                "r_out":     float(rout),
+                "ap_area":   float(phot["area_ap"]),
+                "ann_area":  float(phot["area_ann"]),
+                "R_raw":     float(phot["R"]["raw_sum"]),
+                "G_raw":     float(phot["G"]["raw_sum"]),
+                "B_raw":     float(phot["B"]["raw_sum"]),
                 "R_ann_sum": float(phot["R"]["ann_sum"]),
                 "G_ann_sum": float(phot["G"]["ann_sum"]),
                 "B_ann_sum": float(phot["B"]["ann_sum"]),
-
-                # local background estimate (per pixel)
-                "R_bg_pp": float(phot["R"]["mu_bg"]),
-                "G_bg_pp": float(phot["G"]["mu_bg"]),
-                "B_bg_pp": float(phot["B"]["mu_bg"]),
-
-                # star-only measured flux
-                "R_meas": float(Rm),
-                "G_meas": float(Gm),
-                "B_meas": float(Bm),
-
-                # expected synthetic channel integrals
-                "S_star_R": float(S_sr),
-                "S_star_G": float(S_sg),
-                "S_star_B": float(S_sb),
-
-                # ratios for current SPCC solve
-                "exp_RG": float(exp_RG),
-                "exp_BG": float(exp_BG),
-                "meas_RG": float(meas_RG),
-                "meas_BG": float(meas_BG),
+                "R_bg_pp":   float(phot["R"]["mu_bg"]),
+                "G_bg_pp":   float(phot["G"]["mu_bg"]),
+                "B_bg_pp":   float(phot["B"]["mu_bg"]),
+                "R_meas":    float(Rm),
+                "G_meas":    float(Gm),
+                "B_meas":    float(Bm),
+                "S_star_R":  float(S_sr),
+                "S_star_G":  float(S_sg),
+                "S_star_B":  float(S_sb),
+                "exp_RG":    float(exp_RG),
+                "exp_BG":    float(exp_BG),
+                "meas_RG":   float(meas_RG),
+                "meas_BG":   float(meas_BG),
+                "used_gaia": sid is not None and int(sid) in gaia_integrals,
             })
 
         self._last_matched = enriched
+
         diag_meas_RG = np.asarray(diag_meas_RG, dtype=np.float64)
         diag_exp_RG  = np.asarray(diag_exp_RG,  dtype=np.float64)
         diag_meas_BG = np.asarray(diag_meas_BG, dtype=np.float64)
         diag_exp_BG  = np.asarray(diag_exp_BG,  dtype=np.float64)
 
         if diag_meas_RG.size == 0 or diag_meas_BG.size == 0:
-            QMessageBox.information(self, "No Valid Stars", "No stars with valid measured vs expected ratios.")
+            QMessageBox.information(self, "No Valid Stars",
+                "No stars with valid measured vs expected ratios.")
             return
 
-        n_stars = int(diag_meas_RG.size)
+        n_stars    = int(diag_meas_RG.size)
+        n_used_xp  = sum(1 for e in enriched if e.get("used_gaia"))
+        n_used_pkl = n_stars - n_used_xp
+
+        # ── Step D: Fit color correction model ────────────────────────────
+        _sfcc_status(self,
+            f"Fitting color correction model — {n_stars} stars "
+            f"({n_used_xp} Gaia XP, {n_used_pkl} Pickles)…")
+        QApplication.processEvents()
 
         def rms_frac(pred, exp):
             return float(np.sqrt(np.mean(((pred / exp) - 1.0) ** 2)))
 
-        slope_only = lambda x, m: m * x
+        slope_only = lambda x, m:    m * x
         affine     = lambda x, m, b: m * x + b
         quad       = lambda x, a, b, c: a * x**2 + b * x + c
 
-        denR = float(np.sum(diag_meas_RG**2))
-        denB = float(np.sum(diag_meas_BG**2))
-        mR_s = (float(np.sum(diag_meas_RG * diag_exp_RG)) / denR) if denR > 0 else 1.0
-        mB_s = (float(np.sum(diag_meas_BG * diag_exp_BG)) / denB) if denB > 0 else 1.0
-        rms_s = rms_frac(slope_only(diag_meas_RG, mR_s), diag_exp_RG) + rms_frac(slope_only(diag_meas_BG, mB_s), diag_exp_BG)
+        denR  = float(np.sum(diag_meas_RG**2))
+        denB  = float(np.sum(diag_meas_BG**2))
+        mR_s  = float(np.sum(diag_meas_RG * diag_exp_RG)) / denR if denR > 0 else 1.0
+        mB_s  = float(np.sum(diag_meas_BG * diag_exp_BG)) / denB if denB > 0 else 1.0
+        rms_s = (rms_frac(slope_only(diag_meas_RG, mR_s), diag_exp_RG) +
+                 rms_frac(slope_only(diag_meas_BG, mB_s), diag_exp_BG))
 
         mR_a, bR_a = np.linalg.lstsq(
-            np.vstack([diag_meas_RG, np.ones_like(diag_meas_RG)]).T, diag_exp_RG, rcond=None
-        )[0]
+            np.vstack([diag_meas_RG, np.ones_like(diag_meas_RG)]).T,
+            diag_exp_RG, rcond=None)[0]
         mB_a, bB_a = np.linalg.lstsq(
-            np.vstack([diag_meas_BG, np.ones_like(diag_meas_BG)]).T, diag_exp_BG, rcond=None
-        )[0]
-        rms_a = rms_frac(affine(diag_meas_RG, mR_a, bR_a), diag_exp_RG) + rms_frac(affine(diag_meas_BG, mB_a, bB_a), diag_exp_BG)
+            np.vstack([diag_meas_BG, np.ones_like(diag_meas_BG)]).T,
+            diag_exp_BG, rcond=None)[0]
+        rms_a = (rms_frac(affine(diag_meas_RG, mR_a, bR_a), diag_exp_RG) +
+                 rms_frac(affine(diag_meas_BG, mB_a, bB_a), diag_exp_BG))
 
-        quad_ok = (diag_meas_RG.size >= 6 and diag_meas_BG.size >= 6)
-
+        quad_ok = diag_meas_RG.size >= 6 and diag_meas_BG.size >= 6
         if quad_ok:
             try:
                 aR_q, bR_q, cR_q = np.polyfit(diag_meas_RG, diag_exp_RG, 2)
                 aB_q, bB_q, cB_q = np.polyfit(diag_meas_BG, diag_exp_BG, 2)
-                rms_q = rms_frac(quad(diag_meas_RG, aR_q, bR_q, cR_q), diag_exp_RG) + \
-                        rms_frac(quad(diag_meas_BG, aB_q, bB_q, cB_q), diag_exp_BG)
+                rms_q = (rms_frac(quad(diag_meas_RG, aR_q, bR_q, cR_q), diag_exp_RG) +
+                         rms_frac(quad(diag_meas_BG, aB_q, bB_q, cB_q), diag_exp_BG))
             except Exception:
                 aR_q, bR_q, cR_q = 0.0, 1.0, 0.0
                 aB_q, bB_q, cB_q = 0.0, 1.0, 0.0
@@ -3074,15 +3125,20 @@ class SFCCDialog(QDialog):
 
         idx = int(np.argmin([rms_s, rms_a, rms_q]))
         if idx == 0:
-            coeff_R, coeff_B, model_choice = (0.0, float(mR_s), 0.0), (0.0, float(mB_s), 0.0), "slope-only"
+            coeff_R, coeff_B, model_choice = (
+                (0.0, float(mR_s), 0.0), (0.0, float(mB_s), 0.0), "slope-only")
         elif idx == 1:
-            coeff_R, coeff_B, model_choice = (0.0, float(mR_a), float(bR_a)), (0.0, float(mB_a), float(bB_a)), "affine"
+            coeff_R, coeff_B, model_choice = (
+                (0.0, float(mR_a), float(bR_a)),
+                (0.0, float(mB_a), float(bB_a)), "affine")
         else:
-            coeff_R, coeff_B, model_choice = (float(aR_q), float(bR_q), float(cR_q)), (float(aB_q), float(bB_q), float(cB_q)), "quadratic"
+            coeff_R, coeff_B, model_choice = (
+                (float(aR_q), float(bR_q), float(cR_q)),
+                (float(aB_q), float(bB_q), float(cB_q)), "quadratic")
 
         poly = lambda c, x: c[0] * x**2 + c[1] * x + c[2]
 
-        # ---- Diagnostics plot (unchanged) ----
+        # ── Step E: Diagnostics plot ──────────────────────────────────────
         self.figure.clf()
         res0_RG = (diag_meas_RG / diag_exp_RG) - 1.0
         res0_BG = (diag_meas_BG / diag_exp_BG) - 1.0
@@ -3123,97 +3179,76 @@ class SFCCDialog(QDialog):
         self.figure.tight_layout(w_pad=2.0)
         self.canvas.draw()
 
-        # ---- Apply SFCC correction to ORIGINAL floats (not the SEP base) ----
-        self.count_label.setText("Applying SFCC color scales to image…")
+        # ── Step F: Apply correction ──────────────────────────────────────
+        _sfcc_status(self, "Applying SFCC color scales to image…")
         QApplication.processEvents()
 
-        eps = 1e-8
-        #calibrated = base.copy()
-        calibrated = img_float.copy() 
-
+        calibrated = img_float.copy()
         R = calibrated[..., 0]
         G = calibrated[..., 1]
         B = calibrated[..., 2]
+        eps = 1e-8
 
         RG = R / np.maximum(G, eps)
         BG = B / np.maximum(G, eps)
 
         aR, bR, cR = coeff_R
         aB, bB, cB = coeff_B
+        mR = np.clip(aR * RG**2 + bR * RG + cR, 0.25, 4.0)
+        mB = np.clip(aB * BG**2 + bB * BG + cB, 0.25, 4.0)
 
-        mR = aR * RG**2 + bR * RG + cR
-        mB = aB * BG**2 + bB * BG + cB
-
-        mR = np.clip(mR, 0.25, 4.0)
-        mB = np.clip(mB, 0.25, 4.0)
-
-        pR = float(np.median(R))
-        pB = float(np.median(B))
-
-        calibrated[..., 0] = _pivot_scale_channel(R, mR, pR)
-        calibrated[..., 2] = _pivot_scale_channel(B, mB, pB)
-
+        calibrated[..., 0] = _pivot_scale_channel(R, mR, float(np.median(R)))
+        calibrated[..., 2] = _pivot_scale_channel(B, mB, float(np.median(B)))
         calibrated = np.clip(calibrated, 0.0, 1.0)
 
-        # --- OPTIONAL: apply BN/pedestal to the FINAL calibrated image, not just SEP base ---
         if self.neutralize_chk.isChecked():
             try:
-                print("[SPCC] Applying background neutralization to final calibrated image...")
                 _debug_probe_channels(calibrated, "final_before_BN")
-
-                # If you want pedestal removal as part of BN, set remove_pedestal=True here
-                # (and/or make this a checkbox)
                 calibrated = self._neutralize_background(calibrated, remove_pedestal=True)
-
                 _debug_probe_channels(calibrated, "final_after_BN")
             except Exception as e:
                 print(f"[SPCC] Final BN failed: {e}")
 
-
-        # Convert back to original dtype
-        if img.dtype == np.uint8:
-            out_img = (np.clip(calibrated, 0.0, 1.0) * 255.0).astype(np.uint8)
-        else:
-            out_img = np.clip(calibrated, 0.0, 1.0).astype(np.float32)
+        out_img = ((np.clip(calibrated, 0.0, 1.0) * 255.0).astype(np.uint8)
+                   if img.dtype == np.uint8
+                   else np.clip(calibrated, 0.0, 1.0).astype(np.float32))
 
         new_meta = dict(doc.metadata or {})
         new_meta.update({
-            "SFCC_applied": True,
-            "SFCC_timestamp": datetime.now().isoformat(),
-            "SFCC_model": model_choice,
-            "SFCC_coeff_R": [float(v) for v in coeff_R],
-            "SFCC_coeff_B": [float(v) for v in coeff_B],
-            "SFCC_num_stars": int(n_stars),
+            "SFCC_applied":            True,
+            "SFCC_timestamp":          datetime.now().isoformat(),
+            "SFCC_model":              model_choice,
+            "SFCC_coeff_R":            [float(v) for v in coeff_R],
+            "SFCC_coeff_B":            [float(v) for v in coeff_B],
+            "SFCC_num_stars":          int(n_stars),
+            "SFCC_num_gaia_xp":        int(n_used_xp),
+            "SFCC_num_pickles":        int(n_used_pkl),
             "SFCC_num_enriched_stars": int(len(enriched)),
         })
 
         self.doc_manager.update_active_document(
-            out_img,
-            metadata=new_meta,
-            step_name="SFCC Calibrated",
-            doc=doc,
-        )
+            out_img, metadata=new_meta,
+            step_name="SFCC Calibrated", doc=doc)
 
-        self.count_label.setText(f"Applied SFCC color calibration using {n_stars} stars")
+        _sfcc_status(self,
+            f"SFCC complete — {n_stars} stars  ·  "
+            f"{n_used_xp} Gaia XP  ·  {n_used_pkl} Pickles  ·  model: {model_choice}")
         QApplication.processEvents()
 
         def pretty(coeff):
-            # coefficient sum gives you f(1) for quadratic form a*x^2+b*x+c at x=1
             return float(coeff[0] + coeff[1] + coeff[2])
 
-        QMessageBox.information(
-            self,
-            "SFCC Complete",
+        QMessageBox.information(self, "SFCC Complete",
             f"Applied SFCC using {n_stars} stars\n"
-            f"Model: {model_choice}\n"
-            f"R ratio @ x=1: {pretty(coeff_R):.4f}\n"
-            f"B ratio @ x=1: {pretty(coeff_B):.4f}\n"
-            f"Background neutralisation: {'ON' if self.neutralize_chk.isChecked() else 'OFF'}"
-        )
+            f"  Gaia XP spectra:   {n_used_xp}\n"
+            f"  Pickles templates: {n_used_pkl}\n"
+            f"  Model: {model_choice}\n"
+            f"  R ratio @ x=1: {pretty(coeff_R):.4f}\n"
+            f"  B ratio @ x=1: {pretty(coeff_B):.4f}\n"
+            f"  Background neutralisation: "
+            f"{'ON' if self.neutralize_chk.isChecked() else 'OFF'}")
 
-        self.current_image = out_img  # keep for gradient step
-
-
+        self.current_image = out_img
     # ── Chromatic gradient (optional) ──────────────────────────────────
     def run_gradient_extraction(self):
         print("[SPCC-GRAD] start")

@@ -45,6 +45,7 @@
 # fetch_stars infrastructure, Pickles SED loading, SEP photometry helpers,
 # Gaia XP fallback, and the WCS / SIMBAD plumbing all come straight from
 # sfcc.py via explicit imports below.  Nothing is duplicated.
+# TODO DR4: switch NBExtract to normalized XP-only integrals
 
 from __future__ import annotations
 
