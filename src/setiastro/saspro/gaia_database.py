@@ -297,6 +297,81 @@ class GaiaBulkLibrary:
                 continue
         return False
 
+    def find_nearest_batch(
+        self,
+        coords: list[tuple[float, float]],
+        radius_arcsec: float = 10.0,
+    ) -> dict[int, tuple[int, float]]:
+        """
+        Match a list of (ra, dec) coords against all installed files.
+        Returns dict: coord_index -> (source_id, sep_arcsec)
+
+        Uses one bounding box query per file covering all coords at once,
+        then cross-matches in Python — far faster than one query per star.
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        if not coords or not self._connections:
+            return {}
+
+        radius_deg = radius_arcsec / 3600.0
+
+        # Compute overall bounding box covering all coords + radius
+        ras  = [c[0] for c in coords]
+        decs = [c[1] for c in coords]
+        dec_min = min(decs) - radius_deg
+        dec_max = max(decs) + radius_deg
+        mid_dec = (min(decs) + max(decs)) / 2.0
+        cosd = max(1e-6, abs(math.cos(math.radians(mid_dec))))
+        ra_min  = min(ras) - radius_deg / cosd
+        ra_max  = max(ras) + radius_deg / cosd
+
+        def _query_file(conn):
+            """Fetch all sources in the bounding box from one file."""
+            try:
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT source_id, ra, dec FROM sources
+                    WHERE dec BETWEEN ? AND ?
+                      AND ra  BETWEEN ? AND ?
+                """, (dec_min, dec_max, ra_min, ra_max))
+                return cur.fetchall()
+            except Exception:
+                return []
+
+        # Query all files in parallel
+        all_sources: list[tuple[int, float, float]] = []
+        conns = list(self._connections.values())
+        with ThreadPoolExecutor(max_workers=min(8, len(conns))) as ex:
+            futures = [ex.submit(_query_file, conn) for conn in conns]
+            for fut in as_completed(futures):
+                try:
+                    all_sources.extend(fut.result())
+                except Exception:
+                    pass
+
+        if not all_sources:
+            return {}
+
+        # Build numpy arrays for fast vectorised cross-match
+        src_ids  = np.array([s[0] for s in all_sources], dtype=np.int64)
+        src_ras  = np.array([s[1] for s in all_sources], dtype=np.float64)
+        src_decs = np.array([s[2] for s in all_sources], dtype=np.float64)
+
+        results: dict[int, tuple[int, float]] = {}
+
+        for i, (ra, dec) in enumerate(coords):
+            cosd_i = max(1e-6, abs(math.cos(math.radians(dec))))
+            dra    = (src_ras  - ra)  * cosd_i
+            ddec   = (src_decs - dec)
+            seps   = np.hypot(dra, ddec) * 3600.0   # arcsec
+
+            j = int(np.argmin(seps))
+            if seps[j] <= radius_arcsec:
+                results[i] = (int(src_ids[j]), float(seps[j]))
+
+        return results
+
     def find_nearest(self, ra: float, dec: float,
                      radius_arcsec: float = 3.0) -> Optional[Tuple[int, float]]:
         """Return (source_id, sep_arcsec) of the closest source, or None."""
@@ -860,30 +935,41 @@ class _GroupRowWidget(QFrame):
             self._lbl_file_count.setText(f"{mb_part}  ·  {done}/{total} files")
 
 class _SpectraCountWorker(QThread):
+    progress = _Signal(int)         # running total so far
     finished = _Signal(dict, int)   # {group_key: count}, total
 
-    def __init__(self, library: GaiaBulkLibrary, parent=None):
+    def __init__(self, library_dir: Path, parent=None):
         super().__init__(parent)
-        self._library = library
+        self._dir    = library_dir
+        self._cancel = False
+
+    def cancel(self):
+        self._cancel = True
 
     def run(self):
-        group_counts = {}
-        total = 0
+        group_counts: dict[str, int] = {g.key: 0 for g in GROUP_DEFS}
+        running_total = 0
+
         for g in GROUP_DEFS:
-            count = 0
             for fname in g.filenames:
-                conn = self._library._connections.get(fname)
-                if conn is None:
+                if self._cancel:
+                    self.finished.emit(group_counts, running_total)
+                    return
+                path = self._dir / fname
+                if not path.exists():
                     continue
                 try:
+                    conn = sqlite3.connect(str(path), check_same_thread=True)
+                    conn.execute("PRAGMA query_only = ON;")
                     n = conn.execute("SELECT COUNT(*) FROM spectra").fetchone()[0]
-                    count += n
-                    total += n
+                    conn.close()
+                    group_counts[g.key] += n
+                    running_total += n
+                    self.progress.emit(running_total)
                 except Exception:
                     pass
-            group_counts[g.key] = count
-        self.finished.emit(group_counts, total)
 
+        self.finished.emit(group_counts, running_total)
 # ══════════════════════════════════════════════════════════════════════════════
 #  Main dialog
 # ══════════════════════════════════════════════════════════════════════════════
@@ -947,6 +1033,14 @@ class GaiaDatabaseDialog(QDialog):
         self._total_lbl.setStyleSheet(
             "font-size: 11px; color: #556688; border: none;")
         hdr_layout.addWidget(self._total_lbl)
+        btn_count = QPushButton("Count")
+        btn_count.setFixedWidth(60)
+        btn_count.setStyleSheet(
+            "QPushButton { background: #1a1a2e; color: #556688; border: 1px solid #2a2a3e; "
+            "border-radius: 3px; padding: 3px 8px; font-size: 10px; }"
+            "QPushButton:hover { background: #222240; color: #8899ee; }")
+        btn_count.clicked.connect(self._run_spectra_count)
+        hdr_layout.addWidget(btn_count)
         root.addWidget(hdr)
 
         # ── Tabs ──────────────────────────────────────────────────────────
@@ -1168,13 +1262,45 @@ class GaiaDatabaseDialog(QDialog):
         self._start_spectra_count()
 
     def _start_spectra_count(self):
-        worker = _SpectraCountWorker(self._library, parent=None)
+        # Cancel any existing count worker
+        existing = getattr(self, "_count_worker", None)
+        if existing is not None:
+            try:
+                existing.cancel()
+                existing.wait(500)
+            except Exception:
+                pass
+        self._count_worker = None
+        self._total_lbl.setText(
+            f"{self._n_installed_groups()}/{len(GROUP_DEFS)} groups installed  ·  "
+            f"click Count to tally spectra")
+        
+    def _n_installed_groups(self) -> int:
+        return sum(1 for g in GROUP_DEFS
+                   if all((self._library._dir / f).exists() for f in g.filenames))
+
+    def _run_spectra_count(self):
+        """Called by the Count button — starts background count with live ticking."""
+        existing = getattr(self, "_count_worker", None)
+        if existing is not None and existing.isRunning():
+            return  # already counting
+
+        self._total_lbl.setText(
+            f"{self._n_installed_groups()}/{len(GROUP_DEFS)} groups installed  ·  "
+            f"counting… 0 spectra")
+
+        worker = _SpectraCountWorker(self._library._dir, parent=None)
+        worker.progress.connect(self._on_count_progress)
         worker.finished.connect(self._on_spectra_counted)
         worker.start()
         self._count_worker = worker
 
+    def _on_count_progress(self, running_total: int):
+        self._total_lbl.setText(
+            f"{self._n_installed_groups()}/{len(GROUP_DEFS)} groups installed  ·  "
+            f"counting… {running_total:,} spectra")
+
     def _on_spectra_counted(self, group_counts: dict, total: int):
-        # Update each row with actual spectra count
         for key, row in self._rows.items():
             g = next((g for g in GROUP_DEFS if g.key == key), None)
             if g is None:
@@ -1196,10 +1322,10 @@ class GaiaDatabaseDialog(QDialog):
             )
             row.update_status(status)
 
-        n_groups = sum(1 for g in GROUP_DEFS
-                       if all((self._library._dir / f).exists() for f in g.filenames))
         self._total_lbl.setText(
-            f"{n_groups}/{len(GROUP_DEFS)} groups installed  ·  {total:,} spectra")
+            f"{self._n_installed_groups()}/{len(GROUP_DEFS)} groups installed  ·  "
+            f"{total:,} spectra")
+        self._count_worker = None
 
     def _on_install(self, key: str):
         group_def = next(g for g in GROUP_DEFS if g.key == key)
@@ -1390,13 +1516,87 @@ class GaiaDatabaseDialog(QDialog):
             self._viewer_status.setText(f"Resolving '{name}' via SIMBAD…")
             QApplication.processEvents()
             try:
+                from astroquery.simbad import Simbad
                 from astropy.coordinates import SkyCoord
-                coord = SkyCoord.from_name(name)
-                ra, dec = coord.ra.deg, coord.dec.deg
-                label   = name
-                self._viewer_status.setText(
-                    f"Resolved {name} → RA={ra:.5f}°  Dec={dec:.5f}°  — searching…")
-                QApplication.processEvents()
+
+                # ── Primary: ask SIMBAD for the Gaia DR3 source_id directly ──
+                try:
+                    s = Simbad()
+                    s.add_votable_fields("ids", "ra", "dec")
+                    result = s.query_object(name)
+                except Exception:
+                    result = None
+
+                if result is not None and len(result) > 0:
+                    # Parse Gaia DR3 source_id from IDS field
+                    # Column name varies by astroquery version
+                    ids_col = None
+                    for col in result.colnames:
+                        if col.upper() == "IDS":
+                            ids_col = col
+                            break
+
+                    if ids_col is not None:
+                        ids_str = str(result[ids_col][0])
+                        for part in ids_str.split("|"):
+                            part = part.strip()
+                            if part.startswith("Gaia DR3 "):
+                                try:
+                                    sid = int(part.replace("Gaia DR3 ", "").strip())
+                                    label = name
+                                    self._viewer_status.setText(
+                                        f"Resolved '{name}' → Gaia DR3 {sid} — searching library…")
+                                    QApplication.processEvents()
+
+                                    # Look up directly by source_id — no positional search needed
+                                    spec = self._library.get_spectrum(sid)
+                                    if spec is not None:
+                                        info = self._library.get_source_info(sid)
+                                        if info:
+                                            label = (f"{name}  →  source {sid}  "
+                                                    f"(G={info['gmag']:.2f})")
+                                            self._source_info.setPlainText(
+                                                f"source_id: {sid}\n"
+                                                f"RA: {info['ra']:.6f}°    Dec: {info['dec']:.6f}°    "
+                                                f"G mag: {info['gmag']:.3f}")
+                                        else:
+                                            self._source_info.setPlainText(f"source_id: {sid}")
+                                        self._spectrum_viewer.show_spectrum(spec, title=label)
+                                        self._viewer_status.setText("Spectrum loaded — local library")
+                                        return
+                                    else:
+                                        # source_id resolved but not in installed groups —
+                                        # fall through to positional with known coords
+                                        self._viewer_status.setText(
+                                            f"Gaia DR3 {sid} found in SIMBAD but not in installed "
+                                            f"library groups — trying positional fallback…")
+                                        QApplication.processEvents()
+                                except ValueError:
+                                    pass
+                                break
+
+                    # ── Fallback: positional search using SIMBAD coordinates ──
+                    try:
+                        ra_val  = float(result["RA"][0])
+                        dec_val = float(result["DEC"][0])
+                    except Exception:
+                        coord = SkyCoord.from_name(name)
+                        ra_val, dec_val = coord.ra.deg, coord.dec.deg
+
+                    ra, dec = ra_val, dec_val
+                    label = name
+                    self._viewer_status.setText(
+                        f"Resolved {name} → RA={ra:.5f}°  Dec={dec:.5f}°  — searching…")
+                    QApplication.processEvents()
+                else:
+                    # SIMBAD returned nothing — try SkyCoord.from_name
+                    coord = SkyCoord.from_name(name)
+                    ra, dec = coord.ra.deg, coord.dec.deg
+                    label = name
+                    self._viewer_status.setText(
+                        f"Resolved {name} → RA={ra:.5f}°  Dec={dec:.5f}°  — searching…")
+                    QApplication.processEvents()
+
             except Exception as e:
                 self._viewer_status.setText(
                     f"Could not resolve '{name}' via SIMBAD: {e}")
