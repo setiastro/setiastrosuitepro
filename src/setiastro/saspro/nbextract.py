@@ -46,6 +46,7 @@
 # Gaia XP fallback, and the WCS / SIMBAD plumbing all come straight from
 # sfcc.py via explicit imports below.  Nothing is duplicated.
 
+
 from __future__ import annotations
 
 import os
@@ -66,7 +67,7 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
     QLabel, QComboBox, QDoubleSpinBox, QPushButton,
     QCheckBox, QMessageBox, QApplication, QGroupBox,
-    QSizePolicy, QWidget, QLineEdit,
+    QSizePolicy, QWidget, QLineEdit, QSpinBox,
 )
 from PyQt6.QtGui import QIcon
 
@@ -125,7 +126,7 @@ _SK_BW1     = "NBExtract/BW_Line1"
 _SK_BW2     = "NBExtract/BW_Line2"
 _SK_CENTER1 = "NBExtract/Center_Line1"
 _SK_CENTER2 = "NBExtract/Center_Line2"
-
+_SK_MAX_CAL = "NBExtract/MaxCalStars"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Core maths
@@ -667,6 +668,20 @@ class NBExtractDialog(SFCCDialog):
         )
         row_act.addWidget(self.nb_stretch_chk)
         row_act.addStretch()
+        # Max calibration stars
+        row_act.addSpacing(16)
+        row_act.addWidget(QLabel("Max cal stars:"))
+        self.nb_max_cal_spin = QSpinBox()
+        self.nb_max_cal_spin.setRange(6, 2000)
+        self.nb_max_cal_spin.setValue(300)
+        self.nb_max_cal_spin.setSingleStep(50)
+        self.nb_max_cal_spin.setToolTip(
+            "Maximum number of Gaia XP stars used to fit the mixing matrix.\n"
+            "The brightest N re-detected stars are selected.\n"
+            "300 is more than sufficient — increase only for very sparse fields."
+        )
+        row_act.addWidget(self.nb_max_cal_spin)
+        self.nb_max_cal_spin.valueChanged.connect(self._save_nb_settings)        
         grp_lay.addLayout(row_act)
 
         # Matrix readout
@@ -762,6 +777,8 @@ class NBExtractDialog(SFCCDialog):
         self.nb_line2_name.textChanged.connect(
             lambda _: self._on_preset_changed() if self.nb_preset_combo.currentText() == FILTER_PRESET_CUSTOM else None
         )
+
+        self.nb_max_cal_spin.valueChanged.connect(self._redraw_fetch_histogram)
 
         self._on_preset_changed()
 
@@ -893,60 +910,66 @@ class NBExtractDialog(SFCCDialog):
         )
 
     # ── fetch_stars override ──────────────────────────────────────────────────
-
     def fetch_stars(self):
-        """
-        Override to redraw histogram after parent runs, showing only
-        calibration-eligible stars (not B-V inferred).
-        """
         super().fetch_stars()
-
         if not getattr(self, "star_list", None):
             return
 
-        templates_real = []
-        for s in self.star_list:
-            tmpl      = s.get("pickles_match")
-            sp_source = s.get("sp_source", "")
-            sp_clean  = s.get("sp_clean", "") or ""
-            if tmpl is None:
-                continue
-            is_bv_inferred = (
-                sp_source == "bv_inferred"
-                or (
-                    sp_source not in ("simbad", "gaia_xp")
-                    and len(sp_clean.strip()) == 1
-                )
-            )
-            if not is_bv_inferred:
-                templates_real.append(tmpl)
+        n_gaia_xp = sum(1 for s in self.star_list if s.get("gaia_source_id") is not None)
+        n_no_xp   = len(self.star_list) - n_gaia_xp
 
-        if not templates_real:
+        self._redraw_fetch_histogram()
+
+        if getattr(self, "count_label", None) is not None:
+            self.count_label.setText(
+                f"Step 1 complete — {len(self.star_list):,} stars detected  ·  "
+                f"{n_gaia_xp:,} Gaia XP spectra available for calibration  ·  "
+                f"{n_no_xp:,} no XP spectrum"
+            )
+
+    def _redraw_fetch_histogram(self):
+        if not getattr(self, "star_list", None):
+            return
+
+        n_gaia_xp = sum(1 for s in self.star_list if s.get("gaia_source_id") is not None)
+        if n_gaia_xp == 0:
+            return
+
+        gmags = [s["gaia_gmag"] for s in self.star_list
+                 if s.get("gaia_source_id") is not None
+                 and s.get("gaia_gmag") is not None]
+        if not gmags:
             return
 
         try:
             _force_mpl_no_tex()
             self.figure.clf()
-            uniq, cnt = np.unique(templates_real, return_counts=True)
+
+            max_cal = int(self.nb_max_cal_spin.value())
+            gmags_sorted = sorted(gmags)
+
+            if len(gmags_sorted) >= max_cal:
+                limiting_mag = gmags_sorted[max_cal - 1]
+                mag_line = f"brightest {max_cal} stars reach G = {limiting_mag:.1f}"
+            else:
+                limiting_mag = gmags_sorted[-1]
+                mag_line = f"all {len(gmags_sorted)} stars used — faintest G = {limiting_mag:.1f}"
+
             ax = self.figure.add_subplot(111)
-            ax.bar(uniq, cnt, edgecolor="black")
-            ax.set_xlabel("Spectral Type")
+            ax.hist(gmags, bins=30, color="#44cc88", edgecolor="none", alpha=0.85)
+            ax.axvline(limiting_mag, color="#ffaa44", lw=1.4,
+                       linestyle="--", alpha=0.85, label=f"G = {limiting_mag:.1f} cut")
+            ax.legend(fontsize=8)
+            ax.set_xlabel("Gaia G magnitude")
             ax.set_ylabel("Count")
             ax.set_title(
-                f"Spectral Distribution (calibration-eligible stars only, n={len(templates_real)})"
+                f"Gaia XP stars available for NBExtract calibration\n"
+                f"n={n_gaia_xp:,} total  ·  {mag_line}"
             )
-            ax.tick_params(axis="x", rotation=90)
             ax.grid(axis="y", linestyle="--", alpha=0.3)
+            self.figure.tight_layout()
             self.canvas.setVisible(True)
             self.canvas.draw()
-
-            types_str = ", ".join([str(u) for u in uniq])
-            if getattr(self, "count_label", None) is not None:
-                self.count_label.setText(
-                    f"Found {len(self.star_list)} stars; "
-                    f"{len(templates_real)} eligible for NBExtract calibration; "
-                    f"templates: {types_str}"
-                )
         except Exception as e:
             print(f"[NBExtract] Histogram redraw failed: {e}")
 
@@ -970,6 +993,12 @@ class NBExtractDialog(SFCCDialog):
                     spin.setValue(float(val))
                 except Exception:
                     pass
+        max_cal = s.value(_SK_MAX_CAL, 300)
+        if hasattr(self, "nb_max_cal_spin"):
+            try:
+                self.nb_max_cal_spin.setValue(int(max_cal))
+            except Exception:
+                pass
 
     def _save_nb_settings(self):
         s = QSettings()
@@ -978,7 +1007,9 @@ class NBExtractDialog(SFCCDialog):
         s.setValue(_SK_BW2,     self.nb_bw2_spin.value())
         s.setValue(_SK_CENTER1, self.nb_center1_spin.value())
         s.setValue(_SK_CENTER2, self.nb_center2_spin.value())
-
+        s.setValue(_SK_MAX_CAL, self.nb_max_cal_spin.value()
+                   if hasattr(self, "nb_max_cal_spin") else 300)
+        
     # ── SED loading ───────────────────────────────────────────────────────────
 
     def _load_sed_nm(self, extname: str) -> Tuple[np.ndarray, np.ndarray]:
@@ -997,7 +1028,6 @@ class NBExtractDialog(SFCCDialog):
         raise KeyError(f"SED extension '{extname}' not found in FITS data files.")
 
     # ── Step 2: calibrate mixing matrix ──────────────────────────────────────
-
     def _calibrate_mixing_matrix(self):
         if not getattr(self, "star_list", None):
             QMessageBox.warning(
@@ -1023,17 +1053,18 @@ class NBExtractDialog(SFCCDialog):
         bw2_nm      = float(self.nb_bw2_spin.value())
         preset_name = self.nb_preset_combo.currentText()
         l1_key, l2_key = FILTER_PRESETS.get(preset_name, ("Ha", "OIII"))
-        # For Custom preset, use whatever names the user typed
         if preset_name == FILTER_PRESET_CUSTOM:
             l1_key = self.nb_line1_name.text().strip() or "Line1"
             l2_key = self.nb_line2_name.text().strip() or "Line2"
 
-        _sfcc_status(self, "NBExtract: preparing image for star photometry…")
+        # ── Prepare image ─────────────────────────────────────────────────
+        _sfcc_status(self, "NBExtract XP: preparing image for photometry…")
         QApplication.processEvents()
 
         img_float = img.astype(np.float32) / (255.0 if img.dtype == np.uint8 else 1.0)
         base = self._make_working_base_for_sep(img_float)
 
+        # ── SEP re-detection ──────────────────────────────────────────────
         import sep
         gray     = np.mean(base, axis=2).astype(np.float32)
         bkg      = sep.Background(gray)
@@ -1041,7 +1072,7 @@ class NBExtractDialog(SFCCDialog):
         err      = float(bkg.globalrms)
 
         sep_sigma = float(self.sep_thr_spin.value()) if hasattr(self, "sep_thr_spin") else 5.0
-        _sfcc_status(self, f"NBExtract: detecting stars (SEP σ={sep_sigma:.1f})…")
+        _sfcc_status(self, f"NBExtract XP: re-detecting stars (SEP σ={sep_sigma:.1f})…")
         QApplication.processEvents()
 
         sources = sep.extract(data_sub, sep_sigma, err=err)
@@ -1061,39 +1092,86 @@ class NBExtractDialog(SFCCDialog):
                                  "All SEP detections rejected by radius filter.")
             return
 
-        star_records = []
-        n_no_template  = 0
-        n_bv_skipped   = 0
+        _sfcc_status(self,
+            f"NBExtract XP: {sources.size:,} sources detected — "
+            f"matching to Gaia XP catalog…")
+        QApplication.processEvents()
 
+        # ── Load Gaia bulk library ─────────────────────────────────────────
+        lib = None
+        try:
+            from setiastro.saspro.gaia_database import get_library
+            lib = get_library()
+            if not lib.installed_bands():
+                lib = None
+        except Exception:
+            lib = None
+
+        if lib is None:
+            QMessageBox.critical(self, "No Gaia Library",
+                "Gaia XP spectral library is required for NBExtract calibration.\n"
+                "Please install at least the Ultra-Bright or Bright group.")
+            return
+
+        # ── Match star_list XP stars to SEP detections ────────────────────
+        # Only keep stars with a gaia_source_id that are re-detected by SEP.
+        # Sort by SEP flux descending so we take the 300 brightest/cleanest.
+        candidates = []
         for star in self.star_list:
-            tmpl = star.get("pickles_match")
-            if tmpl is None:
-                n_no_template += 1
-                continue
-
-            sp_source = star.get("sp_source", "")
-            sp_clean  = star.get("sp_clean", "") or ""
-
-            is_bv_inferred = (
-                sp_source == "bv_inferred"
-                or (
-                    sp_source not in ("simbad", "gaia_xp")
-                    and len(sp_clean.strip()) == 1
-                )
-            )
-            if is_bv_inferred:
-                n_bv_skipped += 1
+            sid = star.get("gaia_source_id")
+            if sid is None:
                 continue
 
             dx = sources["x"] - star["x"]
             dy = sources["y"] - star["y"]
             j  = int(np.argmin(dx * dx + dy * dy))
             if (dx[j] ** 2 + dy[j] ** 2) >= 9.0:
-                continue
+                continue   # not re-detected at this SEP threshold — skip
 
-            x    = float(sources["x"][j])
-            y    = float(sources["y"][j])
-            a    = float(sources["a"][j])
+            candidates.append({
+                "star":      star,
+                "src_flux":  float(sources["flux"][j]),
+                "src_index": j,
+                "a":         float(sources["a"][j]),
+                "x":         float(sources["x"][j]),
+                "y":         float(sources["y"][j]),
+            })
+
+        n_matched = len(candidates)
+        _sfcc_status(self,
+            f"NBExtract XP: {n_matched:,} Gaia XP stars re-detected by SEP — "
+            f"selecting 300 brightest for calibration…")
+        QApplication.processEvents()
+
+        if n_matched == 0:
+            QMessageBox.warning(self, "No XP Stars Detected",
+                "No Gaia XP stars were re-detected by SEP at the current threshold.\n\n"
+                "Try lowering the Star detect σ, or install more Gaia XP library groups.")
+            return
+
+        # Sort brightest first, cap at 300
+        candidates.sort(key=lambda c: c["src_flux"], reverse=True)
+        MAX_CAL_STARS = int(self.nb_max_cal_spin.value()) \
+                        if hasattr(self, "nb_max_cal_spin") else 300
+        candidates = candidates[:MAX_CAL_STARS]
+
+        _sfcc_status(self,
+            f"NBExtract XP: integrating spectra for {len(candidates)} brightest stars "
+            f"over {l1_key} ({center1_nm:.2f} nm ± {bw1_nm/2:.1f}) "
+            f"and {l2_key} ({center2_nm:.2f} nm ± {bw2_nm/2:.1f})…")
+        QApplication.processEvents()
+
+        # ── Aperture photometry + spectrum integration ─────────────────────
+        star_records  = []
+        n_no_spectrum = 0
+        n_xp_used     = 0
+
+        for cand in candidates:
+            star = cand["star"]
+            sid  = star.get("gaia_source_id")
+            x    = cand["x"]
+            y    = cand["y"]
+            a    = cand["a"]
             r    = float(np.clip(2.0 * a, 2.0, 10.0))
 
             phot = measure_star_rgb_raw_aperture(base, x, y, r)
@@ -1109,22 +1187,36 @@ class NBExtractDialog(SFCCDialog):
             if Rm <= 0 or Gm <= 0 or Bm <= 0:
                 continue
 
+            # Load XP spectrum and normalize to unit total flux
             try:
-                wl_nm, fl = self._load_sed_nm(tmpl)
+                spec = lib.get_spectrum(int(sid))
+                if spec is None:
+                    n_no_spectrum += 1
+                    continue
+                wl_nm = np.asarray(spec.wavelengths, dtype=np.float64)
+                fl    = np.asarray(spec.flux,        dtype=np.float64)
+                total = float(np.trapz(fl, wl_nm))
+                if total <= 0:
+                    n_no_spectrum += 1
+                    continue
+                fl = fl / total
             except Exception as e:
-                print(f"[NBExtract] Cannot load SED '{tmpl}': {e}")
+                print(f"[NBExtract XP] spectrum load failed for {sid}: {e}")
+                n_no_spectrum += 1
                 continue
 
             S1 = integrate_sed_over_window(wl_nm, fl, center1_nm, bw1_nm)
             S2 = integrate_sed_over_window(wl_nm, fl, center2_nm, bw2_nm)
 
             if S1 <= 0.0 or S2 <= 0.0:
+                n_no_spectrum += 1
                 continue
 
+            n_xp_used += 1
             star_records.append({
-                "template": tmpl,
-                "x": x,
-                "y": y,
+                "template": f"GaiaXP_{sid}",
+                "x":       x,
+                "y":       y,
                 "R_meas":  Rm,
                 "G_meas":  Gm,
                 "B_meas":  Bm,
@@ -1133,27 +1225,21 @@ class NBExtractDialog(SFCCDialog):
             })
 
         n_used = len(star_records)
-        _sfcc_status(
-            self,
-            f"NBExtract: {n_used} stars usable for calibration "
-            f"({n_no_template} no Pickles template, {n_bv_skipped} B-V-only rejected).",
-        )
+        _sfcc_status(self,
+            f"NBExtract XP: {n_used} calibration stars ready  ·  "
+            f"{n_xp_used} XP spectra integrated  ·  "
+            f"{n_no_spectrum} spectra missing from library")
         QApplication.processEvents()
 
         if n_used < 6:
             reply = QMessageBox.question(
                 self, "Too Few Stars — Use Fallback?",
-                f"Only {n_used} usable calibration star(s) found (need ≥ 6 for NNLS).\n\n"
-                "This is common for sparse fields, galaxy images, or small FOVs\n"
-                "where few stars have catalogued spectral types.\n\n"
-                "Use the stellar flux color mixing fallback instead?\n\n"
-                "This fits a 3×3 color mixing matrix from whatever stars are\n"
-                "available — even a handful can provide a useful correction —\n"
-                f"and extracts the dominant channel for {l1_key} and {l2_key}.\n\n"
-                "Alternatively, try:\n"
-                "  • Lowering the SEP detection threshold\n"
-                "  • Re-plate-solving the image\n"
-                "  • Enabling the Gaia XP fallback",
+                f"Only {n_used} Gaia XP calibration stars found (need ≥ 6 for NNLS).\n\n"
+                f"  {n_matched:,} XP stars re-detected by SEP\n"
+                f"  {n_xp_used} XP spectra successfully integrated\n"
+                f"  {n_no_spectrum} spectra missing from local library\n\n"
+                "Try installing more Gaia XP library groups, or lower the\n"
+                "Star detect σ to detect more stars, or use the fallback.",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.Yes,
             )
@@ -1162,24 +1248,21 @@ class NBExtractDialog(SFCCDialog):
             self._run_wb_fallback(doc, img_float, l1_key, l2_key)
             return
 
+        # ── Fit mixing matrix ─────────────────────────────────────────────
+        _sfcc_status(self,
+            f"NBExtract XP: fitting {l1_key}/{l2_key} mixing matrix "
+            f"from {n_used} Gaia XP stars…")
+        QApplication.processEvents()
+
         A, n_clipped_used = fit_mixing_matrix(star_records)
         if A is None:
             reply = QMessageBox.question(
                 self, "Matrix Fit Failed — Use Fallback?",
-                "Could not fit the full NNLS mixing matrix.\n\n"
+                "Could not fit the NNLS mixing matrix.\n\n"
                 "Common causes:\n"
                 "  • Image is a synthetic palette (e.g. HOO where G=B=OIII exactly)\n"
-                "    — the full solve requires a real dual-band OSC image.\n"
-                "  • Too few spectrally diverse calibration stars survived filtering.\n"
-                "  • All calibration stars are the same spectral type.\n\n"
-                "Use the stellar flux mixing fallback?\n\n"
-                "This fits a 3×3 color mixing matrix directly from the measured\n"
-                "stellar fluxes in your image — the same stars, the same data.\n"
-                "It corrects inter-channel cross-talk using the actual photon\n"
-                "counts through your specific optical train, then extracts\n"
-                f"the dominant channel for {l1_key} and {l2_key}.\n\n"
-                "Less precise than the full NNLS solve but physically grounded\n"
-                "and works on any image including synthetic palettes.",
+                "  • Too few spectrally diverse stars survived sigma clipping.\n\n"
+                "Use the stellar flux mixing fallback instead?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.Yes,
             )
@@ -1193,47 +1276,48 @@ class NBExtractDialog(SFCCDialog):
         self._nb_star_records = star_records
         self._save_nb_settings()
 
-        # ── Auto-Q from condition number ──────────────────────────────────
         k = float(np.linalg.cond(A))
-        self._set_auto_q(A)
 
-        # ── Diagnostics ───────────────────────────────────────────────────
+        _sfcc_status(self,
+            f"NBExtract XP: matrix fitted — condition number {k:.2f}  ·  "
+            f"{n_clipped_used}/{n_used} stars used  ·  auto-deriving Q values…")
+        QApplication.processEvents()
+
+        self._set_auto_q(A)
         self._plot_calibration_diagnostics(star_records, A, l1_key, l2_key)
 
-        # ── Matrix readout ────────────────────────────────────────────────
         warn_text, warn_severity = condition_number_warning(A)
 
         def _pct(row, col):
             total = float(A[row, 0] + A[row, 1])
-            if total <= 0:
-                return 0.0
+            if total <= 0: return 0.0
             return 100.0 * float(A[row, col]) / total
 
+        q1_val = float(self.nb_q1_spin.value())
+        q2_val = float(self.nb_q2_spin.value())
+
         matrix_lines = [
+            f"Calibrated from {n_clipped_used} Gaia XP stars  "
+            f"({n_matched:,} re-detected  ·  {n_used - n_clipped_used} outliers clipped)",
             f"Channel sensitivity  ({l1_key} %  |  {l2_key} %):",
             f"  R :  {_pct(0,0):.1f}%  {l1_key}   {_pct(0,1):.1f}%  {l2_key}",
             f"  G :  {_pct(1,0):.1f}%  {l1_key}   {_pct(1,1):.1f}%  {l2_key}",
             f"  B :  {_pct(2,0):.1f}%  {l1_key}   {_pct(2,1):.1f}%  {l2_key}",
-            f"  Condition number : {k:.2f}",
-            f"  Stars used : {n_clipped_used} of {n_used}  ({n_used - n_clipped_used} outliers clipped)",
+            f"  Condition number : {k:.2f}   Q₁={q1_val:.2f}  Q₂={q2_val:.2f}",
         ]
         if warn_text:
             prefix = "  🛑  " if warn_severity == "severe" else "  ⚠  "
             matrix_lines.append(f"{prefix}{warn_text}")
         self.nb_matrix_label.setText("\n".join(matrix_lines))
 
-        # Severe condition number — prompt to switch to fallback instead of proceeding
         if warn_severity == "severe":
             reply = QMessageBox.question(
                 self, "Poor Channel Separation — Use Fallback?",
                 f"Condition number is {k:.1f} — noise would be amplified "
-                f"~{k**2:.0f}\u00d7 by the NNLS inversion.\n\n"
+                f"~{k**2:.0f}× by the NNLS inversion.\n\n"
                 f"At this level the extracted channels will be dominated by amplified "
-                f"noise rather than real emission signal. This typically happens with "
-                f"triband filters where all three lines compete in every channel.\n\n"
-                f"Switch to the stellar flux color mixing fallback instead?\n"
-                f"It uses the same calibration stars but avoids the inversion entirely,\n"
-                f"giving a physically grounded result without noise amplification.",
+                f"noise rather than real emission signal.\n\n"
+                f"Switch to the stellar flux color mixing fallback instead?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.Yes,
             )
@@ -1241,18 +1325,22 @@ class NBExtractDialog(SFCCDialog):
                 self.nb_extract_btn.setEnabled(False)
                 self._run_wb_fallback(doc, img_float, l1_key, l2_key)
                 return
-            # User chose to proceed anyway
             self.nb_extract_btn.setEnabled(True)
         else:
             self.nb_extract_btn.setEnabled(True)
 
-        q1_val = float(self.nb_q1_spin.value())
-        q2_val = float(self.nb_q2_spin.value())
+        _sfcc_status(self,
+            f"NBExtract XP calibration complete — {n_clipped_used} stars  ·  "
+            f"condition number {k:.2f}  ·  Q₁={q1_val:.2f}  Q₂={q2_val:.2f}  ·  "
+            f"ready for Step 3")
+
         summary = (
-            f"Mixing matrix fitted from {n_clipped_used} stars "
-            f"({n_used - n_clipped_used} clipped as outliers).\n"
+            f"Mixing matrix fitted from {n_clipped_used} Gaia XP stars "
+            f"({n_used - n_clipped_used} clipped as outliers)\n"
+            f"  {n_matched:,} XP stars re-detected by SEP\n"
+            f"  300 brightest selected for calibration\n\n"
             f"Condition number: {k:.2f}\n"
-            f"Auto Q₁ = {q1_val:.2f}  Q₂ = {q2_val:.2f}  (derived from matrix structure)\n\n"
+            f"Auto Q₁ = {q1_val:.2f}  Q₂ = {q2_val:.2f}\n\n"
         )
         summary += warn_text if warn_text else "Matrix looks well-conditioned ✓"
         QMessageBox.information(self, "Calibration Complete", summary)
@@ -1616,15 +1704,11 @@ class NBExtractDialog(SFCCDialog):
     # ── Document / window helpers ─────────────────────────────────────────────
 
     def closeEvent(self, ev):
-        """
-        SFCCDialog._cleanup() (called by super().closeEvent) already disconnects
-        activeDocumentChanged / currentDocumentChanged and releases the star list,
-        WCS, matplotlib canvas, and Gaia downloader.  We just need to clear
-        NBExtract-specific state before handing off.
-        """
         self._A_matrix = None
         self._nb_star_records = []
         self._fallback_mode = False
+        self._cleanup()   # call directly instead of relying on super chain
+        ev.accept()
         super().closeEvent(ev)
 
     def _main_window(self):
