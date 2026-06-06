@@ -1120,7 +1120,7 @@ class SFCCDialog(QDialog):
         layout = QVBoxLayout(self)
 
         row1 = QHBoxLayout(); layout.addLayout(row1)
-        self.fetch_stars_btn = QPushButton(self.tr("Step 1: Fetch Stars from Current View"))
+        self.fetch_stars_btn = QPushButton(self.tr("Step 1: Fetch Stars & Spectra from Current View"))
         f = self.fetch_stars_btn.font(); f.setBold(True); self.fetch_stars_btn.setFont(f)
         self.fetch_stars_btn.clicked.connect(self.fetch_stars)
         row1.addWidget(self.fetch_stars_btn)
@@ -2675,12 +2675,10 @@ class SFCCDialog(QDialog):
         n_pickles = sum(1 for s in self.star_list if s.get("pickles_match") is not None)
         n_bv      = sum(1 for s in self.star_list if s.get("sp_source") == "bv_inferred")
 
-        doc = self.doc_manager.get_active_document()
-        if doc is not None:
-            meta = dict(doc.metadata or {})
-            meta["SFCC_star_list"] = list(self.star_list)
-            self.doc_manager.update_active_document(
-                doc.image, metadata=meta, step_name="SFCC Stars Cached", doc=doc)
+        # ── DO NOT cache star_list into document metadata ─────────────────
+        # update_active_document fires activeDocumentChanged which causes
+        # sluggish active-view switching after Step 1 completes.
+        # self.star_list lives on the dialog instance and is all we need.
 
         # ── Summary plot ──────────────────────────────────────────────────
         if getattr(self, "figure", None) is not None:
@@ -3759,6 +3757,7 @@ class SFCCDialog(QDialog):
 
     def closeEvent(self, event):
         self._cleanup()
+        event.accept()
         super().closeEvent(event)
 
 
