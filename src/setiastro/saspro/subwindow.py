@@ -435,7 +435,7 @@ class ImageSubWindow(QWidget):
         # View / render state
         # ─────────────────────────────────────────────────────────
         self._min_scale = 0.02
-        self._max_scale = 3.00  # 300%
+        self._max_scale = 5.00  # 500%
         self.scale = 0.25
         self._dragging = False
         self._drag_start = QPoint()
