@@ -156,7 +156,8 @@ class PreviewPane(QWidget):
                     arr,
                     target_median=0.25,
                     normalize=True,
-                    apply_curves=False
+                    apply_curves=False,
+                    no_black_clip=True
                 )
             else:
                 stretched = stretch_color_image(
@@ -164,7 +165,8 @@ class PreviewPane(QWidget):
                     target_median=0.25,
                     linked=False,
                     normalize=True,
-                    apply_curves=False
+                    apply_curves=False,
+                    no_black_clip=True
                 )
 
             # convert back to a QImage for display

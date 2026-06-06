@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import math
 import os
+import shutil
 import sqlite3
 import time
 import zlib
@@ -35,14 +36,14 @@ from urllib.error import URLError, HTTPError
 import numpy as np
 
 from PyQt6.QtCore import (
-    Qt, QThread, QStandardPaths,
+    Qt, QThread, QStandardPaths, QSettings,
     pyqtSignal as _Signal,
 )
 from PyQt6.QtWidgets import (
     QApplication, QDialog, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QProgressBar, QWidget, QMessageBox, QFileDialog,
     QScrollArea, QFrame, QTabWidget, QTextEdit, QLineEdit, QComboBox,
-    QSizePolicy,
+    QSizePolicy, QRadioButton, QButtonGroup,
 )
 from PyQt6.QtGui import QColor
 
@@ -60,25 +61,26 @@ LIBRARY_DOWNLOAD_BASE = "https://f005.backblazeb2.com/file/setiastro-gaia/"
 # Gaia XP wavelength grid (nm) — 343 points, 336–1020 nm, 2 nm step
 WL_GRID = np.arange(336, 1022, 2, dtype=np.float32)
 
+# QSettings key for the user-chosen library directory
+_SETTINGS_LIBRARY_DIR = "gaia_library/custom_dir"
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  Group definitions
-#  Each group has a list of sub-filenames that together cover its mag range.
-#  GaiaBulkLibrary opens whatever sub-files are present — no hardcoded list.
 # ══════════════════════════════════════════════════════════════════════════════
 
 @dataclass
 class GroupDef:
-    key:         str            # internal key e.g. "medium"
-    label:       str            # display label
+    key:         str
+    label:       str
     mag_lo:      Optional[float]
     mag_hi:      float
-    filenames:   List[str]      # ordered list of sub-files
-    est_size:    str            # total estimated download size
-    est_stars:   str            # approximate star count
+    filenames:   List[str]
+    est_size:    str
+    est_stars:   str
     description: str
     recommended: bool = False
-    warning:     str  = ""      # shown in orange if non-empty
+    warning:     str  = ""
 
 
 GROUP_DEFS: List[GroupDef] = [
@@ -155,22 +157,50 @@ GROUP_DEFS: List[GroupDef] = [
                 "Only needed for extreme deep-field work.",
     ),
 ]
-# Fast lookup: filename → group key
+
 _FILENAME_TO_GROUP: Dict[str, str] = {
     fn: g.key for g in GROUP_DEFS for fn in g.filenames
 }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  Library directory
+#  Library directory  (respects user override stored in QSettings)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def get_library_dir() -> Path:
+def _default_library_dir() -> Path:
     base = Path(QStandardPaths.writableLocation(
         QStandardPaths.StandardLocation.AppDataLocation))
     d = base / "gaia_library"
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def get_library_dir() -> Path:
+    """
+    Returns the active library directory.
+    Checks QSettings for a user override; falls back to the default
+    AppData location if none is set or the stored path no longer exists.
+    """
+    s = QSettings()
+    custom = s.value(_SETTINGS_LIBRARY_DIR, "", type=str)
+    if custom:
+        p = Path(custom)
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+            return p
+        except Exception:
+            pass   # fall through to default
+    return _default_library_dir()
+
+
+def set_library_dir(path: Path):
+    """Persist a user-chosen library directory to QSettings."""
+    QSettings().setValue(_SETTINGS_LIBRARY_DIR, str(path))
+
+
+def clear_library_dir_override():
+    """Reset to the default AppData location."""
+    QSettings().remove(_SETTINGS_LIBRARY_DIR)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -194,12 +224,11 @@ def _decompress(data: bytes) -> np.ndarray:
 
 @dataclass
 class GroupStatus:
-    """Runtime status of one group."""
     group:        GroupDef
-    installed:    List[str]     # sub-files present on disk
-    missing:      List[str]     # sub-files not yet downloaded
-    total_mb:     float         # disk usage of installed files
-    total_spectra: int          # spectra across installed files
+    installed:    List[str]
+    missing:      List[str]
+    total_mb:     float
+    total_spectra: int
 
     @property
     def fully_installed(self) -> bool:
@@ -215,18 +244,12 @@ class GroupStatus:
 
 
 class GaiaBulkLibrary:
-    """
-    Manages the collection of bulk Gaia XP SQLite files.
-    Dynamically discovers installed files — no hardcoded filename list required.
-    """
-
     def __init__(self, library_dir: Optional[Path] = None):
         self._dir = library_dir or get_library_dir()
         self._connections: Dict[str, sqlite3.Connection] = {}
         self._open_installed()
 
     def _open_installed(self):
-        """Open all gaia_xp_*.sqlite files found in library_dir."""
         for path in sorted(self._dir.glob("gaia_xp_*.sqlite")):
             fname = path.name
             if fname not in self._connections:
@@ -238,6 +261,7 @@ class GaiaBulkLibrary:
                     print(f"[GaiaBulkLibrary] Could not open {fname}: {e}")
 
     def refresh(self):
+        self._dir = get_library_dir()
         self._open_installed()
 
     def close(self):
@@ -247,8 +271,6 @@ class GaiaBulkLibrary:
             except Exception:
                 pass
         self._connections.clear()
-
-    # ── Lookups ───────────────────────────────────────────────────────────
 
     def get_spectrum(self, source_id: int) -> Optional[CalibratedSpectrum]:
         sid = int(source_id)
@@ -302,21 +324,12 @@ class GaiaBulkLibrary:
         coords: list[tuple[float, float]],
         radius_arcsec: float = 10.0,
     ) -> dict[int, tuple[int, float]]:
-        """
-        Match a list of (ra, dec) coords against all installed files.
-        Returns dict: coord_index -> (source_id, sep_arcsec)
-
-        Uses one bounding box query per file covering all coords at once,
-        then cross-matches in Python — far faster than one query per star.
-        """
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
         if not coords or not self._connections:
             return {}
 
         radius_deg = radius_arcsec / 3600.0
-
-        # Compute overall bounding box covering all coords + radius
         ras  = [c[0] for c in coords]
         decs = [c[1] for c in coords]
         dec_min = min(decs) - radius_deg
@@ -327,7 +340,6 @@ class GaiaBulkLibrary:
         ra_max  = max(ras) + radius_deg / cosd
 
         def _query_file(conn):
-            """Fetch all sources in the bounding box from one file."""
             try:
                 cur = conn.cursor()
                 cur.execute("""
@@ -339,7 +351,6 @@ class GaiaBulkLibrary:
             except Exception:
                 return []
 
-        # Query all files in parallel
         all_sources: list[tuple[int, float, float]] = []
         conns = list(self._connections.values())
         with ThreadPoolExecutor(max_workers=min(8, len(conns))) as ex:
@@ -353,19 +364,16 @@ class GaiaBulkLibrary:
         if not all_sources:
             return {}
 
-        # Build numpy arrays for fast vectorised cross-match
         src_ids  = np.array([s[0] for s in all_sources], dtype=np.int64)
         src_ras  = np.array([s[1] for s in all_sources], dtype=np.float64)
         src_decs = np.array([s[2] for s in all_sources], dtype=np.float64)
 
         results: dict[int, tuple[int, float]] = {}
-
         for i, (ra, dec) in enumerate(coords):
             cosd_i = max(1e-6, abs(math.cos(math.radians(dec))))
             dra    = (src_ras  - ra)  * cosd_i
             ddec   = (src_decs - dec)
-            seps   = np.hypot(dra, ddec) * 3600.0   # arcsec
-
+            seps   = np.hypot(dra, ddec) * 3600.0
             j = int(np.argmin(seps))
             if seps[j] <= radius_arcsec:
                 results[i] = (int(src_ids[j]), float(seps[j]))
@@ -374,7 +382,6 @@ class GaiaBulkLibrary:
 
     def find_nearest(self, ra: float, dec: float,
                      radius_arcsec: float = 3.0) -> Optional[Tuple[int, float]]:
-        """Return (source_id, sep_arcsec) of the closest source, or None."""
         radius_deg = radius_arcsec / 3600.0
         cosd = max(1e-6, abs(math.cos(math.radians(dec))))
         best_sid, best_sep = None, 1e9
@@ -402,8 +409,6 @@ class GaiaBulkLibrary:
         if best_sid is not None and best_sep <= radius_arcsec:
             return (int(best_sid), float(best_sep))
         return None
-
-    # ── Status ────────────────────────────────────────────────────────────
 
     def get_group_status(self) -> List[GroupStatus]:
         statuses = []
@@ -447,7 +452,6 @@ class GaiaBulkLibrary:
         return list(self._connections.keys())
 
     def close_file(self, filename: str):
-        """Close and remove one file's connection (before delete)."""
         conn = self._connections.pop(filename, None)
         if conn:
             try:
@@ -471,18 +475,326 @@ def get_library() -> GaiaBulkLibrary:
 def refresh_library():
     global _library_instance
     if _library_instance is not None:
-        _library_instance.refresh()
-    else:
-        _library_instance = GaiaBulkLibrary()
+        _library_instance.close()
+    _library_instance = GaiaBulkLibrary()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  Download worker  — downloads one sub-file at a time
+#  Migration worker
+# ══════════════════════════════════════════════════════════════════════════════
+
+class _MigrateWorker(QThread):
+    """
+    Moves or copies installed sqlite files from src_dir to dest_dir,
+    one file at a time.  Uses shutil.move/copy2 so cross-device transfers
+    work correctly.
+    """
+    file_progress  = _Signal(int, int, str)   # files_done, files_total, current_filename
+    file_done      = _Signal(str, bool)        # filename, success
+    finished       = _Signal(bool, str)        # success, message
+    cancelled      = _Signal()
+
+    def __init__(self, src_dir: Path, dest_dir: Path,
+                 filenames: List[str], mode: str, parent=None):
+        """
+        mode: 'move' | 'copy'
+        filenames: list of sqlite filenames that exist in src_dir
+        """
+        super().__init__(parent)
+        self._src      = src_dir
+        self._dest     = dest_dir
+        self._files    = filenames
+        self._mode     = mode
+        self._cancel   = False
+
+    def cancel(self):
+        self._cancel = True
+
+    def run(self):
+        total = len(self._files)
+        done  = 0
+
+        for fname in self._files:
+            if self._cancel:
+                self.cancelled.emit()
+                return
+
+            src  = self._src  / fname
+            dest = self._dest / fname
+
+            if not src.exists():
+                done += 1
+                self.file_done.emit(fname, True)
+                self.file_progress.emit(done, total, fname)
+                continue
+
+            if dest.exists() and dest.stat().st_size == src.stat().st_size:
+                # Already there (same size) — skip copy, remove source if moving
+                if self._mode == "move":
+                    try:
+                        src.unlink()
+                    except Exception:
+                        pass
+                done += 1
+                self.file_done.emit(fname, True)
+                self.file_progress.emit(done, total, fname)
+                continue
+
+            self.file_progress.emit(done, total, fname)
+            try:
+                if self._mode == "move":
+                    shutil.move(str(src), str(dest))
+                else:
+                    shutil.copy2(str(src), str(dest))
+                done += 1
+                self.file_done.emit(fname, True)
+                self.file_progress.emit(done, total, fname)
+            except Exception as e:
+                self.file_done.emit(fname, False)
+                self.finished.emit(
+                    False,
+                    f"Failed on {fname}:\n{e}\n\n"
+                    f"{done}/{total} files completed before the error.\n"
+                    f"The new location has been saved — files already transferred "
+                    f"are accessible, and the remaining originals are still in the "
+                    f"old location."
+                )
+                return
+
+        verb = "moved" if self._mode == "move" else "copied"
+        self.finished.emit(True, f"{done} file(s) {verb} successfully.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Change-location dialog
+# ══════════════════════════════════════════════════════════════════════════════
+
+class _ChangeLocationDialog(QDialog):
+    """
+    Asks the user where they want the library, and what to do with
+    any files already installed in the current location.
+    """
+    def __init__(self, current_dir: Path, installed_files: List[str], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Change Library Location")
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setModal(True)
+        self.setMinimumWidth(520)
+
+        self._current_dir    = current_dir
+        self._installed      = installed_files   # filenames present on disk
+        self._chosen_dir     = current_dir
+        self._chosen_mode    = "move"            # 'move' | 'copy' | 'switch'
+
+        v = QVBoxLayout(self)
+        v.setSpacing(12)
+
+        # Current path
+        v.addWidget(QLabel("<b>Current location:</b>"))
+        cur_lbl = QLabel(str(current_dir))
+        cur_lbl.setStyleSheet("color:#6688aa; font-family:monospace; font-size:11px;")
+        cur_lbl.setWordWrap(True)
+        v.addWidget(cur_lbl)
+
+        # New path picker
+        v.addWidget(QLabel("<b>New location:</b>"))
+        path_row = QHBoxLayout()
+        self._path_edit = QLineEdit(str(current_dir))
+        self._path_edit.setReadOnly(True)
+        self._path_edit.setStyleSheet(
+            "background:#12121f; color:#ddd; border:1px solid #334; "
+            "border-radius:3px; padding:3px 6px; font-family:monospace;")
+        path_row.addWidget(self._path_edit, 1)
+        btn_browse = QPushButton("Browse…")
+        btn_browse.setFixedWidth(80)
+        btn_browse.clicked.connect(self._browse)
+        path_row.addWidget(btn_browse)
+        v.addLayout(path_row)
+
+        # Migration options (only shown when there are installed files)
+        if installed_files:
+            size_mb = sum(
+                (current_dir / f).stat().st_size / (1024 * 1024)
+                for f in installed_files
+                if (current_dir / f).exists()
+            )
+            size_str = (f"{size_mb/1024:.1f} GB" if size_mb >= 1024
+                        else f"{size_mb:.0f} MB")
+
+            v.addWidget(QLabel(
+                f"<b>What to do with {len(installed_files)} installed file(s) "
+                f"({size_str})?</b>"))
+
+            self._rdo_move   = QRadioButton(
+                "Move files to new location  (recommended — frees space on old drive)")
+            self._rdo_copy   = QRadioButton(
+                "Copy files  (keep originals — useful as backup)")
+            self._rdo_switch = QRadioButton(
+                "Just switch pointer  (leave files where they are)")
+            self._rdo_move.setChecked(True)
+
+            grp = QButtonGroup(self)
+            for rdo in (self._rdo_move, self._rdo_copy, self._rdo_switch):
+                grp.addButton(rdo)
+                v.addWidget(rdo)
+
+            self._rdo_move.toggled.connect(self._update_mode)
+            self._rdo_copy.toggled.connect(self._update_mode)
+            self._rdo_switch.toggled.connect(self._update_mode)
+        else:
+            # Nothing installed — no files to move
+            self._rdo_move   = None
+            self._rdo_copy   = None
+            self._rdo_switch = None
+            self._chosen_mode = "switch"
+            v.addWidget(QLabel(
+                "No files installed yet — new downloads will go to the chosen folder."))
+
+        # Progress bar (hidden until migration starts)
+        self._prog_label = QLabel("")
+        self._prog_label.setStyleSheet("color:#aaa; font-size:11px;")
+        self._prog_label.setVisible(False)
+        v.addWidget(self._prog_label)
+
+        self._prog_bar = QProgressBar()
+        self._prog_bar.setTextVisible(True)
+        self._prog_bar.setVisible(False)
+        self._prog_bar.setStyleSheet("""
+            QProgressBar {
+                border:1px solid #333; border-radius:3px;
+                background:#0a0a18; color:#aaa;
+                text-align:center; font-size:10px;
+            }
+            QProgressBar::chunk { background:#4466cc; border-radius:2px; }
+        """)
+        v.addWidget(self._prog_bar)
+
+        # Buttons
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        self._btn_ok     = QPushButton("Apply")
+        self._btn_ok.setFixedWidth(90)
+        self._btn_ok.clicked.connect(self._apply)
+        self._btn_cancel = QPushButton("Cancel")
+        self._btn_cancel.setFixedWidth(90)
+        self._btn_cancel.clicked.connect(self.reject)
+        btn_row.addWidget(self._btn_ok)
+        btn_row.addWidget(self._btn_cancel)
+        v.addLayout(btn_row)
+
+        self._worker: Optional[_MigrateWorker] = None
+
+    def _browse(self):
+        chosen = QFileDialog.getExistingDirectory(
+            self, "Choose Library Folder", str(self._chosen_dir))
+        if chosen:
+            self._chosen_dir = Path(chosen)
+            self._path_edit.setText(chosen)
+
+    def _update_mode(self):
+        if self._rdo_move and self._rdo_move.isChecked():
+            self._chosen_mode = "move"
+        elif self._rdo_copy and self._rdo_copy.isChecked():
+            self._chosen_mode = "copy"
+        else:
+            self._chosen_mode = "switch"
+
+    def _apply(self):
+        dest = self._chosen_dir
+
+        if dest == self._current_dir:
+            self.accept()
+            return
+
+        try:
+            dest.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            QMessageBox.critical(self, "Error",
+                                f"Could not create directory:\n{e}")
+            return
+
+        # ── Close all open SQLite connections before touching the files ───────
+        # Windows locks open sqlite files; close the singleton library first.
+        global _library_instance
+        if _library_instance is not None:
+            try:
+                _library_instance.close()
+            except Exception:
+                pass
+            _library_instance = None
+        # ─────────────────────────────────────────────────────────────────────
+
+        set_library_dir(dest)
+
+        if self._chosen_mode == "switch" or not self._installed:
+            self.accept()
+            return
+
+        # Start migration worker
+        self._btn_ok.setEnabled(False)
+        self._btn_cancel.setText("Cancel Migration")
+        self._prog_label.setVisible(True)
+        self._prog_bar.setVisible(True)
+        self._prog_bar.setMaximum(len(self._installed))
+        self._prog_bar.setValue(0)
+
+        self._worker = _MigrateWorker(
+            self._current_dir, dest,
+            self._installed, self._chosen_mode,
+            parent=None,
+        )
+        self._worker.file_progress.connect(self._on_file_progress)
+        self._worker.finished.connect(self._on_finished)
+        self._worker.cancelled.connect(self._on_cancelled)
+        self._btn_cancel.clicked.disconnect()
+        self._btn_cancel.clicked.connect(self._cancel_migration)
+        self._worker.start()
+
+    def _cancel_migration(self):
+        if self._worker:
+            self._worker.cancel()
+
+    def _on_file_progress(self, done: int, total: int, fname: str):
+        self._prog_bar.setValue(done)
+        self._prog_bar.setFormat(f"{done}/{total} files")
+        self._prog_label.setText(f"{'Moving' if self._chosen_mode == 'move' else 'Copying'}: {fname}")
+
+    def _on_finished(self, ok: bool, msg: str):
+        if self._worker:
+            self._worker.wait()
+        self._worker = None
+
+        if ok:
+            self.accept()
+        else:
+            QMessageBox.warning(self, "Migration Incomplete", msg)
+            # Still accept — the new path is already saved, partial migration is valid
+            self.accept()
+
+    def _on_cancelled(self):
+        if self._worker:
+            self._worker.wait()
+        self._worker = None
+        # New path is already saved; files transferred so far are usable
+        QMessageBox.information(
+            self, "Migration Cancelled",
+            "Migration was cancelled. The library location has been updated — "
+            "files that were already transferred are accessible at the new location. "
+            "Remaining files are still in the old location and will be skipped by SASpro."
+        )
+        self.accept()
+
+    def chosen_dir(self) -> Path:
+        return self._chosen_dir
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Download workers  (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
 class _FileDownloadWorker(QThread):
-    progress  = _Signal(int, int, str)   # bytes_done, bytes_total, msg
-    finished  = _Signal(bool, str)       # success, message
+    progress  = _Signal(int, int, str)
+    finished  = _Signal(bool, str)
     cancelled = _Signal()
 
     def __init__(self, url: str, dest: Path, parent=None):
@@ -531,15 +843,11 @@ class _FileDownloadWorker(QThread):
 
 
 class _GroupDownloadWorker(QThread):
-    """
-    Downloads all missing sub-files for one group sequentially.
-    Emits file-level and overall progress.
-    """
-    file_progress = _Signal(float, float, str)   # bytes_done_mb, bytes_total_mb, msg
-    file_done        = _Signal(str, bool)        # filename, success
-    group_progress   = _Signal(int, int)         # files_done, files_total
-    group_finished   = _Signal(bool, str)        # success, message
-    cancelled        = _Signal()
+    file_progress  = _Signal(float, float, str)
+    file_done      = _Signal(str, bool)
+    group_progress = _Signal(int, int)
+    group_finished = _Signal(bool, str)
+    cancelled      = _Signal()
 
     def __init__(self, group: GroupDef, missing: List[str],
                  dest_dir: Path, parent=None):
@@ -615,8 +923,9 @@ class _GroupDownloadWorker(QThread):
             f"({total_files} file{'s' if total_files != 1 else ''})."
         )
 
+
 # ══════════════════════════════════════════════════════════════════════════════
-#  Spectrum viewer widget
+#  Spectrum viewer widget  (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
 class SpectrumViewerWidget(QWidget):
@@ -710,13 +1019,13 @@ class SpectrumViewerWidget(QWidget):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  Group row widget
+#  Group row widget  (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
 class _GroupRowWidget(QFrame):
-    install_requested = _Signal(str)   # group key
-    remove_requested  = _Signal(str)   # group key
-    browse_requested  = _Signal(str)   # group key
+    install_requested = _Signal(str)
+    remove_requested  = _Signal(str)
+    browse_requested  = _Signal(str)
 
     def __init__(self, status: GroupStatus, parent=None):
         super().__init__(parent)
@@ -738,13 +1047,11 @@ class _GroupRowWidget(QFrame):
         outer.setContentsMargins(12, 10, 12, 10)
         outer.setSpacing(12)
 
-        # Status dot
         self._dot = QLabel("●")
         self._dot.setFixedWidth(16)
         self._dot.setAlignment(Qt.AlignmentFlag.AlignCenter)
         outer.addWidget(self._dot)
 
-        # Info block
         info = QVBoxLayout()
         info.setSpacing(3)
 
@@ -782,7 +1089,6 @@ class _GroupRowWidget(QFrame):
 
         outer.addLayout(info, stretch=1)
 
-        # Progress bar
         self._progress = QProgressBar()
         self._progress.setFixedWidth(200)
         self._progress.setVisible(False)
@@ -797,14 +1103,12 @@ class _GroupRowWidget(QFrame):
         """)
         outer.addWidget(self._progress)
 
-        # File counter label (shows "3/10 files" during download)
         self._lbl_file_count = QLabel()
         self._lbl_file_count.setStyleSheet(
             "font-size: 10px; color: #6688aa; border: none;")
         self._lbl_file_count.setVisible(False)
         outer.addWidget(self._lbl_file_count)
 
-        # Buttons
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(6)
 
@@ -924,19 +1228,17 @@ class _GroupRowWidget(QFrame):
             self._lbl_file_count.setText(f"{done_mb:,.0f} MB")
 
     def update_group_progress(self, done: int, total: int):
-        # Only show files counter here — MB display handled by update_file_progress
-        # when Content-Length is missing
         if self._progress.maximum() > 0:
             self._lbl_file_count.setText(f"{done}/{total} files")
         else:
-            # Large file mode — lbl_file_count shows MB, append file count
             current = self._lbl_file_count.text()
             mb_part = current.split("·")[0].strip() if "·" in current else current
             self._lbl_file_count.setText(f"{mb_part}  ·  {done}/{total} files")
 
+
 class _SpectraCountWorker(QThread):
-    progress = _Signal(int)         # running total so far
-    finished = _Signal(dict, int)   # {group_key: count}, total
+    progress = _Signal(int)
+    finished = _Signal(dict, int)
 
     def __init__(self, library_dir: Path, parent=None):
         super().__init__(parent)
@@ -970,6 +1272,8 @@ class _SpectraCountWorker(QThread):
                     pass
 
         self.finished.emit(group_counts, running_total)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  Main dialog
 # ══════════════════════════════════════════════════════════════════════════════
@@ -990,8 +1294,6 @@ class GaiaDatabaseDialog(QDialog):
 
         self._build_ui()
         self._refresh_groups()
-
-    # ── UI ────────────────────────────────────────────────────────────────
 
     def _build_ui(self):
         self.setStyleSheet("""
@@ -1062,6 +1364,7 @@ class GaiaDatabaseDialog(QDialog):
         info_lbl.setStyleSheet("color: #778; font-size: 11px; margin-bottom: 4px;")
         lib_layout.addWidget(info_lbl)
 
+        # Directory row — now includes "Change Location…" button
         dir_row = QHBoxLayout()
         dir_row.addWidget(QLabel("Library folder:"))
         self._dir_lbl = QLabel(str(get_library_dir()))
@@ -1069,6 +1372,15 @@ class GaiaDatabaseDialog(QDialog):
             "color: #6688aa; font-size: 11px; font-family: monospace;")
         self._dir_lbl.setWordWrap(True)
         dir_row.addWidget(self._dir_lbl, stretch=1)
+
+        btn_change_loc = QPushButton("Change Location…")
+        btn_change_loc.setFixedWidth(130)
+        btn_change_loc.setToolTip(
+            "Move the library to a different drive or folder.\n"
+            "Useful for keeping large files off your system drive.")
+        btn_change_loc.clicked.connect(self._change_location)
+        dir_row.addWidget(btn_change_loc)
+
         btn_open_dir = QPushButton("Open Folder")
         btn_open_dir.setFixedWidth(100)
         btn_open_dir.clicked.connect(self._open_library_dir)
@@ -1103,7 +1415,6 @@ class GaiaDatabaseDialog(QDialog):
         mode_row.addStretch()
         viewer_layout.addLayout(mode_row)
 
-        # Name row
         self._name_row   = QWidget()
         name_layout = QHBoxLayout(self._name_row)
         name_layout.setContentsMargins(0, 0, 0, 0)
@@ -1116,7 +1427,6 @@ class GaiaDatabaseDialog(QDialog):
         name_layout.addWidget(btn_name)
         viewer_layout.addWidget(self._name_row)
 
-        # RA/Dec row
         self._radec_row  = QWidget()
         radec_layout = QHBoxLayout(self._radec_row)
         radec_layout.setContentsMargins(0, 0, 0, 0)
@@ -1143,7 +1453,6 @@ class GaiaDatabaseDialog(QDialog):
         self._radec_row.setVisible(False)
         viewer_layout.addWidget(self._radec_row)
 
-        # Source ID row
         self._sid_row = QWidget()
         sid_layout = QHBoxLayout(self._sid_row)
         sid_layout.setContentsMargins(0, 0, 0, 0)
@@ -1221,6 +1530,34 @@ class GaiaDatabaseDialog(QDialog):
         footer_layout.addWidget(btn_close)
         root.addWidget(footer)
 
+    # ── Change location ───────────────────────────────────────────────────
+
+    def _change_location(self):
+        if self._workers:
+            QMessageBox.warning(self, "Downloads Active",
+                                "Please wait for active downloads to finish "
+                                "before changing the library location.")
+            return
+
+        current_dir = get_library_dir()
+
+        installed_files = [
+            f for g in GROUP_DEFS
+            for f in g.filenames
+            if (current_dir / f).exists()
+        ]
+
+        dlg = _ChangeLocationDialog(current_dir, installed_files, parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        # ── Reload library from new location and refresh UI ──────────────────
+        refresh_library()
+        self._library = get_library()
+        self._dir_lbl.setText(str(get_library_dir()))
+        self._refresh_groups()
+        self.library_changed.emit()
+
     # ── Group management ──────────────────────────────────────────────────
 
     def _refresh_groups(self):
@@ -1229,14 +1566,12 @@ class GaiaDatabaseDialog(QDialog):
             row.deleteLater()
         self._rows.clear()
 
-        # Build status without spectra counts first — fast, no SQLite COUNT(*)
+        lib_dir = get_library_dir()
         for g in GROUP_DEFS:
-            installed = [f for f in g.filenames
-                         if (self._library._dir / f).exists()]
-            missing   = [f for f in g.filenames
-                         if not (self._library._dir / f).exists()]
+            installed = [f for f in g.filenames if (lib_dir / f).exists()]
+            missing   = [f for f in g.filenames if not (lib_dir / f).exists()]
             total_mb  = sum(
-                (self._library._dir / f).stat().st_size / (1024 * 1024)
+                (lib_dir / f).stat().st_size / (1024 * 1024)
                 for f in installed
             )
             status = GroupStatus(
@@ -1244,7 +1579,7 @@ class GaiaDatabaseDialog(QDialog):
                 installed=installed,
                 missing=missing,
                 total_mb=total_mb,
-                total_spectra=0,   # filled in later by background thread
+                total_spectra=0,
             )
             row = _GroupRowWidget(status)
             row.install_requested.connect(self._on_install)
@@ -1253,16 +1588,11 @@ class GaiaDatabaseDialog(QDialog):
             self._group_layout.insertWidget(self._group_layout.count() - 1, row)
             self._rows[status.group.key] = row
 
-        n_groups = sum(1 for g in GROUP_DEFS
-                       if all((self._library._dir / f).exists() for f in g.filenames))
         self._total_lbl.setText(
-            f"{n_groups}/{len(GROUP_DEFS)} groups installed  ·  counting spectra…")
-
-        # Count spectra in background
-        self._start_spectra_count()
+            f"{self._n_installed_groups()}/{len(GROUP_DEFS)} groups installed  ·  "
+            f"click Count to tally spectra")
 
     def _start_spectra_count(self):
-        # Cancel any existing count worker
         existing = getattr(self, "_count_worker", None)
         if existing is not None:
             try:
@@ -1274,22 +1604,22 @@ class GaiaDatabaseDialog(QDialog):
         self._total_lbl.setText(
             f"{self._n_installed_groups()}/{len(GROUP_DEFS)} groups installed  ·  "
             f"click Count to tally spectra")
-        
+
     def _n_installed_groups(self) -> int:
+        lib_dir = get_library_dir()
         return sum(1 for g in GROUP_DEFS
-                   if all((self._library._dir / f).exists() for f in g.filenames))
+                   if all((lib_dir / f).exists() for f in g.filenames))
 
     def _run_spectra_count(self):
-        """Called by the Count button — starts background count with live ticking."""
         existing = getattr(self, "_count_worker", None)
         if existing is not None and existing.isRunning():
-            return  # already counting
+            return
 
         self._total_lbl.setText(
             f"{self._n_installed_groups()}/{len(GROUP_DEFS)} groups installed  ·  "
             f"counting… 0 spectra")
 
-        worker = _SpectraCountWorker(self._library._dir, parent=None)
+        worker = _SpectraCountWorker(get_library_dir(), parent=None)
         worker.progress.connect(self._on_count_progress)
         worker.finished.connect(self._on_spectra_counted)
         worker.start()
@@ -1301,16 +1631,15 @@ class GaiaDatabaseDialog(QDialog):
             f"counting… {running_total:,} spectra")
 
     def _on_spectra_counted(self, group_counts: dict, total: int):
+        lib_dir = get_library_dir()
         for key, row in self._rows.items():
             g = next((g for g in GROUP_DEFS if g.key == key), None)
             if g is None:
                 continue
-            installed = [f for f in g.filenames
-                         if (self._library._dir / f).exists()]
-            missing   = [f for f in g.filenames
-                         if not (self._library._dir / f).exists()]
+            installed = [f for f in g.filenames if (lib_dir / f).exists()]
+            missing   = [f for f in g.filenames if not (lib_dir / f).exists()]
             total_mb  = sum(
-                (self._library._dir / f).stat().st_size / (1024 * 1024)
+                (lib_dir / f).stat().st_size / (1024 * 1024)
                 for f in installed
             )
             status = GroupStatus(
@@ -1329,18 +1658,17 @@ class GaiaDatabaseDialog(QDialog):
 
     def _on_install(self, key: str):
         group_def = next(g for g in GROUP_DEFS if g.key == key)
-        statuses  = {s.group.key: s for s in self._library.get_group_status()}
-        status    = statuses[key]
-        missing   = status.missing
+        lib_dir   = get_library_dir()
+        missing   = [f for f in group_def.filenames if not (lib_dir / f).exists()]
 
         if not missing:
-            return  # already fully installed
+            return
 
         row = self._rows.get(key)
         if row is None:
             return
 
-        worker = _GroupDownloadWorker(group_def, missing, get_library_dir(), parent=self)
+        worker = _GroupDownloadWorker(group_def, missing, lib_dir, parent=self)
         self._workers[key] = worker
 
         row.set_downloading(True, cancel_cb=worker.cancel)
@@ -1358,7 +1686,6 @@ class GaiaDatabaseDialog(QDialog):
         worker.start()
 
     def _on_file_done(self, fname: str, ok: bool):
-        """A single sub-file finished — refresh library so it's queryable."""
         if ok:
             refresh_library()
             self._library = get_library()
@@ -1393,10 +1720,13 @@ class GaiaDatabaseDialog(QDialog):
 
     def _on_remove(self, key: str):
         group_def = next(g for g in GROUP_DEFS if g.key == key)
-        statuses  = {s.group.key: s for s in self._library.get_group_status()}
-        installed = statuses[key].installed
+        lib_dir   = get_library_dir()
+        installed = [f for f in group_def.filenames if (lib_dir / f).exists()]
+        total_gb  = sum(
+            (lib_dir / f).stat().st_size / (1024 * 1024 * 1024)
+            for f in installed
+        )
 
-        total_gb = statuses[key].total_mb / 1024
         reply = QMessageBox.question(
             self, "Remove Group",
             f"Delete all installed files for '{group_def.label}'?\n\n"
@@ -1410,7 +1740,7 @@ class GaiaDatabaseDialog(QDialog):
 
         for fname in installed:
             self._library.close_file(fname)
-            path = get_library_dir() / fname
+            path = lib_dir / fname
             try:
                 path.unlink(missing_ok=True)
             except Exception as e:
@@ -1423,19 +1753,15 @@ class GaiaDatabaseDialog(QDialog):
         self.library_changed.emit()
 
     def _on_browse(self, key: str):
-        """Let user point to a locally-built SQLite file for one group."""
         group_def = next(g for g in GROUP_DEFS if g.key == key)
         lib_dir   = get_library_dir()
-
-        missing = [f for f in group_def.filenames
-                   if not (lib_dir / f).exists()]
+        missing   = [f for f in group_def.filenames if not (lib_dir / f).exists()]
 
         if not missing:
             QMessageBox.information(self, "Already Installed",
                                     f"{group_def.label} is already fully installed.")
             return
 
-        # Pick the first missing file
         start_dir = getattr(self, "_last_browse_dir", str(lib_dir))
         path, _ = QFileDialog.getOpenFileName(
             self, f"Locate a file for '{group_def.label}'", start_dir,
@@ -1446,14 +1772,12 @@ class GaiaDatabaseDialog(QDialog):
         selected_path = Path(path)
         self._last_browse_dir = str(selected_path.parent)
 
-        # Scan the selected folder for other missing files from this group
         found_others = []
         for fname in missing:
             candidate = selected_path.parent / fname
             if candidate.exists() and candidate != selected_path:
                 found_others.append((fname, candidate))
 
-        # Build the full install list — selected file + any found siblings
         to_install = [(selected_path.name, selected_path)]
         if found_others:
             names_list = "\n".join(f"  {f}" for f, _ in found_others)
@@ -1467,8 +1791,6 @@ class GaiaDatabaseDialog(QDialog):
             if reply == QMessageBox.StandardButton.Yes:
                 to_install.extend(found_others)
 
-        # Copy all selected files
-        import shutil
         copied = 0
         for fname, src in to_install:
             dest = lib_dir / fname
@@ -1519,7 +1841,6 @@ class GaiaDatabaseDialog(QDialog):
                 from astroquery.simbad import Simbad
                 from astropy.coordinates import SkyCoord
 
-                # ── Primary: ask SIMBAD for the Gaia DR3 source_id directly ──
                 try:
                     s = Simbad()
                     s.add_votable_fields("ids", "ra", "dec")
@@ -1528,8 +1849,6 @@ class GaiaDatabaseDialog(QDialog):
                     result = None
 
                 if result is not None and len(result) > 0:
-                    # Parse Gaia DR3 source_id from IDS field
-                    # Column name varies by astroquery version
                     ids_col = None
                     for col in result.colnames:
                         if col.upper() == "IDS":
@@ -1548,7 +1867,6 @@ class GaiaDatabaseDialog(QDialog):
                                         f"Resolved '{name}' → Gaia DR3 {sid} — searching library…")
                                     QApplication.processEvents()
 
-                                    # Look up directly by source_id — no positional search needed
                                     spec = self._library.get_spectrum(sid)
                                     if spec is not None:
                                         info = self._library.get_source_info(sid)
@@ -1565,8 +1883,6 @@ class GaiaDatabaseDialog(QDialog):
                                         self._viewer_status.setText("Spectrum loaded — local library")
                                         return
                                     else:
-                                        # source_id resolved but not in installed groups —
-                                        # fall through to positional with known coords
                                         self._viewer_status.setText(
                                             f"Gaia DR3 {sid} found in SIMBAD but not in installed "
                                             f"library groups — trying positional fallback…")
@@ -1575,7 +1891,6 @@ class GaiaDatabaseDialog(QDialog):
                                     pass
                                 break
 
-                    # ── Fallback: positional search using SIMBAD coordinates ──
                     try:
                         ra_val  = float(result["RA"][0])
                         dec_val = float(result["DEC"][0])
@@ -1589,7 +1904,6 @@ class GaiaDatabaseDialog(QDialog):
                         f"Resolved {name} → RA={ra:.5f}°  Dec={dec:.5f}°  — searching…")
                     QApplication.processEvents()
                 else:
-                    # SIMBAD returned nothing — try SkyCoord.from_name
                     coord = SkyCoord.from_name(name)
                     ra, dec = coord.ra.deg, coord.dec.deg
                     label = name
@@ -1618,7 +1932,6 @@ class GaiaDatabaseDialog(QDialog):
                 self._viewer_status.setText("Invalid source_id — must be an integer.")
                 return
 
-        # Spectrum lookup
         spec = None
 
         if sid is not None:
@@ -1636,8 +1949,6 @@ class GaiaDatabaseDialog(QDialog):
             except ValueError:
                 radius = 5.0
 
-            # For name searches, try progressively larger radii since SIMBAD
-            # and Gaia coordinate epochs can differ by arcseconds for bright stars
             search_radii = [radius, 30.0, 120.0, 600.0] if mode == 0 else [radius]
 
             result = None
@@ -1668,7 +1979,6 @@ class GaiaDatabaseDialog(QDialog):
             else:
                 label = f"{label}  →  source {sid}  (sep={sep:.2f}\")"
 
-        # Fall back to live cache
         if spec is None and sid is not None:
             try:
                 from setiastro.saspro.gaia_downloader import GaiaSpectraDB
@@ -1714,6 +2024,13 @@ class GaiaDatabaseDialog(QDialog):
         self._viewer_status.setText(f"Spectrum loaded — {source_str}")
 
     def closeEvent(self, event):
+        # Cancel spectra count worker if running
+        count_worker = getattr(self, "_count_worker", None)
+        if count_worker is not None and count_worker.isRunning():
+            count_worker.cancel()
+            count_worker.wait(2000)   # brief wait; it checks _cancel between files
+        self._count_worker = None
+
         for worker in list(self._workers.values()):
             worker.cancel()
             worker.wait()

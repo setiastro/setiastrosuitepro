@@ -2335,12 +2335,43 @@ def debayer_GBRG_fullres_fast(image, interpolate=True):
         _edge_aware_interpolate_numba(out)
     return out
 
+@njit(parallel=True, fastmath=True, cache=True)
+def _strict_cfa_fill(image, out, r0, c0_r, r1, c1_r):
+    """
+    Strict CFA: place each raw sample into its true channel, leave everything
+    else black. No interpolation whatsoever.
+
+    r0/c0_r/r1/c1_r encode the 2x2 Bayer tile as channel indices (0=R,1=G,2=B):
+      pixel (even_row, even_col) → channel r0
+      pixel (even_row, odd_col)  → channel c0_r
+      pixel (odd_row,  even_col) → channel r1
+      pixel (odd_row,  odd_col)  → channel c1_r
+    """
+    H, W = image.shape
+    for y in prange(H):
+        for x in range(W):
+            yr = y & 1
+            xr = x & 1
+            if yr == 0:
+                ch = c0_r if xr else r0
+            else:
+                ch = c1_r if xr else r1
+            out[y, x, ch] = image[y, x]
+    return out
+
+# channel-index tuples for _strict_cfa_fill: (even_row/even_col, even_row/odd_col, odd_row/even_col, odd_row/odd_col)
+_CFA_CHAN = {
+    "RGGB": (0, 1, 1, 2),
+    "BGGR": (2, 1, 1, 0),
+    "GRBG": (1, 0, 2, 1),
+    "GBRG": (1, 2, 0, 1),
+}
 
 def debayer_fits_fast(image_data, bayer_pattern, cfa_drizzle=False, method="edge"):
     bp = (bayer_pattern or "").upper()
     interpolate = not cfa_drizzle
 
-    # 1) lay down samples; skip interpolate here so we can select method later
+    # 1) lay down samples
     if bp == "RGGB":
         out = debayer_RGGB_fullres_fast(image_data, interpolate=False)
     elif bp == "BGGR":
@@ -2352,12 +2383,17 @@ def debayer_fits_fast(image_data, bayer_pattern, cfa_drizzle=False, method="edge
     else:
         raise ValueError(f"Unsupported Bayer pattern: {bayer_pattern}")
 
-    # 2) interpolate unless CFA drizzle
+    # 2) method dispatch
     if interpolate:
         m = (method or "edge").lower()
         if m == "bilinear":
             _bilinear_interpolate_numba(out)
-        else:
+        elif m == "strict_cfa":
+            # Rebuild from scratch using the strict kernel (no interpolation)
+            out = np.zeros_like(out)
+            r0, c0r, r1, c1r = _CFA_CHAN[bp]
+            _strict_cfa_fill(image_data, out, r0, c0r, r1, c1r)
+        else:   # "edge" default
             _edge_aware_interpolate_numba(out)
 
     return out

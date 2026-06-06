@@ -115,8 +115,8 @@ class StatisticalStretchDialog(QDialog):
 
         # Target median
         self.spin_target = QDoubleSpinBox()
-        self.spin_target.setRange(0.01, 0.99)
-        self.spin_target.setSingleStep(0.01)
+        self.spin_target.setRange(0.001, 0.99)
+        self.spin_target.setSingleStep(0.001)
         self.spin_target.setValue(0.25)
         self.spin_target.setDecimals(3)
 
@@ -498,6 +498,7 @@ class StatisticalStretchDialog(QDialog):
         #self._restore_window_geometry()
         # Initial preview + clip stats
         self._populate_initial_preview()
+
 
 
     # ----- helpers -----
