@@ -50,6 +50,8 @@ from PyQt6 import sip
 try:
     from matplotlib.figure import Figure
     from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+    import matplotlib
+    matplotlib.rcParams["text.usetex"] = False
     HAS_MPL = True
 except ImportError:
     HAS_MPL = False
@@ -961,12 +963,16 @@ class SpectrumViewerWidget(QWidget):
         self._ax.set_facecolor("#1a1a2e")
         self._ax.text(0.5, 0.5, "No spectrum loaded",
                       transform=self._ax.transAxes,
-                      ha="center", va="center", color="#555", fontsize=12)
+                      ha="center", va="center", color="#555", fontsize=12,
+                      usetex=False)
         self._ax.set_xticks([])
         self._ax.set_yticks([])
         for sp in self._ax.spines.values():
             sp.set_color("#333")
-        self._fig.tight_layout(pad=0.5)
+        try:
+            self._fig.tight_layout(pad=0.5)
+        except Exception:
+            pass
         self._canvas.draw()
 
     def show_spectrum(self, spectrum: CalibratedSpectrum, title: str = ""):

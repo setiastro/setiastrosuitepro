@@ -1206,7 +1206,7 @@ class SFCCDialog(QDialog):
             lambda v: QSettings().setValue("SFCC/UseColorMatrix", bool(v))
         )
         # hide gradient controls by default (enable if you like)
-        self.run_grad_btn.hide(); self.grad_method_combo.hide()
+        self.run_grad_btn.hide(); self.grad_method_combo.hide(); self.color_matrix_chk.hide()
 
 
     # ── Settings helpers ────────────────────────────────────────────────
@@ -2770,26 +2770,25 @@ class SFCCDialog(QDialog):
         template_integrals: dict,
     ) -> np.ndarray:
         """
-        Fit a 3×3 color correction matrix from stellar photometry residuals
-        and apply it to the image.
+        Fit a 3×3 color rotation matrix from the stellar locus.
 
-        For each star we have:
-          - measured (R, G, B) fluxes from aperture photometry
-          - expected (S_R, S_G, S_B) fluxes from XP spectrum or Pickles
+        Each star gives us two points in (R/G, B/G) ratio space:
+          - measured:  where the star actually lands in the image
+          - expected:  where it should land given its XP/Pickles spectrum
 
-        The ratio measured/expected tells us the instrument+atmosphere response.
-        A 3×3 matrix M maps measured → expected, correcting cross-channel bleed.
+        We fit M such that M @ [Rm/Gm, 1, Bm/Gm] ≈ [Sr/Sg, 1, Sb/Sg]
 
-        We solve:  M @ measured_rgb ≈ expected_rgb  (per star)
-        Then apply: corrected_pixel = M @ pixel  for every pixel.
+        This is a pure color rotation — M should look like a near-identity
+        matrix with small off-diagonal terms. If it doesn't, the data is
+        too noisy or degenerate (checked via condition number).
+
+        Applied in ratio space: correct R/G and B/G ratios per pixel,
+        G channel unchanged.
         """
-        import numpy as np
-
         eps = 1e-12
 
-        # Build per-star measured and expected RGB vectors
-        src_rows = []   # measured
-        dst_rows = []   # expected (from spectrum)
+        src_rows = []  # measured ratio vectors
+        dst_rows = []  # expected ratio vectors
 
         for e in enriched:
             Rm = float(e["R_meas"])
@@ -2799,17 +2798,14 @@ class SFCCDialog(QDialog):
             Sg = float(e["S_star_G"])
             Sb = float(e["S_star_B"])
 
-            if not (np.isfinite(Rm) and np.isfinite(Gm) and np.isfinite(Bm)):
+            if not all(np.isfinite(v) for v in (Rm, Gm, Bm, Sr, Sg, Sb)):
                 continue
-            if not (np.isfinite(Sr) and np.isfinite(Sg) and np.isfinite(Sb)):
-                continue
-            if Rm <= 0 or Gm <= 0 or Bm <= 0:
-                continue
-            if Sr <= 0 or Sg <= 0 or Sb <= 0:
+            if Rm <= 0 or Gm <= 0 or Bm <= 0 or Sr <= 0 or Sg <= 0 or Sb <= 0:
                 continue
 
-            # Normalize both by green to work in ratio space —
-            # this makes the matrix independent of absolute flux calibration
+            # Both vectors in ratio space — G is always 1.0
+            # This is the key: we're comparing ratios to ratios,
+            # not ADU counts to spectral integrals
             src_rows.append([Rm / Gm, 1.0, Bm / Gm])
             dst_rows.append([Sr / Sg, 1.0, Sb / Sg])
 
@@ -2817,11 +2813,11 @@ class SFCCDialog(QDialog):
             print(f"[SPCC-CM] Too few stars for matrix fit ({len(src_rows)}), skipping.")
             return img
 
-        src = np.array(src_rows, dtype=np.float64)   # (N, 3)
-        dst = np.array(dst_rows, dtype=np.float64)   # (N, 3)
+        src = np.array(src_rows, dtype=np.float64)  # (N, 3)
+        dst = np.array(dst_rows, dtype=np.float64)  # (N, 3)
 
-        # Sigma clip outliers in residual space before fitting
-        init_M = np.linalg.lstsq(src, dst, rcond=None)[0].T   # (3, 3)
+        # Sigma clip on residuals from an initial fit
+        init_M = np.linalg.lstsq(src, dst, rcond=None)[0].T  # (3, 3)
         pred   = (init_M @ src.T).T
         resid  = np.sqrt(np.mean((pred - dst) ** 2, axis=1))
         med    = np.median(resid)
@@ -2836,16 +2832,20 @@ class SFCCDialog(QDialog):
             print(f"[SPCC-CM] Too few stars after clipping ({len(src_k)}), skipping.")
             return img
 
-        # Solve row by row for numerical stability
+        # Solve row by row
         M = np.zeros((3, 3), dtype=np.float64)
         for ch in range(3):
             coeffs, _, _, _ = np.linalg.lstsq(src_k, dst_k[:, ch], rcond=None)
             M[ch] = coeffs
 
-        # Sanity check — reject degenerate solutions
-        diag  = np.diag(M)
+        # Force the G row to [0, 1, 0] — G channel is our reference,
+        # it must map to itself exactly. This is what keeps the matrix
+        # near-identity and well-conditioned.
+        M[1] = [0.0, 1.0, 0.0]
+
+        cond = float(np.linalg.cond(M))
+        diag = np.diag(M)
         offdiag = M - np.diag(diag)
-        cond  = float(np.linalg.cond(M))
 
         print(f"[SPCC-CM] Color matrix ({len(src_k)} stars, {n_clipped} clipped, cond={cond:.2f}):")
         print(np.round(M, 4))
@@ -2858,55 +2858,46 @@ class SFCCDialog(QDialog):
             print(f"[SPCC-CM] Matrix out of bounds, skipping.")
             return img
 
-        # Convert ratio-space matrix back to full RGB space.
-        # The matrix was fit in (R/G, 1, B/G) space — we need to apply it
-        # per-pixel in the same ratio space then reconstruct RGB.
+        # Apply in ratio space: for each pixel compute R/G and B/G,
+        # transform via M, reconstruct RGB with G unchanged
         H, W = img.shape[:2]
-        out   = img.copy().astype(np.float64)
-        G_ch  = out[..., 1]
+        out = img.astype(np.float64)
+        G_ch = out[..., 1].copy()
+        G_safe = np.where(G_ch > 1e-8, G_ch, 1e-8)
 
-        eps32 = np.float64(1e-8)
-        G_safe = np.where(G_ch > eps32, G_ch, eps32)
+        ratio_img = np.stack([
+            out[..., 0] / G_safe,
+            np.ones((H, W), dtype=np.float64),
+            out[..., 2] / G_safe,
+        ], axis=-1)  # (H, W, 3)
 
-        # Build ratio image: [R/G, 1, B/G]
-        ratio_R = out[..., 0] / G_safe
-        ratio_B = out[..., 2] / G_safe
-        ratio_img = np.stack([ratio_R,
-                               np.ones_like(ratio_R),
-                               ratio_B], axis=-1)   # (H, W, 3)
-
-        # Apply matrix: corrected_ratio = M @ ratio
         flat     = ratio_img.reshape(-1, 3)
         out_flat = (M @ flat.T).T
         out_ratio = out_flat.reshape(H, W, 3)
 
-        # Reconstruct: R = ratio_R_corrected * G,  G unchanged,  B = ratio_B_corrected * G
         corrected = np.stack([
             out_ratio[..., 0] * G_safe,
-            G_ch.copy(),
+            G_ch,
             out_ratio[..., 2] * G_safe,
         ], axis=-1)
 
-        # Fix negatives per-pixel (same approach as WB matrix)
+        # Fix per-pixel negatives
         pixel_mins = np.min(corrected, axis=-1, keepdims=True)
         if np.any(pixel_mins < 0.0):
             corrected = np.where(pixel_mins < 0.0, corrected - pixel_mins, corrected)
 
-        # Compress highlights preserving ratios
+        # Compress highlights
         mx = float(np.nanmax(corrected))
         if mx > 1.0:
             lum = (0.2126 * corrected[..., 0] +
                    0.7152 * corrected[..., 1] +
                    0.0722 * corrected[..., 2])
             lum_pivot = float(np.median(lum))
-            denom = max(mx - lum_pivot, 1e-8)
-            a = (1.0 - lum_pivot) / denom
+            a = (1.0 - lum_pivot) / max(mx - lum_pivot, 1e-8)
             corrected = lum_pivot + (corrected - lum_pivot) * a
 
-        result = np.clip(corrected, 0.0, 1.0).astype(np.float32)
-
-        print(f"[SPCC-CM] Matrix applied. Off-diagonal max: {np.abs(offdiag).max():.4f}")
-        return result
+        print(f"[SPCC-CM] Applied. Off-diagonal max: {np.abs(offdiag).max():.4f}")
+        return np.clip(corrected, 0.0, 1.0).astype(np.float32)
 
     # -- Step 2: Core color calibration using matched stars + synthetic photometry ---------
     def run_spcc(self):
@@ -3487,7 +3478,7 @@ class SFCCDialog(QDialog):
             f"  Gaia XP spectra:   {n_used_xp}\n"
             f"  Pickles templates: {n_used_pkl}\n"
             f"  Model: {model_choice}\n"
-            f"  3×3 color matrix:  {'ON' if use_cm else 'OFF'}\n"
+            #f"  3×3 color matrix:  {'ON' if use_cm else 'OFF'}\n"
             f"  R ratio @ x=1: {pretty(coeff_R):.4f}\n"
             f"  B ratio @ x=1: {pretty(coeff_B):.4f}\n"
             f"  Background neutralisation: "
