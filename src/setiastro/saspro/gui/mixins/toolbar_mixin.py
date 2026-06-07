@@ -31,7 +31,7 @@ from setiastro.saspro.resources import (
     pixelmath_path, histogram_path, mosaic_path, rescale_path, staralign_path,
     platesolve_path, psf_path, supernova_path, starregistration_path, csv_icon_path, collage_path,
     stacking_path, pedestal_icon_path, starspike_path, astrospike_path, dithericon_path,gaia_path,
-    signature_icon_path, livestacking_path, convoicon_path, spcc_icon_path, atlas_path,
+    signature_icon_path, livestacking_path, convoicon_path, spcc_icon_path, atlas_path,flythrough_path,
     exoicon_path, peeker_icon, dse_icon_path, isophote_path, statstretch_path,resizecanvas_path,nbextract_icon,
     starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path, narrowbandnormalization_path,
     nbtorgb_path, freqsep_path, multiscale_decomp_path, contsub_path, halo_path, cosmic_path, nbi_path,
@@ -318,6 +318,7 @@ class ToolbarMixin:
         tb_star.addAction(self.act_live_stacking)
         tb_star.addAction(self.act_planetary_stacker)
         tb_star.addAction(self.act_planet_projection)
+        tb_star.addAction(self.act_flythrough)
         tb_star.addAction(self.act_plate_solve)
         
         tb_star.addAction(self.act_star_align)
@@ -1367,6 +1368,11 @@ class ToolbarMixin:
         self.act_planet_projection.setStatusTip(self.tr("View your planets with stereographic projection"))
         self.act_planet_projection.triggered.connect(self._open_planet_projection)
 
+        self.act_flythrough = QAction(QIcon(flythrough_path), self.tr("Nebula Flythrough…"), self)
+        self.act_flythrough.setIconVisibleInMenu(True)
+        self.act_flythrough.setStatusTip(self.tr("Create a flythrough animation compositing starless and stars-only images"))
+        self.act_flythrough.triggered.connect(self._open_flythrough)
+
         self.act_plate_solve = QAction(QIcon(platesolve_path), self.tr("Plate Solver..."), self)
         self.act_plate_solve.setIconVisibleInMenu(True)
         self.act_plate_solve.setStatusTip(self.tr("Solve WCS/SIP for the active image or a file"))
@@ -1655,6 +1661,7 @@ class ToolbarMixin:
         reg("stacking_suite", self.act_stacking_suite)
         reg("planet_projection", self.act_planet_projection)
         reg("supernova_hunter", self.act_supernova_hunter)
+        reg("flythrough", self.act_flythrough)
         reg("star_spikes", self.act_star_spikes)
         reg("astrospike", self.act_astrospike)
         reg("exo_detector", self.act_exo_detector)

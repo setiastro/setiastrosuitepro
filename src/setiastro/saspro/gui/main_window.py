@@ -181,7 +181,7 @@ from setiastro.saspro.resources import (
     convoicon_path, spcc_icon_path, sasp_data_path, exoicon_path, peeker_icon,rotatearbitrary_path,
     dse_icon_path, astrobin_filters_csv_path, isophote_path, statstretch_path,
     starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path,gaia_path,
-    nbtorgb_path, freqsep_path, contsub_path, halo_path, cosmic_path,dithericon_path,
+    nbtorgb_path, freqsep_path, contsub_path, halo_path, cosmic_path,dithericon_path,flythrough_path,
     satellite_path, imagecombine_path, wrench_path, eye_icon_path,multiscale_decomp_path, nbi_path,
     disk_icon_path, nuke_path, hubble_path, collage_path, annotated_path, atlas_path,
     colorwheel_path, font_path, csv_icon_path, spinner_path, wims_path, narrowbandnormalization_path,
@@ -4889,6 +4889,44 @@ class AstroSuiteProMainWindow(
         dlg.show()
         self._log("Functions: opened Planet Projection.")
 
+    def _open_flythrough(self):
+        dlg = getattr(self, "_flythrough_dlg", None)
+        if dlg is not None:
+            try:
+                if not dlg.isVisible():
+                    dlg.show()
+                dlg.raise_()
+                dlg.activateWindow()
+                return
+            except RuntimeError:
+                self._flythrough_dlg = None
+
+        from setiastro.saspro.flythrough import open_flythrough_dialog
+
+        def _list_open_docs():
+            docs = []
+            for sw in self.mdi.subWindowList():
+                view = sw.widget()
+                doc  = getattr(view, "document", None)
+                if doc is None:
+                    try:
+                        doc = self.doc_manager.get_document_for_view(view)
+                    except Exception:
+                        pass
+                if doc is not None and getattr(doc, "image", None) is not None:
+                    docs.append((doc.display_name(), doc))
+            return docs
+
+        dlg = open_flythrough_dialog(
+            self,
+            list_open_docs_fn=_list_open_docs,
+            doc_manager=self.doc_manager,
+        )
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dlg.destroyed.connect(lambda _=None: setattr(self, "_flythrough_dlg", None))
+        dlg.setWindowIcon(QIcon(flythrough_path))
+        self._flythrough_dlg = dlg
+        self._log("Functions: opened Nebula Flythrough.")
 
     def _open_stacking_suite(self):
         # Reuse if we already have one

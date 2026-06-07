@@ -234,6 +234,7 @@ class Icons:
     HR_DIAGRAM = property(lambda self: _resource_path('HRDiagram.png'))
     EXOPLANET = property(lambda self: _resource_path('exoicon.png'))
     ATLAS = property(lambda self: _resource_path('atlas.png'))
+    FLYTHROUGH = property(lambda self: _resource_path('flythrough.png'))
     
     # Deconvolution & filters
     CONVO = property(lambda self: _resource_path('convo.png'))
@@ -247,6 +248,7 @@ class Icons:
     
     # Color
     SPCC = property(lambda self: _resource_path('spcc.png'))
+    SSSC = property(lambda self: _resource_path('sssc.png'))
     NBEXTRACT = property(lambda self: _resource_path('nbextract.png'))
     MAGNITUDE = property(lambda self: _resource_path('magnitude.png'))
     SNR_TOOL = property(lambda self: _resource_path('snr.png'))
@@ -451,6 +453,8 @@ _LEGACY_ICON_MAP = {
     'nbextract_icon': 'nbextract.png',
     'atlas_path': 'atlas.png',
     'gaia_path': 'gaia.png',
+    'flythrough_path': 'flythrough.png',
+    'sssc_path': 'sssc.png',
 
     'exoicon_path': 'exoicon.png',
     'peeker_icon': 'gridicon.png',
