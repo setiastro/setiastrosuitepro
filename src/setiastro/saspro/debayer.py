@@ -49,8 +49,9 @@ def _find_raw_sibling(path: Optional[str]) -> Optional[str]:
 
 # -------- helpers ------------------------------------------------------------
 _BAYER_METHODS = [
-    ("Edge-aware (Numba)", "edge"),
-    ("Bilinear (Numba)", "bilinear"),
+    ("Edge-aware (Numba)",            "edge"),
+    ("Bilinear (Numba)",              "bilinear"),
+    ("Strict CFA (no interpolation)", "strict_cfa"),
 ]
 _XTRANS_METHODS = [
     ("AHD (rawpy)", "AHD"),

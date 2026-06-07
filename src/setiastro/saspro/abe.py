@@ -1851,18 +1851,43 @@ class ABEDialog(QDialog):
         hsb.setValue((hsb.maximum() - hsb.minimum()) // 2)
         vsb.setValue((vsb.maximum() - vsb.minimum()) // 2)
 
-
-
     def _label_to_image_coords(self, posf) -> QPointF | None:
         if self._preview_qimg is None:
             return None
-        img_w = self._preview_qimg.width(); img_h = self._preview_qimg.height()
-        lab_w = self.preview_label.width(); lab_h = self.preview_label.height()
-        sx = img_w / max(1.0, lab_w); sy = img_h / max(1.0, lab_h)
-        x_img = float(posf.x()) * sx; y_img = float(posf.y()) * sy
-        # clamp to image
+
+        img_w = self._preview_qimg.width()
+        img_h = self._preview_qimg.height()
+
+        # The scaled pixmap may be smaller than the label if zoomed out —
+        # Qt centers it, so we must account for that margin before converting.
+        pm = self.preview_label.pixmap()
+        if pm is None or pm.isNull():
+            return None
+
+        pm_w = pm.width()
+        pm_h = pm.height()
+        lab_w = self.preview_label.width()
+        lab_h = self.preview_label.height()
+
+        off_x = max(0, (lab_w - pm_w) // 2)
+        off_y = max(0, (lab_h - pm_h) // 2)
+
+        # Position relative to the pixmap origin (not the label origin)
+        px = float(posf.x()) - off_x
+        py = float(posf.y()) - off_y
+
+        # Outside the drawn pixmap area — ignore
+        if px < 0 or py < 0 or px >= pm_w or py >= pm_h:
+            return None
+
+        # Pixmap pixels → image pixels via the preview scale
+        x_img = px / max(1e-12, self._preview_scale)
+        y_img = py / max(1e-12, self._preview_scale)
+
+        # Clamp to image bounds
         x_img = max(0.0, min(x_img, img_w - 1.0))
         y_img = max(0.0, min(y_img, img_h - 1.0))
+
         return QPointF(x_img, y_img)
 
     def _install_zoom_filters(self):

@@ -376,7 +376,22 @@ class MenuMixin:
         wa = QWidgetAction(self)
         wa.setDefaultWidget(self._link_btn)
         m_view.addAction(wa)
+        # ── Link group keyboard shortcuts ─────────────────────────────────────
+        for _key, _group in (("N", None), ("A", "A"), ("B", "B"), ("C", "C"), ("D", "D")):
+            _act = QAction(
+                self.tr("Link: None") if _group is None else self.tr(f"Link: Group {_group}"),
+                self
+            )
+            _act.setShortcut(QKeySequence(f"Ctrl+Alt+{_key if _group else 'N'}"))
+            _act.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+            _act.triggered.connect(
+                lambda checked=False, g=_group: self._set_group_for_active(g)
+            )
+            # Add to the view menu so they're discoverable, but visually separate
+            m_view.addAction(_act)
 
+        m_view.addSeparator()
+        # ─────────────────────────────────────────────────────────────────────
         # first-time sync of label/checked state
         self._sync_link_action_state()
 

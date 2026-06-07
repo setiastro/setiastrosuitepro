@@ -410,6 +410,110 @@ def _strip_ext_if_filename(s: str) -> str:
         return base
     return s
 
+# Add this class near the top of subwindow.py, before ImageSubWindow
+
+class _LoupeWindow(QWidget):
+    """
+    A small always-on-top frameless window that shows a zoomed-in
+    patch of the image around the cursor during Space+drag readout.
+    Follows the mouse, offset so it doesn't obscure the cursor.
+    """
+    SIZE    = 161          # window size in pixels (square)
+    PATCH   = 17           # source image pixels to sample (16×16)
+    OFFSET  = (20, 20)     # px offset from cursor so it doesn't cover the probe point
+
+    def __init__(self, parent=None):
+        assert self.PATCH % 2 == 1, "PATCH must be odd for unambiguous center pixel"
+        assert self.SIZE  % 2 == 1, "SIZE must be odd so crosshair bisects center pixel block"        
+        super().__init__(parent, 
+            Qt.WindowType.Tool |
+            Qt.WindowType.FramelessWindowHint |
+            Qt.WindowType.WindowStaysOnTopHint |
+            Qt.WindowType.WindowTransparentForInput
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+        self.setFixedSize(self.SIZE, self.SIZE)
+        self._pixmap: QPixmap | None = None
+
+    def set_patch(self, arr: np.ndarray):
+        """
+        arr: small H×W or H×W×3 float32 crop from the source image (already
+             normalized 0-1 or uint8). We scale it up to fill the window.
+        """
+        if arr is None or arr.size == 0:
+            self._pixmap = None
+            self.update()
+            return
+
+        # normalize to uint8
+        if arr.dtype == np.uint8:
+            buf8 = arr
+        elif arr.dtype == np.uint16:
+            buf8 = (arr.astype(np.float32) / 65535.0 * 255.0).clip(0, 255).astype(np.uint8)
+        else:
+            buf8 = (np.clip(arr.astype(np.float32, copy=False), 0.0, 1.0) * 255.0).astype(np.uint8)
+
+        # force H×W×3
+        if buf8.ndim == 2:
+            buf8 = np.stack([buf8] * 3, axis=-1)
+        elif buf8.ndim == 3 and buf8.shape[2] == 1:
+            buf8 = np.repeat(buf8, 3, axis=2)
+        elif buf8.ndim == 3 and buf8.shape[2] > 3:
+            buf8 = buf8[..., :3]
+
+        buf8 = np.ascontiguousarray(buf8)
+        h, w, _ = buf8.shape
+        qimg = QImage(buf8.tobytes(), w, h, w * 3, QImage.Format.Format_RGB888)
+
+        # scale up with nearest-neighbour so individual pixels are crisp blocks
+        pm = QPixmap.fromImage(qimg)
+        self._pixmap = pm.scaled(
+            self.SIZE, self.SIZE,
+            Qt.AspectRatioMode.IgnoreAspectRatio,
+            Qt.TransformationMode.FastTransformation,   # nearest-neighbour = crisp pixels
+        )
+        self.update()
+
+    def move_to_cursor(self, global_pos: QPoint):
+        ox, oy = self.OFFSET
+        x = global_pos.x() + ox
+        y = global_pos.y() + oy
+
+        # keep on screen
+        screen = QApplication.screenAt(global_pos)
+        if screen is not None:
+            sg = screen.geometry()
+            if x + self.SIZE > sg.right():
+                x = global_pos.x() - self.SIZE - ox
+            if y + self.SIZE > sg.bottom():
+                y = global_pos.y() - self.SIZE - oy
+
+        self.move(x, y)
+
+    def paintEvent(self, ev):
+        from PyQt6.QtGui import QPainter, QPen, QColor, QFont
+        p = QPainter(self)
+
+        if self._pixmap is None:
+            p.fillRect(self.rect(), QColor(20, 20, 30))
+            p.end()
+            return
+
+        p.drawPixmap(0, 0, self._pixmap)
+
+        # crosshair at centre
+        cx = cy = self.SIZE // 2
+        p.setPen(QPen(QColor(255, 0, 0, 200), 1))
+        p.drawLine(cx, 0, cx, self.SIZE)
+        p.drawLine(0, cy, self.SIZE, cy)
+
+        # thin border
+        p.setPen(QPen(QColor(255, 255, 255, 120), 1))
+        p.drawRect(0, 0, self.SIZE - 1, self.SIZE - 1)
+
+        p.end()
+
 class ImageSubWindow(QWidget):
     aboutToClose = pyqtSignal(object)
     autostretchChanged = pyqtSignal(bool)
@@ -435,7 +539,7 @@ class ImageSubWindow(QWidget):
         # View / render state
         # ─────────────────────────────────────────────────────────
         self._min_scale = 0.02
-        self._max_scale = 3.00  # 300%
+        self._max_scale = 5.00  # 500%
         self.scale = 0.25
         self._dragging = False
         self._drag_start = QPoint()
@@ -476,6 +580,7 @@ class ImageSubWindow(QWidget):
         # pixel readout live-probe state
         self._space_down = False
         self._readout_dragging = False
+        self._loupe: _LoupeWindow | None = None
         # Pinch gesture state (macOS trackpad)
         self._gesture_zoom_start = None
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -1314,65 +1419,127 @@ class ImageSubWindow(QWidget):
             return
         super().keyReleaseEvent(ev)
 
+    def _update_loupe(self, xi: int, yi: int, vp_pos: QPoint):
+        if self._loupe is None:
+            self._loupe = _LoupeWindow()
 
+        doc = getattr(self, "document", None)
+        if doc is None or doc.image is None:
+            return
+
+        src = getattr(self, "_buf8", None)
+        if src is None:
+            src = np.asarray(doc.image)
+
+        arr = np.asarray(src)
+
+        if arr.ndim == 2:
+            H, W = arr.shape
+        elif arr.ndim == 3:
+            H, W = arr.shape[:2]
+        else:
+            return
+
+        ph = _LoupeWindow.PATCH
+        pw = _LoupeWindow.PATCH
+        half = ph // 2
+
+        # clamp the crop window to image bounds
+        y0 = max(0, yi - half)
+        y1 = min(H, y0 + ph)        # fixed size from y0, not yi+half+1
+        x0 = max(0, xi - half)
+        x1 = min(W, x0 + pw)
+
+        if y1 <= y0 or x1 <= x0:
+            return
+
+        patch = arr[y0:y1, x0:x1]
+        actual_h = patch.shape[0]
+        actual_w = patch.shape[1]
+
+        # only pad if we're genuinely at an edge
+        if actual_h < ph or actual_w < pw:
+            if arr.ndim == 2:
+                padded = np.zeros((ph, pw), dtype=arr.dtype)
+            else:
+                padded = np.zeros((ph, pw, arr.shape[2]), dtype=arr.dtype)
+
+            # figure out where in the padded canvas this patch lands
+            top_pad  = max(0, half - (yi - y0))
+            left_pad = max(0, half - (xi - x0))
+
+            # clamp paste region so it never overruns padded bounds
+            paste_h = min(actual_h, ph - top_pad)
+            paste_w = min(actual_w, pw - left_pad)
+
+            if paste_h > 0 and paste_w > 0:
+                padded[top_pad:top_pad + paste_h,
+                       left_pad:left_pad + paste_w] = patch[:paste_h, :paste_w]
+            patch = padded
+
+        self._loupe.set_patch(patch)
+
+        global_pos = self.scroll.viewport().mapToGlobal(vp_pos)
+        self._loupe.move_to_cursor(global_pos)
+        self._loupe.show()
+
+    def _hide_loupe(self):
+        if self._loupe is not None:
+            self._loupe.hide()
 
     def _sample_image_at_viewport_pos(self, vp_pos: QPoint):
-        """
-        vp_pos: position in viewport coords (the visible part of the scroll area).
-        Returns (x_img_int, y_img_int, sample_dict) or None if OOB.
-        sample_dict is always raw float(s), never normalized.
-        """
         if self.document is None or self.document.image is None:
             return None
 
         arr = np.asarray(self.document.image)
 
-        # detect shape
         if arr.ndim == 2:
             h, w = arr.shape
             channels = 1
         elif arr.ndim == 3:
             h, w, channels = arr.shape[:3]
         else:
-            return None  # unsupported shape
+            return None
 
-        # current scroll offsets
-        hbar = self.scroll.horizontalScrollBar()
-        vbar = self.scroll.verticalScrollBar()
-        x_label = hbar.value() + vp_pos.x()
-        y_label = vbar.value() + vp_pos.y()
+        pm = self.label.pixmap()
+        if pm is None:
+            return None
+
+        # Convert viewport pos → label pos
+        p_label = self.label.mapFrom(self.scroll.viewport(), vp_pos)
+
+        # Account for centering offset when image is smaller than viewport
+        pm_w = pm.width()
+        pm_h = pm.height()
+        lbl_w = self.label.width()
+        lbl_h = self.label.height()
+
+        off_x = max(0, (lbl_w - pm_w) // 2)
+        off_y = max(0, (lbl_h - pm_h) // 2)
+
+        px = p_label.x() - off_x
+        py = p_label.y() - off_y
+
+        # If outside the actual pixmap area, bail out
+        if px < 0 or py < 0 or px >= pm_w or py >= pm_h:
+            return None
 
         scale = max(self.scale, 1e-12)
-        x_img = x_label / scale
-        y_img = y_label / scale
-
-        xi = int(round(x_img))
-        yi = int(round(y_img))
+        xi = int(round(px / scale))
+        yi = int(round(py / scale))
 
         if xi < 0 or yi < 0 or xi >= w or yi >= h:
             return None
 
-        # ---- mono cases ----
         if arr.ndim == 2 or channels == 1:
-            # pure mono or (H, W, 1)
-            if arr.ndim == 2:
-                val = float(arr[yi, xi])
-            else:
-                val = float(arr[yi, xi, 0])
-            sample = {"mono": val}
-            return (xi, yi, sample)
+            val = float(arr[yi, xi]) if arr.ndim == 2 else float(arr[yi, xi, 0])
+            return (xi, yi, {"mono": val})
 
-        # ---- color / 3+ channels ----
         pix = arr[yi, xi]
-
-        # make robust if pix is 1-D
-        # expect at least 3 numbers, fallback to repeating R
         r = float(pix[0])
         g = float(pix[1]) if channels > 1 else r
         b = float(pix[2]) if channels > 2 else r
-
-        sample = {"r": r, "g": g, "b": b}
-        return (xi, yi, sample)
+        return (xi, yi, {"r": r, "g": g, "b": b})
 
     def sizeHint(self) -> QSize:
         lbl = getattr(self, "image_label", None) or getattr(self, "label", None)
@@ -3207,6 +3374,7 @@ class ImageSubWindow(QWidget):
                 if res is not None:
                     xi, yi, sample = res
                     self._show_readout(xi, yi, sample)
+                    self._update_loupe(xi, yi, vp_pos)
                 self._readout_dragging = True
                 return True
             return False
@@ -3219,6 +3387,7 @@ class ImageSubWindow(QWidget):
                 if res is not None:
                     xi, yi, sample = res
                     self._show_readout(xi, yi, sample)
+                    self._update_loupe(xi, yi, vp_pos)
                 return True
             return False
 
@@ -3226,6 +3395,7 @@ class ImageSubWindow(QWidget):
         if ev.type() == QEvent.Type.MouseButtonRelease:
             if self._readout_dragging:
                 self._readout_dragging = False
+                self._hide_loupe()
                 return True
             return False
 
@@ -3361,6 +3531,7 @@ class ImageSubWindow(QWidget):
                 if res is not None:
                     xi, yi, sample = res
                     self._show_readout(xi, yi, sample)
+                    self._update_loupe(xi, yi, vp_pos)
                 self._readout_dragging = True
                 return
 
@@ -3695,6 +3866,7 @@ class ImageSubWindow(QWidget):
             if res is not None:
                 xi, yi, sample = res
                 self._show_readout(xi, yi, sample)
+                self._update_loupe(xi, yi, vp_pos)
             return
 
         if self._dragging:
@@ -3715,8 +3887,9 @@ class ImageSubWindow(QWidget):
             e.ignore(); return
         if e.button() == Qt.MouseButton.LeftButton:
             self._dragging = False
-            self._pan_live = False        # ← back to debounced mode
+            self._pan_live = False
             self._readout_dragging = False
+            self._hide_loupe()
             self._emit_view_transform()
             return
         super().mouseReleaseEvent(e)
@@ -3798,7 +3971,13 @@ class ImageSubWindow(QWidget):
                 self.aboutToClose.emit(doc)
         except Exception:
             pass
-
+        try:
+            if self._loupe is not None:
+                self._loupe.hide()
+                self._loupe.deleteLater()
+                self._loupe = None
+        except Exception:
+            pass
         # Clear cached buffers so numpy arrays are released before Qt
         # finishes tearing down child widgets
         self._buf8 = None
