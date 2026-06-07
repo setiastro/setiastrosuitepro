@@ -8,6 +8,149 @@
 #   If your adapter names differ, tweak _get_img_meta/_get_header/_push_image below (they already try a few fallbacks).
 #
 # - Call open_sfcc(view_adapter, sasp_data_path) to show the dialog.
+# ══════════════════════════════════════════════════════════════════════════════
+# DR4 MIGRATION — SFCC ARCHITECTURE ROADMAP
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# BACKGROUND: WHY THE CURRENT APPROACH HAS A CEILING
+# ─────────────────────────────────────────────────────
+# The current SFCC pipeline (SPCC-style) works as follows:
+#
+#   S_expected = ∫ flux_star(λ) × T_filter(λ) × QE_sensor(λ) dλ
+#
+# We then compare S_expected to what the camera actually measured to derive
+# a per-channel color correction. The filter transmission curves (Antlia,
+# Chroma, Baader etc.) are generally trustworthy — manufacturers measure
+# these interferometrically and the curves are physically meaningful.
+#
+# The sensor QE curves are a different story. Manufacturer QE curves are:
+#   - Measured at room temperature; your sensor runs at -10°C to -20°C
+#   - Measured with a bare die; your sensor has an AR coating, cover glass,
+#     microlenses, and a specific electronics chain
+#   - Published as marketing material, not calibration data
+#   - Systematically optimistic in the red (Sony IMX sensors especially)
+#   - Completely ignorant of your specific telescope's optical throughput,
+#     secondary obstruction, mirror coatings, and field flattener transmission
+#   - Ignorant of your atmosphere (water vapor, aerosols, airmass)
+#
+# This is exactly the same problem we hit with PixInsight's DBExtract for
+# narrowband work: it presumed it knew the filter/sensor response, and the
+# presumption was wrong enough to produce bad results. We abandoned DBExtract
+# and built NBExtract, which solves the mixing matrix purely from the data
+# using Gaia XP spectra as ground truth. The result was dramatically better.
+#
+# The 3×3 color matrix attempt in SFCC hit the same wall — with DR3 data,
+# per-star photometric scatter dominated over the real cross-channel signal,
+# so the matrix faithfully fit the noise instead of the signal. The scalar/
+# quadratic model works because it averages noise across hundreds of stars.
+# The matrix cannot average in the same way.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# THE DR4 ARCHITECTURE: LET THE STARS SOLVE THE SENSOR
+# ─────────────────────────────────────────────────────
+# Gaia DR4 changes the situation in two ways:
+#   1. ~10× more XP sources per field (G ≲ 17.5 vs current G ≲ 15.5)
+#   2. Improved XP spectral calibration, especially in crowded fields
+#      and for faint/cool stars where DR3 had systematic biases
+#
+# With that density, we can do what Gaia does internally to calibrate its
+# own photometric system: recover the effective system throughput empirically
+# from the data itself, with no presumption about QE.
+#
+# The formulation is a blind sensor characterization:
+#
+#   For each star i and channel c:
+#
+#     measured_c(i) = k_c × ∫ flux_star_i(λ) × T_filter_c(λ) × R(λ) dλ
+#
+#   where:
+#     - flux_star_i(λ)  is the Gaia XP calibrated spectrum (known)
+#     - T_filter_c(λ)   is the filter transmission curve (known, reliable)
+#     - R(λ)            is the unknown effective system response:
+#                         QE(λ) × atmosphere(λ) × optics(λ) × everything_else
+#     - k_c             is an unknown per-channel scalar gain
+#
+# We want to solve for R(λ) — the true system response — using the stars
+# as calibrators. This is identical to what Gaia's internal photometric
+# calibration pipeline does (see Carrasco et al. 2021, Riello et al. 2021).
+#
+# In practice R(λ) is parameterized as a smooth function (e.g. a low-order
+# polynomial or a set of basis splines on the 350–1000 nm range). The system
+# of equations across all stars and all channels becomes:
+#
+#   measured_c(i) / ∫ flux_star_i(λ) × T_filter_c(λ) dλ  =  k_c × <R>_c(i)
+#
+# where <R>_c(i) is the flux-weighted mean of R(λ) through channel c for
+# star i. With enough stars of diverse spectral types spanning the full
+# color range (O through M), the system is well-determined.
+#
+# The color correction then becomes:
+#
+#   corrected_c(i) = measured_c(i) / (k_c × <R>_c(i) / <R>_c(ref))
+#
+# where ref is the white reference star (e.g. G2V). No QE curve anywhere.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# WHAT NEEDS TO CHANGE IN THE CODE
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# 1. QUERY: update gaiadr3 → gaiadr4 in _query_gaia_sources_in_field()
+#    - mag_limit: 15.5 → 16.5 (verify column names haven't changed)
+#    - has_xp_continuous column: verify still exists / same semantics
+#
+# 2. UI: remove the Sensor (QE) combobox from the dialog entirely.
+#    The sensor is no longer an input — it is a *solved output*.
+#    Filter curves remain as inputs (R/G/B + LP/cut filters).
+#
+# 3. NEW: _solve_system_response() method
+#    Inputs:  enriched star list (measured flux per channel per star)
+#             filter transmission curves T_R, T_G, T_B on wl_grid
+#             Gaia XP spectra (already cached in gaia_xp_cache.sqlite)
+#    Output:  R(λ) — effective system response on wl_grid
+#             per-channel scalar gains k_R, k_G, k_B
+#
+#    Implementation sketch:
+#      - Parameterize R(λ) as a degree-6 polynomial (or 8-knot B-spline)
+#        constrained to be non-negative and bounded to [0.05, 1.0]
+#      - Build the linear system: for each star i and channel c,
+#          measured_c(i) = k_c × ∫ flux_i(λ) × T_c(λ) × R(λ) dλ
+#      - Solve via non-negative least squares (scipy.optimize.nnls)
+#        or bounded L-BFGS-B with the polynomial coefficients as free params
+#      - Sigma clip on per-star residuals (3σ) and re-solve
+#      - Require ≥ 50 stars spanning B-V range [-0.3, 1.8] for stable solution
+#
+# 4. REPLACE run_spcc() Step A/B/F with the new pipeline:
+#      Step A: integrate Gaia XP spectra × T_filter (no QE)  [unchanged]
+#      Step B: solve R(λ) from star residuals               [new]
+#      Step C: photometry                                    [unchanged]
+#      Step F: apply correction using solved R(λ)            [updated]
+#
+# 5. DIAGNOSTICS: add a "Solved System Response" plot showing R(λ) alongside
+#    the manufacturer QE curve (for comparison / validation). Users will
+#    immediately see how wrong the manufacturer curve was for their setup.
+#    This is a compelling visual that justifies dropping QE curves entirely.
+#
+# 6. PERSISTENCE: cache the solved R(λ) per (telescope, camera, filter_set,
+#    date) in QSettings or a sidecar file. Night-to-night variation is mostly
+#    atmosphere — the optics/sensor component is stable. This lets the user
+#    build up a calibrated system response over time, improving with each run.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# REFERENCES
+# ─────────────────────────────────────────────────────────────────────────────
+# Gaia photometric calibration methodology (the approach we are replicating):
+#   Carrasco et al. 2021 — "The Gaia photometric science alerts programme"
+#   Riello et al. 2021   — "Gaia Early Data Release 3: Photometric content
+#                           and validation" (A&A 649, A3)
+#   Fabricius et al. 2021 — "Gaia Early Data Release 3: Catalogue validation"
+#
+# The key insight from Riello et al.: the internal calibration solves for
+# both the mean instrument response AND per-observation corrections
+# simultaneously using an overconstrained system of calibrator stars.
+# With DR4 XP density (~500-2000 stars per typical astrophotography field)
+# we have sufficient overconstrained data to do the same thing.
+#
+# ══════════════════════════════════════════════════════════════════════════════
 
 from __future__ import annotations
 
