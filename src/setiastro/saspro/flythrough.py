@@ -139,15 +139,9 @@ def _build_depth_map(img: np.ndarray,
                      depth_gamma: float = 1.0,
                      invert: bool = False) -> np.ndarray:
     """
-    Build a smooth normalised depth map from the luminance of img.
-    Returns float32 H x W in [-1, 1].
-      +1 = brightest region  = closest to camera
-      -1 = darkest region    = furthest from camera
-    (flip with invert=True for dark=closer)
-
-    Uses MAD normalisation so bright stars don't dominate the field.
-    The heavy blur is intentional — we want large-scale nebula structure
-    to drive the depth, not individual stars or noise.
+    Build a depth map directly from luminance.
+    Returns float32 H x W in [0, 1] where 1 = brightest = closest.
+    No MAD, no median subtraction — just blurred luminance, normalised.
     """
     img = _ensure_rgb(img)
     lum = (0.299 * img[:, :, 0] +
@@ -155,25 +149,17 @@ def _build_depth_map(img: np.ndarray,
            0.114 * img[:, :, 2]).astype(np.float32)
 
     if HAS_CV2 and blur_sigma > 0:
-        lum_s = cv2.GaussianBlur(lum, (0, 0), float(blur_sigma))
-    else:
-        lum_s = lum
-
-    # Centre around median so sky background = 0
-    h = lum_s - float(np.median(lum_s))
-
-    # Optional gamma shaping
-    g = float(max(1e-6, depth_gamma))
-    if abs(g - 1.0) > 1e-6:
-        h = np.sign(h) * (np.abs(h) ** g)
+        lum = cv2.GaussianBlur(lum, (0, 0), float(blur_sigma))
 
     if invert:
-        h = -h
+        lum = 1.0 - lum
 
-    # MAD normalisation — robust against stars
-    mad = float(np.median(np.abs(h))) + 1e-9
-    h = h / (6.0 * mad)
-    return np.clip(h, -1.0, 1.0).astype(np.float32)
+    # Simple normalise to [0, 1] — preserve actual luminance structure
+    lo, hi = float(lum.min()), float(lum.max())
+    if hi > lo:
+        lum = (lum - lo) / (hi - lo)
+    
+    return lum.astype(np.float32)
 
 
 # ---------------------------------------------------------------------------
@@ -229,7 +215,7 @@ def _zoom_crop_depth(img, depth_map, zoom_base, depth_strength,
     cx_px = cx_frac * W
     cy_px = cy_frac * H
 
-    # Step 1: flat zoom source coords (where each output pixel reads from)
+    # Step 1: flat zoom source coords
     cols = (np.arange(out_w, dtype=np.float32) + 0.5) / out_w - 0.5
     rows = (np.arange(out_h, dtype=np.float32) + 0.5) / out_h - 0.5
     u, v = np.meshgrid(cols, rows)
@@ -246,24 +232,20 @@ def _zoom_crop_depth(img, depth_map, zoom_base, depth_strength,
                            interpolation=cv2.INTER_LINEAR,
                            borderMode=cv2.BORDER_REPLICATE)
 
-    # Step 3: radial parallax from height
-    # Direction from zoom centre in OUTPUT space
-    dx = u * crop_w   # displacement from centre in source pixels
+    # Step 3: radial direction vectors from zoom centre
+    dx = u * crop_w
     dy = v * crop_h
-    dist = np.sqrt(dx*dx + dy*dy)
+    dist = np.sqrt(dx * dx + dy * dy)
     safe_dist = np.maximum(dist, 1e-6)
     nx = dx / safe_dist
     ny = dy / safe_dist
 
-    # Height-driven extra shift: tall pixels shift outward by depth*strength*zoom_progress
-    # This is the parallax — tall things move more than short things as camera advances
-    parallax_px = dm_sampled * depth_strength * (zoom_base - 1.0)
+    # Centre depth so sky recedes (-), nebula advances (+)
+    dm_centred = dm_sampled - 0.5   # [-0.5, 0.5]
+    parallax_px = dm_centred * depth_strength * (zoom_base - 1.0) * 2.0
 
-    final_src_x = (base_src_x - nx * parallax_px).astype(np.float32)
-    final_src_y = (base_src_y - ny * parallax_px).astype(np.float32)
-
-    final_src_x = np.clip(final_src_x, 0.0, W - 1.0)
-    final_src_y = np.clip(final_src_y, 0.0, H - 1.0)
+    final_src_x = np.clip(base_src_x - nx * parallax_px, 0.0, W - 1.0).astype(np.float32)
+    final_src_y = np.clip(base_src_y - ny * parallax_px, 0.0, H - 1.0).astype(np.float32)
 
     return cv2.remap(img, final_src_x, final_src_y,
                      interpolation=cv2.INTER_LINEAR,
@@ -493,14 +475,15 @@ def _zoom_crop_depth_gpu(t, depth_t, zoom_base, depth_strength,
                                 align_corners=True).squeeze(0).squeeze(0)
 
     # Radial direction from zoom centre in source pixel space
+    # Centre depth so sky recedes, nebula advances
     dx = u_g * crop_w
     dy = v_g * crop_h
-    dist = torch.sqrt(dx*dx + dy*dy).clamp(min=1e-6)
+    dist = torch.sqrt(dx * dx + dy * dy).clamp(min=1e-6)
     nx = dx / dist
     ny = dy / dist
 
-    # Parallax: grows with camera advance (zoom_base - 1)
-    parallax_px = dm_sampled * depth_strength * (zoom_base - 1.0)
+    dm_centred = dm_sampled - 0.5
+    parallax_px = dm_centred * depth_strength * (zoom_base - 1.0) * 2.0
 
     final_src_x = (base_src_x - nx * parallax_px).clamp(0, W - 1.0)
     final_src_y = (base_src_y - ny * parallax_px).clamp(0, H - 1.0)
