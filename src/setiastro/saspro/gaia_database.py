@@ -46,7 +46,7 @@ from PyQt6.QtWidgets import (
     QSizePolicy, QRadioButton, QButtonGroup,
 )
 from PyQt6.QtGui import QColor
-
+from PyQt6 import sip
 try:
     from matplotlib.figure import Figure
     from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
@@ -1213,6 +1213,12 @@ class _GroupRowWidget(QFrame):
             self._lbl_file_count.setText("")
 
     def update_file_progress(self, done_mb: float, total_mb: float, msg: str):
+        try:
+            from PyQt6 import sip
+            if sip.isdeleted(self) or sip.isdeleted(self._progress):
+                return
+        except Exception:
+            return
         self._progress.setVisible(True)
         if total_mb > 0:
             total_kb = int(total_mb * 1024)
@@ -1228,6 +1234,12 @@ class _GroupRowWidget(QFrame):
             self._lbl_file_count.setText(f"{done_mb:,.0f} MB")
 
     def update_group_progress(self, done: int, total: int):
+        try:
+            from PyQt6 import sip
+            if sip.isdeleted(self) or sip.isdeleted(self._progress):
+                return
+        except Exception:
+            return
         if self._progress.maximum() > 0:
             self._lbl_file_count.setText(f"{done}/{total} files")
         else:
@@ -1674,9 +1686,9 @@ class GaiaDatabaseDialog(QDialog):
         row.set_downloading(True, cancel_cb=worker.cancel)
 
         worker.file_progress.connect(
-            lambda d, t, m, r=row: r.update_file_progress(d, t, m))
+            lambda d, t, m, r=row: r.update_file_progress(d, t, m) if not sip.isdeleted(r) else None)
         worker.group_progress.connect(
-            lambda d, t, r=row: r.update_group_progress(d, t))
+            lambda d, t, r=row: r.update_group_progress(d, t) if not sip.isdeleted(r) else None)
         worker.file_done.connect(
             lambda fname, ok: self._on_file_done(fname, ok))
         worker.group_finished.connect(

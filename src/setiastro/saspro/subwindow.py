@@ -418,11 +418,13 @@ class _LoupeWindow(QWidget):
     patch of the image around the cursor during Space+drag readout.
     Follows the mouse, offset so it doesn't obscure the cursor.
     """
-    SIZE    = 160          # window size in pixels (square)
-    PATCH   = 16           # source image pixels to sample (16×16)
+    SIZE    = 161          # window size in pixels (square)
+    PATCH   = 17           # source image pixels to sample (16×16)
     OFFSET  = (20, 20)     # px offset from cursor so it doesn't cover the probe point
 
     def __init__(self, parent=None):
+        assert self.PATCH % 2 == 1, "PATCH must be odd for unambiguous center pixel"
+        assert self.SIZE  % 2 == 1, "SIZE must be odd so crosshair bisects center pixel block"        
         super().__init__(parent, 
             Qt.WindowType.Tool |
             Qt.WindowType.FramelessWindowHint |
