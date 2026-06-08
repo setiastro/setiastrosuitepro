@@ -186,7 +186,7 @@ from setiastro.saspro.resources import (
     disk_icon_path, nuke_path, hubble_path, collage_path, annotated_path, atlas_path,
     colorwheel_path, font_path, csv_icon_path, spinner_path, wims_path, narrowbandnormalization_path,
     wimi_path, linearfit_path, debayer_path, aberration_path, acv_icon_path, snr_path,nbextract_icon,
-    functionbundles_path, viewbundles_path, selectivecolor_path, selectivelum_path, rgbalign_path, planetarystacker_path,syqon_path,
+    functionbundles_path, viewbundles_path, selectivecolor_path, selectivelum_path, rgbalign_path, planetarystacker_path,syqon_path,rcastro_path,
     background_path, script_icon_path, planetprojection_path,clonestampicon_path, finderchart_path,magnitude_path,
 )
 
@@ -4220,6 +4220,39 @@ class AstroSuiteProMainWindow(
         except Exception as e:
             print(f"Failed to open SyQon Tools: {e}")
 
+    def _open_rcastro(self):
+        from setiastro.saspro.rcastro import open_rcastro_dialog
+        sw = self.mdi.activeSubWindow()
+        if not sw:
+            QMessageBox.information(self, "RC-Astro Tools", "No active image view.")
+            return
+        w   = sw.widget() if hasattr(sw, "widget") else None
+        doc = getattr(w, "document", None)
+        if doc is None or getattr(doc, "image", None) is None:
+            QMessageBox.information(self, "RC-Astro Tools", "Active view has no image.")
+            return
+
+        # Clear stale reference if dialog was closed/destroyed
+        if hasattr(self, "_rcastro_dlg") and self._rcastro_dlg is not None:
+            try:
+                if not self._rcastro_dlg.isVisible():
+                    self._rcastro_dlg = None
+            except RuntimeError:
+                # C++ object already deleted
+                self._rcastro_dlg = None
+
+        if not hasattr(self, "_rcastro_dlg") or self._rcastro_dlg is None:
+            self._rcastro_dlg = open_rcastro_dialog(
+                self,
+                doc=doc,
+                rcastro_icon=QIcon(rcastro_path),
+            )
+            self._rcastro_dlg.destroyed.connect(
+                lambda: setattr(self, "_rcastro_dlg", None))
+        else:
+            self._rcastro_dlg.raise_()
+            self._rcastro_dlg.activateWindow()
+
     def _open_cosmic_clarity_ui(self):
         print("Opening Cosmic Clarity UI...")
         try:
@@ -6632,7 +6665,35 @@ class AstroSuiteProMainWindow(
                 except Exception:
                     print("Cosmic Clarity replay-on-base failed:", e)
             return
+        if cid == "rcastro":
+            try:
+                from setiastro.saspro.rcastro import run_rcastro_via_preset
 
+                preset_dict = preset if isinstance(preset, dict) else {}
+                run_rcastro_via_preset(self, preset_dict, doc=base_doc)
+
+                try:
+                    _rc_labels = {
+                        "bxt": "BlurXTerminator",
+                        "sxt": "StarXTerminator",
+                        "nxt": "NoiseXTerminator",
+                    }
+                    product = preset_dict.get("product", "bxt")
+                    self._log(
+                        f"[Replay] Replayed RC-Astro {_rc_labels.get(product, product.upper())} "
+                        f"on base of '{target_sw.windowTitle()}'"
+                    )
+                except Exception:
+                    pass
+            except Exception as e:
+                try:
+                    QMessageBox.warning(
+                        self, "RC-Astro",
+                        f"Replay-on-base failed:\n{e}"
+                    )
+                except Exception:
+                    print("RC-Astro replay-on-base failed:", e)
+            return
         # ---- For everything else, fall back to the normal command-drop behavior ----
         try:
             self._handle_command_drop(dict(payload), target_sw=target_sw)
@@ -7252,7 +7313,26 @@ class AstroSuiteProMainWindow(
             except Exception:
                 pass
             return
+        if cid == "rcastro":
+            from setiastro.saspro.rcastro import run_rcastro_via_preset
 
+            doc = None
+            try:
+                if target_sw is not None:
+                    vw = target_sw.widget()
+                    doc = getattr(vw, "document", None)
+            except Exception:
+                doc = None
+
+            run_rcastro_via_preset(self, preset or {}, doc=doc)
+
+            try:
+                _rc_labels = {"bxt": "BlurXTerminator", "sxt": "StarXTerminator", "nxt": "NoiseXTerminator"}
+                product = (preset or {}).get("product", "bxt")
+                self._log(f"Ran RC-Astro {_rc_labels.get(product, product.upper())}")
+            except Exception:
+                pass
+            return
         if cid == "linear_fit":
             try:
                 doc = self.doc_manager.get_active_document()

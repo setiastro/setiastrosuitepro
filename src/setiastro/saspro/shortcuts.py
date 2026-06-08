@@ -572,7 +572,7 @@ _PRESET_UI_IDS = {
     "remove_green","star_align","background_neutral","white_balance","clahe",
     "morphology","pixel_math","rgb_align","signature_insert","signature_adder",
     "signature","halo_b_gon","geom_rescale","rescale","debayer","image_combine","geom_resize_canvas",
-    "star_spikes","diffraction_spikes", "multiscale_decomp","geom_rotate_any","syqontools",
+    "star_spikes","diffraction_spikes", "multiscale_decomp","geom_rotate_any","syqontools","rcastro",
 }
 
 def _has_preset_editor_for_command(command_id: str) -> bool:
@@ -659,6 +659,15 @@ def _open_preset_editor_for_command(parent, command_id: str, initial: dict | Non
             "mode":"sharpen","gpu":True,"create_new_view":False,"sharpening_mode":"Both",
             "auto_psf":True,"nonstellar_psf":3.0,"stellar_amount":0.50,"nonstellar_amount":0.50,
             "denoise_luma":0.50,"denoise_color":0.50,"denoise_mode":"full","separate_channels":False,"scale":2
+        })
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
+
+    if command_id == "rcastro":
+        from setiastro.saspro.rcastro import RCAstroPresetDialog
+        dlg = RCAstroPresetDialog(parent, initial=cur or {
+            "product": "bxt", "engine": "auto",
+            "sharpen_stars": 0.0, "auto_nsr": True,
+            "sharpen_nonstellar": 0.0,
         })
         return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
 

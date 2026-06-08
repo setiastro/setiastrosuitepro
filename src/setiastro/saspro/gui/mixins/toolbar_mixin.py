@@ -36,7 +36,7 @@ from setiastro.saspro.resources import (
     starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path, narrowbandnormalization_path,
     nbtorgb_path, freqsep_path, multiscale_decomp_path, contsub_path, halo_path, cosmic_path, nbi_path,
     satellite_path, imagecombine_path, wims_path, wimi_path, linearfit_path, snr_path,
-    debayer_path, aberration_path, functionbundles_path, viewbundles_path, planetarystacker_path,syqon_path,
+    debayer_path, aberration_path, functionbundles_path, viewbundles_path, planetarystacker_path,syqon_path,rcastro_path,
     selectivecolor_path, selectivelum_path, rgbalign_path, planetprojection_path, clonestampicon_path, finderchart_path,magnitude_path,
 )
 
@@ -250,6 +250,7 @@ class ToolbarMixin:
         tbCosmic.addAction(self.actCosmicUI)
         tbCosmic.addAction(self.actCosmicSat)
         tbCosmic.addAction(self.actSyQonTools)
+        tbCosmic.addAction(self.act_rcastro)
 
         self._restore_toolbar_order(tbCosmic, "Toolbar/Cosmic")
         try:
@@ -1275,6 +1276,9 @@ class ToolbarMixin:
         self.actSyQonTools = QAction(syqon_icon, self.tr("SyQon Tools..."), self)
         self.actSyQonTools.triggered.connect(self._open_syqon_tools)
 
+        self.act_rcastro = QAction(QIcon(rcastro_path), "RC-Astro Tools…", self)
+        self.act_rcastro.setStatusTip(self.tr("Tools from RC-Astro (e.g. BXT, NXT, SXT)"))
+        self.act_rcastro.triggered.connect(self._open_rcastro)
 
         #Tools
         self.act_blink = QAction(QIcon(blink_path), self.tr("Blink Comparator..."), self)
@@ -1677,6 +1681,7 @@ class ToolbarMixin:
         reg("cosmicclaritysat", self.actCosmicSat)
         reg("aberrationai", self.actAberrationAI)
         reg("syqontools", self.actSyQonTools)
+        reg("rcastro", self.act_rcastro)
         reg("view_bundles", self.act_view_bundles)
         reg("function_bundles", self.act_function_bundles)
 
