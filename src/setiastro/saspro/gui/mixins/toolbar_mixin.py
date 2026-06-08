@@ -250,7 +250,7 @@ class ToolbarMixin:
         tbCosmic.addAction(self.actCosmicUI)
         tbCosmic.addAction(self.actCosmicSat)
         tbCosmic.addAction(self.actSyQonTools)
-        tbCosmic.addAction(self.act_rcastro)
+        #tbCosmic.addAction(self.act_rcastro)
 
         self._restore_toolbar_order(tbCosmic, "Toolbar/Cosmic")
         try:
