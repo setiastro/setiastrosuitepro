@@ -245,6 +245,7 @@ class Icons:
     HALO = property(lambda self: _resource_path('halo.png'))
     ABERRATION = property(lambda self: _resource_path('aberration.png'))
     SYQON = property(lambda self: _resource_path('syqon.png'))
+    RCASTRO = property(lambda self: _resource_path('rcastro.png'))
     
     # Color
     SPCC = property(lambda self: _resource_path('spcc.png'))
@@ -455,6 +456,7 @@ _LEGACY_ICON_MAP = {
     'gaia_path': 'gaia.png',
     'flythrough_path': 'flythrough.png',
     'sssc_path': 'sssc.png',
+    'rcastro_path': 'rcastro.png',
 
     'exoicon_path': 'exoicon.png',
     'peeker_icon': 'gridicon.png',

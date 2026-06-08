@@ -1097,7 +1097,7 @@ class _LayerPanel(QGroupBox):
             "Strength 0.2-0.4 is usually plenty.  Depth blur controls smoothness.")
         fx_v.addWidget(self.chk_depth_warp)
         dw_row, self.sld_depth_warp, self.lbl_depth_warp = _slider_row(
-            "  Strength:", 0.0, 10.0, 0.3, decimals=2, scale=100)
+            "  Strength:", 0.0, 2.0, 0.3, decimals=2, scale=100)
         dw_row.setEnabled(False)
         self.chk_depth_warp.toggled.connect(dw_row.setEnabled)
         fx_v.addWidget(dw_row)
@@ -1187,7 +1187,7 @@ class _LayerPanel(QGroupBox):
     def get_fx(self) -> dict:
         fx: dict = {"animate_effects": self.chk_animate_fx.isChecked()}
         if self.chk_depth_warp.isChecked():
-            fx["depth_warp"]       = self.sld_depth_warp.value() / 100.0
+            fx["depth_warp"]       = (self.sld_depth_warp.value() / 100.0) * 10.0
             fx["depth_blur_sigma"] = self.sld_depth_blur.value() / 10.0
             fx["depth_invert"]     = self.chk_depth_invert.isChecked()
         if self.chk_barrel.isChecked():
