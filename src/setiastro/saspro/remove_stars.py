@@ -36,15 +36,16 @@ except Exception:
 
 # Shared utilities
 from setiastro.saspro.widgets.image_utils import extract_mask_from_document as _active_mask_array_from_doc
-from setiastro.saspro.resources import get_resources, starnet_path, get_icons
+from setiastro.saspro.resources import get_resources, starnet_path, get_icons, rcastro_path, syqon_path
 
 _ENABLE_SYQON = True  # flip to True only after you get permission
 
 # --- Star Removal tool registry ---
 _STAR_REMOVAL_TOOLS = [
     {"key": "syqon", "label": "SyQon Starless", "runner": "_run_syqon", "icon_path": starnet_path},    
-    {"key": "starnet", "label": "StarNet", "runner": "_run_starnet", "icon_path": starnet_path},
+    {"key": "starnet", "label": "StarNet", "runner": "_run_starnet", "icon_path": syqon_path},
     {"key": "darkstar", "label": "CosmicClarity Dark Star", "runner": "_run_darkstar", "icon_path": starnet_path},
+    #{"key": "sxt",     "label": "StarXTerminator (RC-Astro)",   "runner": "_run_sxt",     "icon_path": rcastro_path},
 ]
 
 _MAD_NORM = 1.4826
@@ -3218,3 +3219,40 @@ def darkstar_starless_from_array(
         stars_only = stars_only.mean(axis=2).astype(np.float32, copy=False)
 
     return starless, (stars_only if output_stars_only else None), bool(was_mono)
+
+def _run_sxt(main, doc, icon_path=None):
+    """Open the RC-Astro dialog with the StarXTerminator tab pre-selected."""
+    from setiastro.saspro.rcastro import open_rcastro_dialog
+    from PyQt6.QtGui import QIcon
+
+    # Check exe is configured first
+    s = QSettings()
+    exe = str(s.value("rcastro/exe_path", ""))
+    if not exe or not os.path.exists(exe):
+        QMessageBox.warning(
+            main, "StarXTerminator",
+            "RC-Astro executable not set.\n\n"
+            "Open RC-Astro Tools from the toolbar and browse for the\n"
+            "rc-astro executable first, then try again."
+        )
+        return
+
+    icon = QIcon(icon_path) if icon_path else None
+
+    # Open the dialog (or raise it if already open)
+    if hasattr(main, "_rcastro_dlg") and main._rcastro_dlg is not None:
+        try:
+            dlg = main._rcastro_dlg
+            # Switch to the SXT tab (index 1)
+            dlg.tabs.setCurrentIndex(1)
+            dlg.raise_()
+            dlg.activateWindow()
+            return
+        except RuntimeError:
+            main._rcastro_dlg = None
+
+    dlg = open_rcastro_dialog(main, doc=doc, rcastro_icon=icon)
+    # Switch to SXT tab (index 1: BXT=0, SXT=1, NXT=2)
+    dlg.tabs.setCurrentIndex(1)
+    main._rcastro_dlg = dlg
+    dlg.destroyed.connect(lambda: setattr(main, "_rcastro_dlg", None))

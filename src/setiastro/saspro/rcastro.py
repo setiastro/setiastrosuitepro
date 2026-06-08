@@ -260,6 +260,7 @@ class _SXTPanel(QWidget):
         self.chk_unscreen.setChecked(False)
         self.chk_unscreen.setEnabled(False)
         self.chk_stars.toggled.connect(self.chk_unscreen.setEnabled)
+        self.chk_unscreen.setEnabled(self.chk_stars.isChecked()) 
         form.addRow("", self.chk_unscreen)
 
         note = QLabel(
