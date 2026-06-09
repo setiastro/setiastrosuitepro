@@ -716,6 +716,8 @@ def _bootstrap_imports():
     if not _splash_initialized:
         _init_splash()
     # ── Gravitas field messages ───────────────────────────────────────
+    import random
+
     _GRAVITAS_MESSAGES = [
         "Preserving diffuse gravitas fields...",
         "Initializing volumetric coherence engine...",
@@ -732,7 +734,11 @@ def _bootstrap_imports():
         "Preparing quantum-adjacent star alignment kernels...",
         "Engaging probabilistic pixel gravity synthesizer...",
         "Normalizing interstellar density transition buffers...",
+        "Convincing hot pixels they are not stars...", 
+        "Checking whether Pluto is a planet today...",
+        "Debating optimal sigma-clipping thresholds internally...",
     ]
+    random.shuffle(_GRAVITAS_MESSAGES)
     _grav_idx = [0]
 
     def _update_splash_gravitas(progress: int):

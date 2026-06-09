@@ -232,7 +232,7 @@ def _zoom_crop_depth(img, depth_map, zoom_base, depth_strength,
                            interpolation=cv2.INTER_LINEAR,
                            borderMode=cv2.BORDER_REPLICATE)
 
-    # Step 3: radial direction vectors from zoom centre
+    # Step 3: radial direction vectors from zoom center
     dx = u * crop_w
     dy = v * crop_h
     dist = np.sqrt(dx * dx + dy * dy)
@@ -240,9 +240,9 @@ def _zoom_crop_depth(img, depth_map, zoom_base, depth_strength,
     nx = dx / safe_dist
     ny = dy / safe_dist
 
-    # Centre depth so sky recedes (-), nebula advances (+)
-    dm_centred = dm_sampled - 0.5   # [-0.5, 0.5]
-    parallax_px = dm_centred * depth_strength * (zoom_base - 1.0) * 2.0
+    # center depth so sky recedes (-), nebula advances (+)
+    dm_centerd = dm_sampled - 0.5   # [-0.5, 0.5]
+    parallax_px = dm_centerd * depth_strength * (zoom_base - 1.0) * 2.0
 
     final_src_x = np.clip(base_src_x - nx * parallax_px, 0.0, W - 1.0).astype(np.float32)
     final_src_y = np.clip(base_src_y - ny * parallax_px, 0.0, H - 1.0).astype(np.float32)
@@ -259,7 +259,7 @@ def apply_radial_stretch(img: np.ndarray,
                           strength: float,
                           cx_frac: float = 0.5,
                           cy_frac: float = 0.5) -> np.ndarray:
-    """Edges zoom outward faster than centre (rubber-sheet effect)."""
+    """Edges zoom outward faster than center (rubber-sheet effect)."""
     if abs(strength) < 1e-4 or not HAS_CV2:
         return img
     h, w = img.shape[:2]
@@ -474,16 +474,16 @@ def _zoom_crop_depth_gpu(t, depth_t, zoom_base, depth_strength,
                                 mode="bilinear", padding_mode="border",
                                 align_corners=True).squeeze(0).squeeze(0)
 
-    # Radial direction from zoom centre in source pixel space
-    # Centre depth so sky recedes, nebula advances
+    # Radial direction from zoom center in source pixel space
+    # center depth so sky recedes, nebula advances
     dx = u_g * crop_w
     dy = v_g * crop_h
     dist = torch.sqrt(dx * dx + dy * dy).clamp(min=1e-6)
     nx = dx / dist
     ny = dy / dist
 
-    dm_centred = dm_sampled - 0.5
-    parallax_px = dm_centred * depth_strength * (zoom_base - 1.0) * 2.0
+    dm_centerd = dm_sampled - 0.5
+    parallax_px = dm_centerd * depth_strength * (zoom_base - 1.0) * 2.0
 
     final_src_x = (base_src_x - nx * parallax_px).clamp(0, W - 1.0)
     final_src_y = (base_src_y - ny * parallax_px).clamp(0, H - 1.0)
@@ -889,10 +889,10 @@ class _FlythroughWorker(QThread):
 
 
 # ---------------------------------------------------------------------------
-# Centre-picker label
+# center-picker label
 # ---------------------------------------------------------------------------
 
-class _CentrePickerLabel(QLabel):
+class _centerPickerLabel(QLabel):
     pointPicked = pyqtSignal(float, float)
     pickCancelled = pyqtSignal()
 
@@ -1047,13 +1047,13 @@ class _LayerPanel(QGroupBox):
         self.sp_cx_start = _dsb(); self.sp_cy_start = _dsb()
         cx_s.addWidget(QLabel("X:")); cx_s.addWidget(self.sp_cx_start)
         cx_s.addWidget(QLabel("Y:")); cx_s.addWidget(self.sp_cy_start)
-        form.addRow("Centre start:", cx_s)
+        form.addRow("center start:", cx_s)
 
         cx_e = QHBoxLayout()
         self.sp_cx_end = _dsb(); self.sp_cy_end = _dsb()
         cx_e.addWidget(QLabel("X:")); cx_e.addWidget(self.sp_cx_end)
         cx_e.addWidget(QLabel("Y:")); cx_e.addWidget(self.sp_cy_end)
-        form.addRow("Centre end:", cx_e)
+        form.addRow("center end:", cx_e)
 
         self.cmb_ease = QComboBox()
         self.cmb_ease.addItems(list(EASE_FUNCTIONS.keys()))
@@ -1061,8 +1061,8 @@ class _LayerPanel(QGroupBox):
         form.addRow("Easing:", self.cmb_ease)
 
         pick_row = QHBoxLayout()
-        self.btn_pick_start = QPushButton("Pick Start Centre")
-        self.btn_pick_end   = QPushButton("Pick End Centre")
+        self.btn_pick_start = QPushButton("Pick Start center")
+        self.btn_pick_end   = QPushButton("Pick End center")
         self.btn_pick_start.setCheckable(True); self.btn_pick_end.setCheckable(True)
         pick_row.addWidget(self.btn_pick_start); pick_row.addWidget(self.btn_pick_end)
         form.addRow("", pick_row)
@@ -1123,7 +1123,7 @@ class _LayerPanel(QGroupBox):
         # Radial edge stretch
         self.chk_barrel = QCheckBox("Radial edge stretch")
         self.chk_barrel.setToolTip(
-            "Edges zoom outward faster than the centre — rubber-sheet effect.")
+            "Edges zoom outward faster than the center — rubber-sheet effect.")
         fx_v.addWidget(self.chk_barrel)
         barrel_row, self.sld_barrel, self.lbl_barrel = _slider_row(
             "  Strength:", -0.5, 0.5, 0.25, decimals=3, scale=1000)
@@ -1135,7 +1135,7 @@ class _LayerPanel(QGroupBox):
         # Zoom blur
         self.chk_zoom_blur = QCheckBox("Zoom blur  (warp-speed streaks)")
         self.chk_zoom_blur.setToolTip(
-            "Radial motion blur from zoom centre.  Best on stars layer.")
+            "Radial motion blur from zoom center.  Best on stars layer.")
         fx_v.addWidget(self.chk_zoom_blur)
         zb_row, self.sld_zoom_blur, self.lbl_zoom_blur = _slider_row(
             "  Strength:", 0.0, 1.0, 0.4, decimals=2, scale=100)
@@ -1347,9 +1347,9 @@ class FlythroughDialog(QDialog):
         self.panel_sl._on_pick_activated = _make_pick_activator(self.panel_sl, self.panel_st)
         self.panel_st._on_pick_activated = _make_pick_activator(self.panel_st, self.panel_sl)
 
-        picker_box = QGroupBox("Click image to set zoom centre points")
+        picker_box = QGroupBox("Click image to set zoom center points")
         picker_v   = QVBoxLayout(picker_box)
-        self.picker = _CentrePickerLabel()
+        self.picker = _centerPickerLabel()
         self.picker.setMinimumHeight(180)
         self.picker.pointPicked.connect(self._on_point_picked)
         picker_v.addWidget(self.picker)
