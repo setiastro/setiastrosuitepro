@@ -159,7 +159,7 @@ from PyQt6.QtWidgets import (
     QApplication, QVBoxLayout, QHBoxLayout, QComboBox, QSpinBox,
     QDoubleSpinBox, QCheckBox, QLabel, QLineEdit, QMainWindow, QPushButton,
     QDialog, QFileDialog, QInputDialog, QMessageBox, QWidget,
-    QProgressDialog,
+    QProgressDialog, QGroupBox,
 )
 from PyQt6.QtCore import QEventLoop
 
@@ -2019,8 +2019,27 @@ class SSSCDialog(QDialog):
             lambda v: QSettings().setValue(_SK_SEP_THR, int(v)))
         row4.addWidget(self.sep_thr_spin)
  
-        row4.addWidget(vsep())
-        row4.addWidget(lbl("R(λ) ctrl pts:"))
+
+        adv_box = QGroupBox("Advanced")
+        adv_box.setStyleSheet("""
+            QGroupBox {
+                color: #555555;
+                border: 1px solid #333333;
+                border-radius: 4px;
+                margin-top: 6px;
+                font-size: 10px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 6px;
+                padding: 0 3px;
+            }
+        """)
+        adv_layout = QHBoxLayout(adv_box)
+        adv_layout.setSpacing(6)
+        adv_layout.setContentsMargins(6, 4, 6, 4)
+
+        adv_layout.addWidget(lbl("R(λ) ctrl pts:"))
         self.nctrl_spin = QSpinBox()
         self.nctrl_spin.setRange(4, 24)
         self.nctrl_spin.setValue(8)
@@ -2034,8 +2053,25 @@ class SSSCDialog(QDialog):
             "16 = high resolution (~1000+ stars)")
         self.nctrl_spin.valueChanged.connect(
             lambda v: QSettings().setValue(_SK_N_CTRL, int(v)))
-        row4.addWidget(self.nctrl_spin)
- 
+        adv_layout.addWidget(self.nctrl_spin)
+
+        adv_layout.addWidget(lbl("M(Σ) ctrl pts:"))
+        self.max_stars_spin = QSpinBox()
+        self.max_stars_spin.setRange(100, 2000)
+        self.max_stars_spin.setValue(500)
+        self.max_stars_spin.setSingleStep(100)
+        self.max_stars_spin.setFixedWidth(58)
+        self.max_stars_spin.setStyleSheet(SPIN_STYLE)
+        self.max_stars_spin.setToolTip(
+            "Maximum calibrator stars for photometry.\n"
+            "Stars are selected brightest-first, XP stars prioritized.\n"
+            "500 is recommended — dim stars add noise, not accuracy.")
+        self.max_stars_spin.valueChanged.connect(
+            lambda v: QSettings().setValue("SSSC/MaxStars", int(v)))
+        adv_layout.addWidget(self.max_stars_spin)
+
+        row4.addWidget(vsep())
+        row4.addWidget(adv_box)
         row4.addStretch()
  
         self.session_info_lbl = QLabel("")
@@ -2109,6 +2145,8 @@ class SSSCDialog(QDialog):
 
         sep_thr = int(s.value(_SK_SEP_THR, 15))
         self.sep_thr_spin.setValue(sep_thr)
+
+        self.max_stars_spin.setValue(int(s.value("SSSC/MaxStars", 500)))
 
         nctrl = int(s.value(_SK_N_CTRL, 8))
         if hasattr(self, "nctrl_spin"):
@@ -2957,9 +2995,14 @@ SSSC is part of SetiAstro Suite Pro &mdash; www.setiastro.com
                 "No catalog stars matched to SEP detections.")
             return
 
-        MAX_PHOT_STARS = 500
+        MAX_PHOT_STARS = int(self.max_stars_spin.value()) if hasattr(self, "max_stars_spin") else 500
         if len(raw_matches) > MAX_PHOT_STARS:
-            raw_matches.sort(key=lambda m: m["sep_flux"], reverse=True)
+            def _match_priority(m):
+                si = int(m["sim_index"])
+                has_xp = (0 <= si < len(self.star_list)
+                        and self.star_list[si].get("gaia_source_id") is not None)
+                return (0 if has_xp else 1, -m["sep_flux"])
+            raw_matches.sort(key=_match_priority)
             raw_matches = raw_matches[:MAX_PHOT_STARS]
 
         wl_grid = _WL_GRID.copy()
