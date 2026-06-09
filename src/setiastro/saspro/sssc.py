@@ -166,7 +166,9 @@ from PyQt6.QtCore import QEventLoop
 # ── SASpro internals
 from setiastro.saspro.main_helpers import non_blocking_sleep
 from setiastro.saspro.backgroundneutral import background_neutralize_rgb, auto_rect_50x50
-from astroquery.gaia import Gaia
+# astroquery.gaia is imported lazily — see _get_sssc_gaia_tap() below.
+# Importing it at module level triggers a network connection to the ESA
+# Gaia TAP service, which hangs the splash screen during DR4 maintenance.
 from setiastro.saspro.gaia_downloader import GaiaDownloader, HAS_GAIAXPY
 from setiastro.saspro.gaia_downloader import GaiaSpectraDB
 from setiastro.saspro.gaia_database import get_library
@@ -226,6 +228,19 @@ _SK_SEP_THR  = "SSSC/SEPThreshold"
 _SK_N_CTRL   = "SSSC/NCtrlPoints"
 _SK_BN       = "SSSC/BackgroundNeutralization"
 
+def _get_sssc_gaia_tap():
+    """
+    Lazily import and return the astroquery Gaia TAP object.
+    Deferred so the archive connection is not attempted at module load time.
+    During DR4 migration periods the Gaia archive can be slow or unresponsive;
+    importing astroquery.gaia at module level would cause the splash screen
+    to hang indefinitely.
+    """
+    try:
+        from astroquery.gaia import Gaia
+        return Gaia
+    except ImportError:
+        return None
 
 # ══════════════════════════════════════════════════════════════════════════════
 # System response model
@@ -1627,10 +1642,10 @@ def build_sssc_diagnostics_figure(
 class SSSCDialog(QDialog):
     """
     Spectrophotometric Standard Star Calibration dialog.
-
+ 
     Derives the effective system throughput R(λ) from Gaia XP stellar
     spectra and filter transmission curves — no sensor QE curve required.
-
+ 
     Architecture overview:
       Step 1 — Fetch Stars & Spectra  (reuses SFCC fetch_stars logic)
       Step 2 — Run SSSC Calibration   (calls _solve_system_response)
@@ -1640,20 +1655,20 @@ class SSSCDialog(QDialog):
         Step D: apply correction via apply_sssc_correction()
         Step E: diagnostics plot
         Step F: persist solution to session cache
-
+ 
     See module docstring for full architecture and DR4 migration plan.
     """
-
+ 
     def __init__(self, doc_manager, sasp_data_path: str, parent=None):
         super().__init__(parent)
         _force_mpl_no_tex()
         self.setWindowTitle("Spectrophotometric Standard Star Calibration (SSSC)")
         self.setWindowFlag(Qt.WindowType.Window, True)
-
+ 
         import platform
         if platform.system() == "Darwin":
             self.setWindowFlag(Qt.WindowType.Tool, True)
-
+ 
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         try:
@@ -1661,12 +1676,12 @@ class SSSCDialog(QDialog):
         except Exception:
             pass
         self.setMinimumSize(900, 650)
-
+ 
         self.doc_manager    = doc_manager
         self.sasp_data_path = sasp_data_path
         self.user_custom_path = self._ensure_user_custom_fits()
         self.main_win       = parent
-
+ 
         self.star_list:    list[dict] = []
         self._last_matched: list[dict] = []
         self._session_cache: SessionResponseCache | None = None
@@ -1674,9 +1689,9 @@ class SSSCDialog(QDialog):
         self.current_image  = None
         self.current_header = None
         self.wcs            = None
-
+ 
         self._reload_hdu_lists()
-
+ 
         self.pickles_templates: list[str] = []
         for p in (self.user_custom_path, self.sasp_data_path):
             try:
@@ -1690,7 +1705,7 @@ class SSSCDialog(QDialog):
             except Exception:
                 pass
         self.pickles_templates.sort()
-
+ 
         self.sasp_viewer_window = None
         self._gaia_dl           = None
         self.center_ra          = None
@@ -1698,13 +1713,14 @@ class SSSCDialog(QDialog):
         self.wcs_header         = None
         self.pixscale           = None
         self.orientation        = None
-
+ 
         self._build_ui()
         self.load_settings()
+        self._restore_geometry()
         self.finished.connect(lambda *_: self._cleanup())
-
+ 
     # ── File prep ─────────────────────────────────────────────────────────────
-
+ 
     def _ensure_user_custom_fits(self) -> str:
         app_data = QStandardPaths.writableLocation(
             QStandardPaths.StandardLocation.AppDataLocation)
@@ -1713,24 +1729,24 @@ class SSSCDialog(QDialog):
         if not os.path.exists(path):
             fits.HDUList([fits.PrimaryHDU()]).writeto(path)
         return path
-
+ 
     def _gaia_db_path(self) -> str:
         base = QStandardPaths.writableLocation(
             QStandardPaths.StandardLocation.AppDataLocation)
         d = os.path.join(base, "gaia")
         os.makedirs(d, exist_ok=True)
         return os.path.join(d, "gaia_xp_cache.sqlite")
-
+ 
     def _get_session_cache(self) -> SessionResponseCache:
         if self._session_cache is None:
             self._session_cache = SessionResponseCache(self._gaia_db_path())
         return self._session_cache
-
+ 
     def _reload_hdu_lists(self):
         self.sed_list    = []
         self.filter_list = []
         self.sensor_list = []
-
+ 
         with fits.open(self.sasp_data_path, mode="readonly", memmap=False) as base:
             for hdu in base:
                 if not isinstance(hdu, fits.BinTableHDU):
@@ -1743,7 +1759,7 @@ class SSSCDialog(QDialog):
                     self.filter_list.append(e)
                 elif c == "SENSOR":
                     self.sensor_list.append(e)
-
+ 
         for path in (self.user_custom_path,):
             try:
                 with fits.open(path, mode="readonly", memmap=False) as hdul:
@@ -1758,27 +1774,137 @@ class SSSCDialog(QDialog):
                             self.sensor_list.append(e)
             except Exception:
                 pass
-
+ 
         self.sed_list.sort()
         self.filter_list.sort()
         self.sensor_list.sort()
-
+ 
     # ── UI ────────────────────────────────────────────────────────────────────
-
+ 
     def _build_ui(self):
+        # ── Shared style helpers ──────────────────────────────────────────────
+        # Step action buttons: large, bold, colored so they read as primary actions
+        STEP1_STYLE = """
+            QPushButton {
+                background: #1a6b5a;
+                color: #e8f8f5;
+                border: 1px solid #25a080;
+                border-radius: 4px;
+                padding: 5px 14px;
+                font-weight: bold;
+                font-size: 12px;
+            }
+            QPushButton:hover  { background: #1f8570; border-color: #2ebf9a; }
+            QPushButton:pressed { background: #154f42; }
+        """
+        STEP2_STYLE = """
+            QPushButton {
+                background: #1a4f2a;
+                color: #e8f8ee;
+                border: 1px solid #2a8040;
+                border-radius: 4px;
+                padding: 5px 14px;
+                font-weight: bold;
+                font-size: 12px;
+            }
+            QPushButton:hover  { background: #1f6535; border-color: #35a050; }
+            QPushButton:pressed { background: #123520; }
+        """
+        # Utility buttons: subtle, clearly secondary
+        UTIL_STYLE = """
+            QPushButton {
+                background: #2d2d2d;
+                color: #aaaaaa;
+                border: 1px solid #444444;
+                border-radius: 4px;
+                padding: 4px 10px;
+                font-size: 11px;
+            }
+            QPushButton:hover  { background: #383838; color: #cccccc; border-color: #555; }
+            QPushButton:pressed { background: #222222; }
+        """
+        # Danger button (clear history)
+        DANGER_STYLE = """
+            QPushButton {
+                background: #3a1f1f;
+                color: #cc8888;
+                border: 1px solid #6b3333;
+                border-radius: 4px;
+                padding: 4px 10px;
+                font-size: 11px;
+            }
+            QPushButton:hover  { background: #4a2525; color: #ffaaaa; border-color: #8b4444; }
+            QPushButton:pressed { background: #2a1515; }
+        """
+        # Label styling
+        LBL_STYLE   = "color: #aaaaaa; font-size: 11px;"
+        LBL_R_STYLE = "color: #cc6666; font-size: 11px; font-weight: bold;"
+        LBL_G_STYLE = "color: #66aa66; font-size: 11px; font-weight: bold;"
+        LBL_B_STYLE = "color: #6688cc; font-size: 11px; font-weight: bold;"
+        COMBO_STYLE = """
+            QComboBox {
+                background: #2a2a2a;
+                color: #cccccc;
+                border: 1px solid #444;
+                border-radius: 3px;
+                padding: 2px 6px;
+                font-size: 11px;
+            }
+            QComboBox:hover { border-color: #666; }
+            QComboBox::drop-down { border: none; }
+        """
+        SPIN_STYLE = """
+            QSpinBox {
+                background: #2a2a2a;
+                color: #cccccc;
+                border: 1px solid #444;
+                border-radius: 3px;
+                padding: 2px 4px;
+                font-size: 11px;
+            }
+            QSpinBox:hover { border-color: #666; }
+        """
+        EDIT_STYLE = """
+            QLineEdit {
+                background: #2a2a2a;
+                color: #aaaaaa;
+                border: 1px solid #3a3a3a;
+                border-radius: 3px;
+                padding: 3px 6px;
+                font-size: 11px;
+            }
+            QLineEdit:focus { border-color: #25a080; color: #cccccc; }
+        """
+        CHK_STYLE = "color: #aaaaaa; font-size: 11px;"
+        SEP_STYLE = "color: #444444;"
+ 
+        def lbl(text, style=LBL_STYLE):
+            w = QLabel(text)
+            w.setStyleSheet(style)
+            return w
+ 
+        def vsep():
+            """Thin vertical separator line."""
+            s = QLabel("│")
+            s.setStyleSheet(SEP_STYLE)
+            return s
+ 
         layout = QVBoxLayout(self)
-
-        # ── Row 1: Step 1 button + white reference ────────────────────────────
+        layout.setSpacing(4)
+        layout.setContentsMargins(8, 6, 8, 6)
+ 
+        # ── Row 1: Step 1 + White Reference ──────────────────────────────────
         row1 = QHBoxLayout()
-        self.fetch_btn = QPushButton("Step 1: Fetch Stars & Spectra from Current View")
-        f = self.fetch_btn.font()
-        f.setBold(True)
-        self.fetch_btn.setFont(f)
+        row1.setSpacing(8)
+ 
+        self.fetch_btn = QPushButton("⭐  Step 1: Fetch Stars & Spectra")
+        self.fetch_btn.setStyleSheet(STEP1_STYLE)
+        self.fetch_btn.setMinimumHeight(30)
         self.fetch_btn.clicked.connect(self.fetch_stars)
         row1.addWidget(self.fetch_btn)
-
-        row1.addSpacing(20)
-        row1.addWidget(QLabel("White Reference:"))
+ 
+        row1.addWidget(vsep())
+        row1.addWidget(lbl("White Reference:"))
         self.star_combo = QComboBox()
         self.star_combo.addItem("G2V (Solar)", userData="G2V")
         self.star_combo.addItem("Vega (A0V)",  userData="A0V")
@@ -1786,137 +1912,168 @@ class SSSCDialog(QDialog):
             if sed.upper() in ("A0V", "G2V"):
                 continue
             self.star_combo.addItem(sed, userData=sed)
+        self.star_combo.setStyleSheet(COMBO_STYLE)
+        self.star_combo.setFixedWidth(140)
         row1.addWidget(self.star_combo)
         row1.addStretch()
+        self.about_btn = QPushButton("About")
+        self.about_btn.setStyleSheet(
+            "QPushButton { background: #1a2f4a; color: #88bbee; border: 1px solid #2a5080;"
+            " border-radius: 4px; padding: 4px 10px; font-size: 11px; }"
+            " QPushButton:hover { background: #1f3a5f; color: #aaccff; border-color: #3a70aa; }"
+            " QPushButton:pressed { background: #111f33; }"
+        )
+        self.about_btn.setToolTip("About SSSC — what it is and how it works")
+        self.about_btn.clicked.connect(self._show_about)
+        row1.addWidget(self.about_btn)        
         layout.addLayout(row1)
-
-        # ── Row 2: Filter selectors (NO sensor QE) ───────────────────────────
+ 
+        # ── Row 2: RGB Filters ────────────────────────────────────────────────
         row2 = QHBoxLayout()
-        row2.addWidget(QLabel("R Filter:"))
+        row2.setSpacing(8)
+ 
+        row2.addWidget(lbl("R Filter:", LBL_R_STYLE))
         self.r_filter_combo = QComboBox()
         self.r_filter_combo.addItem("(None)")
         self.r_filter_combo.addItems(self.filter_list)
+        self.r_filter_combo.setStyleSheet(COMBO_STYLE)
         row2.addWidget(self.r_filter_combo)
-
-        row2.addSpacing(16)
-        row2.addWidget(QLabel("G Filter:"))
+ 
+        row2.addWidget(vsep())
+        row2.addWidget(lbl("G Filter:", LBL_G_STYLE))
         self.g_filter_combo = QComboBox()
         self.g_filter_combo.addItem("(None)")
         self.g_filter_combo.addItems(self.filter_list)
+        self.g_filter_combo.setStyleSheet(COMBO_STYLE)
         row2.addWidget(self.g_filter_combo)
-
-        row2.addSpacing(16)
-        row2.addWidget(QLabel("B Filter:"))
+ 
+        row2.addWidget(vsep())
+        row2.addWidget(lbl("B Filter:", LBL_B_STYLE))
         self.b_filter_combo = QComboBox()
         self.b_filter_combo.addItem("(None)")
         self.b_filter_combo.addItems(self.filter_list)
+        self.b_filter_combo.setStyleSheet(COMBO_STYLE)
         row2.addWidget(self.b_filter_combo)
         row2.addStretch()
-
         layout.addLayout(row2)
-
-        # ── Row 3: LP/cut filters ─────────────────────────────────────────────
+ 
+        # ── Row 3: LP/cut filters + Camera label ─────────────────────────────
         row3 = QHBoxLayout()
-        row3.addWidget(QLabel("LP/Cut Filter 1:"))
+        row3.setSpacing(8)
+ 
+        row3.addWidget(lbl("LP/Cut 1:"))
         self.lp_filter_combo = QComboBox()
         self.lp_filter_combo.addItem("(None)")
         self.lp_filter_combo.addItems(self.filter_list)
+        self.lp_filter_combo.setStyleSheet(COMBO_STYLE)
         row3.addWidget(self.lp_filter_combo)
-
-        row3.addSpacing(16)
-        row3.addWidget(QLabel("LP/Cut Filter 2:"))
+ 
+        row3.addWidget(vsep())
+        row3.addWidget(lbl("LP/Cut 2:"))
         self.lp_filter_combo2 = QComboBox()
         self.lp_filter_combo2.addItem("(None)")
         self.lp_filter_combo2.addItems(self.filter_list)
+        self.lp_filter_combo2.setStyleSheet(COMBO_STYLE)
         row3.addWidget(self.lp_filter_combo2)
-        row3.addStretch()
-        layout.addLayout(row3)
-
-        # ── Row 3b: Camera / rig label ────────────────────────────────────────
-        row_cam = QHBoxLayout()
-        row_cam.addWidget(QLabel("Camera / Rig:"))
+ 
+        row3.addWidget(vsep())
+        row3.addWidget(lbl("Camera / Rig:"))
         self.camera_label_edit = QLineEdit()
         self.camera_label_edit.setPlaceholderText(
-            "e.g.  IMX492 · EdgeHD f/7  —  separates session history per sensor "
-            "(leave blank to share history across sensors with the same filters)")
+            "e.g. IMX492 · EdgeHD f/7  (separates session history per sensor)")
         self.camera_label_edit.setMaxLength(80)
+        self.camera_label_edit.setStyleSheet(EDIT_STYLE)
         self.camera_label_edit.textChanged.connect(
             lambda v: QSettings().setValue("SSSC/CameraLabel", v))
-        row_cam.addWidget(self.camera_label_edit)
-        layout.addLayout(row_cam)
-
-        # ── Row 4: Step 2 button + controls ──────────────────────────────────
+        row3.addWidget(self.camera_label_edit, stretch=1)
+        layout.addLayout(row3)
+ 
+        # ── Row 4: Step 2 + options + session controls ────────────────────────
         row4 = QHBoxLayout()
-        self.run_btn = QPushButton("Step 2: Run SSSC Calibration")
-        f2 = self.run_btn.font()
-        f2.setBold(True)
-        self.run_btn.setFont(f2)
+        row4.setSpacing(8)
+ 
+        self.run_btn = QPushButton("🔬  Step 2: Run SSSC Calibration")
+        self.run_btn.setStyleSheet(STEP2_STYLE)
+        self.run_btn.setMinimumHeight(30)
         self.run_btn.clicked.connect(self.run_sssc)
         row4.addWidget(self.run_btn)
-
-        self.neutralize_chk = QCheckBox("Background Neutralization")
+ 
+        row4.addWidget(vsep())
+ 
+        self.neutralize_chk = QCheckBox("BG Neutralize")
         self.neutralize_chk.setChecked(False)
+        self.neutralize_chk.setStyleSheet(CHK_STYLE)
+        self.neutralize_chk.setToolTip("Background Neutralization")
         row4.addWidget(self.neutralize_chk)
-
-        row4.addSpacing(16)
-        row4.addWidget(QLabel("Star detect σ:"))
+ 
+        row4.addWidget(vsep())
+        row4.addWidget(lbl("Star σ:"))
         self.sep_thr_spin = QSpinBox()
         self.sep_thr_spin.setRange(2, 100)
         self.sep_thr_spin.setValue(15)
+        self.sep_thr_spin.setFixedWidth(52)
+        self.sep_thr_spin.setStyleSheet(SPIN_STYLE)
+        self.sep_thr_spin.setToolTip("Star detection threshold (SEP σ)")
         self.sep_thr_spin.valueChanged.connect(
             lambda v: QSettings().setValue(_SK_SEP_THR, int(v)))
         row4.addWidget(self.sep_thr_spin)
-
-        row4.addSpacing(16)
-        row4.addWidget(QLabel("R(λ) ctrl pts:"))
+ 
+        row4.addWidget(vsep())
+        row4.addWidget(lbl("R(λ) ctrl pts:"))
         self.nctrl_spin = QSpinBox()
         self.nctrl_spin.setRange(4, 24)
         self.nctrl_spin.setValue(8)
         self.nctrl_spin.setSingleStep(2)
+        self.nctrl_spin.setFixedWidth(52)
+        self.nctrl_spin.setStyleSheet(SPIN_STYLE)
         self.nctrl_spin.setToolTip(
-            "Number of control points per channel for Stage 3 R(λ) solver.\n"
-            "8 = default (good for 200-600 stars)\n"
-            "12 = finer resolution (~600+ stars recommended)\n"
-            "16 = high resolution (~1000+ stars recommended)\n"
-            "More control points chase noise if star count is insufficient.")
+            "Control points per channel for Stage 3 R(λ) solver.\n"
+            "8 = default (200–600 stars)\n"
+            "12 = finer (~600+ stars)\n"
+            "16 = high resolution (~1000+ stars)")
         self.nctrl_spin.valueChanged.connect(
             lambda v: QSettings().setValue(_SK_N_CTRL, int(v)))
         row4.addWidget(self.nctrl_spin)
-
+ 
         row4.addStretch()
+ 
         self.session_info_lbl = QLabel("")
-        self.session_info_lbl.setStyleSheet("color: #888888; font-size: 10px;")
+        self.session_info_lbl.setStyleSheet("color: #606060; font-size: 10px;")
         row4.addWidget(self.session_info_lbl)
-
-        self.clear_session_btn = QPushButton("Clear Session History")
+ 
+        row4.addWidget(vsep())
+ 
+        self.clear_session_btn = QPushButton("Clear History")
+        self.clear_session_btn.setStyleSheet(DANGER_STYLE)
         self.clear_session_btn.setToolTip(
             "Delete all saved R(λ) solutions for the current filter+camera combination")
         self.clear_session_btn.clicked.connect(self._clear_session_history)
         row4.addWidget(self.clear_session_btn)
+ 
 
-        self.about_btn = QPushButton("About SSSC")
-        self.about_btn.clicked.connect(self._show_about)
-        row4.addWidget(self.about_btn)
-
+ 
         self.close_btn = QPushButton("Close")
+        self.close_btn.setStyleSheet(UTIL_STYLE)
         self.close_btn.clicked.connect(self.reject)
         row4.addWidget(self.close_btn)
         layout.addLayout(row4)
-
+ 
         # ── Status label ──────────────────────────────────────────────────────
         self.count_label = QLabel("")
+        self.count_label.setStyleSheet("color: #888888; font-size: 11px; padding: 1px 2px;")
         layout.addWidget(self.count_label)
-
+ 
         # ── Matplotlib canvas ─────────────────────────────────────────────────
         self.figure = Figure(figsize=(14, 8))
         self.canvas = FigureCanvas(self.figure)
         self.canvas.setVisible(False)
         layout.addWidget(self.canvas, stretch=1)
-
+ 
         self.reset_btn = QPushButton("Reset View / Close")
+        self.reset_btn.setStyleSheet(UTIL_STYLE)
         self.reset_btn.clicked.connect(self.reject)
         layout.addWidget(self.reset_btn)
-
+ 
         # ── Persist filter combos ─────────────────────────────────────────────
         self.r_filter_combo.currentIndexChanged.connect(
             lambda _: QSettings().setValue(_SK_RFILTER, self.r_filter_combo.currentText()))
@@ -1930,6 +2087,7 @@ class SSSCDialog(QDialog):
             lambda _: QSettings().setValue(_SK_LP2, self.lp_filter_combo2.currentText()))
         self.star_combo.currentIndexChanged.connect(
             lambda _: QSettings().setValue(_SK_SENSOR, self.star_combo.currentText()))
+
 
     def load_settings(self):
         s = QSettings()
@@ -1981,7 +2139,7 @@ class SSSCDialog(QDialog):
     # ── Gaia helpers ──────────────────────────────────────────────────────────
 
     def _gaia_enabled(self) -> bool:
-        return (Gaia is not None) and (GaiaDownloader is not None) and bool(HAS_GAIAXPY)
+        return (GaiaDownloader is not None) and bool(HAS_GAIAXPY)
 
     def _use_gaia_fallback(self) -> bool:
         return self._gaia_enabled()
@@ -3172,7 +3330,17 @@ SSSC is part of SetiAstro Suite Pro &mdash; www.setiastro.com
 
     # ── Cleanup ───────────────────────────────────────────────────────────────
 
+    def _restore_geometry(self):
+        s = QSettings()
+        geom = s.value("SSSC/WindowGeometry")
+        if geom:
+            self.restoreGeometry(geom)
+
+    def _save_geometry(self):
+        QSettings().setValue("SSSC/WindowGeometry", self.saveGeometry())
+
     def _cleanup(self):
+        self._save_geometry()
         try:
             if self._session_cache is not None:
                 self._session_cache.close()

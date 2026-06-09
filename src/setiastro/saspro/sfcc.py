@@ -204,8 +204,6 @@ from PyQt6.QtWidgets import (QToolBar, QWidget, QToolButton, QMenu, QApplication
 from setiastro.saspro.backgroundneutral import run_background_neutral_via_preset
 from setiastro.saspro.backgroundneutral import background_neutralize_rgb, auto_rect_50x50
 # --- Gaia XP fallback (optional) ---
-from astroquery.gaia import Gaia
-# you will add gaia_downloader.py to src/setiastro/saspro/gaia_downloader.py
 from setiastro.saspro.gaia_downloader import GaiaDownloader, HAS_GAIAXPY
 
 import warnings
@@ -223,9 +221,9 @@ except Exception:
     pd = None
 
 
-import gaiaxpy
-from gaiaxpy import generate
-from gaiaxpy.generator.photometric_system import PhotometricSystem
+# gaiaxpy is imported lazily — see _get_gaiaxpy_generate() below.
+# gaiaxpy fetches passband configuration from the Gaia archive on first
+# import; doing this at module level causes the splash screen to hang.
 
 import io
 import re
@@ -233,6 +231,35 @@ import contextlib
 
 from setiastro.saspro.gaia_downloader import GaiaSpectraDB, CalibratedSpectrum
 from setiastro.saspro.gaia_downloader import download_xp_spectra_only, ensure_saspro_spcc_dirs
+
+def _get_sfcc_gaia_tap():
+    """
+    Lazily import and return the astroquery Gaia TAP object.
+    Deferred so the archive connection is not attempted at module load time.
+    During DR4 migration periods the Gaia archive can be slow or unresponsive;
+    importing astroquery.gaia at module level would cause the splash screen
+    to hang indefinitely.
+    """
+    try:
+        from astroquery.gaia import Gaia
+        return Gaia
+    except ImportError:
+        return None
+
+
+def _get_gaiaxpy_generate():
+    """
+    Lazily import gaiaxpy.generate and PhotometricSystem.
+    gaiaxpy fetches passband configuration from the Gaia archive on first
+    import; deferring until first use prevents splash screen hangs.
+    Returns (generate, PhotometricSystem) or (None, None) if unavailable.
+    """
+    try:
+        from gaiaxpy import generate
+        from gaiaxpy.generator.photometric_system import PhotometricSystem
+        return generate, PhotometricSystem
+    except ImportError:
+        return None, None
 
 def _force_mpl_no_tex():
     try:
@@ -460,6 +487,7 @@ def gaiaxp_synth_bvr_from_source_ids(
     ids = [int(x) for x in source_ids if x is not None]
     ids = list(dict.fromkeys(ids))  # de-dupe preserving order
 
+    generate, PhotometricSystem = _get_gaiaxpy_generate()
     if not ids or generate is None or PhotometricSystem is None:
         return out
 
@@ -1011,12 +1039,10 @@ def _gaiaxp_synth_bvr(self, source_ids, *, status_cb=None, username=None, passwo
     except Exception:
         pass
 
-    try:
-        from gaiaxpy import generate
-        from gaiaxpy.generator.photometric_system import PhotometricSystem
-    except Exception:
+    generate, PhotometricSystem = _get_gaiaxpy_generate()
+    if generate is None or PhotometricSystem is None:
         return {}
-
+    
     ids = [int(x) for x in source_ids if x is not None]
     ids = list(dict.fromkeys(ids))
     if not ids:
@@ -1800,14 +1826,8 @@ class SFCCDialog(QDialog):
 
     # ── Gaia XP fallback helpers ─────────────────────────────────────────
     def _gaia_enabled(self) -> bool:
-        """
-        Gaia fallback requires:
-          - astroquery.gaia (for the region query)
-          - gaia_downloader available (for caching)
-          - gaiaxpy installed (to calibrate XP spectra)  [strictly required to actually download spectra]
-        """
-        return (Gaia is not None) and (GaiaDownloader is not None) and bool(HAS_GAIAXPY)
-
+        return (GaiaDownloader is not None) and bool(HAS_GAIAXPY)
+    
     def _get_gaia_downloader(self):
         """
         Lazy init: downloader holds sqlite DB connection.
@@ -1839,6 +1859,7 @@ class SFCCDialog(QDialog):
         self._last_gaia_query_error = None
         self._last_gaia_query_attempts = 0
 
+        Gaia = _get_sfcc_gaia_tap()
         if Gaia is None:
             self._last_gaia_query_error = "Gaia astroquery module unavailable"
             return []
