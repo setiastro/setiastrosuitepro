@@ -620,13 +620,38 @@ def _solve_system_response(
         rms_a = (_rms_frac(mR_a * mrg + bR_a, erg) +
                  _rms_frac(mB_a * mbg + bB_a, ebg))
 
-        # Quadratic
+        # Quadratic — fit on clipped population, then validate before accepting.
+        # With wide B-V fields (e.g. B-V span > 3) contaminated photometry or
+        # mis-matched stars produce extreme ratio values. np.polyfit extrapolates
+        # wildly on those, yielding near-zero or negative predictions and
+        # astronomically large RMS when evaluated on the full population.
+        # Guard: only accept quadratic if all predictions on the clipped
+        # population are positive and the coefficients are physically reasonable
+        # (leading term small enough that it doesn't flip sign within the data range).
         if len(mrg) >= 6:
             try:
                 aR_q, bR_q, cR_q = np.polyfit(mrg, erg, 2)
                 aB_q, bB_q, cB_q = np.polyfit(mbg, ebg, 2)
-                rms_q = (_rms_frac(aR_q * mrg**2 + bR_q * mrg + cR_q, erg) +
-                         _rms_frac(aB_q * mbg**2 + bB_q * mbg + cB_q, ebg))
+                pred_q_R = aR_q * mrg**2 + bR_q * mrg + cR_q
+                pred_q_B = aB_q * mbg**2 + bB_q * mbg + cB_q
+                # Also evaluate on the FULL population — the quadratic must stay
+                # positive there too or the final residual_rms will explode on
+                # outliers (carbon stars etc. with extreme ratio values).
+                pred_q_R_full = aR_q * meas_RG**2 + bR_q * meas_RG + cR_q
+                pred_q_B_full = aB_q * meas_BG**2 + bB_q * meas_BG + cB_q
+                quad_ok = (
+                    np.all(pred_q_R > 0) and np.all(pred_q_B > 0)
+                    and np.all(pred_q_R_full > 0) and np.all(pred_q_B_full > 0)
+                    and np.isfinite(aR_q) and np.isfinite(aB_q)
+                    and (abs(aR_q) < 1e6 and abs(aB_q) < 1e6)
+                )
+                if quad_ok:
+                    rms_q = (_rms_frac(pred_q_R, erg) + _rms_frac(pred_q_B, ebg))
+                    # Reject if the computed rms_q is not finite (overflow possible)
+                    if not np.isfinite(rms_q):
+                        rms_q = np.inf
+                else:
+                    rms_q = np.inf
             except Exception:
                 aR_q = bR_q = aB_q = bB_q = 0.0
                 cR_q = cB_q = 1.0
@@ -653,11 +678,24 @@ def _solve_system_response(
         def _poly2(c, x):
             return c[0] * x**2 + c[1] * x + c[2]
 
+        # Compute final residual RMS on the full population (original formula).
+        # If the model is degenerate (non-finite or astronomically large),
+        # fall back to the Stage 1 RMS so the display is sensible.
         pred2_RG = _poly2(coeff_R2, meas_RG)
         pred2_BG = _poly2(coeff_B2, meas_BG)
         r2_RG = (meas_RG / np.where(pred2_RG > eps, pred2_RG, eps)) - 1.0
         r2_BG = (meas_BG / np.where(pred2_BG > eps, pred2_BG, eps)) - 1.0
-        residual_rms = float(np.sqrt(np.mean(r2_RG**2 + r2_BG**2) / 2.0))
+        residual_rms_raw = float(np.sqrt(np.mean(r2_RG**2 + r2_BG**2) / 2.0))
+
+        # Guard: if the quadratic blew up (carbon stars, extreme B-V, etc.),
+        # the reported Stage 2 RMS would be meaningless. In that case fall back
+        # to Stage 1 RMS — it's the honest "what we actually applied" baseline,
+        # and Stage 3 will improve from there regardless.
+        if not np.isfinite(residual_rms_raw) or residual_rms_raw > 1e6:
+            residual_rms = rms_stage1
+            model2 = model2 + " [degenerate→S1 fallback]"
+        else:
+            residual_rms = residual_rms_raw
 
         gains = np.array([
             k_R, k_G, k_B,
@@ -919,16 +957,24 @@ def _solve_system_response(
                 return float(np.sum(resid ** 2))
 
             # ── Coordinate descent ────────────────────────────────────────────
-            # Each sweep visits every control point once and makes at most one
-            # ±20% move.  Using large jumps (e.g. ×0.5) lets a single point
-            # collapse to near-zero while others haven't moved yet — the stale
-            # I_rest makes every subsequent point look worse than it is and the
-            # whole curve degrades.  With ±20% steps, if the whole R(λ) curve
-            # needs to shift (e.g. all points ~0.7× lower) every point moves
-            # ~20% per sweep and they descend together.  No single point runs
-            # away from the pack.  60 sweeps is enough for any realistic shift
-            # (reaching 0.1× from 1.0 takes ~22 sweeps at 10% steps).
-            STEP_SIZES = [0.8, 0.9, 1.1, 1.2]   # ±20% max per point per sweep
+            # Coordinate descent — directional search per control point.
+            #
+            # Strategy: for each point, try UP first (×1.1, ×1.2). If either
+            # improves, take the best and move on. If not, try DOWN (×0.9, ×0.8).
+            # If neither direction improves, stay put.
+            #
+            # This is much more efficient in the refinement phase (seeded from
+            # prior) where most points are already near their optimum — we find
+            # the right direction on the first probe and skip the other side.
+            # On a fresh start all points need to move so both directions get
+            # tried anyway, same as before.
+            #
+            # Step sizes ±10%/±20% per sweep. Large enough to make progress
+            # on a fresh start (reaching 0.1× from 1.0 takes ~22 sweeps at
+            # 10% steps); small enough that no single point runs away from
+            # its neighbors before they've had a chance to move.
+            STEPS_UP   = [1.1, 1.2]   # try larger first
+            STEPS_DOWN = [0.9, 0.8]   # try smaller if up didn't help
 
             x_cur = x0.copy()
             loss_prev = _rms_loss(x_cur)
@@ -949,16 +995,27 @@ def _solve_system_response(
                 for ci, (ch_name, cd) in enumerate(active_channels):
                     r_vals = np.maximum(x_cur[ci * N_CTRL : (ci + 1) * N_CTRL], 0.0)
                     for j in range(N_CTRL):
-                        r_j    = r_vals[j]
-                        I_rest = cd["W"] @ r_vals - r_j * cd["W"][:, j]
+                        r_j       = r_vals[j]
+                        I_rest    = cd["W"] @ r_vals - r_j * cd["W"][:, j]
+                        cur_loss  = _rms_loss_1d(ci, ch_name, cd, j, I_rest, r_j)
                         best_r    = r_j
-                        best_loss = _rms_loss_1d(ci, ch_name, cd, j, I_rest, r_j)
-                        for s in STEP_SIZES:
-                            candidate = r_j * s
-                            l = _rms_loss_1d(ci, ch_name, cd, j, I_rest, candidate)
+                        best_loss = cur_loss
+
+                        # Try UP first
+                        for s in STEPS_UP:
+                            l = _rms_loss_1d(ci, ch_name, cd, j, I_rest, r_j * s)
                             if l < best_loss:
                                 best_loss = l
-                                best_r    = candidate
+                                best_r    = r_j * s
+
+                        # Only try DOWN if UP didn't improve
+                        if best_r == r_j:
+                            for s in STEPS_DOWN:
+                                l = _rms_loss_1d(ci, ch_name, cd, j, I_rest, r_j * s)
+                                if l < best_loss:
+                                    best_loss = l
+                                    best_r    = r_j * s
+
                         if best_r != r_j:
                             r_vals[j] = best_r
                             any_improved = True

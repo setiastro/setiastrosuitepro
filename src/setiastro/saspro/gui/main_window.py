@@ -3053,31 +3053,65 @@ class AstroSuiteProMainWindow(
         self.SFCC_window.show()
 
     def SSSC_show(self):
-        from setiastro.saspro.sssc import SSSCDialog
+        from setiastro.saspro.sssc_loader import SSSCSplash, SSSCLoader
         from setiastro.saspro.doc_manager import DocManager
+
         if getattr(self, "SSSC_window", None) and self.SSSC_window.isVisible():
             self.SSSC_window.raise_()
             self.SSSC_window.activateWindow()
             return
+
         if not hasattr(self, "doc_manager") or self.doc_manager is None:
-            self.doc_manager = DocManager(image_manager=getattr(self, "image_manager", None), parent=self)
+            self.doc_manager = DocManager(
+                image_manager=getattr(self, "image_manager", None), parent=self)
+
         if not os.path.exists(sasp_data_path):
-            QMessageBox.critical(self, "Missing Resource", f"SASP Data file not found:\n{sasp_data_path}")
+            QMessageBox.critical(self, "Missing Resource",
+                f"SASP Data file not found:\n{sasp_data_path}")
             return
-        self.SSSC_window = SSSCDialog(
-            doc_manager=self.doc_manager,
-            sasp_data_path=sasp_data_path,
-            parent=self
-        )
-        try:
-            self.SSSC_window.setWindowIcon(QIcon(sssc_icon_path))
-        except Exception:
-            pass
-        try:
-            self.SSSC_window.destroyed.connect(lambda _=None: setattr(self, "SSSC_window", None))
-        except Exception:
-            pass
-        self.SSSC_window.show()
+
+        splash = SSSCSplash(parent=self, sssc_path=sssc_path)
+        splash.show()
+        QApplication.processEvents()
+
+        self._sssc_loader = SSSCLoader(parent=self)
+
+        def _on_ready():
+            splash.set_status("Building interface…")
+            QApplication.processEvents()
+            try:
+                from setiastro.saspro.sssc import SSSCDialog  # already cached, instant
+                self.SSSC_window = SSSCDialog(
+                    doc_manager=self.doc_manager,
+                    sasp_data_path=sasp_data_path,
+                    parent=self,
+                )
+                try:
+                    self.SSSC_window.setWindowIcon(QIcon(sssc_path))
+                except Exception:
+                    pass
+                try:
+                    self.SSSC_window.destroyed.connect(
+                        lambda _=None: setattr(self, "SSSC_window", None))
+                except Exception:
+                    pass
+                splash.close()
+                self.SSSC_window.show()
+            except Exception as exc:
+                splash.close()
+                QMessageBox.critical(self, "SSSC Error", f"Failed to open SSSC:\n{exc}")
+
+        def _on_progress(msg):
+            splash.set_status(msg)
+
+        def _on_error(msg):
+            splash.close()
+            QMessageBox.critical(self, "SSSC Error", f"Failed to open SSSC:\n{msg}")
+
+        self._sssc_loader.progress.connect(_on_progress)
+        self._sssc_loader.ready.connect(_on_ready)
+        self._sssc_loader.error.connect(_on_error)
+        self._sssc_loader.start()
 
     def _open_nbextract(self):
         from setiastro.saspro.nbextract import NBExtractDialog
