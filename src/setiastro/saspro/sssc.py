@@ -26,38 +26,89 @@
 #
 # BOOTSTRAP STAGES (data-driven progression):
 # ────────────────────────────────────────────
-#  Stage 1  (<50 stars)      : scalar per-channel gains only (k_R, k_G, k_B)
-#                              Equivalent to current SFCC scalar/quadratic model.
+#  Stage 1  (<50 stars)      : Scalar per-channel gains only (k_R, k_G, k_B).
+#                              Equivalent to SFCC/SPCC scalar model. Corrects
+#                              the dominant white-balance error but cannot
+#                              capture any wavelength-dependent variation.
 #
-#  Stage 2  (50–200 stars)   : color-dependent gain within each band.
-#                              First moment of R(λ) per filter resolved.
-#                              Quadratic model per channel becomes well-posed.
+#  Stage 2  (50–200 stars)   : Color-dependent gain within each band.
+#                              Fits a quadratic model in ratio space (same as
+#                              SFCC Step D) but using filter-only integrals —
+#                              no QE presumption. Captures the first moment of
+#                              R(λ) per filter. Dominant improvement over Stage 1.
 #
-#  Stage 3  (200–1000 stars) : full R(λ) as smooth polynomial/spline.
-#                              Requires spectral diversity spanning B-V [-0.3, 1.8].
-#                              Hot blue O/B stars probe blue end of each passband;
-#                              cool M dwarfs probe the red end. Full population
-#                              triangulates R(λ) shape within each filter.
-#                              TARGET FOR GAIA DR4.
+#  Stage 3  (200+ stars,     : Full R(λ) shape solved per channel via coordinate
+#            B-V span ≥ 1.5)   descent on piecewise-linear control points.
+#                              Hot O/B stars constrain the blue edge of each
+#                              passband; cool K/M stars constrain the red edge.
+#                              The full B-V population triangulates R(λ) shape
+#                              within each filter. Each run refines the solution;
+#                              prior sessions seed the next via ctrl_points cache.
+#                              Control point count (default 8) is user-adjustable:
+#                                8  pts → 200+ stars  (default, conservative)
+#                               12  pts → 600+ stars  (finer resolution)
+#                               16  pts → 1000+ stars (high resolution)
+#                              Pixel correction still uses Stage 2 quadratic gains
+#                              (well-conditioned); Stage 3 R(λ) drives diagnostics
+#                              and seeds future sessions.
 #
-#  Stage 4  (1000+ stars,    : atmosphere decorrelation. With enough sessions at
-#            multi-session)    different airmasses, R(λ) separates into:
-#                                R(λ) = QE_true(λ) × optics(λ) × atmosphere(λ)
-#                              The hardware component stabilizes; atmosphere varies.
-#                              Builds a persistent calibrated system model over time.
+#  Stage 4  (future —        : Atmosphere/hardware decorrelation.
+#            DR4 + multi-      Requires Gaia DR4 star density AND multi-session
+#            night airmass)    data spanning a range of airmasses. The solver
+#                              would decompose R(λ) as:
+#                                R(λ) = R_hardware(λ) × R_atmosphere(λ, X)
+#                              where X is airmass. R_hardware(λ) is stable
+#                              night to night (sensor QE, mirror coatings,
+#                              optics, AR coating). R_atmosphere(λ, X) varies
+#                              with airmass and atmospheric conditions.
+#                              By imaging the same filter+camera combination
+#                              across many nights at different airmasses, the
+#                              hardware component can be isolated and locked in
+#                              as a persistent, empirically-measured system
+#                              response curve — your actual QE curve, not the
+#                              manufacturer's. Once stable, calibration collapses
+#                              back to Stage 2 speed but with a physically correct
+#                              R_hardware(λ) as input instead of a datasheet guess.
+#                              The curve will also naturally track aging: mirror
+#                              oxidation, sensor temperature variation, filter
+#                              aging, or optical train changes all appear as
+#                              drift in R_hardware(λ) over time.
 #
-# REFERENCES:
-#   Riello et al. 2021  — "Gaia EDR3: Photometric content and validation"
-#                          A&A 649, A3  (the pipeline we are replicating)
-#   Carrasco et al. 2021 — "Gaia photometric science alerts programme"
-#   Fabricius et al. 2021 — "Gaia EDR3: Catalogue validation"
+# ─────────────────────────────────────────────────────────────────────────────
+# THE ENDGAME
+# ─────────────────────────────────────────────────────────────────────────────
+#  Once Stage 4 has converged on a stable R_hardware(λ) for your rig:
 #
-# DR4 MIGRATION CHECKLIST (update sfcc.py too):
+#    measured_c(i) = k_c × ∫ flux_i(λ) × T_filter(λ) × R_hardware(λ) dλ
+#
+#  R_hardware(λ) is now a KNOWN INPUT, not something being solved for.
+#  Every calibration run becomes Stage 2 speed with Stage 3+ accuracy —
+#  SFCC/SPCC but with an empirically-measured, rig-specific QE curve that
+#  no manufacturer datasheet could ever give you.
+#
+#  The bootstrap sequence is a one-time investment per imaging rig. After
+#  that, the system self-maintains: each new session either confirms the
+#  hardware curve is stable or detects drift and flags an update.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# REFERENCES
+# ─────────────────────────────────────────────────────────────────────────────
+#  Riello et al. 2021     — "Gaia EDR3: Photometric content and validation"
+#                            A&A 649, A3  (the calibration pipeline we replicate)
+#  Carrasco et al. 2021   — "Gaia photometric science alerts programme"
+#  Fabricius et al. 2021  — "Gaia EDR3: Catalogue validation"
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# DR4 MIGRATION CHECKLIST
+# ─────────────────────────────────────────────────────────────────────────────
+#  When Gaia DR4 releases, update the following (sfcc.py too):
 #   □ _query_gaia_sources_in_field(): gaiadr3 → gaiadr4, mag_limit 15.5 → 16.5
 #   □ Verify has_xp_continuous column name unchanged in DR4 schema
 #   □ Rebuild split library files with DR4 source list
-#   □ _solve_system_response(): fill in the NNLS solver (stubbed below)
-#   □ Enable Stage 3 path once field star counts confirm >200 XP sources
+#   □ Lower _STAGE3_MIN threshold — DR4 density means more fields qualify
+#   □ Enable Stage 4 path: implement airmass decorrelation solver
+#   □ Add AIRMASS / ALTITUDE FITS header ingestion to session metadata
+#   □ Add R_hardware(λ) persistence and drift-detection to SessionResponseCache
 # ══════════════════════════════════════════════════════════════════════════════
 
 from __future__ import annotations
@@ -749,15 +800,33 @@ def _solve_system_response(
             # transmission-weighted composite across channels and maps very
             # poorly back to individual channel control points (causes 10^13 RMS).
             seeded_from_prior = False
-            if (prior_response is not None
-                    and prior_response.stage >= 3
-                    and prior_response.residual_rms < 2.0
-                    and prior_response.ctrl_points is not None):
-                status_cb(
-                    f"[SSSC] Stage 3: seeding from prior ctrl_points "
-                    f"({prior_response.n_stars} stars, "
-                    f"RMS={prior_response.residual_rms:.4f})"
-                )
+
+            # Prior seeding is only valid when:
+            #   1. Prior has ctrl_points (not just stitched response)
+            #   2. Prior N_CTRL matches current N_CTRL — W-matrix scale is
+            #      proportional to hat function width, which depends on N_CTRL.
+            #      An 8-point prior seeded into a 16-point solver has ~2x scale
+            #      mismatch, sending sweep 1 to RMS >> Stage 2 RMS.
+            #   3. Sanity check: seeded x0 loss is not dramatically worse than
+            #      the flat Stage 2 x0 (catches any other scale mismatches).
+            prior_n_ctrl = None
+            if prior_response is not None and prior_response.ctrl_points is not None:
+                # Read stored n_ctrl if available, else infer from wl array length
+                for _cp in prior_response.ctrl_points.values():
+                    prior_n_ctrl = int(_cp.get("n_ctrl", len(_cp["wl"])))
+                    break
+
+            can_seed = (
+                prior_response is not None
+                and prior_response.stage >= 3
+                and prior_response.residual_rms < 2.0
+                and prior_response.ctrl_points is not None
+                and prior_n_ctrl == N_CTRL   # N_CTRL must match exactly
+            )
+
+            if can_seed:
+                # Build candidate seeded x0
+                x0_seeded = x0.copy()
                 for ci, (ch_name, cd) in enumerate(active_channels):
                     prior_cp = prior_response.ctrl_points.get(ch_name)
                     if prior_cp is None:
@@ -766,17 +835,50 @@ def _solve_system_response(
                     prior_vals = np.asarray(prior_cp["vals"], dtype=np.float64)
                     if len(prior_wl) < 2 or len(prior_vals) < 2:
                         continue
-                    # Interpolate prior ctrl_vals onto current ctrl_wl grid.
-                    # prior_vals are already in W-matrix scale — no normalization needed.
                     seeded_vals = np.interp(
                         cd["ctrl_wl"], prior_wl, prior_vals,
                         left=prior_vals[0], right=prior_vals[-1],
                     )
                     seeded_vals = np.clip(seeded_vals, eps, None)
-                    x0[ci * N_CTRL : (ci + 1) * N_CTRL] = seeded_vals
-                seeded_from_prior = True
+                    x0_seeded[ci * N_CTRL : (ci + 1) * N_CTRL] = seeded_vals
+
+                # Sanity check: seeded loss must be <= 5x the flat Stage 2 loss.
+                # If it's worse, the prior scale is incompatible (e.g. different
+                # N_CTRL, different filter set, or corrupted cache entry).
+                def _quick_loss(x_test):
+                    total = 0.0
+                    for ci2, (ch2, cd2) in enumerate(active_channels):
+                        r2 = np.maximum(x_test[ci2 * N_CTRL : (ci2+1) * N_CTRL], 0.0)
+                        I2 = cd2["W"] @ r2
+                        I2s = np.where(I2 > eps, I2, eps)
+                        total += float(np.sum((cd2["meas_n"] / (s3_gains[ch2] * I2s) - 1.0)**2))
+                    return total
+
+                loss_flat   = _quick_loss(x0)
+                loss_seeded = _quick_loss(x0_seeded)
+
+                if loss_seeded <= 5.0 * loss_flat:
+                    x0 = x0_seeded
+                    seeded_from_prior = True
+                    status_cb(
+                        f"[SSSC] Stage 3: seeding from prior ctrl_points "
+                        f"({prior_response.n_stars} stars, "
+                        f"RMS={prior_response.residual_rms:.4f}, "
+                        f"N_CTRL={N_CTRL})"
+                    )
+                else:
+                    status_cb(
+                        f"[SSSC] Stage 3: prior seed rejected — "
+                        f"seeded loss ({loss_seeded:.1f}) > 5x flat loss ({loss_flat:.1f}), "
+                        f"starting from Stage 2 operating point"
+                    )
             else:
-                if prior_response is not None and prior_response.ctrl_points is None:
+                if prior_response is not None and prior_n_ctrl != N_CTRL:
+                    status_cb(
+                        f"[SSSC] Stage 3: prior N_CTRL={prior_n_ctrl} != current {N_CTRL} "
+                        f"— W-matrix scale mismatch, starting fresh"
+                    )
+                elif prior_response is not None and prior_response.ctrl_points is None:
                     status_cb(
                         "[SSSC] Stage 3: prior session has no ctrl_points — "
                         "starting from Stage 2 operating point"
@@ -912,9 +1014,10 @@ def _solve_system_response(
             ctrl_points = {}
             for ci, (ch_name, cd) in enumerate(active_channels):
                 ctrl_points[ch_name] = {
-                    "wl":   cd["ctrl_wl"].copy(),
-                    "vals": np.maximum(
-                        x_opt[ci * N_CTRL : (ci + 1) * N_CTRL], 0.0).copy(),
+                    "wl":     cd["ctrl_wl"].copy(),
+                    "vals":   np.maximum(
+                                  x_opt[ci * N_CTRL : (ci + 1) * N_CTRL], 0.0).copy(),
+                    "n_ctrl": int(N_CTRL),   # stored so seeding can verify scale compatibility
                 }
 
             # Store per-channel R(λ) for diagnostics panel, normalized TOGETHER
@@ -1381,7 +1484,7 @@ def build_sssc_diagnostics_figure(
                      height=0.55, zorder=2)
             stars_needed = max(0, thresh - sr.n_stars)
             if stg == 4:
-                note = "multi-session at varied airmass"
+                note = "Requires DR4 + multi-night airmass data"
             elif stars_needed > 0:
                 note = f"need {stars_needed:,} more stars"
             else:
