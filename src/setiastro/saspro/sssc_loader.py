@@ -3,6 +3,13 @@
 #
 # Splash screen + background loader for the SSSC dialog.
 # Mirrors the wimi_loader.py pattern exactly.
+#
+# NOTE on network-heavy imports:
+# astroquery.gaia and gaiaxpy both make network calls to the ESA Gaia archive
+# on first import. These are now lazy in gaia_downloader.py, but we also avoid
+# importing GaiaDownloader here during preload — it is not needed until the
+# user clicks "Fetch Stars", and importing it would spin up the DB connection
+# unnecessarily. gaia_database (the local SQLite library) is safe to preload.
 
 from PyQt6.QtCore import QThread, pyqtSignal, Qt
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QProgressBar, QApplication
@@ -100,6 +107,13 @@ class SSSCLoader(QThread):
     Does the heavy imports off the GUI thread.
     Emits ready() on success, error(msg) on failure.
     progress(str) emitted for status updates.
+
+    Deliberately does NOT import GaiaDownloader or anything that touches
+    astroquery.gaia or gaiaxpy — both make network calls to the ESA archive
+    on first import and will hang here if the archive is slow or under
+    maintenance (e.g. during DR4 migration).  Those imports are deferred
+    to _get_gaia_tap() / _get_gaiaxpy_calibrate() in gaia_downloader.py
+    and only fire when the user actually clicks "Fetch Stars".
     """
     progress = pyqtSignal(str)
     ready    = pyqtSignal()
@@ -115,12 +129,11 @@ class SSSCLoader(QThread):
             from astropy.wcs import WCS   # noqa
             from astroquery.simbad import Simbad  # noqa
 
-            self.progress.emit("Loading Gaia modules…")
-            from setiastro.saspro.gaia_downloader import GaiaDownloader  # noqa
-            from setiastro.saspro.gaia_database import get_library        # noqa
+            self.progress.emit("Loading Gaia local database…")
+            from setiastro.saspro.gaia_database import get_library  # noqa — local SQLite, no network
 
             self.progress.emit("Loading SSSC…")
-            from setiastro.saspro.sssc import SSSCDialog  # noqa — warms the cache
+            from setiastro.saspro.sssc import SSSCDialog  # noqa — warms module cache
 
             self.progress.emit("Almost ready…")
             self.ready.emit()

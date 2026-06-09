@@ -15,11 +15,10 @@ import hashlib
 import time
 
 try:
-    from astroquery.gaia import Gaia
-    HAS_ASTROQUERY = True
-except ImportError:
+    import importlib.util as _ilu
+    HAS_ASTROQUERY = _ilu.find_spec("astroquery") is not None
+except Exception:
     HAS_ASTROQUERY = False
-
 try:
     from astropy.coordinates import SkyCoord
     from astropy import units as u
@@ -28,14 +27,47 @@ except ImportError:
     HAS_ASTROPY = False
 
 try:
-    # gaiaxpy API varies slightly by version, but calibrate() exists across releases
-    from gaiaxpy import calibrate
+    import importlib as _importlib
+    _importlib.util.find_spec("gaiaxpy")   # check it exists, don't import
     HAS_GAIAXPY = True
-except ImportError:
+except (ImportError, ValueError):
     HAS_GAIAXPY = False
 
 import contextlib
 import uuid
+
+def _get_gaia_tap():
+    """
+    Lazily import and return the astroquery Gaia TAP object.
+    Deferred so the archive connection is not attempted at module load time.
+    During DR4 migration periods the Gaia archive can be slow or unresponsive;
+    importing astroquery.gaia at module level would cause the splash screen
+    to hang indefinitely.
+    """
+    try:
+        from astroquery.gaia import Gaia
+        return Gaia
+    except ImportError:
+        raise ImportError(
+            "astroquery is required. Install with: pip install astroquery"
+        )
+
+
+def _get_gaiaxpy_calibrate():
+    """
+    Lazily import gaiaxpy.calibrate — defers archive passband init until first use.
+    gaiaxpy fetches configuration/passband data from the Gaia archive on first
+    import; doing this at module load time causes hangs when the archive is
+    unstable (e.g. during DR4 migration periods).
+    """
+    try:
+        from gaiaxpy import calibrate
+        return calibrate
+    except ImportError:
+        raise ImportError(
+            "GaiaXPy is required for spectrum calibration. "
+            "Install with: pip install gaiaxpy"
+        )
 
 @contextlib.contextmanager
 def saspro_tmp_context(tmp_dir: Path):
@@ -204,7 +236,7 @@ def download_xp_spectra_only(
                 # GaiaXPy API note: calibrate() signature and return format has changed
                 # across versions. DR4 may require a gaiaxpy version bump.
                 # If calibrate() breaks: pip install --upgrade gaiaxpy                
-                calibrated, sampling = calibrate(batch_ids)
+                calibrated, sampling = _get_gaiaxpy_calibrate()(batch_ids)
             finally:
                 os.chdir(cwd0)
             wavelengths = _sampling_to_wavelengths(sampling, fallback=fallback_wl)
@@ -890,7 +922,7 @@ class GaiaDownloader:
 
         print(f"Querying Gaia DR3 for sources within {radius_deg}° of ({ra:.4f}, {dec:.4f})...")
 
-        job = Gaia.launch_job_async(query)
+        job = _get_gaia_tap().launch_job_async(query)
         result = job.get_results()
 
         sources: List[GaiaSource] = []
@@ -957,7 +989,7 @@ class GaiaDownloader:
                     # GaiaXPy API note: calibrate() signature and return format has changed
                     # across versions. DR4 may require a gaiaxpy version bump.
                     # If calibrate() breaks: pip install --upgrade gaiaxpy                    
-                    calibrated, sampling = calibrate(batch_ids)
+                    calibrated, sampling = _get_gaiaxpy_calibrate()(batch_ids)
 
                 wavelengths = self._sampling_to_wavelengths(sampling, fallback=fallback_wl)
 

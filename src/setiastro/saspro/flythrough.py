@@ -894,6 +894,7 @@ class _FlythroughWorker(QThread):
 
 class _CentrePickerLabel(QLabel):
     pointPicked = pyqtSignal(float, float)
+    pickCancelled = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -953,6 +954,9 @@ class _CentrePickerLabel(QLabel):
         self._repaint_scaled()
 
     def mousePressEvent(self, ev):
+        if ev.button() == Qt.MouseButton.RightButton:
+            self.pickCancelled.emit()   # new signal — add to class
+            return        
         if ev.button() != Qt.MouseButton.LeftButton or self._qimg is None:
             return
         pm_w, pm_h   = self._qimg.width(), self._qimg.height()
@@ -1017,6 +1021,7 @@ class _LayerPanel(QGroupBox):
                 color: {accent_colour};
             }}
         """)
+        self._on_pick_activated = None
 
         form = QFormLayout(self)
 
@@ -1156,18 +1161,31 @@ class _LayerPanel(QGroupBox):
     def _on_pick_start(self, checked):
         self._pick_mode = "start" if checked else None
         self.btn_pick_end.setChecked(False)
+        # Notify dialog to deactivate the other panel
+        if checked and self._on_pick_activated:
+            self._on_pick_activated(self)
 
     def _on_pick_end(self, checked):
         self._pick_mode = "end" if checked else None
         self.btn_pick_start.setChecked(False)
+        if checked and self._on_pick_activated:
+            self._on_pick_activated(self)
 
     def receive_picked_point(self, fx: float, fy: float):
         if self._pick_mode == "start":
-            self.sp_cx_start.setValue(fx); self.sp_cy_start.setValue(fy)
-            self.btn_pick_start.setChecked(False); self._pick_mode = None
+            self.sp_cx_start.setValue(fx)
+            self.sp_cy_start.setValue(fy)
+            # DO NOT clear _pick_mode — stay active for repositioning
         elif self._pick_mode == "end":
-            self.sp_cx_end.setValue(fx); self.sp_cy_end.setValue(fy)
-            self.btn_pick_end.setChecked(False); self._pick_mode = None
+            self.sp_cx_end.setValue(fx)
+            self.sp_cy_end.setValue(fy)
+            # DO NOT clear _pick_mode — stay active for repositioning
+
+    def deactivate_picking(self):
+        """Called by the dialog to cancel pick mode on this panel."""
+        self._pick_mode = None
+        self.btn_pick_start.setChecked(False)
+        self.btn_pick_end.setChecked(False)
 
     @property
     def picking(self) -> bool:
@@ -1321,6 +1339,13 @@ class FlythroughDialog(QDialog):
         layers_row.addWidget(self.panel_sl, 1)
         layers_row.addWidget(self.panel_st, 1)
         left.addLayout(layers_row)
+        def _make_pick_activator(active_panel, other_panel):
+            def _cb(panel):
+                other_panel.deactivate_picking()
+            return _cb
+
+        self.panel_sl._on_pick_activated = _make_pick_activator(self.panel_sl, self.panel_st)
+        self.panel_st._on_pick_activated = _make_pick_activator(self.panel_st, self.panel_sl)
 
         picker_box = QGroupBox("Click image to set zoom centre points")
         picker_v   = QVBoxLayout(picker_box)
@@ -1413,7 +1438,7 @@ class FlythroughDialog(QDialog):
         foot.setAlignment(Qt.AlignmentFlag.AlignCenter)
         foot.setStyleSheet("color:#444; font-size:10px;")
         root.addWidget(foot)
-
+        self.picker.pickCancelled.connect(self._cancel_all_picking)
         for panel in (self.panel_sl, self.panel_st):
             for sp in (panel.sp_zoom_start, panel.sp_zoom_end,
                        panel.sp_cx_start, panel.sp_cy_start,
@@ -1432,6 +1457,10 @@ class FlythroughDialog(QDialog):
                         panel.chk_animate_fx, panel.chk_depth_warp,
                         panel.chk_depth_invert):
                 chk.toggled.connect(self._schedule_preview)
+
+    def _cancel_all_picking(self):
+        self.panel_sl.deactivate_picking()
+        self.panel_st.deactivate_picking()
 
     def _toggle_play(self, checked: bool):
         self._playing = checked
@@ -1519,8 +1548,9 @@ class FlythroughDialog(QDialog):
         for panel in (self.panel_sl, self.panel_st):
             if panel.picking:
                 panel.receive_picked_point(fx, fy)
-                self._update_markers(); self._schedule_preview()
-                return
+                self._update_markers()
+                self._schedule_preview()
+                return  # only the active panel gets the click
 
     def _schedule_preview(self):
         self._preview_timer.start()
@@ -1550,8 +1580,18 @@ class FlythroughDialog(QDialog):
                                       blur_sigma=float(st_fx.get("depth_blur_sigma", 8.0)),
                                       invert=bool(st_fx.get("depth_invert", False)))
 
-        out_w = min(self.sp_out_w.value(), 640)
-        out_h = min(self.sp_out_h.value(), 360)
+        src_h, src_w = self._starless_arr.shape[:2]
+        if src_w > 0 and src_h > 0:
+            aspect = src_w / src_h
+            if aspect >= 1.0:
+                out_w = min(src_w, 640)
+                out_h = max(1, int(round(out_w / aspect)))
+            else:
+                out_h = min(src_h, 360)
+                out_w = max(1, int(round(out_h * aspect)))
+        else:
+            out_w = 640
+            out_h = 360
 
         try:
             frame = render_frame(

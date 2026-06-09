@@ -1894,6 +1894,10 @@ class SSSCDialog(QDialog):
         self.clear_session_btn.clicked.connect(self._clear_session_history)
         row4.addWidget(self.clear_session_btn)
 
+        self.about_btn = QPushButton("About SSSC")
+        self.about_btn.clicked.connect(self._show_about)
+        row4.addWidget(self.about_btn)
+
         self.close_btn = QPushButton("Close")
         self.close_btn.clicked.connect(self.reject)
         row4.addWidget(self.close_btn)
@@ -2463,6 +2467,170 @@ class SSSCDialog(QDialog):
             f"{n_bv_pickles:,} Pickles/B-V  ·  {n_none:,} unclassified")
 
         self._update_session_info_label()
+
+    def _show_about(self):
+        """Display the SSSC About dialog."""
+        from PyQt6.QtWidgets import QScrollArea, QTextBrowser
+        dlg = QDialog(self)
+        dlg.setWindowTitle("About SSSC — Spectrophotometric Standard Star Calibration")
+        dlg.setMinimumSize(720, 580)
+        dlg.resize(760, 640)
+        layout = QVBoxLayout(dlg)
+
+        browser = QTextBrowser()
+        browser.setOpenExternalLinks(True)
+        browser.setStyleSheet("font-size: 13px; background: #1a1a1a; color: #dddddd;")
+        browser.setHtml("""
+<style>
+  body  { font-family: sans-serif; font-size: 13px; color: #dddddd;
+          background: #1a1a1a; margin: 16px; line-height: 1.55; }
+  h2    { color: #44cc88; margin-top: 18px; margin-bottom: 4px; }
+  h3    { color: #88bbff; margin-top: 14px; margin-bottom: 3px; }
+  p     { margin: 6px 0; }
+  ul    { margin: 4px 0 8px 20px; }
+  li    { margin-bottom: 3px; }
+  .stage  { color: #ffcc66; font-weight: bold; }
+  .note   { color: #aaaaaa; font-style: italic; }
+  .future { color: #cc88ff; }
+  code  { background: #2a2a2a; padding: 1px 4px; border-radius: 3px;
+          color: #88ffcc; font-size: 12px; }
+  hr    { border: none; border-top: 1px solid #333; margin: 14px 0; }
+</style>
+ 
+<h2>What is SSSC?</h2>
+<p>
+SSSC (Spectrophotometric Standard Star Calibration) is SetiAstro&rsquo;s next-generation
+empirical color calibration, derived directly from the photometric calibration pipeline
+used internally by the Gaia space mission (Riello et al. 2021). The same mathematical
+framework that Gaia uses to self-calibrate a billion stars is applied here to calibrate
+your image &mdash; using Gaia&rsquo;s own XP stellar spectra as the reference standard.
+</p>
+<p>
+Traditional calibration tools require a <b>sensor QE curve</b> as input. The problem is
+that most published QE curves are promotional material &mdash; measured at room temperature
+on a bare die, often representing a best-case sample rather than an independently-verified
+response for your specific sensor batch. They have no knowledge of your AR coating, your
+optical train, your atmosphere, or your electronics chain. The curve you apply is rarely
+the curve your camera actually has in practice.
+</p>
+<p>
+<b>SSSC abandons the QE curve entirely.</b> Instead, it solves for the true effective
+system throughput R(&lambda;) directly from your image data, using Gaia XP stellar
+spectra as calibration references. No assumptions. No datasheets. Just your actual system,
+measured empirically from the stars in your field.
+</p>
+ 
+<hr>
+ 
+<h2>How does it work?</h2>
+<p>
+For each calibrator star, Gaia has measured a continuous flux spectrum from ~330&ndash;1050&nbsp;nm
+at ~2.5&nbsp;nm resolution. SSSC integrates those spectra through your filter transmission
+curves and solves for the R(&lambda;) that best explains the difference between what Gaia
+predicts and what your camera actually measured. The core equation is:
+</p>
+<p style="margin-left:20px; font-family:monospace; color:#88ffcc;">
+measured<sub>c</sub>(i) = k<sub>c</sub> &times; &int; flux<sub>i</sub>(&lambda;)
+&times; T<sub>filter</sub>(&lambda;) &times; R(&lambda;) d&lambda;
+</p>
+<p>
+R(&lambda;) absorbs everything the datasheet cannot tell you: true sensor QE at
+operating temperature, mirror and lens throughput, AR coating, field flattener,
+and atmospheric extinction. Filter transmission curves remain as inputs &mdash;
+manufacturers publish reliable interferometric measurements for these.
+</p>
+ 
+<hr>
+ 
+<h2>Bootstrap Stages</h2>
+<p>
+The solution quality improves automatically as more calibrator stars are available.
+SSSC selects the highest stage your field supports:
+</p>
+<ul>
+  <li><span class="stage">Stage 1 (&lt;50 stars):</span>
+      Scalar per-channel gains k<sub>R</sub>, k<sub>G</sub>, k<sub>B</sub>.
+      This is equivalent to traditional scalar SPCC &mdash; a single white-balance
+      correction per channel. Always runs as the baseline.</li>
+  <li><span class="stage">Stage 2 (50&ndash;200 stars):</span>
+      Color-dependent gain within each band, fit as slope, affine, or quadratic
+      depending on which best describes your data. Captures the dominant wavelength
+      dependence within each filter passband. Comparable to SASpro&rsquo;s polynomial
+      SPCC fit, which already exceeds traditional scalar SPCC quality on most normal
+      star fields &mdash; and SSSC achieves this without any QE curve assumption at all.</li>
+  <li><span class="stage">Stage 3 (200+ stars, B&minus;V span &ge; 1.5):</span>
+      Full R(&lambda;) shape solved per channel using piecewise-linear control points
+      and coordinate descent. Hot blue stars constrain the blue edge of each filter;
+      cool red stars constrain the red edge. The solution refines with each run &mdash;
+      prior sessions seed the next, so calibration accuracy accumulates over time.</li>
+  <li><span class="stage future">Stage 4 (future &mdash; DR4 + multi-night):</span>
+      Atmosphere/hardware decorrelation. By imaging across multiple nights at different
+      airmasses, R(&lambda;) separates into a stable hardware component and a variable
+      atmospheric component. Once converged, your empirically-measured QE curve is locked
+      in permanently &mdash; calibration collapses back to Stage 2 speed with Stage 3+
+      accuracy, using your actual curve instead of a manufacturer guess.</li>
+</ul>
+ 
+<hr>
+ 
+<h2>What can SSSC do today with Gaia DR3?</h2>
+<p>
+Gaia DR3 provides continuous XP spectra for stars to about G&nbsp;&le;&nbsp;15.5.
+On a typical wide-field image (0.5&ndash;2&deg; FOV) this yields 200&ndash;600
+calibrator stars, comfortably in Stage 3 territory for most fields.
+</p>
+<p>
+In testing, SSSC Stage 3 already outperforms traditional SPCC on the same data,
+precisely because it does not inherit the QE curve assumption. The residual RMS
+improvement from Stage 1 &rarr; Stage 2 &rarr; Stage 3 is visible in the
+Calibration Quality waterfall panel on every run.
+</p>
+<p class="note">
+Tip: run SSSC on multiple images from the same rig. Each run refines the R(&lambda;)
+solution and seeds the next. The Camera&nbsp;/&nbsp;Rig label field separates history
+per sensor so solutions don&rsquo;t mix between different imaging trains.
+</p>
+ 
+<hr>
+ 
+<h2 class="future">What will SSSC do with Gaia DR4?</h2>
+<p>
+Gaia DR4 is expected to extend XP spectra to G&nbsp;&le;&nbsp;16.5, roughly
+<b>tripling the calibrator star count</b> in most fields. This means:
+</p>
+<ul>
+  <li>Fields that currently reach Stage 2 will reliably reach Stage 3</li>
+  <li>Stage 3 with 16+ control points becomes well-constrained (&gt;1000 stars)</li>
+  <li>Stage 4 atmosphere decorrelation becomes feasible &mdash; enough stars per
+      session to resolve the airmass-dependent component of R(&lambda;)</li>
+</ul>
+<p>
+The Stage 4 endgame: once your hardware R(&lambda;) has converged from multi-night
+data, it is saved permanently to your session cache. Every subsequent calibration
+run loads that curve as a known input &mdash; no solver needed, Stage 2 speed,
+empirically-correct accuracy. The curve also self-maintains: mirror oxidation,
+sensor aging, filter changes all appear as drift in R(&lambda;) and trigger an update.
+</p>
+ 
+<hr>
+ 
+<h2>References</h2>
+<ul>
+  <li>Riello et al. 2021 &mdash; <i>Gaia EDR3: Photometric content and validation</i>,
+      A&amp;A 649, A3 &mdash; the calibration pipeline SSSC replicates</li>
+  <li>Carrasco et al. 2021 &mdash; <i>Gaia photometric science alerts programme</i></li>
+  <li>Fabricius et al. 2021 &mdash; <i>Gaia EDR3: Catalogue validation</i></li>
+</ul>
+<p class="note" style="margin-top:16px;">
+SSSC is part of SetiAstro Suite Pro &mdash; www.setiastro.com
+</p>
+""")
+        layout.addWidget(browser)
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dlg.accept)
+        layout.addWidget(close_btn)
+        dlg.exec()
 
     def _clear_session_history(self):
         """Delete all saved R(λ) solutions for the current session ID, with confirmation."""
