@@ -492,8 +492,15 @@ class _LoupeWindow(QWidget):
         self.move(x, y)
 
     def paintEvent(self, ev):
-        from PyQt6.QtGui import QPainter, QPen, QColor, QFont
+        from PyQt6.QtGui import QPainter, QPen, QColor
+
+        # Guard: don't attempt to paint if the widget isn't ready
+        if self.width() <= 0 or self.height() <= 0:
+            return
+
         p = QPainter(self)
+        if not p.isActive():          # paint device returned engine==0
+            return
 
         if self._pixmap is None:
             p.fillRect(self.rect(), QColor(20, 20, 30))
@@ -502,13 +509,11 @@ class _LoupeWindow(QWidget):
 
         p.drawPixmap(0, 0, self._pixmap)
 
-        # crosshair at centre
         cx = cy = self.SIZE // 2
         p.setPen(QPen(QColor(255, 0, 0, 200), 1))
         p.drawLine(cx, 0, cx, self.SIZE)
         p.drawLine(0, cy, self.SIZE, cy)
 
-        # thin border
         p.setPen(QPen(QColor(255, 255, 255, 120), 1))
         p.drawRect(0, 0, self.SIZE - 1, self.SIZE - 1)
 
@@ -1477,11 +1482,11 @@ class ImageSubWindow(QWidget):
                        left_pad:left_pad + paste_w] = patch[:paste_h, :paste_w]
             patch = padded
 
-        self._loupe.set_patch(patch)
-
         global_pos = self.scroll.viewport().mapToGlobal(vp_pos)
+        self._loupe.set_patch(patch)        
         self._loupe.move_to_cursor(global_pos)
-        self._loupe.show()
+        if not self._loupe.isVisible():                       # show only once patch is ready
+            self._loupe.show()
 
     def _hide_loupe(self):
         if self._loupe is not None:

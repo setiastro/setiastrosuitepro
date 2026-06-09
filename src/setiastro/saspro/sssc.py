@@ -1897,7 +1897,7 @@ class SSSCDialog(QDialog):
         row1 = QHBoxLayout()
         row1.setSpacing(8)
  
-        self.fetch_btn = QPushButton("⭐  Step 1: Fetch Stars & Spectra")
+        self.fetch_btn = QPushButton("⭐  Step 1: Fetch Stars && Spectra")
         self.fetch_btn.setStyleSheet(STEP1_STYLE)
         self.fetch_btn.setMinimumHeight(30)
         self.fetch_btn.clicked.connect(self.fetch_stars)
