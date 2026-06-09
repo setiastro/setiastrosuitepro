@@ -585,6 +585,7 @@ def _solve_system_response(
     # population and _rms_frac formula so all stages are directly comparable.
     # Fallback for Stage 1 only (< _STAGE2_MIN stars):
     rms_stage1_raw = float(np.sqrt(np.mean(resid_RG**2 + resid_BG**2) / 2.0))
+    residual_rms = rms_stage1_raw   # fallback; overwritten by Stage 2/3 if they run
     rms_stage1   = None   # will be overwritten with comparable value in Stage 2 block
     stage_rms    = {}
 
