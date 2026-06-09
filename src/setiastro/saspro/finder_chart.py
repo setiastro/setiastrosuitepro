@@ -1382,7 +1382,7 @@ def render_finder_chart_cached(
 
 def _draw_fov_box(ax, bg_wcs: "WCS", center: "SkyCoord", req: "FinderChartRequest", out_px: int):
     """
-    Draw the imaging sensor FOV rectangle centred on the field centre.
+    Draw the imaging sensor FOV rectangle centerd on the field center.
     Rotation is clockwise from North (positive = CW in sky coords).
     """
     if not getattr(req, "show_fov_box", False):

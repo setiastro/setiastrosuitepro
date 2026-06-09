@@ -362,7 +362,7 @@ def _compute_stats(
 
     # ── Walking noise metrics ─────────────────────────────────────────────
     # 1) PCA linearity: ratio of first to second singular value of the
-    #    mean-centred point cloud.  A random 2-D dither → ~1.0.
+    #    mean-centerd point cloud.  A random 2-D dither → ~1.0.
     #    A straight-line drift → very large.
     if n >= 3:
         pts_c = np.stack([dx - dx.mean(), dy - dy.mean()], axis=1)
@@ -782,8 +782,8 @@ class _DitherPlot(FigureCanvas if _MPL else QWidget):
             sc = float(unit_scale)
             plot_x = stats["dx"] * sc
             plot_y = stats["dy"] * sc
-            xlabel = f"ΔX centre ({unit_label})"
-            ylabel = f"ΔY centre ({unit_label})"
+            xlabel = f"ΔX center ({unit_label})"
+            ylabel = f"ΔY center ({unit_label})"
 
         steps   = stats["valid_steps"] * (float(unit_scale) if not use_radec else 1.0)
         n       = stats["n"]
@@ -830,7 +830,7 @@ class _DitherPlot(FigureCanvas if _MPL else QWidget):
                     xytext=(0, 3), textcoords="offset points",
                 )
 
-        title_suffix = " (RA/Dec)" if use_radec else " — image centre"
+        title_suffix = " (RA/Dec)" if use_radec else " — image center"
         ax_scatter.set_title(f"Dither Scatter{title_suffix}", color=_ACCENT, fontsize=10)
         ax_scatter.set_xlabel(xlabel, **lbl)
         ax_scatter.set_ylabel(ylabel, **lbl)
@@ -997,7 +997,7 @@ class DitherAnalysisWindow(QWidget):
     """
     Stand-alone Dither Analysis tool.
 
-    Dither offsets are computed as the displacement of the IMAGE CENTRE after
+    Dither offsets are computed as the displacement of the IMAGE center after
     each frame's alignment transform, relative to the reference frame.  This
     correctly handles meridian flips, which are flagged separately.
     """
@@ -2553,7 +2553,7 @@ class DitherAnalysisWindow(QWidget):
             f"  Failed / skipped    : {s['n_failed']}",
             f"  Meridian flips      : {n_ft}  (transition steps excluded from stats)",
             "─" * 52,
-            "  Image-centre dither offsets (all frames):",
+            "  Image-center dither offsets (all frames):",
             f"  RMS offset          : {_px(s['rms_offset'])}",
             f"  Mean offset         : {_px(s['mean_radius'])}",
             f"  Max offset          : {_px(s['max_radius'])}",
@@ -2585,7 +2585,7 @@ class DitherAnalysisWindow(QWidget):
             walking_note,
             "═" * 52,
             "",
-            "  Per-frame  (ΔX, ΔY = image-centre offset from ref,  r = radius):",
+            "  Per-frame  (ΔX, ΔY = image-center offset from ref,  r = radius):",
             "─" * 52,
         ]
 

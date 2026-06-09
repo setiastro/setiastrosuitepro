@@ -31,12 +31,12 @@ from setiastro.saspro.resources import (
     pixelmath_path, histogram_path, mosaic_path, rescale_path, staralign_path,
     platesolve_path, psf_path, supernova_path, starregistration_path, csv_icon_path, collage_path,
     stacking_path, pedestal_icon_path, starspike_path, astrospike_path, dithericon_path,gaia_path,
-    signature_icon_path, livestacking_path, convoicon_path, spcc_icon_path, atlas_path,
+    signature_icon_path, livestacking_path, convoicon_path, spcc_icon_path, atlas_path,flythrough_path,
     exoicon_path, peeker_icon, dse_icon_path, isophote_path, statstretch_path,resizecanvas_path,nbextract_icon,
     starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path, narrowbandnormalization_path,
     nbtorgb_path, freqsep_path, multiscale_decomp_path, contsub_path, halo_path, cosmic_path, nbi_path,
     satellite_path, imagecombine_path, wims_path, wimi_path, linearfit_path, snr_path,
-    debayer_path, aberration_path, functionbundles_path, viewbundles_path, planetarystacker_path,syqon_path,
+    debayer_path, aberration_path, functionbundles_path, viewbundles_path, planetarystacker_path,syqon_path,rcastro_path,sssc_path,
     selectivecolor_path, selectivelum_path, rgbalign_path, planetprojection_path, clonestampicon_path, finderchart_path,magnitude_path,
 )
 
@@ -218,6 +218,7 @@ class ToolbarMixin:
         tb_fn.addAction(self.act_white_balance)
         tb_fn.addAction(self.act_nbextract)
         tb_fn.addAction(self.act_sfcc)
+        tb_fn.addAction(self.act_sssc)
         tb_fn.addAction(self.act_remove_green)
         tb_fn.addAction(self.act_convo)
         tb_fn.addAction(self.act_extract_luma)
@@ -250,6 +251,7 @@ class ToolbarMixin:
         tbCosmic.addAction(self.actCosmicUI)
         tbCosmic.addAction(self.actCosmicSat)
         tbCosmic.addAction(self.actSyQonTools)
+        #tbCosmic.addAction(self.act_rcastro)
 
         self._restore_toolbar_order(tbCosmic, "Toolbar/Cosmic")
         try:
@@ -318,6 +320,7 @@ class ToolbarMixin:
         tb_star.addAction(self.act_live_stacking)
         tb_star.addAction(self.act_planetary_stacker)
         tb_star.addAction(self.act_planet_projection)
+        tb_star.addAction(self.act_flythrough)
         tb_star.addAction(self.act_plate_solve)
         
         tb_star.addAction(self.act_star_align)
@@ -1046,10 +1049,15 @@ class ToolbarMixin:
         self.act_white_balance.setStatusTip(self.tr("Apply white balance (Star-Based, Manual, or Auto)"))
         self.act_white_balance.triggered.connect(self._open_white_balance)
 
-        self.act_sfcc = QAction(QIcon(spcc_icon_path), self.tr("Spectral Photometric Flux Color Calibration..."), self)
+        self.act_sfcc = QAction(QIcon(spcc_icon_path), self.tr("Spectrophotometric Standard Star Calibration (SSSC)"), self)
         self.act_sfcc.setObjectName("sfcc")
         self.act_sfcc.setToolTip(self.tr("Open SPfCC (Pickles + GAIA + Filters + Sensor QE)"))
         self.act_sfcc.triggered.connect(self.SFCC_show)
+
+        self.act_sssc = QAction(QIcon(sssc_path), self.tr("Spectral Standard Star Calibration..."), self)
+        self.act_sssc.setObjectName("sssc")
+        self.act_sssc.setToolTip(self.tr("Open SSSC (Spectral Standard Star Calibration)"))
+        self.act_sssc.triggered.connect(self.SSSC_show)
 
         self.act_nbextract = QAction(QIcon(nbextract_icon), self.tr("Narrowband Channel Extractor..."), self)
         self.act_nbextract.setObjectName("nbextract")
@@ -1274,6 +1282,9 @@ class ToolbarMixin:
         self.actSyQonTools = QAction(syqon_icon, self.tr("SyQon Tools..."), self)
         self.actSyQonTools.triggered.connect(self._open_syqon_tools)
 
+        self.act_rcastro = QAction(QIcon(rcastro_path), "RC-Astro Tools…", self)
+        self.act_rcastro.setStatusTip(self.tr("Tools from RC-Astro (e.g. BXT, NXT, SXT)"))
+        self.act_rcastro.triggered.connect(self._open_rcastro)
 
         #Tools
         self.act_blink = QAction(QIcon(blink_path), self.tr("Blink Comparator..."), self)
@@ -1366,6 +1377,11 @@ class ToolbarMixin:
         self.act_planet_projection.setIconVisibleInMenu(True)
         self.act_planet_projection.setStatusTip(self.tr("View your planets with stereographic projection"))
         self.act_planet_projection.triggered.connect(self._open_planet_projection)
+
+        self.act_flythrough = QAction(QIcon(flythrough_path), self.tr("Nebula Flythrough…"), self)
+        self.act_flythrough.setIconVisibleInMenu(True)
+        self.act_flythrough.setStatusTip(self.tr("Create a flythrough animation compositing starless and stars-only images"))
+        self.act_flythrough.triggered.connect(self._open_flythrough)
 
         self.act_plate_solve = QAction(QIcon(platesolve_path), self.tr("Plate Solver..."), self)
         self.act_plate_solve.setIconVisibleInMenu(True)
@@ -1612,6 +1628,7 @@ class ToolbarMixin:
         reg("background_neutral", self.act_background_neutral)
         reg("white_balance", self.act_white_balance)
         reg("sfcc",    self.act_sfcc)
+        reg("sssc",    self.act_sssc)
         reg("nbextract", self.act_nbextract)
         reg("convo", self.act_convo)
         reg("extract_luminance", self.act_extract_luma)
@@ -1655,6 +1672,7 @@ class ToolbarMixin:
         reg("stacking_suite", self.act_stacking_suite)
         reg("planet_projection", self.act_planet_projection)
         reg("supernova_hunter", self.act_supernova_hunter)
+        reg("flythrough", self.act_flythrough)
         reg("star_spikes", self.act_star_spikes)
         reg("astrospike", self.act_astrospike)
         reg("exo_detector", self.act_exo_detector)
@@ -1670,6 +1688,7 @@ class ToolbarMixin:
         reg("cosmicclaritysat", self.actCosmicSat)
         reg("aberrationai", self.actAberrationAI)
         reg("syqontools", self.actSyQonTools)
+        reg("rcastro", self.act_rcastro)
         reg("view_bundles", self.act_view_bundles)
         reg("function_bundles", self.act_function_bundles)
 

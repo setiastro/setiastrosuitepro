@@ -278,7 +278,7 @@ class AltAzFieldRotationDialog(QDialog):
         st_lay.addStretch(1)
 
         note = QLabel(
-            "<small><b>How it works:</b> Stars rotate around the sensor centre on an Alt/Az "
+            "<small><b>How it works:</b> Stars rotate around the sensor center on an Alt/Az "
             "mount. The corner sweeps the largest arc. "
             "Rate = 15.04 × cos(lat) × cos(az) / cos(alt)  arcsec/sec. "
             "Max exposure = (tolerance × pixel pitch) / (2π/360 × corner half-diagonal × rate). "

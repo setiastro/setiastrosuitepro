@@ -184,6 +184,7 @@ class MenuMixin:
         m_fn.addAction(self.act_rgb_combine)
         m_fn.addAction(self.act_rgb_extract)
         m_fn.addAction(self.act_sfcc)
+        m_fn.addAction(self.act_sssc)
         m_fn.addAction(self.act_signature)
         m_fn.addAction(self.act_star_stretch)
         m_fn.addAction(self.act_stat_stretch)
@@ -200,6 +201,7 @@ class MenuMixin:
         mCosmic.addAction(self.act_graxpert)
         mCosmic.addAction(self.actSyQonTools) 
         mCosmic.addAction(self.act_remove_stars)
+        #mCosmic.addAction(self.act_rcastro)
 
         m_tools = mb.addMenu(self.tr("&Tools"))
 
@@ -247,6 +249,7 @@ class MenuMixin:
         m_star.addAction(self.act_isophote)
         m_star.addAction(self.act_live_stacking)
         m_star.addAction(self.act_mosaic_master)
+        m_star.addAction(self.act_flythrough)
         m_star.addAction(self.act_planet_projection)
         m_star.addAction(self.act_planetary_stacker)
         m_star.addAction(self.act_plate_solve)

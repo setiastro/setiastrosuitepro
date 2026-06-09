@@ -181,12 +181,12 @@ from setiastro.saspro.resources import (
     convoicon_path, spcc_icon_path, sasp_data_path, exoicon_path, peeker_icon,rotatearbitrary_path,
     dse_icon_path, astrobin_filters_csv_path, isophote_path, statstretch_path,
     starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path,gaia_path,
-    nbtorgb_path, freqsep_path, contsub_path, halo_path, cosmic_path,dithericon_path,
+    nbtorgb_path, freqsep_path, contsub_path, halo_path, cosmic_path,dithericon_path,flythrough_path,
     satellite_path, imagecombine_path, wrench_path, eye_icon_path,multiscale_decomp_path, nbi_path,
     disk_icon_path, nuke_path, hubble_path, collage_path, annotated_path, atlas_path,
     colorwheel_path, font_path, csv_icon_path, spinner_path, wims_path, narrowbandnormalization_path,
-    wimi_path, linearfit_path, debayer_path, aberration_path, acv_icon_path, snr_path,nbextract_icon,
-    functionbundles_path, viewbundles_path, selectivecolor_path, selectivelum_path, rgbalign_path, planetarystacker_path,syqon_path,
+    wimi_path, linearfit_path, debayer_path, aberration_path, acv_icon_path, snr_path,nbextract_icon,sssc_path,
+    functionbundles_path, viewbundles_path, selectivecolor_path, selectivelum_path, rgbalign_path, planetarystacker_path,syqon_path,rcastro_path,
     background_path, script_icon_path, planetprojection_path,clonestampicon_path, finderchart_path,magnitude_path,
 )
 
@@ -3052,6 +3052,67 @@ class AstroSuiteProMainWindow(
             pass
         self.SFCC_window.show()
 
+    def SSSC_show(self):
+        from setiastro.saspro.sssc_loader import SSSCSplash, SSSCLoader
+        from setiastro.saspro.doc_manager import DocManager
+
+        if getattr(self, "SSSC_window", None) and self.SSSC_window.isVisible():
+            self.SSSC_window.raise_()
+            self.SSSC_window.activateWindow()
+            return
+
+        if not hasattr(self, "doc_manager") or self.doc_manager is None:
+            self.doc_manager = DocManager(
+                image_manager=getattr(self, "image_manager", None), parent=self)
+
+        if not os.path.exists(sasp_data_path):
+            QMessageBox.critical(self, "Missing Resource",
+                f"SASP Data file not found:\n{sasp_data_path}")
+            return
+
+        splash = SSSCSplash(parent=self, sssc_path=sssc_path)
+        splash.show()
+        QApplication.processEvents()
+
+        self._sssc_loader = SSSCLoader(parent=self)
+
+        def _on_ready():
+            splash.set_status("Building interface…")
+            QApplication.processEvents()
+            try:
+                from setiastro.saspro.sssc import SSSCDialog  # already cached, instant
+                self.SSSC_window = SSSCDialog(
+                    doc_manager=self.doc_manager,
+                    sasp_data_path=sasp_data_path,
+                    parent=self,
+                )
+                try:
+                    self.SSSC_window.setWindowIcon(QIcon(sssc_path))
+                except Exception:
+                    pass
+                try:
+                    self.SSSC_window.destroyed.connect(
+                        lambda _=None: setattr(self, "SSSC_window", None))
+                except Exception:
+                    pass
+                splash.close()
+                self.SSSC_window.show()
+            except Exception as exc:
+                splash.close()
+                QMessageBox.critical(self, "SSSC Error", f"Failed to open SSSC:\n{exc}")
+
+        def _on_progress(msg):
+            splash.set_status(msg)
+
+        def _on_error(msg):
+            splash.close()
+            QMessageBox.critical(self, "SSSC Error", f"Failed to open SSSC:\n{msg}")
+
+        self._sssc_loader.progress.connect(_on_progress)
+        self._sssc_loader.ready.connect(_on_ready)
+        self._sssc_loader.error.connect(_on_error)
+        self._sssc_loader.start()
+
     def _open_nbextract(self):
         from setiastro.saspro.nbextract import NBExtractDialog
         from setiastro.saspro.doc_manager import DocManager
@@ -4220,6 +4281,39 @@ class AstroSuiteProMainWindow(
         except Exception as e:
             print(f"Failed to open SyQon Tools: {e}")
 
+    def _open_rcastro(self):
+        from setiastro.saspro.rcastro import open_rcastro_dialog
+        sw = self.mdi.activeSubWindow()
+        if not sw:
+            QMessageBox.information(self, "RC-Astro Tools", "No active image view.")
+            return
+        w   = sw.widget() if hasattr(sw, "widget") else None
+        doc = getattr(w, "document", None)
+        if doc is None or getattr(doc, "image", None) is None:
+            QMessageBox.information(self, "RC-Astro Tools", "Active view has no image.")
+            return
+
+        # Clear stale reference if dialog was closed/destroyed
+        if hasattr(self, "_rcastro_dlg") and self._rcastro_dlg is not None:
+            try:
+                if not self._rcastro_dlg.isVisible():
+                    self._rcastro_dlg = None
+            except RuntimeError:
+                # C++ object already deleted
+                self._rcastro_dlg = None
+
+        if not hasattr(self, "_rcastro_dlg") or self._rcastro_dlg is None:
+            self._rcastro_dlg = open_rcastro_dialog(
+                self,
+                doc=doc,
+                rcastro_icon=QIcon(rcastro_path),
+            )
+            self._rcastro_dlg.destroyed.connect(
+                lambda: setattr(self, "_rcastro_dlg", None))
+        else:
+            self._rcastro_dlg.raise_()
+            self._rcastro_dlg.activateWindow()
+
     def _open_cosmic_clarity_ui(self):
         print("Opening Cosmic Clarity UI...")
         try:
@@ -4889,6 +4983,44 @@ class AstroSuiteProMainWindow(
         dlg.show()
         self._log("Functions: opened Planet Projection.")
 
+    def _open_flythrough(self):
+        dlg = getattr(self, "_flythrough_dlg", None)
+        if dlg is not None:
+            try:
+                if not dlg.isVisible():
+                    dlg.show()
+                dlg.raise_()
+                dlg.activateWindow()
+                return
+            except RuntimeError:
+                self._flythrough_dlg = None
+
+        from setiastro.saspro.flythrough import open_flythrough_dialog
+
+        def _list_open_docs():
+            docs = []
+            for sw in self.mdi.subWindowList():
+                view = sw.widget()
+                doc  = getattr(view, "document", None)
+                if doc is None:
+                    try:
+                        doc = self.doc_manager.get_document_for_view(view)
+                    except Exception:
+                        pass
+                if doc is not None and getattr(doc, "image", None) is not None:
+                    docs.append((doc.display_name(), doc))
+            return docs
+
+        dlg = open_flythrough_dialog(
+            self,
+            list_open_docs_fn=_list_open_docs,
+            doc_manager=self.doc_manager,
+        )
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dlg.destroyed.connect(lambda _=None: setattr(self, "_flythrough_dlg", None))
+        dlg.setWindowIcon(QIcon(flythrough_path))
+        self._flythrough_dlg = dlg
+        self._log("Functions: opened Nebula Flythrough.")
 
     def _open_stacking_suite(self):
         # Reuse if we already have one
@@ -6594,7 +6726,35 @@ class AstroSuiteProMainWindow(
                 except Exception:
                     print("Cosmic Clarity replay-on-base failed:", e)
             return
+        if cid == "rcastro":
+            try:
+                from setiastro.saspro.rcastro import run_rcastro_via_preset
 
+                preset_dict = preset if isinstance(preset, dict) else {}
+                run_rcastro_via_preset(self, preset_dict, doc=base_doc)
+
+                try:
+                    _rc_labels = {
+                        "bxt": "BlurXTerminator",
+                        "sxt": "StarXTerminator",
+                        "nxt": "NoiseXTerminator",
+                    }
+                    product = preset_dict.get("product", "bxt")
+                    self._log(
+                        f"[Replay] Replayed RC-Astro {_rc_labels.get(product, product.upper())} "
+                        f"on base of '{target_sw.windowTitle()}'"
+                    )
+                except Exception:
+                    pass
+            except Exception as e:
+                try:
+                    QMessageBox.warning(
+                        self, "RC-Astro",
+                        f"Replay-on-base failed:\n{e}"
+                    )
+                except Exception:
+                    print("RC-Astro replay-on-base failed:", e)
+            return
         # ---- For everything else, fall back to the normal command-drop behavior ----
         try:
             self._handle_command_drop(dict(payload), target_sw=target_sw)
@@ -7214,7 +7374,26 @@ class AstroSuiteProMainWindow(
             except Exception:
                 pass
             return
+        if cid == "rcastro":
+            from setiastro.saspro.rcastro import run_rcastro_via_preset
 
+            doc = None
+            try:
+                if target_sw is not None:
+                    vw = target_sw.widget()
+                    doc = getattr(vw, "document", None)
+            except Exception:
+                doc = None
+
+            run_rcastro_via_preset(self, preset or {}, doc=doc)
+
+            try:
+                _rc_labels = {"bxt": "BlurXTerminator", "sxt": "StarXTerminator", "nxt": "NoiseXTerminator"}
+                product = (preset or {}).get("product", "bxt")
+                self._log(f"Ran RC-Astro {_rc_labels.get(product, product.upper())}")
+            except Exception:
+                pass
+            return
         if cid == "linear_fit":
             try:
                 doc = self.doc_manager.get_active_document()

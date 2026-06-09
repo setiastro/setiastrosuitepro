@@ -2657,7 +2657,7 @@ class ExoPlanetWindow(QDialog):
             symbolBrush=pg.mkBrush(180, 200, 255, 160),
             symbolSize=4,
         )
-        # Mark predicted transit centres
+        # Mark predicted transit centers
         if np.isfinite(best_t0_jd) and np.isfinite(best_period_d):
             t0_rel = best_t0_jd - t_jd_good[0]
             span   = float(np.ptp(t_plot))
