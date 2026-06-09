@@ -106,7 +106,7 @@ from PyQt6.QtCore import (Qt, QSettings, QStandardPaths, QThread,
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (
     QApplication, QVBoxLayout, QHBoxLayout, QComboBox, QSpinBox,
-    QDoubleSpinBox, QCheckBox, QLabel, QMainWindow, QPushButton,
+    QDoubleSpinBox, QCheckBox, QLabel, QLineEdit, QMainWindow, QPushButton,
     QDialog, QFileDialog, QInputDialog, QMessageBox, QWidget,
     QProgressDialog,
 )
@@ -172,6 +172,7 @@ _SK_LP1      = "SSSC/LPFilter"
 _SK_LP2      = "SSSC/LPFilter2"
 _SK_SENSOR   = "SSSC/WhiteReference"   # white reference SED only — no QE
 _SK_SEP_THR  = "SSSC/SEPThreshold"
+_SK_N_CTRL   = "SSSC/NCtrlPoints"
 _SK_BN       = "SSSC/BackgroundNeutralization"
 
 
@@ -212,6 +213,15 @@ class SystemResponse:
         Per-channel scalar gains [k_R, k_G, k_B] (always solved).
     residual_rms : float
         RMS fractional residual of the fit across all calibrators.
+    ctrl_points : dict | None
+        Per-channel control point values from Stage 3 solver.
+        Keys: "R", "G", "B" — each a dict with "wl" and "vals" arrays.
+        Used to seed the next session's x0 directly in control-point space,
+        avoiding the stitched-response misinterpretation bug.
+    stage_rms : dict
+        Per-stage residual RMS waterfall — {1: rms1, 2: rms2, 3: rms3} for
+        each stage that ran.  Used by the diagnostics panel.  Older cached
+        solutions without this field default to {solved_stage: residual_rms}.
     """
 
     def __init__(
@@ -227,6 +237,9 @@ class SystemResponse:
         residual_rms: float = 0.0,
         poly_coeffs: np.ndarray | None = None,
         timestamp: str | None = None,
+        ctrl_points: dict | None = None,
+        stage_rms: dict | None = None,
+        channel_response: dict | None = None,
     ):
         self.wl_ang       = np.asarray(wl_ang,    dtype=np.float64)
         self.response     = np.asarray(response,  dtype=np.float64)
@@ -238,6 +251,12 @@ class SystemResponse:
         self.residual_rms = float(residual_rms)
         self.poly_coeffs  = poly_coeffs
         self.timestamp    = timestamp or datetime.now().isoformat()
+        self.ctrl_points     = ctrl_points
+        self.stage_rms       = stage_rms if stage_rms is not None else {stage: residual_rms}
+        # Per-channel normalized R(lambda) on _WL_GRID — populated by Stage 3 solver.
+        # Keys: "R", "G", "B". Each array normalized to its own peak=1.
+        # None for Stage 1/2 solutions.
+        self.channel_response: dict | None = channel_response
 
     def evaluate(self, wl_ang: np.ndarray) -> np.ndarray:
         """Interpolate R(λ) onto an arbitrary wavelength grid."""
@@ -245,7 +264,7 @@ class SystemResponse:
                          left=0.0, right=0.0)
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "wl_ang":       self.wl_ang.tolist(),
             "response":     self.response.tolist(),
             "stage":        self.stage,
@@ -256,11 +275,35 @@ class SystemResponse:
             "residual_rms": self.residual_rms,
             "poly_coeffs":  self.poly_coeffs.tolist() if self.poly_coeffs is not None else None,
             "timestamp":    self.timestamp,
+            "stage_rms":    {str(k): v for k, v in self.stage_rms.items()},
         }
+        if self.ctrl_points is not None:
+            d["ctrl_points"] = {
+                ch: {"wl": v["wl"].tolist(), "vals": v["vals"].tolist()}
+                for ch, v in self.ctrl_points.items()
+            }
+        if self.channel_response is not None:
+            d["channel_response"] = {
+                ch: v.tolist() for ch, v in self.channel_response.items()
+            }
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "SystemResponse":
         pc = d.get("poly_coeffs")
+        cp_raw = d.get("ctrl_points")
+        ctrl_points = None
+        if cp_raw is not None:
+            try:
+                ctrl_points = {
+                    ch: {
+                        "wl":   np.array(v["wl"]),
+                        "vals": np.array(v["vals"]),
+                    }
+                    for ch, v in cp_raw.items()
+                }
+            except Exception:
+                ctrl_points = None
         return cls(
             wl_ang       = np.array(d["wl_ang"]),
             response     = np.array(d["response"]),
@@ -272,6 +315,11 @@ class SystemResponse:
             residual_rms = d.get("residual_rms", 0.0),
             poly_coeffs  = np.array(pc) if pc is not None else None,
             timestamp    = d.get("timestamp"),
+            ctrl_points  = ctrl_points,
+            stage_rms    = {int(k): float(v) for k, v in d["stage_rms"].items()}
+                           if "stage_rms" in d else None,
+            channel_response = {ch: np.array(v) for ch, v in d["channel_response"].items()}
+                               if "channel_response" in d else None,
         )
 
     @property
@@ -294,15 +342,18 @@ def make_session_id(
     b_filter: str,
     lp1: str,
     lp2: str,
+    camera_label: str = "",
 ) -> str:
     """
-    Stable hash identifying an imaging session's filter configuration.
+    Stable hash identifying an imaging session's filter + camera configuration.
 
-    The session ID is deliberately independent of the sensor — since the
-    sensor response is what we are *solving for*, it cannot be part of the
-    key. Two sessions with the same filter set on different sensors will
-    build separate response models automatically because their photometric
-    measurements will differ.
+    The camera_label is a user-supplied free-text string (e.g. "IMX492 EdgeHD
+    f/7") that distinguishes different sensors or optical trains using the same
+    filter set. Leaving it blank gives the old filter-only behaviour so existing
+    sessions are not broken.
+
+    The session ID is deliberately independent of any QE curve name — since the
+    sensor response is what we are *solving for*, it cannot be part of the key.
 
     Parameters
     ----------
@@ -310,6 +361,8 @@ def make_session_id(
         Filter curve EXTNAME values.
     lp1, lp2 : str
         LP/cut filter EXTNAME values (or "(None)").
+    camera_label : str
+        Optional free-text camera / rig identifier.
 
     Returns
     -------
@@ -317,7 +370,7 @@ def make_session_id(
         8-character hex hash.
     """
     key = json.dumps(
-        [r_filter, g_filter, b_filter, lp1, lp2],
+        [r_filter, g_filter, b_filter, lp1, lp2, camera_label.strip()],
         sort_keys=True
     ).encode()
     return hashlib.sha256(key).hexdigest()[:8]
@@ -335,6 +388,8 @@ def _solve_system_response(
     T_sys_B: np.ndarray,
     session_id: str,
     *,
+    prior_response: "SystemResponse | None" = None,
+    n_ctrl: int = 8,
     status_cb=None,
 ) -> SystemResponse:
     """
@@ -350,79 +405,24 @@ def _solve_system_response(
 
         measured_c(i) = k_c × ∫ flux_i(λ) × T_filter_c(λ) × R(λ) dλ
 
-    We parameterize R(λ) as a degree-6 polynomial constrained to [0, 1]
-    and solve via non-negative least squares across all stars and channels
-    simultaneously.
-
     Bootstrap stages are selected automatically based on star count and
     spectral diversity. Stage 1 always runs; Stage 3 requires ≥ 200 stars
     spanning B-V ≥ 1.5 range.
 
-    Parameters
-    ----------
-    enriched : list[dict]
-        Output of the parallel photometry step. Each entry must contain:
-          R_meas, G_meas, B_meas   — background-subtracted star fluxes
-          S_star_R, S_star_G, S_star_B — ∫ flux×T_filter dλ  (no R(λ))
-          used_gaia                — True if Gaia XP spectrum used
-          gaia_B, gaia_V           — for B-V color (spectral diversity check)
-    wl_grid : np.ndarray
-        Wavelength grid in Angstrom (shared _WL_GRID).
-    T_sys_R, T_sys_G, T_sys_B : np.ndarray
-        Filter × LP throughput arrays on wl_grid. No QE term included.
-    session_id : str
-        From make_session_id().
-    status_cb : callable | None
-        Progress callback f(str).
-
-    Returns
-    -------
-    SystemResponse
-        Solved system response with stage, gains, R(λ), and diagnostics.
-
-    Notes
-    -----
-    STUB — Stage 1 (scalar gains) is fully implemented.
-    Stage 3 (full R(λ) polynomial) is stubbed pending DR4 data density.
-
-    Stage 3 implementation sketch (fill in when DR4 available):
-    ─────────────────────────────────────────────────────────────
-    1. For each star i, we need the XP spectrum flux sampled on wl_grid.
-       Currently enriched[] only stores the integrated S_star_R/G/B values.
-       We need to store the full flux array in enriched[] for Stage 3.
-       Add "xp_flux" : np.ndarray to the _measure_one() return dict.
-
-    2. Parameterize R(λ) as a polynomial basis:
-           R(λ) = Σ_k  c_k × B_k(λ)
-       where B_k are Legendre polynomials on [-1, 1] mapped to wl_grid.
-       Degree 6 gives 7 free parameters — well constrained by 200+ stars.
-
-    3. For each star i and channel c, the model integral becomes:
-           I_c(i) = ∫ flux_i(λ) × T_c(λ) × R(λ) dλ
-                  = Σ_k  c_k × ∫ flux_i(λ) × T_c(λ) × B_k(λ) dλ
-                  = Σ_k  c_k × A_ck(i)
-       where A_ck(i) is precomputed for each (star, channel, basis_func).
-
-    4. Build the full linear system:
-           [A_R(0)  A_R(1) ... A_R(N-1)]   [c_0]   [measured_R / k_R]
-           [A_G(0)  A_G(1) ... A_G(N-1)] × [c_1] = [measured_G / k_G]
-           [A_B(0)  A_B(1) ... A_B(N-1)]   [...]   [measured_B / k_B]
-       Dimensions: (3 × n_stars) rows, (n_poly_coeffs) columns.
-
-    5. Solve with scipy.optimize.nnls (enforces R(λ) ≥ 0):
-           c, residual = nnls(A_matrix, b_vector)
-
-    6. Sigma clip: compute per-star residuals, remove 3σ outliers, re-solve.
-
-    7. Normalize so max(R(λ)) = 1.0. Store poly_coeffs in SystemResponse.
-
-    8. Iterate k_c gains: with R(λ) fixed, re-solve for k_R, k_G, k_B as
-       simple linear scalars. Repeat steps 5-8 until convergence (<0.1%).
+    Stage 3 prior seeding
+    ─────────────────────
+    When a prior Stage 3 solution exists, we seed x0 from the prior session's
+    ctrl_points (per-channel control point values stored in the same coordinate
+    space as x_cur).  This is safe because ctrl_points["R"]["vals"] etc. are
+    in units of W-matrix scale — exactly what the coordinate descent operates
+    on.  We do NOT use the stitched sr.response array for seeding because that
+    is a filter-transmission-weighted composite across all channels and maps
+    very poorly back to individual channel control points.
     """
     if status_cb is None:
         status_cb = lambda m: None
 
-    eps = 1e-12
+    eps = 1e-30   # guard only against literal zeros/underflow
 
     # ── Build per-star measurement arrays ────────────────────────────────────
     Rm_arr = np.array([float(e["R_meas"]) for e in enriched], dtype=np.float64)
@@ -432,12 +432,21 @@ def _solve_system_response(
     Sg_arr = np.array([float(e["S_star_G"]) for e in enriched], dtype=np.float64)
     Sb_arr = np.array([float(e["S_star_B"]) for e in enriched], dtype=np.float64)
 
-    # Guard against zeros
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ratio_RG = np.where(Sg_arr > eps, Sr_arr / Sg_arr, np.nan)
+        ratio_BG = np.where(Sg_arr > eps, Sb_arr / Sg_arr, np.nan)
+        meas_RG  = np.where(Gm_arr > eps, Rm_arr / Gm_arr, np.nan)
+        meas_BG  = np.where(Gm_arr > eps, Bm_arr / Gm_arr, np.nan)
+
     valid = (
-        (Gm_arr > eps) & (Rm_arr > eps) & (Bm_arr > eps) &
-        (Sg_arr > eps) & (Sr_arr > eps) & (Sb_arr > eps) &
         np.isfinite(Rm_arr) & np.isfinite(Gm_arr) & np.isfinite(Bm_arr) &
-        np.isfinite(Sr_arr) & np.isfinite(Sg_arr) & np.isfinite(Sb_arr)
+        np.isfinite(Sr_arr) & np.isfinite(Sg_arr) & np.isfinite(Sb_arr) &
+        (Rm_arr > 0) & (Gm_arr > 0) & (Bm_arr > 0) &
+        (Sg_arr > eps) &
+        np.isfinite(ratio_RG) & np.isfinite(ratio_BG) &
+        np.isfinite(meas_RG)  & np.isfinite(meas_BG)  &
+        (ratio_RG > 0) & (ratio_BG > 0) &
+        (meas_RG  > 0) & (meas_BG  > 0)
     )
     Rm_arr = Rm_arr[valid]
     Gm_arr = Gm_arr[valid]
@@ -487,22 +496,14 @@ def _solve_system_response(
     )
 
     # ── Stage 1: solve scalar per-channel gains k_R, k_G, k_B ───────────────
-    # In ratio space: measured_R/measured_G = (k_R/k_G) × (Sr/Sg)
-    # So:  meas_RG / exp_RG  =  k_R / k_G  (a single scalar per ratio)
-    #
-    # We solve for k_R/k_G and k_B/k_G via weighted least squares,
-    # then set k_G = 1.0 (G is the reference channel).
-
     meas_RG = Rm_arr / Gm_arr
     meas_BG = Bm_arr / Gm_arr
     exp_RG  = Sr_arr / Sg_arr
     exp_BG  = Sb_arr / Sg_arr
 
-    # Simple robust median ratio (insensitive to outliers)
     ratio_RG = np.median(meas_RG / np.where(exp_RG > eps, exp_RG, eps))
     ratio_BG = np.median(meas_BG / np.where(exp_BG > eps, exp_BG, eps))
 
-    # k_R/k_G = ratio_RG  →  k_G=1, k_R=ratio_RG, k_B=ratio_BG
     k_G = 1.0
     k_R = float(np.clip(ratio_RG, 0.1, 10.0))
     k_B = float(np.clip(ratio_BG, 0.1, 10.0))
@@ -510,53 +511,464 @@ def _solve_system_response(
 
     status_cb(f"[SSSC] Stage 1 gains: k_R={k_R:.4f}  k_G={k_G:.4f}  k_B={k_B:.4f}")
 
-    # Residual RMS for Stage 1
     pred_RG  = k_R * exp_RG
     pred_BG  = k_B * exp_BG
     resid_RG = (meas_RG / np.where(pred_RG > eps, pred_RG, eps)) - 1.0
     resid_BG = (meas_BG / np.where(pred_BG > eps, pred_BG, eps)) - 1.0
-    residual_rms = float(np.sqrt(np.mean(resid_RG**2 + resid_BG**2) / 2.0))
+    # Stage 1 RMS is computed inside the Stage 2 block using the same sigma-clipped
+    # population and _rms_frac formula so all stages are directly comparable.
+    # Fallback for Stage 1 only (< _STAGE2_MIN stars):
+    rms_stage1_raw = float(np.sqrt(np.mean(resid_RG**2 + resid_BG**2) / 2.0))
+    rms_stage1   = None   # will be overwritten with comparable value in Stage 2 block
+    stage_rms    = {}
 
-    # ── Stage 1 R(λ): flat response scaled by gains ──────────────────────────
-    # A flat R(λ) = 1.0 everywhere is the Stage 1 assumption — we know nothing
-    # about the shape yet, only the integrated ratio per channel pair.
-    response = np.ones_like(_WL_GRID, dtype=np.float64)
+    response         = np.ones_like(_WL_GRID, dtype=np.float64)
+    poly_coeffs      = None
+    ctrl_points      = None   # populated by Stage 3
+    ch_response_norm = None   # populated by Stage 3 — per-channel normalized R(λ)
 
-    # ── Stage 2: color-dependent gain within each band ───────────────────────
-    # Fit a quadratic model: exp_RG_corrected = a_R × meas_RG² + b_R × meas_RG + c_R
-    # This captures the first-order non-linearity of R(λ) within each band.
-    # Directly mirrors the SFCC quadratic model — but now framed as a step
-    # toward the full R(λ) solution rather than an end in itself.
+    # ── Stage 2: color-dependent gain — quadratic model per channel ──────────
     if stage >= 2:
         status_cb("[SSSC] Stage 2: fitting color-dependent band response…")
-        # (implementation matches SFCC run_spcc Stage D — reuse that logic here
-        #  when wiring up the full pipeline; for now gains capture the bulk)
-        pass  # TODO: wire in quadratic fit from sfcc.run_spcc Stage D
 
-    # ── Stage 3: full R(λ) polynomial ────────────────────────────────────────
-    # STUB — see docstring above for the full implementation sketch.
-    # Requires "xp_flux" arrays stored in enriched[] (not yet added to
-    # _measure_one() in sfcc.py). Enable when DR4 provides sufficient density.
+        def _rms_frac(pred, exp_v):
+            return float(np.sqrt(np.mean(((pred / np.where(exp_v > eps, exp_v, eps)) - 1.0) ** 2)))
+
+        raw_resid = np.abs(resid_RG) + np.abs(resid_BG)
+        med_r = float(np.median(raw_resid))
+        mad_r = float(np.median(np.abs(raw_resid - med_r))) * 1.4826
+        if mad_r > 0:
+            keep2 = raw_resid < med_r + 3.0 * mad_r
+        else:
+            keep2 = np.ones(len(meas_RG), dtype=bool)
+
+        mrg = meas_RG[keep2];  erg = exp_RG[keep2]
+        mbg = meas_BG[keep2];  ebg = exp_BG[keep2]
+
+        # Slope-only
+        denR = float(np.sum(mrg ** 2))
+        denB = float(np.sum(mbg ** 2))
+        mR_s = float(np.sum(mrg * erg)) / denR if denR > 0 else 1.0
+        mB_s = float(np.sum(mbg * ebg)) / denB if denB > 0 else 1.0
+        rms_s = (_rms_frac(mR_s * mrg, erg) + _rms_frac(mB_s * mbg, ebg))
+
+        # Stage 1 RMS using the SAME metric, population, and _rms_frac as Stage 2.
+        # k_R/k_B are the median-ratio scalar gains from Stage 1. Using these
+        # (not the lstsq slope mR_s) gives the true Stage 1 prediction quality.
+        _r1_R = _rms_frac(k_R * mrg, erg)
+        _r1_B = _rms_frac(k_B * mbg, ebg)
+        rms_stage1 = float(np.sqrt((_r1_R**2 + _r1_B**2) / 2.0))
+        stage_rms[1] = rms_stage1
+        status_cb(f"[SSSC] Stage 1 RMS={rms_stage1:.4f}  (scalar k_R={k_R:.4f} k_B={k_B:.4f})")
+
+        # Affine
+        mR_a, bR_a = np.linalg.lstsq(
+            np.vstack([mrg, np.ones_like(mrg)]).T, erg, rcond=None)[0]
+        mB_a, bB_a = np.linalg.lstsq(
+            np.vstack([mbg, np.ones_like(mbg)]).T, ebg, rcond=None)[0]
+        rms_a = (_rms_frac(mR_a * mrg + bR_a, erg) +
+                 _rms_frac(mB_a * mbg + bB_a, ebg))
+
+        # Quadratic
+        if len(mrg) >= 6:
+            try:
+                aR_q, bR_q, cR_q = np.polyfit(mrg, erg, 2)
+                aB_q, bB_q, cB_q = np.polyfit(mbg, ebg, 2)
+                rms_q = (_rms_frac(aR_q * mrg**2 + bR_q * mrg + cR_q, erg) +
+                         _rms_frac(aB_q * mbg**2 + bB_q * mbg + cB_q, ebg))
+            except Exception:
+                aR_q = bR_q = aB_q = bB_q = 0.0
+                cR_q = cB_q = 1.0
+                rms_q = np.inf
+        else:
+            aR_q = bR_q = aB_q = bB_q = 0.0
+            cR_q = cB_q = 1.0
+            rms_q = np.inf
+
+        idx2 = int(np.argmin([rms_s, rms_a, rms_q]))
+        if idx2 == 0:
+            coeff_R2 = (0.0, float(mR_s), 0.0)
+            coeff_B2 = (0.0, float(mB_s), 0.0)
+            model2   = "slope-only"
+        elif idx2 == 1:
+            coeff_R2 = (0.0, float(mR_a), float(bR_a))
+            coeff_B2 = (0.0, float(mB_a), float(bB_a))
+            model2   = "affine"
+        else:
+            coeff_R2 = (float(aR_q), float(bR_q), float(cR_q))
+            coeff_B2 = (float(aB_q), float(bB_q), float(cB_q))
+            model2   = "quadratic"
+
+        def _poly2(c, x):
+            return c[0] * x**2 + c[1] * x + c[2]
+
+        pred2_RG = _poly2(coeff_R2, meas_RG)
+        pred2_BG = _poly2(coeff_B2, meas_BG)
+        r2_RG = (meas_RG / np.where(pred2_RG > eps, pred2_RG, eps)) - 1.0
+        r2_BG = (meas_BG / np.where(pred2_BG > eps, pred2_BG, eps)) - 1.0
+        residual_rms = float(np.sqrt(np.mean(r2_RG**2 + r2_BG**2) / 2.0))
+
+        gains = np.array([
+            k_R, k_G, k_B,
+            coeff_R2[0], coeff_R2[1], coeff_R2[2],
+            coeff_B2[0], coeff_B2[1], coeff_B2[2],
+        ], dtype=np.float64)
+
+        stage_rms[2] = residual_rms
+
+        status_cb(
+            f"[SSSC] Stage 2 model={model2}  "
+            f"RMS={residual_rms:.4f}  "
+            f"({int(np.sum(keep2))} stars after sigma clip)"
+        )
+
+    # ── Stage 3: full R(λ) via coordinate descent ─────────────────────────────
     if stage >= 3:
-        status_cb("[SSSC] Stage 3: solving full R(λ) — STUB (pending DR4)…")
-        # TODO: implement per docstring above
-        # When implemented, overwrite `response` with the polynomial solution
-        # and set poly_coeffs.
-        stage = 2  # fall back until implemented
-        pass
+        xp_fluxes = [e.get("xp_flux") for e in enriched_valid]
+        have_flux = [f is not None and len(f) == len(_WL_GRID) for f in xp_fluxes]
 
-    poly_coeffs = None  # set by Stage 3 when implemented
+        xp_indices  = np.array([i for i, h in enumerate(have_flux) if h], dtype=np.intp)
+        n_xp_stage3 = len(xp_indices)
+
+        if n_xp_stage3 < _STAGE3_MIN:
+            status_cb(
+                f"[SSSC] Stage 3: only {n_xp_stage3} XP stars — "
+                f"need {_STAGE3_MIN}, keeping Stage 2"
+            )
+            stage = 2
+
+        else:
+            T_G_f64 = T_sys_G.astype(np.float64)
+            T_R_f64 = T_sys_R.astype(np.float64)
+            T_B_f64 = T_sys_B.astype(np.float64)
+
+            # Per-spectrum G-band normalisation
+            fl_xp_norm = []
+            g_integrals = []
+            for flux_raw in [xp_fluxes[i] for i in xp_indices]:
+                fl = np.asarray(flux_raw, dtype=np.float64)
+                fl = np.where(fl > 0, fl, 0.0)
+                g_int = float(_trapz(fl * T_G_f64, x=_WL_GRID))
+                if g_int < eps:
+                    g_int = float(np.max(fl)) if fl.max() > 0 else 1.0
+                fl_xp_norm.append(fl / g_int)
+                g_integrals.append(g_int)
+            g_integrals = np.array(g_integrals, dtype=np.float64)
+
+            Rm_xp_n = Rm_arr[xp_indices] / g_integrals
+            Gm_xp_n = Gm_arr[xp_indices] / g_integrals
+            Bm_xp_n = Bm_arr[xp_indices] / g_integrals
+            n_xp_s3 = n_xp_stage3
+
+            PASSBAND_THRESH = 0.05
+            # N_CTRL: control points per channel. More = finer R(λ) resolution
+            # but requires more stars to avoid fitting noise. Rule of thumb:
+            #   8  pts -> 200+ stars (default)
+            #   12 pts -> 600+ stars recommended
+            #   16 pts -> 1000+ stars recommended
+            N_CTRL = max(4, int(n_ctrl))
+
+            channels_cfg = [
+                ("R", T_R_f64, Rm_xp_n, k_R),
+                ("G", T_G_f64, Gm_xp_n, 1.0),
+                ("B", T_B_f64, Bm_xp_n, k_B),
+            ]
+
+            ch_data = {}
+            for ch_name, T_c, meas_n, k_c_init in channels_cfg:
+                T_peak = float(np.max(T_c))
+                if T_peak < eps:
+                    ch_data[ch_name] = None
+                    continue
+                pb = T_c >= PASSBAND_THRESH * T_peak
+                pb_wl = _WL_GRID[pb]
+                T_pb  = T_c[pb]
+
+                ctrl_wl = np.linspace(pb_wl[0], pb_wl[-1], N_CTRL)
+
+                W = np.zeros((n_xp_s3, N_CTRL), dtype=np.float64)
+                for j in range(N_CTRL):
+                    hat = np.zeros_like(pb_wl)
+                    if j == 0:
+                        mask_j = pb_wl <= ctrl_wl[1]
+                        hat[mask_j] = (ctrl_wl[1] - pb_wl[mask_j]) / (ctrl_wl[1] - ctrl_wl[0])
+                    elif j == N_CTRL - 1:
+                        mask_j = pb_wl >= ctrl_wl[-2]
+                        hat[mask_j] = (pb_wl[mask_j] - ctrl_wl[-2]) / (ctrl_wl[-1] - ctrl_wl[-2])
+                    else:
+                        l_mask = (pb_wl >= ctrl_wl[j-1]) & (pb_wl <= ctrl_wl[j])
+                        r_mask = (pb_wl >= ctrl_wl[j])   & (pb_wl <= ctrl_wl[j+1])
+                        hat[l_mask] = (pb_wl[l_mask] - ctrl_wl[j-1]) / (ctrl_wl[j] - ctrl_wl[j-1])
+                        hat[r_mask] = (ctrl_wl[j+1] - pb_wl[r_mask]) / (ctrl_wl[j+1] - ctrl_wl[j])
+
+                    for i in range(n_xp_s3):
+                        fl_pb = fl_xp_norm[i][pb]
+                        W[i, j] = float(_trapz(fl_pb * T_pb * hat, x=pb_wl))
+
+                ch_data[ch_name] = {
+                    "T_c":     T_c,
+                    "pb":      pb,
+                    "pb_wl":   pb_wl,
+                    "T_pb":    T_pb,
+                    "ctrl_wl": ctrl_wl,
+                    "W":       W,
+                    "meas_n":  meas_n,
+                    "k_c":     k_c_init,
+                }
+
+            active_channels = [
+                (ch_name, ch_data[ch_name])
+                for ch_name in ("R", "G", "B")
+                if ch_data[ch_name] is not None
+            ]
+
+            # Stage 2 gains used throughout — we minimize the SAME residual
+            # that gets reported as RMS, not an internal surrogate.
+            s3_gains = {"R": k_R, "G": 1.0, "B": k_B}
+
+            # ── x0: Stage 2 operating point (flat per-channel scale) ──────────
+            # Compute the uniform scale for each channel so W @ x0_flat ≈ meas_n/k_c.
+            x0 = np.ones(len(active_channels) * N_CTRL, dtype=np.float64)
+            ch_scales = {}
+            for ci, (ch_name, cd) in enumerate(active_channels):
+                W_flat = cd["W"].sum(axis=1)
+                W_med  = float(np.median(W_flat[W_flat > eps]))
+                k_c    = s3_gains[ch_name]
+                if W_med > eps and k_c > eps:
+                    scale = float(np.median(cd["meas_n"])) / (k_c * W_med)
+                    scale = max(scale, eps)
+                else:
+                    scale = 1.0
+                ch_scales[ch_name] = scale
+                x0[ci * N_CTRL : (ci + 1) * N_CTRL] = scale
+
+            # ── Prior session seeding (ctrl_points space only) ────────────────
+            # We seed from prior ctrl_points if available — these are stored in
+            # the same W-matrix scale as x_cur, so interpolation is safe.
+            # We do NOT use the stitched sr.response array: that is a filter-
+            # transmission-weighted composite across channels and maps very
+            # poorly back to individual channel control points (causes 10^13 RMS).
+            seeded_from_prior = False
+            if (prior_response is not None
+                    and prior_response.stage >= 3
+                    and prior_response.residual_rms < 2.0
+                    and prior_response.ctrl_points is not None):
+                status_cb(
+                    f"[SSSC] Stage 3: seeding from prior ctrl_points "
+                    f"({prior_response.n_stars} stars, "
+                    f"RMS={prior_response.residual_rms:.4f})"
+                )
+                for ci, (ch_name, cd) in enumerate(active_channels):
+                    prior_cp = prior_response.ctrl_points.get(ch_name)
+                    if prior_cp is None:
+                        continue
+                    prior_wl   = np.asarray(prior_cp["wl"],   dtype=np.float64)
+                    prior_vals = np.asarray(prior_cp["vals"], dtype=np.float64)
+                    if len(prior_wl) < 2 or len(prior_vals) < 2:
+                        continue
+                    # Interpolate prior ctrl_vals onto current ctrl_wl grid.
+                    # prior_vals are already in W-matrix scale — no normalization needed.
+                    seeded_vals = np.interp(
+                        cd["ctrl_wl"], prior_wl, prior_vals,
+                        left=prior_vals[0], right=prior_vals[-1],
+                    )
+                    seeded_vals = np.clip(seeded_vals, eps, None)
+                    x0[ci * N_CTRL : (ci + 1) * N_CTRL] = seeded_vals
+                seeded_from_prior = True
+            else:
+                if prior_response is not None and prior_response.ctrl_points is None:
+                    status_cb(
+                        "[SSSC] Stage 3: prior session has no ctrl_points — "
+                        "starting from Stage 2 operating point"
+                    )
+                elif prior_response is not None and prior_response.residual_rms >= 2.0:
+                    status_cb(
+                        f"[SSSC] Stage 3: prior RMS too high "
+                        f"({prior_response.residual_rms:.4f}) — starting fresh"
+                    )
+                else:
+                    status_cb(
+                        "[SSSC] Stage 3: no prior session — "
+                        "starting from Stage 2 operating point"
+                    )
+
+            def _rms_loss(x):
+                """
+                Sum of squared fractional residuals using Stage 2 gains.
+                This is exactly what gets reported as RMS.
+                """
+                total = 0.0
+                for ci, (ch_name, cd) in enumerate(active_channels):
+                    r_vals = np.maximum(x[ci * N_CTRL : (ci + 1) * N_CTRL], 0.0)
+                    I = cd["W"] @ r_vals
+                    I_safe = np.where(I > eps, I, eps)
+                    k_c = s3_gains[ch_name]
+                    resid = cd["meas_n"] / (k_c * I_safe) - 1.0
+                    total += float(np.sum(resid ** 2))
+                return total
+
+            def _rms_loss_1d(ci, ch_name, cd, j, I_rest, r_j):
+                """1D loss: only this channel, only this control point varies."""
+                r_j = max(r_j, 0.0)
+                I = r_j * cd["W"][:, j] + I_rest
+                I_safe = np.where(I > eps, I, eps)
+                k_c = s3_gains[ch_name]
+                resid = cd["meas_n"] / (k_c * I_safe) - 1.0
+                return float(np.sum(resid ** 2))
+
+            # ── Coordinate descent ────────────────────────────────────────────
+            # Each sweep visits every control point once and makes at most one
+            # ±20% move.  Using large jumps (e.g. ×0.5) lets a single point
+            # collapse to near-zero while others haven't moved yet — the stale
+            # I_rest makes every subsequent point look worse than it is and the
+            # whole curve degrades.  With ±20% steps, if the whole R(λ) curve
+            # needs to shift (e.g. all points ~0.7× lower) every point moves
+            # ~20% per sweep and they descend together.  No single point runs
+            # away from the pack.  60 sweeps is enough for any realistic shift
+            # (reaching 0.1× from 1.0 takes ~22 sweeps at 10% steps).
+            STEP_SIZES = [0.8, 0.9, 1.1, 1.2]   # ±20% max per point per sweep
+
+            x_cur = x0.copy()
+            loss_prev = _rms_loss(x_cur)
+            status_cb(
+                f"[SSSC] Stage 3: coordinate descent "
+                f"({len(active_channels)} channels × {N_CTRL} ctrl pts, "
+                f"{n_xp_s3} stars)  "
+                f"Stage 2 RMS={residual_rms:.4f}  "
+                f"{'[seeded from prior]' if seeded_from_prior else '[fresh start]'}…"
+            )
+            try:
+                QApplication.processEvents()
+            except Exception:
+                pass
+
+            for sweep in range(60):
+                any_improved = False
+                for ci, (ch_name, cd) in enumerate(active_channels):
+                    r_vals = np.maximum(x_cur[ci * N_CTRL : (ci + 1) * N_CTRL], 0.0)
+                    for j in range(N_CTRL):
+                        r_j    = r_vals[j]
+                        I_rest = cd["W"] @ r_vals - r_j * cd["W"][:, j]
+                        best_r    = r_j
+                        best_loss = _rms_loss_1d(ci, ch_name, cd, j, I_rest, r_j)
+                        for s in STEP_SIZES:
+                            candidate = r_j * s
+                            l = _rms_loss_1d(ci, ch_name, cd, j, I_rest, candidate)
+                            if l < best_loss:
+                                best_loss = l
+                                best_r    = candidate
+                        if best_r != r_j:
+                            r_vals[j] = best_r
+                            any_improved = True
+                    x_cur[ci * N_CTRL : (ci + 1) * N_CTRL] = r_vals
+
+                loss_new = _rms_loss(x_cur)
+                rms_new  = float(np.sqrt(loss_new / (n_xp_s3 * len(active_channels))))
+                delta    = loss_prev - loss_new
+                status_cb(
+                    f"[SSSC] Stage 3 sweep {sweep + 1}: "
+                    f"RMS={rms_new:.4f}  Δloss={delta:.4f}"
+                )
+                try:
+                    QApplication.processEvents()
+                except Exception:
+                    pass
+                # True convergence: no point moved at all, or loss change negligible
+                if not any_improved or delta < 1e-4:
+                    break
+                loss_prev = loss_new
+
+            x_opt = x_cur
+
+            # Reconstruct per-channel R(λ) on full grid
+            R_channels = {}
+            for ci, (ch_name, cd) in enumerate(active_channels):
+                r_vals = np.maximum(x_opt[ci * N_CTRL : (ci + 1) * N_CTRL], 0.0)
+                R_full = np.zeros(len(_WL_GRID), dtype=np.float64)
+                R_full[cd["pb"]] = np.interp(
+                    cd["pb_wl"], cd["ctrl_wl"], r_vals)
+                R_channels[ch_name] = R_full
+
+            # Stitch into single R(λ) weighted by filter transmission
+            T_sum = T_R_f64 + T_G_f64 + T_B_f64
+            T_safe = np.where(T_sum > eps, T_sum, eps)
+            response_iter = (
+                R_channels.get("R", np.ones(len(_WL_GRID))) * T_R_f64 +
+                R_channels.get("G", np.ones(len(_WL_GRID))) * T_G_f64 +
+                R_channels.get("B", np.ones(len(_WL_GRID))) * T_B_f64
+            ) / T_safe
+            response_iter = np.maximum(response_iter, 0.0)
+            r_max = float(np.max(response_iter))
+            if r_max > eps:
+                response_iter /= r_max
+
+            # Preserve Stage 2 gains for pixel correction
+            gains       = gains   # already set by Stage 2 (9-element array)
+            response    = response_iter
+            poly_coeffs = None
+
+            # Store per-channel ctrl_points for next-session seeding.
+            # These are in W-matrix scale — safe to interpolate directly.
+            ctrl_points = {}
+            for ci, (ch_name, cd) in enumerate(active_channels):
+                ctrl_points[ch_name] = {
+                    "wl":   cd["ctrl_wl"].copy(),
+                    "vals": np.maximum(
+                        x_opt[ci * N_CTRL : (ci + 1) * N_CTRL], 0.0).copy(),
+                }
+
+            # Store per-channel R(λ) for diagnostics panel, normalized TOGETHER
+            # so relative heights are preserved. Divide all channels by the single
+            # global max across R, G, B — the channel with highest response = 1.0,
+            # others scale proportionally. This is what the plot needs to show
+            # the true relative throughput of each channel.
+            ch_response_norm = {}
+            global_ch_max = max(
+                float(np.max(v)) for v in R_channels.values()
+                if np.max(v) > eps
+            ) if R_channels else 1.0
+            if global_ch_max < eps:
+                global_ch_max = 1.0
+            for ch_name, R_full in R_channels.items():
+                ch_response_norm[ch_name] = R_full / global_ch_max
+
+            # Final RMS
+            rms_terms = []
+            for ci, (ch_name, cd) in enumerate(active_channels):
+                r_vals = np.maximum(x_opt[ci * N_CTRL : (ci + 1) * N_CTRL], 0.0)
+                I_c    = cd["W"] @ r_vals
+                I_safe = np.where(I_c > eps, I_c, eps)
+                k_use  = s3_gains[ch_name]
+                resid_c = cd["meas_n"] / (k_use * I_safe) - 1.0
+                rms_terms.append(float(np.mean(resid_c ** 2)))
+            residual_rms = float(np.sqrt(np.mean(rms_terms)))
+
+            stage_rms[3] = residual_rms
+
+            status_cb(
+                f"[SSSC] Stage 3 complete — "
+                f"k_R={k_R:.4f}  k_G=1.0000  k_B={k_B:.4f}  "
+                f"RMS={residual_rms:.4f}"
+            )
+
+    # If Stage 2 never ran (< _STAGE2_MIN stars), fill stage_rms[1] with the
+    # raw fallback value computed from the unclipped population.
+    if 1 not in stage_rms:
+        stage_rms[1] = rms_stage1_raw
 
     return SystemResponse(
-        wl_ang       = _WL_GRID.copy(),
-        response     = response,
-        stage        = stage,
-        n_stars      = n_stars,
-        bv_range     = bv_range,
-        session_id   = session_id,
-        gains        = gains,
-        residual_rms = residual_rms,
-        poly_coeffs  = poly_coeffs,
+        wl_ang          = _WL_GRID.copy(),
+        response        = response,
+        stage           = stage,
+        n_stars         = n_stars,
+        bv_range        = bv_range,
+        session_id      = session_id,
+        gains           = gains,
+        residual_rms    = residual_rms,
+        poly_coeffs     = poly_coeffs,
+        ctrl_points     = ctrl_points,
+        stage_rms       = stage_rms,
+        channel_response = ch_response_norm if stage >= 3 else None,
     )
 
 
@@ -690,68 +1102,72 @@ def apply_sssc_correction(
     For Stage 1/2 this is equivalent to the SFCC per-channel correction
     using the solved gains k_R, k_G, k_B. For Stage 3+ it uses the full
     R(λ)-corrected integrals to compute per-pixel corrections.
-
-    Parameters
-    ----------
-    img_float : np.ndarray
-        Float32 RGB image in [0, 1].
-    sr : SystemResponse
-        Solved system response from _solve_system_response().
-    enriched : list[dict]
-        Per-star photometry (for residual-based correction in Stage 3).
-    wl_grid : np.ndarray
-        Wavelength grid in Angstrom.
-    T_sys_R, T_sys_G, T_sys_B : np.ndarray
-        Filter throughput arrays (no QE) on wl_grid.
-    status_cb : callable | None
-
-    Returns
-    -------
-    np.ndarray
-        Corrected float32 RGB image in [0, 1].
     """
     if status_cb is None:
         status_cb = lambda m: None
 
     eps = 1e-8
-    k_R, k_G, k_B = sr.gains
+    k_R = float(sr.gains[0])
+    k_G = float(sr.gains[1])
+    k_B = float(sr.gains[2])
 
     if sr.stage <= 2:
-        # ── Stage 1/2: scalar gain correction ────────────────────────────────
-        # k_R = median(measured_RG / expected_RG)
-        # So measured_RG = k_R × expected_RG
-        # To correct:  multiply R channel by (1/k_R), leave G unchanged.
-        # k_G is always 1.0 (G is the reference), so only R and B need scaling.
-        status_cb(f"[SSSC] Applying Stage {sr.stage} gain correction…")
+        status_cb(f"[SSSC] Applying Stage {sr.stage} correction…")
 
         calibrated = img_float.copy()
         R = calibrated[..., 0]
         G = calibrated[..., 1]
         B = calibrated[..., 2]
 
-        scale_R = float(np.clip(1.0 / max(k_R, eps), 0.25, 4.0))
-        scale_B = float(np.clip(1.0 / max(k_B, eps), 0.25, 4.0))
+        if sr.stage == 2 and len(sr.gains) == 9:
+            aR, bR, cR = sr.gains[3], sr.gains[4], sr.gains[5]
+            aB, bB, cB = sr.gains[6], sr.gains[7], sr.gains[8]
 
-        calibrated[..., 0] = _pivot_scale_channel(R, scale_R, float(np.median(R)))
-        calibrated[..., 2] = _pivot_scale_channel(B, scale_B, float(np.median(B)))
+            RG = R / np.maximum(G, eps)
+            BG = B / np.maximum(G, eps)
+
+            mR = np.clip(aR * RG**2 + bR * RG + cR, 0.25, 4.0)
+            mB = np.clip(aB * BG**2 + bB * BG + cB, 0.25, 4.0)
+
+            calibrated[..., 0] = _pivot_scale_channel(
+                R, mR / np.maximum(RG, eps), float(np.median(R)))
+            calibrated[..., 2] = _pivot_scale_channel(
+                B, mB / np.maximum(BG, eps), float(np.median(B)))
+        else:
+            scale_R = float(np.clip(1.0 / max(k_R, eps), 0.25, 4.0))
+            scale_B = float(np.clip(1.0 / max(k_B, eps), 0.25, 4.0))
+            calibrated[..., 0] = _pivot_scale_channel(R, scale_R, float(np.median(R)))
+            calibrated[..., 2] = _pivot_scale_channel(B, scale_B, float(np.median(B)))
+
         return np.clip(calibrated, 0.0, 1.0).astype(np.float32)
 
     else:
-        # ── Stage 3+: full R(λ)-corrected integrals ──────────────────────────
-        # TODO: implement when Stage 3 solver is complete.
-        # For now fall back to Stage 1/2 correction.
-        status_cb("[SSSC] Stage 3 correction — STUB, falling back to Stage 2…")
-        sr_fallback = SystemResponse(
-            wl_ang=sr.wl_ang, response=sr.response,
-            stage=2, n_stars=sr.n_stars, bv_range=sr.bv_range,
-            session_id=sr.session_id, gains=sr.gains,
-            residual_rms=sr.residual_rms,
-        )
-        return apply_sssc_correction(
-            img_float, sr_fallback, enriched,
-            wl_grid, T_sys_R, T_sys_G, T_sys_B,
-            status_cb=status_cb,
-        )
+        # Stage 3: apply via Stage 2 quadratic gains (well-conditioned)
+        status_cb("[SSSC] Applying Stage 3 correction (via Stage 2 gains)…")
+
+        calibrated = img_float.copy()
+        R = calibrated[..., 0]
+        G = calibrated[..., 1]
+        B = calibrated[..., 2]
+
+        if len(sr.gains) == 9:
+            aR, bR, cR = sr.gains[3], sr.gains[4], sr.gains[5]
+            aB, bB, cB = sr.gains[6], sr.gains[7], sr.gains[8]
+            RG = R / np.maximum(G, eps)
+            BG = B / np.maximum(G, eps)
+            mR = np.clip(aR * RG**2 + bR * RG + cR, 0.25, 4.0)
+            mB = np.clip(aB * BG**2 + bB * BG + cB, 0.25, 4.0)
+            calibrated[..., 0] = _pivot_scale_channel(
+                R, mR / np.maximum(RG, eps), float(np.median(R)))
+            calibrated[..., 2] = _pivot_scale_channel(
+                B, mB / np.maximum(BG, eps), float(np.median(B)))
+        else:
+            scale_R = float(np.clip(1.0 / max(k_R, eps), 0.25, 4.0))
+            scale_B = float(np.clip(1.0 / max(k_B, eps), 0.25, 4.0))
+            calibrated[..., 0] = _pivot_scale_channel(R, scale_R, float(np.median(R)))
+            calibrated[..., 2] = _pivot_scale_channel(B, scale_B, float(np.median(B)))
+
+        return np.clip(calibrated, 0.0, 1.0).astype(np.float32)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -774,34 +1190,10 @@ def build_sssc_diagnostics_figure(
     Build the SSSC diagnostic figure into an existing matplotlib Figure.
 
     Four panels:
-      1. Solved R(λ) vs manufacturer QE (the "gotcha" plot — shows how
-         wrong the datasheet was for your actual setup)
+      1. Solved R(λ) vs manufacturer QE
       2. Before/After residual scatter in (R/G, B/G) ratio space
       3. Bootstrap stage indicator and star count history
       4. B-V color distribution of calibrator population
-
-    Parameters
-    ----------
-    figure : Figure
-        Existing matplotlib Figure to draw into (cleared first).
-    sr : SystemResponse
-        Solved system response.
-    enriched : list[dict]
-        Per-star photometry results.
-    T_sys_R, T_sys_G, T_sys_B : np.ndarray
-        Filter throughput arrays on wl_grid.
-    wl_grid : np.ndarray
-        Wavelength grid in Angstrom.
-    manufacturer_qe : np.ndarray | None
-        If provided, overlay manufacturer QE curve for comparison.
-        Must be on the same wl_grid.
-    manufacturer_qe_label : str
-        Legend label for manufacturer curve.
-
-    Returns
-    -------
-    matplotlib.figure.Figure
-        The same figure passed in, now populated.
     """
     _force_mpl_no_tex()
     fig = figure
@@ -809,44 +1201,95 @@ def build_sssc_diagnostics_figure(
 
     eps = 1e-12
 
-    # ── Panel 1: R(λ) vs manufacturer QE ────────────────────────────────────
+    # ── Panel 1: Per-channel solved R(λ) ─────────────────────────────────────
     ax1 = fig.add_subplot(2, 2, 1)
-    wl_nm = wl_grid / 10.0  # Å → nm for readability
+    wl_nm = wl_grid / 10.0  # Å → nm
 
-    ax1.plot(wl_nm, sr.response, color="#44cc88", linewidth=2.0,
-             label=f"Solved R(λ)  [{sr.stage_label}]")
+    # Per-channel R(λ) curves — each solved independently within its passband.
+    # For Stage 3 we have channel_response with per-channel shapes.
+    # For Stage 1/2 we fall back to the stitched composite.
+    ch_resp = getattr(sr, "channel_response", None)
+    ch_cfg = [
+        ("R", T_sys_R, "#ee4444", "R channel R(λ)"),
+        ("G", T_sys_G, "#44cc44", "G channel R(λ)"),
+        ("B", T_sys_B, "#4488ee", "B channel R(λ)"),
+    ]
+
+    if ch_resp is not None:
+        # Detect stale per-channel-normalized cache entries: if all three channels
+        # peak at ~1.0, they were normalized individually (old format) and relative
+        # heights are lost. Fall back to composite for that session.
+        ch_peaks = [float(np.max(ch_resp[ch])) for ch in ("R", "G", "B") if ch in ch_resp]
+        all_near_one = all(abs(p - 1.0) < 0.05 for p in ch_peaks) and len(ch_peaks) == 3
+        if all_near_one:
+            ch_resp = None   # treat as Stage 1/2 and fall through to composite
+
+    if ch_resp is not None:
+        # channel_response values are already normalized together globally
+        # (divided by the single max across all channels in the solver).
+        # Just plot them directly with zero-anchor points at passband edges.
+        for ch_name, T_c, color, label in ch_cfg:
+            R_ch = ch_resp.get(ch_name)
+            if R_ch is None:
+                continue
+            T_peak = float(np.max(T_c))
+            if T_peak < eps:
+                continue
+            pb_mask = T_c >= 0.05 * T_peak
+            pb_indices = np.where(pb_mask)[0]
+            if len(pb_indices) == 0:
+                continue
+
+            i_lo = pb_indices[0]
+            i_hi = pb_indices[-1]
+            lo_wl = wl_nm[max(0, i_lo - 1)]
+            hi_wl = wl_nm[min(len(wl_nm) - 1, i_hi + 1)]
+
+            wl_plot = np.concatenate([[lo_wl], wl_nm[pb_mask], [hi_wl]])
+            R_plot  = np.concatenate([[0.0],   R_ch[pb_mask],  [0.0]])
+
+            ax1.plot(wl_plot, R_plot, color=color, linewidth=2.5,
+                     label=label, zorder=4)
+    else:
+        # Stage 1/2: single composite (stitched) — grey to distinguish from Stage 3
+        ax1.plot(wl_nm, sr.response, color="#888888", linewidth=2.0,
+                 linestyle="--", label=f"R(λ) composite  [{sr.stage_label}]",
+                 zorder=4)
 
     if manufacturer_qe is not None:
         qe_norm = manufacturer_qe / max(float(np.max(manufacturer_qe)), eps)
-        ax1.plot(wl_nm, qe_norm, color="#cc4444", linewidth=1.5,
-                 linestyle="--", label=manufacturer_qe_label, alpha=0.8)
+        ax1.plot(wl_nm, qe_norm, color="#ffaa44", linewidth=1.5,
+                 linestyle="--", label=manufacturer_qe_label, alpha=0.85, zorder=3)
 
-    # Overlay filter bands
-    for T, color, label in [
-        (T_sys_R, "red",   "R filter"),
-        (T_sys_G, "green", "G filter"),
-        (T_sys_B, "blue",  "B filter"),
-    ]:
-        T_norm = T / max(float(np.max(T)), eps)
-        ax1.fill_between(wl_nm, T_norm * 0.3, alpha=0.12, color=color)
-        ax1.plot(wl_nm, T_norm * 0.3, color=color, linewidth=0.8,
-                 linestyle=":", alpha=0.6, label=label)
+    # Filter passband fills — light shading only
+    for T_c, color in [(T_sys_R, "red"), (T_sys_G, "green"), (T_sys_B, "blue")]:
+        T_peak = float(np.max(T_c))
+        if T_peak < eps:
+            continue
+        T_norm = T_c / T_peak
+        ax1.fill_between(wl_nm, T_norm, alpha=0.07, color=color, zorder=1)
+        ax1.plot(wl_nm, T_norm, color=color, linewidth=0.7,
+                 linestyle=":", alpha=0.5, zorder=2)
 
     ax1.set_xlim(300, 1100)
-    ax1.set_ylim(0, 1.1)
+    ax1.set_ylim(0, 1.15)
     ax1.set_xlabel("Wavelength (nm)")
     ax1.set_ylabel("Normalized throughput")
-    ax1.set_title("Solved System Response R(λ)")
+    if ch_resp is not None:
+        ax1.set_title("Solved R(λ) per Channel  [Stage 3]")
+    elif manufacturer_qe is not None:
+        ax1.set_title("Solved R(λ)  vs  Manufacturer QE")
+    else:
+        ax1.set_title(f"System Response  [{sr.stage_label}]")
     ax1.legend(fontsize=7, loc="upper right")
     ax1.grid(True, alpha=0.3)
-
-    if manufacturer_qe is not None:
-        ax1.set_title("Solved R(λ)  vs  Manufacturer QE")
 
     # ── Panel 2: Residuals before/after ──────────────────────────────────────
     ax2 = fig.add_subplot(2, 2, 2)
 
-    k_R, k_G, k_B = sr.gains
+    k_R = float(sr.gains[0])
+    k_G = float(sr.gains[1])
+    k_B = float(sr.gains[2])
 
     meas_RG, exp_RG, meas_BG, exp_BG = [], [], [], []
     for e in enriched:
@@ -889,27 +1332,82 @@ def build_sssc_diagnostics_figure(
         ax2.legend(fontsize=7, ncol=2)
         ax2.grid(True, alpha=0.3)
 
-    # ── Panel 3: Bootstrap stage indicator ───────────────────────────────────
+    # ── Panel 3: Per-stage RMS waterfall ─────────────────────────────────────
+    # Shows how much each bootstrap stage contributed to calibration quality.
+    # Bar length = RMS (longer = worse), so improvement reads left-to-right.
     ax3 = fig.add_subplot(2, 2, 3)
-    stages     = [_STAGE1_MIN, _STAGE2_MIN, _STAGE3_MIN, _STAGE4_MIN]
-    stage_lbls = ["Stage 1\nScalar", "Stage 2\nBand", "Stage 3\nR(λ)", "Stage 4\nHardware"]
-    colors     = ["#888888", "#5588cc", "#44cc88", "#cc8844"]
 
-    for i, (thresh, lbl, col) in enumerate(zip(stages, stage_lbls, colors)):
-        reached = sr.n_stars >= thresh
-        ax3.barh(i, sr.n_stars if reached else thresh,
-                 color=col if reached else "#333333",
-                 alpha=0.8 if reached else 0.3, height=0.6)
-        ax3.axvline(thresh, color=col, lw=1.5, ls="--", alpha=0.7)
-        ax3.text(thresh + 5, i, f"{thresh}", va="center", fontsize=8, color=col)
+    # Collect per-stage RMS from sr.stage_rms (may be missing for old cached sessions)
+    s_rms = getattr(sr, "stage_rms", {sr.stage: sr.residual_rms})
 
-    ax3.axvline(sr.n_stars, color="white", lw=2.0, label=f"This run: {sr.n_stars} stars")
+    wf_rows = [
+        (1, "Stage 1\nScalar gains",   "#888888", _STAGE1_MIN),
+        (2, "Stage 2\nColor model",    "#5588cc", _STAGE2_MIN),
+        (3, "Stage 3\nFull R(\u03bb)",      "#44cc88", _STAGE3_MIN),
+        (4, "Stage 4\nAtmosphere",     "#cc8844", _STAGE4_MIN),
+    ]
+
+    # RMS axis: scale to the worst RMS that ran, with a little headroom
+    ran_rms = [v for k, v in s_rms.items() if v > 0]
+    rms_max = max(ran_rms) * 1.15 if ran_rms else 1.0
+
+    for i, (stg, lbl, col, thresh) in enumerate(wf_rows):
+        rms_val = s_rms.get(stg)
+        did_run = rms_val is not None
+        bar_color = col if did_run else "#2a2a2a"
+        bar_alpha = 0.85 if did_run else 0.25
+
+        if did_run:
+            ax3.barh(i, rms_val, color=bar_color, alpha=bar_alpha,
+                     height=0.55, zorder=3)
+            # RMS value label inside or outside bar
+            label_x = rms_val + rms_max * 0.01
+            ax3.text(label_x, i, f"RMS={rms_val:.4f}",
+                     va="center", ha="left", fontsize=8.5,
+                     color=col, fontweight="bold", zorder=4)
+
+            # Improvement delta vs previous stage
+            prev_stg = stg - 1
+            prev_rms = s_rms.get(prev_stg)
+            if prev_rms is not None and prev_rms > rms_val:
+                delta = prev_rms - rms_val
+                ax3.text(rms_max * 0.99, i,
+                         f"▼ {delta:.4f}",
+                         va="center", ha="right", fontsize=7.5,
+                         color="#aaffaa", alpha=0.9, zorder=4)
+        else:
+            # Stage not yet reached — show as a faint placeholder
+            ax3.barh(i, rms_max * 0.15, color=bar_color, alpha=bar_alpha,
+                     height=0.55, zorder=2)
+            stars_needed = max(0, thresh - sr.n_stars)
+            if stg == 4:
+                note = "multi-session at varied airmass"
+            elif stars_needed > 0:
+                note = f"need {stars_needed:,} more stars"
+            else:
+                note = "criteria met — runs next"
+            ax3.text(rms_max * 0.16, i, note,
+                     va="center", ha="left", fontsize=7.5,
+                     color="#666666", style="italic", zorder=3)
+
     ax3.set_yticks(range(4))
-    ax3.set_yticklabels(stage_lbls, fontsize=8)
-    ax3.set_xlabel("Calibrator star count")
-    ax3.set_title("Bootstrap Stage Progress")
-    ax3.legend(fontsize=8)
-    ax3.grid(True, axis="x", alpha=0.3)
+    ax3.set_yticklabels([r[1] for r in wf_rows], fontsize=8)
+    ax3.set_xlim(0, rms_max)
+    ax3.set_xlabel("Fractional residual RMS  (lower = better)")
+    ax3.set_title("Calibration Quality by Stage")
+    ax3.grid(True, axis="x", alpha=0.25, zorder=1)
+    ax3.set_axisbelow(True)
+
+    # Session context annotation bottom-right
+    bv_span = sr.bv_range[1] - sr.bv_range[0]
+    k_R_disp = float(sr.gains[0])
+    k_B_disp = float(sr.gains[2])
+    ctx = (
+        f"{sr.n_stars:,} stars  ·  B-V span={bv_span:.2f}\nk_R={k_R_disp:.4f}  k_G=1.0000  k_B={k_B_disp:.4f}"
+    )
+    ax3.text(0.99, 0.03, ctx, transform=ax3.transAxes,
+             ha="right", va="bottom", fontsize=7.5,
+             color="#aaaaaa", family="monospace")
 
     # ── Panel 4: B-V distribution ─────────────────────────────────────────────
     ax4 = fig.add_subplot(2, 2, 4)
@@ -934,21 +1432,28 @@ def build_sssc_diagnostics_figure(
 
     ax4.set_xlabel("B−V color index")
     ax4.set_ylabel("Count")
-    ax4.set_title("Calibrator Spectral Coverage")
     ax4.legend(fontsize=8)
     ax4.grid(True, axis="y", alpha=0.3)
 
-    # Stage 3 note
     if sr.stage < 3:
         needed = _STAGE3_MIN - sr.n_stars
         ax4.set_title(
             f"Spectral Coverage  (need {needed} more stars for Stage 3)"
             if needed > 0 else "Spectral Coverage  ✓ Stage 3 ready"
         )
+    else:
+        ax4.set_title("Calibrator Spectral Coverage")
 
+    # Build suptitle with per-stage RMS waterfall summary if available
+    _sr = getattr(sr, "stage_rms", {sr.stage: sr.residual_rms})
+    _rms_parts = []
+    for _stg, _lbl in [(1, "S1"), (2, "S2"), (3, "S3")]:
+        if _stg in _sr:
+            _rms_parts.append(f"{_lbl}={_sr[_stg]:.3f}")
+    _rms_str = "  →  ".join(_rms_parts) if len(_rms_parts) > 1 else f"RMS={sr.residual_rms:.3f}"
     fig.suptitle(
         f"SSSC Calibration Report  ·  {sr.n_stars} stars  ·  "
-        f"{sr.stage_label}  ·  RMS={sr.residual_rms:.3f}",
+        f"{sr.stage_label}  ·  {_rms_str}",
         fontsize=11,
     )
     fig.tight_layout(rect=[0, 0, 1, 0.95])
@@ -1012,9 +1517,6 @@ class SSSCDialog(QDialog):
 
         self._reload_hdu_lists()
 
-        # ── Attrs that SFCC fetch_stars expects on self ───────────────────────
-        # fetch_stars is delegated to SFCCDialog.fetch_stars via method binding.
-        # All attrs it touches must be pre-initialised here.
         self.pickles_templates: list[str] = []
         for p in (self.user_custom_path, self.sasp_data_path):
             try:
@@ -1029,8 +1531,8 @@ class SSSCDialog(QDialog):
                 pass
         self.pickles_templates.sort()
 
-        self.sasp_viewer_window = None   # SaspViewer window ref (unused in SSSC but
-        self._gaia_dl           = None   # expected by SFCC helpers we delegate to)
+        self.sasp_viewer_window = None
+        self._gaia_dl           = None
         self.center_ra          = None
         self.center_dec         = None
         self.wcs_header         = None
@@ -1151,10 +1653,6 @@ class SSSCDialog(QDialog):
         row2.addWidget(self.b_filter_combo)
         row2.addStretch()
 
-        # Note: deliberately no Sensor (QE) selector — it is solved from data
-        no_qe_lbl = QLabel("⚠ No QE curve — sensor response solved from stars")
-        no_qe_lbl.setStyleSheet("color: #44cc88; font-style: italic;")
-        row2.addWidget(no_qe_lbl)
         layout.addLayout(row2)
 
         # ── Row 3: LP/cut filters ─────────────────────────────────────────────
@@ -1173,6 +1671,19 @@ class SSSCDialog(QDialog):
         row3.addWidget(self.lp_filter_combo2)
         row3.addStretch()
         layout.addLayout(row3)
+
+        # ── Row 3b: Camera / rig label ────────────────────────────────────────
+        row_cam = QHBoxLayout()
+        row_cam.addWidget(QLabel("Camera / Rig:"))
+        self.camera_label_edit = QLineEdit()
+        self.camera_label_edit.setPlaceholderText(
+            "e.g.  IMX492 · EdgeHD f/7  —  separates session history per sensor "
+            "(leave blank to share history across sensors with the same filters)")
+        self.camera_label_edit.setMaxLength(80)
+        self.camera_label_edit.textChanged.connect(
+            lambda v: QSettings().setValue("SSSC/CameraLabel", v))
+        row_cam.addWidget(self.camera_label_edit)
+        layout.addLayout(row_cam)
 
         # ── Row 4: Step 2 button + controls ──────────────────────────────────
         row4 = QHBoxLayout()
@@ -1196,10 +1707,32 @@ class SSSCDialog(QDialog):
             lambda v: QSettings().setValue(_SK_SEP_THR, int(v)))
         row4.addWidget(self.sep_thr_spin)
 
+        row4.addSpacing(16)
+        row4.addWidget(QLabel("R(λ) ctrl pts:"))
+        self.nctrl_spin = QSpinBox()
+        self.nctrl_spin.setRange(4, 24)
+        self.nctrl_spin.setValue(8)
+        self.nctrl_spin.setSingleStep(2)
+        self.nctrl_spin.setToolTip(
+            "Number of control points per channel for Stage 3 R(λ) solver.\n"
+            "8 = default (good for 200-600 stars)\n"
+            "12 = finer resolution (~600+ stars recommended)\n"
+            "16 = high resolution (~1000+ stars recommended)\n"
+            "More control points chase noise if star count is insufficient.")
+        self.nctrl_spin.valueChanged.connect(
+            lambda v: QSettings().setValue(_SK_N_CTRL, int(v)))
+        row4.addWidget(self.nctrl_spin)
+
         row4.addStretch()
         self.session_info_lbl = QLabel("")
         self.session_info_lbl.setStyleSheet("color: #888888; font-size: 10px;")
         row4.addWidget(self.session_info_lbl)
+
+        self.clear_session_btn = QPushButton("Clear Session History")
+        self.clear_session_btn.setToolTip(
+            "Delete all saved R(λ) solutions for the current filter+camera combination")
+        self.clear_session_btn.clicked.connect(self._clear_session_history)
+        row4.addWidget(self.clear_session_btn)
 
         self.close_btn = QPushButton("Close")
         self.close_btn.clicked.connect(self.reject)
@@ -1254,6 +1787,20 @@ class SSSCDialog(QDialog):
         sep_thr = int(s.value(_SK_SEP_THR, 15))
         self.sep_thr_spin.setValue(sep_thr)
 
+        nctrl = int(s.value(_SK_N_CTRL, 8))
+        if hasattr(self, "nctrl_spin"):
+            self.nctrl_spin.setValue(nctrl)
+
+        cam_label = s.value("SSSC/CameraLabel", "")
+        if hasattr(self, "camera_label_edit"):
+            self.camera_label_edit.setText(str(cam_label))
+
+    def _camera_label(self) -> str:
+        try:
+            return self.camera_label_edit.text().strip()
+        except Exception:
+            return ""
+
     # ── View plumbing ─────────────────────────────────────────────────────────
 
     def _get_active_image_and_header(self):
@@ -1267,7 +1814,7 @@ class SSSCDialog(QDialog):
                 meta.get("header"))
         return img, hdr, meta
 
-    # ── Gaia helpers (delegated to sfcc infrastructure) ───────────────────────
+    # ── Gaia helpers ──────────────────────────────────────────────────────────
 
     def _gaia_enabled(self) -> bool:
         return (Gaia is not None) and (GaiaDownloader is not None) and bool(HAS_GAIAXPY)
@@ -1290,14 +1837,7 @@ class SSSCDialog(QDialog):
         *,
         batch_size: int = 25,
     ) -> dict[int, tuple[float, float, float]]:
-        """
-        Delegate to the SFCC implementation — identical logic, no QE term
-        because T_sys_R/G/B here are filter-only (QE not included).
-
-        See sfcc.SFCCDialog._gaia_integrals_for_source_ids for full docs.
-        """
         from setiastro.saspro.sfcc import SFCCDialog as _SFCC
-        # Borrow the method by binding self — all required attrs are present
         return _SFCC._gaia_integrals_for_source_ids(
             self, source_ids,
             wl_grid_ang, T_sys_R, T_sys_G, T_sys_B,
@@ -1310,8 +1850,54 @@ class SSSCDialog(QDialog):
             self, missing, dl, batch_size=batch_size)
 
     def initialize_wcs_from_header(self, header):
-        from setiastro.saspro.sfcc import SFCCDialog as _SFCC
-        return _SFCC.initialize_wcs_from_header(self, header)
+        if header is None:
+            self.wcs = None
+            return
+        try:
+            hdr = header.copy()
+            if "RADECSYS" in hdr and "RADESYS" not in hdr:
+                radesys_val = str(hdr["RADECSYS"]).strip()
+                hdr["RADESYS"] = radesys_val
+                try:
+                    del hdr["RADECSYS"]
+                except Exception:
+                    pass
+            if "EPOCH" in hdr and "EQUINOX" not in hdr:
+                hdr["EQUINOX"] = hdr["EPOCH"]
+                try:
+                    del hdr["EPOCH"]
+                except Exception:
+                    pass
+            self.wcs = WCS(hdr, naxis=2, relax=True)
+            try:
+                psm = self.wcs.pixel_scale_matrix
+                self.pixscale = float(np.hypot(psm[0, 0], psm[1, 0]) * 3600.0)
+            except Exception:
+                self.pixscale = None
+            try:
+                self.center_ra, self.center_dec = [
+                    float(x) for x in self.wcs.wcs.crval]
+            except Exception:
+                self.center_ra, self.center_dec = None, None
+            try:
+                self.wcs_header = self.wcs.to_header(relax=True)
+            except Exception:
+                self.wcs_header = None
+            if "CROTA2" in hdr:
+                try:
+                    self.orientation = float(hdr["CROTA2"])
+                except Exception:
+                    self.orientation = None
+            else:
+                try:
+                    cd1_1 = float(hdr.get("CD1_1", 0.0))
+                    cd1_2 = float(hdr.get("CD1_2", 0.0))
+                    self.orientation = math.degrees(math.atan2(cd1_2, cd1_1))
+                except Exception:
+                    self.orientation = None
+        except Exception as e:
+            print(f"[SSSC] WCS initialization error: {e}")
+            self.wcs = None
 
     def _make_working_base_for_sep(self, img_float):
         from setiastro.saspro.sfcc import SFCCDialog as _SFCC
@@ -1325,21 +1911,401 @@ class SSSCDialog(QDialog):
     # ── Step 1: Fetch Stars ───────────────────────────────────────────────────
 
     def fetch_stars(self):
-        """
-        Fetch stars, WCS-convert positions, match Gaia XP library, query SIMBAD.
+        from astropy.coordinates import SkyCoord
+        import astropy.units as u
+        from astroquery.simbad import Simbad
+        from astropy.io import fits as _fits
 
-        Delegates entirely to the SFCC fetch_stars implementation — the star
-        catalog logic is identical. The only difference is what we do with
-        those stars in Step 2.
-        """
-        from setiastro.saspro.sfcc import SFCCDialog as _SFCC
-        _SFCC.fetch_stars(self)
+        img, hdr, _meta = self._get_active_image_and_header()
+        self.current_image  = img
+        self.current_header = hdr
 
-        # Update session info label after fetch
+        if self.current_header is None or self.current_image is None:
+            QMessageBox.warning(self, "No Plate Solution",
+                "Please plate-solve the active document first.")
+            return
+
+        try:
+            self.initialize_wcs_from_header(self.current_header)
+        except Exception:
+            QMessageBox.critical(self, "WCS Error",
+                "Could not build a 2D WCS from header.")
+            return
+
+        if not getattr(self, "wcs", None):
+            QMessageBox.critical(self, "WCS Error",
+                "Could not build a 2D WCS from header.")
+            return
+
+        wcs2 = self.wcs.celestial if hasattr(self.wcs, "celestial") else self.wcs
+        H, W = self.current_image.shape[:2]
+
+        _sfcc_status(self, "Detecting stars with SEP…")
+        QApplication.processEvents()
+
+        if self.current_image.dtype == np.uint8:
+            img_float = self.current_image.astype(np.float32) / 255.0
+        else:
+            img_float = self.current_image.astype(np.float32, copy=False)
+
+        base     = self._make_working_base_for_sep(img_float)
+        gray     = np.mean(base, axis=2).astype(np.float32)
+        bkg      = sep.Background(gray)
+        data_sub = gray - bkg.back()
+        err      = float(bkg.globalrms)
+
+        sep_sigma = float(self.sep_thr_spin.value()) if hasattr(self, "sep_thr_spin") else 5.0
+        sources   = sep.extract(data_sub, sep_sigma, err=err)
+
+        if sources.size == 0:
+            QMessageBox.critical(self, "SEP Error", "SEP found no sources.")
+            return
+
+        r_fluxrad, _ = sep.flux_radius(
+            gray, sources["x"], sources["y"],
+            2.0 * sources["a"], 0.5,
+            normflux=sources["flux"], subpix=5)
+        mask    = (r_fluxrad > 0.2) & (r_fluxrad <= 10)
+        sources = sources[mask]
+        if sources.size == 0:
+            QMessageBox.critical(self, "SEP Error",
+                "All SEP detections rejected by radius filter.")
+            return
+
+        _sfcc_status(self,
+            f"SEP detected {sources.size:,} stars — converting to sky coords…")
+        QApplication.processEvents()
+
+        xs = sources["x"].astype(np.float64)
+        ys = sources["y"].astype(np.float64)
+
+        try:
+            sky_coords = wcs2.all_pix2world(np.column_stack([xs, ys]), 0)
+        except Exception as e:
+            QMessageBox.critical(self, "WCS Error", str(e))
+            return
+
+        valid_mask = (
+            np.isfinite(sky_coords[:, 0]) & np.isfinite(sky_coords[:, 1]) &
+            (sky_coords[:, 1] >= -90) & (sky_coords[:, 1] <= 90)
+        )
+        sources    = sources[valid_mask]
+        sky_coords = sky_coords[valid_mask]
+
+        if sources.size == 0:
+            QMessageBox.critical(self, "WCS Error",
+                "No valid sky coordinates after WCS conversion.")
+            return
+
+        self.star_list      = []
+        gaia_source_map: dict[int, int] = {}
+
+        if self._use_gaia_fallback():
+            try:
+                lib = get_library()
+                if lib.installed_bands():
+                    _sfcc_status(self,
+                        f"Matching {sources.size:,} SEP stars against local Gaia library…")
+                    QApplication.processEvents()
+
+                    coords_list  = [(float(sky_coords[i, 0]), float(sky_coords[i, 1]))
+                                    for i in range(len(sources))]
+                    batch_results = lib.find_nearest_batch(
+                        coords_list, radius_arcsec=3.0)
+
+                    for sep_idx, (sid, sep_arcsec) in batch_results.items():
+                        gaia_source_map[sep_idx] = sid
+
+                    _sfcc_status(self,
+                        f"Gaia library matched {len(gaia_source_map):,} of "
+                        f"{sources.size:,} SEP stars")
+                    QApplication.processEvents()
+            except Exception as e:
+                print(f"[SSSC] Gaia bulk match failed: {e}")
+
+        for i in range(len(sources)):
+            sid  = gaia_source_map.get(i)
+            info = None
+            if sid is not None:
+                try:
+                    info = get_library().get_source_info(sid)
+                except Exception:
+                    pass
+
+            self.star_list.append({
+                "ra":              float(sky_coords[i, 0]),
+                "dec":             float(sky_coords[i, 1]),
+                "x":               float(sources["x"][i]),
+                "y":               float(sources["y"][i]),
+                "a":               float(sources["a"][i]),
+                "main_id":         None,
+                "sp_clean":        None,
+                "pickles_match":   None,
+                "sp_source":       "gaia_xp" if sid is not None else None,
+                "Bmag":            None,
+                "Vmag":            None,
+                "Rmag":            None,
+                "gaia_source_id":  sid,
+                "gaia_gmag":       info["gmag"] if info else None,
+                "gaia_sep_arcsec": batch_results.get(i, (None, None))[1]
+                                   if i in gaia_source_map else None,
+            })
+
+        pix_corners = np.array([[W/2, H/2], [0,0], [W,0], [0,H], [W,H]], dtype=float)
+        try:
+            sky_corners = wcs2.all_pix2world(pix_corners, 0)
+        except Exception as e:
+            QMessageBox.critical(self, "WCS Error", str(e))
+            return
+
+        center_sky  = SkyCoord(ra=float(sky_corners[0,0])*u.deg,
+                               dec=float(sky_corners[0,1])*u.deg, frame="icrs")
+        corners_sky = SkyCoord(ra=sky_corners[1:,0]*u.deg,
+                               dec=sky_corners[1:,1]*u.deg, frame="icrs")
+        radius = center_sky.separation(corners_sky).max() * 1.05
+
+        Simbad.reset_votable_fields()
+        ok = False
+        for _ in range(5):
+            try:
+                Simbad.add_votable_fields("sp", "B", "V", "R", "ra", "dec", "main_id")
+                ok = True; break
+            except Exception:
+                QApplication.processEvents(); non_blocking_sleep(0.8)
+        if not ok:
+            for _ in range(5):
+                try:
+                    Simbad.add_votable_fields("sp", "flux(B)", "flux(V)", "flux(R)",
+                                              "ra(d)", "dec(d)", "main_id")
+                    ok = True; break
+                except Exception:
+                    QApplication.processEvents(); non_blocking_sleep(0.8)
+
+        simbad_result = None
+        if ok:
+            Simbad.ROW_LIMIT = 10000
+            for attempt in range(1, 6):
+                try:
+                    _sfcc_status(self,
+                        f"Querying SIMBAD for spectral types (attempt {attempt}/5)…")
+                    QApplication.processEvents()
+                    simbad_result = Simbad.query_region(center_sky, radius=radius)
+                    break
+                except Exception:
+                    QApplication.processEvents(); non_blocking_sleep(1.2)
+
+        templates_for_hist = []
+
+        if simbad_result is not None and len(simbad_result) > 0:
+            cols_lower  = {c.lower(): c for c in simbad_result.colnames}
+            ra_col      = (cols_lower.get("ra") or cols_lower.get("ra(d)")
+                           or cols_lower.get("ra_d"))
+            dec_col     = (cols_lower.get("dec") or cols_lower.get("dec(d)")
+                           or cols_lower.get("dec_d"))
+            b_col       = cols_lower.get("b") or cols_lower.get("flux_b")
+            v_col       = cols_lower.get("v") or cols_lower.get("flux_v")
+            r_col       = cols_lower.get("r") or cols_lower.get("flux_r")
+            main_id_col = cols_lower.get("main_id")
+
+            def _unmask_num(x):
+                try:
+                    if x is None: return None
+                    if ma.isMaskedArray(x) and ma.is_masked(x): return None
+                    return float(x)
+                except Exception:
+                    return None
+
+            def _infer(bv):
+                if bv is None or (isinstance(bv, float) and np.isnan(bv)):
+                    return None
+                if bv < 0.00: return "B"
+                elif bv < 0.30: return "A"
+                elif bv < 0.58: return "F"
+                elif bv < 0.81: return "G"
+                elif bv < 1.40: return "K"
+                else: return "M"
+
+            sl_ras  = np.array([s["ra"]  for s in self.star_list], dtype=np.float64)
+            sl_decs = np.array([s["dec"] for s in self.star_list], dtype=np.float64)
+            matched_simbad = 0
+
+            for row in simbad_result:
+                if ra_col is None or dec_col is None:
+                    continue
+                sra  = _unmask_num(row[ra_col])
+                sdec = _unmask_num(row[dec_col])
+                if sra is None or sdec is None:
+                    continue
+
+                cosd  = max(1e-6, abs(math.cos(math.radians(sdec))))
+                seps  = np.hypot((sl_ras - sra) * cosd,
+                                 sl_decs - sdec) * 3600.0
+                j = int(np.argmin(seps))
+                if seps[j] > 3.0:
+                    continue
+
+                st   = self.star_list[j]
+                raw_sp = None
+                if "SP_TYPE" in simbad_result.colnames:
+                    raw_sp = row["SP_TYPE"]
+                elif "sp_type" in simbad_result.colnames:
+                    raw_sp = row["sp_type"]
+
+                bmag = _unmask_num(row[b_col]) if b_col else None
+                vmag = _unmask_num(row[v_col]) if v_col else None
+                rmag = _unmask_num(row[r_col]) if r_col else None
+
+                sp_clean = sp_source = None
+                if raw_sp and str(raw_sp).strip():
+                    sp = str(raw_sp).strip().upper()
+                    if not (sp.startswith("SN") or sp.startswith("KA")):
+                        sp_clean  = sp
+                        sp_source = "simbad"
+                elif bmag is not None and vmag is not None:
+                    sp_clean  = _infer(bmag - vmag)
+                    sp_source = "bv_inferred"
+
+                match_list    = pickles_match_for_simbad(
+                    sp_clean, self.pickles_templates) if sp_clean else []
+                best_template = match_list[0] if match_list else None
+
+                st["main_id"]       = (str(row[main_id_col]).strip()
+                                       if main_id_col and row[main_id_col] else None)
+                st["sp_clean"]      = sp_clean
+                st["sp_source"]     = (sp_source
+                                       if st["sp_source"] != "gaia_xp" else "gaia_xp")
+                st["pickles_match"] = best_template
+                st["Bmag"]          = float(bmag) if bmag is not None else None
+                st["Vmag"]          = float(vmag) if vmag is not None else None
+                st["Rmag"]          = float(rmag) if rmag is not None else None
+
+                if best_template:
+                    templates_for_hist.append(best_template)
+                matched_simbad += 1
+
+            _sfcc_status(self,
+                f"SIMBAD matched {matched_simbad} stars — "
+                f"{len(gaia_source_map):,} have Gaia XP spectra")
+            QApplication.processEvents()
+
+        if self._use_gaia_fallback():
+            gaia_ids_all = [st["gaia_source_id"] for st in self.star_list
+                            if st.get("gaia_source_id") is not None]
+            if gaia_ids_all:
+                try:
+                    _sfcc_busy(self, True,
+                        f"Inferring spectral types from Gaia XP for "
+                        f"{len(gaia_ids_all):,} stars…")
+                    needs_bvr = sorted(set(
+                        int(st["gaia_source_id"]) for st in self.star_list
+                        if st.get("gaia_source_id") is not None
+                        and (st.get("gaia_B") is None or st.get("gaia_V") is None)
+                    ))
+                    if needs_bvr:
+                        cache_dir = os.path.join(
+                            QStandardPaths.writableLocation(
+                                QStandardPaths.StandardLocation.AppDataLocation),
+                            "gaiaxpy_cache")
+                        os.makedirs(cache_dir, exist_ok=True)
+                        from setiastro.saspro.sfcc import _gaiaxp_synth_bvr_cached
+                        bvr_map = _gaiaxp_synth_bvr_cached(
+                            self, needs_bvr,
+                            db_path=self._gaia_db_path(),
+                            status_cb=lambda m: _sfcc_status(self, m),
+                            cache_dir=cache_dir,
+                        )
+                        for st in self.star_list:
+                            sid_i = st.get("gaia_source_id")
+                            if sid_i is None or int(sid_i) not in bvr_map:
+                                continue
+                            bvr = bvr_map[int(sid_i)]
+                            st["gaia_B"] = bvr["B"]
+                            st["gaia_V"] = bvr["V"]
+                            st["gaia_R"] = bvr["R"]
+                            if st.get("Bmag") is None: st["Bmag"] = bvr["B"]
+                            if st.get("Vmag") is None: st["Vmag"] = bvr["V"]
+                            if st.get("Rmag") is None: st["Rmag"] = bvr["R"]
+                            if not st.get("sp_clean"):
+                                letter = _infer_letter_from_bv(bvr["B"] - bvr["V"])
+                                if letter:
+                                    st["sp_clean"]  = letter
+                                    st["sp_source"] = "bv_inferred"
+                            if st.get("sp_clean") and not st.get("pickles_match"):
+                                ml = pickles_match_for_simbad(
+                                    st["sp_clean"], self.pickles_templates)
+                                st["pickles_match"] = ml[0] if ml else None
+                                if st["pickles_match"]:
+                                    templates_for_hist.append(st["pickles_match"])
+                except Exception as e:
+                    _sfcc_status(self, f"[SSSC] Gaia XP BVR failed: {e}")
+                finally:
+                    _sfcc_busy(self, False)
+
+        n_gaia_xp        = sum(1 for s in self.star_list
+                               if s.get("gaia_source_id") is not None)
+        n_simbad_pickles = sum(1 for s in self.star_list
+                               if s.get("gaia_source_id") is None
+                               and s.get("sp_source") == "simbad"
+                               and s.get("pickles_match") is not None)
+        n_bv_pickles     = sum(1 for s in self.star_list
+                               if s.get("gaia_source_id") is None
+                               and s.get("sp_source") == "bv_inferred")
+        n_none           = (len(self.star_list)
+                            - n_gaia_xp - n_simbad_pickles - n_bv_pickles)
+
+        if getattr(self, "figure", None) is not None:
+            self.figure.clf()
+
+        if (getattr(self, "figure", None) is not None
+                and getattr(self, "canvas", None) is not None):
+            fig = self.figure
+
+            ax1 = fig.add_subplot(1, 2, 1)
+            if templates_for_hist:
+                uniq, cnt = np.unique(templates_for_hist, return_counts=True)
+                ax1.bar(uniq, cnt, edgecolor="black", color="#5588cc", label="Pickles")
+            bv_types = [s["sp_clean"] for s in self.star_list
+                        if s.get("sp_source") == "bv_inferred" and s.get("sp_clean")]
+            if bv_types:
+                bv_uniq, bv_cnt = np.unique(bv_types, return_counts=True)
+                ax1.bar(bv_uniq, bv_cnt, edgecolor="black", color="#cc8844",
+                        alpha=0.7, label="B-V inferred")
+            ax1.set_xlabel("Spectral Type")
+            ax1.set_ylabel("Count")
+            ax1.set_title("Spectral Type Distribution")
+            ax1.tick_params(axis="x", rotation=90)
+            ax1.grid(axis="y", linestyle="--", alpha=0.3)
+            ax1.legend(fontsize=8)
+
+            ax2 = fig.add_subplot(1, 2, 2)
+            labels, sizes, colors = [], [], []
+            for label, size, color in [
+                (f"Gaia XP ({n_gaia_xp})",               n_gaia_xp,        "#44cc88"),
+                (f"Pickles/SIMBAD ({n_simbad_pickles})",  n_simbad_pickles, "#5588cc"),
+                (f"Pickles/B-V ({n_bv_pickles})",         n_bv_pickles,     "#cc8844"),
+                (f"No spectrum ({n_none})",                n_none,           "#555555"),
+            ]:
+                if size > 0:
+                    labels.append(label); sizes.append(size); colors.append(color)
+            if sizes:
+                ax2.pie(sizes, labels=labels, colors=colors, autopct="%1.0f%%",
+                        textprops={"fontsize": 8})
+            ax2.set_title("Calibration Source Breakdown")
+
+            fig.tight_layout()
+            self.canvas.setVisible(True)
+            _force_mpl_no_tex()
+            self.canvas.draw()
+
+        _sfcc_status(self,
+            f"Step 1 complete — {len(self.star_list):,} stars  ·  "
+            f"{n_gaia_xp:,} Gaia XP  ·  {n_simbad_pickles:,} Pickles/SIMBAD  ·  "
+            f"{n_bv_pickles:,} Pickles/B-V  ·  {n_none:,} unclassified")
+
         self._update_session_info_label()
 
-    def _update_session_info_label(self):
-        """Show session ID and historical run count in UI."""
+    def _clear_session_history(self):
+        """Delete all saved R(λ) solutions for the current session ID, with confirmation."""
         try:
             sid = make_session_id(
                 self.r_filter_combo.currentText(),
@@ -1347,6 +2313,56 @@ class SSSCDialog(QDialog):
                 self.b_filter_combo.currentText(),
                 self.lp_filter_combo.currentText(),
                 self.lp_filter_combo2.currentText(),
+                self._camera_label(),
+            )
+            cache = self._get_session_cache()
+            n = cache.session_count(sid)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Could not read session cache:\n{e}")
+            return
+
+        if n == 0:
+            QMessageBox.information(self, "Clear Session History",
+                "No saved solutions found for this filter+camera combination.")
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Clear Session History",
+            f"Delete all {n} saved R(λ) solution(s) for session {sid}?\n\n"
+            f"This will remove the accumulated calibration history for this\n"
+            f"filter+camera combination. The next run will start fresh.\n\n"
+            f"This cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            import sqlite3
+            cache._conn.execute(
+                f"DELETE FROM {_SESSION_TABLE} WHERE session_id = ?", (sid,))
+            cache._conn.commit()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to clear session:\n{e}")
+            return
+
+        self._update_session_info_label()
+        _sfcc_status(self, f"[SSSC] Session history cleared — {n} run(s) deleted for {sid}")
+        QMessageBox.information(self, "Clear Session History",
+            f"Cleared {n} saved solution(s) for session {sid}.\n"
+            f"The next calibration run will start fresh.")
+
+    def _update_session_info_label(self):
+        try:
+            sid = make_session_id(
+                self.r_filter_combo.currentText(),
+                self.g_filter_combo.currentText(),
+                self.b_filter_combo.currentText(),
+                self.lp_filter_combo.currentText(),
+                self.lp_filter_combo2.currentText(),
+                self._camera_label(),
             )
             cache = self._get_session_cache()
             n_sessions = cache.session_count(sid)
@@ -1366,16 +2382,6 @@ class SSSCDialog(QDialog):
     # ── Step 2: Run SSSC ──────────────────────────────────────────────────────
 
     def run_sssc(self):
-        """
-        Main calibration pipeline.
-
-        Step A — Integrate XP spectra × T_filter (no QE anywhere)
-        Step B — Filter to spectrum-bearing stars, parallel photometry
-        Step C — Solve R(λ) at appropriate bootstrap stage
-        Step D — Apply correction
-        Step E — Diagnostics plot
-        Step F — Persist solution to session cache
-        """
         import concurrent.futures
 
         r_filt  = self.r_filter_combo.currentText()
@@ -1415,7 +2421,6 @@ class SSSCDialog(QDialog):
         if self.neutralize_chk.isChecked():
             base = self._neutralize_background(base, remove_pedestal=False)
 
-        # ── SEP re-detection ─────────────────────────────────────────────────
         gray     = np.mean(base, axis=2).astype(np.float32)
         bkg      = sep.Background(gray)
         data_sub = gray - bkg.back()
@@ -1441,7 +2446,6 @@ class SSSCDialog(QDialog):
                 "All detections rejected by radius filter.")
             return
 
-        # ── Match star_list → SEP detections ─────────────────────────────────
         _sfcc_status(self, f"Matching {sources.size:,} SEP sources to star catalog…")
         QApplication.processEvents()
 
@@ -1471,7 +2475,6 @@ class SSSCDialog(QDialog):
             raw_matches.sort(key=lambda m: m["sep_flux"], reverse=True)
             raw_matches = raw_matches[:MAX_PHOT_STARS]
 
-        # ── Load filter curves (NO QE) ───────────────────────────────────────
         wl_grid = _WL_GRID.copy()
 
         def load_curve(ext):
@@ -1497,7 +2500,6 @@ class SSSCDialog(QDialog):
         interp_tp = lambda wl_o, tp_o: np.interp(
             wl_grid, wl_o, tp_o, left=0.0, right=0.0)
 
-        # Filter-only throughput — deliberately omitting QE
         T_R = interp_tp(*load_curve(r_filt)) if r_filt != "(None)" else np.ones_like(wl_grid)
         T_G = interp_tp(*load_curve(g_filt)) if g_filt != "(None)" else np.ones_like(wl_grid)
         T_B = interp_tp(*load_curve(b_filt)) if b_filt != "(None)" else np.ones_like(wl_grid)
@@ -1505,12 +2507,10 @@ class SSSCDialog(QDialog):
         LP2 = interp_tp(*load_curve(lp_filt2)) if lp_filt2 != "(None)" else np.ones_like(wl_grid)
         LP  = LP1 * LP2
 
-        # T_sys = filter × LP only — no QE multiplied in
         T_sys_R = T_R * LP
         T_sys_G = T_G * LP
         T_sys_B = T_B * LP
 
-        # ── Step A: Gaia XP integrals (filter-only, no QE) ──────────────────
         _sfcc_status(self, "Computing Gaia XP integrals (filter curves only, no QE)…")
         QApplication.processEvents()
 
@@ -1538,7 +2538,6 @@ class SSSCDialog(QDialog):
             except Exception as e:
                 print(f"[SSSC] Gaia XP integrals failed: {e}")
 
-        # Pickles fallback for unmatched stars
         types_needed:     set[str]  = set()
         simbad_to_pickles: dict[str, str] = {}
         if not hasattr(self, "pickles_templates"):
@@ -1571,7 +2570,6 @@ class SSSCDialog(QDialog):
             except Exception as e:
                 print(f"[SSSC] Pickles {pname} failed: {e}")
 
-        # Filter to stars with spectra
         raw_matches_with_spectrum = [
             m for m in raw_matches
             if (
@@ -1591,8 +2589,37 @@ class SSSCDialog(QDialog):
                 "No stars with Gaia XP spectrum or Pickles template found.")
             return
 
-        # ── Step B: Parallel aperture photometry ─────────────────────────────
-        _sfcc_status(self, f"Measuring flux for {n_with_spectrum} stars (parallel)…")
+        _sfcc_status(self, f"Pre-loading XP spectra for {n_with_spectrum} stars…")
+        QApplication.processEvents()
+
+        xp_flux_cache: dict[int, np.ndarray | None] = {}
+        if self._use_gaia_fallback():
+            dl = self._get_gaia_downloader()
+            for m in raw_matches_with_spectrum:
+                si  = int(m["sim_index"])
+                sid = self.star_list[si].get("gaia_source_id") \
+                      if 0 <= si < len(self.star_list) else None
+                if sid is None or int(sid) in xp_flux_cache:
+                    continue
+                try:
+                    spec = dl.db.get_spectrum(int(sid))
+                    if spec is not None and spec.flux is not None:
+                        wl_spec = np.asarray(
+                            spec.wavelengths, dtype=np.float64) * 10.0
+                        fl_spec = np.asarray(spec.flux, dtype=np.float64)
+                        if wl_spec[0] > wl_spec[-1]:
+                            wl_spec = wl_spec[::-1]
+                            fl_spec = fl_spec[::-1]
+                        arr = np.interp(
+                            _WL_GRID, wl_spec, fl_spec, left=0.0, right=0.0)
+                        xp_flux_cache[int(sid)] = np.where(arr > 0, arr, 0.0)
+                    else:
+                        xp_flux_cache[int(sid)] = None
+                except Exception:
+                    xp_flux_cache[int(sid)] = None
+
+        _sfcc_status(self,
+            f"Measuring flux for {n_with_spectrum} stars (parallel)…")
         QApplication.processEvents()
 
         base_ro  = np.ascontiguousarray(base, dtype=np.float32)
@@ -1635,6 +2662,8 @@ class SSSCDialog(QDialog):
             if S_sr <= 0 or S_sg <= 0 or S_sb <= 0:
                 return None
 
+            xp_flux_arr = xp_flux_cache.get(int(sid)) if sid is not None else None
+
             st = self.star_list[si]
             return {
                 **m,
@@ -1647,8 +2676,7 @@ class SSSCDialog(QDialog):
                 "used_gaia": sid is not None and int(sid) in gaia_integrals,
                 "gaia_B":    st.get("gaia_B"),
                 "gaia_V":    st.get("gaia_V"),
-                # xp_flux stored here in Stage 3 — add when DR4 enabled:
-                # "xp_flux": <np.ndarray on wl_grid>,
+                "xp_flux":   xp_flux_arr,
             }
 
         n_workers  = min(8, max(1, os.cpu_count() or 4))
@@ -1682,17 +2710,33 @@ class SSSCDialog(QDialog):
                 f"Only {len(enriched)} valid calibrator stars — need ≥ {_STAGE1_MIN}.")
             return
 
-        # ── Step C: Solve R(λ) ───────────────────────────────────────────────
         _sfcc_status(self, "Solving system response R(λ)…")
         QApplication.processEvents()
 
-        session_id = make_session_id(r_filt, g_filt, b_filt, lp_filt, lp_filt2)
+        session_id = make_session_id(r_filt, g_filt, b_filt, lp_filt, lp_filt2,
+                                     self._camera_label())
+
+        try:
+            prior_sr = self._get_session_cache().load_latest(session_id)
+            if prior_sr is not None and prior_sr.stage >= 3:
+                has_cp = prior_sr.ctrl_points is not None
+                _sfcc_status(self,
+                    f"Found prior Stage 3 solution ({prior_sr.n_stars} stars, "
+                    f"RMS={prior_sr.residual_rms:.4f}, "
+                    f"ctrl_points={'yes' if has_cp else 'no'}) — will seed optimizer")
+                QApplication.processEvents()
+        except Exception:
+            prior_sr = None
+
+        n_ctrl_pts = int(self.nctrl_spin.value()) if hasattr(self, "nctrl_spin") else 8
 
         try:
             sr = _solve_system_response(
                 enriched, wl_grid,
                 T_sys_R, T_sys_G, T_sys_B,
                 session_id,
+                prior_response=prior_sr,
+                n_ctrl=n_ctrl_pts,
                 status_cb=lambda m: _sfcc_status(self, m),
             )
         except Exception as e:
@@ -1702,7 +2746,6 @@ class SSSCDialog(QDialog):
 
         self._last_sr = sr
 
-        # ── Step D: Apply correction ─────────────────────────────────────────
         _sfcc_status(self, "Applying system response correction…")
         QApplication.processEvents()
 
@@ -1725,7 +2768,6 @@ class SSSCDialog(QDialog):
             else np.clip(calibrated, 0.0, 1.0).astype(np.float32)
         )
 
-        # ── Step E: Diagnostics ──────────────────────────────────────────────
         _sfcc_status(self, "Building diagnostics…")
         QApplication.processEvents()
 
@@ -1741,7 +2783,6 @@ class SSSCDialog(QDialog):
         except Exception as e:
             print(f"[SSSC] Diagnostics failed: {e}")
 
-        # ── Step F: Save to document + session cache ─────────────────────────
         new_meta = dict(doc.metadata or {})
         new_meta.update({
             "SSSC_applied":      True,
@@ -1778,6 +2819,7 @@ class SSSCDialog(QDialog):
             f"{sr.stage_label}  ·  RMS={sr.residual_rms:.4f}")
         QApplication.processEvents()
 
+        stars_needed = max(0, _STAGE3_MIN - sr.n_stars)
         QMessageBox.information(self, "SSSC Complete",
             f"Applied SSSC using {len(enriched)} calibrator stars\n\n"
             f"  Gaia XP spectra:   {n_xp}\n"
@@ -1789,11 +2831,15 @@ class SSSCDialog(QDialog):
             f"  Gains:  k_R={sr.gains[0]:.4f}  k_G={sr.gains[1]:.4f}  k_B={sr.gains[2]:.4f}\n\n"
             f"  No sensor QE curve was used.\n"
             f"  Filter curves only — sensor response solved from stars.\n\n"
-            f"  {_STAGE3_MIN - sr.n_stars} more stars needed for Stage 3 (full R(λ))"
-            if sr.stage < 3 else
-            f"Applied SSSC using {len(enriched)} calibrator stars\n\n"
-            f"  Bootstrap stage:   {sr.stage_label}  ✓\n"
-            f"  Full R(λ) curve solved from stellar data."
+            + (
+                f"  ✓ Stage 3 (full R(λ)) solved from {sr.n_stars} stars.\n"
+                f"  Each run refines R(λ) further — run again on the same\n"
+                f"  filter+camera combination to improve the solution."
+                if sr.stage >= 3 else
+                f"  {stars_needed} more stars needed for Stage 3 (full R(λ))."
+                if stars_needed > 0 else
+                f"  Stage 3 criteria met — will activate on next run."
+            )
         )
 
     # ── Cleanup ───────────────────────────────────────────────────────────────

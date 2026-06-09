@@ -184,6 +184,7 @@ class MenuMixin:
         m_fn.addAction(self.act_rgb_combine)
         m_fn.addAction(self.act_rgb_extract)
         m_fn.addAction(self.act_sfcc)
+        m_fn.addAction(self.act_sssc)
         m_fn.addAction(self.act_signature)
         m_fn.addAction(self.act_star_stretch)
         m_fn.addAction(self.act_stat_stretch)

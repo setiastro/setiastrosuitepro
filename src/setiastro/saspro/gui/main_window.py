@@ -185,7 +185,7 @@ from setiastro.saspro.resources import (
     satellite_path, imagecombine_path, wrench_path, eye_icon_path,multiscale_decomp_path, nbi_path,
     disk_icon_path, nuke_path, hubble_path, collage_path, annotated_path, atlas_path,
     colorwheel_path, font_path, csv_icon_path, spinner_path, wims_path, narrowbandnormalization_path,
-    wimi_path, linearfit_path, debayer_path, aberration_path, acv_icon_path, snr_path,nbextract_icon,
+    wimi_path, linearfit_path, debayer_path, aberration_path, acv_icon_path, snr_path,nbextract_icon,sssc_path,
     functionbundles_path, viewbundles_path, selectivecolor_path, selectivelum_path, rgbalign_path, planetarystacker_path,syqon_path,rcastro_path,
     background_path, script_icon_path, planetprojection_path,clonestampicon_path, finderchart_path,magnitude_path,
 )
@@ -3051,6 +3051,33 @@ class AstroSuiteProMainWindow(
         except Exception:
             pass
         self.SFCC_window.show()
+
+    def SSSC_show(self):
+        from setiastro.saspro.sssc import SSSCDialog
+        from setiastro.saspro.doc_manager import DocManager
+        if getattr(self, "SSSC_window", None) and self.SSSC_window.isVisible():
+            self.SSSC_window.raise_()
+            self.SSSC_window.activateWindow()
+            return
+        if not hasattr(self, "doc_manager") or self.doc_manager is None:
+            self.doc_manager = DocManager(image_manager=getattr(self, "image_manager", None), parent=self)
+        if not os.path.exists(sasp_data_path):
+            QMessageBox.critical(self, "Missing Resource", f"SASP Data file not found:\n{sasp_data_path}")
+            return
+        self.SSSC_window = SSSCDialog(
+            doc_manager=self.doc_manager,
+            sasp_data_path=sasp_data_path,
+            parent=self
+        )
+        try:
+            self.SSSC_window.setWindowIcon(QIcon(sssc_icon_path))
+        except Exception:
+            pass
+        try:
+            self.SSSC_window.destroyed.connect(lambda _=None: setattr(self, "SSSC_window", None))
+        except Exception:
+            pass
+        self.SSSC_window.show()
 
     def _open_nbextract(self):
         from setiastro.saspro.nbextract import NBExtractDialog

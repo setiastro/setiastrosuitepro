@@ -260,7 +260,8 @@ class _SXTPanel(QWidget):
         self.chk_unscreen.setChecked(False)
         self.chk_unscreen.setEnabled(False)
         self.chk_stars.toggled.connect(self.chk_unscreen.setEnabled)
-        self.chk_unscreen.setEnabled(self.chk_stars.isChecked()) 
+        # sync initial enabled state — toggled doesn't fire during construction
+        self.chk_unscreen.setEnabled(self.chk_stars.isChecked())
         form.addRow("", self.chk_unscreen)
 
         note = QLabel(
@@ -908,16 +909,11 @@ def _on_finished(main_dlg, doc, return_code, dlg,
         dlg.mark_done()
         return
 
-    # SXT stars-only — push as new document using same pattern as StarNet
+    # SXT stars-only — open via docman.open_path, subwindow spawns automatically
     if product == "sxt" and os.path.exists(stars_path):
         dlg.append(f"Loading stars-only: {os.path.basename(stars_path)}\n")
-        stars, _, _, _ = load_image(stars_path)
-        if stars is not None:
-            stars = np.clip(stars.astype(np.float32, copy=False), 0.0, 1.0)
-            if is_mono and stars.ndim == 3:
-                stars = stars.mean(axis=2).astype(np.float32)
-            _push_new_doc(main_window, doc, stars, "_stars", "Stars-Only (SXT)")
-            dlg.append("Stars-only image pushed as new document.\n")
+        _push_new_doc(main_window, stars_path, source_doc=doc)
+        dlg.append("Stars-only image pushed as new document.\n")
 
     _cleanup()
     dlg.append("Done.\n")
@@ -927,25 +923,26 @@ def _on_finished(main_dlg, doc, return_code, dlg,
         f"{label} completed successfully.")
 
 
-def _push_new_doc(main, source_doc, img: np.ndarray,
-                   suffix: str, step_name: str):
-    """Push img as a new document — mirrors _push_as_new_doc in starnet.py."""
+def _push_new_doc(main, file_path: str, source_doc=None):
+    """Open a file via DocManager — registration and subwindow spawn are automatic.
+    If source_doc is provided, rename the new doc to source_doc's name + _stars."""
     try:
-        base  = (getattr(source_doc, "title", None)
-                 or getattr(source_doc, "name", "")
-                 or "image")
-        title = base + suffix
-        meta  = {"step_name": step_name,
-                 "bit_depth": "32-bit floating point",
-                 "is_mono":   img.ndim == 2}
-        # Try the same call chain StarNet uses
-        if hasattr(main, "_push_as_new_doc"):
-            main._push_as_new_doc(source_doc, img, title_suffix=suffix,
-                                   source=step_name)
-        elif hasattr(main, "open_array"):
-            main.open_array(img, metadata=meta, title=title)
-        elif hasattr(main, "create_document"):
-            main.create_document(image=img, metadata=meta, name=title)
+        dm = getattr(main, "docman", None) or getattr(main, "doc_manager", None)
+        if dm is None:
+            print("[RC-Astro] _push_new_doc: no doc_manager found on main window")
+            return
+        new_doc = dm.open_path(file_path)
+        if new_doc is not None and source_doc is not None:
+            try:
+                base = (getattr(source_doc, "display_name", lambda: "")()
+                        or getattr(source_doc, "name", "")
+                        or "image")
+                # Strip any file extension from the base name
+                base = os.path.splitext(base)[0]
+                new_doc.metadata["display_name"] = f"{base}_stars"
+                new_doc.changed.emit()
+            except Exception as e:
+                print(f"[RC-Astro] _push_new_doc rename failed: {e}")
     except Exception as e:
         print(f"[RC-Astro] _push_new_doc failed: {e}")
 
