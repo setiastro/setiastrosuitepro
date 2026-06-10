@@ -766,7 +766,7 @@ def _solve_system_response(
             Bm_xp_n = Bm_arr[xp_indices] / g_integrals
             n_xp_s3 = n_xp_stage3
 
-            PASSBAND_THRESH = 0.05
+
             # N_CTRL: control points per channel. More = finer R(λ) resolution
             # but requires more stars to avoid fitting noise. Rule of thumb:
             #   8  pts -> 200+ stars (default)
@@ -780,13 +780,20 @@ def _solve_system_response(
                 ("B", T_B_f64, Bm_xp_n, k_B),
             ]
 
+            # Per-channel passband thresholds.
+            # Green uses 0.707 (half-power) to cut the broad secondary red lobe
+            # present in OSC Bayer green filters. R and B use 0.30 which is tight
+            # enough to exclude cross-channel leakage while still covering the
+            # full passband of steep astro filters.
+            PASSBAND_THRESH_PER_CH = {"R": 0.30, "G": 0.707, "B": 0.30}
+
             ch_data = {}
             for ch_name, T_c, meas_n, k_c_init in channels_cfg:
                 T_peak = float(np.max(T_c))
                 if T_peak < eps:
                     ch_data[ch_name] = None
                     continue
-                pb = T_c >= PASSBAND_THRESH * T_peak
+                pb = T_c >= PASSBAND_THRESH_PER_CH[ch_name] * T_peak
                 pb_wl = _WL_GRID[pb]
                 T_pb  = T_c[pb]
 
@@ -3041,7 +3048,12 @@ SSSC is part of SetiAstro Suite Pro &mdash; www.setiastro.com
         T_sys_R = T_R * LP
         T_sys_G = T_G * LP
         T_sys_B = T_B * LP
-
+        # Half-power clip on green to suppress OSC Bayer red-tail bleed.
+        # For steep astro filters this changes nothing (the tail is already ~0).
+        # For OSC Bayer green this cuts the secondary red lobe before integration.
+        T_peak_G = float(np.max(T_sys_G))
+        if T_peak_G > 0:
+            T_sys_G = np.where(T_sys_G >= 0.707 * T_peak_G, T_sys_G, 0.0)
         _sfcc_status(self, "Computing Gaia XP integrals (filter curves only, no QE)…")
         QApplication.processEvents()
 
