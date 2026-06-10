@@ -124,7 +124,8 @@ from datetime import datetime
 from typing import List, Tuple, Optional, Dict, Any
 
 import numpy as np
-
+if not hasattr(np, 'trapezoid'):
+    np.trapezoid = np.trapz
 try:
     _trapz = np.trapezoid
 except AttributeError:
