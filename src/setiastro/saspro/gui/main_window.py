@@ -2648,10 +2648,11 @@ class AstroSuiteProMainWindow(
 
         # --- Get the *current* display-stretch parameters ---
         # start from global defaults
-        target = float(self.settings.value("display/target", 0.30, type=float))
-        sigma  = float(self.settings.value("display/sigma", 5.0, type=float))
-        linked = bool(self.settings.value("display/stretch_linked", False, type=bool))
-        use_24 = self.settings.value("display/autostretch_24bit", True, type=bool)
+        target       = float(self.settings.value("display/target", 0.30, type=float))
+        sigma        = float(self.settings.value("display/sigma", 5.0, type=float))
+        linked       = bool(self.settings.value("display/stretch_linked", False, type=bool))
+        use_24       = self.settings.value("display/autostretch_24bit", True, type=bool)
+        no_black_clip = bool(self.settings.value("display/no_black_clip", False, type=bool))
 
         # if your view exposes per-view overrides, prefer those
         if hasattr(view, "autostretch_target"):
@@ -2669,6 +2670,11 @@ class AstroSuiteProMainWindow(
                 linked = bool(view.stretch_linked)
             except Exception:
                 pass
+        if hasattr(view, "no_black_clip"):
+            try:
+                no_black_clip = bool(view.no_black_clip)
+            except Exception:
+                pass
 
         # --- Run the same autostretch math used for display ---
         try:
@@ -2678,6 +2684,7 @@ class AstroSuiteProMainWindow(
                 linked=linked,
                 sigma=sigma,
                 use_24bit=use_24,
+                no_black_clip=no_black_clip,
             )
         except Exception as e:
             QMessageBox.warning(self, "Display-Stretch", f"Failed to apply autostretch:\n{e}")
@@ -2697,6 +2704,7 @@ class AstroSuiteProMainWindow(
             "autostretch_target": float(target),
             "autostretch_sigma": float(sigma),
             "autostretch_linked": bool(linked),
+            "autostretch_no_black_clip": bool(no_black_clip),
         }
 
         try:
@@ -2720,7 +2728,8 @@ class AstroSuiteProMainWindow(
         try:
             self._log(
                 f"Display-Stretch baked into image (target={target:.3f}, "
-                f"sigma={sigma:.2f}, linked={'on' if linked else 'off'}) "
+                f"sigma={sigma:.2f}, linked={'on' if linked else 'off'}, "
+                f"no_black_clip={'on' if no_black_clip else 'off'}) "
                 f"-> {sw.windowTitle()}"
             )
         except Exception:

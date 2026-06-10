@@ -2077,18 +2077,234 @@ class ThreeDSettingsDialog(QDialog):
             }
         return None
 
+
+# ---------------------------------------------------------------------------
+# Synthetic filter curves (Johnson B and V, on Angstrom grid 3000-11000 Å)
+# These are the standard Bessell 1990 curves, tabulated coarsely.
+# For the purpose of synthesizing B-V from Gaia XP the exact shape matters
+# less than consistency — all stars go through the same curves.
+# ---------------------------------------------------------------------------
+ 
+_B_WL  = np.array([3600,3700,3800,3900,4000,4100,4200,4300,4400,4500,
+                   4600,4700,4800,4900,5000,5100,5200,5300,5400,5500], dtype=np.float64)
+_B_TP  = np.array([0.00,0.03,0.13,0.37,0.68,0.92,1.00,0.97,0.86,0.69,
+                   0.49,0.32,0.18,0.08,0.02,0.00,0.00,0.00,0.00,0.00], dtype=np.float64)
+ 
+_V_WL  = np.array([4700,4800,4900,5000,5100,5200,5300,5400,5500,5600,
+                   5700,5800,5900,6000,6100,6200,6300,6400,6500,6600,6700,6800,6900,7000], dtype=np.float64)
+_V_TP  = np.array([0.00,0.01,0.03,0.08,0.18,0.36,0.60,0.83,0.96,1.00,
+                   0.99,0.93,0.83,0.71,0.58,0.44,0.32,0.21,0.12,0.06,0.02,0.01,0.00,0.00], dtype=np.float64)
+ 
+_WL_GRID = np.arange(3000, 11001, dtype=np.float64)   # 1-Å grid
+ 
+def _synth_bv_from_xp(flux_arr, wl_nm):
+    """
+    Compute synthetic B-V color index from XP spectrum.
+    Uses the ratio of filter integrals — zero-point cancels out.
+    Returns B-V (float) or None on failure.
+    """
+    try:
+        wl_ang = np.asarray(wl_nm, dtype=np.float64) * 10.0
+        flux   = np.asarray(flux_arr, dtype=np.float64)
+        if wl_ang[0] > wl_ang[-1]:
+            wl_ang = wl_ang[::-1]
+            flux   = flux[::-1]
+
+        flux_grid = np.interp(_WL_GRID, wl_ang, flux, left=0.0, right=0.0)
+        flux_grid = np.where(flux_grid > 0, flux_grid, 0.0)
+
+        b_tp = np.interp(_WL_GRID, _B_WL, _B_TP, left=0.0, right=0.0)
+        v_tp = np.interp(_WL_GRID, _V_WL, _V_TP, left=0.0, right=0.0)
+
+        f_B = float(np.trapz(flux_grid * b_tp, _WL_GRID))
+        f_V = float(np.trapz(flux_grid * v_tp, _WL_GRID))
+
+        if f_B <= 0 or f_V <= 0:
+            return None
+
+        # B-V = -2.5 * log10(f_B / f_V) + ZP_BV
+        # Vega zero-point offset for Johnson B-V: +0.09 mag
+        # (Vega has B-V = -0.001 by definition but the Bessell curves
+        #  give a small offset vs a flat spectrum)
+        ZP_BV = 0.09
+        bv = -2.5 * math.log10(f_B / f_V) + ZP_BV
+        return float(bv)
+    except Exception:
+        return None 
+ 
+def _synth_mag_from_xp(flux_arr, wl_nm, filter_wl_ang, filter_tp,
+                        vega_flux_density=3.63e-9):
+    """
+    Synthesize an AB/Vega-ish magnitude from an XP flux array.
+ 
+    flux_arr  : flux in W/nm/m² (Gaia XP units), sampled at wl_nm (nm)
+    wl_nm     : wavelength array in nm (Gaia XP output)
+    filter_wl_ang : filter transmission wavelengths in Angstrom
+    filter_tp : filter transmission (0–1)
+ 
+    Returns magnitude (float) or NaN on failure.
+    """
+    try:
+        # Convert XP wavelengths nm → Å and resample onto _WL_GRID
+        wl_ang = np.asarray(wl_nm, dtype=np.float64) * 10.0
+        flux   = np.asarray(flux_arr, dtype=np.float64)
+        if wl_ang[0] > wl_ang[-1]:
+            wl_ang = wl_ang[::-1]
+            flux   = flux[::-1]
+ 
+        flux_grid = np.interp(_WL_GRID, wl_ang, flux, left=0.0, right=0.0)
+        flux_grid = np.where(flux_grid > 0, flux_grid, 0.0)
+ 
+        # Interpolate filter onto same grid
+        tp_grid = np.interp(_WL_GRID, filter_wl_ang, filter_tp, left=0.0, right=0.0)
+ 
+        # Integrate  ∫ f(λ) T(λ) dλ  (trapezoidal)
+        num = float(np.trapz(flux_grid * tp_grid, _WL_GRID))
+        den = float(np.trapz(tp_grid, _WL_GRID))
+ 
+        if den <= 0 or num <= 0:
+            return float('nan')
+ 
+        f_mean = num / den  # mean flux density in passband
+ 
+        # Convert to magnitude using Vega reference (approximate, consistent)
+        # vega_flux_density ≈ 3.63e-9 W/cm²/Å → needs unit matching
+        # XP flux is in W/nm/m² = 1e-10 W/Å/cm²  (1 m² = 1e4 cm², 1 nm = 10 Å → /10)
+        # So:  f [W/nm/m²]  →  f * 1e-4 / 10 [W/Å/cm²]  =  f * 1e-5  [W/Å/cm²]
+        # Vega reference in same units: 3.63e-9 W/cm²/Å (B band reference is similar)
+        # We just want consistent colours so the exact zero-point doesn't matter.
+        mag = -2.5 * math.log10(f_mean)
+        return mag
+    except Exception:
+        return float('nan')
+ 
+ 
+def _blackbody_teff_from_xp(flux_arr, wl_nm):
+    """
+    Estimate Teff by least-squares fitting a Planck function to the XP continuum.
+    Returns Teff in Kelvin, or None on failure.
+    Grid-searches 2500–50000 K then refines.
+    """
+    try:
+        from scipy.optimize import minimize_scalar
+ 
+        wl_ang = np.asarray(wl_nm, dtype=np.float64) * 10.0
+        flux   = np.asarray(flux_arr, dtype=np.float64)
+        if wl_ang[0] > wl_ang[-1]:
+            wl_ang = wl_ang[::-1]
+            flux   = flux[::-1]
+ 
+        # Only use optical range 4000–8000 Å for the fit (avoids XP edge noise)
+        mask = (wl_ang >= 4000) & (wl_ang <= 8000)
+        wl_f = wl_ang[mask]
+        fl_f = flux[mask]
+        if len(wl_f) < 10:
+            return None
+ 
+        fl_f = np.where(fl_f > 0, fl_f, 0.0)
+        if fl_f.max() <= 0:
+            return None
+ 
+        # Normalise so the fit is scale-independent
+        fl_norm = fl_f / fl_f.max()
+ 
+        h = 6.626e-34; c_ms = 3e8; k = 1.381e-23
+ 
+        def planck(T):
+            lam = wl_f * 1e-10      # Å → m
+            B = (2 * h * c_ms**2 / lam**5) / (np.exp(h * c_ms / (lam * k * T)) - 1.0)
+            B_norm = B / B.max() if B.max() > 0 else B
+            resid = fl_norm - B_norm
+            return float(np.sum(resid**2))
+ 
+        # Coarse grid
+        T_grid = np.arange(2500, 50001, 500)
+        losses = [planck(T) for T in T_grid]
+        T0 = float(T_grid[np.argmin(losses)])
+ 
+        # Refine
+        result = minimize_scalar(planck, bounds=(max(1000, T0 - 2000), T0 + 2000),
+                                 method='bounded')
+        return float(result.x) if result.success else T0
+    except Exception:
+        return None
+ 
+ 
+def _spectral_class_from_teff(T):
+    """Return single letter spectral class from Teff."""
+    if T is None:
+        return "?"
+    if T >= 30000: return "O"
+    if T >= 10000: return "B"
+    if T >=  7500: return "A"
+    if T >=  6000: return "F"
+    if T >=  5200: return "G"
+    if T >=  3700: return "K"
+    return "M"
+ 
+ 
+# Spectral class → distinctive color for the "class color" plot mode
+_CLASS_COLORS = {
+    "O": "#9bb0ff",   # blue-white
+    "B": "#aabfff",   # blue-white
+    "A": "#cad7ff",   # white-blue
+    "F": "#f8f7ff",   # white
+    "G": "#fff4ea",   # yellow-white
+    "K": "#ffd2a1",   # orange
+    "M": "#ffad51",   # orange-red
+    "?": "#888888",
+}
+ 
+
+from PyQt6.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox,
+    QCheckBox, QSpinBox, QDoubleSpinBox, QDialogButtonBox, QWidget,
+)
+from PyQt6.QtGui import QColor
+from PyQt6.QtWidgets import QColorDialog
+ 
+ 
 class HRSettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("H-R Diagram Settings")
         layout = QVBoxLayout(self)
-
-        # 1) Star Color Mode
+ 
+        # ── 1) Gaia XP photometry toggle ─────────────────────────────────
+        self.use_xp_chk = QCheckBox(
+            "Use Gaia XP synthetic photometry (recommended if library installed)")
+        self.use_xp_chk.setChecked(True)
+        self.use_xp_chk.setToolTip(
+            "When checked, B and V magnitudes are synthesised from Gaia XP spectra\n"
+            "rather than taken from the SIMBAD catalogue. This gives consistent\n"
+            "photometry for every star with an XP spectrum and typically triples\n"
+            "or more the number of stars on the diagram.\n\n"
+            "Requires the Gaia XP spectral library to be installed.")
+        layout.addWidget(self.use_xp_chk)
+ 
+        # ── 2) Teff source ────────────────────────────────────────────────
+        layout.addWidget(QLabel("Teff estimation:"))
+        self.teff_mode_cb = QComboBox()
+        self.teff_mode_cb.addItems([
+            "Blackbody fit to XP spectrum (best, requires XP)",
+            "Ballesteros B-V formula (classic)",
+        ])
+        self.teff_mode_cb.setToolTip(
+            "Blackbody fit directly fits a Planck function to the XP continuum.\n"
+            "More accurate especially for cool/red stars. Falls back to Ballesteros\n"
+            "if no XP spectrum is available.")
+        layout.addWidget(self.teff_mode_cb)
+ 
+        # ── 3) Star Color Mode ────────────────────────────────────────────
         layout.addWidget(QLabel("Star Color Mode:"))
         self.color_mode_cb = QComboBox()
-        self.color_mode_cb.addItems(["Realistic (blackbody)", "Solid (Custom)"])
+        self.color_mode_cb.addItems([
+            "Realistic (blackbody)",
+            "Spectral class (O/B/A/F/G/K/M)",
+            "Solid (Custom)",
+        ])
         layout.addWidget(self.color_mode_cb)
-
+ 
         self.color_btn = QPushButton("Choose Solid Color…")
         self.custom_color = QColor(255, 255, 255)
         self.color_btn.setVisible(False)
@@ -2099,19 +2315,29 @@ class HRSettingsDialog(QDialog):
                 self.color_mode_cb.currentText().startswith("Solid")
             )
         )
-
-        # 2) Background Choice
+ 
+        # ── 4) Outlier flagging ───────────────────────────────────────────
+        self.flag_outliers_chk = QCheckBox(
+            "Flag spectral outliers (carbon stars, emission-line, peculiar)")
+        self.flag_outliers_chk.setChecked(True)
+        self.flag_outliers_chk.setToolTip(
+            "Stars whose XP-derived Teff diverges strongly from the B-V prediction\n"
+            "are marked with a distinct symbol (triangle) so they stand out as\n"
+            "non-standard objects rather than appearing as H-R diagram noise.")
+        layout.addWidget(self.flag_outliers_chk)
+ 
+        # ── 5) Background ─────────────────────────────────────────────────
         layout.addWidget(QLabel("Background:"))
         self.bg_mode_cb = QComboBox()
         self.bg_mode_cb.addItems(["HR Diagram Image", "Solid Black"])
         layout.addWidget(self.bg_mode_cb)
-
-        # 3) Marker Size Mode
+ 
+        # ── 6) Marker Size ────────────────────────────────────────────────
         layout.addWidget(QLabel("Marker Size:"))
         self.marker_size_mode_cb = QComboBox()
         self.marker_size_mode_cb.addItems(["Auto (recommended)", "Manual"])
         layout.addWidget(self.marker_size_mode_cb)
-
+ 
         self.marker_size_widget = QWidget()
         ms_layout = QHBoxLayout(self.marker_size_widget)
         ms_layout.setContentsMargins(0, 0, 0, 0)
@@ -2122,50 +2348,34 @@ class HRSettingsDialog(QDialog):
         ms_layout.addWidget(self.marker_size_spin)
         ms_layout.addStretch(1)
         layout.addWidget(self.marker_size_widget)
-
         self.marker_size_widget.setVisible(False)
         self.marker_size_mode_cb.currentIndexChanged.connect(
             lambda idx: self.marker_size_widget.setVisible(
                 self.marker_size_mode_cb.currentText().startswith("Manual")
             )
         )
-
-        # 4) Axis Range Mode
+ 
+        # ── 7) Axis Range ─────────────────────────────────────────────────
         layout.addWidget(QLabel("Axis Range:"))
         self.range_mode_cb = QComboBox()
         self.range_mode_cb.addItems(["Default (–0.3→2.25, –9→19)", "Custom"])
         layout.addWidget(self.range_mode_cb)
-
+ 
         self.custom_range_widget = QWidget()
         cr_layout = QHBoxLayout(self.custom_range_widget)
-        cr_layout.addWidget(QLabel("X Min:"))
-        self.xmin_spin = QDoubleSpinBox()
-        self.xmin_spin.setRange(-10.0, 10.0)
-        self.xmin_spin.setDecimals(3)
-        self.xmin_spin.setValue(-0.3)
-        cr_layout.addWidget(self.xmin_spin)
-
-        cr_layout.addWidget(QLabel("X Max:"))
-        self.xmax_spin = QDoubleSpinBox()
-        self.xmax_spin.setRange(-10.0, 10.0)
-        self.xmax_spin.setDecimals(3)
-        self.xmax_spin.setValue(2.25)
-        cr_layout.addWidget(self.xmax_spin)
-
-        cr_layout.addWidget(QLabel("Y Min:"))
-        self.ymin_spin = QDoubleSpinBox()
-        self.ymin_spin.setRange(-50.0, 50.0)
-        self.ymin_spin.setDecimals(3)
-        self.ymin_spin.setValue(-9.0)
-        cr_layout.addWidget(self.ymin_spin)
-
-        cr_layout.addWidget(QLabel("Y Max:"))
-        self.ymax_spin = QDoubleSpinBox()
-        self.ymax_spin.setRange(-50.0, 50.0)
-        self.ymax_spin.setDecimals(3)
-        self.ymax_spin.setValue(19.0)
-        cr_layout.addWidget(self.ymax_spin)
-
+        for lbl, attr, val in [
+            ("X Min:", "xmin_spin", -0.3),
+            ("X Max:", "xmax_spin",  2.25),
+            ("Y Min:", "ymin_spin", -9.0),
+            ("Y Max:", "ymax_spin", 19.0),
+        ]:
+            cr_layout.addWidget(QLabel(lbl))
+            spin = QDoubleSpinBox()
+            spin.setRange(-50.0, 50.0)
+            spin.setDecimals(3)
+            spin.setValue(val)
+            cr_layout.addWidget(spin)
+            setattr(self, attr, spin)
         layout.addWidget(self.custom_range_widget)
         self.custom_range_widget.setVisible(False)
         self.range_mode_cb.currentIndexChanged.connect(
@@ -2173,46 +2383,154 @@ class HRSettingsDialog(QDialog):
                 self.range_mode_cb.currentText().startswith("Custom")
             )
         )
-
-        # 5) Show Sun
-        layout.addWidget(QLabel("Show Sun:"))
+ 
+        # ── 8) Show Sun ───────────────────────────────────────────────────
         self.show_sun_cb = QCheckBox("Include Sun on diagram")
         self.show_sun_cb.setChecked(True)
         layout.addWidget(self.show_sun_cb)
+        # ── 3D CMD options ────────────────────────────────────────────────
+        from PyQt6.QtWidgets import QFrame
+        sep_line = QFrame()
+        sep_line.setFrameShape(QFrame.Shape.HLine)
+        sep_line.setStyleSheet("color: #333;")
+        layout.addWidget(sep_line)
 
-        # 6) OK / Cancel Buttons
-        btns = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        layout.addWidget(QLabel("── 3D Color-Magnitude Diagram ──"))
+
+        self.cmd_3d_btn_chk = QCheckBox("Add '3D CMD' button to output")
+        self.cmd_3d_btn_chk.setChecked(True)
+        layout.addWidget(self.cmd_3d_btn_chk)
+
+        layout.addWidget(QLabel("Distance axis units:"))
+        self.dist_units_cb = QComboBox()
+        self.dist_units_cb.addItems(["Parsecs", "Light-years"])
+        layout.addWidget(self.dist_units_cb)
+
+        layout.addWidget(QLabel("Distance axis scale:"))
+        self.dist_scale_cb = QComboBox()
+        self.dist_scale_cb.addItems(["Linear", "Logarithmic"])
+        layout.addWidget(self.dist_scale_cb)
+
+        layout.addWidget(QLabel("Distance range:"))
+        self.dist_range_cb = QComboBox()
+        self.dist_range_cb.addItems(["Auto", "Custom"])
+        layout.addWidget(self.dist_range_cb)
+
+        self.dist_range_widget = QWidget()
+        dr_layout = QHBoxLayout(self.dist_range_widget)
+        dr_layout.setContentsMargins(0, 0, 0, 0)
+        dr_layout.addWidget(QLabel("Min:"))
+        self.dist_min_spin = QDoubleSpinBox()
+        self.dist_min_spin.setRange(0.1, 1e7)
+        self.dist_min_spin.setDecimals(1)
+        self.dist_min_spin.setValue(0.0)
+        dr_layout.addWidget(self.dist_min_spin)
+        dr_layout.addWidget(QLabel("Max:"))
+        self.dist_max_spin = QDoubleSpinBox()
+        self.dist_max_spin.setRange(1.0, 1e7)
+        self.dist_max_spin.setDecimals(1)
+        self.dist_max_spin.setValue(1000.0)
+        dr_layout.addWidget(self.dist_max_spin)
+        layout.addWidget(self.dist_range_widget)
+        self.dist_range_widget.setVisible(False)
+        self.dist_range_cb.currentIndexChanged.connect(
+            lambda idx: self.dist_range_widget.setVisible(
+                self.dist_range_cb.currentText() == "Custom"
+            )
         )
+        self._load_settings()
+        # ── OK / Cancel ───────────────────────────────────────────────────
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
         layout.addWidget(btns)
+ 
+    def _load_settings(self):
+        s = QSettings()
+        self.use_xp_chk.setChecked(s.value("HR/use_xp", True, type=bool))
+        idx = self.teff_mode_cb.findText(s.value("HR/teff_mode", ""))
+        if idx >= 0: self.teff_mode_cb.setCurrentIndex(idx)
+        idx = self.color_mode_cb.findText(s.value("HR/color_mode", ""))
+        if idx >= 0: self.color_mode_cb.setCurrentIndex(idx)
+        self.flag_outliers_chk.setChecked(s.value("HR/flag_outliers", True, type=bool))
+        idx = self.bg_mode_cb.findText(s.value("HR/bg_mode", ""))
+        if idx >= 0: self.bg_mode_cb.setCurrentIndex(idx)
+        idx = self.marker_size_mode_cb.findText(s.value("HR/marker_size_mode", ""))
+        if idx >= 0: self.marker_size_mode_cb.setCurrentIndex(idx)
+        self.marker_size_spin.setValue(s.value("HR/marker_size", 8, type=int))
+        idx = self.range_mode_cb.findText(s.value("HR/range_mode", ""))
+        if idx >= 0: self.range_mode_cb.setCurrentIndex(idx)
+        self.xmin_spin.setValue(s.value("HR/x_min", -0.3, type=float))
+        self.xmax_spin.setValue(s.value("HR/x_max", 2.25, type=float))
+        self.ymin_spin.setValue(s.value("HR/y_min", -9.0, type=float))
+        self.ymax_spin.setValue(s.value("HR/y_max", 19.0, type=float))
+        self.show_sun_cb.setChecked(s.value("HR/show_sun", True, type=bool))
+        self.cmd_3d_btn_chk.setChecked(s.value("HR/show_3d_cmd", True, type=bool))
+        idx = self.dist_units_cb.findText(s.value("HR/dist_units", ""))
+        if idx >= 0: self.dist_units_cb.setCurrentIndex(idx)
+        idx = self.dist_scale_cb.findText(s.value("HR/dist_scale", ""))
+        if idx >= 0: self.dist_scale_cb.setCurrentIndex(idx)
+        idx = self.dist_range_cb.findText(s.value("HR/dist_range", ""))
+        if idx >= 0: self.dist_range_cb.setCurrentIndex(idx)
+        self.dist_min_spin.setValue(s.value("HR/dist_min", 0.0, type=float))
+        self.dist_max_spin.setValue(s.value("HR/dist_max", 1000.0, type=float))
+
+    def _save_settings(self):
+        s = QSettings()
+        s.setValue("HR/use_xp",           self.use_xp_chk.isChecked())
+        s.setValue("HR/teff_mode",         self.teff_mode_cb.currentText())
+        s.setValue("HR/color_mode",        self.color_mode_cb.currentText())
+        s.setValue("HR/flag_outliers",     self.flag_outliers_chk.isChecked())
+        s.setValue("HR/bg_mode",           self.bg_mode_cb.currentText())
+        s.setValue("HR/marker_size_mode",  self.marker_size_mode_cb.currentText())
+        s.setValue("HR/marker_size",       self.marker_size_spin.value())
+        s.setValue("HR/range_mode",        self.range_mode_cb.currentText())
+        s.setValue("HR/x_min",             self.xmin_spin.value())
+        s.setValue("HR/x_max",             self.xmax_spin.value())
+        s.setValue("HR/y_min",             self.ymin_spin.value())
+        s.setValue("HR/y_max",             self.ymax_spin.value())
+        s.setValue("HR/show_sun",          self.show_sun_cb.isChecked())
+        s.setValue("HR/show_3d_cmd",       self.cmd_3d_btn_chk.isChecked())
+        s.setValue("HR/dist_units",        self.dist_units_cb.currentText())
+        s.setValue("HR/dist_scale",        self.dist_scale_cb.currentText())
+        s.setValue("HR/dist_range",        self.dist_range_cb.currentText())
+        s.setValue("HR/dist_min",          self.dist_min_spin.value())
+        s.setValue("HR/dist_max",          self.dist_max_spin.value())
 
     def _choose_color(self):
         col = QColorDialog.getColor(self.custom_color, self, "Select Marker Color")
         if col.isValid():
             self.custom_color = col
-
+ 
     def getSettings(self):
-        """
-        Pops up the dialog. Returns a dict or None if canceled.
-        """
         if self.exec() == QDialog.DialogCode.Accepted:
+            self._save_settings()
             return {
-                "color_mode": self.color_mode_cb.currentText(),
-                "custom_color": self.custom_color,
-                "bg_mode": self.bg_mode_cb.currentText(),
+                "use_xp":          self.use_xp_chk.isChecked(),
+                "teff_mode":       self.teff_mode_cb.currentText(),
+                "color_mode":      self.color_mode_cb.currentText(),
+                "custom_color":    self.custom_color,
+                "flag_outliers":   self.flag_outliers_chk.isChecked(),
+                "bg_mode":         self.bg_mode_cb.currentText(),
                 "marker_size_mode": self.marker_size_mode_cb.currentText(),
-                "marker_size": self.marker_size_spin.value(),
-                "range_mode": self.range_mode_cb.currentText(),
+                "marker_size":     self.marker_size_spin.value(),
+                "range_mode":      self.range_mode_cb.currentText(),
                 "x_min": self.xmin_spin.value(),
                 "x_max": self.xmax_spin.value(),
                 "y_min": self.ymin_spin.value(),
                 "y_max": self.ymax_spin.value(),
-                "show_sun": self.show_sun_cb.isChecked(),
+                "show_sun":        self.show_sun_cb.isChecked(),
+                "show_3d_cmd":   self.cmd_3d_btn_chk.isChecked(),
+                "dist_units":    self.dist_units_cb.currentText(),
+                "dist_scale":    self.dist_scale_cb.currentText(),
+                "dist_range":    self.dist_range_cb.currentText(),
+                "dist_min":      self.dist_min_spin.value(),
+                "dist_max":      self.dist_max_spin.value(),                
             }
         return None
-    
+
+
 class LegendDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -2634,8 +2952,10 @@ class WIMIDialog(QDialog):
         # store optional original FITS header when available (pre-seed for plate solver)
         self.original_header = None
         self.marker_style = "Circle" 
+    
         self.settings = QSettings() 
-            
+        self.max_results = int(self.settings.value("wimi/max_results", 100, type=int))
+        self.marker_style = self.settings.value("wimi/marker_style", "Circle", type=str)                
 
         main_layout = QHBoxLayout()
 
@@ -4629,229 +4949,365 @@ class WIMIDialog(QDialog):
         tmp.write(html); tmp.close()
         webbrowser.open("file://" + tmp.name)
 
-
-
     def show_hr_diagram(self):
-        """H-R Diagram: B–V vs Abs V, with selectable color, background, and axis ranges."""
-        # Pop up the settings dialog
+        """
+        H-R Diagram with optional Gaia XP synthetic photometry.
+    
+        When 'Use Gaia XP' is selected:
+        - B and V are synthesised from XP spectra using Johnson B/V curves
+        - Teff is estimated by blackbody fitting to the XP continuum
+        - Stars with XP data are colored by spectral class or blackbody color
+        - Outliers (carbon stars etc.) are flagged with a distinct symbol
+        - Stars without XP fallback to catalog B, V from SIMBAD
+        """
+        from PIL import Image as _PILImage
+        import os, tempfile, webbrowser
+        import plotly.graph_objects as go
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox
+    
         settings = HRSettingsDialog(self).getSettings()
         if settings is None:
             return
-
+    
+        use_xp        = settings["use_xp"]
+        teff_mode     = settings["teff_mode"]
         use_realistic = settings["color_mode"].startswith("Realistic")
-        use_image_bg = settings["bg_mode"].startswith("HR Diagram")
-        solid_qcolor = settings["custom_color"]
-        show_sun = settings["show_sun"]
-
-        # Determine axis bounds
+        use_class_col = settings["color_mode"].startswith("Spectral class")
+        solid_qcolor  = settings["custom_color"]
+        flag_outliers = settings["flag_outliers"]
+        use_image_bg  = settings["bg_mode"].startswith("HR Diagram")
+        show_sun      = settings["show_sun"]
+    
         if settings["range_mode"].startswith("Default"):
             x0, x1 = -0.3, 2.25
             y0, y1 = -9.0, 19.0
         else:
-            x0 = settings["x_min"]
-            x1 = settings["x_max"]
-            y0 = settings["y_min"]
-            y1 = settings["y_max"]
-
-        # Sanity: ensure query_results exist
-        if not getattr(self, 'query_results', None):
-            QMessageBox.information(self, "No Data",
-                "Run a SIMBAD query first to gather B, V, and distance data.")
-            return
-
-        # Collect data
-        B, V, Mv, names = [], [], [], []
-        for obj in self.query_results:
+            x0 = settings["x_min"];  x1 = settings["x_max"]
+            y0 = settings["y_min"];  y1 = settings["y_max"]
+    
+        # ── Try to get Gaia library ───────────────────────────────────────────
+        lib = None
+        if use_xp:
             try:
-                b = float(obj['Bmag'])
-                v = float(obj['Vmag'])
-                m = float(obj['absolute_mag'])
-            except (TypeError, ValueError, KeyError):
-                continue
-            B.append(b); V.append(v); Mv.append(m); names.append(obj['name'])
-        if not B:
+                from setiastro.saspro.gaia_database import get_library
+                _lib = get_library()
+                if _lib.installed_bands():
+                    lib = _lib
+                else:
+                    lib = None
+            except Exception:
+                lib = None
+            if lib is None:
+                QMessageBox.information(
+                    self, "Gaia Library",
+                    "No Gaia XP library installed — falling back to SIMBAD catalog photometry.\n"
+                    "Install bands via Settings → Gaia XP Spectral Library for best results.")
+    
+        # ── Build stellar data ────────────────────────────────────────────────
+        # We'll build from self.results (all objects from SIMBAD) so we can
+        # attempt XP lookup for every one, not just those that already had B/V.
+        # Parallax for absolute magnitude still comes from query_results.
+    
+        # Build a quick lookup from name → query_results entry (has parallax etc.)
+        qr_by_name = {}
+        for obj in getattr(self, "query_results", []):
+            nm = obj.get("name")
+            if nm:
+                qr_by_name[nm] = obj
+    
+        B_list, V_list, Mv_list = [], [], []
+        names_list, teff_list, spec_list = [], [], []
+        is_outlier = []
+        used_xp_list = []
+    
+        # Pre-build filter arrays on the standard grid (done once)
+        _b_tp_grid = np.interp(_WL_GRID, _B_WL, _B_TP, left=0.0, right=0.0)
+        _v_tp_grid = np.interp(_WL_GRID, _V_WL, _V_TP, left=0.0, right=0.0)
+    
+        source_objects = getattr(self, "results", [])
+        if not source_objects:
+            # Fall back to query_results if results isn't populated
+            source_objects = getattr(self, "query_results", [])
+    
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            for obj in source_objects:
+                name = obj.get("name", "")
+                ra   = obj.get("ra")
+                dec  = obj.get("dec")
+    
+                # Parallax — from qr_by_name or obj itself
+                qr  = qr_by_name.get(name, obj)
+                plx = None
+                for k in ("parallax_mas", "PLX_VALUE", "plx"):
+                    v = qr.get(k)
+                    if v is not None:
+                        try:
+                            plx = float(v)
+                            if plx > 0:
+                                break
+                        except Exception:
+                            plx = None
+                if plx is None or plx <= 0:
+                    continue
+    
+                dist_pc = 1000.0 / plx
+    
+                # ── Try XP path ───────────────────────────────────────────────
+                xp_used  = False
+                B = V = Teff = None
+                outlier = False
+    
+                if lib is not None and ra is not None and dec is not None:
+                    try:
+                        match = lib.find_nearest(float(ra), float(dec), radius_arcsec=3.0)
+                        if match is not None:
+                            source_id, sep_arcsec = match
+                            spec = lib.get_spectrum(source_id)
+                            if spec is not None and spec.flux is not None:
+                                wl_nm  = np.asarray(spec.wavelengths, dtype=np.float64)
+                                fl_arr = np.asarray(spec.flux,        dtype=np.float64)
+                                if wl_nm[0] > wl_nm[-1]:
+                                    wl_nm  = wl_nm[::-1]
+                                    fl_arr = fl_arr[::-1]
+    
+                                # Synthetic B, V magnitudes
+                                bv_synth = _synth_bv_from_xp(fl_arr, wl_nm)
+                                if bv_synth is not None and math.isfinite(bv_synth):
+                                    # We have B-V but not absolute B or V separately
+                                    # Store as a sentinel — absolute mag still comes from parallax+Vmag
+                                    B = bv_synth      # repurpose B slot to hold B-V
+                                    V = 0.0           # V=0 so B-V = B-V correctly
+                                    xp_used = True
+    
+                                # Teff from XP spectrum
+                                if "Blackbody" in teff_mode:
+                                    Teff = _blackbody_teff_from_xp(fl_arr, wl_nm)
+    
+                                # Outlier detection: compare B-V-derived Teff with
+                                # blackbody Teff — large divergence = peculiar star
+                                if flag_outliers and B is not None and Teff is not None:
+                                    bv_val = B - V
+                                    T_bv   = 4600.0 * (1/(0.92*bv_val+1.7) + 1/(0.92*bv_val+0.62)) \
+                                            if bv_val > -0.5 else None
+                                    if T_bv is not None:
+                                        ratio = Teff / T_bv if T_bv > 0 else 1.0
+                                        outlier = ratio < 0.5 or ratio > 2.0
+                    except Exception:
+                        pass  # fall through to catalog
+    
+                # ── Catalog fallback ──────────────────────────────────────────
+                if B is None or V is None:
+                    try:
+                        B = float(qr.get("Bmag"))
+                        V = float(qr.get("Vmag"))
+                        if not (math.isfinite(B) and math.isfinite(V)):
+                            B = V = None
+                    except Exception:
+                        B = V = None
+    
+                if B is None or V is None:
+                    continue
+    
+                # ── Teff fallback (Ballesteros) ───────────────────────────────
+                if Teff is None:
+                    bv = B - V
+                    Teff = 4600.0 * (1/(0.92*bv+1.7) + 1/(0.92*bv+0.62))
+    
+                # ── Absolute magnitude ────────────────────────────────────────
+                # Use catalog Vmag for absolute magnitude — always
+                # XP is only used for B-V color and Teff
+                Vmag_catalog = None
+                try:
+                    Vmag_catalog = float(qr.get("Vmag"))
+                    if not math.isfinite(Vmag_catalog):
+                        Vmag_catalog = None
+                except Exception:
+                    pass
+
+                if Vmag_catalog is None:
+                    # Fall back to Gaia G mag as approximate V
+                    try:
+                        Vmag_catalog = float(qr.get("Gmag") or qr.get("gaia_gmag"))
+                    except Exception:
+                        pass
+
+                if Vmag_catalog is None:
+                    continue   # can't place on diagram without an apparent magnitude
+
+                absV = Vmag_catalog - (5 * math.log10(dist_pc) - 5)
+    
+                spec_class = _spectral_class_from_teff(Teff)
+    
+                B_list.append(B);  V_list.append(V);  Mv_list.append(absV)
+                teff_list.append(Teff);  names_list.append(name)
+                spec_list.append(spec_class);  is_outlier.append(outlier)
+                used_xp_list.append(xp_used)
+    
+        finally:
+            QApplication.restoreOverrideCursor()
+    
+        if not B_list:
             QMessageBox.warning(self, "Insufficient Data",
-                "No objects have valid B-mag, V-mag and absolute magnitude.")
+                "No stars with usable photometry found.\n"
+                "Run a SIMBAD query first, and install the Gaia XP library for best results.")
             return
-
-        # Compute B−V & T_eff & colors
-        bv = [b - v for b, v in zip(B, V)]
-        T_eff = [4600.0 * (1/(0.92*x + 1.7) + 1/(0.92*x + 0.62)) for x in bv]
+    
+        bv_arr   = np.array(B_list) - np.array(V_list)
+        Mv_arr   = np.array(Mv_list)
+        teff_arr = np.array(teff_list)
+        n_xp     = sum(used_xp_list)
+        n_total  = len(B_list)
+    
+        # ── Colors ───────────────────────────────────────────────────────────
         if use_realistic:
-            colors = [kelvin_to_rgb(T) for T in T_eff]
+            colors = [kelvin_to_rgb(T) for T in teff_arr]
+        elif use_class_col:
+            colors = [_CLASS_COLORS.get(s, "#888888") for s in spec_list]
         else:
-            hex_color = solid_qcolor.name()
-            colors = [hex_color] * len(bv)
-
-        # Prepare hover & URLs
+            hex_c  = solid_qcolor.name()
+            colors = [hex_c] * n_total
+    
+        # ── Hover text & URLs ─────────────────────────────────────────────────
         hover_texts, urls = [], []
-        for nm, b, v, m, T in zip(names, B, V, Mv, T_eff):
+        for nm, b, v, m, T, sc, xp in zip(names_list, B_list, V_list, Mv_arr,
+                                        teff_arr, spec_list, used_xp_list):
+            src = "Gaia XP" if xp else "catalog"
             hover_texts.append(
                 f"<b>{nm}</b><br>"
-                f"B: {b:.2f}  V: {v:.2f}<br>"
+                f"B: {b:.3f}  V: {v:.3f}  B-V: {b-v:.3f}<br>"
                 f"Abs V: {m:.2f}<br>"
-                f"Tₑff: {T:.0f} K"
+                f"Teff: {int(T):,} K  ({sc})<br>"
+                f"Source: {src}"
             )
             enc = urllib.parse.quote(nm)
             urls.append(
-                f"https://simbad.cds.unistra.fr/simbad/sim-basic?"
-                f"Ident={enc}&submit=SIMBAD+search"
+                f"https://simbad.cds.unistra.fr/simbad/sim-basic?Ident={enc}&submit=SIMBAD+search"
             )
-
-        # Create scatter
-        # Marker size can be auto or user-controlled
+    
+        # ── Marker sizes ─────────────────────────────────────────────────────
         if settings["marker_size_mode"].startswith("Auto"):
-            n_pts = max(1, len(bv))
-            marker_size = max(4, min(12, int(round(120 / np.sqrt(n_pts)))))
+            marker_size = max(4, min(12, int(round(120 / max(1, math.sqrt(n_total))))))
         else:
             marker_size = int(settings["marker_size"])
-
-        scatter = go.Scatter(
-            x=bv,
-            y=Mv,
-            mode='markers',
-            marker=dict(
-                color=colors,
-                size=marker_size,
-                opacity=0.80,
-                line=dict(width=0)
-            ),
-            hovertext=hover_texts,
-            customdata=urls,
-            name=f"Stars (size {marker_size})"
-        )
-        fig = go.Figure(scatter)
-
-
-        # 1) Dense BV grid over x0→x1
+    
+        # ── Split normal vs outlier ───────────────────────────────────────────
+        norm_idx = [i for i, o in enumerate(is_outlier) if not o]
+        out_idx  = [i for i, o in enumerate(is_outlier) if o]
+    
+        traces = []
+    
+        def _subset(idx, symbol, name_legend, size_mult=1.0):
+            if not idx:
+                return
+            bv_s  = bv_arr[idx];  mv_s = Mv_arr[idx]
+            col_s = [colors[i] for i in idx]
+            ht_s  = [hover_texts[i] for i in idx]
+            url_s = [urls[i] for i in idx]
+            sz    = max(3, int(marker_size * size_mult))
+            traces.append(go.Scatter(
+                x=bv_s, y=mv_s, mode="markers",
+                marker=dict(color=col_s, size=sz, symbol=symbol,
+                            opacity=0.80, line=dict(width=0)),
+                hovertext=ht_s, customdata=url_s,
+                name=name_legend,
+            ))
+    
+        _subset(norm_idx, "circle",           f"Stars ({len(norm_idx)})")
+        _subset(out_idx,  "triangle-up-open", f"Outliers ({len(out_idx)})", size_mult=1.4)
+    
+        fig = go.Figure(traces)
+    
+        # ── Radius iso-lines ─────────────────────────────────────────────────
         bv_grid = np.linspace(x0, x1, 300)
-        # 2) Compute Teff at each BV
-        T_grid = 4600.0 * (1.0/(0.92*bv_grid + 1.7) + 1.0/(0.92*bv_grid + 0.62))
-        # 3) Solar Teff for normalization
-        T_sun = 5772.0
-
-        # 4) Radii in R_sun
-        radii = [0.01, 0.1, 1.0, 10.0, 100.0, 1000.0]
-        # 5) Corresponding gray shades for each contour
-        gray_colors = [
-            "#444444",  # darkest gray for R=0.01
-            "#666666",  # R=0.1
-            "#888888",  # R=1.0
-            "#AAAAAA",  # R=10
-            "#CCCCCC",  # R=100
-            "#EEEEEE"   # R=1000 (lightest)
-        ]
-
-        for idx, R_rs in enumerate(radii):
-            # compute L/L_sun
-            L_over_Lsun = (R_rs**2) * (T_grid / T_sun)**4
-            # convert to M_V
-            MV_line = 4.83 - 2.5 * np.log10(L_over_Lsun)
-
-            fig.add_trace(
-                go.Scatter(
-                    x=bv_grid,
-                    y=MV_line,
-                    mode='lines',
-                    line=dict(
-                        color=gray_colors[idx],
-                        dash='dash'
-                    ),
-                    name=f"R = {R_rs:g} R⊙",   # plain text “R⊙”
-                    hoverinfo='none'
-                )
+        T_grid  = 4600.0 * (1/(0.92*bv_grid+1.7) + 1/(0.92*bv_grid+0.62))
+        T_sun   = 5772.0
+        gray_colors = ["#444","#666","#888","#aaa","#ccc","#eee"]
+        for R_rs, gc in zip([0.01, 0.1, 1.0, 10.0, 100.0, 1000.0], gray_colors):
+            L = R_rs**2 * (T_grid / T_sun)**4
+            MV_line = 4.83 - 2.5 * np.log10(np.maximum(L, 1e-30))
+            fig.add_trace(go.Scatter(
+                x=bv_grid, y=MV_line, mode="lines",
+                line=dict(color=gc, dash="dash"),
+                name=f"R = {R_rs:g} R⊙", hoverinfo="none",
+            ))
+    
+        # ── Sun marker ───────────────────────────────────────────────────────
+        if show_sun:
+            sun_sz = max(18, marker_size + 10)
+            fig.add_trace(go.Scatter(
+                x=[0.66], y=[4.8], mode="markers+text",
+                marker=dict(color="gold", size=sun_sz, symbol="star"),
+                name="Sun", hoverinfo="skip",
+            ))
+    
+        # ── Spectral class color legend (sidebar annotation) ─────────────────
+        class_legend_html = ""
+        if use_class_col:
+            swatches = "".join(
+                f'<span style="display:inline-block;width:14px;height:14px;'
+                f'background:{col};border-radius:2px;margin-right:4px;'
+                f'vertical-align:middle"></span>{cls}&nbsp;&nbsp;'
+                for cls, col in _CLASS_COLORS.items() if cls != "?"
             )
-        # ───────────────────────────────────────────────────────────────────
-
-        # Build tick labels
+            class_legend_html = (
+                f'<div style="margin-top:8px;font-size:12px;color:#ccc;">'
+                f'Spectral class:&nbsp;{swatches}</div>'
+            )
+    
+        # ── Axis ticks ───────────────────────────────────────────────────────
         bv_ticks = [-0.3, 0.0, 0.5, 1.0, 1.5, 2.0, 2.25]
-        t_ticks = [4600.0*(1/(0.92*x+1.7)+1/(0.92*x+0.62)) for x in bv_ticks]
-        tick_labels = [f"{x:.2f}<br>{int(t):,} K" for x,t in zip(bv_ticks, t_ticks)]
-
-        # If using image background, load via PIL
-        if use_image_bg:
-            pil_img = Image.open(hrdiagram_path)
-
-        # Force the specified x & y axis ranges
+        t_ticks  = [4600.0*(1/(0.92*x+1.7)+1/(0.92*x+0.62)) for x in bv_ticks]
+        tick_lbl = [f"{x:.2f}<br>{int(t):,} K" for x, t in zip(bv_ticks, t_ticks)]
+    
         fig.update_xaxes(
-            title_text="B−V color (mag) ↔ Tₑff",
-            tickvals=bv_ticks,
-            ticktext=tick_labels,
-            tickfont_color='white',
-            title_font=dict(color='white'),
-            gridcolor='gray',
-            zerolinecolor='gray',
-            range=[x0, x1]
+            title_text="B−V color (mag) ↔ Teff",
+            tickvals=bv_ticks, ticktext=tick_lbl,
+            tickfont_color="white", title_font=dict(color="white"),
+            gridcolor="gray", zerolinecolor="gray", range=[x0, x1],
         )
         fig.update_yaxes(
             title_text="Absolute V magnitude (mag)",
-            range=[y1, y0],         # reversed on purpose: y1 (–9) at top, y0 (19) at bottom
-            autorange=False,
-            tickfont_color='white',
-            title_font=dict(color='white'),
-            gridcolor='gray',
-            zerolinecolor='gray',
+            range=[y1, y0], autorange=False,
+            tickfont_color="white", title_font=dict(color="white"),
+            gridcolor="gray", zerolinecolor="gray",
         )
-
-        # Add the image behind the plot if chosen
+    
         if use_image_bg:
-            fig.add_layout_image(
-                dict(
-                    source=pil_img,
-                    xref="x", yref="y",
-                    x=x0, y=y0,
-                    sizex=(x1 - x0),
-                    sizey=(y1 - y0),
-                    xanchor="left", yanchor="top",
-                    sizing="stretch",
-                    opacity=1.0,
-                    layer="below"
-                )
-            )
-
-        # Add a special marker for the Sun (B−V=0.66, Mv=4.8)
-        if show_sun:
-            sun_size = max(18, marker_size + 10)
-
-            sun_scatter = go.Scatter(
-                x=[0.66],
-                y=[4.8],
-                mode='markers+text',
-                marker=dict(
-                    color='gold',
-                    size=sun_size,
-                    symbol='star'
+            from setiastro.saspro.resources import hrdiagram_path
+            pil_img = _PILImage.open(hrdiagram_path)
+            fig.add_layout_image(dict(
+                source=pil_img, xref="x", yref="y",
+                x=x0, y=y0, sizex=(x1-x0), sizey=(y1-y0),
+                xanchor="left", yanchor="top",
+                sizing="stretch", opacity=1.0, layer="below",
+            ))
+    
+        fig.update_layout(
+            title=dict(
+                text=(
+                    f"Hertzsprung–Russell Diagram  ·  {n_total} stars  "
+                    f"({'Gaia XP synthetic + catalog' if n_xp > 0 else 'catalog photometry'})"
+                    f"  ·  {n_xp} XP / {n_total-n_xp} catalog"
                 ),
-                name="Sun",
-                hoverinfo='skip'
-            )
-            fig.add_trace(sun_scatter)
-
-        # Style axes & background
-        if use_image_bg:
-            fig.update_layout(
-                title=dict(text="Hertzsprung–Russell Diagram", font_color='white'),
-                plot_bgcolor='rgba(0,0,0,0)',
-                paper_bgcolor='black',
-                margin=dict(l=40, r=20, t=60, b=60)
-            )
-        else:
-            fig.update_layout(
-                title=dict(text="Hertzsprung–Russell Diagram", font_color='white'),
-                plot_bgcolor='black',
-                paper_bgcolor='black',
-                margin=dict(l=40, r=20, t=60, b=60)
-            )
-
-        # Sidebar & click behaviour
+                font_color="white",
+            ),
+            plot_bgcolor="rgba(0,0,0,0)" if use_image_bg else "black",
+            paper_bgcolor="black",
+            margin=dict(l=40, r=20, t=60, b=60),
+        )
+    
+        # ── Sidebar + click handler ───────────────────────────────────────────
         items = "".join(
             f'<li><a href="{u}" style="color:cyan" target="_blank">{n}</a></li>'
-            for n,u in zip(names, urls)
+            for n, u in zip(names_list, urls)
         )
         sidebar = (
             '<div style="padding:10px;font-family:sans-serif;'
-            'margin-top:10px;border-top:1px solid #444; background:black; color:white;">'
-            '<h3>Objects</h3><ul>' + items + '</ul></div>'
+            'border-top:1px solid #444;background:black;color:white;">'
+            f'<h3>Stars ({n_total})</h3>'
+            f'{class_legend_html}'
+            '<ul>' + items + '</ul></div>'
         )
         js = """
         <script>
@@ -4862,26 +5318,245 @@ class WIMIDialog(QDialog):
         });
         </script>
         """
-
-        html = fig.to_html(include_plotlyjs='cdn', full_html=True)
+    
+        html = fig.to_html(include_plotlyjs="cdn", full_html=True)
         html = html.replace("</body>", sidebar + js + "</body>")
-
-        # Save & preview
+    
         default = os.path.join(os.path.expanduser("~"), "hr_diagram.html")
         fn, _ = QFileDialog.getSaveFileName(self, "Save H-R Diagram As",
                                             default, "HTML Files (*.html)")
         if fn:
-            if not fn.lower().endswith('.html'):
-                fn += '.html'
-            with open(fn, 'w', encoding='utf-8') as f:
+            if not fn.lower().endswith(".html"):
+                fn += ".html"
+            with open(fn, "w", encoding="utf-8") as f:
                 f.write(html)
-
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.html',
-                                        mode='w', encoding='utf-8')
+    
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".html",
+                                        mode="w", encoding="utf-8")
         tmp.write(html); tmp.close()
+
+        if settings.get("show_3d_cmd"):
+            self._cmd_3d_data = {
+                "bv":    bv_arr.tolist(),
+                "mv":    Mv_arr.tolist(),
+                "names": names_list,
+                "urls":  urls,
+                "teff":  teff_arr.tolist(),
+                "spec":  spec_list,
+                "colors": colors,
+                "plx":   [qr_by_name.get(n, {}).get("parallax_mas") for n in names_list],
+                "settings": settings,
+            }
+            # Add a 3D CMD button to the HR diagram HTML
+            cmd_btn_html = (
+                '<div style="text-align:center;margin:10px;">'
+                '<button onclick="window.open(\'cmd3d.html\')" '
+                'style="background:#1a4f2a;color:#e8f8ee;border:1px solid #2a8040;'
+                'border-radius:4px;padding:8px 20px;font-size:13px;cursor:pointer;">'
+                '🌌 Open 3D CMD</button></div>'
+            )
+            html = html.replace("</body>", cmd_btn_html + "</body>")
+
+        import webbrowser
         webbrowser.open("file://" + tmp.name)
 
-    
+        if settings.get("show_3d_cmd") and hasattr(self, "_cmd_3d_data"):
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(500, lambda: self.show_3d_cmd(self._cmd_3d_data))
+
+    def show_3d_cmd(self, data: dict):
+        import os, tempfile, webbrowser, math
+        import plotly.graph_objects as go
+
+        settings  = data["settings"]
+        bv        = data["bv"]
+        mv        = data["mv"]
+        names     = data["names"]
+        urls      = data["urls"]
+        teff      = data["teff"]
+        spec      = data["spec"]
+        colors    = data["colors"]
+        plx_list  = data["plx"]
+
+        use_ly     = settings["dist_units"] == "Light-years"
+        use_log    = settings["dist_scale"] == "Logarithmic"
+        custom_rng = settings["dist_range"] == "Custom"
+        dist_min   = settings["dist_min"]
+        dist_max   = settings["dist_max"]
+
+        PC_TO_LY = 3.261563777
+
+        # Build distance values, filter out bad parallaxes
+        pts = []
+        for i, plx in enumerate(plx_list):
+            try:
+                plx_f = float(plx)
+                if plx_f <= 0:
+                    continue
+                dist_pc = 1000.0 / plx_f
+                dist    = dist_pc * PC_TO_LY if use_ly else dist_pc
+                pts.append({
+                    "bv":    bv[i],
+                    "mv":    mv[i],
+                    "dist":  dist,
+                    "name":  names[i],
+                    "url":   urls[i],
+                    "teff":  teff[i],
+                    "spec":  spec[i],
+                    "color": colors[i],
+                })
+            except Exception:
+                continue
+
+        if not pts:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "3D CMD",
+                "No stars with valid parallax distances available.")
+            return
+
+        # Apply distance range filter
+        if custom_rng:
+            pts = [p for p in pts if dist_min <= p["dist"] <= dist_max]
+        if not pts:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "3D CMD",
+                "No stars within the specified distance range.")
+            return
+
+        dist_unit_label = "Distance (ly)" if use_ly else "Distance (pc)"
+
+        xs     = [p["bv"]   for p in pts]
+        ys     = [p["mv"]   for p in pts]
+        zs     = [p["dist"] for p in pts]
+        cols   = [p["color"] for p in pts]
+        dist_label = "ly" if use_ly else "pc"
+        hovers = [
+            f"<b>{p['name']}</b><br>"
+            f"B-V: {p['bv']:.3f}<br>"
+            f"Abs V: {p['mv']:.2f}<br>"
+            f"Distance: {p['dist']:.1f} {dist_label}<br>"
+            f"Teff: {int(p['teff']):,} K  ({p['spec']})"
+            for p in pts
+        ]
+        custom = [p["url"] for p in pts]
+
+        scatter = go.Scatter3d(
+            x=xs, y=ys, z=zs,
+            mode="markers",
+            marker=dict(
+                color=cols,
+                size=4,
+                opacity=0.85,
+                line=dict(width=0),
+            ),
+            hovertext=hovers,
+            hoverinfo="text",
+            customdata=custom,
+            name=f"Stars ({len(pts)})",
+        )
+
+        # Distance iso-planes — faint reference planes at round distances
+        dist_vals = sorted(set(p["dist"] for p in pts))
+        d_min_act = min(dist_vals)
+        d_max_act = max(dist_vals)
+
+        # Pick 4-5 nice round reference distances
+        import numpy as np
+        if use_log:
+            ref_dists = np.logspace(
+                math.log10(max(d_min_act, 1)),
+                math.log10(d_max_act),
+                5
+            ).tolist()
+        else:
+            ref_dists = np.linspace(d_min_act, d_max_act, 5).tolist()
+
+        bv_range = [min(xs) - 0.1, max(xs) + 0.1]
+        mv_range = [min(ys) - 0.5, max(ys) + 0.5]
+
+        ref_planes = []
+        for rd in ref_dists:
+            rd_label = f"{rd:.0f} {'ly' if use_ly else 'pc'}"
+            ref_planes.append(go.Scatter3d(
+                x=[bv_range[0], bv_range[1], bv_range[1], bv_range[0]],
+                y=[mv_range[0], mv_range[0], mv_range[1], mv_range[1]],
+                z=[rd, rd, rd, rd],
+                mode="lines",
+                line=dict(color="rgba(255,255,255,0.12)", width=1),
+                hoverinfo="skip",
+                showlegend=False,
+                name=rd_label,
+            ))
+
+        fig = go.Figure([scatter] + ref_planes)
+
+        z_axis = dict(
+            title=dist_unit_label,
+            gridcolor="rgba(255,255,255,0.15)",
+            showbackground=True,
+            backgroundcolor="rgb(5,5,15)",
+        )
+        if use_log:
+            z_axis["type"] = "log"
+        if custom_rng:
+            z_axis["range"] = [
+                math.log10(dist_min) if use_log else dist_min,
+                math.log10(dist_max) if use_log else dist_max,
+            ]
+
+        fig.update_layout(
+            title=dict(
+                text=f"3D Color-Magnitude Diagram  ·  {len(pts)} stars",
+                font=dict(color="white"),
+            ),
+            paper_bgcolor="rgb(5,5,15)",
+            scene=dict(
+                xaxis=dict(
+                    title="B-V color index",
+                    gridcolor="rgba(255,255,255,0.15)",
+                    showbackground=True,
+                    backgroundcolor="rgb(5,5,15)",
+                    tickfont=dict(color="white"),
+                    title_font=dict(color="white"),
+                ),
+                yaxis=dict(
+                    title="Absolute V magnitude",
+                    autorange="reversed",
+                    gridcolor="rgba(255,255,255,0.15)",
+                    showbackground=True,
+                    backgroundcolor="rgb(5,5,15)",
+                    tickfont=dict(color="white"),
+                    title_font=dict(color="white"),
+                ),
+                zaxis={**z_axis,
+                    "tickfont": dict(color="white"),
+                    "title_font": dict(color="white")},
+                aspectmode="manual",
+                aspectratio=dict(x=1.2, y=1.0, z=1.0),
+                bgcolor="rgb(5,5,15)",
+            ),
+            margin=dict(l=0, r=0, b=0, t=50),
+        )
+
+        js = """
+        <script>
+        var gd = document.getElementsByClassName('plotly-graph-div')[0];
+        gd.on('plotly_click', function(e){
+            var url = e.points[0].customdata;
+            if(url) window.open(url,'_blank');
+        });
+        </script>
+        """
+
+        html = fig.to_html(include_plotlyjs="cdn", full_html=True)
+        html = html.replace("</body>", js + "</body>")
+
+        tmp = tempfile.NamedTemporaryFile(
+            delete=False, suffix=".html", mode="w", encoding="utf-8")
+        tmp.write(html)
+        tmp.close()
+        webbrowser.open("file://" + tmp.name)
+
     def search_defined_region(self):
         """Perform a Simbad search for the defined region and filter by selected object types."""
         selected_types = self.get_selected_object_types()
@@ -7772,6 +8447,9 @@ class WIMIDialog(QDialog):
         """Update settings based on dialog input."""
         self.max_results = int(max_results)
         self.marker_style = str(marker_style)
+        s = QSettings()
+        s.setValue("wimi/max_results", self.max_results)
+        s.setValue("wimi/marker_style", self.marker_style)
         self.main_preview.draw_query_results()
         dialog.accept()
 
