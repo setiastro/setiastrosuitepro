@@ -3048,12 +3048,18 @@ SSSC is part of SetiAstro Suite Pro &mdash; www.setiastro.com
         T_sys_R = T_R * LP
         T_sys_G = T_G * LP
         T_sys_B = T_B * LP
-        # Half-power clip on green to suppress OSC Bayer red-tail bleed.
-        # For steep astro filters this changes nothing (the tail is already ~0).
-        # For OSC Bayer green this cuts the secondary red lobe before integration.
-        T_peak_G = float(np.max(T_sys_G))
+
+        # Half-power clip on green for XP integral computation only.
+        # This suppresses OSC Bayer red-tail bleed in S_star_G values used
+        # by Stage 1/2 ratio math. We keep the unclipped T_sys_G for passing
+        # to _solve_system_response where Stage 3 applies its own per-channel
+        # passband threshold (PASSBAND_THRESH_PER_CH G=0.707).
+        T_sys_G_integrals = T_sys_G.copy()
+        T_peak_G = float(np.max(T_sys_G_integrals))
         if T_peak_G > 0:
-            T_sys_G = np.where(T_sys_G >= 0.707 * T_peak_G, T_sys_G, 0.0)
+            T_sys_G_integrals = np.where(
+                T_sys_G_integrals >= 0.707 * T_peak_G, T_sys_G_integrals, 0.0)
+
         _sfcc_status(self, "Computing Gaia XP integrals (filter curves only, no QE)…")
         QApplication.processEvents()
 
@@ -3071,7 +3077,7 @@ SSSC is part of SetiAstro Suite Pro &mdash; www.setiastro.com
                         gaia_ids,
                         wl_grid_ang=wl_grid.astype(np.float64),
                         T_sys_R=T_sys_R.astype(np.float64),
-                        T_sys_G=T_sys_G.astype(np.float64),
+                        T_sys_G=T_sys_G_integrals.astype(np.float64),   # ← clipped
                         T_sys_B=T_sys_B.astype(np.float64),
                         batch_size=25,
                     )
@@ -3107,7 +3113,7 @@ SSSC is part of SetiAstro Suite Pro &mdash; www.setiastro.com
                 fs_i = np.interp(wl_grid, wl_s, fl_s, left=0.0, right=0.0)
                 template_integrals[pname] = (
                     float(_trapz(fs_i * T_sys_R, x=wl_grid)),
-                    float(_trapz(fs_i * T_sys_G, x=wl_grid)),
+                    float(_trapz(fs_i * T_sys_G_integrals, x=wl_grid)),  # ← clipped
                     float(_trapz(fs_i * T_sys_B, x=wl_grid)),
                 )
             except Exception as e:
@@ -3276,7 +3282,7 @@ SSSC is part of SetiAstro Suite Pro &mdash; www.setiastro.com
         try:
             sr = _solve_system_response(
                 enriched, wl_grid,
-                T_sys_R, T_sys_G, T_sys_B,
+                T_sys_R, T_sys_G_integrals, T_sys_B,
                 session_id,
                 prior_response=prior_sr,
                 n_ctrl=n_ctrl_pts,
