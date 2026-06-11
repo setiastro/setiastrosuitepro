@@ -959,6 +959,7 @@ class _SyQonDenoiseHubPage(QWidget):
 
 _SYQON_PARALLAX_BUY_URL = "https://syqon.it/parallax"
  
+
 class _SyQonSharpenHubPage(QWidget):
  
     def __init__(self, parent=None):
@@ -971,6 +972,7 @@ class _SyQonSharpenHubPage(QWidget):
         self._scale_factor  = 1.0
         self._do_mtf        = False
         self._mtf_params    = None
+        self._mtf_linked    = False
         self.settings       = QSettings()
  
         lay = QVBoxLayout(self)
@@ -1136,8 +1138,17 @@ class _SyQonSharpenHubPage(QWidget):
         self.spin_mtf.setValue(float(self.settings.value("syqon/parallax_mtf_target", 0.15)))
         form.addRow("Temp stretch target median:", self.spin_mtf)
  
-        self.chk_mtf.toggled.connect(lambda on: self.spin_mtf.setEnabled(bool(on)))
+        self.chk_mtf_linked = QCheckBox("Linked stretch (preserves star colors — use if already color calibrated)", self)
+        self.chk_mtf_linked.setChecked(bool(self.settings.value("syqon/parallax_mtf_linked", False, type=bool)))
+        self.chk_mtf_linked.setToolTip(
+            "Unlinked stretch applies independent per-channel blackpoint which can shift star colors.\n"
+            "Linked stretch uses one combined stretch for all channels, preserving star colors."
+        )
+        form.addRow("", self.chk_mtf_linked)
+ 
+        self.chk_mtf.toggled.connect(lambda on: (self.spin_mtf.setEnabled(bool(on)), self.chk_mtf_linked.setEnabled(bool(on))))
         self.spin_mtf.setEnabled(self.chk_mtf.isChecked())
+        self.chk_mtf_linked.setEnabled(self.chk_mtf.isChecked())
  
         lay.addWidget(box)
  
@@ -1288,7 +1299,13 @@ class _SyQonSharpenHubPage(QWidget):
                 result = np.stack([result] * 3, axis=-1)
  
             if self._do_mtf and self._mtf_params is not None:
-                result = _invert_mtf_unlinked_rgb(result, self._mtf_params)
+                from setiastro.saspro.remove_stars import (
+                    _invert_mtf_unlinked_rgb, _invert_mtf_linked_rgb,
+                )
+                if getattr(self, "_mtf_linked", False):
+                    result = _invert_mtf_linked_rgb(result, self._mtf_params)
+                else:
+                    result = _invert_mtf_unlinked_rgb(result, self._mtf_params)
  
             if self._scale_factor > 1.01:
                 result = np.clip(result * self._scale_factor, 0.0, 1.0).astype(np.float32)
@@ -1378,15 +1395,26 @@ class _SyQonSharpenHubPage(QWidget):
             xrgb = x01[..., :3]
  
         if bool(self.chk_mtf.isChecked()):
-            from setiastro.saspro.remove_stars import _mtf_params_unlinked, _apply_mtf_unlinked_rgb
-            self._mtf_params = _mtf_params_unlinked(xrgb, shadows_clipping=-2.8,
-                                                     targetbg=float(self.spin_mtf.value()))
-            x_for_net    = _apply_mtf_unlinked_rgb(xrgb, self._mtf_params)
-            self._do_mtf = True
+            from setiastro.saspro.remove_stars import (
+                _mtf_params_unlinked, _apply_mtf_unlinked_rgb,
+                _mtf_params_linked,   _apply_mtf_linked_rgb,
+            )
+            mtf_target  = float(self.spin_mtf.value())
+            use_linked  = bool(self.chk_mtf_linked.isChecked())
+            self.settings.setValue("syqon/parallax_mtf_linked", use_linked)
+            if use_linked:
+                self._mtf_params = _mtf_params_linked(xrgb, targetbg=mtf_target)
+                x_for_net        = _apply_mtf_linked_rgb(xrgb, self._mtf_params)
+            else:
+                self._mtf_params = _mtf_params_unlinked(xrgb, targetbg=mtf_target)
+                x_for_net        = _apply_mtf_unlinked_rgb(xrgb, self._mtf_params)
+            self._mtf_linked = use_linked
+            self._do_mtf     = True
         else:
             x_for_net        = xrgb
             self._do_mtf     = False
             self._mtf_params = None
+            self._mtf_linked = False
  
         self._set_busy(True)
         self.lbl_status.setText("Processing…")
@@ -1411,8 +1439,8 @@ class _SyQonSharpenHubPage(QWidget):
         self.proc_thr.progress.connect(self._on_progress)
         self.proc_thr.finished.connect(self._on_finished)
         self.proc_thr.start()
-
-
+ 
+ 
 class _SyQonParallaxProcessThread(QThread):
     progress = pyqtSignal(int, str)
     finished = pyqtSignal(object, dict, str)
@@ -1481,7 +1509,7 @@ class _SyQonParallaxProcessThread(QThread):
                 s += 1
                 current, inf = parallax_sharpen_rgb01(
                     current, self.sharpen_path, self.sharpen_alpha,
-                    tile=self.tile, overlap=self.overlap,
+                    tile=self.tile, overlap=self.overlap, pad=self.pad,
                     use_gpu=True, prefer_dml=True,
                     progress_cb=_cb(f"[{s}/{n}] Sharpening α={self.sharpen_alpha:.2f}"),
                 )
@@ -1495,9 +1523,7 @@ class _SyQonParallaxProcessThread(QThread):
             import traceback
             info["traceback"] = traceback.format_exc()
             self.finished.emit(None, info, str(e))
- 
 
- 
 
 class _SyQonPrismProcessThread(QThread):
     progress = pyqtSignal(int, str)          # percent, stage
@@ -1735,7 +1761,168 @@ def run_syqon_tools_via_preset(main, doc, preset: dict | None = None):
         })
         return
 
-    QMessageBox.information(main, "SyQon Sharpening", "Parallax / sharpening models are not available yet.")            
+    _run_syqon_parallax_headless(main, doc, preset)         
+
+def _run_syqon_parallax_headless(main, doc, preset: dict | None = None):
+    """
+    Headless Parallax runner — mirrors _run_syqon_prism_headless exactly.
+    Called by run_syqon_tools_via_preset when family="sharpening".
+    """
+    import numpy as np
+    from setiastro.saspro.remove_stars import (
+        _mtf_params_unlinked, _apply_mtf_unlinked_rgb, _invert_mtf_unlinked_rgb,
+    )
+    from setiastro.saspro.sharpen_engines.syqon_parallax_engine import (
+        parallax_correction_rgb01,
+        parallax_star_reduce_rgb01,
+        parallax_sharpen_rgb01,
+    )
+    from setiastro.saspro.syqon_paths import (
+        syqon_parallax_correction_model_path,
+        syqon_parallax_star_reduction_model_path,
+        syqon_parallax_sharpen_model_path,
+    )
+ 
+    preset = dict(preset or {})
+ 
+    do_correct    = bool(preset.get("parallax_correct",       True))
+    star_level    = int(preset.get("parallax_star_level",     3))
+    sharpen_alpha = float(preset.get("parallax_sharpen_alpha", 0.7))
+    tile          = int(preset.get("parallax_tile_size",      512))
+    overlap       = int(preset.get("parallax_overlap",        64))
+    pad           = int(preset.get("parallax_pad",            96))
+    use_mtf       = bool(preset.get("parallax_use_mtf",       True))
+    mtf_target    = float(preset.get("parallax_mtf_target",   0.15))
+ 
+    # Validate model paths
+    if do_correct:
+        p = syqon_parallax_correction_model_path()
+        if not p.exists():
+            QMessageBox.warning(main, "SyQon Parallax",
+                                "Correction model not installed. Install it from the SyQon Tools hub.")
+            return
+ 
+    if star_level > 0:
+        p = syqon_parallax_star_reduction_model_path()
+        if not p.exists():
+            QMessageBox.warning(main, "SyQon Parallax",
+                                "Star reduction model not installed. Install it from the SyQon Tools hub.")
+            return
+ 
+    if sharpen_alpha > 0.0:
+        p = syqon_parallax_sharpen_model_path()
+        if not p.exists():
+            QMessageBox.warning(main, "SyQon Parallax",
+                                "Sharpen model not installed. Install it from the SyQon Tools hub.")
+            return
+ 
+    if not do_correct and star_level == 0 and sharpen_alpha <= 0.0:
+        QMessageBox.warning(main, "SyQon Parallax",
+                            "No stages enabled in preset. Enable at least one.")
+        return
+ 
+    # Prepare image
+    src = np.asarray(doc.image, dtype=np.float32)
+    orig_was_mono = (src.ndim == 2) or (src.ndim == 3 and src.shape[2] == 1)
+ 
+    x = np.nan_to_num(src, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+    scale_factor = float(np.max(x)) if x.size else 1.0
+    x01 = np.clip(x / scale_factor if scale_factor > 1.01 else x, 0.0, 1.0)
+ 
+    if x01.ndim == 2:
+        xrgb = np.stack([x01] * 3, axis=-1)
+    elif x01.ndim == 3 and x01.shape[2] == 1:
+        xrgb = np.repeat(x01, 3, axis=2)
+    else:
+        xrgb = x01[..., :3]
+ 
+    if use_mtf:
+        mtf_params = _mtf_params_unlinked(xrgb, shadows_clipping=-2.8, targetbg=mtf_target)
+        x_for_net  = _apply_mtf_unlinked_rgb(xrgb, mtf_params)
+    else:
+        mtf_params = None
+        x_for_net  = xrgb
+ 
+    dlg = _ProcDialog(main, title="SyQon Parallax Progress")
+    dlg.append_text("Starting SyQon Parallax…\\n")
+ 
+    # Build thread
+    from setiastro.saspro.syqon_tools import _SyQonParallaxProcessThread
+    thr = _SyQonParallaxProcessThread(
+        x_for_net       = x_for_net,
+        do_correct      = do_correct,
+        correction_path = str(syqon_parallax_correction_model_path()) if do_correct else "",
+        star_level      = star_level,
+        star_path       = str(syqon_parallax_star_reduction_model_path()) if star_level > 0 else "",
+        sharpen_alpha   = sharpen_alpha,
+        sharpen_path    = str(syqon_parallax_sharpen_model_path()) if sharpen_alpha > 0 else "",
+        tile            = tile,
+        overlap         = overlap,
+        pad             = pad,
+        parent          = dlg,
+    )
+ 
+    def _on_prog(pct: int, stage: str):
+        dlg.set_progress(pct, 100, stage)
+ 
+    def _on_done(result_s, info: dict, err: str):
+        if err:
+            QMessageBox.critical(main, "SyQon Parallax", err)
+            dlg.close()
+            return
+ 
+        result = np.asarray(result_s, dtype=np.float32)
+        if result.ndim == 2:
+            result = np.stack([result] * 3, axis=-1)
+ 
+        if use_mtf and mtf_params is not None:
+            result = _invert_mtf_unlinked_rgb(result, mtf_params)
+ 
+        if scale_factor > 1.01:
+            result = np.clip(result * scale_factor, 0.0, 1.0).astype(np.float32)
+ 
+        if orig_was_mono:
+            final = result.mean(axis=2).astype(np.float32)
+        else:
+            final = result[..., :3]
+ 
+        final = np.clip(final, 0.0, 1.0).astype(np.float32)
+ 
+        meta = {
+            "step_name": "Parallax",
+            "bit_depth": "32-bit floating point",
+            "is_mono":   bool(orig_was_mono),
+            "replay_last": {
+                "op": "syqon_parallax",
+                "params": {
+                    "correct":       do_correct,
+                    "star_level":    star_level,
+                    "sharpen_alpha": sharpen_alpha,
+                    "tile":          tile,
+                    "overlap":       overlap,
+                    "pad":           pad,
+                    "use_mtf":       use_mtf,
+                    "mtf_target":    mtf_target,
+                }
+            }
+        }
+        doc.apply_edit(final, metadata=meta, step_name="Parallax")
+ 
+        try:
+            if hasattr(main, "_log"):
+                main._log("SyQon Parallax (headless)")
+        except Exception:
+            pass
+ 
+        dlg.close()
+ 
+    thr.progress.connect(_on_prog)
+    thr.finished.connect(_on_done)
+    dlg.cancel_button.clicked.connect(lambda: thr.cancel())
+    dlg.show()
+    thr.start()
+    dlg.exec()
+
 
 def _run_syqon_prism_headless(main, doc, preset: dict | None = None):
     preset = dict(preset or {})

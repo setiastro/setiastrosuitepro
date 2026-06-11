@@ -90,21 +90,26 @@ def _mtf_inverse(y: np.ndarray, shadows: float, midtones: float, highlights: flo
     return np.clip(x, 0.0, 1.0).astype(np.float32, copy=False)
 
 def _mtf_params_linked(img_rgb01: np.ndarray, shadowclip_sigma: float = -2.8, targetbg: float = 0.25):
-    if img_rgb01.ndim == 2:
-        gray = img_rgb01
-    else:
-        gray = img_rgb01.mean(axis=2)
-    peak, sigma = _robust_peak_sigma(gray)
-    s = peak + shadowclip_sigma * sigma
-    s = float(np.clip(s, gray.min(), max(gray.max() - 1e-6, 0.0)))
-    h = 1.0
-    x = (peak - s) / max(h - s, 1e-8)
-    x = float(np.clip(x, 1e-6, 1.0 - 1e-6))
-    y = float(np.clip(targetbg, 1e-6, 1.0 - 1e-6))
-    denom = (2.0 * y * x) - y - x
-    m = (x * (y - 1.0)) / denom if abs(denom) > 1e-12 else 0.5
+    # shadowclip_sigma accepted for legacy compatibility but ignored.
+    # Matches stretch_color_image(linked=True, no_black_clip=True) exactly:
+    #   bp  = whole-image minimum (single value, all channels)
+    #   med = whole-image median (single value, all channels)
+    #   same transform applied identically to all channels
+    x = np.asarray(img_rgb01, dtype=np.float32)
+
+    bp = float(np.clip(x.min(), 0.0, 1.0 - 1e-6))
+    denom = max(1.0 - bp, 1e-12)
+    med_raw = float(np.median(x))
+    med_rescaled = float(np.clip((med_raw - bp) / denom, 1e-6, 1.0 - 1e-6))
+
+    tb = float(np.clip(targetbg, 1e-6, 1.0 - 1e-6))
+    denom_m = (2.0 * tb - 1.0) * med_rescaled - tb
+    if abs(denom_m) < 1e-12:
+        denom_m = 1e-12
+    m = med_rescaled * (tb - 1.0) / denom_m
     m = float(np.clip(m, 1e-4, 1.0 - 1e-4))
-    return {"s": s, "m": m, "h": h}
+
+    return {"s": bp, "m": m, "h": 1.0}
 
 def _apply_mtf_linked_rgb(img_rgb01: np.ndarray, p: dict) -> np.ndarray:
     if img_rgb01.ndim == 2:
@@ -150,9 +155,9 @@ def _mtf_params_unlinked_noclip(img_rgb01: np.ndarray, targetbg: float = 0.25) -
 
     return {"s": s, "m": m, "h": h}
 
-def _mtf_params_unlinked(img_rgb01: np.ndarray,
-                         shadows_clipping: float = -2.8,
-                         targetbg: float = 0.25) -> dict:
+def _mtf_params_unlinked(img_rgb01, shadows_clipping=-2.8, targetbg=0.25):
+    import numpy as np
+ 
     x = np.asarray(img_rgb01, dtype=np.float32)
     if x.ndim == 2:
         x_in = x[..., None]; C_in = 1
@@ -160,40 +165,48 @@ def _mtf_params_unlinked(img_rgb01: np.ndarray,
         x_in = x; C_in = 1
     else:
         x_in = x; C_in = x.shape[2]
-
-    med = np.median(x_in, axis=(0, 1)).astype(np.float32)
-    diff = np.abs(x_in - med.reshape(1, 1, C_in))
-    mad_raw = np.median(diff, axis=(0, 1)).astype(np.float32)
-    mad = mad_raw * _MAD_NORM
-    mad[mad == 0] = 0.001
-    inverted_flags = (med > 0.5)
-
+ 
     s_in = np.zeros(C_in, dtype=np.float32)
     m_in = np.zeros(C_in, dtype=np.float32)
-    h_in = np.zeros(C_in, dtype=np.float32)
-
+    h_in = np.ones(C_in, dtype=np.float32)
+ 
+    tb = float(np.clip(targetbg, 1e-6, 1.0 - 1e-6))
+ 
     for c in range(C_in):
-        is_inv = inverted_flags[c]
-        md = med[c]; md_dev = mad[c]
-        if not is_inv:
-            c0 = max(md + shadows_clipping * md_dev, 0.0)
-            m2 = md - c0
-            s_in[c] = c0
-            m_in[c] = float(_mtf_scalar(m2, targetbg, 0.0, 1.0))
-            h_in[c] = 1.0
-        else:
-            c1 = min(md - shadows_clipping * md_dev, 1.0)
-            m2 = c1 - md
-            s_in[c] = 0.0
-            m_in[c] = 1.0 - float(_mtf_scalar(m2, targetbg, 0.0, 1.0))
-            h_in[c] = c1
-
+        ch = x_in[..., c]
+ 
+        # Step 1: blackpoint = channel minimum (no sigma clipping)
+        bp = float(np.clip(ch.min(), 0.0, 1.0 - 1e-6))
+ 
+        # Step 2: rescale median the same way numba_color_unlinked_from_img does
+        denom = max(1.0 - bp, 1e-12)
+        med_raw = float(np.median(ch))
+        med_rescaled = float(np.clip((med_raw - bp) / denom, 1e-6, 1.0 - 1e-6))
+ 
+        # Step 3: solve MTF midtone m such that MTF(med_rescaled) = targetbg
+        # MTF: y = (m-1)*tb*x / (m*(tb+x-1) - tb*x)
+        # Solving MTF(med_rescaled) = tb:
+        #   denom_m = (2*tb - 1)*med_rescaled - tb
+        #   m = med_rescaled*(tb - 1) / denom_m
+        denom_m = (2.0 * tb - 1.0) * med_rescaled - tb
+        if abs(denom_m) < 1e-12:
+            denom_m = 1e-12
+        m = med_rescaled * (tb - 1.0) / denom_m
+        m = float(np.clip(m, 1e-4, 1.0 - 1e-4))
+ 
+        # s = blackpoint, m = MTF midtone, h = 1.0
+        # _mtf_apply(x, s, m, h) computes: r=(x-s)/(h-s), then MTF(r,m)
+        s_in[c] = bp
+        m_in[c] = m
+        h_in[c] = 1.0
+ 
     if C_in == 1:
-        s = np.repeat(s_in, 3); m = np.repeat(m_in, 3); h = np.repeat(h_in, 3)
+        s = np.repeat(s_in, 3); m_arr = np.repeat(m_in, 3); h = np.repeat(h_in, 3)
     else:
-        s = s_in; m = m_in; h = h_in
+        s = s_in; m_arr = m_in; h = h_in
+ 
+    return {"s": s, "m": m_arr, "h": h}
 
-    return {"s": s, "m": m, "h": h}
 
 def _mtf_scalar(x: float, m: float, lo: float = 0.0, hi: float = 1.0) -> float:
     if x <= lo: return 0.0

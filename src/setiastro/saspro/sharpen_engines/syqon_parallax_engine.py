@@ -112,20 +112,21 @@ def _run_tiled_cosine(
     tile: int,
     overlap: int,
     pad: int,
+    normalize_brightness: bool = False,
+    target_median: float = 0.10,
     progress_cb: Optional[ProgressCB] = None,
     label: str = "",
 ) -> np.ndarray:
     img_padded, orig_hw = _pad_reflect(img, pad)
-    H, W   = img_padded.shape[:2]
-    stride = max(tile - overlap, 1)
-    ys     = list(range(0, H, stride))
-    xs     = list(range(0, W, stride))
-    total  = len(ys) * len(xs)
-    w2     = _cosine_weights(tile, overlap)
+    H, W = img_padded.shape[:2]
+
+    ys = _syqon_grid_positions(H, tile, overlap)
+    xs = _syqon_grid_positions(W, tile, overlap)
+    total = len(ys) * len(xs)
+    w2    = _cosine_weights(tile, overlap)
 
     out_acc = np.zeros((H, W, 3), dtype=np.float32)
     w_acc   = np.zeros((H, W, 1), dtype=np.float32)
-    buf     = np.zeros((tile, tile, 3), dtype=np.float32)
     done    = 0
 
     for y0 in ys:
@@ -135,15 +136,22 @@ def _run_tiled_cosine(
             patch  = img_padded[y0:y1, x0:x1, :]
             ph, pw = patch.shape[:2]
 
-            if ph != tile or pw != tile:
-                buf.fill(0.0)
-                buf[:ph, :pw, :] = patch
-                patch_in = buf
-            else:
-                patch_in = patch
+            patch_in = _pad_tile_np(patch, tile) if (ph != tile or pw != tile) else patch
 
-            pred    = np.clip(infer_fn(patch_in), 0.0, 1.0)
-            wlocal  = w2[:ph, :pw, :]
+            if normalize_brightness:
+                # Per-tile median shift — keeps model input in trained brightness
+                # range regardless of source image brightness.
+                # Floor prevents explosion on near-black background tiles.
+                tile_median = float(np.median(patch_in))
+                tile_median = max(tile_median, 1e-3)
+                scale       = min(target_median / tile_median, target_median / 1e-3)
+                patch_norm  = np.clip(patch_in * scale, 0.0, 1.0).astype(np.float32)
+                pred_norm   = np.clip(infer_fn(patch_norm), 0.0, 1.0)
+                pred        = np.clip(pred_norm / scale, 0.0, 1.0).astype(np.float32)
+            else:
+                pred = np.clip(infer_fn(patch_in), 0.0, 1.0)
+
+            wlocal = w2[:ph, :pw, :]
             out_acc[y0:y1, x0:x1, :] += pred[:ph, :pw, :] * wlocal
             w_acc  [y0:y1, x0:x1, :] += wlocal
 
@@ -193,6 +201,7 @@ def parallax_correction_rgb01(
     result = _run_tiled_cosine(
         _infer, _ensure_rgb(img_rgb01),
         tile=tile, overlap=overlap, pad=pad,
+        normalize_brightness=True, target_median=0.10,
         progress_cb=progress_cb, label="[Correction]",
     )
 
@@ -246,6 +255,7 @@ def parallax_star_reduce_rgb01(
     result = _run_tiled_cosine(
         _infer, _ensure_rgb(img_rgb01),
         tile=tile, overlap=overlap, pad=pad,
+        normalize_brightness=True, target_median=0.10,
         progress_cb=progress_cb, label=f"[StarReduce L{level}]",
     )
 
@@ -270,6 +280,7 @@ def parallax_sharpen_rgb01(
     *,
     tile: int = 512,
     overlap: int = 64,
+    pad: int = 96,
     use_gpu: bool = True,
     prefer_dml: bool = True,
     progress_cb: Optional[ProgressCB] = None,
@@ -294,7 +305,10 @@ def parallax_sharpen_rgb01(
     model, config = load_parallax_model(ckpt_path, variant="sharpen")
     model.to(device).eval()
 
-    height, width = img.shape[:2]
+    # Reflect-pad full image before tiling — same as correction/star_reduce
+    img_padded, orig_hw = _pad_reflect(img, pad)
+    height, width = img_padded.shape[:2]
+
     xs    = _syqon_grid_positions(width,  tile, overlap)
     ys    = _syqon_grid_positions(height, tile, overlap)
     total = len(xs) * len(ys)
@@ -314,7 +328,7 @@ def parallax_sharpen_rgb01(
         tile_h = bottom - top
         tile_w = right - left
 
-        tile_data        = img[top:bottom, left:right, :]
+        tile_data        = img_padded[top:bottom, left:right, :]
         tile_data_padded = _pad_tile_np(tile_data, tile)
 
         tile_tensor = (
@@ -337,9 +351,10 @@ def parallax_sharpen_rgb01(
         if callable(progress_cb):
             progress_cb(idx, total, f"[Sharpen] tile {idx}/{total}…")
 
-    # Reconstruct + alpha blend — exact SyQon formula
+    # Reconstruct, unpad, then alpha blend against original unpadded image
     reconstructed = output_tensor / torch.clamp(weight_sum, min=1e-6)
     reconstructed = reconstructed.squeeze(0).permute(1, 2, 0).numpy()
+    reconstructed = _unpad(reconstructed, orig_hw, pad)
 
     final_output = img + alpha * (reconstructed - img)
     result = np.clip(final_output, 0.0, 1.0).astype(np.float32, copy=False)
@@ -349,7 +364,7 @@ def parallax_sharpen_rgb01(
         "alpha":   alpha,
         "device":  str(device),
         "torch_version": getattr(torch, "__version__", None),
-        "tile": tile, "overlap": overlap,
+        "tile": tile, "overlap": overlap, "pad": pad,
     }
     return result, info
 
