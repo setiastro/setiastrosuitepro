@@ -18101,7 +18101,13 @@ class StackingSuiteDialog(QDialog):
                 self._set_registration_busy(True)
                 self.update_status(self.tr("🌠 Star-Trail Mode enabled: skipping registration & using max-value stack"))
                 QApplication.processEvents()
-                return self._make_star_trail()
+                self._make_star_trail()
+                mon = getattr(self, "_exec_monitor", None)
+                if mon is not None:
+                    mon.finish_all(ok=True)
+                self._set_registration_busy(False)
+                return
+            
             all_files = [f for lst in self.light_files.values() for f in lst]
             if not all_files:
                 self.update_status(self.tr("⚠️ No light files to register!"))
@@ -19223,7 +19229,6 @@ class StackingSuiteDialog(QDialog):
                 continue
         return transforms
 
-
     def _make_star_trail(self):
         # 1) collect all your calibrated light frames
         all_files = [f for flist in self.light_files.values() for f in flist]
@@ -19235,6 +19240,9 @@ class StackingSuiteDialog(QDialog):
         # 2) load every frame (once), compute its median, and remember its header
         frames: list[tuple[np.ndarray, fits.Header]] = []
         medians: list[float] = []
+
+        self.update_status(self.tr(f"📂 Star-Trail: Loading {n_frames} frames…"))
+        QApplication.processEvents()
 
         for fidx, fn in enumerate(all_files, start=1):
             if fidx == 1 or fidx % 50 == 0 or fidx == n_frames:
@@ -19272,8 +19280,13 @@ class StackingSuiteDialog(QDialog):
         else:
             hdr_to_use = None
 
-        # 3) normalize each frame and write to a temp dir
+        self.update_status(self.tr(f"✅ Star-Trail: Loading complete ({len(frames)} frames)"))
+        QApplication.processEvents()
+
         # 3) normalize each frame, write to temp dir, then free immediately
+        self.update_status(self.tr(f"🔄 Star-Trail: Normalizing {len(frames)} frames…"))
+        QApplication.processEvents()
+
         with tempfile.TemporaryDirectory(prefix="startrail_norm_") as norm_dir:
             normalized_paths = []
             n_frames_loaded = len(frames)
@@ -19282,7 +19295,6 @@ class StackingSuiteDialog(QDialog):
                     self.update_status(self.tr(f"🔄 Normalizing frame {idx}/{n_frames_loaded}"))
                     QApplication.processEvents()
 
-                # guard against divide-by-zero
                 m = float(np.median(arr))
                 scale = ref_median / (m + 1e-12)
                 img_norm = arr * scale
@@ -19292,18 +19304,16 @@ class StackingSuiteDialog(QDialog):
                 fits.PrimaryHDU(data=img_norm, header=hdr).writeto(out_path, overwrite=True)
                 normalized_paths.append(out_path)
 
-                # free immediately — don't hold the entire dataset in RAM
                 del img_norm, arr
-                frames[idx - 1] = None  # drop reference so GC can collect
+                frames[idx - 1] = None
 
-            # all original arrays are now freed before we load normalized ones
             frames.clear()
             gc.collect()
-            self.update_status(self.tr(f"🧹 Original frames freed from memory"))
+            self.update_status(self.tr(f"✅ Star-Trail: Normalization complete"))
             QApplication.processEvents()
 
             # 4) stack and do max-value projection
-            self.update_status(self.tr(f"📊 Stacking {len(normalized_paths)} frames"))
+            self.update_status(self.tr(f"📊 Star-Trail: Stacking {len(normalized_paths)} frames…"))
             QApplication.processEvents()
             self.update_status(self.tr(f"💾 Loading normalized frames into memory…"))
             QApplication.processEvents()
@@ -19312,7 +19322,7 @@ class StackingSuiteDialog(QDialog):
             QApplication.processEvents()
             trail_img, _ = max_value_stack(stack)
 
-            # 5) Save automatically like all other masters
+            # 5) Save
             trail_img = trail_img.astype(np.float32)
             trail_norm = trail_img / (trail_img.max() + 1e-12)
 
@@ -19331,10 +19341,8 @@ class StackingSuiteDialog(QDialog):
                 is_mono=(trail_norm.ndim == 2)
             )
 
-        # once we exit the with-block, all the _st.fit files are deleted
         self.update_status(self.tr(f"✅ Star-Trail image saved to: {out_path}"))
         return
-
 
     def _apply_autocrop(self, arr, file_list, header, scale=1.0, rect_override=None):
         """

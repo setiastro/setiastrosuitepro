@@ -111,14 +111,17 @@ _r(r"✅ Saved integrated image.*for '(.+?)'",        "Integration",       _ST_O
 _r(r"📐 Drizzle for '(.+?)'",                        "Integration",       _ST_RUNNING, 1)
 
 # ── Star Trail ────────────────────────────────────────────────────────────
-_r(r"🌠 Star-Trail Mode enabled",                   "Star Trail",            _ST_RUNNING)
-_r(r"📂 Loading frame \d+/\d+",                     "Star Trail: Loading",   _ST_RUNNING)
-_r(r"🧹 Original frames freed",                     "Star Trail: Loading",   _ST_OK)
-_r(r"🔄 Normalizing frame \d+/\d+",                 "Star Trail: Normalize", _ST_RUNNING)
-_r(r"📊 Stacking \d+ frames",                       "Star Trail: Stack",     _ST_RUNNING)
-_r(r"💾 Loading normalized frames into memory",     "Star Trail: Stack",     _ST_RUNNING)
-_r(r"⚡ Running max-value projection",              "Star Trail: Stack",     _ST_RUNNING)
-_r(r"✅ Star-Trail image saved",                     "Star Trail: Stack",     _ST_OK)
+_r(r"🌠 Star-Trail Mode enabled",                        "Star Trail",            _ST_INFO)
+_r(r"📂 Star-Trail: Loading \d+ frames",                 "Star Trail: Loading",   _ST_RUNNING)
+_r(r"📂 Loading frame \d+/\d+",                          "Star Trail: Loading",   _ST_RUNNING)
+_r(r"✅ Star-Trail: Loading complete",                    "Star Trail: Loading",   _ST_OK)
+_r(r"🔄 Star-Trail: Normalizing \d+ frames",             "Star Trail: Normalize", _ST_RUNNING)
+_r(r"🔄 Normalizing frame \d+/\d+",                      "Star Trail: Normalize", _ST_RUNNING)
+_r(r"✅ Star-Trail: Normalization complete",              "Star Trail: Normalize", _ST_OK)
+_r(r"📊 Star-Trail: Stacking \d+ frames",                "Star Trail: Stack",     _ST_RUNNING)
+_r(r"💾 Loading normalized frames into memory",          "Star Trail: Stack",     _ST_RUNNING)
+_r(r"⚡ Running max-value projection",                   "Star Trail: Stack",     _ST_RUNNING)
+_r(r"✅ Star-Trail image saved",                          "Star Trail: Stack",     _ST_OK)
 
 # ── Autocrop ──────────────────────────────────────────────────────────────
 _r(r"✂️.*[Cc]rop",                                  "Autocrop",          _ST_RUNNING)
