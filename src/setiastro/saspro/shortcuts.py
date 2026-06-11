@@ -2461,155 +2461,174 @@ class _StarStretchPresetDialog(QDialog):
             "scnr_green":     bool(self.chk_scnr.isChecked()),
         }
 
-class _SyQonToolsPresetDialog(QDialog):
+
     """
     Preset editor for command_id="syqontools"
-
-    Keys:
-      family: "starless" | "denoise" | "sharpening"
-
-      # Starless
-      starless_model_kind:        "nadir" | "axiomv2" | "axiomv2.1" | "axiomv2.2"
-      starless_use_mtf:           bool   (apply temporary stretch before inference)
-      starless_mtf_target_median: float  (stretch target median, default 0.25)
-
-      # Prism
-      prism_model_kind: "prism_mini" | "prism_deep"
-      prism_tile_size: int
-      prism_overlap: int
-      prism_pad: int
-      prism_strength: float
-      prism_use_mtf: bool
-      prism_mtf_target_median: float
-      prism_use_amp: bool
-
-      # Behavior
-      auto_run: bool
-        - False: open hub to selected page only
-        - True: directly execute selected family if supported
+ 
+    Families:
+      sclass _SyQonToolsPresetDialog(QDialog):tarless   — model kind + temp stretch
+      denoise    — Prism Mini/Deep + all Prism settings
+      sharpening — Parallax: correction, star reduction, sharpen strength
     """
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
         self.setWindowTitle("SyQon Tools — Preset")
         init = dict(initial or {})
-
+ 
         lay = QVBoxLayout(self)
-
         form = QFormLayout()
-
-        # ---- family ----
+ 
+        # ── Family ──
         self.cmb_family = QComboBox(self)
-        self.cmb_family.addItem("Starless",   "starless")
-        self.cmb_family.addItem("Denoise",    "denoise")
-        self.cmb_family.addItem("Sharpening", "sharpening")
-
+        self.cmb_family.addItem("Starless",            "starless")
+        self.cmb_family.addItem("Denoise",             "denoise")
+        self.cmb_family.addItem("Sharpening (Parallax)", "sharpening")
+ 
         fam0 = str(init.get("family", "starless") or "starless").strip().lower()
         idx  = self.cmb_family.findData(fam0)
-        if idx < 0:
-            idx = self.cmb_family.findData("starless")
-        if idx >= 0:
-            self.cmb_family.setCurrentIndex(idx)
-
+        if idx < 0: idx = 0
+        self.cmb_family.setCurrentIndex(idx)
         form.addRow("Tool family:", self.cmb_family)
-
-        self.chk_auto_run = QCheckBox("Run selected tool directly instead of only opening the hub", self)
-        self.chk_auto_run.setChecked(bool(init.get("auto_run", True)))
-        self.chk_auto_run.hide()
-        form.addRow("", self.chk_auto_run)
-
-        # ---- starless group ----
+ 
+        lay.addLayout(form)
+ 
+        # ── Starless group ──
         self.grp_starless = QGroupBox("Starless Preset", self)
         fs = QFormLayout(self.grp_starless)
-
-        # Model
+ 
         self.cmb_starless_model = QComboBox(self)
         self.cmb_starless_model.addItem("Nadir",     "nadir")
         self.cmb_starless_model.addItem("AxiomV2",   "axiomv2")
         self.cmb_starless_model.addItem("AxiomV2.1", "axiomv2.1")
         self.cmb_starless_model.addItem("AxiomV2.2", "axiomv2.2")
-
         sm0 = str(init.get("starless_model_kind", "nadir") or "nadir").strip().lower()
         idx = self.cmb_starless_model.findData(sm0)
-        if idx < 0:
-            idx = self.cmb_starless_model.findData("nadir")
-        if idx >= 0:
-            self.cmb_starless_model.setCurrentIndex(idx)
+        self.cmb_starless_model.setCurrentIndex(max(0, idx))
         fs.addRow("Model:", self.cmb_starless_model)
-
-        # Temp stretch
-        self.chk_starless_use_mtf = QCheckBox(
-            "Apply temporary stretch before inference (recommended for linear data)", self
-        )
-        self.chk_starless_use_mtf.setChecked(bool(init.get("starless_use_mtf", True)))
-        fs.addRow("", self.chk_starless_use_mtf)
-
-        self.spin_starless_mtf_median = QDoubleSpinBox(self)
-        self.spin_starless_mtf_median.setRange(0.01, 0.50)
-        self.spin_starless_mtf_median.setDecimals(3)
-        self.spin_starless_mtf_median.setSingleStep(0.01)
-        self.spin_starless_mtf_median.setValue(float(init.get("starless_mtf_target_median", 0.25)))
-        self.spin_starless_mtf_median.setEnabled(self.chk_starless_use_mtf.isChecked())
-        self.chk_starless_use_mtf.toggled.connect(self.spin_starless_mtf_median.setEnabled)
-        fs.addRow("Stretch target median:", self.spin_starless_mtf_median)
-
-        # ---- prism group ----
+ 
+        self.chk_starless_mtf = QCheckBox("Apply temporary stretch (recommended for linear data)", self)
+        self.chk_starless_mtf.setChecked(bool(init.get("starless_use_mtf", True)))
+        fs.addRow("", self.chk_starless_mtf)
+ 
+        self.spin_starless_mtf = QDoubleSpinBox(self)
+        self.spin_starless_mtf.setRange(0.01, 0.50); self.spin_starless_mtf.setDecimals(3)
+        self.spin_starless_mtf.setSingleStep(0.01)
+        self.spin_starless_mtf.setValue(float(init.get("starless_mtf_target_median", 0.25)))
+        self.spin_starless_mtf.setEnabled(self.chk_starless_mtf.isChecked())
+        self.chk_starless_mtf.toggled.connect(self.spin_starless_mtf.setEnabled)
+        fs.addRow("Stretch target median:", self.spin_starless_mtf)
+ 
+        lay.addWidget(self.grp_starless)
+ 
+        # ── Prism group ──
         self.grp_prism = QGroupBox("Prism Preset", self)
         fp = QFormLayout(self.grp_prism)
-
+ 
         self.cmb_prism_model = QComboBox(self)
         self.cmb_prism_model.addItem("Prism Mini (free)", "prism_mini")
         self.cmb_prism_model.addItem("Prism Deep (paid)", "prism_deep")
         pm0 = str(init.get("prism_model_kind", "prism_mini") or "prism_mini").strip().lower()
         idx = self.cmb_prism_model.findData(pm0)
-        if idx < 0:
-            idx = self.cmb_prism_model.findData("prism_mini")
-        if idx >= 0:
-            self.cmb_prism_model.setCurrentIndex(idx)
+        self.cmb_prism_model.setCurrentIndex(max(0, idx))
         fp.addRow("Model:", self.cmb_prism_model)
-
-        self.spin_tile = QSpinBox(self)
-        self.spin_tile.setRange(128, 2048)
-        self.spin_tile.setValue(int(init.get("prism_tile_size", 512)))
-        fp.addRow("Tile size:", self.spin_tile)
-
-        self.spin_overlap = QSpinBox(self)
-        self.spin_overlap.setRange(16, 512)
-        self.spin_overlap.setValue(int(init.get("prism_overlap", 64)))
-        fp.addRow("Overlap:", self.spin_overlap)
-
-        self.spin_pad = QSpinBox(self)
-        self.spin_pad.setRange(0, 2048)
-        self.spin_pad.setValue(int(init.get("prism_pad", 64)))
-        fp.addRow("Edge pad:", self.spin_pad)
-
-        self.spin_strength = QDoubleSpinBox(self)
-        self.spin_strength.setRange(0.0, 1.0)
-        self.spin_strength.setDecimals(2)
-        self.spin_strength.setSingleStep(0.01)
-        self.spin_strength.setValue(float(init.get("prism_strength", 0.85)))
-        fp.addRow("Strength:", self.spin_strength)
-
+ 
+        self.spin_prism_tile = QSpinBox(self)
+        self.spin_prism_tile.setRange(128, 2048)
+        self.spin_prism_tile.setValue(int(init.get("prism_tile_size", 512)))
+        fp.addRow("Tile size:", self.spin_prism_tile)
+ 
+        self.spin_prism_overlap = QSpinBox(self)
+        self.spin_prism_overlap.setRange(16, 512)
+        self.spin_prism_overlap.setValue(int(init.get("prism_overlap", 64)))
+        fp.addRow("Overlap:", self.spin_prism_overlap)
+ 
+        self.spin_prism_pad = QSpinBox(self)
+        self.spin_prism_pad.setRange(0, 2048)
+        self.spin_prism_pad.setValue(int(init.get("prism_pad", 64)))
+        fp.addRow("Edge pad:", self.spin_prism_pad)
+ 
+        self.spin_prism_strength = QDoubleSpinBox(self)
+        self.spin_prism_strength.setRange(0.0, 1.0); self.spin_prism_strength.setDecimals(2)
+        self.spin_prism_strength.setSingleStep(0.01)
+        self.spin_prism_strength.setValue(float(init.get("prism_strength", 0.85)))
+        fp.addRow("Strength:", self.spin_prism_strength)
+ 
         self.chk_prism_mtf = QCheckBox("Apply temporary stretch for model", self)
         self.chk_prism_mtf.setChecked(bool(init.get("prism_use_mtf", True)))
         fp.addRow("", self.chk_prism_mtf)
-
-        self.spin_mtf_target = QDoubleSpinBox(self)
-        self.spin_mtf_target.setRange(0.01, 0.50)
-        self.spin_mtf_target.setDecimals(3)
-        self.spin_mtf_target.setSingleStep(0.01)
-        self.spin_mtf_target.setValue(float(init.get("prism_mtf_target_median", 0.10)))
-        self.spin_mtf_target.setEnabled(self.chk_prism_mtf.isChecked())
-        self.chk_prism_mtf.toggled.connect(self.spin_mtf_target.setEnabled)
-        fp.addRow("MTF target median:", self.spin_mtf_target)
-
+ 
+        self.spin_prism_mtf = QDoubleSpinBox(self)
+        self.spin_prism_mtf.setRange(0.01, 0.50); self.spin_prism_mtf.setDecimals(3)
+        self.spin_prism_mtf.setSingleStep(0.01)
+        self.spin_prism_mtf.setValue(float(init.get("prism_mtf_target_median", 0.10)))
+        self.spin_prism_mtf.setEnabled(self.chk_prism_mtf.isChecked())
+        self.chk_prism_mtf.toggled.connect(self.spin_prism_mtf.setEnabled)
+        fp.addRow("MTF target median:", self.spin_prism_mtf)
+ 
         self.chk_prism_amp = QCheckBox("Use AMP (mixed precision)", self)
         self.chk_prism_amp.setChecked(bool(init.get("prism_use_amp", False)))
         fp.addRow("", self.chk_prism_amp)
-
-        lay.addLayout(form)
-        lay.addWidget(self.grp_starless)
+ 
         lay.addWidget(self.grp_prism)
-
+ 
+        # ── Parallax group ──
+        self.grp_parallax = QGroupBox("Parallax Preset", self)
+        fpar = QFormLayout(self.grp_parallax)
+ 
+        self.chk_par_correct = QCheckBox("Aberration correction", self)
+        self.chk_par_correct.setChecked(bool(init.get("parallax_correct", True)))
+        fpar.addRow("", self.chk_par_correct)
+ 
+        # Star reduction + correction on same row
+        star_row = QWidget(self)
+        star_lay = QHBoxLayout(star_row)
+        star_lay.setContentsMargins(0, 0, 0, 0); star_lay.setSpacing(12)
+        star_lbl = QLabel("Star reduction (0=off, 1–6):", self)
+        self.spin_par_star = QSpinBox(self)
+        self.spin_par_star.setRange(0, 6)
+        self.spin_par_star.setValue(int(init.get("parallax_star_level", 3)))
+        self.spin_par_star.setFixedWidth(52)
+        star_lay.addWidget(star_lbl)
+        star_lay.addWidget(self.spin_par_star)
+        star_lay.addStretch(1)
+        fpar.addRow(star_row)
+ 
+        self.spin_par_sharpen = QDoubleSpinBox(self)
+        self.spin_par_sharpen.setRange(0.0, 1.0); self.spin_par_sharpen.setDecimals(2)
+        self.spin_par_sharpen.setSingleStep(0.05)
+        self.spin_par_sharpen.setValue(float(init.get("parallax_sharpen_alpha", 0.7)))
+        self.spin_par_sharpen.setToolTip("0.0 = off, 1.0 = full sharpen")
+        fpar.addRow("Sharpen strength:", self.spin_par_sharpen)
+ 
+        self.spin_par_tile = QSpinBox(self)
+        self.spin_par_tile.setRange(128, 2048)
+        self.spin_par_tile.setValue(int(init.get("parallax_tile_size", 512)))
+        fpar.addRow("Tile size:", self.spin_par_tile)
+ 
+        self.spin_par_overlap = QSpinBox(self)
+        self.spin_par_overlap.setRange(8, 512)
+        self.spin_par_overlap.setValue(int(init.get("parallax_overlap", 64)))
+        fpar.addRow("Overlap:", self.spin_par_overlap)
+ 
+        self.spin_par_pad = QSpinBox(self)
+        self.spin_par_pad.setRange(0, 2048)
+        self.spin_par_pad.setValue(int(init.get("parallax_pad", 96)))
+        fpar.addRow("Edge pad:", self.spin_par_pad)
+ 
+        self.chk_par_mtf = QCheckBox("Apply temporary stretch (recommended for linear data)", self)
+        self.chk_par_mtf.setChecked(bool(init.get("parallax_use_mtf", True)))
+        fpar.addRow("", self.chk_par_mtf)
+ 
+        self.spin_par_mtf = QDoubleSpinBox(self)
+        self.spin_par_mtf.setRange(0.01, 0.50); self.spin_par_mtf.setDecimals(3)
+        self.spin_par_mtf.setSingleStep(0.01)
+        self.spin_par_mtf.setValue(float(init.get("parallax_mtf_target", 0.15)))
+        self.spin_par_mtf.setEnabled(self.chk_par_mtf.isChecked())
+        self.chk_par_mtf.toggled.connect(self.spin_par_mtf.setEnabled)
+        fpar.addRow("MTF target median:", self.spin_par_mtf)
+ 
+        lay.addWidget(self.grp_parallax)
+ 
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
             parent=self
@@ -2617,34 +2636,48 @@ class _SyQonToolsPresetDialog(QDialog):
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
         lay.addWidget(btns)
-
+ 
         self.cmb_family.currentIndexChanged.connect(self._sync_visibility)
         self._sync_visibility()
-
+ 
     def _sync_visibility(self):
         fam = str(self.cmb_family.currentData() or "starless")
         self.grp_starless.setVisible(fam == "starless")
         self.grp_prism.setVisible(fam == "denoise")
-
+        self.grp_parallax.setVisible(fam == "sharpening")
+ 
     def result_dict(self) -> dict:
         return {
             "family":   str(self.cmb_family.currentData() or "starless"),
             "auto_run": True,
-
+ 
+            # Starless
             "starless_model_kind":        str(self.cmb_starless_model.currentData() or "nadir"),
-            "starless_use_mtf":           bool(self.chk_starless_use_mtf.isChecked()),
-            "starless_mtf_target_median": float(self.spin_starless_mtf_median.value()),
-
+            "starless_use_mtf":           bool(self.chk_starless_mtf.isChecked()),
+            "starless_mtf_target_median": float(self.spin_starless_mtf.value()),
+ 
+            # Prism
             "prism_model_kind":        str(self.cmb_prism_model.currentData() or "prism_mini"),
-            "prism_tile_size":         int(self.spin_tile.value()),
-            "prism_overlap":           int(self.spin_overlap.value()),
-            "prism_pad":               int(self.spin_pad.value()),
-            "prism_strength":          float(self.spin_strength.value()),
+            "prism_tile_size":         int(self.spin_prism_tile.value()),
+            "prism_overlap":           int(self.spin_prism_overlap.value()),
+            "prism_pad":               int(self.spin_prism_pad.value()),
+            "prism_strength":          float(self.spin_prism_strength.value()),
             "prism_use_mtf":           bool(self.chk_prism_mtf.isChecked()),
-            "prism_mtf_target_median": float(self.spin_mtf_target.value()),
+            "prism_mtf_target_median": float(self.spin_prism_mtf.value()),
             "prism_use_amp":           bool(self.chk_prism_amp.isChecked()),
+ 
+            # Parallax
+            "parallax_correct":       bool(self.chk_par_correct.isChecked()),
+            "parallax_star_level":    int(self.spin_par_star.value()),
+            "parallax_sharpen_alpha": float(self.spin_par_sharpen.value()),
+            "parallax_tile_size":     int(self.spin_par_tile.value()),
+            "parallax_overlap":       int(self.spin_par_overlap.value()),
+            "parallax_pad":           int(self.spin_par_pad.value()),
+            "parallax_use_mtf":       bool(self.chk_par_mtf.isChecked()),
+            "parallax_mtf_target":    float(self.spin_par_mtf.value()),
         }
-    
+
+
 class _RemoveGreenPresetDialog(QDialog):
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
