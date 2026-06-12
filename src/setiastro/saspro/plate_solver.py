@@ -751,8 +751,10 @@ def _parse_ra_deg(h: Header) -> float | None:
     ra = _first_float(h.get("CRVAL1"))
     if ra is not None: return ra
     ra = _first_float(h.get("RA"))
-    if ra is not None and 0.0 <= ra < 360.0: return ra
-    for key in ("OBJCTRA", "RA"):
+    if ra is not None:
+        if 0.0 <= ra < 360.0: return ra
+        if 0.0 <= ra <= 24.0: return ra * 15.0  # stored in hours
+    for key in ("OBJCTRA", "RA", "TELRA", "MNTRA", "CENTERRA", "RA_OBJ", "ALPHA_J2000"):
         s = h.get(key); 
         if not s: continue
         s = str(s).strip()
@@ -776,7 +778,7 @@ def _parse_dec_deg(h: Header) -> float | None:
     if dec is not None: return dec
     dec = _first_float(h.get("DEC"))
     if dec is not None and -90 <= dec <= 90: return dec
-    for key in ("OBJCTDEC","DEC"):
+    for key in ("OBJCTDEC", "DEC", "TELDEC", "MNTDEC", "CENTERDEC", "DEC_OBJ", "DELTA_J2000"):
         s = h.get(key); 
         if not s: continue
         s = str(s).strip()
@@ -1455,10 +1457,11 @@ def _solve_numpy_with_fallback(
 
     # ── Pass 1: ASTAP seeded (only if we actually have RA/Dec) ───────────────
     if _has_seed:
+        _r_display = "auto" if _orig_radius_mode == "auto" else f"{_orig_radius_val}°"
         _set_status_ui(
             parent,
             QCoreApplication.translate("PlateSolver",
-                "Status: ASTAP solving (seeded from header, r=179)…")
+                "Status: ASTAP solving (seeded from header, r={0})…").format(_r_display)
         )
 
         _pass1_scale = None
@@ -1479,16 +1482,15 @@ def _solve_numpy_with_fallback(
                     print(f"[PlateSolver] Pass 1: H_img={H_img}  H_full(hdr)={H_effective}  bin_factor={bin_factor}")
 
         settings.setValue("astap/seed_mode",          "auto")
-        settings.setValue("astap/seed_radius_mode",   "value")
-        settings.setValue("astap/seed_radius_value",   179.0)
+        # radius: respect user dialog choice — don't override it for Pass 1
         if _pass1_fov is not None and _pass1_fov > 0:
             settings.setValue("astap/seed_fov_mode",  "value")
             settings.setValue("astap/seed_fov_value",  _pass1_fov)
-            print(f"[PlateSolver] Pass 1: scale={_pass1_scale:.3f}\"/px  fov={_pass1_fov:.4f}°  r=179")
+            print(f"[PlateSolver] Pass 1: scale={_pass1_scale:.3f}\"/px  fov={_pass1_fov:.4f}°  r={_orig_radius_mode}/{_orig_radius_val}")
         else:
             settings.setValue("astap/seed_fov_mode",  "auto")
             settings.setValue("astap/seed_fov_value",  0.0)
-            print("[PlateSolver] Pass 1: no scale in header, fov=auto  r=179")
+            print(f"[PlateSolver] Pass 1: no scale in header, fov=auto  r={_orig_radius_mode}/{_orig_radius_val}")
 
         try:
             ok, res = _solve_numpy_with_astap(parent, settings, image, seed_header)
@@ -1518,6 +1520,7 @@ def _solve_numpy_with_fallback(
     QApplication.processEvents()
  
     settings.setValue("astap/seed_mode",          "none")   # no RA/Dec
+    # Pass 2 is blind so we force wide radius regardless of user setting
     settings.setValue("astap/seed_radius_mode",   "value")
     settings.setValue("astap/seed_radius_value",   179.0)
     settings.setValue("astap/seed_fov_mode",       "auto")
@@ -2191,7 +2194,7 @@ def _estimate_scale_arcsec_from_header(hdr: Header) -> float | None:
         print("Seed: PC*CDELT-based scale failed:", e)
 
     # 4) Explicit pixscale keywords (already in arcsec/pixel)
-    for key in ("PIXSCALE", "SECPIX"):
+    for key in ("PIXSCALE", "SECPIX", "SECPIX1", "SECPIX2", "SCALE", "PLATESCL", "PLTSCALE"):
         if key in hdr:
             try:
                 result = _sane_arcsec(float(hdr[key]))
@@ -2203,6 +2206,21 @@ def _estimate_scale_arcsec_from_header(hdr: Header) -> float | None:
     # 5) Pixel size + focal length
     px_um_x  = _first_float(hdr.get("XPIXSZ"))
     px_um_y  = _first_float(hdr.get("YPIXSZ"))
+    focal_mm = _first_float(hdr.get("FOCALLEN"))
+    if focal_mm and (px_um_x or px_um_y):
+        px_um = px_um_x or px_um_y
+        if px_um_x and px_um_y:
+            px_um = (px_um_x + px_um_y) / 2.0
+        bx = _first_int(hdr.get("XBINNING")) or _first_int(hdr.get("XBIN")) or 1
+        by = _first_int(hdr.get("YBINNING")) or _first_int(hdr.get("YBIN")) or 1
+        px_um_eff = px_um * ((bx + by) / 2.0)
+        result = _sane_arcsec(206.264806 * px_um_eff / float(focal_mm))
+        if result is not None:
+            return result
+
+    # 6) PIXSIZE1/PIXSIZE2 (base pixel size in microns, multiply by binning)
+    px_um_x  = _first_float(hdr.get("PIXSIZE1"))
+    px_um_y  = _first_float(hdr.get("PIXSIZE2"))
     focal_mm = _first_float(hdr.get("FOCALLEN"))
     if focal_mm and (px_um_x or px_um_y):
         px_um = px_um_x or px_um_y
