@@ -1232,6 +1232,13 @@ class BlinkTab(QWidget):
         self._save_window_geometry()
         self._save_tree_header_state()
 
+        try:
+            if self.metrics_window is not None:
+                self.metrics_window.close()
+                self.metrics_window = None
+        except Exception:
+            pass
+
         super().closeEvent(e)
 
     def initUI(self):

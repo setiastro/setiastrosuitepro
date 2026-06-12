@@ -124,12 +124,14 @@ from datetime import datetime
 from typing import List, Tuple, Optional, Dict, Any
 
 import numpy as np
-if not hasattr(np, 'trapezoid'):
-    np.trapezoid = np.trapz
 try:
     _trapz = np.trapezoid
 except AttributeError:
     _trapz = np.trapz
+
+# Patch np.trapz for any dependency code that calls it directly on NumPy 2.x
+if not hasattr(np, 'trapz'):
+    np.trapz = np.trapezoid
 
 import numpy.ma as ma
 
