@@ -171,6 +171,10 @@ try:
 except AttributeError:
     _trapz = np.trapz
 
+# Patch np.trapz for any third-party or internal code that calls it directly on NumPy 2.x
+if not hasattr(np, 'trapz'):
+    np.trapz = np.trapezoid
+
 import numpy.ma as ma
 import pandas as pd
 
@@ -313,7 +317,7 @@ def _integrate_flux_times_T(flux_w_per_nm: np.ndarray, wl_nm: np.ndarray, T: np.
     t = np.asarray(T, dtype=np.float64).reshape(-1)
     if f.size != w.size or t.size != w.size:
         raise ValueError("Integration arrays must be same length")
-    return float(np.trapz(f * t, w))
+    return float(_trapz(f * t, w))
 
 
 def _gaiaxp_synth_bvr_cached(

@@ -1049,12 +1049,12 @@ class ToolbarMixin:
         self.act_white_balance.setStatusTip(self.tr("Apply white balance (Star-Based, Manual, or Auto)"))
         self.act_white_balance.triggered.connect(self._open_white_balance)
 
-        self.act_sfcc = QAction(QIcon(spcc_icon_path), self.tr("Spectrophotometric Standard Star Calibration (SSSC)"), self)
+        self.act_sfcc = QAction(QIcon(spcc_icon_path), self.tr("Spectrophotometric Flux Color Calibration (SPCC)"), self)
         self.act_sfcc.setObjectName("sfcc")
         self.act_sfcc.setToolTip(self.tr("Open SPfCC (Pickles + GAIA + Filters + Sensor QE)"))
         self.act_sfcc.triggered.connect(self.SFCC_show)
 
-        self.act_sssc = QAction(QIcon(sssc_path), self.tr("Spectral Standard Star Calibration..."), self)
+        self.act_sssc = QAction(QIcon(sssc_path), self.tr("Spectrophotometric Standard Star Calibration (SSSC)"), self)
         self.act_sssc.setObjectName("sssc")
         self.act_sssc.setToolTip(self.tr("Open SSSC (Spectral Standard Star Calibration)"))
         self.act_sssc.triggered.connect(self.SSSC_show)

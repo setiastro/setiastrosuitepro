@@ -929,7 +929,9 @@ class CosmicClarityDialogPro(QDialog):
         self.chk_correct_conservative.toggled.connect(self._save_cc_ui_settings)
  
         self.setMinimumSize(760, 520)
-        self.resize(860, 560)
+        self._restore_cc_geometry()
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(0, self._deferred_resize)
 
 
     def _dn_model_changed(self, idx: int):
@@ -1326,7 +1328,25 @@ class CosmicClarityDialogPro(QDialog):
         self.cmb_gpu.setVisible(show_gpu)
  
         self._update_denoise_dependent_ui()
+        self._relayout_after_visibility_change()
 
+    def _relayout_after_visibility_change(self):
+        from PyQt6.QtCore import QTimer
+        def _do():
+            try:
+                self.layout().activate()
+                for child in self.findChildren(QGroupBox):
+                    child.layout().activate()
+                    child.updateGeometry()
+                self.adjustSize()
+                # if we have a saved geometry, don't let adjustSize shrink below it
+                s = QSettings()
+                g = s.value("cc/dialog_geometry")
+                if g:
+                    self.restoreGeometry(g)
+            except Exception:
+                pass
+        QTimer.singleShot(0, _do)
 
     # ----- Validation -----
     def _validate_root(self) -> bool:
@@ -1769,6 +1789,21 @@ class CosmicClarityDialogPro(QDialog):
 
         return preset
 
+    def _deferred_resize(self):
+        self.adjustSize()
+        s = QSettings()
+        g = s.value("cc/dialog_geometry")
+        if g:
+            self.restoreGeometry(g)
+
+    def _restore_cc_geometry(self):
+        s = QSettings()
+        g = s.value("cc/dialog_geometry")
+        if g:
+            self.restoreGeometry(g)
+        else:
+            self.resize(860, 560)
+
     def closeEvent(self, e):
         thr = getattr(self, "_engine_thread", None)
         if thr is not None and thr.isRunning():
@@ -1776,6 +1811,11 @@ class CosmicClarityDialogPro(QDialog):
             self._cancel_all_engine()
             e.ignore()
             return
+        try:
+            QSettings().setValue("cc/dialog_geometry", self.saveGeometry())
+            QSettings().sync()
+        except Exception:
+            pass
         super().closeEvent(e)
 
     def reject(self):
@@ -1784,6 +1824,7 @@ class CosmicClarityDialogPro(QDialog):
             self._closing_after_cancel = True
             self._cancel_all_engine()
             return
+        QSettings().setValue("cc/dialog_geometry", self.saveGeometry())
         super().reject()
 
     def _engine_cleanup_and_maybe_close(self):
