@@ -257,9 +257,64 @@ class WaveScaleHDRDialogPro(QDialog):
         self.s_comp   = QSlider(Qt.Orientation.Horizontal); self.s_comp.setRange(10, 500); self.s_comp.setValue(150)
         self.s_gamma  = QSlider(Qt.Orientation.Horizontal); self.s_gamma.setRange(10, 1000); self.s_gamma.setValue(500)
 
-        form.addRow(self.tr("Number of Scales:"), self.s_scales)
-        form.addRow(self.tr("Coarse Compression:"), self.s_comp)
-        form.addRow(self.tr("Mask Gamma:"), self.s_gamma)
+        # hover tooltips: what each parameter is and how it affects the image
+        _tip_scales = self.tr(
+            "Number of Scales (2-10)\n\n"
+            "How many wavelet detail layers the luminance is split into. "
+            "More scales let the effect reach larger structures (broad spiral "
+            "arms, big nebula gradients); fewer keep it focused on fine detail.\n\n"
+            "Higher -> larger-scale structure enhanced. Default: 5."
+        )
+        _tip_comp = self.tr(
+            "Coarse Compression (0.10-5.00)\n\n"
+            "Strength of the local-contrast boost. It amplifies detail in the "
+            "bright regions relative to the broad background, compressing the "
+            "overall dynamic range so a bright core reveals structure instead "
+            "of clipping to white.\n\n"
+            "1.0 = gentle uniform lift; below 1.0 suppresses detail in bright "
+            "areas; above ~2.0 can produce halos and a crunchy look. Default: 1.50."
+        )
+        _tip_gamma = self.tr(
+            "Mask Gamma (0.10-10.00)\n\n"
+            "Shapes the luminance mask that steers WHERE the effect is applied "
+            "(mask = brightness ^ gamma).\n\n"
+            "Higher -> effect concentrated on only the brightest regions, e.g. a "
+            "galaxy core. Lower -> effect spreads into fainter areas too, which "
+            "also lifts background noise. Default: 5.00."
+        )
+        self.s_scales.setToolTip(_tip_scales)
+        self.s_comp.setToolTip(_tip_comp)
+        self.s_gamma.setToolTip(_tip_gamma)
+
+        # live value readouts next to each slider
+        self.lbl_scales_val = QLabel()
+        self.lbl_comp_val   = QLabel()
+        self.lbl_gamma_val  = QLabel()
+        self.lbl_scales_val.setToolTip(_tip_scales)
+        self.lbl_comp_val.setToolTip(_tip_comp)
+        self.lbl_gamma_val.setToolTip(_tip_gamma)
+        for _l in (self.lbl_scales_val, self.lbl_comp_val, self.lbl_gamma_val):
+            _l.setMinimumWidth(42)
+            _l.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        def _slider_row(slider, value_label):
+            row = QHBoxLayout()
+            row.addWidget(slider, 1)
+            row.addWidget(value_label)
+            return row
+
+        form.addRow(self.tr("Number of Scales:"), _slider_row(self.s_scales, self.lbl_scales_val))
+        form.addRow(self.tr("Coarse Compression:"), _slider_row(self.s_comp, self.lbl_comp_val))
+        form.addRow(self.tr("Mask Gamma:"), _slider_row(self.s_gamma, self.lbl_gamma_val))
+
+        # keep readouts in sync with the sliders (comp/gamma are slider value / 100)
+        self.s_scales.valueChanged.connect(lambda v: self.lbl_scales_val.setText(str(int(v))))
+        self.s_comp.valueChanged.connect(lambda v: self.lbl_comp_val.setText(f"{v / 100.0:.2f}"))
+        self.s_gamma.valueChanged.connect(lambda v: self.lbl_gamma_val.setText(f"{v / 100.0:.2f}"))
+        # initialize the displayed values
+        self.lbl_scales_val.setText(str(int(self.s_scales.value())))
+        self.lbl_comp_val.setText(f"{self.s_comp.value() / 100.0:.2f}")
+        self.lbl_gamma_val.setText(f"{self.s_gamma.value() / 100.0:.2f}")
 
         row = QHBoxLayout()
         self.btn_preview = QPushButton(self.tr("Preview"))
