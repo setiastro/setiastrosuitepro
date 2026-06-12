@@ -257,10 +257,42 @@ class WaveScaleHDRDialogPro(QDialog):
         self.s_comp   = QSlider(Qt.Orientation.Horizontal); self.s_comp.setRange(10, 500); self.s_comp.setValue(150)
         self.s_gamma  = QSlider(Qt.Orientation.Horizontal); self.s_gamma.setRange(10, 1000); self.s_gamma.setValue(500)
 
+        # hover tooltips: what each parameter is and how it affects the image
+        _tip_scales = self.tr(
+            "Number of Scales (2-10)\n\n"
+            "How many wavelet detail layers the luminance is split into. "
+            "More scales let the effect reach larger structures (broad spiral "
+            "arms, big nebula gradients); fewer keep it focused on fine detail.\n\n"
+            "Higher -> larger-scale structure enhanced. Default: 5."
+        )
+        _tip_comp = self.tr(
+            "Coarse Compression (0.10-5.00)\n\n"
+            "Strength of the local-contrast boost. It amplifies detail in the "
+            "bright regions relative to the broad background, compressing the "
+            "overall dynamic range so a bright core reveals structure instead "
+            "of clipping to white.\n\n"
+            "1.0 = gentle uniform lift; below 1.0 suppresses detail in bright "
+            "areas; above ~2.0 can produce halos and a crunchy look. Default: 1.50."
+        )
+        _tip_gamma = self.tr(
+            "Mask Gamma (0.10-10.00)\n\n"
+            "Shapes the luminance mask that steers WHERE the effect is applied "
+            "(mask = brightness ^ gamma).\n\n"
+            "Higher -> effect concentrated on only the brightest regions, e.g. a "
+            "galaxy core. Lower -> effect spreads into fainter areas too, which "
+            "also lifts background noise. Default: 5.00."
+        )
+        self.s_scales.setToolTip(_tip_scales)
+        self.s_comp.setToolTip(_tip_comp)
+        self.s_gamma.setToolTip(_tip_gamma)
+
         # live value readouts next to each slider
         self.lbl_scales_val = QLabel()
         self.lbl_comp_val   = QLabel()
         self.lbl_gamma_val  = QLabel()
+        self.lbl_scales_val.setToolTip(_tip_scales)
+        self.lbl_comp_val.setToolTip(_tip_comp)
+        self.lbl_gamma_val.setToolTip(_tip_gamma)
         for _l in (self.lbl_scales_val, self.lbl_comp_val, self.lbl_gamma_val):
             _l.setMinimumWidth(42)
             _l.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
