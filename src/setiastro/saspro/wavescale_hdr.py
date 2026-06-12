@@ -257,9 +257,32 @@ class WaveScaleHDRDialogPro(QDialog):
         self.s_comp   = QSlider(Qt.Orientation.Horizontal); self.s_comp.setRange(10, 500); self.s_comp.setValue(150)
         self.s_gamma  = QSlider(Qt.Orientation.Horizontal); self.s_gamma.setRange(10, 1000); self.s_gamma.setValue(500)
 
-        form.addRow(self.tr("Number of Scales:"), self.s_scales)
-        form.addRow(self.tr("Coarse Compression:"), self.s_comp)
-        form.addRow(self.tr("Mask Gamma:"), self.s_gamma)
+        # live value readouts next to each slider
+        self.lbl_scales_val = QLabel()
+        self.lbl_comp_val   = QLabel()
+        self.lbl_gamma_val  = QLabel()
+        for _l in (self.lbl_scales_val, self.lbl_comp_val, self.lbl_gamma_val):
+            _l.setMinimumWidth(42)
+            _l.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        def _slider_row(slider, value_label):
+            row = QHBoxLayout()
+            row.addWidget(slider, 1)
+            row.addWidget(value_label)
+            return row
+
+        form.addRow(self.tr("Number of Scales:"), _slider_row(self.s_scales, self.lbl_scales_val))
+        form.addRow(self.tr("Coarse Compression:"), _slider_row(self.s_comp, self.lbl_comp_val))
+        form.addRow(self.tr("Mask Gamma:"), _slider_row(self.s_gamma, self.lbl_gamma_val))
+
+        # keep readouts in sync with the sliders (comp/gamma are slider value / 100)
+        self.s_scales.valueChanged.connect(lambda v: self.lbl_scales_val.setText(str(int(v))))
+        self.s_comp.valueChanged.connect(lambda v: self.lbl_comp_val.setText(f"{v / 100.0:.2f}"))
+        self.s_gamma.valueChanged.connect(lambda v: self.lbl_gamma_val.setText(f"{v / 100.0:.2f}"))
+        # initialize the displayed values
+        self.lbl_scales_val.setText(str(int(self.s_scales.value())))
+        self.lbl_comp_val.setText(f"{self.s_comp.value() / 100.0:.2f}")
+        self.lbl_gamma_val.setText(f"{self.s_gamma.value() / 100.0:.2f}")
 
         row = QHBoxLayout()
         self.btn_preview = QPushButton(self.tr("Preview"))
