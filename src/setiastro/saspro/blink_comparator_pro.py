@@ -636,7 +636,12 @@ class MetricsPanel(QWidget):
 
 class MetricsWindow(QWidget):
     def __init__(self, parent=None):
-        super().__init__(parent, Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint)
+        # Plain top-level window — no WindowStaysOnTopHint. That flag forces
+        # the window above EVERY application on the OS, not just SASpro's
+        # main window, which is not what we want. A normal Window flag still
+        # keeps it as its own window (so it won't get hidden inside the MDI
+        # area on macOS), but respects normal OS focus/z-order rules.
+        super().__init__(parent, Qt.WindowType.Window)
         self._thresholds_per_group: dict[str, List[float|None]] = {}
         self.setWindowTitle(self.tr("Frame Metrics"))
         self.resize(800, 600)
@@ -2754,10 +2759,11 @@ class BlinkTab(QWidget):
 
     def show_metrics(self):
         if self.metrics_window is None:
-            self.metrics_window = MetricsWindow()
+            # Parent to BlinkTab so this stays in the same window hierarchy
+            # as Blink — closes/hides along with Blink instead of becoming
+            # its own orphaned top-level window.
+            self.metrics_window = MetricsWindow(parent=self)
             mp = self.metrics_window.metrics_panel
-            mp.pointClicked.connect(self.on_metrics_point)
-            mp.thresholdChanged.connect(self.on_threshold_change)
 
         order = self._tree_order_indices()
         self.metrics_window.set_images(self.loaded_images, order=order)
@@ -3698,6 +3704,21 @@ class BlinkTab(QWidget):
         QTimer.singleShot(0, self._update_zoom_panel_to_viewport_center)
 
     def wheelEvent(self, event: QWheelEvent):
+        # This handler catches wheel events that bubble up to the BlinkTab
+        # widget itself — e.g. when the file tree hits the top/bottom of its
+        # scrollable content and Qt passes the unhandled wheel event to the
+        # parent. Only zoom the preview if the cursor is actually over the
+        # preview's scroll area; otherwise ignore so nothing is zoomed just
+        # because some other widget ran out of room to scroll.
+        try:
+            pos_in_self = event.position().toPoint()
+        except AttributeError:
+            pos_in_self = event.pos()
+
+        if not self.scroll_area.geometry().contains(pos_in_self):
+            event.ignore()
+            return
+
         # Check the vertical delta to determine zoom direction.
         if event.angleDelta().y() > 0:
             self.zoom_in()

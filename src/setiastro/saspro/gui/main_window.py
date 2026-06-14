@@ -4469,13 +4469,15 @@ class AstroSuiteProMainWindow(
 
     def _open_blink_tool(self):
         from setiastro.saspro.blink_comparator_pro import BlinkComparatorPro
-        dlg = BlinkComparatorPro(doc_manager=self.docman)
+        # Parent to the main window: ties the dialog's lifecycle to SASpro
+        # (so it closes when SASpro closes) and lets normal OS window
+        # stacking rules apply. Previously this had no parent AND
+        # WindowStaysOnTopHint, which together made it an orphaned
+        # always-on-top-of-everything window that survived app shutdown.
+        dlg = BlinkComparatorPro(doc_manager=self.docman, parent=self)
         dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         dlg.setWindowTitle("Blink Comparator")
-        dlg.setWindowFlags(
-            Qt.WindowType.Window |
-            Qt.WindowType.WindowStaysOnTopHint
-        )
+        dlg.setWindowFlags(Qt.WindowType.Window)
         try:
             dlg.setWindowIcon(QIcon(blink_path))
         except Exception:

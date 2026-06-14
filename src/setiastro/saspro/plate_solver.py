@@ -1875,10 +1875,50 @@ def _solve_numpy_with_astap(parent, settings, image: np.ndarray, seed_header: He
         _set_status_ui(parent, QCoreApplication.translate("PlateSolver", "Status: ASTAP timed out."))
         return False, QCoreApplication.translate("PlateSolver", "ASTAP timed out.")
 
+    # Always capture ASTAP's full stdout/stderr — print it regardless of exit
+    # code. Note: on Windows, astap.exe is a GUI-subsystem binary and often
+    # writes NOTHING to redirected stdout/stderr even when launched via
+    # QProcess — the real failure information is encoded only in the process
+    # exit code. We decode that here so the console shows the same "F" error
+    # the GUI would display.
+    astap_out = bytes(proc.readAllStandardOutput()).decode(errors="ignore")
+    astap_err = bytes(proc.readAllStandardError()).decode(errors="ignore")
+
+    _ASTAP_EXIT_CODES = {
+        0:  "Solution found.",
+        1:  "No solution found (the field did not match the reference catalog "
+            "within the given search area/scale).",
+        2:  "Not enough stars detected in the image to attempt a solve.",
+        16: "Error reading the image file (unsupported or corrupt FITS).",
+        17: "Error reading the star reference database (catalog files missing "
+            "or not configured in ASTAP).",
+        32: "Not enough memory.",
+        33: "Error writing output files (.wcs/.ini) — check permissions on the "
+            "temp directory.",
+    }
+    exit_code = proc.exitCode()
+    exit_desc = _ASTAP_EXIT_CODES.get(exit_code, "Unknown/undocumented exit code.")
+    print(f"[ASTAP] exit code: {exit_code}  ->  {exit_desc}")
+    if astap_out.strip():
+        print("[ASTAP] STDOUT:\n" + astap_out)
+    if astap_err.strip():
+        print("[ASTAP] STDERR:\n" + astap_err)
+
+    if exit_code != 0:
+        try: os.remove(tmp_fit)
+        except Exception as e:
+            import logging
+            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
+        try:
+            if os.path.exists(sidecar_wcs): os.remove(sidecar_wcs)
+        except Exception as e:
+            import logging
+            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
+        return False, QCoreApplication.translate(
+            "PlateSolver", "ASTAP exit code {0}: {1}"
+        ).format(exit_code, exit_desc)
+
     if proc.exitCode() != 0:
-        out = bytes(proc.readAllStandardOutput()).decode(errors="ignore")
-        err = bytes(proc.readAllStandardError()).decode(errors="ignore")
-        print("ASTAP failed.\nSTDOUT:\n", out, "\nSTDERR:\n", err)
         try: os.remove(tmp_fit)
         except Exception as e:
             import logging
@@ -1889,6 +1929,40 @@ def _solve_numpy_with_astap(parent, settings, image: np.ndarray, seed_header: He
             import logging
             logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
         return False, QCoreApplication.translate("PlateSolver", "ASTAP returned a non-zero exit code.")
+
+    # Even on exit code 0, ASTAP may have failed to find a solution and
+    # simply not written the .wcs sidecar (or written one with no CRVAL/CTYPE).
+    # Treat that case as a failure too, instead of silently returning a
+    # WCS-less header that breaks downstream SFCC/SSSC.
+    if not os.path.exists(sidecar_wcs):
+        print(f"[ASTAP] exit code 0 but no .wcs sidecar was written: {sidecar_wcs}")
+        try: os.remove(tmp_fit)
+        except Exception as e:
+            import logging
+            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
+        return False, QCoreApplication.translate(
+            "PlateSolver",
+            "ASTAP exited normally but did not produce a WCS solution."
+        )
+
+    try:
+        _wcs_check = _parse_astap_wcs_file(sidecar_wcs)
+        if "CRVAL1" not in _wcs_check and "CTYPE1" not in _wcs_check:
+            print(f"[ASTAP] .wcs sidecar exists but has no CRVAL1/CTYPE1: {dict(_wcs_check)}")
+            try: os.remove(tmp_fit)
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
+            try: os.remove(sidecar_wcs)
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
+            return False, QCoreApplication.translate(
+                "PlateSolver",
+                "ASTAP exited normally but the .wcs file contains no solution."
+            )
+    except Exception as e:
+        print(f"[ASTAP] Could not validate .wcs sidecar: {e}")
 
     # >>> THIS is the key change: read the header **directly** from the FITS ASTAP wrote
     try:
