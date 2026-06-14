@@ -2765,6 +2765,12 @@ class BlinkTab(QWidget):
             self.metrics_window = MetricsWindow(parent=self)
             mp = self.metrics_window.metrics_panel
 
+            # Wire metrics interactions back to BlinkTab so clicking a dot
+            # flags/unflags the corresponding frame, and dragging a
+            # threshold line re-evaluates flags for all frames against it.
+            mp.pointClicked.connect(self.on_metrics_point)
+            mp.thresholdChanged.connect(self.on_threshold_change)
+
         order = self._tree_order_indices()
         self.metrics_window.set_images(self.loaded_images, order=order)
 
