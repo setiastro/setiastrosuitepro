@@ -2223,16 +2223,12 @@ def _solve_delta_job(args):
             gray = arr if arr.ndim == 2 else np.mean(arr, axis=2)
             gray = np.nan_to_num(gray, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
 
-        # Fixed 3x downsample for the solve grid, regardless of sensor
-        # resolution. The previous formula targeted a ~1024px long side,
-        # which for high-resolution sensors (e.g. ~5500px long side on a
-        # 26MP camera) produced ds≈5 -> an effective ~1100px solve grid.
-        # On certain meridian-flipped frames that coarse grid let the
-        # solver lock into an offset basin the convergence gate couldn't
-        # detect, producing double stars. A fixed ds=3 keeps the solve
-        # grid proportional to sensor resolution and fine enough to avoid
-        # that failure mode, without exposing a user-tunable downsample.
-        ds = 3
+        # NOTE: `ds` is already provided in args (matches self.solve_downsample,
+        # which was also used to build ref_small_ds/Wref_ds/Href_ds). Previously
+        # this was hardcoded/recomputed here, ignoring the passed-in value and
+        # the user-configured downsample — that override has been removed;
+        # `ds` from args is used as-is below.
+        ds = max(1, int(ds))
 
         # 2) downsample source to DS space
         if ds > 1:
@@ -2527,13 +2523,23 @@ def _finalize_write_job(args):
         (orig_path, align_model, ref_shape, ref_npy_path,
          affine_2x3, h_reproj, output_directory,
          det_sigma, minarea, limit_stars,
-         min_fwhm, max_ellipticity) = args
+         min_fwhm, max_ellipticity, solve_downsample) = args
     except ValueError:
-        # old-format args without hot pixel params
-        (orig_path, align_model, ref_shape, ref_npy_path,
-         affine_2x3, h_reproj, output_directory,
-         det_sigma, minarea, limit_stars) = args
-        min_fwhm, max_ellipticity = 1.2, 0.6
+        try:
+            # format without solve_downsample (default to 3, matching the
+            # previous fixed-ds behavior)
+            (orig_path, align_model, ref_shape, ref_npy_path,
+             affine_2x3, h_reproj, output_directory,
+             det_sigma, minarea, limit_stars,
+             min_fwhm, max_ellipticity) = args
+            solve_downsample = 3
+        except ValueError:
+            # oldest-format args without hot pixel params or solve_downsample
+            (orig_path, align_model, ref_shape, ref_npy_path,
+             affine_2x3, h_reproj, output_directory,
+             det_sigma, minarea, limit_stars) = args
+            min_fwhm, max_ellipticity = 1.2, 0.6
+            solve_downsample = 3
 
     import os
     os.environ.setdefault("OMP_NUM_THREADS", "1")
@@ -2613,8 +2619,10 @@ def _finalize_write_job(args):
         if model != "affine":
             dbg(f"[finalize] base={base} model={model} det_sigma={det_sigma} minarea={minarea} limit_stars={limit_stars}")
 
-            # Fixed 3x downsample — see _solve_delta_job for rationale.
-            ds = 3
+            # Use the same solve-grid downsample factor as the refinement
+            # passes (user-configurable, default 3) so the finalize pass
+            # stays consistent with the deltas it builds on.
+            ds = max(1, int(solve_downsample))
 
             if ds > 1:
                 ref_ds = cv2.resize(ref2d, (max(1, Wref // ds), max(1, Href // ds)), interpolation=cv2.INTER_AREA)
@@ -3498,13 +3506,14 @@ class StarRegistrationThread(QThread):
 
             # ✂️ No DAO/RANSAC: astroalign handles detection internally.
 
-            # --- Build shared ref at full + downsampled solve-res ---
             self.ref_small_full = np.ascontiguousarray(ref2d.astype(np.float32, copy=False))
             print(f"[SRT] run() started, files={len(self.original_files)}, ref={self.reference}")
-            # Fixed 3x downsample for the solve grid — see _solve_delta_job
-            # for rationale (avoids the bimodal lock seen on high-resolution
-            # sensors with the old ~1024px-target formula).
-            ds = 3
+            # Solve grid downsample factor, user-configurable in Stacking
+            # Settings (default 3, stored in self.downsample via align_prefs).
+            # Lower values give a finer solve grid; some high-resolution
+            # sensors need ds=2 to avoid a bimodal registration lock on
+            # meridian-flipped frames.
+            ds = max(1, int(self.downsample))
             self.solve_downsample = ds
 
             if ds > 1 and cv2 is not None:
@@ -3887,6 +3896,7 @@ class StarRegistrationThread(QThread):
                 int(self.limit_stars) if self.limit_stars is not None else None,
                 float(getattr(self, "min_fwhm", 1.2)),
                 float(getattr(self, "max_ellipticity", 0.6)),
+                int(getattr(self, "solve_downsample", 3)),
             ))
         self.progress_update.emit(f"📝 Finalizing aligned outputs with {finalize_workers} processes…")
 
