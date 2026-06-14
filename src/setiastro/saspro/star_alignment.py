@@ -2223,9 +2223,16 @@ def _solve_delta_job(args):
             gray = arr if arr.ndim == 2 else np.mean(arr, axis=2)
             gray = np.nan_to_num(gray, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
 
-        # Compute downsample to target ~1024px on long side
-        long_side = max(gray.shape[0], gray.shape[1])
-        ds = max(1, int(round(long_side / 1024)))
+        # Fixed 3x downsample for the solve grid, regardless of sensor
+        # resolution. The previous formula targeted a ~1024px long side,
+        # which for high-resolution sensors (e.g. ~5500px long side on a
+        # 26MP camera) produced ds≈5 -> an effective ~1100px solve grid.
+        # On certain meridian-flipped frames that coarse grid let the
+        # solver lock into an offset basin the convergence gate couldn't
+        # detect, producing double stars. A fixed ds=3 keeps the solve
+        # grid proportional to sensor resolution and fine enough to avoid
+        # that failure mode, without exposing a user-tunable downsample.
+        ds = 3
 
         # 2) downsample source to DS space
         if ds > 1:
@@ -2606,8 +2613,8 @@ def _finalize_write_job(args):
         if model != "affine":
             dbg(f"[finalize] base={base} model={model} det_sigma={det_sigma} minarea={minarea} limit_stars={limit_stars}")
 
-            long_side = max(ref2d.shape[0], ref2d.shape[1])
-            ds = max(1, int(round(long_side / 1024)))
+            # Fixed 3x downsample — see _solve_delta_job for rationale.
+            ds = 3
 
             if ds > 1:
                 ref_ds = cv2.resize(ref2d, (max(1, Wref // ds), max(1, Href // ds)), interpolation=cv2.INTER_AREA)
@@ -3494,9 +3501,10 @@ class StarRegistrationThread(QThread):
             # --- Build shared ref at full + downsampled solve-res ---
             self.ref_small_full = np.ascontiguousarray(ref2d.astype(np.float32, copy=False))
             print(f"[SRT] run() started, files={len(self.original_files)}, ref={self.reference}")
-            # Always downsample to ~1024px long side — plenty for triangle invariants
-            long_side = max(ref2d.shape[0], ref2d.shape[1])
-            ds = max(1, int(round(long_side / 1024)))
+            # Fixed 3x downsample for the solve grid — see _solve_delta_job
+            # for rationale (avoids the bimodal lock seen on high-resolution
+            # sensors with the old ~1024px-target formula).
+            ds = 3
             self.solve_downsample = ds
 
             if ds > 1 and cv2 is not None:
