@@ -2240,6 +2240,22 @@ class SSSCDialog(QDialog):
                 except Exception:
                     pass
             self.wcs = WCS(hdr, naxis=2, relax=True)
+
+            # Guard against a WCS with no celestial axes (naxis=0). This happens
+            # when the header lacks valid CTYPE1/CTYPE2 RA/DEC keywords — e.g. a
+            # purely linear WCS, or a header with stray WCS-like keywords but no
+            # real plate solution. Calling .all_pix2world() on such a WCS later
+            # raises the cryptic:
+            #   "When providing two arguments, the array must be of shape (N, 0)"
+            # Catch it here and fall through to the existing "no WCS" path instead.
+            _wcs_check = self.wcs.celestial if hasattr(self.wcs, "celestial") else self.wcs
+            if _wcs_check.naxis < 2:
+                print("[SSSC] WCS has no celestial axes (naxis < 2) — "
+                      "header is missing valid CTYPE1/CTYPE2 RA/DEC. "
+                      "Treating as no WCS.")
+                self.wcs = None
+                return
+
             try:
                 psm = self.wcs.pixel_scale_matrix
                 self.pixscale = float(np.hypot(psm[0, 0], psm[1, 0]) * 3600.0)

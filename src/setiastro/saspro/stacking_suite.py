@@ -7145,11 +7145,19 @@ class StackingSuiteDialog(QDialog):
         self.align_max_cp.setValue(self.settings.value("stacking/align/max_cp", 250, type=int))
         disto_form.addRow(self.tr("Max control points:"), self.align_max_cp)
 
-        # Legacy profile compatibility: instantiated but not shown — downsample is now automatic.
-        self.align_downsample = QSpinBox()
-        self.align_downsample.setRange(1, 64)
-        self.align_downsample.setValue(self.settings.value("stacking/align/downsample", 3, type=int))
 
+        self.align_downsample = QSpinBox()
+        self.align_downsample.setRange(1, 8)
+        self.align_downsample.setValue(self.settings.value("stacking/align/downsample", 3, type=int))
+        self.align_downsample.setToolTip(
+            self.tr("Solve grid downsample factor (source size / N).\n"
+            "Default 3 works for most setups. Lower (e.g. 2) gives a finer "
+            "solve grid — try this if you see double stars / a bimodal "
+            "registration error on high-resolution sensors, especially "
+            "with meridian-flipped frames. Higher values are faster but "
+            "coarser.")
+        )
+        disto_form.addRow(self.tr("Solve grid downsample:"), self.align_downsample)
         # Homography / Similarity-specific RANSAC reprojection threshold
         self.h_ransac_reproj = QDoubleSpinBox()
         self.h_ransac_reproj.setRange(0.1, 10.0)

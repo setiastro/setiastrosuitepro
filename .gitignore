@@ -11,6 +11,7 @@ env/
 .env/
 .venv/
 ENV/
+*.code-workspace
 
 # IDE
 .vscode/

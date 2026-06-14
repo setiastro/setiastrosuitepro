@@ -475,9 +475,31 @@ def _to_chw_float32(img: np.ndarray, color_mode: str) -> np.ndarray:
     raise ValueError(f"Unsupported image shape {x.shape}")
 
 def _center_crop_hw(img: np.ndarray, Ht: int, Wt: int) -> np.ndarray:
+    """
+    Center-crop OR center-pad img (H,W,...) to exactly (Ht,Wt) on the first
+    two axes. See _center_crop for why padding (not just cropping) is
+    required: a source frame smaller than the common (Ht,Wt) grid in either
+    axis must be padded, not silently left at its smaller size.
+    """
     h, w = img.shape[:2]
-    y0 = max(0, (h - Ht)//2); x0 = max(0, (w - Wt)//2)
-    return img[y0:y0+Ht, x0:x0+Wt, ...].copy() if (Ht < h or Wt < w) else img
+    if h == Ht and w == Wt:
+        return img
+
+    y0 = max(0, (h - Ht) // 2)
+    x0 = max(0, (w - Wt) // 2)
+    y1 = y0 + min(h, Ht)
+    x1 = x0 + min(w, Wt)
+    cropped = img[y0:y1, x0:x1, ...]
+
+    ch, cw = cropped.shape[:2]
+    if ch == Ht and cw == Wt:
+        return cropped.copy()
+
+    out = np.zeros((Ht, Wt) + img.shape[2:], dtype=img.dtype)
+    oy = (Ht - ch) // 2
+    ox = (Wt - cw) // 2
+    out[oy:oy+ch, ox:ox+cw, ...] = cropped
+    return out
 
 def _stack_loader_memmap(paths: list[str], Ht: int, Wt: int, color_mode: str):
     """
@@ -1104,21 +1126,61 @@ def _common_hw(data_list):
     return int(min(Hs)), int(min(Ws))
 
 def _center_crop(arr, Ht, Wt):
-    """Center-crop arr (H,W) or (C,H,W) to (Ht,Wt)."""
+    """
+    Center-crop OR center-pad arr (H,W) or (C,H,W) to exactly (Ht,Wt).
+
+    Previously this only cropped — if a source frame was SMALLER than the
+    common (Ht,Wt) grid in either dimension (e.g. an aligned/derotated frame
+    that ended up (3670,3670) when the common grid is (3670,5496)), slicing
+    with [:Ht, :Wt] silently returned the smaller source size unchanged,
+    producing a mismatched (3670,3670) array that later failed to broadcast
+    against (3670,5496) arrays mid-solve. Now each axis is cropped if larger
+    than target and zero-padded (centered) if smaller, so the result is
+    ALWAYS exactly (Ht,Wt) or (C,Ht,Wt).
+    """
+    arr = np.asarray(arr)
+
     if arr.ndim == 2:
         H, W = arr.shape
         if H == Ht and W == Wt:
             return arr
+
         y0 = max(0, (H - Ht) // 2)
         x0 = max(0, (W - Wt) // 2)
-        return arr[y0:y0+Ht, x0:x0+Wt]
+        y1 = y0 + min(H, Ht)
+        x1 = x0 + min(W, Wt)
+        cropped = arr[y0:y1, x0:x1]
+
+        ch, cw = cropped.shape
+        if ch == Ht and cw == Wt:
+            return cropped
+
+        out = np.zeros((Ht, Wt), dtype=arr.dtype)
+        oy = (Ht - ch) // 2
+        ox = (Wt - cw) // 2
+        out[oy:oy+ch, ox:ox+cw] = cropped
+        return out
+
     else:
         C, H, W = arr.shape
         if H == Ht and W == Wt:
             return arr
+
         y0 = max(0, (H - Ht) // 2)
         x0 = max(0, (W - Wt) // 2)
-        return arr[:, y0:y0+Ht, x0:x0+Wt]
+        y1 = y0 + min(H, Ht)
+        x1 = x0 + min(W, Wt)
+        cropped = arr[:, y0:y1, x0:x1]
+
+        _, ch, cw = cropped.shape
+        if ch == Ht and cw == Wt:
+            return cropped
+
+        out = np.zeros((C, Ht, Wt), dtype=arr.dtype)
+        oy = (Ht - ch) // 2
+        ox = (Wt - cw) // 2
+        out[:, oy:oy+ch, ox:ox+cw] = cropped
+        return out
 
 def _sanitize_numeric(a):
     """Replace NaN/Inf, clip negatives, make contiguous float32."""
