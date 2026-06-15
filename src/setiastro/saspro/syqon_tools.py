@@ -1052,12 +1052,18 @@ class _SyQonSharpenHubPage(QWidget):
         self.chk_correction.setChecked(bool(self.settings.value("syqon/parallax_correct", True, type=bool)))
         stages_lay.addWidget(self.chk_correction)
  
-        star_lbl = QLabel("Star reduction (0=off, 1–6):", self)
+        star_lbl = QLabel("Star reduction (0=off, 1–10):", self)
         self.spin_star = QSpinBox(self)
-        self.spin_star.setRange(0, 6)
+        self.spin_star.setRange(0, 10)
         self.spin_star.setValue(int(self.settings.value("syqon/parallax_star_level", 3)))
-        self.spin_star.setFixedWidth(52)
-        self.spin_star.setToolTip("0 = disabled, 1–6 = strength")
+        self.spin_star.setFixedWidth(60)
+        self.spin_star.setToolTip(
+            "0 = disabled\n"
+            "1–6 = direct model strength\n"
+            "7–10 = hybrid neural-morphological star reduction (model run at "
+            "safe level 5, plus escalating morphological erosion of flagged "
+            "star cores; 10 = stars nearly removed)"
+        )
         stages_lay.addWidget(star_lbl)
         stages_lay.addWidget(self.spin_star)
         stages_lay.addStretch(1)
@@ -1068,15 +1074,21 @@ class _SyQonSharpenHubPage(QWidget):
         saved_sharpen = float(self.settings.value("syqon/parallax_sharpen_alpha", 0.7))
  
         self.sld_sharpen = QSlider(Qt.Orientation.Horizontal, self)
-        self.sld_sharpen.setRange(0, 100)
+        self.sld_sharpen.setRange(0, 200)
         self.sld_sharpen.setValue(int(round(saved_sharpen * 100.0)))
- 
+
         self.spin_sharpen = QDoubleSpinBox(self)
-        self.spin_sharpen.setRange(0.0, 1.0)
+        self.spin_sharpen.setRange(0.0, 2.0)
         self.spin_sharpen.setSingleStep(0.01)
         self.spin_sharpen.setDecimals(2)
         self.spin_sharpen.setValue(saved_sharpen)
-        self.spin_sharpen.setToolTip("0.0 = off, 1.0 = full sharpen")
+        self.spin_sharpen.setToolTip(
+            "0% = off, 100% = full model-strength sharpen, 200% = double "
+            "strength.\n"
+            "Above 100% extrapolates beyond the model's output (more "
+            "aggressive; higher risk of clipping/halos in highlights and "
+            "shadows — result is still clamped to [0,1])."
+        )
         self.spin_sharpen.setFixedWidth(62)
  
         self._syncing_sharpen = False
@@ -1451,9 +1463,9 @@ class _SyQonParallaxProcessThread(QThread):
         self.x_for_net       = np.asarray(x_for_net, dtype=np.float32)
         self.do_correct      = bool(do_correct)
         self.correction_path = str(correction_path)
-        self.star_level      = int(np.clip(star_level, 0, 6))
+        self.star_level      = int(np.clip(star_level, 0, 10))
         self.star_path       = str(star_path)
-        self.sharpen_alpha   = float(np.clip(sharpen_alpha, 0.0, 1.0))
+        self.sharpen_alpha   = float(np.clip(sharpen_alpha, 0.0, 2.0))
         self.sharpen_path    = str(sharpen_path)
         self.tile            = int(tile)
         self.overlap         = int(overlap)
