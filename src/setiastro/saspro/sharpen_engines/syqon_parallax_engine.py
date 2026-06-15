@@ -100,7 +100,74 @@ def _pad_tile_np(tile: np.ndarray, tile_size: int) -> np.ndarray:
     pad_mode = "reflect" if h > 1 and w > 1 else "edge"
     return np.pad(tile, ((0, pad_h), (0, pad_w), (0, 0)), mode=pad_mode)
 
+# ---------------------------------------------------------------------------
+# Hybrid Neural-Morphological Star Reduction (levels 7-10)
+#
+# For star_level > 6, the model is run ONCE at the safe level=5, then a
+# circular-structuring-element erosion (escalating with level) is blended
+# into regions the level-5 prediction already flagged as stellar via
+# |pred_neural - input|. Ported from SyQon's updated Siril script.
+# ---------------------------------------------------------------------------
 
+def _get_circular_kernel(size: int, device, torch):
+    y, x = torch.meshgrid(
+        torch.linspace(-1, 1, size), torch.linspace(-1, 1, size), indexing="ij"
+    )
+    dist = x ** 2 + y ** 2
+    return (dist <= 1.0).float().to(device)
+
+
+def _erode_circular(img, size: int, torch, F):
+    """Grayscale erosion with a circular structuring element. img: (B,C,H,W)."""
+    kernel = _get_circular_kernel(size, img.device, torch)
+    K = size
+    padding = K // 2
+    B, C, H, W = img.shape
+
+    x = img.reshape(B * C, 1, H, W)
+    patches = F.unfold(x, kernel_size=K, padding=padding)
+
+    k_flat = kernel.reshape(-1, 1)
+    large_val = torch.tensor(999.0, device=patches.device, dtype=patches.dtype)
+    masked_patches = torch.where(k_flat == 1.0, patches, large_val)
+
+    min_vals, _ = torch.min(masked_patches, dim=1)
+    return min_vals.reshape(B, C, H, W)
+
+
+def _hybrid_star_reduction(model, t, level: int, torch, F):
+    """t: (1,3,H,W) float32 in [0,1] (post brightness normalization).
+    Runs model once at safe level=5, then blends in morphological erosion."""
+    safe_lv = torch.tensor([5.0 / 10.0], dtype=torch.float32, device=t.device)
+    pred_neural = model(t, safe_lv)
+
+    diff = torch.abs(pred_neural - t)
+    diff_max, _ = torch.max(diff, dim=1, keepdim=True)
+
+    if level == 7:
+        mask_raw = torch.clamp((diff_max - 0.008) * 30.0, 0.0, 1.0)
+        mask_dilated = F.max_pool2d(mask_raw, kernel_size=3, stride=1, padding=1)
+        mask_smooth = F.avg_pool2d(mask_dilated, kernel_size=3, stride=1, padding=1)
+        eroded = _erode_circular(t, size=3, torch=torch, F=F)
+    elif level == 8:
+        mask_raw = torch.clamp((diff_max - 0.006) * 50.0, 0.0, 1.0)
+        mask_dilated = F.max_pool2d(mask_raw, kernel_size=3, stride=1, padding=1)
+        mask_smooth = F.avg_pool2d(mask_dilated, kernel_size=3, stride=1, padding=1)
+        eroded = _erode_circular(t, size=5, torch=torch, F=F)
+    elif level == 9:
+        mask_raw = torch.clamp((diff_max - 0.005) * 100.0, 0.0, 1.0)
+        mask_dilated = F.max_pool2d(mask_raw, kernel_size=5, stride=1, padding=2)
+        mask_smooth = F.avg_pool2d(mask_dilated, kernel_size=5, stride=1, padding=2)
+        eroded = _erode_circular(_erode_circular(t, size=5, torch=torch, F=F), size=5, torch=torch, F=F)
+    else:  # level == 10
+        mask_raw = torch.clamp((diff_max - 0.003) * 200.0, 0.0, 1.0)
+        mask_dilated = F.max_pool2d(mask_raw, kernel_size=5, stride=1, padding=2)
+        mask_smooth = F.avg_pool2d(mask_dilated, kernel_size=5, stride=1, padding=2)
+        eroded = t
+        for _ in range(5):
+            eroded = _erode_circular(eroded, size=5, torch=torch, F=F)
+
+    return t + mask_smooth * (eroded - t)
 # ---------------------------------------------------------------------------
 # Generic cosine-blend tiled runner (correction + star_reduce)
 # ---------------------------------------------------------------------------
@@ -237,20 +304,29 @@ def parallax_star_reduce_rgb01(
     from setiastro.saspro.runtime_torch import import_torch
     from setiastro.saspro.syqon_parallax_model.model import load_parallax_model
 
-    level  = int(np.clip(level, 1, 6))
+    level  = int(np.clip(level, 1, 10))
+    hybrid = level > 6
     torch  = import_torch(prefer_cuda=use_gpu, prefer_xpu=False, prefer_dml=prefer_dml, status_cb=lambda *_: None)
     device = _infer_device(torch, prefer_cuda=use_gpu, prefer_dml=prefer_dml)
+    F      = torch.nn.functional
 
     model, config = load_parallax_model(ckpt_path, variant="star_reduce")
     model.to(device).eval()
 
-    lv_t = torch.tensor([float(level) / 10.0], dtype=torch.float32, device=device)
+    if hybrid:
+        def _infer(patch_hwc: np.ndarray) -> np.ndarray:
+            t = torch.from_numpy(np.ascontiguousarray(patch_hwc.transpose(2, 0, 1)[None], dtype=np.float32)).to(device)
+            with torch.no_grad():
+                out = _hybrid_star_reduction(model, t, level, torch, F)
+            return out[0].clamp(0.0, 1.0).float().cpu().numpy().transpose(1, 2, 0)
+    else:
+        lv_t = torch.tensor([float(level) / 10.0], dtype=torch.float32, device=device)
 
-    def _infer(patch_hwc: np.ndarray) -> np.ndarray:
-        t = torch.from_numpy(np.ascontiguousarray(patch_hwc.transpose(2, 0, 1)[None], dtype=np.float32)).to(device)
-        with torch.no_grad():
-            out = model(t, lv_t)
-        return out[0].clamp(0.0, 1.0).float().cpu().numpy().transpose(1, 2, 0)
+        def _infer(patch_hwc: np.ndarray) -> np.ndarray:
+            t = torch.from_numpy(np.ascontiguousarray(patch_hwc.transpose(2, 0, 1)[None], dtype=np.float32)).to(device)
+            with torch.no_grad():
+                out = model(t, lv_t)
+            return out[0].clamp(0.0, 1.0).float().cpu().numpy().transpose(1, 2, 0)
 
     result = _run_tiled_cosine(
         _infer, _ensure_rgb(img_rgb01),
@@ -293,7 +369,7 @@ def parallax_sharpen_rgb01(
     from setiastro.saspro.runtime_torch import import_torch
     from setiastro.saspro.syqon_parallax_model.model import load_parallax_model
 
-    alpha  = float(np.clip(alpha, 0.0, 1.0))
+    alpha  = float(np.clip(alpha, 0.0, 2.0))
     img    = _ensure_rgb(img_rgb01)
 
     if alpha == 0.0:
