@@ -10663,6 +10663,31 @@ class StackingSuiteDialog(QDialog):
         self.comet_save_starless_cb.toggled.connect(
             lambda v: self.settings.setValue("stacking/comet/save_starless", bool(v))
         )
+
+        # ─────────────────────────────────────────
+        # Output options row
+        # ─────────────────────────────────────────
+        output_opts_row = QHBoxLayout()
+
+        self.save_rejection_layers_cb = QCheckBox(self.tr("Save rejection layers with master lights"))
+        self.save_rejection_layers_cb.setToolTip(self.tr(
+            "When enabled, master light FITS files are saved as multi-extension FITS (MEF) "
+            "with additional HDUs containing the rejection any-mask, fraction map, and count map.\n"
+            "Disable to save smaller single-HDU FITS files."
+        ))
+        self.save_rejection_layers_cb.setChecked(
+            self.settings.value("stacking/save_rejection_layers", True, type=bool)
+        )
+        self.save_rejection_layers_cb.toggled.connect(
+            lambda v: (
+                self.settings.setValue("stacking/save_rejection_layers", bool(v)),
+                self.settings.sync()
+            )
+        )
+        output_opts_row.addWidget(self.save_rejection_layers_cb)
+        output_opts_row.addStretch(1)
+        layout.addLayout(output_opts_row)
+
         # ─────────────────────────────────────────
         # 8) Backend / Install GPU Acceleration — MOVED BELOW comet+trail row
         # ─────────────────────────────────────────
