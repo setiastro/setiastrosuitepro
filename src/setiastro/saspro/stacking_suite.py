@@ -5625,12 +5625,27 @@ class StackingSuiteDialog(QDialog):
     def restore_saved_master_calibrations(self):
         saved_darks = self.settings.value("stacking/master_darks", [], type=list)
         saved_flats = self.settings.value("stacking/master_flats", [], type=list)
-        print(f"[RESTORE] saved_darks={saved_darks}")
-        print(f"[RESTORE] saved_flats={saved_flats}")
-        if saved_darks:
-            self.add_master_files(self.master_dark_tree, "DARK", saved_darks)
-        if saved_flats:
-            self.add_master_files(self.master_flat_tree, "FLAT", saved_flats)
+
+        valid_darks = [p for p in saved_darks if os.path.exists(p)]
+        valid_flats = [p for p in saved_flats if os.path.exists(p)]
+
+        # Forget any paths that no longer exist
+        for p in saved_darks:
+            if p not in valid_darks:
+                self.update_status(self.tr(f"⚠️ Master dark no longer found, forgetting: {p}"))
+        for p in saved_flats:
+            if p not in valid_flats:
+                self.update_status(self.tr(f"⚠️ Master flat no longer found, forgetting: {p}"))
+
+        if valid_darks != saved_darks:
+            self.settings.setValue("stacking/master_darks", valid_darks)
+        if valid_flats != saved_flats:
+            self.settings.setValue("stacking/master_flats", valid_flats)
+
+        if valid_darks:
+            self.add_master_files(self.master_dark_tree, "DARK", valid_darks)
+        if valid_flats:
+            self.add_master_files(self.master_flat_tree, "FLAT", valid_flats)
 
     def _quick_build_master_dark(self):
         self.create_master_dark()
