@@ -779,23 +779,32 @@ class MarkerLayer(QGraphicsItem):
         except RuntimeError:
             pass
 
-
     def paint(self, p: QPainter, option, widget):
         vr = option.exposedRect.adjusted(-self._cell, -self._cell, self._cell, self._cell)
         c = self._cell
 
-        p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
-        base_pen = QPen()
-        base_pen.setCosmetic(True)
-        base_pen.setWidth(1)
-
-        r = self._radius
         show_names = self._show_names()
         style = self._style()
         selected_name = self._selected_name()
 
-        gx0, gy0 = int(max(0, int(vr.left() // c))),  int(max(0, int(vr.top() // c)))
-        gx1, gy1 = int(int(vr.right() // c)),         int(int(vr.bottom() // c))
+        # Extract current scene→device scale so we can draw in screen pixels
+        t = p.transform()
+        # Average of x and y scale factors
+        scene_scale = (abs(t.m11()) + abs(t.m22())) / 2.0
+        if scene_scale < 1e-9:
+            scene_scale = 1.0
+
+        # Fixed screen-space radius in pixels
+        FIXED_SCREEN_R = 6.0
+
+        base_pen = QPen()
+        base_pen.setCosmetic(True)
+        base_pen.setWidth(1)
+
+        gx0 = int(max(0, int(vr.left()  // c)))
+        gy0 = int(max(0, int(vr.top()   // c)))
+        gx1 = int(int(vr.right()  // c))
+        gy1 = int(int(vr.bottom() // c))
 
         for gy in range(gy0, gy1 + 1):
             for gx in range(gx0, gx1 + 1):
@@ -804,29 +813,42 @@ class MarkerLayer(QGraphicsItem):
                     if not vr.contains(QPointF(x, y)):
                         continue
 
-                    # pick color: green if selected, else per-point color, else fallback
-                    col = QColor(0, 255, 0) if selected_name and pt.get("name") == selected_name \
-                          else pt.get("color", self._color())
+                    col = (QColor(0, 255, 0)
+                        if selected_name and pt.get("name") == selected_name
+                        else pt.get("color", self._color()))
                     base_pen.setColor(col)
                     p.setPen(base_pen)
 
+                    radius_px = pt.get("radius_px")  # scene-space radius, or None
 
-                    if style == "Crosshair":
-                        # use QLineF to avoid int casting everywhere
-                        p.drawLine(QLineF(x - r, y,     x + r, y))
-                        p.drawLine(QLineF(x,     y - r, x,     y + r))
-                    else:
+                    if radius_px is not None and radius_px > 0:
+                        # Draw a circle scaled to the object's actual angular size
+                        # radius_px is in scene/image pixels → already correct for QPainter scene coords
+                        min_r = FIXED_SCREEN_R / scene_scale  # don't go smaller than fixed size
+                        r = max(radius_px, min_r)
+                        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
                         p.drawEllipse(QPointF(x, y), r, r)
+                        p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+                    else:
+                        # Fixed screen-space size: convert screen pixels → scene units
+                        r = FIXED_SCREEN_R / scene_scale
+
+                        if style == "Crosshair":
+                            p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+                            p.drawLine(QLineF(x - r, y,     x + r, y))
+                            p.drawLine(QLineF(x,     y - r, x,     y + r))
+                        else:
+                            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+                            p.drawEllipse(QPointF(x, y), r, r)
+                            p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
 
                     if show_names and pt.get("name"):
                         text_pen = QPen(QColor(255, 255, 255))
                         text_pen.setCosmetic(True)
                         p.setPen(text_pen)
-                        name_str = str(pt["name"])  # make sure it’s a plain str
-                        # either cast to ints...
-                        p.drawText(int(x + r + 2), int(y - r - 2), name_str)
-                        # ...or equivalently:
-                        # p.drawText(QPointF(x + r + 2, y - r - 2), name_str)
+                        # Offset name label by fixed screen amount
+                        label_offset = (FIXED_SCREEN_R + 2.0) / scene_scale
+                        p.drawText(QPointF(x + label_offset, y - label_offset), str(pt["name"]))
                         p.setPen(base_pen)
 
 def _qt_is_alive(obj) -> bool:
@@ -1526,9 +1548,44 @@ class CustomGraphicsView(QGraphicsView):
             if not xy: continue
             x, y = xy
             if x is None or y is None: continue
-            pts.append({"x": float(x), "y": float(y),
-                        "name": obj.get("name"),
-                        "color": obj.get("color", QColor(255,255,255))})
+
+            radius_px = None
+            diam = obj.get("diameter")
+            unit = obj.get("diameter_unit", "arcmin")  # default arcmin for legacy entries
+
+            if diam not in (None, "N/A", "", "--"):
+                try:
+                    diam_val = float(diam)
+                    if diam_val > 0 and self.pixscale and self.pixscale > 0:
+                        # Convert to arcsec
+                        if unit == "arcmin":
+                            diam_arcsec = diam_val * 60.0
+                        elif unit == "arcsec":
+                            diam_arcsec = diam_val
+                        elif unit == "deg":
+                            diam_arcsec = diam_val * 3600.0
+                        else:
+                            diam_arcsec = diam_val * 60.0  # assume arcmin
+
+                        radius_px = (diam_arcsec / self.pixscale) / 2.0
+
+                        # Sanity clamp: don't draw circles larger than the image
+                        # or smaller than 2 scene pixels (those just use fixed size)
+                        if self.main_image:
+                            max_r = max(self.main_image.width(), self.main_image.height()) * 0.5
+                            if radius_px > max_r:
+                                radius_px = None  # too big to be meaningful, use fixed
+                        if radius_px is not None and radius_px < 2.0:
+                            radius_px = None  # too small, use fixed marker
+                except (ValueError, TypeError):
+                    radius_px = None
+
+            pts.append({
+                "x": float(x), "y": float(y),
+                "name": obj.get("name"),
+                "color": obj.get("color", QColor(255, 255, 255)),
+                "radius_px": radius_px,
+            })
         try:
             self._marker_layer.set_points(pts)
         except RuntimeError:
@@ -3878,27 +3935,6 @@ class WIMIDialog(QDialog):
         return self._selected_name
 
     def _set_marker_points_from_results(self):
-        if self._marker_layer is None or self.wcs is None:
-            return
-        pts = []
-        for obj in self.results:
-            ra, dec = obj.get('ra'), obj.get('dec')
-            if ra is None or dec is None:
-                continue
-            x, y = self.calculate_pixel_from_ra_dec(ra, dec)
-            if x is None or y is None:
-                continue
-            name_val = obj.get("name")
-            if not name_val:
-                name_val = obj.get("Name")  # fallback if key differs
-            pts.append({
-                "x": x, "y": y,
-                "name": str(name_val or ""),
-                "color": obj.get("color")
-            })
-        self._marker_layer.set_points(pts)
-
-    def _set_marker_points_from_results(self):
         self._ensure_marker_layer()
         if not _qt_is_alive(self._marker_layer):
             return
@@ -3909,9 +3945,25 @@ class WIMIDialog(QDialog):
             if not xy: continue
             x, y = xy
             if x is None or y is None: continue
-            pts.append({"x": float(x), "y": float(y),
-                        "name": obj.get("name"),
-                        "color": obj.get("color", QColor(255,255,255))})
+
+            # Compute angular size radius in pixels if available
+            radius_px = None
+            diam = obj.get("diameter")
+            if diam not in (None, "N/A", "", "--"):
+                try:
+                    diam_arcmin = float(diam)  # galdim_majaxis is in arcmin
+                    if diam_arcmin > 0 and self.pixscale and self.pixscale > 0:
+                        diam_arcsec = diam_arcmin * 60.0
+                        radius_px = (diam_arcsec / self.pixscale) / 2.0
+                except (ValueError, TypeError):
+                    radius_px = None
+
+            pts.append({
+                "x": float(x), "y": float(y),
+                "name": obj.get("name"),
+                "color": obj.get("color", QColor(255, 255, 255)),
+                "radius_px": radius_px,  # None = use fixed screen size
+            })
         try:
             self._marker_layer.set_points(pts)
         except RuntimeError:
@@ -4232,11 +4284,11 @@ class WIMIDialog(QDialog):
         if self.image_data.ndim == 2:
             # Call stretch_mono_image if the image is mono
 
-            stretched_image = stretch_mono_image(self.image_data, target_median=0.25, normalize=True)
+            stretched_image = stretch_mono_image(self.image_data, target_median=0.25, normalize=True, no_black_clip=True)
         else:
             # Call stretch_color_image if the image is color
 
-            stretched_image = stretch_color_image(self.image_data, target_median=0.25, linked=True, normalize=True)
+            stretched_image = stretch_color_image(self.image_data, target_median=0.25, linked=False, normalize=True, no_black_clip=True)
         
         # If the AutoStretch is toggled off (using the same button), restore the original image
         if self.auto_stretch_button.text() == "AutoStretch":
@@ -7915,7 +7967,8 @@ class WIMIDialog(QDialog):
         query = f"""
             SELECT TOP {max_results}
                 ra, dec, main_id,
-                rvz_redshift, otype, galdim_majaxis
+                rvz_redshift, otype, galdim_majaxis, galdim_minaxis,
+                galdim_angle
             FROM basic
             WHERE CONTAINS(
                 POINT('ICRS', basic.ra, basic.dec),
@@ -8028,7 +8081,13 @@ class WIMIDialog(QDialog):
 
             # basics
             ra, dec = float(row["ra"]), float(row["dec"])
-            diam     = row.get("galdim_majaxis", "N/A")
+            diam_raw = row.get("galdim_majaxis")  # arcmin, may be masked
+            diam_arcmin = _mask_safe_float(diam_raw)
+
+            # For nebulae SIMBAD sometimes has nothing in galdim_majaxis.
+            # The otype can tell us to expect a size even when it's missing.
+            # We store in arcmin consistently; _set_marker_points_from_results converts.
+            diam = diam_arcmin if diam_arcmin is not None else "N/A"
 
             rz_raw   = row["rvz_redshift"]
             red_z    = _mask_safe_float(rz_raw)  # ← no warning, None if masked
@@ -8062,9 +8121,19 @@ class WIMIDialog(QDialog):
             long_type = otype_long_name_lookup.get(short_type, short_type)
 
             # add to tree
+            # Human-readable diameter display
+            if diam_arcmin is not None:
+                if diam_arcmin >= 1.0:
+                    diam_display = f"{diam_arcmin:.2f}'"
+                else:
+                    diam_display = f"{diam_arcmin * 60.0:.1f}\""
+            else:
+                diam_display = "N/A"
+
             item = QTreeWidgetItem([
                 f"{ra:.6f}", f"{dec:.6f}", name,
-                str(diam), short_type, long_type,
+                diam_display,
+                short_type, long_type,
                 f"{red_val:.6f}" if isinstance(red_val, (int, float)) else str(red_val),
                 f"{distance:.6f}" if isinstance(distance, float) else str(distance)
             ])
@@ -8072,7 +8141,8 @@ class WIMIDialog(QDialog):
 
             query_results.append({
                 'ra': ra, 'dec': dec, 'name': name,
-                'diameter': diam,
+                'diameter': diam,           # arcmin float or "N/A"
+                'diameter_unit': 'arcmin',  # explicit so downstream code is unambiguous
                 'short_type': short_type,
                 'long_type': long_type,
                 'redshift': red_val,
