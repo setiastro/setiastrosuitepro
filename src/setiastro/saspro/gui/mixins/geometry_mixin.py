@@ -508,22 +508,32 @@ class GeometryMixin:
     """
 
     def _apply_geom_with_wcs(self, doc, out_image: np.ndarray,
-                              M_src_to_dst: np.ndarray | None,
-                              step_name: str):
-        """
-        Apply a geometry transform to `doc` and update WCS (if present)
-        using the same machinery as crop (update_wcs_after_crop).
-        
-        Args:
-            doc: Document to apply transform to
-            out_image: Transformed image array
-            M_src_to_dst: 3x3 transformation matrix (source to destination)
-            step_name: Name of the operation for history
-        """
+                            M_src_to_dst: np.ndarray | None,
+                            step_name: str):
         out_h, out_w = out_image.shape[:2]
         meta = dict(getattr(doc, "metadata", {}) or {})
 
+        # Only attempt WCS update if there is a real celestial WCS present
+        should_update_wcs = False
         if update_wcs_after_crop is not None and M_src_to_dst is not None:
+            wcs_obj = meta.get("wcs")
+            if wcs_obj is not None:
+                try:
+                    from astropy.wcs import WCS as _WCS
+                    if isinstance(wcs_obj, _WCS) and wcs_obj.has_celestial:
+                        # Sanity check: CRVAL must be valid sky coords
+                        crval = getattr(wcs_obj.wcs, "crval", None)
+                        if (crval is not None and len(crval) >= 2
+                                and -360.0 <= float(crval[0]) <= 360.0
+                                and -90.0  <= float(crval[1]) <= 90.0):
+                            should_update_wcs = True
+                        else:
+                            print(f"[WCS-GEOM] Skipping WCS update for {step_name}: "
+                                f"CRVAL {crval} is not valid sky coordinates.")
+                except Exception as e:
+                    print(f"[WCS-GEOM] WCS validation failed for {step_name}: {e}")
+
+        if should_update_wcs:
             try:
                 meta = update_wcs_after_crop(
                     meta,
@@ -553,15 +563,13 @@ class GeometryMixin:
                 except Exception:
                     pass
 
-        # If WCS was successfully refit, update_wcs_after_crop
-        # will have stashed a '__wcs_debug__' payload in metadata.
         dbg = meta.get("__wcs_debug__")
         if isinstance(dbg, dict):
             try:
                 self._show_wcs_update_popup(dbg, step_name=step_name)
             except Exception as e:
                 print(f"[WCS-GEOM] Failed to show WCS popup for {step_name}: {e}")
-
+                
     def _exec_geom_invert(self):
         """Execute invert operation on active view."""
         sw = self.mdi.activeSubWindow() if hasattr(self, "mdi") else None

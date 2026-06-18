@@ -438,16 +438,20 @@ def update_wcs_after_crop(metadata: dict, M_src_to_dst: np.ndarray, out_w: int, 
 
     # ------------------------------------------------------------------
     # 10) Write back to metadata
-    #     IMPORTANT: also update metadata["wcs"] with the NEW live object
-    #     so RA/Dec lookups don't use stale pre-transform coordinates.
     # ------------------------------------------------------------------
     out_meta = dict(metadata)
     out_meta["original_header"] = new_hdr
 
-    # Update the live WCS object — this is what SIMBAD queries and coordinate
-    # lookups use directly. Without this, they use the pre-crop WCS.
+    # Update the live WCS object
     try:
         out_meta["wcs"] = w_new
+    except Exception:
+        pass
+
+    # ← ADD THIS: update wcs_header to match the new WCS
+    # Without this, coordinate lookups use the stale pre-transform wcs_header
+    try:
+        out_meta["wcs_header"] = w_new.to_header(relax=True)
     except Exception:
         pass
 

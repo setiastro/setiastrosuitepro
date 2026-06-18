@@ -703,32 +703,47 @@ def _float01(arr: np.ndarray) -> np.ndarray:
 
 def _normalize_for_astap(img: np.ndarray) -> np.ndarray:
     """
-    Use migrated stretch functions when available.
+    Normalize image to [0,1] float32 and apply stretch for star visibility.
+    For integer arrays: divide by dtype max.
+    For float arrays: min-max normalize (handles raw ADU values outside [0,1]).
     Returns float32 in [0,1], 2D for mono or 3D for color.
-    Guaranteed to return something usable even if stretch funcs fail.
     """
-    f01 = _float01(img)
+    a = np.asarray(img, dtype=np.float32)
+
+    # Normalize to [0,1] — handle both int-origin and float-ADU inputs
+    if img.dtype.kind in "ui":
+        info = np.iinfo(img.dtype)
+        if info.max > 0:
+            a = a / float(info.max)
+    else:
+        # Float array — may be raw ADU (e.g. 772–12913), not [0,1]
+        mn, mx = float(a.min()), float(a.max())
+        if mx > mn:
+            a = (a - mn) / (mx - mn)
+        else:
+            a = np.zeros_like(a)
+
+    a = np.clip(a, 0.0, 1.0)
 
     # Mono
-    if f01.ndim == 2 or (f01.ndim == 3 and f01.shape[2] == 1):
+    if a.ndim == 2 or (a.ndim == 3 and a.shape[2] == 1):
         if stretch_mono_image is not None:
             try:
-                out = stretch_mono_image(f01, 0.1, False, no_black_clip=True)
+                out = stretch_mono_image(a, 0.1, False, no_black_clip=True)
                 return np.clip(out.astype(np.float32), 0.0, 1.0)
             except Exception as e:
                 print("DEBUG mono stretch failed, fallback:", e)
-        return np.clip(f01.astype(np.float32), 0.0, 1.0)
+        return a.astype(np.float32)
 
     # Color
     if stretch_color_image is not None:
         try:
-            out = stretch_color_image(f01, 0.1, False, False, no_black_clip=True)
+            out = stretch_color_image(a, 0.1, False, False, no_black_clip=True)
             return np.clip(out.astype(np.float32), 0.0, 1.0)
         except Exception as e:
             print("DEBUG color stretch failed, fallback:", e)
 
-    return np.clip(f01.astype(np.float32), 0.0, 1.0)
-
+    return a.astype(np.float32)
 
 def _first_float(v):
     if v is None: return None
@@ -1542,7 +1557,17 @@ def _solve_numpy_with_fallback(
     err2 = str(res2) if res2 is not None else "unknown error"
     print(f"[PlateSolver] Pass 2 (ASTAP blind) failed: {err2}")
  
-    # ── Pass 3: Astrometry.net ───────────────────────────────────────────────
+    # ── Pass 3: Vizier ───────────────────────────────────────────────────────
+    if pref != "astap_only":
+        ok3, res3 = _solve_with_vizier(image, seed_header, parent=parent)
+        if ok3:
+            # res3 is a WCS object — convert to header and merge
+            wcs_hdr = res3.to_header(relax=True)
+            acq_base = _strip_wcs_keys(seed_header.copy()) if isinstance(seed_header, Header) else None
+            return True, _merge_wcs_into_base_header(acq_base, _as_header(wcs_hdr))
+        print(f"[PlateSolver] Pass 3 (Vizier) failed: {res3}")
+
+    # ── Pass 4: Astrometry.net ───────────────────────────────────────────────
     if pref == "astap_only":
         _set_status_ui(
             parent,
@@ -1786,7 +1811,87 @@ def _to_gray2d_unit(arr: np.ndarray) -> np.ndarray:
     # last resort: collapse to (H, W)
     return a.reshape(a.shape[0], -1).astype(np.float32)
 
+def _make_seed_wcs(ra_deg, dec_deg, scale_arcsec, img_w, img_h):
+    from astropy.wcs import WCS
+    w = WCS(naxis=2)
+    w.wcs.crpix = [img_w / 2, img_h / 2]
+    w.wcs.crval = [ra_deg, dec_deg]
+    w.wcs.cdelt = [-scale_arcsec / 3600.0, scale_arcsec / 3600.0]
+    w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+    return w
 
+def _solve_with_vizier(image, seed_header, parent=None):
+    from astroquery.vizier import Vizier
+    from astropy.coordinates import SkyCoord
+    from astropy.wcs.utils import fit_wcs_from_points
+    import astropy.units as u
+
+    ra  = _parse_ra_deg(seed_header)
+    dec = _parse_dec_deg(seed_header)
+    scale = _estimate_scale_arcsec_from_header(seed_header)
+    if ra is None or dec is None or scale is None:
+        return False, "Vizier solver needs RA/Dec/scale seed"
+
+    img_h, img_w = image.shape[:2]
+    fov_deg = (max(img_h, img_w) * scale) / 3600.0
+
+    # Query Gaia DR3 bright stars
+    center = SkyCoord(ra=ra*u.deg, dec=dec*u.deg)
+    v = Vizier(columns=["RA_ICRS", "DE_ICRS", "Gmag"], row_limit=500)
+    result = v.query_region(center, radius=fov_deg*0.75*u.deg,
+                            catalog="I/355/gaiadr3")
+    if not result:
+        return False, "Vizier returned no catalog stars"
+
+    cat = result[0]
+    cat = cat[cat["Gmag"] < 18.0]  # limit to bright enough stars
+    if len(cat) < 10:
+        return False, f"Only {len(cat)} catalog stars — too few"
+
+    # Project catalog to pixel space using seed WCS
+    seed_wcs = _make_seed_wcs(ra, dec, scale, img_w, img_h)
+    cat_sky = SkyCoord(ra=cat["RA_ICRS"], dec=cat["DE_ICRS"], unit="deg")
+    cat_xy = np.array(seed_wcs.world_to_pixel(cat_sky)).T  # (N, 2)
+
+    # Keep only catalog stars that project inside the image
+    in_bounds = ((cat_xy[:,0] >= 0) & (cat_xy[:,0] < img_w) &
+                 (cat_xy[:,1] >= 0) & (cat_xy[:,1] < img_h))
+    cat_xy = cat_xy[in_bounds]
+    cat_sky_in = cat_sky[in_bounds]
+    if len(cat_xy) < 10:
+        return False, "Too few catalog stars project inside image"
+
+    # Detect stars in image
+    gray = _to_gray2d_unit(_normalize_for_astap(image))
+    img_stars = _detect_stars_uniform(gray, det_sigma=12.0, minarea=5,
+                                      grid=(4,4), max_per_cell=30, max_total=300)
+    if len(img_stars) < 10:
+        return False, "Too few stars detected in image"
+
+    # Match: image stars ↔ catalog pixel positions via astroalign
+    from setiastro.saspro import astroalign
+    try:
+        tform, (img_matched, cat_matched_xy) = astroalign.find_transform(
+            img_stars, cat_xy, max_control_points=100
+        )
+    except Exception as e:
+        return False, f"Vizier: astroalign match failed: {e}"
+
+    # Map matched catalog pixels back to sky coords via the seed WCS
+    matched_sky = seed_wcs.pixel_to_world(cat_matched_xy[:,0], cat_matched_xy[:,1])
+
+    # Fit final WCS
+    try:
+        wcs_solution = fit_wcs_from_points(
+            (img_matched[:,0], img_matched[:,1]),
+            matched_sky,
+            projection='TAN',
+            proj_point='center'
+        )
+    except Exception as e:
+        return False, f"Vizier: WCS fit failed: {e}"
+
+    return True, wcs_solution
 # ---------------------------------------------------------------------
 # Core ASTAP solving for a numpy image + seed header
 # ---------------------------------------------------------------------
@@ -1803,7 +1908,12 @@ def _solve_numpy_with_astap(parent, settings, image: np.ndarray, seed_header: He
     norm = _normalize_for_astap(image)
     #gray = _to_gray2d_unit(image)
     gray = _to_gray2d_unit(norm)
-
+    # Safety clamp — ensure gray is strictly [0,1] before writing temp FITS
+    # regardless of what normalization path was taken above
+    mn, mx = float(gray.min()), float(gray.max())
+    if mx > mn:
+        gray = ((gray - mn) / (mx - mn)).astype(np.float32)
+    gray = np.clip(gray, 0.0, 1.0).astype(np.float32)
     # build a clean temp header (strip old WCS but KEEP acquisition keys)
     if isinstance(seed_header, Header):
         clean_for_temp = _strip_wcs_keys(seed_header)
