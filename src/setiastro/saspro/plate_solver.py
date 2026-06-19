@@ -32,7 +32,6 @@ except Exception:
     stretch_mono_image = None
     stretch_color_image = None
 
-
 _NONFITS_META_KEYS = {
     "FILE_PATH",
     "FITS_HEADER",
@@ -1127,8 +1126,12 @@ def _get_astap_fov_value(settings) -> float:
         return 0.0
 
 def _get_solver_preference(settings) -> str:
-    """Returns 'both', 'astap_only', or 'astrometry_only'."""
-    return (settings.value("plate_solver/preference", "both", type=str) or "both").lower()
+    val = (settings.value("plate_solver/preference", "both", type=str) or "both").lower()
+    # migrate old vizier_only key to GAIA_only
+    if val == "vizier_only":
+        settings.setValue("plate_solver/preference", "gaia_only")
+        return "gaia_only"
+    return val
 
 def _set_solver_preference(settings, pref: str):
     settings.setValue("plate_solver/preference", (pref or "both").lower())
@@ -1421,69 +1424,96 @@ def _solve_numpy_with_fallback(
     parent, settings, image: np.ndarray, seed_header
 ) -> tuple[bool, "Header | str"]:
     """
-    Three-pass solve strategy:
- 
-    Pass 1 — ASTAP seeded (auto from header, -r 179, compute FOV from scale).
+    Four-pass solve strategy:
+
+    Pass 1 — In-House Gaia DR3 (Hough matching against local Gaia catalog).
+              Fast, no external process, handles rotation/scale variants.
+
+    Pass 2 — ASTAP seeded (auto from header, compute FOV from scale).
               Fast when header has good RA/Dec.
- 
-    Pass 2 — ASTAP blind (-r 179, -fov 0, -z 0, no RA/Dec seed).
+
+    Pass 3 — ASTAP blind (-r 179, -fov 0, -z 0, no RA/Dec seed).
               Slower but handles completely wrong or missing coordinates.
- 
-    Pass 3 — Astrometry.net (local solve-field if configured, then web API).
-              Last resort for fields ASTAP can't solve.
+
+    Pass 4 — Astrometry.net (local solve-field if configured, then web API).
+              Last resort for fields nothing else can solve.
     """
     from astropy.io.fits import Header
     pref = _get_solver_preference(settings)
+    print(f"[PlateSolver] pref='{pref}'")
 
-    # Astrometry.net only — skip ASTAP entirely
+    # ── Astrometry.net only ──────────────────────────────────────────────────
     if pref == "astrometry_only":
-        _set_status_ui(
-            parent,
-            QCoreApplication.translate("PlateSolver",
-                "Status: Solver preference = Astrometry.net only…")
-        )
+        _set_status_ui(parent, QCoreApplication.translate("PlateSolver",
+            "Status: Solver preference = Astrometry.net only…"))
         return _solve_numpy_with_astrometry(parent, settings, image, seed_header)
 
-    # ASTAP only — run seeded then blind, never fall through to Astrometry.net
-    if pref == "astap_only":
-        # reuse the same seeded/blind logic but stop before Pass 3
-        # we'll handle this with a flag checked before Pass 3
-        pass
-    # Save original settings to restore after each pass
+    # ── Gaia DR3 only ────────────────────────────────────────────────────────
+    if pref in ("gaia_only", "vizier_only"):
+        _set_status_ui(parent, QCoreApplication.translate("PlateSolver",
+            "Status: Solver preference = In-House Gaia DR3 only…"))
+        ok, res = _solve_with_GAIA(image, seed_header, parent=parent)
+        if ok:
+            _set_status_ui(parent, QCoreApplication.translate("PlateSolver",
+                "Status: Solved via in-house Gaia DR3."))
+        else:
+            _set_status_ui(parent, QCoreApplication.translate("PlateSolver",
+                "Status: In-house Gaia DR3 failed: {0}").format(str(res)))
+        return ok, res
+
+    # ── Pass 1: In-House Gaia DR3 ────────────────────────────────────────────
+    if pref not in ("astap_only",):
+        _set_status_ui(parent, QCoreApplication.translate("PlateSolver",
+            "Status: Trying in-house Gaia DR3 solver…"))
+        QApplication.processEvents()
+
+        ok1, res1 = _solve_with_GAIA(image, seed_header, parent=parent)
+        if ok1:
+            _set_status_ui(parent, QCoreApplication.translate("PlateSolver",
+                "Status: Solved via in-house Gaia DR3."))
+            return True, res1
+
+        err1 = str(res1)
+        print(f"[PlateSolver] Pass 1 (Gaia DR3) failed: {err1}")
+    else:
+        err1 = "skipped (ASTAP only)"
+        print(f"[PlateSolver] Pass 1 skipped — {err1}")
+
+    # ── ASTAP only early exit after Gaia fails ───────────────────────────────
+    # (still runs ASTAP passes below, just won't fall through to Astrometry.net)
+
+    # ── Save original settings to restore after each ASTAP pass ─────────────
     _orig_radius_mode = settings.value("astap/seed_radius_mode", "auto",    type=str)
     _orig_radius_val  = settings.value("astap/seed_radius_value", 5.0,      type=float)
     _orig_fov_mode    = settings.value("astap/seed_fov_mode",    "compute", type=str)
     _orig_fov_val     = settings.value("astap/seed_fov_value",    0.0,      type=float)
     _orig_seed_mode   = settings.value("astap/seed_mode",        "auto",    type=str)
- 
+
     def _restore():
         settings.setValue("astap/seed_radius_mode",  _orig_radius_mode)
         settings.setValue("astap/seed_radius_value",  _orig_radius_val)
         settings.setValue("astap/seed_fov_mode",      _orig_fov_mode)
         settings.setValue("astap/seed_fov_value",     _orig_fov_val)
-        settings.setValue("astap/seed_mode",           _orig_seed_mode)
- 
-    # ── Determine if we actually have useful seed data ───────────────────────
+        settings.setValue("astap/seed_mode",          _orig_seed_mode)
+
+    # ── Determine if we have useful seed data ────────────────────────────────
     _has_seed = False
     if isinstance(seed_header, Header):
         ra  = _parse_ra_deg(seed_header)
         dec = _parse_dec_deg(seed_header)
         _has_seed = (ra is not None and dec is not None)
 
-    # ── Pass 1: ASTAP seeded (only if we actually have RA/Dec) ───────────────
+    # ── Pass 2: ASTAP seeded ─────────────────────────────────────────────────
     if _has_seed:
         _r_display = "auto" if _orig_radius_mode == "auto" else f"{_orig_radius_val}°"
-        _set_status_ui(
-            parent,
-            QCoreApplication.translate("PlateSolver",
-                "Status: ASTAP solving (seeded from header, r={0})…").format(_r_display)
-        )
+        _set_status_ui(parent, QCoreApplication.translate("PlateSolver",
+            "Status: ASTAP solving (seeded from header, r={0})…").format(_r_display))
 
-        _pass1_scale = None
-        _pass1_fov   = None
+        _pass2_scale = None
+        _pass2_fov   = None
         if isinstance(seed_header, Header):
-            _pass1_scale = _estimate_scale_arcsec_from_header(seed_header)
-            if _pass1_scale is not None:
+            _pass2_scale = _estimate_scale_arcsec_from_header(seed_header)
+            if _pass2_scale is not None:
                 H_img = int(image.shape[0]) if image.ndim >= 2 else 0
                 if H_img > 0:
                     naxis2 = seed_header.get("NAXIS2", None)
@@ -1493,116 +1523,86 @@ def _solve_numpy_with_fallback(
                     except (TypeError, ValueError):
                         bin_factor = 1
                     H_effective = H_img * bin_factor
-                    _pass1_fov = (H_effective * _pass1_scale) / 3600.0
-                    print(f"[PlateSolver] Pass 1: H_img={H_img}  H_full(hdr)={H_effective}  bin_factor={bin_factor}")
+                    _pass2_fov = (H_effective * _pass2_scale) / 3600.0
+                    print(f"[PlateSolver] Pass 2: H_img={H_img}  H_full(hdr)={H_effective}  bin_factor={bin_factor}")
 
-        settings.setValue("astap/seed_mode",          "auto")
-        # radius: respect user dialog choice — don't override it for Pass 1
-        if _pass1_fov is not None and _pass1_fov > 0:
+        settings.setValue("astap/seed_mode", "auto")
+        if _pass2_fov is not None and _pass2_fov > 0:
             settings.setValue("astap/seed_fov_mode",  "value")
-            settings.setValue("astap/seed_fov_value",  _pass1_fov)
-            print(f"[PlateSolver] Pass 1: scale={_pass1_scale:.3f}\"/px  fov={_pass1_fov:.4f}°  r={_orig_radius_mode}/{_orig_radius_val}")
+            settings.setValue("astap/seed_fov_value",  _pass2_fov)
+            print(f"[PlateSolver] Pass 2: scale={_pass2_scale:.3f}\"/px  fov={_pass2_fov:.4f}°  r={_orig_radius_mode}/{_orig_radius_val}")
         else:
             settings.setValue("astap/seed_fov_mode",  "auto")
             settings.setValue("astap/seed_fov_value",  0.0)
-            print(f"[PlateSolver] Pass 1: no scale in header, fov=auto  r={_orig_radius_mode}/{_orig_radius_val}")
+            print(f"[PlateSolver] Pass 2: no scale in header, fov=auto  r={_orig_radius_mode}/{_orig_radius_val}")
 
         try:
-            ok, res = _solve_numpy_with_astap(parent, settings, image, seed_header)
+            ok2, res2 = _solve_numpy_with_astap(parent, settings, image, seed_header)
         finally:
             _restore()
 
-        if ok:
-            _set_status_ui(
-                parent,
-                QCoreApplication.translate("PlateSolver", "Status: Solved with ASTAP (seeded).")
-            )
-            return True, res
+        if ok2:
+            _set_status_ui(parent, QCoreApplication.translate("PlateSolver",
+                "Status: Solved with ASTAP (seeded)."))
+            return True, res2
 
-        err1 = str(res) if res is not None else "unknown error"
-        print(f"[PlateSolver] Pass 1 (ASTAP seeded) failed: {err1}")
+        err2 = str(res2) if res2 is not None else "unknown error"
+        print(f"[PlateSolver] Pass 2 (ASTAP seeded) failed: {err2}")
     else:
-        err1 = "no seed available"
-        print(f"[PlateSolver] Pass 1 skipped — {err1}")
+        err2 = "no seed available"
+        print(f"[PlateSolver] Pass 2 skipped — {err2}")
 
-    # ── Pass 2: ASTAP blind ──────────────────────────────────────────────────
-    _set_status_ui(
-        parent,
-        QCoreApplication.translate("PlateSolver",
-            "Status: {0} Trying ASTAP blind solve…"
-        ).format(f"Seeded solve failed ({err1})." if _has_seed else "No seed available.")
-    )
+    # ── Pass 3: ASTAP blind ──────────────────────────────────────────────────
+    _set_status_ui(parent, QCoreApplication.translate("PlateSolver",
+        "Status: {0} Trying ASTAP blind solve…"
+    ).format(f"Seeded solve failed ({err2})." if _has_seed else "No seed available."))
     QApplication.processEvents()
- 
-    settings.setValue("astap/seed_mode",          "none")   # no RA/Dec
-    # Pass 2 is blind so we force wide radius regardless of user setting
-    settings.setValue("astap/seed_radius_mode",   "value")
-    settings.setValue("astap/seed_radius_value",   179.0)
-    settings.setValue("astap/seed_fov_mode",       "auto")
-    settings.setValue("astap/seed_fov_value",       0.0)
-    print("[PlateSolver] Pass 2: blind  r=179  fov=auto")
- 
+
+    settings.setValue("astap/seed_mode",         "none")
+    settings.setValue("astap/seed_radius_mode",  "value")
+    settings.setValue("astap/seed_radius_value",  179.0)
+    settings.setValue("astap/seed_fov_mode",      "auto")
+    settings.setValue("astap/seed_fov_value",      0.0)
+    print("[PlateSolver] Pass 3: blind  r=179  fov=auto")
+
     try:
-        ok2, res2 = _solve_numpy_with_astap(parent, settings, image, None)
+        ok3, res3 = _solve_numpy_with_astap(parent, settings, image, None)
     finally:
         _restore()
- 
-    if ok2:
-        _set_status_ui(
-            parent,
-            QCoreApplication.translate("PlateSolver", "Status: Solved with ASTAP (blind).")
-        )
-        return True, res2
- 
-    err2 = str(res2) if res2 is not None else "unknown error"
-    print(f"[PlateSolver] Pass 2 (ASTAP blind) failed: {err2}")
- 
-    # ── Pass 3: Vizier ───────────────────────────────────────────────────────
-    if pref != "astap_only":
-        ok3, res3 = _solve_with_vizier(image, seed_header, parent=parent)
-        if ok3:
-            # res3 is a WCS object — convert to header and merge
-            wcs_hdr = res3.to_header(relax=True)
-            acq_base = _strip_wcs_keys(seed_header.copy()) if isinstance(seed_header, Header) else None
-            return True, _merge_wcs_into_base_header(acq_base, _as_header(wcs_hdr))
-        print(f"[PlateSolver] Pass 3 (Vizier) failed: {res3}")
+
+    if ok3:
+        _set_status_ui(parent, QCoreApplication.translate("PlateSolver",
+            "Status: Solved with ASTAP (blind)."))
+        return True, res3
+
+    err3 = str(res3) if res3 is not None else "unknown error"
+    print(f"[PlateSolver] Pass 3 (ASTAP blind) failed: {err3}")
 
     # ── Pass 4: Astrometry.net ───────────────────────────────────────────────
     if pref == "astap_only":
-        _set_status_ui(
-            parent,
-            QCoreApplication.translate("PlateSolver",
-                "Status: ASTAP failed and solver is set to ASTAP only — not falling back to Astrometry.net."
-            )
-        )
-        return False, QCoreApplication.translate(
-            "PlateSolver",
-            "ASTAP solve failed (both seeded and blind). Astrometry.net fallback is disabled."
-        )
+        _set_status_ui(parent, QCoreApplication.translate("PlateSolver",
+            "Status: ASTAP failed and solver is set to ASTAP only."))
+        return False, QCoreApplication.translate("PlateSolver",
+            "ASTAP solve failed (both seeded and blind). Astrometry.net fallback is disabled.")
 
-    _set_status_ui(
-        parent,
-        QCoreApplication.translate("PlateSolver",
-            "Status: ASTAP blind solve failed ({0}). Falling back to Astrometry.net…"
-        ).format(err2)
-    )
+    if pref == "gaia_only":
+        _set_status_ui(parent, QCoreApplication.translate("PlateSolver",
+            "Status: Gaia DR3 solve failed and solver is set to Gaia only."))
+        return False, QCoreApplication.translate("PlateSolver",
+            "In-house Gaia DR3 solve failed. ASTAP and Astrometry.net fallback are disabled.")
+
+    _set_status_ui(parent, QCoreApplication.translate("PlateSolver",
+        "Status: ASTAP failed ({0}). Falling back to Astrometry.net…").format(err3))
     QApplication.processEvents()
- 
-    ok3, res3 = _solve_numpy_with_astrometry(parent, settings, image, seed_header)
-    if ok3:
-        _set_status_ui(
-            parent,
-            QCoreApplication.translate("PlateSolver", "Status: Solved via Astrometry.net.")
-        )
+
+    ok4, res4 = _solve_numpy_with_astrometry(parent, settings, image, seed_header)
+    if ok4:
+        _set_status_ui(parent, QCoreApplication.translate("PlateSolver",
+            "Status: Solved via Astrometry.net."))
     else:
-        _set_status_ui(
-            parent,
-            QCoreApplication.translate("PlateSolver",
-                "Status: All solvers failed. Last error: {0}"
-            ).format(str(res3))
-        )
- 
-    return ok3, res3
+        _set_status_ui(parent, QCoreApplication.translate("PlateSolver",
+            "Status: All solvers failed. Last error: {0}").format(str(res4)))
+    return ok4, res4
 
 def _solve_numpy_with_astrometry(
     parent, settings, image: np.ndarray, seed_header
@@ -1811,87 +1811,671 @@ def _to_gray2d_unit(arr: np.ndarray) -> np.ndarray:
     # last resort: collapse to (H, W)
     return a.reshape(a.shape[0], -1).astype(np.float32)
 
-def _make_seed_wcs(ra_deg, dec_deg, scale_arcsec, img_w, img_h):
-    from astropy.wcs import WCS
+def _make_seed_wcs(ra_deg: float, dec_deg: float, scale_arcsec: float,
+                   img_w: int, img_h: int,
+                   seed_header: "Header | None" = None) -> WCS:
+    """Build a TAN seed WCS, incorporating rotation from header if available."""
+    import math
+
+    rot_deg = 0.0
+    if seed_header is not None:
+        for key in ("ANGLE", "POSANGLE", "CROTA2", "CROTA1", "OBJCTROT",
+                    "ROTANG", "ROT_ANGL", "CAMROTAN"):
+            v = seed_header.get(key)
+            if v is not None:
+                try:
+                    rot_deg = float(v)
+                    print(f"[GaiaLocal] using rotation {rot_deg:.2f}° from header key {key}")
+                    break
+                except Exception:
+                    pass
+
     w = WCS(naxis=2)
-    w.wcs.crpix = [img_w / 2, img_h / 2]
-    w.wcs.crval = [ra_deg, dec_deg]
-    w.wcs.cdelt = [-scale_arcsec / 3600.0, scale_arcsec / 3600.0]
+    w.wcs.crpix = [img_w / 2.0, img_h / 2.0]
+    w.wcs.crval = [float(ra_deg), float(dec_deg)]
     w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+
+    scale_deg = float(scale_arcsec) / 3600.0
+    rot_rad   = math.radians(rot_deg)
+    cos_r     = math.cos(rot_rad)
+    sin_r     = math.sin(rot_rad)
+
+    # Standard CD matrix with rotation
+    w.wcs.cd = np.array([
+        [-scale_deg * cos_r,  scale_deg * sin_r],
+        [-scale_deg * sin_r, -scale_deg * cos_r],
+    ])
+    w.wcs.set()
     return w
 
-def _solve_with_vizier(image, seed_header, parent=None):
-    from astroquery.vizier import Vizier
-    from astropy.coordinates import SkyCoord
-    from astropy.wcs.utils import fit_wcs_from_points
-    import astropy.units as u
+def _hough_match_catalog_to_image(
+    img_stars: np.ndarray,
+    cat_xy: np.ndarray,
+    img_w: int,
+    img_h: int,
+    max_stars: int = 100,
+    min_matches: int = 6,
+    match_tol_px: float = 10.0,
+) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """
+    Match image stars to catalog stars using a Hough-style vote on
+    (dx, dy) translation space.
 
-    ra  = _parse_ra_deg(seed_header)
-    dec = _parse_dec_deg(seed_header)
-    scale = _estimate_scale_arcsec_from_header(seed_header)
-    if ra is None or dec is None or scale is None:
-        return False, "Vizier solver needs RA/Dec/scale seed"
+    Algorithm references:
+      - Tabur (2007), PASA 24, 189 — voting on translation offsets between
+        projected catalog and detected image stars; closest analog to this impl.
+      - Valdes et al. (1995), PASP 107, 1119 — FOCAS catalog matching via
+        voting/histogram approach (USNO astrometric matching library basis).
+      - Groth (1986), AJ 91, 1244 — original triangle invariant matching,
+        foundational to all subsequent star-pattern recognition work.
 
-    img_h, img_w = image.shape[:2]
+    Since the seed WCS already encodes scale and rotation (including camera
+    angle from ANGLE/CROTA2/OBJCTROT header keys), the residual transform
+    between img_stars and cat_xy is dominated by a small translation only.
+    Voting on (dx, dy) bins robustly finds this offset even with ~50% outliers.
+    """
+    from scipy.spatial import KDTree
+
+    def _grid_sample(pts, n, w, h):
+        if len(pts) <= n:
+            return pts.copy()
+        cols = max(1, int(np.sqrt(n * w / max(h, 1))) + 1)
+        rows = max(1, int(np.sqrt(n * h / max(w, 1))) + 1)
+        per  = max(1, n // (cols * rows) + 1)
+        cw, rh = w / cols, h / rows
+        out = []
+        for r in range(rows):
+            for c in range(cols):
+                mask = (
+                    (pts[:,0] >= c*cw) & (pts[:,0] < (c+1)*cw) &
+                    (pts[:,1] >= r*rh) & (pts[:,1] < (r+1)*rh)
+                )
+                cell = pts[mask]
+                if len(cell):
+                    out.append(cell[:per])
+        result = np.vstack(out) if out else pts[:n]
+        return result[:n]
+
+    src = _grid_sample(img_stars, max_stars, img_w, img_h)
+    ref = _grid_sample(cat_xy,    max_stars, img_w, img_h)
+
+    n_src, n_ref = len(src), len(ref)
+    print(f"[HoughMatch] {n_src} img stars, {n_ref} cat stars")
+
+    if n_src < 3 or n_ref < 3:
+        return None, None
+
+    # ── Vote on (dx, dy) translation ────────────────────────────────────
+    # bin size: roughly match_tol_px so nearby votes cluster
+    bin_px = match_tol_px * 2.0
+    dx_range = img_w
+    dy_range = img_h
+
+    votes   = {}   # (bx, by) → [(src_i, ref_j), ...]
+    for i, s in enumerate(src):
+        for j, r in enumerate(ref):
+            dx = r[0] - s[0]
+            dy = r[1] - s[1]
+            # Only consider plausible offsets — within half image size
+            if abs(dx) > dx_range * 0.5 or abs(dy) > dy_range * 0.5:
+                continue
+            bx = int(np.round(dx / bin_px))
+            by = int(np.round(dy / bin_px))
+            key = (bx, by)
+            if key not in votes:
+                votes[key] = []
+            votes[key].append((i, j))
+
+    if not votes:
+        print("[HoughMatch] no votes accumulated")
+        return None, None
+
+    # Find peak bin
+    best_key  = max(votes, key=lambda k: len(votes[k]))
+    best_votes = votes[best_key]
+    best_count = len(best_votes)
+    print(f"[HoughMatch] peak bin {best_key} has {best_count} votes "
+          f"(dx≈{best_key[0]*bin_px:.1f}px, dy≈{best_key[1]*bin_px:.1f}px)")
+
+    if best_count < min_matches:
+        # Try merging neighboring bins
+        bx0, by0 = best_key
+        merged = []
+        for dbx in range(-1, 2):
+            for dby in range(-1, 2):
+                k = (bx0 + dbx, by0 + dby)
+                merged.extend(votes.get(k, []))
+        print(f"[HoughMatch] after 3×3 merge: {len(merged)} votes")
+        if len(merged) < min_matches:
+            return None, None
+        best_votes = merged
+
+    # ── Refine: use exact nearest-neighbor matching at the voted offset ──
+    best_dx = best_key[0] * bin_px
+    best_dy = best_key[1] * bin_px
+
+    # Shift all src stars by the voted offset and match to ref
+    src_shifted = src + np.array([best_dx, best_dy])
+    tree = KDTree(ref)
+    dists, idxs = tree.query(src_shifted, k=1, workers=-1)
+
+    inlier_mask = dists < match_tol_px * 1.5
+    img_m = src[inlier_mask]
+    cat_m = ref[idxs[inlier_mask]]
+
+    print(f"[HoughMatch] {inlier_mask.sum()} pairs within {match_tol_px*1.5:.1f}px after offset")
+
+    if len(img_m) < min_matches:
+        return None, None
+
+    # ── Affine fit + inlier rejection ───────────────────────────────────
+    try:
+        from scipy.linalg import lstsq
+        ones  = np.ones((len(img_m), 1))
+        A_mat = np.hstack([img_m, ones])
+        Ax, _, _, _ = lstsq(A_mat, cat_m[:, 0])
+        Ay, _, _, _ = lstsq(A_mat, cat_m[:, 1])
+        pred_x = A_mat @ Ax
+        pred_y = A_mat @ Ay
+        res = np.sqrt((cat_m[:,0]-pred_x)**2 + (cat_m[:,1]-pred_y)**2)
+        print(f"[HoughMatch] affine residuals: median={np.median(res):.1f}px  "
+              f"max={res.max():.1f}px")
+        inliers = res < match_tol_px
+        if inliers.sum() < min_matches:
+            inliers = res < match_tol_px * 3
+            print(f"[HoughMatch] relaxed tol: {inliers.sum()} inliers")
+        if inliers.sum() < min_matches:
+            return None, None
+        img_m = img_m[inliers]
+        cat_m = cat_m[inliers]
+    except Exception as e:
+        print(f"[HoughMatch] affine check failed: {e}")
+
+    print(f"[HoughMatch] final: {len(img_m)} matched pairs")
+    return img_m, cat_m
+
+def _solve_with_GAIA(image: np.ndarray,
+                     seed_header: "Header | None",
+                     parent=None) -> tuple[bool, "Header | str"]:
+    """
+    Match image stars to catalog stars using a Hough-style vote on
+    (dx, dy) translation space.
+
+    Algorithm references:
+      - Tabur (2007), PASA 24, 189 — voting on translation offsets between
+        projected catalog and detected image stars; closest analog to this impl.
+      - Valdes et al. (1995), PASP 107, 1119 — FOCAS catalog matching via
+        voting/histogram approach (USNO astrometric matching library basis).
+      - Groth (1986), AJ 91, 1244 — original triangle invariant matching,
+        foundational to all subsequent star-pattern recognition work.
+
+    Since the seed WCS already encodes scale and rotation (including camera
+    angle from ANGLE/CROTA2/OBJCTROT header keys), the residual transform
+    between img_stars and cat_xy is dominated by a small translation only.
+    Voting on (dx, dy) bins robustly finds this offset even with ~50% outliers.
+    """
+
+    # ── 1) Extract seed ──────────────────────────────────────────────────────
+    ra    = _parse_ra_deg(seed_header)  if isinstance(seed_header, Header) else None
+    dec   = _parse_dec_deg(seed_header) if isinstance(seed_header, Header) else None
+    scale = _estimate_scale_arcsec_from_header(seed_header) if isinstance(seed_header, Header) else None
+
+    if ra is None or dec is None:
+        return False, "Gaia DR3 solver: no RA/Dec seed in header"
+    if scale is None:
+        return False, "Gaia DR3 solver: no pixel scale in header (need FOCALLEN+XPIXSZ or CD matrix)"
+
+    img_h, img_w = int(image.shape[0]), int(image.shape[1])
     fov_deg = (max(img_h, img_w) * scale) / 3600.0
 
-    # Query Gaia DR3 bright stars
-    center = SkyCoord(ra=ra*u.deg, dec=dec*u.deg)
-    v = Vizier(columns=["RA_ICRS", "DE_ICRS", "Gmag"], row_limit=500)
-    result = v.query_region(center, radius=fov_deg*0.75*u.deg,
-                            catalog="I/355/gaiadr3")
-    if not result:
-        return False, "Vizier returned no catalog stars"
+    # ── 2) Build search grid: center + spiral of offsets + scale variants ────
+    def _spiral_centers(ra0, dec0, fov_deg, n_rings=2):
+        centers = [(ra0, dec0)]
+        step_deg = fov_deg * 0.4
+        for ring in range(1, n_rings + 1):
+            radius = ring * step_deg
+            n_pts = max(6, int(2 * math.pi * ring))
+            for i in range(n_pts):
+                angle = 2 * math.pi * i / n_pts
+                d_ra  = radius * math.cos(angle) / max(math.cos(math.radians(dec0)), 0.01)
+                d_dec = radius * math.sin(angle)
+                new_ra  = (ra0 + d_ra) % 360.0
+                new_dec = max(-90.0, min(90.0, dec0 + d_dec))
+                centers.append((new_ra, new_dec))
+        return centers
 
-    cat = result[0]
-    cat = cat[cat["Gmag"] < 18.0]  # limit to bright enough stars
-    if len(cat) < 10:
-        return False, f"Only {len(cat)} catalog stars — too few"
+    scale_variants = [scale, scale * 0.95, scale * 1.05, scale * 0.90, scale * 1.10]
+    search_centers = _spiral_centers(ra, dec, fov_deg, n_rings=2)
 
-    # Project catalog to pixel space using seed WCS
-    seed_wcs = _make_seed_wcs(ra, dec, scale, img_w, img_h)
-    cat_sky = SkyCoord(ra=cat["RA_ICRS"], dec=cat["DE_ICRS"], unit="deg")
-    cat_xy = np.array(seed_wcs.world_to_pixel(cat_sky)).T  # (N, 2)
+    print(f"[GAIA] seed RA={ra:.4f}° Dec={dec:.4f}° scale={scale:.3f}\"/px "
+          f"FOV={fov_deg:.3f}° — {len(search_centers)} centers × {len(scale_variants)} scales")
+    _set_status_ui(parent, "Status: Querying local Gaia DR3 library…")
 
-    # Keep only catalog stars that project inside the image
-    in_bounds = ((cat_xy[:,0] >= 0) & (cat_xy[:,0] < img_w) &
-                 (cat_xy[:,1] >= 0) & (cat_xy[:,1] < img_h))
-    cat_xy = cat_xy[in_bounds]
-    cat_sky_in = cat_sky[in_bounds]
-    if len(cat_xy) < 10:
-        return False, "Too few catalog stars project inside image"
-
-    # Detect stars in image
-    gray = _to_gray2d_unit(_normalize_for_astap(image))
-    img_stars = _detect_stars_uniform(gray, det_sigma=12.0, minarea=5,
-                                      grid=(4,4), max_per_cell=30, max_total=300)
-    if len(img_stars) < 10:
-        return False, "Too few stars detected in image"
-
-    # Match: image stars ↔ catalog pixel positions via astroalign
-    from setiastro.saspro import astroalign
+    # ── 3) Load Gaia library ─────────────────────────────────────────────────
     try:
-        tform, (img_matched, cat_matched_xy) = astroalign.find_transform(
-            img_stars, cat_xy, max_control_points=100
-        )
+        from setiastro.saspro.gaia_database import get_library
+        lib = get_library()
+        if not lib.installed_bands():
+            return False, "Gaia DR3 solver: no Gaia XP library installed — install bands via Settings → Gaia XP Spectral Library"
     except Exception as e:
-        return False, f"Vizier: astroalign match failed: {e}"
+        return False, f"Gaia DR3 solver: could not load Gaia library: {e}"
 
-    # Map matched catalog pixels back to sky coords via the seed WCS
-    matched_sky = seed_wcs.pixel_to_world(cat_matched_xy[:,0], cat_matched_xy[:,1])
-
-    # Fit final WCS
+    # ── 4) Detect image stars once (reused across all attempts) ──────────────
     try:
-        wcs_solution = fit_wcs_from_points(
-            (img_matched[:,0], img_matched[:,1]),
+        import astropy.units as u
+        from astropy.coordinates import SkyCoord
+
+        norm = _normalize_for_astap(image)
+        gray = _to_gray2d_unit(norm)
+        mn, mx = float(gray.min()), float(gray.max())
+        if mx > mn:
+            gray = ((gray - mn) / (mx - mn)).astype(np.float32)
+        gray = np.clip(gray, 0.0, 1.0).astype(np.float32)
+    except Exception as e:
+        return False, f"Gaia DR3 solver: image normalization failed: {e}"
+
+    try:
+        import sep
+        sep.set_extract_pixstack(5_000_000)
+        from setiastro.saspro.star_alignment import _detect_stars_uniform
+
+        _sigma_levels = [50, 25, 15, 10, 5, 3]
+        _target_min, _target_max = 500, 1000
+        img_stars = None
+        used_sigma = None
+
+        for _sigma in _sigma_levels:
+            _candidates = _detect_stars_uniform(
+                gray, det_sigma=float(_sigma), minarea=5,
+                grid=(5, 5), max_per_cell=60, max_total=1200,
+            )
+            n = len(_candidates)
+            print(f"[GAIA] star detection σ={_sigma}: {n} stars")
+            if n >= _target_min:
+                if n > _target_max:
+                    _grid_rows, _grid_cols = 3, 3
+                    _max_per_cell = _target_max // (_grid_rows * _grid_cols)
+                    _cell_w = img_w / _grid_cols
+                    _cell_h = img_h / _grid_rows
+                    _balanced = []
+                    for _gr in range(_grid_rows):
+                        for _gc in range(_grid_cols):
+                            _x0 = _gc * _cell_w; _x1 = (_gc+1) * _cell_w
+                            _y0 = _gr * _cell_h; _y1 = (_gr+1) * _cell_h
+                            _in_cell = _candidates[
+                                (_candidates[:,0] >= _x0) & (_candidates[:,0] < _x1) &
+                                (_candidates[:,1] >= _y0) & (_candidates[:,1] < _y1)
+                            ]
+                            if len(_in_cell) > 0:
+                                _balanced.append(_in_cell[:_max_per_cell])
+                    _candidates = np.vstack(_balanced) if _balanced else _candidates[:_target_max]
+                img_stars = _candidates
+                used_sigma = _sigma
+                break
+            if _sigma == _sigma_levels[-1] and n > 0:
+                img_stars = _candidates
+                used_sigma = _sigma
+
+        if img_stars is None or len(img_stars) == 0:
+            return False, "Gaia DR3 solver: no stars detected in image at any sigma level"
+
+        print(f"[GAIA] using {len(img_stars)} stars at σ={used_sigma}")
+
+    except Exception as e:
+        return False, f"Gaia DR3 solver: star detection failed: {e}"
+
+    if len(img_stars) < 10:
+        return False, f"Gaia DR3 solver: only {len(img_stars)} stars detected — too few"
+
+    # ── 5) Search loop: spiral centers × scale variants ──────────────────────
+    import sqlite3
+
+    best_result = None
+
+    for attempt_idx, (c_ra, c_dec) in enumerate(search_centers):
+        if best_result is not None:
+            break
+
+        for c_scale in scale_variants:
+            if best_result is not None:
+                break
+
+            is_center = (attempt_idx == 0 and c_scale == scale)
+            label = "center" if is_center else f"spiral[{attempt_idx}] scale={c_scale:.3f}\"/px"
+
+            try:
+                seed_wcs = _make_seed_wcs(c_ra, c_dec, c_scale, img_w, img_h, seed_header)
+
+                corners_pix = [(0,0),(img_w-1,0),(0,img_h-1),(img_w-1,img_h-1)]
+                corner_sky  = [seed_wcs.pixel_to_world(x, y) for x, y in corners_pix]
+                ra_min  = min(c.ra.deg  for c in corner_sky) - 0.1
+                ra_max  = max(c.ra.deg  for c in corner_sky) + 0.1
+                dec_min = min(c.dec.deg for c in corner_sky) - 0.1
+                dec_max = max(c.dec.deg for c in corner_sky) + 0.1
+
+                all_sources = []
+                for fname, conn in lib._connections.items():
+                    try:
+                        cur = conn.cursor()
+                        cur.execute("""
+                            SELECT source_id, ra, dec FROM sources
+                            WHERE dec BETWEEN ? AND ? AND ra BETWEEN ? AND ?
+                        """, (dec_min, dec_max, ra_min, ra_max))
+                        all_sources.extend(cur.fetchall())
+                    except Exception as e:
+                        print(f"[GaiaLocal] query failed on {fname}: {e}")
+
+                if not all_sources:
+                    continue
+
+                seen_sids = {}
+                for sid, sra, sdec in all_sources:
+                    if sid not in seen_sids:
+                        seen_sids[sid] = {"ra": sra, "dec": sdec}
+
+                if len(seen_sids) < 10:
+                    continue
+
+                if is_center:
+                    print(f"[GaiaLocal] {len(seen_sids)} unique catalog stars found in field")
+                _set_status_ui(parent, f"Status: {len(seen_sids)} Gaia stars — trying {label}…")
+
+                cat_infos = list(seen_sids.values())
+                cat_sky_all = SkyCoord(
+                    ra=[i["ra"] for i in cat_infos] * u.deg,
+                    dec=[i["dec"] for i in cat_infos] * u.deg,
+                )
+                px, py = seed_wcs.world_to_pixel(cat_sky_all)
+                cat_xy_all = np.column_stack([px, py]).astype(np.float32)
+
+                margin = 50
+                in_bounds = (
+                    (cat_xy_all[:,0] >= -margin) & (cat_xy_all[:,0] < img_w + margin) &
+                    (cat_xy_all[:,1] >= -margin) & (cat_xy_all[:,1] < img_h + margin)
+                )
+                cat_xy_all  = cat_xy_all[in_bounds]
+                cat_sky_all = cat_sky_all[in_bounds]
+
+                if len(cat_xy_all) < 10:
+                    continue
+
+                grid_rows, grid_cols = 3, 3
+                max_per_cell = 1000 // (grid_rows * grid_cols)
+                cell_w = img_w / grid_cols
+                cell_h = img_h / grid_rows
+                cat_xy_grid, cat_sky_idx = [], []
+                for gr in range(grid_rows):
+                    for gc in range(grid_cols):
+                        x0, x1 = gc * cell_w, (gc+1) * cell_w
+                        y0, y1 = gr * cell_h, (gr+1) * cell_h
+                        in_cell = np.where(
+                            (cat_xy_all[:,0] >= x0) & (cat_xy_all[:,0] < x1) &
+                            (cat_xy_all[:,1] >= y0) & (cat_xy_all[:,1] < y1)
+                        )[0]
+                        if len(in_cell) == 0:
+                            continue
+                        if len(in_cell) > max_per_cell:
+                            step = len(in_cell) / max_per_cell
+                            in_cell = in_cell[np.round(np.arange(0, len(in_cell), step)).astype(int)[:max_per_cell]]
+                        cat_xy_grid.append(cat_xy_all[in_cell])
+                        cat_sky_idx.extend(in_cell.tolist())
+
+                if not cat_xy_grid:
+                    continue
+
+                cat_xy  = np.vstack(cat_xy_grid)
+                cat_sky = cat_sky_all[np.array(cat_sky_idx)]
+
+                print(f"[GaiaLocal] {label}: {len(cat_xy)} catalog stars, matching…")
+
+                img_matched, cat_matched_xy = _hough_match_catalog_to_image(
+                    img_stars, cat_xy,
+                    img_w=img_w, img_h=img_h,
+                    max_stars=500, min_matches=6, match_tol_px=10.0,
+                )
+
+                if img_matched is not None and len(img_matched) >= 6:
+                    print(f"[GaiaLocal] matched at {label} with {len(img_matched)} pairs")
+                    best_result = (img_matched, cat_matched_xy, seed_wcs, cat_sky)
+                    break
+
+            except Exception as e:
+                print(f"[GaiaLocal] attempt {label} failed: {e}")
+                continue
+
+    if best_result is None:
+        return False, (f"Gaia DR3 solver: no match found across {len(search_centers)} "
+                       f"centers × {len(scale_variants)} scale variants")
+
+    img_matched, cat_matched_xy, seed_wcs, cat_sky = best_result
+    n_matched = len(img_matched)
+    print(f"[GaiaLocal] {n_matched} matched star pairs")
+    _set_status_ui(parent, f"Status: {n_matched} matches — fitting WCS…")
+
+    # ── 6) Map matched catalog pixel positions back to sky coords ────────────
+    try:
+        import astropy.units as u
+        from astropy.coordinates import SkyCoord
+        matched_cat_px = cat_matched_xy[:, 0]
+        matched_cat_py = cat_matched_xy[:, 1]
+        matched_sky = seed_wcs.pixel_to_world(matched_cat_px, matched_cat_py)
+    except Exception as e:
+        return False, f"Gaia DR3 solver: sky coordinate recovery failed: {e}"
+
+    # ── 7) Fit initial TAN WCS ────────────────────────────────────────────────
+    try:
+        from astropy.wcs.utils import fit_wcs_from_points
+
+        proj_point = SkyCoord(
+            ra=float(np.mean([c.ra.deg for c in matched_sky])) * u.deg,
+            dec=float(np.mean([c.dec.deg for c in matched_sky])) * u.deg,
+        )
+
+        wcs_tan = fit_wcs_from_points(
+            (img_matched[:, 0], img_matched[:, 1]),
             matched_sky,
             projection='TAN',
-            proj_point='center'
+            proj_point=proj_point,
         )
-    except Exception as e:
-        return False, f"Vizier: WCS fit failed: {e}"
+        wcs_tan.array_shape = (img_h, img_w)
+        wcs_solution = wcs_tan
 
-    return True, wcs_solution
+    except Exception as e:
+        return False, f"Gaia DR3 solver: WCS fit failed: {e}"
+
+    # ── 8) Iterative refinement via fitted-WCS reprojection ──────────────────
+    # Now that we have an approximate WCS, re-project ALL catalog stars through
+    # it and do a direct nearest-neighbor match — no Hough needed since the
+    # offset should be small. Repeat until RMS converges or max iterations.
+    try:
+        import astropy.units as u
+        from astropy.coordinates import SkyCoord
+        from astropy.wcs.utils import fit_wcs_from_points, proj_plane_pixel_scales
+        from scipy.spatial import KDTree
+
+        MAX_ITER       = 5
+        RMS_CONVERGE   = 0.05   # arcsec — stop if improvement is less than this
+        NN_TOL_PX      = 8.0    # nearest-neighbour match tolerance in pixels
+        MIN_PAIRS      = 10     # require at least this many pairs to adopt
+
+        prev_rms = None
+
+        for iteration in range(MAX_ITER):
+            # Compute current RMS
+            sky_fit    = wcs_solution.pixel_to_world(img_matched[:, 0], img_matched[:, 1])
+            sep_arcsec = matched_sky.separation(sky_fit).arcsec
+            rms        = float(np.sqrt(np.mean(sep_arcsec**2)))
+            p95        = float(np.percentile(sep_arcsec, 95))
+            print(f"[GaiaLocal] iter={iteration} RMS={rms:.3f}\"  p95={p95:.3f}\"  n={n_matched}")
+
+            if prev_rms is not None and (prev_rms - rms) < RMS_CONVERGE:
+                print(f"[GaiaLocal] converged (improvement {prev_rms-rms:.3f}\" < {RMS_CONVERGE}\")")
+                break
+            prev_rms = rms
+
+            # Re-project the full catalog through the current WCS solution
+            try:
+                t_sources = []
+                corners_pix = [(0,0),(img_w-1,0),(0,img_h-1),(img_w-1,img_h-1)]
+                corner_sky  = [wcs_solution.pixel_to_world(x, y) for x, y in corners_pix]
+                t_ra_min  = min(c.ra.deg  for c in corner_sky) - 0.05
+                t_ra_max  = max(c.ra.deg  for c in corner_sky) + 0.05
+                t_dec_min = min(c.dec.deg for c in corner_sky) - 0.05
+                t_dec_max = max(c.dec.deg for c in corner_sky) + 0.05
+
+                for fname, conn in lib._connections.items():
+                    try:
+                        cur = conn.cursor()
+                        cur.execute("""
+                            SELECT source_id, ra, dec FROM sources
+                            WHERE dec BETWEEN ? AND ? AND ra BETWEEN ? AND ?
+                        """, (t_dec_min, t_dec_max, t_ra_min, t_ra_max))
+                        t_sources.extend(cur.fetchall())
+                    except Exception:
+                        pass
+
+                if not t_sources:
+                    print(f"[GaiaLocal] iter={iteration}: no catalog sources in bbox, stopping")
+                    break
+
+                t_seen = {}
+                for sid, sra, sdec in t_sources:
+                    if sid not in t_seen:
+                        t_seen[sid] = {"ra": sra, "dec": sdec}
+
+                t_cat_infos = list(t_seen.values())
+                t_cat_sky_all = SkyCoord(
+                    ra=[i["ra"] for i in t_cat_infos] * u.deg,
+                    dec=[i["dec"] for i in t_cat_infos] * u.deg,
+                )
+                t_px, t_py = wcs_solution.world_to_pixel(t_cat_sky_all)
+                t_cat_xy = np.column_stack([t_px, t_py]).astype(np.float32)
+
+                margin = 5
+                in_b = (
+                    (t_cat_xy[:,0] >= -margin) & (t_cat_xy[:,0] < img_w + margin) &
+                    (t_cat_xy[:,1] >= -margin) & (t_cat_xy[:,1] < img_h + margin)
+                )
+                t_cat_xy    = t_cat_xy[in_b]
+                t_cat_sky_f = t_cat_sky_all[in_b]
+
+                if len(t_cat_xy) < MIN_PAIRS:
+                    print(f"[GaiaLocal] iter={iteration}: only {len(t_cat_xy)} catalog stars in frame, stopping")
+                    break
+
+                # Direct nearest-neighbour match
+                tree = KDTree(t_cat_xy)
+                dists, idxs = tree.query(img_stars, k=1, workers=-1)
+                inlier_mask = dists < NN_TOL_PX
+                t_img_m     = img_stars[inlier_mask]
+                t_cat_m_xy  = t_cat_xy[idxs[inlier_mask]]
+                t_cat_sky_m = t_cat_sky_f[idxs[inlier_mask]]
+
+                print(f"[GaiaLocal] iter={iteration}: {inlier_mask.sum()} pairs within {NN_TOL_PX}px "
+                      f"from {len(t_cat_xy)} catalog stars")
+
+                if len(t_img_m) < MIN_PAIRS:
+                    print(f"[GaiaLocal] iter={iteration}: too few pairs ({len(t_img_m)}), stopping")
+                    break
+
+                # Fit new WCS from this larger matched set
+                t_proj = SkyCoord(
+                    ra=float(np.mean([c.ra.deg for c in t_cat_sky_m])) * u.deg,
+                    dec=float(np.mean([c.dec.deg for c in t_cat_sky_m])) * u.deg,
+                )
+                t_wcs_tan = fit_wcs_from_points(
+                    (t_img_m[:,0], t_img_m[:,1]),
+                    t_cat_sky_m,
+                    projection='TAN',
+                    proj_point=t_proj,
+                )
+                t_wcs_tan.array_shape = (img_h, img_w)
+
+                t_sky_fit = t_wcs_tan.pixel_to_world(t_img_m[:,0], t_img_m[:,1])
+                t_rms     = float(np.sqrt(np.mean(
+                    t_cat_sky_m.separation(t_sky_fit).arcsec**2
+                )))
+                print(f"[GaiaLocal] iter={iteration}: new WCS RMS={t_rms:.3f}\" ({len(t_img_m)} pairs)")
+
+                # Always adopt if we have more pairs, or same pairs with better RMS
+                if len(t_img_m) > n_matched or (len(t_img_m) >= n_matched and t_rms <= rms):
+                    print(f"[GaiaLocal] iter={iteration}: adopting ({len(t_img_m)} pairs, RMS={t_rms:.3f}\")")
+                    img_matched  = t_img_m
+                    matched_sky  = t_cat_sky_m
+                    n_matched    = len(t_img_m)
+                    rms          = t_rms
+                    wcs_solution = t_wcs_tan
+                else:
+                    print(f"[GaiaLocal] iter={iteration}: not better, stopping")
+                    break
+
+            except Exception as e:
+                print(f"[GaiaLocal] iter={iteration} refinement failed: {e}")
+                break
+
+        # Final RMS report
+        try:
+            sky_fit    = wcs_solution.pixel_to_world(img_matched[:, 0], img_matched[:, 1])
+            sep_arcsec = matched_sky.separation(sky_fit).arcsec
+            rms        = float(np.sqrt(np.mean(sep_arcsec**2)))
+            p95        = float(np.percentile(sep_arcsec, 95))
+            print(f"[GaiaLocal] final RMS={rms:.3f}\"  p95={p95:.3f}\"  n={n_matched}")
+        except Exception:
+            pass
+
+        # ── SIP fit on final matched set ─────────────────────────────────────
+        if n_matched >= 20:
+            try:
+                if n_matched >= 100:
+                    sip_degree = 4
+                elif n_matched >= 50:
+                    sip_degree = 3
+                else:
+                    sip_degree = 2
+
+                proj_point = SkyCoord(
+                    ra=float(np.mean([c.ra.deg for c in matched_sky])) * u.deg,
+                    dec=float(np.mean([c.dec.deg for c in matched_sky])) * u.deg,
+                )
+                wcs_sip = fit_wcs_from_points(
+                    (img_matched[:, 0], img_matched[:, 1]),
+                    matched_sky,
+                    projection='TAN',
+                    proj_point=proj_point,
+                    sip_degree=sip_degree,
+                )
+                wcs_sip.array_shape = (img_h, img_w)
+
+                sky_sip  = wcs_sip.pixel_to_world(img_matched[:, 0], img_matched[:, 1])
+                res_sip  = matched_sky.separation(sky_sip).arcsec
+                sky_tan2 = wcs_solution.pixel_to_world(img_matched[:, 0], img_matched[:, 1])
+                res_tan2 = matched_sky.separation(sky_tan2).arcsec
+                rms_sip  = float(np.sqrt(np.mean(res_sip**2)))
+                rms_tan2 = float(np.sqrt(np.mean(res_tan2**2)))
+                print(f"[GaiaLocal] TAN RMS={rms_tan2:.3f}\"  SIP-{sip_degree} RMS={rms_sip:.3f}\"")
+                if rms_sip < rms_tan2:
+                    wcs_solution = wcs_sip
+                    print(f"[GaiaLocal] using SIP-{sip_degree} solution")
+                else:
+                    print(f"[GaiaLocal] SIP-{sip_degree} did not improve fit, using TAN")
+            except Exception as e:
+                print(f"[GaiaLocal] SIP fit failed, using TAN: {e}")
+
+        _set_status_ui(parent, f"Status: Gaia DR3 solve — RMS={rms:.2f}\" ({n_matched} stars)")
+        print("Plate Solve Completed Successfully")
+
+    except Exception as e:
+        print(f"[GaiaLocal] step 8 refinement exception: {e}")
+
+    # ── 9) Build final header ─────────────────────────────────────────────────
+    try:
+        wcs_hdr  = _as_header(wcs_solution.to_header(relax=True))
+        acq_base = _strip_wcs_keys(seed_header.copy()) if isinstance(seed_header, Header) else None
+        final_hdr = _merge_wcs_into_base_header(acq_base, wcs_hdr)
+        return True, final_hdr
+    except Exception as e:
+        return False, f"Gaia DR3 solver: header merge failed: {e}"
+         
 # ---------------------------------------------------------------------
 # Core ASTAP solving for a numpy image + seed header
 # ---------------------------------------------------------------------
@@ -2677,9 +3261,10 @@ class PlateSolverDialog(QDialog):
 
         # Solver preference
         self.cb_solver_pref = QComboBox(seed_box)
-        self.cb_solver_pref.addItem(self.tr("ASTAP → Astrometry.net (both)"), "both")
-        self.cb_solver_pref.addItem(self.tr("ASTAP only"),                     "astap_only")
-        self.cb_solver_pref.addItem(self.tr("Astrometry.net only"),            "astrometry_only")
+        self.cb_solver_pref.addItem(self.tr("Gaia DR3 → ASTAP → Astrometry.net (all)"), "both")
+        self.cb_solver_pref.addItem(self.tr("In-House Gaia DR3 only"),                   "gaia_only")
+        self.cb_solver_pref.addItem(self.tr("ASTAP only"),                               "astap_only")
+        self.cb_solver_pref.addItem(self.tr("Astrometry.net only"),                      "astrometry_only") 
         seed_form.addRow(self.tr("Solver:"), self.cb_solver_pref)
 
         # Tooltips
@@ -2757,7 +3342,7 @@ class PlateSolverDialog(QDialog):
         fov_mode = _get_astap_fov_mode(self.settings)
         self.cb_fov_mode.setCurrentIndex(1 if fov_mode == "auto" else (2 if fov_mode == "value" else 0))
         self.le_fov_val.setText(str(_get_astap_fov_value(self.settings)))
-        pref_map = {"both": 0, "astap_only": 1, "astrometry_only": 2}
+        pref_map = {"both": 0, "gaia_only": 1, "astap_only": 2, "astrometry_only": 3}
         self.cb_solver_pref.setCurrentIndex(
             pref_map.get(_get_solver_preference(self.settings), 0)
         )
@@ -2801,32 +3386,22 @@ class PlateSolverDialog(QDialog):
 
     # ---------- actions ----------
     def _run(self):
-        astap_exe = _get_astap_exe(self.settings)
-        if not astap_exe or not os.path.exists(astap_exe):
-            self.status.setText(self.tr("ASTAP path missing. Set Preferences → ASTAP executable."))
-            QMessageBox.warning(self, self.tr("Plate Solver"), self.tr("ASTAP path missing.\nSet it in Preferences → ASTAP executable."))
-            return
-
+        # ── Save all settings first ──────────────────────────────────────────
         idx = self.cb_seed_mode.currentIndex()
         _set_seed_mode(self.settings, "auto" if idx == 0 else ("manual" if idx == 1 else "none"))
-        # manual values
         try:
             manual_scale = float(self.le_scale.text().strip()) if self.le_scale.text().strip() else None
         except Exception:
             manual_scale = None
         _set_manual_seed(self.settings, self.le_ra.text().strip(), self.le_dec.text().strip(), manual_scale)
-        # radius
         self.settings.setValue("astap/seed_radius_mode", "auto" if self.cb_radius_mode.currentIndex()==0 else "value")
         try:
             self.settings.setValue("astap/seed_radius_value", float(self.le_radius_val.text().strip()))
         except Exception:
             pass
-        pref_idx_map = {0: "both", 1: "astap_only", 2: "astrometry_only"}
-        _set_solver_preference(
-            self.settings,
-            pref_idx_map.get(self.cb_solver_pref.currentIndex(), "both")
-        )        
-        # fov
+        pref_idx_map = {0: "both", 1: "gaia_only", 2: "astap_only", 3: "astrometry_only"}
+        pref = pref_idx_map.get(self.cb_solver_pref.currentIndex(), "both")
+        _set_solver_preference(self.settings, pref)
         self.settings.setValue("astap/seed_fov_mode",
                                "compute" if self.cb_fov_mode.currentIndex()==0 else ("auto" if self.cb_fov_mode.currentIndex()==1 else "value"))
         try:
@@ -2834,9 +3409,17 @@ class PlateSolverDialog(QDialog):
         except Exception:
             pass
 
+        # ── ASTAP check only when ASTAP will actually be used ────────────────
+        if pref not in ("gaia_only", "astrometry_only"):
+            astap_exe = _get_astap_exe(self.settings)
+            if not astap_exe or not os.path.exists(astap_exe):
+                self.status.setText(self.tr("ASTAP path missing. Set Preferences → ASTAP executable."))
+                QMessageBox.warning(self, self.tr("Plate Solver"), self.tr("ASTAP path missing.\nSet it in Preferences → ASTAP executable."))
+                return
+
+        # ── Dispatch ─────────────────────────────────────────────────────────
         mode = self.stack.currentIndex()
         if mode == 0:
-            # Active view
             doc = _active_doc_from_parent(self.parent())
             if not doc:
                 QMessageBox.information(self, self.tr("Plate Solver"), self.tr("No active image view."))
@@ -2844,11 +3427,10 @@ class PlateSolverDialog(QDialog):
             ok, res = plate_solve_doc_inplace(self, doc, self.settings)
             if ok:
                 self.status.setText(self.tr("Solved with ASTAP (WCS + SIP applied to active doc)."))
-                QTimer.singleShot(0, self.accept)  # close when done
+                QTimer.singleShot(0, self.accept)
             else:
                 self.status.setText(str(res))
         elif mode == 1:
-            # Single file
             path = self.le_path.text().strip()
             if not path:
                 QMessageBox.information(self, self.tr("Plate Solver"), self.tr("Choose a file to solve."))
