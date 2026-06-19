@@ -1998,22 +1998,28 @@ def _solve_with_GAIA(image: np.ndarray,
                      seed_header: "Header | None",
                      parent=None) -> tuple[bool, "Header | str"]:
     """
-    Match image stars to catalog stars using a Hough-style vote on
-    (dx, dy) translation space.
+        Match image stars to catalog stars by voting on (dx, dy) translation space
+        — a Generalized Hough Transform restricted to pure translation.
 
-    Algorithm references:
-      - Tabur (2007), PASA 24, 189 — voting on translation offsets between
-        projected catalog and detected image stars; closest analog to this impl.
-      - Valdes et al. (1995), PASP 107, 1119 — FOCAS catalog matching via
-        voting/histogram approach (USNO astrometric matching library basis).
-      - Groth (1986), AJ 91, 1244 — original triangle invariant matching,
-        foundational to all subsequent star-pattern recognition work.
+        Since the seed WCS already encodes scale and rotation (including camera
+        angle from ANGLE/CROTA2/OBJCTROT header keys), the residual transform
+        between img_stars and cat_xy is dominated by a small translation only.
+        Each (image_star, catalog_star) pair votes for the implied (dx, dy) offset.
+        The peak bin in the 2-D accumulator reveals the true translation; candidate
+        pairs are then confirmed by nearest-neighbour search and affine inlier
+        rejection.
 
-    Since the seed WCS already encodes scale and rotation (including camera
-    angle from ANGLE/CROTA2/OBJCTROT header keys), the residual transform
-    between img_stars and cat_xy is dominated by a small translation only.
-    Voting on (dx, dy) bins robustly finds this offset even with ~50% outliers.
-    """
+        Algorithm references:
+        - Hough (1962), U.S. Patent 3,069,654 — original transform concept
+        - Ballard (1981), Pattern Recognition 13(2):111–122 — Generalized
+            Hough Transform extended to arbitrary shapes and translations
+        - Groth (1986), AJ 91, 1244 — foundational star triangle matching,
+            basis for all subsequent star-pattern recognition work
+        - Valdes et al. (1995), PASP 107, 1119 — FOCAS voting-based catalog
+            matching (USNO astrometric matching library)
+        - Tabur (2007), PASA 24, 189 — fast triangle/cosine-metric matching
+            for CCD-to-catalog astrometry (arXiv:0710.3618)
+        """
 
     # ── 1) Extract seed ──────────────────────────────────────────────────────
     ra    = _parse_ra_deg(seed_header)  if isinstance(seed_header, Header) else None
