@@ -1566,7 +1566,7 @@ class ImagePeekerDialogPro(QDialog):
                 hdr = _header_from_meta(meta)
 
                 # If we truly have no WCS, plate-solve
-                if hdr is None or not WCS(hdr, relax=True).has_celestial:
+                if hdr is None or not WCS(hdr, naxis=2, relax=True).has_celestial:
                     ok, hdr_or_err = plate_solve_doc_inplace(
                         parent=self, doc=self._coerce_doc(self.document), settings=self.settings
                     )
