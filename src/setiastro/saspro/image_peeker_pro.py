@@ -1086,12 +1086,15 @@ class DistortionGridDialog(QDialog):
 
         # — 5) full‐image warp maps (pixels) for drawing grid —
         H, W = data.shape
-        YY, XX = np.mgrid[0:H, 0:W]
-        U = XX - crpix1
-        V = YY - crpix2
-        DX_pix, DY_pix = eval_sip(A, B, U, V)
-        DX = DX_pix * amplify
-        DY = DY_pix * amplify
+
+        def warp_points(xs, ys):
+            """Evaluate SIP distortion only at the given sample points."""
+            xs = np.asarray(xs, dtype=np.float64)
+            ys = np.asarray(ys, dtype=np.float64)
+            u = xs - crpix1
+            v = ys - crpix2
+            dx_pix, dy_pix = eval_sip(A, B, u, v)
+            return dx_pix * amplify, dy_pix * amplify
 
         # — 6) build the distortion grid scene —
         scene = QGraphicsScene(self)
@@ -1106,13 +1109,13 @@ class DistortionGridDialog(QDialog):
         title.setStyleSheet("color: white;")
 
         # draw horizontal + vertical lines
+        # draw horizontal + vertical lines
         for i in range(n_grid_lines+1):
             y0  = i*(H-1)/n_grid_lines
             xs  = np.linspace(0, W-1, 200)
             ys  = np.full_like(xs, y0)
-            xi  = np.clip(xs.astype(int), 0, W-1)
-            yi  = np.clip(ys.astype(int), 0, H-1)
-            warped = np.column_stack([ xs + DX[yi,xi], ys + DY[yi,xi] ])
+            dx_line, dy_line = warp_points(xs, ys)
+            warped = np.column_stack([xs + dx_line, ys + dy_line])
             path = QPainterPath(QPointF(*warped[0]))
             for px,py in warped[1:]:
                 path.lineTo(QPointF(px,py))
@@ -1122,27 +1125,33 @@ class DistortionGridDialog(QDialog):
             x0  = j*(W-1)/n_grid_lines
             ys  = np.linspace(0, H-1, 200)
             xs  = np.full_like(ys, x0)
-            xi  = np.clip(xs.astype(int), 0, W-1)
-            yi  = np.clip(ys.astype(int), 0, H-1)
-            warped = np.column_stack([ xs + DX[yi,xi], ys + DY[yi,xi] ])
+            dx_line, dy_line = warp_points(xs, ys)
+            warped = np.column_stack([xs + dx_line, ys + dy_line])
             path = QPainterPath(QPointF(*warped[0]))
             for px,py in warped[1:]:
                 path.lineTo(QPointF(px,py))
             scene.addPath(path, pen)
 
         # annotate each grid‐intersection
+        # Pre-compute all intersection points at once (vectorized)
+        ii_grid, jj_grid = np.meshgrid(np.arange(n_grid_lines+1), np.arange(n_grid_lines+1))
+        x0_all = (jj_grid.ravel() * (W-1) / n_grid_lines)
+        y0_all = (ii_grid.ravel() * (H-1) / n_grid_lines)
+        dx_pix_all, dy_pix_all = warp_points(x0_all, y0_all)
+        dx_pix_all /= amplify  # un-amplify to get raw pixel distortion for the label
+        dy_pix_all /= amplify
+
+        idx = 0
         for i in range(n_grid_lines+1):
             for j in range(n_grid_lines+1):
                 y0 = i*(H-1)/n_grid_lines
                 x0 = j*(W-1)/n_grid_lines
-                xi, yi = int(round(x0)), int(round(y0))
 
-                # local distortion in pixels → arcsec
-                d_pix    = math.hypot(DX_pix[yi, xi], DY_pix[yi, xi])
+                d_pix    = math.hypot(dx_pix_all[idx], dy_pix_all[idx])
                 d_arcsec = d_pix * arcsec_per_pix
 
-                px = x0 + DX[yi, xi]
-                py = y0 + DY[yi, xi]
+                px = x0 + dx_pix_all[idx] * amplify
+                py = y0 + dy_pix_all[idx] * amplify
 
                 txt = QGraphicsTextItem(f"{d_arcsec:.1f}\"")
                 txt.setFont(label_font)
@@ -1150,6 +1159,7 @@ class DistortionGridDialog(QDialog):
                 txt.setDefaultTextColor(QColor(200,200,200))
                 txt.setPos(px + 4, py + 4)
                 scene.addItem(txt)
+                idx += 1
 
         view = QGraphicsView(scene)
         view.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -1292,25 +1302,41 @@ def _ensure_fits_header(orig_hdr):
             return None
     return None
 def _arcsec_per_pix_from_header(hdr: fits.Header, fallback_px_um: float|None=None, fallback_fl_mm: float|None=None):
-    """Try CDELT-based scale; fallback to CD matrix; then pixel_size & focal length."""
+    """Try PC*CDELT scale; fallback to CD matrix; then pixel_size & focal length."""
     if hdr is None:
         if fallback_px_um and fallback_fl_mm:
             return 206.264806 * (fallback_px_um / fallback_fl_mm)
         return None
+
+    # 1) PC matrix * CDELT (modern WCS convention used by astropy fit_wcs_from_points)
     try:
-        return abs(float(hdr["CDELT1"])) * 3600.0
-    except Exception:
-        try:
-            cd11 = float(hdr["CD1_1"])
-            cd12 = float(hdr.get("CD1_2", 0.0))
-            cd21 = float(hdr.get("CD2_1", 0.0))
-            cd22 = float(hdr["CD2_2"])
+        cdelt1 = float(hdr.get("CDELT1", 1.0))
+        cdelt2 = float(hdr.get("CDELT2", 1.0))
+        pc1_1  = float(hdr.get("PC1_1", 1.0))
+        pc1_2  = float(hdr.get("PC1_2", 0.0))
+        pc2_1  = float(hdr.get("PC2_1", 0.0))
+        pc2_2  = float(hdr.get("PC2_2", 1.0))
+        if "PC1_1" in hdr or "PC2_2" in hdr:
+            cd11 = cdelt1 * pc1_1
+            cd12 = cdelt1 * pc1_2
+            cd21 = cdelt2 * pc2_1
+            cd22 = cdelt2 * pc2_2
             scale_deg = np.sqrt(abs(cd11 * cd22 - cd12 * cd21))
-            return scale_deg * 3600.0
-        except Exception:
-            if fallback_px_um and fallback_fl_mm:
-                return 206.264806 * (fallback_px_um / fallback_fl_mm)
-            return None
+            if scale_deg > 0:
+                return scale_deg * 3600.0
+    except Exception:
+        pass
+
+    # 2) CD matrix directly
+    try:
+        cd11 = float(hdr["CD1_1"])
+        cd12 = float(hdr.get("CD1_2", 0.0))
+        cd21 = float(hdr.get("CD2_1", 0.0))
+        cd22 = float(hdr["CD2_2"])
+        scale_deg = np.sqrt(abs(cd11 * cd22 - cd12 * cd21))
+        return scale_deg * 3600.0
+    except Exception:
+        pass
 
 class ImagePeekerDialogPro(QDialog):
     def __init__(self, parent, document, settings):
