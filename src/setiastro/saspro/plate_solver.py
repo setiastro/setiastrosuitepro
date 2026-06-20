@@ -1859,20 +1859,36 @@ def _hough_match_catalog_to_image(
 ) -> tuple[np.ndarray | None, np.ndarray | None]:
     """
     Match image stars to catalog stars using a Hough-style vote on
-    (dx, dy) translation space.
+    (dx, dy) translation space, followed by a RANSAC similarity-transform
+    refinement pass before final affine inlier rejection.
 
     Algorithm references:
+      - Hough (1962), U.S. Patent 3,069,654 — original transform concept.
+      - Ballard (1981), Pattern Recognition 13(2):111–122 — Generalized
+        Hough Transform extended to arbitrary shapes and translations.
       - Tabur (2007), PASA 24, 189 — voting on translation offsets between
         projected catalog and detected image stars; closest analog to this impl.
       - Valdes et al. (1995), PASP 107, 1119 — FOCAS catalog matching via
         voting/histogram approach (USNO astrometric matching library basis).
       - Groth (1986), AJ 91, 1244 — original triangle invariant matching,
         foundational to all subsequent star-pattern recognition work.
+      - Fischler & Bolles (1981), Comm. ACM 24(6):381-395 — RANSAC, used
+        here to fit a robust similarity transform from a noisy candidate
+        pool without being dragged off by false correspondences.
 
-    Since the seed WCS already encodes scale and rotation (including camera
-    angle from ANGLE/CROTA2/OBJCTROT header keys), the residual transform
-    between img_stars and cat_xy is dominated by a small translation only.
-    Voting on (dx, dy) bins robustly finds this offset even with ~50% outliers.
+    The seed WCS may carry meaningful residual rotation/scale error on top
+    of the dominant translation (e.g. when CRVAL itself is off by a
+    significant fraction of a degree). A pure-translation Hough vote only
+    captures stars near the rotation center tightly; everything else drifts
+    out of the bin as you move away from that center. To handle this:
+      1. Vote on (dx, dy) to find the coarse bulk offset.
+      2. Gather a loose 3x3-neighborhood candidate pool around that bin.
+      3. Fit a similarity transform (rotation + uniform scale + translation)
+         via RANSAC over that pool — minimal 2-point samples scored by
+         inlier consensus — rejecting any false cross-bin correspondences
+         that would otherwise bias a plain least-squares fit.
+      4. Re-match using the corrected transform at a tight tolerance and
+         do a final affine fit + inlier rejection for the returned pairs.
     """
     from scipy.spatial import KDTree
 
@@ -1906,17 +1922,15 @@ def _hough_match_catalog_to_image(
         return None, None
 
     # ── Vote on (dx, dy) translation ────────────────────────────────────
-    # bin size: roughly match_tol_px so nearby votes cluster
     bin_px = match_tol_px * 2.0
     dx_range = img_w
     dy_range = img_h
 
-    votes   = {}   # (bx, by) → [(src_i, ref_j), ...]
+    votes = {}   # (bx, by) → [(src_i, ref_j), ...]
     for i, s in enumerate(src):
         for j, r in enumerate(ref):
             dx = r[0] - s[0]
             dy = r[1] - s[1]
-            # Only consider plausible offsets — within half image size
             if abs(dx) > dx_range * 0.5 or abs(dy) > dy_range * 0.5:
                 continue
             bx = int(np.round(dx / bin_px))
@@ -1930,45 +1944,128 @@ def _hough_match_catalog_to_image(
         print("[HoughMatch] no votes accumulated")
         return None, None
 
-    # Find peak bin
     best_key  = max(votes, key=lambda k: len(votes[k]))
-    best_votes = votes[best_key]
-    best_count = len(best_votes)
+    best_count = len(votes[best_key])
     print(f"[HoughMatch] peak bin {best_key} has {best_count} votes "
           f"(dx≈{best_key[0]*bin_px:.1f}px, dy≈{best_key[1]*bin_px:.1f}px)")
 
-    if best_count < min_matches:
-        # Try merging neighboring bins
-        bx0, by0 = best_key
-        merged = []
-        for dbx in range(-1, 2):
-            for dby in range(-1, 2):
-                k = (bx0 + dbx, by0 + dby)
-                merged.extend(votes.get(k, []))
-        print(f"[HoughMatch] after 3×3 merge: {len(merged)} votes")
-        if len(merged) < min_matches:
-            return None, None
-        best_votes = merged
+    bx0, by0 = best_key
+    merged = list(votes[best_key])
+    # Always pull in the 3x3 neighborhood — this gives the similarity-fit
+    # stage a wider, noisier candidate set to work with even when the peak
+    # bin itself is tight (residual rotation/scale spreads votes out).
+    for dbx in range(-1, 2):
+        for dby in range(-1, 2):
+            if dbx == 0 and dby == 0:
+                continue
+            k = (bx0 + dbx, by0 + dby)
+            merged.extend(votes.get(k, []))
 
-    # ── Refine: use exact nearest-neighbor matching at the voted offset ──
-    best_dx = best_key[0] * bin_px
-    best_dy = best_key[1] * bin_px
+    if len(merged) < 4:
+        print(f"[HoughMatch] too few candidates even after 3x3 merge: {len(merged)}")
+        return None, None
 
-    # Shift all src stars by the voted offset and match to ref
-    src_shifted = src + np.array([best_dx, best_dy])
+    print(f"[HoughMatch] candidate pool after 3x3 merge: {len(merged)} pairs")
+
+    # ── Similarity-transform refinement via RANSAC ────────────────────────
+    # Fit src -> ref using a 4-parameter similarity transform:
+    #   [x']   [ a -b ] [x]   [tx]
+    #   [y'] = [ b  a ] [y] + [ty]
+    # A plain least-squares fit over the whole noisy candidate pool can be
+    # dragged off by a handful of false cross-bin correspondences (which is
+    # exactly what was happening here: scale/rotation looked sane but the
+    # post-transform distance distribution was garbage for most stars).
+    # RANSAC over minimal 2-point samples avoids that.
+    cand_src = np.array([src[i] for i, j in merged], dtype=np.float64)
+    cand_ref = np.array([ref[j] for i, j in merged], dtype=np.float64)
+
+    def _fit_similarity(pts_src, pts_ref):
+        n = len(pts_src)
+        A = np.zeros((2 * n, 4), dtype=np.float64)
+        b = np.zeros(2 * n, dtype=np.float64)
+        x, y = pts_src[:, 0], pts_src[:, 1]
+        A[0::2, 0] = x;  A[0::2, 1] = -y;  A[0::2, 2] = 1.0
+        A[1::2, 0] = y;  A[1::2, 1] =  x;  A[1::2, 3] = 1.0
+        b[0::2] = pts_ref[:, 0]
+        b[1::2] = pts_ref[:, 1]
+        sol, *_ = np.linalg.lstsq(A, b, rcond=None)
+        return sol  # a_, b_, tx, ty
+
+    def _apply_sim(pts, sol):
+        a_, b_, tx, ty = sol
+        xs, ys = pts[:, 0], pts[:, 1]
+        return np.column_stack([
+            a_ * xs - b_ * ys + tx,
+            b_ * xs + a_ * ys + ty,
+        ])
+
+    try:
+        n_cand = len(cand_src)
+        if n_cand < 4:
+            raise ValueError("not enough candidates for similarity fit")
+
+        rng = np.random.default_rng(0)
+        ransac_tol = match_tol_px * 2.0
+
+        idx_pairs = [(i, j) for i in range(n_cand) for j in range(i + 1, n_cand)]
+        rng.shuffle(idx_pairs)
+        n_trials = min(200, len(idx_pairs))
+
+        best_inliers = None
+        best_sol = None
+
+        for i, j in idx_pairs[:n_trials]:
+            sub_src = cand_src[[i, j]]
+            sub_ref = cand_ref[[i, j]]
+            try:
+                sol = _fit_similarity(sub_src, sub_ref)
+            except Exception:
+                continue
+            pred = _apply_sim(cand_src, sol)
+            err = np.hypot(pred[:, 0] - cand_ref[:, 0], pred[:, 1] - cand_ref[:, 1])
+            inliers = err < ransac_tol
+            if best_inliers is None or inliers.sum() > best_inliers.sum():
+                best_inliers = inliers
+                best_sol = sol
+
+        if best_sol is None or best_inliers.sum() < 4:
+            raise ValueError("RANSAC found no consensus")
+
+        print(f"[HoughMatch] RANSAC similarity: {best_inliers.sum()}/{n_cand} inliers")
+
+        # Refit on the inlier consensus set for a cleaner final transform
+        sol = _fit_similarity(cand_src[best_inliers], cand_ref[best_inliers])
+        a_, b_, tx, ty = sol
+
+        src_transformed = _apply_sim(src, sol)
+        scale_recovered = float(np.hypot(a_, b_))
+        rot_recovered = float(np.degrees(np.arctan2(b_, a_)))
+        print(f"[HoughMatch] similarity fit: scale={scale_recovered:.4f} "
+              f"rot={rot_recovered:.2f}°")
+    except Exception as e:
+        print(f"[HoughMatch] similarity fit failed ({e}), falling back to translation only")
+        best_dx = best_key[0] * bin_px
+        best_dy = best_key[1] * bin_px
+        src_transformed = src + np.array([best_dx, best_dy])
+
+    # ── Re-match with the corrected (similarity-transformed) positions ───
     tree = KDTree(ref)
-    dists, idxs = tree.query(src_shifted, k=1, workers=-1)
+    dists, idxs = tree.query(src_transformed, k=1, workers=-1)
+
+    print(f"[HoughMatch] post-similarity distance stats: "
+          f"min={dists.min():.2f}px median={np.median(dists):.2f}px "
+          f"p90={np.percentile(dists, 90):.2f}px max={dists.max():.2f}px")
 
     inlier_mask = dists < match_tol_px * 1.5
     img_m = src[inlier_mask]
     cat_m = ref[idxs[inlier_mask]]
 
-    print(f"[HoughMatch] {inlier_mask.sum()} pairs within {match_tol_px*1.5:.1f}px after offset")
+    print(f"[HoughMatch] {inlier_mask.sum()} pairs within {match_tol_px*1.5:.1f}px after similarity correction")
 
     if len(img_m) < min_matches:
         return None, None
 
-    # ── Affine fit + inlier rejection ───────────────────────────────────
+    # ── Affine fit + inlier rejection (final polish) ─────────────────────
     try:
         from scipy.linalg import lstsq
         ones  = np.ones((len(img_m), 1))
@@ -2086,7 +2183,7 @@ def _solve_with_GAIA(image: np.ndarray,
         from setiastro.saspro.star_alignment import _detect_stars_uniform
 
         _sigma_levels = [50, 25, 15, 10, 5, 3]
-        _target_min, _target_max = 500, 1000
+        _target_min, _target_max = 1000, 2000
         img_stars = None
         used_sigma = None
 
@@ -2113,6 +2210,12 @@ def _solve_with_GAIA(image: np.ndarray,
                                 (_candidates[:,1] >= _y0) & (_candidates[:,1] < _y1)
                             ]
                             if len(_in_cell) > 0:
+                                if _in_cell.shape[1] >= 3:
+                                    # sort by brightness (col 2, descending) so
+                                    # we keep the most reliable detections per
+                                    # cell, not an arbitrary subset
+                                    _order = np.argsort(-_in_cell[:, 2])
+                                    _in_cell = _in_cell[_order]
                                 _balanced.append(_in_cell[:_max_per_cell])
                     _candidates = np.vstack(_balanced) if _balanced else _candidates[:_target_max]
                 img_stars = _candidates
@@ -2164,7 +2267,7 @@ def _solve_with_GAIA(image: np.ndarray,
                     try:
                         cur = conn.cursor()
                         cur.execute("""
-                            SELECT source_id, ra, dec FROM sources
+                            SELECT source_id, ra, dec, phot_g_mean_mag FROM sources
                             WHERE dec BETWEEN ? AND ? AND ra BETWEEN ? AND ?
                         """, (dec_min, dec_max, ra_min, ra_max))
                         all_sources.extend(cur.fetchall())
@@ -2175,9 +2278,9 @@ def _solve_with_GAIA(image: np.ndarray,
                     continue
 
                 seen_sids = {}
-                for sid, sra, sdec in all_sources:
+                for sid, sra, sdec, gmag in all_sources:
                     if sid not in seen_sids:
-                        seen_sids[sid] = {"ra": sra, "dec": sdec}
+                        seen_sids[sid] = {"ra": sra, "dec": sdec, "gmag": gmag}
 
                 if len(seen_sids) < 10:
                     continue
@@ -2187,6 +2290,9 @@ def _solve_with_GAIA(image: np.ndarray,
                 _set_status_ui(parent, f"Status: {len(seen_sids)} Gaia stars — trying {label}…")
 
                 cat_infos = list(seen_sids.values())
+                # Sort brightest-first (lowest G mag) so downstream grid
+                # truncation and matching prefer reliable bright stars.
+                cat_infos.sort(key=lambda i: (i["gmag"] if i["gmag"] is not None else 99.0))
                 cat_sky_all = SkyCoord(
                     ra=[i["ra"] for i in cat_infos] * u.deg,
                     dec=[i["dec"] for i in cat_infos] * u.deg,
@@ -2221,8 +2327,7 @@ def _solve_with_GAIA(image: np.ndarray,
                         if len(in_cell) == 0:
                             continue
                         if len(in_cell) > max_per_cell:
-                            step = len(in_cell) / max_per_cell
-                            in_cell = in_cell[np.round(np.arange(0, len(in_cell), step)).astype(int)[:max_per_cell]]
+                            in_cell = in_cell[:max_per_cell]
                         cat_xy_grid.append(cat_xy_all[in_cell])
                         cat_sky_idx.extend(in_cell.tolist())
 
@@ -2237,7 +2342,7 @@ def _solve_with_GAIA(image: np.ndarray,
                 img_matched, cat_matched_xy = _hough_match_catalog_to_image(
                     img_stars, cat_xy,
                     img_w=img_w, img_h=img_h,
-                    max_stars=500, min_matches=6, match_tol_px=10.0,
+                    max_stars=1000, min_matches=6, match_tol_px=10.0,
                 )
 
                 if img_matched is not None and len(img_matched) >= 6:
@@ -2420,12 +2525,25 @@ def _solve_with_GAIA(image: np.ndarray,
                 break
 
         # Final RMS report
+        # Final RMS report + quality gate
         try:
             sky_fit    = wcs_solution.pixel_to_world(img_matched[:, 0], img_matched[:, 1])
             sep_arcsec = matched_sky.separation(sky_fit).arcsec
             rms        = float(np.sqrt(np.mean(sep_arcsec**2)))
             p95        = float(np.percentile(sep_arcsec, 95))
             print(f"[GaiaLocal] final RMS={rms:.3f}\"  p95={p95:.3f}\"  n={n_matched}")
+
+            # Quality gate: a "solved" result with poor RMS or too few
+            # matched stars isn't trustworthy enough for SIP/SFCC use.
+            # Bail out so the caller can fall through to ASTAP/Astrometry.net.
+            QUALITY_RMS_LIMIT = 3.0   # arcsec
+            QUALITY_MIN_PAIRS = 20
+            if rms > QUALITY_RMS_LIMIT or n_matched < QUALITY_MIN_PAIRS:
+                return False, (
+                    f"Gaia DR3 solver: match quality too low for reliable use "
+                    f"(RMS={rms:.2f}\", n={n_matched}; need RMS<={QUALITY_RMS_LIMIT}\" "
+                    f"and n>={QUALITY_MIN_PAIRS})"
+                )
         except Exception:
             pass
 
