@@ -1184,6 +1184,131 @@ class CustomGraphicsView(QGraphicsView):
 
         super().mouseReleaseEvent(event)
 
+    def contextMenuEvent(self, event):
+        """Right-click context menu for an object under the cursor."""
+        scene_pos = self.mapToScene(event.pos())
+        clicked_object = self.get_object_at_position(scene_pos)
+
+        if not clicked_object:
+            super().contextMenuEvent(event)
+            return
+
+        # Select it first so the tree/main view stay in sync
+        self.parent.selected_object = clicked_object
+        self.select_object(clicked_object)
+        self.draw_query_results()
+        self.update_mini_preview()
+        for i in range(self.parent.results_tree.topLevelItemCount()):
+            item = self.parent.results_tree.topLevelItem(i)
+            if item.text(2) == clicked_object.get("name"):
+                self.parent.results_tree.setCurrentItem(item)
+                break
+
+        menu = QMenu(self)
+
+        name   = clicked_object.get("name", "")
+        ra     = clicked_object.get("ra")
+        dec    = clicked_object.get("dec")
+        source = (clicked_object.get("source", "Simbad") or "Simbad").strip()
+
+        act_open = menu.addAction(f"Open Website ({source})")
+        act_open.triggered.connect(lambda: self._open_object_website(clicked_object))
+
+        act_zoom = menu.addAction("Zoom to Object")
+        act_zoom.triggered.connect(lambda: self.zoom_to_coordinates(ra, dec))
+
+        act_copy_radec = menu.addAction("Copy RA/Dec")
+        act_copy_radec.triggered.connect(lambda: self._copy_object_radec(clicked_object))
+
+        act_copy_info = menu.addAction("Copy Object Information")
+        act_copy_info.triggered.connect(lambda: self.parent.copy_object_information(
+            self._tree_item_for_object(clicked_object)
+        ))
+
+        menu.addSeparator()
+
+        try:
+            from setiastro.saspro.gaia_database import get_library
+            has_lib = bool(get_library().installed_bands())
+        except Exception:
+            has_lib = False
+
+        act_spectrum = menu.addAction("View Gaia XP Spectrum")
+        act_spectrum.setEnabled(has_lib)
+        if not has_lib:
+            act_spectrum.setToolTip("No Gaia library installed — use Settings → Gaia XP Spectral Library")
+        act_spectrum.triggered.connect(lambda: self.parent._show_gaia_spectrum_for_item(
+            self._tree_item_for_object(clicked_object)
+        ))
+
+        menu.addSeparator()
+
+        act_delete = menu.addAction("Delete Object")
+        act_delete.triggered.connect(lambda: self._delete_object(clicked_object))
+
+        menu.exec(event.globalPos())
+
+    def _tree_item_for_object(self, obj):
+        """Find the QTreeWidgetItem matching this object's name."""
+        name = obj.get("name")
+        for i in range(self.parent.results_tree.topLevelItemCount()):
+            item = self.parent.results_tree.topLevelItem(i)
+            if item.text(2) == name:
+                return item
+        return None
+
+    def _open_object_website(self, obj):
+        name   = obj.get("name", "")
+        ra     = obj.get("ra")
+        dec    = obj.get("dec")
+        source = (obj.get("source", "Simbad") or "Simbad").strip()
+        kind   = obj.get("long_type", "") or obj.get("type", "")
+
+        s = source.lower()
+        if s.startswith("minordb"):
+            open_minor_body_3d_page(name, kind=kind)
+            return
+
+        try:
+            ra_f, dec_f = float(ra), float(dec)
+        except (TypeError, ValueError):
+            ra_f = dec_f = None
+
+        if source == "Simbad" and name:
+            encoded_name = quote(name)
+            webbrowser.open(
+                f"https://simbad.cds.unistra.fr/simbad/sim-basic?Ident={encoded_name}&submit=SIMBAD+search"
+            )
+        elif source == "Vizier" and ra_f is not None:
+            radius = 5 / 60
+            dec_sign = "%2B" if dec_f >= 0 else "-"
+            webbrowser.open(
+                f"http://ned.ipac.caltech.edu/conesearch?search_type=Near%20Position%20Search"
+                f"&ra={ra_f:.6f}d&dec={dec_sign}{abs(dec_f):.6f}d&radius={radius:.3f}"
+                "&in_csys=Equatorial&in_equinox=J2000.0"
+            )
+        elif source == "Mast" and ra_f is not None:
+            webbrowser.open(
+                f"https://mast.stsci.edu/portal/Mashup/Clients/Mast/Portal.html?"
+                f"searchQuery={ra_f}%2C{dec_f}%2Cradius%3D0.0006"
+            )
+
+    def _copy_object_radec(self, obj):
+        ra  = obj.get("ra")
+        dec = obj.get("dec")
+        try:
+            text = f"{float(ra):.6f}, {float(dec):.6f}"
+        except (TypeError, ValueError):
+            text = f"{ra}, {dec}"
+        QApplication.clipboard().setText(text)
+        self.parent.status_label.setText(f"Copied RA/Dec: {text}")
+
+    def _delete_object(self, obj):
+        item = self._tree_item_for_object(obj)
+        if item is not None:
+            self.parent.results_tree.setCurrentItem(item)
+            item.setSelected(True)
+        self.delete_selected_objects()
 
     def draw_measurement_line_and_label(self, distance_ddmmss):
         """Draw the measurement line and label with the celestial distance."""
@@ -3346,6 +3471,7 @@ class WIMIDialog(QDialog):
         self.results_tree.customContextMenuRequested.connect(self.open_context_menu)
         self.results_tree.itemClicked.connect(self.on_tree_item_clicked)
         self.results_tree.itemDoubleClicked.connect(self.on_tree_item_double_clicked)
+        self.results_tree.currentItemChanged.connect(self.on_tree_current_item_changed)
         self.results_tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.results_tree.setSortingEnabled(True)
         right_panel.addWidget(self.results_tree)
@@ -4332,15 +4458,23 @@ class WIMIDialog(QDialog):
         scaled_pixmap = pixmap.scaled(self.mini_preview.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
         self.mini_preview.setPixmap(scaled_pixmap)
 
+        # Save current view state before swapping the pixmap
+        saved_transform = self.main_preview.transform()
+        saved_h_scroll = self.main_preview.horizontalScrollBar().value()
+        saved_v_scroll = self.main_preview.verticalScrollBar().value()
+
         self.main_scene.clear()
         self.main_scene.addPixmap(pixmap)
         self._marker_layer = None
         self._ensure_marker_layer()
-        self._set_marker_points_from_results()        
+        self._set_marker_points_from_results()
         self.main_preview.setSceneRect(QRectF(pixmap.rect()))
-        self.zoom_level = 1.0
-        self.main_preview.resetTransform()
-        self.main_preview.centerOn(self.main_scene.sceneRect().center())
+
+        # Restore the view exactly as it was, instead of resetting to 1:1 centered
+        self.main_preview.setTransform(saved_transform)
+        self.main_preview.horizontalScrollBar().setValue(saved_h_scroll)
+        self.main_preview.verticalScrollBar().setValue(saved_v_scroll)
+
         self.update_green_box()
 
         # Optionally, you can also update any other parts of the UI after stretching the image
@@ -6001,6 +6135,21 @@ class WIMIDialog(QDialog):
         self.main_preview.draw_query_results()  # Redraw the main image without markers
         self.status_label.setText("Results cleared.")
 
+    def on_tree_current_item_changed(self, current, previous):
+        """Keep arrow-key navigation in sync with the main preview, same as a click."""
+        if current is None:
+            return
+        object_name = current.text(2)
+
+        selected_object = next(
+            (obj for obj in self.results if obj.get("name") == object_name), None
+        )
+        if selected_object:
+            self.selected_object = selected_object
+            self.main_preview.select_object(selected_object)
+            self.main_preview.draw_query_results()
+            self.main_preview.update_mini_preview()
+
     def on_tree_item_clicked(self, item):
         """Handle item click in the TreeWidget to highlight the associated object."""
         object_name = item.text(2)
@@ -6017,8 +6166,6 @@ class WIMIDialog(QDialog):
             self.main_preview.draw_query_results()
             self.main_preview.update_mini_preview() 
             
-            
-
     def on_tree_item_double_clicked(self, item):
         """Handle double-click event on a TreeWidget item to open SIMBAD or NED URL based on source."""
         object_name = item.text(2)  # Assuming 'Name' is in the third column
