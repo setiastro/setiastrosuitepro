@@ -1992,16 +1992,14 @@ class CustomGraphicsView(QGraphicsView):
 
 
     def select_object(self, selected_obj):
-        self.selected_object = selected_obj if self.selected_object != selected_obj else None
-        sel_name = self.selected_object["name"] if self.selected_object else None
-        # tell the dialog (and thus the MarkerLayer)
+        self.selected_object = selected_obj
+        sel_name = selected_obj["name"] if selected_obj else None
         self.parent._set_selected_name(sel_name)
 
-        # Update the TreeWidget selection in MainWindow
         for i in range(self.parent.results_tree.topLevelItemCount()):
             item = self.parent.results_tree.topLevelItem(i)
-            if item.text(2) == selected_obj["name"]:
-                self.parent.results_tree.setCurrentItem(item if self.selected_object else None)
+            if item.text(2) == (selected_obj.get("name") if selected_obj else None):
+                self.parent.results_tree.setCurrentItem(item)
                 break
 
     def undo_annotation(self):
@@ -6145,8 +6143,12 @@ class WIMIDialog(QDialog):
             (obj for obj in self.results if obj.get("name") == object_name), None
         )
         if selected_object:
+            # Set directly instead of calling main_preview.select_object,
+            # which toggles and would deselect on a normal click (itemClicked
+            # already calls select_object for that path).
+            self.main_preview.selected_object = selected_object
             self.selected_object = selected_object
-            self.main_preview.select_object(selected_object)
+            self._set_selected_name(selected_object.get("name"))
             self.main_preview.draw_query_results()
             self.main_preview.update_mini_preview()
 
