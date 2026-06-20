@@ -1,10 +1,10 @@
 {
-  "version": "1.18.4.post2",
+  "version": "1.18.5",
   "downloads": {
-      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.18.4/setiastrosuitepro_windows.zip",
-      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.18.4/SetiAstroSuitePro_macOS_Intel.dmg",
-      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.18.4/SetiAstroSuitePro_AppleSilicon.dmg",
-      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.18.4/SetiAstroSuitePro_linux.tar.xz"
+      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.18.5/setiastrosuitepro_windows.zip",
+      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.18.5/SetiAstroSuitePro_macOS_Intel.dmg",
+      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.18.5/SetiAstroSuitePro_AppleSilicon.dmg",
+      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.18.5/SetiAstroSuitePro_linux.tar.xz"
   },
- "notes": "Seti Astro Suite Pro\n\nV1.18.4 Maintenance update for various bus and UX fixes: main_window ui, blink comparator, mfd, stacking suite, star alignment, sssc, platesolver.\n\nV1.18.3 Maintenance update for various bug and UX fixes.\n\nV1.18.2 Syqon Parallax integration\n\nV1.18.1 SSSC bug fix, WIMI HR Diagram Updates, Bug fix for make stretch permanent.\n\nV1.18.0\nSSSC — Spectrophotometric Standard Star Calibration\nSolves your imaging system's true effective throughput R(λ) directly from Gaia XP stellar spectra — no sensor QE curve required. Three stages activate automatically: scalar gains (5+ stars), color-dependent band response (50+), and full per-channel R(λ) via coordinate descent (200+, B-V span ≥ 1.5). Each run refines and seeds the next. Works with any filter set — dedicated astro, OSC Bayer+QE, LP/cut filters. Substantially less sensitive to input curve accuracy than traditional SPCC. Requires the Gaia XP spectral library.\n\nNebula Flythrough — Cinematic zoom videos from your astrophotos. Composites a stars-only layer over starless using Screen blend, with independent zoom center and rate per layer. Per-layer effects: nebula depth warp (luminance-driven parallax), radial edge stretch, zoom blur, and chromatic aberration — all rampable with zoom velocity. Live scrubber preview before full render. GPU accelerated. SD through 4K export."
+ "notes": "Seti Astro Suite Pro\n\nV1.18.5 \nNew Plate Solver Option: GAIA DB platesolving. This is the new default option. It uses your installed GAIA DB files to accurately plate solve your image, requires the initial fits header information or manual seed, much like PI image solver. For a blind solve it then fallback to ASTAP blindsolving, finally to astrometry.net.\n\nOther major updates are included in: Display Stretch logic, WCS in geometry changes, History Explorer, Image Peeker, Live Stacking, Stacking Suite, Whats In My Image, bug fixes in minimized shelf, syqon, runtime torch, and more.."
 }
