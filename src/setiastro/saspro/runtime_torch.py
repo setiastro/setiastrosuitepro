@@ -278,7 +278,7 @@ def _detect_cuda_version(status_cb=print) -> tuple[int, int] | None:
             timeout=10, **_safe_text_kwargs(),
         )
         out = r.stdout or ""
-        m = re.search(r"CUDA Version:\s*([0-9]+)\.([0-9]+)", out)
+        m = re.search(r"CUDA (?:UMD )?Version:\s*([0-9]+)\.([0-9]+)", out)
         if m:
             ver = (int(m.group(1)), int(m.group(2)))
             _rt_dbg(f"CUDA {ver[0]}.{ver[1]} detected via nvidia-smi", status_cb)

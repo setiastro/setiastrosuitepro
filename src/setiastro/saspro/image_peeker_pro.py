@@ -1061,11 +1061,25 @@ class DistortionGridDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Astrometric Distortion & Histogram"))
 
-        # — 1) detect stars —
+        # — 1) detect stars — single high-sigma pass, then subsample if too many
         gray = img.mean(-1).astype(np.float32) if img.ndim==3 else img.astype(np.float32)
         data = np.ascontiguousarray(gray, np.float32)
         bkg  = sep.Background(data)
-        stars = sep.extract(data - bkg.back(), thresh=5.0, err=bkg.globalrms)
+        bkg_sub = data - bkg.back()
+
+        _target_max = 1000
+        stars = sep.extract(bkg_sub, thresh=50.0, err=bkg.globalrms)
+        n = len(stars) if stars is not None else 0
+
+        if stars is None or n == 0:
+            stars = sep.extract(bkg_sub, thresh=10.0, err=bkg.globalrms)
+            n = len(stars) if stars is not None else 0
+
+        if n > _target_max:
+            # Keep the brightest _target_max stars
+            order = np.argsort(stars['flux'])[::-1][:_target_max]
+            stars = stars[order]
+
         if stars is None or len(stars) < 10:
             QMessageBox.warning(self, self.tr("Distortion"), self.tr("Not enough stars found."))
             self.reject()
@@ -1077,14 +1091,14 @@ class DistortionGridDialog(QDialog):
         # — 2) extract SIP A,B and reference pixel from metadata dict —
         A, B, crpix1, crpix2 = extract_sip_from_meta(sip_meta)
 
-        # — 4) per-star residuals in pixels → arc-sec —
+        # — 3) per-star residuals in pixels → arc-sec —
         u_star = x_pix - crpix1
         v_star = y_pix - crpix2
         dx_star_pix, dy_star_pix = eval_sip(A, B, u_star, v_star)
         disp_star_pix    = np.hypot(dx_star_pix, dy_star_pix)
         disp_star_arcsec = disp_star_pix * arcsec_per_pix
 
-        # — 5) full‐image warp maps (pixels) for drawing grid —
+        # — 4) warp helper for grid lines / annotations —
         H, W = data.shape
 
         def warp_points(xs, ys):
@@ -1096,20 +1110,18 @@ class DistortionGridDialog(QDialog):
             dx_pix, dy_pix = eval_sip(A, B, u, v)
             return dx_pix * amplify, dy_pix * amplify
 
-        # — 6) build the distortion grid scene —
+        # — 5) build the distortion grid scene —
         scene = QGraphicsScene(self)
         scene.setBackgroundBrush(QColor(30,30,30))
         pen  = QPen(QColor(255,100,100), 1)
         label_font = QFont("Arial", 12, QFont.Weight.Bold)
 
-        # title above the grid
         title = QLabel(self.tr("Astrometric Distortion Grid"))
         title.setFont(QFont("Arial", 16, QFont.Weight.Bold))
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet("color: white;")
 
-        # draw horizontal + vertical lines
-        # draw horizontal + vertical lines
+        # draw horizontal + vertical grid lines
         for i in range(n_grid_lines+1):
             y0  = i*(H-1)/n_grid_lines
             xs  = np.linspace(0, W-1, 200)
@@ -1132,8 +1144,7 @@ class DistortionGridDialog(QDialog):
                 path.lineTo(QPointF(px,py))
             scene.addPath(path, pen)
 
-        # annotate each grid‐intersection
-        # Pre-compute all intersection points at once (vectorized)
+        # annotate each grid intersection (vectorized point computation)
         ii_grid, jj_grid = np.meshgrid(np.arange(n_grid_lines+1), np.arange(n_grid_lines+1))
         x0_all = (jj_grid.ravel() * (W-1) / n_grid_lines)
         y0_all = (ii_grid.ravel() * (H-1) / n_grid_lines)
@@ -1170,7 +1181,7 @@ class DistortionGridDialog(QDialog):
         left_layout.addWidget(title)
         left_layout.addWidget(view, 1)
 
-        # — 7) histogram of per-star residuals (arcsec) —
+        # — 6) histogram of per-star residuals (arcsec) —
         fig    = Figure(figsize=(4,4))
         canvas = FigureCanvas(fig)
         ax     = fig.add_subplot(111)
@@ -1193,7 +1204,7 @@ class DistortionGridDialog(QDialog):
         v = QVBoxLayout(self)
         v.addLayout(hl)
         v.addWidget(btn, 0)
-
+        
 def make_header_from_xisf_meta(meta: dict) -> fits.Header:
     """
     meta is the dict you returned as original_header for XISF:
@@ -1408,7 +1419,10 @@ class ImagePeekerDialogPro(QDialog):
         self.analysis_combo.addItem(self.tr("Tilt Analysis"), "Tilt Analysis")
         self.analysis_combo.addItem(self.tr("Focal Plane Analysis"), "Focal Plane Analysis")
         self.analysis_combo.addItem(self.tr("Astrometric Distortion Analysis"), "Astrometric Distortion Analysis")
-        analysis_row.addWidget(self.analysis_combo); analysis_row.addStretch(1)
+        analysis_row.addWidget(self.analysis_combo)
+        self.analyze_btn = QPushButton(self.tr("Analyze"))
+        analysis_row.addWidget(self.analyze_btn)
+        analysis_row.addStretch(1)
 
         btns = QHBoxLayout(); btns.addStretch(1)
         ok_btn = QPushButton(self.tr("Save Settings && Exit")); cancel_btn = QPushButton(self.tr("Exit without Saving"))
@@ -1423,7 +1437,7 @@ class ImagePeekerDialogPro(QDialog):
         self.grid_spin.valueChanged.connect(self._refresh_mosaic)
         self.panel_slider.valueChanged.connect(lambda v: (self.panel_value_label.setText(str(v)), self._refresh_mosaic()))
         self.sep_slider.valueChanged.connect(lambda v: (self.sep_value_label.setText(str(v)), self._refresh_mosaic()))
-        self.analysis_combo.currentTextChanged.connect(self._run_analysis)
+        self.analyze_btn.clicked.connect(self._run_analysis)
         ok_btn.clicked.connect(self.accept); cancel_btn.clicked.connect(self.reject)
         def _save_after_change(*_):
             self._save_ui_state()
@@ -1437,6 +1451,15 @@ class ImagePeekerDialogPro(QDialog):
         self.focal_length_input.editingFinished.connect(_save_after_change)
         self.aperture_input.editingFinished.connect(_save_after_change)
         QTimer.singleShot(0, self._refresh_mosaic)
+
+    def _run_analysis(self, *_):
+        mode_key = self.analysis_combo.currentData()
+        mode_disp = self.analysis_combo.currentText()
+        if mode_key == "None":
+            QMessageBox.information(self, self.tr("Analysis"), self.tr("Select an analysis type first."))
+            return
+        self._set_busy(True, self.tr("Running {0}…").format(mode_disp))
+        QTimer.singleShot(0, lambda: self._run_analysis_dispatch(mode_key))
 
     def _k(self, key: str) -> str:
         return f"{self._persist_prefix}/{key}"
