@@ -5625,12 +5625,27 @@ class StackingSuiteDialog(QDialog):
     def restore_saved_master_calibrations(self):
         saved_darks = self.settings.value("stacking/master_darks", [], type=list)
         saved_flats = self.settings.value("stacking/master_flats", [], type=list)
-        print(f"[RESTORE] saved_darks={saved_darks}")
-        print(f"[RESTORE] saved_flats={saved_flats}")
-        if saved_darks:
-            self.add_master_files(self.master_dark_tree, "DARK", saved_darks)
-        if saved_flats:
-            self.add_master_files(self.master_flat_tree, "FLAT", saved_flats)
+
+        valid_darks = [p for p in saved_darks if os.path.exists(p)]
+        valid_flats = [p for p in saved_flats if os.path.exists(p)]
+
+        # Forget any paths that no longer exist
+        for p in saved_darks:
+            if p not in valid_darks:
+                self.update_status(self.tr(f"⚠️ Master dark no longer found, forgetting: {p}"))
+        for p in saved_flats:
+            if p not in valid_flats:
+                self.update_status(self.tr(f"⚠️ Master flat no longer found, forgetting: {p}"))
+
+        if valid_darks != saved_darks:
+            self.settings.setValue("stacking/master_darks", valid_darks)
+        if valid_flats != saved_flats:
+            self.settings.setValue("stacking/master_flats", valid_flats)
+
+        if valid_darks:
+            self.add_master_files(self.master_dark_tree, "DARK", valid_darks)
+        if valid_flats:
+            self.add_master_files(self.master_flat_tree, "FLAT", valid_flats)
 
     def _quick_build_master_dark(self):
         self.create_master_dark()
@@ -10663,6 +10678,31 @@ class StackingSuiteDialog(QDialog):
         self.comet_save_starless_cb.toggled.connect(
             lambda v: self.settings.setValue("stacking/comet/save_starless", bool(v))
         )
+
+        # ─────────────────────────────────────────
+        # Output options row
+        # ─────────────────────────────────────────
+        output_opts_row = QHBoxLayout()
+
+        self.save_rejection_layers_cb = QCheckBox(self.tr("Save rejection layers with master lights"))
+        self.save_rejection_layers_cb.setToolTip(self.tr(
+            "When enabled, master light FITS files are saved as multi-extension FITS (MEF) "
+            "with additional HDUs containing the rejection any-mask, fraction map, and count map.\n"
+            "Disable to save smaller single-HDU FITS files."
+        ))
+        self.save_rejection_layers_cb.setChecked(
+            self.settings.value("stacking/save_rejection_layers", True, type=bool)
+        )
+        self.save_rejection_layers_cb.toggled.connect(
+            lambda v: (
+                self.settings.setValue("stacking/save_rejection_layers", bool(v)),
+                self.settings.sync()
+            )
+        )
+        output_opts_row.addWidget(self.save_rejection_layers_cb)
+        output_opts_row.addStretch(1)
+        layout.addLayout(output_opts_row)
+
         # ─────────────────────────────────────────
         # 8) Backend / Install GPU Acceleration — MOVED BELOW comet+trail row
         # ─────────────────────────────────────────

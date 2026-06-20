@@ -376,7 +376,19 @@ class SettingsDialog(QDialog):
         w_models = QWidget()
         w_models.setLayout(models_box)
         right_col.addRow(w_models)
+        # ---- Gaia XP Spectral Library ----
+        right_col.addRow(QLabel(self.tr("<b>Gaia XP Spectral Library</b>")))
 
+        self.lbl_gaia_status = QLabel(self.tr("Status: (unknown)"))
+        self.lbl_gaia_status.setStyleSheet("color:#888;")
+        self.lbl_gaia_status.setWordWrap(True)
+        self.lbl_gaia_status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        right_col.addRow(self.lbl_gaia_status)
+
+        self.btn_gaia_open = QPushButton(self.tr("Open Gaia Database…"))
+        self.btn_gaia_open.setToolTip(self.tr("Manage installed Gaia XP spectral library groups"))
+        self.btn_gaia_open.clicked.connect(self._open_gaia_database_clicked)
+        right_col.addRow(self.btn_gaia_open)
         # ---- WIMS + RA/Dec + Updates ----
         right_col.addRow(QLabel(self.tr("<b>What's In My Sky — Defaults</b>")))
         right_col.addRow(self.tr("Latitude (°):"), self.sp_lat)
@@ -477,6 +489,43 @@ class SettingsDialog(QDialog):
         self._layout_mode = None
         self._update_responsive_layout()
 
+    def _open_gaia_database_clicked(self):
+        from setiastro.saspro.gaia_database import open_gaia_database_dialog
+        dlg = open_gaia_database_dialog(parent=self)
+        try:
+            dlg.library_changed.connect(self._refresh_gaia_status)
+        except Exception:
+            pass
+
+    def _refresh_gaia_status(self):
+        try:
+            from setiastro.saspro.gaia_database import GROUP_DEFS, get_library_dir
+            lib_dir = get_library_dir()
+            n_installed = sum(
+                1 for g in GROUP_DEFS
+                if all((lib_dir / f).exists() for f in g.filenames)
+            )
+            n_partial = sum(
+                1 for g in GROUP_DEFS
+                if any((lib_dir / f).exists() for f in g.filenames)
+                and not all((lib_dir / f).exists() for f in g.filenames)
+            )
+            total_mb = sum(
+                (lib_dir / f).stat().st_size / (1024 * 1024)
+                for g in GROUP_DEFS for f in g.filenames
+                if (lib_dir / f).exists()
+            )
+            size_str = f"{total_mb/1024:.1f} GB" if total_mb >= 1024 else f"{total_mb:.0f} MB"
+
+            lines = [self.tr("{0}/{1} groups installed  ·  {2} on disk").format(
+                n_installed, len(GROUP_DEFS), size_str)]
+            if n_partial:
+                lines.append(self.tr("{0} group(s) partially installed").format(n_partial))
+            lines.append(self.tr("Location: {0}").format(str(lib_dir)))
+
+            self.lbl_gaia_status.setText("\n".join(lines))
+        except Exception as e:
+            self.lbl_gaia_status.setText(self.tr("Status: error reading library ({0})").format(e))
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -1295,7 +1344,15 @@ class SettingsDialog(QDialog):
             self._refresh_models_status()
         except Exception:
             pass
-
+        try:
+            self._refresh_models_status()
+        except Exception:
+            pass
+        try:
+            self._refresh_gaia_status()
+        except Exception:
+            pass
+        
     def reject(self):
         """User cancelled: restore the original background opacity (revert live changes)."""
         try:

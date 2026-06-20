@@ -381,6 +381,17 @@ def parallax_sharpen_rgb01(
     model, config = load_parallax_model(ckpt_path, variant="sharpen")
     model.to(device).eval()
 
+    # AstroNAFLiteDeblur is the only Parallax model using grouped/depthwise
+    # convolutions (NAFBlock.conv2, groups=dw_c). On some Turing-generation
+    # GPUs (observed: GTX 1650), cuDNN's autotuned algorithm for grouped
+    # convs at certain tile sizes (256/512) silently returns all-zero
+    # output with NO error — completes normally but produces a black tile.
+    # Disabling cudnn.benchmark forces a stable algorithm selection.
+    _cudnn_benchmark_prev = None
+    if device.type == "cuda":
+        _cudnn_benchmark_prev = torch.backends.cudnn.benchmark
+        torch.backends.cudnn.benchmark = False
+
     # Reflect-pad full image before tiling — same as correction/star_reduce
     img_padded, orig_hw = _pad_reflect(img, pad)
     height, width = img_padded.shape[:2]
@@ -435,6 +446,9 @@ def parallax_sharpen_rgb01(
     final_output = img + alpha * (reconstructed - img)
     result = np.clip(final_output, 0.0, 1.0).astype(np.float32, copy=False)
 
+    if _cudnn_benchmark_prev is not None:
+        torch.backends.cudnn.benchmark = _cudnn_benchmark_prev
+        
     info = {
         "variant": "sharpen",
         "alpha":   alpha,

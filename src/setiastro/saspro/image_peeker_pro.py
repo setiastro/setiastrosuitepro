@@ -1061,11 +1061,25 @@ class DistortionGridDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Astrometric Distortion & Histogram"))
 
-        # — 1) detect stars —
+        # — 1) detect stars — single high-sigma pass, then subsample if too many
         gray = img.mean(-1).astype(np.float32) if img.ndim==3 else img.astype(np.float32)
         data = np.ascontiguousarray(gray, np.float32)
         bkg  = sep.Background(data)
-        stars = sep.extract(data - bkg.back(), thresh=5.0, err=bkg.globalrms)
+        bkg_sub = data - bkg.back()
+
+        _target_max = 1000
+        stars = sep.extract(bkg_sub, thresh=50.0, err=bkg.globalrms)
+        n = len(stars) if stars is not None else 0
+
+        if stars is None or n == 0:
+            stars = sep.extract(bkg_sub, thresh=10.0, err=bkg.globalrms)
+            n = len(stars) if stars is not None else 0
+
+        if n > _target_max:
+            # Keep the brightest _target_max stars
+            order = np.argsort(stars['flux'])[::-1][:_target_max]
+            stars = stars[order]
+
         if stars is None or len(stars) < 10:
             QMessageBox.warning(self, self.tr("Distortion"), self.tr("Not enough stars found."))
             self.reject()
@@ -1077,42 +1091,43 @@ class DistortionGridDialog(QDialog):
         # — 2) extract SIP A,B and reference pixel from metadata dict —
         A, B, crpix1, crpix2 = extract_sip_from_meta(sip_meta)
 
-        # — 4) per-star residuals in pixels → arc-sec —
+        # — 3) per-star residuals in pixels → arc-sec —
         u_star = x_pix - crpix1
         v_star = y_pix - crpix2
         dx_star_pix, dy_star_pix = eval_sip(A, B, u_star, v_star)
         disp_star_pix    = np.hypot(dx_star_pix, dy_star_pix)
         disp_star_arcsec = disp_star_pix * arcsec_per_pix
 
-        # — 5) full‐image warp maps (pixels) for drawing grid —
+        # — 4) warp helper for grid lines / annotations —
         H, W = data.shape
-        YY, XX = np.mgrid[0:H, 0:W]
-        U = XX - crpix1
-        V = YY - crpix2
-        DX_pix, DY_pix = eval_sip(A, B, U, V)
-        DX = DX_pix * amplify
-        DY = DY_pix * amplify
 
-        # — 6) build the distortion grid scene —
+        def warp_points(xs, ys):
+            """Evaluate SIP distortion only at the given sample points."""
+            xs = np.asarray(xs, dtype=np.float64)
+            ys = np.asarray(ys, dtype=np.float64)
+            u = xs - crpix1
+            v = ys - crpix2
+            dx_pix, dy_pix = eval_sip(A, B, u, v)
+            return dx_pix * amplify, dy_pix * amplify
+
+        # — 5) build the distortion grid scene —
         scene = QGraphicsScene(self)
         scene.setBackgroundBrush(QColor(30,30,30))
         pen  = QPen(QColor(255,100,100), 1)
         label_font = QFont("Arial", 12, QFont.Weight.Bold)
 
-        # title above the grid
         title = QLabel(self.tr("Astrometric Distortion Grid"))
         title.setFont(QFont("Arial", 16, QFont.Weight.Bold))
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet("color: white;")
 
-        # draw horizontal + vertical lines
+        # draw horizontal + vertical grid lines
         for i in range(n_grid_lines+1):
             y0  = i*(H-1)/n_grid_lines
             xs  = np.linspace(0, W-1, 200)
             ys  = np.full_like(xs, y0)
-            xi  = np.clip(xs.astype(int), 0, W-1)
-            yi  = np.clip(ys.astype(int), 0, H-1)
-            warped = np.column_stack([ xs + DX[yi,xi], ys + DY[yi,xi] ])
+            dx_line, dy_line = warp_points(xs, ys)
+            warped = np.column_stack([xs + dx_line, ys + dy_line])
             path = QPainterPath(QPointF(*warped[0]))
             for px,py in warped[1:]:
                 path.lineTo(QPointF(px,py))
@@ -1122,27 +1137,32 @@ class DistortionGridDialog(QDialog):
             x0  = j*(W-1)/n_grid_lines
             ys  = np.linspace(0, H-1, 200)
             xs  = np.full_like(ys, x0)
-            xi  = np.clip(xs.astype(int), 0, W-1)
-            yi  = np.clip(ys.astype(int), 0, H-1)
-            warped = np.column_stack([ xs + DX[yi,xi], ys + DY[yi,xi] ])
+            dx_line, dy_line = warp_points(xs, ys)
+            warped = np.column_stack([xs + dx_line, ys + dy_line])
             path = QPainterPath(QPointF(*warped[0]))
             for px,py in warped[1:]:
                 path.lineTo(QPointF(px,py))
             scene.addPath(path, pen)
 
-        # annotate each grid‐intersection
+        # annotate each grid intersection (vectorized point computation)
+        ii_grid, jj_grid = np.meshgrid(np.arange(n_grid_lines+1), np.arange(n_grid_lines+1))
+        x0_all = (jj_grid.ravel() * (W-1) / n_grid_lines)
+        y0_all = (ii_grid.ravel() * (H-1) / n_grid_lines)
+        dx_pix_all, dy_pix_all = warp_points(x0_all, y0_all)
+        dx_pix_all /= amplify  # un-amplify to get raw pixel distortion for the label
+        dy_pix_all /= amplify
+
+        idx = 0
         for i in range(n_grid_lines+1):
             for j in range(n_grid_lines+1):
                 y0 = i*(H-1)/n_grid_lines
                 x0 = j*(W-1)/n_grid_lines
-                xi, yi = int(round(x0)), int(round(y0))
 
-                # local distortion in pixels → arcsec
-                d_pix    = math.hypot(DX_pix[yi, xi], DY_pix[yi, xi])
+                d_pix    = math.hypot(dx_pix_all[idx], dy_pix_all[idx])
                 d_arcsec = d_pix * arcsec_per_pix
 
-                px = x0 + DX[yi, xi]
-                py = y0 + DY[yi, xi]
+                px = x0 + dx_pix_all[idx] * amplify
+                py = y0 + dy_pix_all[idx] * amplify
 
                 txt = QGraphicsTextItem(f"{d_arcsec:.1f}\"")
                 txt.setFont(label_font)
@@ -1150,6 +1170,7 @@ class DistortionGridDialog(QDialog):
                 txt.setDefaultTextColor(QColor(200,200,200))
                 txt.setPos(px + 4, py + 4)
                 scene.addItem(txt)
+                idx += 1
 
         view = QGraphicsView(scene)
         view.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -1160,7 +1181,7 @@ class DistortionGridDialog(QDialog):
         left_layout.addWidget(title)
         left_layout.addWidget(view, 1)
 
-        # — 7) histogram of per-star residuals (arcsec) —
+        # — 6) histogram of per-star residuals (arcsec) —
         fig    = Figure(figsize=(4,4))
         canvas = FigureCanvas(fig)
         ax     = fig.add_subplot(111)
@@ -1183,7 +1204,7 @@ class DistortionGridDialog(QDialog):
         v = QVBoxLayout(self)
         v.addLayout(hl)
         v.addWidget(btn, 0)
-
+        
 def make_header_from_xisf_meta(meta: dict) -> fits.Header:
     """
     meta is the dict you returned as original_header for XISF:
@@ -1292,25 +1313,41 @@ def _ensure_fits_header(orig_hdr):
             return None
     return None
 def _arcsec_per_pix_from_header(hdr: fits.Header, fallback_px_um: float|None=None, fallback_fl_mm: float|None=None):
-    """Try CDELT-based scale; fallback to CD matrix; then pixel_size & focal length."""
+    """Try PC*CDELT scale; fallback to CD matrix; then pixel_size & focal length."""
     if hdr is None:
         if fallback_px_um and fallback_fl_mm:
             return 206.264806 * (fallback_px_um / fallback_fl_mm)
         return None
+
+    # 1) PC matrix * CDELT (modern WCS convention used by astropy fit_wcs_from_points)
     try:
-        return abs(float(hdr["CDELT1"])) * 3600.0
-    except Exception:
-        try:
-            cd11 = float(hdr["CD1_1"])
-            cd12 = float(hdr.get("CD1_2", 0.0))
-            cd21 = float(hdr.get("CD2_1", 0.0))
-            cd22 = float(hdr["CD2_2"])
+        cdelt1 = float(hdr.get("CDELT1", 1.0))
+        cdelt2 = float(hdr.get("CDELT2", 1.0))
+        pc1_1  = float(hdr.get("PC1_1", 1.0))
+        pc1_2  = float(hdr.get("PC1_2", 0.0))
+        pc2_1  = float(hdr.get("PC2_1", 0.0))
+        pc2_2  = float(hdr.get("PC2_2", 1.0))
+        if "PC1_1" in hdr or "PC2_2" in hdr:
+            cd11 = cdelt1 * pc1_1
+            cd12 = cdelt1 * pc1_2
+            cd21 = cdelt2 * pc2_1
+            cd22 = cdelt2 * pc2_2
             scale_deg = np.sqrt(abs(cd11 * cd22 - cd12 * cd21))
-            return scale_deg * 3600.0
-        except Exception:
-            if fallback_px_um and fallback_fl_mm:
-                return 206.264806 * (fallback_px_um / fallback_fl_mm)
-            return None
+            if scale_deg > 0:
+                return scale_deg * 3600.0
+    except Exception:
+        pass
+
+    # 2) CD matrix directly
+    try:
+        cd11 = float(hdr["CD1_1"])
+        cd12 = float(hdr.get("CD1_2", 0.0))
+        cd21 = float(hdr.get("CD2_1", 0.0))
+        cd22 = float(hdr["CD2_2"])
+        scale_deg = np.sqrt(abs(cd11 * cd22 - cd12 * cd21))
+        return scale_deg * 3600.0
+    except Exception:
+        pass
 
 class ImagePeekerDialogPro(QDialog):
     def __init__(self, parent, document, settings):
@@ -1382,7 +1419,10 @@ class ImagePeekerDialogPro(QDialog):
         self.analysis_combo.addItem(self.tr("Tilt Analysis"), "Tilt Analysis")
         self.analysis_combo.addItem(self.tr("Focal Plane Analysis"), "Focal Plane Analysis")
         self.analysis_combo.addItem(self.tr("Astrometric Distortion Analysis"), "Astrometric Distortion Analysis")
-        analysis_row.addWidget(self.analysis_combo); analysis_row.addStretch(1)
+        analysis_row.addWidget(self.analysis_combo)
+        self.analyze_btn = QPushButton(self.tr("Analyze"))
+        analysis_row.addWidget(self.analyze_btn)
+        analysis_row.addStretch(1)
 
         btns = QHBoxLayout(); btns.addStretch(1)
         ok_btn = QPushButton(self.tr("Save Settings && Exit")); cancel_btn = QPushButton(self.tr("Exit without Saving"))
@@ -1397,7 +1437,7 @@ class ImagePeekerDialogPro(QDialog):
         self.grid_spin.valueChanged.connect(self._refresh_mosaic)
         self.panel_slider.valueChanged.connect(lambda v: (self.panel_value_label.setText(str(v)), self._refresh_mosaic()))
         self.sep_slider.valueChanged.connect(lambda v: (self.sep_value_label.setText(str(v)), self._refresh_mosaic()))
-        self.analysis_combo.currentTextChanged.connect(self._run_analysis)
+        self.analyze_btn.clicked.connect(self._run_analysis)
         ok_btn.clicked.connect(self.accept); cancel_btn.clicked.connect(self.reject)
         def _save_after_change(*_):
             self._save_ui_state()
@@ -1411,6 +1451,15 @@ class ImagePeekerDialogPro(QDialog):
         self.focal_length_input.editingFinished.connect(_save_after_change)
         self.aperture_input.editingFinished.connect(_save_after_change)
         QTimer.singleShot(0, self._refresh_mosaic)
+
+    def _run_analysis(self, *_):
+        mode_key = self.analysis_combo.currentData()
+        mode_disp = self.analysis_combo.currentText()
+        if mode_key == "None":
+            QMessageBox.information(self, self.tr("Analysis"), self.tr("Select an analysis type first."))
+            return
+        self._set_busy(True, self.tr("Running {0}…").format(mode_disp))
+        QTimer.singleShot(0, lambda: self._run_analysis_dispatch(mode_key))
 
     def _k(self, key: str) -> str:
         return f"{self._persist_prefix}/{key}"
@@ -1566,7 +1615,7 @@ class ImagePeekerDialogPro(QDialog):
                 hdr = _header_from_meta(meta)
 
                 # If we truly have no WCS, plate-solve
-                if hdr is None or not WCS(hdr, relax=True).has_celestial:
+                if hdr is None or not WCS(hdr, naxis=2, relax=True).has_celestial:
                     ok, hdr_or_err = plate_solve_doc_inplace(
                         parent=self, doc=self._coerce_doc(self.document), settings=self.settings
                     )

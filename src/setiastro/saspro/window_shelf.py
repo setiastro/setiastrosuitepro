@@ -210,18 +210,27 @@ class MinimizeInterceptor(QObject):
     def eventFilter(self, obj, ev):
         if isinstance(obj, QMdiSubWindow) and ev.type() == QEvent.Type.WindowStateChange:
             if obj.windowState() & Qt.WindowState.WindowMinimized:
+                tok = getattr(obj, "_shelf_token", None)
+                if tok and tok in self.shelf._tok2sub:
+                    return False
                 self.shelf.pre_capture_state(obj)
                 QTimer.singleShot(0, lambda o=obj: self._redirect(o))
                 return True
         return False
 
     def _redirect(self, sub: QMdiSubWindow):
-        # Clear the minimized bit and hide, then add shelf entry
+        if self.shelf._is_dead(sub):
+            return
+        tok = getattr(sub, "_shelf_token", None)
+        if tok and tok in self.shelf._tok2sub:
+            return
+        if not (sub.windowState() & Qt.WindowState.WindowMinimized):
+            return
+
         sub.setWindowState(sub.windowState() & ~Qt.WindowState.WindowMinimized)
         sub.hide()
         self.shelf.add_entry(sub)
 
-        # NEW: pick a new active subwindow (so the hidden one isn't "active")
         QTimer.singleShot(0, lambda s=sub: self._activate_next_visible(s))
 
     def _activate_next_visible(self, hidden_sub: QMdiSubWindow):

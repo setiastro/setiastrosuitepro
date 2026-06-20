@@ -769,6 +769,15 @@ class HistoryImagePreview(QWidget):
         win.resize(900, 700)
 
         v = QVBoxLayout(win)
+
+        help_lbl = QLabel(
+            "Left-click + drag: move before/after divider  •  "
+            "Middle-click + drag, or hold Space + left-click + drag: pan image  •  "
+            "Ctrl+wheel: zoom"
+        )
+        help_lbl.setWordWrap(True)
+        v.addWidget(help_lbl)
+
         self.slider_widget = ComparisonSlider(self.image_data, cur, parent=win)
         v.addWidget(self.slider_widget, 1)
 
@@ -787,6 +796,7 @@ class HistoryImagePreview(QWidget):
         v.addLayout(bar)
 
         win.show()
+        self.slider_widget.setFocus()
         mw = self._find_main_window()
         if mw and hasattr(mw, "_log"):
             mw._log("History: opened Compare with Current.")
@@ -857,9 +867,14 @@ class HistoryImagePreview(QWidget):
 
         return super().eventFilter(obj, ev)
 
-
 class ComparisonSlider(QWidget):
-    """Before/after slider with Ctrl+wheel zoom, Fit, 1:1, optional display autostretch."""
+    """Before/after slider with Ctrl+wheel zoom, Fit, 1:1, optional display autostretch.
+
+    Panning:
+      - Middle-click drag pans the image.
+      - Hold Space and left-click drag pans the image (left-click alone
+        without Space still moves the before/after divider).
+    """
     def __init__(self, before_image: np.ndarray, after_image: np.ndarray, parent=None):
         super().__init__(parent)
         self.before = np.asarray(before_image)
@@ -868,10 +883,18 @@ class ComparisonSlider(QWidget):
         self.autostretch_on = False
         self.slider_pos = 0.5
 
+        self.pan_x = 0.0
+        self.pan_y = 0.0
+
+        self._space_down = False
+        self._panning = False
+        self._pan_last_pos = None
+
         self._q_before = None; self._buf_before = None
         self._q_after  = None; self._buf_after  = None
         self.setMouseTracking(True)
         self.setMinimumSize(400, 300)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._rebuild()
 
     def _mk_vis(self, a: np.ndarray) -> np.ndarray:
@@ -899,7 +922,10 @@ class ComparisonSlider(QWidget):
         W,H = self.width(), self.height()
         iw,ih = self._q_before.width(), self._q_before.height()
         if iw==0 or ih==0: return
-        self.set_zoom(min(W/iw, H/ih))
+        s = min(W/iw, H/ih)
+        self.pan_x = 0.0
+        self.pan_y = 0.0
+        self.set_zoom(max(0.05, s))
 
     def toggle_autostretch(self):
         self.autostretch_on = not self.autostretch_on
@@ -919,8 +945,8 @@ class ComparisonSlider(QWidget):
                                   Qt.TransformationMode.SmoothTransformation)
         a = self._q_after.scaled(tw, th, Qt.AspectRatioMode.KeepAspectRatio,
                                  Qt.TransformationMode.SmoothTransformation)
-        ox = (W - b.width()) // 2
-        oy = (H - b.height()) // 2
+        ox = (W - b.width()) // 2 + int(self.pan_x)
+        oy = (H - b.height()) // 2 + int(self.pan_y)
         cut = int(W * self.slider_pos)
 
         p.save(); p.setClipRect(0, 0, cut, H); p.drawImage(ox, oy, b); p.restore()
@@ -929,16 +955,62 @@ class ComparisonSlider(QWidget):
         p.setPen(Qt.GlobalColor.red); p.drawLine(cut, 0, cut, H)
 
     def mousePressEvent(self, ev):
+        if ev.button() == Qt.MouseButton.MiddleButton or (
+            ev.button() == Qt.MouseButton.LeftButton and self._space_down
+        ):
+            self._panning = True
+            self._pan_last_pos = ev.position()
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            return
+
         if ev.button() == Qt.MouseButton.LeftButton:
             self._set_div(ev.position().x())
+
     def mouseMoveEvent(self, ev):
+        if self._panning and self._pan_last_pos is not None:
+            delta = ev.position() - self._pan_last_pos
+            self.pan_x += delta.x()
+            self.pan_y += delta.y()
+            self._pan_last_pos = ev.position()
+            self.update()
+            return
+
         if ev.buttons() & Qt.MouseButton.LeftButton:
             self._set_div(ev.position().x())
+
+    def mouseReleaseEvent(self, ev):
+        if self._panning and (
+            ev.button() == Qt.MouseButton.MiddleButton
+            or ev.button() == Qt.MouseButton.LeftButton
+        ):
+            self._panning = False
+            self._pan_last_pos = None
+            self.setCursor(Qt.CursorShape.OpenHandCursor if self._space_down else Qt.CursorShape.ArrowCursor)
+
     def _set_div(self, x):
         self.slider_pos = min(max(x / max(1, self.width()), 0.0), 1.0); self.update()
+
     def wheelEvent(self, ev):
         if ev.modifiers() & Qt.KeyboardModifier.ControlModifier:
             self.set_zoom(self.zoom * (1.25 if ev.angleDelta().y() > 0 else 0.8))
             ev.accept()
         else:
             ev.ignore()
+
+    def keyPressEvent(self, ev):
+        if ev.key() == Qt.Key.Key_Space:
+            self._space_down = True
+            if not self._panning:
+                self.setCursor(Qt.CursorShape.OpenHandCursor)
+            ev.accept()
+            return
+        super().keyPressEvent(ev)
+
+    def keyReleaseEvent(self, ev):
+        if ev.key() == Qt.Key.Key_Space:
+            self._space_down = False
+            if not self._panning:
+                self.setCursor(Qt.CursorShape.ArrowCursor)
+            ev.accept()
+            return
+        super().keyReleaseEvent(ev)

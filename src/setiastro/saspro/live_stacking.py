@@ -105,7 +105,34 @@ class LiveStackSettingsDialog(QDialog):
             step=0.5
         )
 
+        # find this block:
+        self.delay_spin = CustomDoubleSpinBox(
+            minimum=0.0,
+            maximum=60.0,
+            initial=parent.FILE_STABLE_SECS,
+            step=0.5
+        )
 
+        # replace with:
+        self.delay_spin = CustomDoubleSpinBox(
+            minimum=0.0,
+            maximum=60.0,
+            initial=parent.FILE_STABLE_SECS,
+            step=0.5
+        )
+
+        # Star detection sigma threshold
+        self.star_sigma_spin = CustomDoubleSpinBox(
+            minimum=1.0,
+            maximum=20.0,
+            initial=parent.star_thresh_sigma,
+            step=0.5
+        )
+        self.star_sigma_spin.setToolTip(
+            "Detection threshold for star finding (σ above background).\n"
+            "Lower = more stars found (including faint ones).\n"
+            "Higher = only bright/obvious stars. Default: 7.0"
+        )
 
         # Build form layout
         form = QFormLayout()
@@ -116,6 +143,7 @@ class LiveStackSettingsDialog(QDialog):
         form.addRow("Max Eccentricity:", self.ecc_spin)
         form.addRow("Min Star Count:", self.star_spin)
         form.addRow("Acquisition Delay:", self.delay_spin)
+        form.addRow("Star Detection σ:", self.star_sigma_spin)
 
         self.mapping_combo = QComboBox()
         opts = ["Natural", "SHO", "HSO", "OSH", "SOH", "HOS", "OHS"]
@@ -141,18 +169,19 @@ class LiveStackSettingsDialog(QDialog):
 
     def getValues(self):
         """
-        Returns a tuple of five values in order:
-          (bootstrap_frames, clip_threshold,
-           max_fwhm, max_ecc, min_star_count, delay)
+        Returns a tuple in order:
+            (bootstrap_frames, clip_threshold,
+            max_fwhm, max_ecc, min_star_count, mapping, delay, star_thresh_sigma)
         """
-        bs      = int(self.bs_spin.value())
-        sigma   = self.sigma_spin.value()
-        fwhm    = self.fwhm_spin.value()
-        ecc     = self.ecc_spin.value()
-        stars   = int(self.star_spin.value())
-        mapping = self.mapping_combo.currentText()
-        delay = self.delay_spin.value()
-        return bs, sigma, fwhm, ecc, stars, mapping, delay
+        bs            = int(self.bs_spin.value())
+        sigma         = self.sigma_spin.value()
+        fwhm          = self.fwhm_spin.value()
+        ecc           = self.ecc_spin.value()
+        stars         = int(self.star_spin.value())
+        mapping       = self.mapping_combo.currentText()
+        delay         = self.delay_spin.value()
+        star_sigma    = self.star_sigma_spin.value()
+        return bs, sigma, fwhm, ecc, stars, mapping, delay, star_sigma
 
 def _qget(settings: QSettings, key: str, default, typ):
     try:
@@ -254,7 +283,7 @@ class LiveMetricsWindow(QWidget):
 
 from setiastro.saspro.star_metrics import measure_stars_sep
 
-def compute_frame_star_metrics(image_2d):
+def compute_frame_star_metrics(image_2d, thresh_sigma: float = 7.0):
     """
     Harmonized with Blink metrics:
       - SEP.Background() for back/noise
@@ -274,7 +303,7 @@ def compute_frame_star_metrics(image_2d):
 
     star_count, fwhm, ecc = measure_stars_sep(
         data,
-        thresh_sigma=7.0,
+        thresh_sigma=thresh_sigma,
         minarea=16,
         deblend_nthresh=32,
         aggregate="median",
@@ -404,7 +433,8 @@ class LiveStackWindow(QDialog):
         self.min_star_count     = _qget(s, "LiveStack/min_star_count",     5,     int)
         self.narrowband_mapping = _qget(s, "LiveStack/narrowband_mapping", "Natural", str)
         self.star_trail_mode    = _qget(s, "LiveStack/star_trail_mode",    False, bool)
-        self.FILE_STABLE_SECS   = _qget(s, "LiveStack/file_stable_secs",   3.0,   float)
+        self.FILE_STABLE_SECS     = _qget(s, "LiveStack/file_stable_secs",     3.0,   float)
+        self.star_thresh_sigma    = _qget(s, "LiveStack/star_thresh_sigma",     7.0,   float)
 
 
         self.total_exposure = 0.0  # seconds
@@ -673,7 +703,7 @@ class LiveStackWindow(QDialog):
     def open_settings(self):
         dlg = LiveStackSettingsDialog(self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            bs, sigma, fwhm, ecc, stars, mapping, delay = dlg.getValues()
+            bs, sigma, fwhm, ecc, stars, mapping, delay, star_sigma = dlg.getValues()
 
             # 1) Persist into QSettings
             s = QSettings()
@@ -683,7 +713,8 @@ class LiveStackWindow(QDialog):
             s.setValue("LiveStack/max_ecc",            ecc)
             s.setValue("LiveStack/min_star_count",     stars)
             s.setValue("LiveStack/narrowband_mapping", mapping)
-            s.setValue("LiveStack/file_stable_secs", delay)
+            s.setValue("LiveStack/file_stable_secs",   delay)
+            s.setValue("LiveStack/star_thresh_sigma",  star_sigma)
 
             # 2) Apply to this live‐stack session
             self.bootstrap_frames   = bs
@@ -692,12 +723,13 @@ class LiveStackWindow(QDialog):
             self.max_ecc            = ecc
             self.min_star_count     = stars
             self.narrowband_mapping = mapping
-            self.FILE_STABLE_SECS = delay
+            self.FILE_STABLE_SECS   = delay
+            self.star_thresh_sigma  = star_sigma
 
             self.status_label.setText(
                 f"↺ Settings saved: BS={bs}, σ={sigma:.1f}, "
                 f"FWHM≤{fwhm:.1f}, ECC≤{ecc:.2f}, Stars≥{stars}, "
-                f"Mapping={mapping}"
+                f"Mapping={mapping}, StarSigma={star_sigma:.1f}"
             )
             QApplication.processEvents()
 
@@ -1517,7 +1549,7 @@ class LiveStackWindow(QDialog):
             return
 
         # ——— 9) METRICS & SNR —————————————————————————
-        sc, fwhm, ecc = compute_frame_star_metrics(norm_plane)
+        sc, fwhm, ecc = compute_frame_star_metrics(norm_plane, thresh_sigma=self.star_thresh_sigma)
         # instead, use the cumulative stack (or composite) for SNR:
         if mono_key:
             # once we have any filter_stacks, build the composite;

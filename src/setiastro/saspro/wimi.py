@@ -779,23 +779,32 @@ class MarkerLayer(QGraphicsItem):
         except RuntimeError:
             pass
 
-
     def paint(self, p: QPainter, option, widget):
         vr = option.exposedRect.adjusted(-self._cell, -self._cell, self._cell, self._cell)
         c = self._cell
 
-        p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
-        base_pen = QPen()
-        base_pen.setCosmetic(True)
-        base_pen.setWidth(1)
-
-        r = self._radius
         show_names = self._show_names()
         style = self._style()
         selected_name = self._selected_name()
 
-        gx0, gy0 = int(max(0, int(vr.left() // c))),  int(max(0, int(vr.top() // c)))
-        gx1, gy1 = int(int(vr.right() // c)),         int(int(vr.bottom() // c))
+        # Extract current scene→device scale so we can draw in screen pixels
+        t = p.transform()
+        # Average of x and y scale factors
+        scene_scale = (abs(t.m11()) + abs(t.m22())) / 2.0
+        if scene_scale < 1e-9:
+            scene_scale = 1.0
+
+        # Fixed screen-space radius in pixels
+        FIXED_SCREEN_R = 6.0
+
+        base_pen = QPen()
+        base_pen.setCosmetic(True)
+        base_pen.setWidth(1)
+
+        gx0 = int(max(0, int(vr.left()  // c)))
+        gy0 = int(max(0, int(vr.top()   // c)))
+        gx1 = int(int(vr.right()  // c))
+        gy1 = int(int(vr.bottom() // c))
 
         for gy in range(gy0, gy1 + 1):
             for gx in range(gx0, gx1 + 1):
@@ -804,29 +813,42 @@ class MarkerLayer(QGraphicsItem):
                     if not vr.contains(QPointF(x, y)):
                         continue
 
-                    # pick color: green if selected, else per-point color, else fallback
-                    col = QColor(0, 255, 0) if selected_name and pt.get("name") == selected_name \
-                          else pt.get("color", self._color())
+                    col = (QColor(0, 255, 0)
+                        if selected_name and pt.get("name") == selected_name
+                        else pt.get("color", self._color()))
                     base_pen.setColor(col)
                     p.setPen(base_pen)
 
+                    radius_px = pt.get("radius_px")  # scene-space radius, or None
 
-                    if style == "Crosshair":
-                        # use QLineF to avoid int casting everywhere
-                        p.drawLine(QLineF(x - r, y,     x + r, y))
-                        p.drawLine(QLineF(x,     y - r, x,     y + r))
-                    else:
+                    if radius_px is not None and radius_px > 0:
+                        # Draw a circle scaled to the object's actual angular size
+                        # radius_px is in scene/image pixels → already correct for QPainter scene coords
+                        min_r = FIXED_SCREEN_R / scene_scale  # don't go smaller than fixed size
+                        r = max(radius_px, min_r)
+                        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
                         p.drawEllipse(QPointF(x, y), r, r)
+                        p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+                    else:
+                        # Fixed screen-space size: convert screen pixels → scene units
+                        r = FIXED_SCREEN_R / scene_scale
+
+                        if style == "Crosshair":
+                            p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+                            p.drawLine(QLineF(x - r, y,     x + r, y))
+                            p.drawLine(QLineF(x,     y - r, x,     y + r))
+                        else:
+                            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+                            p.drawEllipse(QPointF(x, y), r, r)
+                            p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
 
                     if show_names and pt.get("name"):
                         text_pen = QPen(QColor(255, 255, 255))
                         text_pen.setCosmetic(True)
                         p.setPen(text_pen)
-                        name_str = str(pt["name"])  # make sure it’s a plain str
-                        # either cast to ints...
-                        p.drawText(int(x + r + 2), int(y - r - 2), name_str)
-                        # ...or equivalently:
-                        # p.drawText(QPointF(x + r + 2, y - r - 2), name_str)
+                        # Offset name label by fixed screen amount
+                        label_offset = (FIXED_SCREEN_R + 2.0) / scene_scale
+                        p.drawText(QPointF(x + label_offset, y - label_offset), str(pt["name"]))
                         p.setPen(base_pen)
 
 def _qt_is_alive(obj) -> bool:
@@ -1162,6 +1184,131 @@ class CustomGraphicsView(QGraphicsView):
 
         super().mouseReleaseEvent(event)
 
+    def contextMenuEvent(self, event):
+        """Right-click context menu for an object under the cursor."""
+        scene_pos = self.mapToScene(event.pos())
+        clicked_object = self.get_object_at_position(scene_pos)
+
+        if not clicked_object:
+            super().contextMenuEvent(event)
+            return
+
+        # Select it first so the tree/main view stay in sync
+        self.parent.selected_object = clicked_object
+        self.select_object(clicked_object)
+        self.draw_query_results()
+        self.update_mini_preview()
+        for i in range(self.parent.results_tree.topLevelItemCount()):
+            item = self.parent.results_tree.topLevelItem(i)
+            if item.text(2) == clicked_object.get("name"):
+                self.parent.results_tree.setCurrentItem(item)
+                break
+
+        menu = QMenu(self)
+
+        name   = clicked_object.get("name", "")
+        ra     = clicked_object.get("ra")
+        dec    = clicked_object.get("dec")
+        source = (clicked_object.get("source", "Simbad") or "Simbad").strip()
+
+        act_open = menu.addAction(f"Open Website ({source})")
+        act_open.triggered.connect(lambda: self._open_object_website(clicked_object))
+
+        act_zoom = menu.addAction("Zoom to Object")
+        act_zoom.triggered.connect(lambda: self.zoom_to_coordinates(ra, dec))
+
+        act_copy_radec = menu.addAction("Copy RA/Dec")
+        act_copy_radec.triggered.connect(lambda: self._copy_object_radec(clicked_object))
+
+        act_copy_info = menu.addAction("Copy Object Information")
+        act_copy_info.triggered.connect(lambda: self.parent.copy_object_information(
+            self._tree_item_for_object(clicked_object)
+        ))
+
+        menu.addSeparator()
+
+        try:
+            from setiastro.saspro.gaia_database import get_library
+            has_lib = bool(get_library().installed_bands())
+        except Exception:
+            has_lib = False
+
+        act_spectrum = menu.addAction("View Gaia XP Spectrum")
+        act_spectrum.setEnabled(has_lib)
+        if not has_lib:
+            act_spectrum.setToolTip("No Gaia library installed — use Settings → Gaia XP Spectral Library")
+        act_spectrum.triggered.connect(lambda: self.parent._show_gaia_spectrum_for_item(
+            self._tree_item_for_object(clicked_object)
+        ))
+
+        menu.addSeparator()
+
+        act_delete = menu.addAction("Delete Object")
+        act_delete.triggered.connect(lambda: self._delete_object(clicked_object))
+
+        menu.exec(event.globalPos())
+
+    def _tree_item_for_object(self, obj):
+        """Find the QTreeWidgetItem matching this object's name."""
+        name = obj.get("name")
+        for i in range(self.parent.results_tree.topLevelItemCount()):
+            item = self.parent.results_tree.topLevelItem(i)
+            if item.text(2) == name:
+                return item
+        return None
+
+    def _open_object_website(self, obj):
+        name   = obj.get("name", "")
+        ra     = obj.get("ra")
+        dec    = obj.get("dec")
+        source = (obj.get("source", "Simbad") or "Simbad").strip()
+        kind   = obj.get("long_type", "") or obj.get("type", "")
+
+        s = source.lower()
+        if s.startswith("minordb"):
+            open_minor_body_3d_page(name, kind=kind)
+            return
+
+        try:
+            ra_f, dec_f = float(ra), float(dec)
+        except (TypeError, ValueError):
+            ra_f = dec_f = None
+
+        if source == "Simbad" and name:
+            encoded_name = quote(name)
+            webbrowser.open(
+                f"https://simbad.cds.unistra.fr/simbad/sim-basic?Ident={encoded_name}&submit=SIMBAD+search"
+            )
+        elif source == "Vizier" and ra_f is not None:
+            radius = 5 / 60
+            dec_sign = "%2B" if dec_f >= 0 else "-"
+            webbrowser.open(
+                f"http://ned.ipac.caltech.edu/conesearch?search_type=Near%20Position%20Search"
+                f"&ra={ra_f:.6f}d&dec={dec_sign}{abs(dec_f):.6f}d&radius={radius:.3f}"
+                "&in_csys=Equatorial&in_equinox=J2000.0"
+            )
+        elif source == "Mast" and ra_f is not None:
+            webbrowser.open(
+                f"https://mast.stsci.edu/portal/Mashup/Clients/Mast/Portal.html?"
+                f"searchQuery={ra_f}%2C{dec_f}%2Cradius%3D0.0006"
+            )
+
+    def _copy_object_radec(self, obj):
+        ra  = obj.get("ra")
+        dec = obj.get("dec")
+        try:
+            text = f"{float(ra):.6f}, {float(dec):.6f}"
+        except (TypeError, ValueError):
+            text = f"{ra}, {dec}"
+        QApplication.clipboard().setText(text)
+        self.parent.status_label.setText(f"Copied RA/Dec: {text}")
+
+    def _delete_object(self, obj):
+        item = self._tree_item_for_object(obj)
+        if item is not None:
+            self.parent.results_tree.setCurrentItem(item)
+            item.setSelected(True)
+        self.delete_selected_objects()
 
     def draw_measurement_line_and_label(self, distance_ddmmss):
         """Draw the measurement line and label with the celestial distance."""
@@ -1526,9 +1673,44 @@ class CustomGraphicsView(QGraphicsView):
             if not xy: continue
             x, y = xy
             if x is None or y is None: continue
-            pts.append({"x": float(x), "y": float(y),
-                        "name": obj.get("name"),
-                        "color": obj.get("color", QColor(255,255,255))})
+
+            radius_px = None
+            diam = obj.get("diameter")
+            unit = obj.get("diameter_unit", "arcmin")  # default arcmin for legacy entries
+
+            if diam not in (None, "N/A", "", "--"):
+                try:
+                    diam_val = float(diam)
+                    if diam_val > 0 and self.pixscale and self.pixscale > 0:
+                        # Convert to arcsec
+                        if unit == "arcmin":
+                            diam_arcsec = diam_val * 60.0
+                        elif unit == "arcsec":
+                            diam_arcsec = diam_val
+                        elif unit == "deg":
+                            diam_arcsec = diam_val * 3600.0
+                        else:
+                            diam_arcsec = diam_val * 60.0  # assume arcmin
+
+                        radius_px = (diam_arcsec / self.pixscale) / 2.0
+
+                        # Sanity clamp: don't draw circles larger than the image
+                        # or smaller than 2 scene pixels (those just use fixed size)
+                        if self.main_image:
+                            max_r = max(self.main_image.width(), self.main_image.height()) * 0.5
+                            if radius_px > max_r:
+                                radius_px = None  # too big to be meaningful, use fixed
+                        if radius_px is not None and radius_px < 2.0:
+                            radius_px = None  # too small, use fixed marker
+                except (ValueError, TypeError):
+                    radius_px = None
+
+            pts.append({
+                "x": float(x), "y": float(y),
+                "name": obj.get("name"),
+                "color": obj.get("color", QColor(255, 255, 255)),
+                "radius_px": radius_px,
+            })
         try:
             self._marker_layer.set_points(pts)
         except RuntimeError:
@@ -1810,16 +1992,14 @@ class CustomGraphicsView(QGraphicsView):
 
 
     def select_object(self, selected_obj):
-        self.selected_object = selected_obj if self.selected_object != selected_obj else None
-        sel_name = self.selected_object["name"] if self.selected_object else None
-        # tell the dialog (and thus the MarkerLayer)
+        self.selected_object = selected_obj
+        sel_name = selected_obj["name"] if selected_obj else None
         self.parent._set_selected_name(sel_name)
 
-        # Update the TreeWidget selection in MainWindow
         for i in range(self.parent.results_tree.topLevelItemCount()):
             item = self.parent.results_tree.topLevelItem(i)
-            if item.text(2) == selected_obj["name"]:
-                self.parent.results_tree.setCurrentItem(item if self.selected_object else None)
+            if item.text(2) == (selected_obj.get("name") if selected_obj else None):
+                self.parent.results_tree.setCurrentItem(item)
                 break
 
     def undo_annotation(self):
@@ -3289,6 +3469,7 @@ class WIMIDialog(QDialog):
         self.results_tree.customContextMenuRequested.connect(self.open_context_menu)
         self.results_tree.itemClicked.connect(self.on_tree_item_clicked)
         self.results_tree.itemDoubleClicked.connect(self.on_tree_item_double_clicked)
+        self.results_tree.currentItemChanged.connect(self.on_tree_current_item_changed)
         self.results_tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.results_tree.setSortingEnabled(True)
         right_panel.addWidget(self.results_tree)
@@ -3878,27 +4059,6 @@ class WIMIDialog(QDialog):
         return self._selected_name
 
     def _set_marker_points_from_results(self):
-        if self._marker_layer is None or self.wcs is None:
-            return
-        pts = []
-        for obj in self.results:
-            ra, dec = obj.get('ra'), obj.get('dec')
-            if ra is None or dec is None:
-                continue
-            x, y = self.calculate_pixel_from_ra_dec(ra, dec)
-            if x is None or y is None:
-                continue
-            name_val = obj.get("name")
-            if not name_val:
-                name_val = obj.get("Name")  # fallback if key differs
-            pts.append({
-                "x": x, "y": y,
-                "name": str(name_val or ""),
-                "color": obj.get("color")
-            })
-        self._marker_layer.set_points(pts)
-
-    def _set_marker_points_from_results(self):
         self._ensure_marker_layer()
         if not _qt_is_alive(self._marker_layer):
             return
@@ -3909,9 +4069,25 @@ class WIMIDialog(QDialog):
             if not xy: continue
             x, y = xy
             if x is None or y is None: continue
-            pts.append({"x": float(x), "y": float(y),
-                        "name": obj.get("name"),
-                        "color": obj.get("color", QColor(255,255,255))})
+
+            # Compute angular size radius in pixels if available
+            radius_px = None
+            diam = obj.get("diameter")
+            if diam not in (None, "N/A", "", "--"):
+                try:
+                    diam_arcmin = float(diam)  # galdim_majaxis is in arcmin
+                    if diam_arcmin > 0 and self.pixscale and self.pixscale > 0:
+                        diam_arcsec = diam_arcmin * 60.0
+                        radius_px = (diam_arcsec / self.pixscale) / 2.0
+                except (ValueError, TypeError):
+                    radius_px = None
+
+            pts.append({
+                "x": float(x), "y": float(y),
+                "name": obj.get("name"),
+                "color": obj.get("color", QColor(255, 255, 255)),
+                "radius_px": radius_px,  # None = use fixed screen size
+            })
         try:
             self._marker_layer.set_points(pts)
         except RuntimeError:
@@ -4232,11 +4408,11 @@ class WIMIDialog(QDialog):
         if self.image_data.ndim == 2:
             # Call stretch_mono_image if the image is mono
 
-            stretched_image = stretch_mono_image(self.image_data, target_median=0.25, normalize=True)
+            stretched_image = stretch_mono_image(self.image_data, target_median=0.25, normalize=True, no_black_clip=True)
         else:
             # Call stretch_color_image if the image is color
 
-            stretched_image = stretch_color_image(self.image_data, target_median=0.25, linked=True, normalize=True)
+            stretched_image = stretch_color_image(self.image_data, target_median=0.25, linked=False, normalize=True, no_black_clip=True)
         
         # If the AutoStretch is toggled off (using the same button), restore the original image
         if self.auto_stretch_button.text() == "AutoStretch":
@@ -4280,15 +4456,23 @@ class WIMIDialog(QDialog):
         scaled_pixmap = pixmap.scaled(self.mini_preview.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
         self.mini_preview.setPixmap(scaled_pixmap)
 
+        # Save current view state before swapping the pixmap
+        saved_transform = self.main_preview.transform()
+        saved_h_scroll = self.main_preview.horizontalScrollBar().value()
+        saved_v_scroll = self.main_preview.verticalScrollBar().value()
+
         self.main_scene.clear()
         self.main_scene.addPixmap(pixmap)
         self._marker_layer = None
         self._ensure_marker_layer()
-        self._set_marker_points_from_results()        
+        self._set_marker_points_from_results()
         self.main_preview.setSceneRect(QRectF(pixmap.rect()))
-        self.zoom_level = 1.0
-        self.main_preview.resetTransform()
-        self.main_preview.centerOn(self.main_scene.sceneRect().center())
+
+        # Restore the view exactly as it was, instead of resetting to 1:1 centered
+        self.main_preview.setTransform(saved_transform)
+        self.main_preview.horizontalScrollBar().setValue(saved_h_scroll)
+        self.main_preview.verticalScrollBar().setValue(saved_v_scroll)
+
         self.update_green_box()
 
         # Optionally, you can also update any other parts of the UI after stretching the image
@@ -5949,6 +6133,25 @@ class WIMIDialog(QDialog):
         self.main_preview.draw_query_results()  # Redraw the main image without markers
         self.status_label.setText("Results cleared.")
 
+    def on_tree_current_item_changed(self, current, previous):
+        """Keep arrow-key navigation in sync with the main preview, same as a click."""
+        if current is None:
+            return
+        object_name = current.text(2)
+
+        selected_object = next(
+            (obj for obj in self.results if obj.get("name") == object_name), None
+        )
+        if selected_object:
+            # Set directly instead of calling main_preview.select_object,
+            # which toggles and would deselect on a normal click (itemClicked
+            # already calls select_object for that path).
+            self.main_preview.selected_object = selected_object
+            self.selected_object = selected_object
+            self._set_selected_name(selected_object.get("name"))
+            self.main_preview.draw_query_results()
+            self.main_preview.update_mini_preview()
+
     def on_tree_item_clicked(self, item):
         """Handle item click in the TreeWidget to highlight the associated object."""
         object_name = item.text(2)
@@ -5965,8 +6168,6 @@ class WIMIDialog(QDialog):
             self.main_preview.draw_query_results()
             self.main_preview.update_mini_preview() 
             
-            
-
     def on_tree_item_double_clicked(self, item):
         """Handle double-click event on a TreeWidget item to open SIMBAD or NED URL based on source."""
         object_name = item.text(2)  # Assuming 'Name' is in the third column
@@ -7915,7 +8116,8 @@ class WIMIDialog(QDialog):
         query = f"""
             SELECT TOP {max_results}
                 ra, dec, main_id,
-                rvz_redshift, otype, galdim_majaxis
+                rvz_redshift, otype, galdim_majaxis, galdim_minaxis,
+                galdim_angle
             FROM basic
             WHERE CONTAINS(
                 POINT('ICRS', basic.ra, basic.dec),
@@ -8028,7 +8230,13 @@ class WIMIDialog(QDialog):
 
             # basics
             ra, dec = float(row["ra"]), float(row["dec"])
-            diam     = row.get("galdim_majaxis", "N/A")
+            diam_raw = row.get("galdim_majaxis")  # arcmin, may be masked
+            diam_arcmin = _mask_safe_float(diam_raw)
+
+            # For nebulae SIMBAD sometimes has nothing in galdim_majaxis.
+            # The otype can tell us to expect a size even when it's missing.
+            # We store in arcmin consistently; _set_marker_points_from_results converts.
+            diam = diam_arcmin if diam_arcmin is not None else "N/A"
 
             rz_raw   = row["rvz_redshift"]
             red_z    = _mask_safe_float(rz_raw)  # ← no warning, None if masked
@@ -8062,9 +8270,19 @@ class WIMIDialog(QDialog):
             long_type = otype_long_name_lookup.get(short_type, short_type)
 
             # add to tree
+            # Human-readable diameter display
+            if diam_arcmin is not None:
+                if diam_arcmin >= 1.0:
+                    diam_display = f"{diam_arcmin:.2f}'"
+                else:
+                    diam_display = f"{diam_arcmin * 60.0:.1f}\""
+            else:
+                diam_display = "N/A"
+
             item = QTreeWidgetItem([
                 f"{ra:.6f}", f"{dec:.6f}", name,
-                str(diam), short_type, long_type,
+                diam_display,
+                short_type, long_type,
                 f"{red_val:.6f}" if isinstance(red_val, (int, float)) else str(red_val),
                 f"{distance:.6f}" if isinstance(distance, float) else str(distance)
             ])
@@ -8072,7 +8290,8 @@ class WIMIDialog(QDialog):
 
             query_results.append({
                 'ra': ra, 'dec': dec, 'name': name,
-                'diameter': diam,
+                'diameter': diam,           # arcmin float or "N/A"
+                'diameter_unit': 'arcmin',  # explicit so downstream code is unambiguous
                 'short_type': short_type,
                 'long_type': long_type,
                 'redshift': red_val,

@@ -37,17 +37,24 @@ def _choose_stride(h: int, w: int, max_pixels: int) -> tuple[int, int]:
     s = max(1, int(np.sqrt(n / float(max_pixels))))
     return s, s
 
+def _bincount_nonzero(uN: np.ndarray, maxv: int) -> np.ndarray:
+    """Histogram of levels [0..maxv], excluding level-0 (true black / dropout) pixels."""
+    hist = np.bincount(uN.ravel(), minlength=maxv + 1)
+    hist[0] = 0  # ignore zero-valued pixels (stacking border dropouts, padding, etc.)
+    return hist
+
 def _compute_lut_from_sample(sample_uN: np.ndarray, target: float, sigma: float, maxv: int,
                              qfloor: float = 0.001, no_black_clip: bool = False) -> np.ndarray:
-    hist = np.bincount(sample_uN.ravel(), minlength=maxv + 1)
+    hist = _bincount_nonzero(sample_uN, maxv)
     total = int(hist.sum()) or 1
 
     cdf = np.cumsum(hist)
     med = int(np.searchsorted(cdf, (total + 1) // 2))
 
     if no_black_clip:
-        # Use true image minimum as black point — no sigma clipping
-        bp = int(np.argmax(hist > 0))
+        # Use true image minimum (excluding zero dropout) as black point — no sigma clipping
+        nz = np.argmax(hist > 0)
+        bp = int(nz) if hist[nz] > 0 else 0
     else:
         bins      = np.arange(maxv + 1, dtype=np.float64)
         hist_low  = hist[:med + 1]
@@ -62,8 +69,8 @@ def _compute_lut_from_sample(sample_uN: np.ndarray, target: float, sigma: float,
     return _build_lut_generic(bp, target, med, maxv)
 
 def _stats_from_hist_generic(uN: np.ndarray, maxv: int) -> tuple[float, float, int, int]:
-    """(median, std, minv, maxv) using a histogram of levels [0..maxv]."""
-    hist = np.bincount(uN.ravel(), minlength=maxv + 1)
+    """(median, std, minv, maxv) using a histogram of levels [0..maxv], excluding zero pixels."""
+    hist = _bincount_nonzero(uN, maxv)
     total = int(hist.sum())
     if total == 0:
         return 0.0, 1.0, 0, 0
@@ -96,7 +103,9 @@ def _build_lut_generic(bp: int, target_median: float, med_uN: float, maxv: int) 
     denom = median_rescaled * (target_median + r - 1.0) - target_median * r
     denom = np.where(np.abs(denom) < 1e-12, 1e-12, denom)
     out = ((median_rescaled - 1.0) * target_median * r) / denom
-    return np.clip(out, 0.0, 1.0).astype(np.float32)
+    lut = np.clip(out, 0.0, 1.0).astype(np.float32)
+    lut[0] = 0.0  # keep true zero pixels mapped to 0 regardless of stretch
+    return lut
 
 def _fast_channel_autostretch_uN(ch_uN: np.ndarray, target: float, sigma: float, maxv: int,
                                  qfloor: float = 0.001) -> np.ndarray:
@@ -108,8 +117,8 @@ def _fast_channel_autostretch_uN(ch_uN: np.ndarray, target: float, sigma: float,
     sy, sx = _choose_stride(h, w, _MAX_STATS_PIXELS)
     sample = ch_uN[::sy, ::sx]
 
-    # Histogram on the sample
-    hist = np.bincount(sample.ravel(), minlength=maxv + 1)
+    # Histogram on the sample, excluding zero-valued (dropout/border) pixels
+    hist = _bincount_nonzero(sample, maxv)
     total = int(hist.sum()) or 1
 
     # CDF + median index
@@ -261,5 +270,3 @@ def autostretch(
         **_ignored_kwargs,
     )
     return out
-    
-
