@@ -12632,7 +12632,7 @@ class StackingSuiteDialog(QDialog):
         return d
 
     def _closest_flat_for(self, *, filter_name: str, image_size: str, light_path: str,
-                           light_gain: float | None = None, light_offset: float | None = None):
+                        light_gain: float | None = None, light_offset: float | None = None):
         ftoken = self._sanitize_name(filter_name)
         light_d = self._file_local_night_date(light_path)
 
@@ -12643,7 +12643,6 @@ class StackingSuiteDialog(QDialog):
         if not candidates:
             return None
 
-        # Cache flat gain/offset
         if not hasattr(self, "_master_flat_go"):
             self._master_flat_go = {}
 
@@ -12670,40 +12669,43 @@ class StackingSuiteDialog(QDialog):
                 return True
             return False
 
-        # 1) exact session + gain match
-        light_hdr = None
-        try:
-            with fits.open(light_path, memmap=True) as hdul:
-                light_hdr = hdul[0].header
-        except Exception:
-            pass
-        light_session = self._session_from_dateobs_local_night(light_hdr) if light_hdr else None
+        def _key_session(key: str) -> str | None:
+            # pull the *first* [..] bracket — that's always the session, gain is appended after
+            m = re.search(r"\[([^\]]+)\]", key)
+            return m.group(1) if m else None
+
+        # 1) exact session + gain match — prefer the CACHED session tag (set correctly at ingest)
+        light_session = self.session_tags.get(light_path)
+        if not light_session:
+            # fallback only if not cached for some reason
+            try:
+                light_hdr = fits.getheader(light_path, memmap=True)
+            except Exception:
+                light_hdr = None
+            light_session = self._session_from_dateobs_local_night(light_hdr) if light_hdr else None
+
         if light_session:
-            exact_key = f"{ftoken} ({image_size}) [{light_session}]"
-            for key, path in candidates:
-                if key == exact_key and not _go_mismatch(path):
+            exact_matches = [(k, p) for k, p in candidates if _key_session(k) == light_session]
+            for _, path in exact_matches:
+                if not _go_mismatch(path):
                     return path
-            # exact session but gain mismatch — still prefer over wrong session
-            for key, path in candidates:
-                if key == exact_key:
-                    return path
+            if exact_matches:
+                return exact_matches[0][1]
 
         # 2) nearest date, gain-matched candidates preferred
         if light_d is None:
-            # prefer gain match among candidates
             for _, path in candidates:
                 if not _go_mismatch(path):
                     return path
             return candidates[0][1]
 
-        best = (None, 10**9, True)   # (path, |Δdays|, go_mismatch)
+        best = (None, 10**9, True)
         for _key, fpath in candidates:
             fd = self._file_local_night_date(fpath)
             if fd is None:
                 continue
             delta = abs((fd - light_d).days)
             mismatch = _go_mismatch(fpath)
-            # prefer gain match; within same gain bucket prefer nearest date
             if (mismatch, delta) < (best[2], best[1]):
                 best = (fpath, delta, mismatch)
 
@@ -15130,27 +15132,38 @@ class StackingSuiteDialog(QDialog):
                     else:
                         best_flat_path = None
 
-                        exact_key = f"{filter_name} ({image_size}) [{session_name}]"
-                        if exact_key in self.master_files:
-                            # still check gain match — if mismatch, fall through to _closest_flat_for
-                            candidate = self.master_files[exact_key]
+                        # NOTE: master_files keys are like:
+                        #   "H (6248x4176) [2026-01-07] [G100]"
+                        # i.e. the session bracket is NOT necessarily the last
+                        # bracket in the key (gain suffix may follow it), so we
+                        # can't do an exact dict-key match anymore. Match by prefix.
+                        exact_key_prefix = f"{filter_name} ({image_size}) [{session_name}]"
+                        exact_candidates = [
+                            mp for mk, mp in self.master_files.items()
+                            if str(mk).startswith(exact_key_prefix)
+                        ]
+
+                        if exact_candidates:
                             if not hasattr(self, "_master_flat_go"):
                                 self._master_flat_go = {}
-                            if candidate not in self._master_flat_go:
-                                try:
-                                    hdr = fits.getheader(candidate, memmap=True)
-                                    g = _get_key_float(hdr, "GAIN")
-                                    o = _get_key_float(hdr, "OFFSET")
-                                    if o is None:
-                                        o = _get_key_float(hdr, "BLKLEVEL")
-                                    self._master_flat_go[candidate] = (g, o)
-                                except Exception:
-                                    self._master_flat_go[candidate] = (None, None)
-                            fg, fo = self._master_flat_go[candidate]
-                            gain_ok = (l_gain is None or fg is None or abs(l_gain - fg) <= 1)
-                            offset_ok = (l_offset is None or fo is None or abs(l_offset - fo) <= 1)
-                            if gain_ok and offset_ok:
-                                best_flat_path = candidate
+
+                            for candidate in exact_candidates:
+                                if candidate not in self._master_flat_go:
+                                    try:
+                                        hdr = fits.getheader(candidate, memmap=True)
+                                        g = _get_key_float(hdr, "GAIN")
+                                        o = _get_key_float(hdr, "OFFSET")
+                                        if o is None:
+                                            o = _get_key_float(hdr, "BLKLEVEL")
+                                        self._master_flat_go[candidate] = (g, o)
+                                    except Exception:
+                                        self._master_flat_go[candidate] = (None, None)
+                                fg, fo = self._master_flat_go[candidate]
+                                gain_ok = (l_gain is None or fg is None or abs(l_gain - fg) <= 1)
+                                offset_ok = (l_offset is None or fo is None or abs(l_offset - fo) <= 1)
+                                if gain_ok and offset_ok:
+                                    best_flat_path = candidate
+                                    break
 
                         if best_flat_path is None:
                             best_flat_path = self._closest_flat_for(

@@ -2239,149 +2239,212 @@ def _solve_with_GAIA(image: np.ndarray,
     # ── 5) Search loop: spiral centers × scale variants ──────────────────────
     import sqlite3
 
-    best_result = None
+    excluded_sids: set = set()
+    MAX_RETRY_ROUNDS = 2  # initial attempt + 1 retry with bad stars excluded
 
-    for attempt_idx, (c_ra, c_dec) in enumerate(search_centers):
-        if best_result is not None:
-            break
+    for retry_round in range(MAX_RETRY_ROUNDS):
+        best_result = None
 
-        for c_scale in scale_variants:
+        for attempt_idx, (c_ra, c_dec) in enumerate(search_centers):
             if best_result is not None:
                 break
 
-            is_center = (attempt_idx == 0 and c_scale == scale)
-            label = "center" if is_center else f"spiral[{attempt_idx}] scale={c_scale:.3f}\"/px"
-
-            try:
-                seed_wcs = _make_seed_wcs(c_ra, c_dec, c_scale, img_w, img_h, seed_header)
-
-                corners_pix = [(0,0),(img_w-1,0),(0,img_h-1),(img_w-1,img_h-1)]
-                corner_sky  = [seed_wcs.pixel_to_world(x, y) for x, y in corners_pix]
-                ra_min  = min(c.ra.deg  for c in corner_sky) - 0.1
-                ra_max  = max(c.ra.deg  for c in corner_sky) + 0.1
-                dec_min = min(c.dec.deg for c in corner_sky) - 0.1
-                dec_max = max(c.dec.deg for c in corner_sky) + 0.1
-
-                all_sources = []
-                for fname, conn in lib._connections.items():
-                    try:
-                        cur = conn.cursor()
-                        cur.execute("""
-                            SELECT source_id, ra, dec, phot_g_mean_mag FROM sources
-                            WHERE dec BETWEEN ? AND ? AND ra BETWEEN ? AND ?
-                        """, (dec_min, dec_max, ra_min, ra_max))
-                        all_sources.extend(cur.fetchall())
-                    except Exception as e:
-                        print(f"[GaiaLocal] query failed on {fname}: {e}")
-
-                if not all_sources:
-                    continue
-
-                seen_sids = {}
-                for sid, sra, sdec, gmag in all_sources:
-                    if sid not in seen_sids:
-                        seen_sids[sid] = {"ra": sra, "dec": sdec, "gmag": gmag}
-
-                if len(seen_sids) < 10:
-                    continue
-
-                if is_center:
-                    print(f"[GaiaLocal] {len(seen_sids)} unique catalog stars found in field")
-                _set_status_ui(parent, f"Status: {len(seen_sids)} Gaia stars — trying {label}…")
-
-                cat_infos = list(seen_sids.values())
-                # Sort brightest-first (lowest G mag) so downstream grid
-                # truncation and matching prefer reliable bright stars.
-                cat_infos.sort(key=lambda i: (i["gmag"] if i["gmag"] is not None else 99.0))
-                cat_sky_all = SkyCoord(
-                    ra=[i["ra"] for i in cat_infos] * u.deg,
-                    dec=[i["dec"] for i in cat_infos] * u.deg,
-                )
-                px, py = seed_wcs.world_to_pixel(cat_sky_all)
-                cat_xy_all = np.column_stack([px, py]).astype(np.float32)
-
-                margin = 50
-                in_bounds = (
-                    (cat_xy_all[:,0] >= -margin) & (cat_xy_all[:,0] < img_w + margin) &
-                    (cat_xy_all[:,1] >= -margin) & (cat_xy_all[:,1] < img_h + margin)
-                )
-                cat_xy_all  = cat_xy_all[in_bounds]
-                cat_sky_all = cat_sky_all[in_bounds]
-
-                if len(cat_xy_all) < 10:
-                    continue
-
-                grid_rows, grid_cols = 3, 3
-                max_per_cell = 1000 // (grid_rows * grid_cols)
-                cell_w = img_w / grid_cols
-                cell_h = img_h / grid_rows
-                cat_xy_grid, cat_sky_idx = [], []
-                for gr in range(grid_rows):
-                    for gc in range(grid_cols):
-                        x0, x1 = gc * cell_w, (gc+1) * cell_w
-                        y0, y1 = gr * cell_h, (gr+1) * cell_h
-                        in_cell = np.where(
-                            (cat_xy_all[:,0] >= x0) & (cat_xy_all[:,0] < x1) &
-                            (cat_xy_all[:,1] >= y0) & (cat_xy_all[:,1] < y1)
-                        )[0]
-                        if len(in_cell) == 0:
-                            continue
-                        if len(in_cell) > max_per_cell:
-                            in_cell = in_cell[:max_per_cell]
-                        cat_xy_grid.append(cat_xy_all[in_cell])
-                        cat_sky_idx.extend(in_cell.tolist())
-
-                if not cat_xy_grid:
-                    continue
-
-                cat_xy  = np.vstack(cat_xy_grid)
-                cat_sky = cat_sky_all[np.array(cat_sky_idx)]
-
-                print(f"[GaiaLocal] {label}: {len(cat_xy)} catalog stars, matching…")
-
-                img_matched, cat_matched_xy = _hough_match_catalog_to_image(
-                    img_stars, cat_xy,
-                    img_w=img_w, img_h=img_h,
-                    max_stars=1000, min_matches=6, match_tol_px=10.0,
-                )
-
-                if img_matched is not None and len(img_matched) >= 6:
-                    print(f"[GaiaLocal] matched at {label} with {len(img_matched)} pairs")
-                    best_result = (img_matched, cat_matched_xy, seed_wcs, cat_sky)
+            for c_scale in scale_variants:
+                if best_result is not None:
                     break
 
-            except Exception as e:
-                print(f"[GaiaLocal] attempt {label} failed: {e}")
-                continue
+                is_center = (attempt_idx == 0 and c_scale == scale)
+                label = "center" if is_center else f"spiral[{attempt_idx}] scale={c_scale:.3f}\"/px"
 
-    if best_result is None:
-        return False, (f"Gaia DR3 solver: no match found across {len(search_centers)} "
-                       f"centers × {len(scale_variants)} scale variants")
+                try:
+                    seed_wcs = _make_seed_wcs(c_ra, c_dec, c_scale, img_w, img_h, seed_header)
 
-    img_matched, cat_matched_xy, seed_wcs, cat_sky = best_result
+                    corners_pix = [(0,0),(img_w-1,0),(0,img_h-1),(img_w-1,img_h-1)]
+                    corner_sky  = [seed_wcs.pixel_to_world(x, y) for x, y in corners_pix]
+                    ra_min  = min(c.ra.deg  for c in corner_sky) - 0.1
+                    ra_max  = max(c.ra.deg  for c in corner_sky) + 0.1
+                    dec_min = min(c.dec.deg for c in corner_sky) - 0.1
+                    dec_max = max(c.dec.deg for c in corner_sky) + 0.1
+
+                    all_sources = []
+                    for fname, conn in lib._connections.items():
+                        try:
+                            cur = conn.cursor()
+                            cur.execute("""
+                                SELECT source_id, ra, dec, phot_g_mean_mag FROM sources
+                                WHERE dec BETWEEN ? AND ? AND ra BETWEEN ? AND ?
+                            """, (dec_min, dec_max, ra_min, ra_max))
+                            all_sources.extend(cur.fetchall())
+                        except Exception as e:
+                            print(f"[GaiaLocal] query failed on {fname}: {e}")
+
+                    if not all_sources:
+                        continue
+
+                    seen_sids = {}
+                    for sid, sra, sdec, gmag in all_sources:
+                        if sid in excluded_sids:
+                            continue
+                        if sid not in seen_sids:
+                            seen_sids[sid] = {"ra": sra, "dec": sdec, "gmag": gmag, "sid": sid}
+
+                    if len(seen_sids) < 10:
+                        continue
+
+                    if is_center:
+                        print(f"[GaiaLocal] {len(seen_sids)} unique catalog stars found in field "
+                              f"({len(excluded_sids)} excluded from prior round)")
+                    _set_status_ui(parent, f"Status: {len(seen_sids)} Gaia stars — trying {label}…")
+
+                    cat_infos = list(seen_sids.values())
+                    cat_infos.sort(key=lambda i: (i["gmag"] if i["gmag"] is not None else 99.0))
+                    cat_sky_all = SkyCoord(
+                        ra=[i["ra"] for i in cat_infos] * u.deg,
+                        dec=[i["dec"] for i in cat_infos] * u.deg,
+                    )
+                    cat_sid_all = np.array([i["sid"] for i in cat_infos])
+                    px, py = seed_wcs.world_to_pixel(cat_sky_all)
+                    cat_xy_all = np.column_stack([px, py]).astype(np.float32)
+
+                    margin = 50
+                    in_bounds = (
+                        (cat_xy_all[:,0] >= -margin) & (cat_xy_all[:,0] < img_w + margin) &
+                        (cat_xy_all[:,1] >= -margin) & (cat_xy_all[:,1] < img_h + margin)
+                    )
+                    cat_xy_all  = cat_xy_all[in_bounds]
+                    cat_sky_all = cat_sky_all[in_bounds]
+                    cat_sid_all = cat_sid_all[in_bounds]
+
+                    if len(cat_xy_all) < 10:
+                        continue
+
+                    grid_rows, grid_cols = 3, 3
+                    max_per_cell = 1000 // (grid_rows * grid_cols)
+                    cell_w = img_w / grid_cols
+                    cell_h = img_h / grid_rows
+                    cat_xy_grid, cat_sky_idx = [], []
+                    for gr in range(grid_rows):
+                        for gc in range(grid_cols):
+                            x0, x1 = gc * cell_w, (gc+1) * cell_w
+                            y0, y1 = gr * cell_h, (gr+1) * cell_h
+                            in_cell = np.where(
+                                (cat_xy_all[:,0] >= x0) & (cat_xy_all[:,0] < x1) &
+                                (cat_xy_all[:,1] >= y0) & (cat_xy_all[:,1] < y1)
+                            )[0]
+                            if len(in_cell) == 0:
+                                continue
+                            if len(in_cell) > max_per_cell:
+                                in_cell = in_cell[:max_per_cell]
+                            cat_xy_grid.append(cat_xy_all[in_cell])
+                            cat_sky_idx.extend(in_cell.tolist())
+
+                    if not cat_xy_grid:
+                        continue
+
+                    cat_xy  = np.vstack(cat_xy_grid)
+                    cat_sky = cat_sky_all[np.array(cat_sky_idx)]
+                    cat_sid = cat_sid_all[np.array(cat_sky_idx)]
+
+                    print(f"[GaiaLocal] {label}: {len(cat_xy)} catalog stars, matching…")
+
+                    img_matched, cat_matched_xy = _hough_match_catalog_to_image(
+                        img_stars, cat_xy,
+                        img_w=img_w, img_h=img_h,
+                        max_stars=1000, min_matches=6, match_tol_px=10.0,
+                    )
+
+                    if img_matched is not None and len(img_matched) >= 6:
+                        print(f"[GaiaLocal] matched at {label} with {len(img_matched)} pairs")
+                        # carry along the full catalog sid array so we can
+                        # identify which sids the eventual fit actually used
+                        best_result = (img_matched, cat_matched_xy, seed_wcs, cat_sky, cat_xy, cat_sid)
+                        break
+
+                except Exception as e:
+                    print(f"[GaiaLocal] attempt {label} failed: {e}")
+                    continue
+
+        if best_result is None:
+            if retry_round + 1 < MAX_RETRY_ROUNDS:
+                print("[GaiaLocal] no match this round, nothing to exclude — stopping retries")
+            break
+
+        img_matched, cat_matched_xy, seed_wcs, cat_sky, _cat_xy_full, _cat_sid_full = best_result
+
+        # Map matched catalog pixel positions back to their source_ids so we
+        # can exclude them if this round's solve turns out to be bad.
+        try:
+            _match_sid_lookup = {}
+            for _xy, _sid in zip(_cat_xy_full, _cat_sid_full):
+                _match_sid_lookup[(round(float(_xy[0]), 2), round(float(_xy[1]), 2))] = int(_sid)
+            matched_sids = []
+            for _mxy in cat_matched_xy:
+                key = (round(float(_mxy[0]), 2), round(float(_mxy[1]), 2))
+                if key in _match_sid_lookup:
+                    matched_sids.append(_match_sid_lookup[key])
+        except Exception:
+            matched_sids = []
+
+        ok_round, result_or_err = _gaia_fit_and_validate(
+            img_matched, cat_matched_xy, seed_wcs, cat_sky,
+            img_w, img_h, lib, parent,
+        )
+
+        if ok_round:
+            return True, _gaia_build_final_header(result_or_err, seed_header)
+
+        print(f"[GaiaLocal] retry_round={retry_round}: {result_or_err}")
+        if matched_sids and retry_round + 1 < MAX_RETRY_ROUNDS:
+            excluded_sids.update(matched_sids)
+            print(f"[GaiaLocal] excluding {len(matched_sids)} catalog stars from this bad match, retrying…")
+            continue
+        else:
+            return False, result_or_err
+
+    return False, "Gaia DR3 solver: no match found across all search attempts"
+
+def _gaia_build_final_header(wcs_solution: WCS, seed_header: "Header | None") -> Header:
+    wcs_hdr  = _as_header(wcs_solution.to_header(relax=True))
+    acq_base = _strip_wcs_keys(seed_header.copy()) if isinstance(seed_header, Header) else None
+    return _merge_wcs_into_base_header(acq_base, wcs_hdr)
+
+
+def _gaia_fit_and_validate(
+    img_matched: np.ndarray,
+    cat_matched_xy: np.ndarray,
+    seed_wcs: WCS,
+    cat_sky,
+    img_w: int,
+    img_h: int,
+    lib,
+    parent,
+) -> tuple[bool, "WCS | str"]:
+    """
+    Run steps 6-9 of the Gaia solve (TAN fit, iterative refinement,
+    quality gate, SIP fit) on one matched-pair candidate set.
+    Returns (True, wcs_solution) on success, (False, error_str) on failure.
+    """
+    import astropy.units as u
+    from astropy.coordinates import SkyCoord
+    from astropy.wcs.utils import fit_wcs_from_points
+    from scipy.spatial import KDTree
+
     n_matched = len(img_matched)
-    print(f"[GaiaLocal] {n_matched} matched star pairs")
-    _set_status_ui(parent, f"Status: {n_matched} matches — fitting WCS…")
 
-    # ── 6) Map matched catalog pixel positions back to sky coords ────────────
+    # ── Map matched catalog pixel positions back to sky coords ───────────────
     try:
-        import astropy.units as u
-        from astropy.coordinates import SkyCoord
         matched_cat_px = cat_matched_xy[:, 0]
         matched_cat_py = cat_matched_xy[:, 1]
         matched_sky = seed_wcs.pixel_to_world(matched_cat_px, matched_cat_py)
     except Exception as e:
         return False, f"Gaia DR3 solver: sky coordinate recovery failed: {e}"
 
-    # ── 7) Fit initial TAN WCS ────────────────────────────────────────────────
+    # ── Fit initial TAN WCS ────────────────────────────────────────────────
     try:
-        from astropy.wcs.utils import fit_wcs_from_points
-
         proj_point = SkyCoord(
             ra=float(np.mean([c.ra.deg for c in matched_sky])) * u.deg,
             dec=float(np.mean([c.dec.deg for c in matched_sky])) * u.deg,
         )
-
         wcs_tan = fit_wcs_from_points(
             (img_matched[:, 0], img_matched[:, 1]),
             matched_sky,
@@ -2390,41 +2453,29 @@ def _solve_with_GAIA(image: np.ndarray,
         )
         wcs_tan.array_shape = (img_h, img_w)
         wcs_solution = wcs_tan
-
     except Exception as e:
         return False, f"Gaia DR3 solver: WCS fit failed: {e}"
 
-    # ── 8) Iterative refinement via fitted-WCS reprojection ──────────────────
-    # Now that we have an approximate WCS, re-project ALL catalog stars through
-    # it and do a direct nearest-neighbor match — no Hough needed since the
-    # offset should be small. Repeat until RMS converges or max iterations.
+    # ── Iterative refinement via fitted-WCS reprojection ──────────────────────
     try:
-        import astropy.units as u
-        from astropy.coordinates import SkyCoord
-        from astropy.wcs.utils import fit_wcs_from_points, proj_plane_pixel_scales
-        from scipy.spatial import KDTree
-
-        MAX_ITER       = 5
-        RMS_CONVERGE   = 0.05   # arcsec — stop if improvement is less than this
-        NN_TOL_PX      = 8.0    # nearest-neighbour match tolerance in pixels
-        MIN_PAIRS      = 10     # require at least this many pairs to adopt
-
+        MAX_ITER     = 5
+        RMS_CONVERGE = 0.05
+        NN_TOL_PX    = 8.0
+        MIN_PAIRS    = 10
         prev_rms = None
+        rms = None
 
         for iteration in range(MAX_ITER):
-            # Compute current RMS
             sky_fit    = wcs_solution.pixel_to_world(img_matched[:, 0], img_matched[:, 1])
             sep_arcsec = matched_sky.separation(sky_fit).arcsec
             rms        = float(np.sqrt(np.mean(sep_arcsec**2)))
-            p95        = float(np.percentile(sep_arcsec, 95))
-            print(f"[GaiaLocal] iter={iteration} RMS={rms:.3f}\"  p95={p95:.3f}\"  n={n_matched}")
+            print(f"[GaiaLocal] iter={iteration} RMS={rms:.3f}\"  n={n_matched}")
 
             if prev_rms is not None and (prev_rms - rms) < RMS_CONVERGE:
                 print(f"[GaiaLocal] converged (improvement {prev_rms-rms:.3f}\" < {RMS_CONVERGE}\")")
                 break
             prev_rms = rms
 
-            # Re-project the full catalog through the current WCS solution
             try:
                 t_sources = []
                 corners_pix = [(0,0),(img_w-1,0),(0,img_h-1),(img_w-1,img_h-1)]
@@ -2474,12 +2525,10 @@ def _solve_with_GAIA(image: np.ndarray,
                     print(f"[GaiaLocal] iter={iteration}: only {len(t_cat_xy)} catalog stars in frame, stopping")
                     break
 
-                # Direct nearest-neighbour match
                 tree = KDTree(t_cat_xy)
-                dists, idxs = tree.query(img_stars, k=1, workers=-1)
+                dists, idxs = tree.query(img_matched, k=1, workers=-1)
                 inlier_mask = dists < NN_TOL_PX
-                t_img_m     = img_stars[inlier_mask]
-                t_cat_m_xy  = t_cat_xy[idxs[inlier_mask]]
+                t_img_m     = img_matched[inlier_mask]
                 t_cat_sky_m = t_cat_sky_f[idxs[inlier_mask]]
 
                 print(f"[GaiaLocal] iter={iteration}: {inlier_mask.sum()} pairs within {NN_TOL_PX}px "
@@ -2489,7 +2538,6 @@ def _solve_with_GAIA(image: np.ndarray,
                     print(f"[GaiaLocal] iter={iteration}: too few pairs ({len(t_img_m)}), stopping")
                     break
 
-                # Fit new WCS from this larger matched set
                 t_proj = SkyCoord(
                     ra=float(np.mean([c.ra.deg for c in t_cat_sky_m])) * u.deg,
                     dec=float(np.mean([c.dec.deg for c in t_cat_sky_m])) * u.deg,
@@ -2503,12 +2551,9 @@ def _solve_with_GAIA(image: np.ndarray,
                 t_wcs_tan.array_shape = (img_h, img_w)
 
                 t_sky_fit = t_wcs_tan.pixel_to_world(t_img_m[:,0], t_img_m[:,1])
-                t_rms     = float(np.sqrt(np.mean(
-                    t_cat_sky_m.separation(t_sky_fit).arcsec**2
-                )))
+                t_rms     = float(np.sqrt(np.mean(t_cat_sky_m.separation(t_sky_fit).arcsec**2)))
                 print(f"[GaiaLocal] iter={iteration}: new WCS RMS={t_rms:.3f}\" ({len(t_img_m)} pairs)")
 
-                # Always adopt if we have more pairs, or same pairs with better RMS
                 if len(t_img_m) > n_matched or (len(t_img_m) >= n_matched and t_rms <= rms):
                     print(f"[GaiaLocal] iter={iteration}: adopting ({len(t_img_m)} pairs, RMS={t_rms:.3f}\")")
                     img_matched  = t_img_m
@@ -2519,87 +2564,67 @@ def _solve_with_GAIA(image: np.ndarray,
                 else:
                     print(f"[GaiaLocal] iter={iteration}: not better, stopping")
                     break
-
             except Exception as e:
                 print(f"[GaiaLocal] iter={iteration} refinement failed: {e}")
                 break
 
-        # Final RMS report
-        # Final RMS report + quality gate
+        # Final RMS + quality gate
+        sky_fit    = wcs_solution.pixel_to_world(img_matched[:, 0], img_matched[:, 1])
+        sep_arcsec = matched_sky.separation(sky_fit).arcsec
+        rms        = float(np.sqrt(np.mean(sep_arcsec**2)))
+        p95        = float(np.percentile(sep_arcsec, 95))
+        print(f"[GaiaLocal] final RMS={rms:.3f}\"  p95={p95:.3f}\"  n={n_matched}")
+
+        QUALITY_RMS_LIMIT = 3.0
+        QUALITY_MIN_PAIRS = 20
+        if rms > QUALITY_RMS_LIMIT or n_matched < QUALITY_MIN_PAIRS:
+            return False, (
+                f"match quality too low (RMS={rms:.2f}\", n={n_matched}; "
+                f"need RMS<={QUALITY_RMS_LIMIT}\" and n>={QUALITY_MIN_PAIRS})"
+            )
+    except Exception as e:
+        return False, f"Gaia DR3 solver: refinement exception: {e}"
+
+    # ── SIP fit ────────────────────────────────────────────────────────────
+    if n_matched >= 20:
         try:
-            sky_fit    = wcs_solution.pixel_to_world(img_matched[:, 0], img_matched[:, 1])
-            sep_arcsec = matched_sky.separation(sky_fit).arcsec
-            rms        = float(np.sqrt(np.mean(sep_arcsec**2)))
-            p95        = float(np.percentile(sep_arcsec, 95))
-            print(f"[GaiaLocal] final RMS={rms:.3f}\"  p95={p95:.3f}\"  n={n_matched}")
+            if n_matched >= 100:
+                sip_degree = 4
+            elif n_matched >= 50:
+                sip_degree = 3
+            else:
+                sip_degree = 2
 
-            # Quality gate: a "solved" result with poor RMS or too few
-            # matched stars isn't trustworthy enough for SIP/SFCC use.
-            # Bail out so the caller can fall through to ASTAP/Astrometry.net.
-            QUALITY_RMS_LIMIT = 3.0   # arcsec
-            QUALITY_MIN_PAIRS = 20
-            if rms > QUALITY_RMS_LIMIT or n_matched < QUALITY_MIN_PAIRS:
-                return False, (
-                    f"Gaia DR3 solver: match quality too low for reliable use "
-                    f"(RMS={rms:.2f}\", n={n_matched}; need RMS<={QUALITY_RMS_LIMIT}\" "
-                    f"and n>={QUALITY_MIN_PAIRS})"
-                )
-        except Exception:
-            pass
+            proj_point = SkyCoord(
+                ra=float(np.mean([c.ra.deg for c in matched_sky])) * u.deg,
+                dec=float(np.mean([c.dec.deg for c in matched_sky])) * u.deg,
+            )
+            wcs_sip = fit_wcs_from_points(
+                (img_matched[:, 0], img_matched[:, 1]),
+                matched_sky,
+                projection='TAN',
+                proj_point=proj_point,
+                sip_degree=sip_degree,
+            )
+            wcs_sip.array_shape = (img_h, img_w)
 
-        # ── SIP fit on final matched set ─────────────────────────────────────
-        if n_matched >= 20:
-            try:
-                if n_matched >= 100:
-                    sip_degree = 4
-                elif n_matched >= 50:
-                    sip_degree = 3
-                else:
-                    sip_degree = 2
+            sky_sip  = wcs_sip.pixel_to_world(img_matched[:, 0], img_matched[:, 1])
+            res_sip  = matched_sky.separation(sky_sip).arcsec
+            sky_tan2 = wcs_solution.pixel_to_world(img_matched[:, 0], img_matched[:, 1])
+            res_tan2 = matched_sky.separation(sky_tan2).arcsec
+            rms_sip  = float(np.sqrt(np.mean(res_sip**2)))
+            rms_tan2 = float(np.sqrt(np.mean(res_tan2**2)))
+            print(f"[GaiaLocal] TAN RMS={rms_tan2:.3f}\"  SIP-{sip_degree} RMS={rms_sip:.3f}\"")
+            if rms_sip < rms_tan2:
+                wcs_solution = wcs_sip
+                print(f"[GaiaLocal] using SIP-{sip_degree} solution")
+        except Exception as e:
+            print(f"[GaiaLocal] SIP fit failed, using TAN: {e}")
 
-                proj_point = SkyCoord(
-                    ra=float(np.mean([c.ra.deg for c in matched_sky])) * u.deg,
-                    dec=float(np.mean([c.dec.deg for c in matched_sky])) * u.deg,
-                )
-                wcs_sip = fit_wcs_from_points(
-                    (img_matched[:, 0], img_matched[:, 1]),
-                    matched_sky,
-                    projection='TAN',
-                    proj_point=proj_point,
-                    sip_degree=sip_degree,
-                )
-                wcs_sip.array_shape = (img_h, img_w)
+    _set_status_ui(parent, f"Status: Gaia DR3 solve — RMS={rms:.2f}\" ({n_matched} stars)")
+    print("Plate Solve Completed Successfully")
+    return True, wcs_solution   
 
-                sky_sip  = wcs_sip.pixel_to_world(img_matched[:, 0], img_matched[:, 1])
-                res_sip  = matched_sky.separation(sky_sip).arcsec
-                sky_tan2 = wcs_solution.pixel_to_world(img_matched[:, 0], img_matched[:, 1])
-                res_tan2 = matched_sky.separation(sky_tan2).arcsec
-                rms_sip  = float(np.sqrt(np.mean(res_sip**2)))
-                rms_tan2 = float(np.sqrt(np.mean(res_tan2**2)))
-                print(f"[GaiaLocal] TAN RMS={rms_tan2:.3f}\"  SIP-{sip_degree} RMS={rms_sip:.3f}\"")
-                if rms_sip < rms_tan2:
-                    wcs_solution = wcs_sip
-                    print(f"[GaiaLocal] using SIP-{sip_degree} solution")
-                else:
-                    print(f"[GaiaLocal] SIP-{sip_degree} did not improve fit, using TAN")
-            except Exception as e:
-                print(f"[GaiaLocal] SIP fit failed, using TAN: {e}")
-
-        _set_status_ui(parent, f"Status: Gaia DR3 solve — RMS={rms:.2f}\" ({n_matched} stars)")
-        print("Plate Solve Completed Successfully")
-
-    except Exception as e:
-        print(f"[GaiaLocal] step 8 refinement exception: {e}")
-
-    # ── 9) Build final header ─────────────────────────────────────────────────
-    try:
-        wcs_hdr  = _as_header(wcs_solution.to_header(relax=True))
-        acq_base = _strip_wcs_keys(seed_header.copy()) if isinstance(seed_header, Header) else None
-        final_hdr = _merge_wcs_into_base_header(acq_base, wcs_hdr)
-        return True, final_hdr
-    except Exception as e:
-        return False, f"Gaia DR3 solver: header merge failed: {e}"
-         
 # ---------------------------------------------------------------------
 # Core ASTAP solving for a numpy image + seed header
 # ---------------------------------------------------------------------
