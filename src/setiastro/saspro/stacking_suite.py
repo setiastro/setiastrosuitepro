@@ -5131,6 +5131,7 @@ class FlatStrengthPreviewDialog(QDialog):
 class StackingSuiteDialog(QDialog):
     requestRelaunch = pyqtSignal(str, str)  # old_dir, new_dir
     status_signal = pyqtSignal(str)
+    _platesolve_signal = pyqtSignal(object, object, str, dict) 
 
     def __init__(self, parent=None, wrench_path=None, spinner_path=None, **_ignored):
         super().__init__(parent)
@@ -5184,7 +5185,7 @@ class StackingSuiteDialog(QDialog):
         )
 
         self._cfa_for_this_run = None  # None = follow checkbox; True/False = override for this run
-
+        self._platesolve_signal.connect(self._platesolve_slot, Qt.ConnectionType.BlockingQueuedConnection)
         # Debounced progress (alignment)
         self._align_prog_timer = QTimer(self)
         self._align_prog_timer.setSingleShot(True)
@@ -10385,7 +10386,20 @@ class StackingSuiteDialog(QDialog):
         self.autocrop_pct.setValue(self.settings.value("stacking/autocrop_pct", 95.0, type=float))
         self.autocrop_cb.setChecked(self.settings.value("stacking/autocrop_enabled", True, type=bool))
         tol_layout.addWidget(self.autocrop_pct)
-
+        tol_layout.addStretch()
+        self.platesolve_master_cb = QCheckBox(self.tr("Plate solve master(s) before saving"))
+        self.platesolve_master_cb.setToolTip(self.tr(
+            "Runs the Gaia DR3 → ASTAP → Astrometry.net solver waterfall on the final "
+            "master (and auto-cropped master, if enabled) before saving. The solved "
+            "WCS is merged into the saved FITS header."
+        ))
+        self.platesolve_master_cb.setChecked(
+            self.settings.value("stacking/platesolve_master_enabled", False, type=bool)
+        )
+        self.platesolve_master_cb.toggled.connect(
+            lambda v: self.settings.setValue("stacking/platesolve_master_enabled", bool(v))
+        )
+        tol_layout.addWidget(self.platesolve_master_cb)
         tol_layout.addStretch()
 
         self.split_dualband_cb = QCheckBox(self.tr("Split dual-band OSC before integration"))
@@ -20458,7 +20472,10 @@ class StackingSuiteDialog(QDialog):
             base = f"MasterLight_{display_group}_{n_frames_group}stacked"
             base = self._normalize_master_stem(base)
             out_path_orig = self._build_out(self._master_light_dir(), base, "fit")
-
+            # ── NEW: plate solve before saving ──────────────────────────
+            hdr_orig = self._maybe_plate_solve_master(
+                integrated_image, hdr_orig, label=f"'{group_key}' master", status_cb=log
+            )
             maps = group_prepass.get("rej_maps") or getattr(self, "_rej_maps", {}).get(group_key)
             save_layers = self.settings.value("stacking/save_rejection_layers", True, type=bool)
 
@@ -20558,6 +20575,9 @@ class StackingSuiteDialog(QDialog):
                     if uf and (abs(uf[0] - 1.0) > 1e-4 or abs(uf[1] - 1.0) > 1e-4):
                         hdr_crop = self._fix_header_for_upscale(hdr_crop, uf[0], uf[1])                
                 is_mono_crop = (cropped_img.ndim == 2)
+                hdr_crop = self._maybe_plate_solve_master(
+                    cropped_img, hdr_crop, label=f"'{group_key}' auto-cropped master", status_cb=log
+                )
                 Hc, Wc = (cropped_img.shape[:2] if cropped_img.ndim >= 2 else (H, W))
                 display_group_crop = self._label_with_dims(group_key, Wc, Hc)
                 base_crop = f"MasterLight_{display_group_crop}_{n_frames_group}stacked_autocrop"
@@ -21545,6 +21565,64 @@ class StackingSuiteDialog(QDialog):
             result = None
         responder.finished.emit(result)
 
+    @pyqtSlot(object, object, str, dict)
+    def _platesolve_slot(self, img_array, header, label, holder):
+        """
+        Runs ONLY on the GUI thread (invoked via BlockingQueuedConnection).
+        Safe to create QProcess/QDialog here.
+        """
+        try:
+            from setiastro.saspro.plate_solver import plate_solve_numpy_headless, _status_popup_close
+            ok, result = plate_solve_numpy_headless(self, self.settings, img_array, seed_header=header)
+            holder["ok"] = ok
+            holder["result"] = result
+        except Exception as e:
+            holder["ok"] = False
+            holder["result"] = str(e)
+        finally:
+            # plate_solve_numpy_headless never closes its own status popup
+            # (only plate_solve_doc_inplace does) — close it here so the
+            # solve dialog doesn't sit there waiting on manual "Hide".
+            try:
+                _status_popup_close()
+            except Exception:
+                pass
+
+    def _maybe_plate_solve_master(self, img_array, header, *, label="master", status_cb=None):
+        log = status_cb or self.update_status
+
+        if not self.settings.value("stacking/platesolve_master_enabled", False, type=bool):
+            return header
+
+        log(self.tr(f"🔭 Plate solving {label} (Gaia DR3 → ASTAP → Astrometry.net)…"))
+        QApplication.processEvents()
+
+        try:
+            if QThread.currentThread() is self._gui_thread:
+                from setiastro.saspro.plate_solver import plate_solve_numpy_headless, _status_popup_close
+                try:
+                    ok, result = plate_solve_numpy_headless(self, self.settings, img_array, seed_header=header)
+                finally:
+                    try:
+                        _status_popup_close()
+                    except Exception:
+                        pass
+            else:
+                holder: dict = {}
+                self._platesolve_signal.emit(img_array, header, label, holder)
+                ok = holder.get("ok", False)
+                result = holder.get("result", "plate solve failed (no result returned)")
+        except Exception as e:
+            log(self.tr(f"⚠️ Plate solve error for {label}: {e}"))
+            return header
+
+        if ok:
+            log(self.tr(f"✅ Plate solve succeeded for {label}."))
+            return result
+        else:
+            log(self.tr(f"⚠️ Plate solve failed for {label}: {result}"))
+            return header
+
     def stack_images_mixed_drizzle(
         self,
         grouped_files,           # { group_key: [aligned _n_r.fit paths] }
@@ -21677,7 +21755,10 @@ class StackingSuiteDialog(QDialog):
             base = f"MasterLight_{display_group}_{n_frames_group}stacked"
             base = self._normalize_master_stem(base)
             out_path_orig = self._build_out(self._master_light_dir(), base, "fit")
-
+            # ── NEW: plate solve before saving ──────────────────────────
+            hdr_orig = self._maybe_plate_solve_master(
+                integrated_image, hdr_orig, label=f"'{group_key}' master", status_cb=log
+            )
             # Try to attach rejection maps that were accumulated during integration
             maps = getattr(self, "_rej_maps", {}).get(group_key)
             save_layers = self.settings.value("stacking/save_rejection_layers", True, type=bool)
@@ -21781,6 +21862,10 @@ class StackingSuiteDialog(QDialog):
                 )
                 hdr_crop["NCOMBINE"] = (int(n_frames_group), "Number of frames combined")
                 hdr_crop["NSTACK"]   = (int(n_frames_group), "Alias of NCOMBINE (SetiAstro)")
+                # ── NEW: plate solve the cropped master separately (geometry/CRPIX differ) ──
+                hdr_crop = self._maybe_plate_solve_master(
+                    cropped_img, hdr_crop, label=f"'{group_key}' auto-cropped master", status_cb=log
+                )                
                 is_mono_crop = (cropped_img.ndim == 2)
                 Hc, Wc = (cropped_img.shape[:2] if cropped_img.ndim >= 2 else (H, W))
                 display_group_crop = self._label_with_dims(group_key, Wc, Hc)
@@ -23790,6 +23875,9 @@ class StackingSuiteDialog(QDialog):
 
         is_mono_driz = (final_drizzle.ndim == 2)
         final_drizzle = self._normalize_stack_01(final_drizzle)
+        hdr_orig = self._maybe_plate_solve_master(
+            final_drizzle, hdr_orig, label=f"'{group_key}' drizzle master", status_cb=log
+        )        
         save_image(
             img_array=final_drizzle,
             filename=out_path_orig,
@@ -23819,6 +23907,11 @@ class StackingSuiteDialog(QDialog):
             out_path_crop = self._build_out(self._master_light_dir(), base_crop, "fit")
 
             cropped_drizzle = self._normalize_stack_01(cropped_drizzle)
+            hdr_crop = self._maybe_plate_solve_master(
+                cropped_drizzle, hdr_crop,
+                label=f"'{group_key}' auto-cropped drizzle master",
+                status_cb=log
+            )            
             save_image(
                 img_array=cropped_drizzle,
                 filename=out_path_crop,
