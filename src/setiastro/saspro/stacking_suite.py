@@ -5131,6 +5131,7 @@ class FlatStrengthPreviewDialog(QDialog):
 class StackingSuiteDialog(QDialog):
     requestRelaunch = pyqtSignal(str, str)  # old_dir, new_dir
     status_signal = pyqtSignal(str)
+    _platesolve_signal = pyqtSignal(object, object, str, dict) 
 
     def __init__(self, parent=None, wrench_path=None, spinner_path=None, **_ignored):
         super().__init__(parent)
@@ -5184,7 +5185,7 @@ class StackingSuiteDialog(QDialog):
         )
 
         self._cfa_for_this_run = None  # None = follow checkbox; True/False = override for this run
-
+        self._platesolve_signal.connect(self._platesolve_slot, Qt.ConnectionType.BlockingQueuedConnection)
         # Debounced progress (alignment)
         self._align_prog_timer = QTimer(self)
         self._align_prog_timer.setSingleShot(True)
@@ -10385,7 +10386,20 @@ class StackingSuiteDialog(QDialog):
         self.autocrop_pct.setValue(self.settings.value("stacking/autocrop_pct", 95.0, type=float))
         self.autocrop_cb.setChecked(self.settings.value("stacking/autocrop_enabled", True, type=bool))
         tol_layout.addWidget(self.autocrop_pct)
-
+        tol_layout.addStretch()
+        self.platesolve_master_cb = QCheckBox(self.tr("Plate solve master(s) before saving"))
+        self.platesolve_master_cb.setToolTip(self.tr(
+            "Runs the Gaia DR3 → ASTAP → Astrometry.net solver waterfall on the final "
+            "master (and auto-cropped master, if enabled) before saving. The solved "
+            "WCS is merged into the saved FITS header."
+        ))
+        self.platesolve_master_cb.setChecked(
+            self.settings.value("stacking/platesolve_master_enabled", False, type=bool)
+        )
+        self.platesolve_master_cb.toggled.connect(
+            lambda v: self.settings.setValue("stacking/platesolve_master_enabled", bool(v))
+        )
+        tol_layout.addWidget(self.platesolve_master_cb)
         tol_layout.addStretch()
 
         self.split_dualband_cb = QCheckBox(self.tr("Split dual-band OSC before integration"))
@@ -12632,7 +12646,7 @@ class StackingSuiteDialog(QDialog):
         return d
 
     def _closest_flat_for(self, *, filter_name: str, image_size: str, light_path: str,
-                           light_gain: float | None = None, light_offset: float | None = None):
+                        light_gain: float | None = None, light_offset: float | None = None):
         ftoken = self._sanitize_name(filter_name)
         light_d = self._file_local_night_date(light_path)
 
@@ -12643,7 +12657,6 @@ class StackingSuiteDialog(QDialog):
         if not candidates:
             return None
 
-        # Cache flat gain/offset
         if not hasattr(self, "_master_flat_go"):
             self._master_flat_go = {}
 
@@ -12670,40 +12683,43 @@ class StackingSuiteDialog(QDialog):
                 return True
             return False
 
-        # 1) exact session + gain match
-        light_hdr = None
-        try:
-            with fits.open(light_path, memmap=True) as hdul:
-                light_hdr = hdul[0].header
-        except Exception:
-            pass
-        light_session = self._session_from_dateobs_local_night(light_hdr) if light_hdr else None
+        def _key_session(key: str) -> str | None:
+            # pull the *first* [..] bracket — that's always the session, gain is appended after
+            m = re.search(r"\[([^\]]+)\]", key)
+            return m.group(1) if m else None
+
+        # 1) exact session + gain match — prefer the CACHED session tag (set correctly at ingest)
+        light_session = self.session_tags.get(light_path)
+        if not light_session:
+            # fallback only if not cached for some reason
+            try:
+                light_hdr = fits.getheader(light_path, memmap=True)
+            except Exception:
+                light_hdr = None
+            light_session = self._session_from_dateobs_local_night(light_hdr) if light_hdr else None
+
         if light_session:
-            exact_key = f"{ftoken} ({image_size}) [{light_session}]"
-            for key, path in candidates:
-                if key == exact_key and not _go_mismatch(path):
+            exact_matches = [(k, p) for k, p in candidates if _key_session(k) == light_session]
+            for _, path in exact_matches:
+                if not _go_mismatch(path):
                     return path
-            # exact session but gain mismatch — still prefer over wrong session
-            for key, path in candidates:
-                if key == exact_key:
-                    return path
+            if exact_matches:
+                return exact_matches[0][1]
 
         # 2) nearest date, gain-matched candidates preferred
         if light_d is None:
-            # prefer gain match among candidates
             for _, path in candidates:
                 if not _go_mismatch(path):
                     return path
             return candidates[0][1]
 
-        best = (None, 10**9, True)   # (path, |Δdays|, go_mismatch)
+        best = (None, 10**9, True)
         for _key, fpath in candidates:
             fd = self._file_local_night_date(fpath)
             if fd is None:
                 continue
             delta = abs((fd - light_d).days)
             mismatch = _go_mismatch(fpath)
-            # prefer gain match; within same gain bucket prefer nearest date
             if (mismatch, delta) < (best[2], best[1]):
                 best = (fpath, delta, mismatch)
 
@@ -15130,27 +15146,38 @@ class StackingSuiteDialog(QDialog):
                     else:
                         best_flat_path = None
 
-                        exact_key = f"{filter_name} ({image_size}) [{session_name}]"
-                        if exact_key in self.master_files:
-                            # still check gain match — if mismatch, fall through to _closest_flat_for
-                            candidate = self.master_files[exact_key]
+                        # NOTE: master_files keys are like:
+                        #   "H (6248x4176) [2026-01-07] [G100]"
+                        # i.e. the session bracket is NOT necessarily the last
+                        # bracket in the key (gain suffix may follow it), so we
+                        # can't do an exact dict-key match anymore. Match by prefix.
+                        exact_key_prefix = f"{filter_name} ({image_size}) [{session_name}]"
+                        exact_candidates = [
+                            mp for mk, mp in self.master_files.items()
+                            if str(mk).startswith(exact_key_prefix)
+                        ]
+
+                        if exact_candidates:
                             if not hasattr(self, "_master_flat_go"):
                                 self._master_flat_go = {}
-                            if candidate not in self._master_flat_go:
-                                try:
-                                    hdr = fits.getheader(candidate, memmap=True)
-                                    g = _get_key_float(hdr, "GAIN")
-                                    o = _get_key_float(hdr, "OFFSET")
-                                    if o is None:
-                                        o = _get_key_float(hdr, "BLKLEVEL")
-                                    self._master_flat_go[candidate] = (g, o)
-                                except Exception:
-                                    self._master_flat_go[candidate] = (None, None)
-                            fg, fo = self._master_flat_go[candidate]
-                            gain_ok = (l_gain is None or fg is None or abs(l_gain - fg) <= 1)
-                            offset_ok = (l_offset is None or fo is None or abs(l_offset - fo) <= 1)
-                            if gain_ok and offset_ok:
-                                best_flat_path = candidate
+
+                            for candidate in exact_candidates:
+                                if candidate not in self._master_flat_go:
+                                    try:
+                                        hdr = fits.getheader(candidate, memmap=True)
+                                        g = _get_key_float(hdr, "GAIN")
+                                        o = _get_key_float(hdr, "OFFSET")
+                                        if o is None:
+                                            o = _get_key_float(hdr, "BLKLEVEL")
+                                        self._master_flat_go[candidate] = (g, o)
+                                    except Exception:
+                                        self._master_flat_go[candidate] = (None, None)
+                                fg, fo = self._master_flat_go[candidate]
+                                gain_ok = (l_gain is None or fg is None or abs(l_gain - fg) <= 1)
+                                offset_ok = (l_offset is None or fo is None or abs(l_offset - fo) <= 1)
+                                if gain_ok and offset_ok:
+                                    best_flat_path = candidate
+                                    break
 
                         if best_flat_path is None:
                             best_flat_path = self._closest_flat_for(
@@ -20445,7 +20472,10 @@ class StackingSuiteDialog(QDialog):
             base = f"MasterLight_{display_group}_{n_frames_group}stacked"
             base = self._normalize_master_stem(base)
             out_path_orig = self._build_out(self._master_light_dir(), base, "fit")
-
+            # ── NEW: plate solve before saving ──────────────────────────
+            hdr_orig = self._maybe_plate_solve_master(
+                integrated_image, hdr_orig, label=f"'{group_key}' master", status_cb=log
+            )
             maps = group_prepass.get("rej_maps") or getattr(self, "_rej_maps", {}).get(group_key)
             save_layers = self.settings.value("stacking/save_rejection_layers", True, type=bool)
 
@@ -20545,6 +20575,9 @@ class StackingSuiteDialog(QDialog):
                     if uf and (abs(uf[0] - 1.0) > 1e-4 or abs(uf[1] - 1.0) > 1e-4):
                         hdr_crop = self._fix_header_for_upscale(hdr_crop, uf[0], uf[1])                
                 is_mono_crop = (cropped_img.ndim == 2)
+                hdr_crop = self._maybe_plate_solve_master(
+                    cropped_img, hdr_crop, label=f"'{group_key}' auto-cropped master", status_cb=log
+                )
                 Hc, Wc = (cropped_img.shape[:2] if cropped_img.ndim >= 2 else (H, W))
                 display_group_crop = self._label_with_dims(group_key, Wc, Hc)
                 base_crop = f"MasterLight_{display_group_crop}_{n_frames_group}stacked_autocrop"
@@ -21532,6 +21565,64 @@ class StackingSuiteDialog(QDialog):
             result = None
         responder.finished.emit(result)
 
+    @pyqtSlot(object, object, str, dict)
+    def _platesolve_slot(self, img_array, header, label, holder):
+        """
+        Runs ONLY on the GUI thread (invoked via BlockingQueuedConnection).
+        Safe to create QProcess/QDialog here.
+        """
+        try:
+            from setiastro.saspro.plate_solver import plate_solve_numpy_headless, _status_popup_close
+            ok, result = plate_solve_numpy_headless(self, self.settings, img_array, seed_header=header)
+            holder["ok"] = ok
+            holder["result"] = result
+        except Exception as e:
+            holder["ok"] = False
+            holder["result"] = str(e)
+        finally:
+            # plate_solve_numpy_headless never closes its own status popup
+            # (only plate_solve_doc_inplace does) — close it here so the
+            # solve dialog doesn't sit there waiting on manual "Hide".
+            try:
+                _status_popup_close()
+            except Exception:
+                pass
+
+    def _maybe_plate_solve_master(self, img_array, header, *, label="master", status_cb=None):
+        log = status_cb or self.update_status
+
+        if not self.settings.value("stacking/platesolve_master_enabled", False, type=bool):
+            return header
+
+        log(self.tr(f"🔭 Plate solving {label} (Gaia DR3 → ASTAP → Astrometry.net)…"))
+        QApplication.processEvents()
+
+        try:
+            if QThread.currentThread() is self._gui_thread:
+                from setiastro.saspro.plate_solver import plate_solve_numpy_headless, _status_popup_close
+                try:
+                    ok, result = plate_solve_numpy_headless(self, self.settings, img_array, seed_header=header)
+                finally:
+                    try:
+                        _status_popup_close()
+                    except Exception:
+                        pass
+            else:
+                holder: dict = {}
+                self._platesolve_signal.emit(img_array, header, label, holder)
+                ok = holder.get("ok", False)
+                result = holder.get("result", "plate solve failed (no result returned)")
+        except Exception as e:
+            log(self.tr(f"⚠️ Plate solve error for {label}: {e}"))
+            return header
+
+        if ok:
+            log(self.tr(f"✅ Plate solve succeeded for {label}."))
+            return result
+        else:
+            log(self.tr(f"⚠️ Plate solve failed for {label}: {result}"))
+            return header
+
     def stack_images_mixed_drizzle(
         self,
         grouped_files,           # { group_key: [aligned _n_r.fit paths] }
@@ -21664,7 +21755,10 @@ class StackingSuiteDialog(QDialog):
             base = f"MasterLight_{display_group}_{n_frames_group}stacked"
             base = self._normalize_master_stem(base)
             out_path_orig = self._build_out(self._master_light_dir(), base, "fit")
-
+            # ── NEW: plate solve before saving ──────────────────────────
+            hdr_orig = self._maybe_plate_solve_master(
+                integrated_image, hdr_orig, label=f"'{group_key}' master", status_cb=log
+            )
             # Try to attach rejection maps that were accumulated during integration
             maps = getattr(self, "_rej_maps", {}).get(group_key)
             save_layers = self.settings.value("stacking/save_rejection_layers", True, type=bool)
@@ -21768,6 +21862,10 @@ class StackingSuiteDialog(QDialog):
                 )
                 hdr_crop["NCOMBINE"] = (int(n_frames_group), "Number of frames combined")
                 hdr_crop["NSTACK"]   = (int(n_frames_group), "Alias of NCOMBINE (SetiAstro)")
+                # ── NEW: plate solve the cropped master separately (geometry/CRPIX differ) ──
+                hdr_crop = self._maybe_plate_solve_master(
+                    cropped_img, hdr_crop, label=f"'{group_key}' auto-cropped master", status_cb=log
+                )                
                 is_mono_crop = (cropped_img.ndim == 2)
                 Hc, Wc = (cropped_img.shape[:2] if cropped_img.ndim >= 2 else (H, W))
                 display_group_crop = self._label_with_dims(group_key, Wc, Hc)
@@ -23777,6 +23875,9 @@ class StackingSuiteDialog(QDialog):
 
         is_mono_driz = (final_drizzle.ndim == 2)
         final_drizzle = self._normalize_stack_01(final_drizzle)
+        hdr_orig = self._maybe_plate_solve_master(
+            final_drizzle, hdr_orig, label=f"'{group_key}' drizzle master", status_cb=log
+        )        
         save_image(
             img_array=final_drizzle,
             filename=out_path_orig,
@@ -23806,6 +23907,11 @@ class StackingSuiteDialog(QDialog):
             out_path_crop = self._build_out(self._master_light_dir(), base_crop, "fit")
 
             cropped_drizzle = self._normalize_stack_01(cropped_drizzle)
+            hdr_crop = self._maybe_plate_solve_master(
+                cropped_drizzle, hdr_crop,
+                label=f"'{group_key}' auto-cropped drizzle master",
+                status_cb=log
+            )            
             save_image(
                 img_array=cropped_drizzle,
                 filename=out_path_crop,
