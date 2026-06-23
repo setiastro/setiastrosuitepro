@@ -77,17 +77,40 @@ def _torch_load_fallback(torch, ckpt_path: str):
 
 
 def _detect_arch(sd: dict) -> str:
+    """
+    Identify which model architecture produced this state dict.
+
+    Dispatch order (most-specific first):
+      axiomv3   — StarXEmulator: dense encoder + pixel-shuffle decoder.
+                  Key markers: 'e1_1.0.weight', 'conv_stars.weight',
+                               'd4_shuffle.conv_gate.weight'
+      axiomv22  — StarNetGenerator: g_conv / g_deconv U-Net with 3-branch head.
+                  Key markers: keys starting with 'g_conv' or 'g_deconv'
+      lite      — NAFNetLite: fusions layer or conv3.weight present.
+      standard  — NAFNet (default).
+    """
+    # AxiomV3 — StarXEmulator
+    if any(k in sd for k in ("e1_1.0.weight", "conv_stars.weight", "d4_shuffle.conv_gate.weight")):
+        return "axiomv3"
+
+    # AxiomV2.2 — StarNetGenerator
     if any(k.startswith("g_conv") or k.startswith("g_deconv") for k in sd):
         return "axiomv22"
+
+    # NAFNetLite
     for k in sd:
         if k.startswith("fusions.") or k.endswith(".conv3.weight"):
             return "lite"
+
+    # NAFNet standard
     for k in sd:
         if k.endswith(".ffn1.weight") or k.endswith(".sca.1.weight"):
             return "standard"
+
     for k, v in sd.items():
         if ".norm1.weight" in k and hasattr(v, "ndim"):
             return "lite" if v.ndim == 1 else "standard"
+
     return "standard"
 
 
@@ -120,8 +143,19 @@ def _load_state_dict(torch, ckpt_path: str):
         if "model" in ckpt and isinstance(ckpt["model"], dict):
             return ckpt["model"], _small_meta(ckpt)
         if any(
-            k.startswith(("intro.", "ending.", "encoders.", "downs.", "middle.",
-                          "decoders.", "ups.", "g_conv", "g_deconv"))
+            k.startswith((
+                "intro.", "ending.", "encoders.", "downs.", "middle.",
+                "decoders.", "ups.", "g_conv", "g_deconv",
+                # AxiomV3 top-level keys
+                "e1_1.", "e1_2.", "e1_3.", "e1_4.",
+                "e2_1.", "e2_2.", "e2_3.",
+                "e4_1.", "e4_2.", "e8.", "e16.", "e32.", "e64.", "e128.", "e256.",
+                "conv_0.", "conv_1.", "conv_2.", "conv_3.", "conv_4.",
+                "conv_d4.", "d4_shuffle.", "pixel_shuffle_d4.",
+                "conv_d2.", "d2_shuffle.", "pixel_shuffle_d2.",
+                "conv_d1.", "d1_shuffle.", "pixel_shuffle_d1.",
+                "conv_dd1.", "conv_dd2.", "conv_stars.",
+            ))
             for k in ckpt.keys()
         ):
             sd = {(k[7:] if k.startswith("module.") else k): v for k, v in ckpt.items()}
@@ -144,6 +178,13 @@ def _detect_ups_variant(sd: dict) -> str:
 def _infer_starnet_channels(sd: dict) -> int:
     if "g_conv0.weight" in sd:
         return int(sd["g_conv0.weight"].shape[1])
+    return 3
+
+
+def _infer_starxemulator_channels(sd: dict) -> int:
+    """Infer in_channels for StarXEmulator from e1_1 conv weight."""
+    if "e1_1.0.weight" in sd:
+        return int(sd["e1_1.0.weight"].shape[1])
     return 3
 
 
@@ -209,7 +250,9 @@ def load_nafnet_model(
     model_kind: str = "nadir",
 ):
     from setiastro.saspro.runtime_torch import import_torch
-    from setiastro.saspro.syqon_model.model import NAFNet, NAFNetLite, StarNetGenerator
+    from setiastro.saspro.syqon_model.model import (
+        NAFNet, NAFNetLite, StarNetGenerator, StarXEmulator,
+    )
 
     torch = import_torch(
         prefer_cuda=use_gpu,
@@ -221,7 +264,20 @@ def load_nafnet_model(
     sd, meta = _load_state_dict(torch, ckpt_path)
     arch = _detect_arch(sd)
 
-    if arch == "axiomv22":
+    if arch == "axiomv3":
+        # StarXEmulator — AxiomV3
+        in_channels = _infer_starxemulator_channels(sd)
+        model = StarXEmulator(in_channels=in_channels, out_channels=in_channels)
+        model.load_state_dict(sd, strict=True)
+        model.eval()
+        info = {
+            "model_kind":  model_kind,
+            "arch":        "axiomv3",
+            "in_channels": in_channels,
+            "meta":        meta,
+        }
+
+    elif arch == "axiomv22":
         in_channels = _infer_starnet_channels(sd)
         model = StarNetGenerator(in_channels=in_channels)
         model.load_state_dict(sd, strict=True)
@@ -232,6 +288,7 @@ def load_nafnet_model(
             "in_channels": in_channels,
             "meta":        meta,
         }
+
     else:
         ups_variant = _detect_ups_variant(sd)
         base_ch, enc_blks, dec_blks, middle_blk_num = _infer_nafnet_cfg_from_sd(sd)
@@ -341,7 +398,8 @@ def _pad_to_multiple(t, multiple=8, torch=None):
 
 
 def _build_blend_weights(tile: int, stride: int, arch: str) -> np.ndarray:
-    if arch == "axiomv22":
+    # AxiomV3 uses the same cosine ramp as AxiomV2.2 — both are direct starless output.
+    if arch in ("axiomv22", "axiomv3"):
         overlap     = tile - stride
         blend       = max(1, overlap)
         coords      = np.arange(tile, dtype=np.float32)
@@ -360,7 +418,8 @@ def _build_blend_weights(tile: int, stride: int, arch: str) -> np.ndarray:
 def _predict_tile(model, t, *, device, use_amp, amp_dtype, info, torch):
     arch        = info.get("arch", "standard")
     is_axiomv22 = (arch == "axiomv22")
-
+    # AxiomV3 takes raw [0,1] input — normalisation is baked into forward().
+    # AxiomV2.2 expects [-1, 1].
     t_input = (t * 2.0 - 1.0) if is_axiomv22 else t
     t_padded, orig_H, orig_W = _pad_to_multiple(t_input, multiple=8, torch=torch)
 
@@ -406,15 +465,21 @@ def _predict_tile(model, t, *, device, use_amp, amp_dtype, info, torch):
 
 
 def _resolve_residual_mode(info: dict) -> bool:
+    """
+    Residual mode means the model outputs *stars* and we subtract to get starless.
+    AxiomV3 and AxiomV2.2 output starless directly → residual_mode = False.
+    NAFNetLite also outputs directly clamped image → False.
+    NAFNet with pixelshuffle ups → True (legacy residual).
+    """
     arch = info.get("arch", "standard")
-    if arch in ("axiomv22", "lite"):
+    if arch in ("axiomv3", "axiomv22", "lite"):
         return False
     ups = info.get("ups_variant", "bilinear")
     return (ups == "pixelshuffle")
 
 
 # =============================================================================
-# Tiled inference — Axiom
+# Tiled inference
 # =============================================================================
 
 def _run_tiled_rgb(
@@ -1010,6 +1075,12 @@ def nafnet_starless_rgb01(
         info=info, residual_mode=residual_mode,
     )
 
+    # AxiomV3 doesn't support per-channel mode (model normalises per tile internally)
+    if arch == "axiomv3" and channel_mode == "rgb+perchan":
+        channel_mode = "rgb"
+        info["channel_mode"] = "rgb"
+        info["perchan_skipped"] = "axiomv3_unsupported"
+
     if channel_mode == "rgb+perchan":
         grand_total = 4 * tiles_per
 
@@ -1044,9 +1115,7 @@ def nafnet_starless_rgb01(
         )
         info["chroma_correction"] = False
 
-    # ------------------------------------------------------------------
-    # Signal 1.0 post-process — only for AxiomV2.2, only if model present
-    # ------------------------------------------------------------------
+    # Signal 1.0 post-process — only for AxiomV2.2, not applicable to V3
     if arch == "axiomv22" and signal_ckpt_path and os.path.isfile(signal_ckpt_path):
         if callable(progress_cb):
             progress_cb(0, 1, "Loading Signal 1.0 model…")
@@ -1183,7 +1252,7 @@ class syqonnafnetSession:
         self._arch          = self.info.get("arch", "standard")
         self._signal_model  = None
 
-        # Pre-load Signal if arch is axiomv22 and model is present
+        # Pre-load Signal if arch is axiomv22 and model is present (not used for axiomv3)
         if self._arch == "axiomv22" and signal_ckpt_path and os.path.isfile(signal_ckpt_path):
             try:
                 self._signal_model = load_signal_model(
@@ -1250,6 +1319,12 @@ class syqonnafnetSession:
         xs_       = list(range(0, W, stride))
         tiles_per = len(ys) * len(xs_)
 
+        # AxiomV3 doesn't support per-channel mode
+        if self._arch == "axiomv3" and channel_mode == "rgb+perchan":
+            channel_mode = "rgb"
+            info["channel_mode"] = "rgb"
+            info["perchan_skipped"] = "axiomv3_unsupported"
+
         shared = dict(
             tile=tile, stride=stride, arch=self._arch,
             device=self.device, torch=self.torch,
@@ -1291,7 +1366,7 @@ class syqonnafnetSession:
             )
             info["chroma_correction"] = False
 
-        # Signal pass
+        # Signal pass — axiomv22 only
         if self._arch == "axiomv22" and self._signal_model is not None:
             if callable(progress_cb):
                 progress_cb(0, 1, "Building Signal 1.0 star hole mask…")
