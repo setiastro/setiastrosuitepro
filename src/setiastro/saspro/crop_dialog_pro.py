@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import os
 import numpy as np
 import cv2
 from typing import Optional
@@ -39,6 +40,31 @@ def histogram_style_autostretch(image: np.ndarray, sigma: float = 3.0) -> np.nda
 
 # -------- blend mode compositing -----------------------------------
 _BLEND_MODES = ["Screen", "Average", "Min", "Max", "Difference"]
+
+# Colorize palette — six perceptually distinct hues cycling for N images.
+# Each entry is an RGB [0,1] multiplier applied to the luminance of the layer.
+_OVERLAP_COLORS: list[tuple[float, float, float]] = [
+    (0.30, 0.55, 1.00),   # blue
+    (1.00, 0.30, 0.30),   # red
+    (0.30, 1.00, 0.40),   # green
+    (1.00, 0.30, 1.00),   # magenta
+    (0.20, 0.95, 0.95),   # cyan
+    (1.00, 0.90, 0.10),   # yellow
+]
+
+
+def _colorize_layer(layer: np.ndarray, color: tuple[float, float, float]) -> np.ndarray:
+    """
+    Tint a HxWx3 float32 layer with a solid hue.
+    We convert to luminance first so mono and colour images both tint uniformly,
+    then multiply that luma by the RGB color vector.
+    Result is clamped to [0,1].
+    """
+    lum = (0.2126 * layer[..., 0] +
+           0.7152 * layer[..., 1] +
+           0.0722 * layer[..., 2])[..., np.newaxis]          # H×W×1
+    tinted = lum * np.array(color, dtype=np.float32)         # broadcast to H×W×3
+    return np.clip(tinted, 0.0, 1.0).astype(np.float32)
 
 def _to_rgb01(arr: np.ndarray) -> np.ndarray:
     """Normalise any doc image array to float32 HxWx3 in [0,1]."""
@@ -360,6 +386,7 @@ class OverlapPanel(QWidget):
         self._docs: list = []          # list of document objects
         self._checks: list[QCheckBox] = []
         self._composite_mode = False   # True = composite preview active
+        self._colorize = False         # True = tint each layer before blending
 
         root = QVBoxLayout(self)
         root.setContentsMargins(4, 4, 4, 4)
@@ -383,6 +410,16 @@ class OverlapPanel(QWidget):
         self.cmb_blend.setCurrentText("Screen")
         blend_row.addWidget(self.cmb_blend, 1)
         root.addLayout(blend_row)
+
+        # ── colorize toggle ─────────────────────────────────────────────────
+        self.chk_colorize = QCheckBox("Colorize images (blue / red / green / …)")
+        self.chk_colorize.setChecked(False)
+        self.chk_colorize.setToolTip(
+            "Tint each image a distinct hue before blending.\n"
+            "Overlap regions converge toward white/grey; frame edges\n"
+            "show their assigned color — makes coverage gaps obvious."
+        )
+        root.addWidget(self.chk_colorize)
 
         # ── image list (scrollable) ─────────────────────────────────────────
         self.scroll = QScrollArea()
@@ -413,7 +450,8 @@ class OverlapPanel(QWidget):
 
         # ── wiring ──────────────────────────────────────────────────────────
         self.cmb_blend.currentTextChanged.connect(self._on_blend_changed)
-        self.btn_refresh.clicked.connect(self.refresh_docs)
+        self.chk_colorize.stateChanged.connect(self._on_colorize_changed)
+        self.btn_refresh.clicked.connect(lambda _: self.refresh_docs())
         self.btn_apply.clicked.connect(self._on_apply_toggled)
         self.btn_clear.clicked.connect(self._on_clear)
 
@@ -424,10 +462,15 @@ class OverlapPanel(QWidget):
     def refresh_docs(self, all_docs: list | None = None):
         """
         Populate the checkbox list.  Pass a list of document objects,
-        or call with no args to trigger the parent dialog to supply them.
+        or call with no args to re-fetch from the parent CropDialogPro.
         """
         if all_docs is not None:
             self._docs = list(all_docs)
+        else:
+            # Re-fetch from the parent crop dialog if available
+            parent_dlg = self.parent()
+            if hasattr(parent_dlg, "_collect_all_docs"):
+                self._docs = parent_dlg._collect_all_docs()
         self._rebuild_list()
 
     def checked_docs(self) -> list:
@@ -456,8 +499,9 @@ class OverlapPanel(QWidget):
             return None
 
         H, W = target_shape
+        colorize = self._colorize
         layers = []
-        for d in docs:
+        for idx, d in enumerate(docs):
             raw = _to_rgb01(np.asarray(d.image))
             # resize to match the primary image canvas
             dh, dw = raw.shape[:2]
@@ -465,6 +509,9 @@ class OverlapPanel(QWidget):
                 raw = cv2.resize(raw, (W, H), interpolation=cv2.INTER_AREA)
             if autostretch:
                 raw = histogram_style_autostretch(raw)
+            if colorize:
+                color = _OVERLAP_COLORS[idx % len(_OVERLAP_COLORS)]
+                raw = _colorize_layer(raw, color)
             layers.append(raw.astype(np.float32))
 
         return _blend_images(layers, self.blend_mode())
@@ -486,7 +533,27 @@ class OverlapPanel(QWidget):
                 item.widget().deleteLater()
 
         for doc in self._docs:
-            title = getattr(doc, "title", None) or getattr(doc, "filename", None) or "Untitled"
+            # ImageDocument.display_name() is a method; fall back through
+            # metadata keys that DocManager actually populates
+            title = None
+            try:
+                fn = getattr(doc, "display_name", None)
+                if callable(fn):
+                    title = fn()
+            except Exception:
+                pass
+            if not title:
+                meta = getattr(doc, "metadata", {}) or {}
+                title = (
+                    meta.get("display_name")
+                    or meta.get("file_path")
+                    or getattr(doc, "title", None)
+                    or getattr(doc, "filename", None)
+                    or "Untitled"
+                )
+                # if file_path, show just the basename
+                if title and os.path.sep in title:
+                    title = os.path.basename(title)
             cb = QCheckBox(str(title))
             cb.setChecked(True)
             cb.stateChanged.connect(self._on_check_changed)
@@ -498,6 +565,11 @@ class OverlapPanel(QWidget):
             self.composite_changed.emit()
 
     def _on_blend_changed(self, _):
+        if self._composite_mode:
+            self.composite_changed.emit()
+
+    def _on_colorize_changed(self, state: int):
+        self._colorize = bool(state)
         if self._composite_mode:
             self.composite_changed.emit()
 
