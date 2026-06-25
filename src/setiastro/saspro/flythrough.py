@@ -93,11 +93,12 @@ WORKING_RES_PRESETS = {
 # Mid-layer blend modes
 # ---------------------------------------------------------------------------
 
-# Names shown in the UI dropdown
-MID_BLEND_MODES = [
+# Names shown in the UI dropdown — shared by mid and stars layers
+LAYER_BLEND_MODES = [
     "Screen",
     "Add",
     "Average",
+    "Max",
     "Multiply",
     "Overlay",
     "Soft Light",
@@ -106,11 +107,15 @@ MID_BLEND_MODES = [
     "Color Dodge",
     "Lighten",
     "Darken",
+    "Threshold Mask",   # pixels above threshold sit on top of base; below are transparent
 ]
+
+# Back-compat alias
+MID_BLEND_MODES = LAYER_BLEND_MODES
 
 
 def _blend_mid_cpu(base: np.ndarray, mid: np.ndarray,
-                   mode: str, opacity: float) -> np.ndarray:
+                   mode: str, opacity: float, **kwargs) -> np.ndarray:
     """
     Blend `mid` over `base` using `mode` at `opacity`.
     All arrays are float32 HxWx3 in [0,1].
@@ -146,10 +151,20 @@ def _blend_mid_cpu(base: np.ndarray, mid: np.ndarray,
         blended = np.abs(b - m)
     elif mode == "Color Dodge":
         blended = np.where(m >= 1.0, 1.0, np.clip(b / np.maximum(1.0 - m, 1e-7), 0.0, 1.0))
+    elif mode == "Max":
+        blended = np.maximum(b, m)
     elif mode == "Lighten":
         blended = np.maximum(b, m)
     elif mode == "Darken":
         blended = np.minimum(b, m)
+    elif mode == "Threshold Mask":
+        # Alpha compositing: pixels above threshold sit fully on top of base.
+        # alpha=1 → show layer pixel; alpha=0 → show base pixel.
+        thr     = float(kwargs.get("threshold", 0.2))
+        feather = max(float(kwargs.get("feather", 0.1)), 1e-4)
+        lum     = (0.2126 * m[..., 0] + 0.7152 * m[..., 1] + 0.0722 * m[..., 2])[..., None]
+        alpha   = np.clip((lum - thr) / feather, 0.0, 1.0)
+        blended = b * (1.0 - alpha) + m * alpha   # straight over composite
     else:
         blended = (b + m) * 0.5   # fallback: Average
 
@@ -160,7 +175,7 @@ def _blend_mid_cpu(base: np.ndarray, mid: np.ndarray,
     return np.clip(blended, 0.0, 1.0).astype(np.float32)
 
 
-def _blend_mid_gpu(base_t, mid_t, mode: str, opacity: float):
+def _blend_mid_gpu(base_t, mid_t, mode: str, opacity: float, **kwargs):
     """GPU equivalent of _blend_mid_cpu. Inputs are NCHW tensors."""
     import torch
     b = torch.clamp(base_t, 0.0, 1.0)
@@ -192,10 +207,19 @@ def _blend_mid_gpu(base_t, mid_t, mode: str, opacity: float):
                         torch.ones_like(b),
                         b / torch.clamp(1.0 - m, min=1e-7)),
             0.0, 1.0)
+    elif mode == "Max":
+        blended = torch.maximum(b, m)
     elif mode == "Lighten":
         blended = torch.maximum(b, m)
     elif mode == "Darken":
         blended = torch.minimum(b, m)
+    elif mode == "Threshold Mask":
+        # Alpha compositing: pixels above threshold sit fully on top of base.
+        thr     = float(kwargs.get("threshold", 0.2))
+        feather = max(float(kwargs.get("feather", 0.1)), 1e-4)
+        lum     = (0.2126 * m[:, 0:1] + 0.7152 * m[:, 1:2] + 0.0722 * m[:, 2:3])
+        alpha   = torch.clamp((lum - thr) / feather, 0.0, 1.0)
+        blended = b * (1.0 - alpha) + m * alpha   # straight over composite
     else:
         blended = (b + m) * 0.5
 
@@ -282,23 +306,39 @@ def _zoom_crop(img: np.ndarray,
                zoom: float,
                cx_frac: float, cy_frac: float,
                out_h: int, out_w: int) -> np.ndarray:
+    """
+    Zoom crop with torus (wrap-around) boundary — no edge streaks or reflections.
+    When the crop window extends beyond the image edge it wraps to the opposite side,
+    like a seamless tileable texture.
+    """
     H, W = img.shape[:2]
     crop_w = max(1, int(round(W / zoom)))
     crop_h = max(1, int(round(H / zoom)))
     cx_px  = cx_frac * W
     cy_px  = cy_frac * H
-    x0 = int(round(cx_px - crop_w / 2))
-    y0 = int(round(cy_px - crop_h / 2))
-    x0 = max(0, min(x0, W - crop_w))
-    y0 = max(0, min(y0, H - crop_h))
-    crop = img[y0:y0 + crop_h, x0:x0 + crop_w]
+
     if HAS_CV2:
-        return cv2.resize(crop, (out_w, out_h),
-                          interpolation=cv2.INTER_LANCZOS4).astype(np.float32)
-    ys = np.linspace(0, crop.shape[0] - 1, out_h).astype(np.int32)
-    xs = np.linspace(0, crop.shape[1] - 1, out_w).astype(np.int32)
-    return (crop[ys][:, xs] if crop.ndim == 2
-            else crop[np.ix_(ys, xs)]).astype(np.float32)
+        # Build source coordinates in image pixel space, then wrap with modulo.
+        out_ys = np.linspace(cy_px - crop_h / 2.0, cy_px + crop_h / 2.0,
+                              out_h, dtype=np.float32)
+        out_xs = np.linspace(cx_px - crop_w / 2.0, cx_px + crop_w / 2.0,
+                              out_w, dtype=np.float32)
+        # Torus wrap: modulo keeps coords in [0, W) and [0, H)
+        out_xs = (out_xs % W).reshape(1, -1).repeat(out_h, axis=0)
+        out_ys = (out_ys % H).reshape(-1, 1).repeat(out_w, axis=1)
+        return cv2.remap(img,
+                         out_xs.astype(np.float32),
+                         out_ys.astype(np.float32),
+                         interpolation=cv2.INTER_LINEAR,
+                         borderMode=cv2.BORDER_WRAP).astype(np.float32)
+
+    # Fallback (no cv2): nearest-neighbour with integer wrap
+    ys = (np.linspace(cy_px - crop_h / 2.0, cy_px + crop_h / 2.0,
+                      out_h).astype(np.int32)) % H
+    xs = (np.linspace(cx_px - crop_w / 2.0, cx_px + crop_w / 2.0,
+                      out_w).astype(np.int32)) % W
+    return (img[ys][:, xs] if img.ndim == 2
+            else img[np.ix_(ys, xs)]).astype(np.float32)
 
 
 # ---------------------------------------------------------------------------
@@ -323,11 +363,12 @@ def _zoom_crop_depth(img, depth_map, zoom_base, depth_strength,
     base_src_x = cx_px + u * crop_w
     base_src_y = cy_px + v * crop_h
 
-    sx = np.clip(base_src_x, 0.0, W - 1.0).astype(np.float32)
-    sy = np.clip(base_src_y, 0.0, H - 1.0).astype(np.float32)
+    # Torus wrap for depth sampling
+    sx = (base_src_x % W).astype(np.float32)
+    sy = (base_src_y % H).astype(np.float32)
     dm_sampled = cv2.remap(depth_map, sx, sy,
                            interpolation=cv2.INTER_LINEAR,
-                           borderMode=cv2.BORDER_REPLICATE)
+                           borderMode=cv2.BORDER_WRAP)
 
     dx = u * crop_w
     dy = v * crop_h
@@ -339,12 +380,13 @@ def _zoom_crop_depth(img, depth_map, zoom_base, depth_strength,
     dm_centerd = dm_sampled - 0.5
     parallax_px = dm_centerd * depth_strength * (zoom_base - 1.0) * 2.0
 
-    final_src_x = np.clip(base_src_x - nx * parallax_px, 0.0, W - 1.0).astype(np.float32)
-    final_src_y = np.clip(base_src_y - ny * parallax_px, 0.0, H - 1.0).astype(np.float32)
+    # Torus wrap for final sample
+    final_src_x = ((base_src_x - nx * parallax_px) % W).astype(np.float32)
+    final_src_y = ((base_src_y - ny * parallax_px) % H).astype(np.float32)
 
     return cv2.remap(img, final_src_x, final_src_y,
                      interpolation=cv2.INTER_LINEAR,
-                     borderMode=cv2.BORDER_REFLECT_101).astype(np.float32)
+                     borderMode=cv2.BORDER_WRAP).astype(np.float32)
 
 
 # ---------------------------------------------------------------------------
@@ -370,7 +412,7 @@ def apply_radial_stretch(img: np.ndarray,
     src_y = (yg - dy * factor).astype(np.float32)
     return cv2.remap(img, src_x, src_y,
                      interpolation=cv2.INTER_LINEAR,
-                     borderMode=cv2.BORDER_REFLECT_101).astype(np.float32)
+                     borderMode=cv2.BORDER_WRAP).astype(np.float32)
 
 
 def apply_zoom_blur(img: np.ndarray,
@@ -494,24 +536,41 @@ def _np_depth_to_tensor(dm: np.ndarray, device):
 # GPU flat zoom crop
 # ---------------------------------------------------------------------------
 
+def _wrap_norm_coords(coords):
+    """
+    Fold normalised grid_sample coords (range [-1,1]) into torus wrap.
+    Maps any value outside [-1,1] back using modulo so the image tiles seamlessly.
+    """
+    # Shift to [0,2], modulo 2, shift back to [-1,1]
+    return ((coords + 1.0) % 2.0) - 1.0
+
+
 def _zoom_crop_gpu(t, zoom: float, cx_frac: float, cy_frac: float,
                    out_h: int, out_w: int):
+    """Zoom crop with torus wrap — no edge streaks or reflections."""
     import torch
     import torch.nn.functional as F
 
     _, C, H, W = t.shape
-    cx_n = float(np.clip(cx_frac * 2.0 - 1.0, -1.0, 1.0))
-    cy_n = float(np.clip(cy_frac * 2.0 - 1.0, -1.0, 1.0))
-    hx = min(1.0 / max(zoom, 1e-4), 1.0)
-    hy = min(1.0 / max(zoom, 1e-4), 1.0)
-    cx_n = float(np.clip(cx_n, -1.0 + hx, 1.0 - hx))
-    cy_n = float(np.clip(cy_n, -1.0 + hy, 1.0 - hy))
+
+    # Centre in normalised coords (no clamping — wrap handles out-of-bounds)
+    cx_n = float(cx_frac * 2.0 - 1.0)
+    cy_n = float(cy_frac * 2.0 - 1.0)
+    hx = 1.0 / max(zoom, 1e-4)
+    hy = 1.0 / max(zoom, 1e-4)
 
     gx = torch.linspace(cx_n - hx, cx_n + hx, out_w, device=t.device, dtype=torch.float32)
     gy = torch.linspace(cy_n - hy, cy_n + hy, out_h, device=t.device, dtype=torch.float32)
     grid_y, grid_x = torch.meshgrid(gy, gx, indexing="ij")
+
+    # Torus wrap: fold any out-of-range normalised coords back into [-1, 1]
+    grid_x = _wrap_norm_coords(grid_x)
+    grid_y = _wrap_norm_coords(grid_y)
+
     grid = torch.stack([grid_x, grid_y], dim=-1).unsqueeze(0)
-    return F.grid_sample(t, grid, mode="bilinear", padding_mode="border", align_corners=True)
+    # zeros padding_mode is fine here because _wrap_norm_coords already keeps
+    # all coords inside [-1, 1], so the padding zone is never reached.
+    return F.grid_sample(t, grid, mode="bilinear", padding_mode="zeros", align_corners=True)
 
 
 # ---------------------------------------------------------------------------
@@ -541,11 +600,12 @@ def _zoom_crop_depth_gpu(t, depth_t, zoom_base, depth_strength,
     base_src_x = cx_px + u_g * crop_w
     base_src_y = cy_px + v_g * crop_h
 
-    norm_bx = (base_src_x.clamp(0, W-1) / (W - 1)) * 2.0 - 1.0
-    norm_by = (base_src_y.clamp(0, H-1) / (H - 1)) * 2.0 - 1.0
+    # Torus wrap for depth map sampling
+    norm_bx = _wrap_norm_coords((base_src_x % W) / (W - 1) * 2.0 - 1.0)
+    norm_by = _wrap_norm_coords((base_src_y % H) / (H - 1) * 2.0 - 1.0)
     depth_grid = torch.stack([norm_bx, norm_by], dim=-1).unsqueeze(0)
     dm_sampled = F.grid_sample(depth_t, depth_grid,
-                                mode="bilinear", padding_mode="border",
+                                mode="bilinear", padding_mode="zeros",
                                 align_corners=True).squeeze(0).squeeze(0)
 
     dx = u_g * crop_w
@@ -557,15 +617,16 @@ def _zoom_crop_depth_gpu(t, depth_t, zoom_base, depth_strength,
     dm_centerd = dm_sampled - 0.5
     parallax_px = dm_centerd * depth_strength * (zoom_base - 1.0) * 2.0
 
-    final_src_x = (base_src_x - nx * parallax_px).clamp(0, W - 1.0)
-    final_src_y = (base_src_y - ny * parallax_px).clamp(0, H - 1.0)
+    # Torus wrap for final image sample
+    final_src_x = (base_src_x - nx * parallax_px) % W
+    final_src_y = (base_src_y - ny * parallax_px) % H
 
-    norm_fx = final_src_x / (W - 1) * 2.0 - 1.0
-    norm_fy = final_src_y / (H - 1) * 2.0 - 1.0
+    norm_fx = _wrap_norm_coords(final_src_x / (W - 1) * 2.0 - 1.0)
+    norm_fy = _wrap_norm_coords(final_src_y / (H - 1) * 2.0 - 1.0)
     grid = torch.stack([norm_fx, norm_fy], dim=-1).unsqueeze(0)
 
     return F.grid_sample(t, grid, mode="bilinear",
-                          padding_mode="border", align_corners=True)
+                          padding_mode="zeros", align_corners=True)
 
 
 # ---------------------------------------------------------------------------
@@ -590,8 +651,8 @@ def _radial_stretch_gpu(t, strength: float, cx_frac: float, cy_frac: float):
     factor = strength * r * r
     src_x = grid_x - dx * factor
     src_y = grid_y - dy * factor
-    grid = torch.stack([src_x, src_y], dim=-1).unsqueeze(0)
-    return F.grid_sample(t, grid, mode="bilinear", padding_mode="reflection", align_corners=True)
+    grid = torch.stack([_wrap_norm_coords(src_x), _wrap_norm_coords(src_y)], dim=-1).unsqueeze(0)
+    return F.grid_sample(t, grid, mode="bilinear", padding_mode="zeros", align_corners=True)
 
 
 def _zoom_blur_gpu(t, strength: float, cx_frac: float, cy_frac: float, samples: int = 12):
@@ -639,14 +700,14 @@ def _chroma_gpu(t, strength: float, cx_frac: float, cy_frac: float):
         norm_ys = (src_ys / (H - 1)) * 2.0 - 1.0
         grid_x = norm_xs.unsqueeze(0).expand(H, W)
         grid_y = norm_ys.unsqueeze(1).expand(H, W)
-        return torch.stack([grid_x, grid_y], dim=-1).unsqueeze(0)
+        return torch.stack([_wrap_norm_coords(grid_x), _wrap_norm_coords(grid_y)], dim=-1).unsqueeze(0)
 
     out = t.clone()
     if r_zoom > 0.01:
         out[:, 0:1] = F.grid_sample(t[:, 0:1], _channel_grid(r_zoom),
-                                     mode="bilinear", padding_mode="border", align_corners=True)
+                                     mode="bilinear", padding_mode="zeros", align_corners=True)
     out[:, 2:3] = F.grid_sample(t[:, 2:3], _channel_grid(b_zoom),
-                                 mode="bilinear", padding_mode="border", align_corners=True)
+                                 mode="bilinear", padding_mode="zeros", align_corners=True)
     return torch.clamp(out, 0.0, 1.0)
 
 
@@ -660,7 +721,7 @@ def _screen_blend_gpu(a, b):
 
 def render_frame(
     starless: np.ndarray,
-    stars:    np.ndarray,
+    stars:    np.ndarray | None,
     t: float,
     sl_zoom_start: float, sl_zoom_end: float,
     sl_cx_start: float,   sl_cy_start: float,
@@ -675,9 +736,11 @@ def render_frame(
     out_h: int, out_w: int,
     sl_depth_map: np.ndarray | None = None,
     st_depth_map: np.ndarray | None = None,
+    # ── stars blend mode (default Screen for back-compat) ─────────────
+    st_blend_mode: str = "Screen",
+    st_opacity: float = 1.0,
     # ── mid layer (all optional) ──────────────────────────────────────
     mid: np.ndarray | None = None,
-    mid_enabled: bool = False,
     mid_zoom_start: float = 1.0, mid_zoom_end: float = 1.0,
     mid_cx_start: float = 0.5,   mid_cy_start: float = 0.5,
     mid_cx_end: float = 0.5,     mid_cy_end: float = 0.5,
@@ -722,22 +785,24 @@ def render_frame(
     else:
         sl_frame = _zoom_crop(starless, sl_zoom, sl_cx, sl_cy, out_h, out_w)
 
-    if st_depth_map is not None and dw_st > 1e-4:
-        st_frame = _zoom_crop_depth(stars, st_depth_map, st_zoom, dw_st,
-                                     st_cx, st_cy, out_h, out_w)
-    else:
-        st_frame = _zoom_crop(stars, st_zoom, st_cx, st_cy, out_h, out_w)
-
     sl_fx_post = {k: v for k, v in sl_fx.items() if k != "depth_warp"}
-    st_fx_post = {k: v for k, v in st_fx.items() if k != "depth_warp"}
     sl_fx_post["zoom_velocity"] = sl_zoom_vel
-    st_fx_post["zoom_velocity"] = st_zoom_vel
-
     sl_rgb = _apply_layer_effects(_ensure_rgb(sl_frame), t, sl_cx, sl_cy, sl_fx_post)
-    st_rgb = _apply_layer_effects(_ensure_rgb(st_frame), t, st_cx, st_cy, st_fx_post)
+
+    if stars is not None:
+        if st_depth_map is not None and dw_st > 1e-4:
+            st_frame = _zoom_crop_depth(stars, st_depth_map, st_zoom, dw_st,
+                                         st_cx, st_cy, out_h, out_w)
+        else:
+            st_frame = _zoom_crop(stars, st_zoom, st_cx, st_cy, out_h, out_w)
+        st_fx_post = {k: v for k, v in st_fx.items() if k != "depth_warp"}
+        st_fx_post["zoom_velocity"] = st_zoom_vel
+        st_rgb = _apply_layer_effects(_ensure_rgb(st_frame), t, st_cx, st_cy, st_fx_post)
+    else:
+        st_rgb = None
 
     # ── mid layer ────────────────────────────────────────────────────
-    if mid_enabled and mid is not None and mid_ease_fn is not None:
+    if mid is not None and mid_ease_fn is not None:
         te_mid = mid_ease_fn(t)
         m_zoom = mid_zoom_start + (mid_zoom_end - mid_zoom_start) * te_mid
         m_cx   = mid_cx_start   + (mid_cx_end   - mid_cx_start)   * te_mid
@@ -763,8 +828,16 @@ def render_frame(
     else:
         base_rgb = sl_rgb
 
-    # Stars screened on top of the base
-    return np.clip(_screen_blend(base_rgb, st_rgb), 0.0, 1.0).astype(np.float32)
+    # Stars blended on top of the base using the selected blend mode (optional)
+    if st_rgb is not None:
+        st_fx_blend = {
+            "threshold": (st_fx or {}).get("threshold", 0.2),
+            "feather":   (st_fx or {}).get("feather",   0.1),
+        }
+        result = _blend_mid_cpu(base_rgb, st_rgb, st_blend_mode, st_opacity, **st_fx_blend)
+    else:
+        result = base_rgb
+    return np.clip(result, 0.0, 1.0).astype(np.float32)
 
 
 # ---------------------------------------------------------------------------
@@ -772,7 +845,7 @@ def render_frame(
 # ---------------------------------------------------------------------------
 
 def render_frame_gpu(
-    starless_t, stars_t,
+    starless_t, stars_t,   # stars_t may be None
     t: float,
     sl_zoom_start, sl_zoom_end,
     sl_cx_start, sl_cy_start,
@@ -785,9 +858,11 @@ def render_frame_gpu(
     out_h: int,  out_w: int,
     sl_depth_t=None,
     st_depth_t=None,
+    # ── stars blend mode (default Screen for back-compat) ─────────────
+    st_blend_mode: str = "Screen",
+    st_opacity: float = 1.0,
     # ── mid layer ────────────────────────────────────────────────────
     mid_t=None,
-    mid_enabled: bool = False,
     mid_zoom_start: float = 1.0, mid_zoom_end: float = 1.0,
     mid_cx_start: float = 0.5,   mid_cy_start: float = 0.5,
     mid_cx_end: float = 0.5,     mid_cy_end: float = 0.5,
@@ -817,21 +892,12 @@ def render_frame_gpu(
     else:
         sl_frame = _zoom_crop_gpu(starless_t, sl_zoom, sl_cx, sl_cy, out_h, out_w)
 
-    if st_depth_t is not None and dw_st > 1e-4:
-        st_frame = _zoom_crop_depth_gpu(stars_t, st_depth_t, st_zoom, dw_st,
-                                         st_cx, st_cy, out_h, out_w)
-    else:
-        st_frame = _zoom_crop_gpu(stars_t, st_zoom, st_cx, st_cy, out_h, out_w)
-
     eps = 0.005
     t_lo, t_hi = max(0.0, t - eps), min(1.0, t + eps)
     sl_vel_raw = (sl_ease_fn(t_hi) - sl_ease_fn(t_lo)) / max(t_hi - t_lo, 1e-9)
-    st_vel_raw = (st_ease_fn(t_hi) - st_ease_fn(t_lo)) / max(t_hi - t_lo, 1e-9)
 
     animate_sl = bool(sl_fx.get("animate_effects", True))
-    animate_st = bool(st_fx.get("animate_effects", True))
     ramp_sl = float(np.clip(sl_vel_raw / 3.0, 0.0, 1.0)) if animate_sl else 1.0
-    ramp_st = float(np.clip(st_vel_raw / 3.0, 0.0, 1.0)) if animate_st else 1.0
 
     # Starless effects
     rs = float(sl_fx.get("radial_stretch", 0.0)) * ramp_sl
@@ -845,20 +911,30 @@ def render_frame_gpu(
     if abs(ca) > 1e-4:
         sl_frame = _chroma_gpu(sl_frame, ca, sl_cx, sl_cy)
 
-    # Stars effects
-    rs = float(st_fx.get("radial_stretch", 0.0)) * ramp_st
-    if abs(rs) > 1e-4:
-        st_frame = _radial_stretch_gpu(st_frame, rs, st_cx, st_cy)
-    zb = float(st_fx.get("zoom_blur", 0.0)) * ramp_st
-    if zb > 1e-4:
-        st_frame = _zoom_blur_gpu(st_frame, zb, st_cx, st_cy,
-                                   int(st_fx.get("zoom_blur_samples", 12)))
-    ca = float(st_fx.get("chroma", 0.0)) * ramp_st
-    if abs(ca) > 1e-4:
-        st_frame = _chroma_gpu(st_frame, ca, st_cx, st_cy)
+    # Stars effects (optional)
+    st_frame = None
+    if stars_t is not None:
+        if st_depth_t is not None and dw_st > 1e-4:
+            st_frame = _zoom_crop_depth_gpu(stars_t, st_depth_t, st_zoom, dw_st,
+                                             st_cx, st_cy, out_h, out_w)
+        else:
+            st_frame = _zoom_crop_gpu(stars_t, st_zoom, st_cx, st_cy, out_h, out_w)
+        st_vel_raw = (st_ease_fn(t_hi) - st_ease_fn(t_lo)) / max(t_hi - t_lo, 1e-9)
+        animate_st = bool(st_fx.get("animate_effects", True))
+        ramp_st = float(np.clip(st_vel_raw / 3.0, 0.0, 1.0)) if animate_st else 1.0
+        rs = float(st_fx.get("radial_stretch", 0.0)) * ramp_st
+        if abs(rs) > 1e-4:
+            st_frame = _radial_stretch_gpu(st_frame, rs, st_cx, st_cy)
+        zb = float(st_fx.get("zoom_blur", 0.0)) * ramp_st
+        if zb > 1e-4:
+            st_frame = _zoom_blur_gpu(st_frame, zb, st_cx, st_cy,
+                                       int(st_fx.get("zoom_blur_samples", 12)))
+        ca = float(st_fx.get("chroma", 0.0)) * ramp_st
+        if abs(ca) > 1e-4:
+            st_frame = _chroma_gpu(st_frame, ca, st_cx, st_cy)
 
     # ── mid layer ────────────────────────────────────────────────────
-    if mid_enabled and mid_t is not None and mid_ease_fn is not None:
+    if mid_t is not None and mid_ease_fn is not None:
         te_mid = mid_ease_fn(t)
         m_zoom = mid_zoom_start + (mid_zoom_end - mid_zoom_start) * te_mid
         m_cx   = mid_cx_start   + (mid_cx_end   - mid_cx_start)   * te_mid
@@ -891,7 +967,16 @@ def render_frame_gpu(
     else:
         base_frame = sl_frame
 
-    composited = torch.clamp(_screen_blend_gpu(base_frame, st_frame), 0.0, 1.0)
+    # Stars blended on top of base (optional)
+    if st_frame is not None:
+        composited = torch.clamp(
+            _blend_mid_gpu(base_frame, st_frame, st_blend_mode, st_opacity,
+                           threshold=float(st_fx.get("threshold", 0.2) if st_fx else 0.2),
+                           feather=float(st_fx.get("feather", 0.1) if st_fx else 0.1)),
+            0.0, 1.0
+        )
+    else:
+        composited = torch.clamp(base_frame, 0.0, 1.0)
     return _tensor_to_np(composited)
 
 
@@ -915,7 +1000,7 @@ class _FlythroughWorker(QThread):
         p = self._p
         try:
             starless_np = _ensure_rgb(p["starless"])
-            stars_np    = _ensure_rgb(p["stars"])
+            stars_np    = _ensure_rgb(p["stars"]) if p.get("stars") is not None else None
             mid_np      = _ensure_rgb(p["mid"]) if p.get("mid") is not None else None
 
             fps      = int(p["fps"])
@@ -932,9 +1017,10 @@ class _FlythroughWorker(QThread):
             st_fx  = p.get("st_fx",  {})
             mid_fx = p.get("mid_fx", {})
 
-            mid_enabled    = bool(p.get("mid_enabled", False)) and mid_np is not None
             mid_blend_mode = str(p.get("mid_blend_mode", "Screen"))
             mid_opacity    = float(p.get("mid_opacity", 1.0))
+            st_blend_mode  = str(p.get("st_blend_mode", "Screen"))
+            st_opacity     = float(p.get("st_opacity", 1.0))
 
             if not HAS_CV2:
                 self.finished.emit(False, "OpenCV (cv2) is required for video export.")
@@ -956,7 +1042,7 @@ class _FlythroughWorker(QThread):
                     invert=bool(st_fx.get("depth_invert", False)))
 
             mid_depth_map = None
-            if mid_enabled and mid_fx.get("depth_warp", 0.0) > 1e-4:
+            if mid_np is not None and mid_fx.get("depth_warp", 0.0) > 1e-4:
                 mid_depth_map = _build_depth_map(
                     mid_np,
                     blur_sigma=float(mid_fx.get("depth_blur_sigma", 8.0)),
@@ -972,8 +1058,8 @@ class _FlythroughWorker(QThread):
                 try:
                     import torch
                     starless_t = _np_to_tensor(starless_np, device)
-                    stars_t    = _np_to_tensor(stars_np,    device)
-                    if mid_enabled and mid_np is not None:
+                    stars_t    = _np_to_tensor(stars_np, device) if stars_np is not None else None
+                    if mid_np is not None:
                         mid_t_gpu = _np_to_tensor(mid_np, device)
                     if sl_depth_map is not None:
                         sl_depth_t = _np_depth_to_tensor(sl_depth_map, device)
@@ -1021,8 +1107,9 @@ class _FlythroughWorker(QThread):
                             out_h, out_w,
                             sl_depth_t=sl_depth_t,
                             st_depth_t=st_depth_t,
+                            st_blend_mode=st_blend_mode,
+                            st_opacity=st_opacity,
                             mid_t=mid_t_gpu,
-                            mid_enabled=mid_enabled,
                             mid_zoom_start=p.get("mid_zoom_start", 1.0),
                             mid_zoom_end=p.get("mid_zoom_end", 1.0),
                             mid_cx_start=p.get("mid_cx_start", 0.5),
@@ -1053,8 +1140,9 @@ class _FlythroughWorker(QThread):
                         out_h, out_w,
                         sl_depth_map=sl_depth_map,
                         st_depth_map=st_depth_map,
+                        st_blend_mode=st_blend_mode,
+                        st_opacity=st_opacity,
                         mid=mid_np,
-                        mid_enabled=mid_enabled,
                         mid_zoom_start=p.get("mid_zoom_start", 1.0),
                         mid_zoom_end=p.get("mid_zoom_end", 1.0),
                         mid_cx_start=p.get("mid_cx_start", 0.5),
@@ -1194,7 +1282,7 @@ def _slider_row(label: str, lo: float, hi: float, default: float,
 # ---------------------------------------------------------------------------
 
 class _LayerPanel(QGroupBox):
-    def __init__(self, title: str, accent_colour: str, parent=None):
+    def __init__(self, title: str, accent_colour: str, parent=None, has_source: bool = False, has_blend: bool = True):
         super().__init__(title, parent)
         self._accent    = accent_colour
         self._pick_mode = "start"
@@ -1218,6 +1306,18 @@ class _LayerPanel(QGroupBox):
         self._on_pick_activated = None
 
         form = QFormLayout(self)
+
+        # Source image combo (shown when has_source=True)
+        self.cmb_source = QComboBox()
+        self.cmb_source.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.cmb_source.setMinimumContentsLength(22)
+        self._src_label = QLabel("Source image:")
+        if has_source:
+            form.addRow(self._src_label, self.cmb_source)
+        else:
+            self._src_label.setVisible(False)
+            self.cmb_source.setVisible(False)
 
         # Zoom
         self.sp_zoom_start = QDoubleSpinBox()
@@ -1336,6 +1436,62 @@ class _LayerPanel(QGroupBox):
 
         form.addRow(fx_box)
 
+        # ── Blend mode / opacity (applies this layer onto the composite below it) ──
+        # Starless is the base layer — nothing is below it, so no blend controls needed.
+        self._has_blend = bool(has_blend)
+
+        # Always create the widgets (so blend_mode()/opacity()/get_fx() are always safe),
+        # but only add them to the form and make them visible when has_blend=True.
+        self.cmb_blend = QComboBox()
+        self.cmb_blend.addItems(LAYER_BLEND_MODES)
+        self.cmb_blend.setCurrentText("Screen")
+
+        self.sld_opacity = QSlider(Qt.Orientation.Horizontal)
+        self.sld_opacity.setRange(0, 100); self.sld_opacity.setValue(100)
+        self.lbl_opacity = QLabel("1.00"); self.lbl_opacity.setFixedWidth(36)
+        self.sld_opacity.valueChanged.connect(
+            lambda v: self.lbl_opacity.setText(f"{v/100:.2f}"))
+
+        self.lbl_threshold = QLabel("Threshold:")
+        self.sld_threshold = QSlider(Qt.Orientation.Horizontal)
+        self.sld_threshold.setRange(0, 100); self.sld_threshold.setValue(20)
+        self.lbl_thr_val = QLabel("0.20"); self.lbl_thr_val.setFixedWidth(36)
+        self.sld_threshold.valueChanged.connect(
+            lambda v: self.lbl_thr_val.setText(f"{v/100:.2f}"))
+
+        self.lbl_feather = QLabel("Feather:")
+        self.sld_feather = QSlider(Qt.Orientation.Horizontal)
+        self.sld_feather.setRange(1, 50); self.sld_feather.setValue(10)
+        self.lbl_fth_val = QLabel("0.10"); self.lbl_fth_val.setFixedWidth(36)
+        self.sld_feather.valueChanged.connect(
+            lambda v: self.lbl_fth_val.setText(f"{v/100:.2f}"))
+
+        if has_blend:
+            blend_sep = QLabel("─── Layer Blend ───")
+            blend_sep.setStyleSheet("color:#888; font-size:10px;")
+            form.addRow(blend_sep)
+            form.addRow("Blend mode:", self.cmb_blend)
+            op_row = QHBoxLayout()
+            op_row.addWidget(self.sld_opacity, 1); op_row.addWidget(self.lbl_opacity)
+            form.addRow("Opacity:", op_row)
+            thr_row = QHBoxLayout()
+            thr_row.addWidget(self.sld_threshold, 1); thr_row.addWidget(self.lbl_thr_val)
+            fth_row = QHBoxLayout()
+            fth_row.addWidget(self.sld_feather, 1); fth_row.addWidget(self.lbl_fth_val)
+            form.addRow(self.lbl_threshold, thr_row)
+            form.addRow(self.lbl_feather,   fth_row)
+
+            def _on_blend_changed(txt):
+                is_mask = (txt == "Threshold Mask")
+                self.lbl_threshold.setVisible(is_mask)
+                self.sld_threshold.setVisible(is_mask)
+                self.lbl_thr_val.setVisible(is_mask)
+                self.lbl_feather.setVisible(is_mask)
+                self.sld_feather.setVisible(is_mask)
+                self.lbl_fth_val.setVisible(is_mask)
+            self.cmb_blend.currentTextChanged.connect(_on_blend_changed)
+            _on_blend_changed(self.cmb_blend.currentText())
+
     def _on_pick_start(self, checked):
         self._pick_mode = "start" if checked else None
         self.btn_pick_end.setChecked(False)
@@ -1376,6 +1532,12 @@ class _LayerPanel(QGroupBox):
             "ease":       str(self.cmb_ease.currentText()),
         }
 
+    def blend_mode(self) -> str:
+        return self.cmb_blend.currentText()
+
+    def opacity(self) -> float:
+        return self.sld_opacity.value() / 100.0
+
     def get_fx(self) -> dict:
         fx: dict = {"animate_effects": self.chk_animate_fx.isChecked()}
         if self.chk_depth_warp.isChecked():
@@ -1389,6 +1551,9 @@ class _LayerPanel(QGroupBox):
             fx["zoom_blur_samples"] = 12
         if self.chk_chroma.isChecked():
             fx["chroma"]           = self.sld_chroma.value() / 100.0
+        # Threshold mask params — always included so render_frame can read them
+        fx["threshold"] = self.sld_threshold.value() / 100.0
+        fx["feather"]   = self.sld_feather.value()   / 100.0
         return fx
 
     def markers(self) -> list:
@@ -1412,6 +1577,10 @@ class _LayerPanel(QGroupBox):
         s.setValue(f"flythrough/{key}_zblur",      self.sld_zoom_blur.value())
         s.setValue(f"flythrough/{key}_chroma_on",  self.chk_chroma.isChecked())
         s.setValue(f"flythrough/{key}_chroma",     self.sld_chroma.value())
+        s.setValue(f"flythrough/{key}_blend_mode", self.cmb_blend.currentText())
+        s.setValue(f"flythrough/{key}_opacity",    self.sld_opacity.value())
+        s.setValue(f"flythrough/{key}_threshold",  self.sld_threshold.value())
+        s.setValue(f"flythrough/{key}_feather",    self.sld_feather.value())
 
     def load_settings(self, s: QSettings, key: str):
         self.sp_zoom_start.setValue(float(s.value(f"flythrough/{key}_zoom_start", 1.0)))
@@ -1432,12 +1601,18 @@ class _LayerPanel(QGroupBox):
         self.sld_zoom_blur.setValue(   int( s.value(f"flythrough/{key}_zblur",     40)))
         self.chk_chroma.setChecked(    bool(s.value(f"flythrough/{key}_chroma_on", False, type=bool)))
         self.sld_chroma.setValue(      int( s.value(f"flythrough/{key}_chroma",    50)))
+        self.cmb_blend.setCurrentText( str( s.value(f"flythrough/{key}_blend_mode", "Screen")))
+        self.sld_opacity.setValue(     int( s.value(f"flythrough/{key}_opacity",    100)))
+        self.sld_threshold.setValue(   int( s.value(f"flythrough/{key}_threshold",  20)))
+        self.sld_feather.setValue(     int( s.value(f"flythrough/{key}_feather",    10)))
         self._dw_row.setEnabled(self.chk_depth_warp.isChecked())
         self._dblur_row.setEnabled(self.chk_depth_warp.isChecked())
         self.chk_depth_invert.setEnabled(self.chk_depth_warp.isChecked())
         self._barrel_row.setEnabled(self.chk_barrel.isChecked())
         self._zb_row.setEnabled(self.chk_zoom_blur.isChecked())
         self._ca_row.setEnabled(self.chk_chroma.isChecked())
+        # Trigger visibility update for threshold controls
+        self.cmb_blend.currentTextChanged.emit(self.cmb_blend.currentText())
 
 
 # ---------------------------------------------------------------------------
@@ -1456,8 +1631,6 @@ class _MidLayerPanel(QGroupBox):
     def __init__(self, accent_colour: str = "#88cc88", parent=None):
         super().__init__("Mid Layer", parent)
         self._accent = accent_colour
-        self.setCheckable(True)
-        self.setChecked(False)          # disabled by default
         self.setStyleSheet(f"""
             QGroupBox {{
                 border: 2px solid {accent_colour};
@@ -1479,43 +1652,15 @@ class _MidLayerPanel(QGroupBox):
         root.setSpacing(4)
         root.setContentsMargins(6, 6, 6, 6)
 
-        # Source combo
-        src_row = QHBoxLayout()
-        src_row.addWidget(QLabel("Source image:"))
-        self.cmb_source = QComboBox()
-        self.cmb_source.setSizeAdjustPolicy(
-            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-        self.cmb_source.setMinimumContentsLength(20)
-        src_row.addWidget(self.cmb_source, 1)
-        root.addLayout(src_row)
-
-        # Blend mode + opacity on the same row
-        blend_row = QHBoxLayout()
-        blend_row.addWidget(QLabel("Blend:"))
-        self.cmb_blend = QComboBox()
-        self.cmb_blend.addItems(MID_BLEND_MODES)
-        self.cmb_blend.setCurrentText("Screen")
-        blend_row.addWidget(self.cmb_blend)
-        blend_row.addSpacing(12)
-        blend_row.addWidget(QLabel("Opacity:"))
-        self.sld_opacity = QSlider(Qt.Orientation.Horizontal)
-        self.sld_opacity.setRange(0, 100)
-        self.sld_opacity.setValue(100)
-        blend_row.addWidget(self.sld_opacity, 1)
-        self.lbl_opacity = QLabel("1.00")
-        self.lbl_opacity.setFixedWidth(36)
-        blend_row.addWidget(self.lbl_opacity)
-        self.sld_opacity.valueChanged.connect(
-            lambda v: self.lbl_opacity.setText(f"{v/100:.2f}"))
-        root.addLayout(blend_row)
-
-        # Reuse _LayerPanel for all the zoom/center/ease/effects controls
-        self._layer = _LayerPanel("", accent_colour)
-        # Remove the double border from the inner panel
+        # _LayerPanel with source combo embedded (has_source=True)
+        self._layer = _LayerPanel("", accent_colour, has_source=True)
         self._layer.setStyleSheet("")
         self._layer.setTitle("")
         self._layer.setFlat(True)
         root.addWidget(self._layer)
+
+        # Expose source combo at wrapper level for external wiring
+        self.cmb_source = self._layer.cmb_source
 
     # ── delegate picking API to inner layer ───────────────────────────
     @property
@@ -1546,8 +1691,6 @@ class _MidLayerPanel(QGroupBox):
         self._layer.receive_picked_point(fx, fy)
 
     def markers(self) -> list:
-        if not self.isChecked():
-            return []
         return self._layer.markers()
 
     # ── delegate button refs for signal wiring ────────────────────────
@@ -1570,14 +1713,11 @@ class _MidLayerPanel(QGroupBox):
     def sp_cy_end(self):   return self._layer.sp_cy_end
 
     # ── data accessors ────────────────────────────────────────────────
-    def is_enabled(self) -> bool:
-        return self.isChecked()
-
     def blend_mode(self) -> str:
-        return self.cmb_blend.currentText()
+        return self._layer.blend_mode()
 
     def opacity(self) -> float:
-        return self.sld_opacity.value() / 100.0
+        return self._layer.opacity()
 
     def get_params(self) -> dict:
         return self._layer.get_params()
@@ -1587,17 +1727,9 @@ class _MidLayerPanel(QGroupBox):
 
     # ── settings ──────────────────────────────────────────────────────
     def save_settings(self, s: QSettings, key: str = "mid"):
-        s.setValue(f"flythrough/{key}_enabled",     self.isChecked())
-        s.setValue(f"flythrough/{key}_blend_mode",  self.cmb_blend.currentText())
-        s.setValue(f"flythrough/{key}_opacity",     self.sld_opacity.value())
-        self._layer.save_settings(s, key)
+        self._layer.save_settings(s, key)  # _layer saves blend_mode, opacity, threshold, feather
 
     def load_settings(self, s: QSettings, key: str = "mid"):
-        self.setChecked(bool(s.value(f"flythrough/{key}_enabled", False, type=bool)))
-        self.cmb_blend.setCurrentText(
-            str(s.value(f"flythrough/{key}_blend_mode", "Screen")))
-        self.sld_opacity.setValue(
-            int(s.value(f"flythrough/{key}_opacity", 100)))
         self._layer.load_settings(s, key)
 
 
@@ -1644,29 +1776,9 @@ class FlythroughDialog(QDialog):
     def _build_ui(self):
         root = QVBoxLayout(self)
 
-        # ── source images ──────────────────────────────────────────────
-        src_box  = QGroupBox("Source Images")
-        src_form = QFormLayout(src_box)
-        self.cmb_starless = QComboBox()
-        self.cmb_stars    = QComboBox()
-        for cmb in (self.cmb_starless, self.cmb_stars):
-            cmb.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-            cmb.setMinimumContentsLength(28)
-            cmb.currentIndexChanged.connect(self._on_source_changed)
-        src_form.addRow("Starless image:",   self.cmb_starless)
-        src_form.addRow("Stars-only image:", self.cmb_stars)
-
-        res_row = QHBoxLayout()
-        self.cmb_working_res = QComboBox()
-        self.cmb_working_res.addItems(list(WORKING_RES_PRESETS.keys()))
-        self.cmb_working_res.setCurrentText("HD  (1920x1080)")
-        self.cmb_working_res.currentIndexChanged.connect(self._on_source_changed)
+        # Working resolution label (updated when source changes; used in output box)
         self.lbl_working_size = QLabel("")
         self.lbl_working_size.setStyleSheet("color:#888; font-size:11px;")
-        res_row.addWidget(self.cmb_working_res, 1)
-        res_row.addWidget(self.lbl_working_size)
-        src_form.addRow("Working resolution:", res_row)
-        root.addWidget(src_box)
 
         # ── body ───────────────────────────────────────────────────────
         body = QHBoxLayout()
@@ -1674,11 +1786,14 @@ class FlythroughDialog(QDialog):
 
         left = QVBoxLayout()
 
-        # Three layer panels side by side
+        # Three layer panels side by side — each has its own source combo
         layers_row = QHBoxLayout()
-        self.panel_sl  = _LayerPanel("Starless Layer", "#88aaff")
-        self.panel_mid = _MidLayerPanel("#88cc88")
-        self.panel_st  = _LayerPanel("Stars Layer",    "#ffcc66")
+        self.panel_sl  = _LayerPanel("Starless Layer", "#88aaff", has_source=True, has_blend=False)
+        self.panel_mid = _MidLayerPanel("#88cc88")   # mid already embeds has_source=True
+        self.panel_st  = _LayerPanel("Stars Layer",    "#ffcc66", has_source=True, has_blend=True)
+        # Expose top-level source combos for _populate_combos / _on_source_changed
+        self.cmb_starless = self.panel_sl.cmb_source
+        self.cmb_stars    = self.panel_st.cmb_source
         layers_row.addWidget(self.panel_sl,  1)
         layers_row.addWidget(self.panel_mid, 1)
         layers_row.addWidget(self.panel_st,  1)
@@ -1738,13 +1853,21 @@ class FlythroughDialog(QDialog):
         out_form = QFormLayout(out_box)
         out_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
 
+        # Working resolution (moved here from the old source box)
+        self.cmb_working_res = QComboBox()
+        self.cmb_working_res.addItems(list(WORKING_RES_PRESETS.keys()))
+        self.cmb_working_res.setCurrentText("HD  (1920x1080)")
+        self.cmb_working_res.currentIndexChanged.connect(self._on_source_changed)
+        out_form.addRow("Working res:", self.cmb_working_res)
+        out_form.addRow("", self.lbl_working_size)
+
         res_out = QHBoxLayout()
         self.sp_out_w = QSpinBox(); self.sp_out_w.setRange(64, 7680)
         self.sp_out_w.setValue(1920); self.sp_out_w.setSuffix(" px")
         self.sp_out_h = QSpinBox(); self.sp_out_h.setRange(64, 4320)
         self.sp_out_h.setValue(1080); self.sp_out_h.setSuffix(" px")
         res_out.addWidget(self.sp_out_w); res_out.addWidget(QLabel("x")); res_out.addWidget(self.sp_out_h)
-        out_form.addRow("Resolution:", res_out)
+        out_form.addRow("Export res:", res_out)
 
         fps_row = QHBoxLayout()
         self.sp_fps = QSpinBox(); self.sp_fps.setRange(1, 120); self.sp_fps.setValue(30); self.sp_fps.setSuffix(" fps")
@@ -1805,45 +1928,35 @@ class FlythroughDialog(QDialog):
                        panel.sp_cx_end, panel.sp_cy_end):
                 sp.valueChanged.connect(self._update_markers)
             for sld in (panel.sld_barrel, panel.sld_zoom_blur, panel.sld_chroma,
-                        panel.sld_depth_warp, panel.sld_depth_blur):
+                        panel.sld_depth_warp, panel.sld_depth_blur,
+                        panel.sld_opacity, panel.sld_threshold, panel.sld_feather):
                 sld.valueChanged.connect(self._schedule_preview)
             for chk in (panel.chk_barrel, panel.chk_zoom_blur, panel.chk_chroma,
                         panel.chk_animate_fx, panel.chk_depth_warp,
                         panel.chk_depth_invert):
                 chk.toggled.connect(self._schedule_preview)
+            panel.cmb_blend.currentTextChanged.connect(self._schedule_preview)
 
-        # Mid panel wiring (delegates through _MidLayerPanel properties)
-        for sp in (self.panel_mid.sp_cx_start, self.panel_mid.sp_cy_start,
-                   self.panel_mid.sp_cx_end,   self.panel_mid.sp_cy_end,
-                   self.panel_mid._layer.sp_zoom_start, self.panel_mid._layer.sp_zoom_end):
+        # Mid panel wiring — all controls now live on panel_mid._layer
+        ml = self.panel_mid._layer   # shorthand
+        for sp in (ml.sp_cx_start, ml.sp_cy_start, ml.sp_cx_end, ml.sp_cy_end,
+                   ml.sp_zoom_start, ml.sp_zoom_end):
             sp.valueChanged.connect(self._schedule_preview)
             sp.valueChanged.connect(self._update_markers)
-        self.panel_mid._layer.cmb_ease.currentIndexChanged.connect(self._schedule_preview)
-        for btn in (self.panel_mid.btn_pick_start, self.panel_mid.btn_pick_end):
+        ml.cmb_ease.currentIndexChanged.connect(self._schedule_preview)
+        for btn in (ml.btn_pick_start, ml.btn_pick_end):
             btn.clicked.connect(self._update_markers)
-        for sld in (self.panel_mid._layer.sld_barrel,
-                    self.panel_mid._layer.sld_zoom_blur,
-                    self.panel_mid._layer.sld_chroma,
-                    self.panel_mid._layer.sld_depth_warp,
-                    self.panel_mid._layer.sld_depth_blur,
-                    self.panel_mid.sld_opacity):
+        for sld in (ml.sld_barrel, ml.sld_zoom_blur, ml.sld_chroma,
+                    ml.sld_depth_warp, ml.sld_depth_blur,
+                    ml.sld_opacity, ml.sld_threshold, ml.sld_feather):
             sld.valueChanged.connect(self._schedule_preview)
-        for chk in (self.panel_mid._layer.chk_barrel,
-                    self.panel_mid._layer.chk_zoom_blur,
-                    self.panel_mid._layer.chk_chroma,
-                    self.panel_mid._layer.chk_animate_fx,
-                    self.panel_mid._layer.chk_depth_warp,
-                    self.panel_mid._layer.chk_depth_invert):
+        for chk in (ml.chk_barrel, ml.chk_zoom_blur, ml.chk_chroma,
+                    ml.chk_animate_fx, ml.chk_depth_warp, ml.chk_depth_invert):
             chk.toggled.connect(self._schedule_preview)
-        self.panel_mid.toggled.connect(self._on_mid_toggled)
-        self.panel_mid.cmb_blend.currentIndexChanged.connect(self._schedule_preview)
+        ml.cmb_blend.currentTextChanged.connect(self._schedule_preview)
         self.panel_mid.cmb_source.currentIndexChanged.connect(self._on_mid_source_changed)
 
     # ------------------------------------------------------------------
-
-    def _on_mid_toggled(self, enabled: bool):
-        self._schedule_preview()
-        self._update_markers()
 
     def _on_mid_source_changed(self):
         doc = self.panel_mid.cmb_source.currentData()
@@ -1902,6 +2015,7 @@ class FlythroughDialog(QDialog):
             for title, doc in docs:
                 cmb.addItem(title, doc)
             cmb.blockSignals(False)
+            cmb.currentIndexChanged.connect(self._on_source_changed)
 
         # Mid source combo gets the same list plus a "-- none --" entry
         self.panel_mid.cmb_source.blockSignals(True)
@@ -1936,6 +2050,7 @@ class FlythroughDialog(QDialog):
             self._starless_arr = None
             self.lbl_working_size.setText("")
 
+        self._stars_arr = None
         if st_raw is not None:
             if preset and self._starless_arr is not None:
                 th, tw = self._starless_arr.shape[:2]
@@ -1944,8 +2059,6 @@ class FlythroughDialog(QDialog):
                 self._stars_arr = _downsize_to_fit(st_raw, preset[0], preset[1])
             else:
                 self._stars_arr = st_raw
-        else:
-            self._stars_arr = None
 
         # Refresh mid if it had data
         self._on_mid_source_changed()
@@ -1971,8 +2084,8 @@ class FlythroughDialog(QDialog):
         self._preview_timer.start()
 
     def _refresh_preview(self):
-        if self._starless_arr is None or self._stars_arr is None:
-            self.preview_lbl.setText("Select both source images to preview.")
+        if self._starless_arr is None:
+            self.preview_lbl.setText("Select a starless image to preview.")
             return
 
         t_raw = self.sld_scrub.value() / 100.0
@@ -1984,8 +2097,6 @@ class FlythroughDialog(QDialog):
         sl_fx  = self.panel_sl.get_fx()
         st_fx  = self.panel_st.get_fx()
         mid_fx = self.panel_mid.get_fx()
-
-        mid_enabled = self.panel_mid.is_enabled() and self._mid_arr is not None
 
         # Build depth maps at working res
         sl_dm = None
@@ -1999,7 +2110,7 @@ class FlythroughDialog(QDialog):
                                       blur_sigma=float(st_fx.get("depth_blur_sigma", 8.0)),
                                       invert=bool(st_fx.get("depth_invert", False)))
         mid_dm = None
-        if mid_enabled and mid_fx.get("depth_warp", 0.0) > 1e-4:
+        if self._mid_arr is not None and mid_fx.get("depth_warp", 0.0) > 1e-4:
             mid_dm = _build_depth_map(self._mid_arr,
                                        blur_sigma=float(mid_fx.get("depth_blur_sigma", 8.0)),
                                        invert=bool(mid_fx.get("depth_invert", False)))
@@ -2016,7 +2127,9 @@ class FlythroughDialog(QDialog):
 
         try:
             frame = render_frame(
-                self._starless_arr, self._stars_arr, t_raw,
+                self._starless_arr,
+                self._stars_arr,   # may be None — stars layer is optional
+                t_raw,
                 sl_p["zoom_start"], sl_p["zoom_end"],
                 sl_p["cx_start"],   sl_p["cy_start"],
                 sl_p["cx_end"],     sl_p["cy_end"],
@@ -2027,8 +2140,10 @@ class FlythroughDialog(QDialog):
                 EASE_FUNCTIONS[st_p["ease"]], st_fx,
                 out_h, out_w,
                 sl_depth_map=sl_dm, st_depth_map=st_dm,
-                mid=self._mid_arr,
-                mid_enabled=mid_enabled,
+                st_blend_mode=self.panel_st.blend_mode(),
+                st_opacity=self.panel_st.opacity(),
+                mid=self._mid_arr,   # None when no mid image selected
+
                 mid_zoom_start=mid_p["zoom_start"], mid_zoom_end=mid_p["zoom_end"],
                 mid_cx_start=mid_p["cx_start"],     mid_cy_start=mid_p["cy_start"],
                 mid_cx_end=mid_p["cx_end"],         mid_cy_end=mid_p["cy_end"],
@@ -2074,18 +2189,11 @@ class FlythroughDialog(QDialog):
         self.panel_mid.save_settings(s, "mid")
 
     def _export(self):
-        if self._starless_full is None or self._stars_full is None:
-            QMessageBox.warning(self, "Flythrough", "Please select both source images first.")
+        if self._starless_full is None:
+            QMessageBox.warning(self, "Flythrough", "Please select a starless image first.")
             return
         if not HAS_CV2:
             QMessageBox.critical(self, "Flythrough", "OpenCV (cv2) is required for video export.")
-            return
-
-        mid_enabled = self.panel_mid.is_enabled()
-        if mid_enabled and self._mid_full is None:
-            QMessageBox.warning(self, "Flythrough",
-                "Mid layer is enabled but no source image is selected.\n"
-                "Please select a mid-layer image or disable the mid layer.")
             return
 
         s        = QSettings()
@@ -2112,11 +2220,12 @@ class FlythroughDialog(QDialog):
 
         params = {
             "starless":      self._starless_full,
-            "stars":         self._stars_full,
-            "mid":           self._mid_full if mid_enabled else None,
-            "mid_enabled":   mid_enabled,
+            "stars":         self._stars_full,   # may be None
+            "mid":           self._mid_full,   # None when no mid image selected
             "mid_blend_mode": self.panel_mid.blend_mode(),
             "mid_opacity":   self.panel_mid.opacity(),
+            "st_blend_mode": self.panel_st.blend_mode(),
+            "st_opacity":    self.panel_st.opacity(),
             "fps":           self.sp_fps.value(),
             "duration":      self.sp_duration.value(),
             "out_w":         self.sp_out_w.value(),
@@ -2141,7 +2250,7 @@ class FlythroughDialog(QDialog):
         self.btn_export.setEnabled(False); self.btn_cancel_export.setVisible(True)
 
         full_h, full_w = self._starless_full.shape[:2]
-        mid_note = f" + mid ({self.panel_mid.blend_mode()})" if mid_enabled else ""
+        mid_note = f" + mid ({self.panel_mid.blend_mode()})" if self._mid_full is not None else ""
         self.lbl_status.setText(
             f"Rendering {params['out_w']}x{params['out_h']}{mid_note} -- "
             f"cropping from {full_w}x{full_h} originals...")

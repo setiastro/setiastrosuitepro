@@ -401,6 +401,7 @@ def make_stereo_pair(
     disk_mask: np.ndarray | None = None,
     *,
     interp: int = None,
+    radius_px: float | None = None,
 ):
     if cv2 is None:
         dummy_mask = np.ones(roi_rgb.shape[:2], dtype=bool)
@@ -430,10 +431,16 @@ def make_stereo_pair(
         xf = x.astype(np.float32, copy=False)
 
     H, W = xf.shape[:2]
-    # estimate radius_px from disk area (in pixels)
-    area_px = float(disk.sum())
-    radius = np.sqrt(area_px / np.pi)
-    radius = np.clip(radius, 16.0, 0.49 * min(W, H))
+    if radius_px is not None and radius_px > 0:
+        # Caller supplied the true radius — use it directly.
+        # Do NOT apply the 0.49*min(W,H) cap: the disk may legitimately extend
+        # beyond the ROI boundary (near-edge planet), and BORDER_CONSTANT=0 in
+        # remap correctly fills those out-of-bounds pixels with black.
+        radius = max(16.0, float(radius_px))
+    else:
+        area_px = float(disk.sum())
+        radius = np.sqrt(area_px / np.pi)
+        radius = np.clip(radius, 16.0, 0.49 * min(W, H))
 
     mapLx, mapLy, mapRx, mapRy, _ = _sphere_reproject_maps(H, W, theta_deg, radius_px=radius)
 
@@ -2400,16 +2407,32 @@ class PlanetProjectionDialog(QDialog):
             s_need = int(np.ceil(2.0 * (need_half + margin)))
             s = max(s, s_need)
 
-        s = int(np.clip(s, float(self.spin_min.value()), float(self.spin_max.value())))
+        # Ensure ROI is at least 2*r so the full disk diameter fits.
+        # This matters when r is large (e.g. full-frame sun image).
+        s = max(s, int(np.ceil(2.0 * r)) + 4)
+        s = int(np.clip(s, float(self.spin_min.value()), float(self.spin_max.value()) * 4))
 
-        # ---- ROI crop ALWAYS (for normal/saturn) ----
+        # ---- ROI crop with reflect-padding so near-edge disks get full size ----
         cx_i, cy_i = int(round(cx)), int(round(cy))
-        x0 = max(0, cx_i - s // 2)
-        y0 = max(0, cy_i - s // 2)
-        x1 = min(Wfull, x0 + s)
-        y1 = min(Hfull, y0 + s)
+        half = s // 2
 
-        roi = img[y0:y1, x0:x1, :3]
+        pad_top  = max(0, half - cy_i)
+        pad_bot  = max(0, (cy_i + half + 1) - Hfull)
+        pad_left = max(0, half - cx_i)
+        pad_rght = max(0, (cx_i + half + 1) - Wfull)
+
+        if pad_top or pad_bot or pad_left or pad_rght:
+            img_pad = np.pad(img[..., :3],
+                             ((pad_top, pad_bot), (pad_left, pad_rght), (0, 0)),
+                             mode="reflect")
+        else:
+            img_pad = img[..., :3]
+
+        cx_p = cx_i + pad_left
+        cy_p = cy_i + pad_top
+        x0p = cx_p - half
+        y0p = cy_p - half
+        roi = img_pad[y0p:y0p + s, x0p:x0p + s]
         # ---- GALAXY ROI expansion (ensure full projected ellipse fits) ----
         if ptype == 3:
             tilt = float(self.spin_ring_tilt.value())
@@ -2436,8 +2459,9 @@ class PlanetProjectionDialog(QDialog):
         # ---- disk mask (ROI coords) ----
         H0, W0 = roi.shape[:2]
         yy, xx = np.mgrid[0:H0, 0:W0].astype(np.float32)
-        cx0 = float(cx - x0)
-        cy0 = float(cy - y0)
+        # Centre is always at half because we padded to make it so
+        cx0 = float(half)
+        cy0 = float(half)
         disk = ((xx - cx0) ** 2 + (yy - cy0) ** 2) <= (float(r) ** 2)
 
         def to01(x):
@@ -2452,7 +2476,8 @@ class PlanetProjectionDialog(QDialog):
         # ---- BODY (sphere reprojection) ----
         interp = cv2.INTER_LANCZOS4
         left_w, right_w, maskL, maskR = make_stereo_pair(
-            roi, theta_deg=theta, disk_mask=disk, interp=interp
+            roi, theta_deg=theta, disk_mask=disk, interp=interp,
+            radius_px=float(r),
         )
         Lw01 = to01(left_w)
         Rw01 = to01(right_w)
@@ -2665,7 +2690,10 @@ class PlanetProjectionDialog(QDialog):
         # and then choosing the "left" for +theta and "right" for -theta.
         # Easiest: call make_stereo_pair with theta_deg and take left_w/maskL as view.
         interp = cv2.INTER_LANCZOS4
-        left_w, right_w, maskL, maskR = make_stereo_pair(roi, theta_deg=float(theta_deg), disk_mask=disk, interp=interp)
+        left_w, right_w, maskL, maskR = make_stereo_pair(
+            roi, theta_deg=float(theta_deg), disk_mask=disk, interp=interp,
+            radius_px=float(ctx.get("r", 0)) or None,
+        )
 
         view01 = to01(left_w)
         mask = maskL
