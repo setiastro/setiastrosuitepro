@@ -1,10 +1,10 @@
 {
-  "version": "1.18.6",
+  "version": "1.18.7",
   "downloads": {
-      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.18.6/setiastrosuitepro_windows.zip",
-      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.18.6/SetiAstroSuitePro_macOS_Intel.dmg",
-      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.18.6/SetiAstroSuitePro_AppleSilicon.dmg",
-      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.18.6/SetiAstroSuitePro_linux.tar.xz"
+      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.18.7/setiastrosuitepro_windows.zip",
+      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.18.7/SetiAstroSuitePro_macOS_Intel.dmg",
+      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.18.7/SetiAstroSuitePro_AppleSilicon.dmg",
+      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.18.7/SetiAstroSuitePro_linux.tar.xz"
   },
- "notes": "Seti Astro Suite Pro\n\nV1.18.6 \n RC-Astro tools available under Smart Tools for the upcoming standalone RC-Astro tool release. Stacking Suite bug fixes in auto-detect sessions, added Plate Solve option in Stacking Suite to solve your masters before saving out. Other bug and UX fixes."
+ "notes": "Seti Astro Suite Pro\n\nV1.18.7\n New Crop Feature: Image Overlay. Overlay multiple image (and use option colorize) to see exactly the crop box you want to use to batch crop all the images at one.\n Fly Through: Major updates to include a Mid Layer for a more layered fly through affect. \n Other updates to 3D Planet Projection, Plate Solvers, Syqon Starless for Axiom V3 support, and RC Astro tools."
 }
