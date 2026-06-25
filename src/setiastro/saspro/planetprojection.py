@@ -564,7 +564,7 @@ def _shift_mask(mask: np.ndarray, dx: float, dy: float):
     return mw > 127
 
 def _disk_to_equirect_texture(roi_rgb01: np.ndarray, disk_mask: np.ndarray,
-                              tex_h: int = 256, tex_w: int = 512) -> np.ndarray:
+                              tex_h: int = 1024, tex_w: int = 2048) -> np.ndarray:
     """
     Convert a planet disk image (ROI) into an equirectangular texture (lat/lon).
     roi_rgb01: float32 RGB in [0,1]
@@ -609,21 +609,19 @@ def _disk_to_equirect_texture(roi_rgb01: np.ndarray, disk_mask: np.ndarray,
     tex[~vis] = 0.0
     return tex
 
-
-def _build_sphere_mesh(n_lat: int = 120, n_lon: int = 240):
+def _build_sphere_mesh(n_lat: int = 480, n_lon: int = 960):
     """
-    Build sphere vertices and triangle indices.
+    Build sphere vertices and triangle indices (vectorized — no Python loops).
     Returns:
       verts: (N,3) float32
       lats:  (N,) float32
       lons:  (N,) float32
-      i,j,k triangle index lists
+      I,J,K  int32 triangle index arrays
     """
-    # lat: +pi/2 (north) to -pi/2 (south)
     lats = np.linspace(+0.5*np.pi, -0.5*np.pi, n_lat, endpoint=True).astype(np.float32)
     lons = np.linspace(-np.pi, np.pi, n_lon, endpoint=False).astype(np.float32)
 
-    Lon, Lat = np.meshgrid(lons, lats)  # (n_lat,n_lon)
+    Lon, Lat = np.meshgrid(lons, lats)  # (n_lat, n_lon)
 
     x = (np.cos(Lat) * np.sin(Lon)).astype(np.float32)
     y = (np.sin(Lat)).astype(np.float32)
@@ -631,27 +629,23 @@ def _build_sphere_mesh(n_lat: int = 120, n_lon: int = 240):
 
     verts = np.stack([x, y, z], axis=-1).reshape(-1, 3)
 
-    # triangles on the grid
-    def idx(a, b):
-        return a * n_lon + b
+    # Vectorized quad triangulation — no Python loops
+    a = np.arange(n_lat - 1, dtype=np.int32)
+    b = np.arange(n_lon,     dtype=np.int32)
+    A, B = np.meshgrid(a, b, indexing='ij')          # (n_lat-1, n_lon)
+    B2 = (B + 1) % n_lon
 
-    I = []
-    J = []
-    K = []
-    for a in range(n_lat - 1):
-        for b in range(n_lon):
-            b2 = (b + 1) % n_lon
-            p00 = idx(a, b)
-            p01 = idx(a, b2)
-            p10 = idx(a + 1, b)
-            p11 = idx(a + 1, b2)
-            # two triangles per quad
-            I.extend([p00, p00])
-            J.extend([p10, p11])
-            K.extend([p11, p01])
+    p00 = (A * n_lon + B ).reshape(-1)
+    p01 = (A * n_lon + B2).reshape(-1)
+    p10 = ((A + 1) * n_lon + B ).reshape(-1)
+    p11 = ((A + 1) * n_lon + B2).reshape(-1)
+
+    # Two triangles per quad: (p00,p10,p11) and (p00,p11,p01)
+    I = np.concatenate([p00, p00]).astype(np.int32)
+    J = np.concatenate([p10, p11]).astype(np.int32)
+    K = np.concatenate([p11, p01]).astype(np.int32)
 
     return verts, Lat.reshape(-1), Lon.reshape(-1), I, J, K
-
 
 def _sample_tex_colors(tex: np.ndarray, lats: np.ndarray, lons: np.ndarray) -> np.ndarray:
     """
@@ -851,8 +845,8 @@ def export_planet_sphere_html(
     roi_rgb: np.ndarray,
     disk_mask: np.ndarray,
     out_path: str | None = None,
-    n_lat: int = 120,
-    n_lon: int = 240,
+    n_lat: int = 480,
+    n_lon: int = 960,
     title: str = "Planet Sphere",
     rings: dict | None = None,
 ):
@@ -2619,8 +2613,8 @@ class PlanetProjectionDialog(QDialog):
                     roi_rgb=roi,
                     disk_mask=disk,
                     out_path=None,
-                    n_lat=140,
-                    n_lon=280,
+                    n_lat=480,
+                    n_lon=960,
                     title="Saturn" if rings_on else "Planet Sphere",
                     rings=rings_kwargs,
                 )

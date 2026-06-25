@@ -3378,11 +3378,14 @@ class PlateSolverDialog(QDialog):
         self.le_ra = QLineEdit(seed_box);   self.le_ra.setPlaceholderText(self.tr("RA (e.g. 22:32:14 or 338.1385)"))
         self.le_dec = QLineEdit(seed_box);  self.le_dec.setPlaceholderText(self.tr("Dec (e.g. +40:42:43 or 40.7123)"))
         self.le_scale = QLineEdit(seed_box); self.le_scale.setPlaceholderText(self.tr('Scale [" / px] (e.g. 1.46)'))
+        self.btn_lookup = QPushButton(self.tr("Lookup…"), seed_box)
+        self.btn_lookup.setToolTip(self.tr("Search the celestial catalog by name (e.g. M42, NGC 1499, Abell 426)"))
+        self.btn_lookup.clicked.connect(self._lookup_catalog_object)
         manual_row.addWidget(self.le_ra, 1)
         manual_row.addWidget(self.le_dec, 1)
         manual_row.addWidget(self.le_scale, 1)
+        manual_row.addWidget(self.btn_lookup)
         seed_form.addRow(self.tr("Manual RA/Dec/Scale:"), manual_row)
-
         # Search radius (-r)
         rad_row = QHBoxLayout()
         self.cb_radius_mode = QComboBox(seed_box)
@@ -3516,6 +3519,200 @@ class PlateSolverDialog(QDialog):
         # if batch page exists:
         self.log.setObjectName("batch_log")
 
+    def _lookup_catalog_object(self):
+        """
+        Search the bundled celestial catalog + bright star list by object name
+        and populate the manual RA/Dec fields.
+        """
+        import re as _re
+        import os as _os
+
+        # ── Ask user for object name first (fail fast before loading anything) ──
+        from PyQt6.QtWidgets import QInputDialog
+        query, ok = QInputDialog.getText(
+            self,
+            self.tr("Object Lookup"),
+            self.tr("Enter object name (e.g. M42, NGC 1333, Abell 426, Sh2-155, Sirius):"),
+        )
+        if not ok or not query.strip():
+            return
+        query = query.strip()
+        q = query.lower().strip()
+
+        # ── Normalisation helpers (shared by both search paths) ───────────────
+        def _normalize(s):
+            s = str(s).lower().strip()
+            s = _re.sub(r'^pk\s*', 'pn-g ', s)
+            return _re.sub(
+                r'^(ngc|ic|m|ugc|pgc|aco|lbn|ldn|sh2|png|pn-g|abell|sh2-?)\s*(\d)',
+                r'\1 \2', s
+            )
+
+        q_is_pk  = bool(_re.match(r'^pk[\s\d]', q))
+        q_png    = _re.sub(r'^pk\s*', 'pn-g ', q) if q_is_pk else q
+        q_spaced = _re.sub(
+            r'^(ngc|ic|m|ugc|pgc|aco|lbn|ldn|sh2|png|pn-g|abell|sh2-?|pk|arp)\s*(\d)',
+            r'\1 \2', q
+        )
+        q_compact = _re.sub(r'\s+', '', q)
+
+        def _name_matches(name: str) -> bool:
+            n = _normalize(name)
+            if q in n or q_spaced in n or q_compact in n:
+                return True
+            if q_is_pk:
+                q_png_s = _re.sub(r'\s+', ' ', q_png).strip()
+                q_png_c = _re.sub(r'\s+', '', q_png)
+                if q_png in n or q_png_s in n or q_png_c in n:
+                    return True
+            return False
+
+        # ── Results list: each entry is dict(name, ra, dec, note) ────────────
+        results = []
+
+        # ── 1) Bright star list ───────────────────────────────────────────────
+        try:
+            from setiastro.saspro.bright_stars import BRIGHT_STARS
+            for entry in BRIGHT_STARS:
+                star_name, ra, dec = str(entry[0]), float(entry[1]), float(entry[2])
+                mag = entry[3] if len(entry) > 3 else None
+                if _name_matches(star_name):
+                    note = f"Star  mag {mag:.2f}" if mag is not None else "Star"
+                    results.append({
+                        "name": star_name, "ra": ra, "dec": dec,
+                        "alt": "", "note": note,
+                    })
+        except ImportError:
+            pass   # bright_stars not available — silently skip
+        except Exception as e:
+            print(f"[Lookup] bright_stars search error: {e}")
+
+        # ── 2) Celestial catalog ──────────────────────────────────────────────
+        try:
+            from setiastro.saspro.wims import _load_full_catalog
+            import sys as _sys, pandas as pd
+
+            app_root = getattr(_sys, "_MEIPASS",
+                               _os.path.dirname(_os.path.abspath(__file__)))
+            candidates = [
+                _os.path.join(app_root, "data", "catalogs", "celestial_catalog.csv"),
+                _os.path.join(app_root, "..", "data", "catalogs", "celestial_catalog.csv"),
+                _os.path.join(app_root, "..", "..", "data", "catalogs", "celestial_catalog.csv"),
+                _os.path.join(app_root, "celestial_catalog.csv"),
+                _os.path.join(app_root, "..", "..", "..", "data", "catalogs", "celestial_catalog.csv"),
+            ]
+            catalog_path = next(
+                (_os.path.normpath(p) for p in candidates if _os.path.exists(p)), None
+            )
+
+            if catalog_path:
+                df = _load_full_catalog(catalog_path)
+                if not df.empty and "Name" in df.columns:
+                    name_col    = df["Name"].astype(str).apply(_normalize)
+                    altname_col = df.get("Alt Name",
+                                         pd.Series(dtype=str)).astype(str).apply(_normalize)
+
+                    mask = (
+                        name_col.str.contains(_re.escape(q),          na=False) |
+                        name_col.str.contains(_re.escape(q_spaced),   na=False) |
+                        name_col.str.contains(_re.escape(q_compact),  na=False) |
+                        altname_col.str.contains(_re.escape(q),       na=False) |
+                        altname_col.str.contains(_re.escape(q_spaced),na=False) |
+                        df["Name"].astype(str).str.lower().str.contains(
+                            _re.escape(q_compact), na=False)
+                    )
+                    if q_is_pk:
+                        q_png_s = _re.sub(r'\s+', ' ', q_png).strip()
+                        q_png_c = _re.sub(r'\s+', '', q_png)
+                        mask = mask | (
+                            name_col.str.contains(_re.escape(q_png),  na=False) |
+                            name_col.str.contains(_re.escape(q_png_s),na=False) |
+                            name_col.str.contains(_re.escape(q_png_c),na=False)
+                        )
+
+                    for _, row in df[mask].head(50).iterrows():
+                        try:
+                            ra  = float(row["RA"])
+                            dec = float(row["Dec"])
+                        except (ValueError, TypeError):
+                            continue
+                        alt = str(row.get("Alt Name", ""))
+                        if alt in ("nan", "None", "—", ""):
+                            alt = ""
+                        typ = str(row.get("Type", ""))
+                        if typ in ("nan", "None", ""):
+                            typ = ""
+                        mag_raw = row.get("Magnitude", "")
+                        mag_str = f"  mag {mag_raw}" if (
+                            mag_raw and str(mag_raw) not in ("nan","None","")) else ""
+                        note = f"{typ}{mag_str}".strip() if typ else mag_str.strip()
+                        results.append({
+                            "name": str(row["Name"]), "ra": ra, "dec": dec,
+                            "alt": alt, "note": note,
+                        })
+        except ImportError:
+            pass   # pandas / whatsinmysky not available
+        except Exception as e:
+            print(f"[Lookup] catalog search error: {e}")
+
+        # ── Nothing found ─────────────────────────────────────────────────────
+        if not results:
+            QMessageBox.information(
+                self, self.tr("Object Lookup"),
+                self.tr("No match found for '{0}'.").format(query)
+            )
+            return
+
+        # ── One result: use it directly ───────────────────────────────────────
+        if len(results) == 1:
+            chosen = results[0]
+        else:
+            # De-duplicate by (name, ra, dec) keeping first occurrence
+            seen   = set()
+            unique = []
+            for r in results:
+                key = (r["name"].lower(), round(r["ra"], 4), round(r["dec"], 4))
+                if key not in seen:
+                    seen.add(key)
+                    unique.append(r)
+            results = unique
+
+            if len(results) == 1:
+                chosen = results[0]
+            else:
+                items = []
+                for r in results:
+                    label = r["name"]
+                    if r["alt"]:
+                        label += f"  /  {r['alt']}"
+                    if r["note"]:
+                        label += f"  [{r['note']}]"
+                    items.append(label)
+
+                item_str, ok2 = QInputDialog.getItem(
+                    self,
+                    self.tr("Select Object"),
+                    self.tr("Multiple matches — choose one:"),
+                    items, 0, False,
+                )
+                if not ok2:
+                    return
+                chosen = results[items.index(item_str)]
+
+        # ── Populate fields ───────────────────────────────────────────────────
+        self.le_ra.setText(f"{chosen['ra']:.6f}")
+        self.le_dec.setText(f"{chosen['dec']:.6f}")
+
+        # Switch seed mode to Manual so the values are actually used
+        self.cb_seed_mode.setCurrentIndex(1)
+
+        disp = chosen["name"]
+        if chosen.get("alt"):
+            disp += f" / {chosen['alt']}"
+        self.status.setText(
+            self.tr("Loaded: {0}  RA={1:.4f}°  Dec={2:+.4f}°").format(
+                disp, chosen["ra"], chosen["dec"])
+        )
     # ---------- file/batch pickers ----------
     def _browse_file(self):
         f, _ = QFileDialog.getOpenFileName(
