@@ -2345,7 +2345,7 @@ class CosmicClaritySatelliteDialogPro(QDialog):
             fmt, _ = _save_fmt_and_bitdepth_from_path_for_legacy(dst)
             save_image(
                 out, dst, fmt or "fits",
-                "32-bit floating point",
+                bd or "32-bit floating point",
                 hdr, mono,
                 image_meta=image_meta,
                 file_meta=None,
@@ -2567,7 +2567,7 @@ class SatelliteEngineThread(QThread):
                 fmt, _ = _save_fmt_and_bitdepth_from_path_for_legacy(fp_out)
                 save_image(
                     out, fp_out, fmt or "fits",
-                    "32-bit floating point",
+                    bd or "32-bit floating point",
                     hdr, mono,
                     image_meta=image_meta,
                     file_meta=None,
