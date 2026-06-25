@@ -90,25 +90,17 @@ def _mtf_inverse(y: np.ndarray, shadows: float, midtones: float, highlights: flo
     return np.clip(x, 0.0, 1.0).astype(np.float32, copy=False)
 
 def _mtf_params_linked(img_rgb01: np.ndarray, shadowclip_sigma: float = -2.8, targetbg: float = 0.25):
-    # shadowclip_sigma accepted for legacy compatibility but ignored.
-    # Matches stretch_color_image(linked=True, no_black_clip=True) exactly:
-    #   bp  = whole-image minimum (single value, all channels)
-    #   med = whole-image median (single value, all channels)
-    #   same transform applied identically to all channels
     x = np.asarray(img_rgb01, dtype=np.float32)
-
     bp = float(np.clip(x.min(), 0.0, 1.0 - 1e-6))
     denom = max(1.0 - bp, 1e-12)
     med_raw = float(np.median(x))
     med_rescaled = float(np.clip((med_raw - bp) / denom, 1e-6, 1.0 - 1e-6))
-
     tb = float(np.clip(targetbg, 1e-6, 1.0 - 1e-6))
     denom_m = (2.0 * tb - 1.0) * med_rescaled - tb
     if abs(denom_m) < 1e-12:
         denom_m = 1e-12
     m = med_rescaled * (tb - 1.0) / denom_m
     m = float(np.clip(m, 1e-4, 1.0 - 1e-4))
-
     return {"s": bp, "m": m, "h": 1.0}
 
 def _apply_mtf_linked_rgb(img_rgb01: np.ndarray, p: dict) -> np.ndarray:
@@ -174,28 +166,15 @@ def _mtf_params_unlinked(img_rgb01, shadows_clipping=-2.8, targetbg=0.25):
  
     for c in range(C_in):
         ch = x_in[..., c]
- 
-        # Step 1: blackpoint = channel minimum (no sigma clipping)
         bp = float(np.clip(ch.min(), 0.0, 1.0 - 1e-6))
- 
-        # Step 2: rescale median the same way numba_color_unlinked_from_img does
         denom = max(1.0 - bp, 1e-12)
         med_raw = float(np.median(ch))
         med_rescaled = float(np.clip((med_raw - bp) / denom, 1e-6, 1.0 - 1e-6))
- 
-        # Step 3: solve MTF midtone m such that MTF(med_rescaled) = targetbg
-        # MTF: y = (m-1)*tb*x / (m*(tb+x-1) - tb*x)
-        # Solving MTF(med_rescaled) = tb:
-        #   denom_m = (2*tb - 1)*med_rescaled - tb
-        #   m = med_rescaled*(tb - 1) / denom_m
         denom_m = (2.0 * tb - 1.0) * med_rescaled - tb
         if abs(denom_m) < 1e-12:
             denom_m = 1e-12
         m = med_rescaled * (tb - 1.0) / denom_m
         m = float(np.clip(m, 1e-4, 1.0 - 1e-4))
- 
-        # s = blackpoint, m = MTF midtone, h = 1.0
-        # _mtf_apply(x, s, m, h) computes: r=(x-s)/(h-s), then MTF(r,m)
         s_in[c] = bp
         m_in[c] = m
         h_in[c] = 1.0
@@ -461,14 +440,17 @@ def _syqon_data_dir() -> Path:
     d.mkdir(parents=True, exist_ok=True)
     return d
 
-_SYQON_BUY_URL        = "https://donate.stripe.com/14AdR9fZFbw85Rb4Wq2B204"
-_SYQON_BUY_URL_NADIR  = "https://donate.stripe.com/14AdR9fZFbw85Rb4Wq2B204"
+_SYQON_BUY_URL         = "https://donate.stripe.com/14AdR9fZFbw85Rb4Wq2B204"
+_SYQON_BUY_URL_NADIR   = "https://donate.stripe.com/14AdR9fZFbw85Rb4Wq2B204"
 _SYQON_BUY_URL_AXIOMV2 = "https://syqon.it/starless/"
+_SYQON_BUY_URL_AXIOMV3 = "https://syqon.it/starless/"   # update when SyQon supplies a V3 link
 
 def _syqon_buy_url_for(model_kind: str) -> str:
     mk = _syqon_norm_kind(model_kind)
     if mk in ("axiomv2", "axiomv2.1", "axiomv2.2"):
         return _SYQON_BUY_URL_AXIOMV2
+    if mk == "axiomv3":
+        return _SYQON_BUY_URL_AXIOMV3
     return _SYQON_BUY_URL_NADIR
 
 
@@ -480,6 +462,8 @@ def _syqon_model_path(d: Path, model_kind: str) -> Path:
         return d / "axiomv2.1.pt"
     if mk == "axiomv2.2":
         return d / "axiomv2.2.pt"
+    if mk == "axiomv3":
+        return d / "axiomv3.pt"
     return d / "nadir"
 
 def _syqon_signal_path(d: Path) -> Path:
@@ -538,12 +522,13 @@ def _syqon_compute_target_bg_from_doc(doc) -> float:
     med = float(np.median(gray)) if gray.size else 0.12
     return float(np.clip(med, 0.01, 0.50))
 
-# --- model labels — AxiomV2.2 added ---
+# --- model labels ---
 _SYQON_MODEL_LABELS = {
     "nadir":      "Nadir",
     "axiomv2":    "AxiomV2",
     "axiomv2.1":  "AxiomV2.1",
     "axiomv2.2":  "AxiomV2.2",
+    "axiomv3":    "AxiomV3",
 }
 
 
@@ -557,6 +542,8 @@ def _syqon_norm_kind(v: str) -> str:
         return "axiomv2.1"
     if v in ("axiomv2.2", "axiom2.2", "axiom v2.2", "axiom-v2.2", "axiomv2_2"):
         return "axiomv2.2"
+    if v in ("axiomv3", "axiom3", "axiom v3", "axiom-v3", "axiomv3.0", "v3"):
+        return "axiomv3"
     return "nadir"
 
 def _rgb01_to_qimage(rgb01: np.ndarray):
@@ -586,7 +573,7 @@ class _SyQonProcessThread(QThread):
         model_kind: str = "nadir",
         use_amp: bool = False,
         amp_dtype: str = "fp16",
-        channel_mode: str = "rgb",        # ← add
+        channel_mode: str = "rgb",
         *,
         live_preview: bool = False,
         preview_src_rgb01: np.ndarray | None = None,
@@ -717,14 +704,13 @@ class _SyQonProcessThread(QThread):
                 residual_mode=True,
                 use_amp=self.use_amp,
                 amp_dtype=self.amp_dtype,
-                channel_mode=self.channel_mode,    # ← add
+                channel_mode=self.channel_mode,
                 progress_cb=_prog,
                 tile_cb=_tile_cb if (self.live_preview and preview_buf is not None) else None,
                 signal_ckpt_path      = self.signal_ckpt_path,
                 signal_tile           = self.signal_tile,
                 signal_overlap        = self.signal_overlap,
                 signal_diff_threshold = self.signal_diff_threshold,
-
             )
 
             if self._cancel:
@@ -860,7 +846,7 @@ class SyQonStarlessDialog(QDialog):
 
         self.cmb_model = QComboBox(self)
         self.cmb_model.clear()
-        for key in ("nadir", "axiomv2", "axiomv2.1", "axiomv2.2"):   # ← AxiomV2.2 added
+        for key in ("nadir", "axiomv2", "axiomv2.1", "axiomv2.2", "axiomv3"):
             self.cmb_model.addItem(_SYQON_MODEL_LABELS[key], userData=key)
         self.cmb_model.setCurrentIndex(0)
 
@@ -927,7 +913,8 @@ class SyQonStarlessDialog(QDialog):
             "Runs the model twice: once on the full RGB image and once per channel independently.\n"
             "The two results are averaged, then Lab chroma correction is applied.\n"
             "Can reduce colour fringing on narrowband or colour-imbalanced images.\n"
-            "Takes approximately 4× longer than standard mode."
+            "Takes approximately 4× longer than standard mode.\n"
+            "Note: not available for AxiomV3 (model uses internal per-tile normalisation)."
         )
         self.spin_pad = QSpinBox(self)
         self.spin_pad.setRange(0, 1024); self.spin_pad.setSingleStep(16)
@@ -1076,6 +1063,11 @@ class SyQonStarlessDialog(QDialog):
     def _on_model_changed(self, *_):
         s = getattr(self.main, "settings", None) or QSettings()
         s.setValue("syqon/model_kind", self._model_kind())
+        # AxiomV3 doesn't support per-channel mode — grey it out so users aren't confused
+        is_v3 = (self._model_kind() == "axiomv3")
+        if is_v3:
+            self.chk_rgb_perchan.setChecked(False)
+        self.chk_rgb_perchan.setEnabled(not is_v3)
         self._refresh_state()
 
     def _on_worker_preview(self, qimg):
@@ -1174,8 +1166,9 @@ class SyQonStarlessDialog(QDialog):
         mtf_wrap = self._mtf_params
         do_mtf   = bool(getattr(self, "_do_mtf", True))
 
+        # AxiomV3 has normalisation baked in — MTF inversion still valid if we applied it
         if do_mtf and mtf_wrap is not None:
-            bp3       = np.asarray(mtf_wrap["bp3"], dtype=np.float32)
+            bp3        = np.asarray(mtf_wrap["bp3"], dtype=np.float32)
             mtf_params = mtf_wrap["mtf"]
             starless_bp  = _invert_mtf_unlinked_rgb(starless_s, mtf_params)
             starless_lin = _add_bp_per_channel(starless_bp, bp3)
@@ -1210,6 +1203,7 @@ class SyQonStarlessDialog(QDialog):
         final_to_apply  = final_starless.mean(axis=2).astype(np.float32, copy=False) if orig_was_mono else final_starless
         final_to_apply  = np.clip(final_to_apply, 0.0, 1.0).astype(np.float32, copy=False)
 
+        model_kind_used = self._model_kind()
         meta = {
             "step_name": "Stars Removed",
             "bit_depth": "32-bit floating point",
@@ -1225,9 +1219,10 @@ class SyQonStarlessDialog(QDialog):
                     "make_stars":  bool(self.chk_make_stars.isChecked()),
                     "pad_edges":   bool(pad_edges),
                     "pad_pixels":  int(pad_pixels),
-                    "channel_mode": "rgb+perchan" if bool(self.chk_rgb_perchan.isChecked()) else "rgb",
+                    "channel_mode": "rgb+perchan" if (bool(self.chk_rgb_perchan.isChecked()) and model_kind_used != "axiomv3") else "rgb",
                     "stars_extract": str(stars_extract_mode),
                     "model_path":  str(self._model_dst_path()),
+                    "model_kind":  model_kind_used,
                     "label":       "Remove Stars (SyQon)",
                     "use_mtf":     bool(do_mtf),
                     "use_amp":     bool(self.chk_amp.isChecked()),
@@ -1250,11 +1245,12 @@ class SyQonStarlessDialog(QDialog):
                     "target_bg":   float(target_bg),
                     "make_stars":  bool(self.chk_make_stars.isChecked()),
                     "model_path":  str(self._model_dst_path()),
+                    "model_kind":  model_kind_used,
                     "pad_edges":   bool(pad_edges),
                     "pad_pixels":  int(pad_pixels),
                     "stars_extract": str(stars_extract_mode),
                     "use_mtf":     bool(do_mtf),
-                    "channel_mode": "rgb+perchan" if bool(self.chk_rgb_perchan.isChecked()) else "rgb",
+                    "channel_mode": "rgb+perchan" if (bool(self.chk_rgb_perchan.isChecked()) and model_kind_used != "axiomv3") else "rgb",
                 },
             }
         except Exception:
@@ -1304,7 +1300,7 @@ class SyQonStarlessDialog(QDialog):
         if self._have_model():
             self.lbl_model_path.setText(f"Installed model path:\n{str(dst)}")
     
-            # Show Signal status for AxiomV2.2
+            # Show Signal status for AxiomV2.2 only
             if mk == "axiomv2.2":
                 sig_ok = _syqon_have_signal(self.data_dir)
                 sig_status = "Signal 1.0: installed ✓" if sig_ok else "Signal 1.0: not installed (optional but recommended)"
@@ -1329,7 +1325,7 @@ class SyQonStarlessDialog(QDialog):
 
 
     def _open_buy_page(self):
-        mk  = (self.cmb_model.currentText() or "nadir").lower().strip()
+        mk  = self._model_kind()
         url = _syqon_buy_url_for(mk)
         if not url:
             QMessageBox.information(
@@ -1383,9 +1379,7 @@ class SyQonStarlessDialog(QDialog):
             s.setValue(f"syqon/model_src_path/{mk}", str(src))
             s.setValue(f"syqon/model_installed_path/{mk}", str(dst))
     
-        # ------------------------------------------------------------------
         # AxiomV2.2: offer Signal 1.0 install immediately after Axiom install
-        # ------------------------------------------------------------------
         if mk == "axiomv2.2":
             reply = QMessageBox.question(
                 self,
@@ -1463,7 +1457,7 @@ class SyQonStarlessDialog(QDialog):
         s.setValue("syqon/use_mtf",              bool(self.chk_mtf.isChecked()))
         s.setValue("syqon/mtf_target_median",    float(self.spin_mtf_median.value()))
         s.setValue("syqon/use_amp",              bool(self.chk_amp.isChecked()))
-        s.setValue("syqon/rgb_perchan_mode", bool(self.chk_rgb_perchan.isChecked()))
+        s.setValue("syqon/rgb_perchan_mode",     bool(self.chk_rgb_perchan.isChecked()))
         s.setValue("syqon/model_kind",           self._model_kind())
         s.setValue("syqon/standalone_cli_path",  self.edt_cli_path.text().strip())
 
@@ -1548,6 +1542,7 @@ class SyQonStarlessDialog(QDialog):
             return
 
         ckpt_path  = str(self._model_dst_path())
+        model_kind = self._model_kind()
         do_mtf     = bool(self.chk_mtf.isChecked())
         self._do_mtf = do_mtf
 
@@ -1562,15 +1557,22 @@ class SyQonStarlessDialog(QDialog):
             x_for_net        = xrgb
             self._mtf_params = None
 
-        model_kind   = self._model_kind()
         live_preview = bool(self.chk_live_preview.isChecked())
         preview_src  = x_for_net if do_mtf else xrgb
-        # Resolve Signal 1.0 path — only used for AxiomV2.2
+
+        # AxiomV3: per-channel mode not supported; force rgb
+        is_v3 = (model_kind == "axiomv3")
+        channel_mode = "rgb"
+        if not is_v3 and self.chk_rgb_perchan.isChecked():
+            channel_mode = "rgb+perchan"
+
+        # Signal 1.0 path — only used for AxiomV2.2
         signal_ckpt_path = ""
         if model_kind == "axiomv2.2":
             sig_path = _syqon_signal_path(self.data_dir)
             if sig_path.exists():
                 signal_ckpt_path = str(sig_path)
+
         self.proc_thr = _SyQonProcessThread(
             x_for_net=x_for_net,
             ckpt_path=ckpt_path,
@@ -1581,7 +1583,7 @@ class SyQonStarlessDialog(QDialog):
             model_kind=model_kind,
             use_amp=bool(self.chk_amp.isChecked()),
             amp_dtype="fp16",
-            channel_mode="rgb+perchan" if self.chk_rgb_perchan.isChecked() else "rgb",
+            channel_mode=channel_mode,
             signal_ckpt_path=signal_ckpt_path,
             signal_tile=1024,
             signal_overlap=64,

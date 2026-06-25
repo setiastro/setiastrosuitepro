@@ -916,12 +916,7 @@ def _on_finished(main_dlg, doc, return_code, dlg,
         dlg.append("Stars-only image pushed as new document.\n")
 
     _cleanup()
-    dlg.append("Done.\n")
-    dlg.set_stage(f"{label} complete.")
-    dlg.mark_done()
-    QMessageBox.information(main_dlg, label,
-        f"{label} completed successfully.")
-
+    dlg.accept()
 
 def _push_new_doc(main, file_path: str, source_doc=None):
     """Open a file via DocManager — registration and subwindow spawn are automatic.

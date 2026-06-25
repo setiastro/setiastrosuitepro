@@ -234,7 +234,7 @@ def _build_StarNetGenerator():
         def __init__(self, in_channels=3, repair_scale=0.35, alpha_smooth_kernel=5):
             super().__init__()
             self.in_channels         = in_channels
-            self.repair_scale        = repair_scale        # kept for checkpoint compat
+            self.repair_scale        = repair_scale
             self.alpha_smooth_kernel = int(alpha_smooth_kernel)
 
             # Encoder
@@ -262,12 +262,9 @@ def _build_StarNetGenerator():
                 nn.Conv2d(128, 64, kernel_size=3, stride=1, padding=1),
                 nn.LeakyReLU(0.2, inplace=True),
             )
-            # outputs: removal(in_ch) + inpainted(in_ch) + alpha(1)
             self.g_out = nn.Conv2d(64, in_channels * 2 + 1, kernel_size=3, stride=1, padding=1)
 
-            # Weight init
             self.apply(_init_weights)
-            # Bias alpha gate toward "no inpainting" at init
             nn.init.constant_(self.g_out.bias[in_channels * 2:], -3.0)
 
         def forward(self, x, return_aux=False):
@@ -300,13 +297,11 @@ def _build_StarNetGenerator():
             inpainted_output = torch.tanh(raw_inpainted)
             alpha            = torch.sigmoid(raw_alpha)
 
-            # ── Smooth alpha to feather residual/inpaint transition edges ──
             k = self.alpha_smooth_kernel
             if k % 2 == 0:
                 k += 1
             alpha = F.avg_pool2d(alpha, kernel_size=k, stride=1, padding=k // 2)
             alpha = torch.clamp(alpha, 0.0, 1.0)
-            # ──────────────────────────────────────────────────────────────
 
             output = (1.0 - alpha) * residual_output + alpha * inpainted_output
 
@@ -320,6 +315,148 @@ def _build_StarNetGenerator():
             return output
 
     return StarNetGenerator
+
+
+# =============================================================================
+# StarXEmulator (AxiomV3) — lazy builder
+# Dense-encoder / pixel-shuffle-decoder; per-tile min-max norm in forward().
+# Model outputs starless directly — no residual subtraction needed in engine.
+# =============================================================================
+
+def _build_StarXEmulator():
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+
+    class GatedConv2d(nn.Module):
+        def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1):
+            super().__init__()
+            self.conv_gate = nn.Conv2d(in_channels, out_channels, kernel_size, stride=stride, padding=padding)
+            self.conv_mask = nn.Conv2d(in_channels, out_channels, kernel_size, stride=stride, padding=padding)
+            self.prelu = nn.PReLU(num_parameters=out_channels)
+
+        def forward(self, x):
+            gate = self.conv_gate(x)
+            mask = torch.sigmoid(self.conv_mask(x))
+            return self.prelu(gate * mask)
+
+    class StarXEmulator(nn.Module):
+        def __init__(self, in_channels=3, out_channels=3):
+            super().__init__()
+
+            # --- ENCODER ---
+            self.e1_1 = nn.Sequential(nn.Conv2d(in_channels, 16, kernel_size=3, padding=1), nn.PReLU(num_parameters=16))
+            self.e1_2 = nn.Sequential(nn.Conv2d(in_channels + 16, 16, kernel_size=3, padding=1), nn.PReLU(num_parameters=16))
+            self.e1_3 = nn.Sequential(nn.Conv2d(in_channels + 16 + 16, 16, kernel_size=3, padding=1), nn.PReLU(num_parameters=16))
+            self.e1_4 = GatedConv2d(in_channels + 16 + 16 + 16, 16, kernel_size=3, padding=1)
+
+            self.e2_1 = nn.Sequential(nn.Conv2d(64, 32, kernel_size=3, stride=2, padding=1), nn.PReLU(num_parameters=32))
+            self.e2_2 = nn.Sequential(nn.Conv2d(32, 32, kernel_size=3, padding=1), nn.PReLU(num_parameters=32))
+            self.e2_3 = GatedConv2d(64, 32, kernel_size=3, padding=1)
+
+            self.e4_1 = nn.Sequential(nn.Conv2d(96, 64, kernel_size=3, stride=2, padding=1), nn.PReLU(num_parameters=64))
+            self.e4_2 = GatedConv2d(64, 64, kernel_size=3, padding=1)
+
+            self.e8   = GatedConv2d(128, 128, kernel_size=3, stride=2, padding=1)
+            self.e16  = GatedConv2d(128, 192, kernel_size=3, stride=2, padding=1)
+            self.e32  = nn.Sequential(nn.Conv2d(192, 256, kernel_size=3, stride=2, padding=1), nn.PReLU(num_parameters=256))
+            self.e64  = nn.Sequential(nn.Conv2d(256, 512, kernel_size=3, stride=2, padding=1), nn.PReLU(num_parameters=512))
+            self.e128 = nn.Sequential(nn.Conv2d(512, 512, kernel_size=3, stride=2, padding=1), nn.PReLU(num_parameters=512))
+            self.e256 = nn.Sequential(nn.Conv2d(512, 512, kernel_size=3, stride=2, padding=1), nn.PReLU(num_parameters=512))
+
+            # --- BOTTLENECK ---
+            self.conv_0 = nn.Sequential(nn.Conv2d(512, 256, kernel_size=3, padding=1), nn.PReLU(num_parameters=256))
+
+            # --- DECODER ---
+            self.conv_1  = nn.Sequential(nn.Conv2d(768, 256, kernel_size=3, padding=1), nn.PReLU(num_parameters=256))
+            self.conv_2  = nn.Sequential(nn.Conv2d(768, 256, kernel_size=3, padding=1), nn.PReLU(num_parameters=256))
+            self.conv_3  = nn.Sequential(nn.Conv2d(512, 256, kernel_size=3, padding=1), nn.PReLU(num_parameters=256))
+            self.conv_4  = nn.Sequential(nn.Conv2d(448, 256, kernel_size=3, padding=1), nn.PReLU(num_parameters=256))
+            self.conv_d4 = nn.Sequential(nn.Conv2d(384, 128, kernel_size=3, padding=1), nn.PReLU(num_parameters=128))
+
+            self.d4_shuffle      = GatedConv2d(128, 512, kernel_size=3, padding=1)
+            self.pixel_shuffle_d4 = nn.PixelShuffle(2)
+
+            self.conv_d2         = nn.Sequential(nn.Conv2d(256, 128, kernel_size=3, padding=1), nn.PReLU(num_parameters=128))
+            self.d2_shuffle      = GatedConv2d(128, 512, kernel_size=3, padding=1)
+            self.pixel_shuffle_d2 = nn.PixelShuffle(2)
+
+            self.conv_d1         = nn.Sequential(nn.Conv2d(224, 64, kernel_size=3, padding=1), nn.PReLU(num_parameters=64))
+            self.d1_shuffle      = GatedConv2d(64, 256, kernel_size=3, padding=1)
+            self.pixel_shuffle_d1 = nn.PixelShuffle(2)
+
+            self.conv_dd1 = GatedConv2d(128, 48, kernel_size=3, padding=1)
+            self.conv_dd2 = GatedConv2d(112, 32, kernel_size=3, padding=1)
+            self.conv_stars = nn.Conv2d(144, out_channels, kernel_size=3, padding=1)
+
+        def upsample_2x(self, x):
+            return F.interpolate(x, scale_factor=2, mode='nearest')
+
+        def forward(self, x):
+            # Per-tile min/max normalisation (baked in — engine feeds raw [0,1])
+            min_val  = x.amin(dim=(2, 3), keepdim=True)
+            max_val  = x.amax(dim=(2, 3), keepdim=True)
+            range_val = (max_val - min_val).clamp_min(1e-8)
+            x_norm   = (x - min_val) / range_val
+
+            # Encoder
+            x1_1 = self.e1_1(x_norm)
+            x1_2 = self.e1_2(torch.cat([x_norm, x1_1], dim=1))
+            x1_3 = self.e1_3(torch.cat([x_norm, x1_1, x1_2], dim=1))
+            x1_4 = self.e1_4(torch.cat([x_norm, x1_1, x1_2, x1_3], dim=1))
+            e1_concat = torch.cat([x1_1, x1_2, x1_3, x1_4], dim=1)  # 64ch
+
+            x2_1 = self.e2_1(e1_concat)
+            x2_2 = self.e2_2(x2_1)
+            x2_3 = self.e2_3(torch.cat([x2_1, x2_2], dim=1))
+            e2_concat = torch.cat([x2_1, x2_2, x2_3], dim=1)  # 96ch
+
+            x4_1 = self.e4_1(e2_concat)
+            x4_2 = self.e4_2(x4_1)
+            e4_concat = torch.cat([x4_1, x4_2], dim=1)  # 128ch
+
+            e8_out  = self.e8(e4_concat)   # 128ch
+            e16_out = self.e16(e8_out)     # 192ch
+            e32_out = self.e32(e16_out)    # 256ch
+            e64_out = self.e64(e32_out)    # 512ch
+            e128_out = self.e128(e64_out)  # 512ch
+            e256_out = self.e256(e128_out) # 512ch
+
+            # Bottleneck
+            latent = self.conv_0(e256_out)  # 256ch
+
+            # Decoder
+            u_d128  = self.upsample_2x(latent)
+            d128_out = self.conv_1(torch.cat([u_d128, e128_out], dim=1))
+
+            u_d64   = self.upsample_2x(d128_out)
+            d64_out = self.conv_2(torch.cat([u_d64, e64_out], dim=1))
+
+            u_d32   = self.upsample_2x(d64_out)
+            d32_out = self.conv_3(torch.cat([u_d32, e32_out], dim=1))
+
+            u_d16   = self.upsample_2x(d32_out)
+            d16_out = self.conv_4(torch.cat([u_d16, e16_out], dim=1))
+
+            u_d8    = self.upsample_2x(d16_out)
+            d8_out  = self.conv_d4(torch.cat([u_d8, e8_out], dim=1))
+
+            d4_pixel_shuffle = self.pixel_shuffle_d4(self.d4_shuffle(d8_out))   # 128ch
+            d2_out  = self.conv_d2(torch.cat([d4_pixel_shuffle, e4_concat], dim=1))
+            d2_pixel_shuffle = self.pixel_shuffle_d2(self.d2_shuffle(d2_out))   # 128ch
+            d1_out  = self.conv_d1(torch.cat([d2_pixel_shuffle, e2_concat], dim=1))
+            d1_pixel_shuffle = self.pixel_shuffle_d1(self.d1_shuffle(d1_out))   # 64ch
+
+            dd1_out = self.conv_dd1(torch.cat([d1_pixel_shuffle, e1_concat], dim=1))   # 48ch
+            dd2_out = self.conv_dd2(torch.cat([d1_pixel_shuffle, dd1_out], dim=1))     # 32ch
+
+            stars_out   = self.conv_stars(torch.cat([d1_pixel_shuffle, dd1_out, dd2_out], dim=1))
+            starless_norm = x_norm - stars_out
+            starless      = starless_norm * range_val + min_val
+            return torch.clamp(starless, 0.0, 1.0)
+
+    return StarXEmulator
+
 
 # =============================================================================
 # Legacy / extra models — all kept for compatibility, all lazified
@@ -701,6 +838,9 @@ def build_UNetStar(**kwargs):
 def build_StarNetGenerator(**kwargs):
     return _build_StarNetGenerator()(**kwargs)
 
+def build_StarXEmulator(**kwargs):
+    return _build_StarXEmulator()(**kwargs)
+
 
 class NAFNet:
     """Lazy proxy — instantiating this builds and returns the real NAFNet."""
@@ -723,6 +863,11 @@ class LayerNorm2d:
         return _build_LayerNorm2d()(**kwargs)
 
 class StarNetGenerator:
-    """Lazy proxy — instantiating this builds and returns the real StarNetGenerator."""
+    """Lazy proxy — instantiating this builds and returns the real StarNetGenerator (AxiomV2.2)."""
     def __new__(cls, **kwargs):
         return _build_StarNetGenerator()(**kwargs)
+
+class StarXEmulator:
+    """Lazy proxy — instantiating this builds and returns the real StarXEmulator (AxiomV3)."""
+    def __new__(cls, **kwargs):
+        return _build_StarXEmulator()(**kwargs)
