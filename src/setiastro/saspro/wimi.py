@@ -6573,41 +6573,51 @@ class WIMIDialog(QDialog):
         if isinstance(header, fits.Header):
             self.header = header.copy()
         else:
-            # assume dict-like
             h = fits.Header()
             for k, v in dict(header).items():
                 h[k] = v
             self.header = h
 
         try:
-            # Use only the first two dimensions for WCS
-            self.wcs = WCS(self.header, naxis=2, relax=True)
-            
-            # Calculate and set pixel scale
-            pixel_scale_matrix = self.wcs.pixel_scale_matrix
-            self.pixscale = np.sqrt(pixel_scale_matrix[0, 0]**2 + pixel_scale_matrix[1, 0]**2) * 3600  # arcsec/pixel
-            self.center_ra, self.center_dec = self.wcs.wcs.crval
-            self.wcs_header = self.wcs.to_header(relax=True)  # Store the full WCS header, including non-standard keywords
-            self.print_corner_coordinates()
+            # Build WCS — request naxis=2 but also guard against color cubes
+            # that report 3+ axes even when naxis=2 is specified
+            wcs_raw = WCS(self.header, naxis=2, relax=True)
+            if wcs_raw.naxis > 2:
+                self.wcs = wcs_raw.celestial
+            else:
+                self.wcs = wcs_raw
 
-            # --- 🔍 Debugging Output ---
-            print(f"Header CROTA2 Value: {header.get('CROTA2', 'Not Found')}")
+            # Sanity-check: celestial may still return a non-2D WCS on weird headers
+            if self.wcs.naxis != 2:
+                raise ValueError(
+                    f"Could not reduce WCS to 2 celestial axes (got {self.wcs.naxis})."
+                )
 
-            # Display WCS information
+            # Pixel scale
             from astropy.wcs.utils import proj_plane_pixel_scales
-
-            # pixel scale (arcsec/px) – average the two axes (or keep both if you want)
-            scales = proj_plane_pixel_scales(self.wcs) * 3600.0  # arcsec/pixel
+            scales = proj_plane_pixel_scales(self.wcs) * 3600.0   # arcsec/pixel
             self.pixscale = float(np.mean(scales))
 
-            # orientation
+            # Reference coordinate — crval may have >2 elements on a reduced WCS
+            crval = self.wcs.wcs.crval
+            self.center_ra  = float(crval[0])
+            self.center_dec = float(crval[1])
+
+            self.wcs_header = self.wcs.to_header(relax=True)
+            self.print_corner_coordinates()
+
+            # Debugging
+            print(f"Header CROTA2 Value: {header.get('CROTA2', 'Not Found')}")
+
+            # Orientation
             def _cd_orientation(hdr):
-                c11 = hdr.get("CD1_1"); c12 = hdr.get("CD1_2"); c21 = hdr.get("CD2_1"); c22 = hdr.get("CD2_2")
-                pc11 = hdr.get("PC1_1"); pc12 = hdr.get("PC1_2"); pc21 = hdr.get("PC2_1"); pc22 = hdr.get("PC2_2")
+                c11 = hdr.get("CD1_1"); c12 = hdr.get("CD1_2")
+                c21 = hdr.get("CD2_1"); c22 = hdr.get("CD2_2")
+                pc11 = hdr.get("PC1_1"); pc12 = hdr.get("PC1_2")
+                pc21 = hdr.get("PC2_1"); pc22 = hdr.get("PC2_2")
                 if None not in (c11, c12, c21, c22):
                     return np.degrees(np.arctan2(-c12, c11))
                 if None not in (pc11, pc12, pc21, pc22):
-                    # If PC given, use CDELT to scale
                     cdelt1 = float(hdr.get("CDELT1", 1.0))
                     return np.degrees(np.arctan2(-pc12 * cdelt1, pc11 * cdelt1))
                 return None
@@ -6619,12 +6629,10 @@ class WIMIDialog(QDialog):
                     self.orientation = _cd_orientation(self.header)
             else:
                 self.orientation = _cd_orientation(self.header)
-            self.orientation_label.setText(f"Orientation: {self.orientation:.2f}°" if self.orientation is not None else "Orientation: N/A")
 
-            # --- ✅ Ensure `self.orientation` is a float before using it ---
             if self.orientation is not None:
                 try:
-                    self.orientation = float(self.orientation)  # Final conversion check
+                    self.orientation = float(self.orientation)
                     print(f"Orientation: {self.orientation:.2f}°")
                     self.orientation_label.setText(f"Orientation: {self.orientation:.2f}°")
                 except (ValueError, TypeError):
@@ -6634,9 +6642,11 @@ class WIMIDialog(QDialog):
                 print("Orientation is None.")
                 self.orientation_label.setText("Orientation: N/A")
 
-            print(f"WCS data loaded: RA={self.center_ra}, Dec={self.center_dec}, Pixel Scale={self.pixscale} arcsec/px")
-            # kick off atlas overlap check whenever WCS is freshly initialized
+            print(f"WCS data loaded: RA={self.center_ra}, Dec={self.center_dec}, "
+                  f"Pixel Scale={self.pixscale} arcsec/px")
+
             QTimer.singleShot(0, self._fetch_atlas_catalog)
+
         except ValueError as e:
             raise ValueError(f"WCS initialization error: {e}")
 
@@ -7818,28 +7828,25 @@ class WIMIDialog(QDialog):
             print("WCS not initialized.")
             return None, None
 
-        # Convert RA and Dec to pixel coordinates using the WCS object
         try:
+            # Force 2D WCS to avoid axis-count mismatch with color FITS cubes
+            wcs2d = self.wcs.celestial if self.wcs.naxis > 2 else self.wcs
             sky_coord = SkyCoord(ra, dec, unit=(u.deg, u.deg), frame="icrs")
-            x, y = self.wcs.world_to_pixel(sky_coord)
+            x, y = wcs2d.world_to_pixel(sky_coord)
         except Exception as e:
             print(f"world_to_pixel failed for RA={ra}, Dec={dec}: {e}")
             return None, None
 
-        # world_to_pixel can return scalars or numpy arrays – normalize to scalars
         x_arr = np.asarray(x)
         y_arr = np.asarray(y)
 
         if x_arr.size == 0 or y_arr.size == 0:
-            print(f"WCS returned empty pixel coords for RA={ra}, Dec={dec}")
             return None, None
 
         x_val = float(x_arr.ravel()[0])
         y_val = float(y_arr.ravel()[0])
 
-        # Guard against NaNs / infinities
         if not np.isfinite(x_val) or not np.isfinite(y_val):
-            print(f"WCS returned invalid pixel coords for RA={ra}, Dec={dec}: x={x_val}, y={y_val}")
             return None, None
 
         return int(round(x_val)), int(round(y_val))
