@@ -7829,22 +7829,19 @@ class WIMIDialog(QDialog):
             return None, None
 
         try:
-            # Force 2D WCS to avoid axis-count mismatch with color FITS cubes
-            wcs2d = self.wcs.celestial if self.wcs.naxis > 2 else self.wcs
-            sky_coord = SkyCoord(ra, dec, unit=(u.deg, u.deg), frame="icrs")
-            x, y = wcs2d.world_to_pixel(sky_coord)
-        except Exception as e:
-            print(f"world_to_pixel failed for RA={ra}, Dec={dec}: {e}")
-            return None, None
+            x, y = self.wcs.world_to_pixel_values(float(ra), float(dec))
+        except Exception:
+            # fallback: try via SkyCoord in case world_to_pixel_values also fails
+            try:
+                wcs2d = self.wcs.celestial if self.wcs.naxis > 2 else self.wcs
+                sky_coord = SkyCoord(ra, dec, unit=(u.deg, u.deg), frame="icrs")
+                x, y = wcs2d.world_to_pixel(sky_coord)
+            except Exception as e:
+                print(f"world_to_pixel failed for RA={ra}, Dec={dec}: {e}")
+                return None, None
 
-        x_arr = np.asarray(x)
-        y_arr = np.asarray(y)
-
-        if x_arr.size == 0 or y_arr.size == 0:
-            return None, None
-
-        x_val = float(x_arr.ravel()[0])
-        y_val = float(y_arr.ravel()[0])
+        x_val = float(np.asarray(x).ravel()[0])
+        y_val = float(np.asarray(y).ravel()[0])
 
         if not np.isfinite(x_val) or not np.isfinite(y_val):
             return None, None
