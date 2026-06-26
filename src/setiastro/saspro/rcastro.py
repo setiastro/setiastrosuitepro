@@ -548,6 +548,14 @@ class RCAstroDialog(QDialog):
             "Requires an internet connection.")
         self.btn_dl_models.clicked.connect(self._download_models)
         dl_row.addWidget(self.btn_dl_models)
+
+        self.btn_update = QPushButton("Upgrade RC-Astro CLI")
+        self.btn_update.setToolTip(
+            "Downloads and installs the latest RC-Astro CLI version.\n"
+            "Requires an internet connection.")
+        self.btn_update.clicked.connect(self._upgrade_cli)
+        dl_row.addWidget(self.btn_update)
+
         dl_row.addStretch(1)
         exe_form.addRow("", dl_row)
 
@@ -620,6 +628,28 @@ class RCAstroDialog(QDialog):
         root.addWidget(foot)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
+    def _upgrade_cli(self):
+        exe = self._get_exe()
+        if not exe or not os.path.exists(exe):
+            QMessageBox.warning(self, "RC-Astro",
+                "Set the rc-astro executable path first.")
+            return
+        dlg = _ProgressDialog(self, "Upgrade RC-Astro CLI")
+        dlg.set_stage("Connecting…")
+        cmd = [exe, "update", "--install"]
+        worker = _RCAstroWorker(cmd, os.path.dirname(exe) or os.getcwd())
+        dlg.set_cancel_fn(worker.cancel)
+        worker.output_signal.connect(dlg.append)
+        def _on_finish(rc: int):
+            if rc == 0:
+                dlg.set_stage("Upgrade complete.")
+                self._probe_version(exe)  # refresh version label
+            else:
+                dlg.set_stage(f"Upgrade failed (code {rc}).")
+            dlg.mark_done()
+        worker.finished_signal.connect(_on_finish)
+        worker.start()
+        dlg.exec()
 
     def _get_exe(self) -> str:
         return self.edit_exe.text().strip()

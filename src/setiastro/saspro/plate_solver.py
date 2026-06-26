@@ -1452,7 +1452,7 @@ def _solve_numpy_with_fallback(
     if pref in ("gaia_only", "vizier_only"):
         _set_status_ui(parent, QCoreApplication.translate("PlateSolver",
             "Status: Solver preference = In-House Gaia DR3 only…"))
-        ok, res = _solve_with_GAIA(image, seed_header, parent=parent)
+        ok, res = _solve_with_GAIA(image, seed_header, parent=parent, settings=settings)
         if ok:
             _set_status_ui(parent, QCoreApplication.translate("PlateSolver",
                 "Status: Solved via in-house Gaia DR3."))
@@ -1467,7 +1467,7 @@ def _solve_numpy_with_fallback(
             "Status: Trying in-house Gaia DR3 solver…"))
         QApplication.processEvents()
 
-        ok1, res1 = _solve_with_GAIA(image, seed_header, parent=parent)
+        ok1, res1 = _solve_with_GAIA(image, seed_header, parent=parent, settings=settings)
         if ok1:
             _set_status_ui(parent, QCoreApplication.translate("PlateSolver",
                 "Status: Solved via in-house Gaia DR3."))
@@ -1498,7 +1498,20 @@ def _solve_numpy_with_fallback(
 
     # ── Determine if we have useful seed data ────────────────────────────────
     _has_seed = False
-    if isinstance(seed_header, Header):
+    _seed_mode = _get_seed_mode(settings)
+    
+    if _seed_mode == "manual":
+        # Check if manual fields have valid RA/Dec
+        ra_s  = _get_manual_ra(settings)
+        dec_s = _get_manual_dec(settings)
+        ra_deg  = _parse_ra_input_to_deg(ra_s)
+        dec_deg = _parse_dec_input_to_deg(dec_s)
+        _has_seed = (ra_deg is not None and dec_deg is not None)
+        if _has_seed:
+            print(f"[PlateSolver] Manual seed: RA={ra_deg:.4f}° Dec={dec_deg:.4f}°")
+        else:
+            print("[PlateSolver] Manual mode selected but RA/Dec fields are invalid/empty")
+    elif isinstance(seed_header, Header):
         ra  = _parse_ra_deg(seed_header)
         dec = _parse_dec_deg(seed_header)
         _has_seed = (ra is not None and dec is not None)
@@ -2093,7 +2106,8 @@ def _hough_match_catalog_to_image(
 
 def _solve_with_GAIA(image: np.ndarray,
                      seed_header: "Header | None",
-                     parent=None) -> tuple[bool, "Header | str"]:
+                     parent=None,
+                     settings=None) -> tuple[bool, "Header | str"]:
     """
         Match image stars to catalog stars by voting on (dx, dy) translation space
         — a Generalized Hough Transform restricted to pure translation.
@@ -2119,9 +2133,25 @@ def _solve_with_GAIA(image: np.ndarray,
         """
 
     # ── 1) Extract seed ──────────────────────────────────────────────────────
-    ra    = _parse_ra_deg(seed_header)  if isinstance(seed_header, Header) else None
-    dec   = _parse_dec_deg(seed_header) if isinstance(seed_header, Header) else None
-    scale = _estimate_scale_arcsec_from_header(seed_header) if isinstance(seed_header, Header) else None
+    from PyQt6.QtCore import QSettings
+    
+    # Check if we're in manual seed mode — if so, prefer settings over header
+    _seed_mode = _get_seed_mode(settings) if settings is not None else "auto"
+    
+    if _seed_mode == "manual" and settings is not None:
+        ra_s  = _get_manual_ra(settings)
+        dec_s = _get_manual_dec(settings)
+        ra    = _parse_ra_input_to_deg(ra_s)
+        dec   = _parse_dec_input_to_deg(dec_s)
+        scale = _get_manual_scale(settings)
+        # scale from header as fallback if not specified manually
+        if scale is None and isinstance(seed_header, Header):
+            scale = _estimate_scale_arcsec_from_header(seed_header)
+        print(f"[GAIA] manual seed: RA={ra} Dec={dec} scale={scale}")
+    else:
+        ra    = _parse_ra_deg(seed_header)  if isinstance(seed_header, Header) else None
+        dec   = _parse_dec_deg(seed_header) if isinstance(seed_header, Header) else None
+        scale = _estimate_scale_arcsec_from_header(seed_header) if isinstance(seed_header, Header) else None
 
     if ra is None or dec is None:
         return False, "Gaia DR3 solver: no RA/Dec seed in header"

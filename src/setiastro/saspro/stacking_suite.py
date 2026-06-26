@@ -24112,10 +24112,10 @@ class StackingSuiteDialog(QDialog):
         try:
             for p in file_list:
                 sources.append(_MMImage(p))
-        except OSError as e:
+        except (OSError, MemoryError) as e:
             gc.enable()
-            if e.errno in (errno.EMFILE, errno.ENFILE):
-                log(f"⚠️ Too many open files ({e}); falling back to lazy per-tile reads.")
+            if isinstance(e, MemoryError) or (hasattr(e, 'errno') and e.errno in (errno.EMFILE, errno.ENFILE, errno.ENOMEM)):
+                log(f"⚠️ Memory pressure opening memmaps ({e}); falling back to lazy per-tile reads.")
                 for s in sources:
                     try: s.close()
                     except Exception: pass
