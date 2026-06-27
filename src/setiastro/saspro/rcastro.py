@@ -183,6 +183,18 @@ class _BXTPanel(QWidget):
         form = QFormLayout(self)
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
 
+        # Correct Only checkbox — disables star sharpening when checked
+        self.chk_correct_only = QCheckBox(
+            "Correct Only  (PSF aberration correction without any sharpening)"
+        )
+        self.chk_correct_only.setChecked(False)
+        self.chk_correct_only.setToolTip(
+            "Passes --correct-only to BXT.\n"
+            "Corrects PSF aberrations without applying any star sharpening.\n"
+            "Equivalent to leaving Sharpen Stars at 0."
+        )
+        form.addRow("", self.chk_correct_only)
+
         self.sld_ss  = _form_slider(form, "Sharpen Stars (0 – 0.7):",
                                     0.0, 0.7, 0.0, decimals=2, scale=100)
         self.sld_ash = _form_slider(form, "Adjust Star Halos (−0.5 – 0.5):",
@@ -208,24 +220,41 @@ class _BXTPanel(QWidget):
         note.setStyleSheet("color:#888; font-size:11px;")
         form.addRow("", note)
 
+        # Wire Correct Only → disable/enable Sharpen Stars slider
+        self.chk_correct_only.toggled.connect(self._on_correct_only_toggled)
+
+    def _on_correct_only_toggled(self, checked: bool):
+        self.sld_ss.setEnabled(not checked)
+        if checked:
+            self.sld_ss.setValue(0)
+
     def build_args(self) -> list[str]:
         args: list[str] = []
-        ss = self.sld_ss.value() / 100.0
-        if ss > 0:
-            args += ["--sharpen-stars", f"{ss:.2f}"]
+
+        if self.chk_correct_only.isChecked():
+            args.append("--correct-only")
+        else:
+            ss = self.sld_ss.value() / 100.0
+            if ss > 0:
+                args += ["--sharpen-stars", f"{ss:.2f}"]
+
         ash = self.sld_ash.value() / 100.0
         if abs(ash) > 0:
             args += ["--adjust-star-halos", f"{ash:.2f}"]
+
         if not self.chk_auto_nsr.isChecked():
             nsr = self.sld_nsr.value() / 10.0
             args += ["--no-auto-nonstellar-radius",
                      "--nonstellar-radius", f"{nsr:.1f}"]
+
         sn = self.sld_sn.value() / 100.0
         if sn > 0:
             args += ["--sharpen-nonstellar", f"{sn:.2f}"]
+
         return args
 
     def save_settings(self, s: QSettings):
+        s.setValue("rcastro/bxt_correct_only", self.chk_correct_only.isChecked())
         s.setValue("rcastro/bxt_ss",   self.sld_ss.value())
         s.setValue("rcastro/bxt_ash",  self.sld_ash.value())
         s.setValue("rcastro/bxt_auto", self.chk_auto_nsr.isChecked())
@@ -233,12 +262,15 @@ class _BXTPanel(QWidget):
         s.setValue("rcastro/bxt_sn",   self.sld_sn.value())
 
     def load_settings(self, s: QSettings):
+        self.chk_correct_only.setChecked(
+            bool(s.value("rcastro/bxt_correct_only", False, type=bool)))
         self.sld_ss.setValue(          int( s.value("rcastro/bxt_ss",   0)))
         self.sld_ash.setValue(         int( s.value("rcastro/bxt_ash",  0)))
         self.chk_auto_nsr.setChecked( bool( s.value("rcastro/bxt_auto", True, type=bool)))
         self.sld_nsr.setValue(         int( s.value("rcastro/bxt_nsr",  0)))
         self.sld_sn.setValue(          int( s.value("rcastro/bxt_sn",   0)))
-
+        # Sync enabled state after load
+        self._on_correct_only_toggled(self.chk_correct_only.isChecked())
 
 # ---------------------------------------------------------------------------
 # SXT parameter panel
@@ -291,23 +323,27 @@ class _SXTPanel(QWidget):
 # ---------------------------------------------------------------------------
 # NXT parameter panel
 # ---------------------------------------------------------------------------
-
 class _NXTPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
 
-        # Simple
-        simple_box  = QGroupBox("Simple  (single strength across all channels)")
+        # ── Simple ────────────────────────────────────────────────────────────
+        simple_box  = QGroupBox("Simple  (single strength — disabled when Advanced options are used)")
         simple_form = QFormLayout(simple_box)
-        self.sld_dn  = _form_slider(simple_form, "Denoise (0–1):",           0, 1, 0.0)
-        self.sld_di  = _form_slider(simple_form, "Denoise Intensity (0–1):", 0, 1, 0.0)
-        self.sld_dc  = _form_slider(simple_form, "Denoise Color (0–1):",     0, 1, 0.0)
+        self.sld_dn = _form_slider(simple_form, "Denoise (0–1):", 0, 1, 0.0)
         outer.addWidget(simple_box)
 
-        # Advanced frequency
-        adv_box  = QGroupBox("Advanced frequency mode")
+        # ── Advanced: Intensity & Color ────────────────────────────────────────
+        ic_box  = QGroupBox("Advanced — Intensity & Color")
+        ic_form = QFormLayout(ic_box)
+        self.sld_di = _form_slider(ic_form, "Denoise Intensity (0–1):", 0, 1, 0.0)
+        self.sld_dc = _form_slider(ic_form, "Denoise Color (0–1):",     0, 1, 0.0)
+        outer.addWidget(ic_box)
+
+        # ── Advanced: Frequency ───────────────────────────────────────────────
+        adv_box  = QGroupBox("Advanced — Frequency")
         adv_form = QFormLayout(adv_box)
         self.sld_hf  = _form_slider(adv_form, "High-freq (0–1):",              0, 1, 0.0)
         self.sld_lf  = _form_slider(adv_form, "Low-freq (0–1):",               0, 1, 0.0)
@@ -316,7 +352,6 @@ class _NXTPanel(QWidget):
         self.sld_chf = _form_slider(adv_form, "Color High-freq (0–1):",        0, 1, 0.0)
         self.sld_clf = _form_slider(adv_form, "Color Low-freq (0–1):",         0, 1, 0.0)
 
-        # Frequency scale slider (1–100 px, stored *10 for integer slider)
         fs_row = QWidget(); fs_h = QHBoxLayout(fs_row)
         fs_h.setContentsMargins(0, 0, 0, 0); fs_h.setSpacing(6)
         self.sld_fs = QSlider(Qt.Orientation.Horizontal)
@@ -328,7 +363,7 @@ class _NXTPanel(QWidget):
         adv_form.addRow("Frequency Scale (1–100 px):", fs_row)
         outer.addWidget(adv_box)
 
-        # Iterations
+        # ── Iterations ────────────────────────────────────────────────────────
         iter_row = QWidget(); iter_h = QHBoxLayout(iter_row)
         iter_h.setContentsMargins(0, 0, 0, 0)
         self.sp_iter = QDoubleSpinBox()
@@ -340,6 +375,62 @@ class _NXTPanel(QWidget):
         outer.addLayout(iter_form)
         outer.addStretch(1)
 
+        # ── Mutual exclusion wiring ───────────────────────────────────────────
+        # All advanced sliders — when any of these is > 0, disable simple denoise
+        self._advanced_sliders = [
+            self.sld_di, self.sld_dc,
+            self.sld_hf, self.sld_lf,
+            self.sld_ihf, self.sld_ilf,
+            self.sld_chf, self.sld_clf,
+            self.sld_fs,
+        ]
+        # sld_fs default is 50 (non-zero) so we track it differently —
+        # frequency scale only "counts" as active if any freq slider is > 0
+        self._freq_sliders = [
+            self.sld_hf, self.sld_lf,
+            self.sld_ihf, self.sld_ilf,
+            self.sld_chf, self.sld_clf,
+        ]
+        self._ic_sliders = [self.sld_di, self.sld_dc]
+
+        for sld in self._ic_sliders + self._freq_sliders:
+            sld.valueChanged.connect(self._update_simple_enabled)
+
+        # Simple denoise: when it's > 0, disable all advanced sliders
+        self.sld_dn.valueChanged.connect(self._update_advanced_enabled)
+
+        self._simple_box = simple_box
+        self._ic_box     = ic_box
+        self._adv_box    = adv_box
+
+    def _advanced_in_use(self) -> bool:
+        """True if any intensity/color or frequency slider is active."""
+        for sld in self._ic_sliders + self._freq_sliders:
+            if sld.value() > 0:
+                return True
+        return False
+
+    def _simple_in_use(self) -> bool:
+        return self.sld_dn.value() > 0
+
+    def _update_simple_enabled(self):
+        """Called when any advanced slider changes — disable simple if advanced active."""
+        in_use = self._advanced_in_use()
+        self.sld_dn.setEnabled(not in_use)
+        self._simple_box.setTitle(
+            "Simple  (disabled — Advanced options are active)"
+            if in_use else
+            "Simple  (single strength — disabled when Advanced options are used)"
+        )
+
+    def _update_advanced_enabled(self):
+        """Called when simple denoise slider changes — disable advanced if simple active."""
+        in_use = self._simple_in_use()
+        for sld in self._ic_sliders + self._freq_sliders:
+            sld.setEnabled(not in_use)
+        self._ic_box.setEnabled(not in_use)
+        self._adv_box.setEnabled(not in_use)
+
     def build_args(self) -> list[str]:
         args: list[str] = []
 
@@ -348,19 +439,24 @@ class _NXTPanel(QWidget):
                 args.append(flag)
                 args.append(f"{val:.2f}")
 
-        _a("--denoise",                     self.sld_dn.value()  / 100.0)
-        _a("--denoise-intensity",           self.sld_di.value()  / 100.0)
-        _a("--denoise-color",               self.sld_dc.value()  / 100.0)
-        _a("--denoise-high-freq",           self.sld_hf.value()  / 100.0)
-        _a("--denoise-low-freq",            self.sld_lf.value()  / 100.0)
-        _a("--denoise-intensity-high-freq", self.sld_ihf.value() / 100.0)
-        _a("--denoise-intensity-low-freq",  self.sld_ilf.value() / 100.0)
-        _a("--denoise-color-high-freq",     self.sld_chf.value() / 100.0)
-        _a("--denoise-color-low-freq",      self.sld_clf.value() / 100.0)
+        # Only one mode can be active at a time
+        if self._simple_in_use():
+            _a("--denoise", self.sld_dn.value() / 100.0)
+        else:
+            _a("--denoise-intensity",           self.sld_di.value()  / 100.0)
+            _a("--denoise-color",               self.sld_dc.value()  / 100.0)
+            _a("--denoise-high-freq",           self.sld_hf.value()  / 100.0)
+            _a("--denoise-low-freq",            self.sld_lf.value()  / 100.0)
+            _a("--denoise-intensity-high-freq", self.sld_ihf.value() / 100.0)
+            _a("--denoise-intensity-low-freq",  self.sld_ilf.value() / 100.0)
+            _a("--denoise-color-high-freq",     self.sld_chf.value() / 100.0)
+            _a("--denoise-color-low-freq",      self.sld_clf.value() / 100.0)
 
-        fs = self.sld_fs.value() / 10.0
-        if abs(fs - 5.0) > 0.05:
-            args += ["--frequency-scale", f"{fs:.1f}"]
+            # Frequency scale only matters if any freq slider is active
+            if any(s.value() > 0 for s in self._freq_sliders):
+                fs = self.sld_fs.value() / 10.0
+                if abs(fs - 5.0) > 0.05:
+                    args += ["--frequency-scale", f"{fs:.1f}"]
 
         it = float(self.sp_iter.value())
         if abs(it - 2.0) > 0.05:
@@ -389,7 +485,9 @@ class _NXTPanel(QWidget):
         ]:
             getattr(self, attr).setValue(int(s.value(key, default)))
         self.sp_iter.setValue(float(s.value("rcastro/nxt_iter", 2.0)))
-
+        # Sync enabled states after loading
+        self._update_simple_enabled()
+        self._update_advanced_enabled()
 
 # ---------------------------------------------------------------------------
 # Per-product license / activation panel
@@ -1055,6 +1153,7 @@ class RCAstroPresetDialog(QDialog):
         out["args"] = panel.build_args()
         # Also store human-readable params for re-display
         if product == "bxt":
+            out["correct_only"]        = self._bxt.chk_correct_only.isChecked()
             out["sharpen_stars"]       = self._bxt.sld_ss.value()  / 100.0
             out["adjust_star_halos"]   = self._bxt.sld_ash.value() / 100.0
             out["auto_nsr"]            = self._bxt.chk_auto_nsr.isChecked()
@@ -1073,6 +1172,8 @@ class RCAstroPresetDialog(QDialog):
 
 
 def _apply_bxt_preset(panel: _BXTPanel, p: dict):
+    if "correct_only" in p:
+        panel.chk_correct_only.setChecked(bool(p["correct_only"]))
     if "sharpen_stars" in p:
         panel.sld_ss.setValue(int(float(p["sharpen_stars"]) * 100))
     if "adjust_star_halos" in p:
