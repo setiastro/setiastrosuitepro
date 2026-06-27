@@ -7524,8 +7524,10 @@ class StackingSuiteDialog(QDialog):
         self.low_ram_safe_mode_cb.setToolTip(self.tr(
             "Reads only the tile data needed from each subframe using direct file seeks,\n"
             "instead of memory-mapping all subframes simultaneously.\n"
-            "Use this if you get memory errors stacking large numbers of frames.\n"
-            "Note: approximately 4× slower than normal mode."
+            "Use this if you see 'Failed to open images (memmap)' errors when stacking\n"
+            "large numbers of frames (typically 300+ frames or low system RAM).\n"
+            "Note: approximately 10× slower than normal mode — stacking will complete\n"
+            "successfully but will take significantly longer."
         ))
         self.low_ram_safe_mode_cb.setChecked(
             self.settings.value("stacking/low_ram_safe_mode", False, type=bool)
