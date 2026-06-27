@@ -421,7 +421,9 @@ def _predict_tile(model, t, *, device, use_amp, amp_dtype, info, torch):
     # AxiomV3 takes raw [0,1] input — normalisation is baked into forward().
     # AxiomV2.2 expects [-1, 1].
     t_input = (t * 2.0 - 1.0) if is_axiomv22 else t
-    t_padded, orig_H, orig_W = _pad_to_multiple(t_input, multiple=8, torch=torch)
+    arch = info.get("arch", "standard")
+    pad_multiple = 256 if arch == "axiomv3" else 8
+    t_padded, orig_H, orig_W = _pad_to_multiple(t_input, multiple=pad_multiple, torch=torch)
 
     def _run(inp):
         return model(inp)
