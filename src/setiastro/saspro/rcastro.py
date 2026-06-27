@@ -1068,6 +1068,20 @@ def _on_finished(main_dlg, doc, return_code, dlg,
 
     # SXT stars-only — open via docman.open_path, subwindow spawns automatically
     if product == "sxt" and os.path.exists(stars_path):
+        # If the source was mono, collapse the RGB stars output back to mono so it
+        # matches the original (otherwise it can't be combined/subtracted with it).
+        # Mirrors the mono-collapse applied to the main starless result above.
+        if is_mono:
+            try:
+                from setiastro.saspro.legacy.image_manager import save_image
+                s_img, _, _, _ = load_image(stars_path)
+                if s_img is not None and s_img.ndim == 3:
+                    s_img = s_img.mean(axis=2).astype(np.float32)
+                    save_image(np.clip(s_img, 0.0, 1.0), stars_path,
+                               "tif", "32-bit floating point", None, False,
+                               image_meta=None, file_meta=None)
+            except Exception as e:
+                dlg.append(f"[warn] could not collapse stars to mono: {e}\n")
         dlg.append(f"Loading stars-only: {os.path.basename(stars_path)}\n")
         _push_new_doc(main_window, stars_path, source_doc=doc)
         dlg.append("Stars-only image pushed as new document.\n")
