@@ -49,35 +49,25 @@ def _to_qpixmap01(img01: np.ndarray) -> QPixmap:
         qimg = QImage(buf.data, w, h, buf.strides[0], QImage.Format.Format_RGB888)
     return QPixmap.fromImage(qimg)
 
+
 def _display_stretch(img01: np.ndarray) -> np.ndarray:
-    """
-    Display-only stretch. Does NOT modify underlying data used for mask creation.
-    Returns float32 in [0,1].
-    """
     a = np.asarray(img01, dtype=np.float32)
     a = np.clip(a, 0.0, 1.0)
-
-    # Color: use your existing stretch if available
     if a.ndim == 3 and a.shape[2] == 3 and stretch_color_image is not None:
         try:
-            return np.clip(stretch_color_image(a, 0.25, linked=False, normalize=False), 0.0, 1.0).astype(np.float32)
+            return np.clip(
+                stretch_color_image(a, 0.25, linked=False, normalize=False),
+                0.0, 1.0
+            ).astype(np.float32)
         except Exception:
             pass
-
-    # Mono (or fallback): simple robust stretch around median
-    # (keeps it predictable and fast; display-only)
     m = float(np.nanmedian(a))
     if not np.isfinite(m):
         return a.astype(np.float32, copy=False)
-
-    # Simple gamma-like lift using median anchor
-    # If median is tiny, boost; if already bright, minimal change.
     target = 0.25
     eps = 1e-8
     scale = target / max(m, eps)
     out = np.clip(a * scale, 0.0, 1.0)
-
-    # Gentle midtone curve
     out = np.sqrt(out)
     return np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
 
@@ -89,65 +79,327 @@ def _find_main_window(w):
         p = p.parent()
     return p
 
-def _push_numpy_as_new_document(owner_widget, arr01: np.ndarray, default_name: str = "Mask") -> bool:
+
+def _push_numpy_as_new_document(
+    owner_widget, arr01: np.ndarray, default_name: str = "Mask"
+) -> bool:
     mw = _find_main_window(owner_widget)
     if mw is None or not hasattr(mw, "docman"):
-        QMessageBox.warning(owner_widget, "Cannot Create Document", "Main window / DocManager not found.")
+        QMessageBox.warning(
+            owner_widget, "Cannot Create Document",
+            "Main window / DocManager not found."
+        )
         return False
-
-    # Ask for the document name
-    name, ok = QInputDialog.getText(owner_widget, "New Document Name", "Name:", text=default_name)
+    name, ok = QInputDialog.getText(
+        owner_widget, "New Document Name", "Name:", text=default_name
+    )
     if not ok:
         return False
-
-    # Ensure float32 in [0..1]
     img = np.clip(arr01.astype(np.float32, copy=False), 0.0, 1.0)
-
-    # This sets metadata['display_name'] via DocManager and emits documentAdded
     doc = mw.docman.open_array(img, title=name)
-
-    # Nothing else required: AstroSuiteProMainWindow._open_subwindow_for_added_doc
-    # will create/show the subwindow.
     if hasattr(mw, "_log"):
         mw._log(f"Created new document from mask: {doc.display_name()}")
     return True
 
-def _downsample_for_preview(img: np.ndarray, max_dim: int = 1000) -> tuple[np.ndarray, float]:
-    """
-    Returns (preview_img, scale_to_preview)
 
-    scale_to_preview = preview_size / original_size
-    so full-res coordinates can be mapped to preview with:
-        preview_x = full_x * scale
-        preview_y = full_y * scale
-    """
+def _downsample_for_preview(
+    img: np.ndarray, max_dim: int = 1000
+) -> tuple[np.ndarray, float]:
     a = np.asarray(img, dtype=np.float32)
     h, w = a.shape[:2]
     longest = max(h, w)
-
     if longest <= max_dim:
         return a, 1.0
-
     scale = float(max_dim) / float(longest)
     new_w = max(1, int(round(w * scale)))
     new_h = max(1, int(round(h * scale)))
-
     if cv2 is not None:
         interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
-        if a.ndim == 2:
-            out = cv2.resize(a, (new_w, new_h), interpolation=interp)
-        else:
-            out = cv2.resize(a, (new_w, new_h), interpolation=interp)
+        out = cv2.resize(a, (new_w, new_h), interpolation=interp)
         return out.astype(np.float32, copy=False), scale
-
-    # fallback
     ys = np.linspace(0, h - 1, new_h).astype(np.int32)
     xs = np.linspace(0, w - 1, new_w).astype(np.int32)
-    if a.ndim == 2:
-        out = a[ys][:, xs]
-    else:
-        out = a[ys][:, xs, :]
+    out = a[ys][:, xs] if a.ndim == 2 else a[ys][:, xs, :]
     return out.astype(np.float32, copy=False), scale
+
+class _ZoomableImageView(QGraphicsView):
+    """
+    A QGraphicsView that displays a single pixmap with:
+    - Ctrl+Wheel or plain wheel zoom
+    - Middle-button or right-button drag pan
+    - Keyboard +/- zoom, F fit
+    - zoom_to_rect(scene_rect) for syncing with the canvas
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
+        self.setDragMode(QGraphicsView.DragMode.NoDrag)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+        self._scene = QGraphicsScene(self)
+        self.setScene(self._scene)
+
+        self._pix_item = QGraphicsPixmapItem()
+        self._pix_item.setTransformationMode(
+            Qt.TransformationMode.SmoothTransformation
+        )
+        self._scene.addItem(self._pix_item)
+
+        self._zoom = 1.0
+        self._min_zoom = 0.02
+        self._max_zoom = 32.0
+        self._pan_active = False
+        self._pan_start = None
+
+    # ── pixmap API ────────────────────────────────────────────────────────────
+
+    def set_pixmap(self, pm: QPixmap):
+        self._pix_item.setPixmap(pm)
+        self._scene.setSceneRect(self._pix_item.boundingRect())
+
+    def pixmap(self) -> QPixmap:
+        return self._pix_item.pixmap()
+
+    # ── zoom API ──────────────────────────────────────────────────────────────
+
+    def set_zoom(self, z: float):
+        self._zoom = max(self._min_zoom, min(float(z), self._max_zoom))
+        self.resetTransform()
+        self.scale(self._zoom, self._zoom)
+        self._update_zoom_label()
+
+    def _update_zoom_label(self):
+        try:
+            lbl = getattr(self.parent(), "_zoom_lbl", None)
+            if lbl is not None:
+                lbl.setText(f"{int(round(self._zoom * 100))}%")
+        except Exception:
+            pass
+
+    def zoom_in(self):
+        self.set_zoom(self._zoom * 1.25)
+
+    def zoom_out(self):
+        self.set_zoom(self._zoom / 1.25)
+
+    def fit_to_view(self):
+        pm = self._pix_item.pixmap()
+        if pm.isNull():
+            return
+        vw = max(1, self.viewport().width())
+        vh = max(1, self.viewport().height())
+        iw, ih = pm.width(), pm.height()
+        if iw == 0 or ih == 0:
+            return
+        s = min(vw / iw, vh / ih)
+        self.set_zoom(s)
+
+    def sync_view_from(self, other: "QGraphicsView"):
+        """
+        Copy the zoom and center from another QGraphicsView so both
+        canvas and live preview stay locked together.
+        """
+        try:
+            t = other.transform()
+            # Extract uniform scale from the transform (m11 = x scale)
+            self.set_zoom(t.m11())
+            center = other.mapToScene(other.viewport().rect().center())
+            self.centerOn(center)
+        except Exception:
+            pass
+
+    # ── events ────────────────────────────────────────────────────────────────
+
+    def wheelEvent(self, ev):
+        dy = ev.pixelDelta().y()
+        if dy != 0:
+            abs_dy = abs(dy)
+            if abs_dy <= 3:
+                base = 1.015
+            elif abs_dy <= 10:
+                base = 1.03
+            else:
+                base = 1.06
+            factor = base if dy > 0 else 1.0 / base
+        else:
+            ad = ev.angleDelta().y()
+            if ad == 0:
+                ev.accept()
+                return
+            factor = 1.25 if ad > 0 else 0.8
+        self.set_zoom(self._zoom * factor)
+        ev.accept()
+
+    def mousePressEvent(self, ev):
+        if ev.button() in (
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.MiddleButton,
+            Qt.MouseButton.RightButton
+        ):
+            self._pan_active = True
+            self._pan_start = ev.position().toPoint()
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            ev.accept()
+            return
+        super().mousePressEvent(ev)
+
+    def mouseMoveEvent(self, ev):
+        if self._pan_active and self._pan_start is not None:
+            delta = ev.position().toPoint() - self._pan_start
+            self._pan_start = ev.position().toPoint()
+            self.horizontalScrollBar().setValue(
+                self.horizontalScrollBar().value() - delta.x()
+            )
+            self.verticalScrollBar().setValue(
+                self.verticalScrollBar().value() - delta.y()
+            )
+            ev.accept()
+            return
+        super().mouseMoveEvent(ev)
+
+    def mouseReleaseEvent(self, ev):
+        if ev.button() in (
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.MiddleButton,
+            Qt.MouseButton.RightButton
+        ):
+            self._pan_active = False
+            self._pan_start = None
+            self.unsetCursor()
+            ev.accept()
+            return
+        super().mouseReleaseEvent(ev)
+
+    def keyPressEvent(self, ev):
+        if ev.key() in (Qt.Key.Key_Plus, Qt.Key.Key_Equal):
+            self.zoom_in(); ev.accept()
+        elif ev.key() == Qt.Key.Key_Minus:
+            self.zoom_out(); ev.accept()
+        elif ev.key() == Qt.Key.Key_F:
+            self.fit_to_view(); ev.accept()
+        else:
+            super().keyPressEvent(ev)
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        QTimer.singleShot(0, self.fit_to_view)
+        QTimer.singleShot(50, self._update_zoom_label)
+
+class LivePreviewDialog(QDialog):
+    """
+    Floating live mask preview — zoomable/pannable, stays in sync with
+    the main canvas zoom when sync_with_canvas() is called.
+    """
+
+    def __init__(self, original_image01: np.ndarray, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(self.tr("Live Mask Preview"))
+        self.setWindowFlag(Qt.WindowType.Tool, True)
+        self.resize(480, 400)
+
+        self._base_image01 = np.asarray(original_image01, dtype=np.float32)
+        self._current_mask01: np.ndarray | None = None
+        self.max_alpha = 150
+
+        # ── view FIRST so toolbar buttons can connect to it ────────────────
+        self._view = _ZoomableImageView(self)
+        self._view.set_pixmap(_to_qpixmap01(self._base_image01))
+
+        # ── toolbar ────────────────────────────────────────────────────────
+        tb = QHBoxLayout()
+        b_out = themed_toolbtn("zoom-out",      "Zoom Out  (scroll wheel)")
+        b_in  = themed_toolbtn("zoom-in",       "Zoom In   (scroll wheel)")
+        b_fit = themed_toolbtn("zoom-fit-best", "Fit to Window  (F)")
+
+        b_out.clicked.connect(self._view.zoom_out)
+        b_in.clicked.connect(self._view.zoom_in)
+        b_fit.clicked.connect(self._view.fit_to_view)
+
+        for b in (b_out, b_in, b_fit):
+            tb.addWidget(b)
+        tb.addStretch()
+
+        self._zoom_lbl = QLabel("100%")
+        tb.addWidget(self._zoom_lbl)
+
+        # ── layout ─────────────────────────────────────────────────────────
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(4, 4, 4, 4)
+        lay.setSpacing(2)
+        lay.addLayout(tb)
+        lay.addWidget(self._view, 1)
+
+    # ── public API ────────────────────────────────────────────────────────────
+
+    def update_mask(self, mask01: np.ndarray):
+        self._current_mask01 = mask01
+        self._render()
+
+    def set_base_image(self, image01: np.ndarray):
+        self._base_image01 = np.asarray(image01, dtype=np.float32)
+        if self._current_mask01 is not None:
+            self._render()
+        else:
+            self._view.set_pixmap(_to_qpixmap01(self._base_image01))
+
+    def sync_with_canvas(self, canvas: "MaskCanvas"):
+        """Lock zoom/pan to match the drawing canvas."""
+        self._view.sync_view_from(canvas)
+
+    # ── internal ──────────────────────────────────────────────────────────────
+
+    def _render(self):
+        if self._current_mask01 is None:
+            return
+        h, w = self._current_mask01.shape[:2]
+        alpha = (
+            np.clip(self._current_mask01, 0, 1) * self.max_alpha
+        ).astype(np.uint8)
+
+        # Build base RGB from stored image
+        base = np.clip(self._base_image01, 0, 1)
+        if base.ndim == 2:
+            base_rgb = np.stack([base, base, base], axis=2)
+        else:
+            base_rgb = base[..., :3]
+        base8 = (base_rgb * 255).astype(np.uint8)
+
+        # Resize base to match mask if they differ (preview vs full)
+        if base8.shape[:2] != (h, w):
+            if cv2 is not None:
+                base8 = cv2.resize(base8, (w, h), interpolation=cv2.INTER_LINEAR)
+            else:
+                base8 = base8  # best effort
+
+        # Red overlay composited onto base
+        rgba = np.zeros((h, w, 4), dtype=np.uint8)
+        rgba[..., :3] = base8
+        rgba[..., 3] = 255
+
+        # Screen-blend red channel where mask > 0
+        mask_f = np.clip(self._current_mask01, 0, 1)[..., None]
+        red_overlay = np.array([255, 50, 50], dtype=np.float32)
+        blended = base8.astype(np.float32) * (1 - mask_f * 0.55) + red_overlay * (mask_f * 0.55)
+        rgba[..., :3] = np.clip(blended, 0, 255).astype(np.uint8)
+
+        qimg = QImage(
+            rgba.data, w, h, 4 * w, QImage.Format.Format_RGBA8888
+        )
+        pm = QPixmap.fromImage(qimg)
+
+        old_zoom = self._view._zoom
+        old_center = self._view.mapToScene(
+            self._view.viewport().rect().center()
+        )
+        self._view.set_pixmap(pm)
+        # restore view position
+        self._view.set_zoom(old_zoom)
+        self._view.centerOn(old_center)
 
 # ---------- Interactive ellipse handles ----------
 class HandleItem(QGraphicsRectItem):
@@ -544,186 +796,82 @@ class MaskCanvas(QGraphicsView):
         super().showEvent(ev)
         QTimer.singleShot(0, self.fit_to_view)
 
-
-
-# ---------- Live preview ----------
-
-class LivePreviewDialog(QDialog):
-    def __init__(self, original_image01: np.ndarray, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle(self.tr("Live Mask Preview"))
-        self.label = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
-        lay = QVBoxLayout(self); lay.addWidget(self.label)
-        self.resize(300, 300)
-        self.base_pixmap = _to_qpixmap01(original_image01)
-        self.max_alpha = 150
-
-    def update_mask(self, mask01: np.ndarray):
-        h, w = mask01.shape
-        alpha = (np.clip(mask01, 0, 1) * self.max_alpha).astype(np.uint8)
-        rgba = np.zeros((h, w, 4), dtype=np.uint8)
-        rgba[..., 0] = 255  # red
-        rgba[..., 3] = alpha
-        overlay_qimg = QImage(rgba.data, w, h, 4*w, QImage.Format.Format_RGBA8888)
-        overlay = QPixmap.fromImage(overlay_qimg)
-        canvas = QPixmap(self.base_pixmap)
-        p = QPainter(canvas); p.drawPixmap(0, 0, overlay); p.end()
-        self.label.setPixmap(canvas.scaled(
-            self.label.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.FastTransformation
-        ))
-
-    def set_base_image(self, image01: np.ndarray):
-        self.base_pixmap = _to_qpixmap01(image01)
-
 # ---------- Preview (push-as-doc) ----------
+
 class MaskPreviewDialog(QDialog):
-    """Scrollable preview + 'Push as New Document…'."""
+    """Full-resolution mask preview with zoom/pan + push-as-document."""
+
     def __init__(self, mask01: np.ndarray, parent=None):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Mask Preview"))
         self.mask = np.clip(mask01, 0, 1).astype(np.float32)
 
-        # --- drag-pan state ---
-        self._dragging = False
-        self._drag_start = None
-        self._h_start = 0
-        self._v_start = 0
+        self._view = _ZoomableImageView(self)
+        self._view.set_pixmap(self._make_pixmap(self.mask))
 
-        # Build UI first
-        self.scroll = QScrollArea(self)
-        self.scroll.setWidgetResizable(False)
-        self.scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        self.label = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
-        self.label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
-
-        self.pixmap = self._to_pixmap(self.mask)
-        self.label.setPixmap(self.pixmap)
-        self.label.resize(self.pixmap.size())
-
-        self.scroll.setWidget(self.label)
-
-        # Enable mouse drag panning on the label (NOW label exists)
-        self.label.setMouseTracking(True)
-        self.label.installEventFilter(self)
-
-        btns = QHBoxLayout()
-        b_in   = themed_toolbtn("zoom-in", "Zoom In")
-        b_out  = themed_toolbtn("zoom-out", "Zoom Out")
-        b_fit  = themed_toolbtn("zoom-fit-best", "Fit to Preview")
+        # toolbar
+        tb = QHBoxLayout()
+        b_out  = themed_toolbtn("zoom-out",      "Zoom Out")
+        b_in   = themed_toolbtn("zoom-in",       "Zoom In")
+        b_fit  = themed_toolbtn("zoom-fit-best", "Fit to Window")
         b_push = QPushButton(self.tr("Push as New Document…"))
 
-        b_in.clicked.connect(lambda: self._zoom(1.2))
-        b_out.clicked.connect(lambda: self._zoom(1/1.2))
-        b_fit.clicked.connect(self._fit)
+        b_out.clicked.connect(self._view.zoom_out)
+        b_in.clicked.connect(self._view.zoom_in)
+        b_fit.clicked.connect(self._view.fit_to_view)
         b_push.clicked.connect(self.push_as_new_document)
 
-        for b in (b_in, b_out, b_fit, b_push):
-            btns.addWidget(b)
+        for w in (b_out, b_in, b_fit, b_push):
+            tb.addWidget(w)
+        tb.addStretch()
+
+        self._zoom_lbl = QLabel("")
+        tb.addWidget(self._zoom_lbl)
 
         lay = QVBoxLayout(self)
-        lay.addWidget(self.scroll)
-        lay.addLayout(btns)
+        lay.setContentsMargins(4, 4, 4, 4)
+        lay.setSpacing(2)
+        lay.addLayout(tb)
+        lay.addWidget(self._view, 1)
 
-        self.scale = 1.0
-        self.setMinimumSize(600, 400)
+        self.setMinimumSize(640, 480)
 
-    def _to_pixmap(self, mask01: np.ndarray) -> QPixmap:
+    def _make_pixmap(self, mask01: np.ndarray) -> QPixmap:
         m8 = (np.clip(mask01, 0, 1) * 255).astype(np.uint8)
         h, w = m8.shape
         qimg = QImage(m8.data, w, h, w, QImage.Format.Format_Grayscale8)
         return QPixmap.fromImage(qimg)
 
-    def _zoom(self, factor: float):
-        self.scale *= factor
-        scaled = self.pixmap.scaled(
-            self.pixmap.size() * self.scale,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation
-        )
-        self.label.setPixmap(scaled)
-        self.label.resize(scaled.size())
-
-    def _fit(self):
-        vp = self.scroll.viewport().size()
-        if self.pixmap.width() and self.pixmap.height():
-            s = min(vp.width()/self.pixmap.width(), vp.height()/self.pixmap.height())
-            self.scale = max(0.05, s)
-            # re-render at the new scale (don’t multiply again)
-            scaled = self.pixmap.scaled(
-                self.pixmap.size() * self.scale,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
-            )
-            self.label.setPixmap(scaled)
-            self.label.resize(scaled.size())
-
-    def eventFilter(self, obj, ev):
-        if obj is self.label:
-            if ev.type() == QEvent.Type.MouseButtonPress and ev.button() == Qt.MouseButton.LeftButton:
-                self._dragging = True
-                self._drag_start = ev.globalPosition().toPoint()
-                self._h_start = self.scroll.horizontalScrollBar().value()
-                self._v_start = self.scroll.verticalScrollBar().value()
-                self.setCursor(Qt.CursorShape.ClosedHandCursor)
-                return True
-
-            if ev.type() == QEvent.Type.MouseMove and self._dragging:
-                p = ev.globalPosition().toPoint()
-                d = p - self._drag_start
-                self.scroll.horizontalScrollBar().setValue(self._h_start - d.x())
-                self.scroll.verticalScrollBar().setValue(self._v_start - d.y())
-                return True
-
-            if ev.type() == QEvent.Type.MouseButtonRelease and ev.button() == Qt.MouseButton.LeftButton:
-                self._dragging = False
-                self._drag_start = None
-                self.unsetCursor()
-                return True
-
-        return super().eventFilter(obj, ev)
-
     def push_as_new_document(self):
         if self.mask is None:
             QMessageBox.warning(self, "No Mask", "No mask to push.")
             return
-
-        # Walk up to the main window to reach DocManager
         host = self.parent()
         while host is not None and not hasattr(host, "docman"):
             host = host.parent()
         if host is None or not hasattr(host, "docman"):
-            QMessageBox.warning(self, "No DocManager", "Could not find the document manager.")
+            QMessageBox.warning(self, "No DocManager",
+                                "Could not find the document manager.")
             return
-
-        # Ask for a friendly name
-        name, ok = QInputDialog.getText(self, "New Document Name", "Name:", text="Mask")
+        name, ok = QInputDialog.getText(
+            self, "New Document Name", "Name:", text="Mask"
+        )
         if not ok:
             return
-
-        # Ensure float32; a mask is mono by definition
         img = self.mask.astype(np.float32, copy=False)
         meta = {
             "bit_depth": "32-bit floating point",
             "is_mono": True,
             "original_format": "fits",
         }
-
-        # Create the doc → this emits documentAdded, which the main window now handles via _spawn_subwindow_for
         new_doc = host.docman.create_document(img, metadata=meta, name=(name or "Mask"))
-
-        # Focus it
         try:
             sw = host._find_subwindow_for_doc(new_doc)
             if sw:
                 host.mdi.setActiveSubWindow(sw)
         except Exception:
             pass
-
         self.accept()
-
 
 
 # ---------- Mask dialog ----------
