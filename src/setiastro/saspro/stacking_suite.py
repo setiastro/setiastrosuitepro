@@ -2278,6 +2278,39 @@ def compute_safe_chunk(height, width, N, channels, dtype, pref_h, pref_w):
 
     return ch, cw
 
+def compute_safe_chunk_low_ram(height, width, N, channels, dtype, pref_h, pref_w):
+    """
+    Chunk budget for low-RAM seek mode.
+    Only needs to fit (N, th, tw, C) × 4 bytes in available RAM —
+    no full-file mappings held simultaneously.
+    """
+    vm    = psutil.virtual_memory()
+    avail = int(vm.available * 0.75)
+    bpe   = 4  # float32 always
+
+    # Stack buffer: N frames × th × tw × C × 4 bytes
+    # Plus 2× output headroom
+    bytes_per_tile_pixel = (N * channels + 2 * channels) * bpe
+    max_pixels = max(1, avail // bytes_per_tile_pixel)
+
+    ch = min(pref_h, height)
+    cw = min(pref_w, width)
+
+    while ch > 1 and cw > 1 and ch * cw > max_pixels:
+        if ch >= cw:
+            ch = max(1, ch // 2)
+        else:
+            cw = max(1, cw // 2)
+
+    ch = max(1, min(ch, height))
+    cw = max(1, min(cw, width))
+
+    if ch * cw < 1:
+        raise MemoryError(
+            f"Not enough RAM for even a 1×1 tile (N={N}, C={channels})"
+        )
+    return ch, cw
+
 _DIM_RE = re.compile(r"\s*\(\d+\s*x\s*\d+\)\s*")
 
 
@@ -3609,6 +3642,382 @@ def _load_image_for_stack(path: str):
         is_mono = bool(img.ndim == 2 or (img.ndim == 3 and img.shape[-1] == 1))
         return img, hdr, is_mono
 
+# ──────────────────────────────────────────────────────────────────────────────
+# _MMImage — seek-based reader, no mmap, no OS page-table reservation
+# Works for float32 FITS (post-calibration) and XISF.
+# For FITS: opens a plain file handle, computes data_start_offset once,
+#           then each read_tile_into does fseek + fread for exactly the
+#           bytes needed. Zero virtual address space consumed per file.
+# ──────────────────────────────────────────────────────────────────────────────
+
+class _MMImageSeek:
+    """
+    Seek-based tile reader for float32 FITS and XISF.
+
+    Key design decisions vs the old mmap version:
+    - FITS: raw file handle (open in 'rb'), data_start computed once from
+      header block count. read_tile_into seeks to each row and reads
+      exactly tw*C*4 bytes. No mmap, no OS virtual-address reservation.
+    - XISF uncompressed: same raw-seek approach on the attachment block.
+    - XISF compressed: decompress once into a plain ndarray at open time
+      (unavoidable), then slice from that array per tile.
+    - Thread safety: each worker gets its own file handle via _open_handle()
+      which re-opens the file. The main handle is only used for init.
+    """
+
+    def __init__(self, path: str):
+        self.path = path
+        self._kind = None          # "fits" | "xisf"
+
+        # FITS raw-seek state
+        self._fits_header = None
+        self._bitpix = 0
+        self._data_start = 0       # byte offset where pixel data begins
+        self._fits_width = 0       # NAXIS1 (fastest axis = columns)
+        self._fits_height = 0      # NAXIS2
+        self._fits_channels = 0    # 1 or 3
+        self._fits_layout = None   # "HW" | "HWC" | "CHW"
+        self._fits_fh = None       # file handle kept open for reads
+
+        # XISF state
+        self._xisf_data_start = 0
+        self._xisf_width = 0
+        self._xisf_height = 0
+        self._xisf_channels = 0
+        self._xisf_layout = None   # "HW" | "HWC" | "CHW"
+        self._xisf_fh = None
+        self._xisf_arr = None      # only for compressed XISF
+
+        p = path.lower()
+        if p.endswith((".fit", ".fits", ".fz")):
+            self._open_fits(path)
+            self._kind = "fits"
+        elif p.endswith(".xisf"):
+            if XISF is None:
+                raise RuntimeError("XISF support not available.")
+            self._open_xisf(path)
+            self._kind = "xisf"
+        else:
+            self._open_fits(path)
+            self._kind = "fits"
+
+        # Unified shape/ndim exposed to callers
+        if self._kind == "fits":
+            if self._fits_channels == 1:
+                self.shape = (self._fits_height, self._fits_width)
+                self.ndim = 2
+            else:
+                if self._fits_layout == "CHW":
+                    self.shape = (self._fits_height, self._fits_width, self._fits_channels)
+                else:
+                    self.shape = (self._fits_height, self._fits_width, self._fits_channels)
+                self.ndim = 3
+        else:
+            if self._xisf_channels == 1:
+                self.shape = (self._xisf_height, self._xisf_width)
+                self.ndim = 2
+            else:
+                self.shape = (self._xisf_height, self._xisf_width, self._xisf_channels)
+                self.ndim = 3
+
+    # ── FITS open ──────────────────────────────────────────────────────────────
+
+    def _open_fits(self, path: str):
+        from astropy.io import fits as _fits
+
+        # Read header only (no data load) to get geometry and data offset.
+        # We open with memmap=False but immediately close after header parse —
+        # we only want the header bytes, not the data array.
+        with _fits.open(path, memmap=False, lazy_load_hdus=True) as hdul:
+            hdu = None
+            for h in hdul:
+                # Access header without loading data
+                hdr = h.header
+                if hdr.get("NAXIS", 0) >= 2:
+                    hdu = h
+                    break
+            if hdu is None:
+                raise ValueError(f"No image HDU found in {path}")
+
+            hdr = hdu.header
+            self._fits_header = hdr
+
+            bitpix = int(hdr.get("BITPIX", -32))
+            self._bitpix = bitpix
+            naxis = int(hdr.get("NAXIS", 0))
+
+            # FITS axis order: NAXIS1=fastest (columns/width), NAXIS2=rows/height
+            naxis1 = int(hdr.get("NAXIS1", 0))
+            naxis2 = int(hdr.get("NAXIS2", 0))
+            naxis3 = int(hdr.get("NAXIS3", 1)) if naxis >= 3 else 1
+
+            # Detect layout
+            if naxis == 2:
+                self._fits_width    = naxis1
+                self._fits_height   = naxis2
+                self._fits_channels = 1
+                self._fits_layout   = "HW"
+            elif naxis == 3:
+                # Common layouts:
+                #   (3, H, W)  -> NAXIS1=W, NAXIS2=H, NAXIS3=3  -> CHW
+                #   (H, W, 3)  -> NAXIS1=3, NAXIS2=W, NAXIS3=H  -> HWC (rare)
+                if naxis3 == 3:
+                    # Most common FITS color: NAXIS3=3, CHW on disk
+                    self._fits_width    = naxis1
+                    self._fits_height   = naxis2
+                    self._fits_channels = 3
+                    self._fits_layout   = "CHW"
+                elif naxis1 == 3:
+                    # HWC on disk (unusual)
+                    self._fits_width    = naxis2
+                    self._fits_height   = naxis3
+                    self._fits_channels = 3
+                    self._fits_layout   = "HWC"
+                else:
+                    # Treat as CHW with whatever naxis3 is
+                    self._fits_width    = naxis1
+                    self._fits_height   = naxis2
+                    self._fits_channels = naxis3
+                    self._fits_layout   = "CHW"
+            else:
+                raise ValueError(f"Unsupported FITS NAXIS={naxis} in {path}")
+
+            # Compute byte offset to first data pixel.
+            # FITS header is always a multiple of 2880 bytes.
+            # Each HDU header block is 2880 bytes; data follows immediately.
+            # We compute the offset of THIS hdu's data block.
+            # hdu._data_offset is set by astropy after header parse.
+            try:
+                data_offset = hdu._data_offset   # astropy internal, reliable
+            except AttributeError:
+                # Fallback: count header cards -> round up to 2880 blocks
+                n_cards = len(hdr) + 1  # +1 for END card
+                header_bytes = math.ceil(n_cards * 80 / 2880) * 2880
+                # Also account for any preceding HDUs (primary HDU for extensions)
+                # For simple single-HDU files this is just header_bytes.
+                data_offset = header_bytes
+
+            self._data_start = int(data_offset)
+
+        # Now open a persistent raw file handle for seek-reads
+        self._fits_fh = open(path, "rb")
+
+    # ── XISF open ─────────────────────────────────────────────────────────────
+
+    def _open_xisf(self, path: str):
+        x = XISF(path)
+        ims = x.get_images_metadata()
+        if not ims:
+            raise ValueError(f"Empty XISF: {path}")
+        m0 = ims[0]
+
+        w, h, chc = m0["geometry"]
+        self._xisf_width    = int(w)
+        self._xisf_height   = int(h)
+        self._xisf_channels = int(chc)
+        self._xisf_layout   = "CHW"   # XISF is always planar CHW on disk
+        self._xisf_dtype    = m0["dtype"]
+
+        loc  = m0.get("location", None)
+        comp = m0.get("compression", None)
+
+        if isinstance(loc, tuple) and loc[0] == "attachment" and not comp:
+            # Uncompressed attachment — raw seek works
+            self._xisf_data_start = int(loc[1])
+            self._xisf_fh = open(path, "rb")
+            self._xisf_arr = None
+        else:
+            # Compressed / inline — must decompress once
+            arr = x.read_image(0)
+            self._xisf_arr = np.asarray(arr, dtype=np.float32, order="C")
+            self._xisf_fh = None
+
+    # ── Core seek-read ─────────────────────────────────────────────────────────
+
+    def _seek_read_rows(self, fh, data_start: int,
+                        full_width: int, full_height: int,
+                        y0: int, y1: int, x0: int, x1: int,
+                        channel_plane: int, n_channels: int,
+                        dtype: np.dtype) -> np.ndarray:
+        """
+        Read a 2D tile (th, tw) for one channel plane from a raw file handle.
+
+        For CHW layout: plane_offset = channel_plane * full_height * full_width
+        Each row of the tile is a contiguous slice [x0:x1] within the row.
+
+        Returns float32 (th, tw) array.
+        """
+        bpp = dtype.itemsize   # bytes per pixel (4 for float32)
+        tw = x1 - x0
+        th = y1 - y0
+
+        plane_offset = data_start + channel_plane * full_height * full_width * bpp
+        out = np.empty((th, tw), dtype=np.float32)
+
+        for ri in range(th):
+            row_idx = y0 + ri
+            row_offset = plane_offset + row_idx * full_width * bpp + x0 * bpp
+            fh.seek(row_offset)
+            raw = fh.read(tw * bpp)
+            if len(raw) < tw * bpp:
+                # Short read at edge — zero-pad
+                out[ri, :len(raw)//bpp] = np.frombuffer(raw, dtype=dtype).astype(np.float32)
+                out[ri, len(raw)//bpp:] = 0.0
+            else:
+                out[ri] = np.frombuffer(raw, dtype=dtype).astype(np.float32)
+
+        return out
+
+    # ── Public API ─────────────────────────────────────────────────────────────
+
+    def open_handle(self):
+        """
+        Return a fresh file handle for this file (for worker threads).
+        Each thread must call open_handle() and close it itself.
+        The main _fits_fh / _xisf_fh is kept for the owning thread.
+        """
+        return open(self.path, "rb")
+
+    def read_tile_into(self, dst: np.ndarray, y0: int, y1: int,
+                       x0: int, x1: int, channels: int,
+                       fh=None) -> None:
+        """
+        Fill dst (th, tw, channels) float32 with the tile.
+        fh: optional external file handle (for thread-pool workers).
+            If None, uses self._fits_fh / self._xisf_fh.
+        No heap allocations beyond the row read buffers inside _seek_read_rows.
+        """
+        if self._kind == "fits":
+            self._read_tile_fits(dst, y0, y1, x0, x1, channels, fh)
+        else:
+            self._read_tile_xisf(dst, y0, y1, x0, x1, channels, fh)
+
+    def _read_tile_fits(self, dst, y0, y1, x0, x1, channels, fh=None):
+        use_fh = fh if fh is not None else self._fits_fh
+        dtype = np.dtype(">f4") if self._bitpix == -32 else np.dtype(np.float32)
+        # FITS is big-endian by spec for float; astropy corrects, we must too
+        # Actually for float32 FITS (BITPIX=-32) data is IEEE big-endian on disk
+        fits_dtype = np.dtype(">f4")   # always big-endian float32 for BITPIX=-32
+
+        if self._fits_layout == "HW":
+            plane = self._seek_read_rows(
+                use_fh, self._data_start,
+                self._fits_width, self._fits_height,
+                y0, y1, x0, x1,
+                channel_plane=0, n_channels=1,
+                dtype=fits_dtype
+            )
+            dst[..., 0] = plane
+            if channels == 3:
+                dst[..., 1] = plane
+                dst[..., 2] = plane
+
+        elif self._fits_layout == "CHW":
+            for ci in range(min(channels, self._fits_channels)):
+                plane = self._seek_read_rows(
+                    use_fh, self._data_start,
+                    self._fits_width, self._fits_height,
+                    y0, y1, x0, x1,
+                    channel_plane=ci, n_channels=self._fits_channels,
+                    dtype=fits_dtype
+                )
+                dst[..., ci] = plane
+            if channels == 3 and self._fits_channels == 1:
+                dst[..., 1] = dst[..., 0]
+                dst[..., 2] = dst[..., 0]
+
+        elif self._fits_layout == "HWC":
+            # Rare — rows are interleaved RGB on disk
+            # Read each row as width*3 floats, extract [x0:x1, ci]
+            bpp = 4
+            th = y1 - y0
+            tw = x1 - x0
+            for ri in range(th):
+                row_idx = y0 + ri
+                row_offset = (self._data_start +
+                              row_idx * self._fits_width * self._fits_channels * bpp)
+                use_fh.seek(row_offset + x0 * self._fits_channels * bpp)
+                raw = use_fh.read(tw * self._fits_channels * bpp)
+                row = np.frombuffer(raw, dtype=np.dtype(">f4")).astype(np.float32)
+                row = row.reshape(tw, self._fits_channels)
+                for ci in range(min(channels, self._fits_channels)):
+                    dst[ri, :, ci] = row[:, ci]
+
+    def _read_tile_xisf(self, dst, y0, y1, x0, x1, channels, fh=None):
+        if self._xisf_arr is not None:
+            # Decompressed array already in memory
+            if self._xisf_channels == 1:
+                dst[..., 0] = self._xisf_arr[y0:y1, x0:x1]
+                if channels == 3:
+                    dst[..., 1] = dst[..., 0]
+                    dst[..., 2] = dst[..., 0]
+            else:
+                # _xisf_arr is HWC after decompression
+                dst[..., :channels] = self._xisf_arr[y0:y1, x0:x1, :channels]
+            return
+
+        # Uncompressed XISF: same CHW seek approach
+        use_fh = fh if fh is not None else self._xisf_fh
+        xisf_dtype = np.dtype(self._xisf_dtype).newbyteorder("<")  # XISF is LE
+        for ci in range(min(channels, self._xisf_channels)):
+            plane = self._seek_read_rows(
+                use_fh, self._xisf_data_start,
+                self._xisf_width, self._xisf_height,
+                y0, y1, x0, x1,
+                channel_plane=ci, n_channels=self._xisf_channels,
+                dtype=xisf_dtype
+            )
+            dst[..., ci] = plane
+        if channels == 3 and self._xisf_channels == 1:
+            dst[..., 1] = dst[..., 0]
+            dst[..., 2] = dst[..., 0]
+
+    def read_tile(self, y0, y1, x0, x1) -> np.ndarray:
+        """Compatibility shim — allocates and returns. Prefer read_tile_into."""
+        th = y1 - y0
+        tw = x1 - x0
+        c = 3 if self.ndim == 3 else 1
+        dst = np.empty((th, tw, c), dtype=np.float32)
+        self.read_tile_into(dst, y0, y1, x0, x1, c)
+        if c == 1:
+            return dst[..., 0]
+        return dst
+
+    def read_full(self) -> np.ndarray:
+        H = self._fits_height if self._kind == "fits" else self._xisf_height
+        W = self._fits_width  if self._kind == "fits" else self._xisf_width
+        C = self._fits_channels if self._kind == "fits" else self._xisf_channels
+        dst = np.empty((H, W, C), dtype=np.float32)
+        self.read_tile_into(dst, 0, H, 0, W, C)
+        if C == 1:
+            return dst[..., 0]
+        return dst
+
+    def close(self):
+        fh = self._fits_fh
+        self._fits_fh = None
+        if fh is not None:
+            try:
+                fh.close()
+            except Exception:
+                pass
+
+        fh = self._xisf_fh
+        self._xisf_fh = None
+        if fh is not None:
+            try:
+                fh.close()
+            except Exception:
+                pass
+
+        self._xisf_arr = None
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
 class _MMImage:
     """
     Unified memory-friendly reader for FITS (memmap) and XISF.
@@ -3984,6 +4393,7 @@ class _MMImage:
             self.close()
         except Exception:
             pass
+
 
 def _open_sources_for_mfdeconv(paths, log):
     srcs = []
@@ -7110,6 +7520,18 @@ class StackingSuiteDialog(QDialog):
         w_hw = QWidget(); w_hw.setLayout(hw_row)
         fl_general.addRow(self.tr("Chunk Size:"), w_hw)
 
+        self.low_ram_safe_mode_cb = QCheckBox(self.tr("Low RAM Safe Mode"))
+        self.low_ram_safe_mode_cb.setToolTip(self.tr(
+            "Reads only the tile data needed from each subframe using direct file seeks,\n"
+            "instead of memory-mapping all subframes simultaneously.\n"
+            "Use this if you get memory errors stacking large numbers of frames.\n"
+            "Note: approximately 4× slower than normal mode."
+        ))
+        self.low_ram_safe_mode_cb.setChecked(
+            self.settings.value("stacking/low_ram_safe_mode", False, type=bool)
+        )
+        fl_general.addRow(self.low_ram_safe_mode_cb)
+
         left_col.addWidget(gb_general)
 
         self.temp_group_step_spin = QDoubleSpinBox()
@@ -7950,6 +8372,8 @@ class StackingSuiteDialog(QDialog):
         self.settings.setValue("stacking/modz_threshold",       self.modz_threshold)
         self.settings.setValue("stacking/chunk_height",         self.chunk_height)
         self.settings.setValue("stacking/chunk_width",          self.chunk_width)
+        self.settings.setValue("stacking/low_ram_safe_mode",
+                               bool(self.low_ram_safe_mode_cb.isChecked()))        
         self.settings.setValue("stacking/autocrop_enabled",     self.autocrop_cb.isChecked())
         self.settings.setValue("stacking/autocrop_pct",         float(self.autocrop_pct.value()))
         self.temp_group_step = float(self.temp_group_step_spin.value())
@@ -24066,16 +24490,27 @@ class StackingSuiteDialog(QDialog):
         height, width = ref_data.shape[:2]
         channels = 3 if is_color else 1
         N = len(file_list)
+        del ref_data
 
         algo = (algo_override or self.rejection_algorithm)
 
-        gc.disable()
-        try:
-            use_gpu = bool(self._hw_accel_enabled()) and _torch_ok() and _gpu_algo_supported(algo)
-        finally:
-            gc.enable()
-
+        use_gpu = bool(self._hw_accel_enabled()) and _torch_ok() and _gpu_algo_supported(algo)
         log(f"📊 Stacking group '{group_key}' with {algo}{' [GPU]' if use_gpu else ''}")
+
+        # ── Low RAM Safe Mode gate ─────────────────────────────────────────────
+        low_ram_mode = self.settings.value("stacking/low_ram_safe_mode", False, type=bool)
+        if low_ram_mode:
+            log("🐢 Low RAM Safe Mode enabled — using seek-based tile reader.")
+            return self._normal_integration_low_ram(
+                group_key=group_key,
+                file_list=file_list,
+                frame_weights=frame_weights,
+                status_cb=status_cb,
+                algo_override=algo_override,
+                collect_per_file_rejections=collect_per_file_rejections,
+            )
+
+        # ── NORMAL (fast mmap) PATH ────────────────────────────────────────────
 
         def _satmask_sidecar_path(image_path: str) -> str:
             root, _ = os.path.splitext(image_path)
@@ -24104,9 +24539,7 @@ class StackingSuiteDialog(QDialog):
         if satmask_present:
             log(f"🛰️ Found aligned satellite masks for {satmask_present}/{N} frame(s).")
 
-        use_memmap_sources = True
         sources: list[_MMImage] = []
-        source_paths = list(file_list)
 
         gc.disable()
         try:
@@ -24114,19 +24547,13 @@ class StackingSuiteDialog(QDialog):
                 sources.append(_MMImage(p))
         except (OSError, MemoryError) as e:
             gc.enable()
-            if isinstance(e, MemoryError) or (hasattr(e, 'errno') and e.errno in (errno.EMFILE, errno.ENFILE, errno.ENOMEM)):
-                log(f"⚠️ Memory pressure opening memmaps ({e}); falling back to lazy per-tile reads.")
-                for s in sources:
-                    try: s.close()
-                    except Exception: pass
-                sources.clear()
-                use_memmap_sources = False
-            else:
-                for s in sources:
-                    try: s.close()
-                    except Exception: pass
-                log(f"⚠️ Failed to open images (memmap): {e}")
-                return None, {}, None
+            for s in sources:
+                try: s.close()
+                except Exception: pass
+            log(f"⚠️ Failed to open images (memmap): {e}")
+            log(f"💡 If you are stacking a large number of frames, enable "
+                f"'Low RAM Safe Mode' in Stacking Settings to avoid this error.")
+            return None, {}, None
         except Exception as e:
             gc.enable()
             for s in sources:
@@ -24199,31 +24626,14 @@ class StackingSuiteDialog(QDialog):
             ms = maskbuf[:N, :th, :tw]
             ms.fill(False)
 
-            if use_memmap_sources:
-                for i, src in enumerate(sources):
-                    sub = src.read_tile(y0, y1, x0, x1)
-                    if sub.ndim == 2:
-                        sub = sub[:, :, None].repeat(channels, axis=2) if channels == 3 else sub[:, :, None]
-                    ts[i, :, :, :] = sub
-                    mfull = satmask_full_list[i]
-                    if mfull is not None:
-                        ms[i, :, :] = mfull[y0:y1, x0:x1]
-            else:
-                for i, path in enumerate(source_paths):
-                    src = _MMImage(path)
-                    try:
-                        sub = src.read_tile(y0, y1, x0, x1)
-                    finally:
-                        try: src.close()
-                        except Exception: pass
-                        del src
-                        gc.collect()
-                    if sub.ndim == 2:
-                        sub = sub[:, :, None].repeat(channels, axis=2) if channels == 3 else sub[:, :, None]
-                    ts[i, :, :, :] = sub
-                    mfull = satmask_full_list[i]
-                    if mfull is not None:
-                        ms[i, :, :] = mfull[y0:y1, x0:x1]
+            for i, src in enumerate(sources):
+                sub = src.read_tile(y0, y1, x0, x1)
+                if sub.ndim == 2:
+                    sub = sub[:, :, None].repeat(channels, axis=2) if channels == 3 else sub[:, :, None]
+                ts[i, :, :, :] = sub
+                mfull = satmask_full_list[i]
+                if mfull is not None:
+                    ms[i, :, :] = mfull[y0:y1, x0:x1]
             return th, tw
 
         # Numba JIT warmup
@@ -24286,9 +24696,9 @@ class StackingSuiteDialog(QDialog):
             elif algo == "Comet High-Clip Percentile":
                 k = self.settings.value("stacking/comet_hclip_k", 1.30, type=float)
                 p = self.settings.value("stacking/comet_hclip_p", 25.0, type=float)
-                return _high_clip_percentile(ts_masked, k=float(k), p=float(p)).astype(np.float32), base_rej
+                return _high_clip_percentile(ts_masked, k=float(k), p=float(p)), base_rej
             elif algo == "Comet Lower-Trim (30%)":
-                return _lower_trimmed_mean(ts_masked, trim_hi_frac=0.30).astype(np.float32), base_rej
+                return _lower_trimmed_mean(ts_masked, trim_hi_frac=0.30), base_rej
             elif algo == "Comet Percentile (40th)":
                 return np.nanpercentile(ts_masked, 40.0, axis=0).astype(np.float32), base_rej
             elif algo == "Simple Average (No Rejection)":
@@ -24303,7 +24713,6 @@ class StackingSuiteDialog(QDialog):
                 result = np.max(x, axis=0)
                 return np.where(np.isfinite(result), result, 0.0).astype(np.float32), base_rej
 
-            # Numba algorithms
             fn_map = {
                 "Weighted Windsorized Sigma Clipping": lambda: windsorized_sigma_clip_weighted(ts_masked, weights_array, lower=self.sigma_low, upper=self.sigma_high),
                 "Windsorized Sigma Clipping":          lambda: windsorized_sigma_clip_weighted(ts_masked, weights_array, lower=self.sigma_low, upper=self.sigma_high),
@@ -24320,7 +24729,6 @@ class StackingSuiteDialog(QDialog):
                 tile_rej_map = np.any(tile_rej_map, axis=-1)
             return np.asarray(tile_result, dtype=np.float32), tile_rej_map | base_rej
 
-        # Deep prefetch pipeline
         _buf_pool  = [_mk_buf()      for _ in range(PREFETCH_DEPTH + 1)]
         _mask_pool = [_mk_mask_buf() for _ in range(PREFETCH_DEPTH + 1)]
         pending      = deque()
@@ -24417,16 +24825,14 @@ class StackingSuiteDialog(QDialog):
 
         tp.shutdown(wait=True)
 
-        # close memmaps in background — don't block the return
-        if use_memmap_sources:
-            import threading as _threading2
-            _sources_to_close = list(sources)
-            sources.clear()
-            def _close_memmaps():
-                for s in _sources_to_close:
-                    try: s.close()
-                    except Exception: pass
-            _threading2.Thread(target=_close_memmaps, daemon=True).start()
+        import threading as _threading2
+        _sources_to_close = list(sources)
+        sources.clear()
+        def _close_memmaps():
+            for s in _sources_to_close:
+                try: s.close()
+                except Exception: pass
+        _threading2.Thread(target=_close_memmaps, daemon=True).start()
 
         if channels == 1:
             integrated_image = integrated_image[..., 0]
@@ -24447,7 +24853,374 @@ class StackingSuiteDialog(QDialog):
         _threading.Thread(target=lambda: _free_torch_memory(), daemon=True).start()
 
         return integrated_image, per_file_rejections, ref_header
-    
+
+    def _normal_integration_low_ram(
+        self,
+        group_key,
+        file_list,
+        frame_weights,
+        status_cb=None,
+        *,
+        algo_override: str | None = None,
+        collect_per_file_rejections: bool = False,
+    ):
+        """
+        Low RAM Safe Mode integration — seek-based tile reader.
+        Identical rejection/GPU logic to normal path but uses _MMImageSeek
+        which opens a plain file handle and seeks to each tile position,
+        consuming zero OS page-table reservations regardless of N.
+        ~4× slower than normal mmap path on SSD.
+        """
+        import gc
+        import os
+        import math
+        import time
+        import contextlib
+        import numpy as np
+        from astropy.io import fits
+        from concurrent.futures import ThreadPoolExecutor as _TPE
+
+        collect_per_file = bool(collect_per_file_rejections)
+        per_file_rejections = {f: [] for f in file_list} if collect_per_file else None
+        log = status_cb or (lambda *_: None)
+
+        ref_file = file_list[0]
+        ref_data, ref_header, _, _ = load_image(ref_file)
+        if ref_data is None:
+            log(f"⚠️ Could not load reference '{ref_file}' for group '{group_key}'.")
+            return None, {}, None
+        if ref_header is None:
+            ref_header = fits.Header()
+
+        is_color = (ref_data.ndim == 3 and ref_data.shape[2] == 3)
+        height, width = ref_data.shape[:2]
+        channels = 3 if is_color else 1
+        N = len(file_list)
+        del ref_data
+
+        algo = (algo_override or self.rejection_algorithm)
+        use_gpu = bool(self._hw_accel_enabled()) and _torch_ok() and _gpu_algo_supported(algo)
+        log(f"📊 [LowRAM] Stacking '{group_key}' with {algo}{' [GPU]' if use_gpu else ''}")
+
+        # ── Satellite masks ────────────────────────────────────────────────────
+        def _load_full_satmask(image_path: str):
+            p = os.path.splitext(image_path)[0] + "_satmask.npy"
+            if not os.path.exists(p):
+                return None
+            try:
+                m = np.load(p, allow_pickle=False)
+                m = np.asarray(m, dtype=bool)
+                if m.ndim != 2 or m.shape != (height, width):
+                    return None
+                return m
+            except Exception:
+                return None
+
+        satmask_full_list = [_load_full_satmask(p) for p in file_list]
+
+        # ── Open seek-based readers ────────────────────────────────────────────
+        sources: list[_MMImageSeek] = []
+        try:
+            for p in file_list:
+                sources.append(_MMImageSeek(p))
+        except Exception as e:
+            for s in sources:
+                try: s.close()
+                except Exception: pass
+            log(f"⚠️ Failed to open image handles: {e}")
+            return None, {}, None
+
+        # ── Chunk size ─────────────────────────────────────────────────────────
+        DTYPE = self._dtype()
+        try:
+            chunk_h, chunk_w = compute_safe_chunk_low_ram(
+                height, width, N, channels, DTYPE,
+                self.chunk_height, self.chunk_width
+            )
+            log(f"🔧 [LowRAM] chunk {chunk_h}×{chunk_w}, {N} frames, {channels}ch, "
+                f"{(os.cpu_count() or 4)} cores")
+        except MemoryError as e:
+            for s in sources:
+                try: s.close()
+                except Exception: pass
+            log(f"⚠️ {e}")
+            return None, {}, None
+
+        # ── Output buffer ──────────────────────────────────────────────────────
+        integrated_image, integrated_memmap_path = smart_zeros(
+            (height, width, channels), dtype=DTYPE
+        )
+
+        # ── Pre-allocate tile stack — reused every tile ────────────────────────
+        buf_stack = np.empty((N, chunk_h, chunk_w, channels), dtype=np.float32)
+        mask_buf  = np.zeros((N, chunk_h, chunk_w), dtype=np.bool_)
+
+        # ── I/O workers — parallel seek-reads across files per tile ───────────
+        _io_workers = min(max(1, (os.cpu_count() or 4)), N, 16)
+
+        def _read_one_file(args):
+            i, src, y0, y1, x0, x1, th, tw = args
+            fh = src.open_handle()
+            try:
+                src.read_tile_into(
+                    buf_stack[i, :th, :tw, :channels],
+                    y0, y1, x0, x1, channels,
+                    fh=fh
+                )
+                mfull = satmask_full_list[i]
+                if mfull is not None:
+                    mask_buf[i, :th, :tw] = mfull[y0:y1, x0:x1]
+                else:
+                    mask_buf[i, :th, :tw] = False
+            finally:
+                try: fh.close()
+                except Exception: pass
+
+        def _read_tile_parallel(y0, y1, x0, x1):
+            th = y1 - y0
+            tw = x1 - x0
+            with _TPE(max_workers=_io_workers) as pool:
+                list(pool.map(_read_one_file, [
+                    (i, sources[i], y0, y1, x0, x1, th, tw)
+                    for i in range(N)
+                ]))
+            return th, tw
+
+        # ── Weight resolution ──────────────────────────────────────────────────
+        _orig_by_aligned = getattr(self, "orig_by_aligned", {})
+        _norm2orig = {
+            os.path.normpath(v): k
+            for k, v in getattr(self, "_orig2norm", {}).items()
+        }
+        _fw_normcase = {
+            os.path.normcase(os.path.normpath(k)): v
+            for k, v in frame_weights.items()
+        }
+
+        def _resolve_weight(aligned_path: str) -> float:
+            ap = os.path.normpath(aligned_path)
+            norm_path = _orig_by_aligned.get(ap)
+            if norm_path is None:
+                return float(_fw_normcase.get(os.path.normcase(ap), 1.0))
+            orig_key = _norm2orig.get(os.path.normpath(norm_path))
+            if orig_key:
+                w = _fw_normcase.get(orig_key)
+                if w is not None:
+                    return float(w)
+            return float(_fw_normcase.get(os.path.normcase(ap), 1.0))
+
+        weights_array = np.array(
+            [_resolve_weight(p) for p in file_list], dtype=np.float32
+        )
+        log(f"⚖️ Weight range: min={weights_array.min():.3f} "
+            f"max={weights_array.max():.3f} mean={weights_array.mean():.3f}")
+
+        # ── Rejection maps ─────────────────────────────────────────────────────
+        rej_any   = np.zeros((height, width), dtype=np.bool_)
+        rej_count = np.zeros((height, width), dtype=np.uint16)
+
+        # ── Numba warmup ───────────────────────────────────────────────────────
+        _NUMBA_CPU_ALGOS = {
+            "Weighted Windsorized Sigma Clipping", "Windsorized Sigma Clipping",
+            "Kappa-Sigma Clipping", "Trimmed Mean",
+            "Extreme Studentized Deviate (ESD)",
+            "Biweight Estimator", "Modified Z-Score Clipping",
+        }
+        if not use_gpu and algo in _NUMBA_CPU_ALGOS:
+            try:
+                _d3 = np.ones((2, 2, 2), dtype=np.float32)
+                _d4 = np.ones((2, 2, 2, 1), dtype=np.float32)
+                _dw = np.ones(2, dtype=np.float32)
+                if algo in ("Weighted Windsorized Sigma Clipping", "Windsorized Sigma Clipping"):
+                    windsorized_sigma_clip_weighted(_d3, _dw, lower=float(self.sigma_low), upper=float(self.sigma_high))
+                    windsorized_sigma_clip_weighted(_d4, _dw, lower=float(self.sigma_low), upper=float(self.sigma_high))
+                elif algo == "Kappa-Sigma Clipping":
+                    kappa_sigma_clip_weighted(_d3, _dw, kappa=float(self.kappa), iterations=int(self.iterations))
+                    kappa_sigma_clip_weighted(_d4, _dw, kappa=float(self.kappa), iterations=int(self.iterations))
+                elif algo == "Trimmed Mean":
+                    trimmed_mean_weighted(_d3, _dw, trim_fraction=float(self.trim_fraction))
+                    trimmed_mean_weighted(_d4, _dw, trim_fraction=float(self.trim_fraction))
+                elif algo == "Extreme Studentized Deviate (ESD)":
+                    esd_clip_weighted(_d3, _dw, threshold=float(self.esd_threshold))
+                    esd_clip_weighted(_d4, _dw, threshold=float(self.esd_threshold))
+                elif algo == "Biweight Estimator":
+                    biweight_location_weighted(_d3, _dw, tuning_constant=float(self.biweight_constant))
+                    biweight_location_weighted(_d4, _dw, tuning_constant=float(self.biweight_constant))
+                elif algo == "Modified Z-Score Clipping":
+                    modified_zscore_clip_weighted(_d3, _dw, threshold=float(self.modz_threshold))
+                    modified_zscore_clip_weighted(_d4, _dw, threshold=float(self.modz_threshold))
+            except Exception:
+                pass
+
+        # ── CPU tile reducer ───────────────────────────────────────────────────
+        def _cpu_reduce_tile(ts, forced_reject_2d, th, tw):
+            ts = np.asarray(ts, dtype=np.float32)
+            forced_reject = np.asarray(forced_reject_2d, dtype=bool)[..., None]
+            valid = np.isfinite(ts) & (ts != 0.0) & (~forced_reject)
+            ts_masked = np.where(valid, ts, np.nan)
+            base_rej = np.any(~valid, axis=-1)
+
+            if algo in ("Comet Median", "Simple Median (No Rejection)"):
+                return np.nanmedian(ts_masked, axis=0).astype(np.float32), base_rej
+            elif algo == "Comet High-Clip Percentile":
+                k = self.settings.value("stacking/comet_hclip_k", 1.30, type=float)
+                p = self.settings.value("stacking/comet_hclip_p", 25.0, type=float)
+                return _high_clip_percentile(ts_masked, k=float(k), p=float(p)).astype(np.float32), base_rej
+            elif algo == "Comet Lower-Trim (30%)":
+                return _lower_trimmed_mean(ts_masked, trim_hi_frac=0.30).astype(np.float32), base_rej
+            elif algo == "Comet Percentile (40th)":
+                return np.nanpercentile(ts_masked, 40.0, axis=0).astype(np.float32), base_rej
+            elif algo == "Simple Average (No Rejection)":
+                w = weights_array[:, None, None, None].astype(np.float32)
+                w_eff = np.where(valid, w, 0.0)
+                num = np.sum(np.where(valid, ts, 0.0) * w_eff, axis=0)
+                den = np.sum(w_eff, axis=0)
+                fallback = np.nanmedian(ts_masked, axis=0)
+                return np.where(den > 0, num / np.maximum(den, 1e-20), fallback).astype(np.float32), base_rej
+            elif algo == "Max Value":
+                x = np.where(valid, ts, -np.inf)
+                result = np.max(x, axis=0)
+                return np.where(np.isfinite(result), result, 0.0).astype(np.float32), base_rej
+
+            fn_map = {
+                "Weighted Windsorized Sigma Clipping": lambda: windsorized_sigma_clip_weighted(ts_masked, weights_array, lower=self.sigma_low, upper=self.sigma_high),
+                "Windsorized Sigma Clipping":          lambda: windsorized_sigma_clip_weighted(ts_masked, weights_array, lower=self.sigma_low, upper=self.sigma_high),
+                "Kappa-Sigma Clipping":                lambda: kappa_sigma_clip_weighted(ts_masked, weights_array, kappa=self.kappa, iterations=self.iterations),
+                "Trimmed Mean":                        lambda: trimmed_mean_weighted(ts_masked, weights_array, trim_fraction=self.trim_fraction),
+                "Extreme Studentized Deviate (ESD)":   lambda: esd_clip_weighted(ts_masked, weights_array, threshold=self.esd_threshold),
+                "Biweight Estimator":                  lambda: biweight_location_weighted(ts_masked, weights_array, tuning_constant=self.biweight_constant),
+                "Modified Z-Score Clipping":           lambda: modified_zscore_clip_weighted(ts_masked, weights_array, threshold=self.modz_threshold),
+            }
+            fn = fn_map.get(algo, lambda: windsorized_sigma_clip_weighted(
+                ts_masked, weights_array, lower=self.sigma_low, upper=self.sigma_high
+            ))
+            tile_result, tile_rej_map = fn()
+            tile_rej_map = np.asarray(tile_rej_map, dtype=bool)
+            if tile_rej_map.ndim == 4:
+                tile_rej_map = np.any(tile_rej_map, axis=-1)
+            return np.asarray(tile_result, dtype=np.float32), tile_rej_map | base_rej
+
+        # ── Tile list ──────────────────────────────────────────────────────────
+        n_rows = math.ceil(height / chunk_h)
+        n_cols = math.ceil(width  / chunk_w)
+        total_tiles = n_rows * n_cols
+        tiles = [
+            (y0, min(y0 + chunk_h, height), x0, min(x0 + chunk_w, width))
+            for y0 in range(0, height, chunk_h)
+            for x0 in range(0, width,  chunk_w)
+        ]
+
+        log(f"🔧 [LowRAM] {total_tiles} tiles, {n_rows}×{n_cols} grid, "
+            f"io_workers={_io_workers}, {'GPU' if use_gpu else 'CPU'}")
+
+        # ── Main tile loop ─────────────────────────────────────────────────────
+        _ctx_instance = (
+            _safe_torch_inference_ctx() if use_gpu else contextlib.nullcontext()
+        )
+        with _ctx_instance:
+            for tile_idx, (y0, y1, x0, x1) in enumerate(tiles, start=1):
+                t0 = time.perf_counter()
+
+                th, tw = _read_tile_parallel(y0, y1, x0, x1)
+
+                ts               = buf_stack[:N, :th, :tw, :channels]
+                forced_mask_tile = mask_buf[:N, :th, :tw]
+
+                if ts.size == 0 or th == 0 or tw == 0:
+                    continue
+
+                if use_gpu:
+                    try:
+                        tile_result, tile_rej_map = _torch_reduce_tile(
+                            ts, weights_array,
+                            algo_name=algo,
+                            kappa=float(self.kappa),
+                            iterations=int(self.iterations),
+                            sigma_low=float(self.sigma_low),
+                            sigma_high=float(self.sigma_high),
+                            trim_fraction=float(self.trim_fraction),
+                            esd_threshold=float(self.esd_threshold),
+                            biweight_constant=float(self.biweight_constant),
+                            modz_threshold=float(self.modz_threshold),
+                            comet_hclip_k=float(self.settings.value(
+                                "stacking/comet_hclip_k", 1.30, type=float)),
+                            comet_hclip_p=float(self.settings.value(
+                                "stacking/comet_hclip_p", 25.0, type=float)),
+                            forced_reject_mask_np=forced_mask_tile,
+                        )
+                        if hasattr(tile_result, "detach"):
+                            tile_result = tile_result.detach().cpu().numpy()
+                        if hasattr(tile_rej_map, "detach"):
+                            tile_rej_map = tile_rej_map.detach().cpu().numpy()
+                    except Exception as e:
+                        log(f"⚠️ GPU failed tile {tile_idx}: {e} – falling back to CPU.")
+                        use_gpu = False
+                        tile_result, tile_rej_map = _cpu_reduce_tile(
+                            ts, forced_mask_tile, th, tw
+                        )
+                else:
+                    tile_result, tile_rej_map = _cpu_reduce_tile(
+                        ts, forced_mask_tile, th, tw
+                    )
+
+                integrated_image[y0:y1, x0:x1, :] = tile_result
+
+                trm = np.asarray(tile_rej_map, dtype=bool)
+                if trm.ndim == 4:
+                    trm = np.any(trm, axis=-1)
+                rej_any[y0:y1, x0:x1]   |= np.any(trm, axis=0)
+                rej_count[y0:y1, x0:x1] += trm.sum(axis=0).astype(np.uint16)
+
+                if collect_per_file:
+                    for i, fpath in enumerate(file_list):
+                        m = trm[i]
+                        if np.any(m):
+                            per_file_rejections[fpath].append((x0, y0, m.copy()))
+
+                dt = time.perf_counter() - t0
+                work_px = th * tw * N * channels
+                mpx_s = (work_px / 1e6) / dt if dt > 0 else float("inf")
+                log(f"\r  🔧 [LowRAM] Tile {tile_idx}/{total_tiles} [{group_key}] "
+                    f"{th}×{tw} — {mpx_s:.1f} MPx/s")
+
+        # ── GPU sync ───────────────────────────────────────────────────────────
+        if use_gpu:
+            try:
+                import torch as _torch
+                if _torch.cuda.is_available():
+                    _torch.cuda.synchronize()
+            except Exception:
+                pass
+
+        # ── Close readers ──────────────────────────────────────────────────────
+        import threading as _t2
+        _sc = list(sources)
+        sources.clear()
+        _t2.Thread(target=lambda: [s.close() for s in _sc], daemon=True).start()
+
+        # ── Finalise ───────────────────────────────────────────────────────────
+        if channels == 1:
+            integrated_image = integrated_image[..., 0]
+
+        if not hasattr(self, "_rej_maps"):
+            self._rej_maps = {}
+        rej_frac = rej_count.astype(np.float32) / float(max(1, N))
+        self._rej_maps[group_key] = {
+            "any": rej_any, "frac": rej_frac, "count": rej_count, "n": N
+        }
+
+        log(f"✅ [LowRAM] Integration complete for group '{group_key}'.")
+
+        if integrated_memmap_path is not None:
+            integrated_image = np.array(integrated_image)
+            try: cleanup_memmap(None, integrated_memmap_path)
+            except Exception: pass
+
+        import threading as _t
+        _t.Thread(target=lambda: _free_torch_memory(), daemon=True).start()
+
+        return integrated_image, per_file_rejections, ref_header
+
     def _safe_component(self, s: str, *, replacement:str="_", maxlen:int=180) -> str:
         """
         Sanitize a *single* path component for cross-platform safety.
