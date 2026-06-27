@@ -26,7 +26,7 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel,
     QPushButton, QComboBox, QDoubleSpinBox, QSpinBox,
     QGroupBox, QSlider, QFileDialog, QMessageBox, QProgressBar,
-    QWidget, QSizePolicy, QCheckBox, QTabWidget, QTextEdit,
+    QWidget, QSizePolicy, QCheckBox, QRadioButton, QTabWidget, QTextEdit,
     QLineEdit, QApplication, QScrollArea,
 )
 from PyQt6.QtGui import QFont
@@ -225,31 +225,36 @@ class _BXTPanel(QWidget):
 
     def _on_correct_only_toggled(self, checked: bool):
         self.sld_ss.setEnabled(not checked)
-        if checked:
-            self.sld_ss.setValue(0)
+        self.sld_ash.setEnabled(not checked)
+        self.sld_sn.setEnabled(not checked)
 
     def build_args(self) -> list[str]:
         args: list[str] = []
 
         if self.chk_correct_only.isChecked():
             args.append("--correct-only")
+            # --correct-only forces all sharpening to 0 — only NSR is still valid
+            if not self.chk_auto_nsr.isChecked():
+                nsr = self.sld_nsr.value() / 10.0
+                args += ["--no-auto-nonstellar-radius",
+                         "--nonstellar-radius", f"{nsr:.1f}"]
         else:
             ss = self.sld_ss.value() / 100.0
             if ss > 0:
                 args += ["--sharpen-stars", f"{ss:.2f}"]
 
-        ash = self.sld_ash.value() / 100.0
-        if abs(ash) > 0:
-            args += ["--adjust-star-halos", f"{ash:.2f}"]
+            ash = self.sld_ash.value() / 100.0
+            if abs(ash) > 0:
+                args += ["--adjust-star-halos", f"{ash:.2f}"]
 
-        if not self.chk_auto_nsr.isChecked():
-            nsr = self.sld_nsr.value() / 10.0
-            args += ["--no-auto-nonstellar-radius",
-                     "--nonstellar-radius", f"{nsr:.1f}"]
+            if not self.chk_auto_nsr.isChecked():
+                nsr = self.sld_nsr.value() / 10.0
+                args += ["--no-auto-nonstellar-radius",
+                         "--nonstellar-radius", f"{nsr:.1f}"]
 
-        sn = self.sld_sn.value() / 100.0
-        if sn > 0:
-            args += ["--sharpen-nonstellar", f"{sn:.2f}"]
+            sn = self.sld_sn.value() / 100.0
+            if sn > 0:
+                args += ["--sharpen-nonstellar", f"{sn:.2f}"]
 
         return args
 
@@ -329,107 +334,93 @@ class _NXTPanel(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
 
-        # ── Simple ────────────────────────────────────────────────────────────
-        simple_box  = QGroupBox("Simple  (single strength — disabled when Advanced options are used)")
-        simple_form = QFormLayout(simple_box)
-        self.sld_dn = _form_slider(simple_form, "Denoise (0–1):", 0, 1, 0.0)
-        outer.addWidget(simple_box)
+        # ── Mode selector ─────────────────────────────────────────────────────
+        mode_box = QGroupBox("Denoise Mode")
+        mode_h   = QHBoxLayout(mode_box)
+        self.rb_simple = QRadioButton("Simple")
+        self.rb_ic     = QRadioButton("Intensity && Color")
+        self.rb_freq   = QRadioButton("Frequency")
+        self.rb_simple.setChecked(True)
+        for rb in (self.rb_simple, self.rb_ic, self.rb_freq):
+            mode_h.addWidget(rb)
+        mode_h.addStretch(1)
+        outer.addWidget(mode_box)
 
-        # ── Advanced: Intensity & Color ────────────────────────────────────────
-        ic_box  = QGroupBox("Advanced — Intensity & Color")
-        ic_form = QFormLayout(ic_box)
+        # ── Simple ────────────────────────────────────────────────────────────
+        self._simple_box = QGroupBox("Simple")
+        simple_form = QFormLayout(self._simple_box)
+        self.sld_dn = _form_slider(simple_form, "Denoise (0–1):", 0, 1, 0.0)
+        outer.addWidget(self._simple_box)
+
+        # ── Intensity & Color ─────────────────────────────────────────────────
+        self._ic_box = QGroupBox("Intensity && Color")
+        ic_form = QFormLayout(self._ic_box)
         self.sld_di = _form_slider(ic_form, "Denoise Intensity (0–1):", 0, 1, 0.0)
         self.sld_dc = _form_slider(ic_form, "Denoise Color (0–1):",     0, 1, 0.0)
-        outer.addWidget(ic_box)
+        outer.addWidget(self._ic_box)
 
-        # ── Advanced: Frequency ───────────────────────────────────────────────
-        adv_box  = QGroupBox("Advanced — Frequency")
-        adv_form = QFormLayout(adv_box)
-        self.sld_hf  = _form_slider(adv_form, "High-freq (0–1):",              0, 1, 0.0)
-        self.sld_lf  = _form_slider(adv_form, "Low-freq (0–1):",               0, 1, 0.0)
-        self.sld_ihf = _form_slider(adv_form, "Intensity High-freq (0–1):",    0, 1, 0.0)
-        self.sld_ilf = _form_slider(adv_form, "Intensity Low-freq (0–1):",     0, 1, 0.0)
-        self.sld_chf = _form_slider(adv_form, "Color High-freq (0–1):",        0, 1, 0.0)
-        self.sld_clf = _form_slider(adv_form, "Color Low-freq (0–1):",         0, 1, 0.0)
+        # ── Frequency ─────────────────────────────────────────────────────────
+        self._freq_box = QGroupBox("Frequency")
+        freq_form = QFormLayout(self._freq_box)
+        self.sld_hf  = _form_slider(freq_form, "High-freq (0–1):",              0, 1, 0.0)
+        self.sld_lf  = _form_slider(freq_form, "Low-freq (0–1):",               0, 1, 0.0)
+        self.sld_ihf = _form_slider(freq_form, "Intensity High-freq (0–1):",    0, 1, 0.0)
+        self.sld_ilf = _form_slider(freq_form, "Intensity Low-freq (0–1):",     0, 1, 0.0)
+        self.sld_chf = _form_slider(freq_form, "Color High-freq (0–1):",        0, 1, 0.0)
+        self.sld_clf = _form_slider(freq_form, "Color Low-freq (0–1):",         0, 1, 0.0)
 
-        fs_row = QWidget(); fs_h = QHBoxLayout(fs_row)
-        fs_h.setContentsMargins(0, 0, 0, 0); fs_h.setSpacing(6)
-        self.sld_fs = QSlider(Qt.Orientation.Horizontal)
-        self.sld_fs.setRange(10, 1000); self.sld_fs.setValue(50)
-        self.lbl_fs = QLabel("5.0"); self.lbl_fs.setFixedWidth(48)
+        fs_row = QWidget()
+        fs_h   = QHBoxLayout(fs_row)
+        fs_h.setContentsMargins(0, 0, 0, 0)
+        fs_h.setSpacing(6)
+        self.sld_fs  = QSlider(Qt.Orientation.Horizontal)
+        self.sld_fs.setRange(10, 1000)
+        self.sld_fs.setValue(50)
+        self.lbl_fs  = QLabel("5.0")
+        self.lbl_fs.setFixedWidth(48)
         self.sld_fs.valueChanged.connect(
             lambda v: self.lbl_fs.setText(f"{v/10.0:.1f}"))
-        fs_h.addWidget(self.sld_fs, 1); fs_h.addWidget(self.lbl_fs)
-        adv_form.addRow("Frequency Scale (1–100 px):", fs_row)
-        outer.addWidget(adv_box)
+        fs_h.addWidget(self.sld_fs, 1)
+        fs_h.addWidget(self.lbl_fs)
+        freq_form.addRow("Frequency Scale (1–100 px):", fs_row)
+        outer.addWidget(self._freq_box)
 
-        # ── Iterations ────────────────────────────────────────────────────────
-        iter_row = QWidget(); iter_h = QHBoxLayout(iter_row)
+        # ── Iterations (common to all modes) ──────────────────────────────────
+        iter_row = QWidget()
+        iter_h   = QHBoxLayout(iter_row)
         iter_h.setContentsMargins(0, 0, 0, 0)
         self.sp_iter = QDoubleSpinBox()
-        self.sp_iter.setRange(1.0, 5.0); self.sp_iter.setSingleStep(0.5)
-        self.sp_iter.setValue(2.0); self.sp_iter.setDecimals(1)
-        iter_h.addWidget(self.sp_iter); iter_h.addStretch(1)
+        self.sp_iter.setRange(1.0, 5.0)
+        self.sp_iter.setSingleStep(0.5)
+        self.sp_iter.setValue(2.0)
+        self.sp_iter.setDecimals(1)
+        iter_h.addWidget(self.sp_iter)
+        iter_h.addStretch(1)
         iter_form = QFormLayout()
         iter_form.addRow("Iterations (1–5):", iter_row)
         outer.addLayout(iter_form)
         outer.addStretch(1)
 
-        # ── Mutual exclusion wiring ───────────────────────────────────────────
-        # All advanced sliders — when any of these is > 0, disable simple denoise
-        self._advanced_sliders = [
-            self.sld_di, self.sld_dc,
-            self.sld_hf, self.sld_lf,
-            self.sld_ihf, self.sld_ilf,
-            self.sld_chf, self.sld_clf,
-            self.sld_fs,
-        ]
-        # sld_fs default is 50 (non-zero) so we track it differently —
-        # frequency scale only "counts" as active if any freq slider is > 0
-        self._freq_sliders = [
-            self.sld_hf, self.sld_lf,
-            self.sld_ihf, self.sld_ilf,
-            self.sld_chf, self.sld_clf,
-        ]
-        self._ic_sliders = [self.sld_di, self.sld_dc]
+        # ── Wire radio buttons ────────────────────────────────────────────────
+        self.rb_simple.toggled.connect(self._update_mode)
+        self.rb_ic.toggled.connect(self._update_mode)
+        self.rb_freq.toggled.connect(self._update_mode)
+        self._update_mode()
 
-        for sld in self._ic_sliders + self._freq_sliders:
-            sld.valueChanged.connect(self._update_simple_enabled)
+    def _update_mode(self):
+        simple = self.rb_simple.isChecked()
+        ic     = self.rb_ic.isChecked()
+        freq   = self.rb_freq.isChecked()
+        self._simple_box.setEnabled(simple)
+        self._ic_box.setEnabled(ic)
+        self._freq_box.setEnabled(freq)
 
-        # Simple denoise: when it's > 0, disable all advanced sliders
-        self.sld_dn.valueChanged.connect(self._update_advanced_enabled)
-
-        self._simple_box = simple_box
-        self._ic_box     = ic_box
-        self._adv_box    = adv_box
-
-    def _advanced_in_use(self) -> bool:
-        """True if any intensity/color or frequency slider is active."""
-        for sld in self._ic_sliders + self._freq_sliders:
-            if sld.value() > 0:
-                return True
-        return False
-
-    def _simple_in_use(self) -> bool:
-        return self.sld_dn.value() > 0
-
-    def _update_simple_enabled(self):
-        """Called when any advanced slider changes — disable simple if advanced active."""
-        in_use = self._advanced_in_use()
-        self.sld_dn.setEnabled(not in_use)
-        self._simple_box.setTitle(
-            "Simple  (disabled — Advanced options are active)"
-            if in_use else
-            "Simple  (single strength — disabled when Advanced options are used)"
-        )
-
-    def _update_advanced_enabled(self):
-        """Called when simple denoise slider changes — disable advanced if simple active."""
-        in_use = self._simple_in_use()
-        for sld in self._ic_sliders + self._freq_sliders:
-            sld.setEnabled(not in_use)
-        self._ic_box.setEnabled(not in_use)
-        self._adv_box.setEnabled(not in_use)
+    def _active_mode(self) -> str:
+        if self.rb_ic.isChecked():
+            return "ic"
+        if self.rb_freq.isChecked():
+            return "freq"
+        return "simple"
 
     def build_args(self) -> list[str]:
         args: list[str] = []
@@ -439,24 +430,25 @@ class _NXTPanel(QWidget):
                 args.append(flag)
                 args.append(f"{val:.2f}")
 
-        # Only one mode can be active at a time
-        if self._simple_in_use():
+        mode = self._active_mode()
+
+        if mode == "simple":
             _a("--denoise", self.sld_dn.value() / 100.0)
-        else:
-            _a("--denoise-intensity",           self.sld_di.value()  / 100.0)
-            _a("--denoise-color",               self.sld_dc.value()  / 100.0)
+
+        elif mode == "ic":
+            _a("--denoise-intensity", self.sld_di.value() / 100.0)
+            _a("--denoise-color",     self.sld_dc.value() / 100.0)
+
+        elif mode == "freq":
             _a("--denoise-high-freq",           self.sld_hf.value()  / 100.0)
             _a("--denoise-low-freq",            self.sld_lf.value()  / 100.0)
             _a("--denoise-intensity-high-freq", self.sld_ihf.value() / 100.0)
             _a("--denoise-intensity-low-freq",  self.sld_ilf.value() / 100.0)
             _a("--denoise-color-high-freq",     self.sld_chf.value() / 100.0)
             _a("--denoise-color-low-freq",      self.sld_clf.value() / 100.0)
-
-            # Frequency scale only matters if any freq slider is active
-            if any(s.value() > 0 for s in self._freq_sliders):
-                fs = self.sld_fs.value() / 10.0
-                if abs(fs - 5.0) > 0.05:
-                    args += ["--frequency-scale", f"{fs:.1f}"]
+            fs = self.sld_fs.value() / 10.0
+            if abs(fs - 5.0) > 0.05:
+                args += ["--frequency-scale", f"{fs:.1f}"]
 
         it = float(self.sp_iter.value())
         if abs(it - 2.0) > 0.05:
@@ -465,6 +457,8 @@ class _NXTPanel(QWidget):
         return args
 
     def save_settings(self, s: QSettings):
+        mode = self._active_mode()
+        s.setValue("rcastro/nxt_mode", mode)
         for attr, key in [
             ("sld_dn",  "rcastro/nxt_dn"),  ("sld_di",  "rcastro/nxt_di"),
             ("sld_dc",  "rcastro/nxt_dc"),  ("sld_hf",  "rcastro/nxt_hf"),
@@ -476,6 +470,14 @@ class _NXTPanel(QWidget):
         s.setValue("rcastro/nxt_iter", self.sp_iter.value())
 
     def load_settings(self, s: QSettings):
+        mode = str(s.value("rcastro/nxt_mode", "simple"))
+        if mode == "ic":
+            self.rb_ic.setChecked(True)
+        elif mode == "freq":
+            self.rb_freq.setChecked(True)
+        else:
+            self.rb_simple.setChecked(True)
+
         for attr, key, default in [
             ("sld_dn",  "rcastro/nxt_dn",  0), ("sld_di",  "rcastro/nxt_di",  0),
             ("sld_dc",  "rcastro/nxt_dc",  0), ("sld_hf",  "rcastro/nxt_hf",  0),
@@ -485,9 +487,7 @@ class _NXTPanel(QWidget):
         ]:
             getattr(self, attr).setValue(int(s.value(key, default)))
         self.sp_iter.setValue(float(s.value("rcastro/nxt_iter", 2.0)))
-        # Sync enabled states after loading
-        self._update_simple_enabled()
-        self._update_advanced_enabled()
+        self._update_mode()
 
 # ---------------------------------------------------------------------------
 # Per-product license / activation panel
