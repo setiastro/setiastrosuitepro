@@ -47,7 +47,20 @@ PRODUCT_LABELS = {
     "nxt": "NoiseXTerminator",
 }
 
-
+def _prefer_high_perf_gpu(exe_path: str) -> None:
+    if platform.system() != "Windows" or not exe_path:
+        return
+    try:
+        import winreg
+        full = os.path.abspath(exe_path)
+        with winreg.CreateKeyEx(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\DirectX\UserGpuPreferences",
+            0, winreg.KEY_SET_VALUE,
+        ) as key:
+            winreg.SetValueEx(key, full, 0, winreg.REG_SZ, "GpuPreference=2;")
+    except Exception:
+        pass
 # ---------------------------------------------------------------------------
 # Worker — runs any rc-astro subprocess, streams stdout+stderr
 # ---------------------------------------------------------------------------
@@ -705,7 +718,17 @@ class RCAstroDialog(QDialog):
         self.chk_overwrite = QCheckBox("Overwrite existing output files")
         self.chk_overwrite.setChecked(True)
         common_form.addRow("", self.chk_overwrite)
+        self.chk_high_perf_gpu = QCheckBox("Prefer high-performance GPU (NVIDIA)")
+        self.chk_high_perf_gpu.setChecked(True)
+        self.chk_high_perf_gpu.setToolTip(
+            "On hybrid-GPU Windows laptops, DirectML defaults to the Intel\n"
+            "integrated GPU. This tells Windows to run rc-astro on the\n"
+            "discrete NVIDIA GPU instead. No effect on macOS/Linux or\n"
+            "single-GPU systems.")
+        common_form.addRow("", self.chk_high_perf_gpu)
 
+        self.cmb_engine.currentTextChanged.connect(self._update_gpu_pref_visibility)
+        self._update_gpu_pref_visibility(self.cmb_engine.currentText())
         root.addWidget(common_box)
 
         # ── Run / Close ───────────────────────────────────────────────────────
@@ -726,6 +749,9 @@ class RCAstroDialog(QDialog):
         root.addWidget(foot)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
+    def _update_gpu_pref_visibility(self, engine: str):
+        self.chk_high_perf_gpu.setVisible(str(engine) not in ("dml", "cpu"))
+
     def _upgrade_cli(self):
         exe = self._get_exe()
         if not exe or not os.path.exists(exe):
@@ -820,7 +846,8 @@ class RCAstroDialog(QDialog):
             self.cmb_engine.setCurrentIndex(idx)
         self.chk_overwrite.setChecked(
             bool(s.value("rcastro/overwrite", True, type=bool)))
-
+        self.chk_high_perf_gpu.setChecked(
+            bool(s.value("rcastro/high_perf_gpu", True, type=bool)))
         self.bxt_panel.load_settings(s)
         self.sxt_panel.load_settings(s)
         self.nxt_panel.load_settings(s)
@@ -833,6 +860,7 @@ class RCAstroDialog(QDialog):
         s = QSettings()
         s.setValue("rcastro/engine",   self.cmb_engine.currentText())
         s.setValue("rcastro/overwrite", self.chk_overwrite.isChecked())
+        s.setValue("rcastro/high_perf_gpu", self.chk_high_perf_gpu.isChecked())
         s.setValue("rcastro/last_tab",  self.tabs.currentIndex())
         self.bxt_panel.save_settings(s)
         self.sxt_panel.save_settings(s)
@@ -918,7 +946,8 @@ class RCAstroDialog(QDialog):
         cmd += ["--depth", "32F"]
         if self.chk_overwrite.isChecked():
             cmd.append("--overwrite")
-
+        if self.cmb_engine.currentText() != "cpu" and self.chk_high_perf_gpu.isChecked():
+            _prefer_high_perf_gpu(exe)
         # ── Progress dialog ───────────────────────────────────────────────────
         dlg = _ProgressDialog(self, f"{label} — Processing")
         dlg.set_stage(f"Launching {label}…")
@@ -1301,7 +1330,8 @@ def run_rcastro_via_preset(main, preset: dict | None = None, *, doc=None):
     cmd = [exe, "--no-banner", product, input_path]
     cmd += args
     cmd += ["--engine", engine, "--depth", "32F", "--overwrite"]
-
+    if engine != "cpu" and bool(s.value("rcastro/high_perf_gpu", True, type=bool)):
+        _prefer_high_perf_gpu(exe)
     label = PRODUCT_LABELS.get(product, product.upper())
 
     # Show a simple non-blocking progress dialog
