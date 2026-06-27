@@ -26,7 +26,7 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel,
     QPushButton, QComboBox, QDoubleSpinBox, QSpinBox,
     QGroupBox, QSlider, QFileDialog, QMessageBox, QProgressBar,
-    QWidget, QSizePolicy, QCheckBox, QTabWidget, QTextEdit,
+    QWidget, QSizePolicy, QCheckBox, QRadioButton, QTabWidget, QTextEdit,
     QLineEdit, QApplication, QScrollArea,
 )
 from PyQt6.QtGui import QFont
@@ -47,7 +47,20 @@ PRODUCT_LABELS = {
     "nxt": "NoiseXTerminator",
 }
 
-
+def _prefer_high_perf_gpu(exe_path: str) -> None:
+    if platform.system() != "Windows" or not exe_path:
+        return
+    try:
+        import winreg
+        full = os.path.abspath(exe_path)
+        with winreg.CreateKeyEx(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\DirectX\UserGpuPreferences",
+            0, winreg.KEY_SET_VALUE,
+        ) as key:
+            winreg.SetValueEx(key, full, 0, winreg.REG_SZ, "GpuPreference=2;")
+    except Exception:
+        pass
 # ---------------------------------------------------------------------------
 # Worker — runs any rc-astro subprocess, streams stdout+stderr
 # ---------------------------------------------------------------------------
@@ -183,6 +196,18 @@ class _BXTPanel(QWidget):
         form = QFormLayout(self)
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
 
+        # Correct Only checkbox — disables star sharpening when checked
+        self.chk_correct_only = QCheckBox(
+            "Correct Only  (PSF aberration correction without any sharpening)"
+        )
+        self.chk_correct_only.setChecked(False)
+        self.chk_correct_only.setToolTip(
+            "Passes --correct-only to BXT.\n"
+            "Corrects PSF aberrations without applying any star sharpening.\n"
+            "Equivalent to leaving Sharpen Stars at 0."
+        )
+        form.addRow("", self.chk_correct_only)
+
         self.sld_ss  = _form_slider(form, "Sharpen Stars (0 – 0.7):",
                                     0.0, 0.7, 0.0, decimals=2, scale=100)
         self.sld_ash = _form_slider(form, "Adjust Star Halos (−0.5 – 0.5):",
@@ -208,24 +233,46 @@ class _BXTPanel(QWidget):
         note.setStyleSheet("color:#888; font-size:11px;")
         form.addRow("", note)
 
+        # Wire Correct Only → disable/enable Sharpen Stars slider
+        self.chk_correct_only.toggled.connect(self._on_correct_only_toggled)
+
+    def _on_correct_only_toggled(self, checked: bool):
+        self.sld_ss.setEnabled(not checked)
+        self.sld_ash.setEnabled(not checked)
+        self.sld_sn.setEnabled(not checked)
+
     def build_args(self) -> list[str]:
         args: list[str] = []
-        ss = self.sld_ss.value() / 100.0
-        if ss > 0:
-            args += ["--sharpen-stars", f"{ss:.2f}"]
-        ash = self.sld_ash.value() / 100.0
-        if abs(ash) > 0:
-            args += ["--adjust-star-halos", f"{ash:.2f}"]
-        if not self.chk_auto_nsr.isChecked():
-            nsr = self.sld_nsr.value() / 10.0
-            args += ["--no-auto-nonstellar-radius",
-                     "--nonstellar-radius", f"{nsr:.1f}"]
-        sn = self.sld_sn.value() / 100.0
-        if sn > 0:
-            args += ["--sharpen-nonstellar", f"{sn:.2f}"]
+
+        if self.chk_correct_only.isChecked():
+            args.append("--correct-only")
+            # --correct-only forces all sharpening to 0 — only NSR is still valid
+            if not self.chk_auto_nsr.isChecked():
+                nsr = self.sld_nsr.value() / 10.0
+                args += ["--no-auto-nonstellar-radius",
+                         "--nonstellar-radius", f"{nsr:.1f}"]
+        else:
+            ss = self.sld_ss.value() / 100.0
+            if ss > 0:
+                args += ["--sharpen-stars", f"{ss:.2f}"]
+
+            ash = self.sld_ash.value() / 100.0
+            if abs(ash) > 0:
+                args += ["--adjust-star-halos", f"{ash:.2f}"]
+
+            if not self.chk_auto_nsr.isChecked():
+                nsr = self.sld_nsr.value() / 10.0
+                args += ["--no-auto-nonstellar-radius",
+                         "--nonstellar-radius", f"{nsr:.1f}"]
+
+            sn = self.sld_sn.value() / 100.0
+            if sn > 0:
+                args += ["--sharpen-nonstellar", f"{sn:.2f}"]
+
         return args
 
     def save_settings(self, s: QSettings):
+        s.setValue("rcastro/bxt_correct_only", self.chk_correct_only.isChecked())
         s.setValue("rcastro/bxt_ss",   self.sld_ss.value())
         s.setValue("rcastro/bxt_ash",  self.sld_ash.value())
         s.setValue("rcastro/bxt_auto", self.chk_auto_nsr.isChecked())
@@ -233,12 +280,15 @@ class _BXTPanel(QWidget):
         s.setValue("rcastro/bxt_sn",   self.sld_sn.value())
 
     def load_settings(self, s: QSettings):
+        self.chk_correct_only.setChecked(
+            bool(s.value("rcastro/bxt_correct_only", False, type=bool)))
         self.sld_ss.setValue(          int( s.value("rcastro/bxt_ss",   0)))
         self.sld_ash.setValue(         int( s.value("rcastro/bxt_ash",  0)))
         self.chk_auto_nsr.setChecked( bool( s.value("rcastro/bxt_auto", True, type=bool)))
         self.sld_nsr.setValue(         int( s.value("rcastro/bxt_nsr",  0)))
         self.sld_sn.setValue(          int( s.value("rcastro/bxt_sn",   0)))
-
+        # Sync enabled state after load
+        self._on_correct_only_toggled(self.chk_correct_only.isChecked())
 
 # ---------------------------------------------------------------------------
 # SXT parameter panel
@@ -291,54 +341,99 @@ class _SXTPanel(QWidget):
 # ---------------------------------------------------------------------------
 # NXT parameter panel
 # ---------------------------------------------------------------------------
-
 class _NXTPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
 
-        # Simple
-        simple_box  = QGroupBox("Simple  (single strength across all channels)")
-        simple_form = QFormLayout(simple_box)
-        self.sld_dn  = _form_slider(simple_form, "Denoise (0–1):",           0, 1, 0.0)
-        self.sld_di  = _form_slider(simple_form, "Denoise Intensity (0–1):", 0, 1, 0.0)
-        self.sld_dc  = _form_slider(simple_form, "Denoise Color (0–1):",     0, 1, 0.0)
-        outer.addWidget(simple_box)
+        # ── Mode selector ─────────────────────────────────────────────────────
+        mode_box = QGroupBox("Denoise Mode")
+        mode_h   = QHBoxLayout(mode_box)
+        self.rb_simple = QRadioButton("Simple")
+        self.rb_ic     = QRadioButton("Intensity && Color")
+        self.rb_freq   = QRadioButton("Frequency")
+        self.rb_simple.setChecked(True)
+        for rb in (self.rb_simple, self.rb_ic, self.rb_freq):
+            mode_h.addWidget(rb)
+        mode_h.addStretch(1)
+        outer.addWidget(mode_box)
 
-        # Advanced frequency
-        adv_box  = QGroupBox("Advanced frequency mode")
-        adv_form = QFormLayout(adv_box)
-        self.sld_hf  = _form_slider(adv_form, "High-freq (0–1):",              0, 1, 0.0)
-        self.sld_lf  = _form_slider(adv_form, "Low-freq (0–1):",               0, 1, 0.0)
-        self.sld_ihf = _form_slider(adv_form, "Intensity High-freq (0–1):",    0, 1, 0.0)
-        self.sld_ilf = _form_slider(adv_form, "Intensity Low-freq (0–1):",     0, 1, 0.0)
-        self.sld_chf = _form_slider(adv_form, "Color High-freq (0–1):",        0, 1, 0.0)
-        self.sld_clf = _form_slider(adv_form, "Color Low-freq (0–1):",         0, 1, 0.0)
+        # ── Simple ────────────────────────────────────────────────────────────
+        self._simple_box = QGroupBox("Simple")
+        simple_form = QFormLayout(self._simple_box)
+        self.sld_dn = _form_slider(simple_form, "Denoise (0–1):", 0, 1, 0.0)
+        outer.addWidget(self._simple_box)
 
-        # Frequency scale slider (1–100 px, stored *10 for integer slider)
-        fs_row = QWidget(); fs_h = QHBoxLayout(fs_row)
-        fs_h.setContentsMargins(0, 0, 0, 0); fs_h.setSpacing(6)
-        self.sld_fs = QSlider(Qt.Orientation.Horizontal)
-        self.sld_fs.setRange(10, 1000); self.sld_fs.setValue(50)
-        self.lbl_fs = QLabel("5.0"); self.lbl_fs.setFixedWidth(48)
+        # ── Intensity & Color ─────────────────────────────────────────────────
+        self._ic_box = QGroupBox("Intensity && Color")
+        ic_form = QFormLayout(self._ic_box)
+        self.sld_di = _form_slider(ic_form, "Denoise Intensity (0–1):", 0, 1, 0.0)
+        self.sld_dc = _form_slider(ic_form, "Denoise Color (0–1):",     0, 1, 0.0)
+        outer.addWidget(self._ic_box)
+
+        # ── Frequency ─────────────────────────────────────────────────────────
+        self._freq_box = QGroupBox("Frequency")
+        freq_form = QFormLayout(self._freq_box)
+        self.sld_hf  = _form_slider(freq_form, "High-freq (0–1):",              0, 1, 0.0)
+        self.sld_lf  = _form_slider(freq_form, "Low-freq (0–1):",               0, 1, 0.0)
+        self.sld_ihf = _form_slider(freq_form, "Intensity High-freq (0–1):",    0, 1, 0.0)
+        self.sld_ilf = _form_slider(freq_form, "Intensity Low-freq (0–1):",     0, 1, 0.0)
+        self.sld_chf = _form_slider(freq_form, "Color High-freq (0–1):",        0, 1, 0.0)
+        self.sld_clf = _form_slider(freq_form, "Color Low-freq (0–1):",         0, 1, 0.0)
+
+        fs_row = QWidget()
+        fs_h   = QHBoxLayout(fs_row)
+        fs_h.setContentsMargins(0, 0, 0, 0)
+        fs_h.setSpacing(6)
+        self.sld_fs  = QSlider(Qt.Orientation.Horizontal)
+        self.sld_fs.setRange(10, 1000)
+        self.sld_fs.setValue(50)
+        self.lbl_fs  = QLabel("5.0")
+        self.lbl_fs.setFixedWidth(48)
         self.sld_fs.valueChanged.connect(
             lambda v: self.lbl_fs.setText(f"{v/10.0:.1f}"))
-        fs_h.addWidget(self.sld_fs, 1); fs_h.addWidget(self.lbl_fs)
-        adv_form.addRow("Frequency Scale (1–100 px):", fs_row)
-        outer.addWidget(adv_box)
+        fs_h.addWidget(self.sld_fs, 1)
+        fs_h.addWidget(self.lbl_fs)
+        freq_form.addRow("Frequency Scale (1–100 px):", fs_row)
+        outer.addWidget(self._freq_box)
 
-        # Iterations
-        iter_row = QWidget(); iter_h = QHBoxLayout(iter_row)
+        # ── Iterations (common to all modes) ──────────────────────────────────
+        iter_row = QWidget()
+        iter_h   = QHBoxLayout(iter_row)
         iter_h.setContentsMargins(0, 0, 0, 0)
         self.sp_iter = QDoubleSpinBox()
-        self.sp_iter.setRange(1.0, 5.0); self.sp_iter.setSingleStep(0.5)
-        self.sp_iter.setValue(2.0); self.sp_iter.setDecimals(1)
-        iter_h.addWidget(self.sp_iter); iter_h.addStretch(1)
+        self.sp_iter.setRange(1.0, 5.0)
+        self.sp_iter.setSingleStep(0.5)
+        self.sp_iter.setValue(2.0)
+        self.sp_iter.setDecimals(1)
+        iter_h.addWidget(self.sp_iter)
+        iter_h.addStretch(1)
         iter_form = QFormLayout()
         iter_form.addRow("Iterations (1–5):", iter_row)
         outer.addLayout(iter_form)
         outer.addStretch(1)
+
+        # ── Wire radio buttons ────────────────────────────────────────────────
+        self.rb_simple.toggled.connect(self._update_mode)
+        self.rb_ic.toggled.connect(self._update_mode)
+        self.rb_freq.toggled.connect(self._update_mode)
+        self._update_mode()
+
+    def _update_mode(self):
+        simple = self.rb_simple.isChecked()
+        ic     = self.rb_ic.isChecked()
+        freq   = self.rb_freq.isChecked()
+        self._simple_box.setEnabled(simple)
+        self._ic_box.setEnabled(ic)
+        self._freq_box.setEnabled(freq)
+
+    def _active_mode(self) -> str:
+        if self.rb_ic.isChecked():
+            return "ic"
+        if self.rb_freq.isChecked():
+            return "freq"
+        return "simple"
 
     def build_args(self) -> list[str]:
         args: list[str] = []
@@ -348,19 +443,25 @@ class _NXTPanel(QWidget):
                 args.append(flag)
                 args.append(f"{val:.2f}")
 
-        _a("--denoise",                     self.sld_dn.value()  / 100.0)
-        _a("--denoise-intensity",           self.sld_di.value()  / 100.0)
-        _a("--denoise-color",               self.sld_dc.value()  / 100.0)
-        _a("--denoise-high-freq",           self.sld_hf.value()  / 100.0)
-        _a("--denoise-low-freq",            self.sld_lf.value()  / 100.0)
-        _a("--denoise-intensity-high-freq", self.sld_ihf.value() / 100.0)
-        _a("--denoise-intensity-low-freq",  self.sld_ilf.value() / 100.0)
-        _a("--denoise-color-high-freq",     self.sld_chf.value() / 100.0)
-        _a("--denoise-color-low-freq",      self.sld_clf.value() / 100.0)
+        mode = self._active_mode()
 
-        fs = self.sld_fs.value() / 10.0
-        if abs(fs - 5.0) > 0.05:
-            args += ["--frequency-scale", f"{fs:.1f}"]
+        if mode == "simple":
+            _a("--denoise", self.sld_dn.value() / 100.0)
+
+        elif mode == "ic":
+            _a("--denoise-intensity", self.sld_di.value() / 100.0)
+            _a("--denoise-color",     self.sld_dc.value() / 100.0)
+
+        elif mode == "freq":
+            _a("--denoise-high-freq",           self.sld_hf.value()  / 100.0)
+            _a("--denoise-low-freq",            self.sld_lf.value()  / 100.0)
+            _a("--denoise-intensity-high-freq", self.sld_ihf.value() / 100.0)
+            _a("--denoise-intensity-low-freq",  self.sld_ilf.value() / 100.0)
+            _a("--denoise-color-high-freq",     self.sld_chf.value() / 100.0)
+            _a("--denoise-color-low-freq",      self.sld_clf.value() / 100.0)
+            fs = self.sld_fs.value() / 10.0
+            if abs(fs - 5.0) > 0.05:
+                args += ["--frequency-scale", f"{fs:.1f}"]
 
         it = float(self.sp_iter.value())
         if abs(it - 2.0) > 0.05:
@@ -369,6 +470,8 @@ class _NXTPanel(QWidget):
         return args
 
     def save_settings(self, s: QSettings):
+        mode = self._active_mode()
+        s.setValue("rcastro/nxt_mode", mode)
         for attr, key in [
             ("sld_dn",  "rcastro/nxt_dn"),  ("sld_di",  "rcastro/nxt_di"),
             ("sld_dc",  "rcastro/nxt_dc"),  ("sld_hf",  "rcastro/nxt_hf"),
@@ -380,6 +483,14 @@ class _NXTPanel(QWidget):
         s.setValue("rcastro/nxt_iter", self.sp_iter.value())
 
     def load_settings(self, s: QSettings):
+        mode = str(s.value("rcastro/nxt_mode", "simple"))
+        if mode == "ic":
+            self.rb_ic.setChecked(True)
+        elif mode == "freq":
+            self.rb_freq.setChecked(True)
+        else:
+            self.rb_simple.setChecked(True)
+
         for attr, key, default in [
             ("sld_dn",  "rcastro/nxt_dn",  0), ("sld_di",  "rcastro/nxt_di",  0),
             ("sld_dc",  "rcastro/nxt_dc",  0), ("sld_hf",  "rcastro/nxt_hf",  0),
@@ -389,7 +500,7 @@ class _NXTPanel(QWidget):
         ]:
             getattr(self, attr).setValue(int(s.value(key, default)))
         self.sp_iter.setValue(float(s.value("rcastro/nxt_iter", 2.0)))
-
+        self._update_mode()
 
 # ---------------------------------------------------------------------------
 # Per-product license / activation panel
@@ -607,7 +718,17 @@ class RCAstroDialog(QDialog):
         self.chk_overwrite = QCheckBox("Overwrite existing output files")
         self.chk_overwrite.setChecked(True)
         common_form.addRow("", self.chk_overwrite)
+        self.chk_high_perf_gpu = QCheckBox("Prefer high-performance GPU (NVIDIA)")
+        self.chk_high_perf_gpu.setChecked(True)
+        self.chk_high_perf_gpu.setToolTip(
+            "On hybrid-GPU Windows laptops, DirectML defaults to the Intel\n"
+            "integrated GPU. This tells Windows to run rc-astro on the\n"
+            "discrete NVIDIA GPU instead. No effect on macOS/Linux or\n"
+            "single-GPU systems.")
+        common_form.addRow("", self.chk_high_perf_gpu)
 
+        self.cmb_engine.currentTextChanged.connect(self._update_gpu_pref_visibility)
+        self._update_gpu_pref_visibility(self.cmb_engine.currentText())
         root.addWidget(common_box)
 
         # ── Run / Close ───────────────────────────────────────────────────────
@@ -628,6 +749,9 @@ class RCAstroDialog(QDialog):
         root.addWidget(foot)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
+    def _update_gpu_pref_visibility(self, engine: str):
+        self.chk_high_perf_gpu.setVisible(str(engine) not in ("dml", "cpu"))
+
     def _upgrade_cli(self):
         exe = self._get_exe()
         if not exe or not os.path.exists(exe):
@@ -722,7 +846,8 @@ class RCAstroDialog(QDialog):
             self.cmb_engine.setCurrentIndex(idx)
         self.chk_overwrite.setChecked(
             bool(s.value("rcastro/overwrite", True, type=bool)))
-
+        self.chk_high_perf_gpu.setChecked(
+            bool(s.value("rcastro/high_perf_gpu", True, type=bool)))
         self.bxt_panel.load_settings(s)
         self.sxt_panel.load_settings(s)
         self.nxt_panel.load_settings(s)
@@ -735,6 +860,7 @@ class RCAstroDialog(QDialog):
         s = QSettings()
         s.setValue("rcastro/engine",   self.cmb_engine.currentText())
         s.setValue("rcastro/overwrite", self.chk_overwrite.isChecked())
+        s.setValue("rcastro/high_perf_gpu", self.chk_high_perf_gpu.isChecked())
         s.setValue("rcastro/last_tab",  self.tabs.currentIndex())
         self.bxt_panel.save_settings(s)
         self.sxt_panel.save_settings(s)
@@ -820,7 +946,8 @@ class RCAstroDialog(QDialog):
         cmd += ["--depth", "32F"]
         if self.chk_overwrite.isChecked():
             cmd.append("--overwrite")
-
+        if self.cmb_engine.currentText() != "cpu" and self.chk_high_perf_gpu.isChecked():
+            _prefer_high_perf_gpu(exe)
         # ── Progress dialog ───────────────────────────────────────────────────
         dlg = _ProgressDialog(self, f"{label} — Processing")
         dlg.set_stage(f"Launching {label}…")
@@ -1055,6 +1182,7 @@ class RCAstroPresetDialog(QDialog):
         out["args"] = panel.build_args()
         # Also store human-readable params for re-display
         if product == "bxt":
+            out["correct_only"]        = self._bxt.chk_correct_only.isChecked()
             out["sharpen_stars"]       = self._bxt.sld_ss.value()  / 100.0
             out["adjust_star_halos"]   = self._bxt.sld_ash.value() / 100.0
             out["auto_nsr"]            = self._bxt.chk_auto_nsr.isChecked()
@@ -1073,6 +1201,8 @@ class RCAstroPresetDialog(QDialog):
 
 
 def _apply_bxt_preset(panel: _BXTPanel, p: dict):
+    if "correct_only" in p:
+        panel.chk_correct_only.setChecked(bool(p["correct_only"]))
     if "sharpen_stars" in p:
         panel.sld_ss.setValue(int(float(p["sharpen_stars"]) * 100))
     if "adjust_star_halos" in p:
@@ -1200,7 +1330,8 @@ def run_rcastro_via_preset(main, preset: dict | None = None, *, doc=None):
     cmd = [exe, "--no-banner", product, input_path]
     cmd += args
     cmd += ["--engine", engine, "--depth", "32F", "--overwrite"]
-
+    if engine != "cpu" and bool(s.value("rcastro/high_perf_gpu", True, type=bool)):
+        _prefer_high_perf_gpu(exe)
     label = PRODUCT_LABELS.get(product, product.upper())
 
     # Show a simple non-blocking progress dialog

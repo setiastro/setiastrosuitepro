@@ -1121,7 +1121,7 @@ def _install_torch(
         status_cb("ROCm install attempts failed. Falling back to other backends…")
 
     # ── Intel XPU ─────────────────────────────────────────────────────────────
-    INTEL_XPU_INDEX = "https://pytorch-extension.intel.com/release-whl/stable/xpu/us/"
+    INTEL_XPU_INDEX = "https://download.pytorch.org/whl/xpu"
     if prefer_xpu and sysname in ("Windows", "Linux"):
         status_cb("Trying PyTorch Intel XPU wheels…")
         ladder = _TORCH_VERSION_LADDER.get((ver[0], ver[1]), ["2.11.*"])
