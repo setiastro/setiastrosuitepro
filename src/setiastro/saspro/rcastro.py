@@ -48,6 +48,40 @@ PRODUCT_LABELS = {
 }
 
 
+def _prefer_high_perf_gpu(exe_path: str) -> None:
+    """
+    Force Windows to run ``exe_path`` on the high-performance (discrete/NVIDIA)
+    GPU rather than the integrated (Intel) GPU.
+
+    The RC-Astro CLI uses DirectML on Windows, which defaults to GPU adapter 0.
+    On hybrid laptops Windows usually enumerates the Intel iGPU as adapter 0, so
+    BlurX/StarX/NoiseX run on the slow integrated chip. The RC-Astro CLI exposes
+    no adapter/device flag, so adapter choice is owned by the OS.
+
+    We write the same per-application preference that Windows
+    Settings → System → Display → Graphics writes:
+        HKCU\\Software\\Microsoft\\DirectX\\UserGpuPreferences
+        <full exe path> = "GpuPreference=2;"   (2 = High performance)
+
+    This persists, so it also fixes standalone CLI runs and future launches.
+    No-op on non-Windows platforms or if the registry can't be written.
+    """
+    if platform.system() != "Windows" or not exe_path:
+        return
+    try:
+        import winreg
+        full = os.path.abspath(exe_path)
+        with winreg.CreateKeyEx(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\DirectX\UserGpuPreferences",
+            0, winreg.KEY_SET_VALUE,
+        ) as key:
+            winreg.SetValueEx(key, full, 0, winreg.REG_SZ, "GpuPreference=2;")
+    except Exception:
+        # Best-effort only — never block a run because the hint failed.
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Worker — runs any rc-astro subprocess, streams stdout+stderr
 # ---------------------------------------------------------------------------
@@ -608,6 +642,19 @@ class RCAstroDialog(QDialog):
         self.chk_overwrite.setChecked(True)
         common_form.addRow("", self.chk_overwrite)
 
+        self.chk_high_perf_gpu = QCheckBox("Prefer high-performance GPU (NVIDIA)")
+        self.chk_high_perf_gpu.setChecked(True)
+        self.chk_high_perf_gpu.setToolTip(
+            "On hybrid-GPU Windows laptops, DirectML defaults to the Intel\n"
+            "integrated GPU. This tells Windows to run rc-astro on the\n"
+            "discrete NVIDIA GPU instead. No effect on macOS/Linux or\n"
+            "single-GPU systems.")
+        common_form.addRow("", self.chk_high_perf_gpu)
+
+        # Only relevant when the backend is auto-selected; hide for explicit dml/cpu.
+        self.cmb_engine.currentTextChanged.connect(self._update_gpu_pref_visibility)
+        self._update_gpu_pref_visibility(self.cmb_engine.currentText())
+
         root.addWidget(common_box)
 
         # ── Run / Close ───────────────────────────────────────────────────────
@@ -710,6 +757,10 @@ class RCAstroDialog(QDialog):
 
     # ── Settings ──────────────────────────────────────────────────────────────
 
+    def _update_gpu_pref_visibility(self, engine: str):
+        # Hide the NVIDIA preference when the user explicitly picks dml or cpu.
+        self.chk_high_perf_gpu.setVisible(str(engine) not in ("dml", "cpu"))
+
     def _load_settings(self):
         s = QSettings()
         exe = str(s.value("rcastro/exe_path", ""))
@@ -722,6 +773,8 @@ class RCAstroDialog(QDialog):
             self.cmb_engine.setCurrentIndex(idx)
         self.chk_overwrite.setChecked(
             bool(s.value("rcastro/overwrite", True, type=bool)))
+        self.chk_high_perf_gpu.setChecked(
+            bool(s.value("rcastro/high_perf_gpu", True, type=bool)))
 
         self.bxt_panel.load_settings(s)
         self.sxt_panel.load_settings(s)
@@ -735,6 +788,7 @@ class RCAstroDialog(QDialog):
         s = QSettings()
         s.setValue("rcastro/engine",   self.cmb_engine.currentText())
         s.setValue("rcastro/overwrite", self.chk_overwrite.isChecked())
+        s.setValue("rcastro/high_perf_gpu", self.chk_high_perf_gpu.isChecked())
         s.setValue("rcastro/last_tab",  self.tabs.currentIndex())
         self.bxt_panel.save_settings(s)
         self.sxt_panel.save_settings(s)
@@ -814,12 +868,17 @@ class RCAstroDialog(QDialog):
         stars_path  = os.path.join(work_dir, f"input-{product}-stars.tif")
 
         # ── Build full command ────────────────────────────────────────────────
+        engine = self.cmb_engine.currentText()
         cmd = [exe, "--no-banner", product, input_path]
         cmd += panel_args
-        cmd += ["--engine", self.cmb_engine.currentText()]
+        cmd += ["--engine", engine]
         cmd += ["--depth", "32F"]
         if self.chk_overwrite.isChecked():
             cmd.append("--overwrite")
+
+        # Prefer the discrete NVIDIA GPU for DirectML (Windows hybrid-GPU laptops)
+        if engine != "cpu" and self.chk_high_perf_gpu.isChecked():
+            _prefer_high_perf_gpu(exe)
 
         # ── Progress dialog ───────────────────────────────────────────────────
         dlg = _ProgressDialog(self, f"{label} — Processing")
@@ -1200,6 +1259,10 @@ def run_rcastro_via_preset(main, preset: dict | None = None, *, doc=None):
     cmd = [exe, "--no-banner", product, input_path]
     cmd += args
     cmd += ["--engine", engine, "--depth", "32F", "--overwrite"]
+
+    # Prefer the discrete NVIDIA GPU for DirectML (Windows hybrid-GPU laptops)
+    if engine != "cpu" and bool(s.value("rcastro/high_perf_gpu", True, type=bool)):
+        _prefer_high_perf_gpu(exe)
 
     label = PRODUCT_LABELS.get(product, product.upper())
 
