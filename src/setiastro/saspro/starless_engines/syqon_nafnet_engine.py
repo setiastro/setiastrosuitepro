@@ -393,7 +393,9 @@ def _pad_to_multiple(t, multiple=8, torch=None):
     if pad_h == 0 and pad_w == 0:
         return t, H, W
     import torch.nn.functional as F
-    t = F.pad(t, (0, pad_w, 0, pad_h), mode="reflect")
+    # reflect requires pad < input dim; replicate has no such restriction
+    mode = "reflect" if (pad_h < H and pad_w < W) else "replicate"
+    t = F.pad(t, (0, pad_w, 0, pad_h), mode=mode)
     return t, H, W
 
 

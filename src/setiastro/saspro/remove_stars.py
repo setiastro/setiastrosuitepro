@@ -1258,7 +1258,9 @@ class SyQonStarlessDialog(QDialog):
 
         self._set_busy(False)
         self.lbl.setText("Complete!")
-        self.close()
+        # Only close if running as a real dialog, not embedded in SyQon Tools hub
+        if self.windowFlags() & Qt.WindowType.Dialog:
+            self.close()
 
     def _model_dst_path(self) -> Path:
         return _syqon_model_path(self.data_dir, self._model_kind())
@@ -1526,8 +1528,14 @@ class SyQonStarlessDialog(QDialog):
                 exe_path=exe_path,
                 tile=tile,
                 overlap=overlap,
-                use_temp_stretch=use_temp_stretch,
-                backend="auto",
+                pad=pad_pixels if pad_edges else 0,
+                use_mtf=bool(self.chk_mtf.isChecked()),
+                mtf_target=float(self.spin_mtf_median.value()),
+                use_amp=bool(self.chk_amp.isChecked()),
+                amp_dtype="fp16",
+                channel_mode="rgb+perchan" if self.chk_rgb_perchan.isChecked() else "rgb",
+                use_cpu=False,
+                no_dml=False,
                 parent=self,
             )
             self.proc_thr.progress.connect(self._on_worker_progress)
@@ -1639,22 +1647,35 @@ class _SyQonStandaloneCLIThread(QThread):
         exe_path: str,
         tile: int,
         overlap: int,
-        use_temp_stretch: bool,
-        backend: str,
+        pad: int,
+        use_mtf: bool,
+        mtf_target: float,
+        use_amp: bool,
+        amp_dtype: str,
+        channel_mode: str,
+        use_cpu: bool,
+        no_dml: bool,
         parent=None,
     ):
         super().__init__(parent)
-        self.input_rgb01 = np.asarray(input_rgb01, dtype=np.float32)
-        self.exe_path = str(exe_path)
-        self.tile = int(tile)
-        self.overlap = int(overlap)
-        self.use_temp_stretch = bool(use_temp_stretch)
-        self.backend = "Auto"
-        self._cancel = False
-
-        self._tmp_in = None
-        self._tmp_out = None
-        self._p = None
+        self.input_rgb01  = np.asarray(input_rgb01, dtype=np.float32)
+        self.exe_path     = str(exe_path)
+        self.tile         = int(tile)
+        self.overlap      = int(overlap)
+        self.pad          = int(pad)
+        self.use_mtf      = bool(use_mtf)
+        self.mtf_target   = float(mtf_target)
+        self.use_amp      = bool(use_amp)
+        self.amp_dtype    = (amp_dtype or "fp16").lower().strip()
+        self.channel_mode = (channel_mode or "rgb").strip().lower()
+        self.use_cpu      = bool(use_cpu)
+        self.no_dml       = bool(no_dml)
+        self._cancel      = False
+        self._tmp_in      = None
+        self._tmp_out     = None
+        self._tmp_stars   = None
+        self._tmp_json    = None
+        self._p           = None
 
     def cancel(self):
         self._cancel = True
@@ -1668,88 +1689,54 @@ class _SyQonStandaloneCLIThread(QThread):
         self.progress.emit(int(np.clip(pct, 0, 100)), str(stage or ""))
 
     def run(self):
-        import threading
-        import re
+        import threading, re
 
         info = {
-            "engine": "syqon_standalone_cli",
+            "engine":   "syqon_standalone_cli",
             "exe_path": self.exe_path,
-            "tile": int(self.tile),
-            "overlap": int(self.overlap),
-            "temp_stretch": bool(self.use_temp_stretch),
-            "backend_requested": str(self.backend),
+            "tile":     self.tile,
+            "overlap":  self.overlap,
+            "pad":      self.pad,
         }
 
         stdout_lines = []
         stderr_lines = []
 
-        # real progress patterns from Starless CLI output
-        re_tile = re.compile(r"tile\s+(\d+)\s*/\s*(\d+)", re.IGNORECASE)
         re_pct_tiles = re.compile(r"\[(\d+)%\]\s*(\d+)\s*/\s*(\d+)", re.IGNORECASE)
+        re_tile      = re.compile(r"tile\s+(\d+)\s*/\s*(\d+)",         re.IGNORECASE)
 
-        progress_state = {
-            "done": 0,
-            "total": 0,
-            "pct": 0,
-        }
-
-        def _update_progress_from_line(line: str):
-            line_s = line.strip()
-
-            m = re_pct_tiles.search(line_s)
+        def _update_progress(line: str):
+            s = line.strip()
+            m = re_pct_tiles.search(s)
             if m:
-                pct = int(m.group(1))
-                done = int(m.group(2))
-                total = int(m.group(3))
-                progress_state["pct"] = pct
-                progress_state["done"] = done
-                progress_state["total"] = total
-
+                pct, done, total = int(m.group(1)), int(m.group(2)), int(m.group(3))
                 if total > 0 and done >= max(1, total - 2):
-                    self._emit(
-                        min(pct, 99),
-                        "Waiting on Starless CLI to stitch, finalize processing, and write the output file…"
-                    )
+                    self._emit(min(pct, 99), "Stitching and writing output…")
                 else:
                     self._emit(pct, f"Standalone CLI: {done}/{total} tiles")
                 return
-
-            m = re_tile.search(line_s)
+            m = re_tile.search(s)
             if m:
-                done = int(m.group(1))
-                total = int(m.group(2))
+                done, total = int(m.group(1)), int(m.group(2))
                 pct = int(round(100.0 * done / max(total, 1)))
-                progress_state["pct"] = pct
-                progress_state["done"] = done
-                progress_state["total"] = total
-
                 if total > 0 and done >= max(1, total - 2):
-                    self._emit(
-                        min(pct, 99),
-                        "Waiting on Starless CLI to stitch, finalize processing, and write the output file…"
-                    )
+                    self._emit(min(pct, 99), "Stitching and writing output…")
                 else:
                     self._emit(pct, f"Standalone CLI: {done}/{total} tiles")
-                return
 
         def _reader(pipe, label, sink):
             try:
-                while True:
-                    line = pipe.readline()
-                    if not line:
-                        break
+                for line in pipe:
                     line = line.rstrip("\r\n")
                     sink.append(line)
                     print(f"[Starless {label}] {line}", flush=True)
-
                     if label == "stdout":
                         try:
-                            _update_progress_from_line(line)
-                        except Exception as e:
-                            print(f"[Starless progress parse error] {type(e).__name__}: {e}", flush=True)
-
+                            _update_progress(line)
+                        except Exception:
+                            pass
             except Exception as e:
-                print(f"[Starless {label} reader error] {type(e).__name__}: {e}", flush=True)
+                print(f"[Starless {label} reader] {type(e).__name__}: {e}", flush=True)
 
         try:
             if self._cancel:
@@ -1757,14 +1744,16 @@ class _SyQonStandaloneCLIThread(QThread):
 
             exe = Path(self.exe_path)
             if not exe.exists():
-                raise RuntimeError(f"Standalone Starless executable not found:\n{self.exe_path}")
+                raise RuntimeError(f"Starless executable not found:\n{self.exe_path}")
 
-            # temp files
-            tag = f"syqon_starless_{os.getpid()}_{int(time.time()*1000)}"
+            tag    = f"syqon_{os.getpid()}_{int(time.time()*1000)}"
             tmpdir = Path(tempfile.gettempdir()) / "SASpro_SyQon_StarlessCLI"
             tmpdir.mkdir(parents=True, exist_ok=True)
-            self._tmp_in = str(tmpdir / f"{tag}_in.fits")
-            self._tmp_out = str(tmpdir / f"{tag}_out.fits")
+
+            self._tmp_in    = str(tmpdir / f"{tag}_in.fits")
+            self._tmp_out   = str(tmpdir / f"{tag}_starless.fits")
+            self._tmp_stars = str(tmpdir / f"{tag}_stars.fits")
+            self._tmp_json  = str(tmpdir / f"{tag}_starless.json")
 
             self._emit(2, "Standalone CLI: writing temp FITS…")
             save_image(
@@ -1782,32 +1771,46 @@ class _SyQonStandaloneCLIThread(QThread):
             if self._cancel:
                 raise RuntimeError("Cancelled")
 
+            # Build args to match PI script exactly
             args = [
-                "--input", self._tmp_in,
-                "--output", self._tmp_out,
-                "--tile", str(int(self.tile)),
-                "--overlap", str(int(self.overlap)),
+                "--input",   self._tmp_in,
+                "--output",  self._tmp_out,
+                "--stars",   self._tmp_stars,
+                "--tile",    str(self.tile),
+                "--overlap", str(self.overlap),
+                "--pad",     str(self.pad),
             ]
-            if self.use_temp_stretch:
-                args.append("--temp-stretch")
-            if self.backend:
-                args += ["--backend", str(self.backend)]
+
+            if self.use_mtf:
+                args += ["--use-mtf", "--mtf-target", f"{self.mtf_target:.3f}"]
+
+            if self.use_amp:
+                args.append("--use-amp")
+            args += ["--amp-dtype", self.amp_dtype]
+
+            if self.channel_mode and self.channel_mode != "rgb":
+                args += ["--channel-mode", self.channel_mode]
+
+            if self.use_cpu:
+                args.append("--cpu")
+            if self.no_dml:
+                args.append("--no-dml")
+
+            args += ["--json-info", self._tmp_json]
 
             cmd = [str(exe)] + args
             info["command"] = cmd
-            info["cwd"] = str(exe.parent)
 
             print("\n[Starless CLI launch]", flush=True)
-            print("CMD:", cmd, flush=True)
-            print("CWD:", str(exe.parent), flush=True)
+            print("CMD:", " ".join(cmd), flush=True)
 
             self._emit(5, "Standalone CLI: starting…")
 
-            startupinfo = None
-            creationflags = 0
+            startupinfo    = None
+            creationflags  = 0
             if os.name == "nt":
                 creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-                startupinfo = subprocess.STARTUPINFO()
+                startupinfo   = subprocess.STARTUPINFO()
                 startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
 
             self._p = subprocess.Popen(
@@ -1823,18 +1826,9 @@ class _SyQonStandaloneCLIThread(QThread):
                 creationflags=creationflags,
             )
 
-            t_out = threading.Thread(
-                target=_reader,
-                args=(self._p.stdout, "stdout", stdout_lines),
-                daemon=True,
-            )
-            t_err = threading.Thread(
-                target=_reader,
-                args=(self._p.stderr, "stderr", stderr_lines),
-                daemon=True,
-            )
-            t_out.start()
-            t_err.start()
+            t_out = threading.Thread(target=_reader, args=(self._p.stdout, "stdout", stdout_lines), daemon=True)
+            t_err = threading.Thread(target=_reader, args=(self._p.stderr, "stderr", stderr_lines), daemon=True)
+            t_out.start(); t_err.start()
 
             t0 = time.time()
             timeout_s = 20 * 60
@@ -1842,35 +1836,35 @@ class _SyQonStandaloneCLIThread(QThread):
             while True:
                 if self._cancel:
                     raise RuntimeError("Cancelled")
-
-                # TRUE success test, same concept as PI
                 if self._tmp_out and os.path.exists(self._tmp_out):
-                    print(f"[Starless watcher] Output file found: {self._tmp_out}", flush=True)
                     self._emit(95, "Standalone CLI: output detected, loading…")
                     time.sleep(0.5)
                     break
-
-                # If process exited and no output yet, keep waiting briefly until timeout.
                 if self._p.poll() is not None:
                     print(f"[Starless watcher] Process exited rc={self._p.returncode}", flush=True)
-
                 if (time.time() - t0) > timeout_s:
                     raise RuntimeError("Standalone CLI timed out (no output file produced).")
-
                 time.sleep(0.25)
 
-            # let readers flush remaining text
             try:
                 self._p.wait(timeout=2.0)
             except Exception:
                 pass
-
             t_out.join(timeout=1.0)
             t_err.join(timeout=1.0)
 
             info["stdout_tail"] = "\n".join(stdout_lines[-200:])
             info["stderr_tail"] = "\n".join(stderr_lines[-200:])
-            info["returncode"] = self._p.returncode
+            info["returncode"]  = self._p.returncode
+
+            # Load JSON info if present
+            try:
+                if os.path.exists(self._tmp_json):
+                    import json
+                    with open(self._tmp_json, "r") as f:
+                        info["cli_json"] = json.load(f)
+            except Exception:
+                pass
 
             self._emit(97, "Standalone CLI: loading output…")
             starless_rgb01, _, _, _ = load_image(self._tmp_out)
@@ -1879,24 +1873,37 @@ class _SyQonStandaloneCLIThread(QThread):
                 raise RuntimeError("Standalone CLI output could not be loaded.")
 
             starless_rgb01 = np.asarray(starless_rgb01, dtype=np.float32)
-
             if starless_rgb01.ndim == 2:
                 starless_rgb01 = np.stack([starless_rgb01] * 3, axis=-1)
             elif starless_rgb01.ndim == 3 and starless_rgb01.shape[2] == 1:
                 starless_rgb01 = np.repeat(starless_rgb01, 3, axis=2)
             else:
                 starless_rgb01 = starless_rgb01[..., :3]
-
             starless_rgb01 = np.clip(starless_rgb01, 0.0, 1.0).astype(np.float32, copy=False)
 
+            # Load stars output if present
+            stars_rgb01 = None
+            try:
+                if os.path.exists(self._tmp_stars):
+                    s_img, _, _, _ = load_image(self._tmp_stars)
+                    if s_img is not None:
+                        s_img = np.asarray(s_img, dtype=np.float32)
+                        if s_img.ndim == 2:
+                            s_img = np.stack([s_img] * 3, axis=-1)
+                        elif s_img.ndim == 3 and s_img.shape[2] == 1:
+                            s_img = np.repeat(s_img, 3, axis=2)
+                        stars_rgb01 = np.clip(s_img[..., :3], 0.0, 1.0).astype(np.float32, copy=False)
+            except Exception:
+                pass
+
             self._emit(100, "Standalone CLI: complete")
-            self.finished.emit(starless_rgb01, None, info, "")
+            self.finished.emit(starless_rgb01, stars_rgb01, info, "")
 
         except Exception as e:
             import traceback
             info["stdout_tail"] = "\n".join(stdout_lines[-200:])
             info["stderr_tail"] = "\n".join(stderr_lines[-200:])
-            info["traceback"] = traceback.format_exc()
+            info["traceback"]   = traceback.format_exc()
             self.finished.emit(None, None, info, str(e))
 
         finally:
@@ -1905,8 +1912,7 @@ class _SyQonStandaloneCLIThread(QThread):
                     self._p.terminate()
             except Exception:
                 pass
-
-            for p in (self._tmp_in, self._tmp_out):
+            for p in (self._tmp_in, self._tmp_out, self._tmp_stars, self._tmp_json):
                 try:
                     if p and os.path.exists(p):
                         os.remove(p)

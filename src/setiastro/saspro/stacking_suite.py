@@ -17628,55 +17628,153 @@ class StackingSuiteDialog(QDialog):
         - Only uses leaf items (childCount()==0)
         - Repairs missing leaf UserRole by matching basename against parent's cached list
         - Filters non-existent paths
+        - Merges groups whose exposure and gain fall within tolerance
         """
         light_files: dict[str, list[str]] = {}
         total_leafs = 0
         total_paths = 0
-
         for i in range(self.reg_tree.topLevelItemCount()):
             top = self.reg_tree.topLevelItem(i)
             group_key = top.text(0)
             repaired_from_parent = 0
-
-            # Parent's cached list (may be stale but useful for repairing)
             parent_cached = top.data(0, Qt.ItemDataRole.UserRole) or []
-
             paths: list[str] = []
             for j in range(top.childCount()):
                 leaf = top.child(j)
-                # Only accept real leaf rows (no grandchildren expected in this tree)
                 if leaf.childCount() != 0:
                     continue
-
                 total_leafs += 1
-
                 fp = leaf.data(0, Qt.ItemDataRole.UserRole)
                 if not fp:
-                    # Try to repair by basename match against parent's cached list
                     name = leaf.text(0).lstrip("⚠️ ").strip()
                     match = next((p for p in parent_cached if os.path.basename(p) == name), None)
                     if match:
                         leaf.setData(0, Qt.ItemDataRole.UserRole, match)
                         fp = match
                         repaired_from_parent += 1
-
                 if fp and isinstance(fp, str) and os.path.exists(fp):
                     paths.append(fp)
-
             if paths:
                 light_files[group_key] = paths
-                # keep the parent cache in sync for future repairs
                 top.setData(0, Qt.ItemDataRole.UserRole, paths)
                 total_paths += len(paths)
-
             if debug:
                 self.update_status(self.tr(
                     f"⤴ {group_key}: {len(paths)} files"
                     + (f" (repaired {repaired_from_parent})" if repaired_from_parent else "")
                 ))
+
+        # ── Tolerance-based group merging ──────────────────────────────────────
+        try:
+            exp_tol  = int(self.exposure_tolerance_spin.value())
+            gain_tol = int(self.gain_tolerance_spin.value())
+        except Exception:
+            exp_tol  = int(self.settings.value("stacking/exposure_tolerance", 0))
+            gain_tol = int(self.settings.value("stacking/gain_tolerance",     10))
+
+        if exp_tol > 0 or gain_tol > 0:
+            import re as _re
+
+            def _parse_key(key: str):
+                """
+                Extract (filter, exposure_sec, gain, width, height) from a group key.
+                Group keys look like:  "Ha - 300s - 100g - 6224x4168"
+                or older formats like: "Ha - 300s - 6224x4168"
+                Returns a dict of parsed fields; missing fields default to None.
+                """
+                exp   = None
+                gain  = None
+                filt  = key
+                dims  = None
+
+                # exposure: <number>s
+                m = _re.search(r'(\d+(?:\.\d+)?)s', key)
+                if m:
+                    try: exp = float(m.group(1))
+                    except Exception: pass
+
+                # gain: <number>g
+                m = _re.search(r'(\d+)g', key)
+                if m:
+                    try: gain = int(m.group(1))
+                    except Exception: pass
+
+                # dimensions: NxM
+                m = _re.search(r'(\d+)x(\d+)', key)
+                if m:
+                    dims = (int(m.group(1)), int(m.group(2)))
+
+                # filter: everything before the first ' - '
+                parts = key.split(' - ')
+                filt = parts[0].strip() if parts else key
+
+                return {"filter": filt, "exp": exp, "gain": gain, "dims": dims}
+
+            def _can_merge(a: str, b: str) -> bool:
+                """True if two group keys are tolerance-compatible."""
+                pa = _parse_key(a)
+                pb = _parse_key(b)
+
+                # Different filter → never merge
+                if pa["filter"] != pb["filter"]:
+                    return False
+
+                # Different dimensions → never merge
+                if pa["dims"] != pb["dims"] and pa["dims"] is not None and pb["dims"] is not None:
+                    return False
+
+                # Exposure tolerance
+                if pa["exp"] is not None and pb["exp"] is not None:
+                    if abs(pa["exp"] - pb["exp"]) > exp_tol:
+                        return False
+
+                # Gain tolerance
+                if pa["gain"] is not None and pb["gain"] is not None:
+                    if abs(pa["gain"] - pb["gain"]) > gain_tol:
+                        return False
+
+                return True
+
+            # Union-find merge
+            keys = list(light_files.keys())
+            parent = {k: k for k in keys}
+
+            def _find(x):
+                while parent[x] != x:
+                    parent[x] = parent[parent[x]]
+                    x = parent[x]
+                return x
+
+            def _union(x, y):
+                rx, ry = _find(x), _find(y)
+                if rx != ry:
+                    parent[ry] = rx
+
+            for i in range(len(keys)):
+                for j in range(i + 1, len(keys)):
+                    if _can_merge(keys[i], keys[j]):
+                        _union(keys[i], keys[j])
+
+            merged: dict[str, list[str]] = {}
+            for k in keys:
+                root = _find(k)
+                if root not in merged:
+                    merged[root] = []
+                merged[root].extend(light_files[k])
+
+            if len(merged) < len(light_files):
+                self.update_status(self.tr(
+                    f"🔀 Tolerance merge: {len(light_files)} tree groups → {len(merged)} integration group(s) "
+                    f"(exp tol={exp_tol}s, gain tol={gain_tol})"
+                ))
+            light_files = merged
+
         self.light_files = light_files
         if debug:
-            self.update_status(self.tr(f"🧭 Tree snapshot → groups: {len(light_files)}, leaves seen: {total_leafs}, paths kept: {total_paths}"))
+            self.update_status(self.tr(
+                f"🧭 Tree snapshot → groups: {len(light_files)}, "
+                f"leaves seen: {total_leafs}, paths kept: {total_paths}"
+            ))
         return light_files
 
     def _norm_filter_key(self, s: str) -> str:

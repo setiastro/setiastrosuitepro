@@ -148,6 +148,18 @@ class SyQonToolsDialog(QDialog):
             self.cmb_family.setCurrentIndex(idx)
 
         self._sync_page()
+        self.cmb_family.currentIndexChanged.connect(self._on_family_changed)
+        self.cmb_family.currentIndexChanged.connect(self._maybe_embed_starless)
+        self._sync_page()
+        self._maybe_embed_starless()
+        
+    def _maybe_embed_starless(self, *_):
+        if self.cmb_family.currentData() != "starless":
+            return
+        doc = self.get_active_doc()
+        if doc is None or getattr(doc, "image", None) is None:
+            return
+        self.page_starless.ensure_embedded(self.parent(), doc)
 
     def _on_family_changed(self, *_):
         self.settings.setValue("syqon/tools/last_family", str(self.cmb_family.currentData() or "starless"))
@@ -157,13 +169,15 @@ class SyQonToolsDialog(QDialog):
         key = self.cmb_family.currentData()
         if key == "starless":
             self.stack.setCurrentWidget(self.page_starless)
-            self.btn_launch.setText("Open Starless Tool")
+            self.btn_launch.setVisible(False)
         elif key == "denoise":
             self.stack.setCurrentWidget(self.page_denoise)
+            self.btn_launch.setVisible(True)
             self.btn_launch.setText("Process")
         else:
             self.stack.setCurrentWidget(self.page_sharpen)
-            self.btn_launch.setText("Process")   # was "Open Sharpening Tool"
+            self.btn_launch.setVisible(True)
+            self.btn_launch.setText("Process")
 
     def _launch_selected_tool(self):
         doc = self.get_active_doc()
@@ -174,24 +188,8 @@ class SyQonToolsDialog(QDialog):
         key = self.cmb_family.currentData()
 
         if key == "starless":
-            model_kind = self.page_starless.model_kind()
-            if not hasattr(self, "_child_dialogs"):
-                self._child_dialogs = []
-
-            dlg = SyQonStarlessDialog(self.parent(), doc, parent=self.parent(), icon=self.windowIcon())
-            idx = dlg.cmb_model.findData(model_kind)
-            if idx >= 0:
-                dlg.cmb_model.setCurrentIndex(idx)
-
-            dlg.setModal(False)
-            dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-
-            self._child_dialogs.append(dlg)
-            dlg.destroyed.connect(lambda *_ , d=dlg: self._child_dialogs.remove(d) if d in self._child_dialogs else None)
-
-            dlg.show()
-            dlg.raise_()
-            dlg.activateWindow()
+            # Already embedded — the Process button inside SyQonStarlessDialog handles it
+            self.page_starless.ensure_embedded(self.parent(), doc)
             return
 
         if key == "denoise":
@@ -229,41 +227,40 @@ class SyQonToolsDialog(QDialog):
 class _SyQonStarlessHubPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.icons = get_icons()
+        self._embedded_dlg = None
         lay = QVBoxLayout(self)
-        # --- Axiom logo ---
-        self.lbl_logo = QLabel(self)
-        self.lbl_logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.setContentsMargins(0, 0, 0, 0)
+        self._lay = lay
+
+    def ensure_embedded(self, main, doc):
+        """
+        Called when the user switches to the Starless tab.
+        Embeds SyQonStarlessDialog as a child widget (not shown as a dialog).
+        Rebuilds it if the doc changed.
+        """
+        from setiastro.saspro.remove_stars import SyQonStarlessDialog
+
+        if self._embedded_dlg is not None:
+            # clear old one
+            self._lay.removeWidget(self._embedded_dlg)
+            self._embedded_dlg.setParent(None)
+            self._embedded_dlg.deleteLater()
+            self._embedded_dlg = None
+
+        dlg = SyQonStarlessDialog(main, doc, parent=self)
+        # Make it behave as an embedded widget, not a top-level dialog
+        dlg.setWindowFlags(Qt.WindowType.Widget)
+        dlg.setModal(False)
+
+        # Hide the Close button since we're embedded — user closes via SyQon Tools
         try:
-            pm = QPixmap(self.icons.SYQON_AXIOM)
-            if not pm.isNull():
-                self.lbl_logo.setPixmap(
-                    pm.scaledToWidth(260, Qt.TransformationMode.SmoothTransformation)
-                )
-                lay.addWidget(self.lbl_logo)
+            dlg.btn_close.hide()
         except Exception:
             pass
-        box = QGroupBox("SyQon Starless", self)
-        form = QFormLayout(box)
 
-        self.cmb_model = QComboBox(self)
-        self.cmb_model.addItem("Nadir", userData="nadir")
-        self.cmb_model.addItem("AxiomV2", userData="axiomv2")
-        form.addRow("Model:", self.cmb_model)
-
-        info = QLabel(
-            "Use SyQon’s star-removal models. This opens the full Starless dialog "
-            "with all current settings and live preview support."
-        )
-        info.setWordWrap(True)
-
-        lay.addWidget(box)
-        lay.addWidget(info)
-        lay.addStretch(1)
-
-    def model_kind(self) -> str:
-        return str(self.cmb_model.currentData() or "nadir")
-
+        self._embedded_dlg = dlg
+        self._lay.addWidget(dlg)
+        dlg.show()
 class _SyQonDenoiseHubPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
