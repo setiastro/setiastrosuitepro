@@ -15,6 +15,7 @@ _SYQON_SESSION = None
 _SYQON_CKPT    = None
 
 def _infer_device(torch, *, prefer_cuda: bool = True, prefer_dml: bool = True):
+
     if prefer_cuda and getattr(torch, "cuda", None) and torch.cuda.is_available():
         return torch.device("cuda")
 
