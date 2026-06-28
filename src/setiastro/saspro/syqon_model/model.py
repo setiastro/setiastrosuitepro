@@ -393,9 +393,9 @@ def _build_StarXEmulator():
             return F.interpolate(x, scale_factor=2, mode='nearest')
 
         def forward(self, x):
-            # Per-tile min/max normalisation (baked in — engine feeds raw [0,1])
-            min_val  = x.amin(dim=(2, 3), keepdim=True)
-            max_val  = x.amax(dim=(2, 3), keepdim=True)
+            # Per-tile min/max normalisation — DML-safe: reduce dims one at a time
+            min_val  = x.min(dim=3, keepdim=True).values.min(dim=2, keepdim=True).values
+            max_val  = x.max(dim=3, keepdim=True).values.max(dim=2, keepdim=True).values
             range_val = (max_val - min_val).clamp_min(1e-8)
             x_norm   = (x - min_val) / range_val
 
