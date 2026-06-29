@@ -695,6 +695,15 @@ class ImageSubWindow(QWidget):
         row.addWidget(self._btn_wcs, 0, Qt.AlignmentFlag.AlignLeft)
         # ─────────────────────────────────────────────────────────────────
 
+        row.addStretch(1)
+
+        self._zoom_label = QLabel("25%")
+        self._zoom_label.setFixedWidth(52)
+        self._zoom_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self._zoom_label.setStyleSheet("color: rgba(255,255,255,0.55); font-size: 11px;")
+        self._zoom_label.setToolTip("Current zoom level")
+        row.addWidget(self._zoom_label, 0, Qt.AlignmentFlag.AlignRight)
+
         # ---- Inline view title (shown when the MDI subwindow is maximized) ----
         self._inline_title = QLabel(self)
         self._inline_title.setText("")
@@ -804,6 +813,8 @@ class ImageSubWindow(QWidget):
 
         QTimer.singleShot(0, self._install_mdi_state_watch)
         QTimer.singleShot(0, self._update_inline_title_and_buttons)
+        QTimer.singleShot(0, self._update_zoom_label)
+
 
     def _on_document_changed(self):
         """
@@ -1147,6 +1158,15 @@ class ImageSubWindow(QWidget):
 
         self.replayOnBaseRequested.emit(self)
 
+    def _update_zoom_label(self):
+        lbl = getattr(self, "_zoom_label", None)
+        if lbl is None:
+            return
+        try:
+            pct = int(round(self.scale * 100))
+            lbl.setText(f"{pct}%")
+        except Exception:
+            pass
 
     def set_view_transform(self, scale, hval, vval, from_link=False):
         self._suppress_link_emit = True
@@ -1156,9 +1176,8 @@ class ImageSubWindow(QWidget):
             scale_changed = (abs(scale - self.scale) > 1e-9)
             if scale_changed:
                 self.scale = scale
-                self._render(rebuild=False)  # fast present for responsiveness
-
-                # ✅ NEW: schedule the final smooth redraw (same as main zoom path)
+                self._render(rebuild=False)
+                self._update_zoom_label()
                 if self._smooth_zoom:
                     self._request_zoom_redraw()
 
@@ -2269,17 +2288,15 @@ class ImageSubWindow(QWidget):
 
 
     def set_scale(self, s: float):
-        # Programmatic scale changes must schedule final smooth redraw
         s = float(max(self._min_scale, min(s, self._max_scale)))
         if abs(s - self.scale) < 1e-9:
             return
         self.scale = s
-        self._render()                 # fast present happens here
+        self._render()
         self._schedule_emit_view_transform()
-
-        # ✅ NEW: ensure we do the final smooth redraw (same as manual zoom)
         if self._smooth_zoom:
             self._request_zoom_redraw()
+        self._update_zoom_label()
 
 
 
@@ -3412,9 +3429,9 @@ class ImageSubWindow(QWidget):
         vbar.setValue(new_v)
 
         # Defer one final smooth redraw (and WCS overlay) after the burst
+        self._update_zoom_label()
         if self._smooth_zoom:
             self._request_zoom_redraw()
-
 
     def _request_zoom_redraw(self):
         if getattr(self, "_zoom_timer", None) is None:
