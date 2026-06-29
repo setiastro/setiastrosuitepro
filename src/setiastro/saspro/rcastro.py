@@ -797,8 +797,15 @@ class RCAstroDialog(QDialog):
         if not exe or not os.path.exists(exe):
             self.lbl_devices.setText("Set the rc-astro executable path first.")
             return
+        s = QSettings()
+        if not bool(s.value("rcastro/uses_device_flag", True, type=bool)):
+            self.lbl_devices.setText(
+                "Device listing requires RC-Astro CLI 0.9.7 or later. "
+                "Please upgrade using the button above.")
+            return
         import subprocess
         self.lbl_devices.setText("Querying devices…")
+        QApplication.processEvents()
         QApplication.processEvents()
         try:
             r = subprocess.run(
