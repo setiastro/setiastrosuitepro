@@ -4,6 +4,11 @@ from dataclasses import dataclass, field
 from typing import Optional, List
 import numpy as np
 
+try:
+    import cv2  # optional; used for fast, low-memory resize/warp
+except Exception:  # pragma: no cover
+    cv2 = None
+
 BLEND_MODES = [
     "Normal",
     "Multiply",
@@ -137,12 +142,49 @@ def _apply_levels(img: np.ndarray, black_point: float, white_point: float, midto
 
     return np.clip(out, 0.0, 1.0)
 
+def _is_identity_transform(t: "LayerTransform | None") -> bool:
+    """True if the transform is (effectively) a no-op, so we can skip warping."""
+    if t is None:
+        return True
+    try:
+        return (abs(float(t.tx)) < 1e-6 and abs(float(t.ty)) < 1e-6 and
+                abs(float(t.rot_deg)) < 1e-6 and
+                abs(float(t.sx) - 1.0) < 1e-6 and abs(float(t.sy) - 1.0) < 1e-6)
+    except Exception:
+        return False
+
+
+def _scaled_transform(t: "LayerTransform", scale: float) -> "LayerTransform":
+    """Return a copy of t with translation/pivot scaled for a downsized canvas."""
+    if scale == 1.0:
+        return t
+    return LayerTransform(
+        tx=float(t.tx) * scale,
+        ty=float(t.ty) * scale,
+        rot_deg=float(t.rot_deg),
+        sx=float(t.sx),
+        sy=float(t.sy),
+        pivot_x=(None if t.pivot_x is None else float(t.pivot_x) * scale),
+        pivot_y=(None if t.pivot_y is None else float(t.pivot_y) * scale),
+    )
+
+
 def _resize_like(src: np.ndarray, tgt_shape_hw: tuple[int, int]) -> np.ndarray:
-    """Nearest resize without dependencies. src: (H,W[,C]), target: (H,W)."""
+    """Nearest resize. src: (H,W[,C]), target: (H,W). Uses OpenCV when available."""
     Ht, Wt = int(tgt_shape_hw[0]), int(tgt_shape_hw[1])
     Hs, Ws = src.shape[0], src.shape[1]
     if (Hs, Ws) == (Ht, Wt):
         return src
+    if cv2 is not None:
+        try:
+            out = cv2.resize(np.ascontiguousarray(src), (Wt, Ht),
+                             interpolation=cv2.INTER_NEAREST)
+            # cv2 drops a trailing singleton channel; restore if needed
+            if src.ndim == 3 and out.ndim == 2:
+                out = out[:, :, None]
+            return out
+        except Exception:
+            pass
     yi = (np.linspace(0, Hs - 1, Ht)).astype(np.int32)
     xi = (np.linspace(0, Ws - 1, Wt)).astype(np.int32)
     return src[yi][:, xi, ...] if src.ndim == 3 else src[yi][:, xi]
@@ -204,6 +246,23 @@ def _warp_affine_nearest(src: np.ndarray, out_hw: tuple[int, int], M_src_to_dst:
         C = None
     else:
         C = int(src.shape[2])
+
+    # Fast path: OpenCV warpAffine (C-optimized, low memory). M is src->dst;
+    # OpenCV inverts it internally when WARP_INVERSE_MAP is not set.
+    if cv2 is not None:
+        try:
+            M23 = np.asarray(M_src_to_dst, dtype=np.float32)[:2, :]
+            out = cv2.warpAffine(
+                np.ascontiguousarray(src), M23, (Wt, Ht),
+                flags=cv2.INTER_NEAREST,
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=(float(fill),) * 4,
+            )
+            if C is not None and out.ndim == 2:
+                out = out[:, :, None]
+            return out.astype(src.dtype, copy=False)
+        except Exception:
+            pass
 
     # Compute inverse mapping
     try:
@@ -402,7 +461,8 @@ def _apply_mode(base: np.ndarray, src: np.ndarray, layer: ImageLayer) -> np.ndar
     return src
 
 
-def composite_stack(base_img: np.ndarray, layers: List[ImageLayer]) -> np.ndarray:
+def composite_stack(base_img: np.ndarray, layers: List[ImageLayer],
+                    max_dim: int | None = None, **kwargs) -> np.ndarray:
     """
     Composite a base image with a stack of ImageLayer objects.
 
@@ -412,11 +472,25 @@ def composite_stack(base_img: np.ndarray, layers: List[ImageLayer]) -> np.ndarra
     - Applies per-layer transform (translate/rotate/scale about pivot) in canvas space
       AFTER resizing the layer to the base canvas (H,W).
     - Applies the SAME transform to the layer's mask (if present) so alpha lines up.
+    - max_dim: if set and the base's longest side exceeds it, the whole composite
+      runs at a reduced resolution (for fast live previews). Layer translations are
+      scaled accordingly so geometry stays correct. Pass None (default) for full res.
     """
     if base_img is None:
         return None
 
-    out = _ensure_3c(_float01(base_img))
+    base_arr = np.asarray(base_img)
+    H0, W0 = int(base_arr.shape[0]), int(base_arr.shape[1])
+
+    # Optional preview downscale. Resize the RAW array first (cheap), then do the
+    # float/3-channel conversion on the small image — this keeps the whole
+    # composite at preview resolution instead of converting the full image first.
+    scale = 1.0
+    if max_dim and max(H0, W0) > int(max_dim):
+        scale = float(max_dim) / float(max(H0, W0))
+        base_arr = _resize_like(base_arr, (max(1, int(round(H0 * scale))),
+                                           max(1, int(round(W0 * scale)))))
+    out = _ensure_3c(_float01(base_arr))
     H, W = int(out.shape[0]), int(out.shape[1])
 
     # iterate bottom → top so the top-most layer renders last
@@ -432,9 +506,11 @@ def composite_stack(base_img: np.ndarray, layers: List[ImageLayer]) -> np.ndarra
         if src is None:
             continue
 
-        # ----- normalize to float01 + 3 channels + canvas size -----
-        s = _ensure_3c(_float01(src))
-        s = _resize_like(s, (H, W))
+        # ----- normalize to canvas size + float01 + 3 channels -----
+        # Resize the RAW source to the (possibly downscaled) canvas first, so the
+        # float/3-channel conversion runs at preview resolution, not full-res.
+        s = _resize_like(np.asarray(src), (H, W))
+        s = _ensure_3c(_float01(s))
 
         # ----- per-layer levels -----
         if bool(getattr(L, "levels_enabled", False)):
@@ -446,13 +522,17 @@ def composite_stack(base_img: np.ndarray, layers: List[ImageLayer]) -> np.ndarra
             )
 
         # ----- apply layer transform in canvas space -----
+        # Skip entirely for identity transforms — this is the common case and
+        # avoids an expensive full-canvas warp per layer per recomposite.
         t = getattr(L, "transform", None)
-        if t is not None:
+        t_eff = None
+        if not _is_identity_transform(t):
+            t_eff = _scaled_transform(t, scale)
             try:
-                s = _apply_transform_to_layer_image(s, t, H, W)
+                s = _apply_transform_to_layer_image(s, t_eff, H, W)
             except Exception:
                 # If transform fails for any reason, fall back to untransformed
-                pass
+                t_eff = None
 
         # ----- validate blend mode -----
         if getattr(L, "mode", None) not in BLEND_MODES:
@@ -475,10 +555,11 @@ def composite_stack(base_img: np.ndarray, layers: List[ImageLayer]) -> np.ndarra
             if m is not None:
                 m = _resize_like(m, (H, W))
 
-                # Apply SAME transform to mask so it stays registered with the layer pixels
-                if t is not None:
+                # Apply SAME (scaled) transform to mask so it stays registered with
+                # the layer pixels. Skip when the transform is identity.
+                if t_eff is not None:
                     try:
-                        m = _apply_transform_to_mask(m, t, H, W)
+                        m = _apply_transform_to_mask(m, t_eff, H, W)
                     except Exception:
                         pass
 

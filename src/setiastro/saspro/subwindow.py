@@ -77,7 +77,18 @@ from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavToolbar
 from matplotlib.figure import Figure
 
 from setiastro.saspro.autostretch import autostretch, autostretch_with_lut, apply_autostretch_lut
-from .layers import BLEND_MODES, ImageLayer, composite_stack
+from .layers import BLEND_MODES, ImageLayer, composite_stack, _resize_like
+
+
+def _layer_profile_log(msg: str):
+    """Append a layer-compositing timing line to <temp>/sas_layers_profile.log."""
+    try:
+        import os, tempfile, datetime
+        p = os.path.join(tempfile.gettempdir(), "sas_layers_profile.log")
+        with open(p, "a", encoding="utf-8") as f:
+            f.write(datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3] + "  " + msg + "\n")
+    except Exception:
+        pass
 from setiastro.saspro.dnd_mime import (
     MIME_ASTROMETRY,
     MIME_CMD,
@@ -684,6 +695,15 @@ class ImageSubWindow(QWidget):
         row.addWidget(self._btn_wcs, 0, Qt.AlignmentFlag.AlignLeft)
         # ─────────────────────────────────────────────────────────────────
 
+        row.addStretch(1)
+
+        self._zoom_label = QLabel("25%")
+        self._zoom_label.setFixedWidth(52)
+        self._zoom_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self._zoom_label.setStyleSheet("color: rgba(255,255,255,0.55); font-size: 11px;")
+        self._zoom_label.setToolTip("Current zoom level")
+        row.addWidget(self._zoom_label, 0, Qt.AlignmentFlag.AlignRight)
+
         # ---- Inline view title (shown when the MDI subwindow is maximized) ----
         self._inline_title = QLabel(self)
         self._inline_title.setText("")
@@ -793,6 +813,8 @@ class ImageSubWindow(QWidget):
 
         QTimer.singleShot(0, self._install_mdi_state_watch)
         QTimer.singleShot(0, self._update_inline_title_and_buttons)
+        QTimer.singleShot(0, self._update_zoom_label)
+
 
     def _on_document_changed(self):
         """
@@ -1136,6 +1158,15 @@ class ImageSubWindow(QWidget):
 
         self.replayOnBaseRequested.emit(self)
 
+    def _update_zoom_label(self):
+        lbl = getattr(self, "_zoom_label", None)
+        if lbl is None:
+            return
+        try:
+            pct = int(round(self.scale * 100))
+            lbl.setText(f"{pct}%")
+        except Exception:
+            pass
 
     def set_view_transform(self, scale, hval, vval, from_link=False):
         self._suppress_link_emit = True
@@ -1145,9 +1176,8 @@ class ImageSubWindow(QWidget):
             scale_changed = (abs(scale - self.scale) > 1e-9)
             if scale_changed:
                 self.scale = scale
-                self._render(rebuild=False)  # fast present for responsiveness
-
-                # ✅ NEW: schedule the final smooth redraw (same as main zoom path)
+                self._render(rebuild=False)
+                self._update_zoom_label()
                 if self._smooth_zoom:
                     self._request_zoom_redraw()
 
@@ -1386,22 +1416,208 @@ class ImageSubWindow(QWidget):
 
 
       
-    def apply_layer_stack(self, layers):
-        """
-        Rebuild the display override from base document + given layer stack.
-        Does not mutate the underlying document.image.
-        """
+    # Longest-side limit used while compositing a live preview. Full resolution
+    # is always used for merges / non-preview applies.
+    _LAYER_PREVIEW_MAX_DIM = 1100
+    # When True, per-update timing (composite / upscale / render) is appended to
+    # <temp>/sas_layers_profile.log. Set False to disable once diagnosed.
+    _LAYER_PROFILE = False
+
+    def apply_layer_stack(self, layers, *, preview: bool = False):
+        if getattr(self, "_compositing", False):
+            return
+        self._compositing = True
+        import time as _time
+        _t0 = _time.perf_counter()
+        _t1 = _t2 = _t0
+        base = None
         try:
             base = self.document.image
             if layers:
-                comp = composite_stack(base, layers)
-                self._display_override = comp
+                max_dim = self._LAYER_PREVIEW_MAX_DIM if preview else None
+                # Apply base levels to base before compositing (display-only)
+                base_for_comp = base
+                base_levels = getattr(self, "_base_levels", None)
+                if base_levels and base_levels.get("enabled", False) and base is not None:
+                    from setiastro.saspro.layers import _apply_levels, _ensure_3c, _float01
+                    base_for_comp = _apply_levels(
+                        _ensure_3c(_float01(base)),
+                        float(base_levels.get("black_point", 0.0)),
+                        float(base_levels.get("white_point", 1.0)),
+                        float(base_levels.get("midtones", 0.5)),
+                    )
+                comp = composite_stack(base_for_comp, layers, max_dim=max_dim)
+                _t1 = _time.perf_counter()
+                if preview:
+                    _t2 = _time.perf_counter()
+                    self._display_override = comp
+                    self._render_layer_preview(comp)
+                    self.layers_changed.emit()
+                else:
+                    if (comp is not None and base is not None
+                            and comp.shape[:2] != base.shape[:2]):
+                        comp = _resize_like(comp, base.shape[:2])
+                    _t2 = _time.perf_counter()
+                    self._display_override = comp
+                    self.layers_changed.emit()
+                    self._render(rebuild=True)
             else:
-                self._display_override = None
-            self.layers_changed.emit()
-            self._render(rebuild=True)
+                # No layers — base levels still apply as display-only
+                base_levels = getattr(self, "_base_levels", None)
+                if base_levels and base_levels.get("enabled", False) and base is not None:
+                    from setiastro.saspro.layers import _apply_levels, _ensure_3c, _float01
+                    comp = _apply_levels(
+                        _ensure_3c(_float01(base)),
+                        float(base_levels.get("black_point", 0.0)),
+                        float(base_levels.get("white_point", 1.0)),
+                        float(base_levels.get("midtones", 0.5)),
+                    )
+                    _t1 = _t2 = _time.perf_counter()
+                    self._display_override = comp
+                    self.layers_changed.emit()
+                    if preview:
+                        self._render_layer_preview(comp)
+                    else:
+                        self._render(rebuild=True)
+                else:
+                    self._display_override = None
+                    _t1 = _t2 = _time.perf_counter()
+                    self.layers_changed.emit()
+                    self._render(rebuild=True)
+            _t3 = _time.perf_counter()
+            if getattr(self, "_LAYER_PROFILE", False):
+                try:
+                    sh = None if base is None else tuple(int(x) for x in base.shape[:2])
+                    _layer_profile_log(
+                        f"{'preview' if preview else 'full   '}  "
+                        f"composite={(_t1-_t0)*1000:7.1f}ms  "
+                        f"upscale={(_t2-_t1)*1000:7.1f}ms  "
+                        f"render={(_t3-_t2)*1000:7.1f}ms  "
+                        f"total={(_t3-_t0)*1000:7.1f}ms  "
+                        f"layers={len(layers)} base={sh}")
+                except Exception:
+                    pass
         except Exception as e:
-            print("[ImageSubWindow] apply_layer_stack error:", e)      
+            print("[ImageSubWindow] apply_layer_stack error:", e)
+        finally:
+            self._compositing = False
+
+    def _render_layer_preview(self, comp_small):
+        """Fast live preview render.
+
+        Does autostretch + 8-bit conversion on the SMALL composite, builds a small
+        QImage, then upscales only the resulting QPixmap (fast Qt scaling) to the
+        full source size so the on-screen zoom (which is in source-pixel units via
+        self.scale) stays consistent with the full-resolution document. This keeps
+        all per-pixel work at preview resolution instead of 16MP per frame.
+        """
+        try:
+            from PyQt6 import sip as _sip
+            if _sip.isdeleted(self):
+                return
+            lbl = getattr(self, "label", None)
+            if lbl is None or _sip.isdeleted(lbl):
+                return
+        except Exception:
+            return
+
+        base = getattr(self.document, "image", None)
+        if base is None or comp_small is None:
+            self._render(rebuild=True)
+            return
+
+        full_h, full_w = int(base.shape[0]), int(base.shape[1])
+        arr = np.asarray(comp_small)
+        if arr.ndim == 3 and arr.shape[2] == 1:
+            arr = arr[..., 0]
+        is_mono = (arr.ndim == 2)
+
+        import time as _pt
+        _ta = _pt.perf_counter()
+
+        # ---- autostretch on the small array, reusing the cached LUT if present ----
+        if self.autostretch_enabled:
+            arr_f = arr.astype(np.float32, copy=False)
+            try:
+                mx = float(arr_f.max()) if arr_f.size else 1.0
+            except Exception:
+                mx = 1.0
+            if mx > 5.0:
+                arr_f = arr_f / mx
+            lut = getattr(self, "_autostretch_lut_cache", None)
+            try:
+                if lut is not None:
+                    vis = apply_autostretch_lut(
+                        arr_f, lut,
+                        linked=(not is_mono and self._autostretch_linked),
+                    )
+                else:
+                    vis, lut2 = autostretch_with_lut(
+                        arr_f,
+                        target_median=self.autostretch_target,
+                        sigma=self.autostretch_sigma,
+                        linked=(not is_mono and self._autostretch_linked),
+                        use_24bit=None,
+                        no_black_clip=bool(getattr(self, "_no_black_clip", False)),
+                    )
+                    self._autostretch_lut_cache = lut2
+            except Exception:
+                vis = np.clip(arr_f, 0.0, 1.0)
+        else:
+            vis = arr
+
+        # ---- to uint8 RGB (still at preview resolution) ----
+        if vis.dtype == np.uint8:
+            buf8 = vis
+        else:
+            buf8 = (np.clip(vis.astype(np.float32, copy=False), 0.0, 1.0) * 255.0).astype(np.uint8)
+        if buf8.ndim == 2:
+            buf8 = np.stack([buf8] * 3, axis=-1)
+        elif buf8.ndim == 3 and buf8.shape[2] == 1:
+            buf8 = np.repeat(buf8, 3, axis=2)
+        elif buf8.ndim == 3 and buf8.shape[2] > 3:
+            buf8 = buf8[..., :3]
+        buf8 = np.ascontiguousarray(buf8)
+
+        h, w, _c = buf8.shape
+        _tb = _pt.perf_counter()
+        try:
+            qimg = QImage(buf8.tobytes(), w, h, 3 * w, QImage.Format.Format_RGB888)
+            pm_small = QPixmap.fromImage(qimg)
+            _tc = _pt.perf_counter()
+            # Scale straight from the small preview to the on-screen display size
+            # (full_size * current zoom) in ONE step — never materialize a 16MP
+            # intermediate pixmap, which is what made this path slow.
+            scale = float(getattr(self, "scale", 1.0) or 1.0)
+            sw = max(1, int(full_w * scale))
+            sh = max(1, int(full_h * scale))
+            pm_disp = pm_small.scaled(
+                sw, sh,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.FastTransformation,
+            )
+        except Exception:
+            self._render(rebuild=True)
+            return
+
+        # Keep the small pixmap as the source; the trailing full-resolution apply
+        # restores the true full-res _pm_src once dragging stops.
+        self._qimg_src = None
+        self._pm_src = pm_small
+        self._pm_src_wcs = None
+        self._buf8 = None
+        self.label.setPixmap(pm_disp)
+        self.label.resize(pm_disp.size())
+        if getattr(self, "_LAYER_PROFILE", False):
+            try:
+                _td = _pt.perf_counter()
+                _layer_profile_log(
+                    f"  prev-detail  stretch+8bit={(_tb-_ta)*1000:6.1f}ms  "
+                    f"toqimg={(_tc-_tb)*1000:6.1f}ms  "
+                    f"scale+paint={(_td-_tc)*1000:6.1f}ms  "
+                    f"small=({w}x{h}) disp=({sw}x{sh}) zoom={scale:.3f}")
+            except Exception:
+                pass
 
     def keyPressEvent(self, ev):
         if ev.key() == Qt.Key.Key_Space:
@@ -2072,17 +2288,15 @@ class ImageSubWindow(QWidget):
 
 
     def set_scale(self, s: float):
-        # Programmatic scale changes must schedule final smooth redraw
         s = float(max(self._min_scale, min(s, self._max_scale)))
         if abs(s - self.scale) < 1e-9:
             return
         self.scale = s
-        self._render()                 # fast present happens here
+        self._render()
         self._schedule_emit_view_transform()
-
-        # ✅ NEW: ensure we do the final smooth redraw (same as manual zoom)
         if self._smooth_zoom:
             self._request_zoom_redraw()
+        self._update_zoom_label()
 
 
 
@@ -3215,9 +3429,9 @@ class ImageSubWindow(QWidget):
         vbar.setValue(new_v)
 
         # Defer one final smooth redraw (and WCS overlay) after the burst
+        self._update_zoom_label()
         if self._smooth_zoom:
             self._request_zoom_redraw()
-
 
     def _request_zoom_redraw(self):
         if getattr(self, "_zoom_timer", None) is None:

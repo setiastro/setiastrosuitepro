@@ -61,6 +61,25 @@ def _prefer_high_perf_gpu(exe_path: str) -> None:
             winreg.SetValueEx(key, full, 0, winreg.REG_SZ, "GpuPreference=2;")
     except Exception:
         pass
+
+def _detect_cli_uses_device_flag(exe: str) -> bool:
+    """
+    Returns True if this rc-astro binary uses --device (0.9.7+),
+    False if it uses the old --engine flag (0.9.6 and earlier).
+    Probes via --no-banner --help and looks for '--device' in the output.
+    """
+    if not exe or not os.path.exists(exe):
+        return True  # assume new if unknown
+    import subprocess
+    try:
+        r = subprocess.run(
+            [exe, "--no-banner", "--help"],
+            capture_output=True, text=True, timeout=8
+        )
+        out = (r.stdout or "") + (r.stderr or "")
+        return "--device" in out
+    except Exception:
+        return True  # assume new on error    
 # ---------------------------------------------------------------------------
 # Worker — runs any rc-astro subprocess, streams stdout+stderr
 # ---------------------------------------------------------------------------
@@ -293,7 +312,6 @@ class _BXTPanel(QWidget):
 # ---------------------------------------------------------------------------
 # SXT parameter panel
 # ---------------------------------------------------------------------------
-
 class _SXTPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -310,9 +328,18 @@ class _SXTPanel(QWidget):
         self.chk_unscreen.setChecked(False)
         self.chk_unscreen.setEnabled(False)
         self.chk_stars.toggled.connect(self.chk_unscreen.setEnabled)
-        # sync initial enabled state — toggled doesn't fire during construction
         self.chk_unscreen.setEnabled(self.chk_stars.isChecked())
         form.addRow("", self.chk_unscreen)
+
+        self.sld_overlap = _form_slider(
+            form, "Tile Overlap (0 – 0.5):",
+            0.0, 0.5, 0.2, decimals=2, scale=100
+        )
+        self.sld_overlap.setToolTip(
+            "Tile overlap fraction passed to --overlap.\n"
+            "Default 0.20 (20%). Higher values reduce seam artifacts\n"
+            "but increase processing time."
+        )
 
         note = QLabel(
             "SASpro will load the starless result into the current document\n"
@@ -327,16 +354,20 @@ class _SXTPanel(QWidget):
             args.append("--stars")
             if self.chk_unscreen.isChecked():
                 args.append("--unscreen")
+        overlap = self.sld_overlap.value() / 100.0
+        if abs(overlap - 0.2) > 0.005:
+            args += ["--overlap", f"{overlap:.2f}"]
         return args
 
     def save_settings(self, s: QSettings):
         s.setValue("rcastro/sxt_stars",    self.chk_stars.isChecked())
         s.setValue("rcastro/sxt_unscreen", self.chk_unscreen.isChecked())
+        s.setValue("rcastro/sxt_overlap",  self.sld_overlap.value())
 
     def load_settings(self, s: QSettings):
         self.chk_stars.setChecked(   bool(s.value("rcastro/sxt_stars",    True,  type=bool)))
         self.chk_unscreen.setChecked(bool(s.value("rcastro/sxt_unscreen", False, type=bool)))
-
+        self.sld_overlap.setValue(    int(s.value("rcastro/sxt_overlap",  20)))
 
 # ---------------------------------------------------------------------------
 # NXT parameter panel
@@ -707,13 +738,25 @@ class RCAstroDialog(QDialog):
 
         eng_row = QHBoxLayout()
         self.cmb_engine = QComboBox()
-        self.cmb_engine.addItems(["auto", "dml", "cpu"])
+        self.cmb_engine.addItems(["auto", "gpu", "cpu"])
+        self.cmb_engine.setEditable(True)
         self.cmb_engine.setToolTip(
-            "auto  — let rc-astro pick the best available backend\n"
-            "dml   — DirectML (Windows GPU)\n"
-            "cpu   — force CPU (slow but always works)")
-        eng_row.addWidget(self.cmb_engine); eng_row.addStretch(1)
-        common_form.addRow("Inference Engine:", eng_row)
+            "auto  — let rc-astro pick the best available device\n"
+            "gpu   — use GPU (0.9.7+) / was 'dml' on older CLI\n"
+            "cpu   — force CPU (slow but always works)\n"
+            "gpu0, gpu1 etc. — select a specific GPU (0.9.7+ only)")
+        eng_row.addWidget(self.cmb_engine)
+        self.btn_list_devices = QPushButton("List Devices")
+        self.btn_list_devices.setToolTip("Run rc-astro --device to show available compute devices.")
+        self.btn_list_devices.clicked.connect(self._list_devices)
+        eng_row.addWidget(self.btn_list_devices)
+        eng_row.addStretch(1)
+        common_form.addRow("Compute Device:", eng_row)
+
+        self.lbl_devices = QLabel("")
+        self.lbl_devices.setWordWrap(True)
+        self.lbl_devices.setStyleSheet("color:#aaa; font-size:11px;")
+        common_form.addRow("", self.lbl_devices)
 
         self.chk_overwrite = QCheckBox("Overwrite existing output files")
         self.chk_overwrite.setChecked(True)
@@ -749,8 +792,46 @@ class RCAstroDialog(QDialog):
         root.addWidget(foot)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
+    def _list_devices(self):
+        exe = self._get_exe()
+        if not exe or not os.path.exists(exe):
+            self.lbl_devices.setText("Set the rc-astro executable path first.")
+            return
+        s = QSettings()
+        if not bool(s.value("rcastro/uses_device_flag", True, type=bool)):
+            self.lbl_devices.setText(
+                "Device listing requires RC-Astro CLI 0.9.7 or later. "
+                "Please upgrade using the button above.")
+            return
+        import subprocess
+        self.lbl_devices.setText("Querying devices…")
+        QApplication.processEvents()
+        QApplication.processEvents()
+        try:
+            r = subprocess.run(
+                [exe, "--no-banner", "--device"],
+                capture_output=True, text=True, timeout=10
+            )
+            out = ((r.stdout or "") + (r.stderr or "")).strip()
+            # Filter out banner art lines and empty lines
+            lines = [
+                l for l in out.splitlines()
+                if l.strip() and l.strip()[0] not in "/_\\|"
+            ]
+            # Drop the "Select a device with..." trailing instruction line
+            lines = [l for l in lines if not l.strip().lower().startswith("select a device")]
+            self.lbl_devices.setText("\n".join(lines) or "No device info returned.")
+        except Exception as e:
+            self.lbl_devices.setText(f"Error: {e}")
+
+    def _device_flag(self) -> str:
+        """Returns '--device' for 0.9.7+ or '--engine' for older CLI."""
+        s = QSettings()
+        uses_device = bool(s.value("rcastro/uses_device_flag", True, type=bool))
+        return "--device" if uses_device else "--engine"
+
     def _update_gpu_pref_visibility(self, engine: str):
-        self.chk_high_perf_gpu.setVisible(str(engine) not in ("dml", "cpu"))
+        self.chk_high_perf_gpu.setVisible(str(engine).strip().lower() != "cpu")
 
     def _upgrade_cli(self):
         exe = self._get_exe()
@@ -790,23 +871,25 @@ class RCAstroDialog(QDialog):
         self.edit_exe.setText(fn)
         s = QSettings()
         s.setValue("rcastro/exe_path", fn)
+        s.setValue("rcastro/uses_device_flag", bool(_detect_cli_uses_device_flag(fn)))
         self._probe_version(fn)
 
     def _probe_version(self, exe: str):
         import subprocess
         try:
-            # --help always works and prints the version in the banner
             r = subprocess.run(
                 [exe, "--no-banner", "--help"],
                 capture_output=True, text=True, timeout=8)
             out = (r.stdout or "") + (r.stderr or "")
+            # Update device-flag detection while we have the help output
+            s = QSettings()
+            s.setValue("rcastro/uses_device_flag", bool("--device" in out))
             for line in out.splitlines():
                 line = line.strip()
                 if line.lower().startswith("version"):
                     self.lbl_version.setText(line)
                     return
-                # rc-astro prints "Version X.Y.Z (build ...)" in the banner
-                if "version" in line.lower() and ("build" in line.lower() or "." in line):
+                if "version" in line.lower() and ("build" in line.lower() or re.search(r'\d+\.\d+', line)):
                     self.lbl_version.setText(line)
                     return
             self.lbl_version.setText("rc-astro found.")
@@ -840,10 +923,17 @@ class RCAstroDialog(QDialog):
         self.edit_exe.setText(exe)
         if exe and os.path.exists(exe):
             self._probe_version(exe)
-
-        idx = self.cmb_engine.findText(str(s.value("rcastro/engine", "auto")))
+        # Migrate old engine values from pre-0.9.7 (--engine → --device)
+        raw_engine = str(s.value("rcastro/engine", "auto"))
+        # Migrate old provider names from pre-0.9.7
+        if raw_engine in ("dml", "coreml", "cuda"):
+            raw_engine = "gpu"
+            s.setValue("rcastro/engine", "gpu")
+        idx = self.cmb_engine.findText(raw_engine)
         if idx >= 0:
             self.cmb_engine.setCurrentIndex(idx)
+        else:
+            self.cmb_engine.setCurrentText(raw_engine)
         self.chk_overwrite.setChecked(
             bool(s.value("rcastro/overwrite", True, type=bool)))
         self.chk_high_perf_gpu.setChecked(
@@ -942,7 +1032,7 @@ class RCAstroDialog(QDialog):
         # ── Build full command ────────────────────────────────────────────────
         cmd = [exe, "--no-banner", product, input_path]
         cmd += panel_args
-        cmd += ["--engine", self.cmb_engine.currentText()]
+        cmd += [self._device_flag(), self.cmb_engine.currentText()]
         cmd += ["--depth", "32F"]
         if self.chk_overwrite.isChecked():
             cmd.append("--overwrite")
@@ -1068,6 +1158,20 @@ def _on_finished(main_dlg, doc, return_code, dlg,
 
     # SXT stars-only — open via docman.open_path, subwindow spawns automatically
     if product == "sxt" and os.path.exists(stars_path):
+        # If the source was mono, collapse the RGB stars output back to mono so it
+        # matches the original (otherwise it can't be combined/subtracted with it).
+        # Mirrors the mono-collapse applied to the main starless result above.
+        if is_mono:
+            try:
+                from setiastro.saspro.legacy.image_manager import save_image
+                s_img, _, _, _ = load_image(stars_path)
+                if s_img is not None and s_img.ndim == 3:
+                    s_img = s_img.mean(axis=2).astype(np.float32)
+                    save_image(np.clip(s_img, 0.0, 1.0), stars_path,
+                               "tif", "32-bit floating point", None, False,
+                               image_meta=None, file_meta=None)
+            except Exception as e:
+                dlg.append(f"[warn] could not collapse stars to mono: {e}\n")        
         dlg.append(f"Loading stars-only: {os.path.basename(stars_path)}\n")
         _push_new_doc(main_window, stars_path, source_doc=doc)
         dlg.append("Stars-only image pushed as new document.\n")
@@ -1126,7 +1230,8 @@ class RCAstroPresetDialog(QDialog):
         prod_form.addRow("Product:", self.cmb_product)
 
         self.cmb_engine = QComboBox()
-        self.cmb_engine.addItems(["auto", "dml", "cpu"])
+        self.cmb_engine.addItems(["auto", "gpu", "cpu"])
+        self.cmb_engine.setEditable(True)
         self.cmb_engine.setCurrentText(str(p.get("engine", "auto")))
         prod_form.addRow("Engine:", self.cmb_engine)
         outer.addLayout(prod_form)
@@ -1327,9 +1432,13 @@ def run_rcastro_via_preset(main, preset: dict | None = None, *, doc=None):
         QMessageBox.critical(main, "RC-Astro", f"Failed to write temp TIFF:\n{e}")
         return
 
+    # Determine correct flag for installed CLI version
+    uses_device = bool(s.value("rcastro/uses_device_flag", True, type=bool))
+    device_flag = "--device" if uses_device else "--engine"
+
     cmd = [exe, "--no-banner", product, input_path]
     cmd += args
-    cmd += ["--engine", engine, "--depth", "32F", "--overwrite"]
+    cmd += [device_flag, engine, "--depth", "32F", "--overwrite"]
     if engine != "cpu" and bool(s.value("rcastro/high_perf_gpu", True, type=bool)):
         _prefer_high_perf_gpu(exe)
     label = PRODUCT_LABELS.get(product, product.upper())
