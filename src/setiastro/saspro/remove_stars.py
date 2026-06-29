@@ -2041,10 +2041,12 @@ def _run_starnet(main, doc, icon_path=None):
     else:
         processing_norm = processing_image
 
-    # --- Build input/output paths (StarNet folder)
+    # --- Build input/output paths in a real temp directory (not the StarNet folder,
+    #     which may be read-only on some installs, especially StarNet2 2.5+)
     starnet_dir = os.path.dirname(exe) or os.getcwd()
-    input_image_path = os.path.join(starnet_dir, "imagetoremovestars.tif")
-    output_image_path = os.path.join(starnet_dir, "starless.tif")
+    _starnet_tmp_dir = tempfile.mkdtemp(prefix="SASpro_StarNet_")
+    input_image_path = os.path.join(_starnet_tmp_dir, "imagetoremovestars.tif")
+    output_image_path = os.path.join(_starnet_tmp_dir, "starless.tif")
 
     # --- Prepare input for StarNet 
     img_for_starnet = processing_norm
@@ -2233,22 +2235,23 @@ def _on_starnet_finished(main, doc, return_code, dialog, input_path, output_path
         return bps
 
     dialog.append_text(f"\nProcess finished with return code {return_code}.\n")
+    _tmp_dir = os.path.dirname(input_path)
     if return_code != 0:
         QMessageBox.critical(main, "StarNet Error", f"StarNet failed with return code {return_code}.")
         _safe_rm(input_path); _safe_rm(output_path)
+        _safe_rmdir(_tmp_dir)
         dialog.close()
         return
-
     if not os.path.exists(output_path):
         QMessageBox.critical(main, "StarNet Error", "Starless image was not created.")
         _safe_rm(input_path)
+        _safe_rmdir(_tmp_dir)
         dialog.close()
         return
-
     dialog.append_text(f"Starless image found at {output_path}. Loading image...\n")
     starless_rgb, _, _, _ = load_image(output_path)
     _safe_rm(input_path); _safe_rm(output_path)
-
+    _safe_rmdir(_tmp_dir)
     if starless_rgb is None:
         QMessageBox.critical(main, "StarNet Error", "Failed to load starless image.")
         dialog.close()
@@ -2773,6 +2776,13 @@ def _safe_rm(p):
     try:
         if p and os.path.exists(p):
             os.remove(p)
+    except Exception:
+        pass
+
+def _safe_rmdir(p):
+    try:
+        if p and os.path.isdir(p):
+            shutil.rmtree(p, ignore_errors=True)
     except Exception:
         pass
 
