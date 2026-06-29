@@ -462,7 +462,7 @@ def _apply_mode(base: np.ndarray, src: np.ndarray, layer: ImageLayer) -> np.ndar
 
 
 def composite_stack(base_img: np.ndarray, layers: List[ImageLayer],
-                    max_dim: int | None = None) -> np.ndarray:
+                    max_dim: int | None = None, **kwargs) -> np.ndarray:
     """
     Composite a base image with a stack of ImageLayer objects.
 

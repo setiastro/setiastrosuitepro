@@ -194,47 +194,47 @@ class _LayerRow(QWidget):
         self.sig_strength_label = None
         self.sig_strength = None
 
+# row 3: Levels — built for ALL rows (base and non-base)
+        from PyQt6.QtWidgets import QDoubleSpinBox
+
+        r3 = QHBoxLayout(); v.addLayout(r3)
+
+        self.levels_enable = QCheckBox()
+        self.levels_enable.setToolTip("Enable per-layer levels adjustment")
+        self.levels_enable.setChecked(False)
+
+        self.levels_bp_label = QLabel("Black")
+        self.levels_bp = QDoubleSpinBox()
+        self.levels_bp.setRange(0.0, 1.0)
+        self.levels_bp.setSingleStep(0.01)
+        self.levels_bp.setDecimals(3)
+        self.levels_bp.setValue(0.0)
+
+        self.levels_wp_label = QLabel("White")
+        self.levels_wp = QDoubleSpinBox()
+        self.levels_wp.setRange(0.0, 1.0)
+        self.levels_wp.setSingleStep(0.01)
+        self.levels_wp.setDecimals(3)
+        self.levels_wp.setValue(1.0)
+
+        self.levels_mt_label = QLabel("Midtones")
+        self.levels_mt = QDoubleSpinBox()
+        self.levels_mt.setRange(0.01, 1.0)
+        self.levels_mt.setSingleStep(0.01)
+        self.levels_mt.setDecimals(3)
+        self.levels_mt.setValue(0.5)
+
+        r3.addWidget(self.levels_enable)
+        r3.addWidget(self.levels_bp_label)
+        r3.addWidget(self.levels_bp)
+        r3.addWidget(self.levels_mt_label)
+        r3.addWidget(self.levels_mt)
+        r3.addWidget(self.levels_wp_label)
+        r3.addWidget(self.levels_wp)
+        r3.addStretch(1)
+
         if not self._is_base:
-            from PyQt6.QtWidgets import QDoubleSpinBox
-
-            # row 3: Levels
-            r3 = QHBoxLayout(); v.addLayout(r3)
-
-            self.levels_enable = QCheckBox()
-            self.levels_enable.setToolTip("Enable per-layer levels adjustment")
-            self.levels_enable.setChecked(False)
-
-            self.levels_bp_label = QLabel("Black")
-            self.levels_bp = QDoubleSpinBox()
-            self.levels_bp.setRange(0.0, 1.0)
-            self.levels_bp.setSingleStep(0.01)
-            self.levels_bp.setDecimals(3)
-            self.levels_bp.setValue(0.0)
-
-            self.levels_wp_label = QLabel("White")
-            self.levels_wp = QDoubleSpinBox()
-            self.levels_wp.setRange(0.0, 1.0)
-            self.levels_wp.setSingleStep(0.01)
-            self.levels_wp.setDecimals(3)
-            self.levels_wp.setValue(1.0)
-
-            self.levels_mt_label = QLabel("Midtones")
-            self.levels_mt = QDoubleSpinBox()
-            self.levels_mt.setRange(0.01, 1.0)
-            self.levels_mt.setSingleStep(0.01)
-            self.levels_mt.setDecimals(3)
-            self.levels_mt.setValue(0.5)
-
-            r3.addWidget(self.levels_enable)
-            r3.addWidget(self.levels_bp_label)
-            r3.addWidget(self.levels_bp)
-            r3.addWidget(self.levels_mt_label)
-            r3.addWidget(self.levels_mt)
-            r3.addWidget(self.levels_wp_label)
-            r3.addWidget(self.levels_wp)
-            r3.addStretch(1)
-
-            # row 4: Sigmoid parameters
+            # row 4: Sigmoid parameters — non-base only
             r4 = QHBoxLayout(); v.addLayout(r4)
 
             self.sig_center_label = QLabel("Sigmoid center")
@@ -258,16 +258,26 @@ class _LayerRow(QWidget):
             r4.addStretch(1)
 
         if self._is_base:
-            # Base row is informational only
+            # Base row is informational only — except levels which apply to base
             for w in (
                 self.chk, self.mode, self.sld, self.btn_up, self.btn_tf, self.btn_dn, self.btn_x,
                 self.mask_combo, self.mask_invert, self.btn_clear_mask,
-                self.levels_enable, self.levels_bp, self.levels_wp, self.levels_mt,
                 self.sig_center, self.sig_strength
             ):
                 if w is not None:
                     w.setEnabled(False)
             self.lbl.setStyleSheet("color: palette(mid);")
+            # Wire levels for base layer
+            if self.levels_enable is not None:
+                self.levels_enable.toggled.connect(self._update_levels_enabled_ui)
+                self.levels_enable.toggled.connect(self._emit)
+            if self.levels_bp is not None:
+                self.levels_bp.valueChanged.connect(self._clamp_levels_ui)
+            if self.levels_wp is not None:
+                self.levels_wp.valueChanged.connect(self._clamp_levels_ui)
+            if self.levels_mt is not None:
+                self.levels_mt.valueChanged.connect(self._emit)
+            self._update_levels_enabled_ui()
         else:
             self.chk.stateChanged.connect(self._emit)
             self.mode.currentIndexChanged.connect(self._on_mode_changed)
@@ -716,6 +726,16 @@ class LayersDock(QDockWidget):
         base_name = base_name() if callable(base_name) else "Current View"
         base_label = f"Base • {base_name}"
         base_row = _LayerRow(base_label, "—", 1.0, True, is_base=True)
+        # Restore saved base levels from the view
+        base_levels = getattr(vw, "_base_levels", None)
+        if base_levels:
+            base_row.set_levels_enabled(base_levels.get("enabled", False))
+            base_row.set_levels_params(
+                base_levels.get("black_point", 0.0),
+                base_levels.get("white_point", 1.0),
+                base_levels.get("midtones", 0.5),
+            )
+        base_row.changed.connect(self._apply_list_to_view_debounced)
         itb = QListWidgetItem(self.list)
         itb.setSizeHint(base_row.sizeHint())
         self.list.addItem(itb)
@@ -1020,6 +1040,25 @@ class LayersDock(QDockWidget):
                 lyr.mask_invert = bool(p["mask_invert"])
             except Exception as ex:
                 print("[LayersDock] sync row error:", ex)
+        # Sync base layer levels (last row)
+        vw = self.current_view()
+        if vw:
+            n_layers = len(getattr(vw, "_layers", []) or [])
+            base_item = self.list.item(n_layers)
+            if base_item is not None:
+                base_roww = self.list.itemWidget(base_item)
+                if isinstance(base_roww, _LayerRow) and getattr(base_roww, "_is_base", False):
+                    try:
+                        p = base_roww.params()
+                        vw._base_levels = {
+                            "enabled":     bool(p.get("levels_enabled", False)),
+                            "black_point": float(p.get("black_point", 0.0)),
+                            "white_point": float(p.get("white_point", 1.0)),
+                            "midtones":    float(p.get("midtones", 0.5)),
+                        }
+                    except Exception:
+                        pass
+
 
     def _apply_list_to_view(self):
         vw = self.current_view()
@@ -1197,6 +1236,16 @@ class LayersDock(QDockWidget):
                 return
 
             base_img = base_doc.image
+            # Apply base levels to base before compositing (display-only — base_doc.image unchanged)
+            base_levels = getattr(vw, "_base_levels", None)
+            if base_levels and base_levels.get("enabled", False):
+                from setiastro.saspro.layers import _apply_levels, _ensure_3c, _float01
+                base_img = _apply_levels(
+                    _ensure_3c(_float01(base_img)),
+                    float(base_levels.get("black_point", 0.0)),
+                    float(base_levels.get("white_point", 1.0)),
+                    float(base_levels.get("midtones", 0.5)),
+                )
             merged = composite_stack(base_img, layers)
             if merged is None:
                 QMessageBox.warning(self, "Layers", "Composite failed (empty result).")
@@ -1208,8 +1257,9 @@ class LayersDock(QDockWidget):
             meta["step_name"] = "Layers Merge"
             base_doc.apply_edit(merged.copy(), metadata=meta, step_name="Layers Merge")
 
-            # Clear layers and update live preview
+            # Clear layers, reset base levels, and update live preview
             vw._layers = []
+            vw._base_levels = None
             vw._reinstall_layer_watchers()
             self._rebuild_list()
             vw.apply_layer_stack([])
@@ -1238,6 +1288,16 @@ class LayersDock(QDockWidget):
                 return
 
             base_img = base_doc.image
+            # Apply base levels to base before compositing (display-only — base_doc.image unchanged)
+            base_levels = getattr(vw, "_base_levels", None)
+            if base_levels and base_levels.get("enabled", False):
+                from setiastro.saspro.layers import _apply_levels, _ensure_3c, _float01
+                base_img = _apply_levels(
+                    _ensure_3c(_float01(base_img)),
+                    float(base_levels.get("black_point", 0.0)),
+                    float(base_levels.get("white_point", 1.0)),
+                    float(base_levels.get("midtones", 0.5)),
+                )
             merged = composite_stack(base_img, layers)
             if merged is None:
                 QMessageBox.warning(self, "Layers", "Composite failed (empty result).")

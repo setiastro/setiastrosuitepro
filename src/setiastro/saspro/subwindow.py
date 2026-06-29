@@ -1405,18 +1405,6 @@ class ImageSubWindow(QWidget):
     _LAYER_PROFILE = False
 
     def apply_layer_stack(self, layers, *, preview: bool = False):
-        """
-        Rebuild the display override from base document + given layer stack.
-        Does not mutate the underlying document.image.
-
-        preview=True composites at a reduced resolution for snappy live editing;
-        the result is upscaled back to full canvas size so view coordinates stay
-        valid. A trailing full-resolution apply produces the final quality.
-        """
-        # Re-entrancy guard: watched-doc 'changed' signals fire during _render /
-        # apply_edit, which could recursively re-trigger compositing and freeze the
-        # UI. Drop overlapping calls; the latest layer state is recomposited by the
-        # trailing (debounced/full) apply.
         if getattr(self, "_compositing", False):
             return
         self._compositing = True
@@ -1428,15 +1416,20 @@ class ImageSubWindow(QWidget):
             base = self.document.image
             if layers:
                 max_dim = self._LAYER_PREVIEW_MAX_DIM if preview else None
-                comp = composite_stack(base, layers, max_dim=max_dim)
+                # Apply base levels to base before compositing (display-only)
+                base_for_comp = base
+                base_levels = getattr(self, "_base_levels", None)
+                if base_levels and base_levels.get("enabled", False) and base is not None:
+                    from setiastro.saspro.layers import _apply_levels, _ensure_3c, _float01
+                    base_for_comp = _apply_levels(
+                        _ensure_3c(_float01(base)),
+                        float(base_levels.get("black_point", 0.0)),
+                        float(base_levels.get("white_point", 1.0)),
+                        float(base_levels.get("midtones", 0.5)),
+                    )
+                comp = composite_stack(base_for_comp, layers, max_dim=max_dim)
                 _t1 = _time.perf_counter()
                 if preview:
-                    # Keep the composite SMALL. The fast preview renderer does the
-                    # autostretch/8-bit conversion on the small image and upscales
-                    # only the final pixmap, so no 16MP work happens per frame.
-                    # Set the override BEFORE emitting so listeners (e.g. the separate
-                    # Layer Preview window) can REUSE this already-composited result
-                    # instead of compositing a second time.
                     _t2 = _time.perf_counter()
                     self._display_override = comp
                     self._render_layer_preview(comp)
@@ -1450,10 +1443,28 @@ class ImageSubWindow(QWidget):
                     self.layers_changed.emit()
                     self._render(rebuild=True)
             else:
-                self._display_override = None
-                _t1 = _t2 = _time.perf_counter()
-                self.layers_changed.emit()
-                self._render(rebuild=True)
+                # No layers — base levels still apply as display-only
+                base_levels = getattr(self, "_base_levels", None)
+                if base_levels and base_levels.get("enabled", False) and base is not None:
+                    from setiastro.saspro.layers import _apply_levels, _ensure_3c, _float01
+                    comp = _apply_levels(
+                        _ensure_3c(_float01(base)),
+                        float(base_levels.get("black_point", 0.0)),
+                        float(base_levels.get("white_point", 1.0)),
+                        float(base_levels.get("midtones", 0.5)),
+                    )
+                    _t1 = _t2 = _time.perf_counter()
+                    self._display_override = comp
+                    self.layers_changed.emit()
+                    if preview:
+                        self._render_layer_preview(comp)
+                    else:
+                        self._render(rebuild=True)
+                else:
+                    self._display_override = None
+                    _t1 = _t2 = _time.perf_counter()
+                    self.layers_changed.emit()
+                    self._render(rebuild=True)
             _t3 = _time.perf_counter()
             if getattr(self, "_LAYER_PROFILE", False):
                 try:
